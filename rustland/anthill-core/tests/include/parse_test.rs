@@ -3062,16 +3062,14 @@ sort Host {
     }
     assert_eq!(labels.len(), 2, "row should carry two present labels");
 
-    // Each `Modifies[host]` lowers to `parameterized(base: sort_ref(name:
-    // Ref(Modifies)), bindings: cons(...))`, so drill base → name. The
-    // canonical-form sort orders labels by `type_display_name`, so the
-    // order here is alphabetical (`Modifies` before `Reads`).
+    // WI-361: each `Modifies[host]` is the term-backed `Fn{Modifies, named:[…]}`
+    // — the base sort IS the functor (no `parameterized(base: sort_ref(…))`
+    // wrapper). The canonical-form sort orders labels by `type_display_name`, so
+    // the order here is alphabetical (`Modifies` before `Reads`).
     let names: Vec<String> = labels.iter().map(|&effect| {
-        let base = named_arg(&kb, effect, "base");
-        let name_tid = named_arg(&kb, base, "name");
-        match kb.get_term(name_tid) {
-            Term::Ref(sym) => kb.resolve_sym(*sym).to_owned(),
-            other => panic!("expected Ref for sort_ref.name, got {:?}", other),
+        match kb.get_term(effect) {
+            Term::Fn { functor, .. } => kb.resolve_sym(*functor).to_owned(),
+            other => panic!("expected term-backed parameterized effect Fn, got {:?}", other),
         }
     }).collect();
     assert_eq!(names, vec!["Modifies".to_owned(), "Reads".to_owned()],
@@ -3138,11 +3136,10 @@ sort Host
                 let head = named_args.iter()
                     .find(|(s, _)| kb.resolve_sym(*s) == "head")
                     .map(|(_, v)| *v).expect("cons.head");
-                // head is the effect term — parameterized(Modify, [c = ...]) etc.
-                let base = named_arg(kb, head, "base");
-                let name_tid = named_arg(kb, base, "name");
-                match kb.get_term(name_tid) {
-                    Term::Ref(sym) => kb.resolve_sym(*sym).to_owned(),
+                // WI-361: head is the term-backed effect `Fn{Modify, named}` —
+                // the base sort IS the functor (no `parameterized(base:…)` wrapper).
+                match kb.get_term(head) {
+                    Term::Fn { functor, .. } => kb.resolve_sym(*functor).to_owned(),
                     _ => "?".to_owned(),
                 }
             }
@@ -4556,10 +4553,9 @@ operation just[A](x: A) -> Box[A]
     let vid_param = assert_var_id(&kb, named_arg(&kb, params[0], "type_name"));
 
     let return_type = named_arg(&kb, op_info, "return_type");
-    let bindings_list = named_arg(&kb, return_type, "bindings");
-    let bindings = cons_list_to_vec(&kb, bindings_list);
-    assert_eq!(bindings.len(), 1);
-    let bound_value = named_arg(&kb, bindings[0], "value");
+    // WI-361: term-backed `Box[A]` = `Fn{Box, named:[(T, Var(A))]}` — the binding
+    // value is the `T` named arg directly (no `bindings: List[TypeBinding]` wrapper).
+    let bound_value = named_arg(&kb, return_type, "T");
     let vid_return = assert_var_id(&kb, bound_value);
 
     assert_eq!(vid_param, vid_return,

@@ -2541,16 +2541,12 @@ impl KnowledgeBase {
 
     /// sort_ref(name: <sym>) — reference to a named sort.
     pub fn make_sort_ref(&mut self, sort_sym: Symbol) -> TermId {
-        let sort_ref_sym = self.resolve_symbol("anthill.prelude.Type.sort_ref");
-        let name_key = self.intern("name");
-        let name_val = self.alloc(Term::Ref(sort_sym));
-        let mut named_args: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
-        named_args.push((name_key, name_val));
-        self.alloc(Term::Fn {
-            functor: sort_ref_sym,
-            pos_args: SmallVec::new(),
-            named_args,
-        })
+        // WI-361 producer flip: a bare sort is the term `Ref(S)` itself — no
+        // `sort_ref(name: Ref(S))` wrapper. The sort symbol IS the functor for
+        // discrimination (`rules_by_functor`, discrim top-edge); dual-form readers
+        // (`extract_sort_ref_sym` / `type_head`) still recognize the deep
+        // `sort_ref` shape for any residual/reflect terms.
+        self.alloc(Term::Ref(sort_sym))
     }
 
     /// `denoted(value: <term>)` — a value standing in a type-argument
@@ -2743,34 +2739,28 @@ impl KnowledgeBase {
 
     /// parameterized(base: <type>, bindings: List[TypeBinding]).
     pub fn make_parameterized_type(&mut self, base: TermId, bindings: &[(Symbol, TermId)]) -> TermId {
-        let parameterized_sym = self.resolve_symbol("anthill.prelude.Type.parameterized");
-        let type_binding_sym = self.resolve_symbol("anthill.prelude.Type.TypeBinding");
-        let base_key = self.intern("base");
-        let bindings_key = self.intern("bindings");
-        let param_key = self.intern("param");
-        let value_key = self.intern("value");
-
-        let binding_terms: Vec<TermId> = bindings.iter().map(|(param_sym, value_term)| {
-            let param_ref = self.alloc(Term::Ref(*param_sym));
-            let mut args: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
-            args.push((param_key, param_ref));
-            args.push((value_key, *value_term));
-            args.sort_by_key(|(s, _)| s.index());
-            self.alloc(Term::Fn {
-                functor: type_binding_sym,
-                pos_args: SmallVec::new(),
-                named_args: args,
-            })
-        }).collect();
-
-        let bindings_list = self.build_list(&binding_terms);
-
-        let mut named_args: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
-        named_args.push((base_key, base));
-        named_args.push((bindings_key, bindings_list));
+        // WI-361 producer flip: term-backed — the base sort IS the functor and the
+        // bindings ARE the named args (`List[T = Int]` = `Fn{List, named:[(T, …)]}`),
+        // with no `parameterized(base, bindings: List[TypeBinding])` wrapper. The
+        // base sort is the discriminating functor (native `rules_by_functor`/discrim
+        // selectivity — the SLD `canonicalize_type_value` shape, now produced
+        // directly). `base` is a sort reference — `Ref(S)` (post make_sort_ref flip)
+        // or a deep `sort_ref(name: Ref(S))` during transition — read via the
+        // dual-form reader.
+        let base_sym = crate::kb::typing::extract_sort_ref_sym(self, base)
+            .expect("make_parameterized_type: base must be a sort reference");
+        if bindings.is_empty() {
+            // A parameterized type with no bindings IS the bare sort (`List[]` ≡
+            // `List`) — emit `Ref(S)`, never a degenerate no-arg `Fn{S}` (which
+            // `type_head` classifies as `Error`, losing the base sort). Mirrors the
+            // inference's own empty-bindings guard; also covers an over-applied
+            // non-parametric sort whose stray bindings were dropped at load.
+            return self.alloc(Term::Ref(base_sym));
+        }
+        let mut named_args: SmallVec<[(Symbol, TermId); 2]> = bindings.iter().copied().collect();
         named_args.sort_by_key(|(s, _)| s.index());
         self.alloc(Term::Fn {
-            functor: parameterized_sym,
+            functor: base_sym,
             pos_args: SmallVec::new(),
             named_args,
         })

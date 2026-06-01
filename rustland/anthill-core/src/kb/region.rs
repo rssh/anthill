@@ -120,6 +120,15 @@ pub(crate) fn result_type_admits_region(
             return true;
         }
     }
+    // WI-361: a term-backed parameterized region (`-> Cell[V]` = `Fn{Cell, named}`)
+    // carries its base sort as the FUNCTOR, which `subterms()` excludes — check it
+    // directly so the region is still admitted (the deep `parameterized(base:
+    // sort_ref(Cell), …)` form keeps the base reachable via the subterm recursion).
+    if let Term::Fn { functor, .. } = kb.get_term(ty) {
+        if regions.contains(functor) {
+            return true;
+        }
+    }
     kb.get_term(ty)
         .subterms()
         .iter()

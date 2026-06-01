@@ -578,13 +578,12 @@ fn wi350_abstract_stream_receiver_types_via_interface_with_two_impls() {
         .expect("head(s) on abstract Stream[T] must type-check (not Ambiguous) with ≥2 impls");
     let ty = result.ty.as_term().expect("ground return type");
     let ty_str = TermPrinter::new(&kb).print_term(ty);
-    let named = match kb.get_term(ty) {
-        Term::Fn { named_args, .. } => named_args.clone(),
+    // WI-361: term-backed `Option[T = …]` = `Fn{Option, named}` — the base sort
+    // IS the functor (no deep `parameterized(base: sort_ref(…))` wrapper).
+    let base = match kb.get_term(ty) {
+        Term::Fn { functor, .. } => *functor,
         _ => panic!("expected parameterized Option return; got {ty_str}"),
     };
-    let base = get_named_arg(&kb, &named, "base")
-        .and_then(|b| extract_sort_ref_sym(&kb, b))
-        .unwrap_or_else(|| panic!("return type base not a sort_ref; got {ty_str}"));
     assert_eq!(kb.qualified_name_of(base), "anthill.prelude.Option",
         "abstract-receiver head must type via interface to Option; got {ty_str}");
 }

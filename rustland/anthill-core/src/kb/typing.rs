@@ -5880,7 +5880,12 @@ fn bind_spec_params_from_carrier(
 /// and keeps only `Value::Term` values (a parameterized type's bindings are
 /// ground terms).
 fn parameterized_short_bindings(kb: &KnowledgeBase, ty: TermId) -> Vec<(String, TermId)> {
-    parameterized_bindings_term(kb, ty)
+    // WI-361: read bindings form-agnostically — deep `parameterized(base, bindings)`
+    // OR term-backed `Fn{S, named}` (`List[T = Int]` = `Fn{List, named:[(T, Int)]}`).
+    let TypeExtractor::Parameterized { bindings, .. } = extract_type(kb, &TermIdView(ty)) else {
+        return Vec::new();
+    };
+    bindings
         .into_iter()
         .filter_map(|(param, value)| {
             value
@@ -7549,55 +7554,35 @@ fn unify_parameterized_with_sort_ref(
     parameterized: TermId,
     sort_ref: TermId,
 ) -> bool {
-    let pbase = match kb.get_term(parameterized) {
-        Term::Fn { named_args, .. } => {
-            match get_named_arg(kb, named_args, "base") {
-                Some(b) => b,
-                None => return types_compatible(kb, subst, &TermIdView(parameterized), &TermIdView(sort_ref)),
-            }
-        }
-        _ => return types_compatible(kb, subst, &TermIdView(parameterized), &TermIdView(sort_ref)),
+    // WI-361: read base + bindings form-agnostically — deep `parameterized(base,
+    // bindings)` OR term-backed `Fn{S, named}`. A non-parameterized side, a base
+    // mismatch, or a non-`sort_ref` falls back to the plain compat relation.
+    let TypeExtractor::Parameterized { base: pbase_sym, bindings } =
+        extract_type(kb, &TermIdView(parameterized))
+    else {
+        return types_compatible(kb, subst, &TermIdView(parameterized), &TermIdView(sort_ref));
     };
-    let pbase_sym = match extract_sort_ref_sym(kb, pbase) {
-        Some(s) => s,
-        None => return types_compatible(kb, subst, &TermIdView(parameterized), &TermIdView(sort_ref)),
-    };
-    let sref_sym = match extract_sort_ref_sym(kb, sort_ref) {
-        Some(s) => s,
-        None => return types_compatible(kb, subst, &TermIdView(parameterized), &TermIdView(sort_ref)),
+    let Some(sref_sym) = extract_sort_ref_sym(kb, sort_ref) else {
+        return types_compatible(kb, subst, &TermIdView(parameterized), &TermIdView(sort_ref));
     };
     if pbase_sym != sref_sym {
         return types_compatible(kb, subst, &TermIdView(parameterized), &TermIdView(sort_ref));
     }
 
-    let bindings_tid = match kb.get_term(parameterized) {
-        Term::Fn { named_args, .. } => get_named_arg(kb, named_args, "bindings"),
-        _ => None,
-    };
-    if let Some(bt) = bindings_tid {
-        for binding in list_to_vec(kb, bt) {
-            let psym = match binding_param_sym(kb, binding) {
-                Some(s) => s,
-                None => continue,
-            };
-            let value = match binding_value(kb, binding) {
-                Some(v) => v,
-                None => continue,
-            };
-            let qualified = format!(
-                "{}.{}",
-                kb.qualified_name_of(pbase_sym),
-                kb.resolve_sym(psym),
-            );
-            let qualified_sym = match kb.try_resolve_symbol(&qualified) {
-                Some(s) => s,
-                None => continue,
-            };
-            if let Some(alias_target) = resolve_sort_alias(kb, qualified_sym) {
-                if let Term::Var(Var::Global(vid)) = kb.get_term(alias_target) {
-                    if !occurs_in(kb, *vid, value) {
-                        subst.bind(*vid, value);
-                    }
+    for (psym, value) in &bindings {
+        // Only term-carried binding values bind a `TermId` alias Var; a
+        // `Value::Node` (denoted-bearing) binding has no alias-Var target here.
+        let Value::Term(value) = value else { continue };
+        let qualified = format!(
+            "{}.{}",
+            kb.qualified_name_of(pbase_sym),
+            kb.resolve_sym(*psym),
+        );
+        let Some(qualified_sym) = kb.try_resolve_symbol(&qualified) else { continue };
+        if let Some(alias_target) = resolve_sort_alias(kb, qualified_sym) {
+            if let Term::Var(Var::Global(vid)) = kb.get_term(alias_target) {
+                if !occurs_in(kb, *vid, *value) {
+                    subst.bind(*vid, *value);
                 }
             }
         }
@@ -11556,10 +11541,11 @@ mod wi361_reader_tests {
         let tb_int = term_backed_param(&mut kb, list, t, int);
         let tb_int2 = term_backed_param(&mut kb, list, t, int);
         let tb_str = term_backed_param(&mut kb, list, t, string);
-        // deep `parameterized(sort_ref(List), [T = sort_ref(Int)])`.
-        let int_ref = kb.make_sort_ref(int);
-        let base = kb.make_sort_ref(list);
-        let deep_int = kb.make_parameterized_type(base, &[(t, int_ref)]);
+        // deep `parameterized(base: sort_ref(List), [TypeBinding(T, sort_ref(Int))])`,
+        // built by hand — post-WI-361 the `make_*` builders emit the term backing,
+        // so the genuine cross-form (deep vs term-backed) is exercised only by
+        // constructing the deep shape explicitly via `deep_param`.
+        let deep_int = deep_param(&mut kb, list, t, int);
 
         // term-backed vs term-backed: same instantiation unifies; differing
         // binding is rejected.
@@ -11592,6 +11578,102 @@ mod wi361_reader_tests {
             !types_compatible(&mut kb, &mut s5, &TermIdView(tb_int), &TermIdView(tb_str)),
             "List[T=Int] is not <: List[T=String]"
         );
+    }
+
+    /// Build the legacy DEEP `sort_ref(name: Ref(sym))` by hand — post-WI-361
+    /// `make_sort_ref` emits the term backing `Ref(sym)`, so the dual-form
+    /// readers' deep path is exercised only by constructing it explicitly.
+    fn deep_sort_ref(kb: &mut KnowledgeBase, sym: Symbol) -> TermId {
+        let sr = kb.resolve_symbol("anthill.prelude.Type.sort_ref");
+        let name = kb.intern("name");
+        let r = kb.alloc(Term::Ref(sym));
+        let mut na: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
+        na.push((name, r));
+        kb.alloc(Term::Fn { functor: sr, pos_args: SmallVec::new(), named_args: na })
+    }
+
+    /// Build the legacy DEEP `parameterized(base: sort_ref(base), bindings:
+    /// [TypeBinding(param, value: sort_ref(arg))])` by hand (replicating the
+    /// pre-WI-361 `make_parameterized_type` shape) so the readers' deep path
+    /// stays covered after the producer flip.
+    fn deep_param(kb: &mut KnowledgeBase, base: Symbol, param: Symbol, arg: Symbol) -> TermId {
+        let parameterized = kb.resolve_symbol("anthill.prelude.Type.parameterized");
+        let type_binding = kb.resolve_symbol("anthill.prelude.Type.TypeBinding");
+        let base_key = kb.intern("base");
+        let bindings_key = kb.intern("bindings");
+        let param_key = kb.intern("param");
+        let value_key = kb.intern("value");
+        let base_sr = deep_sort_ref(kb, base);
+        let param_ref = kb.alloc(Term::Ref(param));
+        let value_sr = deep_sort_ref(kb, arg);
+        let mut ba: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
+        ba.push((param_key, param_ref));
+        ba.push((value_key, value_sr));
+        ba.sort_by_key(|(s, _)| s.index());
+        let binding = kb.alloc(Term::Fn { functor: type_binding, pos_args: SmallVec::new(), named_args: ba });
+        let bindings_list = kb.build_list(&[binding]);
+        let mut na: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
+        na.push((base_key, base_sr));
+        na.push((bindings_key, bindings_list));
+        na.sort_by_key(|(s, _)| s.index());
+        kb.alloc(Term::Fn { functor: parameterized, pos_args: SmallVec::new(), named_args: na })
+    }
+
+    /// WI-361 PRODUCER FLIP: `make_sort_ref` now emits the bare term `Ref(S)`
+    /// and `make_parameterized_type` the term backing `Fn{S, named}` (base sort
+    /// IS the functor, no `sort_ref`/`parameterized` wrapper); the dual-form
+    /// readers classify both the flipped producers' output AND a hand-built deep
+    /// shape identically.
+    #[test]
+    fn producer_flip_emits_term_backing_readers_dual_form() {
+        use super::{extract_type, sort_functor_of, TypeExtractor};
+        use crate::kb::term_view::TermIdView;
+        let mut kb = kb_with_prelude();
+        let int = kb.intern("Int");
+        let list = kb.intern("List");
+        let t = kb.intern("T");
+
+        // make_sort_ref(Int) -> the bare term `Ref(Int)`, NOT `sort_ref(name: …)`.
+        let sr = kb.make_sort_ref(int);
+        assert!(matches!(kb.get_term(sr), Term::Ref(s) if *s == int),
+            "make_sort_ref flips to Ref(S); got {:?}", kb.get_term(sr));
+
+        // make_parameterized_type(make_sort_ref(List), [T = Ref(Int)]) ->
+        // `Fn{List, named:[(T, Ref(Int))]}` — the base sort IS the functor.
+        let base = kb.make_sort_ref(list);
+        let int_ref = kb.make_sort_ref(int);
+        let p = kb.make_parameterized_type(base, &[(t, int_ref)]);
+        match kb.get_term(p).clone() {
+            Term::Fn { functor, named_args, pos_args } => {
+                assert_eq!(functor, list, "functor IS the base sort (List)");
+                assert!(pos_args.is_empty());
+                assert_eq!(named_args.len(), 1);
+                assert_eq!(named_args[0].0, t, "the binding is the `T` named arg");
+            }
+            other => panic!("make_parameterized_type flips to Fn{{S, named}}; got {other:?}"),
+        }
+
+        // make_parameterized_type with NO bindings collapses to the bare sort
+        // `Ref(S)` — a no-binding parameterized IS the bare sort, never a
+        // degenerate no-arg `Fn{S}` (which would classify as `Error`).
+        let empty_base = kb.make_sort_ref(list);
+        let empty_param = kb.make_parameterized_type(empty_base, &[]);
+        assert!(matches!(kb.get_term(empty_param), Term::Ref(s) if *s == list),
+            "empty-bindings parameterized collapses to bare Ref(S); got {:?}", kb.get_term(empty_param));
+
+        // Dual-form readers classify the flipped producers' output …
+        assert!(matches!(extract_type(&kb, &TermIdView(sr)), TypeExtractor::SortRef(s) if s == int));
+        assert!(matches!(extract_type(&kb, &TermIdView(p)), TypeExtractor::Parameterized { base, .. } if base == list));
+        assert_eq!(sort_functor_of(&kb, p), Some(list), "term-backed Fn{{List,..}} -> List");
+
+        // … AND a hand-built DEEP shape identically (deep recognition retained).
+        let deep_sr = deep_sort_ref(&mut kb, int);
+        let deep_p = deep_param(&mut kb, list, t, int);
+        assert!(matches!(extract_type(&kb, &TermIdView(deep_sr)), TypeExtractor::SortRef(s) if s == int),
+            "deep sort_ref(Int) still reads as SortRef(Int)");
+        assert!(matches!(extract_type(&kb, &TermIdView(deep_p)), TypeExtractor::Parameterized { base, .. } if base == list),
+            "deep parameterized(List, …) still reads as Parameterized{{List}}");
+        assert_eq!(sort_functor_of(&kb, deep_p), Some(list), "deep parameterized -> List");
     }
 }
 
@@ -11993,4 +12075,5 @@ end
         );
     }
 }
+
 

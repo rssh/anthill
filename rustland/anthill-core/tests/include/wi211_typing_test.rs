@@ -100,52 +100,21 @@ fn stream_head_on_concrete_stream_yields_option_with_concrete_t() {
     // Pre-fix it would have been parameterized(Option, [T = Var(_)]) — i.e.
     // an unbound Var because unify_parameterized_with_sort_ref hadn't
     // propagated the per-call bindings.
-    let named_args = match kb.get_term(ty) {
-        Term::Fn { named_args, .. } => named_args.clone(),
+    // WI-361: term-backed `Option[T = X]` = `Fn{Option, named:[(T, X)]}` — the
+    // base sort IS the functor; the `T` binding is the `T` named arg directly
+    // (no deep `parameterized(base: sort_ref(Option), bindings: [...])` wrapper).
+    let (base_sym, named_args) = match kb.get_term(ty) {
+        Term::Fn { functor, named_args, .. } => (*functor, named_args.clone()),
         _ => panic!("expected parameterized return type; got {ty_str}"),
     };
-    let base = get_named_arg(&kb, &named_args, "base")
-        .unwrap_or_else(|| panic!("missing base field; got {ty_str}"));
-    let base_sym = extract_sort_ref_sym(&kb, base)
-        .unwrap_or_else(|| panic!("base not a sort_ref; got {ty_str}"));
     assert_eq!(
         kb.qualified_name_of(base_sym),
         "anthill.prelude.Option",
         "expected Option base; got {ty_str}",
     );
-
-    let bindings = get_named_arg(&kb, &named_args, "bindings")
-        .unwrap_or_else(|| panic!("missing bindings field; got {ty_str}"));
-    let mut t_value_sym = None;
-    let mut cur = bindings;
-    loop {
-        let (functor, na) = match kb.get_term(cur) {
-            Term::Fn { functor, named_args, .. } => (*functor, named_args.clone()),
-            _ => break,
-        };
-        if kb.resolve_sym(functor) == "nil" { break; }
-        let head_binding = match get_named_arg(&kb, &na, "head") {
-            Some(t) => t,
-            None => break,
-        };
-        if let Term::Fn { named_args: bna, .. } = kb.get_term(head_binding).clone() {
-            let param = get_named_arg(&kb, &bna, "param");
-            let value = get_named_arg(&kb, &bna, "value");
-            if let (Some(p), Some(v)) = (param, value) {
-                if let Term::Ref(p_sym) = kb.get_term(p) {
-                    if kb.resolve_sym(*p_sym) == "T" {
-                        t_value_sym = extract_sort_ref_sym(&kb, v);
-                    }
-                }
-            }
-        }
-        cur = match get_named_arg(&kb, &na, "tail") {
-            Some(t) => t,
-            None => break,
-        };
-    }
-
-    let t_sym = t_value_sym
+    let t_value = get_named_arg(&kb, &named_args, "T")
+        .unwrap_or_else(|| panic!("missing T binding; got {ty_str}"));
+    let t_sym = extract_sort_ref_sym(&kb, t_value)
         .unwrap_or_else(|| panic!("expected T = sort_ref(...) in Option binding; got {ty_str}"));
     assert_eq!(
         kb.qualified_name_of(t_sym),

@@ -2647,19 +2647,18 @@ fn lower_type(ctx: &CodegenContext, type_term: TermId) -> Result<String, CppCode
             })
         }
         Term::Fn { functor, .. } => {
-            // Typed parameterized form (post-typing pass):
-            //   parameterized(base: sort_ref(<sort>), bindings: [...])
-            if kb.resolve_sym(*functor) == "parameterized" {
+            // Parameterized type — the deep `parameterized(base: sort_ref(S),
+            // bindings)` OR the term-backed `Fn{S, named}` form (WI-361).
+            // `unpack_parameterized` reads both; a non-parameterized Fn (e.g.
+            // an `arrow`/`named_tuple` structural type) falls through to error.
+            if unpack_parameterized(kb, type_term).is_some() {
                 return lower_parameterized(ctx, type_term);
             }
-            // Pre-typing form (rare in practice — typing usually rewrites
-            // these into the parameterized wrapper). Fall through with a
-            // helpful error.
             let qualified = kb.qualified_name_of(*functor);
             Err(CppCodegenError {
                 message: format!(
                     "unexpected non-parameterized Fn term as type: '{qualified}' \
-                     (typing pass should have wrapped it in `parameterized(base: ..., bindings: ...)`)"
+                     (expected a sort ref, a parameterized type, or a term-backed Fn{{S, named}})"
                 ),
             })
         }

@@ -80,23 +80,11 @@ fn fixture_interp(captured: Arc<Mutex<Option<Snapshot>>>) -> Interpreter {
 /// `KnowledgeBase::make_sort_ref_by_name`); the test asserts on the
 /// short name to avoid hardcoding TermId equality across runs.
 fn extract_sort_ref_name(interp: &Interpreter, tid: TermId) -> Option<String> {
-    let term = interp.kb().get_term(tid);
-    let Term::Fn { functor, named_args, .. } = term else { return None; };
-    let functor_qn = interp.kb().qualified_name_of(*functor);
-    if functor_qn.rsplit('.').next() != Some("sort_ref") { return None; }
-    // The `name` field is interned (no qualified name); look up by
-    // short-name comparison so it works whether the field symbol
-    // resolved to a bare or qualified form.
-    let name_tid = named_args.iter()
-        .find(|(s, _)| interp.kb().resolve_sym(*s) == "name")
-        .map(|(_, t)| *t)?;
-    match interp.kb().get_term(name_tid) {
-        Term::Ref(s) | Term::Ident(s) => {
-            let qn = interp.kb().qualified_name_of(*s);
-            Some(qn.rsplit('.').next().unwrap_or(qn).to_string())
-        }
-        _ => None,
-    }
+    // WI-361: a bare sort is the term-backed `Ref(S)` or the deep
+    // `sort_ref(name: Ref(S))`; `extract_sort_ref_sym` recognizes both.
+    let sym = anthill_core::kb::typing::extract_sort_ref_sym(interp.kb(), tid)?;
+    let qn = interp.kb().qualified_name_of(sym);
+    Some(qn.rsplit('.').next().unwrap_or(qn).to_string())
 }
 
 #[test]

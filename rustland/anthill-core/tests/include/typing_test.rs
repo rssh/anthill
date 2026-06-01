@@ -3516,7 +3516,22 @@ fn cover_pairs_sort_ref_with_parameterized_same_base() {
     // sort_refs (Reads, Writes, etc.) — but the cross-arm pairing also
     // surfaces for entities-of-sort comparisons.
     let list_base = kb.make_sort_ref_by_name("List");
-    let list_param = kb.make_parameterized_type(list_base, &[]); // bare List[]
+    // WI-361: a no-bindings parameterized is the DEEP `parameterized(base:
+    // sort_ref(List), bindings: nil)` built by hand — post the producer flip,
+    // `make_parameterized_type(_, &[])` would emit a bare `Fn{List}` (an `Error`
+    // shape, NOT a parameterized type), so the bridge arm is exercised against the
+    // genuine deep no-bindings form instead.
+    let list_param = {
+        let parameterized = kb.resolve_symbol("anthill.prelude.Type.parameterized");
+        let base_key = kb.intern("base");
+        let bindings_key = kb.intern("bindings");
+        let empty_bindings = kb.build_list(&[]);
+        let mut na: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
+        na.push((base_key, list_base));
+        na.push((bindings_key, empty_bindings));
+        na.sort_by_key(|(s, _)| s.index());
+        kb.alloc(Term::Fn { functor: parameterized, pos_args: SmallVec::new(), named_args: na })
+    };
 
     // arrow(Int, Int, [list_param]) where the label is parameterized.
     let actual = kb.make_arrow_type(int_ty, int_ty, &[list_param]);
