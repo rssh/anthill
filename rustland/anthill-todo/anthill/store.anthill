@@ -46,11 +46,16 @@ namespace anthill.todo.store
     operation commit_feedback(s: Cell[V = State], fb: Feedback) -> Unit
       effects {Modify[s], Error}
 
-    -- Read-only ops: typed WorkItem returns (WI-204 phase B1).
+    -- Read-only ops: typed WorkItem returns (WI-204 phase B1). They may raise
+    -- `Error` (the backing store can fail on read) — declared here so a concrete
+    -- impl's `effects Error` refines rather than widens the spec (WI-347).
     operation lookup(s: Cell[V = State], id: String) -> Option[T = WorkItem]
+      effects Error
     operation by_status_of(s: Cell[V = State], st: WorkStatus)
       -> List[T = WorkItem]
+      effects Error
     operation all(s: Cell[V = State]) -> List[T = WorkItem]
+      effects Error
   end
 
   -- ─── 2. File-backed impl ────────────────────────────────────────
