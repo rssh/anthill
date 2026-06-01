@@ -51,7 +51,7 @@ thread_local! {
 /// A resolved operation body: its body node plus its params. Params are
 /// `Rc<[…]>` (not `Vec`) so a `op_body_cache` hit is a pair of refcount
 /// bumps rather than a per-call heap allocation.
-pub(crate) type OpBody = (Rc<NodeOccurrence>, Rc<[(Symbol, TermId)]>);
+pub(crate) type OpBody = (Rc<NodeOccurrence>, Rc<[(Symbol, Value)]>);
 
 impl Interpreter {
     /// Drive the activation stack until it empties. Single loop, no native
@@ -922,7 +922,7 @@ impl Interpreter {
         &mut self,
         target: Symbol,
         body_node: Rc<NodeOccurrence>,
-        params: &[(Symbol, TermId)],
+        params: &[(Symbol, Value)],
         arg_values: Vec<Value>,
         requirements: SmallVec<[(Symbol, super::value::RequirementHandle); 2]>,
         type_args: FrameTypeArgs,
@@ -1441,7 +1441,7 @@ fn sort_named_canonical(kb: &KnowledgeBase, functor: Symbol, named: &mut Vec<(Sy
 pub fn lookup_operation_body(
     kb: &KnowledgeBase,
     functor: Symbol,
-) -> Option<(std::rc::Rc<crate::kb::node_occurrence::NodeOccurrence>, Vec<(Symbol, TermId)>)> {
+) -> Option<(std::rc::Rc<crate::kb::node_occurrence::NodeOccurrence>, Vec<(Symbol, Value)>)> {
     let rec = crate::kb::op_info::lookup_operation_info(kb, functor)?;
     let body = rec.body_node?;
     Some((body, rec.params))

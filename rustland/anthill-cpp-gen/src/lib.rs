@@ -913,7 +913,22 @@ fn operations_in_sort(
 
         let mut params = Vec::new();
         for (p_name_sym, p_type) in &rec.params {
-            let cpp_type = lower_type(ctx, *p_type)?;
+            // WI-341 Stage A: param types are carrier-agnostic. A ground type
+            // lowers as before; a denoted-bearing (`Value::Node`) callback-arrow
+            // param is not supported by C++ codegen (and is never materialized).
+            let p_term = match p_type {
+                anthill_core::eval::Value::Term(t) => *t,
+                _ => {
+                    return Err(CppCodegenError {
+                        message: format!(
+                            "operation '{name}' parameter '{}' has a denoted-bearing \
+                             type unsupported by C++ codegen",
+                            kb.resolve_sym(*p_name_sym)
+                        ),
+                    })
+                }
+            };
+            let cpp_type = lower_type(ctx, p_term)?;
             params.push(ParamInfo { name: kb.resolve_sym(*p_name_sym).to_string(), cpp_type });
         }
 

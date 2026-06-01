@@ -2910,7 +2910,12 @@ fn wi355_arrow_param_names_lowered_to_named_tuple() {
         load::load(&mut kb, &parsed, &NullResolver).expect("load");
         let sym = kb.try_resolve_symbol("foo").expect("op foo");
         let rec = anthill_core::kb::op_info::lookup_operation_info(&kb, sym).expect("opinfo");
-        let arrow = rec.params[0].1; // the single param `f`, an arrow type
+        // The single param `f`, a (ground) arrow type — WI-341 Stage A: param
+        // types are carrier-agnostic `Value`; a no-effect arrow is a `Value::Term`.
+        let arrow = match &rec.params[0].1 {
+            anthill_core::eval::Value::Term(t) => *t,
+            other => panic!("expected a ground arrow param type, got {other:?}"),
+        };
         let mut out = Vec::new();
         typefield_names(&kb, arrow, &mut out);
         out

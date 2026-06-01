@@ -10,14 +10,12 @@
 
 use std::rc::Rc;
 
-use smallvec::SmallVec;
-
 use crate::eval::value::Value;
 use crate::intern::Symbol;
 
 use super::node_occurrence::NodeOccurrence;
 use super::term::{Term, TermId};
-use super::term_view::{TermView, ViewItem};
+use super::term_view::{TermView, ViewHead, ViewItem};
 use super::typing::list_to_vec;
 use super::KnowledgeBase;
 
@@ -31,8 +29,16 @@ use super::KnowledgeBase;
 #[derive(Debug, Clone)]
 pub struct OpInfoRecord {
     pub op_sym: Symbol,
-    /// Each entry: `(param_name_symbol, declared_type_term)`.
-    pub params: Vec<(Symbol, TermId)>,
+    /// Each entry: `(param_name_symbol, declared_type)`. WI-341 Stage A: the
+    /// type is carrier-agnostic `Value` — a callback parameter whose arrow
+    /// effect is `denoted`-bearing (`Modify[a]`) is a `Value::Node` arrow that
+    /// cannot be a hash-consed `TermId`. A ground param type is a `Value::Term`.
+    /// Read carrier-faithfully from the `OperationInfo` head (value fact when any
+    /// param/effect is `Node`), never materialized back to a term.
+    pub params: Vec<(Symbol, Value)>,
+    /// WI-341 Stage A: still `TermId` pending the next slice — making this
+    /// `Value` cascades into `type_check_node`'s `expected: Option<TermId>`,
+    /// `op_boundary_effects` / `region.rs`, and `eval`, so it lands separately.
     pub return_type: TermId,
     /// Effect labels, carrier-agnostic `Value`s read directly from the
     /// `OperationInfo` fact (WI-348). A ground label (`Error`) is a
@@ -73,7 +79,7 @@ pub fn lookup_operation_info(kb: &KnowledgeBase, op_sym: Symbol) -> Option<OpInf
 
         let return_type = head_field_term(kb, head, "return_type")?;
         let effects = effects_of_head(kb, head);
-        let params = extract_params(kb, head_field_term(kb, head, "params"));
+        let params = extract_params(kb, head_field(kb, head, "params"));
         let type_params = extract_type_params(kb, head_field_term(kb, head, "type_params"));
         let body_node = kb.op_body_node(op_sym).cloned();
         return Some(OpInfoRecord {
@@ -106,6 +112,18 @@ pub fn head_field_term(kb: &KnowledgeBase, head: &Value, key: &str) -> Option<Te
         ViewItem::Value(Value::Term(t)) => Some(*t),
         _ => None,
     }
+}
+
+/// A named field as a carrier-agnostic `Value` — for fields that may be
+/// `denoted`-bearing (`return_type`, a `params` FieldInfo type). A hash-consed
+/// `Term` field reads as `Value::Term`; a `Value::Node` field is returned
+/// verbatim (occurrence preserved, never materialized to a term). WI-341 Stage A.
+pub fn head_field_value(kb: &KnowledgeBase, head: &Value, key: &str) -> Option<Value> {
+    Some(match head_field(kb, head, key)? {
+        ViewItem::Term(t) => Value::Term(t),
+        ViewItem::Value(v) => v.clone(),
+        ViewItem::Node(occ) => Value::Node(occ),
+    })
 }
 
 /// The operation symbol carried in an `OperationInfo` head's `name` field
@@ -182,36 +200,38 @@ fn extract_type_params(kb: &KnowledgeBase, tp_tid: Option<TermId>) -> Vec<(Symbo
         .collect()
 }
 
-fn extract_params(kb: &KnowledgeBase, params_tid: Option<TermId>) -> Vec<(Symbol, TermId)> {
-    let params_tid = match params_tid {
-        Some(t) => t,
-        None => return Vec::new(),
+/// Decode the `params` field to `(name, type)` pairs carrier-faithfully. The
+/// params list AND each `FieldInfo` may be hash-consed (`Term`) or — when a
+/// param type is `denoted`-bearing (a callback's `Modify[a]` arrow) — value
+/// carriers; the type is returned as a `Value`, preserving `Value::Node`
+/// occurrence identity and **never** materialized back to a term. Mirrors
+/// [`effects_of_head`] (WI-341 Stage A).
+fn extract_params(kb: &KnowledgeBase, params_field: Option<ViewItem>) -> Vec<(Symbol, Value)> {
+    let items: Vec<Value> = match params_field {
+        Some(ViewItem::Term(t)) => list_to_vec(kb, t).into_iter().map(Value::Term).collect(),
+        Some(ViewItem::Value(Value::Term(t))) => {
+            list_to_vec(kb, *t).into_iter().map(Value::Term).collect()
+        }
+        Some(ViewItem::Value(v)) => value_list_to_vec(kb, v),
+        _ => return Vec::new(),
     };
-    list_to_vec(kb, params_tid)
+    items
         .into_iter()
-        .filter_map(|param_tid| {
-            let pargs = match kb.get_term(param_tid) {
-                Term::Fn { named_args, .. } => named_args,
-                _ => return None,
-            };
-            let pname = find_named_term(kb, pargs, "name").and_then(|v| match kb.get_term(v) {
-                Term::Ref(s) => Some(*s),
-                _ => None,
-            })?;
-            let ptype = find_named_term(kb, pargs, "type_name")?;
-            Some((pname, ptype))
+        .filter_map(|fi| {
+            let name = view_ref_sym(kb, head_field(kb, &fi, "name")?)?;
+            let ptype = head_field_value(kb, &fi, "type_name")?;
+            Some((name, ptype))
         })
         .collect()
 }
 
-/// Term-level named-arg lookup, for walking the ground `params` FieldInfo terms
-/// (always hash-consed regardless of the OperationInfo head carrier).
-fn find_named_term(
-    kb: &KnowledgeBase,
-    named_args: &SmallVec<[(Symbol, TermId); 2]>,
-    key: &str,
-) -> Option<TermId> {
-    named_args.iter()
-        .find(|(s, _)| kb.resolve_sym(*s) == key)
-        .map(|(_, v)| *v)
+/// The symbol a `name`-field `ViewItem` refers to. Carrier-agnostic: a ref reads
+/// as `ViewHead::Ref` through `TermView` whether the field is a hash-consed
+/// `Term::Ref`, a `Value::Term(Ref)`, or a `Value::Node` `Expr::Ref` occurrence —
+/// so no `kb.get_term` (which would only see the `Term` carrier).
+fn view_ref_sym(kb: &KnowledgeBase, item: ViewItem) -> Option<Symbol> {
+    match item.head(kb) {
+        ViewHead::Ref(s) => Some(s),
+        _ => None,
+    }
 }

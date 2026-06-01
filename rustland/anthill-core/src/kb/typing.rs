@@ -3009,13 +3009,15 @@ fn check_apply_iter(
 
         for (i, arg_occ) in pos_args.iter().enumerate() {
             if let Some(arg_var_sym) = extract_var_ref_sym_node(arg_occ) {
-                if let Some(&(param_sym, _)) = op.params.get(i) {
-                    param_to_arg_sym.insert(param_sym, arg_var_sym);
+                if let Some((param_sym, _)) = op.params.get(i) {
+                    param_to_arg_sym.insert(*param_sym, arg_var_sym);
                 }
             }
             if let Ok(ref arg_result) = pos_results[i] {
-                if let Some(&(_, param_type)) = op.params.get(i) {
-                    unify_types(kb, &mut subst, &arg_result.ty, &TermIdView(param_type));
+                // WI-341 Stage A: the param type is `Value` (`Value::TermView`),
+                // unified carrier-agnostically — no `TermIdView` wrap.
+                if let Some((_, param_type)) = op.params.get(i) {
+                    unify_types(kb, &mut subst, &arg_result.ty, param_type);
                 }
                 arg_effects = merge_effects(&arg_effects, &arg_result.effects);
             }
@@ -3028,9 +3030,9 @@ fn check_apply_iter(
             if let Ok(ref arg_result) = named_results[i] {
                 if let Some(param_type) = op.params.iter()
                     .find(|(s, _)| *s == *arg_name)
-                    .map(|(_, t)| *t)
+                    .map(|(_, t)| t)
                 {
-                    unify_types(kb, &mut subst, &arg_result.ty, &TermIdView(param_type));
+                    unify_types(kb, &mut subst, &arg_result.ty, param_type);
                 }
                 arg_effects = merge_effects(&arg_effects, &arg_result.effects);
             }
@@ -3994,7 +3996,7 @@ pub(crate) fn record_apply_within_rewrite(
 
 /// Full operation info for type checking: params with types, return type, effects.
 struct OperationInfoFull {
-    params: Vec<(Symbol, TermId)>,  // (param_name, param_type)
+    params: Vec<(Symbol, Value)>,  // (param_name, param_type); WI-341 Stage A carrier-agnostic
     return_type: TermId,
     effects: Vec<Value>,
     /// Operation-level type parameters in declaration order, as
@@ -5729,12 +5731,14 @@ fn receiver_carrier(
 /// same logical sort may be interned under several `Symbol`s).
 pub(crate) fn self_receiver_param_index(
     kb: &KnowledgeBase,
-    params: &[(Symbol, TermId)],
+    params: &[(Symbol, Value)],
     spec_sort: Symbol,
 ) -> Option<usize> {
     let spec_canon = kb.canonical_sort_sym(spec_sort);
     params.iter().position(|(_, pty)| {
-        sort_functor_of(kb, *pty).map(|s| kb.canonical_sort_sym(s)) == Some(spec_canon)
+        // WI-341 Stage A: carrier-agnostic. A `Value::Node` (denoted-bearing
+        // callback) param type is never a spec carrier sort → `None`.
+        carrier_sort_of_value(kb, pty).map(|s| kb.canonical_sort_sym(s)) == Some(spec_canon)
     })
 }
 
@@ -9580,7 +9584,8 @@ pub fn simp_fire_guard_holds(kb: &KnowledgeBase, redex: &NodeOccurrence) -> bool
     let mut checked_carrier = false;
     for (i, (_param_name, param_type)) in rec.params.iter().enumerate() {
         // Is this parameter declared with the spec sort's type-parameter?
-        let is_carrier = sort_functor_of(kb, *param_type)
+        // WI-341 Stage A: carrier-agnostic read of the (now `Value`) param type.
+        let is_carrier = carrier_sort_of_value(kb, param_type)
             .is_some_and(|s| type_params.iter().any(|tp| tp.as_str() == kb.resolve_sym(s)));
         if !is_carrier {
             continue;
@@ -10228,7 +10233,7 @@ fn check_operation_bodies(kb: &mut KnowledgeBase, op_syms: &[Symbol], errors: &m
         return_type: TermId,
         declared_effects: Vec<Value>,
         body_node: Rc<NodeOccurrence>,
-        params: Vec<(Symbol, TermId)>,
+        params: Vec<(Symbol, Value)>,
         span: Option<Span>,
     }
 
@@ -10270,11 +10275,10 @@ fn check_operation_bodies(kb: &mut KnowledgeBase, op_syms: &[Symbol], errors: &m
             .and_then(|(parent_qn, _)| kb.try_resolve_symbol(parent_qn));
         env.set_enclosing_sort(kb, parent_sym);
         for (name, ty) in &op.params {
-            // WI-341 Stage A: env carries `Value`; op param types are still
-            // `TermId` here (the loader's TermId path) — wrap. A callback param
-            // whose arrow effect is denoted-bearing becomes `Value::Node` once
-            // op param types flow through the `Value` loader path (later slice).
-            env.bind_var(*name, Value::Term(*ty));
+            // WI-341 Stage A: op param types are carrier-agnostic `Value`. A
+            // callback param whose arrow effect is denoted-bearing binds as a
+            // `Value::Node` arrow; a ground param as `Value::Term`.
+            env.bind_var(*name, ty.clone());
         }
 
         // WI-270: thread the declared return type as the body's
@@ -10645,7 +10649,9 @@ fn collect_term_type_constraints(
             if let Some(op) = lookup_operation_info_full(kb, functor) {
                 // Operation call: match args to param types
                 for (i, &arg) in pos_args.iter().enumerate() {
-                    if let Some(&(_, param_type)) = op.params.get(i) {
+                    // WI-341 Stage A: seed inference from the param type
+                    // carrier-agnostically (a `Value::Node` callback-arrow param too).
+                    if let Some((_, param_type)) = op.params.get(i) {
                         constrain_var_type(kb, arg, param_type, var_types, subst);
                     }
                 }
@@ -10655,9 +10661,9 @@ fn collect_term_type_constraints(
                 for (field_sym, field_type) in &field_types {
                     if let Some((_, arg_tid)) = named_args.iter().find(|(s, _)| s == field_sym) {
                         let arg_tid = *arg_tid;
-                        // WI-342: field type is a carrier-agnostic `Value`; re-ground.
-                        let field_term = value_to_term_id(kb, field_type);
-                        constrain_var_type(kb, arg_tid, field_term, var_types, subst);
+                        // WI-341 Stage A: field type is a carrier-agnostic `Value` —
+                        // constrain directly, no re-grounding to a term.
+                        constrain_var_type(kb, arg_tid, field_type, var_types, subst);
                     }
                 }
             }
@@ -10679,7 +10685,7 @@ fn collect_term_type_constraints(
 fn constrain_var_type(
     kb: &mut KnowledgeBase,
     term: TermId,
-    expected_type: TermId,
+    expected_type: &Value,
     var_types: &mut HashMap<u32, Value>,
     subst: &mut Substitution,
 ) {
@@ -10698,16 +10704,16 @@ fn constrain_var_type(
 fn constrain_vid(
     kb: &mut KnowledgeBase,
     vid: u32,
-    expected_type: TermId,
+    expected_type: &Value,
     var_types: &mut HashMap<u32, Value>,
     subst: &mut Substitution,
 ) {
     if let Some(existing) = var_types.get(&vid) {
-        if !unify_types(kb, subst, existing, &TermIdView(expected_type)) {
+        if !unify_types(kb, subst, existing, expected_type) {
             subst.contradiction = true;
         }
     } else {
-        var_types.insert(vid, Value::Term(expected_type));
+        var_types.insert(vid, expected_type.clone());
     }
 }
 
@@ -10779,7 +10785,8 @@ fn constrain_application(
 ) {
     if let Some(op) = lookup_operation_info_full(kb, functor) {
         for (i, arg) in pos_args.iter().enumerate() {
-            if let Some(&(_, param_type)) = op.params.get(i) {
+            // WI-341 Stage A: seed inference from the param type carrier-agnostically.
+            if let Some((_, param_type)) = op.params.get(i) {
                 constrain_occ_var_type(kb, arg, param_type, var_types, subst);
             }
         }
@@ -10787,9 +10794,9 @@ fn constrain_application(
         let field_types = field_types.to_vec();
         for (field_sym, field_type) in &field_types {
             if let Some((_, arg)) = named_args.iter().find(|(s, _)| s == field_sym) {
-                // WI-342: field type is a carrier-agnostic `Value`; re-ground.
-                let field_term = value_to_term_id(kb, field_type);
-                constrain_occ_var_type(kb, arg, field_term, var_types, subst);
+                // WI-341 Stage A: field type is a carrier-agnostic `Value` —
+                // constrain directly, no re-grounding to a term.
+                constrain_occ_var_type(kb, arg, field_type, var_types, subst);
             }
         }
     }
@@ -10800,7 +10807,7 @@ fn constrain_application(
 fn constrain_occ_var_type(
     kb: &mut KnowledgeBase,
     occ: &Rc<NodeOccurrence>,
-    expected_type: TermId,
+    expected_type: &Value,
     var_types: &mut HashMap<u32, Value>,
     subst: &mut Substitution,
 ) {
