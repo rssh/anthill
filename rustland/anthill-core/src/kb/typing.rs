@@ -7067,12 +7067,44 @@ fn unify_denoted_view<A: TermView, B: TermView>(kb: &mut KnowledgeBase, a: &A, b
     let sa = denoted_ref_sym(kb, a);
     let sb = denoted_ref_sym(kb, b);
     match (sa, sb) {
-        (Some(sa), Some(sb)) => sa == sb,
-        // TODO(WI-341/alpha): a non-`Ref` carried value (a bound-name reference,
-        // a nested apply) needs alpha-equivalence over the carried `Expr` spine,
-        // not symbol equality. Refuse to unify what we can't yet compare.
+        (Some(sa), Some(sb)) => {
+            if sa == sb {
+                return true;
+            }
+            // WI-341 ALPHA-EQUIVALENCE. A callback's own arrow param (a
+            // `CallbackParam` place, `f.a`) is a binder: its alpha-canonical
+            // identity is its POSITION among the callback's params (the doc's De
+            // Bruijn view, computed from the place). So `(a) -> R @ Modify[a]`
+            // and `(c) -> R @ Modify[c]` are the same type up to renaming — their
+            // binders compare equal because the arrow being unified aligns the
+            // i-th param of each. (A free reference — an op param `Modify[s]`,
+            // the result — is not a CallbackParam, so it falls back to symbol
+            // identity above, never alpha-equated.)
+            match (callback_binder_position(kb, sa), callback_binder_position(kb, sb)) {
+                (Some(pa), Some(pb)) => pa == pb,
+                _ => false,
+            }
+        }
+        // A non-`Ref` carried value that is not a plain binder reference
+        // (a nested apply, a literal) is not yet comparable — refuse.
         _ => false,
     }
+}
+
+/// WI-341 alpha-equivalence: the 0-based position of a `CallbackParam` binder
+/// among its callback's parameters — its alpha-canonical identity. `None` for a
+/// non-binder symbol (an op param / result / sort), which is compared by
+/// identity instead. The parent callable is the place's qualified name minus its
+/// last segment (`<op>.f.a` → `<op>.f`), and its ordered params are on its symbol
+/// (`SymbolTable::arg_places`).
+fn callback_binder_position(kb: &KnowledgeBase, sym: Symbol) -> Option<usize> {
+    if kb.kind_of(sym) != Some(crate::intern::SymbolKind::CallbackParam) {
+        return None;
+    }
+    let qn = kb.qualified_name_of(sym);
+    let parent_qn = qn.rsplit_once('.').map(|(p, _)| p)?;
+    let callback = kb.try_resolve_symbol(parent_qn)?;
+    kb.symbols.arg_places(callback).iter().position(|&p| p == sym)
 }
 
 /// The symbol a `denoted`'s `value` child refers to, if it is a `Ref`-shaped
@@ -11276,5 +11308,96 @@ mod p4_tests {
         );
     }
 
+}
+
+/// WI-341 Stage B — alpha-equivalence of callback-arrow binders. A callback's
+/// own param (`Modify[a]`) is a binder whose alpha-canonical identity is its
+/// POSITION; two callbacks' i-th params are the same up to renaming.
+#[cfg(test)]
+mod wi341_alpha_tests {
+    use crate::kb::load::{self, NullResolver};
+    use crate::kb::subst::Substitution;
+    use crate::kb::KnowledgeBase;
+    use crate::parse;
+    use std::path::{Path, PathBuf};
+
+    fn collect(dir: &Path, out: &mut Vec<PathBuf>) {
+        if dir.is_dir() {
+            for e in std::fs::read_dir(dir).unwrap() {
+                let p = e.unwrap().path();
+                if p.is_dir() {
+                    collect(&p, out);
+                } else if p.extension().is_some_and(|x| x == "anthill") {
+                    out.push(p);
+                }
+            }
+        }
+    }
+
+    fn load_ops(src: &str) -> KnowledgeBase {
+        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../stdlib/anthill");
+        let mut files = Vec::new();
+        collect(&dir, &mut files);
+        let mut parsed: Vec<_> = files
+            .iter()
+            .map(|p| parse::parse(&std::fs::read_to_string(p).unwrap()).unwrap())
+            .collect();
+        parsed.push(parse::parse(src).expect("parse ops"));
+        let refs: Vec<_> = parsed.iter().collect();
+        let mut kb = KnowledgeBase::new();
+        load::register_prelude(&mut kb);
+        kb.register_standard_builtins();
+        let _ = load::load_all(&mut kb, &refs, &NullResolver);
+        kb
+    }
+
+    /// The (`Value`) type of an op's first parameter — a callback arrow.
+    fn first_param_type(kb: &KnowledgeBase, op_qn: &str) -> crate::eval::value::Value {
+        let op = kb.try_resolve_symbol(op_qn).unwrap_or_else(|| panic!("resolve {op_qn}"));
+        let rec = crate::kb::op_info::lookup_operation_info(kb, op)
+            .unwrap_or_else(|| panic!("opinfo {op_qn}"));
+        rec.params.into_iter().next().expect("a param").1
+    }
+
+    #[test]
+    fn same_position_callback_binders_are_alpha_equivalent() {
+        let src = r#"
+namespace anthill.test.wi341alpha
+  import anthill.prelude.{Unit, Cell}
+  operation op1(f: (a: Cell) -> Unit @ Modify[a]) -> Unit
+  operation op2(g: (c: Cell) -> Unit @ Modify[c]) -> Unit
+end
+"#;
+        let mut kb = load_ops(src);
+        let f_arrow = first_param_type(&kb, "anthill.test.wi341alpha.op1");
+        let g_arrow = first_param_type(&kb, "anthill.test.wi341alpha.op2");
+        // The denoted-bearing callback arrows are `Value::Node` (Stage A).
+        assert!(matches!(f_arrow, crate::eval::value::Value::Node(_)), "op1.f must be Value::Node");
+        assert!(matches!(g_arrow, crate::eval::value::Value::Node(_)), "op2.g must be Value::Node");
+        let mut subst = Substitution::new();
+        assert!(
+            super::unify_types(&mut kb, &mut subst, &f_arrow, &g_arrow),
+            "`(a) -> Unit @ Modify[a]` and `(c) -> Unit @ Modify[c]` are alpha-equivalent"
+        );
+    }
+
+    #[test]
+    fn different_position_callback_binders_do_not_unify() {
+        let src = r#"
+namespace anthill.test.wi341alpha2
+  import anthill.prelude.{Unit, Cell}
+  operation op3(f: (a: Cell, b: Cell) -> Unit @ Modify[a]) -> Unit
+  operation op4(g: (c: Cell, d: Cell) -> Unit @ Modify[d]) -> Unit
+end
+"#;
+        let mut kb = load_ops(src);
+        let f_arrow = first_param_type(&kb, "anthill.test.wi341alpha2.op3");
+        let g_arrow = first_param_type(&kb, "anthill.test.wi341alpha2.op4");
+        let mut subst = Substitution::new();
+        assert!(
+            !super::unify_types(&mut kb, &mut subst, &f_arrow, &g_arrow),
+            "a modify on param 0 vs param 1 must NOT unify (binder positions differ)"
+        );
+    }
 }
 
