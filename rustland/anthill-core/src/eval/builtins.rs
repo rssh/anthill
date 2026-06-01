@@ -84,6 +84,7 @@ pub fn register_standard_builtins(interp: &mut Interpreter) -> Result<(), EvalEr
     register_if_present(interp, "anthill.reflect.KB.facts_of", kb_facts_of)?;
     register_if_present(interp, "anthill.reflect.Substitution.lookup", subst_lookup)?;
     register_if_present(interp, "anthill.reflect.term_functor_name", term_functor_name)?;
+    register_if_present(interp, "anthill.reflect.extract", extract_type_builtin)?;
     register_if_present(interp, "anthill.reflect.term_field", term_field)?;
     register_if_present(interp, "anthill.reflect.term_as_string", term_as_string)?;
     register_if_present(interp, "anthill.reflect.term_as_entity", term_as_entity)?;
@@ -654,6 +655,173 @@ fn term_functor_name(interp: &mut Interpreter, args: &[Value]) -> Result<Value, 
             named: Vec::new().into(),
         },
     })
+}
+
+/// `anthill.reflect.extract(t: Term) -> TypeExtractor`.
+///
+/// Reify a type term's structure into the transparent, low-level `TypeExtractor`
+/// reflection ADT. Reads the engine's current deep-form `Type` representation
+/// (`sort_ref` / `type_var` / `arrow` / `denoted` / `effects_rows` / …). Total —
+/// a term that is not a recognised type form classifies as `Error`.
+///
+/// WIP: the list-bearing forms `parameterized` / `named_tuple` are not yet
+/// reified (they fall through to `Error`); the leaf, `arrow` and `effects_rows`
+/// forms are. The eventual `Term`-backed forms (`Ref(S)` / `Fn{S,named}`) are a
+/// follow-on once the engine builds them.
+fn extract_type_builtin(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    use crate::kb::term_view::{TermView, ViewHead};
+    let [arg] = expect_args::<1>("extract", args)?;
+    let ty = arg.clone();
+
+    let ctor = match TermView::head(&ty, &interp.kb) {
+        ViewHead::Functor { functor: Some(f), .. } => interp.kb.qualified_name_of(f).to_string(),
+        _ => String::new(),
+    };
+
+    // Deep-form field keys.
+    let name_key = interp.kb.intern("name");
+    let value_key = interp.kb.intern("value");
+    let param_key = interp.kb.intern("param");
+    let result_key = interp.kb.intern("result");
+    let effects_key = interp.kb.intern("effects");
+    let effects_expr_key = interp.kb.intern("effects_expr");
+    let expr_key = interp.kb.intern("expr");
+    let term_key = interp.kb.intern("term");
+    let base_key = interp.kb.intern("base");
+    let bindings_key = interp.kb.intern("bindings");
+    let fields_key = interp.kb.intern("fields");
+    let type_key = interp.kb.intern("type");
+
+    match ctor.as_str() {
+        "anthill.prelude.Type.sort_ref" => match ti_read_field(&interp.kb, &ty, name_key) {
+            Some(name) => ti_entity(interp, "SortRef", vec![(name_key, name)]),
+            None => ti_entity(interp, "Error", vec![(term_key, ty)]),
+        },
+        "anthill.prelude.Type.type_var" => match ti_read_field(&interp.kb, &ty, name_key) {
+            Some(name) => ti_entity(interp, "TypeVar", vec![(name_key, name)]),
+            None => ti_entity(interp, "Error", vec![(term_key, ty)]),
+        },
+        "anthill.prelude.Type.nothing" => ti_entity(interp, "Nothing", vec![]),
+        "anthill.prelude.Type.denoted" => match ti_read_field(&interp.kb, &ty, value_key) {
+            Some(v) => ti_entity(interp, "Denoted", vec![(value_key, v)]),
+            None => ti_entity(interp, "Error", vec![(term_key, ty)]),
+        },
+        "anthill.prelude.Type.arrow" => {
+            let p = ti_read_field(&interp.kb, &ty, param_key);
+            let r = ti_read_field(&interp.kb, &ty, result_key);
+            let e = ti_read_field(&interp.kb, &ty, effects_key);
+            match (p, r, e) {
+                (Some(p), Some(r), Some(e)) => ti_entity(
+                    interp,
+                    "Arrow",
+                    vec![(param_key, p), (result_key, r), (effects_key, e)],
+                ),
+                _ => ti_entity(interp, "Error", vec![(term_key, ty)]),
+            }
+        }
+        "anthill.prelude.Type.effects_rows" => {
+            match ti_read_field(&interp.kb, &ty, effects_expr_key) {
+                Some(e) => ti_entity(interp, "EffectsRows", vec![(expr_key, e)]),
+                None => ti_entity(interp, "Error", vec![(term_key, ty)]),
+            }
+        }
+        "anthill.prelude.Type.parameterized" => {
+            let base_val = ti_read_field(&interp.kb, &ty, base_key);
+            let bindings_val = ti_read_field(&interp.kb, &ty, bindings_key);
+            match (base_val, bindings_val) {
+                (Some(b), Some(bindings)) => {
+                    // base symbol: a `sort_ref`'s `name` field, or a bare `Ref(S)` itself.
+                    let base_sym = ti_read_field(&interp.kb, &b, name_key).unwrap_or(b);
+                    let new_bindings =
+                        ti_rewrap_list(interp, &bindings, "TypeBinding", param_key, value_key)?;
+                    ti_entity(
+                        interp,
+                        "Parameterized",
+                        vec![(base_key, base_sym), (bindings_key, new_bindings)],
+                    )
+                }
+                _ => ti_entity(interp, "Error", vec![(term_key, ty)]),
+            }
+        }
+        "anthill.prelude.Type.named_tuple" => match ti_read_field(&interp.kb, &ty, fields_key) {
+            Some(fields) => {
+                let new_fields =
+                    ti_rewrap_list(interp, &fields, "NamedTupleElement", name_key, type_key)?;
+                ti_entity(interp, "NamedTuple", vec![(fields_key, new_fields)])
+            }
+            None => ti_entity(interp, "Error", vec![(term_key, ty)]),
+        },
+        // non-types and any unrecognised form.
+        _ => ti_entity(interp, "Error", vec![(term_key, ty)]),
+    }
+}
+
+/// Read a named field of a (carrier-agnostic) type term as a `Value`.
+fn ti_read_field(kb: &crate::kb::KnowledgeBase, ty: &Value, key: crate::intern::Symbol) -> Option<Value> {
+    use crate::kb::term_view::{TermView, ViewItem};
+    match TermView::named_arg(ty, kb, key)? {
+        ViewItem::Term(t) => Some(Value::Term(t)),
+        ViewItem::Value(v) => Some(v.clone()),
+        ViewItem::Node(occ) => Some(Value::Node(occ)),
+    }
+}
+
+/// Build a `TypeExtractor` variant entity value (`anthill.prelude.TypeExtractor.<short>`).
+fn ti_entity(
+    interp: &mut Interpreter,
+    short: &str,
+    fields: Vec<(crate::intern::Symbol, Value)>,
+) -> Result<Value, EvalError> {
+    let qname = format!("anthill.prelude.TypeExtractor.{}", short);
+    let functor = require_symbol(interp, &qname, short)?;
+    Ok(Value::Entity { functor, pos: Vec::new().into(), named: fields.into() })
+}
+
+/// Re-wrap a deep-form `List[T]` of 2-field records into a value list of
+/// `TypeExtractor.<ctor>` entities, reading `key1`/`key2` from each element.
+/// (The deep and TypeExtractor field names coincide — `param`/`value` for a
+/// binding, `name`/`type` for a tuple element.)
+fn ti_rewrap_list(
+    interp: &mut Interpreter,
+    list: &Value,
+    ctor: &str,
+    key1: crate::intern::Symbol,
+    key2: crate::intern::Symbol,
+) -> Result<Value, EvalError> {
+    let elems: Vec<Value> = match list {
+        Value::Term(tid) => crate::kb::typing::list_to_vec(&interp.kb, *tid)
+            .into_iter()
+            .map(Value::Term)
+            .collect(),
+        _ => Vec::new(),
+    };
+    let mut out: Vec<Value> = Vec::with_capacity(elems.len());
+    for el in elems {
+        if let (Some(a), Some(b)) = (
+            ti_read_field(&interp.kb, &el, key1),
+            ti_read_field(&interp.kb, &el, key2),
+        ) {
+            out.push(ti_entity(interp, ctor, vec![(key1, a), (key2, b)])?);
+        }
+    }
+    build_value_list(interp, out)
+}
+
+/// Build a `List` value (`cons`/`nil`) from element values.
+fn build_value_list(interp: &mut Interpreter, elems: Vec<Value>) -> Result<Value, EvalError> {
+    let cons_sym = require_symbol(interp, "anthill.prelude.List.cons", "cons")?;
+    let nil_sym = require_symbol(interp, "anthill.prelude.List.nil", "nil")?;
+    let head_key = interp.kb.intern("head");
+    let tail_key = interp.kb.intern("tail");
+    let mut list = Value::Entity { functor: nil_sym, pos: Vec::new().into(), named: Vec::new().into() };
+    for elem in elems.into_iter().rev() {
+        list = Value::Entity {
+            functor: cons_sym,
+            pos: Vec::new().into(),
+            named: vec![(head_key, elem), (tail_key, list)].into(),
+        };
+    }
+    Ok(list)
 }
 
 /// `anthill.reflect.term_field(t: Term, name: String) -> Option[Term]`.

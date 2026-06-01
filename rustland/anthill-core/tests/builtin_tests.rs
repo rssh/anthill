@@ -19,3 +19,6 @@ mod toml_ser_test;
 
 #[path = "include/vec3_ops_test.rs"]
 mod vec3_ops_test;
+
+#[path = "include/type_extract_test.rs"]
+mod type_extract_test;
