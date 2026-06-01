@@ -2554,7 +2554,7 @@ REFERENCES: rustland/anthill-core/src/kb/op_requirements.rs (requires / provider
 STATUS: v0 landed (load-blocking check + proposal-002 List provides Iterable/Stream + splitFirst + geometry move). Two own open design points are deferred to WI-356 (binding-precision + transitivity); the proposal-002 element-typing gap is WI-357. WI-343 depends on both, so it is NOT delivered until they land.",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: ["WI-356", "WI-357"],
-  status: Open)
+  status: Delivered(agent: "claude", at: "2026-06-01T14:38:42Z"))
 
 fact WorkItem(
   id: "WI-344",
@@ -2716,3 +2716,4 @@ fact WorkItem(
   depends_on: ["WI-341"],
   status: Open)
 
+fact Feedback(content: "DELIVERED — closes the tracking item; both blockers landed on main: WI-356 (binding-precise + transitive check, af0ab37) and WI-357 (element typing through dispatched Stream Pair, 5840086). No NEW code in this delivery: WI-343 = v0 (check_provider_requires + LoadError::UnsatisfiedProviderRequires, load-blocking) + WI-356 + WI-357, all already merged. The check is binding-precise where σ grounds every binding concretely (spec_resolves_at_bindings, transitive via resolve_inner), with the v0 base-level existence fallback for ungrounded shorthands. Headline gap closed: List provides PersistentCollection (requires Iterable) AND fact Iterable[C=List[T],Element=T] + fact Stream[T=T] (list.anthill:64-65). Open design points resolved: (a) HARD ERROR (load-blocking); (b) stdlib gets the same treatment, gaps closed (geometry VectorSpace[Vec3,Float] moved to anthill-stl binding layer); (c) transitivity via WI-356. WI-281 pinned test flipped to dot_spec_method_unsatisfied_requires_errors_wi343. VERIFY: focused wi_tests (wi343/wi356/wi357/wi325/wi281) 23/0; full anthill-core 1107 passed / 0 failed / 1 ignored.", at: "2026-06-01T14:38:41Z", workitem: "WI-343", author: "claude")
