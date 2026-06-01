@@ -7083,24 +7083,32 @@ fn unify_parameterized_view<A: TermView, B: TermView>(
     a: &A,
     b: &B,
 ) -> bool {
-    // `intern` (not `lookup_symbol`) so the arm is robust in a KB that hasn't
-    // yet interned the well-known `base` field symbol (a production KB always
-    // has via stdlib load; idempotent either way). The view's `type_node_named`
-    // resolves the same name through `lookup_symbol`, which now matches.
-    let base_sym = kb.intern("base");
-    let a_base = a.named_arg(kb, base_sym).map(|it| view_item_value(&it));
-    let b_base = b.named_arg(kb, base_sym).map(|it| view_item_value(&it));
-    match (a_base, b_base) {
-        (Some(ab), Some(bb)) => {
-            if !unify_types(kb, subst, &ab, &bb) {
-                return false;
-            }
-        }
+    // A `Value::Node` parameterized addresses its `base` field by name in the
+    // view layer (`type_node_named` via `lookup_symbol`), and the `make_*_occ`
+    // builders — unlike `make_parameterized_type` — don't intern it; ensure it
+    // is interned (as this fn did pre-WI-361) so `extract_type` resolves the
+    // base in a minimal KB. Done here (not eagerly at prelude/KB init) to avoid
+    // perturbing load-time symbol-id ordering; a no-op once stdlib is loaded.
+    kb.intern("base");
+    // WI-361: read base + bindings form-agnostically via `extract_type` so a
+    // term-backed `Fn{S, named}` (base = functor, bindings = named args) unifies
+    // like a deep `parameterized(base, bindings)`. Each base is a sort; present
+    // it as a bare `Ref(S)` and recurse `unify_types` — equivalent to the deep
+    // `sort_ref` base (both classify as `SortRef`) and preserving the full base
+    // relation (incl. WI-344 provider admissibility), not a sort-symbol shortcut.
+    let (a_base, a_bindings) = match extract_type(kb, a) {
+        TypeExtractor::Parameterized { base, bindings } => (base, bindings),
         _ => return false,
+    };
+    let (b_base, b_bindings) = match extract_type(kb, b) {
+        TypeExtractor::Parameterized { base, bindings } => (base, bindings),
+        _ => return false,
+    };
+    let a_base_ty = kb.alloc(Term::Ref(a_base));
+    let b_base_ty = kb.alloc(Term::Ref(b_base));
+    if !unify_types(kb, subst, &TermIdView(a_base_ty), &TermIdView(b_base_ty)) {
+        return false;
     }
-
-    let a_bindings = parameterized_bindings(kb, a);
-    let b_bindings = parameterized_bindings(kb, b);
     for (param, av) in &a_bindings {
         if let Some((_, bv)) = b_bindings.iter().find(|(p, _)| p == param) {
             if !unify_types(kb, subst, av, bv) {
@@ -7492,8 +7500,11 @@ fn unify_term_dispatch(
     a_resolved: TermId,
     b_resolved: TermId,
 ) -> bool {
-    let a_functor = type_functor_name(kb, a_resolved);
-    let b_functor = type_functor_name(kb, b_resolved);
+    // WI-361: dispatch on the canonical form tag so a term-backed `Ref(S)` /
+    // `Fn{S,named}` routes through the same arms as the deep `sort_ref` /
+    // `parameterized` (identical to `type_functor_name` on the deep form).
+    let a_functor = type_dispatch_name(kb, a_resolved);
+    let b_functor = type_dispatch_name(kb, b_resolved);
 
     match (a_functor, b_functor) {
         // WI-342 dispatch consolidation: the `parameterized` / `arrow` arms route
@@ -8578,8 +8589,11 @@ fn types_compatible_term_dispatch(kb: &mut KnowledgeBase, subst: &mut Substituti
         return true;
     }
 
-    let actual_functor = type_functor_name(kb, actual);
-    let expected_functor = type_functor_name(kb, expected);
+    // WI-361: dispatch on the canonical form tag (see `type_dispatch_name`) so a
+    // term-backed `Ref(S)` / `Fn{S,named}` routes through the same arms as the
+    // deep `sort_ref` / `parameterized`.
+    let actual_functor = type_dispatch_name(kb, actual);
+    let expected_functor = type_dispatch_name(kb, expected);
 
     // type_var is compatible with anything (wildcard for inference)
     if actual_functor == Some("type_var") || expected_functor == Some("type_var") {
@@ -8596,8 +8610,8 @@ fn types_compatible_term_dispatch(kb: &mut KnowledgeBase, subst: &mut Substituti
             // Nominal / entity-subtyping / refines, then WI-344 provider
             // admissibility: a value of a bare carrier sort is usable
             // where a bare spec it provides is expected. Confined to the
-            // bare↔bare arm so it never rides `base_sort_compatible` and
-            // drops a parameterized spec's bindings — see
+            // bare↔bare arm so it never rides the `sort_ref ↔ parameterized`
+            // base check and drops a parameterized spec's bindings — see
             // `sort_provides_admissibly`.
             sort_ref_compatible(kb, actual, expected)
                 || match (extract_sort_ref_sym(kb, actual), extract_sort_ref_sym(kb, expected)) {
@@ -8621,10 +8635,20 @@ fn types_compatible_term_dispatch(kb: &mut KnowledgeBase, subst: &mut Substituti
         // bindings on the parameterized side stand unconstrained
         // against the bare side.
         (Some("sort_ref"), Some("parameterized")) => {
-            base_sort_compatible(kb, actual, parameterized_base(kb, expected))
+            // bare `S` vs `B[…]`: nominal base-sort compatibility only (provider
+            // admissibility is confined to the bare↔bare arm above). WI-361:
+            // `parameterized_base_sym` reads the base sort form-agnostically
+            // (deep `base` field or the term-backed functor).
+            match (extract_sort_ref_sym(kb, actual), parameterized_base_sym(kb, expected)) {
+                (Some(a), Some(eb)) => sort_sym_compatible(kb, a, eb),
+                _ => false,
+            }
         }
         (Some("parameterized"), Some("sort_ref")) => {
-            base_sort_compatible(kb, expected, parameterized_base(kb, actual))
+            match (extract_sort_ref_sym(kb, expected), parameterized_base_sym(kb, actual)) {
+                (Some(e), Some(ab)) => sort_sym_compatible(kb, e, ab),
+                _ => false,
+            }
         }
         (Some("arrow"), Some("arrow")) => {
             arrow_compatible_view(kb, subst, &TermIdView(actual), &TermIdView(expected))
@@ -8797,21 +8821,27 @@ fn parameterized_compatible_view<A: TermView, B: TermView>(
     actual: &A,
     expected: &B,
 ) -> bool {
-    let base_sym = kb.intern("base");
-    match (
-        named_child_value(kb, actual, base_sym),
-        named_child_value(kb, expected, base_sym),
-    ) {
-        (Some(ab), Some(eb)) => {
-            if !types_compatible(kb, subst, &ab, &eb) {
-                return false;
-            }
-        }
+    // Ensure the `base` field name is interned for the `Value::Node` view read
+    // (see `unify_parameterized_view`).
+    kb.intern("base");
+    // WI-361: base + bindings form-agnostic via `extract_type` (see
+    // `unify_parameterized_view`); the base subtype check recurses the full
+    // `types_compatible` on `Ref(S)` (preserving provider admissibility), not a
+    // sort-symbol shortcut.
+    let (actual_base, actual_bindings) = match extract_type(kb, actual) {
+        TypeExtractor::Parameterized { base, bindings } => (base, bindings),
         _ => return false,
+    };
+    let (expected_base, expected_bindings) = match extract_type(kb, expected) {
+        TypeExtractor::Parameterized { base, bindings } => (base, bindings),
+        _ => return false,
+    };
+    let actual_base_ty = kb.alloc(Term::Ref(actual_base));
+    let expected_base_ty = kb.alloc(Term::Ref(expected_base));
+    if !types_compatible(kb, subst, &TermIdView(actual_base_ty), &TermIdView(expected_base_ty)) {
+        return false;
     }
 
-    let actual_bindings = parameterized_bindings(kb, actual);
-    let expected_bindings = parameterized_bindings(kb, expected);
     for (param, ev) in &expected_bindings {
         match actual_bindings.iter().find(|(p, _)| p == param) {
             Some((_, av)) => {
@@ -8936,22 +8966,13 @@ fn arrow_effects_field(kb: &mut KnowledgeBase, ty: TermId) -> Option<TermId> {
 }
 
 /// The `base` sort_ref of a `parameterized(base, bindings)` type term.
-fn parameterized_base(kb: &KnowledgeBase, ty: TermId) -> Option<TermId> {
-    if let Term::Fn { named_args, .. } = kb.get_term(ty) {
-        return get_named_arg(kb, named_args, "base");
-    }
-    None
-}
-
-/// Compare a `sort_ref` against an optional `sort_ref` base (extracted
-/// from a parameterized type's `base` field). Used by the
-/// bare-vs-parameterized arms of `types_compatible` — only the base
-/// sort identity matters; the parameterized side's bindings are left
-/// unconstrained against the bare side.
-fn base_sort_compatible(kb: &KnowledgeBase, sort_ref: TermId, base: Option<TermId>) -> bool {
-    match base {
-        Some(b) => sort_ref_compatible(kb, sort_ref, b),
-        None => false,
+/// The base sort symbol of a parameterized type, form-agnostic (WI-361): the
+/// deep `parameterized(base: sort_ref(S), …)` base field or the term-backed
+/// `Fn{S, …}` functor, via [`type_head`]. `None` if not a parameterized type.
+fn parameterized_base_sym(kb: &KnowledgeBase, ty: TermId) -> Option<Symbol> {
+    match type_head(kb, &TermIdView(ty)) {
+        TypeHead::Parameterized { base, .. } => Some(base),
+        _ => None,
     }
 }
 
@@ -9287,8 +9308,8 @@ fn sort_sym_compatible(kb: &KnowledgeBase, actual_sym: Symbol, expected_sym: Sym
 ///
 /// Deliberately base-only and called ONLY from the `(sort_ref, sort_ref)`
 /// arm of [`types_compatible`] — NOT from `sort_sym_compatible`, because
-/// that is also reached via `base_sort_compatible`, the `sort_ref ↔
-/// parameterized` bridge that drops the parameterized side's bindings. A
+/// that is also reached from the `sort_ref ↔ parameterized` arms' base
+/// check, which drops the parameterized side's bindings. A
 /// base-only accept there would admit a binding mismatch (a `Widget`
 /// providing `Comparable[T = Widget]` accepted where `Comparable[T =
 /// Gadget]` is expected). Restricting to `(sort_ref, sort_ref)` keeps it
@@ -9938,6 +9959,27 @@ fn deep_parameterized_base<V: TermView>(kb: &KnowledgeBase, ty: &V) -> Option<Sy
     match type_head(kb, &base) {
         TypeHead::SortRef(s) => Some(s),
         _ => None,
+    }
+}
+
+/// The canonical dispatch tag for a type's form — [`type_head`] mapped to the
+/// `&str` names the unify/subtype dispatch arms match on. Unlike
+/// [`type_functor_name`] (the raw functor short-name), this canonicalizes BOTH
+/// representations: a term-backed bare sort `Ref(S)` reports `"sort_ref"` and a
+/// term-backed `Fn{S, named}` reports `"parameterized"`, so the dispatch arms
+/// fire identically for the deep and the term-backed form (WI-361 stage 2). On
+/// the deep form it agrees with `type_functor_name` for every Type constructor.
+fn type_dispatch_name(kb: &KnowledgeBase, ty: TermId) -> Option<&'static str> {
+    match type_head(kb, &TermIdView(ty)) {
+        TypeHead::SortRef(_) => Some("sort_ref"),
+        TypeHead::TypeVar(_) => Some("type_var"),
+        TypeHead::Parameterized { .. } => Some("parameterized"),
+        TypeHead::Arrow => Some("arrow"),
+        TypeHead::Denoted => Some("denoted"),
+        TypeHead::EffectsRows => Some("effects_rows"),
+        TypeHead::NamedTuple => Some("named_tuple"),
+        TypeHead::Nothing => Some("nothing"),
+        TypeHead::Error => None,
     }
 }
 
@@ -11553,6 +11595,63 @@ mod wi361_reader_tests {
         // A parameterized type is NOT a bare sort ref.
         let tb = term_backed_param(&mut kb, list, t, int);
         assert_eq!(extract_sort_ref_sym(&kb, tb), None, "Fn{{List,..}} is not a bare sort ref");
+    }
+
+    /// The unify/subtype STRUCTURAL dispatch reads a term-backed `Fn{S, named}`
+    /// as a parameterized type (via `type_dispatch_name`/`extract_type`), so it
+    /// unifies/subtypes like the deep `parameterized` — including cross-form
+    /// (deep vs term-backed), which is what lets the producer flip be gradual.
+    #[test]
+    fn parameterized_unify_subtype_term_backed_and_cross_form() {
+        use super::{types_compatible, unify_types};
+        use crate::kb::subst::Substitution;
+        use crate::kb::term_view::TermIdView;
+
+        let mut kb = kb_with_prelude();
+        let list = kb.intern("List");
+        let int = kb.intern("Int");
+        let string = kb.intern("String");
+        let t = kb.intern("T");
+
+        let tb_int = term_backed_param(&mut kb, list, t, int);
+        let tb_int2 = term_backed_param(&mut kb, list, t, int);
+        let tb_str = term_backed_param(&mut kb, list, t, string);
+        // deep `parameterized(sort_ref(List), [T = sort_ref(Int)])`.
+        let int_ref = kb.make_sort_ref(int);
+        let base = kb.make_sort_ref(list);
+        let deep_int = kb.make_parameterized_type(base, &[(t, int_ref)]);
+
+        // term-backed vs term-backed: same instantiation unifies; differing
+        // binding is rejected.
+        let mut s = Substitution::new();
+        assert!(
+            unify_types(&mut kb, &mut s, &TermIdView(tb_int), &TermIdView(tb_int2)),
+            "term-backed List[T=Int] unifies with itself"
+        );
+        let mut s2 = Substitution::new();
+        assert!(
+            !unify_types(&mut kb, &mut s2, &TermIdView(tb_int), &TermIdView(tb_str)),
+            "term-backed List[T=Int] vs List[T=String] rejected at the binding"
+        );
+
+        // cross-form: deep parameterized unifies with its term-backed twin.
+        let mut s3 = Substitution::new();
+        assert!(
+            unify_types(&mut kb, &mut s3, &TermIdView(deep_int), &TermIdView(tb_int)),
+            "deep List[T=Int] unifies cross-form with term-backed List[T=Int]"
+        );
+
+        // subtype: cross-form accept; differing binding reject.
+        let mut s4 = Substitution::new();
+        assert!(
+            types_compatible(&mut kb, &mut s4, &TermIdView(tb_int), &TermIdView(deep_int)),
+            "term-backed List[T=Int] <: deep List[T=Int]"
+        );
+        let mut s5 = Substitution::new();
+        assert!(
+            !types_compatible(&mut kb, &mut s5, &TermIdView(tb_int), &TermIdView(tb_str)),
+            "List[T=Int] is not <: List[T=String]"
+        );
     }
 }
 
