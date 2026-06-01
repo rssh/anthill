@@ -16,6 +16,7 @@ namespace anthill.reflect
   import anthill.prelude.{Bool}
   import anthill.prelude.{Stream}
   import anthill.prelude.{Type}
+  import anthill.prelude.{TypeExtractor}
   import anthill.prelude.{Modifiable}
 
   -- ================================================================
@@ -188,6 +189,14 @@ namespace anthill.reflect
   operation term_as_sort(t: Term) -> Option[T = Type]
   -- Check whether a Term represents a valid sort
   operation can_be_sort(t: Term) -> Bool
+
+  -- Reify a type's deep structure on demand — the one reflection entry point for
+  -- type introspection. A type is term-backed, so `extract` takes the `Term`; a
+  -- child sub-type (e.g. `Arrow.param`, itself a `Term`) feeds straight back in.
+  -- Total — a non-type term classifies as `Error`. Computes the structural form;
+  -- it is NOT stored. Pattern-match the result:
+  --   case extract(t) { SortRef(s) -> .., Parameterized(base, binds) -> .., Error(_) -> .. }
+  operation extract(t: Term) -> TypeExtractor
 
   -- ================================================================
   -- KB: the knowledge base

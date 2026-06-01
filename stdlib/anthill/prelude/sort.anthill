@@ -119,3 +119,39 @@ enum anthill.prelude.EffectExpression
 
   fact Eq[T = EffectExpression]
 end
+
+{< TypeExtractor: the reified deep structure of a `Type`.
+
+   A `Type` *value* is term-backed (the engine stores it as an ordinary term —
+   `Ref(S)` for a bare sort, `Fn{S, named}` for a parameterized type, with a
+   value-in-type carried as `denoted`). This enum is NOT that stored form — it
+   is what `anthill.reflect.extract(t)` REIFIES on demand so a program can
+   `case` over a type's structure. The variants mirror the structural forms a
+   type can take; `extract` reads the term backing into exactly one of them.
+   Nothing here is stored — the deep representation is a computed view, defined
+   once in the stdlib (the Rust engine view is generated from this). >}
+enum anthill.prelude.TypeExtractor
+  import anthill.prelude.{List}
+  import anthill.reflect.{Symbol, NodeOccurrence, Term}
+
+  entity SortRef(name: Symbol)
+  entity TypeVar(name: Symbol)
+  entity Parameterized(base: Symbol, bindings: List[TypeBinding])
+  entity Arrow(param: Term, result: Term, effects: Term)
+  entity Denoted(value: NodeOccurrence)
+  entity EffectsRows(expr: EffectExpression)
+  entity NamedTuple(fields: List[NamedTupleElement])
+  entity Nothing
+  {< The term is not a well-formed type — `extract` could not classify it (a
+     non-type term, or a malformed type expression). Keeps `extract` total
+     rather than returning an `Option`. `term` is the offending input. >}
+  entity Error(term: Term)
+
+  {< A parameter binding in a `Parameterized` extract (`param = value`).
+     `value` is the bound sub-type — a term that is itself a type, so it feeds
+     straight back into `extract`. >}
+  entity TypeBinding(param: Symbol, value: Term)
+  {< One element of a `NamedTuple` extract (`name : type`) — named for its parent,
+     since it is specific to named tuples. `type` is the element's sub-type term. >}
+  entity NamedTupleElement(name: Symbol, type: Term)
+end
