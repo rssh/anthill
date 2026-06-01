@@ -5446,19 +5446,12 @@ impl<'a> Loader<'a> {
     fn type_expr_to_term(&mut self, ty: &TypeExpr) -> TermId {
         match ty {
             TypeExpr::Simple(name) => {
-                // WI-341 loader binder context: a single-segment name matching a
-                // callback arrow's own param (in scope only while loading that
-                // callback param's arrow type) resolves to its `CallbackParam`
-                // place — a self-referential effect `Modify[a]` becomes
-                // `denoted(Ref(<op>.f.a))` = `Modify[f.a]`, the same value-in-type
-                // lowering the `is_value` arm below gives `result` / a bare place.
-                if name.segments.len() == 1 && !self.arrow_binder_scope.is_empty() {
-                    let nm = self.parsed.symbols.name(name.segments[0]);
-                    if let Some(&place) = self.arrow_binder_scope.get(nm) {
-                        let value = self.kb.alloc(Term::Ref(place));
-                        return self.kb.make_denoted(value);
-                    }
-                }
+                // WI-341: a callback arrow's own param binder (`Modify[a]`) is now
+                // lowered as a `Value::Node` occurrence by the `type_expr_to_child`
+                // Simple arm — op param types flow through the Value path. This
+                // hash-consed `type_expr_to_term` path is only reached for ground
+                // arrows (the `!any_node` re-grounding), whose effects reference no
+                // binder, so the binder consult that used to live here is dead.
                 let sort_sym = self.remap_name(name);
                 let short_name = self.kb.resolve_sym(sort_sym).to_owned();
                 // If this symbol is a type parameter, use a Var directly.
