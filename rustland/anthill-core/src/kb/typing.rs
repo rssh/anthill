@@ -5451,6 +5451,121 @@ fn is_type_param_binding(kb: &KnowledgeBase, short: Symbol, spec_qn: &str) -> bo
     resolve_sort_alias(kb, s).is_some()
 }
 
+/// WI-347 — operation-override refinement check. A carrier's own operation
+/// that implements/overrides a spec operation (own-op-beats-inherited, §8.7)
+/// must REFINE the spec op: effects no wider, precondition no stronger,
+/// postcondition no weaker. The soundness twin of the provider/call-site
+/// checks — a caller programs against the SPEC's contract, so an override that
+/// raises an effect the spec doesn't cover (or strengthens a precondition /
+/// weakens a postcondition) would surprise it.
+///
+/// EFFECTS: `∀ ie ∈ impl_effects. ∃ se ∈ spec_effects[σ]. ie <: se`
+/// (`types_compatible`, the relation `spec-instance-dispatch.md §"Effect
+/// compatibility"` specifies). Enforced only when the comparison is
+/// *confident* — every impl and σ-substituted spec effect is a ground
+/// `Value::Term` (no unbound type-param, no `denoted` `Value::Node`).
+/// Otherwise the op's effect check is skipped (fail-open): parametric
+/// (`effects E`) / denoted (`Modify[c]`) effect refinement is deferred, which
+/// keeps the stdlib's polymorphic-effect providers from false-positiving while
+/// still catching a ground effect-widening (the doc's `Network`-vs-`Error`
+/// case). Contract (`requires`/`ensures`) refinement is added on this same
+/// pass next.
+pub fn check_override_refinement(kb: &mut KnowledgeBase) -> Vec<super::load::LoadError> {
+    use super::load::LoadError;
+    let Some(provides_sym) = kb.try_resolve_symbol("anthill.reflect.SortProvidesInfo") else {
+        return Vec::new();
+    };
+    // Own declared ops per sort — owned snapshot, no `kb` borrow held in the loop.
+    let own: std::collections::HashMap<Symbol, Vec<Symbol>> =
+        super::load::sorts_and_own_ops(kb).into_iter().collect();
+    let short = |kb: &KnowledgeBase, s: Symbol| -> String {
+        kb.qualified_name_of(s).rsplit('.').next().unwrap_or("").to_string()
+    };
+
+    // Snapshot provisions before the (mutating) refinement walk:
+    // (carrier, spec base, σ = spec type-param symbol → provision binding value).
+    struct Prov { carrier: Symbol, spec: Symbol, sigma: Vec<(Symbol, TermId)> }
+    let mut provs: Vec<Prov> = Vec::new();
+    for rid in kb.rules_by_functor(provides_sym) {
+        if !kb.is_fact(rid) { continue; }
+        let head = kb.rule_head(rid);
+        let named = match kb.get_term(head) {
+            Term::Fn { named_args, .. } => named_args.clone(),
+            _ => continue,
+        };
+        let Some(sr) = get_named_arg(kb, &named, "sort_ref") else { continue };
+        let Some(carrier) = super::load::sort_ref_functor(kb, sr) else { continue };
+        let Some(spec_view) = get_named_arg(kb, &named, "spec") else { continue };
+        let Some((spec_base, _)) = unwrap_spec_view(kb, spec_view) else { continue };
+        let spec_qn = kb.qualified_name_of(spec_base).to_string();
+        let mut sigma: Vec<(Symbol, TermId)> = Vec::new();
+        if let Term::Fn { named_args, .. } = kb.get_term(spec_view).clone() {
+            for (k, v) in &named_args {
+                if is_type_param_binding(kb, *k, &spec_qn) {
+                    sigma.push((*k, *v));
+                }
+            }
+        }
+        provs.push(Prov { carrier, spec: spec_base, sigma });
+    }
+
+    let mut errors = Vec::new();
+    for p in &provs {
+        let (Some(spec_ops), Some(carrier_ops)) = (own.get(&p.spec), own.get(&p.carrier))
+        else { continue };
+        for &spec_op in spec_ops {
+            let sn = short(kb, spec_op);
+            // The carrier's own op of the same short name is its override/impl.
+            let Some(&impl_op) = carrier_ops.iter().find(|&&o| short(kb, o) == sn)
+            else { continue };
+            let Some(spec_info) = super::op_info::lookup_operation_info(kb, spec_op) else { continue };
+            let Some(impl_info) = super::op_info::lookup_operation_info(kb, impl_op) else { continue };
+
+            // ── effects-⊆ (confident-ground only; fail-open otherwise) ──────
+            let spec_effs: Vec<Value> = spec_info.effects.iter()
+                .map(|se| sigma_subst_effect(kb, se, &p.sigma))
+                .collect();
+            let ground = |kb: &KnowledgeBase, e: &Value|
+                matches!(e, Value::Term(t) if !contains_type_param(kb, *t));
+            let confident = impl_info.effects.iter().all(|e| ground(kb, e))
+                && spec_effs.iter().all(|e| ground(kb, e));
+            if confident {
+                for ie in &impl_info.effects {
+                    let covered = spec_effs.iter().any(|se| {
+                        let mut subst = Substitution::new();
+                        types_compatible(kb, &mut subst, ie, se)
+                    });
+                    if !covered {
+                        errors.push(LoadError::IncompatibleOverride {
+                            carrier: kb.qualified_name_of(p.carrier).to_string(),
+                            spec: kb.qualified_name_of(p.spec).to_string(),
+                            op: sn.clone(),
+                            reason: format!(
+                                "the override declares effect `{}`, which is not covered by \
+                                 any effect the spec operation declares (effects must not widen)",
+                                type_display_name_value(kb, ie)),
+                        });
+                    }
+                }
+            }
+        }
+    }
+    errors
+}
+
+/// Apply a provision's σ (spec param symbol → binding) to a spec operation's
+/// effect label. A ground `Value::Term` is rewritten via
+/// [`substitute_impl_params_alloc`]; a `denoted` `Value::Node` (e.g.
+/// `Modify[c]`) is returned verbatim — its σ-instantiation is part of the
+/// deferred parametric-effect handling, and the caller's confidence gate skips
+/// any op whose effects stay non-ground.
+fn sigma_subst_effect(kb: &mut KnowledgeBase, eff: &Value, sigma: &[(Symbol, TermId)]) -> Value {
+    match eff {
+        Value::Term(t) if !sigma.is_empty() => Value::Term(substitute_impl_params_alloc(kb, *t, sigma)),
+        other => other.clone(),
+    }
+}
+
 /// Replace every `Ref(p)` / `Ident(p)` / nullary `Fn(p, [], [])` in
 /// `term` where `p` is in `impl_subst` with its bound value. The
 /// nullary-Fn shape is what `convert_term` produces for a bare name

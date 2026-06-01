@@ -20,6 +20,9 @@ mod wi345_warnings_channel_test;
 #[path = "include/wi346_requires_shadow_test.rs"]
 mod wi346_requires_shadow_test;
 
+#[path = "include/wi347_override_refinement_test.rs"]
+mod wi347_override_refinement_test;
+
 #[path = "include/wi246_rule_body_desc_test.rs"]
 mod wi246_rule_body_desc_test;
 

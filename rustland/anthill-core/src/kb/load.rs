@@ -151,6 +151,19 @@ pub enum LoadError {
         spec: String,
         required: String,
     },
+    /// WI-347: an operation override violates behavioral subtyping — a
+    /// carrier's own operation that implements/overrides a spec operation does
+    /// not *refine* it. `reason` names the specific violation: an effect not
+    /// covered by the spec's effects (effect-widening), a strengthened
+    /// precondition, or a weakened postcondition. Load-blocking: the override
+    /// is unsound — a caller programming against the spec's contract would be
+    /// surprised.
+    IncompatibleOverride {
+        carrier: String,
+        spec: String,
+        op: String,
+        reason: String,
+    },
     Other {
         message: String,
     },
@@ -184,6 +197,10 @@ impl LoadError {
                 format!("'{}' provides '{}', which requires '{}', but '{}' does not provide '{}' (add a `fact {}[…]` for the carrier)",
                     carrier, spec, required, carrier, required, required)
             }
+            LoadError::IncompatibleOverride { carrier, spec, op, reason } => {
+                format!("'{}' overrides '{}.{}' (it provides '{}') but the override does not refine it: {}",
+                    carrier, spec, op, spec, reason)
+            }
             LoadError::Other { message } => {
                 format!("load error: {}", message)
             }
@@ -200,7 +217,8 @@ impl LoadError {
         matches!(self,
             LoadError::TypeMismatch { .. }
             | LoadError::UnresolvedImport { .. }
-            | LoadError::UnsatisfiedProviderRequires { .. })
+            | LoadError::UnsatisfiedProviderRequires { .. }
+            | LoadError::IncompatibleOverride { .. })
     }
 }
 
@@ -226,6 +244,9 @@ impl std::fmt::Display for LoadError {
             LoadError::UnsatisfiedProviderRequires { carrier, spec, required } => {
                 write!(f, "'{}' provides '{}', which requires '{}', but '{}' does not provide '{}'",
                     carrier, spec, required, carrier, required)
+            }
+            LoadError::IncompatibleOverride { carrier, spec, op, reason } => {
+                write!(f, "'{}' overrides '{}.{}' but does not refine it: {}", carrier, spec, op, reason)
             }
             LoadError::Other { message } => {
                 write!(f, "load error: {}", message)
@@ -1999,6 +2020,11 @@ fn load_phase_inner(
     // must itself be satisfied — else the satisfaction fact is unsound.
     all_errors.extend(super::typing::check_provider_requires(kb));
     mark!("check_provider_requires");
+    // WI-347: operation-override refinement — a carrier's own op overriding a
+    // spec op must refine it (effects no wider; pre/post next). Load-blocking
+    // (unsound override), so it lands in `all_errors`.
+    all_errors.extend(super::typing::check_override_refinement(kb));
+    mark!("check_override_refinement");
     // WI-346: requires-shadow lint — advisory (non-fatal), so it lands in
     // `all_warnings`, not `all_errors`. A legal-but-suspicious same-named op on
     // a `requires`-user (which does NOT override) should be flagged, not block.
@@ -2971,7 +2997,7 @@ fn intern_op_short(kb: &mut KnowledgeBase, op_sym: Symbol) -> Symbol {
 /// the operation symbols it declares. `build_sort_ops_table` collects
 /// this into a map both passes share — a single scan instead of one
 /// `SortInfo` walk per sort.
-fn sorts_and_own_ops(kb: &KnowledgeBase) -> Vec<(Symbol, Vec<Symbol>)> {
+pub(crate) fn sorts_and_own_ops(kb: &KnowledgeBase) -> Vec<(Symbol, Vec<Symbol>)> {
     let sort_info_sym = match kb.try_resolve_symbol("anthill.reflect.SortInfo") {
         Some(s) => s,
         None => return Vec::new(),
