@@ -10296,6 +10296,7 @@ fn check_operation_bodies(kb: &mut KnowledgeBase, op_syms: &[Symbol], errors: &m
                     kb,
                     &result.env,
                     op.return_type,
+                    op.op_sym,
                     op_result_sym,
                     &region_sorts,
                     &result.effects,

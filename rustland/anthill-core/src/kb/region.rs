@@ -30,6 +30,9 @@
 
 use std::collections::{HashMap, HashSet};
 
+use smallvec::SmallVec;
+
+use super::resolve::ResolveConfig;
 use super::term::{Term, TermId};
 use super::KnowledgeBase;
 use super::typing::{
@@ -37,7 +40,7 @@ use super::typing::{
     TypingEnv,
 };
 use crate::eval::value::Value;
-use crate::intern::Symbol;
+use crate::intern::{Symbol, SymbolKind};
 
 /// The sorts admitted by `Modifiable[T = …]` facts (`{Cell}` in the
 /// current stdlib). A result type that structurally mentions one of these
@@ -168,15 +171,28 @@ fn push_effect_dedup(out: &mut Vec<Value>, effect: Value) {
     }
 }
 
-/// Operation-boundary effect masking (WI-314). Given the body's derived
-/// effect row, the op's return type, and its reserved `result` symbol,
-/// return the externally-visible row: locals dropped, escaping fresh
-/// regions kept (re-keyed to `result`), non-escaping fresh regions
-/// dropped, parameters left external. See the module header.
+/// Operation-boundary effect masking (WI-314 + WI-353). Given the body's
+/// derived effect row, the op's return type, and its reserved `result` symbol,
+/// return the externally-visible row: locals dropped, escaping fresh regions
+/// kept (re-keyed to `result`), non-escaping fresh regions dropped, parameters
+/// left external. See the module header.
+///
+/// WI-353 — the `Modify` slice of `effect_derive` (proposal 046). A `Modify` on
+/// a **callback parameter** place (`<op>.f.a`, kind `CallbackParam`) is not a
+/// caller-visible resource as written: the binder `a` is meaningless outside the
+/// callback's arrow. Such a label is resolved against the op's own data by the
+/// WI-352 flow facts — `keep_modify(f.a, into)` (checking mode) over the op's
+/// argument places + `result` — and kept re-keyed to each `into` that holds
+/// (input origin → that input; fresh output escaping the result → `result`,
+/// gated on the same return-type escape test as WI-314; neither → dropped).
+/// Mixed provenance (a foldLeft accumulator fed by both the seed and the
+/// callback's own output) keeps the union. `op_sym` supplies those candidate
+/// `into` places (`SymbolTable::arg_places`).
 pub(crate) fn op_boundary_effects(
     kb: &mut KnowledgeBase,
     env: &TypingEnv,
     return_type: TermId,
+    op_sym: Symbol,
     op_result_sym: Option<Symbol>,
     regions: &HashSet<Symbol>,
     effects: &[Value],
@@ -185,6 +201,10 @@ pub(crate) fn op_boundary_effects(
     let after_local = external_effects(kb, env, effects);
     // 2. Result-region masking, keyed on whether the result can carry one.
     let admits = result_type_admits_region(kb, return_type, regions);
+    // WI-353: candidate `into` places for a callback-parameter `Modify` — the
+    // op's own DATA argument places plus its `result`. Built lazily (only the
+    // rare `CallbackParam` arm reads it; the common op carries no such effect).
+    let mut into_candidates: Option<Vec<Symbol>> = None;
     let mut out: Vec<Value> = Vec::with_capacity(after_local.len());
     for effect in after_local {
         match extract_effect_resource_sym(kb, &effect) {
@@ -200,6 +220,61 @@ pub(crate) fn op_boundary_effects(
                 }
                 // else: the fresh region cannot reach the result — drop.
             }
+            Some(sym) if kb.kind_of(sym) == Some(SymbolKind::CallbackParam) => {
+                // WI-353: a callback parameter's latent `Modify[f.a]`. Resolve
+                // its origin(s) by flow reachability and keep one re-keyed label
+                // per candidate `into` place that `keep_modify` holds for. `kind`
+                // is not consulted — v1 re-keys every edge as `direct` (re-key to
+                // the whole source), a sound coarsening (046 §"Role of kind").
+                let candidates = into_candidates.get_or_insert_with(|| {
+                    // DATA places only: the op's non-callback params + its
+                    // `result`. A callback param is a function value, never a
+                    // modifiable re-key target — exclude it (a `Param` carries
+                    // its arrow's places, so `arg_places` non-empty marks it).
+                    let mut v: Vec<Symbol> = kb
+                        .symbols
+                        .arg_places(op_sym)
+                        .iter()
+                        .copied()
+                        .filter(|&p| kb.symbols.arg_places(p).is_empty())
+                        .collect();
+                    if let Some(r) = op_result_sym {
+                        v.push(r);
+                    }
+                    v
+                });
+                // `keep_modify` is queried in *checking* mode against each
+                // candidate (the enumerate form `keep_modify(p, ?r)` residualizes
+                // on the `provenance` builtin's unbound output; WI-352 caveat).
+                for &into in candidates.iter() {
+                    if !keep_modify_holds(kb, sym, into) {
+                        continue;
+                    }
+                    // Re-keying to the op result is additionally gated on the
+                    // return type actually being able to carry the region — the
+                    // same WI-314 escape test: a fresh output that *reaches* the
+                    // result by dataflow but a result type that cannot hold it is
+                    // masked. Re-keying to an input place keeps unconditionally
+                    // (the input is externally visible).
+                    if op_result_sym == Some(into) && !admits {
+                        continue;
+                    }
+                    let kept = rekey_resource_value(kb, &effect, sym, into);
+                    push_effect_dedup(&mut out, kept);
+                }
+                // No candidate held → drop. Sound when the WI-352 flow facts
+                // fully captured the feed: the callback was fed a fresh,
+                // non-escaping local (absence is the drop, 046 feed spec).
+                // LIMITATION (v1, mirrors the WI-314 narrow slice above): if
+                // `flow_derive` under-approximated the feed — e.g. the callback
+                // arg is a library-accessor result, or a nested-callback
+                // application it does not model — there is *also* no solution, so
+                // the label is dropped: an unsound drop. Not reachable from
+                // source yet (a callback's `Modify[a]` cannot reach the boundary
+                // until the binder→place front-end, WI-341/342); when it goes
+                // live the sound coarse fallback is the doc's all-to-all keep
+                // (046 §"Role of kind", the flow-presence conservative axis).
+            }
             _ => {
                 // Parameter / unknown resource — external, keep.
                 push_effect_dedup(&mut out, effect);
@@ -207,6 +282,36 @@ pub(crate) fn op_boundary_effects(
         }
     }
     out
+}
+
+/// WI-353: whether `keep_modify(place, into)` holds via the WI-352 `feed` rules
+/// + `provenance` builtin, queried in **checking** mode (both arguments ground).
+/// The enumerate form `keep_modify(place, ?r)` residualizes — the resolver
+/// delays a rule whose body has the `provenance` builtin with an unbound output
+/// — so the boundary classifier instead checks each candidate `into` place it
+/// already has in hand (the op's inputs + result). A genuine, residual-free
+/// solution is required; an absent `feed` substrate (e.g. `reflect/feed` not
+/// loaded) yields `false` (nothing to keep), leaving the label to drop.
+///
+/// The `.any()` scans *all* solutions — it must NOT be reduced to
+/// `max_solutions: 1` + first-solution: the resolver can return a residual
+/// (delayed) solution before the residual-free one, so taking only the first
+/// would report `false` for a label that genuinely holds (an unsound drop).
+fn keep_modify_holds(kb: &mut KnowledgeBase, place: Symbol, into: Symbol) -> bool {
+    let km = match kb.try_resolve_symbol("anthill.reflect.feed.keep_modify") {
+        Some(s) => s,
+        None => return false,
+    };
+    let p_term = kb.alloc(Term::Ref(place));
+    let into_term = kb.alloc(Term::Ref(into));
+    let goal = kb.alloc(Term::Fn {
+        functor: km,
+        pos_args: SmallVec::from_slice(&[p_term, into_term]),
+        named_args: SmallVec::new(),
+    });
+    kb.resolve(&[goal], &ResolveConfig::default())
+        .iter()
+        .any(|s| s.residual.is_empty())
 }
 
 #[cfg(test)]
@@ -247,5 +352,167 @@ mod tests {
 
         // And the lookalike is still rejected.
         assert!(!is_result_region_sym(&kb, lookalike));
+    }
+}
+
+/// WI-353 — the `Modify` slice of `effect_derive` (proposal 046): the
+/// `op_boundary_effects` callback-parameter classifier, exercised against the
+/// **real** WI-352 flow facts (derived from each op's body) and the **real**
+/// registered places. The input effect row is built synthetically — a callback's
+/// `Modify[<its own arrow param>]` cannot yet reach the boundary from source (the
+/// binder→place wiring is WI-341/342), so `modify_label` stands in for it,
+/// keyed to the genuine `CallbackParam` place the loader registered.
+#[cfg(test)]
+mod wi353_tests {
+    use super::*;
+    use crate::kb::load::{self, NullResolver};
+    use crate::parse;
+    use std::collections::HashSet;
+    use std::path::{Path, PathBuf};
+
+    const OPS: &str = r#"
+namespace anthill.test.wi353
+  import anthill.prelude.{List, Unit, Cell, Int}
+
+  -- foreach: the callback is applied to each element of `l`, so the element
+  -- place `f.a` is fed `element_of` from `l`.
+  operation each(l: List[T = Cell], f: (a: Cell) -> Unit) -> Unit =
+    match l
+      case nil() -> unit
+      case cons(h, rest) -> f(h)
+
+  -- foldLeft over a region-bearing accumulator. The accumulator place `f.a`
+  -- is fed by the seed `z` (an input) AND the callback's own output `f.result`
+  -- (a fresh value, escaping through the `Cell` result).
+  operation foldCell(xs: List[T = Cell], z: Cell, f: (a: Cell, t: Cell) -> Cell) -> Cell =
+    match xs
+      case nil() -> z
+      case cons(h, rest) -> foldCell(rest, f(z, h), f)
+
+  -- Same shape, but the result type `Int` cannot carry a region — the
+  -- escaping-to-result component is masked.
+  operation foldInt(xs: List[T = Int], z: Int, f: (a: Int, t: Int) -> Int) -> Int =
+    match xs
+      case nil() -> z
+      case cons(h, rest) -> foldInt(rest, f(z, h), f)
+end
+"#;
+
+    fn collect(dir: &Path, out: &mut Vec<PathBuf>) {
+        if dir.is_dir() {
+            for e in std::fs::read_dir(dir).unwrap() {
+                let p = e.unwrap().path();
+                if p.is_dir() {
+                    collect(&p, out);
+                } else if p.extension().is_some_and(|x| x == "anthill") {
+                    out.push(p);
+                }
+            }
+        }
+    }
+
+    fn load_ops() -> KnowledgeBase {
+        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../stdlib/anthill");
+        let mut files = Vec::new();
+        collect(&dir, &mut files);
+        let mut parsed: Vec<_> = files
+            .iter()
+            .map(|p| parse::parse(&std::fs::read_to_string(p).unwrap()).unwrap())
+            .collect();
+        parsed.push(parse::parse(OPS).expect("parse ops"));
+        let refs: Vec<_> = parsed.iter().collect();
+        let mut kb = KnowledgeBase::new();
+        load::register_prelude(&mut kb);
+        kb.register_standard_builtins();
+        // flow_derive runs in the load pipeline regardless of typecheck outcome.
+        let _ = load::load_all(&mut kb, &refs, &NullResolver);
+        kb
+    }
+
+    fn sym(kb: &KnowledgeBase, qn: &str) -> Symbol {
+        kb.try_resolve_symbol(qn).unwrap_or_else(|| panic!("resolve {qn}"))
+    }
+
+    /// A synthetic ground `Modify[T = <resource>]` label, the shape the loader's
+    /// value-in-type lowering produces (`parameterized` + `denoted(Ref(_))`).
+    fn modify_label(kb: &mut KnowledgeBase, resource: Symbol) -> Value {
+        let base = kb.make_name_term("Modify");
+        let res_ref = kb.alloc(Term::Ref(resource));
+        let denoted = kb.make_denoted(res_ref);
+        let t = kb.intern("T");
+        Value::Term(kb.make_parameterized_type(base, &[(t, denoted)]))
+    }
+
+    fn resources(kb: &KnowledgeBase, row: &[Value]) -> HashSet<Symbol> {
+        row.iter().filter_map(|e| extract_effect_resource_sym(kb, e)).collect()
+    }
+
+    /// Run `op_boundary_effects` for `<op_qn>` with a return type of sort `ret`
+    /// and a single synthetic `Modify[<op_qn>.<modify_on>]` input label; return
+    /// the resource-symbol set of the masked row.
+    fn boundary(kb: &mut KnowledgeBase, op_qn: &str, ret_qn: &str, modify_on: &str) -> HashSet<Symbol> {
+        let op_sym = sym(kb, op_qn);
+        let result_sym = kb.try_resolve_symbol(&format!("{op_qn}.result"));
+        let regions = region_sorts(kb);
+        let ret = sym(kb, ret_qn);
+        let ret_ty = kb.alloc(Term::Ref(ret));
+        let resource = sym(kb, &format!("{op_qn}.{modify_on}"));
+        let row = vec![modify_label(kb, resource)];
+        let env = TypingEnv::empty();
+        let out = op_boundary_effects(kb, &env, ret_ty, op_sym, result_sym, &regions, &row);
+        resources(kb, &out)
+    }
+
+    #[test]
+    fn foreach_callback_modify_surfaces_on_list() {
+        let mut kb = load_ops();
+        let l = sym(&kb, "anthill.test.wi353.each.l");
+        let got = boundary(&mut kb, "anthill.test.wi353.each", "anthill.prelude.Unit", "f.a");
+        assert_eq!(
+            got,
+            [l].into_iter().collect(),
+            "foreach: a Modify on the element param `f.a` must surface as Modify[l]"
+        );
+    }
+
+    #[test]
+    fn fold_accumulator_mixed_provenance_keeps_seed_and_result() {
+        let mut kb = load_ops();
+        let z = sym(&kb, "anthill.test.wi353.foldCell.z");
+        let result = sym(&kb, "anthill.test.wi353.foldCell.result");
+        let got = boundary(&mut kb, "anthill.test.wi353.foldCell", "anthill.prelude.Cell", "f.a");
+        assert_eq!(
+            got,
+            [z, result].into_iter().collect(),
+            "foldLeft accumulator is fed by the seed `z` (input) AND the fresh \
+             callback output escaping the Cell result — keep both, the union"
+        );
+    }
+
+    #[test]
+    fn fold_result_type_cannot_carry_region_masks_it() {
+        let mut kb = load_ops();
+        let z = sym(&kb, "anthill.test.wi353.foldInt.z");
+        let got = boundary(&mut kb, "anthill.test.wi353.foldInt", "anthill.prelude.Int", "f.a");
+        assert_eq!(
+            got,
+            [z].into_iter().collect(),
+            "an `Int` result cannot carry the region: the escaping-to-result \
+             component is masked (WI-314 escape test); only the seed `z` survives"
+        );
+    }
+
+    #[test]
+    fn element_param_modify_surfaces_on_source_list_only() {
+        // `foldCell.f.t` is fed `element_of` from `xs` only — a Modify on it
+        // surfaces on `xs`, not on the seed `z` or the `result`.
+        let mut kb = load_ops();
+        let xs = sym(&kb, "anthill.test.wi353.foldCell.xs");
+        let got = boundary(&mut kb, "anthill.test.wi353.foldCell", "anthill.prelude.Cell", "f.t");
+        assert_eq!(
+            got,
+            [xs].into_iter().collect(),
+            "the element param `f.t` comes only from `xs`"
+        );
     }
 }
