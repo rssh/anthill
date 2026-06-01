@@ -87,7 +87,7 @@ fn polynom_has_requires_ring() {
 
     // Query for SortRequiresInfo facts about Polynom
     let req_sym = kb.resolve_symbol("anthill.reflect.SortRequiresInfo");
-    let results = kb.by_functor(req_sym);
+    let results = kb.rules_by_functor(req_sym);
     assert!(!results.is_empty(), "should have SortRequiresInfo facts");
 
     // At least one should reference Polynom

@@ -76,7 +76,7 @@ fn float_provides_ring_and_vec3_provides_vector_space() {
     // Verify the satisfaction declarations (`fact Ring[T = Float]`
     // in float.anthill, `fact VectorSpace[V = Vec3, F = Float]` in
     // geometry.anthill) land as facts under the spec's functor in
-    // the by_functor index.
+    // the rules_by_functor index.
     let kb = load_with(r#"
         namespace test.algebra.satisfaction
           export Marker
@@ -85,12 +85,12 @@ fn float_provides_ring_and_vec3_provides_vector_space() {
     "#);
     let ring_sym = kb.try_resolve_symbol("anthill.prelude.algebra.Ring")
         .expect("Ring spec must resolve");
-    let ring_facts = kb.by_functor(ring_sym);
+    let ring_facts = kb.rules_by_functor(ring_sym);
     assert!(!ring_facts.is_empty(),
         "expected at least one Ring satisfaction fact (Float should provide Ring)");
     let vs_sym = kb.try_resolve_symbol("anthill.prelude.algebra.VectorSpace")
         .expect("VectorSpace spec must resolve");
-    let vs_facts = kb.by_functor(vs_sym);
+    let vs_facts = kb.rules_by_functor(vs_sym);
     assert!(!vs_facts.is_empty(),
         "expected at least one VectorSpace satisfaction fact (Vec3 should provide VectorSpace)");
 }

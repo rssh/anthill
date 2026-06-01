@@ -116,7 +116,7 @@ fn retrieve_fast_path_missing_id_returns_empty() {
 
 #[test]
 fn retrieve_slow_path_by_status() {
-    // No `id` in the pattern, so retrieve walks by_functor and
+    // No `id` in the pattern, so retrieve walks rules_by_functor and
     // pattern-matches each candidate. Two Open + one Claimed; only
     // the two Open should come back.
     let mut kb = KnowledgeBase::new();

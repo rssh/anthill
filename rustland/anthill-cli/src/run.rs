@@ -72,7 +72,7 @@ fn find_main_providers(kb: &mut KnowledgeBase) -> Vec<Symbol> {
     let spec_field = kb.intern("spec");
 
     let mut providers: Vec<Symbol> = Vec::new();
-    for rid in kb.by_functor(requires_sym) {
+    for rid in kb.rules_by_functor(requires_sym) {
         if !kb.is_fact(rid) {
             continue;
         }

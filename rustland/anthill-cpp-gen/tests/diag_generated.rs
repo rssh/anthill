@@ -22,7 +22,7 @@ fn dump_generated_profile_shape() {
     "#;
     let kb = load_kb_with(source);
     let sym = kb.try_resolve_symbol("anthill.realization.Generated").unwrap();
-    for rid in kb.by_functor(sym) {
+    for rid in kb.rules_by_functor(sym) {
         let head = kb.rule_head(rid);
         if let Term::Fn { named_args, .. } = kb.get_term(head) {
             for (name, val) in named_args {

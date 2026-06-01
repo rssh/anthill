@@ -17,7 +17,7 @@ fn has_description_fact(kb: &KnowledgeBase, text: &str) -> bool {
     let Some(desc_sym) = kb.try_resolve_symbol("Description") else {
         return false;
     };
-    kb.by_functor(desc_sym).iter().any(|&rid| {
+    kb.rules_by_functor(desc_sym).iter().any(|&rid| {
         let head = kb.rule_head(rid);
         match kb.get_term(head) {
             Term::Fn { pos_args, .. } if pos_args.len() == 3 => {

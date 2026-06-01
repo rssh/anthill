@@ -557,7 +557,7 @@ sort Color {
 
     // Query EntityInfo facts by functor
     let entity_info_sym = kb.resolve_symbol("anthill.reflect.EntityInfo");
-    let facts = kb.by_functor(entity_info_sym);
+    let facts = kb.rules_by_functor(entity_info_sym);
     assert_eq!(facts.len(), 3, "should have 3 EntityInfo facts for red, green, blue");
 }
 
@@ -650,7 +650,7 @@ entity Account(id: Int, balance: Int)
 
     // No EntityInfo facts for standalone entities
     let entity_info_sym = kb.resolve_symbol("anthill.reflect.EntityInfo");
-    let facts = kb.by_functor(entity_info_sym);
+    let facts = kb.rules_by_functor(entity_info_sym);
     assert_eq!(facts.len(), 0, "standalone entity should not produce EntityInfo facts");
 }
 
@@ -688,7 +688,7 @@ sort Shape {
 
     // EntityInfo facts: 2 for Color + 2 for Shape = 4
     let entity_info_sym = kb.resolve_symbol("anthill.reflect.EntityInfo");
-    let facts = kb.by_functor(entity_info_sym);
+    let facts = kb.rules_by_functor(entity_info_sym);
     assert_eq!(facts.len(), 4, "should have 4 EntityInfo facts total");
 }
 
@@ -999,7 +999,7 @@ entity Foo(x: ?)
 
     let foo_sym = kb.resolve_symbol("Foo");
     let x_sym = kb.intern("x");
-    let facts = kb.by_functor(foo_sym);
+    let facts = kb.rules_by_functor(foo_sym);
     // There should be an Entity fact for Foo
     assert!(!facts.is_empty(), "Foo entity should exist in KB");
 
@@ -1033,7 +1033,7 @@ entity Box(contents: ?)
     // Get the Box entity fact
     let box_sym = kb.resolve_symbol("Box");
     let contents_sym = kb.intern("contents");
-    let facts = kb.by_functor(box_sym);
+    let facts = kb.rules_by_functor(box_sym);
     assert!(!facts.is_empty(), "Box should exist in KB");
 
     let entity_term = kb.fact_term(facts[0]);
@@ -1834,7 +1834,7 @@ end
     let mut param_sym: Option<Symbol> = None;
     let mut body_var_sym: Option<Symbol> = None;
 
-    for rid in kb.by_functor(op_info_sym) {
+    for rid in kb.rules_by_functor(op_info_sym) {
         if !kb.is_fact(rid) { continue; }
         // WI-348: skip value-fact heads (an op with a `denoted` effect, e.g.
         // stdlib's Cell.set) — `id` has none, so its head is a hash-consed term.
@@ -3872,7 +3872,7 @@ end
     let mut kb = load_with_source(source);
     // Check that SortInfo for Color has kind = "enum"
     let si_sym = kb.resolve_symbol("anthill.reflect.SortInfo");
-    for rid in kb.by_functor(si_sym) {
+    for rid in kb.rules_by_functor(si_sym) {
         if !kb.is_fact(rid) { continue; }
         let head = kb.rule_head(rid);
         if let Term::Fn { named_args, .. } = kb.get_term(head) {
@@ -4190,7 +4190,7 @@ rule test_induction(?P) :- ?P(nil)
     let test_sym = kb.try_resolve_symbol("test_induction");
     assert!(test_sym.is_some(), "test_induction should be defined");
 
-    let facts = kb.by_functor(test_sym.unwrap());
+    let facts = kb.rules_by_functor(test_sym.unwrap());
     assert!(!facts.is_empty(), "should have rule for test_induction");
     let body = kb.rule_body_nodes(facts[0]);
     assert!(!body.is_empty(), "rule should have a body");
@@ -4215,7 +4215,7 @@ rule test(?P) :- ?P(foo, bar)
     let mut kb = load_with_source(source);
     let test_sym = kb.try_resolve_symbol("test");
     assert!(test_sym.is_some());
-    let facts = kb.by_functor(test_sym.unwrap());
+    let facts = kb.rules_by_functor(test_sym.unwrap());
     let body = kb.rule_body_nodes(facts[0]);
     match body[0].as_expr() {
         Some(anthill_core::kb::node_occurrence::Expr::Apply { functor, pos_args, .. }) => {
@@ -4252,7 +4252,7 @@ rule bigint_induction(?P)
     let ind_sym = kb.try_resolve_symbol("bigint_induction");
     assert!(ind_sym.is_some(), "bigint_induction should be defined");
 
-    let rules = kb.by_functor(ind_sym.unwrap());
+    let rules = kb.rules_by_functor(ind_sym.unwrap());
     assert!(!rules.is_empty(), "should have a rule");
 
     // Rule head: bigint_induction(?P)
@@ -5276,7 +5276,7 @@ fn wi031_stdlib_load_then_typecheck_then_verify_typing_facts() {
             Term::Fn { functor, .. } => *functor,
             _ => panic!("{qn} did not resolve to Fn term"),
         };
-        let found = kb.by_functor(sort_info_sym).iter().any(|rid| {
+        let found = kb.rules_by_functor(sort_info_sym).iter().any(|rid| {
             let head = kb.fact_term(*rid);
             let Term::Fn { named_args, .. } = kb.get_term(head) else { return false };
             named_args.iter().any(|(f, v)| *f == name_field && match kb.get_term(*v) {

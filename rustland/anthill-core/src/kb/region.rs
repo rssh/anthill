@@ -55,7 +55,7 @@ pub(crate) fn region_sorts(kb: &KnowledgeBase) -> HashSet<Symbol> {
         Some(s) => s,
         None => return out, // no Modifiable facts loaded — nothing admits a region
     };
-    for rid in kb.by_functor(modifiable) {
+    for rid in kb.rules_by_functor(modifiable) {
         collect_sort_refs(kb, kb.rule_head(rid), modifiable, &mut out);
     }
     out

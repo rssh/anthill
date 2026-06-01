@@ -61,12 +61,12 @@ const PASS_NAME: &str = "anthill.kb.passes.simp_rewrite";
 
 /// Whether any indexed `[simp]` equation exists — the gate both firing
 /// sites use to skip all firing work in the common no-rule case.
-/// `by_functor(eq)` holds only indexed (`[simp]`/`[unfold]`) equations
+/// `rules_by_functor(eq)` holds only indexed (`[simp]`/`[unfold]`) equations
 /// post-WI-139, so an empty index (e.g. a stdlib-only load) returns fast.
 /// Read once per typer walk (WI-283) and once per [`run`].
 pub(super) fn has_simp_equations(kb: &mut KnowledgeBase) -> bool {
     let eq_sym = kb.eq_functor();
-    kb.by_functor(eq_sym)
+    kb.rules_by_functor(eq_sym)
         .into_iter()
         .any(|rid| kb.is_equation(rid) && meta_has_flag(kb, kb.rule_meta(rid), "simp"))
 }
@@ -268,7 +268,7 @@ pub(super) fn try_fire(
     let eq_sym = kb.eq_functor();
     // All equational rule heads are indexed under `eq`; WI-139 keeps only
     // `[simp]`/`[unfold]`-tagged equations in the index. Reuse that index.
-    for rid in kb.by_functor(eq_sym) {
+    for rid in kb.rules_by_functor(eq_sym) {
         if !kb.is_equation(rid) || !meta_has_flag(kb, kb.rule_meta(rid), "simp") {
             continue;
         }

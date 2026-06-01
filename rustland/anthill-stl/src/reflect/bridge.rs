@@ -247,7 +247,7 @@ impl KbBridge {
         let mut kb = self.kb.borrow_mut();
         let plain_sym = kb.resolve_name_in_global(sort_name)
             .unwrap_or_else(|| kb.intern(sort_name));
-        let rids = kb.by_functor(plain_sym);
+        let rids = kb.rules_by_functor(plain_sym);
         for rid in rids {
             let head = kb.fact_term(rid);
             if let CoreTerm::Fn { functor, named_args, .. } = kb.get_term(head) {

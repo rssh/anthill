@@ -21,7 +21,7 @@ fn dump_phase_b_shapes() {
     let kb = load_kb_with(source);
 
     let op_impl_sym = kb.try_resolve_symbol("anthill.realization.OperationImpl").unwrap();
-    for rid in kb.by_functor(op_impl_sym) {
+    for rid in kb.rules_by_functor(op_impl_sym) {
         let head = kb.rule_head(rid);
         if let Term::Fn { named_args, .. } = kb.get_term(head) {
             let op = named_args.iter().find(|(s, _)| kb.resolve_sym(*s) == "operation")

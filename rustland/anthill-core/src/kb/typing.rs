@@ -1698,7 +1698,7 @@ fn try_fire_dot_rule(
 ) -> Option<Rc<NodeOccurrence>> {
     let dot_apply_sym = kb.try_resolve_symbol("anthill.reflect.Expr.dot_apply")?;
     let eq_sym = kb.eq_functor();
-    for rid in kb.by_functor(eq_sym) {
+    for rid in kb.rules_by_functor(eq_sym) {
         if !kb.is_equation(rid)
             || !super::load::meta_has_flag(kb, kb.rule_meta(rid), "simp")
             || super::simp_rewrite::stored_lhs_functor(kb, rid) != Some(dot_apply_sym)
@@ -1754,7 +1754,7 @@ fn find_spec_op_for_provided_sort(
     // Snapshot the provided specs first: the resolution loop below mutates `kb`
     // (`alloc` / `find_operation_in_scope`), so it can't run while iterating.
     let mut spec_syms: Vec<Symbol> = Vec::new();
-    for rid in kb.by_functor(provides_sym) {
+    for rid in kb.rules_by_functor(provides_sym) {
         if !kb.is_fact(rid) {
             continue;
         }
@@ -4721,7 +4721,7 @@ fn spec_has_any_providers(kb: &KnowledgeBase, spec_sort: Symbol) -> bool {
         Some(s) => s,
         None => return false,
     };
-    for rid in kb.by_functor(provides_sym) {
+    for rid in kb.rules_by_functor(provides_sym) {
         if !kb.is_fact(rid) { continue; }
         let head = kb.rule_head(rid);
         let head_named = match kb.get_term(head) {
@@ -4755,7 +4755,7 @@ fn collect_provides_candidates(
     let type_param_names: Vec<String> = kb.type_params_of_sort(goal.spec_sort);
 
     let mut out: Vec<Candidate> = Vec::new();
-    for rid in kb.by_functor(provides_sym) {
+    for rid in kb.rules_by_functor(provides_sym) {
         if !kb.is_fact(rid) {
             continue;
         }
@@ -5219,7 +5219,7 @@ pub fn check_provider_requires(kb: &mut KnowledgeBase) -> Vec<super::load::LoadE
         sigma: SmallVec<[(String, TermId); 2]>,
     }
     let mut provisions: Vec<Provision> = Vec::new();
-    for rid in kb.by_functor(provides_sym) {
+    for rid in kb.rules_by_functor(provides_sym) {
         if !kb.is_fact(rid) {
             continue;
         }
@@ -6171,7 +6171,7 @@ fn check_constructor_iter(
         let parent_name = kb.qualified_name_of(parent_sym).to_string();
         // Collect alias info: (param_short_name, VarId, bound_type)
         let mut alias_info: Vec<(String, TermId)> = Vec::new();
-        for rid in kb.by_functor(a_sym) {
+        for rid in kb.rules_by_functor(a_sym) {
             if !kb.is_fact(rid) { continue; }
             let head = kb.rule_head(rid);
             if let Term::Fn { pos_args, .. } = kb.get_term(head) {
@@ -6710,7 +6710,7 @@ fn lookup_operation_field(kb: &KnowledgeBase, functor: Symbol, field: &str) -> O
     // shared `op_info` helpers, which view either carrier. This path serves
     // `lookup_operation_return_type`, whose `field` is always ground.
     let op_info_sym = kb.try_resolve_symbol("anthill.reflect.OperationInfo")?;
-    for rid in kb.by_functor(op_info_sym) {
+    for rid in kb.rules_by_functor(op_info_sym) {
         if !kb.is_fact(rid) { continue; }
         let head = kb.rule_head_value(rid);
         if super::op_info::head_name_ref(kb, head) == Some(functor) {
@@ -7440,13 +7440,13 @@ fn is_sort_param_symbol(kb: &KnowledgeBase, sym: Symbol) -> bool {
 /// the SortAlias's pos-arg holds the qualified one. The precedence matters
 /// because parameter short names like "T" recur across sorts (Eq.T, Numeric.T,
 /// List.T, …) — without exact-match-first the fallback would return whichever
-/// alias appeared first in by_functor order, causing proposal-038 / WI-210
+/// alias appeared first in rules_by_functor order, causing proposal-038 / WI-210
 /// dispatch to resolve the wrong logical Var.
 fn resolve_sort_alias(kb: &KnowledgeBase, sym: Symbol) -> Option<TermId> {
     let alias_sym = kb.try_resolve_symbol("SortAlias")?;
     let sort_name = kb.resolve_sym(sym);
     let find = |matches: fn(&KnowledgeBase, Symbol, Symbol, &str) -> bool| {
-        for rid in kb.by_functor(alias_sym) {
+        for rid in kb.rules_by_functor(alias_sym) {
             if !kb.is_fact(rid) { continue; }
             let head = kb.rule_head(rid);
             if let Term::Fn { pos_args, .. } = kb.get_term(head) {
@@ -9337,7 +9337,7 @@ fn direct_requires(kb: &KnowledgeBase, sort_sym: Symbol) -> Vec<RequiresEntry> {
         return out;
     };
 
-    for rid in kb.by_functor(requires_sym) {
+    for rid in kb.rules_by_functor(requires_sym) {
         if !kb.is_fact(rid) { continue; }
         let head = kb.rule_head(rid);
         let named_args = match kb.get_term(head) {
@@ -9502,7 +9502,7 @@ fn sort_operation_names(kb: &KnowledgeBase, sort_sym: Symbol) -> Vec<String> {
         None => return Vec::new(),
     };
 
-    for rid in kb.by_functor(sort_info_sym) {
+    for rid in kb.rules_by_functor(sort_info_sym) {
         if !kb.is_fact(rid) { continue; }
         let head = kb.rule_head(rid);
         let named_args = match kb.get_term(head) {
@@ -9860,7 +9860,7 @@ pub fn type_check_sorts_typed(kb: &mut KnowledgeBase, sort_terms: &[TermId]) -> 
 /// `op_has_runnable_body` guarding WI-218 from rewriting spec ops to
 /// body-less impl symbols. Diagnostic: `wi237_diag_test.rs`.
 fn find_sort_info(kb: &KnowledgeBase, sort_info_sym: Symbol, sort_functor: Symbol) -> Option<(Vec<Symbol>, Vec<Symbol>)> {
-    for rid in kb.by_functor(sort_info_sym) {
+    for rid in kb.rules_by_functor(sort_info_sym) {
         if !kb.is_fact(rid) { continue; }
         let head = kb.rule_head(rid);
         let named_args = match kb.get_term(head) {
@@ -10213,7 +10213,7 @@ fn check_entity_facts(kb: &mut KnowledgeBase, ctor_syms: &[Symbol], errors: &mut
         };
         if field_types.is_empty() { continue; }
 
-        for rid in kb.by_functor(ctor_sym) {
+        for rid in kb.rules_by_functor(ctor_sym) {
             if !kb.is_fact(rid) { continue; }
 
             // Skip entity definitions and metadata
@@ -10271,7 +10271,7 @@ fn sort_provides(kb: &KnowledgeBase, carrier: Symbol, spec: Symbol) -> bool {
         Some(s) => s,
         None => return false,
     };
-    for rid in kb.by_functor(provides_sym) {
+    for rid in kb.rules_by_functor(provides_sym) {
         let named = match kb.get_term(kb.rule_head(rid)) {
             Term::Fn { named_args, .. } => named_args.clone(),
             _ => continue,

@@ -90,7 +90,7 @@ fn workitems_loaded() {
     let kb = load_github_todo_kb();
     let wi_sym = kb.try_resolve_symbol("anthill.stage0.WorkItem")
         .expect("WorkItem should be resolved");
-    let results = kb.by_functor(wi_sym);
+    let results = kb.rules_by_functor(wi_sym);
     // 4 work items + 1 entity definition = at least 4 facts with WorkItem functor
     assert!(results.len() >= 4, "expected at least 4 WorkItem facts, got {}", results.len());
 }
@@ -100,7 +100,7 @@ fn project_loaded() {
     let kb = load_github_todo_kb();
     let proj_sym = kb.try_resolve_symbol("anthill.stage0.Project")
         .expect("Project should be resolved");
-    let results = kb.by_functor(proj_sym);
+    let results = kb.rules_by_functor(proj_sym);
     assert!(results.len() >= 1, "expected at least 1 Project fact");
 }
 
@@ -149,7 +149,7 @@ fn feedback_loaded() {
     let kb = load_github_todo_kb();
     let fb_sym = kb.try_resolve_symbol("anthill.stage0.Feedback")
         .expect("Feedback should be resolved");
-    let results = kb.by_functor(fb_sym);
+    let results = kb.rules_by_functor(fb_sym);
     assert!(results.len() >= 2, "expected at least 2 Feedback facts, got {}", results.len());
 }
 
@@ -158,7 +158,7 @@ fn tooldef_loaded() {
     let kb = load_github_todo_kb();
     let tool_sym = kb.try_resolve_symbol("anthill.stage0.ToolDef")
         .expect("ToolDef should be resolved");
-    let results = kb.by_functor(tool_sym);
+    let results = kb.rules_by_functor(tool_sym);
     // project.anthill imports cargo-build, cargo-test, cargo-clippy + tools.anthill defines lint-all
     assert!(results.len() >= 1, "expected at least 1 ToolDef fact, got {}", results.len());
 }

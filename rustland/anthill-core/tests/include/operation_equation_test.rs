@@ -41,7 +41,7 @@ fn operation_body_emits_equation_rule() {
     let eq_sym = kb.try_resolve_symbol("anthill.prelude.Eq.eq")
         .or_else(|| kb.try_resolve_symbol("eq"))
         .expect("eq symbol");
-    let rules = kb.by_functor(eq_sym);
+    let rules = kb.rules_by_functor(eq_sym);
     let printer = TermPrinter::new(&kb);
     let heads: Vec<String> = rules.iter()
         .map(|&r| printer.print_term(kb.rule_head(r)))
@@ -65,7 +65,7 @@ fn equation_rule_has_correct_shape() {
     let eq_sym = kb.try_resolve_symbol("anthill.prelude.Eq.eq")
         .or_else(|| kb.try_resolve_symbol("eq"))
         .expect("eq symbol");
-    let rule_id = kb.by_functor(eq_sym).into_iter()
+    let rule_id = kb.rules_by_functor(eq_sym).into_iter()
         .find(|&r| {
             let head = kb.rule_head(r);
             match kb.get_term(head) {
@@ -108,7 +108,7 @@ fn no_body_no_equation_rule() {
     let eq_sym = kb.try_resolve_symbol("anthill.prelude.Eq.eq")
         .or_else(|| kb.try_resolve_symbol("eq"))
         .expect("eq symbol");
-    let rules = kb.by_functor(eq_sym);
+    let rules = kb.rules_by_functor(eq_sym);
     let printer = TermPrinter::new(&kb);
     let heads: Vec<String> = rules.iter()
         .map(|&r| printer.print_term(kb.rule_head(r)))

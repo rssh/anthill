@@ -66,7 +66,7 @@ pub struct OpInfoRecord {
 /// value list → its elements verbatim, preserving `Value::Node` identity).
 pub fn lookup_operation_info(kb: &KnowledgeBase, op_sym: Symbol) -> Option<OpInfoRecord> {
     let op_info_sym = kb.try_resolve_symbol("anthill.reflect.OperationInfo")?;
-    for rid in kb.by_functor(op_info_sym) {
+    for rid in kb.rules_by_functor(op_info_sym) {
         if !kb.is_fact(rid) { continue; }
         let head = kb.rule_head_value(rid);
 

@@ -1,5 +1,5 @@
 //! WI-139: equational rules are cite-required by default; opt-in
-//! via `[simp]` / `[unfold]` to enter the `by_functor` index for
+//! via `[simp]` / `[unfold]` to enter the `rules_by_functor` index for
 //! SLD goal resolution. (`[hint]` is recognised by the parser but
 //! its SMT-side semantics — auto-include in proof preamble — are
 //! deferred for v0; the attribute itself parses and stores cleanly.)
@@ -28,8 +28,8 @@ fn load_with(extra: &str) -> KnowledgeBase {
     kb
 }
 
-/// Count equational-headed rules indexed in by_functor. Walks
-/// every by_functor entry whose head term parses as an equation
+/// Count equational-headed rules indexed in rules_by_functor. Walks
+/// every rules_by_functor entry whose head term parses as an equation
 /// (head functor's QN ends in `eq` or `=`). Sidesteps the
 /// scope-resolution complexity of finding the right `eq` symbol
 /// by checking the head shape directly.
@@ -40,11 +40,11 @@ fn equational_indexed_count(mut kb: KnowledgeBase) -> usize {
     for &rid in &all_rules {
         let head = kb.rule_head(rid);
         if !is_equational_head(&kb, head) { continue; }
-        // Is this rule still in by_functor under its head's
+        // Is this rule still in rules_by_functor under its head's
         // functor? Probe directly.
         if let Term::Fn { functor, .. } = kb.get_term(head) {
             let f = *functor;
-            if kb.by_functor(f).iter().any(|&r| r == rid) {
+            if kb.rules_by_functor(f).iter().any(|&r| r == rid) {
                 count += 1;
             }
         }
@@ -53,7 +53,7 @@ fn equational_indexed_count(mut kb: KnowledgeBase) -> usize {
 }
 
 #[test]
-fn bare_equational_rule_is_excluded_from_by_functor() {
+fn bare_equational_rule_is_excluded_from_rules_by_functor() {
     let baseline = equational_indexed_count(load_with(r#"
         namespace test.eqattr.bare
           export Marker
@@ -71,7 +71,7 @@ fn bare_equational_rule_is_excluded_from_by_functor() {
     "#));
     assert_eq!(
         baseline, with_law,
-        "bare equational rule must NOT add to the by_functor index — \
+        "bare equational rule must NOT add to the rules_by_functor index — \
          got baseline {baseline} → with_law {with_law}"
     );
 }
@@ -94,7 +94,7 @@ fn simp_attributed_equational_rule_is_indexed() {
     "#));
     assert!(
         with_simp > baseline,
-        "[simp]-tagged equational rule must be in by_functor — \
+        "[simp]-tagged equational rule must be in rules_by_functor — \
          got baseline {baseline} → with_simp {with_simp}"
     );
 }
@@ -116,14 +116,14 @@ fn unfold_attributed_equational_rule_is_indexed() {
     "#));
     assert!(
         with_unfold > baseline,
-        "[unfold]-tagged equational rule must be in by_functor — \
+        "[unfold]-tagged equational rule must be in rules_by_functor — \
          got baseline {baseline} → with_unfold {with_unfold}"
     );
 }
 
 #[test]
 fn hint_attributed_equational_rule_stays_unindexed_in_v0() {
-    // [hint] currently doesn't gate the by_functor index — its
+    // [hint] currently doesn't gate the rules_by_functor index — its
     // semantics are SMT-only auto-emission, which v0 hasn't wired
     // yet. The attribute parses cleanly; the rule remains
     // cite-required for SLD-side resolution. Once SMT-emission
@@ -147,7 +147,7 @@ fn hint_attributed_equational_rule_stays_unindexed_in_v0() {
     "#));
     assert_eq!(
         baseline, with_hint,
-        "[hint] alone must NOT add to the by_functor index in v0 \
+        "[hint] alone must NOT add to the rules_by_functor index in v0 \
          — got baseline {baseline} → with_hint {with_hint}"
     );
 }
@@ -156,7 +156,7 @@ fn hint_attributed_equational_rule_stays_unindexed_in_v0() {
 fn horn_rule_is_indexed_regardless_of_attributes() {
     // Horn rules (head is a non-`=` term, body via `:-`) are
     // unaffected by the equational gate. Always indexed in
-    // by_functor for SLD goal resolution.
+    // rules_by_functor for SLD goal resolution.
     let kb = load_with(r#"
         namespace test.eqattr.horn
           export horny
@@ -168,7 +168,7 @@ fn horn_rule_is_indexed_regardless_of_attributes() {
     let sym = kb.try_resolve_symbol("test.eqattr.horn.horny")
         .expect("horny rule must resolve");
     assert!(
-        !kb.by_functor(sym).is_empty(),
-        "Horn rule must be in by_functor for goal resolution"
+        !kb.rules_by_functor(sym).is_empty(),
+        "Horn rule must be in rules_by_functor for goal resolution"
     );
 }

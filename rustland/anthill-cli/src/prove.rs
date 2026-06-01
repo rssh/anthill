@@ -227,7 +227,7 @@ fn collect_proof_records(kb: &KnowledgeBase) -> Vec<ProofRec> {
     };
     let syms = ProofSyms::new(kb);
     let mut out = Vec::new();
-    for rid in kb.by_functor(functor) {
+    for rid in kb.rules_by_functor(functor) {
         let head = kb.rule_head(rid);
         if let Some(rec) = read_proof_record(kb, &syms, head) {
             out.push(rec);
@@ -732,7 +732,7 @@ fn dispatch_structured(
 ) -> DispatchOutcome {
     let syms = ProofSyms::new(kb);
     // Re-fetch the parent ProofRecord's body term — `rec` doesn't
-    // carry it, so we walk by_functor for ProofRecord and find the
+    // carry it, so we walk rules_by_functor for ProofRecord and find the
     // record for this rule QN.
     let body_tid = match find_proof_body_term(kb, &syms, &rec.rule) {
         Some(t) => t,
@@ -847,7 +847,7 @@ fn find_proof_body_term(
     rule_qn: &str,
 ) -> Option<TermId> {
     let functor = kb.try_resolve_symbol("anthill.realization.ProofRecord")?;
-    for rid in kb.by_functor(functor) {
+    for rid in kb.rules_by_functor(functor) {
         let head = kb.rule_head(rid);
         let named = match kb.get_term(head) {
             Term::Fn { named_args, .. } => named_args,
@@ -916,7 +916,7 @@ fn dispatch_derivation(
         None => return DispatchOutcome::no_witness(
             Verdict::EmitError(format!("rule `{rule_qn}` not in KB"))),
     };
-    let rules = kb.by_functor(rule_sym);
+    let rules = kb.rules_by_functor(rule_sym);
     if rules.is_empty() {
         return DispatchOutcome::no_witness(
             Verdict::EmitError(format!("no rules found for `{rule_qn}`")));
@@ -1193,7 +1193,7 @@ fn cite_status(
         None => return CiteStatus::NotFound,
     };
     let mut found_record = false;
-    for rid in kb.by_functor(record_sym) {
+    for rid in kb.rules_by_functor(record_sym) {
         if !kb.is_fact(rid) { continue; }
         let head = kb.rule_head(rid);
         let named = match kb.get_term(head) {
@@ -1329,7 +1329,7 @@ fn implicit_cites_for(rule_qn: &str, kb: &KnowledgeBase) -> Vec<String> {
 
     // Snapshot all ProofRecord QNs once so the inner loop is cheap.
     let mut all_record_qns: Vec<String> = Vec::new();
-    for rid in kb.by_functor(record_sym) {
+    for rid in kb.rules_by_functor(record_sym) {
         if !kb.is_fact(rid) { continue; }
         let head = kb.rule_head(rid);
         let named = match kb.get_term(head) {

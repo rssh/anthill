@@ -208,7 +208,7 @@ end
         "Modifiable sort must be declared",
     );
     let modifiable_sym = kb.try_resolve_symbol("anthill.prelude.Modifiable").unwrap();
-    let facts = kb.by_functor(modifiable_sym);
+    let facts = kb.rules_by_functor(modifiable_sym);
     assert!(
         !facts.is_empty(),
         "expected at least one Modifiable[T = ...] fact (Cell, FileStore, etc.)",

@@ -95,7 +95,7 @@ fn round_trip_escapes_preserve_content() {
         // `intern` is idempotent — returns the existing symbol if scan/load
         // interned it for the fact's functor, otherwise creates a fresh one.
         let s_sym = kb2.intern("s");
-        let rules = kb2.by_functor(s_sym);
+        let rules = kb2.rules_by_functor(s_sym);
         assert_eq!(rules.len(), 1, "should find exactly one fact for {original:?}");
         let head = kb2.rule_head(rules[0]);
         let printer = TermPrinter::new(&kb2);
@@ -149,7 +149,7 @@ fn round_trip_entity_with_string_fields_preserves_escapes() {
         .expect("entity-with-strings fact should load");
 
     let acc_sym = kb2.intern("Account");
-    let rules = kb2.by_functor(acc_sym);
+    let rules = kb2.rules_by_functor(acc_sym);
     assert_eq!(rules.len(), 1, "exactly one Account fact after round-trip");
 
     // Reprint via the second KB and compare textually — if any escape was
@@ -408,12 +408,12 @@ fn full_round_trip() {
     let eq_sym2 = kb2.try_resolve_symbol("Eq")
         .or_else(|| kb2.try_resolve_symbol("anthill.prelude.Eq"))
         .unwrap_or_else(|| kb2.intern("Eq"));
-    let eq_results = kb2.by_functor(eq_sym2);
+    let eq_results = kb2.rules_by_functor(eq_sym2);
     assert_eq!(eq_results.len(), 1, "should find 1 Eq fact");
 
     // Verify we can find the parent fact by functor
     let parent_sym2 = kb2.intern("parent");
-    let parent_results = kb2.by_functor(parent_sym2);
+    let parent_results = kb2.rules_by_functor(parent_sym2);
     assert_eq!(parent_results.len(), 1, "should find 1 parent fact");
 }
 

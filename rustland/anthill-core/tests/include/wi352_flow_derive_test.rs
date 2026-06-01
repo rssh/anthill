@@ -79,7 +79,7 @@ fn flow_facts_for_reduce_match_046() {
 
     // Derived (from_sym, kind_short, to_sym) for facts over reduce's places.
     let mut actual: HashSet<(Symbol, String, Symbol)> = HashSet::new();
-    for rid in kb.by_functor(flow_sym) {
+    for rid in kb.rules_by_functor(flow_sym) {
         let head = kb.rule_head(rid);
         let Term::Fn { named_args, .. } = kb.get_term(head) else { continue };
         let (mut from, mut to, mut kind) = (None, None, None);

@@ -86,7 +86,7 @@ pub fn run_check_with(
     };
 
     let mut out = Vec::new();
-    for rid in kb.by_functor(record_sym) {
+    for rid in kb.rules_by_functor(record_sym) {
         if !kb.is_fact(rid) { continue; }
         let head = kb.rule_head(rid);
         let outcome = match check_one_record_with(
@@ -467,7 +467,7 @@ fn check_specialization_witness(
 }
 
 /// True iff a `ProofRecord` fact exists with `rule = qn`. The check
-/// scans the by_functor list for ProofRecord — small in practice
+/// scans the rules_by_functor list for ProofRecord — small in practice
 /// (proofs per project are bounded) and avoids needing a separate
 /// index.
 fn proof_record_exists(kb: &KnowledgeBase, qn: &str) -> bool {
@@ -475,7 +475,7 @@ fn proof_record_exists(kb: &KnowledgeBase, qn: &str) -> bool {
         Some(s) => s,
         None => return false,
     };
-    for rid in kb.by_functor(record_sym) {
+    for rid in kb.rules_by_functor(record_sym) {
         if !kb.is_fact(rid) { continue; }
         let head = kb.rule_head(rid);
         if let Term::Fn { named_args, .. } = kb.get_term(head) {
@@ -564,7 +564,7 @@ fn check_scope_axiom_witness(
                 "ScopeAxiom(induction): SortInfo schema not loaded".into()
             ),
         };
-        for rid in kb.by_functor(sort_info_sym) {
+        for rid in kb.rules_by_functor(sort_info_sym) {
             if !kb.is_fact(rid) { continue; }
             let head = kb.rule_head(rid);
             let head_named = match kb.get_term(head) {
@@ -597,7 +597,7 @@ fn check_scope_axiom_witness(
             ),
         };
         let mut scope_seen = false;
-        for rid in kb.by_functor(requires_sym) {
+        for rid in kb.rules_by_functor(requires_sym) {
             if !kb.is_fact(rid) { continue; }
             let head = kb.rule_head(rid);
             let head_named = match kb.get_term(head) {

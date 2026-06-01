@@ -65,7 +65,7 @@ fn lookup_explicit_policy(
     let policy_sym = kb.try_resolve_symbol(
         "anthill.realization.policy.TranslationPolicy"
     )?;
-    for rid in kb.by_functor(policy_sym) {
+    for rid in kb.rules_by_functor(policy_sym) {
         if !kb.is_fact(rid) { continue; }
         let head = kb.rule_head(rid);
         let named = match kb.get_term(head) {

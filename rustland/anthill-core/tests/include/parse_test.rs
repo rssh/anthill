@@ -292,7 +292,7 @@ end
     // the now-deleted `op_effects` side-table. The ground `may_fail` op, by
     // contrast, keeps a hash-consed `Value::Term` head.
     let op_info_sym = kb.try_resolve_symbol("anthill.reflect.OperationInfo").unwrap();
-    let has_value_fact = kb.by_functor(op_info_sym).into_iter().any(|rid| {
+    let has_value_fact = kb.rules_by_functor(op_info_sym).into_iter().any(|rid| {
         kb.is_fact(rid)
             && !matches!(kb.rule_head_value(rid), anthill_core::eval::Value::Term(_))
     });
@@ -613,7 +613,7 @@ fn load_workitem_and_query() {
 
     // Check the term has the expected structure: WorkItem(id: "WI-001", ...)
     let wi_sym = kb.intern("WorkItem");
-    let workitems = kb.by_functor(wi_sym);
+    let workitems = kb.rules_by_functor(wi_sym);
     assert_eq!(workitems.len(), 1, "should have one WorkItem");
 
     let fid = workitems[0];
@@ -635,7 +635,7 @@ fn load_workitem_and_query() {
 }
 
 #[test]
-fn by_functor_query() {
+fn rules_by_functor_query() {
     let source = r#"fact parent("alice", "bob")
 fact parent("bob", "charlie")
 "#;
@@ -644,7 +644,7 @@ fact parent("bob", "charlie")
     load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
 
     let parent_sym = kb.intern("parent");
-    let results = kb.by_functor(parent_sym);
+    let results = kb.rules_by_functor(parent_sym);
     assert_eq!(results.len(), 2, "should find 2 parent facts");
 }
 
@@ -4263,7 +4263,7 @@ fn parse_description_containing_status_open_substring() {
     // Sanity: the description's String literal carries the embedded
     // `status: Open` verbatim; the *fact's* status field is just `Open`.
     let wi_sym = kb.intern("WorkItem");
-    let rules = kb.by_functor(wi_sym);
+    let rules = kb.rules_by_functor(wi_sym);
     assert_eq!(rules.len(), 1);
     let head = kb.rule_head(rules[0]);
     let Term::Fn { named_args, .. } = kb.get_term(head) else {

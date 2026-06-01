@@ -121,7 +121,7 @@ fn walk_visited(
             h.update([GROUP_SEP]);
             continue;
         };
-        for rid in kb.by_functor(sym) {
+        for rid in kb.rules_by_functor(sym) {
             // Head stays a hash-consed term (searched in the discrim tree).
             let head = kb.rule_head(rid);
             h.update(printer.print_term(head).as_bytes());
@@ -146,7 +146,7 @@ fn fact_dep_hash_from(kb: &KnowledgeBase, referenced: &BTreeSet<u32>) -> String 
         let functor = Symbol::from_raw(raw);
         h.update(kb.qualified_name_of(functor).as_bytes());
         h.update([ITEM_SEP]);
-        for rid in kb.by_functor(functor) {
+        for rid in kb.rules_by_functor(functor) {
             if !kb.is_fact(rid) { continue; }
             let head = kb.rule_head(rid);
             h.update(printer.print_term(head).as_bytes());

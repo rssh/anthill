@@ -155,14 +155,14 @@ impl Store for IndexedFileStore {
             return Ok(Vec::new());
         }
 
-        // Slow path: walk by_functor (already retract-filtered),
+        // Slow path: walk rules_by_functor (already retract-filtered),
         // pattern-match each candidate. Multi-store disambiguation is
         // out of v0.1 scope.
         let Term::Fn { functor, .. } = kb.get_term(pattern) else {
             return Ok(Vec::new());
         };
         let functor = *functor;
-        Ok(kb.by_functor(functor)
+        Ok(kb.rules_by_functor(functor)
             .into_iter()
             .map(|rid| kb.rule_head(rid))
             .filter(|head| pattern_matches(kb, pattern, *head))

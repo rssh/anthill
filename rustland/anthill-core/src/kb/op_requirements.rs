@@ -181,7 +181,7 @@ fn operations_of_sort(kb: &KnowledgeBase, sort_sym: Symbol) -> Vec<Symbol> {
         Some(s) => s,
         None => return Vec::new(),
     };
-    for rid in kb.by_functor(sort_info_sym) {
+    for rid in kb.rules_by_functor(sort_info_sym) {
         if !kb.is_fact(rid) { continue; }
         let head = kb.rule_head(rid);
         let named_args = match kb.get_term(head) {

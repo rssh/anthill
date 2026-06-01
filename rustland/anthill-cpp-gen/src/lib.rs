@@ -115,7 +115,7 @@ impl CarrierTable {
             return Self { by_qualified, artifacts };
         };
 
-        for rid in kb.by_functor(impl_sym) {
+        for rid in kb.rules_by_functor(impl_sym) {
             let head = kb.rule_head(rid);
 
             let target = match named_string(kb, head, "target") {
@@ -201,7 +201,7 @@ impl ConversionTable {
             .or_else(|| kb.try_resolve_symbol("ReturnTypeConversion"));
         let Some(sym) = sym else { return Self { by_target } };
 
-        for rid in kb.by_functor(sym) {
+        for rid in kb.rules_by_functor(sym) {
             let head = kb.rule_head(rid);
             let target     = match named_string(kb, head, "target")     { Some(s) => s, None => continue };
             let operation  = match named_string(kb, head, "operation")  { Some(s) => s, None => continue };
@@ -237,7 +237,7 @@ impl OpImplTable {
             .or_else(|| kb.try_resolve_symbol("OperationImpl"));
         let Some(sym) = sym else { return Self { by_op } };
 
-        for rid in kb.by_functor(sym) {
+        for rid in kb.rules_by_functor(sym) {
             let head = kb.rule_head(rid);
             // operation: Term::Ref(<op_sym>)
             let Some(op_term) = named_arg(kb, head, "operation") else { continue };
@@ -885,7 +885,7 @@ fn operations_in_sort(
     let qualified = kb.qualified_name_of(sort_sym).to_string();
 
     let mut out = Vec::new();
-    for rid in kb.by_functor(op_info_sym) {
+    for rid in kb.rules_by_functor(op_info_sym) {
         // WI-348: the OperationInfo head may be a *value fact* (Node-carrying)
         // for an op with a `denoted` effect (`Modify[c]`), so it can't be read
         // as a term. Match the fact to its op symbol carrier-agnostically, then
@@ -1025,7 +1025,7 @@ pub fn generated_targets(kb: &KnowledgeBase) -> Vec<GeneratedTarget> {
         None => return Vec::new(),
     };
     let mut out = Vec::new();
-    for rid in kb.by_functor(sym) {
+    for rid in kb.rules_by_functor(sym) {
         let head = kb.rule_head(rid);
         let Some(source) = named_arg(kb, head, "source").and_then(|t| as_string(kb, t)) else { continue };
         let Some(artifact) = named_arg(kb, head, "artifact").and_then(|t| as_string(kb, t)) else { continue };
@@ -1361,7 +1361,7 @@ fn classify_namespace(
     // deep), aren't carrier-bound, and aren't already a sum sort.
     let mut traits_qns: std::collections::HashSet<String> = std::collections::HashSet::new();
     if let Some(op_info_sym) = kb.try_resolve_symbol("anthill.reflect.OperationInfo") {
-        for rid in kb.by_functor(op_info_sym) {
+        for rid in kb.rules_by_functor(op_info_sym) {
             // WI-348: carrier-agnostic — the head may be a value fact for an op
             // with a `denoted` effect; match it to its op symbol via `op_info`.
             let Some(op_sym) = anthill_core::kb::op_info::head_name_ref(kb, kb.rule_head_value(rid))

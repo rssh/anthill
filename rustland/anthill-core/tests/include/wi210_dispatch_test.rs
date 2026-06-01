@@ -56,7 +56,7 @@ fn load_capturing_errors(
 fn provides_info_heads(kb: &mut KnowledgeBase) -> Vec<String> {
     let sym = kb.try_resolve_symbol("anthill.reflect.SortProvidesInfo")
         .expect("SortProvidesInfo registered");
-    let rids: Vec<_> = kb.by_functor(sym).into_iter().collect();
+    let rids: Vec<_> = kb.rules_by_functor(sym).into_iter().collect();
     let heads: Vec<_> = rids.iter().map(|&r| kb.rule_head(r)).collect();
     let printer = TermPrinter::new(kb);
     let mut out: Vec<String> = heads.into_iter()
@@ -287,7 +287,7 @@ fn subst_with_param(
         .unwrap_or_else(|| panic!("{} not registered", param_qn));
     let alias_sym = kb.try_resolve_symbol("SortAlias").expect("SortAlias");
     let mut param_var = None;
-    for rid in kb.by_functor(alias_sym) {
+    for rid in kb.rules_by_functor(alias_sym) {
         if !kb.is_fact(rid) { continue; }
         let head = kb.rule_head(rid);
         if let Term::Fn { pos_args, .. } = kb.get_term(head).clone() {

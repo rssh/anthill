@@ -146,7 +146,7 @@ struct RuleEntry {
     /// label even when the head's functor differs from the label
     /// (e.g. `rule simple_lemma: gte(?x, 3.0) :- ...` — head functor
     /// is `gte`, label is `simple_lemma`). `None` for unlabeled rules
-    /// (they remain reachable through `by_functor` on the head).
+    /// (they remain reachable through `rules_by_functor` on the head).
     label: Option<Symbol>,
 }
 
@@ -263,7 +263,7 @@ pub struct KnowledgeBase {
 
     // Indexes — all maintained atomically by assert/retract
     by_sort: HashMap<TermId, Vec<RuleId>>,
-    by_functor: HashMap<Symbol, Vec<RuleId>>,
+    rules_by_functor: HashMap<Symbol, Vec<RuleId>>,
     by_domain: HashMap<TermId, Vec<RuleId>>,
     rules_by_label: HashMap<Symbol, Vec<RuleId>>,
 
@@ -422,7 +422,7 @@ impl KnowledgeBase {
             symbols: SymbolTable::new(),
             rules: Vec::new(),
             by_sort: HashMap::new(),
-            by_functor: HashMap::new(),
+            rules_by_functor: HashMap::new(),
             rules_by_label: HashMap::new(),
             by_domain: HashMap::new(),
             sort_entities: HashMap::new(),
@@ -797,7 +797,7 @@ impl KnowledgeBase {
 
         // Index by top-level functor
         if let Term::Fn { functor, .. } = *self.terms.get(head) {
-            self.by_functor.entry(functor).or_default().push(rule_id);
+            self.rules_by_functor.entry(functor).or_default().push(rule_id);
         }
 
         // WI-233: ground-fact dedup index. Inserted only for body-empty
@@ -1263,7 +1263,7 @@ impl KnowledgeBase {
         self.by_sort.entry(sort).or_default().push(rule_id);
         self.by_domain.entry(domain).or_default().push(rule_id);
         if let Some(f) = functor {
-            self.by_functor.entry(f).or_default().push(rule_id);
+            self.rules_by_functor.entry(f).or_default().push(rule_id);
         }
         // `fact_dedup` is SKIPPED for a non-Term head — no `TermId` key.
 
@@ -1335,13 +1335,13 @@ impl KnowledgeBase {
         if let Some(v) = self.by_domain.get_mut(&domain) {
             v.retain(|&rid| rid != id);
         }
-        // by_functor via the head's `TermView` functor (any carrier — WI-348).
+        // rules_by_functor via the head's `TermView` functor (any carrier — WI-348).
         let head_functor = match term_view::TermView::head(&head_val, self) {
             term_view::ViewHead::Functor { functor: Some(f), .. } => Some(f),
             _ => None,
         };
         if let Some(f) = head_functor {
-            if let Some(v) = self.by_functor.get_mut(&f) {
+            if let Some(v) = self.rules_by_functor.get_mut(&f) {
                 v.retain(|&rid| rid != id);
             }
         }
@@ -1463,11 +1463,11 @@ impl KnowledgeBase {
     }
 
     /// All active rules/facts with a given top-level functor symbol.
-    /// Remove `id` from the `by_functor` head index without
+    /// Remove `id` from the `rules_by_functor` head index without
     /// retracting the rule. The rule still exists in the KB —
     /// reachable by `try_resolve_symbol` (for cite-resolution),
     /// `by_sort`, `by_domain`, and direct `RuleId` access — but
-    /// SLD's `by_functor`-driven goal resolution will not consult
+    /// SLD's `rules_by_functor`-driven goal resolution will not consult
     /// it.
     ///
     /// Used for opt-in equational rules per WI-139: equational
@@ -1478,14 +1478,14 @@ impl KnowledgeBase {
     pub fn unindex_functor(&mut self, id: RuleId) {
         let head = head_term_id(&self.rules[id.index()].head);
         if let Term::Fn { functor, .. } = *self.terms.get(head) {
-            if let Some(v) = self.by_functor.get_mut(&functor) {
+            if let Some(v) = self.rules_by_functor.get_mut(&functor) {
                 v.retain(|&rid| rid != id);
             }
         }
     }
 
-    pub fn by_functor(&self, sym: Symbol) -> Vec<RuleId> {
-        self.by_functor
+    pub fn rules_by_functor(&self, sym: Symbol) -> Vec<RuleId> {
+        self.rules_by_functor
             .get(&sym)
             .map(|v| {
                 v.iter()
@@ -2084,11 +2084,11 @@ impl KnowledgeBase {
                 return Some(rid);
             }
         }
-        self.by_functor(sym).first().copied()
+        self.rules_by_functor(sym).first().copied()
     }
 
     /// All rule ids that resolve to `qn` — label-first, then
-    /// by_functor fallback. Labeled multi-head rules
+    /// rules_by_functor fallback. Labeled multi-head rules
     /// (`rule X: H1, H2 :- B`) desugar at load time into N rules
     /// sharing label X; `using X` fans out over this list so each
     /// head contributes its own lifted implication clause. For
@@ -2101,11 +2101,11 @@ impl KnowledgeBase {
                 return ids.clone();
             }
         }
-        self.by_functor(sym)
+        self.rules_by_functor(sym)
     }
 
     /// Citation handle for labeled rules. `None` for unlabeled rules
-    /// (those resolve via `by_functor` on the head).
+    /// (those resolve via `rules_by_functor` on the head).
     pub fn rule_label(&self, id: RuleId) -> Option<Symbol> {
         self.rules[id.index()].label
     }
@@ -2215,7 +2215,7 @@ impl KnowledgeBase {
     /// heads with — `load.rs`), falling back to a bare `eq` only for
     /// prelude-less KBs (e.g. `simp_rewrite`'s bare-`new()` unit tests).
     ///
-    /// `[simp]` firing (`simp_rewrite`) must look up `by_functor` under
+    /// `[simp]` firing (`simp_rewrite`) must look up `rules_by_functor` under
     /// *this* symbol, not a freshly-interned bare `eq`: the two differ once
     /// the prelude is loaded, so a bare `intern("eq")` finds none of the
     /// loaded `[simp]` equations (WI-283).
@@ -3337,7 +3337,7 @@ mod tests {
     #[test]
     fn value_fact_node_head_indexes_queries_and_preserves_node_identity() {
         // WI-348 Phase B: a fact whose head carries a `Value::Node` (denoted)
-        // is stored, indexed (by_sort / by_functor / discrim), queried back, and
+        // is stored, indexed (by_sort / rules_by_functor / discrim), queried back, and
         // — crucially — a variable query binds the SAME occurrence (Node identity
         // preserved through the answer via the carrier-faithful resolve).
         use crate::eval::value::Value;
@@ -3368,7 +3368,7 @@ mod tests {
 
         // Indexed by sort and by top-level functor (via the head's TermView).
         assert_eq!(kb.by_sort(sort), vec![rid]);
-        assert_eq!(kb.by_functor(f_sym), vec![rid]);
+        assert_eq!(kb.rules_by_functor(f_sym), vec![rid]);
 
         // Query f(?x): the value fact matches; ?x binds the Node by identity.
         let xv = kb.fresh_var(c_sym);

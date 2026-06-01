@@ -525,7 +525,7 @@ fn collect_workitems(kb: &KnowledgeBase) -> Vec<WorkItemInfo> {
     };
 
     let mut items = Vec::new();
-    for rid in kb.by_functor(wi_sym) {
+    for rid in kb.rules_by_functor(wi_sym) {
         let head = kb.rule_head(rid);
         // Skip entity definition (has no string id)
         let id = match extract_named_arg(kb, head, "id").and_then(|t| extract_string(kb, t)) {
@@ -559,7 +559,7 @@ fn collect_workitems(kb: &KnowledgeBase) -> Vec<WorkItemInfo> {
 fn items_with_feedback(kb: &KnowledgeBase) -> std::collections::HashSet<String> {
     let mut result = std::collections::HashSet::new();
     if let Some(fb_sym) = kb.try_resolve_symbol("anthill.stage0.Feedback") {
-        for rid in kb.by_functor(fb_sym) {
+        for rid in kb.rules_by_functor(fb_sym) {
             let fh = kb.rule_head(rid);
             if let Some(wi_id) = extract_named_arg(kb, fh, "workitem")
                 .and_then(|t| extract_string(kb, t))
@@ -772,7 +772,7 @@ fn run_show(kb: &KnowledgeBase, id: &str) {
 
             // Show feedback
             if let Some(fb_sym) = kb.try_resolve_symbol("anthill.stage0.Feedback") {
-                for rid in kb.by_functor(fb_sym) {
+                for rid in kb.rules_by_functor(fb_sym) {
                     let fh = kb.rule_head(rid);
                     let fb_wi = extract_named_arg(kb, fh, "workitem")
                         .and_then(|t| extract_string(kb, t));

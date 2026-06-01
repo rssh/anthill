@@ -32,7 +32,7 @@ fn induction_rule_head_for(kb: &KnowledgeBase, qn_prefix: &str) -> Option<TermId
     // Find the auto-generated induction rule by its functor.
     let induction_qn = format!("{qn_prefix}.induction");
     let sym = kb.try_resolve_symbol(&induction_qn)?;
-    kb.by_functor(sym).first().map(|&r| kb.rule_head(r))
+    kb.rules_by_functor(sym).first().map(|&r| kb.rule_head(r))
 }
 
 #[test]
@@ -63,7 +63,7 @@ fn finite_enum_induction_rule_is_emitted() {
     // The rule body must reference each constructor exactly once
     // (via ho_apply). We can grep the body text.
     let sym = kb.try_resolve_symbol("test.induction.color.Color.induction").unwrap();
-    let rid = kb.by_functor(sym)[0];
+    let rid = kb.rules_by_functor(sym)[0];
     let body_terms: Vec<String> = kb.rule_body_nodes(rid).iter()
         .map(|atom| printer.print_occurrence(atom))
         .collect();
@@ -90,7 +90,7 @@ fn recursive_enum_induction_rule_has_one_case_per_constructor() {
     let kb = load_with(src);
     let sym = kb.try_resolve_symbol("test.induction.list.IntList.induction")
         .expect("IntList.induction symbol missing");
-    let rid = kb.by_functor(sym).first().copied()
+    let rid = kb.rules_by_functor(sym).first().copied()
         .expect("no rule for MyList.induction");
     assert_eq!(kb.rule_body_nodes(rid).len(), 2,
         "expected 2 body goals (one per ctor), got {}", kb.rule_body_nodes(rid).len());
@@ -136,7 +136,7 @@ fn recursive_field_emits_inductive_hypothesis() {
     "#;
     let kb = load_with(src);
     let sym = kb.try_resolve_symbol("test.induction.ih.IntList.induction").unwrap();
-    let rid = kb.by_functor(sym)[0];
+    let rid = kb.rules_by_functor(sym)[0];
     let body = kb.rule_body_nodes(rid);
     assert_eq!(body.len(), 2, "expected 2 body goals (nil + cons)");
 
@@ -183,7 +183,7 @@ fn nullary_constructor_uses_ref_term() {
     "#;
     let kb = load_with(src);
     let sym = kb.try_resolve_symbol("test.induction.nullary.Bit.induction").unwrap();
-    let rid = kb.by_functor(sym)[0];
+    let rid = kb.rules_by_functor(sym)[0];
     for goal in kb.rule_body_nodes(rid) {
         match goal.as_expr() {
             Some(Expr::Apply { pos_args, .. }) if pos_args.len() == 2 => {

@@ -43,7 +43,7 @@ fn bridge_fact_installed_after_register_prelude() {
     load::register_prelude(&mut kb);
 
     let er_sym = effects_runtime_sym(&kb);
-    let rules = kb.by_functor(er_sym);
+    let rules = kb.rules_by_functor(er_sym);
     assert_eq!(
         rules.len(),
         1,
@@ -57,7 +57,7 @@ fn bridge_fact_installed_after_register_prelude() {
 fn bridge_fact_not_duplicated_on_second_register_prelude() {
     // Mirrors the op_requirements.rs:259-261 pattern: register_prelude
     // explicitly, then load_all → register_prelude again. The bridge must
-    // remain a single rule, not pile up. With the by_functor guard at
+    // remain a single rule, not pile up. With the rules_by_functor guard at
     // load.rs's emit_effects_runtime_bridge_fact, the second call is a
     // no-op for the bridge.
     let mut kb = KnowledgeBase::new();
@@ -65,12 +65,12 @@ fn bridge_fact_not_duplicated_on_second_register_prelude() {
     load::register_prelude(&mut kb);
 
     let er_sym = effects_runtime_sym(&kb);
-    let rules = kb.by_functor(er_sym);
+    let rules = kb.rules_by_functor(er_sym);
     assert_eq!(
         rules.len(),
         1,
         "expected bridge fact to remain a single rule across two register_prelude calls, got \
-         {} — duplicates would inflate by_functor / by_sort / discrim and surface duplicate \
+         {} — duplicates would inflate rules_by_functor / by_sort / discrim and surface duplicate \
          solutions for any query matching EffectsRuntime[Effects = ?]",
         rules.len()
     );
@@ -86,7 +86,7 @@ fn bridge_fact_not_duplicated_on_many_register_prelude_calls() {
     }
 
     let er_sym = effects_runtime_sym(&kb);
-    let rules = kb.by_functor(er_sym);
+    let rules = kb.rules_by_functor(er_sym);
     assert_eq!(rules.len(), 1, "expected 1 rule after 5 register_prelude calls, got {}", rules.len());
 }
 

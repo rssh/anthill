@@ -576,7 +576,7 @@ impl<'kb> Emitter<'kb> {
         // that yields one inline SMT expression. Used by call sites
         // like `step_distance_bound(?delta)`.
         if pos_args.len() == 1 && named_args.is_empty()
-            && self.kb.by_functor(functor).iter()
+            && self.kb.rules_by_functor(functor).iter()
                 .any(|rid| !self.kb.is_fact(*rid))
         {
             let bind_idx = match pos_args[0].as_expr() {
@@ -633,7 +633,7 @@ impl<'kb> Emitter<'kb> {
         call_args: &[Rc<NodeOccurrence>],
         bindings: &mut BTreeMap<String, String>,
     ) -> Result<bool, SmtGenError> {
-        let candidates = self.kb.by_functor(functor);
+        let candidates = self.kb.rules_by_functor(functor);
         // Record the functor's QN in visited_rules so the cache key
         // observes any change to its defining facts (initial-geometry
         // edits invalidate downstream proofs).
@@ -706,7 +706,7 @@ impl<'kb> Emitter<'kb> {
             Some(s) => s,
             None => return Ok(false),
         };
-        let rid = match self.kb.by_functor(sym).into_iter()
+        let rid = match self.kb.rules_by_functor(sym).into_iter()
             .find(|r| !self.kb.is_fact(*r))
         {
             Some(r) => r,
@@ -869,7 +869,7 @@ impl<'kb> Emitter<'kb> {
         self.visited_rules.insert(callee_qn.to_string());
         let sym = self.kb.try_resolve_symbol(callee_qn)
             .ok_or_else(|| SmtGenError::new(format!("rule call '{callee_qn}' not found")))?;
-        let rid = self.kb.by_functor(sym).into_iter()
+        let rid = self.kb.rules_by_functor(sym).into_iter()
             .find(|r| !self.kb.is_fact(*r))
             .ok_or_else(|| SmtGenError::new(format!(
                 "rule call '{callee_qn}' has no defining clauses")))?;
@@ -1109,14 +1109,14 @@ impl<'kb> Emitter<'kb> {
     fn collect_facts_for_referenced_entities(&mut self) {
         for entity_qn in self.referenced_entities.clone() {
             let Some(sym) = self.kb.try_resolve_symbol(&entity_qn) else { continue };
-            // `by_functor(sym)` returns BOTH the entity declaration
+            // `rules_by_functor(sym)` returns BOTH the entity declaration
             // (named_args have abstract field types) and any
             // `fact ...` instances (named_args have concrete
             // values). Walk every rule and accept the first one
             // whose named_args resolve to numeric literals — that's
             // a ground fact. Multi-fact disambiguation is a v1
             // concern; for v0 we expect at most one fact per entity.
-            for rid in self.kb.by_functor(sym) {
+            for rid in self.kb.rules_by_functor(sym) {
                 let head = self.kb.rule_head(rid);
                 let Term::Fn { named_args, .. } = self.kb.get_term(head) else { continue };
                 let any_concrete = named_args.iter().any(|(_, t)|

@@ -1125,7 +1125,7 @@ fn run_query(args: &QueryArgs) -> Result<(), i32> {
                 1
             })?;
             let sym = kb.try_resolve_symbol(name).unwrap_or_else(|| kb.intern(name));
-            let results = kb.by_functor(sym);
+            let results = kb.rules_by_functor(sym);
             print_rule_results(&kb, &results, args.max_results);
         }
         QueryMode::Domain => {

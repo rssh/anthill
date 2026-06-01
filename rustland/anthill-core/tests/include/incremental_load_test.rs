@@ -41,7 +41,7 @@ fn canonical_requires_facts(kb: &KnowledgeBase) -> BTreeSet<String> {
     let sym = kb.try_resolve_symbol("anthill.reflect.SortRequiresInfo")
         .expect("SortRequiresInfo");
     let printer = TermPrinter::new(kb);
-    kb.by_functor(sym).iter()
+    kb.rules_by_functor(sym).iter()
         .map(|rid| printer.print_term(kb.rule_head(*rid)))
         .collect()
 }
@@ -54,7 +54,7 @@ fn resolve_instantiations_is_idempotent() {
         .expect("SortRequiresInfo symbol");
 
     // Snapshot the set of finalized SortRequiresInfo rule IDs + their heads.
-    let before: Vec<_> = kb.by_functor(requires_sym).iter()
+    let before: Vec<_> = kb.rules_by_functor(requires_sym).iter()
         .map(|rid| (*rid, kb.rule_head(*rid)))
         .collect();
     assert!(!before.is_empty(), "stdlib should define SortRequiresInfo facts");
@@ -62,7 +62,7 @@ fn resolve_instantiations_is_idempotent() {
     // Second call must be a no-op: no retract, no reassert.
     resolve_instantiations(&mut kb);
 
-    let after: Vec<_> = kb.by_functor(requires_sym).iter()
+    let after: Vec<_> = kb.rules_by_functor(requires_sym).iter()
         .map(|rid| (*rid, kb.rule_head(*rid)))
         .collect();
 
@@ -128,7 +128,7 @@ fn load_incremental_does_not_touch_stdlib_facts() {
 
     let requires_sym = kb.try_resolve_symbol("anthill.reflect.SortRequiresInfo")
         .expect("SortRequiresInfo");
-    let pre: Vec<_> = kb.by_functor(requires_sym).iter()
+    let pre: Vec<_> = kb.rules_by_functor(requires_sym).iter()
         .filter(|rid| kb.is_requires_resolved(**rid))
         .map(|rid| (*rid, kb.rule_head(*rid)))
         .collect();
@@ -156,7 +156,7 @@ fn at_least_one_requires_fact_marked_resolved() {
     let requires_sym = kb.try_resolve_symbol("anthill.reflect.SortRequiresInfo")
         .expect("SortRequiresInfo symbol");
 
-    let any_marked = kb.by_functor(requires_sym).iter()
+    let any_marked = kb.rules_by_functor(requires_sym).iter()
         .any(|rid| kb.is_requires_resolved(*rid));
     assert!(any_marked,
         "stdlib has SortView-shaped requires, at least one should be marked");

@@ -34,7 +34,7 @@ fn load_stdlib() -> KnowledgeBase {
 fn rule_body_for(kb: &KnowledgeBase, qn: &str) -> Vec<Rc<NodeOccurrence>> {
     let sym = kb.try_resolve_symbol(qn)
         .unwrap_or_else(|| panic!("symbol {qn} not in KB"));
-    let rid = kb.by_functor(sym).first().copied()
+    let rid = kb.rules_by_functor(sym).first().copied()
         .unwrap_or_else(|| panic!("no rule for {qn}"));
     kb.rule_body_nodes(rid).to_vec()
 }

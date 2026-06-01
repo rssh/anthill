@@ -21,7 +21,7 @@ fn dump_phase_f_shapes() {
     let kb = load_kb_with_lenient(source);
 
     let op_info_sym = kb.try_resolve_symbol("anthill.reflect.OperationInfo").unwrap();
-    for rid in kb.by_functor(op_info_sym) {
+    for rid in kb.rules_by_functor(op_info_sym) {
         let head = kb.rule_head(rid);
         let nm = if let Term::Fn { named_args, .. } = kb.get_term(head) {
             named_args.iter().find(|(s, _)| kb.resolve_sym(*s) == "name")

@@ -268,7 +268,7 @@ pub fn scan_definitions(kb: &mut KnowledgeBase, files: &[&ParsedFile]) -> Vec<Lo
     // Sub-pass 4 (WI-295): retry deferred predicate imports. Head-functor Goals
     // from sub-pass 3 are now in `by_qualified_name`, so a cross-namespace
     // rule-predicate import resolves like any declared name. (Resolve by
-    // symbol, not `by_functor` — rules aren't asserted until the load phase.)
+    // symbol, not `rules_by_functor` — rules aren't asserted until the load phase.)
     for p in pending {
         match kb.symbols.by_qualified_name.get(&p.qualified).copied() {
             Some(sym) => kb.symbols.add_import(p.scope_raw, &p.short, sym),
@@ -1285,8 +1285,8 @@ pub fn register_prelude(kb: &mut KnowledgeBase) {
 /// kb.register_standard_builtins(); load::load_all(&mut kb, …)` — `load_all`
 /// itself re-enters `register_prelude`). `assert_rule_debruijn` does NOT
 /// consult `fact_dedup` (only `assert_fact` does), so an unguarded second
-/// call duplicates the rule entry in `by_sort` / `by_functor` / `by_domain`
-/// / `discrim`. We therefore early-return when `by_functor[EffectsRuntime]`
+/// call duplicates the rule entry in `by_sort` / `rules_by_functor` / `by_domain`
+/// / `discrim`. We therefore early-return when `rules_by_functor[EffectsRuntime]`
 /// is non-empty — at prelude-bootstrap time the bridge is the only fact
 /// with this functor, so a non-empty entry means the bridge is already
 /// installed.
@@ -1312,8 +1312,8 @@ fn emit_effects_runtime_bridge_fact(kb: &mut KnowledgeBase) {
 
     // Idempotency guard — see doc-comment above. The bridge is the only
     // rule with EffectsRuntime as its head functor at prelude bootstrap,
-    // so a non-empty `by_functor` entry means it is already installed.
-    if !kb.by_functor(er_sort_sym).is_empty() {
+    // so a non-empty `rules_by_functor` entry means it is already installed.
+    if !kb.rules_by_functor(er_sort_sym).is_empty() {
         return;
     }
 
@@ -1979,7 +1979,7 @@ fn build_base_substitutions(kb: &mut KnowledgeBase) {
         None => return,
     };
 
-    let rule_ids = kb.by_functor(sort_info_sym);
+    let rule_ids = kb.rules_by_functor(sort_info_sym);
     let name_sym = kb.intern("name");
     let parameters_sym = kb.intern("parameters");
     let operations_sym = kb.intern("operations");
@@ -2091,7 +2091,7 @@ fn resolve_requires_bindings(kb: &mut KnowledgeBase) {
     let sort_ref_field = kb.intern("sort_ref");
     let spec_field = kb.intern("spec");
 
-    let rule_ids = kb.by_functor(requires_sym);
+    let rule_ids = kb.rules_by_functor(requires_sym);
 
     // Collect facts to update: (rule_id, sort_ref_term, spec_sort_sym, explicit_named_args)
     let mut updates: Vec<(super::RuleId, TermId, Symbol, SmallVec<[(Symbol, TermId); 2]>)> = Vec::new();
@@ -2313,7 +2313,7 @@ fn register_requires_axiom_witnesses(kb: &mut KnowledgeBase) {
     let aspect_arg = kb.intern("aspect");
 
     let existing_rule_qns = collect_existing_proof_record_qns(kb, record_sym);
-    let requires_rids = kb.by_functor(requires_info_sym);
+    let requires_rids = kb.rules_by_functor(requires_info_sym);
     let mut new_records: Vec<TermId> = Vec::new();
 
     for rid in requires_rids {
@@ -2473,7 +2473,7 @@ fn register_induction_axiom_witnesses(kb: &mut KnowledgeBase) {
     let aspect_arg = kb.intern("aspect");
 
     let existing_rule_qns = collect_existing_proof_record_qns(kb, record_sym);
-    let sort_info_rids = kb.by_functor(sort_info_sym);
+    let sort_info_rids = kb.rules_by_functor(sort_info_sym);
     let mut new_records: Vec<TermId> = Vec::new();
 
     for rid in sort_info_rids {
@@ -2632,7 +2632,7 @@ fn register_specialization_witnesses(kb: &mut KnowledgeBase) {
 
     // Snapshot all (X-qn, spec-tid) pairs first so we don't borrow-
     // conflict with kb mutations during ProofRecord construction.
-    let provides_rids = kb.by_functor(provides_info_sym);
+    let provides_rids = kb.rules_by_functor(provides_info_sym);
     let mut targets: Vec<(String, TermId)> = Vec::new();
     for rid in provides_rids {
         if !kb.is_fact(rid) { continue; }
@@ -2794,7 +2794,7 @@ pub fn build_sort_ops_table(kb: &mut KnowledgeBase) {
     // sort's own ops, pass 2 reads the spec sort's ops from the same
     // map. Scanning per sort via `operations_of_sort` would be
     // O(sorts²). Snapshot before inserting: interning short names
-    // mutates `kb`, which can't overlap the `by_functor` walk.
+    // mutates `kb`, which can't overlap the `rules_by_functor` walk.
     let sort_ops: HashMap<Symbol, Vec<Symbol>> = sorts_and_own_ops(kb).into_iter().collect();
 
     // ── Pass 1: every sort's own declared operations. ──────────────
@@ -2812,9 +2812,9 @@ pub fn build_sort_ops_table(kb: &mut KnowledgeBase) {
     };
     // Snapshot (impl_sort, spec_sort) pairs first — populating the
     // table interns short names (mutating `kb`), which can't overlap
-    // the `by_functor` borrow walk.
+    // the `rules_by_functor` borrow walk.
     let mut pairs: Vec<(Symbol, Symbol)> = Vec::new();
-    for rid in kb.by_functor(provides_sym) {
+    for rid in kb.rules_by_functor(provides_sym) {
         if !kb.is_fact(rid) { continue; }
         let head = kb.rule_head(rid);
         let named = match kb.get_term(head) {
@@ -2872,7 +2872,7 @@ fn sorts_and_own_ops(kb: &KnowledgeBase) -> Vec<(Symbol, Vec<Symbol>)> {
         None => return Vec::new(),
     };
     let mut out: Vec<(Symbol, Vec<Symbol>)> = Vec::new();
-    for rid in kb.by_functor(sort_info_sym) {
+    for rid in kb.rules_by_functor(sort_info_sym) {
         if !kb.is_fact(rid) { continue; }
         let head = kb.rule_head(rid);
         let named = match kb.get_term(head) {
@@ -3076,7 +3076,7 @@ pub fn sort_info_qn(
 /// duplicates.
 fn collect_existing_proof_record_qns(kb: &KnowledgeBase, record_sym: Symbol) -> HashSet<String> {
     let mut out = HashSet::new();
-    for rid in kb.by_functor(record_sym) {
+    for rid in kb.rules_by_functor(record_sym) {
         if !kb.is_fact(rid) { continue; }
         let head = kb.rule_head(rid);
         if let Term::Fn { named_args, .. } = kb.get_term(head) {
@@ -3092,7 +3092,7 @@ fn collect_existing_proof_record_qns(kb: &KnowledgeBase, record_sym: Symbol) -> 
 
 /// Detect an equational rule head (WI-139): the head term is an
 /// `=` application like `add(?a, ?b) = add(?b, ?a)`. Used by
-/// `load_rule` to gate the `by_functor` index — bare equational
+/// `load_rule` to gate the `rules_by_functor` index — bare equational
 /// rules are cite-required only and must not drive automatic SLD
 /// rewriting (which would loop on `add_comm`-style laws).
 pub fn is_equational_head(kb: &KnowledgeBase, head: TermId) -> bool {
@@ -3207,7 +3207,7 @@ fn collect_sort_operations(kb: &mut KnowledgeBase, sort_sym: Symbol) -> Vec<Symb
     let name_field = kb.intern("name");
     let operations_field = kb.intern("operations");
 
-    let rule_ids = kb.by_functor(sort_info_sym);
+    let rule_ids = kb.rules_by_functor(sort_info_sym);
     for rid in rule_ids {
         if !kb.is_fact(rid) {
             continue;
@@ -3259,7 +3259,7 @@ pub(crate) fn find_operation_in_scope(kb: &mut KnowledgeBase, sort_ref_tid: Term
         _ => return None,
     };
 
-    let rule_ids = kb.by_functor(op_info_sym);
+    let rule_ids = kb.rules_by_functor(op_info_sym);
     for rid in rule_ids {
         if !kb.is_fact(rid) {
             continue;
@@ -4122,7 +4122,7 @@ impl<'a> Loader<'a> {
     /// `term_spans` / `functor_spans` side-tables — typing.rs and
     /// other passes read these for error-reporting spans.
     /// First-write-wins on both keys mirrors the legacy
-    /// `the legacy occurrence by-term index/by_functor.first()` semantics.
+    /// `the legacy occurrence by-term index/rules_by_functor.first()` semantics.
     fn create_occurrence(&mut self, parse_id: TermId, kb_id: TermId) {
         let span = self.parsed.terms.span(parse_id);
         let source_span = SourceSpan::from_span(self.source_id, span);
@@ -5392,7 +5392,7 @@ impl<'a> Loader<'a> {
         let alias_sym = self.kb.try_resolve_symbol("SortAlias")?;
         let sort_name = self.kb.resolve_sym(sym);
         let scan = |matches: &dyn Fn(Symbol, &str) -> bool| -> Option<TermId> {
-            for rid in self.kb.by_functor(alias_sym) {
+            for rid in self.kb.rules_by_functor(alias_sym) {
                 if !self.kb.is_fact(rid) { continue; }
                 let head = self.kb.rule_head(rid);
                 let Term::Fn { pos_args, .. } = self.kb.get_term(head) else { continue };
@@ -5953,10 +5953,10 @@ impl<'a> Loader<'a> {
         // later load_items pass would otherwise allocate a *second*
         // SortAlias with a fresh target Var, leaving each type-param
         // backed by two distinct Vars (`find_sort_alias_var` then
-        // returns the first by `by_functor` order, which may differ
+        // returns the first by `rules_by_functor` order, which may differ
         // from the Var the entity field already captured).
         let alias_sym = self.kb.resolve_symbol("SortAlias");
-        for rid in self.kb.by_functor(alias_sym) {
+        for rid in self.kb.rules_by_functor(alias_sym) {
             if !self.kb.is_fact(rid) { continue; }
             let head = self.kb.rule_head(rid);
             if let Term::Fn { pos_args, .. } = self.kb.get_term(head) {

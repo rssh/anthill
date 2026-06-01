@@ -52,7 +52,7 @@ fn goal_for(kb: &mut KnowledgeBase, spec_qn: &str, param_short: &str, carrier_qn
         .unwrap_or_else(|| panic!("{param_qn} not registered"));
     let alias_sym = kb.try_resolve_symbol("SortAlias").expect("SortAlias");
     let mut param_var = None;
-    for rid in kb.by_functor(alias_sym) {
+    for rid in kb.rules_by_functor(alias_sym) {
         if !kb.is_fact(rid) { continue; }
         let head = kb.rule_head(rid);
         if let Term::Fn { pos_args, .. } = kb.get_term(head).clone() {

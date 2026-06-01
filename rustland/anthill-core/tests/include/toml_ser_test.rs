@@ -73,7 +73,7 @@ language = "rust"
     // Query by functor
     let project_sym = kb.try_resolve_symbol("test.Project")
         .expect("Project should be resolved");
-    let results = kb.by_functor(project_sym);
+    let results = kb.rules_by_functor(project_sym);
     assert_eq!(results.len(), 1);
 
     let head = kb.rule_head(results[0]);
@@ -128,7 +128,7 @@ flag = true
 
     let nums_sym = kb.try_resolve_symbol("test.Nums")
         .expect("Nums should be resolved");
-    let results = kb.by_functor(nums_sym);
+    let results = kb.rules_by_functor(nums_sym);
     assert_eq!(results.len(), 1);
 }
 
@@ -156,7 +156,7 @@ tags = ["rust", "core"]
 
     let task_sym = kb.try_resolve_symbol("test.Task")
         .expect("Task should be resolved");
-    let results = kb.by_functor(task_sym);
+    let results = kb.rules_by_functor(task_sym);
     assert_eq!(results.len(), 1);
 
     let printer = TermPrinter::new(&kb);
@@ -194,7 +194,7 @@ tags = ["urgent"]
 
     let task_sym = kb.try_resolve_symbol("test.Task")
         .expect("Task should be resolved");
-    let results = kb.by_functor(task_sym);
+    let results = kb.rules_by_functor(task_sym);
     assert_eq!(results.len(), 2);
 }
 
@@ -245,7 +245,7 @@ tags = []
 
     let task_sym = kb.try_resolve_symbol("test.Task")
         .expect("Task resolved");
-    let results = kb.by_functor(task_sym);
+    let results = kb.rules_by_functor(task_sym);
     assert_eq!(results.len(), 1);
 
     let head = kb.rule_head(results[0]);
@@ -274,7 +274,7 @@ language = "rust"
 
     let project_sym = kb.try_resolve_symbol("test.Project")
         .expect("Project resolved");
-    let results = kb.by_functor(project_sym);
+    let results = kb.rules_by_functor(project_sym);
     assert_eq!(results.len(), 1);
 
     let head = kb.rule_head(results[0]);
@@ -347,8 +347,8 @@ tags = []
         .expect("Project resolved");
     let task_sym = kb.try_resolve_symbol("test.Task")
         .expect("Task resolved");
-    assert_eq!(kb.by_functor(project_sym).len(), 1);
-    assert_eq!(kb.by_functor(task_sym).len(), 1);
+    assert_eq!(kb.rules_by_functor(project_sym).len(), 1);
+    assert_eq!(kb.rules_by_functor(task_sym).len(), 1);
 }
 
 // ── Serializer tests ────────────────────────────────────────────
@@ -425,7 +425,7 @@ language = "rust"
     // Find the fact
     let project_sym = kb.try_resolve_symbol("test.Project")
         .expect("Project resolved");
-    let facts = kb.by_functor(project_sym);
+    let facts = kb.rules_by_functor(project_sym);
     assert_eq!(facts.len(), 1);
 
     // Serialize
@@ -441,7 +441,7 @@ language = "rust"
 
     let project_sym2 = kb2.try_resolve_symbol("test.Project")
         .expect("Project resolved in kb2");
-    let facts2 = kb2.by_functor(project_sym2);
+    let facts2 = kb2.rules_by_functor(project_sym2);
     assert_eq!(facts2.len(), 1);
 }
 
@@ -461,7 +461,7 @@ fn round_trip_json() {
 
     let project_sym = kb.try_resolve_symbol("test.Project")
         .expect("Project resolved");
-    let facts = kb.by_functor(project_sym);
+    let facts = kb.rules_by_functor(project_sym);
 
     let json_out = term_ser::serialize_json(&kb, "test.Project", &facts)
         .expect("serialize");

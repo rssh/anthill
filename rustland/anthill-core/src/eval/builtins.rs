@@ -1091,7 +1091,7 @@ fn reflect_find_fact(interp: &mut Interpreter, args: &[Value]) -> Result<Value, 
         _ => None,
     };
     let found = functor.and_then(|f| {
-        interp.kb.by_functor(f).into_iter()
+        interp.kb.rules_by_functor(f).into_iter()
             .find(|rid| interp.kb.rule_head(*rid) == target)
     });
 
@@ -1193,7 +1193,7 @@ fn kb_facts_of(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalEr
     // `OperationInfo` carrying a `denoted` effect). `rule_head_value` returns the
     // head's `Value` directly (`Value::Term` for the universal hash-consed case),
     // so `facts_of(kb, OperationInfo)` no longer panics on a Node-carrying head.
-    let rule_ids = interp.kb.by_functor(functor_sym);
+    let rule_ids = interp.kb.rules_by_functor(functor_sym);
     let elements: Vec<Value> = rule_ids.into_iter()
         .map(|rid| interp.kb.rule_head_value(rid).clone())
         .collect();
