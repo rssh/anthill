@@ -5798,8 +5798,17 @@ impl<'a> Loader<'a> {
                     || matches!(result_child, TypeChild::Node(_))
                     || effect_children.iter().any(|c| matches!(c, TypeChild::Node(_)));
                 if !any_node {
-                    // Fully ground arrow — the hash-consed builder is faithful.
-                    return TypeChild::Ground(self.type_expr_to_term(ty));
+                    // Fully ground arrow — assemble the hash-consed term from the
+                    // children already built (no second walk via type_expr_to_term;
+                    // the signature never re-grounds through that path).
+                    let ground = |c: TypeChild| match c {
+                        TypeChild::Ground(t) => t,
+                        TypeChild::Node(_) => unreachable!("checked !any_node"),
+                    };
+                    let param_t = ground(param_child);
+                    let result_t = ground(result_child);
+                    let effect_ts: Vec<TermId> = effect_children.into_iter().map(ground).collect();
+                    return TypeChild::Ground(self.kb.make_arrow_type(param_t, result_t, &effect_ts));
                 }
                 // Fold the effect children into an `effects_rows` occurrence
                 // (present(label) merged into a row), carried on the arrow.
@@ -6677,7 +6686,10 @@ impl<'a> Loader<'a> {
             type_param_var_terms.push(var_tid);
         }
 
-        let return_term = self.type_expr_to_term(&o.return_type);
+        // WI-341: the whole operation SIGNATURE flows through the Value path — a
+        // denoted-bearing return type (an op returning a `Modify`-carrying
+        // callback) is a `Value::Node`, never re-grounded via `type_expr_to_term`.
+        let return_value = self.type_expr_to_value(&o.return_type);
 
         // Build FieldInfo list for params
         let field_info_sym = self.kb.resolve_symbol("anthill.reflect.FieldInfo");
@@ -6801,15 +6813,16 @@ impl<'a> Loader<'a> {
         // Every other field is always a ground `Value::Term`.
         use crate::eval::value::Value;
         let (effects_field, effects_all_ground) = value_or_ground_list(self.kb, effect_values);
-        // WI-341 Stage A: the head is a value fact when EITHER params or effects
-        // carry a `Value::Node` (denoted-bearing); else a hash-consed `Term::Fn`.
-        let all_ground = params_all_ground && effects_all_ground;
+        // WI-341: the head is a value fact when ANY of params / return / effects
+        // carries a `Value::Node` (denoted-bearing); else a hash-consed `Term::Fn`.
+        let all_ground =
+            params_all_ground && effects_all_ground && matches!(return_value, Value::Term(_));
         // Single source of truth for the field set / order. Readers resolve by
         // key (functor + `NamedKey(sym)`), so order is not load-bearing.
         let named: Vec<(Symbol, Value)> = vec![
             (name_sym, Value::Term(name_ref)),
             (params_sym, params_field),
-            (return_type_sym, Value::Term(return_term)),
+            (return_type_sym, return_value),
             (effects_sym, effects_field),
             (requires_sym, Value::Term(requires_list)),
             (ensures_sym, Value::Term(ensures_list)),
