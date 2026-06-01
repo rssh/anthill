@@ -3042,11 +3042,15 @@ fn check_apply_iter(
             .iter()
             .map(|e| walk_type_deep_value(kb, &subst, e))
             .collect();
-        let effects = merge_effects(&substituted_op_effects, &arg_effects);
+        // `mut`: a concretely-dispatched self-receiver spec op closes its
+        // polymorphic effect row at the carrier below (WI-357).
+        let mut effects = merge_effects(&substituted_op_effects, &arg_effects);
 
         // Resolve return type deeply so `Option[T = Var(vid_T)]`
         // collapses to `Option[T = Term]` once `vid_T` is bound.
-        let resolved_ret = walk_type_deep(kb, &subst, op.return_type);
+        // `mut`: a concretely-dispatched self-receiver spec op re-walks it
+        // below once the carrier pins the spec's element params (WI-357).
+        let mut resolved_ret = walk_type_deep(kb, &subst, op.return_type);
 
         // WI-270: every declared op type-parameter must be pinned by
         // some combination of: explicit `[bindings]`, caller-side
@@ -3099,6 +3103,49 @@ fn check_apply_iter(
             let carrier = receiver_carrier(
                 kb, &op, spec_sort, named_args, pos_results, named_results,
             );
+
+            // WI-357: a concretely-dispatched self-receiver spec op (e.g.
+            // `Stream.splitFirst` on a `List[Int]`) binds none of the spec's
+            // own type parameters through argument unification — the argument
+            // matched the *bare* `Stream` parameter, not `Stream[T]`. The
+            // unbound `Stream.T` both leaves the return `?_` (a destructured
+            // `pair(h, _)` gets `h : ?_`) and makes the dispatch goal abstract
+            // (no impl matches → a spurious `requires Stream[…]` demand on the
+            // caller). Recover the spec params from the receiver carrier's
+            // provider fact (`List` provides `fact Stream[T = T]` ⇒ a
+            // `List[Int]` as a `Stream` has `Stream.T = Int`) and re-walk the
+            // return type so the element threads through and the dispatch goal
+            // below is concrete.
+            if let ReceiverCarrier::Concrete(carrier_sym) = carrier {
+                if bind_spec_params_from_carrier(
+                    kb, &mut subst, &op, spec_sort, carrier_sym,
+                    named_args, pos_results, named_results,
+                ) {
+                    resolved_ret = walk_type_deep(kb, &subst, op.return_type);
+                    // Close the spec op's OWN polymorphic effect row at this
+                    // concrete carrier. The provider fact cannot yet bind the
+                    // effect parameter (effects aren't expressible as type
+                    // arguments — WI-301 / WI-320), so the spec op's `effects E`
+                    // walked to an unresolved row variable above. A concrete
+                    // carrier that provides the spec realizes that row as its
+                    // own effect; the only expressible case today is a pure
+                    // provider (`List`), so drop the still-unresolved row var
+                    // rather than surface it as a spurious `undeclared effect:
+                    // ?_`. Self-disabling: once a provider CAN bind `E`, the
+                    // label resolves and is no longer a bare var, so it is kept.
+                    //
+                    // Re-merge with the UNTOUCHED `arg_effects` rather than
+                    // filtering the merged set, so a genuinely polymorphic
+                    // effect contributed by the receiver argument itself is
+                    // never erased — only the spec op's own row is closed.
+                    let closed_op_effects: Vec<Value> = substituted_op_effects
+                        .iter()
+                        .filter(|e| !effect_is_unresolved_var(kb, e))
+                        .cloned()
+                        .collect();
+                    effects = merge_effects(&closed_op_effects, &arg_effects);
+                }
+            }
 
             // WI-239: defer-to-requirement takes priority over provider-
             // based dispatch. If the spec op is reachable through the
@@ -5726,6 +5773,193 @@ pub(crate) fn self_receiver_param_index(
 /// `Value::Term` of a typer-reflect Type shape, read by [`sort_functor_of`].
 fn carrier_sort_of_value(kb: &KnowledgeBase, v: &Value) -> Option<Symbol> {
     sort_functor_of(kb, v.as_term()?)
+}
+
+/// WI-357 — bind a self-receiver spec op's own type parameters from the
+/// concrete receiver carrier, so a dispatched call threads the element
+/// type. `Stream.splitFirst(s: Stream) -> Option[T = Pair[A = T, …]]`
+/// invoked on `s : List[Int]` unifies the argument against the *bare*
+/// `Stream` parameter, which binds none of the spec's own type
+/// parameters (`Stream.T`). The unbound `Stream.T` then both (a) leaves
+/// the return `Option[T = Pair[A = ?_, …]]` — a destructured `pair(h, _)`
+/// gets `h : ?_` — and (b) makes the dispatch goal abstract, so no impl
+/// matches and the typer demands a `requires Stream[…]` on the caller.
+///
+/// Recover the spec params from the carrier's provider fact: `List`
+/// provides `fact Stream[T = T]`, so a `List[Int]` viewed as a `Stream`
+/// has `Stream.T = List.T = Int`. The element value is read by SHORT NAME
+/// from the receiver's own type arguments — robust to whether the
+/// provider fact stores the carrier param as a `Var` / `Ref` / nullary
+/// `Fn`. Returns true iff at least one spec parameter was bound (the
+/// caller then re-walks the return type through the updated subst).
+fn bind_spec_params_from_carrier(
+    kb: &KnowledgeBase,
+    subst: &mut Substitution,
+    op: &OperationInfoFull,
+    spec_sort: Symbol,
+    carrier_sym: Symbol,
+    named_args: &[(Symbol, Rc<NodeOccurrence>)],
+    pos_results: &[Result<TypeResult, TypeError>],
+    named_results: &[Result<TypeResult, TypeError>],
+) -> bool {
+    // The self-receiver argument's inferred type (e.g. `List[T = Int]`).
+    let Some(idx) = self_receiver_param_index(kb, &op.params, spec_sort) else {
+        return false;
+    };
+    let param_name = op.params[idx].0;
+    let recv_ty = pos_results
+        .get(idx)
+        .and_then(|r| r.as_ref().ok())
+        .and_then(|r| r.ty.as_term())
+        .or_else(|| {
+            named_args
+                .iter()
+                .position(|(n, _)| *n == param_name)
+                .and_then(|j| named_results.get(j))
+                .and_then(|r| r.as_ref().ok())
+                .and_then(|r| r.ty.as_term())
+        });
+    let Some(recv_ty) = recv_ty else {
+        return false;
+    };
+
+    // The receiver's own type arguments, keyed by carrier-param short name.
+    let recv_bindings = parameterized_short_bindings(kb, recv_ty);
+    if recv_bindings.is_empty() {
+        return false;
+    }
+
+    // The carrier's provider fact maps each spec parameter to a
+    // carrier-side value (`fact Stream[T = T]` ⇒ spec `T` ↦ carrier `T`).
+    let Some(view_bindings) = provider_spec_view_bindings(kb, carrier_sym, spec_sort) else {
+        return false;
+    };
+
+    let mut any = false;
+    for (spec_param_sym, carrier_value) in view_bindings {
+        // Which carrier parameter does the provider fact map this spec
+        // parameter onto? (`Stream.T` ↦ `List.T` ⇒ carrier short "T".)
+        let Some(carrier_short) = typaram_ref_short_name(kb, carrier_value) else {
+            continue;
+        };
+        let Some(concrete) = recv_bindings
+            .iter()
+            .find(|e| e.0 == carrier_short)
+            .map(|e| e.1)
+        else {
+            continue;
+        };
+        let Some(spec_vid) = type_param_vid_in_sort(kb, spec_sort, spec_param_sym) else {
+            continue;
+        };
+        // Only fill a genuinely-empty slot. If the call already bound this
+        // param to anything — a concrete term (e.g. an explicit
+        // `splitFirst[T = …]`) OR an alias var from earlier unification —
+        // leave it: `bind_term` would flag a *contradiction* against any
+        // differing existing binding (it does not rebind), and an alias
+        // whose root is bound is resolved by `walk_type_deep` anyway.
+        if subst.resolve_as_value(spec_vid).is_some() {
+            continue;
+        }
+        if !occurs_in(kb, spec_vid, concrete) {
+            subst.bind_term(spec_vid, concrete);
+            any = true;
+        }
+    }
+    any
+}
+
+/// A `parameterized` type's bindings as `(carrier-param short name,
+/// value)` pairs — the receiver-side reader for
+/// [`bind_spec_params_from_carrier`]. Re-keys [`parameterized_bindings_term`]
+/// by short name (the form `bind_spec_params_from_carrier` matches against)
+/// and keeps only `Value::Term` values (a parameterized type's bindings are
+/// ground terms).
+fn parameterized_short_bindings(kb: &KnowledgeBase, ty: TermId) -> Vec<(String, TermId)> {
+    parameterized_bindings_term(kb, ty)
+        .into_iter()
+        .filter_map(|(param, value)| {
+            value
+                .as_term()
+                .map(|t| (short_name_of(kb.resolve_sym(param)).to_string(), t))
+        })
+        .collect()
+}
+
+/// The spec-view bindings of the `SortProvidesInfo` fact recording that
+/// `carrier_sym` provides `spec_sort` — `(spec param symbol, carrier-side
+/// value)` pairs (`fact Stream[T = T]` on `List` ⇒ `[(Stream.T, List.T)]`).
+/// First matching provider wins. `None` when the carrier declares no such
+/// provision.
+fn provider_spec_view_bindings(
+    kb: &KnowledgeBase,
+    carrier_sym: Symbol,
+    spec_sort: Symbol,
+) -> Option<SmallVec<[(Symbol, TermId); 2]>> {
+    let provides_sym = kb.try_resolve_symbol("anthill.reflect.SortProvidesInfo")?;
+    for rid in kb.by_functor(provides_sym) {
+        if !kb.is_fact(rid) {
+            continue;
+        }
+        let head_named = match kb.get_term(kb.rule_head(rid)) {
+            Term::Fn { named_args, .. } => named_args.clone(),
+            _ => continue,
+        };
+        let Some(sr) = get_named_arg(kb, &head_named, "sort_ref") else {
+            continue;
+        };
+        let Some(carrier) = super::load::sort_ref_functor(kb, sr) else {
+            continue;
+        };
+        if kb.canonical_sort_sym(carrier) != kb.canonical_sort_sym(carrier_sym) {
+            continue;
+        }
+        let Some(spec_t) = get_named_arg(kb, &head_named, "spec") else {
+            continue;
+        };
+        let Some((base, bindings)) = unwrap_spec_view(kb, spec_t) else {
+            continue;
+        };
+        // Canonicalize both sides — the spec base in the provider fact's
+        // `SortView` is resolved in the carrier's import scope and may be a
+        // different `Symbol` id than `spec_sort` (resolved in the caller's
+        // scope) even for the same logical sort. Matches the carrier compare
+        // above; a raw `==` would silently no-op this binding.
+        if kb.canonical_sort_sym(base) == kb.canonical_sort_sym(spec_sort) {
+            return Some(bindings);
+        }
+    }
+    None
+}
+
+/// WI-357 — true iff an effect label is still an unresolved type/row
+/// variable (a bare `?_`). Used to close a spec op's polymorphic effect
+/// row when it dispatches to a concrete carrier whose provider fact does
+/// not (yet) bind the effect parameter.
+fn effect_is_unresolved_var(kb: &KnowledgeBase, e: &Value) -> bool {
+    match e {
+        Value::Term(t) => matches!(kb.get_term(*t), Term::Var(_)),
+        _ => false,
+    }
+}
+
+/// The short name of a type-parameter reference as a provider fact stores
+/// it in a spec view — tolerant of every shape a bare param name takes
+/// (`sort_ref(name: S)` / `Ref` / `Ident` / a nullary `Fn` / `Var`).
+fn typaram_ref_short_name(kb: &KnowledgeBase, tid: TermId) -> Option<String> {
+    if let Some(s) = extract_sort_ref_sym(kb, tid) {
+        return Some(short_name_of(kb.resolve_sym(s)).to_string());
+    }
+    match kb.get_term(tid) {
+        Term::Ref(s) | Term::Ident(s) => Some(short_name_of(kb.resolve_sym(*s)).to_string()),
+        Term::Fn { functor, pos_args, named_args }
+            if pos_args.is_empty() && named_args.is_empty() =>
+        {
+            Some(short_name_of(kb.resolve_sym(*functor)).to_string())
+        }
+        Term::Var(Var::Global(v)) => Some(short_name_of(kb.resolve_sym(v.name())).to_string()),
+        _ => None,
+    }
 }
 
 /// WI-210/WI-224 — find the unique impl operation symbol for a spec-op

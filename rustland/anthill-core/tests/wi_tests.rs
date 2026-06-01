@@ -145,3 +145,6 @@ mod wi351_callback_place_test;
 
 #[path = "include/wi352_flow_derive_test.rs"]
 mod wi352_flow_derive_test;
+
+#[path = "include/wi357_element_typing_test.rs"]
+mod wi357_element_typing_test;
