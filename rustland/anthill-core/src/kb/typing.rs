@@ -664,11 +664,11 @@ fn extract_effect_resource_sym_term(kb: &KnowledgeBase, effect: TermId) -> Optio
                         // resource as `denoted(value: Ref(c))`; see through the
                         // wrapper to the underlying value before extracting.
                         let value_tid = unwrap_denoted_value(kb, value_tid);
+                        // `extract_sort_ref_sym` names the sort for both a deep
+                        // `sort_ref` and the bare `Ref(S)` a value-in-type takes
+                        // (WI-361), so one check covers both.
                         if let Some(sym) = extract_sort_ref_sym(kb, value_tid) {
                             return Some(sym);
-                        }
-                        if let Term::Ref(s) = kb.get_term(value_tid) {
-                            return Some(*s);
                         }
                     }
                 }
@@ -5611,7 +5611,9 @@ fn format_term_for_goal(kb: &KnowledgeBase, t: TermId) -> String {
         return kb.qualified_name_of(sym).to_string();
     }
     match kb.get_term(t) {
-        Term::Ref(s) | Term::Ident(s) => kb.qualified_name_of(*s).to_string(),
+        // bare `Ref` is named above via `extract_sort_ref_sym` (WI-361); a still-
+        // unresolved `Ident` falls here.
+        Term::Ident(s) => kb.qualified_name_of(*s).to_string(),
         Term::Fn { functor, pos_args, named_args } => {
             let base = kb.qualified_name_of(*functor).to_string();
             if pos_args.is_empty() && named_args.is_empty() {
@@ -5980,7 +5982,8 @@ fn typaram_ref_short_name(kb: &KnowledgeBase, tid: TermId) -> Option<String> {
         return Some(short_name_of(kb.resolve_sym(s)).to_string());
     }
     match kb.get_term(tid) {
-        Term::Ref(s) | Term::Ident(s) => Some(short_name_of(kb.resolve_sym(*s)).to_string()),
+        // bare `Ref` handled above via `extract_sort_ref_sym` (WI-361); `Ident` here.
+        Term::Ident(s) => Some(short_name_of(kb.resolve_sym(*s)).to_string()),
         Term::Fn { functor, pos_args, named_args }
             if pos_args.is_empty() && named_args.is_empty() =>
         {
@@ -6176,7 +6179,8 @@ fn sort_sym_of_term(kb: &KnowledgeBase, t: TermId) -> Option<Symbol> {
         return Some(s);
     }
     match kb.get_term(t) {
-        Term::Ref(s) | Term::Ident(s) => Some(*s),
+        // bare `Ref` handled above via `extract_sort_ref_sym` (WI-361); `Ident` here.
+        Term::Ident(s) => Some(*s),
         Term::Fn { functor, .. } => Some(*functor),
         _ => None,
     }
@@ -6456,15 +6460,10 @@ fn check_constructor_iter(
 /// `Function[A, B, E]` surface type. `arrow` is the typer's shorthand for
 /// it, so the two are the same callable type (see [`arrow_parts`]).
 fn is_function_type(kb: &KnowledgeBase, ty: TermId) -> bool {
-    if type_functor_name(kb, ty) != Some("parameterized") {
-        return false;
-    }
-    let base = match kb.get_term(ty) {
-        Term::Fn { named_args, .. } => get_named_arg(kb, named_args, "base"),
-        _ => None,
-    };
-    base.and_then(|b| extract_sort_ref_sym(kb, b))
-        .is_some_and(|s| kb.qualified_name_of(s) == "anthill.prelude.Function")
+    matches!(
+        type_head(kb, &TermIdView(ty)),
+        TypeHead::Parameterized { base, .. } if kb.qualified_name_of(base) == "anthill.prelude.Function"
+    )
 }
 
 /// Decompose a callable type into `(param, result, effects)`.
@@ -7184,24 +7183,41 @@ fn parameterized_bindings(kb: &KnowledgeBase, v: &impl TermView) -> Vec<(Symbol,
     }
 }
 
+/// Decode a `List[record]` of two-field records into `(symbol-field, value-field)`
+/// pairs — the shared mechanism behind a `parameterized`'s `bindings`
+/// (`TypeBinding{param, value}`) and a `named_tuple`'s `fields`
+/// (`TypeField{name, type}`). `sym_key` names the `Ref`-valued field (read as a
+/// `Symbol`), `val_key` the type-valued field (read as a `Value::Term`); an
+/// element that is not a record or is missing either field is skipped.
+fn list_records_to_pairs(
+    kb: &KnowledgeBase,
+    list: TermId,
+    sym_key: &str,
+    val_key: &str,
+) -> Vec<(Symbol, Value)> {
+    list_to_vec(kb, list)
+        .into_iter()
+        .filter_map(|e| match kb.get_term(e) {
+            Term::Fn { named_args, .. } => {
+                let s = extract_ref_field(kb, named_args, sym_key)?;
+                let v = get_named_arg(kb, named_args, val_key)?;
+                Some((s, Value::Term(v)))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
 /// Bindings of a `TermId`-carried `parameterized` (`List[TypeBinding]`).
 fn parameterized_bindings_term(kb: &KnowledgeBase, t: TermId) -> Vec<(Symbol, Value)> {
     let args = match kb.get_term(t) {
         Term::Fn { named_args, .. } => named_args.clone(),
         _ => return Vec::new(),
     };
-    let list = match get_named_arg(kb, &args, "bindings") {
-        Some(b) => b,
-        None => return Vec::new(),
-    };
-    list_to_vec(kb, list)
-        .into_iter()
-        .filter_map(|b| {
-            let param = binding_param_sym(kb, b)?;
-            let value = binding_value(kb, b)?;
-            Some((param, Value::Term(value)))
-        })
-        .collect()
+    match get_named_arg(kb, &args, "bindings") {
+        Some(list) => list_records_to_pairs(kb, list, "param", "value"),
+        None => Vec::new(),
+    }
 }
 
 /// A [`ViewItem`] (which may borrow `kb`) as an owned [`Value`], freeing the
@@ -9795,12 +9811,210 @@ fn sort_operation_names(kb: &KnowledgeBase, sort_sym: Symbol) -> Vec<String> {
 /// Extract the sort symbol from a sort_ref(name: Ref(sym)) term.
 /// Returns None if the term is not a sort_ref.
 pub fn extract_sort_ref_sym(kb: &KnowledgeBase, ty: TermId) -> Option<Symbol> {
-    if let Term::Fn { functor, named_args, .. } = kb.get_term(ty) {
-        if kb.resolve_sym(*functor) == "sort_ref" {
-            return extract_ref_field(kb, named_args, "name");
+    // WI-361 stage 2: a bare sort is `Ref(S)` (term backing) or `sort_ref(name:
+    // Ref(S))` (deep) — `type_head` classifies both as `SortRef`. Parameterized /
+    // structural variants are not bare sorts → `None` (unchanged).
+    match type_head(kb, &TermIdView(ty)) {
+        TypeHead::SortRef(s) => Some(s),
+        _ => None,
+    }
+}
+
+// ── WI-361 stage 2: term-backed Type classifier ─────────────────────────────
+
+/// The reified structural form of a `Type` — the Rust mirror of the stdlib
+/// `anthill.prelude.TypeExtractor` enum (sort.anthill), computed on demand by
+/// [`extract_type`]. It backs the `anthill.reflect.extract` builtin and is the
+/// engine-internal classifier the typer/codegen `match` over (replacing ad-hoc
+/// `type_functor_name`-keyed dispatch as readers migrate).
+///
+/// **Dual-form.** A `Type` value is converging from a deep ADT representation
+/// (`sort_ref(name)` / `parameterized(base, bindings)` terms) onto a *term
+/// backing*: a bare sort `S` is `Term::Ref(S)`, a type application `S[p = v, …]`
+/// is `Fn{S, named:[(p, v), …]}` (the base sort is the functor — no
+/// `parameterized` wrapper). [`extract_type`] reads BOTH forms into the same
+/// variants, so producers and readers can migrate independently. The structural
+/// type forms (`arrow` / `effects_rows` / `named_tuple` / `denoted` / `nothing`
+/// / `type_var`) stay entities in both worlds and read identically.
+///
+/// Sub-type children are owned [`Value`]s (the carrier the builtin emits and the
+/// typer is migrating onto, WI-342); symbol heads (`SortRef`/`TypeVar` name,
+/// `Parameterized` base) are `Symbol`s.
+#[derive(Clone, Debug)]
+pub enum TypeExtractor {
+    /// A bare sort `S` — term-backed `Ref(S)` or deep `sort_ref(name: Ref(S))`.
+    SortRef(Symbol),
+    /// A type variable — deep `type_var(name)`.
+    TypeVar(Symbol),
+    /// A type application `S[p = v, …]` — term-backed `Fn{S, named}` or deep
+    /// `parameterized(base, bindings)`. `bindings` are `(param, value-type)`.
+    Parameterized { base: Symbol, bindings: Vec<(Symbol, Value)> },
+    /// An arrow type — `arrow(param, result, effects)`.
+    Arrow { param: Value, result: Value, effects: Value },
+    /// A value standing in a type-argument position (`Modify[c]`) —
+    /// `denoted(value)`; carries the value occurrence.
+    Denoted(Value),
+    /// An effect row in type position — `effects_rows(expr: EffectExpression)`.
+    EffectsRows(Value),
+    /// A named tuple type — `named_tuple(fields)`; `(name, field-type)` pairs.
+    NamedTuple(Vec<(Symbol, Value)>),
+    /// The bottom type `nothing`.
+    Nothing,
+    /// Not a well-formed type form (a non-type term or a malformed type
+    /// expression). Keeps [`extract_type`] total. Note: in the *term-backed*
+    /// representation a parameterized type is structurally identical to an
+    /// ordinary data term `Fn{f, named}`, so a data term with named args reifies
+    /// as `Parameterized` rather than `Error` — there is no structural type/data
+    /// distinction (by design; the caller knows it holds a type). Only a bare
+    /// `Fn{f}` with no args, or a non-functor / non-`Ref` shape, is `Error`.
+    Error,
+}
+
+/// The structural kind of a type carrier WITHOUT materializing its children —
+/// the cheap classification shared by [`extract_type`] (which adds the child
+/// payloads) and the dispatch-key readers ([`sort_functor_of`], `is_function_type`)
+/// that only need the head. Dual-form: recognizes both the deep representation
+/// (`sort_ref` / `parameterized` / …) and the term backing (`Ref(S)` /
+/// `Fn{S, named}`).
+enum TypeHead {
+    SortRef(Symbol),
+    TypeVar(Symbol),
+    /// `base` is the base sort symbol; `deep` distinguishes the legacy
+    /// `parameterized(base, bindings)` wrapper (bindings in a `bindings` List
+    /// field) from the term backing `Fn{S, named}` (bindings ARE the named args).
+    Parameterized { base: Symbol, deep: bool },
+    Arrow,
+    Denoted,
+    EffectsRows,
+    NamedTuple,
+    Nothing,
+    Error,
+}
+
+/// Classify a type carrier's head — see [`TypeHead`]. Cheap: reads at most the
+/// `sort_ref`/`type_var` name and a deep `parameterized`'s base, never the
+/// bindings / fields / arrow children.
+fn type_head<V: TermView>(kb: &KnowledgeBase, ty: &V) -> TypeHead {
+    match ty.head(kb) {
+        // Term-backed bare sort `Ref(S)`.
+        ViewHead::Ref(s) => TypeHead::SortRef(s),
+        ViewHead::Functor { functor: Some(f), named_arity, .. } => {
+            match kb.qualified_name_of(f) {
+                "anthill.prelude.Type.sort_ref" => match view_child_sym(kb, ty, "name") {
+                    Some(s) => TypeHead::SortRef(s),
+                    None => TypeHead::Error,
+                },
+                "anthill.prelude.Type.type_var" => match view_child_sym(kb, ty, "name") {
+                    Some(s) => TypeHead::TypeVar(s),
+                    None => TypeHead::Error,
+                },
+                "anthill.prelude.Type.nothing" => TypeHead::Nothing,
+                "anthill.prelude.Type.denoted" => TypeHead::Denoted,
+                "anthill.prelude.Type.effects_rows" => TypeHead::EffectsRows,
+                "anthill.prelude.Type.arrow" => TypeHead::Arrow,
+                "anthill.prelude.Type.named_tuple" => TypeHead::NamedTuple,
+                "anthill.prelude.Type.parameterized" => match deep_parameterized_base(kb, ty) {
+                    Some(base) => TypeHead::Parameterized { base, deep: true },
+                    None => TypeHead::Error,
+                },
+                // Term-backed parameterized: the functor IS the base sort, the
+                // named args ARE the bindings. A no-arg `Fn{f}` is malformed
+                // (a bare sort is `Ref(S)`, never `Fn{S}`).
+                _ if named_arity > 0 => TypeHead::Parameterized { base: f, deep: false },
+                _ => TypeHead::Error,
+            }
+        }
+        _ => TypeHead::Error,
+    }
+}
+
+/// Base sort symbol of a deep `parameterized(base, …)` — its `base` child
+/// classified to a bare sort. `None` if the base is not a sort reference (the
+/// spec gate confirms a parameterized base is always a concrete sort — never
+/// itself parameterized or higher-kinded — so this is exhaustive for well-formed
+/// types and conservatively `None` for malformed ones).
+fn deep_parameterized_base<V: TermView>(kb: &KnowledgeBase, ty: &V) -> Option<Symbol> {
+    let base = view_child_value(kb, ty, "base")?;
+    match type_head(kb, &base) {
+        TypeHead::SortRef(s) => Some(s),
+        _ => None,
+    }
+}
+
+/// Classify a (carrier-agnostic) type carrier into a [`TypeExtractor`] — the head
+/// ([`type_head`]) plus its materialized child payloads. Total. Reads both the
+/// deep and the term-backed Type representations (WI-361 stage 2).
+pub fn extract_type<V: TermView>(kb: &KnowledgeBase, ty: &V) -> TypeExtractor {
+    match type_head(kb, ty) {
+        TypeHead::SortRef(s) => TypeExtractor::SortRef(s),
+        TypeHead::TypeVar(s) => TypeExtractor::TypeVar(s),
+        TypeHead::Nothing => TypeExtractor::Nothing,
+        TypeHead::Error => TypeExtractor::Error,
+        TypeHead::Denoted => match view_child_value(kb, ty, "value") {
+            Some(v) => TypeExtractor::Denoted(v),
+            None => TypeExtractor::Error,
+        },
+        TypeHead::EffectsRows => match view_child_value(kb, ty, "effects_expr") {
+            Some(e) => TypeExtractor::EffectsRows(e),
+            None => TypeExtractor::Error,
+        },
+        TypeHead::Arrow => match (
+            view_child_value(kb, ty, "param"),
+            view_child_value(kb, ty, "result"),
+            view_child_value(kb, ty, "effects"),
+        ) {
+            (Some(param), Some(result), Some(effects)) => {
+                TypeExtractor::Arrow { param, result, effects }
+            }
+            _ => TypeExtractor::Error,
+        },
+        TypeHead::NamedTuple => TypeExtractor::NamedTuple(named_tuple_fields(kb, ty)),
+        TypeHead::Parameterized { base, deep } => {
+            let bindings = if deep {
+                parameterized_bindings(kb, ty)
+            } else {
+                term_backed_bindings(kb, ty)
+            };
+            TypeExtractor::Parameterized { base, bindings }
         }
     }
-    None
+}
+
+/// Bindings of a *term-backed* parameterized type `Fn{S, named}` — the named args
+/// ARE the `(param, value-type)` bindings (no `bindings: List[TypeBinding]`
+/// wrapper). Distinct from [`parameterized_bindings`], which reads the deep form.
+fn term_backed_bindings<V: TermView>(kb: &KnowledgeBase, ty: &V) -> Vec<(Symbol, Value)> {
+    ty.named_keys(kb)
+        .into_iter()
+        .filter_map(|k| named_child_value(kb, ty, k).map(|v| (k, v)))
+        .collect()
+}
+
+/// Fields of a `named_tuple(fields: List[TypeField])` as `(name, field-type)`.
+/// Reads the deep `TermId` form (the live carrier); a `Value::Node` NamedTuple
+/// exposes no `fields` named child (WI-342 Rep A), so it yields no fields here.
+fn named_tuple_fields<V: TermView>(kb: &KnowledgeBase, ty: &V) -> Vec<(Symbol, Value)> {
+    match view_child_value(kb, ty, "fields") {
+        Some(Value::Term(list)) => list_records_to_pairs(kb, list, "name", "type"),
+        _ => Vec::new(),
+    }
+}
+
+/// A view's named child (keyed by short field name) as an owned [`Value`].
+fn view_child_value<V: TermView>(kb: &KnowledgeBase, ty: &V, key: &str) -> Option<Value> {
+    let sym = kb.lookup_symbol(key)?;
+    named_child_value(kb, ty, sym)
+}
+
+/// A view's named child as the `Symbol` it references (`Ref(s)` / `Ident(s)`).
+fn view_child_sym<V: TermView>(kb: &KnowledgeBase, ty: &V, key: &str) -> Option<Symbol> {
+    match view_child_value(kb, ty, key)? {
+        Value::Term(t) => match kb.get_term(t) {
+            Term::Ref(s) | Term::Ident(s) => Some(*s),
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 /// WI-302: unwrap a `denoted(value: V)` wrapper to its inner value term.
@@ -9834,27 +10048,15 @@ fn unwrap_denoted_value(kb: &KnowledgeBase, ty: TermId) -> TermId {
 /// here; a caller that passes them must extend this reader (e.g. with a
 /// `SymbolKind::Sort` check on the functor).
 pub fn sort_functor_of(kb: &KnowledgeBase, ty: TermId) -> Option<Symbol> {
-    match type_functor_name(kb, ty) {
-        Some("sort_ref") => extract_sort_ref_sym(kb, ty),
-        Some("parameterized") => {
-            let base = match kb.get_term(ty) {
-                Term::Fn { named_args, .. } => get_named_arg(kb, named_args, "base"),
-                _ => None,
-            }?;
-            sort_functor_of(kb, base)
-        }
-        // WI-320: `effects_rows(EffectExpression)` is a structural Type
-        // variant — like `denoted`, it has no underlying sort head to widen
-        // to. Returning None means `min_sort` is undefined for occurrences
-        // typed as an effect-row, which is the correct conservative answer
-        // for Scope A (no `[simp]` rules target effect-row positions yet).
-        // Once WI-307 wires `arrow.effects` to row form, returning the
-        // `EffectsRuntime` kind anchor here may be revisited.
-        Some("effects_rows") => None,
-        _ => match kb.get_term(ty) {
-            Term::Ref(s) => Some(*s),
-            _ => None,
-        },
+    // The sort head is the base of a bare sort or a (deep / term-backed)
+    // parameterized type; the structural variants have none. WI-320:
+    // `effects_rows`/`denoted`/`arrow` have no underlying sort head to widen to
+    // — `None` means `min_sort` is undefined for an occurrence typed as one of
+    // them, the correct conservative answer (no `[simp]` rule targets those
+    // positions yet).
+    match type_head(kb, &TermIdView(ty)) {
+        TypeHead::SortRef(s) | TypeHead::Parameterized { base: s, .. } => Some(s),
+        _ => None,
     }
 }
 
@@ -11269,6 +11471,88 @@ mod p3_tests {
         assert!(!s.is_contradiction(), "equal Value-carried types must not contradict");
         s.bind_value(vid, Value::Node(occ_d));
         assert!(s.is_contradiction(), "a distinct Value-carried type contradicts");
+    }
+}
+
+#[cfg(test)]
+mod wi361_reader_tests {
+    //! WI-361 stage 2: the dispatch-key reader `sort_functor_of` classifies via
+    //! `type_head`, so it reads the TERM-BACKED form (`Ref(S)` bare sort,
+    //! `Fn{S, named}` parameterized — base sort IS the functor) identically to
+    //! the deep `sort_ref`/`parameterized` form. Producers still build the deep
+    //! form today, so the test manually constructs the term backing to exercise
+    //! the migrated path. (The deep-form path stays covered by the wider suite;
+    //! the carrier-agnostic classifier itself by `type_extract_test`.)
+    use super::{extract_sort_ref_sym, sort_functor_of};
+    use crate::intern::Symbol;
+    use crate::kb::load::register_prelude;
+    use crate::kb::term::{Term, TermId};
+    use crate::kb::KnowledgeBase;
+    use smallvec::SmallVec;
+
+    fn kb_with_prelude() -> KnowledgeBase {
+        let mut kb = KnowledgeBase::new();
+        register_prelude(&mut kb);
+        kb
+    }
+
+    /// Term backing `Fn{base, named:[(param, Ref(arg))]}` — a parameterized type
+    /// whose base sort IS the functor (no deep `parameterized` wrapper).
+    fn term_backed_param(kb: &mut KnowledgeBase, base: Symbol, param: Symbol, arg: Symbol) -> TermId {
+        let arg_ref = kb.alloc(Term::Ref(arg));
+        let mut named: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
+        named.push((param, arg_ref));
+        kb.alloc(Term::Fn { functor: base, pos_args: SmallVec::new(), named_args: named })
+    }
+
+    #[test]
+    fn sort_functor_of_reads_term_backed_and_deep_parameterized() {
+        let mut kb = kb_with_prelude();
+        let list = kb.intern("List");
+        let int = kb.intern("Int");
+        let t = kb.intern("T");
+
+        // Term-backed `List[T = Int]` == `Fn{List, named:[(T, Ref(Int))]}` — the
+        // functor IS the base sort; pre-migration this returned None.
+        let tb = term_backed_param(&mut kb, list, t, int);
+        assert_eq!(sort_functor_of(&kb, tb), Some(list), "term-backed Fn{{List,..}} -> List");
+
+        // Deep `parameterized(sort_ref(List), [T = sort_ref(Int)])` — behavior
+        // preserved (both forms classify to the same base sort).
+        let int_ref = kb.make_sort_ref(int);
+        let base = kb.make_sort_ref(list);
+        let deep = kb.make_parameterized_type(base, &[(t, int_ref)]);
+        assert_eq!(sort_functor_of(&kb, deep), Some(list), "deep parameterized -> List");
+
+        // Term-backed bare sort `Ref(Int)`.
+        let bare = kb.alloc(Term::Ref(int));
+        assert_eq!(sort_functor_of(&kb, bare), Some(int), "bare Ref(Int) -> Int");
+
+        // A structural variant (arrow) has no sort head.
+        let unit = kb.intern("Unit");
+        let unit_ref = kb.make_sort_ref(unit);
+        let arrow = kb.make_arrow_type(unit_ref, unit_ref, &[]);
+        assert_eq!(sort_functor_of(&kb, arrow), None, "arrow has no sort head");
+    }
+
+    #[test]
+    fn extract_sort_ref_sym_reads_term_backed_bare_ref() {
+        let mut kb = kb_with_prelude();
+        let int = kb.intern("Int");
+        let list = kb.intern("List");
+        let t = kb.intern("T");
+
+        // Term-backed bare sort `Ref(Int)` — pre-migration this returned None.
+        let bare = kb.alloc(Term::Ref(int));
+        assert_eq!(extract_sort_ref_sym(&kb, bare), Some(int), "bare Ref(Int) -> Int");
+
+        // Deep `sort_ref(name: Ref(Int))` — behavior preserved.
+        let deep = kb.make_sort_ref(int);
+        assert_eq!(extract_sort_ref_sym(&kb, deep), Some(int), "deep sort_ref(Int) -> Int");
+
+        // A parameterized type is NOT a bare sort ref.
+        let tb = term_backed_param(&mut kb, list, t, int);
+        assert_eq!(extract_sort_ref_sym(&kb, tb), None, "Fn{{List,..}} is not a bare sort ref");
     }
 }
 

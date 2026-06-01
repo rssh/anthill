@@ -5,7 +5,7 @@
 use anthill_core::eval::builtins::register_standard_builtins;
 use anthill_core::eval::{Interpreter, Value};
 use anthill_core::intern::Symbol;
-use anthill_core::kb::term::Term;
+use anthill_core::kb::term::{Term, TermId};
 use smallvec::SmallVec;
 
 use crate::common::load_kb_with;
@@ -93,6 +93,97 @@ fn extract_parameterized_reifies_parameterized_with_typebinding() {
         entity_functor(head),
         Some(binding_ctor),
         "each binding should be re-wrapped as TypeExtractor.TypeBinding, got {head:?}"
+    );
+}
+
+#[test]
+fn extract_term_backed_ref_reifies_sortref() {
+    // WI-361 stage 2: a bare sort carried as the *term backing* `Ref(S)` (not the
+    // deep `sort_ref(name: Ref(S))`) reifies as SortRef — the dual-form reader.
+    let mut kb = load_kb_with("");
+    let int_sym = kb.try_resolve_symbol("anthill.prelude.Int").expect("Int sort");
+    let sortref = kb
+        .try_resolve_symbol("anthill.prelude.TypeExtractor.SortRef")
+        .expect("SortRef ctor");
+    let name_key = kb.intern("name");
+    // term backing: bare `Ref(Int)`.
+    let ty = kb.alloc(Term::Ref(int_sym));
+
+    let mut interp = Interpreter::new(kb);
+    register_standard_builtins(&mut interp).expect("register builtins");
+    let r = interp
+        .call("anthill.reflect.extract", &[Value::Term(ty)])
+        .expect("extract should evaluate");
+
+    assert_eq!(
+        entity_functor(&r),
+        Some(sortref),
+        "Ref(Int) should reify as SortRef, got {r:?}"
+    );
+    let name = field(&r, name_key).expect("SortRef.name");
+    assert!(
+        matches!(name, Value::Term(t) if matches!(interp.kb().get_term(*t), Term::Ref(s) if *s == int_sym)),
+        "SortRef.name should be Ref(Int), got {name:?}"
+    );
+}
+
+#[test]
+fn extract_term_backed_fn_reifies_parameterized() {
+    // WI-361 stage 2: a type application carried as the *term backing*
+    // `Fn{S, named}` — the base sort IS the functor, the named args ARE the
+    // bindings (no `parameterized` wrapper) — reifies as Parameterized.
+    let mut kb = load_kb_with("");
+    let int_sym = kb.try_resolve_symbol("anthill.prelude.Int").expect("Int sort");
+    let list_sym = kb.try_resolve_symbol("anthill.prelude.List").expect("List sort");
+    let param_ctor = kb
+        .try_resolve_symbol("anthill.prelude.TypeExtractor.Parameterized")
+        .expect("Parameterized ctor");
+    let binding_ctor = kb
+        .try_resolve_symbol("anthill.prelude.TypeBinding")
+        .expect("TypeBinding ctor");
+    let cons_sym = kb
+        .try_resolve_symbol("anthill.prelude.List.cons")
+        .expect("List.cons");
+    let bindings_key = kb.intern("bindings");
+    let base_key = kb.intern("base");
+    let head_key = kb.intern("head");
+    let t_param = kb.intern("T");
+
+    // term backing: `List[T = Int]` == `Fn{List, named:[(T, Ref(Int))]}`.
+    let int_ref = kb.alloc(Term::Ref(int_sym));
+    let mut named: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
+    named.push((t_param, int_ref));
+    let ty = kb.alloc(Term::Fn { functor: list_sym, pos_args: SmallVec::new(), named_args: named });
+
+    let mut interp = Interpreter::new(kb);
+    register_standard_builtins(&mut interp).expect("register builtins");
+    let r = interp
+        .call("anthill.reflect.extract", &[Value::Term(ty)])
+        .expect("extract should evaluate");
+
+    assert_eq!(
+        entity_functor(&r),
+        Some(param_ctor),
+        "Fn{{List,..}} should reify as Parameterized, got {r:?}"
+    );
+    // base is `Ref(List)` — the functor lifted to the base-sort field.
+    let base = field(&r, base_key).expect("Parameterized.base");
+    assert!(
+        matches!(base, Value::Term(t) if matches!(interp.kb().get_term(*t), Term::Ref(s) if *s == list_sym)),
+        "Parameterized.base should be Ref(List), got {base:?}"
+    );
+    // bindings is a non-empty cons list whose head is a re-wrapped TypeBinding.
+    let bindings = field(&r, bindings_key).expect("Parameterized.bindings");
+    assert_eq!(
+        entity_functor(bindings),
+        Some(cons_sym),
+        "bindings should be a non-empty list, got {bindings:?}"
+    );
+    let head = field(bindings, head_key).expect("cons head");
+    assert_eq!(
+        entity_functor(head),
+        Some(binding_ctor),
+        "each binding re-wrapped as TypeExtractor.TypeBinding, got {head:?}"
     );
 }
 

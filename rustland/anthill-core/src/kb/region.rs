@@ -66,17 +66,12 @@ pub(crate) fn region_sorts(kb: &KnowledgeBase) -> HashSet<Symbol> {
 /// `Modifiable[T = Cell]` stored as `Fn{functor: Modifiable, T: Cell}` or
 /// as `parameterized(sort_ref(Modifiable), bindings: [T = Cell])`.
 fn collect_sort_refs(kb: &KnowledgeBase, term: TermId, skip: Symbol, out: &mut HashSet<Symbol>) {
+    // `extract_sort_ref_sym` names the sort for both a deep `sort_ref` and the
+    // bare `Ref(Cell)` a `Modifiable[T = Cell]` type-arg takes (WI-361), so one
+    // check covers both fact-head shapes.
     if let Some(s) = extract_sort_ref_sym(kb, term) {
         if s != skip {
             out.insert(s);
-        }
-        return;
-    }
-    // `Modifiable[T = Cell]` stores the type-arg as a bare `Ref(Cell)`, not a
-    // `sort_ref`, so a plain reference names the admitted sort too.
-    if let Term::Ref(s) = kb.get_term(term) {
-        if *s != skip {
-            out.insert(*s);
         }
         return;
     }
@@ -118,13 +113,10 @@ pub(crate) fn result_type_admits_region(
     ty: TermId,
     regions: &HashSet<Symbol>,
 ) -> bool {
+    // `extract_sort_ref_sym` names the sort for both a deep `sort_ref` and the
+    // bare `Ref(S)` a type-arg takes (WI-361).
     if let Some(s) = extract_sort_ref_sym(kb, ty) {
         if regions.contains(&s) {
-            return true;
-        }
-    }
-    if let Term::Ref(s) = kb.get_term(ty) {
-        if regions.contains(s) {
             return true;
         }
     }
