@@ -189,32 +189,57 @@ pub(crate) fn type_child_view_item<'a>(child: &TypeChild) -> ViewItem<'a> {
     }
 }
 
+/// The base sort symbol of a `Parameterized` carrier's `base` child. WI-361: the
+/// occurrence carrier mirrors the term-backed `Fn{S, named}`, so this symbol is
+/// the view-head *functor* (no `parameterized` wrapper). A parameterized base is
+/// always a concrete sort `Ref(S)` (spec gate: a type param "must be a concrete
+/// type, not a type constructor"); anything else is malformed → `None`.
+fn parameterized_base_functor(base: &TypeChild, kb: &KnowledgeBase) -> Option<Symbol> {
+    match base {
+        TypeChild::Ground(t) => match kb.get_term(*t) {
+            Term::Ref(s) | Term::Ident(s) => Some(*s),
+            _ => None,
+        },
+        TypeChild::Node(_) => None,
+    }
+}
+
 fn type_node_head(tn: &TypeNode, kb: &KnowledgeBase) -> ViewHead {
-    let (short, named_arity) = match tn {
-        // `bindings` deferred (Rep A) → exposed arity is `base` only.
-        TypeNode::Denoted { .. } => ("denoted", 1),
-        TypeNode::Parameterized { .. } => ("parameterized", 1),
-        TypeNode::EffectsRows { .. } => ("effects_rows", 1),
-        TypeNode::Arrow { .. } => ("arrow", 3),
-        // Fields are not a uniformly-exposed named child (like Parameterized's
-        // bindings); they're read via the dedicated `named_tuple_fields` reader.
-        TypeNode::NamedTuple { .. } => ("named_tuple", 0),
+    let (functor, named_arity) = match tn {
+        // WI-361: a parameterized type's occurrence carrier mirrors the term-backed
+        // `Fn{S, named}` — its head functor IS the base sort and the named args ARE
+        // the bindings (no `parameterized` wrapper), so `TermView` reads the carrier
+        // and its term twin identically. The other forms are genuine structural
+        // entities whose head functor is the form name.
+        TypeNode::Parameterized { base, bindings } => {
+            (parameterized_base_functor(base, kb), bindings.len())
+        }
+        TypeNode::Denoted { .. } => (type_functor_sym(kb, "denoted"), 1),
+        TypeNode::EffectsRows { .. } => (type_functor_sym(kb, "effects_rows"), 1),
+        TypeNode::Arrow { .. } => (type_functor_sym(kb, "arrow"), 3),
+        // Fields are not a uniformly-exposed named child; they're read via the
+        // dedicated `named_tuple_fields` reader.
+        TypeNode::NamedTuple { .. } => (type_functor_sym(kb, "named_tuple"), 0),
     };
-    match type_functor_sym(kb, short) {
+    match functor {
         Some(f) => ViewHead::Functor { functor: Some(f), pos_arity: 0, named_arity },
         None => ViewHead::Opaque,
     }
 }
 
 fn type_node_keys(tn: &TypeNode, kb: &KnowledgeBase) -> Vec<Symbol> {
-    let keys: &[&str] = match tn {
+    let short_keys: &[&str] = match tn {
+        // Bindings ARE the named args (WI-361) — the keys are the binding params,
+        // which come from terms (already interned), so return them directly.
+        TypeNode::Parameterized { bindings, .. } => {
+            return bindings.iter().map(|(s, _)| *s).collect();
+        }
         TypeNode::Denoted { .. } => &["value"],
-        TypeNode::Parameterized { .. } => &["base"],
         TypeNode::EffectsRows { .. } => &["effects_expr"],
         TypeNode::Arrow { .. } => &["param", "result", "effects"],
         TypeNode::NamedTuple { .. } => &[],
     };
-    keys.iter().filter_map(|k| kb.lookup_symbol(k)).collect()
+    short_keys.iter().filter_map(|k| kb.lookup_symbol(k)).collect()
 }
 
 fn type_node_named<'a>(tn: &TypeNode, kb: &KnowledgeBase, sym: Symbol) -> Option<ViewItem<'a>> {
@@ -223,9 +248,11 @@ fn type_node_named<'a>(tn: &TypeNode, kb: &KnowledgeBase, sym: Symbol) -> Option
         TypeNode::Denoted { value } if Some(sym) == key("value") => {
             Some(ViewItem::Node(Rc::clone(value)))
         }
-        TypeNode::Parameterized { base, .. } if Some(sym) == key("base") => {
-            Some(type_child_view_item(base))
-        }
+        // Bindings ARE the named args (WI-361): resolve the child by binding param.
+        TypeNode::Parameterized { bindings, .. } => bindings
+            .iter()
+            .find(|(s, _)| *s == sym)
+            .map(|(_, c)| type_child_view_item(c)),
         TypeNode::EffectsRows { effects_expr } if Some(sym) == key("effects_expr") => {
             Some(type_child_view_item(effects_expr))
         }

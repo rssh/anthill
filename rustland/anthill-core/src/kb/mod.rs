@@ -3790,7 +3790,6 @@ mod tests {
         let empty_row_tid = kb.make_effect_expression_empty_row();
 
         let arrow_sym = kb.resolve_symbol("anthill.prelude.Type.arrow");
-        let parameterized_sym = kb.resolve_symbol("anthill.prelude.Type.parameterized");
         let effects_rows_sym = kb.resolve_symbol("anthill.prelude.Type.effects_rows");
         let merge_sym = kb.resolve_symbol("anthill.prelude.EffectExpression.merge");
         let absent_sym = kb.resolve_symbol("anthill.prelude.EffectExpression.absent");
@@ -3802,7 +3801,6 @@ mod tests {
         let left_key = kb.intern("left");
         let right_key = kb.intern("right");
         let label_key = kb.intern("label");
-        let base_key = kb.intern("base");
 
         // ── Value-carried spine (the new producer builders). ──
         let denoted_occ = kb.make_denoted_occ_ref(c_sym, span, None);
@@ -3867,30 +3865,37 @@ mod tests {
         );
 
         let paramd = left.named_arg(&kb, label_key).expect("absent.label");
-        assert_eq!(functor_of(&paramd.head(&kb)), Some(parameterized_sym));
-        let base = paramd.named_arg(&kb, base_key).expect("parameterized.base");
+        // WI-361: the parameterized carrier mirrors the term-backed `Fn{Modify, T}`
+        // — its head functor IS the base sort `Modify` (no `parameterized` wrapper)
+        // and the binding `T` reads as a named arg, so `TermView` reads the carrier
+        // and its `Term::Fn` twin identically.
+        assert_eq!(functor_of(&paramd.head(&kb)), Some(modify_sym));
+        assert_eq!(
+            functor_of(&paramd.head(&kb)),
+            functor_of(&TermIdView(modify_param).head(&kb)),
+            "parameterized carrier reads the same functor as its Term::Fn twin",
+        );
         assert!(
-            matches!(base, ViewItem::Term(t) if t == modify_base),
-            "parameterized.base is the ground sort_ref(Modify) Term, got {base:?}",
+            matches!(paramd.head(&kb), ViewHead::Functor { named_arity: 1, pos_arity: 0, .. }),
+            "parameterized exposes its single binding T as a named arg, got {:?}",
+            paramd.head(&kb),
         );
 
-        // Rep A: `bindings` isn't on the generic view; reach the `denoted`
-        // type-specifically via `as_type`, asserting occurrence identity.
+        // The binding value `T = denoted(c)` is reached as the named arg `T`,
+        // carrying the identity-bearing occurrence (the poison source) — not a
+        // hash-consed Term.
+        let t_arg = paramd.named_arg(&kb, t_sym).expect("parameterized.T binding");
+        let ViewItem::Node(denoted_seen) = &t_arg else {
+            panic!("binding value is the poisoned denoted Node, got {t_arg:?}");
+        };
+        assert!(Rc::ptr_eq(denoted_seen, &denoted_occ), "denoted Rc identity preserved");
+
+        // Storage is unchanged (`TypeNode::Parameterized { base, bindings }`); the
+        // Rc identity of the carrier occurrence is preserved through the view.
         let ViewItem::Node(param_seen) = &paramd else {
             panic!("parameterized read as a Node occurrence, got {paramd:?}");
         };
         assert!(Rc::ptr_eq(param_seen, &param_occ), "view preserves Rc identity");
-        let TypeNode::Parameterized { bindings, .. } =
-            param_seen.as_type().expect("parameterized is a Type node")
-        else {
-            panic!("expected Parameterized");
-        };
-        assert_eq!(bindings.len(), 1);
-        assert_eq!(bindings[0].0, t_sym, "binding param is T");
-        let TypeChild::Node(denoted_seen) = &bindings[0].1 else {
-            panic!("binding value is the poisoned denoted, not ground");
-        };
-        assert!(Rc::ptr_eq(denoted_seen, &denoted_occ), "denoted Rc identity preserved");
         let TypeNode::Denoted { value } =
             denoted_seen.as_type().expect("denoted is a Type node")
         else {

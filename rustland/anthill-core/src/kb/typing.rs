@@ -7213,7 +7213,11 @@ fn unify_view_structural<A: TermView, B: TermView>(
     a: &A,
     b: &B,
 ) -> bool {
-    match (resolved_functor_name(kb, a), resolved_functor_name(kb, b)) {
+    // WI-361: dispatch on the CANONICAL type tag (`type_head`), not the raw
+    // functor — a flipped parameterized carrier / term-backed `Fn{S, named}`
+    // reports its base sort as the raw functor, so raw-functor dispatch would miss
+    // the `parameterized` arm (and the `denoted` alpha-equivalence path beneath it).
+    match (type_dispatch_name_view(kb, a), type_dispatch_name_view(kb, b)) {
         (Some("denoted"), Some("denoted")) => unify_denoted_view(kb, a, b),
         (Some("parameterized"), Some("parameterized")) => {
             unify_parameterized_view(kb, subst, a, b)
@@ -7252,12 +7256,13 @@ fn unify_parameterized_view<A: TermView, B: TermView>(
     a: &A,
     b: &B,
 ) -> bool {
-    // A `Value::Node` parameterized addresses its `base` field by name in the
-    // view layer (`type_node_named` via `lookup_symbol`), and the `make_*_occ`
-    // builders — unlike `make_parameterized_type` — don't intern it; ensure it
-    // is interned (as this fn did pre-WI-361) so `extract_type` resolves the
-    // base in a minimal KB. Done here (not eagerly at prelude/KB init) to avoid
-    // perturbing load-time symbol-id ordering; a no-op once stdlib is loaded.
+    // `extract_type`'s DEEP-form arm reads a `parameterized(base, …)` TermId's
+    // `base` child by name (`deep_parameterized_base` via `lookup_symbol`) — the
+    // reflect/residual form, still dual-form. Intern `base` so that resolves in a
+    // minimal KB (`register_prelude` deliberately doesn't — eager-interning
+    // perturbed load-time symbol ids, breaking wi355); a no-op once stdlib is
+    // loaded. The WI-361-flipped Node carrier reads its base from the head
+    // functor, not a `base` child, so it needs no intern.
     kb.intern("base");
     // WI-361: read base + bindings form-agnostically via `extract_type` so a
     // term-backed `Fn{S, named}` (base = functor, bindings = named args) unifies
@@ -8854,8 +8859,11 @@ fn types_compatible_view_structural<A: TermView, B: TermView>(
         return types_compatible_term_dispatch(kb, subst, *x, *y);
     }
 
-    let af = resolved_functor_name(kb, &a);
-    let ef = resolved_functor_name(kb, &e);
+    // WI-361: canonical type tag, not raw functor (see `unify_view_structural`) —
+    // a flipped parameterized / term-backed `Fn{S, named}` routes to the
+    // `parameterized` arms instead of falling through to the re-grounding bridge.
+    let af = type_dispatch_name_view(kb, &a);
+    let ef = type_dispatch_name_view(kb, &e);
     // type_var is the inference wildcard; nothing is bottom (subtype of all).
     if af == Some("type_var") || ef == Some("type_var") {
         return true;
@@ -8880,17 +8888,16 @@ fn types_compatible_view_structural<A: TermView, B: TermView>(
         // type. Read the parts carrier-agnostically (no re-ground) so a
         // `Value::Node` arrow checks against a `Function` without the lossy
         // `occ_to_term` bridge the `_` fallback would force on a denoted effect.
-        // (A *term-backed* `Function` reports its raw functor here, not
-        // `parameterized`, so that pairing still takes the re-grounding fallback
-        // below — same residual as the other term-backed view forms.)
+        // Dispatch is now canonical (`type_head`), so a term-backed `Fn{Function,
+        // named}` reports `parameterized` and hits this arm directly too (no
+        // re-grounding residual).
         (Some("arrow"), Some("parameterized")) | (Some("parameterized"), Some("arrow")) => {
             arrow_function_compatible(kb, subst, &a, &e)
         }
         // WI-342: any pair without a carrier-agnostic subtype arm yet
-        // (`parameterized`-vs-`sort_ref`, `named_tuple`, term-backed forms whose
-        // raw functor isn't a canonical tag) re-grounds both sides and delegates
-        // to `types_compatible_term_dispatch` — sound (lossless) and strictly
-        // more complete than the old `_ => false`. In lockstep with
+        // (`parameterized`-vs-`sort_ref`, `named_tuple`) re-grounds both sides and
+        // delegates to `types_compatible_term_dispatch` — sound (lossless) and
+        // strictly more complete than the old `_ => false`. In lockstep with
         // `unify_view_structural`'s identical bridge.
         _ => {
             let at = view_to_term_id(kb, &a);
@@ -8978,8 +8985,8 @@ fn parameterized_compatible_view<A: TermView, B: TermView>(
     actual: &A,
     expected: &B,
 ) -> bool {
-    // Ensure the `base` field name is interned for the `Value::Node` view read
-    // (see `unify_parameterized_view`).
+    // Intern `base` for `extract_type`'s deep-form `base`-child read of a
+    // reflect/residual `parameterized` TermId (see `unify_parameterized_view`).
     kb.intern("base");
     // WI-361: base + bindings form-agnostic via `extract_type` (see
     // `unify_parameterized_view`); the base subtype check recurses the full
@@ -9234,20 +9241,14 @@ fn more_general_type(kb: &KnowledgeBase, a: &Value, b: &Value) -> Value {
 }
 
 /// The form tag of a branch type for [`more_general_type`]'s bare-vs-
-/// parameterized normalization. WI-361 dual-form on the `TermId` carrier (a
-/// term-backed `Ref(S)` / `Fn{S,named}` reports `sort_ref` / `parameterized`
-/// via [`type_dispatch_name`], where the raw functor would not); a `Value::Node`
-/// keeps the raw-functor reading — it is never a bare sort, and only these two
-/// tags drive the normalization.
+/// parameterized normalization, via the canonical classifier ([`type_head`]) so
+/// it is carrier-agnostic. WI-361: a `Value::Node` parameterized reports
+/// `parameterized` even though its raw functor is now the base sort (the carrier
+/// mirrors the term backing `Fn{S,named}`), exactly like a term-backed
+/// `Fn{S,named}` / `Ref(S)` on the `TermId` side — a raw-functor read would miss
+/// it and mis-normalize the join to the over-specific side.
 fn more_general_form(kb: &KnowledgeBase, v: &Value) -> Option<&'static str> {
-    match v {
-        Value::Term(t) => type_dispatch_name(kb, *t),
-        _ => match resolved_functor_name(kb, v) {
-            Some("parameterized") => Some("parameterized"),
-            Some("sort_ref") => Some("sort_ref"),
-            _ => None,
-        },
-    }
+    type_dispatch_name_view(kb, v)
 }
 
 /// WI-287: the result type of a branching expression (`match` / `if`),
@@ -10099,7 +10100,19 @@ fn deep_parameterized_base<V: TermView>(kb: &KnowledgeBase, ty: &V) -> Option<Sy
 /// fire identically for the deep and the term-backed form (WI-361 stage 2). On
 /// the deep form it agrees with `type_functor_name` for every Type constructor.
 fn type_dispatch_name(kb: &KnowledgeBase, ty: TermId) -> Option<&'static str> {
-    match type_head(kb, &TermIdView(ty)) {
+    type_dispatch_name_view(kb, &TermIdView(ty))
+}
+
+/// [`type_dispatch_name`] over any [`TermView`] carrier — the canonical dispatch
+/// tag from [`type_head`], so the view-structural unify/subtype arms route a
+/// `Value::Node` (or term-backed) carrier by its *canonical* form rather than its
+/// raw functor. WI-361: once the parameterized carrier mirrors the term backing
+/// (functor = base sort) and the producers build `Fn{S, named}`, the raw functor
+/// is the base sort `S`, not `parameterized` — so dispatch MUST canonicalize or
+/// the `(parameterized, parameterized)` arm (and the `denoted` alpha path beneath
+/// it) is missed.
+fn type_dispatch_name_view<V: TermView>(kb: &KnowledgeBase, ty: &V) -> Option<&'static str> {
+    match type_head(kb, ty) {
         TypeHead::SortRef(_) => Some("sort_ref"),
         TypeHead::TypeVar(_) => Some("type_var"),
         TypeHead::Parameterized { .. } => Some("parameterized"),
@@ -11904,6 +11917,38 @@ mod p4_tests {
             span(),
             None,
         )
+    }
+
+    /// WI-361 regression: `more_general_type`'s bare-vs-parameterized join
+    /// normalization must classify a `Value::Node` parameterized via the canonical
+    /// `type_head` tag, not its raw functor. After the carrier flip the Node's raw
+    /// functor is the base sort (`Modify`), not `parameterized`; a raw-functor read
+    /// tags it `None` and the join returns the OVER-SPECIFIC parameterized side
+    /// instead of the more-general bare sort. Both orderings must yield the bare.
+    #[test]
+    fn more_general_type_prefers_bare_over_value_node_parameterized() {
+        use crate::eval::value::Value;
+        let mut kb = kb_with_prelude();
+        let modify = kb.intern("Modify");
+        let p = kb.intern("resource");
+        let c = kb.intern("c");
+
+        // `Value::Node` `Modify[resource = denoted(c)]` (head functor = base sort
+        // `Modify` post-flip) vs the bare sort `Modify` (`Ref(Modify)`).
+        let node_param = Value::Node(occ_param(&mut kb, modify, p, c));
+        let bare_tid = kb.make_sort_ref(modify);
+        let bare = Value::Term(bare_tid);
+
+        let node_first = super::more_general_type(&kb, &node_param, &bare);
+        let bare_first = super::more_general_type(&kb, &bare, &node_param);
+        assert!(
+            matches!(node_first, Value::Term(t) if t == bare_tid),
+            "join should pick the more-general bare sort, got {node_first:?}",
+        );
+        assert!(
+            matches!(bare_first, Value::Term(t) if t == bare_tid),
+            "join must be commutative (bare sort either way), got {bare_first:?}",
+        );
     }
 
     /// Cross-carrier: ground `Modify[c]` unifies with `Value`-carried
