@@ -10371,18 +10371,20 @@ fn extract_sym_list(kb: &KnowledgeBase, list_tid: TermId) -> Vec<Symbol> {
 fn check_value_against_type(
     kb: &mut KnowledgeBase,
     value: TermId,
-    declared_type: TermId,
+    declared_type: &Value,
     entity_sym: Symbol,
     field_sym: Symbol,
     span: Option<Span>,
 ) -> Option<TypeError> {
     // WI-361: dispatch on the canonical form tag so a term-backed `Ref(S)` /
     // `Fn{S,named}` routes to the same arms as the deep `sort_ref` / `parameterized`.
-    let type_functor = type_dispatch_name(kb, declared_type);
+    // WI-342: the declared type is carrier-agnostic — read it through [`TermView`]
+    // (a `Value::Node` denoted-bearing field type is handled, not re-grounded).
+    let type_functor = type_dispatch_name_view(kb, declared_type);
 
     match type_functor {
         Some("sort_ref") => {
-            let declared_sym = extract_sort_ref_sym(kb, &TermIdView(declared_type))?;
+            let declared_sym = extract_sort_ref_sym(kb, declared_type)?;
             check_value_against_sort_ref(kb, value, declared_sym, declared_type, entity_sym, field_sym, span)
         }
         Some("parameterized") => {
@@ -10397,7 +10399,7 @@ fn check_value_against_sort_ref(
     kb: &KnowledgeBase,
     value: TermId,
     declared_sym: Symbol,
-    declared_type: TermId,
+    declared_type: &Value,
     entity_sym: Symbol,
     field_sym: Symbol,
     span: Option<Span>,
@@ -10432,7 +10434,7 @@ fn check_value_against_sort_ref(
                 Some(TypeError::Other {
                     span,
                     context: TypeErrorContext::EntityField { entity: entity_sym, field: field_sym },
-                    expected: type_display_name(kb, declared_type),
+                    expected: type_display_name_value(kb, declared_type),
                     actual: actual.to_string(),
                 })
             }
@@ -10467,7 +10469,7 @@ fn check_value_sort_membership(
     kb: &KnowledgeBase,
     parent: Option<TermId>,
     declared_sym: Symbol,
-    declared_type: TermId,
+    declared_type: &Value,
     entity_sym: Symbol,
     field_sym: Symbol,
     span: Option<Span>,
@@ -10482,7 +10484,7 @@ fn check_value_sort_membership(
     Some(TypeError::Other {
         span,
         context: TypeErrorContext::EntityField { entity: entity_sym, field: field_sym },
-        expected: type_display_name(kb, declared_type),
+        expected: type_display_name_value(kb, declared_type),
         actual: extract_parent_name(kb, parent),
     })
 }
@@ -10494,15 +10496,16 @@ fn check_value_sort_membership(
 fn check_value_against_parameterized(
     kb: &mut KnowledgeBase,
     value: TermId,
-    declared_type: TermId,
+    declared_type: &Value,
     entity_sym: Symbol,
     field_sym: Symbol,
     span: Option<Span>,
 ) -> Option<TypeError> {
     // WI-361: read base + bindings form-agnostically — deep
     // `parameterized(base: sort_ref(S), bindings)` or term-backed `Fn{S, named}`.
+    // WI-342: carrier-agnostic over [`TermView`] (the declared type is a `Value`).
     let TypeExtractor::Parameterized { base: base_sym, bindings } =
-        extract_type(kb, &TermIdView(declared_type))
+        extract_type(kb, declared_type)
     else {
         return None;
     };
@@ -10543,7 +10546,7 @@ fn check_value_against_parameterized(
             return Some(TypeError::Other {
                 span,
                 context: TypeErrorContext::EntityField { entity: entity_sym, field: field_sym },
-                expected: type_display_name(kb, declared_type),
+                expected: type_display_name_value(kb, declared_type),
                 actual: extract_parent_name(kb, parent),
             });
         }
@@ -10557,9 +10560,10 @@ fn check_value_against_parameterized(
     // unsubstituted. WI-361: bindings come carrier-agnostic from `extract_type`.
     let mut subst = Substitution::new();
     for (psym, value_type) in &bindings {
-        let Value::Term(vt) = value_type else { continue };
         if let Some(vid) = type_param_vid_in_sort(kb, base_sym, *psym) {
-            subst.bind(vid, *vt);
+            // WI-342: bind carrier-agnostically (`bind_value`) so a `Value::Node`
+            // binding is carried; `walk_type_value` resolves a field type through it.
+            subst.bind_value(vid, value_type.clone());
         }
     }
 
@@ -10581,13 +10585,11 @@ fn check_value_against_parameterized(
         };
         if matches!(kb.get_term(fval), Term::Var(_)) { continue; }
 
-        // Walk the field type through the substitution to resolve type params.
-        // WI-342: the field type is a carrier-agnostic `Value`; re-ground for the
-        // term-based value/type check.
-        let declared_term = value_to_term_id(kb, declared_field_type);
-        let instantiated_type = walk_type(kb, &subst, declared_term);
+        // Walk the field type through the substitution to resolve type params,
+        // carrier-agnostically (WI-342) — a `Value::Node` field type is carried.
+        let instantiated_type = walk_type_value(kb, &subst, declared_field_type);
 
-        if let Some(err) = check_value_against_type(kb, fval, instantiated_type, entity_sym, *fsym, span) {
+        if let Some(err) = check_value_against_type(kb, fval, &instantiated_type, entity_sym, *fsym, span) {
             return Some(err);
         }
     }
@@ -10696,9 +10698,9 @@ fn check_entity_facts(kb: &mut KnowledgeBase, ctor_syms: &[Symbol], errors: &mut
                     continue;
                 }
 
-                // WI-342: field type is a carrier-agnostic `Value`; re-ground.
-                let declared_term = value_to_term_id(kb, declared_type);
-                if let Some(err) = check_value_against_type(kb, field_value, declared_term, ctor_sym, field_sym, span) {
+                // WI-342: the field type is a carrier-agnostic `Value` — checked in
+                // place, no re-ground.
+                if let Some(err) = check_value_against_type(kb, field_value, declared_type, ctor_sym, field_sym, span) {
                     errors.push(err);
                 }
             }
