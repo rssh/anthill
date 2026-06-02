@@ -4651,3 +4651,58 @@ end
         ),
     }
 }
+
+#[test]
+fn wi342_env_dataflow_let_bound_lambda_carries_modify_effect() {
+    // WI-342 env data-flow: a `let`-bound effectful lambda's arrow type is a
+    // `Value::Node` (it carries `Modify[s]`). The pattern env now binds that type
+    // carrier-agnostically (`extend_env_from_pattern` no longer re-grounds), so a
+    // later reference to the bound name reads the Node arrow back out of the env.
+    // The op-boundary return check then compares it cross-carrier against the
+    // declared arrow — exercising the env-carries-Node path end-to-end.
+    //
+    // POSITIVE: declared `@ {Modify[s]}` matches the bound lambda's effect → loads.
+    let kb = load_with_stdlib(r#"
+namespace test.wi342letenv
+  import anthill.prelude.{Cell, Int}
+
+  operation set_cell(c: Cell[V = Int], v: Int) -> Cell[V = Int]
+    effects Modify[c]
+
+  operation outer(s: Cell[V = Int]) -> (Int) -> Cell[V = Int] @ {Modify[s]}
+    = let f = lambda v -> set_cell(s, v)
+      f
+end
+"#);
+    assert!(
+        kb.try_resolve_symbol("test.wi342letenv.outer").is_some(),
+        "outer should have loaded (the let-bound lambda's Modify[s] must survive \
+         the env binding and read back as the returned arrow's effect)",
+    );
+
+    // NEGATIVE (load-bearing): a PURE declared return must REJECT the let-bound
+    // effectful lambda. Were the effect dropped when the env re-bound the type,
+    // the arrow would type as pure (pure <: effectful) and wrongly load.
+    let pure_decl = r#"
+namespace test.wi342letenv_neg
+  import anthill.prelude.{Cell, Int}
+
+  operation set_cell(c: Cell[V = Int], v: Int) -> Cell[V = Int]
+    effects Modify[c]
+
+  operation outer(s: Cell[V = Int]) -> (Int) -> Cell[V = Int]
+    = let f = lambda v -> set_cell(s, v)
+      f
+end
+"#;
+    match try_load_with_stdlib(pure_decl) {
+        Ok(_) => panic!(
+            "a let-bound lambda carrying Modify[s] must NOT satisfy a pure declared \
+             return type — the env binding dropped the effect instead of carrying it",
+        ),
+        Err(errs) => assert!(
+            !errs.is_empty(),
+            "expected a type error rejecting the undeclared let-bound lambda effect",
+        ),
+    }
+}

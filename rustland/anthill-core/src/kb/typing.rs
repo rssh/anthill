@@ -939,6 +939,19 @@ fn walk_type_deep_value(kb: &mut KnowledgeBase, subst: &Substitution, e: &Value)
     }
 }
 
+/// WI-342 env data-flow: resolve sort-level type params in a carrier-agnostic
+/// constructor field type through the pattern subst (`case some(name)` over
+/// `Option[T = String]` resolves `name`'s declared `T` to `String`). A ground
+/// (`Value::Term`) field walks via [`walk_type`]; a `Value::Node` field carries
+/// `Ref`s, not type-param vars, so the substitution is a no-op and it is returned
+/// as-is (same rationale as [`walk_type_deep_value`]).
+fn walk_type_value(kb: &KnowledgeBase, subst: &Substitution, ty: &Value) -> Value {
+    match ty {
+        Value::Term(t) => Value::Term(walk_type(kb, subst, *t)),
+        other => other.clone(),
+    }
+}
+
 // ── Helpers ────────────────────────────────────────────────────
 
 /// WI-342 effects-vertical: display name of a carrier-agnostic effect label.
@@ -1397,7 +1410,9 @@ enum TypeBuildFrame {
         branch_envs: Vec<Rc<TypingEnv>>,
         branch_count: usize,
         outer_env: Rc<TypingEnv>,
-        scr_ty: Option<TermId>,
+        /// WI-342: the scrutinee type, carrier-agnostic (`Value`) — read for
+        /// the exhaustiveness sort lookup below via [`TermView`].
+        scr_ty: Option<Value>,
         covered_entities: Vec<Symbol>,
         has_wildcard: bool,
         /// WI-287: the match's own expected type (the parent's hint).
@@ -1949,7 +1964,10 @@ fn visit_type(
                     kb.make_type_var(fresh)
                 });
             let mut lambda_env = (*env).clone();
-            extend_env_from_pattern(kb, &mut lambda_env, param, Some(param_type));
+            // WI-342: the env binds a `Value`; the lambda param type is still a
+            // hash-consed `TermId` (it feeds `make_arrow_type` in `LambdaBody`),
+            // so wrap it `Value::Term` for the binding.
+            extend_env_from_pattern(kb, &mut lambda_env, param, Some(Value::Term(param_type)));
             // WI-270: if expected is `arrow(param, result, effects)`,
             // decompose and pass `result` to the body. Mismatching
             // shapes (or `None`) leave the body without a hint. WI-342 S3a: the
@@ -2476,13 +2494,12 @@ fn build_type(
             // WI-283: keep the value's (possibly-rewritten) node to
             // reassemble the `Let` at `LetFinal` (its result is consumed here).
             let value_node = Rc::clone(&r.node);
-            // WI-342: the env binds a hash-consed `TermId` type — re-ground the
-            // let value's carrier-agnostic `ty`.
-            let value_ty = Some(value_to_term_id(kb, &r.ty));
+            // WI-342: the env binds a carrier-agnostic `Value` — carry the let
+            // value's `ty` (and a `Value` annotation) without re-grounding.
+            let value_ty = Some(r.ty);
             let (value_effects, mut ext_env) = (r.effects, r.env);
-            // WI-342: the env binds a hash-consed `TermId` (migrated in S5), so
-            // re-ground a `Value` annotation here; prefer it over the value type.
-            let bound_ty = annotation.map(|a| value_to_term_id(kb, &a)).or(value_ty);
+            // Prefer an explicit annotation (already `Value`, S4a) over the value type.
+            let bound_ty = annotation.or(value_ty);
             extend_env_from_pattern(kb, &mut ext_env, pattern, bound_ty);
             if let Some(var_name) = extract_pattern_var_name(kb, pattern) {
                 ext_env.declare_local_resource(var_name);
@@ -2525,9 +2542,9 @@ fn build_type(
         }
         TypeBuildFrame::MatchAfterScrutinee { occ, branches, outer_env, body_expected, fuel } => {
             let scr_r = results.pop().expect("MatchAfterScrutinee: missing scrutinee result");
-            // WI-342: the scrutinee sort lookup + pattern env binding use a
-            // hash-consed `TermId`; re-ground the carrier-agnostic `ty`.
-            let scr_ty = scr_r.as_ref().ok().map(|r| value_to_term_id(kb, &r.ty));
+            // WI-342: carry the scrutinee's `ty` as a `Value` — the sort lookup
+            // and pattern env binding read it carrier-agnostically (no re-ground).
+            let scr_ty = scr_r.as_ref().ok().map(|r| r.ty.clone());
             let scr_effects = scr_r.as_ref().ok().map(|r| r.effects.clone()).unwrap_or_default();
             // WI-283: the scrutinee's (possibly-rewritten) node for
             // reassembly — falling back to the original when it didn't type.
@@ -2552,7 +2569,8 @@ fn build_type(
             // set — resolving against them replaces the removed global
             // short→qualified fallback the late lookup relied on.
             let scrutinee_ctors: Vec<Symbol> = scr_ty
-                .and_then(|sty| extract_sort_ref_sym(kb, &TermIdView(sty)))
+                .as_ref()
+                .and_then(|sty| extract_sort_ref_sym(kb, sty))
                 .map(|s| {
                     let sort_term = kb.make_name_term_from_sym(s);
                     sort_constructor_syms(kb, sort_term)
@@ -2571,7 +2589,7 @@ fn build_type(
                     &mut has_wildcard,
                 );
                 let mut branch_env = (*outer_env).clone();
-                extend_env_from_pattern(kb, &mut branch_env, pattern_tid, scr_ty);
+                extend_env_from_pattern(kb, &mut branch_env, pattern_tid, scr_ty.clone());
                 branch_envs.push(Rc::new(branch_env));
             }
 
@@ -2655,7 +2673,7 @@ fn build_type(
             let mut result_env = (*outer_env).clone();
             if !has_wildcard {
                 if let Some(sty) = scr_ty {
-                    if let Some(sort_sym) = extract_sort_ref_sym(kb, &TermIdView(sty)) {
+                    if let Some(sort_sym) = extract_sort_ref_sym(kb, &sty) {
                         let sort_term = kb.make_name_term_from_sym(sort_sym);
                         if kb.sort_kind(sort_term) == Some(SortKind::Enum) {
                             let all_entities = sort_constructor_syms(kb, sort_term);
@@ -6775,23 +6793,15 @@ fn extract_function_param_type<V: TermView>(kb: &mut KnowledgeBase, fn_type: &V)
 /// sub-patterns positionally (`lambda (a, b) -> ...` checked against
 /// `Function[(A, B), R]` types `a: A`, `b: B`). Returns `None` for a
 /// non-tuple type.
-fn named_tuple_field_types(kb: &KnowledgeBase, ty: TermId) -> Option<Vec<TermId>> {
-    if type_functor_name(kb, ty) != Some("NamedTuple") {
-        return None;
-    }
-    let fields_tid = match kb.get_term(ty) {
-        Term::Fn { named_args, .. } => get_named_arg(kb, named_args, "fields"),
+/// Component types of a named-tuple type, in field order, carrier-agnostically
+/// (WI-342 env data-flow): reads via [`extract_type`] so a `Value::Node` tuple (a
+/// component that is a denoted-bearing lambda arrow) is handled too, and yields
+/// each component as a carrier-agnostic [`Value`]. A non-tuple type yields `None`.
+fn named_tuple_field_types<V: TermView>(kb: &KnowledgeBase, ty: &V) -> Option<Vec<Value>> {
+    match extract_type(kb, ty) {
+        TypeExtractor::NamedTuple(fields) => Some(fields.into_iter().map(|(_, v)| v).collect()),
         _ => None,
-    }?;
-    let mut out = Vec::new();
-    for field in list_to_vec(kb, fields_tid) {
-        if let Term::Fn { named_args, .. } = kb.get_term(field) {
-            if let Some(field_ty) = get_named_arg(kb, named_args, "type") {
-                out.push(field_ty);
-            }
-        }
     }
-    Some(out)
 }
 
 /// Extract the variable name symbol from a `var_pattern`.
@@ -6835,15 +6845,16 @@ pub(crate) fn extract_type_param<V: TermView>(kb: &KnowledgeBase, ty: &V, param:
 /// short-name resolution is ambiguous when many sorts declare
 /// `sort T = ?`.
 fn build_pattern_subst(
-    kb: &KnowledgeBase,
-    scrutinee_type: TermId,
+    kb: &mut KnowledgeBase,
+    scrutinee_type: &impl TermView,
     parent_sort: Symbol,
 ) -> Option<Substitution> {
     // WI-361: read the bindings form-agnostically — deep `parameterized(base,
     // bindings)` or term-backed `Fn{S, named}`. A non-parameterized scrutinee
-    // (bare sort, arrow, …) yields no pattern subst.
+    // (bare sort, arrow, …) yields no pattern subst. WI-342: carrier-agnostic
+    // over [`TermView`] so a `Value::Node` scrutinee builds the subst too.
     let TypeExtractor::Parameterized { bindings, .. } =
-        extract_type(kb, &TermIdView(scrutinee_type))
+        extract_type(kb, scrutinee_type)
     else {
         return None;
     };
@@ -6851,9 +6862,16 @@ fn build_pattern_subst(
     let mut subst = Substitution::new();
     let mut any = false;
     for (param, value) in &bindings {
-        let Value::Term(value) = value else { continue };
         if let Some(vid) = type_param_vid_in_sort(kb, parent_sort, *param) {
-            subst.bind_term(vid, *value);
+            // The pattern subst feeds `walk_type` (TermId-based — the type-var
+            // resolver is not a WI-342 migration target), so a binding value
+            // materializes to a hash-consed `TermId` here. A `Value::Node`
+            // (denoted-bearing) type-param value re-grounds losslessly — exactly
+            // what the pre-WI-342 whole-scrutinee re-ground did before this fn saw
+            // the bindings, so binding it (rather than silently dropping it) keeps
+            // the migration behaviour-identical over the full input domain.
+            let ground = value_to_term_id(kb, value);
+            subst.bind_term(vid, ground);
             any = true;
         }
     }
@@ -6887,7 +6905,7 @@ fn extend_env_from_pattern(
     kb: &mut KnowledgeBase,
     env: &mut TypingEnv,
     pattern: TermId,
-    scrutinee_type: Option<TermId>,
+    scrutinee_type: Option<Value>,
 ) {
     if let Term::Fn { functor, named_args, pos_args } = kb.get_term(pattern).clone() {
         let functor_name = kb.resolve_sym(functor).to_string();
@@ -6901,11 +6919,13 @@ fn extend_env_from_pattern(
                     // here with no component type) and match vars over an
                     // un-inferred scrutinee stayed unbound and every
                     // reference failed as `UnresolvedName`. (WI-289)
+                    // WI-342: the env binds a carrier-agnostic `Value`, so a
+                    // `Value::Node` component type is preserved, not re-grounded.
                     let ty = scrutinee_type.unwrap_or_else(|| {
                         let fresh = kb.intern("?pat");
-                        kb.make_type_var(fresh)
+                        Value::Term(kb.make_type_var(fresh))
                     });
-                    env.bind_var(sym, Value::Term(ty));
+                    env.bind_var(sym, ty);
                     // Pattern-bound names are local — effects on them
                     // shouldn't escape the surrounding match/case scope
                     // (matches `check_let_expr`'s declare_local_resource
@@ -6937,16 +6957,17 @@ fn extend_env_from_pattern(
                                 _ => None,
                             });
                         let subst = scrutinee_type
+                            .as_ref()
                             .zip(parent_sort)
                             .and_then(|(st, p)| build_pattern_subst(kb, st, p));
                         for (i, sub_pat) in sub_patterns.iter().enumerate() {
-                            // WI-342: the field type is a carrier-agnostic `Value`;
-                            // the env binds a hash-consed `TermId`, so re-ground.
+                            // WI-342: the field type is a carrier-agnostic `Value`
+                            // (`entity_field_types`); resolve its sort-level type
+                            // params through the pattern subst without re-grounding.
                             let field_type = fields.get(i).map(|(_, ty)| {
-                                let t = value_to_term_id(kb, ty);
                                 match &subst {
-                                    Some(s) => walk_type(kb, s, t),
-                                    None => t,
+                                    Some(s) => walk_type_value(kb, s, ty),
+                                    None => ty.clone(),
                                 }
                             });
                             extend_env_from_pattern(kb, env, *sub_pat, field_type);
@@ -6971,9 +6992,11 @@ fn extend_env_from_pattern(
                 // type var.
                 if let Some(elements) = get_named_arg(kb, &named_args, "elements") {
                     let sub_patterns = list_to_vec(kb, elements);
-                    let components = scrutinee_type.and_then(|t| named_tuple_field_types(kb, t));
+                    let components = scrutinee_type
+                        .as_ref()
+                        .and_then(|t| named_tuple_field_types(kb, t));
                     for (i, sub_pat) in sub_patterns.iter().enumerate() {
-                        let comp = components.as_ref().and_then(|c| c.get(i).copied());
+                        let comp = components.as_ref().and_then(|c| c.get(i).cloned());
                         extend_env_from_pattern(kb, env, *sub_pat, comp);
                     }
                 }
@@ -7534,7 +7557,7 @@ fn unify_term_dispatch(
 ) -> bool {
     // WI-361: dispatch on the canonical form tag so a term-backed `Ref(S)` /
     // `Fn{S,named}` routes through the same arms as the deep `sort_ref` /
-    // `parameterized` (identical to `type_functor_name` on the deep form).
+    // `parameterized` (identical to the raw functor name on the deep form).
     let a_functor = type_dispatch_name(kb, a_resolved);
     let b_functor = type_dispatch_name(kb, b_resolved);
 
@@ -8948,14 +8971,6 @@ fn parameterized_base_sym(kb: &KnowledgeBase, ty: TermId) -> Option<Symbol> {
     }
 }
 
-/// Get the functor name of a Type entity term.
-fn type_functor_name<'a>(kb: &'a KnowledgeBase, ty: TermId) -> Option<&'a str> {
-    match kb.get_term(ty) {
-        Term::Fn { functor, .. } => Some(kb.resolve_sym(*functor)),
-        _ => None,
-    }
-}
-
 /// Strict subtype check: actual is a proper subtype of expected.
 /// `is_subtype(A, A)` is false. `is_subtype(red, Color)` is true.
 ///
@@ -9831,7 +9846,7 @@ pub fn extract_sort_ref_sym<V: TermView>(kb: &KnowledgeBase, ty: &V) -> Option<S
 /// `anthill.prelude.TypeExtractor` enum (sort.anthill), computed on demand by
 /// [`extract_type`]. It backs the `anthill.reflect.extract` builtin and is the
 /// engine-internal classifier the typer/codegen `match` over (replacing ad-hoc
-/// `type_functor_name`-keyed dispatch as readers migrate).
+/// functor-name-keyed dispatch as readers migrate).
 ///
 /// **Dual-form.** A `Type` value is converging from a deep ADT representation
 /// (`sort_ref(name)` / `parameterized(base, bindings)` terms) onto a *term
@@ -9928,12 +9943,12 @@ fn type_head<V: TermView>(kb: &KnowledgeBase, ty: &V) -> TypeHead {
 }
 
 /// The canonical dispatch tag for a type's form — [`type_head`] mapped to the
-/// `&str` names the unify/subtype dispatch arms match on. Unlike
-/// [`type_functor_name`] (the raw functor short-name), this canonicalizes BOTH
+/// `&str` names the unify/subtype dispatch arms match on. Unlike the raw functor
+/// short-name, this canonicalizes BOTH
 /// representations: a term-backed bare sort `Ref(S)` reports `"sort_ref"` and a
 /// term-backed `Fn{S, named}` reports `"parameterized"`, so the dispatch arms
 /// fire identically for the deep and the term-backed form (WI-361 stage 2). On
-/// the deep form it agrees with `type_functor_name` for every Type constructor.
+/// the deep form it agrees with the raw functor name for every Type constructor.
 fn type_dispatch_name(kb: &KnowledgeBase, ty: TermId) -> Option<&'static str> {
     type_dispatch_name_view(kb, &TermIdView(ty))
 }
