@@ -69,7 +69,7 @@ fn collect_sort_refs(kb: &KnowledgeBase, term: TermId, skip: Symbol, out: &mut H
     // `extract_sort_ref_sym` names the sort for both a deep `sort_ref` and the
     // bare `Ref(Cell)` a `Modifiable[T = Cell]` type-arg takes (WI-361), so one
     // check covers both fact-head shapes.
-    if let Some(s) = extract_sort_ref_sym(kb, term) {
+    if let Some(s) = extract_sort_ref_sym(kb, &super::term_view::TermIdView(term)) {
         if s != skip {
             out.insert(s);
         }
@@ -115,7 +115,7 @@ pub(crate) fn result_type_admits_region(
 ) -> bool {
     // `extract_sort_ref_sym` names the sort for both a deep `sort_ref` and the
     // bare `Ref(S)` a type-arg takes (WI-361).
-    if let Some(s) = extract_sort_ref_sym(kb, ty) {
+    if let Some(s) = extract_sort_ref_sym(kb, &super::term_view::TermIdView(ty)) {
         if regions.contains(&s) {
             return true;
         }

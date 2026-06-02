@@ -484,7 +484,6 @@ pub struct TypingEnv {
     // `Value::Node` arrow and cannot be a hash-consed `TermId`. Ground bindings
     // are `Value::Term`.
     var_bindings: HashMap<Symbol, Value>,
-    type_bindings: HashMap<Symbol, TermId>,
     local_resources: Vec<Symbol>,
     /// Enclosing sort for defer-to-requirement detection plus a
     /// cached `requires_chain` snapshot. The chain is consulted for every
@@ -504,7 +503,6 @@ impl TypingEnv {
     pub fn empty() -> Self {
         Self {
             var_bindings: HashMap::new(),
-            type_bindings: HashMap::new(),
             local_resources: Vec::new(),
             enclosing: None,
             diagnostics: Vec::new(),
@@ -543,14 +541,6 @@ impl TypingEnv {
 
     pub fn lookup_var(&self, name: Symbol) -> Option<Value> {
         self.var_bindings.get(&name).cloned()
-    }
-
-    pub fn bind_type(&mut self, param: Symbol, ty: TermId) {
-        self.type_bindings.insert(param, ty);
-    }
-
-    pub fn lookup_type(&self, param: Symbol) -> Option<TermId> {
-        self.type_bindings.get(&param).copied()
     }
 
     pub fn declare_local_resource(&mut self, name: Symbol) {
@@ -2562,7 +2552,7 @@ fn build_type(
             // set — resolving against them replaces the removed global
             // short→qualified fallback the late lookup relied on.
             let scrutinee_ctors: Vec<Symbol> = scr_ty
-                .and_then(|sty| extract_sort_ref_sym(kb, sty))
+                .and_then(|sty| extract_sort_ref_sym(kb, &TermIdView(sty)))
                 .map(|s| {
                     let sort_term = kb.make_name_term_from_sym(s);
                     sort_constructor_syms(kb, sort_term)
@@ -2665,7 +2655,7 @@ fn build_type(
             let mut result_env = (*outer_env).clone();
             if !has_wildcard {
                 if let Some(sty) = scr_ty {
-                    if let Some(sort_sym) = extract_sort_ref_sym(kb, sty) {
+                    if let Some(sort_sym) = extract_sort_ref_sym(kb, &TermIdView(sty)) {
                         let sort_term = kb.make_name_term_from_sym(sort_sym);
                         if kb.sort_kind(sort_term) == Some(SortKind::Enum) {
                             let all_entities = sort_constructor_syms(kb, sort_term);
@@ -5715,7 +5705,7 @@ fn format_goal(kb: &KnowledgeBase, goal: &SortGoal) -> String {
 /// Render a binding value compactly. Sort symbols → short name;
 /// parametric forms → `Base[K = V]`.
 fn format_term_for_goal(kb: &KnowledgeBase, t: TermId) -> String {
-    if let Some(sym) = extract_sort_ref_sym(kb, t) {
+    if let Some(sym) = extract_sort_ref_sym(kb, &TermIdView(t)) {
         return kb.qualified_name_of(sym).to_string();
     }
     match kb.get_term(t) {
@@ -6046,7 +6036,7 @@ fn effect_is_unresolved_var(kb: &KnowledgeBase, e: &Value) -> bool {
 /// it in a spec view — tolerant of every shape a bare param name takes
 /// (`sort_ref(name: S)` / `Ref` / `Ident` / a nullary `Fn` / `Var`).
 fn typaram_ref_short_name(kb: &KnowledgeBase, tid: TermId) -> Option<String> {
-    if let Some(s) = extract_sort_ref_sym(kb, tid) {
+    if let Some(s) = extract_sort_ref_sym(kb, &TermIdView(tid)) {
         return Some(short_name_of(kb.resolve_sym(s)).to_string());
     }
     match kb.get_term(tid) {
@@ -6243,7 +6233,7 @@ fn is_type_param_value(kb: &KnowledgeBase, value: TermId) -> bool {
 /// shapes a binding value may take: `sort_ref(name: Ref(X))`,
 /// bare `Ref(X)` / `Ident(X)`, or a nullary `Fn { functor: X, … }`.
 fn sort_sym_of_term(kb: &KnowledgeBase, t: TermId) -> Option<Symbol> {
-    if let Some(s) = extract_sort_ref_sym(kb, t) {
+    if let Some(s) = extract_sort_ref_sym(kb, &TermIdView(t)) {
         return Some(s);
     }
     match kb.get_term(t) {
@@ -7617,7 +7607,7 @@ fn unify_parameterized_with_sort_ref(
     else {
         return types_compatible(kb, subst, &TermIdView(parameterized), &TermIdView(sort_ref));
     };
-    let Some(sref_sym) = extract_sort_ref_sym(kb, sort_ref) else {
+    let Some(sref_sym) = extract_sort_ref_sym(kb, &TermIdView(sort_ref)) else {
         return types_compatible(kb, subst, &TermIdView(parameterized), &TermIdView(sort_ref));
     };
     if pbase_sym != sref_sym {
@@ -7684,7 +7674,7 @@ fn walk_type(kb: &KnowledgeBase, subst: &Substitution, ty: TermId) -> TermId {
     // WI-361: a bare sort is `Ref(S)` (term backing) or `sort_ref(name: Ref(S))`
     // (deep); `extract_sort_ref_sym` recognizes both. Any other shape (a
     // parameterized / arrow / non-type term) is left unchanged.
-    let sym = match extract_sort_ref_sym(kb, ty) {
+    let sym = match extract_sort_ref_sym(kb, &TermIdView(ty)) {
         Some(s) => s,
         None => return ty,
     };
@@ -8633,7 +8623,7 @@ fn types_compatible_term_dispatch(kb: &mut KnowledgeBase, subst: &mut Substituti
             // base check and drops a parameterized spec's bindings — see
             // `sort_provides_admissibly`.
             sort_ref_compatible(kb, actual, expected)
-                || match (extract_sort_ref_sym(kb, actual), extract_sort_ref_sym(kb, expected)) {
+                || match (extract_sort_ref_sym(kb, &TermIdView(actual)), extract_sort_ref_sym(kb, &TermIdView(expected))) {
                     (Some(a), Some(e)) => sort_provides_admissibly(kb, a, e),
                     _ => false,
                 }
@@ -8658,13 +8648,13 @@ fn types_compatible_term_dispatch(kb: &mut KnowledgeBase, subst: &mut Substituti
             // admissibility is confined to the bare↔bare arm above). WI-361:
             // `parameterized_base_sym` reads the base sort form-agnostically
             // (deep `base` field or the term-backed functor).
-            match (extract_sort_ref_sym(kb, actual), parameterized_base_sym(kb, expected)) {
+            match (extract_sort_ref_sym(kb, &TermIdView(actual)), parameterized_base_sym(kb, expected)) {
                 (Some(a), Some(eb)) => sort_sym_compatible(kb, a, eb),
                 _ => false,
             }
         }
         (Some("parameterized"), Some("sort_ref")) => {
-            match (extract_sort_ref_sym(kb, expected), parameterized_base_sym(kb, actual)) {
+            match (extract_sort_ref_sym(kb, &TermIdView(expected)), parameterized_base_sym(kb, actual)) {
                 (Some(e), Some(ab)) => sort_sym_compatible(kb, e, ab),
                 _ => false,
             }
@@ -8993,7 +8983,7 @@ pub fn is_subtype(kb: &mut KnowledgeBase, sub: TermId, sup: TermId) -> bool {
 /// two distinct entity-typed branches even when leaves weren't already
 /// widened to their sort.
 fn widen_to_parent_sort(kb: &mut KnowledgeBase, t: TermId) -> Option<TermId> {
-    let sym = extract_sort_ref_sym(kb, t)?;
+    let sym = extract_sort_ref_sym(kb, &TermIdView(t))?;
     let parent = kb.constructor_parent_sort(sym)?;
     Some(sort_term_to_type(kb, parent))
 }
@@ -9245,11 +9235,11 @@ fn compute_branch_join_type(
 /// sort_ref(name: A) compatible with sort_ref(name: B)
 /// if A == B, or A is_entity_of B, or A refines B via requires.
 fn sort_ref_compatible(kb: &KnowledgeBase, actual: TermId, expected: TermId) -> bool {
-    let actual_sym = match extract_sort_ref_sym(kb, actual) {
+    let actual_sym = match extract_sort_ref_sym(kb, &TermIdView(actual)) {
         Some(s) => s,
         None => return false,
     };
-    let expected_sym = match extract_sort_ref_sym(kb, expected) {
+    let expected_sym = match extract_sort_ref_sym(kb, &TermIdView(expected)) {
         Some(s) => s,
         None => return false,
     };
@@ -9823,11 +9813,13 @@ fn sort_operation_names(kb: &KnowledgeBase, sort_sym: Symbol) -> Vec<String> {
 
 /// Extract the sort symbol from a sort_ref(name: Ref(sym)) term.
 /// Returns None if the term is not a sort_ref.
-pub fn extract_sort_ref_sym(kb: &KnowledgeBase, ty: TermId) -> Option<Symbol> {
+pub fn extract_sort_ref_sym<V: TermView>(kb: &KnowledgeBase, ty: &V) -> Option<Symbol> {
     // WI-361 stage 2: a bare sort is `Ref(S)` (term backing) or `sort_ref(name:
     // Ref(S))` (deep) — `type_head` classifies both as `SortRef`. Parameterized /
     // structural variants are not bare sorts → `None` (unchanged).
-    match type_head(kb, &TermIdView(ty)) {
+    // WI-342: carrier-agnostic over `TermView` (input principle) so a `Value`
+    // sort type reads identically without re-grounding.
+    match type_head(kb, ty) {
         TypeHead::SortRef(s) => Some(s),
         _ => None,
     }
@@ -10362,7 +10354,7 @@ fn check_value_against_type(
 
     match type_functor {
         Some("sort_ref") => {
-            let declared_sym = extract_sort_ref_sym(kb, declared_type)?;
+            let declared_sym = extract_sort_ref_sym(kb, &TermIdView(declared_type))?;
             check_value_against_sort_ref(kb, value, declared_sym, declared_type, entity_sym, field_sym, span)
         }
         Some("parameterized") => {
@@ -10604,7 +10596,7 @@ fn declared_type_goal_bindings(
 /// types (`List[T = Int]`) expose their real base and value sorts to
 /// `parametric_value_parts`.
 fn canonicalize_goal_value(kb: &mut KnowledgeBase, value: TermId) -> TermId {
-    if let Some(s) = extract_sort_ref_sym(kb, value) {
+    if let Some(s) = extract_sort_ref_sym(kb, &TermIdView(value)) {
         return kb.alloc(Term::Ref(s));
     }
     kb.map_fn_children(value, |kb, child| canonicalize_goal_value(kb, child))
@@ -11465,6 +11457,7 @@ mod wi361_reader_tests {
     //! the migrated path. (The deep-form path stays covered by the wider suite;
     //! the carrier-agnostic classifier itself by `type_extract_test`.)
     use super::{extract_sort_ref_sym, sort_functor_of};
+    use crate::kb::term_view::TermIdView;
     use crate::intern::Symbol;
     use crate::kb::load::register_prelude;
     use crate::kb::term::{Term, TermId};
@@ -11524,15 +11517,15 @@ mod wi361_reader_tests {
 
         // Term-backed bare sort `Ref(Int)` — pre-migration this returned None.
         let bare = kb.alloc(Term::Ref(int));
-        assert_eq!(extract_sort_ref_sym(&kb, bare), Some(int), "bare Ref(Int) -> Int");
+        assert_eq!(extract_sort_ref_sym(&kb, &TermIdView(bare)), Some(int), "bare Ref(Int) -> Int");
 
         // The same via the real builder `make_sort_ref` (also `Ref(Int)`).
         let built = kb.make_sort_ref(int);
-        assert_eq!(extract_sort_ref_sym(&kb, built), Some(int), "make_sort_ref(Int) -> Int");
+        assert_eq!(extract_sort_ref_sym(&kb, &TermIdView(built)), Some(int), "make_sort_ref(Int) -> Int");
 
         // A parameterized type is NOT a bare sort ref.
         let tb = term_backed_param(&mut kb, list, t, int);
-        assert_eq!(extract_sort_ref_sym(&kb, tb), None, "Fn{{List,..}} is not a bare sort ref");
+        assert_eq!(extract_sort_ref_sym(&kb, &TermIdView(tb)), None, "Fn{{List,..}} is not a bare sort ref");
     }
 
     /// The unify/subtype STRUCTURAL dispatch reads a term-backed `Fn{S, named}` as

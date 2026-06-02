@@ -2787,7 +2787,7 @@ impl KnowledgeBase {
         // sort is the discriminating functor (native `rules_by_functor`/discrim
         // selectivity, produced directly). `base` is a sort reference `Ref(S)` (post
         // make_sort_ref flip), read via the reader.
-        let base_sym = crate::kb::typing::extract_sort_ref_sym(self, base)
+        let base_sym = crate::kb::typing::extract_sort_ref_sym(self, &crate::kb::term_view::TermIdView(base))
             .expect("make_parameterized_type: base must be a sort reference");
         if bindings.is_empty() {
             // A parameterized type with no bindings IS the bare sort (`List[]` ≡

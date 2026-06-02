@@ -727,7 +727,7 @@ struct ParamInfo {
 /// marshalling) and for anything else exotic.
 fn is_body_emittable(ctx: &CodegenContext, type_term: TermId) -> bool {
     let kb = ctx.kb;
-    if let Some(sym) = extract_sort_ref_sym(kb, type_term) {
+    if let Some(sym) = extract_sort_ref_sym(kb, &TermIdView(type_term)) {
         let qualified = kb.qualified_name_of(sym);
         if ctx.carriers.lookup(qualified).is_some() {
             return true;
@@ -1482,7 +1482,7 @@ fn collect_type_term_refs(
     in_band: &std::collections::HashSet<Symbol>,
     out: &mut std::collections::HashSet<Symbol>,
 ) {
-    if let Some(sym) = extract_sort_ref_sym(kb, term) {
+    if let Some(sym) = extract_sort_ref_sym(kb, &TermIdView(term)) {
         if in_band.contains(&sym) {
             out.insert(sym);
         }
@@ -2122,7 +2122,7 @@ fn effect_kind_short(kb: &KnowledgeBase, term: TermId) -> Option<String> {
     // envelopes via the existing helpers — pre-typing forms like
     // `Error[T = X]` or `Modify(self)` fall through to the bare
     // functor short name.
-    if let Some(sym) = extract_sort_ref_sym(kb, term) {
+    if let Some(sym) = extract_sort_ref_sym(kb, &TermIdView(term)) {
         return Some(short_of(sym));
     }
     if let Some((base, _)) = unpack_parameterized(kb, term) {
@@ -2615,7 +2615,7 @@ fn lower_literal(lit: &Literal) -> String {
 
 fn lower_type(ctx: &CodegenContext, type_term: TermId) -> Result<String, CppCodegenError> {
     let kb = ctx.kb;
-    if let Some(sym) = extract_sort_ref_sym(kb, type_term) {
+    if let Some(sym) = extract_sort_ref_sym(kb, &TermIdView(type_term)) {
         return sort_to_cpp(ctx, sym);
     }
 

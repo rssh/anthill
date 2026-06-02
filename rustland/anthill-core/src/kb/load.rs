@@ -4346,7 +4346,7 @@ impl<'a> Loader<'a> {
     /// True iff `ty` is the `List` sort. WI-361 dual-form: the term-backed bare
     /// sort `Ref(List)` or the deep `sort_ref(name: Ref(List))`.
     fn is_list_sort_ref(kb: &KnowledgeBase, ty: TermId) -> bool {
-        extract_sort_ref_sym(kb, ty).is_some_and(|s| Self::is_list_sort_sym(kb, s))
+        extract_sort_ref_sym(kb, &TermIdView(ty)).is_some_and(|s| Self::is_list_sort_sym(kb, s))
     }
 
     /// `Some(element_hint)` if `ty` is List-shaped, else `None` — outer

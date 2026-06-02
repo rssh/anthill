@@ -82,7 +82,7 @@ fn fixture_interp(captured: Arc<Mutex<Option<Snapshot>>>) -> Interpreter {
 fn extract_sort_ref_name(interp: &Interpreter, tid: TermId) -> Option<String> {
     // WI-361: a bare sort is the term-backed `Ref(S)` or the deep
     // `sort_ref(name: Ref(S))`; `extract_sort_ref_sym` recognizes both.
-    let sym = anthill_core::kb::typing::extract_sort_ref_sym(interp.kb(), tid)?;
+    let sym = anthill_core::kb::typing::extract_sort_ref_sym(interp.kb(), &anthill_core::kb::term_view::TermIdView(tid))?;
     let qn = interp.kb().qualified_name_of(sym);
     Some(qn.rsplit('.').next().unwrap_or(qn).to_string())
 }

@@ -114,7 +114,7 @@ fn stream_head_on_concrete_stream_yields_option_with_concrete_t() {
     );
     let t_value = get_named_arg(&kb, &named_args, "T")
         .unwrap_or_else(|| panic!("missing T binding; got {ty_str}"));
-    let t_sym = extract_sort_ref_sym(&kb, t_value)
+    let t_sym = extract_sort_ref_sym(&kb, &anthill_core::kb::term_view::TermIdView(t_value))
         .unwrap_or_else(|| panic!("expected T = sort_ref(...) in Option binding; got {ty_str}"));
     assert_eq!(
         kb.qualified_name_of(t_sym),
