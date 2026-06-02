@@ -2553,7 +2553,7 @@ impl KnowledgeBase {
     /// position (WI-302). Mirrors reflect `Type.denoted`. The `value` is the
     /// term-form of the carried value occurrence.
     pub fn make_denoted(&mut self, value: TermId) -> TermId {
-        let denoted_sym = self.resolve_symbol("anthill.prelude.Type.denoted");
+        let denoted_sym = self.resolve_symbol("anthill.prelude.TypeExtractor.Denoted");
         let value_key = self.intern("value");
         let mut named_args: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
         named_args.push((value_key, value));
@@ -2620,7 +2620,7 @@ impl KnowledgeBase {
     /// `named_tuple(fields)` carried as a Type occurrence (WI-342). Occurrence
     /// peer of [`Self::make_named_tuple_type`]; minted when a tuple field's type
     /// is `denoted`-bearing. WI-361: the `(name, type)` children are assembled into
-    /// the `Value`-carried `List[TypeField]` the carrier stores (mirroring the term
+    /// the `Value`-carried `List[NamedTupleElement]` the carrier stores (mirroring the term
     /// form), so the field-type poison rides as `Value::Node` while ground field
     /// types stay `Value::Term`.
     pub fn make_named_tuple_occ(
@@ -2638,11 +2638,11 @@ impl KnowledgeBase {
     }
 
     /// WI-361: assemble a `named_tuple`'s `(name, type)` children into the
-    /// `Value`-carried `List[TypeField]` the [`node_occurrence::TypeNode::NamedTuple`]
+    /// `Value`-carried `List[NamedTupleElement]` the [`node_occurrence::TypeNode::NamedTuple`]
     /// carrier stores — the same shape [`Self::make_named_tuple_type`] builds as a
     /// hash-consed term, but in the `Value` world so a poisoned (`Value::Node`) field
     /// type rides as-is and a ground one stays `Value::Term` (no lift). `cons` cells
-    /// and `TypeField` records are `Value::Entity`s ordered by
+    /// and `NamedTupleElement` records are `Value::Entity`s ordered by
     /// [`Self::sort_named_canonical`], matching the term form's discrim/eq key so the
     /// two carriers compare cross-carrier.
     fn build_named_tuple_fields_value(
@@ -2651,7 +2651,7 @@ impl KnowledgeBase {
     ) -> crate::eval::value::Value {
         use crate::eval::value::Value;
         use node_occurrence::TypeChild;
-        let type_field_sym = self.resolve_symbol("anthill.prelude.Type.TypeField");
+        let element_sym = self.resolve_symbol("anthill.prelude.NamedTupleElement");
         let name_key = self.intern("name");
         let type_key = self.intern("type");
 
@@ -2663,9 +2663,9 @@ impl KnowledgeBase {
             };
             let name_ref = Value::Term(self.alloc(Term::Ref(field_name)));
             let mut named = vec![(name_key, name_ref), (type_key, type_value)];
-            self.sort_named_canonical(type_field_sym, &mut named);
+            self.sort_named_canonical(element_sym, &mut named);
             elems.push(Value::Entity {
-                functor: type_field_sym,
+                functor: element_sym,
                 pos: Rc::from(Vec::new()),
                 named: Rc::from(named),
             });
@@ -2827,13 +2827,13 @@ impl KnowledgeBase {
     /// code-review #6) — their unification semantics aren't row-tail.
     ///
     /// **Bootstrap dependency** (code-review #13) — beyond the
-    /// `anthill.prelude.Type.arrow` symbol pre-WI-307 made_arrow_type
-    /// needed, this function now also requires
-    /// `anthill.prelude.Type.effects_rows` and the five
+    /// `anthill.prelude.TypeExtractor.Arrow` symbol made_arrow_type
+    /// needs, this function now also requires
+    /// `anthill.prelude.TypeExtractor.EffectsRows` and the five
     /// `anthill.prelude.EffectExpression.{empty_row, present, absent, open,
     /// merge}` entity symbols. All six are pre-registered by
     /// `kb::load::register_stdlib_scopes` (the same path that registers
-    /// `Type.arrow`); a KB constructed without `register_prelude` panics
+    /// `TypeExtractor.Arrow`); a KB constructed without `register_prelude` panics
     /// at the first builder call with a clear `resolve_symbol` message
     /// rather than silently producing malformed terms.
     pub fn make_arrow_type(&mut self, param: TermId, result: TermId, effects: &[TermId]) -> TermId {
@@ -2853,7 +2853,7 @@ impl KnowledgeBase {
         result: TermId,
         effects_rows: TermId,
     ) -> TermId {
-        let arrow_sym = self.resolve_symbol("anthill.prelude.Type.arrow");
+        let arrow_sym = self.resolve_symbol("anthill.prelude.TypeExtractor.Arrow");
         let param_key = self.intern("param");
         let result_key = self.intern("result");
         let effects_key = self.intern("effects");
@@ -2899,7 +2899,7 @@ impl KnowledgeBase {
             "anthill.prelude.EffectExpression.empty_row",
         )?;
         let rows_sym = self.try_resolve_symbol(
-            "anthill.prelude.Type.effects_rows",
+            "anthill.prelude.TypeExtractor.EffectsRows",
         )?;
         let empty = self.alloc(Term::Fn {
             functor: empty_sym,
@@ -2993,7 +2993,7 @@ impl KnowledgeBase {
     /// (WI-320 substrate). Use this when storing a row in any Type-typed
     /// slot (e.g. `arrow.effects`, `EffectsRuntime[Effects = …]`).
     pub fn make_effects_rows_type(&mut self, expr: TermId) -> TermId {
-        let sym = self.resolve_symbol("anthill.prelude.Type.effects_rows");
+        let sym = self.resolve_symbol("anthill.prelude.TypeExtractor.EffectsRows");
         let expr_key = self.intern("effects_expr");
         let mut named_args: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
         named_args.push((expr_key, expr));
@@ -3088,7 +3088,7 @@ impl KnowledgeBase {
 
     /// type_var(name: <sym>) — a type variable for inference.
     pub fn make_type_var(&mut self, name: Symbol) -> TermId {
-        let type_var_sym = self.resolve_symbol("anthill.prelude.Type.type_var");
+        let type_var_sym = self.resolve_symbol("anthill.prelude.TypeExtractor.TypeVar");
         let name_key = self.intern("name");
         let name_val = self.alloc(Term::Ref(name));
         let mut named_args: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
@@ -3100,10 +3100,10 @@ impl KnowledgeBase {
         })
     }
 
-    /// named_tuple(fields: List[TypeField]).
+    /// named_tuple(fields: List[NamedTupleElement]).
     pub fn make_named_tuple_type(&mut self, fields: &[(Symbol, TermId)]) -> TermId {
-        let named_tuple_sym = self.resolve_symbol("anthill.prelude.Type.named_tuple");
-        let type_field_sym = self.resolve_symbol("anthill.prelude.Type.TypeField");
+        let named_tuple_sym = self.resolve_symbol("anthill.prelude.TypeExtractor.NamedTuple");
+        let element_sym = self.resolve_symbol("anthill.prelude.NamedTupleElement");
         let fields_key = self.intern("fields");
         let name_key = self.intern("name");
         let type_key = self.intern("type");
@@ -3115,7 +3115,7 @@ impl KnowledgeBase {
             args.push((type_key, *field_type));
             args.sort_by_key(|(s, _)| s.index());
             self.alloc(Term::Fn {
-                functor: type_field_sym,
+                functor: element_sym,
                 pos_args: SmallVec::new(),
                 named_args: args,
             })
@@ -3134,7 +3134,7 @@ impl KnowledgeBase {
 
     /// nothing — bottom type.
     pub fn make_nothing_type(&mut self) -> TermId {
-        let nothing_sym = self.resolve_symbol("anthill.prelude.Type.nothing");
+        let nothing_sym = self.resolve_symbol("anthill.prelude.TypeExtractor.Nothing");
         self.alloc(Term::Fn {
             functor: nothing_sym,
             pos_args: SmallVec::new(),
@@ -3829,8 +3829,8 @@ mod tests {
         let arrow_term = kb.make_arrow_type(param_ty, result_ty, &[absent_term]);
         let empty_row_tid = kb.make_effect_expression_empty_row();
 
-        let arrow_sym = kb.resolve_symbol("anthill.prelude.Type.arrow");
-        let effects_rows_sym = kb.resolve_symbol("anthill.prelude.Type.effects_rows");
+        let arrow_sym = kb.resolve_symbol("anthill.prelude.TypeExtractor.Arrow");
+        let effects_rows_sym = kb.resolve_symbol("anthill.prelude.TypeExtractor.EffectsRows");
         let merge_sym = kb.resolve_symbol("anthill.prelude.EffectExpression.merge");
         let absent_sym = kb.resolve_symbol("anthill.prelude.EffectExpression.absent");
 

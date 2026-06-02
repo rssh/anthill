@@ -36,6 +36,18 @@ namespace anthill.reflect.typing_pass
   import anthill.reflect.{Symbol, Term, FactId, ConstraintId}
   import anthill.reflect.typing.{is_entity_of, type_compatible}
   import anthill.reflect.{occurrence_term, occurrence_owner, occurrences_of, scope}
+  -- WI-361 (pending rewrite): PART I / PART II below are written in the
+  -- pre-WI-361 DEEP-Type notation — `sort_ref(name)` / `parameterized(base,
+  -- bindings)` / `arrow` / `named_tuple` / `type_var` / `nothing` /
+  -- `TypeBinding` / `TypeField`. The engine no longer has those constructors:
+  -- a type is now term-backed (`Ref(S)` for a bare sort, `Fn{S, named}` for a
+  -- parameterized type, structural forms reified via `TypeExtractor`), so the
+  -- import below and the structural rules no longer resolve. This file is a
+  -- DECLARATIVE reference spec — loaded only by the
+  -- `typing_pass_spec_parses_and_loads` parse/define smoke test, which tolerates
+  -- the unresolved-name load warnings — so the staleness is non-fatal; a
+  -- term-backed rewrite is follow-up work (cf. WI-2202, which also lists this
+  -- file for effect-set treatment).
   import anthill.prelude.Type.{sort_ref, parameterized, arrow, type_var, named_tuple, nothing, TypeBinding, TypeField}
   import anthill.prelude.{Int, Float, String, Bool, List, Option, Type, Nothing}
 

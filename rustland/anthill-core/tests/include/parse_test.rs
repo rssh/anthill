@@ -2878,16 +2878,17 @@ fn parse_arrow_type_single_named_param() {
     }
 }
 
-/// WI-355: a multi-param callback arrow lowers to a `named_tuple` whose
-/// `TypeField` names come from the declared param names (`acc`, `elem`),
+/// WI-355: a multi-param callback arrow lowers to a `NamedTuple` whose
+/// `NamedTupleElement` names come from the declared param names (`acc`, `elem`),
 /// not the synthetic `_0`/`_1`; an *unnamed* multi-param arrow gets the
 /// **1-based** positional names `_1`/`_2` (spec §4.5, matching plain tuples).
 #[test]
 fn wi355_arrow_param_names_lowered_to_named_tuple() {
-    // Collect every `TypeField` name symbol reachable under `t`.
+    // Collect every `NamedTupleElement` name symbol reachable under `t` (WI-361:
+    // named-tuple element records relocated from `Type.TypeField`).
     fn typefield_names(kb: &KnowledgeBase, t: TermId, out: &mut Vec<String>) {
         if let Term::Fn { functor, pos_args, named_args } = kb.get_term(t) {
-            if kb.resolve_sym(*functor) == "TypeField" {
+            if kb.resolve_sym(*functor) == "NamedTupleElement" {
                 for (k, v) in named_args {
                     if kb.resolve_sym(*k) == "name" {
                         if let Term::Ref(s) = kb.get_term(*v) {
@@ -3012,8 +3013,8 @@ sort Host {
         Term::Fn { functor, .. } => kb.resolve_sym(*functor).to_owned(),
         other => panic!("expected arrow Fn, got {:?}", other),
     };
-    assert_eq!(functor_name, "arrow",
-        "arrow-effect term should be built via prelude Type.arrow");
+    assert_eq!(functor_name, "Arrow",
+        "arrow-effect term should be built via prelude TypeExtractor.Arrow");
 
     // WI-307 v1a: the effects field is `effects_rows(effects_expr: <EX>)`,
     // not a List. Walk the wrapper down to the EffectExpression payload.
@@ -3022,8 +3023,8 @@ sort Host {
         Term::Fn { functor, .. } => kb.resolve_sym(*functor).to_owned(),
         other => panic!("expected effects_rows Fn, got {:?}", other),
     };
-    assert_eq!(er_functor, "effects_rows",
-        "arrow.effects should be wrapped in the effects_rows Type entity");
+    assert_eq!(er_functor, "EffectsRows",
+        "arrow.effects should be wrapped in the EffectsRows Type entity");
 
     // Walk the canonical right-folded `merge(present(l), merge(...,
     // empty_row))` chain and collect the present-label types.

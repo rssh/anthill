@@ -1036,43 +1036,14 @@ pub fn type_display_name(kb: &KnowledgeBase, ty: TermId) -> String {
     match kb.get_term(ty) {
         Term::Fn { functor, named_args, .. } => {
             let fname = kb.resolve_sym(*functor);
+            // WI-361: a bare sort is `Term::Ref(S)` (the `Term::Ref` arm below),
+            // and a parameterized type is `Fn{S, named}` whose functor is the base
+            // sort — handled by the generic `_` arm (renders `S[p = v, …]`). The
+            // remaining structural forms are the `TypeExtractor.*` entities.
             match fname {
-                "sort_ref" => {
-                    // sort_ref(name: Ref(sym))
-                    extract_ref_field(kb, named_args, "name")
-                        .map(|s| kb.resolve_sym(s).to_string())
-                        .unwrap_or_else(|| "?".to_string())
-                }
-                "parameterized" => {
-                    // parameterized(base: type, bindings: List[TypeBinding])
-                    let base_name = get_named_arg(kb, named_args, "base")
-                        .map(|b| type_display_name(kb, b))
-                        .unwrap_or_else(|| "?".to_string());
-                    let bindings_tid = get_named_arg(kb, named_args, "bindings");
-                    let bindings = bindings_tid.map(|b| list_to_vec(kb, b)).unwrap_or_default();
-                    let params: Vec<String> = bindings.iter().map(|b| {
-                        if let Term::Fn { named_args: ba, .. } = kb.get_term(*b) {
-                            let p = extract_ref_field(kb, ba, "param")
-                                .map(|s| kb.resolve_sym(s).to_string())
-                                .unwrap_or_else(|| "?".to_string());
-                            let v = get_named_arg(kb, ba, "value")
-                                .map(|v| type_display_name(kb, v))
-                                .unwrap_or_else(|| "?".to_string());
-                            format!("{} = {}", p, v)
-                        } else {
-                            "?".to_string()
-                        }
-                    }).collect();
-                    if params.is_empty() {
-                        base_name
-                    } else {
-                        format!("{}[{}]", base_name, params.join(", "))
-                    }
-                }
-                "arrow" => {
-                    // arrow(param: Type, result: Type, effects: Type)
-                    // — WI-307/WI-331: `effects` is a singular
-                    // `effects_rows(EffectExpression)` Type, not a
+                "Arrow" => {
+                    // Arrow(param, result, effects) — WI-307/WI-331: `effects` is
+                    // a singular `EffectsRows(EffectExpression)` Type, not a
                     // legacy `List[Type]`.
                     let p = get_named_arg(kb, named_args, "param")
                         .map(|t| type_display_name(kb, t))
@@ -1082,12 +1053,12 @@ pub fn type_display_name(kb: &KnowledgeBase, ty: TermId) -> String {
                         .unwrap_or_else(|| "?".to_string());
                     format!("{} -> {}", p, r)
                 }
-                "type_var" => {
+                "TypeVar" => {
                     extract_ref_field(kb, named_args, "name")
                         .map(|s| format!("?{}", kb.resolve_sym(s)))
                         .unwrap_or_else(|| "?".to_string())
                 }
-                "named_tuple" => {
+                "NamedTuple" => {
                     let fields_tid = get_named_arg(kb, named_args, "fields");
                     let fields = fields_tid.map(|f| list_to_vec(kb, f)).unwrap_or_default();
                     let parts: Vec<String> = fields.iter().map(|f| {
@@ -1105,15 +1076,15 @@ pub fn type_display_name(kb: &KnowledgeBase, ty: TermId) -> String {
                     }).collect();
                     format!("({})", parts.join(", "))
                 }
-                "nothing" => "nothing".to_string(),
-                "denoted" => {
+                "Nothing" => "nothing".to_string(),
+                "Denoted" => {
                     // WI-302: value-in-type — render the carried value directly
                     // (`Modify[c]` shows `c`, not `denoted[value = c]`).
                     get_named_arg(kb, named_args, "value")
                         .map(|v| type_display_name(kb, v))
                         .unwrap_or_else(|| "?".to_string())
                 }
-                "effects_rows" => {
+                "EffectsRows" => {
                     // WI-320: EffectExpression-in-Type — render with row braces
                     // (`{…}`) around the wrapped expression. The inner is an
                     // EffectExpression term (present / absent / open / merge /
@@ -5052,7 +5023,7 @@ fn parametric_value_parts(
             // phantom (param = effects_expr, value = E) binding, leading
             // spec-resolution and `values_structurally_equal` to treat it
             // as a satisfaction site.
-            if f_qn == "effects_rows" || f_qn.ends_with(".effects_rows") {
+            if f_qn == "EffectsRows" || f_qn.ends_with(".EffectsRows") {
                 return None;
             }
             // Generic Fn — non-empty named_args means parametric.
@@ -6601,7 +6572,7 @@ fn arrow_parts<V: TermView>(
 /// through untouched; only a legacy `List[Type]` `Function.E` binding (a
 /// `TermId` carrier) is flattened and re-canonicalized.
 fn canonical_effects_row(kb: &mut KnowledgeBase, row: &impl TermView) -> Value {
-    let effects_rows_sym = kb.try_resolve_symbol("anthill.prelude.Type.effects_rows");
+    let effects_rows_sym = kb.try_resolve_symbol("anthill.prelude.TypeExtractor.EffectsRows");
     match row.as_bind_value() {
         // Ground carrier: a canonical `effects_rows(...)` passes through; a
         // legacy `List[Type]` (Function.E pre-WI-331) is flattened + re-
@@ -6692,7 +6663,7 @@ pub(crate) fn effects_rows_to_flat_list(kb: &KnowledgeBase, ty: TermId) -> Vec<T
     // Dispatch via Symbol identity (code-review #5) rather than short-name
     // compare so a user-defined `effects_rows` entity in another namespace
     // isn't misrouted here.
-    let effects_rows_sym = kb.try_resolve_symbol("anthill.prelude.Type.effects_rows");
+    let effects_rows_sym = kb.try_resolve_symbol("anthill.prelude.TypeExtractor.EffectsRows");
     let expr = match (effects_rows_sym, kb.get_term(ty)) {
         (Some(er), Term::Fn { functor, named_args, .. }) if *functor == er => {
             match get_named_arg(kb, named_args, "effects_expr") {
@@ -6809,7 +6780,7 @@ fn extract_function_param_type<V: TermView>(kb: &mut KnowledgeBase, fn_type: &V)
 /// `Function[(A, B), R]` types `a: A`, `b: B`). Returns `None` for a
 /// non-tuple type.
 fn named_tuple_field_types(kb: &KnowledgeBase, ty: TermId) -> Option<Vec<TermId>> {
-    if type_functor_name(kb, ty) != Some("named_tuple") {
+    if type_functor_name(kb, ty) != Some("NamedTuple") {
         return None;
     }
     let fields_tid = match kb.get_term(ty) {
@@ -7847,7 +7818,7 @@ fn decompose_effect_row(
     // Match the wrapper by its fully-qualified symbol (not the short name), as
     // the pre-P4 `TermId` walk did — a same-short-named functor in another
     // namespace must NOT be mistaken for the prelude `Type.effects_rows`.
-    let effects_rows_sym = kb.try_resolve_symbol("anthill.prelude.Type.effects_rows");
+    let effects_rows_sym = kb.try_resolve_symbol("anthill.prelude.TypeExtractor.EffectsRows");
     let is_effects_rows = matches!(
         walked.head(kb),
         ViewHead::Functor { functor: Some(f), .. } if Some(f) == effects_rows_sym
@@ -9069,10 +9040,14 @@ fn join_types(kb: &mut KnowledgeBase, a: Value, b: Value) -> Option<Value> {
     // (or widens a nominal side up the lattice); it never constructs a new type,
     // so no occurrence-level lub is needed. `types_compatible` is already
     // carrier-agnostic; we pass the `Value`s directly rather than re-grounding.
-    if resolved_functor_name(kb, &a) == Some("type_var") {
+    // WI-361: dispatch on the CANONICAL type tag (`type_dispatch_name_view`), not
+    // the raw functor — a term-backed type_var is `Fn{TypeExtractor.TypeVar, …}`
+    // whose raw functor name is "TypeVar", so a raw `== "type_var"` check would
+    // miss the inference wildcard and force the full lattice climb (spurious clash).
+    if type_dispatch_name_view(kb, &a) == Some("type_var") {
         return Some(b);
     }
-    if resolved_functor_name(kb, &b) == Some("type_var") {
+    if type_dispatch_name_view(kb, &b) == Some("type_var") {
         return Some(a);
     }
     let (mut a, mut b) = (a, b);
@@ -9253,7 +9228,7 @@ fn compute_branch_join_type(
         // to a wildcard — report the clash instead, mirroring the
         // type_var guard in the `(None, Some)` arm above.
         (Some((bt, span)), Some(exp)) => {
-            if type_functor_name(kb, exp) == Some("type_var") {
+            if type_dispatch_name(kb, exp) == Some("type_var") {
                 let expected_t = value_to_term_id(kb, &acc);
                 let actual_t = value_to_term_id(kb, &bt);
                 Err(TypeError::TypeMismatch {
@@ -9954,15 +9929,15 @@ fn type_head<V: TermView>(kb: &KnowledgeBase, ty: &V) -> TypeHead {
         ViewHead::Ref(s) => TypeHead::SortRef(s),
         ViewHead::Functor { functor: Some(f), named_arity, .. } => {
             match kb.qualified_name_of(f) {
-                "anthill.prelude.Type.type_var" => match view_child_sym(kb, ty, "name") {
+                "anthill.prelude.TypeExtractor.TypeVar" => match view_child_sym(kb, ty, "name") {
                     Some(s) => TypeHead::TypeVar(s),
                     None => TypeHead::Error,
                 },
-                "anthill.prelude.Type.nothing" => TypeHead::Nothing,
-                "anthill.prelude.Type.denoted" => TypeHead::Denoted,
-                "anthill.prelude.Type.effects_rows" => TypeHead::EffectsRows,
-                "anthill.prelude.Type.arrow" => TypeHead::Arrow,
-                "anthill.prelude.Type.named_tuple" => TypeHead::NamedTuple,
+                "anthill.prelude.TypeExtractor.Nothing" => TypeHead::Nothing,
+                "anthill.prelude.TypeExtractor.Denoted" => TypeHead::Denoted,
+                "anthill.prelude.TypeExtractor.EffectsRows" => TypeHead::EffectsRows,
+                "anthill.prelude.TypeExtractor.Arrow" => TypeHead::Arrow,
+                "anthill.prelude.TypeExtractor.NamedTuple" => TypeHead::NamedTuple,
                 // Parameterized: the functor IS the base sort, the named args ARE
                 // the bindings. A no-arg `Fn{f}` is malformed (a bare sort is
                 // `Ref(S)`, never `Fn{S}`).

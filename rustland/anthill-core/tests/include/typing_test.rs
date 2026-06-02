@@ -1301,9 +1301,9 @@ fn wi297_occurrence_term_literal_synth_resolves() {
     let source = concat!(
         "namespace wi297.t\n",
         "  import anthill.reflect.{Expr}\n",
-        "  import anthill.prelude.Type.{sort_ref}\n",
+        "  import anthill.prelude.TypeExtractor.{SortRef}\n",
         "  import anthill.prelude.{Int}\n",
-        "  rule synth(?e, sort_ref(name: Int)) :- occurrence_term(?e, int_lit(value: ?))\n",
+        "  rule synth(?e, SortRef(name: Int)) :- occurrence_term(?e, int_lit(value: ?))\n",
         "  rule probe(?T) :- synth(42, ?T)\n",
         "end\n",
     );
@@ -1320,7 +1320,7 @@ fn wi297_occurrence_term_literal_synth_resolves() {
     let bound = kb.reify(var_t, &results[0].subst);
     match kb.get_term(bound) {
         Term::Fn { functor, named_args, .. } => {
-            assert_eq!(kb.resolve_sym(*functor), "sort_ref", "synth should yield sort_ref(...)");
+            assert_eq!(kb.resolve_sym(*functor), "SortRef", "synth should yield SortRef(...)");
             let name = named_args.iter().find(|(s, _)| kb.resolve_sym(*s) == "name")
                 .map(|(_, t)| *t)
                 .expect("sort_ref should carry a name arg");
@@ -1331,7 +1331,7 @@ fn wi297_occurrence_term_literal_synth_resolves() {
             };
             assert_eq!(kb.resolve_sym(name_sym), "Int", "literal 42 should synth to Int");
         }
-        other => panic!("expected sort_ref(name: Int), got {other:?}"),
+        other => panic!("expected SortRef(name: Int), got {other:?}"),
     }
 }
 
@@ -1344,10 +1344,10 @@ fn wi297_occurrence_term_discriminates_literal_kind() {
     let source = concat!(
         "namespace wi297.b\n",
         "  import anthill.reflect.{Expr}\n",
-        "  import anthill.prelude.Type.{sort_ref}\n",
+        "  import anthill.prelude.TypeExtractor.{SortRef}\n",
         "  import anthill.prelude.{Int, String}\n",
-        "  rule synth(?e, sort_ref(name: Int))    :- occurrence_term(?e, int_lit(value: ?))\n",
-        "  rule synth(?e, sort_ref(name: String)) :- occurrence_term(?e, string_lit(value: ?))\n",
+        "  rule synth(?e, SortRef(name: Int))    :- occurrence_term(?e, int_lit(value: ?))\n",
+        "  rule synth(?e, SortRef(name: String)) :- occurrence_term(?e, string_lit(value: ?))\n",
         "  rule probe_int(?T) :- synth(42, ?T)\n",
         "  rule probe_str(?T) :- synth(\"hi\", ?T)\n",
         "end\n",
@@ -1357,16 +1357,16 @@ fn wi297_occurrence_term_discriminates_literal_kind() {
     let sort_ref_name = |kb: &KnowledgeBase, t: TermId| -> String {
         match kb.get_term(t) {
             Term::Fn { functor, named_args, .. } => {
-                assert_eq!(kb.resolve_sym(*functor), "sort_ref");
+                assert_eq!(kb.resolve_sym(*functor), "SortRef");
                 let n = named_args.iter().find(|(s, _)| kb.resolve_sym(*s) == "name")
-                    .map(|(_, t)| *t).expect("sort_ref name");
+                    .map(|(_, t)| *t).expect("SortRef name");
                 match kb.get_term(n) {
                     Term::Ref(s) | Term::Ident(s) => kb.resolve_sym(*s).to_string(),
                     Term::Fn { functor, .. } => kb.resolve_sym(*functor).to_string(),
                     other => panic!("unexpected name term {other:?}"),
                 }
             }
-            other => panic!("expected sort_ref, got {other:?}"),
+            other => panic!("expected SortRef, got {other:?}"),
         }
     };
 
@@ -3125,7 +3125,7 @@ fn types_compatible_bootstrap_safe_when_prelude_not_registered() {
     // Build two arrow terms with only param + result populated (no
     // effects field on either side, then one side with an effects-like
     // field shape).
-    let arrow_sym = kb.intern("anthill.prelude.Type.arrow");
+    let arrow_sym = kb.intern("anthill.prelude.TypeExtractor.Arrow");
     let int_sym = kb.intern("anthill.prelude.Int");
     let int_ty = kb.alloc(Term::Fn {
         functor: int_sym,
@@ -3463,7 +3463,7 @@ fn subtype_rejects_malformed_multi_tail_row() {
 
     // Hand-construct an arrow with the malformed effects field directly
     // (bypassing make_arrow_type's canonicalization).
-    let arrow_sym = kb.try_resolve_symbol("anthill.prelude.Type.arrow")
+    let arrow_sym = kb.try_resolve_symbol("anthill.prelude.TypeExtractor.Arrow")
         .expect("arrow symbol pre-registered");
     let param_key = kb.intern("param");
     let result_key = kb.intern("result");

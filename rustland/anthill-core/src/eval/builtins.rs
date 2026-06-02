@@ -679,7 +679,7 @@ fn extract_type_builtin(interp: &mut Interpreter, args: &[Value]) -> Result<Valu
     let param_key = interp.kb.intern("param");
     let result_key = interp.kb.intern("result");
     let effects_key = interp.kb.intern("effects");
-    let expr_key = interp.kb.intern("expr");
+    let effects_expr_key = interp.kb.intern("effects_expr");
     let term_key = interp.kb.intern("term");
     let base_key = interp.kb.intern("base");
     let bindings_key = interp.kb.intern("bindings");
@@ -705,7 +705,7 @@ fn extract_type_builtin(interp: &mut Interpreter, args: &[Value]) -> Result<Valu
             "Arrow",
             vec![(param_key, param), (result_key, result), (effects_key, effects)],
         ),
-        TypeExtractor::EffectsRows(e) => ti_entity(interp, "EffectsRows", vec![(expr_key, e)]),
+        TypeExtractor::EffectsRows(e) => ti_entity(interp, "EffectsRows", vec![(effects_expr_key, e)]),
         TypeExtractor::Parameterized { base, bindings } => {
             let base_val = sym_ref(interp, base);
             let new_bindings =

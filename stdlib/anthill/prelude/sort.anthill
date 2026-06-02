@@ -1,67 +1,36 @@
-{< Type: the type of types in the kernel.
-   Every sort declaration introduces a Type value.
-   Type forms a lattice via entity_of and refines relationships.
-   No top type exists (the lattice is unbounded above).
-   Nothing is the bottom (uninhabited, subtype of everything).
+namespace anthill.prelude
+{< Type: the type of types in the kernel — an OPAQUE, term-backed handle.
 
-   Type and EffectExpression are *co-defined* in this file: Type carries
-   an EffectExpression in `effects_rows`, and EffectExpression's element
-   forms (`present` / `absent` / `open`) carry a `Type`. Splitting them
-   across files created a cross-file import cycle whose soundness depended
-   on the loader's 2-pass scan; colocating them removes the cross-file
-   cycle entirely (parallel to how `TypeField` / `TypeBinding`, which are
-   tightly coupled with Type's shape, are also defined here). The
-   brainstorm's G1 — `EffectExpression as own reflect sort` — is unchanged:
-   it remains its own `enum`, just sitting next to Type in this file. >}
-enum anthill.prelude.Type
-  import anthill.prelude.{Lattice, Eq, List, Option}
-  import anthill.reflect.{Symbol, NodeOccurrence}
+   WI-361 (representation convergence): a `Type` value IS an ordinary term —
+   `Ref(S)` for a bare sort, `Fn{S, named}` for a parameterized type, with a
+   value-in-type carried as `TypeExtractor.Denoted` and the structural forms
+   (arrow / named tuple / effects row / nothing / type var) carried as the
+   `TypeExtractor.*` entities (below). There is NO stored deep ADT inside
+   `Type`; its structure is REIFIED on demand by
+   `anthill.reflect.extract(t) -> TypeExtractor`.
 
-  -- Type constructors: all type forms in the language
-  entity sort_ref(name: Symbol)
-  entity parameterized(base: Type, bindings: List[TypeBinding])
-  entity named_tuple(fields: List[TypeField])
-  -- `effects` is the `effects_rows`-wrapped EffectExpression carrying the
-  -- arrow's effect row (WI-307 v1a). Stored as a single `Type` (the row
-  -- algebra is internal to the EffectExpression value); previous to
-  -- WI-307 / WI-331 this field's declared type was `List[Type]` while
-  -- the loader already produced the singular-Type shape — the
-  -- declaration is now aligned with `make_arrow_type`'s output.
-  entity arrow(param: Type, result: Type, effects: Type)
-  entity type_var(name: Symbol)
-  -- The one seam from the type sublanguage into the expression language:
-  -- a Type *denoted* by a carried VALUE occurrence — a value standing in a
-  -- type-argument position, e.g. `Modify[store]` / `Modify[c]` / `Modify[result.a]`
-  -- (proposal 027.1; WI-302). Value-dependent / first-class (Idris-style), not
-  -- a DOT singleton — hence `denoted`, not `singleton`. The carried occurrence
-  -- is the value indexing the type; it is NOT a sort reference. (Building a
-  -- Type by a computation is different — that is ordinary expression code using
-  -- the Type constructors directly, not this seam.)
-  entity denoted(value: NodeOccurrence)
-  -- The bridge from the EffectExpression row algebra (co-defined below)
-  -- into Type position — exactly parallel to `denoted(NodeOccurrence)` above.
-  -- An effect-row is `effects_rows(expr)` where `expr` is an EffectExpression
-  -- (present / absent / open / merge / empty_row), and the row sits in:
-  --   (a) the `Effects` type-arg slot of `EffectsRuntime[Effects = effects_rows(...)]`,
-  --       so an effects type-parameter can be constrained by ordinary `requires` —
-  --       see proposal 045 §2 (variant 7 adoption; WI-320);
-  --   (b) `arrow.effects` once WI-307 lands the singular-Type migration of that field.
-  -- The variant has no behavior of its own — it is a pure structural wrapper
-  -- (like `denoted`). EffectExpression keeps its own reflect sort + normal form
-  -- (the WI-320 substrate adds five typing.rs arms — `type_display_name`,
-  -- `types_compatible`, `unify_types`, `parametric_value_parts`,
-  -- `sort_functor_of` — so the variant is recognized through the typer; the
-  -- *row* unification that consumes the wrapped EffectExpression on
-  -- `arrow.effects` is the WI-307 follow-on).
-  entity effects_rows(effects_expr: EffectExpression)
-  entity nothing
+   So `Type` is a bare `sort Type = ?` — an opaque handle like `Term` /
+   `Symbol` — and every structural form lives in `TypeExtractor`. `Eq` /
+   `Lattice` ride Type's NOMINAL identity (NOT `Term`'s — keying the
+   type-lattice on `Term` would make it the universal default on every term,
+   so the resolver could not tell a type-term from any term by structure). The
+   namespace-level facts below scope the lattice/eq to `Type` alone (the
+   carrier is derived from the `T = Type` binding).
 
-  {< Type field: a named component in a named tuple type. >}
-  entity TypeField(name: Symbol, type: Type)
+   `Type` and `EffectExpression` remain *co-defined* in this file:
+   EffectExpression's element forms (`present` / `absent` / `open`) carry a
+   `Type`, and the effects-row structural form (`TypeExtractor.EffectsRows`)
+   carries an EffectExpression. Splitting them across files created a
+   cross-file import cycle whose soundness depended on the loader's 2-pass
+   scan; colocating them removes the cycle. >}
+  sort Type = ?
 
-  {< Type binding: a named parameter binding in a parameterized type. >}
-  entity TypeBinding(param: Symbol, value: Type)
-
+  -- Type forms a lattice via entity_of / refines (no top — the lattice is
+  -- unbounded above; Nothing is the bottom). `Eq` / `Lattice` ride Type's
+  -- nominal identity (WI-361). These are namespace-level facts, so the
+  -- provides-carrier is derived from the `T = Type` binding value (→ Type);
+  -- short names resolve as `anthill.prelude` siblings (a qualified
+  -- `anthill.prelude.Type` is not accepted in binding-value position).
   fact Eq[T = Type]
   fact Lattice[T = Type]
 end
@@ -99,8 +68,8 @@ enum anthill.prelude.EffectExpression
   entity empty_row
 
   -- a single present effect label, e.g. `Modify[c]` (the `e` / `+e` form;
-  -- listing a label means presence). `label` is the effect Type —
-  -- `parametrized(base: sort_ref(Modify), …)`.
+  -- listing a label means presence). `label` is the effect Type — term-backed
+  -- `Fn{Modify, named:[(<param>, TypeExtractor.Denoted(c))]}` (WI-361).
   entity present(label: Type)
 
   -- `- e` — a guaranteed-absent effect: a `lacks` constraint on the tail.
@@ -147,7 +116,11 @@ enum anthill.prelude.TypeExtractor
   entity Parameterized(base: Symbol, bindings: List[TypeBinding])
   entity Arrow(param: Term, result: Term, effects: Term)
   entity Denoted(value: NodeOccurrence)
-  entity EffectsRows(expr: EffectExpression)
+  -- The wrapped EffectExpression. Field name `effects_expr` (not `expr`) so the
+  -- relocated structural functor's stored term — `Fn{TypeExtractor.EffectsRows,
+  -- named:[(effects_expr, …)]}`, built by `make_effects_rows_type` — matches this
+  -- declaration directly (WI-361; the engine uses `effects_expr` throughout).
+  entity EffectsRows(effects_expr: EffectExpression)
   entity NamedTuple(fields: List[NamedTupleElement])
   entity Nothing
   {< The term is not a well-formed type — `extract` could not classify it (a

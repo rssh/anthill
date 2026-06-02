@@ -107,8 +107,8 @@ fn bridge_fact_not_duplicated_on_many_register_prelude_calls() {
 fn build_effects_rows_wrapping(kb: &mut KnowledgeBase, inner: anthill_core::kb::term::TermId)
     -> anthill_core::kb::term::TermId
 {
-    let effects_rows_sym = kb.try_resolve_symbol("anthill.prelude.Type.effects_rows")
-        .expect("effects_rows entity symbol pre-registered");
+    let effects_rows_sym = kb.try_resolve_symbol("anthill.prelude.TypeExtractor.EffectsRows")
+        .expect("EffectsRows entity symbol pre-registered");
     let effects_expr_sym = kb.intern("effects_expr");
     kb.alloc(Term::Fn {
         functor: effects_rows_sym,
@@ -118,8 +118,8 @@ fn build_effects_rows_wrapping(kb: &mut KnowledgeBase, inner: anthill_core::kb::
 }
 
 fn build_nothing(kb: &mut KnowledgeBase) -> anthill_core::kb::term::TermId {
-    let nothing_sym = kb.try_resolve_symbol("anthill.prelude.Type.nothing")
-        .expect("nothing entity symbol pre-registered");
+    let nothing_sym = kb.try_resolve_symbol("anthill.prelude.TypeExtractor.Nothing")
+        .expect("Nothing entity symbol pre-registered");
     kb.alloc(Term::Fn { functor: nothing_sym, pos_args: SmallVec::new(), named_args: SmallVec::new() })
 }
 

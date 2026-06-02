@@ -1385,8 +1385,8 @@ pub fn register_prelude(kb: &mut KnowledgeBase) {
 /// installed.
 fn emit_effects_runtime_bridge_fact(kb: &mut KnowledgeBase) {
     // Resolve the symbols. Both are unconditionally pre-registered by
-    // `register_stdlib_scopes` above (line ~1187 for `effects_rows`, line
-    // ~1258 for `EffectsRuntime`). A missing symbol here means
+    // `register_stdlib_scopes` above (`TypeExtractor.EffectsRows` and
+    // `EffectsRuntime`). A missing symbol here means
     // `register_stdlib_scopes` was bypassed or its definitions were
     // accidentally removed — a serious bootstrap regression. Per CLAUDE.md
     // (`avoid fallbacks, better know about errors early`) we panic with a
@@ -1398,8 +1398,8 @@ fn emit_effects_runtime_bridge_fact(kb: &mut KnowledgeBase) {
         "WI-320 bootstrap invariant: anthill.prelude.EffectsRuntime symbol \
          pre-registered by register_stdlib_scopes — see kb/load.rs",
     );
-    let effects_rows_sym = kb.try_resolve_symbol("anthill.prelude.Type.effects_rows").expect(
-        "WI-320 bootstrap invariant: anthill.prelude.Type.effects_rows symbol \
+    let effects_rows_sym = kb.try_resolve_symbol("anthill.prelude.TypeExtractor.EffectsRows").expect(
+        "WI-320 bootstrap invariant: anthill.prelude.TypeExtractor.EffectsRows symbol \
          pre-registered by register_stdlib_scopes — see kb/load.rs",
     );
 
@@ -1499,7 +1499,11 @@ fn register_stdlib_scopes(kb: &mut KnowledgeBase, global_raw: u32) {
     let cons_sym = kb.symbols.define("cons", "anthill.prelude.List.cons", SymbolKind::Entity, list_term.raw());
     let nil_sym = kb.symbols.define("nil", "anthill.prelude.List.nil", SymbolKind::Entity, list_term.raw());
 
-    // anthill.prelude.Type sort — type constructors for the typing pass
+    // anthill.prelude.Type sort — the opaque, term-backed type handle (WI-361).
+    // Its structural forms now live in `TypeExtractor` (below); `Type` itself is
+    // a bare `sort Type = ?` with NO constructors. Kept pre-registered so
+    // `make_sort_ref_by_name("anthill.prelude.Type")` and the `Eq`/`Lattice`
+    // facts riding Type's nominal identity resolve at bootstrap.
     let type_sort_sym = kb.symbols.define("Type", "anthill.prelude.Type", SymbolKind::Sort, prelude_term.raw());
     let type_sort_term = kb.alloc(Term::Fn {
         functor: type_sort_sym, pos_args: SmallVec::new(), named_args: SmallVec::new(),
@@ -1509,17 +1513,36 @@ fn register_stdlib_scopes(kb: &mut KnowledgeBase, global_raw: u32) {
         instantiation_term_raw: prelude_term.raw(),
         is_enclosing: true,
     });
-    kb.symbols.define("sort_ref", "anthill.prelude.Type.sort_ref", SymbolKind::Entity, type_sort_term.raw());
-    kb.symbols.define("parameterized", "anthill.prelude.Type.parameterized", SymbolKind::Entity, type_sort_term.raw());
-    kb.symbols.define("arrow", "anthill.prelude.Type.arrow", SymbolKind::Entity, type_sort_term.raw());
-    kb.symbols.define("type_var", "anthill.prelude.Type.type_var", SymbolKind::Entity, type_sort_term.raw());
-    kb.symbols.define("named_tuple", "anthill.prelude.Type.named_tuple", SymbolKind::Entity, type_sort_term.raw());
-    kb.symbols.define("nothing", "anthill.prelude.Type.nothing", SymbolKind::Entity, type_sort_term.raw());
-    kb.symbols.define("denoted", "anthill.prelude.Type.denoted", SymbolKind::Entity, type_sort_term.raw());
+
+    // anthill.prelude.TypeExtractor sort — the STRUCTURAL type forms the engine
+    // builds as the term backing of a `Type` (WI-361). `make_arrow_type` /
+    // `make_denoted` / `make_effects_rows_type` / `make_type_var` /
+    // `make_named_tuple_type` / `make_nothing_type` resolve these functors
+    // BEFORE stdlib load (at bootstrap), so they are pre-registered here; the
+    // stdlib `enum TypeExtractor` re-declares them idempotently. SortRef /
+    // Parameterized / Error are COMPUTED-ONLY (a bare sort is `Ref(S)`, a
+    // parameterized type `Fn{S, named}`), never built by the engine, so they
+    // need no pre-registration here — only the `extract` builtin mints them,
+    // post-load, resolving against the stdlib declaration.
+    let type_extractor_sort_sym = kb.symbols.define("TypeExtractor", "anthill.prelude.TypeExtractor", SymbolKind::Sort, prelude_term.raw());
+    let type_extractor_sort_term = kb.alloc(Term::Fn {
+        functor: type_extractor_sort_sym, pos_args: SmallVec::new(), named_args: SmallVec::new(),
+    });
+    kb.symbols.add_parent(type_extractor_sort_term.raw(), ScopeInclusion {
+        parent_scope_raw: prelude_term.raw(),
+        instantiation_term_raw: prelude_term.raw(),
+        is_enclosing: true,
+    });
+    kb.symbols.define("Arrow", "anthill.prelude.TypeExtractor.Arrow", SymbolKind::Entity, type_extractor_sort_term.raw());
+    kb.symbols.define("TypeVar", "anthill.prelude.TypeExtractor.TypeVar", SymbolKind::Entity, type_extractor_sort_term.raw());
+    kb.symbols.define("NamedTuple", "anthill.prelude.TypeExtractor.NamedTuple", SymbolKind::Entity, type_extractor_sort_term.raw());
+    kb.symbols.define("Nothing", "anthill.prelude.TypeExtractor.Nothing", SymbolKind::Entity, type_extractor_sort_term.raw());
+    kb.symbols.define("Denoted", "anthill.prelude.TypeExtractor.Denoted", SymbolKind::Entity, type_extractor_sort_term.raw());
     // WI-320 — variant-7 substrate: the EffectExpression-into-Type bridge.
-    kb.symbols.define("effects_rows", "anthill.prelude.Type.effects_rows", SymbolKind::Entity, type_sort_term.raw());
-    kb.symbols.define("TypeField", "anthill.prelude.Type.TypeField", SymbolKind::Entity, type_sort_term.raw());
-    kb.symbols.define("TypeBinding", "anthill.prelude.Type.TypeBinding", SymbolKind::Entity, type_sort_term.raw());
+    kb.symbols.define("EffectsRows", "anthill.prelude.TypeExtractor.EffectsRows", SymbolKind::Entity, type_extractor_sort_term.raw());
+    // Standalone record for a named-tuple element (anthill.prelude.NamedTupleElement) —
+    // built by make_named_tuple_type; lives at prelude scope (not inside an enum).
+    kb.symbols.define("NamedTupleElement", "anthill.prelude.NamedTupleElement", SymbolKind::Entity, prelude_term.raw());
 
     // WI-307 — v1a row-substrate: the EffectExpression algebra entities, the
     // payload `effects_rows` wraps. Pre-registered so `make_arrow_type` can

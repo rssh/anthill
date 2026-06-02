@@ -95,38 +95,25 @@ namespace anthill.reflect.typing
        list_contains(?param, ?params)
 
   -- ================================================================
-  -- Type entity term compatibility (anthill.prelude.Type)
+  -- Structural subtyping is term-backed (WI-361)
   -- ================================================================
-  -- Rules for the Type entity representation used by the typing pass.
-  -- sort_ref, parameterized, arrow, named_tuple, type_var, nothing.
-
-  import anthill.prelude.Type.{sort_ref, parameterized, arrow, type_var, named_tuple, nothing, TypeBinding, TypeField}
-
-  -- ================================================================
-  -- is_subtype: strict subtyping (irreflexive)
-  -- ================================================================
-
-  -- Entity strict subtyping
-  rule is_subtype(sort_ref(name: ?A), sort_ref(name: ?B))
-    :- is_entity_of(?A, ?B), neq(?A, ?B)
-
-  -- Requires/refines strict subtyping
-  rule is_subtype(sort_ref(name: ?A), sort_ref(name: ?B))
-    :- refines(?A, ?B)
-
-  -- Identity: same type
-  rule type_compatible(sort_ref(name: ?A), sort_ref(name: ?A))
-
-  -- Entity subtyping: sort_ref(entity) <: sort_ref(parent)
-  rule type_compatible(sort_ref(name: ?A), sort_ref(name: ?B))
-    :- is_entity_of(?A, ?B)
-
-  -- type_var is compatible with anything (inference wildcard)
-  rule type_compatible(type_var(name: ?), ?)
-  rule type_compatible(?, type_var(name: ?))
-
-  -- nothing is bottom type — subtype of everything
-  rule type_compatible(nothing, ?)
+  -- A `Type` value is an ordinary term — `Ref(S)` for a bare sort,
+  -- `Fn{S, named}` for a parameterized type, and the `TypeExtractor.*`
+  -- entities for the structural forms (arrow / named tuple / effects row /
+  -- nothing / type var). The deep `Type.sort_ref(...)` / `parameterized(...)`
+  -- / `arrow(...)` / `named_tuple(...)` constructors no longer exist, so the
+  -- STRUCTURAL subtyping rules that pattern-matched them (sort-ref
+  -- identity/entity, `is_subtype`, parameterized variance, arrow, named-tuple,
+  -- type_var/nothing) are removed: structural compatibility is decided by the
+  -- Rust term-backed typer (`types_compatible` / `is_subtype` / `unify_types`
+  -- in kb/typing.rs), which reads the term shape directly.
+  --
+  -- What stays is the RELATIONAL core — `entity_of` / `refines` / `provides`
+  -- and the `type_compatible` rules they feed (identity / entity / refines /
+  -- provides above, plus composition-through-requires below). These read
+  -- `EntityInfo` / `SortRequiresInfo` / `SortProvidesInfo` facts and are
+  -- independent of a type's term shape, so they apply equally to the
+  -- term-backed bare-sort form.
 
   -- ================================================================
   -- Variance (proposal 035)
@@ -174,81 +161,38 @@ namespace anthill.reflect.typing
        type_compatible(?V2, ?V1)
 
   -- Composition through `requires` (proposal 035 §Variance through requires).
-  -- A is compatible with C if A refines some intermediate B_inst, and
-  -- B_inst itself is compatible with C under B_inst's own sort's variance.
-  -- Rule chosen to terminate: the refines chain is acyclic, and the
-  -- recursive type_compatible call descends to a structurally smaller term.
+  -- A is compatible with C if A refines some intermediate B_inst, and B_inst
+  -- itself is compatible with C (via any of the type_compatible arms). Rule
+  -- chosen to terminate: the refines chain is acyclic, and the recursive
+  -- type_compatible call descends to a structurally smaller term.
 
   rule type_compatible(?A, ?C)
     :- refines(?A, ?B_inst),
        type_compatible(?B_inst, ?C)
 
-  -- Parameterized types: compatible if base compatible and per-parameter
-  -- bindings pass the variance check. Replaces the old covariant-by-default
-  -- `bindings_compatible` (which was equivalent to `effective_covariant`
-  -- on every parameter regardless of declaration).
-  rule type_compatible(
-    parameterized(base: sort_ref(name: ?S), bindings: ?Binds1),
-    parameterized(base: sort_ref(name: ?S), bindings: ?Binds2))
-    :- bindings_variance_compatible(?S, ?Binds1, ?Binds2)
-
-  rule bindings_variance_compatible(?, ?, nil)
-  rule bindings_variance_compatible(?S, ?Actual,
-    cons(head: TypeBinding(param: ?P, value: ?V2), tail: ?rest))
-    :- list_contains(TypeBinding(param: ?P, value: ?V1), ?Actual),
-       check_variance(?S, ?P, ?V1, ?V2),
-       bindings_variance_compatible(?S, ?Actual, ?rest)
-
-  -- Arrow subtyping: contravariant param, covariant result, covariant effects
-  --
-  -- STALE — WI-307 / WI-331: `arrow.effects` is now a singular `Type`
-  -- holding an `effects_rows(EffectExpression)` wrapper, not a `List[Type]`.
-  -- `effects_subset` below still walks a cons-list, so this reflect-side
-  -- rule will not fire correctly until WI-330 migrates the spec onto row
-  -- unification (matching the Rust typer's `subtype_effect_rows`). Kept as
-  -- a placeholder so the surface shape (contravariant param, covariant
-  -- result, covariant effects) is documented; downstream tests do not
-  -- exercise this rule today.
-  rule type_compatible(
-    arrow(param: ?P1, result: ?R1, effects: ?E1),
-    arrow(param: ?P2, result: ?R2, effects: ?E2))
-    :- type_compatible(?P2, ?P1),
-       type_compatible(?R1, ?R2),
-       effects_subset(?E1, ?E2)
-
-  -- Effect subset: actual effects ⊆ expected effects.
-  -- WI-307 / WI-331 stale (see note on `type_compatible` above): the
-  -- arrow.effects field is now a single `Type` wrapping an
-  -- `EffectExpression`, not a cons-list. WI-330 replaces this with a
-  -- row-unification rule.
-  rule effects_subset(nil, ?)
-  rule effects_subset(cons(head: ?E, tail: ?rest), ?expected)
-    :- list_contains(?E, ?expected),
-       effects_subset(?rest, ?expected)
-
-  -- Named tuple subtyping: width + depth
-  -- Every expected field must have a compatible actual field
-  rule type_compatible(
-    named_tuple(fields: ?F1),
-    named_tuple(fields: ?F2))
-    :- fields_compatible(?F1, ?F2)
-
-  rule fields_compatible(?, nil)
-  rule fields_compatible(?actual,
-    cons(head: TypeField(name: ?N, type: ?T2), tail: ?rest))
-    :- list_contains(TypeField(name: ?N, type: ?T1), ?actual),
-       type_compatible(?T1, ?T2),
-       fields_compatible(?actual, ?rest)
+  -- NOTE (WI-361): the structural variance-aware subtyping over parameterized
+  -- types — `type_compatible(parameterized(base, bindings1), parameterized(base,
+  -- bindings2)) :- bindings_variance_compatible(...)`, plus the `arrow` and
+  -- `named_tuple` arms — used the deep `parameterized`/`arrow`/`named_tuple`/
+  -- `TypeBinding`/`TypeField` constructors, which no longer exist (a
+  -- parameterized type is the term `Fn{S, named}`, whose base sort sits in
+  -- functor position — an SLD rule cannot abstract over it). Term-backed
+  -- structural subtyping lives in the Rust typer (`parameterized_compatible` /
+  -- `arrow_function_compatible` in kb/typing.rs). The variance scaffolding above
+  -- (`check_variance` + `effective_covariant`/`_contravariant` + the
+  -- `Covariant`/`Contravariant` facts below) is RETAINED — it is the per-(sort,
+  -- param) variance resolver the Rust typer is to consume (WI-2151) and the
+  -- variance inference will populate (WI-184); e.g. `Covariant(Option, T)` makes
+  -- `Option` covariant in `T`.
 
   -- ================================================================
-  -- Variance migration facts (proposal 035 §Risk: existing tests)
+  -- Variance facts (proposal 035 §Risk: existing tests)
   -- ================================================================
-  -- Default flipped from covariant to invariant by the rules above. The
-  -- prelude container types that were correctly covariant under the old
-  -- default need explicit declarations so user code that was relying on
-  -- e.g. `List[Cat] <: List[Animal]` keeps working. Mutating containers
-  -- (Map, Set, Cell) intentionally drop to invariant — the previously-
-  -- allowed unsound widening is correctly rejected.
+  -- The prelude container types that are covariant in their element parameter.
+  -- Consumed via `effective_covariant` / `check_variance` (e.g. by the typer,
+  -- WI-2151) so `List[Cat] <: List[Animal]`, `Option[Cat] <: Option[Animal]`,
+  -- etc. hold. Mutating containers (Map, Set, Cell) are intentionally absent —
+  -- they default to invariant (the unsound widening is correctly rejected).
 
   fact Covariant(sort: List, param: T)
   fact Covariant(sort: Option, param: T)

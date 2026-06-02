@@ -172,7 +172,7 @@ fn occ_named_keys(occ: &NodeOccurrence, kb: &KnowledgeBase) -> Vec<Symbol> {
 // the first live consumer.
 
 fn type_functor_sym(kb: &KnowledgeBase, short: &str) -> Option<Symbol> {
-    kb.try_resolve_symbol(&format!("anthill.prelude.Type.{short}"))
+    kb.try_resolve_symbol(&format!("anthill.prelude.TypeExtractor.{short}"))
 }
 
 fn effect_functor_sym(kb: &KnowledgeBase, short: &str) -> Option<Symbol> {
@@ -214,12 +214,12 @@ fn type_node_head(tn: &TypeNode, kb: &KnowledgeBase) -> ViewHead {
         TypeNode::Parameterized { base, bindings } => {
             (parameterized_base_functor(base, kb), bindings.len())
         }
-        TypeNode::Denoted { .. } => (type_functor_sym(kb, "denoted"), 1),
-        TypeNode::EffectsRows { .. } => (type_functor_sym(kb, "effects_rows"), 1),
-        TypeNode::Arrow { .. } => (type_functor_sym(kb, "arrow"), 3),
-        // WI-361: one `fields` child (a `Value`-carried `List[TypeField]`),
-        // matching the term form `named_tuple(fields: List[TypeField])`.
-        TypeNode::NamedTuple { .. } => (type_functor_sym(kb, "named_tuple"), 1),
+        TypeNode::Denoted { .. } => (type_functor_sym(kb, "Denoted"), 1),
+        TypeNode::EffectsRows { .. } => (type_functor_sym(kb, "EffectsRows"), 1),
+        TypeNode::Arrow { .. } => (type_functor_sym(kb, "Arrow"), 3),
+        // WI-361: one `fields` child (a `Value`-carried `List[NamedTupleElement]`),
+        // matching the term form `NamedTuple(fields: List[NamedTupleElement])`.
+        TypeNode::NamedTuple { .. } => (type_functor_sym(kb, "NamedTuple"), 1),
     };
     match functor {
         Some(f) => ViewHead::Functor { functor: Some(f), pos_arity: 0, named_arity },

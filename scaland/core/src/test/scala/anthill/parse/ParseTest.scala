@@ -468,25 +468,25 @@ class ParseTest extends munit.FunSuite:
       case fn: Term.Fn => pf.symbols.name(fn.functor)
       case other => fail(s"expected Fn, got $other")
 
-  test("WI-288: arrow type `(T) -> Int` lowers to `Type.arrow`") {
+  test("WI-288/WI-361: arrow type `(T) -> Int` lowers to `TypeExtractor.Arrow`") {
     val (pf, op) = parseDemoOp(
       "  operation f() -> Int =\n    let x : (T) -> Int = 1 in x")
     val tn = namedArg(pf, op.body.getOrElse(fail("no body")), "type_name")
-    assertEquals(functorName(pf, tn), "anthill.prelude.Type.arrow")
+    assertEquals(functorName(pf, tn), "anthill.prelude.TypeExtractor.Arrow")
   }
 
-  test("WI-288: named tuple `(a: T, b: Int)` lowers to `Type.named_tuple`") {
+  test("WI-288/WI-361: named tuple `(a: T, b: Int)` lowers to `TypeExtractor.NamedTuple`") {
     val (pf, op) = parseDemoOp(
       "  operation f() -> Int =\n    let x : (a: T, b: Int) = 1 in x")
     val tn = namedArg(pf, op.body.getOrElse(fail("no body")), "type_name")
-    assertEquals(functorName(pf, tn), "anthill.prelude.Type.named_tuple")
+    assertEquals(functorName(pf, tn), "anthill.prelude.TypeExtractor.NamedTuple")
   }
 
-  test("WI-288: positional tuple `(T, Int)` lowers to `Type.named_tuple`") {
+  test("WI-288/WI-361: positional tuple `(T, Int)` lowers to `TypeExtractor.NamedTuple`") {
     val (pf, op) = parseDemoOp(
       "  operation f() -> Int =\n    let x : (T, Int) = 1 in x")
     val tn = namedArg(pf, op.body.getOrElse(fail("no body")), "type_name")
-    assertEquals(functorName(pf, tn), "anthill.prelude.Type.named_tuple")
+    assertEquals(functorName(pf, tn), "anthill.prelude.TypeExtractor.NamedTuple")
   }
 
   /** Walks the entire stdlib tree and asserts every .anthill file parses.
