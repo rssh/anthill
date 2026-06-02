@@ -1641,10 +1641,10 @@ fn find_spec_op_for_provided_sort(
         if !kb.is_fact(rid) {
             continue;
         }
-        let named = match kb.get_term(kb.rule_head(rid)) {
-            Term::Fn { named_args, .. } => named_args.clone(),
-            _ => continue,
-        };
+        // A value-fact SortProvidesInfo (denoted-bearing spec) carries no spec
+        // base via the term-only path; occurrence dispatch is gated effect-
+        // expressions-as-types work, so skip rather than panic on a value head.
+        let Some(named) = kb.fact_head_named_args(rid) else { continue };
         let Some(sr) = get_named_arg(kb, &named, "sort_ref") else { continue };
         let Some(carrier) = super::load::sort_ref_functor(kb, sr) else { continue };
         // `same_symbol`, not `==`: a sort carries distinct Symbol ids
@@ -4660,11 +4660,10 @@ fn spec_has_any_providers(kb: &KnowledgeBase, spec_sort: Symbol) -> bool {
     };
     for rid in kb.rules_by_functor(provides_sym) {
         if !kb.is_fact(rid) { continue; }
-        let head = kb.rule_head(rid);
-        let head_named = match kb.get_term(head) {
-            Term::Fn { named_args, .. } => named_args.clone(),
-            _ => continue,
-        };
+        // A value-fact SortProvidesInfo (denoted-bearing spec) is skipped here;
+        // occurrence-based provider lookup is gated effect-expressions-as-types
+        // work (avoid the term-only `rule_head` panic on a value head).
+        let Some(head_named) = kb.fact_head_named_args(rid) else { continue };
         let spec_view_tid = match get_named_arg(kb, &head_named, "spec") {
             Some(t) => t,
             None => continue,
@@ -4696,11 +4695,11 @@ fn collect_provides_candidates(
         if !kb.is_fact(rid) {
             continue;
         }
-        let head = kb.rule_head(rid);
-        let head_named = match kb.get_term(head) {
-            Term::Fn { named_args, .. } => named_args.clone(),
-            _ => continue,
-        };
+        // A value-fact SortProvidesInfo (denoted-bearing spec) is skipped from
+        // dispatch-candidate collection; occurrence-based dispatch is gated
+        // effect-expressions-as-types work (avoid the term-only `rule_head`
+        // panic on a value head).
+        let Some(head_named) = kb.fact_head_named_args(rid) else { continue };
         let sort_ref_tid = match get_named_arg(kb, &head_named, "sort_ref") {
             Some(t) => t,
             None => continue,
@@ -5132,11 +5131,10 @@ pub fn check_provider_requires(kb: &mut KnowledgeBase) -> Vec<super::load::LoadE
         if !kb.is_fact(rid) {
             continue;
         }
-        let head = kb.rule_head(rid);
-        let named = match kb.get_term(head) {
-            Term::Fn { named_args, .. } => named_args.clone(),
-            _ => continue,
-        };
+        // A value-fact SortProvidesInfo (denoted-bearing spec) is skipped from
+        // ops-coverage checking; occurrence-based coverage is gated effect-
+        // expressions-as-types work (avoid the term-only `rule_head` panic).
+        let Some(named) = kb.fact_head_named_args(rid) else { continue };
         let Some(sr) = get_named_arg(kb, &named, "sort_ref") else { continue };
         let Some(carrier) = super::load::sort_ref_functor(kb, sr) else { continue };
         let Some(spec_view) = get_named_arg(kb, &named, "spec") else { continue };
@@ -5377,11 +5375,10 @@ pub fn check_override_refinement(kb: &mut KnowledgeBase) -> Vec<super::load::Loa
     let mut provs: Vec<Prov> = Vec::new();
     for rid in kb.rules_by_functor(provides_sym) {
         if !kb.is_fact(rid) { continue; }
-        let head = kb.rule_head(rid);
-        let named = match kb.get_term(head) {
-            Term::Fn { named_args, .. } => named_args.clone(),
-            _ => continue,
-        };
+        // A value-fact SortProvidesInfo (denoted-bearing spec) is skipped from
+        // override-refinement coverage; occurrence-based coverage is gated
+        // effect-expressions-as-types work (avoid the term-only `rule_head` panic).
+        let Some(named) = kb.fact_head_named_args(rid) else { continue };
         let Some(sr) = get_named_arg(kb, &named, "sort_ref") else { continue };
         let Some(carrier) = super::load::sort_ref_functor(kb, sr) else { continue };
         let Some(spec_view) = get_named_arg(kb, &named, "spec") else { continue };
@@ -5959,10 +5956,10 @@ fn provider_spec_view_bindings(
         if !kb.is_fact(rid) {
             continue;
         }
-        let head_named = match kb.get_term(kb.rule_head(rid)) {
-            Term::Fn { named_args, .. } => named_args.clone(),
-            _ => continue,
-        };
+        // A value-fact SortProvidesInfo (denoted-bearing spec) is skipped;
+        // occurrence-based provides lookup is gated effect-expressions-as-types
+        // work (avoid the term-only `rule_head` panic on a value head).
+        let Some(head_named) = kb.fact_head_named_args(rid) else { continue };
         let Some(sr) = get_named_arg(kb, &head_named, "sort_ref") else {
             continue;
         };
@@ -6448,7 +6445,11 @@ fn check_constructor_iter(
         let mut alias_info: Vec<(String, TermId)> = Vec::new();
         for rid in kb.rules_by_functor(a_sym) {
             if !kb.is_fact(rid) { continue; }
-            let head = kb.rule_head(rid);
+            // A value-fact SortAlias (denoted-bearing target, e.g.
+            // `sort T = Foo[Int, 3]`) never has a logic `Var` target, so it is not
+            // a type-param indirection — skip it (and avoid the term-only
+            // `rule_head` panic on a `Value::Node`/`Entity` head).
+            let Some(head) = kb.fact_head_term(rid) else { continue };
             if let Term::Fn { pos_args, .. } = kb.get_term(head) {
                 if pos_args.len() >= 2 {
                     let sort_tid = pos_args[0];
@@ -7707,7 +7708,10 @@ fn resolve_sort_alias(kb: &KnowledgeBase, sym: Symbol) -> Option<TermId> {
     let find = |matches: fn(&KnowledgeBase, Symbol, Symbol, &str) -> bool| {
         for rid in kb.rules_by_functor(alias_sym) {
             if !kb.is_fact(rid) { continue; }
-            let head = kb.rule_head(rid);
+            // A value-fact SortAlias (denoted-bearing target) carries no ground
+            // target `TermId` — skip it (callers want a ground `Var`/alias term),
+            // and avoid the term-only `rule_head` panic on a `Value::Node` head.
+            let Some(head) = kb.fact_head_term(rid) else { continue };
             if let Term::Fn { pos_args, .. } = kb.get_term(head) {
                 if pos_args.len() >= 2 {
                     if let Term::Fn { functor, .. } = kb.get_term(pos_args[0]) {
@@ -9575,11 +9579,13 @@ fn direct_requires(kb: &KnowledgeBase, sort_sym: Symbol) -> Vec<RequiresEntry> {
 
     for rid in kb.rules_by_functor(requires_sym) {
         if !kb.is_fact(rid) { continue; }
-        let head = kb.rule_head(rid);
-        let named_args = match kb.get_term(head) {
-            Term::Fn { named_args, .. } => named_args,
-            _ => continue,
-        };
+        // A value-fact SortRequiresInfo (denoted-bearing spec) cannot yield a
+        // term-form `RequiresEntry.spec` (a `TermId` consumed by the term-only
+        // spec walks `unwrap_spec_view` / `substitute_in_spec`); occurrence-based
+        // requires-chain resolution is gated effect-expressions-as-types work, so
+        // skip it here. The spec is preserved faithfully on the fact for that pass
+        // (rather than hit the term-only `rule_head` panic on a value head).
+        let Some(named_args) = kb.fact_head_named_args(rid) else { continue };
 
         // Check that this SortRequiresInfo is for our sort. `same_symbol`
         // keys on resolved-Symbol / qualified-name identity so a fact
@@ -10638,10 +10644,10 @@ pub(crate) fn sort_provides(kb: &KnowledgeBase, carrier: Symbol, spec: Symbol) -
         None => return false,
     };
     for rid in kb.rules_by_functor(provides_sym) {
-        let named = match kb.get_term(kb.rule_head(rid)) {
-            Term::Fn { named_args, .. } => named_args.clone(),
-            _ => continue,
-        };
+        // A value-fact SortProvidesInfo (denoted-bearing spec) is skipped;
+        // occurrence-based provides lookup is gated effect-expressions-as-types
+        // work (avoid the term-only `rule_head` panic on a value head).
+        let Some(named) = kb.fact_head_named_args(rid) else { continue };
         let carrier_ok = get_named_arg(kb, &named, "sort_ref")
             .and_then(|t| super::load::sort_ref_functor(kb, t))
             .is_some_and(|c| same_symbol(kb, c, carrier));

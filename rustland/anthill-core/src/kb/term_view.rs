@@ -63,6 +63,22 @@ pub enum ViewItem<'a> {
     Node(Rc<NodeOccurrence>),
 }
 
+impl ViewItem<'_> {
+    /// The ground hash-consed `TermId` this child carries, if any. A `Term`
+    /// carrier — or a `Value::Term` — yields its `TermId`; a `Node` (denoted /
+    /// occurrence carrier) or any other `Value` has no `TermId` → `None`. The
+    /// carrier-agnostic peer of reading a child as a term: a reader that only
+    /// makes sense for ground children (a `SortAlias` target `Var`, a positional
+    /// sort ref) uses this and treats `None` as "not a ground term, skip".
+    pub fn as_term_id(&self) -> Option<TermId> {
+        match self {
+            ViewItem::Term(t) => Some(*t),
+            ViewItem::Value(Value::Term(t)) => Some(*t),
+            _ => None,
+        }
+    }
+}
+
 // ── Occurrence views (WI-276) ──────────────────────────────────
 //
 // `Value::Node` / `ViewItem::Node` expose a reflect `Expr` occurrence to the

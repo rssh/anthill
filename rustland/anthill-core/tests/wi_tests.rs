@@ -165,3 +165,6 @@ mod wi357_element_typing_test;
 
 #[path = "include/wi365_effect_grounding_test.rs"]
 mod wi365_effect_grounding_test;
+
+#[path = "include/wi366_value_in_type_facts_test.rs"]
+mod wi366_value_in_type_facts_test;

@@ -107,3 +107,4 @@ Variables: `?name` (named, shared within scope), `?` (anonymous, each occurrence
 
 # Development principles
  - avoid fallbacks, better know about errors early.
+ - prefer a loud error over a silent skip: when a case can't be handled — a not-yet-supported / gated path, an unexpected value carrier, a missing field — surface it as an explicit error or diagnostic rather than silently `continue`/dropping it. Silent skips hide bugs and read as "handled" when they aren't.

@@ -1185,7 +1185,11 @@ fn reflect_find_fact(interp: &mut Interpreter, args: &[Value]) -> Result<Value, 
     };
     let found = functor.and_then(|f| {
         interp.kb.rules_by_functor(f).into_iter()
-            .find(|rid| interp.kb.rule_head(*rid) == target)
+            // A value-fact head (WI-348/WI-366) is not a `TermId`, so it can never
+            // equal the ground `target` — skip it (avoids the term-only
+            // `rule_head` panic on a value head).
+            .find(|rid| matches!(interp.kb.rule_head_value(*rid),
+                crate::eval::value::Value::Term(t) if *t == target))
     });
 
     match found {

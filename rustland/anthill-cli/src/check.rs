@@ -599,11 +599,11 @@ fn check_scope_axiom_witness(
         let mut scope_seen = false;
         for rid in kb.rules_by_functor(requires_sym) {
             if !kb.is_fact(rid) { continue; }
-            let head = kb.rule_head(rid);
-            let head_named = match kb.get_term(head) {
-                Term::Fn { named_args, .. } => named_args.clone(),
-                _ => continue,
-            };
+            // A value-fact SortRequiresInfo (denoted-bearing spec, WI-366) carries
+            // no term-form named args; occurrence-based scope-axiom checking is
+            // gated effect-expressions-as-types work, so skip rather than hit the
+            // term-only `rule_head` panic on a value head.
+            let Some(head_named) = kb.fact_head_named_args(rid) else { continue };
             let sort_ref_tid = match get_named_arg(kb, &head_named, "sort_ref") {
                 Some(t) => t,
                 None => continue,

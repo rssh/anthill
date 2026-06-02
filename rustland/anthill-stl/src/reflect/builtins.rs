@@ -14,6 +14,7 @@ use anthill_core::eval::{EvalError, Interpreter, Value};
 use anthill_core::intern::Symbol;
 use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::RuleId;
+use anthill_core::kb::term_view::TermView;
 use anthill_core::kb::resolve::ResolveConfig;
 use anthill_core::kb::term::{Literal, Term as CoreTerm, TermId, Var};
 
@@ -187,33 +188,58 @@ pub fn register_reflect_builtins(interp: &mut Interpreter) -> Result<(), EvalErr
 
 // ── KB introspection helpers (over &mut KnowledgeBase) ──────────
 
-fn facts_by_sort_name(kb: &mut KnowledgeBase, sort_name: &str) -> Vec<(RuleId, TermId)> {
+fn facts_by_sort_name(kb: &mut KnowledgeBase, sort_name: &str) -> Vec<(RuleId, Value)> {
     let sort_term = kb.make_name_term(sort_name);
     kb.by_sort(sort_term)
         .into_iter()
-        .map(|rid| (rid, kb.fact_term(rid)))
+        // WI-366: the head is read carrier-agnostically as a `Value`. The schemas
+        // read this way (`Member`, `Rule`, `Description`) are ground by design, so
+        // every head is `Value::Term` in practice — but the surface is carrier-
+        // agnostic, so a value head (should one ever appear) flows through and is
+        // read via `TermView`, neither skipped nor panicked. (`SortInfo` shares
+        // the `"Sort"` bucket with the value-in-type `SortAlias`, so it is read by
+        // functor instead — see `facts_by_functor` / `kb_sorts`.)
+        .map(|rid| (rid, kb.rule_head_value(rid).clone()))
         .collect()
 }
 
-fn term_functor_sym(kb: &KnowledgeBase, id: TermId) -> Option<Symbol> {
-    match kb.get_term(id) {
-        CoreTerm::Fn { functor, .. } => Some(*functor),
-        _ => None,
-    }
+/// Facts for a reflect schema queried directly by `functor`, used where the sort
+/// bucket is shared with another functor: `SortInfo` shares sort `"Sort"` with
+/// the value-in-type `SortAlias` (WI-366), so reading the `"Sort"` bucket would
+/// also pick up `SortAlias` heads. Querying the `SortInfo` functor returns only
+/// the wanted facts. Heads are carrier-agnostic [`Value`]s, read via `TermView`.
+fn facts_by_functor(kb: &KnowledgeBase, functor: Symbol) -> Vec<(RuleId, Value)> {
+    kb.rules_by_functor(functor)
+        .into_iter()
+        .filter(|rid| kb.is_fact(*rid))
+        .map(|rid| (rid, kb.rule_head_value(rid).clone()))
+        .collect()
 }
 
-fn term_named_args(kb: &KnowledgeBase, id: TermId) -> Vec<(Symbol, TermId)> {
-    match kb.get_term(id) {
-        CoreTerm::Fn { named_args, .. } => named_args.iter().copied().collect(),
-        _ => vec![],
-    }
+/// Named args of a reflect fact head, read carrier-agnostically via `TermView`
+/// (WI-366). These schemas are ground by design, so each field value is a
+/// hash-consed term; a non-`Term` field (not expected here) has no `TermId` and
+/// is omitted.
+fn term_named_args(kb: &KnowledgeBase, head: &Value) -> Vec<(Symbol, TermId)> {
+    head.named_keys(kb)
+        .into_iter()
+        .filter_map(|k| head.named_arg(kb, k).and_then(|i| i.as_term_id()).map(|t| (k, t)))
+        .collect()
 }
 
-fn term_pos_args(kb: &KnowledgeBase, id: TermId) -> Vec<TermId> {
-    match kb.get_term(id) {
-        CoreTerm::Fn { pos_args, .. } => pos_args.iter().copied().collect(),
-        _ => vec![],
+/// Positional args of a reflect fact head — carrier-agnostic peer of
+/// [`term_named_args`]. Ground-schema use only (a non-`Term` positional, not
+/// expected here, is omitted).
+fn term_pos_args(kb: &KnowledgeBase, head: &Value) -> Vec<TermId> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    while let Some(item) = head.pos_arg(kb, i) {
+        if let Some(t) = item.as_term_id() {
+            out.push(t);
+        }
+        i += 1;
     }
+    out
 }
 
 fn term_display_name(kb: &KnowledgeBase, id: TermId) -> String {
@@ -268,7 +294,7 @@ fn collect_list_terms(kb: &KnowledgeBase, syms: &ReflectSyms, list_tid: TermId) 
 fn members_of_kind(kb: &mut KnowledgeBase, parent_name: &str, kind: &str) -> Vec<String> {
     let mut results = vec![];
     for (_rid, head) in facts_by_sort_name(kb, "Member") {
-        let pos = term_pos_args(kb, head);
+        let pos = term_pos_args(kb, &head);
         if pos.len() == 3 {
             let member_kind = term_display_name(kb, pos[1]);
             let member_parent = term_display_name(kb, pos[2]);
@@ -357,11 +383,14 @@ fn kb_sorts(
     let namespace = option_string_arg(ns)?;
     let kb = interp.kb_mut();
 
-    let facts = facts_by_sort_name(kb, "Sort");
+    // `SortInfo` shares sort `"Sort"` with the value-in-type `SortAlias` (WI-366),
+    // so query the `SortInfo` functor directly rather than reading the `"Sort"`
+    // bucket and tripping on the value `SortAlias` head. Every fact is a
+    // `SortInfo`, so the former functor filter is gone.
+    let facts = facts_by_functor(kb, syms.sort_info);
     let mut entries: Vec<Value> = Vec::new();
     for (_rid, head) in facts {
-        if term_functor_sym(kb, head) != Some(syms.sort_info) { continue; }
-        let named = term_named_args(kb, head);
+        let named = term_named_args(kb, &head);
         let field = |key: Symbol| named.iter().find(|(n, _)| *n == key).map(|(_, tid)| *tid);
 
         let name_tid = match field(syms.f_name) { Some(t) => t, None => continue };
@@ -526,7 +555,13 @@ fn kb_rules(
         let domain = kb.fact_domain(rid);
         let domain_name = term_display_name(kb, domain);
         if domain_name != sort_name && short_of(&domain_name) != sort_name { continue; }
-        items.push(reify_term_to_value(kb, syms, head));
+        // A `Rule` fact head is the rule's predicate term — always hash-consed
+        // (rules are not value facts), so the carrier-agnostic head reifies via
+        // its `TermId`.
+        let head_tid = head
+            .as_term()
+            .expect("a Rule fact head is a hash-consed predicate term");
+        items.push(reify_term_to_value(kb, syms, head_tid));
     }
     Ok(build_list_value(syms, items))
 }
@@ -543,7 +578,7 @@ fn kb_descriptions(
     let mut items: Vec<Value> = Vec::new();
     let facts = facts_by_sort_name(kb, "Description");
     for (idx, (_rid, head)) in facts.into_iter().enumerate() {
-        let pos = term_pos_args(kb, head);
+        let pos = term_pos_args(kb, &head);
         if pos.len() < 2 { continue; }
         let desc_target_tid = pos[0];
         let desc_content = term_display_name(kb, pos[1]);

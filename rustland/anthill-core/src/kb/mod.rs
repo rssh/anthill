@@ -1525,6 +1525,32 @@ impl KnowledgeBase {
         &self.rules[id.index()].head
     }
 
+    /// The head of a fact as a ground hash-consed `TermId`, or `None` if it is a
+    /// value fact (a `Value::Node`/`Value::Entity`-carrying head — WI-348/WI-366).
+    /// The carrier-agnostic skip for the term-only readers of the sort-relation
+    /// reflect facts (`SortAlias` / `SortRequiresInfo` / `SortProvidesInfo`): a
+    /// value head has no `TermId`, so a term-only reader treats `None` as "skip
+    /// this fact" — occurrence-based handling is gated effect-expressions-as-types
+    /// work (the producer surfaces a diagnostic). Avoids the `rule_head` /
+    /// `head_term_id` panic on a value head.
+    pub fn fact_head_term(&self, id: RuleId) -> Option<TermId> {
+        match &self.rules[id.index()].head {
+            crate::eval::value::Value::Term(t) => Some(*t),
+            _ => None,
+        }
+    }
+
+    /// The named args of a fact head when it is a ground `Term::Fn`, else `None`
+    /// (a value head, or a non-`Fn` term). An owned clone — the carrier-agnostic
+    /// skip peer of [`Self::fact_head_term`] for readers that pull named fields
+    /// (`sort_ref` / `spec`) off a sort-relation reflect fact.
+    pub fn fact_head_named_args(&self, id: RuleId) -> Option<SmallVec<[(Symbol, TermId); 2]>> {
+        match self.get_term(self.fact_head_term(id)?) {
+            Term::Fn { named_args, .. } => Some(named_args.clone()),
+            _ => None,
+        }
+    }
+
     /// Whether a rule id refers to a live (non-retracted) rule. Out-of-bounds
     /// ids return false. Use before reading rule fields when the caller
     /// can't guarantee the id was just produced.
@@ -2553,17 +2579,17 @@ impl KnowledgeBase {
     /// (WI-302), the GROUND (hash-consed) carrier. Mirrors reflect
     /// `TypeExtractor.Denoted`. The `value` is the term-form of the carried value.
     ///
-    /// WI-342 T8: NO LONGER the value-in-type production builder — the typer
-    /// (T1–T7) and the loader's migrated positions (entity fields, op signature,
-    /// call type-args, via `type_expr_to_child`) mint a `Value::Node` `denoted`
-    /// occurrence through [`Self::make_denoted_occ`] instead, the carrier the
-    /// migration requires. The ground form survives for the parameterized
-    /// ground-FACT positions still lowered by `type_expr_to_term` (`SortAlias` /
-    /// `SortView` / the fact-`provides` placeholder), which stay hash-consed
-    /// `TermId`s until effect-expressions-as-types lets those fact slots carry a
-    /// `Value`; plus `#[cfg(test)]` cross-carrier fixtures (a ground `denoted`
-    /// unified/subtyped against its `Value::Node` twin). So it cannot be deleted
-    /// yet — but it is off every live value-in-type *production* path.
+    /// WI-366: **test-only.** Every production value-in-type now mints a
+    /// `Value::Node` `denoted` occurrence via [`Self::make_denoted_occ`] — the
+    /// typer (WI-342 T1–T7), the loader's value positions (entity fields, op
+    /// signature, call type-args, via `type_expr_to_child`/`type_expr_to_value`),
+    /// and the sort-relation facts (`SortAlias` / `SortView` `requires` / fact
+    /// `provides`, via `type_expr_to_value` / `sort_inst_to_value`). No production
+    /// caller builds a ground `denoted`, so this is `#[cfg(test)]` — retained only
+    /// for the cross-carrier fixtures that unify/subtype a ground `denoted`
+    /// against its `Value::Node` twin (region.rs `modify_label`, the WI-342
+    /// mod.rs test, the typing.rs cross-carrier tests).
+    #[cfg(test)]
     pub fn make_denoted(&mut self, value: TermId) -> TermId {
         let denoted_sym = self.resolve_symbol("anthill.prelude.TypeExtractor.Denoted");
         let value_key = self.intern("value");

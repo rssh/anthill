@@ -76,8 +76,10 @@ fn find_main_providers(kb: &mut KnowledgeBase) -> Vec<Symbol> {
         if !kb.is_fact(rid) {
             continue;
         }
-        let head = kb.rule_head(rid);
-        let Term::Fn { named_args, .. } = kb.get_term(head) else { continue };
+        // WI-366: a value-fact SortRequiresInfo (denoted-bearing spec) has no
+        // term-form head; entry-point discovery is term-only, so skip it rather
+        // than hit the term-only `rule_head` panic on a value head.
+        let Some(named_args) = kb.fact_head_named_args(rid) else { continue };
         let sort_ref_tid = named_args.iter().find(|(s, _)| *s == sort_ref_field).map(|(_, t)| *t);
         let spec_tid = named_args.iter().find(|(s, _)| *s == spec_field).map(|(_, t)| *t);
         let (Some(sr), Some(sp)) = (sort_ref_tid, spec_tid) else { continue };

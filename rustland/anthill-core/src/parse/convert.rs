@@ -1379,7 +1379,7 @@ impl<'a> Converter<'a> {
                 // a `type_name` named-arg child pointing at a
                 // `Term::ParseAux(TypeExpr(T))` node — replaces the
                 // prior `SimpleTermStore::let_type_annotations` HashMap.
-                // The loader unwraps and calls `type_expr_to_term`.
+                // The loader unwraps it and lowers via `type_expr_to_value`.
                 let mut named: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
                 if let Some(ty) = type_anno {
                     let aux = Term::ParseAux(Box::new(super::ir::ParseAux::TypeExpr(ty)));
