@@ -647,16 +647,6 @@ fn effect_binding_resource<V: TermView>(kb: &KnowledgeBase, v: &V) -> Option<Sym
     }
 }
 
-/// Materialize a list of carrier-agnostic effect labels to ground `TermId`s for
-/// [`KnowledgeBase::make_arrow_type`] (its `effects_rows` is a `TermId`). Each
-/// label re-grounds via [`value_to_term_id`]. Used by the LambdaBody ground-arrow
-/// path; a lambda whose effects contain a `Value::Node` takes the Value-carried
-/// arrow path instead (WI-342 ty-slot migration), so this no longer sees a Node
-/// effect on the live lambda path.
-fn effects_as_term_ids(kb: &mut KnowledgeBase, effects: &[Value]) -> Vec<TermId> {
-    effects.iter().map(|e| value_to_term_id(kb, e)).collect()
-}
-
 /// WI-342 ty-slot migration: materialize a carrier-agnostic type [`Value`] to a
 /// ground hash-consed `TermId`, for the consumers that still require one — the
 /// `TermId` type builders / collections, the `inferred_type` node slot, and
@@ -852,6 +842,50 @@ fn named_tuple_value(
             terms.push((*s, value_to_term_id(kb, v)));
         }
         Value::Term(kb.make_named_tuple_type(&terms))
+    }
+}
+
+/// WI-342: build an `arrow(param, result, effects)` type carrier-agnostically.
+/// When any of `param` / `result` / an effect label is a `Value::Node`
+/// (denoted-bearing — e.g. a lambda body effect `Modify[c]`), mint a `Value::Node`
+/// arrow occurrence so the poisoned child is CARRIED, not re-grounded; the
+/// op-boundary return check then compares it cross-carrier (`arrow_compatible_view`
+/// + `subtype_effect_rows`). When everything is ground, build the hash-consed
+/// `make_arrow_type` (its children are then provably `Value::Term`, unwrapped via
+/// `as_term`). Label order is not load-bearing — row unify/subtype compare label
+/// sets. `span`/`owner` stamp a Node-carried occurrence.
+fn make_arrow_value(
+    kb: &mut KnowledgeBase,
+    param: &Value,
+    result: &Value,
+    effects: &[Value],
+    span: crate::span::SourceSpan,
+    owner: Option<Symbol>,
+) -> Value {
+    let poisoned = matches!(param, Value::Node(_))
+        || matches!(result, Value::Node(_))
+        || effects.iter().any(|e| matches!(e, Value::Node(_)));
+    if poisoned {
+        let mut row = kb.make_empty_row_occ(span, owner);
+        for label in effects.iter().rev() {
+            let label_child = value_to_type_child(kb, label);
+            let present = kb.make_present_occ(label_child, span, owner);
+            row = kb.make_merge_occ(TypeChild::Node(present), TypeChild::Node(row), span, owner);
+        }
+        let effects_child =
+            TypeChild::Node(kb.make_effects_rows_occ(TypeChild::Node(row), span, owner));
+        let param_child = value_to_type_child(kb, param);
+        let result_child = value_to_type_child(kb, result);
+        let arrow = kb.make_arrow_occ(param_child, result_child, effects_child, span, owner);
+        Value::Node(arrow)
+    } else {
+        let p = param.as_term().expect("make_arrow_value: ground param");
+        let r = result.as_term().expect("make_arrow_value: ground result");
+        let effect_tids: Vec<TermId> = effects
+            .iter()
+            .map(|e| e.as_term().expect("make_arrow_value: ground effect"))
+            .collect();
+        Value::Term(kb.make_arrow_type(p, r, &effect_tids))
     }
 }
 
@@ -1431,7 +1465,7 @@ enum TypeBuildFrame {
     /// to what the body referenced — without it, `build` would re-derive
     /// a *different* fresh var and the arrow would claim `?a -> T` while
     /// the body was typed under a distinct `?b`.
-    LambdaBody { occ: Rc<NodeOccurrence>, param_type: TermId, outer_env: Rc<TypingEnv> },
+    LambdaBody { occ: Rc<NodeOccurrence>, param_type: Value, outer_env: Rc<TypingEnv> },
     /// WI-285: all three If sub-expressions finished (drained in
     /// `[condition, then, else]` order); merge their effects and return
     /// the if's `TypeResult`. WI-287: the type is the join of the then /
@@ -1949,25 +1983,21 @@ fn visit_type(
             // Previously this used only (1), so an unannotated lambda left
             // its param unbound in the body env and every reference to it
             // failed resolution as `UnresolvedName`.
-            let param_type = extract_pattern_type_ann(kb, param)
+            // WI-342: the param type is carrier-agnostic (`Value`) — the env binds
+            // it directly, and `LambdaBody` builds the arrow's param slot from it
+            // (a `Value::Node` denoted-bearing param is carried, not re-grounded).
+            let param_type: Value = extract_pattern_type_ann(kb, param)
+                .map(Value::Term)
                 .or_else(|| {
-                    // Checking direction: the expected arrow's param slot. The
-                    // pattern-env slot is still a `TermId`, so re-ground at this
-                    // sink (`extract_function_param_type` now yields a `Value`).
-                    expected.as_ref().and_then(|exp| {
-                        extract_function_param_type(kb, exp)
-                            .map(|v| value_to_term_id(kb, &v))
-                    })
+                    // Checking direction: the expected arrow's param slot, as-is.
+                    expected.as_ref().and_then(|exp| extract_function_param_type(kb, exp))
                 })
                 .unwrap_or_else(|| {
                     let fresh = kb.intern("?param");
-                    kb.make_type_var(fresh)
+                    Value::Term(kb.make_type_var(fresh))
                 });
             let mut lambda_env = (*env).clone();
-            // WI-342: the env binds a `Value`; the lambda param type is still a
-            // hash-consed `TermId` (it feeds `make_arrow_type` in `LambdaBody`),
-            // so wrap it `Value::Term` for the binding.
-            extend_env_from_pattern(kb, &mut lambda_env, param, Some(Value::Term(param_type)));
+            extend_env_from_pattern(kb, &mut lambda_env, param, Some(param_type.clone()));
             // WI-270: if expected is `arrow(param, result, effects)`,
             // decompose and pass `result` to the body. Mismatching
             // shapes (or `None`) leave the body without a hint. WI-342 S3a: the
@@ -2292,11 +2322,10 @@ fn build_type(
             // (possibly-rewritten) node. Ill-typed nodes (`Err`) are
             // left unstamped (`inferred_type` stays `None`).
             if let Some(Ok(r)) = results.last() {
-                // WI-342: `inferred_type` stays a hash-consed `TermId` (its
-                // readers — `min_sort`/`sort_functor_of` — only need the functor);
-                // re-ground the carrier-agnostic `ty` here.
-                let ty_term = value_to_term_id(kb, &r.ty);
-                r.node.set_inferred_type(ty_term);
+                // WI-342: `inferred_type` is carrier-agnostic — stamp the `ty`
+                // directly (a `Value::Node` denoted-bearing type is preserved,
+                // not re-grounded). `min_sort` widens it via `sort_functor_of_view`.
+                r.node.set_inferred_type(r.ty.clone());
             }
         }
         TypeBuildFrame::Apply { occ, fn_sym, pos_args, named_args, env, expected, fuel } => {
@@ -2394,9 +2423,9 @@ fn build_type(
             let receiver_node = Rc::clone(&recv.node);
             // `min_sort`: widen the receiver to its least declared sort. Read
             // the child's result type directly (don't depend on the receiver's
-            // `Stamp` frame ordering).
-            let recv_term = value_to_term_id(kb, &recv.ty);
-            let recv_sort = sort_functor_of(kb, recv_term);
+            // `Stamp` frame ordering). WI-342: widen the carrier-agnostic `ty`
+            // in place — a `Value::Node` receiver type need not be re-grounded.
+            let recv_sort = sort_functor_of_view(kb, &recv.ty);
             let dot_span = Some(occ.span.span);
             // The (typed) arg occurrences — used by both the dot-rule override
             // and the default method fallback.
@@ -2706,7 +2735,6 @@ fn build_type(
             // is the exact type the param was bound to in the body env
             // (see the `Expr::Lambda` visit case), so the arrow's param
             // slot and the body's view of the param agree.
-            let a_val = param_type;
             let body_ty: Value = body_r.as_ref().ok().map(|r| r.ty.clone()).unwrap_or_else(|| {
                 let fresh = kb.intern("?result");
                 Value::Term(kb.make_type_var(fresh))
@@ -2716,44 +2744,13 @@ fn build_type(
                 .ok()
                 .map(|r| r.effects.clone())
                 .unwrap_or_default();
-            // WI-342 ty-slot migration: when a body effect is carrier-poisoned
-            // (a denoted-bearing `Modify[c]` rode in as `Value::Node`), build the
-            // arrow as a `Value::Node` occurrence so the effect is CARRIED on the
-            // lambda's type rather than re-grounded — the op-boundary return check
-            // then compares it cross-carrier (`arrow_compatible_view` +
-            // `subtype_effect_rows`). When every effect is ground, the hash-consed
-            // `make_arrow_type` path is unchanged. (Label order is not
-            // load-bearing: row unify/subtype compare label sets.)
-            let fn_ty: Value = if body_effects.iter().any(|e| matches!(e, Value::Node(_))) {
-                let span = occ.span;
-                let owner = occ.owner;
-                let mut row = kb.make_empty_row_occ(span, owner);
-                for label in body_effects.iter().rev() {
-                    let label_child = value_to_type_child(kb, label);
-                    let present = kb.make_present_occ(label_child, span, owner);
-                    row = kb.make_merge_occ(
-                        TypeChild::Node(present),
-                        TypeChild::Node(row),
-                        span,
-                        owner,
-                    );
-                }
-                let effects_child =
-                    TypeChild::Node(kb.make_effects_rows_occ(TypeChild::Node(row), span, owner));
-                let result_child = value_to_type_child(kb, &body_ty);
-                let arrow = kb.make_arrow_occ(
-                    TypeChild::Ground(a_val),
-                    result_child,
-                    effects_child,
-                    span,
-                    owner,
-                );
-                Value::Node(arrow)
-            } else {
-                let b_val = value_to_term_id(kb, &body_ty);
-                let effect_tids = effects_as_term_ids(kb, &body_effects);
-                Value::Term(kb.make_arrow_type(a_val, b_val, &effect_tids))
-            };
+            // WI-342: build the arrow carrier-agnostically. When a child (param,
+            // result, or a body effect) is carrier-poisoned (a denoted-bearing
+            // `Modify[c]` rode in as `Value::Node`), the arrow is minted as a
+            // `Value::Node` so the effect is CARRIED on the lambda's type rather
+            // than re-grounded; the op-boundary return check compares it
+            // cross-carrier. A fully-ground lambda still builds a hash-consed arrow.
+            let fn_ty = make_arrow_value(kb, &param_type, &body_ty, &body_effects, occ.span, occ.owner);
             // Creating a lambda is itself pure — body effects live in the type.
             // If the body itself errored, propagate that error rather than
             // synthesizing a lambda over an ill-typed body.
@@ -10060,13 +10057,20 @@ fn view_child_sym<V: TermView>(kb: &KnowledgeBase, ty: &V, key: &str) -> Option<
 /// type-directed `[simp]` engine) and the structural variants (arrow / named_tuple
 /// / …), which have no single sort head.
 pub fn sort_functor_of(kb: &KnowledgeBase, ty: TermId) -> Option<Symbol> {
-    // The sort head is the base of a bare sort or a (deep / term-backed)
-    // parameterized type; the structural variants have none. WI-320:
-    // `effects_rows`/`denoted`/`arrow` have no underlying sort head to widen to
-    // — `None` means `min_sort` is undefined for an occurrence typed as one of
-    // them, the correct conservative answer (no `[simp]` rule targets those
-    // positions yet).
-    match type_head(kb, &TermIdView(ty)) {
+    sort_functor_of_view(kb, &TermIdView(ty))
+}
+
+/// Carrier-agnostic [`sort_functor_of`] (WI-342): the sort head of any type read
+/// through [`TermView`] — a ground `TermId` (via [`TermIdView`]) or a `Value` /
+/// `Value::Node` carrier alike, so a consumer that has a `Value`-carried type need
+/// not re-ground it just to widen to its sort. The sort head is the base of a bare
+/// sort or a (deep / term-backed) parameterized type; the structural variants have
+/// none. WI-320: `effects_rows`/`denoted`/`arrow` have no underlying sort head to
+/// widen to — `None` means `min_sort` is undefined for an occurrence typed as one
+/// of them, the correct conservative answer (no `[simp]` rule targets those
+/// positions yet).
+pub fn sort_functor_of_view<V: TermView>(kb: &KnowledgeBase, ty: &V) -> Option<Symbol> {
+    match type_head(kb, ty) {
         TypeHead::SortRef(s) | TypeHead::Parameterized { base: s, .. } => Some(s),
         _ => None,
     }
@@ -10081,7 +10085,7 @@ pub fn sort_functor_of(kb: &KnowledgeBase, ty: TermId) -> Option<Symbol> {
 /// compile-time reader over an *expression* — never a runtime goal or
 /// a callable `typeof`.
 pub fn min_sort(kb: &KnowledgeBase, occ: &NodeOccurrence) -> Option<Symbol> {
-    sort_functor_of(kb, occ.inferred_type()?)
+    sort_functor_of_view(kb, &occ.inferred_type()?)
 }
 
 /// WI-283 — the type-directed firing guard for `[simp]` rewriting.

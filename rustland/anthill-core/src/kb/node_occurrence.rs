@@ -431,8 +431,12 @@ impl NodeOccurrence {
     /// Record the typer's inferred type for this occurrence (WI-284).
     /// Only `Expr`-kind occurrences carry typer metadata; rule heads
     /// ignore the call. Idempotent under re-typing — the last (most
-    /// refined, e.g. expected-hint-constrained) type wins.
-    pub fn set_inferred_type(&self, ty: TermId) {
+    /// refined, e.g. expected-hint-constrained) type wins. WI-342: the
+    /// inferred type is carrier-agnostic (`Value`) — a denoted-bearing type
+    /// (a lambda arrow carrying `Modify[c]`) is stored as `Value::Node`
+    /// rather than re-grounded; the reader [`min_sort`] widens it via
+    /// [`TermView`].
+    pub fn set_inferred_type(&self, ty: Value) {
         if let NodeKind::Expr { inferred_type, .. } = &self.kind {
             *inferred_type.borrow_mut() = Some(ty);
         }
@@ -441,9 +445,9 @@ impl NodeOccurrence {
     /// The typer's inferred type for this occurrence, if typed (WI-284).
     /// `None` for rule heads, not-yet-typed occurrences, or ill-typed
     /// nodes. The basis for `min_sort` (`typing::min_sort`).
-    pub fn inferred_type(&self) -> Option<TermId> {
+    pub fn inferred_type(&self) -> Option<Value> {
         match &self.kind {
-            NodeKind::Expr { inferred_type, .. } => *inferred_type.borrow(),
+            NodeKind::Expr { inferred_type, .. } => inferred_type.borrow().clone(),
             _ => None,
         }
     }
@@ -484,7 +488,7 @@ pub enum NodeKind {
         /// (`min_sort`, `typing::min_sort`) without recomputing. Written
         /// by the typer's `Stamp` work-frame once a node's `TypeResult`
         /// is finalized; `None` until typed, or when the node is ill-typed.
-        inferred_type: RefCell<Option<TermId>>,
+        inferred_type: RefCell<Option<Value>>,
     },
     /// Rule head — positional wrapper around a Term-shaped head pattern.
     /// Args are `TermId` (KB-position content); the wrap exists for span

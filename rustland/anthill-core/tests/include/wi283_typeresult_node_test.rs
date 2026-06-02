@@ -58,13 +58,16 @@ fn assert_node_identity(kb: &mut KnowledgeBase, input: &Rc<NodeOccurrence>) {
         Rc::ptr_eq(&r.node, input),
         "TypeResult.node must be the input occurrence (identity) until a rule fires",
     );
-    // node↔type coherence: Stamp wrote `r.ty` onto `r.node`. WI-342:
-    // `inferred_type` stays a hash-consed `TermId` (the Stamp frame re-grounds
-    // the carrier-agnostic `ty`); for this ground type it is the same TermId.
-    assert_eq!(
-        r.node.inferred_type(),
-        r.ty.as_term(),
-        "the result's node carries the inferred type the Stamp frame recorded",
+    // node↔type coherence: Stamp wrote `r.ty` onto `r.node`. WI-342: the
+    // `inferred_type` slot is carrier-agnostic (`Value`) — the Stamp frame stores
+    // the `ty` directly, so the node carries exactly the result's type (compared
+    // structurally; `Value` has no `PartialEq`).
+    let stamped = r.node.inferred_type();
+    assert!(
+        stamped.as_ref().is_some_and(|s| s.structural_eq(&r.ty)),
+        "the result's node carries the inferred type the Stamp frame recorded: \
+         stamped {stamped:?} vs ty {:?}",
+        r.ty,
     );
 }
 
