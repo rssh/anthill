@@ -1274,6 +1274,47 @@ impl KnowledgeBase {
         rule_id
     }
 
+    /// Assert a fact `functor(pos…, named…)` from carrier-agnostic `Value`
+    /// children, choosing the carrier once (WI-366). If every child is a ground
+    /// `Value::Term`, the head is the hash-consed `Term::Fn` and routes to
+    /// [`Self::assert_fact`] (dedup + structural sharing); if any child carries a
+    /// `Value::Node` (a denoted value-in-type), the head is a `Value::Entity`
+    /// value fact via [`Self::assert_fact_value`]. Collapses the
+    /// build-Term-or-Entity choice the sort-relation producers (`SortAlias` /
+    /// `SortRequiresInfo` / `SortProvidesInfo`) otherwise repeat.
+    pub fn assert_fact_carrier(
+        &mut self,
+        functor: Symbol,
+        pos: Vec<crate::eval::value::Value>,
+        named: Vec<(Symbol, crate::eval::value::Value)>,
+        sort: TermId,
+        domain: TermId,
+        meta: Option<TermId>,
+    ) -> RuleId {
+        use crate::eval::value::Value;
+        let all_ground = pos.iter().all(|v| matches!(v, Value::Term(_)))
+            && named.iter().all(|(_, v)| matches!(v, Value::Term(_)));
+        if all_ground {
+            let pos_args: SmallVec<[TermId; 4]> = pos
+                .iter()
+                .map(|v| v.as_term().expect("all_ground ⇒ Value::Term"))
+                .collect();
+            let named_args: SmallVec<[(Symbol, TermId); 2]> = named
+                .iter()
+                .map(|(s, v)| (*s, v.as_term().expect("all_ground ⇒ Value::Term")))
+                .collect();
+            let term = self.alloc(Term::Fn { functor, pos_args, named_args });
+            self.assert_fact(term, sort, domain, meta)
+        } else {
+            let head = Value::Entity {
+                functor,
+                pos: std::rc::Rc::from(pos),
+                named: std::rc::Rc::from(named),
+            };
+            self.assert_fact_value(head, sort, domain, meta)
+        }
+    }
+
     /// Incref the ground `TermId` leaves reachable in a value head (WI-348
     /// Phase B), keeping them alive for the rule's lifetime — including those
     /// carried *inside* a `Value::Node` occurrence (e.g. a `denoted` Type's

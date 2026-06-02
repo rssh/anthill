@@ -495,7 +495,7 @@ fn scan_operation_params(
 
     // Register each op type param as a Sort symbol AND flag it as a
     // type-param so bare uses (`x: T`) route through the type-param
-    // branch in `type_expr_to_term` — same mechanism as `sort T = ?`
+    // branch in `type_expr_to_child` — same mechanism as `sort T = ?`
     // inside a sort body.
     for tp in &op.type_params {
         let tp_name = parse_sym.name(tp.name);
@@ -5066,7 +5066,8 @@ impl<'a> Loader<'a> {
                 // The old term-side `k_type_name` slot on the let_expr `Term::Fn`
                 // (WI-271) was write-only — the typer types the let from the
                 // occurrence, not the term — so it is dropped, removing a
-                // ground-fact `type_expr_to_term` caller. (`read_parse_type_
+                // ground-fact caller of the structural type lowering
+                // (`type_expr_to_value`). (`read_parse_type_
                 // annotation` still feeds the occurrence annotation below.)
                 let kb_id = self.kb.alloc(Term::Fn {
                     functor: self.expr_syms.let_expr,
@@ -5830,7 +5831,7 @@ impl<'a> Loader<'a> {
                 let sort_sym = self.remap_name(name);
                 let short_name = self.kb.resolve_sym(sort_sym).to_owned();
                 // A type-param name is a ground logic Var (no denoted) — build it
-                // via the shared `type_param_var` helper (NOT `type_expr_to_term`,
+                // via the shared `type_param_var` helper (NOT `type_expr_to_value`,
                 // which this fn must not call, see the wrapper note on it).
                 if self.kb.symbols.is_type_param(self.current_scope.raw(), &short_name) {
                     return node_occurrence::TypeChild::Ground(
@@ -5861,9 +5862,9 @@ impl<'a> Loader<'a> {
             TypeExpr::Parameterized { name, bindings } => {
                 let sort_sym = self.remap_name(name);
                 let base_term = self.kb.make_sort_ref(sort_sym);
-                // Same positional→declared-param-name mapping as the
-                // `type_expr_to_term` Parameterized arm, so a label's binding
-                // symbols match across the two builders (the display-name
+                // Same positional→declared-param-name mapping for both the node
+                // and the ground hash-consed form, so a label's binding
+                // symbols match across the two carriers (the display-name
                 // comparison in the op-boundary check relies on this).
                 let declared_params = self.kb.type_params_of_sort(sort_sym);
                 let mut child_bindings: Vec<(Symbol, node_occurrence::TypeChild)> = Vec::new();
@@ -5897,8 +5898,8 @@ impl<'a> Loader<'a> {
                 } else {
                     // No denoted binding ⇒ assemble the hash-consed parameterized
                     // term from the ground children already built (NOT a second
-                    // walk via `type_expr_to_term`; same `base_term` + the same
-                    // positional→param-name mapping ⇒ identical to its arm).
+                    // structural walk; same `base_term` + the same
+                    // positional→param-name mapping ⇒ the ground hash-consed form).
                     let ground_bindings: Vec<(Symbol, TermId)> = child_bindings
                         .into_iter()
                         .map(|(s, c)| match c {
@@ -5917,7 +5918,7 @@ impl<'a> Loader<'a> {
                 // (`Modify[a]`) becomes a `Value::Node` arrow so the occurrence is
                 // CARRIED, not re-grounded. The binder scope applies only to the
                 // EFFECT labels (a self-referential `Modify[a]`); suspend it for
-                // the param/return TYPE positions (mirror `type_expr_to_term`),
+                // the param/return TYPE positions (mirror `type_expr_to_child`),
                 // restore it for the effects.
                 let saved = std::mem::take(&mut self.arrow_binder_scope);
                 let param_child = if params.len() == 1 {
@@ -5961,7 +5962,7 @@ impl<'a> Loader<'a> {
                     || effect_children.iter().any(|c| matches!(c, TypeChild::Node(_)));
                 if !any_node {
                     // Fully ground arrow — assemble the hash-consed term from the
-                    // children already built (no second walk via type_expr_to_term;
+                    // children already built (no second structural walk;
                     // the signature never re-grounds through that path).
                     let ground = |c: TypeChild| match c {
                         TypeChild::Ground(t) => t,
@@ -5994,7 +5995,7 @@ impl<'a> Loader<'a> {
                 // Mirror the Arrow multi-param branch: lower each field via the
                 // carrier-agnostic child path; any `Node` field poisons the tuple
                 // to a `Value::Node` named_tuple, else assemble the hash-consed
-                // term (identical to `type_expr_to_term`'s Tuple arm).
+                // term (the ground hash-consed form).
                 let mut children: Vec<(Symbol, TypeChild)> = Vec::new();
                 let mut any_node = false;
                 for (sym, fty) in fields {
@@ -6017,8 +6018,8 @@ impl<'a> Loader<'a> {
                 }
             }
             TypeExpr::Variable { term_id, descriptions } => {
-                // A logic Var is always ground (no denoted) — mirror
-                // `type_expr_to_term`'s Variable arm (convert + emit descriptions).
+                // A logic Var is always ground (no denoted) — convert the term
+                // and emit its descriptions, yielding the ground hash-consed form.
                 let kb_id = self.convert_term(*term_id);
                 for desc_text in descriptions {
                     self.emit_desc_fact(kb_id, desc_text, self.current_scope);
@@ -6038,7 +6039,7 @@ impl<'a> Loader<'a> {
             }
             TypeExpr::EffectAbsent(inner) => {
                 // `-E` lacks-atom: ground inner ⇒ hash-consed `absent` term
-                // (mirror `type_expr_to_term`); a denoted-bearing inner ⇒ the
+                // (mirror `type_expr_to_child`); a denoted-bearing inner ⇒ the
                 // occurrence `absent` form (carries the poison).
                 match self.type_expr_to_child(inner, span, owner) {
                     node_occurrence::TypeChild::Ground(t) => {
@@ -6230,26 +6231,21 @@ impl<'a> Loader<'a> {
             }
             _ => self.type_expr_to_value(&s.definition),
         };
-        match target_value {
-            crate::eval::value::Value::Term(target_term) => {
-                let alias_fact = self.kb.alloc(Term::Fn {
-                    functor: alias_sym,
-                    pos_args: SmallVec::from_slice(&[sort_term, target_term]),
-                    named_args: SmallVec::new(),
-                });
-                self.kb.assert_fact(alias_fact, sort_sort, domain, None);
-            }
-            target_value => {
-                self.diagnose_gated_value_in_type("sort alias", &s.definition);
-                use crate::eval::value::Value;
-                let head = Value::Entity {
-                    functor: alias_sym,
-                    pos: std::rc::Rc::from(vec![Value::Term(sort_term), target_value]),
-                    named: std::rc::Rc::from(Vec::<(Symbol, Value)>::new()),
-                };
-                self.kb.assert_fact_value(head, sort_sort, domain, None);
-            }
+        use crate::eval::value::Value;
+        // A denoted-bearing target (value-in-type, e.g. `sort T = Vector[Int, 3]`)
+        // rides as a `Value::Node` SortAlias fact but its resolution is gated.
+        if !matches!(target_value, Value::Term(_)) {
+            self.diagnose_gated_value_in_type("sort alias", &s.definition);
         }
+        // SortAlias is positional: `SortAlias(sort_ref, target)`.
+        self.kb.assert_fact_carrier(
+            alias_sym,
+            vec![Value::Term(sort_term), target_value],
+            Vec::new(),
+            sort_sort,
+            domain,
+            None,
+        );
 
         // Emit Description facts for all description blocks
         for desc_text in &s.descriptions {
@@ -6288,9 +6284,9 @@ impl<'a> Loader<'a> {
 
         // Pre-load nested `sort X = ?` declarations so their SortAlias
         // is in place before entity FieldInfo build calls
-        // `type_expr_to_term` on field types that reference them. Without
+        // `type_expr_to_value` on field types that reference them. Without
         // this, `entity foo(x: T)` runs before `sort T = ?` in source
-        // order, hits `type_expr_to_term`'s fallback (no SortAlias yet),
+        // order, hits `type_expr_to_child`'s fallback (no SortAlias yet),
         // and allocates a fresh `Var(name="T")` — a different Var than
         // the SortAlias's `Var(name="_")` registered later. The two Vars
         // never unify, so pattern substitution misses and the typer
@@ -7021,7 +7017,7 @@ impl<'a> Loader<'a> {
         }
 
         // Pre-allocate type-param Vars and seed the per-scope cache so
-        // later `type_expr_to_term` calls reuse them, and we can publish
+        // later `type_expr_to_value` calls reuse them, and we can publish
         // the list on OperationInfo. Skipping the `find_sort_alias_var`
         // branch is intentional: an op type-param is its own logical
         // variable, distinct from any same-named outer SortAlias.
@@ -7043,7 +7039,7 @@ impl<'a> Loader<'a> {
 
         // WI-341: the whole operation SIGNATURE flows through the Value path — a
         // denoted-bearing return type (an op returning a `Modify`-carrying
-        // callback) is a `Value::Node`, never re-grounded via `type_expr_to_term`.
+        // callback) is a `Value::Node`, never re-grounded via `type_expr_to_value`.
         let return_value = self.type_expr_to_value(&o.return_type);
 
         // Build FieldInfo list for params
@@ -7381,32 +7377,18 @@ impl<'a> Loader<'a> {
         // `Term` head cannot hold → the SortRequiresInfo head becomes a value
         // fact carrying the occurrence. A ground spec keeps the hash-consed
         // `Term::Fn` head — byte-identical to the prior build (the universal case).
-        match spec_value {
-            crate::eval::value::Value::Term(type_term) => {
-                let requires_term = self.kb.alloc(Term::Fn {
-                    functor: requires_sym,
-                    pos_args: SmallVec::new(),
-                    named_args: SmallVec::from_slice(&[
-                        (sort_ref_sym, domain),
-                        (spec_sym, type_term),
-                    ]),
-                });
-                self.kb.assert_fact(requires_term, requirement_sort, domain, None);
-            }
-            spec_value => {
-                self.diagnose_gated_value_in_type("requires", &r.type_expr);
-                use crate::eval::value::Value;
-                let head = Value::Entity {
-                    functor: requires_sym,
-                    pos: std::rc::Rc::from(Vec::<Value>::new()),
-                    named: std::rc::Rc::from(vec![
-                        (sort_ref_sym, Value::Term(domain)),
-                        (spec_sym, spec_value),
-                    ]),
-                };
-                self.kb.assert_fact_value(head, requirement_sort, domain, None);
-            }
+        use crate::eval::value::Value;
+        if !matches!(spec_value, Value::Term(_)) {
+            self.diagnose_gated_value_in_type("requires", &r.type_expr);
         }
+        self.kb.assert_fact_carrier(
+            requires_sym,
+            Vec::new(),
+            vec![(sort_ref_sym, Value::Term(domain)), (spec_sym, spec_value)],
+            requirement_sort,
+            domain,
+            None,
+        );
     }
 
     fn load_describe(&mut self, d: &Describe, domain: TermId) {
@@ -7794,32 +7776,18 @@ impl<'a> Loader<'a> {
         // WI-366: a denoted-bearing spec rides as a `Value::Node` → the
         // SortProvidesInfo head becomes a value fact (mirrors load_requires_decl);
         // a ground spec keeps the hash-consed `Term::Fn` head (byte-identical).
-        match spec_value {
-            crate::eval::value::Value::Term(spec_term) => {
-                let provides_term = self.kb.alloc(Term::Fn {
-                    functor: provides_sym,
-                    pos_args: SmallVec::new(),
-                    named_args: SmallVec::from_slice(&[
-                        (sort_ref_sym, domain),
-                        (spec_sym, spec_term),
-                    ]),
-                });
-                self.kb.assert_fact(provides_term, provides_sort, domain, None);
-            }
-            spec_value => {
-                self.diagnose_gated_value_in_type("provides", &pc.spec);
-                use crate::eval::value::Value;
-                let head = Value::Entity {
-                    functor: provides_sym,
-                    pos: std::rc::Rc::from(Vec::<Value>::new()),
-                    named: std::rc::Rc::from(vec![
-                        (sort_ref_sym, Value::Term(domain)),
-                        (spec_sym, spec_value),
-                    ]),
-                };
-                self.kb.assert_fact_value(head, provides_sort, domain, None);
-            }
+        use crate::eval::value::Value;
+        if !matches!(spec_value, Value::Term(_)) {
+            self.diagnose_gated_value_in_type("provides", &pc.spec);
         }
+        self.kb.assert_fact_carrier(
+            provides_sym,
+            Vec::new(),
+            vec![(sort_ref_sym, Value::Term(domain)), (spec_sym, spec_value)],
+            provides_sort,
+            domain,
+            None,
+        );
     }
 
     /// Standalone `provides Spec language X ... end`. Proposal 038.
@@ -8088,7 +8056,8 @@ impl<'a> Loader<'a> {
     ///   - `effects { Modify[c] }`      → none          (closed row)
     ///
     /// The kb term emitted per row variable is the SortAlias-backed Var
-    /// shape that `type_expr_to_term` returns for the effect — the same
+    /// shape that the structural type lowering (`type_expr_to_value`)
+    /// returns for the effect — the same
     /// Term that goes into OperationInfo.effects, keeping the row var's
     /// identity consistent across effects/requires. This is structurally
     /// distinct from what a hand-written `requires EffectsRuntime[Effects = E]`
@@ -8122,7 +8091,7 @@ impl<'a> Loader<'a> {
             };
             // Cache the resolved sym to avoid pushing duplicate UnresolvedName
             // diagnostics: `remap_name` errors-on-miss, so calling it once
-            // here AND again via `type_expr_to_term` (~7067) would double a
+            // here AND again via `type_expr_to_value` (~7067) would double a
             // legitimate error. We resolve once, dedup-by-sym, then reuse the
             // SortAlias Var directly without re-routing through remap_name.
             let sym = self.remap_name(name);
