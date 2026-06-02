@@ -159,3 +159,6 @@ mod wi352_flow_derive_test;
 mod wi341_callback_modify_test;
 #[path = "include/wi357_element_typing_test.rs"]
 mod wi357_element_typing_test;
+
+#[path = "include/wi365_effect_grounding_test.rs"]
+mod wi365_effect_grounding_test;
