@@ -2842,11 +2842,9 @@ impl KnowledgeBase {
     }
 
     /// Build `arrow(param, result, effects)` from an ALREADY-canonical
-    /// `effects_rows(EffectExpression)` Type. WI-342: the `Value::Node`-arrow
-    /// re-grounding path (`occ_to_term`) materializes an arrow whose
-    /// `effects` child is an occurrence-carried `effects_rows` that is already
-    /// canonical — it must NOT be re-canonicalized (it is a row, not a raw label
-    /// list). [`Self::make_arrow_type`] canonicalizes then calls this.
+    /// `effects_rows(EffectExpression)` Type — the `effects` child is a row, not a
+    /// raw label list, so it must NOT be re-canonicalized.
+    /// [`Self::make_arrow_type`] canonicalizes a raw label list, then calls this.
     pub(crate) fn make_arrow_from_effects_rows(
         &mut self,
         param: TermId,

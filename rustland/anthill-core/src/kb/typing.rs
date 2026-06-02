@@ -559,9 +559,9 @@ impl TypingEnv {
 pub struct TypeResult {
     /// WI-342 ty-slot migration: the inferred type is carrier-agnostic — a
     /// ground type rides as `Value::Term`, a denoted-bearing type (today: a
-    /// lambda arrow carrying a `Modify[c]` effect) as `Value::Node`. Consumers
-    /// that need a hash-consed `TermId` materialize via [`value_to_term_id`];
-    /// the unify/subtype sites take it directly (`Value: TermView`).
+    /// lambda arrow carrying a `Modify[c]` effect) as `Value::Node`. The typer is
+    /// now `Value`-native end-to-end: consumers read it through [`TermView`]
+    /// (`Value: TermView`); no re-grounding bridge remains.
     pub ty: Value,
     pub env: TypingEnv,
     /// WI-342 effects-vertical: effect labels are carrier-agnostic `Value`
@@ -647,115 +647,6 @@ fn effect_binding_resource<V: TermView>(kb: &KnowledgeBase, v: &V) -> Option<Sym
     }
 }
 
-/// WI-342 ty-slot migration: materialize a carrier-agnostic type [`Value`] to a
-/// ground hash-consed `TermId`, for the consumers that still require one — the
-/// `TermId` type builders / collections, the `inferred_type` node slot, and
-/// [`TypeError`] fields. A `Value::Term` unwraps; a `Value::Node` is re-grounded
-/// by [`occ_to_term`] (the inverse of the `make_*_occ` builders, lossless for the
-/// shapes minted today). The Node arrow flows as a `Value` only to the
-/// unify/subtype sites (`Value: TermView`); everywhere a `TermId` is needed it is
-/// re-grounded here. The `debug_assert` guards a shape the term builders can't
-/// express (none minted today); the release fallback (a fresh type var) is
-/// unreachable.
-fn value_to_term_id(kb: &mut KnowledgeBase, v: &Value) -> TermId {
-    match v {
-        Value::Term(t) => *t,
-        Value::Node(occ) => occ_to_term(kb, occ).unwrap_or_else(|| {
-            debug_assert!(false, "WI-342: type Value could not be grounded: {v:?}");
-            let sym = kb.intern("?ungrounded");
-            kb.make_type_var(sym)
-        }),
-        other => {
-            debug_assert!(false, "WI-342: non-type Value reached value_to_term_id: {other:?}");
-            let sym = kb.intern("?ungrounded");
-            kb.make_type_var(sym)
-        }
-    }
-}
-
-/// Re-ground a `Value`-carried `Type` / `EffectExpression` occurrence into the
-/// equivalent hash-consed term — the total inverse of the `make_*_occ` builders
-/// (`make_denoted` / `make_parameterized_type` / `make_arrow_from_effects_rows` /
-/// `make_effects_rows_type` / `make_effect_expression_*`). `None` only for a
-/// carried-value shape the builders can't express (a non-`Ref` denoted value —
-/// not minted; same TODO as `unify_denoted_view`).
-fn occ_to_term(kb: &mut KnowledgeBase, occ: &Rc<NodeOccurrence>) -> Option<TermId> {
-    if let Some(tn) = occ.as_type() {
-        return match tn {
-            TypeNode::Denoted { value } => match &value.kind {
-                NodeKind::Expr { expr: Expr::Ref(s), .. } => {
-                    let v = kb.alloc(Term::Ref(*s));
-                    Some(kb.make_denoted(v))
-                }
-                _ => None,
-            },
-            TypeNode::Parameterized { base, bindings } => {
-                let base_term = type_child_to_term(kb, base)?;
-                let mut bs: Vec<(Symbol, TermId)> = Vec::with_capacity(bindings.len());
-                for (p, c) in bindings {
-                    bs.push((*p, type_child_to_term(kb, c)?));
-                }
-                Some(kb.make_parameterized_type(base_term, &bs))
-            }
-            TypeNode::EffectsRows { effects_expr } => {
-                let inner = type_child_to_term(kb, effects_expr)?;
-                Some(kb.make_effects_rows_type(inner))
-            }
-            TypeNode::Arrow { param, result, effects } => {
-                let p = type_child_to_term(kb, param)?;
-                let r = type_child_to_term(kb, result)?;
-                // `effects` is an already-canonical `effects_rows` child — re-ground
-                // it directly (NOT via make_arrow_type, which re-canonicalizes raw
-                // labels).
-                let e = type_child_to_term(kb, effects)?;
-                Some(kb.make_arrow_from_effects_rows(p, r, e))
-            }
-            TypeNode::NamedTuple { fields } => {
-                // WI-361: `fields` is the `Value`-carried `List[TypeField]`; decode
-                // it, then re-ground each field type to a hash-consed `TermId`.
-                let pairs = list_records_to_pairs(kb, fields, "name", "type");
-                let mut fs: Vec<(Symbol, TermId)> = Vec::with_capacity(pairs.len());
-                for (s, v) in pairs {
-                    fs.push((s, value_to_term_id(kb, &v)));
-                }
-                Some(kb.make_named_tuple_type(&fs))
-            }
-        };
-    }
-    if let Some(en) = occ.as_effect_expr() {
-        return match en {
-            EffectExprNode::Present { label } => {
-                let l = type_child_to_term(kb, label)?;
-                Some(kb.make_effect_expression_present(l))
-            }
-            EffectExprNode::Absent { label } => {
-                let l = type_child_to_term(kb, label)?;
-                Some(kb.make_effect_expression_absent(l))
-            }
-            EffectExprNode::Merge { left, right } => {
-                let l = type_child_to_term(kb, left)?;
-                let r = type_child_to_term(kb, right)?;
-                Some(kb.make_effect_expression_merge(l, r))
-            }
-            EffectExprNode::Open { tail } => {
-                let t = type_child_to_term(kb, tail)?;
-                Some(kb.make_effect_expression_open(t))
-            }
-            EffectExprNode::EmptyRow => Some(kb.make_effect_expression_empty_row()),
-        };
-    }
-    None
-}
-
-/// Re-ground a [`TypeChild`]: `Ground` is already a `TermId`; `Node` recurses
-/// through [`occ_to_term`].
-fn type_child_to_term(kb: &mut KnowledgeBase, child: &TypeChild) -> Option<TermId> {
-    match child {
-        TypeChild::Ground(t) => Some(*t),
-        TypeChild::Node(n) => occ_to_term(kb, n),
-    }
-}
-
 /// WI-342: place a carrier-agnostic type [`Value`] into a [`TypeChild`] slot of a
 /// `Value::Node` occurrence being built — `Term` → `Ground`, `Node` → `Node`.
 /// A scalar/`Var` type value is a typer bug (types are `Term`/`Node`); re-ground
@@ -765,26 +656,11 @@ fn value_to_type_child(kb: &mut KnowledgeBase, v: &Value) -> TypeChild {
         Value::Term(t) => TypeChild::Ground(*t),
         Value::Node(occ) => TypeChild::Node(Rc::clone(occ)),
         other => {
+            // A scalar/`Var`/`Entity` is a typer bug here (types are `Term`/`Node`);
+            // mint a fresh `?ungrounded` type var so we don't panic in release.
             debug_assert!(false, "WI-342: non-type Value in a TypeChild slot: {other:?}");
-            TypeChild::Ground(value_to_term_id(kb, v))
-        }
-    }
-}
-
-/// WI-342: re-ground any [`TermView`] to a hash-consed `TermId`. Bridges the
-/// view-dispatch fallback for functor pairs whose carrier-agnostic arm isn't
-/// wired yet (`parameterized`-vs-`sort_ref`, `named_tuple`, …) — re-grounding is
-/// lossless, so delegating such a pair to the proven `*_term_dispatch` is sound
-/// and strictly more complete than refusing (`_ => false`). The per-arm view
-/// wirings remain the eventual replacement for this bridge.
-fn view_to_term_id(kb: &mut KnowledgeBase, v: &impl TermView) -> TermId {
-    match v.as_bind_value() {
-        BindValue::Term(t) => t,
-        BindValue::Value(val) => value_to_term_id(kb, &val),
-        other => {
-            debug_assert!(false, "WI-342: cannot re-ground TermView to TermId: {other:?}");
             let sym = kb.intern("?ungrounded");
-            kb.make_type_var(sym)
+            TypeChild::Ground(kb.make_type_var(sym))
         }
     }
 }
@@ -810,9 +686,11 @@ fn parameterized_value(
         }
         Value::Node(kb.make_parameterized_occ(TypeChild::Ground(base), children, span, owner))
     } else {
+        // Ground branch: no binding is a `Value::Node` (checked above), so every
+        // value is a `Value::Term` — unwrap it directly for the hash-consed builder.
         let mut terms: Vec<(Symbol, TermId)> = Vec::with_capacity(bindings.len());
         for (s, v) in bindings {
-            terms.push((*s, value_to_term_id(kb, v)));
+            terms.push((*s, v.as_term().expect("parameterized_value ground branch: Term binding")));
         }
         Value::Term(kb.make_parameterized_type(base, &terms))
     }
@@ -837,9 +715,11 @@ fn named_tuple_value(
         }
         Value::Node(kb.make_named_tuple_occ(children, span, owner))
     } else {
+        // Ground branch: no field is a `Value::Node` (checked above), so every
+        // value is a `Value::Term` — unwrap it directly for the hash-consed builder.
         let mut terms: Vec<(Symbol, TermId)> = Vec::with_capacity(fields.len());
         for (s, v) in fields {
-            terms.push((*s, value_to_term_id(kb, v)));
+            terms.push((*s, v.as_term().expect("named_tuple_value ground branch: Term field")));
         }
         Value::Term(kb.make_named_tuple_type(&terms))
     }
@@ -6319,7 +6199,7 @@ fn check_tuple_literal_constructor(
     collect_arg_errors(pos_results.iter().chain(named_results.iter()))?;
 
     // Collect (field label, result) eagerly — interning the positional `_i`
-    // labels here releases the `kb` borrow before the `value_to_term_id` loop
+    // labels here releases the `kb` borrow before the `named_tuple_value` build
     // below also needs `&mut kb` (WI-342).
     // WI-355: 1-based positional names `_1`, `_2`, … (spec §4.5) so the tuple
     // value's type unifies (by name) against a tuple-typed / arrow param.
@@ -7129,31 +7009,38 @@ fn unify_view_structural<A: TermView, B: TermView>(
     // functor — a flipped parameterized carrier / term-backed `Fn{S, named}`
     // reports its base sort as the raw functor, so raw-functor dispatch would miss
     // the `parameterized` arm (and the `denoted` alpha-equivalence path beneath it).
+    // WI-342: every arm of `unify_term_dispatch` has a carrier-agnostic peer here,
+    // so the dispatch is wired natively for both carriers with no re-ground bridge.
+    // The arms below mirror `unify_term_dispatch`'s exactly (same functor pairs,
+    // same helpers); the final `_` mirrors its `_ => types_compatible` fallback.
     match (type_dispatch_name_view(kb, a), type_dispatch_name_view(kb, b)) {
         (Some("denoted"), Some("denoted")) => unify_denoted_view(kb, a, b),
         (Some("parameterized"), Some("parameterized")) => {
             unify_parameterized_view(kb, subst, a, b)
         }
-        (Some("arrow"), Some("arrow")) => unify_arrow_view(kb, subst, a, b),
-        // NB: a bare `effects_rows`-vs-`effects_rows` arm is deliberately NOT
-        // wired here. The arrow arm above unifies the effects child via
-        // `unify_effect_rows` directly; routing a *top-level* effects_rows pair
-        // through the full row algorithm would diverge from the legacy
-        // `unify_term_dispatch` arm (which does the weaker WI-320 structural
-        // unify of the inner `effects_expr`). Keep them consistent — defer to
-        // the dispatch-consolidation step rather than introduce a carrier-
-        // dependent answer for the same functor pair.
-        // WI-342: any functor pair without a carrier-agnostic arm yet
-        // (`parameterized`-vs-`sort_ref`, `named_tuple`, top-level `effects_rows`)
-        // re-grounds both sides and delegates to the proven `unify_term_dispatch`
-        // — sound (re-grounding is lossless) and strictly more complete than the
-        // old `_ => false` false-negative. The per-arm view wirings replace this
-        // bridge incrementally.
-        _ => {
-            let at = view_to_term_id(kb, a);
-            let bt = view_to_term_id(kb, b);
-            unify_term_dispatch(kb, subst, at, bt)
+        (Some("parameterized"), Some("sort_ref")) => {
+            unify_parameterized_with_sort_ref(kb, subst, a, b)
         }
+        (Some("sort_ref"), Some("parameterized")) => {
+            unify_parameterized_with_sort_ref(kb, subst, b, a)
+        }
+        (Some("arrow"), Some("arrow")) => unify_arrow_view(kb, subst, a, b),
+        (Some("named_tuple"), Some("named_tuple")) => unify_named_tuple(kb, subst, a, b),
+        // The same weaker WI-320 structural unify of the inner `effects_expr` that
+        // `unify_term_dispatch` does for a top-level `effects_rows` pair (NOT the
+        // full row algorithm — the arrow arm handles rows inside arrows via
+        // `unify_effect_rows`). Read each `effects_expr` child carrier-agnostically.
+        (Some("effects_rows"), Some("effects_rows")) => {
+            let ee = kb.intern("effects_expr");
+            match (named_child_value(kb, a, ee), named_child_value(kb, b, ee)) {
+                (Some(x), Some(y)) => unify_types(kb, subst, &x, &y),
+                _ => false,
+            }
+        }
+        // Mirrors `unify_term_dispatch`'s `_ => types_compatible(...)` — a unify of
+        // any other (form-mismatched) pair falls back to the subtype check, which is
+        // itself carrier-agnostic (no re-ground).
+        _ => types_compatible(kb, subst, a, b),
     }
 }
 
@@ -7578,16 +7465,16 @@ fn unify_term_dispatch(
             unify_parameterized_view(kb, subst, &TermIdView(a_resolved), &TermIdView(b_resolved))
         }
         (Some("parameterized"), Some("sort_ref")) => {
-            unify_parameterized_with_sort_ref(kb, subst, a_resolved, b_resolved)
+            unify_parameterized_with_sort_ref(kb, subst, &TermIdView(a_resolved), &TermIdView(b_resolved))
         }
         (Some("sort_ref"), Some("parameterized")) => {
-            unify_parameterized_with_sort_ref(kb, subst, b_resolved, a_resolved)
+            unify_parameterized_with_sort_ref(kb, subst, &TermIdView(b_resolved), &TermIdView(a_resolved))
         }
         (Some("arrow"), Some("arrow")) => {
             unify_arrow_view(kb, subst, &TermIdView(a_resolved), &TermIdView(b_resolved))
         }
         (Some("named_tuple"), Some("named_tuple")) => {
-            unify_named_tuple(kb, subst, a_resolved, b_resolved)
+            unify_named_tuple(kb, subst, &TermIdView(a_resolved), &TermIdView(b_resolved))
         }
         (Some("effects_rows"), Some("effects_rows")) => {
             // WI-320 substrate: structural unification on the wrapped
@@ -7622,25 +7509,26 @@ fn unify_term_dispatch(
 ///
 /// Bases must match. Type params not bound on the parameterized side
 /// stay unbound (caller didn't constrain them — width subtyping).
-fn unify_parameterized_with_sort_ref(
+fn unify_parameterized_with_sort_ref<P: TermView, S: TermView>(
     kb: &mut KnowledgeBase,
     subst: &mut Substitution,
-    parameterized: TermId,
-    sort_ref: TermId,
+    parameterized: &P,
+    sort_ref: &S,
 ) -> bool {
     // WI-361: read base + bindings form-agnostically — deep `parameterized(base,
     // bindings)` OR term-backed `Fn{S, named}`. A non-parameterized side, a base
     // mismatch, or a non-`sort_ref` falls back to the plain compat relation.
+    // WI-342: carrier-agnostic over [`TermView`] (both sides may be a `Value::Node`).
     let TypeExtractor::Parameterized { base: pbase_sym, bindings } =
-        extract_type(kb, &TermIdView(parameterized))
+        extract_type(kb, parameterized)
     else {
-        return types_compatible(kb, subst, &TermIdView(parameterized), &TermIdView(sort_ref));
+        return types_compatible(kb, subst, parameterized, sort_ref);
     };
-    let Some(sref_sym) = extract_sort_ref_sym(kb, &TermIdView(sort_ref)) else {
-        return types_compatible(kb, subst, &TermIdView(parameterized), &TermIdView(sort_ref));
+    let Some(sref_sym) = extract_sort_ref_sym(kb, sort_ref) else {
+        return types_compatible(kb, subst, parameterized, sort_ref);
     };
     if pbase_sym != sref_sym {
-        return types_compatible(kb, subst, &TermIdView(parameterized), &TermIdView(sort_ref));
+        return types_compatible(kb, subst, parameterized, sort_ref);
     }
 
     for (psym, value) in &bindings {
@@ -8526,34 +8414,28 @@ fn subtype_effect_rows<EA: TermView, EB: TermView>(
 }
 
 /// Unify two named tuple types: matching fields must unify.
-fn unify_named_tuple(kb: &mut KnowledgeBase, subst: &mut Substitution, a: TermId, b: TermId) -> bool {
-    let (a_args, b_args) = match (kb.get_term(a), kb.get_term(b)) {
-        (Term::Fn { named_args: aa, .. }, Term::Fn { named_args: ba, .. }) => (aa.clone(), ba.clone()),
-        _ => return false,
-    };
-
-    let a_fields = get_named_arg(kb, &a_args, "fields")
-        .map(|f| list_to_vec(kb, f)).unwrap_or_default();
-    let b_fields = get_named_arg(kb, &b_args, "fields")
-        .map(|f| list_to_vec(kb, f)).unwrap_or_default();
-
-    // Every field in b must have a matching field in a that unifies
-    for bf in &b_fields {
-        let b_name = field_name_sym(kb, *bf);
-        let b_type = field_type(kb, *bf);
-        if let (Some(name), Some(bt)) = (b_name, b_type) {
-            let at = a_fields.iter()
-                .find(|af| field_name_sym(kb, **af) == Some(name))
-                .and_then(|af| field_type(kb, *af));
-            match at {
-                Some(at) => {
-                    if !unify_types(kb, subst, &TermIdView(at), &TermIdView(bt)) { return false; }
+/// WI-342: the sole `named_tuple` unification, carrier-agnostic over [`TermView`]
+/// (both the `TermId` dispatch via [`TermIdView`] and the `Value` carrier route
+/// here). Fields are read by name via [`named_tuple_fields`] on each carrier; every
+/// `b` field must have a matching `a` field whose type unifies.
+fn unify_named_tuple<A: TermView, B: TermView>(
+    kb: &mut KnowledgeBase,
+    subst: &mut Substitution,
+    a: &A,
+    b: &B,
+) -> bool {
+    let a_fields = named_tuple_fields(kb, a);
+    let b_fields = named_tuple_fields(kb, b);
+    for (b_name, b_type) in &b_fields {
+        match a_fields.iter().find(|(n, _)| n == b_name) {
+            Some((_, a_type)) => {
+                if !unify_types(kb, subst, a_type, b_type) {
+                    return false;
                 }
-                None => return false,
             }
+            None => return false,
         }
     }
-
     true
 }
 
@@ -8698,7 +8580,7 @@ fn types_compatible_term_dispatch(kb: &mut KnowledgeBase, subst: &mut Substituti
             arrow_function_compatible(kb, subst, &TermIdView(actual), &TermIdView(expected))
         }
         (Some("named_tuple"), Some("named_tuple")) => {
-            named_tuple_compatible(kb, subst, actual, expected)
+            named_tuple_compatible(kb, subst, &TermIdView(actual), &TermIdView(expected))
         }
         (Some("effects_rows"), Some("effects_rows")) => {
             // WI-333: row subsumption via [`subtype_effect_rows`]. The
@@ -8773,24 +8655,33 @@ fn types_compatible_view_structural<A: TermView, B: TermView>(
         }
         // WI-361/WI-342: `arrow` and `Function[A,B,E]` denote the same callable
         // type. Read the parts carrier-agnostically (no re-ground) so a
-        // `Value::Node` arrow checks against a `Function` without the lossy
-        // `occ_to_term` bridge the `_` fallback would force on a denoted effect.
+        // `Value::Node` arrow checks against a `Function` without a lossy bridge.
         // Dispatch is now canonical (`type_head`), so a term-backed `Fn{Function,
-        // named}` reports `parameterized` and hits this arm directly too (no
-        // re-grounding residual).
+        // named}` reports `parameterized` and hits this arm directly too.
         (Some("arrow"), Some("parameterized")) | (Some("parameterized"), Some("arrow")) => {
             arrow_function_compatible(kb, subst, &a, &e)
         }
-        // WI-342: any pair without a carrier-agnostic subtype arm yet
-        // (`parameterized`-vs-`sort_ref`, `named_tuple`) re-grounds both sides and
-        // delegates to `types_compatible_term_dispatch` — sound (lossless) and
-        // strictly more complete than the old `_ => false`. In lockstep with
-        // `unify_view_structural`'s identical bridge.
-        _ => {
-            let at = view_to_term_id(kb, &a);
-            let et = view_to_term_id(kb, &e);
-            types_compatible_term_dispatch(kb, subst, at, et)
+        (Some("named_tuple"), Some("named_tuple")) => named_tuple_compatible(kb, subst, &a, &e),
+        // Bare `S` vs `B[…]`: nominal base-sort compatibility only (mirrors
+        // `types_compatible_term_dispatch`). `sort_sym_compatible` takes
+        // (sort_ref-side sym, parameterized-side base); `sort_functor_of_view`
+        // surfaces the head sym for a `sort_ref` and the base for a `parameterized`.
+        (Some("sort_ref"), Some("parameterized")) => {
+            match (sort_functor_of_view(kb, &a), sort_functor_of_view(kb, &e)) {
+                (Some(av), Some(eb)) => sort_sym_compatible(kb, av, eb),
+                _ => false,
+            }
         }
+        (Some("parameterized"), Some("sort_ref")) => {
+            match (sort_functor_of_view(kb, &e), sort_functor_of_view(kb, &a)) {
+                (Some(ev), Some(ab)) => sort_sym_compatible(kb, ev, ab),
+                _ => false,
+            }
+        }
+        // WI-342: every non-false arm of `types_compatible_term_dispatch` now has a
+        // carrier-agnostic peer above; any other pair is a form mismatch, which the
+        // term dispatch also rejects (`_ => false`). No re-ground bridge.
+        _ => false,
     }
 }
 
@@ -8908,9 +8799,8 @@ fn parameterized_compatible_view<A: TermView, B: TermView>(
 /// BOTH the `TermId` dispatch ([`types_compatible_term_dispatch`], via
 /// [`TermIdView`]) AND the `Value`-carrier dispatch
 /// ([`types_compatible_view_structural`]), so a `Value::Node` callback arrow
-/// checks against a `Function[A, B, E]` directly — without the lossy
-/// `view_to_term_id` re-ground the generic fallback would otherwise force on a
-/// denoted-bearing effect. Decomposes both via [`arrow_parts`] (which yields
+/// checks against a `Function[A, B, E]` directly — natively, with no re-grounding
+/// bridge. Decomposes both via [`arrow_parts`] (which yields
 /// `None` for a non-`Function` parameterized type, so `arrow` vs `List[T]` stays
 /// incompatible), checks contravariant param + covariant result, and (WI-332)
 /// covariant effects via the carrier-agnostic [`subtype_effect_rows`]. WI-289.
@@ -10164,62 +10054,28 @@ pub fn simp_fire_guard_holds(kb: &KnowledgeBase, redex: &NodeOccurrence) -> bool
 /// named_tuple(fields: [...]) <: named_tuple(fields: [...])
 /// Width subtyping: actual may have more fields than expected.
 /// Depth subtyping: each expected field's type must be a supertype of actual's.
-fn named_tuple_compatible(kb: &mut KnowledgeBase, subst: &mut Substitution, actual: TermId, expected: TermId) -> bool {
-    let (actual_args, expected_args) = match (kb.get_term(actual), kb.get_term(expected)) {
-        (Term::Fn { named_args: a, .. }, Term::Fn { named_args: e, .. }) => {
-            (a.clone(), e.clone())
-        }
-        _ => return false,
-    };
-
-    let expected_fields = get_named_arg(kb, &expected_args, "fields")
-        .map(|f| list_to_vec(kb, f))
-        .unwrap_or_default();
-    let actual_fields = get_named_arg(kb, &actual_args, "fields")
-        .map(|f| list_to_vec(kb, f))
-        .unwrap_or_default();
-
-    // Every expected field must have a matching actual field with compatible type
-    for ef in &expected_fields {
-        let exp_name = field_name_sym(kb, *ef);
-        let exp_type = field_type(kb, *ef);
-        match (exp_name, exp_type) {
-            (Some(name), Some(et)) => {
-                let actual_type = actual_fields.iter()
-                    .find(|af| field_name_sym(kb, **af) == Some(name))
-                    .and_then(|af| field_type(kb, *af));
-                match actual_type {
-                    Some(at) => {
-                        if !types_compatible(kb, subst, &TermIdView(at), &TermIdView(et)) {
-                            return false;
-                        }
-                    }
-                    None => return false,
+/// WI-342: the sole `named_tuple` subtyping, carrier-agnostic over [`TermView`].
+/// Width subtyping: every `expected` field must have a matching `actual` field
+/// whose type is compatible. Fields are read by name via [`named_tuple_fields`].
+fn named_tuple_compatible<A: TermView, B: TermView>(
+    kb: &mut KnowledgeBase,
+    subst: &mut Substitution,
+    actual: &A,
+    expected: &B,
+) -> bool {
+    let actual_fields = named_tuple_fields(kb, actual);
+    let expected_fields = named_tuple_fields(kb, expected);
+    for (exp_name, exp_type) in &expected_fields {
+        match actual_fields.iter().find(|(n, _)| n == exp_name) {
+            Some((_, act_type)) => {
+                if !types_compatible(kb, subst, act_type, exp_type) {
+                    return false;
                 }
             }
-            _ => return false,
+            None => return false,
         }
     }
-
     true
-}
-
-/// Extract name symbol from TypeField(name: Ref(sym), type: ...).
-fn field_name_sym(kb: &KnowledgeBase, field: TermId) -> Option<Symbol> {
-    if let Term::Fn { named_args, .. } = kb.get_term(field) {
-        extract_ref_field(kb, named_args, "name")
-    } else {
-        None
-    }
-}
-
-/// Extract type from TypeField(name: ..., type: type_term).
-fn field_type(kb: &KnowledgeBase, field: TermId) -> Option<TermId> {
-    if let Term::Fn { named_args, .. } = kb.get_term(field) {
-        get_named_arg(kb, named_args, "type")
-    } else {
-        None
-    }
 }
 
 // ── Unified type checking ──────────────────────────────────────
@@ -11891,9 +11747,9 @@ mod p4_tests {
     /// WI-342 collection migration: a `Value::Node` `named_tuple` with a poisoned
     /// (Node-arrow) field — `(f: Unit -> Unit {Modify[c]}, n: Int)` — unifies and
     /// is mutually compatible with its ground twin CROSS-CARRIER, through the
-    /// view-dispatch bridge (`view_to_term_id` re-grounds the Node tuple via
-    /// `occ_to_term`'s NamedTuple arm, then delegates to the `named_tuple`
-    /// term dispatch). A different field effect (`{Modify[d]}`) is rejected.
+    /// native carrier-agnostic `named_tuple` view arms (`unify_named_tuple` /
+    /// `named_tuple_compatible` read each carrier's fields via `named_tuple_fields`;
+    /// no re-grounding bridge). A different field effect (`{Modify[d]}`) is rejected.
     /// (Surface syntax can't express a tuple-of-lambda *type* annotation, so this
     /// exercises the new `make_named_tuple_occ` / `TypeNode::NamedTuple` path
     /// directly.)
