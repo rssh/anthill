@@ -6810,32 +6810,16 @@ fn extract_pattern_var_name(kb: &KnowledgeBase, pattern: TermId) -> Option<Symbo
 }
 
 
-/// Extract a named type parameter from a parameterized type term.
-/// e.g. extract_type_param(kb, List[T = Int], "T") → Some(Int)
-/// Extract a type parameter from a parameterized type.
-/// e.g. extract_type_param(kb, parameterized(base: sort_ref(List), bindings: [TypeBinding(param: T, value: Int)]), "T") → Some(sort_ref(Int))
+/// Extract a named type parameter from a parameterized type term. WI-361: a
+/// parameterized type is `Fn{S, named}` (the base sort is the functor, the
+/// bindings ARE the named args), so a type parameter is a direct named-arg
+/// lookup — e.g. `extract_type_param(kb, List[T = Int], "T") → Some(Int)`. (The
+/// deep `parameterized(base, bindings: List[TypeBinding])` form no longer exists.)
 pub(crate) fn extract_type_param(kb: &KnowledgeBase, ty: TermId, param: &str) -> Option<TermId> {
-    if let Term::Fn { functor, named_args, .. } = kb.get_term(ty) {
-        let fname = kb.resolve_sym(*functor);
-        if fname == "parameterized" {
-            // Search bindings list for TypeBinding with matching param
-            let bindings_tid = get_named_arg(kb, named_args, "bindings")?;
-            for binding in list_to_vec(kb, bindings_tid) {
-                if let Term::Fn { named_args: ba, .. } = kb.get_term(binding) {
-                    if let Some(psym) = extract_ref_field(kb, ba, "param") {
-                        if kb.resolve_sym(psym) == param {
-                            return get_named_arg(kb, ba, "value");
-                        }
-                    }
-                }
-            }
-            None
-        } else {
-            // Fallback: direct named arg lookup (for compatibility)
-            named_args.iter()
-                .find(|(s, _)| kb.resolve_sym(*s) == param)
-                .map(|(_, v)| *v)
-        }
+    if let Term::Fn { named_args, .. } = kb.get_term(ty) {
+        named_args.iter()
+            .find(|(s, _)| kb.resolve_sym(*s) == param)
+            .map(|(_, v)| *v)
     } else {
         None
     }
