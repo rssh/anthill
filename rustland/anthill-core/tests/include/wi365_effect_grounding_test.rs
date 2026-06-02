@@ -82,6 +82,25 @@ namespace test.wi365.carrier
 end
 "#;
 
+// ── Sanity: the spec + carrier load clean on their own ──────────────────────
+
+/// `CARRIER` (the `Box` spec and the non-pure `MutBox` provider) loads with
+/// zero errors by itself. This guards the two effect tests below: any
+/// diagnostic they observe must come from the CONSUMER's call, not from a
+/// broken `CARRIER`. Without it, the tightened `contains("undeclared effect")
+/// && contains("Modify")` match could still be satisfied vacuously by a
+/// carrier-level failure (e.g. an `undeclared effect` error on `MutBox.peek`
+/// itself), making the anchor green for the wrong reason.
+#[test]
+fn carrier_loads_clean() {
+    let errs = load_errors(&[CARRIER]);
+    assert!(
+        errs.is_empty(),
+        "the WI-365 spec+carrier must load with no errors so the effect tests \
+         isolate the consumer's dispatched call; got: {errs:?}",
+    );
+}
+
 // ── Anchor: the DIRECT carrier-op call already surfaces the Modify effect ────
 
 /// `MutBox.peek` (the concrete carrier op) is `effects Modify[b]`. A consumer
@@ -101,7 +120,7 @@ end
 "#;
     let errs = load_errors(&[CARRIER, consumer]);
     assert!(
-        errs.iter().any(|e| e.contains("Modify")),
+        errs.iter().any(|e| e.contains("undeclared effect") && e.contains("Modify")),
         "a pure consumer calling MutBox.peek directly (effects Modify[b]) must be \
          rejected with an undeclared-effect diagnostic naming Modify; got: {errs:?}",
     );
@@ -132,7 +151,7 @@ end
 "#;
     let errs = load_errors(&[CARRIER, consumer]);
     assert!(
-        errs.iter().any(|e| e.contains("Modify")),
+        errs.iter().any(|e| e.contains("undeclared effect") && e.contains("Modify")),
         "a pure consumer calling MutBox.peek THROUGH the Box spec op must be \
          rejected with an undeclared-effect diagnostic naming Modify — the \
          dispatched effect must ground to the carrier's Modify[b], not {{}}; \
