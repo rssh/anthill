@@ -128,7 +128,7 @@ end
 /// and is out of scope here — WI-365 delivers the def-side typecheck and the
 /// `collect([1,2,3]) == 3` eval (the runtime element is correct regardless).
 /// `#[ignore]`d so it documents the gap and un-ignores when that lands.
-#[ignore = "WI-365 follow-up: consumption-side element precision vs WI-270 expected-seeding"]
+#[ignore = "WI-367: consumption-side element precision vs WI-270 expected-seeding"]
 #[test]
 fn collect_wrong_element_return_is_rejected() {
     let src = r#"
