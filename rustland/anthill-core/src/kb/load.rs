@@ -6630,29 +6630,21 @@ impl<'a> Loader<'a> {
         let functor = self.remap_name(&e.name);
 
         // WI-342: lower each field type ONCE, carrier-agnostically — a value-in-
-        // type field (`Modify[c]`-shaped / dependent) is carried as `Value::Node`,
-        // a ground field type as `Value::Term`. The reflect `Entity` fact needs
-        // the hash-consed `TermId` form, derived below via `as_term` (entity field
-        // types are ground today — no value-in-type field — so this never `None`s;
-        // a future denoted field would re-ground here). Lowering once avoids
-        // double-firing per-field side effects like `emit_desc_fact` (a described
-        // type-var field type).
+        // type field (`Vector[Int, 3]` / `Modify[c]`-shaped / dependent) is carried
+        // as `Value::Node`, a ground field type as `Value::Term`. Lowering once
+        // avoids double-firing per-field side effects like `emit_desc_fact` (a
+        // described type-var field type). The Entity schema fact below is built
+        // carrier-agnostically (a value fact when any field is `Node`).
         let field_types: Vec<(Symbol, crate::eval::value::Value)> = e.fields
             .iter()
             .map(|f| (self.reintern(f.name), self.type_expr_to_value(&f.ty)))
-            .collect();
-        let named_args: SmallVec<[(Symbol, TermId); 2]> = field_types
-            .iter()
-            .map(|(s, v)| {
-                (*s, v.as_term().expect("entity field type is ground (no value-in-type field)"))
-            })
             .collect();
 
         // Register entity field names for partial named-arg expansion.
         // Register under both the qualified symbol (from remap_name) and
         // the short name, so that sugar-generated facts (which use unqualified
         // functor names like "WorkItem") can also look up entity fields.
-        let field_names: Vec<Symbol> = named_args.iter().map(|(s, _)| *s).collect();
+        let field_names: Vec<Symbol> = field_types.iter().map(|(s, _)| *s).collect();
         self.kb.register_entity_fields(functor, field_names.clone());
         self.kb.register_entity_field_types(functor, field_types.clone());
         let short_name = if e.name.segments.len() == 1 {
@@ -6666,8 +6658,31 @@ impl<'a> Loader<'a> {
             self.kb.register_entity_fields(short_sym, field_names);
         }
 
-        let entity_term = self.kb.alloc(Term::Fn { functor, pos_args: SmallVec::new(), named_args });
-        self.kb.assert_fact(entity_term, entity_sort, domain, None);
+        // WI-342: build the Entity schema fact carrier-agnostically. A
+        // value-in-type field (`Vector[Int, 3]`) lowers to a `Value::Node`,
+        // which a hash-consed `Term` cannot hold → the head becomes a value
+        // fact (mirrors the WI-348 OperationInfo split and the S4c EntityInfo
+        // fact). All-ground field types keep the hash-consed `Term::Fn` head
+        // (dedup, structural sharing) — the universal case today, byte-identical
+        // to the prior build. The fact is read carrier-agnostically by the
+        // `KB.fields` reflect builtin; the TermId-only bridge skips a value head
+        // (the carrier-faithful path is `KB.*`).
+        use crate::eval::value::Value;
+        if field_types.iter().all(|(_, v)| matches!(v, Value::Term(_))) {
+            let named_args: SmallVec<[(Symbol, TermId); 2]> = field_types
+                .iter()
+                .map(|(s, v)| (*s, v.as_term().expect("all-ground ⇒ field type is Value::Term")))
+                .collect();
+            let entity_term = self.kb.alloc(Term::Fn { functor, pos_args: SmallVec::new(), named_args });
+            self.kb.assert_fact(entity_term, entity_sort, domain, None);
+        } else {
+            let head = Value::Entity {
+                functor,
+                pos: std::rc::Rc::from(Vec::<Value>::new()),
+                named: std::rc::Rc::from(field_types),
+            };
+            self.kb.assert_fact_value(head, entity_sort, domain, None);
+        }
     }
 
     fn load_fact(&mut self, f: &Fact, domain: TermId) {

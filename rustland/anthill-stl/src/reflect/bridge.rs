@@ -88,12 +88,14 @@ impl KbBridge {
     /// Get all fact head TermIds for a given KB sort name (e.g. "Sort", "Operation").
     ///
     /// WI-348: a fact head may be a carrier-agnostic *value fact* (Node-carrying)
-    /// — for the "Operation" sort, an op with a `denoted` effect (`Modify[c]`).
-    /// This TermId-only bridge cannot represent a Node-carrying head, so such
-    /// facts are skipped here (the carrier-faithful path is the `KB.*` reflect
-    /// builtins, which read effects via `op_info`). Skipping rather than calling
-    /// `fact_term` avoids the value-head panic; for every other sort all heads
-    /// are hash-consed terms, so nothing is dropped.
+    /// — for the "Operation" sort, an op with a `denoted` effect (`Modify[c]`);
+    /// WI-342: for the "Entity" sort, an entity with a value-in-type field
+    /// (`Vector[Int, 3]`). This TermId-only bridge cannot represent a
+    /// Node-carrying head, so such facts are skipped here (the carrier-faithful
+    /// path is the `KB.*` reflect builtins, which read these via `op_info` /
+    /// `rule_head_value`). Skipping rather than calling `fact_term` avoids the
+    /// value-head panic; for the remaining sorts all heads are hash-consed
+    /// terms, so nothing is dropped.
     fn facts_by_sort_name(&self, sort_name: &str) -> Vec<(anthill_core::kb::RuleId, TermId)> {
         let sort_term = self.resolve_sort_name(sort_name);
         let kb = self.kb.borrow();
@@ -249,7 +251,15 @@ impl KbBridge {
             .unwrap_or_else(|| kb.intern(sort_name));
         let rids = kb.rules_by_functor(plain_sym);
         for rid in rids {
-            let head = kb.fact_term(rid);
+            // WI-342: skip a value-fact head (e.g. an Entity schema fact with a
+            // value-in-type field). This TermId-only bridge cannot represent a
+            // Node-carrying head; `fact_term` would panic on it. Mirrors the
+            // value-fact skip in `facts_by_sort_name` — the carrier-faithful
+            // path is the `KB.*` reflect builtins.
+            let head = match kb.rule_head_value(rid) {
+                anthill_core::eval::Value::Term(t) => *t,
+                _ => continue,
+            };
             if let CoreTerm::Fn { functor, named_args, .. } = kb.get_term(head) {
                 let fields: Vec<anthill_core::intern::Symbol> = named_args
                     .iter()

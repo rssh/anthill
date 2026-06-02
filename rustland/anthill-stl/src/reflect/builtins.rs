@@ -195,13 +195,6 @@ fn facts_by_sort_name(kb: &mut KnowledgeBase, sort_name: &str) -> Vec<(RuleId, T
         .collect()
 }
 
-fn term_functor_name(kb: &KnowledgeBase, id: TermId) -> Option<String> {
-    match kb.get_term(id) {
-        CoreTerm::Fn { functor, .. } => Some(kb.resolve_sym(*functor).to_string()),
-        _ => None,
-    }
-}
-
 fn term_functor_sym(kb: &KnowledgeBase, id: TermId) -> Option<Symbol> {
     match kb.get_term(id) {
         CoreTerm::Fn { functor, .. } => Some(*functor),
@@ -480,16 +473,36 @@ fn kb_fields(
     let name = str_arg(name)?;
     let kb = interp.kb_mut();
 
+    // WI-342: the Entity schema fact is carrier-agnostic — an entity with a
+    // value-in-type field (`Vector[Int, 3]`) has a `Value::Entity` head, so
+    // read the head as a `Value` and project functor + named args through the
+    // carrier. A ground entity is a `Value::Term(Fn)` (byte-identical to the
+    // prior `fact_term`/`term_named_args` path); a field type rides into the
+    // FieldInfo as its own `Value` (a denoted field type is a `Value::Node`,
+    // surfaced verbatim, never re-grounded). Iterate `by_sort` directly rather
+    // than `facts_by_sort_name`, which calls the panicking term-only reader.
+    let sort_term = kb.make_name_term("Entity");
     let mut items: Vec<Value> = Vec::new();
-    let facts = facts_by_sort_name(kb, "Entity");
-    for (_rid, head) in facts {
-        let functor_name = match term_functor_name(kb, head) { Some(n) => n, None => continue };
+    for rid in kb.by_sort(sort_term) {
+        let head = kb.rule_head_value(rid).clone();
+        let (functor, named): (Symbol, Vec<(Symbol, Value)>) = match &head {
+            Value::Term(t) => match kb.get_term(*t) {
+                CoreTerm::Fn { functor, named_args, .. } => (
+                    *functor,
+                    named_args.iter().map(|&(s, tid)| (s, Value::Term(tid))).collect(),
+                ),
+                _ => continue,
+            },
+            Value::Entity { functor, named, .. } => (*functor, named.to_vec()),
+            _ => continue,
+        };
+        let functor_name = kb.resolve_sym(functor).to_string();
         if functor_name != name && short_of(&functor_name) != name { continue; }
-        for (field_sym, field_tid) in term_named_args(kb, head) {
+        for (field_sym, field_type) in named {
             let name_val = Value::Str(kb.resolve_sym(field_sym).to_string());
             let fields = vec![
                 (syms.f_name, name_val),
-                (syms.f_type_name, Value::Term(field_tid)),
+                (syms.f_type_name, field_type),
             ];
             items.push(make_entity(kb, syms.field_info, fields));
         }
