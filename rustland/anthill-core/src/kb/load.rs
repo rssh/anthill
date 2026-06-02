@@ -6263,7 +6263,22 @@ impl<'a> Loader<'a> {
                     SymbolDef::Resolved { qualified_name, .. } => qualified_name.clone(),
                     SymbolDef::Unresolved { name } => name.clone(),
                 };
-                let field_terms: Vec<TermId> = e.fields
+                // WI-342 S4c: entity field types are carrier-agnostic, mirroring
+                // the WI-348 op-param value-`FieldInfo`. A denoted-bearing field
+                // type (a value-in-type like `Vector[Int, 3]`) lowers to a
+                // `Value::Node` → a *value* `FieldInfo` entity carrying the
+                // occurrence; a ground field type stays a hash-consed `FieldInfo`
+                // term. When any field is `Node` the fields list (and the
+                // `EntityInfo` head) become a value fact, so the occurrence is
+                // CARRIED rather than re-grounded. No field type in the current
+                // corpus is denoted-bearing (a value-in-type field — a `Simple`
+                // naming a value symbol, or a literal denoted once `make_denoted`
+                // is retired), so `type_expr_to_value` yields `Value::Term` for
+                // every field and this stays byte-identical to the prior
+                // `type_expr_to_term` build. The value-fact branch is the readiness
+                // for that flip (and the more faithful result for the value-in-type
+                // field the prior code re-grounded via `make_denoted`).
+                let field_values: Vec<crate::eval::value::Value> = e.fields
                     .iter()
                     .map(|f| {
                         let field_name_str = self.parsed.symbols.name(f.name).to_owned();
@@ -6274,26 +6289,68 @@ impl<'a> Loader<'a> {
                             self.kb.symbols.define(&field_name_str, &field_qualified, SymbolKind::Field, ctor_term.raw())
                         };
                         let name_term = self.kb.alloc(Term::Ref(field_sym));
-                        let type_term = self.type_expr_to_term(&f.ty);
-                        self.kb.alloc(Term::Fn {
-                            functor: field_info_sym,
-                            pos_args: SmallVec::new(),
-                            named_args: SmallVec::from_slice(&[
-                                (fi_name_sym, name_term),
-                                (fi_type_sym, type_term),
-                            ]),
-                        })
+                        let type_value = self.type_expr_to_value(&f.ty);
+                        match type_value {
+                            crate::eval::value::Value::Node(_) => {
+                                // Denoted-bearing field type → value FieldInfo entity.
+                                let named: Vec<(Symbol, crate::eval::value::Value)> = vec![
+                                    (fi_name_sym, crate::eval::value::Value::Term(name_term)),
+                                    (fi_type_sym, type_value),
+                                ];
+                                crate::eval::value::Value::Entity {
+                                    functor: field_info_sym,
+                                    pos: std::rc::Rc::from(Vec::new()),
+                                    named: std::rc::Rc::from(named),
+                                }
+                            }
+                            crate::eval::value::Value::Term(type_term) => {
+                                // Ground field type → hash-consed FieldInfo term.
+                                crate::eval::value::Value::Term(self.kb.alloc(Term::Fn {
+                                    functor: field_info_sym,
+                                    pos_args: SmallVec::new(),
+                                    named_args: SmallVec::from_slice(&[
+                                        (fi_name_sym, name_term),
+                                        (fi_type_sym, type_term),
+                                    ]),
+                                }))
+                            }
+                            // `type_expr_to_value` yields only `Value::Term` /
+                            // `Value::Node` (TypeChild has two variants).
+                            other => unreachable!("a field type is Term or Node, got {other:?}"),
+                        }
                     })
                     .collect();
-                let fields_list = build_list(self.kb, &field_terms);
+                let (fields_field, fields_all_ground) = value_or_ground_list(self.kb, field_values);
 
-                // Assert EntityInfo fact (name stores sort term for entity_of compatibility)
-                let entity_info_fact = self.kb.alloc(Term::Fn {
-                    functor: entity_info_sym,
-                    pos_args: SmallVec::new(),
-                    named_args: SmallVec::from_slice(&[(fi_name_sym, ctor_term), (fields_field_sym, fields_list)]),
-                });
-                self.kb.assert_fact(entity_info_fact, sort_sort, parent_domain, None);
+                // Assert EntityInfo fact (name stores sort term for entity_of
+                // compatibility). A denoted-bearing field forces a `Value::Node`
+                // somewhere in the head, which a hash-consed `Term` cannot hold →
+                // value fact; an all-ground head stays a hash-consed `Term::Fn`
+                // (dedup, structural sharing).
+                if fields_all_ground {
+                    let fields_list = match fields_field {
+                        crate::eval::value::Value::Term(t) => t,
+                        _ => unreachable!("fields_all_ground ⇒ fields list is Value::Term"),
+                    };
+                    let entity_info_fact = self.kb.alloc(Term::Fn {
+                        functor: entity_info_sym,
+                        pos_args: SmallVec::new(),
+                        named_args: SmallVec::from_slice(&[(fi_name_sym, ctor_term), (fields_field_sym, fields_list)]),
+                    });
+                    self.kb.assert_fact(entity_info_fact, sort_sort, parent_domain, None);
+                } else {
+                    use crate::eval::value::Value;
+                    let named: Vec<(Symbol, Value)> = vec![
+                        (fi_name_sym, Value::Term(ctor_term)),
+                        (fields_field_sym, fields_field),
+                    ];
+                    let head = Value::Entity {
+                        functor: entity_info_sym,
+                        pos: std::rc::Rc::from(Vec::<Value>::new()),
+                        named: std::rc::Rc::from(named),
+                    };
+                    self.kb.assert_fact_value(head, sort_sort, parent_domain, None);
+                }
             }
         }
 
