@@ -31,8 +31,11 @@ pub enum TypeError {
     TypeMismatch {
         span: Option<Span>,
         context: TypeErrorContext,
-        expected: TermId,
-        actual: TermId,
+        // WI-342 (S2): carrier-agnostic `Value` — a denoted-bearing type
+        // (a lambda's `Value::Node` arrow) flows straight into the diagnostic
+        // without re-grounding. Rendered via `type_display_name_value`.
+        expected: Value,
+        actual: Value,
     },
     UnknownField {
         span: Option<Span>,
@@ -189,8 +192,8 @@ impl TypeError {
         match self {
             TypeError::TypeMismatch { expected, actual, .. } => {
                 format!("type mismatch: expected {}, got {}",
-                    type_display_name(kb, *expected),
-                    type_display_name(kb, *actual))
+                    type_display_name_value(kb, expected),
+                    type_display_name_value(kb, actual))
             }
             TypeError::UnknownField { entity_name, field, .. } => {
                 format!("unknown field '{}' in entity {}",
@@ -323,8 +326,8 @@ impl TypeError {
             TypeError::TypeMismatch { context, expected, actual, .. } => LoadError::TypeMismatch {
                 entity_name: context.entity_name(kb),
                 field_name: context.field_name(kb),
-                expected_type: type_display_name(kb, *expected),
-                actual_type: type_display_name(kb, *actual),
+                expected_type: type_display_name_value(kb, expected),
+                actual_type: type_display_name_value(kb, actual),
                 span: self.span(kb),
             },
             TypeError::UnknownField { entity_name, field, .. } => {
@@ -9143,8 +9146,8 @@ fn compute_branch_join_type(
     };
     // WI-342: branch types are carrier-agnostic `Value`s (a branch may be a
     // `Value::Node` lambda arrow). The join returns one of them — no
-    // re-grounding. `TypeError` fields stay `TermId`, so re-ground only at the
-    // (cold) diagnostic-construction sites.
+    // re-grounding. `TypeError` fields are `Value` (S2), so the branch carrier
+    // flows straight into any diagnostic below.
     let first_ty: Value = match branch_tys.first() {
         Some((b, _)) => b.clone(),
         None => {
@@ -9166,12 +9169,11 @@ fn compute_branch_join_type(
             // WI-335: each branch's conformance check is independent.
             let mut subst = Substitution::new();
             if !types_compatible(kb, &mut subst, bt, &TermIdView(exp)) {
-                let actual = value_to_term_id(kb, bt);
                 return Err(TypeError::TypeMismatch {
                     span: *span,
                     context: branch_ctx,
-                    expected: exp,
-                    actual,
+                    expected: Value::Term(exp),
+                    actual: bt.clone(),
                 });
             }
         }
@@ -9213,13 +9215,11 @@ fn compute_branch_join_type(
         // type_var guard in the `(None, Some)` arm above.
         (Some((bt, span)), Some(exp)) => {
             if type_dispatch_name(kb, exp) == Some("type_var") {
-                let expected_t = value_to_term_id(kb, &acc);
-                let actual_t = value_to_term_id(kb, &bt);
                 Err(TypeError::TypeMismatch {
                     span,
                     context: branch_ctx,
-                    expected: expected_t,
-                    actual: actual_t,
+                    expected: acc.clone(),
+                    actual: bt.clone(),
                 })
             } else {
                 Ok(Value::Term(exp))
@@ -9228,13 +9228,11 @@ fn compute_branch_join_type(
         // No expected type and no common supertype — the top-less lattice
         // has no join, so the branch types genuinely clash.
         (Some((bt, span)), None) => {
-            let expected_t = value_to_term_id(kb, &acc);
-            let actual_t = value_to_term_id(kb, &bt);
             Err(TypeError::TypeMismatch {
                 span,
                 context: branch_ctx,
-                expected: expected_t,
-                actual: actual_t,
+                expected: acc.clone(),
+                actual: bt.clone(),
             })
         }
     }
@@ -10814,16 +10812,14 @@ fn check_operation_bodies(kb: &mut KnowledgeBase, op_syms: &[Symbol], errors: &m
                 // WI-341/342: both sides are carrier-agnostic `Value` — the
                 // subtype check takes them directly (`Value: TermView`), where a
                 // lambda's `Value::Node` arrow flows cross-carrier against the
-                // declared return arrow. The `TypeError` fields are `TermId` (for
-                // display only), so re-ground both for the diagnostic.
+                // declared return arrow. `TypeError` fields are `Value` (S2), so
+                // the carrier flows straight into the diagnostic (no re-grounding).
                 if !types_compatible(kb, &mut subst, &result.ty, &op.return_type) {
-                    let actual = value_to_term_id(kb, &result.ty);
-                    let expected = value_to_term_id(kb, &op.return_type);
                     errors.push(TypeError::TypeMismatch {
                         span: None,
                         context: TypeErrorContext::OperationReturn { op_name: op.op_sym },
-                        expected,
-                        actual,
+                        expected: op.return_type.clone(),
+                        actual: result.ty.clone(),
                     });
                 }
 
