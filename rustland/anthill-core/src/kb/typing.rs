@@ -728,9 +728,12 @@ fn occ_to_term(kb: &mut KnowledgeBase, occ: &Rc<NodeOccurrence>) -> Option<TermI
                 Some(kb.make_arrow_from_effects_rows(p, r, e))
             }
             TypeNode::NamedTuple { fields } => {
-                let mut fs: Vec<(Symbol, TermId)> = Vec::with_capacity(fields.len());
-                for (s, c) in fields {
-                    fs.push((*s, type_child_to_term(kb, c)?));
+                // WI-361: `fields` is the `Value`-carried `List[TypeField]`; decode
+                // it, then re-ground each field type to a hash-consed `TermId`.
+                let pairs = list_records_to_pairs(kb, fields, "name", "type");
+                let mut fs: Vec<(Symbol, TermId)> = Vec::with_capacity(pairs.len());
+                for (s, v) in pairs {
+                    fs.push((s, value_to_term_id(kb, &v)));
                 }
                 Some(kb.make_named_tuple_type(&fs))
             }
@@ -833,11 +836,11 @@ fn parameterized_value(
 }
 
 /// WI-342: build `named_tuple(fields)` carrier-agnostically. When any field type
-/// is a `Value::Node` (e.g. a tuple element that is a lambda carrying
-/// `Modify[c]`), mint a `Value::Node` via [`KnowledgeBase::make_named_tuple_occ`]
-/// so the poisoned field is CARRIED, not re-grounded; otherwise the hash-consed
-/// [`KnowledgeBase::make_named_tuple_type`]. A Node tuple compares cross-carrier
-/// via the `view_to_term_id` dispatch bridge.
+/// is a `Value::Node` (e.g. a tuple element that is a lambda carrying `Modify[c]`),
+/// mint a `Value::Node` via [`KnowledgeBase::make_named_tuple_occ`] — whose `fields`
+/// is the WI-361 `Value`-carried `List[TypeField]` mirroring the term form — so the
+/// poisoned field is CARRIED, not re-grounded; otherwise the hash-consed
+/// [`KnowledgeBase::make_named_tuple_type`]. `TermView` reads both carriers alike.
 fn named_tuple_value(
     kb: &mut KnowledgeBase,
     fields: &[(Symbol, Value)],
@@ -996,11 +999,12 @@ fn type_display_name_occ(kb: &KnowledgeBase, occ: &Rc<NodeOccurrence>) -> String
             type_child_display_name(kb, param),
             type_child_display_name(kb, result)
         ),
-        // Mirrors `type_display_name`'s `named_tuple` arm: `(f: T, n: U)`.
+        // Mirrors `type_display_name`'s `named_tuple` arm: `(f: T, n: U)`. WI-361:
+        // decode the `Value`-carried `List[TypeField]` and display each field type.
         NodeKind::Type(TypeNode::NamedTuple { fields }) => {
-            let parts: Vec<String> = fields
-                .iter()
-                .map(|(n, c)| format!("{}: {}", kb.resolve_sym(*n), type_child_display_name(kb, c)))
+            let parts: Vec<String> = list_records_to_pairs(kb, fields, "name", "type")
+                .into_iter()
+                .map(|(n, v)| format!("{}: {}", kb.resolve_sym(n), type_display_name_value(kb, &v)))
                 .collect();
             format!("({})", parts.join(", "))
         }
@@ -7366,28 +7370,56 @@ fn parameterized_bindings(kb: &KnowledgeBase, v: &impl TermView) -> Vec<(Symbol,
 }
 
 /// Decode a `List[record]` of two-field records into `(symbol-field, value-field)`
-/// pairs — the shared mechanism behind a `parameterized`'s `bindings`
-/// (`TypeBinding{param, value}`) and a `named_tuple`'s `fields`
-/// (`TypeField{name, type}`). `sym_key` names the `Ref`-valued field (read as a
-/// `Symbol`), `val_key` the type-valued field (read as a `Value::Term`); an
-/// element that is not a record or is missing either field is skipped.
-fn list_records_to_pairs(
+/// pairs, carrier-agnostic over [`TermView`] — a hash-consed `Term` cons-list OR a
+/// `Value::Entity` cons-list (the WI-361 poisoned `named_tuple` `fields` carrier).
+/// Shared by a `parameterized`'s `bindings` (`TypeBinding{param, value}`) and a
+/// `named_tuple`'s `fields` (`TypeField{name, type}`). `sym_key` names the
+/// `Ref`-valued field (read as a `Symbol`), `val_key` the type-valued field (read
+/// as a `Value`); a cell that is not a `cons` record or is missing either field is
+/// skipped.
+pub(crate) fn list_records_to_pairs<V: TermView>(
     kb: &KnowledgeBase,
-    list: TermId,
+    list: &V,
     sym_key: &str,
     val_key: &str,
 ) -> Vec<(Symbol, Value)> {
-    list_to_vec(kb, list)
-        .into_iter()
-        .filter_map(|e| match kb.get_term(e) {
-            Term::Fn { named_args, .. } => {
-                let s = extract_ref_field(kb, named_args, sym_key)?;
-                let v = get_named_arg(kb, named_args, val_key)?;
-                Some((s, Value::Term(v)))
-            }
-            _ => None,
-        })
-        .collect()
+    let (Some(head_key), Some(tail_key)) = (kb.lookup_symbol("head"), kb.lookup_symbol("tail"))
+    else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    let mut next = decode_cons_cell(kb, list, head_key, tail_key, sym_key, val_key, &mut out);
+    while let Some(cell) = next {
+        next = decode_cons_cell(kb, &cell, head_key, tail_key, sym_key, val_key, &mut out);
+    }
+    out
+}
+
+/// One step of [`list_records_to_pairs`]: if `cell` is a `cons` record, push its
+/// `head` record's `(sym_key, val_key)` pair into `out` and return its `tail` as a
+/// [`Value`]; otherwise (nil / non-cons) `None`.
+fn decode_cons_cell<V: TermView>(
+    kb: &KnowledgeBase,
+    cell: &V,
+    head_key: Symbol,
+    tail_key: Symbol,
+    sym_key: &str,
+    val_key: &str,
+    out: &mut Vec<(Symbol, Value)>,
+) -> Option<Value> {
+    match cell.head(kb) {
+        ViewHead::Functor { functor: Some(f), .. }
+            if kb.qualified_name_of(f) == "anthill.prelude.List.cons" => {}
+        _ => return None,
+    }
+    if let Some(rec) = named_child_value(kb, cell, head_key) {
+        if let (Some(s), Some(v)) =
+            (view_child_sym(kb, &rec, sym_key), view_child_value(kb, &rec, val_key))
+        {
+            out.push((s, v));
+        }
+    }
+    named_child_value(kb, cell, tail_key)
 }
 
 /// Bindings of a `TermId`-carried `parameterized` (`List[TypeBinding]`).
@@ -7397,7 +7429,7 @@ fn parameterized_bindings_term(kb: &KnowledgeBase, t: TermId) -> Vec<(Symbol, Va
         _ => return Vec::new(),
     };
     match get_named_arg(kb, &args, "bindings") {
-        Some(list) => list_records_to_pairs(kb, list, "param", "value"),
+        Some(list) => list_records_to_pairs(kb, &TermIdView(list), "param", "value"),
         None => Vec::new(),
     }
 }
@@ -7643,7 +7675,10 @@ fn occ_contains_var(kb: &KnowledgeBase, vid: VarId, occ: &Rc<NodeOccurrence>) ->
             TypeNode::Arrow { param, result, effects } => {
                 child(kb, param) || child(kb, result) || child(kb, effects)
             }
-            TypeNode::NamedTuple { fields } => fields.iter().any(|(_, c)| child(kb, c)),
+            // WI-361: `fields` is the `Value`-carried `List[TypeField]`; the
+            // view-walking `occurs_in_view` descends its cons cells + records and
+            // into any poisoned (`Value::Node`) field type via `occ_contains_var`.
+            TypeNode::NamedTuple { fields } => occurs_in_view(kb, vid, fields),
         };
     }
     if let Some(en) = occ.as_effect_expr() {
@@ -10175,12 +10210,13 @@ fn term_backed_bindings<V: TermView>(kb: &KnowledgeBase, ty: &V) -> Vec<(Symbol,
 }
 
 /// Fields of a `named_tuple(fields: List[TypeField])` as `(name, field-type)`.
-/// Reads the deep `TermId` form (the live carrier); a `Value::Node` NamedTuple
-/// exposes no `fields` named child (WI-342 Rep A), so it yields no fields here.
+/// WI-361: carrier-agnostic — reads the single `fields` child (a `Term` cons-list
+/// for a ground tuple, a `Value`-carried `List[TypeField]` for a poisoned
+/// `Value::Node` tuple) and decodes it the same way for both.
 fn named_tuple_fields<V: TermView>(kb: &KnowledgeBase, ty: &V) -> Vec<(Symbol, Value)> {
     match view_child_value(kb, ty, "fields") {
-        Some(Value::Term(list)) => list_records_to_pairs(kb, list, "name", "type"),
-        _ => Vec::new(),
+        Some(fields) => list_records_to_pairs(kb, &fields, "name", "type"),
+        None => Vec::new(),
     }
 }
 
@@ -12168,6 +12204,51 @@ mod p4_tests {
             !unify_types(&mut kb, &mut s3, &TermIdView(ground_tuple), &value_tuple_d),
             "tuple field {{Modify[c]}} vs {{Modify[d]}} differ"
         );
+    }
+
+    /// WI-361: a `Value::Node` named tuple now exposes the SAME single `fields`
+    /// child as its term twin, so `TermView` reads both alike — and
+    /// `named_tuple_fields` returns its fields (previously EMPTY for a `Value::Node`
+    /// tuple: the closed gap). A ground field reads as `Value::Term`, the poisoned
+    /// one as `Value::Node`.
+    #[test]
+    fn node_named_tuple_reads_fields_through_termview() {
+        use crate::eval::value::Value;
+        use crate::kb::term_view::{TermView, ViewHead};
+        let mut kb = kb_with_prelude();
+        let modify = kb.intern("Modify");
+        let p = kb.intern("resource");
+        let c = kb.intern("c");
+        let unit = kb.intern("Unit");
+        let unit_ref = kb.make_sort_ref(unit);
+        let int = kb.intern("Int");
+        let int_ref = kb.make_sort_ref(int);
+        let f = kb.intern("f");
+        let n = kb.intern("n");
+        let fields_key = kb.intern("fields");
+
+        // `(f: Unit -> Unit {Modify[c]}, n: Int)` as a `Value::Node` (poisoned `f`).
+        let value_arrow_c = value_modify_arrow(&mut kb, modify, p, unit_ref, c);
+        let tuple = Value::Node(kb.make_named_tuple_occ(
+            vec![(f, TypeChild::Node(value_arrow_c)), (n, TypeChild::Ground(int_ref))],
+            span(),
+            None,
+        ));
+
+        // View surface mirrors the term form: one `fields` named child.
+        assert!(
+            matches!(tuple.head(&kb), ViewHead::Functor { named_arity: 1, .. }),
+            "Node named tuple exposes one `fields` child, got {:?}",
+            tuple.head(&kb),
+        );
+        assert!(tuple.named_arg(&kb, fields_key).is_some(), "the `fields` child is exposed");
+
+        // The closed gap: `named_tuple_fields` decodes BOTH fields for a Node tuple.
+        let by: std::collections::HashMap<_, _> =
+            super::named_tuple_fields(&kb, &tuple).into_iter().collect();
+        assert_eq!(by.len(), 2, "two fields decoded, got {by:?}");
+        assert!(matches!(by.get(&n), Some(Value::Term(_))), "`n: Int` rides as Value::Term");
+        assert!(matches!(by.get(&f), Some(Value::Node(_))), "poisoned `f` rides as Value::Node");
     }
 
     /// WI-342 occurs-check over a `Value::Node` Rep-A type: binding `?v` to a Node

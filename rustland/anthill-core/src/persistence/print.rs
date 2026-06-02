@@ -6,6 +6,7 @@
 
 use std::rc::Rc;
 
+use crate::eval::value::Value;
 use crate::intern::Symbol;
 use crate::kb::KnowledgeBase;
 use crate::kb::node_occurrence::{EffectExprNode, Expr, NodeOccurrence, TypeChild, TypeNode};
@@ -104,6 +105,18 @@ impl<'a> TermPrinter<'a, KnowledgeBase> {
         }
     }
 
+    /// WI-361: render a field type carried as a [`Value`] (a `named_tuple` `fields`
+    /// `List[TypeField]` element) — `Value::Term` is a hash-consed term, `Value::Node`
+    /// a poisoned occurrence; both reuse the existing writers. A type is only ever
+    /// `Term` or `Node`, so the fallback is unreachable.
+    fn write_type_value(&self, v: &Value, buf: &mut String) {
+        match v {
+            Value::Term(t) => self.write_term(*t, buf),
+            Value::Node(occ) => self.write_occurrence(occ, buf),
+            _ => buf.push('?'),
+        }
+    }
+
     /// Render a `Type`-sort occurrence (WI-342 IR). Structural and faithful —
     /// `Parameterized` shows its `[param = value]` bindings (the part a
     /// `denoted` value-index like `Modify[c]` lives in), `denoted(..)` marks a
@@ -139,12 +152,19 @@ impl<'a> TermPrinter<'a, KnowledgeBase> {
                 self.write_type_child(effects, buf);
             }
             TypeNode::NamedTuple { fields } => {
+                // WI-361: `fields` is a `Value`-carried `List[TypeField]`; decode it
+                // via the one shared decoder (the typer's `named_tuple_fields` uses
+                // the same) and render `(n: T, …)`.
                 buf.push('(');
-                for (i, (sym, val)) in fields.iter().enumerate() {
-                    if i > 0 { buf.push_str(", "); }
-                    buf.push_str(self.view.sym_name(*sym));
+                let pairs =
+                    crate::kb::typing::list_records_to_pairs(self.view, fields, "name", "type");
+                for (i, (name, ty)) in pairs.iter().enumerate() {
+                    if i > 0 {
+                        buf.push_str(", ");
+                    }
+                    buf.push_str(self.view.sym_name(*name));
                     buf.push_str(": ");
-                    self.write_type_child(val, buf);
+                    self.write_type_value(ty, buf);
                 }
                 buf.push(')');
             }

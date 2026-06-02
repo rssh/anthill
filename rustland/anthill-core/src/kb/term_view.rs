@@ -217,9 +217,9 @@ fn type_node_head(tn: &TypeNode, kb: &KnowledgeBase) -> ViewHead {
         TypeNode::Denoted { .. } => (type_functor_sym(kb, "denoted"), 1),
         TypeNode::EffectsRows { .. } => (type_functor_sym(kb, "effects_rows"), 1),
         TypeNode::Arrow { .. } => (type_functor_sym(kb, "arrow"), 3),
-        // Fields are not a uniformly-exposed named child; they're read via the
-        // dedicated `named_tuple_fields` reader.
-        TypeNode::NamedTuple { .. } => (type_functor_sym(kb, "named_tuple"), 0),
+        // WI-361: one `fields` child (a `Value`-carried `List[TypeField]`),
+        // matching the term form `named_tuple(fields: List[TypeField])`.
+        TypeNode::NamedTuple { .. } => (type_functor_sym(kb, "named_tuple"), 1),
     };
     match functor {
         Some(f) => ViewHead::Functor { functor: Some(f), pos_arity: 0, named_arity },
@@ -237,16 +237,22 @@ fn type_node_keys(tn: &TypeNode, kb: &KnowledgeBase) -> Vec<Symbol> {
         TypeNode::Denoted { .. } => &["value"],
         TypeNode::EffectsRows { .. } => &["effects_expr"],
         TypeNode::Arrow { .. } => &["param", "result", "effects"],
-        TypeNode::NamedTuple { .. } => &[],
+        // WI-361: the single `fields` child (the `List[TypeField]` Value).
+        TypeNode::NamedTuple { .. } => &["fields"],
     };
     short_keys.iter().filter_map(|k| kb.lookup_symbol(k)).collect()
 }
 
-fn type_node_named<'a>(tn: &TypeNode, kb: &KnowledgeBase, sym: Symbol) -> Option<ViewItem<'a>> {
+fn type_node_named<'a>(tn: &'a TypeNode, kb: &KnowledgeBase, sym: Symbol) -> Option<ViewItem<'a>> {
     let key = |k: &str| kb.lookup_symbol(k);
     match tn {
         TypeNode::Denoted { value } if Some(sym) == key("value") => {
             Some(ViewItem::Node(Rc::clone(value)))
+        }
+        // WI-361: the single `fields` child — the `Value`-carried `List[TypeField]`,
+        // borrowed (`ViewItem::Value`) so `TermView` walks it like the term's list.
+        TypeNode::NamedTuple { fields } if Some(sym) == key("fields") => {
+            Some(ViewItem::Value(fields))
         }
         // Bindings ARE the named args (WI-361): resolve the child by binding param.
         TypeNode::Parameterized { bindings, .. } => bindings
@@ -328,7 +334,7 @@ fn effect_expr_named<'a>(
 /// `Node`). Returns `None` for any other kind, so Expr callers fall back to the
 /// `Rc`-returning `occ_named_child`.
 fn occ_type_named<'a>(
-    occ: &NodeOccurrence,
+    occ: &'a NodeOccurrence,
     kb: &KnowledgeBase,
     sym: Symbol,
 ) -> Option<ViewItem<'a>> {

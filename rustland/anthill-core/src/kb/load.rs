@@ -3512,7 +3512,7 @@ fn build_list_with_tail(kb: &mut KnowledgeBase, items: &[TermId], tail: Option<T
 /// a `Value::Node` label (`Modify[c]`), which cannot live in a `TermId` list.
 /// `cons`/`nil` cells are `Value::Entity`s over the same prelude constructors,
 /// so the result decomposes into the same `DiscrimKey`s as a term list.
-fn build_value_list(kb: &mut KnowledgeBase, items: Vec<crate::eval::value::Value>) -> crate::eval::value::Value {
+pub(crate) fn build_value_list(kb: &mut KnowledgeBase, items: Vec<crate::eval::value::Value>) -> crate::eval::value::Value {
     use crate::eval::value::Value;
     use std::rc::Rc;
     let nil_sym = kb.resolve_symbol("anthill.prelude.List.nil");

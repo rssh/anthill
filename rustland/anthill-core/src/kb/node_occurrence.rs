@@ -130,10 +130,11 @@ fn drain_type_node(tn: &mut TypeNode, stack: &mut Vec<Rc<NodeOccurrence>>) {
             drain_type_child(result, stack);
             drain_type_child(effects, stack);
         }
-        TypeNode::NamedTuple { fields } => {
-            for (_, c) in fields.iter_mut() {
-                drain_type_child(c, stack);
-            }
+        TypeNode::NamedTuple { .. } => {
+            // WI-361: `fields` is a `Value`-carried `List[TypeField]`. Its poisoned
+            // leaves are `Value::Node`s whose own `Drop` is already iterative, and
+            // the `Value::Entity` cons spine is shallow (tuple arity) — so there is
+            // nothing to hoist onto the work stack here.
         }
     }
 }
@@ -775,14 +776,15 @@ pub enum TypeNode {
         result: TypeChild,
         effects: TypeChild,
     },
-    /// `named_tuple(fields: [TypeField(name, type), …])` — a tuple type whose
-    /// fields are `(name, type)` pairs. WI-342: minted when a tuple literal has a
-    /// field whose type is `denoted`-bearing (a `Value::Node`, e.g. a tuple
-    /// element that is a lambda carrying `Modify[c]`). The hash-consed form keys
-    /// the fields under a single `fields` named-arg `List`; the occurrence form
-    /// holds them inline as `Vec<(Symbol, TypeChild)>` (mirroring `Parameterized`
-    /// bindings).
-    NamedTuple { fields: Vec<(Symbol, TypeChild)> },
+    /// `named_tuple(fields: List[TypeField])` — a tuple type whose fields are
+    /// `TypeField(name, type)` records. WI-342: minted when a tuple literal has a
+    /// field whose type is `denoted`-bearing (a `Value::Node`, e.g. a tuple element
+    /// that is a lambda carrying `Modify[c]`). WI-361: `fields` is a `Value`-carried
+    /// `List[TypeField]` mirroring the hash-consed term form `make_named_tuple_type`
+    /// builds — a ground field type rides as `Value::Term`, a poisoned one as
+    /// `Value::Node` — so `TermView` reads this carrier and its term twin
+    /// identically (one `fields` child; no special-cased reader).
+    NamedTuple { fields: Value },
 }
 
 /// Structural `EffectExpression`-sort IR (WI-342). Mirrors the row algebra
@@ -1688,6 +1690,11 @@ fn type_node_eq(a: &TypeNode, b: &TypeNode) -> bool {
             TypeNode::Arrow { param: pa, result: ra, effects: ea },
             TypeNode::Arrow { param: pb, result: rb, effects: eb },
         ) => type_child_eq(pa, pb) && type_child_eq(ra, rb) && type_child_eq(ea, eb),
+        // WI-361: `fields` is a `Value`-carried `List[TypeField]` — compare with
+        // `Value::structural_eq` (canonical-ordered, so positional compare holds).
+        (TypeNode::NamedTuple { fields: fa }, TypeNode::NamedTuple { fields: fb }) => {
+            fa.structural_eq(fb)
+        }
         _ => false,
     }
 }
@@ -2449,10 +2456,7 @@ pub(crate) fn substitute_ref_syms_occ(
                     effects: rewrite_ref_child(effects, map),
                 },
                 TypeNode::NamedTuple { fields } => TypeNode::NamedTuple {
-                    fields: fields
-                        .iter()
-                        .map(|(s, c)| (*s, rewrite_ref_child(c, map)))
-                        .collect(),
+                    fields: rewrite_ref_value(fields, map),
                 },
             };
             NodeOccurrence::new_type(rebuilt, occ.span, occ.owner)
@@ -2489,6 +2493,28 @@ fn rewrite_ref_child(
     match child {
         TypeChild::Ground(t) => TypeChild::Ground(*t),
         TypeChild::Node(n) => TypeChild::Node(substitute_ref_syms_occ(n, map)),
+    }
+}
+
+/// WI-361: re-key `Ref` symbols inside a `Value`-carried child (a `named_tuple`'s
+/// `fields` `List[TypeField]`), mirroring [`rewrite_ref_child`]: a ground
+/// `Value::Term` passes through (a hash-consed `Term` carries no renamable
+/// occurrence ref), a poisoned `Value::Node` re-keys via [`substitute_ref_syms_occ`],
+/// and a `Value::Entity`/`Tuple` rebuilds with its children rewritten. Scalars /
+/// other carriers pass through unchanged.
+fn rewrite_ref_value(value: &Value, map: &std::collections::HashMap<Symbol, Symbol>) -> Value {
+    match value {
+        Value::Node(occ) => Value::Node(substitute_ref_syms_occ(occ, map)),
+        Value::Entity { functor, pos, named } => Value::Entity {
+            functor: *functor,
+            pos: pos.iter().map(|v| rewrite_ref_value(v, map)).collect(),
+            named: named.iter().map(|(s, v)| (*s, rewrite_ref_value(v, map))).collect(),
+        },
+        Value::Tuple { pos, named } => Value::Tuple {
+            pos: pos.iter().map(|v| rewrite_ref_value(v, map)).collect(),
+            named: named.iter().map(|(s, v)| (*s, rewrite_ref_value(v, map))).collect(),
+        },
+        other => other.clone(),
     }
 }
 

@@ -2619,18 +2619,60 @@ impl KnowledgeBase {
 
     /// `named_tuple(fields)` carried as a Type occurrence (WI-342). Occurrence
     /// peer of [`Self::make_named_tuple_type`]; minted when a tuple field's type
-    /// is `denoted`-bearing.
+    /// is `denoted`-bearing. WI-361: the `(name, type)` children are assembled into
+    /// the `Value`-carried `List[TypeField]` the carrier stores (mirroring the term
+    /// form), so the field-type poison rides as `Value::Node` while ground field
+    /// types stay `Value::Term`.
     pub fn make_named_tuple_occ(
-        &self,
+        &mut self,
         fields: Vec<(Symbol, node_occurrence::TypeChild)>,
         span: crate::span::SourceSpan,
         owner: Option<Symbol>,
     ) -> Rc<NodeOccurrence> {
+        let fields_value = self.build_named_tuple_fields_value(fields);
         NodeOccurrence::new_type(
-            node_occurrence::TypeNode::NamedTuple { fields },
+            node_occurrence::TypeNode::NamedTuple { fields: fields_value },
             span,
             owner,
         )
+    }
+
+    /// WI-361: assemble a `named_tuple`'s `(name, type)` children into the
+    /// `Value`-carried `List[TypeField]` the [`node_occurrence::TypeNode::NamedTuple`]
+    /// carrier stores — the same shape [`Self::make_named_tuple_type`] builds as a
+    /// hash-consed term, but in the `Value` world so a poisoned (`Value::Node`) field
+    /// type rides as-is and a ground one stays `Value::Term` (no lift). `cons` cells
+    /// and `TypeField` records are `Value::Entity`s ordered by
+    /// [`Self::sort_named_canonical`], matching the term form's discrim/eq key so the
+    /// two carriers compare cross-carrier.
+    fn build_named_tuple_fields_value(
+        &mut self,
+        fields: Vec<(Symbol, node_occurrence::TypeChild)>,
+    ) -> crate::eval::value::Value {
+        use crate::eval::value::Value;
+        use node_occurrence::TypeChild;
+        let type_field_sym = self.resolve_symbol("anthill.prelude.Type.TypeField");
+        let name_key = self.intern("name");
+        let type_key = self.intern("type");
+
+        let mut elems: Vec<Value> = Vec::with_capacity(fields.len());
+        for (field_name, child) in fields {
+            let type_value = match child {
+                TypeChild::Ground(t) => Value::Term(t),
+                TypeChild::Node(o) => Value::Node(o),
+            };
+            let name_ref = Value::Term(self.alloc(Term::Ref(field_name)));
+            let mut named = vec![(name_key, name_ref), (type_key, type_value)];
+            self.sort_named_canonical(type_field_sym, &mut named);
+            elems.push(Value::Entity {
+                functor: type_field_sym,
+                pos: Rc::from(Vec::new()),
+                named: Rc::from(named),
+            });
+        }
+        // The `cons`/`nil` spine reuses the shared `Value`-list builder (its
+        // `[head, tail]` order is canonical, matching `sort_named_canonical`).
+        crate::kb::load::build_value_list(self, elems)
     }
 
     /// `arrow(param, result, effects)` carried as a Type occurrence.
