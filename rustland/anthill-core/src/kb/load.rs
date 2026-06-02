@@ -5169,7 +5169,11 @@ impl<'a> Loader<'a> {
                 let args_list = build_list(self.kb, &arg_terms);
                 let name_ref = self.kb.alloc(Term::Ref(kb_functor));
 
-                let type_args_tid = self.build_call_type_args(outer_parse_id);
+                // WI-342: the occurrence type-args (carrier-agnostic `Value`s) are
+                // the source of truth; the term-side `type_args` handle is the
+                // ground-only vestige (materialize + print).
+                let type_args = self.build_call_type_args(outer_parse_id);
+                let type_args_tid = self.type_args_term_handle(&type_args);
 
                 let s = &self.expr_syms;
                 let kb_id = if is_entity {
@@ -5210,7 +5214,10 @@ impl<'a> Loader<'a> {
                             span, name: kb_functor, pos_count, named_keys: occ_named_keys,
                         }
                     } else {
-                        let type_args = node_occurrence::collect_type_args(self.kb, type_args_tid);
+                        // WI-342: the occurrence carries the carrier-agnostic
+                        // `Value` type-args DIRECTLY (built above), not via the
+                        // term-handle round-trip — so a value-in-type arg rides as
+                        // `Value::Node` rather than being lost to the ground handle.
                         node_occurrence::BuildFrame::Apply {
                             span, functor: kb_functor, pos_count,
                             named_keys: occ_named_keys, type_args,
@@ -5276,43 +5283,83 @@ impl<'a> Loader<'a> {
         }
     }
 
-    /// WI-271: lower the parse-side `[A = Int, B = String]` call
-    /// bindings — read from the apply parse Term's `type_args`
-    /// named arg pointing at a `Term::ParseAux(SortBindings(...))`
-    /// node — into a cons-list of `type_arg(name: Option[Ref],
-    /// value: Type)` entries the typer reads to seed its
-    /// substitution. Returns `None` when the call has no explicit
-    /// bindings.
-    fn build_call_type_args(&mut self, parse_id: TermId) -> Option<TermId> {
-        let bindings = self.read_parse_call_type_args(parse_id)?;
-        if bindings.is_empty() {
-            return None;
-        }
-        let entries: Vec<TermId> = bindings.iter().map(|b| {
-            // The binding's `param` (e.g. "A" in `[A = Int]`) is a label
-            // referring to the callee's type-param, NOT a value to look
-            // up in the caller's scope. Intern as a bare symbol.
-            let name_opt = match &b.param {
-                Some(name) => {
+    /// WI-271 / WI-342: lower the parse-side `[A = Int, B = String]` call
+    /// bindings (read from the apply parse Term's `type_args` named arg, a
+    /// `Term::ParseAux(SortBindings(...))`) into carrier-agnostic occurrence
+    /// type-args `(Option<Symbol>, Value)`: the param label (`A`) as a bare
+    /// interned `Symbol` referring to the callee's type-param (NOT a caller-scope
+    /// value), and the bound type as a `Value`. A value-in-type bound (the `3` in
+    /// `g[3]`) lowers via `type_expr_to_value` to a `Value::Node` denoted — never
+    /// re-grounded via `make_denoted`. The occurrence carries these directly
+    /// (`BuildFrame::Apply.type_args`); the vestigial term-side handle is built
+    /// separately by `type_args_term_handle`. Empty when no explicit bindings.
+    fn build_call_type_args(
+        &mut self,
+        parse_id: TermId,
+    ) -> Vec<(Option<Symbol>, crate::eval::value::Value)> {
+        let Some(bindings) = self.read_parse_call_type_args(parse_id) else {
+            return Vec::new();
+        };
+        bindings
+            .iter()
+            .map(|b| {
+                let name = b.param.as_ref().map(|name| {
                     let raw = join_segments(&self.parsed.symbols, &name.segments);
-                    let sym = self.kb.intern(&raw);
-                    let name_ref = self.kb.alloc(Term::Ref(sym));
-                    build_some(self.kb, name_ref)
-                }
-                None => build_none(self.kb),
-            };
-            let value = self.type_expr_to_term(&b.bound);
-            let s = &self.expr_syms;
-            self.kb.alloc(Term::Fn {
-                functor: s.type_arg,
-                pos_args: SmallVec::new(),
-                named_args: SmallVec::from_slice(&[
-                    (s.k_name, name_opt),
-                    (s.k_value, value),
-                ]),
+                    self.kb.intern(&raw)
+                });
+                let value = self.type_expr_to_value(&b.bound);
+                (name, value)
             })
-        }).collect();
-        Some(build_list(self.kb, &entries))
+            .collect()
+    }
+
+    /// WI-342: build the vestigial term-side `type_args` handle — a cons-list of
+    /// `type_arg(name: Option[Ref], value: Type)` hash-consed terms — from the
+    /// occurrence type-args. This handle feeds ONLY occurrence materialization
+    /// (`collect_type_args`) and persistence printing; the typer and runtime read
+    /// the occurrence / `resolved_type_args` side-table. A `Value::Node`
+    /// (value-in-type) entry, which a hash-consed term cannot hold, is OMITTED —
+    /// the occurrence is the source of truth and carries it faithfully. Returns
+    /// `None` when there is no ground entry (no `type_args` named arg added).
+    fn type_args_term_handle(
+        &mut self,
+        entries: &[(Option<Symbol>, crate::eval::value::Value)],
+    ) -> Option<TermId> {
+        use crate::eval::value::Value;
+        let (type_arg_sym, k_name, k_value) = {
+            let s = &self.expr_syms;
+            (s.type_arg, s.k_name, s.k_value)
+        };
+        let term_entries: Vec<TermId> = entries
+            .iter()
+            .filter_map(|(name, value)| {
+                // Omit a value-in-type (Node) entry — see fn doc.
+                let value_term = match value {
+                    Value::Term(t) => *t,
+                    _ => return None,
+                };
+                let name_opt = match name {
+                    Some(sym) => {
+                        let name_ref = self.kb.alloc(Term::Ref(*sym));
+                        build_some(self.kb, name_ref)
+                    }
+                    None => build_none(self.kb),
+                };
+                Some(self.kb.alloc(Term::Fn {
+                    functor: type_arg_sym,
+                    pos_args: SmallVec::new(),
+                    named_args: SmallVec::from_slice(&[
+                        (k_name, name_opt),
+                        (k_value, value_term),
+                    ]),
+                }))
+            })
+            .collect();
+        if term_entries.is_empty() {
+            None
+        } else {
+            Some(build_list(self.kb, &term_entries))
+        }
     }
 
     /// WI-271: is the term at `id` a parse-only `Term::ParseAux`?
@@ -5652,6 +5699,51 @@ impl<'a> Loader<'a> {
         }
     }
 
+    /// WI-342: the hash-consed logic `Var` (`TermId`) for a `Simple` type name
+    /// that is a type parameter in the current scope. A type param is a ground
+    /// `Var` (no `denoted`), shared by all references to the same param within a
+    /// scope via the `type_param_vars` cache. Extracted from `type_expr_to_term`
+    /// so `type_expr_to_child` can build it WITHOUT delegating to
+    /// `type_expr_to_term` (which becomes a thin `as_term` wrapper once the
+    /// loader's type lowering is fully carrier-agnostic).
+    fn type_param_var(&mut self, sort_sym: Symbol, short_name: &str) -> TermId {
+        let key = (self.current_scope.raw(), short_name.to_owned());
+        if let Some(&cached) = self.type_param_vars.get(&key) {
+            return cached;
+        }
+        // Try SortAlias first (if abstract sort already loaded).
+        let var_tid = if let Some(alias_var) = self.find_sort_alias_var(sort_sym) {
+            alias_var
+        } else {
+            let var_sym = self.kb.intern(short_name);
+            let vid = self.kb.fresh_var(var_sym);
+            self.kb.alloc(Term::Var(Var::Global(vid)))
+        };
+        self.type_param_vars.insert(key, var_tid);
+        var_tid
+    }
+
+    /// WI-342: lift a ground value `TermId` (a value-in-type literal — the `3`
+    /// in `Vector[Int, 3]` / `g[3]`) into a value `NodeOccurrence` for a
+    /// `denoted` occurrence's `value` slot. The converter only emits
+    /// `TypeExpr::Denoted` for literals (convert.rs), so a `Term::Const` leaf is
+    /// the sole expected shape; anything else is a loader bug (error early).
+    fn value_term_to_occ(
+        &self,
+        t: TermId,
+        span: SourceSpan,
+        owner: Option<Symbol>,
+    ) -> Rc<NodeOccurrence> {
+        let expr = match self.kb.get_term(t) {
+            Term::Const(lit) => Expr::Const(lit.clone()),
+            other => panic!(
+                "WI-342: a value-in-type `denoted` value must be a literal \
+                 (TypeExpr::Denoted is only emitted for literals), got {other:?}"
+            ),
+        };
+        NodeOccurrence::new_expr(expr, span, owner)
+    }
+
     /// Convert a TypeExpr to a Type entity term in the KB.
     /// Produces sort_ref, parameterized, arrow, type_var, named_tuple terms.
     fn type_expr_to_term(&mut self, ty: &TypeExpr) -> TermId {
@@ -5668,20 +5760,7 @@ impl<'a> Loader<'a> {
                 // If this symbol is a type parameter, use a Var directly.
                 // All references to the same type param within a scope share the same Var.
                 if self.kb.symbols.is_type_param(self.current_scope.raw(), &short_name) {
-                    let key = (self.current_scope.raw(), short_name.clone());
-                    if let Some(&cached) = self.type_param_vars.get(&key) {
-                        return cached;
-                    }
-                    // Try SortAlias first (if abstract sort already loaded)
-                    let var_tid = if let Some(alias_var) = self.find_sort_alias_var(sort_sym) {
-                        alias_var
-                    } else {
-                        let var_sym = self.kb.intern(&short_name);
-                        let vid = self.kb.fresh_var(var_sym);
-                        self.kb.alloc(Term::Var(Var::Global(vid)))
-                    };
-                    self.type_param_vars.insert(key, var_tid);
-                    return var_tid;
+                    return self.type_param_var(sort_sym, &short_name);
                 }
                 // WI-302/WI-313: a name resolving to a VALUE in a type slot is
                 // value-in-type — `Modify[c]`, `Modify[result]`, `Modify[kb]`
@@ -5892,10 +5971,13 @@ impl<'a> Loader<'a> {
                 }
                 let sort_sym = self.remap_name(name);
                 let short_name = self.kb.resolve_sym(sort_sym).to_owned();
-                // A type-param name is a ground logic Var — defer to the
-                // hash-consed builder (no denoted).
+                // A type-param name is a ground logic Var (no denoted) — build it
+                // via the shared `type_param_var` helper (NOT `type_expr_to_term`,
+                // which this fn must not call, see the wrapper note on it).
                 if self.kb.symbols.is_type_param(self.current_scope.raw(), &short_name) {
-                    return node_occurrence::TypeChild::Ground(self.type_expr_to_term(ty));
+                    return node_occurrence::TypeChild::Ground(
+                        self.type_param_var(sort_sym, &short_name),
+                    );
                 }
                 // WI-302/WI-313: a name resolving to a VALUE in a type slot is
                 // value-in-type (`Modify[c]`) — the `denoted` source. Mint it as
@@ -5955,9 +6037,20 @@ impl<'a> Loader<'a> {
                         owner,
                     ))
                 } else {
-                    // No denoted binding ⇒ the ground hash-consed form is
-                    // faithful; rebuild it via the canonical builder.
-                    node_occurrence::TypeChild::Ground(self.type_expr_to_term(ty))
+                    // No denoted binding ⇒ assemble the hash-consed parameterized
+                    // term from the ground children already built (NOT a second
+                    // walk via `type_expr_to_term`; same `base_term` + the same
+                    // positional→param-name mapping ⇒ identical to its arm).
+                    let ground_bindings: Vec<(Symbol, TermId)> = child_bindings
+                        .into_iter()
+                        .map(|(s, c)| match c {
+                            node_occurrence::TypeChild::Ground(t) => (s, t),
+                            node_occurrence::TypeChild::Node(_) => unreachable!("checked !any_node"),
+                        })
+                        .collect();
+                    node_occurrence::TypeChild::Ground(
+                        self.kb.make_parameterized_type(base_term, &ground_bindings),
+                    )
                 }
             }
             TypeExpr::Arrow { params, return_type, effects } => {
@@ -6038,12 +6131,66 @@ impl<'a> Loader<'a> {
                         .make_arrow_occ(param_child, result_child, effects_child, span, owner),
                 )
             }
-            // No denoted obligation for any other label shape (sort_ref, tuple,
-            // bare denoted, `-E`): build the hash-consed form. A bare top-level
-            // `denoted` effect label is not minted by any current producer; if
-            // one appears it rides as a ground `Term` denoted (the pre-E2
-            // behavior), which the deferred non-effect loader-flip slice Node-ifies.
-            _ => node_occurrence::TypeChild::Ground(self.type_expr_to_term(ty)),
+            TypeExpr::Tuple(fields) => {
+                use node_occurrence::TypeChild;
+                // Mirror the Arrow multi-param branch: lower each field via the
+                // carrier-agnostic child path; any `Node` field poisons the tuple
+                // to a `Value::Node` named_tuple, else assemble the hash-consed
+                // term (identical to `type_expr_to_term`'s Tuple arm).
+                let mut children: Vec<(Symbol, TypeChild)> = Vec::new();
+                let mut any_node = false;
+                for (sym, fty) in fields {
+                    let key = self.reintern(*sym);
+                    let c = self.type_expr_to_child(fty, span, owner);
+                    any_node |= matches!(c, TypeChild::Node(_));
+                    children.push((key, c));
+                }
+                if any_node {
+                    TypeChild::Node(self.kb.make_named_tuple_occ(children, span, owner))
+                } else {
+                    let ground: Vec<(Symbol, TermId)> = children
+                        .into_iter()
+                        .map(|(k, c)| match c {
+                            TypeChild::Ground(t) => (k, t),
+                            TypeChild::Node(_) => unreachable!("checked !any_node"),
+                        })
+                        .collect();
+                    TypeChild::Ground(self.kb.make_named_tuple_type(&ground))
+                }
+            }
+            TypeExpr::Variable { term_id, descriptions } => {
+                // A logic Var is always ground (no denoted) — mirror
+                // `type_expr_to_term`'s Variable arm (convert + emit descriptions).
+                let kb_id = self.convert_term(*term_id);
+                for desc_text in descriptions {
+                    self.emit_desc_fact(kb_id, desc_text, self.current_scope);
+                }
+                node_occurrence::TypeChild::Ground(kb_id)
+            }
+            TypeExpr::Denoted(t) => {
+                // WI-342: value-in-type literal (`3` in `Vector[Int, 3]` / `g[3]`)
+                // — carried as a `Value::Node` `denoted` occurrence whose value is
+                // the literal as an `Expr::Const` occurrence (the occurrence-form
+                // peer of `make_denoted(Const(lit))`). This is THE site that
+                // retires the loader's last live `make_denoted`: a denoted now
+                // rides on the non-hash-consed carrier.
+                let value_term = self.convert_term(*t);
+                let value_occ = self.value_term_to_occ(value_term, span, owner);
+                node_occurrence::TypeChild::Node(self.kb.make_denoted_occ(value_occ, span, owner))
+            }
+            TypeExpr::EffectAbsent(inner) => {
+                // `-E` lacks-atom: ground inner ⇒ hash-consed `absent` term
+                // (mirror `type_expr_to_term`); a denoted-bearing inner ⇒ the
+                // occurrence `absent` form (carries the poison).
+                match self.type_expr_to_child(inner, span, owner) {
+                    node_occurrence::TypeChild::Ground(t) => {
+                        node_occurrence::TypeChild::Ground(self.kb.make_effect_expression_absent(t))
+                    }
+                    node_occurrence::TypeChild::Node(n) => node_occurrence::TypeChild::Node(
+                        self.kb.make_absent_occ(node_occurrence::TypeChild::Node(n), span, owner),
+                    ),
+                }
+            }
         }
     }
 
