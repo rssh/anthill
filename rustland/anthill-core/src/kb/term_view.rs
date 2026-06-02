@@ -388,6 +388,69 @@ pub trait TermView {
     }
 }
 
+/// Representation-independent structural equality between two term views.
+///
+/// Two views are equal iff their heads match and every child recurses equal —
+/// regardless of whether either side rides as a hash-consed `TermId`, a
+/// `Value`, or a `Value::Node` occurrence (children are themselves [`ViewItem`]s,
+/// which are `TermView`, so the recursion is carrier-blind). This is the
+/// structural primitive consumers should reach for instead of comparing
+/// rendered display names: a name compare is fragile in both directions — two
+/// distinct terms can render the same string, and one logical term can render
+/// two ways across representations (an abstract sort's row-variable effect `E`
+/// reads as `Ref(S.E)` → `"E"` in a signature but as its `SortAlias` `Var` →
+/// `"?_"` once walked; see the WI-365 op-boundary effect check). Variables
+/// compare by `VarId`, constants by value, functors/refs/idents by symbol plus
+/// recursive children. `Opaque` heads (closures, streams, Rigid/DeBruijn vars)
+/// and head-kind mismatches are conservatively unequal — there is no shared
+/// structure to compare (mirrors `Value::structural_eq`, which this generalizes
+/// to the cross-carrier `Term`-vs-`Node` case the former leaves `false`).
+///
+/// Purely structural: it does NOT resolve a substitution or a `SortAlias`.
+/// Callers that need two differently-encoded-but-equal forms to agree (e.g.
+/// `Ref(S.E)` vs its alias `Var`) canonicalize first (walk through the subst),
+/// then compare. Distinct from `Value::structural_eq` (inherent, single-carrier,
+/// no walk) — kept separate so the carrier-blind comparison has an unambiguous
+/// name.
+pub fn views_structurally_equal<A: TermView, B: TermView>(
+    kb: &KnowledgeBase,
+    a: &A,
+    b: &B,
+) -> bool {
+    match (a.head(kb), b.head(kb)) {
+        (ViewHead::Var(va), ViewHead::Var(vb)) => va == vb,
+        (ViewHead::Const(la), ViewHead::Const(lb)) => la == lb,
+        (ViewHead::Ref(sa), ViewHead::Ref(sb)) => sa == sb,
+        (ViewHead::Ident(sa), ViewHead::Ident(sb)) => sa == sb,
+        (ViewHead::Bottom, ViewHead::Bottom) => true,
+        (
+            ViewHead::Functor { functor: fa, pos_arity: pa, named_arity: na },
+            ViewHead::Functor { functor: fb, pos_arity: pb, named_arity: nb },
+        ) => {
+            if fa != fb || pa != pb || na != nb {
+                return false;
+            }
+            for i in 0..pa {
+                match (a.pos_arg(kb, i), b.pos_arg(kb, i)) {
+                    (Some(ca), Some(cb)) if views_structurally_equal(kb, &ca, &cb) => {}
+                    _ => return false,
+                }
+            }
+            // `named_arity` equal + every one of `a`'s keys found-and-equal in
+            // `b` ⇒ identical key sets (named args are duplicate-free and in
+            // canonical order, so no extra-key escape).
+            for key in a.named_keys(kb) {
+                match (a.named_arg(kb, key), b.named_arg(kb, key)) {
+                    (Some(ca), Some(cb)) if views_structurally_equal(kb, &ca, &cb) => {}
+                    _ => return false,
+                }
+            }
+            true
+        }
+        _ => false,
+    }
+}
+
 /// Wrapper so we can `impl TermView for TermIdView` without orphan-rule
 /// issues on the bare `TermId` type.
 #[derive(Clone, Copy, Debug)]

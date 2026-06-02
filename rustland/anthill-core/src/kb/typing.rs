@@ -15,7 +15,7 @@ use super::node_occurrence::{
     EffectExprNode, Expr, MatchBranch, NodeKind, NodeOccurrence, TypeChild, TypeNode,
 };
 use super::persist_subst::BindValue;
-use super::term_view::{TermIdView, TermView, ViewHead, ViewItem};
+use super::term_view::{views_structurally_equal, TermIdView, TermView, ViewHead, ViewItem};
 use super::{KnowledgeBase, SortKind};
 use crate::eval::value::Value;
 use crate::intern::Symbol;
@@ -2955,6 +2955,42 @@ fn check_apply_iter(
             occ.set_resolved_type_args(resolved);
         }
 
+        // WI-365 (call-side): a self-receiver spec op WITH a default body
+        // (`Stream.collect` / `takeN`) is consumed as a NORMAL op —
+        // `lookup_spec_op_dispatch` (body-less only) returns `None` for it, so
+        // the WI-357 carrier element/effect threading in the dispatch block
+        // below never runs. When such an op is consumed on a concrete carrier
+        // (a `List` walked as a `Stream`), its `effects E` row variable — the
+        // enclosing sort's own effect param — stays an unbound `?_` (a provider
+        // fact cannot bind an effect parameter; effects aren't expressible as
+        // type arguments — WI-301), spuriously surfacing as `undeclared effect:
+        // ?_` at a pure consumption site (`length(collect([1,2,3]))`). Thread
+        // the element from the carrier and close the row the same way the
+        // body-less path does. (The element usually already threads via
+        // argument unification binding the sort param; the effect-close is the
+        // load-bearing part and is NOT gated on the bind, so a pure carrier
+        // still closes `E` even when the element bound separately.)
+        if lookup_spec_op_dispatch(kb, fn_sym).is_none() {
+            if let Some(spec_sort) = self_receiver_spec_sort(kb, &op, fn_sym) {
+                if let ReceiverCarrier::Concrete(carrier_sym) = receiver_carrier(
+                    kb, &op, spec_sort, named_args, pos_results, named_results,
+                ) {
+                    if bind_spec_params_from_carrier(
+                        kb, &mut subst, &op, spec_sort, carrier_sym,
+                        named_args, pos_results, named_results,
+                    ) {
+                        resolved_ret = walk_type_deep_value(kb, &subst, &op.return_type);
+                    }
+                    let closed_op_effects: Vec<Value> = substituted_op_effects
+                        .iter()
+                        .filter(|e| !effect_is_unresolved_var(kb, e))
+                        .cloned()
+                        .collect();
+                    effects = merge_effects(&closed_op_effects, &arg_effects);
+                }
+            }
+        }
+
         // WI-210 phase 3 dispatch (proposal 038): if `fn_sym` is a spec
         // op (declared without body on a parametric sort), look up the
         // unique impl op based on the per-call substitution. The proposal-
@@ -5768,6 +5804,29 @@ pub(crate) fn self_receiver_param_index(
 /// `Value::Term` of a typer-reflect Type shape, read by [`sort_functor_of`].
 fn carrier_sort_of_value(kb: &KnowledgeBase, v: &Value) -> Option<Symbol> {
     sort_functor_of(kb, v.as_term()?)
+}
+
+/// WI-365 — the parametric sort a self-receiver op belongs to, whether or not
+/// it has a default body. [`lookup_spec_op_dispatch`] returns the parent only
+/// for body-LESS spec ops (the dispatch candidates); a default-bodied spec op
+/// (`Stream.collect`) is a normal op for dispatch but still carries the sort's
+/// element / effect parameters, which must be grounded from the carrier when
+/// the op is consumed on a concrete provider. `None` unless the parent is a
+/// parametric sort AND the op has a self-receiver parameter (one typed as the
+/// sort itself, e.g. `s: Stream`) — the same shape [`receiver_carrier`] keys on.
+fn self_receiver_spec_sort(
+    kb: &KnowledgeBase,
+    op: &OperationInfoFull,
+    fn_sym: Symbol,
+) -> Option<Symbol> {
+    let op_qn = kb.qualified_name_of(fn_sym);
+    let (parent_qn, _short) = op_qn.rsplit_once('.')?;
+    let parent_sym = kb.try_resolve_symbol(parent_qn)?;
+    if kb.type_params_of_sort(parent_sym).is_empty() {
+        return None;
+    }
+    self_receiver_param_index(kb, &op.params, parent_sym)?;
+    Some(parent_sym)
 }
 
 /// WI-357 — bind a self-receiver spec op's own type parameters from the
@@ -10722,21 +10781,46 @@ fn check_operation_bodies(kb: &mut KnowledgeBase, op_syms: &[Symbol], errors: &m
                     &region_sorts,
                     &result.effects,
                 );
-                // WI-342 effects-vertical: labels are `Value`; compare by
-                // display name (the authoritative check — the old `contains`
-                // `TermId`-identity fast-path is subsumed, since a declared
-                // effect's name always matches its own).
+                // Validate every effect the body produces was declared. WI-365:
+                // compare by representation-independent STRUCTURAL IDENTITY
+                // (`views_structurally_equal`), not by rendered display name. A
+                // name compare is fragile in both directions — distinct effects
+                // can share a name, and one effect can render two ways across
+                // representations. The concrete failure: an abstract sort's
+                // `effects E` row variable is stored as `Ref(S.E)` in the
+                // signature, but a body call — the abstract self-receiver spec
+                // op (`splitFirst(s)`) or the recursive op itself
+                // (`collect(rest)`) — has that row variable resolved through its
+                // `SortAlias` to the (anonymous) alias `Var`. As names those are
+                // `"E"` vs `"?_"` and never match, so a pure-`effects E` body
+                // spuriously reported `undeclared effect: ?_`.
+                //
+                // Canonicalize first, then compare structurally — mirroring how
+                // the return-type check above (`types_compatible`) already walks
+                // both sides. The (empty) `canon_subst` walk collapses a
+                // sort-parameter `Ref(S.E)` to its alias `Var` on both the
+                // declared and the body side, so the row variable's two encodings
+                // agree; a concrete effect sort (`Error`) is not a sort param and
+                // walks to itself; a denoted `Modify[c]` (a `Value::Node`)
+                // compares structurally against another via the same `TermView`
+                // recursion. Diagnostics still render the raw (readable) names.
+                let canon_subst = Substitution::new();
+                let declared_canon: Vec<Value> = op.declared_effects.iter()
+                    .map(|e| walk_type_deep_value(kb, &canon_subst, e))
+                    .collect();
+                let declared_display: Vec<String> = op.declared_effects.iter()
+                    .map(|e| type_display_name_value(kb, e))
+                    .collect();
                 for effect in &ext_effects {
-                    let effect_name = type_display_name_value(kb, effect);
-                    let declared_names: Vec<String> = op.declared_effects.iter()
-                        .map(|e| type_display_name_value(kb, e))
-                        .collect();
-                    if !declared_names.iter().any(|d| d == &effect_name) {
+                    let effect_canon = walk_type_deep_value(kb, &canon_subst, effect);
+                    let declared = declared_canon.iter()
+                        .any(|d| views_structurally_equal(kb, &effect_canon, d));
+                    if !declared {
                         errors.push(TypeError::Other {
                             span: op.span,
                             context: TypeErrorContext::OperationEffects { op_name: op.op_sym },
-                            expected: format!("declared: [{}]", declared_names.join(", ")),
-                            actual: format!("undeclared effect: {}", effect_name),
+                            expected: format!("declared: [{}]", declared_display.join(", ")),
+                            actual: format!("undeclared effect: {}", type_display_name_value(kb, effect)),
                         });
                     }
                 }

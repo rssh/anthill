@@ -5,6 +5,11 @@
 -- Concrete sorts bind E to their specific effect.
 sort anthill.prelude.Stream
   import anthill.prelude.{Option, Pair, List, Bool, Int}
+  import anthill.prelude.Option.{some, none}
+  import anthill.prelude.Pair.{pair}
+  import anthill.prelude.List.{nil, cons}
+  import anthill.prelude.Ordered.{gt}
+  import anthill.prelude.Numeric.{sub}
 
   sort T = ?              -- element type
   -- WI-320 / proposal 045: `effects E = ?` lifts E to a row variable with
@@ -18,10 +23,21 @@ sort anthill.prelude.Stream
     effects E
   operation tail(s: Stream) -> Stream
     effects E
-  operation takeN(s: Stream, n: Int) -> List[T = T]
-    effects E
-  operation collect(s: Stream) -> List[T = T]
-    effects E
+  -- Default definitions over the primitive `splitFirst` (WI-362, enabled by
+  -- WI-365 abstract spec-op self-typing). A carrier supplies only `splitFirst`;
+  -- these derive `takeN` / `collect` once for every `fact Stream[X]` provider.
+  -- The self-receiver call `splitFirst(s)` is typed at the enclosing sort's own
+  -- params, threading the element `T` and the effect row `E`.
+  operation takeN(s: Stream, n: Int) -> List[T] effects E =
+    if gt(n, 0) then
+      match splitFirst(s)
+        case none() -> nil
+        case some(pair(h, rest)) -> cons(head: h, tail: takeN(rest, sub(n, 1)))
+    else nil
+  operation collect(s: Stream) -> List[T] effects E =
+    match splitFirst(s)
+      case none() -> nil
+      case some(pair(h, rest)) -> cons(head: h, tail: collect(rest))
   operation isEmpty(s: Stream) -> Bool
     effects E
 

@@ -1642,3 +1642,50 @@ end
         .expect("splitFirst on a non-empty List must dispatch to List's Stream impl");
     assert_eq!(expect_bool(nonempty), true, "splitFirst([1,2]) must be some(...)");
 }
+
+/// WI-365 / WI-362 trip-wire. `collect` is a `Stream` spec op whose DEFAULT BODY
+/// (over the primitive `splitFirst`) now typechecks on the abstract `Stream`
+/// sort. Consuming a `List` as a `Stream`, `collect([1,2,3])` dispatches to that
+/// default body; its inner `splitFirst` resolves to `List`'s impl, peeling the
+/// list element by element back into a `List`. `length` of the result is 3 —
+/// proving the default body is both typecheckable (WI-365) and executable end to
+/// end (WI-362).
+#[test]
+fn wi362_collect_over_list_when_typer_grounds_effect_and_element() {
+    let src = r#"
+namespace test.wi362_collect
+  import anthill.prelude.{List, Int}
+  import anthill.prelude.List.{length}
+  import anthill.prelude.Stream.{collect}
+
+  operation collect_len() -> Int = length(collect([1, 2, 3]))
+end
+"#;
+    // `interp_for` registers the standard eval builtins (`length`'s `add`,
+    // etc.); the bare `Interpreter::new` would leave them unregistered.
+    let mut interp = interp_for(src);
+    let len = interp.call("test.wi362_collect.collect_len", &[])
+        .expect("collect over a List, dispatched through Stream's default body, must run");
+    assert_eq!(expect_int(len), 3, "collect([1,2,3]) then length must be 3");
+}
+
+/// `takeN` default body, executed end to end: `takeN([1,2,3,4,5], 2)` peels two
+/// elements via `splitFirst`, short-circuiting at `n = 0` through the lazy `if`.
+#[test]
+fn wi362_take_n_over_list_executes() {
+    let src = r#"
+namespace test.wi362_taken
+  import anthill.prelude.{List, Int}
+  import anthill.prelude.List.{length}
+  import anthill.prelude.Stream.{takeN}
+
+  operation taken_len() -> Int = length(takeN([1, 2, 3, 4, 5], 2))
+end
+"#;
+    // `interp_for` registers the standard eval builtins (`gt`/`sub` in takeN,
+    // `add` in length); the bare `Interpreter::new` would leave them unregistered.
+    let mut interp = interp_for(src);
+    let len = interp.call("test.wi362_taken.taken_len", &[])
+        .expect("takeN over a List, dispatched through Stream's default body, must run");
+    assert_eq!(expect_int(len), 2, "takeN([1,2,3,4,5], 2) then length must be 2");
+}

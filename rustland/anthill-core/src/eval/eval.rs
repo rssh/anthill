@@ -247,6 +247,29 @@ impl Interpreter {
             let tid = self.kb.alloc(crate::kb::term::Term::Ref(sym));
             return self.deliver(Value::Term(tid));
         }
+        // WI-365: a bare reference to a NULLARY constructor — an enum variant
+        // with no fields, e.g. `none` in `Option`'s `case nil() -> none` (and
+        // `nil` itself) — is the *constructed value*, not an operation call.
+        // Such a name reaches here as an `Expr::Ref` or, when it came through
+        // the loader's `var_ref` form, an `Expr::VarRef` — both routed through
+        // `reduce_var`, so this is the single reference→value resolution point
+        // (the loader keeps the bare name as a reference; whether it denotes a
+        // value or a call is settled here, exactly as the free-standing-entity
+        // case above is). `is_free_standing_entity` covers only a top-level
+        // `entity`; an enum variant like `Option.none` is a *constructor*
+        // symbol, so without this it fell through to `dispatch_call` and failed
+        // as `UnknownOperation { name: "none" }`. Latent until now: consuming a
+        // `List` as a `Stream` is the first eval to reach `List.splitFirst`'s
+        // empty case, which returns a bare `none`. The constructor registry is
+        // fully populated by eval time (unlike mid-load), so the kind test is
+        // reliable here. Constructors WITH fields are never referenced bare in
+        // value position (the typer requires the application form), so gate on
+        // nullary.
+        if self.kb.is_constructor_symbol(sym)
+            && self.kb.entity_field_names(sym).map_or(true, |f| f.is_empty())
+        {
+            return self.start_constructor(sym, &[], &[]);
+        }
         self.dispatch_call(sym, Vec::new(), SmallVec::new())
     }
 
