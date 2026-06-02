@@ -3998,7 +3998,6 @@ struct ExprBuilderSyms {
     k_then: Symbol,
     k_else: Symbol,
     k_value: Symbol,
-    k_type_name: Symbol,
     k_param: Symbol,
     k_name: Symbol,
     k_receiver: Symbol,
@@ -4032,7 +4031,6 @@ impl ExprBuilderSyms {
             k_then: kb.intern("then_branch"),
             k_else: kb.intern("else_branch"),
             k_value: kb.intern("value"),
-            k_type_name: kb.intern("type_name"),
             k_param: kb.intern("param"),
             k_name: kb.intern("name"),
             k_receiver: kb.intern("receiver"),
@@ -5029,24 +5027,19 @@ impl<'a> Loader<'a> {
                 let value = results[drain_start + 1];
                 let body = results[drain_start + 2];
                 results.truncate(drain_start);
-                let mut named: SmallVec<[(Symbol, TermId); 2]> = SmallVec::from_slice(&[
+                let named: SmallVec<[(Symbol, TermId); 2]> = SmallVec::from_slice(&[
                     (self.expr_syms.k_pattern, pattern),
                     (self.expr_syms.k_value, value),
                     (self.expr_syms.k_body, body),
                 ]);
-                // WI-271: `let x : T = e1; e2` annotation is now inline
-                // on the parse let_expr Term::Fn as a `type_name`
-                // named arg pointing at a `Term::ParseAux(TypeExpr(T))`
-                // node — replaces the prior
-                // `SimpleTermStore::let_type_annotations` HashMap.
-                // Unwrap the ParseAux and lower the TypeExpr to a KB
-                // Term via the existing `type_expr_to_term` so the
-                // typer (proposal 035 form 1 + WI-270) sees the same
-                // `k_type_name` slot on the KB Term::Fn as before.
-                if let Some(ty_expr) = self.read_parse_type_annotation(outer_parse_id) {
-                    let ty_term = self.type_expr_to_term(&ty_expr);
-                    named.push((self.expr_syms.k_type_name, ty_term));
-                }
+                // WI-342 (T8 cleanup): the `let x : T = e1; e2` annotation is
+                // carried ONLY by the occurrence's `Let.type_annotation` (a
+                // carrier-agnostic `Value`, built below via `type_expr_to_value`).
+                // The old term-side `k_type_name` slot on the let_expr `Term::Fn`
+                // (WI-271) was write-only — the typer types the let from the
+                // occurrence, not the term — so it is dropped, removing a
+                // ground-fact `type_expr_to_term` caller. (`read_parse_type_
+                // annotation` still feeds the occurrence annotation below.)
                 let kb_id = self.kb.alloc(Term::Fn {
                     functor: self.expr_syms.let_expr,
                     pos_args: SmallVec::new(),
@@ -5059,10 +5052,10 @@ impl<'a> Loader<'a> {
                         self.source_id, self.parsed.terms.span(outer_parse_id));
                     // WI-342 S4a: the occurrence annotation is a carrier-agnostic
                     // `Value` (a denoted-bearing `: Modify[c]` rides as
-                    // `Value::Node`) — lower it from the parse annotation via
-                    // `type_expr_to_value` rather than re-reading the term-side
-                    // `k_type_name` `TermId`. (The term slot stays for now; S7
-                    // retires it with the rest of the term-side lowering.)
+                    // `Value::Node`) — lowered from the parse annotation via
+                    // `type_expr_to_value`. This is the SOLE carrier of the let
+                    // annotation now (the term-side `k_type_name` slot was dropped
+                    // in T8 cleanup).
                     let type_annotation = self
                         .read_parse_type_annotation(outer_parse_id)
                         .map(|ty_expr| self.type_expr_to_value(&ty_expr));
