@@ -190,8 +190,16 @@ fn drain_pattern_children(pat: &mut Pattern, stack: &mut Vec<Rc<NodeOccurrence>>
 fn drain_expr_children(expr: &mut Expr, stack: &mut Vec<Rc<NodeOccurrence>>) {
     let mk_placeholder = || NodeOccurrence::new_expr(Expr::Bottom, empty_span(), None);
     match expr {
-        Expr::Apply { pos_args, named_args, .. }
-        | Expr::Constructor { pos_args, named_args, .. }
+        Expr::Apply { pos_args, named_args, type_args, .. } => {
+            for c in std::mem::take(pos_args) { stack.push(c); }
+            for (_, c) in std::mem::take(named_args) { stack.push(c); }
+            // WI-342 S4b: a denoted-bearing type-arg is a `Value::Node`
+            // occurrence — drain it (symmetric with `Let.type_annotation`).
+            for (_, v) in std::mem::take(type_args) {
+                if let Value::Node(occ) = v { stack.push(occ); }
+            }
+        }
+        Expr::Constructor { pos_args, named_args, .. }
         | Expr::Instantiation { pos_args, named_args, .. } => {
             for c in std::mem::take(pos_args) { stack.push(c); }
             for (_, c) in std::mem::take(named_args) { stack.push(c); }
@@ -247,10 +255,14 @@ fn drain_expr_children(expr: &mut Expr, stack: &mut Vec<Rc<NodeOccurrence>>) {
             for c in std::mem::take(pos_args) { stack.push(c); }
             for (_, c) in std::mem::take(named_args) { stack.push(c); }
         }
-        Expr::ApplyWithin { args, named_args, requirements, .. } => {
+        Expr::ApplyWithin { args, named_args, requirements, type_args, .. } => {
             for a in std::mem::take(args) { stack.push(a); }
             for (_, a) in std::mem::take(named_args) { stack.push(a); }
             for r in std::mem::take(requirements) { stack.push(r); }
+            // WI-342 S4b: drain any denoted-bearing (`Value::Node`) type-arg.
+            for (_, v) in std::mem::take(type_args) {
+                if let Value::Node(occ) = v { stack.push(occ); }
+            }
         }
         Expr::HoApplyWithin { predicate, args, requirements } => {
             stack.push(std::mem::replace(predicate, mk_placeholder()));
@@ -546,7 +558,12 @@ pub enum Expr {
         /// Call-site operation type arguments (`op[T = Int](args)`).
         /// Each entry: `(Some(name), type)` for `T = Int`, or
         /// `(None, type)` for positional `Int`. Empty for untyped calls.
-        type_args: Vec<(Option<Symbol>, TermId)>,
+        /// WI-342 S4b: a carrier-agnostic `Value` — a value-in-type type-arg
+        /// (the `3` in `g[3](x)`) rides as `Value::Node` once `make_denoted`
+        /// is retired; a ground type-arg is `Value::Term`. Treated by the
+        /// DeBruijn/σ walkers via the carrier-agnostic `*_value_type` helpers
+        /// (a `Value::Node` type carries no vars, so it passes through).
+        type_args: Vec<(Option<Symbol>, Value)>,
     },
     /// Higher-order application — `predicate(args...)` where predicate is
     /// an expression rather than a known operation symbol.
@@ -638,7 +655,8 @@ pub enum Expr {
         /// positional `Int`. Empty when the call site doesn't bind any
         /// (the typer-resolved values for inferred slots live in
         /// `NodeKind::Expr.resolved_type_args`).
-        type_args: Vec<(Option<Symbol>, TermId)>,
+        /// WI-342 S4b: carrier-agnostic `Value`, mirroring `Apply.type_args`.
+        type_args: Vec<(Option<Symbol>, Value)>,
     },
     /// Higher-order `apply_within`.
     HoApplyWithin {
@@ -1337,20 +1355,21 @@ fn close_named(
     (out, changed)
 }
 
-/// Close vars inside a call site's `type_args` (`(name?, type-TermId)` pairs)
-/// via `term_to_debruijn`. `term_to_debruijn` returns the same hash-consed
-/// `TermId` when nothing changed, so `changed` tracks real rewrites.
+/// Close vars inside a call site's `type_args` (`(name?, type-Value)` pairs)
+/// via the carrier-agnostic `close_value_type` (WI-342 S4b): a ground
+/// `Value::Term` closes through `term_to_debruijn`; a `Value::Node` type
+/// passes through unchanged (it carries no vars).
 fn close_type_args(
     kb: &mut KnowledgeBase,
-    items: &[(Option<Symbol>, TermId)],
+    items: &[(Option<Symbol>, Value)],
     var_order: &[VarId],
-) -> (Vec<(Option<Symbol>, TermId)>, bool) {
+) -> (Vec<(Option<Symbol>, Value)>, bool) {
     let mut changed = false;
     let mut out = Vec::with_capacity(items.len());
-    for &(name, t) in items {
-        let nt = kb.term_to_debruijn(t, var_order);
-        changed |= nt != t;
-        out.push((name, nt));
+    for (name, v) in items {
+        let (nv, ch) = close_value_type(kb, v, var_order);
+        changed |= ch;
+        out.push((*name, nv));
     }
     (out, changed)
 }
@@ -1418,21 +1437,21 @@ fn open_named(
     (out, changed)
 }
 
-/// WI-298: open DeBruijn vars inside a call site's `type_args` (`(name?,
-/// type-TermId)` pairs) via `term_from_debruijn` — the opener twin of
-/// `close_type_args`. `term_from_debruijn` returns the same hash-consed
-/// `TermId` when nothing changed, so `changed` tracks real rewrites.
+/// WI-298/WI-342 S4b: open DeBruijn vars inside a call site's `type_args`
+/// (`(name?, type-Value)` pairs) via the carrier-agnostic `open_value_type` —
+/// the opener twin of `close_type_args`. A ground `Value::Term` opens through
+/// `term_from_debruijn`; a `Value::Node` type passes through unchanged.
 fn open_type_args(
     kb: &mut KnowledgeBase,
-    items: &[(Option<Symbol>, TermId)],
+    items: &[(Option<Symbol>, Value)],
     fresh: &[VarId],
-) -> (Vec<(Option<Symbol>, TermId)>, bool) {
+) -> (Vec<(Option<Symbol>, Value)>, bool) {
     let mut changed = false;
     let mut out = Vec::with_capacity(items.len());
-    for &(name, t) in items {
-        let nt = kb.term_from_debruijn(t, fresh);
-        changed |= nt != t;
-        out.push((name, nt));
+    for (name, v) in items {
+        let (nv, ch) = open_value_type(kb, v, fresh);
+        changed |= ch;
+        out.push((*name, nv));
     }
     (out, changed)
 }
@@ -1628,8 +1647,14 @@ fn collect_expr_termid_field_vars(
 ) {
     match expr {
         Expr::Apply { type_args, .. } | Expr::ApplyWithin { type_args, .. } => {
-            for (_, t) in type_args {
-                kb.collect_vars_rec(*t, vars, seen);
+            // WI-342 S4b: each type-arg is a `Value`. A ground `Value::Term` is
+            // var-collected as before; a `Value::Node` type carries no `Global`
+            // vars (Ref/literal denoteds), symmetric with the no-op DeBruijn
+            // close in `close_value_type` (mirrors the `Let.type_annotation` arm).
+            for (_, v) in type_args {
+                if let Value::Term(t) = v {
+                    kb.collect_vars_rec(*t, vars, seen);
+                }
             }
         }
         Expr::Let { type_annotation, .. } => {
@@ -2584,21 +2609,22 @@ fn rewrite_ref_expr(
     Rc::clone(occ)
 }
 
-/// WI-298: apply σ to the TermId entries in a call site's `type_args` —
-/// the substitution twin of `open_type_args` / `close_type_args`.
-/// `apply_subst` returns the same hash-consed `TermId` when nothing changed,
-/// so `changed` tracks real rewrites.
+/// WI-298/WI-342 S4b: apply σ to a call site's `type_args` (`(name?,
+/// type-Value)` pairs) via the carrier-agnostic `subst_value_type` — the
+/// substitution twin of `open_type_args` / `close_type_args`. A ground
+/// `Value::Term` is rewritten via `apply_subst`; a `Value::Node` type carries
+/// no σ-substitutable vars, so it passes through unchanged.
 fn subst_type_args(
     kb: &mut KnowledgeBase,
-    items: &[(Option<Symbol>, TermId)],
+    items: &[(Option<Symbol>, Value)],
     subst: &Substitution,
-) -> (Vec<(Option<Symbol>, TermId)>, bool) {
+) -> (Vec<(Option<Symbol>, Value)>, bool) {
     let mut changed = false;
     let mut out = Vec::with_capacity(items.len());
-    for &(name, t) in items {
-        let nt = kb.apply_subst(t, subst);
-        changed |= nt != t;
-        out.push((name, nt));
+    for (name, v) in items {
+        let (nv, ch) = subst_value_type(kb, v, subst);
+        changed |= ch;
+        out.push((*name, nv));
     }
     (out, changed)
 }
@@ -2833,7 +2859,7 @@ pub(crate) enum BuildFrame {
         functor: Symbol,
         pos_count: usize,
         named_keys: Vec<Symbol>,
-        type_args: Vec<(Option<Symbol>, TermId)>,
+        type_args: Vec<(Option<Symbol>, Value)>,
     },
     Constructor { span: SourceSpan, name: Symbol, pos_count: usize, named_keys: Vec<Symbol> },
     /// `dot_apply(receiver, name, args)` — the receiver is the single child
@@ -2843,7 +2869,7 @@ pub(crate) enum BuildFrame {
         span: SourceSpan, functor: Symbol,
         pos_count: usize, named_keys: Vec<Symbol>,
         requirements_count: usize,
-        type_args: Vec<(Option<Symbol>, TermId)>,
+        type_args: Vec<(Option<Symbol>, Value)>,
     },
     RequirementAtSort { span: SourceSpan, slot: i64 },
     ConstructRequirement { span: SourceSpan, impl_functor: Symbol, requirements_count: usize },
@@ -3140,7 +3166,7 @@ fn collect_apply_arg_visits(
 pub(crate) fn collect_type_args(
     kb: &KnowledgeBase,
     list_tid: Option<TermId>,
-) -> Vec<(Option<Symbol>, TermId)> {
+) -> Vec<(Option<Symbol>, Value)> {
     let Some(tid) = list_tid else { return Vec::new(); };
     list_to_vec(kb, tid)
         .into_iter()
@@ -3152,7 +3178,12 @@ pub(crate) fn collect_type_args(
             let name_opt = get_named_arg(kb, &entry_args, "name")
                 .and_then(|t| some_name(kb, t));
             let value = get_named_arg(kb, &entry_args, "value")?;
-            Some((name_opt, value))
+            // WI-342 S4b: the term-side handle holds a ground `TermId`, so the
+            // materialized occurrence type-arg is `Value::Term`. The loader's
+            // direct occurrence build mints a `Value::Node` for a value-in-type
+            // arg once `make_denoted` is retired; this term-round-trip path
+            // stays ground (the term handle cannot carry a denoted occurrence).
+            Some((name_opt, Value::Term(value)))
         })
         .collect()
 }
@@ -3798,7 +3829,7 @@ mod tests {
                 functor: f_sym,
                 pos_args: vec![body_arg],
                 named_args: vec![],
-                type_args: vec![(None, type_arg_tid)],
+                type_args: vec![(None, Value::Term(type_arg_tid))],
             },
             span,
             None,
@@ -3817,10 +3848,11 @@ mod tests {
         let Some(Expr::Apply { type_args, .. }) = closed.as_expr() else {
             panic!("expected Apply");
         };
+        let Value::Term(ta) = &type_args[0].1 else { panic!("type-arg must be Value::Term") };
         assert!(
-            matches!(kb.get_term(type_args[0].1), Term::Var(Var::DeBruijn(_))),
+            matches!(kb.get_term(*ta), Term::Var(Var::DeBruijn(_))),
             "type_args var must close to DeBruijn (no stray Global), got {:?}",
-            kb.get_term(type_args[0].1)
+            kb.get_term(*ta)
         );
     }
 
@@ -3845,7 +3877,7 @@ mod tests {
                 functor: f,
                 pos_args: vec![],
                 named_args: vec![],
-                type_args: vec![(None, ta_db)],
+                type_args: vec![(None, Value::Term(ta_db))],
             },
             span,
             None,
@@ -3855,8 +3887,9 @@ mod tests {
         let Some(Expr::Apply { type_args, .. }) = opened.as_expr() else {
             panic!("expected Apply");
         };
-        let Term::Var(Var::Global(vid)) = kb.get_term(type_args[0].1) else {
-            panic!("type_args entry should open to Global, got {:?}", kb.get_term(type_args[0].1));
+        let Value::Term(ta) = &type_args[0].1 else { panic!("type-arg must be Value::Term") };
+        let Term::Var(Var::Global(vid)) = kb.get_term(*ta) else {
+            panic!("type_args entry should open to Global, got {:?}", kb.get_term(*ta));
         };
         assert_eq!(*vid, v0, "type_args DeBruijn(0) must open to fresh Global(v0)");
     }
@@ -3984,7 +4017,7 @@ mod tests {
                 functor: f,
                 pos_args: vec![],
                 named_args: vec![],
-                type_args: vec![(None, ta_global)],
+                type_args: vec![(None, Value::Term(ta_global))],
             },
             span,
             None,
@@ -3997,10 +4030,11 @@ mod tests {
         let Some(Expr::Apply { type_args, .. }) = out.as_expr() else {
             panic!("expected Apply, got {:?}", out.as_expr());
         };
+        let Value::Term(ta) = &type_args[0].1 else { panic!("type-arg must be Value::Term") };
         assert_eq!(
-            type_args[0].1, int_ref,
+            *ta, int_ref,
             "Apply.type_args must be substituted to Ref(Int) under σ; got {:?}",
-            kb.get_term(type_args[0].1),
+            kb.get_term(*ta),
         );
     }
 
@@ -4069,7 +4103,7 @@ mod tests {
                 args: vec![],
                 named_args: vec![],
                 requirements: vec![],
-                type_args: vec![(None, ta_global)],
+                type_args: vec![(None, Value::Term(ta_global))],
             },
             span,
             None,
@@ -4079,10 +4113,11 @@ mod tests {
         let Some(Expr::ApplyWithin { type_args, .. }) = closed.as_expr() else {
             panic!("expected ApplyWithin after close");
         };
+        let Value::Term(ta) = &type_args[0].1 else { panic!("type-arg must be Value::Term") };
         assert!(
-            matches!(kb.get_term(type_args[0].1), Term::Var(Var::DeBruijn(0))),
+            matches!(kb.get_term(*ta), Term::Var(Var::DeBruijn(0))),
             "ApplyWithin.type_args Global must close to DeBruijn(0); got {:?}",
-            kb.get_term(type_args[0].1),
+            kb.get_term(*ta),
         );
         // Open with fresh global: DeBruijn(0) → Global(v_fresh).
         let v_fresh = VarId::new(42, tname);
@@ -4090,8 +4125,9 @@ mod tests {
         let Some(Expr::ApplyWithin { type_args, .. }) = reopened.as_expr() else {
             panic!("expected ApplyWithin after open");
         };
-        let Term::Var(Var::Global(vid)) = kb.get_term(type_args[0].1) else {
-            panic!("type_args entry should open to Global, got {:?}", kb.get_term(type_args[0].1));
+        let Value::Term(ta) = &type_args[0].1 else { panic!("type-arg must be Value::Term") };
+        let Term::Var(Var::Global(vid)) = kb.get_term(*ta) else {
+            panic!("type_args entry should open to Global, got {:?}", kb.get_term(*ta));
         };
         assert_eq!(*vid, v_fresh, "round-trip must yield the fresh global");
     }
@@ -4113,7 +4149,7 @@ mod tests {
                 functor: f,
                 pos_args: vec![],
                 named_args: vec![],
-                type_args: vec![(None, ta_tid)],
+                type_args: vec![(None, Value::Term(ta_tid))],
             },
             span,
             None,

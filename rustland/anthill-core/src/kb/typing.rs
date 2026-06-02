@@ -3963,7 +3963,10 @@ fn seed_op_type_args(
                 }
             }
         };
-        unify_types(kb, subst, &TermIdView(target), &TermIdView(*value));
+        // WI-342 S4b: a type-arg is a carrier-agnostic `Value` (`Value: TermView`),
+        // so unify it directly — a value-in-type arg (`Value::Node`) unifies
+        // cross-carrier through the typer's view dispatch, no re-ground.
+        unify_types(kb, subst, &TermIdView(target), value);
     }
     Ok(())
 }
