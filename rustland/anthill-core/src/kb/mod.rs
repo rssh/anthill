@@ -2783,12 +2783,10 @@ impl KnowledgeBase {
     pub fn make_parameterized_type(&mut self, base: TermId, bindings: &[(Symbol, TermId)]) -> TermId {
         // WI-361 producer flip: term-backed — the base sort IS the functor and the
         // bindings ARE the named args (`List[T = Int]` = `Fn{List, named:[(T, …)]}`),
-        // with no `parameterized(base, bindings: List[TypeBinding])` wrapper. The
-        // base sort is the discriminating functor (native `rules_by_functor`/discrim
-        // selectivity — the SLD `canonicalize_type_value` shape, now produced
-        // directly). `base` is a sort reference — `Ref(S)` (post make_sort_ref flip)
-        // or a deep `sort_ref(name: Ref(S))` during transition — read via the
-        // dual-form reader.
+        // with no `parameterized(base, bindings: List[TypeBinding])` wrapper. The base
+        // sort is the discriminating functor (native `rules_by_functor`/discrim
+        // selectivity, produced directly). `base` is a sort reference `Ref(S)` (post
+        // make_sort_ref flip), read via the reader.
         let base_sym = crate::kb::typing::extract_sort_ref_sym(self, base)
             .expect("make_parameterized_type: base must be a sort reference");
         if bindings.is_empty() {

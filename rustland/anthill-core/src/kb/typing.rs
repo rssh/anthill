@@ -15,7 +15,7 @@ use super::node_occurrence::{
     EffectExprNode, Expr, MatchBranch, NodeKind, NodeOccurrence, TypeChild, TypeNode,
 };
 use super::persist_subst::BindValue;
-use super::term_view::{type_child_view_item, TermIdView, TermView, ViewHead, ViewItem};
+use super::term_view::{TermIdView, TermView, ViewHead, ViewItem};
 use super::{KnowledgeBase, SortKind};
 use crate::eval::value::Value;
 use crate::intern::Symbol;
@@ -775,8 +775,8 @@ fn type_child_to_term(kb: &mut KnowledgeBase, child: &TypeChild) -> Option<TermI
 
 /// WI-342: place a carrier-agnostic type [`Value`] into a [`TypeChild`] slot of a
 /// `Value::Node` occurrence being built — `Term` → `Ground`, `Node` → `Node`.
-/// The inverse of [`type_child_to_value`]. A scalar/`Var` type value is a typer
-/// bug (types are `Term`/`Node`); re-ground it defensively so we don't panic.
+/// A scalar/`Var` type value is a typer bug (types are `Term`/`Node`); re-ground
+/// it defensively so we don't panic.
 fn value_to_type_child(kb: &mut KnowledgeBase, v: &Value) -> TypeChild {
     match v {
         Value::Term(t) => TypeChild::Ground(*t),
@@ -5025,12 +5025,7 @@ fn parametric_value_parts(
 ) -> Option<(Symbol, SmallVec<[(Symbol, TermId); 2]>)> {
     match kb.get_term(value) {
         Term::Fn { functor, named_args, pos_args } => {
-            // sort_ref(name: ...) wraps a concrete sort ref; not
-            // parametric for our purpose.
             let f_qn = kb.qualified_name_of(*functor);
-            if f_qn == "sort_ref" || f_qn.ends_with(".sort_ref") {
-                return None;
-            }
             // SortView is the candidate-side parametric encoding —
             // unwrap into (base, bindings).
             if f_qn == "anthill.reflect.SortView" || f_qn.ends_with(".SortView") {
@@ -5045,33 +5040,10 @@ fn parametric_value_parts(
                     });
                 return base.map(|b| (b, named_args.clone()));
             }
-            // parameterized(base, bindings = [Binding(P, V), ...]) is
-            // the typer-side encoding. Translate into (base, [(P, V)]).
-            // Match both the bare short name (from loader-side conversion)
-            // and the fully-qualified `anthill.prelude.Type.parameterized`
-            // (which is what the typer's reified arg-type unification
-            // produces).
-            if f_qn == "parameterized" || f_qn.ends_with(".parameterized") {
-                let base = get_named_arg(kb, named_args, "base")
-                    .and_then(|t| match kb.get_term(t) {
-                        Term::Fn { functor, .. }
-                        | Term::Ref(functor)
-                        | Term::Ident(functor) => Some(*functor),
-                        _ => None,
-                    });
-                let bindings_tid = get_named_arg(kb, named_args, "bindings");
-                let mut out: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
-                if let Some(bt) = bindings_tid {
-                    for binding in list_to_vec(kb, bt) {
-                        if let (Some(p), Some(v)) =
-                            (binding_param_sym(kb, binding), binding_value(kb, binding))
-                        {
-                            out.push((p, v));
-                        }
-                    }
-                }
-                return base.map(|b| (b, out));
-            }
+            // WI-361: a parameterized type is the term backing `Fn{S, named}` (base
+            // sort IS the functor, bindings ARE the named args) — handled by the
+            // generic-Fn arm below as `(S, named_args)`, no `parameterized(base,
+            // bindings)` wrapper to translate.
             // WI-320: `effects_rows(effects_expr = E)` is a structural Type
             // variant (wraps an EffectExpression), not a parametric spec
             // carrier — `effects_expr` is a *field*, not a spec parameter.
@@ -5828,8 +5800,9 @@ pub fn sort_goal_from_subst(
                 // as a top-level symbol; fall back to its qualified form.
                 short_sym
             });
-            let canonical = canonicalize_type_value(kb, val);
-            bindings.push((short_intern, canonical));
+            // WI-361: a binding value is already canonical (`Ref(S)` / `Fn{S, named}`)
+            // — no `parameterized(base, bindings)` wrapper left to unwrap.
+            bindings.push((short_intern, val));
         }
     }
     SortGoal {
@@ -5839,51 +5812,6 @@ pub fn sort_goal_from_subst(
     }
 }
 
-/// WI-228: convert the typer's reified `Type.parameterized(base = sort_ref(name: X),
-/// bindings = [TypeBinding(param: P, value: V), ...])` representation
-/// into the canonical `Fn(X, [], [(P, V)*])` shape SLD matching expects.
-/// Recurses into binding values so nested parametric types canonicalize
-/// at every level.
-///
-/// Returns the input unchanged when (a) the term is not in
-/// `parameterized` shape (e.g. plain `Ref(Int)` or an already-canonical
-/// `Fn(List, [], [(T, Ref(Int))])`), or (b) it is parameterized but no
-/// child binding rewrote AND the functor already matches the unwrapped
-/// base — i.e. nothing needed translating. The change-detection
-/// short-circuit keeps the common case (already-canonical input)
-/// allocation-free.
-///
-/// Note: cannot reuse `parametric_value_parts` here because its
-/// `parameterized` arm extracts the base via the raw functor of the
-/// `base` field, which for the typer's encoding is the `sort_ref`
-/// functor rather than the underlying sort sym; this function unwraps
-/// `sort_ref(name: X)` to X explicitly.
-fn canonicalize_type_value(kb: &mut KnowledgeBase, ty: TermId) -> TermId {
-    use smallvec::SmallVec;
-    let term = kb.get_term(ty).clone();
-    let Term::Fn { functor, named_args, .. } = term else {
-        return ty;
-    };
-    let f_qn = kb.qualified_name_of(functor);
-    if !(f_qn == "parameterized" || f_qn.ends_with(".parameterized")) {
-        return ty;
-    }
-    let Some(base_tid) = get_named_arg(kb, &named_args, "base") else { return ty };
-    let Some(base_sym) = extract_sort_ref_sym(kb, base_tid) else { return ty };
-    let Some(bindings_tid) = get_named_arg(kb, &named_args, "bindings") else { return ty };
-    let mut canonical_named: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
-    for binding in list_to_vec(kb, bindings_tid) {
-        let Some(param_sym) = binding_param_sym(kb, binding) else { continue };
-        let Some(value_tid) = binding_value(kb, binding) else { continue };
-        let canonical_value = canonicalize_type_value(kb, value_tid);
-        canonical_named.push((param_sym, canonical_value));
-    }
-    kb.alloc(Term::Fn {
-        functor: base_sym,
-        pos_args: SmallVec::new(),
-        named_args: canonical_named,
-    })
-}
 
 /// WI-350 — classify a spec op's receiver at a call site to drive
 /// carrier-aware dispatch. Finds the op's *self-receiver* parameter — the
@@ -6059,15 +5987,14 @@ fn bind_spec_params_from_carrier(
     any
 }
 
-/// A `parameterized` type's bindings as `(carrier-param short name,
-/// value)` pairs — the receiver-side reader for
-/// [`bind_spec_params_from_carrier`]. Re-keys [`parameterized_bindings_term`]
-/// by short name (the form `bind_spec_params_from_carrier` matches against)
-/// and keeps only `Value::Term` values (a parameterized type's bindings are
-/// ground terms).
+/// A `parameterized` type's bindings as `(carrier-param short name, value)` pairs
+/// — the receiver-side reader for [`bind_spec_params_from_carrier`]. Reads via
+/// [`extract_type`], re-keys by short name (the form `bind_spec_params_from_carrier`
+/// matches against), and keeps only `Value::Term` values (a parameterized type's
+/// bindings are ground terms).
 fn parameterized_short_bindings(kb: &KnowledgeBase, ty: TermId) -> Vec<(String, TermId)> {
-    // WI-361: read bindings form-agnostically — deep `parameterized(base, bindings)`
-    // OR term-backed `Fn{S, named}` (`List[T = Int]` = `Fn{List, named:[(T, Int)]}`).
+    // WI-361: a parameterized type is the term backing `Fn{S, named}`
+    // (`List[T = Int]` = `Fn{List, named:[(T, Int)]}`).
     let TypeExtractor::Parameterized { bindings, .. } = extract_type(kb, &TermIdView(ty)) else {
         return Vec::new();
     };
@@ -7260,20 +7187,11 @@ fn unify_parameterized_view<A: TermView, B: TermView>(
     a: &A,
     b: &B,
 ) -> bool {
-    // `extract_type`'s DEEP-form arm reads a `parameterized(base, …)` TermId's
-    // `base` child by name (`deep_parameterized_base` via `lookup_symbol`) — the
-    // reflect/residual form, still dual-form. Intern `base` so that resolves in a
-    // minimal KB (`register_prelude` deliberately doesn't — eager-interning
-    // perturbed load-time symbol ids, breaking wi355); a no-op once stdlib is
-    // loaded. The WI-361-flipped Node carrier reads its base from the head
-    // functor, not a `base` child, so it needs no intern.
-    kb.intern("base");
-    // WI-361: read base + bindings form-agnostically via `extract_type` so a
-    // term-backed `Fn{S, named}` (base = functor, bindings = named args) unifies
-    // like a deep `parameterized(base, bindings)`. Each base is a sort; present
-    // it as a bare `Ref(S)` and recurse `unify_types` — equivalent to the deep
-    // `sort_ref` base (both classify as `SortRef`) and preserving the full base
-    // relation (incl. WI-344 provider admissibility), not a sort-symbol shortcut.
+    // WI-361: read base + bindings via `extract_type` — both carriers present the
+    // term backing `Fn{S, named}` (base = functor, bindings = named args). Each
+    // base is a sort; present it as a bare `Ref(S)` and recurse `unify_types`,
+    // preserving the full base relation (incl. WI-344 provider admissibility),
+    // not a sort-symbol shortcut.
     let (a_base, a_bindings) = match extract_type(kb, a) {
         TypeExtractor::Parameterized { base, bindings } => (base, bindings),
         _ => return false,
@@ -7343,32 +7261,6 @@ fn unify_arrow_view<A: TermView, B: TermView>(
     }
 }
 
-/// WI-342 P4: a `parameterized` type's `(param, value)` bindings read
-/// carrier-agnostically as owned [`Value`]s. The two carriers store bindings
-/// differently — a `TermId` carries `bindings: List[TypeBinding]` (Rep A's view
-/// exposes only `base`), a `Value::Node` carries `Vec<(Symbol, TypeChild)>` —
-/// so this branches on the concrete carrier rather than going through the view's
-/// `named_arg` (which can't enumerate either shape uniformly).
-fn parameterized_bindings(kb: &KnowledgeBase, v: &impl TermView) -> Vec<(Symbol, Value)> {
-    match v.as_bind_value() {
-        // `Value::as_bind_value` maps `Value::Term` → `BindValue::Term`, so the
-        // `Value(Value::Term)` shape is unreachable from the `Value` carrier
-        // today; kept folded in defensively for any future `TermView` whose
-        // `as_bind_value` wraps a `Value::Term`.
-        BindValue::Term(t) | BindValue::Value(Value::Term(t)) => {
-            parameterized_bindings_term(kb, t)
-        }
-        BindValue::Value(Value::Node(occ)) => match occ.as_type() {
-            Some(TypeNode::Parameterized { bindings, .. }) => bindings
-                .iter()
-                .map(|(s, c)| (*s, type_child_to_value(c)))
-                .collect(),
-            _ => Vec::new(),
-        },
-        _ => Vec::new(),
-    }
-}
-
 /// Decode a `List[record]` of two-field records into `(symbol-field, value-field)`
 /// pairs, carrier-agnostic over [`TermView`] — a hash-consed `Term` cons-list OR a
 /// `Value::Entity` cons-list (the WI-361 poisoned `named_tuple` `fields` carrier).
@@ -7422,18 +7314,6 @@ fn decode_cons_cell<V: TermView>(
     named_child_value(kb, cell, tail_key)
 }
 
-/// Bindings of a `TermId`-carried `parameterized` (`List[TypeBinding]`).
-fn parameterized_bindings_term(kb: &KnowledgeBase, t: TermId) -> Vec<(Symbol, Value)> {
-    let args = match kb.get_term(t) {
-        Term::Fn { named_args, .. } => named_args.clone(),
-        _ => return Vec::new(),
-    };
-    match get_named_arg(kb, &args, "bindings") {
-        Some(list) => list_records_to_pairs(kb, &TermIdView(list), "param", "value"),
-        None => Vec::new(),
-    }
-}
-
 /// A [`ViewItem`] (which may borrow `kb`) as an owned [`Value`], freeing the
 /// caller's `kb` borrow before a `&mut kb` recursion.
 fn view_item_value(item: &ViewItem) -> Value {
@@ -7442,14 +7322,6 @@ fn view_item_value(item: &ViewItem) -> Value {
         ViewItem::Value(v) => (*v).clone(),
         ViewItem::Node(rc) => Value::Node(Rc::clone(rc)),
     }
-}
-
-/// A [`TypeChild`] as an owned [`Value`]: ground → `Value::Term`, poisoned →
-/// `Value::Node`. Routed through [`type_child_view_item`] so the `TypeChild`
-/// carrier mapping lives in exactly one place (the view layer), not duplicated
-/// here — drift between the two would mis-read a child's carrier.
-fn type_child_to_value(child: &TypeChild) -> Value {
-    view_item_value(&type_child_view_item(child))
 }
 
 /// WI-342 P3: resolve a view through the substitution to a `Value` (the
@@ -7619,12 +7491,11 @@ fn denoted_ref_sym(kb: &mut KnowledgeBase, r: &impl TermView) -> Option<Symbol> 
 /// Occurs check over a [`TermView`] (the `Value`-carried analog of
 /// [`occurs_in`]): does `vid` appear anywhere inside `v`?
 ///
-/// WI-342: a `Value::Node` Rep-A type (`parameterized`/`named_tuple`) does NOT
-/// expose its bindings/fields through the view (only `base`, resp. nothing — the
-/// view layer reads them via the dedicated `parameterized_bindings` /
-/// `named_tuple_fields` readers). Walking such a node through the view alone
-/// would MISS a var nested in a binding/field, letting `bind_resolved` create a
-/// cyclic binding. So a `Value::Node` is walked completely via [`occ_contains_var`]
+/// A `Value::Node` type is walked completely via [`occ_contains_var`] (which reads
+/// the occurrence storage directly), not through the view alone — belt-and-braces
+/// so a var nested in a parameterized binding / named-tuple field can't be missed,
+/// which would let `bind_resolved` create a cyclic binding. So a `Value::Node` is
+/// walked completely via [`occ_contains_var`]
 /// over the occurrence spine; every other carrier (a `TermId`, which exposes all
 /// children) uses the view walk.
 fn occurs_in_view(kb: &KnowledgeBase, vid: VarId, v: &impl TermView) -> bool {
@@ -9006,12 +8877,11 @@ fn arrow_compatible_view<A: TermView, B: TermView>(
 /// param name) actual binding whose value is compatible (the subtype direction
 /// iterates expected, unlike unify's a-side).
 ///
-/// Bindings are read via [`parameterized_bindings`], which drops a *malformed*
-/// binding (one whose `param` is not a `Ref` or that lacks a `value`). The
-/// deleted `TermId`-specific `parameterized_compatible` instead `return false`d
-/// on such a binding — so this consolidation is marginally more permissive on a
-/// corrupt EXPECTED type. Unreachable in practice (`make_parameterized_type`
-/// always builds complete `param: Ref(_) + value` bindings), and it brings the
+/// Bindings are read via [`extract_type`], which skips a *malformed* binding (one
+/// whose value is missing). The deleted `TermId`-specific `parameterized_compatible`
+/// instead `return false`d on such a binding — so this consolidation is marginally
+/// more permissive on a corrupt EXPECTED type. Unreachable in practice
+/// (`make_parameterized_type` always builds complete bindings), and it brings the
 /// subtype direction into line with unify, which has always *skipped* malformed
 /// bindings — removing a prior asymmetry rather than introducing one.
 fn parameterized_compatible_view<A: TermView, B: TermView>(
@@ -9020,9 +8890,6 @@ fn parameterized_compatible_view<A: TermView, B: TermView>(
     actual: &A,
     expected: &B,
 ) -> bool {
-    // Intern `base` for `extract_type`'s deep-form `base`-child read of a
-    // reflect/residual `parameterized` TermId (see `unify_parameterized_view`).
-    kb.intern("base");
     // WI-361: base + bindings form-agnostic via `extract_type` (see
     // `unify_parameterized_view`); the base subtype check recurses the full
     // `types_compatible` on `Ref(S)` (preserving provider admissibility), not a
@@ -10065,10 +9932,10 @@ pub enum TypeExtractor {
 enum TypeHead {
     SortRef(Symbol),
     TypeVar(Symbol),
-    /// `base` is the base sort symbol; `deep` distinguishes the legacy
-    /// `parameterized(base, bindings)` wrapper (bindings in a `bindings` List
-    /// field) from the term backing `Fn{S, named}` (bindings ARE the named args).
-    Parameterized { base: Symbol, deep: bool },
+    /// `base` is the base sort symbol. WI-361: a parameterized type is the term
+    /// backing `Fn{S, named}` (the base sort IS the functor, bindings ARE the named
+    /// args) on both carriers — there is no `parameterized(base, bindings)` wrapper.
+    Parameterized { base: Symbol },
     Arrow,
     Denoted,
     EffectsRows,
@@ -10078,18 +9945,15 @@ enum TypeHead {
 }
 
 /// Classify a type carrier's head — see [`TypeHead`]. Cheap: reads at most the
-/// `sort_ref`/`type_var` name and a deep `parameterized`'s base, never the
-/// bindings / fields / arrow children.
+/// `type_var` name, never the bindings / fields / arrow children. WI-361: a bare
+/// sort is `Ref(S)` and a parameterized type is `Fn{S, named}` (functor = base
+/// sort) on both carriers — there is no deep `sort_ref`/`parameterized` wrapper.
 fn type_head<V: TermView>(kb: &KnowledgeBase, ty: &V) -> TypeHead {
     match ty.head(kb) {
         // Term-backed bare sort `Ref(S)`.
         ViewHead::Ref(s) => TypeHead::SortRef(s),
         ViewHead::Functor { functor: Some(f), named_arity, .. } => {
             match kb.qualified_name_of(f) {
-                "anthill.prelude.Type.sort_ref" => match view_child_sym(kb, ty, "name") {
-                    Some(s) => TypeHead::SortRef(s),
-                    None => TypeHead::Error,
-                },
                 "anthill.prelude.Type.type_var" => match view_child_sym(kb, ty, "name") {
                     Some(s) => TypeHead::TypeVar(s),
                     None => TypeHead::Error,
@@ -10099,31 +9963,14 @@ fn type_head<V: TermView>(kb: &KnowledgeBase, ty: &V) -> TypeHead {
                 "anthill.prelude.Type.effects_rows" => TypeHead::EffectsRows,
                 "anthill.prelude.Type.arrow" => TypeHead::Arrow,
                 "anthill.prelude.Type.named_tuple" => TypeHead::NamedTuple,
-                "anthill.prelude.Type.parameterized" => match deep_parameterized_base(kb, ty) {
-                    Some(base) => TypeHead::Parameterized { base, deep: true },
-                    None => TypeHead::Error,
-                },
-                // Term-backed parameterized: the functor IS the base sort, the
-                // named args ARE the bindings. A no-arg `Fn{f}` is malformed
-                // (a bare sort is `Ref(S)`, never `Fn{S}`).
-                _ if named_arity > 0 => TypeHead::Parameterized { base: f, deep: false },
+                // Parameterized: the functor IS the base sort, the named args ARE
+                // the bindings. A no-arg `Fn{f}` is malformed (a bare sort is
+                // `Ref(S)`, never `Fn{S}`).
+                _ if named_arity > 0 => TypeHead::Parameterized { base: f },
                 _ => TypeHead::Error,
             }
         }
         _ => TypeHead::Error,
-    }
-}
-
-/// Base sort symbol of a deep `parameterized(base, …)` — its `base` child
-/// classified to a bare sort. `None` if the base is not a sort reference (the
-/// spec gate confirms a parameterized base is always a concrete sort — never
-/// itself parameterized or higher-kinded — so this is exhaustive for well-formed
-/// types and conservatively `None` for malformed ones).
-fn deep_parameterized_base<V: TermView>(kb: &KnowledgeBase, ty: &V) -> Option<Symbol> {
-    let base = view_child_value(kb, ty, "base")?;
-    match type_head(kb, &base) {
-        TypeHead::SortRef(s) => Some(s),
-        _ => None,
     }
 }
 
@@ -10188,20 +10035,17 @@ pub fn extract_type<V: TermView>(kb: &KnowledgeBase, ty: &V) -> TypeExtractor {
             _ => TypeExtractor::Error,
         },
         TypeHead::NamedTuple => TypeExtractor::NamedTuple(named_tuple_fields(kb, ty)),
-        TypeHead::Parameterized { base, deep } => {
-            let bindings = if deep {
-                parameterized_bindings(kb, ty)
-            } else {
-                term_backed_bindings(kb, ty)
-            };
-            TypeExtractor::Parameterized { base, bindings }
+        TypeHead::Parameterized { base } => {
+            // The named args ARE the bindings on both carriers (WI-361).
+            TypeExtractor::Parameterized { base, bindings: term_backed_bindings(kb, ty) }
         }
     }
 }
 
-/// Bindings of a *term-backed* parameterized type `Fn{S, named}` — the named args
-/// ARE the `(param, value-type)` bindings (no `bindings: List[TypeBinding]`
-/// wrapper). Distinct from [`parameterized_bindings`], which reads the deep form.
+/// Bindings of a parameterized type `Fn{S, named}` — the named args ARE the
+/// `(param, value-type)` bindings (no `bindings: List[TypeBinding]` wrapper). Reads
+/// both carriers: a term-backed `TermId` and a `Value::Node` whose view exposes the
+/// bindings as named args.
 fn term_backed_bindings<V: TermView>(kb: &KnowledgeBase, ty: &V) -> Vec<(Symbol, Value)> {
     ty.named_keys(kb)
         .into_iter()
@@ -10241,17 +10085,12 @@ fn view_child_sym<V: TermView>(kb: &KnowledgeBase, ty: &V, key: &str) -> Option<
 /// widens to, as a `Symbol` (WI-284). It reads the typer-reflect Type
 /// shapes (the form the typer stores in `inferred_type`, which is what
 /// `min_sort` feeds it) and unwraps them to the underlying sort symbol:
-///   - `sort_ref(name: S)`              → `S`
-///   - `parameterized(base: B, …)`      → sort head of `B` (params dropped)
 ///   - bare `Ref(S)`                    → `S`
+///   - `Fn{S, named}` (parameterized)   → `S` (params dropped)
 ///   - everything else                  → `None`
-/// `None` is the unresolved-type-variable case (dispatch-undecidable for
-/// the type-directed `[simp]` engine) — but it ALSO covers the
-/// SLD-`canonicalize_type_value` shape `Fn(S, [], […])` and
-/// qualified-/`Ident`-functor types. Those are not the reflect shapes
-/// the typer records as an expression's type, so they're out of scope
-/// here; a caller that passes them must extend this reader (e.g. with a
-/// `SymbolKind::Sort` check on the functor).
+/// `None` is the unresolved-type-variable case (dispatch-undecidable for the
+/// type-directed `[simp]` engine) and the structural variants (arrow / named_tuple
+/// / …), which have no single sort head.
 pub fn sort_functor_of(kb: &KnowledgeBase, ty: TermId) -> Option<Symbol> {
     // The sort head is the base of a bare sort or a (deep / term-backed)
     // parameterized type; the structural variants have none. WI-320:
@@ -10339,24 +10178,6 @@ pub fn simp_fire_guard_holds(kb: &KnowledgeBase, redex: &NodeOccurrence) -> bool
         }
     }
     checked_carrier
-}
-
-/// Extract param symbol from TypeBinding(param: Ref(sym), value: ...).
-fn binding_param_sym(kb: &KnowledgeBase, binding: TermId) -> Option<Symbol> {
-    if let Term::Fn { named_args, .. } = kb.get_term(binding) {
-        extract_ref_field(kb, named_args, "param")
-    } else {
-        None
-    }
-}
-
-/// Extract value from TypeBinding(param: ..., value: type_term).
-fn binding_value(kb: &KnowledgeBase, binding: TermId) -> Option<TermId> {
-    if let Term::Fn { named_args, .. } = kb.get_term(binding) {
-        get_named_arg(kb, named_args, "value")
-    } else {
-        None
-    }
 }
 
 /// named_tuple(fields: [...]) <: named_tuple(fields: [...])
@@ -11704,7 +11525,7 @@ mod wi361_reader_tests {
     }
 
     #[test]
-    fn sort_functor_of_reads_term_backed_and_deep_parameterized() {
+    fn sort_functor_of_reads_term_backed_parameterized() {
         let mut kb = kb_with_prelude();
         let list = kb.intern("List");
         let int = kb.intern("Int");
@@ -11715,12 +11536,11 @@ mod wi361_reader_tests {
         let tb = term_backed_param(&mut kb, list, t, int);
         assert_eq!(sort_functor_of(&kb, tb), Some(list), "term-backed Fn{{List,..}} -> List");
 
-        // Deep `parameterized(sort_ref(List), [T = sort_ref(Int)])` — behavior
-        // preserved (both forms classify to the same base sort).
+        // The same via the real builder `make_parameterized_type` (also term-backed).
         let int_ref = kb.make_sort_ref(int);
         let base = kb.make_sort_ref(list);
-        let deep = kb.make_parameterized_type(base, &[(t, int_ref)]);
-        assert_eq!(sort_functor_of(&kb, deep), Some(list), "deep parameterized -> List");
+        let built = kb.make_parameterized_type(base, &[(t, int_ref)]);
+        assert_eq!(sort_functor_of(&kb, built), Some(list), "make_parameterized_type -> List");
 
         // Term-backed bare sort `Ref(Int)`.
         let bare = kb.alloc(Term::Ref(int));
@@ -11744,21 +11564,20 @@ mod wi361_reader_tests {
         let bare = kb.alloc(Term::Ref(int));
         assert_eq!(extract_sort_ref_sym(&kb, bare), Some(int), "bare Ref(Int) -> Int");
 
-        // Deep `sort_ref(name: Ref(Int))` — behavior preserved.
-        let deep = kb.make_sort_ref(int);
-        assert_eq!(extract_sort_ref_sym(&kb, deep), Some(int), "deep sort_ref(Int) -> Int");
+        // The same via the real builder `make_sort_ref` (also `Ref(Int)`).
+        let built = kb.make_sort_ref(int);
+        assert_eq!(extract_sort_ref_sym(&kb, built), Some(int), "make_sort_ref(Int) -> Int");
 
         // A parameterized type is NOT a bare sort ref.
         let tb = term_backed_param(&mut kb, list, t, int);
         assert_eq!(extract_sort_ref_sym(&kb, tb), None, "Fn{{List,..}} is not a bare sort ref");
     }
 
-    /// The unify/subtype STRUCTURAL dispatch reads a term-backed `Fn{S, named}`
-    /// as a parameterized type (via `type_dispatch_name`/`extract_type`), so it
-    /// unifies/subtypes like the deep `parameterized` — including cross-form
-    /// (deep vs term-backed), which is what lets the producer flip be gradual.
+    /// The unify/subtype STRUCTURAL dispatch reads a term-backed `Fn{S, named}` as
+    /// a parameterized type (via `type_dispatch_name`/`extract_type`): the same
+    /// instantiation unifies and subtypes, a differing binding is rejected.
     #[test]
-    fn parameterized_unify_subtype_term_backed_and_cross_form() {
+    fn parameterized_unify_subtype_term_backed() {
         use super::{types_compatible, unify_types};
         use crate::kb::subst::Substitution;
         use crate::kb::term_view::TermIdView;
@@ -11772,37 +11591,24 @@ mod wi361_reader_tests {
         let tb_int = term_backed_param(&mut kb, list, t, int);
         let tb_int2 = term_backed_param(&mut kb, list, t, int);
         let tb_str = term_backed_param(&mut kb, list, t, string);
-        // deep `parameterized(base: sort_ref(List), [TypeBinding(T, sort_ref(Int))])`,
-        // built by hand — post-WI-361 the `make_*` builders emit the term backing,
-        // so the genuine cross-form (deep vs term-backed) is exercised only by
-        // constructing the deep shape explicitly via `deep_param`.
-        let deep_int = deep_param(&mut kb, list, t, int);
 
-        // term-backed vs term-backed: same instantiation unifies; differing
-        // binding is rejected.
+        // Same instantiation unifies; a differing binding is rejected.
         let mut s = Substitution::new();
         assert!(
             unify_types(&mut kb, &mut s, &TermIdView(tb_int), &TermIdView(tb_int2)),
-            "term-backed List[T=Int] unifies with itself"
+            "List[T=Int] unifies with itself"
         );
         let mut s2 = Substitution::new();
         assert!(
             !unify_types(&mut kb, &mut s2, &TermIdView(tb_int), &TermIdView(tb_str)),
-            "term-backed List[T=Int] vs List[T=String] rejected at the binding"
+            "List[T=Int] vs List[T=String] rejected at the binding"
         );
 
-        // cross-form: deep parameterized unifies with its term-backed twin.
-        let mut s3 = Substitution::new();
-        assert!(
-            unify_types(&mut kb, &mut s3, &TermIdView(deep_int), &TermIdView(tb_int)),
-            "deep List[T=Int] unifies cross-form with term-backed List[T=Int]"
-        );
-
-        // subtype: cross-form accept; differing binding reject.
+        // Subtype: same accept; differing reject.
         let mut s4 = Substitution::new();
         assert!(
-            types_compatible(&mut kb, &mut s4, &TermIdView(tb_int), &TermIdView(deep_int)),
-            "term-backed List[T=Int] <: deep List[T=Int]"
+            types_compatible(&mut kb, &mut s4, &TermIdView(tb_int), &TermIdView(tb_int2)),
+            "List[T=Int] <: List[T=Int]"
         );
         let mut s5 = Substitution::new();
         assert!(
@@ -11811,52 +11617,12 @@ mod wi361_reader_tests {
         );
     }
 
-    /// Build the legacy DEEP `sort_ref(name: Ref(sym))` by hand — post-WI-361
-    /// `make_sort_ref` emits the term backing `Ref(sym)`, so the dual-form
-    /// readers' deep path is exercised only by constructing it explicitly.
-    fn deep_sort_ref(kb: &mut KnowledgeBase, sym: Symbol) -> TermId {
-        let sr = kb.resolve_symbol("anthill.prelude.Type.sort_ref");
-        let name = kb.intern("name");
-        let r = kb.alloc(Term::Ref(sym));
-        let mut na: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
-        na.push((name, r));
-        kb.alloc(Term::Fn { functor: sr, pos_args: SmallVec::new(), named_args: na })
-    }
-
-    /// Build the legacy DEEP `parameterized(base: sort_ref(base), bindings:
-    /// [TypeBinding(param, value: sort_ref(arg))])` by hand (replicating the
-    /// pre-WI-361 `make_parameterized_type` shape) so the readers' deep path
-    /// stays covered after the producer flip.
-    fn deep_param(kb: &mut KnowledgeBase, base: Symbol, param: Symbol, arg: Symbol) -> TermId {
-        let parameterized = kb.resolve_symbol("anthill.prelude.Type.parameterized");
-        let type_binding = kb.resolve_symbol("anthill.prelude.Type.TypeBinding");
-        let base_key = kb.intern("base");
-        let bindings_key = kb.intern("bindings");
-        let param_key = kb.intern("param");
-        let value_key = kb.intern("value");
-        let base_sr = deep_sort_ref(kb, base);
-        let param_ref = kb.alloc(Term::Ref(param));
-        let value_sr = deep_sort_ref(kb, arg);
-        let mut ba: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
-        ba.push((param_key, param_ref));
-        ba.push((value_key, value_sr));
-        ba.sort_by_key(|(s, _)| s.index());
-        let binding = kb.alloc(Term::Fn { functor: type_binding, pos_args: SmallVec::new(), named_args: ba });
-        let bindings_list = kb.build_list(&[binding]);
-        let mut na: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
-        na.push((base_key, base_sr));
-        na.push((bindings_key, bindings_list));
-        na.sort_by_key(|(s, _)| s.index());
-        kb.alloc(Term::Fn { functor: parameterized, pos_args: SmallVec::new(), named_args: na })
-    }
-
-    /// WI-361 PRODUCER FLIP: `make_sort_ref` now emits the bare term `Ref(S)`
-    /// and `make_parameterized_type` the term backing `Fn{S, named}` (base sort
-    /// IS the functor, no `sort_ref`/`parameterized` wrapper); the dual-form
-    /// readers classify both the flipped producers' output AND a hand-built deep
-    /// shape identically.
+    /// WI-361 PRODUCER FLIP: `make_sort_ref` emits the bare term `Ref(S)` and
+    /// `make_parameterized_type` the term backing `Fn{S, named}` (base sort IS the
+    /// functor, no `sort_ref`/`parameterized` wrapper); the readers classify the
+    /// flipped producers' output, and empty bindings collapse to the bare `Ref(S)`.
     #[test]
-    fn producer_flip_emits_term_backing_readers_dual_form() {
+    fn producer_flip_emits_term_backing() {
         use super::{extract_type, sort_functor_of, TypeExtractor};
         use crate::kb::term_view::TermIdView;
         let mut kb = kb_with_prelude();
@@ -11892,19 +11658,10 @@ mod wi361_reader_tests {
         assert!(matches!(kb.get_term(empty_param), Term::Ref(s) if *s == list),
             "empty-bindings parameterized collapses to bare Ref(S); got {:?}", kb.get_term(empty_param));
 
-        // Dual-form readers classify the flipped producers' output …
+        // Readers classify the flipped producers' output.
         assert!(matches!(extract_type(&kb, &TermIdView(sr)), TypeExtractor::SortRef(s) if s == int));
         assert!(matches!(extract_type(&kb, &TermIdView(p)), TypeExtractor::Parameterized { base, .. } if base == list));
         assert_eq!(sort_functor_of(&kb, p), Some(list), "term-backed Fn{{List,..}} -> List");
-
-        // … AND a hand-built DEEP shape identically (deep recognition retained).
-        let deep_sr = deep_sort_ref(&mut kb, int);
-        let deep_p = deep_param(&mut kb, list, t, int);
-        assert!(matches!(extract_type(&kb, &TermIdView(deep_sr)), TypeExtractor::SortRef(s) if s == int),
-            "deep sort_ref(Int) still reads as SortRef(Int)");
-        assert!(matches!(extract_type(&kb, &TermIdView(deep_p)), TypeExtractor::Parameterized { base, .. } if base == list),
-            "deep parameterized(List, …) still reads as Parameterized{{List}}");
-        assert_eq!(sort_functor_of(&kb, deep_p), Some(list), "deep parameterized -> List");
     }
 }
 
