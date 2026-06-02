@@ -975,13 +975,25 @@ fn walk_type_deep_value(kb: &mut KnowledgeBase, subst: &Substitution, e: &Value)
 
 /// WI-342 env data-flow: resolve sort-level type params in a carrier-agnostic
 /// constructor field type through the pattern subst (`case some(name)` over
-/// `Option[T = String]` resolves `name`'s declared `T` to `String`). A ground
-/// (`Value::Term`) field walks via [`walk_type`]; a `Value::Node` field carries
-/// `Ref`s, not type-param vars, so the substitution is a no-op and it is returned
-/// as-is (same rationale as [`walk_type_deep_value`]).
+/// `Option[T = String]` resolves `name`'s declared `T` to `String`). A field's
+/// top-level type-param var is resolved through the subst via [`resolve_as_value`]
+/// (so a `Value::Node` type-param value — a denoted-bearing arg — is surfaced as a
+/// Node, not dropped); a ground binding routes through [`walk_type`] as before. A
+/// `Value::Node` field carries `Ref`s, not type-param vars, so it is returned as-is
+/// (same rationale as [`walk_type_deep_value`]).
 fn walk_type_value(kb: &KnowledgeBase, subst: &Substitution, ty: &Value) -> Value {
     match ty {
-        Value::Term(t) => Value::Term(walk_type(kb, subst, *t)),
+        Value::Term(t) => {
+            // A field type that is itself a type-param var resolves through the
+            // subst's `Value` binding, which may be a `Value::Node` (carried, not
+            // re-grounded). A non-var / unbound term falls to the TermId walk.
+            if let Term::Var(Var::Global(vid)) = kb.get_term(*t) {
+                if let Some(bound) = subst.resolve_as_value(*vid) {
+                    return walk_type_value(kb, subst, &bound.clone());
+                }
+            }
+            Value::Term(walk_type(kb, subst, *t))
+        }
         other => other.clone(),
     }
 }
@@ -6842,7 +6854,7 @@ pub(crate) fn extract_type_param<V: TermView>(kb: &KnowledgeBase, ty: &V, param:
 /// short-name resolution is ambiguous when many sorts declare
 /// `sort T = ?`.
 fn build_pattern_subst(
-    kb: &mut KnowledgeBase,
+    kb: &KnowledgeBase,
     scrutinee_type: &impl TermView,
     parent_sort: Symbol,
 ) -> Option<Substitution> {
@@ -6860,15 +6872,12 @@ fn build_pattern_subst(
     let mut any = false;
     for (param, value) in &bindings {
         if let Some(vid) = type_param_vid_in_sort(kb, parent_sort, *param) {
-            // The pattern subst feeds `walk_type` (TermId-based — the type-var
-            // resolver is not a WI-342 migration target), so a binding value
-            // materializes to a hash-consed `TermId` here. A `Value::Node`
-            // (denoted-bearing) type-param value re-grounds losslessly — exactly
-            // what the pre-WI-342 whole-scrutinee re-ground did before this fn saw
-            // the bindings, so binding it (rather than silently dropping it) keeps
-            // the migration behaviour-identical over the full input domain.
-            let ground = value_to_term_id(kb, value);
-            subst.bind_term(vid, ground);
+            // WI-342: bind the type-param value carrier-agnostically (`bind_value`),
+            // so a `Value::Node` (denoted-bearing) type-param is preserved rather
+            // than re-grounded. `walk_type_value` resolves a field type through this
+            // binding via `resolve_as_value` (it may surface the Node); a ground
+            // `Value::Term` binding is still read by `walk_type`'s `resolve_with_term`.
+            subst.bind_value(vid, value.clone());
             any = true;
         }
     }
