@@ -1256,7 +1256,7 @@ enum TypeWorkOp {
     Visit {
         occ: Rc<NodeOccurrence>,
         env: Rc<TypingEnv>,
-        expected: Option<TermId>,
+        expected: Option<Value>,
         /// WI-283: remaining `[simp]` fire-fuel for this node. Inherited
         /// unchanged by child Visits; spent (`fuel - 1`) only when an
         /// Apply/Constructor fires and re-`Visit`s its synthesized RHS.
@@ -1281,7 +1281,7 @@ fn push_visit(
     work: &mut Vec<TypeWorkOp>,
     occ: Rc<NodeOccurrence>,
     env: Rc<TypingEnv>,
-    expected: Option<TermId>,
+    expected: Option<Value>,
     fuel: usize,
 ) {
     work.push(TypeWorkOp::Build(TypeBuildFrame::Stamp));
@@ -1314,7 +1314,7 @@ enum TypeBuildFrame {
         pos_args: Vec<Rc<NodeOccurrence>>,
         named_args: Vec<(Symbol, Rc<NodeOccurrence>)>,
         env: Rc<TypingEnv>,
-        expected: Option<TermId>,
+        expected: Option<Value>,
         /// WI-283: fire-fuel inherited from this node's `Visit`; on a fire
         /// the RHS is re-`Visit`ed with `fuel - 1` (bounds the chain).
         fuel: usize,
@@ -1330,7 +1330,7 @@ enum TypeBuildFrame {
         named_args: Vec<(Symbol, Rc<NodeOccurrence>)>,
         env: Rc<TypingEnv>,
         span: Option<Span>,
-        expected: Option<TermId>,
+        expected: Option<Value>,
         /// WI-283: fire-fuel — see [`TypeBuildFrame::Apply::fuel`].
         fuel: usize,
     },
@@ -1348,7 +1348,7 @@ enum TypeBuildFrame {
         pos_count: usize,
         named_keys: Vec<Symbol>,
         env: Rc<TypingEnv>,
-        expected: Option<TermId>,
+        expected: Option<Value>,
         /// WI-283: fire-fuel inherited from this node's `Visit`; spent
         /// (`fuel - 1`) on the re-`Visit` of the synthesized call.
         fuel: usize,
@@ -1364,7 +1364,7 @@ enum TypeBuildFrame {
         pattern: TermId,
         annotation: Option<TermId>,
         body_occ: Rc<NodeOccurrence>,
-        body_expected: Option<TermId>,
+        body_expected: Option<Value>,
         /// WI-283: fire-fuel to propagate onto the body `Visit`.
         fuel: usize,
     },
@@ -1388,7 +1388,7 @@ enum TypeBuildFrame {
         occ: Rc<NodeOccurrence>,
         branches: Vec<MatchBranch>,
         outer_env: Rc<TypingEnv>,
-        body_expected: Option<TermId>,
+        body_expected: Option<Value>,
         /// WI-283: fire-fuel to propagate onto each branch-body `Visit`.
         fuel: usize,
     },
@@ -1414,7 +1414,7 @@ enum TypeBuildFrame {
         /// `Some` ⇒ checked mode (every branch must conform); `None` ⇒
         /// synthesis mode (result is the join — a common supertype — of
         /// the branch types).
-        body_expected: Option<TermId>,
+        body_expected: Option<Value>,
     },
     /// Lambda body finished; build the `arrow(param, body_ty,
     /// body_effects)` type and return a pure result (creating a
@@ -1433,14 +1433,14 @@ enum TypeBuildFrame {
     /// else branch types (checked against `expected` when present), not
     /// just the then-branch type. Replaces the recursive-helper arm so a
     /// deep else-if chain stays on the heap.
-    IfExpr { occ: Rc<NodeOccurrence>, env: Rc<TypingEnv>, expected: Option<TermId> },
+    IfExpr { occ: Rc<NodeOccurrence>, env: Rc<TypingEnv>, expected: Option<Value> },
     /// WI-285: all list elements finished; drain `count`, infer the
     /// element type (`element_hint` when bound by an outer
     /// `List[T = X]`, else the first element's type), build
     /// `List[T = elem]` (former `check_list_literal`).
-    ListLit { occ: Rc<NodeOccurrence>, env: Rc<TypingEnv>, element_hint: Option<TermId>, count: usize },
+    ListLit { occ: Rc<NodeOccurrence>, env: Rc<TypingEnv>, element_hint: Option<Value>, count: usize },
     /// WI-285: as [`TypeBuildFrame::ListLit`], for `Set[T = elem]`.
-    SetLit { occ: Rc<NodeOccurrence>, env: Rc<TypingEnv>, element_hint: Option<TermId>, count: usize },
+    SetLit { occ: Rc<NodeOccurrence>, env: Rc<TypingEnv>, element_hint: Option<Value>, count: usize },
     /// WI-285: all tuple fields finished (positional then named);
     /// drain `pos_count + named_names.len()`, building the named-tuple
     /// type (`_0`, `_1`, … for positional fields, declared names for
@@ -1481,7 +1481,7 @@ pub fn type_check_expr_expected(
     kb: &mut KnowledgeBase,
     env: &TypingEnv,
     expr: TermId,
-    expected: Option<TermId>,
+    expected: Option<Value>,
 ) -> Result<TypeResult, TypeError> {
     let node = materialize_from_handle(kb, expr);
     type_check_node(kb, env, &node, expected)
@@ -1506,7 +1506,7 @@ pub fn type_check_node(
     kb: &mut KnowledgeBase,
     env: &TypingEnv,
     occ: &Rc<NodeOccurrence>,
-    expected: Option<TermId>,
+    expected: Option<Value>,
 ) -> Result<TypeResult, TypeError> {
     let mut work: Vec<TypeWorkOp> = Vec::with_capacity(32);
     let mut results: Vec<Result<TypeResult, TypeError>> = Vec::with_capacity(32);
@@ -1855,7 +1855,7 @@ fn visit_type(
     kb: &mut KnowledgeBase,
     occ: Rc<NodeOccurrence>,
     env: Rc<TypingEnv>,
-    expected: Option<TermId>,
+    expected: Option<Value>,
     // WI-283: the `[simp]` fire-fuel for this node; passed unchanged to
     // child Visits and to the Apply/Constructor/Let/Match build frames so
     // a fire can spend it (`fuel - 1`) when it re-`Visit`s the RHS.
@@ -1902,7 +1902,9 @@ fn visit_type(
                 body_expected: expected,
                 fuel,
             }));
-            push_visit(work, value_occ, env, annotation, fuel);
+            // S4a will flip the let-annotation slot to `Value`; until then the
+            // still-`TermId` annotation rides the now-`Value` hint via `Value::Term`.
+            push_visit(work, value_occ, env, annotation.map(Value::Term), fuel);
         }
         Expr::Match { scrutinee, branches } => {
             let scrutinee_occ = Rc::clone(scrutinee);
@@ -1947,8 +1949,8 @@ fn visit_type(
                     // Checking direction: the expected arrow's param slot. The
                     // pattern-env slot is still a `TermId`, so re-ground at this
                     // sink (`extract_function_param_type` now yields a `Value`).
-                    expected.and_then(|exp| {
-                        extract_function_param_type(kb, &TermIdView(exp))
+                    expected.as_ref().and_then(|exp| {
+                        extract_function_param_type(kb, exp)
                             .map(|v| value_to_term_id(kb, &v))
                     })
                 })
@@ -1960,11 +1962,10 @@ fn visit_type(
             extend_env_from_pattern(kb, &mut lambda_env, param, Some(param_type));
             // WI-270: if expected is `arrow(param, result, effects)`,
             // decompose and pass `result` to the body. Mismatching
-            // shapes (or `None`) leave the body without a hint. The LambdaBody
-            // frame's hint slot is a `TermId`, so re-ground at this sink.
-            let body_expected = expected.and_then(|exp| {
-                extract_function_type_parts(kb, &TermIdView(exp))
-                    .map(|(ret, _)| value_to_term_id(kb, &ret))
+            // shapes (or `None`) leave the body without a hint. WI-342 S3a: the
+            // body's expected hint is a carrier-agnostic `Value` — no re-ground.
+            let body_expected = expected.as_ref().and_then(|exp| {
+                extract_function_type_parts(kb, exp).map(|(ret, _)| ret)
             });
             work.push(TypeWorkOp::Build(TypeBuildFrame::LambdaBody {
                 occ: Rc::clone(&occ),
@@ -2064,8 +2065,8 @@ fn visit_type(
             // Drain order [cond, then, else]: push reversed. The
             // condition is always `Bool` (no hint); both branches share
             // the if's `expected` (WI-270).
-            work.push(TypeWorkOp::Build(TypeBuildFrame::IfExpr { occ: Rc::clone(&occ), env: Rc::clone(&env), expected }));
-            push_visit(work, else_branch, Rc::clone(&env), expected, fuel);
+            work.push(TypeWorkOp::Build(TypeBuildFrame::IfExpr { occ: Rc::clone(&occ), env: Rc::clone(&env), expected: expected.clone() }));
+            push_visit(work, else_branch, Rc::clone(&env), expected.clone(), fuel);
             push_visit(work, then_branch, Rc::clone(&env), expected, fuel);
             push_visit_no_hint(work, condition, env, fuel);
         }
@@ -2073,28 +2074,28 @@ fn visit_type(
             let elems = elems.clone();
             // WI-270: an outer `List[T = X]` makes X each element's
             // expected, and the empty-list fallback.
-            let element_hint = expected.and_then(|exp| extract_type_param(kb, exp, "T"));
+            let element_hint = expected.as_ref().and_then(|exp| extract_type_param(kb, exp, "T"));
             work.push(TypeWorkOp::Build(TypeBuildFrame::ListLit {
                 occ: Rc::clone(&occ),
                 env: Rc::clone(&env),
-                element_hint,
+                element_hint: element_hint.clone(),
                 count: elems.len(),
             }));
             for e in elems.iter().rev() {
-                push_visit(work, Rc::clone(e), Rc::clone(&env), element_hint, fuel);
+                push_visit(work, Rc::clone(e), Rc::clone(&env), element_hint.clone(), fuel);
             }
         }
         Expr::SetLit(elems) => {
             let elems = elems.clone();
-            let element_hint = expected.and_then(|exp| extract_type_param(kb, exp, "T"));
+            let element_hint = expected.as_ref().and_then(|exp| extract_type_param(kb, exp, "T"));
             work.push(TypeWorkOp::Build(TypeBuildFrame::SetLit {
                 occ: Rc::clone(&occ),
                 env: Rc::clone(&env),
-                element_hint,
+                element_hint: element_hint.clone(),
                 count: elems.len(),
             }));
             for e in elems.iter().rev() {
-                push_visit(work, Rc::clone(e), Rc::clone(&env), element_hint, fuel);
+                push_visit(work, Rc::clone(e), Rc::clone(&env), element_hint.clone(), fuel);
             }
         }
         Expr::TupleLit { positional, named } => {
@@ -2597,10 +2598,10 @@ fn build_type(
                 scr_ty,
                 covered_entities,
                 has_wildcard,
-                body_expected,
+                body_expected: body_expected.clone(),
             }));
             for (branch, env) in branches.iter().zip(visit_envs.into_iter()).rev() {
-                push_visit(work, Rc::clone(&branch.body), env, body_expected, fuel);
+                push_visit(work, Rc::clone(&branch.body), env, body_expected.clone(), fuel);
             }
         }
         TypeBuildFrame::MatchFinal {
@@ -2822,7 +2823,7 @@ fn build_type(
             let mut effects = Vec::new();
             // WI-342: keep the element type carrier-agnostic so a `Value::Node`
             // element (e.g. a list of effectful lambdas) is CARRIED, not re-grounded.
-            let mut element_type: Option<Value> = element_hint.map(Value::Term);
+            let mut element_type: Option<Value> = element_hint;
             for r in group {
                 let r = r.expect("aggregator");
                 if element_type.is_none() {
@@ -2851,7 +2852,7 @@ fn build_type(
             let (span, owner) = (occ.span, occ.owner);
             let mut effects = Vec::new();
             // WI-342: carrier-agnostic element type (carry a `Value::Node` element).
-            let mut element_type: Option<Value> = element_hint.map(Value::Term);
+            let mut element_type: Option<Value> = element_hint;
             for r in group {
                 let r = r.expect("aggregator");
                 if element_type.is_none() {
@@ -2935,7 +2936,7 @@ fn check_apply_iter(
     pos_results: &[Result<TypeResult, TypeError>],
     named_results: &[Result<TypeResult, TypeError>],
     span: Option<Span>,
-    expected: Option<TermId>,
+    expected: Option<Value>,
 ) -> Result<TypeResult, TypeError> {
     // Surface any sub-expression failure before continuing. Aggregate
     // sibling errors so a multi-arg call reports every ill-typed arg
@@ -2964,7 +2965,7 @@ fn check_apply_iter(
         // op's `?E` Var binds to WorkItem here, and the post-arg
         // unconstrained-param check sees it as pinned.
         if let Some(exp) = expected {
-            unify_types(kb, &mut subst, &op.return_type, &TermIdView(exp));
+            unify_types(kb, &mut subst, &op.return_type, &exp);
         }
         let mut arg_effects: Vec<Value> = Vec::new();
         let mut param_to_arg_sym: HashMap<Symbol, Symbol> = HashMap::new();
@@ -6331,7 +6332,7 @@ fn check_seq_literal_constructor(
     kb: &mut KnowledgeBase,
     env: &TypingEnv,
     pos_results: &[Result<TypeResult, TypeError>],
-    expected: Option<TermId>,
+    expected: Option<Value>,
     occ: &Rc<NodeOccurrence>,
     base_name: &str,
 ) -> Result<TypeResult, TypeError> {
@@ -6341,7 +6342,7 @@ fn check_seq_literal_constructor(
     // WI-342: carrier-agnostic element type — a `Value::Node` element (an
     // effectful lambda) is carried into the `List`/`Set` parameterization.
     let mut element_type: Option<Value> =
-        expected.and_then(|e| extract_type_param(kb, e, "T")).map(Value::Term);
+        expected.and_then(|e| extract_type_param(kb, &e, "T"));
     let mut effects: Vec<Value> = Vec::new();
     for r in pos_results {
         let r = r.as_ref().expect("aggregator");
@@ -6376,7 +6377,7 @@ fn check_constructor_iter(
     pos_results: &[Result<TypeResult, TypeError>],
     named_results: &[Result<TypeResult, TypeError>],
     span: Option<Span>,
-    expected: Option<TermId>,
+    expected: Option<Value>,
     occ: &Rc<NodeOccurrence>,
 ) -> Result<TypeResult, TypeError> {
     let _ = pos_args; // arg-NodeOccurrence references kept for parity with check_apply_iter
@@ -6437,7 +6438,7 @@ fn check_constructor_iter(
     // empty-field-types early return below so 0-arg constructors
     // (`nil()`, `Map.empty()`) also see the hint.
     if let Some(exp) = expected {
-        unify_types(kb, &mut subst, &TermIdView(parent_type), &TermIdView(exp));
+        unify_types(kb, &mut subst, &TermIdView(parent_type), &exp);
     }
 
     // WI-342: `declared_type` is a carrier-agnostic `Value` (a value-in-type
@@ -6813,16 +6814,17 @@ fn extract_pattern_var_name(kb: &KnowledgeBase, pattern: TermId) -> Option<Symbo
 }
 
 
-/// Extract a named type parameter from a parameterized type term. WI-361: a
-/// parameterized type is `Fn{S, named}` (the base sort is the functor, the
-/// bindings ARE the named args), so a type parameter is a direct named-arg
-/// lookup — e.g. `extract_type_param(kb, List[T = Int], "T") → Some(Int)`. (The
-/// deep `parameterized(base, bindings: List[TypeBinding])` form no longer exists.)
-pub(crate) fn extract_type_param(kb: &KnowledgeBase, ty: TermId, param: &str) -> Option<TermId> {
-    if let Term::Fn { named_args, .. } = kb.get_term(ty) {
-        named_args.iter()
+/// Extract a named type parameter from a parameterized type, carrier-agnostically
+/// (WI-342 S3a): reads via [`extract_type`] so a `Value::Node` parameterized (a
+/// denoted-bearing binding) is handled too, and returns the binding as a
+/// carrier-agnostic [`Value`]. WI-361: a parameterized type is `Fn{S, named}`
+/// (base sort = functor, bindings = named args), so the lookup is over those
+/// bindings — `extract_type_param(List[T = Int], "T") → Some(Value::Term(Int))`.
+pub(crate) fn extract_type_param<V: TermView>(kb: &KnowledgeBase, ty: &V, param: &str) -> Option<Value> {
+    if let TypeExtractor::Parameterized { bindings, .. } = extract_type(kb, ty) {
+        bindings.into_iter()
             .find(|(s, _)| kb.resolve_sym(*s) == param)
-            .map(|(_, v)| *v)
+            .map(|(_, v)| v)
     } else {
         None
     }
@@ -9135,7 +9137,7 @@ fn more_general_form(kb: &KnowledgeBase, v: &Value) -> Option<&'static str> {
 fn compute_branch_join_type(
     kb: &mut KnowledgeBase,
     branch_tys: &[(Value, Option<Span>)],
-    expected: Option<TermId>,
+    expected: Option<Value>,
     construct: &str,
 ) -> Result<Value, TypeError> {
     // Intern once up front so the type-lattice borrows below can take
@@ -9164,15 +9166,15 @@ fn compute_branch_join_type(
     // (`types_compatible` covers entity→sort and `requires`-refine).
     // This is the enforcement the old code skipped — it only ever
     // type-checked the synthesized type, which was branch 0.
-    if let Some(exp) = expected {
+    if let Some(exp) = &expected {
         for (bt, span) in branch_tys {
             // WI-335: each branch's conformance check is independent.
             let mut subst = Substitution::new();
-            if !types_compatible(kb, &mut subst, bt, &TermIdView(exp)) {
+            if !types_compatible(kb, &mut subst, bt, exp) {
                 return Err(TypeError::TypeMismatch {
                     span: *span,
                     context: branch_ctx,
-                    expected: Value::Term(exp),
+                    expected: exp.clone(),
                     actual: bt.clone(),
                 });
             }
@@ -9200,10 +9202,10 @@ fn compute_branch_join_type(
         (None, None) => Ok(acc),
         (None, Some(exp)) => {
             let mut subst = Substitution::new();
-            if types_compatible(kb, &mut subst, &acc, &TermIdView(exp)) {
+            if types_compatible(kb, &mut subst, &acc, &exp) {
                 Ok(acc)
             } else {
-                Ok(Value::Term(exp))
+                Ok(exp)
             }
         }
         // No climb-computed join, but every branch conforms to `expected`
@@ -9214,7 +9216,7 @@ fn compute_branch_join_type(
         // to a wildcard — report the clash instead, mirroring the
         // type_var guard in the `(None, Some)` arm above.
         (Some((bt, span)), Some(exp)) => {
-            if type_dispatch_name(kb, exp) == Some("type_var") {
+            if type_dispatch_name_view(kb, &exp) == Some("type_var") {
                 Err(TypeError::TypeMismatch {
                     span,
                     context: branch_ctx,
@@ -9222,7 +9224,7 @@ fn compute_branch_join_type(
                     actual: bt.clone(),
                 })
             } else {
-                Ok(Value::Term(exp))
+                Ok(exp)
             }
         }
         // No expected type and no common supertype — the top-less lattice
@@ -10797,7 +10799,7 @@ fn check_operation_bodies(kb: &mut KnowledgeBase, op_syms: &[Symbol], errors: &m
         // WI-341: `type_check_node`'s top-down hint is a ground `TermId`; pass it
         // for a ground return type, drop it (`None`) for a `Value::Node` (denoted-
         // bearing) return — never materialize the occurrence into the hint.
-        match type_check_node(kb, &env, &op.body_node, op.return_type.as_term()) {
+        match type_check_node(kb, &env, &op.body_node, Some(op.return_type.clone())) {
             Ok(result) => {
                 // WI-283: the typer is tree-producing — `result.node` is
                 // the (possibly `[simp]`-rewritten) body. Write the
