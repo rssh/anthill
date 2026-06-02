@@ -5744,8 +5744,22 @@ impl<'a> Loader<'a> {
         NodeOccurrence::new_expr(expr, span, owner)
     }
 
-    /// Convert a TypeExpr to a Type entity term in the KB.
+    /// Convert a TypeExpr to a hash-consed Type entity term in the KB.
     /// Produces sort_ref, parameterized, arrow, type_var, named_tuple terms.
+    ///
+    /// WI-342 T8: this is the GROUND (always-hash-consed) lowering, retained for
+    /// the loader positions that store a `TermId` — `SortAlias` (sort-def),
+    /// `SortView` (`requires` / fact `provides`), and the redundant `let : T`
+    /// `k_type_name` slot. A value-in-type here (`Modify[c]`, a literal `3`) still
+    /// lowers to a GROUND `denoted` via `make_denoted`, because those are
+    /// parameterized ground-FACT positions that cannot carry a `Value::Node`
+    /// until effect-expressions-as-types lands (the slot itself would have to
+    /// become a value fact). The carrier-agnostic peer `type_expr_to_value` /
+    /// `type_expr_to_child` (which mints a `Value::Node` for a value-in-type) is
+    /// the path for the MIGRATED positions — op signature, entity fields, call
+    /// type-args — which therefore no longer reach this fn for their
+    /// value-in-types (verified by probe: the loader's only `make_denoted` reach
+    /// is from these ground-fact positions, none exercised by the current corpus).
     fn type_expr_to_term(&mut self, ty: &TypeExpr) -> TermId {
         match ty {
             TypeExpr::Simple(name) => {

@@ -2549,9 +2549,21 @@ impl KnowledgeBase {
         self.alloc(Term::Ref(sort_sym))
     }
 
-    /// `denoted(value: <term>)` — a value standing in a type-argument
-    /// position (WI-302). Mirrors reflect `Type.denoted`. The `value` is the
-    /// term-form of the carried value occurrence.
+    /// `denoted(value: <term>)` — a value standing in a type-argument position
+    /// (WI-302), the GROUND (hash-consed) carrier. Mirrors reflect
+    /// `TypeExtractor.Denoted`. The `value` is the term-form of the carried value.
+    ///
+    /// WI-342 T8: NO LONGER the value-in-type production builder — the typer
+    /// (T1–T7) and the loader's migrated positions (entity fields, op signature,
+    /// call type-args, via `type_expr_to_child`) mint a `Value::Node` `denoted`
+    /// occurrence through [`Self::make_denoted_occ`] instead, the carrier the
+    /// migration requires. The ground form survives for the parameterized
+    /// ground-FACT positions still lowered by `type_expr_to_term` (`SortAlias` /
+    /// `SortView` / the fact-`provides` placeholder), which stay hash-consed
+    /// `TermId`s until effect-expressions-as-types lets those fact slots carry a
+    /// `Value`; plus `#[cfg(test)]` cross-carrier fixtures (a ground `denoted`
+    /// unified/subtyped against its `Value::Node` twin). So it cannot be deleted
+    /// yet — but it is off every live value-in-type *production* path.
     pub fn make_denoted(&mut self, value: TermId) -> TermId {
         let denoted_sym = self.resolve_symbol("anthill.prelude.TypeExtractor.Denoted");
         let value_key = self.intern("value");
