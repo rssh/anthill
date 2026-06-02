@@ -201,10 +201,16 @@ fn drain_expr_children(expr: &mut Expr, stack: &mut Vec<Rc<NodeOccurrence>>) {
             stack.push(std::mem::replace(then_branch, mk_placeholder()));
             stack.push(std::mem::replace(else_branch, mk_placeholder()));
         }
-        Expr::Let { pattern, value, body, .. } => {
+        Expr::Let { pattern, type_annotation, value, body } => {
             stack.push(std::mem::replace(pattern, mk_placeholder()));
             stack.push(std::mem::replace(value, mk_placeholder()));
             stack.push(std::mem::replace(body, mk_placeholder()));
+            // WI-342: a denoted-bearing annotation is a `Value::Node` occurrence
+            // — drain it onto the stack so a deeply nested type can't overflow the
+            // iterative Drop this fn exists to prevent.
+            if let Some(Value::Node(occ)) = type_annotation.take() {
+                stack.push(occ);
+            }
         }
         Expr::Match { scrutinee, branches } => {
             stack.push(std::mem::replace(scrutinee, mk_placeholder()));
@@ -564,12 +570,13 @@ pub enum Expr {
     /// `let pat = value in body`. WI-318: `pattern` is a Pattern-kind
     /// occurrence (typically `Pattern::Var { name, type_ann: None }`).
     /// `type_annotation` is the OUTER `: T` annotation from WI-185
-    /// (`let p: T = …`), legitimately a TermId because it's a type
-    /// expression (proposal 027.1) — its DeBruijn-remap stays in
-    /// WI-298 scope.
+    /// (`let p: T = …`). WI-342 S4a: a carrier-agnostic `Value` — a non-trivial
+    /// (denoted-bearing) annotation rides as `Value::Node`. A `Value::Node` type
+    /// carries only Ref/literal denoteds (no DeBruijn/Global vars), so the
+    /// DeBruijn open/close + σ walkers treat it as opaque (see `*_value_type`).
     Let {
         pattern: Rc<NodeOccurrence>,
-        type_annotation: Option<TermId>,
+        type_annotation: Option<Value>,
         value: Rc<NodeOccurrence>,
         body: Rc<NodeOccurrence>,
     },
@@ -1089,7 +1096,7 @@ pub fn open_debruijn_node(
             let new_pattern = open_debruijn_node(kb, pattern, fresh);
             let new_value = open_debruijn_node(kb, value, fresh);
             let new_body = open_debruijn_node(kb, body, fresh);
-            let (new_ta, ta_changed) = open_option_termid(kb, type_annotation, fresh);
+            let (new_ta, ta_changed) = open_option_value(kb, type_annotation, fresh);
             let c1 = !Rc::ptr_eq(&new_pattern, pattern);
             let c2 = !Rc::ptr_eq(&new_value, value);
             let c3 = !Rc::ptr_eq(&new_body, body);
@@ -1229,7 +1236,7 @@ pub fn node_to_debruijn(
             let new_pattern = node_to_debruijn(kb, pattern, var_order);
             let new_value = node_to_debruijn(kb, value, var_order);
             let new_body = node_to_debruijn(kb, body, var_order);
-            let (new_ta, ta_changed) = close_option_termid(kb, type_annotation, var_order);
+            let (new_ta, ta_changed) = close_option_value(kb, type_annotation, var_order);
             let c1 = !Rc::ptr_eq(&new_pattern, pattern);
             let c2 = !Rc::ptr_eq(&new_value, value);
             let c3 = !Rc::ptr_eq(&new_body, body);
@@ -1344,18 +1351,34 @@ fn close_type_args(
     (out, changed)
 }
 
-/// WI-298: close vars inside an `Option<TermId>` field (today only
-/// `Let.type_annotation`) via `term_to_debruijn` — twin of
-/// `open_option_termid` on the opening side. Returns `(remapped, changed)`.
-fn close_option_termid(
-    kb: &mut KnowledgeBase,
-    item: &Option<TermId>,
-    var_order: &[VarId],
-) -> (Option<TermId>, bool) {
-    match item {
-        Some(t) => {
+/// WI-342: DeBruijn-close a carrier-agnostic type `Value` — twin of
+/// `open_value_type` (a `Value::Node` type carries no vars, so it passes through
+/// `node_to_debruijn` unchanged).
+fn close_value_type(kb: &mut KnowledgeBase, v: &Value, var_order: &[VarId]) -> (Value, bool) {
+    match v {
+        Value::Term(t) => {
             let nt = kb.term_to_debruijn(*t, var_order);
-            (Some(nt), nt != *t)
+            (Value::Term(nt), nt != *t)
+        }
+        Value::Node(occ) => {
+            let r = node_to_debruijn(kb, occ, var_order);
+            (Value::Node(Rc::clone(&r)), !Rc::ptr_eq(&r, occ))
+        }
+        other => (other.clone(), false),
+    }
+}
+
+/// WI-298/WI-342: close vars inside an `Option<Value>` type field (today only
+/// `Let.type_annotation`) — twin of `open_option_value`.
+fn close_option_value(
+    kb: &mut KnowledgeBase,
+    item: &Option<Value>,
+    var_order: &[VarId],
+) -> (Option<Value>, bool) {
+    match item {
+        Some(v) => {
+            let (nv, changed) = close_value_type(kb, v, var_order);
+            (Some(nv), changed)
         }
         None => (None, false),
     }
@@ -1410,18 +1433,38 @@ fn open_type_args(
     (out, changed)
 }
 
-/// WI-298: open DeBruijn vars inside an `Option<TermId>` field (today only
-/// `Let.type_annotation`) via `term_from_debruijn` — the opener twin of
-/// `node_to_debruijn`'s symmetric Let arm. Returns `(remapped, changed)`.
-fn open_option_termid(
-    kb: &mut KnowledgeBase,
-    item: &Option<TermId>,
-    fresh: &[VarId],
-) -> (Option<TermId>, bool) {
-    match item {
-        Some(t) => {
+/// WI-342: DeBruijn-open a carrier-agnostic type `Value` — a ground `Value::Term`
+/// via `term_from_debruijn`; a `Value::Node` type occurrence carries only
+/// Ref/literal denoteds (no DeBruijn/Global vars), so it passes through
+/// `open_debruijn_node` unchanged (a no-op for `NodeKind::Type`/`EffectExpr`) —
+/// symmetric with `close_value_type`/`subst_value_type` and the var collectors.
+/// A type slot never holds a `Value::Var`. Shared by `Let.type_annotation`
+/// (`open_option_value`) and `Apply`/`ApplyWithin.type_args` (`open_type_args`).
+fn open_value_type(kb: &mut KnowledgeBase, v: &Value, fresh: &[VarId]) -> (Value, bool) {
+    match v {
+        Value::Term(t) => {
             let nt = kb.term_from_debruijn(*t, fresh);
-            (Some(nt), nt != *t)
+            (Value::Term(nt), nt != *t)
+        }
+        Value::Node(occ) => {
+            let r = open_debruijn_node(kb, occ, fresh);
+            (Value::Node(Rc::clone(&r)), !Rc::ptr_eq(&r, occ))
+        }
+        other => (other.clone(), false),
+    }
+}
+
+/// WI-298/WI-342: open DeBruijn vars inside an `Option<Value>` type field (today
+/// only `Let.type_annotation`) — the opener twin of `close_option_value`.
+fn open_option_value(
+    kb: &mut KnowledgeBase,
+    item: &Option<Value>,
+    fresh: &[VarId],
+) -> (Option<Value>, bool) {
+    match item {
+        Some(v) => {
+            let (nv, changed) = open_value_type(kb, v, fresh);
+            (Some(nv), changed)
         }
         None => (None, false),
     }
@@ -1587,9 +1630,12 @@ fn collect_expr_termid_field_vars(
         }
         Expr::Let { type_annotation, .. } => {
             // WI-318: pattern is now a Pattern-kind occurrence walked by
-            // `for_each_child` in the caller. Only `type_annotation`
-            // remains a TermId-typed field needing the term-collector.
-            if let Some(t) = type_annotation {
+            // `for_each_child` in the caller. Only `type_annotation` remains a
+            // var-bearing non-occ-child field. WI-342: it is now a `Value`; a
+            // ground `Value::Term` is var-collected as before, a `Value::Node`
+            // type carries no `Global` vars (Ref/literal denoteds), symmetric
+            // with the no-op DeBruijn close in `close_value_type`.
+            if let Some(Value::Term(t)) = type_annotation {
                 kb.collect_vars_rec(*t, vars, seen);
             }
         }
@@ -2366,7 +2412,7 @@ pub fn substitute_occurrence(
             let new_pattern = substitute_occurrence(kb, pattern, subst);
             let new_value = substitute_occurrence(kb, value, subst);
             let new_body = substitute_occurrence(kb, body, subst);
-            let (new_ta, ta_changed) = subst_option_termid(kb, type_annotation, subst);
+            let (new_ta, ta_changed) = subst_option_value(kb, type_annotation, subst);
             let c1 = !Rc::ptr_eq(&new_pattern, pattern);
             let c2 = !Rc::ptr_eq(&new_value, value);
             let c3 = !Rc::ptr_eq(&new_body, body);
@@ -2553,18 +2599,35 @@ fn subst_type_args(
     (out, changed)
 }
 
-/// WI-298: apply σ to an `Option<TermId>` field (today only
-/// `Let.type_annotation`) — the substitution twin of `open_option_termid` /
-/// `close_option_termid`.
-fn subst_option_termid(
-    kb: &mut KnowledgeBase,
-    item: &Option<TermId>,
-    subst: &Substitution,
-) -> (Option<TermId>, bool) {
-    match item {
-        Some(t) => {
+/// WI-342: apply σ to a carrier-agnostic type `Value` — a `Value::Node` type
+/// carries no `Global` var leaves (only Ref/literal denoteds), so it passes
+/// through `substitute_occurrence` unchanged (a no-op for type occurrences).
+fn subst_value_type(kb: &mut KnowledgeBase, v: &Value, subst: &Substitution) -> (Value, bool) {
+    match v {
+        Value::Term(t) => {
             let nt = kb.apply_subst(*t, subst);
-            (Some(nt), nt != *t)
+            (Value::Term(nt), nt != *t)
+        }
+        Value::Node(occ) => {
+            let r = substitute_occurrence(kb, occ, subst);
+            (Value::Node(Rc::clone(&r)), !Rc::ptr_eq(&r, occ))
+        }
+        other => (other.clone(), false),
+    }
+}
+
+/// WI-298/WI-342: apply σ to an `Option<Value>` type field (today only
+/// `Let.type_annotation`) — the substitution twin of `open_option_value` /
+/// `close_option_value`.
+fn subst_option_value(
+    kb: &mut KnowledgeBase,
+    item: &Option<Value>,
+    subst: &Substitution,
+) -> (Option<Value>, bool) {
+    match item {
+        Some(v) => {
+            let (nv, changed) = subst_value_type(kb, v, subst);
+            (Some(nv), changed)
         }
         None => (None, false),
     }
@@ -2758,7 +2821,7 @@ pub(crate) enum BuildFrame {
     /// Empty / missing slot — push a synthesized Bottom occurrence.
     Bottom,
     If { span: SourceSpan },
-    Let { span: SourceSpan, pattern: TermId, type_annotation: Option<TermId> },
+    Let { span: SourceSpan, pattern: TermId, type_annotation: Option<Value> },
     Lambda { span: SourceSpan, param: TermId },
     Match { span: SourceSpan, branches: Vec<BranchMeta> },
     Apply {
@@ -2871,7 +2934,9 @@ fn visit_fn(
         }
         "let_expr" => {
             let pattern = get_named_arg(kb, named_args, "pattern").unwrap_or(t);
-            let type_annotation = get_named_arg(kb, named_args, "type_name");
+            // WI-342: this term→occurrence rebuild reads the ground `type_name`
+            // TermId off the reflect term — it rides as a ground `Value::Term`.
+            let type_annotation = get_named_arg(kb, named_args, "type_name").map(Value::Term);
             let value = get_named_arg(kb, named_args, "value");
             let body = get_named_arg(kb, named_args, "body");
             work.push(WorkOp::Build(BuildFrame::Let { span, pattern, type_annotation }));
@@ -3820,7 +3885,7 @@ mod tests {
         let let_occ = NodeOccurrence::new_expr(
             Expr::Let {
                 pattern,
-                type_annotation: Some(ta_db),
+                type_annotation: Some(Value::Term(ta_db)),
                 value,
                 body,
             },
@@ -3831,7 +3896,7 @@ mod tests {
         let Some(Expr::Let { type_annotation, body, .. }) = opened.as_expr() else {
             panic!("expected Let");
         };
-        let Some(ta) = type_annotation else {
+        let Some(Value::Term(ta)) = type_annotation else {
             panic!("type_annotation should still be Some after open");
         };
         let Term::Var(Var::Global(ta_vid)) = kb.get_term(*ta) else {
@@ -3869,7 +3934,7 @@ mod tests {
         let let_occ = NodeOccurrence::new_expr(
             Expr::Let {
                 pattern,
-                type_annotation: Some(ta_global),
+                type_annotation: Some(Value::Term(ta_global)),
                 value,
                 body,
             },
@@ -3880,7 +3945,7 @@ mod tests {
         let Some(Expr::Let { type_annotation, body, .. }) = closed.as_expr() else {
             panic!("expected Let");
         };
-        let Some(ta) = type_annotation else {
+        let Some(Value::Term(ta)) = type_annotation else {
             panic!("type_annotation should still be Some after close");
         };
         assert!(
@@ -3957,7 +4022,7 @@ mod tests {
         let let_occ = NodeOccurrence::new_expr(
             Expr::Let {
                 pattern,
-                type_annotation: Some(ta_global),
+                type_annotation: Some(Value::Term(ta_global)),
                 value,
                 body,
             },
@@ -3972,7 +4037,7 @@ mod tests {
         let Some(Expr::Let { type_annotation, .. }) = out.as_expr() else {
             panic!("expected Let, got {:?}", out.as_expr());
         };
-        let Some(ta) = type_annotation else {
+        let Some(Value::Term(ta)) = type_annotation else {
             panic!("type_annotation should still be Some after subst");
         };
         assert_eq!(

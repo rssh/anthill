@@ -515,7 +515,7 @@ pub(super) fn reassemble(
         },
         Expr::Let { pattern, type_annotation, value, body } => Expr::Let {
             pattern: cur.take(pattern),
-            type_annotation: *type_annotation,
+            type_annotation: type_annotation.clone(),
             value: cur.take(value),
             body: cur.take(body),
         },

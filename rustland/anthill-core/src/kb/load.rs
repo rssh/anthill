@@ -5057,16 +5057,15 @@ impl<'a> Loader<'a> {
                 if self.occ_suppress == 0 {
                     let span = SourceSpan::from_span(
                         self.source_id, self.parsed.terms.span(outer_parse_id));
-                    // Read the `type_name` slot back off the just-built term;
-                    // pattern is the captured `pattern` TermId field (suppressed
-                    // on the occ stack, so the occ stack holds only [value, body]).
-                    let type_annotation = if let Term::Fn { named_args, .. } = self.kb.get_term(kb_id) {
-                        named_args.iter()
-                            .find(|(k, _)| *k == self.expr_syms.k_type_name)
-                            .map(|(_, v)| *v)
-                    } else {
-                        None
-                    };
+                    // WI-342 S4a: the occurrence annotation is a carrier-agnostic
+                    // `Value` (a denoted-bearing `: Modify[c]` rides as
+                    // `Value::Node`) — lower it from the parse annotation via
+                    // `type_expr_to_value` rather than re-reading the term-side
+                    // `k_type_name` `TermId`. (The term slot stays for now; S7
+                    // retires it with the rest of the term-side lowering.)
+                    let type_annotation = self
+                        .read_parse_type_annotation(outer_parse_id)
+                        .map(|ty_expr| self.type_expr_to_value(&ty_expr));
                     node_occurrence::build_frame(
                         self.kb,
                         node_occurrence::BuildFrame::Let { span, pattern, type_annotation },

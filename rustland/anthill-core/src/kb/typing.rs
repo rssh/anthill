@@ -1362,7 +1362,7 @@ enum TypeBuildFrame {
     LetAfterValue {
         occ: Rc<NodeOccurrence>,
         pattern: TermId,
-        annotation: Option<TermId>,
+        annotation: Option<Value>,
         body_occ: Rc<NodeOccurrence>,
         body_expected: Option<Value>,
         /// WI-283: fire-fuel to propagate onto the body `Visit`.
@@ -1886,7 +1886,7 @@ fn visit_type(
             // WI-318: pattern is now a Pattern-kind occurrence; bridge
             // to TermId for the existing term-based env-extension path.
             let pattern = super::node_occurrence::pattern_to_term(kb, pattern);
-            let annotation = *type_annotation;
+            let annotation = type_annotation.clone();
             let value_occ = Rc::clone(value);
             let body_occ = Rc::clone(body);
             // WI-270: value's expected is the let's annotation only —
@@ -1897,14 +1897,14 @@ fn visit_type(
             work.push(TypeWorkOp::Build(TypeBuildFrame::LetAfterValue {
                 occ: Rc::clone(&occ),
                 pattern,
-                annotation,
+                annotation: annotation.clone(),
                 body_occ,
                 body_expected: expected,
                 fuel,
             }));
-            // S4a will flip the let-annotation slot to `Value`; until then the
-            // still-`TermId` annotation rides the now-`Value` hint via `Value::Term`.
-            push_visit(work, value_occ, env, annotation.map(Value::Term), fuel);
+            // WI-342 S4a: the let-annotation is a carrier-agnostic `Value` and IS
+            // the value's expected type (WI-270) — thread it directly.
+            push_visit(work, value_occ, env, annotation, fuel);
         }
         Expr::Match { scrutinee, branches } => {
             let scrutinee_occ = Rc::clone(scrutinee);
@@ -2490,7 +2490,9 @@ fn build_type(
             // let value's carrier-agnostic `ty`.
             let value_ty = Some(value_to_term_id(kb, &r.ty));
             let (value_effects, mut ext_env) = (r.effects, r.env);
-            let bound_ty = annotation.or(value_ty);
+            // WI-342: the env binds a hash-consed `TermId` (migrated in S5), so
+            // re-ground a `Value` annotation here; prefer it over the value type.
+            let bound_ty = annotation.map(|a| value_to_term_id(kb, &a)).or(value_ty);
             extend_env_from_pattern(kb, &mut ext_env, pattern, bound_ty);
             if let Some(var_name) = extract_pattern_var_name(kb, pattern) {
                 ext_env.declare_local_resource(var_name);
@@ -11271,7 +11273,10 @@ fn collect_occurrence_type_constraints(
         // `for_each_child` below. Only `type_annotation` remains a
         // TermId-typed field needing the term-collector.
         Expr::Let { type_annotation, .. } => {
-            if let Some(t) = type_annotation {
+            // WI-342: a ground `Value::Term` annotation can carry nested op/entity
+            // calls to constrain; a `Value::Node` (denoted) annotation is a pure
+            // type occurrence with none, so it contributes no constraints.
+            if let Some(Value::Term(t)) = type_annotation {
                 collect_term_type_constraints(kb, *t, var_types, subst);
             }
         }
