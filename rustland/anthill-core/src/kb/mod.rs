@@ -318,7 +318,7 @@ pub struct KnowledgeBase {
     /// the `anthill.reflect.operation_body` builtin (which reads this table).
     /// See `docs/design/occurrence-as-value-type.md`.
     ///
-    /// WI-348 / **WI-368**: deliberately NOT collapsed into the `OperationInfo`
+    /// WI-348 / **WI-370**: deliberately NOT collapsed into the `OperationInfo`
     /// value fact (which would complete the "everything is facts" model). The
     /// body is keyed data (`Symbol` → body), but it is *also* an `Expr`
     /// occurrence whose control-flow forms (`let`/`if`/`match`) read `Opaque` in
@@ -330,7 +330,7 @@ pub struct KnowledgeBase {
     /// deep recursion. Doing the collapse *cleanly* — body in the fact, still
     /// shape-queryable — needs a **custom-unification / custom-search hook at a
     /// discrim node** (delegate the body subterm to on-demand `TermView` unify
-    /// instead of trie descent): tracked as **WI-368**. Until that lands, the
+    /// instead of trie descent): tracked as **WI-370**. Until that lands, the
     /// body stays here, reachable relationally via `operation_body`.
     pub(crate) op_bodies: HashMap<Symbol, Rc<NodeOccurrence>>,
 

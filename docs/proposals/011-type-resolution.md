@@ -6,6 +6,17 @@
 
 ## Blocks: 010 (Query System — syntax sugar only, core layers 0-1 unblocked), 012 (Sort-Defined Syntax Sugar)
 
+## Status update — corrections (2026-06-03)
+
+Parts of this proposal are superseded by later decisions. The stale passages are commented-out inline (with a pointer here); the corrected statements are:
+
+1. **"No separate type checker — reuse the resolver" is false in implementation.** A dedicated typer exists — `rustland/anthill-core/src/kb/typing.rs` (`unify_types`, `check_apply_iter`, `check_operation_bodies`, occurrence-based typing, simp-rewrite-during-typing) — distinct from the SLD resolver, though it *is* constraint-solving conceptually. It uses its own `unify_types`, sharing only the *idea* of generalize-missing-to-fresh with the resolver's term-level mechanism. See `docs/design/expansion-during-unification.md` and kernel-language §8.1. (Affects the Motivation section and the "No separate type checker" subsection.) During typing it also performs **type expansion** (kernel §8.1, `expansion-during-unification.md`): every ungrounded type position — a bare or partial parametric sort, a defined type's unfilled slot, a path-dependent projection — is filled with a fresh variable at the `unify_types` boundary, so missing parameters thread through unification. Beyond inference, the typer **elaborates** each call: during typing it resolves the call's required operation *dictionaries* — the spec/requirement implementations a dispatched op needs at its bindings — and attaches them to the call occurrence (`resolved_type_args` → callee `Frame.type_args`; requirement values via `CallClass::DeferToRequirement` / `req_insertion::run`), so the evaluator dispatches through the attached dictionary instead of re-resolving. **Dictionary-passing is resolved at type-check time** — this answers OQ4 (operation dispatch) below, and is the per-call elaboration layer of `expansion-during-unification.md` §7.
+2. **"SortId = TermId" / "types are terms taken to its conclusion" is too strong.** Per CLAUDE.md's representation note: types carry logic variables and unify (the load-bearing claim), but **need not be hash-consed `TermId`s** — hash-consing is not implied by being indexed/searched, and is inappropriate for binders (arrow / dependent types). `Value` / `TermView` carriers now exist.
+3. **Effects are not plain sort-parameters, nor "effect sets" as type arguments.** Superseded by proposal **045** (the `EffectsRuntime` row-variable model: `effects E` → `sort E = ? requires EffectsRuntime[Effects = E]`, plus the structural `EffectsRows` form) and **WI-320** (effects are *not* type arguments). The `Modifies[kb]` / "effect set `Effect`" framing below predates this.
+4. **The "Implementation Status: Done" table** describes the *resolver* engine and was used to argue type-checking could be built on `resolve()`; the actual type-checking engine is `typing.rs` (point 1).
+
+The **durable** parts stand: type resolution follows definitions; the declared-`?`-vs-unfilled-hole distinction; the three levels of typedness; the typing lattice.
+
 ## Motivation
 
 Several design questions converge on the need for a type resolution mechanism:
@@ -173,8 +184,11 @@ The distinction: a **well-typed** term has some bindings that work. A **complete
 
 Conversational specification (see `docs/usage-scenarios/conversational-specification.md`) is the process of moving from accidental `?` (holes the developer hasn't thought about yet) to either concrete types or intentional `?` (declared parameters).
 
-### No separate type checker
+### Typing is constraint-solving — but there *is* a dedicated typer (corrected 2026-06-03)
 
+Typing *is* constraint solving over KB facts — inference = find bindings for free sort vars; checking = verify them; error = unsatisfiable. That conceptual framing stands. **But the original claim "there is no separate type checker — reuse the resolver" did not hold in implementation:** a dedicated typer exists (`kb/typing.rs` — `unify_types`, `check_apply_iter`, `check_operation_bodies`, occurrence-based typing, simp-rewrite-during-typing), distinct from the SLD resolver. It does the constraint-solving via its *own* `unify_types`, sharing only the *idea* of generalize-missing-to-fresh with the resolver's term-level mechanism (`docs/design/expansion-during-unification.md` §3.3; kernel-language §8.1). Type-checking is **not** "just `resolve()`."
+
+<!-- SUPERSEDED 2026-06-03 (see "Status update — corrections" at top):
 Since typing is a constraint expression over KB facts, **there is no separate type checker**. The KB query/resolution engine IS the type checker:
 
 - **Type inference** = constraint solving: find bindings for free sort variables that satisfy all constraints
@@ -182,6 +196,9 @@ Since typing is a constraint expression over KB facts, **there is no separate ty
 - **Type error** = unsatisfiable constraints: no binding exists
 
 The query engine already supports all three operations via SLD resolution with unification.
+-->
+
+The query engine still serves the *resolver*'s term-level work; the typer is a separate pass built alongside it.
 
 ### For each KB snapshot, typing is decidable
 

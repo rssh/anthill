@@ -36,7 +36,7 @@ namespace anthill.realization.scala_caps
     -- Function-arrow distinction (per WI-169 follow-up):
     --   `A -> B`  pure / no effects (cc-tracked)
     --   `A => B`  may have any effect (default cc capture set = {cap})
-    -- Codegen emits `->` for operation types whose effect set is empty
+    -- Codegen emits `->` for operation types whose effect row is empty
     -- and `=>` otherwise. This is enforced at the call-site arrow,
     -- not just in the operation declaration.
 

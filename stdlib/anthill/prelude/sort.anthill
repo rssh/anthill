@@ -35,7 +35,7 @@ namespace anthill.prelude
   fact Lattice[T = Type]
 end
 
-{< EffectExpression: the effect-set carried by an arrow (proposal 045 §3, §6).
+{< EffectExpression: the effect-row carried by an arrow (proposal 045 §3, §6).
 
    The surface algebra a programmer writes — `present` / `absent` / `open`
    tail / `merge` / `empty_row` (`{}`) — which is *also* the stored representation:

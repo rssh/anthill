@@ -336,6 +336,59 @@ in the `denoted` entity — a `TypeExpr`, the type denoted by a compile-time val
 Examples below stay in the surface form `Modify[c]`; the `denoted` term appears
 only when the internal representation is itself the point.
 
+### 5.1.1 Expansion during unification (the effect-row instance)
+
+This section is the **effect-row instance of a general rule** — *expansion during
+unification*, kernel-language.md §8.1: a reference to a parametric sort with
+unbound parameters unifies as that sort applied to a fresh variable for each
+unbound parameter (the type-level counterpart of partial entity patterns). The
+only thing special here is that the rule's "every declared parameter" **includes
+effect-row parameters** (`effects E`), so the access effect threads exactly as an
+ordinary type parameter does.
+
+Step 1 of `effect_derive` (§5.2 — "unify the formal parameter types against the
+arguments, binding the effect variables `E`, `ρ`") can bind a parameter's effect
+row only if that row is *present as a slot* in the parameter's type. A parametric
+sort written in **bare** form — the sort name alone, `s: Stream` rather than
+`s: Stream[T = …, E = …]` — carries no slots: it is `Ref(Stream)`, with no type
+arguments at all. Unifying `Ref(Stream)` against a concrete argument binds
+nothing, so neither the element type nor the effect row threads. This is the
+shared root of two symptoms otherwise treated as separate fixes: the element not
+threading (a destructured `head` typing as `?_`) and the access effect not
+grounding (a pure consumption reporting `undeclared effect: ?_`).
+
+Under the general rule, `s: Stream` **expands** to `Stream[T = ?Tᶜ, E = ?Eᶜ]`
+before unification. The fresh effect-row variable `?Eᶜ` is an ordinary
+`Var::Global` tail (§5.1); nothing about it is special beyond the kind anchor
+(`EffectsRuntime[Effects = E]`, §2.0) that the binding-site check enforces. So a
+bare `Stream` is shorthand for "this sort with each parameter free" —
+`Stream[T = ?, E = ?]` — and the expansion makes that implicit instantiation
+explicit at the unifier, so the effect row participates instead of being dropped.
+
+Grounding is then ordinary (row-)unification, with the carrier cases falling out
+of one mechanism rather than three:
+
+| producer | expanded `Stream` result | `E` grounds to |
+|---|---|---|
+| pure carrier (`List`) | `Stream[T = Int, E = {}]` | the closed empty row `{}` (`effects_rows(empty_row)`) |
+| effectful carrier | `Stream[T = …, E = Modify[…]]` | the carrier's row — a pure consumer is then correctly rejected |
+| abstract carrier (`c : C`) | `Stream[T = …, E = ρ]` | an open row variable — unifies with the enclosing `effects E`, staying polymorphic |
+
+**Worked example** (`collect(iterator(xs))`, `xs : List[Int]`):
+
+- `iterator`'s return is `Stream[Element = T, E = {}]` (`List` is pure → the
+  closed empty row);
+- `collect`'s parameter `s: Stream` **expands** to `Stream[T = ?Tᶜ, E = ?Eᶜ]`;
+- unification binds `?Tᶜ = Int` and `?Eᶜ = {}`, so `collect`'s declared
+  `effects E` grounds to `{}` and a pure caller typechecks.
+
+A carrier supplies its access effect the same way it supplies its element type —
+as a type argument on the `Stream` it produces — so no separate "ground the effect
+from the carrier identity" step is needed. The earlier WI-357 / WI-365 / WI-368
+framing, which recovered element and effect from the carrier's *provider fact* at
+the consumption site, is subsumed by this one rule: those were the symptoms of
+bare references reaching the unifier un-expanded.
+
 ### 5.2 `effect_derive` — the row a call produces
 
 The typer derives each call's row from one specified relation (proposal 046 has

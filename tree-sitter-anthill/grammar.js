@@ -150,6 +150,10 @@ module.exports = grammar({
       $.float_literal,
       $.string_literal,
       $.boolean_literal,
+      // EXPERIMENT (revert): braced effect-row in type-arg value, incl. empty `{}`
+      // — `Stream[E = {}]` / `Stream[E = {Modify[c]}]`. `{`-prefixed ⇒ disjoint
+      // from every `_type`; loader classifies row-vs-set by the param's kind.
+      seq('{', commaSep($._effect_type), '}'),
     ),
 
     export_clause: $ => seq(

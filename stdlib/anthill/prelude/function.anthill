@@ -1,5 +1,5 @@
 -- Function: computation with optional effects.
--- E is the effect set (empty for pure functions).
+-- E is the effect row (empty for pure functions).
 -- Replaces separate Function (pure) and Operation (effectful) sorts.
 -- PureFunction is Function[A, B] with E unbound (= empty).
 sort anthill.prelude.Function
@@ -16,4 +16,4 @@ end
 
 -- PureFunction: Function with no effects.
 -- fact PureFunction[A, B] = Function[A, B, E = {}]
--- (Exact encoding depends on how empty effect sets are represented)
+-- (the empty effect row `{}` = `effects_rows(empty_row)`, proposal 045 §1)
