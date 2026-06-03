@@ -343,6 +343,32 @@ field — a separate collapse. And the optional substrate phases C (De Bruijn fo
 value *rule* heads), D (5 remaining builtins → `TermView`), and E (boundary
 reify) still lack a driving consumer.
 
+## Delivered — consumer test + the `is_equation` carrier gap
+
+The payoff above shipped with synthetic Phase-B substrate tests (a
+`f(denoted(value: Ref(c)))` head, exercised via `kb.query`). The first
+**end-to-end consumer** test — a real op with `effects Modify[c]`, whose
+`OperationInfo` the loader therefore builds as a value fact, queried back via the
+full SLD entry `kb.resolve` and read via `lookup_operation_info` — surfaced a
+latent gap the synthetic tests could not: **`is_equation` read its head through
+the term-only `head_term_id`** (which `panic!`s on a `Value::Entity`/`Value::Node`
+head). The resolver calls `is_equation` on **every** matched candidate at its
+unconditional eq/non-eq triage (`resolve.rs`, the `rc.retain(|rid| !is_equation)`
+line), so `kb.resolve` on *any* goal whose discrimination bucket contains a value
+fact (`OperationInfo`, an entity `FieldInfo`, a value-in-type fact) panicked.
+`kb.query` bypasses that triage, which is why the substrate tests stayed green.
+
+Fix: `is_equation` reads functor + positional arity via `TermView`
+(behaviour-identical for the universal `Value::Term(Fn)` head; a value fact —
+never `eq`-headed — returns `false` as it always should). The sibling term-only
+readers `with_fresh_vars` and `unindex_functor` also use `head_term_id` but are
+**not** reached by value *facts*: `with_fresh_vars` runs only on rules with a body
+(value rule heads are deferred Phase C), and retract of a value fact already
+routes around `unindex_functor` (the Phase-B retract mirror). The lesson: a
+carrier-agnostic *storage* layer is not enough — every reader the *resolver* funnel
+touches per candidate must be carrier-agnostic too, and only a `resolve`-path
+consumer test (not a `query`-path substrate test) exercises that funnel.
+
 ## References
 
 - `docs/design/entity-representation-term-or-value.md` — the carrier rule.

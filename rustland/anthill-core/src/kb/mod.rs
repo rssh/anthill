@@ -2311,9 +2311,18 @@ impl KnowledgeBase {
         if !entry.body_nodes.is_empty() || entry.retracted {
             return false;
         }
-        match self.terms.get(head_term_id(&entry.head)) {
-            Term::Fn { functor, pos_args, .. } => {
-                self.symbols.name(*functor) == "eq" && pos_args.len() == 2
+        // WI-348: the resolver's candidate triage (`resolve.rs` eq/non-eq split)
+        // calls this on EVERY matched candidate, so a value-fact head — a
+        // `Modify[c]`-effect `OperationInfo`, an entity `FieldInfo`, a
+        // value-in-type fact — reaches here and must NOT hit the term-only
+        // `head_term_id` reader (which panics on a `Value::Entity`/`Value::Node`).
+        // Read the head functor + positional arity carrier-agnostically via
+        // `TermView`: behaviour-identical for the universal `Value::Term(Fn)` head
+        // (same functor symbol, `pos_arity == pos_args.len()`), and a value fact —
+        // never `eq`-headed — falls through to `false` as it always should.
+        match term_view::TermView::head(&entry.head, self) {
+            term_view::ViewHead::Functor { functor: Some(functor), pos_arity, .. } => {
+                self.symbols.name(functor) == "eq" && pos_arity == 2
             }
             _ => false,
         }

@@ -171,3 +171,6 @@ mod wi365_effect_grounding_test;
 
 #[path = "include/wi366_value_in_type_facts_test.rs"]
 mod wi366_value_in_type_facts_test;
+
+#[path = "include/wi348_operation_info_queryable_test.rs"]
+mod wi348_operation_info_queryable_test;
