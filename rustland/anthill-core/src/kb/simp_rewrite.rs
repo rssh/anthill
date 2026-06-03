@@ -651,14 +651,15 @@ mod tests {
         add
     }
 
-    /// Assert `add_zero` via the DeBruijn path (`assert_rule_debruijn`, arity
-    /// > 0) — the shape real `[simp]` rules take after loading. Exercises
-    /// `open_equation`'s `term_from_debruijn` branch.
+    /// Assert `add_zero` via the DeBruijn path
+    /// (`assert_rule_debruijn_with_nodes`, arity > 0) — the shape real `[simp]`
+    /// rules take after loading. Exercises `open_equation`'s
+    /// `term_from_debruijn` branch.
     fn assert_add_zero_db(kb: &mut KnowledgeBase) -> Symbol {
         let (eq_head, meta, add) = build_add_zero(kb);
         let sort = kb.make_name_term("Eq");
         let domain = kb.make_name_term("test");
-        kb.assert_rule_debruijn(eq_head, vec![], sort, domain, Some(meta));
+        kb.assert_rule_debruijn_with_nodes(eq_head, vec![], sort, domain, Some(meta));
         add
     }
 
@@ -783,8 +784,8 @@ mod tests {
     #[test]
     fn debruijn_simp_rule_rewrites_op_body() {
         // Real-world shape: a `[simp]` rule stored with DeBruijn vars
-        // (`assert_rule_debruijn`, as the loader produces) still fires —
-        // `open_equation` opens it via `term_from_debruijn`.
+        // (`assert_rule_debruijn_with_nodes`, as the loader produces) still
+        // fires — `open_equation` opens it via `term_from_debruijn`.
         let mut kb = KnowledgeBase::new();
         let add = assert_add_zero_db(&mut kb);
 

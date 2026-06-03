@@ -694,9 +694,10 @@ fn synthesize_step_rule(
         .map(|rid| kb.rule_globals(rid).to_vec())
         .unwrap_or_default();
 
-    let rid = kb.assert_rule_debruijn_in_frame(
+    let body_nodes = kb.term_body_to_nodes(&body_terms);
+    let rid = kb.assert_rule_debruijn_with_nodes_in_frame(
         head_term,
-        body_terms,
+        body_nodes,
         &parent_globals,
         rule_sort,
         global_scope,

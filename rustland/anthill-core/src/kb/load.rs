@@ -1435,8 +1435,8 @@ pub fn register_prelude(kb: &mut KnowledgeBase) {
 /// **Idempotency** — `register_prelude` is called more than once on the
 /// same KB by the common test pattern (e.g. `register_prelude(&mut kb);
 /// kb.register_standard_builtins(); load::load_all(&mut kb, …)` — `load_all`
-/// itself re-enters `register_prelude`). `assert_rule_debruijn` does NOT
-/// consult `fact_dedup` (only `assert_fact` does), so an unguarded second
+/// itself re-enters `register_prelude`). `assert_rule_debruijn_with_nodes` does
+/// NOT consult `fact_dedup` (only `assert_fact` does), so an unguarded second
 /// call duplicates the rule entry in `by_sort` / `rules_by_functor` / `by_domain`
 /// / `discrim`. We therefore early-return when `rules_by_functor[EffectsRuntime]`
 /// is non-empty — at prelude-bootstrap time the bridge is the only fact
@@ -1472,8 +1472,9 @@ fn emit_effects_runtime_bridge_fact(kb: &mut KnowledgeBase) {
     let effects_field_sym = kb.intern("Effects");
     let effects_expr_field_sym = kb.intern("effects_expr");
 
-    // The inner wildcard — built as a Global var that `assert_rule_debruijn`
-    // closes to `DeBruijn(0)` at rule finalization. The name `expr` is for
+    // The inner wildcard — built as a Global var that
+    // `assert_rule_debruijn_with_nodes` closes to `DeBruijn(0)` at rule
+    // finalization. The name `expr` is for
     // diagnostic display only (rendered as `?expr` by the pretty-printer's
     // sigil convention); equality / hash-cons key on VarId uses `id` only.
     let expr_var_name = kb.intern("expr");
@@ -1500,9 +1501,9 @@ fn emit_effects_runtime_bridge_fact(kb: &mut KnowledgeBase) {
         functor: er_sort_sym, pos_args: SmallVec::new(), named_args: SmallVec::new(),
     });
 
-    // Assert via `assert_rule_debruijn` to close the Global var to a
-    // DeBruijn — fact = rule with empty body.
-    kb.assert_rule_debruijn(head, vec![], er_sort_as_sort_term, er_sort_as_sort_term, None);
+    // Assert via the occurrence-native DeBruijn path to close the Global var to
+    // a DeBruijn — fact = rule with empty body (empty occurrence body).
+    kb.assert_rule_debruijn_with_nodes(head, vec![], er_sort_as_sort_term, er_sort_as_sort_term, None);
 }
 
 /// Create the stdlib scope hierarchy for names the loader references directly.
@@ -6673,7 +6674,8 @@ impl<'a> Loader<'a> {
         }
 
         let rule_sort = self.kb.make_name_term("Rule");
-        self.kb.assert_rule_debruijn(head, body, rule_sort, parent_domain, None);
+        let body_nodes = self.kb.term_body_to_nodes(&body);
+        self.kb.assert_rule_debruijn_with_nodes(head, body_nodes, rule_sort, parent_domain, None);
     }
 
     /// True if `ty` is a `Simple` type whose remapped symbol equals the
@@ -7360,7 +7362,7 @@ impl<'a> Loader<'a> {
         });
 
         let eq_sort = self.kb.make_name_term("anthill.prelude.Eq");
-        self.kb.assert_rule_debruijn(head, vec![], eq_sort, domain, None);
+        self.kb.assert_rule_debruijn_with_nodes(head, vec![], eq_sort, domain, None);
     }
 
     /// Replace `Ident(s)`/`Ref(s)` matching a parameter symbol with the

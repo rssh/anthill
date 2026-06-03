@@ -45,7 +45,7 @@ runners).
 | `parse/convert.rs` | Tree-sitter CST → typed IR (`ParsedFile`) |
 | `parse/ir.rs` | Parse IR types: `Item`, `ParsedFile`, `SimpleTermStore` |
 | `kb/term.rs` | `Term`, `TermId`, `TermStore` (hash-consed), `Var` enum |
-| `kb/mod.rs` | `KnowledgeBase`: indexes, `assert_fact`, `assert_rule_debruijn`, `with_fresh_vars` |
+| `kb/mod.rs` | `KnowledgeBase`: indexes, `assert_fact`, `assert_rule_debruijn_with_nodes`, `with_fresh_vars` |
 | `kb/load.rs` | Load ParsedFile → KB: `scan_definitions`, symbol remapping |
 | `kb/resolve.rs` | SLD resolution: `SearchStream`, builtins, NAF, delay |
 | `kb/discrim.rs` | `SubstTree`: discrimination tree for structural matching |
@@ -73,5 +73,5 @@ Integration tests in `anthill-core/tests/` follow:
 
 - `SmallVec<[T; N]>` for term args. Use `from_elem` for single, `from_slice` for multiple (requires `Copy`).
 - Named args always sorted by field name for canonical ordering.
-- `assert_rule_debruijn` for rules (converts vars), `assert_fact` for ground facts (arity 0).
+- `assert_rule_debruijn_with_nodes` for rules (converts vars; term bodies first go through `term_body_to_nodes`), `assert_fact` for ground facts (arity 0).
 - `FnArg` is `Copy` (both `TermId` and `Symbol` are `Copy`).

@@ -6,7 +6,7 @@
 //! term in type-argument position (proposal 045 §2.0.1). `register_prelude`
 //! is called more than once on the same KB by the common test pattern
 //! (manual call + `load_all`'s internal `register_prelude` at
-//! `load.rs:1482`), and `assert_rule_debruijn` does NOT consult
+//! `load.rs:1482`), and `assert_rule_debruijn_with_nodes` does NOT consult
 //! `fact_dedup` — so without the in-function guard we'd duplicate the
 //! bridge rule on every re-entry. Code-review finding #1.
 //!

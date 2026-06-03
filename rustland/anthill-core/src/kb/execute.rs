@@ -258,7 +258,8 @@ impl KnowledgeBase {
         });
         let rule_sort = self.make_name_term("Rule");
         let domain = self.make_name_term("_global");
-        self.assert_rule_debruijn(head, body, rule_sort, domain, None);
+        let body_nodes = self.term_body_to_nodes(&body);
+        self.assert_rule_debruijn_with_nodes(head, body_nodes, rule_sort, domain, None);
         head
     }
 

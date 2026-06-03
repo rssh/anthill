@@ -5077,7 +5077,8 @@ mod tests {
             pos_args: SmallVec::from_elem(var_x, 1),
             named_args: SmallVec::new(),
         });
-        kb.assert_rule_debruijn(head, vec![body_a, body_b], sort, domain, None);
+        let body_nodes = kb.term_body_to_nodes(&[body_a, body_b]);
+        kb.assert_rule_debruijn_with_nodes(head, body_nodes, sort, domain, None);
 
         let config = ResolveConfig::default();
 
@@ -5157,7 +5158,8 @@ mod tests {
             pos_args: SmallVec::from_elem(v3, 1),
             named_args: SmallVec::new(),
         });
-        kb.assert_rule_debruijn(head, vec![body_l, body_r], sort, domain, None);
+        let body_nodes = kb.term_body_to_nodes(&[body_l, body_r]);
+        kb.assert_rule_debruijn_with_nodes(head, body_nodes, sort, domain, None);
 
         // Facts
         for val in &["a", "b"] {
@@ -5249,7 +5251,8 @@ mod tests {
                     })
                 }).collect();
 
-                kb.assert_rule_debruijn(head, body, sort, domain, None);
+                let body_nodes = kb.term_body_to_nodes(&body);
+                kb.assert_rule_debruijn_with_nodes(head, body_nodes, sort, domain, None);
 
                 // Facts: f_i("val_i")
                 for i in 0..n {
@@ -5330,7 +5333,8 @@ mod tests {
                 })
             })
             .collect();
-        kb.assert_rule_debruijn(head, body, sort, domain, None);
+        let body_nodes = kb.term_body_to_nodes(&body);
+        kb.assert_rule_debruijn_with_nodes(head, body_nodes, sort, domain, None);
 
         for i in 0..n {
             let fact = kb.alloc(Term::Fn {
@@ -5509,7 +5513,8 @@ mod tests {
             pos_args: SmallVec::from_slice(&[va, vb, vc]),
             named_args: SmallVec::new(),
         });
-        kb.assert_rule_debruijn(p_head, vec![p_body], sort, domain, None);
+        let body_nodes = kb.term_body_to_nodes(&[p_body]);
+        kb.assert_rule_debruijn_with_nodes(p_head, body_nodes, sort, domain, None);
 
         // Rule: f(?x) :- p(?x, ?, ?)
         let (_, vx) = named(&mut kb, "x");
@@ -5525,7 +5530,8 @@ mod tests {
             pos_args: SmallVec::from_slice(&[vx, a1, a2]),
             named_args: SmallVec::new(),
         });
-        kb.assert_rule_debruijn(f_head, vec![f_body], sort, domain, None);
+        let body_nodes = kb.term_body_to_nodes(&[f_body]);
+        kb.assert_rule_debruijn_with_nodes(f_head, body_nodes, sort, domain, None);
 
         // Query: f(?q)
         let (vq, var_q) = named(&mut kb, "q");
