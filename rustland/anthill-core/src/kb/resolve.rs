@@ -2734,9 +2734,11 @@ impl KnowledgeBase {
     /// `answer_links`), the whole rule should delay. `Not` is skipped (NAF
     /// delays via goal rotation at resolution time) and `PushChoice` is skipped
     /// (a control primitive that fires immediately), so the only delay
-    /// condition checked is "the builtin's first arg resolves to a var". Uses
-    /// the same `resolve_with_term` chasing as the former term-body version, so
-    /// the result is identical for the structurally-parallel bodies.
+    /// condition checked is "the builtin's first arg resolves to a var". The
+    /// chase goes through `resolve_as_value` (WI-348): a `Value::Term`-bound var
+    /// follows the term chain as before, while a var bound to a concrete
+    /// non-`Term` carrier (a `Value::Node`) resolves as *bound* — it is not a
+    /// delaying variable.
     fn body_builtins_delay_on_caller_vars_nodes(
         &self,
         nodes: &[Rc<NodeOccurrence>],
@@ -2767,9 +2769,9 @@ impl KnowledgeBase {
     fn vid_resolves_to_var(&self, vid: VarId, subst: &Substitution) -> bool {
         let mut cur = vid;
         loop {
-            match subst.resolve_with_term(cur) {
+            match subst.resolve_as_value(cur) {
                 None => return true,
-                Some(t) => match self.terms.get(t) {
+                Some(Value::Term(t)) => match self.terms.get(*t) {
                     Term::Var(Var::Global(w)) => {
                         if *w == cur {
                             return true; // self-referential var binding
@@ -2779,6 +2781,10 @@ impl KnowledgeBase {
                     Term::Var(_) => return true,
                     _ => return false,
                 },
+                // Bound to a concrete non-`Term` carrier (a `Value::Node`
+                // occurrence, a scalar) — the chain ends at something concrete,
+                // NOT a variable.
+                Some(_) => return false,
             }
         }
     }
@@ -2814,8 +2820,11 @@ impl KnowledgeBase {
             return;
         }
         match arg.as_expr() {
-            Some(Expr::Var(Var::Global(vid))) => match subst.resolve_with_term(*vid) {
-                Some(t) => self.collect_unbound_vars(t, subst, out),
+            Some(Expr::Var(Var::Global(vid))) => match subst.resolve_as_value(*vid) {
+                Some(Value::Term(t)) => self.collect_unbound_vars(*t, subst, out),
+                // Bound to a concrete non-`Term` carrier (a `Value::Node`) —
+                // the var IS bound, so it is not collected as unbound.
+                Some(_) => {}
                 None => {
                     if !out.contains(vid) {
                         out.push(*vid);

@@ -1926,7 +1926,11 @@ impl KnowledgeBase {
     /// Returns a new hash-consed TermId.
     pub fn apply_subst(&mut self, term: TermId, subst: &subst::Substitution) -> TermId {
         match self.terms.get(term).clone() {
-            Term::Var(Var::Global(vid)) => subst.resolve_with_term(vid).unwrap_or(term),
+            // Term-world substitution: a non-`Term` carrier (a `Value::Node`)
+            // can't be a `Term` child, so a var bound to one stays the var.
+            Term::Var(Var::Global(vid)) => {
+                subst.resolve_as_value(vid).and_then(|v| v.as_term()).unwrap_or(term)
+            }
             Term::Var(Var::DeBruijn(_)) => term,
             Term::Fn { .. } => self.map_fn_children(term, |kb, id| kb.apply_subst(id, subst)),
             _ => term,
@@ -1938,19 +1942,22 @@ impl KnowledgeBase {
     /// Chase Var→binding→Var chains through a substitution.
     /// Returns the final non-variable TermId, or the last unbound Var.
     pub fn walk(&self, term: TermId, subst: &subst::Substitution) -> TermId {
+        use crate::eval::value::Value;
         let mut current = term;
         loop {
             match self.terms.get(current) {
-                Term::Var(Var::Global(vid)) => {
-                    if let Some(bound) = subst.resolve_with_term(*vid) {
-                        if bound == current {
+                Term::Var(Var::Global(vid)) => match subst.resolve_as_value(*vid) {
+                    Some(Value::Term(bound)) => {
+                        if *bound == current {
                             return current; // self-referential, stop
                         }
-                        current = bound;
-                    } else {
-                        return current;
+                        current = *bound;
                     }
-                }
+                    // Non-`Term` carrier (a `Value::Node`/scalar) or unbound:
+                    // stop at the var. This is the term-world chase; the
+                    // carrier-faithful one is `walk_view`.
+                    _ => return current,
+                },
                 _ => return current,
             }
         }
@@ -2561,7 +2568,10 @@ impl KnowledgeBase {
 
             let mut rename = subst::Substitution::new();
             for vid in &all_vars {
-                if let Some(bound) = tree_subst.resolve_with_term(*vid) {
+                // Term-narrow: a non-`Term` carrier here would need De Bruijn
+                // opening over an occurrence (WI-348 Phase C) — until then a
+                // Node binding falls through to a fresh var, as before.
+                if let Some(bound) = tree_subst.resolve_as_value(*vid).and_then(|v| v.as_term()) {
                     if !matches!(self.terms.get(bound), Term::Var(_)) {
                         rename.bind(*vid, bound);
                         continue;
@@ -2587,7 +2597,9 @@ impl KnowledgeBase {
                 match self.terms.get(bound_term) {
                     Term::Var(Var::Global(rule_vid)) => {
                         let rule_vid = *rule_vid;
-                        if let Some(renamed) = rename.resolve_with_term(rule_vid) {
+                        if let Some(renamed) =
+                            rename.resolve_as_value(rule_vid).and_then(|v| v.as_term())
+                        {
                             answer_links.bind(ts_vid, renamed);
                         }
                     }

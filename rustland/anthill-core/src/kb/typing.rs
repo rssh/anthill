@@ -3266,9 +3266,18 @@ fn check_apply_iter(
                                     continue;
                                 }
                             };
-                            let is_abstract = match subst.resolve_with_term(vid) {
+                            let is_abstract = match subst.resolve_as_value(vid) {
                                 None => true,
-                                Some(bound) => is_type_param_value(kb, bound),
+                                Some(Value::Term(bound)) => is_type_param_value(kb, *bound),
+                                // A non-`Term` carrier (a denoted `Value::Node`
+                                // / value-in-type param, WI-302) can't be
+                                // introspected for type-param-ness here, so —
+                                // like the loader-inconsistency arms above and
+                                // per this loop's documented stance — assume
+                                // abstract rather than silently disable the
+                                // WI-325 protection. Carrier-agnostic
+                                // introspection is WI-348 Phase C.
+                                Some(_) => true,
                             };
                             if is_abstract {
                                 abstract_params.push(short_qn_sym);
@@ -4355,7 +4364,7 @@ fn entry_matches_subst(
             Term::Var(Var::Global(v)) => *v,
             _ => continue,
         };
-        let per_call_value = match subst.resolve_with_term(vid) {
+        let per_call_value = match subst.resolve_as_value(vid) {
             // Unbound spec param: this is the OPEN-T defer trigger.
             // The call's binding was not constrained to a concrete
             // carrier (often because the typer unified two free Vars
@@ -4365,7 +4374,21 @@ fn entry_matches_subst(
             // means defer — the impl is determined at runtime by the
             // requirement value the caller passed. Match this entry.
             None => continue,
-            Some(v) => v,
+            Some(Value::Term(v)) => *v,
+            // A denoted `Value::Node` param: matching it against the requires
+            // entry needs the symmetric `TermId` match below to go
+            // carrier-agnostic (WI-348 Phase C). Until then, conservatively
+            // defer (sound — the impl is resolved at runtime), but flag loudly
+            // in debug so the gap surfaces the moment a denoted carrier reaches
+            // here.
+            Some(other) => {
+                debug_assert!(
+                    false,
+                    "WI-348: denoted {} spec param in defer-match — carrier-agnostic entry match is Phase C",
+                    other.type_name(),
+                );
+                continue;
+            }
         };
         // Either side may be a wildcard (a type-param value): the
         // requires entry might use the enclosing sort's open T
@@ -5971,15 +5994,28 @@ pub fn sort_goal_from_subst(
             Term::Var(Var::Global(v)) => *v,
             _ => continue,
         };
-        if let Some(val) = subst.resolve_with_term(vid) {
-            let short_intern = kb.try_resolve_symbol(&short).unwrap_or_else(|| {
-                // Spec param's *short* name (e.g. "T") may not be registered
-                // as a top-level symbol; fall back to its qualified form.
-                short_sym
-            });
-            // WI-361: a binding value is already canonical (`Ref(S)` / `Fn{S, named}`)
-            // — no `parameterized(base, bindings)` wrapper left to unwrap.
-            bindings.push((short_intern, val));
+        match subst.resolve_as_value(vid) {
+            Some(Value::Term(val)) => {
+                let val = *val;
+                let short_intern = kb.try_resolve_symbol(&short).unwrap_or_else(|| {
+                    // Spec param's *short* name (e.g. "T") may not be registered
+                    // as a top-level symbol; fall back to its qualified form.
+                    short_sym
+                });
+                // WI-361: a binding value is already canonical (`Ref(S)` / `Fn{S, named}`)
+                // — no `parameterized(base, bindings)` wrapper left to unwrap.
+                bindings.push((short_intern, val));
+            }
+            // A denoted `Value::Node` binding can't ride in the `TermId`-keyed
+            // `SortGoal.bindings`; carrying it is WI-348 Phase C. Omitting it is
+            // sound (the dispatch goal sees one fewer constraint — a safe
+            // over-approximation), but flag loudly in debug.
+            Some(other) => debug_assert!(
+                false,
+                "WI-348: denoted {} in SortGoal bindings — carrier-agnostic SortGoal is Phase C",
+                other.type_name(),
+            ),
+            None => {}
         }
     }
     SortGoal {
@@ -6801,8 +6837,18 @@ fn check_constructor_iter(
                         if alias_name.starts_with(&parent_name) && alias_name.len() > parent_name.len() {
                             let param_short = alias_name[parent_name.len() + 1..].to_string();
                             if let Term::Var(Var::Global(vid)) = kb.get_term(target_tid) {
-                                if let Some(bound_type) = subst.resolve_with_term(*vid) {
-                                    alias_info.push((param_short, bound_type));
+                                match subst.resolve_as_value(*vid) {
+                                    Some(Value::Term(bound_type)) => {
+                                        alias_info.push((param_short, *bound_type))
+                                    }
+                                    // denoted Node alias binding: `alias_info`
+                                    // is TermId-keyed — WI-348 Phase C.
+                                    Some(other) => debug_assert!(
+                                        false,
+                                        "WI-348: denoted {} alias binding — carrier-agnostic alias_info is Phase C",
+                                        other.type_name(),
+                                    ),
+                                    None => {}
                                 }
                             }
                         }
@@ -7988,9 +8034,13 @@ fn walk_type_deep(kb: &mut KnowledgeBase, subst: &Substitution, ty: TermId) -> T
 /// Walk a type term through the substitution, resolving Vars and type params.
 fn walk_type(kb: &KnowledgeBase, subst: &Substitution, ty: TermId) -> TermId {
     if let Term::Var(Var::Global(vid)) = kb.get_term(ty) {
-        return match subst.resolve_with_term(*vid) {
-            Some(bound) => walk_type(kb, subst, bound),
-            None => ty,
+        return match subst.resolve_as_value(*vid) {
+            Some(Value::Term(bound)) => walk_type(kb, subst, *bound),
+            // Non-`Term` (a denoted `Value::Node`) or unbound: keep the var.
+            // This term-only walker deliberately stops here; its carrier-aware
+            // caller `walk_term_to_resolved` surfaces a `Value::Node` binding
+            // afterward via `resolve_as_value`.
+            _ => ty,
         };
     }
     // WI-361: a bare sort is `Ref(S)` (term backing) or `sort_ref(name: Ref(S))`
@@ -8015,7 +8065,10 @@ fn walk_type(kb: &KnowledgeBase, subst: &Substitution, ty: TermId) -> TermId {
         None => return ty,
     };
     if let Term::Var(Var::Global(vid)) = kb.get_term(alias_target) {
-        subst.resolve_with_term(*vid).map_or(alias_target, |bound| walk_type(kb, subst, bound))
+        subst
+            .resolve_as_value(*vid)
+            .and_then(|v| v.as_term())
+            .map_or(alias_target, |bound| walk_type(kb, subst, bound))
     } else {
         alias_target
     }
