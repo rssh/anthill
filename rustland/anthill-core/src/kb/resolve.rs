@@ -207,12 +207,17 @@ pub struct Solution {
 
 // ── EqChange ────────────────────────────────────────────────────
 
-/// Record of an equational rewrite step.
+/// Record of an equational rewrite step. `original` is the term-world input
+/// (`apply_eq_rules` rewrites a `TermId`, so it is always a term); `rewritten`
+/// is the RHS read back through `σ` carrier-faithfully as a [`Value`] (WI-348)
+/// — an equation whose RHS binds a var to a `Value::Node` keeps it in the
+/// record, instead of dropping to a bare var. (Such an RHS is unreachable until
+/// value rule heads land, Phase C; faithful now.)
 #[allow(dead_code)]
 pub struct EqChange {
     pub rule_id: RuleId,
     pub original: TermId,
-    pub rewritten: TermId,
+    pub rewritten: Value,
 }
 
 // ── SearchStream (lazy resolution) ──────────────────────────────
@@ -697,14 +702,16 @@ impl SearchStream {
         }
 
         // Frame-scoped assumed facts (WI-108). Reify the goal through the
-        // current substitution, then unify each assumed fact against it.
+        // current substitution carrier-faithfully (WI-348), then unify each
+        // assumed fact against it via the `TermView` matcher — so a goal
+        // carrying a `Value::Node` matches by its structure instead of being
+        // lowered to a hash-consed term that drops the occurrence.
         let assumed = self.stack.last().unwrap().assumed_facts.clone();
         if !assumed.is_empty() {
             let frame_subst = self.stack.last().unwrap().subst.clone();
-            let goal = goal_t.unwrap_or_else(|| reify_goal_value(kb, &goal_val));
-            let reified_goal = kb.reify_to_term(goal, &frame_subst);
+            let goal_value = kb.reify_value(&goal_val, &frame_subst);
             for assumed_fact in assumed {
-                if let Some(subst) = kb.match_term(assumed_fact, reified_goal) {
+                if let Some(subst) = kb.match_view(assumed_fact, &goal_value) {
                     if !subst.is_contradiction() {
                         candidates.push(Candidate::Assumption(subst));
                     }
@@ -982,84 +989,80 @@ impl SearchStream {
         let subst = self.stack.last().unwrap().subst.clone();
         let goals_len = self.stack.last().unwrap().goals.len();
 
-        // Inner goal P of `not(P)` (read through TermView), reified to a term
-        // for the groundness check and sub-resolution.
-        let inner_val = goal.pos_arg(kb, 0).and_then(|item| kb.walk_arg(Some(item), &subst));
-        let reified = match inner_val {
-            Some(v) => {
-                let t = reify_goal_value(kb, &v);
-                kb.reify_to_term(t, &subst)
-            }
+        // Inner goal P of `not(P)`, read through TermView and σ-walked. The
+        // groundness gate and sub-resolution read it carrier-faithfully as a
+        // `Value` — no lowering to a hash-consed term (WI-348).
+        let inner = match goal.pos_arg(kb, 0).and_then(|item| kb.walk_arg(Some(item), &subst)) {
+            Some(v) => v,
             None => {
                 self.stack.pop();
                 return Some(StepResult::Continue);
             }
         };
 
-        // Groundness check: NAF on non-ground goals would be unsound
-        match kb.is_ground(reified, &Substitution::new()) {
-            GroundCheck::HasVar => {
-                // Delay — same mechanism as other builtins
-                match delay_mode {
-                    DelayMode::Normal => {
-                        if goals_len == 1 {
-                            let residual = vec![goal.clone()];
-                            self.stack.pop();
-                            self.record_solution_in_ancestors();
-                            return Some(StepResult::YieldSolution(Solution { subst, residual }));
-                        } else {
-                            let f = self.stack.last_mut().unwrap();
-                            let mut rotated: Vec<Value> = f.goals[1..].to_vec();
-                            rotated.push(goal.clone());
-                            f.goals = rotated;
-                            f.depth = depth + 1;
-                            f.state = FrameState::Init {
-                                delay_mode: DelayMode::Delayed { consecutive_delays: 1 },
-                            };
-                            return Some(StepResult::Continue);
-                        }
-                    }
-                    DelayMode::Delayed { consecutive_delays } => {
+        // Groundness check: NAF on non-ground goals would be unsound.
+        if !kb.value_is_ground(&inner, &subst) {
+            // Delay — same mechanism as other builtins
+            match delay_mode {
+                DelayMode::Normal => {
+                    if goals_len == 1 {
+                        let residual = vec![goal.clone()];
+                        self.stack.pop();
+                        self.record_solution_in_ancestors();
+                        return Some(StepResult::YieldSolution(Solution { subst, residual }));
+                    } else {
                         let f = self.stack.last_mut().unwrap();
                         let mut rotated: Vec<Value> = f.goals[1..].to_vec();
                         rotated.push(goal.clone());
                         f.goals = rotated;
                         f.depth = depth + 1;
                         f.state = FrameState::Init {
-                            delay_mode: DelayMode::Delayed {
-                                consecutive_delays: consecutive_delays + 1,
-                            },
+                            delay_mode: DelayMode::Delayed { consecutive_delays: 1 },
                         };
                         return Some(StepResult::Continue);
                     }
                 }
-            }
-            GroundCheck::Ground => {
-                // Sub-resolution: check if the inner goal has any solution
-                let remaining_depth = self.config.max_depth.saturating_sub(depth);
-                let sub_config = ResolveConfig {
-                    max_depth: remaining_depth,
-                    max_solutions: 1,
-                    simplify: self.config.simplify,
-                };
-                let sub_stream = kb.resolve_lazy(&[reified], &sub_config);
-                let has_solution = sub_stream.split_first(kb).is_some();
-
-                if has_solution {
-                    // Inner goal succeeded → not() FAILS — backtrack
-                    self.stack.pop();
-                    return Some(StepResult::Continue);
-                } else {
-                    // Inner goal has no solutions → not() SUCCEEDS
-                    let new_delay = delay_mode.reset();
+                DelayMode::Delayed { consecutive_delays } => {
                     let f = self.stack.last_mut().unwrap();
-                    let new_goals = f.goals[1..].to_vec();
-                    f.goals = new_goals;
-                    f.subst = subst;
+                    let mut rotated: Vec<Value> = f.goals[1..].to_vec();
+                    rotated.push(goal.clone());
+                    f.goals = rotated;
                     f.depth = depth + 1;
-                    f.state = FrameState::Init { delay_mode: new_delay };
+                    f.state = FrameState::Init {
+                        delay_mode: DelayMode::Delayed {
+                            consecutive_delays: consecutive_delays + 1,
+                        },
+                    };
                     return Some(StepResult::Continue);
                 }
+            }
+        } else {
+            // Ground: sub-resolve the goal (σ applied, carrier-faithful) and
+            // check whether the inner goal has any solution.
+            let goal_v = kb.reify_value(&inner, &subst);
+            let remaining_depth = self.config.max_depth.saturating_sub(depth);
+            let sub_config = ResolveConfig {
+                max_depth: remaining_depth,
+                max_solutions: 1,
+                simplify: self.config.simplify,
+            };
+            let sub_stream = kb.resolve_lazy_goals(vec![goal_v], &sub_config);
+            let has_solution = sub_stream.split_first(kb).is_some();
+
+            if has_solution {
+                // Inner goal succeeded → not() FAILS — backtrack
+                self.stack.pop();
+                return Some(StepResult::Continue);
+            } else {
+                // Inner goal has no solutions → not() SUCCEEDS
+                let new_delay = delay_mode.reset();
+                let f = self.stack.last_mut().unwrap();
+                let new_goals = f.goals[1..].to_vec();
+                f.goals = new_goals;
+                f.subst = subst;
+                f.depth = depth + 1;
+                f.state = FrameState::Init { delay_mode: new_delay };
+                return Some(StepResult::Continue);
             }
         }
     }
@@ -1498,13 +1501,18 @@ impl KnowledgeBase {
                 continue;
             }
 
-            // Reify the result variable to get the RHS
-            let rhs = self.reify_to_term(result_var, &tree_subst);
+            // Read the result variable's binding back carrier-faithfully
+            // (WI-348): an all-term RHS rebuilds its hash-consed term; a
+            // `Value::Node` RHS keeps its identity in the recorded change. The
+            // term-world rewrite continuation narrows to a term — a non-term RHS
+            // is unreachable today and not further term-rewritable (Phase C).
+            let rhs_value = self.reify(result_var, &tree_subst);
+            let rhs = rhs_value.as_term().unwrap_or(result_var);
 
             changes.push(EqChange {
                 rule_id: rid,
                 original: current,
-                rewritten: rhs,
+                rewritten: rhs_value,
             });
 
             // Continue rewriting the result
@@ -1644,18 +1652,28 @@ impl KnowledgeBase {
 
     /// `ground(?x)`: succeeds if `?x` is fully ground (no unbound variables anywhere).
     fn builtin_ground<V: TermView>(&self, goal: &V, subst: &Substitution) -> BuiltinResult {
-        let ground = match self.walk_arg(goal.pos_arg(self, 0), subst) {
-            None => return BuiltinResult::Failure,
-            // A term value re-uses the recursive term groundness check; an
-            // occurrence value (post-flip) is ground iff it has no remaining
-            // unbound `Expr::Var(Global)` leaf; any other scalar is ground.
-            Some(Value::Term(t)) => matches!(self.is_ground(t, subst), GroundCheck::Ground),
-            Some(Value::Node(occ)) => !node_occurrence::occurrence_has_unbound_var(&occ),
-            // WI-109: a value-level logic variable is not ground.
-            Some(Value::Var(_)) => false,
-            Some(_) => true,
-        };
-        if ground { BuiltinResult::Success } else { BuiltinResult::Delay }
+        match self.walk_arg(goal.pos_arg(self, 0), subst) {
+            None => BuiltinResult::Failure,
+            Some(v) if self.value_is_ground(&v, subst) => BuiltinResult::Success,
+            Some(_) => BuiltinResult::Delay,
+        }
+    }
+
+    /// Carrier-agnostic groundness of a σ-walked goal [`Value`] (WI-348): a
+    /// `Value::Term` re-uses the recursive term check [`Self::is_ground`]
+    /// (chasing `σ` into subterms); a `Value::Node` occurrence (post-flip) is
+    /// ground iff it has no remaining unbound `Expr::Var(Global)` leaf
+    /// (`occurrence_has_unbound_var`); a value-level logic var (WI-109) is never
+    /// ground; any other scalar is. The shared core of the `ground(?x)` builtin
+    /// and the NAF groundness gate, so neither materializes the goal to a
+    /// `TermId` just to ask "is it ground".
+    fn value_is_ground(&self, v: &Value, subst: &Substitution) -> bool {
+        match v {
+            Value::Term(t) => matches!(self.is_ground(*t, subst), GroundCheck::Ground),
+            Value::Node(occ) => !node_occurrence::occurrence_has_unbound_var(occ),
+            Value::Var(_) => false,
+            _ => true,
+        }
     }
 
     /// Recursive groundness check: walk the term, then check all subterms.
@@ -3638,7 +3656,7 @@ mod tests {
         assert_eq!(result, four);
         assert_eq!(changes.len(), 1);
         assert_eq!(changes[0].original, lhs);
-        assert_eq!(changes[0].rewritten, four);
+        assert_eq!(changes[0].rewritten.as_term(), Some(four));
     }
 
     // ── Builtin dispatch + delay tests ─────────────────────────

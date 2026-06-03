@@ -490,7 +490,7 @@ pub enum StructToken {
 /// abstracts the carrier) and the tokens hold no `TermId`. So it keys the
 /// resolver's answer-dedup set directly with **no materialization** to a
 /// `TermId` and **no `kb` in `Hash`/`Eq`**, replacing the former
-/// `reify_to_term`-materialized `HashSet<TermId>` key.
+/// materialized `HashSet<TermId>` key.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct GoalKey(Vec<StructToken>);
 

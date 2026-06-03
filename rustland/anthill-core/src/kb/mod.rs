@@ -1944,7 +1944,7 @@ impl KnowledgeBase {
     /// var bound to a non-`Term` carrier (a `Value::Node`, a scalar) STOPS the
     /// chase at that var (the Node is not represented in the `TermId` result).
     /// Use this only where a `TermId` is genuinely the right shape — building a
-    /// term (`reify_to_term`, `apply_subst`), inspecting a synthetic term marker
+    /// term (`apply_subst`), inspecting a synthetic term marker
     /// (`forall_impl` / `push_choice` goal-classification), or recursing over
     /// term structure (`is_ground`, `collect_unbound_vars`). The carrier-faithful
     /// chase that SURFACES a `Value::Node` is [`Self::walk_view`]; a builtin
@@ -2013,9 +2013,9 @@ impl KnowledgeBase {
     /// / `Entity` / `Tuple` / scalar) is returned **as-is** — its identity is
     /// the answer; recursing into such a carrier's own children to chase a
     /// nested unbound var is unnecessary until value *rule* heads land
-    /// (WI-348 Phase C, no consumer yet). Read an answer binding with this; the
-    /// term/identity boundaries that genuinely need a `TermId` go through
-    /// [`Self::reify_to_term`].
+    /// (WI-348 Phase C, no consumer yet). Read an answer binding with this; a
+    /// caller that genuinely needs a term narrows the result via
+    /// [`crate::eval::value::Value::as_term`].
     pub fn reify(&mut self, term: TermId, subst: &subst::Substitution) -> crate::eval::value::Value {
         use crate::eval::value::Value;
         // Chase the var chain carrier-faithfully — `walk_view` surfaces a
@@ -2074,22 +2074,30 @@ impl KnowledgeBase {
         }
     }
 
-    /// Term/identity-boundary reify (WI-348 Phase E): chase var chains through
-    /// `σ` and rebuild a hash-consed `TermId`, staying in the term world.
-    /// Conservative by design — a var bound to a non-`Term` `Value` (a
-    /// `Value::Node` answer, a rule-body scalar) is left as the **unbound var**,
-    /// exactly as the former reify did, so the resolver's term-world boundary
-    /// callers — dedup `seen_goals` keys, NAF groundness, assumed-fact
-    /// `match_term`, eq-rewrite RHS — keep their current semantics (a Node
-    /// answer there is unreachable until value *rule* heads land, Phase C).
-    /// Reading an **answer** that may carry a Node goes through the public
-    /// carrier-agnostic [`Self::reify`]; this stays crate-internal.
-    pub(crate) fn reify_to_term(&mut self, term: TermId, subst: &subst::Substitution) -> TermId {
-        let walked = self.walk(term, subst);
-        match self.terms.get(walked) {
-            Term::Var(_) => walked,
-            Term::Fn { .. } => self.map_fn_children(walked, |kb, id| kb.reify_to_term(id, subst)),
-            _ => walked,
+    /// Deep-reify a goal [`Value`] through `σ`, carrier-faithfully — the
+    /// `Value`-carrier front for [`Self::reify`] (WI-348). A `Value::Term`
+    /// deep-substitutes via `reify` (rebuilding through `Term::Fn`); a
+    /// `Value::Node` occurrence substitutes via `substitute_occurrence`, which
+    /// **preserves the occurrence's identity/span** — it is spliced/rewritten in
+    /// place, never rebuilt structurally and never dropped to a bare var; a
+    /// scalar / value-level var passes through. Used at the resolver's goal
+    /// boundaries that need a σ-applied goal as a `Value` — NAF sub-resolution
+    /// and assumed-fact matching — so neither lowers an occurrence goal to a
+    /// hash-consed term. Distinct from `reify_goal_value` (resolve.rs), the
+    /// term-only materializer (`Value -> TermId`, no `σ`) the remaining
+    /// term-structured goal-handlers still use.
+    pub(crate) fn reify_value(
+        &mut self,
+        v: &crate::eval::value::Value,
+        subst: &subst::Substitution,
+    ) -> crate::eval::value::Value {
+        use crate::eval::value::Value;
+        match v {
+            Value::Term(t) => self.reify(*t, subst),
+            Value::Node(occ) => {
+                Value::Node(node_occurrence::substitute_occurrence(self, occ, subst))
+            }
+            other => other.clone(),
         }
     }
 
@@ -3810,8 +3818,8 @@ mod tests {
     #[test]
     fn value_fact_dedup_keeps_distinct_node_answers() {
         // WI-348: the answer-dedup now keys on a carrier-agnostic structural
-        // fingerprint (`goal_fingerprint`) instead of a `reify_to_term`-
-        // materialized `TermId`. Two solutions that bind the query var to
+        // fingerprint (`goal_fingerprint`) instead of a materialized
+        // `TermId`. Two solutions that bind the query var to
         // STRUCTURALLY-DISTINCT `Value::Node` answers must therefore stay
         // distinct — the former key dropped the Node to the bare var, collapsing
         // both to one key and silently losing a genuine answer.
@@ -3858,7 +3866,7 @@ mod tests {
         let solutions = kb.resolve(&[goal], &config);
 
         // The dedup fingerprints the Node structure, so it keeps both — it does
-        // NOT collapse them to one var key (the pre-WI-348 `reify_to_term` bug).
+        // NOT collapse them to one var key (the pre-WI-348 materialize-to-`TermId` bug).
         assert_eq!(solutions.len(), 2, "distinct Node answers must NOT be deduped to one");
 
         let nodes: Vec<_> = solutions
