@@ -5294,6 +5294,189 @@ pub fn check_provider_requires(kb: &mut KnowledgeBase) -> Vec<super::load::LoadE
     errors
 }
 
+/// WI-363: provider-side **operation** coverage — the op-level twin of
+/// [`check_provider_requires`]. For each `fact Spec[X]` (a `SortProvidesInfo`
+/// fact), every operation `Spec` declares must be *backed* for `X`: either a
+/// spec-level default on `Spec` (an `operation … = …` body, a derivation rule,
+/// or a registered builtin) OR an operation `X` itself supplies. An op with
+/// neither resolves to nothing at runtime, so the satisfaction fact is unsound
+/// — reported as a load-blocking [`LoadError::UnbackedProviderOperation`].
+///
+/// Backing detection is deliberately *conservative* (it errs toward "backed").
+/// The goal is the egregious gap — an op with no implementation anywhere (e.g.
+/// `Stream.takeN` before WI-362, or a carrier that forgot the `splitFirst`
+/// primitive) — without false-positiving on the many legitimate shapes a
+/// definition takes:
+///   - **host carriers** (`Int`/`Float`/… via `provides X language rust`): their
+///     ops are backed by the host artifact (`Int.compare` is `i64`'s `Ord`), so
+///     the whole provision is skipped — detected by an
+///     `anthill.realization.Implementation` fact targeting `X`. Mirrors how
+///     [`check_provider_requires`] skips `EffectsRuntime`.
+///   - **spec/carrier op body**: a runnable `operation … = …` on `Spec` or `X`
+///     (resolved via `sort_ops` + `op_has_runnable_body`).
+///   - **equational rule** `op(args) = rhs` (guarded or not): stored under the
+///     `eq` functor with `op` as the LHS head — covers `Stream.head/tail`,
+///     `Ordered.gt`, the spec laws, etc.
+///   - **relational rule** `op(args, result) :- body`: stored under `op`'s own
+///     functor — covers `anthill.geometry.vec_add` & friends, whose head functor
+///     is the *namespace*-level `vec_add`, distinct from the spec op
+///     `VectorSpace.vec_add` (so it's found by resolving `{X-namespace}.op`).
+///   - **builtin**: an op mapped to a resolver builtin (`Eq.eq`, `Numeric.add`).
+pub fn check_provider_operations(kb: &mut KnowledgeBase) -> Vec<super::load::LoadError> {
+    use super::load::LoadError;
+    let Some(provides_sym) = kb.try_resolve_symbol("anthill.reflect.SortProvidesInfo") else {
+        return Vec::new();
+    };
+    let effects_runtime = kb.try_resolve_symbol("anthill.prelude.EffectsRuntime");
+
+    // Host-provided carriers (`Implementation.target` QNs). Their operations are
+    // backed by the host artifact, not an anthill body/rule, so the provision is
+    // skipped wholesale — the op-level peer of WI-343's `EffectsRuntime` skip.
+    let mut host_targets: std::collections::HashSet<String> = std::collections::HashSet::new();
+    if let Some(impl_sym) = kb.try_resolve_symbol("anthill.realization.Implementation") {
+        for rid in kb.rules_by_functor(impl_sym) {
+            if !kb.is_fact(rid) { continue; }
+            let Some(named) = kb.fact_head_named_args(rid) else { continue };
+            let Some(target) = get_named_arg(kb, &named, "target") else { continue };
+            if let Some(qn) = impl_target_qn(kb, target) {
+                host_targets.insert(qn);
+            }
+        }
+    }
+
+    // Op symbols that have an EQUATIONAL definition. A rule `op(args) = rhs`
+    // (guarded or not) has head `eq(op(args), rhs)` — collect each LHS head
+    // functor. Must walk ALL rules, not `rules_by_functor`: WI-139 unindexes
+    // equational rules from the functor index (they're cite-required), so a
+    // functor walk would miss every one. `is_equation` is likewise unusable —
+    // it rejects guarded equations (`rule head(?s) = … :- …`), real definitions.
+    let mut eq_defined: std::collections::HashSet<Symbol> = std::collections::HashSet::new();
+    for rid in kb.live_rule_ids() {
+        let Value::Term(head) = *kb.rule_head_value(rid) else { continue };
+        if !super::load::is_equational_head(kb, head) { continue; }
+        if let Term::Fn { pos_args, .. } = kb.get_term(head) {
+            if let Some(&lhs) = pos_args.first() {
+                if let Some(op) = head_functor_sym(kb, lhs) {
+                    eq_defined.insert(op);
+                }
+            }
+        }
+    }
+
+    // Every sort's own declared operations (one shared `SortInfo` scan).
+    let own_ops: HashMap<Symbol, Vec<Symbol>> =
+        super::load::sorts_and_own_ops(kb).into_iter().collect();
+    // Concrete carriers (have constructors). An *abstract* carrier providing
+    // `fact Spec[Self]` (e.g. `LogicalStream`, `Stream`-provides-`Iterable`) is a
+    // sub-interface whose ops may stay primitives — only concrete carriers must
+    // back every op (they are the runtime witnesses).
+    let concrete = super::load::sorts_with_constructors(kb);
+
+    // Snapshot the provisions before the per-op walk (which interns short names,
+    // mutating `kb` — can't overlap the `rules_by_functor` borrow).
+    struct Provision { carrier: Symbol, spec: Symbol }
+    let mut provisions: Vec<Provision> = Vec::new();
+    for rid in kb.rules_by_functor(provides_sym) {
+        if !kb.is_fact(rid) { continue; }
+        let Some(named) = kb.fact_head_named_args(rid) else { continue };
+        let Some(sr) = get_named_arg(kb, &named, "sort_ref") else { continue };
+        let Some(carrier) = super::load::sort_ref_functor(kb, sr) else { continue };
+        let Some(spec_view) = get_named_arg(kb, &named, "spec") else { continue };
+        let Some(spec) = super::load::provides_spec_base_sym(kb, spec_view) else { continue };
+        provisions.push(Provision { carrier, spec });
+    }
+
+    let mut errors = Vec::new();
+    for p in &provisions {
+        if Some(p.spec) == effects_runtime { continue; }
+        // Abstract carrier (no constructors) → sub-interface, ops may stay
+        // primitives. Only concrete carriers are checked.
+        if !concrete.contains(&p.carrier) { continue; }
+        let carrier_qn = kb.qualified_name_of(p.carrier).to_string();
+        if host_targets.contains(&carrier_qn) { continue; }
+        let carrier_ns = carrier_qn.rsplit_once('.').map(|(ns, _)| ns.to_string());
+        let Some(spec_ops) = own_ops.get(&p.spec) else { continue };
+        for &spec_op in spec_ops {
+            let op_short = kb.qualified_name_of(spec_op)
+                .rsplit('.').next().unwrap_or("").to_string();
+            if op_backed(kb, p.carrier, &carrier_qn, carrier_ns.as_deref(),
+                spec_op, &op_short, &eq_defined)
+            {
+                continue;
+            }
+            errors.push(LoadError::UnbackedProviderOperation {
+                carrier: carrier_qn.clone(),
+                spec: kb.qualified_name_of(p.spec).to_string(),
+                op: op_short,
+            });
+        }
+    }
+    errors
+}
+
+/// True iff the operation `op_short` (declared by the provided spec, as
+/// `spec_op`) is backed for carrier `X`. See [`check_provider_operations`] for
+/// the backing kinds. Conservative: any one source suffices.
+fn op_backed(
+    kb: &mut KnowledgeBase,
+    carrier: Symbol,
+    carrier_qn: &str,
+    carrier_ns: Option<&str>,
+    spec_op: Symbol,
+    op_short: &str,
+    eq_defined: &std::collections::HashSet<Symbol>,
+) -> bool {
+    // Candidate definition symbols: the spec op itself, the carrier's resolved
+    // op (own override or inherited spec default, via `sort_ops`), the carrier's
+    // own op by QN, and the carrier-namespace op (the geometry relational-rule
+    // shape, whose head functor is `{namespace}.op`, not `{Spec}.op`).
+    let mut cands: SmallVec<[Symbol; 6]> = SmallVec::new();
+    cands.push(spec_op);
+    let short_sym = kb.intern(op_short);
+    if let Some(t) = kb.sort_ops_lookup(carrier, short_sym) {
+        cands.push(t);
+    }
+    let mut qns: SmallVec<[String; 2]> = SmallVec::new();
+    qns.push(format!("{carrier_qn}.{op_short}"));
+    if let Some(ns) = carrier_ns {
+        qns.push(format!("{ns}.{op_short}"));
+    }
+    for qn in &qns {
+        if let Some(s) = kb.try_resolve_symbol(qn) {
+            cands.push(s);
+        }
+    }
+    for &c in &cands {
+        if op_has_runnable_body(kb, c) { return true; }
+        if eq_defined.contains(&c) { return true; }
+        if kb.is_builtin(c) { return true; }
+        // Relational definition: a non-fact rule (`op(args, r) :- body`) whose
+        // head functor is `c`.
+        if kb.rules_by_functor(c).iter().any(|&r| !kb.is_fact(r)) { return true; }
+    }
+    false
+}
+
+/// Top functor symbol of a term head — a `Fn` functor, or a bare `Ref`/`Ident`.
+fn head_functor_sym(kb: &KnowledgeBase, tid: TermId) -> Option<Symbol> {
+    match kb.get_term(tid) {
+        Term::Fn { functor, .. } => Some(*functor),
+        Term::Ref(s) | Term::Ident(s) => Some(*s),
+        _ => None,
+    }
+}
+
+/// Qualified name an `Implementation.target` field points at — a `String`
+/// literal (`emit_implementation_fact`'s shape) or a sort reference.
+fn impl_target_qn(kb: &KnowledgeBase, target: TermId) -> Option<String> {
+    match kb.get_term(target) {
+        Term::Const(Literal::String(s)) => Some(s.clone()),
+        Term::Ref(s) | Term::Ident(s) => Some(kb.qualified_name_of(*s).to_string()),
+        Term::Fn { functor, .. } => Some(kb.qualified_name_of(*functor).to_string()),
+        _ => None,
+    }
+}
+
 /// Build the `requires` sub-goals for the provider-side check (WI-356).
 /// Walks `spec`'s **direct** `requires`, instantiating each clause at the
 /// provision's σ. Distinct from `candidate_sub_goals_owned` (the resolver's

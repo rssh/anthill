@@ -14,6 +14,9 @@ mod wi281_spec_dot_dispatch_test;
 #[path = "include/wi343_provider_requires_test.rs"]
 mod wi343_provider_requires_test;
 
+#[path = "include/wi363_provider_operations_test.rs"]
+mod wi363_provider_operations_test;
+
 #[path = "include/wi365_abstract_self_typing_test.rs"]
 mod wi365_abstract_self_typing_test;
 

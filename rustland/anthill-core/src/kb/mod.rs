@@ -1732,6 +1732,19 @@ impl KnowledgeBase {
         self.rules.iter().filter(|r| !r.retracted && !r.body_nodes.is_empty()).count()
     }
 
+    /// All live (non-retracted) rule ids — *including* the WI-139 cite-required
+    /// equational rules that `unindex_functor` pulled from `rules_by_functor`.
+    /// WI-363's op-coverage check enumerates equational definitions this way:
+    /// `rule op(args) = rhs` has no functor-index entry, so a `rules_by_functor`
+    /// walk would miss it. Returns an owned `Vec` so callers can mutate the KB
+    /// (intern, resolve) while iterating.
+    pub fn live_rule_ids(&self) -> Vec<RuleId> {
+        (0..self.rules.len())
+            .map(RuleId::from_index)
+            .filter(|&r| !self.rules[r.index()].retracted)
+            .collect()
+    }
+
     /// Live term count in the hash-consed `TermStore`. Diagnostic — used by
     /// 026.1 Q4's acceptance test to verify external-stream scans do not grow
     /// the main term store.
@@ -3377,6 +3390,14 @@ impl KnowledgeBase {
                 .copied().unwrap_or(old_sym);
             self.builtins.insert(sym, tag);
         }
+    }
+
+    /// True iff `sym` is a registered resolver builtin (`anthill.prelude.Eq.eq`,
+    /// `Numeric.add`, …). WI-363: a spec op that maps to a builtin is backed by
+    /// the host primitive, not an anthill body/rule — so the op-provision check
+    /// must treat it as satisfied.
+    pub fn is_builtin(&self, sym: Symbol) -> bool {
+        self.builtins.contains_key(&sym)
     }
 
     /// Check if a goal term's functor is a registered builtin.

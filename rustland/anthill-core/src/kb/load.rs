@@ -151,6 +151,17 @@ pub enum LoadError {
         spec: String,
         required: String,
     },
+    /// WI-363: a carrier provides a spec but does not back one of the spec's
+    /// declared operations. The op-level twin of `UnsatisfiedProviderRequires`:
+    /// `fact Spec[X]` is trusted by the typer, yet `Spec.op` has neither a
+    /// spec-level default (an `operation … = …` body or a derivation rule on
+    /// `Spec`) nor an operation `X` itself supplies — so a call resolves to
+    /// nothing at runtime. Load-blocking: the satisfaction fact is unsound.
+    UnbackedProviderOperation {
+        carrier: String,
+        spec: String,
+        op: String,
+    },
     /// WI-347: an operation override violates behavioral subtyping — a
     /// carrier's own operation that implements/overrides a spec operation does
     /// not *refine* it. `reason` names the specific violation: an effect not
@@ -208,6 +219,10 @@ impl LoadError {
                 format!("'{}' provides '{}', which requires '{}', but '{}' does not provide '{}' (add a `fact {}[…]` for the carrier)",
                     carrier, spec, required, carrier, required, required)
             }
+            LoadError::UnbackedProviderOperation { carrier, spec, op } => {
+                format!("'{}' provides '{}' but does not back operation '{}.{}': there is no default on '{}' (an `operation {}(…) = …` body or a derivation rule) and '{}' supplies no own '{}' (add a body/rule on '{}' or an `operation {}(…)` on '{}')",
+                    carrier, spec, spec, op, spec, op, carrier, op, spec, op, carrier)
+            }
             LoadError::IncompatibleOverride { carrier, spec, op, reason } => {
                 format!("'{}' overrides '{}.{}' (it provides '{}') but the override does not refine it: {}",
                     carrier, spec, op, spec, reason)
@@ -236,6 +251,7 @@ impl LoadError {
             LoadError::TypeMismatch { .. }
             | LoadError::UnresolvedImport { .. }
             | LoadError::UnsatisfiedProviderRequires { .. }
+            | LoadError::UnbackedProviderOperation { .. }
             | LoadError::IncompatibleOverride { .. }
             // WI-366: a value-in-type in a sort-relation position is not yet
             // resolvable — fail loudly rather than run with an unenforced clause.
@@ -265,6 +281,10 @@ impl std::fmt::Display for LoadError {
             LoadError::UnsatisfiedProviderRequires { carrier, spec, required } => {
                 write!(f, "'{}' provides '{}', which requires '{}', but '{}' does not provide '{}'",
                     carrier, spec, required, carrier, required)
+            }
+            LoadError::UnbackedProviderOperation { carrier, spec, op } => {
+                write!(f, "'{}' provides '{}' but backs no operation '{}.{}' (no default on '{}', no own '{}' on '{}')",
+                    carrier, spec, spec, op, spec, op, carrier)
             }
             LoadError::IncompatibleOverride { carrier, spec, op, reason } => {
                 write!(f, "'{}' overrides '{}.{}' but does not refine it: {}", carrier, spec, op, reason)
@@ -2071,6 +2091,13 @@ fn load_phase_inner(
     // must itself be satisfied — else the satisfaction fact is unsound.
     all_errors.extend(super::typing::check_provider_requires(kb));
     mark!("check_provider_requires");
+    // WI-363: provider-side operation coverage — the op-level twin of the
+    // above. For each `fact Spec[X]`, every operation Spec declares must be
+    // backed by a spec default (body/derivation rule) or an op X supplies;
+    // an unbacked op makes the satisfaction fact unsound (calls resolve to
+    // nothing at runtime). Load-blocking.
+    all_errors.extend(super::typing::check_provider_operations(kb));
+    mark!("check_provider_operations");
     // WI-347: operation-override refinement — a carrier's own op overriding a
     // spec op must refine it (effects no wider; pre/post next). Load-blocking
     // (unsound override), so it lands in `all_errors`.
@@ -3083,6 +3110,39 @@ pub(crate) fn sorts_and_own_ops(kb: &KnowledgeBase) -> Vec<(Symbol, Vec<Symbol>)
             None => Vec::new(),
         };
         out.push((sort_sym, ops));
+    }
+    out
+}
+
+/// The set of sorts that have at least one constructor (`SortInfo.constructors`
+/// is non-empty) — i.e. *concrete* sorts that can be instantiated, as opposed to
+/// *abstract* spec/parametric sorts whose ops may stay primitives. WI-363 uses
+/// this to scope op-provision completeness to concrete carriers: an abstract
+/// carrier declaring `fact Spec[Self]` (e.g. `LogicalStream`, whose `splitFirst`
+/// is a body-less primitive) is a sub-interface, not a runtime witness, so its
+/// ops needn't resolve — the obligation passes to its concrete sub-carriers.
+pub(crate) fn sorts_with_constructors(kb: &KnowledgeBase) -> std::collections::HashSet<Symbol> {
+    let mut out = std::collections::HashSet::new();
+    let Some(sort_info_sym) = kb.try_resolve_symbol("anthill.reflect.SortInfo") else {
+        return out;
+    };
+    for rid in kb.rules_by_functor(sort_info_sym) {
+        if !kb.is_fact(rid) { continue; }
+        let Some(named) = kb.fact_head_named_args(rid) else { continue };
+        let sort_sym = match named.iter()
+            .find(|(s, _)| kb.resolve_sym(*s) == "name")
+            .map(|(_, v)| kb.get_term(*v))
+        {
+            Some(Term::Ref(s) | Term::Ident(s) | Term::Fn { functor: s, .. }) => *s,
+            _ => continue,
+        };
+        let has_ctors = named.iter()
+            .find(|(s, _)| kb.resolve_sym(*s) == "constructors")
+            .map(|(_, v)| !super::typing::list_to_vec(kb, *v).is_empty())
+            .unwrap_or(false);
+        if has_ctors {
+            out.insert(sort_sym);
+        }
     }
     out
 }
