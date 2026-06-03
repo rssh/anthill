@@ -1689,3 +1689,58 @@ end
         .expect("takeN over a List, dispatched through Stream's default body, must run");
     assert_eq!(expect_int(len), 2, "takeN([1,2,3,4,5], 2) then length must be 2");
 }
+
+/// WI-362 Part 1: `Stream` provides `Iterable` (`iterator(s) = s`, proposal
+/// library/002 "Relationship to Stream"). Asserts the provider fact
+/// `SortProvidesInfo(sort_ref: Stream, spec: SortView(Iterable, …))` is
+/// registered, so a value typed as a `Stream` is admissible wherever an
+/// `Iterable` is required (the shared read interface). Loading the stdlib at all
+/// already proves `stream.anthill` (incl. the `stream`↔`iterable` cyclic import
+/// and `iterator(s: Stream) -> Stream = s`) typechecks; this pins the provision
+/// itself rather than just clean load.
+#[test]
+fn wi362_stream_provides_iterable() {
+    use anthill_core::kb::term::Term;
+    let interp = interp_for("namespace test.wi362_iter\nend\n");
+    let kb = interp.kb();
+    let provides = kb
+        .try_resolve_symbol("anthill.reflect.SortProvidesInfo")
+        .expect("SortProvidesInfo sort must exist");
+    // Functor qualified name of a name term (`Fn` / `Ref` / `Ident`).
+    let functor_qn = |t| match kb.get_term(t) {
+        Term::Fn { functor, .. } | Term::Ref(functor) | Term::Ident(functor) => {
+            Some(kb.qualified_name_of(*functor).to_string())
+        }
+        _ => None,
+    };
+    let found = kb.rules_by_functor(provides).into_iter().any(|rid| {
+        if !kb.is_fact(rid) {
+            return false;
+        }
+        let Some(named) = kb.fact_head_named_args(rid) else {
+            return false;
+        };
+        let get = |key: &str| {
+            named
+                .iter()
+                .find(|(s, _)| kb.resolve_sym(*s) == key)
+                .map(|(_, t)| *t)
+        };
+        let (Some(sort_ref), Some(spec)) = (get("sort_ref"), get("spec")) else {
+            return false;
+        };
+        // sort_ref base = Stream; spec = SortView(Iterable, …) → first positional
+        // arg's functor = Iterable.
+        let carrier_is_stream = functor_qn(sort_ref).as_deref() == Some("anthill.prelude.Stream");
+        let spec_base = match kb.get_term(spec) {
+            Term::Fn { pos_args, .. } => pos_args.first().copied().and_then(functor_qn),
+            _ => None,
+        };
+        carrier_is_stream && spec_base.as_deref() == Some("anthill.prelude.Iterable")
+    });
+    assert!(
+        found,
+        "stream.anthill must register `fact Iterable[C = Stream]` \
+         (SortProvidesInfo sort_ref=Stream, spec base=Iterable)",
+    );
+}

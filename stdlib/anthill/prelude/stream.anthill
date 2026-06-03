@@ -10,6 +10,7 @@ sort anthill.prelude.Stream
   import anthill.prelude.List.{nil, cons}
   import anthill.prelude.Ordered.{gt}
   import anthill.prelude.Numeric.{sub}
+  import anthill.prelude.Iterable
 
   sort T = ?              -- element type
   -- WI-320 / proposal 045: `effects E = ?` lifts E to a row variable with
@@ -40,6 +41,15 @@ sort anthill.prelude.Stream
       case some(pair(h, rest)) -> cons(head: h, tail: collect(rest))
   operation isEmpty(s: Stream) -> Bool
     effects E
+
+  -- Stream trivially provides Iterable (proposal library/002, "Relationship to
+  -- Stream"): a Stream IS its own iterator, so `iterator(s) = s`. This gives
+  -- every Stream carrier the shared read interface for free. `Element` rides as
+  -- Stream's own `T`; the access effect `E` is grounded at the consumption
+  -- boundary (it is not a type argument — WI-301), so it is left unbound here,
+  -- exactly as List's provision is (list.anthill).
+  fact Iterable[C = Stream, Element = T]
+  operation iterator(s: Stream) -> Stream = s
 
   -- Laws (derived from splitFirst)
   rule head(?s) = some(fst(?p)) :- splitFirst(?s) = some(?p)
