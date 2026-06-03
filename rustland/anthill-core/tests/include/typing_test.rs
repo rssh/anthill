@@ -285,7 +285,7 @@ fn extract_sort_ref_from_parameterized_type() {
     let results = kb.resolve(&[goal], &default_config());
     assert_eq!(results.len(), 1, "extract_sort_ref should succeed");
 
-    let bound = kb.reify(var_result, &results[0].subst);
+    let bound = kb.reify(var_result, &results[0].subst).as_term().unwrap();
     // extract_sort_ref emits the canonical nullary-Fn shape used by
     // load.rs for sort references (so the result can flow into rule
     // heads / fact field positions that expect Fn(name, [], [])).
@@ -312,7 +312,7 @@ fn extract_sort_ref_from_simple_ref() {
     let results = kb.resolve(&[goal], &default_config());
     assert_eq!(results.len(), 1, "extract_sort_ref from Ref should succeed");
 
-    let bound = kb.reify(var_result, &results[0].subst);
+    let bound = kb.reify(var_result, &results[0].subst).as_term().unwrap();
     match kb.get_term(bound) {
         Term::Fn { functor, pos_args, named_args } if pos_args.is_empty() && named_args.is_empty() => {
             assert_eq!(kb.resolve_sym(*functor), "Eq");
@@ -747,7 +747,7 @@ sort Color {
     assert_eq!(results.len(), 1, "scope(red, ?parent) should find exactly 1 parent");
 
     // Verify the parent is Color (scope returns the sort term Fn, not a Ref)
-    let bound = kb.reify(var_p, &results[0].subst);
+    let bound = kb.reify(var_p, &results[0].subst).as_term().unwrap();
     let color_term = kb.resolve_qualified_name_term("Color");
     assert_eq!(bound, color_term, "scope of red should be Color");
 }
@@ -855,7 +855,7 @@ sort Color {
     assert_eq!(results.len(), 1, "entity_of(red, ?sort) should find exactly 1 parent");
 
     // Verify the parent is Color
-    let bound = kb.reify(var_sort, &results[0].subst);
+    let bound = kb.reify(var_sort, &results[0].subst).as_term().unwrap();
     let color_term = kb.resolve_qualified_name_term("Color");
     assert_eq!(bound, color_term, "entity_of(red, ?sort) should bind ?sort to Color");
 }
@@ -930,7 +930,7 @@ sort Shape {
     let goal1 = make_goal(&mut kb, "anthill.reflect.typing.entity_of", &[red_term, var_sort1]);
     let results1 = kb.resolve(&[goal1], &default_config());
     assert_eq!(results1.len(), 1);
-    let bound1 = kb.reify(var_sort1, &results1[0].subst);
+    let bound1 = kb.reify(var_sort1, &results1[0].subst).as_term().unwrap();
     assert_eq!(bound1, color_term, "red's parent should be Color");
 
     // entity_of(circle, ?sort) → Shape
@@ -938,7 +938,7 @@ sort Shape {
     let goal2 = make_goal(&mut kb, "anthill.reflect.typing.entity_of", &[circle_term, var_sort2]);
     let results2 = kb.resolve(&[goal2], &default_config());
     assert_eq!(results2.len(), 1);
-    let bound2 = kb.reify(var_sort2, &results2[0].subst);
+    let bound2 = kb.reify(var_sort2, &results2[0].subst).as_term().unwrap();
     assert_eq!(bound2, shape_term, "circle's parent should be Shape");
 
     // entity_of(red, Shape) should fail — wrong parent
@@ -1317,7 +1317,7 @@ fn wi297_occurrence_term_literal_synth_resolves() {
         "probe should resolve once via synth/occurrence_term on a literal occurrence"
     );
 
-    let bound = kb.reify(var_t, &results[0].subst);
+    let bound = kb.reify(var_t, &results[0].subst).as_term().unwrap();
     match kb.get_term(bound) {
         Term::Fn { functor, named_args, .. } => {
             assert_eq!(kb.resolve_sym(*functor), "SortRef", "synth should yield SortRef(...)");
@@ -1374,14 +1374,14 @@ fn wi297_occurrence_term_discriminates_literal_kind() {
     let g_int = make_goal(&mut kb, "wi297.b.probe_int", &[var_i]);
     let r_int = kb.resolve(&[g_int], &default_config());
     assert_eq!(r_int.len(), 1, "an int literal should select exactly the int_lit synth rule");
-    let t_int = kb.reify(var_i, &r_int[0].subst);
+    let t_int = kb.reify(var_i, &r_int[0].subst).as_term().unwrap();
     assert_eq!(sort_ref_name(&kb, t_int), "Int");
 
     let var_s = make_var(&mut kb, "Ts");
     let g_str = make_goal(&mut kb, "wi297.b.probe_str", &[var_s]);
     let r_str = kb.resolve(&[g_str], &default_config());
     assert_eq!(r_str.len(), 1, "a string literal should select exactly the string_lit synth rule");
-    let t_str = kb.reify(var_s, &r_str[0].subst);
+    let t_str = kb.reify(var_s, &r_str[0].subst).as_term().unwrap();
     assert_eq!(sort_ref_name(&kb, t_str), "String");
 }
 
@@ -1400,7 +1400,7 @@ fn wi297_occurrence_span_builds_source_span() {
     let goal = make_goal(&mut kb, "wi297.sp.probe", &[var_s]);
     let results = kb.resolve(&[goal], &default_config());
     assert_eq!(results.len(), 1, "occurrence_span should produce a span term");
-    let bound = kb.reify(var_s, &results[0].subst);
+    let bound = kb.reify(var_s, &results[0].subst).as_term().unwrap();
     match kb.get_term(bound) {
         Term::Fn { functor, named_args, .. } => {
             assert_eq!(kb.resolve_sym(*functor), "source_span");
@@ -1433,14 +1433,14 @@ fn wi297_sub_occurrences_empty_vs_nonempty() {
     let g_lit = make_goal(&mut kb, "wi297.su.probe_lit", &[var_k]);
     let r_lit = kb.resolve(&[g_lit], &default_config());
     assert_eq!(r_lit.len(), 1, "a literal occurrence has no sub-occurrences (nil)");
-    let t_lit = kb.reify(var_k, &r_lit[0].subst);
+    let t_lit = kb.reify(var_k, &r_lit[0].subst).as_term().unwrap();
     assert_eq!(kb.get_term(t_lit), &Term::Const(Literal::Int(0)));
 
     let var_k2 = make_var(&mut kb, "k2");
     let g_cmp = make_goal(&mut kb, "wi297.su.probe_compound", &[var_k2]);
     let r_cmp = kb.resolve(&[g_cmp], &default_config());
     assert_eq!(r_cmp.len(), 1, "a constructor occurrence has sub-occurrences (cons)");
-    let t_cmp = kb.reify(var_k2, &r_cmp[0].subst);
+    let t_cmp = kb.reify(var_k2, &r_cmp[0].subst).as_term().unwrap();
     assert_eq!(kb.get_term(t_cmp), &Term::Const(Literal::Int(1)));
 }
 
@@ -1482,7 +1482,7 @@ fn wi297_occurrence_span_structured_pattern_matches() {
     let goal = make_goal(&mut kb, "wi297.sps.probe", &[var_s]);
     let results = kb.resolve(&[goal], &default_config());
     assert_eq!(results.len(), 1, "structured source_span pattern should match (field order aligned)");
-    let bound = kb.reify(var_s, &results[0].subst);
+    let bound = kb.reify(var_s, &results[0].subst).as_term().unwrap();
     assert!(
         matches!(kb.get_term(bound), Term::Const(Literal::Int(_))),
         "start_byte should bind to an Int, got {:?}", kb.get_term(bound)

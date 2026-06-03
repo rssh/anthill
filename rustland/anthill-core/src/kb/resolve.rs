@@ -696,7 +696,7 @@ impl SearchStream {
         if !assumed.is_empty() {
             let frame_subst = self.stack.last().unwrap().subst.clone();
             let goal = goal_t.unwrap_or_else(|| reify_goal_value(kb, &goal_val));
-            let reified_goal = kb.reify(goal, &frame_subst);
+            let reified_goal = kb.reify_to_term(goal, &frame_subst);
             for assumed_fact in assumed {
                 if let Some(subst) = kb.match_term(assumed_fact, reified_goal) {
                     if !subst.is_contradiction() {
@@ -982,7 +982,7 @@ impl SearchStream {
         let reified = match inner_val {
             Some(v) => {
                 let t = reify_goal_value(kb, &v);
-                kb.reify(t, &subst)
+                kb.reify_to_term(t, &subst)
             }
             None => {
                 self.stack.pop();
@@ -1290,7 +1290,7 @@ impl SearchStream {
                 // Reify the goal to a hash-consed term key (a Node goal is
                 // reified via occurrence_to_term), then through the solution σ.
                 let t = reify_goal_value(kb, original_goal);
-                let reified = kb.reify(t, &sol.subst);
+                let reified = kb.reify_to_term(t, &sol.subst);
                 return !seen_goals.insert(reified);
             }
         }
@@ -1499,7 +1499,7 @@ impl KnowledgeBase {
             }
 
             // Reify the result variable to get the RHS
-            let rhs = self.reify(result_var, &tree_subst);
+            let rhs = self.reify_to_term(result_var, &tree_subst);
 
             changes.push(EqChange {
                 rule_id: rid,
@@ -2959,7 +2959,7 @@ mod tests {
         s.bind(vx, var_y);
         s.bind(vy, val);
 
-        let result = kb.reify(term, &s);
+        let result = kb.reify(term, &s).as_term().unwrap();
         match kb.get_term(result) {
             Term::Fn { pos_args, .. } => {
                 assert_eq!(pos_args[0], val);
@@ -3121,8 +3121,8 @@ mod tests {
         let results = kb.resolve(&[goal], &config);
         assert_eq!(results.len(), 1);
         // Use reify to resolve through fresh var chains
-        assert_eq!(kb.reify(var_a, &results[0].subst), alice);
-        assert_eq!(kb.reify(var_b, &results[0].subst), charlie);
+        assert_eq!(kb.reify(var_a, &results[0].subst).as_term().unwrap(), alice);
+        assert_eq!(kb.reify(var_b, &results[0].subst).as_term().unwrap(), charlie);
     }
 
     #[test]
@@ -3218,7 +3218,7 @@ mod tests {
 
         // Should find: ancestor(alice, bob) and ancestor(alice, charlie)
         let bound: Vec<TermId> = results.iter()
-            .map(|sol| kb.reify(var_w, &sol.subst))
+            .map(|sol| kb.reify(var_w, &sol.subst).as_term().unwrap())
             .collect();
         assert_eq!(bound.len(), 2);
         assert!(bound.contains(&bob));
@@ -3639,7 +3639,7 @@ mod tests {
         let results = kb.resolve(&[goal_f, goal_nonvar], &config);
         assert_eq!(results.len(), 1);
         assert!(results[0].residual.is_empty());
-        assert_eq!(kb.reify(var_x, &results[0].subst), hello);
+        assert_eq!(kb.reify(var_x, &results[0].subst).as_term().unwrap(), hello);
     }
 
     #[test]
@@ -3679,7 +3679,7 @@ mod tests {
         let results = kb.resolve(&[goal_nonvar, goal_f], &config);
         assert_eq!(results.len(), 1);
         assert!(results[0].residual.is_empty());
-        assert_eq!(kb.reify(var_x, &results[0].subst), hello);
+        assert_eq!(kb.reify(var_x, &results[0].subst).as_term().unwrap(), hello);
     }
 
     #[test]
@@ -3935,7 +3935,7 @@ mod tests {
         let results = kb.resolve(&[q_check, q_bind], &config);
         assert_eq!(results.len(), 1);
         assert!(results[0].residual.is_empty());
-        assert_eq!(kb.reify(var_a, &results[0].subst), val_42);
+        assert_eq!(kb.reify(var_a, &results[0].subst).as_term().unwrap(), val_42);
     }
 
     #[test]
@@ -4073,7 +4073,7 @@ mod tests {
         let results = kb.resolve(&[q_foo], &config);
         assert_eq!(results.len(), 1);
         assert!(results[0].residual.is_empty());
-        assert_eq!(kb.reify(var_a, &results[0].subst), val_99);
+        assert_eq!(kb.reify(var_a, &results[0].subst).as_term().unwrap(), val_99);
     }
 
     // ── SearchStream (lazy) tests ───────────────────────────────
@@ -4298,10 +4298,10 @@ mod tests {
         let stream = kb.resolve_lazy(&[goal], &config);
 
         let (sol1, stream) = stream.split_first(&mut kb).expect("first ancestor");
-        let r1 = kb.reify(var_w, &sol1.subst);
+        let r1 = kb.reify(var_w, &sol1.subst).as_term().unwrap();
 
         let (sol2, stream) = stream.split_first(&mut kb).expect("second ancestor");
-        let r2 = kb.reify(var_w, &sol2.subst);
+        let r2 = kb.reify(var_w, &sol2.subst).as_term().unwrap();
 
         // Should find bob and charlie (in some order)
         let mut results = vec![r1, r2];
@@ -4556,7 +4556,7 @@ mod tests {
         });
         let solutions = kb.resolve(&[goal], &ResolveConfig::default());
         assert_eq!(solutions.len(), 1, "add(3, 4, ?x) should have 1 solution");
-        let result = kb.reify(var_x, &solutions[0].subst);
+        let result = kb.reify(var_x, &solutions[0].subst).as_term().unwrap();
         assert_eq!(kb.get_term(result), &Term::Const(Literal::Int(7)));
     }
 
@@ -4846,7 +4846,7 @@ mod tests {
         assert_eq!(solutions.len(), 1, "should have exactly one solution (safe(a))");
         assert!(solutions[0].residual.is_empty(), "no residual expected");
         // Reify to follow the full binding chain through fresh vars
-        let resolved = kb.reify(var_q, &solutions[0].subst);
+        let resolved = kb.reify(var_q, &solutions[0].subst).as_term().unwrap();
         assert_eq!(resolved, a, "?q should resolve to 'a'");
     }
 
@@ -4915,11 +4915,11 @@ mod tests {
         assert_eq!(solutions.len(), 4, "should get 4 solutions");
 
         // Solution 0: nat(zero()) → ?x = zero()
-        let r0 = kb.reify(var_x, &solutions[0].subst);
+        let r0 = kb.reify(var_x, &solutions[0].subst).as_term().unwrap();
         assert_eq!(r0, zero_term, "first solution should be zero()");
 
         // Solution 1: nat(succ(zero())) → ?x = succ(zero())
-        let r1 = kb.reify(var_x, &solutions[1].subst);
+        let r1 = kb.reify(var_x, &solutions[1].subst).as_term().unwrap();
         match kb.get_term(r1) {
             Term::Fn { functor, pos_args, .. } => {
                 assert_eq!(*functor, succ_sym);
@@ -4930,7 +4930,7 @@ mod tests {
         }
 
         // Solution 2: nat(succ(succ(zero()))) → ?x = succ(succ(zero()))
-        let r2 = kb.reify(var_x, &solutions[2].subst);
+        let r2 = kb.reify(var_x, &solutions[2].subst).as_term().unwrap();
         match kb.get_term(r2) {
             Term::Fn { functor, pos_args, .. } => {
                 assert_eq!(*functor, succ_sym);
@@ -5043,7 +5043,7 @@ mod tests {
         });
         let sols = kb.resolve(&[q_var], &config);
         assert_eq!(sols.len(), 1, "shared(?q) should have 1 solution");
-        let bound = kb.reify(var_q, &sols[0].subst);
+        let bound = kb.reify(var_q, &sols[0].subst).as_term().unwrap();
         assert_eq!(bound, yes, "?q should resolve to \"yes\"");
     }
 
@@ -5478,7 +5478,7 @@ mod tests {
 
         let mut xs: Vec<String> = solutions.iter()
             .filter_map(|sol| {
-                let t = kb.reify(var_q, &sol.subst);
+                let t = kb.reify(var_q, &sol.subst).as_term().unwrap();
                 match kb.get_term(t) {
                     Term::Const(Literal::String(s)) => Some(s.clone()),
                     _ => None,

@@ -1293,26 +1293,13 @@ impl KnowledgeBase {
         meta: Option<TermId>,
     ) -> RuleId {
         use crate::eval::value::Value;
-        let all_ground = pos.iter().all(|v| matches!(v, Value::Term(_)))
-            && named.iter().all(|(_, v)| matches!(v, Value::Term(_)));
-        if all_ground {
-            let pos_args: SmallVec<[TermId; 4]> = pos
-                .iter()
-                .map(|v| v.as_term().expect("all_ground ⇒ Value::Term"))
-                .collect();
-            let named_args: SmallVec<[(Symbol, TermId); 2]> = named
-                .iter()
-                .map(|(s, v)| (*s, v.as_term().expect("all_ground ⇒ Value::Term")))
-                .collect();
-            let term = self.alloc(Term::Fn { functor, pos_args, named_args });
-            self.assert_fact(term, sort, domain, meta)
-        } else {
-            let head = Value::Entity {
-                functor,
-                pos: std::rc::Rc::from(pos),
-                named: std::rc::Rc::from(named),
-            };
-            self.assert_fact_value(head, sort, domain, meta)
+        // One source of the carrier decision, shared with [`Self::reify`]: the
+        // all-ground head rides as a hash-consed `Term::Fn` (dedup + sharing) and
+        // a `Value::Node`-bearing one as a `Value::Entity` value fact. Routing on
+        // the assembled carrier keeps the two paths from ever disagreeing.
+        match self.fn_value(functor, pos, named) {
+            Value::Term(term) => self.assert_fact(term, sort, domain, meta),
+            head => self.assert_fact_value(head, sort, domain, meta),
         }
     }
 
@@ -1995,14 +1982,97 @@ impl KnowledgeBase {
         }
     }
 
-    /// Deep walk — recursively chase all vars through the substitution,
-    /// rebuilding the term with concrete bindings. Unlike `apply_subst`
-    /// which doesn't chase transitive variable chains.
-    pub fn reify(&mut self, term: TermId, subst: &subst::Substitution) -> TermId {
+    /// Deep-reify a term through the substitution to a carrier-agnostic
+    /// [`Value`] (WI-348). The carrier-faithful successor of the former
+    /// `TermId`-only reify: a var bound to a `Value::Node` (a denoted/occurrence
+    /// answer) — or any other non-`Term` value — is returned with its
+    /// **identity intact**, never materialized to a `TermId` (which is lossy: it
+    /// drops the occurrence's identity/span).
+    ///
+    /// Reification rebuilds **through `Term::Fn` structure**, chasing each var
+    /// child's binding chain: an all-`Term` result rebuilds a hash-consed
+    /// `Value::Term(Fn)` (the universal case), a `Fn` with any non-`Term` child
+    /// becomes the same `Value::Entity` carrier a value fact uses (assembled by
+    /// [`Self::fn_value`]). A var bound to a non-`Term` *carrier* (`Value::Node`
+    /// / `Entity` / `Tuple` / scalar) is returned **as-is** — its identity is
+    /// the answer; recursing into such a carrier's own children to chase a
+    /// nested unbound var is unnecessary until value *rule* heads land
+    /// (WI-348 Phase C, no consumer yet). Read an answer binding with this; the
+    /// term/identity boundaries that genuinely need a `TermId` go through
+    /// [`Self::reify_to_term`].
+    pub fn reify(&mut self, term: TermId, subst: &subst::Substitution) -> crate::eval::value::Value {
+        use crate::eval::value::Value;
+        // Chase the var chain carrier-faithfully — `walk_view` surfaces a
+        // non-`Term` binding the `TermId`-only `walk` cannot see.
+        match self.walk_view(term, subst) {
+            Value::Term(t) => match self.terms.get(t).clone() {
+                Term::Fn { functor, pos_args, named_args } => {
+                    let pos: Vec<Value> =
+                        pos_args.iter().map(|&id| self.reify(id, subst)).collect();
+                    let named: Vec<(Symbol, Value)> = named_args
+                        .iter()
+                        .map(|&(sym, id)| (sym, self.reify(id, subst)))
+                        .collect();
+                    self.fn_value(functor, pos, named)
+                }
+                // Leaf (Const/Ref/Ident/…) or an unbound `Var` — already final.
+                _ => Value::Term(t),
+            },
+            // A bound non-`Term` carrier (`Value::Node` / `Entity` / scalar /
+            // `Var`) — return as-is, identity preserved through the answer.
+            other => other,
+        }
+    }
+
+    /// Assemble a functor application `functor(pos…, named…)` from child
+    /// `Value`s into its canonical head carrier (WI-348) — the **single source**
+    /// of the `Term`-vs-`Value::Entity` decision, shared by [`Self::reify`]
+    /// (rebuilding a reified `Fn`) and [`Self::assert_fact_carrier`] (asserting
+    /// the result). All-`Term` children rebuild a hash-consed `Value::Term(Fn)`
+    /// (the universal case — dedup-able, indexes identically); any non-`Term`
+    /// child forces a `Value::Entity`, which cannot hash-cons but reads back
+    /// through `TermView` like its term twin.
+    fn fn_value(
+        &mut self,
+        functor: Symbol,
+        pos: Vec<crate::eval::value::Value>,
+        named: Vec<(Symbol, crate::eval::value::Value)>,
+    ) -> crate::eval::value::Value {
+        use crate::eval::value::Value;
+        let all_term = pos.iter().all(|v| matches!(v, Value::Term(_)))
+            && named.iter().all(|(_, v)| matches!(v, Value::Term(_)));
+        if all_term {
+            let pos_args: SmallVec<[TermId; 4]> =
+                pos.iter().map(|v| v.as_term().expect("all_term ⇒ Value::Term")).collect();
+            let named_args: SmallVec<[(Symbol, TermId); 2]> = named
+                .iter()
+                .map(|(s, v)| (*s, v.as_term().expect("all_term ⇒ Value::Term")))
+                .collect();
+            Value::Term(self.alloc(Term::Fn { functor, pos_args, named_args }))
+        } else {
+            Value::Entity {
+                functor,
+                pos: std::rc::Rc::from(pos),
+                named: std::rc::Rc::from(named),
+            }
+        }
+    }
+
+    /// Term/identity-boundary reify (WI-348 Phase E): chase var chains through
+    /// `σ` and rebuild a hash-consed `TermId`, staying in the term world.
+    /// Conservative by design — a var bound to a non-`Term` `Value` (a
+    /// `Value::Node` answer, a rule-body scalar) is left as the **unbound var**,
+    /// exactly as the former reify did, so the resolver's term-world boundary
+    /// callers — dedup `seen_goals` keys, NAF groundness, assumed-fact
+    /// `match_term`, eq-rewrite RHS — keep their current semantics (a Node
+    /// answer there is unreachable until value *rule* heads land, Phase C).
+    /// Reading an **answer** that may carry a Node goes through the public
+    /// carrier-agnostic [`Self::reify`]; this stays crate-internal.
+    pub(crate) fn reify_to_term(&mut self, term: TermId, subst: &subst::Substitution) -> TermId {
         let walked = self.walk(term, subst);
         match self.terms.get(walked) {
             Term::Var(_) => walked,
-            Term::Fn { .. } => self.map_fn_children(walked, |kb, id| kb.reify(id, subst)),
+            Term::Fn { .. } => self.map_fn_children(walked, |kb, id| kb.reify_to_term(id, subst)),
             _ => walked,
         }
     }
@@ -3677,15 +3747,42 @@ mod tests {
         assert_eq!(solutions.len(), 1, "the value fact must be found by the full resolver");
 
         // ?x binds the Node *as a Value*, identity preserved through the answer
-        // substitution — the carrier-agnostic substitution result. (Reifying it to
-        // a TermId is deliberately NOT done: that term-only op can't represent a
-        // Node, and forcing materialization would drop the occurrence's identity.)
+        // substitution — the carrier-agnostic substitution result.
         match solutions[0].subst.resolve_as_value(xv) {
             Some(Value::Node(occ)) => assert!(
                 Rc::ptr_eq(&occ, &denoted_occ),
                 "?x must bind the SAME occurrence through the full resolver",
             ),
             other => panic!("?x should bind the Node through resolve, got {other:?}"),
+        }
+
+        // WI-348: `reify` is now carrier-agnostic — reading the answer binding
+        // through it preserves the Node identity (the former `TermId`-only reify
+        // SILENTLY dropped it, leaving `?x` unbound: this is the gap this test
+        // now closes). The bare var reifies to the Node itself; the whole goal
+        // `vf(?x)` reifies to a `Value::Entity` carrying that same Node in its
+        // child slot (the `Fn`-with-a-non-`Term`-child carrier).
+        let subst = solutions[0].subst.clone();
+        match kb.reify(xt, &subst) {
+            Value::Node(occ) => assert!(
+                Rc::ptr_eq(&occ, &denoted_occ),
+                "reify(?x) must yield the SAME occurrence, identity intact",
+            ),
+            other => panic!("reify(?x) should yield the Node, got {other:?}"),
+        }
+        match kb.reify(goal, &subst) {
+            Value::Entity { functor, pos, named } => {
+                assert_eq!(functor, f_sym, "reify(vf(?x)) keeps the functor");
+                assert!(named.is_empty(), "vf has no named args");
+                match &pos[..] {
+                    [Value::Node(occ)] => assert!(
+                        Rc::ptr_eq(occ, &denoted_occ),
+                        "reify(vf(?x)) must carry the SAME occurrence in its child slot",
+                    ),
+                    other => panic!("reify(vf(?x)) pos should be [Node], got {other:?}"),
+                }
+            }
+            other => panic!("reify(vf(?x)) should be a Value::Entity, got {other:?}"),
         }
     }
 

@@ -167,7 +167,7 @@ fn requires_spec_inst_completed_for_int_add() {
     assert!(!solutions.is_empty(), "should find Requires for IntAdd");
 
     let sol = &solutions[0];
-    let inst_tid = kb.reify(var_inst, &sol.subst);
+    let inst_tid = kb.reify(var_inst, &sol.subst).as_term().unwrap();
 
     // spec should be SortView(Monoid(), T=Int(), combine=Ref(add), identity=Ref(zero))
     match kb.get_term(inst_tid).clone() {
@@ -215,7 +215,7 @@ fn requires_spec_inst_completed_for_int_mul() {
     assert!(!solutions.is_empty(), "should find Requires for IntMul");
 
     let sol = &solutions[0];
-    let inst_tid = kb.reify(var_inst, &sol.subst);
+    let inst_tid = kb.reify(var_inst, &sol.subst).as_term().unwrap();
 
     match kb.get_term(inst_tid).clone() {
         Term::Fn { ref named_args, .. } => {
@@ -251,7 +251,7 @@ fn resolve_sort_inst_param_extracts_type_binding() {
     let config = default_config();
     let solutions = kb.resolve(&[req_goal], &config);
     assert!(!solutions.is_empty());
-    let inst_tid = kb.reify(var_inst, &solutions[0].subst);
+    let inst_tid = kb.reify(var_inst, &solutions[0].subst).as_term().unwrap();
 
     // Extract the T named arg key from the spec (it might be scoped as Monoid.T)
     let t_key_sym = match kb.get_term(inst_tid).clone() {
@@ -268,7 +268,7 @@ fn resolve_sort_inst_param_extracts_type_binding() {
     let solutions2 = kb.resolve(&[param_goal], &config);
     assert!(!solutions2.is_empty(), "resolve_sort_instantiation_param should succeed for T");
 
-    let val_tid = kb.reify(var_val, &solutions2[0].subst);
+    let val_tid = kb.reify(var_val, &solutions2[0].subst).as_term().unwrap();
     match kb.get_term(val_tid) {
         Term::Fn { functor, .. } => {
             let name = kb.resolve_sym(*functor);
@@ -290,7 +290,7 @@ fn resolve_sort_inst_param_extracts_operation_binding() {
     let config = default_config();
     let solutions = kb.resolve(&[req_goal], &config);
     assert!(!solutions.is_empty());
-    let inst_tid = kb.reify(var_inst, &solutions[0].subst);
+    let inst_tid = kb.reify(var_inst, &solutions[0].subst).as_term().unwrap();
 
     // Extract the combine named arg key from spec
     let combine_key_sym = match kb.get_term(inst_tid).clone() {
@@ -307,7 +307,7 @@ fn resolve_sort_inst_param_extracts_operation_binding() {
     let solutions2 = kb.resolve(&[param_goal], &config);
     assert!(!solutions2.is_empty(), "resolve_sort_instantiation_param should succeed for combine");
 
-    let val_tid = kb.reify(var_val, &solutions2[0].subst);
+    let val_tid = kb.reify(var_val, &solutions2[0].subst).as_term().unwrap();
     let short = extract_short_name(&kb, val_tid);
     assert_eq!(short, "add", "combine should resolve to add, got: {short}");
 }
@@ -329,7 +329,7 @@ fn auto_bind_same_named_operations() {
     assert!(!solutions.is_empty(), "should find Requires for AutoBindTest");
 
     let sol = &solutions[0];
-    let inst_tid = kb.reify(var_inst, &sol.subst);
+    let inst_tid = kb.reify(var_inst, &sol.subst).as_term().unwrap();
 
     match kb.get_term(inst_tid).clone() {
         Term::Fn { ref named_args, .. } => {

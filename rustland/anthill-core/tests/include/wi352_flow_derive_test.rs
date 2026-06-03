@@ -171,7 +171,7 @@ fn provenance_builtin_reads_symbol_kind() {
         });
         let sols = kb.resolve(&[goal], &ResolveConfig::default());
         let s = sols.first()?;
-        let reified = kb.reify(v, &s.subst);
+        let reified = kb.reify(v, &s.subst).as_term().unwrap();
         term_sym(kb, reified).map(|s| kb.resolve_sym(s).to_string())
     };
     let (z, result, f_result, f_a) = (
