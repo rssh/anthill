@@ -3855,6 +3855,70 @@ mod tests {
     }
 
     #[test]
+    fn value_head_debruijn_var_in_occurrence_indexes_like_term() {
+        // WI-373: a De Bruijn var carried INSIDE an occurrence value head now
+        // keys a var-edge in the discrimination tree, the same as a term head's
+        // De Bruijn var — `occ_index_var` surfaces `Expr::Var` of any kind,
+        // mirroring `TermIdView`'s `Term::Var(v) => Some(v)`. Before this fix the
+        // insert read `Opaque` and panicked ("value-fact keying unimplemented").
+        use crate::eval::value::Value;
+        use crate::intern::Symbol;
+        use crate::kb::load::register_prelude;
+        use std::rc::Rc;
+        use term::Var;
+
+        let mut kb = KnowledgeBase::new();
+        register_prelude(&mut kb);
+
+        let vf = kb.intern("vf");
+        let g = kb.intern("g");
+        let cond = kb.intern("cond");
+        let sort = kb.make_name_term("MySort");
+        let domain = kb.make_name_term("test");
+
+        // An occurrence `g(DeBruijn(0))` — the shape a stored value rule head's
+        // child takes after De Bruijn closure.
+        let xv = kb.fresh_var(vf);
+        let xt = kb.alloc(Term::Var(Var::Global(xv)));
+        let g_term = kb.alloc(Term::Fn {
+            functor: g,
+            pos_args: SmallVec::from_elem(xt, 1),
+            named_args: SmallVec::new(),
+        });
+        let g_global = node_occurrence::materialize_from_handle(&kb, g_term);
+        let g_db = node_occurrence::node_to_debruijn(&mut kb, &g_global, &[xv]);
+
+        let head = Value::Entity {
+            functor: vf,
+            pos: Rc::from(vec![Value::Node(g_db)]),
+            named: Rc::from(Vec::<(Symbol, Value)>::new()),
+        };
+        let cond_goal = kb.alloc(Term::Fn {
+            functor: cond,
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::new(),
+        });
+        let body_nodes = kb.term_body_to_nodes(&[cond_goal]);
+
+        // Indexes without panicking (the De Bruijn var routes to a var-edge)...
+        let rid = kb.assert_rule_nodes(head, body_nodes, sort, domain, None);
+
+        // ...and the head is discoverable by a query on its functor.
+        let yv = kb.fresh_var(vf);
+        let yt = kb.alloc(Term::Var(Var::Global(yv)));
+        let query = kb.alloc(Term::Fn {
+            functor: vf,
+            pos_args: SmallVec::from_elem(yt, 1),
+            named_args: SmallVec::new(),
+        });
+        let found = kb.query(query);
+        assert!(
+            found.iter().any(|(r, _)| *r == rid),
+            "the De Bruijn-bearing value head must be indexed + queryable",
+        );
+    }
+
+    #[test]
     fn retract_removes_from_index() {
         let mut kb = KnowledgeBase::new();
         let sort = kb.make_name_term("T");

@@ -119,6 +119,21 @@ fn occ_head(occ: &NodeOccurrence, kb: &KnowledgeBase) -> ViewHead {
     }
 }
 
+/// The logic variable at an occurrence's head, for discrimination-tree
+/// *indexing* — `Expr::Var` of ANY kind (Global / Rigid / DeBruijn), the
+/// occurrence twin of `TermIdView`'s `Term::Var(v) => Some(*v)` (WI-373). Unlike
+/// [`occ_head`] (goal-side: only `Global` surfaces as `ViewHead::Var`, Rigid /
+/// DeBruijn collapse to `Opaque` so a rigid goal var can't match concrete keys),
+/// the *index* side keys every binder kind as a distinct var-edge, so a stored
+/// value rule head's De Bruijn vars index exactly like a term head's. `None` for
+/// a non-`Var` head — the walk then keys on [`occ_head`].
+fn occ_index_var(occ: &Rc<NodeOccurrence>) -> Option<Var> {
+    match occ.as_expr() {
+        Some(Expr::Var(v)) => Some(*v),
+        _ => None,
+    }
+}
+
 /// The i-th positional child occurrence of an Apply/Constructor occurrence.
 /// Type / EffectExpression occurrences expose only named children (none
 /// positional), so this is `None` for them.
@@ -793,18 +808,12 @@ impl TermView for Value {
                 _ => None,
             },
             Value::Var(v) => Some(*v),
-            // Occurrence heads surface only `Global` vars; an occurrence whose
-            // head is a Rigid / DeBruijn binder reads `Opaque` (`occ_head`), so
-            // this returns `None` and the insert walk then keys on `head` —
-            // which is `Opaque`, and so panics (discrim insert guard #1). That
-            // is intentional for now: a value rule head carrying a DeBruijn
-            // binder is Phase-C work (WI-348). Surfacing those binders as
-            // distinct var-edges here is the Phase-C fix; until then they fail
-            // loudly rather than silently mis-index (Phase A review guard #2).
-            Value::Node(_) => match self.head(kb) {
-                ViewHead::Var(vid) => Some(Var::Global(vid)),
-                _ => None,
-            },
+            // An occurrence head surfaces a var of ANY kind (Global / Rigid /
+            // DeBruijn) as a var-edge — same form as the `Term` / `Value::Var`
+            // arms above and `TermIdView` (WI-373). A stored value rule head's
+            // De Bruijn binder thus indexes like a term head's, instead of
+            // collapsing to `Opaque` and panicking at insert.
+            Value::Node(occ) => occ_index_var(occ),
             _ => None,
         }
     }
@@ -837,6 +846,13 @@ impl TermView for Rc<NodeOccurrence> {
 
     fn as_bind_value(&self) -> BindValue {
         BindValue::Value(Value::Node(Rc::clone(self)))
+    }
+
+    /// Override the `Global`-only default: an occurrence keys a stored-pattern
+    /// var of any kind (Global / Rigid / DeBruijn) as a var-edge, like the
+    /// `TermId` carrier (WI-373).
+    fn index_var(&self, _kb: &KnowledgeBase) -> Option<Var> {
+        occ_index_var(self)
     }
 }
 
@@ -900,14 +916,9 @@ impl TermView for ViewItem<'_> {
                 _ => None,
             },
             ViewItem::Value(v) => (*v).index_var(kb),
-            // See `Value::index_var`: Node heads surface only `Global`; a
-            // Rigid / DeBruijn occurrence head reads `Opaque` and so fails
-            // loudly at insert until Phase C surfaces it as a var-edge
-            // (Phase A review guard #2).
-            ViewItem::Node(_) => match self.head(kb) {
-                ViewHead::Var(vid) => Some(Var::Global(vid)),
-                _ => None,
-            },
+            // An occurrence surfaces a var of any kind as a var-edge — see
+            // `occ_index_var` / `Value::index_var` (WI-373).
+            ViewItem::Node(occ) => occ_index_var(occ),
         }
     }
 }

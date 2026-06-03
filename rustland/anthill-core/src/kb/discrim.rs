@@ -197,17 +197,16 @@ impl<L> SubstTree<L> {
             ViewHead::Bottom => node.concrete.entry(DiscrimKey::Bottom)
                 .or_insert_with(DiscrimNode::new),
             // Functor-less aggregates (tuple / unit) and Opaque heads
-            // (closures, streams, …, and Rigid/DeBruijn vars, which `head`
-            // collapses to Opaque) carry no concrete discrimination key. A
-            // leaf attached at the current node would be unreachable by exact
-            // query — the query walk follows only var-edges for these heads —
-            // and would collide with every other such head in one
-            // undiscriminated bucket. No fact form in use today produces one
-            // as a stored pattern (heads are `Term::Fn` / entities, always
-            // with a functor); the value facts of WI-348 Phase B (and the
-            // DeBruijn value heads of Phase C) must add real keying before
-            // this can fire. Fail loudly now rather than silently mis-index
-            // (Phase A review guard #1/#2).
+            // (closures, streams, post-elaboration forms …) carry no concrete
+            // discrimination key. A leaf attached at the current node would be
+            // unreachable by exact query — the query walk follows only var-edges
+            // for these heads — and would collide with every other such head in
+            // one undiscriminated bucket. Stored-pattern *variables* of any kind
+            // (Global / Rigid / DeBruijn) do NOT reach here — `index_var` routes
+            // them to a var-edge above, for every carrier including occurrence
+            // value heads (WI-373). No fact/rule form in use today produces a
+            // functor-less / opaque stored head; fail loudly rather than silently
+            // mis-index (Phase A review guard #1/#2).
             ViewHead::Functor { functor: None, .. } | ViewHead::Opaque => panic!(
                 "discrim insert: functor-less / opaque head carries no \
                  discrimination key — value-fact keying is unimplemented \
