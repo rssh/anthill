@@ -3628,6 +3628,68 @@ mod tests {
     }
 
     #[test]
+    fn value_fact_full_resolver_search_binds_node_as_value() {
+        // WI-348: drive a value-fact head through the FULL SLD resolver
+        // (`kb.resolve`, not just `kb.query` — so it exercises the resolver's
+        // per-candidate triage, the path `is_equation` sits on) and confirm the
+        // answer binds the query var to the Node *as a `Value`*, occurrence
+        // identity intact. The substitution result is carrier-agnostic — a
+        // `Value`, NOT a `TermId`: materializing the Node to a term would be lossy
+        // and is never needed (consumers read the binding via `resolve_as_value`).
+        use crate::eval::value::Value;
+        use crate::intern::Symbol;
+        use crate::kb::load::register_prelude;
+        use crate::span::{SourceId, SourceSpan};
+        use std::rc::Rc;
+        use term::Var;
+
+        let mut kb = KnowledgeBase::new();
+        register_prelude(&mut kb);
+        let span = SourceSpan::new(SourceId::from_raw(0), 0, 10);
+
+        let f_sym = kb.intern("vf");
+        let c_sym = kb.intern("c");
+        let sort = kb.make_name_term("MySort");
+        let domain = kb.make_name_term("test");
+
+        // Value fact: vf(Node(denoted(c))) — a Node-carrying head.
+        let denoted_occ = kb.make_denoted_occ_ref(c_sym, span, None);
+        let head = Value::Entity {
+            functor: f_sym,
+            pos: Rc::from(vec![Value::Node(Rc::clone(&denoted_occ))]),
+            named: Rc::from(Vec::<(Symbol, Value)>::new()),
+        };
+        kb.assert_fact_value(head, sort, domain, None);
+
+        // SEARCH via the full resolver (not `kb.query`): vf(?x).
+        let xv = kb.fresh_var(c_sym);
+        let xt = kb.alloc(Term::Var(Var::Global(xv)));
+        let goal = kb.alloc(Term::Fn {
+            functor: f_sym,
+            pos_args: SmallVec::from_elem(xt, 1),
+            named_args: SmallVec::new(),
+        });
+        let config = resolve::ResolveConfig {
+            max_solutions: 4,
+            ..resolve::ResolveConfig::default()
+        };
+        let solutions = kb.resolve(&[goal], &config);
+        assert_eq!(solutions.len(), 1, "the value fact must be found by the full resolver");
+
+        // ?x binds the Node *as a Value*, identity preserved through the answer
+        // substitution — the carrier-agnostic substitution result. (Reifying it to
+        // a TermId is deliberately NOT done: that term-only op can't represent a
+        // Node, and forcing materialization would drop the occurrence's identity.)
+        match solutions[0].subst.resolve_as_value(xv) {
+            Some(Value::Node(occ)) => assert!(
+                Rc::ptr_eq(&occ, &denoted_occ),
+                "?x must bind the SAME occurrence through the full resolver",
+            ),
+            other => panic!("?x should bind the Node through resolve, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn entity_of_query_includes_children() {
         let mut kb = KnowledgeBase::new();
         let nat = kb.make_name_term("Nat");
