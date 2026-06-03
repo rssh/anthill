@@ -111,8 +111,9 @@ struct RuleEntry {
     /// The fact/rule head, carrier-agnostic (WI-348 Phase B): `Value::Term`
     /// for the universal hash-consed case, a `Value::Node` for a value fact
     /// carrying a `denoted` occurrence. The many term-only callers read it as a
-    /// `TermId` via `head_term_id` (which panics on a non-Term head — value
-    /// heads route through carrier-aware code, not those readers).
+    /// `TermId` via `rule_head` (which panics on a value head — carrier-agnostic
+    /// readers use `rule_head_value` / `TermView`; term-only readers migrate
+    /// reactively when that panic actually fires, as `is_equation` did).
     head: crate::eval::value::Value,
     /// WI-246: the rule body — body atoms as `NodeOccurrence` (De Bruijn-encoded
     /// `Expr::Var` leaves), the SOLE body representation now that the term
@@ -148,21 +149,6 @@ struct RuleEntry {
     /// is `gte`, label is `simple_lemma`). `None` for unlabeled rules
     /// (they remain reachable through `rules_by_functor` on the head).
     label: Option<Symbol>,
-}
-
-/// Read a rule/fact head as a hash-consed `TermId`. The head is stored
-/// carrier-agnostically (`Value`, WI-348 Phase B); the universal case is
-/// `Value::Term`. Panics on a non-Term head — the value-fact paths that can
-/// produce one route through carrier-aware code, never this term-only reader.
-fn head_term_id(head: &crate::eval::value::Value) -> TermId {
-    match head {
-        crate::eval::value::Value::Term(t) => *t,
-        other => panic!(
-            "rule head is not a Term carrier (WI-348: value head reached a \
-             term-only reader): {}",
-            other.type_name(),
-        ),
-    }
 }
 
 /// Collect the ground `TermId` leaves reachable in a value (WI-348 Phase B), for
@@ -1532,7 +1518,7 @@ impl KnowledgeBase {
     /// drive automatic SLD rewriting (which would loop on rules
     /// like `add_comm: add(a, b) = add(b, a)`).
     pub fn unindex_functor(&mut self, id: RuleId) {
-        let head = head_term_id(&self.rules[id.index()].head);
+        let head = self.rule_head(id);
         if let Term::Fn { functor, .. } = *self.terms.get(head) {
             if let Some(v) = self.rules_by_functor.get_mut(&functor) {
                 v.retain(|&rid| rid != id);
@@ -1567,9 +1553,25 @@ impl KnowledgeBase {
 
     // ── Rule accessors ───────────────────────────────────────────
 
-    /// Get the head term of a rule.
+    /// Get the head of a rule/fact as a hash-consed `TermId`. The head is stored
+    /// carrier-agnostically (`Value`, WI-348 Phase B); the universal case is
+    /// `Value::Term`. This is the **single** term-only head reader (WI-348 folded
+    /// the former `head_term_id` helper in here — there is no generic "head →
+    /// TermId" operation, since a value-fact head has no `TermId`). **Panics on a
+    /// value-fact head** (`Value::Entity` / `Value::Node`): the panic is the
+    /// deliberate trip-wire — a value fact must never reach a term-only head
+    /// reader; carrier-agnostic readers use `rule_head_value` / `TermView`. (The
+    /// `is_equation` bug was exactly such a leak, surfaced by this panic, then fixed.)
     pub fn rule_head(&self, id: RuleId) -> TermId {
-        head_term_id(&self.rules[id.index()].head)
+        match &self.rules[id.index()].head {
+            crate::eval::value::Value::Term(t) => *t,
+            other => panic!(
+                "rule_head: head is not a Term carrier — a value fact reached a \
+                 term-only head reader (WI-348); read via `rule_head_value` / \
+                 `TermView` instead: {}",
+                other.type_name(),
+            ),
+        }
     }
 
     /// Get the head of a rule as a carrier-agnostic `Value` (WI-348). The
@@ -1587,8 +1589,8 @@ impl KnowledgeBase {
     /// reflect facts (`SortAlias` / `SortRequiresInfo` / `SortProvidesInfo`): a
     /// value head has no `TermId`, so a term-only reader treats `None` as "skip
     /// this fact" — occurrence-based handling is gated effect-expressions-as-types
-    /// work (the producer surfaces a diagnostic). Avoids the `rule_head` /
-    /// `head_term_id` panic on a value head.
+    /// work (the producer surfaces a diagnostic). Avoids the `rule_head` panic
+    /// on a value head.
     pub fn fact_head_term(&self, id: RuleId) -> Option<TermId> {
         match &self.rules[id.index()].head {
             crate::eval::value::Value::Term(t) => Some(*t),
@@ -2330,7 +2332,7 @@ impl KnowledgeBase {
         // calls this on EVERY matched candidate, so a value-fact head — a
         // `Modify[c]`-effect `OperationInfo`, an entity `FieldInfo`, a
         // value-in-type fact — reaches here and must NOT hit the term-only
-        // `head_term_id` reader (which panics on a `Value::Entity`/`Value::Node`).
+        // `rule_head` reader (which panics on a `Value::Entity`/`Value::Node`).
         // Read the head functor + positional arity carrier-agnostically via
         // `TermView`: behaviour-identical for the universal `Value::Term(Fn)` head
         // (same functor symbol, `pos_arity == pos_args.len()`), and a value fact —
@@ -2367,7 +2369,14 @@ impl KnowledgeBase {
         tree_subst: &subst::Substitution,
     ) -> (Vec<Rc<NodeOccurrence>>, subst::Substitution) {
         let arity = self.rules[id.index()].arity;
-        let head = head_term_id(&self.rules[id.index()].head);
+        // WI-348 Phase C gap: `rule_head` requires a hash-consed term head, which
+        // is always true today — value heads exist only on ground *facts*
+        // (`assert_fact_value`); *rules* get term heads via `assert_rule_debruijn`,
+        // and `with_fresh_vars` runs only for rules-with-bodies. A value *rule*
+        // head (Phase C) would need De Bruijn opening over a non-hash-consed
+        // occurrence — real work, not a reader swap — so this is correctly guarded
+        // by the `rule_head` panic until value rule heads exist.
+        let head = self.rule_head(id);
         // WI-246: the rule's occurrence body — opened + head-match-renamed, then
         // pushed by the resolver as `Value::Node` goals (and driving the
         // caller-var delay pre-check). The term body (`RuleEntry.body`) is no
