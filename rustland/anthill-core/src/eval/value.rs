@@ -121,6 +121,15 @@ pub enum Value {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct LazyHandle(pub(crate) u32);
 
+/// A hash-consed `TermId` is the universal `Value::Term` carrier (WI-373). Lets
+/// the carrier-agnostic rule-assertion entries take `head: impl Into<Value>`
+/// while every existing `TermId` caller passes its term unchanged.
+impl From<TermId> for Value {
+    fn from(t: TermId) -> Self {
+        Value::Term(t)
+    }
+}
+
 impl Value {
     /// Scalar-leaf equality. Tuples / Entities / Closures / Streams / Lazies
     /// compare as unequal here — for shape-aware compare on Value-to-Value

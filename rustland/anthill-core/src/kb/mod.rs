@@ -736,28 +736,76 @@ impl KnowledgeBase {
     /// callers overwrite them.
     pub fn assert_rule_nodes(
         &mut self,
-        head: TermId,
+        head: impl Into<crate::eval::value::Value>,
         body_nodes: Vec<Rc<NodeOccurrence>>,
         sort: TermId,
         domain: TermId,
         meta: Option<TermId>,
     ) -> RuleId {
-        // Note: builtins always take precedence over rules at resolution time
-        // (checked first in step_init), so rules with builtin functors are
-        // allowed but effectively shadowed during resolution.
+        // WI-373: the head is carrier-agnostic — a `Value::Term` for the
+        // universal hash-consed case, or a `Value::Node`/`Entity` for a value
+        // rule head carrying a denoted occurrence. Every existing caller passes a
+        // `TermId` (→ `Value::Term` via `From`), so the term path is unchanged.
+        // Builtins always take precedence over rules at resolution time (checked
+        // first in step_init), so rules with builtin functors are allowed but
+        // effectively shadowed during resolution.
+        let head: crate::eval::value::Value = head.into();
+        let is_fact = body_nodes.is_empty();
+        let head_term = head.as_term();
+        let rule_id = self.push_value_head_entry(head, body_nodes, sort, domain, meta);
 
+        // WI-233: ground-fact dedup index. Inserted only for body-empty entries
+        // (rules with a body match structurally via the discrim tree, not
+        // exact-equality) AND only for a `Term`-carrier head — a value `Node`
+        // head has no `TermId` key, a dedup-miss not unsoundness (WI-348 Phase
+        // B). We do not overwrite an existing entry; the dedup check in
+        // `assert_fact` upstream routes duplicates to the existing RuleId first.
+        if is_fact {
+            if let Some(t) = head_term {
+                self.fact_dedup.entry((t, sort, domain)).or_insert(rule_id);
+            }
+        }
+        rule_id
+    }
+
+    /// Store a value head + occurrence body as a `RuleEntry` and index it
+    /// carrier-agnostically (WI-348/WI-373) — the shared storage epilogue of
+    /// [`Self::assert_rule_nodes`] and [`Self::assert_fact_value`], so the two
+    /// cannot drift in how a value head is owned and indexed. Increfs the head's
+    /// ground `TermId` leaves (a `Value::Term(t)` yields exactly `[t]`, matching
+    /// the old `terms.incref(head)`; a `Node`/`Entity` head increfs its ground
+    /// children — symmetric with `retract`'s `release_value_ground`) +
+    /// sort/domain/meta, pushes the entry (arity/shared_arity/globals at
+    /// ground-fact defaults — De Bruijn callers overwrite), indexes
+    /// `by_sort`/`by_domain`/`rules_by_functor` (functor via the head's
+    /// `TermView`, any carrier), and inserts the head into the discrim tree
+    /// through its `TermView`. Does NOT touch `fact_dedup` — that key is
+    /// `Term`-only and caller-specific.
+    fn push_value_head_entry(
+        &mut self,
+        head: crate::eval::value::Value,
+        body_nodes: Vec<Rc<NodeOccurrence>>,
+        sort: TermId,
+        domain: TermId,
+        meta: Option<TermId>,
+    ) -> RuleId {
         let rule_id = RuleId(self.rules.len() as u32);
 
-        // Incref on all referenced terms
-        self.terms.incref(head);
+        self.incref_value_ground(&head);
         self.terms.incref(sort);
         self.terms.incref(domain);
         if let Some(m) = meta {
             self.terms.incref(m);
         }
 
+        // Top-level functor via the head's `TermView` (any carrier — WI-348).
+        let head_functor = match term_view::TermView::head(&head, self) {
+            term_view::ViewHead::Functor { functor: Some(f), .. } => Some(f),
+            _ => None,
+        };
+
         self.rules.push(RuleEntry {
-            head: crate::eval::value::Value::Term(head),
+            head: head.clone(),
             body_nodes,
             sort,
             domain,
@@ -769,31 +817,17 @@ impl KnowledgeBase {
             label: None,
         });
 
-        // Update indexes
         self.by_sort.entry(sort).or_default().push(rule_id);
-
-        // Index by domain
         self.by_domain.entry(domain).or_default().push(rule_id);
-
-        // Index by top-level functor
-        if let Term::Fn { functor, .. } = *self.terms.get(head) {
-            self.rules_by_functor.entry(functor).or_default().push(rule_id);
+        if let Some(f) = head_functor {
+            self.rules_by_functor.entry(f).or_default().push(rule_id);
         }
 
-        // WI-233: ground-fact dedup index. Inserted only for body-empty
-        // entries — rules with a body are matched structurally via the
-        // discrim tree, not exact-equality. We do not overwrite an
-        // existing entry; the dedup check in `assert_fact` upstream
-        // routes duplicates to the existing RuleId before we get here.
-        if self.rules[rule_id.index()].body_nodes.is_empty() {
-            self.fact_dedup.entry((head, sort, domain)).or_insert(rule_id);
-        }
-
-        // Discrimination tree index (insert_pattern handles vars in head).
-        // The view-driven walk needs `&self` (Node-carrying value heads read
-        // the whole KB — WI-348), so run it with the index detached.
-        self.with_discrim_detached(|kb, discrim| {
-            discrim.insert_pattern(kb, &term_view::TermIdView(head), rule_id);
+        // Discrimination tree index (insert_pattern handles vars in head). The
+        // view-driven walk needs `&self` (Node-carrying value heads read the
+        // whole KB — WI-348), so run it with the index detached.
+        self.with_discrim_detached(move |kb, discrim| {
+            discrim.insert_pattern(kb, &head, rule_id);
         });
 
         rule_id
@@ -1210,48 +1244,9 @@ impl KnowledgeBase {
         if let Value::Term(t) = head {
             return self.assert_fact(t, sort, domain, meta);
         }
-
-        let rule_id = RuleId(self.rules.len() as u32);
-
-        // Refcount the head's ground `TermId` leaves + sort / domain / meta.
-        self.incref_value_ground(&head);
-        self.terms.incref(sort);
-        self.terms.incref(domain);
-        if let Some(m) = meta {
-            self.terms.incref(m);
-        }
-
-        // Top-level functor via the head's `TermView` (any carrier).
-        let functor = match term_view::TermView::head(&head, self) {
-            term_view::ViewHead::Functor { functor: Some(f), .. } => Some(f),
-            _ => None,
-        };
-
-        self.rules.push(RuleEntry {
-            head: head.clone(),
-            body_nodes: Vec::new(),
-            sort,
-            domain,
-            meta,
-            retracted: false,
-            arity: 0,
-            globals: Vec::new(),
-            shared_arity: 0,
-            label: None,
-        });
-
-        self.by_sort.entry(sort).or_default().push(rule_id);
-        self.by_domain.entry(domain).or_default().push(rule_id);
-        if let Some(f) = functor {
-            self.rules_by_functor.entry(f).or_default().push(rule_id);
-        }
-        // `fact_dedup` is SKIPPED for a non-Term head — no `TermId` key.
-
-        self.with_discrim_detached(move |kb, discrim| {
-            discrim.insert_pattern(kb, &head, rule_id);
-        });
-
-        rule_id
+        // A value (Node/Entity) head: store + index via the shared epilogue. No
+        // body (a fact) and no `fact_dedup` (its key is `Term`-only).
+        self.push_value_head_entry(head, Vec::new(), sort, domain, meta)
     }
 
     /// Assert a fact `functor(pos…, named…)` from carrier-agnostic `Value`
@@ -2075,12 +2070,14 @@ impl KnowledgeBase {
     /// directly (WI-246/WI-372 — the single rule-DeBruijn-assertion path). The
     /// loader builds the occurrences natively from the parse IR; the synthesized
     /// / hand-built callers convert a term body once via
-    /// [`Self::term_body_to_nodes`]. The rule's free vars are collected from the
-    /// head (still a hash-consed term) + the occurrence body, in the same
-    /// first-occurrence order the term-body walk produced
-    /// (`collect_occurrence_global_vars_ordered` mirrors `collect_vars_rec`), then
-    /// `finalize_rule_debruijn_nodes` closes head + occurrences to the shared
-    /// De Bruijn form.
+    /// [`Self::term_body_to_nodes`]. The head is a hash-consed term: a value
+    /// rule head carrying vars is WI-348 Phase C (its De Bruijn close needs the
+    /// Type-occurrence var-walk + DeBruijn-value-head discrim keying, both
+    /// unimplemented). A *ground* value head can be asserted directly via the
+    /// carrier-agnostic [`Self::assert_rule_nodes`]. The rule's free vars are
+    /// collected from the head + occurrence body in the same first-occurrence
+    /// order (`collect_occurrence_global_vars_ordered` mirrors `collect_vars_rec`),
+    /// then `finalize_rule_debruijn_nodes` closes head + occurrences.
     pub fn assert_rule_debruijn_with_nodes(
         &mut self,
         head: TermId,
@@ -3798,6 +3795,63 @@ mod tests {
         // is_entity_of
         assert!(kb.is_entity_of(zero, nat));
         assert!(!kb.is_entity_of(nat, zero));
+    }
+
+    #[test]
+    fn value_rule_head_node_stored_and_read_back() {
+        // WI-373 slice 1: the carrier-agnostic storage epilogue `assert_rule_nodes`
+        // (converged with `assert_fact_value`) stores a RULE head — with a body,
+        // not just a fact — that carries a `Value::Node` denoted occurrence, and
+        // `rule_head_value` reads it back with the occurrence identity intact.
+        // (DeBruijn-*closing* a denoted head is gated on WI-342 P3 — the
+        // Type-occurrence var-walk — so this exercises the no-var storage path.)
+        use crate::eval::value::Value;
+        use crate::intern::Symbol;
+        use crate::kb::load::register_prelude;
+        use crate::span::{SourceId, SourceSpan};
+        use std::rc::Rc;
+
+        let mut kb = KnowledgeBase::new();
+        register_prelude(&mut kb);
+        let span = SourceSpan::new(SourceId::from_raw(0), 0, 10);
+
+        let vf = kb.intern("vf");
+        let cond = kb.intern("cond");
+        let sort = kb.make_name_term("MySort");
+        let domain = kb.make_name_term("test");
+
+        // Head vf(denoted(c1)) — a ground Value::Entity carrying a Node child.
+        let c1 = kb.intern("c1");
+        let denoted = kb.make_denoted_occ_ref(c1, span, None);
+        let head = Value::Entity {
+            functor: vf,
+            pos: Rc::from(vec![Value::Node(Rc::clone(&denoted))]),
+            named: Rc::from(Vec::<(Symbol, Value)>::new()),
+        };
+
+        // A ground body atom, so this is a rule (non-empty body), not a fact.
+        let cond_goal = kb.alloc(Term::Fn {
+            functor: cond,
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::new(),
+        });
+        let body_nodes = kb.term_body_to_nodes(&[cond_goal]);
+
+        let rid = kb.assert_rule_nodes(head, body_nodes, sort, domain, None);
+
+        match kb.rule_head_value(rid) {
+            Value::Entity { functor, pos, .. } => {
+                assert_eq!(*functor, vf);
+                match &pos[0] {
+                    Value::Node(occ) => assert!(
+                        Rc::ptr_eq(occ, &denoted),
+                        "the denoted occurrence must survive storage with identity intact",
+                    ),
+                    other => panic!("head child should be the Node, got {other:?}"),
+                }
+            }
+            other => panic!("value rule head should be a Value::Entity, got {other:?}"),
+        }
     }
 
     #[test]
