@@ -1438,7 +1438,10 @@ fn print_solutions(
             println!("  {}", bindings.join(", "));
         }
         if !sol.residual.is_empty() {
-            let residuals: Vec<String> = sol.residual.iter().map(|&t| printer.print_term(t)).collect();
+            // WI-348: residual goals are carrier-agnostic `Value`s — render each
+            // carrier (a delayed goal may mention a `Value::Node`).
+            let residuals: Vec<String> =
+                sol.residual.iter().map(|v| render_value(&printer, kb, v)).collect();
             println!("    residual: {}", residuals.join(", "));
         }
     }

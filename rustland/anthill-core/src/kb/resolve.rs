@@ -192,14 +192,17 @@ impl Default for ResolveConfig {
 
 /// A successful resolution result: variable bindings collected during proof.
 ///
-/// The substitution is always flat (path-compressed) — use `subst.resolve_as_value(vid).and_then(|v| v.as_term())`
-/// directly, no `walk` needed.
+/// The substitution is always flat (path-compressed) — read a binding via
+/// `subst.resolve_as_value(vid)` directly, no `walk` needed.
 ///
-/// `residual` contains delayed goals that could not be resolved (e.g., a
-/// `nonvar(?x)` where `?x` was never bound by any other goal).
+/// `residual` holds the delayed goals that could not be resolved (e.g., a
+/// `nonvar(?x)` where `?x` was never bound by any other goal), carried
+/// carrier-agnostically as `Value` (WI-348): a delayed goal mentioning a
+/// `Value::Node` keeps it, instead of materializing to a hash-consed `TermId`
+/// via `reify_goal_value` (lossy for an occurrence's identity/span).
 pub struct Solution {
     pub subst: Substitution,
-    pub residual: Vec<TermId>,
+    pub residual: Vec<Value>,
 }
 
 // ── EqChange ────────────────────────────────────────────────────
@@ -401,9 +404,10 @@ impl SearchStream {
         if let DelayMode::Delayed { consecutive_delays } = &delay_mode {
             if *consecutive_delays >= frame.goals.len() {
                 let subst = frame.subst.clone();
-                let goals = frame.goals.clone();
-                let residual: Vec<TermId> =
-                    goals.iter().map(|g| reify_goal_value(kb, g)).collect();
+                // WI-348: residual carries the delayed goals as `Value` — no
+                // materialize-to-`TermId`, so a goal mentioning a `Value::Node`
+                // keeps its occurrence identity.
+                let residual: Vec<Value> = frame.goals.clone();
                 let sol = Solution { subst, residual };
                 self.stack.pop();
                 self.record_solution_in_ancestors();
@@ -590,7 +594,7 @@ impl SearchStream {
                             if frame.goals.len() == 1 {
                                 // Only goal — residualize
                                 let subst = frame.subst.clone();
-                                let residual = vec![reify_goal_value(kb, &goal_val)];
+                                let residual = vec![goal_val.clone()];
                                 self.stack.pop();
                                 self.record_solution_in_ancestors();
                                 return Some(StepResult::YieldSolution(Solution { subst, residual }));
@@ -997,7 +1001,7 @@ impl SearchStream {
                 match delay_mode {
                     DelayMode::Normal => {
                         if goals_len == 1 {
-                            let residual = vec![reify_goal_value(kb, goal)];
+                            let residual = vec![goal.clone()];
                             self.stack.pop();
                             self.record_solution_in_ancestors();
                             return Some(StepResult::YieldSolution(Solution { subst, residual }));
@@ -3751,7 +3755,7 @@ mod tests {
         let results = kb.resolve(&[goal], &config);
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].residual.len(), 1);
-        assert_eq!(results[0].residual[0], goal);
+        assert_eq!(results[0].residual[0].as_term(), Some(goal));
     }
 
     #[test]
@@ -4248,7 +4252,7 @@ mod tests {
 
         let (sol, stream) = stream.split_first(&mut kb).expect("should residualize");
         assert_eq!(sol.residual.len(), 1);
-        assert_eq!(sol.residual[0], goal);
+        assert_eq!(sol.residual[0].as_term(), Some(goal));
 
         // No more solutions
         assert!(stream.split_first(&mut kb).is_none());
