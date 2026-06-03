@@ -3290,6 +3290,45 @@ fn check_apply_iter(
                     }
                 }
                 DispatchOutcome::Unique(impl_op_sym) => {
+                    // WI-365: ground the spec op's polymorphic effect ROW to the
+                    // dispatched impl's real effects (the effect dual of WI-357's
+                    // element threading). The pre-dispatch effect-close dropped
+                    // the unresolved row as if the carrier were pure; a concrete
+                    // impl that overrides the op with a genuine effect
+                    // (`MutBox.peek effects Modify[b]`) must surface it at the
+                    // consumption site so a pure consumer is rejected, exactly as
+                    // a DIRECT call to the impl op is. A pure override (empty or
+                    // wholly-unresolved effects) contributes nothing, so the
+                    // `List`-as-`Stream` pure path is unchanged. Only a real
+                    // override (`impl_op_sym != fn_sym`) can carry an effect the
+                    // spec signature didn't.
+                    if impl_op_sym != fn_sym {
+                        let derived = dispatched_impl_effects(
+                            kb, impl_op_sym, &op.params, &subst, pos_args, named_args,
+                        );
+                        // The spec op's polymorphic effect row is GROUNDED by
+                        // this concrete dispatch. Drop the still-unresolved row
+                        // var from the SPEC OP's OWN effects only — the
+                        // pre-dispatch effect-close fires only for a type-param
+                        // carrier binding, so an effect-only spec (`Box`:
+                        // `effects Effect = ?`, no type-arg binding) still carries
+                        // its `?_` here — substitute the impl's real effects in
+                        // its place, then re-merge the UNTOUCHED `arg_effects`. We
+                        // filter `substituted_op_effects`, not the merged
+                        // `effects`, for the same reason the pre-dispatch close
+                        // does (line above): a genuinely-polymorphic effect a
+                        // receiver argument contributes must never be erased. A
+                        // pure impl grounds the row to {} (`derived` empty); a
+                        // non-pure one contributes its `Modify[b]`, so a pure
+                        // consumer is rejected.
+                        let closed_op_effects: Vec<Value> = substituted_op_effects
+                            .iter()
+                            .filter(|e| !effect_is_unresolved_var(kb, e))
+                            .cloned()
+                            .collect();
+                        let op_and_impl = merge_effects(&closed_op_effects, &derived);
+                        effects = merge_effects(&op_and_impl, &arg_effects);
+                    }
                     // WI-231: tag the call site. The requirement-
                     // insertion pass (`req_insertion::run`) reads the
                     // side-table and emits the actual IR rewrite — no
@@ -6041,6 +6080,81 @@ fn effect_is_unresolved_var(kb: &KnowledgeBase, e: &Value) -> bool {
         Value::Term(t) => matches!(kb.get_term(*t), Term::Var(_)),
         _ => false,
     }
+}
+
+/// WI-365 — the EFFECT dual of WI-357's element threading. When a body-less
+/// self-receiver spec op (`Box.peek`, polymorphic `effects Effect`) dispatches
+/// to a concrete impl that OVERRIDES it with a genuine effect
+/// (`MutBox.peek effects Modify[b]`), the spec op's effect ROW must be GROUNDED
+/// to the impl's real effects at the consumption site — not dropped as if the
+/// carrier were pure. The pre-dispatch effect-close drops the still-unresolved
+/// row var (correct for a pure provider / host builtin — a provider fact cannot
+/// bind an effect parameter, WI-301); once dispatch resolves the concrete impl,
+/// this re-derives its effects so a pure consumer is rejected exactly as a
+/// DIRECT call to the impl op is.
+///
+/// Each impl effect is param-substituted (the IMPL op's params → the call's
+/// argument vars) so `Modify[b]` re-keys to the caller's actual argument — the
+/// same rewrite the spec op's own effects get at the call site
+/// (`substitute_ref_syms_value`, WI-342 E2 re-keys a `Value::Node` label's
+/// `Ref` spine). It is then walked through the per-call subst and filtered to
+/// CONCRETE effects: an impl whose own effect row is itself an unbound var is
+/// effectively pure here, so it contributes nothing — keeping the
+/// `List`-as-`Stream` pure path unchanged. Returns `[]` for a pure override
+/// (empty or wholly-unresolved effects).
+///
+/// The map keys on the IMPL op's parameter names (the impl's effects reference
+/// the impl's own params, which may be renamed vs the spec op's). Parameters
+/// align positionally across a spec op and its override (the override-refinement
+/// check enforces this) and the call was matched against the SPEC op, so the
+/// arg for impl param `i` is the positional arg at `i`, or — for a named call —
+/// the arg named with the SPEC op's param[i] name (`spec_params`).
+fn dispatched_impl_effects(
+    kb: &mut KnowledgeBase,
+    impl_op_sym: Symbol,
+    spec_params: &[(Symbol, Value)],
+    subst: &Substitution,
+    pos_args: &[Rc<NodeOccurrence>],
+    named_args: &[(Symbol, Rc<NodeOccurrence>)],
+) -> Vec<Value> {
+    let Some(impl_op) = lookup_operation_info_full(kb, impl_op_sym) else {
+        return Vec::new();
+    };
+    if impl_op.effects.is_empty() {
+        return Vec::new();
+    }
+    let mut param_to_arg: HashMap<Symbol, Symbol> = HashMap::new();
+    for (i, (impl_param_sym, _)) in impl_op.params.iter().enumerate() {
+        // Positional arg at this index, else the named arg carrying the spec
+        // op's param[i] name (the caller names spec-op params, not impl params).
+        let mut arg_sym = pos_args.get(i).and_then(extract_var_ref_sym_node);
+        if arg_sym.is_none() {
+            if let Some((spec_name, _)) = spec_params.get(i) {
+                for (n, occ) in named_args.iter() {
+                    if n == spec_name {
+                        arg_sym = extract_var_ref_sym_node(occ);
+                        break;
+                    }
+                }
+            }
+        }
+        if let Some(s) = arg_sym {
+            param_to_arg.insert(*impl_param_sym, s);
+        }
+    }
+    let mut out: Vec<Value> = Vec::new();
+    for e in &impl_op.effects {
+        let sub = if param_to_arg.is_empty() {
+            e.clone()
+        } else {
+            substitute_ref_syms_value(kb, e, &param_to_arg)
+        };
+        let walked = walk_type_deep_value(kb, subst, &sub);
+        if !effect_is_unresolved_var(kb, &walked) {
+            out.push(walked);
+        }
+    }
+    out
 }
 
 /// The short name of a type-parameter reference as a provider fact stores

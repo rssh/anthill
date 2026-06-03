@@ -6804,6 +6804,15 @@ impl<'a> Loader<'a> {
                 Term::Fn { functor, pos_args, named_args } => {
                     (*functor, pos_args.clone(), named_args.clone())
                 }
+                // WI-365: a BARE provider fact (`fact Box`, no `[bindings]`) is a
+                // name term, not a `Fn`. A spec parametric only in an EFFECT row
+                // (`effects Effect = ?`) has no type-argument bindings to write —
+                // effects aren't expressible as type arguments (WI-301) — so its
+                // provider claim is necessarily bare. Treat it as a zero-binding
+                // provider so a carrier (`MutBox`) is still found at dispatch.
+                Term::Ref(functor) | Term::Ident(functor) => {
+                    (*functor, SmallVec::new(), SmallVec::new())
+                }
                 _ => return,
             };
         if !matches!(self.kb.kind_of(fact_functor), Some(SymbolKind::Sort)) {

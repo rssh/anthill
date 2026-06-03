@@ -133,12 +133,13 @@ end
 /// `Modify[b]`; a sound typer derives that effect at the call site and rejects
 /// the pure `read_it`, exactly as the direct anchor above is rejected.
 ///
-/// FAILS TODAY: the dispatched `peek`'s effect row is not grounded to the
-/// carrier — it leaks as `?_` (plus a `MissingRequiresForSpecOp`), so no error
-/// names `Modify`. Acceptance gate for WI-365 — un-`#[ignore]` when the
-/// dispatched spec op grounds its effect row to the carrier's real effect.
+/// WI-365 (delivered): the dispatched `peek`'s effect row is now GROUNDED to the
+/// carrier's real effect. After dispatch resolves `MutBox.peek`, the typer
+/// re-derives that impl's `Modify[b]` at the consumption site (re-keyed to the
+/// caller's argument) instead of dropping the unresolved row as if pure, so a
+/// pure consumer is rejected with an undeclared-effect diagnostic naming
+/// `Modify` — matching the direct-call anchor above.
 #[test]
-#[ignore = "WI-365: dispatched spec-op effect grounding not implemented; non-pure carrier effect leaks as ?_ and is never derived to Modify"]
 fn dispatched_spec_peek_surfaces_modify_effect() {
     let consumer = r#"
 namespace test.wi365.dispatched
