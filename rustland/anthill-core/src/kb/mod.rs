@@ -3808,6 +3808,74 @@ mod tests {
     }
 
     #[test]
+    fn value_fact_dedup_keeps_distinct_node_answers() {
+        // WI-348: the answer-dedup now keys on a carrier-agnostic structural
+        // fingerprint (`goal_fingerprint`) instead of a `reify_to_term`-
+        // materialized `TermId`. Two solutions that bind the query var to
+        // STRUCTURALLY-DISTINCT `Value::Node` answers must therefore stay
+        // distinct — the former key dropped the Node to the bare var, collapsing
+        // both to one key and silently losing a genuine answer.
+        use crate::eval::value::Value;
+        use crate::intern::Symbol;
+        use crate::kb::load::register_prelude;
+        use crate::span::{SourceId, SourceSpan};
+        use std::rc::Rc;
+        use term::Var;
+
+        let mut kb = KnowledgeBase::new();
+        register_prelude(&mut kb); // interns the `denoted` field key `value`
+        let span = SourceSpan::new(SourceId::from_raw(0), 0, 10);
+
+        let f_sym = kb.intern("vf");
+        let sort = kb.make_name_term("MySort");
+        let domain = kb.make_name_term("test");
+
+        // Two value facts with structurally-distinct Node heads:
+        // vf(denoted(c1)), vf(denoted(c2)).
+        for name in ["c1", "c2"] {
+            let c = kb.intern(name);
+            let occ = kb.make_denoted_occ_ref(c, span, None);
+            let head = Value::Entity {
+                functor: f_sym,
+                pos: Rc::from(vec![Value::Node(occ)]),
+                named: Rc::from(Vec::<(Symbol, Value)>::new()),
+            };
+            kb.assert_fact_value(head, sort, domain, None);
+        }
+
+        // Query vf(?x): both facts match, two distinct Node answers.
+        let xv = kb.fresh_var(f_sym);
+        let xt = kb.alloc(Term::Var(Var::Global(xv)));
+        let goal = kb.alloc(Term::Fn {
+            functor: f_sym,
+            pos_args: SmallVec::from_elem(xt, 1),
+            named_args: SmallVec::new(),
+        });
+        let config = resolve::ResolveConfig {
+            max_solutions: 8,
+            ..resolve::ResolveConfig::default()
+        };
+        let solutions = kb.resolve(&[goal], &config);
+
+        // The dedup fingerprints the Node structure, so it keeps both — it does
+        // NOT collapse them to one var key (the pre-WI-348 `reify_to_term` bug).
+        assert_eq!(solutions.len(), 2, "distinct Node answers must NOT be deduped to one");
+
+        let nodes: Vec<_> = solutions
+            .iter()
+            .filter_map(|s| match s.subst.resolve_as_value(xv) {
+                Some(Value::Node(occ)) => Some(Rc::clone(occ)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(nodes.len(), 2, "both answers bind ?x to a Node");
+        assert!(
+            !Rc::ptr_eq(&nodes[0], &nodes[1]),
+            "the two Node answers are distinct occurrences, kept distinct by the structural key",
+        );
+    }
+
+    #[test]
     fn entity_of_query_includes_children() {
         let mut kb = KnowledgeBase::new();
         let nat = kb.make_name_term("Nat");

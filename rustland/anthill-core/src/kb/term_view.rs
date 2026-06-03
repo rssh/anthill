@@ -467,6 +467,97 @@ pub fn views_structurally_equal<A: TermView, B: TermView>(
     }
 }
 
+/// A single node of a [`GoalKey`] — a kb-free structural token. `Const` carries
+/// the literal value, `Open` the functor (or `None` for a functor-less
+/// aggregate) plus arities, the rest a leaf symbol/var. Derives `Hash`/`Eq`, so
+/// a `Vec<StructToken>` is self-contained — no `kb` needed to compare or hash.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum StructToken {
+    Open(Option<Symbol>, usize, usize),
+    NamedKey(Symbol),
+    Const(Literal),
+    Ref(Symbol),
+    Ident(Symbol),
+    Var(VarId),
+    Bottom,
+    Opaque,
+}
+
+/// A **carrier-agnostic structural fingerprint** of a goal, walked through σ
+/// (WI-348). Two goals that are structurally identical after substitution —
+/// regardless of carrier (`Term` / `Node` / `Entity`) — produce the same
+/// `GoalKey`, because the walk reads everything through [`TermView`] (which
+/// abstracts the carrier) and the tokens hold no `TermId`. So it keys the
+/// resolver's answer-dedup set directly with **no materialization** to a
+/// `TermId` and **no `kb` in `Hash`/`Eq`**, replacing the former
+/// `reify_to_term`-materialized `HashSet<TermId>` key.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct GoalKey(Vec<StructToken>);
+
+/// Append `view`'s structural fingerprint to `out`, resolving each `Var`
+/// through `subst` (so the key is over the *reified* goal). Named args are
+/// emitted in **sorted** key order — `named_keys` order differs by carrier
+/// (a `Term::Fn` is sorted-by-name, an occurrence is a fixed slice), so sorting
+/// is what makes a `Term` and a `Node` of the same structure agree.
+fn fingerprint_into<V: TermView>(
+    kb: &KnowledgeBase,
+    view: &V,
+    subst: &crate::kb::subst::Substitution,
+    out: &mut Vec<StructToken>,
+) {
+    match view.head(kb) {
+        ViewHead::Var(vid) => match subst.resolve_as_value(vid) {
+            None => out.push(StructToken::Var(vid)),
+            // Self-referential binding (a var bound to itself) — stop, mirroring
+            // `walk`/`walk_view`'s guard, so a cyclic σ can't recurse unboundedly.
+            Some(Value::Var(Var::Global(w))) if *w == vid => out.push(StructToken::Var(vid)),
+            Some(Value::Term(t))
+                if matches!(kb.get_term(*t), Term::Var(Var::Global(w)) if *w == vid) =>
+            {
+                out.push(StructToken::Var(vid))
+            }
+            // Resolve through σ and fingerprint the binding's own view.
+            Some(bound) => {
+                let bound = bound.clone();
+                fingerprint_into(kb, &bound, subst, out);
+            }
+        },
+        ViewHead::Const(lit) => out.push(StructToken::Const(lit)),
+        ViewHead::Ref(s) => out.push(StructToken::Ref(s)),
+        ViewHead::Ident(s) => out.push(StructToken::Ident(s)),
+        ViewHead::Bottom => out.push(StructToken::Bottom),
+        ViewHead::Opaque => out.push(StructToken::Opaque),
+        ViewHead::Functor { functor, pos_arity, named_arity } => {
+            out.push(StructToken::Open(functor, pos_arity, named_arity));
+            for i in 0..pos_arity {
+                if let Some(child) = view.pos_arg(kb, i) {
+                    fingerprint_into(kb, &child, subst, out);
+                }
+            }
+            let mut keys = view.named_keys(kb);
+            keys.sort_by_key(|s| s.index());
+            for key in keys {
+                out.push(StructToken::NamedKey(key));
+                if let Some(child) = view.named_arg(kb, key) {
+                    fingerprint_into(kb, &child, subst, out);
+                }
+            }
+        }
+    }
+}
+
+/// Carrier-agnostic structural fingerprint of `view` reified through `subst`
+/// (WI-348) — see [`GoalKey`].
+pub fn goal_fingerprint<V: TermView>(
+    kb: &KnowledgeBase,
+    view: &V,
+    subst: &crate::kb::subst::Substitution,
+) -> GoalKey {
+    let mut out = Vec::new();
+    fingerprint_into(kb, view, subst, &mut out);
+    GoalKey(out)
+}
+
 /// Wrapper so we can `impl TermView for TermIdView` without orphan-rule
 /// issues on the bare `TermId` type.
 #[derive(Clone, Copy, Debug)]

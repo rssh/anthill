@@ -1389,6 +1389,17 @@ pub fn register_prelude(kb: &mut KnowledgeBase) {
     register_stdlib_scopes(kb, global_raw);
     // Register builtin operations (eq, gt, add, etc.) for the resolver.
     kb.register_standard_builtins();
+    // WI-348: the Type-occurrence field keys (`Denoted.value`, `Arrow.param/
+    // result/effects`, `EffectsRows.effects_expr`, `NamedTuple.fields`) are read
+    // by the carrier-agnostic `TermView` walk (`goal_fingerprint`, `match_view`,
+    // `views_structurally_equal`) via `lookup_symbol`. Intern them so the walk
+    // never silently drops a Type occurrence's named child when its key symbol
+    // isn't yet registered — keeping `type_node_keys` consistent with the
+    // `named_arity` `type_node_head` reports. A full load interns these via the
+    // reflect entity defs; this makes lighter `register_prelude` setups agree.
+    for &k in &["value", "param", "result", "effects", "effects_expr", "fields"] {
+        kb.intern(k);
+    }
     // WI-320 (proposal 045 §2.0.1) — emit the EffectsRuntime ↔ effects_rows
     // bridge fact. Lives here in Rust (not in stdlib/effects-runtime.anthill)
     // because surface `_type` doesn't admit entity-construction terms like

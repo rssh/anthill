@@ -18,7 +18,7 @@ use smallvec::SmallVec;
 use super::subst::Substitution;
 use super::node_occurrence::{self, Expr, NodeOccurrence};
 use super::term::{Literal, Term, TermId, Var, VarId};
-use super::term_view::{ReflectedExpr, ReflectSyms, TermIdView, TermView, ViewHead, ViewItem};
+use super::term_view::{goal_fingerprint, GoalKey, ReflectedExpr, ReflectSyms, TermIdView, TermView, ViewHead, ViewItem};
 use super::persist_subst::BindValue;
 use crate::intern::Symbol;
 use crate::eval::value::Value;
@@ -252,9 +252,11 @@ enum FrameState {
         next: usize,
         any_delayed: bool,
         child_solutions: usize,
-        /// Seen ground goals: reified goal TermIds from yielded solutions.
-        /// Hash-consing guarantees same structure = same TermId.
-        seen_goals: HashSet<TermId>,
+        /// Seen ground goals, keyed by carrier-agnostic structural fingerprint
+        /// (WI-348): `goal_fingerprint` walks the goal's `TermView` through σ to
+        /// a kb-free `GoalKey`, so a `Value::Node`-carrying answer keys by its
+        /// structure (no `TermId` materialization, no drop).
+        seen_goals: HashSet<GoalKey>,
     },
 }
 
@@ -1266,24 +1268,18 @@ impl SearchStream {
         Some(StepResult::Continue)
     }
 
-    /// Check if a solution is a duplicate by reifying the nearest ancestor
-    /// ChoicePoint's goal through the solution substitution. The reified
-    /// goal is a ground TermId (hash-consed) — same structure = same id.
+    /// Check if a solution is a duplicate by **structurally fingerprinting** the
+    /// nearest ancestor ChoicePoint's goal through the solution σ (WI-348). The
+    /// fingerprint (`goal_fingerprint`) reads the goal through `TermView`, so it
+    /// is carrier-agnostic: a `Value::Node` answer keys by its structure, with
+    /// no `TermId` materialization and no `TermStore` growth.
     ///
-    /// Skipped when the substitution carries any non-`Value::Term` binding.
-    /// `reify_to_term` walks bindings term-only (narrowing to `Value::Term`),
-    /// so external-row substitutions (rows bound
-    /// to `Value::Str`/`Value::Entity` per proposal 026.1 §"Lineage-
-    /// preserving bindings") would all reify to the *same* TermId (the
-    /// goal with unbound vars) and the dedup would collapse genuinely
-    /// distinct rows. Hash-consing a Value-tree to make reify Value-aware
-    /// would also defeat Q4's no-`TermStore`-growth guarantee.
+    /// Skipped when σ carries a binding with no structural fingerprint — a
+    /// genuinely external-row / opaque value (`Value::Str`/`Value::Entity` from
+    /// a stream, a closure). A `Value::Node` does NOT disable dedup (it
+    /// fingerprints structurally); only those opaque rows do, which would
+    /// otherwise collapse genuinely distinct rows to one key.
     fn is_duplicate_projection(&mut self, kb: &mut KnowledgeBase, sol: &Solution) -> bool {
-        // `Value::Node` bindings (from matching occurrence goals, WI-246) are
-        // structural and reify to a stable key via `occurrence_to_term`, so
-        // they don't disable dedup. Only genuinely unreifiable external-row
-        // values (`Value::Entity`/`Str`/…) do — those would collapse distinct
-        // rows to one key.
         let has_value_binding = sol.subst.iter()
             .any(|(_, v)| !matches!(v, Value::Term(_) | Value::Node(_)));
         if has_value_binding {
@@ -1291,11 +1287,11 @@ impl SearchStream {
         }
         for frame in self.stack.iter_mut().rev() {
             if let FrameState::ChoicePoint { original_goal, seen_goals, .. } = &mut frame.state {
-                // Reify the goal to a hash-consed term key (a Node goal is
-                // reified via occurrence_to_term), then through the solution σ.
-                let t = reify_goal_value(kb, original_goal);
-                let reified = kb.reify_to_term(t, &sol.subst);
-                return !seen_goals.insert(reified);
+                // Carrier-agnostic structural fingerprint of the goal reified
+                // through σ — keys a `Value::Node` answer by its structure, with
+                // no `TermId` materialization and no `TermStore` growth (WI-348).
+                let key = goal_fingerprint(kb, &*original_goal, &sol.subst);
+                return !seen_goals.insert(key);
             }
         }
         false // no ChoicePoint ancestor — no dedup
