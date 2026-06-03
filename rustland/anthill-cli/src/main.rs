@@ -1311,9 +1311,9 @@ fn run_check(args: &CheckArgs) -> Result<(), i32> {
 /// Render a carrier-agnostic `Value` for display (WI-348). A fact head or a
 /// query binding may be a `Value::Term` (hash-consed), a `Value::Node`
 /// (occurrence — e.g. a `denoted` effect on an `OperationInfo` value fact), or
-/// a structural `Value::Entity`/`Tuple`. Reading it "as a term" (`rule_head` /
-/// `resolve_with_term`) panics on a value head and drops `Node` bindings, so the
-/// query output reads the `Value` and renders each carrier here.
+/// a structural `Value::Entity`/`Tuple`. Reading it "as a term" (`rule_head`, or
+/// narrowing a binding to `Value::Term`) panics on a value head and drops `Node`
+/// bindings, so the query output reads the `Value` and renders each carrier here.
 fn render_value(
     printer: &TermPrinter<'_, KnowledgeBase>,
     kb: &KnowledgeBase,
@@ -1425,8 +1425,8 @@ fn print_solutions(
         let bindings: Vec<String> = query_vars
             .iter()
             .filter_map(|vid| {
-                // WI-348: read the binding as a Value — `resolve_with_term` would
-                // drop a `Value::Node` binding (e.g. a `denoted` effect label).
+                // WI-348: read the binding as a Value — narrowing it to a term
+                // would drop a `Value::Node` binding (e.g. a `denoted` effect label).
                 sol.subst.resolve_as_value(*vid).map(|val| {
                     format!("?{} = {}", kb.resolve_sym(vid.name()), render_value(&printer, kb, val))
                 })

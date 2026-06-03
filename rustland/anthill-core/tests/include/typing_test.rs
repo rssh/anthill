@@ -1098,7 +1098,7 @@ fn field_access_entity_extracts_field() {
     let solutions = kb.resolve(&[goal], &ResolveConfig::default());
     assert!(!solutions.is_empty(), "field_access should produce a solution");
     let sol = &solutions[0];
-    let resolved = sol.subst.resolve_with_term(result_var).expect("result should be bound");
+    let resolved = sol.subst.resolve_as_value(result_var).and_then(|v| v.as_term()).expect("result should be bound");
     // The resolved value should be 42 (the fs field)
     match kb.get_term(resolved) {
         Term::Const(anthill_core::kb::term::Literal::Int(n)) => {
@@ -1198,7 +1198,7 @@ fn field_access_sort_component() {
     let solutions = kb.resolve(&[goal], &ResolveConfig::default());
     assert!(!solutions.is_empty(), "field_access for sort component should succeed");
     let sol = &solutions[0];
-    let resolved = sol.subst.resolve_with_term(result_var).expect("result should be bound");
+    let resolved = sol.subst.resolve_as_value(result_var).and_then(|v| v.as_term()).expect("result should be bound");
     // Should resolve to Carrier sort term (nullary Fn)
     match kb.get_term(resolved) {
         Term::Fn { functor, .. } => {
@@ -2371,7 +2371,7 @@ fn row_unify_open_closed_tail_absorbs() {
     let mut subst = Substitution::new();
     assert!(unify_types(&mut kb, &mut subst, &TermIdView(open_row), &TermIdView(closed_row)),
         "open row should unify with closed row of same labels + extras");
-    assert!(subst.resolve_with_term(rho_vid).is_some(),
+    assert!(subst.resolve_as_value(rho_vid).and_then(|v| v.as_term()).is_some(),
         "?rho should be bound after row unification");
 }
 
@@ -2447,9 +2447,9 @@ fn row_unify_open_open_disjoint_extras() {
     let mut subst = Substitution::new();
     assert!(unify_types(&mut kb, &mut subst, &TermIdView(arrow_a), &TermIdView(arrow_b)),
         "open/open with disjoint extras must unify (Rémy fresh-tail case)");
-    assert!(subst.resolve_with_term(rho_a_vid).is_some(),
+    assert!(subst.resolve_as_value(rho_a_vid).and_then(|v| v.as_term()).is_some(),
         "?rho_a should be bound");
-    assert!(subst.resolve_with_term(rho_b_vid).is_some(),
+    assert!(subst.resolve_as_value(rho_b_vid).and_then(|v| v.as_term()).is_some(),
         "?rho_b should be bound");
 }
 
@@ -2506,7 +2506,7 @@ fn row_lacks_unify_non_conflicting_label_ok() {
     let mut subst = Substitution::new();
     assert!(unify_types(&mut kb, &mut subst, &TermIdView(closed_other), &TermIdView(lacks_row)),
         "{{Other}} unifies with {{-Error | ρ}} — Other is not the lacked Error");
-    assert!(subst.resolve_with_term(rho_vid).is_some(),
+    assert!(subst.resolve_as_value(rho_vid).and_then(|v| v.as_term()).is_some(),
         "ρ should be bound (absorbs Other, closing the row)");
 }
 
@@ -3422,7 +3422,7 @@ fn unify_arrow_shared_rho_with_extras() {
     let mut subst = Substitution::new();
     assert!(unify_types(&mut kb, &mut subst, &TermIdView(arrow_a), &TermIdView(arrow_b)),
         "unify of arrows sharing rho with one side carrying extras must succeed");
-    assert!(subst.resolve_with_term(rho_vid).is_some(),
+    assert!(subst.resolve_as_value(rho_vid).and_then(|v| v.as_term()).is_some(),
         "?rho should be bound after unification");
 }
 
@@ -3928,7 +3928,7 @@ fn unify_var_binds_to_type() {
     let var_term = kb.alloc(Term::Var(anthill_core::kb::term::Var::Global(vid)));
     let mut subst = Substitution::new();
     assert!(unify_types(&mut kb, &mut subst, &TermIdView(var_term), &TermIdView(int_ty)), "Var unifies with Int");
-    assert_eq!(subst.resolve_with_term(vid), Some(int_ty), "Var should be bound to Int");
+    assert_eq!(subst.resolve_as_value(vid).and_then(|v| v.as_term()), Some(int_ty), "Var should be bound to Int");
 }
 
 #[test]
@@ -3943,7 +3943,7 @@ fn unify_both_vars_bind() {
     let mut subst = Substitution::new();
     assert!(unify_types(&mut kb, &mut subst, &TermIdView(var1), &TermIdView(var2)), "two vars unify");
     // One should be bound to the other
-    assert!(subst.resolve_with_term(vid1).is_some() || subst.resolve_with_term(vid2).is_some(),
+    assert!(subst.resolve_as_value(vid1).and_then(|v| v.as_term()).is_some() || subst.resolve_as_value(vid2).and_then(|v| v.as_term()).is_some(),
         "at least one var should be bound");
 }
 
@@ -3973,7 +3973,7 @@ fn unify_parameterized_with_var_binding() {
 
     let mut subst = Substitution::new();
     assert!(unify_types(&mut kb, &mut subst, &TermIdView(list_var), &TermIdView(list_int)), "List[T=?X] unifies with List[T=Int]");
-    assert_eq!(subst.resolve_with_term(x_vid), Some(int_ty), "?X should be bound to Int");
+    assert_eq!(subst.resolve_as_value(x_vid).and_then(|v| v.as_term()), Some(int_ty), "?X should be bound to Int");
 }
 
 #[test]
@@ -3995,8 +3995,8 @@ fn unify_arrow_with_var_binding() {
 
     let mut subst = Substitution::new();
     assert!(unify_types(&mut kb, &mut subst, &TermIdView(arrow_var), &TermIdView(arrow_concrete)), "(?A -> ?B) unifies with (Int -> String)");
-    assert_eq!(subst.resolve_with_term(a_vid), Some(int_ty), "?A = Int");
-    assert_eq!(subst.resolve_with_term(b_vid), Some(str_ty), "?B = String");
+    assert_eq!(subst.resolve_as_value(a_vid).and_then(|v| v.as_term()), Some(int_ty), "?A = Int");
+    assert_eq!(subst.resolve_as_value(b_vid).and_then(|v| v.as_term()), Some(str_ty), "?B = String");
 }
 
 #[test]

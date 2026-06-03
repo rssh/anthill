@@ -926,7 +926,7 @@ mod tests {
         let results = tree.query_resolved(&env.kb, &view(pat), &res);
         assert_eq!(results.len(), 2);
         for (leaf, subst) in &results {
-            let bound = subst.resolve_with_term(vid).expect("bound");
+            let bound = subst.resolve_as_value(vid).and_then(|v| v.as_term()).expect("bound");
             match leaf { 1 => assert_eq!(bound, v1), 2 => assert_eq!(bound, v2), _ => panic!() }
         }
     }
@@ -956,7 +956,7 @@ mod tests {
         });
         let results = tree.query_resolved(&env.kb, &view(pat), |_| fact);
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0].1.resolve_with_term(xv).unwrap(), vid);
+        assert_eq!(results[0].1.resolve_as_value(xv).and_then(|v| v.as_term()).unwrap(), vid);
     }
 
     #[test]
@@ -977,7 +977,7 @@ mod tests {
         let results = tree.query_resolved(&env.kb, &view(var_q), &res);
         assert_eq!(results.len(), 2);
         for (leaf, subst) in &results {
-            let bound = subst.resolve_with_term(vid).unwrap();
+            let bound = subst.resolve_as_value(vid).and_then(|v| v.as_term()).unwrap();
             match leaf { 1 => assert_eq!(bound, tf), 2 => assert_eq!(bound, tg), _ => panic!() }
         }
     }

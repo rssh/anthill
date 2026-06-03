@@ -2463,7 +2463,7 @@ impl KnowledgeBase {
         // WI-246: matching a `Value::Node` goal binds head/rule vars to
         // `Value::Node` subparts of the goal. The De Bruijn / rename / answer-
         // link logic below reads `tree_subst` term-only (`iter_terms` /
-        // `resolve_with_term`), which would silently DROP those bindings —
+        // narrowing to `Value::Term`), which would silently DROP those bindings —
         // losing the head-match constraint and letting the rule body run
         // unconstrained (exponential over-exploration). Reify each
         // `Value::Node` binding to a hash-consed term first. Fast-path: term
@@ -3703,7 +3703,7 @@ mod tests {
             other => panic!("alpha should bind the Node, got {other:?}"),
         }
         assert_eq!(
-            results[0].1.resolve_with_term(yv),
+            results[0].1.resolve_as_value(yv).and_then(|v| v.as_term()),
             Some(beta_t),
             "beta must bind its ground term by key, not by position",
         );
@@ -3856,7 +3856,7 @@ mod tests {
         let target = kb.alloc(Term::Const(Literal::Int(42)));
 
         let s = kb.match_term(var_term, target).expect("should match");
-        assert_eq!(s.resolve_with_term(vid), Some(target));
+        assert_eq!(s.resolve_as_value(vid).and_then(|v| v.as_term()), Some(target));
     }
 
     #[test]
@@ -3952,7 +3952,7 @@ mod tests {
             other => panic!("expected Value::Str, got {other:?}"),
         }
         // resolve() returns None because the binding isn't a TermId.
-        assert!(subst.resolve_with_term(xv).is_none());
+        assert!(subst.resolve_as_value(xv).and_then(|v| v.as_term()).is_none());
     }
 
     #[test]
@@ -4026,8 +4026,8 @@ mod tests {
         }
 
         // Both variables bind to non-Term Values → resolve() returns None.
-        assert!(subst.resolve_with_term(xv).is_none());
-        assert!(subst.resolve_with_term(yv).is_none());
+        assert!(subst.resolve_as_value(xv).and_then(|v| v.as_term()).is_none());
+        assert!(subst.resolve_as_value(yv).and_then(|v| v.as_term()).is_none());
     }
 
     #[test]
@@ -4088,9 +4088,9 @@ mod tests {
             }
             other => panic!("expected Value::Node for ?b, got {other:?}"),
         }
-        // Non-Term bindings → resolve_with_term returns None (lineage preserved).
-        assert!(subst.resolve_with_term(av).is_none());
-        assert!(subst.resolve_with_term(bv).is_none());
+        // Non-Term bindings → narrowing to a term returns None (lineage preserved).
+        assert!(subst.resolve_as_value(av).and_then(|v| v.as_term()).is_none());
+        assert!(subst.resolve_as_value(bv).and_then(|v| v.as_term()).is_none());
     }
 
     #[test]
@@ -4284,8 +4284,8 @@ mod tests {
         let via_term = kb.match_term(pattern, target).expect("match_term");
         let via_view = kb.match_view(pattern, &TermIdView(target)).expect("match_view");
 
-        assert_eq!(via_term.resolve_with_term(xv), via_view.resolve_with_term(xv));
-        assert_eq!(via_term.resolve_with_term(xv), Some(a));
+        assert_eq!(via_term.resolve_as_value(xv).and_then(|v| v.as_term()), via_view.resolve_as_value(xv).and_then(|v| v.as_term()));
+        assert_eq!(via_term.resolve_as_value(xv).and_then(|v| v.as_term()), Some(a));
     }
 
     #[test]
@@ -4390,7 +4390,7 @@ mod tests {
         let results = kb.query(pattern);
         assert_eq!(results.len(), 1);
         let (_, ref s) = results[0];
-        assert_eq!(s.resolve_with_term(vid), Some(alice));
+        assert_eq!(s.resolve_as_value(vid).and_then(|v| v.as_term()), Some(alice));
     }
 
     #[test]
@@ -4440,7 +4440,7 @@ mod tests {
         assert_eq!(node_hits.len(), term_hits.len(), "same candidate count as TermId goal");
         assert_eq!(node_hits[0].0, term_hits[0].0, "same matched rule/fact");
         assert_eq!(
-            node_hits[0].1.resolve_with_term(vid),
+            node_hits[0].1.resolve_as_value(vid).and_then(|v| v.as_term()),
             Some(alice),
             "?x bound to \"alice\" via the occurrence goal",
         );

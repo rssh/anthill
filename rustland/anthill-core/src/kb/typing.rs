@@ -3217,8 +3217,8 @@ fn check_apply_iter(
                     //
                     // Why we walk type_params directly instead of consuming
                     // `sort_goal_from_subst`: `sort_goal_from_subst` only
-                    // emits a binding when `subst.resolve_with_term(vid)`
-                    // returns `Some` — but unification often binds the
+                    // emits a binding when the spec var resolves to a
+                    // `Value::Term` — but unification often binds the
                     // *caller's* var to the spec's var (e.g. `Container.T
                     // → Eq.T`), leaving the spec's var as the equivalence-
                     // class root with no direct binding. Resolving the
@@ -7207,7 +7207,8 @@ fn build_pattern_subst(
             // so a `Value::Node` (denoted-bearing) type-param is preserved rather
             // than re-grounded. `walk_type_value` resolves a field type through this
             // binding via `resolve_as_value` (it may surface the Node); a ground
-            // `Value::Term` binding is still read by `walk_type`'s `resolve_with_term`.
+            // `Value::Term` binding is still read by `walk_type` (which narrows
+            // to `Value::Term`).
             subst.bind_value(vid, value.clone());
             any = true;
         }
@@ -7662,7 +7663,8 @@ fn walk_view(kb: &KnowledgeBase, subst: &Substitution, v: &impl TermView) -> Val
 }
 
 /// Walk a `TermId`-carried type, then surface a non-`Term` `Value` binding the
-/// `TermId` walk can't see (`resolve_with_term` skips non-`Term` bindings).
+/// `TermId` walk can't see (`walk_type` narrows to `Value::Term`, skipping
+/// non-`Term` bindings).
 fn walk_term_to_resolved(kb: &KnowledgeBase, subst: &Substitution, t: TermId) -> Value {
     let t2 = walk_type(kb, subst, t);
     if let Term::Var(Var::Global(vid)) = kb.get_term(t2) {

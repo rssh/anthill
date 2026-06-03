@@ -720,13 +720,13 @@ fn run_next(kb: &mut KnowledgeBase, show_all: bool) {
     for sol in &solutions {
         let id = query_vars.iter()
             .find(|v| kb.resolve_sym(v.name()) == "id")
-            .and_then(|v| sol.subst.resolve_with_term(*v))
+            .and_then(|v| sol.subst.resolve_as_value(*v).and_then(|val| val.as_term()))
             .and_then(|t| extract_string(kb, t))
             .unwrap_or_else(|| "?".into());
         if !seen.insert(id.clone()) { continue; }
         let desc = query_vars.iter()
             .find(|v| kb.resolve_sym(v.name()) == "desc")
-            .and_then(|v| sol.subst.resolve_with_term(*v))
+            .and_then(|v| sol.subst.resolve_as_value(*v).and_then(|val| val.as_term()))
             .and_then(|t| extract_string(kb, t))
             .unwrap_or_default();
         println!("  {} — {}", id, desc);
