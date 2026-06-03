@@ -331,6 +331,21 @@ pub struct KnowledgeBase {
     /// the term handle is no longer built/stored. anthill code reaches a body via
     /// the `anthill.reflect.operation_body` builtin (which reads this table).
     /// See `docs/design/occurrence-as-value-type.md`.
+    ///
+    /// WI-348 / **WI-368**: deliberately NOT collapsed into the `OperationInfo`
+    /// value fact (which would complete the "everything is facts" model). The
+    /// body is keyed data (`Symbol` → body), but it is *also* an `Expr`
+    /// occurrence whose control-flow forms (`let`/`if`/`match`) read `Opaque` in
+    /// `occ_head`. The discrimination tree indexes a fact head's *full* nested
+    /// structure, so a fact-resident body would force the insert walk down into
+    /// that `Expr` — building a per-body structural MIRROR in the trie that no
+    /// query prunes on (the body is never a discriminator; ops are found by
+    /// `name`), needing `occ_head` to mirror the whole `Expr` enum, and risking
+    /// deep recursion. Doing the collapse *cleanly* — body in the fact, still
+    /// shape-queryable — needs a **custom-unification / custom-search hook at a
+    /// discrim node** (delegate the body subterm to on-demand `TermView` unify
+    /// instead of trie descent): tracked as **WI-368**. Until that lands, the
+    /// body stays here, reachable relationally via `operation_body`.
     pub(crate) op_bodies: HashMap<Symbol, Rc<NodeOccurrence>>,
 
     // WI-348 (value-fact payoff): the `op_effects` side-table is GONE. A
