@@ -110,25 +110,20 @@ end
     );
 }
 
-/// KNOWN LIMITATION (trip-wire for a follow-up; beyond WI-365's scope).
+/// WI-367 (delivered): consumption-side element precision for a body-ful
+/// self-receiver spec op.
 ///
-/// Ideally `collect` over a `List[Int]` is `List[Int]`, so returning it where
-/// `List[String]` is expected would be REJECTED. It is NOT, because the
-/// *consumption-side* element of a body-ful self-receiver spec op is currently
-/// driven by WI-270 expected-type seeding rather than the carrier: the
-/// declared return `drain -> List[String]` seeds `unify_types(collect.return =
-/// List[T], List[String])` → binds `Stream.T := String` *before* the carrier
-/// (`xs : List[Int]`) is consulted, so `bind_spec_params_from_carrier` finds
-/// `Stream.T` already bound and skips. The element ends up `String` (the
-/// caller's claim), not `Int` (the carrier's truth), and no mismatch is
-/// reported. WI-357 threads the element for the *dispatched* (body-less) spec
-/// op and for the destructured `Pair`, but not for the *return* of a body-ful
-/// spec op consumed on a provider. Fixing it needs carrier-over-expected
-/// precedence for self-receiver elements (relates to WI-270 / WI-357 / WI-301)
-/// and is out of scope here — WI-365 delivers the def-side typecheck and the
-/// `collect([1,2,3]) == 3` eval (the runtime element is correct regardless).
-/// `#[ignore]`d so it documents the gap and un-ignores when that lands.
-#[ignore = "WI-367: consumption-side element precision vs WI-270 expected-seeding"]
+/// `collect` over a `List[Int]` is `List[Int]`, so returning it where
+/// `List[String]` is expected must be REJECTED. Before WI-367 it was NOT,
+/// because the *consumption-side* element of a body-ful self-receiver spec op
+/// was driven by WI-270 expected-type seeding rather than the carrier: the
+/// declared return `drain -> List[String]` seeded `unify_types(collect.return =
+/// List[T], List[String])` → bound `Stream.T := String` *before* the carrier
+/// (`xs : List[Int]`) was consulted, so `bind_spec_params_from_carrier` found
+/// `Stream.T` already bound and skipped. WI-367 binds the spec element params
+/// from the concrete carrier (ground truth) BEFORE expected-seeding, so the
+/// element is `Int` (the carrier's truth), `resolved_ret` is `List[Int]`, and
+/// the operation-return check rejects the differing `List[String]`.
 #[test]
 fn collect_wrong_element_return_is_rejected() {
     let src = r#"

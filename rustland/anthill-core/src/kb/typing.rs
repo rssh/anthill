@@ -2858,6 +2858,34 @@ fn check_apply_iter(
         // seed the substitution first. Returns `NoSuchTypeParam` on
         // an unknown binding name.
         seed_op_type_args(kb, &mut subst, &op, occ, fn_sym, span)?;
+        // WI-367: a self-receiver spec op consumed on a CONCRETE carrier takes
+        // its element type-params from that carrier — the receiver argument is
+        // the ground truth for the element. Bind them BEFORE the WI-270
+        // expected-seeding below. Otherwise a caller's wrong return claim
+        // (`drain(xs: List[Int]) -> List[String] = collect(xs)`) would let
+        // `unify_types(op.return_type, expected)` pre-seed `Stream.T := String`,
+        // after which the carrier pass (which only fills empty slots) skips and
+        // the unsound element survives — `collect` over a `List[Int]` is
+        // `List[Int]`, not the caller's `List[String]`. Binding from the carrier
+        // first pins `Stream.T := Int`; the expected-seeding `unify_types` then
+        // fails silently against the carrier-pinned slot for a differing claim
+        // (it binds nothing and its boolean is already discarded) and only fills
+        // the still-free params. `resolved_ret` therefore carries the carrier
+        // element, and the outer return-type check rejects the differing
+        // declared return. `carrier_bound` is reused below to gate the WI-357
+        // effect-close, which the early bind would otherwise steal.
+        let carrier_bound = match self_receiver_spec_sort(kb, &op, fn_sym) {
+            Some(spec_sort) => match receiver_carrier(
+                kb, &op, spec_sort, named_args, pos_results, named_results,
+            ) {
+                ReceiverCarrier::Concrete(carrier_sym) => bind_spec_params_from_carrier(
+                    kb, &mut subst, &op, spec_sort, carrier_sym,
+                    named_args, pos_results, named_results,
+                ),
+                _ => false,
+            },
+            None => false,
+        };
         // WI-270: caller-side expected type seeds the substitution via
         // `op.return_type` before argument inference. With caller
         // context (`let v: Option[WorkItem] = term_as_entity(t)`) the
@@ -3030,27 +3058,44 @@ fn check_apply_iter(
             // return type so the element threads through and the dispatch goal
             // below is concrete.
             if let ReceiverCarrier::Concrete(carrier_sym) = carrier {
-                if bind_spec_params_from_carrier(
+                // WI-367: the spec params are usually already bound from this
+                // carrier before expected-seeding (the early pass keys on the
+                // op's PARENT sort), so this pass — keying on the dispatch-
+                // resolved `spec_sort` — normally finds them filled and re-binds
+                // nothing. It still runs as a fallback for the case where the
+                // two resolve the spec to different symbols. `late_bound` records
+                // whether it bound anything here.
+                let late_bound = bind_spec_params_from_carrier(
                     kb, &mut subst, &op, spec_sort, carrier_sym,
                     named_args, pos_results, named_results,
-                ) {
+                );
+                if late_bound {
                     resolved_ret = walk_type_deep_value(kb, &subst, &op.return_type);
-                    // Close the spec op's OWN polymorphic effect row at this
-                    // concrete carrier. The provider fact cannot yet bind the
-                    // effect parameter (effects aren't expressible as type
-                    // arguments — WI-301 / WI-320), so the spec op's `effects E`
-                    // walked to an unresolved row variable above. A concrete
-                    // carrier that provides the spec realizes that row as its
-                    // own effect; the only expressible case today is a pure
-                    // provider (`List`), so drop the still-unresolved row var
-                    // rather than surface it as a spurious `undeclared effect:
-                    // ?_`. Self-disabling: once a provider CAN bind `E`, the
-                    // label resolves and is no longer a bare var, so it is kept.
-                    //
-                    // Re-merge with the UNTOUCHED `arg_effects` rather than
-                    // filtering the merged set, so a genuinely polymorphic
-                    // effect contributed by the receiver argument itself is
-                    // never erased — only the spec op's own row is closed.
+                }
+                // Close the spec op's OWN polymorphic effect row at this
+                // concrete carrier. The provider fact cannot yet bind the
+                // effect parameter (effects aren't expressible as type
+                // arguments — WI-301 / WI-320), so the spec op's `effects E`
+                // walked to an unresolved row variable above. A concrete
+                // carrier that provides the spec realizes that row as its
+                // own effect; the only expressible case today is a pure
+                // provider (`List`), so drop the still-unresolved row var
+                // rather than surface it as a spurious `undeclared effect:
+                // ?_`. Self-disabling: once a provider CAN bind `E`, the
+                // label resolves and is no longer a bare var, so it is kept.
+                //
+                // Re-merge with the UNTOUCHED `arg_effects` rather than
+                // filtering the merged set, so a genuinely polymorphic
+                // effect contributed by the receiver argument itself is
+                // never erased — only the spec op's own row is closed.
+                //
+                // WI-367: gate on the carrier binding succeeding EITHER here or
+                // in the early pass (`carrier_bound`), not on `late_bound`
+                // alone — the early pass now usually consumes the binding, but
+                // the row still needs closing. This reproduces the pre-WI-367
+                // condition exactly (effect-close ran iff the carrier bound a
+                // spec param) while letting the element bind move earlier.
+                if carrier_bound || late_bound {
                     let closed_op_effects: Vec<Value> = substituted_op_effects
                         .iter()
                         .filter(|e| !effect_is_unresolved_var(kb, e))
