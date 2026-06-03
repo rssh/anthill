@@ -831,7 +831,7 @@ impl SearchStream {
             _ => return None,
         };
         if pos_args.is_empty() { return None; }
-        let pred = kb.walk(pos_args[0], subst);
+        let Some(pred) = kb.walk_arg_term(pos_args[0], subst) else { return None };
         let pred_sym = match kb.terms.get(pred) {
             Term::Ref(s) => *s,
             Term::Fn { functor, pos_args: pa, named_args: na, .. }
@@ -948,7 +948,7 @@ impl SearchStream {
         if pos_args.is_empty() { return None; }
 
         // First pos_arg is the predicate variable — walk it
-        let pred_tid = kb.walk(pos_args[0], subst);
+        let Some(pred_tid) = kb.walk_arg_term(pos_args[0], subst) else { return None };
         let pred_sym = match kb.get_term(pred_tid) {
             Term::Ref(s) => *s,
             Term::Fn { functor, pos_args: pa, named_args: na, .. }
@@ -1718,15 +1718,35 @@ impl KnowledgeBase {
         }
     }
 
+    /// Walk a builtin argument to a `TermId`, narrowing the carrier (WI-348
+    /// directive #3 / proposal Phase D). The symbol/name/ref/result builtins
+    /// (`qualified_name`, `short_name`, `lookup_symbol`,
+    /// `resolve_sort_instantiation_param`, `field_access`, `ho_apply`) operate on
+    /// term-shaped data; a var bound to a non-`Term` carrier (a `Value::Node`
+    /// denoted/occurrence, a scalar) is a type error for them — `None` here,
+    /// which each caller turns into its failure path. Reads through `walk_view`
+    /// (the carrier-faithful chase) so a Node binding is *seen and rejected*, not
+    /// silently chased past to the bare var (the former `walk`, which would then
+    /// `Delay` on an already-bound arg). Latent today — the resolve_with_term
+    /// removal diagnostic proved no rule body binds a non-`Term` into a builtin
+    /// arg; this makes that boundary explicit and forward-correct.
+    fn walk_arg_term(&self, arg: TermId, subst: &Substitution) -> Option<TermId> {
+        self.walk_view(arg, subst).as_term()
+    }
+
     fn builtin_qualified_name(&mut self, goal: TermId, subst: &Substitution) -> BuiltinResult {
         let sym_arg = self.builtin_first_arg(goal);
         let result_arg = self.builtin_second_arg(goal);
-        let walked_sym = self.walk(sym_arg, subst);
+        let Some(walked_sym) = self.walk_arg_term(sym_arg, subst) else {
+            return BuiltinResult::Failure;
+        };
         match self.terms.get(walked_sym).clone() {
             Term::Ref(sym) | Term::Ident(sym) => {
                 let name = self.symbol_qualified_name(sym);
                 let str_term = self.alloc(Term::Const(super::term::Literal::String(name)));
-                let walked_result = self.walk(result_arg, subst);
+                let Some(walked_result) = self.walk_arg_term(result_arg, subst) else {
+                    return BuiltinResult::Failure;
+                };
                 match self.terms.get(walked_result) {
                     Term::Var(Var::Global(vid)) => {
                         let vid = *vid;
@@ -1754,13 +1774,17 @@ impl KnowledgeBase {
     fn builtin_short_name(&mut self, goal: TermId, subst: &Substitution) -> BuiltinResult {
         let sym_arg = self.builtin_first_arg(goal);
         let result_arg = self.builtin_second_arg(goal);
-        let walked_sym = self.walk(sym_arg, subst);
+        let Some(walked_sym) = self.walk_arg_term(sym_arg, subst) else {
+            return BuiltinResult::Failure;
+        };
         match self.terms.get(walked_sym).clone() {
             Term::Ref(sym) | Term::Ident(sym) => {
                 let full = self.symbols.resolve(sym);
                 let short = full.rsplit('.').next().unwrap_or(full).to_string();
                 let str_term = self.alloc(Term::Const(super::term::Literal::String(short)));
-                let walked_result = self.walk(result_arg, subst);
+                let Some(walked_result) = self.walk_arg_term(result_arg, subst) else {
+                    return BuiltinResult::Failure;
+                };
                 match self.terms.get(walked_result) {
                     Term::Var(Var::Global(vid)) => {
                         let vid = *vid;
@@ -1788,14 +1812,18 @@ impl KnowledgeBase {
     fn builtin_lookup_symbol(&mut self, goal: TermId, subst: &Substitution) -> BuiltinResult {
         let name_arg = self.builtin_first_arg(goal);
         let result_arg = self.builtin_second_arg(goal);
-        let walked_name = self.walk(name_arg, subst);
+        let Some(walked_name) = self.walk_arg_term(name_arg, subst) else {
+            return BuiltinResult::Failure;
+        };
         match self.terms.get(walked_name).clone() {
             Term::Const(super::term::Literal::String(name)) => {
                 // Look up the symbol by qualified name (read-only)
                 match self.symbols.by_qualified_name.get(&name).copied() {
                     Some(sym) => {
                         let ref_term = self.alloc(Term::Ref(sym));
-                        let walked_result = self.walk(result_arg, subst);
+                        let Some(walked_result) = self.walk_arg_term(result_arg, subst) else {
+                            return BuiltinResult::Failure;
+                        };
                         match self.terms.get(walked_result) {
                             Term::Var(Var::Global(vid)) => {
                                 let vid = *vid;
@@ -2195,8 +2223,12 @@ impl KnowledgeBase {
             _ => return BuiltinResult::Failure,
         };
 
-        let walked_inst = self.walk(inst_arg, subst);
-        let walked_param = self.walk(param_arg, subst);
+        let Some(walked_inst) = self.walk_arg_term(inst_arg, subst) else {
+            return BuiltinResult::Failure;
+        };
+        let Some(walked_param) = self.walk_arg_term(param_arg, subst) else {
+            return BuiltinResult::Failure;
+        };
 
         // Delay if either arg is unbound
         if matches!(self.terms.get(walked_inst), Term::Var(_)) {
@@ -2231,7 +2263,9 @@ impl KnowledgeBase {
 
         match value_tid {
             Some(val) => {
-                let walked_value = self.walk(value_arg, subst);
+                let Some(walked_value) = self.walk_arg_term(value_arg, subst) else {
+                    return BuiltinResult::Failure;
+                };
                 match self.terms.get(walked_value) {
                     Term::Var(Var::Global(vid)) => {
                         let vid = *vid;
@@ -2255,7 +2289,9 @@ impl KnowledgeBase {
     /// Try to bind a result argument to a computed value.
     /// If the result is an unbound Var, bind it. If already bound, check equality.
     fn try_bind_result(&self, result_arg: TermId, value: TermId, subst: &Substitution) -> BuiltinResult {
-        let walked_result = self.walk(result_arg, subst);
+        let Some(walked_result) = self.walk_arg_term(result_arg, subst) else {
+            return BuiltinResult::Failure;
+        };
         match self.terms.get(walked_result) {
             Term::Var(Var::Global(vid)) => {
                 let vid = *vid;
@@ -2638,8 +2674,12 @@ impl KnowledgeBase {
             _ => return BuiltinResult::Failure,
         };
 
-        let walked_obj = self.walk(obj_arg, subst);
-        let walked_field = self.walk(field_arg, subst);
+        let Some(walked_obj) = self.walk_arg_term(obj_arg, subst) else {
+            return BuiltinResult::Failure;
+        };
+        let Some(walked_field) = self.walk_arg_term(field_arg, subst) else {
+            return BuiltinResult::Failure;
+        };
 
         // Extract field symbol from Ref, Ident, or Fn
         let field_sym = match self.terms.get(walked_field) {

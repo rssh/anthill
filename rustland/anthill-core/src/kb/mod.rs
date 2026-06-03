@@ -1939,8 +1939,17 @@ impl KnowledgeBase {
 
     // ── Walk / reify ──────────────────────────────────────────────
 
-    /// Chase Var→binding→Var chains through a substitution.
-    /// Returns the final non-variable TermId, or the last unbound Var.
+    /// Chase Var→binding→Var chains through a substitution, **term-world**:
+    /// returns the final non-variable `TermId`, or the last unbound Var — and a
+    /// var bound to a non-`Term` carrier (a `Value::Node`, a scalar) STOPS the
+    /// chase at that var (the Node is not represented in the `TermId` result).
+    /// Use this only where a `TermId` is genuinely the right shape — building a
+    /// term (`reify_to_term`, `apply_subst`), inspecting a synthetic term marker
+    /// (`forall_impl` / `push_choice` goal-classification), or recursing over
+    /// term structure (`is_ground`, `collect_unbound_vars`). The carrier-faithful
+    /// chase that SURFACES a `Value::Node` is [`Self::walk_view`]; a builtin
+    /// reading a term-shaped arg uses `walk_arg_term` (which rejects a non-term
+    /// carrier rather than silently chasing past it). WI-348.
     pub fn walk(&self, term: TermId, subst: &subst::Substitution) -> TermId {
         use crate::eval::value::Value;
         let mut current = term;
