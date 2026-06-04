@@ -444,15 +444,23 @@ end
     /// A synthetic ground `Modify[T = <resource>]` label, the shape the loader's
     /// value-in-type lowering produces (`parameterized` + `denoted(Ref(_))`).
     fn modify_label(kb: &mut KnowledgeBase, resource: Symbol) -> Value {
-        // Build the `Modify` base as a real `sort_ref` — matching production
-        // (mod.rs `make_sort_ref`, load.rs type-expr lowering), NOT a bare
-        // `make_name_term` — so the label is a well-formed `parameterized` type
-        // the carrier-agnostic `extract_type` readers accept (WI-361).
+        // WI-366: production mints a Node `Modify[resource]` via `make_denoted_occ`
+        // (the value-in-type carrier); build the SAME carrier here — the
+        // carrier-agnostic `op_boundary_effects` / `extract_type` readers accept it,
+        // and no ground-`denoted` producer remains. The `Modify` base is a real
+        // `sort_ref` (a well-formed `parameterized` type, WI-361).
+        use crate::kb::node_occurrence::TypeChild;
+        use crate::span::{SourceId, SourceSpan};
         let base = kb.make_sort_ref_by_name("Modify");
-        let res_ref = kb.alloc(Term::Ref(resource));
-        let denoted = kb.make_denoted(res_ref);
         let t = kb.intern("T");
-        Value::Term(kb.make_parameterized_type(base, &[(t, denoted)]))
+        let sp = SourceSpan::new(SourceId::from_raw(0), 0, 0);
+        let denoted = kb.make_denoted_occ_ref(resource, sp, None);
+        Value::Node(kb.make_parameterized_occ(
+            TypeChild::Ground(base),
+            vec![(t, TypeChild::Node(denoted))],
+            sp,
+            None,
+        ))
     }
 
     fn resources(kb: &KnowledgeBase, row: &[Value]) -> HashSet<Symbol> {

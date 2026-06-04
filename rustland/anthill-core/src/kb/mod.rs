@@ -2759,33 +2759,6 @@ impl KnowledgeBase {
         self.alloc(Term::Ref(sort_sym))
     }
 
-    /// `denoted(value: <term>)` — a value standing in a type-argument position
-    /// (WI-302), the GROUND (hash-consed) carrier. Mirrors reflect
-    /// `TypeExtractor.Denoted`. The `value` is the term-form of the carried value.
-    ///
-    /// WI-366: **test-only.** Every production value-in-type now mints a
-    /// `Value::Node` `denoted` occurrence via [`Self::make_denoted_occ`] — the
-    /// typer (WI-342 T1–T7), the loader's value positions (entity fields, op
-    /// signature, call type-args, via `type_expr_to_child`/`type_expr_to_value`),
-    /// and the sort-relation facts (`SortAlias` / `SortView` `requires` / fact
-    /// `provides`, via `type_expr_to_value` / `sort_inst_to_value`). No production
-    /// caller builds a ground `denoted`, so this is `#[cfg(test)]` — retained only
-    /// for the cross-carrier fixtures that unify/subtype a ground `denoted`
-    /// against its `Value::Node` twin (region.rs `modify_label`, the WI-342
-    /// mod.rs test, the typing.rs cross-carrier tests).
-    #[cfg(test)]
-    pub fn make_denoted(&mut self, value: TermId) -> TermId {
-        let denoted_sym = self.resolve_symbol("anthill.prelude.TypeExtractor.Denoted");
-        let value_key = self.intern("value");
-        let mut named_args: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
-        named_args.push((value_key, value));
-        self.alloc(Term::Fn {
-            functor: denoted_sym,
-            pos_args: SmallVec::new(),
-            named_args,
-        })
-    }
-
     // ── WI-342: Value-carried (occurrence) type builders ───────────────
     //
     // Peers of the `make_*` `TermId` builders above, producing the
@@ -2800,7 +2773,8 @@ impl KnowledgeBase {
     /// `denoted(value: NodeOccurrence)` carried as a Type occurrence
     /// (`TypeNode::Denoted`). `value` is the carried source content — for
     /// `Modify[c]` an `Expr::Ref(c)` occurrence (see [`Self::make_denoted_occ_ref`]).
-    /// Occurrence-form peer of [`Self::make_denoted`].
+    /// The SOLE `denoted` builder: every production value-in-type rides as this
+    /// `Value::Node` occurrence (WI-366 retired the ground `TermId` `denoted`).
     pub fn make_denoted_occ(
         &self,
         value: Rc<NodeOccurrence>,
@@ -4462,7 +4436,7 @@ mod tests {
         // the identity-bearing occurrence the producer built.
         use crate::kb::load::register_prelude;
         use crate::kb::node_occurrence::{Expr, TypeChild, TypeNode};
-        use crate::kb::term_view::{TermIdView, TermView, ViewHead, ViewItem};
+        use crate::kb::term_view::{TermView, ViewHead, ViewItem};
         use crate::span::{SourceId, SourceSpan};
 
         let mut kb = KnowledgeBase::new();
@@ -4475,16 +4449,12 @@ mod tests {
         let param_ty = kb.make_sort_ref_by_name("Cell");
         let result_ty = kb.make_sort_ref_by_name("Unit");
 
-        // ── TermId twin: interns the field keys + yields reference functors. ──
+        // `modify_base` and `empty_row_tid` are ground children the Value-carried
+        // spine reuses below. WI-366: the former ground "TermId twin" of the whole
+        // arrow (built via the retired `make_denoted`) is gone — production never
+        // builds a ground `denoted`, so the cross-carrier identity comparison it
+        // fed was dead-path; the Value-form reads below stand on their own.
         let modify_base = kb.make_sort_ref(modify_sym);
-        let c_ref = kb.alloc(Term::Ref(c_sym));
-        let denoted_term = kb.make_denoted(c_ref);
-        let modify_param = kb.make_parameterized_type(modify_base, &[(t_sym, denoted_term)]);
-        let absent_term = kb.make_effect_expression_absent(modify_param);
-        // `make_arrow_type` folds the effect list into the canonical
-        // `effects_rows(merge(absent(...), empty_row))` — the exact spine the
-        // Value form mirrors below.
-        let arrow_term = kb.make_arrow_type(param_ty, result_ty, &[absent_term]);
         let empty_row_tid = kb.make_effect_expression_empty_row();
 
         let arrow_sym = kb.resolve_symbol("anthill.prelude.TypeExtractor.Arrow");
@@ -4530,10 +4500,9 @@ mod tests {
             _ => None,
         };
 
-        // Carrier identity: the Value-form arrow head matches its TermId twin.
+        // Carrier identity: the Value-form arrow head is the `Arrow` functor.
         let head = arrow_occ.head(&kb);
         assert_eq!(functor_of(&head), Some(arrow_sym));
-        assert_eq!(functor_of(&head), functor_of(&TermIdView(arrow_term).head(&kb)));
         assert!(
             matches!(head, ViewHead::Functor { named_arity: 3, pos_arity: 0, .. }),
             "arrow exposes param/result/effects, got {head:?}",
@@ -4568,11 +4537,6 @@ mod tests {
         // and the binding `T` reads as a named arg, so `TermView` reads the carrier
         // and its `Term::Fn` twin identically.
         assert_eq!(functor_of(&paramd.head(&kb)), Some(modify_sym));
-        assert_eq!(
-            functor_of(&paramd.head(&kb)),
-            functor_of(&TermIdView(modify_param).head(&kb)),
-            "parameterized carrier reads the same functor as its Term::Fn twin",
-        );
         assert!(
             matches!(paramd.head(&kb), ViewHead::Functor { named_arity: 1, pos_arity: 0, .. }),
             "parameterized exposes its single binding T as a named arg, got {:?}",

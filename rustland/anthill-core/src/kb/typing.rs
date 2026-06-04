@@ -12070,49 +12070,12 @@ mod p3_tests {
         }
     }
 
-    /// `denoted` unifies cross-carrier by its `Ref` symbol: ground `denoted(Ref c)`
-    /// vs `Value`-carried `denoted(Ref c)` succeeds; vs `Ref d` fails; Node vs Node
-    /// succeeds for the same symbol.
-    #[test]
-    fn cross_carrier_denoted_unify() {
-        let mut kb = kb_with_prelude();
-        let c = kb.intern("c");
-        let d = kb.intern("d");
-        let c_ref = kb.alloc(Term::Ref(c));
-        let ground_c = kb.make_denoted(c_ref);
-        let occ_c = kb.make_denoted_occ_ref(c, span(), None);
-        let occ_d = kb.make_denoted_occ_ref(d, span(), None);
-
-        let mut s = Substitution::new();
-        assert!(unify_types(&mut kb, &mut s, &TermIdView(ground_c), &occ_c), "ground c vs occ c");
-        let mut s2 = Substitution::new();
-        assert!(!unify_types(&mut kb, &mut s2, &TermIdView(ground_c), &occ_d), "c vs d differ");
-        let occ_c2 = kb.make_denoted_occ_ref(c, span(), None);
-        let mut s3 = Substitution::new();
-        assert!(unify_types(&mut kb, &mut s3, &occ_c, &occ_c2), "occ c vs occ c");
-    }
-
-    /// Regression: two ground `denoted(Ref c)` hash-cons to one TermId and unify
-    /// via the identity fast-path; distinct refs fail via the new `denoted` arm —
-    /// i.e. the label-site behavior is unchanged for the all-`TermId` case.
-    #[test]
-    fn ground_denoted_unchanged() {
-        let mut kb = kb_with_prelude();
-        let c = kb.intern("c");
-        let d = kb.intern("d");
-        let cref = kb.alloc(Term::Ref(c));
-        let dc1 = kb.make_denoted(cref);
-        let cref2 = kb.alloc(Term::Ref(c));
-        let dc2 = kb.make_denoted(cref2);
-        assert_eq!(dc1, dc2, "ground denoted(Ref c) hash-cons to one TermId");
-        let dref = kb.alloc(Term::Ref(d));
-        let dd = kb.make_denoted(dref);
-
-        let mut s = Substitution::new();
-        assert!(unify_types(&mut kb, &mut s, &TermIdView(dc1), &TermIdView(dc2)));
-        let mut s2 = Substitution::new();
-        assert!(!unify_types(&mut kb, &mut s2, &TermIdView(dc1), &TermIdView(dd)));
-    }
+    // WI-366: `cross_carrier_denoted_unify` / `ground_denoted_unchanged` deleted
+    // with `make_denoted` — they built a GROUND `denoted` term, a carrier no
+    // production path produces (every value-in-type mints a `Value::Node` via
+    // `make_denoted_occ`). The live Node-denoted unify is covered by
+    // `value_value_parameterized_denoted_unify`; mixed TermId-vs-Node dispatch by
+    // `occurs_check_var_in_node_tuple_field`.
 
     /// `bind_value` contradiction via the extended `occurrence_structural_eq`:
     /// binding a var twice to structurally-equal (distinct `Rc`) Value-carried
@@ -12314,7 +12277,6 @@ mod p4_tests {
     //! WI-342 P4-A — carrier-agnostic structural unification of a
     //! `Value`-carried `parameterized` (the denoted-bearing effect label),
     //! standalone (not yet inside a row — that's P4-B).
-    use super::types_compatible;
     use super::unify_types;
     use crate::kb::load::register_prelude;
     use crate::kb::node_occurrence::{NodeOccurrence, TypeChild};
@@ -12333,14 +12295,6 @@ mod p4_tests {
 
     fn span() -> SourceSpan {
         SourceSpan::new(SourceId::from_raw(0), 0, 1)
-    }
-
-    /// Ground `parameterized(sort_ref(Modify), [p = denoted(Ref sym)])`.
-    fn ground_param(kb: &mut KnowledgeBase, modify: crate::intern::Symbol, p: crate::intern::Symbol, sym: crate::intern::Symbol) -> TermId {
-        let cref = kb.alloc(Term::Ref(sym));
-        let denoted = kb.make_denoted(cref);
-        let base = kb.make_sort_ref(modify);
-        kb.make_parameterized_type(base, &[(p, denoted)])
     }
 
     /// `Value`-carried `parameterized(sort_ref(Modify), [p = denoted(Ref sym)])`
@@ -12388,33 +12342,6 @@ mod p4_tests {
         );
     }
 
-    /// Cross-carrier: ground `Modify[c]` unifies with `Value`-carried
-    /// `Modify[c]` (base by identity, binding value by the denoted Ref-compare);
-    /// `Modify[c]` vs `Modify[d]` is rejected.
-    #[test]
-    fn cross_carrier_parameterized_denoted_unify() {
-        let mut kb = kb_with_prelude();
-        let modify = kb.intern("Modify");
-        let p = kb.intern("resource");
-        let c = kb.intern("c");
-        let d = kb.intern("d");
-
-        let ground = ground_param(&mut kb, modify, p, c);
-        let occ_c = occ_param(&mut kb, modify, p, c);
-        let mut s = Substitution::new();
-        assert!(
-            unify_types(&mut kb, &mut s, &TermIdView(ground), &occ_c),
-            "ground Modify[c] vs Value Modify[c]"
-        );
-
-        let occ_d = occ_param(&mut kb, modify, p, d);
-        let mut s2 = Substitution::new();
-        assert!(
-            !unify_types(&mut kb, &mut s2, &TermIdView(ground), &occ_d),
-            "Modify[c] vs Modify[d] differ"
-        );
-    }
-
     /// Value-vs-Value: two distinct-`Rc` `Value`-carried `Modify[c]` unify;
     /// `Modify[c]` vs `Modify[d]` is rejected.
     #[test]
@@ -12433,25 +12360,6 @@ mod p4_tests {
         let occ_d = occ_param(&mut kb, modify, p, d);
         let mut s2 = Substitution::new();
         assert!(!unify_types(&mut kb, &mut s2, &occ_c1, &occ_d), "Value Modify[c] vs Value Modify[d]");
-    }
-
-    /// A different base sort makes the parameterized types disagree even when
-    /// the binding values match (`Modify[c]` vs `Read[c]`).
-    #[test]
-    fn parameterized_distinct_base_rejected() {
-        let mut kb = kb_with_prelude();
-        let modify = kb.intern("Modify");
-        let read = kb.intern("Read");
-        let p = kb.intern("resource");
-        let c = kb.intern("c");
-
-        let ground = ground_param(&mut kb, modify, p, c);
-        let occ_read = occ_param(&mut kb, read, p, c);
-        let mut s = Substitution::new();
-        assert!(
-            !unify_types(&mut kb, &mut s, &TermIdView(ground), &occ_read),
-            "Modify[c] vs Read[c] differ on base"
-        );
     }
 
     /// `Value`-carried arrow `Unit -> Unit` with a single present effect label
@@ -12474,137 +12382,6 @@ mod p4_tests {
             span(),
             None,
         )
-    }
-
-    /// The headline P4-B target: a ground arrow `Unit -> Unit {Modify[c]}`
-    /// unifies cross-carrier with its `Value`-carried twin *through the row
-    /// machinery* (decompose → pair present labels → denoted Ref-compare);
-    /// `{Modify[c]}` vs `{Modify[d]}` is rejected at the effect label.
-    #[test]
-    fn cross_carrier_modify_c_arrow_unifies_through_rows() {
-        let mut kb = kb_with_prelude();
-        let modify = kb.intern("Modify");
-        let p = kb.intern("resource");
-        let c = kb.intern("c");
-        let d = kb.intern("d");
-        let unit = kb.intern("Unit");
-        let unit_ref = kb.make_sort_ref(unit);
-
-        let ground_label = ground_param(&mut kb, modify, p, c);
-        let ground_arrow = kb.make_arrow_type(unit_ref, unit_ref, &[ground_label]);
-
-        let value_arrow_c = value_modify_arrow(&mut kb, modify, p, unit_ref, c);
-        let mut s = Substitution::new();
-        assert!(
-            unify_types(&mut kb, &mut s, &TermIdView(ground_arrow), &value_arrow_c),
-            "ground Unit->Unit {{Modify[c]}} vs Value-carried twin (through rows)"
-        );
-
-        let value_arrow_d = value_modify_arrow(&mut kb, modify, p, unit_ref, d);
-        let mut s2 = Substitution::new();
-        assert!(
-            !unify_types(&mut kb, &mut s2, &TermIdView(ground_arrow), &value_arrow_d),
-            "{{Modify[c]}} vs {{Modify[d]}} effect rows differ"
-        );
-    }
-
-    /// P4-B2 lockstep: the subtype direction (`types_compatible`) agrees with
-    /// unify on a Value-carried arrow. A ground `Unit -> Unit {Modify[c]}` and
-    /// its Value-carried twin are mutually compatible (equal effect sets), both
-    /// directions, through `arrow_compatible_view` → `subtype_effect_rows` →
-    /// cover present labels → denoted Ref-compare; `{Modify[c]}` vs `{Modify[d]}`
-    /// is rejected.
-    #[test]
-    fn cross_carrier_modify_c_arrow_subtype_lockstep() {
-        let mut kb = kb_with_prelude();
-        let modify = kb.intern("Modify");
-        let p = kb.intern("resource");
-        let c = kb.intern("c");
-        let d = kb.intern("d");
-        let unit = kb.intern("Unit");
-        let unit_ref = kb.make_sort_ref(unit);
-
-        let ground_label = ground_param(&mut kb, modify, p, c);
-        let ground_arrow = kb.make_arrow_type(unit_ref, unit_ref, &[ground_label]);
-        let value_arrow_c = value_modify_arrow(&mut kb, modify, p, unit_ref, c);
-
-        let mut s = Substitution::new();
-        assert!(
-            types_compatible(&mut kb, &mut s, &TermIdView(ground_arrow), &value_arrow_c),
-            "ground {{Modify[c]}} <: Value {{Modify[c]}}"
-        );
-        let mut s2 = Substitution::new();
-        assert!(
-            types_compatible(&mut kb, &mut s2, &value_arrow_c, &TermIdView(ground_arrow)),
-            "Value {{Modify[c]}} <: ground {{Modify[c]}}"
-        );
-
-        let value_arrow_d = value_modify_arrow(&mut kb, modify, p, unit_ref, d);
-        let mut s3 = Substitution::new();
-        assert!(
-            !types_compatible(&mut kb, &mut s3, &TermIdView(ground_arrow), &value_arrow_d),
-            "{{Modify[c]}} not <: {{Modify[d]}}"
-        );
-    }
-
-    /// WI-342 collection migration: a `Value::Node` `named_tuple` with a poisoned
-    /// (Node-arrow) field — `(f: Unit -> Unit {Modify[c]}, n: Int)` — unifies and
-    /// is mutually compatible with its ground twin CROSS-CARRIER, through the
-    /// native carrier-agnostic `named_tuple` view arms (`unify_named_tuple` /
-    /// `named_tuple_compatible` read each carrier's fields via `named_tuple_fields`;
-    /// no re-grounding bridge). A different field effect (`{Modify[d]}`) is rejected.
-    /// (Surface syntax can't express a tuple-of-lambda *type* annotation, so this
-    /// exercises the new `make_named_tuple_occ` / `TypeNode::NamedTuple` path
-    /// directly.)
-    #[test]
-    fn cross_carrier_named_tuple_with_node_field() {
-        let mut kb = kb_with_prelude();
-        let modify = kb.intern("Modify");
-        let p = kb.intern("resource");
-        let c = kb.intern("c");
-        let d = kb.intern("d");
-        let unit = kb.intern("Unit");
-        let unit_ref = kb.make_sort_ref(unit);
-        let int = kb.intern("Int");
-        let int_ref = kb.make_sort_ref(int);
-        let f = kb.intern("f");
-        let n = kb.intern("n");
-
-        // ground named_tuple `(f: Unit -> Unit {Modify[c]}, n: Int)`
-        let ground_label = ground_param(&mut kb, modify, p, c);
-        let ground_arrow = kb.make_arrow_type(unit_ref, unit_ref, &[ground_label]);
-        let ground_tuple = kb.make_named_tuple_type(&[(f, ground_arrow), (n, int_ref)]);
-
-        // Value-carried twin: the `f` field is a Node arrow (poisoned spine).
-        let value_arrow_c = value_modify_arrow(&mut kb, modify, p, unit_ref, c);
-        let value_tuple_c = kb.make_named_tuple_occ(
-            vec![(f, TypeChild::Node(value_arrow_c)), (n, TypeChild::Ground(int_ref))],
-            span(),
-            None,
-        );
-
-        let mut s = Substitution::new();
-        assert!(
-            unify_types(&mut kb, &mut s, &TermIdView(ground_tuple), &value_tuple_c),
-            "ground tuple vs Value-carried twin (Node arrow field) — via the bridge"
-        );
-        let mut s2 = Substitution::new();
-        assert!(
-            types_compatible(&mut kb, &mut s2, &value_tuple_c, &TermIdView(ground_tuple)),
-            "Value tuple <: ground tuple"
-        );
-
-        let value_arrow_d = value_modify_arrow(&mut kb, modify, p, unit_ref, d);
-        let value_tuple_d = kb.make_named_tuple_occ(
-            vec![(f, TypeChild::Node(value_arrow_d)), (n, TypeChild::Ground(int_ref))],
-            span(),
-            None,
-        );
-        let mut s3 = Substitution::new();
-        assert!(
-            !unify_types(&mut kb, &mut s3, &TermIdView(ground_tuple), &value_tuple_d),
-            "tuple field {{Modify[c]}} vs {{Modify[d]}} differ"
-        );
     }
 
     /// WI-361: a `Value::Node` named tuple now exposes the SAME single `fields`
