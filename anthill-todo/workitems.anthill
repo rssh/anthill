@@ -2867,3 +2867,11 @@ fact WorkItem(
   depends_on: [],
   status: Open)
 
+fact WorkItem(
+  id: "WI-378",
+  description: "Unify rule var-collection (renumbered off origin's parallel WI-377/effect-row collision). Kill the 4-way lockstep over an Expr's embedded type-fields (Apply.type_args / ApplyWithin.type_args / Let.type_annotation, holding Values): collect/close/open/substitute each special-case them; close+open share carrier-agnostic close_value_type/open_value_type but COLLECT re-implemented a bespoke Term-only walk held in manual lockstep ('CRUCIAL: must mirror node_to_debruijn'). STEP 1 DELIVERED (a96a55f, behavior-preserving): collect_value_type/collect_type_args_vars/collect_option_value twins of close_*; collect_expr_termid_field_vars delegates -> structural mirror, not hand-maintained. STEP 2 (follow-on): wire gap 1 (WI-342-P3 Type-occurrence var-walk) so collect/close walk INTO a Type occ, then migrate type_args/type_annotation to occurrence-children -> one carrier-agnostic walk replaces the collect_vars_rec(term-head)/collect_occurrence_global_vars_ordered(occ-body) pair; touches the typer + Expr repr; also unblocks denoted value rule heads (WI-373 gap 1). User-chosen 'both sequenced' 2026-06-04. Surfaced reviewing WI-373. Rust-only.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: [],
+  status: Open)
+
+fact Feedback(content: "STEP 1 DELIVERED 2026-06-04 (a96a55f): collect side now structurally mirrors close via collect_value_type (twin close_value_type) + collect_type_args_vars (twin close_type_args; _vars avoids the existing reflect collect_type_args) + collect_option_value (twin close_option_value). Behavior-identical (Value::Term->collect_vars_rec, else nothing); Value::Node skip consistent with close_value_type's node_to_debruijn no-op on a Type occ. node_occurrence.rs only; 1439 green (incl origin WI-375 tests); /code-review 0 findings. STEP 2 = gap 1 (Type-occ walk) + type-field->occurrence-children migration; couples with WI-373 gap 1 + typer.", at: "2026-06-04T06:24:49Z", workitem: "WI-378", author: "user")
