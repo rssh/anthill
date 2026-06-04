@@ -110,6 +110,22 @@ Without per-operation type-parameter declarations, `E` here would have to be eit
 
 ## Design
 
+An operation introduces a small **environment of logical variables** — its type
+parameters `[T]` — and the rest of this section is facets of that one
+environment, not separate features:
+
+- it is **inferred bidirectionally** — synthesized from the arguments, then
+  checked against the expected return (§"Resolution at a call" / "Inference
+  order");
+- a variable is introduced **explicitly** as `[T]`, or **implicitly** by a
+  sort-carried projection `X.L`, which mints one *and* adds a `requires X[L =
+  Ti]` (§"Type projections");
+- the bound variables **parameterize the `requires`** the operation carries —
+  they set the bindings its requirement dictionaries are constructed at
+  (`operation-call-model.md`).
+
+`[T]`, type projections, and `requires` are three faces of the same environment.
+
 ### Declaration-site syntax
 
 Extend the `Operation` production with an optional bracketed type-parameter list, immediately after the name:
@@ -227,20 +243,50 @@ This is the same grammar already accepted in proposal 035 for sort companions �
 
 **Disambiguation.** `Name[...]` followed by `(` is a typed call. `Name[...]` followed by `.` is a sort-companion call (proposal 035). `Name[...]` followed by neither is an instantiation term (proposal 020). The three uses share the same lexical prefix and disambiguate on the following token — no new ambiguity introduced.
 
-### Typer: three-way resolution (parallel to 035)
+### Typer: resolution at a call
 
 When the typer sees `op[bindings](args)`:
 
-1. **All parameters bound by `bindings`** — substitute and proceed to argument type-checking.
-2. **Some parameters unbound** — run HM inference for the remaining ones, using:
-   - Argument types (bottom-up from each arg).
-   - Expected return type (top-down from context — assignment LHS, function return, named arg position).
-   - `requires` constraints (treat each as a unification goal that may pin parameters).
-3. **No constraint available for an unbound parameter** — type error, with diagnostic naming the unconstrained parameter. The user can supply it explicitly via `op[T = ...](args)`.
+1. **Explicit `bindings` first** — substitute the parameters the caller pinned via `op[T = …]`; the rest go through inference.
+2. **Inference for the remaining parameters is *bidirectional*** — the three sources are consulted in a **fixed order**, not as one symmetric constraint set (detailed in the next section, "Inference order"):
+   - **arguments** synthesize the parameters (bottom-up, including across a provider boundary);
+   - the **expected return** then fills only *still-free* parameters (top-down — assignment LHS, function return, argument position) — never overriding an arg-bound one;
+   - **`requires`** constraints are discharged as goals that may pin any still-free parameter.
+3. **No source pins an unbound parameter** — type error naming it; the caller supplies it via `op[T = …](args)`.
 
-When the typer sees `op(args)` (no explicit bindings), case (1) reduces to case (2)/(3) — every parameter goes through inference.
+`op(args)` (no explicit bindings) is just case (1) with an empty bindings list — every parameter goes through inference. The shape parallels 035's `Map.empty()` resolution; the generalizations are that an operation has its own bindings table, and that the three sources are **ordered** (arguments before expected) — which 035's symmetric account left unstated.
 
-This is the same algorithm 035 specifies for `Map.empty()`; the only generalization is "an operation has its own bindings table separate from any enclosing sort".
+### Inference order: arguments before expected (bidirectional)
+
+Step 2's three constraint sources are not symmetric — their **order is fixed**, and the rule is **bidirectional** (synthesize up from arguments, then check against the expected):
+
+1. **Synthesize from the arguments first.** Bind each parameter from the argument types (bottom-up) — *including across a provider boundary*: a `List[Int]` argument supplied where a `Stream[T = A]` parameter is declared binds `A := Int` through `List`-provides-`Stream` (the carrier's provider fact threads the binding; `Stream[T = A]` viewed against `List[Int]`-as-a-`Stream`).
+2. **The expected return type fills only *still-free* parameters** — never overrides one the arguments already bound. `empty() : List[A]` (no arguments) still takes `A` from the expected; `id_list[A](xs: List[A]) -> List[A]` on a `List[Int]` does **not** let an expected `List[String]` re-bind `A`.
+3. **Check** the synthesized result against the expected (the conformance check at the call's use site — operation return, typed `let`, argument position).
+
+This ordering is a **soundness requirement**, not an optimization. Reversed — expected seeding parameters *before* arguments — a wrong declared return is silently accepted: `id_list(List[Int])` assigned to `List[String]` would pin `A := String` from the expected, the contradicting argument `List[Int]` would be ignored, and the unsound result would survive. Arguments-first pins `A := Int`; the expected `List[String]` then cannot re-bind the now-pinned `A`, and the result `List[Int]` is correctly rejected.
+
+The kernel today does the reverse — `rustland/anthill-core/src/kb/typing.rs` (`check_apply_iter`) seeds parameters from the expected return *before* argument unification, with the correct order patched in only as a special case for self-receiver spec operations (WI-367). Making **arguments-before-expected** the general rule generalizes that fix, and is the load-bearing piece for sound `[T]` inference. See [`docs/design/type-parameter-scoping.md`](../design/type-parameter-scoping.md) for the surrounding rule set (projection `s.T` / `s.Sort`, expansion, no implicit sort-parameter sharing).
+
+### Type projections (`s.T`, `s.Sort`, `X.L`) — and why the sort-carried form is an `[T]`
+
+A **type projection** reads a type member off a path. There are two forms with two distinct meanings — and one of them *is* an operation type parameter, which is why it belongs here.
+
+**Expression-carried `s.T` / `s.Sort`** — `s` is a *value* (a parameter or local). `s.T` is the named type member `T` of `s`'s static type; `s.Sort` is `s`'s whole parameterized sort (`= Stream[s.T, s.E]`). It elaborates to a fresh `Ti` plus the **constraint** `Ti = typeof(s).T`, discharged the moment `s` is synthesized (bidirectional, §"Inference order"). `Ti` is *determined* by `s` — it is **not** a free operation type parameter; this is a synthesis-time constraint, not an `[T]`. Used to thread a producer's element fluently: `iterator(l: List) -> Stream[T = l.T]`. (Surface + elimination: WI-376.)
+
+**Sort-carried `X.L`** — `X` is a *sort* (a type), `L` one of its parameters. This **is sugar for an operation type parameter plus a requirement**:
+
+```
+f(..., p: X.L, ...)   ≡   f[Ti](..., p: Ti, ...)  requires X[L = Ti]
+```
+
+`X.L` mints a *fresh, free* `Ti` (the operation becomes polymorphic in it — an anonymous `[Ti]`) and synthesizes `requires X[L = Ti]` (the caller must supply an `X` whose `L` is that `Ti`). Many members extend trivially:
+
+```
+... X.L1 ... X.L2 ...   ≡   [Ti1, Ti2]  requires X[L1 = Ti1, L2 = Ti2]
+```
+
+This is the F-ω / Scala `X#L` abstract-type-member encoding: an abstract type member becomes a fresh variable bounded by a requirement. The synthesized `Ti` flows like any operation type parameter (inferred per §"Inference order", threaded through `frame.requirements`), and the generated requirement materializes exactly as any other (`construct_requirement`; `operation-call-model.md`). So **sort-carried projection adds no new machinery** — it desugars onto the operation-type-parameter + requirement channels this proposal and operation-call-model already define. (The grammar parses both — a dotted name in type position, same CST as a qualified ref; the loader classifies by `SymbolKind`: value head → expression-carried, sort + member → sort-carried. Elimination: WI-376.)
 
 ### Worked example: `term_as_entity`
 
@@ -334,6 +380,8 @@ end
 ```
 
 `K` and `V` are still resolved through the sort's scope; `F` is resolved through `merge_with`'s own bindings table. Same lookup mechanism, two bind sites.
+
+**Where they touch.** A sort-carried projection `X.L` (§"Type projections") is the one form that does both: it is an operation-level *introduction* (`[Ti]`) that *also* emits a `requires X[L = Ti]`. That isn't the sort-`requires` case — it's the introduction site generating its own requirement, not a quantification over already-declared sort parameters — but it is where introduction and requirement coincide in a single piece of syntax.
 
 ## Grammar Changes (tree-sitter)
 
@@ -474,6 +522,7 @@ Implicit-form signatures already in stdlib (e.g. `operation identity(x: ?T) -> ?
 - **Inference-quality diagnostics.** Once explicit and implicit forms compose with HOFs and `requires` chains, ambiguity reports may need polish (which parameter is unconstrained, where does it appear, what context could pin it). Tooling work, not blocking.
 - **Sort-companion ↔ free-standing-op unification at the call site.** `Map[K, V].empty()` and `empty[K, V]()` are different surfaces today (one is sort-companion dispatch, the other is namespace call). They could share more machinery — orthogonal.
 - **Operation-level variance annotations.** Variance lives at the sort level (035 §Variance). No analogue is needed at the operation level for the cases this proposal addresses.
+- **The inference engine itself.** This proposal's bidirectional inference is hand-rolled in `check_apply_iter` (WI-379). Its principled home is typing-as-constraints solved over a **per-sort unification framework** (CLP) — `future/unification-framework.md`, the substrate WI-010 wants. Long-horizon; orthogonal to landing `[T]`.
 
 ## Acceptance
 
@@ -490,3 +539,5 @@ Implicit-form signatures already in stdlib (e.g. `operation identity(x: ?T) -> ?
 **OQ2.** *(closed — the section above resolves this.)* The two surfaces (`[T]` declaration with bare references vs. `?T` logical variables) are independent kernel features. An operation's author picks one. Mixing same-letter cases (`operation foo[T](x: ?T)`) is grammatically admissible but means two distinct vars (declared `T` and logical `?T`) — almost certainly an author mistake; a linter should flag it.
 
 **OQ3.** *Defaults — useful or noise?* `operation foo[T = Int](x: T) -> T` means "T defaults to Int if neither the caller nor inference fills the slot." This falls out of the unified shape (the `Name = Type` form of `SortBinding` already means this for sort instantiations); it costs nothing to allow grammatically. Open question is only whether any stdlib operation should use it for the first landing. The use case is thin — most call sites either have enough context or want explicit. Recommend: allow grammatically, no stdlib adoption in the first landing, revisit if a concrete driver appears.
+
+**OQ4.** *(specified elsewhere — cross-reference, not open here.)* Two pieces this proposal leans on are detailed outside it: **cross-sort parameter inference** (binding `[T]` from a `List[Int]` argument used where a `Stream[T]` is expected, via provider admissibility) — **WI-379**; and **projection cross-dependency strictness** (resolution order, cycle / missing-member / abstract-receiver loud errors) — **WI-376** and [`docs/design/type-parameter-scoping.md`](../design/type-parameter-scoping.md).

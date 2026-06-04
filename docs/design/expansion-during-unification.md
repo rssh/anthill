@@ -4,6 +4,8 @@
 
 This is an **implementation design** doc, not a proposal. The rule is fixed by kernel-language §8.1; this covers *when* the typer starts expansion, *where* it applies (and where it deliberately does not), and *how* it mints variables. Several points are marked **verify** — open questions to settle against the current typer before coding WI-374.
 
+> **Superseded framing (2026-06-04).** §5's *element threading by within-signature sort-parameter sharing* — "`collect`'s `s` and its return both *are* `Stream.T`" — is **withdrawn**. The element/effect of a value `s` is a **projection off the value** (`s.T` / `s.E` / `s.Sort`, WI-376) or an **operation type parameter** ([042](../proposals/042-explicit-type-parameters-on-operations.md)), **never** a shared `Stream.T`. Threading is always *written*; there is no implicit sort-parameter sharing across a signature. See [`type-parameter-scoping.md`](type-parameter-scoping.md) for the decided rules. Consequently the §2/§6.1/§7 "per-call sort-param scheme substrate" is **not** a separate prerequisite — operation type parameters are already per-call — and WI-374's bare-reference expansion (§4 case 1) is a *convenience*, not the load-bearing thread mechanism.
+
 **Design-dialogue update (2026-06-03).** The earlier *side-channel* framing is **withdrawn**. Guiding principle (§5): type-checking depends on the **type, not on provenance** — neither the enclosing scope's `T` (name-fill) nor a recorded producer (a side-channel "sticker") may steer it, since two values of one type must check alike and `List`/`Stream` are different structures bridged only by a *declared* `fact Stream[T = T]`. Consequences threaded through the rest of this doc:
 - the element `T` must be carried **in the type** — via a shared logical variable (`iterator(l: List[T = ?t]) -> Stream[T = ?t]`) or, fluently, an **expression-carried projection** (`iterator(l: List) -> Stream[l.T]`);
 - the §1 "expand to fresh vars" rule is **one case of a general elimination at the unify boundary** (§4) that also eliminates the path-dependent projection forms `x.A` (expression-carried) and `X.L` (sort-carried);
@@ -150,3 +152,25 @@ Caching is sound only where it is **substitution-independent**. Two layers sit a
 **The boundary.** Layer 1 is fully subst-independent (the scheme mentions only the op's own bound vars). Layer 2 stores *walked* per-call results (subst-independent once resolved). The unsound option — a global `unify(A, B)` / call-result memo keyed on type-tuples — stays ruled out: results depend on the live substitution and on fresh-var generativity (two calls with "the same" argument types must still get *distinct* vars).
 
 **Net flow.** Body type-checked once → its signature normalized once into a scheme (Layer 1) → each call instantiates + unifies *its* arguments once, producing the node elaboration (Layer 2) → eval reads the node. No phase re-unifies; the only per-call cost is the single unification of this call's arguments — irreducible.
+
+## 8. Build sequence (reframed 2026-06-04)
+
+After the 2026-06-04 dialogue (§5 superseded — see [`type-parameter-scoping.md`](type-parameter-scoping.md)), the load-bearing mechanism is **not** this doc's bare-vs-bare expansion (§4 case 1) but **bidirectional inference**: threading is *written* (operation type parameters [042] or projection), and the expansion is a convenience. So the dependency graph re-roots — everything that read "depends on WI-374" really depends on **WI-379**.
+
+**Delivered foundation:** WI-307 (effect-row unification), WI-375 (written effect rows, `Stream[E = {}]`), WI-357 (element threading, concrete path), WI-365 (abstract self-typing).
+
+| # | WI | role | depends on |
+|---|----|------|-----------|
+| 1 | **WI-379** | **Foundation** — bidirectional inference (arguments-before-expected + cross-sort binding); sound `[T]` inference. Subsumes WI-367. | — (reorder + generalize existing helpers in `check_apply_iter`) |
+| 2 | **WI-380** | **Stdlib rewrite** — iterator / collect / splitFirst → explicit `[Elem, Eff]` (042) + written `E` (WI-375). The concrete consumer of WI-379; closes the `?_` leak **and** threads the element. **Achieves WI-368's acceptance.** | **WI-379** (+ WI-375 ✓) |
+| 3 | **WI-368** | the *effect-grounding* statement of that same acceptance (`length(collect(List.iterator(xs)))` pure) — achieved by WI-379 + WI-380. | WI-379 (field says WI-374) |
+| 4 | **WI-376** | projection `s.T` / `s.Sort` (fluent alternative to `[Elem, Eff]`) and `X.L` (sort-carried → `[Ti]` + `requires`, desugars into 042). | WI-379 + 042 (field says WI-374) |
+| 5 | **WI-374** | **convenience** — bare-ref expansion `S ≡ S[fresh per param]` (§4 case 1); robustness for unannotated refs, threads nothing on its own (the type-not-provenance Boundary). | — (independent) |
+| 6 | **WI-381** | resolve a defined-type / alias to its shape *before* expansion / projection (§6 OQ6 verify) — prerequisite for WI-374 / WI-376 over aliases. | — (relates 011) |
+| 7 | **WI-382** / [`future/unification-framework`](../proposals/future/unification-framework.md) | **destination** — per-sort unification framework (CLP); the substrate WI-010 wants. | WI-010 |
+
+**Dependency corrections** (the todo CLI has no dep-edit; authoritative here + in WI feedback): **WI-376 and WI-368 re-root from WI-374 to WI-379.** WI-374 is a convenience and threads nothing, so nothing load-bearing may depend on it.
+
+**§6 open-question disposition.** OQ1 (fresh-var scoping) → moot under no-implicit-sharing; OQ2 (requires/provides bare = all-fresh) → WI-356 (delivered); OQ3 (effect-row close) → WI-375 (written, delivered) + WI-368 (context-close); OQ4 (projection scope) → WI-376; OQ5 (effect-row surface) → WI-375 (delivered); OQ6 (defined-type/alias resolution before expansion) → still **verify** (011), folds into WI-379 / WI-376 alias-resolution.
+
+**Minimal path to the acceptance** (`length(collect(List.iterator(xs)))` pure + element threaded): **WI-379 → WI-380** (WI-380's stdlib rewrite discharges WI-368's acceptance). WI-376 (projection), WI-374 (expansion), and WI-381 (alias resolution) are fluency / robustness / correctness-edge on top, not on the critical path; WI-382 is the long-horizon destination.
