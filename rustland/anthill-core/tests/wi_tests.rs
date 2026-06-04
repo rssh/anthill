@@ -183,3 +183,6 @@ mod wi348_operation_info_queryable_test;
 
 #[path = "include/wi379_inference_order_test.rs"]
 mod wi379_inference_order_test;
+
+#[path = "include/wi368_iterator_threading_test.rs"]
+mod wi368_iterator_threading_test;
