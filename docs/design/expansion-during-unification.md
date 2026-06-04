@@ -174,3 +174,38 @@ After the 2026-06-04 dialogue (§5 superseded — see [`type-parameter-scoping.m
 **§6 open-question disposition.** OQ1 (fresh-var scoping) → moot under no-implicit-sharing; OQ2 (requires/provides bare = all-fresh) → WI-356 (delivered); OQ3 (effect-row close) → WI-375 (written, delivered) + WI-368 (context-close); OQ4 (projection scope) → WI-376; OQ5 (effect-row surface) → WI-375 (delivered); OQ6 (defined-type/alias resolution before expansion) → still **verify** (011), folds into WI-379 / WI-376 alias-resolution.
 
 **Minimal path to the acceptance** (`length(collect(List.iterator(xs)))` pure + element threaded): **WI-379 → WI-380** (WI-380's stdlib rewrite discharges WI-368's acceptance). WI-376 (projection), WI-374 (expansion), and WI-381 (alias resolution) are fluency / robustness / correctness-edge on top, not on the critical path; WI-382 is the long-horizon destination.
+
+### Variance (WI-293, proposal 035) — a parallel soundness track, off the critical path
+
+Per-parameter variance (the typer consuming declared `Covariant` / `Contravariant`
+facts, the default flipping covariant→invariant) is **orthogonal** to threading and
+does **not reorder** the sequence — the minimal path
+(`length(collect(List.iterator(xs)))`) is all-equality (every param pinned by
+unification), so no subtyping is exercised. Three points of contact, none a reorder:
+
+- **Seam at WI-379, not a new step.** Variance lives in the *check* primitive
+  (`types_compatible` / `parameterized_compatible`) that WI-379's bidirectional step
+  already calls — so WI-293 *plugs in*, it doesn't sequence. The one constraint it
+  places on WI-379 is the invariant above (*one relation, several implementations
+  that must agree*): route arg-vs-param **and** result-vs-expected through the shared
+  primitive, so WI-293 attaches without WI-379 hand-rolling a bypassing equality.
+- **Synergy — args-before-expected is what keeps variance sound during inference.**
+  WI-379 pins the operation type parameters from the *arguments* by **equality**
+  (unification); variance is *subtyping*, a directional relation on **ground** types.
+  Because the args pin the metavariables first, variance-aware subtyping only ever
+  applies to the final ground checks (result vs expected, arg vs param) — never to
+  solving a metavariable through a `<:` constraint (the classic hard case of local
+  type inference). Expected-first seeding would push a metavariable onto a subtype
+  constraint; args-first sidesteps it. So WI-293 lands **after WI-379** and is
+  independent of WI-380 / 368 / 376 / 374 / 381.
+- **It enriches the WI-382 destination.** Variance is the *order* relation
+  (subtyping / join / meet) — the sibling of *unification* (equality) — and 035 already
+  expresses it as SLD rules over `Covariant` / `Contravariant` facts. So the per-sort
+  framework spans per-sort **ordering**, not only per-sort unification: a second
+  citizen of resolver-as-typechecker, alongside the effect-row case.
+
+The default-flip (covariant→invariant) touches the *same* shared primitive that WI-356
+provider-admissibility and WI-379 both use, so migrate it carefully (035 *Risk: existing
+tests*). (The other half of WI-293 — variance-aware `join_types` for parameterized lubs,
+`join(Option[Cat], Option[Dog]) = Option[Animal]` — is branch-lub machinery, independent
+of this whole sequence.)

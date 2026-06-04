@@ -35,6 +35,10 @@ Effects (WI-307) are the existing proof-of-concept that it must exist.
 ## To extend
 
 - the unifier interface a sort registers (monad subclass / `unify_S`);
+- the **order** relation alongside equality — per-sort subtyping / variance /
+  join-meet (proposal 035 already expresses variance as SLD rules over
+  `Covariant` / `Contravariant` facts; WI-293 consumes them), so the framework
+  dispatches per-sort *ordering* too, not only unification;
 - theory composition (Nelson–Oppen / Baader–Schulz; disjoint-signature
   decidability);
 - termination obligation; discrimination-tree indexing under non-syntactic
