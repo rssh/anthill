@@ -2942,10 +2942,36 @@ fn check_apply_iter(
                 .map(|e| substitute_ref_syms_value(kb, e, &param_to_arg_sym))
                 .collect()
         };
-        let substituted_op_effects: Vec<Value> = pre_substituted
-            .iter()
-            .map(|e| walk_type_deep_value(kb, &subst, e))
-            .collect();
+        // Walk each effect through `walk_type_deep` so arg-unification bindings
+        // propagate, then FLATTEN any element that resolved to a concrete effect-
+        // ROW wrapper. WI-375: `effects E` with E bound to a WRITTEN
+        // `effects_rows(…)` — from a producer's `Stream[E = {…}]` return threaded
+        // into a bare-`Stream` param by `unify_parameterized_with_sort_ref` —
+        // resolves to the row WRAPPER as a single effect element. Decompose it to
+        // its present labels (+ open tail) so the effect machinery (propagation,
+        // the pure-context check in `check_operation_bodies`, the WI-365 close
+        // below) sees flat labels, not the wrapper as one opaque effect (which
+        // rendered as a spurious `undeclared effect: {empty_row}`). A bare label
+        // (`Modify[c]`) or an unbound row var (the WI-365 concrete-carrier path,
+        // closed below) is not an `EffectsRows` head and passes through unchanged.
+        let mut substituted_op_effects: Vec<Value> = Vec::new();
+        for e in &pre_substituted {
+            // Deep-walk to propagate arg-unification bindings into nested effect
+            // positions, then `walk_value_to_resolved` to SURFACE a top-level var
+            // bound to a `Value::Node` — the term-deep walk stops at non-`Term`
+            // bindings (walk_type keeps the var; its doc names `walk_term_to_
+            // resolved` as the surfacing helper), so a written row threaded via
+            // `bind_value` (WI-375, the `E = {Modify[c]}` path) would otherwise
+            // leak as `?_`. The compose keeps the deep walk (for nested term vars)
+            // and adds the recursive Node surface (chained var→…→Node bindings).
+            let deep = walk_type_deep_value(kb, &subst, e);
+            let walked = walk_value_to_resolved(kb, &subst, deep);
+            if matches!(type_head(kb, &walked), TypeHead::EffectsRows) {
+                substituted_op_effects.extend(effect_row_present_values(kb, &walked));
+            } else {
+                substituted_op_effects.push(walked);
+            }
+        }
         // `mut`: a concretely-dispatched self-receiver spec op closes its
         // polymorphic effect row at the carrier below (WI-357).
         let mut effects = merge_effects(&substituted_op_effects, &arg_effects);
@@ -7985,20 +8011,45 @@ fn unify_parameterized_with_sort_ref<P: TermView, S: TermView>(
     }
 
     for (psym, value) in &bindings {
-        // Only term-carried binding values bind a `TermId` alias Var; a
-        // `Value::Node` (denoted-bearing) binding has no alias-Var target here.
-        let Value::Term(value) = value else { continue };
+        // Classify the binding value up front so the `format!` + symbol-resolve
+        // below runs ONLY for a value that actually binds the alias Var. Two bind:
+        //  - a ground (`Value::Term`) value;
+        //  - WI-375: a Node-carried EFFECT-ROW — a WRITTEN row `E = {Modify[c]}`
+        //    whose `effects_rows(…)` carries the `c` occurrence (the whole binding
+        //    is a `Value::Node`). Bound via `bind_value` so the row threads into a
+        //    bare-`Stream` consumer param instead of being dropped, which left `E`
+        //    an unresolved `?_` that leaked as a spurious `undeclared effect`.
+        // Every other carrier (a non-effect-row value-in-type `Value::Node` — a
+        // denoted `Vector[Int, 3]` size — a `Var`, a scalar) binds nothing here:
+        // skip it without the symbol work (the pre-WI-375 leading-`continue`
+        // early-out). Out of WI-375 scope, those ride on their own SortRequiresInfo
+        // / SortAlias value fact (WI-366); binding them here would perturb it.
+        let is_effect_row_node = matches!(value, Value::Node(_))
+            && matches!(type_head(kb, value), TypeHead::EffectsRows);
+        if !matches!(value, Value::Term(_)) && !is_effect_row_node {
+            continue;
+        }
         let qualified = format!(
             "{}.{}",
             kb.qualified_name_of(pbase_sym),
             kb.resolve_sym(*psym),
         );
         let Some(qualified_sym) = kb.try_resolve_symbol(&qualified) else { continue };
-        if let Some(alias_target) = resolve_sort_alias(kb, qualified_sym) {
-            if let Term::Var(Var::Global(vid)) = kb.get_term(alias_target) {
-                if !occurs_in(kb, *vid, *value) {
-                    subst.bind(*vid, *value);
+        let Some(alias_target) = resolve_sort_alias(kb, qualified_sym) else { continue };
+        let Term::Var(Var::Global(vid)) = kb.get_term(alias_target) else { continue };
+        let vid = *vid;
+        match value {
+            // Ground (term-carried): bind after the occurs-check guards a cycle.
+            Value::Term(t) => {
+                if !occurs_in(kb, vid, *t) {
+                    subst.bind(vid, *t);
                 }
+            }
+            // Guaranteed an effect-row Node by `is_effect_row_node` above. (The
+            // occurs-check is term-only; a freshly-opened alias Var never occurs
+            // inside a user-written row, so no cycle arises here.)
+            _ => {
+                subst.bind_value(vid, value.clone());
             }
         }
     }

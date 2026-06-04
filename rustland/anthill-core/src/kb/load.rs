@@ -1003,6 +1003,8 @@ fn type_expr_base_name(parse_sym: &crate::intern::SymbolTable, ty: &TypeExpr) ->
         TypeExpr::Denoted(_) => "denoted".to_owned(),
         // WI-327: nested base name peeks past the absence wrapper.
         TypeExpr::EffectAbsent(inner) => type_expr_base_name(parse_sym, inner),
+        // WI-375: a written effect-row's base is the `effects_rows` bridge entity.
+        TypeExpr::EffectRow(_) => "TypeExtractor.EffectsRows".to_owned(),
     }
 }
 
@@ -1174,6 +1176,21 @@ fn build_instantiation_term(
         // `-E` here it'll surface as a malformed-name binding rather
         // than a panic.
         TypeExpr::EffectAbsent(_) => kb.make_name_term("?absent"),
+        // WI-375: a WRITTEN effect-row in this ground free-fn lowering path
+        // (`Stream[E = {}]` instantiation). Lower each element to a ground term
+        // and assemble the canonical `effects_rows(EffectExpression)` Type — the
+        // same builder the typer/loader use elsewhere. A value-in-type label
+        // (`Modify[c]`) degrades to its ground form here (this path predates
+        // occurrences; see the `Denoted` arm above), which is acceptable for the
+        // instantiation-term slot (`instantiation_term_raw`, written-never-read);
+        // the faithful occurrence form rides via `type_expr_to_child`.
+        TypeExpr::EffectRow(effects) => {
+            let effect_ts: Vec<TermId> = effects
+                .iter()
+                .map(|e| build_instantiation_term(kb, parse_sym, e, current_scope))
+                .collect();
+            kb.build_canonical_effects_rows(&effect_ts)
+        }
     }
 }
 
@@ -6122,7 +6139,64 @@ impl<'a> Loader<'a> {
                     ),
                 }
             }
+            // WI-375: a WRITTEN effect-row in a type-argument value slot
+            // (`Stream[E = {}]` / `Stream[E = {Modify[c]}]`) → the KB
+            // `effects_rows(EffectExpression)` Type (the WI-320 bridge).
+            TypeExpr::EffectRow(effects) => self.lower_effect_row(effects, span, owner),
         }
+    }
+
+    /// WI-375: lower a WRITTEN effect-row (`{}`, `{Modify[c]}`, `{A, -B}`, …)
+    /// to the KB `effects_rows(EffectExpression)` Type. A fully-ground row
+    /// (bare labels / `Modify[Int]` / `-E`, no value-in-type) assembles the
+    /// canonical hash-consed term via [`build_canonical_effects_rows`] — which
+    /// wraps each bare label in `present(…)`, keeps pre-built `absent(…)`
+    /// atoms, sorts, and dedups. A denoted-bearing label (`Modify[c]`, `c` a
+    /// value) poisons the row to the occurrence form, folded `present`/`absent`
+    /// over `empty_row` exactly like the `Arrow` arm's `effects` fold — so the
+    /// value-in-type occurrence is CARRIED, not re-grounded.
+    ///
+    /// [`build_canonical_effects_rows`]: KnowledgeBase::build_canonical_effects_rows
+    fn lower_effect_row(
+        &mut self,
+        effects: &[TypeExpr],
+        span: SourceSpan,
+        owner: Option<Symbol>,
+    ) -> node_occurrence::TypeChild {
+        use node_occurrence::TypeChild;
+        let effect_children: Vec<TypeChild> = effects
+            .iter()
+            .map(|e| self.type_expr_to_child(e, span, owner))
+            .collect();
+        let any_node = effect_children.iter().any(|c| matches!(c, TypeChild::Node(_)));
+        if !any_node {
+            // Fully ground row — `build_canonical_effects_rows` owns the
+            // present/absent wrapping + canonical ordering (the same call the
+            // ground `Arrow` arm reaches through `make_arrow_type`).
+            let effect_ts: Vec<TermId> = effect_children
+                .into_iter()
+                .map(|c| match c {
+                    TypeChild::Ground(t) => t,
+                    TypeChild::Node(_) => unreachable!("checked !any_node"),
+                })
+                .collect();
+            return TypeChild::Ground(self.kb.build_canonical_effects_rows(&effect_ts));
+        }
+        // Denoted-bearing — fold into an `effects_rows` occurrence (mirror the
+        // `Arrow` arm). `-E` is already an `absent(…)` atom from the
+        // `EffectAbsent` arm; every other element is a bare label wrapped in
+        // `present(…)`. (Source order, not canonicalized — occurrences are not
+        // hash-consed, so dedup-canonical form does not apply, as for arrows.)
+        let mut row = TypeChild::Node(self.kb.make_empty_row_occ(span, owner));
+        for (e, child) in effects.iter().zip(effect_children.into_iter()).rev() {
+            let atom = if matches!(e, TypeExpr::EffectAbsent(_)) {
+                child
+            } else {
+                TypeChild::Node(self.kb.make_present_occ(child, span, owner))
+            };
+            row = TypeChild::Node(self.kb.make_merge_occ(atom, row, span, owner));
+        }
+        TypeChild::Node(self.kb.make_effects_rows_occ(row, span, owner))
     }
 
     /// WI-366 — lower a `requires` / `provides` spec to a sort instantiation

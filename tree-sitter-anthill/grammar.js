@@ -150,11 +150,20 @@ module.exports = grammar({
       $.float_literal,
       $.string_literal,
       $.boolean_literal,
-      // EXPERIMENT (revert): braced effect-row in type-arg value, incl. empty `{}`
-      // — `Stream[E = {}]` / `Stream[E = {Modify[c]}]`. `{`-prefixed ⇒ disjoint
-      // from every `_type`; loader classifies row-vs-set by the param's kind.
-      seq('{', commaSep($._effect_type), '}'),
+      // WI-375: a WRITTEN effect-row in a type-argument value slot —
+      // `Stream[E = {}]` / `Stream[E = {Modify[c]}]`. `{`-prefixed ⇒ disjoint
+      // from every `_type`, so admitting it here is conflict-free.
+      $.effect_row,
     ),
+
+    // WI-375 (proposal 045 §2): a braced effect-row written in the
+    // `sort_binding` value slot. A NAMED node (not an inline `seq`) so the
+    // converter can recognize the braces — an inline alternative drops them in
+    // the CST, conflating `{X}` with `X` and the empty `{}` with a missing
+    // value. The empty row `{}` is included (`commaSep`, not `commaSep1`). The
+    // loader classifies row-vs-set-literal by the bound param's kind; only the
+    // effect-row use is wired (the effect-SET-as-type-argument is unbuilt).
+    effect_row: $ => seq('{', commaSep($._effect_type), '}'),
 
     export_clause: $ => seq(
       'export',

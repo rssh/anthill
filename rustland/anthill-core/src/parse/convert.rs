@@ -454,6 +454,21 @@ impl<'a> Converter<'a> {
             "arrow_type" => {
                 self.convert_arrow_type(node)
             }
+            // WI-375 (proposal 045 §2): a WRITTEN effect-row in a type-argument
+            // value slot (`Stream[E = {}]` / `Stream[E = {Modify[c]}]`). Lower
+            // each listed effect through `convert_effect_into` — identical to
+            // the arrow-effects walker — so `merge(…)` flattens and `-E` lowers
+            // to `EffectAbsent`. The empty `{}` row yields `EffectRow(vec![])`.
+            "effect_row" => {
+                let mut effect_items: Vec<Effect> = Vec::new();
+                let mut cursor = node.walk();
+                for child in node.named_children(&mut cursor) {
+                    self.convert_effect_into(child, &mut effect_items);
+                }
+                let effects: Vec<TypeExpr> =
+                    effect_items.into_iter().map(|e| e.type_expr).collect();
+                TypeExpr::EffectRow(effects)
+            }
             "integer_literal" | "float_literal" | "string_literal" | "boolean_literal" => {
                 // WI-302: a literal standing in a type-argument position
                 // (`Vector[Int, 3]`) is value-in-type → denoted(value).

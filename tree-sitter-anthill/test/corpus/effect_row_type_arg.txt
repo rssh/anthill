@@ -1,0 +1,97 @@
+==================================
+Empty effect-row in type-argument value (Stream[E = {}])
+==================================
+
+operation f(l: List) -> Stream[T = Int, E = {}]
+
+---
+
+(source_file
+  (operation_declaration
+    name: (name
+      (identifier))
+    (param
+      name: (identifier)
+      type: (simple_type
+        (name
+          (identifier))))
+    return_type: (application
+      name: (name
+        (identifier))
+      (sort_binding
+        param: (name
+          (identifier))
+        type: (simple_type
+          (name
+            (identifier))))
+      (sort_binding
+        param: (name
+          (identifier))
+        type: (effect_row)))))
+
+==================================
+Single-effect row with a value-in-type effect (Stream[E = {Modify[c]}])
+==================================
+
+operation g(c: C) -> Stream[E = {Modify[c]}]
+
+---
+
+(source_file
+  (operation_declaration
+    name: (name
+      (identifier))
+    (param
+      name: (identifier)
+      type: (simple_type
+        (name
+          (identifier))))
+    return_type: (application
+      name: (name
+        (identifier))
+      (sort_binding
+        param: (name
+          (identifier))
+        type: (effect_row
+          (application
+            name: (name
+              (identifier))
+            (sort_binding
+              type: (simple_type
+                (name
+                  (identifier))))))))))
+
+==================================
+Multi-effect row (Stream[E = {A, Modify[c]}])
+==================================
+
+operation h(c: C) -> Stream[E = {A, Modify[c]}]
+
+---
+
+(source_file
+  (operation_declaration
+    name: (name
+      (identifier))
+    (param
+      name: (identifier)
+      type: (simple_type
+        (name
+          (identifier))))
+    return_type: (application
+      name: (name
+        (identifier))
+      (sort_binding
+        param: (name
+          (identifier))
+        type: (effect_row
+          (simple_type
+            (name
+              (identifier)))
+          (application
+            name: (name
+              (identifier))
+            (sort_binding
+              type: (simple_type
+                (name
+                  (identifier))))))))))

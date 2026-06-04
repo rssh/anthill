@@ -191,6 +191,28 @@ pub enum TypeExpr {
     /// that see this variant should reject — the converter places it
     /// only in `TypeExpr::Arrow.effects` and `Operation.effects`.
     EffectAbsent(Box<TypeExpr>),
+    /// WI-375 (proposal 045 §2): a WRITTEN effect-row in a type-argument value
+    /// slot — `Stream[E = {}]`, `Stream[E = {Modify[c]}]`. The braced `{…}`
+    /// surface (grammar `effect_row` node) lowered to the elements it lists,
+    /// each an effect TypeExpr (a bare label `Simple`, an applied `Modify[c]`
+    /// `Parameterized`/`Denoted`, or a `-E` `EffectAbsent`) — the same element
+    /// shape as `Arrow.effects`. The empty row `{}` is `EffectRow(vec![])`.
+    ///
+    /// The loader lowers this to the KB `effects_rows(EffectExpression)` Type
+    /// (the WI-320 bridge), so a producer can STATE the effect row structurally
+    /// (`Stream[E = {}]` for a pure carrier). The converter places it ONLY as a
+    /// `SortBinding.bound` (the grammar admits `{…}` only in `_common_type_expr`,
+    /// the type-argument value slot).
+    ///
+    /// Row-vs-set classification: the effect-ROW reading is the only one wired —
+    /// the loader lowers every type-argument braced row to `effects_rows`. The
+    /// alternative (a SET literal value bound to a non-effects-kind param) is the
+    /// unbuilt effect-SET-as-type-argument case (proposal 045 rejected it; WI-301
+    /// superseded); a row mistakenly bound to a non-effects param is therefore
+    /// caught downstream by the typer (the `EffectsRuntime[Effects]` kind bridge
+    /// for genuine effect params; a type mismatch otherwise), not reclassified
+    /// as a set here.
+    EffectRow(Vec<TypeExpr>),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]

@@ -363,6 +363,10 @@ impl<'a> RustCodegen<'a> {
             // codegen of effect rows is not implemented, so emit `()`
             // identically to Denoted/effect-bearing arrows.
             TypeExpr::EffectAbsent(_) => "()".to_owned(),
+            // WI-375: a written effect-row (`{}` / `{Modify[c]}`). An effect
+            // annotation, not a value-carrying Rust type — emit `()` like the
+            // effect-bearing arrow / absence forms above.
+            TypeExpr::EffectRow(_) => "()".to_owned(),
         }
     }
 
@@ -423,6 +427,8 @@ impl<'a> RustCodegen<'a> {
             }
             TypeExpr::Denoted(_) => "()".to_owned(),
             TypeExpr::EffectAbsent(_) => "()".to_owned(),
+            // WI-375: written effect-row — an annotation, not a Rust type.
+            TypeExpr::EffectRow(_) => "()".to_owned(),
         }
     }
 
@@ -1269,6 +1275,9 @@ fn analyze_effects(effects: &[Effect], symbols: &SymbolTable, type_params: &[Str
             TypeExpr::Denoted(_) => {}
             // WI-327: `-E` doesn't contribute Modify/Error analysis.
             TypeExpr::EffectAbsent(_) => {}
+            // WI-375: a written effect-row in a type-arg slot is not an
+            // operation effects-clause — no Modify/Error contribution here.
+            TypeExpr::EffectRow(_) => {}
         }
     }
 
@@ -1312,6 +1321,7 @@ fn should_collapse_self(info: &SortInfo, symbols: &SymbolTable) -> bool {
             TypeExpr::Arrow { .. } => "Fn".to_owned(),
             TypeExpr::Denoted(_) => "Denoted".to_owned(),
             TypeExpr::EffectAbsent(_) => "EffectAbsent".to_owned(),
+            TypeExpr::EffectRow(_) => "EffectRow".to_owned(),
         };
 
         if first_type != *param_name {
@@ -1410,6 +1420,7 @@ fn type_expr_name(symbols: &SymbolTable, ty: &TypeExpr) -> String {
         TypeExpr::Arrow { .. } => "Fn".to_owned(),
         TypeExpr::Denoted(_) => "Denoted".to_owned(),
         TypeExpr::EffectAbsent(_) => "EffectAbsent".to_owned(),
+        TypeExpr::EffectRow(_) => "EffectRow".to_owned(),
     }
 }
 
