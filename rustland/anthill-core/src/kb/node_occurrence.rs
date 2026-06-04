@@ -1074,6 +1074,12 @@ pub fn open_debruijn_node(
         for_each_pattern_child(pat, |c| opened.push(open_debruijn_node(kb, c, fresh)));
         return reassemble_pattern(occ, &opened);
     }
+    // WI-378 step 2 / WI-342-P3: open DeBruijn vars inside a Type/EffectExpr
+    // occurrence's spine — the inverse of `node_to_debruijn`'s Type arm.
+    if matches!(occ.kind, NodeKind::Type(_) | NodeKind::EffectExpr(_)) {
+        return rewrite_type_occurrence(&OpenTypeRewrite { fresh }, kb, occ)
+            .unwrap_or_else(|| Rc::clone(occ));
+    }
     let Some(expr) = occ.as_expr() else { return Rc::clone(occ) };
     let rebuilt: Option<Expr> = match expr {
         Expr::Var(Var::DeBruijn(idx)) => fresh
@@ -1203,6 +1209,13 @@ pub fn node_to_debruijn(
         let mut closed: Vec<Rc<NodeOccurrence>> = Vec::new();
         for_each_pattern_child(pat, |c| closed.push(node_to_debruijn(kb, c, var_order)));
         return reassemble_pattern(occ, &closed);
+    }
+    // WI-378 step 2 / WI-342-P3: close vars inside a Type/EffectExpr occurrence's
+    // spine (ground `TermId` children via `term_to_debruijn`, child occurrences by
+    // recursion). The shared structural walk keeps close/open/σ in lockstep.
+    if matches!(occ.kind, NodeKind::Type(_) | NodeKind::EffectExpr(_)) {
+        return rewrite_type_occurrence(&CloseTypeRewrite { var_order }, kb, occ)
+            .unwrap_or_else(|| Rc::clone(occ));
     }
     let Some(expr) = occ.as_expr() else { return Rc::clone(occ) };
     let rebuilt: Option<Expr> = match expr {
@@ -1374,21 +1387,12 @@ fn close_type_args(
     (out, changed)
 }
 
-/// WI-342: DeBruijn-close a carrier-agnostic type `Value` — twin of
-/// `open_value_type` (a `Value::Node` type carries no vars, so it passes through
-/// `node_to_debruijn` unchanged).
+/// WI-342/WI-378: DeBruijn-close the vars of a carrier-agnostic type `Value` —
+/// a thin delegate to the shared [`map_value_type`] (a `Value::Node` now descends
+/// the Type/EffectExpr spine; a `NamedTuple.fields` `Entity`/`Tuple` cons-list
+/// recurses into its element field types). Twin of `open_value_type`.
 fn close_value_type(kb: &mut KnowledgeBase, v: &Value, var_order: &[VarId]) -> (Value, bool) {
-    match v {
-        Value::Term(t) => {
-            let nt = kb.term_to_debruijn(*t, var_order);
-            (Value::Term(nt), nt != *t)
-        }
-        Value::Node(occ) => {
-            let r = node_to_debruijn(kb, occ, var_order);
-            (Value::Node(Rc::clone(&r)), !Rc::ptr_eq(&r, occ))
-        }
-        other => (other.clone(), false),
-    }
+    map_value_type(&CloseTypeRewrite { var_order }, kb, v)
 }
 
 /// WI-298/WI-342: close vars inside an `Option<Value>` type field (today only
@@ -1456,25 +1460,14 @@ fn open_type_args(
     (out, changed)
 }
 
-/// WI-342: DeBruijn-open a carrier-agnostic type `Value` — a ground `Value::Term`
-/// via `term_from_debruijn`; a `Value::Node` type occurrence carries only
-/// Ref/literal denoteds (no DeBruijn/Global vars), so it passes through
-/// `open_debruijn_node` unchanged (a no-op for `NodeKind::Type`/`EffectExpr`) —
-/// symmetric with `close_value_type`/`subst_value_type` and the var collectors.
-/// A type slot never holds a `Value::Var`. Shared by `Let.type_annotation`
-/// (`open_option_value`) and `Apply`/`ApplyWithin.type_args` (`open_type_args`).
+/// WI-342/WI-378: DeBruijn-open the vars of a carrier-agnostic type `Value` — the
+/// inverse of `close_value_type`, delegating to the shared [`map_value_type`]
+/// (a ground `Value::Term` via `term_from_debruijn`; a `Value::Node` descends the
+/// type spine; a `NamedTuple.fields` cons-list recurses). Shared by
+/// `Let.type_annotation` (`open_option_value`) and `Apply`/`ApplyWithin.type_args`
+/// (`open_type_args`).
 fn open_value_type(kb: &mut KnowledgeBase, v: &Value, fresh: &[VarId]) -> (Value, bool) {
-    match v {
-        Value::Term(t) => {
-            let nt = kb.term_from_debruijn(*t, fresh);
-            (Value::Term(nt), nt != *t)
-        }
-        Value::Node(occ) => {
-            let r = open_debruijn_node(kb, occ, fresh);
-            (Value::Node(Rc::clone(&r)), !Rc::ptr_eq(&r, occ))
-        }
-        other => (other.clone(), false),
-    }
+    map_value_type(&OpenTypeRewrite { fresh }, kb, v)
 }
 
 /// WI-298/WI-342: open DeBruijn vars inside an `Option<Value>` type field (today
@@ -1490,6 +1483,262 @@ fn open_option_value(
             (Some(nv), changed)
         }
         None => (None, false),
+    }
+}
+
+// ── Type / EffectExpr var rewrite (WI-378 step 2 / WI-342-P3) ────
+//
+// A `Type` / `EffectExpression` occurrence is a `Value`-carried type whose
+// `denoted` spine forbids hash-consing. Until this slice the three rule-var
+// rewriters (`node_to_debruijn` close, `open_debruijn_node` open,
+// `substitute_occurrence` σ) treated such an occurrence as opaque — they
+// early-returned on a non-`Expr` node, so a logical var living in a `TypeChild`
+// (a parameter binding `Vector[Int, ?n]`, an effect label `Modify[?c]`) was
+// neither closed, opened, nor substituted. The var-collector likewise skipped
+// it. No producer mints such a var today (denoteds are `Ref`/`Const`, type-vars
+// stay ground `TypeChild::Ground` — see the carrier rule), so this is
+// forward-correct substrate; wiring it lets the same machinery handle a type
+// occurrence the moment a dependent-type producer (WI-373 gap 1) emits one.
+//
+// All three rewriters share ONE structural walk (`map_type_node` /
+// `map_effect_node`) parameterized by [`TypeChildRewrite`] — each supplies how
+// to rewrite a ground `TermId`, a child occurrence, and the `Value`-carried
+// `NamedTuple.fields` — so the close/open/σ trio cannot drift out of lockstep
+// over the type spine (the WI-378 anti-lockstep goal).
+
+/// The per-carrier leaf operation a Type/EffectExpr structural rewrite needs:
+/// how to rewrite a ground `TermId` and how to rewrite a child occurrence.
+/// `Value`-carried children (`NamedTuple.fields`) are handled uniformly by
+/// [`map_value_type`] in terms of these two leaves — so close/open/σ share ONE
+/// definition of "rewrite a type Value" and cannot drift (the WI-378 goal).
+trait TypeChildRewrite {
+    /// Rewrite a ground type child (a hash-consed `TermId`); `bool` = changed.
+    fn term(&self, kb: &mut KnowledgeBase, t: TermId) -> (TermId, bool);
+    /// Rewrite a `Rc<NodeOccurrence>` child — a nested Type/EffectExpr node or a
+    /// `Denoted` value occurrence — by recursing the owning rewriter.
+    fn node(&self, kb: &mut KnowledgeBase, n: &Rc<NodeOccurrence>) -> Rc<NodeOccurrence>;
+}
+
+fn map_type_child<R: TypeChildRewrite>(
+    r: &R,
+    kb: &mut KnowledgeBase,
+    child: &TypeChild,
+) -> (TypeChild, bool) {
+    match child {
+        TypeChild::Ground(t) => {
+            let (nt, ch) = r.term(kb, *t);
+            (TypeChild::Ground(nt), ch)
+        }
+        TypeChild::Node(n) => {
+            let nn = r.node(kb, n);
+            let ch = !Rc::ptr_eq(&nn, n);
+            (TypeChild::Node(nn), ch)
+        }
+    }
+}
+
+fn map_type_node<R: TypeChildRewrite>(
+    r: &R,
+    kb: &mut KnowledgeBase,
+    tn: &TypeNode,
+) -> (TypeNode, bool) {
+    match tn {
+        TypeNode::Denoted { value } => {
+            let nv = r.node(kb, value);
+            let ch = !Rc::ptr_eq(&nv, value);
+            (TypeNode::Denoted { value: nv }, ch)
+        }
+        TypeNode::Parameterized { base, bindings } => {
+            let (nbase, mut changed) = map_type_child(r, kb, base);
+            let mut nbind = Vec::with_capacity(bindings.len());
+            for (s, c) in bindings {
+                let (nc, ch) = map_type_child(r, kb, c);
+                changed |= ch;
+                nbind.push((*s, nc));
+            }
+            (TypeNode::Parameterized { base: nbase, bindings: nbind }, changed)
+        }
+        TypeNode::EffectsRows { effects_expr } => {
+            let (ne, ch) = map_type_child(r, kb, effects_expr);
+            (TypeNode::EffectsRows { effects_expr: ne }, ch)
+        }
+        TypeNode::Arrow { param, result, effects } => {
+            let (np, c1) = map_type_child(r, kb, param);
+            let (nr, c2) = map_type_child(r, kb, result);
+            let (nf, c3) = map_type_child(r, kb, effects);
+            (TypeNode::Arrow { param: np, result: nr, effects: nf }, c1 || c2 || c3)
+        }
+        TypeNode::NamedTuple { fields } => {
+            let (nf, ch) = map_value_type(r, kb, fields);
+            (TypeNode::NamedTuple { fields: nf }, ch)
+        }
+    }
+}
+
+/// Rewrite a type-position `Value` under a [`TypeChildRewrite`] — the single
+/// definition of "rewrite the vars of a type Value", shared by `close`/`open`/`σ`
+/// (`close_value_type` / `open_value_type` / `subst_value_type` are thin
+/// delegates). A ground `Value::Term` runs the leaf `term` op; a `Value::Node`
+/// recurses the `node` rewriter (which now descends Type/EffectExpr spines); a
+/// `Value::Entity`/`Tuple` (the `NamedTuple.fields` `List[TypeField]` cons-list,
+/// whose element field-types can themselves be `Value::Term`/`Value::Node`)
+/// recurses into its children — matching the head-side `close_value_head_debruijn`
+/// and the occurs-check, which also descend that cons-list. A scalar / other
+/// carrier has no vars (no-op).
+fn map_value_type<R: TypeChildRewrite>(
+    r: &R,
+    kb: &mut KnowledgeBase,
+    v: &Value,
+) -> (Value, bool) {
+    match v {
+        Value::Term(t) => {
+            let (nt, ch) = r.term(kb, *t);
+            (Value::Term(nt), ch)
+        }
+        Value::Node(occ) => {
+            let nn = r.node(kb, occ);
+            let ch = !Rc::ptr_eq(&nn, occ);
+            (Value::Node(nn), ch)
+        }
+        Value::Entity { functor, pos, named } => {
+            let (npos, c1) = map_value_seq(r, kb, pos);
+            let (nnamed, c2) = map_value_named(r, kb, named);
+            // Reuse the original (cheap Rc bump) when no child var changed — the
+            // ptr-eq economy the Type/Expr rewriters keep.
+            if c1 || c2 {
+                (Value::Entity { functor: *functor, pos: Rc::from(npos), named: Rc::from(nnamed) }, true)
+            } else {
+                (v.clone(), false)
+            }
+        }
+        Value::Tuple { pos, named } => {
+            let (npos, c1) = map_value_seq(r, kb, pos);
+            let (nnamed, c2) = map_value_named(r, kb, named);
+            if c1 || c2 {
+                (Value::Tuple { pos: Rc::from(npos), named: Rc::from(nnamed) }, true)
+            } else {
+                (v.clone(), false)
+            }
+        }
+        // Scalars / runtime carriers hold no type vars — leave untouched.
+        other => (other.clone(), false),
+    }
+}
+
+fn map_value_seq<R: TypeChildRewrite>(
+    r: &R,
+    kb: &mut KnowledgeBase,
+    items: &[Value],
+) -> (Vec<Value>, bool) {
+    let mut changed = false;
+    let mut out = Vec::with_capacity(items.len());
+    for c in items {
+        let (nc, ch) = map_value_type(r, kb, c);
+        changed |= ch;
+        out.push(nc);
+    }
+    (out, changed)
+}
+
+fn map_value_named<R: TypeChildRewrite>(
+    r: &R,
+    kb: &mut KnowledgeBase,
+    items: &[(Symbol, Value)],
+) -> (Vec<(Symbol, Value)>, bool) {
+    let mut changed = false;
+    let mut out = Vec::with_capacity(items.len());
+    for (s, c) in items {
+        let (nc, ch) = map_value_type(r, kb, c);
+        changed |= ch;
+        out.push((*s, nc));
+    }
+    (out, changed)
+}
+
+fn map_effect_node<R: TypeChildRewrite>(
+    r: &R,
+    kb: &mut KnowledgeBase,
+    en: &EffectExprNode,
+) -> (EffectExprNode, bool) {
+    match en {
+        EffectExprNode::Merge { left, right } => {
+            let (nl, c1) = map_type_child(r, kb, left);
+            let (nr, c2) = map_type_child(r, kb, right);
+            (EffectExprNode::Merge { left: nl, right: nr }, c1 || c2)
+        }
+        EffectExprNode::Present { label } => {
+            let (nl, ch) = map_type_child(r, kb, label);
+            (EffectExprNode::Present { label: nl }, ch)
+        }
+        EffectExprNode::Absent { label } => {
+            let (nl, ch) = map_type_child(r, kb, label);
+            (EffectExprNode::Absent { label: nl }, ch)
+        }
+        EffectExprNode::Open { tail } => {
+            let (nt, ch) = map_type_child(r, kb, tail);
+            (EffectExprNode::Open { tail: nt }, ch)
+        }
+        EffectExprNode::EmptyRow => (EffectExprNode::EmptyRow, false),
+    }
+}
+
+/// Rebuild a Type/EffectExpr occurrence under a [`TypeChildRewrite`], reusing the
+/// original `Rc` when nothing in the spine changed (the same ptr-eq economy the
+/// `Expr`/`Pattern` rewriters use).
+fn rewrite_type_occurrence<R: TypeChildRewrite>(
+    r: &R,
+    kb: &mut KnowledgeBase,
+    occ: &Rc<NodeOccurrence>,
+) -> Option<Rc<NodeOccurrence>> {
+    match &occ.kind {
+        NodeKind::Type(tn) => {
+            let (ntn, changed) = map_type_node(r, kb, tn);
+            changed.then(|| NodeOccurrence::new_type(ntn, occ.span, occ.owner))
+        }
+        NodeKind::EffectExpr(en) => {
+            let (nen, changed) = map_effect_node(r, kb, en);
+            changed.then(|| NodeOccurrence::new_effect_expr(nen, occ.span, occ.owner))
+        }
+        _ => None,
+    }
+}
+
+struct CloseTypeRewrite<'a> {
+    var_order: &'a [VarId],
+}
+impl TypeChildRewrite for CloseTypeRewrite<'_> {
+    fn term(&self, kb: &mut KnowledgeBase, t: TermId) -> (TermId, bool) {
+        let nt = kb.term_to_debruijn(t, self.var_order);
+        (nt, nt != t)
+    }
+    fn node(&self, kb: &mut KnowledgeBase, n: &Rc<NodeOccurrence>) -> Rc<NodeOccurrence> {
+        node_to_debruijn(kb, n, self.var_order)
+    }
+}
+
+struct OpenTypeRewrite<'a> {
+    fresh: &'a [VarId],
+}
+impl TypeChildRewrite for OpenTypeRewrite<'_> {
+    fn term(&self, kb: &mut KnowledgeBase, t: TermId) -> (TermId, bool) {
+        let nt = kb.term_from_debruijn(t, self.fresh);
+        (nt, nt != t)
+    }
+    fn node(&self, kb: &mut KnowledgeBase, n: &Rc<NodeOccurrence>) -> Rc<NodeOccurrence> {
+        open_debruijn_node(kb, n, self.fresh)
+    }
+}
+
+struct SubstTypeRewrite<'a> {
+    subst: &'a Substitution,
+}
+impl TypeChildRewrite for SubstTypeRewrite<'_> {
+    fn term(&self, kb: &mut KnowledgeBase, t: TermId) -> (TermId, bool) {
+        let nt = kb.apply_subst(t, self.subst);
+        (nt, nt != t)
+    }
+    fn node(&self, kb: &mut KnowledgeBase, n: &Rc<NodeOccurrence>) -> Rc<NodeOccurrence> {
+        substitute_occurrence(kb, n, self.subst)
     }
 }
 
@@ -1516,15 +1765,17 @@ pub fn occurrence_has_unbound_var(root: &Rc<NodeOccurrence>) -> bool {
                 for_each_pattern_child(pat, |c| stack.push(Rc::clone(c)));
             }
             NodeKind::RuleHead { .. } => {}
-            // WI-342: a Type/EffectExpr occurrence is type-level data, not an
-            // Expr body atom — no producer embeds one in a walked body in this
-            // slice, so reaching here is a bug, not a silent no-op. Surface it
-            // (no error channel here — `debug_assert` like `pattern_to_term`).
-            // P3 replaces this with a real descent, adding the var-*rewriter*
-            // arms (substitute_occurrence / open_/node_to_debruijn) in the same
-            // change so collect and rewrite stay symmetric.
+            // WI-378 step 2 / WI-342-P3: a var inside a Type/EffectExpr occurrence
+            // IS now walked — but via the type-field twins (`collect_value_type` /
+            // the `*_value_type` rewriters), reached where a type `Value` sits
+            // (`Apply.type_args` / `Let.type_annotation`). This `for_each_child`-
+            // driven walk reaches a Type occurrence only once the deferred
+            // type-field→occurrence-child migration routes those fields through
+            // `for_each_child` — which must also thread `kb` here (this walker has
+            // none, so it can't read a ground `TypeChild::Ground(TermId)`). Until
+            // then a type occurrence reaching here is a bug, so assert.
             NodeKind::Type(_) | NodeKind::EffectExpr(_) => {
-                debug_assert!(false, "WI-342: type/effect occurrence in rule-body var walk (not wired until P3)");
+                debug_assert!(false, "type/effect occurrence in for_each_child var walk (type-field migration must thread kb here)");
             }
         }
     }
@@ -1562,10 +1813,12 @@ pub(super) fn collect_occurrence_global_vars(
                 for_each_pattern_child(pat, |c| stack.push(Rc::clone(c)));
             }
             NodeKind::RuleHead { .. } => {}
-            // WI-342: see the symmetry note in `occurrence_has_unbound_var` —
-            // a type occurrence here is a bug until P3 wires it, so assert.
+            // WI-378 step 2 / WI-342-P3: see the note in `occurrence_has_unbound_var`
+            // — type-position vars are walked via `collect_value_type`; a type
+            // occurrence reaching this no-`kb` `for_each_child` walk awaits the
+            // type-field→child migration (which must thread `kb`), so assert.
             NodeKind::Type(_) | NodeKind::EffectExpr(_) => {
-                debug_assert!(false, "WI-342: type/effect occurrence in rule-body var walk (not wired until P3)");
+                debug_assert!(false, "type/effect occurrence in for_each_child var walk (type-field migration must thread kb here)");
             }
         }
     }
@@ -1624,12 +1877,14 @@ pub(super) fn collect_occurrence_global_vars_ordered(
             });
         }
         NodeKind::RuleHead { .. } => {}
-        // WI-342: a type occurrence in a rule-body var walk is a bug until P3
-        // wires it (and the matching var-*rewriters* — `open_debruijn_node` /
-        // `node_to_debruijn` / `substitute_occurrence`) together; assert rather
-        // than silently undercount arity. See `occurrence_has_unbound_var`.
+        // WI-378 step 2 / WI-342-P3: this collector's type-position vars are
+        // gathered by `collect_expr_termid_field_vars` → `collect_value_type`,
+        // which now descends a Type/EffectExpr occurrence (symmetric with the
+        // `*_value_type` rewriters). A type occurrence reaching THIS direct
+        // `for_each_child` arm awaits the type-field→child migration (which must
+        // thread `kb`); until then it would undercount arity, so assert.
         NodeKind::Type(_) | NodeKind::EffectExpr(_) => {
-            debug_assert!(false, "WI-342: type/effect occurrence in rule-body var walk (not wired until P3)");
+            debug_assert!(false, "type/effect occurrence in for_each_child var walk (type-field migration must thread kb here)");
         }
     }
 }
@@ -1662,21 +1917,111 @@ fn collect_expr_termid_field_vars(
 }
 
 /// Collect the free Global vars of a type `Value` — the COLLECT twin of
-/// [`close_value_type`] (and `open_value_type`). A `Value::Term` reads via
-/// `collect_vars_rec`. A `Value::Node` type position is a denoted Type
-/// occurrence which, like `close_value_type`'s `node_to_debruijn` (a no-op on a
-/// Type occurrence — it carries no `Expr`/`Pattern` body to walk), contributes
-/// no Global var today. Walking INTO a Type occurrence — so a Global var in
-/// type position is both collected here and closed there — is WI-342-P3 /
-/// WI-378 step 2.
+/// [`map_value_type`] (used by `close`/`open`/`σ`), walking the SAME carriers so
+/// the var set gathered here is exactly the set those rewriters close (WI-378).
+/// A `Value::Term` reads via `collect_vars_rec`; a `Value::Node` descends the
+/// Type/EffectExpr spine; a `Value::Entity`/`Tuple` (the `NamedTuple.fields`
+/// `List[TypeField]` cons-list) recurses into its element field types; scalars /
+/// other carriers contribute nothing.
 fn collect_value_type(
     kb: &KnowledgeBase,
     v: &Value,
     vars: &mut Vec<VarId>,
     seen: &mut std::collections::HashSet<u32>,
 ) {
-    if let Value::Term(t) = v {
-        kb.collect_vars_rec(*t, vars, seen);
+    match v {
+        Value::Term(t) => kb.collect_vars_rec(*t, vars, seen),
+        Value::Node(occ) => collect_type_or_expr_node_vars(kb, occ, vars, seen),
+        Value::Entity { pos, named, .. } | Value::Tuple { pos, named } => {
+            for c in pos.iter() {
+                collect_value_type(kb, c, vars, seen);
+            }
+            for (_, c) in named.iter() {
+                collect_value_type(kb, c, vars, seen);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Collect the free Global vars from a child occurrence sitting inside a
+/// Type/EffectExpr spine: it is itself a `Type` node, an `EffectExpr` node, or
+/// an `Expr` (a `Denoted` value, e.g. `Expr::Ref`). Dispatch on its kind — the
+/// COLLECT analog of the `node` arm of [`map_type_node`] (used by the
+/// rewriters). Mirrors the structural walk so collect/close/open/σ stay in
+/// lockstep over the type spine (WI-378).
+fn collect_type_or_expr_node_vars(
+    kb: &KnowledgeBase,
+    occ: &Rc<NodeOccurrence>,
+    vars: &mut Vec<VarId>,
+    seen: &mut std::collections::HashSet<u32>,
+) {
+    match &occ.kind {
+        NodeKind::Type(tn) => collect_type_node_vars(kb, tn, vars, seen),
+        NodeKind::EffectExpr(en) => collect_effect_node_vars(kb, en, vars, seen),
+        // A `Denoted` value (or any other) occurrence is an `Expr` — collect via
+        // the ordered Expr walk so first-occurrence order matches the term walk.
+        _ => collect_occurrence_global_vars_ordered(kb, occ, vars, seen),
+    }
+}
+
+/// Collect Global vars in one [`TypeChild`] — ground term via `collect_vars_rec`,
+/// child occurrence by recursion. COLLECT twin of [`map_type_child`].
+fn collect_type_child(
+    kb: &KnowledgeBase,
+    child: &TypeChild,
+    vars: &mut Vec<VarId>,
+    seen: &mut std::collections::HashSet<u32>,
+) {
+    match child {
+        TypeChild::Ground(t) => kb.collect_vars_rec(*t, vars, seen),
+        TypeChild::Node(n) => collect_type_or_expr_node_vars(kb, n, vars, seen),
+    }
+}
+
+/// COLLECT twin of [`map_type_node`]: walk a `TypeNode`'s children gathering
+/// Global vars (WI-378 step 2 / WI-342-P3).
+fn collect_type_node_vars(
+    kb: &KnowledgeBase,
+    tn: &TypeNode,
+    vars: &mut Vec<VarId>,
+    seen: &mut std::collections::HashSet<u32>,
+) {
+    match tn {
+        TypeNode::Denoted { value } => collect_type_or_expr_node_vars(kb, value, vars, seen),
+        TypeNode::Parameterized { base, bindings } => {
+            collect_type_child(kb, base, vars, seen);
+            for (_, c) in bindings {
+                collect_type_child(kb, c, vars, seen);
+            }
+        }
+        TypeNode::EffectsRows { effects_expr } => collect_type_child(kb, effects_expr, vars, seen),
+        TypeNode::Arrow { param, result, effects } => {
+            collect_type_child(kb, param, vars, seen);
+            collect_type_child(kb, result, vars, seen);
+            collect_type_child(kb, effects, vars, seen);
+        }
+        TypeNode::NamedTuple { fields } => collect_value_type(kb, fields, vars, seen),
+    }
+}
+
+/// COLLECT twin of [`map_effect_node`].
+fn collect_effect_node_vars(
+    kb: &KnowledgeBase,
+    en: &EffectExprNode,
+    vars: &mut Vec<VarId>,
+    seen: &mut std::collections::HashSet<u32>,
+) {
+    match en {
+        EffectExprNode::Merge { left, right } => {
+            collect_type_child(kb, left, vars, seen);
+            collect_type_child(kb, right, vars, seen);
+        }
+        EffectExprNode::Present { label } | EffectExprNode::Absent { label } => {
+            collect_type_child(kb, label, vars, seen)
+        }
+        EffectExprNode::Open { tail } => collect_type_child(kb, tail, vars, seen),
+        EffectExprNode::EmptyRow => {}
     }
 }
 
@@ -2407,6 +2752,13 @@ pub fn substitute_occurrence(
         for_each_pattern_child(pat, |c| subst_children.push(substitute_occurrence(kb, c, subst)));
         return reassemble_pattern(occ, &subst_children);
     }
+    // WI-378 step 2 / WI-342-P3: apply σ inside a Type/EffectExpr occurrence's
+    // spine (a Global in a ground `TermId` child via `apply_subst`, child
+    // occurrences by recursion) — symmetric with the De Bruijn rewriters.
+    if matches!(occ.kind, NodeKind::Type(_) | NodeKind::EffectExpr(_)) {
+        return rewrite_type_occurrence(&SubstTypeRewrite { subst }, kb, occ)
+            .unwrap_or_else(|| Rc::clone(occ));
+    }
     let Some(expr) = occ.as_expr() else { return Rc::clone(occ) };
     let rebuilt: Option<Rc<NodeOccurrence>> = match expr {
         Expr::Var(Var::Global(vid)) => return subst_var_leaf(kb, *vid, subst, occ),
@@ -2657,21 +3009,12 @@ fn subst_type_args(
     (out, changed)
 }
 
-/// WI-342: apply σ to a carrier-agnostic type `Value` — a `Value::Node` type
-/// carries no `Global` var leaves (only Ref/literal denoteds), so it passes
-/// through `substitute_occurrence` unchanged (a no-op for type occurrences).
+/// WI-342/WI-378: apply σ to the vars of a carrier-agnostic type `Value` — a thin
+/// delegate to the shared [`map_value_type`] (a `Value::Node` descends the type
+/// spine; a `NamedTuple.fields` cons-list recurses), the σ twin of
+/// `close_value_type` / `open_value_type`.
 fn subst_value_type(kb: &mut KnowledgeBase, v: &Value, subst: &Substitution) -> (Value, bool) {
-    match v {
-        Value::Term(t) => {
-            let nt = kb.apply_subst(*t, subst);
-            (Value::Term(nt), nt != *t)
-        }
-        Value::Node(occ) => {
-            let r = substitute_occurrence(kb, occ, subst);
-            (Value::Node(Rc::clone(&r)), !Rc::ptr_eq(&r, occ))
-        }
-        other => (other.clone(), false),
-    }
+    map_value_type(&SubstTypeRewrite { subst }, kb, v)
 }
 
 /// WI-298/WI-342: apply σ to an `Option<Value>` type field (today only
@@ -4387,6 +4730,196 @@ mod tests {
         let occ = NodeOccurrence::new_expr(Expr::Bottom, span, None);
         let cloned = Rc::clone(&occ);
         assert!(Rc::ptr_eq(&occ, &cloned));
+    }
+
+    // ── WI-378 step 2 / WI-342-P3: Type-occurrence var walk ─────────
+    //
+    // No producer mints a logical var inside a Type occurrence today (denoteds
+    // are Ref/Const, type-vars stay ground TypeChild::Ground), so these tests
+    // hand-build the substrate case: a `Parameterized` type carrying a `Var` in
+    // BOTH a ground `TypeChild::Ground(TermId)` binding and a `TypeChild::Node`
+    // child occurrence (the shape a denoted-bearing dependent type would mint).
+    // They pin that collect / De Bruijn close+open / σ all descend the type spine.
+
+    /// Build `param(base = Bottom, bg = Ground(Var(vg)), bn = Node(Var(vn)))`.
+    fn type_with_vars(kb: &mut KnowledgeBase, vg: VarId, vn: VarId) -> Rc<NodeOccurrence> {
+        let span = make_span();
+        let base_t = kb.alloc(Term::Const(Literal::Int(0)));
+        let vg_t = kb.alloc(Term::Var(Var::Global(vg)));
+        let bg = kb.intern("bg");
+        let bn = kb.intern("bn");
+        let node_child = NodeOccurrence::new_expr(Expr::Var(Var::Global(vn)), span, None);
+        NodeOccurrence::new_type(
+            TypeNode::Parameterized {
+                base: TypeChild::Ground(base_t),
+                bindings: vec![
+                    (bg, TypeChild::Ground(vg_t)),
+                    (bn, TypeChild::Node(node_child)),
+                ],
+            },
+            span,
+            None,
+        )
+    }
+
+    /// Pull the two binding children out of a `Parameterized` type occurrence.
+    fn param_bindings(occ: &Rc<NodeOccurrence>) -> (TypeChild, TypeChild) {
+        match &occ.kind {
+            NodeKind::Type(TypeNode::Parameterized { bindings, .. }) => {
+                (bindings[0].1.clone(), bindings[1].1.clone())
+            }
+            other => panic!("expected Parameterized type, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn type_occurrence_collects_vars_in_ground_and_node_children() {
+        let mut kb = KnowledgeBase::new();
+        let name = kb.intern("v");
+        let vg = VarId::new(1, name);
+        let vn = VarId::new(2, name);
+        let ty = type_with_vars(&mut kb, vg, vn);
+
+        let mut vars = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        collect_value_type(&kb, &Value::Node(Rc::clone(&ty)), &mut vars, &mut seen);
+        // base (ground const) has no var; bindings collect vg then vn, in order.
+        assert_eq!(vars, vec![vg, vn], "both ground- and node-child vars collected, in order");
+    }
+
+    #[test]
+    fn type_occurrence_close_open_roundtrips_vars() {
+        let mut kb = KnowledgeBase::new();
+        let name = kb.intern("v");
+        let vg = VarId::new(1, name);
+        let vn = VarId::new(2, name);
+        let ty = type_with_vars(&mut kb, vg, vn);
+
+        // Close with order [vg, vn]: vg (pos 0) → DeBruijn(1), vn (pos 1) → DeBruijn(0).
+        let closed = node_to_debruijn(&mut kb, &ty, &[vg, vn]);
+        let (bg, bn) = param_bindings(&closed);
+        match bg {
+            TypeChild::Ground(t) => assert!(
+                matches!(kb.terms.get(t), Term::Var(Var::DeBruijn(1))),
+                "ground binding var closes to DeBruijn(1), got {:?}", kb.terms.get(t),
+            ),
+            other => panic!("expected Ground, got {other:?}"),
+        }
+        match bn {
+            TypeChild::Node(n) => assert!(
+                matches!(n.as_expr(), Some(Expr::Var(Var::DeBruijn(0)))),
+                "node-child var closes to DeBruijn(0), got {:?}", n.as_expr(),
+            ),
+            other => panic!("expected Node, got {other:?}"),
+        }
+
+        // Open maps DeBruijn(i) → fresh[i] (the resolver's per-index freshening).
+        // With fresh [fa, fb]: the ground child's DeBruijn(1) → fb, the node
+        // child's DeBruijn(0) → fa — proving open descends the Type spine and
+        // remaps both carriers by index.
+        let fa = VarId::new(10, name);
+        let fb = VarId::new(11, name);
+        let opened = open_debruijn_node(&mut kb, &closed, &[fa, fb]);
+        let (bg, bn) = param_bindings(&opened);
+        match bg {
+            TypeChild::Ground(t) => assert!(
+                matches!(kb.terms.get(t), Term::Var(Var::Global(v)) if *v == fb),
+                "ground binding DeBruijn(1) re-opens to Global(fresh[1]=fb), got {:?}", kb.terms.get(t),
+            ),
+            other => panic!("expected Ground, got {other:?}"),
+        }
+        match bn {
+            TypeChild::Node(n) => assert!(
+                matches!(n.as_expr(), Some(Expr::Var(Var::Global(v))) if *v == fa),
+                "node-child DeBruijn(0) re-opens to Global(fresh[0]=fa)",
+            ),
+            other => panic!("expected Node, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn type_occurrence_unchanged_when_no_var_in_order() {
+        // Behavior-preserving: closing with a var_order that misses the type's
+        // vars leaves the occurrence untouched (same Rc) — the no-var denoted
+        // path the loader actually exercises today.
+        let mut kb = KnowledgeBase::new();
+        let name = kb.intern("v");
+        let vg = VarId::new(1, name);
+        let vn = VarId::new(2, name);
+        let ty = type_with_vars(&mut kb, vg, vn);
+        let other = VarId::new(99, name);
+        let closed = node_to_debruijn(&mut kb, &ty, &[other]);
+        assert!(Rc::ptr_eq(&closed, &ty), "no var in order → occurrence keeps identity");
+    }
+
+    #[test]
+    fn type_occurrence_named_tuple_field_var_is_walked() {
+        // A `NamedTuple` carries its fields as a `Value`-carried cons-list
+        // (`Value::Entity`/`Tuple`), whose element field-types are themselves
+        // type `Value`s. A var inside one must be collected and closed — the
+        // gap the shared `map_value_type` / `collect_value_type` Entity/Tuple
+        // recursion closes (mirroring `close_value_head_debruijn` / occurs-check).
+        let mut kb = KnowledgeBase::new();
+        let name = kb.intern("v");
+        let v = VarId::new(5, name);
+        let f = kb.intern("cons");
+        let span = make_span();
+        let v_t = kb.alloc(Term::Var(Var::Global(v)));
+        // fields = entity(cons, pos = [Term(Var v)]) — a one-element field carrier.
+        let fields = Value::Entity {
+            functor: f,
+            pos: Rc::from(vec![Value::Term(v_t)]),
+            named: Rc::from(Vec::<(Symbol, Value)>::new()),
+        };
+        let nt = NodeOccurrence::new_type(TypeNode::NamedTuple { fields }, span, None);
+
+        // Collect descends the cons-list and finds v.
+        let mut vars = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        collect_value_type(&kb, &Value::Node(Rc::clone(&nt)), &mut vars, &mut seen);
+        assert_eq!(vars, vec![v], "var inside a NamedTuple field type is collected");
+
+        // Close descends and turns it into DeBruijn(0) (single-var order).
+        let closed = node_to_debruijn(&mut kb, &nt, &[v]);
+        match &closed.kind {
+            NodeKind::Type(TypeNode::NamedTuple { fields: Value::Entity { pos, .. } }) => {
+                match &pos[0] {
+                    Value::Term(t) => assert!(
+                        matches!(kb.terms.get(*t), Term::Var(Var::DeBruijn(0))),
+                        "field-type var closes to DeBruijn(0), got {:?}", kb.terms.get(*t),
+                    ),
+                    other => panic!("expected Term field type, got {other:?}"),
+                }
+            }
+            other => panic!("expected NamedTuple Entity fields, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn type_occurrence_substitute_rewrites_ground_var() {
+        let mut kb = KnowledgeBase::new();
+        let name = kb.intern("v");
+        let vg = VarId::new(1, name);
+        let vn = VarId::new(2, name);
+        let ty = type_with_vars(&mut kb, vg, vn);
+
+        // σ = { vg ↦ 7 }. The ground binding's Var(vg) becomes 7; vn unbound stays.
+        let seven = kb.alloc(Term::Const(Literal::Int(7)));
+        let mut subst = Substitution::new();
+        subst.bind(vg, seven);
+        let out = substitute_occurrence(&mut kb, &ty, &subst);
+        let (bg, bn) = param_bindings(&out);
+        match bg {
+            TypeChild::Ground(t) => assert_eq!(t, seven, "vg in a ground type child rewrites to 7"),
+            other => panic!("expected Ground, got {other:?}"),
+        }
+        match bn {
+            TypeChild::Node(n) => assert!(
+                matches!(n.as_expr(), Some(Expr::Var(Var::Global(v))) if *v == vn),
+                "unbound vn stays a Global var",
+            ),
+            other => panic!("expected Node, got {other:?}"),
+        }
     }
 
     #[test]
