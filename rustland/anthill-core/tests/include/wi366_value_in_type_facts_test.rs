@@ -210,6 +210,260 @@ end
     );
 }
 
+// ── WI-366 B1: a WRITTEN effect-row rides on a fact head, byte-identical to
+//    the `provides` clause ───────────────────────────────────────────────────
+
+/// The `spec` field's `E` binding of the (sort-body) `SortProvidesInfo` whose
+/// `sort_ref` is `<ns>.MyList`. Term carrier only (a `{}` row is ground).
+fn provides_e_binding(
+    kb: &KnowledgeBase,
+    ns: &str,
+) -> Option<anthill_core::kb::term::TermId> {
+    use anthill_core::kb::term::Term;
+    let sym = kb.try_resolve_symbol("anthill.reflect.SortProvidesInfo")?;
+    let myl = kb.try_resolve_symbol(&format!("{ns}.MyList"))?;
+    for rid in kb.rules_by_functor(sym).into_iter().filter(|r| kb.is_fact(*r)) {
+        let Value::Term(t) = kb.rule_head_value(rid) else { continue };
+        let Term::Fn { named_args, .. } = kb.get_term(*t) else { continue };
+        let matches_ns = named_args
+            .iter()
+            .find(|(s, _)| kb.resolve_sym(*s) == "sort_ref")
+            .is_some_and(|(_, v)| matches!(kb.get_term(*v),
+                Term::Fn { functor, .. } if *functor == myl));
+        if !matches_ns { continue; }
+        let spec = named_args.iter().find(|(s, _)| kb.resolve_sym(*s) == "spec")?.1;
+        if let Term::Fn { named_args: sv, .. } = kb.get_term(spec) {
+            return sv.iter().find(|(s, _)| kb.resolve_sym(*s) == "E").map(|(_, t)| *t);
+        }
+    }
+    None
+}
+
+/// `fact Spec[E = {}]` and `provides Spec[E = {}]` must emit a BYTE-IDENTICAL
+/// effect-row `E` binding in their `SortProvidesInfo`. Before WI-366 B1 the
+/// `fact`-head term path stringified `{}` → `Term::Ref("{}")` →
+/// `remap_symbol_strict` → an `unresolved name '{}'` load error (the written
+/// row was DROPPED — "term loses fact"); only the type-aware `provides` path
+/// kept it. Now both lower the row through the same `lower_effect_row`, so the
+/// fact-head and `provides` capabilities are the same `effects_rows(empty_row)`.
+#[test]
+fn fact_head_written_empty_effect_row_matches_provides() {
+    // One kb so hash-consing makes equal TermId == structural identity.
+    let fact_ns = r#"
+namespace test.wi366.factrow.f
+  import anthill.prelude.{Int, Stream}
+  sort MyList
+    entity nil
+    fact Stream[T = Int, E = {}]
+  end
+end
+"#;
+    let prov_ns = r#"
+namespace test.wi366.factrow.p
+  import anthill.prelude.{Int, Stream}
+  sort MyList
+    entity nil
+    provides Stream[T = Int, E = {}]
+  end
+end
+"#;
+    let (kb, errs) = load_kb(&[fact_ns, prov_ns]);
+    // The written `{}` row must NOT produce an unresolved-name load error.
+    assert!(
+        !errs.iter().any(|e| e.contains("unresolved name '{}'")),
+        "`fact Stream[E = {{}}]` must not drop the written row to an unresolved \
+         name; got: {errs:?}",
+    );
+    let fe = provides_e_binding(&kb, "test.wi366.factrow.f");
+    let pe = provides_e_binding(&kb, "test.wi366.factrow.p");
+    assert!(
+        fe.is_some() && fe == pe,
+        "the `fact`-head and `provides`-clause SortProvidesInfo must carry a \
+         byte-identical effect-row `E` binding; got fact={fe:?} provides={pe:?}",
+    );
+}
+
+/// Regression (WI-366 B1): a written effect-row in a RULE-BODY atom
+/// (`:- Stream[T = Int, E = {}]`) must be CARRIED, not silently dropped. Rule
+/// bodies load via `build_body_atom_occurrence` (the occurrence path), which used
+/// to filter out ALL `ParseAux` children — so when `{}` started riding as an
+/// effect-row ParseAux, the `E` binding vanished (the loud `unresolved name '{}'`
+/// became a silent drop). The fix lowers the effect-row ParseAux there too, via
+/// the same `lower_effect_row`. We assert the loaded body atom still carries `E`.
+#[test]
+fn rule_body_written_empty_effect_row_is_carried() {
+    use anthill_core::persistence::print::TermPrinter;
+    let src = r#"
+namespace test.wi366.rulerow
+  import anthill.prelude.{Int, Stream}
+  sort Carrier
+    entity c(x: Int)
+  end
+  rule wants_stream(?c)
+    :- Stream[T = Int, E = {}]
+end
+"#;
+    let (kb, errs) = load_kb(&[src]);
+    assert!(
+        !errs.iter().any(|e| e.contains("unresolved name '{}'")),
+        "the written `{{}}` row in a rule body must not stringify to an unresolved \
+         name; got: {errs:?}",
+    );
+    let sym = kb
+        .try_resolve_symbol("test.wi366.rulerow.wants_stream")
+        .expect("rule functor resolves");
+    let rid = kb.rules_by_functor(sym)[0];
+    let printer = TermPrinter::new(&kb);
+    let body: String = kb
+        .rule_body_nodes(rid)
+        .iter()
+        .map(|atom| printer.print_occurrence(atom))
+        .collect::<Vec<_>>()
+        .join(" || ");
+    // The element binding (`Int`) AND the effect-row binding (`E`) must both be
+    // present — if `E` were dropped, only `Int` would survive.
+    assert!(
+        body.contains("Int") && body.contains("E"),
+        "rule-body atom must carry BOTH the `T = Int` and the `E = {{}}` bindings \
+         (the written row must not be dropped); got body: {body}",
+    );
+}
+
+/// Regression (WI-366 B1): a POSITIONAL written effect-row nested inside a
+/// rule-body atom (`:- List[T = Stream[{}]]`) must be CARRIED, not panic.
+/// `build_body_atom_occurrence`'s POSITIONAL child loop (distinct from its named
+/// loop) also has to lower the effect-row aux — otherwise the positional `{}`
+/// recurses into the outer `Term::ParseAux => unreachable!` and panics.
+#[test]
+fn rule_body_positional_nested_empty_effect_row_is_carried() {
+    use anthill_core::persistence::print::TermPrinter;
+    let src = r#"
+namespace test.wi366.rulerowpos
+  import anthill.prelude.{Int, Stream, List}
+  sort Carrier
+    entity c(x: Int)
+  end
+  rule wants(?c)
+    :- List[T = Stream[{}]]
+end
+"#;
+    // Must NOT panic; the nested positional row must be carried.
+    let (kb, errs) = load_kb(&[src]);
+    assert!(
+        !errs.iter().any(|e| e.contains("unresolved name '{}'")),
+        "nested positional `{{}}` must not stringify to an unresolved name; got: {errs:?}",
+    );
+    let sym = kb
+        .try_resolve_symbol("test.wi366.rulerowpos.wants")
+        .expect("rule functor resolves");
+    let rid = kb.rules_by_functor(sym)[0];
+    let body: String = kb
+        .rule_body_nodes(rid)
+        .iter()
+        .map(|atom| TermPrinter::new(&kb).print_occurrence(atom))
+        .collect::<Vec<_>>()
+        .join(" || ");
+    assert!(
+        body.contains("Stream") && body.contains("EffectsRows"),
+        "the nested `Stream[{{}}]` and its lowered effect-row must both survive in the \
+         rule body (no panic/drop); got: {body}",
+    );
+}
+
+/// Regression (WI-366 B1): a written effect-row in an OP-BODY type-expression
+/// (`operation give() -> Type = Stream[T = Int, E = {}]`) must be CARRIED, not
+/// dropped. Op bodies load via the `convert_expr_term` work-stack (`visit_load`),
+/// a THIRD term-position consumer that also filtered out ParseAux children — so
+/// `{}`-as-aux would have been silently dropped (and a naive keep would have
+/// panicked in `build_expr_leaf`). The fix lowers it via the same path and
+/// materializes the occurrence.
+#[test]
+fn op_body_written_empty_effect_row_is_carried() {
+    use anthill_core::persistence::print::TermPrinter;
+    let src = r#"
+namespace test.wi366.opbodyrow
+  import anthill.prelude.{Int, Stream, Type}
+  sort Carrier
+    entity c(x: Int)
+    operation give(self: Carrier) -> Type = Stream[T = Int, E = {}]
+  end
+end
+"#;
+    let (kb, errs) = load_kb(&[src]);
+    assert!(
+        !errs.iter().any(|e| e.contains("unresolved name '{}'")),
+        "the written `{{}}` row in an op body must not stringify to an unresolved \
+         name; got: {errs:?}",
+    );
+    let op = kb
+        .try_resolve_symbol("test.wi366.opbodyrow.Carrier.give")
+        .expect("op functor resolves");
+    let body = kb.op_body_node(op).expect("give has a body");
+    let printed = TermPrinter::new(&kb).print_occurrence(body);
+    assert!(
+        printed.contains("Int") && printed.contains("E"),
+        "op-body type-expression must carry BOTH `T = Int` and the `E = {{}}` \
+         effect-row binding (the written row must not be dropped); got: {printed}",
+    );
+}
+
+/// Regression (WI-366 B1): a written effect-row in a QUERY pattern
+/// (`anthill query --pattern 'Stream[T = Int, E = {}]'`) must lower, not PANIC.
+/// Queries are converted by `convert_query_term` — a FOURTH term-position
+/// consumer (a free fn, not the `Loader`) — whose `ParseAux` arm used to be
+/// `unreachable!`. The parse change made `{}` ride as an effect-row aux, which
+/// would hit that panic (worse than the pre-change loud `unresolved name '{}'`).
+/// The fix lowers the empty row to `effects_rows(empty_row)` so the pattern
+/// matches `provides`/fact rows.
+#[test]
+fn query_pattern_written_empty_effect_row_lowers() {
+    use anthill_core::kb::load;
+    use anthill_core::kb::term::Term;
+    use anthill_core::parse;
+    use std::collections::HashMap;
+
+    // Load stdlib so Stream / Int / EffectExpression.empty_row are registered.
+    let (mut kb, _errs) = load_kb(&[]);
+
+    // Replicate the CLI `query --pattern` path (`fact {pattern}`); stdlib names
+    // are already registered in `kb` above, so no import line is needed.
+    let src = "fact Stream[T = Int, E = {}]";
+    let parsed = parse::parse(src).expect("parse query pattern");
+    let _ = load::scan_definitions(&mut kb, &[&parsed]);
+    let global_raw = kb.make_name_term("_global").raw();
+    let mut var_map = HashMap::new();
+    let mut term = None;
+    for item in &parsed.items {
+        if let anthill_core::parse::ir::Item::Fact(f) = item {
+            // Must NOT panic (was `unreachable!` on the effect-row ParseAux).
+            term = Some(load::convert_query_term(
+                &mut kb,
+                &parsed.terms,
+                &parsed.symbols,
+                f.term,
+                global_raw,
+                &mut var_map,
+            ));
+        }
+    }
+    let term = term.expect("query pattern has a fact term");
+    let Term::Fn { named_args, .. } = kb.get_term(term) else {
+        panic!("query pattern term must be a Fn");
+    };
+    let e = named_args
+        .iter()
+        .find(|(s, _)| kb.resolve_sym(*s) == "E")
+        .map(|(_, t)| *t)
+        .expect("E binding present (not dropped) in query pattern term");
+    assert!(
+        matches!(kb.get_term(e), Term::Fn { functor, .. }
+            if kb.qualified_name_of(*functor) == "anthill.prelude.TypeExtractor.EffectsRows"),
+        "query `Stream[E = {{}}]` must lower E to an `effects_rows` Type (not drop it \
+         or panic); got: {:?}",
+        kb.get_term(e),
+    );
+}
+
 /// Guard: the ground case is unchanged. `sort Bar = Int` (no value-in-type)
 /// stays a hash-consed `Value::Term` SortAlias — no value fact is minted, so the
 /// migration is byte-identical for the universal ground case.

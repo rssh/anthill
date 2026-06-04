@@ -3841,9 +3841,33 @@ pub fn convert_query_term(
             kb.alloc(Term::Ref(kb_sym))
         }
         Term::Bottom => kb.alloc(Term::Bottom),
-        Term::ParseAux(_) => unreachable!(
-            "parse-only Term::ParseAux variant reached convert_query_term (loader should strip it)",
-        ),
+        Term::ParseAux(aux) => {
+            // WI-366 B1: a written effect-row binding value in a query pattern
+            // (`anthill query --pattern 'Spec[E = {}]'`). A parse `Term` can't
+            // structurally hold a row, so it rides as `ParseAux::TypeExpr(
+            // EffectRow)`. This converter is a free fn (no `Loader`), so it can't
+            // reuse `lower_effect_row`; build the EMPTY (closed-pure) row directly
+            // — the same `effects_rows(empty_row)` the loader emits, so the pattern
+            // matches `provides`/fact rows. A non-empty written row can carry
+            // labels a query term can't faithfully lower without the loader's type
+            // machinery → match permissively with a fresh row var, rather than
+            // panicking (the pre-WI-366-B1 behavior was a loud `unresolved name`
+            // error; a written `{}` query is the realistic pattern).
+            match aux.as_ref() {
+                ParseAux::TypeExpr(TypeExpr::EffectRow(effects)) if effects.is_empty() => {
+                    kb.build_canonical_effects_rows(&[])
+                }
+                ParseAux::TypeExpr(TypeExpr::EffectRow(_)) => {
+                    let n = kb.intern("_E");
+                    let v = kb.fresh_var(n);
+                    kb.alloc(Term::Var(Var::Global(v)))
+                }
+                other => unreachable!(
+                    "parse-only Term::ParseAux({other:?}) reached convert_query_term — \
+                     only a written effect-row binding value is handled here",
+                ),
+            }
+        }
     }
 }
 
@@ -4667,9 +4691,13 @@ impl<'a> Loader<'a> {
                 // Pre-collect the non-ParseAux args so the closure
                 // body's `self`-mut calls don't re-borrow during
                 // iteration.
+                // WI-366 B1: keep a written effect-row binding value
+                // (`ParseAux::TypeExpr(EffectRow)`, e.g. `fact Spec[E = {}]`) —
+                // unlike the let/apply build-site ParseAux payloads, it is a real
+                // term-position binding value the ParseAux arm lowers in place.
                 let visible_named: SmallVec<[(Symbol, TermId); 2]> = named_args
                     .iter()
-                    .filter(|&&(_, id)| !self.is_parse_aux(id))
+                    .filter(|&&(_, id)| !self.is_parse_aux(id) || self.is_effect_row_aux(id))
                     .copied()
                     .collect();
                 let mut new_named: SmallVec<[(Symbol, TermId); 2]> = visible_named
@@ -4727,20 +4755,27 @@ impl<'a> Loader<'a> {
                     Term::Ident(new_sym)
                 }
             }
-            Term::ParseAux(_) => {
-                // WI-271: parse-only payload (TypeExpr / SortBindings).
-                // Reaches `convert_term_with_expected` when the loader
-                // recurses into a let_expr / apply's `type_name` /
-                // `type_args` child without first stripping the
-                // ParseAux. Specialized handlers at the LetExpr /
-                // ApplyOrConstructor build sites read these children
-                // directly and call `type_expr_to_value` /
-                // `build_call_type_args` — they should NOT route
-                // through generic `convert_term`.
+            Term::ParseAux(aux) => {
+                // WI-271: parse-only payload (TypeExpr / SortBindings). The
+                // let_expr / apply `type_name` / `type_args` children are read
+                // and lowered DIRECTLY at the LetExpr / ApplyOrConstructor build
+                // sites (which strip the ParseAux first), so those never reach
+                // here. The one ParseAux that DOES route through generic
+                // `convert_term` is a WRITTEN effect-row binding value in a
+                // term-position type-arg slot (`fact Spec[E = {}]`, WI-366 B1):
+                // a parse `Term` can't structurally hold a row, so it rides as
+                // `ParseAux::TypeExpr(EffectRow(..))` and is lowered HERE via the
+                // same `lower_effect_row` the type-aware `provides` path uses, so
+                // the fact-head and `provides` rows are byte-identical.
+                if let Some(kb_id) = self.lower_effect_row_aux(parse_id) {
+                    self.term_map.insert(parse_id.raw(), kb_id);
+                    return kb_id;
+                }
                 unreachable!(
-                    "Term::ParseAux reached convert_term_with_expected — \
-                     the LetExpr/ApplyOrConstructor build site must read \
-                     and lower it directly before recursing",
+                    "Term::ParseAux({aux:?}) reached convert_term_with_expected — \
+                     only a written effect-row binding value routes here; the \
+                     LetExpr/ApplyOrConstructor build site must read and lower \
+                     its ParseAux directly before recursing",
                 );
             }
         };
@@ -5006,8 +5041,12 @@ impl<'a> Loader<'a> {
                         // `read_parse_call_type_args` and
                         // `read_parse_type_annotation`; the work-stack
                         // walker must not recurse into them.
+                        // WI-366 B1: but KEEP a written effect-row binding value
+                        // (`operation f() -> Type = Spec[E = {}]`) — the
+                        // `Term::ParseAux` arm below lowers it (it is a real
+                        // binding value, not a build-site payload).
                         let visible_named: Vec<(Symbol, TermId)> = named_args.iter()
-                            .filter(|&&(_, tid)| !self.is_parse_aux(tid))
+                            .filter(|&&(_, tid)| !self.is_parse_aux(tid) || self.is_effect_row_aux(tid))
                             .copied()
                             .collect();
                         let named_keys: SmallVec<[Symbol; 2]> =
@@ -5039,6 +5078,27 @@ impl<'a> Loader<'a> {
                 self.create_occurrence(parse_id, kb_id);
                 results.push(kb_id);
                 self.push_leaf_occ(kb_id);
+            }
+            Term::ParseAux(_) => {
+                // WI-366 B1: a written effect-row binding value in an op-body
+                // type-expression (`operation f() -> Type = Spec[E = {}]`),
+                // reached via the kept aux in the ApplyOrConstructor `_` arm
+                // above. Lower it the same way the fact-head / rule-body paths do;
+                // the occurrence is the MATERIALIZED row, not `push_leaf_occ`
+                // (whose `build_expr_leaf` panics on a non-leaf `effects_rows` Fn).
+                let kb_id = self.lower_effect_row_aux(parse_id).unwrap_or_else(|| {
+                    unreachable!(
+                        "Term::ParseAux in op-body expr position must be a written \
+                         effect-row binding value (the only aux kept by the \
+                         ApplyOrConstructor child filter)",
+                    )
+                });
+                self.create_occurrence(parse_id, kb_id);
+                results.push(kb_id);
+                if self.occ_suppress == 0 {
+                    let occ = node_occurrence::materialize_from_handle(self.kb, kb_id);
+                    self.expr_occ_results.push(occ);
+                }
             }
             _ => {
                 let kb_id = self.convert_term(parse_id);
@@ -5496,6 +5556,62 @@ impl<'a> Loader<'a> {
         matches!(self.parsed.terms.get(id), Term::ParseAux(_))
     }
 
+    /// WI-366 B1: is the parse term at `id` a WRITTEN effect-row binding value
+    /// (`ParseAux::TypeExpr(EffectRow)`, from `fact Spec[E = {}]`)? Unlike the
+    /// let/apply build-site ParseAux payloads ([`Self::is_parse_aux`]) — which
+    /// are consumed directly at their build sites and filtered out of the generic
+    /// child recursion — this one is a real term-position binding value that
+    /// `convert_term`'s ParseAux arm lowers in place (via `lower_effect_row`), so
+    /// the generic Fn child walk must KEEP it rather than drop it.
+    fn is_effect_row_aux(&self, id: TermId) -> bool {
+        matches!(self.parsed.terms.get(id),
+            Term::ParseAux(aux) if matches!(aux.as_ref(), ParseAux::TypeExpr(TypeExpr::EffectRow(_))))
+    }
+
+    /// WI-366 B1: lower a WRITTEN effect-row binding value at `pid` — a
+    /// `ParseAux::TypeExpr(EffectRow)` produced for `Spec[E = {}]` in a
+    /// term-position type-arg slot — to its KB `effects_rows(EffectExpression)`
+    /// ground `TermId`, via the SAME [`Self::lower_effect_row`] the type-aware
+    /// `provides` path uses. So a fact head, a rule-body atom, and a `provides`
+    /// clause all carry a byte-identical row. Returns `None` when `pid` is not an
+    /// effect-row aux (the caller then handles it as a normal child / skips it).
+    ///
+    /// A denoted-bearing row (`{Modify[c]}`) cannot ride the hash-consed
+    /// term/occurrence path — the carrier would have to be a value fact (WI-366
+    /// B, gated on effect-expressions-as-types) — so it emits the gated diagnostic
+    /// and falls back to the closed-pure row rather than dropping it silently.
+    fn lower_effect_row_aux(&mut self, pid: TermId) -> Option<TermId> {
+        let effects = match self.parsed.terms.get(pid) {
+            Term::ParseAux(aux) => match aux.as_ref() {
+                ParseAux::TypeExpr(TypeExpr::EffectRow(effects)) => effects.clone(),
+                _ => return None,
+            },
+            _ => return None,
+        };
+        let span = SourceSpan::from_span(self.source_id, self.parsed.terms.span(pid));
+        let owner = self.current_owner;
+        Some(match self.lower_effect_row(&effects, span, owner) {
+            node_occurrence::TypeChild::Ground(t) => t,
+            node_occurrence::TypeChild::Node(_) => {
+                self.diagnose_gated_value_in_type(
+                    "type argument",
+                    &TypeExpr::EffectRow(effects),
+                );
+                self.kb.build_canonical_effects_rows(&[])
+            }
+        })
+    }
+
+    /// WI-366 B1: occurrence-form of [`Self::lower_effect_row_aux`] — lower a
+    /// written effect-row binding value at `pid` and materialize it as an
+    /// `Rc<NodeOccurrence>`, the twin the occurrence-building paths
+    /// (`build_body_atom_occurrence`) need where the term path uses the raw
+    /// `TermId`. `None` when `pid` is not an effect-row aux.
+    fn lower_effect_row_aux_occ(&mut self, pid: TermId) -> Option<Rc<NodeOccurrence>> {
+        let rows_tid = self.lower_effect_row_aux(pid)?;
+        Some(node_occurrence::materialize_from_handle(self.kb, rows_tid))
+    }
+
     /// WI-271: extract a parse-only `ParseAux` payload from a parent
     /// parse `Term::Fn`'s named arg. `key` is the unresolved parse-side
     /// name (e.g. `"type_name"`, `"type_args"`); `extract` projects the
@@ -5643,12 +5759,26 @@ impl<'a> Loader<'a> {
                 // with `reintern`ed keys in source order — matching `convert_term`
                 // (no entity-field sort for non-entity functors) and thus the
                 // `UnknownFn` materialization.
+                // WI-366 B1: a written effect-row binding value (`:- Spec[E = {}]`,
+                // or nested/positional `:- Outer[k = Inner[{}]]`) rides as an
+                // effect-row ParseAux — lower+materialize it (the same
+                // `lower_effect_row` the fact-head / `provides` paths use) rather
+                // than recursing into the outer `Term::ParseAux` unreachable
+                // (positional) or dropping it via the build-site skip (named).
                 let mut pos: Vec<Rc<NodeOccurrence>> = Vec::with_capacity(pos_args.len());
                 for &pid in pos_args.iter() {
+                    if let Some(child) = self.lower_effect_row_aux_occ(pid) {
+                        pos.push(child);
+                        continue;
+                    }
                     pos.push(self.build_body_atom_occurrence(pid));
                 }
                 let mut named: Vec<(Symbol, Rc<NodeOccurrence>)> = Vec::new();
                 for &(sym, pid) in named_args.iter() {
+                    if let Some(child) = self.lower_effect_row_aux_occ(pid) {
+                        named.push((self.reintern(sym), child));
+                        continue;
+                    }
                     if self.is_parse_aux(pid) {
                         continue;
                     }

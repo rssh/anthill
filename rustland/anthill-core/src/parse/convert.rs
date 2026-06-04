@@ -1619,6 +1619,20 @@ impl<'a> Converter<'a> {
             // Variables (`?` / `?x`) — preserve as Var terms; resolution
             // treats these as wildcards, not as named refs.
             "variable_term" | "variable" => self.convert_term(node),
+            // WI-366 B1: a WRITTEN effect-row in a term-position type-argument
+            // slot (`fact Spec[E = {}]`). A parse `Term` has no structural
+            // effect-row form, so the default arm below used to stringify `{}`
+            // to `Ref("{}")` → an `unresolved name '{}'` load error (a written
+            // row could not ride on a fact head). Carry the real `TypeExpr`
+            // through `ParseAux` instead; the loader lowers it via the SAME
+            // `lower_effect_row` the type-aware `provides` path uses, so the
+            // fact-head and `provides` emissions produce a byte-identical
+            // `effects_rows(EffectExpression)` Type (the empty `{}` closed-pure
+            // row, and any ground row).
+            "effect_row" => {
+                let te = self.convert_type(node);
+                self.terms.alloc(Term::ParseAux(Box::new(ParseAux::TypeExpr(te))), span)
+            }
             // Other non-type term shapes (function calls, tuples, arrows)
             // appearing in binding-value position collapse to `Ref(Name)`
             // — the SLD resolver doesn't need to introspect them.
