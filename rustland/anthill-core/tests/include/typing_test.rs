@@ -2194,6 +2194,109 @@ end
     assert!(!types_compatible(&mut kb, specific_param, general_param), "(red -> Int) not <: (Color -> Int)");
 }
 
+// ── WI-293: declared per-(sort, param) variance in parameterized_compatible ──
+//
+// Before WI-293 every parameterized binding was checked covariantly regardless of
+// declared variance (potential unsoundness for contravariant / invariant params).
+// These exercise the parameterized path (`parameterized_compatible_view`) reading
+// the `Covariant` / `Contravariant` facts (stdlib/anthill/reflect/typing.anthill).
+// The subtype pair is `red <: Color` (entity of the source enum).
+
+#[test]
+fn variance_function_param_A_contravariant() {
+    // `Function`'s A (argument) param is declared Contravariant (WI-293 facts), so
+    // a function over a WIDER arg is a subtype of one over a NARROWER arg:
+    //   Function[A=Color] <: Function[A=red]   (contravariant — accept)
+    //   Function[A=red]  NOT<: Function[A=Color] (the covariant direction, REJECTED
+    //   — pre-WI-293 covariant-everywhere wrongly accepted this).
+    let source = "enum Color\n  entity red\nend\n";
+    let mut kb = load_with_source(source);
+    let int_ty = kb.make_sort_ref_by_name("Int");
+    let red_ty = kb.make_sort_ref(kb.resolve_symbol("Color.red"));
+    let color_ty = kb.make_sort_ref(kb.resolve_symbol("Color"));
+    let fn_base = kb.make_sort_ref(kb.resolve_symbol("anthill.prelude.Function"));
+    let a_sym = kb.intern("A");
+    let b_sym = kb.intern("B");
+
+    let fn_color_arg = kb.make_parameterized_type(fn_base, &[(a_sym, color_ty), (b_sym, int_ty)]);
+    let fn_red_arg = kb.make_parameterized_type(fn_base, &[(a_sym, red_ty), (b_sym, int_ty)]);
+
+    assert!(types_compatible(&mut kb, fn_color_arg, fn_red_arg),
+        "Function[A=Color] <: Function[A=red] — contravariant param");
+    assert!(!types_compatible(&mut kb, fn_red_arg, fn_color_arg),
+        "Function[A=red] NOT<: Function[A=Color] — covariant direction rejected");
+}
+
+#[test]
+fn variance_invariant_default_rejects_widening() {
+    // `Cell` declares no variance for its V param ⇒ invariant (the safe default,
+    // proposal 035: mutating containers stay invariant). So the covariant widening
+    // is REJECTED — the soundness fix (pre-WI-293 the covariant default wrongly
+    // accepted `Cell[V=red] <: Cell[V=Color]`).
+    let source = "enum Color\n  entity red\nend\n";
+    let mut kb = load_with_source(source);
+    let red_ty = kb.make_sort_ref(kb.resolve_symbol("Color.red"));
+    let color_ty = kb.make_sort_ref(kb.resolve_symbol("Color"));
+    let cell_base = kb.make_sort_ref(kb.resolve_symbol("anthill.prelude.Cell"));
+    let v_sym = kb.intern("V");
+
+    let cell_red = kb.make_parameterized_type(cell_base, &[(v_sym, red_ty)]);
+    let cell_color = kb.make_parameterized_type(cell_base, &[(v_sym, color_ty)]);
+
+    assert!(!types_compatible(&mut kb, cell_red, cell_color),
+        "Cell[V=red] NOT<: Cell[V=Color] — invariant param rejects covariant widening");
+    // Exact binding is accepted (identical term short-circuits, but states intent).
+    assert!(types_compatible(&mut kb, cell_red, cell_red),
+        "Cell[V=red] <: Cell[V=red] — invariant accepts the exact binding");
+}
+
+#[test]
+fn variance_covariant_param_preserved() {
+    // `Option`'s T is declared Covariant — the prior (covariant-everywhere)
+    // behavior is preserved for declared-covariant params: Option[red] <:
+    // Option[Color], and the reverse is rejected.
+    let source = "enum Color\n  entity red\nend\n";
+    let mut kb = load_with_source(source);
+    let red_ty = kb.make_sort_ref(kb.resolve_symbol("Color.red"));
+    let color_ty = kb.make_sort_ref(kb.resolve_symbol("Color"));
+    let opt_base = kb.make_sort_ref(kb.resolve_symbol("anthill.prelude.Option"));
+    let t_sym = kb.intern("T");
+
+    let opt_red = kb.make_parameterized_type(opt_base, &[(t_sym, red_ty)]);
+    let opt_color = kb.make_parameterized_type(opt_base, &[(t_sym, color_ty)]);
+
+    assert!(types_compatible(&mut kb, opt_red, opt_color),
+        "Option[red] <: Option[Color] — covariant param");
+    assert!(!types_compatible(&mut kb, opt_color, opt_red),
+        "Option[Color] NOT<: Option[red] — covariant rejects reverse");
+}
+
+#[test]
+fn variance_read_only_iterable_covariant_mutable_invariant() {
+    // WI-293 default-flip migration: a read-only interface whose element is
+    // OUTPUT-only is declared covariant (Iterable.iterator -> Stream[Element]),
+    // but a builder sort that takes the element as INPUT
+    // (PersistentCollection.insert(elem: Element)) stays invariant — covariant
+    // widening there would be unsound (the case the default-flip correctly rejects).
+    let source = "enum Color\n  entity red\nend\n";
+    let mut kb = load_with_source(source);
+    let red_ty = kb.make_sort_ref(kb.resolve_symbol("Color.red"));
+    let color_ty = kb.make_sort_ref(kb.resolve_symbol("Color"));
+    let elem_sym = kb.intern("Element");
+
+    let iter_base = kb.make_sort_ref(kb.resolve_symbol("anthill.prelude.Iterable"));
+    let iter_red = kb.make_parameterized_type(iter_base, &[(elem_sym, red_ty)]);
+    let iter_color = kb.make_parameterized_type(iter_base, &[(elem_sym, color_ty)]);
+    assert!(types_compatible(&mut kb, iter_red, iter_color),
+        "Iterable[Element=red] <: Iterable[Element=Color] — read-only => covariant");
+
+    let coll_base = kb.make_sort_ref(kb.resolve_symbol("anthill.prelude.PersistentCollection"));
+    let coll_red = kb.make_parameterized_type(coll_base, &[(elem_sym, red_ty)]);
+    let coll_color = kb.make_parameterized_type(coll_base, &[(elem_sym, color_ty)]);
+    assert!(!types_compatible(&mut kb, coll_red, coll_color),
+        "PersistentCollection[Element=red] NOT<: [Element=Color] — insert(elem) => invariant");
+}
+
 #[test]
 fn subtype_parameterized_same() {
     let mut kb = load_stdlib_kb();

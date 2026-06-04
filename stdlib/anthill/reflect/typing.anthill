@@ -200,4 +200,27 @@ namespace anthill.reflect.typing
   fact Covariant(sort: Pair, param: A)
   fact Covariant(sort: Pair, param: B)
 
+  -- Read-only collection interfaces — the element appears only in OUTPUT
+  -- positions (Iterable.iterator -> Stream[Element], IndexedSeq.nth -> Option[T]),
+  -- so they are covariant in their element, like List/Stream. WI-293: without
+  -- these the default-flip (covariant->invariant) would wrongly reject
+  -- Iterable[red] <: Iterable[Color]. PersistentCollection / MutableCollection /
+  -- Cell / Set / Map stay UNDECLARED (invariant): they put the element in an
+  -- INPUT position (insert(elem: Element)), where covariant widening is unsound —
+  -- the very case the default-flip correctly rejects.
+  fact Covariant(sort: Iterable, param: Element)
+  fact Covariant(sort: IndexedSeq, param: T)
+
+  -- Function[A, B, E] structural variance (proposal 035 line 178; WI-293):
+  -- contravariant in the argument A, covariant in the result B and the effect
+  -- row E. This is the SAME variance `arrow_compatible` / `arrow_function_compatible`
+  -- hardcode for the `arrow` form; declaring it here makes the parameterized
+  -- `Function[…] <: Function[…]` path (the Rust typer's `parameterized_compatible`,
+  -- WI-333) honor it uniformly instead of defaulting A/B/E to invariant. Covariant
+  -- E checks the effect row by subsumption (fewer effects <: more), the row twin
+  -- of subtype_effect_rows.
+  fact Contravariant(sort: Function, param: A)
+  fact Covariant(sort: Function, param: B)
+  fact Covariant(sort: Function, param: E)
+
 end

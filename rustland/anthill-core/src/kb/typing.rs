@@ -9257,11 +9257,60 @@ fn arrow_compatible_view<A: TermView, B: TermView>(
     }
 }
 
+/// Per-(sort, parameter) variance, read from the declared `Covariant` /
+/// `Contravariant` facts (proposal 035; `stdlib/anthill/reflect/typing.anthill`).
+/// No fact ⇒ invariant (the safe default); both ⇒ bivariant. WI-293.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Variance {
+    Covariant,
+    Contravariant,
+    Invariant,
+    Bivariant,
+}
+
+/// Look up the declared variance of `sort`'s parameter `param` from the KB
+/// variance facts. Reads the facts directly via the per-functor rule index — the
+/// idiom every other typer fact reader uses (`sort_provides` / `requires`), NOT
+/// SLD: the `effective_*` / `check_variance` rules in the stdlib are retained-but-
+/// unconsumed scaffolding for the future inference layer (WI-184), so matching the
+/// fact index directly is the consistent choice. `same_symbol` tolerates the
+/// bare/qualified split (a fact's `sort: List` resolves to `anthill.prelude.List`;
+/// its `param: T` stays a bare name).
+fn declared_variance(kb: &KnowledgeBase, sort: Symbol, param: Symbol) -> Variance {
+    let cov = matches_variance_fact(kb, "anthill.reflect.typing.Covariant", sort, param);
+    let con = matches_variance_fact(kb, "anthill.reflect.typing.Contravariant", sort, param);
+    match (cov, con) {
+        (true, true) => Variance::Bivariant,
+        (true, false) => Variance::Covariant,
+        (false, true) => Variance::Contravariant,
+        (false, false) => Variance::Invariant,
+    }
+}
+
+/// Whether a `Covariant`/`Contravariant` fact (named by `fact_qn`) is asserted for
+/// `(sort, param)`. Walks `rules_by_functor` and matches the `sort` / `param`
+/// named args by symbol. The `entity Covariant(sort: Symbol, param: Symbol)`
+/// declaration also shows up under this functor, but its arg values are the field
+/// metadata type (`Symbol`), so it never matches a real `(sort, param)` lookup.
+fn matches_variance_fact(kb: &KnowledgeBase, fact_qn: &str, sort: Symbol, param: Symbol) -> bool {
+    let Some(functor) = kb.try_resolve_symbol(fact_qn) else { return false };
+    kb.rules_by_functor(functor).into_iter().any(|rid| {
+        let Some(named) = kb.fact_head_named_args(rid) else { return false };
+        let sort_ok = get_named_arg(kb, &named, "sort")
+            .and_then(|t| super::load::sort_ref_functor(kb, t))
+            .is_some_and(|s| same_symbol(kb, s, sort));
+        let param_ok = get_named_arg(kb, &named, "param")
+            .and_then(|t| super::load::sort_ref_functor(kb, t))
+            .is_some_and(|p| same_symbol(kb, p, param));
+        sort_ok && param_ok
+    })
+}
+
 /// WI-342: the sole `parameterized` subtyping, carrier-agnostic over [`TermView`]
 /// (both the `TermId` dispatch via [`TermIdView`] and the `Value` carrier route
 /// here). Base compatible, then every EXPECTED binding must have a matching (by
-/// param name) actual binding whose value is compatible (the subtype direction
-/// iterates expected, unlike unify's a-side).
+/// param name) actual binding whose value is compatible — by the parameter's
+/// DECLARED variance (WI-293), not unconditionally covariantly.
 ///
 /// Bindings are read via [`extract_type`], which skips a *malformed* binding (one
 /// whose value is missing). The deleted `TermId`-specific `parameterized_compatible`
@@ -9297,7 +9346,43 @@ fn parameterized_compatible_view<A: TermView, B: TermView>(
     for (param, ev) in &expected_bindings {
         match actual_bindings.iter().find(|(p, _)| p == param) {
             Some((_, av)) => {
-                if !types_compatible(kb, subst, av, ev) {
+                // WI-293: check the binding by the parameter's DECLARED variance.
+                // covariant → actual <: expected (the prior unconditional check);
+                // contravariant → expected <: actual (flipped); invariant (default)
+                // → both directions (equal); bivariant → either. Keyed on the
+                // expected base — the supertype contract being checked against.
+                // (Usually equal to the actual base; a cross-base parameterized
+                // subtype is reachable via `refines`, and the supertype's variance
+                // is the contract to honor there.) The two-direction arms run on a
+                // CLONED subst and commit only on success, so a failed direction
+                // can't leave partial row/var bindings in the threaded `subst`
+                // (the per-direction hygiene `join_types` uses; matters for the
+                // `||` bivariant arm, where direction-2 must see a clean subst).
+                let ok = match declared_variance(kb, expected_base, *param) {
+                    Variance::Covariant => types_compatible(kb, subst, av, ev),
+                    Variance::Contravariant => types_compatible(kb, subst, ev, av),
+                    Variance::Invariant => {
+                        let mut probe = subst.clone();
+                        if types_compatible(kb, &mut probe, av, ev)
+                            && types_compatible(kb, &mut probe, ev, av)
+                        {
+                            *subst = probe;
+                            true
+                        } else {
+                            false
+                        }
+                    }
+                    Variance::Bivariant => {
+                        let mut probe = subst.clone();
+                        if types_compatible(kb, &mut probe, av, ev) {
+                            *subst = probe;
+                            true
+                        } else {
+                            types_compatible(kb, subst, ev, av)
+                        }
+                    }
+                };
+                if !ok {
                     return false;
                 }
             }
@@ -9482,6 +9567,14 @@ fn join_types(kb: &mut KnowledgeBase, a: Value, b: Value) -> Option<Value> {
             // the widen step.)
             (true, true) => return Some(more_general_type(kb, &a, &b)),
             // Incomparable: widen the entity side(s) one level and retry.
+            // WI-293/WI-382: for two same-base parameterized types
+            // (`Option[T=Cat]` / `Option[T=Dog]`) the STRICT lub would recurse
+            // into the bindings by variance — covariant `join(av,bv)`, invariant
+            // `av==bv`, contravariant `meet(av,bv)` — yielding `Option[T=Animal]`.
+            // That CONSTRUCTS a type (join never does today) and needs a `meet`
+            // (absent), so it is deferred to the WI-382 per-sort ORDER-relation
+            // framework (join/meet as registered order ops). Until then we widen
+            // the nominal side — a sound common supertype, not the strict lub.
             (false, false) => {
                 let wa = widen_value(kb, &a);
                 let wb = widen_value(kb, &b);
