@@ -1,0 +1,70 @@
+==================================
+Operation with meta clause (clauseless) — WI-087
+==================================
+
+operation get_values(self: GPS) -> Vec3
+  meta [Vec3FromConstDoublePtr3, Profile: "cpp20-stl"]
+
+---
+
+(source_file
+  (operation_declaration
+    name: (name
+      (identifier))
+    (param
+      name: (identifier)
+      type: (simple_type
+        (name
+          (identifier))))
+    return_type: (simple_type
+      (name
+        (identifier)))
+    (operation_clause
+      (meta_clause
+        (meta_block
+          (meta_entry
+            key: (name
+              (identifier)))
+          (meta_entry
+            key: (name
+              (identifier))
+            value: (string_literal)))))))
+
+==================================
+Operation with effects then meta clause — WI-087
+==================================
+
+operation step(self: Robot) -> Unit
+  effects Modify[self]
+  meta [CppName: "step"]
+
+---
+
+(source_file
+  (operation_declaration
+    name: (name
+      (identifier))
+    (param
+      name: (identifier)
+      type: (simple_type
+        (name
+          (identifier))))
+    return_type: (simple_type
+      (name
+        (identifier)))
+    (operation_clause
+      (effects_clause
+        (application
+          name: (name
+            (identifier))
+          (sort_binding
+            type: (simple_type
+              (name
+                (identifier)))))))
+    (operation_clause
+      (meta_clause
+        (meta_block
+          (meta_entry
+            key: (name
+              (identifier))
+            value: (string_literal)))))))

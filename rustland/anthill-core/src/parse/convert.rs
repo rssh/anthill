@@ -2162,6 +2162,11 @@ impl<'a> Converter<'a> {
         let mut requires = Vec::new();
         let mut ensures = Vec::new();
         let mut effects = Vec::new();
+        // WI-087: entries from `meta [...]` clauses. Accumulated across clauses
+        // (like effects / requires / ensures in this same loop) so repeated
+        // `meta` clauses merge rather than the last silently winning. Falls back
+        // below to a trailing bare meta_block when no `meta` clause is present.
+        let mut meta_entries: Vec<MetaEntry> = Vec::new();
 
         for clause in self.children_by_kind(node, "operation_clause") {
             let mut cursor = clause.walk();
@@ -2183,13 +2188,26 @@ impl<'a> Converter<'a> {
                             self.convert_effect_into(type_child, &mut effects);
                         }
                     }
+                    // WI-087: `meta [Marker, Key: value]` — the meta_block is
+                    // nested one level under the meta_clause.
+                    "meta_clause" => {
+                        if let Some(mb) = self.convert_meta_block(child) {
+                            meta_entries.extend(mb.entries);
+                        }
+                    }
                     _ => {}
                 }
             }
         }
 
         let body = self.field(node, "body").map(|b| self.convert_expr_body(b));
-        let meta = self.convert_meta_block(node);
+        // Prefer the accumulated `meta` clauses; otherwise fall back to a trailing
+        // bare meta_block (a direct child of the operation node).
+        let meta = if meta_entries.is_empty() {
+            self.convert_meta_block(node)
+        } else {
+            Some(MetaBlock { entries: meta_entries })
+        };
 
         Some(Operation {
             visibility,

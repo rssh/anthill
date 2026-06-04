@@ -62,6 +62,11 @@ pub struct OpInfoRecord {
     /// WI-347 — postcondition clause terms (the `ensures` field), same per-clause
     /// shape as `requires`. No auto-inferred entries are mixed in.
     pub ensures: Vec<TermId>,
+    /// WI-087 — operation attributes: the `meta(key: value, ...)` term lowered
+    /// from the operation's `meta_block`. `None` when the operation carries no
+    /// attributes (an empty `meta()` reads back as `None`). Inspect with
+    /// [`crate::kb::load::meta_has_flag`] / [`crate::kb::load::meta_value`].
+    pub meta: Option<TermId>,
 }
 
 /// Walk `OperationInfo` facts, returning the record for `op_sym` if
@@ -93,6 +98,9 @@ pub fn lookup_operation_info(kb: &KnowledgeBase, op_sym: Symbol) -> Option<OpInf
         let body_node = kb.op_body_node(op_sym).cloned();
         let requires = clause_list_field(kb, head, "requires");
         let ensures = clause_list_field(kb, head, "ensures");
+        // WI-087: the `meta(...)` term. An empty `meta()` (the no-attributes
+        // case) carries no named args, so report it as `None`.
+        let meta = head_field_term(kb, head, "meta").filter(|t| meta_term_nonempty(kb, *t));
         return Some(OpInfoRecord {
             op_sym,
             params,
@@ -102,9 +110,17 @@ pub fn lookup_operation_info(kb: &KnowledgeBase, op_sym: Symbol) -> Option<OpInf
             body_node,
             requires,
             ensures,
+            meta,
         });
     }
     None
+}
+
+/// WI-087: a `meta(...)` term carries attributes iff it has at least one named
+/// arg. An empty `meta()` (the no-attributes default the loader always emits)
+/// reports as having none, so `OpInfoRecord::meta` is `None` for it.
+fn meta_term_nonempty(kb: &KnowledgeBase, meta_tid: TermId) -> bool {
+    matches!(kb.get_term(meta_tid), Term::Fn { named_args, .. } if !named_args.is_empty())
 }
 
 /// Find a named field of a carrier-agnostic head, by short name. Both `Term`

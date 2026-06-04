@@ -741,7 +741,7 @@ Operation     ::= DescriptionBlock*
                     ['requires' RuleBody]            -- precondition
                     ['ensures' RuleBody]             -- postcondition
                     ['effects' '(' Effect (',' Effect)* ')']
-                    ['meta' ':' Meta]
+                    ['meta' MetaBlock]               -- attributes (WI-087); see §5.8, §7
 
 TypeParamList ::= '[' TypeParam (',' TypeParam)* ']'
 TypeParam     ::= Name                          -- per proposal 042
@@ -963,6 +963,44 @@ The correspondence holds for all effect kinds:
 
 For the formal development of both interpretations and their equivalence proofs, see `isabelleland/kernel/Anthill_Kernel.thy`.
 
+### 5.8 Operation Attributes (Metadata)
+
+Operations carry structured metadata that downstream tools read — markers for
+recurring codegen lowering patterns, profile/dispatch hints, and verbatim
+host-language escape hatches. The vehicle is a `meta` clause carrying a
+`MetaBlock` (the `[...]` shorthand from §7):
+
+```
+operation get_values(self: GPS) -> Vec3
+  meta [Vec3FromConstDoublePtr3, Profile: "cpp20-stl"]
+
+operation step(self: Robot) -> Unit
+  effects Modify[self]
+  meta [CppName: "step", CppBody: "self->step();"]
+```
+
+Each entry is either a **flag** (a bare `Marker`, value defaults to `⊥`) or a
+**key/value** pair (`Key: term`), exactly as elsewhere a `MetaBlock` appears.
+Three driving uses, all on this one mechanism:
+
+1. **Named markers** for recurring lowering patterns (`Vec3FromConstDoublePtr3`)
+   — codegen has one handler per marker, reusable across many operations.
+2. **Verbatim host body** escape hatch (`CppBody: "..."`) for ad-hoc glue.
+3. **Profile / dispatch hints** (`Profile: "cpp20-stl"`, `CppName: "..."`).
+
+**Why the `meta` keyword.** Unlike facts and rules — which take a *bare* trailing
+`[...]` — an operation needs the leading `meta` keyword. A bare `[...]` placed
+right after the return type is otherwise grabbed as return-type application
+arguments (`-> Vec3[...]`), which is exactly the clauseless getter shape that
+most needs markers. The keyword disambiguates, and the clause composes with
+`effects` / `requires` / `ensures` and works when no other clause is present.
+
+**Representation.** The block lowers to a `meta(key: value, ...)` term (the same
+shape as fact/rule metadata) carried as the `meta` field of the operation's
+`OperationInfo` reflection fact. Consumers read it via the kernel helpers
+`meta_has_flag` (flag presence) and `meta_value` (a key's value); an operation
+with no `meta` clause carries an empty `meta()` (reported as "no attributes").
+
 ## 6. Syntactic Sugar
 
 Readable shorthand that desugars to kernel constructs. The reasoning engine only sees rules and sorts.
@@ -1033,7 +1071,7 @@ OperationEntry ::= [Visibility] Name '(' [ParamList] ')' '->' Type
                      ['requires' RuleBody]
                      ['ensures' RuleBody]
                      ['effects' '(' Effect (',' Effect)* ')']
-                     ['meta' ':' Meta]
+                     ['meta' MetaBlock]               -- attributes (WI-087); see §5.8
 
 RuleBlock      ::= 'rule' Body[RuleEntry*]
 RuleEntry      ::= [Name ':'] Head [':-' RuleBody]
@@ -1825,7 +1863,7 @@ Operation   ::= DescriptionBlock*
                   ['requires' RuleBody]
                   ['ensures' RuleBody]
                   ['effects' '(' Effect (',' Effect)* ')']
-                  ['meta' ':' Meta]
+                  ['meta' MetaBlock]               -- attributes (WI-087); see §5.8
 ParamList   ::= Param (',' Param)*
 Param       ::= Name ':' Type
 
@@ -1858,7 +1896,7 @@ OperationEntry ::= [Visibility] Name '(' [ParamList] ')' '->' Type
                      ['requires' RuleBody]
                      ['ensures' RuleBody]
                      ['effects' '(' Effect (',' Effect)* ')']
-                     ['meta' ':' Meta]
+                     ['meta' MetaBlock]               -- attributes (WI-087); see §5.8
 
 RuleBlock   ::= 'rule' Body[RuleEntry*]
               -- desugars to: individual Rule declarations

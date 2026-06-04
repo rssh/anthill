@@ -401,7 +401,17 @@ module.exports = grammar({
       $.requires_clause,
       $.ensures_clause,
       $.effects_clause,
+      $.meta_clause,
     ),
+
+    // WI-087: operation attributes / metadata. A keyword-introduced clause
+    // carrying the existing `meta_block` (`[Marker, Key: value, ...]`). The
+    // `meta` keyword is the disambiguating vehicle: a bare `[...]` placed right
+    // after the return type is otherwise grabbed as return-type application args
+    // (`-> Vec3[...]`), which fails for clauseless ops (pure getter bindings —
+    // exactly the ones that carry codegen markers). As a clause it composes with
+    // effects / requires / ensures and works with no other clause present.
+    meta_clause: $ => seq('meta', $.meta_block),
 
     requires_declaration: $ => seq(
       'requires',

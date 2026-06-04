@@ -438,7 +438,13 @@ namespace anthill.reflect
     return_type  : Term,                            -- return type expression
     effects      : List[Term],                      -- effect type expressions
     requires     : List[NodeOccurrence],            -- precondition expressions (positioned)
-    ensures      : List[NodeOccurrence]             -- postcondition expressions (positioned)
+    ensures      : List[NodeOccurrence],            -- postcondition expressions (positioned)
+    -- WI-087: operation attributes / metadata. A `meta(key: value, ...)` term
+    -- (same shape as rule/fact meta) carrying the operation's `[Marker, Key: v]`
+    -- meta_block. Empty `meta()` when the operation has no meta_block. Downstream
+    -- tools (codegen markers, Profile / CppBody / CppName hints) read it via
+    -- `meta_has_flag` / `meta_value`.
+    meta         : Term                             -- meta(key: value, ...)
   )
 
   entity FieldInfo(

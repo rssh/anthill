@@ -46,9 +46,9 @@ const OP_QN: &str = "test.wi348_op_query.overwrite";
 /// truth in `load_operation`). A discrimination-tree query must match the fact's
 /// total arity, so a query goal carries all of these — `name` ground, the rest
 /// fresh vars — never a partial `OperationInfo(name: ?n)` (which would key on a
-/// different arity and miss the 7-field fact).
-const OP_INFO_FIELDS: [&str; 7] =
-    ["name", "params", "return_type", "effects", "requires", "ensures", "type_params"];
+/// different arity and miss the fact). WI-087 added `meta`.
+const OP_INFO_FIELDS: [&str; 8] =
+    ["name", "params", "return_type", "effects", "requires", "ensures", "type_params", "meta"];
 
 fn op_sym(kb: &KnowledgeBase) -> Symbol {
     kb.try_resolve_symbol(OP_QN).expect("overwrite op symbol after load")

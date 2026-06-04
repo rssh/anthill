@@ -3441,6 +3441,20 @@ pub fn meta_has_flag(kb: &KnowledgeBase, meta: Option<TermId>, key: &str) -> boo
     false
 }
 
+/// WI-087: the value bound to `key` in a `meta(key: value, ...)` term, when the
+/// key is present with a value. A flag-form key (`[Marker]`, value `Term::Bottom`)
+/// returns `Some(Bottom-tid)` — presence is via [`meta_has_flag`]; this is for
+/// valued attributes (`Profile: "cpp20-stl"`, `CppBody: "..."`, `CppName: "..."`).
+pub fn meta_value(kb: &KnowledgeBase, meta: Option<TermId>, key: &str) -> Option<TermId> {
+    let tid = meta?;
+    if let Term::Fn { named_args, .. } = kb.get_term(tid) {
+        for (k, v) in named_args.iter() {
+            if kb.resolve_sym(*k) == key { return Some(*v); }
+        }
+    }
+    None
+}
+
 /// Resolve a `SortRequiresInfo.sort_ref` term to the qualified name
 /// of the enclosing scope (sort or operation). Returns the canonical
 /// `qualified_name` rather than the short display name so the
@@ -7329,6 +7343,24 @@ impl<'a> Loader<'a> {
             None => false,
         };
 
+        // WI-087: operation attributes. Lower the operation's `meta_block`
+        // (`[Marker, Key: value, ...]`) into a `meta(key: value, ...)` term —
+        // the same shape and reader idiom (`meta_has_flag` / `meta_value`) as
+        // rule/fact meta. An absent meta_block yields an empty `meta()`, so the
+        // OperationInfo `meta` field is always present. Built while still in the
+        // operation scope so a term-valued attribute resolves against op names.
+        let meta_term = match &o.meta {
+            Some(mb) => self.load_meta_block(mb),
+            None => {
+                let meta_functor = self.kb.resolve_symbol("meta");
+                self.kb.alloc(Term::Fn {
+                    functor: meta_functor,
+                    pos_args: SmallVec::new(),
+                    named_args: SmallVec::new(),
+                })
+            }
+        };
+
         self.current_scope = prev_scope;
         self.current_owner = prev_owner;
 
@@ -7341,6 +7373,7 @@ impl<'a> Loader<'a> {
         let requires_sym = self.kb.intern("requires");
         let ensures_sym = self.kb.intern("ensures");
         let type_params_sym = self.kb.intern("type_params");
+        let meta_sym = self.kb.intern("meta");
 
         // name: Ref to operation symbol
         let name_ref = self.kb.alloc(Term::Ref(functor));
@@ -7369,6 +7402,9 @@ impl<'a> Loader<'a> {
             (requires_sym, Value::Term(requires_list)),
             (ensures_sym, Value::Term(ensures_list)),
             (type_params_sym, Value::Term(type_params_list)),
+            // WI-087: operation attributes — always a ground `meta(...)` term, so
+            // it never forces the value-fact path (does not enter `all_ground`).
+            (meta_sym, Value::Term(meta_term)),
         ];
         if all_ground {
             // Ground head → hash-consed `Term::Fn` (dedup, structural sharing).

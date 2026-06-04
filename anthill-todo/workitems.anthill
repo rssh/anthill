@@ -596,7 +596,7 @@ fact WorkItem(
   description: "Operation attributes / metadata in anthill — the kernel mechanism. Operations need a way to carry structured metadata that downstream tools read. Three distinct uses, ALL riding on this one mechanism: (1) named marker facts for recurring lowering patterns (e.g. Vec3FromConstDoublePtr3 — codegen has one handler per marker, marker is reusable across many operations); (2) one-off escape hatch with literal host-language body (CppBody(\"...\") — for ad-hoc glue that doesn't fit a known pattern); (3) profile/dispatch hints (Profile(\"cpp20-stl\")). Note: @ is taken for effects (grammar.js:608 arrow-type annotation; WI-004 may extend it to operation declarations) so attributes need a different vehicle. Two candidate shapes: (A) keyword-introduced clause matching effects/requires shape: 'operation foo(...) -> R effects (E) meta Vec3FromConstDoublePtr3, Profile(\"cpp20-stl\")'; (B) nested fact block reusing existing keyword: 'operation foo(...) -> R effects (E) fact Vec3FromConstDoublePtr3 fact Profile(\"cpp20-stl\")' where the operation symbol is the implicit subject. (B) is semantically purer — attributes already ARE facts about the operation symbol, the realization model is already fact-based, and no new keyword needed. Open design: pick (A) vs (B); attribute argument forms; name resolution scope; how attributes interact with effects and contracts.",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: [],
-  status: Open)
+  status: Delivered(agent: "claude", at: "2026-06-04T23:57:43Z"))
 
 fact WorkItem(
   id: "WI-088",
