@@ -2070,29 +2070,126 @@ impl KnowledgeBase {
     /// directly (WI-246/WI-372 — the single rule-DeBruijn-assertion path). The
     /// loader builds the occurrences natively from the parse IR; the synthesized
     /// / hand-built callers convert a term body once via
-    /// [`Self::term_body_to_nodes`]. The head is a hash-consed term: a value
-    /// rule head carrying vars is WI-348 Phase C (its De Bruijn close needs the
-    /// Type-occurrence var-walk + DeBruijn-value-head discrim keying, both
-    /// unimplemented). A *ground* value head can be asserted directly via the
-    /// carrier-agnostic [`Self::assert_rule_nodes`]. The rule's free vars are
-    /// collected from the head + occurrence body in the same first-occurrence
-    /// order (`collect_occurrence_global_vars_ordered` mirrors `collect_vars_rec`),
-    /// then `finalize_rule_debruijn_nodes` closes head + occurrences.
+    /// [`Self::term_body_to_nodes`]. The `head` is carrier-agnostic (WI-373):
+    /// every existing caller passes a `TermId` (→ `Value::Term`), but it may also
+    /// carry a `Value::Node`/`Entity` value head whose vars close to De Bruijn
+    /// like a term head's (an `Expr` Node child works; a *denoted* `Type` Node
+    /// child still needs the WI-342-P3 Type-occurrence var-walk). The rule's free
+    /// vars are collected from the head + occurrence body in the same
+    /// first-occurrence order (`collect_value_head_vars` mirrors
+    /// `collect_occurrence_global_vars_ordered` mirrors `collect_vars_rec`), then
+    /// `finalize_rule_debruijn_nodes` closes head + occurrences.
     pub fn assert_rule_debruijn_with_nodes(
         &mut self,
-        head: TermId,
+        head: impl Into<crate::eval::value::Value>,
         body_nodes: Vec<Rc<NodeOccurrence>>,
         sort: TermId,
         domain: TermId,
         meta: Option<TermId>,
     ) -> RuleId {
+        let head = head.into();
         let mut vars = Vec::new();
         let mut seen = std::collections::HashSet::new();
-        self.collect_vars_rec(head, &mut vars, &mut seen);
+        self.collect_value_head_vars(&head, &mut vars, &mut seen);
         for n in &body_nodes {
             node_occurrence::collect_occurrence_global_vars_ordered(self, n, &mut vars, &mut seen);
         }
         self.finalize_rule_debruijn_nodes(head, body_nodes, vars, 0, sort, domain, meta)
+    }
+
+    /// Collect a rule head's Global `VarId`s in first-occurrence order,
+    /// carrier-agnostically (WI-373) — the head twin of
+    /// `collect_occurrence_global_vars_ordered` (body). A `Value::Term` walks via
+    /// `collect_vars_rec`; a `Value::Node` via the occurrence walker; a
+    /// `Value::Entity` recurses pos-then-named, matching the term-head walk order
+    /// so head/body De Bruijn indices align.
+    pub(crate) fn collect_value_head_vars(
+        &self,
+        head: &crate::eval::value::Value,
+        vars: &mut Vec<VarId>,
+        seen: &mut std::collections::HashSet<u32>,
+    ) {
+        use crate::eval::value::Value;
+        match head {
+            Value::Term(t) => self.collect_vars_rec(*t, vars, seen),
+            Value::Node(occ) => {
+                node_occurrence::collect_occurrence_global_vars_ordered(self, occ, vars, seen)
+            }
+            // A functor head or an anonymous tuple: recurse into the children
+            // (any of which can carry vars), pos before named.
+            Value::Entity { pos, named, .. } | Value::Tuple { pos, named } => {
+                for c in pos.iter() {
+                    self.collect_value_head_vars(c, vars, seen);
+                }
+                for (_, c) in named.iter() {
+                    self.collect_value_head_vars(c, vars, seen);
+                }
+            }
+            // Scalar head children carry no Global vars.
+            Value::Int(_) | Value::BigInt(_) | Value::Float(_) | Value::Bool(_)
+            | Value::Str(_) | Value::Unit => {}
+            // A bare value-level var (WI-109) or a runtime carrier
+            // (Closure/Stream/Lazy/…) is not a shape a stored rule head takes —
+            // fail loudly rather than silently undercount the rule's arity.
+            other => debug_assert!(
+                false,
+                "WI-373: unexpected value rule-head carrier in var-collection: {}",
+                other.type_name(),
+            ),
+        }
+    }
+
+    /// Close a rule head's Global vars to De Bruijn, carrier-agnostically
+    /// (WI-373) — the head twin of the body's `node_to_debruijn` close, kept in
+    /// lockstep with [`Self::collect_value_head_vars`] (same carriers, same
+    /// recursion). A `Value::Term` closes via `term_to_debruijn`; a `Value::Node`
+    /// occurrence via `node_to_debruijn`; a `Value::Entity`/`Tuple` recurses into
+    /// its children; a scalar has no vars; any other carrier fails loudly.
+    fn close_value_head_debruijn(
+        &mut self,
+        head: crate::eval::value::Value,
+        vars: &[VarId],
+    ) -> crate::eval::value::Value {
+        use crate::eval::value::Value;
+        match head {
+            Value::Term(t) => Value::Term(self.term_to_debruijn(t, vars)),
+            Value::Node(occ) => Value::Node(node_occurrence::node_to_debruijn(self, &occ, vars)),
+            Value::Entity { functor, pos, named } => {
+                let pos: Vec<Value> = pos
+                    .iter()
+                    .map(|c| self.close_value_head_debruijn(c.clone(), vars))
+                    .collect();
+                let named: Vec<(Symbol, Value)> = named
+                    .iter()
+                    .map(|(s, c)| (*s, self.close_value_head_debruijn(c.clone(), vars)))
+                    .collect();
+                Value::Entity { functor, pos: std::rc::Rc::from(pos), named: std::rc::Rc::from(named) }
+            }
+            Value::Tuple { pos, named } => {
+                let pos: Vec<Value> = pos
+                    .iter()
+                    .map(|c| self.close_value_head_debruijn(c.clone(), vars))
+                    .collect();
+                let named: Vec<(Symbol, Value)> = named
+                    .iter()
+                    .map(|(s, c)| (*s, self.close_value_head_debruijn(c.clone(), vars)))
+                    .collect();
+                Value::Tuple { pos: std::rc::Rc::from(pos), named: std::rc::Rc::from(named) }
+            }
+            // Scalars have no vars to close.
+            h @ (Value::Int(_) | Value::BigInt(_) | Value::Float(_) | Value::Bool(_)
+            | Value::Str(_) | Value::Unit) => h,
+            // A bare value-level var or a runtime carrier is not a stored
+            // rule-head shape — fail loudly rather than leave a var unclosed.
+            h => {
+                debug_assert!(
+                    false,
+                    "WI-373: unexpected value rule-head carrier in De Bruijn close: {}",
+                    h.type_name(),
+                );
+                h
+            }
+        }
     }
 
     /// WI-246/WI-372 finalize: the occurrence body is supplied directly (a term
@@ -2105,7 +2202,7 @@ impl KnowledgeBase {
     #[allow(clippy::too_many_arguments)]
     fn finalize_rule_debruijn_nodes(
         &mut self,
-        head: TermId,
+        head: impl Into<crate::eval::value::Value>,
         body_nodes: Vec<Rc<NodeOccurrence>>,
         vars: Vec<VarId>,
         shared_arity: u32,
@@ -2113,15 +2210,17 @@ impl KnowledgeBase {
         domain: TermId,
         meta: Option<TermId>,
     ) -> RuleId {
+        let head = head.into();
         let arity = vars.len() as u32;
         // Close head + occurrence body to De Bruijn against the shared `vars`
         // (Global → DeBruijn, including vars inside any TermId pattern/param
         // fields the occurrence carries); ground facts (`vars` empty) keep both
-        // as-is.
+        // as-is. The head close is carrier-agnostic (`close_value_head_debruijn`),
+        // mirroring the body's `node_to_debruijn`.
         let (db_head, db_nodes) = if vars.is_empty() {
             (head, body_nodes)
         } else {
-            let new_head = self.term_to_debruijn(head, &vars);
+            let new_head = self.close_value_head_debruijn(head, &vars);
             let mut out = Vec::with_capacity(body_nodes.len());
             for n in &body_nodes {
                 out.push(node_occurrence::node_to_debruijn(self, n, &vars));
@@ -2212,7 +2311,7 @@ impl KnowledgeBase {
     /// once via [`Self::term_body_to_nodes`].
     pub fn assert_rule_debruijn_with_nodes_in_frame(
         &mut self,
-        head: TermId,
+        head: impl Into<crate::eval::value::Value>,
         body_nodes: Vec<Rc<NodeOccurrence>>,
         seed_globals: &[VarId],
         sort: TermId,
@@ -2225,11 +2324,12 @@ impl KnowledgeBase {
         // assignment); step-introduced vars are prepended. Vars are collected
         // from head + occurrences in the SAME first-occurrence order as
         // `assert_rule_debruijn_with_nodes` (so frame alignment is preserved).
+        let head = head.into();
         let seen: std::collections::HashSet<u32> =
             seed_globals.iter().map(|v| v.raw()).collect();
         let mut vars = Vec::new();
         let mut collected = std::collections::HashSet::new();
-        self.collect_vars_rec(head, &mut vars, &mut collected);
+        self.collect_value_head_vars(&head, &mut vars, &mut collected);
         for n in &body_nodes {
             node_occurrence::collect_occurrence_global_vars_ordered(self, n, &mut vars, &mut collected);
         }
@@ -2352,14 +2452,16 @@ impl KnowledgeBase {
         tree_subst: &subst::Substitution,
     ) -> (Vec<Rc<NodeOccurrence>>, subst::Substitution) {
         let arity = self.rules[id.index()].arity;
-        // WI-348 Phase C gap: `rule_head` requires a hash-consed term head, which
-        // is always true today — value heads exist only on ground *facts*
-        // (`assert_fact_value`); *rules* get term heads via
-        // `assert_rule_debruijn_with_nodes`, and `with_fresh_vars` runs only for
-        // rules-with-bodies. A value *rule*
-        // head (Phase C) would need De Bruijn opening over a non-hash-consed
-        // occurrence — real work, not a reader swap — so this is correctly guarded
-        // by the `rule_head` panic until value rule heads exist.
+        // WI-373 gap 3 (the deep, unbuilt half): a value *rule* head can be
+        // ASSERTED + INDEXED (carrier-agnostic closure + WI-373 gap-2 discrim
+        // keying), but RESOLVING one needs the discrim binding-extraction to
+        // thread a query var matched against a position INSIDE the value head's
+        // Node. Today that is term-only: `VarPath` is single-level and
+        // `extract_value_at_path` does not descend into a Node child, so a nested
+        // value-head var yields an EMPTY `tree_subst` → an UNCONSTRAINED answer
+        // (a silent wrong result). So `rule_head` stays the LOUD guard here —
+        // value-rule-head resolution fails loudly rather than mis-resolve, until
+        // the binding-extraction (VarPath nesting + value-head path-descent) lands.
         let head = self.rule_head(id);
         // WI-246: the rule's occurrence body — opened + head-match-renamed, then
         // pushed by the resolver as `Value::Node` goals (and driving the
@@ -2463,8 +2565,9 @@ impl KnowledgeBase {
             (final_nodes, answer_links)
         } else {
             // Legacy path: Global vars (ground facts or rules not yet converted).
-            // WI-246: collect rule vars from the head (still a hash-consed term)
-            // + the OCCURRENCE body — legacy bodies use Global vars, parallel to
+            // WI-246: collect rule vars from the head (a hash-consed term — the
+            // `rule_head` guard above means we never reach here with a value head)
+            // + the OCCURRENCE body. Legacy bodies use Global vars, parallel to
             // `body_nodes`, so no term body is read here.
             let mut all_vars = Vec::new();
             let mut seen = std::collections::HashSet::new();
@@ -3915,6 +4018,72 @@ mod tests {
         assert!(
             found.iter().any(|(r, _)| *r == rid),
             "the De Bruijn-bearing value head must be indexed + queryable",
+        );
+    }
+
+    #[test]
+    fn value_rule_head_with_var_asserts_closes_and_indexes() {
+        // WI-373: a var-bearing value rule head asserts via the carrier-agnostic
+        // De Bruijn path — `collect_value_head_vars` finds the var inside the Expr
+        // Node child (arity 1), `close_value_head_debruijn` closes it, and gap-2
+        // discrim keying indexes it (queryable). RESOLVING such a head is loudly
+        // gated on the binding-extraction half of gap 3 (see `with_fresh_vars`).
+        use crate::eval::value::Value;
+        use crate::intern::Symbol;
+        use crate::kb::load::register_prelude;
+        use std::rc::Rc;
+        use term::Var;
+
+        let mut kb = KnowledgeBase::new();
+        register_prelude(&mut kb);
+
+        let vf = kb.intern("vf");
+        let g = kb.intern("g");
+        let thing = kb.intern("thing");
+        let sort = kb.make_name_term("MySort");
+        let domain = kb.make_name_term("test");
+
+        // Head vf(g(?x)) — g(?x) carried as an Expr Node; body thing(?x).
+        let xv = kb.fresh_var(vf);
+        let xt = kb.alloc(Term::Var(Var::Global(xv)));
+        let g_x = kb.alloc(Term::Fn {
+            functor: g,
+            pos_args: SmallVec::from_elem(xt, 1),
+            named_args: SmallVec::new(),
+        });
+        let g_occ = node_occurrence::materialize_from_handle(&kb, g_x);
+        let head = Value::Entity {
+            functor: vf,
+            pos: Rc::from(vec![Value::Node(g_occ)]),
+            named: Rc::from(Vec::<(Symbol, Value)>::new()),
+        };
+        let thing_x = kb.alloc(Term::Fn {
+            functor: thing,
+            pos_args: SmallVec::from_elem(xt, 1),
+            named_args: SmallVec::new(),
+        });
+        let body_nodes = kb.term_body_to_nodes(&[thing_x]);
+
+        // Closure: collect the var inside the Node + close to De Bruijn + index.
+        let rid = kb.assert_rule_debruijn_with_nodes(head, body_nodes, sort, domain, None);
+        assert_eq!(kb.rule_arity(rid), 1, "?x inside the Node is the rule's one var");
+
+        // Discoverable by a query on its functor (gap-2 keying).
+        let yv = kb.fresh_var(vf);
+        let yt = kb.alloc(Term::Var(Var::Global(yv)));
+        let g_y = kb.alloc(Term::Fn {
+            functor: g,
+            pos_args: SmallVec::from_elem(yt, 1),
+            named_args: SmallVec::new(),
+        });
+        let query = kb.alloc(Term::Fn {
+            functor: vf,
+            pos_args: SmallVec::from_elem(g_y, 1),
+            named_args: SmallVec::new(),
+        });
+        assert!(
+            kb.query(query).iter().any(|(r, _)| *r == rid),
+            "the var-bearing value rule head must be indexed + queryable",
         );
     }
 
