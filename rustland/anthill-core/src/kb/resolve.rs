@@ -5115,6 +5115,42 @@ mod tests {
         assert_eq!(bound, yes, "?q should resolve to \"yes\"");
     }
 
+    #[test]
+    fn nested_var_goal_binds_against_ground_fact() {
+        // WI-373 gap 3 (end-to-end): a goal with a variable at a NESTED position
+        // must bind against a ground fact. Fact holds(state(active)); query
+        // holds(state(?x)); expect ?x = active. Before the nested binding-
+        // extraction the fact was found but ?x stayed unbound (silent wrong answer).
+        let mut kb = KnowledgeBase::new();
+        let sort = kb.make_name_term("Sort");
+        let domain = kb.make_name_term("test");
+        let holds = kb.intern("holds");
+        let state = kb.intern("state");
+        let active = kb.alloc(Term::Const(Literal::String("active".into())));
+        let state_active = kb.alloc(Term::Fn {
+            functor: state, pos_args: SmallVec::from_elem(active, 1), named_args: SmallVec::new(),
+        });
+        let fact = kb.alloc(Term::Fn {
+            functor: holds, pos_args: SmallVec::from_elem(state_active, 1), named_args: SmallVec::new(),
+        });
+        kb.assert_fact(fact, sort, domain, None);
+
+        let x_sym = kb.intern("x");
+        let vx = kb.fresh_var(x_sym);
+        let var_x = kb.alloc(Term::Var(Var::Global(vx)));
+        let state_x = kb.alloc(Term::Fn {
+            functor: state, pos_args: SmallVec::from_elem(var_x, 1), named_args: SmallVec::new(),
+        });
+        let query = kb.alloc(Term::Fn {
+            functor: holds, pos_args: SmallVec::from_elem(state_x, 1), named_args: SmallVec::new(),
+        });
+        let config = ResolveConfig::default();
+        let sols = kb.resolve(&[query], &config);
+        assert_eq!(sols.len(), 1, "holds(state(?x)) should find the fact");
+        let bound = kb.reify(var_x, &sols[0].subst).as_term();
+        assert_eq!(bound, Some(active), "nested ?x must bind to active, got {:?}", bound);
+    }
+
     /// Multiple anonymous variables get distinct DeBruijn indices.
     ///
     /// Rule: pair(?) :- left(?), right(?)

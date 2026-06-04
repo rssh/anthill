@@ -458,7 +458,7 @@ impl<L: Clone> SubstTree<L> {
         query: &V,
     ) -> Vec<(L, SmallSubst)> {
         let mut results = Vec::new();
-        Self::query_node(&self.root, kb, query, VarPath::Root, SmallSubst::new(), &mut results);
+        Self::query_node(&self.root, kb, query, VarPath::root(), SmallSubst::new(), &mut results);
         results
     }
 
@@ -533,9 +533,11 @@ impl<L: Clone> SubstTree<L> {
                                     results.push((leaf.clone(), subst.clone()));
                                 }
                             };
+                            // `path` is the prefix to this head's args — root at
+                            // the top level; the args' own paths extend it.
                             Self::query_args(
                                 n2, kb, query, 0, pos_arity, &named_keys, 0,
-                                0, true, subst.clone(), results, &collect_leaves,
+                                &path, subst.clone(), results, &collect_leaves,
                             );
                         }
                     }
@@ -588,7 +590,10 @@ impl<L: Clone> SubstTree<L> {
 
     /// Process args in canonical order: positionals 0..pos_total first,
     /// then named in `named_keys` starting at `named_idx`. `on_done` fires
-    /// when both cursors reach their ends.
+    /// when both cursors reach their ends. `prefix` is the [`VarPath`] to this
+    /// container; each arg's own path extends it by one step, recorded so a
+    /// query var — at any depth — binds to the matched fact's subterm (WI-373
+    /// gap 3: nested binding extraction).
     #[allow(clippy::too_many_arguments)]
     fn query_args<V: TermView>(
         node: &DiscrimNode<L>,
@@ -598,8 +603,7 @@ impl<L: Clone> SubstTree<L> {
         pos_total: usize,
         named_keys: &[Symbol],
         named_idx: usize,
-        pos_offset: usize,
-        bind_paths: bool,
+        prefix: &VarPath,
         subst: SmallSubst,
         results: &mut Vec<(L, SmallSubst)>,
         on_done: &dyn Fn(&DiscrimNode<L>, SmallSubst, &mut Vec<(L, SmallSubst)>),
@@ -610,29 +614,25 @@ impl<L: Clone> SubstTree<L> {
         }
 
         if pos_idx < pos_total {
-            let path = if bind_paths {
-                Some(VarPath::Arg(ArgPos::Positional(pos_offset)))
-            } else { None };
+            let arg_path = prefix.appended(ArgPos::Positional(pos_idx));
             if let Some(mc) = node.concrete.get(&DiscrimKey::Positional) {
                 if let Some(arg) = query.pos_arg(kb, pos_idx) {
                     Self::query_arg_value(
-                        mc, kb, arg, path, query,
+                        mc, kb, arg, arg_path, prefix, query,
                         pos_idx + 1, pos_total, named_keys, named_idx,
-                        pos_offset + 1, bind_paths, subst, results, on_done,
+                        subst, results, on_done,
                     );
                 }
             }
         } else {
             let sym = named_keys[named_idx];
-            let path = if bind_paths {
-                Some(VarPath::Arg(ArgPos::Named(sym)))
-            } else { None };
+            let arg_path = prefix.appended(ArgPos::Named(sym));
             if let Some(mc) = node.concrete.get(&DiscrimKey::NamedKey(sym)) {
                 if let Some(arg) = query.named_arg(kb, sym) {
                     Self::query_arg_value(
-                        mc, kb, arg, path, query,
+                        mc, kb, arg, arg_path, prefix, query,
                         pos_idx, pos_total, named_keys, named_idx + 1,
-                        pos_offset, bind_paths, subst, results, on_done,
+                        subst, results, on_done,
                     );
                 }
             }
@@ -640,33 +640,34 @@ impl<L: Clone> SubstTree<L> {
     }
 
     /// Process one arg value, then continue with the remaining args of the
-    /// outer query via `query_args`.
+    /// outer query via `query_args`. `arg_path` is the [`VarPath`] addressing
+    /// THIS arg (the container `prefix` extended by this arg's step); `prefix`
+    /// is the container's own path, used to continue its remaining args. A
+    /// query var here binds to `arg_path`; descending into a nested compound
+    /// uses `arg_path` as the nested container's prefix, so vars at any depth
+    /// record a full path (WI-373 gap 3).
     #[allow(clippy::too_many_arguments)]
     fn query_arg_value<V: TermView>(
         node: &DiscrimNode<L>,
         kb: &KnowledgeBase,
         arg: ViewItem<'_>,
-        arg_path: Option<VarPath>,
+        arg_path: VarPath,
+        prefix: &VarPath,
         outer: &V,
         pos_idx: usize,
         pos_total: usize,
         named_keys: &[Symbol],
         named_idx: usize,
-        pos_offset: usize,
-        bind_paths: bool,
         subst: SmallSubst,
         results: &mut Vec<(L, SmallSubst)>,
         on_done: &dyn Fn(&DiscrimNode<L>, SmallSubst, &mut Vec<(L, SmallSubst)>),
     ) {
         match arg.head(kb) {
             ViewHead::Var(vid) => {
-                let s = match arg_path {
-                    Some(path) => subst.with_binding(vid, BindValue::Path(path)),
-                    None => subst,
-                };
+                let s = subst.with_binding(vid, BindValue::Path(arg_path));
                 Self::skip_subtree_then_continue(
                     node, kb, outer, pos_idx, pos_total, named_keys, named_idx,
-                    pos_offset, bind_paths, s, results, on_done,
+                    prefix, s, results, on_done,
                 );
             }
             ViewHead::Functor { functor, pos_arity, named_arity } => {
@@ -678,12 +679,14 @@ impl<L: Clone> SubstTree<L> {
                             let nested_cont = |node: &DiscrimNode<L>, subst: SmallSubst, results: &mut Vec<(L, SmallSubst)>| {
                                 Self::query_args(
                                     node, kb, outer, pos_idx, pos_total, named_keys, named_idx,
-                                    pos_offset, bind_paths, subst, results, on_done,
+                                    prefix, subst, results, on_done,
                                 );
                             };
+                            // Descend with `arg_path` as the nested container's
+                            // prefix — nested vars extend it, not restart at root.
                             Self::query_args(
                                 n2, kb, &arg, 0, pos_arity, &inner_named_keys, 0,
-                                0, false, subst.clone(), results, &nested_cont,
+                                &arg_path, subst.clone(), results, &nested_cont,
                             );
                         }
                     }
@@ -692,35 +695,35 @@ impl<L: Clone> SubstTree<L> {
                     let branch = subst.clone().with_binding(tree_var.as_vid(), arg.as_bind_value());
                     Self::query_args(
                         child, kb, outer, pos_idx, pos_total, named_keys, named_idx,
-                        pos_offset, bind_paths, branch, results, on_done,
+                        prefix, branch, results, on_done,
                     );
                 }
             }
             ViewHead::Const(lit) => {
                 Self::follow_key_then_continue(
                     node, &DiscrimKey::Lit(lit), arg, kb, outer,
-                    pos_idx, pos_total, named_keys, named_idx, pos_offset, bind_paths,
+                    pos_idx, pos_total, named_keys, named_idx, prefix,
                     subst, results, on_done,
                 );
             }
             ViewHead::Ident(sym) => {
                 Self::follow_key_then_continue(
                     node, &DiscrimKey::Ident(sym), arg, kb, outer,
-                    pos_idx, pos_total, named_keys, named_idx, pos_offset, bind_paths,
+                    pos_idx, pos_total, named_keys, named_idx, prefix,
                     subst, results, on_done,
                 );
             }
             ViewHead::Ref(sym) => {
                 Self::follow_key_then_continue(
                     node, &DiscrimKey::Ref(sym), arg, kb, outer,
-                    pos_idx, pos_total, named_keys, named_idx, pos_offset, bind_paths,
+                    pos_idx, pos_total, named_keys, named_idx, prefix,
                     subst, results, on_done,
                 );
             }
             ViewHead::Bottom => {
                 Self::follow_key_then_continue(
                     node, &DiscrimKey::Bottom, arg, kb, outer,
-                    pos_idx, pos_total, named_keys, named_idx, pos_offset, bind_paths,
+                    pos_idx, pos_total, named_keys, named_idx, prefix,
                     subst, results, on_done,
                 );
             }
@@ -729,7 +732,7 @@ impl<L: Clone> SubstTree<L> {
                     let branch = subst.clone().with_binding(tree_var.as_vid(), arg.as_bind_value());
                     Self::query_args(
                         child, kb, outer, pos_idx, pos_total, named_keys, named_idx,
-                        pos_offset, bind_paths, branch, results, on_done,
+                        prefix, branch, results, on_done,
                     );
                 }
             }
@@ -748,8 +751,7 @@ impl<L: Clone> SubstTree<L> {
         pos_total: usize,
         named_keys: &[Symbol],
         named_idx: usize,
-        pos_offset: usize,
-        bind_paths: bool,
+        prefix: &VarPath,
         subst: SmallSubst,
         results: &mut Vec<(L, SmallSubst)>,
         on_done: &dyn Fn(&DiscrimNode<L>, SmallSubst, &mut Vec<(L, SmallSubst)>),
@@ -757,14 +759,14 @@ impl<L: Clone> SubstTree<L> {
         if let Some(child) = node.concrete.get(key) {
             Self::query_args(
                 child, kb, outer, pos_idx, pos_total, named_keys, named_idx,
-                pos_offset, bind_paths, subst.clone(), results, on_done,
+                prefix, subst.clone(), results, on_done,
             );
         }
         for (tree_var, child) in &node.var_edges {
             let branch = subst.clone().with_binding(tree_var.as_vid(), arg.as_bind_value());
             Self::query_args(
                 child, kb, outer, pos_idx, pos_total, named_keys, named_idx,
-                pos_offset, bind_paths, branch, results, on_done,
+                prefix, branch, results, on_done,
             );
         }
     }
@@ -779,26 +781,25 @@ impl<L: Clone> SubstTree<L> {
         pos_total: usize,
         named_keys: &[Symbol],
         named_idx: usize,
-        pos_offset: usize,
-        bind_paths: bool,
+        prefix: &VarPath,
         subst: SmallSubst,
         results: &mut Vec<(L, SmallSubst)>,
         on_done: &dyn Fn(&DiscrimNode<L>, SmallSubst, &mut Vec<(L, SmallSubst)>),
     ) {
         Self::query_args(
             node, kb, outer, pos_idx, pos_total, named_keys, named_idx,
-            pos_offset, bind_paths, subst.clone(), results, on_done,
+            prefix, subst.clone(), results, on_done,
         );
         for (_, child) in &node.concrete {
             Self::skip_subtree_then_continue(
                 child, kb, outer, pos_idx, pos_total, named_keys, named_idx,
-                pos_offset, bind_paths, subst.clone(), results, on_done,
+                prefix, subst.clone(), results, on_done,
             );
         }
         for (_, child) in &node.var_edges {
             Self::skip_subtree_then_continue(
                 child, kb, outer, pos_idx, pos_total, named_keys, named_idx,
-                pos_offset, bind_paths, subst.clone(), results, on_done,
+                prefix, subst.clone(), results, on_done,
             );
         }
     }
@@ -979,6 +980,31 @@ mod tests {
             let bound = subst.resolve_as_value(vid).and_then(|v| v.as_term()).unwrap();
             match leaf { 1 => assert_eq!(bound, tf), 2 => assert_eq!(bound, tg), _ => panic!() }
         }
+    }
+
+    #[test]
+    fn nested_var_binds_to_fact_subterm() {
+        // WI-373 gap 3: a query var at a NESTED position must bind to the matched
+        // fact's subterm. Insert ground fact f(g(42)), query f(g(?y)); ?y → 42.
+        // Before the nested binding-extraction, ?y recorded no path and resolved
+        // to None (the fact was found but the var was silently unbound).
+        let mut env = TestEnv::new();
+        let mut tree: SubstTree<u32> = SubstTree::new();
+        let f = env.intern("f");
+        let g = env.intern("g");
+        let v42 = env.alloc(Term::Const(Literal::Int(42)));
+        let g42 = env.alloc(Term::Fn { functor: g, pos_args: SmallVec::from_elem(v42, 1), named_args: SmallVec::new() });
+        let fact = env.alloc(Term::Fn { functor: f, pos_args: SmallVec::from_elem(g42, 1), named_args: SmallVec::new() });
+        tree.insert_ground(&env.kb, &view(fact), 1);
+
+        let yv = env.fresh_var("y");
+        let var_y = env.alloc(Term::Var(Var::Global(yv)));
+        let gy = env.alloc(Term::Fn { functor: g, pos_args: SmallVec::from_elem(var_y, 1), named_args: SmallVec::new() });
+        let pat = env.alloc(Term::Fn { functor: f, pos_args: SmallVec::from_elem(gy, 1), named_args: SmallVec::new() });
+        let results = tree.query_resolved(&env.kb, &view(pat), |_| fact);
+        assert_eq!(results.len(), 1, "fact should be found");
+        let bound = results[0].1.resolve_as_value(yv).and_then(|v| v.as_term());
+        assert_eq!(bound, Some(v42), "nested ?y must bind to 42, got {:?}", bound);
     }
 
     #[test]

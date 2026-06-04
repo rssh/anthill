@@ -2452,17 +2452,18 @@ impl KnowledgeBase {
         tree_subst: &subst::Substitution,
     ) -> (Vec<Rc<NodeOccurrence>>, subst::Substitution) {
         let arity = self.rules[id.index()].arity;
-        // WI-373 gap 3 (the deep, unbuilt half): a value *rule* head can be
-        // ASSERTED + INDEXED (carrier-agnostic closure + WI-373 gap-2 discrim
-        // keying), but RESOLVING one needs the discrim binding-extraction to
-        // thread a query var matched against a position INSIDE the value head's
-        // Node. Today that is term-only: `VarPath` is single-level and
-        // `extract_value_at_path` does not descend into a Node child, so a nested
-        // value-head var yields an EMPTY `tree_subst` → an UNCONSTRAINED answer
-        // (a silent wrong result). So `rule_head` stays the LOUD guard here —
-        // value-rule-head resolution fails loudly rather than mis-resolve, until
-        // the binding-extraction (VarPath nesting + value-head path-descent) lands.
-        let head = self.rule_head(id);
+        // WI-373 gap 3 (delivered): a query var matched against a position
+        // INSIDE a value rule head now threads a nested `VarPath` and
+        // `extract_value_at_path` descends into the head's `Value::Node` child
+        // (the discrim binding-extraction), so the head match enters
+        // `tree_subst` carrier-faithfully — no longer an empty/unconstrained
+        // answer. The arity > 0 path below never reads the head term (the
+        // match is fully encoded in `tree_subst`), so a value rule head no
+        // longer needs the term-only `rule_head` reader here. Only the
+        // arity == 0 legacy path reads it (for the head's Global vars) — it
+        // takes `rule_head` locally, and a value head there stays the LOUD
+        // guard (a ground value-headed rule has no head vars to collect; an
+        // arity-0 value rule with head vars is WI-342-P3 / gap 1 territory).
         // WI-246: the rule's occurrence body — opened + head-match-renamed, then
         // pushed by the resolver as `Value::Node` goals (and driving the
         // caller-var delay pre-check). The term body (`RuleEntry.body`) is no
@@ -2565,10 +2566,14 @@ impl KnowledgeBase {
             (final_nodes, answer_links)
         } else {
             // Legacy path: Global vars (ground facts or rules not yet converted).
-            // WI-246: collect rule vars from the head (a hash-consed term — the
-            // `rule_head` guard above means we never reach here with a value head)
-            // + the OCCURRENCE body. Legacy bodies use Global vars, parallel to
-            // `body_nodes`, so no term body is read here.
+            // WI-246: collect rule vars from the head (a hash-consed term) + the
+            // OCCURRENCE body. Legacy bodies use Global vars, parallel to
+            // `body_nodes`, so no term body is read here. `rule_head` is the LOUD
+            // guard for a value head reaching this arity-0 path (a ground value
+            // fact has no head vars; an arity-0 value rule with head vars is
+            // gap 1 / WI-342-P3 territory) — the arity > 0 path above no longer
+            // reads it, so value rule heads with vars resolve there unguarded.
+            let head = self.rule_head(id);
             let mut all_vars = Vec::new();
             let mut seen = std::collections::HashSet::new();
             self.collect_vars_rec(head, &mut all_vars, &mut seen);
@@ -4085,6 +4090,92 @@ mod tests {
             kb.query(query).iter().any(|(r, _)| *r == rid),
             "the var-bearing value rule head must be indexed + queryable",
         );
+    }
+
+    #[test]
+    fn value_rule_head_with_var_resolves_and_binds_nested() {
+        // WI-373 gap 3 (binding extraction): RESOLVE against a var-bearing value
+        // rule head. Rule  vf(g(?x)) :- thing(?x)  with head carried as a
+        // Value::Node, plus fact thing("active"). A query vf(g(?y)) must bind the
+        // NESTED ?y to the rule's head var, run the body, and answer ?y="active".
+        // Before the nested binding-extraction this yielded an empty tree_subst
+        // (?y unconstrained — a silent wrong answer) and `with_fresh_vars`
+        // loud-guarded the value head; now it resolves carrier-faithfully.
+        use crate::eval::value::Value;
+        use crate::intern::Symbol;
+        use crate::kb::load::register_prelude;
+        use crate::kb::resolve::ResolveConfig;
+        use std::rc::Rc;
+        use term::Var;
+
+        let mut kb = KnowledgeBase::new();
+        register_prelude(&mut kb);
+
+        let vf = kb.intern("vf");
+        let g = kb.intern("g");
+        let thing = kb.intern("thing");
+        let sort = kb.make_name_term("MySort");
+        let domain = kb.make_name_term("test");
+
+        // Fact thing("active").
+        let active = kb.alloc(Term::Const(Literal::String("active".into())));
+        let thing_active = kb.alloc(Term::Fn {
+            functor: thing, pos_args: SmallVec::from_elem(active, 1), named_args: SmallVec::new(),
+        });
+        kb.assert_fact(thing_active, sort, domain, None);
+
+        // Rule vf(g(?x)) :- thing(?x), head g(?x) carried as a Value::Node.
+        let xv = kb.fresh_var(vf);
+        let xt = kb.alloc(Term::Var(Var::Global(xv)));
+        let g_x = kb.alloc(Term::Fn {
+            functor: g, pos_args: SmallVec::from_elem(xt, 1), named_args: SmallVec::new(),
+        });
+        let g_occ = node_occurrence::materialize_from_handle(&kb, g_x);
+        let head = Value::Entity {
+            functor: vf,
+            pos: Rc::from(vec![Value::Node(g_occ)]),
+            named: Rc::from(Vec::<(Symbol, Value)>::new()),
+        };
+        let thing_x = kb.alloc(Term::Fn {
+            functor: thing, pos_args: SmallVec::from_elem(xt, 1), named_args: SmallVec::new(),
+        });
+        let body_nodes = kb.term_body_to_nodes(&[thing_x]);
+        kb.assert_rule_debruijn_with_nodes(head, body_nodes, sort, domain, None);
+
+        let config = ResolveConfig::default();
+
+        // Query vf(g(?y)) → 1 solution with ?y = "active".
+        let yv = kb.fresh_var(vf);
+        let yt = kb.alloc(Term::Var(Var::Global(yv)));
+        let g_y = kb.alloc(Term::Fn {
+            functor: g, pos_args: SmallVec::from_elem(yt, 1), named_args: SmallVec::new(),
+        });
+        let q_var = kb.alloc(Term::Fn {
+            functor: vf, pos_args: SmallVec::from_elem(g_y, 1), named_args: SmallVec::new(),
+        });
+        let sols = kb.resolve(&[q_var], &config);
+        assert_eq!(sols.len(), 1, "vf(g(?y)) should resolve through the value rule head");
+        let bound = kb.reify(yt, &sols[0].subst).as_term();
+        assert_eq!(bound, Some(active), "nested ?y must bind to \"active\", got {:?}", bound);
+
+        // Query vf(g("active")) → succeeds (body thing("active") holds).
+        let g_active = kb.alloc(Term::Fn {
+            functor: g, pos_args: SmallVec::from_elem(active, 1), named_args: SmallVec::new(),
+        });
+        let q_ok = kb.alloc(Term::Fn {
+            functor: vf, pos_args: SmallVec::from_elem(g_active, 1), named_args: SmallVec::new(),
+        });
+        assert_eq!(kb.resolve(&[q_ok], &config).len(), 1, "vf(g(\"active\")) should hold");
+
+        // Query vf(g("missing")) → fails (no thing("missing")).
+        let missing = kb.alloc(Term::Const(Literal::String("missing".into())));
+        let g_missing = kb.alloc(Term::Fn {
+            functor: g, pos_args: SmallVec::from_elem(missing, 1), named_args: SmallVec::new(),
+        });
+        let q_no = kb.alloc(Term::Fn {
+            functor: vf, pos_args: SmallVec::from_elem(g_missing, 1), named_args: SmallVec::new(),
+        });
+        assert_eq!(kb.resolve(&[q_no], &config).len(), 0, "vf(g(\"missing\")) should fail");
     }
 
     #[test]

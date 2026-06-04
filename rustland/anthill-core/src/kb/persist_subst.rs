@@ -21,17 +21,40 @@ use crate::kb::KnowledgeBase;
 
 // ── VarPath — position of a variable binding in a term ──────────
 
-/// Describes where in a fact term to extract a variable's binding value.
-#[derive(Clone, Debug)]
-pub enum VarPath {
-    /// The entire fact term (bare variable query)
-    Root,
-    /// An argument value of the top-level Fn
-    Arg(ArgPos),
+/// Describes where in a fact term to extract a variable's binding value: a
+/// chain of [`ArgPos`] steps descending from the head, root-to-leaf. The empty
+/// chain is the root (a bare-variable query binds the whole head). A single
+/// step addresses a top-level argument; multiple steps address a variable
+/// nested inside a compound argument (`f(g(?y))` records `?y` at
+/// `[Positional(0), Positional(0)]`). The discrimination-tree query records the
+/// chain as it descends the query structure (WI-373 gap 3 — nested binding
+/// extraction); `extract_at_path` / `extract_value_at_path` replay it against
+/// the matched fact head.
+#[derive(Clone, Debug, Default)]
+pub struct VarPath(SmallVec<[ArgPos; 4]>);
+
+impl VarPath {
+    /// The root path (empty chain) — addresses the whole head.
+    pub(crate) fn root() -> Self {
+        VarPath(SmallVec::new())
+    }
+
+    /// A new path with `step` appended (descend one level). Cheap for the
+    /// common shallow case (≤ 4 steps stay inline in the `SmallVec`).
+    pub(crate) fn appended(&self, step: ArgPos) -> Self {
+        let mut steps = self.0.clone();
+        steps.push(step);
+        VarPath(steps)
+    }
+
+    /// The steps, root-to-leaf.
+    pub(crate) fn steps(&self) -> &[ArgPos] {
+        &self.0
+    }
 }
 
 /// Identifies an argument within a Fn term.
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub enum ArgPos {
     /// N-th positional argument (0-based)
     Positional(usize),
@@ -57,29 +80,32 @@ pub enum BindValue {
 
 // ── Path extraction ─────────────────────────────────────────────
 
-/// Extract a subterm TermId from a fact term following a VarPath.
+/// Extract a subterm TermId from a fact term following a VarPath, descending
+/// one [`ArgPos`] step at a time. The root path returns the whole term; a
+/// multi-step path walks into nested `Fn` args (WI-373 gap 3).
 pub(crate) fn extract_at_path(terms: &TermStore, fact_term: TermId, path: &VarPath) -> TermId {
-    match path {
-        VarPath::Root => fact_term,
-        VarPath::Arg(arg_pos) => {
-            if let Term::Fn { pos_args, named_args, .. } = terms.get(fact_term) {
-                match arg_pos {
-                    ArgPos::Positional(n) => {
-                        if let Some(&id) = pos_args.get(*n) {
-                            return id;
-                        }
-                    }
-                    ArgPos::Named(sym) => {
-                        for &(s, id) in named_args.iter() {
-                            if s == *sym { return id; }
-                        }
-                    }
-                }
+    let mut cur = fact_term;
+    for step in path.steps() {
+        let Term::Fn { pos_args, named_args, .. } = terms.get(cur) else {
+            // A recorded path must descend a term that matched the query
+            // structure; a non-Fn here is a discrim/path desync — surface it
+            // loudly in debug, fall back to the whole term in release.
+            debug_assert!(false, "extract_at_path: path step {step:?} into a non-Fn term");
+            return fact_term;
+        };
+        let next = match step {
+            ArgPos::Positional(n) => pos_args.get(*n).copied(),
+            ArgPos::Named(sym) => named_args.iter().find(|(s, _)| s == sym).map(|(_, id)| *id),
+        };
+        match next {
+            Some(id) => cur = id,
+            None => {
+                debug_assert!(false, "extract_at_path: no arg at {step:?} (path/fact desync)");
+                return fact_term;
             }
-            // Fallback: return fact_term itself (shouldn't happen with valid paths)
-            fact_term
         }
     }
+    cur
 }
 
 /// Carrier-faithful peer of [`extract_at_path`] (WI-348 Phase B): extract a
@@ -90,18 +116,29 @@ pub(crate) fn extract_at_path(terms: &TermStore, fact_term: TermId, path: &VarPa
 /// (the term-store walk would read a sorted-by-name skeleton; see the design
 /// doc's named-order finding).
 pub(crate) fn extract_value_at_path(kb: &KnowledgeBase, head: &Value, path: &VarPath) -> Value {
-    let item = match path {
-        VarPath::Root => return head.clone(),
-        VarPath::Arg(ArgPos::Positional(n)) => head.pos_arg(kb, *n),
-        VarPath::Arg(ArgPos::Named(sym)) => head.named_arg(kb, *sym),
-    };
-    match item {
-        Some(ViewItem::Term(t)) => Value::Term(t),
-        Some(ViewItem::Value(v)) => v.clone(),
-        Some(ViewItem::Node(occ)) => Value::Node(occ),
-        // Mirror extract_at_path's fallback: an invalid path yields the head.
-        None => head.clone(),
+    let mut cur = head.clone();
+    for step in path.steps() {
+        // Read the child through `TermView` at each level — the SAME surface
+        // the tree indexed by — so a `Value::Node` child keeps its occurrence
+        // identity as we descend (WI-373 gap 3 nested path-descent).
+        let item = match step {
+            ArgPos::Positional(n) => cur.pos_arg(kb, *n),
+            ArgPos::Named(sym) => cur.named_arg(kb, *sym),
+        };
+        cur = match item {
+            Some(ViewItem::Term(t)) => Value::Term(t),
+            Some(ViewItem::Value(v)) => v.clone(),
+            Some(ViewItem::Node(occ)) => Value::Node(occ),
+            // Mirror extract_at_path: a recorded path must descend a matching
+            // head; a missing child is a path/head desync — loud in debug,
+            // whole-head fallback in release.
+            None => {
+                debug_assert!(false, "extract_value_at_path: no child at {step:?} (path/head desync)");
+                return head.clone();
+            }
+        };
     }
+    cur
 }
 
 // ── PersistSubst trait ──────────────────────────────────────────
@@ -281,7 +318,7 @@ mod tests {
         });
 
         let s = SmallSubst::new()
-            .with_binding(vid, BindValue::Path(VarPath::Arg(ArgPos::Positional(0))));
+            .with_binding(vid, BindValue::Path(VarPath::root().appended(ArgPos::Positional(0))));
         let sub = s.resolve_leaf(&env.terms, fact_term);
         assert_eq!(sub.resolve_as_value(vid).and_then(|v| v.as_term()), Some(val));
     }
@@ -345,7 +382,7 @@ mod tests {
     fn extract_at_path_root() {
         let mut env = TestEnv::new();
         let tid = env.alloc(Term::Const(Literal::Int(42)));
-        assert_eq!(extract_at_path(&env.terms, tid, &VarPath::Root), tid);
+        assert_eq!(extract_at_path(&env.terms, tid, &VarPath::root()), tid);
     }
 
     #[test]
@@ -359,8 +396,8 @@ mod tests {
             pos_args: SmallVec::from_slice(&[val0, val1]),
             named_args: SmallVec::new(),
         });
-        assert_eq!(extract_at_path(&env.terms, term, &VarPath::Arg(ArgPos::Positional(0))), val0);
-        assert_eq!(extract_at_path(&env.terms, term, &VarPath::Arg(ArgPos::Positional(1))), val1);
+        assert_eq!(extract_at_path(&env.terms, term, &VarPath::root().appended(ArgPos::Positional(0))), val0);
+        assert_eq!(extract_at_path(&env.terms, term, &VarPath::root().appended(ArgPos::Positional(1))), val1);
     }
 
     #[test]
@@ -374,6 +411,28 @@ mod tests {
             pos_args: SmallVec::new(),
             named_args: SmallVec::from_slice(&[(k_sym, val)]),
         });
-        assert_eq!(extract_at_path(&env.terms, term, &VarPath::Arg(ArgPos::Named(k_sym))), val);
+        assert_eq!(extract_at_path(&env.terms, term, &VarPath::root().appended(ArgPos::Named(k_sym))), val);
+    }
+
+    #[test]
+    fn extract_at_path_nested() {
+        // f(g(inner)) — a two-step path [Positional(0), Positional(0)]
+        // descends into the nested compound to reach `inner` (WI-373 gap 3).
+        let mut env = TestEnv::new();
+        let f_sym = env.intern("f");
+        let g_sym = env.intern("g");
+        let inner = env.alloc(Term::Const(Literal::Int(7)));
+        let g = env.alloc(Term::Fn {
+            functor: g_sym, pos_args: SmallVec::from_elem(inner, 1), named_args: SmallVec::new(),
+        });
+        let f = env.alloc(Term::Fn {
+            functor: f_sym, pos_args: SmallVec::from_elem(g, 1), named_args: SmallVec::new(),
+        });
+        let path = VarPath::root()
+            .appended(ArgPos::Positional(0))
+            .appended(ArgPos::Positional(0));
+        assert_eq!(extract_at_path(&env.terms, f, &path), inner);
+        // One step short reaches the intermediate g(inner).
+        assert_eq!(extract_at_path(&env.terms, f, &VarPath::root().appended(ArgPos::Positional(0))), g);
     }
 }
