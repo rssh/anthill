@@ -1634,11 +1634,14 @@ pub(super) fn collect_occurrence_global_vars_ordered(
     }
 }
 
-/// Collect `Var::Global` ids from the `TermId`-typed var-bearing fields of an
-/// `Expr` — the pattern / param / type-annotation / type-arg fields that
-/// `for_each_child` does not descend but [`node_to_debruijn`] closes. Kept in
-/// lockstep with `node_to_debruijn`'s `term_to_debruijn` calls: any field closed
-/// there must be collected here.
+/// Collect `Var::Global` ids from an `Expr`'s type-positional fields — the
+/// `type_args` / `type_annotation` that `for_each_child` does not descend but
+/// `node_to_debruijn` closes. The COLLECT twin of the closer's `close_type_args`
+/// / `close_option_value`: it walks the SAME fields and reads each type `Value`
+/// through [`collect_value_type`] (twin of `close_value_type`), so the var set
+/// gathered here is exactly the set `node_to_debruijn` later closes — the
+/// "keep in lockstep with `node_to_debruijn`" constraint is now structural
+/// (twin functions), not a hand-maintained parallel (WI-378 step 1).
 fn collect_expr_termid_field_vars(
     kb: &KnowledgeBase,
     expr: &Expr,
@@ -1647,32 +1650,57 @@ fn collect_expr_termid_field_vars(
 ) {
     match expr {
         Expr::Apply { type_args, .. } | Expr::ApplyWithin { type_args, .. } => {
-            // WI-342 S4b: each type-arg is a `Value`. A ground `Value::Term` is
-            // var-collected as before; a `Value::Node` type carries no `Global`
-            // vars (Ref/literal denoteds), symmetric with the no-op DeBruijn
-            // close in `close_value_type` (mirrors the `Let.type_annotation` arm).
-            for (_, v) in type_args {
-                if let Value::Term(t) = v {
-                    kb.collect_vars_rec(*t, vars, seen);
-                }
-            }
+            collect_type_args_vars(kb, type_args, vars, seen)
         }
         Expr::Let { type_annotation, .. } => {
-            // WI-318: pattern is now a Pattern-kind occurrence walked by
-            // `for_each_child` in the caller. Only `type_annotation` remains a
-            // var-bearing non-occ-child field. WI-342: it is now a `Value`; a
-            // ground `Value::Term` is var-collected as before, a `Value::Node`
-            // type carries no `Global` vars (Ref/literal denoteds), symmetric
-            // with the no-op DeBruijn close in `close_value_type`.
-            if let Some(Value::Term(t)) = type_annotation {
-                kb.collect_vars_rec(*t, vars, seen);
-            }
+            collect_option_value(kb, type_annotation, vars, seen)
         }
-        // WI-318: Lambda / LambdaWithin params and MatchBranch.pattern
-        // are now Pattern-kind occurrences walked by `for_each_child`
-        // in the caller (vars in any nested type_ann are reached
-        // through that recursion).
+        // WI-318: Lambda / LambdaWithin params and MatchBranch.pattern are
+        // Pattern-kind occurrences walked by `for_each_child` in the caller.
         _ => {}
+    }
+}
+
+/// Collect the free Global vars of a type `Value` — the COLLECT twin of
+/// [`close_value_type`] (and `open_value_type`). A `Value::Term` reads via
+/// `collect_vars_rec`. A `Value::Node` type position is a denoted Type
+/// occurrence which, like `close_value_type`'s `node_to_debruijn` (a no-op on a
+/// Type occurrence — it carries no `Expr`/`Pattern` body to walk), contributes
+/// no Global var today. Walking INTO a Type occurrence — so a Global var in
+/// type position is both collected here and closed there — is WI-342-P3 /
+/// WI-378 step 2.
+fn collect_value_type(
+    kb: &KnowledgeBase,
+    v: &Value,
+    vars: &mut Vec<VarId>,
+    seen: &mut std::collections::HashSet<u32>,
+) {
+    if let Value::Term(t) = v {
+        kb.collect_vars_rec(*t, vars, seen);
+    }
+}
+
+/// Collect twin of [`close_type_args`].
+fn collect_type_args_vars(
+    kb: &KnowledgeBase,
+    items: &[(Option<Symbol>, Value)],
+    vars: &mut Vec<VarId>,
+    seen: &mut std::collections::HashSet<u32>,
+) {
+    for (_, v) in items {
+        collect_value_type(kb, v, vars, seen);
+    }
+}
+
+/// Collect twin of [`close_option_value`].
+fn collect_option_value(
+    kb: &KnowledgeBase,
+    item: &Option<Value>,
+    vars: &mut Vec<VarId>,
+    seen: &mut std::collections::HashSet<u32>,
+) {
+    if let Some(v) = item {
+        collect_value_type(kb, v, vars, seen);
     }
 }
 
