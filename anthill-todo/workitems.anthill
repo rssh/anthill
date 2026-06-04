@@ -2955,5 +2955,17 @@ fact WorkItem(
   description: "anthill-todo CLI: NAMED TICKET LISTS / TAGS + ORDERED INSERT (+ dep-edit) -- the primitives a reusable build-loop SKILL needs. MOTIVATION: the typing build loop (docs/design/typing-build-loop.md) reads a design + an ORDERED ticket sequence, picks the first undelivered whose deps are delivered, then DELIVERS it or INSERTS a prerequisite before it and restarts. Generalizable to ANY project if the tracker supports the primitives -- then one skill drives any tagged sequence. FEATURES: (1) TAGS / named lists -- tag a ticket with a list name (e.g. 'anthill-todo tag WI-NNN typing'); a ticket may carry several tags. (2) ORDERED list view -- 'list --tag typing' shows the tagged tickets in SEQUENCE order (topological by 'depends', or an explicit rank) with status, so 'first undelivered whose deps are delivered' is well-defined and machine-readable. (3) INSERT-BEFORE -- 'insert WI-NEW --before WI-CUR --tag typing' (or sugar on add): place WI-NEW before WI-CUR in the sequence AND make WI-CUR depend on WI-NEW (the 'insert blocking prerequisite' op the loop performs; today done by hand via 'add --depends' + 'feedback'). (4) DEP-EDIT -- 'depends add/remove WI-A WI-B' (the CLI currently has NO way to add a dependency to an existing ticket -- a gap hit repeatedly this session; we worked around it with feedback). ACCEPTANCE: tag tickets into a named ordered list; 'list --tag X' shows them topo-ordered with status; insert a ticket before another (sets dep + tag); add/remove a dep on an existing ticket; reproduce the typing sequence (WI-379..387 + 368/376/374/381/382/383/384/385) as a 'typing' tag. ENABLES a reusable '/build-loop' skill (read design -> first undelivered in the tag -> deliver, or insert prerequisite, or stop for interaction). Rust (anthill-todo crate). Relates docs/design/typing-build-loop.md.",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: [],
-  status: Open)
+  status: Delivered(agent: "claude", at: "2026-06-04T18:47:10Z"))
 
+fact Tag(name: "typing", workitem: "WI-368")
+fact Tag(name: "typing", workitem: "WI-374")
+fact Tag(name: "typing", workitem: "WI-376")
+fact Tag(name: "typing", workitem: "WI-379")
+fact Tag(name: "typing", workitem: "WI-380")
+fact Tag(name: "typing", workitem: "WI-381")
+fact Tag(name: "typing", workitem: "WI-382")
+fact Tag(name: "typing", workitem: "WI-383")
+fact Tag(name: "typing", workitem: "WI-384")
+fact Tag(name: "typing", workitem: "WI-385")
+fact Tag(name: "typing", workitem: "WI-386")
+fact Tag(name: "typing", workitem: "WI-387")

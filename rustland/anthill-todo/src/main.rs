@@ -49,16 +49,31 @@ If the project has no `anthill-todo/` directory yet, run `init` first.
 
 ```bash
 anthill-todo -d "$PWD" list                              # List all work items
-anthill-todo -d "$PWD" add "description" [--depends WI-NNN]  # Add a new work item
+anthill-todo -d "$PWD" list --tag typing                 # Tag's items in dependency (sequence) order
+anthill-todo -d "$PWD" add "description" [--depends WI-NNN] [--tag NAME]  # Add a new work item
+anthill-todo -d "$PWD" insert "description" --before WI-NNN [--tag NAME]  # Insert a prerequisite before WI-NNN
 anthill-todo -d "$PWD" show WI-NNN                       # Show details
 anthill-todo -d "$PWD" next                              # Show next claimable item
 anthill-todo -d "$PWD" --agent claude claim WI-NNN       # Claim a work item
 anthill-todo -d "$PWD" --agent claude deliver WI-NNN     # Mark as delivered
 anthill-todo -d "$PWD" feedback WI-NNN "feedback text"   # Add feedback
+anthill-todo -d "$PWD" tag WI-NNN typing                 # Add a tag (named list)
+anthill-todo -d "$PWD" untag WI-NNN typing               # Remove a tag
+anthill-todo -d "$PWD" add-dependency WI-A WI-B          # Make WI-A depend on WI-B
+anthill-todo -d "$PWD" remove-dependency WI-A WI-B       # Drop WI-A's dependency on WI-B
 anthill-todo -d "$PWD" status                            # Show status counts
 anthill-todo -d "$PWD" graph                             # Show dependency graph
 anthill-todo -d "$PWD" init                              # Initialize anthill-todo/ in project
 ```
+
+### Build-loop primitives (tags + ordered insert)
+
+A *named list* (tag) plus `list --tag` gives a machine-readable, dependency-ordered
+sequence: `list --tag typing` shows the tag's items topologically (a dependency
+appears before its dependents) with status, marking the first undelivered item whose
+dependencies are all satisfied with `<- next`. `insert "desc" --before WI-CUR --tag typing`
+creates a new item, tags it, and makes WI-CUR depend on it — the "insert a blocking
+prerequisite" step, in one command.
 "#;
 
 // ── CLI types ───────────────────────────────────────────────────
@@ -100,6 +115,28 @@ enum TodoCommand {
         /// Acceptance criteria: tool names (e.g. cargo-test)
         #[arg(long = "acceptance")]
         acceptance: Vec<String>,
+        /// Named lists to tag the new item with (e.g. typing). Repeatable.
+        #[arg(long = "tag")]
+        tags: Vec<String>,
+    },
+    /// Add a new work item *before* an existing one in a sequence:
+    /// creates the item, tags it, and makes the existing item depend on it.
+    Insert {
+        /// Description of the new work item
+        description: String,
+        /// Existing work item the new one is inserted before
+        /// (the existing item is made to depend on the new one)
+        #[arg(long = "before")]
+        before: String,
+        /// Named lists to tag the new item with. Repeatable.
+        #[arg(long = "tag")]
+        tags: Vec<String>,
+        /// Additional dependencies for the new item
+        #[arg(long = "depends")]
+        depends_on: Vec<String>,
+        /// Acceptance criteria: tool names (e.g. cargo-test)
+        #[arg(long = "acceptance")]
+        acceptance: Vec<String>,
     },
     /// Show work item counts by status
     Status,
@@ -111,6 +148,10 @@ enum TodoCommand {
         /// Show all items including delivered/verified
         #[arg(long)]
         all: bool,
+        /// Show only items in the named list (tag), in dependency
+        /// (topological) order with status — the build-loop sequence view.
+        #[arg(long)]
+        tag: Option<String>,
     },
     /// Show next claimable work item
     Next {
@@ -175,6 +216,20 @@ enum TodoCommand {
         id: String,
         /// Dependency work item ID to remove
         dependency: String,
+    },
+    /// Tag a work item into a named list (e.g. `tag WI-007 typing`)
+    Tag {
+        /// Work item ID
+        id: String,
+        /// Tag / list name
+        name: String,
+    },
+    /// Remove a tag from a work item
+    Untag {
+        /// Work item ID
+        id: String,
+        /// Tag / list name to remove
+        name: String,
     },
     /// Show dependency graph
     Graph,
@@ -571,6 +626,62 @@ fn items_with_feedback(kb: &KnowledgeBase) -> std::collections::HashSet<String> 
     result
 }
 
+// ── Tag accessors ───────────────────────────────────────────────
+
+/// All `(workitem, tag-name)` pairs from `anthill.stage0.Tag` facts.
+fn collect_tags(kb: &KnowledgeBase) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    if let Some(tag_sym) = kb.try_resolve_symbol("anthill.stage0.Tag") {
+        for rid in kb.rules_by_functor(tag_sym) {
+            let head = kb.rule_head(rid);
+            let wi = extract_named_arg(kb, head, "workitem").and_then(|t| extract_string(kb, t));
+            let name = extract_named_arg(kb, head, "name").and_then(|t| extract_string(kb, t));
+            if let (Some(wi), Some(name)) = (wi, name) {
+                out.push((wi, name));
+            }
+        }
+    }
+    out
+}
+
+/// Tag names attached to a work item (sorted, deduped).
+fn tags_for_item(kb: &KnowledgeBase, id: &str) -> Vec<String> {
+    let mut tags: Vec<String> = collect_tags(kb)
+        .into_iter()
+        .filter(|(wi, _)| wi == id)
+        .map(|(_, name)| name)
+        .collect();
+    tags.sort();
+    tags.dedup();
+    tags
+}
+
+/// Work item IDs carrying the given tag.
+fn items_for_tag(kb: &KnowledgeBase, name: &str) -> std::collections::HashSet<String> {
+    collect_tags(kb)
+        .into_iter()
+        .filter(|(_, n)| n == name)
+        .map(|(wi, _)| wi)
+        .collect()
+}
+
+/// True if work item `id` already carries tag `name`.
+fn is_tagged(kb: &KnowledgeBase, id: &str, name: &str) -> bool {
+    collect_tags(kb).iter().any(|(wi, n)| wi == id && n == name)
+}
+
+/// The stage0 `Tag` entity must be defined in the project's domain for tag
+/// facts to resolve on reload. Returns true if present; otherwise prints a
+/// remediation error and returns false.
+fn require_tag_entity(kb: &KnowledgeBase) -> bool {
+    if kb.try_resolve_symbol("anthill.stage0.Tag").is_some() {
+        return true;
+    }
+    eprintln!("error: Tag entity not defined in this project's domain.anthill — \
+               add `entity Tag(workitem: String, name: String)` (and export it) to use tags.");
+    false
+}
+
 // ── Command implementations ─────────────────────────────────────
 
 fn run_status(kb: &KnowledgeBase) {
@@ -594,7 +705,11 @@ fn run_status(kb: &KnowledgeBase) {
     }
 }
 
-fn run_list(kb: &KnowledgeBase, status_filter: Option<&str>, show_all: bool) {
+fn run_list(kb: &KnowledgeBase, status_filter: Option<&str>, show_all: bool, tag: Option<&str>) {
+    if let Some(tag) = tag {
+        run_list_tagged(kb, tag, status_filter);
+        return;
+    }
     let items = collect_workitems(kb);
     let closed = |s: &str| s == "Delivered" || s == "Verified";
     let filtered: Vec<_> = items.iter()
@@ -690,6 +805,119 @@ fn run_list(kb: &KnowledgeBase, status_filter: Option<&str>, show_all: bool) {
     println!("{} item(s)", filtered.len());
 }
 
+/// Topologically order a set of work item IDs by the dependency graph:
+/// if item B (transitively) depends on item A, then A comes before B.
+/// Independent items are ordered by id for a deterministic sequence.
+/// Reachability is computed over the *full* graph, so two tagged items
+/// are ordered correctly even when the dependency path between them runs
+/// through untagged items.
+fn topo_order_tagged(items: &[WorkItemInfo], tagged: &std::collections::HashSet<String>) -> Vec<String> {
+    let mut nodes: Vec<String> = tagged.iter().cloned().collect();
+    nodes.sort();
+
+    let mut indeg: HashMap<String, usize> = nodes.iter().map(|n| (n.clone(), 0)).collect();
+    let mut succ: HashMap<String, Vec<String>> = nodes.iter().map(|n| (n.clone(), Vec::new())).collect();
+    for a in &nodes {
+        for b in &nodes {
+            if a == b { continue; }
+            // `a` precedes `b` iff `b` transitively depends on `a`.
+            if has_transitive_dep(items, b, a) {
+                succ.get_mut(a).unwrap().push(b.clone());
+                *indeg.get_mut(b).unwrap() += 1;
+            }
+        }
+    }
+
+    // Kahn's algorithm; among ready nodes pick the smallest id.
+    let mut ordered = Vec::with_capacity(nodes.len());
+    let mut placed: std::collections::HashSet<String> = std::collections::HashSet::new();
+    while ordered.len() < nodes.len() {
+        let next = nodes.iter()
+            .filter(|n| !placed.contains(n.as_str()) && indeg[n.as_str()] == 0)
+            .min()
+            .cloned();
+        let Some(next) = next else {
+            // A dependency cycle leaves nodes with non-zero indegree. We
+            // don't drop them silently — append the remainder in id order so
+            // the tag view still lists every member.
+            for n in &nodes {
+                if placed.insert(n.clone()) { ordered.push(n.clone()); }
+            }
+            break;
+        };
+        placed.insert(next.clone());
+        for s in &succ[&next] {
+            *indeg.get_mut(s).unwrap() -= 1;
+        }
+        ordered.push(next);
+    }
+    ordered
+}
+
+fn truncate_desc(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        s.to_string()
+    } else {
+        let head: String = s.chars().take(max).collect();
+        format!("{head}…")
+    }
+}
+
+/// `list --tag <name>`: the named-list sequence view. Items are shown in
+/// dependency (topological) order with status; the first undelivered item
+/// whose dependencies are all satisfied is marked `<- next` (the ticket the
+/// build loop would pick), and items with unmet deps show `(blocked: …)`.
+fn run_list_tagged(kb: &KnowledgeBase, tag: &str, status_filter: Option<&str>) {
+    let items = collect_workitems(kb);
+    let tagged = items_for_tag(kb, tag);
+    if tagged.is_empty() {
+        println!("No work items tagged '{tag}'.");
+        return;
+    }
+
+    let ordered = topo_order_tagged(&items, &tagged);
+
+    let status_of: HashMap<&str, &str> =
+        items.iter().map(|i| (i.id.as_str(), i.status.as_str())).collect();
+    let by_id: HashMap<&str, &WorkItemInfo> =
+        items.iter().map(|i| (i.id.as_str(), i)).collect();
+    let delivered = |s: &str| s == "Delivered" || s == "Verified";
+
+    println!("tag '{tag}' ({} item(s), sequence order):", ordered.len());
+
+    let mut next_marked = false;
+    let mut shown = 0usize;
+    for id in &ordered {
+        let Some(item) = by_id.get(id.as_str()) else {
+            // A tag pointing at a missing id is a data error — show it, don't hide it.
+            println!("  {id} [missing] (no such work item)");
+            shown += 1;
+            continue;
+        };
+        if let Some(f) = status_filter {
+            if !item.status.eq_ignore_ascii_case(f) { continue; }
+        }
+        shown += 1;
+
+        let unmet: Vec<&str> = item.depends_on.iter()
+            .filter(|d| status_of.get(d.as_str()).map_or(true, |s| !delivered(s)))
+            .map(|d| d.as_str())
+            .collect();
+
+        let is_next = !next_marked && !delivered(&item.status) && unmet.is_empty();
+        if is_next { next_marked = true; }
+
+        let blocked = if unmet.is_empty() {
+            String::new()
+        } else {
+            format!(" (blocked: {})", unmet.join(", "))
+        };
+        let marker = if is_next { "  <- next" } else { "" };
+        println!("  {} [{}] {}{}{}", item.id, item.status, truncate_desc(&item.description, 100), blocked, marker);
+    }
+    println!("{shown} item(s)");
+}
+
 fn run_next(kb: &mut KnowledgeBase, show_all: bool) {
     let claimable_sym = match kb.try_resolve_symbol("anthill.stage0.workflow.claimable") {
         Some(s) => s,
@@ -744,6 +972,10 @@ fn run_show(kb: &KnowledgeBase, id: &str) {
             println!("Status:      {}", wi.status);
             if !wi.depends_on.is_empty() {
                 println!("Depends on:  {}", wi.depends_on.join(", "));
+            }
+            let tags = tags_for_item(kb, id);
+            if !tags.is_empty() {
+                println!("Tags:        {}", tags.join(", "));
             }
 
             // Show full term for detailed fields
@@ -1339,52 +1571,52 @@ fn has_transitive_dep(items: &[WorkItemInfo], from: &str, target: &str) -> bool 
     false
 }
 
-fn run_add_dependency(kb: &KnowledgeBase, project_dir: &Path, id: &str, dep_id: &str) {
+fn run_add_dependency(kb: &KnowledgeBase, project_dir: &Path, id: &str, dep_id: &str) -> bool {
     let items = collect_workitems(kb);
     let item = match items.iter().find(|i| i.id == id) {
         Some(i) => i,
-        None => { eprintln!("error: work item '{id}' not found"); return; }
+        None => { eprintln!("error: work item '{id}' not found"); return false; }
     };
 
     if id == dep_id {
         eprintln!("error: work item cannot depend on itself");
-        return;
+        return false;
     }
 
     if !items.iter().any(|i| i.id == dep_id) {
         eprintln!("error: dependency target '{dep_id}' not found");
-        return;
+        return false;
     }
 
     if item.depends_on.iter().any(|d| d == dep_id) {
         eprintln!("error: '{id}' already depends on '{dep_id}'");
-        return;
+        return false;
     }
 
     if has_transitive_dep(&items, dep_id, id) {
         eprintln!("error: adding {id} -> {dep_id} would create a cycle ({dep_id} already transitively depends on {id})");
-        return;
+        return false;
     }
 
     let mut new_deps = item.depends_on.clone();
     new_deps.push(dep_id.to_string());
 
     match update_depends_in_source(project_dir, id, &new_deps) {
-        Ok(()) => println!("added dependency: {id} -> {dep_id}"),
-        Err(e) => eprintln!("error: source update for {id} failed: {e}"),
+        Ok(()) => { println!("added dependency: {id} -> {dep_id}"); true }
+        Err(e) => { eprintln!("error: source update for {id} failed: {e}"); false }
     }
 }
 
-fn run_remove_dependency(kb: &KnowledgeBase, project_dir: &Path, id: &str, dep_id: &str) {
+fn run_remove_dependency(kb: &KnowledgeBase, project_dir: &Path, id: &str, dep_id: &str) -> bool {
     let items = collect_workitems(kb);
     let item = match items.iter().find(|i| i.id == id) {
         Some(i) => i,
-        None => { eprintln!("error: work item '{id}' not found"); return; }
+        None => { eprintln!("error: work item '{id}' not found"); return false; }
     };
 
     if !item.depends_on.iter().any(|d| d == dep_id) {
         eprintln!("error: '{id}' does not depend on '{dep_id}'");
-        return;
+        return false;
     }
 
     let new_deps: Vec<String> = item.depends_on.iter()
@@ -1393,8 +1625,8 @@ fn run_remove_dependency(kb: &KnowledgeBase, project_dir: &Path, id: &str, dep_i
         .collect();
 
     match update_depends_in_source(project_dir, id, &new_deps) {
-        Ok(()) => println!("removed dependency: {id} -> {dep_id}"),
-        Err(e) => eprintln!("error: source update for {id} failed: {e}"),
+        Ok(()) => { println!("removed dependency: {id} -> {dep_id}"); true }
+        Err(e) => { eprintln!("error: source update for {id} failed: {e}"); false }
     }
 }
 
@@ -1510,32 +1742,200 @@ fn next_workitem_id(kb: &KnowledgeBase, project_dir: &Path) -> Result<String, St
     Ok(format!("WI-{:03}", max_num + 1))
 }
 
-fn run_add(kb: &KnowledgeBase, project_dir: &Path, description: &str, depends_on: &[String], acceptance: &[String]) {
-    let id = match next_workitem_id(kb, project_dir) {
-        Ok(id) => id,
-        Err(e) => {
-            eprintln!("error: {e}");
-            return;
-        }
-    };
+fn build_workitem_block(id: &str, description: &str, depends_on: &[String], acceptance: &[String]) -> String {
     let desc_escaped = escape_anthill_string(description);
-
     let deps = format_string_list(depends_on);
-
     let acc = if acceptance.is_empty() {
         format_acceptance_list(&["cargo-test".to_string()])
     } else {
         format_acceptance_list(acceptance)
     };
-
-    let block = format!(
+    format!(
         "fact WorkItem(\n  id: \"{id}\",\n  description: \"{desc_escaped}\",\n  acceptance: {acc},\n  depends_on: {deps},\n  status: Open)\n\n"
-    );
+    )
+}
 
+/// A `Tag` fact attaching `name` to work item `id`. Field order is fixed
+/// here for readable source; the loader resolves named args by field name.
+fn build_tag_block(id: &str, name: &str) -> String {
+    format!(
+        "fact Tag(name: \"{}\", workitem: \"{}\")\n",
+        escape_anthill_string(name),
+        escape_anthill_string(id)
+    )
+}
+
+/// Render the trailing " [tags: a, b]" note (empty when there are no tags).
+fn tag_note(tags: &[String]) -> String {
+    if tags.is_empty() { String::new() } else { format!(" [tags: {}]", tags.join(", ")) }
+}
+
+/// Append a WorkItem block (plus a Tag fact per tag) for the given id.
+fn append_workitem(project_dir: &Path, id: &str, description: &str, depends_on: &[String], acceptance: &[String], tags: &[String]) {
     let workitems_file = scan_dir(project_dir).join("workitems.anthill");
-    append_to_file(&workitems_file, &block);
+    append_to_file(&workitems_file, &build_workitem_block(id, description, depends_on, acceptance));
+    for t in tags {
+        append_to_file(&workitems_file, &build_tag_block(id, t));
+    }
+}
 
-    println!("added: {id} — {description}");
+/// Allocate the next id, append a new WorkItem (plus any tag facts), and return
+/// its id. Returns None on error (already reported). Shared by `add` and `insert`.
+fn add_workitem(
+    kb: &KnowledgeBase,
+    project_dir: &Path,
+    description: &str,
+    depends_on: &[String],
+    acceptance: &[String],
+    tags: &[String],
+) -> Option<String> {
+    if !tags.is_empty() && !require_tag_entity(kb) {
+        return None;
+    }
+    let id = match next_workitem_id(kb, project_dir) {
+        Ok(id) => id,
+        Err(e) => { eprintln!("error: {e}"); return None; }
+    };
+    append_workitem(project_dir, &id, description, depends_on, acceptance, tags);
+    Some(id)
+}
+
+fn run_add(kb: &KnowledgeBase, project_dir: &Path, description: &str, depends_on: &[String], acceptance: &[String], tags: &[String]) -> bool {
+    match add_workitem(kb, project_dir, description, depends_on, acceptance, tags) {
+        Some(id) => {
+            println!("added: {id} — {description}{}", tag_note(tags));
+            true
+        }
+        None => false,
+    }
+}
+
+// ── Tag / Insert commands ───────────────────────────────────────
+
+fn run_tag(kb: &KnowledgeBase, project_dir: &Path, id: &str, name: &str) -> bool {
+    if !require_tag_entity(kb) {
+        return false;
+    }
+    if name.trim().is_empty() {
+        eprintln!("error: tag name must be non-empty");
+        return false;
+    }
+    let items = collect_workitems(kb);
+    if !items.iter().any(|i| i.id == id) {
+        eprintln!("error: work item '{id}' not found");
+        return false;
+    }
+    if is_tagged(kb, id, name) {
+        eprintln!("error: '{id}' is already tagged '{name}'");
+        return false;
+    }
+    let workitems_file = scan_dir(project_dir).join("workitems.anthill");
+    append_to_file(&workitems_file, &build_tag_block(id, name));
+    println!("tagged: {id} +{name}");
+    true
+}
+
+fn run_untag(kb: &KnowledgeBase, project_dir: &Path, id: &str, name: &str) -> bool {
+    if !is_tagged(kb, id, name) {
+        eprintln!("error: '{id}' is not tagged '{name}'");
+        return false;
+    }
+    match remove_tag_in_source(project_dir, id, name) {
+        Ok(true) => { println!("untagged: {id} -{name}"); true }
+        Ok(false) => { eprintln!("error: tag fact for {id}/{name} not found in source"); false }
+        Err(e) => { eprintln!("error: removing tag: {e}"); false }
+    }
+}
+
+/// Remove the first `fact Tag(...)` block matching both `workitem: "<id>"`
+/// and `name: "<name>"`. Returns Ok(true) if one was removed.
+fn remove_tag_in_source(project_dir: &Path, id: &str, name: &str) -> Result<bool, String> {
+    let files = collect_anthill_files(&[scan_dir(project_dir)]);
+    // Match the markers as `build_tag_block` actually writes them — escaped —
+    // so a tag name containing a quote/backslash is still found and removable.
+    let wi_marker = format!("workitem: \"{}\"", escape_anthill_string(id));
+    let name_marker = format!("name: \"{}\"", escape_anthill_string(name));
+
+    for file in &files {
+        let source = match fs::read_to_string(file) {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+        if !(source.contains(&wi_marker) && source.contains(&name_marker)) {
+            continue;
+        }
+
+        let mut pos = 0;
+        while let Some(fact_offset) = source[pos..].find("fact ") {
+            let abs_start = pos + fact_offset;
+            let Some(abs_end) = fact_block_end(&source, abs_start) else { break };
+            let block = &source[abs_start..abs_end];
+            if block.starts_with("fact Tag(") && block.contains(&wi_marker) && block.contains(&name_marker) {
+                let mut result = String::with_capacity(source.len());
+                result.push_str(&source[..abs_start]);
+                // Swallow one trailing newline so the removed single-line fact
+                // leaves no blank gap at the deletion site (tag facts are
+                // written one per line). Whitespace elsewhere is left intact.
+                let after = source[abs_end..].strip_prefix('\n').map_or(abs_end, |_| abs_end + 1);
+                result.push_str(&source[after..]);
+                write_source(file, &result)?;
+                return Ok(true);
+            }
+            pos = abs_end;
+        }
+    }
+    Ok(false)
+}
+
+/// `insert <description> --before <id>`: create a new work item, tag it,
+/// and make `<id>` depend on it — placing the new item earlier in any
+/// dependency-ordered sequence (the build loop's "insert prerequisite").
+fn run_insert(
+    kb: &KnowledgeBase,
+    project_dir: &Path,
+    description: &str,
+    before: &str,
+    tags: &[String],
+    depends_on: &[String],
+    acceptance: &[String],
+) -> bool {
+    if !tags.is_empty() && !require_tag_entity(kb) {
+        return false;
+    }
+    let items = collect_workitems(kb);
+    let before_item = match items.iter().find(|i| i.id == before) {
+        Some(i) => i,
+        None => { eprintln!("error: --before target '{before}' not found"); return false; }
+    };
+
+    // The new item's own deps must not (transitively) reach `before`, or
+    // making `before` depend on the new item would close a cycle.
+    for d in depends_on {
+        if d == before || has_transitive_dep(&items, d, before) {
+            eprintln!("error: inserting before {before} with dependency {d} would create a cycle");
+            return false;
+        }
+    }
+
+    // Allocate the id and rewrite `before`'s depends_on FIRST. That rewrite is
+    // the step that can fail (e.g. a non-bracket `depends_on`); doing it before
+    // appending avoids leaving an orphaned, unlinked work item on disk.
+    let new_id = match next_workitem_id(kb, project_dir) {
+        Ok(id) => id,
+        Err(e) => { eprintln!("error: {e}"); return false; }
+    };
+    let mut new_before_deps = before_item.depends_on.clone();
+    if !new_before_deps.iter().any(|d| d == &new_id) {
+        new_before_deps.push(new_id.clone());
+    }
+    if let Err(e) = update_depends_in_source(project_dir, before, &new_before_deps) {
+        eprintln!("error: failed to make {before} depend on the new item: {e}");
+        return false;
+    }
+
+    append_workitem(project_dir, &new_id, description, depends_on, acceptance, tags);
+    println!("inserted: {new_id} before {before}{} ({before} now depends on {new_id})", tag_note(tags));
+    true
 }
 
 // ── Entry point ─────────────────────────────────────────────────
@@ -1585,28 +1985,38 @@ fn main() -> ExitCode {
         }
     };
 
-    match &cli.command {
+    // The WI-388 mutation primitives (add / insert / tag / untag /
+    // *-dependency) report failure via a non-zero exit so a driving script
+    // (e.g. a build-loop) can branch on `$?`. The older display/lifecycle
+    // commands keep their prior exit-0-with-stderr behaviour (out of scope
+    // here) and are treated as always-OK in this dispatch.
+    let ok = match &cli.command {
         TodoCommand::Init { .. } | TodoCommand::Delete { .. } | TodoCommand::Skill => unreachable!(),
-        TodoCommand::Add { description, depends_on, acceptance } => {
-            run_add(&kb, &project_dir, description, depends_on, acceptance);
+        TodoCommand::Add { description, depends_on, acceptance, tags } => {
+            run_add(&kb, &project_dir, description, depends_on, acceptance, tags)
         }
-        TodoCommand::Status => run_status(&kb),
-        TodoCommand::List { status, all } => run_list(&kb, status.as_deref(), *all),
-        TodoCommand::Next { all } => run_next(&mut kb, *all),
-        TodoCommand::Show { id } => run_show(&kb, id),
-        TodoCommand::Claim { id } => run_claim(&mut kb, id, &cli.agent, &project_dir),
-        TodoCommand::Deliver { id } => run_deliver(&mut kb, id, &cli.agent, &project_dir),
-        TodoCommand::Verify { id } => run_verify(&mut kb, id, &project_dir),
-        TodoCommand::Feedback { id, text } => run_feedback(&mut kb, id, text, &cli.agent, &project_dir),
+        TodoCommand::Insert { description, before, tags, depends_on, acceptance } => {
+            run_insert(&kb, &project_dir, description, before, tags, depends_on, acceptance)
+        }
+        TodoCommand::Status => { run_status(&kb); true }
+        TodoCommand::List { status, all, tag } => { run_list(&kb, status.as_deref(), *all, tag.as_deref()); true }
+        TodoCommand::Next { all } => { run_next(&mut kb, *all); true }
+        TodoCommand::Show { id } => { run_show(&kb, id); true }
+        TodoCommand::Claim { id } => { run_claim(&mut kb, id, &cli.agent, &project_dir); true }
+        TodoCommand::Deliver { id } => { run_deliver(&mut kb, id, &cli.agent, &project_dir); true }
+        TodoCommand::Verify { id } => { run_verify(&mut kb, id, &project_dir); true }
+        TodoCommand::Feedback { id, text } => { run_feedback(&mut kb, id, text, &cli.agent, &project_dir); true }
         TodoCommand::Update { id, description, acceptance } => {
-            run_update(&kb, &project_dir, id, description.as_deref(), acceptance);
+            run_update(&kb, &project_dir, id, description.as_deref(), acceptance); true
         }
         TodoCommand::AddDependency { id, dependency } => run_add_dependency(&kb, &project_dir, id, dependency),
         TodoCommand::RemoveDependency { id, dependency } => run_remove_dependency(&kb, &project_dir, id, dependency),
-        TodoCommand::Graph => run_graph(&kb),
-    }
+        TodoCommand::Tag { id, name } => run_tag(&kb, &project_dir, id, name),
+        TodoCommand::Untag { id, name } => run_untag(&kb, &project_dir, id, name),
+        TodoCommand::Graph => { run_graph(&kb); true }
+    };
 
-    ExitCode::SUCCESS
+    if ok { ExitCode::SUCCESS } else { ExitCode::FAILURE }
 }
 
 // ── Anthill-bundle entry point ──────────────────────────────────
@@ -1966,6 +2376,60 @@ mod tests {
         ];
         // X not in items — should not panic, just not found
         assert!(!has_transitive_dep(&items, "A", "Z"));
+    }
+
+    // ── topo_order_tagged ──────────────────────────────────────────
+
+    fn tagged(ids: &[&str]) -> std::collections::HashSet<String> {
+        ids.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn topo_chain_orders_deps_first() {
+        // C -> B -> A: A must come first, C last.
+        let items = vec![
+            make_item("A", &[]),
+            make_item("B", &["A"]),
+            make_item("C", &["B"]),
+        ];
+        let order = topo_order_tagged(&items, &tagged(&["A", "B", "C"]));
+        assert_eq!(order, vec!["A", "B", "C"]);
+    }
+
+    #[test]
+    fn topo_independent_items_break_ties_by_id() {
+        let items = vec![
+            make_item("A", &[]),
+            make_item("B", &[]),
+            make_item("C", &[]),
+        ];
+        let order = topo_order_tagged(&items, &tagged(&["C", "A", "B"]));
+        assert_eq!(order, vec!["A", "B", "C"]);
+    }
+
+    #[test]
+    fn topo_orders_through_untagged_intermediary() {
+        // D depends on M (untagged) which depends on A. Tagging only A and D,
+        // A must still precede D (reachability is over the full graph).
+        let items = vec![
+            make_item("A", &[]),
+            make_item("M", &["A"]),
+            make_item("D", &["M"]),
+        ];
+        let order = topo_order_tagged(&items, &tagged(&["D", "A"]));
+        assert_eq!(order, vec!["A", "D"]);
+    }
+
+    #[test]
+    fn topo_cycle_still_lists_every_member() {
+        // A <-> B cycle: neither has indegree 0, but both must still appear.
+        let items = vec![
+            make_item("A", &["B"]),
+            make_item("B", &["A"]),
+        ];
+        let mut order = topo_order_tagged(&items, &tagged(&["A", "B"]));
+        order.sort();
+        assert_eq!(order, vec!["A", "B"]);
     }
 
     // ── update_status_in_source: regression for description-shadowing ──
