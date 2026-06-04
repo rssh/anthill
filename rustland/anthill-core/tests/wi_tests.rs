@@ -172,6 +172,9 @@ mod wi365_effect_grounding_test;
 #[path = "include/wi375_effect_row_surface_test.rs"]
 mod wi375_effect_row_surface_test;
 
+#[path = "include/wi377_effect_row_absent_fold_test.rs"]
+mod wi377_effect_row_absent_fold_test;
+
 #[path = "include/wi366_value_in_type_facts_test.rs"]
 mod wi366_value_in_type_facts_test;
 

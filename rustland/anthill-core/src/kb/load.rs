@@ -6062,18 +6062,13 @@ impl<'a> Loader<'a> {
                     let effect_ts: Vec<TermId> = effect_children.into_iter().map(ground).collect();
                     return TypeChild::Ground(self.kb.make_arrow_type(param_t, result_t, &effect_ts));
                 }
-                // Fold the effect children into an `effects_rows` occurrence
-                // (present(label) merged into a row), carried on the arrow.
-                let mut row = self.kb.make_empty_row_occ(span, owner);
-                for label in effect_children.into_iter().rev() {
-                    let present = self.kb.make_present_occ(label, span, owner);
-                    row = self
-                        .kb
-                        .make_merge_occ(TypeChild::Node(present), TypeChild::Node(row), span, owner);
-                }
-                let effects_child = TypeChild::Node(
-                    self.kb.make_effects_rows_occ(TypeChild::Node(row), span, owner),
-                );
+                // WI-377: fold the effect children into an `effects_rows`
+                // occurrence via the shared absent-aware helper. The earlier
+                // hand-rolled fold here wrapped EVERY child in `present(…)`,
+                // double-wrapping a `-E` lacks-atom (already an `absent(…)` atom
+                // from the `EffectAbsent` arm) into `present(absent(E))`; the
+                // helper keeps absent atoms bare.
+                let effects_child = self.fold_effect_row_occ(effects, effect_children, span, owner);
                 TypeChild::Node(
                     self.kb
                         .make_arrow_occ(param_child, result_child, effects_child, span, owner),
@@ -6152,9 +6147,10 @@ impl<'a> Loader<'a> {
     /// canonical hash-consed term via [`build_canonical_effects_rows`] — which
     /// wraps each bare label in `present(…)`, keeps pre-built `absent(…)`
     /// atoms, sorts, and dedups. A denoted-bearing label (`Modify[c]`, `c` a
-    /// value) poisons the row to the occurrence form, folded `present`/`absent`
-    /// over `empty_row` exactly like the `Arrow` arm's `effects` fold — so the
-    /// value-in-type occurrence is CARRIED, not re-grounded.
+    /// value) poisons the row to the occurrence form via the shared
+    /// [`fold_effect_row_occ`](Self::fold_effect_row_occ) — the same fold the
+    /// `Arrow` arm uses — so the value-in-type occurrence is CARRIED, not
+    /// re-grounded.
     ///
     /// [`build_canonical_effects_rows`]: KnowledgeBase::build_canonical_effects_rows
     fn lower_effect_row(
@@ -6182,11 +6178,31 @@ impl<'a> Loader<'a> {
                 .collect();
             return TypeChild::Ground(self.kb.build_canonical_effects_rows(&effect_ts));
         }
-        // Denoted-bearing — fold into an `effects_rows` occurrence (mirror the
-        // `Arrow` arm). `-E` is already an `absent(…)` atom from the
-        // `EffectAbsent` arm; every other element is a bare label wrapped in
-        // `present(…)`. (Source order, not canonicalized — occurrences are not
-        // hash-consed, so dedup-canonical form does not apply, as for arrows.)
+        // Denoted-bearing — fold into an `effects_rows` occurrence via the
+        // shared absent-aware helper (the same fold the `Arrow` arm uses).
+        self.fold_effect_row_occ(effects, effect_children, span, owner)
+    }
+
+    /// WI-377: fold an effect list into an `effects_rows(EffectExpression)`
+    /// OCCURRENCE (the denoted-bearing `Value::Node` form), shared by the
+    /// written-row [`lower_effect_row`](Self::lower_effect_row) and the `Arrow`
+    /// arm's effects fold. Each element's pre-lowered `child` is wrapped in
+    /// `present(…)` UNLESS the source `TypeExpr` is a `-E` lacks-atom
+    /// (`EffectAbsent`) — which is already an `absent(…)` atom from the
+    /// `EffectAbsent` arm and must be carried bare (wrapping it would yield the
+    /// malformed `present(absent(E))`). Source order, not canonicalized:
+    /// occurrences are not hash-consed, so the dedup-canonical form does not
+    /// apply (as for arrows). `effects` and `effect_children` are zipped, so
+    /// they MUST be the same length and order (the callers build `effect_children`
+    /// by `type_expr_to_child`-mapping `effects`).
+    fn fold_effect_row_occ(
+        &mut self,
+        effects: &[TypeExpr],
+        effect_children: Vec<node_occurrence::TypeChild>,
+        span: SourceSpan,
+        owner: Option<Symbol>,
+    ) -> node_occurrence::TypeChild {
+        use node_occurrence::TypeChild;
         let mut row = TypeChild::Node(self.kb.make_empty_row_occ(span, owner));
         for (e, child) in effects.iter().zip(effect_children.into_iter()).rev() {
             let atom = if matches!(e, TypeExpr::EffectAbsent(_)) {
