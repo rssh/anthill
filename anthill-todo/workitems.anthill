@@ -2865,7 +2865,7 @@ fact WorkItem(
   description: "Loader: extract a shared absent-aware effect-row fold helper, fixing the Arrow-arm -E lacks-atom double-wrap. In type_expr_to_child (kb/load.rs ~6065), the Arrow arm's occurrence/Node path (taken when the effect row carries a value-in-type element, e.g. Modify[c]) unconditionally wraps every effect child in present(...). But a -E lacks-atom has already been lowered to an absent(...) occurrence by the EffectAbsent arm, so it comes out as the malformed present(absent(E)). The new lower_effect_row (WI-375, ~6186) does it right via 'if matches!(e, EffectAbsent(_))' (bare absent atom, present-wrap only non-absent labels). Fix: lift that absent-aware present/absent decision into a shared helper and call it from BOTH the Arrow effects fold and lower_effect_row -- dedups the two folds and fixes the Arrow path. Pre-existing latent bug (predates WI-375); only bites an arrow whose effect row has BOTH a denoted element AND a -E lacks-atom, which no current test exercises.",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: [],
-  status: Open)
+  status: Delivered(agent: "claude", at: "2026-06-04T07:55:51Z"))
 
 fact WorkItem(
   id: "WI-378",
