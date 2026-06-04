@@ -180,3 +180,6 @@ mod wi366_value_in_type_facts_test;
 
 #[path = "include/wi348_operation_info_queryable_test.rs"]
 mod wi348_operation_info_queryable_test;
+
+#[path = "include/wi379_inference_order_test.rs"]
+mod wi379_inference_order_test;

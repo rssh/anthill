@@ -1436,8 +1436,8 @@ end
 fn m5_modify_counter_write_then_read() {
     let src = r#"
 namespace test.m5_counter
-  import anthill.prelude.{Int, Unit}
-  import Modify.{get, set}
+  import anthill.prelude.{Int, Unit, Modify}
+  import ModifyRuntime.{get, set}
 
   sort CounterState
     entity counter
@@ -1464,7 +1464,7 @@ fn m5_modify_get_before_set_errors() {
     let src = r#"
 namespace test.m5_unset
   import anthill.prelude.{Int}
-  import Modify.{get}
+  import ModifyRuntime.{get}
 
   sort CounterState
     entity counter
@@ -1488,8 +1488,8 @@ fn m5_modify_two_resources_are_independent() {
     // Two distinct resource entities should not share state.
     let src = r#"
 namespace test.m5_independent
-  import anthill.prelude.{Int, Unit}
-  import Modify.{get, set}
+  import anthill.prelude.{Int, Unit, Modify}
+  import ModifyRuntime.{get, set}
 
   sort Cells
     entity a
@@ -1519,8 +1519,8 @@ fn m5_modify_self_referential_set_errors_with_cyclic_reference() {
     // structural walk catches this.
     let src = r#"
 namespace test.m5_cycle
-  import anthill.prelude.{Unit}
-  import Modify.{set}
+  import anthill.prelude.{Unit, Modify}
+  import ModifyRuntime.{set}
 
   sort CycleState
     entity counter

@@ -111,8 +111,8 @@ pub fn register_standard_builtins(interp: &mut Interpreter) -> Result<(), EvalEr
     register_if_present(interp, "anthill.prelude.Console.eprintln", console_eprintln)?;
     register_if_present(interp, "anthill.prelude.Console.read_line", console_read_line)?;
 
-    register_if_present(interp, "anthill.prelude.Modify.get", modify_get)?;
-    register_if_present(interp, "anthill.prelude.Modify.set", modify_set)?;
+    register_if_present(interp, "anthill.prelude.ModifyRuntime.get", modify_get)?;
+    register_if_present(interp, "anthill.prelude.ModifyRuntime.set", modify_set)?;
     register_if_present(interp, "anthill.prelude.Cell.new", cell_new)?;
     register_if_present(interp, "anthill.prelude.Cell.get", cell_get)?;
     register_if_present(interp, "anthill.prelude.Cell.set", cell_set)?;
@@ -1537,8 +1537,8 @@ effect_dispatcher!(console_println,   "anthill.prelude.Console.println",   "prin
 effect_dispatcher!(console_eprint,    "anthill.prelude.Console.eprint",    "eprint",    "anthill.prelude.Console.ConsoleError");
 effect_dispatcher!(console_eprintln,  "anthill.prelude.Console.eprintln",  "eprintln",  "anthill.prelude.Console.ConsoleError");
 effect_dispatcher!(console_read_line, "anthill.prelude.Console.read_line", "read_line", "anthill.prelude.Console.ConsoleInput");
-effect_dispatcher!(modify_get, "anthill.prelude.Modify.get", "get", "anthill.prelude.Modify");
-effect_dispatcher!(modify_set, "anthill.prelude.Modify.set", "set", "anthill.prelude.Modify");
+effect_dispatcher!(modify_get, "anthill.prelude.ModifyRuntime.get", "get", "anthill.prelude.Modify");
+effect_dispatcher!(modify_set, "anthill.prelude.ModifyRuntime.set", "set", "anthill.prelude.Modify");
 
 // ── Persistence builtins (proposal 007 §4) ─────────────────────
 

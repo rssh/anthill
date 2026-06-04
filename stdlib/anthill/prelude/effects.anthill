@@ -1,10 +1,13 @@
 -- Effects: effect declaration and well-known effect kinds
 --
--- Each effect kind is a sort with an entity constructor:
---   sort Modify { sort T = ?  entity Modify(target: T) }
+-- Each effect kind is a sort parameterized by what it ranges over:
+--   sort Modify { sort T = ? }   — the effect MARKER, keyed by resource type T
 --
 -- Type level:  Modify[T = store]   — sort instantiation, used in effects clauses
--- Term level:  Modify(store)       — entity instance, has type Modify[T = Store]
+--              Modify[c]           — denoted by a value/place (e.g. Cell.set)
+-- The Modify marker carries only WHICH resource is mutated. Its runtime
+-- operations live on a separate carrier sort `ModifyRuntime[T, V]` (below),
+-- which adds the stored-VALUE type V — independent of the resource type T.
 --
 -- Effect kinds are registered via `fact Effect[T = Kind[?]]`.
 -- The kernel checks effect declarations; interpretation is provided
@@ -19,11 +22,12 @@
 --
 -- Runtime-handler semantics (Rust evaluator, M5):
 --   A handler is registered per effect sort (`Modify`, `Error`, …), not
---   per instantiation. The default `Modify` handler holds one arena keyed
---   by the target's functor symbol — `set(store, v)` and `set(counter, v)`
---   share the same handler but live in separate slots within it. To give
---   a specific resource its own handler, replace the global Modify handler
---   with a dispatcher that switches on the target symbol.
+--   per instantiation. The `ModifyRuntime.get`/`set` operations route to the
+--   default `Modify` handler, which holds one arena keyed by the target's
+--   functor symbol — `set(store, v)` and `set(counter, v)` share the same
+--   handler but live in separate slots within it. To give a specific resource
+--   its own handler, replace the global Modify handler with a dispatcher that
+--   switches on the target symbol.
 
 namespace anthill.prelude
 
@@ -46,11 +50,34 @@ namespace anthill.prelude
   -- Well-known effect kinds.
   -- Each sort defines its operations — the "pseudo API" that the effect provides.
 
+  -- Modify[T]: the effect MARKER, keyed by the resource-identity type T.
+  -- This is what effect rows carry (`effects Modify[T = CounterState]`); it
+  -- says only WHICH resource is mutated, not what value it holds.
   sort Modify
+    sort T = ?
+  end
+
+  -- ModifyRuntime[T, V]: the runtime carrier for the Modify-effect operations.
+  -- It carries BOTH the resource-identity type T and the stored-value type V,
+  -- which are INDEPENDENT (a `CounterState` resource may hold an `Int`). Keeping
+  -- them as separate parameters is what lets `get` return the value type rather
+  -- than the resource type: the old `Modify { get(target: T) -> T }` folded both
+  -- into one `T`, which only type-checked while arguments went unchecked and the
+  -- expected return masked the contradiction — surfaced and rejected once WI-379
+  -- made arguments authoritative.
+  --
+  -- V is currently inferred per call (from the value argument for `set`, from
+  -- the expected return for `get`) and is NOT yet tied to the resource, so a
+  -- wrong value-type read is not caught. Recording that tie on the resource
+  -- (`sort CounterState { sort V = Int }` + `get(target: T) -> T.V`) is the
+  -- sound destination — a structured-parameter / sort-carried-projection
+  -- feature tracked in WI-383.
+  sort ModifyRuntime
     import anthill.prelude.{Unit}
     sort T = ?
-    operation get(target: T) -> T
-    operation set(target: T, value: T) -> Unit effects Modify[T]
+    sort V = ?
+    operation get(target: T) -> V
+    operation set(target: T, value: V) -> Unit effects Modify[T]
   end
 
   sort Error

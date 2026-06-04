@@ -4,7 +4,7 @@
 -- with an initial value. Modify[c] is the effect mutations carry; the
 -- fact `Modifiable[T = Cell[V]]` admits Modify[c] in operation rows.
 sort anthill.prelude.Cell
-  import anthill.prelude.{Unit, Modifiable}
+  import anthill.prelude.{Unit, Modifiable, Modify, ModifyRuntime}
 
   sort V = ?
 
@@ -31,4 +31,10 @@ sort anthill.prelude.Cell
 
   -- Cell satisfies Modifiable for any V.
   fact Modifiable[T = Cell]
+
+  -- Cell is a ModifyRuntime carrier for any V: the resource-identity type is
+  -- `Cell` and the stored-value type is the cell's own `V`, so the generic
+  -- `ModifyRuntime.get`/`set` operate on a `Cell[V]` with value type `V`
+  -- (threaded from the cell, the List-provides-Stream-style carrier binding).
+  fact ModifyRuntime[T = Cell, V = V]
 end

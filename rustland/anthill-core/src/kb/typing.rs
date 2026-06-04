@@ -163,6 +163,7 @@ pub enum TypeErrorContext {
     OperationEffects { op_name: Symbol },
     OperationMatch { op_name: Symbol },
     Rule { name: Symbol, field: RuleField },
+    LetBinding { var: Symbol },
 }
 
 impl TypeErrorContext {
@@ -173,6 +174,7 @@ impl TypeErrorContext {
             | TypeErrorContext::OperationEffects { op_name }
             | TypeErrorContext::OperationMatch { op_name } => kb.resolve_sym(*op_name).to_string(),
             TypeErrorContext::Rule { name, .. } => kb.resolve_sym(*name).to_string(),
+            TypeErrorContext::LetBinding { var } => kb.resolve_sym(*var).to_string(),
         }
     }
 
@@ -183,6 +185,7 @@ impl TypeErrorContext {
             TypeErrorContext::OperationEffects { .. } => "effects".to_string(),
             TypeErrorContext::OperationMatch { .. } => "match".to_string(),
             TypeErrorContext::Rule { field, .. } => field.name().to_string(),
+            TypeErrorContext::LetBinding { .. } => "annotation".to_string(),
         }
     }
 }
@@ -1906,8 +1909,17 @@ fn visit_type(
         }
 
         // ── Leaf cases ──────────────────────────────────────────
-        Expr::Const(Literal::Int(_)) | Expr::Const(Literal::BigInt(_)) => results.push(Ok(
+        Expr::Const(Literal::Int(_)) => results.push(Ok(
             TypeResult::pure(kb.make_sort_ref_by_name("Int"), unwrap_env(env), Rc::clone(&occ)),
+        )),
+        // A `BigInt` literal is one that exceeded `i64` at parse — it cannot be
+        // an `Int` value, so it types as `BigInt`. (Previously lumped with
+        // `Int`; the WI-379 args-before-expected order made that mis-typing
+        // visible — `100…0 + 100…0` declared `-> BigInt` pinned `Numeric.T` to
+        // the literal's type from the argument, so a literal typed `Int` made
+        // the sum `Int`, rejected against the `BigInt` return.)
+        Expr::Const(Literal::BigInt(_)) => results.push(Ok(
+            TypeResult::pure(kb.make_sort_ref_by_name("BigInt"), unwrap_env(env), Rc::clone(&occ)),
         )),
         Expr::Const(Literal::Float(_)) => results.push(Ok(
             TypeResult::pure(kb.make_sort_ref_by_name("Float"), unwrap_env(env), Rc::clone(&occ)),
@@ -2419,6 +2431,30 @@ fn build_type(
             // value's `ty` (and a `Value` annotation) without re-grounding.
             let value_ty = Some(r.ty);
             let (value_effects, mut ext_env) = (r.effects, r.env);
+            // WI-379: a let with an explicit annotation must have its value
+            // CONFORM to that annotation — the let-binding counterpart of the
+            // operation-return check in `check_operation_bodies`. The
+            // args-before-expected reorder makes the value's inferred type
+            // authoritative, so a contradicting annotation
+            // (`let v: List[String] = id_list(ys: List[Int])`) is a real
+            // mismatch and must be rejected rather than silently rebinding the
+            // value as the annotated type. (When the annotation merely fills a
+            // still-free param it was threaded in as `expected` when the value
+            // was typed, so `value_ty` already matches and this check passes.)
+            if let (Some(ann), Some(vty)) = (annotation.as_ref(), value_ty.as_ref()) {
+                let mut subst = Substitution::new();
+                if !types_compatible(kb, &mut subst, vty, ann) {
+                    let var = extract_pattern_var_name(kb, pattern)
+                        .unwrap_or_else(|| kb.intern("_"));
+                    results.push(Err(TypeError::TypeMismatch {
+                        span: None,
+                        context: TypeErrorContext::LetBinding { var },
+                        expected: ann.clone(),
+                        actual: vty.clone(),
+                    }));
+                    return;
+                }
+            }
             // Prefer an explicit annotation (already `Value`, S4a) over the value type.
             let bound_ty = annotation.or(value_ty);
             extend_env_from_pattern(kb, &mut ext_env, pattern, bound_ty);
@@ -2886,14 +2922,10 @@ fn check_apply_iter(
             },
             None => false,
         };
-        // WI-270: caller-side expected type seeds the substitution via
-        // `op.return_type` before argument inference. With caller
-        // context (`let v: Option[WorkItem] = term_as_entity(t)`) the
-        // op's `?E` Var binds to WorkItem here, and the post-arg
-        // unconstrained-param check sees it as pinned.
-        if let Some(exp) = expected {
-            unify_types(kb, &mut subst, &op.return_type, &exp);
-        }
+        // WI-379: synthesize from the ARGUMENTS first (the two loops below);
+        // the caller-side `expected` is consulted only AFTER (moved below the
+        // arg loops), so it fills still-free type params without overriding any
+        // that an argument pinned.
         let mut arg_effects: Vec<Value> = Vec::new();
         let mut param_to_arg_sym: HashMap<Symbol, Symbol> = HashMap::new();
 
@@ -2926,6 +2958,23 @@ fn check_apply_iter(
                 }
                 arg_effects = merge_effects(&arg_effects, &arg_result.effects);
             }
+        }
+
+        // WI-270 / WI-379: now that the arguments have been synthesized,
+        // consult the caller-side `expected` type via `op.return_type`. Running
+        // it AFTER argument inference (it used to run before) makes it fill only
+        // STILL-FREE type params: a param an argument already pinned resists the
+        // override — the `unify_types` against the pinned slot fails for a
+        // differing claim and its boolean is discarded, binding nothing — so a
+        // wrong declared return no longer masks a contradicting argument
+        // (WI-379 soundness gap (a)). A genuinely free param
+        // (`empty() -> List[Elem]`, `term_as_entity[E] -> Option[E]`) is still
+        // filled from `expected` (WI-270's legitimate case). The synthesized
+        // `resolved_ret` is then checked against `expected` at the use site
+        // (`check_operation_bodies` return check / let conformance), which is
+        // what actually rejects the wrong declared return.
+        if let Some(exp) = expected {
+            unify_types(kb, &mut subst, &op.return_type, &exp);
         }
 
         // Apply param-name substitution to op.effects (WI-209), then
@@ -6799,6 +6848,17 @@ fn check_constructor_iter(
     // when the value-side carries a fresh type-var. Runs before the
     // empty-field-types early return below so 0-arg constructors
     // (`nil()`, `Map.empty()`) also see the hint.
+    //
+    // WI-379 note: unlike `check_apply_iter`, this expected-seeding is NOT
+    // safely movable below the field loops. The constructor builds its result
+    // type by reading each param Var's binding out of `subst` (below), and
+    // DROPS a param whose Var resolves to `None`. Seeding `expected` first binds
+    // the params to concrete values so they survive the build; with fields
+    // first, a field that is an unbound element var aliases the param to an
+    // unbound var (→ `None` → dropped), e.g. `pair(h, t)` builds `Pair[B=List]`
+    // losing `A`. So the args-before-expected soundness fix (rejecting
+    // `f() -> Option[String] = some(42)`) needs the build made robust to
+    // unbound-var params first — tracked as its own follow-up, not this reorder.
     if let Some(exp) = expected {
         unify_types(kb, &mut subst, &TermIdView(parent_type), &exp);
     }
