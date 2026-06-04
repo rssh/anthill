@@ -6226,7 +6226,26 @@ impl<'a> Loader<'a> {
     fn sort_inst_to_value(&mut self, ty: &TypeExpr) -> crate::eval::value::Value {
         use crate::eval::value::Value;
         match ty {
-            TypeExpr::Simple(name) => Value::Term(self.name_to_sort_term(name)),
+            TypeExpr::Simple(name) => {
+                // WI-387: a type-param binding value (the `T` in `provides
+                // Stream[T = T]`) must lower to a `Ref(param)` — the SAME shape
+                // the `fact`-head path (`maybe_emit_fact_provides_info` over
+                // `convert_term`) emits — not the nullary `Fn` `name_to_sort_term`
+                // builds. Only `Ref`/`Ident` is recognized as a dispatch type-param
+                // WILDCARD (`impl_param_ref`); a nullary `Fn` scores CONCRETE
+                // specificity, so a `provides`-clause provider out-ranks an
+                // equivalent `fact` provider and breaks carrier-less `Ambiguous`
+                // dispatch (wi210). A universal `provides Spec[T = T]` IS a wildcard
+                // provision, exactly like `fact Spec[T = T]` — the two must emit
+                // structurally identical `SortProvidesInfo` bindings.
+                let sort_sym = self.remap_name(name);
+                let short_name = self.kb.resolve_sym(sort_sym).to_owned();
+                if self.kb.symbols.is_type_param(self.current_scope.raw(), &short_name) {
+                    Value::Term(self.kb.make_sort_ref(sort_sym))
+                } else {
+                    Value::Term(self.name_to_sort_term(name))
+                }
+            }
             TypeExpr::Parameterized { name, bindings } => {
                 let name_term = self.name_to_sort_term(name);
                 let mut pos: Vec<Value> = vec![Value::Term(name_term)];

@@ -40,7 +40,6 @@ fn load_errors(extras: &[&str]) -> Vec<String> {
 /// `length(collect(List.iterator(xs)))` in a PURE op (no effects clause) must
 /// load clean — no floating `?_` observation effect.
 #[test]
-#[ignore = "WI-387: needs FIX 3 (abstract/requires-coverage treats provided concrete E as covering)"]
 fn collect_iterator_list_is_pure() {
     let src = r#"
 namespace test.wi368.pure
@@ -61,7 +60,6 @@ end
 /// returning it where `List[T = Int]` is declared conforms, and returning it
 /// where `List[T = String]` is declared is REJECTED (the element is really Int).
 #[test]
-#[ignore = "WI-387: needs FIX 3 (abstract/requires-coverage treats provided concrete E as covering)"]
 fn collect_iterator_threads_element_int() {
     let ok = r#"
 namespace test.wi368.elem_ok

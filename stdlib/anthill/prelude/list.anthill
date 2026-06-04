@@ -62,9 +62,18 @@ enum anthill.prelude.List
   -- and its tail is itself a Stream); List provides it below over cons/nil,
   -- so head / tail / isEmpty derive from it on a List (takeN / collect are
   -- declared on Stream but have no derivation rule yet).
-  fact Stream[T = T]
+  --
+  -- WI-387: the provision WRITES the observation effect `E = {}` (a pure
+  -- carrier — `splitFirst` over cons/nil is pure), so the effect row is carried
+  -- IN the type rather than reconstructed by a close-to-pure default (unsound
+  -- for effectful carriers — see expansion-during-unification.md §5). A
+  -- `provides` clause (not `fact Stream[…]`) is used so the row `{}` lowers
+  -- through the type-aware path (the fact-head term path makes `Ref("{}")` →
+  -- unresolved). `iterator` then writes both the threaded element `[Elem]` and
+  -- the pure effect, so `Stream[T = Elem, E = {}]` is fully in the type.
+  provides Stream[T = T, E = {}]
   fact Iterable[C = List[T], Element = T]
-  operation iterator(l: List) -> Stream = l
+  operation iterator[Elem](l: List[T = Elem]) -> Stream[T = Elem, E = {}] = l
 
   -- Stream primitive: peel the head and return the tail (itself a List, hence
   -- a Stream). `pair`-shaped (not Iteration's tuple `split`) so Stream's

@@ -3312,8 +3312,29 @@ fn check_apply_iter(
                     // the WI-325 protection.
                     if spec_warrants_abstract_check(kb, spec_sort) {
                         let spec_qn = kb.qualified_name_of(spec_sort).to_string();
+                        // WI-387 FIX 3: the receiver carrier's provider fact may
+                        // bind a spec param to a GROUND value (`List provides
+                        // Stream[E = {}]`). `bind_spec_params_from_carrier`
+                        // threads only type-param-REF provider bindings (`Stream.T
+                        // ↦ List.T`) into the subst, so a written ground row never
+                        // reaches the per-param subst resolution below and would be
+                        // wrongly flagged abstract — regressing delivered
+                        // wi357/wi210 once `List` writes `E = {}`. Such a param is
+                        // concrete → COVERED, so skip it; a provider binding that
+                        // mentions a type-param stays abstract (still demands a
+                        // `requires`, e.g. a `C provides Iterable[Element = C.T]`).
+                        let provider_bindings = carrier_sym
+                            .and_then(|c| provider_spec_view_bindings(kb, c, spec_sort));
                         let mut abstract_params: SmallVec<[Symbol; 2]> = SmallVec::new();
                         for short in kb.type_params_of_sort(spec_sort) {
+                            if provider_bindings.as_ref().is_some_and(|binds| {
+                                binds.iter().any(|(p, v)| {
+                                    short_name_of(kb.resolve_sym(*p)) == short.as_str()
+                                        && type_value_is_ground(kb, *v)
+                                })
+                            }) {
+                                continue;
+                            }
                             let short_qn = format!("{spec_qn}.{short}");
                             let short_qn_sym = match kb.try_resolve_symbol(&short_qn) {
                                 Some(s) => s,
@@ -4934,6 +4955,31 @@ fn collect_provides_candidates(
             let per_call_value = match goal_binding_value(kb, goal, *binding_short) {
                 Some(t) => t,
                 None => {
+                    // WI-387: the goal under-constrains this spec param (no
+                    // per-call value). On the CARRIER-LESS compat path (provider
+                    // admissibility — "does some carrier provide Stream?"), a
+                    // written EFFECT-ROW binding (`E = {}` on `List provides
+                    // Stream[E = {}]`) is NON-discriminating for dispatch — it
+                    // carries the observation effect, not the carrier identity —
+                    // so it must not drop the candidate, and two providers still
+                    // resolve `Ambiguous` (the dispatch analogue of FIX 3: a
+                    // provided concrete `E` covers, it does not demand). A TYPE
+                    // binding the goal omits (a concrete `T = Int` on `fact
+                    // Eq[T = Int]`) IS discriminating and keeps the strict reject —
+                    // else every concrete `Eq` impl would match a bare `Eq` goal
+                    // (a coherence violation: wi325 / wi237). The CONCRETE
+                    // self-receiver path (`goal.carrier = Some`) also keeps the
+                    // strict reject: its carrier filter already selected the impl
+                    // and WI-357's pre-dispatch element re-walk threads the type,
+                    // so altering its outcome would regress element threading
+                    // (wi357).
+                    let is_effect_row = matches!(
+                        type_dispatch_name_view(kb, &TermIdView(*candidate_value)),
+                        Some("effects_rows")
+                    );
+                    if goal.carrier.is_none() && is_effect_row {
+                        continue;
+                    }
                     all_match = false;
                     break;
                 }
@@ -6645,6 +6691,27 @@ fn is_type_param_value(kb: &KnowledgeBase, value: TermId) -> bool {
             is_sort_param_symbol(kb, *functor)
         }
         _ => false,
+    }
+}
+
+/// WI-387 (FIX 3) — true iff `tid` is a fully-ground type value: no logic var
+/// and no sort-parameter reference ANYWHERE in its structure. The recursive
+/// dual of [`is_type_param_value`] (which tests only the head). A carrier's
+/// provider-fact binding that is ground (the written empty row `{}` for a pure
+/// carrier's `Stream.E`) COVERS its spec param in the abstract/requires-coverage
+/// check, whereas a binding that mentions a type-param (`Stream.T ↦ List.T`, or
+/// a nested `C = List[T]`) stays abstract and still demands a `requires`.
+fn type_value_is_ground(kb: &KnowledgeBase, tid: TermId) -> bool {
+    match kb.get_term(tid) {
+        Term::Var(_) => false,
+        Term::Ref(sym) | Term::Ident(sym) => !is_sort_param_symbol(kb, *sym),
+        Term::Fn { functor, pos_args, named_args } => {
+            !is_sort_param_symbol(kb, *functor)
+                && pos_args.iter().all(|a| type_value_is_ground(kb, *a))
+                && named_args.iter().all(|(_, a)| type_value_is_ground(kb, *a))
+        }
+        Term::Const(_) | Term::Bottom => true,
+        Term::ParseAux(_) => false,
     }
 }
 
@@ -9366,6 +9433,49 @@ fn matches_variance_fact(kb: &KnowledgeBase, fact_qn: &str, sort: Symbol, param:
     })
 }
 
+/// Check one parameterized binding by the parameter's DECLARED variance
+/// (WI-293), keyed on the supertype's variance contract (`expected_base`):
+/// covariant → actual <: expected (the prior unconditional check);
+/// contravariant → expected <: actual (flipped); invariant (default) → both
+/// directions (equal); bivariant → either. The two-direction arms run on a
+/// CLONED subst and commit only on success, so a failed direction can't leave
+/// partial row/var bindings in the threaded `subst` (the per-direction hygiene
+/// `join_types` uses; matters for the `||` bivariant arm, where direction-2 must
+/// see a clean subst). Shared by [`parameterized_compatible_view`]'s same-base
+/// arm (the actual carries the param) and its cross-sort provider arm (WI-387
+/// FIX 2: the actual-side value comes from the actual's provider fact).
+fn check_binding_by_variance<A: TermView, E: TermView>(
+    kb: &mut KnowledgeBase,
+    subst: &mut Substitution,
+    expected_base: Symbol,
+    param: Symbol,
+    av: &A,
+    ev: &E,
+) -> bool {
+    match declared_variance(kb, expected_base, param) {
+        Variance::Covariant => types_compatible(kb, subst, av, ev),
+        Variance::Contravariant => types_compatible(kb, subst, ev, av),
+        Variance::Invariant => {
+            let mut probe = subst.clone();
+            if types_compatible(kb, &mut probe, av, ev) && types_compatible(kb, &mut probe, ev, av) {
+                *subst = probe;
+                true
+            } else {
+                false
+            }
+        }
+        Variance::Bivariant => {
+            let mut probe = subst.clone();
+            if types_compatible(kb, &mut probe, av, ev) {
+                *subst = probe;
+                true
+            } else {
+                types_compatible(kb, subst, ev, av)
+            }
+        }
+    }
+}
+
 /// WI-342: the sole `parameterized` subtyping, carrier-agnostic over [`TermView`]
 /// (both the `TermId` dispatch via [`TermIdView`] and the `Value` carrier route
 /// here). Base compatible, then every EXPECTED binding must have a matching (by
@@ -9403,50 +9513,49 @@ fn parameterized_compatible_view<A: TermView, B: TermView>(
         return false;
     }
 
+    // WI-387 FIX 2: the actual's cross-sort provider view (`List` provides
+    // `Stream`) — loop-invariant (`actual_base`/`expected_base` are fixed for the
+    // whole check), so resolve it ONCE rather than per missing expected param
+    // (mirrors FIX 3's hoist of `provider_bindings`; `provider_spec_view_bindings`
+    // is a full scan of every `SortProvidesInfo` fact). `None` for a same-base
+    // check (no cross-sort translation) or a non-provider actual.
+    let cross_sort_provider = if actual_base != expected_base {
+        provider_spec_view_bindings(kb, actual_base, expected_base)
+    } else {
+        None
+    };
     for (param, ev) in &expected_bindings {
-        match actual_bindings.iter().find(|(p, _)| p == param) {
-            Some((_, av)) => {
-                // WI-293: check the binding by the parameter's DECLARED variance.
-                // covariant → actual <: expected (the prior unconditional check);
-                // contravariant → expected <: actual (flipped); invariant (default)
-                // → both directions (equal); bivariant → either. Keyed on the
-                // expected base — the supertype contract being checked against.
-                // (Usually equal to the actual base; a cross-base parameterized
-                // subtype is reachable via `refines`, and the supertype's variance
-                // is the contract to honor there.) The two-direction arms run on a
-                // CLONED subst and commit only on success, so a failed direction
-                // can't leave partial row/var bindings in the threaded `subst`
-                // (the per-direction hygiene `join_types` uses; matters for the
-                // `||` bivariant arm, where direction-2 must see a clean subst).
-                let ok = match declared_variance(kb, expected_base, *param) {
-                    Variance::Covariant => types_compatible(kb, subst, av, ev),
-                    Variance::Contravariant => types_compatible(kb, subst, ev, av),
-                    Variance::Invariant => {
-                        let mut probe = subst.clone();
-                        if types_compatible(kb, &mut probe, av, ev)
-                            && types_compatible(kb, &mut probe, ev, av)
-                        {
-                            *subst = probe;
-                            true
-                        } else {
-                            false
-                        }
+        // The actual-side value to check against the expected binding `ev`:
+        // normally the actual's OWN binding for `param`. WI-387 FIX 2: when the
+        // actual lacks it AND the actual is a CROSS-SORT provider of the expected
+        // (`List` lacks `Stream.E` but provides `Stream`), fall back to the value
+        // the actual's provider fact supplies for that param (matched by short
+        // name) — so `List[Elem]` conforms to `Stream[T = Elem, E = {}]` via
+        // `provides Stream[E = {}]`. The actual was never translated through its
+        // provider into the expected sort's param space before, so the missing
+        // expected param rejected unconditionally. A param absent on BOTH sides,
+        // or a SAME-base actual genuinely missing the param (`cross_sort_provider`
+        // is `None`), still rejects: this LOOSENS the cross-sort case only and
+        // cannot newly-reject existing code.
+        let ok = match actual_bindings.iter().find(|(p, _)| p == param) {
+            Some((_, av)) => check_binding_by_variance(kb, subst, expected_base, *param, av, ev),
+            None => {
+                let short = short_name_of(kb.resolve_sym(*param));
+                let pv = cross_sort_provider.as_ref().and_then(|view| {
+                    view.iter()
+                        .find(|(p, _)| short_name_of(kb.resolve_sym(*p)) == short)
+                        .map(|(_, v)| *v)
+                });
+                match pv {
+                    Some(pv) => {
+                        check_binding_by_variance(kb, subst, expected_base, *param, &TermIdView(pv), ev)
                     }
-                    Variance::Bivariant => {
-                        let mut probe = subst.clone();
-                        if types_compatible(kb, &mut probe, av, ev) {
-                            *subst = probe;
-                            true
-                        } else {
-                            types_compatible(kb, subst, ev, av)
-                        }
-                    }
-                };
-                if !ok {
-                    return false;
+                    None => false,
                 }
             }
-            None => return false,
+        };
+        if !ok {
+            return false;
         }
     }
     true
