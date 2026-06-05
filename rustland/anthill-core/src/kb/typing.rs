@@ -2805,7 +2805,11 @@ fn build_type(
                 let fresh = kb.intern("?T");
                 Value::Term(kb.make_type_var(fresh))
             });
-            let set_base = kb.make_sort_ref_by_name("Set");
+            // WI-393: QUALIFIED, like the `ListLit` frame and the `SetLiteral`
+            // constructor path — a bare `"Set"` never canonicalizes for the
+            // carrier provider lookup. Keeps the two set-literal forms agreeing on
+            // the carrier symbol.
+            let set_base = kb.make_sort_ref_by_name("anthill.prelude.Set");
             let t_sym = kb.intern("T");
             let set_type = parameterized_value(kb, set_base, &[(t_sym, t_val)], span, owner);
             results.push(Ok(TypeResult { ty: set_type, env: unwrap_env(env), effects, node }));
@@ -6366,61 +6370,59 @@ fn bind_spec_params_from_carrier(
     for (spec_param_sym, carrier_value) in view_bindings {
         let spec_short = short_name_of(kb.resolve_sym(spec_param_sym)).to_string();
         let is_ref = typaram_ref_short_name(kb, carrier_value);
-        // The carrier-side CONCRETE value for this spec parameter:
+        // The carrier-side CONCRETE value for this spec parameter, as a ground
+        // hash-consed term:
         //  - a type-param ref (`Stream.T` ↦ `List.T`): the receiver's binding for
-        //    that carrier param (`List[T = Int]` ⇒ `Int`);
+        //    that carrier param (`List[T = Int]` ⇒ `Int`). Threaded even if itself
+        //    a var (an unbound receiver element legitimately aliases the op param).
         //  - a GROUND provider row (`Stream.E` ↦ `{}`, the WRITTEN pure row of
         //    `List provides Stream[E = {}]`): the value itself. The pre-WI-393
         //    code `continue`-skipped this (only a ref mapped), dropping the `{}`
         //    so a cross-sort `collect`'s `Eff` never grounded.
-        let concrete: Option<Value> = match &is_ref {
-            Some(carrier_short) => recv_bindings
-                .iter()
-                .find(|e| e.0 == *carrier_short)
-                .map(|e| Value::Term(e.1)),
-            None => Some(Value::Term(carrier_value)),
+        // The `type_value_is_ground` guard on the non-ref arm is load-bearing: a
+        // non-ref provider binding that still mentions the carrier's OWN params
+        // (`provides Stream[T = Pair[A = C.T, B = C.T]]`) is not ground, and
+        // binding it verbatim would pin the op param to a carrier-relative `?_`
+        // (the receiver's actual argument is never substituted in) — silently
+        // wrong. Skip it: the op param stays unbound and surfaces a LOUD
+        // `unconstrained` instead. (Threading such a compound through
+        // `recv_bindings` is future work — see WI-380 follow-ups.)
+        let concrete: Option<TermId> = match &is_ref {
+            Some(carrier_short) => recv_bindings.iter().find(|e| e.0 == *carrier_short).map(|e| e.1),
+            None if type_value_is_ground(kb, carrier_value) => Some(carrier_value),
+            None => None,
         };
         let Some(concrete) = concrete else { continue };
 
         // (a) The spec sort's OWN alias var — kept for the WI-325 abstract-
         //     coverage check on a dispatched body-less op (it resolves the spec
         //     param's alias var in the subst, and the dispatch goal is built from
-        //     it). Only a ground TERM derived from a type-param ref (the element);
-        //     a written effect row is not bound onto the spec alias (effects
-        //     aren't expressible there — WI-301; the coverage check reads the
-        //     provider view's groundness directly for that). Only fill a
-        //     genuinely-empty slot: `bind_term` flags a CONTRADICTION against a
-        //     differing existing binding (it does not rebind), and an alias whose
-        //     root is bound resolves anyway.
+        //     it). Only a type-param-ref binding (the element); a written effect
+        //     row is not bound onto the spec alias (effects aren't expressible
+        //     there — WI-301; the coverage check reads the provider view's
+        //     groundness directly for that). Only fill a genuinely-empty slot:
+        //     `bind_term` flags a CONTRADICTION against a differing existing
+        //     binding (it does not rebind), and an alias whose root is bound
+        //     resolves anyway.
         if is_ref.is_some() {
-            if let (Value::Term(ct), Some(spec_vid)) =
-                (&concrete, type_param_vid_in_sort(kb, spec_sort, spec_param_sym))
-            {
-                if subst.resolve_as_value(spec_vid).is_none() && !occurs_in(kb, spec_vid, *ct) {
-                    subst.bind_term(spec_vid, *ct);
+            if let Some(spec_vid) = type_param_vid_in_sort(kb, spec_sort, spec_param_sym) {
+                if subst.resolve_as_value(spec_vid).is_none() && !occurs_in(kb, spec_vid, concrete) {
+                    subst.bind_term(spec_vid, concrete);
                     any = true;
                 }
             }
         }
 
         // (b) The consuming op's OWN type-param var (WI-393), matched by short
-        //     name through `op_param_map`. Bound carrier-agnostically — `concrete`
-        //     may be a written effect-row `Value::Node`. Same empty-slot guard.
+        //     name through `op_param_map`. `concrete` is a ground hash-consed term
+        //     (the receiver's element, or a ground provider row like `{}`); bind
+        //     it occurs-checked into the op's own `Elem` / `Eff`. Same empty-slot
+        //     guard as (a).
         if let Some((_, op_param_val)) = op_param_map.iter().find(|(s, _)| *s == spec_short) {
             if let Some(op_vid) = resolved_var(kb, op_param_val) {
-                if subst.resolve_as_value(op_vid).is_none() {
-                    match &concrete {
-                        Value::Term(t) => {
-                            if !occurs_in(kb, op_vid, *t) {
-                                subst.bind_term(op_vid, *t);
-                                any = true;
-                            }
-                        }
-                        other => {
-                            subst.bind_value(op_vid, other.clone());
-                            any = true;
-                        }
-                    }
+                if subst.resolve_as_value(op_vid).is_none() && !occurs_in(kb, op_vid, concrete) {
+                    subst.bind_term(op_vid, concrete);
+                    any = true;
                 }
             }
         }
