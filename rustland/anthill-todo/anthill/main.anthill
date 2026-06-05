@@ -43,7 +43,7 @@ namespace anthill.todo
   import anthill.reflect.LogicalQuery.{pattern_query}
   import anthill.todo.store.{WorkItemStore}
   import anthill.todo.store.WorkItemStore.{lookup, by_status_of, all,
-                                           next_id, commit, forget,
+                                           next_id, commit, replace, forget,
                                            commit_feedback}
   export Main, specs
 
@@ -278,7 +278,7 @@ namespace anthill.todo
     -- `s: Cell[State]` is the WorkItemStore state cell threaded through
     -- to every cmd_X; bodies dispatch through the sort-level
     -- `requires WorkItemStore[State]` and call
-    -- WorkItemStore.{lookup, by_status_of, next_id, commit, forget}
+    -- WorkItemStore.{lookup, by_status_of, next_id, commit, replace, forget}
     -- on it. The host picks the impl (e.g. FileBasedWorkitemStore) by
     -- calling Main.main via call_with_requirements (WI-236).
     operation dispatch(name: String, args: List[Binding],
@@ -1215,8 +1215,9 @@ namespace anthill.todo
 
     -- ── cmd_claim ────────────────────────────────────────────────
     -- `claim <id>` transitions Open → Claimed(agent, since). Routes
-    -- through WorkItemStore.lookup → forget + commit (the impl pair
-    -- handles the retract+persist dance internally).
+    -- through WorkItemStore.lookup → replace, which buffers the
+    -- retract+persist pair and flushes once (atomic update: a mid-step
+    -- failure on the Error effect leaves nothing written).
 
     operation cmd_claim(args: List[Binding],
                          store: FileStore,
@@ -1240,8 +1241,7 @@ namespace anthill.todo
                        id: String, wi: WorkItem) -> Int
       effects {ConsoleOutput, Modify[s], Error, Clock}
     =
-      let _ = WorkItemStore.forget(s, id)
-      let _ = WorkItemStore.commit(s,
+      let _ = WorkItemStore.replace(s, id,
         with_status(wi, Claimed(agent: agent, since: now())))
       let _ = println(console(),
         concat("claimed: ", concat(id, concat(" by ", agent))))
@@ -1272,8 +1272,7 @@ namespace anthill.todo
                          id: String, wi: WorkItem) -> Int
       effects {ConsoleOutput, Modify[s], Error, Clock}
     =
-      let _ = WorkItemStore.forget(s, id)
-      let _ = WorkItemStore.commit(s,
+      let _ = WorkItemStore.replace(s, id,
         with_status(wi, Delivered(agent: agent, at: now())))
       let _ = println(console(),
         concat("delivered: ", concat(id, concat(" by ", agent))))
@@ -1303,8 +1302,7 @@ namespace anthill.todo
     operation do_verify(s: Cell[State], id: String, wi: WorkItem) -> Int
       effects {ConsoleOutput, Modify[s], Error, Clock}
     =
-      let _ = WorkItemStore.forget(s, id)
-      let _ = WorkItemStore.commit(s, with_status(wi, Verified(at: now())))
+      let _ = WorkItemStore.replace(s, id, with_status(wi, Verified(at: now())))
       let _ = println(console(), concat("verified: ", id))
       0
 
@@ -1373,16 +1371,14 @@ namespace anthill.todo
             "update: nothing to change — pass --description and/or --acceptance")
           2
         else
-          let _ = WorkItemStore.forget(s, id)
-          let _ = WorkItemStore.commit(s,
+          let _ = WorkItemStore.replace(s, id,
             with_acceptance(wi, tools_to_acceptance(raw_acc)))
           let _ = println(console(),
             concat("updated ", concat(id, ": acceptance")))
           0
       else
         let new_wi = update_fields(wi, new_desc, has_acc, raw_acc)
-        let _ = WorkItemStore.forget(s, id)
-        let _ = WorkItemStore.commit(s, new_wi)
+        let _ = WorkItemStore.replace(s, id, new_wi)
         let summary = if has_acc then "description, acceptance" else "description"
         let _ = println(console(), concat("updated ",
           concat(id, concat(": ", summary))))
@@ -1457,8 +1453,7 @@ namespace anthill.todo
             concat("' already depends on '", concat(dep, "'")))))
         1
       else
-        let _ = WorkItemStore.forget(s, id)
-        let _ = WorkItemStore.commit(s,
+        let _ = WorkItemStore.replace(s, id,
           with_deps(wi, append_string(current, dep)))
         let _ = println(console(),
           concat("added dependency: ",
@@ -1498,8 +1493,7 @@ namespace anthill.todo
     =
       let current = deps_of_w(wi)
       if list_contains_string(current, dep) then
-        let _ = WorkItemStore.forget(s, id)
-        let _ = WorkItemStore.commit(s,
+        let _ = WorkItemStore.replace(s, id,
           with_deps(wi, remove_string(current, dep)))
         let _ = println(console(),
           concat("removed dependency: ",
