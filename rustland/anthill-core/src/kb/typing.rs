@@ -5852,9 +5852,11 @@ pub fn check_override_refinement(kb: &mut KnowledgeBase) -> Vec<super::load::Loa
             // op params, not the spec type-param, so σ is not applied). The
             // loader's auto-`EffectsRuntime` requires are filtered out — those
             // are the effects check's concern. Conservative: clauses match by
-            // structural (TermId) equality; a logically-equivalent but
-            // syntactically-different refinement is not yet recognized (a
-            // future SMT-backed entailment check would subsume this).
+            // carrier-agnostic structural equality (`views_structurally_equal`;
+            // for the ground clauses here == hash-consed `TermId` equality); a
+            // logically-equivalent but syntactically-different refinement is not
+            // yet recognized (a future SMT-backed entailment check would subsume
+            // this).
             let align: Vec<(Symbol, TermId)> = {
                 let mut a = Vec::new();
                 for ((ip, _), (sp, _)) in impl_info.params.iter().zip(spec_info.params.iter()) {
@@ -5869,8 +5871,8 @@ pub fn check_override_refinement(kb: &mut KnowledgeBase) -> Vec<super::load::Loa
             // spec also requires (the override demands no more than the spec).
             let spec_pre = user_precondition_clauses(kb, &spec_info.requires);
             for ic in user_precondition_clauses(kb, &impl_info.requires) {
-                let ic = substitute_impl_params_alloc(kb, ic, &align);
-                if !spec_pre.contains(&ic) {
+                let ic = substitute_clause(kb, &ic, &align);
+                if !spec_pre.iter().any(|sp| views_structurally_equal(kb, sp, &ic)) {
                     errors.push(LoadError::IncompatibleOverride {
                         carrier: kb.qualified_name_of(p.carrier).to_string(),
                         spec: kb.qualified_name_of(p.spec).to_string(),
@@ -5882,11 +5884,11 @@ pub fn check_override_refinement(kb: &mut KnowledgeBase) -> Vec<super::load::Loa
             }
             // postcondition no-weaker: every spec postcondition must be one the
             // impl also ensures (the override promises no less than the spec).
-            let impl_post: Vec<TermId> = impl_info.ensures.iter()
-                .map(|&c| substitute_impl_params_alloc(kb, c, &align))
+            let impl_post: Vec<Value> = impl_info.ensures.iter()
+                .map(|c| substitute_clause(kb, c, &align))
                 .collect();
-            for &sc in &spec_info.ensures {
-                if !impl_post.contains(&sc) {
+            for sc in &spec_info.ensures {
+                if !impl_post.iter().any(|ip| views_structurally_equal(kb, ip, sc)) {
                     errors.push(LoadError::IncompatibleOverride {
                         carrier: kb.qualified_name_of(p.carrier).to_string(),
                         spec: kb.qualified_name_of(p.spec).to_string(),
@@ -5903,18 +5905,37 @@ pub fn check_override_refinement(kb: &mut KnowledgeBase) -> Vec<super::load::Loa
 
 /// User precondition clauses of an operation — its `requires` field minus the
 /// loader's auto-inferred `EffectsRuntime[Effects=E]` entries (WI-320), which
-/// track the effect row, not a caller-facing precondition. WI-347.
-fn user_precondition_clauses(kb: &KnowledgeBase, clauses: &[TermId]) -> Vec<TermId> {
-    clauses.iter().copied().filter(|&c| !is_effects_runtime_clause(kb, c)).collect()
+/// track the effect row, not a caller-facing precondition. WI-347. WI-366 B2:
+/// carrier-agnostic `Value` clauses (read through `TermView`).
+fn user_precondition_clauses(kb: &KnowledgeBase, clauses: &[Value]) -> Vec<Value> {
+    clauses.iter().filter(|c| !is_effects_runtime_clause(kb, c)).cloned().collect()
 }
 
-/// Is `tid` an auto-inferred `EffectsRuntime[Effects=…]` requires clause?
+/// Is `clause` an auto-inferred `EffectsRuntime[Effects=…]` requires clause?
 /// Such clauses are `Fn{ functor: EffectsRuntime, … }` (see
 /// `infer_effects_row_requires`); they ride in the `requires` list but are not
-/// user preconditions, so the override contract check skips them.
-fn is_effects_runtime_clause(kb: &KnowledgeBase, tid: TermId) -> bool {
-    matches!(kb.get_term(tid),
-        Term::Fn { functor, .. } if kb.qualified_name_of(*functor) == "anthill.prelude.EffectsRuntime")
+/// user preconditions, so the override contract check skips them. WI-366 B2: the
+/// functor is read through [`TermView`] so the check is carrier-agnostic (a
+/// denoted-bearing user precondition rides as a `Value::Node`).
+fn is_effects_runtime_clause(kb: &KnowledgeBase, clause: &Value) -> bool {
+    matches!(clause.head(kb),
+        ViewHead::Functor { functor: Some(f), .. }
+            if kb.qualified_name_of(f) == "anthill.prelude.EffectsRuntime")
+}
+
+/// Apply a spec↔impl param-alignment `subst` to a carrier-agnostic
+/// precondition/postcondition clause for the override-refinement comparison
+/// (WI-366 B2). A ground `Value::Term` clause is rewritten via
+/// [`substitute_impl_params_alloc`]; a denoted-bearing `Value::Node` clause is
+/// returned verbatim — substituting into the occurrence is deferred parametric
+/// handling, so the structural comparison treats it as un-rewritten
+/// (conservative: a denoted precondition that needed alignment would not be
+/// recognized as covered, never falsely accepted).
+fn substitute_clause(kb: &mut KnowledgeBase, clause: &Value, subst: &[(Symbol, TermId)]) -> Value {
+    match clause {
+        Value::Term(t) => Value::Term(substitute_impl_params_alloc(kb, *t, subst)),
+        other => other.clone(),
+    }
 }
 
 /// Apply a provision's σ (spec param symbol → binding) to a spec operation's

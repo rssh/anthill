@@ -53,15 +53,20 @@ pub struct OpInfoRecord {
     /// Body NodeOccurrence read from `kb.op_bodies`. `None` when the
     /// operation is body-less (a spec op declaration).
     pub body_node: Option<Rc<NodeOccurrence>>,
-    /// WI-347 — precondition clause terms (the `requires` field). Each entry is
-    /// one clause: a goal term, or a `conjunction(g1, …)` when the clause had
-    /// several goals. **Includes** the auto-inferred `EffectsRuntime[Effects=E]`
-    /// requires appended by the loader (WI-320); a consumer comparing user
-    /// preconditions filters those out (see `check_override_refinement`).
-    pub requires: Vec<TermId>,
-    /// WI-347 — postcondition clause terms (the `ensures` field), same per-clause
-    /// shape as `requires`. No auto-inferred entries are mixed in.
-    pub ensures: Vec<TermId>,
+    /// WI-347 — precondition clauses (the `requires` field). Each entry is one
+    /// clause: a goal term, or a `conjunction(g1, …)` when the clause had several
+    /// goals. **Includes** the auto-inferred `EffectsRuntime[Effects=E]` requires
+    /// appended by the loader (WI-320); a consumer comparing user preconditions
+    /// filters those out (see `check_override_refinement`). WI-366 B2:
+    /// carrier-agnostic `Value` — a denoted-bearing precondition (`requires
+    /// Modify[c]`) is a `Value::Node` that a hash-consed `TermId` can't hold; a
+    /// ground clause is a `Value::Term`. Read carrier-faithfully, never
+    /// materialized back to a term (mirrors `params`/`effects`).
+    pub requires: Vec<Value>,
+    /// WI-347 — postcondition clauses (the `ensures` field), same per-clause shape
+    /// and carrier-agnostic `Value` as `requires` (WI-366 B2). No auto-inferred
+    /// entries are mixed in.
+    pub ensures: Vec<Value>,
     /// WI-087 — operation attributes: the `meta(key: value, ...)` term lowered
     /// from the operation's `meta_block`. `None` when the operation carries no
     /// attributes (an empty `meta()` reads back as `None`). Inspect with
@@ -155,15 +160,20 @@ pub fn head_field_value(kb: &KnowledgeBase, head: &Value, key: &str) -> Option<V
     })
 }
 
-/// Decode a clause-list field (`requires` / `ensures`) to its clause terms.
-/// The field is a ground `TermId` cons-list built by `convert_clause_list`;
-/// each element is one clause term. A non-`Term` (value-fact) carrier or an
-/// absent field yields an empty list (contracts are ground predicate terms, so
-/// the value-fact path is not expected here).
-fn clause_list_field(kb: &KnowledgeBase, head: &Value, key: &str) -> Vec<TermId> {
-    match head_field_term(kb, head, key) {
-        Some(list_tid) => list_to_vec(kb, list_tid),
-        None => Vec::new(),
+/// Decode a clause-list field (`requires` / `ensures`) to its clause `Value`s
+/// carrier-faithfully (WI-366 B2). The field is a cons-list built by
+/// `convert_clause_list`; a hash-consed head stores a `TermId` list (each element
+/// wrapped `Value::Term`), a value fact a value list whose elements (possibly
+/// `Value::Node` for a denoted precondition) are returned verbatim. Mirrors
+/// [`effects_of_head`].
+fn clause_list_field(kb: &KnowledgeBase, head: &Value, key: &str) -> Vec<Value> {
+    match head_field(kb, head, key) {
+        Some(ViewItem::Term(t)) => list_to_vec(kb, t).into_iter().map(Value::Term).collect(),
+        Some(ViewItem::Value(Value::Term(t))) => {
+            list_to_vec(kb, *t).into_iter().map(Value::Term).collect()
+        }
+        Some(ViewItem::Value(v)) => value_list_to_vec(kb, v),
+        _ => Vec::new(),
     }
 }
 
