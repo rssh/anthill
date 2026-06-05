@@ -76,6 +76,54 @@ fact WorkItem(
         inner.display());
 }
 
+#[cfg(unix)]
+#[test]
+fn claim_on_readonly_dir_raises_clean_error_not_panic() {
+    // WI-195: a store I/O failure (here: a read-only project dir so the
+    // FileStore can't create/rewrite files) must surface through the Error
+    // effect as a clean `error: ... failed: ...` line + EXIT_RUNTIME — NOT a
+    // Rust panic/backtrace, and NOT a leaked `internal evaluator error:`
+    // fault. Persist/flush/retract declare `effects Error`, so the host-side
+    // failure rides the Error channel.
+    use std::os::unix::fs::PermissionsExt;
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let proj = setup_project(&tmp, "\
+fact WorkItem(
+  id: \"WI-001\",
+  description: \"test item\",
+  acceptance: [ToolPasses(\"cargo-test\")],
+  depends_on: [],
+  status: Open)
+");
+    let inner = proj.join("anthill-todo");
+    // Read-only dir: reads still work (bundle loads), but the store cannot
+    // create/rename files, so persist/flush fails.
+    fs::set_permissions(&inner, fs::Permissions::from_mode(0o555)).expect("chmod ro");
+
+    let out = Command::new(ANTHILL_TODO_BIN)
+        .args([
+            "--anthill", "-d", proj.to_str().unwrap(),
+            "--agent", "claude",
+            "claim", "WI-001",
+        ])
+        .output().expect("run");
+
+    // Restore write so the tempdir can be cleaned up.
+    fs::set_permissions(&inner, fs::Permissions::from_mode(0o755)).expect("chmod rw");
+
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(1),
+        "expected EXIT_RUNTIME (1); stderr={stderr}");
+    assert!(stderr.contains("error:") && stderr.contains("failed"),
+        "expected a clean 'error: ... failed' line, got stderr: {stderr}");
+    // The failure rode the Error effect — not a leaked Internal fault / panic.
+    assert!(!stderr.contains("internal evaluator error"),
+        "store I/O failure should be a Raised Error, not Internal: {stderr}");
+    assert!(!stderr.to_lowercase().contains("panic"),
+        "must not panic: {stderr}");
+}
+
 #[test]
 fn claim_unknown_id_errors() {
     let tmp = tempfile::tempdir().expect("tempdir");

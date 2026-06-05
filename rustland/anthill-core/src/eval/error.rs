@@ -8,7 +8,12 @@ use super::Value;
 pub enum EvalError {
     UnboundVar { name: String, span: Option<SourceSpan> },
     UnknownOperation { name: String },
-    OperationBodyMissing { name: String },
+    /// An operation was invoked that has neither a body nor a registered
+    /// builtin. The typer is supposed to guarantee this never happens, so
+    /// hitting it is an invariant violation (a typer/loader bug) — NOT a
+    /// recoverable domain error, and it does not ride the `Error` effect
+    /// channel. Carries a captured backtrace to locate the bad dispatch.
+    OperationBodyMissing { name: String, backtrace: std::backtrace::Backtrace },
     TypeMismatch { expected: &'static str, got: String },
     ArityMismatch { op: &'static str, expected: usize, got: usize },
     DivisionByZero { op: &'static str },
@@ -49,7 +54,11 @@ impl std::fmt::Display for EvalError {
         match self {
             EvalError::UnboundVar { name, .. } => write!(f, "unbound variable: {name}"),
             EvalError::UnknownOperation { name } => write!(f, "unknown operation: {name}"),
-            EvalError::OperationBodyMissing { name } => write!(f, "operation has no body: {name}"),
+            EvalError::OperationBodyMissing { name, backtrace } => write!(
+                f,
+                "operation has no body: {name} — this is a typer-guaranteed invariant \
+                 violation (should be unreachable).\nbacktrace:\n{backtrace}"
+            ),
             EvalError::TypeMismatch { expected, got } => write!(f, "type mismatch: expected {expected}, got {got}"),
             EvalError::ArityMismatch { op, expected, got } => write!(f, "{op}: expected {expected} args, got {got}"),
             EvalError::DivisionByZero { op } => write!(f, "{op}: division by zero"),

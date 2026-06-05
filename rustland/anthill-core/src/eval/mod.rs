@@ -530,6 +530,7 @@ impl Interpreter {
         let (body_term, params) = self.cached_operation_body(sym)
             .ok_or_else(|| EvalError::OperationBodyMissing {
                 name: self.kb.qualified_name_of(sym).to_string(),
+                backtrace: std::backtrace::Backtrace::force_capture(),
             })?;
         if args.len() != params.len() {
             return Err(EvalError::ArityMismatch {

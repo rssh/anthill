@@ -6,7 +6,7 @@
 use std::fs;
 use std::path::PathBuf;
 
-use anthill_core::eval::{builtins, value::Value, Interpreter};
+use anthill_core::eval::{builtins, value::Value, EvalError, Interpreter};
 use anthill_core::intern::Symbol;
 use anthill_core::kb::load::{self, FileSourceResolver};
 use anthill_core::kb::term::{Term, TermId};
@@ -256,6 +256,17 @@ fn run_inner(args: &RunArgs) -> Result<i32, i32> {
         Ok(Value::Int(n)) => Ok(clamp_exit(n)),
         Ok(other) => {
             eprintln!("error: main returned non-Int value: {other:?}");
+            Err(EXIT_RUNTIME)
+        }
+        // Top-level Error handler (WI-195): an `Error` effect that propagated
+        // out of the entry op arrives as `Raised`; format its payload as the
+        // canonical `error: ...` line (Raised's Display drops the payload).
+        Err(EvalError::Raised { payload }) => {
+            let msg = match &payload {
+                Value::Str(s) => s.clone(),
+                other => format!("{other:?}"),
+            };
+            eprintln!("error: {msg}");
             Err(EXIT_RUNTIME)
         }
         Err(e) => {
