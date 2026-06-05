@@ -325,6 +325,25 @@ fn detect_cycle_term(
     }
 }
 
+// ── Default Error handler ──────────────────────────────────────
+
+/// Default `Error` handler (proposal 027 §Error, WI-073). `raise(error: T)`
+/// carries the error payload as `args[0]`; the handler returns
+/// [`HandlerAction::Throw`] with it, and the dispatch site turns that into
+/// [`EvalError::Raised`]. Error-ness lives in the channel (the `Throw`
+/// variant), not in the value — the payload is an ordinary opaque `Value`
+/// of the operation's `T`, propagated verbatim. Until catch/recover
+/// constructs land (WI-195+), a raised Error aborts evaluation carrying its
+/// payload.
+pub fn default_error_handler() -> EffectHandler {
+    Box::new(|_interp, _op_sym, args| {
+        let payload = args.first().cloned().ok_or_else(|| EvalError::ArityMismatch {
+            op: "Error.raise", expected: 1, got: 0,
+        })?;
+        Ok(HandlerAction::Throw(payload))
+    })
+}
+
 // ── Interpreter integration ────────────────────────────────────
 
 /// The handler map. Stored behind an `Option` inside `Interpreter` so we
@@ -450,11 +469,12 @@ impl Interpreter {
     /// even for tests, since Modify.get/set have no side effect beyond
     /// the handler's own state.
     pub fn register_standard_effect_handlers(&mut self) -> Result<(), EvalError> {
-        let entries: [(&str, fn() -> EffectHandler); 4] = [
+        let entries: [(&str, fn() -> EffectHandler); 5] = [
             ("anthill.prelude.Console.ConsoleOutput", stdio_console_output_handler),
             ("anthill.prelude.Console.ConsoleError", stdio_console_error_handler),
             ("anthill.prelude.Console.ConsoleInput", stdio_console_input_handler),
             ("Modify", default_modify_handler),
+            ("anthill.prelude.Error", default_error_handler),
         ];
         for (qname, factory) in entries {
             match self.register_effect_handler(qname, factory()) {

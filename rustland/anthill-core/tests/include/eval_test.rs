@@ -1646,6 +1646,27 @@ fn wi389_fail_action_surfaces_its_reason() {
 }
 
 #[test]
+fn wi073_raise_surfaces_as_raised_with_payload() {
+    // WI-073 (end-to-end): invoking the Error.raise operation routes through
+    // the error_raise builtin to the default Error handler (installed by
+    // register_standard_effect_handlers), which Throws the payload; the
+    // dispatch site surfaces it as EvalError::Raised carrying that payload
+    // verbatim. Chain: raise -> builtin -> Error handler -> Throw -> Raised.
+    let mut interp = interp_for("namespace test.wi073 end\n");
+    interp.register_standard_effect_handlers().expect("register standard effect handlers");
+
+    let err = interp
+        .call("anthill.prelude.Error.raise", &[Value::Str("kaboom".into())])
+        .unwrap_err();
+    match err {
+        EvalError::Raised { payload } => {
+            assert_eq!(payload.as_str(), Some("kaboom"), "payload preserved verbatim");
+        }
+        other => panic!("expected EvalError::Raised, got {other:?}"),
+    }
+}
+
+#[test]
 fn wi350_eval_resolves_abstract_spec_op_from_value_runtime_sort() {
     // WI-350 (eval leg): a body-less spec op (`Box.peek` — a self-receiver
     // spec, `peek(b: Box)`) called on a concrete value resolves the impl

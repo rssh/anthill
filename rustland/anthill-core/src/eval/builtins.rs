@@ -113,6 +113,7 @@ pub fn register_standard_builtins(interp: &mut Interpreter) -> Result<(), EvalEr
 
     register_if_present(interp, "anthill.prelude.ModifyRuntime.get", modify_get)?;
     register_if_present(interp, "anthill.prelude.ModifyRuntime.set", modify_set)?;
+    register_if_present(interp, "anthill.prelude.Error.raise", error_raise)?;
     register_if_present(interp, "anthill.prelude.Cell.new", cell_new)?;
     register_if_present(interp, "anthill.prelude.Cell.get", cell_get)?;
     register_if_present(interp, "anthill.prelude.Cell.set", cell_set)?;
@@ -1539,6 +1540,7 @@ effect_dispatcher!(console_eprintln,  "anthill.prelude.Console.eprintln",  "epri
 effect_dispatcher!(console_read_line, "anthill.prelude.Console.read_line", "read_line", "anthill.prelude.Console.ConsoleInput");
 effect_dispatcher!(modify_get, "anthill.prelude.ModifyRuntime.get", "get", "anthill.prelude.Modify");
 effect_dispatcher!(modify_set, "anthill.prelude.ModifyRuntime.set", "set", "anthill.prelude.Modify");
+effect_dispatcher!(error_raise, "anthill.prelude.Error.raise", "raise", "anthill.prelude.Error");
 
 // ── Persistence builtins (proposal 007 §4) ─────────────────────
 
