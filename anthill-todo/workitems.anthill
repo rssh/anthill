@@ -1373,7 +1373,7 @@ fact WorkItem(
   description: "Wire the Error effect through the eval layer end-to-end. Today persist / retract / flush / console builtins raise EvalError::Internal (a Rust-level error that aborts the bundle with a backtrace) when their underlying operation fails — the declared `Error` effect on those signatures is documentation only. Replace those raises with proper effect dispatches: build an error term carrying (sort, message, optional cause), invoke the Error handler stack, propagate. Install a default top-level Error handler in run_anthill_bundle that formats the term to stderr (canonical 'error: ...' line) and returns EXIT_RUNTIME. Side effect: `eprintln(console(), \"error: ...\")` patterns retire from bundle command bodies — the handler emits the line. No new syntax: handler installation is registration (same shape as Console / Modify[store]); local recovery, if ever needed, is a stdlib builtin like recover_with_default(comp, default) — not a try/catch construct. Acceptance: a fixture invoking `anthill-todo --anthill claim WI-001` against a read-only filesystem produces 'error: persist failed: ...' on stderr and exits with EXIT_RUNTIME (1) instead of a Rust panic with backtrace; existing happy-path tests still green.",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: ["WI-073"],
-  status: Open)
+  status: Delivered(agent: "claude", at: "2026-06-05T13:45:03Z"))
 
 fact WorkItem(
   id: "WI-191",
