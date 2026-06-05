@@ -190,5 +190,8 @@ mod wi379_inference_order_test;
 #[path = "include/wi368_iterator_threading_test.rs"]
 mod wi368_iterator_threading_test;
 
+#[path = "include/wi376_projection_test.rs"]
+mod wi376_projection_test;
+
 #[path = "include/wi392_op_type_param_rigid_test.rs"]
 mod wi392_op_type_param_rigid_test;
