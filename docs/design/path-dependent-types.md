@@ -220,6 +220,52 @@ is just the general typing architecture made concrete.
   grammar form (`(expr).M` does not parse yet) and (b) a **stability guard** —
   projecting an *abstract* member off an *unstable* receiver is a loud error
   (`makeProvider().K`); `let p = makeProvider(); p.K` is the escape.
+### Sealing & escape (ML's avoidance problem) — resolved: the base model is escape-free
+
+A path type is **rigid** (ungrounded) only when its receiver's type is abstract, and
+that abstraction always comes from a **declared** boundary — it is never minted inside
+a body. So a rigid `p.M` roots at exactly one of three places, and only the last can
+escape:
+
+| root of a rigid `p.M` | in scope | escapes? |
+|---|---|---|
+| **top-level / global** (`defaultKVStore`) | everywhere | never (ML's `Stdlib.Map.t`) |
+| **operation interface** (a param / type-param) | the op + its callers | never (rooted at the boundary) |
+| **hidden local** (sealing / existential-unpack / local type definition) | one body | yes — *and all three are absent* |
+
+All three hidden-local introducers are **absent from the base model** — no sealing (an
+abstracting return), no existentials, no local sort definitions — so no scope-local
+type can be *formed*. Escape (ML's avoidance problem, where no principal avoiding-type
+exists) is therefore **unformable, not merely rejected**.
+
+**The deeper reason it cannot arise: abstraction is a call-site contract, discharged
+statically per call.** `requires` and `ensures` are one mechanism — the
+dictionary-passing / `req_insertion` path (011's per-call elaboration, resolved at
+type-check time):
+
+- **`requires`** discharges an op's abstract **inputs** — the caller supplies the
+  dictionaries;
+- **`ensures`** discharges its abstract **outputs** — the caller assumes the manifest
+  facts (`ensures result.K = String` is ML's `with type t = string`, a translucent
+  manifest written as a postcondition — sound because types are terms, so an equation
+  is a fact).
+
+Both **ground the abstraction at the call**, from the caller's view, so nothing
+abstract *survives* a call into runtime — hence no escape and no runtime existential
+packaging. An abstraction **not** discharged at the call (an unmet `requires`, an
+un-manifested `ensures`) is an undischarged residual → no-silent-drop **rejects** it
+(§4). That yields one rule:
+
+> **A return must be interface-expressible** — concrete, rooted at the op's own
+> inputs, or made so by an `ensures` manifest. The `requires`/`ensures` dual covers
+> abstract inputs and outputs symmetrically.
+
+**Build note.** Implement **strict** first — *forbid the abstracting return* (a return
+must be concrete or input-rooted); it is the degenerate case and covers every current
+use-case. Add the **`ensures`-manifest** admit-form (translucent returns — `K`
+manifest, `V` still abstract) when a real need appears. **Existentials** — deliberately
+letting an abstraction *outlive* its call — are the separate opt-in, co-designed
+if/when wanted.
 
 ## 6. Seam map
 
