@@ -17,10 +17,71 @@ use crate::intern::Symbol;
 
 use super::{EvalError, Interpreter, Value};
 
+/// Opaque marker for a resolver-level alternative continuation the runtime
+/// can re-enter on backtrack. Placeholder until the Branch substrate
+/// (WI-075: `push_choice` + activation-stack snapshots) lands — no handler
+/// constructs one yet, so `HandlerAction::Choice` is unreachable today.
+#[derive(Debug, Clone)]
+pub struct AltMarker;
+
+/// Snapshot of the activation stack at an operation call site, used to
+/// suspend and later resume evaluation. Placeholder until the
+/// suspend/resume substrate lands — no handler constructs one yet, so
+/// `HandlerAction::Suspend` is unreachable today.
+#[derive(Debug, Clone)]
+pub struct ContSnapshot;
+
+/// What a handler tells the runtime to do with the (implicit) continuation
+/// when it returns — proposal 027 §Outputs, the `HandlerAction` carrier.
+/// The handler never receives the continuation as a value; it returns one
+/// of these variants and the dispatch site ([`Interpreter::invoke_effect_handler`])
+/// interprets it.
+///
+/// Only `Pure` and `Throw` are interpreted today (WI-389). `Fail`,
+/// `Choice`, and `Suspend` need the Branch / suspend-resume substrate
+/// (WI-075); the dispatch site rejects them with a clear error until then.
+#[derive(Debug)]
+pub enum HandlerAction {
+    /// Resume the current path with this value (linear — the common case).
+    Pure(Value),
+    /// Abort with an anthill-level error payload. The dispatch site turns
+    /// this into [`EvalError::Raised`]. Error-ness lives *here*, in the
+    /// channel — the payload is an ordinary opaque `Value`, untagged.
+    Throw(Value),
+    /// Abort the current resolver branch (resolver-level failure). The
+    /// `Value` is the failure reason/diagnostic — symmetric with `Throw`,
+    /// it records *why* the branch was abandoned so an exhausted search can
+    /// explain itself. (`Throw` propagates past choice points as an error;
+    /// `Fail` backtracks to the nearest alternative.)
+    Fail(Value),
+    /// Resume now with `value`; on backtrack, try `alts` in list order.
+    Choice(Value, Vec<AltMarker>),
+    /// Paused: the runtime returns to its driver and resumes later via the
+    /// snapshot.
+    Suspend(ContSnapshot),
+}
+
+impl HandlerAction {
+    /// The variant name, for diagnostics.
+    fn kind_name(&self) -> &'static str {
+        match self {
+            HandlerAction::Pure(_) => "Pure",
+            HandlerAction::Throw(_) => "Throw",
+            HandlerAction::Fail(_) => "Fail",
+            HandlerAction::Choice(..) => "Choice",
+            HandlerAction::Suspend(..) => "Suspend",
+        }
+    }
+}
+
 /// Handler for a single effect sort. Dispatched on the operation symbol
-/// (e.g., `print` vs `println` both fall into `ConsoleOutput`).
+/// (e.g., `print` vs `println` both fall into `ConsoleOutput`). Returns a
+/// [`HandlerAction`] describing what the runtime should do with the
+/// continuation; the `Err` channel is reserved for genuine internal faults
+/// (I/O errors, arity mismatches), *not* for anthill-level errors — those
+/// ride out through `HandlerAction::Throw`.
 pub type EffectHandler =
-    Box<dyn FnMut(&mut Interpreter, Symbol, &[Value]) -> Result<Value, EvalError>>;
+    Box<dyn FnMut(&mut Interpreter, Symbol, &[Value]) -> Result<HandlerAction, EvalError>>;
 
 // ── Default Console handlers (stdio) ───────────────────────────
 
@@ -53,7 +114,7 @@ fn stdio_console_write_handler<W: Write + 'static>(sink: W) -> EffectHandler {
             out.write_all(b"\n").map_err(|e| EvalError::Internal(e.to_string()))?;
         }
         out.flush().map_err(|e| EvalError::Internal(e.to_string()))?;
-        Ok(Value::Unit)
+        Ok(HandlerAction::Pure(Value::Unit))
     })
 }
 
@@ -67,7 +128,7 @@ pub fn stdio_console_input_handler() -> EffectHandler {
             .map_err(|e| EvalError::Internal(e.to_string()))?;
         if buf.ends_with('\n') { buf.pop(); }
         if buf.ends_with('\r') { buf.pop(); }
-        Ok(Value::Str(buf))
+        Ok(HandlerAction::Pure(Value::Str(buf)))
     })
 }
 
@@ -89,7 +150,7 @@ pub fn buffered_console_handler(buf: SharedBuffer) -> EffectHandler {
         if op_appends_newline(interp.kb().resolve_sym(op_sym)) {
             buf.borrow_mut().push('\n');
         }
-        Ok(Value::Unit)
+        Ok(HandlerAction::Pure(Value::Unit))
     })
 }
 
@@ -103,7 +164,7 @@ pub type SharedInputScript = Rc<RefCell<std::collections::VecDeque<String>>>;
 pub fn scripted_console_input_handler(script: SharedInputScript) -> EffectHandler {
     Box::new(move |_interp, _op_sym, _args| {
         script.borrow_mut().pop_front()
-            .map(Value::Str)
+            .map(|s| HandlerAction::Pure(Value::Str(s)))
             .ok_or_else(|| EvalError::Internal("scripted console input exhausted".into()))
     })
 }
@@ -146,7 +207,7 @@ pub fn default_modify_handler() -> EffectHandler {
         if let Value::Cell(h) = target {
             let handle = h.clone();
             return match op_name {
-                "get" => Ok(interp.read_cell(&handle)),
+                "get" => Ok(HandlerAction::Pure(interp.read_cell(&handle))),
                 "set" => {
                     let new_val = args.get(1).cloned().ok_or_else(|| {
                         EvalError::ArityMismatch {
@@ -154,7 +215,7 @@ pub fn default_modify_handler() -> EffectHandler {
                         }
                     })?;
                     interp.write_cell(&handle, new_val);
-                    Ok(Value::Unit)
+                    Ok(HandlerAction::Pure(Value::Unit))
                 }
                 other => Err(EvalError::Internal(
                     format!("Modify[Cell] handler: unknown op `{}`", other),
@@ -169,6 +230,7 @@ pub fn default_modify_handler() -> EffectHandler {
                 cells.borrow()
                     .get(&key)
                     .cloned()
+                    .map(HandlerAction::Pure)
                     .ok_or_else(|| EvalError::Internal(
                         format!("Modify.get: no value set for `{}`",
                                 interp.kb().resolve_sym(key))
@@ -180,7 +242,7 @@ pub fn default_modify_handler() -> EffectHandler {
                 })?;
                 detect_cycle(interp, key, &new_val, 0)?;
                 cells.borrow_mut().insert(key, new_val);
-                Ok(Value::Unit)
+                Ok(HandlerAction::Pure(Value::Unit))
             }
             other => Err(EvalError::Internal(format!("Modify handler: unknown op `{}`", other))),
         }
@@ -348,9 +410,37 @@ impl Interpreter {
         let mut handler = self.effect_handlers.take_for_invoke(effect_sym).ok_or_else(|| {
             EvalError::Internal(format!("no handler registered for effect `{}`", effect_qname))
         })?;
-        let result = handler(self, op_sym, args);
+        let action = handler(self, op_sym, args);
         self.effect_handlers.return_handler(effect_sym, handler);
-        result
+        // Interpret the carrier. Only `Pure`/`Throw` are wired (WI-389);
+        // the continuation-manipulating variants need the Branch /
+        // suspend-resume substrate (WI-075) and surface a loud error until
+        // then, rather than being silently dropped.
+        match action? {
+            HandlerAction::Pure(v) => Ok(v),
+            HandlerAction::Throw(payload) => Err(EvalError::Raised { payload }),
+            // Fail / Choice / Suspend manipulate the continuation and need
+            // the Branch / suspend-resume substrate (WI-075). Until then,
+            // hitting one is a runtime-internal not-implemented state — fail
+            // loudly with the dispatch context (effect + operation) and a
+            // captured backtrace, so the offending call site is locatable.
+            unsupported => {
+                // `Fail` carries a reason (the "why" of the branch abort) —
+                // surface it so the diagnostic explains the failure even
+                // though the resolver-fail path itself isn't wired yet.
+                let detail = match &unsupported {
+                    HandlerAction::Fail(reason) => Some(format!("{reason:?}")),
+                    _ => None,
+                };
+                Err(EvalError::UnsupportedHandlerAction {
+                    action: unsupported.kind_name(),
+                    effect: effect_qname.to_string(),
+                    op: self.kb().resolve_sym(op_sym).to_string(),
+                    detail,
+                    backtrace: std::backtrace::Backtrace::force_capture(),
+                })
+            }
+        }
     }
 
     /// Register the standard effect handlers. Includes real-stdio

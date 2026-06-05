@@ -2,6 +2,8 @@ use crate::intern::Symbol;
 use crate::kb::term::TermId;
 use crate::span::SourceSpan;
 
+use super::Value;
+
 #[derive(Debug)]
 pub enum EvalError {
     UnboundVar { name: String, span: Option<SourceSpan> },
@@ -15,6 +17,29 @@ pub enum EvalError {
     StepsExhausted { cap: u64 },
     MatchFailed { scrutinee: String },
     UnhandledEffect { effect: Symbol, payload: Option<TermId> },
+    /// An anthill-level `Error` effect was raised (proposal 027 §Error).
+    /// Produced at the effect-dispatch site from a handler's
+    /// `HandlerAction::Throw(payload)`. The payload is an ordinary opaque
+    /// `Value` — error-ness lives in *this variant* (the channel), not in
+    /// the value itself. Until catch/recover constructs land (WI-195+), a
+    /// raised Error aborts evaluation carrying its payload here.
+    Raised { payload: Value },
+    /// A handler returned a continuation-manipulating action (`Fail`,
+    /// `Choice`, or `Suspend`) that the runtime cannot yet honor — those
+    /// need the Branch / suspend-resume substrate (WI-075). Hitting one is
+    /// a runtime-internal not-yet-implemented state, so it carries the
+    /// dispatch context (effect sort + operation) and a captured backtrace
+    /// to locate the offending call site.
+    UnsupportedHandlerAction {
+        action: &'static str,
+        effect: String,
+        op: String,
+        /// Action-specific explanation — for `Fail`, the reason carried by
+        /// the action (the "why" of the branch abort). `None` for actions
+        /// that carry no reason payload.
+        detail: Option<String>,
+        backtrace: std::backtrace::Backtrace,
+    },
     CyclicReference,
     Internal(String),
 }
@@ -33,6 +58,20 @@ impl std::fmt::Display for EvalError {
             EvalError::StepsExhausted { cap } => write!(f, "step budget exhausted after {cap} steps"),
             EvalError::MatchFailed { scrutinee } => write!(f, "pattern match failed on {scrutinee}"),
             EvalError::UnhandledEffect { .. } => write!(f, "unhandled effect"),
+            EvalError::Raised { .. } => write!(f, "raised error"),
+            EvalError::UnsupportedHandlerAction { action, effect, op, detail, backtrace } => {
+                write!(
+                    f,
+                    "handler for effect `{effect}` returned the `{action}` action while \
+                     dispatching operation `{op}`, but the runtime cannot honor it yet: \
+                     `{action}` needs the Branch / suspend-resume substrate (WI-075). \
+                     This is a runtime-internal not-yet-implemented path."
+                )?;
+                if let Some(detail) = detail {
+                    write!(f, " reason: {detail}")?;
+                }
+                write!(f, "\nbacktrace:\n{backtrace}")
+            }
             EvalError::CyclicReference => write!(f, "cyclic reference detected"),
             EvalError::Internal(s) => write!(f, "internal evaluator error: {s}"),
         }
