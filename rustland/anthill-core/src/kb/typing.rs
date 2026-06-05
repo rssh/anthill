@@ -11416,6 +11416,29 @@ fn extract_parent_name(kb: &KnowledgeBase, parent: TermId) -> String {
     }
 }
 
+/// WI-392: build a substitution that Skolemizes an operation's own declared type
+/// parameters — each `Var::Global(vid)` ↦ a fresh `Var::Rigid`. Applied (via
+/// `walk_type_deep_value`) to the op's param types / return / effects before its
+/// body is checked, so the body sees its type parameters as rigid
+/// (fixed-but-abstract) constants: usable but not solvable. Mirrors the
+/// resolver's `forall_impl` skolemisation (`resolve.rs` `step_forall_impl`), the
+/// only other site that mints `Var::Rigid`.
+fn rigidify_op_type_params(
+    kb: &mut KnowledgeBase,
+    type_params: &[(Symbol, TermId)],
+) -> Substitution {
+    let mut rigidify = Substitution::new();
+    for (_, var_tid) in type_params {
+        if let Term::Var(Var::Global(vid)) = kb.get_term(*var_tid) {
+            let vid = *vid;
+            let fresh = kb.fresh_var(vid.name());
+            let rigid_term = kb.alloc(Term::Var(Var::Rigid(fresh)));
+            rigidify.bind_term(vid, rigid_term);
+        }
+    }
+    rigidify
+}
+
 /// Check operation bodies against their declared return types.
 fn check_operation_bodies(kb: &mut KnowledgeBase, op_syms: &[Symbol], errors: &mut Vec<TypeError>) {
     struct OpInfo {
@@ -11440,12 +11463,44 @@ fn check_operation_bodies(kb: &mut KnowledgeBase, op_syms: &[Symbol], errors: &m
             None => continue,
         };
         let span = kb.functor_span(rec.op_sym).map(|s| s.span);
+        // WI-392: while CHECKING this operation's body, its OWN declared type
+        // parameters are universally quantified — Skolemize them to `Var::Rigid`
+        // so the body may USE them but never CONSTRAIN them (a `Rigid` unifies
+        // only with itself, so e.g. `add(h, 1)` on `h: Elem` is correctly
+        // rejected; the body must type-check for ALL `Elem`). Inner calls keep
+        // their own FLEXIBLE `Global` type params, which solve TO these rigids
+        // (rigid ⇒ global; `resolved_var` matches only `Global`), and
+        // `check_unconstrained_type_params` passes them unchanged (it flags only
+        // bare `Global`s) — so a self-receiver / recursive call whose type param
+        // resolves to the enclosing rigid is no longer a false "unconstrained"
+        // leak. Declared ⇒ check-mode ⇒ rigid; an *inferred* param would stay
+        // flexible (you cannot infer a rigid), but operation type params are
+        // always declared. A rigid in an effect-row position is CHECKED
+        // structurally, never *bound* (`bind_row_tail` is the binding path), so
+        // its WI-336 rigid-tail rejection is not on the checking path.
+        let (params, return_type, declared_effects) = if rec.type_params.is_empty() {
+            (rec.params, rec.return_type, rec.effects)
+        } else {
+            let rigidify = rigidify_op_type_params(kb, &rec.type_params);
+            let params = rec
+                .params
+                .iter()
+                .map(|(n, t)| (*n, walk_type_deep_value(kb, &rigidify, t)))
+                .collect();
+            let return_type = walk_type_deep_value(kb, &rigidify, &rec.return_type);
+            let declared_effects = rec
+                .effects
+                .iter()
+                .map(|e| walk_type_deep_value(kb, &rigidify, e))
+                .collect();
+            (params, return_type, declared_effects)
+        };
         ops_to_check.push(OpInfo {
             op_sym: rec.op_sym,
-            return_type: rec.return_type,
-            declared_effects: rec.effects,
+            return_type,
+            declared_effects,
             body_node,
-            params: rec.params,
+            params,
             span,
         });
     }

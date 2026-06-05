@@ -448,6 +448,21 @@ pub fn views_structurally_equal<A: TermView, B: TermView>(
     a: &A,
     b: &B,
 ) -> bool {
+    // WI-392: a rigid (Skolem) or DeBruijn var has a comparable identity (its
+    // `Var`), but `head` collapses both to `Opaque` for goal-side anti-wildcard
+    // semantics (a rigid *goal* var must not match concrete discrim keys). For
+    // structural EQUALITY they ARE comparable — two occurrences of the same
+    // rigid effect / type parameter are the same effect/type — so compare them
+    // by full `Var` identity, which the index side already surfaces
+    // (`index_var`). A rigid vs a different-flavoured var or a non-var is unequal
+    // (`Var`'s derived `Eq`; a non-var `index_var` is `None`, so we fall through
+    // to the `head` match and its `_ => false`). `Global` vars are unaffected —
+    // they keep flowing through `head`'s `ViewHead::Var` arm below.
+    if let (Some(va), Some(vb)) = (a.index_var(kb), b.index_var(kb)) {
+        if va.is_rigid() || va.is_debruijn() || vb.is_rigid() || vb.is_debruijn() {
+            return va == vb;
+        }
+    }
     match (a.head(kb), b.head(kb)) {
         (ViewHead::Var(va), ViewHead::Var(vb)) => va == vb,
         (ViewHead::Const(la), ViewHead::Const(lb)) => la == lb,
