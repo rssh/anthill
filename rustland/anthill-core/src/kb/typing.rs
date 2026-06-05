@@ -7600,6 +7600,19 @@ fn project_type_member(
     fn_sym: Symbol,
     span: Option<Span>,
 ) -> Result<Value, TypeError> {
+    // WI-381: resolve a defined-type / alias receiver to its underlying shape first, so
+    // every projection reads off the resolved structure (`sort IntStream =
+    // Stream[T = Int]` ⟹ project off `Stream[T = Int]`), never the opaque alias — which
+    // declares no members, so `s.T` would spuriously fail. A non-alias / opaque /
+    // parametric receiver is left unchanged.
+    let resolved_recv: Value = match extract_type(kb, arg_ty) {
+        TypeExtractor::SortRef(s) => match resolve_alias_shape(kb, s) {
+            Some(shape) => Value::Term(shape),
+            None => arg_ty.clone(),
+        },
+        _ => arg_ty.clone(),
+    };
+    let arg_ty = &resolved_recv;
     // `s.Sort` — the whole parameterized sort of the receiver (captures every
     // parameter, wide-sort safe).
     if member == "Sort" {
@@ -8454,6 +8467,13 @@ fn unify_parameterized_with_sort_ref<P: TermView, S: TermView>(
     let Some(sref_sym) = extract_sort_ref_sym(kb, sort_ref) else {
         return types_compatible(kb, subst, parameterized, sort_ref);
     };
+    // WI-381: a sort_ref to a structured (ground) defined-type / alias resolves to its
+    // underlying shape first — `IntStream` ⟹ `Stream[T = Int]` — so the alias's fixed
+    // bindings are ENFORCED against the parameterized side instead of the bare ref
+    // going all-fresh and silently dropping them. Re-dispatch through `unify_types`.
+    if let Some(shape) = resolve_alias_shape(kb, sref_sym) {
+        return unify_types(kb, subst, parameterized, &TermIdView(shape));
+    }
     if pbase_sym != sref_sym {
         return types_compatible(kb, subst, parameterized, sort_ref);
     }
@@ -8622,6 +8642,64 @@ fn resolve_sort_alias(kb: &KnowledgeBase, sym: Symbol) -> Option<TermId> {
     };
     find(|_, f, s, _| f == s)
         .or_else(|| find(|kb, f, _, n| kb.resolve_sym(f) == n))
+}
+
+/// WI-381: resolve a defined-type / alias reference (`SortRef(S)`) to its underlying
+/// SHAPE — following alias chains to a finite shape — so the typer judges members and
+/// ungrounded positions on the *resolved* shape, not the opaque alias
+/// (`docs/design/expansion-during-unification.md` §1, §6 OQ6). `sort IntStream =
+/// Stream[T = Int]` resolves to `Stream[T = Int]` (so `T = Int` is KEPT and the
+/// unwritten `E` stays open); a chain `Top = Mid`, `Mid = List[T = Int]` follows
+/// through to `List[T = Int]`.
+///
+/// Returns `None` — the alias stays opaque — when `sym` is NOT a structured alias to a
+/// GROUND shape:
+///   - it has no `SortAlias` fact (a plain sort);
+///   - the target is a bare logical `Var` — an opaque sort (`sort Term = ?`) or a type
+///     parameter (`sort T = ?`); collapsing it would lose the sort-ref form (cf.
+///     [`walk_type`]);
+///   - the alias chain CYCLES (`sort A = A`, `A = B`/`B = A`) — a malformed definition;
+///     refuse rather than loop (callers re-dispatch on the result, so a partial cyclic
+///     result would not terminate);
+///   - the resolved shape is NOT ground — a PARAMETRIC alias (`sort PairKey =
+///     Pair[?X1, ?X2]`) with open `?` leaves, or one mentioning a sort parameter. Its
+///     per-use fresh-leaf instantiation is WI-374's per-call scheme machinery; until
+///     then it stays opaque, which is sound (a conservative compat / abstract-receiver
+///     result, never a wrong ground bind).
+fn resolve_alias_shape(kb: &KnowledgeBase, sym: Symbol) -> Option<TermId> {
+    let mut visited: Vec<Symbol> = vec![sym];
+    let shape = resolve_alias_shape_chain(kb, sym, &mut visited)?;
+    type_value_is_ground(kb, shape).then_some(shape)
+}
+
+/// The structural half of [`resolve_alias_shape`]: follow `SortAlias` (and bare-ref
+/// chains) to a finite shape `TermId`. `None` for a non-alias, an alias whose target is
+/// a logical `Var`, or a cyclic chain (`visited` guards revisits). A bare-ref target
+/// to a NON-alias sort (`sort Top = List`) is itself the final shape.
+fn resolve_alias_shape_chain(
+    kb: &KnowledgeBase,
+    sym: Symbol,
+    visited: &mut Vec<Symbol>,
+) -> Option<TermId> {
+    let target = resolve_sort_alias(kb, sym)?;
+    if matches!(kb.get_term(target), Term::Var(_)) {
+        return None;
+    }
+    // A bare-ref target that NAMES another sort: if that sort is itself an alias, follow
+    // the chain (`sort Top = Mid`); a revisit is a cycle → refuse. If it is NOT an alias
+    // (`sort Top = List`), `target` (the bare ref) is the final shape. A parameterized
+    // target (`List[T = Int]`) names its base sort, which is not an alias — same path
+    // keeps `target`.
+    if let Some(next) = extract_sort_ref_sym(kb, &TermIdView(target)) {
+        if resolve_sort_alias(kb, next).is_some() {
+            if visited.contains(&next) {
+                return None;
+            }
+            visited.push(next);
+            return resolve_alias_shape_chain(kb, next, visited);
+        }
+    }
+    Some(target)
 }
 
 // ── WI-307 v1a row unification ──────────────────────────────────────────
@@ -9517,6 +9595,17 @@ fn types_compatible_term_dispatch(kb: &mut KnowledgeBase, subst: &mut Substituti
         // bindings on the parameterized side stand unconstrained
         // against the bare side.
         (Some("sort_ref"), Some("parameterized")) => {
+            // WI-381: a structured (ground) defined-type / alias on the bare side
+            // resolves to its underlying shape and re-dispatches as parameterized — so
+            // `IntList` vs `List[T = Int]` CHECKS the bindings (`T = Int` kept) and an
+            // `IntList` value conforms to its own definition. Without this, the
+            // bare↔param arm below checks base-sort nominal compat ONLY, dropping the
+            // alias's fixed bindings.
+            if let Some(shape) =
+                extract_sort_ref_sym(kb, &TermIdView(actual)).and_then(|s| resolve_alias_shape(kb, s))
+            {
+                return types_compatible(kb, subst, &TermIdView(shape), &TermIdView(expected));
+            }
             // bare `S` vs `B[…]`: nominal base-sort compatibility only (provider
             // admissibility is confined to the bare↔bare arm above). WI-361:
             // `parameterized_base_sym` reads the base sort form-agnostically
@@ -9527,6 +9616,12 @@ fn types_compatible_term_dispatch(kb: &mut KnowledgeBase, subst: &mut Substituti
             }
         }
         (Some("parameterized"), Some("sort_ref")) => {
+            // WI-381: mirror — resolve a structured alias on the bare (expected) side.
+            if let Some(shape) =
+                extract_sort_ref_sym(kb, &TermIdView(expected)).and_then(|s| resolve_alias_shape(kb, s))
+            {
+                return types_compatible(kb, subst, &TermIdView(actual), &TermIdView(shape));
+            }
             match (extract_sort_ref_sym(kb, &TermIdView(expected)), parameterized_base_sym(kb, actual)) {
                 (Some(e), Some(ab)) => sort_sym_compatible(kb, e, ab),
                 _ => false,
@@ -9629,12 +9724,24 @@ fn types_compatible_view_structural<A: TermView, B: TermView>(
         // (sort_ref-side sym, parameterized-side base); `sort_functor_of_view`
         // surfaces the head sym for a `sort_ref` and the base for a `parameterized`.
         (Some("sort_ref"), Some("parameterized")) => {
+            // WI-381: resolve a structured (ground) alias on the bare side and
+            // re-dispatch — mirrors `types_compatible_term_dispatch` so the subtype
+            // relation stays carrier-symmetric (the Node-carrier path must resolve
+            // aliases just as the term path does, or an alias compared against a
+            // denoted-bearing parameterized type would drop its fixed bindings).
+            if let Some(shape) = sort_functor_of_view(kb, &a).and_then(|s| resolve_alias_shape(kb, s)) {
+                return types_compatible(kb, subst, &TermIdView(shape), &e);
+            }
             match (sort_functor_of_view(kb, &a), sort_functor_of_view(kb, &e)) {
                 (Some(av), Some(eb)) => sort_sym_compatible(kb, av, eb),
                 _ => false,
             }
         }
         (Some("parameterized"), Some("sort_ref")) => {
+            // WI-381: mirror — resolve a structured alias on the bare (expected) side.
+            if let Some(shape) = sort_functor_of_view(kb, &e).and_then(|s| resolve_alias_shape(kb, s)) {
+                return types_compatible(kb, subst, &a, &TermIdView(shape));
+            }
             match (sort_functor_of_view(kb, &e), sort_functor_of_view(kb, &a)) {
                 (Some(ev), Some(ab)) => sort_sym_compatible(kb, ev, ab),
                 _ => false,
