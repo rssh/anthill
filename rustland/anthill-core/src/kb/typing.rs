@@ -2770,7 +2770,13 @@ fn build_type(
                 let fresh = kb.intern("?T");
                 Value::Term(kb.make_type_var(fresh))
             });
-            let list_base = kb.make_sort_ref_by_name("List");
+            // WI-393: the QUALIFIED sort name. A bare `"List"` interns a symbol
+            // whose qualified name is `"List"`, which `canonical_sort_sym` (keyed
+            // on qualified name) never folds onto `anthill.prelude.List` — so a
+            // list LITERAL consumed as a Stream (`collect([1,2,3])`) failed the
+            // carrier provider lookup that a written `List[T]` param passes. The
+            // canonical sort makes the literal's carrier match the provider fact.
+            let list_base = kb.make_sort_ref_by_name("anthill.prelude.List");
             let t_sym = kb.intern("T");
             let list_type = parameterized_value(kb, list_base, &[(t_sym, t_val)], span, owner);
             results.push(Ok(TypeResult { ty: list_type, env: unwrap_env(env), effects, node }));
@@ -4212,8 +4218,16 @@ fn check_unconstrained_type_params(
         return Ok(());
     }
     for (name, var_term) in &op.type_params {
-        let resolved = walk_type_deep(kb, subst, *var_term);
-        if let Term::Var(Var::Global(_)) = kb.get_term(resolved) {
+        // Carrier-agnostic resolve over [`TermView`]: `walk_view` returns a
+        // `Value`, so a var bound to a `Value::Node` (a WRITTEN effect row
+        // `E = {Modify[p]}` threaded into an op's `Eff` param by the same-sort
+        // arg-unification, WI-393) is SURFACED, not lost. The term-only
+        // `walk_type`/`walk_type_deep` cannot: their `TermId` return has nowhere
+        // to put a non-`Term` carrier, so they keep the var and a row-bound
+        // effect param was falsely flagged unconstrained. A genuinely unbound
+        // param still resolves to a bare var.
+        let resolved = walk_view(kb, subst, &TermIdView(*var_term));
+        if resolved_var(kb, &resolved).is_some() {
             return Err(TypeError::UnconstrainedTypeParam {
                 span,
                 op: fn_sym,
@@ -6331,35 +6345,84 @@ fn bind_spec_params_from_carrier(
         return false;
     };
 
+    // WI-393: the CONSUMING op's self-receiver param type maps each spec
+    // parameter (by short name) to the op's OWN type-param var — `collect[Elem,
+    // Eff](s: Stream[T = Elem, E = Eff])` gives {T ↦ Elem, E ↦ Eff}. An op
+    // rewritten to explicit `[Elem, Eff]` params (042) no longer uses the spec
+    // sort's own `Stream.T` / `Stream.E`, so binding only those (below) leaves the
+    // op's `Elem` / `Eff` free → element `?_` / `Eff unconstrained` at a cross-sort
+    // consumption site. Bind the op's params from the same carrier view. Empty for
+    // a bare-`Stream` param (the pre-rewrite ops) — then only the spec sort's
+    // params bind, exactly as before.
+    let op_param_map: Vec<(String, Value)> = match extract_type(kb, &op.params[idx].1) {
+        TypeExtractor::Parameterized { bindings, .. } => bindings
+            .into_iter()
+            .map(|(p, v)| (short_name_of(kb.resolve_sym(p)).to_string(), v))
+            .collect(),
+        _ => Vec::new(),
+    };
+
     let mut any = false;
     for (spec_param_sym, carrier_value) in view_bindings {
-        // Which carrier parameter does the provider fact map this spec
-        // parameter onto? (`Stream.T` ↦ `List.T` ⇒ carrier short "T".)
-        let Some(carrier_short) = typaram_ref_short_name(kb, carrier_value) else {
-            continue;
+        let spec_short = short_name_of(kb.resolve_sym(spec_param_sym)).to_string();
+        let is_ref = typaram_ref_short_name(kb, carrier_value);
+        // The carrier-side CONCRETE value for this spec parameter:
+        //  - a type-param ref (`Stream.T` ↦ `List.T`): the receiver's binding for
+        //    that carrier param (`List[T = Int]` ⇒ `Int`);
+        //  - a GROUND provider row (`Stream.E` ↦ `{}`, the WRITTEN pure row of
+        //    `List provides Stream[E = {}]`): the value itself. The pre-WI-393
+        //    code `continue`-skipped this (only a ref mapped), dropping the `{}`
+        //    so a cross-sort `collect`'s `Eff` never grounded.
+        let concrete: Option<Value> = match &is_ref {
+            Some(carrier_short) => recv_bindings
+                .iter()
+                .find(|e| e.0 == *carrier_short)
+                .map(|e| Value::Term(e.1)),
+            None => Some(Value::Term(carrier_value)),
         };
-        let Some(concrete) = recv_bindings
-            .iter()
-            .find(|e| e.0 == carrier_short)
-            .map(|e| e.1)
-        else {
-            continue;
-        };
-        let Some(spec_vid) = type_param_vid_in_sort(kb, spec_sort, spec_param_sym) else {
-            continue;
-        };
-        // Only fill a genuinely-empty slot. If the call already bound this
-        // param to anything — a concrete term (e.g. an explicit
-        // `splitFirst[T = …]`) OR an alias var from earlier unification —
-        // leave it: `bind_term` would flag a *contradiction* against any
-        // differing existing binding (it does not rebind), and an alias
-        // whose root is bound is resolved by `walk_type_deep` anyway.
-        if subst.resolve_as_value(spec_vid).is_some() {
-            continue;
+        let Some(concrete) = concrete else { continue };
+
+        // (a) The spec sort's OWN alias var — kept for the WI-325 abstract-
+        //     coverage check on a dispatched body-less op (it resolves the spec
+        //     param's alias var in the subst, and the dispatch goal is built from
+        //     it). Only a ground TERM derived from a type-param ref (the element);
+        //     a written effect row is not bound onto the spec alias (effects
+        //     aren't expressible there — WI-301; the coverage check reads the
+        //     provider view's groundness directly for that). Only fill a
+        //     genuinely-empty slot: `bind_term` flags a CONTRADICTION against a
+        //     differing existing binding (it does not rebind), and an alias whose
+        //     root is bound resolves anyway.
+        if is_ref.is_some() {
+            if let (Value::Term(ct), Some(spec_vid)) =
+                (&concrete, type_param_vid_in_sort(kb, spec_sort, spec_param_sym))
+            {
+                if subst.resolve_as_value(spec_vid).is_none() && !occurs_in(kb, spec_vid, *ct) {
+                    subst.bind_term(spec_vid, *ct);
+                    any = true;
+                }
+            }
         }
-        if !occurs_in(kb, spec_vid, concrete) {
-            subst.bind_term(spec_vid, concrete);
-            any = true;
+
+        // (b) The consuming op's OWN type-param var (WI-393), matched by short
+        //     name through `op_param_map`. Bound carrier-agnostically — `concrete`
+        //     may be a written effect-row `Value::Node`. Same empty-slot guard.
+        if let Some((_, op_param_val)) = op_param_map.iter().find(|(s, _)| *s == spec_short) {
+            if let Some(op_vid) = resolved_var(kb, op_param_val) {
+                if subst.resolve_as_value(op_vid).is_none() {
+                    match &concrete {
+                        Value::Term(t) => {
+                            if !occurs_in(kb, op_vid, *t) {
+                                subst.bind_term(op_vid, *t);
+                                any = true;
+                            }
+                        }
+                        other => {
+                            subst.bind_value(op_vid, other.clone());
+                            any = true;
+                        }
+                    }
+                }
+            }
         }
     }
     any
@@ -6905,11 +6968,15 @@ fn check_constructor_iter(
     // Type it as `List[T = elem]` / `Set[T = elem]`, mirroring the
     // `Expr::ListLit` / `Expr::SetLit` builds. (The body node stays a
     // `constructor(ListLiteral)` for eval/codegen, which handle it.)
+    // WI-393: QUALIFIED base names — a bare `"List"`/`"Set"` interns a symbol
+    // whose qualified name is itself, which `canonical_sort_sym` never folds onto
+    // the prelude sort, so a literal consumed as a Stream (`collect([1,2,3])`)
+    // missed the carrier provider lookup. See the `ListLit` build frame.
     if kb.qualified_name_of(ctor_sym) == "anthill.reflect.ListLiteral" {
-        return check_seq_literal_constructor(kb, env, pos_results, expected, occ, "List");
+        return check_seq_literal_constructor(kb, env, pos_results, expected, occ, "anthill.prelude.List");
     }
     if kb.qualified_name_of(ctor_sym) == "anthill.reflect.SetLiteral" {
-        return check_seq_literal_constructor(kb, env, pos_results, expected, occ, "Set");
+        return check_seq_literal_constructor(kb, env, pos_results, expected, occ, "anthill.prelude.Set");
     }
 
     // Free-standing entities (declared at namespace level, not nested in a
