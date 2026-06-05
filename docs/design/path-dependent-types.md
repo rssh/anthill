@@ -172,10 +172,26 @@ classes**: compare structurally, two terms equal at a variable iff they are in t
 guessed binding (a *check*, never a *binding*). One routine serves both this receiver
 check and α-equivalence of binders (arrow / dependent types — the deferred `Positioned`
 reading). This is
-a **custom unification rule at that head** (**WI-400**, on the **WI-370**
-custom-unification feature) and it is the whole of what keeps the equality sound. ML
-never meets this — it only *checks* declared sharing, never *infers* abstract-type
-equality; DTT meets it and answers the same way (neutrals are opaque).
+a **custom unification rule at that head** (**WI-400**) — and it is the whole of what
+keeps the equality sound. **In the Rust typer it is an arm of `unify_types`** (the
+typer's own type-unifier — `unify_types` / `unify_view_structural` in `kb/typing.rs`,
+*distinct* from the discrimination tree): a σ-equality check over the typer's
+`Substitution` — resolve both receivers through σ, compare structurally, α-rename at
+binders. ML never meets this — it only *checks* declared sharing, never *infers*
+abstract-type equality; DTT meets it and answers the same way (neutrals are opaque).
+
+> **Rust now, anthill later — why WI-400 does not depend on WI-370.** Today the typer is
+> **Rust** (`kb/typing.rs`), with its own type-unifier `unify_types`, *separate from* the
+> discrimination tree (which is the unifier only for *fact resolution* / SLD). So
+> σ-equality is a Rust routine at the `ExprCarried` arm of `unify_types`, over the typer's
+> substitution — no trie machinery. **WI-370** — custom unification *at a
+> discrimination-tree node* — is the realization of the same idea in the *self-hosted*
+> typer, where typing is re-expressed as anthill rules run by the SLD resolver
+> (**WI-010**) and checked equal to the Rust typer (**WI-079**). That track is necessarily
+> **downstream** of a working bootstrapped typer — the anthill typer cannot be landed
+> before there is a typer to check its rules — so WI-370 sits *after* WI-400, never before
+> it. WI-370 therefore leaves the `typing` build set for the self-hosting /
+> everything-is-facts track (with its driver **WI-371**, the op-body-as-fact collapse).
 
 **Inference = collect constraints, defer maximally, solve at the end** (the 011 view;
 the resolver already is a constraint solver with delay/wake). A flexible
@@ -290,9 +306,12 @@ if/when wanted.
 | `k : s.provider.K` depends on param `s` (cross-param + synthesis order) | **WI-398** |
 | projection at `let` / body / `requires`, not only call args | **WI-399** |
 | identity by unification; rigid abstract member; abstract-stays-poly | **WI-376** (keystone) |
-| equality = ζ/δ/η conversion; non-injective `ExprCarried` head; delay + no-silent-drop | **WI-370** (custom unification) |
+| equality = ζ/δ/η conversion; non-injective `ExprCarried` head; delay + no-silent-drop | **WI-400** (σ-equality arm in the Rust typer's `unify_types`) |
 
 The parametric working example of §1 needs **WI-384 + WI-376 + WI-397 + WI-398**, the
-two rules of §3, and the conversion/delay discipline of §4 (its soundness rule rides
-**WI-370**). The plain-field and arbitrary-expression cases (§5) are the genuinely new
-representation work, deferred.
+two rules of §3, and the conversion/delay discipline of §4 (its soundness rule is
+**WI-400**, an arm of the Rust typer's `unify_types`). **WI-370** (custom unification at a
+discrimination-tree node) is the *self-hosted* realization of that same soundness rule,
+deferred to the anthill-typing track (WI-010 / WI-079) — downstream of the bootstrapped
+Rust typer, not a prerequisite of any seam here. The plain-field and arbitrary-expression
+cases (§5) are the genuinely new representation work, deferred.
