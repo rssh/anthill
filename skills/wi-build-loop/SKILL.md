@@ -34,6 +34,37 @@ This skill's argument (`$ARGUMENTS`) is the **tag** (named list) to drive, e.g.
 sequence) and say so. If the chosen tag has no items, run `list` (no `--tag`) to
 show what exists and ask the user which tag to drive.
 
+## Sync with origin first (before each run)
+
+This repo **commits WI work directly to `main`**, and more than one machine /
+session pushes to it — so sync *before* starting, or you risk building on a stale
+tree or stranding commits. Two failure modes, both real:
+
+- **Local behind / diverged.** `main` may have remote commits you lack *and*
+  unpushed local commits from a prior session (the loop commits, but a session can
+  end before pushing). A plain `git pull --ff-only` then **fails** ("not possible
+  to fast-forward"). Reconcile with a **merge** — the established convention here
+  (`git log --merges` shows repeated `Merge remote-tracking branch 'origin/main'`),
+  not a rebase:
+
+  ```bash
+  git fetch origin
+  git status --short                 # must be clean; stash/commit anything first
+  git merge origin/main --no-edit    # = the repo's `git pull` convention (merge, not rebase)
+  cargo build -q 2>/dev/null || ( cd rustland && cargo build )   # compile-sanity the merge
+  ```
+
+  Code conflicts are rare (tickets touch different files — typer vs eval, etc.);
+  the one file that tends to conflict is `anthill-todo/workitems.anthill` (tracking
+  data) — resolve by keeping **both** sides' items.
+
+- **Local not pushed.** Unpushed commits are how the divergence above accumulates.
+  **Push after every delivery** (loop step 4), and at run start confirm sync:
+
+  ```bash
+  git rev-list --left-right --count HEAD...origin/main   # want: 0  0  (ahead  behind)
+  ```
+
 ## Setup — resolve the CLI (once)
 
 Set `TAG` to the argument above (or `typing` if none). Prefer an installed
@@ -76,8 +107,10 @@ user how to build/install it — don't guess a path.)
 4. **Act — exactly one of:**
    - **Deliver.** If the work is scoped and verifiable: implement it, run the
      project's full test suite green, run `/code-review` (via the Skill tool),
-     commit per the repo's rules, then `--agent claude deliver WI-NNN`. Continue to
-     the next ticket or stop (one-ticket-per-run keeps context small).
+     commit per the repo's rules, **`git push origin main`** (so local never
+     strands commits — see *Sync with origin*), then `--agent claude deliver
+     WI-NNN`. Continue to the next ticket or stop (one-ticket-per-run keeps context
+     small).
    - **Insert a prerequisite.** If implementing surfaces a *new primitive / gap*
      the ticket genuinely needs (not its own remaining scope), insert it before the
      current ticket in **one command** — creates the new WI, tags it into the
@@ -92,7 +125,8 @@ user how to build/install it — don't guess a path.)
      semantic change to a core model, a cascade into delivered functionality),
      **stop and ask** — do not guess.
 
-5. **Always leave the tree green and committed** before stopping.
+5. **Always leave the tree green, committed, and pushed** before stopping
+   (`HEAD...origin/main` = `0  0`).
 
 > Distinction (matters): *insert a prerequisite* is for a genuinely new
 > primitive/capability the ticket depends on. *Remaining scope of the current
@@ -112,6 +146,9 @@ user how to build/install it — don't guess a path.)
 ## Rules & gotchas
 
 - **One ticket (or one stop) per run.** Keep context small; hand off cleanly.
+- **Sync at both ends** — merge `origin/main` *before* starting (not `--ff-only`,
+  which fails on divergence), and **push after every deliver** so local never
+  strands commits. End each run with `HEAD...origin/main` = `0  0`.
 - **Commit before running any review/agent workflow** — its subagents may
   `git stash`/`git checkout` and wipe uncommitted changes.
 - **Loud error over silent skip:** surface unhandled cases rather than dropping them.
