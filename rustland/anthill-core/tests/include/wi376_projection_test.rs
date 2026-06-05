@@ -204,6 +204,89 @@ end
     );
 }
 
+// ── WI-396: expression-carried projection in EFFECT-row position (`effects s.E`) ──
+//
+// The element projection `s.T` carries the receiver's element; `s.E` is its effect
+// sibling — it threads the receiver Stream's effect ROW (the observation effect,
+// `effects E = ?` on stream.anthill). The same classifier + eliminator the type
+// position uses now serves the effect position: `effects s.E` lowers to an
+// `ExprCarried`, and at the call it projects the `E` member off the argument's
+// inferred type. `List` has NO effect member to project, so `l.E` is a loud
+// missing-member error (design §5: the written row is the route there, not a
+// projection) — never a silent pure default, which `E` must never become.
+
+/// `drain(s: Stream) -> List[T = s.T] effects s.E` threads BOTH the element and the
+/// effect: on a `Stream[T = Int, E = {Branch}]` it is `List[Int]` with effect
+/// `{Branch}`, so a caller that declares `effects {Branch}` conforms.
+#[test]
+fn effect_projection_threads_concrete() {
+    let ok = r#"
+namespace test.wi396.eff_ok
+  import anthill.prelude.{List, Stream, Int, Branch}
+  operation drain(s: Stream) -> List[T = s.T] effects s.E
+  operation run(es: Stream[T = Int, E = {Branch}]) -> List[T = Int] effects {Branch} = drain(es)
+end
+"#;
+    assert!(
+        load_errors(&[ok]).is_empty(),
+        "drain(es) projects s.E = {{Branch}}; a caller declaring effects {{Branch}} must conform",
+    );
+}
+
+/// The threaded effect is REAL: the projected `s.E = {Branch}` is a genuine effect,
+/// so a caller that declares PURE (no effects) must be rejected — the projection did
+/// not silently default `E` to pure.
+#[test]
+fn effect_projection_wrong_effect_is_rejected() {
+    let wrong = r#"
+namespace test.wi396.eff_wrong
+  import anthill.prelude.{List, Stream, Int, Branch}
+  operation drain(s: Stream) -> List[T = s.T] effects s.E
+  operation run(es: Stream[T = Int, E = {Branch}]) -> List[T = Int] = drain(es)
+end
+"#;
+    assert!(
+        !load_errors(&[wrong]).is_empty(),
+        "drain(es) threads effect {{Branch}}; a pure caller must be rejected, not silently accepted",
+    );
+}
+
+/// `l.E` on a `List` is a loud missing-member error: `List` declares no effect member
+/// `E`, so the projection cannot resolve (design §5 — the written row is the route to
+/// carry `E`, not a projection). Never a silent fresh / pure default.
+#[test]
+fn effect_projection_missing_member_is_loud() {
+    let src = r#"
+namespace test.wi396.eff_missing
+  import anthill.prelude.{List, Int}
+  operation bad(l: List) -> Int effects l.E
+  operation caller(xs: List[T = Int]) -> Int = bad(xs)
+end
+"#;
+    let errs = load_errors(&[src]);
+    assert!(
+        errs.iter().any(|e| e.contains("no member 'E'") || e.contains("has no member")),
+        "List has no effect member 'E'; projecting l.E must be a loud error; got: {errs:?}",
+    );
+}
+
+/// The projection also works INSIDE a written effect row: `effects {s.E}` threads the
+/// receiver's effect row the same way the bare `effects s.E` does.
+#[test]
+fn effect_projection_in_written_row() {
+    let ok = r#"
+namespace test.wi396.eff_row
+  import anthill.prelude.{List, Stream, Int, Branch}
+  operation drain(s: Stream) -> List[T = s.T] effects {s.E}
+  operation run(es: Stream[T = Int, E = {Branch}]) -> List[T = Int] effects {Branch} = drain(es)
+end
+"#;
+    assert!(
+        load_errors(&[ok]).is_empty(),
+        "effects {{s.E}} (projection inside a written row) must thread {{Branch}} like bare effects s.E",
+    );
+}
+
 /// A projection nested in a denoted-bearing type — `Stream[T = l.T, E = {Modify[c]}]`
 /// rides a `Value::Node` carrier — is rejected loudly rather than leaking the
 /// un-eliminated `l.T` into the inferred type (the Node-carrier rewrite is a follow-on).

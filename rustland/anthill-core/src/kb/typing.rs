@@ -2993,9 +2993,12 @@ fn check_apply_iter(
         // member the receiver's sort does not declare, or one it declares but the
         // receiver left unbound (a bare / abstract receiver) → loud `TypeError`. Only
         // ops that actually carry a projection (`op_has_projection`) run the rewrite.
-        // (Effect-POSITION projection `effects s.E` is a follow-on — an `s.E` in effect
-        // syntax does not yet lower to an `ExprCarried`, so the effect loop is a no-op
-        // today; type-position projections are the load-bearing fluent threading.)
+        // WI-396: EFFECT-POSITION projection `effects s.E` rides this same loop — it
+        // lowers to an `ExprCarried` (`type_expr_to_value`, once `infer_effects_row_-
+        // requires` stopped strict-resolving the dotted name) and `project_type_member`
+        // reads the `E` member off the receiver's type, threading the observation effect
+        // row. `l.E` on a sort with no effect member is the same loud missing-member
+        // error — `E` is never silently defaulted to pure (design §5).
         let (proj_return_type, proj_effects): (Value, Vec<Value>) = if op_has_projection {
             let rt = eliminate_type_projections(kb, &op.return_type, &param_to_arg_type, fn_sym, span)?;
             let mut effs: Vec<Value> = Vec::with_capacity(op.effects.len());

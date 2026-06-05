@@ -8591,6 +8591,15 @@ impl<'a> Loader<'a> {
             let TypeExpr::Simple(name) = &eff.type_expr else {
                 continue;
             };
+            // WI-396: a MULTI-segment effect name is an expression-carried
+            // projection (`effects s.E`) or a qualified ref, never a bare
+            // row-variable (which is always a single-segment `sort E = ?` name).
+            // Skip it BEFORE `remap_name`, which would join the segments
+            // (`"s.E"`) and raise a spurious `UnresolvedName` — the projection is
+            // classified + eliminated on the `type_expr_to_value` path, not here.
+            if name.segments.len() >= 2 {
+                continue;
+            }
             // Cache the resolved sym to avoid pushing duplicate UnresolvedName
             // diagnostics: `remap_name` errors-on-miss, so calling it once
             // here AND again via `type_expr_to_value` (~7067) would double a
