@@ -3311,6 +3311,31 @@ impl KnowledgeBase {
         })
     }
 
+    /// expr_carried(value: <term>, member: Ref(<sym>)) — the term twin of an
+    /// expression-carried type projection `s.T` / `s.Sort` (WI-376). `value` is the
+    /// receiver occurrence's term (a ground `Ref(s)` for a param/local receiver);
+    /// `member` is the projected type-member name, carried as `Ref(sym)` exactly as
+    /// [`Self::make_type_var`] carries its `name`. The type-member sibling of
+    /// [`Self::make_denoted`]. (A *compound* receiver — `(expr).T` — would instead
+    /// ride a `TypeNode::ExprCarried` Node carrier; that surface does not parse yet.)
+    pub fn make_expr_carried(&mut self, value: TermId, member: Symbol) -> TermId {
+        let expr_carried_sym = self.resolve_symbol("anthill.prelude.TypeExtractor.ExprCarried");
+        let value_key = self.intern("value");
+        let member_key = self.intern("member");
+        let member_val = self.alloc(Term::Ref(member));
+        let mut named_args: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
+        named_args.push((value_key, value));
+        named_args.push((member_key, member_val));
+        // Canonical named-arg order is by symbol index (codebase convention), so the
+        // hash-consed `ExprCarried` term is order-stable regardless of build site.
+        named_args.sort_by_key(|(s, _)| s.index());
+        self.alloc(Term::Fn {
+            functor: expr_carried_sym,
+            pos_args: SmallVec::new(),
+            named_args,
+        })
+    }
+
     /// Positioned(pos, internal) — a local-binder reference (a lambda parameter /
     /// `let`-local, scope-local and not globally unique) carried with its absolute
     /// binding-site identity `pos`, so two distinct locals with the same surface name

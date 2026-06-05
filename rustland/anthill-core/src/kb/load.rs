@@ -1615,6 +1615,7 @@ fn register_stdlib_scopes(kb: &mut KnowledgeBase, global_raw: u32) {
     kb.symbols.define("NamedTuple", "anthill.prelude.TypeExtractor.NamedTuple", SymbolKind::Entity, type_extractor_sort_term.raw());
     kb.symbols.define("Nothing", "anthill.prelude.TypeExtractor.Nothing", SymbolKind::Entity, type_extractor_sort_term.raw());
     kb.symbols.define("Denoted", "anthill.prelude.TypeExtractor.Denoted", SymbolKind::Entity, type_extractor_sort_term.raw());
+    kb.symbols.define("ExprCarried", "anthill.prelude.TypeExtractor.ExprCarried", SymbolKind::Entity, type_extractor_sort_term.raw());
     // WI-320 — variant-7 substrate: the EffectExpression-into-Type bridge.
     kb.symbols.define("EffectsRows", "anthill.prelude.TypeExtractor.EffectsRows", SymbolKind::Entity, type_extractor_sort_term.raw());
     // Standalone record for a named-tuple element (anthill.prelude.NamedTupleElement) —
@@ -6078,6 +6079,74 @@ impl<'a> Loader<'a> {
     /// whole type to `Node`. Only the value-in-type shapes are Node-aware
     /// (`Simple`-as-value, `Parameterized`); every other shape (arrow, tuple, …)
     /// stays ground (no denoted ⇒ no carrier obligation).
+    /// WI-376: classify a multi-segment type name as an expression-carried type
+    /// projection `s.T` / `s.Sort` when its HEAD resolves (in the current scope) to
+    /// a VALUE binder — a param / local / field / op-result / callback place. The
+    /// receiver is `segments[..n-1]`, the projected member is the last segment.
+    ///
+    /// Returns `None` when the head is NOT a value (a qualified sort ref / namespace
+    /// path, or an unresolved name) so the caller falls back to the sort-ref path —
+    /// this is the discriminator the WI-302 `denoted` classifier uses for the
+    /// single-segment case, lifted to the multi-segment projection.
+    ///
+    /// A single-segment (ref) receiver — `s.T` — rides as a fully-ground term
+    /// `Fn{ExprCarried, value: Ref(s), member: Ref(M)}` (the receiver occurrence is
+    /// the ground reference). A COMPOUND receiver (`a.b.T`, a field path) needs the
+    /// `TypeNode::ExprCarried` Node carrier, which is the documented follow-on; it is
+    /// surfaced as a loud load error here rather than silently mis-lowered.
+    fn try_expr_carried_projection(
+        &mut self,
+        name: &Name,
+        span: SourceSpan,
+        owner: Option<Symbol>,
+    ) -> Option<node_occurrence::TypeChild> {
+        let _ = (span, owner); // ground (ref) receiver needs neither; kept for the Node-carrier follow-on
+        let segs = &name.segments;
+        let head_name = self.parsed.symbols.name(segs[0]).to_owned();
+        let head_sym = match self.kb.symbols.resolve_in_scope(&head_name, self.current_scope.raw()) {
+            ResolveResult::Found(s) => s,
+            _ => return None,
+        };
+        // A projection's receiver is a VALUE; a namespace / sort head is a qualified
+        // sort ref, handled by the normal `remap_name` path (return `None`).
+        let is_value_head = matches!(
+            self.kb.symbols.get(head_sym),
+            SymbolDef::Resolved {
+                kind: SymbolKind::Param | SymbolKind::Field | SymbolKind::LocalLet
+                    | SymbolKind::OpResult | SymbolKind::CallbackParam | SymbolKind::CallbackResult,
+                ..
+            }
+        );
+        if !is_value_head {
+            return None;
+        }
+        let member_name = self.parsed.symbols.name(*segs.last().unwrap()).to_owned();
+        let member_sym = self.kb.intern(&member_name);
+        if segs.len() == 2 {
+            // Single value-reference receiver: a ground occurrence `Ref(head)`. The
+            // resulting `ExprCarried` term is fully ground (receiver + member both
+            // ground), so it rides as a hash-consed `TypeChild::Ground`.
+            let receiver_term = self.kb.alloc(crate::kb::term::Term::Ref(head_sym));
+            Some(node_occurrence::TypeChild::Ground(
+                self.kb.make_expr_carried(receiver_term, member_sym),
+            ))
+        } else {
+            // A compound receiver (`a.b.T`) projects off a field-access occurrence —
+            // the `TypeNode::ExprCarried` Node carrier, not yet built. Surface loudly
+            // (loud-error principle) rather than mis-lowering to a sort ref; emit a
+            // fresh type-var placeholder so loading continues to collect errors.
+            self.errors.push(LoadError::Other {
+                message: format!(
+                    "expression-carried type projection with a compound receiver \
+                     ('{}') is not yet supported (WI-376 follow-on); only a single \
+                     value-reference receiver ('s.T') is supported",
+                    join_segments(&self.parsed.symbols, segs),
+                ),
+            });
+            Some(node_occurrence::TypeChild::Ground(self.kb.make_type_var(member_sym)))
+        }
+    }
+
     fn type_expr_to_child(
         &mut self,
         ty: &TypeExpr,
@@ -6096,6 +6165,19 @@ impl<'a> Loader<'a> {
                         return node_occurrence::TypeChild::Node(
                             self.kb.make_denoted_occ_ref(place, span, owner),
                         );
+                    }
+                }
+                // WI-376: a MULTI-segment name whose HEAD resolves to a VALUE
+                // (param / local / field / op-result) is an expression-carried type
+                // projection `s.T` / `s.Sort` — the type-member sibling of the
+                // single-segment `denoted` value-in-type below. Classify it HERE,
+                // before `remap_name`, which would otherwise join the segments
+                // (`"s.T"`) and raise `UnresolvedName`. A qualified sort ref
+                // (`anthill.prelude.List`, head = namespace) is NOT a value head, so
+                // it falls through to the normal sort-ref path.
+                if name.segments.len() >= 2 {
+                    if let Some(child) = self.try_expr_carried_projection(name, span, owner) {
+                        return child;
                     }
                 }
                 let sort_sym = self.remap_name(name);

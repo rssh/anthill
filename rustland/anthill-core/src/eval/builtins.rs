@@ -686,6 +686,7 @@ fn extract_type_builtin(interp: &mut Interpreter, args: &[Value]) -> Result<Valu
     let bindings_key = interp.kb.intern("bindings");
     let fields_key = interp.kb.intern("fields");
     let type_key = interp.kb.intern("type");
+    let member_key = interp.kb.intern("member");
 
     // A `Symbol` as the `Ref(s)` term the deep field forms carry.
     let sym_ref = |interp: &mut Interpreter, s| Value::Term(interp.kb.alloc(Term::Ref(s)));
@@ -701,6 +702,12 @@ fn extract_type_builtin(interp: &mut Interpreter, args: &[Value]) -> Result<Valu
         }
         TypeExtractor::Nothing => ti_entity(interp, "Nothing", vec![]),
         TypeExtractor::Denoted(v) => ti_entity(interp, "Denoted", vec![(value_key, v)]),
+        // WI-376: reify an expression-carried projection — the receiver occurrence
+        // (`value`) and the member name as a `Ref(sym)` (`member`).
+        TypeExtractor::ExprCarried { value, member } => {
+            let member_val = sym_ref(interp, member);
+            ti_entity(interp, "ExprCarried", vec![(value_key, value), (member_key, member_val)])
+        }
         TypeExtractor::Arrow { param, result, effects } => ti_entity(
             interp,
             "Arrow",

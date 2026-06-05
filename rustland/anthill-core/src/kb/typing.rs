@@ -10638,6 +10638,12 @@ pub enum TypeExtractor {
     /// A value standing in a type-argument position (`Modify[c]`) —
     /// `denoted(value)`; carries the value occurrence.
     Denoted(Value),
+    /// WI-376: an expression-carried projection `s.T` / `s.Sort` — `value` is the
+    /// receiver type occurrence (a param/local ref, or any typed expression),
+    /// `member` the projected type-member name (`T`, `Sort`, `E`). The type-member
+    /// sibling of [`TypeExtractor::Denoted`]; eliminated at the unify boundary by
+    /// projecting the receiver's synthesized type (a `Denoted` value-in-type stays).
+    ExprCarried { value: Value, member: Symbol },
     /// An effect row in type position — `effects_rows(expr: EffectExpression)`.
     EffectsRows(Value),
     /// A named tuple type — `named_tuple(fields)`; `(name, field-type)` pairs.
@@ -10670,6 +10676,7 @@ enum TypeHead {
     Parameterized { base: Symbol },
     Arrow,
     Denoted,
+    ExprCarried,
     EffectsRows,
     NamedTuple,
     Nothing,
@@ -10692,6 +10699,7 @@ fn type_head<V: TermView>(kb: &KnowledgeBase, ty: &V) -> TypeHead {
                 },
                 "anthill.prelude.TypeExtractor.Nothing" => TypeHead::Nothing,
                 "anthill.prelude.TypeExtractor.Denoted" => TypeHead::Denoted,
+                "anthill.prelude.TypeExtractor.ExprCarried" => TypeHead::ExprCarried,
                 "anthill.prelude.TypeExtractor.EffectsRows" => TypeHead::EffectsRows,
                 "anthill.prelude.TypeExtractor.Arrow" => TypeHead::Arrow,
                 "anthill.prelude.TypeExtractor.NamedTuple" => TypeHead::NamedTuple,
@@ -10732,6 +10740,7 @@ fn type_dispatch_name_view<V: TermView>(kb: &KnowledgeBase, ty: &V) -> Option<&'
         TypeHead::Parameterized { .. } => Some("parameterized"),
         TypeHead::Arrow => Some("arrow"),
         TypeHead::Denoted => Some("denoted"),
+        TypeHead::ExprCarried => Some("expr_carried"),
         TypeHead::EffectsRows => Some("effects_rows"),
         TypeHead::NamedTuple => Some("named_tuple"),
         TypeHead::Nothing => Some("nothing"),
@@ -10751,6 +10760,17 @@ pub fn extract_type<V: TermView>(kb: &KnowledgeBase, ty: &V) -> TypeExtractor {
         TypeHead::Denoted => match view_child_value(kb, ty, "value") {
             Some(v) => TypeExtractor::Denoted(v),
             None => TypeExtractor::Error,
+        },
+        // WI-376: an expression-carried projection — read the receiver occurrence
+        // (`value`) and the projected member name (`member`, a `Ref(sym)` ground
+        // child read by `view_child_sym`). Either child missing → `Error`, keeping
+        // `extract_type` total.
+        TypeHead::ExprCarried => match (
+            view_child_value(kb, ty, "value"),
+            view_child_sym(kb, ty, "member"),
+        ) {
+            (Some(value), Some(member)) => TypeExtractor::ExprCarried { value, member },
+            _ => TypeExtractor::Error,
         },
         TypeHead::EffectsRows => match view_child_value(kb, ty, "effects_expr") {
             Some(e) => TypeExtractor::EffectsRows(e),
