@@ -18,29 +18,31 @@ sort anthill.prelude.Stream
   -- `sort E = ? requires EffectsRuntime[Effects = E]`).
   effects E = ?           -- effect row required to observe
 
-  operation splitFirst(s: Stream) -> Option[T = Pair[A = T, B = Stream]]
-    effects E
-  operation head(s: Stream) -> Option[T = T]
-    effects E
-  operation tail(s: Stream) -> Stream
-    effects E
+  operation splitFirst[Elem, Eff](s: Stream[T = Elem, E = Eff]) -> Option[T = Pair[A = Elem, B = Stream[T = Elem, E = Eff]]]
+    effects Eff
+  operation head[Elem, Eff](s: Stream[T = Elem, E = Eff]) -> Option[T = Elem]
+    effects Eff
+  operation tail[Elem, Eff](s: Stream[T = Elem, E = Eff]) -> Stream[T = Elem, E = Eff]
+    effects Eff
   -- Default definitions over the primitive `splitFirst` (WI-362, enabled by
   -- WI-365 abstract spec-op self-typing). A carrier supplies only `splitFirst`;
   -- these derive `takeN` / `collect` once for every `fact Stream[X]` provider.
-  -- The self-receiver call `splitFirst(s)` is typed at the enclosing sort's own
-  -- params, threading the element `T` and the effect row `E`.
-  operation takeN(s: Stream, n: Int) -> List[T] effects E =
+  -- WI-380: each op declares its OWN element `Elem` / effect `Eff` type params
+  -- (042), bound from the receiver `Stream[T = Elem, E = Eff]` at the call site;
+  -- the self-receiver call `splitFirst(s)` threads them via the rigid-param check
+  -- (WI-392, body side) and the carrier effect-row binding (WI-393, consumption).
+  operation takeN[Elem, Eff](s: Stream[T = Elem, E = Eff], n: Int) -> List[T = Elem] effects Eff =
     if gt(n, 0) then
       match splitFirst(s)
         case none() -> nil
         case some(pair(h, rest)) -> cons(head: h, tail: takeN(rest, sub(n, 1)))
     else nil
-  operation collect(s: Stream) -> List[T] effects E =
+  operation collect[Elem, Eff](s: Stream[T = Elem, E = Eff]) -> List[T = Elem] effects Eff =
     match splitFirst(s)
       case none() -> nil
       case some(pair(h, rest)) -> cons(head: h, tail: collect(rest))
-  operation isEmpty(s: Stream) -> Bool
-    effects E
+  operation isEmpty[Elem, Eff](s: Stream[T = Elem, E = Eff]) -> Bool
+    effects Eff
 
   -- Stream trivially provides Iterable (proposal library/002, "Relationship to
   -- Stream"): a Stream IS its own iterator, so `iterator(s) = s`. This gives
