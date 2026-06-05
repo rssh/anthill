@@ -2938,9 +2938,15 @@ fn check_apply_iter(
         // that an argument pinned.
         let mut arg_effects: Vec<Value> = Vec::new();
         let mut param_to_arg_sym: HashMap<Symbol, Symbol> = HashMap::new();
-        // WI-376: each param symbol → the inferred type of the argument bound to it,
-        // so a projection `param.M` in the return / effects can read the receiver's
-        // actual per-call type (the synthesis-time discharge point).
+        // WI-376: only ops whose signature actually carries a projection pay for the
+        // per-call elimination — the >99% that don't skip the param_to_arg_type clones
+        // and the rewrite walk entirely.
+        let op_has_projection = value_contains_projection(kb, &op.return_type)
+            || op.effects.iter().any(|e| value_contains_projection(kb, e));
+        // Each param symbol → the inferred type of the argument bound to it, so a
+        // projection `param.M` in the return / effects can read the receiver's actual
+        // per-call type (the synthesis-time discharge point). Populated only when the op
+        // has a projection.
         let mut param_to_arg_type: HashMap<Symbol, Value> = HashMap::new();
 
         for (i, arg_occ) in pos_args.iter().enumerate() {
@@ -2954,7 +2960,9 @@ fn check_apply_iter(
                 // unified carrier-agnostically — no `TermIdView` wrap.
                 if let Some((param_sym, param_type)) = op.params.get(i) {
                     unify_types(kb, &mut subst, &arg_result.ty, param_type);
-                    param_to_arg_type.insert(*param_sym, arg_result.ty.clone());
+                    if op_has_projection {
+                        param_to_arg_type.insert(*param_sym, arg_result.ty.clone());
+                    }
                 }
                 arg_effects = merge_effects(&arg_effects, &arg_result.effects);
             }
@@ -2970,27 +2978,33 @@ fn check_apply_iter(
                     .map(|(_, t)| t)
                 {
                     unify_types(kb, &mut subst, &arg_result.ty, param_type);
-                    param_to_arg_type.insert(*arg_name, arg_result.ty.clone());
+                    if op_has_projection {
+                        param_to_arg_type.insert(*arg_name, arg_result.ty.clone());
+                    }
                 }
                 arg_effects = merge_effects(&arg_effects, &arg_result.effects);
             }
         }
 
-        // WI-376: discharge expression-carried type projections (`s.T` / `s.Sort` /
-        // `s.E`) in the declared return type and effect rows by projecting the
-        // RECEIVER param's argument type — resolved here, where the arguments are
+        // WI-376: discharge expression-carried type projections (`s.T` / `s.Sort`) in
+        // the declared return type — and any effect rows that carry one — by projecting
+        // the RECEIVER param's argument type, resolved here where the arguments are
         // synthesized. Concrete member → the projected type (`List[Int].T = Int`); a
-        // member the receiver's sort does not declare → loud `TypeError`; a bare /
-        // abstract receiver → a fresh var (stays polymorphic). A signature with no
-        // projection rewrites to itself (the walk finds no `ExprCarried`).
-        let proj_return_type =
-            eliminate_type_projections(kb, &op.return_type, &param_to_arg_type, fn_sym, span)?;
-        let proj_effects: Vec<Value> = {
-            let mut v: Vec<Value> = Vec::with_capacity(op.effects.len());
+        // member the receiver's sort does not declare, or one it declares but the
+        // receiver left unbound (a bare / abstract receiver) → loud `TypeError`. Only
+        // ops that actually carry a projection (`op_has_projection`) run the rewrite.
+        // (Effect-POSITION projection `effects s.E` is a follow-on — an `s.E` in effect
+        // syntax does not yet lower to an `ExprCarried`, so the effect loop is a no-op
+        // today; type-position projections are the load-bearing fluent threading.)
+        let (proj_return_type, proj_effects): (Value, Vec<Value>) = if op_has_projection {
+            let rt = eliminate_type_projections(kb, &op.return_type, &param_to_arg_type, fn_sym, span)?;
+            let mut effs: Vec<Value> = Vec::with_capacity(op.effects.len());
             for e in &op.effects {
-                v.push(eliminate_type_projections(kb, e, &param_to_arg_type, fn_sym, span)?);
+                effs.push(eliminate_type_projections(kb, e, &param_to_arg_type, fn_sym, span)?);
             }
-            v
+            (rt, effs)
+        } else {
+            (op.return_type.clone(), op.effects.clone())
         };
 
         // WI-270 / WI-379: now that the arguments have been synthesized,
@@ -7440,15 +7454,46 @@ pub(crate) fn extract_type_param<V: TermView>(kb: &KnowledgeBase, ty: &V, param:
 
 // ── WI-376: expression-carried projection elimination ──────────
 
-/// WI-376: replace every expression-carried projection (`s.T` / `s.Sort` / `s.E`)
-/// in a type [`Value`] by projecting the RECEIVER param's argument type. `arg_types`
-/// maps each operation parameter symbol to the inferred type of the argument bound
-/// to it (built in [`check_apply_iter`]'s argument loops). This is the synthesis-time
-/// discharge of the projection constraint — the arguments are already synthesized, so
-/// the receiver's static type is known. A projection whose receiver is not an
-/// argument-bound parameter, or names a member the receiver's concrete sort does not
-/// declare, is a loud [`TypeError`]; a bare / abstract receiver projects to a fresh
-/// var (stays polymorphic). Non-projection types pass through unchanged.
+/// WI-376: does a type [`Value`] contain an expression-carried projection
+/// (`ExprCarried`) anywhere in its structure? Carrier-agnostic (reads via
+/// [`extract_type`], so a `Value::Node` parameterized type is walked too). Used both
+/// to GATE the per-call elimination (skip the work for the >99% of signatures with no
+/// projection) and to DETECT a projection nested inside a denoted-bearing `Value::Node`
+/// — which the Node-carrier rewrite does not yet handle, so it is a loud error rather
+/// than a silent leak.
+fn value_contains_projection(kb: &KnowledgeBase, ty: &Value) -> bool {
+    match extract_type(kb, ty) {
+        TypeExtractor::ExprCarried { .. } => true,
+        TypeExtractor::Parameterized { bindings, .. } => {
+            bindings.iter().any(|(_, v)| value_contains_projection(kb, v))
+        }
+        TypeExtractor::Arrow { param, result, effects } => {
+            value_contains_projection(kb, &param)
+                || value_contains_projection(kb, &result)
+                || value_contains_projection(kb, &effects)
+        }
+        TypeExtractor::NamedTuple(fields) => {
+            fields.iter().any(|(_, v)| value_contains_projection(kb, v))
+        }
+        TypeExtractor::EffectsRows(e) => value_contains_projection(kb, &e),
+        TypeExtractor::Denoted(_)
+        | TypeExtractor::SortRef(_)
+        | TypeExtractor::TypeVar(_)
+        | TypeExtractor::Nothing
+        | TypeExtractor::Error => false,
+    }
+}
+
+/// WI-376: replace every expression-carried projection (`s.T` / `s.Sort`) in a type
+/// [`Value`] by projecting the RECEIVER param's argument type. `arg_types` maps each
+/// operation parameter symbol to the inferred type of the argument bound to it (built
+/// in [`check_apply_iter`]'s argument loops). This is the synthesis-time discharge of
+/// the projection constraint — the arguments are already synthesized, so the receiver's
+/// static type is known. A projection whose receiver is not an argument-bound
+/// parameter, names a member the receiver's concrete sort does not declare, or whose
+/// member is not concretely known (a bare / abstract receiver), is a loud
+/// [`TypeError`] — never a silent fresh var, which would unsoundly absorb any demand
+/// downstream. Non-projection types pass through unchanged.
 fn eliminate_type_projections(
     kb: &mut KnowledgeBase,
     ty: &Value,
@@ -7460,10 +7505,17 @@ fn eliminate_type_projections(
         Value::Term(t) => {
             Ok(Value::Term(rewrite_term_projections(kb, *t, arg_types, fn_sym, span)?))
         }
-        // The only projection producer today is the ground-ref loader classifier, which
-        // emits a hash-consed `Value::Term`; a denoted-bearing `Value::Node` carries no
-        // ExprCarried (the compound-receiver Node carrier is the documented follow-on),
-        // so pass it through unchanged.
+        // A denoted-bearing `Value::Node` that ALSO carries a projection (e.g.
+        // `Stream[T = l.T, E = {Modify[c]}]`) cannot yet be rewritten through the Node
+        // carrier — surface it loudly rather than leaking the un-eliminated projection
+        // into the inferred type. A Node with no projection is a plain denoted type,
+        // passed through unchanged.
+        Value::Node(_) if value_contains_projection(kb, ty) => Err(projection_type_error(
+            fn_sym,
+            span,
+            "a type projection nested in a denoted-bearing type (a written effect row / \
+             value-in-type) is not yet supported",
+        )),
         other => Ok(other.clone()),
     }
 }
@@ -7554,33 +7606,31 @@ fn project_type_member(
     if let Some(p) = extract_type_param(kb, arg_ty, member) {
         return Ok(p);
     }
+    // The member is not concretely bound. Both remaining cases are loud errors:
+    // projecting an unbound member would have to mint an unconstrained var, which would
+    // unsoundly absorb any demand downstream (a `peek(l: List) -> l.T` on a bare `List`
+    // could then satisfy BOTH `Int` and `String`). Distinguish a member the sort does
+    // not DECLARE (a genuine missing member) from one it declares but the receiver left
+    // UNBOUND (a bare / abstract receiver). The sound "stays polymorphic" form — reading
+    // the receiver's DECLARED-INTERFACE member so the result is a rigid type tied to the
+    // receiver — is the abstract-receiver follow-on.
     match sort_functor_of_view(kb, arg_ty) {
-        Some(s) => {
-            // The sort DECLARES the member but the receiver left it unbound (a bare /
-            // partial application) — a fresh var threads it by unification. A member
-            // the sort does NOT declare is a loud error (never a silent fresh var).
-            if kb.type_params_of_sort(s).iter().any(|d| d.as_str() == member) {
-                Ok(Value::Term(fresh_projection_var(kb)))
-            } else {
-                Err(projection_type_error(fn_sym, span, &format!(
-                    "type '{}' has no member '{}'",
-                    kb.qualified_name_of(s).to_owned(),
-                    member,
-                )))
-            }
+        Some(s) if kb.type_params_of_sort(s).iter().any(|d| d.as_str() == member) => {
+            Err(projection_type_error(fn_sym, span, &format!(
+                "cannot project '{member}' off a receiver of type '{}' whose '{member}' is \
+                 not concretely known (abstract-receiver projection is not yet supported)",
+                kb.qualified_name_of(s).to_owned(),
+            )))
         }
-        // No concrete sort head (a type variable / abstract receiver): stays
-        // polymorphic — the member resolves at the concrete call.
-        None => Ok(Value::Term(fresh_projection_var(kb))),
+        Some(s) => Err(projection_type_error(fn_sym, span, &format!(
+            "type '{}' has no member '{member}'",
+            kb.qualified_name_of(s).to_owned(),
+        ))),
+        None => Err(projection_type_error(fn_sym, span, &format!(
+            "cannot project '{member}' off an abstract receiver (no concrete sort); \
+             abstract-receiver projection is not yet supported",
+        ))),
     }
-}
-
-/// A fresh flexible type var (`Var::Global`) for a projection that stays polymorphic
-/// (a bare / abstract receiver), bound by unification at the concrete call.
-fn fresh_projection_var(kb: &mut KnowledgeBase) -> TermId {
-    let sym = kb.intern("?proj");
-    let vid = kb.fresh_var(sym);
-    kb.alloc(Term::Var(Var::Global(vid)))
 }
 
 /// A loud [`TypeError`] for an ill-formed / unsupported type projection.

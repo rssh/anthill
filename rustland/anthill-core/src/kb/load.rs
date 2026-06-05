@@ -6102,6 +6102,17 @@ impl<'a> Loader<'a> {
     ) -> Option<node_occurrence::TypeChild> {
         let _ = (span, owner); // ground (ref) receiver needs neither; kept for the Node-carrier follow-on
         let segs = &name.segments;
+        // The MEMBER (last segment) of a TYPE projection is Capitalized — a type member
+        // (`T`, `Sort`, `E`), per the value-vs-type case rule (type-parameter-scoping.md
+        // §1: types/sort-params are Capitalized, value fields lowercase). A lowercase
+        // last segment is a VALUE field / place access (`Modify[result.a]`, `x.head`),
+        // NOT a type projection — leave it to the denoted / sort-ref path (`None`). This
+        // is the discriminator that keeps the per-result-component effect syntax
+        // (`Modify[result.a]`, WI-261) lowering to a denoted place, not an ExprCarried.
+        let member_name = self.parsed.symbols.name(*segs.last().unwrap()).to_owned();
+        if !member_name.chars().next().is_some_and(|c| c.is_uppercase()) {
+            return None;
+        }
         let head_name = self.parsed.symbols.name(segs[0]).to_owned();
         let head_sym = match self.kb.symbols.resolve_in_scope(&head_name, self.current_scope.raw()) {
             ResolveResult::Found(s) => s,
@@ -6120,7 +6131,6 @@ impl<'a> Loader<'a> {
         if !is_value_head {
             return None;
         }
-        let member_name = self.parsed.symbols.name(*segs.last().unwrap()).to_owned();
         let member_sym = self.kb.intern(&member_name);
         if segs.len() == 2 {
             // Single value-reference receiver: a ground occurrence `Ref(head)`. The

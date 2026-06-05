@@ -157,22 +157,68 @@ end
     );
 }
 
-/// One signature serves the concrete and the abstract receiver: a BARE-`List`
-/// receiver (element unbound) projects `l.T` to a fresh var (stays polymorphic),
-/// NOT a missing-member error — only a member the sort fails to *declare* errors.
+/// A BARE / abstract receiver is a loud error, NOT a silent fresh var: projecting
+/// `l.T` off a bare `List` (element unbound) would have to mint an unconstrained var
+/// that could unsoundly satisfy any demand (the same `peek(l)` usable as both `Int`
+/// and `String`). The sound "stays polymorphic" projection — read the receiver's
+/// DECLARED-INTERFACE member so the result is rigid — is the abstract-receiver
+/// follow-on; until then it is rejected.
 #[test]
-fn projection_abstract_receiver_stays_poly() {
+fn projection_bare_receiver_is_rejected() {
     let src = r#"
-namespace test.wi376.poly
+namespace test.wi376.bare
   import anthill.prelude.{List, Int}
   operation peek(l: List) -> l.T
-  operation concrete(xs: List[T = Int]) -> Int = peek(xs)
-  operation relay(l: List) -> l.T = peek(l)
+  operation relay(l: List) -> Int = peek(l)
 end
 "#;
     let errs = load_errors(&[src]);
     assert!(
-        errs.is_empty(),
-        "a bare-List `l.T` stays polymorphic (no missing-member error); got: {errs:?}",
+        errs.iter().any(|e| e.contains("not concretely known") || e.contains("abstract-receiver")),
+        "projecting off a bare (element-unbound) receiver must be a loud error; got: {errs:?}",
+    );
+}
+
+/// Regression (WI-261 / proposal 041): `Modify[result.a]` is a per-result-component
+/// effect — `result` is an OpResult value head but `a` is LOWERCASE, so it is a value
+/// place (a `denoted`), NOT a type projection. Calling such an op must not raise a
+/// spurious "receiver 'result' is not an argument-bound parameter" (the bug a naive
+/// value-head classifier without the capitalization rule introduces).
+#[test]
+fn modify_result_field_not_misclassified_as_projection() {
+    let src = r#"
+namespace test.wi376.result_effect
+  import anthill.prelude.{Cell, Int, Modify}
+  operation make_pair() -> (a: Cell[V = Int], b: Cell[V = Int])
+    effects {Modify[result.a], Modify[result.b]}
+  operation run() -> (a: Cell[V = Int], b: Cell[V = Int])
+    effects {Modify[result.a], Modify[result.b]}
+    = make_pair()
+end
+"#;
+    let errs = load_errors(&[src]);
+    assert!(
+        !errs.iter().any(|e| e.contains("argument-bound") || e.contains("projection")),
+        "Modify[result.a] is a value place, not a type projection; calling the op must \
+         not raise a projection error; got: {errs:?}",
+    );
+}
+
+/// A projection nested in a denoted-bearing type — `Stream[T = l.T, E = {Modify[c]}]`
+/// rides a `Value::Node` carrier — is rejected loudly rather than leaking the
+/// un-eliminated `l.T` into the inferred type (the Node-carrier rewrite is a follow-on).
+#[test]
+fn projection_in_denoted_node_is_rejected() {
+    let src = r#"
+namespace test.wi376.node
+  import anthill.prelude.{List, Stream, Int, Cell, Modify}
+  operation src(l: List, c: Cell[V = Int]) -> Stream[T = l.T, E = {Modify[c]}]
+  operation use_src(xs: List[T = Int], c: Cell[V = Int]) -> Int = src(xs, c)
+end
+"#;
+    let errs = load_errors(&[src]);
+    assert!(
+        errs.iter().any(|e| e.contains("denoted-bearing") || e.contains("not yet supported")),
+        "a projection inside a denoted-bearing type must be a loud error, not a leak; got: {errs:?}",
     );
 }
