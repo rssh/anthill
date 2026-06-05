@@ -497,7 +497,7 @@ fact WorkItem(
   description: "M5 follow-up: Error[T]::raise runtime propagation. WI-050 did not register a handler for Error[?]. Implement: default handler that unwraps args[0] as the error payload and surfaces it as EvalError::Raised { payload: Value }. Downstream catch/handle constructs (future) inspect the payload. Until catch lands, a raised Error aborts evaluation with the payload in the EvalError. Acceptance: integration test calls raise(my_error_value) and asserts the EvalError matches Raised with the expected payload. Depends on WI-050.",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: ["WI-389"],
-  status: Open)
+  status: Delivered(agent: "claude", at: "2026-06-05T10:46:34Z"))
 
 fact WorkItem(
   id: "WI-074",
