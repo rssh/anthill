@@ -2792,7 +2792,7 @@ fact WorkItem(
   description: "Typer: ground the Stream access-effect E at iterator consumption. When an iterator(x) -> Stream is consumed via collect/takeN/splitFirst in a context that declares no effect, the consumed Stream access-effect row E leaks as an undeclared ?_ instead of grounding to {} (a pure carrier) or the carrier real effect -- 'type mismatch in F.effects: expected declared: [], got undeclared effect: ?_'. GENERAL, not carrier-specific: surfaced in WI-364 Phase 0 -- a plain-List control List.length(collect(List.iterator(xs))) leaks IDENTICALLY to a MutableStack walked via iterator. ROOT: the Iterable contract is iterator(c: C) -> Stream[Element, E], but a carrier iterator BODY returns a BARE Stream (List.iterator = l; MutableStack.iterator = Cell.get(c)); the bare Stream return type hides the producing carrier, so the WI-357/365 effect-row grounding never fires at the consumption boundary and E stays an unbound row var. FIX DIRECTION (kb/typing.rs): at a Stream-consuming spec-op call (collect/takeN/splitFirst on a value of static type Stream), ground the consumed Stream E from the producer -- the carrier feeding the consumer -- defaulting to {} when that carrier is pure (List, Cell-backed); mirror the WI-357 concrete-path effect-close (check_apply_iter ~3115) but source the producer carrier from the consumed expression, and likely thread the carrier through iterator bare Stream return so the consumer sees it. ACCEPTANCE: length(collect(List.iterator(xs))) typechecks pure (no undeclared ?_); a MutableStack (WI-364) walked via iterator typechecks; wi357/wi362/wi365 + full anthill-core green. REF: WI-357 (carrier element threading + effect-close, delivered), WI-365 (abstract self-typing), check_apply_iter effect-close. BLOCKS WI-364 (walk via iterator). Rust-only (typer; scaland has no typer).",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: ["WI-379"],
-  status: Open)
+  status: Delivered(agent: "claude", at: "2026-06-05T14:58:52Z"))
 
 fact WorkItem(
   id: "WI-369",
@@ -3038,3 +3038,4 @@ fact WorkItem(
   depends_on: [],
   status: Open)
 
+fact Feedback(content: "ACCEPTANCE MET by delivered work, no new code. length(collect(List.iterator(xs))) typechecks pure (no undeclared ?_) and the element threads to List[Int] -- achieved by WI-379 (bidirectional inference) + WI-380 (stdlib [Elem,Eff] rewrite, written E={}) + WI-393 (consumption-side carrier->op-param threading). wi368_iterator_threading_test (collect_iterator_list_is_pure + collect_iterator_threads_element_int) green; full anthill-core green. Dep re-rooted WI-374->WI-379 per design sec.8.", at: "2026-06-05T14:58:52Z", workitem: "WI-368", author: "claude")
