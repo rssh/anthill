@@ -40,6 +40,14 @@ namespace anthill.todo.store
       effects {Modify[s], Error}
     operation forget(s: Cell[V = State], id: String) -> Unit
       effects {Modify[s], Error}
+    -- Atomic update: retract the existing block for `id` and persist `w`
+    -- in ONE flush, so an update can't half-apply the way `forget` then
+    -- `commit` (two separate flushes) can. The retract+persist buffer and
+    -- a single flush writes them; a mid-step failure surfaces through the
+    -- Error effect before the flush, so nothing is written (the unflushed
+    -- buffer is discarded at process exit — each command is one process).
+    operation replace(s: Cell[V = State], id: String, w: WorkItem) -> Unit
+      effects {Modify[s], Error}
     -- Feedback persistence routes through the same backend as
     -- commit so cmd_X bodies have a single point of mutation
     -- (no separate FileStore handle threaded through dispatch).
@@ -184,37 +192,23 @@ namespace anthill.todo.store
         case wis(_, _) ->
           terms_to_workitems(facts_of(kb(), WorkItem))
 
-    -- Persist `fact` through the wis backend and flush. The
-    -- typed-surface entry points (commit / commit_feedback) split
-    -- only to preserve the WorkItem-vs-Feedback type distinction
-    -- at the spec; the impl body is one shape. Counter management
-    -- lives entirely in `next_id`, so commit doesn't bump it (the
-    -- update path `forget` then `commit` reuses the existing id).
-    operation persist_through(s: Cell[V = WIS], fact: Term) -> Unit
+    -- Buffering primitives. persist/retract stage into the backend's
+    -- pending buffer; flush_backend writes them (per-file atomic
+    -- temp+rename). The public ops compose these: commit / forget flush
+    -- immediately, while `replace` buffers a retract+persist pair and
+    -- flushes ONCE so an update lands as a single write.
+    operation persist_buffer(s: Cell[V = WIS], fact: Term) -> Unit
       effects {Modify[s], Error}
     =
       match Cell.get(s)
         case wis(b, _) ->
           let _ = persist(b, fact, Meta(entries: nil()))
-          let _ = flush(b, nil())
           ()
 
-    operation commit(s: Cell[V = WIS], w: WorkItem) -> Unit
-      effects {Modify[s], Error}
-    =
-      persist_through(s, w)
-
-    operation commit_feedback(s: Cell[V = WIS], fb: Feedback) -> Unit
-      effects {Modify[s], Error}
-    =
-      persist_through(s, fb)
-
-    -- Retract the WorkItem fact whose `id` field matches `target` then
-    -- flush. Looks the fact up via facts_of + find_term_by_id (same
-    -- short-circuit as `lookup`), resolves to a FactId via `find_fact`,
-    -- and routes through `retract` so the IndexedFileStore drops the
-    -- on-disk source block atomically with the in-memory rule.
-    operation forget(s: Cell[V = WIS], target: String) -> Unit
+    -- Buffer a retract of the WorkItem fact whose `id` field matches
+    -- `target` (via facts_of + find_term_by_id + find_fact). No-op if no
+    -- such fact. Does NOT flush.
+    operation forget_buffer(s: Cell[V = WIS], target: String) -> Unit
       effects {Modify[s], Error}
     =
       match Cell.get(s)
@@ -226,7 +220,59 @@ namespace anthill.todo.store
                 case none() -> ()
                 case some(fid) ->
                   let _ = retract(b, fid)
-                  let _ = flush(b, nil())
                   ()
+
+    operation flush_backend(s: Cell[V = WIS]) -> Unit
+      effects {Modify[s], Error}
+    =
+      match Cell.get(s)
+        case wis(b, _) ->
+          let _ = flush(b, nil())
+          ()
+
+    -- Persist `fact` and flush. The typed-surface entry points (commit /
+    -- commit_feedback) split only to preserve the WorkItem-vs-Feedback
+    -- type distinction at the spec; the impl body is one shape. Counter
+    -- management lives entirely in `next_id`, so commit doesn't bump it
+    -- (the update path reuses the existing id via `replace`).
+    operation persist_through(s: Cell[V = WIS], fact: Term) -> Unit
+      effects {Modify[s], Error}
+    =
+      let _ = persist_buffer(s, fact)
+      let _ = flush_backend(s)
+      ()
+
+    operation commit(s: Cell[V = WIS], w: WorkItem) -> Unit
+      effects {Modify[s], Error}
+    =
+      persist_through(s, w)
+
+    operation commit_feedback(s: Cell[V = WIS], fb: Feedback) -> Unit
+      effects {Modify[s], Error}
+    =
+      persist_through(s, fb)
+
+    -- Retract the WorkItem fact whose `id` matches `target`, then flush —
+    -- the IndexedFileStore drops the on-disk source block atomically with
+    -- the in-memory rule.
+    operation forget(s: Cell[V = WIS], target: String) -> Unit
+      effects {Modify[s], Error}
+    =
+      let _ = forget_buffer(s, target)
+      let _ = flush_backend(s)
+      ()
+
+    -- Atomic update: buffer the retract of `target`'s block and the
+    -- persist of `new_wi`, then flush ONCE. Collapses forget+commit's two
+    -- flushes into one, so an update can't half-apply (drop the old block
+    -- yet fail to write the new). On a store I/O failure the Error effect
+    -- fires at the single flush, before anything is written.
+    operation replace(s: Cell[V = WIS], target: String, new_wi: WorkItem) -> Unit
+      effects {Modify[s], Error}
+    =
+      let _ = forget_buffer(s, target)
+      let _ = persist_buffer(s, new_wi)
+      let _ = flush_backend(s)
+      ()
   end
 end
