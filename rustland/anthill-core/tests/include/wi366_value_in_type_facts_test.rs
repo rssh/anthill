@@ -14,9 +14,13 @@
 //! (which runs `resolve_requires_bindings`, the dispatch walks, etc. over the
 //! value-headed fact) no longer panics on the value head.
 //!
-//! These tests pin both halves: (1) loading such a program does not panic — the
-//! readers tolerate the value head; and (2) the fact actually CARRIES the
-//! value-in-type as a `Value::Node`, rather than being re-grounded or dropped.
+//! WI-390 UPDATE: the `requires` / `provides` / `sort-alias` value-in-type facts
+//! now ride as faithful hash-consed `Term`s again (not `Value::Node`). WI-390 made
+//! the Term world lossless for `denoted`, so the spec/target is term-representable
+//! and the gated "not yet resolved" diagnostic no longer fires for these. The three
+//! `*_rides_as_term` tests pin that the head is a `Term` whose spec still CARRIES
+//! the `denoted` value (not dropped). The B1 written-effect-row tests and the
+//! ground-alias guard are unchanged.
 
 use anthill_core::eval::Value;
 use anthill_core::kb::load::{self, NullResolver};
@@ -80,6 +84,38 @@ fn any_node_carrying_fact(kb: &KnowledgeBase, functor_qn: &str) -> bool {
         .any(|rid| value_carries_node(kb.rule_head_value(rid)))
 }
 
+/// WI-390: whether a hash-consed term transitively contains a `denoted(...)` — the
+/// faithful value-in-type form (e.g. the `3` in `Foo[Int, 3]`), proving the
+/// round-trip kept it rather than dropping it.
+fn term_carries_denoted(kb: &KnowledgeBase, t: anthill_core::kb::term::TermId) -> bool {
+    use anthill_core::kb::term::{Term, TermId};
+    let (is_denoted, children): (bool, Vec<TermId>) = match kb.get_term(t) {
+        Term::Fn { functor, pos_args, named_args } => (
+            kb.qualified_name_of(*functor) == "anthill.prelude.TypeExtractor.Denoted",
+            pos_args.iter().copied().chain(named_args.iter().map(|(_, c)| *c)).collect(),
+        ),
+        _ => (false, Vec::new()),
+    };
+    is_denoted || children.into_iter().any(|c| term_carries_denoted(kb, c))
+}
+
+/// WI-390: the hash-consed `Term` head of the first *term*-headed fact whose
+/// functor is `functor_qn` and whose spec/target transitively carries a `denoted`.
+/// `None` if there is no such term-headed fact (e.g. still a `Value::Node`).
+fn denoted_term_fact_head(
+    kb: &KnowledgeBase,
+    functor_qn: &str,
+) -> Option<anthill_core::kb::term::TermId> {
+    let sym = kb.try_resolve_symbol(functor_qn)?;
+    kb.rules_by_functor(sym)
+        .into_iter()
+        .filter(|rid| kb.is_fact(*rid))
+        .find_map(|rid| match kb.rule_head_value(rid) {
+            Value::Term(t) if term_carries_denoted(kb, *t) => Some(*t),
+            _ => None,
+        })
+}
+
 /// A two-parameter sort whose second parameter is bound to a literal (`3`),
 /// the simplest parseable value-in-type. Shared by the three position tests.
 const FOO: &str = r#"
@@ -94,7 +130,7 @@ const FOO: &str = r#"
 /// SortAlias readers, run on every type-param resolution during load, must not
 /// panic iterating it).
 #[test]
-fn sort_alias_value_in_type_rides_as_node() {
+fn sort_alias_value_in_type_rides_as_term() {
     let src = format!(
         r#"
 namespace test.wi366.alias
@@ -105,18 +141,20 @@ end
 "#
     );
     let (kb, errs) = load_kb(&[&src]);
+    // WI-390: `Foo[Int, 3]` is faithfully term-representable, so the SortAlias
+    // target rides as a hash-consed `Term` (the `3` as a `denoted` term), not a
+    // `Value::Node` value fact.
     assert!(
-        any_node_carrying_fact(&kb, "SortAlias"),
-        "`sort Bar = Foo[Int, 3]` must produce a SortAlias value fact carrying the \
-         denoted `3` as a Value::Node (not re-grounded via make_denoted)",
+        !any_node_carrying_fact(&kb, "SortAlias"),
+        "WI-390: `sort Bar = Foo[Int, 3]` must ride as a hash-consed Term SortAlias, not a Value::Node",
     );
-    // WI-366: the value-in-type alias rides as Node (representation) but resolving
-    // it is gated — the loader must surface a hard "not yet resolved" diagnostic
-    // rather than silently load an unresolved alias.
     assert!(
-        errs.iter().any(|e| e.contains("not yet resolved")),
-        "a value-in-type sort alias must emit the gated 'not yet resolved' \
-         diagnostic, not silently load; got: {errs:?}",
+        denoted_term_fact_head(&kb, "SortAlias").is_some(),
+        "the SortAlias target must faithfully carry the denoted `3` (not dropped)",
+    );
+    assert!(
+        !errs.iter().any(|e| e.contains("not yet resolved")),
+        "WI-390: a representable value-in-type alias must NOT emit the gated diagnostic; got: {errs:?}",
     );
 }
 
@@ -125,7 +163,7 @@ end
 /// `resolve_requires_bindings` (and `direct_requires` during typing) over the
 /// value head, which must not panic.
 #[test]
-fn requires_value_in_type_rides_as_node() {
+fn requires_value_in_type_rides_as_term() {
     let src = format!(
         r#"
 namespace test.wi366.req
@@ -139,22 +177,28 @@ end
 "#
     );
     let (kb, errs) = load_kb(&[&src]);
+    // WI-390 ACCEPTANCE: `Foo[Int, 3]` is faithfully term-representable (the `3`
+    // rides as a `denoted` term), so the SortRequiresInfo head is a hash-consed
+    // `Term` — `direct_requires` reads it (no silent skip) and `resolve_cache` keys
+    // on it. (WI-390 reverses the WI-366 `Value::Node` direction here.)
     assert!(
-        any_node_carrying_fact(&kb, "anthill.reflect.SortRequiresInfo"),
-        "`requires Foo[Int, 3]` must produce a SortRequiresInfo value fact carrying \
-         the denoted `3` as a Value::Node",
+        !any_node_carrying_fact(&kb, "anthill.reflect.SortRequiresInfo"),
+        "WI-390: `requires Foo[Int, 3]` must ride as a hash-consed Term fact, not a Value::Node",
     );
     assert!(
-        errs.iter().any(|e| e.contains("not yet resolved")),
-        "a value-in-type requires must emit the gated 'not yet resolved' \
-         diagnostic, not silently load an unenforced clause; got: {errs:?}",
+        denoted_term_fact_head(&kb, "anthill.reflect.SortRequiresInfo").is_some(),
+        "the SortRequiresInfo spec must faithfully carry the denoted `3` (not dropped)",
+    );
+    assert!(
+        !errs.iter().any(|e| e.contains("not yet resolved")),
+        "WI-390: a representable value-in-type requires must NOT emit the gated diagnostic; got: {errs:?}",
     );
 }
 
 /// `provides Foo[Int, 3]` — symmetric to `requires`: the `SortProvidesInfo` fact
 /// rides as a value fact, and the provides/dispatch readers tolerate it.
 #[test]
-fn provides_value_in_type_rides_as_node() {
+fn provides_value_in_type_rides_as_term() {
     let src = format!(
         r#"
 namespace test.wi366.prov
@@ -168,15 +212,20 @@ end
 "#
     );
     let (kb, errs) = load_kb(&[&src]);
+    // WI-390: symmetric to `requires` — the SortProvidesInfo head is a hash-consed
+    // `Term` (keeping requires/provides symmetric for `check_provider_requires`),
+    // its spec faithfully carrying the denoted `3`.
     assert!(
-        any_node_carrying_fact(&kb, "anthill.reflect.SortProvidesInfo"),
-        "`provides Foo[Int, 3]` must produce a SortProvidesInfo value fact carrying \
-         the denoted `3` as a Value::Node",
+        !any_node_carrying_fact(&kb, "anthill.reflect.SortProvidesInfo"),
+        "WI-390: `provides Foo[Int, 3]` must ride as a hash-consed Term fact, not a Value::Node",
     );
     assert!(
-        errs.iter().any(|e| e.contains("not yet resolved")),
-        "a value-in-type provides must emit the gated 'not yet resolved' \
-         diagnostic, not silently load; got: {errs:?}",
+        denoted_term_fact_head(&kb, "anthill.reflect.SortProvidesInfo").is_some(),
+        "the SortProvidesInfo spec must faithfully carry the denoted `3` (not dropped)",
+    );
+    assert!(
+        !errs.iter().any(|e| e.contains("not yet resolved")),
+        "WI-390: a representable value-in-type provides must NOT emit the gated diagnostic; got: {errs:?}",
     );
 }
 
@@ -497,5 +546,176 @@ end
     assert!(
         bar_alias.is_some(),
         "`sort Bar = Int` must stay a ground hash-consed Value::Term SortAlias fact",
+    );
+}
+
+// ── WI-390: faithful `Value → Term` bridge (deeper coverage) ─────────────────
+
+/// The `spec` named-arg term of the SortRequiresInfo fact whose `sort_ref` is the
+/// sort `carrier_qn` — i.e. the lowered `requires` spec, as a hash-consed `TermId`.
+fn carrier_requires_spec(
+    kb: &KnowledgeBase,
+    carrier_qn: &str,
+) -> Option<anthill_core::kb::term::TermId> {
+    use anthill_core::kb::term::Term;
+    let carrier = kb.try_resolve_symbol(carrier_qn)?;
+    let req = kb.try_resolve_symbol("anthill.reflect.SortRequiresInfo")?;
+    kb.rules_by_functor(req)
+        .into_iter()
+        .filter(|r| kb.is_fact(*r))
+        .find_map(|rid| {
+            let Value::Term(t) = kb.rule_head_value(rid) else { return None };
+            let Term::Fn { named_args, .. } = kb.get_term(*t) else { return None };
+            let sr = named_args.iter().find(|(s, _)| kb.resolve_sym(*s) == "sort_ref")?.1;
+            let sr_functor = match kb.get_term(sr) {
+                Term::Fn { functor, .. } => *functor,
+                Term::Ref(s) => *s,
+                _ => return None,
+            };
+            if sr_functor != carrier {
+                return None;
+            }
+            named_args.iter().find(|(s, _)| kb.resolve_sym(*s) == "spec").map(|(_, t)| *t)
+        })
+}
+
+/// WI-390 (R1): `value_to_term` of a `Foo[Int, denoted(3)]` occurrence hash-cons-
+/// equals the ground twin built directly via the term builders — proving the
+/// lowering is byte-faithful (and routes arrows through the non-canonicalizing
+/// builder, so a re-canonicalized arrow can't diverge).
+#[test]
+fn value_to_term_denoted_round_trips_to_ground_twin() {
+    use anthill_core::kb::node_occurrence::{self, Expr, NodeOccurrence, TypeChild};
+    use anthill_core::kb::term::{Literal, Term};
+    use anthill_core::span::{SourceId, SourceSpan};
+    let mut kb = KnowledgeBase::new();
+    load::register_prelude(&mut kb);
+    let sp = SourceSpan::new(SourceId::from_raw(0), 0, 0);
+    let (t_sym, n_sym) = (kb.intern("T"), kb.intern("N"));
+    let foo = kb.make_sort_ref_by_name("Foo");
+    let int_ref = kb.make_sort_ref_by_name("Int");
+
+    // Occurrence: Foo[T = Int, N = denoted(3)].
+    let three_occ = NodeOccurrence::new_expr(Expr::Const(Literal::Int(3)), sp, None);
+    let denoted_occ = kb.make_denoted_occ(three_occ, sp, None);
+    let param_occ = kb.make_parameterized_occ(
+        TypeChild::Ground(foo),
+        vec![(t_sym, TypeChild::Ground(int_ref)), (n_sym, TypeChild::Node(denoted_occ))],
+        sp,
+        None,
+    );
+    let from_occ = node_occurrence::value_to_term(&mut kb, &Value::Node(param_occ))
+        .expect("a denoted-bearing type is term-representable");
+
+    // Ground twin built directly via the term builders.
+    let three_t = kb.alloc(Term::Const(Literal::Int(3)));
+    let denoted_t = kb.make_denoted(three_t);
+    let twin = kb.make_parameterized_type(foo, &[(t_sym, int_ref), (n_sym, denoted_t)]);
+
+    assert_eq!(
+        from_occ, twin,
+        "value_to_term(occurrence) must hash-cons-equal the ground twin (faithful)",
+    );
+    assert!(
+        term_carries_denoted(&kb, from_occ),
+        "the lowered term must carry the denoted `3` (not dropped)",
+    );
+}
+
+/// WI-390 (acceptance): `requires Foo[Int, 3]` vs `Foo[Int, 4]` lower to DISTINCT
+/// spec `TermId`s (so the `TermId`-keyed `resolve_cache` distinguishes them), while
+/// two `Foo[Int, 3]` dedup to one `TermId`.
+#[test]
+fn requires_specs_distinguish_by_denoted_literal() {
+    let src = format!(
+        r#"
+namespace test.wi390.cache
+  import anthill.prelude.{{Int}}
+{FOO}
+  sort CarrierA
+    entity a(x: Int)
+    requires Foo[Int, 3]
+  end
+  sort CarrierB
+    entity b(x: Int)
+    requires Foo[Int, 4]
+  end
+  sort CarrierC
+    entity cc(x: Int)
+    requires Foo[Int, 3]
+  end
+end
+"#
+    );
+    let (kb, _errs) = load_kb(&[&src]);
+    let s3 = carrier_requires_spec(&kb, "test.wi390.cache.CarrierA").expect("A requires spec");
+    let s4 = carrier_requires_spec(&kb, "test.wi390.cache.CarrierB").expect("B requires spec");
+    let s3c = carrier_requires_spec(&kb, "test.wi390.cache.CarrierC").expect("C requires spec");
+    assert_ne!(
+        s3, s4,
+        "`Foo[Int, 3]` and `Foo[Int, 4]` must lower to distinct spec TermIds (distinct cache keys)",
+    );
+    assert_eq!(
+        s3, s3c,
+        "two `Foo[Int, 3]` must dedup to one spec TermId (hash-consing)",
+    );
+    // WI-390 R3: the scope-axiom signature (`requires.<flatten_spec>`) must ALSO
+    // distinguish the literals — `flatten_spec` must not collapse the denoted to a
+    // non-distinguishing token, else two requires differing only in the literal
+    // collide on one scope-axiom QN and one is dropped.
+    let f3 = anthill_core::kb::load::flatten_spec(&kb, s3);
+    let f4 = anthill_core::kb::load::flatten_spec(&kb, s4);
+    assert_ne!(
+        f3, f4,
+        "flatten_spec must distinguish Foo[Int,3] from Foo[Int,4] in the scope-axiom name; got {f3:?} vs {f4:?}",
+    );
+}
+
+/// WI-390 (d): `Positioned(pos, internal)` is an ordinary hash-consed term — same
+/// `(pos, internal)` dedup, a different absolute `pos` is a distinct term (so two
+/// local binders with the same surface name don't collide); the children read back.
+#[test]
+fn positioned_is_a_structural_term() {
+    use anthill_core::kb::term::Term;
+    let mut kb = KnowledgeBase::new();
+    load::register_prelude(&mut kb);
+    let site_a = kb.make_sort_ref_by_name("bindSiteA");
+    let site_b = kb.make_sort_ref_by_name("bindSiteB");
+    let x = kb.make_sort_ref_by_name("x");
+    let pa1 = kb.make_positioned(site_a, x);
+    let pa2 = kb.make_positioned(site_a, x);
+    let pb = kb.make_positioned(site_b, x);
+    assert_eq!(pa1, pa2, "same (pos, internal) → one hash-consed TermId");
+    assert_ne!(pa1, pb, "different pos (binding site) → distinct term (no collision)");
+    let Term::Fn { functor, named_args, .. } = kb.get_term(pa1) else {
+        panic!("Positioned must be a Term::Fn");
+    };
+    assert_eq!(kb.qualified_name_of(*functor), "anthill.reflect.Positioned");
+    let got_pos = named_args.iter().find(|(s, _)| kb.resolve_sym(*s) == "pos").map(|(_, t)| *t);
+    let got_int = named_args.iter().find(|(s, _)| kb.resolve_sym(*s) == "internal").map(|(_, t)| *t);
+    assert_eq!(got_pos, Some(site_a), "pos child reads back");
+    assert_eq!(got_int, Some(x), "internal child reads back");
+}
+
+/// WI-390 (f): `value_to_term` returns `Err` for a term-less residue (the honest
+/// signal) rather than panicking or lowering to a lossy term. `Unit` / an anonymous
+/// `Tuple` (no functor) take the same `Err` arm as the opaque runtime handles
+/// (`Cell`/`Closure`/…) — none of which appear in a spec/cache position.
+#[test]
+fn value_to_term_errors_on_term_less_residue() {
+    use anthill_core::kb::node_occurrence::value_to_term;
+    let mut kb = KnowledgeBase::new();
+    load::register_prelude(&mut kb);
+    assert!(
+        value_to_term(&mut kb, &Value::Unit).is_err(),
+        "`Unit` has no term form → Err residue",
+    );
+    let tup = Value::Tuple {
+        pos: vec![Value::Int(1)].into(),
+        named: Vec::new().into(),
+    };
+    assert!(
+        value_to_term(&mut kb, &tup).is_err(),
+        "an anonymous Tuple (no functor) has no term form → Err residue",
     );
 }

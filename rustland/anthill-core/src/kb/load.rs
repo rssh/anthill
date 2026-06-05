@@ -1764,6 +1764,10 @@ fn register_stdlib_scopes(kb: &mut KnowledgeBase, global_raw: u32) {
     let set_literal_sym = kb.symbols.define("SetLiteral", "anthill.reflect.SetLiteral", SymbolKind::Entity, reflect_term.raw());
     let tuple_literal_sym = kb.symbols.define("TupleLiteral", "anthill.reflect.TupleLiteral", SymbolKind::Entity, reflect_term.raw());
     let list_literal_sym = kb.symbols.define("ListLiteral", "anthill.reflect.ListLiteral", SymbolKind::Entity, reflect_term.raw());
+    // WI-390 — Positioned(pos, internal): a local-binder reference carried with its
+    // absolute binding-site identity (`pos`) so two distinct locals don't collide as
+    // hash-consed terms. Built by `make_positioned`; leaf-only; unifies structurally.
+    kb.symbols.define("Positioned", "anthill.reflect.Positioned", SymbolKind::Entity, reflect_term.raw());
 
     // anthill.reflect.Expr sort + entities
     let expr_sym = kb.symbols.define("Expr", "anthill.reflect.Expr", SymbolKind::Sort, reflect_term.raw());
@@ -3467,6 +3471,34 @@ pub fn qn_of_sort_ref(kb: &KnowledgeBase, term: TermId) -> Option<String> {
     }
 }
 
+/// WI-390: render a `denoted(value: <inner>)` value-in-type binding to a stable
+/// short token for [`flatten_spec`] — by its INNER value (the literal `3` / the
+/// ref `c`), NOT the constant functor name `"Denoted"`. Two `requires` differing
+/// only in the denoted literal must yield distinct `requires.<SE>` signatures, else
+/// their scope axioms collide on one QN and one is silently dropped (load.rs:2592).
+fn denoted_value_short(kb: &KnowledgeBase, denoted_tid: TermId) -> String {
+    let Term::Fn { named_args, .. } = kb.get_term(denoted_tid) else {
+        return "den".to_string();
+    };
+    let inner = named_args
+        .iter()
+        .find(|(k, _)| kb.resolve_sym(*k).rsplit('.').next() == Some("value"))
+        .map(|(_, t)| *t);
+    let Some(inner) = inner else { return "den".to_string() };
+    match kb.get_term(inner) {
+        Term::Const(Literal::Int(n)) => format!("den_i{n}"),
+        Term::Const(Literal::BigInt(n)) => format!("den_i{n}"),
+        Term::Const(Literal::Bool(b)) => format!("den_b{b}"),
+        Term::Const(Literal::String(s)) => format!("den_str_{s}"),
+        Term::Const(Literal::Float(f)) => format!("den_f{}", f.0),
+        Term::Fn { functor, .. } | Term::Ref(functor) | Term::Ident(functor) => {
+            let n = kb.resolve_sym(*functor);
+            format!("den_{}", n.rsplit('.').next().unwrap_or(n))
+        }
+        _ => "den".to_string(),
+    }
+}
+
 /// Flatten a `SortRequiresInfo.spec` term to the deterministic
 /// short-name signature used in `requires.<SE-flat>` rule QNs. For
 /// `SortView(Eq, T = X)` the result is `Eq_<short(X)>`. For a plain
@@ -3512,6 +3544,11 @@ pub fn flatten_spec(kb: &KnowledgeBase, term: TermId) -> Option<String> {
         let k_name = kb.resolve_sym(*k_sym);
         let k_short = k_name.rsplit('.').next().unwrap_or(k_name).to_owned();
         let v_short = match value_sym {
+            // WI-390: a `denoted` value-in-type renders by its inner value so two
+            // requires differing only in the literal get distinct signatures.
+            Some(s) if kb.qualified_name_of(s) == "anthill.prelude.TypeExtractor.Denoted" => {
+                denoted_value_short(kb, *v_tid)
+            }
             Some(s) => {
                 let n = kb.resolve_sym(s);
                 n.rsplit('.').next().unwrap_or(n).to_owned()
@@ -6557,11 +6594,10 @@ impl<'a> Loader<'a> {
             _ => self.type_expr_to_value(&s.definition),
         };
         use crate::eval::value::Value;
-        // A denoted-bearing target (value-in-type, e.g. `sort T = Vector[Int, 3]`)
-        // rides as a `Value::Node` SortAlias fact but its resolution is gated.
-        if !matches!(target_value, Value::Term(_)) {
-            self.diagnose_gated_value_in_type("sort alias", &s.definition);
-        }
+        // WI-390: lower a denoted-bearing alias target (value-in-type, e.g.
+        // `sort T = Vector[Int, 3]`) to a `TermId` so the SortAlias head stays a
+        // hash-consed `Term::Fn`.
+        let target_value = self.lower_value_or_gate(target_value, "sort alias", &s.definition);
         // SortAlias is positional: `SortAlias(sort_ref, target)`.
         self.kb.assert_fact_carrier(
             alias_sym,
@@ -7720,6 +7756,26 @@ impl<'a> Loader<'a> {
         self.errors.push(LoadError::ValueInTypeNotResolved { position, name });
     }
 
+    /// WI-390: lower a sort-relation spec/target `Value` to a hash-consed `Term`
+    /// when it is faithfully term-representable (the universal case, incl. a denoted
+    /// value-in-type); otherwise (the opaque residue — never in a spec position)
+    /// keep the `Value::Node` carrier and emit the gated "not yet resolved"
+    /// diagnostic. Shared by `requires` / `provides` / sort-alias loading.
+    fn lower_value_or_gate(
+        &mut self,
+        value: crate::eval::value::Value,
+        position: &'static str,
+        ty: &TypeExpr,
+    ) -> crate::eval::value::Value {
+        match node_occurrence::value_to_term(&mut self.kb, &value) {
+            Ok(t) => crate::eval::value::Value::Term(t),
+            Err(_) => {
+                self.diagnose_gated_value_in_type(position, ty);
+                value
+            }
+        }
+    }
+
     fn load_requires_decl(&mut self, r: &RequiresDecl, domain: TermId) {
         let requirement_sort = self.kb.make_name_term("Requirement");
         let requires_sym = self.kb.resolve_symbol("anthill.reflect.SortRequiresInfo");
@@ -7729,15 +7785,13 @@ impl<'a> Loader<'a> {
         let sort_ref_sym = self.kb.intern("sort_ref");
         let spec_sym = self.kb.intern("spec");
         self.kb.register_entity_fields(requires_sym, vec![sort_ref_sym, spec_sym]);
-        // WI-366: a denoted-bearing spec (value-in-type binding, e.g. a
-        // `Modify[c]` effect-row) rides as a `Value::Node`, which a hash-consed
-        // `Term` head cannot hold → the SortRequiresInfo head becomes a value
-        // fact carrying the occurrence. A ground spec keeps the hash-consed
-        // `Term::Fn` head — byte-identical to the prior build (the universal case).
+        // WI-390: a denoted-bearing spec is now faithfully term-representable, so
+        // lower it to a `TermId` — the SortRequiresInfo head stays a hash-consed
+        // `Term::Fn`, which `direct_requires` reads (no silent skip) and the
+        // `resolve_cache` keys on. A ground spec passes through unchanged; only the
+        // opaque residue stays a `Value::Node` fact + the gated diagnostic.
         use crate::eval::value::Value;
-        if !matches!(spec_value, Value::Term(_)) {
-            self.diagnose_gated_value_in_type("requires", &r.type_expr);
-        }
+        let spec_value = self.lower_value_or_gate(spec_value, "requires", &r.type_expr);
         self.kb.assert_fact_carrier(
             requires_sym,
             Vec::new(),
@@ -8130,13 +8184,12 @@ impl<'a> Loader<'a> {
         let sort_ref_sym = self.kb.intern("sort_ref");
         let spec_sym = self.kb.intern("spec");
         self.kb.register_entity_fields(provides_sym, vec![sort_ref_sym, spec_sym]);
-        // WI-366: a denoted-bearing spec rides as a `Value::Node` → the
-        // SortProvidesInfo head becomes a value fact (mirrors load_requires_decl);
-        // a ground spec keeps the hash-consed `Term::Fn` head (byte-identical).
+        // WI-390: lower a denoted-bearing spec to a `TermId` (mirrors
+        // load_requires_decl) so the SortProvidesInfo head stays a hash-consed
+        // `Term::Fn` — keeping requires/provides symmetric for
+        // `check_provider_requires`.
         use crate::eval::value::Value;
-        if !matches!(spec_value, Value::Term(_)) {
-            self.diagnose_gated_value_in_type("provides", &pc.spec);
-        }
+        let spec_value = self.lower_value_or_gate(spec_value, "provides", &pc.spec);
         self.kb.assert_fact_carrier(
             provides_sym,
             Vec::new(),

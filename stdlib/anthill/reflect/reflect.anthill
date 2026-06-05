@@ -65,6 +65,15 @@ namespace anthill.reflect
   -- Operation body occurrence (None if declaration only); lives in the loader side-table, not a fact field.
   operation operation_body(op: Symbol) -> Option[T = NodeOccurrence]
 
+  -- WI-390: a hash-consed `Term`-level positioned wrapper. `internal` is the
+  -- recoverable term structure (e.g. a local-binder reference); `pos` is the
+  -- binder's ABSOLUTE binding-site identity, so two distinct local binders with the
+  -- same surface name stay distinct hash-consed terms (and two references to the
+  -- same binder share one term). Built by the engine's `make_positioned`; a
+  -- leaf-only wrapper (never wraps a compound), unified as an ordinary term.
+  -- (Distinct from `NodeOccurrence`, the non-hash-consed occurrence substrate.)
+  entity Positioned(pos: Term, internal: Term)
+
   -- ================================================================
   -- Source unit: a loaded file and the definitions it contributed.
   -- Emitted by the loader after processing each file.

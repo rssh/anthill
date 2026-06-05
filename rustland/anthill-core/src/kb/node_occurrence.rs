@@ -2211,6 +2211,21 @@ pub fn try_occurrence_to_term(kb: &mut KnowledgeBase, occ: &Rc<NodeOccurrence>) 
     if let NodeKind::Pattern(_) = &occ.kind {
         return Some(pattern_to_term(kb, occ));
     }
+    // WI-390: a Type / EffectExpr occurrence lowers faithfully to its hash-consed
+    // term twin (mirroring the `make_*_type` builders), so a denoted-bearing type
+    // round-trips through the term store instead of the former `None`→⊥ loss.
+    // (A denoted's value is a qualified `Expr::Ref` — a globally-unique
+    // Param/Field/CallbackParam place — which lowers to a bare `Term::Ref`, correct
+    // because the qualified symbol IS the binding-site identity. A genuinely-local
+    // `Expr::VarRef` (an unqualified lambda/`let` binder; no producer mints one in a
+    // denoted today) is the deferred case: it would need `make_positioned` with a
+    // resolved `pos`, so a bare `VarRef` reaching here stays a non-goal `None`.)
+    if let Some(tn) = occ.as_type() {
+        return Some(type_node_to_term(kb, tn));
+    }
+    if let Some(en) = occ.as_effect_expr() {
+        return Some(effect_node_to_term(kb, en));
+    }
     Some(match occ.as_expr() {
         Some(Expr::Var(v)) => kb.alloc(Term::Var(*v)),
         Some(Expr::Const(lit)) => kb.alloc(Term::Const(lit.clone())),
@@ -2278,6 +2293,132 @@ fn occ_build_fn(
         named.push((*s, occurrence_to_term(kb, c)));
     }
     kb.alloc(Term::Fn { functor, pos_args: pos, named_args: named })
+}
+
+// ── WI-390: faithful Value/occurrence → Term lowering ───────────
+
+/// A [`TypeChild`] → `TermId`: a ground child passes through verbatim, a
+/// poisoned (`denoted`-bearing) child lowers via the now-lossless
+/// [`occurrence_to_term`].
+fn type_child_to_term(kb: &mut KnowledgeBase, child: &TypeChild) -> TermId {
+    match child {
+        TypeChild::Ground(t) => *t,
+        TypeChild::Node(occ) => occurrence_to_term(kb, occ),
+    }
+}
+
+/// WI-390: lower a `Type`-sort occurrence to its hash-consed term twin, mirroring
+/// the `make_*_type` builders so a `value_to_term(occ)` is byte-identical to the
+/// loader's ground build of the same type. Arrows reuse the *non*-canonicalizing
+/// [`KnowledgeBase::make_arrow_from_effects_rows`] (the `effects` child is already
+/// a canonical `effects_rows`; re-canonicalizing would change bytes).
+fn type_node_to_term(kb: &mut KnowledgeBase, tn: &TypeNode) -> TermId {
+    match tn {
+        TypeNode::Denoted { value } => {
+            let v = occurrence_to_term(kb, value);
+            kb.make_denoted(v)
+        }
+        TypeNode::Parameterized { base, bindings } => {
+            let base_t = type_child_to_term(kb, base);
+            let mut binding_ts: Vec<(Symbol, TermId)> = Vec::with_capacity(bindings.len());
+            for (s, c) in bindings {
+                binding_ts.push((*s, type_child_to_term(kb, c)));
+            }
+            kb.make_parameterized_type(base_t, &binding_ts)
+        }
+        TypeNode::EffectsRows { effects_expr } => {
+            let e = type_child_to_term(kb, effects_expr);
+            kb.make_effects_rows_type(e)
+        }
+        TypeNode::Arrow { param, result, effects } => {
+            let p = type_child_to_term(kb, param);
+            let r = type_child_to_term(kb, result);
+            let e = type_child_to_term(kb, effects);
+            kb.make_arrow_from_effects_rows(p, r, e)
+        }
+        TypeNode::NamedTuple { fields } => {
+            // `fields` is a `Value`-carried `List[NamedTupleElement]` (structurally
+            // the same list `make_named_tuple_type` builds), so lower it via
+            // `value_to_term` and wrap in the `NamedTuple` functor. The `Err`
+            // branch can't fire (a tuple field type is structure, never an opaque
+            // handle); guard it loudly rather than silently dropping the fields.
+            let fields_t = value_to_term(kb, fields).unwrap_or_else(|e| {
+                debug_assert!(false, "named_tuple fields not term-representable: {e:?}");
+                kb.alloc(Term::Bottom)
+            });
+            let nt_sym = kb.resolve_symbol("anthill.prelude.TypeExtractor.NamedTuple");
+            let fields_key = kb.intern("fields");
+            let mut named_args: smallvec::SmallVec<[(Symbol, TermId); 2]> = smallvec::SmallVec::new();
+            named_args.push((fields_key, fields_t));
+            kb.alloc(Term::Fn { functor: nt_sym, pos_args: smallvec::SmallVec::new(), named_args })
+        }
+    }
+}
+
+/// WI-390: lower an `EffectExpression`-sort occurrence to its term twin, mirroring
+/// the `make_effect_expression_*` builders.
+fn effect_node_to_term(kb: &mut KnowledgeBase, en: &EffectExprNode) -> TermId {
+    match en {
+        EffectExprNode::Merge { left, right } => {
+            let l = type_child_to_term(kb, left);
+            let r = type_child_to_term(kb, right);
+            kb.make_effect_expression_merge(l, r)
+        }
+        EffectExprNode::Present { label } => {
+            let l = type_child_to_term(kb, label);
+            kb.make_effect_expression_present(l)
+        }
+        EffectExprNode::Absent { label } => {
+            let l = type_child_to_term(kb, label);
+            kb.make_effect_expression_absent(l)
+        }
+        EffectExprNode::Open { tail } => {
+            let t = type_child_to_term(kb, tail);
+            kb.make_effect_expression_open(t)
+        }
+        EffectExprNode::EmptyRow => kb.make_effect_expression_empty_row(),
+    }
+}
+
+/// WI-390 — the faithful, total `Value → Term` boundary. `Ok(term)` for the
+/// **structural subset**: a `Value::Node` lowers via the now-lossless
+/// [`occurrence_to_term`] (so a denoted-bearing type round-trips), an `Entity`
+/// recurses through `value_to_term` (a nested `Node` lowers, not errors), and the
+/// scalar / `Term` / `Var` leaves reuse [`KnowledgeBase::alloc_from_value`].
+/// `Err` for the opaque runtime handles (`Closure`/`Stream`/`Lazy`/`Map`/`Cell`/
+/// `Substitution`/`Requirement`) and the term-less `Unit`/`Tuple` — the honest
+/// residue, never a panic or a lossy term. Unlike `alloc_from_value` (which
+/// rejects *every* `Node`), this is `Node`-aware: it is the one converter to use
+/// where a value-in-type may ride (e.g. a `requires`/`provides` spec).
+pub fn value_to_term(
+    kb: &mut KnowledgeBase,
+    v: &Value,
+) -> Result<TermId, crate::kb::execute::LowerError> {
+    match v {
+        // A value-in-type occurrence — lossless via occurrence_to_term (WI-390).
+        Value::Node(occ) => Ok(occurrence_to_term(kb, occ)),
+        // Recurse via value_to_term (NOT alloc_from_value) so a nested Node child
+        // lowers faithfully instead of erroring. Canonical named-arg order mirrors
+        // alloc_from_value (declared field order, else Symbol::index()).
+        Value::Entity { functor, pos, named } => {
+            let mut pos_args: smallvec::SmallVec<[TermId; 4]> = smallvec::SmallVec::new();
+            for p in pos.iter() {
+                pos_args.push(value_to_term(kb, p)?);
+            }
+            let mut named_args: smallvec::SmallVec<[(Symbol, TermId); 2]> = smallvec::SmallVec::new();
+            for (sym, nv) in named.iter() {
+                named_args.push((*sym, value_to_term(kb, nv)?));
+            }
+            // Canonical named-arg order via the shared `sort_named_canonical` (the
+            // single source of truth the discrim tree matches against) — declared
+            // field order, else `Symbol::index()`.
+            kb.sort_named_canonical(*functor, &mut named_args);
+            Ok(kb.alloc(Term::Fn { functor: *functor, pos_args, named_args }))
+        }
+        // Scalars / Term / Var convert; opaque + Unit + Tuple error — identical to
+        // alloc_from_value, and none of these carry a Node, so reuse it.
+        other => kb.alloc_from_value(other),
+    }
 }
 
 // ── Substitution over a rule-body-atom occurrence ───────────────

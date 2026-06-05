@@ -3294,6 +3294,48 @@ impl KnowledgeBase {
         })
     }
 
+    /// denoted(value: <term>) — a value-in-type carried faithfully as a hash-consed
+    /// term. The term twin of `TypeNode::Denoted` (WI-390 re-introduced this after
+    /// WI-366 retired the ground builder), so a `denoted` round-trips through the
+    /// term store. `value` is the ground/qualified reference structure; a local-binder
+    /// value rides a `Positioned` internal (see [`Self::make_positioned`]).
+    pub fn make_denoted(&mut self, value: TermId) -> TermId {
+        let denoted_sym = self.resolve_symbol("anthill.prelude.TypeExtractor.Denoted");
+        let value_key = self.intern("value");
+        let mut named_args: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
+        named_args.push((value_key, value));
+        self.alloc(Term::Fn {
+            functor: denoted_sym,
+            pos_args: SmallVec::new(),
+            named_args,
+        })
+    }
+
+    /// Positioned(pos, internal) — a local-binder reference (a lambda parameter /
+    /// `let`-local, scope-local and not globally unique) carried with its absolute
+    /// binding-site identity `pos`, so two distinct locals with the same surface name
+    /// don't collide as one hash-consed term. WI-390: `Positioned` is leaf-only (it
+    /// wraps a binder leaf, never a compound) and unifies structurally as an ordinary
+    /// `Term::Fn`; the type-level alpha-equivalence reading is deferred.
+    pub fn make_positioned(&mut self, pos: TermId, internal: TermId) -> TermId {
+        let positioned_sym = self.resolve_symbol("anthill.reflect.Positioned");
+        let pos_key = self.intern("pos");
+        let internal_key = self.intern("internal");
+        let mut named_args: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
+        named_args.push((pos_key, pos));
+        named_args.push((internal_key, internal));
+        // Canonical field order via the shared helper — once `Positioned` is
+        // declared in stdlib reflect.anthill its registered field order is the
+        // source of truth (else `Symbol::index()`), so the built term matches what
+        // any discrim/reflect reader expects.
+        self.sort_named_canonical(positioned_sym, &mut named_args);
+        self.alloc(Term::Fn {
+            functor: positioned_sym,
+            pos_args: SmallVec::new(),
+            named_args,
+        })
+    }
+
     /// named_tuple(fields: List[NamedTupleElement]).
     pub fn make_named_tuple_type(&mut self, fields: &[(Symbol, TermId)]) -> TermId {
         let named_tuple_sym = self.resolve_symbol("anthill.prelude.TypeExtractor.NamedTuple");
