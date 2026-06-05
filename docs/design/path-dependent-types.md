@@ -1,0 +1,238 @@
+# Path-dependent types in Anthill
+
+## Status: design (started 2026-06-05)
+
+Driven by the `DataProvider` use-case — a generic provider held in a wrapper. This
+is the parked **WI-376 "abstract-receiver stays-poly"** question, generalized: a
+projection `p.M` where `p` is an *expression* is a **path-dependent type**.
+
+This doc starts from **one fully-worked example that needs no new term
+representation**, answers the representation question it raises, states the two
+rules that form the model's spine, and marks what the harder cases add.
+
+> **Divergence from Scala (the headline).** Anthill identifies a projection `p.M` by
+> **unifying the receiver expression `p`** (up to the substitution), not by the
+> **syntactic path** (Scala). `let y = z` makes `y.M ≡ z.M`; Scala rejects it. Falls
+> out of "types are terms; receivers are expressions, compared by unification."
+
+**Framing — two mechanisms, both over _expression types_** (types that embed an
+expression). Anthill *already has* unification of such types: a type may embed an
+expression occurrence (a denoted occurrence, and now an `ExprCarried` receiver), and
+the typer unifies them carrier-agnostically. The spine (§3) is two uses of it:
+
+- **identity** — *unify the expression types* (so `y.T ≡ z.T` exactly when `y` and `z`
+  unify);
+- **grounding** — *track an expression's type through control flow* (so
+  `type(s.provider)` refines to `SubscriberStore` where the construction is visible).
+
+**Related work — Scala 3 experimental modularity**
+([modularity](https://scala-lang.org/api/3.8.4/docs/experimental/modularity.html)),
+the closest existing mechanism, fixes the contrast. Scala's `tracked` parameters keep
+an expression's precise **type** in the instance type — the **grounding** axis (the
+route for the plain-field case, §5) — but leave identity **nominal over the path**
+(even tracked, `val y = z` keeps `y.T ≠ z.T`). Anthill instead **unifies the
+expressions** themselves (the receiver occurrence, against the substitution — a
+compile-time term, *not* the runtime `Value`), so identity follows for free. One-line
+contrast: **Scala tracks the expression's type (grounding only); Anthill also unifies
+the expression (grounding + identity).**
+
+## 1. The one working example
+
+```anthill
+sort DataProvider
+  sort K = ?
+  operation hasKey(k: K) -> Boolean
+
+sort SubscriberStore                       -- a concrete provider
+  provides DataProvider[K = String]
+  entity subscriberStore
+
+sort State                                 -- a wrapper that CARRIES the provider type P
+  sort P = ?
+  entity state(provider: P)
+
+operation check(s: State, k: s.provider.K) -> Boolean
+  = s.provider.hasKey(k)
+```
+
+**In `check`'s body** `s : State` has `P` abstract, so `s.provider.K` is **rigid** —
+a type keyed by the path `s.provider` plus member `K`. The body type-checks by
+*path identity*: `k : s.provider.K` is exactly the `K` that `s.provider.hasKey`
+expects.
+
+**At a concrete call** the path grounds:
+
+```anthill
+check(state(provider = subscriberStore), "abc")   -- ✓  k : s.provider.K = String
+check(state(provider = subscriberStore), 42)        -- ✗  42 : Int ≠ String
+```
+
+The trace — each step is existing or near-existing machinery:
+
+1. **Construction infers `P`.** `state(provider = subscriberStore)` with
+   `subscriberStore : SubscriberStore` ⟹ the occurrence's type is
+   `State[P = SubscriberStore]`. *(Bidirectional inference on the constructor path —
+   **WI-384**.)*
+2. **Field access reads `P` back.** For a receiver of type `State[P = SubscriberStore]`,
+   `s.provider` has the field's declared type `P` with `P = SubscriberStore`
+   substituted from the receiver's type-args ⟹ `s.provider : SubscriberStore`.
+   *(Field type through type-args — the same substitution `build_pattern_subst`
+   already does for pattern field types.)*
+3. **Project the member.** `s.provider.K` = the `K` member of `SubscriberStore`
+   = `String` (it provides `DataProvider[K = String]`). *(The projection eliminator —
+   **WI-376 / WI-397**.)*
+
+## 2. The representation question (the one you raised)
+
+> *Can't represent typed terms — or do we add an optional type to the expression?*
+
+Anthill **already has the second**, and for the parametric wrapper it is enough. The
+model separates:
+
+- the **term** — hash-consed, structural, **untyped** (`state(provider = subscriberStore)`
+  as pure structure);
+- the **occurrence** — the expression node, which **carries a type slot** (the
+  inferred type of *that* occurrence).
+
+Path-dependent typing rides the occurrence's type slot; **no new kind of term**:
+
+- at the **construction** occurrence, the slot holds `State[P = SubscriberStore]`
+  (`P` inferred from the argument — WI-384);
+- at the **`s.provider`** field-access occurrence, its type is read *from the receiver
+  occurrence's type* by substituting `P` — i.e. `type(s.provider) = field-of(type(s))`.
+  That is your *"field access from type."*
+
+So the grounding rule `type(C(f = e).f) = type(e)` is realized as: the constructor
+binds `P := type(e)` into the occurrence's type, and field access reads it back. **No
+value reduction, no refinement type, no new term kind** — the existing
+untyped-term / typed-occurrence split already carries it, *for the parametric
+wrapper*. (The plain-field wrapper is where more is genuinely needed — §5.)
+
+This is also the right *altitude*: it is type inference (a reduction in the **type**
+term, `type(provider(s)) → type(ss)`), never value evaluation — `s.provider` the
+expression does **not** reduce to `ss`.
+
+## 3. The two rules (the spine)
+
+1. **Grounding — track the expression's type through control flow.** `type(p.M)` =
+   the `M`-member of `type(p)`, where `type(p)` is the receiver expression's type *as
+   tracked at that program point* (flow-typing): a visible construction refines it
+   (`type(C(f = e).f) = type(e)`), a declared parametric type carries it (`P`), and
+   behind an abstraction boundary it is just the declared type. Concrete when
+   `type(p)` pins `M`; **rigid** (keyed by `p` + `M`) otherwise — grounding reaches
+   exactly as far as the tracked type carries information.
+2. **Identity — unification of expression types.** A path type embeds its receiver:
+   `y.T` is `ExprCarried(y, T)`. To decide whether `p.M` and `q.M` are the same type,
+   the typer asks what it asks of any two terms — *do they unify?* — which reduces to
+   *do the receiver expressions `p` and `q` unify?* (against the substitution). `let
+   y = z` records `y ↦ z`, so `y` and `z` unify, so `ExprCarried(y, T)` and
+   `ExprCarried(z, T)` unify, so `y.T ≡ z.T` and `Cell[y.T]`, `Cell[z.T]` interchange.
+   Identity is **up to the substitution**, not **up to the syntactic path** (Scala
+   compares the written names, so `let y = z` leaves `y.T ≠ z.T`). Purely
+   compile-time — the receiver is an *expression / term*, never the runtime `Value`;
+   soundness is separate (immutable `let` ⟹ the aliased expressions denote one
+   runtime value, so identifying their projections is safe). Decidable. *(The reverse
+   — when unifying two projections should* drive *a receiver binding rather than only
+   check — is resolved in §4: delay, never bind a non-injective head.)*
+
+These are complementary, not competing: rule 1 says *what type* a projection
+resolves to; rule 2 says *when two (rigid) projections are the same type*.
+
+## 4. Equality is definitional conversion; constraints solve by delay
+
+Path-type **equality** is not ML's nominal `sharing` — it is the **definitional
+conversion** of a dependent type theory, restricted to three reductions and closed
+under congruence:
+
+- **ζ** (receiver) — `p.M ≡ q.M` when the receiver expressions `p`, `q` unify under
+  the substitution (`let y = z` ⟹ `y.M ≡ z.M`);
+- **δ** (manifest) — `p.M ⟶ τ` when `type(p)` makes `M` manifest (grounding, §3);
+- **η** (`.Sort`) — `p.Sort ⟶ type(p)`, reifying the receiver's whole type.
+
+The three are confluent (δ and η act on different members; ζ is orthogonal) and
+terminate on finite type structure (recursive providers need the usual cycle guard).
+A *rigid* `p.M` is a **neutral** — a projection stuck on a variable receiver — and two
+neutrals are equal only structurally, never by inverting the projection.
+
+**Projection heads are non-injective — the one soundness rule.** `peek(a).T` and
+`peek(b).T` can both be `Int` without `a = b`, so the unifier must **not** decompose
+`p.M =?= q.M` into `p =?= q`. `ExprCarried` is an **opaque head** in unification:
+δ-ground both sides and unify the results; if both stay neutral, compare receivers by
+*equality*, never by *binding*. This is a **custom unification rule at that head**
+(filed as **WI-370**) and it is the whole of what keeps unification-equality sound. ML
+never meets this — it only *checks* declared sharing, never *infers* abstract-type
+equality; DTT meets it and answers the same way (neutrals are opaque).
+
+**Inference = collect constraints, defer maximally, solve at the end** (the 011 view;
+the resolver already is a constraint solver with delay/wake). A flexible
+projection-equality `?p.M =?= ?q.M` arises only where a receiver is a logic variable —
+i.e. in **rule bodies**, never in operation signatures — and is an ordinary delayable
+goal: it suspends and wakes when its receivers bind, like every other goal over
+unbound vars. **Delay, never reject.** Rejecting outside the pattern fragment would
+make rule typing order-sensitive (a well-typed rule fails by atom order) and would
+contradict the resolver's own delay discipline.
+
+**The soundness invariant** is the repo's *loud error over silent skip*, lifted to
+constraints: **every deferred constraint ends confirmed, refuted, or surfaced as a
+residual obligation — never silently accepted or dropped.** Two implementation
+obligations follow:
+
+1. **Wake-registration** — a deferred `?p.M =?= ?q.M` is registered on its receiver
+   vars, so grounding (`?p := P1`, `?q := P2`) re-checks it (`String =?= Int` → fail).
+   The resolver's delay/rotation already does this; the duty is not to let the goal
+   fall off.
+2. **Set-level final solve** — a residual `?a.K =?= ?b.K ∧ ?a ≠ ?b` is pairwise-fine
+   but globally unsatisfiable unless two *distinct* providers share a `K` (a
+   KB-existence question). Decidable over a finite KB — but only if the final solve is
+   over the *set*, not per-constraint.
+
+With that invariant the feared case — *unsatisfiable but uncaught* — cannot produce an
+unsound **accept**: an undischarged residual becomes a reported obligation, not a
+silent pass. The cost falls the other way (over-flagging a satisfiable residual —
+incompleteness), which 011 reframes as a work-item.
+
+**Residual accounting = 011's three levels**, read off the final set:
+
+| final residual | typedness | guarantee |
+|---|---|---|
+| refuted | **ill-typed** (`¬∃` binding) | reject |
+| free vars remain | **well-typed**, with obligations | sound only as "∃ a binding," not runtime safety |
+| empty | **universally typed / ground** | the level realization / codegen requires |
+
+So equality is conversion (ζ/δ/η over non-injective heads), inference is delay with
+no-silent-drop, and "typed" is a three-level residual reading — the projection corner
+is just the general typing architecture made concrete.
+
+## 5. What the harder cases add (deferred)
+
+- **Plain (non-parametric) field** — `entity stateErased(provider: DataProvider)`.
+  The construction's type is just `StateErased`; the declared field type
+  `DataProvider` does **not** carry the specific provider, so
+  `stateErased(provider = ss).provider` grounds only if the type is **refined** to
+  record the field's actual type (`StateErased{provider: SubscriberStore}`). *This* is
+  where "typed terms / refinement types" are genuinely required — and it is why the
+  parametric form is the right starting point. (Scala 3's experimental `tracked val
+  provider` is exactly this route: it keeps the constructor argument's precise type in
+  the instance type, grounding `stateErased(provider = ss).provider.K`.) An abstract
+  `stateErased` param stays rigid regardless.
+- **Arbitrary-expression receiver** — `(expr).M`. The substrate already holds the
+  receiver as a `NodeOccurrence`, so the type machinery is uniform; it adds (a) a
+  grammar form (`(expr).M` does not parse yet) and (b) a **stability guard** —
+  projecting an *abstract* member off an *unstable* receiver is a loud error
+  (`makeProvider().K`); `let p = makeProvider(); p.K` is the escape.
+
+## 6. Seam map
+
+| piece | seam |
+|---|---|
+| construction infers `P` | **WI-384** |
+| `s.provider.K` classified + eliminated (compound receiver) | **WI-376** + **WI-397** |
+| `k : s.provider.K` depends on param `s` (cross-param + synthesis order) | **WI-398** |
+| projection at `let` / body / `requires`, not only call args | **WI-399** |
+| identity by unification; rigid abstract member; abstract-stays-poly | **WI-376** (keystone) |
+| equality = ζ/δ/η conversion; non-injective `ExprCarried` head; delay + no-silent-drop | **WI-370** (custom unification) |
+
+The parametric working example of §1 needs **WI-384 + WI-376 + WI-397 + WI-398**, the
+two rules of §3, and the conversion/delay discipline of §4 (its soundness rule rides
+**WI-370**). The plain-field and arbitrary-expression cases (§5) are the genuinely new
+representation work, deferred.
