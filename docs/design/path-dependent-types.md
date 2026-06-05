@@ -121,19 +121,23 @@ expression does **not** reduce to `ss`.
    behind an abstraction boundary it is just the declared type. Concrete when
    `type(p)` pins `M`; **rigid** (keyed by `p` + `M`) otherwise — grounding reaches
    exactly as far as the tracked type carries information.
-2. **Identity — unification of expression types.** A path type embeds its receiver:
-   `y.T` is `ExprCarried(y, T)`. To decide whether `p.M` and `q.M` are the same type,
-   the typer asks what it asks of any two terms — *do they unify?* — which reduces to
-   *do the receiver expressions `p` and `q` unify?* (against the substitution). `let
-   y = z` records `y ↦ z`, so `y` and `z` unify, so `ExprCarried(y, T)` and
-   `ExprCarried(z, T)` unify, so `y.T ≡ z.T` and `Cell[y.T]`, `Cell[z.T]` interchange.
-   Identity is **up to the substitution**, not **up to the syntactic path** (Scala
-   compares the written names, so `let y = z` leaves `y.T ≠ z.T`). Purely
-   compile-time — the receiver is an *expression / term*, never the runtime `Value`;
-   soundness is separate (immutable `let` ⟹ the aliased expressions denote one
-   runtime value, so identifying their projections is safe). Decidable. *(The reverse
-   — when unifying two projections should* drive *a receiver binding rather than only
-   check — is resolved in §4: delay, never bind a non-injective head.)*
+2. **Identity — σ-equality of the receivers.** A path type embeds its receiver: `y.T`
+   is `ExprCarried(y, T)`. To decide whether `p.M` and `q.M` are the same type, the
+   typer checks whether the receivers `p` and `q` are **σ-equal** — *the same term once
+   the current substitution σ is applied*: resolve each through σ (following the
+   `let`/unification aliases σ records) and compare structurally. It is a **check, not
+   a binding** — never "could they be *made* equal" (that is unification, and it would
+   be the unsound non-injective decomposition), only "are they *already* equal under
+   σ". `let y = z` records `y ↦ z`, so `y` and `z` are σ-equal, so `y.T ≡ z.T` and
+   `Cell[y.T]`, `Cell[z.T]` interchange; two distinct receivers stay distinct. Note the
+   receivers are *values* (`s`, `s.provider`), not types — so this bottoms out in
+   ordinary term-equality one level below the type-equality it defines (no circularity)
+   and is purely compile-time (never the runtime `Value`). σ-equality sits **stronger
+   than syntactic-path equality** (Scala, where `let y = z` leaves `y.T ≠ z.T`) and
+   **weaker than semantic equality / unifiability**. Decidable; soundness is separate
+   (immutable `let` ⟹ the aliased values are one runtime value). *(The flexible case —
+   a receiver still a variable, so σ can't yet decide — suspends rather than guesses a
+   binding; §4.)*
 
 These are complementary, not competing: rule 1 says *what type* a projection
 resolves to; rule 2 says *when two (rigid) projections are the same type*.
@@ -144,8 +148,9 @@ Path-type **equality** is not ML's nominal `sharing` — it is the **definitiona
 conversion** of a dependent type theory, restricted to three reductions and closed
 under congruence:
 
-- **ζ** (receiver) — `p.M ≡ q.M` when the receiver expressions `p`, `q` unify under
-  the substitution (`let y = z` ⟹ `y.M ≡ z.M`);
+- **ζ** (receiver) — `p.M ≡ q.M` when the receivers `p`, `q` are **σ-equal** (the same
+  term once the substitution is applied — a non-binding check; `let y = z` ⟹
+  `y.M ≡ z.M`);
 - **δ** (manifest) — `p.M ⟶ τ` when `type(p)` makes `M` manifest (grounding, §3);
 - **η** (`.Sort`) — `p.Sort ⟶ type(p)`, reifying the receiver's whole type.
 
@@ -157,9 +162,18 @@ neutrals are equal only structurally, never by inverting the projection.
 **Projection heads are non-injective — the one soundness rule.** `peek(a).T` and
 `peek(b).T` can both be `Int` without `a = b`, so the unifier must **not** decompose
 `p.M =?= q.M` into `p =?= q`. `ExprCarried` is an **opaque head** in unification:
-δ-ground both sides and unify the results; if both stay neutral, compare receivers by
-*equality*, never by *binding*. This is a **custom unification rule at that head**
-(filed as **WI-370**) and it is the whole of what keeps unification-equality sound. ML
+δ-ground both sides and unify the results; if both stay neutral, **check σ-equality of
+the receivers** — the **α-equality routine modulo the substitution's equivalence
+classes**: compare structurally, two terms equal at a variable iff they are in the
+**same class**, with α-renaming at binders. The routine **accepts the set of classes**
+(σ as a union-find): a substitution `x ↦ y` (from `let x = y`, or a unification) puts
+`x`, `y` in one class, so comparing `x.T` and `y.T` succeeds — `y.T ≡ z.T` for
+`let y = z`, while two distinct receivers stay distinct, never forced equal by a
+guessed binding (a *check*, never a *binding*). One routine serves both this receiver
+check and α-equivalence of binders (arrow / dependent types — the deferred `Positioned`
+reading). This is
+a **custom unification rule at that head** (**WI-400**, on the **WI-370**
+custom-unification feature) and it is the whole of what keeps the equality sound. ML
 never meets this — it only *checks* declared sharing, never *infers* abstract-type
 equality; DTT meets it and answers the same way (neutrals are opaque).
 
