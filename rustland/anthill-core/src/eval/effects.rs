@@ -367,7 +367,9 @@ impl EffectRegistry {
         self.handlers.remove(&effect_sym).and_then(|o| o)
     }
 
-    #[allow(dead_code)]  // not active yet — kept for handler-presence queries
+    /// Whether an effect handler is currently installed for `effect_sym`.
+    /// Used by `raise_error` to decide between routing through the handler
+    /// and the default Throw fallback.
     pub fn has(&self, effect_sym: Symbol) -> bool {
         self.handlers.get(&effect_sym).map_or(false, |o| o.is_some())
     }
@@ -459,6 +461,42 @@ impl Interpreter {
                     backtrace: std::backtrace::Backtrace::force_capture(),
                 })
             }
+        }
+    }
+
+    /// Raise an anthill-level `Error` effect carrying `payload`, routing it
+    /// through the registered Error handler (proposal 027 RuntimeAPI
+    /// `raise_error`, WI-195). A native builtin whose anthill signature
+    /// declares `effects Error` uses this to surface a host-side failure as
+    /// an anthill error — the same channel `Error.raise(x)` takes — instead
+    /// of a raw `EvalError::Internal`. Routes through a custom Error handler
+    /// if one is installed (catch / logging), else falls back to the default
+    /// Throw semantics so the payload is never lost. Returns the resulting
+    /// `EvalError` (`Raised { payload }` in the default case).
+    ///
+    /// This is *only* for failures an operation's `effects Error` actually
+    /// covers. Internal-only conditions a builtin can hit (a missing store
+    /// registration, a lowering bug) are NOT routed here — they stay
+    /// `EvalError::Internal` faults, since no `effects Error` declared them.
+    pub fn raise_error(&mut self, payload: Value) -> EvalError {
+        let error_sym = self.kb.try_resolve_symbol("anthill.prelude.Error");
+        if error_sym.map_or(false, |s| self.effect_handlers.has(s)) {
+            let op_sym = match self.kb.try_resolve_symbol("anthill.prelude.Error.raise") {
+                Some(s) => s,
+                None => self.kb_mut().intern("raise"),
+            };
+            match self.invoke_effect_handler("anthill.prelude.Error", op_sym, &[payload]) {
+                Err(e) => e,
+                // The default Error handler Throws; a handler that *returned*
+                // a value for `raise` is unsound (`raise` -> Nothing). Surface
+                // that loudly rather than dropping the error.
+                Ok(v) => EvalError::Internal(format!(
+                    "Error handler resumed a raise (returned {}) — Error is non-resumable",
+                    v.type_name(),
+                )),
+            }
+        } else {
+            EvalError::Raised { payload }
         }
     }
 

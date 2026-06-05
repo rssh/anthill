@@ -2030,7 +2030,7 @@ const EXIT_RUNTIME: u8 = 1;
 const EXIT_OUT_OF_RANGE: u8 = 255;
 
 fn run_anthill_bundle(argv: &[String]) -> ExitCode {
-    use anthill_core::eval::{builtins, Interpreter, Value};
+    use anthill_core::eval::{builtins, EvalError, Interpreter, Value};
     use anthill_core::kb::load::NullResolver;
 
     // `init` runs before any KB exists — it scaffolds the project's
@@ -2289,6 +2289,22 @@ fn run_anthill_bundle(argv: &[String]) -> ExitCode {
         }
         Ok(other) => {
             eprintln!("error: main returned non-Int value: {other:?}");
+            ExitCode::from(EXIT_RUNTIME)
+        }
+        // Top-level Error handler (WI-195): an anthill `Error` effect that
+        // propagated out of Main (e.g. a `persist`/`flush` store I/O failure
+        // raised through the Error effect) arrives here as `Raised`. Format
+        // its payload as the canonical `error: ...` line and exit RUNTIME —
+        // no Rust panic / backtrace. (Raised's own Display drops the payload,
+        // so we render it here.)
+        Err(EvalError::Raised { payload }) => {
+            let msg = match &payload {
+                Value::Str(s) => s.clone(),
+                // v1: builtins raise String payloads; a user-raised entity
+                // falls back to a debug rendering until a Value printer lands.
+                other => format!("{other:?}"),
+            };
+            eprintln!("error: {msg}");
             ExitCode::from(EXIT_RUNTIME)
         }
         Err(e) => {

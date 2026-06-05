@@ -1560,8 +1560,14 @@ fn persistence_persist(interp: &mut Interpreter, args: &[Value]) -> Result<Value
     let store = interp.store_registry.get_mut(&key).ok_or_else(|| {
         EvalError::Internal(format!("persist: no store registered for key `{key}`"))
     })?;
-    store.persist(&interp.kb, fact_term, sort, domain, None)
-        .map_err(|e| EvalError::Internal(format!("persist: store error: {e}")))?;
+    // The store I/O failure is what `persist`'s `effects Error` declares —
+    // deliver it through the Error effect (a custom handler can intercept;
+    // default Throws -> Raised). The "no store registered" case above is a
+    // host-setup fault not covered by `effects Error`, so it stays Internal.
+    let outcome = store.persist(&interp.kb, fact_term, sort, domain, None);
+    if let Err(e) = outcome {
+        return Err(interp.raise_error(Value::Str(format!("persist failed: {e}"))));
+    }
 
     let handle = interp.kb.alloc(crate::kb::term::Term::Const(
         crate::kb::term::Literal::Handle(crate::kb::term::HandleKind::Fact, rule_id.raw()),
@@ -1603,8 +1609,10 @@ fn persistence_retract(interp: &mut Interpreter, args: &[Value]) -> Result<Value
         let store = interp.store_registry.get_mut(&key).ok_or_else(|| {
             EvalError::Internal(format!("retract: no store registered for key `{key}`"))
         })?;
-        store.retract(&interp.kb, rule_id)
-            .map_err(|e| EvalError::Internal(format!("retract: store error: {e}")))?;
+        let outcome = store.retract(&interp.kb, rule_id);
+        if let Err(e) = outcome {
+            return Err(interp.raise_error(Value::Str(format!("retract failed: {e}"))));
+        }
     }
     interp.kb.retract(rule_id);
     Ok(Value::Bool(true))
@@ -1620,8 +1628,10 @@ fn persistence_flush(interp: &mut Interpreter, args: &[Value]) -> Result<Value, 
     let store = interp.store_registry.get_mut(&key).ok_or_else(|| {
         EvalError::Internal(format!("flush: no store registered for key `{key}`"))
     })?;
-    store.flush(&interp.kb)
-        .map_err(|e| EvalError::Internal(format!("flush: store error: {e}")))?;
+    let outcome = store.flush(&interp.kb);
+    if let Err(e) = outcome {
+        return Err(interp.raise_error(Value::Str(format!("flush failed: {e}"))));
+    }
     Ok(Value::Bool(true))
 }
 
@@ -1672,12 +1682,15 @@ fn persistence_retrieve(interp: &mut Interpreter, args: &[Value]) -> Result<Valu
     let pattern_term = interp.kb.alloc_from_value(&pattern_val)
         .map_err(|e| EvalError::Internal(format!("retrieve: lower pattern: {e:?}")))?;
 
-    let hits = {
+    let outcome = {
         let store = interp.store_registry.get(&key).ok_or_else(|| {
             EvalError::Internal(format!("retrieve: no store registered for key `{key}`"))
         })?;
         store.retrieve(&interp.kb, pattern_term)
-            .map_err(|e| EvalError::Internal(format!("retrieve: store error: {e}")))?
+    };
+    let hits = match outcome {
+        Ok(h) => h,
+        Err(e) => return Err(interp.raise_error(Value::Str(format!("retrieve failed: {e}")))),
     };
 
     let mut iter = hits.into_iter();
