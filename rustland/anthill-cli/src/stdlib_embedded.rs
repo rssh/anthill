@@ -1,77 +1,19 @@
 //! Embedded standard library sources for the `anthill` CLI.
 //!
-//! All `.anthill` files from `stdlib/anthill/` are compiled into the binary
-//! via `include_str!()`. Use `parse_embedded_stdlib()` to get parsed files.
+//! The `(label, source)` list is GENERATED at build time by `build.rs`, which
+//! walks `stdlib/anthill/` and `anthill-stl/anthill/` and `include_str!`s every
+//! `.anthill` file. This keeps the embedded set in lock-step with the live
+//! stdlib — the former hand-maintained list drifted (missing `prelude/cell`,
+//! `kernel`, `logic/*`, …), shipping a stale stdlib. Use
+//! `parse_embedded_stdlib()` to get the parsed files.
 
 use anthill_core::parse;
 use anthill_core::parse::ir::ParsedFile;
 
-static STDLIB_SOURCES: &[(&str, &str)] = &[
-    // prelude
-    ("anthill/prelude/primitives", include_str!("../../../stdlib/anthill/prelude/primitives.anthill")),
-    ("anthill/prelude/bool", include_str!("../../../stdlib/anthill/prelude/bool.anthill")),
-    ("anthill/prelude/int", include_str!("../../../stdlib/anthill/prelude/int.anthill")),
-    ("anthill/prelude/bigint", include_str!("../../../stdlib/anthill/prelude/bigint.anthill")),
-    ("anthill/prelude/float", include_str!("../../../stdlib/anthill/prelude/float.anthill")),
-    ("anthill/prelude/string", include_str!("../../../stdlib/anthill/prelude/string.anthill")),
-    ("anthill/prelude/eq", include_str!("../../../stdlib/anthill/prelude/eq.anthill")),
-    ("anthill/prelude/ordered", include_str!("../../../stdlib/anthill/prelude/ordered.anthill")),
-    ("anthill/prelude/numeric", include_str!("../../../stdlib/anthill/prelude/numeric.anthill")),
-    ("anthill/prelude/option", include_str!("../../../stdlib/anthill/prelude/option.anthill")),
-    ("anthill/prelude/list", include_str!("../../../stdlib/anthill/prelude/list.anthill")),
-    ("anthill/prelude/pair", include_str!("../../../stdlib/anthill/prelude/pair.anthill")),
-    ("anthill/prelude/unit", include_str!("../../../stdlib/anthill/prelude/unit.anthill")),
-    ("anthill/prelude/nothing", include_str!("../../../stdlib/anthill/prelude/nothing.anthill")),
-    ("anthill/prelude/set", include_str!("../../../stdlib/anthill/prelude/set.anthill")),
-    ("anthill/prelude/map", include_str!("../../../stdlib/anthill/prelude/map.anthill")),
-    ("anthill/prelude/sort", include_str!("../../../stdlib/anthill/prelude/sort.anthill")),
-    ("anthill/prelude/meta", include_str!("../../../stdlib/anthill/prelude/meta.anthill")),
-    ("anthill/prelude/function", include_str!("../../../stdlib/anthill/prelude/function.anthill")),
-    ("anthill/prelude/field", include_str!("../../../stdlib/anthill/prelude/field.anthill")),
-    ("anthill/prelude/collection", include_str!("../../../stdlib/anthill/prelude/collection.anthill")),
-    ("anthill/prelude/iteration", include_str!("../../../stdlib/anthill/prelude/iteration.anthill")),
-    ("anthill/prelude/iterable", include_str!("../../../stdlib/anthill/prelude/iterable.anthill")),
-    ("anthill/prelude/mutable_collection", include_str!("../../../stdlib/anthill/prelude/mutable_collection.anthill")),
-    ("anthill/prelude/indexed_seq", include_str!("../../../stdlib/anthill/prelude/indexed_seq.anthill")),
-    ("anthill/prelude/stream", include_str!("../../../stdlib/anthill/prelude/stream.anthill")),
-    ("anthill/prelude/logical_stream", include_str!("../../../stdlib/anthill/prelude/logical_stream.anthill")),
-    ("anthill/prelude/lattice", include_str!("../../../stdlib/anthill/prelude/lattice.anthill")),
-    ("anthill/prelude/effects", include_str!("../../../stdlib/anthill/prelude/effects.anthill")),
-    ("anthill/prelude/effects-runtime", include_str!("../../../stdlib/anthill/prelude/effects-runtime.anthill")),
-    ("anthill/prelude/console", include_str!("../../../stdlib/anthill/prelude/console.anthill")),
-    ("anthill/prelude/algebra", include_str!("../../../stdlib/anthill/prelude/algebra.anthill")),
-    // geometry
-    ("anthill/geometry", include_str!("../../../stdlib/anthill/geometry.anthill")),
-    // reflect
-    ("anthill/reflect/reflect", include_str!("../../../stdlib/anthill/reflect/reflect.anthill")),
-    ("anthill/reflect/typing", include_str!("../../../stdlib/anthill/reflect/typing.anthill")),
-    ("anthill/reflect/feed", include_str!("../../../stdlib/anthill/reflect/feed.anthill")),
-    // realization
-    ("anthill/realization/realization", include_str!("../../../stdlib/anthill/realization/realization.anthill")),
-    ("anthill/realization/witness", include_str!("../../../stdlib/anthill/realization/witness.anthill")),
-    ("anthill/realization/policy", include_str!("../../../stdlib/anthill/realization/policy.anthill")),
-    ("anthill/realization/platform", include_str!("../../../stdlib/anthill/realization/platform.anthill")),
-    ("anthill/realization/rust_std", include_str!("../../../stdlib/anthill/realization/rust_std.anthill")),
-    ("anthill/realization/cpp_std", include_str!("../../../stdlib/anthill/realization/cpp_std.anthill")),
-    // persistence
-    ("anthill/persistence/store", include_str!("../../../stdlib/anthill/persistence/store.anthill")),
-    ("anthill/persistence/filesystem", include_str!("../../../stdlib/anthill/persistence/filesystem.anthill")),
-    ("anthill/persistence/sql", include_str!("../../../stdlib/anthill/persistence/sql.anthill")),
-    // cli
-    ("anthill/cli/main", include_str!("../../../stdlib/anthill/cli/main.anthill")),
-    ("anthill/cli/spec", include_str!("../../../stdlib/anthill/cli/spec.anthill")),
-    ("anthill/cli/parse", include_str!("../../../stdlib/anthill/cli/parse.anthill")),
-    ("anthill/cli/help", include_str!("../../../stdlib/anthill/cli/help.anthill")),
-    // rustland host bindings (proposal 038)
-    ("rustland/anthill-stl/int", include_str!("../../anthill-stl/anthill/int.anthill")),
-    ("rustland/anthill-stl/bigint", include_str!("../../anthill-stl/anthill/bigint.anthill")),
-    ("rustland/anthill-stl/float", include_str!("../../anthill-stl/anthill/float.anthill")),
-    ("rustland/anthill-stl/string", include_str!("../../anthill-stl/anthill/string.anthill")),
-    ("rustland/anthill-stl/bool", include_str!("../../anthill-stl/anthill/bool.anthill")),
-    // Binding-layer satisfaction: Vec3 is a VectorSpace over Float (needs
-    // Ring[Float] from float.anthill above) — see the file's header / WI-343.
-    ("rustland/anthill-stl/geometry", include_str!("../../anthill-stl/anthill/geometry.anthill")),
-];
+/// `(label, source)` for every embedded `.anthill` file. The label is a
+/// human-readable path used only in parse-error messages. Generated by
+/// `build.rs` into `$OUT_DIR/stdlib_sources.rs`.
+static STDLIB_SOURCES: &[(&str, &str)] = include!(concat!(env!("OUT_DIR"), "/stdlib_sources.rs"));
 
 /// Parse all embedded stdlib sources. Returns (parsed files, warnings).
 pub fn parse_embedded_stdlib() -> (Vec<ParsedFile>, Vec<String>) {
