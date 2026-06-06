@@ -7273,13 +7273,28 @@ impl<'a> Loader<'a> {
             return;
         }
         let spec_params = self.kb.type_params_of_sort(fact_functor);
-        if spec_params.is_empty() {
+        // WI-407: a NON-parametric spec (`spec_params` empty) still declares a
+        // real is-a — `sort QueryableStore { fact Store }`, top-level `fact
+        // BulkStore[IndexedFileStore]`. Pre-WI-407 the gate was
+        // `spec_params.is_empty()`, so those edges never reached
+        // `SortProvidesInfo` and the declared hierarchy was invisible to
+        // subtyping (the gap WI-385's arg/field validation surfaced). Emit a
+        // zero-binding provider edge for them too. BUT a non-parametric sort
+        // that has CONSTRUCTORS is a data sort, not a spec: `sort Holder { fact
+        // Color[..] }` with `entity red/green` on Color asserts a data instance,
+        // not is-a (wi210 `fact_for_non_spec_sort_does_not_emit_provides_info`).
+        // So skip only the constructor-shaped non-parametric case; a parametric
+        // fact still emits exactly as before (the `&& spec_params.is_empty()`
+        // keeps a parametric data sort like `List` on its old path).
+        if spec_params.is_empty() && self.kb.sort_has_constructors(fact_functor) {
             return;
         }
 
         // Translate positional bindings → named, using the spec's
         // declared parameter order. type_params_of_sort returns short
-        // names; positional[i] binds to params[i].
+        // names; positional[i] binds to params[i]. Empty for a
+        // non-parametric spec — the loop does nothing and `named` stays
+        // whatever the user wrote (typically nothing).
         let mut named: SmallVec<[(Symbol, TermId); 2]> = fact_named_args.clone();
         for (i, pos_val) in fact_pos_args.iter().enumerate() {
             let param_name = match spec_params.get(i) {
@@ -7304,10 +7319,18 @@ impl<'a> Loader<'a> {
         let sort_ref_term = match self.kb.kind_of(domain_functor) {
             Some(SymbolKind::Sort) => domain,
             Some(SymbolKind::Namespace) => {
-                // Derive carrier from the first binding's value.
-                let carrier_sym = named
+                // Derive carrier from the first binding's value. For a
+                // PARAMETRIC spec the positional was translated into `named`
+                // above (`fact Ring[Float]` → `named[0] = (T, Float)`), so the
+                // carrier is that first binding's value. WI-407: for a
+                // NON-parametric spec there is no param to bind to, so the raw
+                // leading positional IS the carrier (`fact BulkStore[IFS]` →
+                // carrier `IFS`).
+                let carrier_val = named
                     .first()
-                    .and_then(|(_, val)| self.fact_value_to_sort_sym(*val));
+                    .map(|(_, val)| *val)
+                    .or_else(|| fact_pos_args.first().copied());
+                let carrier_sym = carrier_val.and_then(|val| self.fact_value_to_sort_sym(val));
                 match carrier_sym {
                     Some(sym) => self.kb.make_name_term_from_sym(sym),
                     None => return,

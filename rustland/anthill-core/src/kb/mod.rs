@@ -1434,6 +1434,31 @@ impl KnowledgeBase {
         None
     }
 
+    /// Does `sort_sym` have any entity constructor — i.e. is it a
+    /// constructor-shaped DATA sort rather than an abstract spec? Used by the
+    /// provider-info loader (WI-407) to tell `sort QueryableStore { fact Store }`
+    /// (Store is an abstract spec → a provider edge) from `sort Holder { fact
+    /// Color[..] }` (Color is a data sort with `entity red/green` → a data fact,
+    /// NOT a provider edge).
+    ///
+    /// Reads the SYMBOL TABLE (a direct child symbol of kind `Entity`), not the
+    /// runtime `entity_parent` index, ON PURPOSE: `entity_parent` is populated
+    /// incrementally as each sort body loads, so a fact processed BEFORE its
+    /// referenced sort's body (a forward reference) would see it empty and
+    /// misclassify a data sort as a spec. Child symbols are all defined in
+    /// `scan_definitions` (pass 1, before any loading), so this answer is
+    /// load-order-independent. Mirrors [`Self::type_params_of_sort`]'s
+    /// direct-child scan.
+    pub fn sort_has_constructors(&self, sort_sym: Symbol) -> bool {
+        let qn = self.qualified_name_of(sort_sym);
+        let prefix = format!("{qn}.");
+        self.symbols.by_qualified_name.iter().any(|(child_qn, &child_sym)| {
+            child_qn.starts_with(&prefix)
+                && !child_qn[prefix.len()..].contains('.')   // direct child only
+                && matches!(self.kind_of(child_sym), Some(SymbolKind::Entity))
+        })
+    }
+
     // ── Query ───────────────────────────────────────────────────
 
     /// All active rules/facts of a given sort (including entities of that sort).

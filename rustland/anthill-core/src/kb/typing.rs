@@ -11825,29 +11825,76 @@ fn check_entity_facts(kb: &mut KnowledgeBase, ctor_syms: &[Symbol], errors: &mut
     }
 }
 
-/// True if sort `carrier` provides spec `spec` — i.e. a `SortProvidesInfo`
-/// fact records `carrier` as its `sort_ref` and `spec` as the spec base.
-/// `maybe_emit_fact_provides_info` normalizes both explicit `provides`
-/// clauses and bare `fact Spec[T=X]` facts into `SortProvidesInfo`, so this
-/// one query covers both. Used so a fact field declared with a spec sort
-/// accepts a value whose own sort satisfies that spec (WI-036).
+/// True if sort `carrier` provides spec `spec` — directly OR transitively.
+///
+/// A `SortProvidesInfo` fact records `carrier` as its `sort_ref` and a spec as
+/// its base; `maybe_emit_fact_provides_info` normalizes both explicit `provides`
+/// clauses and bare `fact Spec[T=X]` facts into `SortProvidesInfo`, so this one
+/// query covers both. Used so a fact field declared with a spec sort accepts a
+/// value whose own sort satisfies that spec (WI-036).
+///
+/// WI-385 (user decision "transitive everywhere") + WI-407: the `provides` /
+/// `is-a` relation is TRANSITIVE over the `SortProvidesInfo` edge set. If `A`
+/// provides `M` and `M` provides `spec`, then `A` provides `spec` —
+/// `IndexedFileStore → BulkStore → Store`. Every `sort_provides` caller —
+/// subtype admissibility (`types_compatible`), requires-coverage, the
+/// receiver-sort checks, and the loader skip — sees the full chain rather than
+/// just the first hop. WI-407 made the loader emit edges for non-parametric
+/// `fact <Spec>` declarations so this closure has something to chase.
 pub(crate) fn sort_provides(kb: &KnowledgeBase, carrier: Symbol, spec: Symbol) -> bool {
     let provides_sym = match kb.try_resolve_symbol("anthill.reflect.SortProvidesInfo") {
         Some(s) => s,
         None => return false,
     };
+    // Extract the provider edge set ONCE as (carrier, spec) symbol pairs — it is
+    // invariant across the transitive walk, so reading the facts inside the
+    // recursion would re-scan + re-allocate the whole table at every hop. A
+    // value-fact `SortProvidesInfo` (denoted-bearing spec) is skipped here;
+    // occurrence-based provides lookup is gated effect-expressions-as-types work
+    // (avoid the term-only `rule_head` panic on a value head).
+    let mut edges: Vec<(Symbol, Symbol)> = Vec::new();
     for rid in kb.rules_by_functor(provides_sym) {
-        // A value-fact SortProvidesInfo (denoted-bearing spec) is skipped;
-        // occurrence-based provides lookup is gated effect-expressions-as-types
-        // work (avoid the term-only `rule_head` panic on a value head).
         let Some(named) = kb.fact_head_named_args(rid) else { continue };
-        let carrier_ok = get_named_arg(kb, &named, "sort_ref")
+        let Some(c) = get_named_arg(kb, &named, "sort_ref")
             .and_then(|t| super::load::sort_ref_functor(kb, t))
-            .is_some_and(|c| same_symbol(kb, c, carrier));
-        let spec_ok = get_named_arg(kb, &named, "spec")
+        else {
+            continue;
+        };
+        let Some(s) = get_named_arg(kb, &named, "spec")
             .and_then(|t| super::load::provides_spec_base_sym(kb, t))
-            .is_some_and(|s| same_symbol(kb, s, spec));
-        if carrier_ok && spec_ok {
+        else {
+            continue;
+        };
+        edges.push((c, s));
+    }
+    let mut visited: SmallVec<[Symbol; 8]> = SmallVec::new();
+    sort_provides_reach(kb, &edges, carrier, spec, &mut visited)
+}
+
+/// Transitive-reachability worker for [`sort_provides`] over the pre-extracted
+/// `(carrier, spec)` edge set. From `carrier`, follow each edge whose source is
+/// `carrier`: succeed if its target IS `spec`, else recurse on the target.
+/// `visited` is a cycle guard against a cyclic `provides` declaration (a sort
+/// that transitively provides itself) — once a carrier has been explored
+/// without reaching `spec` it is never revisited, so the walk terminates and
+/// stays O(edges).
+fn sort_provides_reach(
+    kb: &KnowledgeBase,
+    edges: &[(Symbol, Symbol)],
+    carrier: Symbol,
+    spec: Symbol,
+    visited: &mut SmallVec<[Symbol; 8]>,
+) -> bool {
+    if visited.iter().any(|&v| same_symbol(kb, v, carrier)) {
+        return false;
+    }
+    visited.push(carrier);
+    for &(src, dst) in edges {
+        if !same_symbol(kb, src, carrier) {
+            continue;
+        }
+        // Direct hop, then the transitive chain through the intermediate spec.
+        if same_symbol(kb, dst, spec) || sort_provides_reach(kb, edges, dst, spec, visited) {
             return true;
         }
     }

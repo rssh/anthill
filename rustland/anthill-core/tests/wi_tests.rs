@@ -198,3 +198,6 @@ mod wi392_op_type_param_rigid_test;
 
 #[path = "include/wi381_alias_resolution_test.rs"]
 mod wi381_alias_resolution_test;
+
+#[path = "include/wi407_provider_edges_test.rs"]
+mod wi407_provider_edges_test;
