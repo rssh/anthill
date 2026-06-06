@@ -88,6 +88,7 @@ pub fn register_standard_builtins(interp: &mut Interpreter) -> Result<(), EvalEr
     register_if_present(interp, "anthill.reflect.term_field", term_field)?;
     register_if_present(interp, "anthill.reflect.term_as_string", term_as_string)?;
     register_if_present(interp, "anthill.reflect.term_as_entity", term_as_entity)?;
+    register_if_present(interp, "anthill.reflect.as_term", as_term)?;
     register_if_present(interp, "anthill.reflect.fresh_var", reflect_fresh_var)?;
     register_if_present(interp, "anthill.reflect.make_fn", reflect_make_fn)?;
     register_if_present(interp, "anthill.reflect.find_fact", reflect_find_fact)?;
@@ -908,6 +909,27 @@ fn term_as_entity(interp: &mut Interpreter, args: &[Value]) -> Result<Value, Eva
     })
 }
 
+/// `anthill.reflect.as_term[E](e: E) -> Term`. The TOTAL value→Term crossing
+/// (WI-406) — the explicit partner to `term_as_entity` (partial Term→entity).
+/// `Term` is the representation-specific reflected-term sort, not a supertype,
+/// so this is a CONVERSION made explicit, not a coercion the typer inserts.
+/// At runtime every value carrier already inhabits the abstract `reflect.Term`
+/// via `TermView` (a `Value::Entity` is accepted wherever a `Term` is — see
+/// `term_as_entity`, the reverse, which takes both), so the value-level
+/// operation is the identity; the work is the type-level relabel to `Term`.
+///
+/// No carrier is rejected — that is not a silent skip but the meaning of TOTAL:
+/// `E` is universally quantified, so every value is a valid input and reflects.
+/// (Contrast `sort_as_term`, whose arg must be a `Type`/`Term` handle and which
+/// therefore loudly rejects a non-`Term` carrier; `as_term` has no ill input to
+/// surface.) The `Value::Entity → Term::Fn` materialization a consumer may need
+/// happens downstream in `alloc_from_value` at the consumption site (the
+/// `pattern_query` lowering, `persist`), NOT here.
+fn as_term(_interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    let [e] = expect_args::<1>("as_term", args)?;
+    Ok(e)
+}
+
 fn materialize_entity(interp: &mut Interpreter, tid: crate::kb::term::TermId) -> Option<Value> {
     use crate::intern::Symbol;
     use crate::kb::term::{Term as CoreTerm, TermId};
@@ -1058,9 +1080,13 @@ fn term_to_value(interp: &mut Interpreter, tid: crate::kb::term::TermId) -> Valu
     }
 }
 
-/// `anthill.reflect.fresh_var(name: String) -> Term`.
+/// `anthill.reflect.fresh_var[T](name: String) -> T`.
 /// Allocate a fresh logical variable wrapped in a `Term::Var(Var::Global(_))`
-/// so anthill code can build pattern queries with named holes. The display
+/// so anthill code can build pattern queries with named holes. WI-406: the
+/// surface type is the caller-bound `T` (a `T`-kinded logic var, WI-109), so a
+/// hole drops into a typed slot with no value↔Term crossing; the runtime
+/// carrier is the same `Term::Var` regardless of `T` (the builtin ignores the
+/// type argument — an unbound logic var inhabits every sort until it binds). The display
 /// name is used by `Substitution.lookup` callers to recover bindings by
 /// name (`lookup(subst, "id")`); two fresh vars with the same name produce
 /// distinct `VarId`s — the resolver's identity is the id, not the name.

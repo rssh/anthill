@@ -1,4 +1,4 @@
-//! WI-182 — `anthill.reflect.fresh_var(name) -> Term`.
+//! WI-182 — `anthill.reflect.fresh_var[T](name) -> T`.
 //!
 //! Closes phase 1 of WI-009: until this builtin existed, anthill code could
 //! not construct `Term::Var(Var::Global(_))` values, which `pattern_query`
@@ -6,12 +6,16 @@
 //! are the named holes the resolver fills in). Without it, `cmd_next`
 //! couldn't run `pattern_query(claimable(?id, ?desc))` from the bundle.
 //!
+//! WI-406 retyped `fresh_var` from `-> Term` to `[T] -> T`, so a hole is a
+//! `T`-kinded logic var: a `String`-field hole is `fresh_var[String](name)`,
+//! and the typed pattern reflects to a `Term` via `as_term` at `pattern_query`.
+//!
 //! This test exercises the full anthill-side flow:
-//!   * call `fresh_var("id")` and `fresh_var("desc")` from inside an
-//!     operation;
-//!   * build a constructor `claimable(?id, ?desc)` whose args are the
-//!     returned `Term` values;
-//!   * wrap as `pattern_query(...)`, run via `KB.execute(kb(), q)`;
+//!   * call `fresh_var[String]("id")` / `fresh_var[String]("p")` from inside
+//!     an operation;
+//!   * build a constructor `Item(id: ?id, name: ?p)` whose args are the
+//!     returned `T`-kinded logic vars;
+//!   * `as_term(goal)` then `pattern_query(...)`, run via `KB.execute(kb(), q)`;
 //!   * splitFirst the resulting stream, lookup the bindings by name,
 //!     return the bound id string.
 
@@ -55,7 +59,7 @@ namespace test.wi182_query
   import anthill.prelude.LogicalStream.{splitFirst}
   import anthill.prelude.Pair.{pair}
   import anthill.prelude.Option.{some, none}
-  import anthill.reflect.{Term, Substitution, fresh_var}
+  import anthill.reflect.{Term, Substitution, fresh_var, as_term}
   import anthill.reflect.KB.{kb, execute}
   import anthill.reflect.LogicalQuery.{pattern_query}
   import anthill.reflect.Substitution.{lookup}
@@ -74,10 +78,10 @@ namespace test.wi182_query
   -- lookup. Each branch returns a distinctive String so the outer test
   -- can assert which path was reached.
   operation first_parent_name() -> String effects Error =
-    let id_var = fresh_var("id")
-    let name_var = fresh_var("p")
+    let id_var = fresh_var[String]("id")
+    let name_var = fresh_var[String]("p")
     let goal = Item(id: id_var, name: name_var)
-    let stream = execute(kb(), pattern_query(term: goal))
+    let stream = execute(kb(), pattern_query(term: as_term(goal)))
     let head = splitFirst(stream)
     match head
       case none() -> "no-solution"

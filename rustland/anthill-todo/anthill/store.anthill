@@ -22,7 +22,7 @@ namespace anthill.todo.store
   import anthill.prelude.Option.{none, some}
   import anthill.prelude.List.{nil, cons}
   import anthill.reflect.{Term, term_as_entity, term_field, term_as_string,
-                          term_functor_name, find_fact}
+                          term_functor_name, find_fact, as_term}
   import anthill.reflect.KB.{kb, facts_of}
   export WorkItemStore, FileBasedWorkitemStore, WIS
 
@@ -202,7 +202,7 @@ namespace anthill.todo.store
     =
       match Cell.get(s)
         case wis(b, _) ->
-          let _ = persist(b, fact, Meta(entries: nil()))
+          let _ = persist(b, fact, Meta(entries: as_term(nil())))
           ()
 
     -- Buffer a retract of the WorkItem fact whose `id` field matches
@@ -245,12 +245,12 @@ namespace anthill.todo.store
     operation commit(s: Cell[V = WIS], w: WorkItem) -> Unit
       effects {Modify[s], Error}
     =
-      persist_through(s, w)
+      persist_through(s, as_term(w))
 
     operation commit_feedback(s: Cell[V = WIS], fb: Feedback) -> Unit
       effects {Modify[s], Error}
     =
-      persist_through(s, fb)
+      persist_through(s, as_term(fb))
 
     -- Retract the WorkItem fact whose `id` matches `target`, then flush —
     -- the IndexedFileStore drops the on-disk source block atomically with
@@ -271,7 +271,7 @@ namespace anthill.todo.store
       effects {Modify[s], Error}
     =
       let _ = forget_buffer(s, target)
-      let _ = persist_buffer(s, new_wi)
+      let _ = persist_buffer(s, as_term(new_wi))
       let _ = flush_backend(s)
       ()
   end

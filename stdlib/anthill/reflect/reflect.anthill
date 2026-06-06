@@ -146,16 +146,34 @@ namespace anthill.reflect
   -- `term_as_string` (string-literal decoder).
   operation term_as_entity[E](t: Term) -> Option[T = E]
 
-  -- Allocate a fresh logical variable as a Term::Var. Used to construct
-  -- pattern queries (`claimable(?id, ?desc)`) from anthill code: pass the
-  -- result as a named-arg or positional in the constructor expression that
-  -- becomes the goal, then run via `KB.execute(kb(), pattern_query(goal))`
-  -- and recover bindings via `Substitution.lookup(subst, name)`.
+  -- Reflect a value to its `Term` representation — the TOTAL value→Term
+  -- crossing, and the explicit partner to `term_as_entity` (the partial
+  -- Term→entity reverse). `Term` is the representation-specific reflected-term
+  -- sort, not a supertype, so crossing into it is a CONVERSION, not subsumption
+  -- (WI-406): a producer that hands an entity to a `Term`-typed sink writes
+  -- `as_term(e)` rather than relying on an implicit coercion. Total — every
+  -- value has a canonical reflected form; at runtime the engine's carriers
+  -- already let a `Value::Entity` inhabit `Term` (see `term_as_entity`, which
+  -- accepts both), so this is the value-level identity made explicit and typed.
+  -- The limited-API precursor to WI-189's `↑`/`quote` staging bracket.
+  operation as_term[E](e: E) -> Term
+
+  -- Allocate a fresh logical variable of sort `T`. Used to construct pattern
+  -- queries (`claimable(?id, ?desc)`) from anthill code: pass the result as a
+  -- named-arg or positional in the constructor expression that becomes the
+  -- goal, then run via `KB.execute(kb(), pattern_query(as_term(goal)))` and
+  -- recover bindings via `Substitution.lookup(subst, name)`.
   --
-  -- Two `fresh_var(name)` calls with the same name return Terms backed by
-  -- distinct VarIds — the display name carries through for `lookup`, but
-  -- the resolver's variable identity is the id, not the name.
-  operation fresh_var(name: String) -> Term
+  -- WI-406: the hole is a `T`-KINDED logic variable (WI-109), not a raw `Term`,
+  -- so a hole in a typed slot needs no value↔Term crossing —
+  -- `Item(id: fresh_var[String]("id"))` builds a TYPED `Item`, reflected to a
+  -- `Term` by `as_term` exactly where it is handed to `pattern_query`. Write a
+  -- raw-`Term` hole (e.g. a `make_fn` argument list) as `fresh_var[Term](name)`.
+  --
+  -- Two `fresh_var[T](name)` calls with the same name return distinct VarIds —
+  -- the display name carries through for `lookup`, but the resolver's variable
+  -- identity is the id, not the name.
+  operation fresh_var[T](name: String) -> T
 
   -- Build a Term::Fn whose functor is resolved by qualified-or-short name.
   -- The expression-level constructor call form `claimable(?id, ?desc)`

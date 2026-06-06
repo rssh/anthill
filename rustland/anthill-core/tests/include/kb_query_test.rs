@@ -25,7 +25,7 @@ namespace test.kb_query
   import anthill.prelude.LogicalStream.{splitFirst}
   import anthill.prelude.Pair.{pair}
   import anthill.prelude.Option.{some, none}
-  import anthill.reflect.{Term, Substitution, fresh_var, term_as_string}
+  import anthill.reflect.{Term, Substitution, fresh_var, term_as_string, as_term}
   import anthill.reflect.KB.{kb, execute}
   import anthill.reflect.LogicalQuery.{pattern_query}
   import anthill.reflect.Substitution.{lookup}
@@ -40,8 +40,8 @@ namespace test.kb_query
   -- `role: "admin"` is the concrete discriminator (only the alice fact qualifies);
   -- `name` is the fresh-var hole whose binding we recover.
   operation admin_name() -> String effects Error =
-    let goal = Person(name: fresh_var("n"), role: "admin")
-    match splitFirst(execute(kb(), pattern_query(term: goal)))
+    let goal = Person(name: fresh_var[String]("n"), role: "admin")
+    match splitFirst(execute(kb(), pattern_query(term: as_term(goal))))
       case none()   -> "no-admin"
       case some(p)  -> name_of(p)
 

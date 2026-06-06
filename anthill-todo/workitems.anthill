@@ -2930,8 +2930,8 @@ fact WorkItem(
   id: "WI-385",
   description: "Typer: operation ARGUMENTS and fact/constructor FIELD VALUES are never type-checked against their declared parameter/field types -- a broad soundness hole orthogonal to WI-379. The arg-unify booleans in check_apply_iter (kb/typing.rs ~2915/2930) and the field-unify booleans in check_constructor_iter are DISCARDED: they drive type-param INFERENCE only, never VALIDATION. Only return-type conformance (check_operation_bodies) and -- since WI-379 -- let-annotation conformance (LetAfterValue) are enforced. PROVEN (recon + WI-379 code-review + bigint_probe): 'operation f(x: Int) -> Int = x' called as 'f(\"hello\")' loads CLEAN (String accepted where Int required); 'fact Counter(n: \"hello\")' with 'entity Counter(n: Int)' loads CLEAN (the String-in-Int-field control that SHOULD error does not). A caller can pass an argument/field of any type and the typer stays silent. FIX DIRECTION: after the arg/field unify loops, check types_compatible(arg.ty, param_type) (and field.ty vs declared field type) and emit a TypeMismatch on failure (new context variant OperationArgument{op,param}; EntityField already exists for fields). RISK (recon warned 'budget for triage; do not assume a clean run'): enabling this surfaces a WAVE of pre-existing latent mismatches the silent path masked -- the Modify get(target:T)->T conflation and BigInt-in-Int-field were instances. Likely needs staged rollout: emit as a WARNING first (warnings channel WI-345) to size the blast radius, then promote to error once the stdlib is clean. RELATES WI-379 (made the RETURN direction authoritative; this is the ARG/FIELD direction), WI-384 (constructor build robustness, same function). ACCEPTANCE: arg/field type mismatches are diagnosed; full anthill-core green after triage. Rust-only (typer).",
   acceptance: [ToolPasses("cargo-test")],
-  depends_on: [],
-  status: Open)
+  depends_on: ["WI-406"],
+  status: Claimed(agent: "claude", since: "2026-06-06T04:24:05Z"))
 
 fact WorkItem(
   id: "WI-386",
@@ -3128,3 +3128,11 @@ fact WorkItem(
   depends_on: [],
   status: Open)
 
+fact WorkItem(
+  id: "WI-406",
+  description: "Typer + stdlib: make the value<->Term reflect boundary EXPLICIT via a limited conversion API (precursor to WI-189 staging brackets). Term (anthill.reflect, sort Term = ?) is the representation-specific reflected-term sort, NOT a top type; value<->Term is a CONVERSION, not subtyping (user decision 2026-06-06). THREE pieces: (1) Add the missing TOTAL reflect op as_term[E](e: E) -> Term (entity->Term); runtime routes through the existing Value::Entity->Term::Fn lowering (alloc_from_value, kb/execute.rs; documented by WI-268). (2) The partial reify op term_as_entity[E](t: Term) -> Option[E] (Term->entity) already exists -- no change. (3) Retype fresh_var(name: String) -> Term to fresh_var[T](name: String) -> T so a query-pattern HOLE is a T-kinded logic var (WI-109), not a raw Term: Person(name: fresh_var[String](\"n\"), role: \"admin\") builds a TYPED entity, reflected to Term via as_term exactly where handed to pattern_query/execute. Rewrite the implicit value->Term sites to call as_term: rustland/anthill-todo/anthill/store.anthill commit/commit_feedback/replace -> persist_through/persist_buffer; query-construction fixtures (kb_query_test, wi182_fresh_var_test) to typed fresh_var + as_term. RESULT: every value<->Term crossing is ONE explicit conversion call, so WI-385 arg/field validation enforces the boundary with ZERO Term carve-outs. CORRELATES: WI-189 (full staging-bracket up/down reify/reflect surface -- the cosmetics/parser version this precedes and that later SUGARS these calls; WI-189 should depend on / subsume this); WI-268 (entity<->term runtime-mapping doc -- the 5 lowering rules as_term/term_as_entity sit on). Builds on proposal 042 (explicit op type-params, delivered) for the [E]/[T] forms. ACCEPTANCE: as_term loads + callable; fresh_var[T] typed; persist + query-construction sites rewritten to explicit conversions; full anthill-core green (additive -- old implicit path still tolerated until WI-385 enforces). Rust (builtin + typer) + stdlib + fixtures.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: [],
+  status: Claimed(agent: "claude", since: "2026-06-06T05:05:29Z"))
+
+fact Tag(name: "typing", workitem: "WI-406")

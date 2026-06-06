@@ -1638,8 +1638,8 @@ namespace anthill.todo
       let show_all = match get_arg(args, "all")
         case some(_) -> true
         case none() -> false
-      let id_var = fresh_var("id")
-      let desc_var = fresh_var("desc")
+      let id_var = fresh_var[Term]("id")
+      let desc_var = fresh_var[Term]("desc")
       let goal = make_fn("anthill.stage0.workflow.claimable",
                          cons(id_var, cons(desc_var, nil())))
       let stream = execute(kb(), pattern_query(term: goal))
