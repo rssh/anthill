@@ -114,8 +114,10 @@ The mapping is exact:
   This settles "where is the prompt": at each effect's `reify`/`provide` boundary, and nowhere
   else.
 - **a row of several effects = layered monads** (Filinski, *Representing Layered Monads*, POPL '99).
-  Each effect's `provide` is its own reify layer — which is precisely the per-effect
-  requirement-slot stack from §2. The layering needs no extra concept; it is the slot stack.
+  Each effect is its own reify layer; the **order of the layers is fixed by a declared order over
+  effect sorts** (§8 "Effect order is declared, not nested"), *not* by the dynamic nesting of
+  `provide`. The layering needs no extra concept — the per-effect requirement slot of §2 stays
+  keyed by effect symbol, and the tower at any point is the in-scope effects sorted by declared rank.
 
 **The `HandlerAction` carrier is defunctionalized reflection.** The carrier in
 `eval/effects.rs` is the per-monad, defunctionalized form of `reflect`:
@@ -279,9 +281,56 @@ this proposal, not a competitor — it supplies the `pure`/`bind` the reflection
 So the user's "is it not important when we have runtime reflect?" is right about the *syntactic*
 MTL-vs-`Eff` encoding — reflection makes user code direct-style either way. The one thing that stays
 real is the **semantic order of non-commuting effects** (`StateT∘ExceptT` vs the reverse — does a
-raise roll back state?), and anthill can express that order **explicitly** in a written
-transformer-stack type *or* **dynamically** in the `provide`-nesting order, depending on whether the
-stack is written or reflection-driven. Composition order is captured; the bureaucracy is not forced.
+raise roll back state?). anthill captures that order with a **fixed, declared order over effect
+sorts** — see the next subsection — so user code stays direct-style and the composition order is
+pinned without forcing the bureaucracy of a written transformer-stack type at each use.
+
+### Effect order is declared (fixed), not nested
+
+The semantic order of non-commuting effects (does `raise` roll back state? does backtracking undo a
+log?) is **fixed by a declared order over effect sorts**, not by the dynamic nesting of `provide`.
+The order is a set of KB facts — `fact effect_below(Reader, State)`, `fact effect_below(State, Branch)`
+— a *partial* order. A computation's effect *set* (045's unordered row) is realized into a monad
+*stack* by topologically sorting its effects under that order and folding the transformer instances
+(`fact Monad[M = StateT[S, M]] :- Monad[M = ?M]`) in rank order.
+
+- **One runtime API — `select_monad(effects) -> M`** ("select a monad for these effects, or fail"):
+  topo-sort the co-occurring effects by `effect_below`, fold their transformer instances. It is
+  **deterministic** — a given effect set has *one* canonical realization (good for type identity,
+  for baking the tower, for caching). It **fails loudly** only when (a) some effect has no `Monad`
+  transformer instance, or (b) two co-occurring effects are *incomparable* under `effect_below`
+  **and** not declared to `commute` — and (b) is resolved **once, globally**, by declaring their
+  relative rank, not at every call site. When the effect set is statically known, `select_monad`
+  constant-folds to compile time (the §8 timing split); when handlers are installed dynamically it
+  runs at runtime over the active set. This subsumes the dynamic `select_monad`/MTL machinery — the
+  resolved tower is the value reflection runs `pure`/`bind` over.
+
+- **Order comes from rank; `provide`-nesting controls scope only.** This decouples two things a
+  nesting-driven design conflates: where a handler is *visible* (the dynamic extent of `provide`)
+  versus *where its layer sits* in the monad tower (its declared rank). The tower at any program
+  point is "the in-scope effects, sorted by rank"; partial scope overlap is fine (the tower is built
+  over the region where the relevant effects are jointly in scope). This is exactly why the
+  per-effect **requirement slot of §2 stays correct as-is** — order is recovered from the rank
+  table, so the slot need not become a single ordered stack; it stays keyed by effect symbol.
+
+- **"The other order" is a different effect, not a re-nesting.** A single fixed order means you
+  cannot locally flip the order of the *same* pair — deliberately: when both orders are genuinely
+  wanted, the two semantics are *different effects* and should be **named as such**. State×Branch is
+  already this in anthill: persistent `Modify` (`persist`/`retract` bypass the handler, §10; ranked
+  *below* `Branch`, so it survives backtracking) versus a backtrackable local state (ranked *above*
+  `Branch`, undone on backtrack). **Logging is the clean illustration**: an audit/trace log that must
+  survive backtracking is one effect (ranked below `Branch`); a speculative log that should be undone
+  when a branch fails is a *different* effect (ranked above `Branch`). Reifying the order distinction
+  as effect *identity* is louder and truer than hiding it in stack position — and matches the repo's
+  prefer-an-explicit-error-over-a-silent-default principle.
+
+This is the conservative, reversible choice: a declared fixed order can be *relaxed* to
+`provide`-nesting later if a real need for local reordering appears, without breaking anything baked
+against the canonical form. **Alternative considered** — order from `provide`-nesting plus
+`commutes` facts to permit reordering: strictly more expressive (both orders of a pair for free), but
+it gives up the canonical realization (type identity must then carry order), conflates scope with
+order, and can fail *ambiguously per-use* rather than once at declaration. Rejected as the default
+for those reasons.
 
 ## 9. Build path and WI map
 
@@ -312,3 +361,7 @@ General mechanism, achievable for all effects; per-effect detail deferred.
   the slot, or stays a direct carrier with `provide` only wrapping the sub-buffer for `transaction`.
 - **Cost of reflection for first-order effects**: confirm the specialized carrier path (cheap abort
   for `Throw`) is taken so `Error` never pays general `shift`/`reset`.
+- **Cross-namespace `effect_below` coherence**: two namespaces may declare conflicting relative ranks
+  for the same effect pair (or introduce a cycle). Policy: a conflict — a cycle in `effect_below`, or
+  two incomparable non-commuting effects that co-occur — is a **loud error**, never silently resolved
+  by declaration order. Decide whether the declared order is closed globally or per-import-scope.
