@@ -67,6 +67,15 @@ pub enum Value {
     // lazy arena is not yet built; `LazyHandle` stays a plain u32 newtype
     // until M5 lands it.
     Closure(ClosureHandle),
+    /// WI-275 — a top-level operation referenced as a first-class function
+    /// value (eta-expansion). A bare reference to an operation of arity ≥ 1 in
+    /// value position (e.g. passing `inc` / `lt_int` to a `Function`-typed
+    /// parameter) carries the operation symbol; applying it (`f(x)` / the
+    /// closure-dispatch path) calls the operation, spreading a single tuple
+    /// argument across a multi-parameter operation to match the
+    /// `Function[(A, B), R]` ⇒ `op(a, b)` convention. Unlike a `Closure` it
+    /// captures no environment — a global operation needs none.
+    OpRef(Symbol),
     Stream(StreamHandle),
     Lazy(LazyHandle),
     /// First-class substitution — reference into an arena owned by the
@@ -209,6 +218,7 @@ impl Value {
             Value::Tuple { .. } => "Tuple",
             Value::Entity { .. } => "Entity",
             Value::Closure(_) => "Closure",
+            Value::OpRef(_) => "OpRef",
             Value::Stream(_) => "Stream",
             Value::Lazy(_) => "Lazy",
             Value::Substitution(_) => "Substitution",

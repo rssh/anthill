@@ -749,6 +749,7 @@ impl TermView for Value {
             Value::Var(Var::Global(vid)) => ViewHead::Var(*vid),
             Value::Var(Var::Rigid(_)) | Value::Var(Var::DeBruijn(_)) => ViewHead::Opaque,
             Value::Closure(_)
+            | Value::OpRef(_)
             | Value::Stream(_)
             | Value::Lazy(_)
             | Value::Substitution(_)

@@ -465,6 +465,70 @@ end
 }
 
 #[test]
+fn m2_hof_inference_sort_and_map() {
+    // WI-275: bidirectional inference for higher-order arguments. A
+    // comparator-parameterized sort and a `map` are driven, the transform/
+    // comparator supplied THREE ways the typer previously rejected at the call
+    // site for want of a param type:
+    //   * an inline tuple lambda      `lambda (a, b) -> a < b`
+    //   * an inline single lambda     `lambda x -> x + 1`
+    //   * a BARE named operation      `lt_int` / `inc` (eta-lifted to a value)
+    // Each call site pushes the declared `Function[...]` param type into the
+    // argument, so the lambda's params type and a bare op name becomes a
+    // function value. The descending case proves the comparator is actually
+    // applied (different comparator ⇒ different order), not ignored.
+    let src = r#"
+namespace test.m2_hof_inf
+  import anthill.prelude.{List, Function, Int, Bool}
+
+  operation insert_by(x: Int, xs: List[T = Int], lt: Function[(Int, Int), Bool]) -> List[T = Int] =
+    match xs
+      case nil() -> cons(x, nil())
+      case cons(h, t) ->
+        if lt((x, h))
+        then cons(x, cons(h, t))
+        else cons(h, insert_by(x, t, lt))
+
+  operation sort_by(xs: List[T = Int], lt: Function[(Int, Int), Bool]) -> List[T = Int] =
+    match xs
+      case nil() -> nil()
+      case cons(h, t) -> insert_by(h, sort_by(t, lt), lt)
+
+  operation map_int(xs: List[T = Int], f: Function[Int, Int]) -> List[T = Int] =
+    match xs
+      case nil() -> nil()
+      case cons(h, t) -> cons(f(h), map_int(t, f))
+
+  operation encode3(xs: List[T = Int]) -> Int =
+    match xs
+      case cons(a, cons(b, cons(c, _))) -> a * 100 + b * 10 + c
+      case _ -> 0
+
+  operation lt_int(a: Int, b: Int) -> Bool = a < b
+  operation inc(n: Int) -> Int = n + 1
+
+  operation main_lambda() -> Int = encode3(sort_by([3, 1, 2], lambda (a, b) -> a < b))
+  operation main_named() -> Int = encode3(sort_by([3, 1, 2], lt_int))
+  operation main_desc() -> Int = encode3(sort_by([3, 1, 2], lambda (a, b) -> a > b))
+  operation main_map_lambda() -> Int = encode3(map_int([1, 2, 3], lambda x -> x + 1))
+  operation main_map_named() -> Int = encode3(map_int([1, 2, 3], inc))
+end
+"#;
+    let mut interp = crate::common::interp_for(src);
+    let run = |interp: &mut Interpreter, op: &str| {
+        expect_int(interp.call(op, &[]).unwrap_or_else(|e| panic!("call {op}: {e:?}")))
+    };
+    // Ascending sort of [3,1,2] ⇒ [1,2,3] ⇒ 123, both lambda and named comparator.
+    assert_eq!(run(&mut interp, "test.m2_hof_inf.main_lambda"), 123);
+    assert_eq!(run(&mut interp, "test.m2_hof_inf.main_named"), 123);
+    // Descending comparator ⇒ [3,2,1] ⇒ 321 (proves the comparator is applied).
+    assert_eq!(run(&mut interp, "test.m2_hof_inf.main_desc"), 321);
+    // map (+1) over [1,2,3] ⇒ [2,3,4] ⇒ 234, both lambda and named transform.
+    assert_eq!(run(&mut interp, "test.m2_hof_inf.main_map_lambda"), 234);
+    assert_eq!(run(&mut interp, "test.m2_hof_inf.main_map_named"), 234);
+}
+
+#[test]
 fn m2_set_literal_dedupes_duplicates() {
     // {10, 20, 20, 30} has four positional elements at parse time; after
     // SetLiteral dedup (scalar_eq on Int) it carries three. `count` uses

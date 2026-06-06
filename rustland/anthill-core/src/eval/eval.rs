@@ -270,6 +270,17 @@ impl Interpreter {
         {
             return self.start_constructor(sym, &[], &[]);
         }
+        // WI-275: a bare reference to an operation of arity ≥ 1 in value position
+        // is that operation as a first-class function value (eta), not a call —
+        // the runtime counterpart of the typer's `operation_as_function_value`.
+        // The `Function`-typed parameter it flows into applies it later via the
+        // closure-dispatch path. A nullary operation keeps the zero-arg-call
+        // reading below (it is not a unary function value).
+        if let Some((_, params)) = self.cached_operation_body(sym) {
+            if !params.is_empty() {
+                return self.deliver(Value::OpRef(sym));
+            }
+        }
         self.dispatch_call(sym, Vec::new(), SmallVec::new())
     }
 
@@ -834,28 +845,41 @@ impl Interpreter {
         requirements: SmallVec<[(Symbol, super::value::RequirementHandle); 2]>,
         type_args: FrameTypeArgs,
     ) -> Result<StepOutcome, EvalError> {
-        // 1. Local closure bound to target?
+        // 1. Local binding to target — a closure, or (WI-275) an eta'd
+        //    operation reference. Clone out the callable value (a handle/Symbol
+        //    copy) so the `self.stack` borrow is released before dispatch.
         let target_name = self.kb.resolve_sym(target).to_string();
-        let local_closure = {
+        let local_callable = {
             let top = self.stack.top()
                 .ok_or_else(|| EvalError::Internal("dispatch_call with no parent".into()))?;
             find_local(&self.kb, &top.locals, &target_name)
                 .and_then(|v| match v {
-                    Value::Closure(h) => Some(h.clone()),
+                    Value::Closure(_) | Value::OpRef(_) => Some(v.clone()),
                     _ => None,
                 })
         };
-        if let Some(handle) = local_closure {
-            // Closures override apply.requirements with their own
-            // (the HO-call exception). The caller's `requirements`
-            // here are discarded — see closure invocation in the design.
-            // Type-args from the apply site are likewise dropped:
-            // closure invocation restores the lambda's captured
-            // type_args, not the caller's. See
-            // `docs/design/operation-call-model.md` §"Closures".
-            drop(requirements);
-            drop(type_args);
-            return self.enter_closure(handle, arg_values);
+        match local_callable {
+            Some(Value::Closure(handle)) => {
+                // Closures override apply.requirements with their own
+                // (the HO-call exception). The caller's `requirements`
+                // here are discarded — see closure invocation in the design.
+                // Type-args from the apply site are likewise dropped:
+                // closure invocation restores the lambda's captured
+                // type_args, not the caller's. See
+                // `docs/design/operation-call-model.md` §"Closures".
+                drop(requirements);
+                drop(type_args);
+                return self.enter_closure(handle, arg_values);
+            }
+            Some(Value::OpRef(op)) => {
+                // WI-275: applying an eta'd operation reference dispatches to the
+                // operation itself, spreading a single tuple argument across its
+                // parameters (`cmp((x, y))` ⇒ `op(x, y)`) — the runtime mirror of
+                // the typer's `Function[(A, B), R]` ⇒ `op(a, b)` eta convention.
+                let spread = self.spread_eta_args(op, arg_values)?;
+                return self.dispatch_call_with_requirements(op, spread, requirements, type_args);
+            }
+            _ => {}
         }
 
         // 2. Registered Rust builtin?
@@ -923,6 +947,43 @@ impl Interpreter {
         }
 
         Err(EvalError::UnknownOperation { name: target_name })
+    }
+
+    /// WI-275: adapt the arguments of an eta'd operation reference (a
+    /// `Value::OpRef`) applied as a function value to the operation's own
+    /// parameter arity. An arity-matched call passes through unchanged
+    /// (`inc(n)`); a single tuple argument — the `Function[(A, B), R]` ⇒
+    /// `op(a, b)` convention, e.g. `cmp((x, y))` — is spread across a
+    /// multi-parameter operation. Anything else is a genuine arity error.
+    fn spread_eta_args(
+        &mut self,
+        op: Symbol,
+        arg_values: Vec<Value>,
+    ) -> Result<Vec<Value>, EvalError> {
+        // An `OpRef` is only minted (in `reduce_var`) for an operation that has
+        // a body, so its arity is always knowable here; a body-less op is a bug,
+        // surfaced loudly rather than passed through with an assumed arity.
+        let arity = match self.cached_operation_body(op) {
+            Some((_, params)) => params.len(),
+            None => return Err(EvalError::UnknownOperation {
+                name: self.kb.resolve_sym(op).to_string(),
+            }),
+        };
+        if arg_values.len() == arity {
+            return Ok(arg_values);
+        }
+        if arity != 1 && arg_values.len() == 1 {
+            if let Value::Tuple { pos, .. } = &arg_values[0] {
+                if pos.len() == arity {
+                    return Ok(pos.iter().cloned().collect());
+                }
+            }
+        }
+        Err(EvalError::ArityMismatch {
+            op: "function-value application",
+            expected: arity,
+            got: arg_values.len(),
+        })
     }
 
     /// Operation-body lookup, memoized. `lookup_operation_body` linear-scans

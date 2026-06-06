@@ -1486,12 +1486,25 @@ fn check_bare_ref(
     sym: Symbol,
     span: Option<Span>,
     occ: &Rc<NodeOccurrence>,
+    expected: Option<&Value>,
 ) -> Result<TypeResult, TypeError> {
     if let Some(ty) = env.lookup_var(sym) {
         return Ok(TypeResult::pure_value(ty, env.clone(), Rc::clone(occ)));
     }
     if kb.is_constructor_symbol(sym) {
         return check_constructor_iter(kb, env, sym, &[], &[], &[], &[], span, None, occ);
+    }
+    // WI-275: a bare operation reference used where a function type is expected
+    // denotes the operation as a first-class function value (eta-expansion) —
+    // its `Function[A, B, E]` arrow type, not its return type. Fires only in a
+    // function-typed context; elsewhere a bare op name keeps denoting its return
+    // type (the zero-arg-call reading below), unchanged.
+    if let Some(exp) = expected {
+        if arrow_parts(kb, exp).is_some() {
+            if let Some(fn_ty) = operation_as_function_value(kb, sym, occ) {
+                return Ok(TypeResult::pure_value(fn_ty, env.clone(), Rc::clone(occ)));
+            }
+        }
     }
     if let Some(ret_ty) = lookup_operation_return_type(kb, sym) {
         return Ok(TypeResult::pure(ret_ty, env.clone(), Rc::clone(occ)));
@@ -1504,6 +1517,74 @@ fn check_bare_ref(
         return Ok(TypeResult::pure(type_ty, env.clone(), Rc::clone(occ)));
     }
     Err(TypeError::UnresolvedName { span, name: sym })
+}
+
+/// WI-275: the arrow type of an operation referenced as a first-class function
+/// value (eta-expansion). `inc(n: Int) -> Int` becomes `Int -> Int`; a
+/// multi-param `lt(a: T, b: T) -> Bool` becomes `(T, T) -> Bool` — a positional
+/// `_1`/`_2` named-tuple param (the WI-355 tuple convention) so it unifies
+/// against a `Function[(T, T), Bool]` slot, matching how a `lambda (a, b) -> ...`
+/// is typed and an `f((a, b))` applied. Returns `None` when `sym` names no
+/// operation, or names a nullary one (which is not a unary function value).
+fn operation_as_function_value(
+    kb: &mut KnowledgeBase,
+    sym: Symbol,
+    occ: &Rc<NodeOccurrence>,
+) -> Option<Value> {
+    // Only eta-lift an operation the runtime can actually run as a function
+    // value, keeping the typer's accepted set a subset of the evaluator's:
+    //   * it must have a runnable anthill body — the evaluator's `reduce_var`
+    //     mints a `Value::OpRef` only for body-having ops, so a body-less
+    //     builtin / spec declaration would type-check here yet crash at eval as
+    //     a zero-arg call (`ArityMismatch`);
+    //   * it must be monomorphic — a type-parameterized op's arrow would carry
+    //     its type-param vars verbatim (no per-use freshening), which alias
+    //     across multiple eta-lifts of the same op.
+    // A reference that fails either gate stays a loud type error, not a silent
+    // runtime failure.
+    if !op_has_runnable_body(kb, sym) {
+        return None;
+    }
+    let op = lookup_operation_info_full(kb, sym)?;
+    if op.params.is_empty() || !op.type_params.is_empty() {
+        return None;
+    }
+    let (span, owner) = (occ.span, occ.owner);
+    let param = if op.params.len() == 1 {
+        op.params[0].1.clone()
+    } else {
+        let fields: Vec<(Symbol, Value)> = op
+            .params
+            .iter()
+            .enumerate()
+            .map(|(i, (_, t))| (kb.intern(&format!("_{}", i + 1)), t.clone()))
+            .collect();
+        named_tuple_value(kb, &fields, span, owner)
+    };
+    Some(make_arrow_value(kb, &param, &op.return_type, &op.effects, span, owner))
+}
+
+/// WI-275: the expected-type hint for a higher-order argument occurrence. Only a
+/// lambda or a bare reference needs a top-down function type — to type a lambda's
+/// parameter, or to eta-lift an operation name to a function value — so those, in
+/// a function-typed parameter slot (`arrow` / `Function[A, B, E]`), get that type
+/// as their hint; every other argument gets `None`, preserving the WI-379
+/// args-before-expected synthesis order.
+fn hof_arg_hint(
+    kb: &mut KnowledgeBase,
+    arg: &Rc<NodeOccurrence>,
+    param_type: Option<Value>,
+) -> Option<Value> {
+    let pt = param_type?;
+    let is_hof_arg = matches!(
+        &arg.kind,
+        NodeKind::Expr { expr: Expr::Lambda { .. } | Expr::VarRef { .. }, .. }
+    );
+    if is_hof_arg && arrow_parts(kb, &pt).is_some() {
+        Some(pt)
+    } else {
+        None
+    }
 }
 
 /// Aggregate sibling errors into one `TypeError`. Flattens nested
@@ -1941,15 +2022,18 @@ fn visit_type(
         // it's a post-elaboration form being re-typed.
         Expr::Const(_) => results.push(Err(TypeError::BottomExpr { span: occ_span })),
         Expr::Ref(sym) => {
-            let r = check_bare_ref(kb, &*env, *sym, occ_span, &occ);
+            let r = check_bare_ref(kb, &*env, *sym, occ_span, &occ, expected.as_ref());
             results.push(r);
         }
         Expr::Ident(sym) => {
-            let r = check_bare_ref(kb, &*env, *sym, occ_span, &occ);
+            let r = check_bare_ref(kb, &*env, *sym, occ_span, &occ, expected.as_ref());
             results.push(r);
         }
         Expr::VarRef { name } => {
-            let r = check_bare_ref(kb, &*env, *name, occ_span, &occ);
+            // WI-275: thread the expected type so a bare operation reference in a
+            // function-typed position is eta-lifted to a function value rather than
+            // denoting its return type.
+            let r = check_bare_ref(kb, &*env, *name, occ_span, &occ, expected.as_ref());
             results.push(r);
         }
 
@@ -1963,6 +2047,46 @@ fn visit_type(
             let pos_args = pos_args.clone();
             let named_args = named_args.clone();
             let occ_clone = Rc::clone(&occ);
+            // WI-275: bidirectional inference for higher-order arguments. Look up
+            // the callee's declared parameter types; a lambda or bare operation
+            // reference in a function-typed slot gets that `Function[A, B, E]`
+            // pushed in as its expected type (`hof_arg_hint`). The lambda then
+            // types its parameter from `A` instead of leaving it an unconstrained
+            // var (which makes an overloaded body call like `add(x, 1)` dispatch-
+            // ambiguous), and a bare op name is eta-lifted to a function value.
+            // Other args take no hint, preserving the WI-379 args-before-expected
+            // order that lets a value/literal arg's own type drive dispatch. The
+            // lookup is gated on the call actually having a lambda/ref argument.
+            let has_hof_arg = pos_args
+                .iter()
+                .chain(named_args.iter().map(|(_, a)| a))
+                .any(|a| matches!(
+                    &a.kind,
+                    NodeKind::Expr { expr: Expr::Lambda { .. } | Expr::VarRef { .. }, .. }
+                ));
+            let op_params = if has_hof_arg {
+                lookup_operation_info_full(kb, functor).map(|op| op.params)
+            } else {
+                None
+            };
+            let pos_hints: Vec<Option<Value>> = pos_args
+                .iter()
+                .enumerate()
+                .map(|(i, arg)| {
+                    let pt = op_params.as_ref().and_then(|ps| ps.get(i)).map(|(_, t)| t.clone());
+                    hof_arg_hint(kb, arg, pt)
+                })
+                .collect();
+            let named_hints: Vec<Option<Value>> = named_args
+                .iter()
+                .map(|(name, arg)| {
+                    let pt = op_params
+                        .as_ref()
+                        .and_then(|ps| ps.iter().find(|(s, _)| s == name))
+                        .map(|(_, t)| t.clone());
+                    hof_arg_hint(kb, arg, pt)
+                })
+                .collect();
             work.push(TypeWorkOp::Build(TypeBuildFrame::Apply {
                 occ: occ_clone,
                 fn_sym: functor,
@@ -1972,11 +2096,11 @@ fn visit_type(
                 expected,
                 fuel,
             }));
-            for (_, arg) in named_args.iter().rev() {
-                push_visit_no_hint(work, Rc::clone(arg), Rc::clone(&env), fuel);
+            for ((_, arg), hint) in named_args.iter().zip(named_hints.iter()).rev() {
+                push_visit(work, Rc::clone(arg), Rc::clone(&env), hint.clone(), fuel);
             }
-            for arg in pos_args.iter().rev() {
-                push_visit_no_hint(work, Rc::clone(arg), Rc::clone(&env), fuel);
+            for (arg, hint) in pos_args.iter().zip(pos_hints.iter()).rev() {
+                push_visit(work, Rc::clone(arg), Rc::clone(&env), hint.clone(), fuel);
             }
         }
         Expr::Constructor { name, pos_args, named_args } => {
