@@ -7040,25 +7040,17 @@ fn check_constructor_iter(
     let mut subst = Substitution::new();
     let mut effects = Vec::new();
 
-    // WI-270: caller context unifies with the parent type first so a
-    // hint like `Option[Int]` constrains `some(?)` to T=Int even
-    // when the value-side carries a fresh type-var. Runs before the
-    // empty-field-types early return below so 0-arg constructors
-    // (`nil()`, `Map.empty()`) also see the hint.
-    //
-    // WI-379 note: unlike `check_apply_iter`, this expected-seeding is NOT
-    // safely movable below the field loops. The constructor builds its result
-    // type by reading each param Var's binding out of `subst` (below), and
-    // DROPS a param whose Var resolves to `None`. Seeding `expected` first binds
-    // the params to concrete values so they survive the build; with fields
-    // first, a field that is an unbound element var aliases the param to an
-    // unbound var (→ `None` → dropped), e.g. `pair(h, t)` builds `Pair[B=List]`
-    // losing `A`. So the args-before-expected soundness fix (rejecting
-    // `f() -> Option[String] = some(42)`) needs the build made robust to
-    // unbound-var params first — tracked as its own follow-up, not this reorder.
-    if let Some(exp) = expected {
-        unify_types(kb, &mut subst, &TermIdView(parent_type), &exp);
-    }
+    // WI-384: fields unify FIRST so each argument pins its param, THEN the caller
+    // `expected` fills only the still-free params (the args-before-expected order of
+    // `check_apply_iter`, WI-379). A field that CONTRADICTS `expected` then wins in the
+    // built type and the use-site return-conformance check rejects it
+    // (`make() -> Option[String] = some(42)` builds `Option[Int]`, rejected) instead of
+    // `expected` masking the contradiction. The expected-seed is moved BELOW the field
+    // loops (but kept ABOVE the empty-bindings early-return, so 0-arg constructors
+    // `nil()` / `Map.empty()` still pick up the hint). Sound only because the build
+    // (below) is now robust to a param the fields left unbound — it includes it as a
+    // fresh `?_` rather than DROPPING it (which had made `pair(h, t)` build
+    // `Pair[B=List]`, losing `A`).
 
     // WI-342: `declared_type` is a carrier-agnostic `Value` (a value-in-type
     // field rides as `Value::Node`); pass it directly to `unify_types`.
@@ -7078,6 +7070,15 @@ fn check_constructor_iter(
                 effects = merge_effects(&effects, &r.effects);
             }
         }
+    }
+
+    // WI-384 / WI-270: now seed the caller `expected` — it fills params the fields left
+    // free (so a 0-arg `nil()` with a `List[Int]` hint still gets `T = Int`), and a
+    // contradicting hint does NOT overwrite a field-pinned param: that param already
+    // holds a concrete type, so unifying it against the hint just fails and is ignored,
+    // leaving the field type in the build (→ use-site rejection of the contradiction).
+    if let Some(exp) = expected {
+        unify_types(kb, &mut subst, &TermIdView(parent_type), &exp);
     }
 
     if subst.bindings.is_empty() {
@@ -7102,8 +7103,10 @@ fn check_constructor_iter(
 
     if let Some(a_sym) = alias_sym {
         let parent_name = kb.qualified_name_of(parent_sym).to_string();
-        // Collect alias info: (param_short_name, VarId, bound_type)
-        let mut alias_info: Vec<(String, TermId)> = Vec::new();
+        // Collect alias info: (param_short_name, bound_type). `None` = the param's Var
+        // was left UNBOUND by the field + expected unification — WI-384 keeps it
+        // (freshened below) rather than dropping it.
+        let mut alias_info: Vec<(String, Option<TermId>)> = Vec::new();
         for rid in kb.rules_by_functor(a_sym) {
             if !kb.is_fact(rid) { continue; }
             // A value-fact SortAlias (denoted-bearing target, e.g.
@@ -7117,21 +7120,39 @@ fn check_constructor_iter(
                     let target_tid = pos_args[1];
                     if let Term::Fn { functor: alias_functor, .. } = kb.get_term(sort_tid) {
                         let alias_name = kb.qualified_name_of(*alias_functor).to_string();
-                        if alias_name.starts_with(&parent_name) && alias_name.len() > parent_name.len() {
+                        // The next char after the parent name MUST be `.` — without this
+                        // a sibling sort whose qualified name merely starts with the
+                        // parent's (`Modify` ⊂ `ModifyRuntime`, `Effect` ⊂ `Effects`)
+                        // matches, slicing a GARBAGE param name. Harmless when the param
+                        // is then DROPPED, but WI-384 KEEPS an unbound param as `?_`, so
+                        // an unchecked prefix would inject a spurious `garbage = ?_`
+                        // binding into the built type.
+                        if alias_name.starts_with(&parent_name)
+                            && alias_name.as_bytes().get(parent_name.len()) == Some(&b'.')
+                        {
                             let param_short = alias_name[parent_name.len() + 1..].to_string();
                             if let Term::Var(Var::Global(vid)) = kb.get_term(target_tid) {
                                 match subst.resolve_as_value(*vid) {
                                     Some(Value::Term(bound_type)) => {
-                                        alias_info.push((param_short, *bound_type))
+                                        alias_info.push((param_short, Some(*bound_type)))
                                     }
-                                    // denoted Node alias binding: `alias_info`
-                                    // is TermId-keyed — WI-348 Phase C.
+                                    // denoted Node alias binding: `alias_info` is
+                                    // TermId-keyed — WI-348 Phase C, asserted unreachable.
+                                    // NOT pushed as a `?_` wildcard: that would lose the
+                                    // concrete denoted value-in-type (e.g. the `3` in
+                                    // `Vector[Int, 3]`) and over-accept, so this path
+                                    // stays a (release-only, unreached) drop until Phase C.
                                     Some(other) => debug_assert!(
                                         false,
                                         "WI-348: denoted {} alias binding — carrier-agnostic alias_info is Phase C",
                                         other.type_name(),
                                     ),
-                                    None => {}
+                                    // WI-384: a param the fields + expected left UNBOUND
+                                    // is present-but-unconstrained — record it (a fresh
+                                    // `?_` is minted below) rather than DROPPING it, which
+                                    // shrank the built type's arity (`pair(h, t)` →
+                                    // `Pair[B=List]`, losing `A`).
+                                    None => alias_info.push((param_short, None)),
                                 }
                             }
                         }
@@ -7139,8 +7160,22 @@ fn check_constructor_iter(
                 }
             }
         }
-        for (param_short, bound_type) in alias_info {
+        for (param_short, bound_opt) in alias_info {
             let param_sym = kb.intern(&param_short);
+            // WI-384: an unbound param becomes a `type_var` WILDCARD so the built type
+            // keeps the sort's full param arity while staying compatible with whatever
+            // the use-site declares — exactly the leniency the old DROP relied on
+            // (width subtyping), but with the param PRESENT so the arity matches. It
+            // must be a `type_var` (not a bare logic `Var`), since only `type_var` is
+            // the inference wildcard the unify/subtype dispatch treats as compatible
+            // with anything; a bare `Var` reads as an incompatible head.
+            let bound_type = match bound_opt {
+                Some(t) => t,
+                None => {
+                    let name = kb.intern("?_");
+                    kb.make_type_var(name)
+                }
+            };
             param_bindings.push((param_sym, bound_type));
         }
     }

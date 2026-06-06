@@ -113,16 +113,14 @@ end
     assert!(errs.is_empty(), "some(42) is Option[Int]: {}", errors_text(&errs));
 }
 
-// KNOWN GAP (the constructor analogue of the apply-path fix): `some(42)` typed
-// against a declared `Option[String]` is still silently accepted. The apply
-// path's args-before-expected reorder is NOT safely transferable to
-// `check_constructor_iter` because it builds its result type by reading param
-// Var bindings out of `subst` and drops a param bound to an unbound var (see the
-// comment in check_constructor_iter). Closing this needs the build made robust
-// to unbound-var params first — tracked separately; ignored until then so the
-// gap stays visible rather than silently dropped.
+// WI-384 (the constructor analogue of the apply-path fix): `some(42)` typed against a
+// declared `Option[String]` is now REJECTED. `check_constructor_iter` unifies the
+// fields FIRST (pinning `T = Int`), then seeds `expected` (the contradicting
+// `String` does not overwrite the pinned `T`), builds `Option[T = Int]`, and the
+// use-site return-conformance check rejects it. The reorder is sound because the
+// build-from-subst now includes an unbound param as a fresh `?_` rather than dropping
+// it (which had broken stdlib `pair(h, t)` → `Pair[B=List]`).
 #[test]
-#[ignore = "constructor-path args-before-expected: needs robust build-from-subst (tracked WI)"]
 fn constructor_wrong_return_rejected() {
     let src = r#"
 namespace test.s042.ctorwrong
