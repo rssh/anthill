@@ -2,6 +2,13 @@
 
 ## Status: Draft (handler dispatch partially implemented in `eval/effects.rs`; this proposal canonicalizes the handler model and the standard effect catalog)
 
+> **Superseded in part by [047](047-effects-as-monads-via-reflection.md).** 047 replaces the
+> §"Handler scoping model" (the flat global `HashMap<Symbol, EffectHandler>` registry, the "no
+> user-definable `with handler` in v1" limitation, and migration steps 8–10) with: handlers are
+> *witnesses in the requirement slot*, and the interpreter realizes effects by Filinski monadic
+> reflection over the non-native activation stack. The effect *catalog* and the `HandlerAction`
+> carrier below remain valid — 047 reinterprets the carrier as defunctionalized reflection.
+
 ## Depends on: 002 (arrow sorts with effect annotations), 013 (effects as sorts and facts), 026 (expression evaluator), 026.1 (value-integrated KB queries)
 
 ## Relates to: WI-050 (M5 effect handlers), WI-075 (resolver `push_choice` primitive — substrate for the `Branch` handler), 037 (Modify framework — supersedes the §4 "twin operations" approach for state mutation)
