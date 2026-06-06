@@ -159,6 +159,10 @@ impl RuleField {
 #[derive(Clone, Debug)]
 pub enum TypeErrorContext {
     EntityField { entity: Symbol, field: Symbol },
+    /// WI-385: an operation ARGUMENT whose inferred type does not conform to
+    /// the declared parameter type. `op_name` is the called operation,
+    /// `param` the declared parameter the argument was bound to.
+    OperationArgument { op_name: Symbol, param: Symbol },
     OperationReturn { op_name: Symbol },
     OperationEffects { op_name: Symbol },
     OperationMatch { op_name: Symbol },
@@ -170,6 +174,7 @@ impl TypeErrorContext {
     pub fn entity_name(&self, kb: &KnowledgeBase) -> String {
         match self {
             TypeErrorContext::EntityField { entity, .. } => kb.resolve_sym(*entity).to_string(),
+            TypeErrorContext::OperationArgument { op_name, .. } => kb.resolve_sym(*op_name).to_string(),
             TypeErrorContext::OperationReturn { op_name }
             | TypeErrorContext::OperationEffects { op_name }
             | TypeErrorContext::OperationMatch { op_name } => kb.resolve_sym(*op_name).to_string(),
@@ -181,6 +186,7 @@ impl TypeErrorContext {
     pub fn field_name(&self, kb: &KnowledgeBase) -> String {
         match self {
             TypeErrorContext::EntityField { field, .. } => kb.resolve_sym(*field).to_string(),
+            TypeErrorContext::OperationArgument { param, .. } => kb.resolve_sym(*param).to_string(),
             TypeErrorContext::OperationReturn { .. } => "return".to_string(),
             TypeErrorContext::OperationEffects { .. } => "effects".to_string(),
             TypeErrorContext::OperationMatch { .. } => "match".to_string(),
@@ -2984,6 +2990,52 @@ fn check_apply_iter(
                 }
                 arg_effects = merge_effects(&arg_effects, &arg_result.effects);
             }
+        }
+
+        // WI-385: VALIDATE each argument against its declared parameter type.
+        // The unify loops above pin type-parameters for INFERENCE and DISCARD
+        // their boolean — so before this check a caller could pass an argument
+        // of any type and the typer stayed silent (`f(x: Int) -> Int` called as
+        // `f("hello")` loaded clean). Now that the arguments are synthesized and
+        // the type-params bound, subtype-check each argument against its param
+        // type — the ARGUMENT direction, peer to the RETURN direction WI-379 made
+        // authoritative. GATED on `resolved_type_is_ground` for BOTH the
+        // (subst-walked) arg type and param type: a polymorphic position (`add(a:
+        // T, b: T)`, an inference-`?_` arg) stays unchecked so the spec-op
+        // dispatch / return-conformance path settles it — only a concrete arg
+        // against a concrete param can fail here. A param a prior argument GROUND
+        // by inference (`f[T](a: T, b: T)` with `a:Int`) is then checkable, so a
+        // contradicting `b:"x"` is still caught. Bail on an ill-typed call
+        // (aggregating sibling mismatches) rather than building its return type.
+        let mut arg_type_errors: Vec<TypeError> = Vec::new();
+        for (i, _) in pos_args.iter().enumerate() {
+            if let Ok(ref arg_result) = pos_results[i] {
+                if let Some((param_sym, param_type)) = op.params.get(i) {
+                    if let Some(err) = validate_arg_against_param(
+                        kb, &mut subst, &arg_result.ty, param_type, span,
+                        TypeErrorContext::OperationArgument { op_name: fn_sym, param: *param_sym },
+                        false, // operation args stay strict (no Option-wrapping interim)
+                    ) {
+                        arg_type_errors.push(err);
+                    }
+                }
+            }
+        }
+        for (i, (arg_name, _)) in named_args.iter().enumerate() {
+            if let Ok(ref arg_result) = named_results[i] {
+                if let Some((param_sym, param_type)) = op.params.iter().find(|(s, _)| *s == *arg_name) {
+                    if let Some(err) = validate_arg_against_param(
+                        kb, &mut subst, &arg_result.ty, param_type, span,
+                        TypeErrorContext::OperationArgument { op_name: fn_sym, param: *param_sym },
+                        false, // operation args stay strict (no Option-wrapping interim)
+                    ) {
+                        arg_type_errors.push(err);
+                    }
+                }
+            }
+        }
+        if !arg_type_errors.is_empty() {
+            return Err(aggregate_errors(arg_type_errors));
         }
 
         // WI-376: discharge expression-carried type projections (`s.T` / `s.Sort`) in
@@ -6841,6 +6893,144 @@ fn type_value_is_ground(kb: &KnowledgeBase, tid: TermId) -> bool {
     }
 }
 
+/// WI-385: groundness of a substitution-RESOLVED type `Value` — the gate for
+/// argument / field type validation. Only a fully-concrete declared type
+/// checked against a fully-concrete actual type may fail; a type-parameter
+/// position (`T`), an unresolved inference var (`?_` / `Value::Var`), or a
+/// carrier whose groundness the term predicate can't read stays UNCHECKED.
+/// This is what keeps the validation from false-positiving on the pervasive
+/// polymorphic signatures (`add(a: T, b: T)`, `some(value: T)`, `cons(head: T,
+/// …)`): those param/field types resolve to a sort-param or a still-free var,
+/// whose conformance the spec-op dispatch / return-conformance path settles, not
+/// this check. Conservative by design — a non-`Term` carrier returns `false`
+/// (skip) rather than risk an unsound pass or a false reject.
+fn resolved_type_is_ground(kb: &KnowledgeBase, v: &Value) -> bool {
+    match v {
+        Value::Term(t) => type_value_is_ground(kb, *t),
+        _ => false,
+    }
+}
+
+/// WI-385: is this resolved type the reflect `Term` sort (`anthill.reflect.Term`)?
+/// The value↔Term boundary is a CONVERSION, not subtyping. Reflection
+/// (value → Term) is TOTAL — every value has a Term representation
+/// (`as_term[E](e) -> Term`, WI-406) — so ANY `actual` type conforms to a
+/// declared `Term`. (Reification, Term → value, is PARTIAL and stays explicit
+/// via the `term_as_entity` family, so the reverse is NOT accepted by the
+/// validation.) `Term` is representation-specific, NOT a top type — keying the
+/// type lattice on it would make it the universal default on every term (see the
+/// note in `stdlib/anthill/prelude/sort.anthill`) — so this acceptance lives in
+/// the WI-385 validation, never in `types_compatible` / the subtype relation.
+fn is_reflect_term_type<V: TermView>(kb: &KnowledgeBase, ty: &V) -> bool {
+    // `type_head` reads only the head (no binding materialization), enough here.
+    matches!(type_head(kb, ty),
+        TypeHead::SortRef(s) if kb.qualified_name_of(s) == "anthill.reflect.Term")
+}
+
+/// WI-385: is this resolved type an `anthill.prelude.Option` — bare `Option` or
+/// applied `Option[T = …]`? The element peel for the Option-wrapping interim.
+fn is_option_type<V: TermView>(kb: &KnowledgeBase, ty: &V) -> bool {
+    match type_head(kb, ty) {
+        TypeHead::Parameterized { base } => kb.qualified_name_of(base) == "anthill.prelude.Option",
+        TypeHead::SortRef(s) => kb.qualified_name_of(s) == "anthill.prelude.Option",
+        _ => false,
+    }
+}
+
+/// WI-385: the base/head sort symbol of a ground type — `S` for a bare `S`, the
+/// base `S` for an application `S[…]`; `None` for a structural form (arrow,
+/// named_tuple, …). Used to test provider admissibility against a bare spec.
+fn type_base_sort_view<V: TermView>(kb: &KnowledgeBase, ty: &V) -> Option<Symbol> {
+    match type_head(kb, ty) {
+        TypeHead::SortRef(s) | TypeHead::Parameterized { base: s } => Some(s),
+        _ => None,
+    }
+}
+
+/// WI-385: subtype-check one supplied value's type (`actual`) against a declared
+/// parameter / field type (`declared`), GATED on groundness. Both sides are
+/// first walked through the inference `subst` (so a param a prior argument
+/// already pinned reads as its concrete type); the check fires ONLY when both
+/// resolve to a fully-concrete type (`resolved_type_is_ground`) — a polymorphic
+/// or still-free position is left for spec-op dispatch / return conformance.
+/// Returns a `TypeMismatch` carrying the RESOLVED forms (a clean "expected Int,
+/// got String", never a raw `?_`) when the concrete actual does not conform;
+/// `None` when unchecked or conforming. The shared core of the operation-
+/// argument (`check_apply_iter`) and entity-field (`check_constructor_iter`)
+/// validation.
+///
+/// Two boundary CONVERSIONS are accepted rather than flagged:
+///  - **value→Term reflection** (`is_reflect_term_type`): total, both positions.
+///  - **Option-wrapping** (`allow_option_wrap`, FIELD positions only): a bare `T`
+///    against a declared `Option[T]` is accepted by peeling the Option and
+///    re-checking `actual` against the element `T`. On-disk facts and convenience
+///    builders write the optional value UNWRAPPED (`depends_on: []`, not
+///    `some([])`); the SOUND fix is a typer some-coercion-insertion pass (its own
+///    follow-on ticket — the first slice of the deferred implicit-conversion
+///    framework), so this is an explicit INTERIM: the value stays bare in memory
+///    and on disk (`normalize_deps`'s reflect-launder is still required). Confined
+///    to FIELD positions — an operation argument stays strict, since with no
+///    coercion inserted a bare value bound to an `Option` param would fail a
+///    `some/none` match at runtime.
+fn validate_arg_against_param(
+    kb: &mut KnowledgeBase,
+    subst: &mut Substitution,
+    actual: &Value,
+    declared: &Value,
+    span: Option<Span>,
+    context: TypeErrorContext,
+    allow_option_wrap: bool,
+) -> Option<TypeError> {
+    let actual_g = walk_view(kb, subst, actual);
+    let declared_g = walk_view(kb, subst, declared);
+    if !resolved_type_is_ground(kb, &actual_g) || !resolved_type_is_ground(kb, &declared_g) {
+        return None;
+    }
+    // value→Term reflection: total conversion, accept any actual vs declared Term.
+    if is_reflect_term_type(kb, &declared_g) {
+        return None;
+    }
+    // Option-wrapping INTERIM (field positions): a bare `T` against `Option[T]`
+    // re-checks against the element `T` (so `description: "…"` peels to a Term and
+    // the reflection above accepts it). See the doc comment.
+    if allow_option_wrap && !is_option_type(kb, &actual_g) && is_option_type(kb, &declared_g) {
+        match extract_type_param(kb, &declared_g, "T") {
+            Some(inner) => {
+                return validate_arg_against_param(
+                    kb, subst, &actual_g, &inner, span, context, allow_option_wrap,
+                );
+            }
+            // A bare `Option` (unconstrained element) has no element to re-check —
+            // accept any value as its implicit `some` payload under the interim.
+            None => return None,
+        }
+    }
+    if types_compatible(kb, subst, &actual_g, &declared_g) {
+        return None;
+    }
+    // WI-385: a concrete carrier conforms to a BARE spec it PROVIDES — e.g.
+    // `List[Int]` passed where `Stream` is declared (`List provides Stream`).
+    // `types_compatible` confines provider-admissibility to its bare↔bare arm (so
+    // it never drops a PARAMETERIZED spec's bindings), so a parameterized-carrier-
+    // vs-bare-spec pairing reaches here unaccepted. The declared spec here is bare
+    // (no bindings to drop), so an admissible provider is sound to accept —
+    // restoring the pre-WI-385 behavior (no arg/field check rejected it) for the
+    // concrete-provider→bare-spec case.
+    if let (Some(actual_base), Some(declared_sort)) =
+        (type_base_sort_view(kb, &actual_g), extract_sort_ref_sym(kb, &declared_g))
+    {
+        if sort_provides_admissibly(kb, actual_base, declared_sort) {
+            return None;
+        }
+    }
+    Some(TypeError::TypeMismatch {
+        span,
+        context,
+        expected: declared_g,
+        actual: actual_g,
+    })
+}
+
 /// Extract the underlying sort symbol from a term in any of the
 /// shapes a binding value may take: `sort_ref(name: Ref(X))`,
 /// bare `Ref(X)` / `Ident(X)`, or a nullary `Fn { functor: X, … }`.
@@ -7070,6 +7260,48 @@ fn check_constructor_iter(
                 effects = merge_effects(&effects, &r.effects);
             }
         }
+    }
+
+    // WI-385: VALIDATE each supplied field value against its declared field type
+    // — the FIELD peer of the operation-argument check in `check_apply_iter`. The
+    // field unify loops above pin type-params for INFERENCE and DISCARD their
+    // boolean, so before this a `fact Counter(n: "hello")` with `entity
+    // Counter(n: Int)` loaded clean (a String in an Int field). `validate_arg_-
+    // against_param` subtype-checks each supplied field value against its declared
+    // type, GATED on groundness (a polymorphic field `some(value: T)` /
+    // `pair(fst: A, …)` stays unchecked — the return-conformance path settles it),
+    // emitting a loud `TypeMismatch` under the existing `EntityField` context. Run
+    // BEFORE the expected-seed and bail before the type is built for a constructor
+    // we've proven ill-formed.
+    let mut field_type_errors: Vec<TypeError> = Vec::new();
+    for (field_sym, declared_type) in &field_types {
+        if let Some((idx, _)) = named_args.iter().enumerate().find(|(_, (s, _))| s == field_sym) {
+            if let Ok(ref r) = named_results[idx] {
+                if let Some(err) = validate_arg_against_param(
+                    kb, &mut subst, &r.ty, declared_type, span,
+                    TypeErrorContext::EntityField { entity: ctor_sym, field: *field_sym },
+                    true, // fields: bare-T-vs-Option[T] interim accept (WI-385)
+                ) {
+                    field_type_errors.push(err);
+                }
+            }
+        }
+    }
+    for (i, r_opt) in pos_results.iter().enumerate() {
+        if let Some((field_sym, declared_type)) = field_types.get(i) {
+            if let Ok(r) = r_opt {
+                if let Some(err) = validate_arg_against_param(
+                    kb, &mut subst, &r.ty, declared_type, span,
+                    TypeErrorContext::EntityField { entity: ctor_sym, field: *field_sym },
+                    true, // fields: bare-T-vs-Option[T] interim accept (WI-385)
+                ) {
+                    field_type_errors.push(err);
+                }
+            }
+        }
+    }
+    if !field_type_errors.is_empty() {
+        return Err(aggregate_errors(field_type_errors));
     }
 
     // WI-384 / WI-270: now seed the caller `expected` — it fills params the fields left

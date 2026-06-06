@@ -15,7 +15,7 @@ namespace anthill.todo
   import anthill.prelude.Time.{now, Clock}
   import anthill.stage0.{Feedback, WorkItem, ToolPasses, AcceptanceCriterion}
   import anthill.stage0.WorkStatus.{Open}
-  import anthill.prelude.{List, LogicalStream, Map, Unit}
+  import anthill.prelude.{List, Stream, Map, Unit}
   import anthill.prelude.Map.{empty, put, get, contains}
   import anthill.prelude.Bool.{not}
   import anthill.prelude.String.{length, substring, toUpper}
@@ -31,7 +31,7 @@ namespace anthill.todo
   import anthill.prelude.Pair.{Pair, pair}
   import anthill.prelude.Ordered.{lt}
   import anthill.prelude.Eq.{eq}
-  import anthill.prelude.LogicalStream.{splitFirst}
+  import anthill.prelude.Stream.{splitFirst}
   import anthill.prelude.Int.{to_string}
   import anthill.prelude.String.{concat}
   import anthill.prelude.List.{cons, nil}
@@ -1605,12 +1605,18 @@ namespace anthill.todo
     -- branch, so the deepest stack is bounded by `limit` (1000). No
     -- intermediate list — `append_pair`-style quadratic build was the
     -- cause of the stack overflow on real workitem sets.
-    operation walk_solutions(stream: LogicalStream,
+    -- WI-385: `execute` returns the ABSTRACT `Stream[Substitution, Error]`;
+    -- this consumer only uses `splitFirst` (a Stream primitive), so it takes the
+    -- producer's type. The value is a `LogicalStream` at runtime (which provides
+    -- Stream), so `splitFirst` dispatches to it. Declaring the param as the
+    -- concrete `LogicalStream` was a latent over-narrowing (a Stream-vs-LogicalStream
+    -- downcast) the discarded arg-unify masked before arg validation.
+    operation walk_solutions(stream: Stream[T = Substitution, E = Error],
                               show_all: Bool,
                               limit: Int,
                               seen: List[String],
                               printed: Int) -> Int
-      effects ConsoleOutput
+      effects {ConsoleOutput, Error}
     =
       if eq(limit, 0) then printed
       else
