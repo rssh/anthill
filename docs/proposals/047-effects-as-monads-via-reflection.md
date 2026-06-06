@@ -200,7 +200,90 @@ The boundary is an **ordinary higher-order operation**, not a language form:
 No grammar change, no new `Expr` node. (An optional `with handler … do … end` sugar may be added
 later as pure desugaring, but it is not the primitive.)
 
-## 8. Build path and WI map
+## 8. Type system: effect labels, the Monad interface (already sketched), stacks vs rows vs reflection
+
+### Effect labels (routing in the layered case)
+
+Reflection over a *stack* of effects needs each operation to carry its **effect label** — the
+effect sort symbol — so a `reflect` routes to the correct reify boundary (the nearest `provide`
+of that effect). The label is the open-union tag of extensible-effects, and it is exactly what
+already keys the requirement slot and the reify/prompt. The interpreter has it implicitly in
+`perform(effect, op, args)` / the slot key; making it explicit on operations is what lets several
+effects coexist on one stack and disambiguates which layer a `reflect` targets.
+
+### Defining the monads — the interface is already sketched, and HKT is expressible
+
+Correction (verified 2026-06-06 against the design docs): the `Monad`/`Functor` interface is
+already **sketched**, and higher-kinded parameters are part of the type-system design — *not*
+absent (an earlier draft of this section wrongly claimed otherwise).
+
+- `operation-call-model-brainstorm.md` §"Abstract monad" sketches
+  `sort Monad { sort M = ?; operation pure(x: A) -> M[T = A]; operation bind(m: M[T = A], f: A -> M[T = B]) -> M[T = B]; operation mapM(…) = … }`,
+  with a concrete instance (`fact Monad[M = Option]`) and **conditional/transformer instances**
+  (`fact Monad[M = StateT[S, M]] :- Monad[M = ?M]`, likewise `ExceptT`).
+- `expansion-during-unification.md §3.6` ("Higher-kinded parameters (Functor / Monad)") sketches
+  `sort Functor { sort F { sort T = ? }; map(fa: F[T = A], f: (A) -> B) -> F[T = B] }` and notes it
+  **parses cleanly (verified)**.
+
+So HKT *is* expressible — a sort parameter that is itself parametric (`sort M = ?` /
+`sort F { sort T = ? }`), applied `M[T = A]`. The grounding is the key insight: **it is provider
+dispatch, not general higher-order unification.** At `map(xs, g)` with `xs : List[Int]`, the carrier
+`List` selects `fact Functor[F = List]`, binding `F := List`; then `F[T = A]` is first-order
+`List[T = A]`. So the higher-kinded case **reduces to first-order once the carrier is dispatched** —
+the same carrier-resolution as ordinary spec dispatch (WI-350). The only genuinely higher-order
+residue (an unbound variable functor head `?M[…]` with no dispatch info) is confined to the
+decidable **pattern fragment** (`check_ho_apply_pattern`); outside it, a loud error.
+
+**Status:** designed + parses; the typer wiring (instantiate the higher-kinded carrier by provider
+dispatch so `M[T=A]` reduces to first-order; bound the residue to the pattern fragment) is a
+verify/implement item — `expansion-during-unification.md §6 Q7`, riding the WI-374/376 expansion
+work. So a generic `Monad[M]` is **expressible by design**, not a missing concept.
+
+Reflection (§3) sits **on top of** this interface: Filinski's `reflect`/`reify` are *defined using* a
+monad's `pure`/`bind` (+ shift/reset). So the `Monad` sort above is a **companion/prerequisite** of
+this proposal, not a competitor — it supplies the `pure`/`bind` the reflection runs over.
+
+### Monad stacks (cheap here), effect rows, and reflection — all three, at different levels
+
+"Monad or monad stack / MTL vs `Eff`?" — anthill can host **both**, at different levels:
+
+- **Monad-transformer stacks** (MTL-style) are expressible as **conditional instances resolved by
+  SLD**: `fact Monad[M = StateT[S, M]] :- Monad[M = ?M]`. Crucially, that SLD resolution is
+  **compile-time machinery**: the typer/elaboration walks the instance chain once, and the
+  interpreter carries the *resolved* witness/env — there is **no runtime SLD dispatch**. So
+  transformer stacks cost nothing at runtime and don't blow up the way native *monomorphization*
+  does (every `StateT<S, ExceptT<E, M>>` clones bodies — why Rust has no thriving transformer
+  library): the chain is resolved ahead of time and threaded as a value.
+
+  This exposes a clean **resolution-timing split**: compile-time SLD resolves the *type-level
+  structure* (which monad / transformer stack, which requirement slots, statically-known witnesses);
+  the only genuinely *runtime* parts are `provide` (dynamically installing a handler witness into a
+  slot) and reflection (running it). So "effects unify with the `requires` slot" holds at the *slot*
+  level, but the fill-timing differs: typeclass witnesses are compile-time-resolved (and can be
+  baked in), effect-handler witnesses are runtime-installed by `provide`.
+
+- **SLD's other face — an explicit runtime query returning a `Stream`, for genuine logical tasks.**
+  Beyond compile-time dispatch, SLD is available as a first-class **runtime operation**:
+  `query(...) -> Stream` (reflect / `LogicalQuery`, e.g. `pattern_query`), returning a *lazy* `Stream`
+  of solutions. This is the interface you **reach for explicitly when the task is genuinely
+  logical/relational** (search the KB, enumerate solutions) — not an ambient effect sprinkled into
+  ordinary code. It shares the `Branch ↦ Stream` denotation, but the relationship is the WI-070 one:
+  `query`/`LogicalStream` is the **external** interface; `Branch` is the **internal** effect
+  mechanism. So nondeterminism is normally *explicit* (call `query`), and Branch's Stream substrate
+  already runs at runtime (over `push_choice` WI-075 / `SearchStream`) — when the direct-style effect
+  form is wanted it is mostly wiring over that, not new machinery.
+- **Effect rows** (045 / WI-307) track the effect *set* — the `Eff` side, unordered, row-polymorphic
+  — for effect *checking*.
+- **Reflection** (§3) runs the composed monad in **direct style** (no explicit `bind` chains).
+
+So the user's "is it not important when we have runtime reflect?" is right about the *syntactic*
+MTL-vs-`Eff` encoding — reflection makes user code direct-style either way. The one thing that stays
+real is the **semantic order of non-commuting effects** (`StateT∘ExceptT` vs the reverse — does a
+raise roll back state?), and anthill can express that order **explicitly** in a written
+transformer-stack type *or* **dynamically** in the `provide`-nesting order, depending on whether the
+stack is written or reflection-driven. Composition order is captured; the bureaucracy is not forced.
+
+## 9. Build path and WI map
 
 General mechanism, achievable for all effects; per-effect detail deferred.
 
@@ -218,7 +301,7 @@ General mechanism, achievable for all effects; per-effect detail deferred.
 6. **Codegen (separate track)** — the monad-to-host transform *(WI-089 `effect_map`)*; the API monad
    is its spec.
 
-## 9. Open questions
+## 10. Open questions
 
 - **Entity → `RequirementHandle` constructor**: confirm a runtime constructor (vs the insertion-pass
   origin) composes with carrier-aware dispatch (WI-350) and the row checker (WI-307).
