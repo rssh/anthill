@@ -1,0 +1,56 @@
+-- Lazy stream-producing combinator (WI-064): map.
+--
+-- Unlike the eager consumers on `Stream` (collect / takeN / fold_left /
+-- fold_right / find, which fold the stream down to a value), `map` PRODUCES a
+-- new stream, so it is a lazy carrier: a small entity that wraps the source
+-- stream plus the transform and PROVIDES Stream by defining `splitFirst` over
+-- the source. The carrier's output element param is named `T` and its effect
+-- `E` — matching Stream's own param names so the `provides Stream[T = T,
+-- E = E]` provision conforms (a divergent name like `Dst`/`Eff` loses the
+-- binding in the cross-sort provider view; cf. `List provides Stream[T = T,
+-- E = {}]`).
+--
+-- `filter` is the sibling lazy carrier, but a kept element is returned VERBATIM
+-- (unlike `map`'s `fn(h)`, whose output type comes from the transform's return
+-- and so needs no element threading) — it requires the source head's element
+-- type to thread through `splitFirst`'s destructured `Pair` (WI-356), which the
+-- typer does not yet do. Deferred to its own ticket; `map` / `find` / `fold`
+-- are what `ParseArgs` (WI-409) needs.
+sort anthill.prelude.MappedStream
+  import anthill.prelude.{Stream, Function, Option, Pair}
+  import anthill.prelude.Option.{some, none}
+  import anthill.prelude.Pair.{pair}
+
+  sort Src = ?
+  sort T = ?
+  effects E = ?
+
+  entity mapped(source: Stream[T = Src, E = E], fn: Function[A = Src, B = T, E = E])
+
+  provides Stream[T = T, E = E]
+
+  -- Stream primitive for a mapped stream: peel the source's head, apply the
+  -- transform, and re-wrap the source's tail so the result stays lazy. The
+  -- output element type comes from `fn`'s return `B = T`, so it threads even
+  -- though the bound `h`'s own type does not (cf. the filter note above).
+  --
+  -- The inner call is QUALIFIED `Stream.splitFirst` (not the bare `splitFirst`
+  -- the other carriers use) and this is REQUIRED, not stylistic: a carrier
+  -- whose provided op shares its short name with the abstract op it calls on an
+  -- abstract receiver self-dispatches to its OWN impl when unqualified — here
+  -- `splitFirst(src)` would re-enter `MappedStream.splitFirst` (unbounded
+  -- recursion / a match failure on the source's `cons`) instead of value-
+  -- dispatching on `src`'s real carrier. `List.splitFirst` never hits this (its
+  -- body destructures `cons`/`nil` directly, with no nested abstract call).
+  operation splitFirst(m: MappedStream) -> Option[T = Pair[A = T, B = MappedStream]] effects E =
+    match m
+      case mapped(src, fn) ->
+        match Stream.splitFirst(src)
+          case none() -> none
+          case some(pair(h, rest)) -> some(pair(fn(h), mapped(rest, fn)))
+
+  -- map constructor: the lazy mapped stream is admissible wherever a
+  -- Stream[T = Dst, E = Eff] is expected (it provides Stream).
+  operation map[S, Dst, Eff](s: Stream[T = S, E = Eff], f: Function[A = S, B = Dst, E = Eff]) -> Stream[T = Dst, E = Eff] =
+    mapped(s, f)
+end

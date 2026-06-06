@@ -10,6 +10,7 @@ sort anthill.prelude.Stream
   import anthill.prelude.List.{nil, cons}
   import anthill.prelude.Ordered.{gt}
   import anthill.prelude.Numeric.{sub}
+  import anthill.prelude.Function
   import anthill.prelude.Iterable
 
   sort T = ?              -- element type
@@ -41,6 +42,24 @@ sort anthill.prelude.Stream
     match splitFirst(s)
       case none() -> nil
       case some(pair(h, rest)) -> cons(head: h, tail: collect(rest))
+  -- Eager combinators (WI-064): consume the stream via `splitFirst`, like
+  -- `collect`. `Acc` is each fold's own accumulator type param (bound from
+  -- `init`); the transform / predicate is a `Function` value applied directly
+  -- (WI-275 HOF). `map` / `filter` (which PRODUCE a stream) are the lazy
+  -- carriers in combinators.anthill, not here.
+  operation fold_left[Elem, Eff, Acc](s: Stream[T = Elem, E = Eff], init: Acc, f: Function[A = (Acc, Elem), B = Acc, E = Eff]) -> Acc effects Eff =
+    match splitFirst(s)
+      case none() -> init
+      case some(pair(h, rest)) -> fold_left(rest, f((init, h)), f)
+  operation fold_right[Elem, Eff, Acc](s: Stream[T = Elem, E = Eff], init: Acc, f: Function[A = (Elem, Acc), B = Acc, E = Eff]) -> Acc effects Eff =
+    match splitFirst(s)
+      case none() -> init
+      case some(pair(h, rest)) -> f((h, fold_right(rest, init, f)))
+  operation find[Elem, Eff](s: Stream[T = Elem, E = Eff], pred: Function[A = Elem, B = Bool, E = Eff]) -> Option[T = Elem] effects Eff =
+    match splitFirst(s)
+      case none() -> none
+      case some(pair(h, rest)) ->
+        if pred(h) then some(h) else find(rest, pred)
   operation isEmpty[Elem, Eff](s: Stream[T = Elem, E = Eff]) -> Bool
     effects Eff
 

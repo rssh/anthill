@@ -529,6 +529,75 @@ end
 }
 
 #[test]
+fn wi064_stdlib_combinators_fold_map_find() {
+    // WI-064: the stdlib higher-order combinators run end-to-end on a List
+    // (admissible as a Stream via `List provides Stream`). The transforms /
+    // predicate are named ops (eta-lifted to function values, WI-275).
+    //   * fold_left / fold_right reduce a list to its sum (the acceptance);
+    //   * map (the lazy `mapped` carrier that provides Stream) transforms each
+    //     element — `collect`-ed back to a List;
+    //   * find returns the first matching element.
+    // `map` needs explicit `[Dst, Eff]` (the output element / effect are not
+    // yet inferred from the transform / source — a WI-275-class refinement).
+    let src = r#"
+namespace test.wi064
+  import anthill.prelude.{List, Int, Stream, Bool, Option}
+  import anthill.prelude.List.{nil, cons}
+  import anthill.prelude.Option.{some, none}
+  import anthill.prelude.Stream.{collect, fold_left, fold_right, find}
+  import anthill.prelude.MappedStream.{map}
+
+  operation addp(a: Int, b: Int) -> Int = a + b
+  operation subt(a: Int, b: Int) -> Int = a - b
+  operation inc(n: Int) -> Int = n + 1
+  operation is_big(n: Int) -> Bool = n > 2
+
+  operation encode3(xs: List[T = Int]) -> Int =
+    match xs
+      case cons(a, cons(b, cons(c, _))) -> a * 100 + b * 10 + c
+      case _ -> 0
+
+  operation sum() -> Int = fold_left([1, 2, 3, 4], 0, addp)
+  operation sumr() -> Int = fold_right([1, 2, 3, 4], 0, addp)
+  -- Non-commutative `subt` separates the two folds (and would catch a swapped
+  -- tuple order): fold_left ((0-1)-2)-3 = -6; fold_right 1-(2-(3-0)) = 2.
+  operation foldl_sub() -> Int = fold_left([1, 2, 3], 0, subt)
+  operation foldr_sub() -> Int = fold_right([1, 2, 3], 0, subt)
+  -- map (+1) over [1,2,3] ⇒ [2,3,4]: collect ⇒ 234; folded ⇒ 9; empty ⇒ 0.
+  operation mapped_inc() -> Int = encode3(collect(map[Dst = Int, Eff = {}]([1, 2, 3], inc)))
+  operation mapped_sum() -> Int = fold_left(map[Dst = Int, Eff = {}]([1, 2, 3], inc), 0, addp)
+  operation mapped_empty() -> Int = fold_left(map[Dst = Int, Eff = {}]([], inc), 0, addp)
+  -- find: first match mid-list, first match at head, and no match (none).
+  operation found() -> Int = unwrap(find([1, 2, 3, 4], is_big))
+  operation found_first() -> Int = unwrap(find([3, 1, 2], is_big))
+  operation found_none() -> Int = unwrap(find([1, 2], is_big))
+  operation unwrap(o: Option[T = Int]) -> Int =
+    match o
+      case some(x) -> x
+      case none() -> 0 - 1
+end
+"#;
+    let mut interp = crate::common::interp_for(src);
+    let run = |interp: &mut Interpreter, op: &str| {
+        expect_int(interp.call(op, &[]).unwrap_or_else(|e| panic!("call {op}: {e:?}")))
+    };
+    // fold_left / fold_right sum: 1+2+3+4 = 10 (the reduce-to-sum acceptance).
+    assert_eq!(run(&mut interp, "test.wi064.sum"), 10);
+    assert_eq!(run(&mut interp, "test.wi064.sumr"), 10);
+    // Direction-sensitive (non-commutative subtraction): left ≠ right.
+    assert_eq!(run(&mut interp, "test.wi064.foldl_sub"), -6);
+    assert_eq!(run(&mut interp, "test.wi064.foldr_sub"), 2);
+    // map (+1): collect ⇒ [2,3,4] ⇒ 234; map then fold ⇒ 9; empty source ⇒ 0.
+    assert_eq!(run(&mut interp, "test.wi064.mapped_inc"), 234);
+    assert_eq!(run(&mut interp, "test.wi064.mapped_sum"), 9);
+    assert_eq!(run(&mut interp, "test.wi064.mapped_empty"), 0);
+    // find: first match (mid), first match (head), no match (⇒ none ⇒ -1).
+    assert_eq!(run(&mut interp, "test.wi064.found"), 3);
+    assert_eq!(run(&mut interp, "test.wi064.found_first"), 3);
+    assert_eq!(run(&mut interp, "test.wi064.found_none"), -1);
+}
+
+#[test]
 fn m2_set_literal_dedupes_duplicates() {
     // {10, 20, 20, 30} has four positional elements at parse time; after
     // SetLiteral dedup (scalar_eq on Int) it carries three. `count` uses
