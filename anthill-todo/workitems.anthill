@@ -3164,3 +3164,6 @@ fact WorkItem(
   status: Open)
 
 fact Feedback(content: "REFRESH NEEDED + re-rooted 2026-06-06: this is the combinator layer under WI-409 (the real driver — map/find/fold used in cli/parse.anthill ParseArgs instead of recursion). (1) The original 'definitions via rules over Iteration.split' approach is superseded by the WI-380 substrate — Stream ops (splitFirst/collect/takeN) are now OPERATIONS with default bodies over splitFirst[Elem,Eff], so map/fold/filter/find should follow that style (explicit [Elem,Eff] element threading, DELIVERED), on Stream/Iterable, not 'rules over split'. (2) Now depends_on WI-275 — the combinators take a Function param and apply it (HOF), which is the proven blocker (probe: applying a function-typed param / lambda arg does not type-check). (3) The element-type CHANGE map needs (Stream[T=A]->Stream[T=B]) is the explicit-type-param style WI-380/393 delivered; the projection/path-dependent cluster (WI-376/397...) is NOT required.", at: "2026-06-06T16:02:48Z", workitem: "WI-064", author: "user")
+fact Tag(name: "first-real-map", workitem: "WI-275")
+fact Tag(name: "first-real-map", workitem: "WI-064")
+fact Tag(name: "first-real-map", workitem: "WI-409")
