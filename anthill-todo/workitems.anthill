@@ -3228,3 +3228,4 @@ fact WorkItem(
   depends_on: [],
   status: Open)
 
+fact Feedback(content: "Trip-wire test ADDED (subprocess, #[ignore]'d so the suite stays green): anthill-cli/tests/wi416_overflow_test.rs::wi416_cross_sort_member_call_does_not_overflow_typer + fixture anthill-cli/tests/fixtures/check/wi416-cross-sort-member.anthill. It runs the built `anthill check` on the repro and asserts the child exits cleanly (code().is_some()) rather than dying by signal. In-process won't work — the overflow is an uncatchable SIGABRT that aborts the whole test binary; the subprocess form observes the child crash safely (verified: --ignored run fails as a clean assertion, exit 134, parent binary not aborted). ACCEPTANCE = un-#[ignore] this test when the typer recursion is guarded.", at: "2026-06-07T07:30:39Z", workitem: "WI-416", author: "user")

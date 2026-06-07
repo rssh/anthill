@@ -1,0 +1,15 @@
+-- WI-416 repro: typechecking a sort operation that calls a CROSS-SORT
+-- `requires`-op typed with the callee sort's own bare sort-parameter
+-- (`List.member(x: T, l: List)`, T = List.T; member's body defers `eq` to
+-- `List requires Eq[T]`) currently INFINITE-RECURSES in the typer and aborts
+-- the process (stack overflow). No `requires` on `Coll` is needed to trigger
+-- it. `anthill check` on this file must typecheck OR emit a clean diagnostic —
+-- never crash.
+namespace test.wi416
+  import anthill.prelude.{List, Int, Bool}
+
+  sort Coll
+    sort T = ?
+    operation contains(items: List[T], x: T) -> Bool = List.member(x, items)
+  end
+end
