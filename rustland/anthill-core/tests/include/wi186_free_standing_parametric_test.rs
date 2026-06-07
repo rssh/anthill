@@ -28,7 +28,7 @@ fn id_polymorphic_free_standing_int() {
 namespace test.wi186_id_int
   operation id(x: ?a) -> ?a
     = x
-  operation main() -> Int
+  operation main() -> Int64
     = id(42)
 end
 "#;
@@ -57,17 +57,17 @@ end
 
 #[test]
 fn id_polymorphic_two_distinct_call_sites() {
-    // The same op called once at Int and once at String — exercises
+    // The same op called once at Int64 and once at String — exercises
     // independent instantiation of ?a per call site.
     let src = r#"
 namespace test.wi186_id_two
   operation id(x: ?a) -> ?a
     = x
-  operation as_int() -> Int
+  operation as_int() -> Int64
     = id(7)
   operation as_str() -> String
     = id("ok")
-  operation main() -> Int
+  operation main() -> Int64
     = as_int()
 end
 "#;
@@ -95,7 +95,7 @@ namespace test.wi186_make_pair
   import anthill.prelude.{Pair}
   operation make_pair(a: ?a, b: ?b) -> Pair[A = ?a, B = ?b]
     = pair(a, b)
-  operation main() -> Pair[A = String, B = Int]
+  operation main() -> Pair[A = String, B = Int64]
     = make_pair("wi", 186)
 end
 "#;

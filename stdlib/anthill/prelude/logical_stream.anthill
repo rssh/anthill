@@ -11,7 +11,7 @@
 --
 -- See proposals: 010 (Query System), 011 (Type Resolution), 012 (Syntax Sugar)
 sort anthill.prelude.LogicalStream
-  import anthill.prelude.{Stream, Option, Pair, Unit, Bool, Int}
+  import anthill.prelude.{Stream, Option, Pair, Unit, Bool, Int64}
   import anthill.prelude.Pair.{pair}
 
   sort T = ?

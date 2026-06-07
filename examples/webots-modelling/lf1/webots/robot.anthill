@@ -6,7 +6,7 @@
 -- model only what the controller calls into.
 
 sort anthill.examples.lf1.webots.Robot
-  import anthill.prelude.{Int, Float, Unit, String, Bool, Modify}
+  import anthill.prelude.{Int64, Float, Unit, String, Bool, Modify}
   import anthill.examples.lf1.webots.{GPS, Gyro, InertialUnit, Motor,
                                        Emitter, Receiver}
   export Robot, StepResult, Running, Quit
@@ -49,7 +49,7 @@ sort anthill.examples.lf1.webots.Robot
   -- are pure within a tick (Design B in the effects-on-sensor-reads
   -- brainstorm), so Tick on step makes the safety proof's discrete
   -- transition explicit.
-  operation step(self: Robot, period: Int) -> StepResult
+  operation step(self: Robot, period: Int64) -> StepResult
     effects Modify[self]
     -- TODO(WI-093): add Tick effect: effects {Modify[self], Tick}
 

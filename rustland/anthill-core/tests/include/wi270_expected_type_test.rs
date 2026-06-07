@@ -10,7 +10,7 @@
 //! 2. The same call inside `let v: Container[Concrete] = op(…)` pins
 //!    `E` to `Concrete` via the let-annotation `expected` flow.
 //! 3. A 0-arg constructor in an annotated let — `let xs: List[T =
-//!    Int] = nil()` — typechecks to the annotated parametric type
+//!    Int64] = nil()` — typechecks to the annotated parametric type
 //!    instead of leaving the element type unbound.
 //!
 //! Operations under test sit inside a `sort` block because
@@ -53,14 +53,14 @@ fn explicit_type_param_call_without_context_errors_with_unconstrained_type_param
     // is unconstrained and the typer must surface the diagnostic.
     let src = r#"
 namespace test.wi270.unconstrained
-  import anthill.prelude.{Option, Int}
+  import anthill.prelude.{Option, Int64}
   import anthill.prelude.Option.{some, none}
   import anthill.reflect.{Term}
 
   sort Driver
     operation take_entity[E](t: Term) -> Option[T = E]
 
-    operation main(t: Term) -> Int =
+    operation main(t: Term) -> Int64 =
       let _v = take_entity(t)
       0
   end
@@ -170,12 +170,12 @@ end
 fn nil_in_annotated_let_pins_list_element_type() {
     let src = r#"
 namespace test.wi270.nil_pinned
-  import anthill.prelude.{List, Int}
+  import anthill.prelude.{List, Int64}
   import anthill.prelude.List.{nil, cons}
 
   sort Driver
-    operation main() -> List[T = Int] =
-      let xs : List[T = Int] = nil()
+    operation main() -> List[T = Int64] =
+      let xs : List[T = Int64] = nil()
       xs
   end
 end
@@ -183,22 +183,22 @@ end
     let (_kb, errs) = try_load(src);
     assert!(
         errs.is_empty(),
-        "expected `nil()` in let `List[T = Int]` to typecheck; got:\n{}",
+        "expected `nil()` in let `List[T = Int64]` to typecheck; got:\n{}",
         fmt_errs(&errs),
     );
 }
 
 #[test]
 fn nil_in_operation_return_position_pins_element_type() {
-    // WI-270 driver (c): `operation foo() -> List[Int] = nil()` —
+    // WI-270 driver (c): `operation foo() -> List[Int64] = nil()` —
     // the body's expected flows from the declared return type.
     let src = r#"
 namespace test.wi270.nil_op_return
-  import anthill.prelude.{List, Int}
+  import anthill.prelude.{List, Int64}
   import anthill.prelude.List.{nil, cons}
 
   sort Driver
-    operation empty_ints() -> List[T = Int] = nil()
+    operation empty_ints() -> List[T = Int64] = nil()
   end
 end
 "#;
@@ -224,13 +224,13 @@ fn foo_two_type_params_parses_loads_and_typechecks() {
     // bindings and observe a typed return.
     let src = r#"
 namespace test.wi269.foo_two_params
-  import anthill.prelude.{Pair, Int, String}
+  import anthill.prelude.{Pair, Int64, String}
   import anthill.prelude.Pair.{pair}
 
   sort Driver
     operation foo[A, B](a: A, b: B) -> Pair[A = A, B = B] = pair(a, b)
-    operation main() -> Pair[A = Int, B = String] =
-      foo[A = Int, B = String](42, "hi")
+    operation main() -> Pair[A = Int64, B = String] =
+      foo[A = Int64, B = String](42, "hi")
   end
 end
 "#;
@@ -245,17 +245,17 @@ end
 #[test]
 fn map_two_type_params_explicit_call_typechecks() {
     // map[A, B](xs: List[A], f: (A) -> B) -> List[B] with explicit
-    // [A = Int, B = String] at the call site. Tests that explicit
+    // [A = Int64, B = String] at the call site. Tests that explicit
     // bindings unify through nested parameterized types and through
     // arrow-typed parameters.
     let src = r#"
 namespace test.wi269.map_explicit
-  import anthill.prelude.{List, Int, String}
+  import anthill.prelude.{List, Int64, String}
 
   sort Driver
     operation map[A, B](xs: List[T = A], f: (A) -> B) -> List[T = B]
-    operation drive(xs: List[T = Int], f: (Int) -> String) -> List[T = String] =
-      map[A = Int, B = String](xs, f)
+    operation drive(xs: List[T = Int64], f: (Int64) -> String) -> List[T = String] =
+      map[A = Int64, B = String](xs, f)
   end
 end
 "#;
@@ -275,11 +275,11 @@ fn map_two_type_params_inferred_from_args_typechecks() {
     // fixture exercises the latter.
     let src = r#"
 namespace test.wi269.map_inferred
-  import anthill.prelude.{List, Int, String}
+  import anthill.prelude.{List, Int64, String}
 
   sort Driver
     operation map[A, B](xs: List[T = A], f: (A) -> B) -> List[T = B]
-    operation drive(xs: List[T = Int], f: (Int) -> String) -> List[T = String] =
+    operation drive(xs: List[T = Int64], f: (Int64) -> String) -> List[T = String] =
       map(xs, f)
   end
 end

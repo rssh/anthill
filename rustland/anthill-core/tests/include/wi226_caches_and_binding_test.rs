@@ -131,7 +131,7 @@ fn resolve_cache_memoizes_dispatch_at_same_goal_and_scope() {
 
 #[test]
 fn binding_aware_match_rejects_wrong_binding_at_flat_slot() {
-    // Correctness acceptance: a caller carrying Eq[T=Int] at slot 0
+    // Correctness acceptance: a caller carrying Eq[T=Int64] at slot 0
     // must NOT have its slot 0 emitted as the projection for a dep
     // Eq[T=String] (different binding). The binding-aware predicate
     // rejects the flat match; without any String-providing alternative
@@ -142,7 +142,7 @@ fn binding_aware_match_rejects_wrong_binding_at_flat_slot() {
     let syms = ProjectionSyms::resolve(&mut kb).expect("stdlib symbols");
 
     let eq_sym = kb.try_resolve_symbol("anthill.prelude.Eq").expect("Eq sort");
-    let int_sym = kb.try_resolve_symbol("anthill.prelude.Int").expect("Int sort");
+    let int_sym = kb.try_resolve_symbol("anthill.prelude.Int64").expect("Int64 sort");
     let string_sym = kb
         .try_resolve_symbol("anthill.prelude.String")
         .expect("String sort");
@@ -193,7 +193,7 @@ fn binding_aware_match_rejects_wrong_binding_at_flat_slot() {
 
     // The projection must NOT be the caller's slot-0 read — that would
     // be the pre-WI-226 buggy behavior (matching by required_sort alone
-    // and reusing slot 0 even though caller's binding is Int, not
+    // and reusing slot 0 even though caller's binding is Int64, not
     // String). Instead it must be construct_requirement with
     // impl_functor = Ref(String).
     let (functor, named_args) = match kb.get_term(projection) {
@@ -202,7 +202,7 @@ fn binding_aware_match_rejects_wrong_binding_at_flat_slot() {
     };
     assert_eq!(
         functor, syms.construct,
-        "binding-aware match must reject slot 0 (Eq[T=Int] != Eq[T=String]) \
+        "binding-aware match must reject slot 0 (Eq[T=Int64] != Eq[T=String]) \
          and fall through to Strategy 3's construct_requirement; got {}",
         kb.qualified_name_of(functor)
     );
@@ -223,6 +223,6 @@ fn binding_aware_match_rejects_wrong_binding_at_flat_slot() {
     };
     assert_eq!(
         impl_sym, string_sym,
-        "Strategy 3 must resolve Eq[T=String]'s carrier to String, not to Int"
+        "Strategy 3 must resolve Eq[T=String]'s carrier to String, not to Int64"
     );
 }

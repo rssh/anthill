@@ -196,10 +196,10 @@ fn nested_handle_emits_requirement_at_sort_chain() {
 #[test]
 fn ground_dep_emits_construct_requirement() {
     // Synthetic Strategy 3 scenario: an empty caller chain (no enclosing
-    // requires) plus a fully-ground dep `Eq[T = Int]`. Strategies 1 and 2
+    // requires) plus a fully-ground dep `Eq[T = Int64]`. Strategies 1 and 2
     // both fail (nothing to scan); Strategy 3 runs SLD resolution
     // against `SortProvidesInfo` — the rustland binding registers
-    // `fact Eq[T = Int]` via a leaf impl carrier — and emits
+    // `fact Eq[T = Int64]` via a leaf impl carrier — and emits
     // `construct_requirement(<IntEq>, nil)`.
     //
     // Done as a direct `build_dep_projection` call against a hand-built
@@ -213,7 +213,7 @@ fn ground_dep_emits_construct_requirement() {
     let syms = ProjectionSyms::resolve(&mut kb).expect("stdlib must define IR symbols");
 
     let eq_sym = kb.try_resolve_symbol("anthill.prelude.Eq").expect("Eq sort");
-    let int_sym = kb.try_resolve_symbol("anthill.prelude.Int").expect("Int sort");
+    let int_sym = kb.try_resolve_symbol("anthill.prelude.Int64").expect("Int64 sort");
     let sort_view_sym = kb
         .try_resolve_symbol("anthill.reflect.SortView")
         .expect("SortView sort");
@@ -221,7 +221,7 @@ fn ground_dep_emits_construct_requirement() {
     let eq_ref = kb.alloc(Term::Ref(eq_sym));
     let int_ref = kb.alloc(Term::Ref(int_sym));
 
-    // dep = SortView(Eq, T = Int) — Strategy 3 reads bindings from the
+    // dep = SortView(Eq, T = Int64) — Strategy 3 reads bindings from the
     // spec field to seed the SLD goal.
     let mut pos: SmallVec<[anthill_core::kb::term::TermId; 4]> = SmallVec::new();
     pos.push(eq_ref);
@@ -249,7 +249,7 @@ fn ground_dep_emits_construct_requirement() {
     let projection = build_dep_projection(
         &mut kb, &dep, None, &caller_requires, &caller_sub_chains, &syms,
     )
-        .expect("Strategy 3 must resolve Eq[T=Int] via SortProvidesInfo");
+        .expect("Strategy 3 must resolve Eq[T=Int64] via SortProvidesInfo");
 
     // Top-level must be construct_requirement(impl_functor=Ref(<Eq impl>),
     // requirements=nil).
@@ -274,12 +274,12 @@ fn ground_dep_emits_construct_requirement() {
         other => panic!("impl_functor must be a sort reference; got {other:?}"),
     };
     // The rustland binding (anthill-stl/anthill/int.anthill) declares
-    // `provides Int … fact Eq[T = Int]` — Int IS the Eq carrier for
-    // T = Int. SortProvidesInfo's `sort_ref` is therefore the Int
-    // symbol, so the construct_requirement's `impl_functor` Ref's Int.
+    // `provides Int64 … fact Eq[T = Int64]` — Int64 IS the Eq carrier for
+    // T = Int64. SortProvidesInfo's `sort_ref` is therefore the Int64
+    // symbol, so the construct_requirement's `impl_functor` Ref's Int64.
     assert_eq!(
         impl_sym, int_sym,
-        "Eq[T = Int]'s SortProvidesInfo carrier is Int itself; \
+        "Eq[T = Int64]'s SortProvidesInfo carrier is Int64 itself; \
          construct_requirement.impl_functor must point to it. Got {}",
         kb.qualified_name_of(impl_sym)
     );

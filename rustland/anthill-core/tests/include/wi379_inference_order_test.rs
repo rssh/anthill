@@ -37,9 +37,9 @@ fn errors_text(errs: &[load::LoadError]) -> String {
 fn same_sort_infers() {
     let src = r#"
 namespace test.s042.same
-  import anthill.prelude.{List, Int}
+  import anthill.prelude.{List, Int64}
   operation id_list[Elem](xs: List[T = Elem]) -> List[T = Elem] = xs
-  operation use_it(ys: List[T = Int]) -> List[T = Int] = id_list(ys)
+  operation use_it(ys: List[T = Int64]) -> List[T = Int64] = id_list(ys)
 end
 "#;
     let errs = try_load(src);
@@ -51,14 +51,14 @@ end
 fn same_sort_wrong_return_rejected() {
     let src = r#"
 namespace test.s042.samewrong
-  import anthill.prelude.{List, Int, String}
+  import anthill.prelude.{List, Int64, String}
   operation id_list[Elem](xs: List[T = Elem]) -> List[T = Elem] = xs
-  operation use_it(ys: List[T = Int]) -> List[T = String] = id_list(ys)
+  operation use_it(ys: List[T = Int64]) -> List[T = String] = id_list(ys)
 end
 "#;
     let errs = try_load(src);
     eprintln!("=== same_sort_wrong ===\n{}", errors_text(&errs));
-    assert!(!errs.is_empty(), "id_list(List[Int]) is List[Int], not List[String]");
+    assert!(!errs.is_empty(), "id_list(List[Int64]) is List[Int64], not List[String]");
 }
 
 // ── CROSS-sort 042 inference (List used as Stream, via List-provides-Stream) ─
@@ -67,17 +67,17 @@ end
 fn cross_sort_infers() {
     let src = r#"
 namespace test.s042.cross
-  import anthill.prelude.{List, Int, Stream, Option}
+  import anthill.prelude.{List, Int64, Stream, Option}
   import anthill.prelude.Option.{some, none}
   operation probe[Elem](s: Stream[T = Elem]) -> Option[T = Elem] = none
-  operation use_it(ys: List[T = Int]) -> Option[T = Int] = probe(ys)
+  operation use_it(ys: List[T = Int64]) -> Option[T = Int64] = probe(ys)
 end
 "#;
     let errs = try_load(src);
     eprintln!("=== cross_sort_infers ===\n{}", errors_text(&errs));
     assert!(
         errs.is_empty(),
-        "cross-sort [Elem]: List[Int] used as Stream[T=Elem] should pin Elem := Int: {}",
+        "cross-sort [Elem]: List[Int64] used as Stream[T=Elem] should pin Elem := Int64: {}",
         errors_text(&errs)
     );
 }
@@ -86,15 +86,15 @@ end
 fn cross_sort_wrong_return_rejected() {
     let src = r#"
 namespace test.s042.crosswrong
-  import anthill.prelude.{List, Int, String, Stream, Option}
+  import anthill.prelude.{List, Int64, String, Stream, Option}
   import anthill.prelude.Option.{some, none}
   operation probe[Elem](s: Stream[T = Elem]) -> Option[T = Elem] = none
-  operation use_it(ys: List[T = Int]) -> Option[T = String] = probe(ys)
+  operation use_it(ys: List[T = Int64]) -> Option[T = String] = probe(ys)
 end
 "#;
     let errs = try_load(src);
     eprintln!("=== cross_sort_wrong ===\n{}", errors_text(&errs));
-    assert!(!errs.is_empty(), "probe(List[Int] as Stream) is Option[Int], not Option[String]");
+    assert!(!errs.is_empty(), "probe(List[Int64] as Stream) is Option[Int64], not Option[String]");
 }
 
 // ── Constructor path: same args-before-expected order (check_constructor_iter) ─
@@ -103,20 +103,20 @@ end
 fn constructor_infers_ok() {
     let src = r#"
 namespace test.s042.ctorok
-  import anthill.prelude.{Int, Option}
+  import anthill.prelude.{Int64, Option}
   import anthill.prelude.Option.{some}
-  operation make() -> Option[T = Int] = some(42)
+  operation make() -> Option[T = Int64] = some(42)
 end
 "#;
     let errs = try_load(src);
     eprintln!("=== constructor_infers_ok ===\n{}", errors_text(&errs));
-    assert!(errs.is_empty(), "some(42) is Option[Int]: {}", errors_text(&errs));
+    assert!(errs.is_empty(), "some(42) is Option[Int64]: {}", errors_text(&errs));
 }
 
 // WI-384 (the constructor analogue of the apply-path fix): `some(42)` typed against a
 // declared `Option[String]` is now REJECTED. `check_constructor_iter` unifies the
-// fields FIRST (pinning `T = Int`), then seeds `expected` (the contradicting
-// `String` does not overwrite the pinned `T`), builds `Option[T = Int]`, and the
+// fields FIRST (pinning `T = Int64`), then seeds `expected` (the contradicting
+// `String` does not overwrite the pinned `T`), builds `Option[T = Int64]`, and the
 // use-site return-conformance check rejects it. The reorder is sound because the
 // build-from-subst now includes an unbound param as a fresh `?_` rather than dropping
 // it (which had broken stdlib `pair(h, t)` → `Pair[B=List]`).
@@ -124,14 +124,14 @@ end
 fn constructor_wrong_return_rejected() {
     let src = r#"
 namespace test.s042.ctorwrong
-  import anthill.prelude.{Int, String, Option}
+  import anthill.prelude.{Int64, String, Option}
   import anthill.prelude.Option.{some}
   operation make() -> Option[T = String] = some(42)
 end
 "#;
     let errs = try_load(src);
     eprintln!("=== constructor_wrong_return ===\n{}", errors_text(&errs));
-    assert!(!errs.is_empty(), "some(42) is Option[Int], not Option[String]");
+    assert!(!errs.is_empty(), "some(42) is Option[Int64], not Option[String]");
 }
 
 // ── Annotated-let conformance (the LetAfterValue use-site check) ─────────────
@@ -140,25 +140,25 @@ end
 fn let_annotation_conformance_ok() {
     let src = r#"
 namespace test.s042.letok
-  import anthill.prelude.{List, Int}
+  import anthill.prelude.{List, Int64}
   operation id_list[Elem](xs: List[T = Elem]) -> List[T = Elem] = xs
-  operation use_it(ys: List[T = Int]) -> List[T = Int] =
-    let v : List[T = Int] = id_list(ys)
+  operation use_it(ys: List[T = Int64]) -> List[T = Int64] =
+    let v : List[T = Int64] = id_list(ys)
     v
 end
 "#;
     let errs = try_load(src);
     eprintln!("=== let_annotation_conformance_ok ===\n{}", errors_text(&errs));
-    assert!(errs.is_empty(), "let v: List[Int] = id_list(List[Int]) conforms: {}", errors_text(&errs));
+    assert!(errs.is_empty(), "let v: List[Int64] = id_list(List[Int64]) conforms: {}", errors_text(&errs));
 }
 
 #[test]
 fn let_annotation_conformance_rejected() {
     let src = r#"
 namespace test.s042.letwrong
-  import anthill.prelude.{List, Int, String}
+  import anthill.prelude.{List, Int64, String}
   operation id_list[Elem](xs: List[T = Elem]) -> List[T = Elem] = xs
-  operation use_it(ys: List[T = Int]) -> List[T = String] =
+  operation use_it(ys: List[T = Int64]) -> List[T = String] =
     let v : List[T = String] = id_list(ys)
     v
 end
@@ -167,6 +167,6 @@ end
     eprintln!("=== let_annotation_conformance_rejected ===\n{}", errors_text(&errs));
     assert!(
         !errs.is_empty(),
-        "id_list(List[Int]) is List[Int]; the let annotation List[String] must be rejected"
+        "id_list(List[Int64]) is List[Int64]; the let annotation List[String] must be rejected"
     );
 }

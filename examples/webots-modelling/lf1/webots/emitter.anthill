@@ -14,7 +14,7 @@
 -- comm_delay_max from them.
 
 sort anthill.examples.lf1.webots.Emitter
-  import anthill.prelude.{Int, Float, Unit, String, Bool, Modify}
+  import anthill.prelude.{Int64, Float, Unit, String, Bool, Modify}
   export Emitter, BROADCAST_CHANNEL
   export send, set_channel, get_channel
   export set_range, get_range, get_buffer_size
@@ -35,10 +35,10 @@ sort anthill.examples.lf1.webots.Emitter
     effects Modify[self]
 
   -- Channel selection (-1 for broadcast).
-  operation set_channel(self: Emitter, channel: Int) -> Unit
+  operation set_channel(self: Emitter, channel: Int64) -> Unit
     effects Modify[self]
 
-  operation get_channel(self: Emitter) -> Int
+  operation get_channel(self: Emitter) -> Int64
 
   -- Effective range (m). -1 for unlimited.
   operation set_range(self: Emitter, range: Float) -> Unit
@@ -46,5 +46,5 @@ sort anthill.examples.lf1.webots.Emitter
 
   operation get_range(self: Emitter) -> Float
 
-  operation get_buffer_size(self: Emitter) -> Int
+  operation get_buffer_size(self: Emitter) -> Int64
 end

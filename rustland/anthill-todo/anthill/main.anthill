@@ -4,7 +4,7 @@
 -- The companion Rust shim at src/main.rs embeds these .anthill files
 -- via include_str!, builds a KB, registers stdlib builtins +
 -- persistence handlers + a project-local FileStore, then calls
--- `anthill.todo.Main.main(args)` and forwards its `Int` return as the
+-- `anthill.todo.Main.main(args)` and forwards its `Int64` return as the
 -- process exit code.
 namespace anthill.todo
   import anthill.cli.Main
@@ -32,7 +32,7 @@ namespace anthill.todo
   import anthill.prelude.Ordered.{lt}
   import anthill.prelude.Eq.{eq}
   import anthill.prelude.Stream.{splitFirst}
-  import anthill.prelude.Int.{to_string}
+  import anthill.prelude.Int64.{to_string}
   import anthill.prelude.String.{concat}
   import anthill.prelude.List.{cons, nil}
   import anthill.reflect.{Term, Substitution, term_functor_name,
@@ -235,7 +235,7 @@ namespace anthill.todo
     status: String,
     description: String,
     depends: List[String],
-    unblocks: Int,
+    unblocks: Int64,
     has_feedback: Bool)
 
   sort Main
@@ -254,7 +254,7 @@ namespace anthill.todo
     -- requires WorkItemStore[State] clause — the host picks the impl
     -- at call time via call_with_requirements (WI-236).
     operation main(args: List[String], store: FileStore,
-                   wis_cell: Cell[State], agent: String) -> Int
+                   wis_cell: Cell[State], agent: String) -> Int64
       effects {ConsoleOutput, ConsoleError, Modify[store], Modify[wis_cell],
                Error, Clock}
     =
@@ -283,7 +283,7 @@ namespace anthill.todo
     -- calling Main.main via call_with_requirements (WI-236).
     operation dispatch(name: String, args: List[Binding],
                        store: FileStore, agent: String,
-                       s: Cell[State]) -> Int
+                       s: Cell[State]) -> Int64
       effects {ConsoleOutput, ConsoleError, Modify[store], Modify[s],
                Error, Clock}
     =
@@ -316,7 +316,7 @@ namespace anthill.todo
               if eq(bname, name) then some(bvalue)
               else get_arg(rest, name)
 
-    operation not_yet(name: String) -> Int
+    operation not_yet(name: String) -> Int64
       effects ConsoleError
     =
       let _ = eprintln(console(), "anthill-todo: subcommand not yet ported to anthill")
@@ -325,8 +325,8 @@ namespace anthill.todo
 
     -- Bump the count for `status` in `acc`, appending a new entry
     -- if absent. Returns the rebuilt list (immutable).
-    operation bump(acc: List[Pair[String, Int]], status: String)
-      -> List[Pair[String, Int]]
+    operation bump(acc: List[Pair[String, Int64]], status: String)
+      -> List[Pair[String, Int64]]
     =
       match acc
         case nil() -> cons(pair(status, 1), nil())
@@ -338,9 +338,9 @@ namespace anthill.todo
 
     -- Insertion sort by string key (ascending). Acceptable for ~5 buckets;
     -- swap for List.sort once that lands in stdlib.
-    operation insert_sorted(buckets: List[Pair[String, Int]],
-                            entry: Pair[String, Int])
-      -> List[Pair[String, Int]]
+    operation insert_sorted(buckets: List[Pair[String, Int64]],
+                            entry: Pair[String, Int64])
+      -> List[Pair[String, Int64]]
     =
       match buckets
         case nil() -> cons(entry, nil())
@@ -352,14 +352,14 @@ namespace anthill.todo
                   if lt(ek, hk) then cons(entry, cons(head, rest))
                   else cons(head, insert_sorted(rest, entry))
 
-    operation sort_buckets(buckets: List[Pair[String, Int]])
-      -> List[Pair[String, Int]]
+    operation sort_buckets(buckets: List[Pair[String, Int64]])
+      -> List[Pair[String, Int64]]
     =
       match buckets
         case nil() -> nil()
         case cons(head, rest) -> insert_sorted(sort_buckets(rest), head)
 
-    operation print_counts(buckets: List[Pair[String, Int]]) -> Int
+    operation print_counts(buckets: List[Pair[String, Int64]]) -> Int64
       effects ConsoleOutput
     =
       match buckets
@@ -382,22 +382,22 @@ namespace anthill.todo
             case none() -> "?"
 
     operation tally_w(items: List[WorkItem],
-                      acc: List[Pair[String, Int]])
-      -> List[Pair[String, Int]]
+                      acc: List[Pair[String, Int64]])
+      -> List[Pair[String, Int64]]
     =
       match items
         case nil() -> acc
         case cons(w, rest) ->
           tally_w(rest, bump(acc, status_name_w(w)))
 
-    operation count_items_w(items: List[WorkItem]) -> Int =
+    operation count_items_w(items: List[WorkItem]) -> Int64 =
       match items
         case nil() -> 0
         case cons(_, rest) -> 1 + count_items_w(rest)
 
     -- Total count line, then per-status breakdown ordered alphabetically
     -- by status name. Mirrors the legacy `run_status` output shape.
-    operation cmd_status(s: Cell[State]) -> Int
+    operation cmd_status(s: Cell[State]) -> Int64
       effects {ConsoleOutput, Error}
     =
       let items = WorkItemStore.all(s)
@@ -451,7 +451,7 @@ namespace anthill.todo
             case none() -> nil()
 
     -- Print id / description / status / depends_on for a single WorkItem.
-    operation cmd_show(args: List[Binding], s: Cell[State]) -> Int
+    operation cmd_show(args: List[Binding], s: Cell[State]) -> Int64
       effects {ConsoleOutput, ConsoleError, Error}
     =
       match get_arg(args, "id")
@@ -689,7 +689,7 @@ namespace anthill.todo
     operation count_transitive(id: String,
                                dep_map: Map[String, List[String]],
                                visited: Map[String, Bool])
-      -> Pair[Int, Map[String, Bool]]
+      -> Pair[Int64, Map[String, Bool]]
     =
       if contains(visited, id) then pair(0, visited)
       else
@@ -700,7 +700,7 @@ namespace anthill.todo
     operation count_transitive_walk(deps: List[String],
                                     dep_map: Map[String, List[String]],
                                     visited: Map[String, Bool])
-      -> Pair[Int, Map[String, Bool]]
+      -> Pair[Int64, Map[String, Bool]]
     =
       match deps
         case nil() -> pair(0, visited)
@@ -904,7 +904,7 @@ namespace anthill.todo
         case cons(_, _) ->
           concat(" (depends: ", concat(join_strings(deps, ", "), ")"))
 
-    operation unblocks_suffix(n: Int) -> String =
+    operation unblocks_suffix(n: Int64) -> String =
       if eq(n, 0) then ""
       else concat(" [unblocks ", concat(to_string(n), "]"))
 
@@ -945,14 +945,14 @@ namespace anthill.todo
           let _ = println(console(), render_blocked(r))
           print_rows_blocked(rest)
 
-    operation count_rows(rs: List[Row]) -> Int =
+    operation count_rows(rs: List[Row]) -> Int64 =
       match rs
         case nil() -> 0
         case cons(_, rest) -> 1 + count_rows(rest)
 
     -- ── cmd_list itself ───────────────────────────────────────────
 
-    operation cmd_list(args: List[Binding], s: Cell[State]) -> Int
+    operation cmd_list(args: List[Binding], s: Cell[State]) -> Int64
       effects {ConsoleOutput, Error}
     =
       let status_filter = get_arg(args, "status")
@@ -1065,7 +1065,7 @@ namespace anthill.todo
               let _ = print_tree(rid, true, true, "", row_map, dep_map)
               print_roots(rest, row_map, dep_map)
 
-    operation cmd_graph(s: Cell[State]) -> Int
+    operation cmd_graph(s: Cell[State]) -> Int64
       effects {ConsoleOutput, Error}
     =
       let raw_rows = rows_of_w(WorkItemStore.all(s))
@@ -1125,7 +1125,7 @@ namespace anthill.todo
 
     operation cmd_add(args: List[Binding],
                       store: FileStore,
-                      s: Cell[State]) -> Int
+                      s: Cell[State]) -> Int64
       effects {ConsoleOutput, ConsoleError, Modify[s], Error}
     =
       match get_arg(args, "description")
@@ -1139,7 +1139,7 @@ namespace anthill.todo
 
     operation do_add(s: Cell[State], description: String,
                      depends_on: List[String],
-                     raw_acceptance: List[String]) -> Int
+                     raw_acceptance: List[String]) -> Int64
       effects {ConsoleOutput, Modify[s], Error}
     =
       let id = WorkItemStore.next_id(s)
@@ -1233,7 +1233,7 @@ namespace anthill.todo
     operation cmd_claim(args: List[Binding],
                          store: FileStore,
                          agent: String,
-                         s: Cell[State]) -> Int
+                         s: Cell[State]) -> Int64
       effects {ConsoleOutput, ConsoleError, Modify[s], Error, Clock}
     =
       match get_arg(args, "id")
@@ -1249,7 +1249,7 @@ namespace anthill.todo
             case some(wi) -> do_claim(s, agent, id, wi)
 
     operation do_claim(s: Cell[State], agent: String,
-                       id: String, wi: WorkItem) -> Int
+                       id: String, wi: WorkItem) -> Int64
       effects {ConsoleOutput, Modify[s], Error, Clock}
     =
       let _ = WorkItemStore.replace(s, id,
@@ -1264,7 +1264,7 @@ namespace anthill.todo
     operation cmd_deliver(args: List[Binding],
                            store: FileStore,
                            agent: String,
-                           s: Cell[State]) -> Int
+                           s: Cell[State]) -> Int64
       effects {ConsoleOutput, ConsoleError, Modify[s], Error, Clock}
     =
       match get_arg(args, "id")
@@ -1280,7 +1280,7 @@ namespace anthill.todo
             case some(wi) -> do_deliver(s, agent, id, wi)
 
     operation do_deliver(s: Cell[State], agent: String,
-                         id: String, wi: WorkItem) -> Int
+                         id: String, wi: WorkItem) -> Int64
       effects {ConsoleOutput, Modify[s], Error, Clock}
     =
       let _ = WorkItemStore.replace(s, id,
@@ -1295,7 +1295,7 @@ namespace anthill.todo
 
     operation cmd_verify(args: List[Binding],
                           store: FileStore,
-                          s: Cell[State]) -> Int
+                          s: Cell[State]) -> Int64
       effects {ConsoleOutput, ConsoleError, Modify[s], Error, Clock}
     =
       match get_arg(args, "id")
@@ -1310,7 +1310,7 @@ namespace anthill.todo
               1
             case some(wi) -> do_verify(s, id, wi)
 
-    operation do_verify(s: Cell[State], id: String, wi: WorkItem) -> Int
+    operation do_verify(s: Cell[State], id: String, wi: WorkItem) -> Int64
       effects {ConsoleOutput, Modify[s], Error, Clock}
     =
       let _ = WorkItemStore.replace(s, id, with_status(wi, Verified(at: now())))
@@ -1324,7 +1324,7 @@ namespace anthill.todo
 
     operation cmd_delete(args: List[Binding],
                           store: FileStore,
-                          s: Cell[State]) -> Int
+                          s: Cell[State]) -> Int64
       effects {ConsoleOutput, ConsoleError, Modify[s], Error}
     =
       match get_arg(args, "id")
@@ -1349,7 +1349,7 @@ namespace anthill.todo
     -- (no append mode — matches legacy run_update).
     operation cmd_update(args: List[Binding],
                           store: FileStore,
-                          s: Cell[State]) -> Int
+                          s: Cell[State]) -> Int64
       effects {ConsoleOutput, ConsoleError, Modify[s], Error}
     =
       match get_arg(args, "id")
@@ -1369,7 +1369,7 @@ namespace anthill.todo
 
     operation do_update(s: Cell[State], id: String, wi: WorkItem,
                         new_desc: Option[String],
-                        raw_acc: List[String]) -> Int
+                        raw_acc: List[String]) -> Int64
       effects {ConsoleOutput, ConsoleError, Modify[s], Error}
     =
       let has_desc = opt_string_present(new_desc)
@@ -1419,7 +1419,7 @@ namespace anthill.todo
     -- Cycle detection deferred (filed as follow-up).
     operation cmd_add_dependency(args: List[Binding],
                                   store: FileStore,
-                                  s: Cell[State]) -> Int
+                                  s: Cell[State]) -> Int64
       effects {ConsoleOutput, ConsoleError, Modify[s], Error}
     =
       match get_arg(args, "id")
@@ -1454,7 +1454,7 @@ namespace anthill.todo
                       case some(_) -> do_add_dep(s, id, dep, wi)
 
     operation do_add_dep(s: Cell[State], id: String, dep: String,
-                          wi: WorkItem) -> Int
+                          wi: WorkItem) -> Int64
       effects {ConsoleOutput, ConsoleError, Modify[s], Error}
     =
       let current = deps_of_w(wi)
@@ -1476,7 +1476,7 @@ namespace anthill.todo
     -- depends_on. Errors if dep isn't currently a dependency.
     operation cmd_remove_dependency(args: List[Binding],
                                      store: FileStore,
-                                     s: Cell[State]) -> Int
+                                     s: Cell[State]) -> Int64
       effects {ConsoleOutput, ConsoleError, Modify[s], Error}
     =
       match get_arg(args, "id")
@@ -1499,7 +1499,7 @@ namespace anthill.todo
                 case some(wi) -> do_remove_dep(s, id, dep, wi)
 
     operation do_remove_dep(s: Cell[State], id: String, dep: String,
-                             wi: WorkItem) -> Int
+                             wi: WorkItem) -> Int64
       effects {ConsoleOutput, ConsoleError, Modify[s], Error}
     =
       let current = deps_of_w(wi)
@@ -1534,7 +1534,7 @@ namespace anthill.todo
     operation cmd_feedback(args: List[Binding],
                             store: FileStore,
                             agent: String,
-                            s: Cell[State]) -> Int
+                            s: Cell[State]) -> Int64
       effects {ConsoleOutput, ConsoleError, Modify[s], Error, Clock}
     =
       let id_opt = get_arg(args, "id")
@@ -1552,7 +1552,7 @@ namespace anthill.todo
               do_feedback(s, agent, id, text)
 
     operation do_feedback(s: Cell[State], agent: String,
-                          id: String, text: String) -> Int
+                          id: String, text: String) -> Int64
       effects {ConsoleOutput, Modify[s], Error, Clock}
     =
       let _ = WorkItemStore.commit_feedback(s, Feedback(
@@ -1565,7 +1565,7 @@ namespace anthill.todo
                         concat(id, concat(": ", text))))
       0
 
-    operation cmd_skill() -> Int
+    operation cmd_skill() -> Int64
       effects ConsoleOutput
     =
       let _ = println(console(), "anthill-todo")
@@ -1613,9 +1613,9 @@ namespace anthill.todo
     -- downcast) the discarded arg-unify masked before arg validation.
     operation walk_solutions(stream: Stream[T = Substitution, E = Error],
                               show_all: Bool,
-                              limit: Int,
+                              limit: Int64,
                               seen: List[String],
-                              printed: Int) -> Int
+                              printed: Int64) -> Int64
       effects {ConsoleOutput, Error}
     =
       if eq(limit, 0) then printed
@@ -1649,7 +1649,7 @@ namespace anthill.todo
           else list_contains_string(rest, needle)
 
 
-    operation cmd_next(args: List[Binding], s: Cell[State]) -> Int
+    operation cmd_next(args: List[Binding], s: Cell[State]) -> Int64
       effects {ConsoleOutput, ConsoleError, Error}
     =
       let show_all = match get_arg(args, "all")

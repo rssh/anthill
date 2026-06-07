@@ -34,9 +34,9 @@ use crate::common::load_kb_with;
 /// term cannot hold). Mirrors the `wi205_cell_test` ops known to load + type.
 const SRC: &str = r#"
 namespace test.wi348_op_query
-  import anthill.prelude.{Int, Cell, Unit}
+  import anthill.prelude.{Int64, Cell, Unit}
 
-  operation overwrite(c: Cell, n: Int) -> Unit effects Modify[c] = Cell.set(c, n)
+  operation overwrite(c: Cell, n: Int64) -> Unit effects Modify[c] = Cell.set(c, n)
 end
 "#;
 

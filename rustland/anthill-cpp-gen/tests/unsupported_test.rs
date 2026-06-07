@@ -32,10 +32,10 @@ fn recursive_anonymous_lambda_rejected() {
     // `Err`. We assert it shows up there.
     let source = r#"
         namespace test.unsupported
-          import anthill.prelude.{Int}
+          import anthill.prelude.{Int64}
           export Calc
           sort Calc
-            operation lam(n: Int) -> Int =
+            operation lam(n: Int64) -> Int64 =
               let f = lambda x -> f(x)
               n
           end
@@ -63,10 +63,10 @@ fn non_recursive_let_lambda_still_works() {
     // existing IIFE + generic-lambda emission applies unchanged.
     let source = r#"
         namespace test.unsupported_ok
-          import anthill.prelude.{Int}
+          import anthill.prelude.{Int64}
           export Calc
           sort Calc
-            operation lam(n: Int) -> Int =
+            operation lam(n: Int64) -> Int64 =
               let g = lambda x -> add(x, 1)
               n
           end

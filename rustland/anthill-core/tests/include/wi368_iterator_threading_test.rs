@@ -1,5 +1,5 @@
 //! WI-368 / WI-380 acceptance anchor: consuming `List.iterator(xs)` via
-//! `collect` / `length` typechecks PURE and threads the element to `List[Int]`.
+//! `collect` / `length` typechecks PURE and threads the element to `List[Int64]`.
 //!
 //! Both cases were PROVEN to pass in isolation during the WI-386 design
 //! (`docs/design/effect-rows-on-cross-sort-carriers.md`) with FIX 2 + a
@@ -43,10 +43,10 @@ fn load_errors(extras: &[&str]) -> Vec<String> {
 fn collect_iterator_list_is_pure() {
     let src = r#"
 namespace test.wi368.pure
-  import anthill.prelude.{List, Int}
+  import anthill.prelude.{List, Int64}
   import anthill.prelude.List.{iterator, length}
   import anthill.prelude.Stream.{collect}
-  operation walk(xs: List[T = Int]) -> Int = length(collect(iterator(xs)))
+  operation walk(xs: List[T = Int64]) -> Int64 = length(collect(iterator(xs)))
 end
 "#;
     let errs = load_errors(&[src]);
@@ -56,36 +56,36 @@ end
     );
 }
 
-/// The element threads: `collect(List.iterator(xs))` is `List[Int]`, so
-/// returning it where `List[T = Int]` is declared conforms, and returning it
-/// where `List[T = String]` is declared is REJECTED (the element is really Int).
+/// The element threads: `collect(List.iterator(xs))` is `List[Int64]`, so
+/// returning it where `List[T = Int64]` is declared conforms, and returning it
+/// where `List[T = String]` is declared is REJECTED (the element is really Int64).
 #[test]
 fn collect_iterator_threads_element_int() {
     let ok = r#"
 namespace test.wi368.elem_ok
-  import anthill.prelude.{List, Int}
+  import anthill.prelude.{List, Int64}
   import anthill.prelude.List.{iterator}
   import anthill.prelude.Stream.{collect}
-  operation gather(xs: List[T = Int]) -> List[T = Int] = collect(iterator(xs))
+  operation gather(xs: List[T = Int64]) -> List[T = Int64] = collect(iterator(xs))
 end
 "#;
     let errs = load_errors(&[ok]);
     assert!(
         errs.is_empty(),
-        "collect(List.iterator(xs)) is List[Int]; returning it as List[Int] conforms; got: {errs:?}",
+        "collect(List.iterator(xs)) is List[Int64]; returning it as List[Int64] conforms; got: {errs:?}",
     );
 
     let wrong = r#"
 namespace test.wi368.elem_wrong
-  import anthill.prelude.{List, Int, String}
+  import anthill.prelude.{List, Int64, String}
   import anthill.prelude.List.{iterator}
   import anthill.prelude.Stream.{collect}
-  operation gather(xs: List[T = Int]) -> List[T = String] = collect(iterator(xs))
+  operation gather(xs: List[T = Int64]) -> List[T = String] = collect(iterator(xs))
 end
 "#;
     let errs = load_errors(&[wrong]);
     assert!(
         !errs.is_empty(),
-        "collect(List.iterator(xs)) is List[Int], not List[String] — must be rejected",
+        "collect(List.iterator(xs)) is List[Int64], not List[String] — must be rejected",
     );
 }

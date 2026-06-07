@@ -44,18 +44,18 @@ fn fmt(errs: &[load::LoadError]) -> String {
 fn inline_lambda_param_typed_from_function_slot() {
     // `lambda x -> x + 1` previously left `x` an unconstrained var, so the
     // overloaded `+` (`Numeric.add`) in the body was dispatch-ambiguous. With
-    // the declared `Function[Int, Int]` pushed into the argument, `x : Int`
+    // the declared `Function[Int64, Int64]` pushed into the argument, `x : Int64`
     // and the body resolves.
     let src = r#"
 namespace test.wi275.inline
-  import anthill.prelude.{List, Int, Function}
+  import anthill.prelude.{List, Int64, Function}
 
-  operation my_map(xs: List[T = Int], f: Function[Int, Int]) -> List[T = Int] =
+  operation my_map(xs: List[T = Int64], f: Function[Int64, Int64]) -> List[T = Int64] =
     match xs
       case nil() -> nil()
       case cons(h, t) -> cons(f(h), my_map(t, f))
 
-  operation go() -> List[T = Int] = my_map([1, 2, 3], lambda x -> x + 1)
+  operation go() -> List[T = Int64] = my_map([1, 2, 3], lambda x -> x + 1)
 end
 "#;
     let errs = load_errs(src);
@@ -64,19 +64,19 @@ end
 
 #[test]
 fn bare_named_operation_eta_lifted_to_function_value() {
-    // A bare `inc` in a `Function[Int, Int]` slot is the operation as a
-    // function value, not its return type `Int`.
+    // A bare `inc` in a `Function[Int64, Int64]` slot is the operation as a
+    // function value, not its return type `Int64`.
     let src = r#"
 namespace test.wi275.named
-  import anthill.prelude.{List, Int, Function}
+  import anthill.prelude.{List, Int64, Function}
 
-  operation my_map(xs: List[T = Int], f: Function[Int, Int]) -> List[T = Int] =
+  operation my_map(xs: List[T = Int64], f: Function[Int64, Int64]) -> List[T = Int64] =
     match xs
       case nil() -> nil()
       case cons(h, t) -> cons(f(h), my_map(t, f))
 
-  operation inc(n: Int) -> Int = n + 1
-  operation go() -> List[T = Int] = my_map([1, 2, 3], inc)
+  operation inc(n: Int64) -> Int64 = n + 1
+  operation go() -> List[T = Int64] = my_map([1, 2, 3], inc)
 end
 "#;
     let errs = load_errs(src);
@@ -86,25 +86,25 @@ end
 #[test]
 fn wrong_typed_operation_in_function_slot_is_rejected() {
     // Soundness: the eta builds `bad`'s real arrow type `String -> Bool`,
-    // which does not conform to the expected `Function[Int, Int]` — so the
+    // which does not conform to the expected `Function[Int64, Int64]` — so the
     // typer rejects it rather than accepting any operation name.
     let src = r#"
 namespace test.wi275.neg
-  import anthill.prelude.{List, Int, String, Function, Bool}
+  import anthill.prelude.{List, Int64, String, Function, Bool}
 
-  operation my_map(xs: List[T = Int], f: Function[Int, Int]) -> List[T = Int] =
+  operation my_map(xs: List[T = Int64], f: Function[Int64, Int64]) -> List[T = Int64] =
     match xs
       case nil() -> nil()
       case cons(h, t) -> cons(f(h), my_map(t, f))
 
   operation bad(s: String) -> Bool = true
-  operation go() -> List[T = Int] = my_map([1, 2, 3], bad)
+  operation go() -> List[T = Int64] = my_map([1, 2, 3], bad)
 end
 "#;
     let errs = load_errs(src);
     assert!(
         !errs.is_empty(),
-        "a String -> Bool operation must not conform to Function[Int, Int]",
+        "a String -> Bool operation must not conform to Function[Int64, Int64]",
     );
     let formatted = fmt(&errs);
     assert!(
@@ -123,10 +123,10 @@ fn body_less_builtin_in_function_slot_is_rejected_not_crashed() {
     // expected `Function`).
     let src = r#"
 namespace test.wi275.builtin
-  import anthill.prelude.{List, Int, Function}
+  import anthill.prelude.{List, Int64, Function}
   import anthill.reflect.{Term}
 
-  operation my_map(xs: List[T = Int], f: Function[Int, Term]) -> List[T = Term] =
+  operation my_map(xs: List[T = Int64], f: Function[Int64, Term]) -> List[T = Term] =
     match xs
       case nil() -> nil()
       case cons(h, t) -> cons(f(h), my_map(t, f))

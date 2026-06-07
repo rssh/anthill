@@ -26,7 +26,7 @@ object EmbeddedStdlib:
     "anthill.prelude.nothing",
     "anthill.prelude.unit",
     "anthill.prelude.bool",
-    "anthill.prelude.int",
+    "anthill.prelude.int64",
     "anthill.prelude.bigint",
     "anthill.prelude.float",
     "anthill.prelude.string",

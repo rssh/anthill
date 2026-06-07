@@ -4,7 +4,7 @@
 -- A future RandomAccess sub-spec can refine this with the O(1)
 -- guarantee when consumers need it.
 sort anthill.prelude.IndexedSeq
-  import anthill.prelude.{Int, Option}
+  import anthill.prelude.{Int64, Option}
   import anthill.prelude.Option.{none}
   import anthill.prelude.Ordered.{lt, gte}
 
@@ -13,8 +13,8 @@ sort anthill.prelude.IndexedSeq
   sort Effect = ?
 
   operation {
-    length(xs: C) -> Int
-    nth(xs: C, i: Int) -> Option[T]
+    length(xs: C) -> Int64
+    nth(xs: C, i: Int64) -> Option[T]
   }
 
   -- Out-of-bounds indices yield none. Both bounds are stated; the

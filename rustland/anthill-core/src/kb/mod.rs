@@ -4704,7 +4704,7 @@ mod tests {
     fn subst_term_replaces_name() {
         let mut kb = KnowledgeBase::new();
         let t = kb.make_name_term("T");
-        let int = kb.make_name_term("Int");
+        let int = kb.make_name_term("Int64");
 
         // Build Option(T) = Fn("Option", pos_args=[Fn("T",[])], named_args=[])
         let option_sym = kb.intern("Option");
@@ -4729,7 +4729,7 @@ mod tests {
     fn subst_term_identity() {
         let mut kb = KnowledgeBase::new();
         let t = kb.make_name_term("T");
-        let int = kb.make_name_term("Int");
+        let int = kb.make_name_term("Int64");
         let string = kb.make_name_term("String");
 
         // Substituting a name that doesn't appear should return the same term
@@ -4741,7 +4741,7 @@ mod tests {
     fn subst_term_nested() {
         let mut kb = KnowledgeBase::new();
         let t = kb.make_name_term("T");
-        let int = kb.make_name_term("Int");
+        let int = kb.make_name_term("Int64");
 
         // Build pair(T, T)
         let pair_sym = kb.intern("pair");

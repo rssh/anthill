@@ -8,7 +8,7 @@
 -- See docs/proposals/030-theorem-registry.md.
 
 namespace anthill.realization.witness
-  import anthill.prelude.{List, Option, Float, Int, Bool}
+  import anthill.prelude.{List, Option, Float, Int64, Bool}
   import anthill.reflect.{Term}
 
 
@@ -114,8 +114,8 @@ namespace anthill.realization.witness
   --
   -- One mapping from an abstract sort parameter to a concrete sort.
   -- Substitutions are lists of these. For polymorphic sorts like
-  -- `List[T]`, a use at T = Int produces a Specialization whose
-  -- substitution is `[SortBinding(abstract_param: "T", concrete_sort: "anthill.prelude.Int")]`.
+  -- `List[T]`, a use at T = Int64 produces a Specialization whose
+  -- substitution is `[SortBinding(abstract_param: "T", concrete_sort: "anthill.prelude.Int64")]`.
 
   entity SortBinding(
     abstract_param : String,                          -- e.g. "T"
@@ -144,7 +144,7 @@ namespace anthill.realization.witness
 
   entity MetaTacticContract(
     name        : String,                             -- meta-tactic name
-    arity       : Int,                                -- number of sub-witnesses required
+    arity       : Int64,                                -- number of sub-witnesses required
     description : String                              -- human-readable shape description
   )
 end

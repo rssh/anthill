@@ -194,7 +194,7 @@ fn plain_call_on_polymorphic_op_documents_the_gap() {
 /// nested op's spec-op dispatch site.
 const MULTI_OP_DRIVER: &str = r#"
 namespace test.wi236_multi
-  import anthill.prelude.{Cell, Option, String, Int}
+  import anthill.prelude.{Cell, Option, String, Int64}
   import anthill.stage0.{WorkItem}
   import anthill.todo.store.{WorkItemStore, FileBasedWorkitemStore, WIS}
 
@@ -202,12 +202,12 @@ namespace test.wi236_multi
     sort State = ?
     requires WorkItemStore[State]
 
-    operation main(s: Cell[State], id: String) -> Int
+    operation main(s: Cell[State], id: String) -> Int64
       effects Error
     =
       cmd_inner(s, id)
 
-    operation cmd_inner(s: Cell[State], id: String) -> Int
+    operation cmd_inner(s: Cell[State], id: String) -> Int64
       effects Error
     =
       match WorkItemStore.lookup(s, id)

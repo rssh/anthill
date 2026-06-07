@@ -3,7 +3,7 @@
 -- Sibling to rust_std (full codegen). Output is a Rust crate that:
 --   1. include_str!'s every file in `sources`
 --   2. Builds the KB at startup, registers stdlib builtins + user effect handlers
---   3. Calls interp.call(`entry`, argv) and returns its Int as exit code
+--   3. Calls interp.call(`entry`, argv) and returns its Int64 as exit code
 --
 -- Used for distribution: one static binary hosts the interpreter + the
 -- embedded anthill program, no .anthill files needed at the user's
@@ -38,7 +38,7 @@ namespace anthill.realization.rust_anthill
     ],
     receiver_map: [],
     type_map: [
-      TypeMapping(anthill_type: "Int",       host_type: "i64"),
+      TypeMapping(anthill_type: "Int64",       host_type: "i64"),
       TypeMapping(anthill_type: "Float",     host_type: "f64"),
       TypeMapping(anthill_type: "Bool",      host_type: "bool"),
       TypeMapping(anthill_type: "String",    host_type: "String"),

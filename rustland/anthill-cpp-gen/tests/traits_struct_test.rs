@@ -13,14 +13,14 @@ fn simple_sort_with_two_operations() {
     // Greeter with a carrier so self-types resolve.
     let source_with_carrier = r#"
         namespace test.simple
-          import anthill.prelude.{Int, Unit, String, Modify, Option}
+          import anthill.prelude.{Int64, Unit, String, Modify, Option}
           import anthill.realization.{Implementation, CarrierBinding}
           export Greeter
 
           sort Greeter
             operation greet(self: Greeter, name: String) -> Unit
               effects Modify[self]
-            operation count(self: Greeter) -> Int
+            operation count(self: Greeter) -> Int64
           end
 
           fact Implementation(
@@ -64,7 +64,7 @@ fn emitted_bodies_actually_compile() {
     // that body lowering produces valid C++ — beyond textual matching.
     let source = r#"
         namespace test.bodies
-          import anthill.prelude.{Int, Unit, String, Modify, Option}
+          import anthill.prelude.{Int64, Unit, String, Modify, Option}
           import anthill.realization.{Implementation, CarrierBinding}
           export Counter
 
@@ -73,8 +73,8 @@ fn emitted_bodies_actually_compile() {
               effects Modify[self]
             operation reset(self: Counter) -> Unit
               effects Modify[self]
-            operation value(self: Counter) -> Int
-            operation set_to(self: Counter, n: Int) -> Unit
+            operation value(self: Counter) -> Int64
+            operation set_to(self: Counter, n: Int64) -> Unit
               effects Modify[self]
           end
 
@@ -190,7 +190,7 @@ fn parameterized_return_bodies_compile() {
     // methods return matching std types.
     let source = r#"
         namespace test.params_compile
-          import anthill.prelude.{Int, Float, Unit, List, Option, Modify}
+          import anthill.prelude.{Int64, Float, Unit, List, Option, Modify}
           import anthill.realization.{Implementation, CarrierBinding}
           export Sensor
 
@@ -276,13 +276,13 @@ int main() {{
 
 #[test]
 fn parameterized_return_types_emit_bodies() {
-    // Operation returns `List[T = Float]` and `Option[T = Int]` —
+    // Operation returns `List[T = Float]` and `Option[T = Int64]` —
     // both should lower to the std-template form AND get bodies
     // synthesised (since List/Option of primitives is "transparent").
     // Project-local entities in the type stay decl-only.
     let source = r#"
         namespace test.params_in_ops
-          import anthill.prelude.{Int, Float, Unit, String, Modify, List, Option}
+          import anthill.prelude.{Int64, Float, Unit, String, Modify, List, Option}
           import anthill.realization.{Implementation, CarrierBinding}
           export Sensor, Sample
 
@@ -367,7 +367,7 @@ fn lf1_gps_traits_struct_emits_correctly() {
 
     // Operations sorted alphabetically: disable, enable, get_sampling_period,
     // get_speed, get_speed_vector, get_values.
-    // self → webots::GPS * (carrier); Int → int64_t; Float → double;
+    // self → webots::GPS * (carrier); Int64 → int64_t; Float → double;
     // Vec3 → Vec3 short name (no carrier — a project-local entity);
     // Unit → void.
     assert!(cpp.contains("struct GPS {"), "missing struct header:\n{cpp}");

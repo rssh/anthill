@@ -18,7 +18,7 @@ explicit `:- …` *plus* the `requires` of its enclosing sort** — a rule defin
 inside a sort inherits that sort's `requires` *implicitly*. So even
 `add_zero: add(?x, 0) = ?x` (no explicit guard) is type-directed when it lives
 in `Numeric`: it carries `requires Numeric[T]`, and its `add` is `Numeric.add`,
-matching a concrete `Int.add(x,0)` only via the satisfaction relation. The
+matching a concrete `Int64.add(x,0)` only via the satisfaction relation. The
 **only** genuinely guard-free / type-independent rules are **top-level rules
 over concrete functors** with no enclosing-sort `requires` — rare. The trivial
 `transpose(transpose(?m)) = ?m` is type-free *only* if declared at top level
@@ -31,8 +31,8 @@ Numeric:  add_identity:  add(?a, 0) = ?a                  -- requires Numeric[T]
 Ordered:  min(?a, ?b) = ite(lte(?a, ?b), ?a, ?b)          -- requires Ordered[T]
 ```
 
-The rule's `add` is `Numeric.add`; a real term is `Int.add(x, 0)` — a
-**different symbol**. The rule matches only if `Int` *satisfies* `Numeric`, and
+The rule's `add` is `Numeric.add`; a real term is `Int64.add(x, 0)` — a
+**different symbol**. The rule matches only if `Int64` *satisfies* `Numeric`, and
 its `requires` holds only if the type satisfies it. **Both need the type.** So
 firing spec/sort rules is type-directed — it *cannot* be done independent of the
 typer. Type-independent firing covers only trivial monomorphic identities.

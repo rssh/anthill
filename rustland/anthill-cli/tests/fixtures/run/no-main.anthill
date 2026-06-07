@@ -1,8 +1,8 @@
 namespace my.empty
-  import anthill.prelude.{Int}
+  import anthill.prelude.{Int64}
   export Thing
 
   sort Thing
-    operation double(n: Int) -> Int = n + n
+    operation double(n: Int64) -> Int64 = n + n
   end
 end

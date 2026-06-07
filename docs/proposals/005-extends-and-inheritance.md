@@ -100,11 +100,11 @@ Can `extends` have `where` bindings?
 
 ```
 sort IntOrdered
-  extends Ordered where { T = Int }
+  extends Ordered where { T = Int64 }
 end
 ```
 
-Or is this just `import Ordered where { T = Int }` plus a subtyping assertion?
+Or is this just `import Ordered where { T = Int64 }` plus a subtyping assertion?
 
 ## Possible Approaches
 

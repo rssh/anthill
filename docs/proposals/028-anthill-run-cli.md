@@ -22,7 +22,7 @@ Non-goals for v1: package manager, dependency resolution, watch mode, REPL, incr
 
 ```anthill
 namespace anthill.cli
-  import anthill.prelude.{Int, String, List}
+  import anthill.prelude.{Int64, String, List}
   import anthill.prelude.Console.{ConsoleOutput, ConsoleInput}
   import anthill.prelude.{Error}
   export Main, main
@@ -30,7 +30,7 @@ namespace anthill.cli
   -- A program that can be invoked from the shell.
   -- Plain sort: no type parameter, no carrier. Hosts one abstract operation.
   sort Main
-    operation main(args: List[T = String]) -> Int
+    operation main(args: List[T = String]) -> Int64
       effects ConsoleOutput, ConsoleInput, Error
   end
 end
@@ -49,7 +49,7 @@ namespace my.app
   sort MyApp
     provides anthill.cli.Main
 
-    operation main(args: List[T = String]) -> Int
+    operation main(args: List[T = String]) -> Int64
       effects ConsoleOutput
     = let c = console in
       println(c, "hello, world");
@@ -58,18 +58,18 @@ namespace my.app
 end
 ```
 
-The body is an expression (per proposal 018's operation-body form), not a rule: `main` is a functional operation with a single `Int` return, not a relational definition.
+The body is an expression (per proposal 018's operation-body form), not a rule: `main` is a functional operation with a single `Int64` return, not a relational definition.
 
 ### Why `requires` / `provides`, not a typeclass
 
 - We do need a *sort*, because every operation in anthill is declared inside a sort. `anthill.cli.Main` is that sort — a signature container.
-- We do not need *parametric abstraction* (`sort T = ?` + satisfaction facts). `Main` has exactly one operation; there is no cluster to reason about generically; no value of type `Main` is ever passed around. The typeclass pattern earns its keep when multiple operations cluster under an abstraction and dispatch varies by carrier type (`Eq.eq` across Int/String/…); `Main` meets neither condition.
+- We do not need *parametric abstraction* (`sort T = ?` + satisfaction facts). `Main` has exactly one operation; there is no cluster to reason about generically; no value of type `Main` is ever passed around. The typeclass pattern earns its keep when multiple operations cluster under an abstraction and dispatch varies by carrier type (`Eq.eq` across Int64/String/…); `Main` meets neither condition.
 - `provides` is proposal 025's standard refinement-and-delivery mechanism: `MyApp provides Main` means `MyApp` is a subtype of `Main` and must supply Main's operations. This is the right modeling tool here. The CLI discovers entry points by querying the KB for this `provides` relation — the discovery story does not need a separate fact shape.
 - User-side cost shrinks from three constructs (`entity` + `fact Main[…]` + `operation main(prog: T, …)`) to two (`sort MyApp` + `operation main(…)`), and `main` drops the ceremonial `prog: T` parameter.
 
 ### Signature contract
 
-- **Return type `Int`**: process exit code. `0` = success, non-zero = failure.
+- **Return type `Int64`**: process exit code. `0` = success, non-zero = failure.
 - **`args: List[String]`**: CLI positional arguments passed after `--` (see below).
 - **Effect row**: `ConsoleOutput, ConsoleInput, Error` by default. Additional effects (`Modify[store]`, `Branch`, …) are allowed but must have handlers registered — see §Handlers.
 
@@ -157,7 +157,7 @@ Programs are free to register additional handlers via proposal-027 `with_handler
 
 ## Promotion of the result
 
-`main` returns `Int` — a `Value::Int(i64)`. No `Value → TermId` promotion is needed at the exit boundary; the i64 goes straight to `std::process::exit`. (The promotion path from proposal 026 §CLI was designed for arbitrary return types; it is retained as library API but not exercised by the CLI.)
+`main` returns `Int64` — a `Value::Int64(i64)`. No `Value → TermId` promotion is needed at the exit boundary; the i64 goes straight to `std::process::exit`. (The promotion path from proposal 026 §CLI was designed for arbitrary return types; it is retained as library API but not exercised by the CLI.)
 
 ## Error reporting
 
@@ -184,7 +184,7 @@ Exit code **1** — runtime error.
 
 Acceptance test is `anthill-cli/tests/run_cmd_test.rs`:
 
-1. **hello.anthill** — single-file program with `sort Hello { provides Main; operation main(_) -> Int = println(console, "hello"); 0 }`. Assert `stdout == "hello\n"`, exit code 0.
+1. **hello.anthill** — single-file program with `sort Hello { provides Main; operation main(_) -> Int64 = println(console, "hello"); 0 }`. Assert `stdout == "hello\n"`, exit code 0.
 2. **no-main.anthill** — well-typed program with no sort providing `Main`. Assert stderr matches the "no program entry" message, exit code 2.
 3. **two-mains.anthill** — two sorts providing `Main`. Assert (a) without `--entry`: exit 2, stderr contains the "ambiguous entry" message *and* both qualified sort names in the candidate list; (b) with `--entry my.Two`: the right one runs.
 4. **args.anthill** — program echoes `args` one per line. Invoke `anthill run … -- a b c`; assert stdout matches.
@@ -192,7 +192,7 @@ Acceptance test is `anthill-cli/tests/run_cmd_test.rs`:
 
 ## Open design decisions
 
-1. **Should `Main` be in `anthill.prelude` or `anthill.cli`?** Draft puts it in `anthill.cli` — the sort is CLI-shaped (return is `Int`, effect row is Console + Error), so it does not belong in the pure prelude. Non-CLI embeddings (library, WASM, server) should define their own entry-point sort (e.g. `anthill.wasm.Wasm`, `anthill.embed.Op`).
+1. **Should `Main` be in `anthill.prelude` or `anthill.cli`?** Draft puts it in `anthill.cli` — the sort is CLI-shaped (return is `Int64`, effect row is Console + Error), so it does not belong in the pure prelude. Non-CLI embeddings (library, WASM, server) should define their own entry-point sort (e.g. `anthill.wasm.Wasm`, `anthill.embed.Op`).
 2. **`println` flushing policy.** v1 flushes on every `println`. Revisit only if a benchmark motivates buffering.
 3. **`read_line` on EOF.** v1 returns empty string. Cleaner would be an `Option[String]`, but the current Console op signature is `String`. Revisit alongside any future Console-signature change; do not special-case here.
 4. **Should `--entry` accept the operation name as an alias?** Draft says no. One name, one convention.

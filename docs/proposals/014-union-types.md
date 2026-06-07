@@ -6,7 +6,7 @@
 
 ## Motivation
 
-Field types in anthill entities are currently either concrete sorts (`Int`, `String`), abstract sorts (`sort T = ?`), or the catch-all `Term`. This lacks precision for cases where a field can hold one of several specific sorts.
+Field types in anthill entities are currently either concrete sorts (`Int64`, `String`), abstract sorts (`sort T = ?`), or the catch-all `Term`. This lacks precision for cases where a field can hold one of several specific sorts.
 
 Concrete example: the `Requires` entity in `anthill.reflect`:
 
@@ -17,7 +17,7 @@ entity Requires(
 )
 ```
 
-The `spec` field is typed `Term` but actually holds either a `Ref` (simple requires like `requires Eq`) or a `SortView` (parameterized requires like `requires Eq[T = Int]`). The type `Term` says nothing about this constraint. What we want is:
+The `spec` field is typed `Term` but actually holds either a `Ref` (simple requires like `requires Eq`) or a `SortView` (parameterized requires like `requires Eq[T = Int64]`). The type `Term` says nothing about this constraint. What we want is:
 
 ```anthill
 entity Requires(
@@ -48,7 +48,7 @@ sort SpecRef = Ref | SortView
 The `|` operator is left-associative and has lower precedence than `Name[bindings]`:
 
 ```anthill
-sort T = A | B[X = Int] | C    -- (A | B[X = Int]) | C
+sort T = A | B[X = Int64] | C    -- (A | B[X = Int64]) | C
 ```
 
 ### Grammar

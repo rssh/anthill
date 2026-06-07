@@ -56,12 +56,12 @@ class LoaderTest extends munit.FunSuite:
     val kb = KnowledgeBase()
     Prelude.register(kb)
 
-    assert(kb.hasQualifiedName("anthill.prelude.Int"))
+    assert(kb.hasQualifiedName("anthill.prelude.Int64"))
     assert(kb.hasQualifiedName("anthill.prelude.String"))
     assert(kb.hasQualifiedName("anthill.prelude.Float"))
     assert(kb.hasQualifiedName("anthill.prelude.Bool"))
 
-    val intSym = kb.tryResolveSymbol("anthill.prelude.Int").get
+    val intSym = kb.tryResolveSymbol("anthill.prelude.Int64").get
     val intTerm = kb.makeNameTermFromSym(intSym)
     assertEquals(kb.sortKind(intTerm), Some(SortKind.Defined))
   }

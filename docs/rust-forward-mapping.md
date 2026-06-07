@@ -191,7 +191,7 @@ sort Container {                           pub trait Container<T>
 Inline type expressions `Name[T = X]` map to generic type application in Rust:
 
 ```
-List[T = Int]                   →  Vec<i32>        (prelude type)
+List[T = Int64]                   →  Vec<i32>        (prelude type)
 Option[T = Account]             →  Option<Account>  (prelude type)
 List[T = ContextRef]            →  Vec<ContextRef>  (prelude type)
 ```
@@ -204,7 +204,7 @@ Anthill prelude sorts map to idiomatic Rust types. These mappings are defined in
 
 | Anthill type | Rust type |
 |---|---|
-| `Int` | `i64` |
+| `Int64` | `i64` |
 | `Float` | `f64` |
 | `Bool` | `bool` |
 | `String` | `String` |
@@ -468,7 +468,7 @@ sort LogicalStream {
 
 -- Rule 1d: Sort name match in enum
 sort List {
-  operation length(l: List) -> Int         →  fn length(&self) -> i64;
+  operation length(l: List) -> Int64         →  fn length(&self) -> i64;
 }
 
 -- Rule 2: In namespace config, first arg is Settings (an entity in config)
@@ -517,7 +517,7 @@ operation persist(store: Store, fact: Term, meta: Meta) -> FactId
 Without `Error`, the return is unwrapped:
 
 ```
-operation increment(counter: Counter) -> Int
+operation increment(counter: Counter) -> Int64
   effects (Modify{counter})
 
 →  fn increment(&mut self) -> i64;
@@ -775,7 +775,7 @@ sort anthill.prelude.List
   sort T
   entity nil
   entity cons(head: T, tail: List)
-  operation length(l: List) -> Int
+  operation length(l: List) -> Int64
   rule length(nil) = 0
   rule length(cons(?x, ?xs)) = add(1, length(?xs))
 end
@@ -1136,7 +1136,7 @@ entity ReceiverRule(
 
 ```anthill
 entity TypeMapping(
-  anthill_type : String,     -- "Int", "List", "Option"
+  anthill_type : String,     -- "Int64", "List", "Option"
   host_type    : String      -- "i64", "Vec", "Option"
 )
 ```
@@ -1176,7 +1176,7 @@ fact LanguageMapping(
   ],
 
   type_map: [
-    TypeMapping(anthill_type: "Int",       host_type: "i64"),
+    TypeMapping(anthill_type: "Int64",       host_type: "i64"),
     TypeMapping(anthill_type: "Float",     host_type: "f64"),
     TypeMapping(anthill_type: "Bool",      host_type: "bool"),
     TypeMapping(anthill_type: "String",    host_type: "String"),
@@ -1235,7 +1235,7 @@ fact LanguageMapping(
     ReceiverRule(condition: "returns_same_type", receiver: ByValue)
   ],
   type_map: [
-    TypeMapping(anthill_type: "Int",    host_type: "i32"),
+    TypeMapping(anthill_type: "Int64",    host_type: "i32"),
     TypeMapping(anthill_type: "List",   host_type: "heapless::Vec"),
     TypeMapping(anthill_type: "String", host_type: "heapless::String"),
     ...
@@ -1256,7 +1256,7 @@ fact LanguageMapping(
   ],
   receiver_map: [],
   type_map: [
-    TypeMapping(anthill_type: "Int",    host_type: "Int"),
+    TypeMapping(anthill_type: "Int64",    host_type: "Int64"),
     TypeMapping(anthill_type: "List",   host_type: "List"),
     TypeMapping(anthill_type: "Option", host_type: "Option"),
     ...

@@ -68,7 +68,7 @@ fn changes_on_transitive_dep_body_change() {
 fn changes_on_referenced_fact_change() {
     let with_fact = format!(
         "{BASE_SRC}\n    namespace test.cache_facts\n      export Cfg\n      \
-         entity Cfg(scale: Int)\n      fact Cfg(scale: 5)\n    end\n"
+         entity Cfg(scale: Int64)\n      fact Cfg(scale: 5)\n    end\n"
     );
     let modified = with_fact.replace("fact Cfg(scale: 5)", "fact Cfg(scale: 6)");
 

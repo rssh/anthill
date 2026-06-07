@@ -35,7 +35,7 @@ fn induction_with_base_and_step_proved_combines_to_proved() {
     let src = r#"
         namespace test.induction.ok
           export ind_ok, base_violation, step_violation
-          entity Bound(lo: Int, hi: Int)
+          entity Bound(lo: Int64, hi: Int64)
           fact Bound(lo: 0, hi: 10)
 
           -- Base violation: P(0) doesn't hold. With ?lo = 0 and the
@@ -56,7 +56,7 @@ fn induction_with_base_and_step_proved_combines_to_proved() {
           rule ind_ok(?marker) :- eq(?marker, true)
 
           proof ind_ok
-            by z3(tactic: induction(over: anthill.prelude.Int,
+            by z3(tactic: induction(over: anthill.prelude.Int64,
                                      base: base_violation,
                                      step: step_violation),
                   logic: "LIA")
@@ -81,7 +81,7 @@ fn induction_with_failing_step_disproves() {
     let src = r#"
         namespace test.induction.fail
           export ind_bad, base_unsat, step_sat
-          entity Cfg(scale: Int)
+          entity Cfg(scale: Int64)
           fact Cfg(scale: 5)
 
           -- Unsat (good base case).
@@ -95,7 +95,7 @@ fn induction_with_failing_step_disproves() {
           rule ind_bad(?marker) :- eq(?marker, true)
 
           proof ind_bad
-            by z3(tactic: induction(over: anthill.prelude.Int,
+            by z3(tactic: induction(over: anthill.prelude.Int64,
                                      base: base_unsat,
                                      step: step_sat),
                   logic: "LIA")
@@ -121,7 +121,7 @@ fn induction_dispatches_three_positional_cases() {
     let src = r#"
         namespace test.induction.multi
           export ind_multi, c1, c2, c3
-          entity Cfg(scale: Int)
+          entity Cfg(scale: Int64)
           fact Cfg(scale: 5)
 
           rule c1(?marker)

@@ -28,7 +28,7 @@ Worth saying upfront because it shapes the design: anthill's loader **already** 
 
 ### `sort T = ?` registration
 
-`load.rs:455-456`, scan pass 1: when `Item::AbstractSort` with `s.definition = TypeExpr::Variable { … }` is encountered inside a sort/enum scope, the scope's `type_params` set gains `"T"` and `type_params_ordered` gets the name appended (so positional bindings later — `Stream[Int, Error]` → `[T = Int, E = Error]` — work).
+`load.rs:455-456`, scan pass 1: when `Item::AbstractSort` with `s.definition = TypeExpr::Variable { … }` is encountered inside a sort/enum scope, the scope's `type_params` set gains `"T"` and `type_params_ordered` gets the name appended (so positional bindings later — `Stream[Int64, Error]` → `[T = Int64, E = Error]` — work).
 
 ### `T` references in operation signatures
 
@@ -197,10 +197,10 @@ Matches the spec's declared `lookup(...) -> Option[T = Term] effects Error`.
 
 ### 1. What about operations *not* declared inside the sort's body?
 
-Free-standing ops like `apply(s: Stream, n: Int) -> ...` declared at namespace level. Inside this op, `Stream` references would lower to `sort_ref(Stream)` via the non-type-param path (`Stream` isn't a type_param of the namespace). The op's signature uses bare `Stream` as a "polymorphic over T and E" shape — but there's no shared Var to bind.
+Free-standing ops like `apply(s: Stream, n: Int64) -> ...` declared at namespace level. Inside this op, `Stream` references would lower to `sort_ref(Stream)` via the non-type-param path (`Stream` isn't a type_param of the namespace). The op's signature uses bare `Stream` as a "polymorphic over T and E" shape — but there's no shared Var to bind.
 
 Two stances:
-- **(a) Reject as ambiguous** at load time: bare-sort references to a parametric sort outside the sort's body must specify bindings (positional or named). Forces `apply(s: Stream[T = ?T, E = ?E], n: Int)` syntax.
+- **(a) Reject as ambiguous** at load time: bare-sort references to a parametric sort outside the sort's body must specify bindings (positional or named). Forces `apply(s: Stream[T = ?T, E = ?E], n: Int64)` syntax.
 - **(b) Allow; freshen at load time**: create a fresh Var per occurrence per op (or shared per op's signature like the in-body case, but per-op rather than per-sort). At call time, unify normally.
 
 This collides with WI-186 (free-standing parametric ops). Coordinate: probably (b), and the freshening machinery should land once and serve both. **Open: confirm with WI-186 implementer.** Out of WI-211's strict scope.
@@ -268,7 +268,7 @@ Estimated ~80 LoC in `kb/typing.rs`, plus a small helper.
 - WI-186 (free-standing parametric ops) — different binding site, same machinery in spirit. Should be coordinated but lands as its own WI.
 - WI-210 (call-site dispatch via fact for spec/impl method resolution) — orthogonal; the typer pieces from WI-211 are reused but the dispatch design needs its own doc.
 - Variance refinement — out of scope.
-- Subtyping for parametric sorts (`Cell[Int] <: Cell[Number]`) — not how anthill works today; out of scope.
+- Subtyping for parametric sorts (`Cell[Int64] <: Cell[Number]`) — not how anthill works today; out of scope.
 
 ## Acceptance
 

@@ -26,13 +26,13 @@ pub fn register_standard_builtins(interp: &mut Interpreter) -> Result<(), EvalEr
     register_if_present(interp, "anthill.prelude.Numeric.sub", numeric_sub)?;
     register_if_present(interp, "anthill.prelude.Numeric.mul", numeric_mul)?;
 
-    register_if_present(interp, "anthill.prelude.Int.neg", int_neg)?;
-    register_if_present(interp, "anthill.prelude.Int.abs", int_abs)?;
-    register_if_present(interp, "anthill.prelude.Int.mod", int_mod)?;
-    register_if_present(interp, "anthill.prelude.Int.rem", int_rem)?;
-    register_if_present(interp, "anthill.prelude.Int.div", int_div)?;
-    register_if_present(interp, "anthill.prelude.Int.divExact", int_div)?;
-    register_if_present(interp, "anthill.prelude.Int.sign", int_sign)?;
+    register_if_present(interp, "anthill.prelude.Int64.neg", int_neg)?;
+    register_if_present(interp, "anthill.prelude.Int64.abs", int_abs)?;
+    register_if_present(interp, "anthill.prelude.Int64.mod", int_mod)?;
+    register_if_present(interp, "anthill.prelude.Int64.rem", int_rem)?;
+    register_if_present(interp, "anthill.prelude.Int64.div", int_div)?;
+    register_if_present(interp, "anthill.prelude.Int64.divExact", int_div)?;
+    register_if_present(interp, "anthill.prelude.Int64.sign", int_sign)?;
 
     register_if_present(interp, "anthill.prelude.Float.div", float_div)?;
 
@@ -62,7 +62,7 @@ pub fn register_standard_builtins(interp: &mut Interpreter) -> Result<(), EvalEr
     register_if_present(interp, "anthill.prelude.BigInt.to_bigint", bigint_to_bigint)?;
     register_if_present(interp, "anthill.prelude.BigInt.to_int", bigint_to_int)?;
     register_if_present(interp, "anthill.prelude.BigInt.to_float", bigint_to_float)?;
-    register_if_present(interp, "anthill.prelude.Int.to_float", int_to_float)?;
+    register_if_present(interp, "anthill.prelude.Int64.to_float", int_to_float)?;
 
     register_if_present(interp, "anthill.prelude.Float.isNaN", float_is_nan)?;
     register_if_present(interp, "anthill.prelude.Float.isInfinite", float_is_infinite)?;
@@ -94,7 +94,7 @@ pub fn register_standard_builtins(interp: &mut Interpreter) -> Result<(), EvalEr
     register_if_present(interp, "anthill.reflect.find_fact", reflect_find_fact)?;
     register_if_present(interp, "anthill.reflect.replace_named_arg", reflect_replace_named_arg)?;
     register_if_present(interp, "anthill.prelude.Time.now", time_now)?;
-    register_if_present(interp, "anthill.prelude.Int.to_string", int_to_string)?;
+    register_if_present(interp, "anthill.prelude.Int64.to_string", int_to_string)?;
 
     // Persistence (proposal 007). The operations are declared inside
     // `sort Store { operation persist … }` so their qualified names are
@@ -204,55 +204,55 @@ fn numeric_mul(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError>
 // ── Int-specific ────────────────────────────────────────────────
 
 fn int_neg(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
-    let [a] = expect_args::<1>("Int.neg", args)?;
+    let [a] = expect_args::<1>("Int64.neg", args)?;
     match a {
         Value::Int(x) => x.checked_neg()
             .map(Value::Int)
-            .ok_or(EvalError::Overflow { op: "Int.neg" }),
-        other => Err(type_mismatch("Int", &other, None)),
+            .ok_or(EvalError::Overflow { op: "Int64.neg" }),
+        other => Err(type_mismatch("Int64", &other, None)),
     }
 }
 
 fn int_abs(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
-    let [a] = expect_args::<1>("Int.abs", args)?;
+    let [a] = expect_args::<1>("Int64.abs", args)?;
     match a {
         Value::Int(x) => x.checked_abs()
             .map(Value::Int)
-            .ok_or(EvalError::Overflow { op: "Int.abs" }),
-        other => Err(type_mismatch("Int", &other, None)),
+            .ok_or(EvalError::Overflow { op: "Int64.abs" }),
+        other => Err(type_mismatch("Int64", &other, None)),
     }
 }
 
 fn int_mod(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
-    let [a, b] = expect_args::<2>("Int.mod", args)?;
+    let [a, b] = expect_args::<2>("Int64.mod", args)?;
     match (&a, &b) {
-        (Value::Int(_), Value::Int(0)) => Err(EvalError::DivisionByZero { op: "Int.mod" }),
+        (Value::Int(_), Value::Int(0)) => Err(EvalError::DivisionByZero { op: "Int64.mod" }),
         (Value::Int(x), Value::Int(y)) => Ok(Value::Int(x.rem_euclid(*y))),
-        _ => Err(type_mismatch("Int", &a, Some(&b))),
+        _ => Err(type_mismatch("Int64", &a, Some(&b))),
     }
 }
 
 fn int_rem(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
-    let [a, b] = expect_args::<2>("Int.rem", args)?;
+    let [a, b] = expect_args::<2>("Int64.rem", args)?;
     match (&a, &b) {
-        (Value::Int(_), Value::Int(0)) => Err(EvalError::DivisionByZero { op: "Int.rem" }),
+        (Value::Int(_), Value::Int(0)) => Err(EvalError::DivisionByZero { op: "Int64.rem" }),
         (Value::Int(x), Value::Int(y)) => Ok(Value::Int(x % y)),
-        _ => Err(type_mismatch("Int", &a, Some(&b))),
+        _ => Err(type_mismatch("Int64", &a, Some(&b))),
     }
 }
 
-/// Truncated integer division. Backs both `anthill.prelude.Int.div` (the
-/// primary name that `/` desugars to) and the historical `Int.divExact`
+/// Truncated integer division. Backs both `anthill.prelude.Int64.div` (the
+/// primary name that `/` desugars to) and the historical `Int64.divExact`
 /// alias (kept via stdlib rule `divExact(a, b) = div(a, b)` for
 /// compatibility). Semantics are identical — the name change is cosmetic.
 fn int_div(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
-    let [a, b] = expect_args::<2>("Int.div", args)?;
+    let [a, b] = expect_args::<2>("Int64.div", args)?;
     match (&a, &b) {
-        (Value::Int(_), Value::Int(0)) => Err(EvalError::DivisionByZero { op: "Int.div" }),
+        (Value::Int(_), Value::Int(0)) => Err(EvalError::DivisionByZero { op: "Int64.div" }),
         (Value::Int(x), Value::Int(y)) => x.checked_div(*y)
             .map(Value::Int)
-            .ok_or(EvalError::Overflow { op: "Int.div" }),
-        _ => Err(type_mismatch("Int", &a, Some(&b))),
+            .ok_or(EvalError::Overflow { op: "Int64.div" }),
+        _ => Err(type_mismatch("Int64", &a, Some(&b))),
     }
 }
 
@@ -268,10 +268,10 @@ fn float_div(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
 }
 
 fn int_sign(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
-    let [a] = expect_args::<1>("Int.sign", args)?;
+    let [a] = expect_args::<1>("Int64.sign", args)?;
     match a {
         Value::Int(x) => Ok(Value::Int(x.signum())),
-        other => Err(type_mismatch("Int", &other, None)),
+        other => Err(type_mismatch("Int64", &other, None)),
     }
 }
 
@@ -459,10 +459,10 @@ fn float_is_finite(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalEr
 /// Int → Float. Exact for |n| < 2^53; rounds to nearest representable
 /// double for larger magnitudes (standard IEEE conversion).
 fn int_to_float(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
-    let [a] = expect_args::<1>("Int.to_float", args)?;
+    let [a] = expect_args::<1>("Int64.to_float", args)?;
     match a {
         Value::Int(n) => Ok(Value::Float(n as f64)),
-        other => Err(type_mismatch("Int", &other, None)),
+        other => Err(type_mismatch("Int64", &other, None)),
     }
 }
 
@@ -532,8 +532,8 @@ fn string_to_lower(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalEr
 fn string_substring(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [s, start, end] = expect_args::<3>("String.substring", args)?;
     let s = match &s { Value::Str(x) => x.clone(), _ => return Err(type_mismatch("String", &s, None)) };
-    let start = start.as_int().ok_or_else(|| type_mismatch("Int", &start, None))?;
-    let end = end.as_int().ok_or_else(|| type_mismatch("Int", &end, None))?;
+    let start = start.as_int().ok_or_else(|| type_mismatch("Int64", &start, None))?;
+    let end = end.as_int().ok_or_else(|| type_mismatch("Int64", &end, None))?;
     let n = s.chars().count() as i64;
     let lo = start.max(0).min(n) as usize;
     let hi = end.max(0).min(n) as usize;
@@ -1295,14 +1295,14 @@ fn time_now(_interp: &mut Interpreter, _args: &[Value]) -> Result<Value, EvalErr
     ))
 }
 
-/// `anthill.prelude.Int.to_string(n: Int) -> String`. Decimal repr, no
+/// `anthill.prelude.Int64.to_string(n: Int64) -> String`. Decimal repr, no
 /// padding. Negative numbers carry a leading `-`. The CLI port uses this
 /// for `"180 work item(s):"` and per-status counts.
 fn int_to_string(_interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
-    let [arg] = expect_args::<1>("Int.to_string", args)?;
+    let [arg] = expect_args::<1>("Int64.to_string", args)?;
     match arg {
         Value::Int(n) => Ok(Value::Str(n.to_string())),
-        other => Err(type_mismatch("Int", &other, None)),
+        other => Err(type_mismatch("Int64", &other, None)),
     }
 }
 
@@ -1766,7 +1766,7 @@ mod tests {
         let err = numeric_add(&mut dummy(), &[Value::Int(1), Value::Float(2.0)]).unwrap_err();
         match err {
             EvalError::TypeMismatch { got, .. } => {
-                assert!(got.contains("Int") && got.contains("Float"), "got = {got}");
+                assert!(got.contains("Int64") && got.contains("Float"), "got = {got}");
             }
             other => panic!("expected TypeMismatch, got {other:?}"),
         }

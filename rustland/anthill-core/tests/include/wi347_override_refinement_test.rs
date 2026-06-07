@@ -47,7 +47,7 @@ fn override_widening_effect_rejected() {
     // override is unsound → rejected.
     let src = r#"
         namespace wi347.widen
-          import anthill.prelude.{Effect, Int}
+          import anthill.prelude.{Effect, Int64}
           export Eff1, Eff2, Sp, Carrier
           sort Eff1 end
           sort Eff2 end
@@ -58,7 +58,7 @@ fn override_widening_effect_rejected() {
             operation op(x: T) -> T effects Eff1
           end
           sort Carrier
-            entity c(id: Int)
+            entity c(id: Int64)
             fact Sp[T = Carrier]
             operation op(x: Carrier) -> Carrier effects Eff2 = x
           end
@@ -79,7 +79,7 @@ fn override_matching_effect_loads() {
     // trivially a subset, so it loads.
     let src = r#"
         namespace wi347.match
-          import anthill.prelude.{Effect, Int}
+          import anthill.prelude.{Effect, Int64}
           export Eff1, Sp, Carrier
           sort Eff1 end
           fact Effect[T = Eff1]
@@ -88,7 +88,7 @@ fn override_matching_effect_loads() {
             operation op(x: T) -> T effects Eff1
           end
           sort Carrier
-            entity c(id: Int)
+            entity c(id: Int64)
             fact Sp[T = Carrier]
             operation op(x: Carrier) -> Carrier effects Eff1 = x
           end
@@ -106,14 +106,14 @@ fn override_pure_op_loads() {
     // Neither the spec op nor the override declares effects — nothing to widen.
     let src = r#"
         namespace wi347.pure
-          import anthill.prelude.{Int}
+          import anthill.prelude.{Int64}
           export Sp, Carrier
           sort Sp
             sort T = ?
             operation op(x: T) -> T
           end
           sort Carrier
-            entity c(id: Int)
+            entity c(id: Int64)
             fact Sp[T = Carrier]
             operation op(x: Carrier) -> Carrier = x
           end
@@ -133,7 +133,7 @@ fn override_dropping_effect_loads() {
     // effect the spec permits — so it loads. (Empty ⊆ {Eff1}.)
     let src = r#"
         namespace wi347.narrow
-          import anthill.prelude.{Effect, Int}
+          import anthill.prelude.{Effect, Int64}
           export Eff1, Sp, Carrier
           sort Eff1 end
           fact Effect[T = Eff1]
@@ -142,7 +142,7 @@ fn override_dropping_effect_loads() {
             operation op(x: T) -> T effects Eff1
           end
           sort Carrier
-            entity c(id: Int)
+            entity c(id: Int64)
             fact Sp[T = Carrier]
             operation op(x: Carrier) -> Carrier = x
           end
@@ -162,7 +162,7 @@ fn override_strengthening_precondition_rejected() {
     // the spec's (empty) precondition could now violate the override's — unsound.
     let src = r#"
         namespace wi347.pre_strong
-          import anthill.prelude.{Int}
+          import anthill.prelude.{Int64}
           import anthill.prelude.Ordered.{gt}
           export Sp, Carrier
           sort Sp
@@ -170,7 +170,7 @@ fn override_strengthening_precondition_rejected() {
             operation op(x: T) -> T
           end
           sort Carrier
-            entity c(id: Int)
+            entity c(id: Int64)
             fact Sp[T = Carrier]
             operation op(x: Carrier) -> Carrier requires gt(x, 0) = x
           end
@@ -191,7 +191,7 @@ fn override_weakening_postcondition_rejected() {
     // less than the spec — a caller relying on the postcondition is unsound.
     let src = r#"
         namespace wi347.post_weak
-          import anthill.prelude.{Int}
+          import anthill.prelude.{Int64}
           import anthill.prelude.Ordered.{gt}
           export Sp, Carrier
           sort Sp
@@ -199,7 +199,7 @@ fn override_weakening_postcondition_rejected() {
             operation op(x: T) -> T ensures gt(x, 0)
           end
           sort Carrier
-            entity c(id: Int)
+            entity c(id: Int64)
             fact Sp[T = Carrier]
             operation op(x: Carrier) -> Carrier = x
           end
@@ -221,7 +221,7 @@ fn override_matching_contract_loads() {
     // it loads — pins that the check does not false-positive on a faithful impl.
     let src = r#"
         namespace wi347.contract_ok
-          import anthill.prelude.{Int}
+          import anthill.prelude.{Int64}
           import anthill.prelude.Ordered.{gt}
           export Sp, Carrier
           sort Sp
@@ -229,7 +229,7 @@ fn override_matching_contract_loads() {
             operation op(x: T) -> T requires gt(x, 0) ensures gt(x, 0)
           end
           sort Carrier
-            entity c(id: Int)
+            entity c(id: Int64)
             fact Sp[T = Carrier]
             operation op(x: Carrier) -> Carrier requires gt(x, 0) ensures gt(x, 0) = x
           end

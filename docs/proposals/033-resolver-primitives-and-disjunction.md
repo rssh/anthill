@@ -90,7 +90,7 @@ The goal list stays `Vec<TermId>` (matching `Frame.goals: Vec<TermId>` at `resol
    - `bind_term` (the resolver-internal binding path) wraps as `Value::Term(t)` by construction.
    - Facts retrieved through proposal 007's queryable-store mechanism enter the KB as TermId-asserted facts, then bind through `bind_term` — also `Value::Term(t)`.
    - `lower_query`'s `alloc_from_value` recursively promotes `Value::Entity{..}` payloads back to `Term::App` and scalars to `Term::Lit`, so any caller-supplied Value crossing the boundary is already a TermId by the time it reaches σ.
-   - `Value::Closure | Stream | Substitution | Lazy | Int | Float | String | Bool` (raw) are evaluator-only; `alloc_from_value` either wraps them (scalars) or rejects them (`UnsupportedVariant`). They never appear as σ bindings on a KB goal-position var.
+   - `Value::Closure | Stream | Substitution | Lazy | Int64 | Float | String | Bool` (raw) are evaluator-only; `alloc_from_value` either wraps them (scalars) or rejects them (`UnsupportedVariant`). They never appear as σ bindings on a KB goal-position var.
 
    Forward-compatibility note: a future proposal (e.g. 026.1 Q4 *if* the external-stream design is pursued) might introduce a `bind_value`-fed path that surfaces `Value::Entity{..}` directly on goal-position vars, avoiding the row-by-row hash-cons. If that lands, the walk would need to invoke `alloc_from_value` (`kb/execute.rs:179`) to lift non-Term Values into the goal queue. That hypothetical concern is shared by *every* resolver step that walks goals through σ — not specific to push_choice — and is out of scope for proposal 033.
 2. Let `tail = goals[1..]`. Compute:

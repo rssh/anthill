@@ -1,6 +1,6 @@
 -- Duration: a non-parametric prelude sort
 sort anthill.prelude.Duration {
-  entity Duration(amount: Int, unit: String)         -- duration(5, "m")
+  entity Duration(amount: Int64, unit: String)         -- duration(5, "m")
 }
 
 -- Timestamp: a non-parametric prelude sort

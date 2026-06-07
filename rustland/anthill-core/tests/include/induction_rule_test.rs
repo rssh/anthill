@@ -83,7 +83,7 @@ fn recursive_enum_induction_rule_has_one_case_per_constructor() {
           export IntList
           enum IntList
             entity nil
-            entity cons(head: Int, tail: IntList)
+            entity cons(head: Int64, tail: IntList)
           end
         end
     "#;
@@ -121,7 +121,7 @@ fn no_entities_no_induction_rule() {
 
 #[test]
 fn recursive_field_emits_inductive_hypothesis() {
-    // For `cons(head: Int, tail: IntList)` the body goal must wrap
+    // For `cons(head: Int64, tail: IntList)` the body goal must wrap
     // in forall_impl with a `ho_apply(?P, ?tail)` antecedent — i.e.
     // the inductive hypothesis on the recursive position. The base
     // case `nil` stays as a flat ho_apply.
@@ -130,7 +130,7 @@ fn recursive_field_emits_inductive_hypothesis() {
           export IntList
           enum IntList
             entity nil
-            entity cons(head: Int, tail: IntList)
+            entity cons(head: Int64, tail: IntList)
           end
         end
     "#;

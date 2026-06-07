@@ -1,13 +1,13 @@
 -- Ordered: total ordering (requires Eq)
 sort anthill.prelude.Ordered
   import anthill.prelude.Bool.{ite}
-  import anthill.prelude.Int.{neg}
+  import anthill.prelude.Int64.{neg}
 
   sort T = ?
   requires Eq[T]
 
   -- Primary operation: compare returns -1, 0, or 1
-  operation compare(a: T, b: T) -> Int
+  operation compare(a: T, b: T) -> Int64
 
   -- Derived operations
   operation {

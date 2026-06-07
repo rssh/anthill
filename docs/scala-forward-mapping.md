@@ -281,7 +281,7 @@ sort Monoid {                              import org.scalacheck.Prop.forAll
 A `Quoted("scala", "...")` term in a sort/operation body is inserted verbatim into the generated Scala source:
 
 ```
-operation hash(s: String) -> Int =
+operation hash(s: String) -> Int64 =
   Quoted("scala", "s.hashCode")
 →  def hash(s: String): Int = s.hashCode
 ```

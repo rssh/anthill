@@ -178,7 +178,7 @@ pub enum LoadError {
     Other {
         message: String,
     },
-    /// WI-366: a value-in-type binding (a denoted value like `Vector[Int, 3]`, or
+    /// WI-366: a value-in-type binding (a denoted value like `Vector[Int64, 3]`, or
     /// a `Modify[c]` effect row) in a sort-relation position (`sort T = …`, a
     /// `requires` / `provides` spec). It rides faithfully as a `Value::Node` fact,
     /// but RESOLVING it (alias expansion, requires/provides dispatch and coverage)
@@ -1335,8 +1335,8 @@ fn process_imports(
 // ── Prelude: built-in primitive sorts ────────────────────────────
 
 /// Primitive sort names that are always available in the global scope.
-/// These correspond to the stdlib primitive types (Int, Float, String, Bool).
-pub const PRELUDE_SORTS: &[&str] = &["Int", "BigInt", "Float", "String", "Bool"];
+/// These correspond to the stdlib primitive types (Int64, Float, String, Bool).
+pub const PRELUDE_SORTS: &[&str] = &["Int64", "BigInt", "Float", "String", "Bool"];
 
 /// Effect sorts declared inside `namespace anthill.prelude` in
 /// stdlib/anthill/prelude/effects.anthill that user code references by
@@ -1379,7 +1379,7 @@ const KERNEL_FUNCTORS: &[&str] = &[
 /// plus stdlib scope hierarchy for loader-referenced names.
 ///
 /// Call this before `scan_definitions` / `load` to ensure that references to
-/// `Int`, `Float`, `String`, `Bool` never produce unresolved-name errors,
+/// `Int64`, `Float`, `String`, `Bool` never produce unresolved-name errors,
 /// and that all loader-internal functor names are resolvable.
 ///
 /// Stdlib names (`cons`, `nil`, `some`, `none`, `SortInfo`, `FieldInfo`,
@@ -1719,8 +1719,8 @@ fn register_stdlib_scopes(kb: &mut KnowledgeBase, global_raw: u32) {
     kb.symbols.define("mul", "anthill.prelude.Numeric.mul", SymbolKind::Operation, num_sort_term.raw());
 
     // Proposal 038: register primitive sorts at anthill.prelude scope so
-    // stdlib's `sort anthill.prelude.Int { ... }` reuses the same Symbol,
-    // alias the bare QN for try_resolve_symbol("Int"), import into _global.
+    // stdlib's `sort anthill.prelude.Int64 { ... }` reuses the same Symbol,
+    // alias the bare QN for try_resolve_symbol("Int64"), import into _global.
     for &name in PRELUDE_SORTS {
         let qualified = format!("anthill.prelude.{name}");
         let sym = kb.symbols.define(name, &qualified, SymbolKind::Sort, prelude_term.raw());
@@ -2491,7 +2491,7 @@ fn resolve_requires_bindings(kb: &mut KnowledgeBase) {
 /// Naming: `<scope-qn>.requires.<SE-flat>` where `<SE-flat>` is the
 /// spec's base sort short-name plus binding-value short-names sorted
 /// by binding key. So `requires Eq[T]` inside `algebra.A` becomes
-/// `algebra.A.requires.Eq_T`; `requires Monoid[T = Int]` becomes
+/// `algebra.A.requires.Eq_T`; `requires Monoid[T = Int64]` becomes
 /// `<scope>.requires.Monoid_Int`.
 ///
 /// Records land with `result = Pending` for now — phase β's witness
@@ -2665,7 +2665,7 @@ fn register_requires_axiom_witnesses(kb: &mut KnowledgeBase) {
 /// matching constructor field types against the parent sort, which
 /// is straightforward but additional code; recursive ADTs picked up
 /// in a follow-up sub-task. Primitives with hand-written `induction`
-/// rules in stdlib (Int.induction, BigInt.induction, …) are *not*
+/// rules in stdlib (Int64.induction, BigInt.induction, …) are *not*
 /// re-registered here — those rules already exist as user-visible
 /// anthill rules and phase γ resolves citations against them
 /// directly. The auto-registered records here cover the kernel-
@@ -5506,7 +5506,7 @@ impl<'a> Loader<'a> {
         }
     }
 
-    /// WI-271 / WI-342: lower the parse-side `[A = Int, B = String]` call
+    /// WI-271 / WI-342: lower the parse-side `[A = Int64, B = String]` call
     /// bindings (read from the apply parse Term's `type_args` named arg, a
     /// `Term::ParseAux(SortBindings(...))`) into carrier-agnostic occurrence
     /// type-args `(Option<Symbol>, Value)`: the param label (`A`) as a bare
@@ -5684,7 +5684,7 @@ impl<'a> Loader<'a> {
         })
     }
 
-    /// WI-271: the `op[A = Int, B = String](…)` bindings child of an apply.
+    /// WI-271: the `op[A = Int64, B = String](…)` bindings child of an apply.
     fn read_parse_call_type_args(&self, apply_parse_id: TermId) -> Option<Vec<crate::parse::ir::SortBinding>> {
         self.read_parse_aux(apply_parse_id, "type_args", |aux| match aux {
             crate::parse::ir::ParseAux::SortBindings(bindings) => Some(bindings.clone()),
@@ -5946,7 +5946,7 @@ impl<'a> Loader<'a> {
             for rid in self.kb.rules_by_functor(alias_sym) {
                 if !self.kb.is_fact(rid) { continue; }
                 // A value-fact SortAlias (denoted-bearing target, e.g.
-                // `sort T = Vector[Int, 3]`) never has a logic `Var` target, so it
+                // `sort T = Vector[Int64, 3]`) never has a logic `Var` target, so it
                 // can't be the type-param indirection we're after — skip it (this
                 // also avoids the term-only `rule_head` panic on a `Value::Node`
                 // head). Type-param aliases (`sort T = ?`) stay ground `Term`s.
@@ -6021,7 +6021,7 @@ impl<'a> Loader<'a> {
     }
 
     /// WI-342: lift a ground value `TermId` (a value-in-type literal — the `3`
-    /// in `Vector[Int, 3]` / `g[3]`) into a value `NodeOccurrence` for a
+    /// in `Vector[Int64, 3]` / `g[3]`) into a value `NodeOccurrence` for a
     /// `denoted` occurrence's `value` slot. The converter only emits
     /// `TypeExpr::Denoted` for literals (convert.rs), so a `Term::Const` leaf is
     /// the sole expected shape; anything else is a loader bug (error early).
@@ -6384,7 +6384,7 @@ impl<'a> Loader<'a> {
                 node_occurrence::TypeChild::Ground(kb_id)
             }
             TypeExpr::Denoted(t) => {
-                // WI-342: value-in-type literal (`3` in `Vector[Int, 3]` / `g[3]`)
+                // WI-342: value-in-type literal (`3` in `Vector[Int64, 3]` / `g[3]`)
                 // — carried as a `Value::Node` `denoted` occurrence whose value is
                 // the literal as an `Expr::Const` occurrence (the occurrence-form
                 // peer of `make_denoted(Const(lit))`). This is THE site that
@@ -6416,7 +6416,7 @@ impl<'a> Loader<'a> {
 
     /// WI-375: lower a WRITTEN effect-row (`{}`, `{Modify[c]}`, `{A, -B}`, …)
     /// to the KB `effects_rows(EffectExpression)` Type. A fully-ground row
-    /// (bare labels / `Modify[Int]` / `-E`, no value-in-type) assembles the
+    /// (bare labels / `Modify[Int64]` / `-E`, no value-in-type) assembles the
     /// canonical hash-consed term via [`build_canonical_effects_rows`] — which
     /// wraps each bare label in `present(…)`, keeps pre-built `absent(…)`
     /// atoms, sorts, and dedups. A denoted-bearing label (`Modify[c]`, `c` a
@@ -6492,7 +6492,7 @@ impl<'a> Loader<'a> {
     /// (`SortView`), as a carrier-agnostic [`Value`](crate::eval::value::Value): a
     /// fully-ground spec rides as `Value::Term` (the hash-consed `SortView` / sort
     /// term); a spec with a denoted-bearing binding (a value-in-type — `Modify[c]`,
-    /// `Vector[Int, 3]`) rides as a
+    /// `Vector[Int64, 3]`) rides as a
     /// `Value::Entity` `SortView` carrying the `Value::Node` binding, so the value-
     /// in-type is CARRIED (the `SortRequiresInfo` / `SortProvidesInfo` fact becomes
     /// a value fact) rather than re-grounded via `make_denoted`.
@@ -6681,7 +6681,7 @@ impl<'a> Loader<'a> {
             if !self.kb.is_fact(rid) { continue; }
             // Carrier-agnostic dedup on the sort ref (pos 0, always a ground sort
             // term). A value-fact SortAlias (denoted-bearing target, e.g.
-            // `sort T = Vector[Int, 3]`) must still dedup, so read via `TermView`
+            // `sort T = Vector[Int64, 3]`) must still dedup, so read via `TermView`
             // rather than the term-only `rule_head` (which panics on a value head).
             let head = self.kb.rule_head_value(rid);
             if head.pos_arg(self.kb, 0).and_then(|p| p.as_term_id()) == Some(sort_term) {
@@ -6691,13 +6691,13 @@ impl<'a> Loader<'a> {
 
         self.kb.register_sort(sort_term, SortKind::Sort);
 
-        // Both variable (sort T = ?Element) and alias (sort T = Int) emit SortAlias.
+        // Both variable (sort T = ?Element) and alias (sort T = Int64) emit SortAlias.
         // For variables, use convert_term directly to avoid double-emitting descriptions
         // (AbstractSort.descriptions already covers them via the loop below).
         // WI-366: a denoted-bearing alias target (a value-in-type, e.g.
-        // `sort T = Vector[Int, 3]`) lowers to a `Value::Node` → the SortAlias
+        // `sort T = Vector[Int64, 3]`) lowers to a `Value::Node` → the SortAlias
         // becomes a value fact carrying the occurrence; a ground target (the
-        // universal case — a `Var` for `sort T = ?`, a `sort_ref` for `sort T = Int`)
+        // universal case — a `Var` for `sort T = ?`, a `sort_ref` for `sort T = Int64`)
         // keeps the hash-consed `Term::Fn` head, byte-identical to the prior build.
         let target_value = match &s.definition {
             TypeExpr::Variable { term_id, .. } => {
@@ -6707,7 +6707,7 @@ impl<'a> Loader<'a> {
         };
         use crate::eval::value::Value;
         // WI-390: lower a denoted-bearing alias target (value-in-type, e.g.
-        // `sort T = Vector[Int, 3]`) to a `TermId` so the SortAlias head stays a
+        // `sort T = Vector[Int64, 3]`) to a `TermId` so the SortAlias head stays a
         // hash-consed `Term::Fn`.
         let target_value = self.lower_value_or_gate(target_value, "sort alias", &s.definition);
         // SortAlias is positional: `SortAlias(sort_ref, target)`.
@@ -6792,7 +6792,7 @@ impl<'a> Loader<'a> {
                 };
                 // WI-342 S4c: entity field types are carrier-agnostic, mirroring
                 // the WI-348 op-param value-`FieldInfo`. A denoted-bearing field
-                // type (a value-in-type like `Vector[Int, 3]`) lowers to a
+                // type (a value-in-type like `Vector[Int64, 3]`) lowers to a
                 // `Value::Node` → a *value* `FieldInfo` entity carrying the
                 // occurrence; a ground field type stays a hash-consed `FieldInfo`
                 // term. When any field is `Node` the fields list (and the
@@ -7172,7 +7172,7 @@ impl<'a> Loader<'a> {
         let functor = self.remap_name(&e.name);
 
         // WI-342: lower each field type ONCE, carrier-agnostically — a value-in-
-        // type field (`Vector[Int, 3]` / `Modify[c]`-shaped / dependent) is carried
+        // type field (`Vector[Int64, 3]` / `Modify[c]`-shaped / dependent) is carried
         // as `Value::Node`, a ground field type as `Value::Term`. Lowering once
         // avoids double-firing per-field side effects like `emit_desc_fact` (a
         // described type-var field type). The Entity schema fact below is built
@@ -7201,7 +7201,7 @@ impl<'a> Loader<'a> {
         }
 
         // WI-342: build the Entity schema fact carrier-agnostically. A
-        // value-in-type field (`Vector[Int, 3]`) lowers to a `Value::Node`,
+        // value-in-type field (`Vector[Int64, 3]`) lowers to a `Value::Node`,
         // which a hash-consed `Term` cannot hold → the head becomes a value
         // fact (mirrors the WI-348 OperationInfo split and the S4c EntityInfo
         // fact). All-ground field types keep the hash-consed `Term::Fn` head
@@ -8338,7 +8338,7 @@ impl<'a> Loader<'a> {
     /// Standalone `provides Spec language X ... end`. Proposal 038.
     ///
     /// Inner facts/rules/proofs are loaded against the spec sort as their
-    /// domain — so a `fact Eq[T = Int]` inside `provides Int language rust`
+    /// domain — so a `fact Eq[T = Int64]` inside `provides Int64 language rust`
     /// triggers Phase 1's SortProvidesInfo auto-emit through the sort-body
     /// path, recording the carrier as the spec sort symbol (not a namespace
     /// doppelgänger). For non-anthill languages, additionally emit an
@@ -8348,11 +8348,11 @@ impl<'a> Loader<'a> {
     fn load_provides_block(&mut self, pb: &ProvidesBlock, _domain: TermId) {
         // The provides-block spec is used only as a ground scope identity (and the
         // `Implementation` fact target), so it needs a `TermId`. WI-366: a
-        // denoted-bearing spec (a value-in-type binding, e.g. `Foo[Int, 3]`)
+        // denoted-bearing spec (a value-in-type binding, e.g. `Foo[Int64, 3]`)
         // projects to its base sort here — the faithful value-in-type rides on a
         // fact, not a scope identity. (Replaces `sort_inst_to_term`, whose
         // `as_term().expect(...)` would panic on a value spec — reachable from the
-        // valid syntax `provides Foo[Int, 3] language … end`.)
+        // valid syntax `provides Foo[Int64, 3] language … end`.)
         let spec_term = match self.sort_inst_to_value(&pb.spec) {
             crate::eval::value::Value::Term(t) => t,
             _ => {
@@ -8766,7 +8766,7 @@ mod wi351_place_tests {
 
     /// Load a self-contained snippet off the bare prelude. Mirrors
     /// `wi355_arrow_param_names_lowered_to_named_tuple`: a bodyless op with
-    /// concrete (`Int`/`Bool`) arrow params loads cleanly without the stdlib.
+    /// concrete (`Int64`/`Bool`) arrow params loads cleanly without the stdlib.
     fn load_op(src: &str) -> KnowledgeBase {
         let mut kb = KnowledgeBase::new();
         register_prelude(&mut kb);
@@ -8783,7 +8783,7 @@ mod wi351_place_tests {
     /// masking, WI-314) is unchanged.
     #[test]
     fn callback_places_classified_by_kind() {
-        let kb = load_op("operation reduce(z: Int, f: (a: Int, t: Int) -> Int) -> Int\n");
+        let kb = load_op("operation reduce(z: Int64, f: (a: Int64, t: Int64) -> Int64) -> Int64\n");
 
         let place = |qn: &str| -> SymbolKind {
             let sym = kb
@@ -8819,18 +8819,18 @@ mod wi351_place_tests {
     /// of arity — single-param arrows lower to the param type *directly* (not a
     /// named tuple, WI-355), but the place names come off the IR, so the
     /// lowering shape is irrelevant. Named single-param arrows parse since
-    /// WI-358 (`(x: Int) -> Bool` → `findp.p.x`); an unnamed one falls back to
+    /// WI-358 (`(x: Int64) -> Bool` → `findp.p.x`); an unnamed one falls back to
     /// the 1-based `_1`.
     #[test]
     fn single_param_callback_place() {
         // Named single param (WI-358): the place takes the declared name.
-        let kb = load_op("operation findp(p: (x: Int) -> Bool) -> Bool\n");
+        let kb = load_op("operation findp(p: (x: Int64) -> Bool) -> Bool\n");
         let role = |qn: &str| kb.try_resolve_symbol(qn).and_then(|s| kb.kind_of(s));
         assert_eq!(role("findp.p.x"), Some(SymbolKind::CallbackParam));
         assert_eq!(role("findp.p.result"), Some(SymbolKind::CallbackResult));
 
         // Unnamed single param: 1-based positional fallback.
-        let kb = load_op("operation g(p: (Int) -> Bool) -> Bool\n");
+        let kb = load_op("operation g(p: (Int64) -> Bool) -> Bool\n");
         let role = |qn: &str| kb.try_resolve_symbol(qn).and_then(|s| kb.kind_of(s));
         assert_eq!(role("g.p._1"), Some(SymbolKind::CallbackParam));
         assert_eq!(role("g.p.result"), Some(SymbolKind::CallbackResult));
@@ -8841,7 +8841,7 @@ mod wi351_place_tests {
     /// 0-based, and no spurious `_3` for a two-param arrow.
     #[test]
     fn unnamed_callback_params_are_one_based() {
-        let kb = load_op("operation app(f: (Int, Int) -> Int) -> Int\n");
+        let kb = load_op("operation app(f: (Int64, Int64) -> Int64) -> Int64\n");
         let role = |qn: &str| kb.try_resolve_symbol(qn).and_then(|s| kb.kind_of(s));
         assert_eq!(role("app.f._1"), Some(SymbolKind::CallbackParam));
         assert_eq!(role("app.f._2"), Some(SymbolKind::CallbackParam));
@@ -8852,13 +8852,13 @@ mod wi351_place_tests {
 
     /// A callback param or result that is *itself* an arrow is descended into,
     /// so arbitrarily nested callbacks resolve with the position-kind roles at
-    /// every depth. `hof(f: (g: (Int, Int) -> Int, y: Int) -> Int)` nests a
-    /// callback `g` inside `f`'s params; `curry(f: (Int) -> (Int) -> Bool)`
+    /// every depth. `hof(f: (g: (Int64, Int64) -> Int64, y: Int64) -> Int64)` nests a
+    /// callback `g` inside `f`'s params; `curry(f: (Int64) -> (Int64) -> Bool)`
     /// nests one in `f`'s result.
     #[test]
     fn nested_callbacks_register_places_recursively() {
         // Param nesting: `f`'s first param `g` is itself a 2-arg callback.
-        let kb = load_op("operation hof(f: (g: (Int, Int) -> Int, y: Int) -> Int) -> Int\n");
+        let kb = load_op("operation hof(f: (g: (Int64, Int64) -> Int64, y: Int64) -> Int64) -> Int64\n");
         let role = |qn: &str| kb.try_resolve_symbol(qn).and_then(|s| kb.kind_of(s));
         assert_eq!(role("hof.f"), Some(SymbolKind::Param));
         assert_eq!(role("hof.f.g"), Some(SymbolKind::CallbackParam));
@@ -8870,7 +8870,7 @@ mod wi351_place_tests {
         assert_eq!(role("hof.f.g.result"), Some(SymbolKind::CallbackResult));
 
         // Result nesting: a curried op — `f`'s result is itself a callback.
-        let kb = load_op("operation curry(f: (Int) -> (Int) -> Bool) -> Bool\n");
+        let kb = load_op("operation curry(f: (Int64) -> (Int64) -> Bool) -> Bool\n");
         let role = |qn: &str| kb.try_resolve_symbol(qn).and_then(|s| kb.kind_of(s));
         assert_eq!(role("curry.f._1"), Some(SymbolKind::CallbackParam));
         assert_eq!(role("curry.f.result"), Some(SymbolKind::CallbackResult));

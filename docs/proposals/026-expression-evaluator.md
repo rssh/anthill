@@ -47,12 +47,12 @@ Runtime values are represented as a Rust `Value` enum, not uniformly as `TermId`
 ```rust
 enum Value {
     // Unboxed scalars — zero alloc, zero hash lookup
-    Int(i64),
+    Int64(i64),
     Float(f64),
     Bool(bool),
     Unit,
 
-    // Anonymous tuple (no functor) — Pair(a, b), (Int, String), and
+    // Anonymous tuple (no functor) — Pair(a, b), (Int64, String), and
     // the shape of operation argument tuples in flight.
     Tuple {
         pos:   SmallVec<[Value; 2]>,
@@ -141,8 +141,8 @@ Entity values like `WorkItem(id: "WI-001", status: Open)` can be either `Value::
 
 | Boundary | Direction | Cost |
 |---|---|---|
-| Source literal → runtime | `Term::Const(Int(1))` → `Value::Int(1)` at eval entry | once per literal, amortized |
-| Arithmetic / logic on scalars | `Value::Int` / `Value::Bool` stay unboxed | zero |
+| Source literal → runtime | `Term::Const(Int64(1))` → `Value::Int64(1)` at eval entry | once per literal, amortized |
+| Arithmetic / logic on scalars | `Value::Int64` / `Value::Bool` stay unboxed | zero |
 | Construct anthill data (`Some(x)`, `cons(h, t)`) | build `Term::Fn` → `TermStore::alloc` → `Value::Term` | one hash-cons at construction |
 | `assert_fact` / resolver input | `Value → TermId` (hash-cons if not already) | only at KB/effect boundary |
 | KB query result | `TermId → Value::Term` | zero (just wraps) |
@@ -154,7 +154,7 @@ Hash-consing cost is paid only when values cross into **persistent KB state** (f
 
 - Same-variant scalars: native `==`.
 - Both `Value::Term(a)` and `Value::Term(b)`: `a == b` — O(1) thanks to hash-consing (sound because equal `TermId`s are structurally equal).
-- Cross-variant (e.g. `Value::Int(1)` vs `Value::Term(tid_int_1)`): promote the scalar side to `TermId` once and compare. Rare; occurs only when something force-compares heterogeneous representations.
+- Cross-variant (e.g. `Value::Int64(1)` vs `Value::Term(tid_int_1)`): promote the scalar side to `TermId` once and compare. Rare; occurs only when something force-compares heterogeneous representations.
 
 ### Closures, streams, lazies
 
@@ -223,7 +223,7 @@ M4 of this proposal implements 026.1; the two proposals land together.
 
 The hash-consed `TermStore` is already a refcounted DAG — and it is structurally acyclic by construction (hash-consing requires knowing a term's hash before allocation, so self-reference is impossible for pure constructor data). Memory management splits by `Value` variant:
 
-- `Value::Int`/`Float`/`Bool`/`Unit` — stack, no management needed.
+- `Value::Int64`/`Float`/`Bool`/`Unit` — stack, no management needed.
 - `Value::Tuple`/`Value::Entity` — owned inline (SmallVec payload); dropped with the `Value`.
 - `Value::Closure`/`Stream`/`Lazy` — handles into arenas, refcounted per arena.
 - `Value::Term(TermId)` — `TermStore`'s existing refcount mechanism.

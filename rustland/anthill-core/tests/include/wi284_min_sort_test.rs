@@ -3,7 +3,7 @@
 //! The typer keeps each occurrence's inferred type (`set_inferred_type`,
 //! written by the `Stamp` work-frame as each node's `TypeResult` is
 //! finalized), and `min_sort` widens that type to the least declared
-//! sort. These tests pin the acceptance examples: `3` -> Int,
+//! sort. These tests pin the acceptance examples: `3` -> Int64,
 //! `cons(1, nil())` -> List, an entity value -> its sort, and an
 //! unresolved type var -> None. They also check that *child*
 //! occurrences carry their own type (uniform stamping), and that
@@ -59,7 +59,7 @@ fn typed_min_sort(kb: &mut KnowledgeBase, occ: &Rc<NodeOccurrence>) -> Option<Sy
 }
 
 /// A sort symbol resolves to `name` exactly, or to a qualified path
-/// ending in `.name` (e.g. `anthill.prelude.Int`).
+/// ending in `.name` (e.g. `anthill.prelude.Int64`).
 fn assert_sort_named(kb: &KnowledgeBase, sym: Symbol, name: &str) {
     let full = kb.resolve_sym(sym);
     assert!(
@@ -73,7 +73,7 @@ fn min_sort_of_int_literal_is_int() {
     let mut kb = load_kb();
     let n3 = occ(Expr::Const(Literal::Int(3)));
     let ms = typed_min_sort(&mut kb, &n3).expect("min_sort(3) should be Some");
-    assert_sort_named(&kb, ms, "Int");
+    assert_sort_named(&kb, ms, "Int64");
     // The occurrence carries its inferred type, not just a derived sort.
     assert!(n3.inferred_type().is_some(), "typer must keep the inferred type");
 }
@@ -107,8 +107,8 @@ fn min_sort_of_list_constructor_is_list() {
     assert_sort_named(&kb, cons_sort, "List");
 
     // Uniform stamping: the child occurrences carry their own type too —
-    // the head arg `1` -> Int, the tail `nil()` -> List.
-    assert_sort_named(&kb, min_sort(&kb, &o1).expect("child `1` typed"), "Int");
+    // the head arg `1` -> Int64, the tail `nil()` -> List.
+    assert_sort_named(&kb, min_sort(&kb, &o1).expect("child `1` typed"), "Int64");
     assert_sort_named(&kb, min_sort(&kb, &onil2).expect("child `nil()` typed"), "List");
 }
 
@@ -154,9 +154,9 @@ fn sort_functor_of_returns_none_on_type_var() {
         "sort_functor_of of a type variable must be None",
     );
     // And it does extract a concrete sort from a sort_ref.
-    let int_ty = kb.make_sort_ref_by_name("Int");
-    let s = sort_functor_of(&kb, int_ty).expect("sort_functor_of(sort_ref(Int)) Some");
-    assert_sort_named(&kb, s, "Int");
+    let int_ty = kb.make_sort_ref_by_name("Int64");
+    let s = sort_functor_of(&kb, int_ty).expect("sort_functor_of(sort_ref(Int64)) Some");
+    assert_sort_named(&kb, s, "Int64");
 }
 // (Removed `wi313_min_sort_of_kb_entity_is_kb`: it asserted `kb` is an entity,
 // but WI-313 resolved with `kb` becoming a zero-arg operation in reflect.anthill

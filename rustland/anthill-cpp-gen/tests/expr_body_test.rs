@@ -16,10 +16,10 @@ use common::{find_cxx, load_kb_with, scratch_dir};
 fn literal_int_body() {
     let source = r#"
         namespace test.expr_a
-          import anthill.prelude.{Int}
+          import anthill.prelude.{Int64}
           export Calc
           sort Calc
-            operation forty_two() -> Int = 42
+            operation forty_two() -> Int64 = 42
           end
         end
     "#;
@@ -61,14 +61,14 @@ fn literal_float_and_string_bodies() {
 
 #[test]
 fn parameter_reference_body() {
-    // `id(x: Int) -> Int = x` — body is just a variable reference,
+    // `id(x: Int64) -> Int64 = x` — body is just a variable reference,
     // emits the parameter name.
     let source = r#"
         namespace test.expr_a
-          import anthill.prelude.{Int}
+          import anthill.prelude.{Int64}
           export Identity
           sort Identity
-            operation id(x: Int) -> Int = x
+            operation id(x: Int64) -> Int64 = x
           end
         end
     "#;
@@ -89,11 +89,11 @@ fn simple_function_call_body() {
     // prelude typeclass dispatch table.
     let source = r#"
         namespace test.expr_a
-          import anthill.prelude.{Int}
+          import anthill.prelude.{Int64}
           export Counter
           sort Counter
-            operation step(x: Int) -> Int = x
-            operation use(x: Int) -> Int = step(x)
+            operation step(x: Int64) -> Int64 = x
+            operation use(x: Int64) -> Int64 = step(x)
           end
         end
     "#;
@@ -109,15 +109,15 @@ fn simple_function_call_body() {
 
 #[test]
 fn nested_call_body() {
-    // `triple_inc(x: Int) -> Int = inc(inc(inc(x)))` — recursive call
+    // `triple_inc(x: Int64) -> Int64 = inc(inc(inc(x)))` — recursive call
     // lowering, exercises lower_expr's recursion on Term::Fn args.
     let source = r#"
         namespace test.expr_a
-          import anthill.prelude.{Int}
+          import anthill.prelude.{Int64}
           export NestedCalls
           sort NestedCalls
-            operation inc(x: Int) -> Int = x
-            operation triple_inc(x: Int) -> Int = inc(inc(inc(x)))
+            operation inc(x: Int64) -> Int64 = x
+            operation triple_inc(x: Int64) -> Int64 = inc(inc(inc(x)))
           end
         end
     "#;
@@ -139,11 +139,11 @@ fn expression_body_takes_precedence_over_carrier_dispatch() {
     // the auto-dispatch path.
     let source = r#"
         namespace test.expr_a
-          import anthill.prelude.{Int}
+          import anthill.prelude.{Int64}
           import anthill.realization.{Implementation, CarrierBinding}
           export Calc
           sort Calc
-            operation get(self: Calc) -> Int = 99
+            operation get(self: Calc) -> Int64 = 99
           end
           fact Implementation(
             target:        "test.expr_a.Calc",
@@ -177,10 +177,10 @@ fn literal_int_body_compiles() {
     // End-to-end: emit a literal-bodied op and verify it compiles.
     let source = r#"
         namespace test.expr_a_compile
-          import anthill.prelude.{Int}
+          import anthill.prelude.{Int64}
           export Calc
           sort Calc
-            operation forty_two() -> Int = 42
+            operation forty_two() -> Int64 = 42
           end
         end
     "#;

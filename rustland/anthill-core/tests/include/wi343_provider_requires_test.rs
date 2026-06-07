@@ -49,7 +49,7 @@ fn provider_missing_required_subspec_errors() {
           export Nameable, Comparable, Widget
           sort Nameable
             sort T = ?
-            operation tag(x: T) -> Int
+            operation tag(x: T) -> Int64
             rule tag(?x) = 0
           end
           sort Comparable
@@ -59,7 +59,7 @@ fn provider_missing_required_subspec_errors() {
             rule pick(?a, ?b) = ?a
           end
           sort Widget
-            entity widget(id: Int)
+            entity widget(id: Int64)
             fact Comparable[T = Widget]
           end
         end
@@ -85,7 +85,7 @@ fn provider_with_required_subspec_loads() {
           export Nameable, Comparable, Widget
           sort Nameable
             sort T = ?
-            operation tag(x: T) -> Int
+            operation tag(x: T) -> Int64
             rule tag(?x) = 0
           end
           sort Comparable
@@ -95,7 +95,7 @@ fn provider_with_required_subspec_loads() {
             rule pick(?a, ?b) = ?a
           end
           sort Widget
-            entity widget(id: Int)
+            entity widget(id: Int64)
             fact Nameable[T = Widget]
             fact Comparable[T = Widget]
           end
@@ -119,11 +119,11 @@ fn provider_of_requireless_spec_loads() {
           export Tagged, Gizmo
           sort Tagged
             sort T = ?
-            operation label(x: T) -> Int
+            operation label(x: T) -> Int64
             rule label(?x) = 0
           end
           sort Gizmo
-            entity gizmo(id: Int)
+            entity gizmo(id: Int64)
             fact Tagged[T = Gizmo]
           end
         end
@@ -151,21 +151,21 @@ fn provider_satisfies_subspec_at_wrong_bindings_errors() {
           export Ring, VS, Carrier, NonRing
           sort Ring
             sort F = ?
-            operation rtag(x: F) -> Int
+            operation rtag(x: F) -> Int64
             rule rtag(?x) = 0
           end
           sort VS
             sort V = ?
             sort F = ?
             requires Ring[F = F]
-            operation vtag(v: V) -> Int
+            operation vtag(v: V) -> Int64
             rule vtag(?v) = 0
           end
           sort NonRing
-            entity nonring(id: Int)
+            entity nonring(id: Int64)
           end
           sort Carrier
-            entity carrier(id: Int)
+            entity carrier(id: Int64)
             fact Ring[F = Carrier]
             fact VS[V = Carrier, F = NonRing]
           end
@@ -195,23 +195,23 @@ fn provider_transitive_requires_gap_errors() {
           export B, A, Spec, Thing
           sort B
             sort T = ?
-            operation btag(x: T) -> Int
+            operation btag(x: T) -> Int64
             rule btag(?x) = 0
           end
           sort A
             sort T = ?
             requires B[T = T]
-            operation atag(x: T) -> Int
+            operation atag(x: T) -> Int64
             rule atag(?x) = 0
           end
           sort Spec
             sort T = ?
             requires A[T = T]
-            operation stag(x: T) -> Int
+            operation stag(x: T) -> Int64
             rule stag(?x) = 0
           end
           sort Thing
-            entity thing(id: Int)
+            entity thing(id: Int64)
             fact A[T = Thing]
             fact Spec[T = Thing]
           end
@@ -243,21 +243,21 @@ fn shorthand_requires_binding_precise_wrong_field_errors() {
           export Ring, VS, Carrier, NonRing
           sort Ring
             sort T = ?
-            operation rtag(x: T) -> Int
+            operation rtag(x: T) -> Int64
             rule rtag(?x) = 0
           end
           sort VS
             sort V = ?
             sort F = ?
             requires Ring[F]
-            operation vtag(v: V) -> Int
+            operation vtag(v: V) -> Int64
             rule vtag(?v) = 0
           end
           sort NonRing
-            entity nonring(id: Int)
+            entity nonring(id: Int64)
           end
           sort Carrier
-            entity carrier(id: Int)
+            entity carrier(id: Int64)
             fact Ring[T = Carrier]
             fact VS[V = Carrier, F = NonRing]
           end
@@ -283,18 +283,18 @@ fn shorthand_requires_binding_precise_right_field_loads() {
           export Ring, VS, Carrier
           sort Ring
             sort T = ?
-            operation rtag(x: T) -> Int
+            operation rtag(x: T) -> Int64
             rule rtag(?x) = 0
           end
           sort VS
             sort V = ?
             sort F = ?
             requires Ring[F]
-            operation vtag(v: V) -> Int
+            operation vtag(v: V) -> Int64
             rule vtag(?v) = 0
           end
           sort Carrier
-            entity carrier(id: Int)
+            entity carrier(id: Int64)
             fact Ring[T = Carrier]
             fact VS[V = Carrier, F = Carrier]
           end

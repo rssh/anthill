@@ -229,7 +229,7 @@ absent (an earlier draft of this section wrongly claimed otherwise).
 
 So HKT *is* expressible — a sort parameter that is itself parametric (`sort M = ?` /
 `sort F { sort T = ? }`), applied `M[T = A]`. The grounding is the key insight: **it is provider
-dispatch, not general higher-order unification.** At `map(xs, g)` with `xs : List[Int]`, the carrier
+dispatch, not general higher-order unification.** At `map(xs, g)` with `xs : List[Int64]`, the carrier
 `List` selects `fact Functor[F = List]`, binding `F := List`; then `F[T = A]` is first-order
 `List[T = A]`. So the higher-kinded case **reduces to first-order once the carrier is dispatched** —
 the same carrier-resolution as ordinary spec dispatch (WI-350). The only genuinely higher-order

@@ -88,7 +88,7 @@ domain anthill.stage0
 
   sort SuccessCriterion {                -- ADT: success criterion for tool execution
     entity ExitZero
-    entity ExitCode(code: Int)
+    entity ExitCode(code: Int64)
     entity OutputMatches(pattern: String)
     entity Custom(term: Term)
   }

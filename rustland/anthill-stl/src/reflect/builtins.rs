@@ -503,7 +503,7 @@ fn kb_fields(
     let kb = interp.kb_mut();
 
     // WI-342: the Entity schema fact is carrier-agnostic — an entity with a
-    // value-in-type field (`Vector[Int, 3]`) has a `Value::Entity` head, so
+    // value-in-type field (`Vector[Int64, 3]`) has a `Value::Entity` head, so
     // read the head as a `Value` and project functor + named args through the
     // carrier. A ground entity is a `Value::Term(Fn)` (byte-identical to the
     // prior `fact_term`/`term_named_args` path); a field type rides into the
@@ -741,7 +741,7 @@ fn reflect_value_to_term(
                 Value::Int(n) => Literal::Int(n),
                 Value::BigInt(n) => Literal::BigInt(n),
                 other => return Err(EvalError::TypeMismatch {
-                    expected: "Int", got: other.type_name().to_string(),
+                    expected: "Int64", got: other.type_name().to_string(),
                 }),
             }
         } else if lit_ctor == syms.float_lit {
@@ -1338,7 +1338,7 @@ end
         let mut interp = load_stdlib_and_source(r#"
 namespace test.reflect_field
   sort Point
-    entity pt(x: Int, y: Int)
+    entity pt(x: Int64, y: Int64)
   end
 end
 "#);
@@ -1387,7 +1387,7 @@ end
             .expect("can_be_sort");
         assert!(matches!(ok, Value::Bool(true)));
 
-        // Int literal is NOT a sort.
+        // Int64 literal is NOT a sort.
         let lit = interp.kb_mut().alloc(CoreTerm::Const(Literal::Int(42)));
         let not_sort = interp.call("anthill.reflect.can_be_sort", &[Value::Term(lit)])
             .expect("can_be_sort (lit)");
@@ -1569,7 +1569,7 @@ namespace test.subst_apply
   end
 end
 "#);
-        // Build subst {?v → Int(42)}, apply to ?v.
+        // Build subst {?v → Int64(42)}, apply to ?v.
         let v_sym = interp.kb_mut().intern("v");
         let vid = interp.kb_mut().fresh_var(v_sym);
         let var_term = interp.kb_mut().alloc(CoreTerm::Var(Var::Global(vid)));
@@ -1584,7 +1584,7 @@ end
             .expect("apply");
         match result {
             Value::Term(tid) => {
-                assert_eq!(tid, val_term, "?v → Int(42) should rewrite the variable");
+                assert_eq!(tid, val_term, "?v → Int64(42) should rewrite the variable");
             }
             other => panic!("expected Value::Term, got {other:?}"),
         }

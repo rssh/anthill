@@ -30,7 +30,7 @@ sort List[T = ?]
   entity nil
   entity cons(head: T, tail: List[T])
 
-  operation length(l: List[T]) -> Int
+  operation length(l: List[T]) -> Int64
     match l
       nil -> 0
       cons(_, tail) -> 1 + length(tail)
@@ -162,7 +162,7 @@ x          -- refers to a let-bound or parameter name
 #### Literals
 
 ```anthill
-42         -- Int
+42         -- Int64
 3.14       -- Float
 "hello"    -- String
 true       -- Bool
@@ -224,7 +224,7 @@ sort Expr
   entity apply(fn: Symbol, args: List[T = ApplyArg])
   entity constructor(name: Symbol, args: List[T = ApplyArg])
   entity var_ref(name: Symbol)        -- lexical variable: x, acc
-  entity int_lit(value: Int)
+  entity int_lit(value: Int64)
   entity float_lit(value: Float)
   entity string_lit(value: String)
   entity bool_lit(value: Bool)
@@ -347,7 +347,7 @@ sort List[T = ?]
   rule length(nil) :- 0
 
   -- Expression body: one specific implementation
-  operation length(l: List[T]) -> Int
+  operation length(l: List[T]) -> Int64
     match l
       nil -> 0
       cons(_, tail) -> 1 + length(tail)
@@ -366,7 +366,7 @@ A sort can separate its **specification** (operation signatures, laws) from its 
 
 ```
 stdlib/algebra/ring.anthill        -- spec: sort Ring with operations and laws
-stdlib/algebra/int_ring.anthill    -- impl: sort IntRing ensures Ring[Int]
+stdlib/algebra/int_ring.anthill    -- impl: sort IntRing ensures Ring[Int64]
 stdlib/algebra/float_ring.anthill  -- impl: sort FloatRing ensures Ring[Float]
 generated/matrix_ring.anthill      -- auto-generated implementation
 ```
@@ -382,7 +382,7 @@ This enables three workflows:
 ### `ensures` — the dual of `requires`
 
 - `requires Ring[R]` — "I depend on Ring for R" (consumer)
-- `ensures Ring[Int]` — "I provide Ring for Int" (implementor)
+- `ensures Ring[Int64]` — "I provide Ring for Int64" (implementor)
 
 ```anthill
 -- Spec sort (ring.anthill): defines the interface
@@ -416,26 +416,26 @@ end
 ```anthill
 -- Implementation sort (int_ring.anthill): provides the bodies
 sort IntRing
-  ensures Ring[Int]
+  ensures Ring[Int64]
 
   -- Required: provide all abstract operations
-  operation add(a: Int, b: Int) -> Int
+  operation add(a: Int64, b: Int64) -> Int64
     a + b
   end
 
-  operation mul(a: Int, b: Int) -> Int
+  operation mul(a: Int64, b: Int64) -> Int64
     a * b
   end
 
-  operation neg(a: Int) -> Int
+  operation neg(a: Int64) -> Int64
     -a
   end
 
-  operation zero() -> Int
+  operation zero() -> Int64
     0
   end
 
-  operation one() -> Int
+  operation one() -> Int64
     1
   end
 
@@ -460,8 +460,8 @@ Different sorts can provide different implementations for different types or pro
 
 ```anthill
 sort IntRing
-  ensures Ring[Int]
-  -- ... Int operations using native arithmetic
+  ensures Ring[Int64]
+  -- ... Int64 operations using native arithmetic
 end
 
 sort FloatRing
@@ -479,25 +479,25 @@ Each `ensures` sort is a named entity in the KB — queryable, reflectable, sele
 
 ### Non-Coherent Implementations (Multiple for Same Type)
 
-A spec may have multiple valid implementations for the same type. Classic example: `Monoid[Int]` — both `(+, 0)` and `(*, 1)` are valid monoids.
+A spec may have multiple valid implementations for the same type. Classic example: `Monoid[Int64]` — both `(+, 0)` and `(*, 1)` are valid monoids.
 
 ```anthill
 sort IntAddMonoid
-  ensures Monoid[Int]
-  operation combine(a: Int, b: Int) -> Int
+  ensures Monoid[Int64]
+  operation combine(a: Int64, b: Int64) -> Int64
     a + b
   end
-  operation identity() -> Int
+  operation identity() -> Int64
     0
   end
 end
 
 sort IntMulMonoid
-  ensures Monoid[Int]
-  operation combine(a: Int, b: Int) -> Int
+  ensures Monoid[Int64]
+  operation combine(a: Int64, b: Int64) -> Int64
     a * b
   end
-  operation identity() -> Int
+  operation identity() -> Int64
     1
   end
 end
@@ -508,15 +508,15 @@ end
 ```anthill
 -- Unambiguous: require the specific implementation, not the abstract spec
 sort SumReducer
-  requires IntAddMonoid    -- brings additive Monoid[Int] into scope
+  requires IntAddMonoid    -- brings additive Monoid[Int64] into scope
 end
 
 sort ProductReducer
-  requires IntMulMonoid    -- brings multiplicative Monoid[Int] into scope
+  requires IntMulMonoid    -- brings multiplicative Monoid[Int64] into scope
 end
 ```
 
-Since `IntAddMonoid` ensures `Monoid[Int]`, requiring `IntAddMonoid` transitively provides all `Monoid` operations — with the additive implementation.
+Since `IntAddMonoid` ensures `Monoid[Int64]`, requiring `IntAddMonoid` transitively provides all `Monoid` operations — with the additive implementation.
 
 **Conflicting implementations in the same scope** — qualify by name:
 
@@ -525,7 +525,7 @@ sort BothMonoids
   requires IntAddMonoid
   requires IntMulMonoid
 
-  operation sum_and_product(a: Int, b: Int) -> (Int, Int)
+  operation sum_and_product(a: Int64, b: Int64) -> (Int64, Int64)
     (IntAddMonoid.combine(a, b), IntMulMonoid.combine(a, b))
   end
 end
@@ -540,8 +540,8 @@ An `ensures` sort provides anthill expression bodies. For host-language implemen
 ```anthill
 -- Anthill implementation (expression bodies)
 sort IntRing
-  ensures Ring[Int]
-  operation add(a: Int, b: Int) -> Int
+  ensures Ring[Int64]
+  operation add(a: Int64, b: Int64) -> Int64
     a + b
   end
 end
@@ -566,7 +566,7 @@ Both are valid implementation strategies. The resolution order (§Resolution Ord
 EnsuresDecl ::= 'ensures' Type
 ```
 
-The type expression is a parameterized sort reference: `Ring[Int]`, `Functor[List]`, etc. The `ensures` sort must provide bodies for all abstract operations of the referenced spec.
+The type expression is a parameterized sort reference: `Ring[Int64]`, `Functor[List]`, etc. The `ensures` sort must provide bodies for all abstract operations of the referenced spec.
 
 ## Proof Obligations
 
@@ -578,9 +578,9 @@ In anthill, `rule head :- body` already has proof semantics: "head holds because
 
 ```anthill
 sort IntRing
-  ensures Ring[Int]
+  ensures Ring[Int64]
 
-  operation add(a: Int, b: Int) -> Int
+  operation add(a: Int64, b: Int64) -> Int64
     a + b
   end
 
@@ -607,7 +607,7 @@ Proof obligations can be discharged by:
 5. **External proofs** — reference a proof artifact (Lean, Coq, SMT solver output):
 ```anthill
 sort IntRing
-  ensures Ring[Int]
+  ensures Ring[Int64]
   -- ...
 end [proofs: "proofs/int_ring.lean"]
 ```
@@ -615,7 +615,7 @@ end [proofs: "proofs/int_ring.lean"]
 6. **Trust annotations** — mark as trusted with evidence level:
 ```anthill
 sort IntRing
-  ensures Ring[Int]
+  ensures Ring[Int64]
   -- ...
 end [trust: tested-1000]
 ```
@@ -625,7 +625,7 @@ end [trust: tested-1000]
 When an operation has `requires`, each call site generates an obligation:
 
 ```anthill
-operation divide(a: Int, b: Int) -> Int
+operation divide(a: Int64, b: Int64) -> Int64
   requires b != 0
 
 -- Call site obligation: prove y != 0
@@ -641,7 +641,7 @@ end
 After calling an operation with `ensures`, postconditions become available facts:
 
 ```anthill
-operation abs(x: Int) -> Int
+operation abs(x: Int64) -> Int64
   ensures result >= 0
 
 let y = abs(x)
@@ -686,7 +686,7 @@ No new proof engine needed for the basic case — internal proof IS just a query
 -- Delegate to Lean:
 fact ProofResult{
   proved(
-    distributivity(Ring, Int),
+    distributivity(Ring, Int64),
     by_tool("lean", "proofs/int_ring.lean")
   )
 }
@@ -706,7 +706,7 @@ end
 ### Obligation Lifecycle
 
 ```
-ensures Ring[Int]
+ensures Ring[Int64]
   → kernel generates Obligation facts (status: Pending)
   → check_obligation tries internal discharge (resolution, simplification)
   → externally proved obligations recorded as ProofResult facts
@@ -792,7 +792,7 @@ _pattern: $ => choice(
   $.identifier,                                         // variable: x
   '_',                                                  // wildcard
   $.literal,                                            // literal: 42, "hello"
-  $.tuple_pattern,                                      // (a, b) or (a: Int, b: Int)
+  $.tuple_pattern,                                      // (a, b) or (a: Int64, b: Int64)
   $.constructor_pattern,                                // cons(h, t)
 ),
 
@@ -802,7 +802,7 @@ tuple_pattern: $ => seq(
 
 _pattern_arg: $ => choice(
   $._pattern,                                           // positional: a
-  seq($.identifier, ':', $._type),                      // typed: a: Int
+  seq($.identifier, ':', $._type),                      // typed: a: Int64
 ),
 
 constructor_pattern: $ => seq(

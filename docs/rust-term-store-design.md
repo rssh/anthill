@@ -312,11 +312,11 @@ sort Nat { entity zero, entity succ(pred: Nat) }
 
 This is the entity-of relationship: each entity constructor belongs to its parent sort (1-level, not transitive). In Maude's terminology, these would be subsorts of the declared sort. Pattern matching on `?x : Nat` can produce `zero` or `succ(...)`.
 
-**Parametric instantiation.** `List[T=Int]` is a ground instantiation of the parametric sort `List`. The relation between `List` (with abstract `T`) and `List[T=Int]` is **instantiation**, not subtyping. But the entity-of relationship applies to the instantiated version too:
+**Parametric instantiation.** `List[T=Int64]` is a ground instantiation of the parametric sort `List`. The relation between `List` (with abstract `T`) and `List[T=Int64]` is **instantiation**, not subtyping. But the entity-of relationship applies to the instantiated version too:
 
 ```
-nil  ≤ List[T=Int]
-cons ≤ List[T=Int]    -- where head : Int, tail : List[T=Int]
+nil  ≤ List[T=Int64]
+cons ≤ List[T=Int64]    -- where head : Int64, tail : List[T=Int64]
 ```
 
 **Abstract sorts.** `sort Scalar` has no constructors and no subtypes — it's opaque until bound via `where { Scalar = float }`. An abstract sort is a **type variable** in the sort lattice.
@@ -337,19 +337,19 @@ domain anthill.reflect.syntax
 end
 ```
 
-This means types ARE terms — terms of sort `anthill.reflect.syntax.Type`. The type `List[T = List[T = Int]]` is:
+This means types ARE terms — terms of sort `anthill.reflect.syntax.Type`. The type `List[T = List[T = Int64]]` is:
 
 ```
 ParameterizedType("List", [
   SortBinding("T", ParameterizedType("List", [
-    SortBinding("T", SimpleType("Int"))
+    SortBinding("T", SimpleType("Int64"))
   ]))
 ])
 ```
 
 This is a regular `Fn` term in the term store, hash-consed like any other term.
 
-**Consequence: `SortId` is just `TermId`.** A sort in the lattice is identified by the `TermId` of its type-term in the store. Hash-consing gives us identity: `List[T=Int]` in two places → same `TermId` → same sort. No separate sort representation needed.
+**Consequence: `SortId` is just `TermId`.** A sort in the lattice is identified by the `TermId` of its type-term in the store. Hash-consing gives us identity: `List[T=Int64]` in two places → same `TermId` → same sort. No separate sort representation needed.
 
 **In the Rust parser IR**, `TypeExpr` remains a convenient enum for building the parse tree. But when loading into the KB, each `TypeExpr` is converted to a term:
 
@@ -421,7 +421,7 @@ Built during domain loading (after parsing):
 1. Parse all sort declarations
 2. Convert each sort's `TypeExpr` to a type-term in the store (hash-consed)
 3. For each sort with entity constructors, assert `EntityOf` facts for constructors
-5. For each `import ... where`, instantiate parametric sorts — producing new type-terms like `ParameterizedType("List", [SortBinding("T", SimpleType("Int"))])`
+5. For each `import ... where`, instantiate parametric sorts — producing new type-terms like `ParameterizedType("List", [SortBinding("T", SimpleType("Int64"))])`
 
 ### 5.4 Subtype Checking
 

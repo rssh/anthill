@@ -25,7 +25,7 @@ fn write_temp(name: &str, contents: &str) -> PathBuf {
 const SRC_BASE: &str = r#"
     namespace test.cache.simple
       export simple_unsat
-      entity Cfg(scale: Int)
+      entity Cfg(scale: Int64)
       fact Cfg(scale: 5)
 
       rule simple_unsat(?marker)

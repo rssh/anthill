@@ -462,7 +462,7 @@ fact WorkItem(
   description: "Make Int's machine-boundedness explicit via an alias, not a rename. BigInt already exists for arbitrary-precision; most real programs want bounded arithmetic (fast, i64-sized). Keep Int as the user-facing default, but introduce `sort BoundedInt` with the current contents of Int and declare `sort Int = BoundedInt` as an alias. Users keep writing `Int`; the spec-level name BoundedInt clarifies what it actually is; the alias prevents churn across existing code. Interacts with WI-066: Error[Overflow] effect lives on BoundedInt arithmetic (inherited by Int via alias). Does NOT promote BigInt to be the literal default — bounded ints remain the pragmatic path. BigInt stays an explicit opt-in for crypto, financial, or values exceeding i64. Scope: stdlib int.anthill rename-and-alias, Error[Overflow] effect on BoundedInt.add/sub/mul/neg/abs, fact Numeric[BoundedInt] (Int inherits via alias). Proposal doc lightweight: this is cosmetic + effect addition, no runtime changes.",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: [],
-  status: Open)
+  status: Delivered(agent: "claude", at: "2026-06-07T16:10:59Z"))
 
 fact WorkItem(
   id: "WI-069",

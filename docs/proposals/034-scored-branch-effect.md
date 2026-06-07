@@ -97,7 +97,7 @@ Different applications use different score types:
 
 - `Float` / `Double` — ML-derived scores, log-probabilities (the article's
   default).
-- `Int` — bounded integer costs (`-cost` for shortest-path; the negation
+- `Int64` — bounded integer costs (`-cost` for shortest-path; the negation
   matches the "greater = better" convention).
 - Custom: pairs `(primary, tiebreak)`, vectors with lexicographic compare,
   arbitrary `Ordered` algebras (e.g. tropical semiring for path cost).
@@ -383,7 +383,7 @@ alt's transactional state is keyed to its snapshot.
 ### Score-type homogeneity within a region
 
 A single `pbranch` call uses one `R`. Two distinct effect rows
-`ScoredBranch[Float]` and `ScoredBranch[Int]` *can* coexist on one
+`ScoredBranch[Float]` and `ScoredBranch[Int64]` *can* coexist on one
 operation (separate priority queues, one per `R`), but most practical
 code uses a single `R` throughout. Mixed-`R` regions are valid but
 unusual; the runtime keeps separate priority stores keyed by `R`'s sort

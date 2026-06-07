@@ -20,10 +20,10 @@ use common::{find_cxx, load_kb_with, load_kb_with_lenient, scratch_dir};
 fn single_let_emits_iife() {
     let source = r#"
         namespace test.expr_c
-          import anthill.prelude.{Int}
+          import anthill.prelude.{Int64}
           export Calc
           sort Calc
-            operation step(n: Int) -> Int =
+            operation step(n: Int64) -> Int64 =
               let x = add(n, 1)
               add(x, x)
           end
@@ -46,10 +46,10 @@ fn nested_let_chain_flattened() {
     // for the optimizer to inline).
     let source = r#"
         namespace test.expr_c
-          import anthill.prelude.{Int}
+          import anthill.prelude.{Int64}
           export Calc
           sort Calc
-            operation chain(n: Int) -> Int =
+            operation chain(n: Int64) -> Int64 =
               let a = add(n, 1)
               let b = add(a, 2)
               add(a, b)
@@ -72,10 +72,10 @@ fn let_with_if_in_body() {
     // compose naturally because lower_expr is fully recursive.
     let source = r#"
         namespace test.expr_c
-          import anthill.prelude.{Int, Bool}
+          import anthill.prelude.{Int64, Bool}
           export Calc
           sort Calc
-            operation pick(n: Int, b: Bool) -> Int =
+            operation pick(n: Int64, b: Bool) -> Int64 =
               let x = add(n, 1)
               if b then x else 0
           end
@@ -98,14 +98,14 @@ fn lambda_emits_generic_lambda() {
     // with std::function or `auto`-typed callables without needing
     // a declared signature.
     //
-    // The type checker rejects "lambda as return value of Int op", so
+    // The type checker rejects "lambda as return value of Int64 op", so
     // we use the lenient loader — the lowering itself is what we test.
     let source = r#"
         namespace test.expr_c
-          import anthill.prelude.{Int}
+          import anthill.prelude.{Int64}
           export Calc
           sort Calc
-            operation lam(n: Int) -> Int = lambda x -> add(x, n)
+            operation lam(n: Int64) -> Int64 = lambda x -> add(x, n)
           end
         end
     "#;
@@ -125,10 +125,10 @@ fn let_iife_compiles() {
     // resulting IIFE syntax under -std=c++17.
     let source = r#"
         namespace test.expr_c_compile
-          import anthill.prelude.{Int}
+          import anthill.prelude.{Int64}
           export Calc
           sort Calc
-            operation forty_two() -> Int =
+            operation forty_two() -> Int64 =
               let x = 21
               let y = 21
               add(x, y)

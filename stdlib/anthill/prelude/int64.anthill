@@ -1,31 +1,31 @@
--- Int: abstract spec for the built-in integer sort.
--- Spec satisfaction facts (Eq[Int], Ordered[Int], Numeric[Int]) live in
--- the per-language binding files (e.g. rustland/anthill-stl/anthill/int.anthill)
+-- Int64: abstract spec for the built-in integer sort.
+-- Spec satisfaction facts (Eq[Int64], Ordered[Int64], Numeric[Int64]) live in
+-- the per-language binding files (e.g. rustland/anthill-stl/anthill/boundedint.anthill)
 -- — see proposal 038.
-sort anthill.prelude.Int
+sort anthill.prelude.Int64
   import anthill.prelude.{Eq, Ordered, Numeric}
   import anthill.prelude.Bool.{ite}
   import anthill.prelude.Ordered.{max, gte, lt, gt}
   import anthill.prelude.Numeric.{add, sub}
 
-  -- Bounds: Int is finite (platform-dependent, e.g. i64)
-  operation minValue() -> Int
-  operation maxValue() -> Int
+  -- Bounds: Int64 is finite (platform-dependent, e.g. i64)
+  operation minValue() -> Int64
+  operation maxValue() -> Int64
 
-  -- Every Int is within bounds
+  -- Every Int64 is within bounds
   constraint in_bounds: gte(?n, minValue), lte(?n, maxValue)
 
   -- Operations beyond what Numeric provides
   operation {
-    abs(a: Int) -> Int                  -- |a|
-    neg(a: Int) -> Int                  -- -a
-    mod(a: Int, b: Int) -> Int          -- a mod b (always non-negative)
-    rem(a: Int, b: Int) -> Int          -- a rem b (sign follows dividend)
-    div(a: Int, b: Int) -> Int          -- truncated integer division; also `/` infix
-    divExact(a: Int, b: Int) -> Int     -- integer division (truncated); alias of div
-    sign(a: Int) -> Int                 -- -1, 0, or 1
-    to_float(n: Int) -> Float           -- exact for |n| < 2^53; rounds otherwise
-    to_string(n: Int) -> String         -- decimal representation, no padding
+    abs(a: Int64) -> Int64                  -- |a|
+    neg(a: Int64) -> Int64                  -- -a
+    mod(a: Int64, b: Int64) -> Int64          -- a mod b (always non-negative)
+    rem(a: Int64, b: Int64) -> Int64          -- a rem b (sign follows dividend)
+    div(a: Int64, b: Int64) -> Int64          -- truncated integer division; also `/` infix
+    divExact(a: Int64, b: Int64) -> Int64     -- integer division (truncated); alias of div
+    sign(a: Int64) -> Int64                 -- -1, 0, or 1
+    to_float(n: Int64) -> Float           -- exact for |n| < 2^53; rounds otherwise
+    to_string(n: Int64) -> String         -- decimal representation, no padding
   }
 
   -- Laws

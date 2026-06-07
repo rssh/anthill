@@ -80,7 +80,7 @@ The exception is proposal 027's `operation set(target: T, ...) effects Modify[T]
 
 `Cell[V]` is a concrete sort: "a typed mutable cell holding a V." It exposes the standard get/set protocol — one read, one write. Branch-interaction is part of Cell's contract, not the operation's signature.
 
-Resources that fit "small typed state you read and overwrite" declare themselves as `Cell[V]` and inherit the protocol. A counter is `Cell[Int]`. A flag is `Cell[Bool]`. A small record is `Cell[MyRecord]`.
+Resources that fit "small typed state you read and overwrite" declare themselves as `Cell[V]` and inherit the protocol. A counter is `Cell[Int64]`. A flag is `Cell[Bool]`. A small record is `Cell[MyRecord]`.
 
 Resources that DON'T fit the Cell protocol — KB, Store, WorkItemStore, Map, Substitution, Stream — declare their own sorts with their own operations. They still carry `Modify[their_sort]` on mutating ops; they just don't use Cell's get/set protocol.
 
@@ -90,7 +90,7 @@ The framework requires a **bidirectional correspondence**:
 - An operation may declare `Modify[T]` only if T has a registered handler.
 - A registered handler exists only for types T that anticipate `Modify[T]` operations.
 
-Bare value types (Int, Bool, String) do **not** admit Modify — they have no handler. Mutable cells wrapping them (`Cell[Int]`) do, because Cell has a handler. Following ML's `Int` vs `IORef Int` and Haskell's `Int` vs `IORef Int` / `STRef Int`. Mutability is a property of the *wrapper*, not the wrapped value.
+Bare value types (Int64, Bool, String) do **not** admit Modify — they have no handler. Mutable cells wrapping them (`Cell[Int64]`) do, because Cell has a handler. Following ML's `Int64` vs `IORef Int64` and Haskell's `Int64` vs `IORef Int64` / `STRef Int64`. Mutability is a property of the *wrapper*, not the wrapped value.
 
 For every resource type T whose operations mutate, there's at least one Modify handler installed at startup. Operations on T raise `Modify[T]` effect; the dispatcher routes to T's currently-active handler. The handler implements T's specific operations against T's state.
 
@@ -110,7 +110,7 @@ The handler-stack model from proposal 027 §"with_handler" picks the topmost han
 
 ```
                         ┌─────────────────────────────────┐
-   anthill code         │   Cell[Int].set(counter, 5)     │
+   anthill code         │   Cell[Int64].set(counter, 5)     │
                         │   KB.assert(kb, fact, sort)     │
                         │   Store.persist(store, fact, m) │
                         │   WIS.commit(wis, work_item)    │
@@ -191,7 +191,7 @@ Three concrete identity schemes (matching what handlers will plug in for, per WI
 
   Useful when the resource has a natural domain key the user will reuse (project name, session id, file path, named-config slot). `WorkItemStore(project: "anthill")` and `WorkItemStore(project: "rustland")` denote two distinct stores under an identity-by-key handler — the entity term is what the handler uses to derive the key.
 
-- **Opaque handle**: the handler allocates a fresh internal slot per construction call; `IdentityKey` is whatever the handler uses to address slots (typically an `Int` uid, hidden from user code). Two calls to `Cell.new(0)` produce two distinct cells even with identical initial values. Identity is allocation-time, not value-time. The current arena machinery for `Map` / `Substitution` / `Stream` uses this scheme — and `Cell[V]` belongs in this category: cells in Rust (`Cell::new`), OCaml (`ref`), Haskell (`newIORef`) all get identity from allocation, not from a domain key the user supplies.
+- **Opaque handle**: the handler allocates a fresh internal slot per construction call; `IdentityKey` is whatever the handler uses to address slots (typically an `Int64` uid, hidden from user code). Two calls to `Cell.new(0)` produce two distinct cells even with identical initial values. Identity is allocation-time, not value-time. The current arena machinery for `Map` / `Substitution` / `Stream` uses this scheme — and `Cell[V]` belongs in this category: cells in Rust (`Cell::new`), OCaml (`ref`), Haskell (`newIORef`) all get identity from allocation, not from a domain key the user supplies.
 
   ```anthill
   sort Cell
@@ -452,7 +452,7 @@ Operations on resources observe these invariants so a future time-travel handler
 
 ### Rule 8: Modify[T] and handler are bidirectionally required
 
-`Modify[T]` may appear in an effect row only if T has a registered handler (so the runtime knows where to dispatch). A handler for T is meaningful only if at least one operation declares `Modify[T]` (otherwise it can never fire). Bare value types without a wrapper sort (Int, Bool, String, raw functor terms) cannot carry Modify because they have no handler and no place for one to attach. Mutability is a property of the resource type, declared by introducing a sort that owns operations carrying `Modify[T]`.
+`Modify[T]` may appear in an effect row only if T has a registered handler (so the runtime knows where to dispatch). A handler for T is meaningful only if at least one operation declares `Modify[T]` (otherwise it can never fire). Bare value types without a wrapper sort (Int64, Bool, String, raw functor terms) cannot carry Modify because they have no handler and no place for one to attach. Mutability is a property of the resource type, declared by introducing a sort that owns operations carrying `Modify[T]`.
 
 ## Open decisions before WI-192 implements
 

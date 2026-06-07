@@ -43,7 +43,7 @@ namespace anthill.reflect
 
   -- Source span with file identity
   enum SourceSpan
-    entity source_span(file: SourceId, start_byte: Int, end_byte: Int)
+    entity source_span(file: SourceId, start_byte: Int64, end_byte: Int64)
   end
 
   -- Positioned node in an expression / rule / operation body: a term plus its
@@ -202,8 +202,8 @@ namespace anthill.reflect
   operation not(query: Term) -> Bool
 
   -- Extract a named binding from a SortView instantiation term.
-  -- Given spec = SortView(Monoid(), T=Int(), combine=Ref(add)),
-  -- resolve_sort_instantiation_param(spec, Ref(T), ?val) binds ?val to Int().
+  -- Given spec = SortView(Monoid(), T=Int64(), combine=Ref(add)),
+  -- resolve_sort_instantiation_param(spec, Ref(T), ?val) binds ?val to Int64().
   operation resolve_sort_instantiation_param(inst: Term, param: Term) -> Term
 
   -- ================================================================
@@ -318,7 +318,7 @@ namespace anthill.reflect
 
   -- Structural decomposition of Term — for introspection.
   enum LiteralRepr {
-    entity IntLiteral(value: Int)
+    entity IntLiteral(value: Int64)
     entity FloatLiteral(value: Float)
     entity StringLiteral(value: String)
     entity BoolLiteral(value: Bool)
@@ -372,7 +372,7 @@ namespace anthill.reflect
     -- empty `args` list; a method call carries its arguments.
     entity dot_apply(receiver: NodeOccurrence, name: Symbol, args: List[ApplyArg])
     entity var_ref(name: Symbol)
-    entity int_lit(value: Int)
+    entity int_lit(value: Int64)
     entity bigint_lit(value: BigInt)
     entity float_lit(value: Float)
     entity string_lit(value: String)
@@ -395,11 +395,11 @@ namespace anthill.reflect
     -- not positionally. Kept defined-but-unused so older IR snapshots
     -- still parse; the typer no longer emits it and the eval no longer
     -- reduces it. Removal is a filed follow-up.
-    entity requirement_at_current(slot: Int, op: Option[Symbol])
+    entity requirement_at_current(slot: Int64, op: Option[Symbol])
     -- requirement_at_sort(chain, slot): project the slot-th bundled
     -- sub-requirement of `chain`. `chain` is a requirement chain rooted
     -- at a `var_ref` requirement read — enforced by the typer.
-    entity requirement_at_sort(chain: NodeOccurrence, slot: Int)
+    entity requirement_at_sort(chain: NodeOccurrence, slot: Int64)
     -- construct_requirement(impl_functor, requirements): allocate a
     -- fresh requirement value bundling the resolved sub-requirements.
     entity construct_requirement(impl_functor: Symbol, requirements: List[NodeOccurrence])
@@ -417,9 +417,9 @@ namespace anthill.reflect
   )
 
   -- Call-site type-argument binding emitted by the loader for
-  -- `op[A = Int](args)` and similar parameterized calls (proposal 042 /
+  -- `op[A = Int64](args)` and similar parameterized calls (proposal 042 /
   -- WI-269). One entry per binding; `name = none()` for positional, e.g.
-  -- `op[Int](args)`. The cons-list of these lives in the parent call's
+  -- `op[Int64](args)`. The cons-list of these lives in the parent call's
   -- `type_args` slot (`Expr.apply` / `Expr.ho_apply`).
   entity type_arg(
     name: Option[T = Symbol],
@@ -498,15 +498,15 @@ namespace anthill.reflect
   -- - Positional arg: the sort reference term (e.g. Monoid() for sort Monoid)
   -- - Named args: parameter bindings (both type params and operations)
   --
-  -- Example: requires Monoid[T = Int, combine = add]
-  -- becomes: SortView(Monoid(), T=Int(), combine=Ref(add))
+  -- Example: requires Monoid[T = Int64, combine = add]
+  -- becomes: SortView(Monoid(), T=Int64(), combine=Ref(add))
   entity SortView(sort: Term)
 
   -- SortRequiresInfo: sort requires spec relationship.
   -- Emitted for each `requires` clause on a sort.
   entity SortRequiresInfo(
     sort_ref : Term,                                -- the sort that has the requirement
-    spec     : Term                                 -- the view: SortView(Ref(Monoid), T=Int(), ...)
+    spec     : Term                                 -- the view: SortView(Ref(Monoid), T=Int64(), ...)
   )
 
   -- SortProvidesInfo: sort provides spec satisfaction (proposal 030
@@ -516,8 +516,8 @@ namespace anthill.reflect
   -- by walking S's auto-registered ScopeAxiom records (α.6) and
   -- checking each is covered by a Discharged ProofRecord at σ.
   entity SortProvidesInfo(
-    sort_ref : Term,                                -- the providing sort (e.g. Ref(Int))
-    spec     : Term                                 -- the spec view (e.g. SortView(Ref(Eq), T = Int()))
+    sort_ref : Term,                                -- the providing sort (e.g. Ref(Int64))
+    spec     : Term                                 -- the spec view (e.g. SortView(Ref(Eq), T = Int64()))
   )
 
   -- ================================================================
@@ -537,7 +537,7 @@ namespace anthill.reflect
   entity DescriptionInfo(
     target  : Symbol,                               -- target name (symbol reference)
     content : String,                               -- description text (literal)
-    index   : Int                                   -- description index (0-based)
+    index   : Int64                                   -- description index (0-based)
   )
 
   -- ================================================================
@@ -575,7 +575,7 @@ namespace anthill.reflect
     entity negation(query: LogicalQuery)                           -- NOT (negation-as-failure)
     entity guarded(query: LogicalQuery, condition: Term)           -- filter
     entity projected(query: LogicalQuery, vars: List[T = String])  -- projection
-    entity limited(query: LogicalQuery, count: Int)                -- cardinality limit
+    entity limited(query: LogicalQuery, count: Int64)                -- cardinality limit
 
     -- Quantifiers: condition -: body (Alloy-inspired)
     entity forall_q(var: Symbol, condition: LogicalQuery, body: LogicalQuery)

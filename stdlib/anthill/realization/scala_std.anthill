@@ -43,7 +43,7 @@ namespace anthill.realization.scala_std
     receiver_map: [],
 
     type_map: [
-      TypeMapping(anthill_type: "Int",       host_type: "Int"),
+      TypeMapping(anthill_type: "Int64",       host_type: "Int64"),
       TypeMapping(anthill_type: "BigInt",    host_type: "BigInt"),
       TypeMapping(anthill_type: "Float",     host_type: "Double"),
       TypeMapping(anthill_type: "Bool",      host_type: "Boolean"),

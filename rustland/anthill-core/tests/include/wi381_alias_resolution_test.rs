@@ -1,14 +1,14 @@
 //! WI-381: resolve a DEFINED-TYPE / ALIAS to its underlying shape BEFORE expansion
 //! and projection (design `docs/design/expansion-during-unification.md` §1, §6 OQ6).
 //!
-//! A bare reference to `sort IntList = List[T = Int]` must resolve to its shape
-//! `List[T = Int]` so that:
-//!   - a projection `s.T` on `s: IntList` projects off the RESOLVED shape (=> `Int`),
+//! A bare reference to `sort IntList = List[T = Int64]` must resolve to its shape
+//! `List[T = Int64]` so that:
+//!   - a projection `s.T` on `s: IntList` projects off the RESOLVED shape (=> `Int64`),
 //!     not the opaque alias (which declares no member `T`); chains
-//!     (`Top = Mid`, `Mid = List[T = Int]`) follow to a finite shape;
-//!   - the alias-fixed binding `T = Int` is KEPT — an `IntList` value conforms to its
-//!     own definition `List[T = Int]` and is rejected against `List[T = String]`; the
-//!     alias did NOT go all-fresh and lose `T = Int`.
+//!     (`Top = Mid`, `Mid = List[T = Int64]`) follow to a finite shape;
+//!   - the alias-fixed binding `T = Int64` is KEPT — an `IntList` value conforms to its
+//!     own definition `List[T = Int64]` and is rejected against `List[T = String]`; the
+//!     alias did NOT go all-fresh and lose `T = Int64`.
 //!
 //! Sites fixed (Rust typer): the projection eliminator (`project_type_member`), the
 //! `parameterized ↔ sort_ref` unify boundary (`unify_parameterized_with_sort_ref`),
@@ -54,41 +54,41 @@ fn load_errors(extras: &[&str]) -> Vec<String> {
 fn alias_loads() {
     let src = r#"
 namespace test.wi381.loads
-  import anthill.prelude.{List, Int}
-  sort IntList = List[T = Int]
-  operation use_it(l: IntList) -> Int
+  import anthill.prelude.{List, Int64}
+  sort IntList = List[T = Int64]
+  operation use_it(l: IntList) -> Int64
 end
 "#;
     let errs = load_errors(&[src]);
-    assert!(errs.is_empty(), "alias `sort IntList = List[T = Int]` should load: {errs:?}");
+    assert!(errs.is_empty(), "alias `sort IntList = List[T = Int64]` should load: {errs:?}");
 }
 
-/// `s.T` on an `IntList` projects `Int` (off the resolved shape `List[T = Int]`).
+/// `s.T` on an `IntList` projects `Int64` (off the resolved shape `List[T = Int64]`).
 #[test]
 fn alias_projection_projects_resolved_member() {
     let src = r#"
 namespace test.wi381.proj
-  import anthill.prelude.{List, Int}
-  sort IntList = List[T = Int]
+  import anthill.prelude.{List, Int64}
+  sort IntList = List[T = Int64]
   operation peek(l: IntList) -> l.T
-  operation caller(xs: IntList) -> Int = peek(xs)
+  operation caller(xs: IntList) -> Int64 = peek(xs)
 end
 "#;
     let errs = load_errors(&[src]);
     assert!(
         errs.is_empty(),
-        "peek(xs) is IntList.T = (List[T=Int]).T = Int; returning it as Int must conform: {errs:?}",
+        "peek(xs) is IntList.T = (List[T=Int64]).T = Int64; returning it as Int64 must conform: {errs:?}",
     );
 }
 
-/// The resolved member is REAL: `peek(xs)` is `Int`, so returning it where `String` is
+/// The resolved member is REAL: `peek(xs)` is `Int64`, so returning it where `String` is
 /// declared is rejected (the projection did not invent a fresh element).
 #[test]
 fn alias_projection_wrong_member_rejected() {
     let src = r#"
 namespace test.wi381.proj_wrong
-  import anthill.prelude.{List, Int, String}
-  sort IntList = List[T = Int]
+  import anthill.prelude.{List, Int64, String}
+  sort IntList = List[T = Int64]
   operation peek(l: IntList) -> l.T
   operation caller(xs: IntList) -> String = peek(xs)
 end
@@ -96,60 +96,60 @@ end
     let errs = load_errors(&[src]);
     assert!(
         !errs.is_empty(),
-        "peek(xs) is Int (resolved off IntList); returning it as String must be REJECTED",
+        "peek(xs) is Int64 (resolved off IntList); returning it as String must be REJECTED",
     );
 }
 
-/// A simple-alias CHAIN `Top = Mid`, `Mid = List[T = Int]` follows to a finite shape,
-/// so `s.T` on a `Top` still projects `Int`.
+/// A simple-alias CHAIN `Top = Mid`, `Mid = List[T = Int64]` follows to a finite shape,
+/// so `s.T` on a `Top` still projects `Int64`.
 #[test]
 fn alias_chain_projection() {
     let src = r#"
 namespace test.wi381.chain
-  import anthill.prelude.{List, Int}
-  sort Mid = List[T = Int]
+  import anthill.prelude.{List, Int64}
+  sort Mid = List[T = Int64]
   sort Top = Mid
   operation peek(l: Top) -> l.T
-  operation caller(xs: Top) -> Int = peek(xs)
+  operation caller(xs: Top) -> Int64 = peek(xs)
 end
 "#;
     let errs = load_errors(&[src]);
-    assert!(errs.is_empty(), "Top -> Mid -> List[T=Int]; (Top).T must project Int: {errs:?}");
+    assert!(errs.is_empty(), "Top -> Mid -> List[T=Int64]; (Top).T must project Int64: {errs:?}");
 }
 
-/// `T = Int` is KEPT at the subtype boundary: an `IntList` conforms to its own
-/// definition `List[T = Int]` (return-conformance — a checked position today).
+/// `T = Int64` is KEPT at the subtype boundary: an `IntList` conforms to its own
+/// definition `List[T = Int64]` (return-conformance — a checked position today).
 #[test]
 fn alias_return_conformance_keeps_binding_ok() {
     let src = r#"
 namespace test.wi381.ret_ok
-  import anthill.prelude.{List, Int}
-  sort IntList = List[T = Int]
-  operation f(xs: IntList) -> List[T = Int] = xs
+  import anthill.prelude.{List, Int64}
+  sort IntList = List[T = Int64]
+  operation f(xs: IntList) -> List[T = Int64] = xs
 end
 "#;
     let errs = load_errors(&[src]);
     assert!(
         errs.is_empty(),
-        "an IntList value must conform to its own definition List[T = Int]: {errs:?}",
+        "an IntList value must conform to its own definition List[T = Int64]: {errs:?}",
     );
 }
 
-/// `T = Int` is KEPT (not all-fresh): an `IntList` does NOT conform to
+/// `T = Int64` is KEPT (not all-fresh): an `IntList` does NOT conform to
 /// `List[T = String]` — returning one there is rejected.
 #[test]
 fn alias_return_conformance_wrong_binding_rejected() {
     let src = r#"
 namespace test.wi381.ret_wrong
-  import anthill.prelude.{List, Int, String}
-  sort IntList = List[T = Int]
+  import anthill.prelude.{List, Int64, String}
+  sort IntList = List[T = Int64]
   operation g(xs: IntList) -> List[T = String] = xs
 end
 "#;
     let errs = load_errors(&[src]);
     assert!(
         !errs.is_empty(),
-        "IntList resolves to List[T=Int]; conforming it to List[T=String] must be REJECTED",
+        "IntList resolves to List[T=Int64]; conforming it to List[T=String] must be REJECTED",
     );
 }
 
@@ -160,11 +160,11 @@ end
 fn cyclic_alias_terminates() {
     let src = r#"
 namespace test.wi381.cyclic
-  import anthill.prelude.{Int}
+  import anthill.prelude.{Int64}
   sort A = B
   sort B = A
   operation peek(x: A) -> x.T
-  operation caller(xs: A) -> Int = peek(xs)
+  operation caller(xs: A) -> Int64 = peek(xs)
 end
 "#;
     // Either the loader rejects the cyclic definition or projection over the opaque

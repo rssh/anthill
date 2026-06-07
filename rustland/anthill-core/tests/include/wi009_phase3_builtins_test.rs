@@ -82,7 +82,7 @@ end
     // facts_of returns both the user fact AND the synthetic entity
     // declaration (whose field values are unbound logical vars). Walk
     // the cons-list and pick the first head whose `fst` field is the
-    // ground Int literal — that's the user fact.
+    // ground Int64 literal — that's the user fact.
     use anthill_core::kb::term::{Literal, Term};
     let head = {
         let mut cur = facts.clone();

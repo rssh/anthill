@@ -180,13 +180,13 @@ fn requirement_name_tracks_requires_chain_entry() {
     let src = r#"
 namespace test.wi222.multi_requires
   import anthill.prelude.Ordered.{compare}
-  import anthill.prelude.{Eq, Ordered, Int}
+  import anthill.prelude.{Eq, Ordered, Int64}
   export Wi222Multi
   sort Wi222Multi
     sort T = ?
     requires Eq[T]
     requires Ordered[T]
-    operation use_compare(a: T, b: T) -> Int = compare(a, b)
+    operation use_compare(a: T, b: T) -> Int64 = compare(a, b)
   end
 end
 "#;
@@ -256,12 +256,12 @@ fn dispatching_dict_is_caller_direct_requirement_var_ref() {
     let src = r#"
 namespace test.wi222.proj_deps
   import anthill.prelude.Ordered.{compare}
-  import anthill.prelude.{Ordered, Int}
+  import anthill.prelude.{Ordered, Int64}
   export Wi222Outer
   sort Wi222Outer
     sort T = ?
     requires Ordered[T]
-    operation use_compare(a: T, b: T) -> Int = compare(a, b)
+    operation use_compare(a: T, b: T) -> Int64 = compare(a, b)
   end
 end
 "#;
@@ -344,27 +344,27 @@ fn pin_now_upgrades_to_apply_within_when_impl_parent_has_requires() {
     // the requirements channel.
     //
     // Setup: a generic spec `Wi222ESpec` with one body-less op `act`,
-    // and an impl sort `Wi222EImpl` that hosts `fact Wi222ESpec[T = Int]`
-    // AND declares its own `requires Eq[T = Int]`. A driver sort
-    // calls `act(x)` at T=Int — Pin-now resolves to Wi222EImpl.act.
-    // Because Wi222EImpl declares `requires Eq[T = Int]`, the call must
+    // and an impl sort `Wi222EImpl` that hosts `fact Wi222ESpec[T = Int64]`
+    // AND declares its own `requires Eq[T = Int64]`. A driver sort
+    // calls `act(x)` at T=Int64 — Pin-now resolves to Wi222EImpl.act.
+    // Because Wi222EImpl declares `requires Eq[T = Int64]`, the call must
     // upgrade to apply_within.
     let src = r#"
 namespace test.wi222.phase_e_pin_now
-  import anthill.prelude.{Eq, Int, Bool}
+  import anthill.prelude.{Eq, Int64, Bool}
   export Wi222ESpec, Wi222EImpl, Wi222EDriver
   sort Wi222ESpec
     sort T = ?
     operation act(x: T) -> Bool
   end
   sort Wi222EImpl
-    fact Wi222ESpec[T = Int]
-    requires Eq[T = Int]
-    operation act(x: Int) -> Bool = true
+    fact Wi222ESpec[T = Int64]
+    requires Eq[T = Int64]
+    operation act(x: Int64) -> Bool = true
   end
   sort Wi222EDriver
     import test.wi222.phase_e_pin_now.Wi222ESpec.{act}
-    operation drive(x: Int) -> Bool = act(x)
+    operation drive(x: Int64) -> Bool = act(x)
   end
 end
 "#;
@@ -423,7 +423,7 @@ fn pinned_call_does_not_get_apply_within_rewrite() {
 namespace test.wi222.no_defer
   import anthill.prelude.Eq.{eq}
   import anthill.prelude.Bool
-  operation pin_call(a: Int, b: Int) -> Bool = eq(a, b)
+  operation pin_call(a: Int64, b: Int64) -> Bool = eq(a, b)
 end
 "#;
     let interp = interp_for(src);
@@ -462,7 +462,7 @@ fn synth_req_names_for_multi_requires_is_direct_no_dup() {
     // `[__req_eq, __req_ordered]`, no collision and no duplication.
     let src = r#"
 namespace test.wi239.multi
-  import anthill.prelude.{Eq, Ordered, Int}
+  import anthill.prelude.{Eq, Ordered, Int64}
   export Wi239Multi
   sort Wi239Multi
     sort T = ?

@@ -269,7 +269,7 @@ Patterns the delegation rule covers (hand-written today, or via future sugar):
 | `Future[T]`                   | `T`         | `!Awaits`    | Async transparency                |
 | `Logged[T]`                   | `T`         | `!Logs`      | Aspect wrapping                   |
 | `UserId = String` (alias)     | `String`    | none         | Newtype transparency              |
-| `PositiveInt = Int{?x > 0}`   | `Int`       | none         | Refinement preservation           |
+| `PositiveInt = Int64{?x > 0}`   | `Int64`       | none         | Refinement preservation           |
 
 Wrapper-defines-own-method always wins. `Either` can declare its own `map`, `flat_map`, etc.; those are receiver-tagged operations and the wrapper's own dispatch picks them first. The `not method_on_self(Either, ?name)` guard on the delegation rule enforces this — when an own-method matches, the delegation rule doesn't fire.
 
@@ -298,7 +298,7 @@ Two examples that stress the design beyond simple method dispatch: `min` (typecl
 sort Ord
   requires Eq[T = T]
   sort T = ?
-  operation compare(a: T, b: T) -> Int
+  operation compare(a: T, b: T) -> Int64
   operation min(a: T, b: T) -> T
 end
 

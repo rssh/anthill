@@ -232,7 +232,7 @@ Replay is mechanical and fast. SLD checking adds the SLD resolver to the trust b
 
 Each sub-witness is checked recursively. The composition is checked structurally: the meta-tactic's name (`induction`, `ranking`, `bmc`, …) corresponds to a registered meta-tactic schema; the sub-witnesses must satisfy the schema's contract. For example:
 
-- `induction(over: Int)` requires a base sub-proof (proving the claim at `0`) and a step sub-proof (proving `P(n) ⇒ P(n+1)`); the kernel verifies the count and shape.
+- `induction(over: Int64)` requires a base sub-proof (proving the claim at `0`) and a step sub-proof (proving `P(n) ⇒ P(n+1)`); the kernel verifies the count and shape.
 - `ranking(boundedness, decrease)` requires a boundedness sub-proof (proving `R(state) ≥ 0`) and a strict-decrease sub-proof (proving `R(state') < R(state)` on the relevant transitions).
 
 The schemas live as KB facts — `MetaTacticContract(name, ...)` — so they can be extended without changing the kernel. The existing `induction(...)` and `ranking(...)` Z3 dispatches in `prove.rs` get re-shaped to emit `MetaCompose` witnesses with their sub-discharges, instead of flat `SmtDischarge` over a synthetic combined document.
@@ -333,7 +333,7 @@ For each `requires <SE>` clause inside scope `S` (where `S` is a sort or operati
 - **Name**: `<S-qn>.requires.<SE-flat>` — sort-expr-keyed flattening of the Sort-Expr, e.g. `anthill.algebra.A.requires.Eq_T` for `requires Eq[T]` inside sort `A`. Stable under reordering of `requires` clauses; unstable only when the user edits the Sort-Expr itself (and that's a substantive change that should invalidate the lemma).
 - **Statement**: the conjunction of `SE`'s laws (pulled from `SE`'s defining sort/spec) instantiated at the clause's binding. For `requires Eq[T]` inside A with abstract param T, the statement is `∀ (a: T) (b: T). (eq a b) = (eq b a) ∧ (eq a a) ∧ ...` — Eq's laws under the abstract T.
 - **Witness (parametric case)**: `ScopeAxiom(scope_kind: "sort" | "operation", scope_qn: <S-qn>, aspect: "requires.<SE-flat>")`. The kernel checks this witness by re-reading `S`'s declaration in the current KB and verifying the clause is present with the same Sort-Expr. The proof is *by definition*: the lemma holds because the source declaration says it does. Not in the trust base — `S`'s source IS the proof, mechanically checkable.
-- **Witness (specialized case)**: `Specialization` composing the parametric ProofRecord with the concrete provides-discharge ProofRecords. Auto-generated when `provides A[T = X]` discharges and Int's spec laws have their own ProofRecords.
+- **Witness (specialized case)**: `Specialization` composing the parametric ProofRecord with the concrete provides-discharge ProofRecords. Auto-generated when `provides A[T = X]` discharges and Int64's spec laws have their own ProofRecords.
 
 A sort with three `requires` clauses produces three ProofRecords. There is no aggregate `Requires[A]` lemma — the conjunction is on demand at translation time, not stored.
 
@@ -355,7 +355,7 @@ At the SMT-emission layer, the kernel may collapse N implicitly-cited `requires`
 
 ### Auto-generated induction principles as registered theorems
 
-Anthill auto-generates an induction principle for each inductive sort and supported primitive: enums (`enum Color { Red; Green; Blue }`), inductive ADTs (`sort List[T] { entity nil; entity cons(head: T, tail: List[T]) }`), and primitives with a well-founded ordering (`Int.induction(?P, ?lo, ?hi)`, `BigInt.induction(?P)` already in the stdlib). These principles are first-class registered theorems under stance 2 — same `ScopeAxiom` mechanism as `requires` clauses, different aspect.
+Anthill auto-generates an induction principle for each inductive sort and supported primitive: enums (`enum Color { Red; Green; Blue }`), inductive ADTs (`sort List[T] { entity nil; entity cons(head: T, tail: List[T]) }`), and primitives with a well-founded ordering (`Int64.induction(?P, ?lo, ?hi)`, `BigInt.induction(?P)` already in the stdlib). These principles are first-class registered theorems under stance 2 — same `ScopeAxiom` mechanism as `requires` clauses, different aspect.
 
 #### Per-sort registration
 
@@ -365,7 +365,7 @@ For each inductive/primitive sort `T`, the kernel registers a ProofRecord at loa
 - **Statement**: the canonical induction principle for `T`'s inductive structure.
   - Enum: `∀ P. (and P(c₁) P(c₂) … P(c_n)) ⇒ ∀ x: T. P(x)`.
   - Inductive ADT: structural induction over constructors, with an IH per recursive arg.
-  - Primitive `Int`: well-founded `∀ P. (P(0) ∧ ∀ n. P(n) ⇒ P(n+1)) ⇒ ∀ k: Int. P(k)` (or its variants for bounded ranges, BigInt, etc.).
+  - Primitive `Int64`: well-founded `∀ P. (P(0) ∧ ∀ n. P(n) ⇒ P(n+1)) ⇒ ∀ k: Int64. P(k)` (or its variants for bounded ranges, BigInt, etc.).
 - **Witness**: `ScopeAxiom(scope_kind: "sort", scope_qn: <T-qn>, aspect: "induction")`. The kernel checks by re-reading T's declaration, verifying T is inductively defined (or a primitive with declared well-foundedness), and confirming the cached principle's statement matches the canonical principle for T's current constructor list / measure. If the user adds/removes a constructor, the witness fails to check and the principle invalidates.
 - **Parametric context**: for polymorphic sorts like `List[T]`, the principle is parametric over `T`. `parametric_context = [ParametricBinding(abstract_sort: "T", requires: [...])]` — including any `requires` of `T` from the sort's declaration.
 
@@ -379,7 +379,7 @@ The `induction(...)` meta-tactic's contract is **derived from** T's auto-registe
 2. Read its statement to determine the expected sub-witness shape:
    - Enum with N constructors → expect N sub-witnesses, each proving `P(c_i)`.
    - Inductive ADT → expect base sub-witnesses for nullary constructors plus step sub-witnesses (with IH) for recursive constructors.
-   - Primitive Int → expect a base sub-witness (`P(0)`) plus a step sub-witness (`∀ n. P(n) ⇒ P(n+1)`).
+   - Primitive Int64 → expect a base sub-witness (`P(0)`) plus a step sub-witness (`∀ n. P(n) ⇒ P(n+1)`).
 3. Verify the sub-witnesses match.
 
 This unifies the meta-tactic and its contract: one source of truth (the auto-generated principle), and the meta-tactic is just a structured user-facing way to invoke it. New constructors automatically expand the contract; the kernel and meta-tactic stay in sync without separate updates.
@@ -390,18 +390,18 @@ Without going through the meta-tactic syntactically, a user may explicitly cite 
 
 ```anthill
 proof some_universal_claim
-  using anthill.prelude.Int.induction
+  using anthill.prelude.Int64.induction
   by z3(logic: "LIA")
 end
 ```
 
 The cite resolves to the registered principle; the proof block discharges in a context where the principle's universal claim is asserted. This is the same `using` machinery as any other cite — no special handling.
 
-`Int.induction(?P, ?lo, ?hi)`, `BigInt.induction(?P)` and similar already-stdlib rules become *the source-level shorthand* for these auto-registered principles. The stdlib file declares the rule; the kernel observes it's an induction principle for the primitive sort and generates the matching ProofRecord with `ScopeAxiom(aspect: "induction")` witness automatically. (For sorts the user defines, the same auto-generation happens at sort load.)
+`Int64.induction(?P, ?lo, ?hi)`, `BigInt.induction(?P)` and similar already-stdlib rules become *the source-level shorthand* for these auto-registered principles. The stdlib file declares the rule; the kernel observes it's an induction principle for the primitive sort and generates the matching ProofRecord with `ScopeAxiom(aspect: "induction")` witness automatically. (For sorts the user defines, the same auto-generation happens at sort load.)
 
 #### Specialization for polymorphic sorts
 
-`List.induction` is parametric over `T`. A use at `T = Int` produces a `Specialization(parametric: "List.induction", substitution: [{abstract_param: "T", concrete_sort: "Int"}], instances: [...])` ProofRecord. The instance-proofs list covers any `requires` `T` had in `List`'s declaration; for `List[T]` with no T-requires, the instances list is empty and `Specialization` is purely a substitution operation.
+`List.induction` is parametric over `T`. A use at `T = Int64` produces a `Specialization(parametric: "List.induction", substitution: [{abstract_param: "T", concrete_sort: "Int64"}], instances: [...])` ProofRecord. The instance-proofs list covers any `requires` `T` had in `List`'s declaration; for `List[T]` with no T-requires, the instances list is empty and `Specialization` is purely a substitution operation.
 
 #### Composition with `requires` (open question)
 
@@ -410,7 +410,7 @@ For polymorphic inductive sorts with parametric `requires` — e.g. `sort List[T
 - `List.induction` provides the structural inductive shape.
 - `List.requires.Eq_T` provides the abstract law content.
 
-Both are implicitly cited inside `List`'s scope. At a use site for `T = Int`, both specialize together via `Specialization`. The composition is mechanical but worth a careful check on first implementation; flagged in open questions.
+Both are implicitly cited inside `List`'s scope. At a use site for `T = Int64`, both specialize together via `Specialization`. The composition is mechanical but worth a careful check on first implementation; flagged in open questions.
 
 ### Per-predicate translation policy
 
@@ -538,12 +538,12 @@ rule reachability_band(?k, ?d)
 The induction tactic discharges this via four sub-queries (`base_lower_violation`, `base_upper_violation`, `lower_violation`, `upper_violation`). Each sub-query produces an `SmtDischarge` witness; the meta-tactic combines them into a `MetaCompose(tactic_name = "induction", sub = [w₁, w₂, w₃, w₄])`.
 
 The kernel checks the `MetaCompose`:
-- The contract `MetaTacticContract(name = "induction", over = "Int")` requires a base witness at `0` and a step witness covering `P(n) ⇒ P(n+1)`.
+- The contract `MetaTacticContract(name = "induction", over = "Int64")` requires a base witness at `0` and a step witness covering `P(n) ⇒ P(n+1)`.
 - The four sub-witnesses match the contract (two-bound base + two-bound step).
 - Each sub-witness's `SmtDischarge` is checked by replay.
 - All checks pass; the kernel writes `ProofRecord(rule = "reachability_band", result = Discharged, witness = MetaCompose(...), state_hash = <hash>)`.
 
-The rule's projected statement is `∀ (k: Int) (d: Real). (k ≥ 0 ∧ distance_at_step(k, d)) ⇒ (d ≥ d_min ∧ d ≤ d_max)` — derived on demand from the rule's IR, not stored.
+The rule's projected statement is `∀ (k: Int64) (d: Real). (k ≥ 0 ∧ distance_at_step(k, d)) ⇒ (d ≥ d_min ∧ d ≤ d_max)` — derived on demand from the rule's IR, not stored.
 
 ### Step 2 — `safety_min_distance` cites
 
@@ -753,7 +753,7 @@ Phase β can land alongside α (witness checking is independent of statement pro
 
 10. **Compound meta-tactic proofs (Framing A → Framing B transition)** — *open, deferred*. v0 commits to *Framing A* (sub-witness-local hypotheses; see Design § Scope of meta-tactic sub-witnesses) — meta-tactic-introduced hypotheses like the inductive hypothesis stay local to the sub-witness's discharge context and do not enter the kernel registry. This breaks when a step's own proof wants to compose other registered theorems via `using` while also having access to IH. *Framing B* introduces scoped temporary registry entries: a meta-tactic, when dispatching a sub-witness, registers a transient fact ("IH is true, scoped to this sub-witness") that lives in the registry only for the duration of the sub-witness's discharge. Implementation requires a `scope: Option[T = SubProofId]` field on ProofRecord, scope-aware querying, sub-proof identifier propagation through nested meta-tactic calls, and lifetime cleanup. Punted from v0; revisited when compound use cases demand it.
 
-11. **Composition of induction principle and `requires` for polymorphic inductive sorts** — *partially resolved*. The current α.6 + α.7 + α.8 pipeline emits separate Specialization records per aspect (induction, requires-clause). γ.4's enclosing-scope walker implicitly cites both. A use site for `T = Int` produces specialized versions of both via separate `Specialization` ProofRecords. Whether to also produce a *single* combined specialization (more compact) or stay with per-aspect granularity (current behavior, simpler) remains open; v0's per-aspect approach is sound regardless.
+11. **Composition of induction principle and `requires` for polymorphic inductive sorts** — *partially resolved*. The current α.6 + α.7 + α.8 pipeline emits separate Specialization records per aspect (induction, requires-clause). γ.4's enclosing-scope walker implicitly cites both. A use site for `T = Int64` produces specialized versions of both via separate `Specialization` ProofRecords. Whether to also produce a *single* combined specialization (more compact) or stay with per-aspect granularity (current behavior, simpler) remains open; v0's per-aspect approach is sound regardless.
 
 12. **`provides` discharge mechanism (WI-119)** — *resolved* (Variant 3 chosen). Source-level `provides A[T = X]` declares satisfaction intent → loader emits `SortProvidesInfo` fact → α.8 verifies + emits Specialization ProofRecords. See WI-119's recorded decision: explicit declarations preferred over implicit derivation (intent vs coincidence is information-bearing). Variant 1 (no clause; derive from existence of supporting proofs) and Variant 2 (compile RHS / mechanical substitution) explicitly rejected.
 

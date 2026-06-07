@@ -46,7 +46,7 @@
 --   - arithmetic in goal position uses Numeric ops: add, mul, div
 
 namespace anthill.examples.lf1.safety.common
-  import anthill.prelude.{Float, Int, Bool}
+  import anthill.prelude.{Float, Int64, Bool}
   import anthill.prelude.Numeric.{add, sub, mul}
   import anthill.prelude.Ordered.{gte}
   import anthill.geometry.{Vec3}
@@ -187,7 +187,7 @@ namespace anthill.examples.lf1.safety.common
   -- KinematicAssumptions; direction free.
   entity RealVelocity(
     drone: Drone,
-    k:     Int,
+    k:     Int64,
     vx:    Float,
     vy:    Float,
     vz:    Float

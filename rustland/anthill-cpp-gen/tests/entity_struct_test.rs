@@ -34,13 +34,13 @@ struct Vec3 {
 
 #[test]
 fn entity_with_int_and_string_fields() {
-    // Mixed primitive types — verifies the Int → int64_t and
+    // Mixed primitive types — verifies the Int64 → int64_t and
     // String → std::string mappings.
     let source = r#"
         namespace test.account
-          import anthill.prelude.{Int, String}
+          import anthill.prelude.{Int64, String}
           export Account
-          entity Account(id: Int, name: String)
+          entity Account(id: Int64, name: String)
         end
     "#;
 

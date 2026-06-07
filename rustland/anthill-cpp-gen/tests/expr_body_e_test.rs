@@ -3,11 +3,11 @@
 //! Calls to prelude typeclass methods get rewritten to their C++
 //! operator equivalents:
 //!   - Numeric.{add, sub, mul} → + - *
-//!   - Int.div / Float.div / Int.mod → / / %
+//!   - Int64.div / Float.div / Int64.mod → / / %
 //!   - Ordered.{gt, lt, gte, lte} → > < >= <=
 //!   - Eq.{eq, neq} → == !=
 //!   - Bool.{and, or, not} → && || !
-//!   - Int.neg / Float.neg → unary -
+//!   - Int64.neg / Float.neg → unary -
 //!
 //! User-defined functions with the same short name don't dispatch
 //! (the rewrite keys on the full qualified name).
@@ -26,10 +26,10 @@ use common::{find_cxx, load_kb_with, scratch_dir};
 fn numeric_add_emits_plus() {
     let source = r#"
         namespace test.expr_e_add
-          import anthill.prelude.{Int}
+          import anthill.prelude.{Int64}
           export Calc
           sort Calc
-            operation inc(x: Int) -> Int = add(x, 1)
+            operation inc(x: Int64) -> Int64 = add(x, 1)
           end
         end
     "#;
@@ -46,11 +46,11 @@ fn numeric_add_emits_plus() {
 fn numeric_sub_mul_emit_operators() {
     let source = r#"
         namespace test.expr_e_arith
-          import anthill.prelude.{Int}
+          import anthill.prelude.{Int64}
           export Calc
           sort Calc
-            operation diff(a: Int, b: Int) -> Int = sub(a, b)
-            operation prod(a: Int, b: Int) -> Int = mul(a, b)
+            operation diff(a: Int64, b: Int64) -> Int64 = sub(a, b)
+            operation prod(a: Int64, b: Int64) -> Int64 = mul(a, b)
           end
         end
     "#;
@@ -65,13 +65,13 @@ fn numeric_sub_mul_emit_operators() {
 fn ordered_comparators_emit_relational_ops() {
     let source = r#"
         namespace test.expr_e_cmp
-          import anthill.prelude.{Int, Bool}
+          import anthill.prelude.{Int64, Bool}
           export Calc
           sort Calc
-            operation g(a: Int, b: Int)  -> Bool = gt(a, b)
-            operation l(a: Int, b: Int)  -> Bool = lt(a, b)
-            operation ge(a: Int, b: Int) -> Bool = gte(a, b)
-            operation le(a: Int, b: Int) -> Bool = lte(a, b)
+            operation g(a: Int64, b: Int64)  -> Bool = gt(a, b)
+            operation l(a: Int64, b: Int64)  -> Bool = lt(a, b)
+            operation ge(a: Int64, b: Int64) -> Bool = gte(a, b)
+            operation le(a: Int64, b: Int64) -> Bool = lte(a, b)
           end
         end
     "#;
@@ -88,12 +88,12 @@ fn ordered_comparators_emit_relational_ops() {
 fn eq_neq_emit_double_equals() {
     let source = r#"
         namespace test.expr_e_eq
-          import anthill.prelude.{Int, Bool}
+          import anthill.prelude.{Int64, Bool}
           import anthill.prelude.Eq.{eq, neq}
           export Calc
           sort Calc
-            operation same(a: Int, b: Int) -> Bool = eq(a, b)
-            operation diff(a: Int, b: Int) -> Bool = neq(a, b)
+            operation same(a: Int64, b: Int64) -> Bool = eq(a, b)
+            operation diff(a: Int64, b: Int64) -> Bool = neq(a, b)
           end
         end
     "#;
@@ -134,11 +134,11 @@ fn user_named_add_does_not_get_rewritten() {
     // plain function call.
     let source = r#"
         namespace test.expr_e_user
-          import anthill.prelude.{Int}
+          import anthill.prelude.{Int64}
           export Calc
           sort Calc
-            operation add(a: Int, b: Int) -> Int = a
-            operation use(a: Int, b: Int) -> Int = add(a, b)
+            operation add(a: Int64, b: Int64) -> Int64 = a
+            operation use(a: Int64, b: Int64) -> Int64 = add(a, b)
           end
         end
     "#;
@@ -156,10 +156,10 @@ fn arithmetic_in_if_compiles() {
     // End-to-end: clang accepts the operator-rewritten code.
     let source = r#"
         namespace test.expr_e_compile
-          import anthill.prelude.{Int}
+          import anthill.prelude.{Int64}
           export Calc
           sort Calc
-            operation abs(n: Int) -> Int = if gt(n, 0) then n else sub(0, n)
+            operation abs(n: Int64) -> Int64 = if gt(n, 0) then n else sub(0, n)
           end
         end
     "#;

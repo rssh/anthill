@@ -127,7 +127,7 @@ sort LogicalQuery {
   entity negation(query: LogicalQuery)
   entity guarded(query: LogicalQuery, condition: Term)
   entity projected(query: LogicalQuery, vars: List[T = String])
-  entity limited(query: LogicalQuery, count: Int)
+  entity limited(query: LogicalQuery, count: Int64)
 
   -- new: quantifiers (condition -: body form)
   entity forall_q(var: Symbol, condition: LogicalQuery, body: LogicalQuery)

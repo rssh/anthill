@@ -28,7 +28,7 @@ value**:
 
 | form | meaning |
 |---|---|
-| `s.Sort` | the whole **parameterized** sort of `s` — e.g. `Stream[T = Int, E = {}]` |
+| `s.Sort` | the whole **parameterized** sort of `s` — e.g. `Stream[T = Int64, E = {}]` |
 | `s.T`, `s.E` | a **named** member of that sort — `s.T = s.Sort.T` |
 
 - **Capitalized** (`Sort`, `T`, `E`), matching anthill's type-vs-value case
@@ -101,7 +101,7 @@ picks one); (b) when you want no new surface.
   do **not** silently share a variable across a signature. `f(a: List, b: List)`
   leaves `a` and `b`'s elements **independent**; to relate them you write a name
   — `f(a: List[T = ?t], b: List[T = ?t])` ties, `List[T = ?x]` / `List[T = ?y]`
-  splits, `List[Int]` / `List[String]` fixes.
+  splits, `List[Int64]` / `List[String]` fixes.
 
 This is what removes the "accidental substitution" fragility: nothing is the
 same variable unless you wrote it so.
@@ -109,7 +109,7 @@ same variable unless you wrote it so.
 ## 4. Bare references still expand (WI-374) — but as a convenience
 
 A bare or partial parametric sort still expands at the unification boundary —
-`Stream` ≡ `Stream[T = ?, E = ?]`, `Stream[T = Int]` ≡ `Stream[T = Int, E = ?]`
+`Stream` ≡ `Stream[T = ?, E = ?]`, `Stream[T = Int64]` ≡ `Stream[T = Int64, E = ?]`
 — minting a **fresh variable per ungrounded position**, **per occurrence**, so
 two independent bare uses never alias. This keeps an *unannotated* reference
 usable; it is **not** how relationships are threaded (that is §2). It never
@@ -141,7 +141,7 @@ preserved — not "one variable per parameter":
   Opens to `Pair[X1', X2']`; unification is first-order/structural.
 - `sort F = { sort T2 = ? }` — `F` is **higher-kinded** (a sort-constructor
   variable). Opens to a fresh higher-kinded `F̂`, **grounded by provider
-  dispatch** (`List[Int]` receiver ⇒ `fact Functor[F = List]` ⇒ `F̂ := List`,
+  dispatch** (`List[Int64]` receiver ⇒ `fact Functor[F = List]` ⇒ `F̂ := List`,
   first-order thereafter), with the residual unbound-`F̂` case bounded to the
   decidable pattern fragment — a loud error outside it, never a guess.
 
@@ -150,8 +150,8 @@ preserved — not "one variable per parameter":
 Resolve aliases / defined types to their **shape** first
 ([011](../proposals/011-type-resolution.md)), then freshen the remaining leaves:
 
-- `sort IntStream = Stream[T = Int]` — a bare `IntStream` resolves to
-  `Stream[T = Int, E = ?]`, so **only `E`** is open and fresh; `T` stays `Int`.
+- `sort IntStream = Stream[T = Int64]` — a bare `IntStream` resolves to
+  `Stream[T = Int64, E = ?]`, so **only `E`** is open and fresh; `T` stays `Int64`.
 - `sort PairKey = Pair[?X1, ?X2]` — expands to `Pair[X1', X2']` with fresh leaves
   per use; chains (`A = B[?X]`, `B = C[?Y]`) follow to a finite shape.
 
@@ -242,7 +242,7 @@ it must exist.
 - **042 (operation type parameters)** — the explicit threading mechanism;
   already implemented (`op.type_params`, `seed_op_type_args`, the
   unconstrained-param inference). The per-call substrate. *Verify*: inference
-  pins `[Elem, Eff]` from a **cross-sort** argument (a `List[Int]` used as a
+  pins `[Elem, Eff]` from a **cross-sort** argument (a `List[Int64]` used as a
   `Stream`) via provider admissibility — the one piece to confirm.
 - **WI-376 (value projection)** — grows the family `s.T` / `s.E` / **`s.Sort`**
   (the whole parameterized sort). The fluent threading mechanism; scales to wide

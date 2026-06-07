@@ -39,16 +39,16 @@ fn try_load(extra: &str) -> Vec<load::LoadError> {
 }
 
 /// A `match` in synthesis position (value of an unannotated `let`)
-/// whose branches return incompatible types — `Int` vs `String`, which
+/// whose branches return incompatible types — `Int64` vs `String`, which
 /// have no common supertype in the (top-less) Type lattice. A sound
 /// typer MUST reject this. WI-287 makes synthesis-mode `match` compute
-/// the join of its branch types, so the `Int`/`String` clash is now a
-/// type error instead of being silently typed as branch 0 (`Int`).
+/// the join of its branch types, so the `Int64`/`String` clash is now a
+/// type error instead of being silently typed as branch 0 (`Int64`).
 #[test]
 fn match_synthesis_rejects_incompatible_branches() {
     let src = r#"
 namespace test.match_cheat.synth
-  import anthill.prelude.{Int, String}
+  import anthill.prelude.{Int64, String}
 
   sort Toggle
     entity on
@@ -56,7 +56,7 @@ namespace test.match_cheat.synth
   end
 
   sort Driver
-    operation pick(t: Toggle) -> Int =
+    operation pick(t: Toggle) -> Int64 =
       let x = match t
         case on  -> 1
         case off -> "hello"
@@ -66,28 +66,28 @@ end
 "#;
     let errs = try_load(src);
 
-    // SOUND expectation: the Int/String branch clash must be rejected.
-    // Fails today because the typer types the match as branch 0 (Int)
+    // SOUND expectation: the Int64/String branch clash must be rejected.
+    // Fails today because the typer types the match as branch 0 (Int64)
     // and never validates the String branch.
     assert!(
         !errs.is_empty(),
-        "unsound: match with incompatible branches (Int vs String) loaded clean — \
+        "unsound: match with incompatible branches (Int64 vs String) loaded clean — \
          the String branch was never type-checked (first-branch-wins)",
     );
 }
 
 /// Broader than synthesis mode: a `match` placed directly as an
-/// operation body, where the declared return type `Int` flows in as the
+/// operation body, where the declared return type `Int64` flows in as the
 /// match's expected type. Before WI-287 the op-body return-type check
-/// only inspected the *synthesized* match type (branch 0, `Int`) and
+/// only inspected the *synthesized* match type (branch 0, `Int64`) and
 /// `body_expected` reached the branches as a mere inference hint, so the
 /// `String` branch leaked. Now `compute_branch_join_type` runs in checked
-/// mode and rejects any branch that doesn't conform to the expected `Int`.
+/// mode and rejects any branch that doesn't conform to the expected `Int64`.
 #[test]
 fn match_as_op_body_rejects_incompatible_branches() {
     let src = r#"
 namespace test.match_cheat.checked
-  import anthill.prelude.{Int, String}
+  import anthill.prelude.{Int64, String}
 
   sort Toggle
     entity on
@@ -95,7 +95,7 @@ namespace test.match_cheat.checked
   end
 
   sort Driver
-    operation pick(t: Toggle) -> Int =
+    operation pick(t: Toggle) -> Int64 =
       match t
         case on  -> 1
         case off -> "hello"
@@ -105,17 +105,17 @@ end
     let errs = try_load(src);
 
     // SOUND expectation: the String branch must fail against the
-    // declared Int return type. Fails today — the return check only
-    // sees branch 0 (Int).
+    // declared Int64 return type. Fails today — the return check only
+    // sees branch 0 (Int64).
     assert!(
         !errs.is_empty(),
-        "unsound: match-as-op-body with a String branch loaded clean against an Int \
+        "unsound: match-as-op-body with a String branch loaded clean against an Int64 \
          return type — only branch 0 was checked",
     );
 }
 
 /// Anchor: the typer DOES enforce return types — a direct `String` body
-/// in an `-> Int` operation is rejected. This rules out "nothing is
+/// in an `-> Int64` operation is rejected. This rules out "nothing is
 /// checked" as the explanation for the two tests above: the leak is
 /// specifically the `match` first-branch-wins shortcut, not a missing
 /// return-type check.
@@ -123,10 +123,10 @@ end
 fn direct_string_body_in_int_op_is_rejected() {
     let src = r#"
 namespace test.match_cheat.anchor
-  import anthill.prelude.{Int, String}
+  import anthill.prelude.{Int64, String}
 
   sort Driver
-    operation pick() -> Int =
+    operation pick() -> Int64 =
       "hello"
   end
 end
@@ -134,6 +134,6 @@ end
     let errs = try_load(src);
     assert!(
         !errs.is_empty(),
-        "expected String body to be rejected against Int return type, but load was clean",
+        "expected String body to be rejected against Int64 return type, but load was clean",
     );
 }

@@ -36,7 +36,7 @@ use crate::common::load_kb_with;
 /// `plain` carries none. Bodyless ops — only the signature + meta matter.
 const SRC: &str = r#"
 namespace test.wi087_meta
-  import anthill.prelude.{Int, Float}
+  import anthill.prelude.{Int64, Float}
 
   sort Vec3
     entity vec3(x: Float, y: Float, z: Float)
@@ -45,8 +45,8 @@ namespace test.wi087_meta
   sort GPS
     operation get_values(self: GPS) -> Vec3
       meta [Vec3FromConstDoublePtr3, Profile: "cpp20-stl", CppBody: "return readVec3(self->getValues());"]
-    operation plain(self: GPS) -> Int
-    operation merged(self: GPS) -> Int
+    operation plain(self: GPS) -> Int64
+    operation merged(self: GPS) -> Int64
       meta [MarkerA]
       meta [MarkerB, Profile: "p2"]
   end

@@ -255,7 +255,7 @@ fn run_inner(args: &RunArgs) -> Result<i32, i32> {
     match interp.call(&main_qname, &[args_value]) {
         Ok(Value::Int(n)) => Ok(clamp_exit(n)),
         Ok(other) => {
-            eprintln!("error: main returned non-Int value: {other:?}");
+            eprintln!("error: main returned non-Int64 value: {other:?}");
             Err(EXIT_RUNTIME)
         }
         // Top-level Error handler (WI-195): an `Error` effect that propagated

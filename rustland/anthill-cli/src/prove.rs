@@ -1480,7 +1480,7 @@ fn recognise_induction_tactic(
 }
 
 /// Dispatch a structural / numeric induction proof as N+ SMT
-/// sub-queries. v1: base + step (for `Int.induction`-shaped proofs).
+/// sub-queries. v1: base + step (for `Int64.induction`-shaped proofs).
 /// Multi-case form (positional `cases`) is handled when the user
 /// supplies them; otherwise base+step is mandatory. WI-101.
 fn dispatch_induction(

@@ -30,10 +30,10 @@ fn options() -> BundleOptions {
             "hello.anthill".into(),
             r#"
 namespace demo.hello
-  import anthill.prelude.{Int, String, List}
+  import anthill.prelude.{Int64, String, List}
   import anthill.prelude.Console.{console, println, ConsoleOutput}
 
-  operation main(args: List[T = String]) -> Int
+  operation main(args: List[T = String]) -> Int64
     effects ConsoleOutput
   =
     let _ = println(console(), "hello bundle")

@@ -254,7 +254,7 @@ class ParseTest extends munit.FunSuite:
   test("WI-162: each of the 6 stdlib files previously blocked now parses") {
     Seq(
       "anthill/prelude/bool.anthill",
-      "anthill/prelude/int.anthill",
+      "anthill/prelude/int64.anthill",
       "anthill/prelude/iteration.anthill",
       "anthill/prelude/collection.anthill",
       "anthill/prelude/list.anthill",

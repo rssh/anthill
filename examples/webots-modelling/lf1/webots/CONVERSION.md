@@ -7,7 +7,7 @@ How to add a new webots device sort to this project, given the C++ header at `$W
 1. **Create one file per device**: `<device_name>.anthill` (lowercase, snake_case).
 2. **Top-of-file comment**: paste the relevant subset of the C++ class's public surface so the reader sees the source-of-truth alongside the anthill model.
 3. **Sort declaration**: `sort anthill.examples.lf1.webots.<DeviceName> ... end`.
-4. **Imports**: `Int`, `Float`, `Unit`, `Bool`, `String` from `anthill.prelude` as needed; `Vec3` from `anthill.examples.lf1.webots.types` for fixed-size double-array returns.
+4. **Imports**: `Int64`, `Float`, `Unit`, `Bool`, `String` from `anthill.prelude` as needed; `Vec3` from `anthill.examples.lf1.webots.types` for fixed-size double-array returns.
 5. **Exports**: list the sort name and every operation, one or more `export` clauses.
 6. **Operations**:
    - **Public C++ method → `operation`** with `self: <DeviceName>` as the first argument.
@@ -15,7 +15,7 @@ How to add a new webots device sort to this project, given the C++ header at `$W
    - **Non-`const` method** → `effects Modify[self]`. Multiple effects: `effects {Modify[self], Error}`. Bracket form for the target binding is required; `Modify(self)` (paren) is the term-level form, `Modify[self]` is the type-level form, effects are types.
    - **Return types**:
      - `void` → `Unit`
-     - `int` returning -1/0/1 codes → `Bool` if it fits, otherwise `Int`
+     - `int` returning -1/0/1 codes → `Bool` if it fits, otherwise `Int64`
      - `double` → `Float`
      - `const double *` returning a fixed 3-vector → `Vec3`
      - `std::string` → `String`
@@ -39,8 +39,8 @@ How to add a new webots device sort to this project, given the C++ header at `$W
 
 | C++ shape | anthill encoding |
 |---|---|
-| `void enable(int)` / `void disable()` | `operation enable(self, p: Int) -> Unit \n  effects (Modify self)` |
-| `int getSamplingPeriod() const` | `operation get_sampling_period(self) -> Int` |
+| `void enable(int)` / `void disable()` | `operation enable(self, p: Int64) -> Unit \n  effects (Modify self)` |
+| `int getSamplingPeriod() const` | `operation get_sampling_period(self) -> Int64` |
 | `const double *getValues() const` (3-vec) | `operation get_values(self) -> Vec3` |
 | `const double *getValues() const` (n-vec) | hand-define a fixed-size value type (`Vec4`, etc.) — anthill `List[T = Float]` is variable-size |
 | nested `enum X { A, B }` in class | `sort X { entity A; entity B; }` at the same namespace |

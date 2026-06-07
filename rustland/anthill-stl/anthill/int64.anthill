@@ -1,0 +1,12 @@
+-- Rust binding for anthill.prelude.Int64. Proposal 038 — host-specific
+-- spec satisfaction lives separately from the language-agnostic spec
+-- in stdlib/anthill/prelude/boundedint.anthill.
+namespace anthill.prelude
+  provides Int64 language rust
+    artifact "rustland/anthill-stl/src/prelude/int.rs"
+    carrier { Int64: "i64" }
+    fact Eq[T = Int64]
+    fact Ordered[T = Int64]
+    fact Numeric[T = Int64]
+  end
+end

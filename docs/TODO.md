@@ -15,7 +15,7 @@ Project-wide follow-up tracking.
   - `eq(A, B)    ⟺  less(A, B) ∧ less(B, A)`
 - `type_compatible` in typing.anthill IS `less` for Sort. The connection is via spec-directed dispatch: `fact Lattice[T = Sort]` routes `less` to `type_compatible`.
 - Sort equality is structural (functor + parameter bindings), not TermId comparison (standardize-apart produces fresh variable IDs).
-- Sort-specific rules beyond plain unification: named tuple compatibility, Nothing as bottom, parameterized sort equality (`List[T=Int]` ≠ `List[T=String]`).
+- Sort-specific rules beyond plain unification: named tuple compatibility, Nothing as bottom, parameterized sort equality (`List[T=Int64]` ≠ `List[T=String]`).
 
 ### Implementation tasks
 

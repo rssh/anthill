@@ -26,7 +26,7 @@ use anthill_smt_gen::{emit_satisfiability_check_with, ProofConfig};
 fn build_kb() -> anthill_core::kb::KnowledgeBase {
     let source = r#"
         namespace test.smt_gen.qfnra_field
-          import anthill.prelude.{Float, Int, Bool}
+          import anthill.prelude.{Float, Int64, Bool}
           import anthill.prelude.Numeric.{add, sub, mul}
           import anthill.prelude.Ordered.{lt, gte}
 

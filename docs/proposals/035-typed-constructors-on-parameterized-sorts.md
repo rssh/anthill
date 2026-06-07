@@ -11,7 +11,7 @@
 `stdlib/anthill/prelude/map.anthill` declares `sort Map` with two abstract type parameters (`K`, `V`) and operations `empty`, `put`, `get`, ... Today only the *rules* are present — no Rust-side runtime, and no syntactic way to call `empty()` and pin its type. Anthill is missing the analog of Scala's
 
 ```scala
-val m: Map[String, Int] = Map.empty[String, Int]
+val m: Map[String, Int64] = Map.empty[String, Int64]
 ```
 
 — a constructor on a parameterized sort that carries explicit type arguments. The same gap will hit `Set`, `Queue`, any user-defined parametric container.
@@ -24,38 +24,38 @@ Three valid forms, in priority order of ergonomics:
 
 ```anthill
 -- (1) Inferred from expected type
-let m: Map[K = String, V = Int] = Map.empty()
+let m: Map[K = String, V = Int64] = Map.empty()
 
 -- (2) Inferred from immediate use (the put fixes K, V)
 let m = put(Map.empty(), "wi", 1)
 
 -- (3) Explicit type arguments at the call site (the "companion" form)
-let m = Map[K = String, V = Int].empty()
+let m = Map[K = String, V = Int64].empty()
 ```
 
-Form (3) is the Scala-companion analog: `Map[K = String, V = Int]` is an instantiation term that names the sort *with* type bindings, and method dispatch on it produces values typed at those bindings.
+Form (3) is the Scala-companion analog: `Map[K = String, V = Int64]` is an instantiation term that names the sort *with* type bindings, and method dispatch on it produces values typed at those bindings.
 
 ## Mechanics
 
 ### Runtime: type erasure
 
-Anthill values are tagged at runtime by their concrete shape (`Value::Int`, `Value::Str`, `Value::Entity { functor, .. }`, etc.). A `Map`'s K and V do not need to be observable at runtime — heterogeneity only matters to the type checker. So the runtime representation of `Map[K, V]` is one shape, e.g. `Value::Map(MapHandle)` wrapping a `HashMap<MapKey, Value>` regardless of K and V. `empty()` produces the same value at runtime no matter the type bindings.
+Anthill values are tagged at runtime by their concrete shape (`Value::Int64`, `Value::Str`, `Value::Entity { functor, .. }`, etc.). A `Map`'s K and V do not need to be observable at runtime — heterogeneity only matters to the type checker. So the runtime representation of `Map[K, V]` is one shape, e.g. `Value::Map(MapHandle)` wrapping a `HashMap<MapKey, Value>` regardless of K and V. `empty()` produces the same value at runtime no matter the type bindings.
 
 ### Type checker: three-way resolution
 
 When the type checker sees `Map.empty()` it must produce a `Map[K = ?, V = ?]` and unify the two free `?`s against context. The cases:
 
 1. **Expected-type context exists** (assignment LHS, function return, named arg position) — unify the free vars against the expected type.
-2. **No expected type, but enclosing expression constrains** — `put(Map.empty(), "x", 1)` infers `K = String, V = Int` from `put`'s parameter types. Standard HM.
+2. **No expected type, but enclosing expression constrains** — `put(Map.empty(), "x", 1)` infers `K = String, V = Int64` from `put`'s parameter types. Standard HM.
 3. **No constraint at all** — the call is ambiguous; the typer requires explicit form (3) or an annotation.
 
 This is no different in spirit from how `[]` (the empty-list literal) is typed today.
 
 ### Surface form (3): instantiation-term as receiver
 
-`Map[K = String, V = Int]` is already a valid instantiation term in the grammar — it appears in `requires` clauses and parameter types. The proposal is to allow the same term as a **dot-call receiver**: `Map[K = String, V = Int].empty()` desugars to `empty()` resolved within the scope of `Map`, with K and V bound at the call. The dispatch already exists (sort scope chains), the only work is letting an instantiation term sit on the LHS of a method call.
+`Map[K = String, V = Int64]` is already a valid instantiation term in the grammar — it appears in `requires` clauses and parameter types. The proposal is to allow the same term as a **dot-call receiver**: `Map[K = String, V = Int64].empty()` desugars to `empty()` resolved within the scope of `Map`, with K and V bound at the call. The dispatch already exists (sort scope chains), the only work is letting an instantiation term sit on the LHS of a method call.
 
-Concretely the parser change is small: `dot_call : term '.' identifier '(' args ')'` already accepts complex left-sides. We need to confirm the existing grammar treats `Map[K = String, V = Int]` as valid in that left-side position.
+Concretely the parser change is small: `dot_call : term '.' identifier '(' args ')'` already accepts complex left-sides. We need to confirm the existing grammar treats `Map[K = String, V = Int64]` as valid in that left-side position.
 
 ### Effect on stdlib `map.anthill`
 
@@ -64,7 +64,7 @@ No change to operation signatures. The existing rules (`get(empty, ?) = none`, e
 ## Non-goals
 
 - **No `companion` keyword.** Scala's companion objects exist because Scala distinguishes types from values rigidly. Anthill sorts already double as namespace-y dispatch points, so we re-use that machinery.
-- **No type-parameter erasure check at runtime.** If user code somehow obtains a `Map[String, Int]` and passes it where `Map[Int, String]` is expected, that is a type-checker bug; runtime won't double-check.
+- **No type-parameter erasure check at runtime.** If user code somehow obtains a `Map[String, Int64]` and passes it where `Map[Int64, String]` is expected, that is a type-checker bug; runtime won't double-check.
 - **No reflection over a Map's K/V at runtime.** Adding `Map.key_type(m) -> Type` is a separate ask; the proposal doesn't preclude it.
 
 ## Variance, logically
@@ -313,9 +313,9 @@ This is the same desugaring as a sort-nested operation, just without an enclosin
 
 ## What this proposal commits to
 
-1. **Surface form (3) — instantiation-term as method receiver.** `Map[K = String, V = Int].empty()` parses; the dispatch resolves `empty` in the scope of `Map` with K and V bound at the call.
+1. **Surface form (3) — instantiation-term as method receiver.** `Map[K = String, V = Int64].empty()` parses; the dispatch resolves `empty` in the scope of `Map` with K and V bound at the call.
 2. **HM-style inference for forms (1) and (2).** Expected-type context and immediate-use context fill in the type parameters; bare `Map.empty()` with no constraint is a type error.
-3. **`Value::Map(MapHandle)` runtime.** Arena-refcounted, like `Substitution` / `Stream`. `MapKey` covers Int / Bool / Str / Term; non-scalar keys deferred.
+3. **`Value::Map(MapHandle)` runtime.** Arena-refcounted, like `Substitution` / `Stream`. `MapKey` covers Int64 / Bool / Str / Term; non-scalar keys deferred.
 4. **Free-standing parametric operations** are valid (symmetry with sort-nested form).
 5. **Variance via `entity Covariant` / `entity Contravariant`** — declared per (sort, param). Default invariant.
 6. **`effective_covariant` / `effective_contravariant` as the consumer-side predicate** (design B, layered). Inference rules slot into this predicate later without touching `check_variance`.
@@ -335,5 +335,5 @@ This is the same desugaring as a sort-nested operation, just without an enclosin
 ## Acceptance
 
 - `Map.empty()` works in all three surface forms above; the type checker rejects form (1)/(2) with no constraint and a clear "ambiguous type parameter" error.
-- `cargo test` covers a fixture that does `Map[K = String, V = Int].empty() |> put(_, "a", 1) |> get(_, "a") = some(1)`.
+- `cargo test` covers a fixture that does `Map[K = String, V = Int64].empty() |> put(_, "a", 1) |> get(_, "a") = some(1)`.
 - WI-183 can replace its `List[Pair[String, X]]` lookups with `Map[String, X]` and report measured speedup.

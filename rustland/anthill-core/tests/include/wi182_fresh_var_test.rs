@@ -31,7 +31,7 @@ fn fresh_var_builtin_returns_distinct_term_per_call() {
     let src = r#"
 namespace test.wi182_distinct
   import anthill.reflect.{Term, fresh_var}
-  operation main() -> Int = 0
+  operation main() -> Int64 = 0
 end
 "#;
     let mut interp = interp_for(src);

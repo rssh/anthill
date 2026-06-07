@@ -8,11 +8,11 @@ use common::load_kb_with;
 fn dump_phase_b_shapes() {
     let source = r#"
         namespace test.dumpb
-          import anthill.prelude.{Int, Bool, Float}
+          import anthill.prelude.{Int64, Bool, Float}
           export Calc, Pose
           entity Pose(x: Float, y: Float)
           sort Calc
-            operation abs(n: Int) -> Int = if gt(n, 0) then n else 0
+            operation abs(n: Int64) -> Int64 = if gt(n, 0) then n else 0
             operation pos_x(p: Pose) -> Float = (p).x
             operation pos_y(p: Pose) -> Float = ?p.y
           end

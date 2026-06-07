@@ -59,7 +59,7 @@ namespace anthill.prelude
 
   -- ModifyRuntime[T, V]: the runtime carrier for the Modify-effect operations.
   -- It carries BOTH the resource-identity type T and the stored-value type V,
-  -- which are INDEPENDENT (a `CounterState` resource may hold an `Int`). Keeping
+  -- which are INDEPENDENT (a `CounterState` resource may hold an `Int64`). Keeping
   -- them as separate parameters is what lets `get` return the value type rather
   -- than the resource type: the old `Modify { get(target: T) -> T }` folded both
   -- into one `T`, which only type-checked while arguments went unchecked and the
@@ -69,7 +69,7 @@ namespace anthill.prelude
   -- V is currently inferred per call (from the value argument for `set`, from
   -- the expected return for `get`) and is NOT yet tied to the resource, so a
   -- wrong value-type read is not caught. Recording that tie on the resource
-  -- (`sort CounterState { sort V = Int }` + `get(target: T) -> T.V`) is the
+  -- (`sort CounterState { sort V = Int64 }` + `get(target: T) -> T.V`) is the
   -- sound destination — a structured-parameter / sort-carried-projection
   -- feature tracked in WI-383.
   sort ModifyRuntime

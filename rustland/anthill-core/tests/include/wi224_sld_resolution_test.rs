@@ -79,7 +79,7 @@ fn goal_for(kb: &mut KnowledgeBase, spec_qn: &str, param_short: &str, carrier_qn
 }
 
 /// Build a parametric carrier value `Outer[Param = Inner]` (e.g.,
-/// `List[T = Int]`). Used to test conditional resolution where the
+/// `List[T = Int64]`). Used to test conditional resolution where the
 /// goal's binding value is itself a parametric type.
 fn parametric_carrier(
     kb: &mut KnowledgeBase,
@@ -110,21 +110,21 @@ fn empty_scope<'a>(_subst: &'a Substitution) -> ResolutionScope<'a> {
 
 #[test]
 fn leaf_resolution_picks_concrete_impl() {
-    // Eq[T = Int] resolves to the IntEq leaf — stdlib registers
-    // `fact Eq[T = Int]` in the rustland bindings.
+    // Eq[T = Int64] resolves to the IntEq leaf — stdlib registers
+    // `fact Eq[T = Int64]` in the rustland bindings.
     let mut kb = load_with("");
-    let goal = goal_for(&mut kb, "anthill.prelude.Eq", "T", "anthill.prelude.Int");
+    let goal = goal_for(&mut kb, "anthill.prelude.Eq", "T", "anthill.prelude.Int64");
     let subst = Substitution::new();
     let scope = empty_scope(&subst);
     let result = resolve(&mut kb, &goal, &scope);
     match result {
         ResolutionResult::Resolved(ResolvedRequiresNode::Leaf { impl_sort, .. }) => {
             let impl_qn = kb.qualified_name_of(impl_sort).to_string();
-            assert!(impl_qn.ends_with(".Int") || impl_qn == "anthill.prelude.Int"
+            assert!(impl_qn.ends_with(".Int64") || impl_qn == "anthill.prelude.Int64"
                 || impl_qn.ends_with("IntEq"),
-                "expected an Int-or-IntEq leaf; got {impl_qn}");
+                "expected an Int64-or-IntEq leaf; got {impl_qn}");
         }
-        other => panic!("expected Resolved::Leaf for Eq[T=Int]; got {other:?}"),
+        other => panic!("expected Resolved::Leaf for Eq[T=Int64]; got {other:?}"),
     }
 }
 
@@ -133,11 +133,11 @@ fn leaf_resolution_picks_concrete_impl() {
 #[test]
 fn one_level_conditional_resolves_via_subgoal() {
     // EqList provides Eq[List[T=A]] conditional on Eq[T=A]. Resolving
-    // Eq[T = List[T = Int]] must produce a Conditional node whose
-    // sub_resolution is Eq[T = Int]'s leaf impl.
+    // Eq[T = List[T = Int64]] must produce a Conditional node whose
+    // sub_resolution is Eq[T = Int64]'s leaf impl.
     let src = r#"
         namespace test.wi224.one_level
-          import anthill.prelude.{Eq, List, Int}
+          import anthill.prelude.{Eq, List, Int64}
           export EqList
           sort EqList
             sort A = ?
@@ -148,9 +148,9 @@ fn one_level_conditional_resolves_via_subgoal() {
     "#;
     let mut kb = load_with(src);
 
-    // Build goal Eq[T = List[T = Int]].
+    // Build goal Eq[T = List[T = Int64]].
     let list_int = parametric_carrier(
-        &mut kb, "anthill.prelude.List", "T", "anthill.prelude.Int");
+        &mut kb, "anthill.prelude.List", "T", "anthill.prelude.Int64");
     let eq_sym = kb.try_resolve_symbol("anthill.prelude.Eq").expect("Eq");
     let t_sym = kb.intern("T");
     let goal = SortGoal {
@@ -171,13 +171,13 @@ fn one_level_conditional_resolves_via_subgoal() {
             match &sub_resolutions[0] {
                 ResolvedRequiresNode::Leaf { impl_sort: inner, .. } => {
                     let inner_qn = kb.qualified_name_of(*inner).to_string();
-                    assert!(inner_qn.contains("Int"),
-                        "expected inner subgoal to resolve to an Int leaf; got {inner_qn}");
+                    assert!(inner_qn.contains("Int64"),
+                        "expected inner subgoal to resolve to an Int64 leaf; got {inner_qn}");
                 }
                 other => panic!("inner sub_resolution should be a Leaf; got {other:?}"),
             }
         }
-        other => panic!("expected Conditional resolution for Eq[List[Int]]; got {other:?}"),
+        other => panic!("expected Conditional resolution for Eq[List[Int64]]; got {other:?}"),
     }
 }
 
@@ -185,11 +185,11 @@ fn one_level_conditional_resolves_via_subgoal() {
 
 #[test]
 fn two_level_conditional_chains_recursively() {
-    // Eq[List[List[Int]]] resolves through two EqList layers, each
+    // Eq[List[List[Int64]]] resolves through two EqList layers, each
     // descending to the inner type's Eq impl.
     let src = r#"
         namespace test.wi224.two_level
-          import anthill.prelude.{Eq, List, Int}
+          import anthill.prelude.{Eq, List, Int64}
           export EqList
           sort EqList
             sort A = ?
@@ -200,9 +200,9 @@ fn two_level_conditional_chains_recursively() {
     "#;
     let mut kb = load_with(src);
 
-    // Build the outer goal: Eq[T = List[T = List[T = Int]]].
+    // Build the outer goal: Eq[T = List[T = List[T = Int64]]].
     let list_int = parametric_carrier(
-        &mut kb, "anthill.prelude.List", "T", "anthill.prelude.Int");
+        &mut kb, "anthill.prelude.List", "T", "anthill.prelude.Int64");
     let list_sym = kb.try_resolve_symbol("anthill.prelude.List").expect("List");
     let t_sym = kb.intern("T");
     let list_list_int = kb.alloc(Term::Fn {
@@ -233,12 +233,12 @@ fn two_level_conditional_chains_recursively() {
                     assert_eq!(mid_qn, "test.wi224.two_level.EqList",
                         "middle layer must be EqList; got {mid_qn}");
                     assert_eq!(inner.len(), 1);
-                    // …whose inner sub_resolution bottoms out at an Int leaf.
+                    // …whose inner sub_resolution bottoms out at an Int64 leaf.
                     match &inner[0] {
                         ResolvedRequiresNode::Leaf { impl_sort: leaf, .. } => {
                             let leaf_qn = kb.qualified_name_of(*leaf).to_string();
-                            assert!(leaf_qn.contains("Int"),
-                                "expected the leaf to mention Int; got {leaf_qn}");
+                            assert!(leaf_qn.contains("Int64"),
+                                "expected the leaf to mention Int64; got {leaf_qn}");
                         }
                         other => panic!("inner-most must be Leaf; got {other:?}"),
                     }
@@ -342,19 +342,19 @@ fn cyclic_when_conditional_subgoal_recurses() {
 
 #[test]
 fn no_match_when_no_candidate_for_bindings() {
-    // OnlyForInt has only `fact NoMatchSpec[T = Int]`. A goal at
+    // OnlyForInt has only `fact NoMatchSpec[T = Int64]`. A goal at
     // T = Bool must produce NoMatch with a hint that mentions the spec.
     let src = r#"
         namespace test.wi224.nm
-          import anthill.prelude.{Int, Bool}
+          import anthill.prelude.{Int64, Bool}
           export NoMatchSpec, OnlyForInt
           sort NoMatchSpec
             sort T = ?
             operation nm_op(x: T) -> T
           end
           sort OnlyForInt
-            fact NoMatchSpec[T = Int]
-            operation nm_op(x: Int) -> Int = x
+            fact NoMatchSpec[T = Int64]
+            operation nm_op(x: Int64) -> Int64 = x
           end
         end
     "#;
@@ -380,14 +380,14 @@ fn no_match_when_no_candidate_for_bindings() {
 fn diamond_coherence_picks_same_a_impl_for_both_branches() {
     // Diamond shape: B and C each `requires DiamondA[T]`; CarrierB
     // and CarrierC are their respective impls, and both transitively
-    // need DiamondA. The acceptance test: resolving DiamondA[T=Int]
+    // need DiamondA. The acceptance test: resolving DiamondA[T=Int64]
     // from inside B's scope and from inside C's scope must pick the
     // SAME A impl (CarrierA). Coherence at the join point — both
     // ends of the diamond agree on which A is used.
     let src = r#"
         namespace test.wi224.diamond
           export DiamondA, DiamondB, DiamondC, CarrierA, CarrierB, CarrierC
-          import anthill.prelude.Int
+          import anthill.prelude.Int64
           sort DiamondA
             sort T = ?
             operation a_op(x: T) -> T
@@ -422,9 +422,9 @@ fn diamond_coherence_picks_same_a_impl_for_both_branches() {
     let mut kb = load_with(src);
 
     let goal_b = goal_for(&mut kb,
-        "test.wi224.diamond.DiamondB", "T", "anthill.prelude.Int");
+        "test.wi224.diamond.DiamondB", "T", "anthill.prelude.Int64");
     let goal_c = goal_for(&mut kb,
-        "test.wi224.diamond.DiamondC", "T", "anthill.prelude.Int");
+        "test.wi224.diamond.DiamondC", "T", "anthill.prelude.Int64");
     let subst = Substitution::new();
     let scope = empty_scope(&subst);
 
@@ -476,16 +476,16 @@ fn diamond_coherence_picks_same_a_impl_for_both_branches() {
 
 #[test]
 fn available_requires_match_short_circuits_resolution() {
-    // When the enclosing sort declares `requires Eq[T=Int]`, a goal at
-    // Eq[T=Int] must resolve as `FromScope` at index 0 — the caller
+    // When the enclosing sort declares `requires Eq[T=Int64]`, a goal at
+    // Eq[T=Int64] must resolve as `FromScope` at index 0 — the caller
     // already holds the right requirement value; no impl-construction
     // needed.
     let src = r#"
         namespace test.wi224.scope
-          import anthill.prelude.{Eq, Int}
+          import anthill.prelude.{Eq, Int64}
           export Wi224Holder
           sort Wi224Holder
-            requires Eq[T = Int]
+            requires Eq[T = Int64]
           end
         end
     "#;
@@ -493,12 +493,12 @@ fn available_requires_match_short_circuits_resolution() {
     let holder = kb.try_resolve_symbol("test.wi224.scope.Wi224Holder")
         .expect("Wi224Holder registered");
     let chain = requires_chain_flat(&kb, holder);
-    let goal = goal_for(&mut kb, "anthill.prelude.Eq", "T", "anthill.prelude.Int");
+    let goal = goal_for(&mut kb, "anthill.prelude.Eq", "T", "anthill.prelude.Int64");
     let scope = ResolutionScope { available_requires: &chain };
     match resolve(&mut kb, &goal, &scope) {
         ResolutionResult::Resolved(ResolvedRequiresNode::FromScope { scope_index, .. }) => {
             assert_eq!(scope_index, 0,
-                "Eq[T=Int] should match the first available_requires slot");
+                "Eq[T=Int64] should match the first available_requires slot");
         }
         other => panic!("expected FromScope; got {other:?}"),
     }

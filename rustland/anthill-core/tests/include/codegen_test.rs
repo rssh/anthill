@@ -16,7 +16,7 @@ fn gen(source: &str) -> String {
 
 #[test]
 fn entity_with_fields_to_struct() {
-    let out = gen(r#"entity Account(id: String, balance: Int)"#);
+    let out = gen(r#"entity Account(id: String, balance: Int64)"#);
     assert!(out.contains("struct Account {"), "output:\n{out}");
     assert!(out.contains("pub id: String"), "output:\n{out}");
     assert!(out.contains("pub balance: i64"), "output:\n{out}");
@@ -86,7 +86,7 @@ fn requires_to_supertrait() {
     let out = gen(r#"sort Ordered {
   sort T = ?
   requires Eq[T = T]
-  operation compare(a: T, b: T) -> Int
+  operation compare(a: T, b: T) -> Int64
 }
 "#);
     assert!(out.contains("trait Ordered: Eq {"), "output:\n{out}");
@@ -154,10 +154,10 @@ fn effects_reads_to_self_result() {
 #[test]
 fn prelude_type_mappings() {
     let out = gen(r#"entity Data(
-  count: Int,
+  count: Int64,
   ratio: Float,
   flag: Bool,
-  items: List[T = Int],
+  items: List[T = Int64],
   maybe: Option[T = String]
 )
 "#);
@@ -189,7 +189,7 @@ fn recursive_field_to_box() {
 fn namespace_to_mod_with_use() {
     let out = gen(r#"namespace banking
   import anthill.prelude.{List, Option}
-  entity Account(id: String, balance: Int)
+  entity Account(id: String, balance: Int64)
 end
 "#);
     assert!(out.contains("pub mod banking {"), "output:\n{out}");

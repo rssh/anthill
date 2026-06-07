@@ -19,11 +19,11 @@ use smallvec::SmallVec;
 
 #[test]
 fn printer_round_trip_simple_fact() {
-    // Build: fact Eq(T: Int)
+    // Build: fact Eq(T: Int64)
     let mut kb = KnowledgeBase::new();
     let eq_sym = kb.intern("Eq");
     let t_sym = kb.intern("T");
-    let int_term = kb.make_name_term("Int");
+    let int_term = kb.make_name_term("Int64");
     let eq_term = kb.alloc(Term::Fn {
         functor: eq_sym,
         pos_args: SmallVec::new(),
@@ -31,7 +31,7 @@ fn printer_round_trip_simple_fact() {
     });
 
     let text = print::print_fact(&kb, eq_term, None);
-    assert_eq!(text, "fact Eq(T: Int)\n");
+    assert_eq!(text, "fact Eq(T: Int64)\n");
 
     // Parse it back
     let parsed = parse::parse(&text).expect("re-parse should succeed");
@@ -344,10 +344,10 @@ fn full_round_trip() {
     let fact_sort = kb1.make_name_term("Fact");
     let domain = kb1.make_name_term("test");
 
-    // fact Eq(T: Int)
+    // fact Eq(T: Int64)
     let eq_sym = kb1.intern("Eq");
     let t_sym = kb1.intern("T");
-    let int_term = kb1.make_name_term("Int");
+    let int_term = kb1.make_name_term("Int64");
     let eq_fact = kb1.alloc(Term::Fn {
         functor: eq_sym,
         pos_args: SmallVec::new(),

@@ -2160,7 +2160,7 @@ fn visit_type(
 
         // ── Leaf cases ──────────────────────────────────────────
         Expr::Const(Literal::Int(_)) => results.push(Ok(
-            TypeResult::pure(kb.make_sort_ref_by_name("Int"), unwrap_env(env), Rc::clone(&occ)),
+            TypeResult::pure(kb.make_sort_ref_by_name("Int64"), unwrap_env(env), Rc::clone(&occ)),
         )),
         // A `BigInt` literal is one that exceeded `i64` at parse — it cannot be
         // an `Int` value, so it types as `BigInt`. (Previously lumped with
@@ -3487,7 +3487,7 @@ fn check_apply_iter(
         // op (declared without body on a parametric sort), look up the
         // unique impl op based on the per-call substitution. The proposal-
         // 038 unification of builtin-sort symbols (Int as the same Symbol
-        // whether referenced bare or via anthill.prelude.Int) makes
+        // whether referenced bare or via anthill.prelude.Int64) makes
         // candidate matching deterministic — `fact Numeric[T = Int]` in
         // the rustland binding emits a SortProvidesInfo whose binding
         // value resolves to the same Int sort as the per-call subst sees.
@@ -12328,14 +12328,14 @@ fn check_value_against_sort_ref(
         Term::Const(lit) => {
             let ok = match lit {
                 Literal::String(_) => is_prim(declared_sym, "String"),
-                Literal::Int(_) => is_prim(declared_sym, "Int"),
+                Literal::Int(_) => is_prim(declared_sym, "Int64"),
                 Literal::Float(_) => is_prim(declared_sym, "Float"),
                 Literal::Bool(_) => is_prim(declared_sym, "Bool"),
                 _ => true,
             };
             let actual = match lit {
                 Literal::String(_) => "String",
-                Literal::Int(_) => "Int",
+                Literal::Int(_) => "Int64",
                 Literal::Float(_) => "Float",
                 Literal::Bool(_) => "Bool",
                 _ => "?",
@@ -12370,7 +12370,7 @@ fn check_value_against_sort_ref(
     }
 }
 
-/// True if the primitive sort of a literal (`"Int"`, `"String"`, …) provides
+/// True if the primitive sort of a literal (`"Int64"`, `"String"`, …) provides
 /// the spec sort `declared_sym` (WI-036 — a primitive value in a spec field).
 fn lit_sort_provides(kb: &KnowledgeBase, prim: &str, declared_sym: Symbol) -> bool {
     kb.try_resolve_symbol(&format!("anthill.prelude.{prim}"))
@@ -13598,7 +13598,7 @@ mod wi361_reader_tests {
     fn sort_functor_of_reads_term_backed_parameterized() {
         let mut kb = kb_with_prelude();
         let list = kb.intern("List");
-        let int = kb.intern("Int");
+        let int = kb.intern("Int64");
         let t = kb.intern("T");
 
         // Term-backed `List[T = Int]` == `Fn{List, named:[(T, Ref(Int))]}` — the
@@ -13614,7 +13614,7 @@ mod wi361_reader_tests {
 
         // Term-backed bare sort `Ref(Int)`.
         let bare = kb.alloc(Term::Ref(int));
-        assert_eq!(sort_functor_of(&kb, bare), Some(int), "bare Ref(Int) -> Int");
+        assert_eq!(sort_functor_of(&kb, bare), Some(int), "bare Ref(Int64) -> Int64");
 
         // A structural variant (arrow) has no sort head.
         let unit = kb.intern("Unit");
@@ -13626,17 +13626,17 @@ mod wi361_reader_tests {
     #[test]
     fn extract_sort_ref_sym_reads_term_backed_bare_ref() {
         let mut kb = kb_with_prelude();
-        let int = kb.intern("Int");
+        let int = kb.intern("Int64");
         let list = kb.intern("List");
         let t = kb.intern("T");
 
         // Term-backed bare sort `Ref(Int)` — pre-migration this returned None.
         let bare = kb.alloc(Term::Ref(int));
-        assert_eq!(extract_sort_ref_sym(&kb, &TermIdView(bare)), Some(int), "bare Ref(Int) -> Int");
+        assert_eq!(extract_sort_ref_sym(&kb, &TermIdView(bare)), Some(int), "bare Ref(Int64) -> Int64");
 
         // The same via the real builder `make_sort_ref` (also `Ref(Int)`).
         let built = kb.make_sort_ref(int);
-        assert_eq!(extract_sort_ref_sym(&kb, &TermIdView(built)), Some(int), "make_sort_ref(Int) -> Int");
+        assert_eq!(extract_sort_ref_sym(&kb, &TermIdView(built)), Some(int), "make_sort_ref(Int64) -> Int64");
 
         // A parameterized type is NOT a bare sort ref.
         let tb = term_backed_param(&mut kb, list, t, int);
@@ -13654,7 +13654,7 @@ mod wi361_reader_tests {
 
         let mut kb = kb_with_prelude();
         let list = kb.intern("List");
-        let int = kb.intern("Int");
+        let int = kb.intern("Int64");
         let string = kb.intern("String");
         let t = kb.intern("T");
 
@@ -13696,7 +13696,7 @@ mod wi361_reader_tests {
         use super::{extract_type, sort_functor_of, TypeExtractor};
         use crate::kb::term_view::TermIdView;
         let mut kb = kb_with_prelude();
-        let int = kb.intern("Int");
+        let int = kb.intern("Int64");
         let list = kb.intern("List");
         let t = kb.intern("T");
 
@@ -13862,7 +13862,7 @@ mod p4_tests {
         let c = kb.intern("c");
         let unit = kb.intern("Unit");
         let unit_ref = kb.make_sort_ref(unit);
-        let int = kb.intern("Int");
+        let int = kb.intern("Int64");
         let int_ref = kb.make_sort_ref(int);
         let f = kb.intern("f");
         let n = kb.intern("n");
@@ -13888,7 +13888,7 @@ mod p4_tests {
         let by: std::collections::HashMap<_, _> =
             super::named_tuple_fields(&kb, &tuple).into_iter().collect();
         assert_eq!(by.len(), 2, "two fields decoded, got {by:?}");
-        assert!(matches!(by.get(&n), Some(Value::Term(_))), "`n: Int` rides as Value::Term");
+        assert!(matches!(by.get(&n), Some(Value::Term(_))), "`n: Int64` rides as Value::Term");
         assert!(matches!(by.get(&f), Some(Value::Node(_))), "poisoned `f` rides as Value::Node");
     }
 

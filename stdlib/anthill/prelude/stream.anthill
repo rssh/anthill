@@ -4,7 +4,7 @@
 -- E is the abstract effect required to observe the stream.
 -- Concrete sorts bind E to their specific effect.
 sort anthill.prelude.Stream
-  import anthill.prelude.{Option, Pair, List, Bool, Int}
+  import anthill.prelude.{Option, Pair, List, Bool, Int64}
   import anthill.prelude.Option.{some, none}
   import anthill.prelude.Pair.{pair}
   import anthill.prelude.List.{nil, cons}
@@ -32,7 +32,7 @@ sort anthill.prelude.Stream
   -- (042), bound from the receiver `Stream[T = Elem, E = Eff]` at the call site;
   -- the self-receiver call `splitFirst(s)` threads them via the rigid-param check
   -- (WI-392, body side) and the carrier effect-row binding (WI-393, consumption).
-  operation takeN[Elem, Eff](s: Stream[T = Elem, E = Eff], n: Int) -> List[T = Elem] effects Eff =
+  operation takeN[Elem, Eff](s: Stream[T = Elem, E = Eff], n: Int64) -> List[T = Elem] effects Eff =
     if gt(n, 0) then
       match splitFirst(s)
         case none() -> nil

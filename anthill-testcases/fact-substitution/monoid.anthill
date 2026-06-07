@@ -7,29 +7,29 @@ sort Monoid {
 }
 
 sort IntAdd {
-  sort T = Int
-  entity value(x: Int)
-  requires Monoid[T = Int, combine = add, identity = zero]
-  operation add(a: Int, b: Int) -> Int
-  operation zero() -> Int
+  sort T = Int64
+  entity value(x: Int64)
+  requires Monoid[T = Int64, combine = add, identity = zero]
+  operation add(a: Int64, b: Int64) -> Int64
+  operation zero() -> Int64
 }
 
 sort IntMul {
-  sort T = Int
-  entity value(x: Int)
-  requires Monoid[T = Int, combine = multiply, identity = one]
-  operation multiply(a: Int, b: Int) -> Int
-  operation one() -> Int
+  sort T = Int64
+  entity value(x: Int64)
+  requires Monoid[T = Int64, combine = multiply, identity = one]
+  operation multiply(a: Int64, b: Int64) -> Int64
+  operation one() -> Int64
 }
 
 -- Auto-bind test: sort with same-named operations as spec,
 -- no explicit binding for identity in requires
 sort AutoBindTest {
-  sort T = Int
-  entity data(x: Int)
-  requires Monoid[T = Int]
-  operation combine(a: Int, b: Int) -> Int
-  operation identity() -> Int
+  sort T = Int64
+  entity data(x: Int64)
+  requires Monoid[T = Int64]
+  operation combine(a: Int64, b: Int64) -> Int64
+  operation identity() -> Int64
 }
 
 }

@@ -137,12 +137,12 @@ fn carrier_bound_sort_skipped_in_namespace_emission() {
 
 #[test]
 fn carrier_overrides_primitive_default() {
-    // Override the default Int → int64_t mapping with a carrier.
+    // Override the default Int64 → int64_t mapping with a carrier.
     // (This is mostly a probe — production specs are unlikely to
     // override primitives, but the precedence is documented.)
     let source = r#"
         namespace test.carriers
-          import anthill.prelude.{Int, Option}
+          import anthill.prelude.{Int64, Option}
           import anthill.realization.{Implementation, CarrierBinding}
           export SmallInt, Counter
 
@@ -160,15 +160,15 @@ fn carrier_overrides_primitive_default() {
             namespace_map: []
           )
 
-          entity Counter(value: SmallInt, total: Int)
+          entity Counter(value: SmallInt, total: Int64)
         end
     "#;
 
     let kb = load_kb_with(source);
     let cpp = emit_entity_struct(&kb, "test.carriers.Counter").expect("emit Counter");
-    // `value: SmallInt` → carrier int32_t; `total: Int` → primitive int64_t.
+    // `value: SmallInt` → carrier int32_t; `total: Int64` → primitive int64_t.
     assert!(cpp.contains("int32_t value"), "expected int32_t for SmallInt:\n{cpp}");
-    assert!(cpp.contains("int64_t total"), "expected int64_t for Int:\n{cpp}");
+    assert!(cpp.contains("int64_t total"), "expected int64_t for Int64:\n{cpp}");
 }
 
 #[test]

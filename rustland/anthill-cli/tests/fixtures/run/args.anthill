@@ -1,13 +1,13 @@
 namespace my.args
   import anthill.cli.Main
   import anthill.prelude.Console.{console, println, ConsoleOutput}
-  import anthill.prelude.{Int, String, List}
+  import anthill.prelude.{Int64, String, List}
   export Argv
 
   sort Argv
     requires anthill.cli.Main
 
-    operation print_each(args: List[T = String]) -> Int
+    operation print_each(args: List[T = String]) -> Int64
       effects ConsoleOutput
     =
       match args
@@ -16,7 +16,7 @@ namespace my.args
           print_each(rest)
         case nil() -> 0
 
-    operation main(args: List[T = String]) -> Int
+    operation main(args: List[T = String]) -> Int64
       effects ConsoleOutput
     = print_each(args)
   end

@@ -54,7 +54,7 @@ UE and no-STL profiles will define their own mappings for containers, strings, a
 | `List[T = X]` | `std::vector<X>` |
 | `Option[T = X]` | `std::optional<X>` |
 | `String` | `std::string` |
-| `Int` | `int64_t` |
+| `Int64` | `int64_t` |
 | `Float` | `double` |
 | `Bool` | `bool` |
 | `import N.{A, B}` | full qualification by default; optional `using N::A;` |
@@ -165,7 +165,7 @@ Operations on `Shape` are written via `std::visit` or pattern-matching helpers. 
 ### 3.4 Standalone entity → `struct`
 
 ```anthill
-entity Account(owner: String, balance: Int)
+entity Account(owner: String, balance: Int64)
 ```
 
 becomes
@@ -202,11 +202,11 @@ All operations of a sort live as static methods on its traits-class struct. Ther
   ```
 - **Operation in a sort with no abstract sub-sort** → static method on a plain struct:
   ```cpp
-  // operation max(a: Int, b: Int) -> Int   in anthill.prelude.Int
-  struct Int {
+  // operation max(a: Int64, b: Int64) -> Int64   in anthill.prelude.Int64
+  struct Int64 {
       static int64_t max(int64_t a, int64_t b);
   };
-  // call:  Int::max(x, y)
+  // call:  Int64::max(x, y)
   ```
 
 ### 3.6 Effects
@@ -251,7 +251,7 @@ Named arguments in anthill (sorted by field name canonically) carry through to C
 
 ### 3.8 Spec satisfaction
 
-Anthill `fact Eq[T = Int]` declares `Int` satisfies `Eq`. In C++ this is a full template specialization of the trait class with the `anthill_satisfied` marker:
+Anthill `fact Eq[T = Int64]` declares `Int64` satisfies `Eq`. In C++ this is a full template specialization of the trait class with the `anthill_satisfied` marker:
 
 ```cpp
 namespace anthill::prelude {

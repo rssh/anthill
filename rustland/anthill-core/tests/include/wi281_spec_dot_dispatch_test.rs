@@ -51,7 +51,7 @@ fn dot_method_dispatches_via_provided_spec() {
     // `Widget` declares no `pick`, but provides `Comparable` (which does).
     // `?a.pick(?b)` resolves `pick` to `Comparable.pick` via the satisfaction
     // fact and synthesizes `pick(a, b)` → Widget. (The `(3).min(5) ->
-    // Ordered.min` shape, self-contained so it needs no anthill-stl Int facts.)
+    // Ordered.min` shape, self-contained so it needs no anthill-stl Int64 facts.)
     let src = r#"
         namespace wi281.provided
           export Comparable, Widget
@@ -61,7 +61,7 @@ fn dot_method_dispatches_via_provided_spec() {
             rule pick(?a, ?b) = ?a
           end
           sort Widget
-            entity widget(id: Int)
+            entity widget(id: Int64)
             fact Comparable[T = Widget]
             operation choose(a: Widget, b: Widget) -> Widget = ?a.pick(?b)
           end
@@ -88,7 +88,7 @@ fn dot_spec_method_threads_requires() {
           export Nameable, Comparable, Widget
           sort Nameable
             sort T = ?
-            operation tag(x: T) -> Int
+            operation tag(x: T) -> Int64
             rule tag(?x) = 0
           end
           sort Comparable
@@ -98,7 +98,7 @@ fn dot_spec_method_threads_requires() {
             rule pick(?a, ?b) = ?a
           end
           sort Widget
-            entity widget(id: Int)
+            entity widget(id: Int64)
             fact Nameable[T = Widget]
             fact Comparable[T = Widget]
             operation choose(a: Widget, b: Widget) -> Widget = ?a.pick(?b)
@@ -128,7 +128,7 @@ fn dot_no_provided_spec_still_reports_no_match() {
             rule pick(?a, ?b) = ?a
           end
           sort Widget
-            entity widget(id: Int)
+            entity widget(id: Int64)
             fact Comparable[T = Widget]
             operation use_bad(a: Widget, b: Widget) -> Widget = ?a.zonk(?b)
           end
@@ -143,10 +143,10 @@ fn dot_no_provided_spec_still_reports_no_match() {
         "expected the no-match diagnostic to name the receiver's sort Widget; got:\n{text}");
 }
 
-// ── The acceptance shape on a real builtin: Int → Ordered.min ───────────
+// ── The acceptance shape on a real builtin: Int64 → Ordered.min ───────────
 
 /// Like `load_capturing_errors` but also loads the Rust host bindings
-/// (`anthill-stl/anthill/`), where `fact Eq/Ordered/Numeric[T = Int]` live.
+/// (`anthill-stl/anthill/`), where `fact Eq/Ordered/Numeric[T = Int64]` live.
 fn load_capturing_errors_with_stl(extra: &str) -> (KnowledgeBase, Vec<LoadError>) {
     let files = crate::common::collect_stdlib_and_rust_bindings();
     let mut parsed: Vec<_> = files.iter().map(|p| {
@@ -168,23 +168,23 @@ fn load_capturing_errors_with_stl(extra: &str) -> (KnowledgeBase, Vec<LoadError>
 
 #[test]
 fn dot_min_dispatches_via_int_ordered() {
-    // `?x.min(?y)` where `x, y: Int`. `Int` declares no `min`, but provides
-    // `Ordered` (`fact Ordered[T = Int]` in anthill-stl), so `min` resolves to
+    // `?x.min(?y)` where `x, y: Int64`. `Int64` declares no `min`, but provides
+    // `Ordered` (`fact Ordered[T = Int64]` in anthill-stl), so `min` resolves to
     // `Ordered.min` and dispatches — the `(3).min(5) -> Ordered.min` acceptance
-    // shape, threading `Ordered[Int]` (and its required `Eq[Int]`, also
-    // provided). Without WI-281 this is a `DotDispatchNoMatch` (Int.min = None).
+    // shape, threading `Ordered[Int64]` (and its required `Eq[Int64]`, also
+    // provided). Without WI-281 this is a `DotDispatchNoMatch` (Int64.min = None).
     let src = r#"
         namespace wi281.intmin
           export Calc
           sort Calc
-            entity calc(v: Int)
-            operation pick_min(x: Int, y: Int) -> Int = ?x.min(?y)
+            entity calc(v: Int64)
+            operation pick_min(x: Int64, y: Int64) -> Int64 = ?x.min(?y)
           end
         end
     "#;
     let (_kb, errs) = load_capturing_errors_with_stl(src);
     assert!(errs.is_empty(),
-        "expected ?x.min(?y) to dispatch to Ordered.min via fact Ordered[Int]; got:\n{}",
+        "expected ?x.min(?y) to dispatch to Ordered.min via fact Ordered[Int64]; got:\n{}",
         errors_text(&errs));
 }
 
@@ -202,7 +202,7 @@ fn dot_spec_method_unsatisfied_requires_errors_wi343() {
           export Nameable, Comparable, Gadget
           sort Nameable
             sort T = ?
-            operation tag(x: T) -> Int
+            operation tag(x: T) -> Int64
             rule tag(?x) = 0
           end
           sort Comparable
@@ -212,7 +212,7 @@ fn dot_spec_method_unsatisfied_requires_errors_wi343() {
             rule pick(?a, ?b) = ?a
           end
           sort Gadget
-            entity gadget(id: Int)
+            entity gadget(id: Int64)
             fact Comparable[T = Gadget]
             operation choose(a: Gadget, b: Gadget) -> Gadget = ?a.pick(?b)
           end

@@ -57,13 +57,13 @@ namespace anthill.stage0
     command    : String,
     args       : Option[T = List[T = String]],
     working_dir: Option[T = String],
-    timeout    : Option[T = Int],
+    timeout    : Option[T = Int64],
     success    : SuccessCriterion
   )
 
   enum SuccessCriterion
     entity ExitZero
-    entity ExitCode(code: Int)
+    entity ExitCode(code: Int64)
     entity OutputMatches(pattern: String)
     entity Custom(term: Term)
   end

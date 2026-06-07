@@ -28,7 +28,7 @@ Unlike the Rust forward mapping (which walks `ParsedFile` for bootstrap reasons)
 
 | Anthill construct | SMT-LIB construct |
 |---|---|
-| Primitive `Int` | `Int` |
+| Primitive `Int64` | `Int` |
 | Primitive `Bool` | `Bool` |
 | Primitive `String` | `String` |
 | Primitive `Float` | `Real` (or `(_ FloatingPoint 11 53)` with FP theory) |
@@ -36,7 +36,7 @@ Unlike the Rust forward mapping (which walks `ParsedFile` for bootstrap reasons)
 | Sort with entities (ADT) | `declare-datatypes` |
 | Parametric sort with entities | `declare-datatypes` with `par` |
 | Abstract sort (`sort T = ?`) | sort parameter in `par`, or `declare-sort` at top level |
-| Type alias (`sort Money = Int`) | inline substitution (no separate declaration) |
+| Type alias (`sort Money = Int64`) | inline substitution (no separate declaration) |
 | Standalone `entity E(fields)` | single-constructor datatype |
 | `operation` (with defining rules) | `define-fun-rec` |
 | `operation` (unimplemented) | `declare-fun` (uninterpreted) |
@@ -54,7 +54,7 @@ Unlike the Rust forward mapping (which walks `ParsedFile` for bootstrap reasons)
 ### 2.1 Primitive Types
 
 ```smt2
-; Int    → Int (arbitrary-precision)
+; Int64    → Int (arbitrary-precision)
 ; BigInt → Int (same — SMT-LIB Int is already arbitrary-precision)
 ; Bool   → Bool
 ; String → String
@@ -78,7 +78,7 @@ Fields become named selectors:
 ```
 sort Duration {                       (declare-datatypes ((Duration 0))
   entity Duration(                →     (((mk-Duration
-    amount: Int,                            (Duration-amount Int)
+    amount: Int64,                            (Duration-amount Int)
     unit: String)                           (Duration-unit String)))))
 }
 ```
@@ -146,7 +146,7 @@ operation balance(a: Account) -> Money
 Operations with constructor-complete equational rules become recursive definitions:
 
 ```
-operation length(l: List) -> Int
+operation length(l: List) -> Int64
 rule length(nil) = 0
 rule length(cons(?x, ?xs)) = add(1, length(?xs))
 

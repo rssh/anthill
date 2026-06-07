@@ -84,8 +84,8 @@ class ExprLoaderTest extends munit.FunSuite:
 
   test("qualifiedNameOf returns qualified name for resolved symbols") {
     val kb = mkKb()
-    val intSym = kb.tryResolveSymbol("anthill.prelude.Int").get
-    assertEquals(kb.qualifiedNameOf(intSym), "anthill.prelude.Int")
+    val intSym = kb.tryResolveSymbol("anthill.prelude.Int64").get
+    assertEquals(kb.qualifiedNameOf(intSym), "anthill.prelude.Int64")
   }
 
   test("qualifiedNameOf returns name for unresolved symbols") {

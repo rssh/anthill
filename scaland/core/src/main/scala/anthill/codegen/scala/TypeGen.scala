@@ -34,7 +34,7 @@ object TypeGen:
   private def mapPrelude(qualName: String): String =
     val short = qualName.split('.').last
     short match
-      case "Int" => "Int"
+      case "Int64" => "Int"
       case "BigInt" => "BigInt"
       case "Float" => "Double"
       case "Bool" => "Boolean"

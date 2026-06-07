@@ -167,7 +167,7 @@ Atomic refcount cost is negligible relative to the work each pass does per node.
 ```rust
 pub enum Value {
     // ... existing variants ...
-    Int(i64), BigInt(BigInt), Float(f64), Bool(bool), Str(String), Unit,
+    Int64(i64), BigInt(BigInt), Float(f64), Bool(bool), Str(String), Unit,
     Tuple { pos, named }, Entity { functor, pos, named },
     Term(TermId),                                // hash-consed KB content
     Closure(...), Stream(...), Lazy(...),

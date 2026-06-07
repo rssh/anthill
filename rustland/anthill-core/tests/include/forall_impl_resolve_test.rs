@@ -228,7 +228,7 @@ fn structural_induction_proves_property_via_auto_generated_rule() {
           export IntList, prop_holds
           enum IntList
             entity i_nil
-            entity i_cons(head: Int, tail: IntList)
+            entity i_cons(head: Int64, tail: IntList)
           end
 
           fact prop_holds(i_nil)
@@ -503,7 +503,7 @@ fn structural_induction_on_stdlib_polymorphic_list() {
     // forall_impl step) — and the rule body itself never references
     // the type parameter ?T, so polymorphism has no effect on the rule.
     //
-    // Define a predicate over a concrete instantiation (List[T = Int])
+    // Define a predicate over a concrete instantiation (List[T = Int64])
     // and discharge induction.
     let src = r#"
         namespace test.forall_impl.poly_list

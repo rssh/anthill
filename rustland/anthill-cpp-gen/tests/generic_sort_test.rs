@@ -70,9 +70,9 @@ fn non_generic_entity_keeps_no_prefix() {
     // Sanity: a plain entity-with-fields emits without `template<…>`.
     let source = r#"
         namespace test.plain
-          import anthill.prelude.{Int}
+          import anthill.prelude.{Int64}
           export Pose
-          entity Pose(x: Int, y: Int)
+          entity Pose(x: Int64, y: Int64)
         end
     "#;
     let kb = load_kb_with(source);

@@ -2,9 +2,9 @@
 -- for every non-zero element `b`, there exists `div(a, b)` satisfying the
 -- inverse law `mul(div(a, b), b) = a`.
 --
--- `Int` does NOT satisfy Field: truncated integer division discards
+-- `Int64` does NOT satisfy Field: truncated integer division discards
 -- information (`div(7, 2) * 2 = 6 ≠ 7`). Code that wants integer truncation
--- uses `Int.div` directly; code that wants proper division works over a
+-- uses `Int64.div` directly; code that wants proper division works over a
 -- `Field` instance (Float approximately, Rational exactly).
 sort anthill.prelude.Field
   import anthill.prelude.{Numeric}

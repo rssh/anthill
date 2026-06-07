@@ -62,7 +62,7 @@ fn apply_within_evaluates_requirements_then_dispatches_to_anthill_op() {
     // to baseline after the body returns + requirement drops.
     let src = r#"
 namespace test.wi223.apply_within
-  operation produce() -> Int = 42
+  operation produce() -> Int64 = 42
 end
 "#;
     let mut kb = load_kb_with(src);
@@ -129,10 +129,10 @@ namespace test.wi223.dispatch_form
   -- Two impl ops with the same short name. Dispatching through
   -- requirements[0]'s functor picks one or the other.
   sort IntFooImpl
-    operation foo() -> Int = 100
+    operation foo() -> Int64 = 100
   end
   sort StringFooImpl
-    operation foo() -> Int = 200
+    operation foo() -> Int64 = 200
   end
 end
 "#;
@@ -198,13 +198,13 @@ fn apply_within_threads_requirements_to_callee_frame_for_introspection() {
     // — but `read_my_req` has no enclosing sort so there are none).
     // The body reads `__req_self` by name and yields the handle.
     //
-    // Setup: register an anthill op `read_my_req() -> Int`. Override its
+    // Setup: register an anthill op `read_my_req() -> Int64`. Override its
     // body via the dispatch_rewrites mechanism: hand-build a
     // `var_ref(name: Ref(__req_self))` term and rewrite the original body
     // term to point at it.
     let src = r#"
 namespace test.wi223.thread_through
-  operation read_my_req() -> Int = 0
+  operation read_my_req() -> Int64 = 0
 end
 "#;
     let mut kb = load_kb_with(src);

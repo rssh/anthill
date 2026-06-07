@@ -62,9 +62,9 @@ fn deeply_nested_else_if_types_without_host_stack_overflow() {
     let env = TypingEnv::empty();
     let r = type_check_node(&mut kb, &env, &node, None);
     assert!(r.is_ok(), "deep else-if chain should type-check; got {:?}", r.err());
-    // The if's type is the then-branch's type (Int) — confirms the
+    // The if's type is the then-branch's type (Int64) — confirms the
     // IfExpr frame *assembles* the result, not merely survives.
-    sort_is(&kb, &node, "Int");
+    sort_is(&kb, &node, "Int64");
 }
 
 #[test]
@@ -73,7 +73,7 @@ fn collection_literal_frames_assemble_types() {
     let mut kb = minimal_kb();
     let env = TypingEnv::empty();
 
-    // [1, 2, 3] : List[T = Int]; first element carries its own type too.
+    // [1, 2, 3] : List[T = Int64]; first element carries its own type too.
     let first = occ(Expr::Const(Literal::Int(1)));
     let list = occ(Expr::ListLit(vec![
         Rc::clone(&first),
@@ -82,9 +82,9 @@ fn collection_literal_frames_assemble_types() {
     ]));
     assert!(type_check_node(&mut kb, &env, &list, None).is_ok(), "list literal should type");
     sort_is(&kb, &list, "List");
-    sort_is(&kb, &first, "Int"); // child stamping preserved
+    sort_is(&kb, &first, "Int64"); // child stamping preserved
 
-    // {1} : Set[T = Int].
+    // {1} : Set[T = Int64].
     let set = occ(Expr::SetLit(vec![occ(Expr::Const(Literal::Int(1)))]));
     assert!(type_check_node(&mut kb, &env, &set, None).is_ok(), "set literal should type");
     sort_is(&kb, &set, "Set");
@@ -96,5 +96,5 @@ fn collection_literal_frames_assemble_types() {
         named: vec![],
     });
     assert!(type_check_node(&mut kb, &env, &tup, None).is_ok(), "tuple literal should type");
-    sort_is(&kb, &tup_int, "Int"); // positional field stamped
+    sort_is(&kb, &tup_int, "Int64"); // positional field stamped
 }

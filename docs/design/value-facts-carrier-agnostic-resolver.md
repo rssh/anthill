@@ -235,7 +235,7 @@ A bespoke `enum HeadCarrier { Term(TermId), Value(Value) }` was considered and
 already makes, and would be a second classification to keep in sync with the
 carrier the resolver / typer / substitution layer already speak (`Substitution`
 is `HashMap<VarId, Value>`; goals are `Vec<Value>`). `Value` admits non-head
-shapes (`Int`, `Closure`, …) that a head never takes, but those simply never occur
+shapes (`Int64`, `Closure`, …) that a head never takes, but those simply never occur
 as a head and `head_view()` handles any carrier uniformly — the looseness costs
 nothing and matches existing goal / subst usage.
 

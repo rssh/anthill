@@ -4,20 +4,20 @@
 //! Acceptance fixture per `docs/design/operation-call-model.md`
 //! §"Operation type arguments":
 //!
-//! 1. `foo[Int](42)` against `operation foo[T](x: T) -> T = x` lands
+//! 1. `foo[Int64](42)` against `operation foo[T](x: T) -> T = x` lands
 //!    on a frame whose `type_args` has one entry — keyed `T`, value
-//!    `sort_ref(name = Int)`. Sort-level entries (none here, since
+//!    `sort_ref(name = Int64)`. Sort-level entries (none here, since
 //!    `Driver` declares no `requires`) occupy the leading positions;
 //!    `T` follows in declaration order.
 //! 2. A second call `foo[String]("hi")` produces a fresh frame whose
 //!    `T` entry holds `sort_ref(name = String)` — per-call binding,
 //!    not shared with the prior call.
 //! 3. Negative case: `foo(42)` with no explicit binding produces a
-//!    frame whose `T` is the typer-inferred `Int` (identical to the
+//!    frame whose `T` is the typer-inferred `Int64` (identical to the
 //!    explicit form).
 //!
 //! Inspection strategy: foo's body calls a non-generic
-//! `peek_dummy(0) -> Int` builtin in a `let` whose value is
+//! `peek_dummy(0) -> Int64` builtin in a `let` whose value is
 //! discarded, then yields `x`. The builtin runs while foo's frame
 //! is the top of the stack (builtins don't push their own frame —
 //! see `dispatch_call_with_requirements`'s builtin branch), so the
@@ -38,16 +38,16 @@ type Snapshot = Vec<(String, TermId)>;
 
 const FIXTURE_SRC: &str = r#"
 namespace test.wi272.frame
-  import anthill.prelude.{Int, String}
+  import anthill.prelude.{Int64, String}
 
   sort Driver
     operation foo[T](x: T) -> T =
       let _peek = peek_dummy(0)
       x
-    operation peek_dummy(_: Int) -> Int
-    operation driver_int() -> Int = foo[Int](42)
+    operation peek_dummy(_: Int64) -> Int64
+    operation driver_int() -> Int64 = foo[Int64](42)
     operation driver_string() -> String = foo[String]("hi")
-    operation driver_inferred() -> Int = foo(42)
+    operation driver_inferred() -> Int64 = foo(42)
   end
 end
 "#;
@@ -75,7 +75,7 @@ fn fixture_interp(captured: Arc<Mutex<Option<Snapshot>>>) -> Interpreter {
     interp
 }
 
-/// Walk a `sort_ref(name = Ref(Int))` term back to its sort short name.
+/// Walk a `sort_ref(name = Ref(Int64))` term back to its sort short name.
 /// The typer encodes scalar types this way (see
 /// `KnowledgeBase::make_sort_ref_by_name`); the test asserts on the
 /// short name to avoid hardcoding TermId equality across runs.
@@ -93,7 +93,7 @@ fn explicit_int_binding_installs_t_on_frame() {
     let mut interp = fixture_interp(captured.clone());
 
     let result = interp.call("test.wi272.frame.Driver.driver_int", &[])
-        .expect("driver_int / foo[Int](42) should run");
+        .expect("driver_int / foo[Int64](42) should run");
     assert_eq!(result.as_int(), Some(42), "body returns x = 42");
 
     let snap = captured.lock().unwrap().clone()
@@ -106,7 +106,7 @@ fn explicit_int_binding_installs_t_on_frame() {
     assert_eq!(snap[0].0, "T", "first (and only) entry's key should be `T`");
     let name = extract_sort_ref_name(&interp, snap[0].1)
         .expect("T should bind to a sort_ref(...)");
-    assert_eq!(name, "Int", "T should be `Int` for foo[Int](42)");
+    assert_eq!(name, "Int64", "T should be `Int64` for foo[Int64](42)");
 }
 
 #[test]
@@ -114,16 +114,16 @@ fn second_call_with_different_binding_is_per_call_fresh() {
     let captured = Arc::new(Mutex::new(None));
     let mut interp = fixture_interp(captured.clone());
 
-    // First call: foo[Int](42).
+    // First call: foo[Int64](42).
     interp.call("test.wi272.frame.Driver.driver_int", &[])
-        .expect("foo[Int](42) should run");
+        .expect("foo[Int64](42) should run");
     let snap1 = captured.lock().unwrap().clone()
         .expect("first call should have captured");
     let name1 = extract_sort_ref_name(&interp, snap1[0].1).unwrap();
-    assert_eq!(name1, "Int");
+    assert_eq!(name1, "Int64");
 
     // Second call: foo[String]("hi"). A *fresh* frame — no carry-over
-    // of the first call's `T = Int`.
+    // of the first call's `T = Int64`.
     interp.call("test.wi272.frame.Driver.driver_string", &[])
         .expect("foo[String](\"hi\") should run");
     let snap2 = captured.lock().unwrap().clone()
@@ -131,14 +131,14 @@ fn second_call_with_different_binding_is_per_call_fresh() {
     assert_eq!(snap2.len(), 1, "fresh frame has exactly one type-arg entry");
     let name2 = extract_sort_ref_name(&interp, snap2[0].1).unwrap();
     assert_eq!(name2, "String",
-        "T should be `String` on the second call, not `Int` from the first");
+        "T should be `String` on the second call, not `Int64` from the first");
 }
 
 #[test]
 fn inferred_binding_matches_explicit() {
-    // foo(42) with no `[T = …]` — the typer infers T = Int from the
+    // foo(42) with no `[T = …]` — the typer infers T = Int64 from the
     // arg's type. The frame's `type_args` channel should be identical
-    // to `foo[Int](42)`. Negative case per design doc §"Test fixture".
+    // to `foo[Int64](42)`. Negative case per design doc §"Test fixture".
     let captured = Arc::new(Mutex::new(None));
     let mut interp = fixture_interp(captured.clone());
 
@@ -149,6 +149,6 @@ fn inferred_binding_matches_explicit() {
     assert_eq!(snap.len(), 1, "expected one entry (T); got {:?}", snap);
     assert_eq!(snap[0].0, "T");
     let name = extract_sort_ref_name(&interp, snap[0].1).unwrap();
-    assert_eq!(name, "Int",
-        "T should infer to `Int` from the arg literal; got `{name}`");
+    assert_eq!(name, "Int64",
+        "T should infer to `Int64` from the arg literal; got `{name}`");
 }

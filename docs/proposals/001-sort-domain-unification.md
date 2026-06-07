@@ -313,8 +313,8 @@ sort F
 end
 
 -- Apply it via inline binding:
-F[T = Int]                              -- F applied to Int
-F[T = F[T = Int]]                       -- F applied to F(Int) — nested application
+F[T = Int64]                              -- F applied to Int64
+F[T = F[T = Int64]]                       -- F applied to F(Int64) — nested application
 
 -- Bind it in 'where' clauses:
 import SomeSpec where { F = Option }

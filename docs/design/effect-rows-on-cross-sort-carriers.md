@@ -19,7 +19,7 @@ operation iterator[Elem](l: List[T = Elem]) -> Stream[T = Elem, E = {}] = l
 ```
 
 `List` provides `Stream` cross-sort (`fact Stream[T = T]`), and `iterator`'s body
-returns a `List` value as a `Stream`. WI-375 already lets `Stream[T = Int, E = {}]`
+returns a `List` value as a `Stream`. WI-375 already lets `Stream[T = Int64, E = {}]`
 be written in an **operation-return** type position. The new difficulty is that
 the **carrier** must declare its observation effect, and a *cross-sort* carrier
 writing an effect row touches three typer/loader subsystems. Each was probed and
@@ -105,8 +105,8 @@ With FIX 2 + the `provides` clause + the written-`E` iterator applied together
 `wi368_iterator_threading_test` **both cases pass**:
 
 ```
-operation walk(xs: List[T = Int]) -> Int = length(collect(iterator(xs)))   -- PURE, no ?_
-operation gather(xs: List[T = Int]) -> List[T = Int] = collect(iterator(xs)) -- List[Int]
+operation walk(xs: List[T = Int64]) -> Int64 = length(collect(iterator(xs)))   -- PURE, no ?_
+operation gather(xs: List[T = Int64]) -> List[T = Int64] = collect(iterator(xs)) -- List[Int64]
 -- and `gather -> List[T = String]` is correctly REJECTED
 ```
 

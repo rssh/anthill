@@ -13,9 +13,9 @@ use crate::common::{interp_for, register_modify_handler};
 fn cell_new_then_get_round_trip() {
     let src = r#"
 namespace test.wi205_round_trip
-  import anthill.prelude.{Int, Cell}
+  import anthill.prelude.{Int64, Cell}
 
-  operation make_and_read(n: Int) -> Int =
+  operation make_and_read(n: Int64) -> Int64 =
     Cell.get(Cell.new(n))
 end
 "#;
@@ -31,11 +31,11 @@ end
 fn cell_set_overwrites_value() {
     let src = r#"
 namespace test.wi205_overwrite
-  import anthill.prelude.{Int, Cell, Unit}
+  import anthill.prelude.{Int64, Cell, Unit}
 
-  operation make(n: Int) -> Cell effects Modify[result] = Cell.new(n)
-  operation overwrite(c: Cell, n: Int) -> Unit effects Modify[c] = Cell.set(c, n)
-  operation read(c: Cell) -> Int = Cell.get(c)
+  operation make(n: Int64) -> Cell effects Modify[result] = Cell.new(n)
+  operation overwrite(c: Cell, n: Int64) -> Unit effects Modify[c] = Cell.set(c, n)
+  operation read(c: Cell) -> Int64 = Cell.get(c)
 end
 "#;
     let mut interp = interp_for(src);
@@ -55,11 +55,11 @@ fn cell_new_returns_distinct_handles() {
     // not perturb the other.
     let src = r#"
 namespace test.wi205_distinct
-  import anthill.prelude.{Int, Cell, Unit}
+  import anthill.prelude.{Int64, Cell, Unit}
 
-  operation make(n: Int) -> Cell effects Modify[result] = Cell.new(n)
-  operation set_value(c: Cell, n: Int) -> Unit effects Modify[c] = Cell.set(c, n)
-  operation read(c: Cell) -> Int = Cell.get(c)
+  operation make(n: Int64) -> Cell effects Modify[result] = Cell.new(n)
+  operation set_value(c: Cell, n: Int64) -> Unit effects Modify[c] = Cell.set(c, n)
+  operation read(c: Cell) -> Int64 = Cell.get(c)
 end
 "#;
     let mut interp = interp_for(src);
@@ -83,8 +83,8 @@ fn cell_handle_drop_reclaims_slot() {
     // must drop. Mirrors the closure_arena / map_arena reclamation tests.
     let src = r#"
 namespace test.wi205_refcount
-  import anthill.prelude.{Int, Cell}
-  operation make(n: Int) -> Cell effects Modify[result] = Cell.new(n)
+  import anthill.prelude.{Int64, Cell}
+  operation make(n: Int64) -> Cell effects Modify[result] = Cell.new(n)
 end
 "#;
     let mut interp = interp_for(src);
@@ -105,8 +105,8 @@ fn cell_handle_clone_keeps_slot_alive() {
     // both must drop before reclamation.
     let src = r#"
 namespace test.wi205_clone
-  import anthill.prelude.{Int, Cell}
-  operation make(n: Int) -> Cell effects Modify[result] = Cell.new(n)
+  import anthill.prelude.{Int64, Cell}
+  operation make(n: Int64) -> Cell effects Modify[result] = Cell.new(n)
 end
 "#;
     let mut interp = interp_for(src);
@@ -128,14 +128,14 @@ fn cell_recursive_allocation_no_aliasing() {
     // Each nested Cell.new call must see its own cell at unwind.
     let src = r#"
 namespace test.wi205_recursive
-  import anthill.prelude.{Int, Cell, Bool}
+  import anthill.prelude.{Int64, Cell, Bool}
 
   -- Each frame contributes Cell.get(c) - n to the sum. If no
   -- aliasing, the contribution is 0 per frame and the total is 0.
   -- With aliasing, an inner call would have overwritten our cell to
   -- a smaller n, so Cell.get(c) - n would be negative on at least
   -- one frame and the total drifts away from 0.
-  operation chain(n: Int) -> Int =
+  operation chain(n: Int64) -> Int64 =
     if n < 1 then 0
     else
       let c = Cell.new(n)

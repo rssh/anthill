@@ -31,11 +31,11 @@ fn carrier_artifact_becomes_include_directive() {
         end
 
         namespace test.car_inc
-          import anthill.prelude.{Int}
+          import anthill.prelude.{Int64}
           import test.car_inc.dev.{GPS}
           export Sensors
           sort Sensors
-            operation read(g: GPS) -> Int = 0
+            operation read(g: GPS) -> Int64 = 0
           end
         end
     "#;

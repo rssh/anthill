@@ -12,7 +12,7 @@ static STDLIB_SOURCES: &[(&str, &str)] = &[
     // prelude
     ("anthill/prelude/primitives", include_str!("../../../stdlib/anthill/prelude/primitives.anthill")),
     ("anthill/prelude/bool", include_str!("../../../stdlib/anthill/prelude/bool.anthill")),
-    ("anthill/prelude/int", include_str!("../../../stdlib/anthill/prelude/int.anthill")),
+    ("anthill/prelude/int64", include_str!("../../../stdlib/anthill/prelude/int64.anthill")),
     ("anthill/prelude/bigint", include_str!("../../../stdlib/anthill/prelude/bigint.anthill")),
     ("anthill/prelude/float", include_str!("../../../stdlib/anthill/prelude/float.anthill")),
     ("anthill/prelude/string", include_str!("../../../stdlib/anthill/prelude/string.anthill")),
@@ -68,11 +68,11 @@ static STDLIB_SOURCES: &[(&str, &str)] = &[
     ("anthill/cli/parse", include_str!("../../../stdlib/anthill/cli/parse.anthill")),
     ("anthill/cli/help", include_str!("../../../stdlib/anthill/cli/help.anthill")),
     // Rust-language spec-satisfaction bindings (anthill-stl). These carry
-    // `fact Eq[T = String]`, `fact Numeric[T = Int]`, etc. — the impls the
+    // `fact Eq[T = String]`, `fact Numeric[T = Int64]`, etc. — the impls the
     // typer's spec dispatch resolves against. Without them, `eq(...)` /
     // `lt(...)` calls in bundle bodies type-check to NoMatch.
     ("anthill-stl/bool", include_str!("../../anthill-stl/anthill/bool.anthill")),
-    ("anthill-stl/int", include_str!("../../anthill-stl/anthill/int.anthill")),
+    ("anthill-stl/int64", include_str!("../../anthill-stl/anthill/int64.anthill")),
     ("anthill-stl/bigint", include_str!("../../anthill-stl/anthill/bigint.anthill")),
     ("anthill-stl/float", include_str!("../../anthill-stl/anthill/float.anthill")),
     ("anthill-stl/string", include_str!("../../anthill-stl/anthill/string.anthill")),

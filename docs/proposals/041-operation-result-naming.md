@@ -33,13 +33,13 @@ The fix is small and contained: extend `result`'s reservation from "valid in `en
 
 A natural worry would be: "what about multi-result operations? Don't we need a way to refer to individual result fields?" The answer is that **anthill already has the surface for this**, two ways over:
 
-- **§4.5 Named-tuple types** make `(a: Cell[Int], b: Cell[Int])` a valid return type today. The spec even uses this exact shape in its own example: `operation divmod(a: Int, b: Int) -> (quotient: Int, remainder: Int)`.
+- **§4.5 Named-tuple types** make `(a: Cell[Int64], b: Cell[Int64])` a valid return type today. The spec even uses this exact shape in its own example: `operation divmod(a: Int64, b: Int64) -> (quotient: Int64, remainder: Int64)`.
 - **§6.7 Field access** makes `result.a` and `result.b` valid term expressions today (`term.identifier` desugars to `field_access(term, identifier)`).
 
 Combining the two, multi-result effect attribution works without any new grammar:
 
 ```anthill
-operation make_pair() -> (a: Cell[Int], b: Cell[Int])
+operation make_pair() -> (a: Cell[Int64], b: Cell[Int64])
   effects Modify[result.a], Modify[result.b]
   ensures ne(result.a, result.b)
 ```
@@ -67,7 +67,7 @@ The reservation is **soft** in the §2.5 sense — `result` is only special at s
 For an operation returning a named tuple, the components are accessed via field projection (§6.7) off `result`:
 
 ```anthill
-operation make_pair() -> (a: Cell[Int], b: Cell[Int])
+operation make_pair() -> (a: Cell[Int64], b: Cell[Int64])
   effects Modify[result.a], Modify[result.b]
   ensures ne(result.a, result.b)
 ```
@@ -82,7 +82,7 @@ In the typer pass over `effects` rows, the name-resolution chain gains one entry
 2. **`result` → the operation's return slot, with type = the declared return type** (new under 041).
 3. Normal scope chain (existing).
 
-`result.a` then resolves via §6.7's existing field-access machinery: `result` resolves to the return slot at sort `(a: Cell[Int], b: Cell[Int])`; the `.a` projection extracts the named field, type `Cell[Int]`.
+`result.a` then resolves via §6.7's existing field-access machinery: `result` resolves to the return slot at sort `(a: Cell[Int64], b: Cell[Int64])`; the `.a` projection extracts the named field, type `Cell[Int64]`.
 
 `ensures` already does the analogous lookup with `result`; this proposal just adds the same arm in `effects`.
 
@@ -90,7 +90,7 @@ In the typer pass over `effects` rows, the name-resolution chain gains one entry
 
 The `result` reservation is soft:
 
-- **`result` as a parameter name**: rejected at the loader. `operation foo(result: Int) -> Int` is a hard error — the same name can't refer to both a parameter and the output.
+- **`result` as a parameter name**: rejected at the loader. `operation foo(result: Int64) -> Int64` is a hard error — the same name can't refer to both a parameter and the output.
 - **`result` inside the operation body**: not shadowed by the proposal. `let result = expr` in the body binds a body-local `result`; the declaration-position `result` is unrelated (different scope).
 
 ## Examples
@@ -106,7 +106,7 @@ end
 ### Multi-result with per-component effects
 
 ```anthill
-operation make_pair() -> (a: Cell[Int], b: Cell[Int])
+operation make_pair() -> (a: Cell[Int64], b: Cell[Int64])
   effects Modify[result.a], Modify[result.b]
   ensures ne(result.a, result.b)
   body...
@@ -115,7 +115,7 @@ operation make_pair() -> (a: Cell[Int], b: Cell[Int])
 ### Partial discharge under 027.1
 
 ```anthill
-operation keep_second() -> Cell[Int]
+operation keep_second() -> Cell[Int64]
   effects Modify[result]
   let (a, b) = make_pair()
   Cell.set(a, 42)                            -- a's Modify discharges (a doesn't escape)
@@ -136,7 +136,7 @@ Existing reflection facts that walk operation signatures already see the return 
 - `effects Modify[result]` parses, resolves, and type-checks (single-return op).
 - `effects Modify[result.a], Modify[result.b]` parses, resolves, and type-checks (named-tuple return).
 - `effects Modify[result]` in a `requires` clause is rejected with the existing "result not allowed in requires" diagnostic.
-- `operation foo(result: Int) -> Int` rejected by the param-name conflict check.
+- `operation foo(result: Int64) -> Int64` rejected by the param-name conflict check.
 
 Roughly a typer-arm change plus tests. No grammar work, no new IR, no new symbol kind. The "Phase 0" prerequisite that 027.1 mentions is exactly this one change.
 
@@ -144,7 +144,7 @@ Roughly a typer-arm change plus tests. No grammar work, no new IR, no new symbol
 
 1. **Diagnostic wording when `result` appears in `requires`**: today's error is something like "result not allowed in requires." Worth confirming the message is clear after 041 widens the scope elsewhere — readers shouldn't be confused why `effects` admits it but `requires` doesn't. **Suggested**: include "preconditions are checked before the result exists" in the error.
 
-2. **Param-name conflict diagnostic**: `operation foo(result: Int)` becomes a hard error. Worth a clear message rather than a generic name-collision error. **Suggested**: "the name 'result' is reserved for the operation's return value; use a different parameter name."
+2. **Param-name conflict diagnostic**: `operation foo(result: Int64)` becomes a hard error. Worth a clear message rather than a generic name-collision error. **Suggested**: "the name 'result' is reserved for the operation's return value; use a different parameter name."
 
 3. **Future positions that take terms**: if proposals later add term-position slots in the operation declaration (e.g., a `where`-clause, an annotation expression), they should follow the same convention — `result` resolves to the output. Document the principle alongside §5.4's reservation.
 

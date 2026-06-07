@@ -16,7 +16,7 @@ use anthill_smt_gen::emit_satisfiability_check;
 fn inductive_kb() -> anthill_core::kb::KnowledgeBase {
     let source = r#"
         namespace test.smt_gen.invariant
-          import anthill.prelude.{Float, Int}
+          import anthill.prelude.{Float, Int64}
           import anthill.prelude.Numeric.{add, sub, mul}
           import anthill.prelude.Float.{div, abs}
           import anthill.prelude.Ordered.{lte, lt, gt}
@@ -27,7 +27,7 @@ fn inductive_kb() -> anthill_core::kb::KnowledgeBase {
 
           entity LinkParameters(
             range_max: Float, signal_speed: Float, baud_rate: Float,
-            byte_size: Int, packet_size: Int)
+            byte_size: Int64, packet_size: Int64)
           entity KinematicAssumptions(
             leader_speed_max: Float, follower_speed_max: Float,
             control_period: Float, sensor_period: Float)

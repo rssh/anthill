@@ -91,21 +91,21 @@ fn subst_with_param(
 
 #[test]
 fn dispatch_defers_when_call_reaches_spec_via_requires() {
-    // Sort `Wi221Box` declares `requires Eq[T = Int]`. A spec-op call
-    // (Eq.eq at T=Int) reached from inside Wi221Box's body must be
-    // classified as Deferred even though stdlib has `fact Eq[T = Int]`
-    // (Int as the impl) — the impl chosen at runtime depends on which
+    // Sort `Wi221Box` declares `requires Eq[T = Int64]`. A spec-op call
+    // (Eq.eq at T=Int64) reached from inside Wi221Box's body must be
+    // classified as Deferred even though stdlib has `fact Eq[T = Int64]`
+    // (Int64 as the impl) — the impl chosen at runtime depends on which
     // requirement value the caller of Wi221Box passes.
     //
     // Without the WI-221 patch, find_unique_impl_op would return
-    // Unique(Int.eq) and Pin-now-rewrite the call, even though the
+    // Unique(Int64.eq) and Pin-now-rewrite the call, even though the
     // dispatch should go through frame.requirements at runtime.
     let mut kb = load_with(r#"
         namespace test.wi221.open_bound
-          import anthill.prelude.{Eq, Int}
+          import anthill.prelude.{Eq, Int64}
           export Wi221Box
           sort Wi221Box
-            requires Eq[T = Int]
+            requires Eq[T = Int64]
           end
         end
     "#);
@@ -118,7 +118,7 @@ fn dispatch_defers_when_call_reaches_spec_via_requires() {
         &mut kb,
         "anthill.prelude.Eq",
         "T",
-        "anthill.prelude.Int",
+        "anthill.prelude.Int64",
     );
     let op_short = kb.intern("eq");
 
@@ -126,18 +126,18 @@ fn dispatch_defers_when_call_reaches_spec_via_requires() {
         .expect("Wi221Box registered");
 
     // Sanity check: with no enclosing sort, the existing Pin-now path
-    // resolves Eq[T=Int] to a Unique impl (Int's `fact Eq[T = Int]`).
+    // resolves Eq[T=Int64] to a Unique impl (Int64's `fact Eq[T = Int64]`).
     let pin_now = find_unique_impl_op(&mut kb, &subst, spec_sort, op_short, &[]);
     assert!(matches!(pin_now, DispatchOutcome::Unique(_)),
         "without enclosing sort, expected Unique (Pin-now); got {pin_now:?}");
 
     // WI-221 patch: with Wi221Box as enclosing sort (whose `requires`
-    // chain covers Eq[T=Int]), dispatch must defer.
+    // chain covers Eq[T=Int64]), dispatch must defer.
     let chain = requires_chain_flat(&kb, enclosing);
     let deferred = find_unique_impl_op(&mut kb, &subst, spec_sort, op_short, &chain);
     assert_eq!(deferred, DispatchOutcome::Deferred,
         "WI-221: expected Deferred when call reaches Eq.eq via Wi221Box's \
-         `requires Eq[T = Int]` clause; got {deferred:?}");
+         `requires Eq[T = Int64]` clause; got {deferred:?}");
 }
 
 #[test]
@@ -163,7 +163,7 @@ fn dispatch_pins_when_enclosing_sort_does_not_require_spec() {
         &mut kb,
         "anthill.prelude.Eq",
         "T",
-        "anthill.prelude.Int",
+        "anthill.prelude.Int64",
     );
     let op_short = kb.intern("eq");
 
@@ -173,7 +173,7 @@ fn dispatch_pins_when_enclosing_sort_does_not_require_spec() {
 
     let outcome = find_unique_impl_op(&mut kb, &subst, spec_sort, op_short, &chain);
     assert!(matches!(outcome, DispatchOutcome::Unique(_)),
-        "WI-221: enclosing sort without `requires Eq[T=Int]` must not \
+        "WI-221: enclosing sort without `requires Eq[T=Int64]` must not \
          defer — Pin-now still applies. Got {outcome:?}");
 }
 
@@ -181,7 +181,7 @@ fn dispatch_pins_when_enclosing_sort_does_not_require_spec() {
 fn dispatch_defers_when_requires_uses_open_param() {
     // Variant: the enclosing sort's `requires` clause uses its own
     // open type-param (`requires Eq[T]` where T is the sort's parameter).
-    // A per-call subst that ground-binds that param to Int should still
+    // A per-call subst that ground-binds that param to Int64 should still
     // be deferred — the impl chosen at runtime depends on whichever
     // Eq requirement the caller passes for the chosen T.
     let mut kb = load_with(r#"
@@ -203,7 +203,7 @@ fn dispatch_defers_when_requires_uses_open_param() {
         &mut kb,
         "anthill.prelude.Eq",
         "T",
-        "anthill.prelude.Int",
+        "anthill.prelude.Int64",
     );
     let op_short = kb.intern("eq");
 

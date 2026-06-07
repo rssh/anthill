@@ -20,7 +20,7 @@
 -- The current discharge.sh uses (b) via z3-LRA.
 
 namespace anthill.examples.lf1.safety.gps
-  import anthill.prelude.{Float, Int, Bool}
+  import anthill.prelude.{Float, Int64, Bool}
   import anthill.prelude.Ordered.{lt, gt, lte, gte}
   import anthill.prelude.Numeric.{add, sub, mul}
   import anthill.prelude.Float.{div, abs}
@@ -63,8 +63,8 @@ namespace anthill.examples.lf1.safety.gps
     range_max:    Float,   -- emitter.range — max reception distance (m)
     signal_speed: Float,   -- propagation speed (m/s); typically c
     baud_rate:    Float,   -- bits per second
-    byte_size:    Int,     -- bits per byte (typically 8)
-    packet_size:  Int      -- payload size in bytes (LeaderPose = 32)
+    byte_size:    Int64,     -- bits per byte (typically 8)
+    packet_size:  Int64      -- payload size in bytes (LeaderPose = 32)
   )
 
   -- =================================================================

@@ -13,8 +13,8 @@ namespace anthill.todo.store
   import anthill.stage0.{WorkItem, WorkStatus, Feedback}
   import anthill.persistence.filesystem.{IndexedFileStore}
   import anthill.persistence.{persist, retract, flush}
-  import anthill.prelude.{Cell, Option, List, Int, String, Unit, Bool}
-  import anthill.prelude.Int.{to_string}
+  import anthill.prelude.{Cell, Option, List, Int64, String, Unit, Bool}
+  import anthill.prelude.Int64.{to_string}
   import anthill.prelude.String.{concat}
   import anthill.prelude.Ordered.{lt}
   import anthill.prelude.Eq.{eq}
@@ -75,14 +75,14 @@ namespace anthill.todo.store
   -- here.
   sort FileBasedWorkitemStore
     enum WIS
-      entity wis(backend: IndexedFileStore, id_counter: Int)
+      entity wis(backend: IndexedFileStore, id_counter: Int64)
     end
 
     fact WorkItemStore[State = WIS]
 
-    -- Format an Int as a 3-zero-padded decimal string. Larger numbers
+    -- Format an Int64 as a 3-zero-padded decimal string. Larger numbers
     -- expand naturally (`WI-1000` is fine).
-    operation pad3(n: Int) -> String =
+    operation pad3(n: Int64) -> String =
       if lt(n, 10) then concat("00", to_string(n))
       else if lt(n, 100) then concat("0", to_string(n))
       else to_string(n)

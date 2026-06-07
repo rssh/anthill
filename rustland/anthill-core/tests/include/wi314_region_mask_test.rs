@@ -33,14 +33,14 @@ fn load_result(source: &str) -> Result<(), Vec<String>> {
 
 #[test]
 fn discarded_allocation_is_masked() {
-    // A cell allocated then discarded — the return type `Int` cannot carry
+    // A cell allocated then discarded — the return type `Int64` cannot carry
     // the region, so `Modify[result]` is masked and no effect declaration
     // is needed. This is the non-virality win.
     let src = r#"
 namespace test.wi314.discard
-  import anthill.prelude.{Int, Cell}
+  import anthill.prelude.{Int64, Cell}
 
-  operation discard(n: Int) -> Int =
+  operation discard(n: Int64) -> Int64 =
     let c = Cell.new(n)
     Cell.get(c)
 end
@@ -54,9 +54,9 @@ fn escaping_let_bound_cell_requires_declaration() {
     // be silently dropped — the op is obliged to declare `Modify[result]`.
     let src = r#"
 namespace test.wi314.escape_undeclared
-  import anthill.prelude.{Int, Cell}
+  import anthill.prelude.{Int64, Cell}
 
-  operation dup(n: Int) -> Cell =
+  operation dup(n: Int64) -> Cell =
     let c = Cell.new(n)
     c
 end
@@ -76,9 +76,9 @@ fn escaping_let_bound_cell_with_declaration_loads() {
     // Same op, now declaring the effect it genuinely has — loads cleanly.
     let src = r#"
 namespace test.wi314.escape_declared
-  import anthill.prelude.{Int, Cell}
+  import anthill.prelude.{Int64, Cell}
 
-  operation dup(n: Int) -> Cell effects Modify[result] =
+  operation dup(n: Int64) -> Cell effects Modify[result] =
     let c = Cell.new(n)
     c
 end

@@ -31,7 +31,7 @@ end
 -- Impl
 sort FileBasedWorkitemStore
   enum WIS
-    entity wis(backend: IndexedFileStore, id_counter: Int)
+    entity wis(backend: IndexedFileStore, id_counter: Int64)
   end
   fact WorkItemStore[State = WIS]   -- "I implement WorkItemStore with State = WIS"
   operation commit(s, w) =          -- with body
@@ -91,7 +91,7 @@ Today the typer leaves spec ops unresolved at call sites — there are multiple 
 ## The shapes a call site can take
 
 ```anthill
-operation cmd_add(s: Cell[V = WIS], a: AddArgs) -> Int =
+operation cmd_add(s: Cell[V = WIS], a: AddArgs) -> Int64 =
   let id = next_id(s)              -- shape A: bare spec name
   let _  = WorkItemStore.commit(s, w)   -- shape B: qualified spec name
   let _  = FileBasedWorkitemStore.commit(s, w)  -- shape C: qualified impl name
@@ -242,7 +242,7 @@ Equality is too strict: a pure-in-memory `InMemoryWorkitemStore.commit` legitima
 > - **Arrow types**: `arrow_compatible` (line 2053) — explicit "contravariant param, covariant result, covariant effects" rule.
 > - **Named tuples**: `named_tuple_compatible` (line 2106) — structural per-field compatibility.
 >
-> WI-210 should **reuse `types_compatible` for effect-element comparison**, not invent a parallel relation. Per the existing code, this means binding positions are **covariant**, not invariant — `Modify[s] <: Modify[t]` if `s <: t`, and `Stream[T = Int] <: Stream[T = Number]` if `Int <: Number` (when those entity-of relations exist).
+> WI-210 should **reuse `types_compatible` for effect-element comparison**, not invent a parallel relation. Per the existing code, this means binding positions are **covariant**, not invariant — `Modify[s] <: Modify[t]` if `s <: t`, and `Stream[T = Int64] <: Stream[T = Number]` if `Int64 <: Number` (when those entity-of relations exist).
 >
 > Documenting `<:` in the kernel-language spec to match the implementation is a separate cleanup — but for WI-210's purposes the primitive is already there.
 
@@ -420,7 +420,7 @@ Concrete consumer examples (none exist yet, but anticipated):
 
 - Stdlib ships a default `Show[T]` impl for any sort with constructors. A project that wants custom rendering for `WorkItem` declares its own `Show` impl; it wins for `WorkItem` calls without disturbing other types.
 - Stdlib ships a default `Persist[Backend = FileBackend]` impl using JSON. A project that wants YAML files declares `Persist[Backend = FileBackend]` locally; it wins.
-- Stdlib ships a fallback `Ordered[Int]`; a project that wants reverse ordering for a specific sort overrides.
+- Stdlib ships a fallback `Ordered[Int64]`; a project that wants reverse ordering for a specific sort overrides.
 
 The pattern only works if (a) defaults exist and (b) overriding them is automatic and *local*. That's what scoped priority gives you.
 
@@ -437,7 +437,7 @@ Example layout for `anthill-todo`:
 ```anthill
 -- stdlib/anthill/persistence/in_memory_store.anthill   (shipped with stdlib)
 sort InMemoryWorkitemStore
-  enum InMemWIS  entity in_mem_wis(map: Term, counter: Int)  end
+  enum InMemWIS  entity in_mem_wis(map: Term, counter: Int64)  end
   fact WorkItemStore[State = InMemWIS]      -- low-priority default
   operation commit(s, w) = ... end
 end
@@ -446,7 +446,7 @@ end
 ```anthill
 -- anthill-todo/store.anthill   (project-local)
 sort FileBasedWorkitemStore
-  enum WIS  entity wis(backend: IndexedFileStore, id_counter: Int)  end
+  enum WIS  entity wis(backend: IndexedFileStore, id_counter: Int64)  end
   fact WorkItemStore[State = WIS]           -- medium-priority project default
   operation commit(s, w) = ... end
 end
@@ -551,7 +551,7 @@ WI-186 handles polymorphic free-standing ops:
 operation id<T>(x: T) -> T = x
 ```
 
-Resolution at `id(42)`: `T` instantiates to `Int` per arg-type unification. No fact lookup — `id` is the unique op named that. Compare to spec/impl:
+Resolution at `id(42)`: `T` instantiates to `Int64` per arg-type unification. No fact lookup — `id` is the unique op named that. Compare to spec/impl:
 
 ```anthill
 sort WorkItemStore { sort State = ?  operation commit(s: Cell[V = State], w: WorkItem) }
@@ -600,14 +600,14 @@ sort WorkItemStore
 end
 
 sort FileBasedWorkitemStore
-  enum WIS  entity wis(backend: IndexedFileStore, id_counter: Int)  end
+  enum WIS  entity wis(backend: IndexedFileStore, id_counter: Int64)  end
   fact WorkItemStore[State = WIS]
   operation commit(s, w) = ...
   operation lookup(s, id) = ...
 end
 
 -- main.anthill (bundle-side)
-operation cmd_add(args: AddArgs, s: Cell[V = WIS], agent: String) -> Int =
+operation cmd_add(args: AddArgs, s: Cell[V = WIS], agent: String) -> Int64 =
   let _ = commit(s, build_workitem(args))     -- ← shape A
   0
 ```

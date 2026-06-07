@@ -14,7 +14,7 @@ namespace anthill.reflect.typing
   -- ================================================================
   -- extract_sort_ref: extract sort symbol from instantiation term
   -- ================================================================
-  -- Builtin: given SortView(Eq(), T=Int()) or Ref(Eq),
+  -- Builtin: given SortView(Eq(), T=Int64()) or Ref(Eq),
   -- extracts the sort symbol as a Ref.
   operation extract_sort_ref(inst: Term) -> Symbol
 
@@ -38,7 +38,7 @@ namespace anthill.reflect.typing
 
   -- Direct: sort A requires spec B_inst.
   -- SortRequiresInfo(sort_ref, spec) — named args.
-  -- spec is the SortView carrying bindings (e.g. SortView(Eq(), T=Int())).
+  -- spec is the SortView carrying bindings (e.g. SortView(Eq(), T=Int64())).
   rule refines(?A, ?B_inst) :- SortRequiresInfo(sort_ref: ?A, spec: ?B_inst)
 
   -- Transitive: A requires B_inst, and B itself refines C_inst.

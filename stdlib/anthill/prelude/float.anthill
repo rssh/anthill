@@ -12,9 +12,9 @@ sort anthill.prelude.Float
     abs(a: Float) -> Float
     neg(a: Float) -> Float                -- -a
     div(a: Float, b: Float) -> Float      -- IEEE division; also `/` infix
-    floor(a: Float) -> Int                -- round toward negative infinity
-    ceil(a: Float) -> Int                 -- round toward positive infinity
-    round(a: Float) -> Int                -- round to nearest
+    floor(a: Float) -> Int64                -- round toward negative infinity
+    ceil(a: Float) -> Int64                 -- round toward positive infinity
+    round(a: Float) -> Int64                -- round to nearest
     recip(a: Float) -> Float              -- 1/a
     -- IEEE 754 predicates: needed because Float.eq returns false for NaN
     -- (NaN != NaN in IEEE), so users can't detect NaN via equality.

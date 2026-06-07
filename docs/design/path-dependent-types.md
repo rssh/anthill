@@ -64,7 +64,7 @@ expects.
 
 ```anthill
 check(state(provider = subscriberStore), "abc")   -- ✓  k : s.provider.K = String
-check(state(provider = subscriberStore), 42)        -- ✗  42 : Int ≠ String
+check(state(provider = subscriberStore), 42)        -- ✗  42 : Int64 ≠ String
 ```
 
 The trace — each step is existing or near-existing machinery:
@@ -160,7 +160,7 @@ A *rigid* `p.M` is a **neutral** — a projection stuck on a variable receiver �
 neutrals are equal only structurally, never by inverting the projection.
 
 **Projection heads are non-injective — the one soundness rule.** `peek(a).T` and
-`peek(b).T` can both be `Int` without `a = b`, so the unifier must **not** decompose
+`peek(b).T` can both be `Int64` without `a = b`, so the unifier must **not** decompose
 `p.M =?= q.M` into `p =?= q`. `ExprCarried` is an **opaque head** in unification:
 δ-ground both sides and unify the results; if both stay neutral, **check σ-equality of
 the receivers** — the **α-equality routine modulo the substitution's equivalence
@@ -208,7 +208,7 @@ residual obligation — never silently accepted or dropped.** Two implementation
 obligations follow:
 
 1. **Wake-registration** — a deferred `?p.M =?= ?q.M` is registered on its receiver
-   vars, so grounding (`?p := P1`, `?q := P2`) re-checks it (`String =?= Int` → fail).
+   vars, so grounding (`?p := P1`, `?q := P2`) re-checks it (`String =?= Int64` → fail).
    The resolver's delay/rotation already does this; the duty is not to let the goal
    fall off.
 2. **Set-level final solve** — a residual `?a.K =?= ?b.K ∧ ?a ≠ ?b` is pairwise-fine

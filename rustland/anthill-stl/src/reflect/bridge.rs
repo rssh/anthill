@@ -90,7 +90,7 @@ impl KbBridge {
     /// WI-348: a fact head may be a carrier-agnostic *value fact* (Node-carrying)
     /// — for the "Operation" sort, an op with a `denoted` effect (`Modify[c]`);
     /// WI-342: for the "Entity" sort, an entity with a value-in-type field
-    /// (`Vector[Int, 3]`). This TermId-only bridge cannot represent a
+    /// (`Vector[Int64, 3]`). This TermId-only bridge cannot represent a
     /// Node-carrying head, so such facts are skipped here (the carrier-faithful
     /// path is the `KB.*` reflect builtins, which read these via `op_info` /
     /// `rule_head_value`). Skipping rather than calling `fact_term` avoids the
@@ -830,9 +830,9 @@ mod tests {
         let bridge = load_source_bridge(r#"
 sort Store {
   entity store
-  operation persist(s: Store, fact: Int) -> Int
-  operation retract(s: Store, id: Int) -> Int
-  operation flush(s: Store) -> Int
+  operation persist(s: Store, fact: Int64) -> Int64
+  operation retract(s: Store, id: Int64) -> Int64
+  operation flush(s: Store) -> Int64
 }
 "#);
         let query = LogicalQuery::SortQuery { sort_name: "OperationInfo".into() };
@@ -884,9 +884,9 @@ fact cat
         let bridge = load_source_bridge(r#"
 sort Store {
   entity store
-  operation persist(s: Store, fact: Int) -> Int
-  operation retract(s: Store, id: Int) -> Int
-  operation flush(s: Store) -> Int
+  operation persist(s: Store, fact: Int64) -> Int64
+  operation retract(s: Store, id: Int64) -> Int64
+  operation flush(s: Store) -> Int64
 }
 "#);
         let query = LogicalQuery::Limited {

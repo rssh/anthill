@@ -22,7 +22,7 @@ Concrete tasks to take this scaffold to a runnable + provable example. Roughly i
 - [ ] **List / IndexedSeq vocabulary** — `IndexedSeq.{nth, length}` on a typeclass orthogonal to Collection/Iteration; List satisfies it. cpp-gen lowers to container-agnostic `xs.size()` / bounds-checked `xs[i]`. Done; future: sub-spec `RandomAccess` for O(1) guarantees.
 - [x] **`anthill-cpp-gen` crate** — KB-driven anthill → C++ emitter, profile `cpp20-stl`. Per `docs/proposals/029-rust-mapping-split.md`, `docs/cpp-forward-mapping.md`.
   - [x] crate scaffolded at `rustland/anthill-cpp-gen/`, in workspace
-  - [x] **entity → struct** with primitive type lowering (Int → int64_t, Float → double, Bool → bool, String → std::string, Unit → void); declaration-order field emission; `sort_ref` unwrapping. End-to-end smoke test against lf1's webots/types.anthill emitting Vec3 and EulerAngles correctly.
+  - [x] **entity → struct** with primitive type lowering (Int64 → int64_t, Float → double, Bool → bool, String → std::string, Unit → void); declaration-order field emission; `sort_ref` unwrapping. End-to-end smoke test against lf1's webots/types.anthill emitting Vec3 and EulerAngles correctly.
   - [x] traits-class emission for sorts with operations (declaration + body forms; topo-sorted alongside data types)
   - [x] `std::variant` emission for sorts with constructors (nullary and field-carrying, generic and non-generic)
   - [x] effect lowering — `Error` → `tl::expected<T, std::string>`; `Error.raise(e)` → `tl::make_unexpected(e)`. (`Modify` mutable-ref lowering still pending.)

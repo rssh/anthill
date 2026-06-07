@@ -9,7 +9,7 @@
 Proposal 001 unified sorts and domains syntactically: `sort X { ... }` can contain everything a domain can. But `domain` retained a dual role — algebraic specification AND namespace — creating confusion around `import ... where`:
 
 - `import X` = load/reference a domain (visibility)
-- `where { T = Int }` = instantiate sort parameters (algebraic)
+- `where { T = Int64 }` = instantiate sort parameters (algebraic)
 
 These are fundamentally different operations bundled into one syntax. The `where` clause on `import` conflated file loading with parametric instantiation.
 
@@ -146,7 +146,7 @@ This is a KB query, not a built-in mechanism. It can be refined, extended, or ov
 namespace banking {
   sort Money {
     requires Numeric[T = Money]
-    entity dollars(amount: Int)
+    entity dollars(amount: Int64)
   }
 
   sort Account {
@@ -177,7 +177,7 @@ namespace anthill.prelude {
 }
 ```
 
-Usage: `List[T = Int]` in type position.
+Usage: `List[T = Int64]` in type position.
 
 ### Functor / Monad
 
@@ -233,7 +233,7 @@ The `requires` keyword is already a soft keyword (used in operations). At sort l
 |---------|-------|---------|---------|
 | `sort Eq { sort T; ... }` | `fth EQ { sort T; ... }` | `trait Eq[T]` | `class Eq a` |
 | `requires Eq[T = Money]` | `view Eq(Money)` | `given Eq[Money]` | `instance Eq Money` |
-| `Name[T=Int]` (type expr) | sort instantiation | `List[Int]` | `List Int` |
+| `Name[T=Int64]` (type expr) | sort instantiation | `List[Int64]` | `List Int64` |
 | `namespace` | `fmod` (flat module) | `package` / `object` | `module` |
 | `import` | `protecting` / `including` | `import` | `import` |
 

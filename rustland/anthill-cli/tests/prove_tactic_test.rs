@@ -27,7 +27,7 @@ fn prove_unsat_with(tactic_clause: &str) -> String {
     let src = format!(r#"
         namespace test.tac.{slug}
           export r
-          entity Cfg(scale: Int)
+          entity Cfg(scale: Int64)
           fact Cfg(scale: 5)
           rule r(?marker)
             :- Cfg(scale: ?s), gt(?s, 99), eq(?marker, ?s)

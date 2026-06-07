@@ -216,23 +216,23 @@ Agents can also **proactively describe** symbols they create or modify, using th
 
 ### 9. Description propagation through substitution
 
-When a program transformation applies a substitution `{?T → Int}`, descriptions don't disappear — they propagate as **references**, creating a provenance chain:
+When a program transformation applies a substitution `{?T → Int64}`, descriptions don't disappear — they propagate as **references**, creating a provenance chain:
 
 ```
 -- Before:
 Desc(T, Eq, content: [text("The type supporting equality")])
 
--- Substitution: {T → Int}
+-- Substitution: {T → Int64}
 -- After (derived automatically):
-Desc(Int, Eq[T=Int], content: [ref(Eq.T)])
+Desc(Int64, Eq[T=Int64], content: [ref(Eq.T)])
 ```
 
-The derived description for `Int` is a **reference list** — not a copy of the text, but pointers back to the original descriptions. This avoids duplication and keeps the provenance chain navigable.
+The derived description for `Int64` is a **reference list** — not a copy of the text, but pointers back to the original descriptions. This avoids duplication and keeps the provenance chain navigable.
 
 **Use cases:**
 
-- **Error messages**: Instead of "Int does not satisfy Hashable", the system resolves the reference chain and says "Int (the type supporting equality) does not satisfy Hashable" — the role context explains why Int is there.
-- **Agent reasoning**: An agent seeing `Int` in a derived program can follow `ref(Eq.T)` to understand it was chosen to fill the role of "the type supporting equality".
+- **Error messages**: Instead of "Int64 does not satisfy Hashable", the system resolves the reference chain and says "Int64 (the type supporting equality) does not satisfy Hashable" — the role context explains why Int64 is there.
+- **Agent reasoning**: An agent seeing `Int64` in a derived program can follow `ref(Eq.T)` to understand it was chosen to fill the role of "the type supporting equality".
 - **Audit trails**: Reference chains form a navigable graph from concrete terms back through substitutions to abstract specifications.
 
 **Composition:** When substitution binds a described variable to another described variable, the derived description collects references to all origins:
@@ -247,12 +247,12 @@ sort Eq
   sort T = ? {< The type supporting equality >}
 end
 
--- After: fact List[T = Int]
--- Derived description for Int in this context:
-Desc(Int, List[T=Int], content: [ref(List.T), ref(Eq.T)])
+-- After: fact List[T = Int64]
+-- Derived description for Int64 in this context:
+Desc(Int64, List[T=Int64], content: [ref(List.T), ref(Eq.T)])
 ```
 
-Tooling resolves the references on demand: hovering over `Int` shows "The element type (List.T); The type supporting equality (Eq.T)".
+Tooling resolves the references on demand: hovering over `Int64` shows "The element type (List.T); The type supporting equality (Eq.T)".
 
 **Implementation:** The substitution engine (`apply_subst`, `reify`) should, when replacing a `Term::Var` that has `Desc` facts, emit a derived `Desc` fact whose content is a list of `ref()` elements pointing to the original descriptions. This is a KB-level operation — the term structure itself is unchanged; only the associated facts propagate.
 

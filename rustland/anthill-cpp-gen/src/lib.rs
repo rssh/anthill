@@ -2222,7 +2222,7 @@ fn render_as_indexed_seq(fn_qn: &str, args: &[String]) -> Option<String> {
 /// Returns `None` for non-typeclass functions, which the caller then
 /// emits as a plain function call.
 ///
-/// Why string-keyed: typeclass facts (`fact Numeric{T = Int}`) make the
+/// Why string-keyed: typeclass facts (`fact Numeric{T = Int64}`) make the
 /// dispatch decision a typeclass-membership check, but for primitives
 /// the answer is always "yes" — and our scrutinees today are almost
 /// always primitives. The user's own sorts can overload the C++
@@ -2235,9 +2235,9 @@ fn render_as_operator(fn_qn: &str, args: &[String]) -> Option<String> {
         ("anthill.prelude.Numeric.add", "+"),
         ("anthill.prelude.Numeric.sub", "-"),
         ("anthill.prelude.Numeric.mul", "*"),
-        ("anthill.prelude.Int.div",     "/"),
+        ("anthill.prelude.Int64.div",     "/"),
         ("anthill.prelude.Float.div",   "/"),
-        ("anthill.prelude.Int.mod",     "%"),
+        ("anthill.prelude.Int64.mod",     "%"),
         ("anthill.prelude.Ordered.gt",  ">"),
         ("anthill.prelude.Ordered.lt",  "<"),
         ("anthill.prelude.Ordered.gte", ">="),
@@ -2254,7 +2254,7 @@ fn render_as_operator(fn_qn: &str, args: &[String]) -> Option<String> {
     }
     let prefix: &[(&str, &str)] = &[
         ("anthill.prelude.Bool.not",    "!"),
-        ("anthill.prelude.Int.neg",     "-"),
+        ("anthill.prelude.Int64.neg",     "-"),
         ("anthill.prelude.Float.neg",   "-"),
     ];
     for (qn, op) in prefix {
@@ -2844,7 +2844,7 @@ fn unsupported_runtime_profile(qualified: &str) -> Option<&'static str> {
 /// Prelude primitive name → C++ type name. None for non-primitives.
 fn prim_lower(short_name: &str) -> Option<&'static str> {
     Some(match short_name {
-        "Int" => "int64_t",
+        "Int64" => "int64_t",
         "Float" => "double",
         "Bool" => "bool",
         "String" => "std::string",

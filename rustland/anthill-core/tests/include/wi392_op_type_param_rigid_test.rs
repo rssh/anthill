@@ -111,9 +111,9 @@ end
 }
 
 /// Regression GUARD (not a rigid-vs-flexible discriminator): returning
-/// `b : Box[T = A]` where `Box[T = Int]` is declared must stay REJECTED.
+/// `b : Box[T = A]` where `Box[T = Int64]` is declared must stay REJECTED.
 /// The operation-return check (`types_compatible`) is invariant in `Box.T`, so
-/// it rejects `Box[T = A]` vs `Box[T = Int]` whether `A` is rigid or flexible —
+/// it rejects `Box[T = A]` vs `Box[T = Int64]` whether `A` is rigid or flexible —
 /// this does not isolate the fix (the three cases above do that). Its job is to
 /// pin that rigidifying the return type did not accidentally make an ill-typed
 /// return pass (e.g. if rigid comparison were too loose).
@@ -121,17 +121,17 @@ end
 fn ill_typed_return_stays_rejected_with_rigid_param() {
     let src = r#"
 namespace test.wi392.sound
-  import anthill.prelude.Int
+  import anthill.prelude.Int64
   sort Box
     sort T = ?
-    operation widen[A](b: Box[T = A]) -> Box[T = Int] = b
+    operation widen[A](b: Box[T = A]) -> Box[T = Int64] = b
   end
 end
 "#;
     let errs = load_errors(src);
     assert!(
         !errs.is_empty(),
-        "widen[A](b: Box[T = A]) -> Box[T = Int] = b must be rejected: Box[T = A] \
-         is not Box[T = Int] (invariant in Box.T); loaded clean instead",
+        "widen[A](b: Box[T = A]) -> Box[T = Int64] = b must be rejected: Box[T = A] \
+         is not Box[T = Int64] (invariant in Box.T); loaded clean instead",
     );
 }

@@ -105,17 +105,17 @@ end
 fn concrete_binding_no_candidates_is_not_an_error() {
     // The WI is explicit that concrete-sort `NoCandidates` stays a
     // legitimate pass-through — host builtins / spec-derived rules may
-    // still resolve at runtime. Here `eq(x, x)` with x: Int has a
-    // matching `fact Eq[T = Int]` in stdlib so it actually goes through
+    // still resolve at runtime. Here `eq(x, x)` with x: Int64 has a
+    // matching `fact Eq[T = Int64]` in stdlib so it actually goes through
     // the `Unique` path; the case under test is that a body using a
     // spec op at a concrete T (no abstract var) doesn't trip WI-325.
     let src = r#"
 namespace test.wi325.concrete_eq
-  import anthill.prelude.{Bool, Eq, Int}
+  import anthill.prelude.{Bool, Eq, Int64}
   import anthill.prelude.Eq.{eq}
 
   sort Driver
-    operation foo(x: Int) -> Bool = eq(x, x)
+    operation foo(x: Int64) -> Bool = eq(x, x)
   end
 end
 "#;
@@ -209,11 +209,11 @@ fn stdlib_spec_without_providers_still_passes_through() {
     // directly.
     let src = r#"
 namespace test.wi325.stdlib_no_provider
-  import anthill.prelude.{Map, Int}
+  import anthill.prelude.{Map, Int64}
   import anthill.prelude.Map.{empty, put, size}
 
   sort Driver
-    operation build() -> Int = size(put(empty(), "a", 1))
+    operation build() -> Int64 = size(put(empty(), "a", 1))
   end
 end
 "#;

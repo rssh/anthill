@@ -15,10 +15,10 @@ use common::load_kb_with_lenient;
 fn option_some_binding_lowers_to_value_iife() {
     let source = r#"
         namespace test.mb_opt
-          import anthill.prelude.{Int, Option}
+          import anthill.prelude.{Int64, Option}
           export Calc
           sort Calc
-            operation unwrap(o: Option[T = Int]) -> Int =
+            operation unwrap(o: Option[T = Int64]) -> Int64 =
               match o
                 case some(w) -> w
                 case none     -> 0
@@ -52,14 +52,14 @@ fn variant_constructor_pattern_binds_fields() {
     // become `std::get<Ctor>(s).<field>` accesses, in declaration order.
     let source = r#"
         namespace test.mb_var
-          import anthill.prelude.{Int}
+          import anthill.prelude.{Int64}
           export Shape, Circle, Square, Calc
           enum Shape
-            entity Circle(radius: Int)
-            entity Square(side: Int)
+            entity Circle(radius: Int64)
+            entity Square(side: Int64)
           end
           sort Calc
-            operation perimeter(s: Shape) -> Int =
+            operation perimeter(s: Shape) -> Int64 =
               match s
                 case Circle(r) -> r
                 case Square(w) -> w
@@ -90,10 +90,10 @@ fn nested_let_inside_branch_body_works() {
     // a binding-pattern branch's body can itself contain a let.
     let source = r#"
         namespace test.mb_nested
-          import anthill.prelude.{Int, Option}
+          import anthill.prelude.{Int64, Option}
           export Calc
           sort Calc
-            operation double_or_zero(o: Option[T = Int]) -> Int =
+            operation double_or_zero(o: Option[T = Int64]) -> Int64 =
               match o
                 case some(w) ->
                   let twice = add(w, w)
@@ -125,10 +125,10 @@ fn wildcard_branch_after_constructor_works() {
     // match isn't trivially short-circuited.
     let source = r#"
         namespace test.mb_wild
-          import anthill.prelude.{Int, Option}
+          import anthill.prelude.{Int64, Option}
           export Calc
           sort Calc
-            operation safe(o: Option[T = Int]) -> Int =
+            operation safe(o: Option[T = Int64]) -> Int64 =
               match o
                 case some(w) -> w
                 case _        -> 0

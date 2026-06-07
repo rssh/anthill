@@ -113,7 +113,7 @@ effects (Read[kb], ?extra)         -- mix with logical variable
 
 ### Why types, not terms?
 
-Effects in operation signatures are **sort instantiations** — `Read[store]` is `Read` parameterized with `store`. This is `Name[bindings]` syntax, which is a type expression (`parameterized_type`). The same syntax works in type position (`List[T = Int]`) and in fact position (`fact Eq[T = Int]`).
+Effects in operation signatures are **sort instantiations** — `Read[store]` is `Read` parameterized with `store`. This is `Name[bindings]` syntax, which is a type expression (`parameterized_type`). The same syntax works in type position (`List[T = Int64]`) and in fact position (`fact Eq[T = Int64]`).
 
 Values can appear in sort binding positions because types are terms. `Read[store]` where `store` is an operation parameter is a sort instantiation referencing a concrete value — a natural form of value-dependent typing that requires no special mechanism. The KB's unification handles abstract bindings (`Read[?]`) and concrete ones (`Read[store]`) uniformly. This is equivalent in power to dependent type theory (DOT, Martin-Löf), expressed as Horn clause resolution instead of typing judgments — the complexity is inherent in what's being checked, not in the formalism.
 
@@ -145,7 +145,7 @@ sort Stream {
     effects (E)
   operation tail(s: Stream) -> Stream
     effects (E)
-  operation takeN(s: Stream, n: Int) -> List[T = T]
+  operation takeN(s: Stream, n: Int64) -> List[T = T]
     effects (E)
   operation collect(s: Stream) -> List[T = T]
     effects (E)

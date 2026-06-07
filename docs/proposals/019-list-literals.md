@@ -60,7 +60,7 @@ Each uses distinct delimiters — no ambiguity. All three follow the same patter
 This proposal defines `ListLiteral` as part of the **untyped** term language — the representation produced by the parser before type resolution. The untyped term language already includes `SetLiteral` and `TupleLiteral` in the same role.
 
 The **typing process** (Proposal 011) will:
-1. Determine the target collection type from the typed term context (e.g. a field declaration `items: List[T = Int]`, a parameter type, or a default)
+1. Determine the target collection type from the typed term context (e.g. a field declaration `items: List[T = Int64]`, a parameter type, or a default)
 2. Rewrite `ListLiteral(a, b)` into the typed term with concrete constructors (e.g. `cons(a, cons(b, nil))` for List)
 
 How the typing process propagates expected types and resolves the target collection sort is out of scope for this proposal — it belongs to the typing process definition in Proposal 011. This proposal only defines the syntax and the untyped parse IR representation.
@@ -263,7 +263,7 @@ The sugar can be deprecated incrementally:
 ## Non-goals
 
 - **List comprehensions** — `[f(x) | x <- xs, p(x)]` is a future concern (note: `|` in comprehensions would use `<-` to distinguish from head|tail)
-- **Typed collection literals** — `[Int]` as a type expression is out of scope (use `List[T = Int]`)
+- **Typed collection literals** — `[Int64]` as a type expression is out of scope (use `List[T = Int64]`)
 - **Heterogeneous collections** — the type system handles this, not the literal syntax
 - **Splicing** — `[a, ...xs, b]` is out of scope
 - **Map literals** — `{k: v, ...}` could be a future proposal using `{}` with `:` pairs (distinguished from set literals by the `:` separator)

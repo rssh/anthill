@@ -7,7 +7,7 @@
 //! type provides the spec (`simp_fire_guard_holds` → `min_sort` +
 //! `sort_provides`). These tests load such a rule from source and pin both
 //! sides of the guard:
-//!   - it fires on a receiver whose type provides the spec (`Int`); and
+//!   - it fires on a receiver whose type provides the spec (`Int64`); and
 //!   - it does **not** fire on a receiver whose type does not (`Bool`) —
 //!     guard-free firing there would erase an unsatisfied call (unsound).
 //!
@@ -22,11 +22,11 @@ use anthill_core::kb::term::{Literal, Term};
 use smallvec::SmallVec;
 
 /// A parametric spec sort `Magma[T] requires Eq[T]` with a `[simp]`
-/// identity, `fact Magma[T = Int]`, and two call sites: one over `Int`
+/// identity, `fact Magma[T = Int64]`, and two call sites: one over `Int64`
 /// (provides Magma) and one over `Bool` (does not).
 const SRC: &str = r#"
 namespace test.wi283guard
-  import anthill.prelude.{Int, Bool, Eq}
+  import anthill.prelude.{Int64, Bool, Eq}
   import test.wi283guard.Magma.{op2}
 
   sort Magma
@@ -41,10 +41,10 @@ namespace test.wi283guard
     }
   end
 
-  fact Magma[T = Int]
+  fact Magma[T = Int64]
 
   sort IntUser
-    operation use_int(a: Int, b: Int) -> Int = op2(a, b)
+    operation use_int(a: Int64, b: Int64) -> Int64 = op2(a, b)
   end
 
   sort BoolUser
@@ -60,11 +60,11 @@ fn simp_rule_fires_where_receiver_provides_the_spec() {
         .try_resolve_symbol("test.wi283guard.IntUser.use_int")
         .expect("use_int symbol");
     let body = kb.op_body_node(op).expect("use_int has a body");
-    // op2(a, b) over Int (Int provides Magma) → rewritten to its first
+    // op2(a, b) over Int64 (Int64 provides Magma) → rewritten to its first
     // argument `a`, a parameter reference. The redex is gone.
     assert!(
         matches!(body.as_expr(), Some(Expr::VarRef { .. })),
-        "op2_id must fire over Int (Int provides Magma): op2(a,b) → a; got {:?}",
+        "op2_id must fire over Int64 (Int64 provides Magma): op2(a,b) → a; got {:?}",
         body.as_expr(),
     );
 }
@@ -95,14 +95,14 @@ fn simp_rule_does_not_fire_where_receiver_lacks_the_spec() {
 //
 // The guard must test the *carrier* argument(s) — those declared with the
 // spec sort's type-parameter — not a positional shortcut. Here `Box.wrap`'s
-// carrier `x: T` is the SECOND parameter; the first, `tag: Int`, is a
-// non-carrier whose type (`Int`) happens to provide `Box`. A guard keyed on
-// arg 0 would read `tag`'s sort, find `Int` provides `Box`, and wrongly fire
+// carrier `x: T` is the SECOND parameter; the first, `tag: Int64`, is a
+// non-carrier whose type (`Int64`) happens to provide `Box`. A guard keyed on
+// arg 0 would read `tag`'s sort, find `Int64` provides `Box`, and wrongly fire
 // regardless of the real carrier `x` — erasing a call where `x`'s type does
 // not satisfy `Box`.
 const SRC_CARRIER: &str = r#"
 namespace test.wi283carrier
-  import anthill.prelude.{Int, Bool, Eq}
+  import anthill.prelude.{Int64, Bool, Eq}
   import test.wi283carrier.Box.{wrap}
 
   sort Box
@@ -110,17 +110,17 @@ namespace test.wi283carrier
     sort T = ?
     requires Eq[T]
     operation {
-      wrap(tag: Int, x: T) -> T
+      wrap(tag: Int64, x: T) -> T
     }
     rule {
       wrap_id: wrap(?tag, ?x) = ?x [simp]
     }
   end
 
-  fact Box[T = Int]
+  fact Box[T = Int64]
 
   sort GoodUser
-    operation use_int(x: Int) -> Int = wrap(5, x)
+    operation use_int(x: Int64) -> Int64 = wrap(5, x)
   end
 
   sort BadUser
@@ -131,7 +131,7 @@ end
 
 #[test]
 fn guard_tests_the_carrier_arg_not_arg0_positive() {
-    // Carrier `x` (arg 1) is Int, which provides Box → fires to `x`, even
+    // Carrier `x` (arg 1) is Int64, which provides Box → fires to `x`, even
     // though the carrier is not the leading argument.
     let kb = crate::common::load_kb_with(SRC_CARRIER);
     let op = kb
@@ -140,7 +140,7 @@ fn guard_tests_the_carrier_arg_not_arg0_positive() {
     let body = kb.op_body_node(op).expect("use_int has a body");
     assert!(
         matches!(body.as_expr(), Some(Expr::VarRef { .. })),
-        "wrap_id must fire when the carrier arg (x: Int, arg 1) provides Box: \
+        "wrap_id must fire when the carrier arg (x: Int64, arg 1) provides Box: \
          wrap(5, x) → x; got {:?}",
         body.as_expr(),
     );
@@ -149,7 +149,7 @@ fn guard_tests_the_carrier_arg_not_arg0_positive() {
 #[test]
 fn guard_tests_the_carrier_arg_not_arg0_negative() {
     // Carrier `x` (arg 1) is Bool, which does NOT provide Box → must NOT
-    // fire, even though arg 0 (`tag: Int`) is a type that DOES provide Box.
+    // fire, even though arg 0 (`tag: Int64`) is a type that DOES provide Box.
     // This is the unsoundness an arg-0 guard would introduce.
     let kb = crate::common::load_kb_with(SRC_CARRIER);
     let op = kb
@@ -166,7 +166,7 @@ fn guard_tests_the_carrier_arg_not_arg0_negative() {
         }
         other => panic!(
             "wrap_id must NOT fire when the carrier x: Bool lacks Box, even though \
-             arg 0 (Int) provides it; got {other:?}",
+             arg 0 (Int64) provides it; got {other:?}",
         ),
     }
 }

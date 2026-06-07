@@ -14,16 +14,16 @@ use common::load_kb_with_lenient;
 fn option_some_lowers_to_make_optional() {
     let source = r#"
         namespace test.opt_some
-          import anthill.prelude.{Int, Option}
+          import anthill.prelude.{Int64, Option}
           import anthill.prelude.Option.{some}
           export Calc
           sort Calc
-            operation lift(x: Int) -> Option[T = Int] = some(x)
+            operation lift(x: Int64) -> Option[T = Int64] = some(x)
           end
         end
     "#;
-    // Lenient loader: typer rejects `some(x): Option[T = Int]`
-    // because the bare-Option-vs-Option[T = Int] check is overstrict.
+    // Lenient loader: typer rejects `some(x): Option[T = Int64]`
+    // because the bare-Option-vs-Option[T = Int64] check is overstrict.
     // The lowering itself is what we test here.
     let kb = load_kb_with_lenient(source);
     let cpp = emit_traits_struct(&kb, "test.opt_some.Calc")
@@ -38,11 +38,11 @@ fn option_some_lowers_to_make_optional() {
 fn option_none_lowers_to_nullopt() {
     let source = r#"
         namespace test.opt_none
-          import anthill.prelude.{Int, Option}
+          import anthill.prelude.{Int64, Option}
           import anthill.prelude.Option.{none}
           export Calc
           sort Calc
-            operation empty() -> Option[T = Int] = none
+            operation empty() -> Option[T = Int64] = none
           end
         end
     "#;

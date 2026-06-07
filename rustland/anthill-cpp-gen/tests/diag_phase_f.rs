@@ -9,12 +9,12 @@ use common::load_kb_with_lenient;
 fn dump_phase_f_shapes() {
     let source = r#"
         namespace test.dumpf
-          import anthill.prelude.{Int, Error}
+          import anthill.prelude.{Int64, Error}
           import anthill.prelude.Error.{raise}
           export Calc
           sort Calc
-            operation a(x: Int) -> Int effects Error = x
-            operation r() -> Int effects Error = raise("boom")
+            operation a(x: Int64) -> Int64 effects Error = x
+            operation r() -> Int64 effects Error = raise("boom")
           end
         end
     "#;

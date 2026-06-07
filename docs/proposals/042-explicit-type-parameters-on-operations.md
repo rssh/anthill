@@ -38,7 +38,7 @@ The implicit form already works for the simple case of "this op is polymorphic i
 
 ```anthill
 operation identity(x: ?T) -> ?T              -- per kernel-language.md §5.2
-operation length(l: List) -> Int             -- T comes from List's sort body
+operation length(l: List) -> Int64             -- T comes from List's sort body
 operation term_as_entity(t: Term) -> Option[T = ?E]   -- ?E inferred at call site
 ```
 
@@ -61,7 +61,7 @@ term_as_entity(t)                                            -- which entity?
 let some(v): Option[WorkItem] = term_as_entity(t)            -- ?E = WorkItem (inferred)
 ```
 
-Proposal 035 already commits to fixing this for sort companions (`Map[K = String, V = Int].empty()`). The same shape, applied to a free-standing operation, is what this proposal lands.
+Proposal 035 already commits to fixing this for sort companions (`Map[K = String, V = Int64].empty()`). The same shape, applied to a free-standing operation, is what this proposal lands.
 
 ### Concrete unblockings
 
@@ -154,7 +154,7 @@ Each entry declares a named logical variable scoped to the operation. The three 
 
 So `operation map[A, B](...)` is exactly `operation map[A = ?, B = ?](...)` with the `= ?` elided. This mirrors how `sort T = ?` works in a sort body — same `Name = ?` shape, same fresh-logical-variable allocation. The brackets are just the per-operation listing form.
 
-**Distinct from `SortBinding`.** Although the surface shape `Name = Type` (and the punning `Name`, and `?`) is the same as `SortBinding` (kernel spec §5.1), this is **not** a `SortBinding`. A `SortBinding` is interpreted at a sort instantiation site (`Foo[T = Int]`), where the binding is one-per-instance: every reference to `Foo[T = Int]` in the same scope denotes the same instantiated sort. An `OperationTypeParam` is declared at the operation's signature, and bindings at call sites (next subsection) are **one-per-call** — two separate `foo[T = Int](...)` calls produce two independent fresh logical variables that happen to be bound to `Int`, not one shared instantiation. The shapes coincide; the semantics do not.
+**Distinct from `SortBinding`.** Although the surface shape `Name = Type` (and the punning `Name`, and `?`) is the same as `SortBinding` (kernel spec §5.1), this is **not** a `SortBinding`. A `SortBinding` is interpreted at a sort instantiation site (`Foo[T = Int64]`), where the binding is one-per-instance: every reference to `Foo[T = Int64]` in the same scope denotes the same instantiated sort. An `OperationTypeParam` is declared at the operation's signature, and bindings at call sites (next subsection) are **one-per-call** — two separate `foo[T = Int64](...)` calls produce two independent fresh logical variables that happen to be bound to `Int64`, not one shared instantiation. The shapes coincide; the semantics do not.
 
 ### Scoping
 
@@ -191,17 +191,17 @@ sort Foo
   sort T = ?                                       -- name a logical variable
   entity Bar(x: T)                                 -- reference by name
 end
-fact Foo[T = Int]                                  -- caller binds the name explicitly
+fact Foo[T = Int64]                                  -- caller binds the name explicitly
 
 -- Operation head (this proposal):
 operation map[A, B](xs: List[A], f: (A) -> B) -> List[B]
 -- = operation map[A = ?, B = ?](...)              -- equivalent explicit form
-map[A = Int, B = String](xs, f)                    -- caller binds the names explicitly
+map[A = Int64, B = String](xs, f)                    -- caller binds the names explicitly
 ```
 
 A signature that uses `?A` / `?B` (or unfilled bare `A` / `B`) instead of `[A, B]` produces the same logical variables at the kernel level, but they're anonymous from the caller's perspective — no name to bind. The proposal's contribution is therefore "let the operation **expose** one or more of its logical variables under a name." It doesn't change the kernel's variable mechanism; it adds a way to address it.
 
-**Call-site bindings as scoped type aliases.** `map[A = Int, B = String](xs, f)` reads as: for the duration of this call, alias `A = Int` and `B = String` for `map`'s named logical variables. The shape is borrowed from `Foo[T = Int]` for sorts — same brackets, same `Name = Type` punning — but the binding is per-call, not per-instance (see the next subsection).
+**Call-site bindings as scoped type aliases.** `map[A = Int64, B = String](xs, f)` reads as: for the duration of this call, alias `A = Int64` and `B = String` for `map`'s named logical variables. The shape is borrowed from `Foo[T = Int64]` for sorts — same brackets, same `Name = Type` punning — but the binding is per-call, not per-instance (see the next subsection).
 
 Internally the loader allocates a `VarId` for each declaration entry (one per bare-name entry; the explicit `Name = Type` form uses the supplied Type as a default that the call site can override) and records the name in the operation's symbol scope. Resolution of bare type names inside the operation body looks up declared parameters the same way sort-body resolution does for `sort T = ?` declarations. A signature can mix `[A]` and `?B` (different letters): `A` has a caller-visible name, `B` doesn't — both are logical variables, only one is addressable from outside.
 
@@ -218,9 +218,9 @@ OperationTypeArg     ::= Type              -- positional: binds the next unfille
                        | Name '=' Type     -- named:      binds the parameter with this name
 ```
 
-Positional and named entries may be mixed in one call, with positional first — same rule as `SortBinding` for sort instantiations (`Bifunctor[String, B = Int]`, kernel spec line 498).
+Positional and named entries may be mixed in one call, with positional first — same rule as `SortBinding` for sort instantiations (`Bifunctor[String, B = Int64]`, kernel spec line 498).
 
-Each entry binds one of the operation's declared type parameters for the duration of this single call. Two calls `foo[T = Int](a)` and `foo[T = Int](b)` are two independent binding events — the typer allocates fresh `Var(vid)`s for each call and unifies them with `Int` separately. Contrast with `Foo[T = Int]` written twice in the same scope: those denote the same instantiated sort.
+Each entry binds one of the operation's declared type parameters for the duration of this single call. Two calls `foo[T = Int64](a)` and `foo[T = Int64](b)` are two independent binding events — the typer allocates fresh `Var(vid)`s for each call and unifies them with `Int64` separately. Contrast with `Foo[T = Int64]` written twice in the same scope: those denote the same instantiated sort.
 
 Examples:
 
@@ -231,15 +231,15 @@ term_as_entity[WorkItem](t)                        -- positional (single param �
 term_as_entity[E = WorkItem](t)                    -- named (when you want it explicit)
 
 -- HOF calls — positional when the param order is canonical:
-map[Int, String, List[Int], {}](xs, int_to_string)        -- all positional
-map[A = Int, B = String](xs, int_to_string)               -- only A and B, rest inferred (named)
-map[Int, String](xs, int_to_string)                       -- A and B positional, C and E inferred
+map[Int64, String, List[Int64], {}](xs, int_to_string)        -- all positional
+map[A = Int64, B = String](xs, int_to_string)               -- only A and B, rest inferred (named)
+map[Int64, String](xs, int_to_string)                       -- A and B positional, C and E inferred
 map(xs, int_to_string)                                     -- all inferred
 ```
 
-The positional form mirrors `Map[String, Int]` (kernel spec line 491) — same convention, same disambiguation. Reach for the named form when (a) you want to skip a leading parameter and bind only a later one, or (b) the call is part of the stdlib's public surface and you want robustness under reordering / new-parameter additions. Otherwise positional reads cleaner.
+The positional form mirrors `Map[String, Int64]` (kernel spec line 491) — same convention, same disambiguation. Reach for the named form when (a) you want to skip a leading parameter and bind only a later one, or (b) the call is part of the stdlib's public surface and you want robustness under reordering / new-parameter additions. Otherwise positional reads cleaner.
 
-This is the same grammar already accepted in proposal 035 for sort companions — the resolver already sees `Map[K = String, V = Int]` as an instantiation term in receiver position. Extending the parser to accept it before a `(` argument list (instead of before `.empty()`) is a one-line addition.
+This is the same grammar already accepted in proposal 035 for sort companions — the resolver already sees `Map[K = String, V = Int64]` as an instantiation term in receiver position. Extending the parser to accept it before a `(` argument list (instead of before `.empty()`) is a one-line addition.
 
 **Disambiguation.** `Name[...]` followed by `(` is a typed call. `Name[...]` followed by `.` is a sort-companion call (proposal 035). `Name[...]` followed by neither is an instantiation term (proposal 020). The three uses share the same lexical prefix and disambiguate on the following token — no new ambiguity introduced.
 
@@ -260,11 +260,11 @@ When the typer sees `op[bindings](args)`:
 
 Step 2's three constraint sources are not symmetric — their **order is fixed**, and the rule is **bidirectional** (synthesize up from arguments, then check against the expected):
 
-1. **Synthesize from the arguments first.** Bind each parameter from the argument types (bottom-up) — *including across a provider boundary*: a `List[Int]` argument supplied where a `Stream[T = A]` parameter is declared binds `A := Int` through `List`-provides-`Stream` (the carrier's provider fact threads the binding; `Stream[T = A]` viewed against `List[Int]`-as-a-`Stream`).
-2. **The expected return type fills only *still-free* parameters** — never overrides one the arguments already bound. `empty() : List[A]` (no arguments) still takes `A` from the expected; `id_list[A](xs: List[A]) -> List[A]` on a `List[Int]` does **not** let an expected `List[String]` re-bind `A`.
+1. **Synthesize from the arguments first.** Bind each parameter from the argument types (bottom-up) — *including across a provider boundary*: a `List[Int64]` argument supplied where a `Stream[T = A]` parameter is declared binds `A := Int64` through `List`-provides-`Stream` (the carrier's provider fact threads the binding; `Stream[T = A]` viewed against `List[Int64]`-as-a-`Stream`).
+2. **The expected return type fills only *still-free* parameters** — never overrides one the arguments already bound. `empty() : List[A]` (no arguments) still takes `A` from the expected; `id_list[A](xs: List[A]) -> List[A]` on a `List[Int64]` does **not** let an expected `List[String]` re-bind `A`.
 3. **Check** the synthesized result against the expected (the conformance check at the call's use site — operation return, typed `let`, argument position).
 
-This ordering is a **soundness requirement**, not an optimization. Reversed — expected seeding parameters *before* arguments — a wrong declared return is silently accepted: `id_list(List[Int])` assigned to `List[String]` would pin `A := String` from the expected, the contradicting argument `List[Int]` would be ignored, and the unsound result would survive. Arguments-first pins `A := Int`; the expected `List[String]` then cannot re-bind the now-pinned `A`, and the result `List[Int]` is correctly rejected.
+This ordering is a **soundness requirement**, not an optimization. Reversed — expected seeding parameters *before* arguments — a wrong declared return is silently accepted: `id_list(List[Int64])` assigned to `List[String]` would pin `A := String` from the expected, the contradicting argument `List[Int64]` would be ignored, and the unsound result would survive. Arguments-first pins `A := Int64`; the expected `List[String]` then cannot re-bind the now-pinned `A`, and the result `List[Int64]` is correctly rejected.
 
 The kernel today does the reverse — `rustland/anthill-core/src/kb/typing.rs` (`check_apply_iter`) seeds parameters from the expected return *before* argument unification, with the correct order patched in only as a special case for self-receiver spec operations (WI-367). Making **arguments-before-expected** the general rule generalizes that fix, and is the load-bearing piece for sound `[T]` inference. See [`docs/design/type-parameter-scoping.md`](../design/type-parameter-scoping.md) for the surrounding rule set (projection `s.T` / `s.Sort`, expansion, no implicit sort-parameter sharing).
 
@@ -330,7 +330,7 @@ A call:
 
 ```anthill
 let ys: List[String] = map(xs, int_to_string)
--- Inference fills: A = Int (from xs: List[Int]), B = String (from int_to_string's
+-- Inference fills: A = Int64 (from xs: List[Int64]), B = String (from int_to_string's
 -- return), C = List (from xs's constructor), E = {} (from int_to_string's row); 
 -- requires both hold.
 
@@ -462,7 +462,7 @@ typed_call: $ => prec.left(2, seq(
 )),
 ```
 
-Precedence ensures `Map[String, Int].empty()` (proposal 035) and `term_as_entity[WorkItem](t)` (this proposal) both parse, with the trailing token (`.` vs `(`) selecting the production.
+Precedence ensures `Map[String, Int64].empty()` (proposal 035) and `term_as_entity[WorkItem](t)` (this proposal) both parse, with the trailing token (`.` vs `(`) selecting the production.
 
 ## Converter / Loader Changes
 
@@ -475,14 +475,14 @@ Precedence ensures `Map[String, Int].empty()` (proposal 035) and `term_as_entity
 2. Process `params`, `return_type`, `requires`, `ensures`, `effects` — references to declared type-param names resolve to the bound vars (same machinery as `sort T = ?` inside a sort body).
 3. Implicit `?T` mentions whose name matches a declared parameter resolve to the *same* var (round-trip with the desugared form).
 
-Call-site loading: when `convert_term` sees a `Name '[' bindings ']' '(' args ')'`, build an `Apply` term where the callee carries the type bindings as side-information consumed by the typer (parallel to how 035 handles `Map[K=String, V=Int].empty()`).
+Call-site loading: when `convert_term` sees a `Name '[' bindings ']' '(' args ')'`, build an `Apply` term where the callee carries the type bindings as side-information consumed by the typer (parallel to how 035 handles `Map[K=String, V=Int64].empty()`).
 
 ## Typer Changes
 
 The typer already handles per-call type-parameter inference for implicit `?T` (the current `term_as_entity` works because of this). The new piece is consuming the explicit-bindings table:
 
 - At a call site `op[bindings](args)`, seed the unification environment with the explicit bindings before running argument type-checking.
-- Diagnose conflicts between explicit bindings and inferred ones (`op[T = Int](x)` where `x: String` and `op`'s param is `T` should error with both the explicit binding and the conflicting argument type cited).
+- Diagnose conflicts between explicit bindings and inferred ones (`op[T = Int64](x)` where `x: String` and `op`'s param is `T` should error with both the explicit binding and the conflicting argument type cited).
 - Report unresolved parameters at call sites with no explicit binding and no inference path, naming each unresolved parameter — the diagnostic should suggest the explicit form (`use op[T = ...]`).
 
 ## Migration
@@ -504,11 +504,11 @@ Implicit-form signatures already in stdlib (e.g. `operation identity(x: ?T) -> ?
 - A fixture that calls `term_as_entity[WorkItem](t)` and verifies the result type pins to `WorkItem`.
 - A fixture exercising `map[A, B, C, E]` over a List, verifying type-param inference fills A from the input, B from the function, C from the constructor, and E from the function's effect row (pure → `{}`; effectful → matching row).
 - A negative fixture: `term_as_entity(t)` with no context — must produce a clear "unresolved type parameter" diagnostic.
-- **Frame-inspection fixture** (covers `docs/design/operation-call-model.md` §"Operation type arguments"): a synthesized `operation foo[T](x: T) -> T` with body `x`. After pushing the frame for a call `foo[Int](42)`, inspect `frame.requirements` and assert:
+- **Frame-inspection fixture** (covers `docs/design/operation-call-model.md` §"Operation type arguments"): a synthesized `operation foo[T](x: T) -> T` with body `x`. After pushing the frame for a call `foo[Int64](42)`, inspect `frame.requirements` and assert:
   - Any sort-level entries (Self + sub-requires) precede the type-argument entries.
-  - An entry keyed `T` exists with the type-value for `Int`.
+  - An entry keyed `T` exists with the type-value for `Int64`.
   - A second call `foo[String]("hi")` in the same scope produces a fresh frame whose `T` entry holds `String` — the two calls do not share their `T` binding (per-call, contra sort instantiation).
-  - The inferred form `foo(42)` produces a frame with the same `T = Int` content as the explicit form.
+  - The inferred form `foo(42)` produces a frame with the same `T = Int64` content as the explicit form.
 
 ## Non-goals
 
@@ -538,6 +538,6 @@ Implicit-form signatures already in stdlib (e.g. `operation identity(x: ?T) -> ?
 
 **OQ2.** *(closed — the section above resolves this.)* The two surfaces (`[T]` declaration with bare references vs. `?T` logical variables) are independent kernel features. An operation's author picks one. Mixing same-letter cases (`operation foo[T](x: ?T)`) is grammatically admissible but means two distinct vars (declared `T` and logical `?T`) — almost certainly an author mistake; a linter should flag it.
 
-**OQ3.** *Defaults — useful or noise?* `operation foo[T = Int](x: T) -> T` means "T defaults to Int if neither the caller nor inference fills the slot." This falls out of the unified shape (the `Name = Type` form of `SortBinding` already means this for sort instantiations); it costs nothing to allow grammatically. Open question is only whether any stdlib operation should use it for the first landing. The use case is thin — most call sites either have enough context or want explicit. Recommend: allow grammatically, no stdlib adoption in the first landing, revisit if a concrete driver appears.
+**OQ3.** *Defaults — useful or noise?* `operation foo[T = Int64](x: T) -> T` means "T defaults to Int64 if neither the caller nor inference fills the slot." This falls out of the unified shape (the `Name = Type` form of `SortBinding` already means this for sort instantiations); it costs nothing to allow grammatically. Open question is only whether any stdlib operation should use it for the first landing. The use case is thin — most call sites either have enough context or want explicit. Recommend: allow grammatically, no stdlib adoption in the first landing, revisit if a concrete driver appears.
 
-**OQ4.** *(specified elsewhere — cross-reference, not open here.)* Two pieces this proposal leans on are detailed outside it: **cross-sort parameter inference** (binding `[T]` from a `List[Int]` argument used where a `Stream[T]` is expected, via provider admissibility) — **WI-379**; and **projection cross-dependency strictness** (resolution order, cycle / missing-member / abstract-receiver loud errors) — **WI-376** and [`docs/design/type-parameter-scoping.md`](../design/type-parameter-scoping.md).
+**OQ4.** *(specified elsewhere — cross-reference, not open here.)* Two pieces this proposal leans on are detailed outside it: **cross-sort parameter inference** (binding `[T]` from a `List[Int64]` argument used where a `Stream[T]` is expected, via provider admissibility) — **WI-379**; and **projection cross-dependency strictness** (resolution order, cycle / missing-member / abstract-receiver loud errors) — **WI-376** and [`docs/design/type-parameter-scoping.md`](../design/type-parameter-scoping.md).

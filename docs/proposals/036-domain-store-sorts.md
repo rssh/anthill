@@ -62,7 +62,7 @@ sort FileBasedWorkitemStore
   enum WIS
     entity wis(
       backend: IndexedFileStore,
-      id_counter: Int)
+      id_counter: Int64)
   end
 
   -- This sort satisfies the spec with State bound to WIS, AND
@@ -100,7 +100,7 @@ sort FileBasedWorkitemStore
   -- fact). Different impls write their own cmd_* — fitting, since
   -- backends with different capabilities (GitHub search, API
   -- batches) typically need different command logic anyway.
-  operation cmd_add(a: AddArgs, s: Cell[WIS]) -> Int
+  operation cmd_add(a: AddArgs, s: Cell[WIS]) -> Int64
     effects {ConsoleOutput, Modify[s], Error}
   =
     let id = next_id(s)
@@ -137,7 +137,7 @@ This is a typeclass-like layering — and that's appropriate here. Each backend'
 `cmd_claim` shape (also inside `FileBasedWorkitemStore`):
 
 ```anthill
-operation cmd_claim(a: ClaimArgs, s: Cell[WIS]) -> Int
+operation cmd_claim(a: ClaimArgs, s: Cell[WIS]) -> Int64
   effects {ConsoleOutput, ConsoleError, Modify[s], Error}
 =
   match lookup(s, a.id)
@@ -150,7 +150,7 @@ operation cmd_claim(a: ClaimArgs, s: Cell[WIS]) -> Int
 
 The `wi.copy(...)` is WI-188 (entity copy form). Without it, we need an explicit re-construction or `replace_named_arg`.
 
-No `Pair[Int, S]` return, no threading — `commit` mutates through `Modify[s]` (Cell's effect); the next `next_id(s)` or `lookup(s, ...)` sees the updated state. The Cell handle is stable across the call; the wrapped `wis(...)` value shifts.
+No `Pair[Int64, S]` return, no threading — `commit` mutates through `Modify[s]` (Cell's effect); the next `next_id(s)` or `lookup(s, ...)` sees the updated state. The Cell handle is stable across the call; the wrapped `wis(...)` value shifts.
 
 ## What language features the surface needs
 
@@ -218,7 +218,7 @@ Today's transitional Rust scheme (the type-independent `default_modify_handler`)
 Per 037, identity is a property of the *handler* (`ModifyHandler[Resource, IdentityKey]`), not the resource sort. The framework permits three identity schemes for the handler to pick:
 
 - **Functor-only** (`IdentityKey = Unit`) — current scheme; one slot per Resource type.
-- **Identity-by-key** (`IdentityKey = String / Int / IdentityKey` opaque type, computed via a sort-declared `key` operation) — multi-instance via a domain key the user supplies (project name, workspace id).
+- **Identity-by-key** (`IdentityKey = String / Int64 / IdentityKey` opaque type, computed via a sort-declared `key` operation) — multi-instance via a domain key the user supplies (project name, workspace id).
 - **Opaque-handle** (`IdentityKey = ` allocation-time uid) — multi-instance via fresh handles per construction.
 
 WI-200 tracks the runtime work to wire per-resource handlers under these schemes. Until WI-200 lands, every Modify-using resource is functor-keyed. WI-192 v0.1 ships under this limitation and uses functor-only on purpose (single-store bundle). Documented here so the limitation is visible at design-review time, not surprise at multi-tenant time.
@@ -300,7 +300,7 @@ Given the language facilities, two landings are reasonable:
 
 **What's lost vs the ideal:** type-safe field access (commands still use `term_field` / `term_as_string` on retrieve results); pattern-matching against `WorkItem(...)` term shapes by hand.
 
-**What's gained:** the indexes don't exist anymore; the ~120 lines of glue retire; commands are linear (no threading, no `Pair[Int, S]` return); single source of truth (the backend); the abstraction shape matches the ideal end-state.
+**What's gained:** the indexes don't exist anymore; the ~120 lines of glue retire; commands are linear (no threading, no `Pair[Int64, S]` return); single source of truth (the backend); the abstraction shape matches the ideal end-state.
 
 ### Strategy B: land alongside WI-188 + WI-189
 

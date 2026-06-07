@@ -66,45 +66,45 @@ fn stream_default_bodies_typecheck_on_load() {
     );
 }
 
-/// CONSUMPTION side. A `List[Int]` walked through the `Stream` spec op `collect`
+/// CONSUMPTION side. A `List[Int64]` walked through the `Stream` spec op `collect`
 /// — `List` provides `Stream`, so `collect` dispatches to `Stream`'s default
 /// body, whose inner `splitFirst` resolves to `List`'s impl (the WI-357 concrete
-/// path). The result is `List[Int]`, so the `-> List[T = Int]` op conforms.
+/// path). The result is `List[Int64]`, so the `-> List[T = Int64]` op conforms.
 #[test]
 fn collect_consuming_list_as_stream_typechecks() {
     let src = r#"
 namespace test.wi365.collect
-  import anthill.prelude.{List, Int}
+  import anthill.prelude.{List, Int64}
   import anthill.prelude.Stream.{collect}
 
-  operation drain(xs: List[T = Int]) -> List[T = Int] = collect(xs)
+  operation drain(xs: List[T = Int64]) -> List[T = Int64] = collect(xs)
 end
 "#;
     let errs = try_load(src);
     assert!(
         errs.is_empty(),
-        "consuming a List[Int] through Stream.collect must yield List[Int]; \
+        "consuming a List[Int64] through Stream.collect must yield List[Int64]; \
          got load errors:\n{}",
         errors_text(&errs),
     );
 }
 
 /// `takeN` likewise: it has a default body over `splitFirst`, so consuming a
-/// `List[Int]` through it typechecks to `List[Int]`.
+/// `List[Int64]` through it typechecks to `List[Int64]`.
 #[test]
 fn take_n_consuming_list_as_stream_typechecks() {
     let src = r#"
 namespace test.wi365.taken
-  import anthill.prelude.{List, Int}
+  import anthill.prelude.{List, Int64}
   import anthill.prelude.Stream.{takeN}
 
-  operation first2(xs: List[T = Int]) -> List[T = Int] = takeN(xs, 2)
+  operation first2(xs: List[T = Int64]) -> List[T = Int64] = takeN(xs, 2)
 end
 "#;
     let errs = try_load(src);
     assert!(
         errs.is_empty(),
-        "consuming a List[Int] through Stream.takeN must yield List[Int]; \
+        "consuming a List[Int64] through Stream.takeN must yield List[Int64]; \
          got load errors:\n{}",
         errors_text(&errs),
     );
@@ -113,31 +113,31 @@ end
 /// WI-367 (delivered): consumption-side element precision for a body-ful
 /// self-receiver spec op.
 ///
-/// `collect` over a `List[Int]` is `List[Int]`, so returning it where
+/// `collect` over a `List[Int64]` is `List[Int64]`, so returning it where
 /// `List[String]` is expected must be REJECTED. Before WI-367 it was NOT,
 /// because the *consumption-side* element of a body-ful self-receiver spec op
 /// was driven by WI-270 expected-type seeding rather than the carrier: the
 /// declared return `drain -> List[String]` seeded `unify_types(collect.return =
 /// List[T], List[String])` → bound `Stream.T := String` *before* the carrier
-/// (`xs : List[Int]`) was consulted, so `bind_spec_params_from_carrier` found
+/// (`xs : List[Int64]`) was consulted, so `bind_spec_params_from_carrier` found
 /// `Stream.T` already bound and skipped. WI-367 binds the spec element params
 /// from the concrete carrier (ground truth) BEFORE expected-seeding, so the
-/// element is `Int` (the carrier's truth), `resolved_ret` is `List[Int]`, and
+/// element is `Int64` (the carrier's truth), `resolved_ret` is `List[Int64]`, and
 /// the operation-return check rejects the differing `List[String]`.
 #[test]
 fn collect_wrong_element_return_is_rejected() {
     let src = r#"
 namespace test.wi365.unsound
-  import anthill.prelude.{List, Int, String}
+  import anthill.prelude.{List, Int64, String}
   import anthill.prelude.Stream.{collect}
 
-  operation drain(xs: List[T = Int]) -> List[T = String] = collect(xs)
+  operation drain(xs: List[T = Int64]) -> List[T = String] = collect(xs)
 end
 "#;
     let errs = try_load(src);
     assert!(
         !errs.is_empty(),
-        "collect on a List[Int] is List[Int], so returning it as List[String] \
+        "collect on a List[Int64] is List[Int64], so returning it as List[String] \
          must be rejected; loaded clean instead",
     );
 }

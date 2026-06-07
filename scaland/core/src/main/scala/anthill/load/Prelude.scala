@@ -37,7 +37,7 @@ object Prelude:
 
   private def registerPrimitiveSorts(kb: KnowledgeBase): Unit =
     val preludeScope = kb.resolveQualifiedNameTerm("anthill.prelude")
-    for name <- IndexedSeq("Int", "BigInt", "Float", "String", "Bool") do
+    for name <- IndexedSeq("Int64", "BigInt", "Float", "String", "Bool") do
       val qualName = s"anthill.prelude.$name"
       val sym = kb.symbols.define(name, qualName, SymbolKind.Sort, preludeScope.raw)
       val sortTerm = kb.makeNameTermFromSym(sym)

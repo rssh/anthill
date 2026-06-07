@@ -129,14 +129,14 @@ object SmtGen:
     case "anthill.prelude.Numeric.sub" | "Numeric.sub" | "sub" => Some("-")
     case "anthill.prelude.Numeric.mul" | "Numeric.mul" | "mul" => Some("*")
     case "anthill.prelude.Float.div"   | "Float.div"   | "div" => Some("/")
-    case "anthill.prelude.Int.div"     | "Int.div"             => Some("div")
+    case "anthill.prelude.Int64.div"     | "Int64.div"             => Some("div")
     case _ => None
 
   private[smtgen] def mapUnaryOp(qn: String): Option[String] = qn match
     case "anthill.prelude.Float.abs" | "Float.abs" | "abs" => Some("anthill_abs")
-    case "anthill.prelude.Int.abs" => Some("anthill_abs")
+    case "anthill.prelude.Int64.abs" => Some("anthill_abs")
     case "anthill.prelude.Float.neg" | "Float.neg" => Some("-")
-    case "anthill.prelude.Int.neg" | "Int.neg" => Some("-")
+    case "anthill.prelude.Int64.neg" | "Int64.neg" => Some("-")
     case _ => None
 
   private[smtgen] def mapInequalityOp(qn: String): Option[String] = qn match

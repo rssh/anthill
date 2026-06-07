@@ -52,7 +52,7 @@ fn let_op_body_builds_native_let_occurrence() {
         &mut kb,
         r#"
 namespace wi304.lt
-  operation f(x: Int) -> Int
+  operation f(x: Int64) -> Int64
     = let y = x
       y
 end
@@ -71,7 +71,7 @@ fn match_op_body_builds_native_match_occurrence() {
         &mut kb,
         r#"
 namespace wi304.mt
-  operation g(x: Int) -> Int
+  operation g(x: Int64) -> Int64
     = match x
         case 0 -> 1
         case _ -> x

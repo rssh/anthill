@@ -77,7 +77,7 @@ fn commit_classifications(kb: &KnowledgeBase, commit_sym: anthill_core::intern::
 fn direct_call_classifies_as_defer() {
     let driver = r#"
 namespace test.wi204_let_ctor_env_direct
-  import anthill.prelude.{Cell, Int}
+  import anthill.prelude.{Cell, Int64}
   import anthill.stage0.{WorkItem}
   import anthill.todo.store.{WorkItemStore, FileBasedWorkitemStore, WIS}
 
@@ -85,7 +85,7 @@ namespace test.wi204_let_ctor_env_direct
     sort State = ?
     requires WorkItemStore[State]
 
-    operation direct(s: Cell[State], wi: WorkItem) -> Int
+    operation direct(s: Cell[State], wi: WorkItem) -> Int64
       effects {Modify[s], Error}
     =
       let _ = WorkItemStore.commit(s, wi)
@@ -127,7 +127,7 @@ end
 fn let_bound_constructor_does_not_drop_enclosing_sort() {
     let driver = r#"
 namespace test.wi204_let_ctor_env_let
-  import anthill.prelude.{Cell, Int, Option, List, none, nil}
+  import anthill.prelude.{Cell, Int64, Option, List, none, nil}
   import anthill.stage0.{WorkItem, Open}
   import anthill.todo.store.{WorkItemStore, FileBasedWorkitemStore, WIS}
 
@@ -135,7 +135,7 @@ namespace test.wi204_let_ctor_env_let
     sort State = ?
     requires WorkItemStore[State]
 
-    operation with_let_ctor(s: Cell[State]) -> Int
+    operation with_let_ctor(s: Cell[State]) -> Int64
       effects {Modify[s], Error}
     =
       let w = WorkItem(

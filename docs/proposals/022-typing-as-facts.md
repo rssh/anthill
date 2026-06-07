@@ -28,7 +28,7 @@ The answer: **typing judgments are facts over ExprOccurrences**. We introduce `O
 
 Anthill's KB has two kinds of identity, serving different purposes:
 
-**TermId** — structural identity (hash-consed). Same structure = same id. Used for types, sort definitions, fact patterns, unification. `List[T=Int]` at line 5 and `List[T=Int]` at line 50 are the same TermId.
+**TermId** — structural identity (hash-consed). Same structure = same id. Used for types, sort definitions, fact patterns, unification. `List[T=Int64]` at line 5 and `List[T=Int64]` at line 50 are the same TermId.
 
 **OccurrenceId** — positional identity (not hash-consed). Each source position = unique id. Used for expressions, typing, error reporting. `gt(x, 0)` at line 10 and `gt(x, 0)` at line 20 are different OccurrenceIds, even though they share the same TermId.
 
@@ -103,7 +103,7 @@ rule exprs_in_op(?occ, ?op)
 ```anthill
 -- Source position
 sort Span
-  entity span(file: String, start_line: Int, start_col: Int, end_line: Int, end_col: Int)
+  entity span(file: String, start_line: Int64, start_col: Int64, end_line: Int64, end_col: Int64)
 end
 
 -- Opaque handle to a positioned term (not hash-consed)
@@ -130,7 +130,7 @@ sort Expr
   entity apply(fn: Symbol, args: List[T = ApplyArg])
   entity constructor(name: Symbol, args: List[T = ApplyArg])
   entity var_ref(name: Symbol)
-  entity int_lit(value: Int)
+  entity int_lit(value: Int64)
   entity float_lit(value: Float)
   entity string_lit(value: String)
   entity bool_lit(value: Bool)
@@ -197,11 +197,11 @@ fact TypeOf(occ: <occ of ?desc in body>, type: Term)       -- from WorkItem.desc
 
 **Expression nodes** — each subexpression occurrence gets a type:
 ```anthill
-operation foo(x: Int) -> Bool = gt(x, 0)
+operation foo(x: Int64) -> Bool = gt(x, 0)
 ```
 ```anthill
-fact TypeOf(occ: <occ of x>,       type: Int)      -- from parameter
-fact TypeOf(occ: <occ of 0>,       type: Int)      -- literal
+fact TypeOf(occ: <occ of x>,       type: Int64)      -- from parameter
+fact TypeOf(occ: <occ of 0>,       type: Int64)      -- literal
 fact TypeOf(occ: <occ of gt(x,0)>, type: Bool)     -- from operation return type
 ```
 
@@ -216,7 +216,7 @@ Types propagate top-down from declarations and bottom-up from literals/construct
 - `requires` spec binding → expected type for bound parameter
 
 **Bottom-up** (inferred type from value):
-- Literal: `"hello"` → `String`, `42` → `Int`, `true` → `Bool`
+- Literal: `"hello"` → `String`, `42` → `Int64`, `true` → `Bool`
 - Constructor: `Open` → parent sort (`WorkStatus`)
 - Constructor with fields: `cons(head: "a", tail: nil)` → `List[T=String]`
 
@@ -295,7 +295,7 @@ The untyped terms (hash-consed in TermStore) stay unchanged. `TypeOf` facts anno
 
 ### Well-typed fact
 ```anthill
-entity Task(id: String, priority: Int)
+entity Task(id: String, priority: Int64)
 
 fact Task(id: "T-001", priority: 3)
 
@@ -304,7 +304,7 @@ fact Task(id: "T-001", priority: 3)
 --   occ#2: 3       at line 3, col 34-35
 -- Typing pass emits:
 fact TypeOf(occ: occ#1, type: String)     -- matches Task.id: String ✓
-fact TypeOf(occ: occ#2, type: Int)        -- matches Task.priority: Int ✓
+fact TypeOf(occ: occ#2, type: Int64)        -- matches Task.priority: Int64 ✓
 ```
 
 ### Type error
@@ -315,17 +315,17 @@ fact Task(id: 42, priority: "high")
 --   occ#3: 42     at line 5, col 15-17
 --   occ#4: "high" at line 5, col 29-35
 -- Typing pass emits:
-fact TypeOf(occ: occ#3, type: Int)        -- but Task.id expects String ✗
-fact TypeOf(occ: occ#4, type: String)     -- but Task.priority expects Int ✗
+fact TypeOf(occ: occ#3, type: Int64)        -- but Task.id expects String ✗
+fact TypeOf(occ: occ#4, type: String)     -- but Task.priority expects Int64 ✗
 
 -- Constraint fires:
--- type_mismatch at line 5, col 15-17: expected String, got Int
--- type_mismatch at line 5, col 29-35: expected Int, got String
+-- type_mismatch at line 5, col 15-17: expected String, got Int64
+-- type_mismatch at line 5, col 29-35: expected Int64, got String
 ```
 
 ### Expression typing with occurrence navigation
 ```anthill
-operation foo(x: Int) -> Bool = gt(x, 0)
+operation foo(x: Int64) -> Bool = gt(x, 0)
 
 -- Occurrence tree:
 --   occ#10: gt(x, 0)  at line 1, col 32-40
@@ -336,8 +336,8 @@ operation foo(x: Int) -> Bool = gt(x, 0)
 --   sub_occurrence(parent: occ#10, position: 1, child: occ#12)
 -- Types:
 fact TypeOf(occ: occ#10, type: Bool)    -- from operation return type
-fact TypeOf(occ: occ#11, type: Int)     -- from parameter declaration
-fact TypeOf(occ: occ#12, type: Int)     -- literal
+fact TypeOf(occ: occ#11, type: Int64)     -- from parameter declaration
+fact TypeOf(occ: occ#12, type: Int64)     -- literal
 
 -- Query: "find all apply expressions with gt functor"
 rule gt_call(?call)
@@ -376,7 +376,7 @@ fact WorkItem(depends_on: ["WI-001", "WI-002"])
 
 ### Why not `TypeOf(term: Term, type: Sort)`?
 
-Hash-consed terms lose positional identity. `"hello"` is one TermId everywhere — you can't distinguish `"hello"` in a String field from `"hello"` in an Int field. TypeOf on bare terms is either trivially derivable (literals always have their natural type) or ambiguous (which occurrence?).
+Hash-consed terms lose positional identity. `"hello"` is one TermId everywhere — you can't distinguish `"hello"` in a String field from `"hello"` in an Int64 field. TypeOf on bare terms is either trivially derivable (literals always have their natural type) or ambiguous (which occurrence?).
 
 ### Why not a separate typed AST?
 

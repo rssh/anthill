@@ -32,9 +32,9 @@ fn result_in_effects_single_return() {
     // `result` must resolve through the operation's scope (added by 041).
     let source = r#"
 namespace anthill.test.wi261.single
-  import anthill.prelude.{Cell, Int}
+  import anthill.prelude.{Cell, Int64}
 
-  operation fresh_counter() -> Cell[V = Int]
+  operation fresh_counter() -> Cell[V = Int64]
     effects Modify[result]
 end
 "#;
@@ -50,9 +50,9 @@ fn result_in_effects_single_return_with_params() {
     // and reserved `result` both live in the op scope.
     let source = r#"
 namespace anthill.test.wi261.with_params
-  import anthill.prelude.{Cell, Int}
+  import anthill.prelude.{Cell, Int64}
 
-  operation init_counter(initial: Int) -> Cell[V = Int]
+  operation init_counter(initial: Int64) -> Cell[V = Int64]
     effects Modify[result]
 end
 "#;
@@ -69,9 +69,9 @@ fn result_field_projection_in_effects() {
     // field-access machinery; 041 only needs `result` to resolve.
     let source = r#"
 namespace anthill.test.wi261.tuple
-  import anthill.prelude.{Cell, Int}
+  import anthill.prelude.{Cell, Int64}
 
-  operation make_pair() -> (a: Cell[V = Int], b: Cell[V = Int])
+  operation make_pair() -> (a: Cell[V = Int64], b: Cell[V = Int64])
     effects {Modify[result.a], Modify[result.b]}
 end
 "#;
@@ -87,9 +87,9 @@ fn param_named_result_rejected() {
     // name. The loader should emit a clear error.
     let source = r#"
 namespace anthill.test.wi261.conflict
-  import anthill.prelude.{Int}
+  import anthill.prelude.{Int64}
 
-  operation bad(result: Int) -> Int
+  operation bad(result: Int64) -> Int64
 end
 "#;
     let mut kb = load_stdlib_kb();

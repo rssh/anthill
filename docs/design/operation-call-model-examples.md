@@ -111,7 +111,7 @@ A different D2 that uses C1 (any T):
 
 ```anthill
 sort D2
-  fact B[T = Int]      -- via C1 with T = Int
+  fact B[T = Int64]      -- via C1 with T = Int64
 end
 ```
 
@@ -149,8 +149,8 @@ sort Eq
 end
 
 sort IntEq
-  fact Eq[T = Int]
-  operation eq(a: Int, b: Int) -> Bool = ...
+  fact Eq[T = Int64]
+  operation eq(a: Int64, b: Int64) -> Bool = ...
 end
 ```
 
@@ -180,7 +180,7 @@ The same `__req_self_eq` serves as both Self and as the dispatching dict for the
 
 ### Call-site translation
 
-Caller calling `neq(x, y)` for `x, y : Int` (IntEq satisfies Eq[T=Int]):
+Caller calling `neq(x, y)` for `x, y : Int64` (IntEq satisfies Eq[T=Int64]):
 
 ```
 apply_within(
@@ -220,10 +220,10 @@ sort C
 end
 
 sort D
-  fact B[T = Int]
-  fact C[T = Int]
-  fact A[T = Int]      -- D supplies ONE consistent A; coherence-checked
-  operation main(x: Int) -> String =
+  fact B[T = Int64]
+  fact C[T = Int64]
+  fact A[T = Int64]      -- D supplies ONE consistent A; coherence-checked
+  operation main(x: Int64) -> String =
     String.concat(use_a_in_b(x), use_a_in_c(x))
 end
 ```
@@ -236,7 +236,7 @@ end
 
 ### Coherence resolution at D's load time
 
-D claims `fact B[T = Int]` and `fact C[T = Int]`. Both require A. D's `fact A[T = Int]` resolves to some impl (call it IntA). The same IntA is used inside both the B-impl and C-impl that D supplies — coherence at the diamond's join point.
+D claims `fact B[T = Int64]` and `fact C[T = Int64]`. Both require A. D's `fact A[T = Int64]` resolves to some impl (call it IntA). The same IntA is used inside both the B-impl and C-impl that D supplies — coherence at the diamond's join point.
 
 ### Elaborated body of `D.main`
 
@@ -322,7 +322,7 @@ Two distinct named bindings: `__req_eq` for the Eq dictionary, `__req_ord` for t
 
 ### Call-site translation
 
-Caller D with `fact B[T = Int]` resolving Eq[Int] (IntEq), Ordered[Int] (IntOrdered):
+Caller D with `fact B[T = Int64]` resolving Eq[Int64] (IntEq), Ordered[Int64] (IntOrdered):
 
 ```
 apply_within(
@@ -459,9 +459,9 @@ Inserted requirement params: `__req_self_statet`, `__req_inner_monad`.
 
 ### Resolution chain at use site
 
-Some caller has a value of type `StateT[Int, Option, X]` and calls `bind` on it.
+Some caller has a value of type `StateT[Int64, Option, X]` and calls `bind` on it.
 
-- SLD synthesis: want `Monad[StateT[Int, Option]]`. Match conditional `Monad[StateT[?S, ?M]] :- Monad[?M]` with `?S = Int, ?M = Option`. Subgoal: `Monad[Option]`. Find: `fact Monad[M = Option]` → OptionMonad.
+- SLD synthesis: want `Monad[StateT[Int64, Option]]`. Match conditional `Monad[StateT[?S, ?M]] :- Monad[?M]` with `?S = Int64, ?M = Option`. Subgoal: `Monad[Option]`. Find: `fact Monad[M = Option]` → OptionMonad.
 - Pin-now construction:
   ```
   construct_requirement(StateTMonad, [
@@ -504,11 +504,11 @@ sort Tagged
 end
 
 sort UserId
-  fact Tagged[Tag = User, T = Int]
+  fact Tagged[Tag = User, T = Int64]
 end
 
 sort PostId
-  fact Tagged[Tag = Post, T = Int]
+  fact Tagged[Tag = Post, T = Int64]
 end
 ```
 
@@ -596,9 +596,9 @@ body: match_expr(
 
 ### Call-site translation
 
-Caller calling `eq(xs, ys)` for `xs, ys : List[T = Int]`:
+Caller calling `eq(xs, ys)` for `xs, ys : List[T = Int64]`:
 
-- SLD synthesis: want `Eq[T = List[T = Int]]`. Match conditional with `?A = Int`. Subgoal: `Eq[T = Int]` → IntEq.
+- SLD synthesis: want `Eq[T = List[T = Int64]]`. Match conditional with `?A = Int64`. Subgoal: `Eq[T = Int64]` → IntEq.
 - Pin-now construction at the call site:
   ```
   apply_within(
@@ -740,7 +740,7 @@ sort Pair
 
   entity pair(a: A, b: B)
 
-  operation cmp(p1: Pair[A=A, B=B], p2: Pair[A=A, B=B]) -> Int =
+  operation cmp(p1: Pair[A=A, B=B], p2: Pair[A=A, B=B]) -> Int64 =
     let ca = compare(p1.a, p2.a)         -- A-typed comparison
     in if ca != 0
        then ca
@@ -787,7 +787,7 @@ Two distinct named bindings (`__req_ord_a` and `__req_ord_b`). They share a sort
 
 ### Call-site translation
 
-Caller D using `Pair[A=Int, B=String]`:
+Caller D using `Pair[A=Int64, B=String]`:
 
 ```
 apply_within(
@@ -810,7 +810,7 @@ The body then dispatches Ordered.compare twice — first through IntOrdered, the
 ### Notes
 
 - Same-sort-name bounds aren't unusual — any sort parametric in multiple types (Pair, Map, BiFunctor, …) will frequently have multiple instances of the same constraint sort.
-- Each named binding is independent: caller can pass impls for entirely unrelated types (Int + String).
+- Each named binding is independent: caller can pass impls for entirely unrelated types (Int64 + String).
 - Compare with Example 4: that had **different sort names** (Eq + Ordered) at the same T. This example has the **same sort name** (Ordered) at different type-args. Both produce length-2 requires-chains; the difference is in the dictionary's sub-instance functors.
 
 ## Summary observations

@@ -16,10 +16,10 @@ use common::{find_cxx, load_kb_with, scratch_dir};
 fn namespace_header_emits_compilable_cpp() {
     let source = r#"
         namespace test.geom
-          import anthill.prelude.{Float, Int, String}
+          import anthill.prelude.{Float, Int64, String}
           export Vec3, Account
           entity Vec3(x: Float, y: Float, z: Float)
-          entity Account(id: Int, name: String)
+          entity Account(id: Int64, name: String)
         end
     "#;
 

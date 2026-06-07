@@ -17,7 +17,7 @@
 -- toolchain = tool + platform constraints.
 
 namespace anthill.realization.platform
-  import anthill.prelude.{List, String, Bool, Int, Option}
+  import anthill.prelude.{List, String, Bool, Int64, Option}
   import anthill.prelude.{Timestamp}
   import anthill.reflect.{Term, KB}
   import anthill.realization.{LanguageMapping}
@@ -64,7 +64,7 @@ namespace anthill.realization.platform
   -- Subsumes CommandShell — exec and env_var are operations on the environment.
 
   entity ProcessResult(
-    exit_code : Int,
+    exit_code : Int64,
     stdout    : Path,
     stderr    : Path
   )
@@ -125,10 +125,10 @@ namespace anthill.realization.platform
   operation join(base: Path, child: String) -> Path
 
   entity FileStatus(
-    size        : Int,
+    size        : Int64,
     modified    : Timestamp,
     is_dir      : Bool,
-    permissions : Int
+    permissions : Int64
   )
 
   sort Filesystem

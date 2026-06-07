@@ -6,7 +6,7 @@
 //! - **Form (2)** — `Map.empty()` constrained by surrounding expression
 //!   (`put(Map.empty(), "a", 1)`). Parses and runs as-is; HM inference of
 //!   K/V is a separate concern that lands with the typing pass.
-//! - **Form (3)** — `Map[K = String, V = Int].empty()`. The
+//! - **Form (3)** — `Map[K = String, V = Int64].empty()`. The
 //!   instantiation-term-as-receiver shape, enabled by extending the parser's
 //!   `field_access` segment collection. Bindings are erased at runtime.
 //!
@@ -54,7 +54,7 @@ fn is_none(interp: &Interpreter, v: &Value) -> bool {
 fn map_empty_via_builtin_call() {
     let src = r#"
 namespace test.map_empty
-  operation main() -> Int
+  operation main() -> Int64
     = 0
 end
 "#;
@@ -70,7 +70,7 @@ end
 fn map_put_get_round_trip() {
     let src = r#"
 namespace test.map_put_get
-  operation main() -> Int
+  operation main() -> Int64
     = 0
 end
 "#;
@@ -100,7 +100,7 @@ end
 fn map_contains_size_remove() {
     let src = r#"
 namespace test.map_extras
-  operation main() -> Int
+  operation main() -> Int64
     = 0
 end
 "#;
@@ -140,7 +140,7 @@ fn form_2_inferred_from_use_parses_and_runs() {
 namespace test.map_form2
   import anthill.prelude.Map.{empty, put, get, size}
 
-  operation build() -> Int
+  operation build() -> Int64
     = size(put(empty(), "a", 1))
 end
 "#;
@@ -159,7 +159,7 @@ namespace test.map_dotted
   import anthill.prelude.{Map}
   import anthill.prelude.Map.{put, get, size}
 
-  operation build() -> Int
+  operation build() -> Int64
     = size(put(Map.empty(), "a", 1))
 end
 "#;
@@ -170,7 +170,7 @@ end
 
 #[test]
 fn form_3_instantiation_receiver_parses_and_runs() {
-    // Form (3): `Map[K = String, V = Int].empty()`. The parser change in
+    // Form (3): `Map[K = String, V = Int64].empty()`. The parser change in
     // `convert.rs` extracts the sort name from the instantiation term, so the
     // call resolves to `anthill.prelude.Map.empty` just like a bare
     // `Map.empty()` would.
@@ -179,8 +179,8 @@ namespace test.map_form3
   import anthill.prelude.{Map}
   import anthill.prelude.Map.{put, get, size}
 
-  operation build() -> Int
-    = size(put(Map[K = String, V = Int].empty(), "a", 1))
+  operation build() -> Int64
+    = size(put(Map[K = String, V = Int64].empty(), "a", 1))
 end
 "#;
     let mut interp = interp_for(src);
@@ -204,8 +204,8 @@ namespace test.map_form1
   import anthill.prelude.{Map}
   import anthill.prelude.Map.{put, get, size}
 
-  operation build() -> Int
-    = let m: Map[K = String, V = Int] = Map.empty()
+  operation build() -> Int64
+    = let m: Map[K = String, V = Int64] = Map.empty()
       size(put(m, "a", 1))
 end
 "#;
@@ -217,11 +217,11 @@ end
 #[test]
 fn form_1_simple_int_annotation() {
     // The annotation can be any type, not just parameterized. Smoke test
-    // for the simple case `let x: Int = 7`.
+    // for the simple case `let x: Int64 = 7`.
     let src = r#"
 namespace test.let_anno_int
-  operation main() -> Int
-    = let x: Int = 7
+  operation main() -> Int64
+    = let x: Int64 = 7
       x
 end
 "#;
@@ -233,7 +233,7 @@ end
 #[test]
 fn proposal_acceptance_fixture() {
     // The fixture from proposal 035 §Acceptance:
-    //   Map[K = String, V = Int].empty()
+    //   Map[K = String, V = Int64].empty()
     //     |> put(_, "a", 1)
     //     |> get(_, "a") = some(1)
     //
@@ -244,8 +244,8 @@ namespace test.map_acceptance
   import anthill.prelude.{Map, Option}
   import anthill.prelude.Map.{put, get}
 
-  operation lookup() -> Option[T = Int]
-    = get(put(Map[K = String, V = Int].empty(), "a", 1), "a")
+  operation lookup() -> Option[T = Int64]
+    = get(put(Map[K = String, V = Int64].empty(), "a", 1), "a")
 end
 "#;
     let mut interp = interp_for(src);
@@ -258,7 +258,7 @@ end
 fn map_keys_values_entries_preserve_insertion_order() {
     let src = r#"
 namespace test.map_iter_order
-  operation main() -> Int = 0
+  operation main() -> Int64 = 0
 end
 "#;
     let mut interp = interp_for(src);

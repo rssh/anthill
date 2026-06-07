@@ -8,17 +8,17 @@ use common::load_kb_with_lenient;
 fn dump_phase_c_shapes() {
     let source = r#"
         namespace test.dumpc
-          import anthill.prelude.{Int}
+          import anthill.prelude.{Int64}
           export Calc
           sort Calc
-            operation step(n: Int) -> Int =
+            operation step(n: Int64) -> Int64 =
               let x = add(n, 1)
               add(x, x)
-            operation chain(n: Int) -> Int =
+            operation chain(n: Int64) -> Int64 =
               let a = add(n, 1)
               let b = add(a, 2)
               add(a, b)
-            operation lam(n: Int) -> Int = lambda x -> add(x, n)
+            operation lam(n: Int64) -> Int64 = lambda x -> add(x, n)
           end
         end
     "#;

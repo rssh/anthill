@@ -2,7 +2,7 @@
 //!
 //! A producer's projection signature `peek(l: List) -> l.T` threads the receiver's
 //! element through call sites: the projection is ELIMINATED by projecting the
-//! ARGUMENT's inferred type (`List[Int].T = Int`) — the synthesis-time discharge of
+//! ARGUMENT's inferred type (`List[Int64].T = Int64`) — the synthesis-time discharge of
 //! WI-379 bidirectional inference, resolved in `check_apply_iter` where the arguments
 //! are already synthesized. `s.Sort` projects the whole parameterized sort of the
 //! receiver. A member the receiver's concrete sort does NOT declare is a loud error
@@ -42,66 +42,66 @@ fn load_errors(extras: &[&str]) -> Vec<String> {
     }
 }
 
-/// `peek(l: List) -> l.T` threads the element: calling it on a `List[Int]` yields
-/// `Int`, so returning the call where `Int` is declared CONFORMS.
+/// `peek(l: List) -> l.T` threads the element: calling it on a `List[Int64]` yields
+/// `Int64`, so returning the call where `Int64` is declared CONFORMS.
 #[test]
 fn projection_threads_element_concrete() {
     let ok = r#"
 namespace test.wi376.elem_ok
-  import anthill.prelude.{List, Int}
+  import anthill.prelude.{List, Int64}
   operation peek(l: List) -> l.T
-  operation caller(xs: List[T = Int]) -> Int = peek(xs)
+  operation caller(xs: List[T = Int64]) -> Int64 = peek(xs)
 end
 "#;
     assert!(
         load_errors(&[ok]).is_empty(),
-        "peek(xs) is List[Int].T = Int; returning it as Int must conform",
+        "peek(xs) is List[Int64].T = Int64; returning it as Int64 must conform",
     );
 }
 
-/// The threaded element is REAL: returning `peek(xs)` (which is `Int`) where `String`
+/// The threaded element is REAL: returning `peek(xs)` (which is `Int64`) where `String`
 /// is declared must be rejected — the projection did not invent a fresh element.
 #[test]
 fn projection_wrong_element_is_rejected() {
     let wrong = r#"
 namespace test.wi376.elem_wrong
-  import anthill.prelude.{List, Int, String}
+  import anthill.prelude.{List, Int64, String}
   operation peek(l: List) -> l.T
-  operation caller(xs: List[T = Int]) -> String = peek(xs)
+  operation caller(xs: List[T = Int64]) -> String = peek(xs)
 end
 "#;
     assert!(
         !load_errors(&[wrong]).is_empty(),
-        "peek(xs) is Int, not String — the wrong declared return must be rejected",
+        "peek(xs) is Int64, not String — the wrong declared return must be rejected",
     );
 }
 
 /// `echo(l: List) -> l.Sort` projects the WHOLE parameterized sort of the receiver,
-/// so `echo(xs)` on a `List[Int]` is `List[Int]` (every parameter captured).
+/// so `echo(xs)` on a `List[Int64]` is `List[Int64]` (every parameter captured).
 #[test]
 fn projection_sort_captures_whole_type() {
     let ok = r#"
 namespace test.wi376.sort_ok
-  import anthill.prelude.{List, Int}
+  import anthill.prelude.{List, Int64}
   operation echo(l: List) -> l.Sort
-  operation caller(xs: List[T = Int]) -> List[T = Int] = echo(xs)
+  operation caller(xs: List[T = Int64]) -> List[T = Int64] = echo(xs)
 end
 "#;
     assert!(
         load_errors(&[ok]).is_empty(),
-        "echo(xs) is l.Sort = List[Int]; returning it as List[Int] must conform",
+        "echo(xs) is l.Sort = List[Int64]; returning it as List[Int64] must conform",
     );
 
     let wrong = r#"
 namespace test.wi376.sort_wrong
-  import anthill.prelude.{List, Int, String}
+  import anthill.prelude.{List, Int64, String}
   operation echo(l: List) -> l.Sort
-  operation caller(xs: List[T = Int]) -> List[T = String] = echo(xs)
+  operation caller(xs: List[T = Int64]) -> List[T = String] = echo(xs)
 end
 "#;
     assert!(
         !load_errors(&[wrong]).is_empty(),
-        "echo(xs) is List[Int], not List[String] — must be rejected",
+        "echo(xs) is List[Int64], not List[String] — must be rejected",
     );
 }
 
@@ -111,9 +111,9 @@ end
 fn projection_missing_member_is_loud() {
     let src = r#"
 namespace test.wi376.missing
-  import anthill.prelude.{List, Int}
+  import anthill.prelude.{List, Int64}
   operation bad(l: List) -> l.Nonesuch
-  operation caller(xs: List[T = Int]) -> Int = bad(xs)
+  operation caller(xs: List[T = Int64]) -> Int64 = bad(xs)
 end
 "#;
     let errs = load_errors(&[src]);
@@ -125,41 +125,41 @@ end
 
 /// The headline acceptance: a producer `to_stream(l: List) -> Stream[T = l.T, E = {}]`
 /// and a consumer `gather(s: Stream) -> List[T = s.T]` THREAD the element through
-/// composition — `gather(to_stream(xs))` on a `List[Int]` is `List[Int]`, with no
+/// composition — `gather(to_stream(xs))` on a `List[Int64]` is `List[Int64]`, with no
 /// fresh `?_` element. (The written `E = {}` carries the observation effect; the
 /// element rides the projection.)
 #[test]
 fn projection_threads_through_composition() {
     let ok = r#"
 namespace test.wi376.compose_ok
-  import anthill.prelude.{List, Stream, Int}
+  import anthill.prelude.{List, Stream, Int64}
   operation to_stream(l: List) -> Stream[T = l.T, E = {}]
   operation gather(s: Stream) -> List[T = s.T]
-  operation walk(xs: List[T = Int]) -> List[T = Int] = gather(to_stream(xs))
+  operation walk(xs: List[T = Int64]) -> List[T = Int64] = gather(to_stream(xs))
 end
 "#;
     assert!(
         load_errors(&[ok]).is_empty(),
-        "gather(to_stream(xs)) must thread Int through the projection composition",
+        "gather(to_stream(xs)) must thread Int64 through the projection composition",
     );
 
     let wrong = r#"
 namespace test.wi376.compose_wrong
-  import anthill.prelude.{List, Stream, Int, String}
+  import anthill.prelude.{List, Stream, Int64, String}
   operation to_stream(l: List) -> Stream[T = l.T, E = {}]
   operation gather(s: Stream) -> List[T = s.T]
-  operation walk(xs: List[T = Int]) -> List[T = String] = gather(to_stream(xs))
+  operation walk(xs: List[T = Int64]) -> List[T = String] = gather(to_stream(xs))
 end
 "#;
     assert!(
         !load_errors(&[wrong]).is_empty(),
-        "the composed element is Int, not String — wrong declared return must be rejected",
+        "the composed element is Int64, not String — wrong declared return must be rejected",
     );
 }
 
 /// A BARE / abstract receiver is a loud error, NOT a silent fresh var: projecting
 /// `l.T` off a bare `List` (element unbound) would have to mint an unconstrained var
-/// that could unsoundly satisfy any demand (the same `peek(l)` usable as both `Int`
+/// that could unsoundly satisfy any demand (the same `peek(l)` usable as both `Int64`
 /// and `String`). The sound "stays polymorphic" projection — read the receiver's
 /// DECLARED-INTERFACE member so the result is rigid — is the abstract-receiver
 /// follow-on; until then it is rejected.
@@ -167,9 +167,9 @@ end
 fn projection_bare_receiver_is_rejected() {
     let src = r#"
 namespace test.wi376.bare
-  import anthill.prelude.{List, Int}
+  import anthill.prelude.{List, Int64}
   operation peek(l: List) -> l.T
-  operation relay(l: List) -> Int = peek(l)
+  operation relay(l: List) -> Int64 = peek(l)
 end
 "#;
     let errs = load_errors(&[src]);
@@ -188,10 +188,10 @@ end
 fn modify_result_field_not_misclassified_as_projection() {
     let src = r#"
 namespace test.wi376.result_effect
-  import anthill.prelude.{Cell, Int, Modify}
-  operation make_pair() -> (a: Cell[V = Int], b: Cell[V = Int])
+  import anthill.prelude.{Cell, Int64, Modify}
+  operation make_pair() -> (a: Cell[V = Int64], b: Cell[V = Int64])
     effects {Modify[result.a], Modify[result.b]}
-  operation run() -> (a: Cell[V = Int], b: Cell[V = Int])
+  operation run() -> (a: Cell[V = Int64], b: Cell[V = Int64])
     effects {Modify[result.a], Modify[result.b]}
     = make_pair()
 end
@@ -216,15 +216,15 @@ end
 // projection) — never a silent pure default, which `E` must never become.
 
 /// `drain(s: Stream) -> List[T = s.T] effects s.E` threads BOTH the element and the
-/// effect: on a `Stream[T = Int, E = {Branch}]` it is `List[Int]` with effect
+/// effect: on a `Stream[T = Int64, E = {Branch}]` it is `List[Int64]` with effect
 /// `{Branch}`, so a caller that declares `effects {Branch}` conforms.
 #[test]
 fn effect_projection_threads_concrete() {
     let ok = r#"
 namespace test.wi396.eff_ok
-  import anthill.prelude.{List, Stream, Int, Branch}
+  import anthill.prelude.{List, Stream, Int64, Branch}
   operation drain(s: Stream) -> List[T = s.T] effects s.E
-  operation run(es: Stream[T = Int, E = {Branch}]) -> List[T = Int] effects {Branch} = drain(es)
+  operation run(es: Stream[T = Int64, E = {Branch}]) -> List[T = Int64] effects {Branch} = drain(es)
 end
 "#;
     assert!(
@@ -240,9 +240,9 @@ end
 fn effect_projection_wrong_effect_is_rejected() {
     let wrong = r#"
 namespace test.wi396.eff_wrong
-  import anthill.prelude.{List, Stream, Int, Branch}
+  import anthill.prelude.{List, Stream, Int64, Branch}
   operation drain(s: Stream) -> List[T = s.T] effects s.E
-  operation run(es: Stream[T = Int, E = {Branch}]) -> List[T = Int] = drain(es)
+  operation run(es: Stream[T = Int64, E = {Branch}]) -> List[T = Int64] = drain(es)
 end
 "#;
     assert!(
@@ -258,9 +258,9 @@ end
 fn effect_projection_missing_member_is_loud() {
     let src = r#"
 namespace test.wi396.eff_missing
-  import anthill.prelude.{List, Int}
-  operation bad(l: List) -> Int effects l.E
-  operation caller(xs: List[T = Int]) -> Int = bad(xs)
+  import anthill.prelude.{List, Int64}
+  operation bad(l: List) -> Int64 effects l.E
+  operation caller(xs: List[T = Int64]) -> Int64 = bad(xs)
 end
 "#;
     let errs = load_errors(&[src]);
@@ -276,9 +276,9 @@ end
 fn effect_projection_in_written_row() {
     let ok = r#"
 namespace test.wi396.eff_row
-  import anthill.prelude.{List, Stream, Int, Branch}
+  import anthill.prelude.{List, Stream, Int64, Branch}
   operation drain(s: Stream) -> List[T = s.T] effects {s.E}
-  operation run(es: Stream[T = Int, E = {Branch}]) -> List[T = Int] effects {Branch} = drain(es)
+  operation run(es: Stream[T = Int64, E = {Branch}]) -> List[T = Int64] effects {Branch} = drain(es)
 end
 "#;
     assert!(
@@ -294,9 +294,9 @@ end
 fn projection_in_denoted_node_is_rejected() {
     let src = r#"
 namespace test.wi376.node
-  import anthill.prelude.{List, Stream, Int, Cell, Modify}
-  operation src(l: List, c: Cell[V = Int]) -> Stream[T = l.T, E = {Modify[c]}]
-  operation use_src(xs: List[T = Int], c: Cell[V = Int]) -> Int = src(xs, c)
+  import anthill.prelude.{List, Stream, Int64, Cell, Modify}
+  operation src(l: List, c: Cell[V = Int64]) -> Stream[T = l.T, E = {Modify[c]}]
+  operation use_src(xs: List[T = Int64], c: Cell[V = Int64]) -> Int64 = src(xs, c)
 end
 "#;
     let errs = load_errors(&[src]);

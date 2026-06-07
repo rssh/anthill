@@ -98,7 +98,7 @@ success = "ExitZero"
 | Anthill type | TOML type | JSON type | Example |
 |-------------|-----------|-----------|---------|
 | `String` | String | string | `"hello"` |
-| `Int` | Integer | number | `42` |
+| `Int64` | Integer | number | `42` |
 | `Float` | Float | number | `3.14` |
 | `Bool` | Boolean | boolean | `true` |
 
@@ -243,7 +243,7 @@ success = "ExitZero"
 entity = "anthill.prelude.Eq"
 
 [[data]]
-T = "Int"
+T = "Int64"
 
 [[data]]
 T = "String"
@@ -251,7 +251,7 @@ T = "String"
 
 Loads as:
 ```anthill
-fact Eq[T = Int]
+fact Eq[T = Int64]
 fact Eq[T = String]
 ```
 

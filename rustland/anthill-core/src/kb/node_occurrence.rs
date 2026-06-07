@@ -4518,7 +4518,7 @@ mod tests {
         use crate::kb::term::Var;
         let mut kb = KnowledgeBase::new();
         let f = kb.intern("f");
-        let int_sym = kb.intern("Int");
+        let int_sym = kb.intern("Int64");
         let xname = kb.intern("x");
         let span = make_span();
         let v0 = VarId::new(7, xname);
@@ -4557,7 +4557,7 @@ mod tests {
         // arm the generic _ fall-through would skip the TermId field.
         use crate::kb::term::Var;
         let mut kb = KnowledgeBase::new();
-        let int_sym = kb.intern("Int");
+        let int_sym = kb.intern("Int64");
         let xname = kb.intern("x");
         let span = make_span();
         let v0 = VarId::new(7, xname);

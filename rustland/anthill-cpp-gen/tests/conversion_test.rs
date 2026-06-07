@@ -22,7 +22,7 @@ fn return_type_conversion_wraps_carrier_call() {
     // wraps the call in Vec3::from_array.
     let source = r#"
         namespace test.conv
-          import anthill.prelude.{Float, Int, Unit, Modify}
+          import anthill.prelude.{Float, Int64, Unit, Modify}
           import anthill.realization.{Implementation, CarrierBinding}
           import anthill.realization.cpp_std.{ReturnTypeConversion}
           export Vec3, Sensor

@@ -27,5 +27,5 @@ sort Ring
   rule ?a * (?b + ?c) = ?a * ?b + ?a * ?c
 end
 
--- Int satisfies Ring
-fact Ring[Int]
+-- Int64 satisfies Ring
+fact Ring[Int64]

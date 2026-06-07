@@ -1,0 +1,11 @@
+-- C++ binding for anthill.prelude.Int64. Proposal 038 — host-specific
+-- spec satisfaction lives separately from the language-agnostic spec
+-- in stdlib/anthill/prelude/int.anthill.
+namespace anthill.prelude
+  provides Int64 language cpp
+    carrier { Int64: "int64_t" }
+    fact Eq[T = Int64]
+    fact Ordered[T = Int64]
+    fact Numeric[T = Int64]
+  end
+end

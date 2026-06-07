@@ -23,7 +23,7 @@
 -- pseudo-device (supervisor-backed) later requires no spec change.
 
 namespace anthill.examples.lf1.follower_transponder
-  import anthill.prelude.{Float, Int, Unit, String, Option, Bool, List}
+  import anthill.prelude.{Float, Int64, Unit, String, Option, Bool, List}
   import anthill.prelude.Option.{some, none}
   import anthill.prelude.Float.{abs, neg}
   import anthill.examples.lf1.leader.{Pose, Controls}
@@ -78,8 +78,8 @@ namespace anthill.examples.lf1.follower_transponder
   entity TransponderFollowerState(
     prev_distance: Option[Float],
     prev_delta:    Option[Float],
-    upc:           Int,
-    seq:           Int,
+    upc:           Int64,
+    seq:           Int64,
     yaw_cmd:       Float
   )
 

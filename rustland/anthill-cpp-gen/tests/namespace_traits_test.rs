@@ -13,11 +13,11 @@ use common::load_kb_with;
 fn namespace_header_includes_traits_class() {
     let source = r#"
         namespace test.ns_traits
-          import anthill.prelude.{Int}
+          import anthill.prelude.{Int64}
           export Pose, Calc
-          entity Pose(x: Int, y: Int)
+          entity Pose(x: Int64, y: Int64)
           sort Calc
-            operation pos_x(p: Pose) -> Int = 0
+            operation pos_x(p: Pose) -> Int64 = 0
           end
         end
     "#;
@@ -56,10 +56,10 @@ fn data_band_topologically_sorted_by_field_deps() {
     // `Inner` first so the C++ compiles without forward declarations.
     let source = r#"
         namespace test.topo
-          import anthill.prelude.{Int}
+          import anthill.prelude.{Int64}
           export Outer, Inner
-          entity Inner(value: Int)
-          entity Outer(inner: Inner, n: Int)
+          entity Inner(value: Int64)
+          entity Outer(inner: Inner, n: Int64)
         end
     "#;
     let kb = load_kb_with(source);
@@ -81,9 +81,9 @@ fn data_band_chains_three_levels() {
     // alphabetical position.
     let source = r#"
         namespace test.chain
-          import anthill.prelude.{Int}
+          import anthill.prelude.{Int64}
           export A, B, C
-          entity C(v: Int)
+          entity C(v: Int64)
           entity B(c: C)
           entity A(b: B)
         end
@@ -104,10 +104,10 @@ fn namespace_with_only_traits_emits_traits() {
     // emits a traits class for the lone sort-with-operations.
     let source = r#"
         namespace test.ns_traits_only
-          import anthill.prelude.{Int}
+          import anthill.prelude.{Int64}
           export Calc
           sort Calc
-            operation forty_two() -> Int = 42
+            operation forty_two() -> Int64 = 42
           end
         end
     "#;

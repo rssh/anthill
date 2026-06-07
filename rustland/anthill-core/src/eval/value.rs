@@ -219,7 +219,7 @@ impl Value {
 
     pub fn type_name(&self) -> &'static str {
         match self {
-            Value::Int(_) => "Int",
+            Value::Int(_) => "Int64",
             Value::BigInt(_) => "BigInt",
             Value::Float(_) => "Float",
             Value::Bool(_) => "Bool",
@@ -262,7 +262,7 @@ mod tests {
     fn scalars_unboxed() {
         assert_eq!(Value::Int(42).as_int(), Some(42));
         assert_eq!(Value::Bool(true).as_bool(), Some(true));
-        assert_eq!(Value::Int(1).type_name(), "Int");
+        assert_eq!(Value::Int(1).type_name(), "Int64");
     }
 
     #[test]

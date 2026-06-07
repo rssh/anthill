@@ -75,7 +75,7 @@ proof add_comm
   mapping {
     add -> +,
     eq -> =,
-    Int -> Int
+    Int64 -> Int64
   }
 end
 ```
@@ -90,7 +90,7 @@ proof sort_correct
 end
 ```
 
-Here the kernel auto-translates the rule's proposition to SMT-LIB using the standard Int/Bool/arithmetic mapping.
+Here the kernel auto-translates the rule's proposition to SMT-LIB using the standard Int64/Bool/arithmetic mapping.
 
 **Test evidence**:
 
@@ -186,10 +186,10 @@ rule Tree.induction(?P)
      (forall(?l, ?r), ?P(?l), ?P(?r) -: ?P(branch(left: ?l, right: ?r)))
 ```
 
-**Bounded numeric (Int):**
+**Bounded numeric (Int64):**
 ```anthill
--- Int has bounded well-founded induction:
-rule Int.induction(?P, ?lo, ?hi)
+-- Int64 has bounded well-founded induction:
+rule Int64.induction(?P, ?lo, ?hi)
   :- ?P(?lo),
      (forall(?n), gte(?n, ?lo), lt(?n, ?hi), ?P(?n) -: ?P(add(?n, 1)))
 ```
@@ -289,7 +289,7 @@ A sort chooses its logic via `requires`:
 ```anthill
 sort NatProofs
   requires Logic.Classical
-  requires Numeric[T = Int]
+  requires Numeric[T = Int64]
   
   rule add_comm(?a, ?b) :- eq(add(?a, ?b), add(?b, ?a))
   
@@ -438,7 +438,7 @@ Trace:
 
 ### Equational reasoning
 
-Operation definitions create equalities: `operation double(x: Int) -> Int = add(x, x)` generates a rule `eq(double(?x), add(?x, ?x))`. This rule is in the proof context and can be applied during resolution like any other rule.
+Operation definitions create equalities: `operation double(x: Int64) -> Int64 = add(x, x)` generates a rule `eq(double(?x), add(?x, ?x))`. This rule is in the proof context and can be applied during resolution like any other rule.
 
 Rewriting is just resolution against an equality rule — not a separate mechanism. The resolver applies `eq(double(?x), add(?x, ?x))` to replace `double(3)` with `add(3, 3)` during unification.
 
@@ -496,9 +496,9 @@ For `by test(runs: N)`, the proof is test metadata:
 ```
 TestEvidence(
   runner: String,
-  runs: Int,
-  failures: Int,
-  seed: Option[Int]
+  runs: Int64,
+  failures: Int64,
+  seed: Option[Int64]
 )
 ```
 
@@ -576,7 +576,7 @@ A sort declares that it satisfies a spec:
 ```anthill
 -- int_stack.anthill
 sort IntStack
-  provides Stack[T = Int]
+  provides Stack[T = Int64]
 end
 ```
 
@@ -588,7 +588,7 @@ A standalone `provides` block delivers the work — operation bodies, proofs, or
 
 ```anthill
 -- Anthill-internal: rules + proofs
-provides Stack[T = Int]
+provides Stack[T = Int64]
   language anthill
 
   rule push(?s, ?x) = cons(head: ?x, tail: ?s)
@@ -602,7 +602,7 @@ end
 
 ```anthill
 -- Host-language: Rust implementation
-provides Stack[T = Int]
+provides Stack[T = Int64]
   language rust
   artifact "src/stack.rs"
   carrier { T = i64 }
@@ -634,7 +634,7 @@ end
 
 ```anthill
 -- stack/impl.anthill
-provides Stack[T = Int]
+provides Stack[T = Int64]
   language anthill
 
   rule push(?s, ?x) = cons(head: ?x, tail: ?s)
@@ -645,7 +645,7 @@ end
 
 ```anthill
 -- stack/proofs.anthill
-provides Stack[T = Int]
+provides Stack[T = Int64]
   language anthill
 
   proof push_pop by derivation
@@ -655,7 +655,7 @@ end
 
 ```anthill
 -- stack/impl_rust.anthill
-provides Stack[T = Int]
+provides Stack[T = Int64]
   language rust
   artifact "src/stack.rs"
   carrier { T = i64 }
@@ -682,7 +682,7 @@ Multiple `provides` blocks can target the same spec — one for anthill rules, o
 fact Provides(
   source: IntStack,
   spec: Stack,
-  bindings: [TypeBinding(param: T, value: sort_ref(Int))]
+  bindings: [TypeBinding(param: T, value: sort_ref(Int64))]
 )
 ```
 

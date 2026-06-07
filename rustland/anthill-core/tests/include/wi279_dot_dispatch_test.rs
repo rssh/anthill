@@ -46,14 +46,14 @@ fn errors_text(errs: &[LoadError]) -> String {
 #[test]
 fn dot_method_zero_arg_dispatches_via_param_receiver() {
     // `?b.peek()`: `?b` resolves to param `b: Box`, min_sort = Box; `peek` is
-    // declared on Box → dispatch synthesizes `peek(b)` → Int. No import.
+    // declared on Box → dispatch synthesizes `peek(b)` → Int64. No import.
     let src = r#"
         namespace wi279.method
           export Box
           sort Box
-            entity box(value: Int)
-            operation peek(b: Box) -> Int = 42
-            operation use_peek(b: Box) -> Int = ?b.peek()
+            entity box(value: Int64)
+            operation peek(b: Box) -> Int64 = 42
+            operation use_peek(b: Box) -> Int64 = ?b.peek()
           end
         end
     "#;
@@ -71,9 +71,9 @@ fn dot_method_with_args_dispatches() {
         namespace wi279.method_args
           export Box
           sort Box
-            entity box(value: Int)
-            operation add_to(b: Box, k: Int) -> Int = k
-            operation use_add(b: Box) -> Int = ?b.add_to(1)
+            entity box(value: Int64)
+            operation add_to(b: Box, k: Int64) -> Int64 = k
+            operation use_add(b: Box) -> Int64 = ?b.add_to(1)
           end
         end
     "#;
@@ -92,12 +92,12 @@ fn dot_method_dispatches_with_no_import_across_sorts() {
         namespace wi279.cross
           export Box, Holder
           sort Box
-            entity box(value: Int)
-            operation peek(b: Box) -> Int = 7
+            entity box(value: Int64)
+            operation peek(b: Box) -> Int64 = 7
           end
           sort Holder
             entity holder(inner: Box)
-            operation use_holder(h: Holder) -> Int =
+            operation use_holder(h: Holder) -> Int64 =
               match h
                 case holder(inner) -> ?inner.peek()
           end
@@ -118,7 +118,7 @@ fn dot_method_chaining_dispatches_each_level() {
         namespace wi279.chain
           export Box
           sort Box
-            entity box(value: Int)
+            entity box(value: Int64)
             operation bump(b: Box) -> Box = b
             operation use_chain(b: Box) -> Box = ?b.bump().bump()
           end
@@ -133,21 +133,21 @@ fn dot_method_chaining_dispatches_each_level() {
 #[test]
 fn dot_method_generic_type_param_infers_through_dispatch() {
     // `?b.idfn(42)` → `idfn(b, 42)`: the dispatched call rides normal Apply
-    // type-param inference (043 §6.6) — `U` is pinned from the arg `42` (Int),
-    // so the call's return type is Int and the body type-checks.
+    // type-param inference (043 §6.6) — `U` is pinned from the arg `42` (Int64),
+    // so the call's return type is Int64 and the body type-checks.
     let src = r#"
         namespace wi279.generic
           export Box
           sort Box
-            entity box(value: Int)
+            entity box(value: Int64)
             operation idfn[U](b: Box, u: U) -> U = u
-            operation use_gen(b: Box) -> Int = ?b.idfn(42)
+            operation use_gen(b: Box) -> Int64 = ?b.idfn(42)
           end
         end
     "#;
     let (_kb, errs) = load_capturing_errors(src);
     assert!(errs.is_empty(),
-        "expected ?b.idfn(42) to dispatch and infer U = Int; got:\n{}",
+        "expected ?b.idfn(42) to dispatch and infer U = Int64; got:\n{}",
         errors_text(&errs));
 }
 
@@ -160,9 +160,9 @@ fn dot_let_bound_receiver_dispatches() {
         namespace wi279.letbound
           export Box
           sort Box
-            entity box(value: Int)
-            operation peek(b: Box) -> Int = 1
-            operation use_let(b: Box) -> Int =
+            entity box(value: Int64)
+            operation peek(b: Box) -> Int64 = 1
+            operation use_let(b: Box) -> Int64 =
               let x = b
               ?x.peek()
           end
@@ -184,8 +184,8 @@ fn dot_no_match_reports_clear_error_at_span() {
         namespace wi279.nomatch
           export Box
           sort Box
-            entity box(value: Int)
-            operation use_bad(b: Box) -> Int = ?b.nope()
+            entity box(value: Int64)
+            operation use_bad(b: Box) -> Int64 = ?b.nope()
           end
         end
     "#;
@@ -209,10 +209,10 @@ fn dot_rule_override_enables_dispatch() {
         namespace wi279.override
           export Box
           sort Box
-            entity box(value: Int)
-            operation regular(b: Box, x: Int) -> Int = x
+            entity box(value: Int64)
+            operation regular(b: Box, x: Int64) -> Int64 = x
             rule dr: dot_apply(?e, special, ?x) = regular(?e, ?x) [simp]
-            operation use_override(b: Box) -> Int = ?b.special(7)
+            operation use_override(b: Box) -> Int64 = ?b.special(7)
           end
         end
     "#;
@@ -233,13 +233,13 @@ fn dot_rule_override_is_sort_scoped() {
         namespace wi279.override_scoped
           export Box, Other
           sort Box
-            entity box(value: Int)
-            operation regular(b: Box, x: Int) -> Int = x
+            entity box(value: Int64)
+            operation regular(b: Box, x: Int64) -> Int64 = x
             rule dr: dot_apply(?e, special, ?x) = regular(?e, ?x) [simp]
           end
           sort Other
-            entity other(tag: Int)
-            operation use_other(o: Other) -> Int = ?o.special(7)
+            entity other(tag: Int64)
+            operation use_other(o: Other) -> Int64 = ?o.special(7)
           end
         end
     "#;
@@ -262,10 +262,10 @@ fn dot_rule_nonlinear_lhs_does_not_fire_on_distinct_args() {
         namespace wi279.nonlinear
           export Box
           sort Box
-            entity box(value: Int)
-            operation regular(b: Box) -> Int = 0
+            entity box(value: Int64)
+            operation regular(b: Box) -> Int64 = 0
             rule dr: dot_apply(?e, special, ?e) = regular(?e) [simp]
-            operation use_nl(b: Box) -> Int = ?b.special(7)
+            operation use_nl(b: Box) -> Int64 = ?b.special(7)
           end
         end
     "#;

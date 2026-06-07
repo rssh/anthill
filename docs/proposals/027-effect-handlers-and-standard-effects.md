@@ -576,7 +576,7 @@ end
 
 (There is no "Branch-aware handler" — Branch interaction is a runtime mechanism per the resource's contract, not a handler kind.)
 
-**Bidirectional correspondence** (037 Rule 8): `Modify[T]` may appear in an effect row only if T has a registered handler; a handler is meaningful only if some operation declares `Modify[T]`. Bare value types (Int, Bool, String) cannot carry Modify because they have no wrapper sort to attach a handler to — mutability is a property of the resource type. See 037 for the full rule.
+**Bidirectional correspondence** (037 Rule 8): `Modify[T]` may appear in an effect row only if T has a registered handler; a handler is meaningful only if some operation declares `Modify[T]`. Bare value types (Int64, Bool, String) cannot carry Modify because they have no wrapper sort to attach a handler to — mutability is a property of the resource type. See 037 for the full rule.
 
 **Subtleties** (highlights; 037 has the canonical list):
 - The handler-stack model picks the topmost handler matching `Modify[T]`. Per-resource distinction is the framework's default, not a special pattern.

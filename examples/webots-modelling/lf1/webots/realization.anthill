@@ -10,7 +10,7 @@
 --   $WEBOTS_HOME/include/controller/cpp/webots/<DeviceName>.hpp
 
 namespace anthill.examples.lf1.webots.realization
-  import anthill.prelude.{List, Option, String, Int}
+  import anthill.prelude.{List, Option, String, Int64}
   import anthill.realization.{Implementation, CarrierBinding,
                               NamespaceMapping}
   import anthill.realization.cpp_std.{ReturnTypeConversion}
@@ -26,7 +26,7 @@ namespace anthill.examples.lf1.webots.realization
   -- to StepResult).
   -- ================================================================
 
-  entity CppEnumValue(constructor: String, value: Int)
+  entity CppEnumValue(constructor: String, value: Int64)
 
   fact CppEnumValue(constructor: "anthill.examples.lf1.webots.Running",
                     value: 0)

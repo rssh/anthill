@@ -169,7 +169,7 @@ fn requires_spec_inst_completed_for_int_add() {
     let sol = &solutions[0];
     let inst_tid = kb.reify(var_inst, &sol.subst).as_term().unwrap();
 
-    // spec should be SortView(Monoid(), T=Int(), combine=Ref(add), identity=Ref(zero))
+    // spec should be SortView(Monoid(), T=Int64(), combine=Ref(add), identity=Ref(zero))
     match kb.get_term(inst_tid).clone() {
         Term::Fn { ref functor, ref named_args, .. } => {
             let functor_name = kb.resolve_sym(*functor);
@@ -180,11 +180,11 @@ fn requires_spec_inst_completed_for_int_add() {
             // Should have all 3 bindings
             assert_eq!(named_args.len(), 3, "spec should have 3 named args (T, combine, identity), got {}", named_args.len());
 
-            // Check T binding -> Int
+            // Check T binding -> Int64
             let t_tid = find_named_arg_by_short(&kb, &named_args, "T");
             assert!(t_tid.is_some(), "should have T binding");
             let t_short = extract_short_name(&kb, t_tid.unwrap());
-            assert_eq!(t_short, "Int", "T should be bound to Int, got: {t_short}");
+            assert_eq!(t_short, "Int64", "T should be bound to Int64, got: {t_short}");
 
             // Check combine binding -> add
             let c_tid = find_named_arg_by_short(&kb, &named_args, "combine");
@@ -272,9 +272,9 @@ fn resolve_sort_inst_param_extracts_type_binding() {
     match kb.get_term(val_tid) {
         Term::Fn { functor, .. } => {
             let name = kb.resolve_sym(*functor);
-            assert!(name == "Int" || name.ends_with(".Int"), "T should resolve to Int, got: {name}");
+            assert!(name == "Int64" || name.ends_with(".Int64"), "T should resolve to Int64, got: {name}");
         }
-        other => panic!("T value should be Int(), got: {:?}", other),
+        other => panic!("T value should be Int64(), got: {:?}", other),
     }
 }
 
@@ -318,7 +318,7 @@ fn resolve_sort_inst_param_extracts_operation_binding() {
 fn auto_bind_same_named_operations() {
     let mut kb = load_monoid_kb();
 
-    // AutoBindTest has `requires Monoid[T = Int]` with no explicit combine/identity.
+    // AutoBindTest has `requires Monoid[T = Int64]` with no explicit combine/identity.
     // Since AutoBindTest has same-named ops (combine, identity), they should auto-bind.
     let auto_term = kb.resolve_qualified_name_term("test.monoid.AutoBindTest");
     let var_inst = make_var(&mut kb, "inst");

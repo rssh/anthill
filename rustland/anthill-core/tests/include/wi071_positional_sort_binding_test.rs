@@ -1,11 +1,11 @@
 //! WI-071 — bare-Type positional SortBinding for parameterized type
-//! references. `Map[String, Int]` is the user-facing shorthand for
-//! `Map[K = String, V = Int]`; positional bindings map to the sort's
+//! references. `Map[String, Int64]` is the user-facing shorthand for
+//! `Map[K = String, V = Int64]`; positional bindings map to the sort's
 //! type parameters in declaration order.
 //!
 //! Before this fix, `type_expr_to_term`'s Parameterized arm silently
 //! dropped positional bindings ("// Positional bindings without param
-//! name — skip for now"), so `Map[String, Int]` parsed and loaded but
+//! name — skip for now"), so `Map[String, Int64]` parsed and loaded but
 //! produced a `parameterized(base: Map)` with no K/V mapping at all.
 //! The fix consults `KnowledgeBase::type_params_of_sort` (which now
 //! returns declaration order via the new `Scope::type_params_ordered`
@@ -41,24 +41,24 @@ fn load_ok(source: &str) -> KnowledgeBase {
 #[test]
 fn positional_two_params_maps_to_declaration_order() {
     // Map declares `sort K = ?; sort V = ?` in that order. The
-    // positional form `Map[String, Int]` must produce the same
-    // parameterized type as the named form `Map[K = String, V = Int]`.
+    // positional form `Map[String, Int64]` must produce the same
+    // parameterized type as the named form `Map[K = String, V = Int64]`.
     // We verify by loading two operations side-by-side and checking
     // the typer accepts both equivalently.
     let src = r#"
 namespace test.wi071_pos
-  import anthill.prelude.{Map, String, Int}
+  import anthill.prelude.{Map, String, Int64}
   import anthill.prelude.Map.{empty, put, get}
 
-  operation positional() -> Map[String, Int] = put(empty(), "a", 1)
-  operation named() -> Map[K = String, V = Int] = put(empty(), "a", 1)
+  operation positional() -> Map[String, Int64] = put(empty(), "a", 1)
+  operation named() -> Map[K = String, V = Int64] = put(empty(), "a", 1)
 
   -- Same return type for both — so a third op assigning one to a
   -- variable of the other's annotated type should typecheck. If the
   -- positional form silently dropped its bindings (the pre-fix
   -- behaviour), the typer would see the result as Map[K=?, V=?] vs
-  -- Map[K=String, V=Int] and complain.
-  operation cross_check() -> Map[String, Int] = named()
+  -- Map[K=String, V=Int64] and complain.
+  operation cross_check() -> Map[String, Int64] = named()
 end
 "#;
     let _kb = load_ok(src);
@@ -72,11 +72,11 @@ fn positional_single_param_preserves_existing_behaviour() {
     // declaration-order lookup still routes correctly.
     let src = r#"
 namespace test.wi071_single
-  import anthill.prelude.{List, Option, Int}
+  import anthill.prelude.{List, Option, Int64}
   import anthill.prelude.List.{cons, nil}
 
-  operation make_list() -> List[Int] = cons(1, nil())
-  operation maybe() -> Option[Int] = none()
+  operation make_list() -> List[Int64] = cons(1, nil())
+  operation maybe() -> Option[Int64] = none()
 end
 "#;
     let _kb = load_ok(src);
@@ -90,14 +90,14 @@ fn named_binding_overrides_positional_cursor() {
     // only positional bindings, not named).
     let src = r#"
 namespace test.wi071_mixed
-  import anthill.prelude.{Map, String, Int}
+  import anthill.prelude.{Map, String, Int64}
   import anthill.prelude.Map.{empty}
 
   -- V named explicitly; K still resolves positionally to "String".
-  operation mixed1() -> Map[String, V = Int] = empty()
+  operation mixed1() -> Map[String, V = Int64] = empty()
 
-  -- K named explicitly; V resolves positionally to "Int".
-  operation mixed2() -> Map[K = String, Int] = empty()
+  -- K named explicitly; V resolves positionally to "Int64".
+  operation mixed2() -> Map[K = String, Int64] = empty()
 end
 "#;
     let _kb = load_ok(src);

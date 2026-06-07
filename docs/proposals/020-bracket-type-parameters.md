@@ -9,14 +9,14 @@
 Anthill currently uses curly braces for type parameterization:
 
 ```anthill
-List{T = Int}
+List{T = Int64}
 Option{T = String}
-fact Eq{Int}
+fact Eq{Int64}
 ```
 
 This overloads `{}` — it appears in three distinct roles:
 
-1. **Type parameters / instantiation**: `List{T = Int}`, `Eq{Int}`
+1. **Type parameters / instantiation**: `List{T = Int64}`, `Eq{Int64}`
 2. **Set literals**: `{a, b, c}` → `SetLiteral(a, b, c)`
 3. **Block delimiters**: `sort Foo { ... }`, `namespace Bar { ... }`
 
@@ -63,8 +63,8 @@ instantiation_term  ::=  Name '[' SortBinding (',' SortBinding)* ']'
 
 `SortBinding` is unchanged:
 ```
-SortBinding ::= Name ('=' Type)?    -- named:     T = Int
-              | Type                 -- positional: Int
+SortBinding ::= Name ('=' Type)?    -- named:     T = Int64
+              | Type                 -- positional: Int64
               | VariableTerm         -- variable:   ?
 ```
 
@@ -83,14 +83,14 @@ This is the exact same disambiguation pattern we already use for `Name{...}` vs 
 -- Types
 sort T = ?
 field items: List[T = String]
-field maybe: Option[T = Int]
+field maybe: Option[T = Int64]
 operation parse(s: String) -> Result[T = AST, E = ParseError]
 
 -- Instantiation as terms (spec satisfaction)
-fact Eq[Int]
+fact Eq[Int64]
 fact Eq[T = String]
 fact Ordered[T = Float]
-fact Numeric[T = Int]
+fact Numeric[T = Int64]
 
 -- Nested
 field deps: Option[T = List[T = String]]

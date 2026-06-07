@@ -118,7 +118,7 @@ The substitutions unify **the same way rules already do** — store De Bruijn,
 identified as the correct replacement for today's `substitute_ref_syms`
 (param-symbol → arg-symbol *string* substitution, which is precisely why
 `-Modify(a)` cannot unify cleanly now). Walk through `find(l0, q)` where
-`q : Cell[Int] -> Bool @ { Modify[c] }`:
+`q : Cell[Int64] -> Bool @ { Modify[c] }`:
 
 ```
 open find's sig:   T fresh; callback arrow param a → fresh value-var V

@@ -22,7 +22,7 @@ use anthill_core::span::{SourceId, SourceSpan};
 use smallvec::SmallVec;
 
 /// A KB with the prelude registered — the typer needs the
-/// `anthill.prelude.Type.*` / `Int` / `Bool` symbols to build leaf types.
+/// `anthill.prelude.Type.*` / `Int64` / `Bool` symbols to build leaf types.
 /// (The bare-`new()` `simp_rewrite` unit tests don't, since they call the
 /// firing helpers directly without type-checking.)
 fn fresh_kb() -> KnowledgeBase {
@@ -163,7 +163,7 @@ fn typer_fires_simp_rule_at_apply() {
     let r = type_check_node(&mut kb, &env, &body, None).expect("add(7,0) types");
 
     // add_zero fired during type-checking: the result node is the reused
-    // matched child `7`, and it carries Int as its inferred type.
+    // matched child `7`, and it carries Int64 as its inferred type.
     assert!(
         matches!(r.node.as_expr(), Some(Expr::Const(Literal::Int(7)))),
         "expected add(7,0) to rewrite to 7, got {:?}",
@@ -175,7 +175,7 @@ fn typer_fires_simp_rule_at_apply() {
     );
     let ms = min_sort(&kb, &r.node).expect("rewritten node carries a declared sort");
     let ty_name = kb.resolve_sym(ms);
-    assert!(ty_name == "Int" || ty_name.ends_with(".Int"), "result type Int, got {ty_name}");
+    assert!(ty_name == "Int64" || ty_name.ends_with(".Int64"), "result type Int64, got {ty_name}");
 }
 
 #[test]

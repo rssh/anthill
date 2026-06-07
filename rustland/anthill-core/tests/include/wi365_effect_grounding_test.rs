@@ -64,18 +64,18 @@ fn load_errors(extras: &[&str]) -> Vec<String> {
 /// effect — by design — so the effect must be derived from `MutBox.peek`.
 const CARRIER: &str = r#"
 namespace test.wi365.carrier
-  import anthill.prelude.{Int, Modify, EffectsRuntime}
+  import anthill.prelude.{Int64, Modify, EffectsRuntime}
   export Box, MutBox
 
   sort Box
     effects Effect = ?
-    operation peek(b: Box) -> Int effects Effect
+    operation peek(b: Box) -> Int64 effects Effect
   end
 
   sort MutBox
-    entity mb(fd: Int)
+    entity mb(fd: Int64)
     fact Box
-    operation peek(b: MutBox) -> Int effects Modify[b] =
+    operation peek(b: MutBox) -> Int64 effects Modify[b] =
       match b
         case mb(x) -> x
   end
@@ -111,11 +111,11 @@ fn carrier_loads_clean() {
 fn direct_carrier_peek_surfaces_modify_effect() {
     let consumer = r#"
 namespace test.wi365.direct
-  import anthill.prelude.{Int}
+  import anthill.prelude.{Int64}
   import test.wi365.carrier.{MutBox}
   import test.wi365.carrier.MutBox.{peek}
 
-  operation read_it(b: MutBox) -> Int = peek(b)
+  operation read_it(b: MutBox) -> Int64 = peek(b)
 end
 "#;
     let errs = load_errors(&[CARRIER, consumer]);
@@ -143,11 +143,11 @@ end
 fn dispatched_spec_peek_surfaces_modify_effect() {
     let consumer = r#"
 namespace test.wi365.dispatched
-  import anthill.prelude.{Int}
+  import anthill.prelude.{Int64}
   import test.wi365.carrier.{MutBox}
   import test.wi365.carrier.Box.{peek}
 
-  operation read_it(b: MutBox) -> Int = peek(b)
+  operation read_it(b: MutBox) -> Int64 = peek(b)
 end
 "#;
     let errs = load_errors(&[CARRIER, consumer]);

@@ -22,7 +22,7 @@ The migration is the first concrete consumer of the `rust+anthill` realization p
                 │  • register `anthill.prelude.Time.now` builtin      │
                 │  • construct FileStore, BulkStore::pull → load      │
                 │  • interp.call("anthill.todo.main", [argv...])      │
-                │  • return Int as exit code                          │
+                │  • return Int64 as exit code                          │
                 └─────────────────────────────────────────────────────┘
                                    │
                                    ▼
@@ -67,7 +67,7 @@ Host (Rust shim):
 
 Anthill (the bundled program):
 - argv parsing via `anthill.cli.parse.parse_argv` over the `OperationSpec` registry.
-- All other subcommands as `operation cmd_<name>(args, agent, store) -> Int`.
+- All other subcommands as `operation cmd_<name>(args, agent, store) -> Int64`.
 - KB queries via `anthill.reflect.KB.execute`.
 - KB mutations via `anthill.reflect.KB.assert` / `KB.retract`.
 - Persistence via `anthill.persistence.{persist, flush}`.
@@ -167,7 +167,7 @@ Old contents (`src/main.rs` 1625 lines, mostly text-editing helpers) is deleted 
 `anthill.cli.parse.parse_argv` (WI-159) handles the heavy lifting:
 
 ```anthill
-operation main(args: List[T = String]) -> Int =
+operation main(args: List[T = String]) -> Int64 =
   let store = bootstrap_store(args) in
   match parse_argv(specs, args)
     case parse_err(no_subcommand()) -> print_help(specs)  -- exit 0

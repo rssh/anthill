@@ -50,7 +50,7 @@ end
     let t_int = kb.alloc_from_value(&Value::Int(7)).expect("alloc int");
     match kb.get_term(t_int) {
         Term::Const(Literal::Int(7)) => {}
-        other => panic!("expected Const(Int(7)), got {other:?}"),
+        other => panic!("expected Const(Int64(7)), got {other:?}"),
     }
 }
 
@@ -198,7 +198,7 @@ fn q3_execute_conjunction_composes_goals() {
     let mut kb = load_kb_with(r#"
 namespace test.q3_conj
   sort Pair
-    entity pair(x: Int, y: Int)
+    entity pair(x: Int64, y: Int64)
   end
   fact pair(x: 1, y: 10)
   fact pair(x: 2, y: 20)

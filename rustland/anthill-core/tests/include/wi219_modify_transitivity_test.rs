@@ -80,7 +80,7 @@ fn commit_pattern_calling_stdlib_persist() {
     // The pattern-bound b should be local; Modify[T = b] should not surface.
     let source = r#"
 namespace anthill.test.wi219.commit_test
-  import anthill.prelude.{Cell, Int, Unit, List}
+  import anthill.prelude.{Cell, Int64, Unit, List}
   import anthill.prelude.Meta.{Meta}
   import anthill.persistence.{Store, persist}
   import anthill.reflect.{Term}
@@ -88,11 +88,11 @@ namespace anthill.test.wi219.commit_test
   -- A backing store impl satisfying anthill.persistence.Store
   sort MyBackend
     fact Store
-    entity bk(id: Int)
+    entity bk(id: Int64)
   end
 
   sort MyState
-    entity st(b: MyBackend, c: Int)
+    entity st(b: MyBackend, c: Int64)
   end
 
   sort MyStore
@@ -130,25 +130,25 @@ fn modify_on_pattern_bound_subterm_does_not_leak() {
 
     let source = r#"
 namespace anthill.test.wi219
-  import anthill.prelude.{Cell, Int, Unit}
+  import anthill.prelude.{Cell, Int64, Unit}
 
   -- A "backend" resource that supports persist
   sort Backend
-    entity bk(id: Int)
+    entity bk(id: Int64)
 
-    operation persist(b: Backend, value: Int) -> Unit
+    operation persist(b: Backend, value: Int64) -> Unit
       effects Modify[b]
   end
 
   -- Wrapper state holds the backend plus a counter
   sort StoreState
-    entity st(backend: Backend, counter: Int)
+    entity st(backend: Backend, counter: Int64)
   end
 
   -- Operation declaring Modify[s] and persisting on s.backend
   -- via pattern-bound `b`.
   sort Store
-    operation commit(s: Cell[V = StoreState], value: Int) -> Unit
+    operation commit(s: Cell[V = StoreState], value: Int64) -> Unit
       effects Modify[s]
     =
       match Cell.get(s)

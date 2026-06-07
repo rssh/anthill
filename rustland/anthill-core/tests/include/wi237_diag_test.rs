@@ -75,11 +75,11 @@ fn dump_eq_lt_rewrites() {
         "anthill.prelude.Ordered",
         "anthill.prelude.Ordered.lt",
         "anthill.prelude.Ordered.compare",
-        "anthill.prelude.Int",
-        "anthill.prelude.Int.lt",
-        "anthill.prelude.Int.compare",
-        "anthill.prelude.Int.Ordered.lt",
-        "anthill.prelude.Int.Ordered.compare",
+        "anthill.prelude.Int64",
+        "anthill.prelude.Int64.lt",
+        "anthill.prelude.Int64.compare",
+        "anthill.prelude.Int64.Ordered.lt",
+        "anthill.prelude.Int64.Ordered.compare",
     ];
     for name in names {
         let resolved = kb.try_resolve_symbol(name);

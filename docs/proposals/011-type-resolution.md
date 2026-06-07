@@ -38,15 +38,15 @@ In the current implementation, type variables (`?T` in sort definitions and oper
 | `sort T = ?` in sort body | `SortAlias(T, Var(?))` fact; the `?` IS stored as a Var term |
 | `?T` in operation param type | `Var(VarId)` directly in the operation's `Fn` named_args |
 | `?x` in rule body | `Var(VarId)` — structurally identical |
-| `Stream[T = Int]` (instantiation) | `Fn("Stream", T: Ref("Int"))` — **not** unification, just structured data |
+| `Stream[T = Int64]` (instantiation) | `Fn("Stream", T: Ref("Int64"))` — **not** unification, just structured data |
 
 This means: type parameters and logic variables are **unified at the KB level**. The distinction is a user-level/parse-time concept only.
 
 ### Implication: Two paths for type instantiation
 
-**Path A: Instantiation = unification.** Since `?T` is `Var(VarId)`, binding `Stream[T = Int]` could be literal unification of `?T` with `Int`. Type resolution IS query resolution. Most "types-are-terms" approach.
+**Path A: Instantiation = unification.** Since `?T` is `Var(VarId)`, binding `Stream[T = Int64]` could be literal unification of `?T` with `Int64`. Type resolution IS query resolution. Most "types-are-terms" approach.
 
-**Path B: Instantiation stays syntactic.** `Stream[T = Int]` remains `Fn("Stream", T: Ref("Int"))` — a concrete term. The KB never unifies type vars during instantiation. Simpler, current behavior.
+**Path B: Instantiation stays syntactic.** `Stream[T = Int64]` remains `Fn("Stream", T: Ref("Int64"))` — a concrete term. The KB never unifies type vars during instantiation. Simpler, current behavior.
 
 ### Key Insight: Type Checking = Logic Procedures Against the KB
 
@@ -69,8 +69,8 @@ rule type_compatible(?A, ?A)                          -- same type (unification)
 rule type_compatible(?A, ?B) :- is_entity_of(?A, ?B)  -- entity subtyping
 rule type_compatible(?A, ?B) :- refines(?A, ?B)       -- spec refinement
 
--- Spec satisfaction: does Int satisfy Eq?
--- = conjunctive query: apply {T → Int} to Eq's fact template, check all match
+-- Spec satisfaction: does Int64 satisfy Eq?
+-- = conjunctive query: apply {T → Int64} to Eq's fact template, check all match
 rule satisfies(?Sort, ?Spec) :-
     template_of(?Spec, ?Facts),
     all_facts_present(?Facts, {?Spec.T -> ?Sort})
@@ -114,26 +114,26 @@ The SLD resolver (`resolve(goals, config) -> Vec<Solution>`) already supports co
 
 ### Type Application: Resolve On Demand, Don't Materialize
 
-When you write `List[T = Int]`, the question is whether to **materialize** concrete facts for the instantiation or **resolve on demand**.
+When you write `List[T = Int64]`, the question is whether to **materialize** concrete facts for the instantiation or **resolve on demand**.
 
 **Materialize** = generate concrete facts:
 ```
--- From template Operation(length, l: List, _returns: Int) with List.T = ?
--- Generate: Operation(length, l: List[T=Int], _returns: Int)
+-- From template Operation(length, l: List, _returns: Int64) with List.T = ?
+-- Generate: Operation(length, l: List[T=Int64], _returns: Int64)
 ```
 Pro: fast lookup. Con: combinatorial explosion (N instantiations × M operations).
 
 **Resolve on demand** = keep templates with variables, use SLD resolution with substitution:
 ```
--- Query: "what operations does List[T=Int] have?"
--- = resolve([Operation(?name, ?params) in List], {T → Int})
+-- Query: "what operations does List[T=Int64] have?"
+-- = resolve([Operation(?name, ?params) in List], {T → Int64})
 -- SLD resolver applies substitution, returns matching operations
 ```
 Pro: no explosion, lazy, naturally incremental. Con: every type query is a resolution step.
 
 Since SLD resolution already exists and handles exactly this (conjunctive goals with substitution), **on-demand resolution is the right default**. Tabling (caching resolved results) can be added later if performance requires it.
 
-This means type application `List[T = Int]` is NOT a separate mechanism — it's a parameterized query. No new code needed for type instantiation; just express it as goals for the resolver.
+This means type application `List[T = Int64]` is NOT a separate mechanism — it's a parameterized query. No new code needed for type instantiation; just express it as goals for the resolver.
 
 ## What Is Typing?
 
@@ -146,7 +146,7 @@ The **typing of a term** is not a judgment ("typed or untyped") — it is a **co
 For example, the typing of `foo(?x)` with `requires gt(?x, 0)` is the constraint:
 
 ```
-∃S: HasSort(?x, S), HasOperation(gt, S, Int, Bool), ...
+∃S: HasSort(?x, S), HasOperation(gt, S, Int64, Bool), ...
 ```
 
 This expression IS the typing. The question is not "is this typed?" but "what are the constraints?"
@@ -168,7 +168,7 @@ operation foo(x: ?T) -> ?T
   requires gt(x, 0)
 ```
 
-- `?T = Int` → well-typed (gt on Int exists)
+- `?T = Int64` → well-typed (gt on Int64 exists)
 - `?T = String` → ill-typed (gt on String may not exist)
 - The formula has free variable `?T`, so typing is **indeterminate** until `?T` is bound
 
@@ -213,7 +213,7 @@ The kernel language spec says "types are terms" — sort identifiers are just te
 fact red <: Color
 fact green <: Color
 fact blue <: Color
-fact Eq[T = Int]     -- Int satisfies Eq
+fact Eq[T = Int64]     -- Int64 satisfies Eq
 ```
 
 This raises the question: when and how does the system resolve types?
@@ -223,7 +223,7 @@ This raises the question: when and how does the system resolve types?
 The current type structure in Anthill, from concrete to abstract:
 
 ```
-Literals (Int, Float, String, Bool)     — ground types, always known
+Literals (Int64, Float, String, Bool)     — ground types, always known
     ↑
 Entities (account, cons, nil, ...)      — constructors, typed by enclosing sort
     ↑
@@ -247,11 +247,11 @@ Key questions about this lattice:
 **Is everything in the KB typed?** Facts have an explicit `fe_sort` field (the sort under which the fact was asserted). But terms within facts may contain untyped subterms (variables, nested Fn terms). Should every subterm have a known sort?
 
 **Where do types come from?**
-- Entity declarations: `entity account(id: Int, owner: String, balance: Int)` — types from signature
+- Entity declarations: `entity account(id: Int64, owner: String, balance: Int64)` — types from signature
 - Operation declarations: types from parameter/return annotations
 - Rule bodies: types inferred from unification context
 - Standalone facts: types from the `fact` assertion's sort parameter
-- Instantiation: types from binding `{T = Int}`
+- Instantiation: types from binding `{T = Int64}`
 
 ## Open Questions
 
@@ -282,12 +282,12 @@ Where should type resolution fit? Options:
 
 **OQ2.1.** For a term `account(?id, ?owner, ?bal)`:
   - What sort is this term? → `Account` (by functor `account` matching a constructor)
-  - What sorts are the arguments? → `?id: Int`, `?owner: String`, `?bal: Int` (from entity declaration)
+  - What sorts are the arguments? → `?id: Int64`, `?owner: String`, `?bal: Int64` (from entity declaration)
   - Is this a complete/partial application? → complete (all 3 args provided)
 
 **OQ2.2.** For a variable `?x`:
   - What sort does `?x` range over? → unknown until unified
-  - Can we constrain it? `?x : Int` → `?x` ranges over `Int`
+  - Can we constrain it? `?x : Int64` → `?x` ranges over `Int64`
   - Does the constraint come from the declaration site or use site?
 
 **OQ2.3.** For a sort expression `Stream[T = Account]`:
@@ -305,11 +305,11 @@ The "What Is Typing?" section above resolves the fundamental question: type infe
 Both reduce to SLD resolution against the KB. There is no separate inference pass — unification during query resolution IS type inference.
 
 **OQ3.2.** (Remaining) How much inference is needed for sort-defined syntax sugar? If `[?x | ?x <- expr]` needs to know that `expr` is a `Stream` to desugar, then at minimum we need to infer the sort of `expr`. Options:
-  - Require explicit annotation: `[?x | ?x <- (expr : Stream[T = Int])]` — no inference needed
-  - Infer from context: if `expr` is a call to an operation returning `Stream[T = Int]`, propagate that
+  - Require explicit annotation: `[?x | ?x <- (expr : Stream[T = Int64])]` — no inference needed
+  - Infer from context: if `expr` is a call to an operation returning `Stream[T = Int64]`, propagate that
   - Infer from operations: if `expr` supports `flatMap`/`guard`/`pure`, it's comprehension-compatible (structural typing)
 
-**OQ3.3.** Bidirectional type checking? Some systems propagate type info both top-down (expected type) and bottom-up (inferred type). E.g., `let s : Stream[T = Int] = query account(?, ?, ?bal)` — the expected type `Stream[T = Int]` constrains how `query` is desugared. Is bidirectional checking worth the complexity?
+**OQ3.3.** Bidirectional type checking? Some systems propagate type info both top-down (expected type) and bottom-up (inferred type). E.g., `let s : Stream[T = Int64] = query account(?, ?, ?bal)` — the expected type `Stream[T = Int64]` constrains how `query` is desugared. Is bidirectional checking worth the complexity?
 
 **OQ3.4.** Literal desugaring. The untyped term language includes `SetLiteral`, `TupleLiteral`, and `ListLiteral` (Proposal 019) — syntactic forms that the typing process must rewrite into concrete operations. `[a, b, c]` desugars via `Collection.add`/`empty`, `[?h | ?t]` desugars via `Iteration.split`. Both algebras are parameterized by an effect set `Effect` (since effectful types like `Stream` also need literal support). The typing process must define:
   - How expected types propagate to literal positions (field types, parameter types, return types)
@@ -368,9 +368,9 @@ The realization boundary is where accidental `?` must be zero. Intentional `?` (
   - **Import-based priority**: the current scope's imports determine preference
   - **Error**: require the user to disambiguate
 
-**OQ4.2.** Can operations be **overloaded** across sorts? If `add` exists on both `Int` and `Float`, is `add(1, 2)` resolved by argument types? (Yes — this is exactly the constraint query mechanism above.)
+**OQ4.2.** Can operations be **overloaded** across sorts? If `add` exists on both `Int64` and `Float`, is `add(1, 2)` resolved by argument types? (Yes — this is exactly the constraint query mechanism above.)
 
-**OQ4.3.** How does this interact with spec sorts? If `Numeric` declares `add`, and both `Int` and `Float` satisfy `Numeric`, then `add` is polymorphic. The specificity ordering handles this: if the argument is known to be `Int`, prefer `Int.add` over `Numeric.add`.
+**OQ4.3.** How does this interact with spec sorts? If `Numeric` declares `add`, and both `Int64` and `Float` satisfy `Numeric`, then `add` is polymorphic. The specificity ordering handles this: if the argument is known to be `Int64`, prefer `Int64.add` over `Numeric.add`.
 
 ### OQ5. Types-are-terms implications
 
@@ -412,7 +412,7 @@ The Anthill type universe, from most concrete to most abstract:
                │                                      │
     ┌──────────┴─────────┐              ┌─────────────┴────────┐
     │ Entities/ctors      │              │ Instantiated sorts   │
-    │ (red, account,      │              │ (List[T=Int],        │
+    │ (red, account,      │              │ (List[T=Int64],        │
     │  cons, nil)         │              │  Stream[T=Account])  │
     └──────────┬─────────┘              └──────────────────────┘
                │
@@ -424,7 +424,7 @@ The Anthill type universe, from most concrete to most abstract:
                │
     ┌──────────┴─────────┐
     │ Literals            │
-    │ (Int, Float,        │
+    │ (Int64, Float,        │
     │  String, Bool)      │
     └────────────────────┘
 ```
@@ -461,7 +461,7 @@ The critical point: this is **derived knowledge, not asserted facts**. The loade
 |---|---|---|---|
 | Nullary (`entity Draft`) | Singleton — exactly one value | `Draft` | `Draft <: WorkStatus` |
 | With fields (`entity Account(id, bal)`) | Refinement family — each application is a sort | `Account(42, 100)` | `Account(42, 100) <: Account` |
-| Parameterized (`entity Pair(fst: ?A, snd: ?B)`) | Dependent family — sort varies with params | `Pair(Int, String)` | `Pair(Int, String) <: Pair` |
+| Parameterized (`entity Pair(fst: ?A, snd: ?B)`) | Dependent family — sort varies with params | `Pair(Int64, String)` | `Pair(Int64, String) <: Pair` |
 
 For the effect system, the **nullary case** is the primary need (resource identifiers like `kb`, `store`). The refinement and dependent cases are powerful but can be deferred.
 
@@ -530,7 +530,7 @@ Each parameterized sort explicitly declares how subtyping propagates through its
 
 **OQ5c.2.** How to ensure soundness? In traditional type systems, the compiler checks that declared variance is consistent with usage (covariant parameters can't appear in input positions). With rules-as-variance, unsound rules are expressible. Options: (a) trust the author, (b) add a checking rule/constraint that validates variance declarations against operation signatures, (c) defer — soundness checking is a concern for a later iteration.
 
-**OQ5c.3.** Default variance: should parameterized sorts without explicit subtyping rules be **invariant** by default? This is the safe choice — `List[Int]` and `List[Nat]` are unrelated unless a rule says otherwise.
+**OQ5c.3.** Default variance: should parameterized sorts without explicit subtyping rules be **invariant** by default? This is the safe choice — `List[Int64]` and `List[Nat]` are unrelated unless a rule says otherwise.
 
 ### OQ5d. Execution Model: Primitives, Procedural Chunks, and Residuals
 
@@ -701,21 +701,21 @@ operation execute(query: LogicalQuery)
 
 **OQ5b.3. How do sorts relate to each other?** The current relationships:
   - **EntityOf** (`<:`): `red <: Color` — constructors are entities of their enclosing sort (1-level, non-transitive)
-  - **Spec satisfaction**: `fact Eq[T = Int]` — Int satisfies the Eq spec
-  - **Type parameter binding**: `List[T = Int]` — T is bound to Int
-  - **Type alias**: `sort Money = Int` — Money is another name for Int
+  - **Spec satisfaction**: `fact Eq[T = Int64]` — Int64 satisfies the Eq spec
+  - **Type parameter binding**: `List[T = Int64]` — T is bound to Int64
+  - **Type alias**: `sort Money = Int64` — Money is another name for Int64
 
 Are these all the same relation (subtyping)? Or distinct relations with different semantics?
 
-**OQ5b.4. Sort of sorts.** What is the sort of `Int`? Options:
-  - `Int : Sort` — all sort names have sort `Sort`
-  - `Int : Type` — with `Type` as a universe (á la Haskell's `Type` kind)
+**OQ5b.4. Sort of sorts.** What is the sort of `Int64`? Options:
+  - `Int64 : Sort` — all sort names have sort `Sort`
+  - `Int64 : Type` — with `Type` as a universe (á la Haskell's `Type` kind)
   - No meta-sort — sort names are just terms, not typed themselves
   - Currently: sort declarations create `SortInfo(name: Symbol, definition: Term, constructors: [...], operations: [...], parameters: [...], requires: [...])` facts with sort `Sort` and domain = enclosing scope
 
-**OQ5b.5. Spec sorts and the lattice.** Spec sorts (Eq, Ordered, Numeric) are at a different level — they classify sorts, not terms. `Eq[T = Int]` says "Int as a sort satisfies Eq." This is a **sort-level predicate**, not a term-level type. Should the lattice distinguish:
-  - Term-level types: `42 : Int`, `red : Color`
-  - Sort-level predicates: `Int satisfies Eq`, `Account satisfies Persistent`
+**OQ5b.5. Spec sorts and the lattice.** Spec sorts (Eq, Ordered, Numeric) are at a different level — they classify sorts, not terms. `Eq[T = Int64]` says "Int64 as a sort satisfies Eq." This is a **sort-level predicate**, not a term-level type. Should the lattice distinguish:
+  - Term-level types: `42 : Int64`, `red : Color`
+  - Sort-level predicates: `Int64 satisfies Eq`, `Account satisfies Persistent`
 
 Or are these unified in the types-are-terms framework?
 
@@ -742,12 +742,12 @@ Template(Eq, T):
     OperationInfo(name: eq, sort_context: some(value: Eq), params: [FieldInfo(name: "a", type_name: T), FieldInfo(name: "b", type_name: T)], return_type: Bool, ...) }
 ```
 
-Asserting `fact Eq[T = Int]` means: apply substitution `{T → Int}` and check the KB:
+Asserting `fact Eq[T = Int64]` means: apply substitution `{T → Int64}` and check the KB:
 
 ```
 Check against KB:
-  SortInfo(name: Int, ...) ?          → ✓ Int is a declared sort
-  OperationInfo(name: eq, sort_context: some(value: Eq), params: [FieldInfo(name: "a", type_name: Int), ...], return_type: Bool, ...) ?  → ✓ or ✗
+  SortInfo(name: Int64, ...) ?          → ✓ Int64 is a declared sort
+  OperationInfo(name: eq, sort_context: some(value: Eq), params: [FieldInfo(name: "a", type_name: Int64), ...], return_type: Bool, ...) ?  → ✓ or ✗
 ```
 
 This is fundamentally different from term unification:
@@ -762,25 +762,25 @@ This is fundamentally different from term unification:
 
 #### The key operations
 
-**Instantiation checking.** Given `Eq[T = Int]`:
+**Instantiation checking.** Given `Eq[T = Int64]`:
 1. Look up the fact template for `Eq`
-2. Apply substitution `{T → Int}` to all patterns in the template
+2. Apply substitution `{T → Int64}` to all patterns in the template
 3. Query the KB for each instantiated pattern
 4. Report: which facts exist, which are missing (= obligations)
 
-**Spec satisfaction.** `fact Eq[T = Int]` asserts that Int satisfies Eq. The system:
+**Spec satisfaction.** `fact Eq[T = Int64]` asserts that Int64 satisfies Eq. The system:
 1. Performs instantiation checking (above)
 2. Missing facts become **open obligations** — pheromone signals for agents to fulfill
 3. Full match = satisfaction verified
 
-**Type-compatible matching.** When checking if `Operation(eq, a: Int, b: Int, _returns: Bool)` exists, allow compatible matches: if `red` is an entity of `Color`, an operation `eq(a: Color, b: Color) -> Bool` could match with `red` as argument (via `type_compatible`).
+**Type-compatible matching.** When checking if `Operation(eq, a: Int64, b: Int64, _returns: Bool)` exists, allow compatible matches: if `red` is an entity of `Color`, an operation `eq(a: Color, b: Color) -> Bool` could match with `red` as argument (via `type_compatible`).
 
 #### Analogies in other systems
 
 | System | Mechanism | Anthill equivalent |
 |--------|-----------|-------------------|
 | ML module signatures | Signature matching: does module M provide types/values declared in sig S? | Fact-set matching: does KB provide facts declared in sort S? |
-| Rust trait impl | Does `impl Eq for Int` provide all required methods? | Does `fact Eq[T = Int]` + KB have all required operation facts? |
+| Rust trait impl | Does `impl Eq for Int64` provide all required methods? | Does `fact Eq[T = Int64]` + KB have all required operation facts? |
 | TypeScript structural typing | Does this object have the right shape? | Does this KB region have the right fact shape? |
 | Algebraic specification (Maude) | Theory morphism: map spec axioms to implementation | Fact-set substitution: map sort template to KB facts |
 
@@ -795,13 +795,13 @@ This is fundamentally different from term unification:
   - (b) **Error**: partial match = type error. Strict, catches problems early.
   - (c) **Conditional**: the sort is "partially satisfied" — some operations available, others not yet.
 
-**OQ6.4.** Can fact-set matching be **incremental**? If new facts are asserted, does a previously partial match become complete? E.g., an agent implements `eq` for `Int` after `fact Eq[T = Int]` was asserted — the obligation is now fulfilled.
+**OQ6.4.** Can fact-set matching be **incremental**? If new facts are asserted, does a previously partial match become complete? E.g., an agent implements `eq` for `Int64` after `fact Eq[T = Int64]` was asserted — the obligation is now fulfilled.
 
-**OQ6.5.** Does fact-set matching subsume term unification for type instantiation? I.e., is `Stream[T = Int]` also fact-set matching (check that Stream's template with `T = Int` has consistent facts)? Or is instantiation simpler (just syntactic substitution)?
+**OQ6.5.** Does fact-set matching subsume term unification for type instantiation? I.e., is `Stream[T = Int64]` also fact-set matching (check that Stream's template with `T = Int64` has consistent facts)? Or is instantiation simpler (just syntactic substitution)?
 
 #### Sort definitions as fact templates with variables (not Abstract marker)
 
-**Update (implemented):** `sort T = ?` now emits `SortAlias(T, Var(?))` — the logical variable is stored directly as a `Term::Var`. Both variable (`sort T = ?Element`) and alias (`sort T = Int`) forms use `SortAlias`. The old `SortInfo(T, Abstract)` path has been removed.
+**Update (implemented):** `sort T = ?` now emits `SortAlias(T, Var(?))` — the logical variable is stored directly as a `Term::Var`. Both variable (`sort T = ?Element`) and alias (`sort T = Int64`) forms use `SortAlias`. The old `SortInfo(T, Abstract)` path has been removed.
 
 The proposed extension: store sort templates with logical variables throughout:
 
@@ -826,15 +826,15 @@ Template for List:
   SortInfo(name: List.T, definition: ?def, ...)           -- T's definition is unbound
   Entity(nil)                                             -- nil constructor
   Entity(cons, head: List.T, tail: List)                  -- cons constructor
-  OperationInfo(name: length, ..., return_type: Int, ...) -- length operation
+  OperationInfo(name: length, ..., return_type: Int64, ...) -- length operation
 ```
 
-Instantiation `Eq[T = Int]` applies `{Eq.T → Int}` and does fact-set matching:
+Instantiation `Eq[T = Int64]` applies `{Eq.T → Int64}` and does fact-set matching:
 
 ```
 After substitution:
-  SortInfo(name: Int, ...) ?   → matches SortInfo for Int ✓
-  OperationInfo(name: eq, ..., params: [FieldInfo(name: "a", type_name: Int), ...]) ?  → check KB ✓ or generate obligation
+  SortInfo(name: Int64, ...) ?   → matches SortInfo for Int64 ✓
+  OperationInfo(name: eq, ..., params: [FieldInfo(name: "a", type_name: Int64), ...]) ?  → check KB ✓ or generate obligation
 ```
 
 Benefits:
@@ -861,7 +861,7 @@ Benefits:
 **OQ7.1.** `Stream[T = Account]` is a sort instantiation — `T` is bound to `Account`. How does the type resolver handle:
   - Checking that `T` is a valid parameter of `Stream`?
   - Propagating the binding into operations? (`map` on `Stream[T = Account]` expects `Account -> ?B`)
-  - Nested instantiation? `Stream[T = List[T = Int]]`
+  - Nested instantiation? `Stream[T = List[T = Int64]]`
 
 **OQ6.2.** How do type variables (`?T`) interact with parametric sorts? In `operation identity(x: ?T) -> ?T`, `?T` is a universally quantified type variable. Resolution at call sites binds `?T` to a concrete sort.
 
@@ -871,7 +871,7 @@ Benefits:
 
 **OQ7.1.** When type resolution fails, what errors are produced?
   - "Unknown sort `Foo`" — name not found
-  - "Sort mismatch: expected `Int`, got `String`" — argument type error
+  - "Sort mismatch: expected `Int64`, got `String`" — argument type error
   - "Operation `map` is ambiguous: found in `List` and `Stream`" — overload resolution failure
   - "Sort `MyType` does not satisfy `Ordered`" — spec sort not satisfied
 
@@ -889,7 +889,7 @@ The type resolution and query system require several new sorts. These form a dep
 
 - **Grammar**: `unit` as a reserved keyword alongside `true`/`false`
 - **Rust**: `Literal::Unit` variant in `enum Literal`
-- **Stdlib**: `sort Unit = ?` (abstract/built-in, like `sort Int = ?`)
+- **Stdlib**: `sort Unit = ?` (abstract/built-in, like `sort Int64 = ?`)
 
 `unit` is the return type of effectful operations with no meaningful result, and the element type of `guard(cond: Bool) -> LogicalStream[T = Unit]`.
 
@@ -918,7 +918,7 @@ A **spec sort** (interface) for read-only lazy sequences. Declares the observati
 
 ```
 sort anthill.prelude.Stream
-  import anthill.prelude.{Option, Pair, List, Int}
+  import anthill.prelude.{Option, Pair, List, Int64}
   export Stream, msplit, once, observeOne, observeN, collect
 
   sort T = ?                -- the implementing sort
@@ -931,7 +931,7 @@ sort anthill.prelude.Stream
 
   -- Observation: crossing from lazy-land to concrete values
   operation observeOne(s: T) -> Option[T = ?Elem]
-  operation observeN(s: T, n: Int) -> List[T = ?Elem]
+  operation observeN(s: T, n: Int64) -> List[T = ?Elem]
   operation collect(s: T) -> List[T = ?Elem]
 end
 ```
@@ -946,7 +946,7 @@ LogicalStream declares `fact Stream[T]` inside its body — "I provide Stream fo
 
 ```
 sort anthill.prelude.LogicalStream
-  import anthill.prelude.{Stream, Option, Pair, Unit, Bool, Int}
+  import anthill.prelude.{Stream, Option, Pair, Unit, Bool, Int64}
   export LogicalStream, empty, pure, mplus, guard, interleave
 
   sort T = ?
@@ -1025,7 +1025,7 @@ sort anthill.prelude.Map
   operation keys(m: Map) -> List[T = K]
   operation values(m: Map) -> List[T = V]
   operation entries(m: Map) -> List[T = Pair[A = K, B = V]]
-  operation size(m: Map) -> Int
+  operation size(m: Map) -> Int64
 end
 ```
 
@@ -1046,7 +1046,7 @@ sort LogicalQuery {
   entity negation(query: LogicalQuery)                    -- NOT (negation-as-failure)
   entity guarded(query: LogicalQuery, condition: Term)    -- filter
   entity projected(query: LogicalQuery, vars: List[T = String]) -- projection
-  entity limited(query: LogicalQuery, count: Int)         -- cardinality limit
+  entity limited(query: LogicalQuery, count: Int64)         -- cardinality limit
 }
 
 -- Execute a query against the KB
@@ -1059,7 +1059,7 @@ operation sort_template(sort_name: String) -> LogicalQuery
   effects (Reads(kb))
 
 -- Apply a substitution to a sort template → concrete conjunctive query
--- Eq[T=Int] → instantiation_query("Eq", bind("T", reflect("Int"), empty_subst))
+-- Eq[T=Int64] → instantiation_query("Eq", bind("T", reflect("Int64"), empty_subst))
 operation instantiation_query(sort_name: String, bindings: Substitution)
   -> LogicalQuery
   effects (Reads(kb))
@@ -1068,9 +1068,9 @@ operation instantiation_query(sort_name: String, bindings: Substitution)
 The **type-to-query mapping**: `sort_template` extracts a sort's fact template. `instantiation_query` applies a substitution to produce a concrete conjunctive query. This is how type checking becomes querying:
 
 ```
--- "Does Int satisfy Eq?" becomes:
-execute(instantiation_query("Eq", bind("T", reflect("Int"), empty_subst)))
--- → checks KB for: SortInfo(name: Int, ...), OperationInfo(name: eq, sort_context: some(value: Eq), ...)
+-- "Does Int64 satisfy Eq?" becomes:
+execute(instantiation_query("Eq", bind("T", reflect("Int64"), empty_subst)))
+-- → checks KB for: SortInfo(name: Int64, ...), OperationInfo(name: eq, sort_context: some(value: Eq), ...)
 -- → LogicalStream of substitutions (non-empty = satisfied, empty = obligations)
 ```
 
@@ -1173,7 +1173,7 @@ This section documents what code changes are needed to implement operation auto-
 `load_fact()` in `kb/load.rs` needs to detect `fact S[T]` inside a sort body and also emit a `Requires(sort_ref: domain, base_sort: S, spec_inst: S[T])` fact, reusing the existing Requires entity. Currently `fact` only stores a generic Fact term, invisible to the `refines` chain. The loader must distinguish:
 
 - `fact S[T]` **inside a sort body** → emit both the Fact and a Requires, enabling the refines chain and operation inheritance.
-- `fact S[T = Int]` **at namespace level** → emit only the Fact (standalone spec satisfaction, no operation inheritance).
+- `fact S[T = Int64]` **at namespace level** → emit only the Fact (standalone spec satisfaction, no operation inheritance).
 
 ### 2. Resolver: NAF support
 
@@ -1206,5 +1206,5 @@ The first option (reuse existing syntax, disambiguate in the loader) is preferre
 - Current symbol resolution: `rustland/anthill-core/src/intern.rs` (`SymbolTable`, `resolve_in_scope`)
 - Current scan-then-load pipeline: `rustland/anthill-core/src/parse/scan.rs`, `rustland/anthill-core/src/kb/load.rs`
 - Sort lattice: entity-of facts in KB, `is_subtype` in `Anthill_Kernel.thy`
-- Spec sort satisfaction: `fact Eq[T = Int]` pattern in stdlib
+- Spec sort satisfaction: `fact Eq[T = Int64]` pattern in stdlib
 - kernel-language.md §3 (sorts), §5 (operations), §8 (semantics)

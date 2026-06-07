@@ -29,7 +29,7 @@ namespace anthill.realization.rust_std
     ],
 
     type_map: [
-      TypeMapping(anthill_type: "Int",       host_type: "i64"),
+      TypeMapping(anthill_type: "Int64",       host_type: "i64"),
       TypeMapping(anthill_type: "Float",     host_type: "f64"),
       TypeMapping(anthill_type: "Bool",      host_type: "bool"),
       TypeMapping(anthill_type: "String",    host_type: "String"),

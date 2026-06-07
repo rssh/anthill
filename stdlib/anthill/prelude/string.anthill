@@ -6,13 +6,13 @@ sort anthill.prelude.String
 
   operation {
     concat(a: String, b: String) -> String
-    length(s: String) -> Int
+    length(s: String) -> Int64
     isEmpty(s: String) -> Bool
     contains(s: String, sub: String) -> Bool
     startsWith(s: String, prefix: String) -> Bool
     endsWith(s: String, suffix: String) -> Bool
-    substring(s: String, start: Int, end: Int) -> String
-    indexOf(s: String, sub: String) -> Int       -- -1 if not found
+    substring(s: String, start: Int64, end: Int64) -> String
+    indexOf(s: String, sub: String) -> Int64       -- -1 if not found
     replace(s: String, old: String, new: String) -> String
     trim(s: String) -> String
     toUpper(s: String) -> String

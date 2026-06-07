@@ -13,7 +13,7 @@ use anthill_smt_gen::{emit_satisfiability_check_with, ProofConfig};
 fn build_kb() -> anthill_core::kb::KnowledgeBase {
     let source = r#"
         namespace test.smt_gen.assumptions
-          import anthill.prelude.{Float, Int}
+          import anthill.prelude.{Float, Int64}
           import anthill.prelude.Ordered.{lt}
 
           export DistanceBounds, violation

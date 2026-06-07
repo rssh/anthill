@@ -70,7 +70,7 @@ Every LLM response either:
 - **Asks** about a remaining `?`
 
 The KB provides:
-- **Validation** — catches inconsistencies ("you said capacity is Int but used it as String")
+- **Validation** — catches inconsistencies ("you said capacity is Int64 but used it as String")
 - **Hole enumeration** — lists remaining `?` to guide the conversation
 - **Implication tracking** — `requires before(now(), date(event(?t)))` implies Event needs a `date` field
 
@@ -91,10 +91,10 @@ sort TicketSales {
   sort Customer = ? {< someone who buys tickets >} ?
   sort Order = ? {< result of a purchase >} ?
 
-  entity Event(name: String, venue: ?, capacity: Int, date: Date)
+  entity Event(name: String, venue: ?, capacity: Int64, date: Date)
   entity Ticket(event: Event, seat: ?, price: Money)
 
-  operation purchase(c: Customer, e: Event, qty: Int) -> Order
+  operation purchase(c: Customer, e: Event, qty: Int64) -> Order
     requires gt(qty, 0)
     requires lte(add(sold(?e), qty), capacity(?e))
     effects (Modify[orders], Emit[Notification])

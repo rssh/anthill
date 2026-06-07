@@ -51,9 +51,9 @@ This generalizes the existing mechanism:
 |---------|-------------|---------|
 | `sort T = ?` | `field: ?` | any type |
 | `sort T = ?Name` | `field: ?Name` | named type param |
-| `sort T = Int` | `field: Int` | concrete type |
+| `sort T = Int64` | `field: Int64` | concrete type |
 
-The `sort T = ?` declaration inside a sort body is still needed for type parameters that appear in `requires` clauses or need to be bound via `Name[T = Int]` syntax. But for simple field types, `?` eliminates the need for a separate declaration.
+The `sort T = ?` declaration inside a sort body is still needed for type parameters that appear in `requires` clauses or need to be bound via `Name[T = Int64]` syntax. But for simple field types, `?` eliminates the need for a separate declaration.
 
 ### Implementation Status
 

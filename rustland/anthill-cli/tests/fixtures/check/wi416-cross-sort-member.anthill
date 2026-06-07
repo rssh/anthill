@@ -6,7 +6,7 @@
 -- it. `anthill check` on this file must typecheck OR emit a clean diagnostic —
 -- never crash.
 namespace test.wi416
-  import anthill.prelude.{List, Int, Bool}
+  import anthill.prelude.{List, Int64, Bool}
 
   sort Coll
     sort T = ?

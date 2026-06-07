@@ -38,7 +38,7 @@ Anthill currently has primitive literals (`-1`, `1.0`, `"hello"`) and named enti
 entity BROADCAST_CHANNEL
 ```
 
-The `entity BROADCAST_CHANNEL` workaround declares a name but binds it to an entity term, not to the `Int` `-1`. The call-site `set_channel(em, BROADCAST_CHANNEL)` fails to type-check against `set_channel(em: Emitter, channel: Int)`. Callers fall back to writing the literal `-1`, losing the name. The same shape recurs:
+The `entity BROADCAST_CHANNEL` workaround declares a name but binds it to an entity term, not to the `Int64` `-1`. The call-site `set_channel(em, BROADCAST_CHANNEL)` fails to type-check against `set_channel(em: Emitter, channel: Int64)`. Callers fall back to writing the literal `-1`, losing the name. The same shape recurs:
 
 - Webots motor velocity-mode sentinel (`+infinity` for `setPosition`).
 - C++ enum encoding values (`fact CppEnumValue(constructor: "Running", value: 0)` in `realization.anthill:31`).
@@ -54,7 +54,7 @@ Ranked by drive on real lf1 / stdlib work:
 | Host-binding sentinels (broadcast channel, infinity for velocity-mode) | **Strong** — no other natural fit; values come from the host API and callers must pass the primitive type. |
 | Algebraic identity elements (`zero`, `one`, `identity`) | **Strong** — bodyless form is the canonical shape for abstract algebras. |
 | Application-specific proof parameters | **Soft** — current "fact with named fields, rules unify on it" pattern works when values are read through queries. Becomes clunky when you want the number directly in an expression. |
-| Enum-like Int values | **Neutral** — entity-side identity usually also wanted. |
+| Enum-like Int64 values | **Neutral** — entity-side identity usually also wanted. |
 
 The host-binding case and algebraic-identity case are the load-bearing drivers; the rest are nice-to-haves.
 
@@ -73,7 +73,7 @@ Const ::= DescriptionBlock*
 Two shapes:
 
 ```anthill
-const BROADCAST_CHANNEL: Int = -1        -- concrete (body given)
+const BROADCAST_CHANNEL: Int64 = -1        -- concrete (body given)
 const zero: R                            -- abstract (open obligation)
 ```
 
@@ -84,7 +84,7 @@ The type annotation is **always required**, even with body. This is deliberate: 
 ```anthill
 namespace anthill.examples.lf1.webots.Emitter
   -- Per-declaration form (recommended for const):
-  export const BROADCAST_CHANNEL: Int = -1
+  export const BROADCAST_CHANNEL: Int64 = -1
 
   -- Or via namespace-level export list:
   export Emitter, set_channel, get_channel
@@ -125,7 +125,7 @@ The same foldability check applies to **every anthill-side body** that fills the
 
 A body is **foldable** iff it lies in the following closed grammar, evaluated by proposal 026's evaluator in *fold mode* (no environment, no allocation, no effects):
 
-- **Literals** of the primitive sorts: `Int`, `BigInt`, `Float`, `String`, `Bool`, `Char`.
+- **Literals** of the primitive sorts: `Int64`, `BigInt`, `Float`, `String`, `Bool`, `Char`.
 - **References** to other `const`-declared names whose own bodies are foldable. (Forward references across files are allowed within one load pipeline pass; see §Cycle detection.)
 - **Calls to operations whose declared effect row is empty** *and* whose body is itself foldable. This recursively excludes allocators (`Cell.new`, `Map.empty`, `Substitution.empty`) since they carry `Modify[result]` per 027.1.
 - **Entity construction** with foldable arguments — `Point(x: 1.0, y: 2.0)` is foldable; an entity field set to a Cell or arena handle is not.
@@ -173,7 +173,7 @@ Every `const NAME: T = EXPR` produces, in addition to the desugared operation, a
 
 ```
 fact Constant(name:    "anthill.examples.lf1.webots.BROADCAST_CHANNEL",
-              type:    Int,
+              type:    Int64,
               value:   -1,
               profile: default)
 ```
@@ -190,14 +190,14 @@ The `Constant` fact is what codegen, IDE tooling, and KB queries use to enumerat
 
 ```anthill
 sort anthill.examples.lf1.webots.Emitter
-  import anthill.prelude.{Int, Float, Unit, String, Bool, Modify}
+  import anthill.prelude.{Int64, Float, Unit, String, Bool, Modify}
   export Emitter, BROADCAST_CHANNEL
   export set_channel, get_channel, send
 
   -- Sentinel for broadcast (mirrors webots::Emitter::CHANNEL_BROADCAST = -1).
-  const BROADCAST_CHANNEL: Int = -1
+  const BROADCAST_CHANNEL: Int64 = -1
 
-  operation set_channel(self: Emitter, channel: Int) -> Unit
+  operation set_channel(self: Emitter, channel: Int64) -> Unit
     effects Modify[self]
 end
 ```
@@ -245,11 +245,11 @@ sort Ring
 end
 
 -- A concrete instance fills the obligations:
-fact Implementation[Ring[R = Int]]
+fact Implementation[Ring[R = Int64]]
   rule zero = 0
   rule one  = 1
-  rule add(?a, ?b) = anthill.prelude.Int.add(?a, ?b)
-  rule mul(?a, ?b) = anthill.prelude.Int.mul(?a, ?b)
+  rule add(?a, ?b) = anthill.prelude.Int64.add(?a, ?b)
+  rule mul(?a, ?b) = anthill.prelude.Int64.mul(?a, ?b)
 end
 ```
 
@@ -277,12 +277,12 @@ operation new(v: V) -> Cell
   effects Modify[result]
 ```
 
-Their declared effect row is non-empty, so the §Validator rejects them as `const` bodies and the §Call-site sugar requires parens. `const COUNTER: Cell[Int] = Cell.new(0)` is a load-time error: "body calls operation `Cell.new` with non-empty effect row `{Modify[result]}` — not foldable."
+Their declared effect row is non-empty, so the §Validator rejects them as `const` bodies and the §Call-site sugar requires parens. `const COUNTER: Cell[Int64] = Cell.new(0)` is a load-time error: "body calls operation `Cell.new` with non-empty effect row `{Modify[result]}` — not foldable."
 
 This is the intended result. A const denotes value-level referential transparency: two reads of the same const are observationally indistinguishable. An allocator violates that — two reads of a load-time-initialised cell are the *same handle*, but the user-level semantics ("this constant has identity, mutating it from one site changes the other") rarely matches what a reader of `const COUNTER: ...` expects. If a load-time singleton is genuinely wanted, declare the operation explicitly:
 
 ```anthill
-operation counter() -> Cell[Int]
+operation counter() -> Cell[Int64]
   effects Modify[result]
   = Cell.new(0)
 ```
@@ -300,7 +300,7 @@ The proposal pivots on referential transparency: a 0-arg operation with an empty
 - **Parametric constants** (`const empty[T]: List[T] = nil`). Falls into the operation-with-body form (`operation empty[T] -> List[T] = nil`); the `const`-keyword shorthand is intentionally monomorphic in v1. Defer. Note this escape hatch is gated on proposal 042 (bracketed type parameters on operations) landing.
 - **Multi-clause "constants"**. Use the long form (`operation` + multiple `rule` clauses or a `match` body). `const` is the explicit declaration of "this name has one foldable value."
 - **Cross-KB override semantics**. Can a downstream namespace redefine an imported constant? Default: no. Override mechanism is a separate proposal in proof-context / scoped-KB territory.
-- **Allocator-as-const ergonomics**. The "singleton cell at load time" pattern (`const COUNTER: Cell[Int] = Cell.new(0)` under the pre-027.1 effect model) is rejected by this proposal's validator; the explicit-operation workaround in §Interaction with proposals 027.1 and 037 covers the same need with the right effect signature visible to readers.
+- **Allocator-as-const ergonomics**. The "singleton cell at load time" pattern (`const COUNTER: Cell[Int64] = Cell.new(0)` under the pre-027.1 effect model) is rejected by this proposal's validator; the explicit-operation workaround in §Interaction with proposals 027.1 and 037 covers the same need with the right effect signature visible to readers.
 
 ## Resolved questions
 
@@ -310,7 +310,7 @@ The following were open in earlier drafts and are now settled:
 2. **`Constant` reflection fact (was Q2).** Add it. Small, focused, parallels `Description` and `Implementation`. See §Reflection and §Validator → `Constant` fact lifecycle for the multi-Implementation refinement.
 3. **Description-block placement (was Q3).** Yes — identical treatment to operations.
 4. **`const` inside an operation body (was Q4).** No — `let` already exists in body scope with the right semantics. `const` is a namespace/sort-scope declaration. Reduces grammar surface.
-5. **Singleton-handle constants (was Q5).** Reject — 027.1's `Modify[result]` on allocators causes the validator to refuse `const COUNTER: Cell[Int] = Cell.new(0)`. The workaround (explicit operation with the effect signature) is documented in §Interaction with proposals 027.1 and 037.
+5. **Singleton-handle constants (was Q5).** Reject — 027.1's `Modify[result]` on allocators causes the validator to refuse `const COUNTER: Cell[Int64] = Cell.new(0)`. The workaround (explicit operation with the effect signature) is documented in §Interaction with proposals 027.1 and 037.
 
 ## Open questions
 

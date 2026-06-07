@@ -370,16 +370,16 @@ of one mechanism rather than three:
 
 | producer | expanded `Stream` result | `E` grounds to |
 |---|---|---|
-| pure carrier (`List`) | `Stream[T = Int, E = {}]` | the closed empty row `{}` (`effects_rows(empty_row)`) |
+| pure carrier (`List`) | `Stream[T = Int64, E = {}]` | the closed empty row `{}` (`effects_rows(empty_row)`) |
 | effectful carrier | `Stream[T = …, E = Modify[…]]` | the carrier's row — a pure consumer is then correctly rejected |
 | abstract carrier (`c : C`) | `Stream[T = …, E = ρ]` | an open row variable — unifies with the enclosing `effects E`, staying polymorphic |
 
-**Worked example** (`collect(iterator(xs))`, `xs : List[Int]`):
+**Worked example** (`collect(iterator(xs))`, `xs : List[Int64]`):
 
 - `iterator`'s return is `Stream[Element = T, E = {}]` (`List` is pure → the
   closed empty row);
 - `collect`'s parameter `s: Stream` **expands** to `Stream[T = ?Tᶜ, E = ?Eᶜ]`;
-- unification binds `?Tᶜ = Int` and `?Eᶜ = {}`, so `collect`'s declared
+- unification binds `?Tᶜ = Int64` and `?Eᶜ = {}`, so `collect`'s declared
   `effects E` grounds to `{}` and a pure caller typechecks.
 
 A carrier supplies its access effect the same way it supplies its element type —
@@ -578,7 +578,7 @@ a freshly-returned region is *observable* is the provenance/masking question —
 and its narrow **result-reachability slice is now delivered (WI-314)**: an
 operation-boundary mask (`kb/region.rs`) **drops** `Modify[result]` when the
 operation's return type cannot carry the region (the cell is discarded —
-`make_and_read : Int`) and **keeps** it, re-keyed to the op's own `result`, when
+`make_and_read : Int64`) and **keeps** it, re-keyed to the op's own `result`, when
 it can (`make : Cell`), so `Cell.new` is non-viral. The **full** provenance /
 aliasing answer — and the region reachable only through a returned named sort's
 field (WI-316) — remains **proposal 046**. Either way it is masking, not a

@@ -269,7 +269,7 @@ So the menu is **E ▸ D ▸ A** for the *representation*, with **B as the relat
 
 **The "declaration-home" axis collapses — it's sugar, not a fork.** In a
 refinement/contracts view a **type *is* shorthand for a pre/post predicate**
-(`x: Int` is a refinement; `-> Y @ E` is a postcondition about result + effects).
+(`x: Int64` is a refinement; `-> Y @ E` is a postcondition about result + effects).
 So `@ E` on a type, `ensures (E in effects)`, and `allow`/`disallow` are
 **interchangeable surfaces over one predicate** — the effect-row contract
 (`member`, checked by `subset`). This is especially natural in anthill ("types

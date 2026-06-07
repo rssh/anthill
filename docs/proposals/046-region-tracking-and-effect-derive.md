@@ -115,7 +115,7 @@ to a region variable.
 
 ### 4.1 Concrete instantiation — the `foreach` call
 
-For `foreach(l, λ x → set(x, get(x) + 1))` with `l : List[Cell[Int]]`, the four
+For `foreach(l, λ x → set(x, get(x) + 1))` with `l : List[Cell[Int64]]`, the four
 arguments are:
 
 ```
@@ -133,14 +133,14 @@ effect_derive(
 
   args = [
      ( denotation: l ,
-       type:       List[Cell[Int]] ),
+       type:       List[Cell[Int64]] ),
      ( denotation: λ x → set(x, get(x)+1) ,
-       type:       (Cell[Int]) -> Unit @ { Modify[x] } )
+       type:       (Cell[Int64]) -> Unit @ { Modify[x] } )
                                               └── x = the lambda's parameter
   ],
 
   ctx =                                                  -- typing environment
-     { l : List[Cell[Int]]  (an input/parameter) ;  no active handlers }
+     { l : List[Cell[Int64]]  (an input/parameter) ;  no active handlers }
 )
 ```
 
@@ -148,7 +148,7 @@ Deriving:
 
 ```
 step 1  unify ( List[A], Function[A,Unit,E] ) ~ args' types
-        ⇒  A := Cell[Int] ,  E := { Modify[x] }
+        ⇒  A := Cell[Int64] ,  E := { Modify[x] }
 
 naïve   output = E = { Modify[x] }      ✗ ILL-SCOPED
         (x is the lambda's parameter — there is x, but no l)

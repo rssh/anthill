@@ -1,12 +1,12 @@
 namespace my.two
   import anthill.cli.Main
   import anthill.prelude.Console.{console, println, ConsoleOutput}
-  import anthill.prelude.{Int, String, List}
+  import anthill.prelude.{Int64, String, List}
   export One, Two
 
   sort One
     requires anthill.cli.Main
-    operation main(args: List[T = String]) -> Int
+    operation main(args: List[T = String]) -> Int64
       effects ConsoleOutput
     =
       let _ = println(console(), "one")
@@ -15,7 +15,7 @@ namespace my.two
 
   sort Two
     requires anthill.cli.Main
-    operation main(args: List[T = String]) -> Int
+    operation main(args: List[T = String]) -> Int64
       effects ConsoleOutput
     =
       let _ = println(console(), "two")

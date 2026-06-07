@@ -48,7 +48,7 @@ operation f(x: (A) -> B) -> C
 ### Examples
 
 ```anthill
-(Int) -> String                         -- unary function
+(Int64) -> String                         -- unary function
 (A) -> B                                -- polymorphic function
 (A, B) -> C                             -- binary function
 () -> A                                 -- thunk (nullary)
@@ -71,8 +71,8 @@ The arrow sort `(A) -> B` is sugar for `Function[A, B]` from stdlib. The existin
 
 ```anthill
 -- These are the same sort:
-(Int) -> String
-Function[A = Int, B = String]
+(Int64) -> String
+Function[A = Int64, B = String]
 ```
 
 ## Term Application

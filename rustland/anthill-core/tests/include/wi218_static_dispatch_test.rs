@@ -16,14 +16,14 @@ use crate::common::interp_for;
 #[test]
 fn spec_op_call_dispatches_to_impl_body_at_runtime() {
     // Tiny spec/impl pair. Spec `Foo` has a body-less op `describe(x: T)`
-    // parameterized by T. Impl `IntFoo` declares `fact Foo[T = Int]`
-    // and supplies a concrete `describe(x: Int) -> String` body.
-    // Caller-side `main_test(n: Int)` calls bare `describe(n)`. Without
+    // parameterized by T. Impl `IntFoo` declares `fact Foo[T = Int64]`
+    // and supplies a concrete `describe(x: Int64) -> String` body.
+    // Caller-side `main_test(n: Int64)` calls bare `describe(n)`. Without
     // WI-218 the eval errors 'unknown operation: describe'; with the
     // rewrite the eval invokes IntFoo.describe and returns "an int".
     let src = r#"
 namespace test.wi218
-  import anthill.prelude.{Int, String}
+  import anthill.prelude.{Int64, String}
 
   sort Foo
     sort T = ?
@@ -31,13 +31,13 @@ namespace test.wi218
   end
 
   sort IntFoo
-    fact Foo[T = Int]
-    operation describe(x: Int) -> String = "an int"
+    fact Foo[T = Int64]
+    operation describe(x: Int64) -> String = "an int"
   end
 
   sort Driver
     import test.wi218.Foo.{describe}
-    operation main_test(n: Int) -> String = describe(n)
+    operation main_test(n: Int64) -> String = describe(n)
   end
 end
 "#;
@@ -56,7 +56,7 @@ fn dispatch_origin_records_the_spec_op_symbol() {
     // Foo.describe".
     let src = r#"
 namespace test.wi218_origin
-  import anthill.prelude.{Int, String}
+  import anthill.prelude.{Int64, String}
 
   sort Bar
     sort T = ?
@@ -64,13 +64,13 @@ namespace test.wi218_origin
   end
 
   sort IntBar
-    fact Bar[T = Int]
-    operation describe(x: Int) -> String = "concrete"
+    fact Bar[T = Int64]
+    operation describe(x: Int64) -> String = "concrete"
   end
 
   sort Driver
     import test.wi218_origin.Bar.{describe}
-    operation main_test(n: Int) -> String = describe(n)
+    operation main_test(n: Int64) -> String = describe(n)
   end
 end
 "#;

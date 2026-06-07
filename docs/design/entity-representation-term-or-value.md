@@ -49,8 +49,8 @@ Therefore:
 > hash-consing upward — every container of a `denoted` is a `Value`
 > (`Value::Node` carries the occurrence).
 
-Conversely, an entity with **no** `denoted` (e.g. `Int`, `List[T]`,
-`Option[Int]`, a *non-dependent* arrow) is ground, content-addressable, and may
+Conversely, an entity with **no** `denoted` (e.g. `Int64`, `List[T]`,
+`Option[Int64]`, a *non-dependent* arrow) is ground, content-addressable, and may
 be a hash-consed `Term`. The boundary is **`denoted`-containment**, not
 type-hood and not (directly) binder-hood.
 

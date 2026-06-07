@@ -21,10 +21,10 @@ fn if_then_else_literal_branches() {
     // can be emitted as a single `return` expression.
     let source = r#"
         namespace test.expr_b
-          import anthill.prelude.{Int, Bool}
+          import anthill.prelude.{Int64, Bool}
           export Calc
           sort Calc
-            operation pick(b: Bool) -> Int = if b then 1 else 0
+            operation pick(b: Bool) -> Int64 = if b then 1 else 0
           end
         end
     "#;
@@ -45,10 +45,10 @@ fn if_then_else_with_call_in_condition() {
     // is reused for the condition.
     let source = r#"
         namespace test.expr_b
-          import anthill.prelude.{Int, Bool}
+          import anthill.prelude.{Int64, Bool}
           export Calc
           sort Calc
-            operation abs(n: Int) -> Int = if gt(n, 0) then n else 0
+            operation abs(n: Int64) -> Int64 = if gt(n, 0) then n else 0
           end
         end
     "#;
@@ -70,10 +70,10 @@ fn nested_if_then_else() {
     // in lower_expr should lower the nested if without trouble.
     let source = r#"
         namespace test.expr_b
-          import anthill.prelude.{Int, Bool}
+          import anthill.prelude.{Int64, Bool}
           export Calc
           sort Calc
-            operation sign(b1: Bool, b2: Bool) -> Int =
+            operation sign(b1: Bool, b2: Bool) -> Int64 =
               if b1 then 1 else if b2 then 0 else (-1)
           end
         end

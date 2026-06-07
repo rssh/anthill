@@ -104,7 +104,7 @@ fn load_toml_int_float_bool() {
     // Register a simple entity with numeric fields
     let src = r#"
 namespace test
-sort Nums { entity Nums(x: Int, y: Float, flag: Bool) }
+sort Nums { entity Nums(x: Int64, y: Float, flag: Bool) }
 end
 "#;
     let parsed = parse::parse(src).expect("parse");

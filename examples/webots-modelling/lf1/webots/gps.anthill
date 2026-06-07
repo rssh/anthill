@@ -9,7 +9,7 @@
 --   const double *getSpeedVector() const; // -> Vec3 (velocity x/y/z)
 
 sort anthill.examples.lf1.webots.GPS
-  import anthill.prelude.{Int, Float, Unit, Modify}
+  import anthill.prelude.{Int64, Float, Unit, Modify}
   import anthill.geometry.{Vec3}
   export GPS
   export enable, disable, get_sampling_period
@@ -19,13 +19,13 @@ sort anthill.examples.lf1.webots.GPS
   -- non-owning webots::GPS* on the C++ side (see realization.anthill).
 
   -- Sensor lifecycle.
-  operation enable(self: GPS, sampling_period: Int) -> Unit
+  operation enable(self: GPS, sampling_period: Int64) -> Unit
     effects Modify[self]
 
   operation disable(self: GPS) -> Unit
     effects Modify[self]
 
-  operation get_sampling_period(self: GPS) -> Int
+  operation get_sampling_period(self: GPS) -> Int64
 
   -- Position in world frame (x, y, z) in meters.
   operation get_values(self: GPS) -> Vec3

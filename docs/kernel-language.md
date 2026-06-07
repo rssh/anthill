@@ -100,8 +100,8 @@ Both styles are interchangeable. A file may mix styles freely.
 Terms are the building blocks of all knowledge. They appear inside rules, constraints, operation contracts, entity fields, and metadata.
 
 ```
-Term ::= Const(type, value)            -- ground value: 42 : Int, "hello" : String
-       | Var(type, name)               -- unification variable: ?x : Int
+Term ::= Const(type, value)            -- ground value: 42 : Int64, "hello" : String
+       | Var(type, name)               -- unification variable: ?x : Int64
        | Fn(name, args: [Term])        -- compound: account(?id, ?owner, ?bal)
        | Ref(Name)                     -- reference to named entity: banking.Money
        | Quoted(language, source)      -- verbatim host-language fragment (see §4.2)
@@ -166,7 +166,7 @@ The kernel has only four primitive types for `Const` values:
 | Type | Values |
 |------|--------|
 | `String` | `"hello"`, `"src/main/scala"` |
-| `Int` | `0`, `42`, `-1` |
+| `Int64` | `0`, `42`, `-1` |
 | `Float` | `3.14`, `-0.5` |
 | `Bool` | `true`, `false` |
 
@@ -189,7 +189,7 @@ Common compound types are defined in standard prelude sorts using the kernel's o
 ```
 -- Duration: a non-parametric prelude sort
 sort anthill.prelude.Duration {
-  entity Duration(amount: Int, unit: String)         -- duration(5, "m")
+  entity Duration(amount: Int64, unit: String)         -- duration(5, "m")
 }
 
 -- Timestamp: a non-parametric prelude sort
@@ -205,7 +205,7 @@ sort anthill.prelude.List
   entity nil                                         -- empty list
   entity cons(head: T, tail: List)                   -- cons cell
 
-  operation length(l: List) -> Int
+  operation length(l: List) -> Int64
   rule length(nil) = 0
   rule length(cons(?x, ?xs)) = add(1, length(?xs))
 end
@@ -292,7 +292,7 @@ entity Project(
 operation lookup(key: String) -> Option[T = Account]
 ```
 
-The inline form `List[T=Int]` refers to the sort `List` with unspecified sort parameter `T` bound to `Int`. This is the Maude view mechanism expressed as a type expression.
+The inline form `List[T=Int64]` refers to the sort `List` with unspecified sort parameter `T` bound to `Int64`. This is the Maude view mechanism expressed as a type expression.
 
 **Grammar:**
 
@@ -300,7 +300,7 @@ The inline form `List[T=Int]` refers to the sort `List` with unspecified sort pa
 Type ::= Name                                        -- simple type reference
        | Name '[' SortBinding (',' SortBinding)* ']' -- inline instantiation
        | VariableTerm                                 -- logical variable: ?, ?T, ?T {< desc >}+ ?
-       | TupleType                                    -- tuple type: (Int, String), (a: Int, b: String), ()
+       | TupleType                                    -- tuple type: (Int64, String), (a: Int64, b: String), ()
        | ArrowType                                    -- arrow type (function sort)
 
 ArrowType ::= '(' ArrowParams ')' '->' Type              -- pure function
@@ -312,7 +312,7 @@ ArrowParams ::= (TupleTypeArg (',' TupleTypeArg)*)?       -- reuses TupleTypeArg
 **Arrow types** describe function-sorted values. `(A) -> B` is the sort of pure functions from `A` to `B`. The parameter list is always parenthesized, disambiguating `->` in type position from `->` in operation return type position. Parameters can be named (using the same syntax as named tuple elements):
 
 ```
-(Int) -> String                         -- unary function
+(Int64) -> String                         -- unary function
 (A, B) -> C                             -- binary function
 () -> A                                 -- thunk (nullary)
 (acc: A, elem: B) -> A                  -- named parameters
@@ -331,8 +331,8 @@ Import and instantiation are separate concepts: `import` makes names visible, in
 **Instantiation as term:** The `Name[bindings]` syntax is valid both in type position and in term position. In term position, it represents a sort instantiation as a first-class value — used to assert that a type satisfies a parametric spec:
 
 ```
--- "Int satisfies Eq" — a fact in the KB
-fact Eq[T = Int]
+-- "Int64 satisfies Eq" — a fact in the KB
+fact Eq[T = Int64]
 
 -- "String satisfies Ordered" — scoped to the declaring namespace
 fact Ordered[T = String]
@@ -379,7 +379,7 @@ TupleLiteral ::= '(' ')'                                           -- unit value
 
 **Disambiguation:** `(a)` with no comma is a parenthesized expression (grouping). `(a, b)` with a comma is a tuple. `Name(...)` preceded by a name is function application. No lookahead needed.
 
-**All-or-nothing naming:** either all elements have explicit names or none do. Mixing `(a: Int, String)` is an error.
+**All-or-nothing naming:** either all elements have explicit names or none do. Mixing `(a: Int64, String)` is an error.
 
 **Desugaring:** Positional tuples desugar to named tuples with `_N` names:
 
@@ -395,10 +395,10 @@ TupleLiteral ::= '(' ')'                                           -- unit value
 
 ```
 -- Multi-value return
-operation divmod(a: Int, b: Int) -> (Int, Int)
+operation divmod(a: Int64, b: Int64) -> (Int64, Int64)
 
 -- Named multi-value return
-operation divmod(a: Int, b: Int) -> (quotient: Int, remainder: Int)
+operation divmod(a: Int64, b: Int64) -> (quotient: Int64, remainder: Int64)
 
 -- Tuple in rules
 rule swap((?x, ?y)) = (?y, ?x)
@@ -421,7 +421,7 @@ CollectionLiteral ::= '[' ']'                                           -- empty
 
 **Head-tail destructuring:** `[h | t]` is represented as `ListLiteral(h, tail: t)`. The typing process rewrites this via `Iteration.split`. Multiple heads are supported: `[a, b | t]` → `ListLiteral(a, b, tail: t)`.
 
-**Disambiguation:** Bare `[` starts a collection literal. `Name[` starts an instantiation term (`Eq[Int]`) or parameterized type (`List[T = Int]`). No lookahead needed — the presence of a leading `Name` disambiguates.
+**Disambiguation:** Bare `[` starts a collection literal. `Name[` starts an instantiation term (`Eq[Int64]`) or parameterized type (`List[T = Int64]`). No lookahead needed — the presence of a leading `Name` disambiguates.
 
 **Representation:** Collection literals are represented as `ListLiteral(...)` terms, analogous to `SetLiteral(...)` for sets and `TupleLiteral(...)` for tuples. The `ListLiteral` entity is defined in `anthill.reflect`.
 
@@ -491,15 +491,15 @@ When a sort binding omits the `Name =` part, it is a **positional** binding — 
 
 ```
 -- Positional bindings (bound to sort parameters in declaration order):
-List[Int]                -- List[T = Int] — Int binds to first param T
-Map[String, Int]         -- Map[K = String, V = Int] — positional for both
+List[Int64]                -- List[T = Int64] — Int64 binds to first param T
+Map[String, Int64]         -- Map[K = String, V = Int64] — positional for both
 
 -- Named bindings (explicit parameter name):
-List[T = Int]            -- explicit: T binds to Int
+List[T = Int64]            -- explicit: T binds to Int64
 Numeric[T = Money]       -- explicit: T binds to Money
 
 -- Mixed: positional first, then named
-Bifunctor[String, B = Int]   -- A = String (positional), B = Int (named)
+Bifunctor[String, B = Int64]   -- A = String (positional), B = Int64 (named)
 
 -- Positional with type variables (common in parametric sort bodies):
 requires Eq[T]           -- Eq[T = T] — T positionally binds to first param
@@ -600,7 +600,7 @@ operation transform(x: ?T {< input type >} ?) -> ?T  -- with inline description 
 **Type alias** (`sort Name = Type`) — creates a name that is equivalent to an existing type. Useful for domain-specific naming:
 
 ```
-sort Money = Int                     -- Money is an alias for Int
+sort Money = Int64                     -- Money is an alias for Int64
 sort Velocity = Float                -- Velocity is an alias for Float
 ```
 
@@ -609,7 +609,7 @@ Unspecified properties are expressed as accessor operations within the enclosing
 ```
 sort linear_algebra {
   sort Vector = ?                    -- unspecified: type parameter
-  operation dim(v: Vector) -> Int     -- accessor
+  operation dim(v: Vector) -> Int64     -- accessor
 }
 ```
 
@@ -751,7 +751,7 @@ Param         ::= Name ':' Type
 
 Parameters are **named bindings** — referenced by name (without `?`) in `requires`/`ensures` clauses. This distinguishes them from rule variables (`?x`), which are pattern-matching unification variables. `requires` clauses may reference parameter names only (precondition: checked before execution). `ensures` clauses may additionally reference `result`, which binds to the return value (postcondition: checked after execution). Using `result` in `requires` is a semantic error.
 
-**Operation type parameters** (`[T1, T2, ...]`) declare per-call polymorphic slots scoped to a single operation invocation. They may appear in the parameter list, return type, requires/ensures, and effects positions. At a call site the bindings can be written positionally (`foo[Int, String](args)`) or named (`foo[T1 = Int, T2 = String](args)`), with the positional-first rule borrowed from `SortBinding` (see §5.2). Operation type parameters are **per-call** — each invocation binds them afresh — in contrast to sort-level type parameters which are pinned at sort instantiation. See `docs/proposals/042-explicit-type-parameters-on-operations.md` for the full design and `docs/design/operation-call-model.md` §"Operation type arguments" for the runtime threading through `frame.requirements`.
+**Operation type parameters** (`[T1, T2, ...]`) declare per-call polymorphic slots scoped to a single operation invocation. They may appear in the parameter list, return type, requires/ensures, and effects positions. At a call site the bindings can be written positionally (`foo[Int64, String](args)`) or named (`foo[T1 = Int64, T2 = String](args)`), with the positional-first rule borrowed from `SortBinding` (see §5.2). Operation type parameters are **per-call** — each invocation binds them afresh — in contrast to sort-level type parameters which are pinned at sort instantiation. See `docs/proposals/042-explicit-type-parameters-on-operations.md` for the full design and `docs/design/operation-call-model.md` §"Operation type arguments" for the runtime threading through `frame.requirements`.
 
 **Contracts** (`requires`/`ensures`) are scoped constraints — they generate denials over the operation's input/output bindings when an implementation is asserted:
 
@@ -1244,7 +1244,7 @@ namespace anthill.prelude.Meta
   sort Trust {
     entity proved                        -- formally proved (Lean/Isabelle kernel)
     entity verified                      -- mechanically verified (Z3, ctproof)
-    entity tested(n: Int)                -- passed n test runs (Hypothesis, sbt-test)
+    entity tested(n: Int64)                -- passed n test runs (Hypothesis, sbt-test)
     entity empirical                     -- observed but not formally checked
     entity proposed                      -- asserted by agent, not yet verified
     entity stale                         -- was valid, environment changed
@@ -1309,7 +1309,7 @@ Ordering: `proved` > `verified` > `tested(N)` > `empirical` > `proposed` > `stal
 | `agent` | `String` | Recorded as provenance |
 | `timestamp` | `String` | Recorded as provenance (when fact was asserted/loaded) |
 | `last-modified` | `String` | When the fact's content last changed (distinct from `timestamp` — does not update on re-load if content is unchanged). Used by codegen to detect stale implementations (see [rust-forward-mapping.md §3.5](rust-forward-mapping.md#35-staleness-detection-via-timestamps)). |
-| `iteration` | `Int` | Tracks project evolution |
+| `iteration` | `Int64` | Tracks project evolution |
 | `source` | `String` | File/line reference |
 | `supersedes` | `Name` | Links to previous version of this fact |
 
@@ -1332,12 +1332,12 @@ When an obligation is discharged, the result is recorded as a `ProofResult` term
 The kernel enforces a **structural type system**:
 
 - **Unspecified sorts** (`sort T = ?` inside a sort body) introduce type parameters without representation. Can appear in operation signatures and fields within the enclosing sort, but have no constructors until a carrier binding is provided.
-- **Type aliases** (`sort Money = Int`) introduce a name equivalent to an existing type. The alias is interchangeable with the aliased type.
+- **Type aliases** (`sort Money = Int64`) introduce a name equivalent to an existing type. The alias is interchangeable with the aliased type.
 - **Sorts with constructors** (`sort S { entity C₁(...), entity C₂(...) }`) introduce closed algebraic data types. All constructors are enumerated; pattern matching in rules is exhaustive.
 - **Operations** have typed signatures: `operation op(x: A, y: B) -> C`. Parameters are named bindings; the kernel type-checks that actual arguments match declared types.
 - **Terms** are typed: `Const` carries its type, `Var` declares its type, `Fn` has the type of its sort's constructor, `Ref` refers to a named type.
 
-**Expansion during unification.** A parametric sort referenced as a type with some or all of its declared parameters unbound unifies as that sort applied to a **fresh variable for each unbound parameter**. A bare reference is the all-unbound case — `Stream` ≡ `Stream[T = ?, E = ?]` — and a partial one fills the rest — `Stream[T = Int]` ≡ `Stream[T = Int, E = ?]`. The typer performs this expansion at **every sort application** — wherever a parametric sort appears as a type, including a bare reference unified against another bare reference — so the parameters participate even when the source writes no binding for them. The expansion covers **every** declared parameter: ordinary type parameters and effect-row parameters (`effects E`; proposal 045 §2) alike. It is the type-level counterpart of the partial-entity-pattern expansion (§8.3), and follows directly from "types are terms" (§4.4) — the same generalize-missing-arguments-to-fresh-variables mechanism, applied to the type sublanguage. Its effect is that a signature written against a bare sort still threads bindings: a parameter declared `s: Stream`, unified against an argument of type `Stream[T = Int, E = {}]`, binds the expanded `T` and `E`, so both the element type and the access effect ground at the call instead of silently dropping. Without it, a bare `Ref(Stream)` carries no slots and unification binds nothing. In **type position** a bare parametric sort name is always an instantiation, so — unlike entity *data* terms, where bare `account` stays a reference and only `account()` expands — no parentheses are needed to trigger it. A *cross-sort* case, where the argument's sort merely *provides* the expected spec (a `List` used as a `Stream`), is the complementary mechanism: provider admissibility (§8.2) supplies the parameter bindings from the provider fact. See proposal 045 §5.1.1 for the effect-row instance and `docs/proposals/library/002` for the `Stream`/`iterator` walk.
+**Expansion during unification.** A parametric sort referenced as a type with some or all of its declared parameters unbound unifies as that sort applied to a **fresh variable for each unbound parameter**. A bare reference is the all-unbound case — `Stream` ≡ `Stream[T = ?, E = ?]` — and a partial one fills the rest — `Stream[T = Int64]` ≡ `Stream[T = Int64, E = ?]`. The typer performs this expansion at **every sort application** — wherever a parametric sort appears as a type, including a bare reference unified against another bare reference — so the parameters participate even when the source writes no binding for them. The expansion covers **every** declared parameter: ordinary type parameters and effect-row parameters (`effects E`; proposal 045 §2) alike. It is the type-level counterpart of the partial-entity-pattern expansion (§8.3), and follows directly from "types are terms" (§4.4) — the same generalize-missing-arguments-to-fresh-variables mechanism, applied to the type sublanguage. Its effect is that a signature written against a bare sort still threads bindings: a parameter declared `s: Stream`, unified against an argument of type `Stream[T = Int64, E = {}]`, binds the expanded `T` and `E`, so both the element type and the access effect ground at the call instead of silently dropping. Without it, a bare `Ref(Stream)` carries no slots and unification binds nothing. In **type position** a bare parametric sort name is always an instantiation, so — unlike entity *data* terms, where bare `account` stays a reference and only `account()` expands — no parentheses are needed to trigger it. A *cross-sort* case, where the argument's sort merely *provides* the expected spec (a `List` used as a `Stream`), is the complementary mechanism: provider admissibility (§8.2) supplies the parameter bindings from the provider fact. See proposal 045 §5.1.1 for the effect-row instance and `docs/proposals/library/002` for the `Stream`/`iterator` walk.
 
 ### 8.2 Entity Subtyping
 
@@ -1481,17 +1481,17 @@ An algebra is not a separate syntactic construct — it is the **typing structur
 
 A sort-with-body that contains unspecified sub-sorts, operations, and laws IS an algebra. When an `Implementation` fact provides carrier bindings (`carrier: { Scalar = float, Vector = CudaDeviceBuffer[float] }`), it instantiates the algebra for a specific host language.
 
-**Parametric structure:** Unspecified sorts inside a sort body serve as type parameters. A sort with unspecified sub-sort `T` is a parametric module — instantiated via inline type expressions `List[T = Int]`. For example, `anthill.prelude.List` has unspecified sub-sort `T`; using `List[T = Int]` inline produces a list-of-integers.
+**Parametric structure:** Unspecified sorts inside a sort body serve as type parameters. A sort with unspecified sub-sort `T` is a parametric module — instantiated via inline type expressions `List[T = Int64]`. For example, `anthill.prelude.List` has unspecified sub-sort `T`; using `List[T = Int64]` inline produces a list-of-integers.
 
 This also supports type class-like patterns: a sort declaring `sort A = ?` and `operation combine(x: A, y: A) -> A` with laws is a specification that any type with a `combine` operation must satisfy. Using `MyType` in place of `A` via inline binding instantiates the specification for a concrete type.
 
 **Spec satisfaction:** To declare that a concrete type satisfies a parametric spec, assert the instantiation as a fact:
 
 ```
--- Int satisfies Eq, Ordered, and Numeric
-fact Eq[T = Int]
-fact Ordered[T = Int]
-fact Numeric[T = Int]
+-- Int64 satisfies Eq, Ordered, and Numeric
+fact Eq[T = Int64]
+fact Ordered[T = Int64]
+fact Numeric[T = Int64]
 ```
 
 For built-in types, the operations are primitive (provided by the runtime). For user-defined types, rules define the operations:
@@ -1527,7 +1527,7 @@ When `fact S[T]` appears inside a sort body, it means both spec satisfaction AND
 
 **Operation override.** A satisfying sort may **redefine** an operation the spec already supplies (a derived rule, or a defaulted operation); its own definition then wins for that carrier. Override is carrier-driven — a call resolves to the carrier's own operation when it has one, otherwise to the spec's. This is the `provides`/`fact` direction. A sort that merely `requires` a spec and happens to declare an operation of the same name is **not** overriding it: that operation is unrelated, and declaring it is reported as a warning that it shadows the required name. An overriding operation must **refine** the spec's contract — its effect row stays within the spec's, and its `requires`/`ensures` are no stronger / no weaker respectively (the effect check is described in `docs/design/spec-instance-dispatch.md`; the `requires`/`ensures` check is a planned follow-up).
 
-Note: namespace-level `fact Eq[T = Int]` (standalone, not inside a sort body) does NOT trigger auto-binding of operations — operations there are standalone rules associated with the fact.
+Note: namespace-level `fact Eq[T = Int64]` (standalone, not inside a sort body) does NOT trigger auto-binding of operations — operations there are standalone rules associated with the fact.
 
 **Namespaces** group sorts, operations, and rules for encapsulation and visibility control, but do not introduce type parameters. A namespace may contain sorts (both parametric and concrete) and type aliases, but unspecified sorts (`sort T = ?`) appear only inside sort bodies as type parameters — never directly in a namespace.
 
@@ -1658,7 +1658,7 @@ sort linear_algebra
   sort Vector = ?                                    -- type parameter (unspecified)
 
   operation {
-    dim(v: Vector) -> Int
+    dim(v: Vector) -> Int64
     add(a: Vector, b: Vector) -> Vector
       requires dim(a) = dim(b)
       ensures dim(result) = dim(a)
@@ -1770,7 +1770,7 @@ AtomTerm    ::= Const(type, value)
               | VariableTerm                 -- variable with optional description
               | Fn(name, args: [Term])
               | Ref(Name)
-              | Instantiation(Name, SortBinding+)  -- Eq[T = Int] in term position
+              | Instantiation(Name, SortBinding+)  -- Eq[T = Int64] in term position
               | CollectionLit                -- [a, b | t] → ListLiteral(a, b, tail: t)
               | SetLit                       -- {a, b} → SetLiteral(a, b)
               | TupleLiteral                 -- (a, b) → TupleLiteral(_1: a, _2: b)
@@ -1845,8 +1845,8 @@ Describe    ::= 'describe' Name DescriptionBlock+  -- attach description(s) to n
 FieldList   ::= Field (',' Field)*
 Field       ::= Name ':' Type
 
-Type        ::= Name                                           -- simple: Account, Int
-              | Name '[' SortBinding (',' SortBinding)* ']'    -- inline instantiation: List[T=Int]
+Type        ::= Name                                           -- simple: Account, Int64
+              | Name '[' SortBinding (',' SortBinding)* ']'    -- inline instantiation: List[T=Int64]
               | VariableTerm                                    -- logical variable: ?, ?T, ?T {< desc >}+ ?
               | '(' ArrowParams ')' '->' Type                    -- arrow type: (A) -> B
               | '(' ArrowParams ')' '->' Type '@' Type          -- effectful arrow: (A) -> B @ E

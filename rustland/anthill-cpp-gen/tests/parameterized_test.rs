@@ -33,9 +33,9 @@ struct Polyline {
 fn entity_with_option_field() {
     let source = r#"
         namespace test.params
-          import anthill.prelude.{Int, String, Option}
+          import anthill.prelude.{Int64, String, Option}
           export User
-          entity User(name: String, age: Option[T = Int])
+          entity User(name: String, age: Option[T = Int64])
         end
     "#;
     let kb = load_kb_with(source);
@@ -55,24 +55,24 @@ fn two_param_field_lowers_in_declaration_order() {
     // canonical symbol-interning order, NOT declaration order, so cpp-gen must
     // emit C++ template args in the sort's DECLARED param order. A 2-param sort
     // `Pair { sort Z = ?; sort A = ? }` mapped to `std::pair` must lower
-    // `Pair[Z = Int, A = String]` as `std::pair<int64_t, std::string>` (Z first),
+    // `Pair[Z = Int64, A = String]` as `std::pair<int64_t, std::string>` (Z first),
     // regardless of how Z/A intern. Pre-fix this emitted the args swapped.
     let source = r#"
         namespace test.params
-          import anthill.prelude.{Int, String}
+          import anthill.prelude.{Int64, String}
           export Pair, Holder
           sort Pair
             sort Z = ?
             sort A = ?
           end
-          entity Holder(p: Pair[Z = Int, A = String])
+          entity Holder(p: Pair[Z = Int64, A = String])
         end
     "#;
     let kb = load_kb_with(source);
     let cpp = emit_entity_struct(&kb, "test.params.Holder").expect("emit Holder");
     assert!(
         cpp.contains("std::pair<int64_t, std::string>"),
-        "2-param type must lower in declaration order (Z=Int then A=String); got:\n{cpp}"
+        "2-param type must lower in declaration order (Z=Int64 then A=String); got:\n{cpp}"
     );
 }
 
@@ -102,11 +102,11 @@ fn namespace_header_with_parameterized_emits_includes() {
     // compilable.
     let source = r#"
         namespace test.params
-          import anthill.prelude.{Float, Int, String, List, Option}
+          import anthill.prelude.{Float, Int64, String, List, Option}
           export Polyline, User
 
           entity Polyline(points: List[T = Float])
-          entity User(name: String, age: Option[T = Int])
+          entity User(name: String, age: Option[T = Int64])
         end
     "#;
     let kb = load_kb_with(source);

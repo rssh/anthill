@@ -55,7 +55,7 @@ fn requires_shadow_emits_warning() {
             operation s_op(x: T) -> T
           end
           sort Carrier
-            entity c(id: Int)
+            entity c(id: Int64)
           end
           sort Req
             requires Sp[T = Carrier]
@@ -84,7 +84,7 @@ fn requires_disjoint_op_name_no_warning() {
             operation s_op(x: T) -> T
           end
           sort Carrier
-            entity c(id: Int)
+            entity c(id: Int64)
           end
           sort Req
             requires Sp[T = Carrier]
@@ -115,10 +115,10 @@ fn provider_override_no_warning() {
             rule s_op(?x) = ?x
           end
           sort Carrier
-            entity c(id: Int)
+            entity c(id: Int64)
           end
           sort Prov
-            entity p(id: Int)
+            entity p(id: Int64)
             fact Sp[T = Prov]
             operation s_op(x: Prov) -> Prov = x
           end
@@ -145,7 +145,7 @@ fn requires_and_provides_no_warning() {
             operation s_op(x: T) -> T
           end
           sort Both
-            entity b(id: Int)
+            entity b(id: Int64)
             requires Sp[T = Both]
             fact Sp[T = Both]
             operation s_op(x: Both) -> Both = x

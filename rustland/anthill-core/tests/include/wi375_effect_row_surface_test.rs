@@ -53,17 +53,17 @@ fn load_errors(extras: &[&str]) -> Vec<String> {
 /// An abstract `Producer` whose two stream-producing ops WRITE their result's
 /// observation effect in the type: `pure_stream` is `E = {}` (pure), and
 /// `eff_stream` is `E = {Modify[p]}` (observing it mutates `p`). Both carry the
-/// element `T = Int`. These are exactly the two WI-375 surface forms.
+/// element `T = Int64`. These are exactly the two WI-375 surface forms.
 const CARRIER: &str = r#"
 namespace test.wi375.carrier
-  import anthill.prelude.{Int, Stream, Modify, EffectsRuntime}
+  import anthill.prelude.{Int64, Stream, Modify, EffectsRuntime}
   export Producer
 
   sort Producer
     -- A pure stream: nothing is incurred to observe it.
-    operation pure_stream(p: Producer) -> Stream[T = Int, E = {}]
+    operation pure_stream(p: Producer) -> Stream[T = Int64, E = {}]
     -- An effectful stream: observing it incurs Modify[p].
-    operation eff_stream(p: Producer) -> Stream[T = Int, E = {Modify[p]}]
+    operation eff_stream(p: Producer) -> Stream[T = Int64, E = {Modify[p]}]
   end
 end
 "#;

@@ -28,7 +28,7 @@ namespace anthill.prelude.Meta
   enum Trust {
     entity proved                        -- formally proved (Lean/Isabelle kernel)
     entity verified                      -- mechanically verified (Z3, ctproof)
-    entity tested(n: Int)                -- passed n test runs (Hypothesis, sbt-test)
+    entity tested(n: Int64)                -- passed n test runs (Hypothesis, sbt-test)
     entity empirical                     -- observed but not formally checked
     entity proposed                      -- asserted by agent, not yet verified
     entity stale                         -- was valid, environment changed

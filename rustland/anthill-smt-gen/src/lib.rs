@@ -1367,7 +1367,7 @@ fn map_arith_op(qn: &str) -> Option<&'static str> {
         "anthill.prelude.Numeric.sub" | "Numeric.sub" | "sub" => Some("-"),
         "anthill.prelude.Numeric.mul" | "Numeric.mul" | "mul" => Some("*"),
         "anthill.prelude.Float.div"   | "Float.div"   | "div" => Some("/"),
-        "anthill.prelude.Int.div"     | "Int.div"             => Some("div"),
+        "anthill.prelude.Int64.div"     | "Int64.div"             => Some("div"),
         _ => None,
     }
 }
@@ -1381,9 +1381,9 @@ fn map_arith_op(qn: &str) -> Option<&'static str> {
 fn map_unary_op(qn: &str) -> Option<&'static str> {
     match qn {
         "anthill.prelude.Float.abs" | "Float.abs" | "abs" => Some("anthill_abs"),
-        "anthill.prelude.Int.abs" => Some("anthill_abs"),
+        "anthill.prelude.Int64.abs" => Some("anthill_abs"),
         "anthill.prelude.Float.neg" | "Float.neg" => Some("-"),
-        "anthill.prelude.Int.neg" | "Int.neg" => Some("-"),
+        "anthill.prelude.Int64.neg" | "Int64.neg" => Some("-"),
         _ => None,
     }
 }

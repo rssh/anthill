@@ -25,7 +25,7 @@ fn write_temp(name: &str, contents: &str) -> PathBuf {
 const SRC_BOTH_UNSAT: &str = r#"
     namespace test.ranking.ok
       export rank_proof, bound_violation, decrease_violation
-      entity State(upc: Int, upc_next: Int)
+      entity State(upc: Int64, upc_next: Int64)
 
       -- Ranking function: R(upc) = -upc. Post-armed invariant: -6 ≤ upc < 0.
       -- Boundedness violation: a state where R < 0 (i.e. upc > 0).
@@ -82,7 +82,7 @@ fn ranking_with_failing_decrease_disproves() {
     let src = r#"
         namespace test.ranking.fail
           export rank_proof_bad, bound_ok, decrease_bad
-          entity Cfg(scale: Int)
+          entity Cfg(scale: Int64)
           fact Cfg(scale: 5)
 
           -- Unsat: bound_ok body asserts gt(s, 999) with s = 5.

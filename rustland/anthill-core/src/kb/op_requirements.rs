@@ -33,12 +33,12 @@ use super::KnowledgeBase;
 
 /// A single requirement entry: a spec sort plus the bindings the
 /// caller's body needs the requirement value to be at. The bindings
-/// match the user-facing named-arg form (e.g. `T = Int`, `combine = ...`).
+/// match the user-facing named-arg form (e.g. `T = Int64`, `combine = ...`).
 /// Equality is structural; same (spec, bindings) pair is one goal.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OpRequirement {
     pub spec_sort: Symbol,
-    /// Per-call type-arg bindings (e.g. `T = Int`). Reserved for the
+    /// Per-call type-arg bindings (e.g. `T = Int64`). Reserved for the
     /// post-rewrite-pass refinement: callers will substitute these via
     /// the typer's per-call subst before unioning into their own
     /// requirements list. v0 leaves this empty; coverage matching uses
@@ -266,7 +266,7 @@ mod tests {
     fn op_with_no_calls_has_empty_requirements() {
         let src = r#"
 namespace test.wi222.empty_reqs
-  operation simple() -> Int = 42
+  operation simple() -> Int64 = 42
 end
 "#;
         let kb = load_with_src(src);
@@ -285,7 +285,7 @@ end
 namespace test.wi222.spec_call
   import anthill.prelude.Eq.{eq}
   import anthill.prelude.{Bool}
-  operation caller(a: Int, b: Int) -> Bool = eq(a, b)
+  operation caller(a: Int64, b: Int64) -> Bool = eq(a, b)
 end
 "#;
         let kb = load_with_src(src);
@@ -307,8 +307,8 @@ end
         // is simpler than full Tarjan).
         let src = r#"
 namespace test.wi222.mutual
-  operation a(n: Int) -> Int = b(n)
-  operation b(n: Int) -> Int = a(n)
+  operation a(n: Int64) -> Int64 = b(n)
+  operation b(n: Int64) -> Int64 = a(n)
 end
 "#;
         let kb = load_with_src(src);
@@ -356,7 +356,7 @@ namespace test.wi222.coverage_missing
   import anthill.prelude.Eq.{eq}
   import anthill.prelude.{Bool}
   sort CoverageMissing
-    operation oops(a: Int, b: Int) -> Bool = eq(a, b)
+    operation oops(a: Int64, b: Int64) -> Bool = eq(a, b)
   end
 end
 "#;
@@ -378,7 +378,7 @@ end
 namespace test.wi222.dedupe
   import anthill.prelude.Eq.{eq}
   import anthill.prelude.{Bool}
-  operation foo(a: Int, b: Int, c: Int) -> Bool
+  operation foo(a: Int64, b: Int64, c: Int64) -> Bool
     = if eq(a, b) then eq(b, c) else false
 end
 "#;

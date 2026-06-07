@@ -14,11 +14,11 @@ use common::load_kb_with_lenient;
 fn length_lowers_to_size_cast() {
     let source = r#"
         namespace test.is_len
-          import anthill.prelude.{Int, List}
+          import anthill.prelude.{Int64, List}
           import anthill.prelude.IndexedSeq.{length}
           export Calc
           sort Calc
-            operation count(xs: List[T = Int]) -> Int = length(xs)
+            operation count(xs: List[T = Int64]) -> Int64 = length(xs)
           end
         end
     "#;
@@ -35,11 +35,11 @@ fn length_lowers_to_size_cast() {
 fn nth_lowers_to_bounds_checked_optional() {
     let source = r#"
         namespace test.is_nth
-          import anthill.prelude.{Int, List, Option}
+          import anthill.prelude.{Int64, List, Option}
           import anthill.prelude.IndexedSeq.{nth}
           export Calc
           sort Calc
-            operation pick(xs: List[T = Int], i: Int) -> Option[T = Int] = nth(xs, i)
+            operation pick(xs: List[T = Int64], i: Int64) -> Option[T = Int64] = nth(xs, i)
           end
         end
     "#;

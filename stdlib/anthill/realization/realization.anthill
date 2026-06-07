@@ -118,7 +118,7 @@ namespace anthill.realization
 
   -- Maps an anthill prelude type to a host-language type.
   entity TypeMapping(
-    anthill_type : String,                          -- e.g. "Int"
+    anthill_type : String,                          -- e.g. "Int64"
     host_type    : String                           -- e.g. "i64"
   )
 

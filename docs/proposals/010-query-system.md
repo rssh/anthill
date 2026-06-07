@@ -24,7 +24,7 @@ Since Anthill is types-are-terms and facts-are-terms, the natural model is **que
 ```
 -- Given:
 sort Account {
-  entity account(id: Int, owner: String, balance: Int)
+  entity account(id: Int64, owner: String, balance: Int64)
 }
 
 -- Then this is a query pattern:
@@ -64,8 +64,8 @@ Note: implicit multiple-return (as in Icon's generators or Prolog's backtracking
 
 ```
 -- count is an operation on Stream, not a query primitive
-operation count(s: Stream[T = ?S]) -> Int
-operation sum_by(s: Stream[T = ?S], f: ?S -> Int) -> Int  -- (pending arrow sorts)
+operation count(s: Stream[T = ?S]) -> Int64
+operation sum_by(s: Stream[T = ?S], f: ?S -> Int64) -> Int64  -- (pending arrow sorts)
 ```
 
 This keeps the kernel query mechanism minimal (terms + unification) and pushes composition to stdlib.
@@ -128,7 +128,7 @@ Or are named queries just rules without heads (views)?
 
 **OQ5.2.** **Constrained variables**: In `account(?id, ?owner, ?bal), gt(?bal, 1000)`, the second atom is a condition, not a KB lookup. How does the engine distinguish "look up in KB" from "evaluate as constraint"? Is this just the same as rule body evaluation (all atoms are goals, some resolve to facts, some to computable predicates)?
 
-**OQ5.3.** Can variables have **type annotations** in query patterns? E.g., `?bal : Int` — does this constrain matching to facts where the argument is of sort Int?
+**OQ5.3.** Can variables have **type annotations** in query patterns? E.g., `?bal : Int64` — does this constrain matching to facts where the argument is of sort Int64?
 
 ### OQ6. Query Sort, Query Syntax, or Both?
 
@@ -157,7 +157,7 @@ sort Query {
   entity disjunction(left: Query, right: Query)    -- OR
   entity negation(query: Query)                    -- NOT (negation-as-failure)
   entity guarded(query: Query, condition: Term)    -- filter
-  entity limited(query: Query, count: Int)         -- cardinality limit
+  entity limited(query: Query, count: Int64)         -- cardinality limit
   entity projected(query: Query, vars: List[T = String])  -- projection
 }
 ```
@@ -179,7 +179,7 @@ sort LogicalQuery {
   entity negation(query: LogicalQuery)
   entity guarded(query: LogicalQuery, condition: Term)
   entity projected(query: LogicalQuery, vars: List[T = String])
-  entity limited(query: LogicalQuery, count: Int)
+  entity limited(query: LogicalQuery, count: Int64)
 }
 ```
 

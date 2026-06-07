@@ -31,10 +31,10 @@ fn load_with(extra: &str) -> KnowledgeBase {
 fn operation_body_emits_equation_rule() {
     let src = r#"
         namespace test.op_eq.simple
-          import anthill.prelude.{Int}
+          import anthill.prelude.{Int64}
           import anthill.prelude.Numeric.{add}
           export double
-          operation double(x: Int) -> Int = add(x, x)
+          operation double(x: Int64) -> Int64 = add(x, x)
         end
     "#;
     let kb = load_with(src);
@@ -55,10 +55,10 @@ fn operation_body_emits_equation_rule() {
 fn equation_rule_has_correct_shape() {
     let src = r#"
         namespace test.op_eq.shape
-          import anthill.prelude.{Int}
+          import anthill.prelude.{Int64}
           import anthill.prelude.Numeric.{add}
           export double
-          operation double(x: Int) -> Int = add(x, x)
+          operation double(x: Int64) -> Int64 = add(x, x)
         end
     "#;
     let kb = load_with(src);
@@ -99,9 +99,9 @@ fn equation_rule_has_correct_shape() {
 fn no_body_no_equation_rule() {
     let src = r#"
         namespace test.op_eq.no_body
-          import anthill.prelude.{Int}
+          import anthill.prelude.{Int64}
           export plain
-          operation plain(x: Int) -> Int
+          operation plain(x: Int64) -> Int64
         end
     "#;
     let kb = load_with(src);

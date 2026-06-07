@@ -54,10 +54,10 @@ fn provider_missing_op_backing_errors() {
           export Spec, Carrier
           sort Spec
             sort T = ?
-            operation needed(x: T) -> Int
+            operation needed(x: T) -> Int64
           end
           sort Carrier
-            entity carrier(id: Int)
+            entity carrier(id: Int64)
             fact Spec[T = Carrier]
           end
         end
@@ -83,11 +83,11 @@ fn provider_with_spec_default_rule_loads() {
           export Spec, Carrier
           sort Spec
             sort T = ?
-            operation needed(x: T) -> Int
+            operation needed(x: T) -> Int64
             rule needed(?x) = 0
           end
           sort Carrier
-            entity carrier(id: Int)
+            entity carrier(id: Int64)
             fact Spec[T = Carrier]
           end
         end
@@ -103,19 +103,19 @@ fn provider_with_spec_default_rule_loads() {
 #[test]
 fn provider_with_own_op_loads() {
     // `Spec.needed` is abstract (no default), but `Carrier` supplies its own
-    // `operation needed(x: Carrier) -> Int = 0`. Pins that a carrier-refined op
+    // `operation needed(x: Carrier) -> Int64 = 0`. Pins that a carrier-refined op
     // counts as backing.
     let src = r#"
         namespace wi363.carrierop
           export Spec, Carrier
           sort Spec
             sort T = ?
-            operation needed(x: T) -> Int
+            operation needed(x: T) -> Int64
           end
           sort Carrier
-            entity carrier(id: Int)
+            entity carrier(id: Int64)
             fact Spec[T = Carrier]
-            operation needed(x: Carrier) -> Int = 0
+            operation needed(x: Carrier) -> Int64 = 0
           end
         end
     "#;
@@ -129,10 +129,10 @@ fn provider_with_own_op_loads() {
 
 #[test]
 fn stdlib_with_bindings_is_op_complete() {
-    // Loads stdlib + the Rust host bindings (`fact Eq[Int]`, `fact
+    // Loads stdlib + the Rust host bindings (`fact Eq[Int64]`, `fact
     // VectorSpace[Vec3, Float]`, List's five provisions, Stream-provides-
     // Iterable, …). After WI-362 every provided spec is op-complete; host
-    // carriers (Int/Float/…) are backed by their artifacts and skipped. Pins
+    // carriers (Int64/Float/…) are backed by their artifacts and skipped. Pins
     // that WI-363 does not regress the standard library.
     let files = crate::common::collect_stdlib_and_rust_bindings();
     let parsed: Vec<_> = files.iter().map(|p| {

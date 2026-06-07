@@ -12,7 +12,7 @@ This is limiting in two ways:
 
 1. **New operators require grammar changes.** Adding `|` for union types (proposal 014) or `&` for intersection types means editing `grammar.js` and `convert_infix` each time.
 
-2. **Operators can't work across contexts.** The `|` symbol should mean union in type position (`field: Int | String`) and logical disjunction in term position (`a | b`). Currently, infix operators exist only in `_term` — there's no infix support in `_type`.
+2. **Operators can't work across contexts.** The `|` symbol should mean union in type position (`field: Int64 | String`) and logical disjunction in term position (`a | b`). Currently, infix operators exist only in `_term` — there's no infix support in `_type`.
 
 ## Design
 
@@ -361,7 +361,7 @@ This proposal adds the term-level `|` (`or`) and the general framework; proposal
 ```anthill
 -- Type position: `|` means union
 entity Result(
-    value: Int | String,
+    value: Int64 | String,
     valid: Bool
 )
 
@@ -409,9 +409,9 @@ rule mixed(?x) = !?x | ?x = unknown -- not(?x) | eq(?x, unknown)
 ### Word operators
 
 ```anthill
-sort Int
-    operation mod(a: Int, b: Int) -> Int [infix: "mod"]
-    operation div(a: Int, b: Int) -> Int [infix: "div"]
+sort Int64
+    operation mod(a: Int64, b: Int64) -> Int64 [infix: "mod"]
+    operation div(a: Int64, b: Int64) -> Int64 [infix: "div"]
 end
 
 -- Usage: same precedence as * and /

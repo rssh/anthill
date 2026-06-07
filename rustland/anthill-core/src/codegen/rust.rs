@@ -1336,7 +1336,7 @@ fn should_collapse_self(info: &SortInfo, symbols: &SymbolTable) -> bool {
 
 fn map_primitive_type(name: &str) -> String {
     match name {
-        "Int" => "i64".to_owned(),
+        "Int64" => "i64".to_owned(),
         "Float" => "f64".to_owned(),
         "Bool" => "bool".to_owned(),
         "String" => "String".to_owned(),
@@ -1492,7 +1492,7 @@ mod tests {
 
     #[test]
     fn test_map_primitive_type() {
-        assert_eq!(map_primitive_type("Int"), "i64");
+        assert_eq!(map_primitive_type("Int64"), "i64");
         assert_eq!(map_primitive_type("Float"), "f64");
         assert_eq!(map_primitive_type("Bool"), "bool");
         assert_eq!(map_primitive_type("String"), "String");

@@ -18,10 +18,10 @@ use common::{load_kb_with, load_kb_with_lenient};
 fn error_effect_wraps_return_in_tl_expected() {
     let source = r#"
         namespace test.expr_f_err
-          import anthill.prelude.{Int}
+          import anthill.prelude.{Int64}
           export Calc
           sort Calc
-            operation safe_div(a: Int, b: Int) -> Int effects Error = a
+            operation safe_div(a: Int64, b: Int64) -> Int64 effects Error = a
           end
         end
     "#;
@@ -41,14 +41,14 @@ fn raise_lowers_to_make_unexpected() {
     // emit `tl::make_unexpected("boom")` so the value matches the
     // wrapped return type. The lenient loader is needed because the
     // typer doesn't yet model raise's `Nothing` return as compatible
-    // with `Int`.
+    // with `Int64`.
     let source = r#"
         namespace test.expr_f_raise
-          import anthill.prelude.{Int, Error}
+          import anthill.prelude.{Int64, Error}
           import anthill.prelude.Error.{raise}
           export Calc
           sort Calc
-            operation always_fail() -> Int effects Error =
+            operation always_fail() -> Int64 effects Error =
               raise("boom")
           end
         end
@@ -73,11 +73,11 @@ fn error_effect_in_effects_set_still_wraps() {
     // them as a list. We pick out Error from anywhere in that list.
     let source = r#"
         namespace test.expr_f_multi
-          import anthill.prelude.{Int}
+          import anthill.prelude.{Int64}
           export Calc
-          entity Calc(state: Int)
+          entity Calc(state: Int64)
           sort CalcOps
-            operation step(self: Calc) -> Int effects {Error, Modify[self]} = 0
+            operation step(self: Calc) -> Int64 effects {Error, Modify[self]} = 0
           end
         end
     "#;
@@ -96,11 +96,11 @@ fn no_error_effect_keeps_plain_return_type() {
     // Sanity: an op with `Modify[self]` but no Error stays unwrapped.
     let source = r#"
         namespace test.expr_f_modify_only
-          import anthill.prelude.{Int}
+          import anthill.prelude.{Int64}
           export Calc
-          entity Calc(state: Int)
+          entity Calc(state: Int64)
           sort CalcOps
-            operation poke(self: Calc) -> Int effects Modify[self] = 0
+            operation poke(self: Calc) -> Int64 effects Modify[self] = 0
           end
         end
     "#;
@@ -125,11 +125,11 @@ fn wildcard_let_emits_discard_statement() {
     // the call returns `void`.
     let source = r#"
         namespace test.expr_f_void
-          import anthill.prelude.{Int}
+          import anthill.prelude.{Int64}
           export Calc
           sort Calc
-            operation sink(x: Int) -> Int = x
-            operation chain(x: Int) -> Int =
+            operation sink(x: Int64) -> Int64 = x
+            operation chain(x: Int64) -> Int64 =
               let _ = sink(x)
               add(x, 1)
           end
@@ -151,11 +151,11 @@ fn wildcard_let_followed_by_named_let_composes() {
     // Mix: `let _ = a; let y = b; body` produces `a; auto y = b; return body;`.
     let source = r#"
         namespace test.expr_f_mix
-          import anthill.prelude.{Int}
+          import anthill.prelude.{Int64}
           export Calc
           sort Calc
-            operation sink(x: Int) -> Int = x
-            operation step(x: Int) -> Int =
+            operation sink(x: Int64) -> Int64 = x
+            operation step(x: Int64) -> Int64 =
               let _ = sink(x)
               let y = add(x, 1)
               add(y, 1)

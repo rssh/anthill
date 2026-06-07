@@ -46,7 +46,7 @@ anthill eval "1 + 2"
 
 -- Expression with ?variables → bindings (query mode)
 anthill eval "?x :- Ring[?x]"
-?x = Int
+?x = Int64
 
 -- Equation → true/false (proof check)
 anthill eval "add(?a, zero) = ?a"
@@ -150,10 +150,10 @@ Assert parses the input as anthill source and loads it into the KB. The routing 
 anthill> assert sort Color { entity red; entity green; entity blue }
 sort Color registered (Defined, 3 constructors)
 
-anthill> assert entity Point(x: Int, y: Int)
+anthill> assert entity Point(x: Int64, y: Int64)
 sort Point registered
 
-anthill> assert operation distance(a: Point, b: Point) -> Int
+anthill> assert operation distance(a: Point, b: Point) -> Int64
 fact #51 asserted
 ```
 
@@ -171,13 +171,13 @@ anthill> length(cons(1, cons(2, nil)))
 2
 
 anthill> ?x :- Ring[?x]
-?x = Int
+?x = Int64
 
 anthill> fact Ring[Float]
 OK
 
 anthill> ?x :- Ring[?x]
-?x = Int
+?x = Int64
 ?x = Float
 
 anthill> add(?a, zero) = ?a

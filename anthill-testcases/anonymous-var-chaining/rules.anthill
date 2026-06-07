@@ -8,7 +8,7 @@
 -- not "skip binding" — the callee may still use those positions.
 
 namespace test.anon_chaining
-  import anthill.prelude.{Int}
+  import anthill.prelude.{Int64}
 
   -- Data: triples where a+b < c
   fact triple(1, 2, 10)

@@ -49,7 +49,7 @@
 --      left is the leader closing the gap — bounded by v_L * T_c.
 
 namespace anthill.examples.lf1.safety.transponder
-  import anthill.prelude.{Float, Int, Bool}
+  import anthill.prelude.{Float, Int64, Bool}
   import anthill.prelude.Ordered.{lt, gt, lte, gte}
   import anthill.prelude.Numeric.{add, sub, mul}
   import anthill.prelude.Float.{abs}
@@ -145,7 +145,7 @@ namespace anthill.examples.lf1.safety.transponder
   -- ranking tactic exposes a `pessimistic_bound: N` argument that
   -- emits a `RankingProof(name, measure, max_ticks)` fact directly.
 
-  entity PostArmedExcursionBound(max_ticks: Int)
+  entity PostArmedExcursionBound(max_ticks: Int64)
 
   rule excursion_distance_bound(?excursion)
     :- transponder_step_distance_bound(?delta_t),

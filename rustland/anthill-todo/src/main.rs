@@ -2288,7 +2288,7 @@ fn run_anthill_bundle(argv: &[String]) -> ExitCode {
             }
         }
         Ok(other) => {
-            eprintln!("error: main returned non-Int value: {other:?}");
+            eprintln!("error: main returned non-Int64 value: {other:?}");
             ExitCode::from(EXIT_RUNTIME)
         }
         // Top-level Error handler (WI-195): an anthill `Error` effect that

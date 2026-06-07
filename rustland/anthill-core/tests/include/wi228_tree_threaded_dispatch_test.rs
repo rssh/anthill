@@ -31,9 +31,9 @@ use crate::common::interp_for;
 fn pin_now_threads_conditional_tree_into_nested_construct_requirement() {
     // Setup: an EqList carrier that conditionally provides Eq for
     // List[T = A] given Eq[T = A]. The driver calls `eq(x, y)` at
-    // T = List[Int] — Pin-now resolves to EqList.eq with a
+    // T = List[Int64] — Pin-now resolves to EqList.eq with a
     // Conditional tree whose sole sub_resolution is the rustland's
-    // `fact Eq[T = Int]` leaf (Int as the carrier).
+    // `fact Eq[T = Int64]` leaf (Int64 as the carrier).
     //
     // WI-325 made `List` itself declare `requires Eq[T]`, so the
     // stdlib emits Eq.eq apply_within rewrites of its own; those
@@ -47,7 +47,7 @@ fn pin_now_threads_conditional_tree_into_nested_construct_requirement() {
     // verified at the source where it lives.
     let src = r#"
 namespace test.wi228.pin_now_tree
-  import anthill.prelude.{Eq, List, Int, Bool}
+  import anthill.prelude.{Eq, List, Int64, Bool}
   export EqList, Driver
   sort EqList
     sort A = ?
@@ -57,7 +57,7 @@ namespace test.wi228.pin_now_tree
   end
   sort Driver
     import anthill.prelude.Eq.{eq}
-    operation drive(x: List[T = Int], y: List[T = Int]) -> Bool = eq(x, y)
+    operation drive(x: List[T = Int64], y: List[T = Int64]) -> Bool = eq(x, y)
   end
 end
 "#;
@@ -65,8 +65,8 @@ end
     let kb = interp.kb();
 
     let int_sym = kb
-        .try_resolve_symbol("anthill.prelude.Int")
-        .expect("Int registered");
+        .try_resolve_symbol("anthill.prelude.Int64")
+        .expect("Int64 registered");
     let impl_eq_sym = kb
         .try_resolve_symbol("test.wi228.pin_now_tree.EqList.eq")
         .expect("EqList.eq registered");
@@ -116,7 +116,7 @@ end
 
     // WI-228: the resolved_tree carries the full impl tree the IR
     // emitter walks. Shape: Conditional { impl_sort = EqList,
-    // sub_resolutions = [Leaf { impl_sort = Int }] }.
+    // sub_resolutions = [Leaf { impl_sort = Int64 }] }.
     let tree = resolved_tree
         .expect("ConcreteApplyWithin for Pin-now Conditional must carry resolved_tree");
     let (outer_impl_sort, sub_resolutions) = match tree {
@@ -142,13 +142,13 @@ end
         ResolvedRequiresNode::Leaf { impl_sort, .. } => *impl_sort,
         ResolvedRequiresNode::Conditional { impl_sort, .. } => *impl_sort,
         other => panic!(
-            "sub-resolution for Eq[T = Int] must be Leaf/Conditional naming Int; \
+            "sub-resolution for Eq[T = Int64] must be Leaf/Conditional naming Int64; \
              got {other:?}"
         ),
     };
     assert_eq!(
         inner_impl_sort, int_sym,
-        "Eq[T = Int]'s carrier is Int (per stdlib's `fact Eq[T = Int]`); got {}",
+        "Eq[T = Int64]'s carrier is Int64 (per stdlib's `fact Eq[T = Int64]`); got {}",
         kb.qualified_name_of(inner_impl_sort)
     );
 }

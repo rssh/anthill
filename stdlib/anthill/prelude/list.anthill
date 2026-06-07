@@ -15,13 +15,13 @@ enum anthill.prelude.List
   sort T = ?                                           -- type parameter (abstract)
   -- WI-325: `member` calls `eq(head, x)` on abstract T, so List itself
   -- requires `Eq[T]`. Concrete-T operations (`length`, `nth`) keep
-  -- using `add`/`gt`/`sub` at T=Int — those resolve via concrete
-  -- `fact Numeric[T=Int]` records and don't need a separate requires.
+  -- using `add`/`gt`/`sub` at T=Int64 — those resolve via concrete
+  -- `fact Numeric[T=Int64]` records and don't need a separate requires.
   requires Eq[T]
   entity nil                                         -- empty list
   entity cons(head: T, tail: List)                   -- cons cell
 
-  operation length(l: List) -> Int =
+  operation length(l: List) -> Int64 =
     match l
       case nil() -> 0
       case cons(_, xs) -> add(1, length(xs))
@@ -81,7 +81,7 @@ enum anthill.prelude.List
   -- `Pair[A = T, B = List]` return mirrors Stream's `Pair[A = T, B = Stream]`
   -- (the Stream-conformant shape) and carries the element type T in the
   -- *signature*. Threading T through a destructured `Pair` at consumption
-  -- sites (so `head` on a `List[Int]` statically types as `Option[Int]`) was
+  -- sites (so `head` on a `List[Int64]` statically types as `Option[Int64]`) was
   -- delivered by WI-357. The effect dual — threading `E` through the nested
   -- `Stream` in a destructured Pair across a carrier-impl self-recursion (the
   -- lazy `filter` carrier) — is still open; see WI-413.
@@ -100,7 +100,7 @@ enum anthill.prelude.List
   -- than destructuring `cons` directly — the cons tail is bare `List` (cons
   -- cannot carry `List[T]`: a self-referential field type overflows the type
   -- walk), so a direct `nth(t, …)` could not infer the recursive `Elem`.
-  operation nth[Elem](xs: List[Elem], i: Int) -> Option[Elem] =
+  operation nth[Elem](xs: List[Elem], i: Int64) -> Option[Elem] =
     match splitFirst(xs)
       case none() -> none
       case some(pair(h, rest)) ->

@@ -24,7 +24,7 @@ The shape we're describing already exists in mainstream languages, with differen
 
 ```scala
 def bar[T](x: T)(using a: A[T]): String = "B" + a.foo(x)
-given intA: A[Int] = new A[Int] { ... }
+given intA: A[Int64] = new A[Int64] { ... }
 ```
 
 - **R**: implicit-resolution rules over `given` declarations at the call site.
@@ -35,7 +35,7 @@ given intA: A[Int] = new A[Int] { ... }
 
 ```haskell
 class Show a where show :: a -> String
-instance Show Int where show n = ...
+instance Show Int64 where show n = ...
 foo :: Show a => a -> String   -- "Show a =>" is the dictionary parameter
 ```
 
@@ -87,7 +87,7 @@ The structural difference C++ does highlight: concepts are *constraints*, separa
 
 ```lean
 class A (T : Type) where foo : T → String
-instance : A Int where foo := toString
+instance : A Int64 where foo := toString
 def bar [A T] (x : T) : String := "B" ++ A.foo x
 ```
 
@@ -98,9 +98,9 @@ def bar [A T] (x : T) : String := "B" ++ A.foo x
 Lean's instance synthesis is **a structured search procedure**. Composable instances mean the runtime environment can be a *chain* of resolved instances built up by search:
 
 ```lean
--- Want: Eq (List (Int × String))
+-- Want: Eq (List (Int64 × String))
 -- Search walks: instance [Eq T] [Eq U] : Eq (T × U), instance [Eq T] : Eq (List T)
--- Composes to: Eq Int + Eq String → Eq (Int × String) → Eq (List (Int × String))
+-- Composes to: Eq Int64 + Eq String → Eq (Int64 × String) → Eq (List (Int64 × String))
 ```
 
 For each step, the elaborator records the resolved instance. The composed environment carries all the resolutions.
@@ -226,7 +226,7 @@ At each instantiation site (`fact Spec[T = Bind]` with ground bindings), clone t
 - Term store grows: O(specs × instantiations × generic-op-count). Hash-consing offers no help since every clone differs by at least one substituted symbol.
 - Eval per apply: direct symbol jump via OperationInfo lookup. No per-call indirection.
 - Codegen-friendly: each (impl, type-arg) pair is its own first-class fact in the source-of-truth KB.
-- Recursive cases (`F[T = F[T = Int]]`) need bounded expansion or explicit `dyn` annotation.
+- Recursive cases (`F[T = F[T = Int64]]`) need bounded expansion or explicit `dyn` annotation.
 
 ### (P) Parameter insertion (what Scala 3 / Lean 4 / GHC actually do)
 
@@ -251,7 +251,7 @@ At typing time, every scope (sort or operation) carries:
 ```
 
 - `sort_id` — the enclosing sort.
-- `substitution` — type-arg bindings (B.T → Int, etc.).
+- `substitution` — type-arg bindings (B.T → Int64, etc.).
 - `Vec<resolved_requires>` — for each `requires` bound, the resolved `(bound_spec, impl_sort)` pair plus the sub-substitution that pins it.
 
 **Aggregation rule (bottom-up)**: per-op env requirement = explicit requires + requires inferred from called ops; per-sort env requirement = union over its ops. Vector ordering is canonicalized (sorted by bound's qualified name, or declaration order).
@@ -399,7 +399,7 @@ sort Eq
 end
 
 sort IntEq
-  fact Eq[T = Int]
+  fact Eq[T = Int64]
   operation eq(a, b) = ...
 end
 ```
@@ -414,10 +414,10 @@ This pattern is widespread — every `Eq`, `Ordered`, `Numeric` impl in stdlib l
 sort A
 sort B requires A
 sort C requires A
-sort D { fact B[T = Int]; fact C[T = Int]; ... }
+sort D { fact B[T = Int64]; fact C[T = Int64]; ... }
 ```
 
-D must supply ONE `A[T = Int]` satisfaction that's consistent for both the B-bound and the C-bound. Coherence at the outermost site, transitive across multiple bounds. If D supplies A inconsistently (or doesn't supply at all), error.
+D must supply ONE `A[T = Int64]` satisfaction that's consistent for both the B-bound and the C-bound. Coherence at the outermost site, transitive across multiple bounds. If D supplies A inconsistently (or doesn't supply at all), error.
 
 ### Functor over parametric sort (higher-kinded)
 
@@ -452,8 +452,8 @@ sort Tagged
   sort T = ?
   entity tagged(v: T)
 end
-sort UserId  -- wants Tagged[Tag = User, T = Int]
-sort PostId  -- wants Tagged[Tag = Post, T = Int]
+sort UserId  -- wants Tagged[Tag = User, T = Int64]
+sort PostId  -- wants Tagged[Tag = Post, T = Int64]
 ```
 
 `Tag` isn't used in operation bodies. M generates two clones differing only in dead `Tag`. D's side table can dedup if it hashes on the parts that affect dispatch. M needs a phantom-detection pass to avoid waste.
@@ -461,7 +461,7 @@ sort PostId  -- wants Tagged[Tag = Post, T = Int]
 ### Conditional / per-T defaults
 
 ```anthill
-fact Display[T = Int]    { ... }       -- explicit
+fact Display[T = Int64]    { ... }       -- explicit
 fact Display[T = ?A]     { ... } where ?A : Numeric  -- conditional default
 ```
 
@@ -507,7 +507,7 @@ operation bind(m, f) = ...
 
 This case adds four pressures the simpler examples don't:
 
-- **Instance chains.** `StateT[Int, ExceptT[Err, Option]]` triggers an SLD walk through three conditional clauses. The synthesized env IS a chain of resolved Monad instances (three levels deep). M can't enumerate this combinatorially; D handles it natively because env construction IS an SLD query.
+- **Instance chains.** `StateT[Int64, ExceptT[Err, Option]]` triggers an SLD walk through three conditional clauses. The synthesized env IS a chain of resolved Monad instances (three levels deep). M can't enumerate this combinatorially; D handles it natively because env construction IS an SLD query.
 
 - **Same-env multi-call within one body.** `mapM`'s body has five spec-op calls (pure, bind, bind, pure, plus recursive mapM) all dispatching against the same Monad env. Performance-relevant for D: cache the env lookup per frame rather than re-resolving each apply.
 
@@ -528,7 +528,7 @@ sort B
 end
 ```
 
-`B.sort`'s body uses both `eq` (from Eq bound) and `lt` (from Ordered bound). At an instantiation `D { fact B[T = Int]; fact Eq[T = Int]; fact Ordered[T = Int] }`, the environment has TWO impl picks (one per bound). Resolution must pin both.
+`B.sort`'s body uses both `eq` (from Eq bound) and `lt` (from Ordered bound). At an instantiation `D { fact B[T = Int64]; fact Eq[T = Int64]; fact Ordered[T = Int64] }`, the environment has TWO impl picks (one per bound). Resolution must pin both.
 
 This is the diamond pattern's inner mechanism: the environment is a *set* of resolutions, not a single one. M's specialized body has both rewrites baked in; D's side-table entry covers both apply terms, keyed on the same environment.
 

@@ -1,9 +1,9 @@
-//! Built-in `Int.induction(?P, ?lo, ?hi)` and `BigInt.induction(?P)`
+//! Built-in `Int64.induction(?P, ?lo, ?hi)` and `BigInt.induction(?P)`
 //! rules from the prelude. WI-107.
 //!
 //! These are the kernel-emitted/hand-authored numeric induction
 //! principles required by the lf1 reachability lift. Since neither
-//! Int nor BigInt is a sort with constructors, the rules can't
+//! Int64 nor BigInt is a sort with constructors, the rules can't
 //! come from emit_induction_rule (proposal 025); they're authored
 //! as plain anthill in stdlib/anthill/prelude/{int,bigint}.anthill.
 
@@ -42,9 +42,9 @@ fn rule_body_for(kb: &KnowledgeBase, qn: &str) -> Vec<Rc<NodeOccurrence>> {
 #[test]
 fn int_induction_loads_with_base_and_step() {
     let kb = load_stdlib();
-    let body = rule_body_for(&kb, "anthill.prelude.Int.induction");
+    let body = rule_body_for(&kb, "anthill.prelude.Int64.induction");
     assert_eq!(body.len(), 2,
-        "Int.induction should have 2 body goals (base + step), got {}", body.len());
+        "Int64.induction should have 2 body goals (base + step), got {}", body.len());
 
     // The step goal must be forall_impl carrying the IH.
     let printer = TermPrinter::new(&kb);
@@ -53,7 +53,7 @@ fn int_induction_loads_with_base_and_step() {
             Some(Expr::Apply { functor, .. }) if kb.resolve_sym(*functor) == "forall_impl")
     }).unwrap_or_else(|| {
         let dump: Vec<_> = body.iter().map(|t| printer.print_occurrence(t)).collect();
-        panic!("no forall_impl in Int.induction body: {dump:?}")
+        panic!("no forall_impl in Int64.induction body: {dump:?}")
     });
 
     let printed = printer.print_occurrence(step);

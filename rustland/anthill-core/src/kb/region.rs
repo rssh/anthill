@@ -10,7 +10,7 @@
 //! - a `Modify[<result-region>]` (a fresh region produced by a sub-call,
 //!   e.g. `Cell.new`) is **dropped** when the operation's return type
 //!   cannot carry that region — the cell is discarded (`make_and_read :
-//!   Int`), so the write is unobservable;
+//!   Int64`), so the write is unobservable;
 //! - it is **kept**, re-keyed to the operation's own `result`, when the
 //!   return type *can* carry it (`make : Cell`) — the op honestly
 //!   allocates a fresh region it hands out;
@@ -380,7 +380,7 @@ mod wi353_tests {
 
     const OPS: &str = r#"
 namespace anthill.test.wi353
-  import anthill.prelude.{List, Unit, Cell, Int}
+  import anthill.prelude.{List, Unit, Cell, Int64}
 
   -- foreach: the callback is applied to each element of `l`, so the element
   -- place `f.a` is fed `element_of` from `l`.
@@ -397,9 +397,9 @@ namespace anthill.test.wi353
       case nil() -> z
       case cons(h, rest) -> foldCell(rest, f(z, h), f)
 
-  -- Same shape, but the result type `Int` cannot carry a region — the
+  -- Same shape, but the result type `Int64` cannot carry a region — the
   -- escaping-to-result component is masked.
-  operation foldInt(xs: List[T = Int], z: Int, f: (a: Int, t: Int) -> Int) -> Int =
+  operation foldInt(xs: List[T = Int64], z: Int64, f: (a: Int64, t: Int64) -> Int64) -> Int64 =
     match xs
       case nil() -> z
       case cons(h, rest) -> foldInt(rest, f(z, h), f)
@@ -513,11 +513,11 @@ end
     fn fold_result_type_cannot_carry_region_masks_it() {
         let mut kb = load_ops();
         let z = sym(&kb, "anthill.test.wi353.foldInt.z");
-        let got = boundary(&mut kb, "anthill.test.wi353.foldInt", "anthill.prelude.Int", "f.a");
+        let got = boundary(&mut kb, "anthill.test.wi353.foldInt", "anthill.prelude.Int64", "f.a");
         assert_eq!(
             got,
             [z].into_iter().collect(),
-            "an `Int` result cannot carry the region: the escaping-to-result \
+            "an `Int64` result cannot carry the region: the escaping-to-result \
              component is masked (WI-314 escape test); only the seed `z` survives"
         );
     }

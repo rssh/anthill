@@ -121,7 +121,7 @@ The constraint is **not** a hardcoded typer rule. It's an open predicate `acycli
 3. **Reject** if neither holds.
 
 This factors the design cleanly:
-- Most code never thinks about it — `Cell[Int]`, `Cell[wis(...)]`, `Cell[List[Int]]` clear the default walk and "just work."
+- Most code never thinks about it — `Cell[Int64]`, `Cell[wis(...)]`, `Cell[List[Int64]]` clear the default walk and "just work."
 - Domain-specific sorts that maintain acyclicity through some other mechanism (an age-ordered runtime discipline, a DLL whose public API preserves the invariant, a region-scoped construction protocol) can declare their guarantee with a fact: `fact acyclic_cell[T = dll[E]]`. These types pass the check without going through the static walk.
 - Future proof-system integration plugs in as another way to discharge the fact (e.g., a proved instance via SMT or kernel proofs) — same predicate, new discharge.
 
@@ -129,7 +129,7 @@ The default static walk is described next; it's what fires when no explicit `acy
 
 #### Default discharge — the static walk
 
-A runtime cycle through `Cell` requires a *type-graph cycle*: payload type T must transitively reach back to `Cell[T]` itself, or to some other `Cell[U]` whose payload reaches back to `Cell[T]`, etc. Plain nesting like `Cell[Cell[Int]]` or `Cell[List[Cell[Int]]]` cannot form a cycle — the inner `Cell[Int]` holds Int, and Int has no path back to any outer Cell. The default walk allows these and only rejects when the descent through the type graph closes a loop through the same Cell type already seen in the chain.
+A runtime cycle through `Cell` requires a *type-graph cycle*: payload type T must transitively reach back to `Cell[T]` itself, or to some other `Cell[U]` whose payload reaches back to `Cell[T]`, etc. Plain nesting like `Cell[Cell[Int64]]` or `Cell[List[Cell[Int64]]]` cannot form a cycle — the inner `Cell[Int64]` holds Int64, and Int64 has no path back to any outer Cell. The default walk allows these and only rejects when the descent through the type graph closes a loop through the same Cell type already seen in the chain.
 
 The check at a `Cell[T]` site is a depth-first walk over T's structure carrying a set of *Cell types currently in the descent chain* (call it `topCells`). When the walk hits another `Cell[U]`: if `Cell[U] ∈ topCells`, that's a cycle — reject. Otherwise recurse into U with `Cell[U]` added to `topCells`. Non-Cell type structure (entities, lists, maps, tuples, abstract-sort unfoldings) recurses without changing `topCells`; a separate `visiting` set handles non-cell recursive sorts so the walk terminates.
 
@@ -159,7 +159,7 @@ descend(τ, topCells, visiting):
                      topCells ∪ { Cell[U] },
                      visiting')
 
-    Int | Bool | String | Float | Symbol | Term | …:
+    Int64 | Bool | String | Float | Symbol | Term | …:
       return ACCEPT                              -- primitives have no payload
 
     Entity Foo(f1: T1, …, fn: Tn):
@@ -201,12 +201,12 @@ descend(τ, topCells, visiting):
 
 | Type expression | Walk | Decision |
 |---|---|---|
-| `Cell[Int]` | descend(Int, {Cell[Int]}) → primitive | ACCEPT |
-| `Cell[Cell[Int]]` | descend(Cell[Int], {Cell[Cell[Int]]}) → Cell[Int] ∉ topCells → descend(Int, {Cell[Cell[Int]], Cell[Int]}) → primitive | ACCEPT |
-| `Cell[List[Cell[Int]]]` | descend(List[Cell[Int]], {Cell[List[Cell[Int]]]}) → descend(Cell[Int], …) → Cell[Int] ∉ topCells → descend(Int, …) | ACCEPT |
-| `Cell[wis(backend: IFS, id_counter: Int)]` | entity with non-cell fields | ACCEPT (WI-203's case) |
+| `Cell[Int64]` | descend(Int64, {Cell[Int64]}) → primitive | ACCEPT |
+| `Cell[Cell[Int64]]` | descend(Cell[Int64], {Cell[Cell[Int64]]}) → Cell[Int64] ∉ topCells → descend(Int64, {Cell[Cell[Int64]], Cell[Int64]}) → primitive | ACCEPT |
+| `Cell[List[Cell[Int64]]]` | descend(List[Cell[Int64]], {Cell[List[Cell[Int64]]]}) → descend(Cell[Int64], …) → Cell[Int64] ∉ topCells → descend(Int64, …) | ACCEPT |
+| `Cell[wis(backend: IFS, id_counter: Int64)]` | entity with non-cell fields | ACCEPT (WI-203's case) |
 | `Cell[A]` where `sort A { entity wrap(value: Cell[A]) }` | descend(A, {Cell[A]}) → unfold wrap(value: Cell[A]) → descend(Cell[A], {Cell[A]}) → Cell[A] ∈ topCells | **REJECT** — cycle |
-| `Cell[A]` where A = `sort A { entity x(t: Int, more: List[A]) }` | descend(A, …) → unfold → descend(List[A]) → descend(A) → A ∈ visiting → terminate | ACCEPT — no Cell on the recursion path |
+| `Cell[A]` where A = `sort A { entity x(t: Int64, more: List[A]) }` | descend(A, …) → unfold → descend(List[A]) → descend(A) → A ∈ visiting → terminate | ACCEPT — no Cell on the recursion path |
 | `Cell[A]` where `sort A { entity wrap(b: B) }` and `sort B { entity wrap(a: Cell[A]) }` | descend(A) → unfold → descend(B) → unfold → descend(Cell[A]) → Cell[A] ∈ topCells | **REJECT** — cycle through B |
 | `Cell[Closure]` | Closure variant → conservative reject | REJECT (until per-sort opt-in lands) |
 
@@ -222,8 +222,8 @@ The kernel attaches an implicit `acyclic_cell(V)` discharge obligation to `Cell.
 
 ```anthill
 -- Default: kernel walks the type graph (the algorithm above). No fact
--- needed for ordinary cases like Cell[Int], Cell[wis(...)],
--- Cell[List[Int]], Cell[Cell[Int]] — they clear the walk on their own.
+-- needed for ordinary cases like Cell[Int64], Cell[wis(...)],
+-- Cell[List[Int64]], Cell[Cell[Int64]] — they clear the walk on their own.
 
 -- A domain sort declares its invariant with a fact:
 sort dll
@@ -237,7 +237,7 @@ end
 fact acyclic_cell[T = dll[E = ?]]
 -- (or per-instantiation, depending on how strong the invariant is)
 
--- Now `Cell[dll[E = Int]]` is well-typed via the fact, even though the
+-- Now `Cell[dll[E = Int64]]` is well-typed via the fact, even though the
 -- default walk would reject it (dll's type graph closes a Cell-loop
 -- through Node.prev / Node.next).
 ```
@@ -505,7 +505,7 @@ Migration steps:
 3. **Add `cells: CellArenaRef` field on `Interpreter`** (eval/mod.rs).
 4. **Rewrite `cell_new`/`cell_get`/`cell_set` builtins** to allocate from / dispatch through the arena instead of the Modify handler.
 5. **Typer rule** — `may_contain_cell` predicate populated as a load-time pass on the KB; check fires at every `Cell.new` call site and `Cell[T]` type annotation. (Replaces the runtime cycle walk from earlier drafts.)
-6. **Tests** — recursion test (deep allocation, no aliasing); refcount test (slot reclaimed when handle dropped); typer-rejection tests for `Cell[Cell[Int]]`, `Cell[List[Cell[X]]]`, etc.
+6. **Tests** — recursion test (deep allocation, no aliasing); refcount test (slot reclaimed when handle dropped); typer-rejection tests for `Cell[Cell[Int64]]`, `Cell[List[Cell[X]]]`, etc.
 7. **Diagnostics** — TermPrinter for Value::Cell (handle id, current value rendered).
 8. **Update wi205_cell_test.rs** — same surface tests still pass under the new representation.
 
@@ -517,7 +517,7 @@ A summary of how user-side mistakes manifest:
 
 | What the developer does | Result |
 |---|---|
-| Tries to write a `Cell` value into another `Cell` (`Cell[Cell[Int]]`, `Cell[List[Cell[T]]]`, `Cell[Closure]`, `Cell[Stream]`, …) | **Compile-time error** at the `Cell.new(v)` call or the `Cell[T]` annotation — the typer's `may_contain_cell` rule rejects it with a clear "Cell[T] requires T to be Cell-free" diagnostic. No runtime path. |
+| Tries to write a `Cell` value into another `Cell` (`Cell[Cell[Int64]]`, `Cell[List[Cell[T]]]`, `Cell[Closure]`, `Cell[Stream]`, …) | **Compile-time error** at the `Cell.new(v)` call or the `Cell[T]` annotation — the typer's `may_contain_cell` rule rejects it with a clear "Cell[T] requires T to be Cell-free" diagnostic. No runtime path. |
 | Wants graph-shaped mutable state with internal cell references | Use the optional `GCCell[T]` sibling sort (when it lands; see "Design variant" below) — permissive on T, backed by tracing mark-sweep. |
 | Writes infinite recursion (no Cell-specific concern) | `ActivationStack` grows in heap; no host-stack overflow. Eventually OOM → allocator panic → process abort. Same as any non-terminating program. |
 | Builds and `Cell.set`s a 10 000-deep nested Tuple/Entity tree | `Cell.set` is O(1) — a single slot write. Tree depth is irrelevant; the value passes through by handle. |
@@ -592,7 +592,7 @@ The trait machinery isn't wasted by the type-level approach for Cell. It lives i
 
 ### When does GC run?
 
-- **Explicit**: `GCCell.collect() -> Int` operation, returns count of slots reclaimed. User triggers; deterministic.
+- **Explicit**: `GCCell.collect() -> Int64` operation, returns count of slots reclaimed. User triggers; deterministic.
 - **Threshold-based**: when the gc_cell_arena's free_list is empty and would otherwise grow, run collection first. Implicit; bounded growth.
 - **Time-based**: periodic from a host loop. Probably overkill for an interpreter; skip.
 
@@ -601,10 +601,10 @@ The trait machinery isn't wasted by the type-level approach for Cell. It lives i
 The user picks at type-declaration time. Most state goes in `Cell`; if the typer rejects `Cell[T]` because T may contain Cell, the error message redirects to `GCCell` as the intended-graph-state alternative:
 
 ```
-error: Cell[T] requires T to be Cell-free; T = `List[Cell[Int]]` contains
+error: Cell[T] requires T to be Cell-free; T = `List[Cell[Int64]]` contains
        Cell at element type. Consider using GCCell[T] if you intend
        graph-shaped state, or refactor T to avoid nested Cells (e.g.
-       Cell[List[Int]] with the outer list reconstructed on update).
+       Cell[List[Int64]] with the outer list reconstructed on update).
 ```
 
 ### Migration impact
@@ -638,7 +638,7 @@ When the cell_arena WI lands:
 4. Cell.new/get/set builtins use arena, drop the Modify-handler delegation.
 5. Recursion test: 1000 deep `Cell.new` calls each see their own value at unwind.
 6. Refcount test: drop the only handle, verify slot reclaimed (free list grew).
-7. Typer rule fires: a program with `let c: Cell[Cell[Int]] = …` (or equivalent at a `Cell.new` call site whose argument has cell-bearing type) is rejected at load time with a clear `Cell[T] requires T to be Cell-free` diagnostic.
+7. Typer rule fires: a program with `let c: Cell[Cell[Int64]] = …` (or equivalent at a `Cell.new` call site whose argument has cell-bearing type) is rejected at load time with a clear `Cell[T] requires T to be Cell-free` diagnostic.
 8. All existing wi205_cell_test.rs tests still pass.
 9. `Print` of a `Value::Cell` doesn't panic.
 

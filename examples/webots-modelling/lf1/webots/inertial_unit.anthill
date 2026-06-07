@@ -10,19 +10,19 @@
 --   double getNoise() const;
 
 sort anthill.examples.lf1.webots.InertialUnit
-  import anthill.prelude.{Int, Float, Unit, Modify}
+  import anthill.prelude.{Int64, Float, Unit, Modify}
   import anthill.geometry.{EulerAngles}
   export InertialUnit
   export enable, disable, get_sampling_period
   export get_roll_pitch_yaw, get_noise
 
-  operation enable(self: InertialUnit, sampling_period: Int) -> Unit
+  operation enable(self: InertialUnit, sampling_period: Int64) -> Unit
     effects Modify[self]
 
   operation disable(self: InertialUnit) -> Unit
     effects Modify[self]
 
-  operation get_sampling_period(self: InertialUnit) -> Int
+  operation get_sampling_period(self: InertialUnit) -> Int64
 
   -- Orientation as (roll, pitch, yaw) in radians. EulerAngles
   -- (rather than Vec3) keeps the field names matched to angular

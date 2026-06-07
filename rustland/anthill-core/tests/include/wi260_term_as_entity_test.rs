@@ -14,9 +14,9 @@ fn term_as_entity_materializes_workitem_into_typed_entity() {
     let src = r#"
 namespace test.wi260
   sort Inventory
-    entity Item(id: String, name: String, count: Int)
+    entity Item(id: String, name: String, count: Int64)
   end
-  operation main() -> Int = 0
+  operation main() -> Int64 = 0
 end
 "#;
     let mut interp = interp_for(src);
@@ -96,7 +96,7 @@ fn term_as_entity_returns_none_for_non_constructor() {
     // String literal isn't a Fn — should return `none()`.
     let src = r#"
 namespace test.wi260_none
-  operation main() -> Int = 0
+  operation main() -> Int64 = 0
 end
 "#;
     let mut interp = interp_for(src);
@@ -127,7 +127,7 @@ fn term_as_entity_returns_none_for_unregistered_functor() {
     // `none()` because `constructor_parent_sort` reports `None`.
     let src = r#"
 namespace test.wi260_unregistered
-  operation main() -> Int = 0
+  operation main() -> Int64 = 0
 end
 "#;
     let mut interp = interp_for(src);
@@ -168,7 +168,7 @@ namespace test.wi260_nested
     entity Inner(tag: String)
     entity Outer(name: String, child: Inner)
   end
-  operation main() -> Int = 0
+  operation main() -> Int64 = 0
 end
 "#;
     let mut interp = interp_for(src);

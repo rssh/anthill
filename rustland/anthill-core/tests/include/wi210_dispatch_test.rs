@@ -97,7 +97,7 @@ fn fact_clause_inside_sort_body_emits_provides_info() {
 #[test]
 fn fact_clause_at_namespace_emits_with_carrier_as_sort_ref() {
     // Namespace-level `fact Spec[bindings]` (the stdlib convention
-    // for primitive carriers like Int satisfying Numeric) emits a
+    // for primitive carriers like Int64 satisfying Numeric) emits a
     // SortProvidesInfo with sort_ref = the carrier (first binding
     // value), not the namespace itself. Mirrors the proposal-036
     // pattern semantically: "X satisfies Spec at these bindings,"
@@ -226,20 +226,20 @@ fn lookup_spec_op_dispatch_rejects_op_on_non_parametric_sort() {
 // ─── Phase 3 dispatch tests (proposal 038) ───────────────────────
 //
 // Builtin-sort unification (proposal 038) makes candidate binding
-// values resolve to the same Symbol whether referenced bare (`Int`)
-// or via the `anthill.prelude.Int` qualified path. find_unique_impl_op
+// values resolve to the same Symbol whether referenced bare (`Int64`)
+// or via the `anthill.prelude.Int64` qualified path. find_unique_impl_op
 // can therefore deterministically match per-call substitutions
 // against SortProvidesInfo records emitted from per-language binding
-// blocks (e.g. `provides Int language rust { fact Numeric[T = Int] }`).
+// blocks (e.g. `provides Int64 language rust { fact Numeric[T = Int64] }`).
 
 #[test]
 fn stdlib_namespace_facts_emit_provides_info_for_numeric() {
-    // Stdlib's `fact Numeric[Int]` at namespace anthill.prelude.Int
+    // Stdlib's `fact Numeric[Int64]` at namespace anthill.prelude.Int64
     // (after Phase 1's namespace-level handling) should emit a
-    // SortProvidesInfo recording Int as a Numeric impl. Pending
+    // SortProvidesInfo recording Int64 as a Numeric impl. Pending
     // WI-213 (builtin sort concept) which lets stdlib put these
-    // facts inside `builtin sort Int { ... }` bodies — but the
-    // semantics are equivalent: Int satisfies Numeric.
+    // facts inside `builtin sort Int64 { ... }` bodies — but the
+    // semantics are equivalent: Int64 satisfies Numeric.
     let mut kb = load_with("");
     let heads = provides_info_heads(&mut kb);
     let dump: Vec<&String> = heads.iter()
@@ -247,10 +247,10 @@ fn stdlib_namespace_facts_emit_provides_info_for_numeric() {
         .collect();
     eprintln!("WI210-DBG Numeric SortProvidesInfo heads: {dump:#?}");
     let int_numeric = heads.iter().any(|h|
-        h.contains("Numeric") && h.contains("Int")
+        h.contains("Numeric") && h.contains("Int64")
     );
     assert!(int_numeric,
-        "expected Int to be recorded as a Numeric impl; saw heads with Numeric:\n{dump:#?}");
+        "expected Int64 to be recorded as a Numeric impl; saw heads with Numeric:\n{dump:#?}");
 }
 
 #[test]
@@ -352,27 +352,27 @@ fn dispatch_workitemstore_op(op_short: &str) -> (KnowledgeBase, anthill_core::in
 #[test]
 fn dispatch_unique_finds_int_impl_for_numeric_add() {
     // `add` on Numeric is dispatch-eligible; with the rustland binding
-    // emitting `fact Numeric[T = Int]`, find_unique_impl_op should
-    // resolve a Unique outcome whose impl sort is Int.
+    // emitting `fact Numeric[T = Int64]`, find_unique_impl_op should
+    // resolve a Unique outcome whose impl sort is Int64.
     let mut kb = load_with("");
     let add_sym = kb.try_resolve_symbol("anthill.prelude.Numeric.add")
         .expect("Numeric.add registered");
     let spec_sort = lookup_spec_op_dispatch(&kb, add_sym)
         .expect("Numeric.add is a spec op");
-    let subst = subst_with_t(&mut kb, "anthill.prelude.Numeric", "anthill.prelude.Int");
+    let subst = subst_with_t(&mut kb, "anthill.prelude.Numeric", "anthill.prelude.Int64");
     let op_short = kb.intern("add");
     let outcome = find_unique_impl_op(&mut kb, &subst, spec_sort, op_short, &[]);
     assert!(matches!(outcome, DispatchOutcome::Unique(_)),
-        "expected Unique impl for Numeric add at T=Int; got {outcome:?}");
+        "expected Unique impl for Numeric add at T=Int64; got {outcome:?}");
 }
 
 #[test]
 fn dispatch_no_candidates_when_carrier_lacks_impl() {
-    // Numeric has impls for Int / Float / BigInt but not Bool. A
+    // Numeric has impls for Int64 / Float / BigInt but not Bool. A
     // per-call subst at T=Bool must yield NoCandidates: the existing
-    // Numeric[Int]/Float/BigInt impls are independent specifications
+    // Numeric[Int64]/Float/BigInt impls are independent specifications
     // about different sorts and must not gate Bool dispatch (same
-    // rationale as `Eq[T=Type]` not gating `Eq[T=Int]`).
+    // rationale as `Eq[T=Type]` not gating `Eq[T=Int64]`).
     let mut kb = load_with("");
     let add_sym = kb.try_resolve_symbol("anthill.prelude.Numeric.add")
         .expect("Numeric.add registered");
@@ -426,7 +426,7 @@ fn dispatch_ambiguous_when_two_impls_match_same_binding() {
 /// `b` typed with the spec sort itself, not its type-parameter) with two
 /// carrier impls (`ListBox`, `StreamBox`). Box's only parameter `T` is the
 /// *element*, so the carrier is not a binding: every impl's universally-
-/// quantified `fact Box[T]` matches a per-call `Box[T = Int]` goal.
+/// quantified `fact Box[T]` matches a per-call `Box[T = Int64]` goal.
 fn load_box_two_carriers() -> KnowledgeBase {
     load_with(r#"
         namespace wi350.box
@@ -453,7 +453,7 @@ fn load_box_two_carriers() -> KnowledgeBase {
 
 #[test]
 fn wi350_self_receiver_spec_is_ambiguous_without_carrier() {
-    // Baseline: with no receiver carrier, the per-call binding `Box[T = Int]`
+    // Baseline: with no receiver carrier, the per-call binding `Box[T = Int64]`
     // matches BOTH carriers' `fact Box[T]` — exactly the pathology WI-350
     // describes ("EVERY Stream-op call is DispatchAmbiguous"). This is the
     // `dispatch_spec_op_cached(.., carrier = None)` path.
@@ -462,7 +462,7 @@ fn wi350_self_receiver_spec_is_ambiguous_without_carrier() {
         .expect("Box.peek registered");
     let spec_sort = lookup_spec_op_dispatch(&kb, peek_sym)
         .expect("Box.peek is a spec op");
-    let subst = subst_with_t(&mut kb, "wi350.box.Box", "anthill.prelude.Int");
+    let subst = subst_with_t(&mut kb, "wi350.box.Box", "anthill.prelude.Int64");
     let op_short = kb.intern("peek");
     let outcome = find_unique_impl_op(&mut kb, &subst, spec_sort, op_short, &[]);
     assert_eq!(outcome, DispatchOutcome::Ambiguous,
@@ -483,7 +483,7 @@ fn wi350_concrete_carrier_disambiguates_self_receiver_spec() {
         .expect("ListBox registered");
     let listbox_peek = kb.try_resolve_symbol("wi350.box.ListBox.peek")
         .expect("ListBox.peek registered");
-    let subst = subst_with_t(&mut kb, "wi350.box.Box", "anthill.prelude.Int");
+    let subst = subst_with_t(&mut kb, "wi350.box.Box", "anthill.prelude.Int64");
     let op_short = kb.intern("peek");
 
     let (outcome, _tree) = dispatch_spec_op_cached(
@@ -597,7 +597,7 @@ fn dispatch_polymorphic_candidate_matches_any_per_call_value() {
     // proposal-002 List now also a Stream impl, `Stream` is a self-receiver
     // spec with ≥2 carriers, so the carrier discriminates (WI-350): supplying
     // the receiver's carrier (`LogicalStream`) picks that impl uniquely at
-    // T = Int, while the carrier-less compat path is genuinely Ambiguous.
+    // T = Int64, while the carrier-less compat path is genuinely Ambiguous.
     let mut kb = load_with("");
     let head_sym = kb.try_resolve_symbol("anthill.prelude.Stream.head")
         .expect("Stream.head registered");
@@ -609,17 +609,17 @@ fn dispatch_polymorphic_candidate_matches_any_per_call_value() {
         &mut kb,
         "anthill.prelude.Stream",
         "T",
-        "anthill.prelude.Int",
+        "anthill.prelude.Int64",
     );
     let op_short = kb.intern("head");
 
     // Carrier = LogicalStream: the universal `fact Stream[T]` candidate
-    // matches the per-call T = Int and the carrier filter keeps only it.
+    // matches the per-call T = Int64 and the carrier filter keeps only it.
     let (with_carrier, _) = dispatch_spec_op_cached(
         &mut kb, &subst, spec_sort, op_short, &[], Some(logical_stream),
     );
     assert!(matches!(with_carrier, DispatchOutcome::Unique(_)),
-        "expected Unique dispatch for Stream.head at carrier=LogicalStream, T=Int; \
+        "expected Unique dispatch for Stream.head at carrier=LogicalStream, T=Int64; \
          got {with_carrier:?}");
 
     // Carrier-less compat path: ≥2 Stream impls both match the universal
@@ -744,13 +744,13 @@ fn dispatch_int_add_x_x_type_checks_via_spec_satisfaction() {
     use anthill_core::kb::term::Term;
     use smallvec::SmallVec;
     // Acceptance criterion #3 (proposal 038): `add(x, x)` for x:Int
-    // type-checks via Int's spec satisfaction — i.e. the dispatch hook
+    // type-checks via Int64's spec satisfaction — i.e. the dispatch hook
     // resolves to Unique without bailing the typer.
     let mut kb = load_with("");
     let add_sym = kb.try_resolve_symbol("anthill.prelude.Numeric.add")
         .expect("Numeric.add registered");
-    let int_sym = kb.try_resolve_symbol("anthill.prelude.Int")
-        .expect("Int registered");
+    let int_sym = kb.try_resolve_symbol("anthill.prelude.Int64")
+        .expect("Int64 registered");
     let int_type = kb.make_sort_ref(int_sym);
 
     let apply_arg_sym = kb.try_resolve_symbol("anthill.reflect.ApplyArg")

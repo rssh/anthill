@@ -8,7 +8,7 @@
 //!
 //! WI-366 migrates those producers to carrier-agnostic value facts: a spec/alias
 //! target whose structure carries a `denoted` value-in-type (here the literal
-//! `3` in `Foo[Int, 3]`) is asserted via `assert_fact_value` with a `Value::Node`
+//! `3` in `Foo[Int64, 3]`) is asserted via `assert_fact_value` with a `Value::Node`
 //! occurrence, NOT re-grounded through `make_denoted` (now `#[cfg(test)]`-only).
 //! All readers of these facts were made carrier-agnostic so loading the program
 //! (which runs `resolve_requires_bindings`, the dispatch walks, etc. over the
@@ -85,7 +85,7 @@ fn any_node_carrying_fact(kb: &KnowledgeBase, functor_qn: &str) -> bool {
 }
 
 /// WI-390: whether a hash-consed term transitively contains a `denoted(...)` — the
-/// faithful value-in-type form (e.g. the `3` in `Foo[Int, 3]`), proving the
+/// faithful value-in-type form (e.g. the `3` in `Foo[Int64, 3]`), proving the
 /// round-trip kept it rather than dropping it.
 fn term_carries_denoted(kb: &KnowledgeBase, t: anthill_core::kb::term::TermId) -> bool {
     use anthill_core::kb::term::{Term, TermId};
@@ -125,7 +125,7 @@ const FOO: &str = r#"
   end
 "#;
 
-/// `sort Bar = Foo[Int, 3]` — the alias target carries the denoted `3`, so the
+/// `sort Bar = Foo[Int64, 3]` — the alias target carries the denoted `3`, so the
 /// `SortAlias` fact must ride as a `Value::Node`-carrying value fact (and the
 /// SortAlias readers, run on every type-param resolution during load, must not
 /// panic iterating it).
@@ -134,19 +134,19 @@ fn sort_alias_value_in_type_rides_as_term() {
     let src = format!(
         r#"
 namespace test.wi366.alias
-  import anthill.prelude.{{Int}}
+  import anthill.prelude.{{Int64}}
 {FOO}
-  sort Bar = Foo[Int, 3]
+  sort Bar = Foo[Int64, 3]
 end
 "#
     );
     let (kb, errs) = load_kb(&[&src]);
-    // WI-390: `Foo[Int, 3]` is faithfully term-representable, so the SortAlias
+    // WI-390: `Foo[Int64, 3]` is faithfully term-representable, so the SortAlias
     // target rides as a hash-consed `Term` (the `3` as a `denoted` term), not a
     // `Value::Node` value fact.
     assert!(
         !any_node_carrying_fact(&kb, "SortAlias"),
-        "WI-390: `sort Bar = Foo[Int, 3]` must ride as a hash-consed Term SortAlias, not a Value::Node",
+        "WI-390: `sort Bar = Foo[Int64, 3]` must ride as a hash-consed Term SortAlias, not a Value::Node",
     );
     assert!(
         denoted_term_fact_head(&kb, "SortAlias").is_some(),
@@ -158,7 +158,7 @@ end
     );
 }
 
-/// `requires Foo[Int, 3]` — the SortView spec carries the denoted `3`, so the
+/// `requires Foo[Int64, 3]` — the SortView spec carries the denoted `3`, so the
 /// `SortRequiresInfo` fact rides as a value fact. Loading runs
 /// `resolve_requires_bindings` (and `direct_requires` during typing) over the
 /// value head, which must not panic.
@@ -167,23 +167,23 @@ fn requires_value_in_type_rides_as_term() {
     let src = format!(
         r#"
 namespace test.wi366.req
-  import anthill.prelude.{{Int}}
+  import anthill.prelude.{{Int64}}
 {FOO}
   sort Carrier
-    entity c(x: Int)
-    requires Foo[Int, 3]
+    entity c(x: Int64)
+    requires Foo[Int64, 3]
   end
 end
 "#
     );
     let (kb, errs) = load_kb(&[&src]);
-    // WI-390 ACCEPTANCE: `Foo[Int, 3]` is faithfully term-representable (the `3`
+    // WI-390 ACCEPTANCE: `Foo[Int64, 3]` is faithfully term-representable (the `3`
     // rides as a `denoted` term), so the SortRequiresInfo head is a hash-consed
     // `Term` — `direct_requires` reads it (no silent skip) and `resolve_cache` keys
     // on it. (WI-390 reverses the WI-366 `Value::Node` direction here.)
     assert!(
         !any_node_carrying_fact(&kb, "anthill.reflect.SortRequiresInfo"),
-        "WI-390: `requires Foo[Int, 3]` must ride as a hash-consed Term fact, not a Value::Node",
+        "WI-390: `requires Foo[Int64, 3]` must ride as a hash-consed Term fact, not a Value::Node",
     );
     assert!(
         denoted_term_fact_head(&kb, "anthill.reflect.SortRequiresInfo").is_some(),
@@ -195,18 +195,18 @@ end
     );
 }
 
-/// `provides Foo[Int, 3]` — symmetric to `requires`: the `SortProvidesInfo` fact
+/// `provides Foo[Int64, 3]` — symmetric to `requires`: the `SortProvidesInfo` fact
 /// rides as a value fact, and the provides/dispatch readers tolerate it.
 #[test]
 fn provides_value_in_type_rides_as_term() {
     let src = format!(
         r#"
 namespace test.wi366.prov
-  import anthill.prelude.{{Int}}
+  import anthill.prelude.{{Int64}}
 {FOO}
   sort Carrier
-    entity c(x: Int)
-    provides Foo[Int, 3]
+    entity c(x: Int64)
+    provides Foo[Int64, 3]
   end
 end
 "#
@@ -217,7 +217,7 @@ end
     // its spec faithfully carrying the denoted `3`.
     assert!(
         !any_node_carrying_fact(&kb, "anthill.reflect.SortProvidesInfo"),
-        "WI-390: `provides Foo[Int, 3]` must ride as a hash-consed Term fact, not a Value::Node",
+        "WI-390: `provides Foo[Int64, 3]` must ride as a hash-consed Term fact, not a Value::Node",
     );
     assert!(
         denoted_term_fact_head(&kb, "anthill.reflect.SortProvidesInfo").is_some(),
@@ -240,9 +240,9 @@ fn provides_block_value_in_type_spec_loads_without_panic() {
     let src = format!(
         r#"
 namespace test.wi366.provblock
-  import anthill.prelude.{{Int}}
+  import anthill.prelude.{{Int64}}
 {FOO}
-  provides Foo[Int, 3] language rust
+  provides Foo[Int64, 3] language rust
     artifact "foo.rs"
   end
 end
@@ -300,19 +300,19 @@ fn fact_head_written_empty_effect_row_matches_provides() {
     // One kb so hash-consing makes equal TermId == structural identity.
     let fact_ns = r#"
 namespace test.wi366.factrow.f
-  import anthill.prelude.{Int, Stream}
+  import anthill.prelude.{Int64, Stream}
   sort MyList
     entity nil
-    fact Stream[T = Int, E = {}]
+    fact Stream[T = Int64, E = {}]
   end
 end
 "#;
     let prov_ns = r#"
 namespace test.wi366.factrow.p
-  import anthill.prelude.{Int, Stream}
+  import anthill.prelude.{Int64, Stream}
   sort MyList
     entity nil
-    provides Stream[T = Int, E = {}]
+    provides Stream[T = Int64, E = {}]
   end
 end
 "#;
@@ -333,7 +333,7 @@ end
 }
 
 /// Regression (WI-366 B1): a written effect-row in a RULE-BODY atom
-/// (`:- Stream[T = Int, E = {}]`) must be CARRIED, not silently dropped. Rule
+/// (`:- Stream[T = Int64, E = {}]`) must be CARRIED, not silently dropped. Rule
 /// bodies load via `build_body_atom_occurrence` (the occurrence path), which used
 /// to filter out ALL `ParseAux` children — so when `{}` started riding as an
 /// effect-row ParseAux, the `E` binding vanished (the loud `unresolved name '{}'`
@@ -344,12 +344,12 @@ fn rule_body_written_empty_effect_row_is_carried() {
     use anthill_core::persistence::print::TermPrinter;
     let src = r#"
 namespace test.wi366.rulerow
-  import anthill.prelude.{Int, Stream}
+  import anthill.prelude.{Int64, Stream}
   sort Carrier
-    entity c(x: Int)
+    entity c(x: Int64)
   end
   rule wants_stream(?c)
-    :- Stream[T = Int, E = {}]
+    :- Stream[T = Int64, E = {}]
 end
 "#;
     let (kb, errs) = load_kb(&[src]);
@@ -369,11 +369,11 @@ end
         .map(|atom| printer.print_occurrence(atom))
         .collect::<Vec<_>>()
         .join(" || ");
-    // The element binding (`Int`) AND the effect-row binding (`E`) must both be
-    // present — if `E` were dropped, only `Int` would survive.
+    // The element binding (`Int64`) AND the effect-row binding (`E`) must both be
+    // present — if `E` were dropped, only `Int64` would survive.
     assert!(
-        body.contains("Int") && body.contains("E"),
-        "rule-body atom must carry BOTH the `T = Int` and the `E = {{}}` bindings \
+        body.contains("Int64") && body.contains("E"),
+        "rule-body atom must carry BOTH the `T = Int64` and the `E = {{}}` bindings \
          (the written row must not be dropped); got body: {body}",
     );
 }
@@ -388,9 +388,9 @@ fn rule_body_positional_nested_empty_effect_row_is_carried() {
     use anthill_core::persistence::print::TermPrinter;
     let src = r#"
 namespace test.wi366.rulerowpos
-  import anthill.prelude.{Int, Stream, List}
+  import anthill.prelude.{Int64, Stream, List}
   sort Carrier
-    entity c(x: Int)
+    entity c(x: Int64)
   end
   rule wants(?c)
     :- List[T = Stream[{}]]
@@ -420,7 +420,7 @@ end
 }
 
 /// Regression (WI-366 B1): a written effect-row in an OP-BODY type-expression
-/// (`operation give() -> Type = Stream[T = Int, E = {}]`) must be CARRIED, not
+/// (`operation give() -> Type = Stream[T = Int64, E = {}]`) must be CARRIED, not
 /// dropped. Op bodies load via the `convert_expr_term` work-stack (`visit_load`),
 /// a THIRD term-position consumer that also filtered out ParseAux children — so
 /// `{}`-as-aux would have been silently dropped (and a naive keep would have
@@ -431,10 +431,10 @@ fn op_body_written_empty_effect_row_is_carried() {
     use anthill_core::persistence::print::TermPrinter;
     let src = r#"
 namespace test.wi366.opbodyrow
-  import anthill.prelude.{Int, Stream, Type}
+  import anthill.prelude.{Int64, Stream, Type}
   sort Carrier
-    entity c(x: Int)
-    operation give(self: Carrier) -> Type = Stream[T = Int, E = {}]
+    entity c(x: Int64)
+    operation give(self: Carrier) -> Type = Stream[T = Int64, E = {}]
   end
 end
 "#;
@@ -450,14 +450,14 @@ end
     let body = kb.op_body_node(op).expect("give has a body");
     let printed = TermPrinter::new(&kb).print_occurrence(body);
     assert!(
-        printed.contains("Int") && printed.contains("E"),
-        "op-body type-expression must carry BOTH `T = Int` and the `E = {{}}` \
+        printed.contains("Int64") && printed.contains("E"),
+        "op-body type-expression must carry BOTH `T = Int64` and the `E = {{}}` \
          effect-row binding (the written row must not be dropped); got: {printed}",
     );
 }
 
 /// Regression (WI-366 B1): a written effect-row in a QUERY pattern
-/// (`anthill query --pattern 'Stream[T = Int, E = {}]'`) must lower, not PANIC.
+/// (`anthill query --pattern 'Stream[T = Int64, E = {}]'`) must lower, not PANIC.
 /// Queries are converted by `convert_query_term` — a FOURTH term-position
 /// consumer (a free fn, not the `Loader`) — whose `ParseAux` arm used to be
 /// `unreachable!`. The parse change made `{}` ride as an effect-row aux, which
@@ -471,12 +471,12 @@ fn query_pattern_written_empty_effect_row_lowers() {
     use anthill_core::parse;
     use std::collections::HashMap;
 
-    // Load stdlib so Stream / Int / EffectExpression.empty_row are registered.
+    // Load stdlib so Stream / Int64 / EffectExpression.empty_row are registered.
     let (mut kb, _errs) = load_kb(&[]);
 
     // Replicate the CLI `query --pattern` path (`fact {pattern}`); stdlib names
     // are already registered in `kb` above, so no import line is needed.
-    let src = "fact Stream[T = Int, E = {}]";
+    let src = "fact Stream[T = Int64, E = {}]";
     let parsed = parse::parse(src).expect("parse query pattern");
     let _ = load::scan_definitions(&mut kb, &[&parsed]);
     let global_raw = kb.make_name_term("_global").raw();
@@ -513,15 +513,15 @@ fn query_pattern_written_empty_effect_row_lowers() {
     );
 }
 
-/// Guard: the ground case is unchanged. `sort Bar = Int` (no value-in-type)
+/// Guard: the ground case is unchanged. `sort Bar = Int64` (no value-in-type)
 /// stays a hash-consed `Value::Term` SortAlias — no value fact is minted, so the
 /// migration is byte-identical for the universal ground case.
 #[test]
 fn ground_alias_stays_a_term_fact() {
     let src = r#"
 namespace test.wi366.ground
-  import anthill.prelude.{Int}
-  sort Bar = Int
+  import anthill.prelude.{Int64}
+  sort Bar = Int64
 end
 "#;
     let (kb, _errs) = load_kb(&[src]);
@@ -545,7 +545,7 @@ end
         });
     assert!(
         bar_alias.is_some(),
-        "`sort Bar = Int` must stay a ground hash-consed Value::Term SortAlias fact",
+        "`sort Bar = Int64` must stay a ground hash-consed Value::Term SortAlias fact",
     );
 }
 
@@ -579,7 +579,7 @@ fn carrier_requires_spec(
         })
 }
 
-/// WI-390 (R1): `value_to_term` of a `Foo[Int, denoted(3)]` occurrence hash-cons-
+/// WI-390 (R1): `value_to_term` of a `Foo[Int64, denoted(3)]` occurrence hash-cons-
 /// equals the ground twin built directly via the term builders — proving the
 /// lowering is byte-faithful (and routes arrows through the non-canonicalizing
 /// builder, so a re-canonicalized arrow can't diverge).
@@ -593,9 +593,9 @@ fn value_to_term_denoted_round_trips_to_ground_twin() {
     let sp = SourceSpan::new(SourceId::from_raw(0), 0, 0);
     let (t_sym, n_sym) = (kb.intern("T"), kb.intern("N"));
     let foo = kb.make_sort_ref_by_name("Foo");
-    let int_ref = kb.make_sort_ref_by_name("Int");
+    let int_ref = kb.make_sort_ref_by_name("Int64");
 
-    // Occurrence: Foo[T = Int, N = denoted(3)].
+    // Occurrence: Foo[T = Int64, N = denoted(3)].
     let three_occ = NodeOccurrence::new_expr(Expr::Const(Literal::Int(3)), sp, None);
     let denoted_occ = kb.make_denoted_occ(three_occ, sp, None);
     let param_occ = kb.make_parameterized_occ(
@@ -622,27 +622,27 @@ fn value_to_term_denoted_round_trips_to_ground_twin() {
     );
 }
 
-/// WI-390 (acceptance): `requires Foo[Int, 3]` vs `Foo[Int, 4]` lower to DISTINCT
+/// WI-390 (acceptance): `requires Foo[Int64, 3]` vs `Foo[Int64, 4]` lower to DISTINCT
 /// spec `TermId`s (so the `TermId`-keyed `resolve_cache` distinguishes them), while
-/// two `Foo[Int, 3]` dedup to one `TermId`.
+/// two `Foo[Int64, 3]` dedup to one `TermId`.
 #[test]
 fn requires_specs_distinguish_by_denoted_literal() {
     let src = format!(
         r#"
 namespace test.wi390.cache
-  import anthill.prelude.{{Int}}
+  import anthill.prelude.{{Int64}}
 {FOO}
   sort CarrierA
-    entity a(x: Int)
-    requires Foo[Int, 3]
+    entity a(x: Int64)
+    requires Foo[Int64, 3]
   end
   sort CarrierB
-    entity b(x: Int)
-    requires Foo[Int, 4]
+    entity b(x: Int64)
+    requires Foo[Int64, 4]
   end
   sort CarrierC
-    entity cc(x: Int)
-    requires Foo[Int, 3]
+    entity cc(x: Int64)
+    requires Foo[Int64, 3]
   end
 end
 "#
@@ -653,11 +653,11 @@ end
     let s3c = carrier_requires_spec(&kb, "test.wi390.cache.CarrierC").expect("C requires spec");
     assert_ne!(
         s3, s4,
-        "`Foo[Int, 3]` and `Foo[Int, 4]` must lower to distinct spec TermIds (distinct cache keys)",
+        "`Foo[Int64, 3]` and `Foo[Int64, 4]` must lower to distinct spec TermIds (distinct cache keys)",
     );
     assert_eq!(
         s3, s3c,
-        "two `Foo[Int, 3]` must dedup to one spec TermId (hash-consing)",
+        "two `Foo[Int64, 3]` must dedup to one spec TermId (hash-consing)",
     );
     // WI-390 R3: the scope-axiom signature (`requires.<flatten_spec>`) must ALSO
     // distinguish the literals — `flatten_spec` must not collapse the denoted to a
@@ -667,7 +667,7 @@ end
     let f4 = anthill_core::kb::load::flatten_spec(&kb, s4);
     assert_ne!(
         f3, f4,
-        "flatten_spec must distinguish Foo[Int,3] from Foo[Int,4] in the scope-axiom name; got {f3:?} vs {f4:?}",
+        "flatten_spec must distinguish Foo[Int64,3] from Foo[Int64,4] in the scope-axiom name; got {f3:?} vs {f4:?}",
     );
 }
 

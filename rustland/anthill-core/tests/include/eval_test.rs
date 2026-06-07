@@ -13,7 +13,7 @@ use crate::common::{
 };
 
 fn expect_int(v: Value) -> i64 {
-    v.as_int().unwrap_or_else(|| panic!("expected Int, got {v:?}"))
+    v.as_int().unwrap_or_else(|| panic!("expected Int64, got {v:?}"))
 }
 
 fn expect_bool(v: Value) -> bool {
@@ -34,7 +34,7 @@ fn expect_float(v: Value) -> f64 {
 fn m1_literal_return() {
     let src = r#"
 namespace test.m1_lit
-  operation main() -> Int
+  operation main() -> Int64
     = 42
 end
 "#;
@@ -48,7 +48,7 @@ end
 fn m1_if_true_then_else() {
     let src_true = r#"
 namespace test.m1_if_true
-  operation main() -> Int
+  operation main() -> Int64
     = if true then 1 else 2
 end
 "#;
@@ -62,7 +62,7 @@ end
 fn m1_if_false_then_else() {
     let src = r#"
 namespace test.m1_if_false
-  operation main() -> Int
+  operation main() -> Int64
     = if false then 1 else 2
 end
 "#;
@@ -77,7 +77,7 @@ fn m1_let_binds_local() {
     // Block-style let: `let x = value <newline> body` (no `in` keyword).
     let src = r#"
 namespace test.m1_let
-  operation main() -> Int
+  operation main() -> Int64
     = let x = 7
       x
 end
@@ -93,9 +93,9 @@ fn m1_operation_call() {
     // `main` calls a zero-arg helper that returns a literal.
     let src = r#"
 namespace test.m1_call
-  operation helper() -> Int
+  operation helper() -> Int64
     = 11
-  operation main() -> Int
+  operation main() -> Int64
     = helper()
 end
 "#;
@@ -110,9 +110,9 @@ fn m1_operation_call_with_arg() {
     // Identity operation exercises param binding + arg plumbing.
     let src = r#"
 namespace test.m1_arg
-  operation id(x: Int) -> Int
+  operation id(x: Int64) -> Int64
     = x
-  operation main() -> Int
+  operation main() -> Int64
     = id(99)
 end
 "#;
@@ -130,10 +130,10 @@ fn m1_non_tail_recursion_hits_depth_cap() {
     // would instead loop forever under TCO — see `m1_tail_recursion_deep`.
     let src = r#"
 namespace test.m1_non_tail
-  operation f() -> Int =
+  operation f() -> Int64 =
     let _ = f()
     0
-  operation main() -> Int = f()
+  operation main() -> Int64 = f()
 end
 "#;
     let kb = load_kb_with(src);
@@ -155,8 +155,8 @@ fn m1_infinite_tail_loop_hits_step_cap() {
     // caps cover the full recursion failure-mode matrix.
     let src = r#"
 namespace test.m1_loop
-  operation loop() -> Int = loop()
-  operation main() -> Int = loop()
+  operation loop() -> Int64 = loop()
+  operation main() -> Int64 = loop()
 end
 "#;
     let kb = load_kb_with(src);
@@ -185,12 +185,12 @@ fn m1_recursive_operation_multi_level() {
     // would suffice; we use 4 to keep headroom for the test driver.
     let src = r#"
 namespace test.m1_rec
-  operation go(a: Bool, b: Bool) -> Int =
+  operation go(a: Bool, b: Bool) -> Int64 =
     if a then
       if b then 42
       else go(true, true)
     else go(true, false)
-  operation main() -> Int = go(false, false)
+  operation main() -> Int64 = go(false, false)
 end
 "#;
     let kb = load_kb_with(src);
@@ -205,7 +205,7 @@ end
 fn m2_match_wildcard() {
     let src = r#"
 namespace test.m2_match_wild
-  operation main() -> Int =
+  operation main() -> Int64 =
     match 7
       case _ -> 1
 end
@@ -220,7 +220,7 @@ end
 fn m2_match_var_binds_scrutinee() {
     let src = r#"
 namespace test.m2_match_var
-  operation main() -> Int =
+  operation main() -> Int64 =
     match 42
       case x -> x
 end
@@ -235,12 +235,12 @@ end
 fn m2_match_literal_picks_arm() {
     let src = r#"
 namespace test.m2_match_lit
-  operation choose(n: Int) -> Int =
+  operation choose(n: Int64) -> Int64 =
     match n
       case 1 -> 10
       case 2 -> 20
       case _ -> 99
-  operation main() -> Int = choose(2)
+  operation main() -> Int64 = choose(2)
 end
 "#;
     let kb = load_kb_with(src);
@@ -254,11 +254,11 @@ fn m2_match_failed_raises_error() {
     // No wildcard, no matching literal → MatchFailed.
     let src = r#"
 namespace test.m2_match_fail
-  operation choose(n: Int) -> Int =
+  operation choose(n: Int64) -> Int64 =
     match n
       case 1 -> 10
       case 2 -> 20
-  operation main() -> Int = choose(3)
+  operation main() -> Int64 = choose(3)
 end
 "#;
     let kb = load_kb_with(src);
@@ -274,7 +274,7 @@ end
 fn m2_lambda_identity() {
     let src = r#"
 namespace test.m2_lambda
-  operation main() -> Int =
+  operation main() -> Int64 =
     let f = lambda x -> x
     f(5)
 end
@@ -289,7 +289,7 @@ end
 fn m2_lambda_closes_over_outer_binding() {
     let src = r#"
 namespace test.m2_closure
-  operation main() -> Int =
+  operation main() -> Int64 =
     let k = 7
     let f = lambda x -> k
     f(99)
@@ -310,11 +310,11 @@ fn m2_list_literal_builds_cons_chain() {
 namespace test.m2_list
   import anthill.prelude.{List}
 
-  operation first(xs: List[T = Int]) -> Int =
+  operation first(xs: List[T = Int64]) -> Int64 =
     match xs
       case cons(h, t) -> h
       case _ -> 0
-  operation main() -> Int = first([10, 20, 30])
+  operation main() -> Int64 = first([10, 20, 30])
 end
 "#;
     let kb = load_kb_with(src);
@@ -331,7 +331,7 @@ fn m2_closure_arena_reclaims_on_drop() {
     // wiring: prior to it, the arena grew monotonically.
     let src = r#"
 namespace test.m2_closure_gc
-  operation main() -> Int =
+  operation main() -> Int64 =
     let f = lambda x -> x
     let g = lambda y -> y
     f(7)
@@ -352,10 +352,10 @@ end
 fn m2_tuple_literal_and_pattern() {
     let src = r#"
 namespace test.m2_tuple
-  operation pair_first(p: (Int, Int)) -> Int =
+  operation pair_first(p: (Int64, Int64)) -> Int64 =
     match p
       case (a, _) -> a
-  operation main() -> Int = pair_first((3, 4))
+  operation main() -> Int64 = pair_first((3, 4))
 end
 "#;
     let kb = load_kb_with(src);
@@ -372,11 +372,11 @@ fn m2_empty_list_matches_nil() {
 namespace test.m2_empty_list
   import anthill.prelude.{List}
 
-  operation is_empty(xs: List[T = Int]) -> Int =
+  operation is_empty(xs: List[T = Int64]) -> Int64 =
     match xs
       case nil() -> 1
       case _ -> 0
-  operation main() -> Int = is_empty([])
+  operation main() -> Int64 = is_empty([])
 end
 "#;
     let kb = load_kb_with(src);
@@ -395,11 +395,11 @@ fn m2_list_recursive_walk_with_tco() {
 namespace test.m2_walk
   import anthill.prelude.{List}
 
-  operation walk(xs: List[T = Int]) -> Int =
+  operation walk(xs: List[T = Int64]) -> Int64 =
     match xs
       case nil() -> 99
       case cons(_, t) -> walk(t)
-  operation main() -> Int = walk([1, 2, 3])
+  operation main() -> Int64 = walk([1, 2, 3])
 end
 "#;
     let kb = load_kb_with(src);
@@ -418,9 +418,9 @@ fn m2_higher_order_lambda() {
 namespace test.m2_ho
   import anthill.prelude.{Function}
 
-  operation apply_twice(f: Function[Int, Int], x: Int) -> Int =
+  operation apply_twice(f: Function[Int64, Int64], x: Int64) -> Int64 =
     f(f(x))
-  operation main() -> Int =
+  operation main() -> Int64 =
     let g = lambda n -> n
     apply_twice(g, 5)
 end
@@ -440,20 +440,20 @@ fn m2_user_defined_reduce_on_list_and_set() {
     // called out in the WI-043 acceptance ("let f = λ(x) -> x+1 in f(2)").
     let src = r#"
 namespace test.m2_reduce
-  import anthill.prelude.{List, Set, Function, Int}
+  import anthill.prelude.{List, Set, Function, Int64}
 
-  operation reduce_list(xs: List[T = Int], acc: Int, f: Function[(Int, Int), Int]) -> Int =
+  operation reduce_list(xs: List[T = Int64], acc: Int64, f: Function[(Int64, Int64), Int64]) -> Int64 =
     match xs
       case nil() -> acc
       case cons(h, t) -> reduce_list(t, f((acc, h)), f)
 
-  operation reduce_set3(s: Set[T = Int], acc: Int, f: Function[(Int, Int), Int]) -> Int =
+  operation reduce_set3(s: Set[T = Int64], acc: Int64, f: Function[(Int64, Int64), Int64]) -> Int64 =
     match s
       case SetLiteral(a, b, c) -> f((f((f((acc, a)), b)), c))
       case _ -> acc
 
-  operation main() -> Int =
-    let add_pair: Function[(Int, Int), Int] = lambda (a, b) -> a + b
+  operation main() -> Int64 =
+    let add_pair: Function[(Int64, Int64), Int64] = lambda (a, b) -> a + b
     let list_sum = reduce_list([1, 2, 3, 4], 0, add_pair)
     reduce_set3({10, 20, 30}, list_sum, add_pair)
 end
@@ -479,9 +479,9 @@ fn m2_hof_inference_sort_and_map() {
     // applied (different comparator ⇒ different order), not ignored.
     let src = r#"
 namespace test.m2_hof_inf
-  import anthill.prelude.{List, Function, Int, Bool}
+  import anthill.prelude.{List, Function, Int64, Bool}
 
-  operation insert_by(x: Int, xs: List[T = Int], lt: Function[(Int, Int), Bool]) -> List[T = Int] =
+  operation insert_by(x: Int64, xs: List[T = Int64], lt: Function[(Int64, Int64), Bool]) -> List[T = Int64] =
     match xs
       case nil() -> cons(x, nil())
       case cons(h, t) ->
@@ -489,29 +489,29 @@ namespace test.m2_hof_inf
         then cons(x, cons(h, t))
         else cons(h, insert_by(x, t, lt))
 
-  operation sort_by(xs: List[T = Int], lt: Function[(Int, Int), Bool]) -> List[T = Int] =
+  operation sort_by(xs: List[T = Int64], lt: Function[(Int64, Int64), Bool]) -> List[T = Int64] =
     match xs
       case nil() -> nil()
       case cons(h, t) -> insert_by(h, sort_by(t, lt), lt)
 
-  operation map_int(xs: List[T = Int], f: Function[Int, Int]) -> List[T = Int] =
+  operation map_int(xs: List[T = Int64], f: Function[Int64, Int64]) -> List[T = Int64] =
     match xs
       case nil() -> nil()
       case cons(h, t) -> cons(f(h), map_int(t, f))
 
-  operation encode3(xs: List[T = Int]) -> Int =
+  operation encode3(xs: List[T = Int64]) -> Int64 =
     match xs
       case cons(a, cons(b, cons(c, _))) -> a * 100 + b * 10 + c
       case _ -> 0
 
-  operation lt_int(a: Int, b: Int) -> Bool = a < b
-  operation inc(n: Int) -> Int = n + 1
+  operation lt_int(a: Int64, b: Int64) -> Bool = a < b
+  operation inc(n: Int64) -> Int64 = n + 1
 
-  operation main_lambda() -> Int = encode3(sort_by([3, 1, 2], lambda (a, b) -> a < b))
-  operation main_named() -> Int = encode3(sort_by([3, 1, 2], lt_int))
-  operation main_desc() -> Int = encode3(sort_by([3, 1, 2], lambda (a, b) -> a > b))
-  operation main_map_lambda() -> Int = encode3(map_int([1, 2, 3], lambda x -> x + 1))
-  operation main_map_named() -> Int = encode3(map_int([1, 2, 3], inc))
+  operation main_lambda() -> Int64 = encode3(sort_by([3, 1, 2], lambda (a, b) -> a < b))
+  operation main_named() -> Int64 = encode3(sort_by([3, 1, 2], lt_int))
+  operation main_desc() -> Int64 = encode3(sort_by([3, 1, 2], lambda (a, b) -> a > b))
+  operation main_map_lambda() -> Int64 = encode3(map_int([1, 2, 3], lambda x -> x + 1))
+  operation main_map_named() -> Int64 = encode3(map_int([1, 2, 3], inc))
 end
 "#;
     let mut interp = crate::common::interp_for(src);
@@ -540,10 +540,10 @@ end
 fn wi420_lambda_over_requires_op_passed_to_hof_evals() {
     let src = r#"
 namespace test.wi420.lam
-  import anthill.prelude.{List, Int, Bool, Function}
+  import anthill.prelude.{List, Int64, Bool, Function}
   import anthill.prelude.List.{member}
 
-  operation use_pred(f: Function[A = Int, B = Bool], v: Int) -> Bool =
+  operation use_pred(f: Function[A = Int64, B = Bool], v: Int64) -> Bool =
     f(v)
 
   operation found() -> Bool =
@@ -566,9 +566,9 @@ end
 
 /// WI-420 (full fix): a `requires`-carrying op (`List.member`, since `List
 /// requires Eq[T]`) passed BARE as a function value to a HOF with no
-/// requirement of its own, applied to a concrete Int list. The `Value::OpRef`
-/// captures the `Eq[Int]` dispatch dict (resolved by the typer at the eta site,
-/// where the expected arrow pins `List.T := Int`) at mint, and installs it into
+/// requirement of its own, applied to a concrete Int64 list. The `Value::OpRef`
+/// captures the `Eq[Int64]` dispatch dict (resolved by the typer at the eta site,
+/// where the expected arrow pins `List.T := Int64`) at mint, and installs it into
 /// member's callee frame at apply — so member's `eq(head, x)` finds `__req_eq`
 /// instead of crashing with "requirement param `__req_eq` not bound". This is
 /// the exact crash WI-420 fixes.
@@ -576,10 +576,10 @@ end
 fn wi420_eta_concrete_member_evals() {
     let src = r#"
 namespace test.wi420eta
-  import anthill.prelude.{List, Int, Bool, Function}
+  import anthill.prelude.{List, Int64, Bool, Function}
   import anthill.prelude.List.{member}
 
-  operation use_pair(f: Function[A = (Int, List[T = Int]), B = Bool], x: Int, xs: List[T = Int]) -> Bool =
+  operation use_pair(f: Function[A = (Int64, List[T = Int64]), B = Bool], x: Int64, xs: List[T = Int64]) -> Bool =
     f((x, xs))
 
   operation present() -> Bool = use_pair(member, 2, [1, 2, 3])
@@ -608,7 +608,7 @@ end
 fn wi420_eta_same_sort_captures_self_dict() {
     let src = r#"
 namespace test.wi420ss
-  import anthill.prelude.{Int, Bool, Function, Eq}
+  import anthill.prelude.{Int64, Bool, Function, Eq}
   import anthill.prelude.Eq.{eq}
   sort S
     sort T = ?
@@ -650,7 +650,7 @@ end
 fn wi421_abstract_requires_op_via_lambda_idiom_evals() {
     let src = r#"
 namespace test.wi421
-  import anthill.prelude.{List, Int, Bool, Function, Eq}
+  import anthill.prelude.{List, Int64, Bool, Function, Eq}
   sort Box
     sort T = ?
     requires Eq[T]
@@ -688,37 +688,37 @@ fn wi064_stdlib_combinators_fold_map_find() {
     // yet inferred from the transform / source — a WI-275-class refinement).
     let src = r#"
 namespace test.wi064
-  import anthill.prelude.{List, Int, Stream, Bool, Option}
+  import anthill.prelude.{List, Int64, Stream, Bool, Option}
   import anthill.prelude.List.{nil, cons}
   import anthill.prelude.Option.{some, none}
   import anthill.prelude.Stream.{collect, fold_left, fold_right, find}
   import anthill.prelude.MappedStream.{map}
 
-  operation addp(a: Int, b: Int) -> Int = a + b
-  operation subt(a: Int, b: Int) -> Int = a - b
-  operation inc(n: Int) -> Int = n + 1
-  operation is_big(n: Int) -> Bool = n > 2
+  operation addp(a: Int64, b: Int64) -> Int64 = a + b
+  operation subt(a: Int64, b: Int64) -> Int64 = a - b
+  operation inc(n: Int64) -> Int64 = n + 1
+  operation is_big(n: Int64) -> Bool = n > 2
 
-  operation encode3(xs: List[T = Int]) -> Int =
+  operation encode3(xs: List[T = Int64]) -> Int64 =
     match xs
       case cons(a, cons(b, cons(c, _))) -> a * 100 + b * 10 + c
       case _ -> 0
 
-  operation sum() -> Int = fold_left([1, 2, 3, 4], 0, addp)
-  operation sumr() -> Int = fold_right([1, 2, 3, 4], 0, addp)
+  operation sum() -> Int64 = fold_left([1, 2, 3, 4], 0, addp)
+  operation sumr() -> Int64 = fold_right([1, 2, 3, 4], 0, addp)
   -- Non-commutative `subt` separates the two folds (and would catch a swapped
   -- tuple order): fold_left ((0-1)-2)-3 = -6; fold_right 1-(2-(3-0)) = 2.
-  operation foldl_sub() -> Int = fold_left([1, 2, 3], 0, subt)
-  operation foldr_sub() -> Int = fold_right([1, 2, 3], 0, subt)
+  operation foldl_sub() -> Int64 = fold_left([1, 2, 3], 0, subt)
+  operation foldr_sub() -> Int64 = fold_right([1, 2, 3], 0, subt)
   -- map (+1) over [1,2,3] ⇒ [2,3,4]: collect ⇒ 234; folded ⇒ 9; empty ⇒ 0.
-  operation mapped_inc() -> Int = encode3(collect(map[Dst = Int, Eff = {}]([1, 2, 3], inc)))
-  operation mapped_sum() -> Int = fold_left(map[Dst = Int, Eff = {}]([1, 2, 3], inc), 0, addp)
-  operation mapped_empty() -> Int = fold_left(map[Dst = Int, Eff = {}]([], inc), 0, addp)
+  operation mapped_inc() -> Int64 = encode3(collect(map[Dst = Int64, Eff = {}]([1, 2, 3], inc)))
+  operation mapped_sum() -> Int64 = fold_left(map[Dst = Int64, Eff = {}]([1, 2, 3], inc), 0, addp)
+  operation mapped_empty() -> Int64 = fold_left(map[Dst = Int64, Eff = {}]([], inc), 0, addp)
   -- find: first match mid-list, first match at head, and no match (none).
-  operation found() -> Int = unwrap(find([1, 2, 3, 4], is_big))
-  operation found_first() -> Int = unwrap(find([3, 1, 2], is_big))
-  operation found_none() -> Int = unwrap(find([1, 2], is_big))
-  operation unwrap(o: Option[T = Int]) -> Int =
+  operation found() -> Int64 = unwrap(find([1, 2, 3, 4], is_big))
+  operation found_first() -> Int64 = unwrap(find([3, 1, 2], is_big))
+  operation found_none() -> Int64 = unwrap(find([1, 2], is_big))
+  operation unwrap(o: Option[T = Int64]) -> Int64 =
     match o
       case some(x) -> x
       case none() -> 0 - 1
@@ -755,15 +755,15 @@ fn wi413_lazy_filter_skips_via_self_recursion() {
     // `[S, Eff]` like its sibling `map[Dst, Eff]`.
     let src = r#"
 namespace test.wi413filter
-  import anthill.prelude.{List, Int, Stream, Bool, Option}
+  import anthill.prelude.{List, Int64, Stream, Bool, Option}
   import anthill.prelude.List.{nil, cons}
   import anthill.prelude.Stream.{collect, fold_left}
   import anthill.prelude.FilteredStream.{filter}
 
-  operation addp(a: Int, b: Int) -> Int = a + b
-  operation is_big(n: Int) -> Bool = n > 2
+  operation addp(a: Int64, b: Int64) -> Int64 = a + b
+  operation is_big(n: Int64) -> Bool = n > 2
 
-  operation encode2(xs: List[T = Int]) -> Int =
+  operation encode2(xs: List[T = Int64]) -> Int64 =
     match xs
       case cons(a, cons(b, _)) -> a * 10 + b
       case cons(a, _) -> a
@@ -771,14 +771,14 @@ namespace test.wi413filter
 
   -- filter (n > 2) over [1,2,3,4] ⇒ [3,4]: the leading 1 and 2 are SKIPPED by
   -- the self-recursion. collect ⇒ 34; sum ⇒ 7.
-  operation kept_collect() -> Int = encode2(collect(filter[S = Int, Eff = {}]([1, 2, 3, 4], is_big)))
-  operation kept_sum() -> Int = fold_left(filter[S = Int, Eff = {}]([1, 2, 3, 4], is_big), 0, addp)
+  operation kept_collect() -> Int64 = encode2(collect(filter[S = Int64, Eff = {}]([1, 2, 3, 4], is_big)))
+  operation kept_sum() -> Int64 = fold_left(filter[S = Int64, Eff = {}]([1, 2, 3, 4], is_big), 0, addp)
   -- A leading run of drops then a single keep: [1,2,3] ⇒ [3] ⇒ 3.
-  operation kept_last() -> Int = fold_left(filter[S = Int, Eff = {}]([1, 2, 3], is_big), 0, addp)
+  operation kept_last() -> Int64 = fold_left(filter[S = Int64, Eff = {}]([1, 2, 3], is_big), 0, addp)
   -- All dropped ⇒ empty ⇒ 0 (every element skipped via self-recursion to none).
-  operation kept_none() -> Int = fold_left(filter[S = Int, Eff = {}]([1, 2], is_big), 0, addp)
+  operation kept_none() -> Int64 = fold_left(filter[S = Int64, Eff = {}]([1, 2], is_big), 0, addp)
   -- All kept ⇒ no skips: [3,4,5] ⇒ 12.
-  operation kept_all() -> Int = fold_left(filter[S = Int, Eff = {}]([3, 4, 5], is_big), 0, addp)
+  operation kept_all() -> Int64 = fold_left(filter[S = Int64, Eff = {}]([3, 4, 5], is_big), 0, addp)
 end
 "#;
     let mut interp = crate::common::interp_for(src);
@@ -794,8 +794,8 @@ end
 
 #[test]
 fn wi414_nth_dispatches_concrete_eq() {
-    // WI-414: `nth` uses `eq(i, 0)` (on a CONCRETE `Int`) under List's sort-level
-    // `requires Eq[T]`. That call must resolve to `fact Eq[Int]` CONCRETELY rather
+    // WI-414: `nth` uses `eq(i, 0)` (on a CONCRETE `Int64`) under List's sort-level
+    // `requires Eq[T]`. That call must resolve to `fact Eq[Int64]` CONCRETELY rather
     // than defer to an unbound `__req_eq` — so `nth` is runtime-callable from an
     // external namespace (previously a compile-clean call that aborted with
     // `DeferToRequirement: __req_eq not bound`). The fix gates the defer-to-
@@ -804,18 +804,18 @@ fn wi414_nth_dispatches_concrete_eq() {
     // `ite` op, so it is evaluable.)
     let src = r#"
 namespace test.wi414
-  import anthill.prelude.{List, Int, Option}
+  import anthill.prelude.{List, Int64, Option}
   import anthill.prelude.List.{nth}
 
-  operation unwrap(o: Option[Int]) -> Int =
+  operation unwrap(o: Option[Int64]) -> Int64 =
     match o
       case some(x) -> x
       case none() -> 0 - 1
-  operation at0() -> Int = unwrap(nth([10, 20, 30], 0))
-  operation at1() -> Int = unwrap(nth([10, 20, 30], 1))
-  operation at2() -> Int = unwrap(nth([10, 20, 30], 2))
-  operation oob() -> Int = unwrap(nth([10, 20, 30], 5))
-  operation neg() -> Int = unwrap(nth([10, 20, 30], 0 - 1))
+  operation at0() -> Int64 = unwrap(nth([10, 20, 30], 0))
+  operation at1() -> Int64 = unwrap(nth([10, 20, 30], 1))
+  operation at2() -> Int64 = unwrap(nth([10, 20, 30], 2))
+  operation oob() -> Int64 = unwrap(nth([10, 20, 30], 5))
+  operation neg() -> Int64 = unwrap(nth([10, 20, 30], 0 - 1))
 end
 "#;
     let mut interp = crate::common::interp_for(src);
@@ -832,17 +832,17 @@ end
 /// WI-415: the CALL-SITE dual of WI-414. `member`'s `eq(head, x)` is genuinely
 /// ABSTRACT (head : the element T), so it correctly DEFERS — but a call
 /// `member(2, [1,2,3])` from a namespace with no `requires` must CONSTRUCT the
-/// `Eq[Int]` requirement from `fact Eq[Int]` and thread it into member's frame,
+/// `Eq[Int64]` requirement from `fact Eq[Int64]` and thread it into member's frame,
 /// rather than leave `__req_eq` unbound. The typer builds the parent-bundle
 /// dispatching dict at compile stage (where the call-site subst still pins
-/// `List.T := Int`, so `Eq[T]` substitutes to `Eq[Int]`) and stores it on the
+/// `List.T := Int64`, so `Eq[T]` substitutes to `Eq[Int64]`) and stores it on the
 /// `ConcreteApplyWithin` classification; eval installs it into the callee's
 /// frame via the same path an explicit `apply_within` dict takes.
 #[test]
 fn wi415_member_call_constructs_concrete_eq_requirement() {
     let src = r#"
 namespace test.wi415
-  import anthill.prelude.{List, Int, Bool}
+  import anthill.prelude.{List, Int64, Bool}
   import anthill.prelude.List.{member}
 
   operation has2() -> Bool = member(2, [1, 2, 3])
@@ -863,7 +863,7 @@ end
 ///
 /// `Coll requires Eq[T]` and its op `contains` delegates to `List.member` on
 /// its OWN abstract element `x : Coll.T`. The outer `Coll.contains([1,2,3], 2)`
-/// is concrete (`Coll.T := Int`), so WI-415 threads `Eq[Int]` into `contains`'s
+/// is concrete (`Coll.T := Int64`), so WI-415 threads `Eq[Int64]` into `contains`'s
 /// frame as `__req_eq`. The inner `member(x, items)` is cross-sort (member's
 /// parent is `List`, not `Coll`) AND abstract (`x : Coll.T`): WI-418 makes the
 /// typer build a dispatching dict for it whose `Eq` slot is a Strategy-1
@@ -875,7 +875,7 @@ end
 fn wi418_cross_sort_abstract_call_forwards_caller_requirement() {
     let src = r#"
 namespace test.wi418
-  import anthill.prelude.{List, Int, Bool, Eq}
+  import anthill.prelude.{List, Int64, Bool, Eq}
   sort Coll
     sort T = ?
     requires Eq[T]
@@ -896,19 +896,19 @@ end
 #[test]
 fn m2_set_literal_dedupes_duplicates() {
     // {10, 20, 20, 30} has four positional elements at parse time; after
-    // SetLiteral dedup (scalar_eq on Int) it carries three. `count` uses
+    // SetLiteral dedup (scalar_eq on Int64) it carries three. `count` uses
     // arity-exact constructor patterns to report which cardinality the
     // runtime actually produced.
     let src = r#"
 namespace test.m2_set_dedup
   import anthill.prelude.{Set}
 
-  operation count(s: Set[T = Int]) -> Int =
+  operation count(s: Set[T = Int64]) -> Int64 =
     match s
       case SetLiteral(_, _, _) -> 3
       case SetLiteral(_, _, _, _) -> 4
       case _ -> 0
-  operation main() -> Int = count({10, 20, 20, 30})
+  operation main() -> Int64 = count({10, 20, 20, 30})
 end
 "#;
     let kb = load_kb_with(src);
@@ -927,11 +927,11 @@ fn m2_set_literal_as_entity() {
 namespace test.m2_set
   import anthill.prelude.{Set}
 
-  operation first_of_three(s: Set[T = Int]) -> Int =
+  operation first_of_three(s: Set[T = Int64]) -> Int64 =
     match s
       case SetLiteral(a, _, _) -> a
       case _ -> 0
-  operation main() -> Int = first_of_three({10, 20, 30})
+  operation main() -> Int64 = first_of_three({10, 20, 30})
 end
 "#;
     let kb = load_kb_with(src);
@@ -945,7 +945,7 @@ end
 fn m3_arithmetic_via_infix() {
     let src = r#"
 namespace test.m3_arith
-  operation main() -> Int = 2 + 3 * 4
+  operation main() -> Int64 = 2 + 3 * 4
 end
 "#;
     let mut interp = interp_for(src);
@@ -956,8 +956,8 @@ end
 fn m3_arithmetic_nested() {
     let src = r#"
 namespace test.m3_nested
-  operation double(n: Int) -> Int = n + n
-  operation main() -> Int = double(5) * 2 - 1
+  operation double(n: Int64) -> Int64 = n + n
+  operation main() -> Int64 = double(5) * 2 - 1
 end
 "#;
     let mut interp = interp_for(src);
@@ -991,9 +991,9 @@ end
 fn m3_if_with_comparison() {
     let src = r#"
 namespace test.m3_if_cmp
-  operation max_of(a: Int, b: Int) -> Int =
+  operation max_of(a: Int64, b: Int64) -> Int64 =
     if a < b then b else a
-  operation main() -> Int = max_of(4, 7)
+  operation main() -> Int64 = max_of(4, 7)
 end
 "#;
     let mut interp = interp_for(src);
@@ -1016,8 +1016,8 @@ end
 fn m3_int_neg_abs() {
     let src = r#"
 namespace test.m3_neg_abs
-  import anthill.prelude.Int.{neg, abs}
-  operation main() -> Int = abs(neg(42))
+  import anthill.prelude.Int64.{neg, abs}
+  operation main() -> Int64 = abs(neg(42))
 end
 "#;
     let mut interp = interp_for(src);
@@ -1028,8 +1028,8 @@ end
 fn m3_int_mod() {
     let src = r#"
 namespace test.m3_mod
-  import anthill.prelude.Int.{mod}
-  operation main() -> Int = mod(17, 5)
+  import anthill.prelude.Int64.{mod}
+  operation main() -> Int64 = mod(17, 5)
 end
 "#;
     let mut interp = interp_for(src);
@@ -1059,9 +1059,9 @@ fn m3_non_tail_recursion_accumulates_frames() {
     let src = r#"
 namespace test.m3_nontail
   import anthill.prelude.Ordered.{gt}
-  operation sumUntil(n: Int) -> Int =
+  operation sumUntil(n: Int64) -> Int64 =
     if gt(n, 0) then sumUntil(n - 1) + 1 else 0
-  operation main(n: Int) -> Int = sumUntil(n)
+  operation main(n: Int64) -> Int64 = sumUntil(n)
 end
 "#;
 
@@ -1085,12 +1085,12 @@ end
 
 #[test]
 fn m3_int_division() {
-    // `/` desugars to `div`. Int import brings `Int.div` into scope as a
+    // `/` desugars to `div`. Int64 import brings `Int64.div` into scope as a
     // truncated integer division. Verifies `7 / 2 == 3` (truncation).
     let src = r#"
 namespace test.m3_div
-  import anthill.prelude.Int.{div}
-  operation main() -> Int = 7 / 2
+  import anthill.prelude.Int64.{div}
+  operation main() -> Int64 = 7 / 2
 end
 "#;
     let mut interp = interp_for(src);
@@ -1102,8 +1102,8 @@ end
 fn m3_int_division_by_zero() {
     let src = r#"
 namespace test.m3_div0
-  import anthill.prelude.Int.{div}
-  operation main() -> Int = 10 / 0
+  import anthill.prelude.Int64.{div}
+  operation main() -> Int64 = 10 / 0
 end
 "#;
     let mut interp = interp_for(src);
@@ -1166,7 +1166,7 @@ end
 fn m3_float_division_by_zero_is_infinity() {
     // Float.div is IEEE-total: 1.0 / 0.0 = +Infinity, not an error. This
     // is the reason Float doesn't need the Error[DivisionByZero] effect
-    // that Int.div carries.
+    // that Int64.div carries.
     let src = r#"
 namespace test.m3_float_div0
   import anthill.prelude.Float.{div}
@@ -1239,10 +1239,10 @@ fn m3_bigint_to_int_fits() {
     // Value that fits in i64 round-trips via to_int → Option.some.
     let src = r#"
 namespace test.m3_bigint_to_int
-  import anthill.prelude.{BigInt, Option, Int}
+  import anthill.prelude.{BigInt, Option, Int64}
   import anthill.prelude.BigInt.{to_bigint, to_int}
 
-  operation main() -> Int =
+  operation main() -> Int64 =
     match to_int(to_bigint(42))
       case some(x) -> x
       case none() -> 0
@@ -1255,7 +1255,7 @@ end
 
 #[test]
 fn m3_int_to_float_and_bigint_to_float() {
-    // Int.to_float is exact for small values; BigInt.to_float rounds to
+    // Int64.to_float is exact for small values; BigInt.to_float rounds to
     // nearest representable double. 1e20 fits in Float as 1.0e20.
     let src = r#"
 namespace test.m3_bigint_to_float
@@ -1275,17 +1275,17 @@ end
 
 #[test]
 fn m3_int_add_overflow_errors() {
-    // Int arithmetic is exact — unlike Float, there's no large x where
+    // Int64 arithmetic is exact — unlike Float, there's no large x where
     // x + 1 == x. Instead, the interesting edge case is overflow: i64::MAX
     // + 1 can't fit. We use checked_add, so this surfaces as
     // EvalError::Overflow rather than silently wrapping to i64::MIN. The
     // test drives via a Rust-side arg rather than a source literal, since
-    // the Int literal grammar handles signed i64 but we want to be exact
+    // the Int64 literal grammar handles signed i64 but we want to be exact
     // about the boundary.
     let src = r#"
 namespace test.m3_int_overflow
-  operation inc(n: Int) -> Int = n + 1
-  operation main() -> Int = inc(9223372036854775807)
+  operation inc(n: Int64) -> Int64 = n + 1
+  operation main() -> Int64 = inc(9223372036854775807)
 end
 "#;
     let mut interp = interp_for(src);
@@ -1317,9 +1317,9 @@ fn m3_operator_precedence() {
     // flagged by this assertion.
     let src = r#"
 namespace test.m3_prec
-  operation compute(x: Int, y: Int, z: Int, w: Int) -> Int =
+  operation compute(x: Int64, y: Int64, z: Int64, w: Int64) -> Int64 =
     x + y * z + w
-  operation main() -> Int = compute(1, 2, 3, 4)
+  operation main() -> Int64 = compute(1, 2, 3, 4)
 end
 "#;
     let mut interp = interp_for(src);
@@ -1337,9 +1337,9 @@ fn m3_tco_10000_tail_calls() {
     let src = r#"
 namespace test.m3_tco
   import anthill.prelude.Ordered.{gt}
-  operation loop(n: Int) -> Int =
+  operation loop(n: Int64) -> Int64 =
     if gt(n, 0) then loop(n - 1) else 0
-  operation main() -> Int = loop(10000)
+  operation main() -> Int64 = loop(10000)
 end
 "#;
     let mut interp = interp_for(src);
@@ -1354,7 +1354,7 @@ fn m3_string_concat_and_length() {
 namespace test.m3_string
   import anthill.prelude.String.{concat, length}
   operation greeting() -> String = concat("hi ", "there")
-  operation main() -> Int = length(greeting())
+  operation main() -> Int64 = length(greeting())
 end
 "#;
     let mut interp = interp_for(src);
@@ -1408,7 +1408,7 @@ namespace test.m4_ancestor
   fact ancestor(parent: alice, child: bob)
   fact ancestor(parent: bob, child: carol)
 
-  operation drain(s: LogicalStream) -> Int =
+  operation drain(s: LogicalStream) -> Int64 =
     match splitFirst(s)
       case some(pair(_, rest)) -> 1 + drain(rest)
       case none() -> 0
@@ -1493,7 +1493,7 @@ namespace test.m4_multi
   fact ancestor(parent: alice, child: bob)
   fact ancestor(parent: bob, child: carol)
 
-  operation drain(s: LogicalStream) -> Int =
+  operation drain(s: LogicalStream) -> Int64 =
     match splitFirst(s)
       case some(pair(_, rest)) -> 1 + drain(rest)
       case none() -> 0
@@ -1561,7 +1561,7 @@ namespace test.m4_take
   import anthill.prelude.Pair.{pair}
   import anthill.prelude.Ordered.{gt}
 
-  operation takeN(s: LogicalStream, n: Int) -> Int =
+  operation takeN(s: LogicalStream, n: Int64) -> Int64 =
     if gt(n, 0) then
       match splitFirst(s)
         case some(pair(_, rest)) -> 1 + takeN(rest, n - 1)
@@ -1865,15 +1865,15 @@ end
 fn m5_modify_counter_write_then_read() {
     let src = r#"
 namespace test.m5_counter
-  import anthill.prelude.{Int, Unit, Modify}
+  import anthill.prelude.{Int64, Unit, Modify}
   import ModifyRuntime.{get, set}
 
   sort CounterState
     entity counter
   end
 
-  operation write(n: Int) -> Unit effects Modify[T = CounterState] = set(counter(), n)
-  operation read() -> Int = get(counter())
+  operation write(n: Int64) -> Unit effects Modify[T = CounterState] = set(counter(), n)
+  operation read() -> Int64 = get(counter())
 end
 "#;
     let mut interp = interp_for(src);
@@ -1892,14 +1892,14 @@ end
 fn m5_modify_get_before_set_errors() {
     let src = r#"
 namespace test.m5_unset
-  import anthill.prelude.{Int}
+  import anthill.prelude.{Int64}
   import ModifyRuntime.{get}
 
   sort CounterState
     entity counter
   end
 
-  operation read() -> Int = get(counter())
+  operation read() -> Int64 = get(counter())
 end
 "#;
     let mut interp = interp_for(src);
@@ -1917,7 +1917,7 @@ fn m5_modify_two_resources_are_independent() {
     // Two distinct resource entities should not share state.
     let src = r#"
 namespace test.m5_independent
-  import anthill.prelude.{Int, Unit, Modify}
+  import anthill.prelude.{Int64, Unit, Modify}
   import ModifyRuntime.{get, set}
 
   sort Cells
@@ -1925,10 +1925,10 @@ namespace test.m5_independent
     entity b
   end
 
-  operation put_a(n: Int) -> Unit effects Modify[T = Cells] = set(a(), n)
-  operation put_b(n: Int) -> Unit effects Modify[T = Cells] = set(b(), n)
-  operation get_a() -> Int = get(a())
-  operation get_b() -> Int = get(b())
+  operation put_a(n: Int64) -> Unit effects Modify[T = Cells] = set(a(), n)
+  operation put_b(n: Int64) -> Unit effects Modify[T = Cells] = set(b(), n)
+  operation get_a() -> Int64 = get(a())
+  operation get_b() -> Int64 = get(b())
 end
 "#;
     let mut interp = interp_for(src);
@@ -2109,18 +2109,18 @@ fn wi350_eval_resolves_abstract_spec_op_from_value_runtime_sort() {
 namespace test.wi350_box
   sort Box
     sort T = ?
-    operation peek(b: Box) -> Int
+    operation peek(b: Box) -> Int64
   end
   sort ListBox
-    entity lbox(item: Int)
-    fact Box[T = Int]
-    operation peek(b: ListBox) -> Int = match b case lbox(x) -> x
+    entity lbox(item: Int64)
+    fact Box[T = Int64]
+    operation peek(b: ListBox) -> Int64 = match b case lbox(x) -> x
   end
   -- `b : Box` is an abstract spec value, so `Box.peek(b)` types through the
   -- interface and stays `Box.peek` (no static impl pinned). At runtime `b`
   -- is the concrete ListBox the caller threads in.
-  operation use_box(b: Box) -> Int = Box.peek(b)
-  operation main() -> Int = use_box(lbox(7))
+  operation use_box(b: Box) -> Int64 = Box.peek(b)
+  operation main() -> Int64 = use_box(lbox(7))
 end
 "#;
     let kb = load_kb_with(src);
@@ -2170,11 +2170,11 @@ end
 fn wi362_collect_over_list_when_typer_grounds_effect_and_element() {
     let src = r#"
 namespace test.wi362_collect
-  import anthill.prelude.{List, Int}
+  import anthill.prelude.{List, Int64}
   import anthill.prelude.List.{length}
   import anthill.prelude.Stream.{collect}
 
-  operation collect_len() -> Int = length(collect([1, 2, 3]))
+  operation collect_len() -> Int64 = length(collect([1, 2, 3]))
 end
 "#;
     // `interp_for` registers the standard eval builtins (`length`'s `add`,
@@ -2191,11 +2191,11 @@ end
 fn wi362_take_n_over_list_executes() {
     let src = r#"
 namespace test.wi362_taken
-  import anthill.prelude.{List, Int}
+  import anthill.prelude.{List, Int64}
   import anthill.prelude.List.{length}
   import anthill.prelude.Stream.{takeN}
 
-  operation taken_len() -> Int = length(takeN([1, 2, 3, 4, 5], 2))
+  operation taken_len() -> Int64 = length(takeN([1, 2, 3, 4, 5], 2))
 end
 "#;
     // `interp_for` registers the standard eval builtins (`gt`/`sub` in takeN,

@@ -9,7 +9,7 @@ use common::load_kb_with_lenient;
 fn dump_phase_d_shapes() {
     let source = r#"
         namespace test.dumpd
-          import anthill.prelude.{Int, Bool, List}
+          import anthill.prelude.{Int64, Bool, List}
           export Color, Calc
           sort Color
             entity Red
@@ -17,16 +17,16 @@ fn dump_phase_d_shapes() {
             entity Blue
           end
           sort Pose
-            entity Pose(x: Int, y: Int)
+            entity Pose(x: Int64, y: Int64)
           end
           sort Calc
-            operation tag(c: Color) -> Int =
+            operation tag(c: Color) -> Int64 =
               match c
                 case Red -> 0
                 case Green -> 1
                 case Blue -> 2
-            operation make_pose(x: Int) -> Pose = Pose(x: x, y: 0)
-            operation pair(x: Int) -> List[T = Int] = [x, 1, 2]
+            operation make_pose(x: Int64) -> Pose = Pose(x: x, y: 0)
+            operation pair(x: Int64) -> List[T = Int64] = [x, 1, 2]
           end
         end
     "#;

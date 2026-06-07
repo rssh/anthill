@@ -37,5 +37,5 @@ sort Polynom
   rule scale(?c, ?p1 + ?p2) = scale(?c, ?p1) + scale(?c, ?p2)
 end
 
--- Polynom[Int] is a valid instantiation (Int satisfies Ring)
-fact Polynom[Int]
+-- Polynom[Int64] is a valid instantiation (Int64 satisfies Ring)
+fact Polynom[Int64]

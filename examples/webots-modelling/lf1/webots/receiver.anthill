@@ -14,7 +14,7 @@
 --   const double *getEmitterDirection() const;  // Vec3, unit vector
 
 sort anthill.examples.lf1.webots.Receiver
-  import anthill.prelude.{Int, Float, Unit, String, Bool, Modify}
+  import anthill.prelude.{Int64, Float, Unit, String, Bool, Modify}
   import anthill.geometry.{Vec3}
   export Receiver
   export enable, disable, get_sampling_period
@@ -23,22 +23,22 @@ sort anthill.examples.lf1.webots.Receiver
   export get_signal_strength, get_emitter_direction
 
   -- Lifecycle.
-  operation enable(self: Receiver, sampling_period: Int) -> Unit
+  operation enable(self: Receiver, sampling_period: Int64) -> Unit
     effects Modify[self]
 
   operation disable(self: Receiver) -> Unit
     effects Modify[self]
 
-  operation get_sampling_period(self: Receiver) -> Int
+  operation get_sampling_period(self: Receiver) -> Int64
 
   -- Channel selection (-1 for broadcast, must match an emitter).
-  operation set_channel(self: Receiver, channel: Int) -> Unit
+  operation set_channel(self: Receiver, channel: Int64) -> Unit
     effects Modify[self]
 
-  operation get_channel(self: Receiver) -> Int
+  operation get_channel(self: Receiver) -> Int64
 
   -- Packet queue iteration.
-  operation get_queue_length(self: Receiver) -> Int
+  operation get_queue_length(self: Receiver) -> Int64
 
   -- Pop the head packet. Modeled as a Modify; the C++ side returns
   -- void.
@@ -46,7 +46,7 @@ sort anthill.examples.lf1.webots.Receiver
     effects Modify[self]
 
   -- Size in bytes of the head packet (0 if queue empty).
-  operation get_data_size(self: Receiver) -> Int
+  operation get_data_size(self: Receiver) -> Int64
 
   -- Read the head packet's payload. As with Emitter.send, we model
   -- the payload as String for now; richer byte-array support can

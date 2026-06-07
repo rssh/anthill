@@ -543,7 +543,7 @@ object Loader:
     // `empty` / `insert` / `Effect`). These should be reached via explicit
     // `import` clauses, mirroring rustland's explicit-only global aliases.
     val skip = Set(
-      "Bool", "Int", "Float", "BigInt", "String",
+      "Bool", "Int64", "Float", "BigInt", "String",
       "Iteration", "Collection", "IndexedSeq", "Set", "Map", "LogicalStream")
     for (qualName, sym) <- kb.symbols.byQualifiedName do
       if qualName.startsWith(preludePrefix) then

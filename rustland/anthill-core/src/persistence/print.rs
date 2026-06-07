@@ -673,13 +673,13 @@ mod tests {
         let mut kb = KnowledgeBase::new();
         let sym = kb.intern("Eq");
         let t_sym = kb.intern("T");
-        let int = kb.make_name_term("Int");
+        let int = kb.make_name_term("Int64");
         let t = kb.alloc(Term::Fn {
             functor: sym,
             pos_args: SmallVec::new(),
             named_args: SmallVec::from_slice(&[(t_sym, int)]),
         });
         let out = print_fact(&kb, t, None);
-        assert_eq!(out, "fact Eq(T: Int)\n");
+        assert_eq!(out, "fact Eq(T: Int64)\n");
     }
 }

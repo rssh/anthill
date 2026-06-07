@@ -16,7 +16,7 @@
 -- computeControls() override is the codegen target.
 
 namespace anthill.examples.lf1.leader
-  import anthill.prelude.{Float, Int, Unit, String, Option, Bool, List}
+  import anthill.prelude.{Float, Int64, Unit, String, Option, Bool, List}
   import anthill.prelude.Option.{some, none}
   import anthill.prelude.Float.{atan2, hypot, log10, fmod, abs,
                                 cos, sin, sqrt, pi}
@@ -59,7 +59,7 @@ namespace anthill.examples.lf1.leader
 
   entity WaypointSequence(
     points:  List[T = Waypoint],
-    current: Int                       -- index into `points`
+    current: Int64                       -- index into `points`
   )
 
   entity LeaderState(

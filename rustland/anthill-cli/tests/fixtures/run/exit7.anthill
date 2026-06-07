@@ -1,10 +1,10 @@
 namespace my.exit7
   import anthill.cli.Main
-  import anthill.prelude.{Int, String, List}
+  import anthill.prelude.{Int64, String, List}
   export E
 
   sort E
     requires anthill.cli.Main
-    operation main(args: List[T = String]) -> Int = 7
+    operation main(args: List[T = String]) -> Int64 = 7
   end
 end

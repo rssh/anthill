@@ -257,14 +257,14 @@ fn extract_sort_ref_from_parameterized_type() {
     load::register_prelude(&mut kb);
     kb.register_standard_builtins();
 
-    // Build SortView(Eq(), T=Int())
+    // Build SortView(Eq(), T=Int64())
     let eq_sym = kb.intern("Eq");
     let eq_name = kb.alloc(Term::Fn {
         functor: eq_sym,
         pos_args: SmallVec::new(),
         named_args: SmallVec::new(),
     });
-    let int_sym = kb.intern("Int");
+    let int_sym = kb.intern("Int64");
     let int_term = kb.alloc(Term::Fn {
         functor: int_sym,
         pos_args: SmallVec::new(),
@@ -333,7 +333,7 @@ sort Eq {
 sort Ordered {
     sort T = ?
     requires Eq[T = T]
-    operation compare(a: T, b: T) -> Int
+    operation compare(a: T, b: T) -> Int64
 }
 "#;
     let mut kb = load_stdlib_kb();
@@ -359,7 +359,7 @@ sort Eq {
 sort Ordered {
     sort T = ?
     requires Eq[T = T]
-    operation compare(a: T, b: T) -> Int
+    operation compare(a: T, b: T) -> Int64
 }
 "#;
     let mut kb = load_stdlib_kb();
@@ -421,7 +421,7 @@ namespace test.wi344_provides
     operation cmp(a: T, b: T) -> Bool
   end
   sort Widget
-    entity widget(id: Int)
+    entity widget(id: Int64)
   end
   fact Comparable[T = Widget]
 end
@@ -492,7 +492,7 @@ sort Eq {
 sort Ordered {
     sort T = ?
     requires Eq[T = T]
-    operation compare(a: T, b: T) -> Int
+    operation compare(a: T, b: T) -> Int64
 }
 "#;
     let mut kb = load_stdlib_kb();
@@ -641,7 +641,7 @@ fn entity_info_standalone_entity_has_no_entity_info() {
     // Standalone entity `entity Foo(...)` is loaded as an Entity fact only.
     // It does NOT produce EntityInfo facts (only sort-with-body entities do).
     let source = r#"
-entity Account(id: Int, balance: Int)
+entity Account(id: Int64, balance: Int64)
 "#;
     let mut kb = KnowledgeBase::new();
     load::register_prelude(&mut kb);
@@ -806,8 +806,8 @@ sort Color {
 fn type_compatible_entity_with_fields() {
     let source = r#"
 sort Account {
-    entity checking(balance: Int)
-    entity savings(balance: Int, rate: Float)
+    entity checking(balance: Int64)
+    entity savings(balance: Int64, rate: Float)
 }
 "#;
     let mut kb = load_stdlib_kb();
@@ -971,7 +971,7 @@ sort Color {
 fn entity_of_standalone_entity_has_no_parent() {
     // Standalone entity (not inside a sort body) has no EntityOf fact.
     let source = r#"
-entity Account(id: Int, balance: Int)
+entity Account(id: Int64, balance: Int64)
 "#;
     let mut kb = load_stdlib_kb();
     load_source(&mut kb, source);
@@ -1050,14 +1050,14 @@ entity Box(contents: ?)
         "field typed ? should be a logic variable in KB");
 
     // A Var unifies with any concrete term via match_term
-    let int_sym = kb.intern("Int");
+    let int_sym = kb.intern("Int64");
     let int_term = kb.alloc(Term::Fn {
         functor: int_sym,
         pos_args: SmallVec::new(),
         named_args: SmallVec::new(),
     });
     let result = kb.match_term(contents_tid, int_term);
-    assert!(result.is_some(), "Var should unify with any concrete term (Int)");
+    assert!(result.is_some(), "Var should unify with any concrete term (Int64)");
 }
 
 // ── Field access builtin tests ───────────────────────────────
@@ -1070,7 +1070,7 @@ fn field_access_entity_extracts_field() {
     load_source(&mut kb, r#"
         namespace test_fa
           sort Env
-            entity env(platform: Int, fs: Int)
+            entity env(platform: Int64, fs: Int64)
           end
         end
     "#);
@@ -1104,7 +1104,7 @@ fn field_access_entity_extracts_field() {
         Term::Const(anthill_core::kb::term::Literal::Int(n)) => {
             assert_eq!(*n, 42);
         }
-        other => panic!("expected Int literal 42, got {:?}", other),
+        other => panic!("expected Int64 literal 42, got {:?}", other),
     }
 }
 
@@ -1137,7 +1137,7 @@ fn field_access_fails_on_bad_field() {
     load_source(&mut kb, r#"
         namespace test_fa2
           sort Env
-            entity env(platform: Int, fs: Int)
+            entity env(platform: Int64, fs: Int64)
           end
         end
     "#);
@@ -1302,8 +1302,8 @@ fn wi297_occurrence_term_literal_synth_resolves() {
         "namespace wi297.t\n",
         "  import anthill.reflect.{Expr}\n",
         "  import anthill.prelude.TypeExtractor.{SortRef}\n",
-        "  import anthill.prelude.{Int}\n",
-        "  rule synth(?e, SortRef(name: Int)) :- occurrence_term(?e, int_lit(value: ?))\n",
+        "  import anthill.prelude.{Int64}\n",
+        "  rule synth(?e, SortRef(name: Int64)) :- occurrence_term(?e, int_lit(value: ?))\n",
         "  rule probe(?T) :- synth(42, ?T)\n",
         "end\n",
     );
@@ -1329,9 +1329,9 @@ fn wi297_occurrence_term_literal_synth_resolves() {
                 Term::Fn { functor, .. } => *functor,
                 other => panic!("unexpected sort_ref name term: {other:?}"),
             };
-            assert_eq!(kb.resolve_sym(name_sym), "Int", "literal 42 should synth to Int");
+            assert_eq!(kb.resolve_sym(name_sym), "Int64", "literal 42 should synth to Int64");
         }
-        other => panic!("expected SortRef(name: Int), got {other:?}"),
+        other => panic!("expected SortRef(name: Int64), got {other:?}"),
     }
 }
 
@@ -1339,14 +1339,14 @@ fn wi297_occurrence_term_literal_synth_resolves() {
 fn wi297_occurrence_term_discriminates_literal_kind() {
     // `occurrence_term` reads the *actual* term of the shown occurrence: a
     // distinct synth rule per literal kind, and each literal selects exactly
-    // the matching rule (42 ⇒ Int, "hi" ⇒ String) — proving the builtin binds
+    // the matching rule (42 ⇒ Int64, "hi" ⇒ String) — proving the builtin binds
     // the occurrence's term, not a vacuous match.
     let source = concat!(
         "namespace wi297.b\n",
         "  import anthill.reflect.{Expr}\n",
         "  import anthill.prelude.TypeExtractor.{SortRef}\n",
-        "  import anthill.prelude.{Int, String}\n",
-        "  rule synth(?e, SortRef(name: Int))    :- occurrence_term(?e, int_lit(value: ?))\n",
+        "  import anthill.prelude.{Int64, String}\n",
+        "  rule synth(?e, SortRef(name: Int64))    :- occurrence_term(?e, int_lit(value: ?))\n",
         "  rule synth(?e, SortRef(name: String)) :- occurrence_term(?e, string_lit(value: ?))\n",
         "  rule probe_int(?T) :- synth(42, ?T)\n",
         "  rule probe_str(?T) :- synth(\"hi\", ?T)\n",
@@ -1375,7 +1375,7 @@ fn wi297_occurrence_term_discriminates_literal_kind() {
     let r_int = kb.resolve(&[g_int], &default_config());
     assert_eq!(r_int.len(), 1, "an int literal should select exactly the int_lit synth rule");
     let t_int = kb.reify(var_i, &r_int[0].subst).as_term().unwrap();
-    assert_eq!(sort_ref_name(&kb, t_int), "Int");
+    assert_eq!(sort_ref_name(&kb, t_int), "Int64");
 
     let var_s = make_var(&mut kb, "Ts");
     let g_str = make_goal(&mut kb, "wi297.b.probe_str", &[var_s]);
@@ -1485,7 +1485,7 @@ fn wi297_occurrence_span_structured_pattern_matches() {
     let bound = kb.reify(var_s, &results[0].subst).as_term().unwrap();
     assert!(
         matches!(kb.get_term(bound), Term::Const(Literal::Int(_))),
-        "start_byte should bind to an Int, got {:?}", kb.get_term(bound)
+        "start_byte should bind to an Int64, got {:?}", kb.get_term(bound)
     );
 }
 
@@ -1538,9 +1538,9 @@ fn wi305_operation_body_discriminates_some_vs_none() {
     // — the node lives in the `op_body_node` side-table, not a fact field.
     let mut kb = load_with_source(concat!(
         "namespace wi305.t\n",
-        "  import anthill.prelude.{Int}\n",
-        "  operation f(x: Int) -> Int = x\n",   // has a body
-        "  operation g(x: Int) -> Int\n",        // declaration only
+        "  import anthill.prelude.{Int64}\n",
+        "  operation f(x: Int64) -> Int64 = x\n",   // has a body
+        "  operation g(x: Int64) -> Int64\n",        // declaration only
         "end\n",
     ));
     let some_sym = kb.resolve_symbol("anthill.prelude.Option.some");
@@ -1614,7 +1614,7 @@ fn load_stdlib_kb_with_result() -> (KnowledgeBase, LoadResult) {
 }
 
 /// WI-420 helper: load full stdlib (incl. the Rust host bindings, so concrete
-/// `fact Eq[Int]`/`Ordered[Int]` records are present, matching real `anthill
+/// `fact Eq[Int64]`/`Ordered[Int64]` records are present, matching real `anthill
 /// check`) + a user `source`, returning `Ok(())`/`Err(messages)` so a test can
 /// assert an expected load-time (typer) error instead of panicking. Thin
 /// wrapper over the shared `common::try_load_kb_with`.
@@ -1625,8 +1625,8 @@ fn try_load_with_source(source: &str) -> Result<(), Vec<String>> {
 /// WI-420 (full fix): eta-lifting a `requires`-carrying op (here `List.member`,
 /// since `List requires Eq[T]`) to a function value now LOADS. The typer
 /// resolves the op's requirement dispatch dict at the eta site — the expected
-/// arrow `Function[(Int, List[T=Int]), Bool]` pins `List.T := Int` — and
-/// attaches it (`CallClass::EtaOpRef`) so eval captures the `Eq[Int]` dict on
+/// arrow `Function[(Int64, List[T=Int64]), Bool]` pins `List.T := Int64` — and
+/// attaches it (`CallClass::EtaOpRef`) so eval captures the `Eq[Int64]` dict on
 /// the `Value::OpRef` at mint and installs it into the callee frame at apply.
 /// (Runtime behavior is pinned by `wi420_eta_concrete_member_evals` in
 /// eval_test; this test pins that it type-checks/loads.)
@@ -1634,10 +1634,10 @@ fn try_load_with_source(source: &str) -> Result<(), Vec<String>> {
 fn wi420_eta_of_requires_carrying_op_loads() {
     let src = r#"
 namespace test.wi420.eta
-  import anthill.prelude.{List, Int, Bool, Function}
+  import anthill.prelude.{List, Int64, Bool, Function}
   import anthill.prelude.List.{member}
 
-  operation use_pair(f: Function[A = (Int, List[T = Int]), B = Bool], x: Int, xs: List[T = Int]) -> Bool =
+  operation use_pair(f: Function[A = (Int64, List[T = Int64]), B = Bool], x: Int64, xs: List[T = Int64]) -> Bool =
     f((x, xs))
 
   operation main() -> Bool =
@@ -1645,8 +1645,8 @@ namespace test.wi420.eta
 end
 "#;
     assert!(try_load_with_source(src).is_ok(),
-        "eta of a concrete requires-carrying op (List.member at T=Int) must load: \
-         WI-420 resolves + captures its Eq[Int] dispatch dict on the OpRef");
+        "eta of a concrete requires-carrying op (List.member at T=Int64) must load: \
+         WI-420 resolves + captures its Eq[Int64] dispatch dict on the OpRef");
 }
 
 /// WI-420 positive control: the gate is targeted, not a blanket ban on eta. A
@@ -1656,12 +1656,12 @@ end
 fn wi420_eta_of_requires_free_op_still_loads() {
     let src = r#"
 namespace test.wi420.ok
-  import anthill.prelude.{Int, Bool, Function}
+  import anthill.prelude.{Int64, Bool, Function}
   import anthill.prelude.Ordered.{gt}
 
-  operation is_big(n: Int) -> Bool = gt(n, 10)
+  operation is_big(n: Int64) -> Bool = gt(n, 10)
 
-  operation use_one(f: Function[A = Int, B = Bool], x: Int) -> Bool = f(x)
+  operation use_one(f: Function[A = Int64, B = Bool], x: Int64) -> Bool = f(x)
 
   operation main() -> Bool = use_one(is_big, 5)
 end
@@ -1673,8 +1673,8 @@ end
 
 /// WI-420: binding a CURRIED op on a requires-sort (its return type is itself a
 /// `Function`) where that `Function` return type is expected is a plain LOUD
-/// type error — `build`'s eta arrow `Int -> Function[Int,Bool]` does not match
-/// the annotation `Function[Int,Bool]` (result `Function[Int,Bool]` ≠ `Bool`).
+/// type error — `build`'s eta arrow `Int64 -> Function[Int64,Bool]` does not match
+/// the annotation `Function[Int64,Bool]` (result `Function[Int64,Bool]` ≠ `Bool`).
 /// The point: it's a load-time mismatch, never a load-clean-then-eval-crash
 /// (the failure mode the earlier conservative gate guarded; the full fix keeps
 /// it loud via ordinary arrow unification, no special gate).
@@ -1682,17 +1682,17 @@ end
 fn wi420_eta_of_curried_requires_op_is_loud_type_error() {
     let src = r#"
 namespace test.wi420.curried
-  import anthill.prelude.{List, Int, Bool, Function}
+  import anthill.prelude.{List, Int64, Bool, Function}
   sort Wrap
-    requires anthill.prelude.Eq[T = Int]
+    requires anthill.prelude.Eq[T = Int64]
     sort T = ?
-    operation build(seed: Int) -> Function[A = Int, B = Bool] =
+    operation build(seed: Int64) -> Function[A = Int64, B = Bool] =
       if List.member(seed, [1, 2, 3]) then lambda y -> true else lambda y -> false
   end
   import test.wi420.curried.Wrap.{build}
 
   operation main() -> Bool =
-    let f: Function[A = Int, B = Bool] = build
+    let f: Function[A = Int64, B = Bool] = build
     f(7)
 end
 "#;
@@ -1710,7 +1710,7 @@ sort Color
 end
 
 sort Shape
-  entity Circle(color: Color, radius: Int)
+  entity Circle(color: Color, radius: Int64)
 end
 
 fact Circle(color: Red, radius: 42)
@@ -1731,13 +1731,13 @@ fact Thing(name: 42)
 "#;
     let (mut kb, result) = load_with_result(source);
     let errors = type_check_sorts(&mut kb, &result.defined_sorts);
-    assert!(!errors.is_empty(), "should detect Int where String expected");
+    assert!(!errors.is_empty(), "should detect Int64 where String expected");
     let err = &errors[0];
     match err {
         load::LoadError::TypeMismatch { field_name, expected_type, actual_type, .. } => {
             assert_eq!(field_name, "name");
             assert!(expected_type.contains("String"), "expected String, got: {expected_type}");
-            assert_eq!(actual_type, "Int");
+            assert_eq!(actual_type, "Int64");
         }
         _ => panic!("expected TypeMismatch, got: {err:?}"),
     }
@@ -1747,14 +1747,14 @@ fact Thing(name: 42)
 fn type_check_int_field_with_string_literal() {
     let source = r#"
 sort Item
-  entity Thing(count: Int)
+  entity Thing(count: Int64)
 end
 
 fact Thing(count: "hello")
 "#;
     let (mut kb, result) = load_with_result(source);
     let errors = type_check_sorts(&mut kb, &result.defined_sorts);
-    assert!(!errors.is_empty(), "should detect String where Int expected");
+    assert!(!errors.is_empty(), "should detect String where Int64 expected");
     match &errors[0] {
         load::LoadError::TypeMismatch { field_name, actual_type, .. } => {
             assert_eq!(field_name, "count");
@@ -1811,11 +1811,11 @@ end
 
 #[test]
 fn type_check_error_reports_line_number() {
-    let source = "sort Item\n  entity Thing(count: Int)\nend\n\nfact Thing(count: \"hello\")\n";
+    let source = "sort Item\n  entity Thing(count: Int64)\nend\n\nfact Thing(count: \"hello\")\n";
     //            line 1        line 2                    line 3  line 4  line 5
     let (mut kb, result) = load_with_result(source);
     let errors = type_check_sorts(&mut kb, &result.defined_sorts);
-    assert!(!errors.is_empty(), "should detect String where Int expected");
+    assert!(!errors.is_empty(), "should detect String where Int64 expected");
     let formatted = errors[0].format_with_source(source);
     assert!(formatted.contains("type mismatch"), "should say type mismatch: {formatted}");
     assert!(formatted.contains("Thing"), "should mention entity name: {formatted}");
@@ -1837,7 +1837,7 @@ fn type_check_stdlib_no_spurious_errors() {
 fn type_check_op_literal_body_correct() {
     let source = r#"
 sort Math
-  operation one() -> Int = 1
+  operation one() -> Int64 = 1
 end
 "#;
     let (mut kb, result) = load_with_result(source);
@@ -1854,7 +1854,7 @@ end
 "#;
     let (mut kb, result) = load_with_result(source);
     let errors = type_check_sorts(&mut kb, &result.defined_sorts);
-    assert!(!errors.is_empty(), "should detect Int body vs String return type");
+    assert!(!errors.is_empty(), "should detect Int64 body vs String return type");
     match &errors[0] {
         load::LoadError::TypeMismatch { entity_name, field_name, .. } => {
             assert!(entity_name.contains("one"), "should mention operation name: {entity_name}");
@@ -1868,7 +1868,7 @@ end
 fn type_check_op_var_ref_correct() {
     let source = r#"
 sort Math
-  operation id(x: Int) -> Int = x
+  operation id(x: Int64) -> Int64 = x
 end
 "#;
     let (mut kb, result) = load_with_result(source);
@@ -1880,12 +1880,12 @@ end
 fn type_check_op_var_ref_wrong_return() {
     let source = r#"
 sort Math
-  operation wrong(x: Int) -> String = x
+  operation wrong(x: Int64) -> String = x
 end
 "#;
     let (mut kb, result) = load_with_result(source);
     let errors = type_check_sorts(&mut kb, &result.defined_sorts);
-    assert!(!errors.is_empty(), "should detect Int var vs String return type, got: {:?}", errors);
+    assert!(!errors.is_empty(), "should detect Int64 var vs String return type, got: {:?}", errors);
 }
 
 #[test]
@@ -1911,7 +1911,7 @@ fn param_and_body_var_share_same_symbol() {
     // same KB Symbol as the parameter declaration in FieldInfo.
     let source = r#"
 sort Math
-  operation id(x: Int) -> Int = x
+  operation id(x: Int64) -> Int64 = x
 end
 "#;
     let kb = load_with_source(source);
@@ -1996,7 +1996,7 @@ fn type_check_op_stdlib_no_spurious_errors() {
 fn type_check_op_if_expr_correct() {
     let source = r#"
 sort Logic
-  operation pick(b: Bool) -> Int = if b then 1 else 0
+  operation pick(b: Bool) -> Int64 = if b then 1 else 0
 end
 "#;
     let (mut kb, result) = load_with_result(source);
@@ -2013,7 +2013,7 @@ end
 "#;
     let (mut kb, result) = load_with_result(source);
     let errors = type_check_sorts(&mut kb, &result.defined_sorts);
-    assert!(!errors.is_empty(), "should detect Int branches vs String return, got: {:?}", errors);
+    assert!(!errors.is_empty(), "should detect Int64 branches vs String return, got: {:?}", errors);
 }
 
 #[test]
@@ -2025,7 +2025,7 @@ fn type_check_op_let_expr_correct() {
     // failures surface — use the actual grammar shape.
     let source = r#"
 sort Math
-  operation double(x: Int) -> Int =
+  operation double(x: Int64) -> Int64 =
     let y = x
     add(y, y)
 end
@@ -2044,7 +2044,7 @@ sort Color
 end
 
 sort Palette
-  operation rank(c: Color) -> Int = match c
+  operation rank(c: Color) -> Int64 = match c
     case Red -> 1
     case Blue -> 2
 end
@@ -2070,7 +2070,7 @@ end
 "#;
     let (mut kb, result) = load_with_result(source);
     let errors = type_check_sorts(&mut kb, &result.defined_sorts);
-    assert!(!errors.is_empty(), "should detect Int match body vs String return, got: {:?}", errors);
+    assert!(!errors.is_empty(), "should detect Int64 match body vs String return, got: {:?}", errors);
 }
 
 // ══════════════════════════════════════════════════════════════════
@@ -2163,16 +2163,16 @@ fn types_compatible(kb: &mut KnowledgeBase, actual: TermId, expected: TermId) ->
 #[test]
 fn subtype_same_sort_ref() {
     let mut kb = load_stdlib_kb();
-    let int_ty = kb.make_sort_ref_by_name("Int");
-    assert!(types_compatible(&mut kb, int_ty, int_ty), "Int <: Int");
+    let int_ty = kb.make_sort_ref_by_name("Int64");
+    assert!(types_compatible(&mut kb, int_ty, int_ty), "Int64 <: Int64");
 }
 
 #[test]
 fn subtype_different_sort_ref_incompatible() {
     let mut kb = load_stdlib_kb();
-    let int_ty = kb.make_sort_ref_by_name("Int");
+    let int_ty = kb.make_sort_ref_by_name("Int64");
     let string_ty = kb.make_sort_ref_by_name("String");
-    assert!(!types_compatible(&mut kb, int_ty, string_ty), "Int not <: String");
+    assert!(!types_compatible(&mut kb, int_ty, string_ty), "Int64 not <: String");
 }
 
 #[test]
@@ -2212,16 +2212,16 @@ end
 
 #[test]
 fn subtype_named_tuple_width() {
-    // (a: Int, b: String) <: (a: Int) — extra fields OK
+    // (a: Int64, b: String) <: (a: Int64) — extra fields OK
     let mut kb = load_stdlib_kb();
-    let int_ty = kb.make_sort_ref_by_name("Int");
+    let int_ty = kb.make_sort_ref_by_name("Int64");
     let string_ty = kb.make_sort_ref_by_name("String");
     let a_sym = kb.intern("a");
     let b_sym = kb.intern("b");
     let wider = kb.make_named_tuple_type(&[(a_sym, int_ty), (b_sym, string_ty)]);
     let narrower = kb.make_named_tuple_type(&[(a_sym, int_ty)]);
-    assert!(types_compatible(&mut kb, wider, narrower), "(a: Int, b: String) <: (a: Int)");
-    assert!(!types_compatible(&mut kb, narrower, wider), "(a: Int) not <: (a: Int, b: String)");
+    assert!(types_compatible(&mut kb, wider, narrower), "(a: Int64, b: String) <: (a: Int64)");
+    assert!(!types_compatible(&mut kb, narrower, wider), "(a: Int64) not <: (a: Int64, b: String)");
 }
 
 #[test]
@@ -2245,41 +2245,41 @@ end
 
 #[test]
 fn subtype_arrow_covariant_result() {
-    // (Int -> red) <: (Int -> Color) — covariant result
+    // (Int64 -> red) <: (Int64 -> Color) — covariant result
     let source = r#"
 enum Color
   entity red
 end
 "#;
     let mut kb = load_with_source(source);
-    let int_ty = kb.make_sort_ref_by_name("Int");
+    let int_ty = kb.make_sort_ref_by_name("Int64");
     let red_sym = kb.resolve_symbol("Color.red");
     let color_sym = kb.resolve_symbol("Color");
     let red_ty = kb.make_sort_ref(red_sym);
     let color_ty = kb.make_sort_ref(color_sym);
     let specific = kb.make_arrow_type(int_ty, red_ty, &[]);
     let general = kb.make_arrow_type(int_ty, color_ty, &[]);
-    assert!(types_compatible(&mut kb, specific, general), "(Int -> red) <: (Int -> Color)");
+    assert!(types_compatible(&mut kb, specific, general), "(Int64 -> red) <: (Int64 -> Color)");
 }
 
 #[test]
 fn subtype_arrow_contravariant_param() {
-    // (Color -> Int) <: (red -> Int) — contravariant param
+    // (Color -> Int64) <: (red -> Int64) — contravariant param
     let source = r#"
 enum Color
   entity red
 end
 "#;
     let mut kb = load_with_source(source);
-    let int_ty = kb.make_sort_ref_by_name("Int");
+    let int_ty = kb.make_sort_ref_by_name("Int64");
     let red_sym = kb.resolve_symbol("Color.red");
     let color_sym = kb.resolve_symbol("Color");
     let red_ty = kb.make_sort_ref(red_sym);
     let color_ty = kb.make_sort_ref(color_sym);
     let general_param = kb.make_arrow_type(color_ty, int_ty, &[]);
     let specific_param = kb.make_arrow_type(red_ty, int_ty, &[]);
-    assert!(types_compatible(&mut kb, general_param, specific_param), "(Color -> Int) <: (red -> Int)");
-    assert!(!types_compatible(&mut kb, specific_param, general_param), "(red -> Int) not <: (Color -> Int)");
+    assert!(types_compatible(&mut kb, general_param, specific_param), "(Color -> Int64) <: (red -> Int64)");
+    assert!(!types_compatible(&mut kb, specific_param, general_param), "(red -> Int64) not <: (Color -> Int64)");
 }
 
 // ── WI-293: declared per-(sort, param) variance in parameterized_compatible ──
@@ -2299,7 +2299,7 @@ fn variance_function_param_A_contravariant() {
     //   — pre-WI-293 covariant-everywhere wrongly accepted this).
     let source = "enum Color\n  entity red\nend\n";
     let mut kb = load_with_source(source);
-    let int_ty = kb.make_sort_ref_by_name("Int");
+    let int_ty = kb.make_sort_ref_by_name("Int64");
     let red_ty = kb.make_sort_ref(kb.resolve_symbol("Color.red"));
     let color_ty = kb.make_sort_ref(kb.resolve_symbol("Color"));
     let fn_base = kb.make_sort_ref(kb.resolve_symbol("anthill.prelude.Function"));
@@ -2388,48 +2388,48 @@ fn variance_read_only_iterable_covariant_mutable_invariant() {
 #[test]
 fn subtype_parameterized_same() {
     let mut kb = load_stdlib_kb();
-    let int_ty = kb.make_sort_ref_by_name("Int");
+    let int_ty = kb.make_sort_ref_by_name("Int64");
     let t_sym = kb.intern("T");
     let list_base = kb.make_sort_ref_by_name("List");
     let list_int = kb.make_parameterized_type(list_base, &[(t_sym, int_ty)]);
-    assert!(types_compatible(&mut kb, list_int, list_int), "List[T=Int] <: List[T=Int]");
+    assert!(types_compatible(&mut kb, list_int, list_int), "List[T=Int64] <: List[T=Int64]");
 }
 
 #[test]
 fn subtype_parameterized_different_binding_incompatible() {
     let mut kb = load_stdlib_kb();
-    let int_ty = kb.make_sort_ref_by_name("Int");
+    let int_ty = kb.make_sort_ref_by_name("Int64");
     let string_ty = kb.make_sort_ref_by_name("String");
     let t_sym = kb.intern("T");
     let list_base = kb.make_sort_ref_by_name("List");
     let list_int = kb.make_parameterized_type(list_base, &[(t_sym, int_ty)]);
     let list_str = kb.make_parameterized_type(list_base, &[(t_sym, string_ty)]);
-    assert!(!types_compatible(&mut kb, list_int, list_str), "List[T=Int] not <: List[T=String]");
+    assert!(!types_compatible(&mut kb, list_int, list_str), "List[T=Int64] not <: List[T=String]");
 }
 
 #[test]
 fn subtype_type_var_compatible_with_anything() {
     let mut kb = load_stdlib_kb();
-    let int_ty = kb.make_sort_ref_by_name("Int");
+    let int_ty = kb.make_sort_ref_by_name("Int64");
     let fresh = kb.intern("?X");
     let var_ty = kb.make_type_var(fresh);
-    assert!(types_compatible(&mut kb, var_ty, int_ty), "type_var <: Int");
-    assert!(types_compatible(&mut kb, int_ty, var_ty), "Int <: type_var");
+    assert!(types_compatible(&mut kb, var_ty, int_ty), "type_var <: Int64");
+    assert!(types_compatible(&mut kb, int_ty, var_ty), "Int64 <: type_var");
 }
 
 #[test]
 fn subtype_nothing_compatible_with_anything() {
     let mut kb = load_stdlib_kb();
-    let int_ty = kb.make_sort_ref_by_name("Int");
+    let int_ty = kb.make_sort_ref_by_name("Int64");
     let nothing = kb.make_nothing_type();
-    assert!(types_compatible(&mut kb, nothing, int_ty), "nothing <: Int");
+    assert!(types_compatible(&mut kb, nothing, int_ty), "nothing <: Int64");
 }
 
 #[test]
 fn subtype_arrow_pure_subtype_of_effectful() {
-    // (Int -> Int @ []) <: (Int -> Int @ [E]) — pure function usable where effects declared
+    // (Int64 -> Int64 @ []) <: (Int64 -> Int64 @ [E]) — pure function usable where effects declared
     let mut kb = load_stdlib_kb();
-    let int_ty = kb.make_sort_ref_by_name("Int");
+    let int_ty = kb.make_sort_ref_by_name("Int64");
     let e_sym = kb.intern("SomeEffect");
     let effect = kb.make_sort_ref(e_sym);
     let pure_fn = kb.make_arrow_type(int_ty, int_ty, &[]);
@@ -2439,9 +2439,9 @@ fn subtype_arrow_pure_subtype_of_effectful() {
 
 #[test]
 fn subtype_arrow_fewer_effects() {
-    // (Int -> Int @ [E1]) <: (Int -> Int @ [E1, E2]) — fewer effects OK
+    // (Int64 -> Int64 @ [E1]) <: (Int64 -> Int64 @ [E1, E2]) — fewer effects OK
     let mut kb = load_stdlib_kb();
-    let int_ty = kb.make_sort_ref_by_name("Int");
+    let int_ty = kb.make_sort_ref_by_name("Int64");
     let e1_sym = kb.intern("E1");
     let e2_sym = kb.intern("E2");
     let e1 = kb.make_sort_ref(e1_sym);
@@ -2454,9 +2454,9 @@ fn subtype_arrow_fewer_effects() {
 
 #[test]
 fn subtype_arrow_different_effects_incompatible() {
-    // (Int -> Int @ [E1]) not <: (Int -> Int @ [E2]) — different effects
+    // (Int64 -> Int64 @ [E1]) not <: (Int64 -> Int64 @ [E2]) — different effects
     let mut kb = load_stdlib_kb();
-    let int_ty = kb.make_sort_ref_by_name("Int");
+    let int_ty = kb.make_sort_ref_by_name("Int64");
     let e1_sym = kb.intern("E1");
     let e2_sym = kb.intern("E2");
     let e1 = kb.make_sort_ref(e1_sym);
@@ -2475,7 +2475,7 @@ fn subtype_arrow_different_effects_incompatible() {
 #[test]
 fn arrow_effects_canonical_form_hash_cons_stable() {
     let mut kb = load_stdlib_kb();
-    let int_ty = kb.make_sort_ref_by_name("Int");
+    let int_ty = kb.make_sort_ref_by_name("Int64");
     // Use names whose alphabetic order is OPPOSITE to source order, so the
     // canonical sort must actively reorder to make the TermIds match.
     let z_sym = kb.intern("ZebraEffect");
@@ -2501,7 +2501,7 @@ fn arrow_effects_canonical_form_hash_cons_stable() {
 #[test]
 fn arrow_effects_empty_canonical_stable() {
     let mut kb = load_stdlib_kb();
-    let int_ty = kb.make_sort_ref_by_name("Int");
+    let int_ty = kb.make_sort_ref_by_name("Int64");
     let a = kb.make_arrow_type(int_ty, int_ty, &[]);
     let b = kb.make_arrow_type(int_ty, int_ty, &[]);
     assert_eq!(a, b, "two pure arrows must hash-cons identically");
@@ -2513,7 +2513,7 @@ fn arrow_effects_empty_canonical_stable() {
 #[test]
 fn row_unify_closed_closed_same() {
     let mut kb = load_stdlib_kb();
-    let int_ty = kb.make_sort_ref_by_name("Int");
+    let int_ty = kb.make_sort_ref_by_name("Int64");
     let ea_sym = kb.intern("EffectA");
     let eb_sym = kb.intern("EffectB");
     let e1 = kb.make_sort_ref(ea_sym);
@@ -2529,7 +2529,7 @@ fn row_unify_closed_closed_same() {
 #[test]
 fn row_unify_closed_closed_different() {
     let mut kb = load_stdlib_kb();
-    let int_ty = kb.make_sort_ref_by_name("Int");
+    let int_ty = kb.make_sort_ref_by_name("Int64");
     let ea_sym = kb.intern("EffectA");
     let eb_sym = kb.intern("EffectB");
     let e1 = kb.make_sort_ref(ea_sym);
@@ -2546,7 +2546,7 @@ fn row_unify_closed_closed_different() {
 #[test]
 fn row_unify_open_closed_tail_absorbs() {
     let mut kb = load_stdlib_kb();
-    let int_ty = kb.make_sort_ref_by_name("Int");
+    let int_ty = kb.make_sort_ref_by_name("Int64");
     let ea_sym = kb.intern("EffectA");
     let eb_sym = kb.intern("EffectB");
     let e1 = kb.make_sort_ref(ea_sym);
@@ -2571,7 +2571,7 @@ fn row_unify_open_closed_tail_absorbs() {
 #[test]
 fn row_unify_open_closed_missing_label_fails() {
     let mut kb = load_stdlib_kb();
-    let int_ty = kb.make_sort_ref_by_name("Int");
+    let int_ty = kb.make_sort_ref_by_name("Int64");
     let ea_sym = kb.intern("EffectA");
     let eb_sym = kb.intern("EffectB");
     let ec_sym = kb.intern("EffectC");
@@ -2596,7 +2596,7 @@ fn row_unify_open_closed_missing_label_fails() {
 #[test]
 fn row_unify_open_open_same_tail() {
     let mut kb = load_stdlib_kb();
-    let int_ty = kb.make_sort_ref_by_name("Int");
+    let int_ty = kb.make_sort_ref_by_name("Int64");
     let ea_sym = kb.intern("EffectA");
     let e1 = kb.make_sort_ref(ea_sym);
 
@@ -2619,7 +2619,7 @@ fn row_unify_open_open_same_tail() {
 #[test]
 fn row_unify_open_open_disjoint_extras() {
     let mut kb = load_stdlib_kb();
-    let int_ty = kb.make_sort_ref_by_name("Int");
+    let int_ty = kb.make_sort_ref_by_name("Int64");
     let ea_sym = kb.intern("EffectA");
     let eb_sym = kb.intern("EffectB");
     let e1 = kb.make_sort_ref(ea_sym);
@@ -2649,7 +2649,7 @@ fn row_unify_open_open_disjoint_extras() {
 #[test]
 fn row_unify_open_open_same_labels() {
     let mut kb = load_stdlib_kb();
-    let int_ty = kb.make_sort_ref_by_name("Int");
+    let int_ty = kb.make_sort_ref_by_name("Int64");
     let ea_sym = kb.intern("EffectA");
     let e1 = kb.make_sort_ref(ea_sym);
 
@@ -2682,7 +2682,7 @@ fn row_unify_open_open_same_labels() {
 #[test]
 fn row_lacks_unify_non_conflicting_label_ok() {
     let mut kb = load_stdlib_kb();
-    let int_ty = kb.make_sort_ref_by_name("Int");
+    let int_ty = kb.make_sort_ref_by_name("Int64");
     let err = kb.make_sort_ref_by_name("Error");
     let other = kb.make_sort_ref_by_name("Other");
 
@@ -2707,7 +2707,7 @@ fn row_lacks_unify_non_conflicting_label_ok() {
 #[test]
 fn row_lacks_unify_present_lacked_label_fails() {
     let mut kb = load_stdlib_kb();
-    let int_ty = kb.make_sort_ref_by_name("Int");
+    let int_ty = kb.make_sort_ref_by_name("Int64");
     let err = kb.make_sort_ref_by_name("Error");
 
     let rho_sym = kb.intern("?rho");
@@ -2729,7 +2729,7 @@ fn row_lacks_unify_present_lacked_label_fails() {
 #[test]
 fn row_lacks_open_open_present_into_lacking_tail_fails() {
     let mut kb = load_stdlib_kb();
-    let int_ty = kb.make_sort_ref_by_name("Int");
+    let int_ty = kb.make_sort_ref_by_name("Int64");
     let err = kb.make_sort_ref_by_name("Error");
 
     let rho_a_sym = kb.intern("?rho_a");
@@ -2758,7 +2758,7 @@ fn row_lacks_open_open_present_into_lacking_tail_fails() {
 #[test]
 fn row_lacks_propagates_to_fresh_shared_tail() {
     let mut kb = load_stdlib_kb();
-    let int_ty = kb.make_sort_ref_by_name("Int");
+    let int_ty = kb.make_sort_ref_by_name("Int64");
     let err = kb.make_sort_ref_by_name("Error");
 
     let rho_a_sym = kb.intern("?rho_a");
@@ -2789,7 +2789,7 @@ fn row_lacks_propagates_to_fresh_shared_tail() {
 #[test]
 fn row_present_absent_same_label_rejected() {
     let mut kb = load_stdlib_kb();
-    let int_ty = kb.make_sort_ref_by_name("Int");
+    let int_ty = kb.make_sort_ref_by_name("Int64");
     let err = kb.make_sort_ref_by_name("Error");
 
     let absent_err = kb.make_effect_expression_absent(err);
@@ -2816,7 +2816,7 @@ fn row_present_absent_same_label_rejected() {
 #[test]
 fn subtype_arrow_pure_subtype_of_effectful_via_rows() {
     let mut kb = load_stdlib_kb();
-    let int_ty = kb.make_sort_ref_by_name("Int");
+    let int_ty = kb.make_sort_ref_by_name("Int64");
     let e_sym = kb.intern("SomeEffect");
     let effect = kb.make_sort_ref(e_sym);
     let pure_fn = kb.make_arrow_type(int_ty, int_ty, &[]);
@@ -2835,7 +2835,7 @@ fn subtype_arrow_pure_subtype_of_effectful_via_rows() {
 #[test]
 fn subtype_arrow_open_le_closed_tail_closes() {
     let mut kb = load_stdlib_kb();
-    let int_ty = kb.make_sort_ref_by_name("Int");
+    let int_ty = kb.make_sort_ref_by_name("Int64");
     let e1_sym = kb.intern("E1");
     let e2_sym = kb.intern("E2");
     let e1 = kb.make_sort_ref(e1_sym);
@@ -2860,7 +2860,7 @@ fn subtype_arrow_open_le_closed_tail_closes() {
 #[test]
 fn subtype_arrow_open_le_closed_extras_reject() {
     let mut kb = load_stdlib_kb();
-    let int_ty = kb.make_sort_ref_by_name("Int");
+    let int_ty = kb.make_sort_ref_by_name("Int64");
     let e1_sym = kb.intern("E1");
     let e2_sym = kb.intern("E2");
     let e3_sym = kb.intern("E3");
@@ -2886,7 +2886,7 @@ fn subtype_arrow_open_le_closed_extras_reject() {
 #[test]
 fn subtype_arrow_closed_le_open() {
     let mut kb = load_stdlib_kb();
-    let int_ty = kb.make_sort_ref_by_name("Int");
+    let int_ty = kb.make_sort_ref_by_name("Int64");
     let e1_sym = kb.intern("E1");
     let e1 = kb.make_sort_ref(e1_sym);
 
@@ -2914,14 +2914,14 @@ fn subtype_arrow_closed_le_open() {
 #[test]
 fn subtype_arrow_with_effect_not_le_function_no_effect() {
     let mut kb = load_stdlib_kb();
-    let int_ty = kb.make_sort_ref_by_name("Int");
+    let int_ty = kb.make_sort_ref_by_name("Int64");
     let reads_sym = kb.intern("Reads");
     let reads = kb.make_sort_ref(reads_sym);
 
-    // arrow(Int, Int, {Reads})
+    // arrow(Int64, Int64, {Reads})
     let actual = kb.make_arrow_type(int_ty, int_ty, &[reads]);
 
-    // Function[A=Int, B=Int, E=effects_rows(empty_row)] — closed empty
+    // Function[A=Int64, B=Int64, E=effects_rows(empty_row)] — closed empty
     // effects (no Reads). Explicit binding distinguishes this from the
     // "missing E = polymorphic" case (see below).
     let fn_sym = kb.resolve_symbol("anthill.prelude.Function");
@@ -2936,7 +2936,7 @@ fn subtype_arrow_with_effect_not_le_function_no_effect() {
     );
 
     assert!(!types_compatible(&mut kb, actual, expected),
-        "arrow(Int, Int, {{Reads}}) NOT <: Function[A=Int, B=Int, E={{}}] — \
+        "arrow(Int64, Int64, {{Reads}}) NOT <: Function[A=Int64, B=Int64, E={{}}] — \
          actual has Reads, expected closed-empty can't accept");
 }
 
@@ -2946,7 +2946,7 @@ fn subtype_arrow_with_effect_not_le_function_no_effect() {
 #[test]
 fn subtype_arrow_pure_le_function_with_effects() {
     let mut kb = load_stdlib_kb();
-    let int_ty = kb.make_sort_ref_by_name("Int");
+    let int_ty = kb.make_sort_ref_by_name("Int64");
     let reads_sym = kb.intern("Reads");
     let reads = kb.make_sort_ref(reads_sym);
 
@@ -2964,21 +2964,21 @@ fn subtype_arrow_pure_le_function_with_effects() {
     );
 
     assert!(types_compatible(&mut kb, actual, expected),
-        "arrow(Int, Int, {{}}) <: Function[A=Int, B=Int, E={{Reads}}] — \
+        "arrow(Int64, Int64, {{}}) <: Function[A=Int64, B=Int64, E={{Reads}}] — \
          pure (empty) is a subset of any closed effect set");
 }
 
 /// WI-332: Function with NO E binding is polymorphic in effects — accepts
 /// effectful actuals (matches the missing-A convention). Distinguishes
-/// `Function[Int, Int]` (polymorphic E, accept anything) from
-/// `Function[A=Int, B=Int, E={}]` (explicit closed empty, reject
+/// `Function[Int64, Int64]` (polymorphic E, accept anything) from
+/// `Function[A=Int64, B=Int64, E={}]` (explicit closed empty, reject
 /// effectful). Without this distinction, common user code like
-/// `operation use(f: Function[Int, Int]) = f(5)` would regress against
+/// `operation use(f: Function[Int64, Int64]) = f(5)` would regress against
 /// effectful lambda actuals that worked pre-WI-332.
 #[test]
 fn subtype_arrow_with_effect_le_function_no_E_binding_polymorphic() {
     let mut kb = load_stdlib_kb();
-    let int_ty = kb.make_sort_ref_by_name("Int");
+    let int_ty = kb.make_sort_ref_by_name("Int64");
     let reads_sym = kb.intern("Reads");
     let reads = kb.make_sort_ref(reads_sym);
 
@@ -2988,14 +2988,14 @@ fn subtype_arrow_with_effect_le_function_no_E_binding_polymorphic() {
     let fn_base = kb.make_sort_ref(fn_sym);
     let a_sym = kb.intern("A");
     let b_sym = kb.intern("B");
-    // Function[A=Int, B=Int] — NO E binding, polymorphic in effects.
+    // Function[A=Int64, B=Int64] — NO E binding, polymorphic in effects.
     let expected = kb.make_parameterized_type(
         fn_base,
         &[(a_sym, int_ty), (b_sym, int_ty)],
     );
 
     assert!(types_compatible(&mut kb, actual, expected),
-        "arrow(Int, Int, {{Reads}}) <: Function[A=Int, B=Int] — missing \
+        "arrow(Int64, Int64, {{Reads}}) <: Function[A=Int64, B=Int64] — missing \
          E binding is polymorphic in effects, accepts any actual");
 }
 
@@ -3004,11 +3004,11 @@ fn subtype_arrow_with_effect_le_function_no_E_binding_polymorphic() {
 #[test]
 fn subtype_function_with_effect_not_le_arrow_no_effect() {
     let mut kb = load_stdlib_kb();
-    let int_ty = kb.make_sort_ref_by_name("Int");
+    let int_ty = kb.make_sort_ref_by_name("Int64");
     let reads_sym = kb.intern("Reads");
     let reads = kb.make_sort_ref(reads_sym);
 
-    // Function[A=Int, B=Int, E={Reads}]
+    // Function[A=Int64, B=Int64, E={Reads}]
     let fn_sym = kb.resolve_symbol("anthill.prelude.Function");
     let fn_base = kb.make_sort_ref(fn_sym);
     let a_sym = kb.intern("A");
@@ -3020,11 +3020,11 @@ fn subtype_function_with_effect_not_le_arrow_no_effect() {
         &[(a_sym, int_ty), (b_sym, int_ty), (e_sym, effects_rows)],
     );
 
-    // arrow(Int, Int, {}) — closed empty
+    // arrow(Int64, Int64, {}) — closed empty
     let expected = kb.make_arrow_type(int_ty, int_ty, &[]);
 
     assert!(!types_compatible(&mut kb, actual, expected),
-        "Function[A=Int, B=Int, E={{Reads}}] NOT <: arrow(Int, Int, {{}}) — \
+        "Function[A=Int64, B=Int64, E={{Reads}}] NOT <: arrow(Int64, Int64, {{}}) — \
          same denotational shape as arrow-vs-arrow rejection");
 }
 
@@ -3043,7 +3043,7 @@ fn subtype_function_with_effect_not_le_arrow_no_effect() {
 #[test]
 fn subtype_function_E_fewer_effects_le_more() {
     let mut kb = load_stdlib_kb();
-    let int_ty = kb.make_sort_ref_by_name("Int");
+    let int_ty = kb.make_sort_ref_by_name("Int64");
     let reads_sym = kb.intern("Reads");
     let writes_sym = kb.intern("Writes");
     let reads = kb.make_sort_ref(reads_sym);
@@ -3078,7 +3078,7 @@ fn subtype_function_E_fewer_effects_le_more() {
 #[test]
 fn subtype_function_E_disjoint_effects_incompatible() {
     let mut kb = load_stdlib_kb();
-    let int_ty = kb.make_sort_ref_by_name("Int");
+    let int_ty = kb.make_sort_ref_by_name("Int64");
     let reads_sym = kb.intern("Reads");
     let writes_sym = kb.intern("Writes");
     let reads = kb.make_sort_ref(reads_sym);
@@ -3113,7 +3113,7 @@ fn subtype_function_E_disjoint_effects_incompatible() {
 #[test]
 fn subtype_function_E_open_le_closed() {
     let mut kb = load_stdlib_kb();
-    let int_ty = kb.make_sort_ref_by_name("Int");
+    let int_ty = kb.make_sort_ref_by_name("Int64");
     let reads_sym = kb.intern("Reads");
     let reads = kb.make_sort_ref(reads_sym);
 
@@ -3150,7 +3150,7 @@ fn subtype_function_E_open_le_closed() {
 #[test]
 fn subtype_function_E_open_le_closed_extras_reject() {
     let mut kb = load_stdlib_kb();
-    let int_ty = kb.make_sort_ref_by_name("Int");
+    let int_ty = kb.make_sort_ref_by_name("Int64");
     let e1_sym = kb.intern("E1");
     let e2_sym = kb.intern("E2");
     let e3_sym = kb.intern("E3");
@@ -3192,7 +3192,7 @@ fn subtype_function_E_open_le_closed_extras_reject() {
 #[test]
 fn subtype_function_E_closed_le_open() {
     let mut kb = load_stdlib_kb();
-    let int_ty = kb.make_sort_ref_by_name("Int");
+    let int_ty = kb.make_sort_ref_by_name("Int64");
     let e1_sym = kb.intern("E1");
     let e1 = kb.make_sort_ref(e1_sym);
 
@@ -3239,7 +3239,7 @@ enum Color
 end
 "#;
     let mut kb = load_with_source(source);
-    let int_ty = kb.make_sort_ref_by_name("Int");
+    let int_ty = kb.make_sort_ref_by_name("Int64");
     let red_sym = kb.resolve_symbol("Color.red");
     let blue_sym = kb.resolve_symbol("Color.blue");
     let color_sym = kb.resolve_symbol("Color");
@@ -3263,7 +3263,7 @@ end
 #[test]
 fn subtype_nested_arrow_shared_rho_inconsistent_binding_rejects() {
     let mut kb = load_stdlib_kb();
-    let int_ty = kb.make_sort_ref_by_name("Int");
+    let int_ty = kb.make_sort_ref_by_name("Int64");
     let e1_sym = kb.intern("E1");
     let e2_sym = kb.intern("E2");
     let e1 = kb.make_sort_ref(e1_sym);
@@ -3274,12 +3274,12 @@ fn subtype_nested_arrow_shared_rho_inconsistent_binding_rejects() {
     let rho_vid = kb.fresh_var(rho_sym);
     let rho = kb.alloc(Term::Var(anthill_core::kb::term::Var::Global(rho_vid)));
 
-    // actual = arrow(arrow(Int, Int, {rho}), arrow(Int, Int, {rho}), {})
+    // actual = arrow(arrow(Int64, Int64, {rho}), arrow(Int64, Int64, {rho}), {})
     let inner_actual_left = kb.make_arrow_type(int_ty, int_ty, &[rho]);
     let inner_actual_right = kb.make_arrow_type(int_ty, int_ty, &[rho]);
     let actual = kb.make_arrow_type(inner_actual_left, inner_actual_right, &[]);
 
-    // expected = arrow(arrow(Int, Int, {E1}), arrow(Int, Int, {E2}), {})
+    // expected = arrow(arrow(Int64, Int64, {E1}), arrow(Int64, Int64, {E2}), {})
     let inner_expected_left = kb.make_arrow_type(int_ty, int_ty, &[e1]);
     let inner_expected_right = kb.make_arrow_type(int_ty, int_ty, &[e2]);
     let expected = kb.make_arrow_type(inner_expected_left, inner_expected_right, &[]);
@@ -3317,7 +3317,7 @@ fn types_compatible_bootstrap_safe_when_prelude_not_registered() {
     // effects field on either side, then one side with an effects-like
     // field shape).
     let arrow_sym = kb.intern("anthill.prelude.TypeExtractor.Arrow");
-    let int_sym = kb.intern("anthill.prelude.Int");
+    let int_sym = kb.intern("anthill.prelude.Int64");
     let int_ty = kb.alloc(Term::Fn {
         functor: int_sym,
         pos_args: SmallVec::new(),
@@ -3327,7 +3327,7 @@ fn types_compatible_bootstrap_safe_when_prelude_not_registered() {
     let result_key = kb.intern("result");
     let effects_key = kb.intern("effects");
 
-    // arrow_no_effects: arrow(param: Int, result: Int) — no effects field.
+    // arrow_no_effects: arrow(param: Int64, result: Int64) — no effects field.
     let mut na: SmallVec<[(anthill_core::intern::Symbol, anthill_core::kb::term::TermId); 2]>
         = SmallVec::new();
     na.push((param_key, int_ty));
@@ -3339,7 +3339,7 @@ fn types_compatible_bootstrap_safe_when_prelude_not_registered() {
         named_args: na,
     });
 
-    // arrow_with_effects: arrow(param: Int, result: Int, effects: <Var>).
+    // arrow_with_effects: arrow(param: Int64, result: Int64, effects: <Var>).
     // Use a Var for the effects slot so the missing side triggers the
     // (Some, None) arm via the *opposite* side's None.
     let v_sym = kb.intern("?eff");
@@ -3430,7 +3430,7 @@ fn types_compatible_bootstrap_safe_when_prelude_not_registered() {
 #[test]
 fn subtype_rejects_rigid_tail_close_to_empty() {
     let mut kb = load_stdlib_kb();
-    let int_ty = kb.make_sort_ref_by_name("Int");
+    let int_ty = kb.make_sort_ref_by_name("Int64");
     let e1_sym = kb.intern("E1");
     let e1 = kb.make_sort_ref(e1_sym);
 
@@ -3440,9 +3440,9 @@ fn subtype_rejects_rigid_tail_close_to_empty() {
         anthill_core::kb::term::Var::Rigid(rigid_vid),
     ));
 
-    // actual = arrow(Int, Int, {| ?rho_rigid}) — open with Rigid tail.
+    // actual = arrow(Int64, Int64, {| ?rho_rigid}) — open with Rigid tail.
     let actual = kb.make_arrow_type(int_ty, int_ty, &[rigid_tail]);
-    // expected = arrow(Int, Int, {E1}) — closed.
+    // expected = arrow(Int64, Int64, {E1}) — closed.
     let expected = kb.make_arrow_type(int_ty, int_ty, &[e1]);
 
     // a_present=[], a_tail=Some(Rigid), e_present=[E1], e_tail=None.
@@ -3461,7 +3461,7 @@ fn subtype_rejects_rigid_tail_close_to_empty() {
 #[test]
 fn unify_rejects_rigid_tail_against_closed() {
     let mut kb = load_stdlib_kb();
-    let int_ty = kb.make_sort_ref_by_name("Int");
+    let int_ty = kb.make_sort_ref_by_name("Int64");
     let e1_sym = kb.intern("E1");
     let e1 = kb.make_sort_ref(e1_sym);
 
@@ -3489,7 +3489,7 @@ fn unify_rejects_rigid_tail_against_closed() {
 #[test]
 fn subtype_accepts_global_tail_close_to_empty() {
     let mut kb = load_stdlib_kb();
-    let int_ty = kb.make_sort_ref_by_name("Int");
+    let int_ty = kb.make_sort_ref_by_name("Int64");
     let e1_sym = kb.intern("E1");
     let e1 = kb.make_sort_ref(e1_sym);
 
@@ -3514,7 +3514,7 @@ fn subtype_accepts_global_tail_close_to_empty() {
 #[test]
 fn subtype_nested_arrow_shared_rho_consistent_binding_accepts() {
     let mut kb = load_stdlib_kb();
-    let int_ty = kb.make_sort_ref_by_name("Int");
+    let int_ty = kb.make_sort_ref_by_name("Int64");
     let e1_sym = kb.intern("E1");
     let e1 = kb.make_sort_ref(e1_sym);
 
@@ -3522,12 +3522,12 @@ fn subtype_nested_arrow_shared_rho_consistent_binding_accepts() {
     let rho_vid = kb.fresh_var(rho_sym);
     let rho = kb.alloc(Term::Var(anthill_core::kb::term::Var::Global(rho_vid)));
 
-    // actual = arrow(arrow(Int, Int, {rho}), arrow(Int, Int, {rho}), {})
+    // actual = arrow(arrow(Int64, Int64, {rho}), arrow(Int64, Int64, {rho}), {})
     let inner_actual_left = kb.make_arrow_type(int_ty, int_ty, &[rho]);
     let inner_actual_right = kb.make_arrow_type(int_ty, int_ty, &[rho]);
     let actual = kb.make_arrow_type(inner_actual_left, inner_actual_right, &[]);
 
-    // expected = arrow(arrow(Int, Int, {E1}), arrow(Int, Int, {E1}), {})
+    // expected = arrow(arrow(Int64, Int64, {E1}), arrow(Int64, Int64, {E1}), {})
     // Both positions agree on {E1} → rho := {E1} satisfies both.
     let inner_expected_left = kb.make_arrow_type(int_ty, int_ty, &[e1]);
     let inner_expected_right = kb.make_arrow_type(int_ty, int_ty, &[e1]);
@@ -3553,7 +3553,7 @@ fn subtype_nested_arrow_shared_rho_consistent_binding_accepts() {
 #[test]
 fn subtype_arrow_shared_rho_only_e_extras() {
     let mut kb = load_stdlib_kb();
-    let int_ty = kb.make_sort_ref_by_name("Int");
+    let int_ty = kb.make_sort_ref_by_name("Int64");
     let e2_sym = kb.intern("E2");
     let e2 = kb.make_sort_ref(e2_sym);
 
@@ -3575,7 +3575,7 @@ fn subtype_arrow_shared_rho_only_e_extras() {
 #[test]
 fn subtype_arrow_shared_rho_only_a_extras() {
     let mut kb = load_stdlib_kb();
-    let int_ty = kb.make_sort_ref_by_name("Int");
+    let int_ty = kb.make_sort_ref_by_name("Int64");
     let e1_sym = kb.intern("E1");
     let e1 = kb.make_sort_ref(e1_sym);
 
@@ -3599,7 +3599,7 @@ fn subtype_arrow_shared_rho_only_a_extras() {
 #[test]
 fn unify_arrow_shared_rho_with_extras() {
     let mut kb = load_stdlib_kb();
-    let int_ty = kb.make_sort_ref_by_name("Int");
+    let int_ty = kb.make_sort_ref_by_name("Int64");
     let e2_sym = kb.intern("E2");
     let e2 = kb.make_sort_ref(e2_sym);
 
@@ -3636,7 +3636,7 @@ fn unify_arrow_shared_rho_with_extras() {
 #[test]
 fn subtype_rejects_malformed_multi_tail_row() {
     let mut kb = load_stdlib_kb();
-    let int_ty = kb.make_sort_ref_by_name("Int");
+    let int_ty = kb.make_sort_ref_by_name("Int64");
 
     // Build a malformed inner EffectExpression: merge(open(?rho_1),
     // open(?rho_2)). decompose_effect_row's stack walk will see two
@@ -3700,14 +3700,14 @@ fn subtype_rejects_malformed_multi_tail_row() {
 #[test]
 fn cover_pairs_sort_ref_with_parameterized_same_base() {
     let mut kb = load_stdlib_kb();
-    let int_ty = kb.make_sort_ref_by_name("Int");
+    let int_ty = kb.make_sort_ref_by_name("Int64");
 
     // Use stdlib's `List` sort so we can build both shapes against the
     // same base symbol. Effect labels in arrow.effects are typically
     // sort_refs (Reads, Writes, etc.) — but the cross-arm pairing also
     // surfaces for entities-of-sort comparisons.
     let list_base = kb.make_sort_ref_by_name("List");
-    // WI-361: the live parameterized form is the term backing `Fn{List, T = Int}`
+    // WI-361: the live parameterized form is the term backing `Fn{List, T = Int64}`
     // (the base sort IS the functor). The bridge pairs it with the bare `List` on
     // the shared base sort, ignoring the binding — the same relation the old deep
     // no-bindings `parameterized(base, bindings: nil)` exercised, on the form a
@@ -3715,9 +3715,9 @@ fn cover_pairs_sort_ref_with_parameterized_same_base() {
     let t = kb.intern("T");
     let list_param = kb.make_parameterized_type(list_base, &[(t, int_ty)]);
 
-    // arrow(Int, Int, [list_param]) where the label is parameterized.
+    // arrow(Int64, Int64, [list_param]) where the label is parameterized.
     let actual = kb.make_arrow_type(int_ty, int_ty, &[list_param]);
-    // arrow(Int, Int, [list_base]) where the label is sort_ref(List).
+    // arrow(Int64, Int64, [list_base]) where the label is sort_ref(List).
     let expected = kb.make_arrow_type(int_ty, int_ty, &[list_base]);
 
     // The two arrows' effects should compare compatibly via the
@@ -3748,7 +3748,7 @@ fn cover_pairs_sort_ref_with_parameterized_same_base() {
 #[test]
 fn cover_snapshot_restore_on_failed_pairing_no_leak() {
     let mut kb = load_stdlib_kb();
-    let int_ty = kb.make_sort_ref_by_name("Int");
+    let int_ty = kb.make_sort_ref_by_name("Int64");
     let e1_sym = kb.intern("E1");
     let e2_sym = kb.intern("E2");
     let e1 = kb.make_sort_ref(e1_sym);
@@ -3782,7 +3782,7 @@ fn cover_snapshot_restore_on_failed_pairing_no_leak() {
 #[test]
 fn subtype_arrow_open_le_open_shared_tail() {
     let mut kb = load_stdlib_kb();
-    let int_ty = kb.make_sort_ref_by_name("Int");
+    let int_ty = kb.make_sort_ref_by_name("Int64");
     let e1_sym = kb.intern("E1");
     let e2_sym = kb.intern("E2");
     let e1 = kb.make_sort_ref(e1_sym);
@@ -3809,8 +3809,8 @@ fn subtype_arrow_open_le_open_shared_tail() {
 #[test]
 fn is_subtype_not_reflexive() {
     let mut kb = load_stdlib_kb();
-    let int_ty = kb.make_sort_ref_by_name("Int");
-    assert!(!is_subtype(&mut kb, int_ty, int_ty), "Int is not a strict subtype of Int");
+    let int_ty = kb.make_sort_ref_by_name("Int64");
+    assert!(!is_subtype(&mut kb, int_ty, int_ty), "Int64 is not a strict subtype of Int64");
 }
 
 #[test]
@@ -3976,8 +3976,8 @@ end
 
 enum Shape
   requires Drawable
-  entity circle(radius: Int)
-  entity rect(w: Int, h: Int)
+  entity circle(radius: Int64)
+  entity rect(w: Int64, h: Int64)
   operation draw() -> String
 end
 "#;
@@ -4012,7 +4012,7 @@ fn enum_parses_and_loads() {
     let source = r#"
 enum Color
   entity red
-  entity blue(shade: Int)
+  entity blue(shade: Int64)
 end
 "#;
     let mut kb = load_with_source(source);
@@ -4105,21 +4105,21 @@ use anthill_core::kb::term_view::TermIdView;
 #[test]
 fn unify_identical_types() {
     let mut kb = load_stdlib_kb();
-    let int_ty = kb.make_sort_ref_by_name("Int");
+    let int_ty = kb.make_sort_ref_by_name("Int64");
     let mut subst = Substitution::new();
-    assert!(unify_types(&mut kb, &mut subst, &TermIdView(int_ty), &TermIdView(int_ty)), "Int unifies with Int");
+    assert!(unify_types(&mut kb, &mut subst, &TermIdView(int_ty), &TermIdView(int_ty)), "Int64 unifies with Int64");
 }
 
 #[test]
 fn unify_var_binds_to_type() {
     let mut kb = load_stdlib_kb();
-    let int_ty = kb.make_sort_ref_by_name("Int");
+    let int_ty = kb.make_sort_ref_by_name("Int64");
     let sym = kb.intern("?X");
     let vid = kb.fresh_var(sym);
     let var_term = kb.alloc(Term::Var(anthill_core::kb::term::Var::Global(vid)));
     let mut subst = Substitution::new();
-    assert!(unify_types(&mut kb, &mut subst, &TermIdView(var_term), &TermIdView(int_ty)), "Var unifies with Int");
-    assert_eq!(subst.resolve_as_value(vid).and_then(|v| v.as_term()), Some(int_ty), "Var should be bound to Int");
+    assert!(unify_types(&mut kb, &mut subst, &TermIdView(var_term), &TermIdView(int_ty)), "Var unifies with Int64");
+    assert_eq!(subst.resolve_as_value(vid).and_then(|v| v.as_term()), Some(int_ty), "Var should be bound to Int64");
 }
 
 #[test]
@@ -4141,17 +4141,17 @@ fn unify_both_vars_bind() {
 #[test]
 fn unify_incompatible_ground_types() {
     let mut kb = load_stdlib_kb();
-    let int_ty = kb.make_sort_ref_by_name("Int");
+    let int_ty = kb.make_sort_ref_by_name("Int64");
     let str_ty = kb.make_sort_ref_by_name("String");
     let mut subst = Substitution::new();
-    assert!(!unify_types(&mut kb, &mut subst, &TermIdView(int_ty), &TermIdView(str_ty)), "Int does not unify with String");
+    assert!(!unify_types(&mut kb, &mut subst, &TermIdView(int_ty), &TermIdView(str_ty)), "Int64 does not unify with String");
 }
 
 #[test]
 fn unify_parameterized_with_var_binding() {
-    // List[T=?X] unified with List[T=Int] → ?X = Int
+    // List[T=?X] unified with List[T=Int64] → ?X = Int64
     let mut kb = load_stdlib_kb();
-    let int_ty = kb.make_sort_ref_by_name("Int");
+    let int_ty = kb.make_sort_ref_by_name("Int64");
     let t_sym = kb.intern("T");
     let list_base = kb.make_sort_ref_by_name("List");
 
@@ -4163,15 +4163,15 @@ fn unify_parameterized_with_var_binding() {
     let list_int = kb.make_parameterized_type(list_base, &[(t_sym, int_ty)]);
 
     let mut subst = Substitution::new();
-    assert!(unify_types(&mut kb, &mut subst, &TermIdView(list_var), &TermIdView(list_int)), "List[T=?X] unifies with List[T=Int]");
-    assert_eq!(subst.resolve_as_value(x_vid).and_then(|v| v.as_term()), Some(int_ty), "?X should be bound to Int");
+    assert!(unify_types(&mut kb, &mut subst, &TermIdView(list_var), &TermIdView(list_int)), "List[T=?X] unifies with List[T=Int64]");
+    assert_eq!(subst.resolve_as_value(x_vid).and_then(|v| v.as_term()), Some(int_ty), "?X should be bound to Int64");
 }
 
 #[test]
 fn unify_arrow_with_var_binding() {
-    // (?A -> ?B) unified with (Int -> String) → ?A=Int, ?B=String
+    // (?A -> ?B) unified with (Int64 -> String) → ?A=Int64, ?B=String
     let mut kb = load_stdlib_kb();
-    let int_ty = kb.make_sort_ref_by_name("Int");
+    let int_ty = kb.make_sort_ref_by_name("Int64");
     let str_ty = kb.make_sort_ref_by_name("String");
 
     let a_sym = kb.intern("?A");
@@ -4185,8 +4185,8 @@ fn unify_arrow_with_var_binding() {
     let arrow_concrete = kb.make_arrow_type(int_ty, str_ty, &[]);
 
     let mut subst = Substitution::new();
-    assert!(unify_types(&mut kb, &mut subst, &TermIdView(arrow_var), &TermIdView(arrow_concrete)), "(?A -> ?B) unifies with (Int -> String)");
-    assert_eq!(subst.resolve_as_value(a_vid).and_then(|v| v.as_term()), Some(int_ty), "?A = Int");
+    assert!(unify_types(&mut kb, &mut subst, &TermIdView(arrow_var), &TermIdView(arrow_concrete)), "(?A -> ?B) unifies with (Int64 -> String)");
+    assert_eq!(subst.resolve_as_value(a_vid).and_then(|v| v.as_term()), Some(int_ty), "?A = Int64");
     assert_eq!(subst.resolve_as_value(b_vid).and_then(|v| v.as_term()), Some(str_ty), "?B = String");
 }
 
@@ -4201,13 +4201,13 @@ sort Container
 end
 "#;
     let mut kb = load_with_source(source);
-    let int_ty = kb.make_sort_ref_by_name("Int");
+    let int_ty = kb.make_sort_ref_by_name("Int64");
     let t_sym = kb.resolve_symbol("Container.T");
     let t_ref = kb.make_sort_ref(t_sym);
 
     let mut subst = Substitution::new();
     assert!(unify_types(&mut kb, &mut subst, &TermIdView(t_ref), &TermIdView(int_ty)),
-        "sort_ref(T) should unify with Int via SortAlias");
+        "sort_ref(T) should unify with Int64 via SortAlias");
 }
 
 // ══════════════════════════════════════════════════════════════════
@@ -4243,20 +4243,20 @@ fact Thing(name: "hello", color: red)
 fn type_check_sorts_wrong_field_type() {
     let source = r#"
 sort Item
-  entity Thing(count: Int)
+  entity Thing(count: Int64)
 end
 fact Thing(count: "hello")
 "#;
     let (mut kb, result) = load_with_result(source);
     let errors = type_check_sorts(&mut kb, &result.defined_sorts);
-    assert!(!errors.is_empty(), "should detect String where Int expected");
+    assert!(!errors.is_empty(), "should detect String where Int64 expected");
 }
 
 #[test]
 fn type_check_sorts_operation_body() {
     let source = r#"
 sort Math
-  operation get_answer() -> Int = 42
+  operation get_answer() -> Int64 = 42
 end
 "#;
     let (mut kb, result) = load_with_result(source);
@@ -4266,18 +4266,18 @@ end
 
 #[test]
 fn let_with_type_annotation_simple() {
-    // Proposal 035 form (1): typer accepts `let x: Int = 7 ; x` cleanly.
+    // Proposal 035 form (1): typer accepts `let x: Int64 = 7 ; x` cleanly.
     // The annotation pins the bound variable's type for the body env.
     let source = r#"
 sort Demo
-  operation main() -> Int =
-    let x: Int = 7
+  operation main() -> Int64 =
+    let x: Int64 = 7
     x
 end
 "#;
     let (mut kb, result) = load_with_result(source);
     let errors = type_check_sorts(&mut kb, &result.defined_sorts);
-    assert!(errors.is_empty(), "let with Int annotation should typecheck, got: {:?}", errors);
+    assert!(errors.is_empty(), "let with Int64 annotation should typecheck, got: {:?}", errors);
 }
 
 #[test]
@@ -4291,8 +4291,8 @@ sort Demo
   import anthill.prelude.{Map}
   import anthill.prelude.Map.{empty, size}
 
-  operation main() -> Int =
-    let m: Map[K = String, V = Int] = empty()
+  operation main() -> Int64 =
+    let m: Map[K = String, V = Int64] = empty()
     size(m)
 end
 "#;
@@ -4303,15 +4303,15 @@ end
 
 #[test]
 fn type_check_sorts_op_with_type_param_instantiation() {
-    // add(x, x) where x: Int should resolve Numeric.T to Int, return Int
+    // add(x, x) where x: Int64 should resolve Numeric.T to Int64, return Int64
     let source = r#"
 sort Math
-  operation double(x: Int) -> Int = add(x, x)
+  operation double(x: Int64) -> Int64 = add(x, x)
 end
 "#;
     let (mut kb, result) = load_with_result(source);
     let errors = type_check_sorts(&mut kb, &result.defined_sorts);
-    assert!(errors.is_empty(), "add(x,x) with x:Int should return Int via type param instantiation, got: {:?}", errors);
+    assert!(errors.is_empty(), "add(x,x) with x:Int should return Int64 via type param instantiation, got: {:?}", errors);
 }
 
 #[test]
@@ -4323,37 +4323,37 @@ end
 "#;
     let (mut kb, result) = load_with_result(source);
     let errors = type_check_sorts(&mut kb, &result.defined_sorts);
-    assert!(!errors.is_empty(), "should detect Int body vs String return");
+    assert!(!errors.is_empty(), "should detect Int64 body vs String return");
 }
 
 #[test]
 fn type_check_sorts_parameterized_field_correct() {
-    // List[T=Int] field with correct cons(head: 1, tail: nil) — no errors
+    // List[T=Int64] field with correct cons(head: 1, tail: nil) — no errors
     let source = r#"
 sort Container
   import anthill.prelude.List
-  entity Box(items: List[T = Int])
+  entity Box(items: List[T = Int64])
 end
 fact Box(items: cons(head: 42, tail: nil))
 "#;
     let (mut kb, result) = load_with_result(source);
     let errors = type_check_sorts(&mut kb, &result.defined_sorts);
-    assert!(errors.is_empty(), "correct List[T=Int] value should produce no errors, got: {:?}", errors);
+    assert!(errors.is_empty(), "correct List[T=Int64] value should produce no errors, got: {:?}", errors);
 }
 
 #[test]
 fn type_check_sorts_parameterized_field_wrong_element() {
-    // List[T=Int] field with wrong element type (String instead of Int)
+    // List[T=Int64] field with wrong element type (String instead of Int64)
     let source = r#"
 sort Container
   import anthill.prelude.List
-  entity Box(items: List[T = Int])
+  entity Box(items: List[T = Int64])
 end
 fact Box(items: cons(head: "hello", tail: nil))
 "#;
     let (mut kb, result) = load_with_result(source);
     let errors = type_check_sorts(&mut kb, &result.defined_sorts);
-    assert!(!errors.is_empty(), "String in List[T=Int] should be detected, got: {:?}", errors);
+    assert!(!errors.is_empty(), "String in List[T=Int64] should be detected, got: {:?}", errors);
 }
 
 #[test]
@@ -4361,7 +4361,7 @@ fn type_check_sorts_only_checks_given_sorts() {
     // Load stdlib, then a user file. Only check the user sorts.
     let source = r#"
 sort MySort
-  entity Foo(x: Int)
+  entity Foo(x: Int64)
 end
 fact Foo(x: "wrong")
 "#;
@@ -4525,10 +4525,10 @@ end
 
 #[test]
 fn rule_typing_consistent_vars_no_error() {
-    // ?x appears as Int in both head and body — consistent
+    // ?x appears as Int64 in both head and body — consistent
     let source = r#"
 sort Math
-  operation double(x: Int) -> Int
+  operation double(x: Int64) -> Int64
   rule double_fact(?x, ?y) :- double(?x, ?y)
 end
 "#;
@@ -4539,17 +4539,17 @@ end
 
 #[test]
 fn rule_typing_inconsistent_vars_detected() {
-    // ?x used as String field and Int field — inconsistent
+    // ?x used as String field and Int64 field — inconsistent
     let source = r#"
 sort Mixed
   entity Foo(name: String)
-  entity Bar(count: Int)
+  entity Bar(count: Int64)
   rule bad(?x) :- Foo(name: ?x), Bar(count: ?x)
 end
 "#;
     let (mut kb, result) = load_with_result(source);
     let errors = type_check_sorts(&mut kb, &result.defined_sorts);
-    assert!(!errors.is_empty(), "?x used as String and Int should be detected, got: {:?}", errors);
+    assert!(!errors.is_empty(), "?x used as String and Int64 should be detected, got: {:?}", errors);
 }
 
 #[test]
@@ -4699,7 +4699,7 @@ fn constructor_infers_type_param_from_int_field() {
     let source = r#"
 sort TestSort
   import anthill.prelude.List
-  entity Holder(items: List[T = Int])
+  entity Holder(items: List[T = Int64])
 end
 fact Holder(items: cons(head: 42, tail: nil))
 "#;
@@ -4707,7 +4707,7 @@ fact Holder(items: cons(head: 42, tail: nil))
     // Use parameterized field checking (already works for facts)
     let errors = type_check_sorts(&mut kb, &result.defined_sorts);
     assert!(errors.is_empty(),
-        "cons(head: 42, tail: nil) in List[T=Int] field should pass, got: {:?}", errors);
+        "cons(head: 42, tail: nil) in List[T=Int64] field should pass, got: {:?}", errors);
 }
 
 #[test]
@@ -4727,12 +4727,12 @@ fact Holder(items: cons(head: "hello", tail: nil))
 
 #[test]
 fn constructor_two_different_instantiations() {
-    // Two fields with different T bindings: List[T=Int] and List[T=String]
+    // Two fields with different T bindings: List[T=Int64] and List[T=String]
     // Both should be checked correctly — shared Var must not cause conflict
     let source = r#"
 sort Container
   import anthill.prelude.List
-  entity Holder(ints: List[T = Int], strings: List[T = String])
+  entity Holder(ints: List[T = Int64], strings: List[T = String])
 end
 fact Holder(ints: cons(head: 42, tail: nil), strings: cons(head: "hello", tail: nil))
 "#;
@@ -4744,12 +4744,12 @@ fact Holder(ints: cons(head: 42, tail: nil), strings: cons(head: "hello", tail: 
 
 #[test]
 fn constructor_two_instantiations_mismatch() {
-    // List[T=Int] field with String value — should detect mismatch
-    // List[T=String] field with Int value — should also detect
+    // List[T=Int64] field with String value — should detect mismatch
+    // List[T=String] field with Int64 value — should also detect
     let source = r#"
 sort Container
   import anthill.prelude.List
-  entity Holder(ints: List[T = Int], strings: List[T = String])
+  entity Holder(ints: List[T = Int64], strings: List[T = String])
 end
 fact Holder(ints: cons(head: "wrong", tail: nil), strings: cons(head: 42, tail: nil))
 "#;
@@ -4761,12 +4761,12 @@ fact Holder(ints: cons(head: "wrong", tail: nil), strings: cons(head: 42, tail: 
 
 #[test]
 fn constructor_two_instantiations_in_rule() {
-    // Rule that uses both List[T=Int] and List[T=String] fields
+    // Rule that uses both List[T=Int64] and List[T=String] fields
     // via different variables — should not interfere
     let source = r#"
 sort Container
   import anthill.prelude.List
-  entity Holder(ints: List[T = Int], strings: List[T = String])
+  entity Holder(ints: List[T = Int64], strings: List[T = String])
   rule test(?x, ?y) :- Holder(ints: ?x, strings: ?y)
 end
 "#;
@@ -4789,7 +4789,7 @@ fact Holder(items: cons(head: 42, tail: nil))
     let (mut kb, result) = load_with_result(source);
     let errors = type_check_sorts(&mut kb, &result.defined_sorts);
     assert!(!errors.is_empty(),
-        "cons(head: 42) in List[T=String] field should detect Int vs String mismatch");
+        "cons(head: 42) in List[T=String] field should detect Int64 vs String mismatch");
 }
 
 // ══════════════════════════════════════════════════════════════════
@@ -4851,7 +4851,7 @@ namespace test.wi036_ok
     operation cmp(a: T, b: T) -> Bool
   end
   sort Widget
-    entity widget(id: Int)
+    entity widget(id: Int64)
   end
   fact Comparable[T = Widget]
   sort Box
@@ -4878,7 +4878,7 @@ namespace test.wi036_bad
     operation cmp(a: T, b: T) -> Bool
   end
   sort Gadget
-    entity gadget(id: Int)
+    entity gadget(id: Int64)
   end
   sort Box
     entity Holder(item: Comparable)
@@ -4910,7 +4910,7 @@ namespace test.wi344_ok
     operation cmp(a: T, b: T) -> Bool
   end
   sort Widget
-    entity widget(id: Int)
+    entity widget(id: Int64)
   end
   fact Comparable[T = Widget]
   operation as_comparable(w: Widget) -> Comparable = w
@@ -4939,7 +4939,7 @@ namespace test.wi344_bad
     operation cmp(a: T, b: T) -> Bool
   end
   sort Gadget
-    entity gadget(id: Int)
+    entity gadget(id: Int64)
   end
   operation as_comparable(g: Gadget) -> Comparable = g
 end
@@ -4970,10 +4970,10 @@ namespace test.wi344_binding_mismatch
     operation cmp(a: T, b: T) -> Bool
   end
   sort Widget
-    entity widget(id: Int)
+    entity widget(id: Int64)
   end
   sort Gadget
-    entity gadget(id: Int)
+    entity gadget(id: Int64)
   end
   fact Comparable[T = Widget]
   operation as_cmp_gadget(w: Widget) -> Comparable[T = Gadget] = w
@@ -5002,7 +5002,7 @@ namespace test.wi036_list_ok
     operation cmp(a: T, b: T) -> Bool
   end
   sort Widget
-    entity widget(id: Int)
+    entity widget(id: Int64)
   end
   fact Comparable[T = Widget]
   sort Box
@@ -5030,10 +5030,10 @@ namespace test.wi036_list_bad
     operation cmp(a: T, b: T) -> Bool
   end
   sort Widget
-    entity widget(id: Int)
+    entity widget(id: Int64)
   end
   sort Gadget
-    entity gadget(id: Int)
+    entity gadget(id: Int64)
   end
   fact Comparable[T = Widget]
   sort Box
@@ -5063,7 +5063,7 @@ namespace test.wi036_pspec
     operation cmp(a: T, b: T) -> Bool
   end
   sort Widget
-    entity widget(id: Int)
+    entity widget(id: Int64)
   end
   fact Comparable[T = Widget]
   sort Box
@@ -5098,10 +5098,10 @@ namespace test.wi274_mismatch
     operation cmp(a: T, b: T) -> Bool
   end
   sort Widget
-    entity widget(id: Int)
+    entity widget(id: Int64)
   end
   sort Gadget
-    entity gadget(id: Int)
+    entity gadget(id: Int64)
   end
   fact Comparable[T = Widget]
   sort Box
@@ -5121,21 +5121,21 @@ end
 
 // WI-274: conditional provider. `EqList` provides Eq for a list whose
 // elements provide Eq (`fact Eq[T = List[T = A]]` guarded by `requires
-// Eq[T = A]`). A field `Eq[T = List[T = Int]]` is accepted because the
-// resolver descends the requires chain and finds Int provides Eq.
+// Eq[T = A]`). A field `Eq[T = List[T = Int64]]` is accepted because the
+// resolver descends the requires chain and finds Int64 provides Eq.
 #[test]
 fn conditional_spec_field_accepts_eq_list_of_eq_elements() {
     let source = r#"
 namespace test.wi274_list_ok
-  import anthill.prelude.{Eq, List, Int}
-  fact Eq[T = Int]
+  import anthill.prelude.{Eq, List, Int64}
+  fact Eq[T = Int64]
   sort EqList
     sort A = ?
     requires Eq[T = A]
     fact Eq[T = List[T = A]]
   end
   sort Box
-    entity Holder(item: Eq[T = List[T = Int]])
+    entity Holder(item: Eq[T = List[T = Int64]])
   end
   fact Holder(item: [1, 2, 3])
 end
@@ -5146,7 +5146,7 @@ end
         .filter(|e| format!("{}", e).contains("Holder"))
         .collect();
     assert!(field_errors.is_empty(),
-        "Int provides Eq, so Eq[T = List[T = Int]] should type-check via the conditional EqList provider, got: {:?}", errors);
+        "Int64 provides Eq, so Eq[T = List[T = Int64]] should type-check via the conditional EqList provider, got: {:?}", errors);
 }
 
 // WI-274: the binding precision discriminates the element type. The
@@ -5158,10 +5158,10 @@ end
 fn conditional_spec_field_rejects_eq_list_of_non_eq_elements() {
     let source = r#"
 namespace test.wi274_list_bad
-  import anthill.prelude.{Eq, List, Int}
-  fact Eq[T = Int]
+  import anthill.prelude.{Eq, List, Int64}
+  fact Eq[T = Int64]
   sort NonEq
-    entity ne(id: Int)
+    entity ne(id: Int64)
   end
   sort EqList
     sort A = ?
@@ -5229,7 +5229,7 @@ use anthill_core::kb::typing::{type_check_sorts_typed, TypeError, TypeErrorConte
 fn typed_field_mismatch_carries_entity_and_field_symbols() {
     let source = r#"
 sort Item
-  entity Thing(count: Int)
+  entity Thing(count: Int64)
 end
 fact Thing(count: "oops")
 "#;
@@ -5240,7 +5240,7 @@ fact Thing(count: "oops")
         TypeError::Other { context: TypeErrorContext::EntityField { entity, field }, expected, actual, .. } => {
             assert_eq!(kb.resolve_sym(*entity), "Thing");
             assert_eq!(kb.resolve_sym(*field), "count");
-            assert!(expected.contains("Int"), "expected Int, got: {expected}");
+            assert!(expected.contains("Int64"), "expected Int64, got: {expected}");
             assert_eq!(actual, "String");
         }
         other => panic!("expected Other(EntityField), got: {other:?}"),
@@ -5251,7 +5251,7 @@ fact Thing(count: "oops")
 fn typed_return_type_mismatch_uses_typemismatch_variant() {
     let source = r#"
 sort Test
-  operation greet() -> Int =
+  operation greet() -> Int64 =
     "hello"
 end
 "#;
@@ -5271,7 +5271,7 @@ end
 
 #[test]
 fn typed_span_resolves_to_source_position() {
-    let source = "sort Item\n  entity Thing(count: Int)\nend\nfact Thing(count: \"oops\")\n";
+    let source = "sort Item\n  entity Thing(count: Int64)\nend\nfact Thing(count: \"oops\")\n";
     let (mut kb, result) = load_with_result(source);
     let errors = type_check_sorts_typed(&mut kb, &result.defined_sorts);
     let span = errors[0].span(&kb);
@@ -5291,7 +5291,7 @@ fn wi186_smoke_free_standing_logical_var_in_param_type() {
     // scope; the typer instantiates it at each call site.
     let source = r#"
 namespace test.wi186_smoke
-  operation id_int(a: ?a) -> Int
+  operation id_int(a: ?a) -> Int64
     = 0
 end
 "#;
@@ -5343,14 +5343,14 @@ end
 fn wi186_free_standing_call_site_concrete() {
     // Call a free-standing parametric op with concrete-typed args
     // and bind into a let with an explicit annotation. The typer
-    // should accept this — it instantiates ?a := String, ?b := Int
+    // should accept this — it instantiates ?a := String, ?b := Int64
     // at the call site.
     let source = r#"
 namespace test.wi186_call
   import anthill.prelude.{Pair}
   operation make_pair(a: ?a, b: ?b) -> Pair[A = ?a, B = ?b]
     = pair(a, b)
-  operation main() -> Pair[A = String, B = Int]
+  operation main() -> Pair[A = String, B = Int64]
     = make_pair("hi", 7)
 end
 "#;
@@ -5370,14 +5370,14 @@ namespace test.wi186_call_int
   import anthill.prelude.{Pair}
   operation make_pair(a: ?a, b: ?b) -> Pair[A = ?a, B = ?b]
     = pair(a, b)
-  operation main() -> Pair[A = Int, B = Int]
+  operation main() -> Pair[A = Int64, B = Int64]
     = make_pair(1, 2)
 end
 "#;
     let (mut kb, result) = load_with_result(source);
     let errors = type_check_sorts(&mut kb, &result.defined_sorts);
     assert!(errors.is_empty(),
-        "Int-Int instantiation should typecheck, got: {:?}",
+        "Int64-Int64 instantiation should typecheck, got: {:?}",
         errors);
 }
 
@@ -5507,9 +5507,9 @@ fn wi031_stdlib_load_then_typecheck_then_verify_typing_facts() {
 // Operation type parameters at call sites (proposal 042 Phase D)
 // ══════════════════════════════════════════════════════════════════
 
-/// All-explicit: arg list alone can't pin A. The explicit `[Int]` is
+/// All-explicit: arg list alone can't pin A. The explicit `[Int64]` is
 /// the only constraint, so without seeding the return type stays
-/// `Box[T = Var(A)]` and won't unify with the annotated `Box[T = Int]`.
+/// `Box[T = Var(A)]` and won't unify with the annotated `Box[T = Int64]`.
 #[test]
 fn op_type_param_explicit_positional_binding_pins_return() {
     let source = r#"
@@ -5518,7 +5518,7 @@ sort Box
 end
 sort Demo
   operation make_box[A]() -> Box[A]
-  operation tester() -> Box[T = Int] = make_box[Int]()
+  operation tester() -> Box[T = Int64] = make_box[Int64]()
 end
 "#;
     let (mut kb, result) = load_with_result(source);
@@ -5535,7 +5535,7 @@ sort Box
 end
 sort Demo
   operation make_box[A]() -> Box[A]
-  operation tester() -> Box[T = Int] = make_box[A = Int]()
+  operation tester() -> Box[T = Int64] = make_box[A = Int64]()
 end
 "#;
     let (mut kb, result) = load_with_result(source);
@@ -5554,7 +5554,7 @@ sort Pair
 end
 sort Demo
   operation make_pair[A, B](a: A, b: B) -> Pair[A = A, B = B]
-  operation tester() -> Pair[A = Int, B = String] = make_pair[A = Int](7, "hi")
+  operation tester() -> Pair[A = Int64, B = String] = make_pair[A = Int64](7, "hi")
 end
 "#;
     let (mut kb, result) = load_with_result(source);
@@ -5572,17 +5572,17 @@ sort Box
 end
 sort Demo
   operation make_box[A](x: A) -> Box[A]
-  operation tester() -> Box[T = Int] = make_box(42)
+  operation tester() -> Box[T = Int64] = make_box(42)
 end
 "#;
     let (mut kb, result) = load_with_result(source);
     let errors = type_check_sorts(&mut kb, &result.defined_sorts);
     assert!(errors.is_empty(),
-        "arg-driven inference should pin A to Int, got: {:?}", errors);
+        "arg-driven inference should pin A to Int64, got: {:?}", errors);
 }
 
 /// Explicit binding inconsistent with expected return type — the seed
-/// pins A = Int, but the caller expects Box[T = String]; downstream
+/// pins A = Int64, but the caller expects Box[T = String]; downstream
 /// unification surfaces the mismatch.
 #[test]
 fn op_type_param_explicit_binding_conflicts_with_expected_return() {
@@ -5592,11 +5592,11 @@ sort Box
 end
 sort Demo
   operation make_box[A]() -> Box[A]
-  operation tester() -> Box[T = String] = make_box[Int]()
+  operation tester() -> Box[T = String] = make_box[Int64]()
 end
 "#;
     let (mut kb, result) = load_with_result(source);
     let errors = type_check_sorts(&mut kb, &result.defined_sorts);
     assert!(!errors.is_empty(),
-        "Box[T = Int] from call should not unify with Box[T = String] expected return");
+        "Box[T = Int64] from call should not unify with Box[T = String] expected return");
 }
