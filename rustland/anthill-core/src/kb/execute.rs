@@ -223,7 +223,7 @@ impl KnowledgeBase {
             Value::Unit => Err(LowerError::UnsupportedVariant("Unit")),
             Value::Tuple { .. } => Err(LowerError::UnsupportedVariant("Tuple")),
             Value::Closure(_) => Err(LowerError::UnsupportedVariant("Closure")),
-            Value::OpRef(_) => Err(LowerError::UnsupportedVariant("OpRef")),
+            Value::OpRef { .. } => Err(LowerError::UnsupportedVariant("OpRef")),
             Value::Stream(_) => Err(LowerError::UnsupportedVariant("Stream")),
             Value::Lazy(_) => Err(LowerError::UnsupportedVariant("Lazy")),
             Value::Substitution(_) => Err(LowerError::UnsupportedVariant("Substitution")),

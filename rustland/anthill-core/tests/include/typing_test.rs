@@ -1622,13 +1622,16 @@ fn try_load_with_source(source: &str) -> Result<(), Vec<String>> {
     crate::common::try_load_kb_with(source).map(|_| ())
 }
 
-/// WI-420 (conservative interim gate): eta-lifting a `requires`-carrying op
-/// (here `List.member`, since `List requires Eq[T]`) to a function value would
-/// mint a `Value::OpRef` with no captured `Eq` dictionary and crash at eval
-/// ("requirement param `__req_eq` not bound in caller frame"). The gate must
-/// reject it at LOAD as a loud type error instead of load-clean-then-crash.
+/// WI-420 (full fix): eta-lifting a `requires`-carrying op (here `List.member`,
+/// since `List requires Eq[T]`) to a function value now LOADS. The typer
+/// resolves the op's requirement dispatch dict at the eta site — the expected
+/// arrow `Function[(Int, List[T=Int]), Bool]` pins `List.T := Int` — and
+/// attaches it (`CallClass::EtaOpRef`) so eval captures the `Eq[Int]` dict on
+/// the `Value::OpRef` at mint and installs it into the callee frame at apply.
+/// (Runtime behavior is pinned by `wi420_eta_concrete_member_evals` in
+/// eval_test; this test pins that it type-checks/loads.)
 #[test]
-fn wi420_eta_of_requires_carrying_op_is_loud_load_error() {
+fn wi420_eta_of_requires_carrying_op_loads() {
     let src = r#"
 namespace test.wi420.eta
   import anthill.prelude.{List, Int, Bool, Function}
@@ -1641,11 +1644,9 @@ namespace test.wi420.eta
     use_pair(member, 2, [1, 2, 3])
 end
 "#;
-    let errs = try_load_with_source(src).expect_err(
-        "eta of a requires-carrying op (List.member) must be a loud load-time \
-         type error, not load-clean-then-crash-at-eval (WI-420)");
-    assert!(errs.iter().any(|e| e.contains("WI-420")),
-        "the rejection must be the WI-420 eta gate, not an unrelated error; got {errs:?}");
+    assert!(try_load_with_source(src).is_ok(),
+        "eta of a concrete requires-carrying op (List.member at T=Int) must load: \
+         WI-420 resolves + captures its Eq[Int] dispatch dict on the OpRef");
 }
 
 /// WI-420 positive control: the gate is targeted, not a blanket ban on eta. A
@@ -1670,15 +1671,15 @@ end
          over-reach to namespace-level ops)");
 }
 
-/// WI-420 regression: a CURRIED op on a requires-sort (its return type is
-/// itself a `Function`) referenced bare where that `Function` return type is
-/// expected. The gate must REJECT it loudly. The subtle trap: if the gate
-/// merely returned None (declining to eta-lift), `check_bare_ref` would fall
-/// through to the return-type reading, which here MATCHES the expected arrow —
-/// loading clean and crashing at eval (`var_ref(__req_eq) unbound`). The gate
-/// returns Err (propagated by `?`) instead, so the rejection stays loud.
+/// WI-420: binding a CURRIED op on a requires-sort (its return type is itself a
+/// `Function`) where that `Function` return type is expected is a plain LOUD
+/// type error — `build`'s eta arrow `Int -> Function[Int,Bool]` does not match
+/// the annotation `Function[Int,Bool]` (result `Function[Int,Bool]` ≠ `Bool`).
+/// The point: it's a load-time mismatch, never a load-clean-then-eval-crash
+/// (the failure mode the earlier conservative gate guarded; the full fix keeps
+/// it loud via ordinary arrow unification, no special gate).
 #[test]
-fn wi420_eta_of_curried_requires_op_is_loud_load_error() {
+fn wi420_eta_of_curried_requires_op_is_loud_type_error() {
     let src = r#"
 namespace test.wi420.curried
   import anthill.prelude.{List, Int, Bool, Function}
@@ -1695,12 +1696,9 @@ namespace test.wi420.curried
     f(7)
 end
 "#;
-    let errs = try_load_with_source(src).expect_err(
-        "eta of a CURRIED requires-carrying op must be a loud load-time error, \
-         not load-clean-then-crash-at-eval via the return-type fallback (WI-420)");
-    assert!(errs.iter().any(|e| e.contains("WI-420")),
-        "the rejection must be the WI-420 eta gate (the return-type fallback would \
-         not mention WI-420); got {errs:?}");
+    assert!(try_load_with_source(src).is_err(),
+        "binding a curried op to its Function return type must be a loud type \
+         error (arrow mismatch), not a load-clean-then-eval-crash (WI-420)");
 }
 
 #[test]

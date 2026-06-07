@@ -410,7 +410,7 @@ impl Interpreter {
             Value::Unit
             | Value::Tuple { .. }
             | Value::Closure(_)
-            | Value::OpRef(_)
+            | Value::OpRef { .. }
             | Value::Stream(_)
             | Value::Lazy(_)
             | Value::Substitution(_)

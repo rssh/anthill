@@ -73,9 +73,19 @@ pub enum Value {
     /// parameter) carries the operation symbol; applying it (`f(x)` / the
     /// closure-dispatch path) calls the operation, spreading a single tuple
     /// argument across a multi-parameter operation to match the
-    /// `Function[(A, B), R]` ⇒ `op(a, b)` convention. Unlike a `Closure` it
-    /// captures no environment — a global operation needs none.
-    OpRef(Symbol),
+    /// `Function[(A, B), R]` ⇒ `op(a, b)` convention. WI-420: a `requires`-
+    /// carrying op also captures the requirement dictionary it needs (`dict`),
+    /// snapshotted at mint like a `Closure` snapshots `requirements`.
+    OpRef {
+        op: Symbol,
+        /// WI-420: the dispatching requirement dict the op needs, evaluated at
+        /// MINT in the eta-site frame (so an abstract requirement reads the
+        /// enclosing `__req_*` and a concrete one builds from its `fact`), then
+        /// installed into the callee frame at apply instead of forwarding the
+        /// caller's. `None` for a requires-free op, or a same-sort eta that
+        /// inherits the caller frame's requirements at apply.
+        dict: Option<RequirementHandle>,
+    },
     Stream(StreamHandle),
     Lazy(LazyHandle),
     /// First-class substitution — reference into an arena owned by the
@@ -218,7 +228,7 @@ impl Value {
             Value::Tuple { .. } => "Tuple",
             Value::Entity { .. } => "Entity",
             Value::Closure(_) => "Closure",
-            Value::OpRef(_) => "OpRef",
+            Value::OpRef { .. } => "OpRef",
             Value::Stream(_) => "Stream",
             Value::Lazy(_) => "Lazy",
             Value::Substitution(_) => "Substitution",

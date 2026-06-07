@@ -564,6 +564,74 @@ end
     );
 }
 
+/// WI-420 (full fix): a `requires`-carrying op (`List.member`, since `List
+/// requires Eq[T]`) passed BARE as a function value to a HOF with no
+/// requirement of its own, applied to a concrete Int list. The `Value::OpRef`
+/// captures the `Eq[Int]` dispatch dict (resolved by the typer at the eta site,
+/// where the expected arrow pins `List.T := Int`) at mint, and installs it into
+/// member's callee frame at apply — so member's `eq(head, x)` finds `__req_eq`
+/// instead of crashing with "requirement param `__req_eq` not bound". This is
+/// the exact crash WI-420 fixes.
+#[test]
+fn wi420_eta_concrete_member_evals() {
+    let src = r#"
+namespace test.wi420eta
+  import anthill.prelude.{List, Int, Bool, Function}
+  import anthill.prelude.List.{member}
+
+  operation use_pair(f: Function[A = (Int, List[T = Int]), B = Bool], x: Int, xs: List[T = Int]) -> Bool =
+    f((x, xs))
+
+  operation present() -> Bool = use_pair(member, 2, [1, 2, 3])
+  operation absent() -> Bool = use_pair(member, 9, [1, 2, 3])
+end
+"#;
+    let mut interp = crate::common::interp_for(src);
+    assert!(
+        expect_bool(interp.call("test.wi420eta.present", &[]).expect("present runs")),
+        "2 IS a member of [1,2,3] — member eta'd as a HOF arg must eval true (WI-420)",
+    );
+    assert!(
+        !expect_bool(interp.call("test.wi420eta.absent", &[]).expect("absent runs")),
+        "9 is NOT a member of [1,2,3] — member eta'd as a HOF arg must eval false (WI-420)",
+    );
+}
+
+/// WI-420 (same-sort eta): `S.check` eta-lifts its sibling `S.are_eq` (both on
+/// `S requires Eq[T]`) into a HOF and applies it. A DIRECT same-sort call
+/// inherits the enclosing frame at eval, but the eta'd `OpRef` ESCAPES to the
+/// HOF's frame (which forwards an empty channel) — so the OpRef must capture
+/// S's dispatching dict (the enclosing frame's `__req_self`) at mint, else
+/// are_eq's `eq(a,b)` crashes on an unbound `__req_eq`. (Soundness hole found by
+/// /code-review: the same-sort guard previously returned no dict.)
+#[test]
+fn wi420_eta_same_sort_captures_self_dict() {
+    let src = r#"
+namespace test.wi420ss
+  import anthill.prelude.{Int, Bool, Function, Eq}
+  import anthill.prelude.Eq.{eq}
+  sort S
+    sort T = ?
+    requires Eq[T]
+    operation are_eq(a: T, b: T) -> Bool = eq(a, b)
+    operation use_pred(f: Function[A = (T, T), B = Bool], x: T, y: T) -> Bool = f((x, y))
+    operation check(x: T, y: T) -> Bool = use_pred(are_eq, x, y)
+  end
+  operation eq_t() -> Bool = S.check(1, 1)
+  operation eq_f() -> Bool = S.check(1, 2)
+end
+"#;
+    let mut interp = crate::common::interp_for(src);
+    assert!(
+        expect_bool(interp.call("test.wi420ss.eq_t", &[]).expect("eq_t runs")),
+        "same-sort eta: are_eq(1,1) must eval true — OpRef captured S's __req_self (WI-420)",
+    );
+    assert!(
+        !expect_bool(interp.call("test.wi420ss.eq_f", &[]).expect("eq_f runs")),
+        "same-sort eta: are_eq(1,2) must eval false (WI-420)",
+    );
+}
+
 #[test]
 fn wi064_stdlib_combinators_fold_map_find() {
     // WI-064: the stdlib higher-order combinators run end-to-end on a List

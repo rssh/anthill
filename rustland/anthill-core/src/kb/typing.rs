@@ -1568,7 +1568,12 @@ fn check_bare_ref(
     // type (the zero-arg-call reading below), unchanged.
     if let Some(exp) = expected {
         if arrow_parts(kb, exp).is_some() {
-            if let Some(fn_ty) = operation_as_function_value(kb, sym, occ)? {
+            if let Some(fn_ty) = operation_as_function_value(kb, sym, occ) {
+                // WI-420: resolve + attach the op's requirement dispatch dict
+                // (the `expected` arrow pins its element type) so eval captures
+                // it on the OpRef. A cross-sort unsatisfiable requirement is a
+                // loud error here.
+                attach_eta_dispatch_dict(kb, env, sym, occ, &fn_ty, exp)?;
                 return Ok(TypeResult::pure_value(fn_ty, env.clone(), Rc::clone(occ)));
             }
         }
@@ -1591,16 +1596,16 @@ fn check_bare_ref(
 /// multi-param `lt(a: T, b: T) -> Bool` becomes `(T, T) -> Bool` — a positional
 /// `_1`/`_2` named-tuple param (the WI-355 tuple convention) so it unifies
 /// against a `Function[(T, T), Bool]` slot, matching how a `lambda (a, b) -> ...`
-/// is typed and an `f((a, b))` applied. Returns `Ok(None)` when `sym` is not an
-/// eta candidate (no operation, nullary, body-less, or type-parameterized) so
-/// the caller falls back to the return-type reading; returns `Err` (WI-420)
-/// when `sym` IS an eta candidate but its enclosing sort carries a `requires`
-/// chain — a loud type error, since the runtime `OpRef` can't carry the dict.
+/// is typed and an `f((a, b))` applied. Returns `None` when `sym` is not an eta
+/// candidate (no operation, nullary, body-less, or type-parameterized) so the
+/// caller falls back to the return-type reading. A `requires`-carrying op's
+/// dispatch dict is resolved + attached separately by `attach_eta_dispatch_dict`
+/// (WI-420), which has the `expected` arrow that pins the element type.
 fn operation_as_function_value(
     kb: &mut KnowledgeBase,
     sym: Symbol,
     occ: &Rc<NodeOccurrence>,
-) -> Result<Option<Value>, TypeError> {
+) -> Option<Value> {
     // Only eta-lift an operation the runtime can actually run as a function
     // value, keeping the typer's accepted set a subset of the evaluator's:
     //   * it must have a runnable anthill body — the evaluator's `reduce_var`
@@ -1613,44 +1618,11 @@ fn operation_as_function_value(
     // A reference that fails either gate stays a loud type error, not a silent
     // runtime failure.
     if !op_has_runnable_body(kb, sym) {
-        return Ok(None);
+        return None;
     }
-    let Some(op) = lookup_operation_info_full(kb, sym) else {
-        return Ok(None);
-    };
+    let op = lookup_operation_info_full(kb, sym)?;
     if op.params.is_empty() || !op.type_params.is_empty() {
-        return Ok(None);
-    }
-    // WI-420 (conservative interim gate): an eta-eligible op whose enclosing
-    // sort carries a `requires` chain (e.g. `List.member` from `List requires
-    // Eq[T]`) needs a requirement dictionary at runtime. The eta path mints a
-    // `Value::OpRef` with no captured dictionary and the apply path forwards
-    // the caller's (empty) requirements, so the body's `__req_*` read crashes
-    // at eval ("requirement param `__req_eq` not bound in caller frame").
-    // Reject LOUDLY (Err, not None): a bare `None` would fall through in
-    // `check_bare_ref` to the return-type reading, which for a CURRIED op
-    // (return type itself a `Function`) silently matches the expected arrow and
-    // defers the failure to a runtime crash. Until `OpRef` captures/threads its
-    // dict like `Closure` (WI-420, the full fix), this stays a loud load-time
-    // type error, preserving the typer-accepted ⊆ runtime-runnable discipline.
-    // Conservative: also rejects a concrete op on a requires-sort whose body
-    // never reads the dict (e.g. `List.length`); WI-420 lifts that.
-    if let Some(parent) = impl_parent_of_op(kb, sym) {
-        if !requires_chain_flat(kb, parent).is_empty() {
-            let op_qn = kb.qualified_name_of(sym).to_string();
-            let parent_qn = kb.qualified_name_of(parent).to_string();
-            return Err(TypeError::Other {
-                span: Some(occ.span.span),
-                context: TypeErrorContext::OperationAsFunctionValue { op_name: sym },
-                expected: "a lambda — eta-lifting a `requires`-carrying operation \
-                    to a function value is not yet supported (WI-420); pass an \
-                    explicit `lambda` instead".to_string(),
-                actual: format!(
-                    "bare operation `{}`, whose sort `{}` has a `requires` clause",
-                    op_qn, parent_qn,
-                ),
-            });
-        }
+        return None;
     }
     let (span, owner) = (occ.span, occ.owner);
     let param = if op.params.len() == 1 {
@@ -1664,7 +1636,95 @@ fn operation_as_function_value(
             .collect();
         named_tuple_value(kb, &fields, span, owner)
     };
-    Ok(Some(make_arrow_value(kb, &param, &op.return_type, &op.effects, span, owner)))
+    Some(make_arrow_value(kb, &param, &op.return_type, &op.effects, span, owner))
+}
+
+/// WI-420: at a bare-op eta site, resolve the operation's requirement dispatch
+/// dict and attach it (`CallClass::EtaOpRef`) to the occurrence so eval captures
+/// it on the `Value::OpRef` at mint. `fn_ty` is the op's eta arrow, `expected`
+/// the arrow type it is checked against; unifying them pins the op's element
+/// type (e.g. `member`'s `List.T := Int` from a `Function[(Int, List[Int]),
+/// Bool]` slot), which `build_concrete_dispatch_dict` needs to resolve a
+/// concrete dep (`Eq[Int]` from its `fact`) or forward an abstract one the
+/// enclosing sort's own `requires` covers (a caller-frame `var_ref`). A
+/// requires-free or same-sort op needs no dict (eval forwards the caller's
+/// requirements). A cross-sort op whose requirement is neither concretely
+/// resolvable nor covered by the enclosing scope is a loud error — the eta
+/// analogue of `MissingRequiresForSpecOp` for a direct call.
+fn attach_eta_dispatch_dict(
+    kb: &mut KnowledgeBase,
+    env: &TypingEnv,
+    sym: Symbol,
+    occ: &Rc<NodeOccurrence>,
+    fn_ty: &Value,
+    expected: &Value,
+) -> Result<(), TypeError> {
+    let Some(parent) = impl_parent_of_op(kb, sym) else {
+        return Ok(()); // namespace-level op — no enclosing sort `requires`
+    };
+    if direct_requires_chain(kb, parent).is_empty() {
+        return Ok(()); // requires-free op — eval forwards the caller's reqs
+    }
+    if env.enclosing_sort() == Some(parent) {
+        // Same-sort eta: the op needs its OWN sort's dispatching dict. A DIRECT
+        // same-sort call inherits the enclosing frame at eval, but an eta'd
+        // `OpRef` ESCAPES to a foreign apply frame (the HOF's), which forwards an
+        // empty requirements channel — so the op's `__req_*` would be unbound
+        // (a typecheck-clean eval crash). Capture the enclosing frame's
+        // `__req_self` (the sort's own dispatching dict, identical to what this
+        // op needs) at mint via a `var_ref`, and install it at apply. (WI-420)
+        let Some(syms) = ProjectionSyms::resolve(kb) else {
+            return Ok(());
+        };
+        let req_self = kb.intern("__req_self");
+        let dict = build_req_var_ref(kb, &syms, req_self);
+        occ.set_classification(CallClass::EtaOpRef { dict });
+        return Ok(());
+    }
+    // Pin the op's element type(s) by unifying its eta arrow against the
+    // expected arrow (best-effort: a non-unifiable expected leaves a dep
+    // abstract, which `build_concrete_dispatch_dict` then forwards or rejects).
+    let mut subst = Substitution::new();
+    // Pin the op's element type by unifying the expected and eta-arrow PARAM
+    // types (carrier-agnostic via `arrow_parts`: `expected` is a `Function[...]`
+    // sort-ref, the eta arrow an `arrow` form — unifying the whole types across
+    // those two carriers does not decompose). Concrete-first so a bare self-sort
+    // ref (e.g. member's `l: List`) on the op side stays open while the concrete
+    // expected param pins the element (`List.T := Int`) — mirroring the direct
+    // call's arg-first unify order.
+    let exp_param = arrow_parts(kb, expected).and_then(|(p, _, _)| p);
+    let fn_param = arrow_parts(kb, fn_ty).and_then(|(p, _, _)| p);
+    if let (Some(ep), Some(fp)) = (exp_param, fn_param) {
+        unify_types(kb, &mut subst, &ep, &fp);
+    }
+    let caller_requires: Vec<RequiresEntry> =
+        env.enclosing_requires().map(|r| r.to_vec()).unwrap_or_default();
+    match build_concrete_dispatch_dict(kb, &subst, parent, env.enclosing_sort(), &caller_requires) {
+        Some(dict) => {
+            occ.set_classification(CallClass::EtaOpRef { dict });
+            Ok(())
+        }
+        None => {
+            // Cross-sort op with a non-empty direct `requires` chain that we
+            // could resolve neither concretely (no `fact`) nor by forwarding
+            // from the enclosing scope: unsatisfiable in this eta context.
+            let op_qn = kb.qualified_name_of(sym).to_string();
+            let parent_qn = kb.qualified_name_of(parent).to_string();
+            Err(TypeError::Other {
+                span: Some(occ.span.span),
+                context: TypeErrorContext::OperationAsFunctionValue { op_name: sym },
+                expected: format!(
+                    "`{}` used as a function value to have a satisfiable `requires` — \
+                     have the enclosing sort `requires` it, or use `{}` at a concrete type",
+                    op_qn, op_qn,
+                ),
+                actual: format!(
+                    "unsatisfiable `{}` requirement for bare operation `{}` (WI-420)",
+                    parent_qn, op_qn,
+                ),
+            })
+        }
+    }
 }
 
 /// WI-275: the expected-type hint for a higher-order argument occurrence. Only a
@@ -4339,7 +4399,14 @@ pub fn build_dep_projection(
 /// or with one side being a type-param wildcard, mirroring
 /// `requires_entry_covers_goal`'s flexibility).
 fn entries_cover(kb: &mut KnowledgeBase, caller: &RequiresEntry, dep: &RequiresEntry) -> bool {
-    if caller.required_sort != dep.required_sort {
+    // WI-420: bridge qualified↔short spec symbols (e.g. a not-yet-fully-resolved
+    // `requires Eq` on a user sort vs the qualified `anthill.prelude.Eq` from a
+    // loaded sort's direct-requires chain). `same_symbol` matches a bare short
+    // name against a qualified name's last segment but NOT two distinct
+    // fully-qualified specs that merely share a last segment, so it cannot
+    // over-match. Plain `!=` here silently failed cross-sort requirement
+    // forwarding when the two sides' spec symbols differed in qualification.
+    if !same_symbol(kb, caller.required_sort, dep.required_sort) {
         return false;
     }
     let Some((_, caller_bindings)) = unwrap_spec_view(kb, caller.spec) else {
@@ -4877,6 +4944,19 @@ pub enum CallClass {
         abstract_params: SmallVec<[Symbol; 2]>,
         span: Option<Span>,
         enclosing_sort: Option<Symbol>,
+    },
+    /// WI-420: a bare operation reference eta-lifted to a `Value::OpRef` whose
+    /// op needs a requirement dictionary. `dict` is the dispatching dict
+    /// (`construct_requirement(callee_parent, [...])` for a concrete dep, or a
+    /// caller-frame `var_ref` projection for an abstract one — built by
+    /// `build_concrete_dispatch_dict` at the eta site from the expected arrow's
+    /// pinning). Eval evaluates it IN THE ETA-SITE FRAME at mint and stores the
+    /// resulting requirement on the `OpRef`, then installs it into the callee
+    /// frame at apply. Set only when the op has a satisfiable, non-inherited
+    /// requirement; a requires-free or same-sort eta carries no classification
+    /// and forwards the caller's requirements.
+    EtaOpRef {
+        dict: TermId,
     },
 }
 

@@ -136,6 +136,12 @@ pub fn run(kb: &mut KnowledgeBase) -> Vec<TypeError> {
                 // Pre-filtered above into `errors`. Unreachable.
                 unreachable!("UnresolvedSpecOp survived the pre-filter");
             }
+            CallClass::EtaOpRef { .. } => {
+                // WI-420: only ever set on an eta `VarRef` occurrence;
+                // `collect_classified` yields `Expr::Apply` occs only, never
+                // this, so it cannot reach the apply-rewrite loop.
+                unreachable!("EtaOpRef classification on a non-apply occurrence");
+            }
         }
     }
 

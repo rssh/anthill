@@ -59,6 +59,7 @@ fn commit_classifications(kb: &KnowledgeBase, commit_sym: anthill_core::intern::
                 CallClass::ConcreteApplyWithin { spec_op_sym, .. } => *spec_op_sym == commit_sym,
                 CallClass::PinNow { spec_op_sym, .. } => *spec_op_sym == commit_sym,
                 CallClass::UnresolvedSpecOp { spec_op_sym, .. } => *spec_op_sym == commit_sym,
+                CallClass::EtaOpRef { .. } => false,
             };
             if names_commit {
                 hits.push(c.clone());

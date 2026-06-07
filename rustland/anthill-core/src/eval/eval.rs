@@ -123,8 +123,8 @@ impl Interpreter {
                 let v = self.literal_to_value(lit.clone())?;
                 self.deliver(v)
             }
-            Expr::Ref(sym) | Expr::Ident(sym) => self.reduce_var(*sym),
-            Expr::VarRef { name } => self.reduce_var(*name),
+            Expr::Ref(sym) | Expr::Ident(sym) => self.reduce_var(*sym, occ),
+            Expr::VarRef { name } => self.reduce_var(*name, occ),
             Expr::If { condition, then_branch, else_branch } => {
                 self.start_if(condition, then_branch, else_branch)
             }
@@ -219,7 +219,7 @@ impl Interpreter {
         }
     }
 
-    fn reduce_var(&mut self, sym: Symbol) -> Result<StepOutcome, EvalError> {
+    fn reduce_var(&mut self, sym: Symbol, occ: &Rc<NodeOccurrence>) -> Result<StepOutcome, EvalError> {
         let target_name = self.kb.resolve_sym(sym).to_string();
         // Local binding first, then a frame requirement (a body reading
         // a `__req_*` param by name — WI-237 names model), then a
@@ -278,10 +278,43 @@ impl Interpreter {
         // reading below (it is not a unary function value).
         if let Some((_, params)) = self.cached_operation_body(sym) {
             if !params.is_empty() {
-                return self.deliver(Value::OpRef(sym));
+                // WI-420: if the typer attached a dispatching dict to this eta
+                // occurrence, evaluate it IN THE CURRENT (eta-site) FRAME — so
+                // an abstract requirement reads the enclosing `__req_*` and a
+                // concrete one builds from its `fact` — and capture it on the
+                // OpRef for the apply path to install into the callee frame.
+                let dict = self.eta_dispatch_dict(occ)?;
+                return self.deliver(Value::OpRef { op: sym, dict });
             }
         }
         self.dispatch_call(sym, Vec::new(), SmallVec::new())
+    }
+
+    /// WI-420: read the `CallClass::EtaOpRef` dict the typer attached to an eta
+    /// occurrence (if any) and evaluate it to a `RequirementHandle` in the
+    /// CURRENT frame (so an abstract requirement reads the enclosing `__req_*`).
+    /// `None` when the occ carries no such classification — a requires-free or
+    /// same-sort eta, for which the apply path forwards the caller's reqs.
+    fn eta_dispatch_dict(
+        &self,
+        occ: &Rc<NodeOccurrence>,
+    ) -> Result<Option<super::value::RequirementHandle>, EvalError> {
+        let dict_tid = match &occ.kind {
+            NodeKind::Expr { classification, .. } => {
+                match classification.borrow().as_deref() {
+                    Some(crate::kb::typing::CallClass::EtaOpRef { dict }) => Some(*dict),
+                    _ => None,
+                }
+            }
+            _ => None,
+        };
+        match dict_tid {
+            Some(tid) => {
+                let dict_occ = crate::kb::node_occurrence::materialize_from_handle(&self.kb, tid);
+                Ok(Some(self.eval_requirement_chain_node(&dict_occ)?))
+            }
+            None => Ok(None),
+        }
     }
 
     fn reduce_lambda(
@@ -874,7 +907,7 @@ impl Interpreter {
                 .ok_or_else(|| EvalError::Internal("dispatch_call with no parent".into()))?;
             find_local(&self.kb, &top.locals, &target_name)
                 .and_then(|v| match v {
-                    Value::Closure(_) | Value::OpRef(_) => Some(v.clone()),
+                    Value::Closure(_) | Value::OpRef { .. } => Some(v.clone()),
                     _ => None,
                 })
         };
@@ -891,13 +924,31 @@ impl Interpreter {
                 drop(type_args);
                 return self.enter_closure(handle, arg_values);
             }
-            Some(Value::OpRef(op)) => {
+            Some(Value::OpRef { op, dict }) => {
                 // WI-275: applying an eta'd operation reference dispatches to the
                 // operation itself, spreading a single tuple argument across its
                 // parameters (`cmp((x, y))` ⇒ `op(x, y)`) — the runtime mirror of
                 // the typer's `Function[(A, B), R]` ⇒ `op(a, b)` eta convention.
                 let spread = self.spread_eta_args(op, arg_values)?;
-                return self.dispatch_call_with_requirements(op, spread, requirements, type_args);
+                // WI-420: a `requires`-carrying op captured its dispatching dict
+                // at mint (evaluated in the eta-site frame). Install THAT into
+                // the callee frame — not the caller's (empty / wrong-scope)
+                // requirements. A dict-less OpRef (requires-free, or a same-sort
+                // eta that inherits) forwards the caller's requirements.
+                match dict {
+                    Some(d) => {
+                        drop(requirements);
+                        let expanded = self.expand_dispatching_dict(op, &d)?;
+                        return self.dispatch_call_with_requirements(
+                            op, spread, expanded, type_args,
+                        );
+                    }
+                    None => {
+                        return self.dispatch_call_with_requirements(
+                            op, spread, requirements, type_args,
+                        );
+                    }
+                }
             }
             _ => {}
         }
