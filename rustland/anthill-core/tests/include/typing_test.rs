@@ -1613,6 +1613,96 @@ fn load_stdlib_kb_with_result() -> (KnowledgeBase, LoadResult) {
     }
 }
 
+/// WI-420 helper: load full stdlib (incl. the Rust host bindings, so concrete
+/// `fact Eq[Int]`/`Ordered[Int]` records are present, matching real `anthill
+/// check`) + a user `source`, returning `Ok(())`/`Err(messages)` so a test can
+/// assert an expected load-time (typer) error instead of panicking. Thin
+/// wrapper over the shared `common::try_load_kb_with`.
+fn try_load_with_source(source: &str) -> Result<(), Vec<String>> {
+    crate::common::try_load_kb_with(source).map(|_| ())
+}
+
+/// WI-420 (conservative interim gate): eta-lifting a `requires`-carrying op
+/// (here `List.member`, since `List requires Eq[T]`) to a function value would
+/// mint a `Value::OpRef` with no captured `Eq` dictionary and crash at eval
+/// ("requirement param `__req_eq` not bound in caller frame"). The gate must
+/// reject it at LOAD as a loud type error instead of load-clean-then-crash.
+#[test]
+fn wi420_eta_of_requires_carrying_op_is_loud_load_error() {
+    let src = r#"
+namespace test.wi420.eta
+  import anthill.prelude.{List, Int, Bool, Function}
+  import anthill.prelude.List.{member}
+
+  operation use_pair(f: Function[A = (Int, List[T = Int]), B = Bool], x: Int, xs: List[T = Int]) -> Bool =
+    f((x, xs))
+
+  operation main() -> Bool =
+    use_pair(member, 2, [1, 2, 3])
+end
+"#;
+    let errs = try_load_with_source(src).expect_err(
+        "eta of a requires-carrying op (List.member) must be a loud load-time \
+         type error, not load-clean-then-crash-at-eval (WI-420)");
+    assert!(errs.iter().any(|e| e.contains("WI-420")),
+        "the rejection must be the WI-420 eta gate, not an unrelated error; got {errs:?}");
+}
+
+/// WI-420 positive control: the gate is targeted, not a blanket ban on eta. A
+/// requires-FREE op (parent is a namespace, not a requires-sort) still
+/// eta-lifts to a function value and loads clean.
+#[test]
+fn wi420_eta_of_requires_free_op_still_loads() {
+    let src = r#"
+namespace test.wi420.ok
+  import anthill.prelude.{Int, Bool, Function}
+  import anthill.prelude.Ordered.{gt}
+
+  operation is_big(n: Int) -> Bool = gt(n, 10)
+
+  operation use_one(f: Function[A = Int, B = Bool], x: Int) -> Bool = f(x)
+
+  operation main() -> Bool = use_one(is_big, 5)
+end
+"#;
+    assert!(try_load_with_source(src).is_ok(),
+        "eta of a requires-free op must still load (the WI-420 gate must not \
+         over-reach to namespace-level ops)");
+}
+
+/// WI-420 regression: a CURRIED op on a requires-sort (its return type is
+/// itself a `Function`) referenced bare where that `Function` return type is
+/// expected. The gate must REJECT it loudly. The subtle trap: if the gate
+/// merely returned None (declining to eta-lift), `check_bare_ref` would fall
+/// through to the return-type reading, which here MATCHES the expected arrow —
+/// loading clean and crashing at eval (`var_ref(__req_eq) unbound`). The gate
+/// returns Err (propagated by `?`) instead, so the rejection stays loud.
+#[test]
+fn wi420_eta_of_curried_requires_op_is_loud_load_error() {
+    let src = r#"
+namespace test.wi420.curried
+  import anthill.prelude.{List, Int, Bool, Function}
+  sort Wrap
+    requires anthill.prelude.Eq[T = Int]
+    sort T = ?
+    operation build(seed: Int) -> Function[A = Int, B = Bool] =
+      if List.member(seed, [1, 2, 3]) then lambda y -> true else lambda y -> false
+  end
+  import test.wi420.curried.Wrap.{build}
+
+  operation main() -> Bool =
+    let f: Function[A = Int, B = Bool] = build
+    f(7)
+end
+"#;
+    let errs = try_load_with_source(src).expect_err(
+        "eta of a CURRIED requires-carrying op must be a loud load-time error, \
+         not load-clean-then-crash-at-eval via the return-type fallback (WI-420)");
+    assert!(errs.iter().any(|e| e.contains("WI-420")),
+        "the rejection must be the WI-420 eta gate (the return-type fallback would \
+         not mention WI-420); got {errs:?}");
+}
+
 #[test]
 fn type_check_correct_fact_no_errors() {
     let source = r#"

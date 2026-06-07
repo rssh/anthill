@@ -73,6 +73,18 @@ pub fn examples_dir() -> PathBuf {
 /// integration test; previously hand-copied in each file.
 #[allow(dead_code)]
 pub fn load_kb_with(source: &str) -> KnowledgeBase {
+    try_load_kb_with(source).unwrap_or_else(|errs| {
+        for e in &errs { eprintln!("{}", e); }
+        panic!("load failed with {} errors", errs.len());
+    })
+}
+
+/// Same load as [`load_kb_with`] (full stdlib + Rust host bindings + `source`)
+/// but returns the load errors instead of panicking, so a test can assert an
+/// expected load-time (typer) error. The error strings are the rendered
+/// `LoadError`s. Parse failures still panic (they are test-authoring bugs).
+#[allow(dead_code)]
+pub fn try_load_kb_with(source: &str) -> Result<KnowledgeBase, Vec<String>> {
     let files = collect_stdlib_and_rust_bindings();
     assert!(!files.is_empty(), "stdlib empty");
 
@@ -89,12 +101,10 @@ pub fn load_kb_with(source: &str) -> KnowledgeBase {
     let mut kb = KnowledgeBase::new();
     load::register_prelude(&mut kb);
     kb.register_standard_builtins();
-    load::load_all(&mut kb, &refs, &NullResolver)
-        .unwrap_or_else(|errs| {
-            for e in &errs { eprintln!("{}", e); }
-            panic!("load failed with {} errors", errs.len());
-        });
-    kb
+    match load::load_all(&mut kb, &refs, &NullResolver) {
+        Ok(_) => Ok(kb),
+        Err(errs) => Err(errs.iter().map(|e| e.to_string()).collect()),
+    }
 }
 
 /// Load stdlib + user source, construct an `Interpreter`, and register the

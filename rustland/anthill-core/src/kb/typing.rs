@@ -168,6 +168,11 @@ pub enum TypeErrorContext {
     OperationMatch { op_name: Symbol },
     Rule { name: Symbol, field: RuleField },
     LetBinding { var: Symbol },
+    /// WI-420: a bare operation reference rejected as a first-class function
+    /// value (eta-expansion) because its enclosing sort carries a `requires`
+    /// chain — the runtime `Value::OpRef` cannot carry the requirement
+    /// dictionary yet, so it would crash at eval on an unbound `__req_*`.
+    OperationAsFunctionValue { op_name: Symbol },
 }
 
 impl TypeErrorContext {
@@ -180,6 +185,9 @@ impl TypeErrorContext {
             | TypeErrorContext::OperationMatch { op_name } => kb.resolve_sym(*op_name).to_string(),
             TypeErrorContext::Rule { name, .. } => kb.resolve_sym(*name).to_string(),
             TypeErrorContext::LetBinding { var } => kb.resolve_sym(*var).to_string(),
+            TypeErrorContext::OperationAsFunctionValue { op_name } => {
+                kb.resolve_sym(*op_name).to_string()
+            }
         }
     }
 
@@ -192,6 +200,7 @@ impl TypeErrorContext {
             TypeErrorContext::OperationMatch { .. } => "match".to_string(),
             TypeErrorContext::Rule { field, .. } => field.name().to_string(),
             TypeErrorContext::LetBinding { .. } => "annotation".to_string(),
+            TypeErrorContext::OperationAsFunctionValue { .. } => "function-value".to_string(),
         }
     }
 }
@@ -1559,7 +1568,7 @@ fn check_bare_ref(
     // type (the zero-arg-call reading below), unchanged.
     if let Some(exp) = expected {
         if arrow_parts(kb, exp).is_some() {
-            if let Some(fn_ty) = operation_as_function_value(kb, sym, occ) {
+            if let Some(fn_ty) = operation_as_function_value(kb, sym, occ)? {
                 return Ok(TypeResult::pure_value(fn_ty, env.clone(), Rc::clone(occ)));
             }
         }
@@ -1582,13 +1591,16 @@ fn check_bare_ref(
 /// multi-param `lt(a: T, b: T) -> Bool` becomes `(T, T) -> Bool` — a positional
 /// `_1`/`_2` named-tuple param (the WI-355 tuple convention) so it unifies
 /// against a `Function[(T, T), Bool]` slot, matching how a `lambda (a, b) -> ...`
-/// is typed and an `f((a, b))` applied. Returns `None` when `sym` names no
-/// operation, or names a nullary one (which is not a unary function value).
+/// is typed and an `f((a, b))` applied. Returns `Ok(None)` when `sym` is not an
+/// eta candidate (no operation, nullary, body-less, or type-parameterized) so
+/// the caller falls back to the return-type reading; returns `Err` (WI-420)
+/// when `sym` IS an eta candidate but its enclosing sort carries a `requires`
+/// chain — a loud type error, since the runtime `OpRef` can't carry the dict.
 fn operation_as_function_value(
     kb: &mut KnowledgeBase,
     sym: Symbol,
     occ: &Rc<NodeOccurrence>,
-) -> Option<Value> {
+) -> Result<Option<Value>, TypeError> {
     // Only eta-lift an operation the runtime can actually run as a function
     // value, keeping the typer's accepted set a subset of the evaluator's:
     //   * it must have a runnable anthill body — the evaluator's `reduce_var`
@@ -1601,11 +1613,44 @@ fn operation_as_function_value(
     // A reference that fails either gate stays a loud type error, not a silent
     // runtime failure.
     if !op_has_runnable_body(kb, sym) {
-        return None;
+        return Ok(None);
     }
-    let op = lookup_operation_info_full(kb, sym)?;
+    let Some(op) = lookup_operation_info_full(kb, sym) else {
+        return Ok(None);
+    };
     if op.params.is_empty() || !op.type_params.is_empty() {
-        return None;
+        return Ok(None);
+    }
+    // WI-420 (conservative interim gate): an eta-eligible op whose enclosing
+    // sort carries a `requires` chain (e.g. `List.member` from `List requires
+    // Eq[T]`) needs a requirement dictionary at runtime. The eta path mints a
+    // `Value::OpRef` with no captured dictionary and the apply path forwards
+    // the caller's (empty) requirements, so the body's `__req_*` read crashes
+    // at eval ("requirement param `__req_eq` not bound in caller frame").
+    // Reject LOUDLY (Err, not None): a bare `None` would fall through in
+    // `check_bare_ref` to the return-type reading, which for a CURRIED op
+    // (return type itself a `Function`) silently matches the expected arrow and
+    // defers the failure to a runtime crash. Until `OpRef` captures/threads its
+    // dict like `Closure` (WI-420, the full fix), this stays a loud load-time
+    // type error, preserving the typer-accepted ⊆ runtime-runnable discipline.
+    // Conservative: also rejects a concrete op on a requires-sort whose body
+    // never reads the dict (e.g. `List.length`); WI-420 lifts that.
+    if let Some(parent) = impl_parent_of_op(kb, sym) {
+        if !requires_chain_flat(kb, parent).is_empty() {
+            let op_qn = kb.qualified_name_of(sym).to_string();
+            let parent_qn = kb.qualified_name_of(parent).to_string();
+            return Err(TypeError::Other {
+                span: Some(occ.span.span),
+                context: TypeErrorContext::OperationAsFunctionValue { op_name: sym },
+                expected: "a lambda — eta-lifting a `requires`-carrying operation \
+                    to a function value is not yet supported (WI-420); pass an \
+                    explicit `lambda` instead".to_string(),
+                actual: format!(
+                    "bare operation `{}`, whose sort `{}` has a `requires` clause",
+                    op_qn, parent_qn,
+                ),
+            });
+        }
     }
     let (span, owner) = (occ.span, occ.owner);
     let param = if op.params.len() == 1 {
@@ -1619,7 +1664,7 @@ fn operation_as_function_value(
             .collect();
         named_tuple_value(kb, &fields, span, owner)
     };
-    Some(make_arrow_value(kb, &param, &op.return_type, &op.effects, span, owner))
+    Ok(Some(make_arrow_value(kb, &param, &op.return_type, &op.effects, span, owner)))
 }
 
 /// WI-275: the expected-type hint for a higher-order argument occurrence. Only a

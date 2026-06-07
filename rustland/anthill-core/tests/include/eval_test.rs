@@ -528,6 +528,42 @@ end
     assert_eq!(run(&mut interp, "test.m2_hof_inf.main_map_named"), 234);
 }
 
+/// WI-420 (sound path): the gate rejects passing a BARE requires-carrying op as
+/// a function value, but a genuine LAMBDA that calls such an op is fine. Here a
+/// lambda calling `List.member` (List requires Eq[T]) is passed to a HOF with
+/// NO requirement of its own and invoked there; it must evaluate correctly —
+/// proving the gate did not affect closures and the lambda's requirement is
+/// discharged regardless of the caller's (empty) requirement scope. (The
+/// IR-level snapshot/restore guarantee for ABSTRACT requirements is pinned by
+/// wi223_closure_requirements_test.)
+#[test]
+fn wi420_lambda_over_requires_op_passed_to_hof_evals() {
+    let src = r#"
+namespace test.wi420.lam
+  import anthill.prelude.{List, Int, Bool, Function}
+  import anthill.prelude.List.{member}
+
+  operation use_pred(f: Function[A = Int, B = Bool], v: Int) -> Bool =
+    f(v)
+
+  operation found() -> Bool =
+    use_pred(lambda e -> member(e, [1, 2, 3]), 2)
+
+  operation absent() -> Bool =
+    use_pred(lambda e -> member(e, [1, 2, 3]), 9)
+end
+"#;
+    let mut interp = crate::common::interp_for(src);
+    assert!(
+        expect_bool(interp.call("test.wi420.lam.found", &[]).expect("found runs")),
+        "lambda calling a requires-op (member) must eval true for a present element",
+    );
+    assert!(
+        !expect_bool(interp.call("test.wi420.lam.absent", &[]).expect("absent runs")),
+        "lambda calling a requires-op (member) must eval false for an absent element",
+    );
+}
+
 #[test]
 fn wi064_stdlib_combinators_fold_map_find() {
     // WI-064: the stdlib higher-order combinators run end-to-end on a List
