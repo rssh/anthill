@@ -6523,6 +6523,20 @@ impl<'a> Loader<'a> {
                 let name_term = self.name_to_sort_term(name);
                 let mut pos: Vec<Value> = vec![Value::Term(name_term)];
                 let mut named: Vec<(Symbol, Value)> = Vec::new();
+                // Positional bindings map to the base sort's declared type
+                // parameters in declaration order — the SAME mapping
+                // `type_expr_to_child` applies to plain type expressions — so a
+                // `provides Stream[T, {}]` and `provides Stream[T = T, E = {}]`
+                // build structurally identical NAMED `SortView` bindings. The
+                // provider / requires / dispatch readers (`unwrap_spec_view`)
+                // read NAMED args only; a positional binding left in `pos` is
+                // invisible to them, so without this mapping a positional spec
+                // clause silently loses its bindings (a pure `provides` would
+                // drop its `E = {}` and the carrier would stop being admissible
+                // as the spec).
+                let base_sym = self.remap_name(name);
+                let declared_params = self.kb.type_params_of_sort(base_sym);
+                let mut positional_index: usize = 0;
                 // A spec is ground iff every binding is ground; any non-`Term`
                 // binding (a `Node`, or a nested value `SortView` `Entity`) poisons
                 // the whole spec to a value carrier.
@@ -6532,11 +6546,17 @@ impl<'a> Loader<'a> {
                     if !matches!(bound, Value::Term(_)) {
                         any_value = true;
                     }
-                    match &b.param {
-                        Some(p) => {
-                            let param_sym = self.reintern(p.last());
-                            named.push((param_sym, bound));
+                    let param_sym = match &b.param {
+                        Some(p) => Some(self.reintern(p.last())),
+                        None if positional_index < declared_params.len() => {
+                            let param_name = declared_params[positional_index].clone();
+                            positional_index += 1;
+                            Some(self.kb.intern(&param_name))
                         }
+                        None => None,
+                    };
+                    match param_sym {
+                        Some(sym) => named.push((sym, bound)),
                         None => pos.push(bound),
                     }
                 }

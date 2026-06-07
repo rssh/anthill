@@ -51,7 +51,7 @@ enum anthill.prelude.List
   -- design: under proposal 045's row model a closed effect is not a type
   -- argument — it is grounded to {} at the consumption boundary by the
   -- typer (WI-357 concrete carrier; WI-365 abstract self-receiver).
-  fact PersistentCollection[C = List[T], Element = T]
+  fact PersistentCollection[List[T], T]
 
   -- List provides Iterable (proposal library/002), so the built collection
   -- can be walked through the one shared read interface — this satisfies
@@ -71,9 +71,9 @@ enum anthill.prelude.List
   -- through the type-aware path (the fact-head term path makes `Ref("{}")` →
   -- unresolved). `iterator` then writes both the threaded element `[Elem]` and
   -- the pure effect, so `Stream[T = Elem, E = {}]` is fully in the type.
-  provides Stream[T = T, E = {}]
-  fact Iterable[C = List[T], Element = T]
-  operation iterator[Elem](l: List[T = Elem]) -> Stream[T = Elem, E = {}] = l
+  provides Stream[T, {}]
+  fact Iterable[List[T], T]
+  operation iterator[Elem](l: List[Elem]) -> Stream[Elem, {}] = l
 
   -- Stream primitive: peel the head and return the tail (itself a List, hence
   -- a Stream). `pair`-shaped (not Iteration's tuple `split`) so Stream's
@@ -85,7 +85,7 @@ enum anthill.prelude.List
   -- delivered by WI-357. The effect dual — threading `E` through the nested
   -- `Stream` in a destructured Pair across a carrier-impl self-recursion (the
   -- lazy `filter` carrier) — is still open; see WI-413.
-  operation splitFirst(xs: List) -> Option[T = Pair[A = T, B = List]] =
+  operation splitFirst(xs: List) -> Option[Pair[T, List]] =
     match xs
       case nil() -> none
       case cons(h, t) -> some(pair(h, t))
@@ -93,7 +93,7 @@ enum anthill.prelude.List
   -- List satisfies IndexedSeq (no effects). Cost is O(N) per `nth` —
   -- callers that need O(1) should depend on a future RandomAccess
   -- subspec that excludes List.
-  fact IndexedSeq[C = List[T], T = T]
+  fact IndexedSeq[List[T], T]
 
   operation nth(xs: List, i: Int) -> Option =
     match xs
@@ -115,10 +115,14 @@ enum anthill.prelude.List
 
   -- List satisfies Iteration (pure). Effect left unbound by design —
   -- grounded to {} at consumption (045 row model; WI-357 / WI-365).
-  fact Iteration[Iterator = List[T], Element = T]
+  fact Iteration[List[T], T]
 
-  -- Iteration.split for List
-  operation split(xs: List) -> Option =
+  -- Iteration.split for List. Tuple-shaped `(Elem, List[Elem])` to conform to
+  -- Iteration's `split -> Option[(Element, Iterator)]` (cf. Stream's
+  -- `splitFirst -> Option[Pair[…]]`, which is Pair-shaped). The explicit `[Elem]`
+  -- param + parameterized receiver `List[Elem]` threads the destructured head's
+  -- element type into the tuple (a bare `xs: List` leaves it `?_` — WI-357).
+  operation split[Elem](xs: List[Elem]) -> Option[(Elem, List[Elem])] =
     match xs
       case nil() -> none
       case cons(h, t) -> some((h, t))
