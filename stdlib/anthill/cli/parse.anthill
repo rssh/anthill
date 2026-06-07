@@ -2,10 +2,12 @@
 -- produces ParsedArgs (spec name + name/value bindings) or a typed
 -- ParseError. v1: one level of subcommands, no nested groups.
 namespace anthill.cli.parse
-  import anthill.prelude.{List, Option, String, Bool}
+  import anthill.prelude.{List, Option, String, Bool, Function}
   import anthill.prelude.Option.{some, none}
   import anthill.prelude.List.{nil, cons}
   import anthill.prelude.Eq.{eq}
+  import anthill.prelude.Bool.{and, not}
+  import anthill.prelude.Stream.{find}
   import anthill.prelude.String.{startsWith, substring, length}
   import anthill.cli.spec.{OperationSpec, ParamSpec, ParamKind}
   import anthill.cli.spec.ParamKind.{positional, flag, repeated, bool_flag}
@@ -80,52 +82,69 @@ namespace anthill.cli.parse
           case some(err) -> parse_err(err)
 
   -- helpers --
+  --
+  -- WI-409: the recursive list SEARCHES below are expressed with the stdlib
+  -- `find` combinator (WI-064) instead of hand-rolled `match nil/cons`. A `List`
+  -- is admissible as `find`'s `Stream` receiver (List provides Stream). Each
+  -- predicate must close over a runtime value (the target `name`, or the current
+  -- `acc`), which a bare op cannot capture and an inline lambda cannot type on a
+  -- generic combinator (its element type is unpinned at the call site, WI-275);
+  -- so each is a CURRIED builder that returns a closure typed against its OWN
+  -- concrete `Function[…]` return — the lambda is then checked at a concrete
+  -- element type, and the resulting function value flows into `find`.
+  -- (The argv walk `parse_args` stays direct recursion: it is a lookahead state
+  -- machine — a flag consumes the NEXT argv element — not a per-element fold.)
+
+  operation spec_name_is(name: String) -> Function[A = OperationSpec, B = Bool] =
+    lambda s ->
+      match s
+        case OperationSpec(sname, _, _, _) -> eq(sname, name)
+
+  operation param_name_is(name: String) -> Function[A = ParamSpec, B = Bool] =
+    lambda p ->
+      match p
+        case ParamSpec(pname, _, _, _) -> eq(pname, name)
+
+  operation binding_name_is(name: String) -> Function[A = Binding, B = Bool] =
+    lambda b ->
+      match b
+        case Binding(bname, _) -> eq(bname, name)
+
+  -- A positional param not yet bound in `acc`.
+  operation unbound_positional(acc: List[T = Binding]) -> Function[A = ParamSpec, B = Bool] =
+    lambda p ->
+      match p
+        case ParamSpec(pname, kind, _, _) ->
+          match kind
+            case positional() -> not(has_binding(acc, pname))
+            case _ -> false
+
+  -- A required param missing from `acc`.
+  operation required_missing(acc: List[T = Binding]) -> Function[A = ParamSpec, B = Bool] =
+    lambda p ->
+      match p
+        case ParamSpec(pname, _, required, _) -> and(required, not(has_binding(acc, pname)))
 
   operation find_spec(specs: List[T = OperationSpec], name: String) -> Option[T = OperationSpec] =
-    match specs
-      case nil() -> none()
-      case cons(s, rest) ->
-        match s
-          case OperationSpec(sname, _, _, _) ->
-            if eq(sname, name) then some(s) else find_spec(rest, name)
+    find(specs, spec_name_is(name))
 
   operation find_param(params: List[T = ParamSpec], name: String) -> Option[T = ParamSpec] =
-    match params
-      case nil() -> none()
-      case cons(p, rest) ->
-        match p
-          case ParamSpec(pname, _, _, _) ->
-            if eq(pname, name) then some(p) else find_param(rest, name)
+    find(params, param_name_is(name))
 
   operation has_binding(acc: List[T = Binding], name: String) -> Bool =
-    match acc
-      case nil() -> false
-      case cons(b, rest) ->
-        match b
-          case Binding(bname, _) ->
-            if eq(bname, name) then true else has_binding(rest, name)
+    match find(acc, binding_name_is(name))
+      case some(_) -> true
+      case none() -> false
 
   -- First positional param that is not yet bound.
   operation next_positional(params: List[T = ParamSpec], acc: List[T = Binding]) -> Option[T = ParamSpec] =
-    match params
-      case nil() -> none()
-      case cons(p, rest) ->
-        match p
-          case ParamSpec(pname, kind, _, _) ->
-            match kind
-              case positional() ->
-                if has_binding(acc, pname) then next_positional(rest, acc) else some(p)
-              case _ -> next_positional(rest, acc)
+    find(params, unbound_positional(acc))
 
-  -- Walk required params, return first one missing from acc (else none).
+  -- First required param missing from acc, mapped to the typed error (else none).
   operation check_required(params: List[T = ParamSpec], acc: List[T = Binding], spec_name: String) -> Option[T = ParseError] =
-    match params
-      case nil() -> none()
-      case cons(p, rest) ->
+    match find(params, required_missing(acc))
+      case none() -> none()
+      case some(p) ->
         match p
-          case ParamSpec(pname, _, required, _) ->
-            if required then
-              if has_binding(acc, pname) then check_required(rest, acc, spec_name)
-              else some(missing_required(spec_name, pname))
-            else check_required(rest, acc, spec_name)
+          case ParamSpec(pname, _, _, _) -> some(missing_required(spec_name, pname))
 end
