@@ -871,19 +871,34 @@ fn walk_type_deep_value(kb: &mut KnowledgeBase, subst: &Substitution, e: &Value)
 /// `Value::Node` field carries `Ref`s, not type-param vars, so it is returned as-is
 /// (same rationale as [`walk_type_deep_value`]).
 fn walk_type_value(kb: &KnowledgeBase, subst: &Substitution, ty: &Value) -> Value {
-    match ty {
-        Value::Term(t) => {
-            // A field type that is itself a type-param var resolves through the
-            // subst's `Value` binding, which may be a `Value::Node` (carried, not
-            // re-grounded). A non-var / unbound term falls to the TermId walk.
-            if let Term::Var(Var::Global(vid)) = kb.get_term(*t) {
-                if let Some(bound) = subst.resolve_as_value(*vid) {
-                    return walk_type_value(kb, subst, &bound.clone());
-                }
-            }
-            Value::Term(walk_type(kb, subst, *t))
+    // Iterative + cycle-guarded (WI-417), mirroring `walk_type`: follow a
+    // `Value::Term(Var)` binding chain via `resolve_as_value`. A field type that
+    // is itself a type-param var resolves through the subst's `Value` binding,
+    // which may be a `Value::Node` (carried, not re-grounded). A non-var /
+    // unbound term falls to the TermId walk; a `Value::Node` ends the chain. A
+    // CYCLIC substitution (those vars are all unified) returns a representative
+    // instead of recursing forever.
+    let mut cur = ty.clone();
+    let mut visited: SmallVec<[VarId; 4]> = SmallVec::new();
+    loop {
+        let t = match &cur {
+            Value::Term(t) => *t,
+            _ => return cur,
+        };
+        let vid = match kb.get_term(t) {
+            Term::Var(Var::Global(vid)) => *vid,
+            _ => return Value::Term(walk_type(kb, subst, t)),
+        };
+        if visited.contains(&vid) {
+            return cur;
         }
-        other => other.clone(),
+        match subst.resolve_as_value(vid) {
+            Some(bound) => {
+                visited.push(vid);
+                cur = bound.clone();
+            }
+            None => return Value::Term(walk_type(kb, subst, t)),
+        }
     }
 }
 
@@ -906,17 +921,28 @@ fn walk_pattern_field_type_deep(
     // Top-level type-param var → resolve through the subst's `Value` binding
     // first, so a `Value::Node` (denoted) binding surfaces rather than being
     // dropped by the term-only deep walk (which keeps a Node-bound var).
-    if let Value::Term(t) = ty {
-        if let Term::Var(Var::Global(vid)) = kb.get_term(*t) {
-            if let Some(bound) = subst.resolve_as_value(*vid) {
-                let bound = bound.clone();
-                return walk_pattern_field_type_deep(kb, subst, &bound);
+    // Iterative + cycle-guarded (WI-417): a cyclic `Value::Term(Var)` chain
+    // returns its representative rather than recursing forever.
+    let mut cur = ty.clone();
+    let mut visited: SmallVec<[VarId; 4]> = SmallVec::new();
+    loop {
+        let Value::Term(t) = &cur else { break };
+        let Term::Var(Var::Global(vid)) = kb.get_term(*t) else { break };
+        let vid = *vid;
+        if visited.contains(&vid) {
+            break;
+        }
+        match subst.resolve_as_value(vid) {
+            Some(bound) => {
+                visited.push(vid);
+                cur = bound.clone();
             }
+            None => break,
         }
     }
     // Otherwise deep-walk: a parameterized `Fn` has its type params resolved in
     // every nested position; a ground term / `Value::Node` is returned as-is.
-    walk_type_deep_value(kb, subst, ty)
+    walk_type_deep_value(kb, subst, &cur)
 }
 
 // ── Helpers ────────────────────────────────────────────────────
@@ -8790,13 +8816,29 @@ fn walk_term_to_resolved(kb: &KnowledgeBase, subst: &Substitution, t: TermId) ->
 /// the `TermId` walk; an unbound `Value::Var` resolves through `subst`; every
 /// other form (`Value::Node`, entities) is already resolved.
 fn walk_value_to_resolved(kb: &KnowledgeBase, subst: &Substitution, val: Value) -> Value {
-    match val {
-        Value::Term(t) => walk_term_to_resolved(kb, subst, t),
-        Value::Var(Var::Global(vid)) => match subst.resolve_as_value(vid) {
-            Some(bound) => walk_value_to_resolved(kb, subst, bound.clone()),
-            None => Value::Var(Var::Global(vid)),
-        },
-        other => other,
+    // Iterative + cycle-guarded (WI-417): follow a `Value::Var` binding chain via
+    // `resolve_as_value`. A `Value::Term` defers to the (guarded) `walk_type`
+    // path; an unbound var / non-var carrier ends the chain. A cyclic `Value::Var`
+    // substitution returns a representative instead of recursing forever.
+    let mut cur = val;
+    let mut visited: SmallVec<[VarId; 4]> = SmallVec::new();
+    loop {
+        match cur {
+            Value::Term(t) => return walk_term_to_resolved(kb, subst, t),
+            Value::Var(Var::Global(vid)) => {
+                if visited.contains(&vid) {
+                    return Value::Var(Var::Global(vid));
+                }
+                match subst.resolve_as_value(vid) {
+                    Some(bound) => {
+                        visited.push(vid);
+                        cur = bound.clone();
+                    }
+                    None => return Value::Var(Var::Global(vid)),
+                }
+            }
+            other => return other,
+        }
     }
 }
 
@@ -13219,6 +13261,86 @@ fn constrain_occ_var_type(
         _ => return,
     };
     constrain_vid(kb, vid, expected_type, var_types, subst);
+}
+
+#[cfg(test)]
+mod wi417_cycle_tests {
+    //! WI-417: the typer's substitution-chain walkers must not overflow the
+    //! host stack on a CYCLIC substitution. Normal unification does not mint a
+    //! pure value-var cycle (WI-416's cycle closed through a sort-alias hop, now
+    //! handled by the `walk_type` guard), so these tests build the cycle
+    //! DIRECTLY in the `Substitution` — the level at which the defect is
+    //! reproducible — and assert each walker terminates with a representative
+    //! rather than recursing to a crash. Before WI-417 these recursed forever
+    //! and aborted the test binary (an uncatchable stack overflow), so a
+    //! regression here is a loud failure.
+    use super::{walk_type, walk_type_value, walk_value_to_resolved, walk_pattern_field_type_deep};
+    use crate::eval::value::Value;
+    use crate::kb::subst::Substitution;
+    use crate::kb::term::{Term, TermId, Var, VarId};
+    use crate::kb::KnowledgeBase;
+
+    fn fresh(kb: &mut KnowledgeBase, name: &str) -> VarId {
+        let sym = kb.intern(name);
+        kb.fresh_var(sym)
+    }
+
+    /// Two vars cross-bound through `Value::Term(Var(_))`: `a → b → a`.
+    fn term_var_cycle(kb: &mut KnowledgeBase) -> (Substitution, TermId, VarId, VarId) {
+        let a = fresh(kb, "A");
+        let b = fresh(kb, "B");
+        let ta = kb.alloc(Term::Var(Var::Global(a)));
+        let tb = kb.alloc(Term::Var(Var::Global(b)));
+        let mut subst = Substitution::new();
+        subst.bind_value(a, Value::Term(tb));
+        subst.bind_value(b, Value::Term(ta));
+        (subst, ta, a, b)
+    }
+
+    #[test]
+    fn walk_type_terminates_on_term_var_cycle() {
+        let mut kb = KnowledgeBase::new();
+        let (subst, ta, a, b) = term_var_cycle(&mut kb);
+        match kb.get_term(walk_type(&kb, &subst, ta)) {
+            Term::Var(Var::Global(v)) => assert!(*v == a || *v == b, "a cycle representative"),
+            other => panic!("expected a cycle-representative var, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn walk_type_value_terminates_on_term_var_cycle() {
+        let mut kb = KnowledgeBase::new();
+        let (subst, ta, a, b) = term_var_cycle(&mut kb);
+        match walk_type_value(&kb, &subst, &Value::Term(ta)) {
+            Value::Term(t) => match kb.get_term(t) {
+                Term::Var(Var::Global(v)) => assert!(*v == a || *v == b),
+                other => panic!("expected a cycle-representative var, got {other:?}"),
+            },
+            other => panic!("expected Value::Term(var), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn walk_pattern_field_type_deep_terminates_on_term_var_cycle() {
+        let mut kb = KnowledgeBase::new();
+        let (subst, ta, _a, _b) = term_var_cycle(&mut kb);
+        // Termination is the property under test (returns instead of crashing).
+        let _ = walk_pattern_field_type_deep(&mut kb, &subst, &Value::Term(ta));
+    }
+
+    #[test]
+    fn walk_value_to_resolved_terminates_on_value_var_cycle() {
+        let mut kb = KnowledgeBase::new();
+        let a = fresh(&mut kb, "A");
+        let b = fresh(&mut kb, "B");
+        let mut subst = Substitution::new();
+        subst.bind_value(a, Value::Var(Var::Global(b)));
+        subst.bind_value(b, Value::Var(Var::Global(a)));
+        match walk_value_to_resolved(&kb, &subst, Value::Var(Var::Global(a))) {
+            Value::Var(Var::Global(v)) => assert!(v == a || v == b, "a cycle representative"),
+            other => panic!("expected a cycle-representative var, got {other:?}"),
+        }
+    }
 }
 
 #[cfg(test)]
