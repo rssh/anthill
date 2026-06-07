@@ -9175,45 +9175,76 @@ fn walk_type_deep(kb: &mut KnowledgeBase, subst: &Substitution, ty: TermId) -> T
 }
 
 /// Walk a type term through the substitution, resolving Vars and type params.
+///
+/// Iterative (not recursive) so a CYCLIC substitution cannot overflow the host
+/// stack. A cycle arises (WI-416) when two distinct `Var` instances of the
+/// SAME sort-parameter cross-bind — e.g. typing `member(x, items)` from inside
+/// a sort whose element unifies with `List.T` can leave `subst[a] = Var(b)`,
+/// `subst[b] = Ref(Coll.T)`, and `SortAlias(Coll.T) = Var(a)`, so the chain
+/// `a -> Ref -> a` never terminates. Every var in such a cycle is unified to
+/// the same (here abstract) type, so on revisiting a var we stop and return the
+/// current term — a sound representative of the equivalence class. The
+/// `visited` set is a stack-local `SmallVec`; the overwhelmingly common chain
+/// is 0–2 hops, so it never allocates and the linear `contains` is trivial.
 fn walk_type(kb: &KnowledgeBase, subst: &Substitution, ty: TermId) -> TermId {
-    if let Term::Var(Var::Global(vid)) = kb.get_term(ty) {
-        return match subst.resolve_as_value(*vid) {
-            Some(Value::Term(bound)) => walk_type(kb, subst, *bound),
-            // Non-`Term` (a denoted `Value::Node`) or unbound: keep the var.
-            // This term-only walker deliberately stops here; its carrier-aware
-            // caller `walk_term_to_resolved` surfaces a `Value::Node` binding
-            // afterward via `resolve_as_value`.
-            _ => ty,
+    let mut ty = ty;
+    // 0–2 hops in practice; inline-4 never spills for any realistic alias chain.
+    let mut visited: SmallVec<[VarId; 4]> = SmallVec::new();
+    loop {
+        if let Term::Var(Var::Global(vid)) = kb.get_term(ty) {
+            let vid = *vid;
+            if visited.contains(&vid) {
+                return ty; // WI-416: cycle — `ty` is a representative.
+            }
+            match subst.resolve_as_value(vid) {
+                Some(Value::Term(bound)) => {
+                    visited.push(vid);
+                    ty = *bound;
+                    continue;
+                }
+                // Non-`Term` (a denoted `Value::Node`) or unbound: keep the var.
+                // This term-only walker deliberately stops here; its carrier-aware
+                // caller `walk_term_to_resolved` surfaces a `Value::Node` binding
+                // afterward via `resolve_as_value`.
+                _ => return ty,
+            }
+        }
+        // WI-361: a bare sort is `Ref(S)` (term backing) or `sort_ref(name: Ref(S))`
+        // (deep); `extract_sort_ref_sym` recognizes both. Any other shape (a
+        // parameterized / arrow / non-type term) is left unchanged.
+        let sym = match extract_sort_ref_sym(kb, &TermIdView(ty)) {
+            Some(s) => s,
+            None => return ty,
         };
-    }
-    // WI-361: a bare sort is `Ref(S)` (term backing) or `sort_ref(name: Ref(S))`
-    // (deep); `extract_sort_ref_sym` recognizes both. Any other shape (a
-    // parameterized / arrow / non-type term) is left unchanged.
-    let sym = match extract_sort_ref_sym(kb, &TermIdView(ty)) {
-        Some(s) => s,
-        None => return ty,
-    };
-    // Only resolve the sort ref through its SortAlias-to-Var if the symbol is
-    // a *sort-level type parameter* (registered via `sort T = ?` inside a sort
-    // body). Top-level abstract sorts like `sort Term = ?` in anthill.reflect
-    // also have a SortAlias-to-Var entry, but they're concrete-but-opaque types
-    // from a typer perspective — collapsing every `sort_ref(Term)` into Term's
-    // alias Var would lose the sort-ref form and surface as `TermId(N)` in
-    // diagnostics.
-    if !is_sort_param_symbol(kb, sym) {
-        return ty;
-    }
-    let alias_target = match resolve_sort_alias(kb, sym) {
-        Some(t) => t,
-        None => return ty,
-    };
-    if let Term::Var(Var::Global(vid)) = kb.get_term(alias_target) {
-        subst
-            .resolve_as_value(*vid)
-            .and_then(|v| v.as_term())
-            .map_or(alias_target, |bound| walk_type(kb, subst, bound))
-    } else {
-        alias_target
+        // Only resolve the sort ref through its SortAlias-to-Var if the symbol is
+        // a *sort-level type parameter* (registered via `sort T = ?` inside a sort
+        // body). Top-level abstract sorts like `sort Term = ?` in anthill.reflect
+        // also have a SortAlias-to-Var entry, but they're concrete-but-opaque types
+        // from a typer perspective — collapsing every `sort_ref(Term)` into Term's
+        // alias Var would lose the sort-ref form and surface as `TermId(N)` in
+        // diagnostics.
+        if !is_sort_param_symbol(kb, sym) {
+            return ty;
+        }
+        let alias_target = match resolve_sort_alias(kb, sym) {
+            Some(t) => t,
+            None => return ty,
+        };
+        let Term::Var(Var::Global(vid)) = kb.get_term(alias_target) else {
+            return alias_target;
+        };
+        let vid = *vid;
+        if visited.contains(&vid) {
+            return alias_target; // WI-416: cycle — the alias var represents it.
+        }
+        match subst.resolve_as_value(vid).and_then(|v| v.as_term()) {
+            Some(bound) => {
+                visited.push(vid);
+                ty = bound;
+                continue;
+            }
+            None => return alias_target,
+        }
     }
 }
 
