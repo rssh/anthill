@@ -203,6 +203,41 @@ impl SymbolTable {
         sym
     }
 
+    /// Define a resolved symbol addressable ONLY by its qualified name — it is
+    /// intentionally NOT inserted into any scope's `locals`, so scope-aware
+    /// resolution (`resolve_in_scope`) never surfaces it as a candidate.
+    ///
+    /// Used for loader-internal fact functors (the reflection `member`
+    /// constructor, the `meta` / `SortAlias` functors) that the loader emits
+    /// into the KB and only ever looks up by qualified name via
+    /// `resolve_symbol`. Registering them as bare global locals (`define`)
+    /// leaked them into user name resolution, where a `requires`-induced scope
+    /// link could resurface e.g. the kernel `member` as a phantom rival to a
+    /// user's `import …List.{member}` alias (WI-422). Idempotent: returns the
+    /// existing symbol if the qualified name is already taken.
+    pub fn define_qualified_only(
+        &mut self,
+        short_name: &str,
+        qualified_name: &str,
+        kind: SymbolKind,
+        scope_raw: u32,
+    ) -> Symbol {
+        if let Some(&existing) = self.by_qualified_name.get(qualified_name) {
+            return existing;
+        }
+        let sym = Symbol(self.defs.len() as u32);
+        self.defs.push(SymbolDef::Resolved {
+            short_name: short_name.to_owned(),
+            qualified_name: qualified_name.to_owned(),
+            kind,
+            scope_raw,
+            arg_places: Vec::new(),
+        });
+        self.by_qualified_name
+            .insert(qualified_name.to_owned(), sym);
+        sym
+    }
+
     /// WI-352 — record the ordered argument-place symbols of a *callable*
     /// place (an operation, or a callback-typed parameter). See
     /// [`SymbolDef::Resolved::arg_places`]. Idempotent overwrite; a no-op on

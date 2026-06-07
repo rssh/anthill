@@ -1367,12 +1367,24 @@ const KERNEL_META_SORTS: &[&str] = &[
     "Requirement", "Description", "Constraint", "Member",
 ];
 
-/// KB-internal functor names used by the loader to construct fact terms.
-/// Not defined in any `.anthill` file.
+/// KB-internal fact functors the loader emits into the KB (never declared in
+/// any `.anthill` file). Each is `(short_name, qualified_name)`.
 /// (EntityInfo and SortRequiresInfo are now declared in reflect.anthill.)
-const KERNEL_FUNCTORS: &[&str] = &[
-    "SortAlias",
-    "member", "meta",
+///
+/// Registered *qualified-only* (see [`SymbolTable::define_qualified_only`]): the
+/// loader addresses them by qualified name via `resolve_symbol`, but they are
+/// kept out of every scope's `locals`, so user name resolution can never
+/// surface them. Previously they were bare global *locals*, which let a
+/// `requires`-induced scope link resurface the kernel `member` as a phantom
+/// rival to a user's `import …List.{member}` alias inside a requires-bearing
+/// sort (WI-422). `member` carries the fully-qualified reflect name it deserves
+/// as a reflection fact; `meta` / `SortAlias` keep their existing qualified
+/// keys (delocalizing alone closes the same latent leak — their many call sites
+/// resolve those keys unchanged).
+const KERNEL_FUNCTORS: &[(&str, &str)] = &[
+    ("SortAlias", "SortAlias"),
+    ("member", "anthill.reflect.member"),
+    ("meta", "meta"),
 ];
 
 /// Register primitive sorts and kernel vocabulary in the global scope,
@@ -1395,10 +1407,9 @@ pub fn register_prelude(kb: &mut KnowledgeBase) {
             kb.symbols.define(name, name, SymbolKind::Sort, global_raw);
         }
     }
-    for &name in KERNEL_FUNCTORS {
-        if !kb.symbols.by_qualified_name.contains_key(name) {
-            kb.symbols.define(name, name, SymbolKind::Entity, global_raw);
-        }
+    for &(short, qualified) in KERNEL_FUNCTORS {
+        kb.symbols
+            .define_qualified_only(short, qualified, SymbolKind::Entity, global_raw);
     }
     // Stdlib scope hierarchy: create scopes with correct qualified names
     // so the loader's resolve_symbol() finds names in the right scopes.
@@ -8671,7 +8682,7 @@ impl<'a> Loader<'a> {
     // ── Member fact emission ───────────────────────────────────
 
     fn emit_member_fact(&mut self, name_sym: Symbol, kind_str: &str, parent: TermId) {
-        let member_sym = self.kb.resolve_symbol("member");
+        let member_sym = self.kb.resolve_symbol("anthill.reflect.member");
         let member_sort = self.kb.make_name_term("Member");
         let name_term = self.kb.make_name_term_from_sym(name_sym);
         let kind_sym = self.kb.intern(kind_str);

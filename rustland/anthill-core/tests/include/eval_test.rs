@@ -675,6 +675,45 @@ end
     );
 }
 
+/// WI-422 (loader/resolution): a selectively-imported operation referenced by
+/// BARE short name inside a sort scope that declares `requires Spec[T]`. The
+/// `requires Eq[T]` link opens a scope path (Box → Eq → prelude → _global) that
+/// bypasses the namespace's `member → List.member` import alias and used to
+/// resurface the loader-internal global `member` *fact functor* as a phantom
+/// second candidate — emitting `ambiguous symbol 'member'` and then cascading
+/// into a hard `unknown functor` failure. The fix registers that kernel functor
+/// qualified-only (`anthill.reflect.member`, never a global local), so bare
+/// `member` here resolves unambiguously to `List.member`. This pins both halves
+/// of the acceptance: the file loads warning-clean AND the call evaluates (the
+/// abstract `Eq[T]` evidence the enclosing `Box requires Eq[T]` supplies threads
+/// through to `member`'s `eq(head, x)`, as in the WI-421 lambda idiom above —
+/// here via a direct bare call instead of `lambda e -> List.member(e, xs)`).
+#[test]
+fn wi422_bare_imported_op_in_requires_bearing_sort_resolves() {
+    let src = r#"
+namespace test.wi422
+  import anthill.prelude.{List, Int64, Bool, Eq}
+  import anthill.prelude.List.{member}
+  sort Box
+    sort T = ?
+    requires Eq[T]
+    operation has(x: T, xs: List[T]) -> Bool = member(x, xs)
+  end
+  operation present() -> Bool = Box.has(2, [1, 2, 3])
+  operation absent() -> Bool = Box.has(9, [1, 2, 3])
+end
+"#;
+    let mut interp = crate::common::interp_for(src);
+    assert!(
+        expect_bool(interp.call("test.wi422.present", &[]).expect("present runs")),
+        "bare imported `member` in a requires-bearing sort: 2 IS in [1,2,3] (WI-422)",
+    );
+    assert!(
+        !expect_bool(interp.call("test.wi422.absent", &[]).expect("absent runs")),
+        "bare imported `member` in a requires-bearing sort: 9 is NOT in [1,2,3] (WI-422)",
+    );
+}
+
 #[test]
 fn wi064_stdlib_combinators_fold_map_find() {
     // WI-064: the stdlib higher-order combinators run end-to-end on a List
