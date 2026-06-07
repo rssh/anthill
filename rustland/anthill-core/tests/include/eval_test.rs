@@ -710,6 +710,45 @@ end
     assert_eq!(run_b(&mut interp, "test.wi415.has9"), false);
 }
 
+/// WI-418 trip-wire (`#[ignore]`): the cross-sort ABSTRACT requirement-
+/// forwarding gap — the third of the WI-415 gaps, now REACHABLE (it
+/// typechecks) because WI-416 fixed the typer stack overflow this scenario
+/// used to hit.
+///
+/// `Coll requires Eq[T]` and its op `contains` delegates to `List.member` on
+/// its OWN abstract element `x : Coll.T`. The outer `Coll.contains([1,2,3], 2)`
+/// is concrete (`Coll.T := Int`), so WI-415 threads `Eq[Int]` into `contains`'s
+/// frame as `__req_eq`. But the inner `member(x, items)` is cross-sort
+/// (member's parent is `List`, not `Coll`) AND abstract (`x : Coll.T`): it must
+/// FORWARD `contains`'s `__req_eq` to `member`'s frame (Strategy-1 `var_ref`,
+/// since `Coll`'s `requires Eq[T]` covers `member`'s `Eq[List.T]` at
+/// `List.T = Coll.T`). Today `build_concrete_dispatch_dict` returns `None` for
+/// the abstract inner call and eval falls through to a plain apply with no
+/// requirements, so `member`'s deferred `eq(head, x)` aborts with
+/// `DeferToRequirement: __req_eq not bound`. Un-`#[ignore]` when WI-418 lands.
+#[test]
+#[ignore]
+fn wi418_cross_sort_abstract_call_forwards_caller_requirement() {
+    let src = r#"
+namespace test.wi418
+  import anthill.prelude.{List, Int, Bool, Eq}
+  sort Coll
+    sort T = ?
+    requires Eq[T]
+    operation contains(items: List[T], x: T) -> Bool = List.member(x, items)
+  end
+  operation has2() -> Bool = Coll.contains([1, 2, 3], 2)
+  operation has9() -> Bool = Coll.contains([1, 2, 3], 9)
+end
+"#;
+    let mut interp = crate::common::interp_for(src);
+    let run_b = |interp: &mut Interpreter, op: &str| {
+        expect_bool(interp.call(op, &[]).unwrap_or_else(|e| panic!("call {op}: {e:?}")))
+    };
+    assert_eq!(run_b(&mut interp, "test.wi418.has2"), true);
+    assert_eq!(run_b(&mut interp, "test.wi418.has9"), false);
+}
+
 #[test]
 fn m2_set_literal_dedupes_duplicates() {
     // {10, 20, 20, 30} has four positional elements at parse time; after
