@@ -16,7 +16,7 @@ namespace anthill.cli.parse
   -- Repeated flags produce multiple bindings with the same name.
   entity Binding(name: String, value: String)
 
-  entity ParsedArgs(spec_name: String, bindings: List[T = Binding])
+  entity ParsedArgs(spec_name: String, bindings: List[Binding])
 
   enum ParseError
     entity no_subcommand
@@ -33,7 +33,7 @@ namespace anthill.cli.parse
   end
 
   -- Top-level: argv[0] is the subcommand, rest is its args.
-  operation parse_argv(specs: List[T = OperationSpec], argv: List[T = String]) -> ParseResult =
+  operation parse_argv(specs: List[OperationSpec], argv: List[String]) -> ParseResult =
     match argv
       case nil() -> parse_err(no_subcommand())
       case cons(head, rest) ->
@@ -41,7 +41,7 @@ namespace anthill.cli.parse
           case none() -> parse_err(unknown_subcommand(head))
           case some(s) -> parse_args(s, rest, nil())
 
-  operation parse_args(s: OperationSpec, argv: List[T = String], acc: List[T = Binding]) -> ParseResult =
+  operation parse_args(s: OperationSpec, argv: List[String], acc: List[Binding]) -> ParseResult =
     match argv
       case nil() -> finalize(s, acc)
       case cons(head, rest) ->
@@ -50,7 +50,7 @@ namespace anthill.cli.parse
         else
           consume_positional(s, head, rest, acc)
 
-  operation consume_flag(s: OperationSpec, name: String, rest: List[T = String], acc: List[T = Binding]) -> ParseResult =
+  operation consume_flag(s: OperationSpec, name: String, rest: List[String], acc: List[Binding]) -> ParseResult =
     match s
       case OperationSpec(sname, _, params, _) ->
         match find_param(params, name)
@@ -65,7 +65,7 @@ namespace anthill.cli.parse
                       case nil() -> parse_err(flag_expects_value(name))
                       case cons(v, more) -> parse_args(s, more, cons(Binding(name, v), acc))
 
-  operation consume_positional(s: OperationSpec, value: String, rest: List[T = String], acc: List[T = Binding]) -> ParseResult =
+  operation consume_positional(s: OperationSpec, value: String, rest: List[String], acc: List[Binding]) -> ParseResult =
     match s
       case OperationSpec(_, _, params, _) ->
         match next_positional(params, acc)
@@ -74,7 +74,7 @@ namespace anthill.cli.parse
             match p
               case ParamSpec(pname, _, _, _) -> parse_args(s, rest, cons(Binding(pname, value), acc))
 
-  operation finalize(s: OperationSpec, acc: List[T = Binding]) -> ParseResult =
+  operation finalize(s: OperationSpec, acc: List[Binding]) -> ParseResult =
     match s
       case OperationSpec(sname, _, params, _) ->
         match check_required(params, acc, sname)
@@ -95,23 +95,23 @@ namespace anthill.cli.parse
   -- (The argv walk `parse_args` stays direct recursion: it is a lookahead state
   -- machine — a flag consumes the NEXT argv element — not a per-element fold.)
 
-  operation spec_name_is(name: String) -> Function[A = OperationSpec, B = Bool] =
+  operation spec_name_is(name: String) -> Function[OperationSpec, Bool] =
     lambda s ->
       match s
         case OperationSpec(sname, _, _, _) -> eq(sname, name)
 
-  operation param_name_is(name: String) -> Function[A = ParamSpec, B = Bool] =
+  operation param_name_is(name: String) -> Function[ParamSpec, Bool] =
     lambda p ->
       match p
         case ParamSpec(pname, _, _, _) -> eq(pname, name)
 
-  operation binding_name_is(name: String) -> Function[A = Binding, B = Bool] =
+  operation binding_name_is(name: String) -> Function[Binding, Bool] =
     lambda b ->
       match b
         case Binding(bname, _) -> eq(bname, name)
 
   -- A positional param not yet bound in `acc`.
-  operation unbound_positional(acc: List[T = Binding]) -> Function[A = ParamSpec, B = Bool] =
+  operation unbound_positional(acc: List[Binding]) -> Function[ParamSpec, Bool] =
     lambda p ->
       match p
         case ParamSpec(pname, kind, _, _) ->
@@ -120,28 +120,28 @@ namespace anthill.cli.parse
             case _ -> false
 
   -- A required param missing from `acc`.
-  operation required_missing(acc: List[T = Binding]) -> Function[A = ParamSpec, B = Bool] =
+  operation required_missing(acc: List[Binding]) -> Function[ParamSpec, Bool] =
     lambda p ->
       match p
         case ParamSpec(pname, _, required, _) -> and(required, not(has_binding(acc, pname)))
 
-  operation find_spec(specs: List[T = OperationSpec], name: String) -> Option[T = OperationSpec] =
+  operation find_spec(specs: List[OperationSpec], name: String) -> Option[OperationSpec] =
     find(specs, spec_name_is(name))
 
-  operation find_param(params: List[T = ParamSpec], name: String) -> Option[T = ParamSpec] =
+  operation find_param(params: List[ParamSpec], name: String) -> Option[ParamSpec] =
     find(params, param_name_is(name))
 
-  operation has_binding(acc: List[T = Binding], name: String) -> Bool =
+  operation has_binding(acc: List[Binding], name: String) -> Bool =
     match find(acc, binding_name_is(name))
       case some(_) -> true
       case none() -> false
 
   -- First positional param that is not yet bound.
-  operation next_positional(params: List[T = ParamSpec], acc: List[T = Binding]) -> Option[T = ParamSpec] =
+  operation next_positional(params: List[ParamSpec], acc: List[Binding]) -> Option[ParamSpec] =
     find(params, unbound_positional(acc))
 
   -- First required param missing from acc, mapped to the typed error (else none).
-  operation check_required(params: List[T = ParamSpec], acc: List[T = Binding], spec_name: String) -> Option[T = ParseError] =
+  operation check_required(params: List[ParamSpec], acc: List[Binding], spec_name: String) -> Option[ParseError] =
     match find(params, required_missing(acc))
       case none() -> none()
       case some(p) ->

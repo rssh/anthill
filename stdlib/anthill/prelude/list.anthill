@@ -85,7 +85,7 @@ enum anthill.prelude.List
   -- delivered by WI-357. The effect dual — threading `E` through the nested
   -- `Stream` in a destructured Pair across a carrier-impl self-recursion (the
   -- lazy `filter` carrier) — is still open; see WI-413.
-  operation splitFirst(xs: List) -> Option[Pair[T, List]] =
+  operation splitFirst[Elem](xs: List[Elem]) -> Option[Pair[Elem, List[Elem]]] =
     match xs
       case nil() -> none
       case cons(h, t) -> some(pair(h, t))
@@ -95,12 +95,17 @@ enum anthill.prelude.List
   -- subspec that excludes List.
   fact IndexedSeq[List[T], T]
 
-  operation nth(xs: List, i: Int) -> Option =
-    match xs
-      case nil() -> none
-      case cons(h, t) ->
+  -- `Option[Elem]` to conform to IndexedSeq's `nth -> Option[T]`. Recurses via
+  -- `splitFirst` (whose DECLARED return threads the tail as `List[Elem]`) rather
+  -- than destructuring `cons` directly — the cons tail is bare `List` (cons
+  -- cannot carry `List[T]`: a self-referential field type overflows the type
+  -- walk), so a direct `nth(t, …)` could not infer the recursive `Elem`.
+  operation nth[Elem](xs: List[Elem], i: Int) -> Option[Elem] =
+    match splitFirst(xs)
+      case none() -> none
+      case some(pair(h, rest)) ->
         ite(eq(i, 0), some(h),
-          ite(gt(i, 0), nth(t, sub(i, 1)), none))
+          ite(gt(i, 0), nth(rest, sub(i, 1)), none))
   rule nth(nil, ?_) = none
   rule nth(cons(?h, ?_), 0) = some(?h)
   rule nth(cons(?_, ?t), ?i) = nth(?t, sub(?i, 1)) :- gt(?i, 0)
