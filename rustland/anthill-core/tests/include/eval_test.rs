@@ -632,6 +632,49 @@ end
     );
 }
 
+/// WI-421 (resolution a2): an external, `requires`-carrying operation
+/// (`List.member`, since `List requires Eq[T]`) used as a higher-order argument
+/// inside a sort body whose element type `T` is ABSTRACT — the case WI-420 left
+/// "machinery-ready but unreachable" for BARE eta. The acceptance semantics
+/// (abstract requires-op as a HOF arg, evaluating true/false) are met TODAY via
+/// the lambda + qualified-dot idiom: `lambda e -> List.member(e, xs)`. The
+/// `Closure` snapshots `Box`'s dispatching dictionary (`__req_self`/`__req_eq`)
+/// at construction and reinstalls it when applied (the sound requirement-capture
+/// path WI-420's feedback contrasts against bare `OpRef`), so `member`'s
+/// `eq(head, x)` resolves against the abstract `Eq[T]` evidence the enclosing
+/// `Box requires Eq[T]` supplies. This pins that path: bare-op eta inside a sort
+/// body (`use_pair(member, …)`) is deliberately NOT supported — it would be pure
+/// sugar over this, and exposing it (or a first-class `summon`-style dictionary)
+/// is left to a separate proposal, not WI-421.
+#[test]
+fn wi421_abstract_requires_op_via_lambda_idiom_evals() {
+    let src = r#"
+namespace test.wi421
+  import anthill.prelude.{List, Int, Bool, Function, Eq}
+  sort Box
+    sort T = ?
+    requires Eq[T]
+    operation use_pred(f: Function[A = T, B = Bool], x: T) -> Bool = f(x)
+    -- `xs` is abstract-T-typed; `List.member` needs `Eq[T]`, supplied by the
+    -- enclosing `Box requires Eq[T]` and captured by the lambda's Closure.
+    operation has(x: T, xs: List[T]) -> Bool =
+      use_pred(lambda e -> List.member(e, xs), x)
+  end
+  operation present() -> Bool = Box.has(2, [1, 2, 3])
+  operation absent() -> Bool = Box.has(9, [1, 2, 3])
+end
+"#;
+    let mut interp = crate::common::interp_for(src);
+    assert!(
+        expect_bool(interp.call("test.wi421.present", &[]).expect("present runs")),
+        "abstract cross-sort requires-op via lambda idiom: 2 IS in [1,2,3] (WI-421)",
+    );
+    assert!(
+        !expect_bool(interp.call("test.wi421.absent", &[]).expect("absent runs")),
+        "abstract cross-sort requires-op via lambda idiom: 9 is NOT in [1,2,3] (WI-421)",
+    );
+}
+
 #[test]
 fn wi064_stdlib_combinators_fold_map_find() {
     // WI-064: the stdlib higher-order combinators run end-to-end on a List
