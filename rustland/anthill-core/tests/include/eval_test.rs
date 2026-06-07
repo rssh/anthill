@@ -710,24 +710,21 @@ end
     assert_eq!(run_b(&mut interp, "test.wi415.has9"), false);
 }
 
-/// WI-418 trip-wire (`#[ignore]`): the cross-sort ABSTRACT requirement-
-/// forwarding gap — the third of the WI-415 gaps, now REACHABLE (it
-/// typechecks) because WI-416 fixed the typer stack overflow this scenario
-/// used to hit.
+/// WI-418: the cross-sort ABSTRACT requirement-forwarding case — the third of
+/// the WI-415 gaps (and reachable only after WI-416 fixed the typer overflow
+/// this scenario used to hit).
 ///
 /// `Coll requires Eq[T]` and its op `contains` delegates to `List.member` on
 /// its OWN abstract element `x : Coll.T`. The outer `Coll.contains([1,2,3], 2)`
 /// is concrete (`Coll.T := Int`), so WI-415 threads `Eq[Int]` into `contains`'s
-/// frame as `__req_eq`. But the inner `member(x, items)` is cross-sort
-/// (member's parent is `List`, not `Coll`) AND abstract (`x : Coll.T`): it must
-/// FORWARD `contains`'s `__req_eq` to `member`'s frame (Strategy-1 `var_ref`,
-/// since `Coll`'s `requires Eq[T]` covers `member`'s `Eq[List.T]` at
-/// `List.T = Coll.T`). Today `build_concrete_dispatch_dict` returns `None` for
-/// the abstract inner call and eval falls through to a plain apply with no
-/// requirements, so `member`'s deferred `eq(head, x)` aborts with
-/// `DeferToRequirement: __req_eq not bound`. Un-`#[ignore]` when WI-418 lands.
+/// frame as `__req_eq`. The inner `member(x, items)` is cross-sort (member's
+/// parent is `List`, not `Coll`) AND abstract (`x : Coll.T`): WI-418 makes the
+/// typer build a dispatching dict for it whose `Eq` slot is a Strategy-1
+/// `var_ref(__req_eq)` — forwarding `contains`'s frame `__req_eq` onward to
+/// `member`'s frame (`Coll`'s `requires Eq[T]` covers `member`'s `Eq[List.T]` at
+/// `List.T = Coll.T`). Without it `member`'s deferred `eq(head, x)` aborted with
+/// `DeferToRequirement: __req_eq not bound`.
 #[test]
-#[ignore]
 fn wi418_cross_sort_abstract_call_forwards_caller_requirement() {
     let src = r#"
 namespace test.wi418

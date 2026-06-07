@@ -4086,25 +4086,31 @@ fn build_dispatching_dict_from_chain(
     Some(build_construct_requirement(kb, syms, callee_spec_sort, sub_reqs_list))
 }
 
-/// WI-415: build, at COMPILE stage, the parent-bundle dispatching dict a
-/// directly-called concrete op needs in its frame when it is called from
-/// OUTSIDE its sort (so the same-sort requirement-inheritance path does not
-/// apply). The op's parent sort `requires Spec[T]`; at the call site the
-/// per-call `subst` pins `T` concretely (`member(2, [1,2,3])` ⇒ `List.T :=
-/// Int`), so the enclosing sort's abstract `Eq[T]` requirement resolves to
-/// the concrete `Eq[Int]` against `fact Eq[Int]`.
+/// WI-415/WI-418: build, at COMPILE stage, the parent-bundle dispatching dict a
+/// directly-called op needs in its frame when it is called from OUTSIDE its sort
+/// (so the same-sort requirement-inheritance path does not apply). The op's
+/// parent sort `requires Spec[T]`; each direct requirement is projected into the
+/// dict two ways, per the call site:
 ///
-/// This reuses the exact projection/construction helpers
-/// `build_dispatching_dict_direct` (the requirement-insertion pass) uses; the
-/// only difference is that the call-site bindings are substituted into the
-/// callee chain FIRST. That substitution is why this runs here, in the typer,
-/// and not in `req_insertion::run` — the subst is alive here and gone there.
+/// - **Concrete (WI-415):** the per-call `subst` pins `T` (`member(2, [1,2,3])`
+///   ⇒ `List.T := Int`), so the abstract `Eq[T]` requirement substitutes to the
+///   concrete `Eq[Int]` and resolves against `fact Eq[Int]` (Strategy 3).
+/// - **Abstract cross-sort (WI-418):** the element stays abstract but the
+///   ENCLOSING sort's own `requires` covers the dep (a sort `Coll requires
+///   Eq[T]` whose op delegates to `List.member` on its abstract element), so the
+///   dep is FORWARDED via a Strategy-1/2 `var_ref` that reads the caller frame's
+///   `__req_*` at eval — threading `Coll`'s `__req_eq` onward to `member`.
+///
+/// Reuses the exact projection/construction helpers `build_dispatching_dict_direct`
+/// (the requirement-insertion pass) uses; the difference is the call-site
+/// bindings are substituted into the callee chain FIRST — which is why this runs
+/// here, in the typer, where the subst is alive (it is gone by `req_insertion`).
 ///
 /// Returns `None` (⇒ no dict; eval keeps its same-sort-inherit / plain-apply
-/// behavior) when the call binds no type parameter concretely (an abstract
-/// in-sort call — the enclosing sort's own requirement carries it) or when
-/// any requirement fails to resolve concretely (leave the pre-WI-415
-/// behavior rather than emit an under-arity dict eval would reject).
+/// behavior) for a SAME-SORT call (eval inherits the enclosing frame's
+/// requirements) or when any requirement fails to project — neither a concrete
+/// `fact` nor a covering caller `requires` — rather than emit an under-arity
+/// dict eval would reject.
 fn build_concrete_dispatch_dict(
     kb: &mut KnowledgeBase,
     subst: &Substitution,
@@ -4112,25 +4118,32 @@ fn build_concrete_dispatch_dict(
     caller_sort: Option<Symbol>,
     caller_requires: &[RequiresEntry],
 ) -> Option<TermId> {
+    // WI-418: a SAME-SORT call inherits the enclosing frame's requirements at
+    // eval (`start_apply_same_sort` checks `inherit` — callee parent == caller
+    // sort — first), so any dict built here would be ignored. Skip it. Every
+    // other call (cross-sort, or no enclosing sort) builds a dict: a CONCRETE
+    // dep resolves against its `fact` via Strategy 3 (WI-415); an ABSTRACT dep
+    // the enclosing sort's own `requires` covers is FORWARDED via a Strategy-1/2
+    // `var_ref` reading the caller frame's `__req_*` (WI-418 — e.g. a sort
+    // `Coll requires Eq[T]` whose op delegates to `List.member` on its abstract
+    // element, so `member` needs `Coll`'s `__req_eq` threaded onward).
+    if caller_sort == Some(callee_spec_sort) {
+        return None;
+    }
     let abstract_chain = direct_requires_chain(kb, callee_spec_sort);
     if abstract_chain.is_empty() {
         return None;
     }
-    // Substitute the call-site bindings into each direct requirement. Bail
-    // unless at least one became concrete — an all-abstract chain is the
-    // in-sort recursion / sibling case the inherit path already handles.
-    let mut any_concrete = false;
-    let mut concrete_chain: Vec<RequiresEntry> = Vec::with_capacity(abstract_chain.len());
-    for entry in &abstract_chain {
-        let spec = substitute_spec_via_subst(kb, entry.spec, subst);
-        if spec != entry.spec {
-            any_concrete = true;
-        }
-        concrete_chain.push(RequiresEntry { required_sort: entry.required_sort, spec });
-    }
-    if !any_concrete {
-        return None;
-    }
+    // Substitute the call-site bindings into each direct requirement so a
+    // concretely-pinned dep (`Eq[T]` ⇒ `Eq[Int]`) resolves against its `fact`;
+    // an abstract dep is left open for the caller-frame `var_ref` forwarding.
+    let concrete_chain: Vec<RequiresEntry> = abstract_chain
+        .iter()
+        .map(|entry| RequiresEntry {
+            required_sort: entry.required_sort,
+            spec: substitute_spec_via_subst(kb, entry.spec, subst),
+        })
+        .collect();
     let syms = ProjectionSyms::resolve(kb)?;
     // `require_complete = true`: every direct requirement must project into the
     // dict, else fall back to no dict (a short dict fails eval's arity check).
