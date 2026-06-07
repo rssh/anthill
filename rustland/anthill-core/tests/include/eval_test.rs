@@ -598,6 +598,54 @@ end
 }
 
 #[test]
+fn wi413_lazy_filter_skips_via_self_recursion() {
+    // WI-413 / WI-410: the lazy `FilteredStream` carrier runs end-to-end. Its
+    // `splitFirst` SELF-RECURSES on a reconstructed `filtered(rest, pred)` to
+    // SKIP a dropped element — the shape that leaked an undeclared `??_` effect
+    // before WI-413. `filter` returns a Stream, so it composes with the eager
+    // consumers (`collect` / `fold_left`). The predicate is a named op
+    // (eta-lifted to a function value, WI-275); `filter` takes explicit
+    // `[S, Eff]` like its sibling `map[Dst, Eff]`.
+    let src = r#"
+namespace test.wi413filter
+  import anthill.prelude.{List, Int, Stream, Bool, Option}
+  import anthill.prelude.List.{nil, cons}
+  import anthill.prelude.Stream.{collect, fold_left}
+  import anthill.prelude.FilteredStream.{filter}
+
+  operation addp(a: Int, b: Int) -> Int = a + b
+  operation is_big(n: Int) -> Bool = n > 2
+
+  operation encode2(xs: List[T = Int]) -> Int =
+    match xs
+      case cons(a, cons(b, _)) -> a * 10 + b
+      case cons(a, _) -> a
+      case _ -> 0
+
+  -- filter (n > 2) over [1,2,3,4] ⇒ [3,4]: the leading 1 and 2 are SKIPPED by
+  -- the self-recursion. collect ⇒ 34; sum ⇒ 7.
+  operation kept_collect() -> Int = encode2(collect(filter[S = Int, Eff = {}]([1, 2, 3, 4], is_big)))
+  operation kept_sum() -> Int = fold_left(filter[S = Int, Eff = {}]([1, 2, 3, 4], is_big), 0, addp)
+  -- A leading run of drops then a single keep: [1,2,3] ⇒ [3] ⇒ 3.
+  operation kept_last() -> Int = fold_left(filter[S = Int, Eff = {}]([1, 2, 3], is_big), 0, addp)
+  -- All dropped ⇒ empty ⇒ 0 (every element skipped via self-recursion to none).
+  operation kept_none() -> Int = fold_left(filter[S = Int, Eff = {}]([1, 2], is_big), 0, addp)
+  -- All kept ⇒ no skips: [3,4,5] ⇒ 12.
+  operation kept_all() -> Int = fold_left(filter[S = Int, Eff = {}]([3, 4, 5], is_big), 0, addp)
+end
+"#;
+    let mut interp = crate::common::interp_for(src);
+    let run = |interp: &mut Interpreter, op: &str| {
+        expect_int(interp.call(op, &[]).unwrap_or_else(|e| panic!("call {op}: {e:?}")))
+    };
+    assert_eq!(run(&mut interp, "test.wi413filter.kept_collect"), 34);
+    assert_eq!(run(&mut interp, "test.wi413filter.kept_sum"), 7);
+    assert_eq!(run(&mut interp, "test.wi413filter.kept_last"), 3);
+    assert_eq!(run(&mut interp, "test.wi413filter.kept_none"), 0);
+    assert_eq!(run(&mut interp, "test.wi413filter.kept_all"), 12);
+}
+
+#[test]
 fn m2_set_literal_dedupes_duplicates() {
     // {10, 20, 20, 30} has four positional elements at parse time; after
     // SetLiteral dedup (scalar_eq on Int) it carries three. `count` uses

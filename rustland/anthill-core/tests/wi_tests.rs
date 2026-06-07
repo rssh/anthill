@@ -172,6 +172,9 @@ mod wi357_element_typing_test;
 #[path = "include/wi365_effect_grounding_test.rs"]
 mod wi365_effect_grounding_test;
 
+#[path = "include/wi413_effect_self_recursion_test.rs"]
+mod wi413_effect_self_recursion_test;
+
 #[path = "include/wi375_effect_row_surface_test.rs"]
 mod wi375_effect_row_surface_test;
 

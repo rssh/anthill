@@ -887,6 +887,38 @@ fn walk_type_value(kb: &KnowledgeBase, subst: &Substitution, ty: &Value) -> Valu
     }
 }
 
+/// DEEP counterpart of [`walk_type_value`] for a constructor pattern's field
+/// type. [`walk_type_value`] resolves only a TOP-LEVEL type-param var; a
+/// PARAMETERIZED field type (`recw.source: Stream[T = T, E = E]`) carries its
+/// type-param vars NESTED in the `Fn`'s named_args, which the shallow
+/// [`walk_type`] leaves untouched — so destructuring `case recw(src)` over a
+/// `Rec[T = Elem, E = Eff]` scrutinee left `src : Stream[T = ?_, E = ?_]`
+/// instead of threading the carrier's element/effect in (WI-413; the same gap
+/// also blocked a `List`-impl `split -> Option[(T, List)]` from threading its
+/// destructured head). Recurse into the parameterized type's children while
+/// preserving the top-level `Value::Node` surfacing (a denoted-bearing
+/// type-param value is carried, not re-grounded).
+fn walk_pattern_field_type_deep(
+    kb: &mut KnowledgeBase,
+    subst: &Substitution,
+    ty: &Value,
+) -> Value {
+    // Top-level type-param var → resolve through the subst's `Value` binding
+    // first, so a `Value::Node` (denoted) binding surfaces rather than being
+    // dropped by the term-only deep walk (which keeps a Node-bound var).
+    if let Value::Term(t) = ty {
+        if let Term::Var(Var::Global(vid)) = kb.get_term(*t) {
+            if let Some(bound) = subst.resolve_as_value(*vid) {
+                let bound = bound.clone();
+                return walk_pattern_field_type_deep(kb, subst, &bound);
+            }
+        }
+    }
+    // Otherwise deep-walk: a parameterized `Fn` has its type params resolved in
+    // every nested position; a ground term / `Value::Node` is returned as-is.
+    walk_type_deep_value(kb, subst, ty)
+}
+
 // ── Helpers ────────────────────────────────────────────────────
 
 /// WI-342 effects-vertical: display name of a carrier-agnostic effect label.
@@ -8180,12 +8212,17 @@ fn extend_env_from_pattern(
                             // WI-342: the field type is a carrier-agnostic `Value`
                             // (`entity_field_types`); resolve its sort-level type
                             // params through the pattern subst without re-grounding.
-                            let field_type = fields.get(i).map(|(_, ty)| {
-                                match &subst {
-                                    Some(s) => walk_type_value(kb, s, ty),
-                                    None => ty.clone(),
-                                }
-                            });
+                            // Deep-walk: a parameterized field type
+                            // (`source: Stream[T = T, E = E]`) carries its type
+                            // params NESTED in the `Fn`, which the shallow
+                            // `walk_type_value` left unsubstituted — so the
+                            // destructure did not thread the scrutinee's element /
+                            // effect into the sub-pattern var (WI-413).
+                            let field_type = match (fields.get(i), &subst) {
+                                (Some((_, ty)), Some(s)) => Some(walk_pattern_field_type_deep(kb, s, ty)),
+                                (Some((_, ty)), None) => Some(ty.clone()),
+                                (None, _) => None,
+                            };
                             extend_env_from_pattern(kb, env, *sub_pat, field_type);
                         }
                     } else {
