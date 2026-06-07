@@ -81,8 +81,10 @@ enum anthill.prelude.List
   -- `Pair[A = T, B = List]` return mirrors Stream's `Pair[A = T, B = Stream]`
   -- (the Stream-conformant shape) and carries the element type T in the
   -- *signature*. Threading T through a destructured `Pair` at consumption
-  -- sites (so `head` on a `List[Int]` statically types as `Option[Int]`) is
-  -- not wired in the typer yet — see WI-356.
+  -- sites (so `head` on a `List[Int]` statically types as `Option[Int]`) was
+  -- delivered by WI-357. The effect dual — threading `E` through the nested
+  -- `Stream` in a destructured Pair across a carrier-impl self-recursion (the
+  -- lazy `filter` carrier) — is still open; see WI-413.
   operation splitFirst(xs: List) -> Option[T = Pair[A = T, B = List]] =
     match xs
       case nil() -> none
