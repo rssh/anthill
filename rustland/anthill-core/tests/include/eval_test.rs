@@ -646,6 +646,73 @@ end
 }
 
 #[test]
+fn wi414_nth_dispatches_concrete_eq() {
+    // WI-414: `nth` uses `eq(i, 0)` (on a CONCRETE `Int`) under List's sort-level
+    // `requires Eq[T]`. That call must resolve to `fact Eq[Int]` CONCRETELY rather
+    // than defer to an unbound `__req_eq` — so `nth` is runtime-callable from an
+    // external namespace (previously a compile-clean call that aborted with
+    // `DeferToRequirement: __req_eq not bound`). The fix gates the defer-to-
+    // requirement match: a concrete per-call value never defers to an OPEN-T
+    // requirement entry. (`nth`'s body uses `if/then/else`, not the rule-only
+    // `ite` op, so it is evaluable.)
+    let src = r#"
+namespace test.wi414
+  import anthill.prelude.{List, Int, Option}
+  import anthill.prelude.List.{nth}
+
+  operation unwrap(o: Option[Int]) -> Int =
+    match o
+      case some(x) -> x
+      case none() -> 0 - 1
+  operation at0() -> Int = unwrap(nth([10, 20, 30], 0))
+  operation at1() -> Int = unwrap(nth([10, 20, 30], 1))
+  operation at2() -> Int = unwrap(nth([10, 20, 30], 2))
+  operation oob() -> Int = unwrap(nth([10, 20, 30], 5))
+  operation neg() -> Int = unwrap(nth([10, 20, 30], 0 - 1))
+end
+"#;
+    let mut interp = crate::common::interp_for(src);
+    let run = |interp: &mut Interpreter, op: &str| {
+        expect_int(interp.call(op, &[]).unwrap_or_else(|e| panic!("call {op}: {e:?}")))
+    };
+    assert_eq!(run(&mut interp, "test.wi414.at0"), 10);
+    assert_eq!(run(&mut interp, "test.wi414.at1"), 20);
+    assert_eq!(run(&mut interp, "test.wi414.at2"), 30);
+    assert_eq!(run(&mut interp, "test.wi414.oob"), -1);
+    assert_eq!(run(&mut interp, "test.wi414.neg"), -1);
+}
+
+/// WI-415 trip-wire (`#[ignore]`): the CALL-SITE dual of WI-414. `member`'s
+/// `eq(head, x)` is genuinely ABSTRACT (head : the element T), so it correctly
+/// DEFERS — but a call `member(2, [1,2,3])` from a namespace with no `requires`
+/// must CONSTRUCT the `Eq[Int]` requirement from `fact Eq[Int]` and thread it,
+/// rather than leave `__req_eq` unbound. Today the typer passes
+/// `resolved_tree = None` for a directly-called concrete requires-op, and
+/// `build_dispatching_dict_direct` can't resolve the open `Eq[T]` with no caller
+/// requires (the resolved-tree single-node abstraction is the wrong shape — the
+/// fix must thread the call-site subst into the dict builder so it substitutes
+/// `Eq[T]`→`Eq[Int]` in the parent-bundle shape). Un-`#[ignore]` when WI-415 lands.
+#[test]
+#[ignore]
+fn wi415_member_call_constructs_concrete_eq_requirement() {
+    let src = r#"
+namespace test.wi415
+  import anthill.prelude.{List, Int, Bool}
+  import anthill.prelude.List.{member}
+
+  operation has2() -> Bool = member(2, [1, 2, 3])
+  operation has9() -> Bool = member(9, [1, 2, 3])
+end
+"#;
+    let mut interp = crate::common::interp_for(src);
+    let run_b = |interp: &mut Interpreter, op: &str| {
+        expect_bool(interp.call(op, &[]).unwrap_or_else(|e| panic!("call {op}: {e:?}")))
+    };
+    assert_eq!(run_b(&mut interp, "test.wi415.has2"), true);
+    assert_eq!(run_b(&mut interp, "test.wi415.has9"), false);
+}
+
+#[test]
 fn m2_set_literal_dedupes_duplicates() {
     // {10, 20, 20, 30} has four positional elements at parse time; after
     // SetLiteral dedup (scalar_eq on Int) it carries three. `count` uses

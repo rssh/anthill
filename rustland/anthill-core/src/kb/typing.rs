@@ -4752,6 +4752,20 @@ fn entry_matches_subst(
                 continue;
             }
         };
+        // WI-414: a CONCRETE per-call value (e.g. `Eq.T := Int` from
+        // `eq(i: Int, 0)`) must NOT defer to an OPEN-T requirement entry
+        // (`requires Eq[T]`, the enclosing sort's abstract element) — such a call
+        // is not "the enclosing T", so it dispatches concretely to the available
+        // `fact Eq[Int]`. Without this the wildcard match below treated `Int` vs
+        // the open `T` as a match, deferring a concretely-dispatchable call to a
+        // `__req` slot that an external caller never binds (a compile-clean call
+        // that then aborts at runtime). An ABSTRACT per-call value (the enclosing
+        // T itself) still defers below — its impl IS the requirement; and a
+        // concrete call to a CONCRETE requirement (`requires Eq[T=Int]`) still
+        // defers via the dispatch match (entry not a wildcard).
+        if !is_type_param_value(kb, per_call_value) && is_type_param_value(kb, *entry_value) {
+            return false;
+        }
         // Either side may be a wildcard (a type-param value): the
         // requires entry might use the enclosing sort's open T
         // (`requires Eq[T]`) or a concrete carrier (`requires Eq[T=Int]`).

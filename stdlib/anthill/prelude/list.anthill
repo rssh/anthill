@@ -35,7 +35,7 @@ enum anthill.prelude.List
   operation member(x: T, l: List) -> Bool =
     match l
       case nil() -> false
-      case cons(head, tail) -> ite(eq(head, x), true, member(x, tail))
+      case cons(head, tail) -> if eq(head, x) then true else member(x, tail)
   rule member(?x, cons(head: ?x, tail: ?_))
   rule member(?x, cons(head: ?_, tail: ?rest)) :- member(?x, ?rest)
 
@@ -104,8 +104,9 @@ enum anthill.prelude.List
     match splitFirst(xs)
       case none() -> none
       case some(pair(h, rest)) ->
-        ite(eq(i, 0), some(h),
-          ite(gt(i, 0), nth(rest, sub(i, 1)), none))
+        if eq(i, 0) then some(h)
+        else if gt(i, 0) then nth(rest, sub(i, 1))
+        else none
   rule nth(nil, ?_) = none
   rule nth(cons(?h, ?_), 0) = some(?h)
   rule nth(cons(?_, ?t), ?i) = nth(?t, sub(?i, 1)) :- gt(?i, 0)
