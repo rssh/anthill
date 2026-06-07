@@ -3724,6 +3724,10 @@ fn check_apply_iter(
                                 spec_op_sym: fn_sym,
                                 enclosing_sort,
                                 resolved_tree: resolved_tree.clone(),
+                                // Pin-now path: the resolved_tree (when threaded
+                                // by eval) carries the requirement; WI-415's
+                                // compile-built dict is the Direct-call dual.
+                                dispatch_dict: None,
                             }
                         } else {
                             CallClass::PinNow {
@@ -3776,6 +3780,22 @@ fn check_apply_iter(
             // tag and the call stays as plain apply.
             if let Some(parent_sym) = impl_parent_of_op(kb, fn_sym) {
                 if !requires_chain(kb, parent_sym).is_empty() {
+                    // WI-415: build the parent-bundle dispatching dict NOW,
+                    // while the per-call subst still pins `parent_sym`'s type
+                    // params (`member(2, …)` ⇒ `List.T := Int`). A cross-sort /
+                    // no-enclosing-sort call then threads the CONCRETE
+                    // requirement (`Eq[Int]`) into the callee's frame; eval
+                    // installs the pre-built dict without re-resolving. `None`
+                    // when no param binds concretely: an in-sort call inherits
+                    // the enclosing frame's requirement at eval, while a
+                    // cross-sort abstract call has no covering requirement at
+                    // all (a pre-existing gap WI-415 does not address).
+                    let enclosing_sort = env.enclosing_sort();
+                    let caller_requires: Vec<RequiresEntry> =
+                        env.enclosing_requires().unwrap_or(&[]).to_vec();
+                    let dispatch_dict = build_concrete_dispatch_dict(
+                        kb, &subst, parent_sym, enclosing_sort, &caller_requires,
+                    );
                     classify(
                         kb,
                         occ,
@@ -3783,8 +3803,9 @@ fn check_apply_iter(
                             fn_target_sym: fn_sym,
                             callee_spec_sort: parent_sym,
                             spec_op_sym: fn_sym,
-                            enclosing_sort: env.enclosing_sort(),
+                            enclosing_sort,
                             resolved_tree: None,
+                            dispatch_dict,
                         },
                     );
                 }
@@ -3978,32 +3999,177 @@ fn build_dispatching_dict_direct(
     // arity invariant. Transitive callee requires are bundled recursively
     // inside each direct projection, not flattened into this list.
     let callee_chain = direct_requires_chain(kb, callee_spec_sort);
-    // Hoist Strategy 2's per-slot direct-requires walk out of the dep
-    // loop: it depends only on `caller_requires`, not on the current
-    // dep, so the worst-case cost drops from O(deps × slots × |SortRequiresInfo|)
-    // to O(slots × |SortRequiresInfo|).
-    //
-    // WI-239: DIRECT (not transitive). A requirement value bundles only
-    // its own direct sub-requires, so `requirement_at_sort(__req_i, k)`'s
-    // `k` indexes the i-th caller require's *direct* sub-chain. A deeper
-    // dep (reachable only past two levels) is not found by Strategy 2 and
-    // falls through to Strategy 3's SLD construction.
+    build_dispatching_dict_from_chain(
+        kb, callee_spec_sort, &callee_chain, caller_sort, caller_requires, syms, false,
+    )
+}
+
+/// Shared core of the Direct-path dict build (`build_dispatching_dict_direct`)
+/// and the WI-415 concrete build (`build_concrete_dispatch_dict`): emit
+/// `construct_requirement(callee_spec_sort, [<one projection per `chain`
+/// entry>])`, sourcing each projection from `caller_requires` via the
+/// three-strategy search in `build_dep_projection`.
+///
+/// `chain` is the callee's DIRECT requires — one projection per slot the
+/// callee body reads by `__req_<spec>` name, matching `synth_req_names` (also
+/// direct) so the dict's arity equals the callee's direct-require count
+/// (eval's `expand_dispatching_dict` invariant). Transitive requires are
+/// bundled recursively inside each direct projection, not flattened. The
+/// Direct path passes `direct_requires_chain` verbatim; WI-415 passes a copy
+/// with the call-site bindings substituted in so each entry resolves
+/// concretely.
+///
+/// `require_complete`: when true, a dep that fails to project aborts the whole
+/// dict (`None`) — WI-415 needs every slot present (a short dict fails eval's
+/// arity check), so it emits no dict and falls back rather than a broken one.
+/// The Direct path passes false and silently drops un-projected deps (its
+/// output is the diagnostic-only `dispatch_rewrites` term).
+fn build_dispatching_dict_from_chain(
+    kb: &mut KnowledgeBase,
+    callee_spec_sort: Symbol,
+    chain: &[RequiresEntry],
+    caller_sort: Option<Symbol>,
+    caller_requires: &[RequiresEntry],
+    syms: &ProjectionSyms,
+    require_complete: bool,
+) -> Option<TermId> {
+    // Hoist Strategy 2's per-slot direct-requires walk out of the dep loop:
+    // it depends only on `caller_requires`, not on the current dep, so the
+    // worst-case cost drops from O(deps × slots × |SortRequiresInfo|) to
+    // O(slots × |SortRequiresInfo|). DIRECT (not transitive, WI-239): a
+    // requirement value bundles only its own direct sub-requires, so
+    // `requirement_at_sort(__req_i, k)`'s `k` indexes the i-th caller
+    // require's *direct* sub-chain; a deeper dep falls through to Strategy 3.
     let caller_sub_chains: Vec<Vec<RequiresEntry>> = caller_requires
         .iter()
         .map(|ar| direct_requires_chain(kb, ar.required_sort))
         .collect();
-    let mut proj_terms: Vec<TermId> = Vec::with_capacity(callee_chain.len());
-    for dep in &callee_chain {
-        if let Some(t) = build_dep_projection(
+    let mut proj_terms: Vec<TermId> = Vec::with_capacity(chain.len());
+    for dep in chain {
+        match build_dep_projection(
             kb, dep, caller_sort, caller_requires, &caller_sub_chains, syms,
         ) {
-            proj_terms.push(t);
+            Some(t) => proj_terms.push(t),
+            None if require_complete => return None,
+            None => {}
         }
     }
     let sub_reqs_list = super::load::build_cons_list(
         kb, &proj_terms, syms.nil, syms.cons, syms.head, syms.tail,
     );
     Some(build_construct_requirement(kb, syms, callee_spec_sort, sub_reqs_list))
+}
+
+/// WI-415: build, at COMPILE stage, the parent-bundle dispatching dict a
+/// directly-called concrete op needs in its frame when it is called from
+/// OUTSIDE its sort (so the same-sort requirement-inheritance path does not
+/// apply). The op's parent sort `requires Spec[T]`; at the call site the
+/// per-call `subst` pins `T` concretely (`member(2, [1,2,3])` ⇒ `List.T :=
+/// Int`), so the enclosing sort's abstract `Eq[T]` requirement resolves to
+/// the concrete `Eq[Int]` against `fact Eq[Int]`.
+///
+/// This reuses the exact projection/construction helpers
+/// `build_dispatching_dict_direct` (the requirement-insertion pass) uses; the
+/// only difference is that the call-site bindings are substituted into the
+/// callee chain FIRST. That substitution is why this runs here, in the typer,
+/// and not in `req_insertion::run` — the subst is alive here and gone there.
+///
+/// Returns `None` (⇒ no dict; eval keeps its same-sort-inherit / plain-apply
+/// behavior) when the call binds no type parameter concretely (an abstract
+/// in-sort call — the enclosing sort's own requirement carries it) or when
+/// any requirement fails to resolve concretely (leave the pre-WI-415
+/// behavior rather than emit an under-arity dict eval would reject).
+fn build_concrete_dispatch_dict(
+    kb: &mut KnowledgeBase,
+    subst: &Substitution,
+    callee_spec_sort: Symbol,
+    caller_sort: Option<Symbol>,
+    caller_requires: &[RequiresEntry],
+) -> Option<TermId> {
+    let abstract_chain = direct_requires_chain(kb, callee_spec_sort);
+    if abstract_chain.is_empty() {
+        return None;
+    }
+    // Substitute the call-site bindings into each direct requirement. Bail
+    // unless at least one became concrete — an all-abstract chain is the
+    // in-sort recursion / sibling case the inherit path already handles.
+    let mut any_concrete = false;
+    let mut concrete_chain: Vec<RequiresEntry> = Vec::with_capacity(abstract_chain.len());
+    for entry in &abstract_chain {
+        let spec = substitute_spec_via_subst(kb, entry.spec, subst);
+        if spec != entry.spec {
+            any_concrete = true;
+        }
+        concrete_chain.push(RequiresEntry { required_sort: entry.required_sort, spec });
+    }
+    if !any_concrete {
+        return None;
+    }
+    let syms = ProjectionSyms::resolve(kb)?;
+    // `require_complete = true`: every direct requirement must project into the
+    // dict, else fall back to no dict (a short dict fails eval's arity check).
+    build_dispatching_dict_from_chain(
+        kb, callee_spec_sort, &concrete_chain, caller_sort, caller_requires, &syms, true,
+    )
+}
+
+/// WI-415: substitute the per-call type bindings into a `requires`-entry spec
+/// term. A sort-parameter `Ref` (e.g. the `Ref(List.T)` inside
+/// `Eq[T = Ref(List.T)]`) whose logical variable the call-site `subst` bound
+/// to a CONCRETE type (`List.T := Int`) is replaced by that type — turning
+/// the enclosing sort's abstract `Eq[T]` requirement into the concrete
+/// `Eq[Int]` the call actually needs. Mirrors `substitute_in_spec`'s
+/// structural walk, but resolves the param→value mapping through
+/// `resolve_sort_alias` + the live `subst` (no precomputed qualified-name
+/// map, so it makes no assumption about how the param symbol is spelled). A
+/// param left abstract (`is_type_param_value`) or unbound is preserved.
+fn substitute_spec_via_subst(
+    kb: &mut KnowledgeBase,
+    spec: TermId,
+    subst: &Substitution,
+) -> TermId {
+    match kb.get_term(spec).clone() {
+        Term::Ref(s) => resolve_param_value_via_subst(kb, s, subst).unwrap_or(spec),
+        Term::Fn { functor, pos_args, named_args }
+            if pos_args.is_empty() && named_args.is_empty() =>
+        {
+            // Nullary Fn — the loader's alternative encoding for a bare name.
+            resolve_param_value_via_subst(kb, functor, subst).unwrap_or(spec)
+        }
+        Term::Fn { .. } => {
+            kb.map_fn_children(spec, |kb, child| substitute_spec_via_subst(kb, child, subst))
+        }
+        _ => spec,
+    }
+}
+
+/// WI-415: the concrete type a sort-parameter symbol's logical variable is
+/// bound to in `subst`, or `None` when `sym` is not a sort parameter, is
+/// unbound, or is bound to another abstract type parameter (the call is not
+/// concrete in that position — the enclosing sort's own `requires` carries
+/// it). Mirrors how `sort_goal_from_subst` reads a binding: alias → `Global`
+/// var → subst value.
+fn resolve_param_value_via_subst(
+    kb: &KnowledgeBase,
+    sym: Symbol,
+    subst: &Substitution,
+) -> Option<TermId> {
+    let alias_target = resolve_sort_alias(kb, sym)?;
+    let vid = match kb.get_term(alias_target) {
+        Term::Var(Var::Global(v)) => *v,
+        _ => return None,
+    };
+    match subst.resolve_as_value(vid) {
+        Some(Value::Term(val)) => {
+            let val = *val;
+            if is_type_param_value(kb, val) {
+                None
+            } else {
+                Some(val)
+            }
+        }
+        _ => None,
+    }
 }
 
 /// Wrap a single dispatching-dict expression in the single-entry
@@ -4565,6 +4731,20 @@ pub enum CallClass {
         spec_op_sym: Symbol,
         enclosing_sort: Option<Symbol>,
         resolved_tree: Option<ResolvedRequiresNode>,
+        /// WI-415: the parent-bundle dispatching dict
+        /// (`construct_requirement(callee_parent, [<resolved sub-reqs>])`),
+        /// built at COMPILE stage by the typer when the call-site
+        /// substitution pinned the callee parent sort's type params
+        /// concretely — a cross-sort / no-enclosing-sort direct call such
+        /// as `member(2, [1,2,3])` from a plain namespace, where the
+        /// same-sort requirement-inheritance path cannot supply the
+        /// callee's `requires`. Eval installs it into the callee's frame
+        /// via the same path an explicit `apply_within` dict takes, with
+        /// no requirement re-resolution at runtime. `None` when no param
+        /// binds concretely (an in-sort call inherits the enclosing frame's
+        /// requirement at eval; a cross-sort abstract call has no covering
+        /// requirement — a pre-existing gap) and for the Pin-now path.
+        dispatch_dict: Option<TermId>,
     },
     /// Defer-to-requirement (WI-222 Phase C+D): dispatch deferred to
     /// runtime via `apply_within(fn = requirement_at_current(slot,

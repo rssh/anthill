@@ -169,9 +169,9 @@ impl Interpreter {
                         pos_args, named_args, type_args,
                     ),
                     Some(CallClass::ConcreteApplyWithin {
-                        fn_target_sym, enclosing_sort, ..
+                        fn_target_sym, enclosing_sort, dispatch_dict, ..
                     }) => self.start_apply_same_sort(
-                        *fn_target_sym, *enclosing_sort,
+                        *fn_target_sym, *enclosing_sort, *dispatch_dict,
                         pos_args, named_args, type_args,
                     ),
                     _ => {
@@ -611,18 +611,28 @@ impl Interpreter {
         )
     }
 
-    /// Sibling-op call inside a sort with non-empty `requires`: the
-    /// callee inherits the caller's frame.requirements as-is (same chain
-    /// shape, same names). Fires for `CallClass::ConcreteApplyWithin`
-    /// whose callee's parent sort matches the caller's enclosing sort —
-    /// the common case for multi-op bundles like anthill-todo's `Main`.
-    /// Cross-sort ConcreteApplyWithin still falls through to plain
-    /// `start_apply`; the requirement-insertion pass owns the projection
-    /// path for those.
+    /// Dispatch a `CallClass::ConcreteApplyWithin` into a sort with
+    /// non-empty `requires`, supplying the callee's frame requirements one
+    /// of three ways:
+    ///
+    /// 1. **Same-sort inherit** — when the callee's parent sort matches the
+    ///    caller's enclosing sort, the callee inherits the caller's
+    ///    `frame.requirements` as-is (same chain shape, same names). The
+    ///    common case for multi-op bundles like anthill-todo's `Main`.
+    /// 2. **WI-415 compile-built dict** — a cross-sort / no-enclosing-sort
+    ///    call (`member(2, [1,2,3])` from a plain namespace) cannot inherit;
+    ///    when the typer pinned the callee parent's type params concretely it
+    ///    built the parent-bundle dispatching dict at compile stage. Install
+    ///    it via the SAME path an explicit `apply_within` dict takes
+    ///    (materialize → reduce to a handle → expand into named `__req_*`
+    ///    slots). No requirement is resolved here — the dict is pre-built.
+    /// 3. **Plain apply** — no dict (an abstract call with no covering
+    ///    requirement); fall through with no requirements channel.
     fn start_apply_same_sort(
         &mut self,
         target: Symbol,
         enclosing_sort: Option<Symbol>,
+        dispatch_dict: Option<TermId>,
         pos_args: &[Rc<NodeOccurrence>],
         named_args: &[(Symbol, Rc<NodeOccurrence>)],
         type_args: FrameTypeArgs,
@@ -632,16 +642,26 @@ impl Interpreter {
             (callee_parent, enclosing_sort),
             (Some(c), Some(e)) if c == e,
         );
-        if !inherit {
-            return self.start_apply(target, pos_args, named_args, type_args);
+        if inherit {
+            let caller_reqs = self.stack.top()
+                .ok_or_else(|| EvalError::Internal(
+                    "start_apply_same_sort with no current frame".into()))?
+                .requirements.clone();
+            return self.dispatch_apply_with_requirements(
+                target, caller_reqs, type_args, pos_args, named_args,
+            );
         }
-        let caller_reqs = self.stack.top()
-            .ok_or_else(|| EvalError::Internal(
-                "start_apply_same_sort with no current frame".into()))?
-            .requirements.clone();
-        self.dispatch_apply_with_requirements(
-            target, caller_reqs, type_args, pos_args, named_args,
-        )
+        // WI-415: cross-sort / no-enclosing-sort call — install the
+        // compile-stage-built dispatching dict (if any) through the existing
+        // apply_within machinery.
+        if let Some(dict_tid) = dispatch_dict {
+            let dict_occ =
+                crate::kb::node_occurrence::materialize_from_handle(&self.kb, dict_tid);
+            return self.start_apply_within(
+                target, pos_args, named_args, std::slice::from_ref(&dict_occ), type_args,
+            );
+        }
+        self.start_apply(target, pos_args, named_args, type_args)
     }
 
     /// Runtime path for `CallClass::DeferToRequirement`: resolve the

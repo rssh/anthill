@@ -682,18 +682,16 @@ end
     assert_eq!(run(&mut interp, "test.wi414.neg"), -1);
 }
 
-/// WI-415 trip-wire (`#[ignore]`): the CALL-SITE dual of WI-414. `member`'s
-/// `eq(head, x)` is genuinely ABSTRACT (head : the element T), so it correctly
-/// DEFERS — but a call `member(2, [1,2,3])` from a namespace with no `requires`
-/// must CONSTRUCT the `Eq[Int]` requirement from `fact Eq[Int]` and thread it,
-/// rather than leave `__req_eq` unbound. Today the typer passes
-/// `resolved_tree = None` for a directly-called concrete requires-op, and
-/// `build_dispatching_dict_direct` can't resolve the open `Eq[T]` with no caller
-/// requires (the resolved-tree single-node abstraction is the wrong shape — the
-/// fix must thread the call-site subst into the dict builder so it substitutes
-/// `Eq[T]`→`Eq[Int]` in the parent-bundle shape). Un-`#[ignore]` when WI-415 lands.
+/// WI-415: the CALL-SITE dual of WI-414. `member`'s `eq(head, x)` is genuinely
+/// ABSTRACT (head : the element T), so it correctly DEFERS — but a call
+/// `member(2, [1,2,3])` from a namespace with no `requires` must CONSTRUCT the
+/// `Eq[Int]` requirement from `fact Eq[Int]` and thread it into member's frame,
+/// rather than leave `__req_eq` unbound. The typer builds the parent-bundle
+/// dispatching dict at compile stage (where the call-site subst still pins
+/// `List.T := Int`, so `Eq[T]` substitutes to `Eq[Int]`) and stores it on the
+/// `ConcreteApplyWithin` classification; eval installs it into the callee's
+/// frame via the same path an explicit `apply_within` dict takes.
 #[test]
-#[ignore]
 fn wi415_member_call_constructs_concrete_eq_requirement() {
     let src = r#"
 namespace test.wi415
