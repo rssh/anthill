@@ -1027,6 +1027,13 @@ fn type_display_name_occ(kb: &KnowledgeBase, occ: &Rc<NodeOccurrence>) -> String
         ),
         NodeKind::EffectExpr(EffectExprNode::Open { tail }) => type_child_display_name(kb, tail),
         NodeKind::EffectExpr(EffectExprNode::EmptyRow) => String::new(),
+        // WI-397: a compound-receiver projection `(a.b).M` — render `receiver.member`
+        // rather than the `?` fallthrough, so a type error naming it is legible.
+        NodeKind::Type(TypeNode::ExprCarried { value, member }) => format!(
+            "{}.{}",
+            type_child_display_name(kb, value),
+            type_child_display_name(kb, member)
+        ),
         _ => "?".to_string(),
     }
 }
@@ -8289,19 +8296,143 @@ fn eliminate_type_projections(
         Value::Term(t) => {
             Ok(Value::Term(rewrite_term_projections(kb, *t, arg_types, fn_sym, span)?))
         }
-        // A denoted-bearing `Value::Node` that ALSO carries a projection (e.g.
-        // `Stream[T = l.T, E = {Modify[c]}]`) cannot yet be rewritten through the Node
-        // carrier — surface it loudly rather than leaking the un-eliminated projection
-        // into the inferred type. A Node with no projection is a plain denoted type,
-        // passed through unchanged.
-        Value::Node(_) if value_contains_projection(kb, ty) => Err(projection_type_error(
-            fn_sym,
-            span,
-            "a type projection nested in a denoted-bearing type (a written effect row / \
-             value-in-type) is not yet supported",
-        )),
+        Value::Node(_) => {
+            // WI-397: a top-level COMPOUND-receiver projection (`a.b.T`) rides a
+            // `TypeNode::ExprCarried` Node carrier (its receiver is a field-access
+            // occurrence). Resolve the receiver path's static type and project the
+            // member — the Node twin of the `Value::Term` path above.
+            if let TypeExtractor::ExprCarried { value, member } = extract_type(kb, ty) {
+                return resolve_compound_projection(kb, &value, member, arg_types, fn_sym, span);
+            }
+            // A projection nested INSIDE a denoted-bearing `Value::Node` (e.g.
+            // `Stream[T = l.T, E = {Modify[c]}]`) is not yet rewritten through the Node
+            // carrier — surface it loudly rather than leaking the un-eliminated
+            // projection. A Node with no projection is a plain denoted type, unchanged.
+            if value_contains_projection(kb, ty) {
+                return Err(projection_type_error(
+                    fn_sym,
+                    span,
+                    "a type projection nested in a denoted-bearing type (a written effect row / \
+                     value-in-type) is not yet supported",
+                ));
+            }
+            Ok(ty.clone())
+        }
         other => Ok(other.clone()),
     }
+}
+
+/// WI-397: resolve a COMPOUND-receiver projection (`a.b.T`) — the receiver `value`
+/// is a field-access occurrence (`Value::Node`), not a single value reference.
+/// Resolve the receiver path's static type, then project the `member` off it. The
+/// Node twin of the single-`Ref` path in [`rewrite_term_projections`].
+fn resolve_compound_projection(
+    kb: &mut KnowledgeBase,
+    receiver: &Value,
+    member: Symbol,
+    arg_types: &HashMap<Symbol, Value>,
+    fn_sym: Symbol,
+    span: Option<Span>,
+) -> Result<Value, TypeError> {
+    let recv_ty = resolve_receiver_path_type(kb, receiver, arg_types, fn_sym, span)?;
+    let member_str = kb.resolve_sym(member).to_owned();
+    project_type_member(kb, &recv_ty, &member_str, fn_sym, span)
+}
+
+/// Resolve the static TYPE of a field-access receiver path occurrence (WI-397). A
+/// single value reference `Ref(s)` is the type of the argument bound to param `s`;
+/// a field access `base.field` is the type of `field` in the (recursively resolved)
+/// `base` type. Any other shape is a loud error (never a silent fresh var).
+fn resolve_receiver_path_type(
+    kb: &mut KnowledgeBase,
+    receiver: &Value,
+    arg_types: &HashMap<Symbol, Value>,
+    fn_sym: Symbol,
+    span: Option<Span>,
+) -> Result<Value, TypeError> {
+    // Innermost head: a value reference `Ref(s)` (the DotApply chain bottoms out in
+    // it). The receiver is the argument bound to param `s`.
+    if let Some(head) = extract_sort_ref_sym(kb, receiver) {
+        return arg_types.get(&head).cloned().ok_or_else(|| {
+            projection_type_error(fn_sym, span, &format!(
+                "type projection receiver '{}' is not an argument-bound parameter of this call",
+                kb.resolve_sym(head),
+            ))
+        });
+    }
+    // A field access `base.field` — a `DotApply` with no call args. Resolve `base`,
+    // then project `field`'s type off it.
+    if let Value::Node(occ) = receiver {
+        if let Some(Expr::DotApply { receiver: base, name, pos_args, named_args }) = occ.as_expr() {
+            if pos_args.is_empty() && named_args.is_empty() {
+                let base_val = Value::Node(std::rc::Rc::clone(base));
+                let field = *name;
+                let base_ty = resolve_receiver_path_type(kb, &base_val, arg_types, fn_sym, span)?;
+                return resolve_field_type(kb, &base_ty, field, fn_sym, span);
+            }
+        }
+    }
+    Err(projection_type_error(fn_sym, span,
+        "type projection receiver is not a value-reference field path (`s.field…`)"))
+}
+
+/// Resolve field `field_sym`'s type given a receiver's sort type (WI-397): find the
+/// receiver sort's constructor declaring the field, take its declared field type,
+/// and substitute the receiver's type-args — the same subst pattern field types use
+/// (design path-dependent-types.md §1 step 2). A receiver with no concrete sort, or
+/// a field no constructor declares, is a loud error.
+fn resolve_field_type(
+    kb: &mut KnowledgeBase,
+    recv_ty: &Value,
+    field_sym: Symbol,
+    fn_sym: Symbol,
+    span: Option<Span>,
+) -> Result<Value, TypeError> {
+    let sort_sym = sort_functor_of_view(kb, recv_ty).ok_or_else(|| {
+        projection_type_error(fn_sym, span, &format!(
+            "cannot access field '{}' on a receiver with no concrete sort",
+            kb.resolve_sym(field_sym),
+        ))
+    })?;
+    // The receiver's type-arg substitution is the same for every constructor.
+    let subst = build_pattern_subst(kb, recv_ty, sort_sym);
+    // Collect the field's resolved type from EVERY constructor that declares it, so the
+    // result is INDEPENDENT of `constructors_of_sort`'s (HashMap) iteration order. Field
+    // access on a multi-variant sort is well-defined only when all variants agree on the
+    // field's type; a divergence is a LOUD error, never an order-dependent pick.
+    let mut resolved: Option<Value> = None;
+    for ctor in kb.constructors_of_sort(sort_sym) {
+        // Scope the `entity_field_types` borrow so the `&mut kb` subst call below is
+        // free; `continue` to the next constructor if this one lacks the field.
+        let declared = {
+            let Some(fields) = kb.entity_field_types(ctor) else { continue };
+            match fields.iter().find(|(f, _)| *f == field_sym) {
+                Some((_, d)) => d.clone(),
+                None => continue,
+            }
+        };
+        let this = match &subst {
+            Some(s) => walk_pattern_field_type_deep(kb, s, &declared),
+            None => declared,
+        };
+        match &resolved {
+            None => resolved = Some(this),
+            Some(prev) if prev.structural_eq(&this) => {}
+            Some(_) => {
+                return Err(projection_type_error(fn_sym, span, &format!(
+                    "field '{}' is declared with differing types across the constructors of \
+                     '{}'; a compound projection off it is ambiguous",
+                    kb.resolve_sym(field_sym),
+                    kb.qualified_name_of(sort_sym).to_owned(),
+                )));
+            }
+        }
+    }
+    resolved.ok_or_else(|| projection_type_error(fn_sym, span, &format!(
+        "type '{}' has no field '{}'",
+        kb.qualified_name_of(sort_sym).to_owned(),
+        kb.resolve_sym(field_sym),
+    )))
 }
 
 /// Recursive term rewrite for [`eliminate_type_projections`]: an `ExprCarried` head is
@@ -9160,6 +9291,8 @@ fn occ_contains_var(kb: &KnowledgeBase, vid: VarId, occ: &Rc<NodeOccurrence>) ->
             // view-walking `occurs_in_view` descends its cons cells + records and
             // into any poisoned (`Value::Node`) field type via `occ_contains_var`.
             TypeNode::NamedTuple { fields } => occurs_in_view(kb, vid, fields),
+            // WI-397: the receiver occurrence + the ground `member` ref.
+            TypeNode::ExprCarried { value, member } => child(kb, value) || child(kb, member),
         };
     }
     if let Some(en) = occ.as_effect_expr() {

@@ -151,6 +151,12 @@ impl<'a> TermPrinter<'a, KnowledgeBase> {
                 buf.push_str(" ! ");
                 self.write_type_child(effects, buf);
             }
+            // WI-397: a compound-receiver projection `(a.b).M` — receiver then `.member`.
+            TypeNode::ExprCarried { value, member } => {
+                self.write_type_child(value, buf);
+                buf.push('.');
+                self.write_type_child(member, buf);
+            }
             TypeNode::NamedTuple { fields } => {
                 // WI-361: `fields` is a `Value`-carried `List[TypeField]`; decode it
                 // via the one shared decoder (the typer's `named_tuple_fields` uses

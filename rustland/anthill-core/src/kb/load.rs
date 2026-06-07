@@ -6111,7 +6111,8 @@ impl<'a> Loader<'a> {
         span: SourceSpan,
         owner: Option<Symbol>,
     ) -> Option<node_occurrence::TypeChild> {
-        let _ = (span, owner); // ground (ref) receiver needs neither; kept for the Node-carrier follow-on
+        // `span` / `owner` are unused by the single-ref ground path but carried into
+        // the compound-receiver occurrence (WI-397) below.
         let segs = &name.segments;
         // The MEMBER (last segment) of a TYPE projection is Capitalized — a type member
         // (`T`, `Sort`, `E`), per the value-vs-type case rule (type-parameter-scoping.md
@@ -6152,19 +6153,31 @@ impl<'a> Loader<'a> {
                 self.kb.make_expr_carried(receiver_term, member_sym),
             ))
         } else {
-            // A compound receiver (`a.b.T`) projects off a field-access occurrence —
-            // the `TypeNode::ExprCarried` Node carrier, not yet built. Surface loudly
-            // (loud-error principle) rather than mis-lowering to a sort ref; emit a
-            // fresh type-var placeholder so loading continues to collect errors.
-            self.errors.push(LoadError::Other {
-                message: format!(
-                    "expression-carried type projection with a compound receiver \
-                     ('{}') is not yet supported (WI-376 follow-on); only a single \
-                     value-reference receiver ('s.T') is supported",
-                    join_segments(&self.parsed.symbols, segs),
-                ),
-            });
-            Some(node_occurrence::TypeChild::Ground(self.kb.make_type_var(member_sym)))
+            // A COMPOUND receiver (`a.b.T`) projects off a field-access occurrence
+            // (WI-397). Build the receiver value path `segs[0..n-1]` as a `DotApply`
+            // chain over the value head (`s` then `.provider` …), then wrap it plus the
+            // member in the `TypeNode::ExprCarried` Node carrier — the receiver is an
+            // `Expr` occurrence (now structural in `occ_head`), so (unlike the single-ref
+            // form) the projection cannot hash-cons. The eliminator resolves the path's
+            // static type at the call site.
+            let mut receiver = NodeOccurrence::new_expr(Expr::Ref(head_sym), span, owner);
+            for &field_seg in &segs[1..segs.len() - 1] {
+                let field_name = self.parsed.symbols.name(field_seg).to_owned();
+                let field_sym = self.kb.intern(&field_name);
+                receiver = NodeOccurrence::new_expr(
+                    Expr::DotApply {
+                        receiver,
+                        name: field_sym,
+                        pos_args: Vec::new(),
+                        named_args: Vec::new(),
+                    },
+                    span,
+                    owner,
+                );
+            }
+            Some(node_occurrence::TypeChild::Node(
+                self.kb.make_expr_carried_occ(receiver, member_sym, span, owner),
+            ))
         }
     }
 

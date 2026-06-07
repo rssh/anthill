@@ -130,6 +130,10 @@ fn drain_type_node(tn: &mut TypeNode, stack: &mut Vec<Rc<NodeOccurrence>>) {
             drain_type_child(result, stack);
             drain_type_child(effects, stack);
         }
+        TypeNode::ExprCarried { value, member } => {
+            drain_type_child(value, stack);
+            drain_type_child(member, stack);
+        }
         TypeNode::NamedTuple { .. } => {
             // WI-361: `fields` is a `Value`-carried `List[TypeField]`. Its poisoned
             // leaves are `Value::Node`s whose own `Drop` is already iterative, and
@@ -814,6 +818,16 @@ pub enum TypeNode {
     /// `Value::Node` — so `TermView` reads this carrier and its term twin
     /// identically (one `fields` child; no special-cased reader).
     NamedTuple { fields: Value },
+    /// `expr_carried(value, member)` — the Node carrier for an expression-carried
+    /// type projection whose receiver is COMPOUND (a field path `a.b`, not a single
+    /// value ref). The ground single-ref form `s.T` rides a hash-consed
+    /// `Fn{ExprCarried, value: Ref(s), member: Ref(M)}` term (no Node — see
+    /// `KnowledgeBase::make_expr_carried`); THIS carrier is for `a.b.T`, where the
+    /// receiver is itself an occurrence (a `DotApply` field access — now structural,
+    /// WI-397). `value` is the receiver occurrence (`TypeChild::Node`); `member` is
+    /// the projected type member as `TypeChild::Ground(Ref(sym))` — mirroring the
+    /// term form so `TermView` reads both carriers identically.
+    ExprCarried { value: TypeChild, member: TypeChild },
 }
 
 /// Structural `EffectExpression`-sort IR (WI-342). Mirrors the row algebra
@@ -1568,6 +1582,11 @@ fn map_type_node<R: TypeChildRewrite>(
             let (nf, c3) = map_type_child(r, kb, effects);
             (TypeNode::Arrow { param: np, result: nr, effects: nf }, c1 || c2 || c3)
         }
+        TypeNode::ExprCarried { value, member } => {
+            let (nv, c1) = map_type_child(r, kb, value);
+            let (nm, c2) = map_type_child(r, kb, member);
+            (TypeNode::ExprCarried { value: nv, member: nm }, c1 || c2)
+        }
         TypeNode::NamedTuple { fields } => {
             let (nf, ch) = map_value_type(r, kb, fields);
             (TypeNode::NamedTuple { fields: nf }, ch)
@@ -2001,6 +2020,10 @@ fn collect_type_node_vars(
             collect_type_child(kb, result, vars, seen);
             collect_type_child(kb, effects, vars, seen);
         }
+        TypeNode::ExprCarried { value, member } => {
+            collect_type_child(kb, value, vars, seen);
+            collect_type_child(kb, member, vars, seen);
+        }
         TypeNode::NamedTuple { fields } => collect_value_type(kb, fields, vars, seen),
     }
 }
@@ -2138,6 +2161,10 @@ fn type_node_eq(a: &TypeNode, b: &TypeNode) -> bool {
             TypeNode::Arrow { param: pa, result: ra, effects: ea },
             TypeNode::Arrow { param: pb, result: rb, effects: eb },
         ) => type_child_eq(pa, pb) && type_child_eq(ra, rb) && type_child_eq(ea, eb),
+        (
+            TypeNode::ExprCarried { value: va, member: ma },
+            TypeNode::ExprCarried { value: vb, member: mb },
+        ) => type_child_eq(va, vb) && type_child_eq(ma, mb),
         // WI-361: `fields` is a `Value`-carried `List[TypeField]` — compare with
         // `Value::structural_eq` (canonical-ordered, so positional compare holds).
         (TypeNode::NamedTuple { fields: fa }, TypeNode::NamedTuple { fields: fb }) => {
@@ -2335,6 +2362,39 @@ fn type_node_to_term(kb: &mut KnowledgeBase, tn: &TypeNode) -> TermId {
             let r = type_child_to_term(kb, result);
             let e = type_child_to_term(kb, effects);
             kb.make_arrow_from_effects_rows(p, r, e)
+        }
+        TypeNode::ExprCarried { value, member } => {
+            // A compound-receiver projection is ELIMINATED to a concrete type before
+            // term-lowering, so this faithful twin (mirroring the single-ref
+            // `make_expr_carried`) is rarely hit; it keeps the lowering total. The
+            // receiver lowers via the shared child path; `member` is a ground
+            // `Ref(sym)` by construction.
+            let v = type_child_to_term(kb, value);
+            let member_sym = match member {
+                TypeChild::Ground(t) => match kb.get_term(*t) {
+                    Term::Ref(s) => Some(*s),
+                    _ => None,
+                },
+                TypeChild::Node(_) => None,
+            };
+            match member_sym {
+                Some(s) => kb.make_expr_carried(v, s),
+                None => {
+                    // Non-Ref member — unreachable via `make_expr_carried_occ` (always a
+                    // ground `Ref`). Rebuild the `ExprCarried` Fn faithfully (mirroring
+                    // `make_expr_carried`'s shape) rather than silently dropping the
+                    // member projection to `v` (loud-over-silent).
+                    let m = type_child_to_term(kb, member);
+                    let ec = kb.resolve_symbol("anthill.prelude.TypeExtractor.ExprCarried");
+                    let vk = kb.intern("value");
+                    let mk = kb.intern("member");
+                    let mut named: smallvec::SmallVec<[(Symbol, TermId); 2]> = smallvec::SmallVec::new();
+                    named.push((vk, v));
+                    named.push((mk, m));
+                    named.sort_by_key(|(s, _)| s.index());
+                    kb.alloc(Term::Fn { functor: ec, pos_args: smallvec::SmallVec::new(), named_args: named })
+                }
+            }
         }
         TypeNode::NamedTuple { fields } => {
             // `fields` is a `Value`-carried `List[NamedTupleElement]` (structurally
@@ -3053,6 +3113,10 @@ pub(crate) fn substitute_ref_syms_occ(
                 },
                 TypeNode::NamedTuple { fields } => TypeNode::NamedTuple {
                     fields: rewrite_ref_value(fields, map),
+                },
+                TypeNode::ExprCarried { value, member } => TypeNode::ExprCarried {
+                    value: rewrite_ref_child(value, map),
+                    member: rewrite_ref_child(member, map),
                 },
             };
             NodeOccurrence::new_type(rebuilt, occ.span, occ.owner)

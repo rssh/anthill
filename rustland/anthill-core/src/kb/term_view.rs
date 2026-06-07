@@ -113,6 +113,25 @@ fn occ_head(occ: &NodeOccurrence, kb: &KnowledgeBase) -> ViewHead {
         Some(Expr::Ref(s)) => ViewHead::Ref(*s),
         Some(Expr::Ident(s)) => ViewHead::Ident(*s),
         Some(Expr::Var(Var::Global(vid))) => ViewHead::Var(*vid),
+        // WI-278 / WI-397: a dot form `r.name(args)` reads STRUCTURALLY as its
+        // reflect `dot_apply(name, receiver[, args])` term twin — head functor
+        // `dot_apply`, NOT opaque — so a fact embedding a DotApply (e.g. a
+        // compound-projection receiver `s.cell`) indexes/matches like any term
+        // instead of hitting the discrim opaque-head guard. `name` + `receiver`
+        // are named children (the field form `r.name` has `named_arity = 2`, no
+        // positional); a method form's call args ride directly as positional /
+        // named (the reflect args-list flattening is not mirrored — unreachable
+        // via this view today, and sound as a discrim pre-filter regardless).
+        Some(Expr::DotApply { pos_args, named_args, .. }) => {
+            match kb.try_resolve_symbol("anthill.reflect.Expr.dot_apply") {
+                Some(da) => ViewHead::Functor {
+                    functor: Some(da),
+                    pos_arity: pos_args.len(),
+                    named_arity: 2 + named_args.len(),
+                },
+                None => ViewHead::Opaque,
+            }
+        }
         // Rigid / DeBruijn vars, control-flow and post-elaboration forms,
         // and rule-head occurrences are opaque to rule-LHS matching.
         _ => ViewHead::Opaque,
@@ -139,9 +158,11 @@ fn occ_index_var(occ: &Rc<NodeOccurrence>) -> Option<Var> {
 /// positional), so this is `None` for them.
 fn occ_pos_child(occ: &NodeOccurrence, _kb: &KnowledgeBase, i: usize) -> Option<Rc<NodeOccurrence>> {
     match occ.as_expr()? {
-        Expr::Apply { pos_args, .. } | Expr::Constructor { pos_args, .. } => {
-            pos_args.get(i).map(Rc::clone)
-        }
+        // WI-397: a DotApply's positional children are its method-call args (the
+        // field form has none); `name` / `receiver` are NAMED children (occ_named_child).
+        Expr::Apply { pos_args, .. }
+        | Expr::Constructor { pos_args, .. }
+        | Expr::DotApply { pos_args, .. } => pos_args.get(i).map(Rc::clone),
         _ => None,
     }
 }
@@ -153,7 +174,19 @@ fn occ_pos_child(occ: &NodeOccurrence, _kb: &KnowledgeBase, i: usize) -> Option<
 /// `occ_named_child` cannot return as an `Rc<NodeOccurrence>` — Type/EffectExpr
 /// callers go through [`type_node_named`] / [`effect_expr_named`] (returning a
 /// `ViewItem`) instead. This `Rc`-returning helper stays Expr-only.
-fn occ_named_child(occ: &NodeOccurrence, _kb: &KnowledgeBase, sym: Symbol) -> Option<Rc<NodeOccurrence>> {
+fn occ_named_child(occ: &NodeOccurrence, kb: &KnowledgeBase, sym: Symbol) -> Option<Rc<NodeOccurrence>> {
+    // WI-278 / WI-397: a DotApply exposes `name` (a synthesized `Ref` to the method
+    // symbol) and `receiver` as named children — mirroring its `dot_apply(name,
+    // receiver)` term twin — plus any named call args.
+    if let Some(Expr::DotApply { receiver, name, named_args, .. }) = occ.as_expr() {
+        if kb.lookup_symbol("receiver") == Some(sym) {
+            return Some(Rc::clone(receiver));
+        }
+        if kb.lookup_symbol("name") == Some(sym) {
+            return Some(NodeOccurrence::new_expr(Expr::Ref(*name), occ.span, occ.owner));
+        }
+        return named_args.iter().find(|(s, _)| *s == sym).map(|(_, c)| Rc::clone(c));
+    }
     let named = match occ.as_expr()? {
         Expr::Apply { named_args, .. } | Expr::Constructor { named_args, .. } => named_args,
         _ => return None,
@@ -171,6 +204,17 @@ fn occ_named_keys(occ: &NodeOccurrence, kb: &KnowledgeBase) -> Vec<Symbol> {
     match occ.as_expr() {
         Some(Expr::Apply { named_args, .. }) | Some(Expr::Constructor { named_args, .. }) => {
             named_args.iter().map(|(s, _)| *s).collect()
+        }
+        // WI-397: `name` + `receiver` (the dot_apply term twin's named children) plus
+        // any named call args, in canonical symbol order (matches the sorted term form,
+        // and keeps insert/query descent in lockstep).
+        Some(Expr::DotApply { named_args, .. }) => {
+            let mut keys: Vec<Symbol> = Vec::with_capacity(2 + named_args.len());
+            if let Some(n) = kb.lookup_symbol("name") { keys.push(n); }
+            if let Some(r) = kb.lookup_symbol("receiver") { keys.push(r); }
+            keys.extend(named_args.iter().map(|(s, _)| *s));
+            keys.sort_by_key(|s| s.index());
+            keys
         }
         _ => Vec::new(),
     }
@@ -251,6 +295,9 @@ fn type_node_head(tn: &TypeNode, kb: &KnowledgeBase) -> ViewHead {
         // WI-361: one `fields` child (a `Value`-carried `List[NamedTupleElement]`),
         // matching the term form `NamedTuple(fields: List[NamedTupleElement])`.
         TypeNode::NamedTuple { .. } => (type_functor_sym(kb, "NamedTuple"), 1),
+        // WI-397: the Node carrier for a compound-receiver projection reads as the
+        // same `ExprCarried(value, member)` head/arity as its single-ref term twin.
+        TypeNode::ExprCarried { .. } => (type_functor_sym(kb, "ExprCarried"), 2),
     };
     match functor {
         Some(f) => ViewHead::Functor { functor: Some(f), pos_arity: 0, named_arity },
@@ -270,6 +317,7 @@ fn type_node_keys(tn: &TypeNode, kb: &KnowledgeBase) -> Vec<Symbol> {
         TypeNode::Arrow { .. } => &["param", "result", "effects"],
         // WI-361: the single `fields` child (the `List[TypeField]` Value).
         TypeNode::NamedTuple { .. } => &["fields"],
+        TypeNode::ExprCarried { .. } => &["value", "member"],
     };
     short_keys.iter().filter_map(|k| kb.lookup_symbol(k)).collect()
 }
@@ -300,6 +348,18 @@ fn type_node_named<'a>(tn: &'a TypeNode, kb: &KnowledgeBase, sym: Symbol) -> Opt
                 Some(type_child_view_item(result))
             } else if Some(sym) == key("effects") {
                 Some(type_child_view_item(effects))
+            } else {
+                None
+            }
+        }
+        // WI-397: `value` (receiver occurrence, a `Node`) and `member` (a ground
+        // `Ref` child) — read identically to the term twin's named args, so
+        // `extract_type` yields `TypeExtractor::ExprCarried { value, member }`.
+        TypeNode::ExprCarried { value, member } => {
+            if Some(sym) == key("value") {
+                Some(type_child_view_item(value))
+            } else if Some(sym) == key("member") {
+                Some(type_child_view_item(member))
             } else {
                 None
             }

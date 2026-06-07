@@ -1434,6 +1434,33 @@ impl KnowledgeBase {
         None
     }
 
+    /// All entity-constructor functor symbols whose parent sort is `sort_sym`
+    /// (WI-397). Enumerated from the entity→parent index, which holds every
+    /// registered entity; the returned symbols are exactly the
+    /// [`Self::entity_field_types`] keys (both the index key and the field-types
+    /// key come from `remap_name(entity.name)` — `name_to_sort_term` builds the
+    /// `entity_parent` key as `Fn{remap_name(..)}`). Used by the projection
+    /// eliminator to resolve a field-access receiver's field type.
+    pub fn constructors_of_sort(&self, sort_sym: Symbol) -> Vec<Symbol> {
+        let mut out = Vec::new();
+        for (&entity_tid, &parent_tid) in &self.entity_parent {
+            let parent_functor = match self.terms.get(parent_tid) {
+                Term::Fn { functor, .. } => Some(*functor),
+                Term::Ref(s) => Some(*s),
+                _ => None,
+            };
+            if parent_functor != Some(sort_sym) {
+                continue;
+            }
+            match self.terms.get(entity_tid) {
+                Term::Fn { functor, .. } => out.push(*functor),
+                Term::Ref(s) => out.push(*s),
+                _ => {}
+            }
+        }
+        out
+    }
+
     /// Does `sort_sym` have any entity constructor — i.e. is it a
     /// constructor-shaped DATA sort rather than an abstract spec? Used by the
     /// provider-info loader (WI-407) to tell `sort QueryableStore { fact Store }`
@@ -3359,6 +3386,32 @@ impl KnowledgeBase {
             pos_args: SmallVec::new(),
             named_args,
         })
+    }
+
+    /// Occurrence twin of [`Self::make_expr_carried`] for a COMPOUND receiver
+    /// (`a.b.T`): the receiver is a field-access `Expr` occurrence (a `DotApply`
+    /// chain over the value path) that cannot hash-cons, so the whole projection
+    /// rides a [`node_occurrence::TypeNode::ExprCarried`] Node carrier rather than a
+    /// ground term. `receiver` is that field-path occurrence; `member` the projected
+    /// type-member name, carried as a ground `Ref` child exactly as the term form
+    /// does — so `TermView` reads `value` / `member` identically across carriers, and
+    /// `extract_type` yields the same `TypeExtractor::ExprCarried`. WI-397.
+    pub fn make_expr_carried_occ(
+        &mut self,
+        receiver: std::rc::Rc<node_occurrence::NodeOccurrence>,
+        member: Symbol,
+        span: crate::span::SourceSpan,
+        owner: Option<Symbol>,
+    ) -> std::rc::Rc<node_occurrence::NodeOccurrence> {
+        let member_ref = self.alloc(Term::Ref(member));
+        node_occurrence::NodeOccurrence::new_type(
+            node_occurrence::TypeNode::ExprCarried {
+                value: node_occurrence::TypeChild::Node(receiver),
+                member: node_occurrence::TypeChild::Ground(member_ref),
+            },
+            span,
+            owner,
+        )
     }
 
     /// Positioned(pos, internal) — a local-binder reference (a lambda parameter /
