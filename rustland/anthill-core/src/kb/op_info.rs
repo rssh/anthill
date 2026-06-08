@@ -74,6 +74,28 @@ pub struct OpInfoRecord {
     pub meta: Option<TermId>,
 }
 
+/// WI-398: every operation's `(symbol, params)` in ONE pass over the `OperationInfo`
+/// facts. The signature-wellformedness check (a cyclic cross-parameter projection)
+/// must cover EVERY operation — body-less free specs included — which the body-type-
+/// check pass (`check_operation_bodies`, keyed off `op_bodies`/`SortInfo`) does not
+/// reach. Carrier-agnostic, mirroring [`lookup_operation_info`]'s param decode.
+pub fn all_operation_params(kb: &KnowledgeBase) -> Vec<(Symbol, Vec<(Symbol, Value)>)> {
+    let Some(op_info_sym) = kb.try_resolve_symbol("anthill.reflect.OperationInfo") else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for rid in kb.rules_by_functor(op_info_sym) {
+        if !kb.is_fact(rid) {
+            continue;
+        }
+        let head = kb.rule_head_value(rid);
+        let Some(op_sym) = head_name_ref(kb, head) else { continue };
+        let params = extract_params(kb, head_field(kb, head, "params"));
+        out.push((op_sym, params));
+    }
+    out
+}
+
 /// Walk `OperationInfo` facts, returning the record for `op_sym` if
 /// any. None means no OperationInfo fact carries `name = op_sym`.
 ///

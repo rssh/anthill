@@ -3238,15 +3238,19 @@ fn check_apply_iter(
         // that an argument pinned.
         let mut arg_effects: Vec<Value> = Vec::new();
         let mut param_to_arg_sym: HashMap<Symbol, Symbol> = HashMap::new();
-        // WI-376: only ops whose signature actually carries a projection pay for the
+        // WI-376/398: only ops whose signature actually carries a projection pay for the
         // per-call elimination — the >99% that don't skip the param_to_arg_type clones
-        // and the rewrite walk entirely.
-        let op_has_projection = value_contains_projection(kb, &op.return_type)
+        // and the rewrite walk entirely. WI-398 adds the PARAMETER positions: a param
+        // whose type projects another param (`check(s: State, k: s.provider.K)`).
+        let params_have_projection =
+            op.params.iter().any(|(_, t)| value_contains_projection(kb, t));
+        let op_has_projection = params_have_projection
+            || value_contains_projection(kb, &op.return_type)
             || op.effects.iter().any(|e| value_contains_projection(kb, e));
         // Each param symbol → the inferred type of the argument bound to it, so a
-        // projection `param.M` in the return / effects can read the receiver's actual
-        // per-call type (the synthesis-time discharge point). Populated only when the op
-        // has a projection.
+        // projection `param.M` in the return / effects / a LATER param can read the
+        // receiver's actual per-call type (the synthesis-time discharge point).
+        // Populated only when the op has a projection.
         let mut param_to_arg_type: HashMap<Symbol, Value> = HashMap::new();
 
         for (i, arg_occ) in pos_args.iter().enumerate() {
@@ -3259,7 +3263,15 @@ fn check_apply_iter(
                 // WI-341 Stage A: the param type is `Value` (`Value::TermView`),
                 // unified carrier-agnostically — no `TermIdView` wrap.
                 if let Some((param_sym, param_type)) = op.params.get(i) {
-                    unify_types(kb, &mut subst, &arg_result.ty, param_type);
+                    // WI-398: a param whose declared type IS / CONTAINS a projection
+                    // (`k: s.cell.T`) cannot be unified against its raw `ExprCarried` —
+                    // the receiver param's type-args are not yet projected, and an
+                    // unbound arg-var must never bind to a projection. Defer it to the
+                    // post-synthesis elimination pass below; the argument type is still
+                    // recorded so a LATER param projecting THIS one can read it.
+                    if !(op_has_projection && value_contains_projection(kb, param_type)) {
+                        unify_types(kb, &mut subst, &arg_result.ty, param_type);
+                    }
                     if op_has_projection {
                         param_to_arg_type.insert(*param_sym, arg_result.ty.clone());
                     }
@@ -3277,12 +3289,43 @@ fn check_apply_iter(
                     .find(|(s, _)| *s == *arg_name)
                     .map(|(_, t)| t)
                 {
-                    unify_types(kb, &mut subst, &arg_result.ty, param_type);
+                    // WI-398: defer a projection param's unify (see the positional loop).
+                    if !(op_has_projection && value_contains_projection(kb, param_type)) {
+                        unify_types(kb, &mut subst, &arg_result.ty, param_type);
+                    }
                     if op_has_projection {
                         param_to_arg_type.insert(*arg_name, arg_result.ty.clone());
                     }
                 }
                 arg_effects = merge_effects(&arg_effects, &arg_result.effects);
+            }
+        }
+
+        // WI-398: CROSS-PARAMETER projection. With every argument now synthesized
+        // (`param_to_arg_type` fully populated above), discharge each projection-bearing
+        // PARAMETER type by projecting the receiver param's argument type — the same
+        // elimination the return / effects positions use (below). A projection reads the
+        // receiver's ARGUMENT type (recorded above; a concrete value, hence ground), so
+        // the discharge is order-independent here; a CYCLIC projection signature
+        // (`f(a: b.T, b: a.T)`) has no synthesis order and is rejected at LOAD
+        // (`check_operation_bodies`), so what reaches a call is always a DAG. The
+        // resolved type is unified against the argument and recorded so the WI-385
+        // VALIDATION below checks the argument against `String`, not the un-eliminated
+        // `s.cell.T`. A projection that cannot resolve (abstract receiver, missing
+        // member) is a loud error here, never a silent skip.
+        let mut effective_param_types: HashMap<Symbol, Value> = HashMap::new();
+        if params_have_projection {
+            for (param_sym, param_type) in &op.params {
+                if !value_contains_projection(kb, param_type) {
+                    continue;
+                }
+                let eff =
+                    eliminate_type_projections(kb, param_type, &param_to_arg_type, fn_sym, span)?;
+                // `unify_types` borrows the arg type (it is `A: TermView`), so no clone.
+                if let Some(arg_ty) = param_to_arg_type.get(param_sym) {
+                    unify_types(kb, &mut subst, arg_ty, &eff);
+                }
+                effective_param_types.insert(*param_sym, eff);
             }
         }
 
@@ -3305,6 +3348,9 @@ fn check_apply_iter(
         for (i, _) in pos_args.iter().enumerate() {
             if let Ok(ref arg_result) = pos_results[i] {
                 if let Some((param_sym, param_type)) = op.params.get(i) {
+                    // WI-398: validate against the ELIMINATED type for a projection param
+                    // (`s.cell.T` → `String`); the raw type for a non-projection param.
+                    let param_type = effective_param_types.get(param_sym).unwrap_or(param_type);
                     if let Some(err) = validate_arg_against_param(
                         kb, &mut subst, &arg_result.ty, param_type, span,
                         TypeErrorContext::OperationArgument { op_name: fn_sym, param: *param_sym },
@@ -3318,6 +3364,8 @@ fn check_apply_iter(
         for (i, (arg_name, _)) in named_args.iter().enumerate() {
             if let Ok(ref arg_result) = named_results[i] {
                 if let Some((param_sym, param_type)) = op.params.iter().find(|(s, _)| *s == *arg_name) {
+                    // WI-398: validate against the eliminated projection type (above).
+                    let param_type = effective_param_types.get(param_sym).unwrap_or(param_type);
                     if let Some(err) = validate_arg_against_param(
                         kb, &mut subst, &arg_result.ty, param_type, span,
                         TypeErrorContext::OperationArgument { op_name: fn_sym, param: *param_sym },
@@ -8275,6 +8323,131 @@ fn value_contains_projection(kb: &KnowledgeBase, ty: &Value) -> bool {
     }
 }
 
+/// WI-398: the head parameter symbol of an expression-carried projection's RECEIVER
+/// path. A single value reference `Ref(s)` is `s`; a field-access chain `s.f.g` bottoms
+/// out in `Ref(s)`, so the head is `s`. Any other shape (not a value-reference path) is
+/// `None`. Mirrors the descent in [`resolve_receiver_path_type`], returning the path's
+/// bottom symbol rather than its type.
+fn receiver_path_head_sym(kb: &KnowledgeBase, receiver: &Value) -> Option<Symbol> {
+    if let Some(head) = extract_sort_ref_sym(kb, receiver) {
+        return Some(head);
+    }
+    if let Value::Node(occ) = receiver {
+        if let Some(Expr::DotApply { receiver: base, pos_args, named_args, .. }) = occ.as_expr() {
+            if pos_args.is_empty() && named_args.is_empty() {
+                return receiver_path_head_sym(kb, &Value::Node(std::rc::Rc::clone(base)));
+            }
+        }
+    }
+    None
+}
+
+/// WI-398: collect the receiver-head symbols of every expression-carried projection
+/// (`ExprCarried`) in a type [`Value`] — the parameters this type PROJECTS. A single-ref
+/// `s.M` contributes `s`; a compound `s.f.M` contributes the chain's bottom head `s`.
+/// Carrier-agnostic (walks via [`extract_type`], so a `Value::Node` parameterized type
+/// is descended too). Builds the cross-parameter dependency graph in
+/// [`param_projection_cycle`].
+fn collect_projection_receivers(kb: &KnowledgeBase, ty: &Value, out: &mut Vec<Symbol>) {
+    match extract_type(kb, ty) {
+        TypeExtractor::ExprCarried { value, .. } => {
+            if let Some(head) = receiver_path_head_sym(kb, &value) {
+                out.push(head);
+            }
+        }
+        TypeExtractor::Parameterized { bindings, .. } => {
+            for (_, v) in &bindings {
+                collect_projection_receivers(kb, v, out);
+            }
+        }
+        TypeExtractor::Arrow { param, result, effects } => {
+            collect_projection_receivers(kb, &param, out);
+            collect_projection_receivers(kb, &result, out);
+            collect_projection_receivers(kb, &effects, out);
+        }
+        TypeExtractor::NamedTuple(fields) => {
+            for (_, v) in &fields {
+                collect_projection_receivers(kb, v, out);
+            }
+        }
+        TypeExtractor::EffectsRows(e) => collect_projection_receivers(kb, &e, out),
+        TypeExtractor::Denoted(_)
+        | TypeExtractor::SortRef(_)
+        | TypeExtractor::TypeVar(_)
+        | TypeExtractor::Nothing
+        | TypeExtractor::Error => {}
+    }
+}
+
+/// WI-398: detect a cyclic CROSS-PARAMETER projection in an operation signature. Param
+/// `q` depends on param `p` when `q`'s declared type projects `p` via an `ExprCarried`
+/// receiver (`q: p.M`, `q: p.f.M`). The synthesis order is a topological order of those
+/// edges; a cycle (`f(a: b.T, b: a.T)`, or the length-1 self-projection `f(a: a.T)`) has
+/// NO synthesis order, so the signature is ill-formed — a loud error at LOAD per the
+/// projection's definitional content (design path-dependent-types.md §6, WI-398).
+/// Returns the cyclic parameter symbols (in cycle order) when the dependencies form a
+/// cycle, else `None`.
+fn param_projection_cycle(kb: &KnowledgeBase, params: &[(Symbol, Value)]) -> Option<Vec<Symbol>> {
+    // Fast path: no parameter type carries a projection ⇒ no edges ⇒ no cycle.
+    if !params.iter().any(|(_, t)| value_contains_projection(kb, t)) {
+        return None;
+    }
+    let sym_to_idx: HashMap<Symbol, usize> =
+        params.iter().enumerate().map(|(i, (s, _))| (*s, i)).collect();
+    // prereqs[q] = the param indices q's type projects (its receivers that are params).
+    let mut prereqs: Vec<Vec<usize>> = vec![Vec::new(); params.len()];
+    for (q, (_, ty)) in params.iter().enumerate() {
+        let mut recv: Vec<Symbol> = Vec::new();
+        collect_projection_receivers(kb, ty, &mut recv);
+        for r in recv {
+            if let Some(&p) = sym_to_idx.get(&r) {
+                if !prereqs[q].contains(&p) {
+                    prereqs[q].push(p);
+                }
+            }
+        }
+    }
+    // DFS cycle detection (0 = unvisited, 1 = on the current path, 2 = done).
+    let mut color = vec![0u8; params.len()];
+    let mut stack: Vec<usize> = Vec::new();
+    for start in 0..params.len() {
+        if color[start] == 0 {
+            if let Some(cycle) = dfs_projection_cycle(start, &prereqs, &mut color, &mut stack) {
+                return Some(cycle.into_iter().map(|i| params[i].0).collect());
+            }
+        }
+    }
+    None
+}
+
+/// DFS helper for [`param_projection_cycle`]: returns the cycle (param indices in path
+/// order) when a back-edge to a node already on the current path is found.
+fn dfs_projection_cycle(
+    u: usize,
+    prereqs: &[Vec<usize>],
+    color: &mut [u8],
+    stack: &mut Vec<usize>,
+) -> Option<Vec<usize>> {
+    color[u] = 1;
+    stack.push(u);
+    for &v in &prereqs[u] {
+        if color[v] == 1 {
+            // Back-edge to a node on the current path: the cycle is the stack suffix
+            // from v's first occurrence onward.
+            let pos = stack.iter().position(|&x| x == v).expect("on-path node is on the stack");
+            return Some(stack[pos..].to_vec());
+        }
+        if color[v] == 0 {
+            if let Some(cycle) = dfs_projection_cycle(v, prereqs, color, stack) {
+                return Some(cycle);
+            }
+        }
+    }
+    stack.pop();
+    color[u] = 2;
+    None
+}
+
 /// WI-376: replace every expression-carried projection (`s.T` / `s.Sort`) in a type
 /// [`Value`] by projecting the RECEIVER param's argument type. `arg_types` maps each
 /// operation parameter symbol to the inferred type of the argument bound to it (built
@@ -12345,6 +12518,43 @@ pub fn type_check_sorts_typed(kb: &mut KnowledgeBase, sort_terms: &[TermId]) -> 
         }
     }
 
+    // WI-398: signature well-formedness over EVERY operation — independent of the
+    // sort/body split above, so a body-less FREE spec is covered too.
+    errors.extend(check_operation_signatures(kb));
+
+    errors
+}
+
+/// WI-398: reject a CYCLIC cross-parameter type projection (`f(a: b.T, b: a.T)`, or the
+/// length-1 self-projection `f(a: a.T)`) loudly at LOAD, for EVERY operation. Unlike
+/// `check_operation_bodies` (keyed off `SortInfo` / `op_bodies`, so it skips body-less
+/// FREE specs), this walks ALL `OperationInfo` facts, so no operation's signature escapes
+/// the check. A cyclic signature has no synthesis order — it is ill-formed by the
+/// projection's definitional content (design path-dependent-types.md §6, WI-398).
+fn check_operation_signatures(kb: &KnowledgeBase) -> Vec<TypeError> {
+    let mut errors: Vec<TypeError> = Vec::new();
+    // One operation symbol may carry more than one `OperationInfo` fact (e.g. a spec and
+    // its impl); report each cyclic signature once.
+    let mut reported: std::collections::HashSet<Symbol> = std::collections::HashSet::new();
+    for (op_sym, params) in super::op_info::all_operation_params(kb) {
+        if !reported.insert(op_sym) {
+            continue; // already reported this op (multiple OperationInfo facts)
+        }
+        if let Some(cycle_syms) = param_projection_cycle(kb, &params) {
+            let mut names: Vec<String> =
+                cycle_syms.iter().map(|s| kb.resolve_sym(*s).to_owned()).collect();
+            // Close the cycle visually (`a -> b -> a`) so the diagnostic reads as one.
+            if let Some(first) = names.first().cloned() {
+                names.push(first);
+            }
+            let span = kb.functor_span(op_sym).map(|s| s.span);
+            errors.push(projection_type_error(op_sym, span, &format!(
+                "cyclic cross-parameter type projection among parameters: {} — a \
+                 parameter's type may project an EARLIER parameter, not form a cycle",
+                names.join(" -> "),
+            )));
+        }
+    }
     errors
 }
 
@@ -12897,12 +13107,20 @@ fn check_operation_bodies(kb: &mut KnowledgeBase, op_syms: &[Symbol], errors: &m
             Some(r) => r,
             None => continue,
         };
+        let span = kb.functor_span(rec.op_sym).map(|s| s.span);
+        // WI-398: a CYCLIC cross-parameter projection signature is ill-formed; the loud
+        // error is raised once, for EVERY op, by `check_operation_signatures` (which
+        // covers body-less free specs this body-check pass never reaches). Here we only
+        // SKIP body-checking such an op so its un-resolvable projection params do not
+        // cascade into spurious secondary errors.
+        if param_projection_cycle(kb, &rec.params).is_some() {
+            continue;
+        }
         // Body-less ops (specs) have no body to type-check.
         let body_node = match rec.body_node {
             Some(n) => n,
             None => continue,
         };
-        let span = kb.functor_span(rec.op_sym).map(|s| s.span);
         // WI-392: while CHECKING this operation's body, its OWN declared type
         // parameters are universally quantified — Skolemize them to `Var::Rigid`
         // so the body may USE them but never CONSTRAIN them (a `Rigid` unifies

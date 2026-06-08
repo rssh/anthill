@@ -3062,7 +3062,7 @@ fact WorkItem(
   description: "Typer/loader: CROSS-PARAMETER projection (f(a: List, b: a.T) -- a param type projects ANOTHER param) plus the load-time STRICTNESS graph. The current eliminator (typing.rs:7497 eliminate_type_projections + the check_apply_iter param_to_arg_type map) projects a receiver that is an argument-bound param of the SAME call; cross-parameter b: a.T needs a synthesized BEFORE b projection is read (bidirectional synthesis order). Build the dependency graph (edge p to q when q type projects p via ExprCarried), resolve in TOPOLOGICAL = synthesis order, and REJECT CYCLES at LOAD (signature well-formedness -- the projection definitional content, loud error per design). Missing member / no-such-interface is already loud in the eliminator; the new load-time work is the graph + cycle rejection + ordering. This is WI-376 original slice 4 strictness. Design: WI-376 user feedback item 4 (REFRAME 2026-06-04); expansion-during-unification.md sec.4. Spun out of WI-376. Rust-only.",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: ["WI-379"],
-  status: Open)
+  status: Delivered(agent: "claude", at: "2026-06-08T06:55:23Z"))
 
 fact Tag(name: "typing", workitem: "WI-398")
 fact WorkItem(
