@@ -2078,6 +2078,33 @@ fn visit_type(
             // to TermId for the existing term-based env-extension path.
             let pattern = super::node_occurrence::pattern_to_term(kb, pattern);
             let annotation = type_annotation.clone();
+            // WI-399: discharge an expression-carried projection (`s.cell.T`) in the
+            // let annotation HERE, where `env` resolves the receiver's type — the
+            // let-binding peer of the op-call elimination in `check_apply_iter`. The
+            // eliminated type then feeds BOTH the value's expected (below) and the
+            // value-vs-annotation conformance at `LetAfterValue`, so a concrete
+            // projection annotation (`s.cell.T` = `String`) checks the value against
+            // `String`, not the opaque projection. A projection whose receiver type is
+            // NOT concretely known in scope (a bare / abstract receiver, a missing
+            // member) is a LOUD error here — never silently leaked to `unify_types`
+            // (which now refuses an un-eliminated projection head, the WI-399 safety
+            // net). The env's `var_bindings` is exactly the `Symbol -> type` resolver
+            // `eliminate_type_projections` needs (the analog of `param_to_arg_type`).
+            let annotation = match annotation {
+                Some(ann) if value_contains_projection(kb, &ann) => {
+                    let var =
+                        extract_pattern_var_name(kb, pattern).unwrap_or_else(|| kb.intern("_"));
+                    let ctx = TypeErrorContext::LetBinding { var };
+                    match eliminate_type_projections(kb, &ann, &env.var_bindings, &ctx, occ_span) {
+                        Ok(elim) => Some(elim),
+                        Err(e) => {
+                            results.push(Err(e));
+                            return;
+                        }
+                    }
+                }
+                other => other,
+            };
             let value_occ = Rc::clone(value);
             let body_occ = Rc::clone(body);
             // WI-270: value's expected is the let's annotation only —
@@ -3319,8 +3346,10 @@ fn check_apply_iter(
                 if !value_contains_projection(kb, param_type) {
                     continue;
                 }
-                let eff =
-                    eliminate_type_projections(kb, param_type, &param_to_arg_type, fn_sym, span)?;
+                let eff = eliminate_type_projections(
+                    kb, param_type, &param_to_arg_type,
+                    &TypeErrorContext::OperationReturn { op_name: fn_sym }, span,
+                )?;
                 // `unify_types` borrows the arg type (it is `A: TermView`), so no clone.
                 if let Some(arg_ty) = param_to_arg_type.get(param_sym) {
                     unify_types(kb, &mut subst, arg_ty, &eff);
@@ -3394,10 +3423,11 @@ fn check_apply_iter(
         // row. `l.E` on a sort with no effect member is the same loud missing-member
         // error — `E` is never silently defaulted to pure (design §5).
         let (proj_return_type, proj_effects): (Value, Vec<Value>) = if op_has_projection {
-            let rt = eliminate_type_projections(kb, &op.return_type, &param_to_arg_type, fn_sym, span)?;
+            let ret_ctx = TypeErrorContext::OperationReturn { op_name: fn_sym };
+            let rt = eliminate_type_projections(kb, &op.return_type, &param_to_arg_type, &ret_ctx, span)?;
             let mut effs: Vec<Value> = Vec::with_capacity(op.effects.len());
             for e in &op.effects {
-                effs.push(eliminate_type_projections(kb, e, &param_to_arg_type, fn_sym, span)?);
+                effs.push(eliminate_type_projections(kb, e, &param_to_arg_type, &ret_ctx, span)?);
             }
             (rt, effs)
         } else {
@@ -8462,12 +8492,12 @@ fn eliminate_type_projections(
     kb: &mut KnowledgeBase,
     ty: &Value,
     arg_types: &HashMap<Symbol, Value>,
-    fn_sym: Symbol,
+    ctx: &TypeErrorContext,
     span: Option<Span>,
 ) -> Result<Value, TypeError> {
     match ty {
         Value::Term(t) => {
-            Ok(Value::Term(rewrite_term_projections(kb, *t, arg_types, fn_sym, span)?))
+            Ok(Value::Term(rewrite_term_projections(kb, *t, arg_types, ctx, span)?))
         }
         Value::Node(_) => {
             // WI-397: a top-level COMPOUND-receiver projection (`a.b.T`) rides a
@@ -8475,7 +8505,7 @@ fn eliminate_type_projections(
             // occurrence). Resolve the receiver path's static type and project the
             // member — the Node twin of the `Value::Term` path above.
             if let TypeExtractor::ExprCarried { value, member } = extract_type(kb, ty) {
-                return resolve_compound_projection(kb, &value, member, arg_types, fn_sym, span);
+                return resolve_compound_projection(kb, &value, member, arg_types, ctx, span);
             }
             // A projection nested INSIDE a denoted-bearing `Value::Node` (e.g.
             // `Stream[T = l.T, E = {Modify[c]}]`) is not yet rewritten through the Node
@@ -8483,7 +8513,7 @@ fn eliminate_type_projections(
             // projection. A Node with no projection is a plain denoted type, unchanged.
             if value_contains_projection(kb, ty) {
                 return Err(projection_type_error(
-                    fn_sym,
+                    ctx,
                     span,
                     "a type projection nested in a denoted-bearing type (a written effect row / \
                      value-in-type) is not yet supported",
@@ -8504,12 +8534,12 @@ fn resolve_compound_projection(
     receiver: &Value,
     member: Symbol,
     arg_types: &HashMap<Symbol, Value>,
-    fn_sym: Symbol,
+    ctx: &TypeErrorContext,
     span: Option<Span>,
 ) -> Result<Value, TypeError> {
-    let recv_ty = resolve_receiver_path_type(kb, receiver, arg_types, fn_sym, span)?;
+    let recv_ty = resolve_receiver_path_type(kb, receiver, arg_types, ctx, span)?;
     let member_str = kb.resolve_sym(member).to_owned();
-    project_type_member(kb, &recv_ty, &member_str, fn_sym, span)
+    project_type_member(kb, &recv_ty, &member_str, ctx, span)
 }
 
 /// Resolve the static TYPE of a field-access receiver path occurrence (WI-397). A
@@ -8520,14 +8550,14 @@ fn resolve_receiver_path_type(
     kb: &mut KnowledgeBase,
     receiver: &Value,
     arg_types: &HashMap<Symbol, Value>,
-    fn_sym: Symbol,
+    ctx: &TypeErrorContext,
     span: Option<Span>,
 ) -> Result<Value, TypeError> {
     // Innermost head: a value reference `Ref(s)` (the DotApply chain bottoms out in
     // it). The receiver is the argument bound to param `s`.
     if let Some(head) = extract_sort_ref_sym(kb, receiver) {
         return arg_types.get(&head).cloned().ok_or_else(|| {
-            projection_type_error(fn_sym, span, &format!(
+            projection_type_error(ctx, span, &format!(
                 "type projection receiver '{}' is not an argument-bound parameter of this call",
                 kb.resolve_sym(head),
             ))
@@ -8540,12 +8570,12 @@ fn resolve_receiver_path_type(
             if pos_args.is_empty() && named_args.is_empty() {
                 let base_val = Value::Node(std::rc::Rc::clone(base));
                 let field = *name;
-                let base_ty = resolve_receiver_path_type(kb, &base_val, arg_types, fn_sym, span)?;
-                return resolve_field_type(kb, &base_ty, field, fn_sym, span);
+                let base_ty = resolve_receiver_path_type(kb, &base_val, arg_types, ctx, span)?;
+                return resolve_field_type(kb, &base_ty, field, ctx, span);
             }
         }
     }
-    Err(projection_type_error(fn_sym, span,
+    Err(projection_type_error(ctx, span,
         "type projection receiver is not a value-reference field path (`s.field…`)"))
 }
 
@@ -8558,11 +8588,11 @@ fn resolve_field_type(
     kb: &mut KnowledgeBase,
     recv_ty: &Value,
     field_sym: Symbol,
-    fn_sym: Symbol,
+    ctx: &TypeErrorContext,
     span: Option<Span>,
 ) -> Result<Value, TypeError> {
     let sort_sym = sort_functor_of_view(kb, recv_ty).ok_or_else(|| {
-        projection_type_error(fn_sym, span, &format!(
+        projection_type_error(ctx, span, &format!(
             "cannot access field '{}' on a receiver with no concrete sort",
             kb.resolve_sym(field_sym),
         ))
@@ -8592,7 +8622,7 @@ fn resolve_field_type(
             None => resolved = Some(this),
             Some(prev) if prev.structural_eq(&this) => {}
             Some(_) => {
-                return Err(projection_type_error(fn_sym, span, &format!(
+                return Err(projection_type_error(ctx, span, &format!(
                     "field '{}' is declared with differing types across the constructors of \
                      '{}'; a compound projection off it is ambiguous",
                     kb.resolve_sym(field_sym),
@@ -8601,7 +8631,7 @@ fn resolve_field_type(
             }
         }
     }
-    resolved.ok_or_else(|| projection_type_error(fn_sym, span, &format!(
+    resolved.ok_or_else(|| projection_type_error(ctx, span, &format!(
         "type '{}' has no field '{}'",
         kb.qualified_name_of(sort_sym).to_owned(),
         kb.resolve_sym(field_sym),
@@ -8615,7 +8645,7 @@ fn rewrite_term_projections(
     kb: &mut KnowledgeBase,
     t: TermId,
     arg_types: &HashMap<Symbol, Value>,
-    fn_sym: Symbol,
+    ctx: &TypeErrorContext,
     span: Option<Span>,
 ) -> Result<TermId, TypeError> {
     if matches!(type_head(kb, &TermIdView(t)), TypeHead::ExprCarried) {
@@ -8626,25 +8656,25 @@ fn rewrite_term_projections(
         // (classified as `SortRef`); a compound receiver is rejected at load, so this
         // is defensive.
         let receiver = extract_sort_ref_sym(kb, &value).ok_or_else(|| {
-            projection_type_error(fn_sym, span, "type projection receiver is not a simple value reference")
+            projection_type_error(ctx, span, "type projection receiver is not a simple value reference")
         })?;
         let arg_ty = match arg_types.get(&receiver) {
             Some(v) => v.clone(),
             None => {
-                return Err(projection_type_error(fn_sym, span, &format!(
+                return Err(projection_type_error(ctx, span, &format!(
                     "type projection receiver '{}' is not an argument-bound parameter of this call",
                     kb.resolve_sym(receiver),
                 )));
             }
         };
         let member_str = kb.resolve_sym(member).to_owned();
-        let projected = project_type_member(kb, &arg_ty, &member_str, fn_sym, span)?;
+        let projected = project_type_member(kb, &arg_ty, &member_str, ctx, span)?;
         return match projected {
             Value::Term(pt) => Ok(pt),
             // A projection resolving to a Node carrier (e.g. `s.Sort` of a denoted-
             // bearing argument) would poison the enclosing return type to a Node — the
             // follow-on; loud rather than silently dropped.
-            _ => Err(projection_type_error(fn_sym, span,
+            _ => Err(projection_type_error(ctx, span,
                 "type projection resolved to a non-term carrier, which is not yet supported")),
         };
     }
@@ -8655,7 +8685,7 @@ fn rewrite_term_projections(
         let mut changed = false;
         let mut new_pos = pos_args;
         for i in 0..new_pos.len() {
-            let nc = rewrite_term_projections(kb, new_pos[i], arg_types, fn_sym, span)?;
+            let nc = rewrite_term_projections(kb, new_pos[i], arg_types, ctx, span)?;
             if nc != new_pos[i] {
                 new_pos[i] = nc;
                 changed = true;
@@ -8663,7 +8693,7 @@ fn rewrite_term_projections(
         }
         let mut new_named = named_args;
         for i in 0..new_named.len() {
-            let nc = rewrite_term_projections(kb, new_named[i].1, arg_types, fn_sym, span)?;
+            let nc = rewrite_term_projections(kb, new_named[i].1, arg_types, ctx, span)?;
             if nc != new_named[i].1 {
                 new_named[i].1 = nc;
                 changed = true;
@@ -8682,7 +8712,7 @@ fn project_type_member(
     kb: &mut KnowledgeBase,
     arg_ty: &Value,
     member: &str,
-    fn_sym: Symbol,
+    ctx: &TypeErrorContext,
     span: Option<Span>,
 ) -> Result<Value, TypeError> {
     // WI-381: resolve a defined-type / alias receiver to its underlying shape first, so
@@ -8717,17 +8747,17 @@ fn project_type_member(
     // receiver — is the abstract-receiver follow-on.
     match sort_functor_of_view(kb, arg_ty) {
         Some(s) if kb.type_params_of_sort(s).iter().any(|d| d.as_str() == member) => {
-            Err(projection_type_error(fn_sym, span, &format!(
+            Err(projection_type_error(ctx, span, &format!(
                 "cannot project '{member}' off a receiver of type '{}' whose '{member}' is \
                  not concretely known (abstract-receiver projection is not yet supported)",
                 kb.qualified_name_of(s).to_owned(),
             )))
         }
-        Some(s) => Err(projection_type_error(fn_sym, span, &format!(
+        Some(s) => Err(projection_type_error(ctx, span, &format!(
             "type '{}' has no member '{member}'",
             kb.qualified_name_of(s).to_owned(),
         ))),
-        None => Err(projection_type_error(fn_sym, span, &format!(
+        None => Err(projection_type_error(ctx, span, &format!(
             "cannot project '{member}' off an abstract receiver (no concrete sort); \
              abstract-receiver projection is not yet supported",
         ))),
@@ -8735,10 +8765,14 @@ fn project_type_member(
 }
 
 /// A loud [`TypeError`] for an ill-formed / unsupported type projection.
-fn projection_type_error(fn_sym: Symbol, span: Option<Span>, msg: &str) -> TypeError {
+/// WI-399: the error context is now THREADED (was hardcoded `OperationReturn`) so a
+/// projection eliminated at a non-call site reports the right place — a `let`-binding
+/// annotation (`LetBinding`), not a phantom operation return. The op-call callers
+/// (`check_apply_iter`) still pass `OperationReturn`, preserving their message.
+fn projection_type_error(ctx: &TypeErrorContext, span: Option<Span>, msg: &str) -> TypeError {
     TypeError::Other {
         span,
-        context: TypeErrorContext::OperationReturn { op_name: fn_sym },
+        context: ctx.clone(),
         expected: "a well-formed type projection".to_owned(),
         actual: msg.to_owned(),
     }
@@ -8997,6 +9031,27 @@ pub fn unify_types<A: TermView, B: TermView>(
     }
     if let Some(vid) = resolved_var(kb, &b) {
         return bind_resolved(kb, subst, vid, a);
+    }
+
+    // WI-399: an un-eliminated expression-carried projection (`s.T` / `s.cell.T`)
+    // must NEVER reach unification. Every projection is discharged at its typing
+    // SITE — where the env resolves the receiver's type: an operation call
+    // (`check_apply_iter`, via `param_to_arg_type`) or a `let` annotation
+    // (`visit_type`, via the env's `var_bindings`). A projection head that survives
+    // to here was reached from a site that does NOT yet eliminate (a rule body, a
+    // higher-order apply) — so the receiver's type is not known at unification. Refuse
+    // EXPLICITLY here rather than rely on the structural fallback below, which would
+    // reach `types_compatible`'s `_ => false` only after treating the opaque
+    // `ExprCarried` head as a plain term — making the "no un-eliminated projection
+    // passes a type relation" invariant legible at the unify boundary the WI-399
+    // design names. Placed AFTER the var arms so a var still binds (mirroring how the
+    // subtype sibling `types_compatible` lets `type_var`/`nothing` win first): the two
+    // relations refuse a bare projection symmetrically — there it is `_ => false` by
+    // construction, here it is this guard.
+    if matches!(type_head(kb, &a), TypeHead::ExprCarried)
+        || matches!(type_head(kb, &b), TypeHead::ExprCarried)
+    {
+        return false;
     }
 
     match (&a, &b) {
@@ -12548,7 +12603,8 @@ fn check_operation_signatures(kb: &KnowledgeBase) -> Vec<TypeError> {
                 names.push(first);
             }
             let span = kb.functor_span(op_sym).map(|s| s.span);
-            errors.push(projection_type_error(op_sym, span, &format!(
+            errors.push(projection_type_error(
+                &TypeErrorContext::OperationReturn { op_name: op_sym }, span, &format!(
                 "cyclic cross-parameter type projection among parameters: {} — a \
                  parameter's type may project an EARLIER parameter, not form a cycle",
                 names.join(" -> "),
