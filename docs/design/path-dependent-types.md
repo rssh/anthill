@@ -261,6 +261,22 @@ arm is therefore **purely ζ**: a structural equality of two neutral `ExprCarrie
 head) at that exact line. The "δ-ground both, then if-neutral check σ" of §4 is thus
 **split across the two layers**, not one call.
 
+**The operation-*body* site is WI-400's PRIMARY site (correction, 2026-06-09 — probes
+BIDIR-3 / 3b).** δ runs not only at the call and `let` sites but at
+**`check_operation_bodies`**, where each parameter is bound into the body env with its
+*declared* type. A projection param type (`k: s.cell.T`) must be **δ-grounded against the
+receiver param's declared type when manifest** (`s: Wrapper[P = Inner[T = String]]` ⟹
+`k : String`) and **neutral-formed when abstract** (`s: State`, `P` open ⟹
+`k : ⟨s.provider⟩.K`), *before* the body is checked. This site is currently **unwired** —
+a manifest `k: s.cell.T` in a body stays the raw neutral `?.T` and the body fails
+(`expected String, got ?.T`), and the §1 motivating example
+(`check(s: State, k: s.provider.K) = s.provider.hasKey(k)`) *is* a body-check. So
+**WI-400's primary work is the body-binding site**, not the `unify_types` ζ arm — the ζ
+arm is *downstream*, the equality check between two neutrals the body-site produces. (At
+the body site the receiver's type is the *declared* param type — fixed, **no**
+bidirectional inference — so eager δ-ground / neutral-form there is sound and complete;
+deferral remains only the flexible rule-body case.)
+
 **Receiver aliasing is canonicalized eagerly at the `let`.** When `let y = <stable
 receiver path>` binds `y` to a variable / field-access chain (`let y = z`,
 `let y = s.provider`), the site records that `y`'s **receiver canonicalizes** to that
@@ -312,8 +328,43 @@ binders — so the ζ check is a binderless structural compare. The "one routine
 - **abstract-stays-poly** — a projection off an abstract receiver no longer errors; it
   forms a neutral usable by path-identity (the WI-399 loud error is now reachable only
   for a genuinely missing member, not an unbound one).
+- **body-site manifest δ-ground (BIDIR-3b)** —
+  `idElem(s: Wrapper[P = Inner[T = String]], k: s.cell.T) -> String = k` must typecheck:
+  `k`'s declared `s.cell.T` δ-grounds to `String` *at body-binding* (today: `expected
+  String, got ?.T` — the body site is unwired).
 - **flexible / rule-body** — `?p.M =?= ?q.M` with logic-var receivers **suspends**, never
   silently accepts (deferred mechanism; assert no false accept).
+
+### Bidirectional flow — the checklist example (WI-427 + WI-400)
+
+The whole effort is rooted in **bidirectional** inference (WI-379). The acceptance
+example below must thread information in *both* directions **and** through a projection —
+it is the regression anchor for the `expected → argument` direction (**WI-427**) and the
+projection it feeds:
+
+```anthill
+operation check(s: Wrapper[P = Inner[T = String]], k: s.cell.T) -> String
+operation poly[X]() -> Wrapper[P = Inner[T = X]]      -- X appears ONLY in the return
+operation caller() -> String = check(poly(), "abc")   -- must typecheck
+```
+
+Three flows must meet:
+
+1. **expected → argument (WI-427, not yet built).** `poly()`'s `X` appears only in its
+   return, so it is unconstrained *from the argument*; it is pinned to `String` only by
+   the **param type** `Wrapper[P = Inner[T = String]]` flowing *down* into the argument.
+   Today this fails (`X unconstrained`) — args are synthesized in isolation
+   (`push_visit_no_hint`). This is the missing half of "both sides."
+2. **projection off the now-grounded receiver (WI-398, delivered).** With
+   `poly() : Wrapper[P = Inner[T = String]]`, the call-site projection `s.cell.T` grounds
+   to `String`.
+3. **argument → parameter (WI-379, delivered).** `"abc" : String` checks against
+   `k : String`.
+
+Soundness twin: `check(poly(), 42)` must be **rejected** for the *right* reason
+(`k : String`, `42 : Int64`) — not the current `X unconstrained`. When both pass,
+"bidirectional from both sides" is restored end-to-end. **On-disk anchor:**
+`wi427_bidirectional_flow_test`, `#[ignore]`'d until WI-427 lands.
 
 ## 5. What the harder cases add (deferred)
 
@@ -451,6 +502,7 @@ not a new mechanism, only the missing wiring of the type-member arm into the gen
 | identity by unification; rigid abstract member; abstract-stays-poly | **WI-376** (keystone) — its abstract-stays-poly relaxation is **co-delivered by WI-400**, §4.1 |
 | equality = ζ/δ/η conversion; non-injective `ExprCarried` head; delay + no-silent-drop | **WI-400** — σ-equality ζ arm in the Rust typer's `unify_types`, realized as **eager let-alias** (§4.1); replaces the WI-399 guard line; co-delivers WI-376 abstract-stays-poly |
 | value-position projection (`let x = [1,2,3].T`); the generic dot's `TypeProjection` arm | **§5.1** (own follow-on — wire `project_type_member` into the `DotApply` frame; not yet a WI) |
+| `expected → argument` inference (push the param type into a polymorphic arg); the missing half of bidirectional flow | **WI-427** (anchor: the §4.1 bidirectional-flow checklist example) |
 
 The parametric working example of §1 needs **WI-384 + WI-376 + WI-397 + WI-398**, the
 two rules of §3, and the conversion/delay discipline of §4 (its soundness rule is
