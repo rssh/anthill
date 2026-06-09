@@ -502,6 +502,16 @@ pub struct TypingEnv {
     // `Value::Node` arrow and cannot be a hash-consed `TermId`. Ground bindings
     // are `Value::Term`.
     var_bindings: HashMap<Symbol, Value>,
+    /// WI-400 increment C (eager let-alias): the canonical receiver PATH a let-bound
+    /// name aliases. `let y = z` records `y → [z]`; `let y = s.provider` records
+    /// `y → [s, provider]` — populated only for a STABLE receiver path (a value reference
+    /// / field-access chain; immutable `let` ⟹ the aliased names denote one runtime
+    /// value, the §3 soundness note). A projection `y.M` formed at the env-bearing let
+    /// site is canonicalized through this map (`canonicalize_projection_receivers`) so it
+    /// carries the SAME receiver as `z.M` / `s.provider.M` and the ζ arm equates them
+    /// (`let y = z ⟹ y.M ≡ z.M`, the Scala divergence). Heads are stored already
+    /// de-aliased (transitive `let y = z; let w = y` ⟹ `w → [z]`).
+    receiver_aliases: HashMap<Symbol, Vec<Symbol>>,
     local_resources: Vec<Symbol>,
     /// Enclosing sort for defer-to-requirement detection plus a
     /// cached `requires_chain` snapshot. The chain is consulted for every
@@ -521,6 +531,7 @@ impl TypingEnv {
     pub fn empty() -> Self {
         Self {
             var_bindings: HashMap::new(),
+            receiver_aliases: HashMap::new(),
             local_resources: Vec::new(),
             enclosing: None,
             diagnostics: Vec::new(),
@@ -559,6 +570,51 @@ impl TypingEnv {
 
     pub fn lookup_var(&self, name: Symbol) -> Option<Value> {
         self.var_bindings.get(&name).cloned()
+    }
+
+    /// WI-400 increment C: record that `name` aliases the canonical receiver `path`
+    /// (`let y = z` ⟹ `name = y`, `path = [z]`). The path's head is de-aliased first, so
+    /// the stored path is fully canonical (transitive `let w = y` resolves to `y`'s
+    /// target). A path that is already the name itself (`let y = y`, degenerate) records
+    /// nothing — and **clears** any stale alias under `name`, since a re-bind of a
+    /// previously-aliased name must not keep pointing at the old receiver (soundness: a
+    /// shadowing `let y = …` rebinds `y`'s identity).
+    fn bind_receiver_alias(&mut self, name: Symbol, path: Vec<Symbol>) {
+        let canon = self.canonicalize_receiver_path(path);
+        if canon.first() == Some(&name) && canon.len() == 1 {
+            self.receiver_aliases.remove(&name);
+            return;
+        }
+        self.receiver_aliases.insert(name, canon);
+    }
+
+    /// WI-400 increment C: drop any receiver alias under `name`. Called when `name` is
+    /// re-bound to an UNSTABLE value (`let y = f()`): the old alias is stale and keeping it
+    /// would canonicalize `y`'s projection to the previous receiver — a false accept.
+    fn clear_receiver_alias(&mut self, name: Symbol) {
+        self.receiver_aliases.remove(&name);
+    }
+
+    /// WI-400 increment C: rewrite a receiver path's HEAD through the alias map (the head
+    /// is replaced by its canonical path, the trailing field segments preserved):
+    /// `[y, f]` with `y → [s, provider]` ⟹ `[s, provider, f]`. One hop suffices because
+    /// stored aliases are already de-aliased at record time.
+    fn canonicalize_receiver_path(&self, path: Vec<Symbol>) -> Vec<Symbol> {
+        let Some((head, rest)) = path.split_first() else {
+            return path;
+        };
+        match self.receiver_aliases.get(head) {
+            Some(canon_head) => {
+                let mut out = canon_head.clone();
+                out.extend_from_slice(rest);
+                out
+            }
+            None => path,
+        }
+    }
+
+    fn receiver_aliases(&self) -> &HashMap<Symbol, Vec<Symbol>> {
+        &self.receiver_aliases
     }
 
     pub fn declare_local_resource(&mut self, name: Symbol) {
@@ -2117,6 +2173,16 @@ fn visit_type(
             // `eliminate_type_projections` needs (the analog of `param_to_arg_type`).
             let annotation = match annotation {
                 Some(ann) if value_contains_projection(kb, &ann) => {
+                    // WI-400 increment C (eager let-alias): canonicalize the annotation's
+                    // projection receiver through the env's let-aliases BEFORE elimination,
+                    // so `let y = z; let k: y.M` resolves `y.M` against the SAME receiver as
+                    // `z.M` (`let y = z ⟹ y.M ≡ z.M`). A no-op when no alias applies.
+                    let ann = canonicalize_projection_receivers(
+                        kb,
+                        env.receiver_aliases(),
+                        &ann,
+                        occ.span,
+                    );
                     let var =
                         extract_pattern_var_name(kb, pattern).unwrap_or_else(|| kb.intern("_"));
                     let ctx = TypeErrorContext::LetBinding { var };
@@ -2812,6 +2878,19 @@ fn build_type(
             extend_env_from_pattern(kb, &mut ext_env, pattern, bound_ty);
             if let Some(var_name) = extract_pattern_var_name(kb, pattern) {
                 ext_env.declare_local_resource(var_name);
+                // WI-400 increment C (eager let-alias): if the value is a STABLE receiver
+                // path (a var / field-access chain — immutable `let` ⟹ one runtime value),
+                // record `var_name`'s canonical receiver, so a later projection off
+                // `var_name` canonicalizes to the aliased receiver (`let y = z ⟹
+                // y.M ≡ z.M`). An unstable value (`let y = f()`) records nothing — it is
+                // its own neutral receiver.
+                match stable_receiver_path(&value_node) {
+                    Some(path) => ext_env.bind_receiver_alias(var_name, path),
+                    // A re-bind to an UNSTABLE value must CLEAR any stale alias from an
+                    // outer `let` of the same name — else `let y = p; let y = f(); … : y.M`
+                    // would wrongly canonicalize `y.M` to `p.M` (a false accept).
+                    None => ext_env.clear_receiver_alias(var_name),
+                }
             }
             work.push(TypeWorkOp::Build(TypeBuildFrame::LetFinal { occ, value_node, value_effects }));
             push_visit(work, body_occ, Rc::new(ext_env), body_expected, fuel);
@@ -8395,6 +8474,113 @@ fn receiver_path_head_sym(kb: &KnowledgeBase, receiver: &Value) -> Option<Symbol
         }
     }
     None
+}
+
+/// WI-400 increment C: the full receiver-path SEGMENTS of a projection receiver value, in
+/// outermost-head-first order — `Ref(s)` ⟹ `[s]`, `s.provider` (a `DotApply` chain) ⟹
+/// `[s, provider]`. The path twin of [`receiver_path_head_sym`] (which returns only the
+/// head). `None` for a non-value-reference receiver. Used by the eager-let-alias
+/// canonicalization to rewrite a receiver whose head is aliased.
+fn receiver_path_segs(kb: &KnowledgeBase, receiver: &Value) -> Option<Vec<Symbol>> {
+    if let Some(head) = extract_sort_ref_sym(kb, receiver) {
+        return Some(vec![head]);
+    }
+    if let Value::Node(occ) = receiver {
+        if let Some(Expr::DotApply { receiver: base, name, pos_args, named_args }) = occ.as_expr() {
+            if pos_args.is_empty() && named_args.is_empty() {
+                let mut segs =
+                    receiver_path_segs(kb, &Value::Node(std::rc::Rc::clone(base)))?;
+                segs.push(*name);
+                return Some(segs);
+            }
+        }
+    }
+    None
+}
+
+/// WI-400 increment C: the stable receiver PATH a `let`-bound value occurrence denotes,
+/// if any. A value reference (`let y = z`) ⟹ `[z]`; a field-access chain
+/// (`let y = s.provider`) ⟹ `[s, provider]`. Returns `None` for anything NOT a stable
+/// path — a call (`let y = f()`), a literal, a constructor — so an unstable binding mints
+/// its OWN neutral receiver rather than aliasing (the §4.1 stability rule). The occurrence
+/// twin of [`receiver_path_segs`] (which reads a type-level receiver value).
+fn stable_receiver_path(occ: &Rc<NodeOccurrence>) -> Option<Vec<Symbol>> {
+    match occ.as_expr()? {
+        // A value reference is an `Expr::VarRef` (an unqualified let/lambda/param binder
+        // read) or a `Ref`/`Ident` (a resolved reference); all denote a stable name.
+        Expr::VarRef { name } => Some(vec![*name]),
+        Expr::Ref(s) | Expr::Ident(s) => Some(vec![*s]),
+        Expr::DotApply { receiver, name, pos_args, named_args }
+            if pos_args.is_empty() && named_args.is_empty() =>
+        {
+            let mut segs = stable_receiver_path(receiver)?;
+            segs.push(*name);
+            Some(segs)
+        }
+        _ => None,
+    }
+}
+
+/// WI-400 increment C (eager let-alias): rewrite a projection type's receiver to its
+/// CANONICAL path BEFORE elimination, when its head is a let-aliased variable — so `y.M`
+/// (`let y = z`) carries the same receiver as `z.M` and the ζ arm equates them
+/// (`let y = z ⟹ y.M ≡ z.M`, the Scala divergence). A no-op when `aliases` is empty (the
+/// common case) or the receiver head is not aliased. Handles the TOP-LEVEL projection
+/// (the let-annotation shape `let k: y.M`); a projection NESTED inside a parameterized /
+/// denoted type is left unchanged — the same carrier-promotion boundary `eliminate_type_-
+/// projections` already documents as a follow-on.
+fn canonicalize_projection_receivers(
+    kb: &mut KnowledgeBase,
+    aliases: &HashMap<Symbol, Vec<Symbol>>,
+    ty: &Value,
+    span: crate::span::SourceSpan,
+) -> Value {
+    if aliases.is_empty() {
+        return ty.clone();
+    }
+    let TypeExtractor::ExprCarried { value, member } = extract_type(kb, ty) else {
+        return ty.clone();
+    };
+    let Some(segs) = receiver_path_segs(kb, &value) else {
+        return ty.clone();
+    };
+    let (head, fields) = segs.split_first().expect("receiver path is non-empty");
+    let Some(canon_head) = aliases.get(head) else {
+        return ty.clone();
+    };
+    // Canonical receiver path = the head's alias path, then the trailing field segments.
+    let mut canon_segs = canon_head.clone();
+    canon_segs.extend_from_slice(fields);
+    build_projection_from_segs(kb, &canon_segs, member, span)
+}
+
+/// WI-400 increment C: build a projection type [`Value`] from a receiver path's segments
+/// plus the projected `member`, mirroring the loader's two carriers
+/// (`try_expr_carried_projection`): a single-segment receiver rides the ground
+/// `Fn{ExprCarried, value: Ref(s), member: Ref(M)}` term; a compound receiver rides the
+/// `TypeNode::ExprCarried` Node over a `DotApply` chain. `span` is the originating
+/// annotation's span (the canonical receiver has no source span of its own); `owner` is
+/// `None`.
+fn build_projection_from_segs(
+    kb: &mut KnowledgeBase,
+    segs: &[Symbol],
+    member: Symbol,
+    span: crate::span::SourceSpan,
+) -> Value {
+    debug_assert!(!segs.is_empty(), "projection receiver path is non-empty");
+    if segs.len() == 1 {
+        let receiver_term = kb.alloc(Term::Ref(segs[0]));
+        return Value::Term(kb.make_expr_carried(receiver_term, member));
+    }
+    let mut receiver = NodeOccurrence::new_expr(Expr::Ref(segs[0]), span, None);
+    for &field in &segs[1..] {
+        receiver = NodeOccurrence::new_expr(
+            Expr::DotApply { receiver, name: field, pos_args: Vec::new(), named_args: Vec::new() },
+            span,
+            None,
+        );
+    }
+    Value::Node(kb.make_expr_carried_occ(receiver, member, span, None))
 }
 
 /// WI-398: collect the receiver-head symbols of every expression-carried projection

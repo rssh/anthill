@@ -6126,23 +6126,33 @@ impl<'a> Loader<'a> {
             return None;
         }
         let head_name = self.parsed.symbols.name(segs[0]).to_owned();
-        let head_sym = match self.kb.symbols.resolve_in_scope(&head_name, self.current_scope.raw()) {
-            ResolveResult::Found(s) => s,
-            _ => return None,
-        };
-        // A projection's receiver is a VALUE; a namespace / sort head is a qualified
-        // sort ref, handled by the normal `remap_name` path (return `None`).
-        let is_value_head = matches!(
-            self.kb.symbols.get(head_sym),
-            SymbolDef::Resolved {
-                kind: SymbolKind::Param | SymbolKind::Field | SymbolKind::LocalLet
-                    | SymbolKind::OpResult | SymbolKind::CallbackParam | SymbolKind::CallbackResult,
-                ..
+        // WI-400 increment C: a let / lambda / match LOCAL is a value head too — consult
+        // the local-name scope stack first (mirrors `remap_symbol`), so a projection off a
+        // let-bound receiver (`let y = …; … : y.K`) resolves its head. A local binding is
+        // definitionally a value, so it skips the value-head sort/namespace gate that keeps
+        // a namespace / sort head (`Foo.T`) on the normal `remap_name` path.
+        let head_sym = if let Some(local) = self.lookup_local_name(&head_name) {
+            local
+        } else {
+            let resolved = match self.kb.symbols.resolve_in_scope(&head_name, self.current_scope.raw()) {
+                ResolveResult::Found(s) => s,
+                _ => return None,
+            };
+            // A projection's receiver is a VALUE; a namespace / sort head is a qualified
+            // sort ref, handled by the normal `remap_name` path (return `None`).
+            let is_value_head = matches!(
+                self.kb.symbols.get(resolved),
+                SymbolDef::Resolved {
+                    kind: SymbolKind::Param | SymbolKind::Field | SymbolKind::LocalLet
+                        | SymbolKind::OpResult | SymbolKind::CallbackParam | SymbolKind::CallbackResult,
+                    ..
+                }
+            );
+            if !is_value_head {
+                return None;
             }
-        );
-        if !is_value_head {
-            return None;
-        }
+            resolved
+        };
         let member_sym = self.kb.intern(&member_name);
         if segs.len() == 2 {
             // Single value-reference receiver: a ground occurrence `Ref(head)`. The

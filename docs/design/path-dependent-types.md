@@ -326,10 +326,36 @@ binders — so the ζ check is a binderless structural compare. The "one routine
 α-equivalence of binders (arrow / dependent types)" of §4 is the **deferred**
 `Positioned` / arrow reading; the base WI-400 routine does not build α-renaming.
 
+#### Increment C DELIVERED (2026-06-09) — eager let-alias (`let y = z ⟹ y.M ≡ z.M`)
+
+The receiver-alias map (substrate change 2 above) landed, completing the WI-400 core. A
+`let` whose value is a **stable receiver path** (a value reference / field-access chain —
+immutable `let` ⟹ one runtime value) records the bound name's **canonical receiver path**
+on the typing env (`TypingEnv.receiver_aliases`, populated at `LetAfterValue` via
+`stable_receiver_path`; heads stored already de-aliased, so transitive `let w = y` resolves
+to `y`'s target). At the env-bearing **let-annotation** site a projection is canonicalized
+through that map *before* elimination (`canonicalize_projection_receivers` →
+`build_projection_from_segs`), so `y.M` carries the **same** receiver as `z.M` and the ζ
+arm equates them. `unify_types` stays env-free (the WI-399 invariant): canonicalization
+runs entirely at the site. An **unstable** value (`let y = pick(p)`) records no alias — `y`
+stays its own neutral receiver (the §4.1 stability rule).
+
+Two enabling fixes: `stable_receiver_path` reads the `Expr::VarRef` form a param/let
+reference actually takes; and the loader's `try_expr_carried_projection` is now
+**local-aware** (consults `lookup_local_name` before the static scope, mirroring
+`remap_symbol`) so a projection off a **let-local** receiver (`let y = p; … : y.K`)
+resolves its head at all — previously "unresolved name 'y.K'". Acceptance:
+`wi400…::let_alias_canonicalizes_receiver` / `_distinct_receiver_rejected` /
+`let_unstable_value_does_not_alias`. Limitation: the canonicalization handles the top-level
+let-annotation projection; a projection NESTED inside a parameterized/denoted annotation is
+unchanged (the same carrier-promotion boundary eliminate documents). **Value-position field
+access** (`let y = s.provider`) remains a separate unsupported form (design §5.1 INC-1b), so
+the let-alias is exercised via a value-reference receiver (`let y = p`, `p : DataProvider`).
+
 #### Increment B DELIVERED (2026-06-09) — abstract→neutral + the ζ arm
 
 The neutral-formation + σ-equality core landed; the **eager-let-alias** map (substrate
-change 2 above) is the remaining **increment C** (see "Deferred", below). What B does:
+change 2 above) is **increment C** (above). What B does:
 
 - **`project_type_member` → `ProjResult::{Grounded, Neutral}`** (the abstract→neutral
   relaxation, co-delivering **WI-376 abstract-stays-poly**). Neutral when the member is
@@ -379,15 +405,21 @@ change 2 above) is the remaining **increment C** (see "Deferred", below). What B
   2026-06-09: the projection now forms the neutral; the residual error is *"unknown
   functor"* at the `hasKey` dispatch). The within-operation path-identity that the ζ core
   *does* deliver is `idK` above.
-- **let-alias** — **deferred (increment C)**: `let y = z ⟹ y.T ≡ z.T`. Needs the env
-  receiver-alias map (substrate change 2) wired into projection *formation*.
+- **let-alias** ✓ (C) — `let y = z ⟹ y.M ≡ z.M`: `let y = p; let m: y.K = k` conforms via
+  receiver canonicalization, while `let y = pick(p)` (unstable) does not alias
+  (`wi400…::let_alias_canonicalizes_receiver` / `_distinct_receiver_rejected` /
+  `let_unstable_value_does_not_alias`).
 - **flexible / rule-body** — **deferred**: `?p.M =?= ?q.M` with logic-var receivers
   **suspends** (the resolver delay/wake); not formed in the base operation-signature scope.
 
-**Deferred from B (all sound — no false accept; at most over-rejection / less-precise
+**Deferred from B + C (all sound — no false accept; at most over-rejection / less-precise
 error):**
 
-- **eager-let-alias** (increment C) — the Scala divergence `let y = z ⟹ y.T ≡ z.T`.
+- **nested let-alias canonicalization** — increment C canonicalizes a TOP-LEVEL
+  let-annotation projection (`let m: y.K`); a projection nested in a parameterized/denoted
+  annotation (`let m: List[T = y.K]`) is unchanged (the carrier-promotion boundary).
+- **value-position field access** (`let y = s.provider`) — a separate unsupported form
+  (§5.1 INC-1b); the let-alias is exercised via a value-reference receiver (`let y = p`).
 - **cross-call neutral threading** — `relay(l: List) -> l.T = peek(l)` does *not* typecheck:
   at the call the neutral keeps the *callee's* receiver symbol (`peek`'s `l`) rather than
   substituting the argument expression, so it ζ-mismatches the caller's `l.T`. The
@@ -568,7 +600,7 @@ not a new mechanism, only the missing wiring of the type-member arm into the gen
 | `k : s.provider.K` depends on param `s` (cross-param + synthesis order) | **WI-398** |
 | projection at `let` / body / `requires`, not only call args | **WI-399** ✓ (delivered 2026-06-09: eager δ-elimination at the let annotation site + a loud `unify_types` guard refusing an un-eliminated `ExprCarried`) |
 | identity by unification; rigid abstract member; abstract-stays-poly | **WI-376** (keystone) — its abstract-stays-poly relaxation **co-delivered by WI-400 increment B** (2026-06-09), §4.1 |
-| equality = ζ/δ/η conversion; non-injective `ExprCarried` head; delay + no-silent-drop | **WI-400** — **increment B DELIVERED** (2026-06-09): σ-equality ζ arm (`expr_carried_zeta`) in `unify_types` **and** both `types_compatible` dispatchers, replacing the WI-399 guard; abstract→neutral (`project_type_member` → `ProjResult`), co-delivering WI-376 abstract-stays-poly. **Remaining:** eager-let-alias (increment C), flexible/rule-body delay, §1 abstract dispatch — §4.1 |
+| equality = ζ/δ/η conversion; non-injective `ExprCarried` head; delay + no-silent-drop | **WI-400** — **increments B + C DELIVERED** (2026-06-09): σ-equality ζ arm (`expr_carried_zeta`) in `unify_types` **and** both `types_compatible` dispatchers, replacing the WI-399 guard; abstract→neutral (`project_type_member` → `ProjResult`), co-delivering WI-376 abstract-stays-poly; **eager let-alias** (`let y = z ⟹ y.M ≡ z.M`, the receiver-alias map). **Remaining:** flexible/rule-body delay, §1 abstract dispatch, value-position field access (§5.1) — §4.1 |
 | value-position projection (`let x = [1,2,3].T`); the generic dot's `TypeProjection` arm | **§5.1** (own follow-on — wire `project_type_member` into the `DotApply` frame; not yet a WI) |
 | `expected → argument` inference (push the param type into a polymorphic arg); the missing half of bidirectional flow | **WI-427** (anchor: the §4.1 bidirectional-flow checklist example) |
 

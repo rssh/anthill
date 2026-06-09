@@ -255,3 +255,120 @@ end
          error (not a silent neutral); got: {errs:?}",
     );
 }
+
+// ── WI-400 INCREMENT C: eager let-alias (the `let y = z ⟹ y.M ≡ z.M` Scala divergence) ──
+//
+// A `let` whose value is a STABLE receiver path (a var / field-access chain — immutable
+// `let` ⟹ one runtime value) records the bound name's CANONICAL receiver on the env. A
+// projection `y.M` formed at a later let site is canonicalized through that map BEFORE
+// elimination, so it carries the SAME receiver as the aliased path and the ζ arm equates
+// them. Anthill identifies a path type by UNIFYING the receiver (`let y = z ⟹ y.M ≡ z.M`),
+// where Scala leaves `y.M ≠ z.M` (nominal over the syntactic path). Design §4.1 / §"headline".
+
+/// `let y = p` aliases `y` to the param `p`, so `let m: y.K = k` resolves `y.K` to the SAME
+/// neutral as `k`'s declared `p.K` and conforms — and returning `m` as `-> p.K` conforms
+/// too. Without eager-let-alias `y.K` would be a projection off the let-bound `y` (its own
+/// distinct receiver) and `≢ p.K`, so `let m: y.K = k` would be rejected; the alias
+/// canonicalizes the receiver `y` to `p`. (`p : DataProvider` with `K` a declared
+/// type-parameter projects the bare-sort neutral `p.K`, sidestepping value-position field
+/// access, which is a separate unsupported form — design §5.1.)
+#[test]
+fn let_alias_canonicalizes_receiver() {
+    let ok = r#"
+namespace test.wi400.let_alias_ok
+  sort DataProvider
+    sort K = ?
+  end
+  operation f(p: DataProvider, k: p.K) -> p.K =
+    let y = p
+    let m: y.K = k
+    m
+end
+"#;
+    assert!(
+        load_errors(&[ok]).is_empty(),
+        "let y = p ⟹ y.K ≡ p.K, so `let m: y.K = k` conforms and `m` returns as p.K; \
+         got: {:?}",
+        load_errors(&[ok]),
+    );
+}
+
+/// The alias canonicalizes to the RIGHT receiver — `let y = p` makes `y.K` the `p`
+/// projection, NOT the `q` one. So `m : y.K` (= `p.K`) returned under a declared `q.K` is
+/// REJECTED (distinct receivers, the non-injective head). Proves the alias is not a blanket
+/// "any projection matches" — `let y = z; let w = other ⟹ y.M ≢ w.M`.
+#[test]
+fn let_alias_distinct_receiver_rejected() {
+    let bad = r#"
+namespace test.wi400.let_alias_bad
+  sort DataProvider
+    sort K = ?
+  end
+  operation g(p: DataProvider, q: DataProvider, k: p.K) -> q.K =
+    let y = p
+    let m: y.K = k
+    m
+end
+"#;
+    let errs = load_errors(&[bad]);
+    assert!(
+        errs.iter().any(|e| e.contains("p.K") && e.contains("q.K")),
+        "y aliases p, so m : p.K must be rejected under a -> q.K return (distinct \
+         receivers); got: {errs:?}",
+    );
+}
+
+/// An UNSTABLE let value (a call) does NOT alias — `y` stays its OWN neutral receiver, so
+/// `y.K ≢ p.K`. The §4.1 stability rule: only a value-reference / field-access path
+/// canonicalizes (immutable `let` ⟹ one runtime value); `let y = pick(p)` mints a fresh
+/// value. So `let m: y.K = k` (`k : p.K`) is REJECTED — the alias did not silently equate
+/// `y.K` with `p.K`. Contrast `let_alias_canonicalizes_receiver` (same shape, stable value).
+#[test]
+fn let_unstable_value_does_not_alias() {
+    let bad = r#"
+namespace test.wi400.let_unstable
+  sort DataProvider
+    sort K = ?
+    operation pick(p: DataProvider) -> DataProvider
+  end
+  operation g(p: DataProvider, k: p.K) -> p.K =
+    let y = pick(p)
+    let m: y.K = k
+    m
+end
+"#;
+    let errs = load_errors(&[bad]);
+    assert!(
+        errs.iter().any(|e| e.contains("y.K") && e.contains("p.K")),
+        "let y = pick(p) is unstable, so y.K does NOT alias p.K; `let m: y.K = k` must be \
+         rejected (k : p.K ≢ y.K); got: {errs:?}",
+    );
+}
+
+/// Soundness: re-binding an aliased name to an UNSTABLE value CLEARS the stale alias. A
+/// `let y = p` (alias `y → p`) shadowed by `let y = pick(p)` (unstable) must NOT keep the
+/// old alias — otherwise `let m: y.K = k` would canonicalize `y.K` to `p.K` and wrongly
+/// accept, even though the shadowing `y` is a fresh value whose `y.K ≢ p.K`. (Regression
+/// for a /code-review-found false-accept.)
+#[test]
+fn let_alias_cleared_on_unstable_rebind() {
+    let bad = r#"
+namespace test.wi400.let_rebind
+  sort DataProvider
+    sort K = ?
+    operation pick(p: DataProvider) -> DataProvider
+  end
+  operation g(p: DataProvider, k: p.K) -> p.K =
+    let y = p
+    let y = pick(p)
+    let m: y.K = k
+    m
+end
+"#;
+    let errs = load_errors(&[bad]);
+    assert!(
+        errs.iter().any(|e| e.contains("y.K") && e.contains("p.K")),
+        "the shadowing `let y = pick(p)` must clear the stale `y → p` alias, so `y.K ≢ p.K` \
+         and `let m: y.K = k` is rejected; got: {errs:?}",
+    );
+}
