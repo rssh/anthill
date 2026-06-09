@@ -27,7 +27,8 @@ The mapping is deterministic: given the same anthill source, the same Rust code 
 | No effects | `&self` (if method), no `Result` wrapping |
 | `effects (Error)` or `effects (Error E)` | `Result<R, Error>` or `Result<R, E>` return |
 | `effects (Requires Cap)` | generic bound or runtime check (future) |
-| `sort T` (abstract sub-sort = type parameter) | generic `<T>` |
+| `sort T` (abstract sub-sort = type parameter) | generic `<T>` (§2.6); on spec sorts in the full mapper, members surviving Self-collapse: associated type `type T;` (§2.14) |
+| `k: s.K` (path-dependent projection, ungrounded) | `S::K` off the receiver lifted to a named generic `S: Sort` (§2.14, full mapper) |
 | `requires Eq[T]` | trait bound: `where T: Eq` or supertrait |
 | `fact SortName` or `fact SortName[bindings]` (inside sort body) | supertrait: `trait S: SortName` |
 | `fact SortName` or `fact SortName[bindings]` (in entity's namespace) | `impl SortName for Entity` |
@@ -87,6 +88,8 @@ sort Stream {                              trait Stream<T, E> {
 ```
 
 Note: `split_first` and `tail` take `self` by value (not `&self`) because the Rust/std profile's `returns_same_type` receiver rule detects that the return type contains `Self` — see §9. `is_empty` returns `Bool`, not `Stream`, so it stays as `&self`.
+
+The trait-generic renderings here and in §2.7/§2.13 are the **bootstrap mapper's**. The KB-driven full mapper renders spec-sort members that survive Self-collapse as **associated types** instead — see §2.14 (§6.5 already shows that form).
 
 ### 2.3 Sort with Constructors → Enum
 
@@ -163,6 +166,8 @@ sort List {                                pub enum List<T> {
 }
 ```
 
+**Mapper split (WI-403).** The generic mapping above holds for *data* sorts (constructor-bearing, §2.3) in both mappers, and is what the bootstrap mapper implements for all sorts. In the KB-driven full mapper (proposal 029's `anthill-rust-gen`, WI-002), members of *spec* sorts (trait-lowered, §2.2) that survive Self-collapse map to **associated types** instead — the form path-dependent projections (`s.K`) require. See §2.14. ("Mapper" here is 029's bootstrap-vs-full split, orthogonal to the §9 LanguageMapping *profiles* like rust/std vs rust/no_std.)
+
 ### 2.7 Requires → Trait Bounds
 
 A `requires` declaration maps to a trait bound — either as a supertrait (on a trait definition) or a `where` clause (on a generic struct or function):
@@ -196,7 +201,7 @@ Option[T = Account]             →  Option<Account>  (prelude type)
 List[T = ContextRef]            →  Vec<ContextRef>  (prelude type)
 ```
 
-Prelude types have special mappings (§2.9). Non-prelude parametric sorts map directly: `MyContainer[T = Foo]` → `MyContainer<Foo>`.
+Prelude types have special mappings (§2.9). Non-prelude parametric sorts map directly: `MyContainer[T = Foo]` → `MyContainer<Foo>`. *(Positional application — the bootstrap mapper, and data sorts in both mappers. A parametric use of a spec sort in the full mapper renders as the named associated-type-binding form `KVStore<K = String>` instead, since associated types are not positional parameters — §2.14.)*
 
 ### 2.9 Prelude Type Mappings
 
@@ -262,7 +267,7 @@ These are generated in a separate `invariants` submodule for test-time checking.
 
 ### 2.13 Fact as Spec Satisfaction Declaration → Supertrait or Impl
 
-A `fact SortName` or `fact SortName[bindings]` declares a spec satisfaction (refinement) relationship. The bindings (if any) are used by the kernel for constraint checking but are ignored by the codegen — only the sort name matters for the Rust mapping. It maps differently depending on context:
+A `fact SortName` or `fact SortName[bindings]` declares a spec satisfaction (refinement) relationship. The bindings (if any) are used by the kernel for constraint checking but are ignored by the bootstrap codegen — only the sort name matters for the Rust mapping. *(In the full mapper the bindings of a spec-sort satisfaction are **not** ignored: they become the generated impl's associated-type items — §2.14.)* It maps differently depending on context:
 
 **Inside a sort body** — becomes a supertrait:
 
@@ -282,7 +287,7 @@ sort Stream {                              trait Stream<T, E>: Streamable {
 }
 ```
 
-`fact Store` inside `sort QueryableStore` means "every QueryableStore is-a Store". `fact Streamable[T = T]` inside `sort Stream` means "every Stream is-a Streamable" — the bindings are stripped, only the sort name `Streamable` becomes a supertrait.
+`fact Store` inside `sort QueryableStore` means "every QueryableStore is-a Store". `fact Streamable[T = T]` inside `sort Stream` means "every Stream is-a Streamable" — in the bootstrap mapper the bindings are stripped, only the sort name `Streamable` becomes a supertrait. *(In the full mapper a binding onto a supertrait member that survives Self-collapse becomes an associated-type binding on the supertrait reference — `trait Stream: Streamable<T = Self::T>` — §2.14.)*
 
 **In an entity's namespace** — becomes a trait implementation:
 
@@ -294,6 +299,62 @@ fact QueryableStore                        impl QueryableStore for SqlStore { ..
 ```
 
 `fact QueryableStore` in the namespace where `SqlStore` is defined means "SqlStore is-a QueryableStore", which maps to implementing the trait.
+
+### 2.14 Path-Dependent Projections (`s.K`) → Associated Types
+
+*(WI-403 realization decision, 2026-06-09. Applies to the KB-driven full mapper — proposal 029's `anthill-rust-gen`, WI-002. The multi-member trait renderings elsewhere in this document — §2.2's `Stream<T, E>`, §2.7's `Container<T>`, §2.13 — show the **bootstrap mapper's** trait-generic form; 029 requires no conformance between the two mappers (each conforms to its own subset of these rules), so bootstrap keeps that form (§6.5 conversely already shows the full mapper's associated-type form). Projections themselves are outside the bootstrap mapper's scope (029 freezes it, and the stdlib writes none); one reaching it must fail loudly — a diagnostic duty, not a new bootstrap feature — never silently strip the receiver and emit the bare member name.)*
+
+An operation signature may project an abstract member off a value parameter (the path-dependent feature, `docs/design/path-dependent-types.md`):
+
+```
+operation check(s: KVStore, k: s.K) -> Bool
+```
+
+After the typer's δ-grounding, a *surviving* `s.K` is **rigid (ungrounded)**: the receiver's type is abstract, so the member is undetermined at the definition site. That is not an error — it is the "well-typed, with obligations" residual level: the operation is **intentionally polymorphic** over `K`. The polymorphism is implicit in the anthill signature but must become explicit in Rust; this section defines where the host parameter comes from.
+
+**Members of spec sorts are associated types.** A *spec* sort (trait-lowered, §2.2) declares its abstract members as Rust associated types, not trait generics:
+
+```
+sort KVStore {                             pub trait KVStore {
+  sort K = ?                      →            type K;
+  sort V = ?                                   type V;
+  operation get(s: KVStore,                    fn get(&self, k: Self::K) -> Option<Self::V>;
+    k: K) -> Option[V]                         fn put(self, k: Self::K, v: Self::V) -> Self;
+  operation put(s: KVStore,                }
+    k: K, v: V) -> KVStore
+}
+
+sort MemStore {                            pub struct MemStore { ... }
+  provides KVStore[                →       impl KVStore for MemStore {
+    K = String, V = Bytes]                     type K = String;
+  entity memStore(...)                         type V = Bytes;
+}                                              ...
+                                           }
+```
+
+This is forced by the path-dependent semantics, not a style preference: `s.K` is well-defined only because each provider *determines* its members — δ-grounding "projects **the** manifest member off the receiver's type" presumes exactly one binding per carrier. A member that is a function of the implementing type is precisely Rust's associated type. Trait generics encode the opposite reading — multi-parameter type classes, where one carrier may instantiate the trait at many bindings — under which `s.K` would be ambiguous. **Data sorts (§2.3) keep the §2.6 generic mapping**: Rust enums have no associated types, and a projection off a concrete carrier δ-grounds before codegen ever sees it.
+
+**Self-collapse takes precedence.** The single-type-parameter collapse (§2.2, §4) is unchanged: a spec sort whose lone member is the operations' subject (`Eq`'s `T`, `Ordered`'s `T`) still collapses that member to `Self` and gains no associated type. Associated types apply to the members that *survive* collapse — in `KVStore` the carrier position collapses to `Self` while `K` and `V` become `type K;` / `type V;`. The §2.7 composition bullet below relies on exactly this split: `Eq` stays collapsed while `K` is projected.
+
+**The lowering forms.** Rust has the projection ("host has it" — `S::K`), so projection is primary and the lift-to-parameter form is reserved for member sharing:
+
+| anthill | Rust | when |
+|---|---|---|
+| `get(s: KVStore, k: s.K)` — receiver collapses to `self` | `fn get(&self, k: Self::K)` | within-sort: `s.K` is the member itself |
+| `check(s: KVStore, k: s.K) -> Bool` — `s` abstract, member ungrounded | `fn check<S: KVStore>(s: &S, k: S::K) -> bool` | cross-sort: the receiver lifts to a **named** generic; `s.K` projects as `S::K` |
+| `f(s: KVStore[K = String], v: s.V)` — partial manifest | `fn f<S: KVStore<K = String>>(s: &S, v: S::V)` | a manifest member becomes an associated-type **equality bound**; the rest still projects |
+| `merge(a: KVStore, b: KVStore)` with `a.K ≡ b.K` required | `fn merge<K, A: KVStore<K = K>, B: KVStore<K = K>>(a: &A, b: &B)` | member **sharing**: the lifted parameter names the member so two receivers can be constrained to agree |
+| `s: MemStore`, use of `s.K` — concrete receiver | `String` (the grounded type) | δ-grounds in the typer; nothing path-dependent reaches codegen |
+
+The host generic an ungrounded `s.K` induces is the **receiver itself** (`S`); the member needs no parameter of its own unless two receivers must share it. The decidability property — "the receiver is in scope, so the parameter is always nameable" — is realized as: the lifted receiver generic `S` is always nameable, and `S::K` reaches the member.
+
+**Composition with the other rules:**
+
+- §2.7: `requires Eq[K]` on a spec-sort member → `where Self::K: Eq` on the trait / `where S::K: Eq` at a use site.
+- §2.8: a parametric *use* of a spec sort in bound position, `KVStore[K = String]`, is Rust's associated-type-binding syntax `KVStore<K = String>` — legal exactly because the members are associated types.
+- §2.13: for a spec-sort satisfaction (`provides` / `fact KVStore[K = String]` in a carrier's scope), the bindings are **no longer ignored** in the full mapper — they become the `type K = String;` items of the generated `impl`.
+- Generic providers compose: `List provides Iterable[Element = T]` → `impl<T> Iterable for List<T> { type Element = T; }`.
+- Effect members (`sort E` on `Stream`) stay outside this rule: they *are* projectable in effect position (`effects s.E`, WI-396), but they are never grounded via `provides` and do not lower to associated types. Their host realization rides the effect channel — §5.5's resolution rule (effects resolve structurally per LanguageMapping profile) is mapper-neutral, though its `Stream<T, E>` rendering shows the bootstrap shape. Whether a full-mapper trait carries `E` at all (associated type vs erased into §5.5's wrapping) is deliberately left to the WI-002 emitter design.
 
 ## 3. Generation Boundary
 
@@ -920,7 +981,7 @@ pub enum WorkStatus {
 
 ### 6.5 Banking Algebra
 
-Banking is parametric over `Money` (abstract sub-sort), so it is a `sort`, not a `namespace`. The codegen produces a trait with `Money` as an associated type:
+Banking is parametric over `Money` (abstract sub-sort), so it is a `sort`, not a `namespace`. The full mapper produces a trait with `Money` as an associated type (the §2.14 rendering — this example predates the bootstrap/full-mapper split and anticipated the associated-type form):
 
 ```
 -- Anthill:

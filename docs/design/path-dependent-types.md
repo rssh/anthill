@@ -241,6 +241,15 @@ So equality is conversion (ζ/δ/η over non-injective heads), inference is dela
 no-silent-drop, and "typed" is a three-level residual reading — the projection corner
 is just the general typing architecture made concrete.
 
+> **WI-403 refines the third row (§5.2).** An *interface-rooted* rigid residual is
+> realizable without being ground: it lowers to a **host generic**, and each **concrete
+> instantiation** grounds it (the caller's δ when its receiver is concrete; an
+> abstract-context call propagates the neutral to its *own* interface —
+> abstract-stays-poly, WI-376) — "ground" is required per instantiation, not at the
+> definition. The middle row's existential reading ("∃ a binding") becomes the host's
+> universal parameter exactly when the residual roots at the operation interface;
+> a hidden-local root stays unrealizable (and §5 makes it unformable).
+
 ## 4.1 Realizing σ-equality on the Rust typer (WI-400) — eager let-alias + structural ζ
 
 *(Added 2026-06-09, after **WI-399** landed the let-site elimination chokepoint and
@@ -696,6 +705,30 @@ is pure δ — no σ-equality, no aliasing. The two meet only when the receiver 
 type. So value-position projection rides the *same* δ / ζ / eager-let-alias model — it is
 not a new mechanism, only the missing wiring of the type-member arm into the generic dot.
 
+## 5.2 Host realization of an ungrounded projection — rule decided (WI-403)
+
+A rigid `s.K` that survives δ means the operation is *intentionally polymorphic* over the
+member (§4's middle residual level: well-typed, with obligations — realizable despite §4's
+"codegen requires ground" row because the residual roots at the operation interface, so
+every *concrete instantiation* grounds it, while an abstract-context call re-roots the
+neutral at its own interface; see the refinement note under the §4 table) — the host
+language must make that polymorphism explicit. **Decision (2026-06-09): in the Rust full mapper (WI-002 /
+proposal 029's `anthill-rust-gen`), spec-sort members lower to associated types, and the
+projection lowers to `S::K` off the receiver lifted to a named generic** —
+`check(s: KVStore, k: s.K)` → `fn check<S: KVStore>(s: &S, k: S::K)`; a manifest member
+becomes an equality bound (`S: KVStore<K = String>`); the lift-to-parameter form
+(`fn merge<K, A: KVStore<K = K>, B: KVStore<K = K>>`) is reserved for constraining two
+receivers to *share* a member. Associated types are forced, not chosen: δ's "project *the*
+manifest member off the receiver's type" is the functional-member reading — one provider,
+one binding — which is exactly Rust's `type K;` (trait generics encode the
+multi-instantiation reading, under which `s.K` would be ambiguous). The induced host
+generic is the receiver itself, so the ticket's decidability property ("receiver in scope
+⟹ nameable") is the lifted `S`. The normative rule lives in
+`docs/rust-forward-mapping.md` §2.14; the emitter lands with the WI-002 KB-driven mapper
+(WI-403 stays open, re-pointed onto WI-002). The bootstrap (parse-IR) mapper is exempt —
+projections are outside its scope and must be rejected loudly, never lowered by stripping
+the receiver.
+
 ## 6. Seam map
 
 | piece | seam |
@@ -708,6 +741,7 @@ not a new mechanism, only the missing wiring of the type-member arm into the gen
 | equality = ζ/δ/η conversion; non-injective `ExprCarried` head; delay + no-silent-drop | **WI-400** — **increments B + C DELIVERED** (2026-06-09): σ-equality ζ arm (`expr_carried_zeta`) in `unify_types` **and** both `types_compatible` dispatchers, replacing the WI-399 guard; abstract→neutral (`project_type_member` → `ProjResult`), co-delivering WI-376 abstract-stays-poly; **eager let-alias** (`let y = z ⟹ y.M ≡ z.M`, the receiver-alias map). **Remaining:** flexible/rule-body delay, §1 abstract dispatch, value-position field access (§5.1) — §4.1 |
 | value-position projection (`let x = [1,2,3].T`); the generic dot's `TypeProjection` arm | **§5.1** (own follow-on — wire `project_type_member` into the `DotApply` frame; not yet a WI) |
 | `expected → argument` inference (push the param type into a polymorphic arg); the missing half of bidirectional flow | **WI-427** (anchor: the §4.1 bidirectional-flow checklist example) |
+| ungrounded `s.K` lowered to the host (realization / codegen) | **WI-403** — rule **decided** 2026-06-09 (§5.2: associated types + `S::K`, normative in `docs/rust-forward-mapping.md` §2.14); emitter rides **WI-002** (the KB-driven full mapper), WI-403 re-pointed onto it and left open |
 
 The parametric working example of §1 needs **WI-384 + WI-376 + WI-397 + WI-398**, the
 two rules of §3, and the conversion/delay discipline of §4 (its soundness rule is
