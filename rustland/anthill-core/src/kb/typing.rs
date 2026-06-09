@@ -1034,6 +1034,18 @@ fn type_display_name_occ(kb: &KnowledgeBase, occ: &Rc<NodeOccurrence>) -> String
             type_child_display_name(kb, value),
             type_child_display_name(kb, member)
         ),
+        // WI-400: a receiver-expression occurrence inside a projection's neutral type — a
+        // value reference (`s`) or a field-access path (`s.provider`) — so the neutral
+        // prints legibly (`s.provider.K`, not `?.K`) in a type error.
+        NodeKind::Expr { expr: Expr::Ref(s) | Expr::Ident(s), .. } => {
+            kb.resolve_sym(*s).to_string()
+        }
+        NodeKind::Expr {
+            expr: Expr::DotApply { receiver, name, pos_args, named_args },
+            ..
+        } if pos_args.is_empty() && named_args.is_empty() => {
+            format!("{}.{}", type_display_name_occ(kb, receiver), kb.resolve_sym(*name))
+        }
         _ => "?".to_string(),
     }
 }
@@ -1092,6 +1104,19 @@ pub fn type_display_name(kb: &KnowledgeBase, ty: TermId) -> String {
                     format!("({})", parts.join(", "))
                 }
                 "Nothing" => "nothing".to_string(),
+                // WI-400: a single-ref expression-carried projection (`l.T`) — render
+                // `receiver.member`, not the generic `ExprCarried[value = …]` fallback, so
+                // a neutral-projection type error reads legibly (mirrors the Node-carrier
+                // `type_display_name_occ` arm for the compound `s.provider.K` form).
+                "ExprCarried" => {
+                    let v = get_named_arg(kb, named_args, "value")
+                        .map(|t| type_display_name(kb, t))
+                        .unwrap_or_else(|| "?".to_string());
+                    let m = get_named_arg(kb, named_args, "member")
+                        .map(|t| type_display_name(kb, t))
+                        .unwrap_or_else(|| "?".to_string());
+                    format!("{v}.{m}")
+                }
                 "Denoted" => {
                     // WI-302: value-in-type — render the carried value directly
                     // (`Modify[c]` shows `c`, not `denoted[value = c]`).
@@ -8505,7 +8530,12 @@ fn eliminate_type_projections(
             // occurrence). Resolve the receiver path's static type and project the
             // member — the Node twin of the `Value::Term` path above.
             if let TypeExtractor::ExprCarried { value, member } = extract_type(kb, ty) {
-                return resolve_compound_projection(kb, &value, member, arg_types, ctx, span);
+                return match resolve_compound_projection(kb, &value, member, arg_types, ctx, span)? {
+                    ProjResult::Grounded(v) => Ok(v),
+                    // WI-400: abstract receiver, member declared — keep the original
+                    // compound `ExprCarried` Node as the rigid neutral.
+                    ProjResult::Neutral => Ok(ty.clone()),
+                };
             }
             // A projection nested INSIDE a denoted-bearing `Value::Node` (e.g.
             // `Stream[T = l.T, E = {Modify[c]}]`) is not yet rewritten through the Node
@@ -8536,32 +8566,40 @@ fn resolve_compound_projection(
     arg_types: &HashMap<Symbol, Value>,
     ctx: &TypeErrorContext,
     span: Option<Span>,
-) -> Result<Value, TypeError> {
-    let recv_ty = resolve_receiver_path_type(kb, receiver, arg_types, ctx, span)?;
+) -> Result<ProjResult, TypeError> {
+    let (recv_ty, recv_decl_sort) =
+        resolve_receiver_path_type(kb, receiver, arg_types, ctx, span)?;
     let member_str = kb.resolve_sym(member).to_owned();
-    project_type_member(kb, &recv_ty, &member_str, ctx, span)
+    project_type_member(kb, &recv_ty, &member_str, recv_decl_sort, ctx, span)
 }
 
 /// Resolve the static TYPE of a field-access receiver path occurrence (WI-397). A
 /// single value reference `Ref(s)` is the type of the argument bound to param `s`;
 /// a field access `base.field` is the type of `field` in the (recursively resolved)
 /// `base` type. Any other shape is a loud error (never a silent fresh var).
+///
+/// WI-400: also returns the **declaring sort** of an ABSTRACT result — the sort whose
+/// `requires` chain lends an abstract type-parameter result its interface (`s.provider :
+/// P` resolves to `(P-var, Some(State))`, since `State` declares the field `provider : P`
+/// and `State requires DataProvider[P]`). `None` for a concrete result.
 fn resolve_receiver_path_type(
     kb: &mut KnowledgeBase,
     receiver: &Value,
     arg_types: &HashMap<Symbol, Value>,
     ctx: &TypeErrorContext,
     span: Option<Span>,
-) -> Result<Value, TypeError> {
+) -> Result<(Value, Option<Symbol>), TypeError> {
     // Innermost head: a value reference `Ref(s)` (the DotApply chain bottoms out in
-    // it). The receiver is the argument bound to param `s`.
+    // it). The receiver is the argument bound to param `s` — a top-level reference, not a
+    // field projection, so no declaring sort is attached here.
     if let Some(head) = extract_sort_ref_sym(kb, receiver) {
-        return arg_types.get(&head).cloned().ok_or_else(|| {
+        let ty = arg_types.get(&head).cloned().ok_or_else(|| {
             projection_type_error(ctx, span, &format!(
                 "type projection receiver '{}' is not an argument-bound parameter of this call",
                 kb.resolve_sym(head),
             ))
-        });
+        })?;
+        return Ok((ty, None));
     }
     // A field access `base.field` — a `DotApply` with no call args. Resolve `base`,
     // then project `field`'s type off it.
@@ -8570,7 +8608,7 @@ fn resolve_receiver_path_type(
             if pos_args.is_empty() && named_args.is_empty() {
                 let base_val = Value::Node(std::rc::Rc::clone(base));
                 let field = *name;
-                let base_ty = resolve_receiver_path_type(kb, &base_val, arg_types, ctx, span)?;
+                let (base_ty, _) = resolve_receiver_path_type(kb, &base_val, arg_types, ctx, span)?;
                 return resolve_field_type(kb, &base_ty, field, ctx, span);
             }
         }
@@ -8584,13 +8622,18 @@ fn resolve_receiver_path_type(
 /// and substitute the receiver's type-args — the same subst pattern field types use
 /// (design path-dependent-types.md §1 step 2). A receiver with no concrete sort, or
 /// a field no constructor declares, is a loud error.
+///
+/// WI-400: returns `(field-type, declaring-sort)`. The declaring sort is `Some(sort_sym)`
+/// when the field's resolved type is ABSTRACT (no concrete sort functor — an unbound
+/// type-parameter of `sort_sym`), so `project_type_member` can read its declared
+/// interface off `sort_sym`'s `requires` chain; `None` for a concrete field type.
 fn resolve_field_type(
     kb: &mut KnowledgeBase,
     recv_ty: &Value,
     field_sym: Symbol,
     ctx: &TypeErrorContext,
     span: Option<Span>,
-) -> Result<Value, TypeError> {
+) -> Result<(Value, Option<Symbol>), TypeError> {
     let sort_sym = sort_functor_of_view(kb, recv_ty).ok_or_else(|| {
         projection_type_error(ctx, span, &format!(
             "cannot access field '{}' on a receiver with no concrete sort",
@@ -8631,11 +8674,21 @@ fn resolve_field_type(
             }
         }
     }
-    resolved.ok_or_else(|| projection_type_error(ctx, span, &format!(
+    let resolved = resolved.ok_or_else(|| projection_type_error(ctx, span, &format!(
         "type '{}' has no field '{}'",
         kb.qualified_name_of(sort_sym).to_owned(),
         kb.resolve_sym(field_sym),
-    )))
+    )))?;
+    // The field's resolved type is an ABSTRACT type-parameter of `sort_sym` (an unbound
+    // `sort P = ?` left as a logic var, not a concrete sort / arrow / tuple) iff it is a
+    // bare type-param value. Then `sort_sym`'s `requires` chain is what lends it an
+    // interface for a downstream projection (`s.provider : P`, `State requires
+    // DataProvider[P]`). A concrete field type carries no declaring sort.
+    let decl_sort = match &resolved {
+        Value::Term(t) if is_type_param_value(kb, *t) => Some(sort_sym),
+        _ => None,
+    };
+    Ok((resolved, decl_sort))
 }
 
 /// Recursive term rewrite for [`eliminate_type_projections`]: an `ExprCarried` head is
@@ -8668,14 +8721,19 @@ fn rewrite_term_projections(
             }
         };
         let member_str = kb.resolve_sym(member).to_owned();
-        let projected = project_type_member(kb, &arg_ty, &member_str, ctx, span)?;
-        return match projected {
-            Value::Term(pt) => Ok(pt),
+        // Single-ref receiver: the arg's inferred type (a concrete sort, or a bound
+        // type-param). No abstract-type-param declaring sort is in hand here (that arises
+        // only on the compound field-projection path) — `None`.
+        return match project_type_member(kb, &arg_ty, &member_str, None, ctx, span)? {
+            ProjResult::Grounded(Value::Term(pt)) => Ok(pt),
             // A projection resolving to a Node carrier (e.g. `s.Sort` of a denoted-
             // bearing argument) would poison the enclosing return type to a Node — the
             // follow-on; loud rather than silently dropped.
-            _ => Err(projection_type_error(ctx, span,
+            ProjResult::Grounded(_) => Err(projection_type_error(ctx, span,
                 "type projection resolved to a non-term carrier, which is not yet supported")),
+            // WI-400: the receiver is abstract but the member is declared — keep the
+            // original `ExprCarried` term `t` as the rigid neutral (path-identity).
+            ProjResult::Neutral => Ok(t),
         };
     }
     // Recurse into `Fn` children, rebuilding only if a child changed. Index-based so
@@ -8706,15 +8764,40 @@ fn rewrite_term_projections(
     Ok(t)
 }
 
+/// WI-400: outcome of projecting a member off a receiver's type. A projection either
+/// **grounds** (δ — the receiver's type makes the member manifest, `List[Int64].T =
+/// Int64`) or **stays neutral** (the receiver's type is abstract — a bare type-parameter
+/// the receiver leaves unbound, or an abstract type-variable receiver — but the member
+/// *is* declared on the receiver's interface, so the projection is a well-formed RIGID
+/// type keyed by `receiver` + `member`). A neutral is NOT an error: it is the
+/// abstract-stays-poly form (WI-376), usable by path-identity (the ζ arm of
+/// [`unify_types`]). The caller keeps the ORIGINAL `ExprCarried` for a neutral — already
+/// the canonical form — rather than reconstructing it.
+enum ProjResult {
+    /// The member is manifest: the projected type.
+    Grounded(Value),
+    /// The receiver is abstract but the member is declared on its interface: keep the
+    /// projection as a rigid neutral.
+    Neutral,
+}
+
 /// Project a single type member (`T`, `E`, `Sort`, …) off the receiver's argument
 /// type for [`rewrite_term_projections`].
+///
+/// `recv_decl_sort` is the sort whose `requires` chain lends an ABSTRACT type-variable
+/// receiver its declared interface — supplied by [`resolve_field_type`] when the
+/// receiver's type resolved to an (abstract) type-parameter of that sort (`s.provider : P`
+/// ⟹ `State`, since `State requires DataProvider[P]`). `None` for a concrete receiver or
+/// where no declaring sort is in hand; then an abstract member that is not a declared
+/// type-parameter cannot be confirmed and is a loud error.
 fn project_type_member(
     kb: &mut KnowledgeBase,
     arg_ty: &Value,
     member: &str,
+    recv_decl_sort: Option<Symbol>,
     ctx: &TypeErrorContext,
     span: Option<Span>,
-) -> Result<Value, TypeError> {
+) -> Result<ProjResult, TypeError> {
     // WI-381: resolve a defined-type / alias receiver to its underlying shape first, so
     // every projection reads off the resolved structure (`sort IntStream =
     // Stream[T = Int]` ⟹ project off `Stream[T = Int]`), never the opaque alias — which
@@ -8731,37 +8814,85 @@ fn project_type_member(
     // `s.Sort` — the whole parameterized sort of the receiver (captures every
     // parameter, wide-sort safe).
     if member == "Sort" {
-        return Ok(arg_ty.clone());
+        return Ok(ProjResult::Grounded(arg_ty.clone()));
     }
     // Concrete: the receiver's type binds the member directly (`List[Int].T = Int`).
     if let Some(p) = extract_type_param(kb, arg_ty, member) {
-        return Ok(p);
+        return Ok(ProjResult::Grounded(p));
     }
-    // The member is not concretely bound. Both remaining cases are loud errors:
-    // projecting an unbound member would have to mint an unconstrained var, which would
-    // unsoundly absorb any demand downstream (a `peek(l: List) -> l.T` on a bare `List`
-    // could then satisfy BOTH `Int` and `String`). Distinguish a member the sort does
-    // not DECLARE (a genuine missing member) from one it declares but the receiver left
-    // UNBOUND (a bare / abstract receiver). The sound "stays polymorphic" form — reading
-    // the receiver's DECLARED-INTERFACE member so the result is a rigid type tied to the
-    // receiver — is the abstract-receiver follow-on.
-    match sort_functor_of_view(kb, arg_ty) {
-        Some(s) if kb.type_params_of_sort(s).iter().any(|d| d.as_str() == member) => {
-            Err(projection_type_error(ctx, span, &format!(
-                "cannot project '{member}' off a receiver of type '{}' whose '{member}' is \
-                 not concretely known (abstract-receiver projection is not yet supported)",
-                kb.qualified_name_of(s).to_owned(),
-            )))
+    // The member is not concretely bound. WI-400 (abstract-stays-poly, co-delivering
+    // WI-376): a projection off an abstract receiver no longer errors — it STAYS NEUTRAL
+    // (a rigid type keyed by receiver + member, compared by the ζ arm of `unify_types`),
+    // PROVIDED the member is DECLARED on the receiver's interface. Distinguish:
+    //
+    //   - a CONCRETE-sort receiver with the member as a declared-but-UNBOUND type
+    //     parameter (`peek(l: List) -> l.T`, bare `List` — `T` is `List`'s param, just
+    //     not pinned) ⟹ neutral;
+    //   - an abstract TYPE-VARIABLE receiver whose declared interface (the enclosing
+    //     sort's `requires Spec[recv]`) provides the member (`s.provider.K` where
+    //     `s.provider : P` and `State requires DataProvider[P]`, `K` a member of
+    //     DataProvider) ⟹ neutral, via [`abstract_var_declares_member`];
+    //   - a member NO interface declares (a typo, `l.Nonesuch`) ⟹ a LOUD error.
+    //
+    // Minting an unconstrained var here (instead of a neutral) would be unsound — it
+    // would absorb any demand downstream (`peek(l)` usable as both `Int64` and `String`);
+    // the neutral cannot, since the ζ arm only equates it with an IDENTICAL neutral.
+    if let Some(s) = sort_functor_of_view(kb, arg_ty) {
+        if kb.type_params_of_sort(s).iter().any(|d| d.as_str() == member) {
+            return Ok(ProjResult::Neutral);
         }
-        Some(s) => Err(projection_type_error(ctx, span, &format!(
+        return Err(projection_type_error(ctx, span, &format!(
             "type '{}' has no member '{member}'",
             kb.qualified_name_of(s).to_owned(),
-        ))),
-        None => Err(projection_type_error(ctx, span, &format!(
-            "cannot project '{member}' off an abstract receiver (no concrete sort); \
-             abstract-receiver projection is not yet supported",
-        ))),
+        )));
     }
+    // No concrete sort: an abstract type-variable receiver (a sort type-parameter, e.g.
+    // `s.provider : P` — opened to a logic var whose source identity is erased). Neutral
+    // iff the param's DECLARED INTERFACE provides the member — the `requires Spec[param]`
+    // bounds on the sort that DECLARES the param (`recv_decl_sort`, supplied by
+    // `resolve_field_type`). Each such `Spec` lends the param its members
+    // (`State requires DataProvider[P]` ⟹ `P` has DataProvider's `K`). A member no bound
+    // declares (or no declaring sort in hand) is a loud error, never a silent neutral.
+    if let Some(decl_sort) = recv_decl_sort {
+        if abstract_member_declared_by_requires(kb, decl_sort, member) {
+            return Ok(ProjResult::Neutral);
+        }
+        return Err(projection_type_error(ctx, span, &format!(
+            "no `requires` bound on '{}' declares a member '{member}' for its abstract type \
+             parameter; cannot project '{member}'",
+            kb.qualified_name_of(decl_sort).to_owned(),
+        )));
+    }
+    Err(projection_type_error(ctx, span, &format!(
+        "cannot project '{member}' off an abstract receiver with no concrete sort",
+    )))
+}
+
+/// WI-400: does any `requires Spec[…]` bound on `decl_sort` lend its abstract type
+/// parameter the member `member`? The carrier of `requires Spec[param]` (here
+/// `decl_sort`'s own param) gains `Spec`'s interface, so `member` is declared iff some
+/// required spec declares it as a type-parameter (`State requires DataProvider[P]` ⟹ `P`
+/// has DataProvider's `K`). The declared-interface-member reading (design
+/// path-dependent-types.md §1, §4.1) — the dual of a concrete carrier's `provides`.
+///
+/// Consults `decl_sort`'s whole `requires` chain rather than matching the requires whose
+/// carrier is this specific param; carrier-precise matching (relevant only when a sort has
+/// several parameters each with their own `requires`) is a documented refinement.
+fn abstract_member_declared_by_requires(
+    kb: &mut KnowledgeBase,
+    decl_sort: Symbol,
+    member: &str,
+) -> bool {
+    for entry in requires_chain(kb, decl_sort) {
+        if kb
+            .type_params_of_sort(entry.required_sort)
+            .iter()
+            .any(|d| d.as_str() == member)
+        {
+            return true;
+        }
+    }
+    false
 }
 
 /// A loud [`TypeError`] for an ill-formed / unsupported type projection.
@@ -9008,6 +9139,48 @@ use super::subst::Substitution;
 ///
 /// WI-307 v1a: `kb` is `&mut` for fresh tail-variable allocation in the row
 /// arms; all type-checker call sites already hold `&mut KnowledgeBase`.
+/// WI-400 — the ζ (receiver σ-equality) decision for an expression-carried projection
+/// at the type-relation boundary, shared by `unify_types` and the `types_compatible`
+/// (subtype) dispatchers so the two relations treat a neutral identically (the design's
+/// "refuse a bare projection symmetrically").
+///
+/// A projection that reaches a type relation is a NEUTRAL: δ-grounding already ran at the
+/// env-bearing site (operation call / `let` / operation body-binding) and could not make
+/// the member manifest (an abstract receiver), so the rigid `ExprCarried` survived. Returns
+/// `Some(verdict)` when at least one side is an `ExprCarried` head, `None` when neither is
+/// (the caller continues its ordinary structural dispatch). The verdict:
+///
+///   - **both neutral** — equal iff they project the SAME member off σ-EQUAL receivers: a
+///     structural CHECK, never a binding. `ExprCarried` is a NON-INJECTIVE head
+///     (`peek(a).T` and `peek(b).T` may both be `Int64` without `a = b`), so the relation
+///     must NOT decompose `p.M =?= q.M` into `p =?= q`. The base scope compares receivers
+///     structurally (eager let-alias canonicalization at the formation site is the deferred
+///     increment that makes `let y = z ⟹ y.M ≡ z.M`; the union-find-over-σ generality is
+///     the deferred flexible / rule-body case);
+///   - **one neutral, one concrete** — a rigid abstract type is neither sub- nor
+///     super-type of a concrete type, so refused (`expected String, got s.cell.T`). The
+///     inference wildcards (`type_var` / `nothing`) are handled by the callers BEFORE this,
+///     so a neutral still flows into an unconstrained var for inference.
+///
+/// Design: path-dependent-types.md §4 (ζ/δ/η), §4.1.
+fn expr_carried_zeta<A: TermView, B: TermView>(kb: &KnowledgeBase, a: &A, b: &B) -> Option<bool> {
+    let a_neutral = matches!(type_head(kb, a), TypeHead::ExprCarried);
+    let b_neutral = matches!(type_head(kb, b), TypeHead::ExprCarried);
+    if !a_neutral && !b_neutral {
+        return None;
+    }
+    if a_neutral && b_neutral {
+        if let (
+            TypeExtractor::ExprCarried { value: va, member: ma },
+            TypeExtractor::ExprCarried { value: vb, member: mb },
+        ) = (extract_type(kb, a), extract_type(kb, b))
+        {
+            return Some(same_symbol(kb, ma, mb) && va.structural_eq(&vb));
+        }
+    }
+    Some(false)
+}
+
 pub fn unify_types<A: TermView, B: TermView>(
     kb: &mut KnowledgeBase,
     subst: &mut Substitution,
@@ -9048,10 +9221,9 @@ pub fn unify_types<A: TermView, B: TermView>(
     // subtype sibling `types_compatible` lets `type_var`/`nothing` win first): the two
     // relations refuse a bare projection symmetrically — there it is `_ => false` by
     // construction, here it is this guard.
-    if matches!(type_head(kb, &a), TypeHead::ExprCarried)
-        || matches!(type_head(kb, &b), TypeHead::ExprCarried)
-    {
-        return false;
+    // WI-400 (ζ — the σ-equality arm, replacing the WI-399 safety-net guard).
+    if let Some(verdict) = expr_carried_zeta(kb, &a, &b) {
+        return verdict;
     }
 
     match (&a, &b) {
@@ -10759,6 +10931,13 @@ fn types_compatible_term_dispatch(kb: &mut KnowledgeBase, subst: &mut Substituti
         return true;
     }
 
+    // WI-400 (ζ): a neutral projection is its own rigid type — equal only to an identical
+    // neutral, never to a concrete type. Placed AFTER the type_var / nothing wildcards so
+    // a neutral still flows into an unconstrained var for inference.
+    if let Some(verdict) = expr_carried_zeta(kb, &TermIdView(actual), &TermIdView(expected)) {
+        return verdict;
+    }
+
     match (actual_functor, expected_functor) {
         (Some("sort_ref"), Some("sort_ref")) => {
             // Nominal / entity-subtyping / refines, then WI-344 provider
@@ -10890,6 +11069,12 @@ fn types_compatible_view_structural<A: TermView, B: TermView>(
     }
     if af == Some("nothing") {
         return true;
+    }
+
+    // WI-400 (ζ): neutral projection — same decision as the term dispatch, carrier-
+    // agnostic (a compound `a.b.T` rides a `Value::Node` ExprCarried, so it reaches here).
+    if let Some(verdict) = expr_carried_zeta(kb, &a, &e) {
+        return verdict;
     }
 
     match (af, ef) {
@@ -13233,34 +13418,31 @@ fn check_operation_bodies(kb: &mut KnowledgeBase, op_syms: &[Symbol], errors: &m
             .rsplit_once('.')
             .and_then(|(parent_qn, _)| kb.try_resolve_symbol(parent_qn));
         env.set_enclosing_sort(kb, parent_sym);
-        // WI-400 (body-site, MANIFEST half): a projection param type (`k: s.cell.T`)
-        // must be discharged against the OTHER params' DECLARED types before it is bound
-        // into the body env — the body-check peer of the call-site elimination
-        // (`check_apply_iter` / WI-398, which discharges against ARGUMENT types). A
-        // MANIFEST receiver (`s: Wrapper[P = Inner[T = String]]`) δ-grounds the member
-        // (`k : String`), so the body then sees `k : String` instead of the raw `?.T`
-        // neutral the un-eliminated projection would leave (which `unify_types` refuses,
-        // WI-399). Eliminated types feed forward, so a later param may project an
-        // EARLIER one (an in-order chain). An ABSTRACT receiver (`s: State`, `P` open) is
-        // still the existing loud error here — the abstract→neutral path-identity case is
-        // WI-400's remaining scope (the §1 `check(s: State, …)` body). Only ops whose
-        // params actually carry a projection pay for the map + walk.
+        // WI-400 (body-site): a projection param type (`k: s.cell.T`) must be discharged
+        // against the OTHER params' DECLARED types before it is bound into the body env —
+        // the body-check peer of the call-site elimination (`check_apply_iter` / WI-398,
+        // which discharges against ARGUMENT types). δ-grounding makes a MANIFEST receiver's
+        // member concrete (`s: Wrapper[P = Inner[T = String]]` ⟹ `k : String`); an ABSTRACT
+        // receiver (`s: State`, `P` open) whose declared interface provides the member
+        // forms a rigid NEUTRAL (`k : ⟨s.provider⟩.K` — abstract-stays-poly), which the
+        // body then path-identity-matches via the ζ arm of `unify_types`. Only a member NO
+        // interface declares stays a loud error. Only ops whose params carry a projection
+        // pay for the map + walk.
         if op.params.iter().any(|(_, t)| value_contains_projection(kb, t)) {
             // Order-INDEPENDENT elimination (matching the call-site, which discharges over
-            // a fully-populated `param_to_arg_type`): repeatedly discharge every
-            // still-projection param type against `decl`, committing each fully-resolved
-            // result so a receiver declared in ANY order — a forward OR a backward
-            // reference — feeds its dependents. `eliminate_type_projections` is
-            // all-or-nothing per type (`Ok` ⟹ no projection remains), so an `Err` here
-            // means only "a receiver param is not yet resolved" (retried next pass) OR a
-            // genuinely un-dischargeable receiver. Cycles are pre-skipped (above), so each
-            // pass either makes progress or the survivors are genuinely abstract / missing
-            // a member — surfaced loudly, and the body-check skipped.
+            // a fully-populated `param_to_arg_type`): iterate to a FIXPOINT — each pass
+            // re-discharges every still-projection param against the current `decl` and
+            // commits any param whose type CHANGED (a manifest receiver grounding, or a
+            // receiver resolved by an earlier pass), so a receiver declared in ANY order
+            // (forward OR backward) feeds its dependents. A pass with no change is the
+            // fixpoint. `Ok` no longer implies "no projection remains" — a stable abstract
+            // NEUTRAL eliminates to itself (`structural_eq`, no change) and legitimately
+            // survives; an `Err` means the receiver is not YET resolved (retried) OR is
+            // genuinely un-dischargeable (surfaced after the fixpoint).
             let mut decl: HashMap<Symbol, Value> =
                 op.params.iter().map(|(n, t)| (*n, t.clone())).collect();
-            let mut proj_failed = false;
             loop {
-                let mut progress = false;
+                let mut changed = false;
                 for (name, _) in &op.params {
                     let cur = decl.get(name).cloned().expect("param present in decl");
                     if value_contains_projection(kb, &cur) {
@@ -13271,40 +13453,36 @@ fn check_operation_bodies(kb: &mut KnowledgeBase, op_syms: &[Symbol], errors: &m
                             &TypeErrorContext::OperationArgument { op_name: op.op_sym, param: *name },
                             op.span,
                         ) {
-                            decl.insert(*name, elim);
-                            progress = true;
+                            if !elim.structural_eq(&cur) {
+                                decl.insert(*name, elim);
+                                changed = true;
+                            }
                         }
                     }
                 }
-                let mut remaining: Vec<Symbol> = Vec::new();
-                for (name, _) in &op.params {
-                    if let Some(t) = decl.get(name) {
-                        if value_contains_projection(kb, t) {
-                            remaining.push(*name);
-                        }
-                    }
-                }
-                if remaining.is_empty() {
+                if !changed {
                     break;
                 }
-                if !progress {
-                    // Stuck: the survivors cannot be discharged (abstract receiver, missing
-                    // member). Surface the real error for each and skip this op's
-                    // body-check to avoid cascading (mirrors the cyclic-signature skip).
-                    for name in &remaining {
-                        let cur = decl.get(name).cloned().expect("param present in decl");
-                        if let Err(e) = eliminate_type_projections(
-                            kb,
-                            &cur,
-                            &decl,
-                            &TypeErrorContext::OperationArgument { op_name: op.op_sym, param: *name },
-                            op.span,
-                        ) {
-                            errors.push(e);
-                        }
+            }
+            // Fixpoint reached. A param that STILL eliminates to an `Err` is genuinely
+            // un-dischargeable (missing member, non-param receiver); surface it and skip
+            // this op's body-check to avoid cascading (mirrors the cyclic-signature skip).
+            // A param that eliminates to `Ok` but still carries a projection is a sound
+            // abstract NEUTRAL (abstract-stays-poly) — bound as-is for the ζ path-identity.
+            let mut proj_failed = false;
+            for (name, _) in &op.params {
+                let cur = decl.get(name).cloned().expect("param present in decl");
+                if value_contains_projection(kb, &cur) {
+                    if let Err(e) = eliminate_type_projections(
+                        kb,
+                        &cur,
+                        &decl,
+                        &TypeErrorContext::OperationArgument { op_name: op.op_sym, param: *name },
+                        op.span,
+                    ) {
+                        errors.push(e);
+                        proj_failed = true;
                     }
-                    proj_failed = true;
-                    break;
                 }
             }
             if proj_failed {

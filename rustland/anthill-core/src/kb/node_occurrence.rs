@@ -2110,6 +2110,18 @@ pub fn occurrence_structural_eq(a: &Rc<NodeOccurrence>, b: &Rc<NodeOccurrence>) 
             Some(Expr::Constructor { name: fb, pos_args: pb, named_args: nb })
             | Some(Expr::Instantiation { name: fb, pos_args: pb, named_args: nb }),
         ) => fa == fb && occ_children_eq(pa, na, pb, nb),
+        // WI-400: a field-access / method-call receiver `s.provider` is a `DotApply`
+        // occurrence — two are structurally equal iff same member name, same receiver,
+        // same call args. Reached by the ζ receiver-equality check (a compound
+        // expression-carried projection `s.provider.K` embeds its receiver here).
+        (
+            Some(Expr::DotApply { receiver: ra, name: na, pos_args: pa, named_args: naa }),
+            Some(Expr::DotApply { receiver: rb, name: nb, pos_args: pb, named_args: nab }),
+        ) => {
+            na == nb
+                && occurrence_structural_eq(ra, rb)
+                && occ_children_eq(pa, naa, pb, nab)
+        }
         _ => false,
     }
 }

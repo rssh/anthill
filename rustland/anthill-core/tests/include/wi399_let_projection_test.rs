@@ -130,12 +130,16 @@ end
     );
 }
 
-/// LOUD error where the receiver type is NOT concretely known: `s : Wrapper` leaves
-/// `P` unbound, so `s.cell.T` cannot resolve — abstract-receiver projection is the
-/// parked follow-on, and must surface as a LOUD diagnostic, never a silent accept (and
-/// never the opaque-head leak that the old path produced).
+/// LOUD error for a GENUINELY MISSING member off an abstract receiver. WI-400
+/// (abstract-stays-poly) makes a projection off an abstract receiver form a rigid neutral
+/// — but ONLY when the member is declared on the receiver's interface. Here `s : Wrapper`
+/// leaves `P` unbound AND `Wrapper` has NO `requires` bound on `P`, so `P` has no declared
+/// interface and `s.cell.T` projects a member nothing declares — a loud error, never a
+/// silent neutral (and never the opaque-head leak the pre-WI-399 path produced). This is
+/// "the WI-399 loud error is now reachable only for a genuinely missing member, not an
+/// unbound one" (path-dependent-types.md §4.1).
 #[test]
-fn let_projection_abstract_receiver_is_loud_error() {
+fn let_projection_missing_member_off_abstract_is_loud_error() {
     let bad = r#"
 namespace test.wi399.let_abstract
   import anthill.prelude.String
@@ -154,9 +158,9 @@ end
 "#;
     let errs = load_errors(&[bad]);
     assert!(
-        errs.iter().any(|e| e.contains("abstract-receiver") || e.contains("not concretely")),
-        "s: Wrapper leaves P unbound, so s.cell.T must be a loud abstract-receiver error; \
-         got: {errs:?}",
+        errs.iter().any(|e| e.contains("'T'") && (e.contains("requires") || e.contains("declares a member"))),
+        "Wrapper has no `requires` lending P a member T, so s.cell.T must be a loud \
+         missing-member error; got: {errs:?}",
     );
 }
 

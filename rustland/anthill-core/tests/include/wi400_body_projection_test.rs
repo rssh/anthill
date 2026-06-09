@@ -158,12 +158,100 @@ end
     );
 }
 
-// REMAINING SCOPE (WI-400 core): an ABSTRACT receiver in a body should keep the
-// projection as a rigid NEUTRAL (path-identity) so the §1 example type-checks in its own
-// generality (the abstract→neutral relaxation + the σ-equality ζ arm). No on-disk anchor
-// is added here yet: a faithful gate needs the receiver's abstract type to DECLARE the
-// projected member (a bound / `requires` so `s.provider.K` is well-formed, not "no member
-// K"), plus dispatch on the abstract receiver — machinery the core itself introduces. The
-// acceptance is specified in docs/design/path-dependent-types.md §4.1 (test matrix); the
-// faithful test is written WITH that core, not pre-committed here in a form that would
-// fail for unrelated reasons.
+// ── WI-400 CORE: abstract-stays-poly (neutral formation) + ζ (σ-equality of receivers) ──
+//
+// An ABSTRACT receiver projection no longer ERRORS at formation — it forms a rigid
+// NEUTRAL (`project_type_member` → `ProjResult::Neutral`, co-delivering WI-376
+// abstract-stays-poly), PROVIDED the member is declared on the receiver's interface: a
+// declared-but-unbound type-parameter of a concrete sort, OR (for an abstract type-variable
+// receiver) a member lent by the declaring sort's `requires Spec[param]` bound. Two
+// neutrals are the SAME type iff they project the SAME member off σ-EQUAL (here:
+// structurally-equal) receivers — the ζ arm of `unify_types` / `types_compatible`. A
+// neutral never equals a concrete type, and the head is NON-INJECTIVE (two distinct
+// receivers stay distinct, never forced equal). Design: path-dependent-types.md §4 / §4.1.
+
+/// §4.1 "abstract-stays-poly" + path-identity (the §1 shape, WITHIN one operation). With
+/// `State requires DataProvider[P]` and `DataProvider` declaring `K`, the projection
+/// `s.provider.K` off the abstract `s.provider : P` is a well-formed rigid neutral, and
+/// `idK(s: State, k: s.provider.K) -> s.provider.K = k` type-checks: `k`'s type and the
+/// declared return are the SAME neutral (same receiver `s.provider`, same member `K`), so
+/// ζ accepts. (The full §1 body `s.provider.hasKey(k)` additionally needs abstract spec-op
+/// DISPATCH through the `requires` bound — a separate concern from the projection/ζ core.)
+#[test]
+fn abstract_projection_path_identity_within_op() {
+    let ok = r#"
+namespace test.wi400.zeta_idk
+  sort DataProvider
+    sort K = ?
+  end
+  sort State
+    sort P = ?
+    requires DataProvider[P]
+    entity state(provider: P)
+  end
+  operation idK(s: State, k: s.provider.K) -> s.provider.K = k
+end
+"#;
+    assert!(
+        load_errors(&[ok]).is_empty(),
+        "s.provider.K forms a neutral (P abstract, K lent by `requires DataProvider[P]`); \
+         returning k: s.provider.K as the SAME s.provider.K conforms by ζ path-identity; \
+         got: {:?}",
+        load_errors(&[ok]),
+    );
+}
+
+/// §4.1 "Non-decomposition" — the soundness core. `ExprCarried` is a NON-INJECTIVE head:
+/// `s.provider.K` and `t.provider.K` may coincide without `s = t`, so ζ must NOT decompose
+/// `s.provider.K =?= t.provider.K` into `s =?= t`. `bad(s: State, t: State, k: s.provider.K)
+/// -> t.provider.K = k` returns `k : s.provider.K` under a declared `t.provider.K` — DISTINCT
+/// receivers, so ζ refuses (never forces `s = t`), and the body is rejected.
+#[test]
+fn abstract_projection_distinct_receivers_rejected() {
+    let bad = r#"
+namespace test.wi400.zeta_bad
+  sort DataProvider
+    sort K = ?
+  end
+  sort State
+    sort P = ?
+    requires DataProvider[P]
+    entity state(provider: P)
+  end
+  operation bad(s: State, t: State, k: s.provider.K) -> t.provider.K = k
+end
+"#;
+    let errs = load_errors(&[bad]);
+    assert!(
+        errs.iter().any(|e| e.contains("s.provider.K") && e.contains("t.provider.K")),
+        "distinct receivers s vs t must NOT be forced equal — k: s.provider.K returned as \
+         t.provider.K must be rejected (non-injective head); got: {errs:?}",
+    );
+}
+
+/// §4.1 "abstract-stays-poly" — the WI-399 loud error is now reachable only for a GENUINELY
+/// missing member, not an unbound one. A member that NO `requires` bound lends the abstract
+/// receiver's type-parameter (`State requires DataProvider[P]`, and DataProvider has no
+/// member `Bogus`) is a loud error, never a silent neutral.
+#[test]
+fn abstract_projection_missing_member_is_loud() {
+    let bad = r#"
+namespace test.wi400.zeta_missing
+  sort DataProvider
+    sort K = ?
+  end
+  sort State
+    sort P = ?
+    requires DataProvider[P]
+    entity state(provider: P)
+  end
+  operation bad(s: State, k: s.provider.Bogus) -> s.provider.Bogus = k
+end
+"#;
+    let errs = load_errors(&[bad]);
+    assert!(
+        errs.iter().any(|e| e.contains("Bogus") && (e.contains("requires") || e.contains("declares a member"))),
+        "no `requires` bound declares a member Bogus, so s.provider.Bogus must be a loud \
+         error (not a silent neutral); got: {errs:?}",
+    );
+}

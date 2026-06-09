@@ -326,22 +326,79 @@ binders — so the ζ check is a binderless structural compare. The "one routine
 α-equivalence of binders (arrow / dependent types)" of §4 is the **deferred**
 `Positioned` / arrow reading; the base WI-400 routine does not build α-renaming.
 
+#### Increment B DELIVERED (2026-06-09) — abstract→neutral + the ζ arm
+
+The neutral-formation + σ-equality core landed; the **eager-let-alias** map (substrate
+change 2 above) is the remaining **increment C** (see "Deferred", below). What B does:
+
+- **`project_type_member` → `ProjResult::{Grounded, Neutral}`** (the abstract→neutral
+  relaxation, co-delivering **WI-376 abstract-stays-poly**). Neutral when the member is
+  *declared* on the receiver's interface: a declared-but-unbound type-parameter of a
+  concrete sort (`peek(l: List) -> l.T`, bare `List` — `T` is `List`'s param), OR a member
+  lent to an abstract type-variable receiver by its declaring sort's `requires Spec[param]`
+  bound (`s.provider : P`, `State requires DataProvider[P]`, `K` a param of DataProvider).
+  A member **no** interface declares stays a **loud** error. The callers keep the original
+  `ExprCarried` for a neutral (no reconstruction).
+- **The declaring sort is threaded** from `resolve_field_type` (which knows the field's
+  owning sort) through `resolve_receiver_path_type` → `project_type_member`, because the
+  abstract type-param's *source identity* is **erased** on the substrate — it opens to a
+  fresh logic var named `_`, so its sort (and thus its `requires`) cannot be recovered from
+  the var alone.
+- **The ζ arm** is `expr_carried_zeta`, shared by `unify_types` **and both
+  `types_compatible` (subtype) dispatchers** (so the two relations refuse a bare projection
+  symmetrically — the return-type conformance check goes through `types_compatible`, *not*
+  `unify_types`). It replaces the WI-399 `return false` guard: two neutrals are equal iff
+  same member off structurally-equal receivers; a neutral never equals a concrete type;
+  placed after the `type_var`/`nothing` wildcards so a neutral still flows into an
+  unconstrained var for inference.
+- **`occurrence_structural_eq` (+ display) gained a `DotApply` arm** — a compound receiver
+  `s.provider` is a `DotApply` occurrence, previously unhandled (so it compared unequal and
+  printed `?`). Now ζ equates `s.provider` with `s.provider` and prints `s.provider.K`.
+- **The body-site loop is a true fixpoint** (iterate while `decl` *changes*, not while a
+  projection *remains*): a stable abstract neutral eliminates to itself and is bound as-is;
+  only a post-fixpoint `Err` (genuinely un-dischargeable) is surfaced.
+
 **Test matrix (acceptance):**
 
-- **§1 typechecks** — identical neutral receivers (`check(s, k: s.provider.K)` body).
-- **Non-decomposition** — `peek(a).T` and `peek(b).T` may both be `Int64` with `a ≠ b`;
-  ζ must **not** unify the receivers (`a =?= b`). Distinct receivers stay distinct.
-- **let-alias** — `let y = z` ⟹ `y.T ≡ z.T` accepts; `let y = z; let w = other` ⟹
-  `y.T ≢ w.T`.
-- **abstract-stays-poly** — a projection off an abstract receiver no longer errors; it
-  forms a neutral usable by path-identity (the WI-399 loud error is now reachable only
-  for a genuinely missing member, not an unbound one).
-- **body-site manifest δ-ground (BIDIR-3b)** —
-  `idElem(s: Wrapper[P = Inner[T = String]], k: s.cell.T) -> String = k` must typecheck:
-  `k`'s declared `s.cell.T` δ-grounds to `String` *at body-binding* (today: `expected
-  String, got ?.T` — the body site is unwired).
-- **flexible / rule-body** — `?p.M =?= ?q.M` with logic-var receivers **suspends**, never
-  silently accepts (deferred mechanism; assert no false accept).
+- **abstract-stays-poly** ✓ (B) — `peek(l: List) -> l.T` is well-formed (forms a neutral),
+  and the WI-399 loud error is now reachable only for a *genuinely missing* member, not an
+  unbound one (`wi376_projection_test::projection_bare_receiver_stays_poly`,
+  `wi399_let_projection_test::let_projection_missing_member_off_abstract_is_loud_error`,
+  `wi400…::abstract_projection_missing_member_is_loud`).
+- **path-identity (within an operation)** ✓ (B) —
+  `idK(s: State, k: s.provider.K) -> s.provider.K = k` typechecks: `k`'s type and the
+  declared return are the *same* neutral (`wi400…::abstract_projection_path_identity_within_op`).
+- **Non-decomposition** ✓ (B) — `s.provider.K` and `t.provider.K` are distinct neutrals; ζ
+  does **not** unify `s =?= t` (`wi400…::abstract_projection_distinct_receivers_rejected`).
+  This is the soundness core of the non-injective head.
+- **body-site manifest δ-ground (BIDIR-3b)** ✓ (increment A) —
+  `idElem(s: Wrapper[P = Inner[T = String]], k: s.cell.T) -> String = k` typechecks.
+- **§1 *full* typechecks** — *not* B. The §1 motivating body `s.provider.hasKey(k)` needs
+  abstract spec-op **dispatch** through the `requires` bound (resolving `hasKey` on the
+  abstract `s.provider : P`) — a **separate concern** from the projection/ζ core (probed
+  2026-06-09: the projection now forms the neutral; the residual error is *"unknown
+  functor"* at the `hasKey` dispatch). The within-operation path-identity that the ζ core
+  *does* deliver is `idK` above.
+- **let-alias** — **deferred (increment C)**: `let y = z ⟹ y.T ≡ z.T`. Needs the env
+  receiver-alias map (substrate change 2) wired into projection *formation*.
+- **flexible / rule-body** — **deferred**: `?p.M =?= ?q.M` with logic-var receivers
+  **suspends** (the resolver delay/wake); not formed in the base operation-signature scope.
+
+**Deferred from B (all sound — no false accept; at most over-rejection / less-precise
+error):**
+
+- **eager-let-alias** (increment C) — the Scala divergence `let y = z ⟹ y.T ≡ z.T`.
+- **cross-call neutral threading** — `relay(l: List) -> l.T = peek(l)` does *not* typecheck:
+  at the call the neutral keeps the *callee's* receiver symbol (`peek`'s `l`) rather than
+  substituting the argument expression, so it ζ-mismatches the caller's `l.T`. The
+  call-site eliminator works on *types* and lacks the argument *expression* needed to
+  rebuild the neutral's receiver. Incompleteness, not unsoundness (a neutral-vs-concrete
+  return is still correctly rejected). Within-operation path-identity (`idK`) is unaffected.
+- **carrier-precise `requires` matching** — `abstract_member_declared_by_requires` consults
+  the declaring sort's *whole* `requires` chain rather than only the bound whose carrier is
+  the specific param; matters only when a sort has several parameters each with their own
+  `requires` (a minor over-acceptance).
+- **abstract spec-op dispatch** for the §1 body (above) — its own concern.
 
 ### Bidirectional flow — the checklist example (WI-427 + WI-400)
 
@@ -510,8 +567,8 @@ not a new mechanism, only the missing wiring of the type-member arm into the gen
 | `s.provider.K` classified + eliminated (compound receiver) | **WI-376** + **WI-397** |
 | `k : s.provider.K` depends on param `s` (cross-param + synthesis order) | **WI-398** |
 | projection at `let` / body / `requires`, not only call args | **WI-399** ✓ (delivered 2026-06-09: eager δ-elimination at the let annotation site + a loud `unify_types` guard refusing an un-eliminated `ExprCarried`) |
-| identity by unification; rigid abstract member; abstract-stays-poly | **WI-376** (keystone) — its abstract-stays-poly relaxation is **co-delivered by WI-400**, §4.1 |
-| equality = ζ/δ/η conversion; non-injective `ExprCarried` head; delay + no-silent-drop | **WI-400** — σ-equality ζ arm in the Rust typer's `unify_types`, realized as **eager let-alias** (§4.1); replaces the WI-399 guard line; co-delivers WI-376 abstract-stays-poly |
+| identity by unification; rigid abstract member; abstract-stays-poly | **WI-376** (keystone) — its abstract-stays-poly relaxation **co-delivered by WI-400 increment B** (2026-06-09), §4.1 |
+| equality = ζ/δ/η conversion; non-injective `ExprCarried` head; delay + no-silent-drop | **WI-400** — **increment B DELIVERED** (2026-06-09): σ-equality ζ arm (`expr_carried_zeta`) in `unify_types` **and** both `types_compatible` dispatchers, replacing the WI-399 guard; abstract→neutral (`project_type_member` → `ProjResult`), co-delivering WI-376 abstract-stays-poly. **Remaining:** eager-let-alias (increment C), flexible/rule-body delay, §1 abstract dispatch — §4.1 |
 | value-position projection (`let x = [1,2,3].T`); the generic dot's `TypeProjection` arm | **§5.1** (own follow-on — wire `project_type_member` into the `DotApply` frame; not yet a WI) |
 | `expected → argument` inference (push the param type into a polymorphic arg); the missing half of bidirectional flow | **WI-427** (anchor: the §4.1 bidirectional-flow checklist example) |
 

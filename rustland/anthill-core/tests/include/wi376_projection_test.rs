@@ -157,25 +157,44 @@ end
     );
 }
 
-/// A BARE / abstract receiver is a loud error, NOT a silent fresh var: projecting
-/// `l.T` off a bare `List` (element unbound) would have to mint an unconstrained var
-/// that could unsoundly satisfy any demand (the same `peek(l)` usable as both `Int64`
-/// and `String`). The sound "stays polymorphic" projection — read the receiver's
-/// DECLARED-INTERFACE member so the result is rigid — is the abstract-receiver
-/// follow-on; until then it is rejected.
+/// WI-400 (abstract-stays-poly, co-delivered) UPDATED the bare-receiver case: a projection
+/// off a bare / abstract receiver no longer ERRORS at formation — `peek(l: List) -> l.T` is
+/// well-formed, forming the rigid NEUTRAL `l.T` (`T` IS a declared type-parameter of `List`,
+/// just unbound on a bare `List`). The neutral "stays polymorphic" but is NOT a fresh var
+/// that absorbs any demand: returning it where a concrete `Int64` is declared is REJECTED by
+/// the ζ arm (a neutral never equals a concrete type), so the old soundness guarantee — one
+/// `peek(l)` cannot satisfy both `Int64` and `String` — is preserved by the neutral, not by
+/// erroring at formation. (Was `projection_bare_receiver_is_rejected`, asserting the
+/// pre-WI-400 loud "abstract-receiver not yet supported" error.)
 #[test]
-fn projection_bare_receiver_is_rejected() {
-    let src = r#"
-namespace test.wi376.bare
+fn projection_bare_receiver_stays_poly() {
+    // The bare-receiver signature is well-formed on its own (l.T is a valid neutral).
+    let ok = r#"
+namespace test.wi376.bare_poly
+  import anthill.prelude.List
+  operation peek(l: List) -> l.T
+end
+"#;
+    assert!(
+        load_errors(&[ok]).is_empty(),
+        "peek(l: List) -> l.T must be well-formed (l.T a rigid neutral, abstract-stays-poly); \
+         got: {:?}",
+        load_errors(&[ok]),
+    );
+
+    // Soundness preserved: the neutral does NOT satisfy a concrete Int64 demand.
+    let wrong = r#"
+namespace test.wi376.bare_concrete
   import anthill.prelude.{List, Int64}
   operation peek(l: List) -> l.T
   operation relay(l: List) -> Int64 = peek(l)
 end
 "#;
-    let errs = load_errors(&[src]);
+    let errs = load_errors(&[wrong]);
     assert!(
-        errs.iter().any(|e| e.contains("not concretely known") || e.contains("abstract-receiver")),
-        "projecting off a bare (element-unbound) receiver must be a loud error; got: {errs:?}",
+        errs.iter().any(|e| e.contains("Int64") && e.contains("l.T")),
+        "the bare-receiver neutral l.T must NOT satisfy a concrete Int64 demand (ζ refuses a \
+         neutral vs concrete); got: {errs:?}",
     );
 }
 
