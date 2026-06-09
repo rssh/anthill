@@ -233,6 +233,88 @@ So equality is conversion (ζ/δ/η over non-injective heads), inference is dela
 no-silent-drop, and "typed" is a three-level residual reading — the projection corner
 is just the general typing architecture made concrete.
 
+## 4.1 Realizing σ-equality on the Rust typer (WI-400) — eager let-alias + structural ζ
+
+*(Added 2026-06-09, after **WI-399** landed the let-site elimination chokepoint and
+the env-free `unify_types` boundary. Decision: **eager let-alias**, not σ-tracked
+receiver vars.)*
+
+§3–4 speak of "σ as a union-find: resolve each receiver through σ, following the
+`let`/unification aliases σ records." **On the current Rust substrate that structure
+does not exist.** The type substitution `Substitution.bindings` is `VarId → Value`
+(logic-var bindings, plus the `lacks` row side-table); a `let y = z` is recorded in the
+**typing env** as `y → type(z)` — the *type*, not the receiver alias `y ≡ z`. Nothing
+maps a value-receiver name to its alias. So "resolve receivers through σ" has nothing to
+read, and a union-find read *inside* `unify_types` would re-introduce the receiver
+context that WI-399 deliberately kept **out** of the env-free unifier. WI-400 is
+therefore realized as **eager let-alias canonicalization at the (env-bearing) site +
+plain structural ζ in `unify_types`**:
+
+**δ at the sites; ζ in `unify_types`.** δ-grounding (project the manifest member off the
+receiver's *known* type) needs `type(receiver)`, which lives only in the env — so it
+runs at the elimination **sites** that hold the env (operation call:
+`check_apply_iter` / `param_to_arg_type`; let annotation: `visit_type` /
+`var_bindings` — **WI-399's eager elimination *is* δ**). `unify_types` has no env, so
+what reaches it is **already a neutral** (δ could not ground it at the site). Its WI-400
+arm is therefore **purely ζ**: a structural equality of two neutral `ExprCarried` heads
+— and it **replaces the WI-399 safety-net guard** (the `return false` on an `ExprCarried`
+head) at that exact line. The "δ-ground both, then if-neutral check σ" of §4 is thus
+**split across the two layers**, not one call.
+
+**Receiver aliasing is canonicalized eagerly at the `let`.** When `let y = <stable
+receiver path>` binds `y` to a variable / field-access chain (`let y = z`,
+`let y = s.provider`), the site records that `y`'s **receiver canonicalizes** to that
+path (a receiver-alias entry in the env, alongside the type binding). Projection
+**formation** (still at the env-bearing site) resolves a receiver through this map before
+building the `ExprCarried`, so `y.M` and `z.M` both carry the **same canonical receiver
+`z`** → the structural ζ in `unify_types` succeeds with no alias lookup of its own. That
+is the "eager" in eager-let-alias: the alias is applied where the env is, so the neutral
+that flows into the type is already canonical and `unify_types` stays env-free (the
+WI-399 invariant). The §4 **union-find-over-σ generality is the deferred flexible /
+rule-body case** — aliases introduced by *unification* (two receiver vars unified during
+rule-body inference), which arise only where receivers are logic variables; there the
+resolver's delay/wake supplies the equivalence dynamically, under no-silent-drop. The
+base scope (operation signatures + immutable `let`) needs no union-find.
+
+Only a **stable** path aliases: `let y = z` / `let y = s.f` canonicalize (immutable
+`let` ⟹ the aliased names are one runtime value — §3's soundness note); `let y = f()`
+does **not** — `y` is its own neutral receiver (`y.M` keyed by `y`), exactly as a fresh
+abstract value should be.
+
+**Two substrate changes WI-400 makes (base scope):**
+
+1. **Abstract receiver → neutral, not error.** Today `project_type_member` raises a loud
+   *"abstract-receiver projection is not yet supported"* when the receiver's member is
+   not manifest. WI-400 replaces that with **returning the rigid neutral
+   `ExprCarried(canonical-receiver, M)`** — this *is* the parked **WI-376
+   abstract-stays-poly**, which WI-400 therefore **co-delivers** (it is the precondition
+   for any neutral to exist for ζ to compare). The §1 working example needs *only* this
+   plus structural ζ of **syntactically identical** receivers (`Ref(s).provider` appears
+   identically in `k`'s type and the `hasKey` call) — **no alias map at all**; the
+   let-alias canonicalization is the *increment* that buys the Scala divergence
+   (`let y = z ⟹ y.T ≡ z.T`).
+2. **A receiver-alias map on the env** (`Symbol → canonical receiver path`), populated at
+   stable `let`, read at projection formation. New state, but env-local and scoped like
+   `var_bindings`.
+
+**Binder-free base scope.** Receivers here are first-order value paths (`s.f.g`) — no
+binders — so the ζ check is a binderless structural compare. The "one routine, also
+α-equivalence of binders (arrow / dependent types)" of §4 is the **deferred**
+`Positioned` / arrow reading; the base WI-400 routine does not build α-renaming.
+
+**Test matrix (acceptance):**
+
+- **§1 typechecks** — identical neutral receivers (`check(s, k: s.provider.K)` body).
+- **Non-decomposition** — `peek(a).T` and `peek(b).T` may both be `Int64` with `a ≠ b`;
+  ζ must **not** unify the receivers (`a =?= b`). Distinct receivers stay distinct.
+- **let-alias** — `let y = z` ⟹ `y.T ≡ z.T` accepts; `let y = z; let w = other` ⟹
+  `y.T ≢ w.T`.
+- **abstract-stays-poly** — a projection off an abstract receiver no longer errors; it
+  forms a neutral usable by path-identity (the WI-399 loud error is now reachable only
+  for a genuinely missing member, not an unbound one).
+- **flexible / rule-body** — `?p.M =?= ?q.M` with logic-var receivers **suspends**, never
+  silently accepts (deferred mechanism; assert no false accept).
+
 ## 5. What the harder cases add (deferred)
 
 - **Plain (non-parametric) field** — `entity stateErased(provider: DataProvider)`.
@@ -297,6 +379,67 @@ manifest, `V` still abstract) when a real need appears. **Existentials** — del
 letting an abstraction *outlive* its call — are the separate opt-in, co-designed
 if/when wanted.
 
+## 5.1 Value-position projection — projection is one arm of the *generic dot*
+
+The projections so far are **type-position** (`k: s.cell.T`, a return / param / effect
+annotation). The **value-position** form is the simple-looking case the architecture
+currently *misses*:
+
+```anthill
+let x = [1,2,3].T     -- x = Int64, a value of sort Type
+```
+
+`.T` projects the element-type member off the receiver's type and **reifies it as a
+value** (`anthill.prelude.Type` is `sort Type = ?`, the opaque handle for a reified type
+— types are terms). The meaning is exactly δ-grounding (§3 rule 1):
+`type([1,2,3]) = List[Int64]`, project `T` ⟹ `Int64`; so `x : Type`, `x = Int64`.
+
+**Why it errors today, and the global gap.** Value-position member access goes through
+*one* place — the `DotApply` build frame in `kb/typing.rs` — which resolves `member`
+**only to an operation** (a method, or a spec-provided op), synthesizing
+`op(receiver, …)`; anything else falls to `DotDispatchNoMatch`. So `[1,2,3].T` looks for
+an *operation* `T` on `List`, finds none, and errors (*"no such member (dot dispatch)"* —
+probe-confirmed, 2026-06-09). Meanwhile the **type-position** projection is a *separate*
+subsystem (`eliminate_type_projections` → `resolve_receiver_path_type` →
+`project_type_member`). The two share nothing but `project_type_member`, and the
+value-position dot never reaches it.
+
+That is the **"something global we are missing"**: *member resolution off the receiver's
+type is one operation with several arms — method, field, and type-member projection — and
+`project_type_member` is the type-member arm.* The value-position dot wires only the
+method arm; the type-position path reimplements receiver-typing (`resolve_field_type`) and
+uses `project_type_member` directly. The unification is a single resolver
+
+```
+resolve_member(type(receiver), member) -> Method(op) | Field(τ) | TypeProjection(τ)
+```
+
+used by **both** the `DotApply` frame and the annotation-side receiver resolver. `.Sort`
+(η) is the whole-type case of the `TypeProjection` arm; plain value-position field access
+(the existing **INC-1b** follow-up — see the `DotApply` frame's TODO) is the `Field` arm.
+So the right altitude is not "add a value-position `.T` special case" but "give the dot
+its `TypeProjection` arm, the same one the annotation path already projects with."
+
+**Implementation (value-position, concrete — the immediate win).** In the `DotApply`
+build frame, *before* the `DotDispatchNoMatch` error and after method resolution fails:
+if `member` is `Sort` or a type member the receiver's sort declares
+(`kb.type_params_of_sort(recv_sort)` contains it), call
+`project_type_member(kb, &recv.ty, &short, &ctx, dot_span)` — **the receiver's type
+`recv.ty` is already inferred and in hand** at this frame (it is what `recv_sort` is read
+from), so no bespoke receiver-typing is needed here, unlike the annotation path. Produce a
+`TypeResult` whose **value** is the reified projected type and whose **type** is
+`anthill.prelude.Type` (the typer already mints this sort for type-valued expressions,
+`kb/typing.rs:1595`). A concrete receiver ⟹ δ-grounds to the member (`Int64`); an abstract
+receiver ⟹ a **neutral** `Type` value (the WI-400 relaxation: project returns the rigid
+neutral rather than erroring).
+
+**Relationship to WI-400 / eager-let-alias.** `[1,2,3].T` is a *concrete* receiver, so it
+is pure δ — no σ-equality, no aliasing. The two meet only when the receiver is abstract:
+`let a = abstractProvider; let x = a.K` makes `x` a neutral `Type` value, and
+`let z = x` aliases it (eager-let-alias, §4.1), so `z` and `x` denote the **same** neutral
+type. So value-position projection rides the *same* δ / ζ / eager-let-alias model — it is
+not a new mechanism, only the missing wiring of the type-member arm into the generic dot.
+
 ## 6. Seam map
 
 | piece | seam |
@@ -304,9 +447,10 @@ if/when wanted.
 | construction infers `P` | **WI-384** |
 | `s.provider.K` classified + eliminated (compound receiver) | **WI-376** + **WI-397** |
 | `k : s.provider.K` depends on param `s` (cross-param + synthesis order) | **WI-398** |
-| projection at `let` / body / `requires`, not only call args | **WI-399** |
-| identity by unification; rigid abstract member; abstract-stays-poly | **WI-376** (keystone) |
-| equality = ζ/δ/η conversion; non-injective `ExprCarried` head; delay + no-silent-drop | **WI-400** (σ-equality arm in the Rust typer's `unify_types`) |
+| projection at `let` / body / `requires`, not only call args | **WI-399** ✓ (delivered 2026-06-09: eager δ-elimination at the let annotation site + a loud `unify_types` guard refusing an un-eliminated `ExprCarried`) |
+| identity by unification; rigid abstract member; abstract-stays-poly | **WI-376** (keystone) — its abstract-stays-poly relaxation is **co-delivered by WI-400**, §4.1 |
+| equality = ζ/δ/η conversion; non-injective `ExprCarried` head; delay + no-silent-drop | **WI-400** — σ-equality ζ arm in the Rust typer's `unify_types`, realized as **eager let-alias** (§4.1); replaces the WI-399 guard line; co-delivers WI-376 abstract-stays-poly |
+| value-position projection (`let x = [1,2,3].T`); the generic dot's `TypeProjection` arm | **§5.1** (own follow-on — wire `project_type_member` into the `DotApply` frame; not yet a WI) |
 
 The parametric working example of §1 needs **WI-384 + WI-376 + WI-397 + WI-398**, the
 two rules of §3, and the conversion/delay discipline of §4 (its soundness rule is
