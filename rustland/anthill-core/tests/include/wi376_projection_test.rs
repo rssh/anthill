@@ -324,3 +324,80 @@ end
         "a projection inside a denoted-bearing type must be a loud error, not a leak; got: {errs:?}",
     );
 }
+
+// ── WI-376 (final): cross-sort provider DIVERGENT member name (the retained acceptance) ──
+//
+// A carrier may PROVIDE a spec that declares a member under a DIFFERENT carrier-side name:
+// `List provides Iterable[List[T], T]` maps Iterable's `Element` to `List`'s `T`. A
+// projection written in the SPEC's vocabulary (`c.Element`) must therefore ground on a
+// concrete carrier (`List[T = Int64].Element = Int64`) by following the `provides` binding,
+// not by looking for a literal `Element` member on `List`. Combined with WI-400's
+// abstract-stays-poly (an abstract carrier `c : C requires Iterable` keeps `c.Element` a
+// neutral), this is the concrete/abstract receiver split via the spec interface. (The
+// concrete-carrier OWN-name case `l.T` and the abstract requires-side case are the earlier
+// WI-376 / WI-400 tests; this file's `projection_threads_*` cover the former.)
+
+/// A projection of a spec member off a CONCRETE carrier grounds through the carrier's
+/// `provides` binding: `elemOf(l: List) -> l.Element` on a `List[T = Int64]` is `Int64`
+/// (Iterable's `Element` ↦ `List`'s `T = Int64`), so returning it as `Int64` conforms.
+#[test]
+fn divergent_provider_member_grounds_concrete() {
+    let ok = r#"
+namespace test.wi376.divergent_ok
+  import anthill.prelude.{List, Int64}
+  operation elemOf(l: List) -> l.Element
+  operation caller(xs: List[T = Int64]) -> Int64 = elemOf(xs)
+end
+"#;
+    assert!(
+        load_errors(&[ok]).is_empty(),
+        "l.Element grounds via `List provides Iterable[List[T], T]` to List's T = Int64; \
+         returning it as Int64 must conform; got: {:?}",
+        load_errors(&[ok]),
+    );
+}
+
+/// The divergent grounding is REAL: `l.Element` is `Int64` (the carrier's element), so
+/// returning it where `String` is declared is rejected — not a fresh var absorbing demand.
+#[test]
+fn divergent_provider_member_wrong_return_rejected() {
+    let wrong = r#"
+namespace test.wi376.divergent_wrong
+  import anthill.prelude.{List, Int64, String}
+  operation elemOf(l: List) -> l.Element
+  operation caller(xs: List[T = Int64]) -> String = elemOf(xs)
+end
+"#;
+    assert!(
+        !load_errors(&[wrong]).is_empty(),
+        "l.Element is Int64 (List's element via Iterable), not String — must be rejected",
+    );
+}
+
+/// The concrete/abstract split via the spec interface: an ABSTRACT carrier `c : C` whose
+/// declared interface is `requires Iterable[C = C, Element = Element, E = E]` keeps
+/// `w.coll.Element` a rigid NEUTRAL (abstract-stays-poly, WI-400), so a body that returns it
+/// as the same `w.coll.Element` type-checks — the same `Element` member that grounds on a
+/// concrete carrier above stays polymorphic here.
+#[test]
+fn abstract_carrier_spec_member_stays_poly() {
+    let ok = r#"
+namespace test.wi376.abstract_iter
+  import anthill.prelude.Iterable
+  sort Walker
+    sort C = ?
+    sort Element = ?
+    effects E = ?
+    requires Iterable[C = C, Element = Element, E = E]
+    entity walker(coll: C)
+  end
+  operation firstElem(w: Walker, e: w.coll.Element) -> w.coll.Element = e
+end
+"#;
+    assert!(
+        load_errors(&[ok]).is_empty(),
+        "an abstract carrier's w.coll.Element (interface from `requires Iterable`) stays a \
+         neutral, so `firstElem(...) = e` type-checks; got: {:?}",
+        load_errors(&[ok]),
+    );
+}

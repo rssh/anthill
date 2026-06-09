@@ -9027,6 +9027,16 @@ fn project_type_member(
         if kb.type_params_of_sort(s).iter().any(|d| d.as_str() == member) {
             return Ok(ProjResult::Neutral);
         }
+        // WI-376 (cross-sort provider DIVERGENT member name): the receiver's sort does not
+        // declare `member` ITSELF, but may PROVIDE a spec that declares it under a
+        // different carrier-side name (`List provides Iterable[List[T], T]` ⟹ Iterable's
+        // `Element` maps to `List`'s `T`). Map `member` through the provides binding to the
+        // carrier-side type and ground/neutralize THAT against the receiver — so one
+        // signature written in the spec's vocabulary (`c.Element`) grounds on a concrete
+        // carrier (`List[T = Int64].Element = Int64`) and stays neutral on a bare one.
+        if let Some(r) = project_via_provided_spec(kb, arg_ty, s, member) {
+            return r;
+        }
         return Err(projection_type_error(ctx, span, &format!(
             "type '{}' has no member '{member}'",
             kb.qualified_name_of(s).to_owned(),
@@ -9079,6 +9089,94 @@ fn abstract_member_declared_by_requires(
         }
     }
     false
+}
+
+/// WI-376 (cross-sort provider divergent member name): project `member` off a CONCRETE
+/// receiver `recv_ty` (sort `recv_sort`) that does not declare `member` itself but PROVIDES
+/// a spec that does — under a possibly-different carrier-side name. Reads the carrier's
+/// `provides Spec[…]` binding for the spec's `member` parameter (`List provides
+/// Iterable[List[T], T]` ⟹ Iterable's `Element` ↦ `List`'s `T`), then grounds that
+/// carrier-side type against the receiver's own type-args (`build_pattern_subst`, the same
+/// substitution field-type resolution uses). A binding that grounds to a concrete type is
+/// `Grounded`; one still resting on an unbound carrier parameter (a BARE receiver) stays
+/// `Neutral` — abstract-stays-poly, exactly as a direct unbound type-param would. Returns
+/// `None` when no provided spec declares `member` (the caller then surfaces the loud
+/// no-member error). First provided spec that declares `member` wins (a member shared
+/// across two provided specs is left to a later disambiguation pass, mirroring
+/// `find_spec_op_for_provided_sort`).
+fn project_via_provided_spec(
+    kb: &mut KnowledgeBase,
+    recv_ty: &Value,
+    recv_sort: Symbol,
+    member: &str,
+) -> Option<Result<ProjResult, TypeError>> {
+    for spec in provided_spec_base_syms(kb, recv_sort) {
+        if !kb.type_params_of_sort(spec).iter().any(|d| d.as_str() == member) {
+            continue;
+        }
+        let Some(bindings) = provider_spec_view_bindings(kb, recv_sort, spec) else {
+            continue;
+        };
+        let Some((_, carrier_val)) =
+            bindings.iter().find(|(p, _)| kb.resolve_sym(*p) == member).copied()
+        else {
+            continue;
+        };
+        // WI-396: an EFFECT-row member (`E`) is NEVER projected via `provides` — the
+        // written row is its route, never a silent pure default (`List provides
+        // Stream[T, {}]` must NOT make `l.E` ground to `{}`). The carrier binding for an
+        // effect member is an effect row; skip it, leaving the loud missing-member error.
+        if matches!(type_head(kb, &Value::Term(carrier_val)), TypeHead::EffectsRows) {
+            continue;
+        }
+        // Ground the carrier-side type (`List`'s `T`) against the receiver's type-args, so
+        // a concrete `List[T = Int64]` grounds `Element` to `Int64`; a bare `List` leaves
+        // it an unbound `T` ⟹ neutral.
+        let grounded = match build_pattern_subst(kb, recv_ty, recv_sort) {
+            Some(s) => walk_pattern_field_type_deep(kb, &s, &Value::Term(carrier_val)),
+            None => Value::Term(carrier_val),
+        };
+        // Grounded ONLY when the result is FULLY concrete (deep `resolved_type_is_ground`,
+        // not a head-only check): a structured binding still resting on an unbound carrier
+        // param (`Element = Pair[A, B]` on a bare receiver) stays NEUTRAL, never a Grounded
+        // type that would absorb demand downstream. A non-Term carrier is conservatively
+        // neutral too.
+        return Some(if resolved_type_is_ground(kb, &grounded) {
+            Ok(ProjResult::Grounded(grounded))
+        } else {
+            Ok(ProjResult::Neutral)
+        });
+    }
+    None
+}
+
+/// WI-376: the base sort symbols of every spec a sort PROVIDES (`fact Spec[…]` /
+/// `provides Spec[…]` → a `SortProvidesInfo` fact). Snapshot (the caller mutates `kb`), so
+/// it returns owned symbols. Mirrors the provider-snapshot loop in
+/// [`find_spec_op_for_provided_sort`].
+fn provided_spec_base_syms(kb: &KnowledgeBase, recv_sort: Symbol) -> Vec<Symbol> {
+    let mut specs: Vec<Symbol> = Vec::new();
+    let Some(provides_sym) = kb.try_resolve_symbol("anthill.reflect.SortProvidesInfo") else {
+        return specs;
+    };
+    for rid in kb.rules_by_functor(provides_sym) {
+        if !kb.is_fact(rid) {
+            continue;
+        }
+        let Some(named) = kb.fact_head_named_args(rid) else { continue };
+        let Some(sr) = get_named_arg(kb, &named, "sort_ref") else { continue };
+        let Some(carrier) = super::load::sort_ref_functor(kb, sr) else { continue };
+        if !same_symbol(kb, carrier, recv_sort) {
+            continue;
+        }
+        let Some(spec_t) = get_named_arg(kb, &named, "spec") else { continue };
+        if let Some(spec_sym) = super::load::provides_spec_base_sym(kb, spec_t) {
+            if !specs.contains(&spec_sym) {
+                specs.push(spec_sym);
+            }
+        }
+    }
+    specs
 }
 
 /// A loud [`TypeError`] for an ill-formed / unsupported type projection.
