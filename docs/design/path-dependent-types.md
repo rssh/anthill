@@ -49,6 +49,7 @@ sort SubscriberStore                       -- a concrete provider
 
 sort State                                 -- a wrapper that CARRIES the provider type P
   sort P = ?
+  requires DataProvider[P]                 -- P provides DataProvider ⟹ abstract P has member K + hasKey
   entity state(provider: P)
 
 operation check(s: State, k: s.provider.K) -> Boolean
@@ -58,7 +59,14 @@ operation check(s: State, k: s.provider.K) -> Boolean
 **In `check`'s body** `s : State` has `P` abstract, so `s.provider.K` is **rigid** —
 a type keyed by the path `s.provider` plus member `K`. The body type-checks by
 *path identity*: `k : s.provider.K` is exactly the `K` that `s.provider.hasKey`
-expects.
+expects. The bound `requires DataProvider[P]` is **load-bearing for the abstract
+body**: it is the dual of `SubscriberStore`'s `provides` (line above) — it gives an
+abstract `P` its *declared interface* (`K`, `hasKey`), so `s.provider.K` is a
+well-formed rigid neutral rather than "no member `K`". (`requires Spec[X]` names the
+**carrier** `X`, the dual of `X provides Spec[…]`; the spec's own param `K` stays
+abstract, projected as `P.K`.) Without it `P` is an unconstrained `sort P = ?` and the
+abstract projection is ill-formed — the concrete call below needs no bound because there
+`P` is instantiated to a provider.
 
 **At a concrete call** the path grounds:
 
