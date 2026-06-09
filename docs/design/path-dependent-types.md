@@ -544,6 +544,97 @@ if/when wanted.
 > `wi401_escape_free_return_test`. The **`ensures`-manifest admit-form is WI-402** (the next
 > ticket); existentials remain the deferred opt-in.
 
+### `ensures Spec[C]` — the output dual of `requires` (WI-402, reframed 2026-06-09)
+
+The admit-form is *not* a postcondition that equates a type member (`ensures result.K =
+String` — a static **type** equation wearing a runtime **value-postcondition**'s clothes; a
+strange form). It is **`ensures Spec[C]`, the exact mirror of `requires Spec[C]`** — one
+mechanism, the arrow flipped:
+
+| | carrier | who discharges | who benefits | dict flow |
+|---|---|---|---|---|
+| `requires Spec[C]` | abstract **input** | the **caller** (`req_insertion`) | the body (gets `Spec` on `C`) | **in** |
+| `ensures Spec[C]` | abstract **output** | the **operation** (its body proves it) | the **caller** (gets `Spec` on the result) | **out** |
+
+A member is pinned by **binding it in the spec application**, exactly as `requires` does —
+`ensures Spec[C, K = String]` manifests `K` (translucent); `ensures Spec[C]` leaves it
+abstract. Two regimes fall out of the same surface:
+
+- **bound** (`ensures Spec[C, K = String]`) — translucent manifest, `K` fully concrete. The
+  simple case: reuses provider-admissibility + the WI-401 admit. The remaining gap is
+  *binding-precise* provider-admissibility (`sort_provides_admissibly` is bare-only today, so
+  even `-> DataProvider[K = String] = s` from a providing carrier is rejected).
+- **unbound** (`ensures Spec[C]`) — an **interface-rooted existential**: an abstract `C`
+  usable only through `Spec`. This is escape-free *for the right reason* — §5's escape table
+  middle row ("operation interface" root) never escapes, and the `ensures` clause names `C` in
+  the signature (visible to the caller), so `c.M` is a neutral rooted at the op interface, not
+  a hidden local. So the existential return stops being §5's deferred "deliberately-let-it-
+  escape" opt-in: controlled by `ensures`, it is safe. It is the genuinely new capability
+  (Rust `-> impl Trait`, ML abstract-type-with-signature).
+
+#### Worked example — a factory returning an interface
+
+```anthill
+sort KVStore
+  sort K = ?
+  sort V = ?
+  operation get(s: KVStore, k: K) -> Option[V]
+  operation put(s: KVStore, k: K, v: V) -> KVStore
+end
+
+sort MemStore                                    -- in-memory backend
+  provides KVStore[K = String, V = Bytes]
+  entity memStore(...)
+end
+sort DiskStore                                   -- on-disk backend
+  provides KVStore[K = String, V = Bytes]
+  entity diskStore(path: String)
+end
+
+-- `C` is introduced by the `ensures` and EXISTENTIALLY quantified — the OPERATION picks it
+-- (here, at runtime from `cfg`), not the caller. Contrast a `requires`/type-param `C`, which
+-- the caller picks. The op promises: ∃ C. C provides KVStore[K=String, V=Bytes], result : C.
+operation openStore(cfg: Config) -> C ensures KVStore[C, K = String, V = Bytes] =
+  if cfg.persistent then diskStore(cfg.path) else memStore(...)
+```
+
+```anthill
+let store = openStore(cfg)        -- store : C, an opaque carrier known to be a KVStore
+KVStore.put(store, "k", bytes)    -- uses the interface; never learns Mem vs Disk
+```
+
+**Why this is unwritable today, and what it exposes.** The two `if` branches are `MemStore`
+and `DiskStore` — *no common concrete type*, so the branch-join has no LUB (WI-287, "match
+takes branch-0 type, no lub"). A bare `-> KVStore` return is the WI-401 escape. So
+`ensures KVStore[C, …]` is **simultaneously the existential packaging and the explicit upper
+bound the join needs**: it is not only "factories," it is the principled answer to "how do
+divergent branches unify on an interface."
+
+**Typing story.**
+- *Producer.* Each branch's value type must **provide** `KVStore[K=String, V=Bytes]`
+  (`MemStore`, `DiskStore` both do); the branch-join unifies them to the existential `C`
+  (the `ensures` spec is the join's upper bound, not branch-0). The op's body discharges the
+  guarantee.
+- *Consumer.* `store : C` is abstract; the `ensures` lends it `KVStore`'s interface, so
+  `KVStore.put(store, …)`/`store.put(…)` resolves against `KVStore` (a neutral receiver,
+  abstract-stays-poly — the WI-376/400 path) — interface-rooted, never grounded to a concrete
+  backend at compile time.
+- *Eval.* The op returns a concrete value (a `memStore`/`diskStore` entity, carrying its real
+  sort); `KVStore.put` dispatches on that runtime sort — so the **dict flows out** with the
+  value (the eval dual of `req_insertion`'s dict-in).
+
+**Symmetry, not a free copy.** The *bound* case reuses the `requires` world directly (the dict
+is a constant — just binding-precise admissibility). The *unbound* case needs the genuinely
+dual plumbing the `requires` code lacks: the op constructs the evidence and the caller receives
+it on the result value (dict-out). Symmetric in concept, new implementation.
+
+**Status / driver.** No *current* operation needs to return an interface — the §1 /
+`DataProvider` use-case, the combinators, and the CLI are all input-side (`requires`) or
+concrete — so this is **designed, not yet built** (matching the WI's own "add when a real
+translucent-return need appears"). The first real driver is the **anthill-todo pluggable
+backend** (`examples/github-todo/docs/pluggable-backend.md`), scheduled **after WI-009**; this
+KVStore example is its standalone rehearsal.
+
 ## 5.1 Value-position projection — projection is one arm of the *generic dot*
 
 The projections so far are **type-position** (`k: s.cell.T`, a return / param / effect
