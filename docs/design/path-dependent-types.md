@@ -530,6 +530,20 @@ manifest, `V` still abstract) when a real need appears. **Existentials** — del
 letting an abstraction *outlive* its call — are the separate opt-in, co-designed
 if/when wanted.
 
+> **Strict gate DELIVERED — WI-401 (2026-06-09).** `abstracting_return_error`
+> (`kb/typing.rs`), called in `check_operation_bodies` in the SUCCESS branch of the
+> return-conformance check (after the body conforms), rejects exactly the sealing return:
+> the body's value type **provides** the declared return's base spec (`sort_provides_-
+> admissibly`, the concrete→bare-spec upcast), the base sorts **differ** (a same-sort
+> return carries no new abstraction — input-rooted), and the return leaves ≥1 of the spec's
+> members **unbound** (a bare *or partial* manifest; a fully-manifest `DataProvider[K =
+> String]` / `Stream[T = Elem, E = {}]` binds them all and is admitted, the members rooting
+> at the op's inputs). This **supersedes WI-344's provider-admissibility at the *return*
+> position** (the bare form was the escape); WI-344 admissibility stays at the *argument*
+> position (the `requires` input dual). The diagnostic names the unbound members. Tests:
+> `wi401_escape_free_return_test`. The **`ensures`-manifest admit-form is WI-402** (the next
+> ticket); existentials remain the deferred opt-in.
+
 ## 5.1 Value-position projection — projection is one arm of the *generic dot*
 
 The projections so far are **type-position** (`k: s.cell.T`, a return / param / effect

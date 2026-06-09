@@ -12094,6 +12094,69 @@ fn sort_provides_admissibly(kb: &KnowledgeBase, actual_sym: Symbol, expected_sym
     false
 }
 
+/// WI-401 — detect an ABSTRACTING (sealing) return so the base model stays escape-free
+/// (docs/design/path-dependent-types.md §5). A return is interface-expressible — and so
+/// admitted — when it is concrete, or rooted at the operation's own inputs (a param's
+/// type, the op's type-params), or (the deferred WI-402 admit-form) made manifest by an
+/// `ensures`. The ONE thing that escapes is a return whose abstract member is minted
+/// *inside* the body: a concrete carrier UPCAST to the **bare abstract spec it provides**
+/// (`seal(s: SubscriberStore) -> DataProvider = s` — the `K = String` is erased, so the
+/// resulting `DataProvider.K` roots at nothing in scope, the ML avoidance problem). This
+/// returns `Some(error)` for exactly that pattern. Called only after the body conforms to
+/// the return type, so it never fires for a plain mismatch.
+///
+/// NOT flagged (each carries no NEW hidden-local abstraction):
+///   - same base sort (`f(p: DataProvider) -> DataProvider = p`) — the return's
+///     abstractness, if any, is the input `p`'s, interface-rooted;
+///   - a return that is NOT a provider upcast (a concrete nominal/entity supertype, or a
+///     type-variable return rooted at an op type-param — `sort_functor_of_view` is `None`);
+///   - a MANIFEST spec return that binds every member (`-> DataProvider[K = String]`, or
+///     `-> Stream[Elem, {}]` whose members root at the op's own type-params) — the members
+///     are carried, nothing abstract escapes.
+fn abstracting_return_error(
+    kb: &KnowledgeBase,
+    body_ty: &Value,
+    ret_ty: &Value,
+    op_sym: Symbol,
+) -> Option<TypeError> {
+    let body_sort = sort_functor_of_view(kb, body_ty)?;
+    let ret_sort = sort_functor_of_view(kb, ret_ty)?;
+    if same_symbol(kb, body_sort, ret_sort) {
+        return None;
+    }
+    if !sort_provides_admissibly(kb, body_sort, ret_sort) {
+        return None;
+    }
+    // Manifest iff every one of the spec's members has a binding in the return type. A
+    // binding to a concrete type OR to the op's own type-parameter (`Stream[Elem, {}]`,
+    // `Elem` input-rooted) is interface-expressible; a member left wholly UNBOUND escapes
+    // (a bare spec leaves them all unbound; a PARTIAL manifest leaves some unbound — §5: a
+    // partial manifest still escapes).
+    let unbound: Vec<String> = kb
+        .type_params_of_sort(ret_sort)
+        .into_iter()
+        .filter(|p| extract_type_param(kb, ret_ty, p).is_none())
+        .collect();
+    if unbound.is_empty() {
+        return None;
+    }
+    let ret_name = kb.qualified_name_of(ret_sort).to_owned();
+    let members = unbound.iter().map(|m| format!("'{m}'")).collect::<Vec<_>>().join(", ");
+    Some(TypeError::Other {
+        span: None,
+        context: TypeErrorContext::OperationReturn { op_name: op_sym },
+        expected: "an interface-expressible return (concrete, input-rooted, or an `ensures` \
+                   manifest)"
+            .to_owned(),
+        actual: format!(
+            "an abstracting return: the body provides '{ret_name}' only by an upcast that leaves \
+             its member(s) {members} unbound, so the abstract member would escape its scope \
+             (the avoidance problem) — bind the member(s) (`{ret_name}[…]`), return a concrete \
+             type, or root them at the operation's inputs",
+        ),
+    })
+}
+
 // ── Requires chain ─────────────────────────────────────────────
 
 /// A direct requires entry: sort A requires spec B with the given SortView term.
@@ -13815,6 +13878,13 @@ fn check_operation_bodies(kb: &mut KnowledgeBase, op_syms: &[Symbol], errors: &m
                         expected: op.return_type.clone(),
                         actual: result.ty.clone(),
                     });
+                } else if let Some(e) =
+                    abstracting_return_error(kb, &result.ty, &op.return_type, op.op_sym)
+                {
+                    // WI-401: the body conforms, but only by a provider UPCAST to a bare
+                    // abstract spec — the sealing return that would let an abstract member
+                    // escape its scope. Forbidden so the base model stays escape-free (§5).
+                    errors.push(e);
                 }
 
                 // WI-314: operation-boundary effect masking. Drops effects

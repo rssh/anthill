@@ -4895,14 +4895,19 @@ end
         "Gadget does not provide Comparable, so the field should be rejected, got: {:?}", errors);
 }
 
-// WI-344: provider admissibility in `types_compatible` — a value whose sort
-// PROVIDES a spec is usable where that spec is expected, at a *value
-// position* (operation return / argument), not just a field-membership
-// check (WI-036). The WI's motivating shape is `iterator(xs: List) ->
-// Stream = xs` once `List` provides `fact Stream[List]`; here the same
-// mechanism is exercised with a self-contained spec/carrier pair.
+// WI-344 introduced provider admissibility in `types_compatible` — a value whose sort
+// PROVIDES a spec is usable where that spec is expected at a value position. WI-401
+// (docs/design/path-dependent-types.md §5) SUPERSEDES it at the RETURN position: returning
+// a concrete carrier as the BARE abstract spec it provides (`as_comparable(w: Widget) ->
+// Comparable = w`, structurally `seal(s: SubscriberStore) -> DataProvider = s`) is the
+// abstracting/sealing return — the spec's abstract member `T` is erased and would escape its
+// scope (the ML avoidance problem). The base model is escape-free, so this is now REJECTED;
+// the route is a concrete / input-rooted / manifest (`ensures`) return. (Provider
+// admissibility still holds at the ARGUMENT position — the `requires` input dual — which
+// WI-401 does not touch; only the return is gated.) Was
+// `operation_return_accepts_value_whose_sort_provides_spec`.
 #[test]
-fn operation_return_accepts_value_whose_sort_provides_spec() {
+fn operation_return_rejects_abstracting_provider_upcast() {
     let source = r#"
 namespace test.wi344_ok
   sort Comparable
@@ -4921,9 +4926,9 @@ end
     let op_errors: Vec<_> = errors.iter()
         .filter(|e| format!("{}", e).contains("as_comparable"))
         .collect();
-    assert!(op_errors.is_empty(),
-        "Widget provides Comparable, so returning a Widget where Comparable \
-         is expected must type-check (WI-344 provider admissibility), got: {:?}",
+    assert!(!op_errors.is_empty(),
+        "returning a Widget as the bare spec Comparable it provides is an abstracting return \
+         (WI-401 escape-free gate) — must be rejected; got: {:?}",
         errors);
 }
 
