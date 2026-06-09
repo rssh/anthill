@@ -3082,7 +3082,7 @@ fact WorkItem(
   description: "Typer: ExprCarried is a NON-INJECTIVE custom-unification head -- the equality-soundness core of path-dependent identity (docs/design/path-dependent-types.md sec.3-4). Unifying two path types p.M =?= q.M: delta-GROUND both sides first (project the manifest member off the receiver type) then unify the results; if both stay NEUTRAL (rigid, no manifest), CHECK SIGMA-EQUALITY of the receivers -- resolve each through the current substitution (follow the let/unification aliases it records) and compare structurally; a non-binding CHECK (are they ALREADY equal under the substitution), NOT unification (could they be MADE equal -- that would be the unsound non-injective decomposition). let y=z makes y,z sigma-equal so y.T==z.T; two distinct receivers stay distinct, never forced equal (projection is not injective: peek(a).T and peek(b).T can both be Int without a=b). A flexible-receiver goal (a receiver that is a logic variable -- arises only in RULE BODIES, never op signatures) SUSPENDS and wakes when its receivers bind (the resolver delay/rotation), under the no-silent-drop discipline (every deferred constraint ends confirmed/refuted/surfaced, never silently accepted; set-level final solve). CONSUMER of the WI-370 custom-unification-at-discrim-node feature (NOT WI-370 itself, whose driver is op-bodies). Underpins WI-376 abstract-stays-poly. Rust-only (typer).",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: ["WI-399"],
-  status: Open)
+  status: Claimed(agent: "claude", since: "2026-06-09T06:59:37Z"))
 
 fact Tag(name: "typing", workitem: "WI-400")
 fact WorkItem(

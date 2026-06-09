@@ -13233,11 +13233,93 @@ fn check_operation_bodies(kb: &mut KnowledgeBase, op_syms: &[Symbol], errors: &m
             .rsplit_once('.')
             .and_then(|(parent_qn, _)| kb.try_resolve_symbol(parent_qn));
         env.set_enclosing_sort(kb, parent_sym);
-        for (name, ty) in &op.params {
-            // WI-341 Stage A: op param types are carrier-agnostic `Value`. A
-            // callback param whose arrow effect is denoted-bearing binds as a
-            // `Value::Node` arrow; a ground param as `Value::Term`.
-            env.bind_var(*name, ty.clone());
+        // WI-400 (body-site, MANIFEST half): a projection param type (`k: s.cell.T`)
+        // must be discharged against the OTHER params' DECLARED types before it is bound
+        // into the body env — the body-check peer of the call-site elimination
+        // (`check_apply_iter` / WI-398, which discharges against ARGUMENT types). A
+        // MANIFEST receiver (`s: Wrapper[P = Inner[T = String]]`) δ-grounds the member
+        // (`k : String`), so the body then sees `k : String` instead of the raw `?.T`
+        // neutral the un-eliminated projection would leave (which `unify_types` refuses,
+        // WI-399). Eliminated types feed forward, so a later param may project an
+        // EARLIER one (an in-order chain). An ABSTRACT receiver (`s: State`, `P` open) is
+        // still the existing loud error here — the abstract→neutral path-identity case is
+        // WI-400's remaining scope (the §1 `check(s: State, …)` body). Only ops whose
+        // params actually carry a projection pay for the map + walk.
+        if op.params.iter().any(|(_, t)| value_contains_projection(kb, t)) {
+            // Order-INDEPENDENT elimination (matching the call-site, which discharges over
+            // a fully-populated `param_to_arg_type`): repeatedly discharge every
+            // still-projection param type against `decl`, committing each fully-resolved
+            // result so a receiver declared in ANY order — a forward OR a backward
+            // reference — feeds its dependents. `eliminate_type_projections` is
+            // all-or-nothing per type (`Ok` ⟹ no projection remains), so an `Err` here
+            // means only "a receiver param is not yet resolved" (retried next pass) OR a
+            // genuinely un-dischargeable receiver. Cycles are pre-skipped (above), so each
+            // pass either makes progress or the survivors are genuinely abstract / missing
+            // a member — surfaced loudly, and the body-check skipped.
+            let mut decl: HashMap<Symbol, Value> =
+                op.params.iter().map(|(n, t)| (*n, t.clone())).collect();
+            let mut proj_failed = false;
+            loop {
+                let mut progress = false;
+                for (name, _) in &op.params {
+                    let cur = decl.get(name).cloned().expect("param present in decl");
+                    if value_contains_projection(kb, &cur) {
+                        if let Ok(elim) = eliminate_type_projections(
+                            kb,
+                            &cur,
+                            &decl,
+                            &TypeErrorContext::OperationArgument { op_name: op.op_sym, param: *name },
+                            op.span,
+                        ) {
+                            decl.insert(*name, elim);
+                            progress = true;
+                        }
+                    }
+                }
+                let mut remaining: Vec<Symbol> = Vec::new();
+                for (name, _) in &op.params {
+                    if let Some(t) = decl.get(name) {
+                        if value_contains_projection(kb, t) {
+                            remaining.push(*name);
+                        }
+                    }
+                }
+                if remaining.is_empty() {
+                    break;
+                }
+                if !progress {
+                    // Stuck: the survivors cannot be discharged (abstract receiver, missing
+                    // member). Surface the real error for each and skip this op's
+                    // body-check to avoid cascading (mirrors the cyclic-signature skip).
+                    for name in &remaining {
+                        let cur = decl.get(name).cloned().expect("param present in decl");
+                        if let Err(e) = eliminate_type_projections(
+                            kb,
+                            &cur,
+                            &decl,
+                            &TypeErrorContext::OperationArgument { op_name: op.op_sym, param: *name },
+                            op.span,
+                        ) {
+                            errors.push(e);
+                        }
+                    }
+                    proj_failed = true;
+                    break;
+                }
+            }
+            if proj_failed {
+                continue;
+            }
+            for (name, _) in &op.params {
+                env.bind_var(*name, decl.remove(name).expect("param present in decl"));
+            }
+        } else {
+            for (name, ty) in &op.params {
+                // WI-341 Stage A: op param types are carrier-agnostic `Value`. A
+                // callback param whose arrow effect is denoted-bearing binds as a
+                // `Value::Node` arrow; a ground param as `Value::Term`.
+                env.bind_var(*name, ty.clone());
+            }
         }
 
         // WI-270: thread the declared return type as the body's

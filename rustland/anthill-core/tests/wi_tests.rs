@@ -208,6 +208,9 @@ mod wi398_cross_param_projection_test;
 #[path = "include/wi399_let_projection_test.rs"]
 mod wi399_let_projection_test;
 
+#[path = "include/wi400_body_projection_test.rs"]
+mod wi400_body_projection_test;
+
 #[path = "include/wi427_bidirectional_flow_test.rs"]
 mod wi427_bidirectional_flow_test;
 
