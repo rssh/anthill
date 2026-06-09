@@ -209,3 +209,28 @@ provider-admissibility and WI-379 both use, so migrate it carefully (035 *Risk: 
 tests*). (The other half of WI-293 — variance-aware `join_types` for parameterized lubs,
 `join(Option[Cat], Option[Dog]) = Option[Animal]` — is branch-lub machinery, independent
 of this whole sequence.)
+
+### Bidirectional inference has two directions — WI-379 (arg→expected) + WI-427 (expected→arg)
+
+The WI-379 *foundation* row of §8 is **half** of bidirectional inference:
+**`argument → expected`** (args-before-expected — synthesize arguments by *equality*, then
+check the result against the caller's expected). The **other half,
+`expected → argument`** — pushing a declared *parameter type* *down* into an argument as a
+top-down checking hint — is **not yet built**, filed as **WI-427** (2026-06-09). Without
+it, a polymorphic argument whose type parameter appears **only in its return** is
+unconstrained from the argument itself and fails even where the param type would pin it
+(`poly[X]() -> Wrapper[P = Inner[T = X]]` passed to `check(s: Wrapper[P = Inner[T =
+String]])` ⟹ *"X unconstrained"*; args are synthesized in isolation via
+`push_visit_no_hint`).
+
+**WI-427 must respect the variance sidestep above:** push the hint only where the param
+type pins by **equality** (a concrete / structured param type), never where it would force
+solving a metavariable through a `<:` subtype constraint — exactly the hard case
+args-first was designed to avoid. So `expected → argument` is admissible for the
+equality-pinning cases (a structured param type fixing a return-only type parameter) and
+stays out of the subtype-metavariable case.
+
+The concrete **bidirectional-flow checklist example** — where `expected → argument`
+(WI-427), a projection, and `argument → parameter` (WI-379) all meet — lives in
+[`path-dependent-types.md`](path-dependent-types.md) §4.1, with an on-disk `#[ignore]`'d
+anchor `wi427_bidirectional_flow_test`.

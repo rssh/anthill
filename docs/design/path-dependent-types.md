@@ -340,7 +340,10 @@ binders — so the ζ check is a binderless structural compare. The "one routine
 The whole effort is rooted in **bidirectional** inference (WI-379). The acceptance
 example below must thread information in *both* directions **and** through a projection —
 it is the regression anchor for the `expected → argument` direction (**WI-427**) and the
-projection it feeds:
+projection it feeds. (The bidirectional-inference design itself — WI-379's delivered
+`argument → expected` half and WI-427's `expected → argument` half, plus the variance
+soundness caveat — lives in [`expansion-during-unification.md`](expansion-during-unification.md)
+§8 + its variance note; this example is duplicated there by reference.)
 
 ```anthill
 operation check(s: Wrapper[P = Inner[T = String]], k: s.cell.T) -> String
