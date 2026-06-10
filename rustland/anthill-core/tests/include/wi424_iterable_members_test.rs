@@ -14,6 +14,14 @@ use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::load::{self, NullResolver};
 use anthill_core::parse;
 
+/// Call a nullary op and expect an Int result.
+fn run_int(interp: &mut anthill_core::eval::Interpreter, op: &str) -> i64 {
+    match interp.call(op, &[]).unwrap_or_else(|e| panic!("call {op}: {e:?}")) {
+        anthill_core::eval::Value::Int(i) => i,
+        other => panic!("call {op}: expected Int, got {other:?}"),
+    }
+}
+
 fn load_errors(extras: &[&str]) -> Vec<String> {
     let dir = crate::common::stdlib_dir();
     let files = crate::common::collect_anthill_files(&dir);
@@ -140,14 +148,8 @@ namespace test.wi424.boxcoll
 end
 "#;
     let mut interp = crate::common::interp_for(src);
-    let run = |interp: &mut anthill_core::eval::Interpreter, op: &str| {
-        match interp.call(op, &[]).unwrap_or_else(|e| panic!("call {op}: {e:?}")) {
-            anthill_core::eval::Value::Int(i) => i,
-            other => panic!("call {op}: expected Int, got {other:?}"),
-        }
-    };
-    assert_eq!(run(&mut interp, "test.wi424.boxcoll.found"), 3);
-    assert_eq!(run(&mut interp, "test.wi424.boxcoll.found_none"), -1);
+    assert_eq!(run_int(&mut interp, "test.wi424.boxcoll.found"), 3);
+    assert_eq!(run_int(&mut interp, "test.wi424.boxcoll.found_none"), -1);
 }
 
 /// EVAL: Iterable.find / Iterable.map run end-to-end on a List.
@@ -180,13 +182,7 @@ namespace test.wi424.eval
 end
 "#;
     let mut interp = crate::common::interp_for(src);
-    let run = |interp: &mut anthill_core::eval::Interpreter, op: &str| {
-        match interp.call(op, &[]).unwrap_or_else(|e| panic!("call {op}: {e:?}")) {
-            anthill_core::eval::Value::Int(i) => i,
-            other => panic!("call {op}: expected Int, got {other:?}"),
-        }
-    };
-    assert_eq!(run(&mut interp, "test.wi424.eval.found"), 3);
-    assert_eq!(run(&mut interp, "test.wi424.eval.found_none"), -1);
-    assert_eq!(run(&mut interp, "test.wi424.eval.mapped_inc"), 234);
+    assert_eq!(run_int(&mut interp, "test.wi424.eval.found"), 3);
+    assert_eq!(run_int(&mut interp, "test.wi424.eval.found_none"), -1);
+    assert_eq!(run_int(&mut interp, "test.wi424.eval.mapped_inc"), 234);
 }

@@ -482,25 +482,37 @@ impl Interpreter {
         arg_values: &[Value],
     ) -> Option<Symbol> {
         use crate::kb::typing::{
-            carrier_param_receiver_index, lookup_spec_op_dispatch, self_receiver_param_index,
+            carrier_param_receiver_for_values, lookup_spec_op_dispatch, self_receiver_param_index,
         };
         let spec_sort = lookup_spec_op_dispatch(&self.kb, spec_op)?;
         let rec = crate::kb::op_info::lookup_operation_info(&self.kb, spec_op)?;
+        // The carrier sort a runtime argument value names: entity functor →
+        // its parent sort's base symbol.
+        let carrier_of = |i: usize| -> Option<Symbol> {
+            let functor = value_functor(&self.kb, arg_values.get(i)?)?;
+            let parent_tid = self.kb.constructor_parent_sort(functor)?;
+            match self.kb.get_term(parent_tid) {
+                Term::Fn { functor, .. } | Term::Ref(functor) | Term::Ident(functor) => {
+                    Some(*functor)
+                }
+                _ => None,
+            }
+        };
         // Same self-receiver classification the typer's `receiver_carrier`
         // uses, so the two never disagree about which argument names the
         // carrier. `arg_values` is in callee-parameter order here (the typer
         // reorders named args), so the declaration index reads the receiver.
         // WI-424: a spec may name its carrier through its own type-param
         // (`Iterable.iterator(c: C)`) instead of the spec sort — fall back to
-        // the carrier-param receiver so the runtime value's carrier still
-        // selects the impl (`iterator` on a `List` value → `List.iterator`).
-        let idx = self_receiver_param_index(&self.kb, &rec.params, spec_sort)
-            .or_else(|| carrier_param_receiver_index(&self.kb, &rec.params, spec_sort))?;
-        let functor = value_functor(&self.kb, arg_values.get(idx)?)?;
-        let parent_tid = self.kb.constructor_parent_sort(functor)?;
-        let carrier = match self.kb.get_term(parent_tid) {
-            Term::Fn { functor, .. } | Term::Ref(functor) | Term::Ident(functor) => *functor,
-            _ => return None,
+        // the carrier-param receiver, gated on the SAME provision check the
+        // typer's classification applies (the value's sort must provide the
+        // spec with that param bound to the carrier), so an element-typed
+        // param never dispatches (`iterator` on a `List` value → `List.iterator`).
+        let carrier = match self_receiver_param_index(&self.kb, &rec.params, spec_sort) {
+            Some(idx) => carrier_of(idx)?,
+            None => {
+                carrier_param_receiver_for_values(&self.kb, &rec.params, spec_sort, &carrier_of)?.1
+            }
         };
         let op_qn = self.kb.qualified_name_of(spec_op);
         let op_short = op_qn.rsplit('.').next().unwrap_or(op_qn);

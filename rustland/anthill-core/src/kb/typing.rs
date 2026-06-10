@@ -520,8 +520,10 @@ pub struct TypingEnv {
     /// vars — threads THIS instance's params: `iterator(c)` inside an
     /// `Iterable` member body returns `Stream[Element, E]` at the enclosing
     /// rigids instead of dangling fresh `?_`. Empty outside a parametric
-    /// sort's member-body check.
-    enclosing_sort_param_rigids: Vec<(VarId, TermId)>,
+    /// sort's member-body check. `Rc`: the env is cloned on every Visit push
+    /// of the iterative typer and this is set once per body, so clones are a
+    /// refcount bump, not a Vec copy.
+    enclosing_sort_param_rigids: Rc<Vec<(VarId, TermId)>>,
     local_resources: Vec<Symbol>,
     /// Enclosing sort for defer-to-requirement detection plus a
     /// cached `requires_chain` snapshot. The chain is consulted for every
@@ -542,7 +544,7 @@ impl TypingEnv {
         Self {
             var_bindings: HashMap::new(),
             receiver_aliases: HashMap::new(),
-            enclosing_sort_param_rigids: Vec::new(),
+            enclosing_sort_param_rigids: Rc::new(Vec::new()),
             local_resources: Vec::new(),
             enclosing: None,
             diagnostics: Vec::new(),
@@ -551,7 +553,7 @@ impl TypingEnv {
 
     /// WI-424 — install the enclosing sort's param-var → rigid map for the
     /// member body about to be checked (see the field doc).
-    pub fn set_enclosing_sort_param_rigids(&mut self, rigids: Vec<(VarId, TermId)>) {
+    pub fn set_enclosing_sort_param_rigids(&mut self, rigids: Rc<Vec<(VarId, TermId)>>) {
         self.enclosing_sort_param_rigids = rigids;
     }
 
@@ -3368,16 +3370,13 @@ fn check_apply_iter(
         // across all members; a different-instance argument is correctly
         // rejected against the rigid.
         if !env.enclosing_sort_param_rigids().is_empty() {
-            let same_sort = kb
-                .qualified_name_of(fn_sym)
-                .rsplit_once('.')
-                .and_then(|(parent_qn, _)| kb.try_resolve_symbol(parent_qn))
+            let same_sort = impl_parent_of_op(kb, fn_sym)
                 .zip(env.enclosing_sort())
                 .is_some_and(|(callee_parent, enclosing)| {
                     kb.canonical_sort_sym(callee_parent) == kb.canonical_sort_sym(enclosing)
                 });
             if same_sort {
-                for (vid, rigid) in env.enclosing_sort_param_rigids() {
+                for (vid, rigid) in env.enclosing_sort_param_rigids().iter() {
                     if subst.resolve_as_value(*vid).is_none() {
                         subst.bind_term(*vid, *rigid);
                     }
@@ -3417,9 +3416,9 @@ fn check_apply_iter(
             None => match carrier_param_receiver(
                 kb, &op, fn_sym, named_args, pos_results, named_results,
             ) {
-                Some((spec_sort, carrier_sym, recv_ty)) => bind_spec_params_from_carrier_param(
-                    kb, &mut subst, spec_sort, carrier_sym, recv_ty,
-                ),
+                Some((spec_sort, _carrier_sym, recv_ty, view)) => {
+                    bind_spec_params_from_carrier_param(kb, &mut subst, spec_sort, recv_ty, view)
+                }
                 None => false,
             },
         };
@@ -7158,30 +7157,63 @@ fn declared_type_param_vid(kb: &KnowledgeBase, pty: &Value) -> Option<VarId> {
     }
 }
 
-/// WI-424 — index of a spec op's CARRIER-PARAM receiver: the first parameter
-/// whose declared type is one of the spec sort's own type-param vars
-/// (`Iterable.find(c: C, …)`, `sort C = ?` on Iterable). The dispatch dual of
-/// [`self_receiver_param_index`] for specs that name their carrier through a
-/// type parameter instead of the spec sort itself; the interpreter's
-/// value-directed dispatch falls back to it so `iterator(c)` on a runtime
-/// `List` resolves `List.iterator`. `None` when the spec declares no params or
-/// no param is typed as one.
-pub(crate) fn carrier_param_receiver_index(
+/// WI-424 — the gate distinguishing a spec's CARRIER param from an
+/// element-like param: does `carrier_sym`'s provision of `spec_sort` bind the
+/// spec param whose canonical var is `pvid` to an application of the carrier
+/// itself (`provides Iterable[C = List[T], …]` ⇒ true for `C`'s vid with
+/// carrier `List`; false for `Element`'s)? Shared by the typer's
+/// [`carrier_param_receiver`] and eval's [`carrier_param_receiver_for_values`]
+/// so the two classifications cannot disagree about which argument names the
+/// carrier. The binding value rides a `SortView(List[T], …)` wrapper — unwrap
+/// via the same reader the provider machinery uses.
+fn provision_binds_param_to_carrier(
+    kb: &KnowledgeBase,
+    spec_sort: Symbol,
+    pvid: VarId,
+    carrier_sym: Symbol,
+) -> Option<SmallVec<[(Symbol, TermId); 2]>> {
+    let view = provider_spec_view_bindings(kb, carrier_sym, spec_sort)?;
+    let carrier_canon = kb.canonical_sort_sym(carrier_sym);
+    let is_carrier_param = view.iter().any(|(sp_sym, sp_val)| {
+        type_param_vid_in_sort(kb, spec_sort, *sp_sym) == Some(pvid)
+            && super::load::provides_spec_base_sym(kb, *sp_val)
+                .map(|b| kb.canonical_sort_sym(b))
+                == Some(carrier_canon)
+    });
+    is_carrier_param.then_some(view)
+}
+
+/// WI-424 — eval-side CARRIER-PARAM receiver: among the params typed as one of
+/// `spec_sort`'s own type-param vars (`Iterable.iterator(c: C)`), the first
+/// whose RUNTIME value's carrier sort (`carrier_of(i)`) provides the spec WITH
+/// that param bound to the carrier application — the same
+/// [`provision_binds_param_to_carrier`] gate the typer applies, so an
+/// element-typed param never dispatches (the value-directed dual of
+/// [`self_receiver_param_index`]'s deliberate type-param-carrier exclusion).
+/// Returns the param index and the value's carrier sort.
+pub(crate) fn carrier_param_receiver_for_values(
     kb: &KnowledgeBase,
     params: &[(Symbol, Value)],
     spec_sort: Symbol,
-) -> Option<usize> {
+    carrier_of: &dyn Fn(usize) -> Option<Symbol>,
+) -> Option<(usize, Symbol)> {
     let spec_params = sort_type_params_as_pairs(kb, spec_sort);
     if spec_params.is_empty() {
         return None;
     }
-    params.iter().position(|(_, pty)| {
-        declared_type_param_vid(kb, pty).is_some_and(|pvid| {
-            spec_params.iter().any(|(_, t)| {
-                matches!(kb.get_term(*t), Term::Var(Var::Global(v)) if *v == pvid)
-            })
-        })
-    })
+    for (i, (_, pty)) in params.iter().enumerate() {
+        let Some(pvid) = declared_type_param_vid(kb, pty) else { continue };
+        if !spec_params.iter().any(|(_, t)| {
+            matches!(kb.get_term(*t), Term::Var(Var::Global(v)) if *v == pvid)
+        }) {
+            continue;
+        }
+        let Some(carrier_sym) = carrier_of(i) else { continue };
+        if provision_binds_param_to_carrier(kb, spec_sort, pvid, carrier_sym).is_some() {
+            return Some((i, carrier_sym));
+        }
+    }
+    None
 }
 
 /// WI-365 — the parametric sort a self-receiver op belongs to, whether or not
@@ -7361,10 +7393,11 @@ fn bind_spec_params_from_carrier(
 /// A param classifies when: its declared type IS one of the spec's own
 /// type-param vars; its argument's inferred type names a sort that PROVIDES the
 /// spec; and the provision binds THAT spec param to an application of the
-/// carrier itself (`provides Iterable[C = List[T], …]` binds `C ↦ List[T]`,
-/// base = the carrier — distinguishing the carrier param from an element-like
-/// param). First match wins. Returns `(spec sort, carrier sort, receiver's
-/// inferred type)`.
+/// carrier itself ([`provision_binds_param_to_carrier`] — distinguishing the
+/// carrier param from an element-like param). First match wins. Returns
+/// `(spec sort, carrier sort, receiver's inferred type, the provision's view
+/// bindings)` — the view rides along so the binder does not re-scan the
+/// provider facts.
 fn carrier_param_receiver(
     kb: &KnowledgeBase,
     op: &OperationInfoFull,
@@ -7372,10 +7405,8 @@ fn carrier_param_receiver(
     named_args: &[(Symbol, Rc<NodeOccurrence>)],
     pos_results: &[Result<TypeResult, TypeError>],
     named_results: &[Result<TypeResult, TypeError>],
-) -> Option<(Symbol, Symbol, TermId)> {
-    let op_qn = kb.qualified_name_of(fn_sym);
-    let (parent_qn, _short) = op_qn.rsplit_once('.')?;
-    let spec_sort = kb.try_resolve_symbol(parent_qn)?;
+) -> Option<(Symbol, Symbol, TermId, SmallVec<[(Symbol, TermId); 2]>)> {
+    let spec_sort = impl_parent_of_op(kb, fn_sym)?;
     let spec_params = sort_type_params_as_pairs(kb, spec_sort);
     if spec_params.is_empty() {
         return None;
@@ -7401,22 +7432,11 @@ fn carrier_param_receiver(
             });
         let Some(recv_ty) = recv_ty else { continue };
         let Some(carrier_sym) = sort_functor_of(kb, recv_ty) else { continue };
-        let Some(view) = provider_spec_view_bindings(kb, carrier_sym, spec_sort) else {
+        let Some(view) = provision_binds_param_to_carrier(kb, spec_sort, pvid, carrier_sym)
+        else {
             continue;
         };
-        let carrier_canon = kb.canonical_sort_sym(carrier_sym);
-        // The binding value rides a `SortView(List[T], …)` wrapper — unwrap to
-        // its base sort via the same reader the provider machinery uses.
-        let is_carrier_param = view.iter().any(|(sp_sym, sp_val)| {
-            type_param_vid_in_sort(kb, spec_sort, *sp_sym) == Some(pvid)
-                && super::load::provides_spec_base_sym(kb, *sp_val)
-                    .map(|b| kb.canonical_sort_sym(b))
-                    == Some(carrier_canon)
-        });
-        if !is_carrier_param {
-            continue;
-        }
-        return Some((spec_sort, carrier_sym, recv_ty));
+        return Some((spec_sort, carrier_sym, recv_ty, view));
     }
     None
 }
@@ -7437,13 +7457,10 @@ fn bind_spec_params_from_carrier_param(
     kb: &mut KnowledgeBase,
     subst: &mut Substitution,
     spec_sort: Symbol,
-    carrier_sym: Symbol,
     recv_ty: TermId,
+    view_bindings: SmallVec<[(Symbol, TermId); 2]>,
 ) -> bool {
     let recv_bindings = parameterized_short_bindings(kb, recv_ty);
-    let Some(view_bindings) = provider_spec_view_bindings(kb, carrier_sym, spec_sort) else {
-        return false;
-    };
     let mut any = false;
     for (spec_param_sym, carrier_value) in view_bindings {
         let concrete: Option<TermId> = match typaram_ref_short_name(kb, carrier_value) {
@@ -9488,10 +9505,16 @@ fn build_pattern_subst(
 /// term is the loader-cached canonical param var (`resolve_sort_alias` of the
 /// qualified param name); a param whose alias is not a plain `Global` var
 /// (a constrained / structured param) is skipped. Empty for a non-sort or
-/// non-parametric `sort_sym`.
-fn sort_type_params_as_pairs(kb: &KnowledgeBase, sort_sym: Symbol) -> Vec<(Symbol, TermId)> {
+/// non-parametric `sort_sym`. Memoized on `kb.sort_param_pairs_cache` — the
+/// uncached computation walks the symbol table per call, and this is consulted
+/// per apply call site (receiver classification) and per eval dispatch.
+fn sort_type_params_as_pairs(kb: &KnowledgeBase, sort_sym: Symbol) -> Rc<Vec<(Symbol, TermId)>> {
+    if let Some(cached) = kb.sort_param_pairs_cache.borrow().get(&sort_sym) {
+        return cached.clone();
+    }
     let qn = kb.qualified_name_of(sort_sym).to_string();
-    kb.type_params_of_sort(sort_sym)
+    let pairs: Vec<(Symbol, TermId)> = kb
+        .type_params_of_sort(sort_sym)
         .iter()
         .filter_map(|name| {
             let qualified_sym = kb.try_resolve_symbol(&format!("{qn}.{name}"))?;
@@ -9499,7 +9522,10 @@ fn sort_type_params_as_pairs(kb: &KnowledgeBase, sort_sym: Symbol) -> Vec<(Symbo
             matches!(kb.get_term(target), Term::Var(Var::Global(_)))
                 .then_some((qualified_sym, target))
         })
-        .collect()
+        .collect();
+    let rc = Rc::new(pairs);
+    kb.sort_param_pairs_cache.borrow_mut().insert(sort_sym, rc.clone());
+    rc
 }
 
 fn type_param_vid_in_sort(
@@ -13949,7 +13975,7 @@ fn check_operation_bodies(kb: &mut KnowledgeBase, op_syms: &[Symbol], errors: &m
         /// WI-424 — the enclosing sort's param canonical vars → their per-body
         /// rigids; installed on the body env so same-sort sibling calls seed
         /// their substitution with the enclosing instance's params.
-        sort_param_rigids: Vec<(VarId, TermId)>,
+        sort_param_rigids: Rc<Vec<(VarId, TermId)>>,
     }
 
     let mut ops_to_check = Vec::new();
@@ -13999,11 +14025,7 @@ fn check_operation_bodies(kb: &mut KnowledgeBase, op_syms: &[Symbol], errors: &m
         // `Stream.find`'s `[Elem, Eff]` and to the declared-effects check. The
         // (vid → rigid) map rides `OpInfo` onto the body env for the same-sort
         // sibling-call seeding in `check_apply_iter`.
-        let parent_sort_params: Vec<(Symbol, TermId)> = kb
-            .qualified_name_of(rec.op_sym)
-            .rsplit_once('.')
-            .map(|(parent_qn, _)| parent_qn.to_string())
-            .and_then(|parent_qn| kb.try_resolve_symbol(&parent_qn))
+        let parent_sort_params: Rc<Vec<(Symbol, TermId)>> = impl_parent_of_op(kb, rec.op_sym)
             .map(|p| sort_type_params_as_pairs(kb, p))
             .unwrap_or_default();
         let mut sort_param_rigids: Vec<(VarId, TermId)> = Vec::new();
@@ -14015,7 +14037,7 @@ fn check_operation_bodies(kb: &mut KnowledgeBase, op_syms: &[Symbol], errors: &m
             let mut all_params = rec.type_params.clone();
             all_params.extend(parent_sort_params.iter().cloned());
             let rigidify = rigidify_op_type_params(kb, &all_params);
-            for (_, var_tid) in &parent_sort_params {
+            for (_, var_tid) in parent_sort_params.iter() {
                 if let Term::Var(Var::Global(vid)) = kb.get_term(*var_tid) {
                     let vid = *vid;
                     if let Some(rigid) = rigidify.resolve_as_value(vid).and_then(|v| v.as_term()) {
@@ -14043,7 +14065,7 @@ fn check_operation_bodies(kb: &mut KnowledgeBase, op_syms: &[Symbol], errors: &m
             body_node,
             params,
             span,
-            sort_param_rigids,
+            sort_param_rigids: Rc::new(sort_param_rigids),
         });
     }
 
@@ -14062,8 +14084,8 @@ fn check_operation_bodies(kb: &mut KnowledgeBase, op_syms: &[Symbol], errors: &m
             .and_then(|(parent_qn, _)| kb.try_resolve_symbol(parent_qn));
         env.set_enclosing_sort(kb, parent_sym);
         // WI-424: same-sort sibling calls seed their substitution with the
-        // enclosing sort's rigids (see the OpInfo field doc).
-        env.set_enclosing_sort_param_rigids(op.sort_param_rigids.clone());
+        // enclosing sort's rigids (see the OpInfo field doc; Rc clone).
+        env.set_enclosing_sort_param_rigids(Rc::clone(&op.sort_param_rigids));
         // WI-400 (body-site): a projection param type (`k: s.cell.T`) must be discharged
         // against the OTHER params' DECLARED types before it is bound into the body env —
         // the body-check peer of the call-site elimination (`check_apply_iter` / WI-398,

@@ -391,6 +391,15 @@ pub struct KnowledgeBase {
     // collision-disambiguation HashMap on every frame push.
     pub(crate) synth_req_names_cache: RefCell<HashMap<Symbol, Rc<Vec<Symbol>>>>,
 
+    // WI-424 — memoized `(param symbol, canonical Var term)` pairs per
+    // parametric sort (`typing::sort_type_params_as_pairs`). Consulted on hot
+    // paths (per apply call site in the typer's receiver classification, per
+    // value-directed dispatch at eval); the uncached computation walks the
+    // whole symbol table + per-param SortAlias scans. A sort's params and
+    // their alias facts are fixed at scan/load time, so entries never go
+    // stale within a session.
+    pub(crate) sort_param_pairs_cache: RefCell<HashMap<Symbol, Rc<Vec<(Symbol, TermId)>>>>,
+
     // WI-226 Cache B — memoized spec-op SLD dispatch results, keyed by
     // `(SortGoal, scope)`. Saves re-walking `SortProvidesInfo` for
     // repeated spec-op calls at the same (spec, bindings, scope) — common
@@ -452,6 +461,7 @@ impl KnowledgeBase {
             requires_chain_cache: RefCell::new(HashMap::new()),
             requires_tree_cache: RefCell::new(HashMap::new()),
             synth_req_names_cache: RefCell::new(HashMap::new()),
+            sort_param_pairs_cache: RefCell::new(HashMap::new()),
             resolve_cache: RefCell::new(HashMap::new()),
             sort_ops: SortOpsTable::default(),
         }
