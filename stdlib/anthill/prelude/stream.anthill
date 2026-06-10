@@ -66,12 +66,11 @@ sort anthill.prelude.Stream
   -- Stream trivially provides Iterable (proposal library/002, "Relationship to
   -- Stream"): a Stream IS its own iterator, so `iterator(s) = s`. This gives
   -- every Stream carrier the shared read interface for free. `Element` rides as
-  -- Stream's own `T`; the access effect `E` is an effect-row type argument
-  -- (proposal 045 §2), left unbound in this provision and grounded at the
-  -- consumption boundary by expansion during unification (kernel-language §8.1):
-  -- the produced Stream's fresh `E` unifies to the carrier's effect ({} for a
-  -- pure carrier), exactly as List's provision is (list.anthill).
-  fact Iterable[C = Stream, Element = T]
+  -- Stream's own `T`, and the access effect rides as Stream's own `E` (WI-424:
+  -- written into the provision via `provides`, the type-aware path, so an
+  -- `Iterable.find/map` over a Stream threads the observation effect instead of
+  -- leaking a fresh `?_`).
+  provides Iterable[C = Stream, Element = T, E = E]
   operation iterator(s: Stream) -> Stream = s
 
   -- Laws (derived from splitFirst)

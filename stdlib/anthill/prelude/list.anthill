@@ -72,7 +72,11 @@ enum anthill.prelude.List
   -- unresolved). `iterator` then writes both the threaded element `[Elem]` and
   -- the pure effect, so `Stream[T = Elem, E = {}]` is fully in the type.
   provides Stream[T, {}]
-  fact Iterable[List[T], T]
+  -- WI-424: the Iterable provision also WRITES the observation effect `E = {}`
+  -- (same WI-387 reasoning as the Stream provision above — `provides`, not
+  -- `fact`, so the row literal lowers through the type-aware path), letting a
+  -- concrete `Iterable.find/map` call site ground `E` instead of leaking `?_`.
+  provides Iterable[C = List[T], Element = T, E = {}]
   operation iterator[Elem](l: List[Elem]) -> Stream[Elem, {}] = l
 
   -- Stream primitive: peel the head and return the tail (itself a List, hence

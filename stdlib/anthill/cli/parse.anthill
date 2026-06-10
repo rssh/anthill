@@ -7,7 +7,7 @@ namespace anthill.cli.parse
   import anthill.prelude.List.{nil, cons}
   import anthill.prelude.Eq.{eq}
   import anthill.prelude.Bool.{and, not}
-  import anthill.prelude.Stream.{find}
+  import anthill.prelude.Iterable.{find}
   import anthill.prelude.String.{startsWith, substring, length}
   import anthill.cli.spec.{OperationSpec, ParamSpec, ParamKind}
   import anthill.cli.spec.ParamKind.{positional, flag, repeated, bool_flag}
@@ -83,12 +83,14 @@ namespace anthill.cli.parse
 
   -- helpers --
   --
-  -- The recursive list SEARCHES below use the stdlib `find` combinator (WI-064).
-  -- A `List` is admissible as `find`'s `Stream` receiver (List provides Stream).
+  -- The recursive list SEARCHES below use the stdlib `find` combinator —
+  -- since WI-424 the GENERAL `Iterable.find` member (a List provides Iterable;
+  -- the member derives via `iterator(c)` and delegates to the `Stream.find`
+  -- engine), so the same import serves any future non-Stream carrier.
   -- The predicate is an INLINE lambda closing over the runtime target
-  -- (`name`/`acc`); the element type is pinned by the concrete receiver, so the
-  -- lambda parameter and its `Bool` result typecheck via WI-275 bidirectional
-  -- HOF-arg inference.
+  -- (`name`/`acc`); the element type is pinned by the concrete receiver's
+  -- Iterable provision, so the lambda parameter and its `Bool` result
+  -- typecheck via WI-275 bidirectional HOF-arg inference.
   -- (The argv walk `parse_args` stays direct recursion: it is a lookahead state
   -- machine — a flag consumes the NEXT argv element — not a per-element fold.)
 

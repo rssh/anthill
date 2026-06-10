@@ -481,14 +481,21 @@ impl Interpreter {
         spec_op: Symbol,
         arg_values: &[Value],
     ) -> Option<Symbol> {
-        use crate::kb::typing::{lookup_spec_op_dispatch, self_receiver_param_index};
+        use crate::kb::typing::{
+            carrier_param_receiver_index, lookup_spec_op_dispatch, self_receiver_param_index,
+        };
         let spec_sort = lookup_spec_op_dispatch(&self.kb, spec_op)?;
         let rec = crate::kb::op_info::lookup_operation_info(&self.kb, spec_op)?;
         // Same self-receiver classification the typer's `receiver_carrier`
         // uses, so the two never disagree about which argument names the
         // carrier. `arg_values` is in callee-parameter order here (the typer
         // reorders named args), so the declaration index reads the receiver.
-        let idx = self_receiver_param_index(&self.kb, &rec.params, spec_sort)?;
+        // WI-424: a spec may name its carrier through its own type-param
+        // (`Iterable.iterator(c: C)`) instead of the spec sort — fall back to
+        // the carrier-param receiver so the runtime value's carrier still
+        // selects the impl (`iterator` on a `List` value → `List.iterator`).
+        let idx = self_receiver_param_index(&self.kb, &rec.params, spec_sort)
+            .or_else(|| carrier_param_receiver_index(&self.kb, &rec.params, spec_sort))?;
         let functor = value_functor(&self.kb, arg_values.get(idx)?)?;
         let parent_tid = self.kb.constructor_parent_sort(functor)?;
         let carrier = match self.kb.get_term(parent_tid) {

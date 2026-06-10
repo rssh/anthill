@@ -10,11 +10,25 @@
 -- the produced Stream and is paid on consumption, so `iterator` itself
 -- carries no effect (cf. MapReadable.entries in 001-map).
 sort anthill.prelude.Iterable
-  import anthill.prelude.Stream
+  import anthill.prelude.{Stream, Option, Bool, Function}
+  import anthill.prelude.MappedStream.{mapped}
 
   sort C = ?                          -- carrier (the collection)
   sort Element = ?
   effects E = ?                       -- iteration/access effect; rides on the produced Stream
 
   operation iterator(c: C) -> Stream[Element, E]
+
+  -- General combinators (WI-424): every Iterable carrier gets these by deriving
+  -- via `iterator(c)`; `Stream.find` stays the direct engine (it recurses on
+  -- `splitFirst`). The inner calls MUST be qualified / the foreign constructor:
+  -- an unqualified `find(...)` here would self-dispatch back to Iterable.find
+  -- (the WI-411 short-name hazard), not value-dispatch on the produced Stream.
+  operation find(c: C, pred: Function[A = Element, B = Bool, E = E]) -> Option[T = Element] effects E =
+    Stream.find(iterator(c), pred)
+
+  -- map PRODUCES a stream, so it returns the lazy `mapped` carrier over the
+  -- iterator (admissible as a Stream — MappedStream provides Stream).
+  operation map[Dst](c: C, f: Function[A = Element, B = Dst, E = E]) -> Stream[T = Dst, E = E] =
+    mapped(iterator(c), f)
 end
