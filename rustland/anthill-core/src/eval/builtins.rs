@@ -709,6 +709,19 @@ fn extract_type_builtin(interp: &mut Interpreter, args: &[Value]) -> Result<Valu
             let member_val = sym_ref(interp, member);
             ti_entity(interp, "ExprCarried", vec![(value_key, value), (member_key, member_val)])
         }
+        // WI-428: reify a rigid type-receiver projection — the declaring sort and the
+        // member name as `Ref(sym)`s, the subject type term as-is.
+        TypeExtractor::RigidTypeProjection { sort, subject, member } => {
+            let sort_key = interp.kb.intern("sort");
+            let var_key = interp.kb.intern("var");
+            let sort_val = sym_ref(interp, sort);
+            let member_val = sym_ref(interp, member);
+            ti_entity(
+                interp,
+                "RigidTypeProjection",
+                vec![(sort_key, sort_val), (var_key, subject), (member_key, member_val)],
+            )
+        }
         TypeExtractor::Arrow { param, result, effects } => ti_entity(
             interp,
             "Arrow",

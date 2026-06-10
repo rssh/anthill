@@ -1196,6 +1196,17 @@ pub fn type_display_name(kb: &KnowledgeBase, ty: TermId) -> String {
                         .unwrap_or_else(|| "?".to_string());
                     format!("{v}.{m}")
                 }
+                // WI-428: a rigid type-receiver projection — render `subject.member`
+                // (`P.Key` / `MemStore.Key`), mirroring the `ExprCarried` arm.
+                "RigidTypeProjection" => {
+                    let v = get_named_arg(kb, named_args, "var")
+                        .map(|t| type_display_name(kb, t))
+                        .unwrap_or_else(|| "?".to_string());
+                    let m = get_named_arg(kb, named_args, "member")
+                        .map(|t| type_display_name(kb, t))
+                        .unwrap_or_else(|| "?".to_string());
+                    format!("{v}.{m}")
+                }
                 "Denoted" => {
                     // WI-302: value-in-type — render the carried value directly
                     // (`Modify[c]` shows `c`, not `denoted[value = c]`).
@@ -8693,7 +8704,7 @@ pub(crate) fn extract_type_param<V: TermView>(kb: &KnowledgeBase, ty: &V, param:
 /// than a silent leak.
 fn value_contains_projection(kb: &KnowledgeBase, ty: &Value) -> bool {
     match extract_type(kb, ty) {
-        TypeExtractor::ExprCarried { .. } => true,
+        TypeExtractor::ExprCarried { .. } | TypeExtractor::RigidTypeProjection { .. } => true,
         TypeExtractor::Parameterized { bindings, .. } => {
             bindings.iter().any(|(_, v)| value_contains_projection(kb, v))
         }
@@ -8869,7 +8880,10 @@ fn collect_projection_receivers(kb: &KnowledgeBase, ty: &Value, out: &mut Vec<Sy
             }
         }
         TypeExtractor::EffectsRows(e) => collect_projection_receivers(kb, &e, out),
-        TypeExtractor::Denoted(_)
+        // WI-428: a rigid type-receiver projection has a TYPE subject, not a value
+        // parameter — it contributes no cross-parameter dependency edge.
+        TypeExtractor::RigidTypeProjection { .. }
+        | TypeExtractor::Denoted(_)
         | TypeExtractor::SortRef(_)
         | TypeExtractor::TypeVar(_)
         | TypeExtractor::Nothing
@@ -9144,6 +9158,23 @@ fn rewrite_term_projections(
     ctx: &TypeErrorContext,
     span: Option<Span>,
 ) -> Result<TermId, TypeError> {
+    // WI-428: a rigid type-receiver projection (`P.Key` / `MemStore.Key`) — validated
+    // and δ-grounded (or kept as the rigid neutral) against the declaring sort's
+    // `requires` chain / the subject's own manifest bindings; no `arg_types` receiver
+    // lookup (the subject is a TYPE, not a value parameter).
+    if matches!(type_head(kb, &TermIdView(t)), TypeHead::RigidProjection) {
+        let TypeExtractor::RigidTypeProjection { sort, subject, member } =
+            extract_type(kb, &TermIdView(t))
+        else {
+            return Ok(t);
+        };
+        return match resolve_rigid_projection(kb, sort, &subject, member, ctx, span)? {
+            ProjResult::Grounded(Value::Term(pt)) => Ok(pt),
+            ProjResult::Grounded(_) => Err(projection_type_error(ctx, span,
+                "type projection resolved to a non-term carrier, which is not yet supported")),
+            ProjResult::Neutral => Ok(t),
+        };
+    }
     if matches!(type_head(kb, &TermIdView(t)), TypeHead::ExprCarried) {
         let TypeExtractor::ExprCarried { value, member } = extract_type(kb, &TermIdView(t)) else {
             return Ok(t);
@@ -9405,6 +9436,253 @@ fn project_via_provided_spec(
         });
     }
     None
+}
+
+/// WI-428: resolve a RIGID type-receiver projection (`P.Key` / `MemStore.Key`) at an
+/// elimination site — the formation-validation rules of design §5.3, run in the typer
+/// (where the `requires` chain is complete regardless of source order), not the loader
+/// (which only classifies).
+///
+///   - **Concrete / bare sort subject** (`sort == subject`, e.g. `MemStore.Key`): must
+///     δ-ground fully via [`project_type_member`] (a manifest binding, an alias shape,
+///     or a provided spec's binding). A declared-but-unbound member (`Storage.Key` —
+///     the spec sort itself) is the `T#K` carrier-conflation and is LOUDLY rejected:
+///     a type-keyed neutral over a bare spec would equate the members of two distinct
+///     carriers.
+///   - **Rigid type-parameter subject** (`P.Key`): carrier-precise bound lookup — the
+///     candidates are the `requires` entries of the declaring sort that DECLARE the
+///     member AND MENTION the subject param among their binding values. No candidate →
+///     loud error; several → loud ambiguity error (so `(var, member)` determines the
+///     bound uniquely — the §5.3 deferred-equivalent identity); exactly one →
+///     δ-THROUGH-THE-BOUND when the entry binds the member (`requires Storage[C = P,
+///     Key = String]` ⟹ `P.Key = String`), else the projection stays the rigid NEUTRAL
+///     (compared by the ζ arm of [`expr_carried_zeta`]).
+fn resolve_rigid_projection(
+    kb: &mut KnowledgeBase,
+    decl_sort: Symbol,
+    subject: &Value,
+    member: Symbol,
+    ctx: &TypeErrorContext,
+    span: Option<Span>,
+) -> Result<ProjResult, TypeError> {
+    let member_str = kb.resolve_sym(member).to_owned();
+    let Value::Term(subject_term) = subject else {
+        return Err(projection_type_error(ctx, span,
+            "rigid type projection subject is not a sort / type-parameter reference"));
+    };
+    let key = subject_key_of_term(kb, *subject_term).ok_or_else(|| {
+        projection_type_error(ctx, span,
+            "rigid type projection subject is not a sort / type-parameter reference")
+    })?;
+    // Concrete / bare sort subject: keyed by the declaring-sort symbol itself (the
+    // loader's `sort slot == var slot` discriminator).
+    if let SubjectKey::Sym(subject_sym) = key {
+        if same_symbol(kb, subject_sym, decl_sort) {
+            let recv = Value::Term(kb.make_sort_ref(subject_sym));
+            return match project_type_member(kb, &recv, &member_str, None, ctx, span)? {
+                // Normalize a nullary-`Fn` ground leaf (the shape `provides` bindings
+                // store via `name_to_sort_term`) to the plain `Ref(s)` type shape.
+                ProjResult::Grounded(v) => Ok(ProjResult::Grounded(normalize_ground_leaf(kb, v))),
+                ProjResult::Neutral => {
+                    let sort_name = kb.qualified_name_of(subject_sym).to_owned();
+                    let short = kb.resolve_sym(subject_sym).to_owned();
+                    Err(projection_type_error(ctx, span, &format!(
+                        "'{short}.{member_str}' is not manifest: '{sort_name}' declares \
+                         '{member_str}' but does not bind it — a projection off the spec sort \
+                         itself would conflate distinct carriers; project off a value \
+                         (`s.{member_str}`) or a `requires`-bounded type parameter \
+                         (`P.{member_str}`)",
+                    )))
+                }
+            };
+        }
+    }
+    // Rigid type-parameter subject: carrier-precise bound lookup, keyed by the
+    // canonical SubjectKey (the param's alias-var id — stable across the param's
+    // symbol registrations and the deep walk's alias resolution / rigidification).
+    let chain = requires_chain(kb, decl_sort);
+    let mut candidates: Vec<&RequiresEntry> = Vec::new();
+    for e in &chain {
+        if kb.type_params_of_sort(e.required_sort).iter().any(|d| d.as_str() == member_str)
+            && spec_mentions_key(kb, e.spec, key)
+        {
+            candidates.push(e);
+        }
+    }
+    match candidates.as_slice() {
+        [] => Err(projection_type_error(ctx, span, &format!(
+            "no `requires` bound on '{}' mentioning '{}' declares a member '{member_str}'; \
+             cannot project '{}.{member_str}'",
+            kb.qualified_name_of(decl_sort).to_owned(),
+            type_display_name_value(kb, subject),
+            type_display_name_value(kb, subject),
+        ))),
+        [entry] => match spec_binding_value(kb, entry.spec, &member_str) {
+            // δ-through-the-bound. The stored application is AUTO-COMPLETED: an
+            // unwritten member's binding is a placeholder ref to the SPEC'S OWN param
+            // (`Key = Storage.Key`) — only THAT binding means "bound-open" (the rigid
+            // NEUTRAL). Any other leaf is a user-written binding and grounds: a
+            // concrete sort (`Key = String`), an opaque nominal (`Key = Token`), or a
+            // sibling param of the declaring sort (`Key = K` — grounds to `K`'s ref,
+            // resolved by the ordinary alias machinery downstream).
+            Some(v) => {
+                let binding_key = subject_key_of_term(kb, v);
+                let placeholder_key =
+                    spec_member_param_key(kb, entry.required_sort, &member_str);
+                let is_placeholder = match (binding_key, placeholder_key) {
+                    (Some(b), Some(p)) => subject_keys_equal(kb, b, p),
+                    // The spec's own param symbol is not identifiable: conservatively
+                    // treat a var-keyed leaf as the placeholder (sound — stays rigid).
+                    (Some(SubjectKey::Var(_)), None) => true,
+                    _ => false,
+                };
+                // A binding to ANOTHER param of the DECLARING sort (`Key = K`, the
+                // carrier `C = P` included) stays rigid too: cross-param δ needs the
+                // rigid-substitution coherence of the call/body world (increment B) —
+                // grounding to the sibling's bare ref here mis-compares against the
+                // rigidified forms the signature walk produces. Sound: at most
+                // over-rejection, never a wrong ground type.
+                let is_sibling_param = binding_key.is_some_and(|b| {
+                    kb.type_params_of_sort(decl_sort).iter().any(|p| {
+                        spec_member_param_key(kb, decl_sort, p)
+                            .is_some_and(|k| subject_keys_equal(kb, b, k))
+                    })
+                });
+                if is_placeholder || is_sibling_param {
+                    Ok(ProjResult::Neutral)
+                } else {
+                    match normalize_spec_binding_type(kb, v) {
+                        Some(ty) => Ok(ProjResult::Grounded(Value::Term(ty))),
+                        None => Err(projection_type_error(ctx, span, &format!(
+                            "'{}.{member_str}' is bound by its `requires` application to \
+                             a structured type; δ through a structured bound binding is \
+                             not yet supported",
+                            type_display_name_value(kb, subject),
+                        ))),
+                    }
+                }
+            }
+            // No binding slot at all: the projection is the rigid neutral.
+            None => Ok(ProjResult::Neutral),
+        },
+        _ => Err(projection_type_error(ctx, span, &format!(
+            "ambiguous projection '{}.{member_str}': several `requires` bounds on '{}' \
+             mentioning it declare '{member_str}'; multi-bound projection is not yet \
+             supported",
+            type_display_name_value(kb, subject),
+            kb.qualified_name_of(decl_sort).to_owned(),
+        ))),
+    }
+}
+
+/// WI-428: the [`SubjectKey`] of a spec's OWN member param (`Storage.Key`) — the
+/// identity the requires-tree's auto-completed placeholder binding carries for an
+/// unwritten member. `None` when the spec's param symbol is not registered under the
+/// expected qualified name.
+fn spec_member_param_key(
+    kb: &KnowledgeBase,
+    spec_sort: Symbol,
+    member: &str,
+) -> Option<SubjectKey> {
+    let qn = format!("{}.{member}", kb.qualified_name_of(spec_sort));
+    let sym = *kb.symbols.by_qualified_name.get(&qn)?;
+    Some(sym_subject_key(kb, sym))
+}
+
+/// WI-428: the canonical identity KEY of a rigid-projection subject / a
+/// `requires`-binding leaf. A type-parameter (`sort P = ?`) is keyed by its ALIAS-VAR
+/// id: the deep walks resolve a param `Ref` into that var (possibly rigidified by
+/// WI-392/424), and the `requires` bindings may name a different symbol registration
+/// of the same param — the var id is the one identity all spellings share. A
+/// non-alias sort is keyed by its symbol (compared via [`same_symbol`]).
+#[derive(Clone, Copy)]
+enum SubjectKey {
+    Var(u32),
+    Sym(Symbol),
+}
+
+fn subject_key_of_term(kb: &KnowledgeBase, t: TermId) -> Option<SubjectKey> {
+    match kb.get_term(t) {
+        Term::Var(Var::Global(v) | Var::Rigid(v)) => Some(SubjectKey::Var(v.raw())),
+        _ => spec_binding_head_sym(kb, t).map(|s| sym_subject_key(kb, s)),
+    }
+}
+
+fn sym_subject_key(kb: &KnowledgeBase, s: Symbol) -> SubjectKey {
+    if let Some(target) = resolve_sort_alias(kb, s) {
+        if let Term::Var(Var::Global(v) | Var::Rigid(v)) = kb.get_term(target) {
+            return SubjectKey::Var(v.raw());
+        }
+    }
+    SubjectKey::Sym(s)
+}
+
+fn subject_keys_equal(kb: &KnowledgeBase, a: SubjectKey, b: SubjectKey) -> bool {
+    match (a, b) {
+        (SubjectKey::Var(x), SubjectKey::Var(y)) => x == y,
+        (SubjectKey::Sym(x), SubjectKey::Sym(y)) => same_symbol(kb, x, y),
+        _ => false,
+    }
+}
+
+/// WI-428: does a `requires` spec application mention the subject KEY among its
+/// TOP-LEVEL binding values (`requires Storage[C = P]` mentions `P`)? Nested mentions
+/// (`Storage[C = List[P]]`) are not yet read — the candidate filter is conservative
+/// (an unmentioned subject surfaces the loud no-bound error, never a silent pick).
+fn spec_mentions_key(kb: &KnowledgeBase, spec: TermId, key: SubjectKey) -> bool {
+    let Term::Fn { named_args, .. } = kb.get_term(spec) else { return false };
+    named_args.iter().any(|(_, v)| {
+        subject_key_of_term(kb, *v).is_some_and(|k| subject_keys_equal(kb, k, key))
+    })
+}
+
+/// WI-428: normalize a ground LEAF value (a nullary `Fn{s}` / deep `sort_ref` — the
+/// shapes `provides` / spec bindings store via `name_to_sort_term`) to the plain
+/// `Ref(s)` type shape via [`normalize_spec_binding_type`]; a non-leaf (a real
+/// parameterized type) passes through unchanged.
+fn normalize_ground_leaf(kb: &mut KnowledgeBase, v: Value) -> Value {
+    match &v {
+        Value::Term(t) => match normalize_spec_binding_type(kb, *t) {
+            Some(n) => Value::Term(n),
+            None => v,
+        },
+        _ => v,
+    }
+}
+
+/// The head symbol of a `requires`-application binding VALUE leaf, across the shapes
+/// the loader stores: `Ref(s)` (a type-param binding, `make_sort_ref`), a NULLARY
+/// `Fn{s}` (a plain sort name via `name_to_sort_term`), or the deep
+/// `sort_ref(name: Ref(s))`. A structured binding (a nested application) is not a
+/// leaf → `None`.
+fn spec_binding_head_sym(kb: &KnowledgeBase, v: TermId) -> Option<Symbol> {
+    match kb.get_term(v) {
+        Term::Ref(s) => Some(*s),
+        Term::Fn { functor, pos_args, named_args }
+            if pos_args.is_empty() && named_args.is_empty() =>
+        {
+            Some(*functor)
+        }
+        _ => extract_sort_ref_sym(kb, &TermIdView(v)),
+    }
+}
+
+/// The binding VALUE a `requires` application carries for `member`, when bound
+/// (`requires Storage[C = P, Key = String]` binds `Key`).
+fn spec_binding_value(kb: &KnowledgeBase, spec: TermId, member: &str) -> Option<TermId> {
+    let Term::Fn { named_args, .. } = kb.get_term(spec) else { return None };
+    named_args.iter().find(|(p, _)| kb.resolve_sym(*p) == member).map(|(_, v)| *v)
+}
+
+/// Normalize a `requires`-binding value LEAF to the plain TYPE shape (`Ref(s)`). A
+/// structured binding has no plain normalization yet → `None` (the caller surfaces a
+/// loud not-yet-supported error, never a silently wrong shape).
+fn normalize_spec_binding_type(kb: &mut KnowledgeBase, v: TermId) -> Option<TermId> {
+    let s = spec_binding_head_sym(kb, v)?;
+    if matches!(kb.get_term(v), Term::Ref(_)) {
+        return Some(v);
+    }
+    Some(kb.alloc(Term::Ref(s)))
 }
 
 /// WI-376: the base sort symbols of every spec a sort PROVIDES (`fact Spec[…]` /
@@ -9734,18 +10012,49 @@ use super::subst::Substitution;
 ///
 /// Design: path-dependent-types.md §4 (ζ/δ/η), §4.1.
 fn expr_carried_zeta<A: TermView, B: TermView>(kb: &KnowledgeBase, a: &A, b: &B) -> Option<bool> {
-    let a_neutral = matches!(type_head(kb, a), TypeHead::ExprCarried);
-    let b_neutral = matches!(type_head(kb, b), TypeHead::ExprCarried);
+    // WI-428: a `RigidTypeProjection` (`P.Key`, the type-keyed neutral) is the second
+    // neutral kind, treated exactly like `ExprCarried` at the relation boundary: two
+    // rigid projections are equal iff same member off the same subject under the same
+    // declaring sort (a structural CHECK — non-injective, never decomposed into a
+    // subject unification); a neutral never equals a concrete type; the two neutral
+    // KINDS never equal each other (an expression-keyed and a type-keyed neutral have
+    // no conversion in the base scope — δ-normalization across kinds is the recorded
+    // §5.3 convergence).
+    let a_neutral = matches!(type_head(kb, a), TypeHead::ExprCarried | TypeHead::RigidProjection);
+    let b_neutral = matches!(type_head(kb, b), TypeHead::ExprCarried | TypeHead::RigidProjection);
     if !a_neutral && !b_neutral {
         return None;
     }
     if a_neutral && b_neutral {
-        if let (
-            TypeExtractor::ExprCarried { value: va, member: ma },
-            TypeExtractor::ExprCarried { value: vb, member: mb },
-        ) = (extract_type(kb, a), extract_type(kb, b))
-        {
-            return Some(same_symbol(kb, ma, mb) && va.structural_eq(&vb));
+        match (extract_type(kb, a), extract_type(kb, b)) {
+            (
+                TypeExtractor::ExprCarried { value: va, member: ma },
+                TypeExtractor::ExprCarried { value: vb, member: mb },
+            ) => {
+                return Some(same_symbol(kb, ma, mb) && va.structural_eq(&vb));
+            }
+            (
+                TypeExtractor::RigidTypeProjection { sort: sa, subject: va, member: ma },
+                TypeExtractor::RigidTypeProjection { sort: sb, subject: vb, member: mb },
+            ) => {
+                // Subject identity via [`SubjectKey`] (the param's alias-var id), NOT
+                // raw term identity: two occurrences of one projection may carry Refs
+                // to DIFFERENT symbol registrations of the same param (the inner
+                // self-named `ns.W.P.P` vs the outer `ns.W.P`).
+                let subjects_eq = match (&va, &vb) {
+                    (Value::Term(ta), Value::Term(tb)) => {
+                        match (subject_key_of_term(kb, *ta), subject_key_of_term(kb, *tb)) {
+                            (Some(ka), Some(kb2)) => subject_keys_equal(kb, ka, kb2),
+                            _ => va.structural_eq(&vb),
+                        }
+                    }
+                    _ => va.structural_eq(&vb),
+                };
+                return Some(
+                    same_symbol(kb, ma, mb) && same_symbol(kb, sa, sb) && subjects_eq,
+                );
+            }
+            _ => return Some(false),
         }
     }
     Some(false)
@@ -10451,6 +10760,16 @@ fn walk_type_deep(kb: &mut KnowledgeBase, subst: &Substitution, ty: TermId) -> T
     let resolved = walk_type(kb, subst, ty);
     match kb.get_term(resolved) {
         Term::Fn { .. } => {
+            // WI-428: a rigid type-receiver projection is OPAQUE to the deep walk —
+            // its `var` child is an IDENTITY slot (the projection subject), not a
+            // unification position; substituting through it (e.g. the WI-392/424
+            // body-site rigidify map resolving a param `Ref` into a fresh rigid var)
+            // would erase the subject identity the eliminator's carrier-precise
+            // `requires` lookup keys on. `resolve_rigid_projection` is the sole
+            // reader of the projection's children.
+            if matches!(type_head(kb, &TermIdView(resolved)), TypeHead::RigidProjection) {
+                return resolved;
+            }
             kb.map_fn_children(resolved, |kb, child| walk_type_deep(kb, subst, child))
         }
         _ => resolved,
@@ -12994,6 +13313,13 @@ pub enum TypeExtractor {
     /// sibling of [`TypeExtractor::Denoted`]; eliminated at the unify boundary by
     /// projecting the receiver's synthesized type (a `Denoted` value-in-type stays).
     ExprCarried { value: Value, member: Symbol },
+    /// WI-428: a RIGID type-receiver projection `P.Key` / `MemStore.Key` — the
+    /// type-keyed sibling of [`TypeExtractor::ExprCarried`] (design §5.3). `subject`
+    /// is the projection's receiver type term (`Ref(P)` for a rigid type-parameter,
+    /// `Ref(S)` for a concrete sort); `sort` is the sort whose `requires` chain lends
+    /// the subject its members (= the subject's own symbol for a concrete-sort
+    /// subject); `member` the projected member name.
+    RigidTypeProjection { sort: Symbol, subject: Value, member: Symbol },
     /// An effect row in type position — `effects_rows(expr: EffectExpression)`.
     EffectsRows(Value),
     /// A named tuple type — `named_tuple(fields)`; `(name, field-type)` pairs.
@@ -13027,6 +13353,8 @@ enum TypeHead {
     Arrow,
     Denoted,
     ExprCarried,
+    /// WI-428: a rigid type-receiver projection (`P.Key` / `MemStore.Key`).
+    RigidProjection,
     EffectsRows,
     NamedTuple,
     Nothing,
@@ -13050,6 +13378,7 @@ fn type_head<V: TermView>(kb: &KnowledgeBase, ty: &V) -> TypeHead {
                 "anthill.prelude.TypeExtractor.Nothing" => TypeHead::Nothing,
                 "anthill.prelude.TypeExtractor.Denoted" => TypeHead::Denoted,
                 "anthill.prelude.TypeExtractor.ExprCarried" => TypeHead::ExprCarried,
+                "anthill.prelude.TypeExtractor.RigidTypeProjection" => TypeHead::RigidProjection,
                 "anthill.prelude.TypeExtractor.EffectsRows" => TypeHead::EffectsRows,
                 "anthill.prelude.TypeExtractor.Arrow" => TypeHead::Arrow,
                 "anthill.prelude.TypeExtractor.NamedTuple" => TypeHead::NamedTuple,
@@ -13091,6 +13420,7 @@ fn type_dispatch_name_view<V: TermView>(kb: &KnowledgeBase, ty: &V) -> Option<&'
         TypeHead::Arrow => Some("arrow"),
         TypeHead::Denoted => Some("denoted"),
         TypeHead::ExprCarried => Some("expr_carried"),
+        TypeHead::RigidProjection => Some("rigid_type_projection"),
         TypeHead::EffectsRows => Some("effects_rows"),
         TypeHead::NamedTuple => Some("named_tuple"),
         TypeHead::Nothing => Some("nothing"),
@@ -13120,6 +13450,19 @@ pub fn extract_type<V: TermView>(kb: &KnowledgeBase, ty: &V) -> TypeExtractor {
             view_child_sym(kb, ty, "member"),
         ) {
             (Some(value), Some(member)) => TypeExtractor::ExprCarried { value, member },
+            _ => TypeExtractor::Error,
+        },
+        // WI-428: a rigid type-receiver projection — declaring sort (`sort`), the
+        // subject type term (`var`), and the member name; all `Ref(sym)` ground
+        // children except the subject, which rides as a value for uniform reading.
+        TypeHead::RigidProjection => match (
+            view_child_sym(kb, ty, "sort"),
+            view_child_value(kb, ty, "var"),
+            view_child_sym(kb, ty, "member"),
+        ) {
+            (Some(sort), Some(subject), Some(member)) => {
+                TypeExtractor::RigidTypeProjection { sort, subject, member }
+            }
             _ => TypeExtractor::Error,
         },
         TypeHead::EffectsRows => match view_child_value(kb, ty, "effects_expr") {

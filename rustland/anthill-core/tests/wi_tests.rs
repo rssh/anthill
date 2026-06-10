@@ -214,6 +214,9 @@ mod wi400_body_projection_test;
 #[path = "include/wi401_escape_free_return_test.rs"]
 mod wi401_escape_free_return_test;
 
+#[path = "include/wi428_rigid_projection_test.rs"]
+mod wi428_rigid_projection_test;
+
 #[path = "include/wi427_bidirectional_flow_test.rs"]
 mod wi427_bidirectional_flow_test;
 

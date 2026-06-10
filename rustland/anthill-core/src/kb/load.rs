@@ -6149,6 +6149,17 @@ impl<'a> Loader<'a> {
                 }
             );
             if !is_value_head {
+                // WI-428: a TYPE head — a rigid type-parameter (`P.Key`) or a sort
+                // (`MemStore.Key`) — classifies as a `RigidTypeProjection`, the
+                // type-keyed sibling of `ExprCarried` (design §5.3). Two-segment only;
+                // anything else stays on the `remap_name` path.
+                if segs.len() == 2 {
+                    if let Some(child) =
+                        self.try_rigid_type_projection(resolved, &head_name, &member_name)
+                    {
+                        return Some(child);
+                    }
+                }
                 return None;
             }
             resolved
@@ -6189,6 +6200,145 @@ impl<'a> Loader<'a> {
                 self.kb.make_expr_carried_occ(receiver, member_sym, span, owner),
             ))
         }
+    }
+
+    /// WI-428: the LOGICAL sort qualified name behind a resolved symbol that may be
+    /// the INNER self-named registration of a sort (`ns.W.P.P`, like
+    /// `anthill.prelude.List.List`): strip the duplicated level iff the outer name
+    /// also ends in `short` AND maps to a Sort-kind symbol (so a sort merely sharing
+    /// its namespace's last segment — `namespace app.Config` containing `sort Config`,
+    /// qn `app.Config.Config` — is NOT stripped: `app.Config` is a Namespace).
+    fn logical_sort_qn<'q>(&self, qn: &'q str, short: &str) -> &'q str {
+        if let Some((outer, last)) = qn.rsplit_once('.') {
+            if last == short && outer.rsplit('.').next() == Some(short) {
+                if let Some(outer_sym) = self.kb.symbols.by_qualified_name.get(outer) {
+                    if matches!(
+                        self.kb.symbols.get(*outer_sym),
+                        SymbolDef::Resolved { kind: SymbolKind::Sort, .. }
+                    ) {
+                        return outer;
+                    }
+                }
+            }
+        }
+        qn
+    }
+
+    /// WI-428: classify a two-segment TYPE-headed name (`P.Key` / `MemStore.Key` /
+    /// `Storage.Key`) as a `RigidTypeProjection` — the type-keyed sibling of the
+    /// value-headed `ExprCarried` (design path-dependent-types.md §5.3). Formation
+    /// VALIDATION (the member is declared by a `requires` bound / the projection is
+    /// manifest) runs in the typer's elimination sites, where the `requires` chain is
+    /// complete regardless of source order; the loader only classifies. Returns `None`
+    /// to fall back to the normal `remap_name` path:
+    ///
+    ///   - a head that is neither a type-parameter nor a sort (a namespace path);
+    ///   - a sort-headed name that RESOLVES as a qualified name (`Enum.Entity` — a
+    ///     legitimate qualified ref, never shadowed by projection classification).
+    fn try_rigid_type_projection(
+        &mut self,
+        head_resolved: Symbol,
+        head_name: &str,
+        member_name: &str,
+    ) -> Option<node_occurrence::TypeChild> {
+        let head_short = self.kb.resolve_sym(head_resolved).to_owned();
+        let qn = self.kb.qualified_name_of(head_resolved).to_owned();
+        let sort_qn = self.logical_sort_qn(&qn, &head_short).to_owned();
+        // Rigid type-parameter head (`P.Key`): the head names a member sort whose
+        // PARENT sort declares it as a type parameter — that parent is the sort whose
+        // `requires` chain the eliminator consults. (NOT `is_type_param`, which reads
+        // the current scope's own params and does not see the enclosing sort's member
+        // params from an operation scope.) The parent-kind gate keeps the
+        // `type_params_of_sort` scan off namespace-parented heads (every `Enum.Entity`
+        // qualified ref).
+        if let Some((parent_qn, _)) = sort_qn.rsplit_once('.') {
+            if let Some(&decl_sort) = self.kb.symbols.by_qualified_name.get(parent_qn) {
+                if matches!(
+                    self.kb.symbols.get(decl_sort),
+                    SymbolDef::Resolved { kind: SymbolKind::Sort, .. }
+                ) && self.kb.type_params_of_sort(decl_sort).iter().any(|p| p == &head_short)
+                {
+                    // Subject = the param's LOGICAL registration (`ns.W.P`), so every
+                    // spelling of `P.Key` hash-conses to one term regardless of which
+                    // registration the head resolution landed on.
+                    let subject_sym = *self
+                        .kb
+                        .symbols
+                        .by_qualified_name
+                        .get(sort_qn.as_str())
+                        .unwrap_or(&head_resolved);
+                    let member_sym = self.kb.intern(member_name);
+                    let subject = self.kb.alloc(Term::Ref(subject_sym));
+                    return Some(node_occurrence::TypeChild::Ground(
+                        self.kb.make_rigid_projection(decl_sort, subject, member_sym),
+                    ));
+                }
+            }
+        }
+        if !matches!(
+            self.kb.symbols.get(head_resolved),
+            SymbolDef::Resolved { kind: SymbolKind::Sort, .. }
+        ) {
+            return None;
+        }
+        // The canonical sort symbol for the (possibly inner self-named) head — the
+        // symbol `type_params_of_sort` and the eliminator's `requires` lookup key on.
+        let head_sort_sym = if sort_qn == qn {
+            head_resolved
+        } else {
+            *self.kb.symbols.by_qualified_name.get(sort_qn.as_str())?
+        };
+        let head_declares_member =
+            self.kb.type_params_of_sort(head_sort_sym).iter().any(|p| p == member_name);
+        // Self-qualified member (`Storage.Key` INSIDE `Storage`'s own declaration): the
+        // qualified spelling of the bare in-scope param `Key` — produce the same
+        // sort-ref form the single-segment path builds for the bare name (design §5.3
+        // bare-spec rule).
+        if head_declares_member {
+            if let ResolveResult::Found(member_resolved) =
+                self.kb.symbols.resolve_in_scope(member_name, self.current_scope.raw())
+            {
+                let m_qn = self.kb.qualified_name_of(member_resolved).to_owned();
+                if self
+                    .logical_sort_qn(&m_qn, member_name)
+                    .rsplit_once('.')
+                    .is_some_and(|(parent, _)| parent == sort_qn)
+                {
+                    return Some(node_occurrence::TypeChild::Ground(
+                        self.kb.make_sort_ref(member_resolved),
+                    ));
+                }
+            }
+        } else {
+            // A NON-param child of the head sort (`Outer.Inner` for a nested alias
+            // sort, `Enum.Entity`) is a legitimate qualified CHILD reference, not a
+            // projection — resolve it directly (the literal-joined check below cannot
+            // see it: `by_qualified_name` holds the FULLY-qualified spelling).
+            let child_qn = format!("{sort_qn}.{member_name}");
+            if let Some(&child) = self.kb.symbols.by_qualified_name.get(&child_qn) {
+                return Some(node_occurrence::TypeChild::Ground(self.kb.make_sort_ref(child)));
+            }
+        }
+        // A sort-headed dotted name that RESOLVES under its written spelling
+        // (scope-aware, or an import-established qualified name) is a legitimate
+        // qualified ref — leave it to `remap_name`.
+        let joined = format!("{head_name}.{member_name}");
+        if !matches!(
+            self.kb.symbols.resolve_in_scope(&joined, self.current_scope.raw()),
+            ResolveResult::NotFound
+        ) || self.kb.symbols.by_qualified_name.contains_key(&joined)
+        {
+            return None;
+        }
+        // Concrete / bare sort head (`MemStore.Key`, `Storage.Key` outside the sort):
+        // subject = the sort itself (sort slot == var slot, the eliminator's
+        // manifest-vs-rigid discriminator). The eliminator δ-grounds a manifest member
+        // and LOUDLY rejects a bare-spec projection (the `T#K` guard).
+        let member_sym = self.kb.intern(member_name);
+        let subject = self.kb.alloc(Term::Ref(head_sort_sym));
+        Some(node_occurrence::TypeChild::Ground(
+            self.kb.make_rigid_projection(head_sort_sym, subject, member_sym),
+        ))
     }
 
     fn type_expr_to_child(

@@ -123,6 +123,19 @@ enum anthill.prelude.TypeExtractor
      by projecting the receiver's synthesized type. A ground (ref) receiver rides as a
      hash-consed term `Fn{ExprCarried, value: Ref(s), member: Ref(M)}`. >}
   entity ExprCarried(value: NodeOccurrence, member: Symbol)
+  {< WI-428: a RIGID type-receiver projection `P.Key` / `MemStore.Key` — the type-keyed
+     sibling of `ExprCarried` (docs/design/path-dependent-types.md §5.3). `var` is the
+     projection SUBJECT: a type-parameter reference (rigid — stays a neutral until the
+     parameter is instantiated) or a concrete sort ref (manifest — δ-grounds at the
+     elimination site and never survives as a stored type). `sort` is the sort whose
+     `requires` chain lends the subject its members (= the subject itself for a
+     concrete-sort subject). `member` is the projected member NAME, resolved against the
+     bound spec's declared params (a positional spec application is sugar for names).
+     The canonical bound-APPLICATION slot (`requires`, design §5.3) is
+     deferred-equivalent in v1: a subject with several candidate bounds is a loud
+     ambiguity error, so `(var, member)` determines the bound uniquely; the slot lands
+     with multi-bound support. >}
+  entity RigidTypeProjection(sort: Symbol, var: Term, member: Symbol)
   -- The wrapped EffectExpression. Field name `effects_expr` (not `expr`) so the
   -- relocated structural functor's stored term — `Fn{TypeExtractor.EffectsRows,
   -- named:[(effects_expr, …)]}`, built by `make_effects_rows_type` — matches this

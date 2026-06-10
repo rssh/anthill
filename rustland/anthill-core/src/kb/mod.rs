@@ -3398,6 +3398,40 @@ impl KnowledgeBase {
         })
     }
 
+    /// rigid_type_projection(sort: Ref(<decl>), var: <subject>, member: Ref(<sym>)) —
+    /// the TYPE-receiver projection `P.Key` / `MemStore.Key` (WI-428, design §5.3): the
+    /// type-keyed sibling of [`Self::make_expr_carried`]. `subject` is the projection's
+    /// receiver TERM — `Ref(P)` for a rigid type-parameter, `Ref(S)` for a concrete
+    /// sort; `decl_sort` is the sort whose `requires` chain lends the subject its
+    /// members (= the subject itself for a concrete-sort subject — the discriminator
+    /// the eliminator uses). All three slots are ground, so the projection always
+    /// hash-conses (no Node carrier).
+    pub fn make_rigid_projection(
+        &mut self,
+        decl_sort: Symbol,
+        subject: TermId,
+        member: Symbol,
+    ) -> TermId {
+        let functor = self.resolve_symbol("anthill.prelude.TypeExtractor.RigidTypeProjection");
+        let sort_key = self.intern("sort");
+        let var_key = self.intern("var");
+        let member_key = self.intern("member");
+        let sort_val = self.alloc(Term::Ref(decl_sort));
+        let member_val = self.alloc(Term::Ref(member));
+        let mut named_args: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
+        named_args.push((sort_key, sort_val));
+        named_args.push((var_key, subject));
+        named_args.push((member_key, member_val));
+        // Canonical named-arg order is by symbol index (codebase convention), so the
+        // hash-consed projection term is order-stable regardless of build site.
+        named_args.sort_by_key(|(s, _)| s.index());
+        self.alloc(Term::Fn {
+            functor,
+            pos_args: SmallVec::new(),
+            named_args,
+        })
+    }
+
     /// Occurrence twin of [`Self::make_expr_carried`] for a COMPOUND receiver
     /// (`a.b.T`): the receiver is a field-access `Expr` occurrence (a `DotApply`
     /// chain over the value path) that cannot hash-cons, so the whole projection
