@@ -64,7 +64,8 @@ body**: it is the dual of `SubscriberStore`'s `provides` (line above) — it giv
 abstract `P` its *declared interface* (`K`, `hasKey`), so `s.provider.K` is a
 well-formed rigid neutral rather than "no member `K`". (`requires Spec[X]` names the
 **carrier** `X`, the dual of `X provides Spec[…]`; the spec's own param `K` stays
-abstract, projected as `P.K`.) Without it `P` is an unconstrained `sort P = ?` and the
+abstract, projected as `P.K` — the type-receiver spelling, §5.3 / WI-428.) Without it `P`
+is an unconstrained `sort P = ?` and the
 abstract projection is ill-formed — the concrete call below needs no bound because there
 `P` is instantiated to a provider.
 
@@ -729,6 +730,129 @@ generic is the receiver itself, so the ticket's decidability property ("receiver
 projections are outside its scope and must be rejected loudly, never lowered by stripping
 the receiver.
 
+## 5.3 Type-receiver projection — `RigidTypeProjection` (decided 2026-06-10)
+
+§1's own commentary prescribes `P.K` — projecting the spec's still-abstract param off the
+*type parameter* the `requires` bound names — yet every form so far keys on an
+**expression** receiver (`ExprCarried`). The type-receiver spellings are real needs:
+
+```anthill
+operation a(k: MemStore.Key) -> String                  -- manifest: = String
+operation getKey(w: Wrapper, k: P.Key) -> P.Key         -- rigid type param (the §1 form)
+operation roundtrip(s: Storage, k: Storage.Key) -> …    -- bare-spec sugar
+```
+
+**Today all three mis-load (probed 2026-06-10).** The WI-376 classifier
+(`try_expr_carried_projection`) gates on a VALUE head; a type head falls through to
+`remap_name`, which emits only an *"unresolved name"* **warning** and mints a degenerate
+nominal sort literally named `MemStore.Key`. Both failure directions are live: a **false
+reject** (`expected String, got MemStore.Key` — semantically it *is* `String`) and a
+**false accept** (`roundtrip`'s two `Storage.Key` positions conflate to one meaningless
+global nominal — Scala 2's carrier-conflating `T#K` arriving by accident). Making the
+fall-through a **hard error** is its own seam (**WI-429**), deliverable before and
+independently of the form below.
+
+**Why not a general `TypeMember(τ, M)`.** Projection off an arbitrary type is the `T#K`
+mistake Scala 3 removed: keyed on a *bare spec*, it would equate `a.K ≡ b.K` for two
+values that are different concrete providers. The sound fragment is exactly the **rigid**
+one — projection off a type *variable* pinned per instantiation (the functional-member
+reading WI-403 already decided for the host: associated types, one provider one binding).
+The head admits only that fragment, and says so in its name.
+
+### The form (WI-428)
+
+```anthill
+entity RigidTypeProjection(requires: Term, var: Type, member: Symbol)
+```
+
+- **`requires`** — the **canonical bound application** (named-sorted; a positional
+  application is sugar for names), *not* the bare spec symbol: two same-spec bounds over
+  distinct bindings (`requires Convert[A = X, B = Y]` vs `… B = Z`) lend distinct
+  members and must stay distinct identities. (The dict-passing side already has this
+  ambiguity filed as **WI-419**; the type side carries the full application from day one
+  instead of re-filing its twin.)
+- **`var`** — the carrier's actual **type-var term** (plus the source name for display).
+  Holding the var, not a name, makes δ-on-binding an *ordinary σ walk*: an instantiation
+  binds the var and the projection grounds through `project_type_member` with no bespoke
+  machinery — which also buys this head **cross-call neutral threading** for free (the
+  callee's neutral grounds under the caller's substitution; `ExprCarried`'s
+  symbol-keyed gap does not apply).
+- **`member`** — the spec's declared param **name**. Identity is by name, never by
+  position — there is no `<A as Convert<B>>::M` positional puzzle, because the bound
+  binds *every* param by name, carrier included
+  (`requires Iterable[C = C, Element = Element, E = E]` is the stdlib norm).
+
+Strictly `(requires, member)` is the identity — `var` is recoverable as the carrier
+binding inside the application; the slot is kept for display and the WI-403 lift.
+
+### Formation — rigid by construction
+
+The constructor is reachable **only for the stuck case**; a ground projection never
+becomes one:
+
+1. **δ at formation** — a manifest receiver (`MemStore.Key`, a bound alias) grounds
+   immediately; nothing is stored.
+2. **δ through the bound** — a member the bound application *binds* grounds through it:
+   `requires Storage[P, Key = String]` ⟹ `P.Key = String` at formation. Only
+   **bound-open** members form the projection.
+3. A member the spec does not declare is a **loud error** at formation.
+
+So a stored `RigidTypeProjection` is well-formed by construction — no environment is
+needed to validate it (contrast the delivered `ExprCarried` neutral, whose declaring
+sort must be threaded sideways because the param's source identity erases to a fresh `_`
+var).
+
+**ζ** — two projections are equal iff same `member`, same canonical `requires`
+application, and carrier vars **in the same σ-class** — a *check*, never a binding (the
+§4 non-injectivity rule unchanged: never unify two vars to force `P.Key ≡ Q.Key`).
+
+### Bare-spec sugar
+
+`Storage.Key` (the spec sort itself as receiver) is **never** a type of its own — it
+desugars at classification when exactly **one** carrier of `Storage` is in scope: a
+*value* carrier → that carrier's `ExprCarried(s, Key)`; a *type-param* carrier → its
+`RigidTypeProjection`; inside the declaring sort it is the qualified spelling of bare
+`Key`. Two carriers in scope → loud ambiguity error naming the explicit forms. The
+degenerate global nominal is never an outcome.
+
+### Relation to `ExprCarried`
+
+`ExprCarried` remains the general head — required wherever the receiver's *type* does
+not carry identity (the §5 erased plain field `provider: DataProvider` has no instance
+var to key on). But where the receiver's type *is* carried by an instance var,
+var-keying is semantically exact: fields typed by the same `P` instance share the member
+(same instantiation — the functional reading), while two `State`-typed params each open
+fresh `P` instances, so `s.provider.K ≠ t.provider.K` — the delivered WI-400 verdicts
+reproduce. The recorded (not scheduled) convergence: normalize such `ExprCarried`
+neutrals to the var-keyed form, which makes carrier-precise `requires` matching
+(**WI-430**, promoted from WI-400's deferred list) hold by construction.
+
+### Groundedness stratification — the representation contract
+
+*(The invariant pressed in review 2026-06-10: "`Type` is term-backed for
+efficiency/history, but can be directly represented as the enum, and the mapping is
+known" — this must survive neutrals.)*
+
+`Type` has three citizen classes; the enum mapping stays total over all three because
+the contextual part never lives *inside* the value:
+
+| class | forms | meaning lives in | in facts / at runtime |
+|---|---|---|---|
+| **ground** | sorts, applications, arrows, … | the value itself (denotes; host-maps) | yes |
+| **flexible** | `TypeVar` | σ (the substitution) | no — typing-time |
+| **rigid neutral** | `ExprCarried`, `RigidTypeProjection` | the instantiation (interface-rooted) | no — typing-time |
+
+The fences: a neutral roots only at an operation interface and dies at instantiation
+(escape-free, WI-401) — it never lands in an asserted fact; **runtime `Type` values stay
+ground** (at eval the receiver carries its real sort, so a value-position projection
+δ-grounds dynamically — `extract` never meets an un-eliminable projection at runtime);
+and the host mapping is known per class — ground as today, rigid by the WI-403
+transliteration `(Convert[A = X, B = Y], X, M)` → `<X as Convert<B = Y>>::M` (carrier
+param → `Self`, other bindings → equality bounds, member name → associated-type name).
+The neutral forms stay in the reflected `TypeExtractor` *deliberately*: the
+enum-representability property exists for the self-hosted typer (WI-010 / WI-079), and
+that consumer must case over neutrals to implement δ/ζ at all.
+
 ## 6. Seam map
 
 | piece | seam |
@@ -742,6 +866,9 @@ the receiver.
 | value-position projection (`let x = [1,2,3].T`); the generic dot's `TypeProjection` arm | **§5.1** (own follow-on — wire `project_type_member` into the `DotApply` frame; not yet a WI) |
 | `expected → argument` inference (push the param type into a polymorphic arg); the missing half of bidirectional flow | **WI-427** (anchor: the §4.1 bidirectional-flow checklist example) |
 | ungrounded `s.K` lowered to the host (realization / codegen) | **WI-403** — rule **decided** 2026-06-09 (§5.2: associated types + `S::K`, normative in `docs/rust-forward-mapping.md` §2.14); emitter rides **WI-002** (the KB-driven full mapper), WI-403 re-pointed onto it and left open |
+| Capitalized dotted fall-through in type position → **hard error** (today: warning + degenerate nominal; a false reject *and* a false accept, §5.3) | **WI-429** (fix vs the delivered WI-376 classifier; independent of WI-428, deliverable first) |
+| type-receiver projection `RigidTypeProjection` (§5.3): classifier arm, δ-at-formation / δ-through-the-bound, ζ by σ-class, bare-spec sugar, `TypeExtractor` entity | **WI-428** |
+| carrier-precise `requires` matching for `ExprCarried` neutrals (promoted from WI-400's deferred list; end-state = the §5.3 convergence onto var-keying) | **WI-430** |
 
 The parametric working example of §1 needs **WI-384 + WI-376 + WI-397 + WI-398**, the
 two rules of §3, and the conversion/delay discipline of §4 (its soundness rule is
