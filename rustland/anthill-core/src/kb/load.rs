@@ -6715,20 +6715,20 @@ impl<'a> Loader<'a> {
         use node_occurrence::TypeChild;
         let mut row = TypeChild::Node(self.kb.make_empty_row_occ(span, owner));
         for (e, child) in effects.iter().zip(effect_children.into_iter()).rev() {
-            // WI-440: a row-tail VARIABLE element (an op-level row param in a
-            // mixed annotation, `@ {Eff, -Modify[x]}`) folds as `open(?Eff)` —
-            // wrapping it in `present(?Eff)` would decompose the VAR as a
-            // present LABEL, losing the tail (the ground path's
-            // `build_canonical_effects_rows` already special-cases the Var).
-            let is_row_var = matches!(
-                &child,
-                TypeChild::Ground(t)
-                    if matches!(self.kb.get_term(*t), Term::Var(Var::Global(_)))
-            );
+            // WI-440/441: a row-tail VARIABLE element — an op-level row param
+            // (`@ {Eff, -Modify[x]}`, a bare `Var`) or a SORT-level row param
+            // (lowered as `Ref(S.E)`, resolved to its alias Var) — folds as
+            // `open(?Eff)`; wrapping it in `present(…)` would decompose the
+            // VAR as a present LABEL, losing the tail (the ground path's
+            // `build_canonical_effects_rows` applies the same rule).
+            let row_var = match &child {
+                TypeChild::Ground(t) => self.kb.row_tail_var_of(*t),
+                TypeChild::Node(_) => None,
+            };
             let atom = if matches!(e, TypeExpr::EffectAbsent(_)) {
                 child
-            } else if is_row_var {
-                TypeChild::Node(self.kb.make_open_occ(child, span, owner))
+            } else if let Some(v) = row_var {
+                TypeChild::Node(self.kb.make_open_occ(TypeChild::Ground(v), span, owner))
             } else {
                 TypeChild::Node(self.kb.make_present_occ(child, span, owner))
             };

@@ -3275,6 +3275,22 @@ impl KnowledgeBase {
     ///
     /// An empty input list with no tail yields `effects_rows(empty_row)` — the
     /// closed pure row.
+    /// WI-441: the row-tail Var a term denotes — the term itself for a bare
+    /// `Var::Global`, the `SortAlias` target Var for a `Ref(S.E)` (a sort-level
+    /// row param referenced from an op signature, which lowers as a Ref).
+    /// `None` for anything else (a label, a ground type, a rigid).
+    pub(crate) fn row_tail_var_of(&self, t: TermId) -> Option<TermId> {
+        use crate::kb::term::{Term as T, Var as V};
+        match self.get_term(t) {
+            T::Var(V::Global(_)) => Some(t),
+            T::Ref(sym) => {
+                let target = crate::kb::typing::resolve_sort_alias(self, *sym)?;
+                matches!(self.get_term(target), T::Var(V::Global(_))).then_some(target)
+            }
+            _ => None,
+        }
+    }
+
     pub fn build_canonical_effects_rows(&mut self, effects: &[TermId]) -> TermId {
         // Partition into atoms (`present(label)` / `absent(label)`) and
         // row-tail Var::Global. At most one tail var is expected; if
@@ -3296,7 +3312,7 @@ impl KnowledgeBase {
         // labels are still wrapped in `present(label)`. Mixed input is
         // sorted by display name with the wrapper applied so canonical
         // form is stable regardless of how each atom arrived.
-        use crate::kb::term::{Term, Var};
+        use crate::kb::term::Term;
         let absent_sym = self.try_resolve_symbol(
             "anthill.prelude.EffectExpression.absent",
         );
@@ -3304,11 +3320,23 @@ impl KnowledgeBase {
             "anthill.prelude.EffectExpression.present",
         );
         let mut atoms: Vec<TermId> = Vec::new();
-        let mut tail_var: Option<TermId> = None;
+        // WI-441: ALL row-tail Vars are collected — a row UNION (`{ES, EF}`,
+        // the lazy combinators' merge row) folds each as its own `open(…)`.
+        // (Pre-WI-441 only the first Var became the tail; the rest were
+        // stuffed into the atoms list and wrapped `present(var)` — a
+        // malformed shape decompose read as a present LABEL.)
+        let mut tail_vars: Vec<TermId> = Vec::new();
         for &e in effects {
+            // WI-441: a SORT-level row param referenced in a written row lowers
+            // as `Ref(S.E)` (it is not a type param of the CURRENT scope) — its
+            // `SortAlias` target Var is the row tail every other reader binds.
+            let row_var = self.row_tail_var_of(e);
             match self.get_term(e) {
-                Term::Var(Var::Global(_)) if tail_var.is_none() => {
-                    tail_var = Some(e);
+                _ if row_var.is_some() => {
+                    let v = row_var.expect("checked is_some");
+                    if !tail_vars.contains(&v) {
+                        tail_vars.push(v);
+                    }
                 }
                 Term::Fn { functor, .. }
                     if Some(*functor) == absent_sym
@@ -3330,12 +3358,16 @@ impl KnowledgeBase {
         atoms.sort_by_cached_key(|&t| crate::kb::typing::type_display_name(self, t));
         atoms.dedup();
 
-        // Right-fold: tail first, then merge() walking back through the
-        // sorted atom list.
-        let mut acc = match tail_var {
-            Some(tail) => self.make_effect_expression_open(tail),
+        // Right-fold: innermost tail first (additional tails as open(…)
+        // merges), then merge() walking back through the sorted atom list.
+        let mut acc = match tail_vars.first() {
+            Some(&tail) => self.make_effect_expression_open(tail),
             None => self.make_effect_expression_empty_row(),
         };
+        for &extra_tail in tail_vars.iter().skip(1) {
+            let o = self.make_effect_expression_open(extra_tail);
+            acc = self.make_effect_expression_merge(o, acc);
+        }
         for &atom in atoms.iter().rev() {
             acc = self.make_effect_expression_merge(atom, acc);
         }

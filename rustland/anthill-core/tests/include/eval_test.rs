@@ -750,9 +750,9 @@ namespace test.wi064
   operation foldl_sub() -> Int64 = fold_left([1, 2, 3], 0, subt)
   operation foldr_sub() -> Int64 = fold_right([1, 2, 3], 0, subt)
   -- map (+1) over [1,2,3] ⇒ [2,3,4]: collect ⇒ 234; folded ⇒ 9; empty ⇒ 0.
-  operation mapped_inc() -> Int64 = encode3(collect(map[Dst = Int64, Eff = {}]([1, 2, 3], inc)))
-  operation mapped_sum() -> Int64 = fold_left(map[Dst = Int64, Eff = {}]([1, 2, 3], inc), 0, addp)
-  operation mapped_empty() -> Int64 = fold_left(map[Dst = Int64, Eff = {}]([], inc), 0, addp)
+  operation mapped_inc() -> Int64 = encode3(collect(map[Dst = Int64, EffS = {}, EffP = {}]([1, 2, 3], inc)))
+  operation mapped_sum() -> Int64 = fold_left(map[Dst = Int64, EffS = {}, EffP = {}]([1, 2, 3], inc), 0, addp)
+  operation mapped_empty() -> Int64 = fold_left(map[Dst = Int64, EffS = {}, EffP = {}]([], inc), 0, addp)
   -- find: first match mid-list, first match at head, and no match (none).
   operation found() -> Int64 = unwrap(find([1, 2, 3, 4], is_big))
   operation found_first() -> Int64 = unwrap(find([3, 1, 2], is_big))
@@ -791,7 +791,7 @@ fn wi413_lazy_filter_skips_via_self_recursion() {
     // before WI-413. `filter` returns a Stream, so it composes with the eager
     // consumers (`collect` / `fold_left`). The predicate is a named op
     // (eta-lifted to a function value, WI-275); `filter` takes explicit
-    // `[S, Eff]` like its sibling `map[Dst, Eff]`.
+    // `[S, EffS, EffP]` like its sibling `map[Dst, EffS, EffP]`.
     let src = r#"
 namespace test.wi413filter
   import anthill.prelude.{List, Int64, Stream, Bool, Option}
@@ -810,14 +810,14 @@ namespace test.wi413filter
 
   -- filter (n > 2) over [1,2,3,4] ⇒ [3,4]: the leading 1 and 2 are SKIPPED by
   -- the self-recursion. collect ⇒ 34; sum ⇒ 7.
-  operation kept_collect() -> Int64 = encode2(collect(filter[S = Int64, Eff = {}]([1, 2, 3, 4], is_big)))
-  operation kept_sum() -> Int64 = fold_left(filter[S = Int64, Eff = {}]([1, 2, 3, 4], is_big), 0, addp)
+  operation kept_collect() -> Int64 = encode2(collect(filter[S = Int64, EffS = {}, EffP = {}]([1, 2, 3, 4], is_big)))
+  operation kept_sum() -> Int64 = fold_left(filter[S = Int64, EffS = {}, EffP = {}]([1, 2, 3, 4], is_big), 0, addp)
   -- A leading run of drops then a single keep: [1,2,3] ⇒ [3] ⇒ 3.
-  operation kept_last() -> Int64 = fold_left(filter[S = Int64, Eff = {}]([1, 2, 3], is_big), 0, addp)
+  operation kept_last() -> Int64 = fold_left(filter[S = Int64, EffS = {}, EffP = {}]([1, 2, 3], is_big), 0, addp)
   -- All dropped ⇒ empty ⇒ 0 (every element skipped via self-recursion to none).
-  operation kept_none() -> Int64 = fold_left(filter[S = Int64, Eff = {}]([1, 2], is_big), 0, addp)
+  operation kept_none() -> Int64 = fold_left(filter[S = Int64, EffS = {}, EffP = {}]([1, 2], is_big), 0, addp)
   -- All kept ⇒ no skips: [3,4,5] ⇒ 12.
-  operation kept_all() -> Int64 = fold_left(filter[S = Int64, Eff = {}]([3, 4, 5], is_big), 0, addp)
+  operation kept_all() -> Int64 = fold_left(filter[S = Int64, EffS = {}, EffP = {}]([3, 4, 5], is_big), 0, addp)
 end
 "#;
     let mut interp = crate::common::interp_for(src);

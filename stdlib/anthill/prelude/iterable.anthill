@@ -31,23 +31,24 @@ sort anthill.prelude.Iterable
   -- binder-aligned — WI-440; a lazy carrier re-walks, so a mutating callback
   -- would make the view inconsistent).
   --
-  -- find (DECOUPLED rows): pred's row `EffP` is its OWN, not tied to the
-  -- access row E — an effectful-but-element-pure pred works on a pure
-  -- carrier (List) and its effects THREAD to the caller; the op's effect is
-  -- the merge `{E, EffP}`. The lazy map/filter stay on the TIED `{E, -…}`
-  -- form: the produced stream pays the callback row on CONSUMPTION, so
-  -- decoupling them needs the row-merge in the result TYPE position.
+  -- DECOUPLED rows (all three members): the callback's row `EffP` is its
+  -- OWN, not tied to the access row E — an effectful-but-element-pure
+  -- callback works on a pure carrier (List) and its effects THREAD to the
+  -- consumer. The eager `find` pays both rows NOW (`effects {E, EffP}`);
+  -- the lazy `map`/`filter` return a stream whose row is the UNION
+  -- `{E, EffP}` (the two-row MappedStream/FilteredStream carriers) — paid
+  -- on consumption.
   operation find[EffP](c: C, pred: (x: Element) -> Bool @ {EffP, -Modify[x]}) -> Option[Element] effects {E, EffP} =
     Stream.find(iterator(c), pred)
 
   -- map PRODUCES a stream, so it returns the lazy `mapped` carrier over the
   -- iterator (admissible as a Stream — MappedStream provides Stream).
-  operation map[Dst](c: C, f: (x: Element) -> Dst @ {E, -Modify[x]}) -> Stream[Dst, E] =
+  operation map[Dst, EffP](c: C, f: (x: Element) -> Dst @ {EffP, -Modify[x]}) -> Stream[Dst, {E, EffP}] =
     mapped(iterator(c), f)
 
   -- filter PRODUCES a stream, so it returns the lazy `filtered` carrier over
   -- the iterator (WI-439; admissible as a Stream — FilteredStream provides
   -- Stream).
-  operation filter(c: C, pred: (x: Element) -> Bool @ {E, -Modify[x]}) -> Stream[Element, E] =
+  operation filter[EffP](c: C, pred: (x: Element) -> Bool @ {EffP, -Modify[x]}) -> Stream[Element, {E, EffP}] =
     filtered(iterator(c), pred)
 end

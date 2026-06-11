@@ -91,7 +91,7 @@ namespace test.wi439.parity
   -- Stream-level engine on the same input (List provides Stream); the
   -- Iterable member must agree. The direct Stream-level call needs the
   -- explicit bindings; the Iterable member gets E from the provision.
-  operation kept_stream() -> Int64 = encode2(collect(filter[S = Int64, Eff = {}]([1, 2, 3, 4], is_big)))
+  operation kept_stream() -> Int64 = encode2(collect(filter[S = Int64, EffS = {}, EffP = {}]([1, 2, 3, 4], is_big)))
 end
 "#;
     let mut interp = crate::common::interp_for(src);

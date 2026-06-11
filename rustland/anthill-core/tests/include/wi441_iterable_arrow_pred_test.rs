@@ -111,6 +111,50 @@ end
     );
 }
 
+/// The LAZY half threads too: an effectful pred's row rides the produced
+/// stream (`Stream[Element, {E, EffP}]`, the two-row FilteredStream carrier)
+/// and is paid on CONSUMPTION — the collecting caller must declare it.
+#[test]
+fn lazy_filter_effectful_pred_threads_on_consumption() {
+    let declared = r#"
+namespace wi441.lazy
+  import anthill.prelude.{Effect, List, Bool, Int64}
+  import anthill.prelude.Iterable.{filter}
+  import anthill.prelude.Stream.{collect}
+  sort Beep end
+  fact Effect[T = Beep]
+  operation noisy(n: Int64) -> Bool effects Beep = true
+  operation ok(xs: List[T = Int64]) -> List[T = Int64] effects Beep =
+    collect(filter(xs, noisy))
+end
+"#;
+    let errs = load_errors(&[declared]);
+    assert!(
+        errs.is_empty(),
+        "collect(filter(xs, noisy)) must typecheck with the caller declaring \
+         Beep (the pred row rides the produced stream); got: {errs:?}",
+    );
+
+    let undeclared = r#"
+namespace wi441.lazy2
+  import anthill.prelude.{Effect, List, Bool, Int64}
+  import anthill.prelude.Iterable.{filter}
+  import anthill.prelude.Stream.{collect}
+  sort Beep end
+  fact Effect[T = Beep]
+  operation noisy(n: Int64) -> Bool effects Beep = true
+  operation boom(xs: List[T = Int64]) -> List[T = Int64] =
+    collect(filter(xs, noisy))
+end
+"#;
+    let errs = load_errors(&[undeclared]);
+    assert!(
+        errs.iter().any(|e| e.contains("undeclared effect") && e.contains("Beep")),
+        "the pred's Beep must surface at the CONSUMING caller's boundary when \
+         undeclared; got: {errs:?}",
+    );
+}
+
 /// Pure preds keep working end-to-end through the arrow form: the WI-424 /
 /// WI-439 suites pin typecheck + eval on List and the BoxColl carrier; this
 /// is the smoke double-check that the converted signatures still EVAL.

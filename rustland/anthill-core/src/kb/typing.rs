@@ -8158,9 +8158,9 @@ fn explode_incurred_effect_row(kb: &mut KnowledgeBase, effect: &Value) -> Option
         }
     };
     let subst = Substitution::new();
-    let (present, tail, _absent) = decompose_effect_row(kb, &subst, &row)?;
+    let (present, tails, _absent) = decompose_effect_row(kb, &subst, &row)?;
     let mut atoms = present;
-    if let Some(t) = tail {
+    for t in tails {
         atoms.push(Value::Term(t));
     }
     Some(atoms)
@@ -8249,8 +8249,8 @@ fn validate_callback_effect_row(
     let (_, _, act_eff) = arrow_parts(kb, actual)?;
     let act_eff = act_eff?;
     let act_row = canonical_effects_row(kb, &act_eff);
-    let (a_present, a_tail, a_absent) = decompose_effect_row(kb, subst, &act_row)?;
-    if a_present.is_empty() || a_tail.is_some() || !a_absent.is_empty() {
+    let (a_present, a_tails, a_absent) = decompose_effect_row(kb, subst, &act_row)?;
+    if a_present.is_empty() || !a_tails.is_empty() || !a_absent.is_empty() {
         // A pure actual row conforms to any declared row (subset semantics);
         // an open / absent-carrying actual is left to the unify path (v1).
         return None;
@@ -8258,7 +8258,7 @@ fn validate_callback_effect_row(
     let (_, _, decl_eff) = arrow_parts(kb, declared)?;
     let decl_eff = decl_eff?;
     let decl_row = canonical_effects_row(kb, &decl_eff);
-    let (e_present, e_tail, e_absent) = decompose_effect_row(kb, subst, &decl_row)?;
+    let (e_present, e_tails, e_absent) = decompose_effect_row(kb, subst, &decl_row)?;
     let actual_places = kb.symbols.arg_places(arg_op_sym);
     let declared_places = kb.symbols.arg_places(param_sym);
     // Positional alignment is meaningful only for EQUAL arities — a mismatch
@@ -8295,7 +8295,7 @@ fn validate_callback_effect_row(
                 ),
             });
         }
-        if e_tail.is_none() {
+        if e_tails.is_empty() {
             return Some(TypeError::Other {
                 span,
                 context: TypeErrorContext::OperationArgument { op_name: fn_sym, param: param_sym },
@@ -8804,8 +8804,8 @@ fn effect_row_present_values(kb: &mut KnowledgeBase, row: &impl TermView) -> Vec
         _ => {
             let subst = Substitution::new();
             match decompose_effect_row(kb, &subst, row) {
-                Some((mut present, tail, _absent)) => {
-                    if let Some(tail_tid) = tail {
+                Some((mut present, tails, _absent)) => {
+                    for tail_tid in tails {
                         present.push(Value::Term(tail_tid));
                     }
                     present
@@ -10474,21 +10474,26 @@ fn unify_view_structural<A: TermView, B: TermView>(
         }
         (Some("arrow"), Some("arrow")) => unify_arrow_view(kb, subst, a, b),
         (Some("named_tuple"), Some("named_tuple")) => unify_named_tuple(kb, subst, a, b),
-        // The same weaker WI-320 structural unify of the inner `effects_expr` that
-        // `unify_term_dispatch` does for a top-level `effects_rows` pair (NOT the
-        // full row algorithm — the arrow arm handles rows inside arrows via
-        // `unify_effect_rows`). Read each `effects_expr` child carrier-agnostically.
+        // WI-441 (was the weaker WI-320 structural unify): a top-level row
+        // pair takes the FULL row algorithm — the structural inner-unify was
+        // order-sensitive over `merge`, rejecting equal rows written in
+        // different binding orders (the two-row carriers' `{ES, EF}`).
         (Some("effects_rows"), Some("effects_rows")) => {
-            let ee = kb.intern("effects_expr");
-            match (named_child_value(kb, a, ee), named_child_value(kb, b, ee)) {
-                (Some(x), Some(y)) => unify_types(kb, subst, &x, &y),
-                _ => false,
-            }
+            unify_effect_rows(kb, subst, a, b)
         }
         // Mirrors `unify_term_dispatch`'s `_ => types_compatible(...)` — a unify of
         // any other (form-mismatched) pair falls back to the subtype check, which is
-        // itself carrier-agnostic (no re-ground).
-        _ => types_compatible(kb, subst, a, b),
+        // itself carrier-agnostic (no re-ground). WI-441: a pair with ONE
+        // row-shaped side (a bare `open(?ρ)` row-var binding vs a rigid row
+        // var; an `effects_rows` vs a bare expression) is a ROW comparison —
+        // the generic fallback cannot equate `?ρ` with `open(?ρ)`.
+        _ => {
+            if value_is_row_shaped(kb, a) || value_is_row_shaped(kb, b) {
+                unify_effect_rows(kb, subst, a, b)
+            } else {
+                types_compatible(kb, subst, a, b)
+            }
+        }
     }
 }
 
@@ -10944,25 +10949,23 @@ fn unify_term_dispatch(
             unify_named_tuple(kb, subst, &TermIdView(a_resolved), &TermIdView(b_resolved))
         }
         (Some("effects_rows"), Some("effects_rows")) => {
-            // WI-320 substrate: structural unification on the wrapped
-            // EffectExpression. The hash-cons short-circuit already caught the
-            // both-ground identical case; this arm covers post-walk wrappers
-            // pointing at structurally-equivalent but distinct TermIds. Row
-            // unification proper (Rémy / Lindley-Cheney) is WI-307.
-            let a_inner = match kb.get_term(a_resolved) {
-                Term::Fn { named_args, .. } => get_named_arg(kb, named_args, "effects_expr"),
-                _ => return false,
-            };
-            let b_inner = match kb.get_term(b_resolved) {
-                Term::Fn { named_args, .. } => get_named_arg(kb, named_args, "effects_expr"),
-                _ => return false,
-            };
-            match (a_inner, b_inner) {
-                (Some(x), Some(y)) => unify_types(kb, subst, &TermIdView(x), &TermIdView(y)),
-                _ => false,
+            // WI-441 (was the WI-320 structural inner-unify): the FULL row
+            // algorithm — the structural form was order-sensitive over
+            // `merge`, rejecting equal rows written in different orders.
+            unify_effect_rows(kb, subst, &TermIdView(a_resolved), &TermIdView(b_resolved))
+        }
+        _ => {
+            // WI-441: a pair with one ROW-shaped side (a bare `open(?ρ)`
+            // binding vs a rigid row var, etc.) is a row comparison — see
+            // the view-dispatch twin.
+            if value_is_row_shaped(kb, &TermIdView(a_resolved))
+                || value_is_row_shaped(kb, &TermIdView(b_resolved))
+            {
+                unify_effect_rows(kb, subst, &TermIdView(a_resolved), &TermIdView(b_resolved))
+            } else {
+                types_compatible(kb, subst, &TermIdView(a_resolved), &TermIdView(b_resolved))
             }
         }
-        _ => types_compatible(kb, subst, &TermIdView(a_resolved), &TermIdView(b_resolved)),
     }
 }
 
@@ -11186,7 +11189,7 @@ pub(crate) fn is_sort_param_symbol(kb: &KnowledgeBase, sym: Symbol) -> bool {
 /// List.T, …) — without exact-match-first the fallback would return whichever
 /// alias appeared first in rules_by_functor order, causing proposal-038 / WI-210
 /// dispatch to resolve the wrong logical Var.
-fn resolve_sort_alias(kb: &KnowledgeBase, sym: Symbol) -> Option<TermId> {
+pub(crate) fn resolve_sort_alias(kb: &KnowledgeBase, sym: Symbol) -> Option<TermId> {
     let alias_sym = kb.try_resolve_symbol("SortAlias")?;
     let sort_name = kb.resolve_sym(sym);
     let find = |matches: fn(&KnowledgeBase, Symbol, Symbol, &str) -> bool| {
@@ -11306,7 +11309,7 @@ fn decompose_effect_row(
     kb: &mut KnowledgeBase,
     subst: &Substitution,
     effects: &impl TermView,
-) -> Option<(Vec<Value>, Option<TermId>, Vec<Value>)> {
+) -> Option<(Vec<Value>, Vec<TermId>, Vec<Value>)> {
     // WI-342 P4-B (B2): carrier-agnostic walk over the `EffectExpression`
     // algebra via [`TermView`], so a `Value`-carried (denoted-bearing) row
     // decomposes by the same code as a hash-consed `TermId` row. Field-name
@@ -11332,20 +11335,25 @@ fn decompose_effect_row(
     let expr: Value = if is_effects_rows {
         match named_child_value(kb, &walked, effects_expr_key) {
             Some(e) => e,
-            None => return Some((Vec::new(), None, Vec::new())),
+            None => return Some((Vec::new(), Vec::new(), Vec::new())),
         }
+    } else if value_is_bare_effect_expr(kb, &walked) {
+        // WI-441: a BARE EffectExpression node (`open(?ρ)` — a row var's
+        // BINDING shape from `bind_row_tail`; a `merge(…)` a bound row var
+        // walked to) is the row's inner expression itself.
+        walked.clone()
     } else {
         // Not an effects_rows wrapper — a bare row Var is itself an open-tail
         // row (mostly partial arrows in tests); anything else is empty.
         match row_tail_termid(kb, &walked) {
-            Some(t) => return Some((Vec::new(), Some(t), Vec::new())),
-            None => return Some((Vec::new(), None, Vec::new())),
+            Some(t) => return Some((Vec::new(), vec![t], Vec::new())),
+            None => return Some((Vec::new(), Vec::new(), Vec::new())),
         }
     };
 
     let mut present: Vec<Value> = Vec::new();
     let mut absent: Vec<Value> = Vec::new();
-    let mut tail: Option<TermId> = None;
+    let mut tails: Vec<TermId> = Vec::new();
     let mut stack: Vec<Value> = vec![expr];
     while let Some(node_raw) = stack.pop() {
         let node = walk_value_to_resolved(kb, subst, node_raw);
@@ -11353,13 +11361,13 @@ fn decompose_effect_row(
         // Unbound Var directly inside the algebra — a row-tail (any flavor;
         // a `TermId`-carried Rigid/DeBruijn is preserved as before).
         if let Some(node_tail) = row_tail_termid(kb, &node) {
-            // WI-339 F13: a second distinct row-tail var is a malformed-row
-            // signal (e.g. `merge(open(?ρ_1), open(?ρ_2))`) — reject hard so
-            // the caller propagates the row-shape error.
-            match tail {
-                None => tail = Some(node_tail),
-                Some(existing) if existing == node_tail => {}
-                Some(_) => return None,
+            // WI-441 (supersedes the WI-339 F13 two-tail reject): MULTIPLE
+            // distinct row tails are a legitimate row UNION — the merge of
+            // two row variables (`{E, EffP}`, the lazy combinators' result
+            // row). Collected deduped; the unify/subtype arms decide what
+            // they can soundly do with a multi-tail row.
+            if !tails.contains(&node_tail) {
+                tails.push(node_tail);
             }
             continue;
         }
@@ -11408,7 +11416,146 @@ fn decompose_effect_row(
         }
     }
 
-    Some((present, tail, absent))
+    Some((present, tails, absent))
+}
+
+/// WI-441: the multi-tail arm shared by [`unify_effect_rows`] and
+/// [`subtype_effect_rows`] — at least one side decomposed to ≥ 2 row tails
+/// (a row UNION like `{E, EffP}`). Two sound moves, else reject:
+///
+/// 1. **Equal tail sets** (walked): the rows agree on the open part; the
+///    relation holds iff the label extras allow it (`only_a` empty; for the
+///    symmetric unify also `only_b`).
+/// 2. **Bare-flexible absorb**: a side that is a SINGLE flexible tail with
+///    no labels/absents binds WHOLESALE to the other row's inner expression
+///    (the receiver-binding shape: `collect`'s `Eff` := `{E, EffP}`).
+///    Guarded by occurs (the other side's tails must not contain the var)
+///    and the var's `lacks` (each absorbed present label is checked; lacks
+///    are propagated onto the absorbed row's flexible tails).
+fn multi_tail_rows_compat(
+    kb: &mut KnowledgeBase,
+    subst: &mut Substitution,
+    a_inner: Option<Value>,
+    b_inner: Option<Value>,
+    a_parts: (&[Value], &[TermId], &[Value]),
+    b_parts: (&[Value], &[TermId], &[Value]),
+    only_a: &[Value],
+    only_b: &[Value],
+    directional: bool,
+) -> bool {
+    let (a_present, a_tails, a_absent) = a_parts;
+    let (b_present, b_tails, b_absent) = b_parts;
+    let mut a_set: Vec<TermId> = a_tails.iter().map(|t| walk_type(kb, subst, *t)).collect();
+    let mut b_set: Vec<TermId> = b_tails.iter().map(|t| walk_type(kb, subst, *t)).collect();
+    a_set.sort_unstable_by_key(|t| t.raw());
+    a_set.dedup();
+    b_set.sort_unstable_by_key(|t| t.raw());
+    b_set.dedup();
+    if a_set == b_set {
+        return if directional {
+            only_a.is_empty()
+        } else {
+            only_a.is_empty() && only_b.is_empty()
+        };
+    }
+    let absorb = |kb: &mut KnowledgeBase,
+                  subst: &mut Substitution,
+                  bare_tail: TermId,
+                  other_inner: &Option<Value>,
+                  other_present: &[Value],
+                  other_tails: &[TermId]|
+     -> bool {
+        let Term::Var(Var::Global(vid)) = kb.get_term(bare_tail) else {
+            return false;
+        };
+        let vid = *vid;
+        if other_tails.iter().any(|t| walk_type(kb, subst, *t) == bare_tail) {
+            return false; // occurs guard
+        }
+        let Some(inner) = other_inner else { return false };
+        let lacks = subst.lacks_of(vid);
+        if !lacks.is_empty() {
+            for l in other_present {
+                if label_violates_lacks(kb, subst, l, &lacks) {
+                    return false;
+                }
+            }
+            for t in other_tails {
+                if let Term::Var(Var::Global(tvid)) = kb.get_term(*t) {
+                    let tvid = *tvid;
+                    subst.add_lacks(tvid, lacks.iter().cloned());
+                }
+                // A rigid tail can't carry the lacks — enforced at its own
+                // instantiation site (same conservatism as the rigid-alias
+                // arm in the single-tail case).
+            }
+        }
+        subst.bind_value(vid, inner.clone());
+        !subst.is_contradiction()
+    };
+    if a_present.is_empty() && a_absent.is_empty() && a_set.len() == 1 {
+        return absorb(kb, subst, a_set[0], &b_inner, b_present, b_tails);
+    }
+    if b_present.is_empty() && b_absent.is_empty() && b_set.len() == 1 {
+        return absorb(kb, subst, b_set[0], &a_inner, a_present, a_tails);
+    }
+    false
+}
+
+/// WI-441: is this value a BARE `EffectExpression` node (`merge` / `present` /
+/// `absent` / `open` / `empty_row`, matched by QUALIFIED functor)? A row var's
+/// binding (`open(?ρ)` from `bind_row_tail`) and a walked bound row are bare
+/// expressions, not `effects_rows` wrappers.
+fn value_is_bare_effect_expr(kb: &KnowledgeBase, v: &impl TermView) -> bool {
+    match v.head(kb) {
+        ViewHead::Functor { functor: Some(sym), .. } => {
+            let qn = kb.qualified_name_of(sym);
+            matches!(
+                qn.strip_prefix("anthill.prelude.EffectExpression."),
+                Some("merge" | "present" | "absent" | "open" | "empty_row")
+            )
+        }
+        _ => false,
+    }
+}
+
+/// WI-441: row-shaped = an `effects_rows` wrapper OR a bare `EffectExpression`
+/// node. A pair with a row-shaped side must compare via the FULL row algebra
+/// (`unify_effect_rows` / `subtype_effect_rows`) — the structural fallback is
+/// order-sensitive over `merge` and cannot equate `?ρ` with `open(?ρ)`.
+fn value_is_row_shaped(kb: &KnowledgeBase, v: &impl TermView) -> bool {
+    if value_is_bare_effect_expr(kb, v) {
+        return true;
+    }
+    matches!(
+        v.head(kb),
+        ViewHead::Functor { functor: Some(sym), .. }
+            if kb.qualified_name_of(sym) == "anthill.prelude.TypeExtractor.EffectsRows"
+    )
+}
+
+/// WI-441: a row value's INNER `EffectExpression` (the `effects_expr` child of
+/// the `effects_rows` wrapper; a bare row Var / bare expression is itself the
+/// inner). Used by the multi-tail wholesale absorb to bind a bare row var to
+/// the OTHER row as-is — reassembling from decomposed parts cannot represent
+/// two tails canonically.
+fn row_inner_value(
+    kb: &mut KnowledgeBase,
+    subst: &Substitution,
+    row: &impl TermView,
+) -> Option<Value> {
+    let effects_expr_key = kb.intern("effects_expr");
+    let walked = walk_view(kb, subst, row);
+    let effects_rows_sym = kb.try_resolve_symbol("anthill.prelude.TypeExtractor.EffectsRows");
+    let is_wrapper = matches!(
+        walked.head(kb),
+        ViewHead::Functor { functor: Some(f), .. } if Some(f) == effects_rows_sym
+    );
+    if is_wrapper {
+        named_child_value(kb, &walked, effects_expr_key)
+    } else {
+        Some(walked)
+    }
 }
 
 /// A row-tail [`TermId`] if `node` resolves to a logic var, else `None`. A
@@ -11829,22 +11976,41 @@ fn unify_effect_rows<EA: TermView, EB: TermView>(
     // WI-339 F13: decompose returns None on malformed input — propagate
     // as a unify rejection so the typer surfaces the row-shape error
     // instead of proceeding on incomplete decomposition.
-    let (a_present, a_tail, a_absent) = match decompose_effect_row(kb, subst, a_effects) {
+    let (a_present, a_tails, a_absent) = match decompose_effect_row(kb, subst, a_effects) {
         Some(p) => p,
         None => return false,
     };
-    let (b_present, b_tail, b_absent) = match decompose_effect_row(kb, subst, b_effects) {
+    let (b_present, b_tails, b_absent) = match decompose_effect_row(kb, subst, b_effects) {
         Some(p) => p,
         None => return false,
     };
 
     // WI-328: register each side's `- e` absents as `lacks` constraints on
-    // that side's tail BEFORE the tail-binding step, so `bind_row_tail`
+    // that side's tail(s) BEFORE the tail-binding step, so `bind_row_tail`
     // sees them when it checks the labels flowing into each tail.
-    register_row_lacks(kb, subst, a_tail, &a_absent);
-    register_row_lacks(kb, subst, b_tail, &b_absent);
+    for &t in &a_tails {
+        register_row_lacks(kb, subst, Some(t), &a_absent);
+    }
+    for &t in &b_tails {
+        register_row_lacks(kb, subst, Some(t), &b_absent);
+    }
 
     let (only_a, only_b) = pair_present_labels(kb, subst, &a_present, &b_present);
+
+    // WI-441: a row UNION (≥ 2 tails, `{E, EffP}`) takes the dedicated
+    // multi-tail arm — equal tail sets or the bare-flexible wholesale absorb.
+    if a_tails.len() > 1 || b_tails.len() > 1 {
+        let a_inner = row_inner_value(kb, subst, a_effects);
+        let b_inner = row_inner_value(kb, subst, b_effects);
+        return multi_tail_rows_compat(
+            kb, subst, a_inner, b_inner,
+            (&a_present, &a_tails, &a_absent),
+            (&b_present, &b_tails, &b_absent),
+            &only_a, &only_b, false,
+        );
+    }
+    let a_tail = a_tails.first().copied();
+    let b_tail = b_tails.first().copied();
 
     match (a_tail, b_tail) {
         (None, None) => only_a.is_empty() && only_b.is_empty(),
@@ -11960,12 +12126,12 @@ fn subtype_effect_rows<EA: TermView, EB: TermView>(
 
     // WI-339 F13: decompose returns None on malformed input — propagate
     // as a sub rejection.
-    let (a_present, a_tail, a_absent) =
+    let (a_present, a_tails, a_absent) =
         match decompose_effect_row(kb, subst, actual_effects) {
             Some(p) => p,
             None => return false,
         };
-    let (e_present, e_tail, e_absent) =
+    let (e_present, e_tails, e_absent) =
         match decompose_effect_row(kb, subst, expected_effects) {
             Some(p) => p,
             None => return false,
@@ -11982,8 +12148,12 @@ fn subtype_effect_rows<EA: TermView, EB: TermView>(
     // (binding a lacked label into the tail would be unsound); the rare
     // genuinely-compatible directional case (route `e` only into the
     // expected side) is left for a later refinement.
-    register_row_lacks(kb, subst, a_tail, &a_absent);
-    register_row_lacks(kb, subst, e_tail, &e_absent);
+    for &t in &a_tails {
+        register_row_lacks(kb, subst, Some(t), &a_absent);
+    }
+    for &t in &e_tails {
+        register_row_lacks(kb, subst, Some(t), &e_absent);
+    }
 
     // WI-326 F1 (code-review): use the covering variant (existential), NOT
     // the unify-shaped 1-to-1 [`pair_present_labels`]. Set semantics with
@@ -11992,6 +12162,20 @@ fn subtype_effect_rows<EA: TermView, EB: TermView>(
     // of `Color`. The 1-to-1 pairing would mark `Color` matched after the
     // first hit and reject the second.
     let (only_a, only_e) = cover_present_labels(kb, subst, &a_present, &e_present);
+
+    // WI-441: row UNIONS (≥ 2 tails) take the multi-tail arm (directional).
+    if a_tails.len() > 1 || e_tails.len() > 1 {
+        let a_inner = row_inner_value(kb, subst, actual_effects);
+        let e_inner = row_inner_value(kb, subst, expected_effects);
+        return multi_tail_rows_compat(
+            kb, subst, a_inner, e_inner,
+            (&a_present, &a_tails, &a_absent),
+            (&e_present, &e_tails, &e_absent),
+            &only_a, &only_e, true,
+        );
+    }
+    let a_tail = a_tails.first().copied();
+    let e_tail = e_tails.first().copied();
 
     match (a_tail, e_tail) {
         // Both closed. actual's extras must be empty (actual ⊆ expected
@@ -12285,7 +12469,18 @@ fn types_compatible_term_dispatch(kb: &mut KnowledgeBase, subst: &mut Substituti
             // consistent global binding across sibling positions.
             subtype_effect_rows(kb, subst, &TermIdView(actual), &TermIdView(expected))
         }
-        _ => false,
+        _ => {
+            // WI-441: a pair with one ROW-shaped side (a bare `open(?ρ)` row
+            // binding vs a rigid row var, a wrapper vs a bare expression) is
+            // a row comparison — see the unify-dispatch twin.
+            if value_is_row_shaped(kb, &TermIdView(actual))
+                || value_is_row_shaped(kb, &TermIdView(expected))
+            {
+                subtype_effect_rows(kb, subst, &TermIdView(actual), &TermIdView(expected))
+            } else {
+                false
+            }
+        }
     }
 }
 
@@ -12387,7 +12582,15 @@ fn types_compatible_view_structural<A: TermView, B: TermView>(
         // WI-342: every non-false arm of `types_compatible_term_dispatch` now has a
         // carrier-agnostic peer above; any other pair is a form mismatch, which the
         // term dispatch also rejects (`_ => false`). No re-ground bridge.
-        _ => false,
+        // WI-441 exception: one ROW-shaped side ⇒ a row comparison (see the
+        // term-dispatch twin).
+        _ => {
+            if value_is_row_shaped(kb, &a) || value_is_row_shaped(kb, &e) {
+                subtype_effect_rows(kb, subst, &a, &e)
+            } else {
+                false
+            }
+        }
     }
 }
 
@@ -12589,6 +12792,29 @@ fn parameterized_compatible_view<A: TermView, B: TermView>(
     } else {
         None
     };
+    // WI-441: the provider view's binding values carry the CARRIER's canonical
+    // param vars (`provides Stream[T = T, E = {ES, EF}]` holds MappedStream's
+    // own ES/EF alias vars). Instantiate them through THIS actual instance's
+    // bindings (ES := the instance's ES value, …) in the scratch subst, so the
+    // per-param comparison below sees the instance's row, not the canon vars
+    // (a two-row provision `{ES, EF}` cannot pair against the expected row's
+    // tails without it — two-tail-to-two-tail pairing is ambiguous).
+    if cross_sort_provider.is_some() {
+        for (ap, av) in &actual_bindings {
+            let q = format!(
+                "{}.{}",
+                kb.qualified_name_of(actual_base),
+                kb.resolve_sym(*ap)
+            );
+            let Some(qsym) = kb.try_resolve_symbol(&q) else { continue };
+            let Some(target) = resolve_sort_alias(kb, qsym) else { continue };
+            let Term::Var(Var::Global(vid)) = kb.get_term(target) else { continue };
+            let vid = *vid;
+            if subst.resolve_as_value(vid).is_none() {
+                subst.bind_value(vid, av.clone());
+            }
+        }
+    }
     for (param, ev) in &expected_bindings {
         // The actual-side value to check against the expected binding `ev`:
         // normally the actual's OWN binding for `param`. WI-387 FIX 2: when the

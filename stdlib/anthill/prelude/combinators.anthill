@@ -16,17 +16,25 @@
 -- skipped by SELF-RECURSING on the reconstructed carrier — whose incurred effect
 -- must thread too (WI-413). Both now work via the explicit `[Elem, Eff]` params.
 sort anthill.prelude.MappedStream
-  import anthill.prelude.{Stream, Function, Option, Pair}
+  import anthill.prelude.{Stream, Function, Option, Pair, Modify}
   import anthill.prelude.Option.{some, none}
   import anthill.prelude.Pair.{pair}
 
   sort Src = ?
   sort T = ?
-  effects E = ?
+  -- WI-441 decoupled rows: the SOURCE's observation row and the TRANSFORM's
+  -- own row are independent; the provided Stream's row is their UNION
+  -- (both are paid on consumption — splitFirst peels the source AND runs fn).
+  effects ES = ?
+  effects EF = ?
 
-  entity mapped(source: Stream[Src, E], fn: Function[Src, T, E])
+  -- The field's arrow row is the PLAIN `{EF}`: the `-Modify[x]` lacks lives
+  -- on the PUBLIC signatures (map / Iterable.map), where the WI-440 call-site
+  -- check enforces it — an entity FIELD has no registered binder places
+  -- (the WI-341 arrow-binder context is operation-param scoped).
+  entity mapped(source: Stream[Src, ES], fn: (Src) -> T @ {EF})
 
-  provides Stream[T, E]
+  provides Stream[T = T, E = {ES, EF}]
 
   -- Stream primitive for a mapped stream: peel the source's head, apply the
   -- transform, and re-wrap the source's tail so the result stays lazy. The
@@ -41,7 +49,7 @@ sort anthill.prelude.MappedStream
   -- recursion / a match failure on the source's `cons`) instead of value-
   -- dispatching on `src`'s real carrier. `List.splitFirst` never hits this (its
   -- body destructures `cons`/`nil` directly, with no nested abstract call).
-  operation splitFirst(m: MappedStream) -> Option[Pair[A = T, B = MappedStream]] effects E =
+  operation splitFirst(m: MappedStream) -> Option[Pair[A = T, B = MappedStream]] effects {ES, EF} =
     match m
       case mapped(src, fn) ->
         match Stream.splitFirst(src)
@@ -49,8 +57,8 @@ sort anthill.prelude.MappedStream
           case some(pair(h, rest)) -> some(pair(fn(h), mapped(rest, fn)))
 
   -- map constructor: the lazy mapped stream is admissible wherever a
-  -- Stream[Dst, Eff] is expected (it provides Stream).
-  operation map[S, Dst, Eff](s: Stream[S, Eff], f: Function[S, Dst, Eff]) -> Stream[Dst, Eff] =
+  -- Stream[Dst, {EffS, EffP}] is expected (it provides Stream).
+  operation map[S, Dst, EffS, EffP](s: Stream[S, EffS], f: (x: S) -> Dst @ {EffP, -Modify[x]}) -> Stream[Dst, {EffS, EffP}] =
     mapped(s, f)
 end
 
@@ -72,22 +80,26 @@ end
 -- deep-walk), and the recursive call's `Eff` binds from its reconstructed
 -- argument by ordinary op-type-param unification — so it closes to `Eff`.
 sort anthill.prelude.FilteredStream
-  import anthill.prelude.{Stream, Function, Option, Pair, Bool}
+  import anthill.prelude.{Stream, Function, Option, Pair, Bool, Modify}
   import anthill.prelude.Option.{some, none}
   import anthill.prelude.Pair.{pair}
 
   sort T = ?
-  effects E = ?
+  -- WI-441 decoupled rows (cf. MappedStream): source row + pred row, the
+  -- provided Stream's row is their union.
+  effects ES = ?
+  effects EF = ?
 
-  entity filtered(source: Stream[T, E], pred: Function[T, Bool, E])
+  -- Plain `{EF}` row — cf. the `mapped` field note (lacks on public sigs).
+  entity filtered(source: Stream[T, ES], pred: (T) -> Bool @ {EF})
 
-  provides Stream[T, E]
+  provides Stream[T = T, E = {ES, EF}]
 
   -- The inner call is QUALIFIED `Stream.splitFirst` (cf. MappedStream): an
   -- unqualified `splitFirst(src)` would re-enter THIS impl on the source. The
   -- RECURSIVE `splitFirst(filtered(rest, pred))` is intentionally unqualified —
   -- it must self-dispatch back here to drop the next element.
-  operation splitFirst[Elem, Eff](f: FilteredStream[T = Elem, E = Eff]) -> Option[Pair[A = Elem, B = FilteredStream[T = Elem, E = Eff]]] effects Eff =
+  operation splitFirst[Elem, EffS, EffP](f: FilteredStream[T = Elem, ES = EffS, EF = EffP]) -> Option[Pair[A = Elem, B = FilteredStream[T = Elem, ES = EffS, EF = EffP]]] effects {EffS, EffP} =
     match f
       case filtered(src, pred) ->
         match Stream.splitFirst(src)
@@ -97,7 +109,7 @@ sort anthill.prelude.FilteredStream
             else splitFirst(filtered(rest, pred))
 
   -- filter constructor: the lazy filtered stream is admissible wherever a
-  -- Stream[S, Eff] is expected (it provides Stream).
-  operation filter[S, Eff](s: Stream[S, Eff], p: Function[S, Bool, Eff]) -> Stream[S, Eff] =
+  -- Stream[S, {EffS, EffP}] is expected (it provides Stream).
+  operation filter[S, EffS, EffP](s: Stream[S, EffS], p: (x: S) -> Bool @ {EffP, -Modify[x]}) -> Stream[S, {EffS, EffP}] =
     filtered(s, p)
 end
