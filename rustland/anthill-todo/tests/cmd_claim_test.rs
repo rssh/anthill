@@ -1,8 +1,10 @@
 //! `anthill-todo --anthill claim <id>` — first retract+assert command
 //! on the bundle, exercising IndexedFileStore's span-based retract
 //! path (WI-187). The Open WorkItem block is dropped from the source
-//! file by byte range; the Claimed replacement lands in the persist
-//! file. Untargeted facts are untouched.
+//! file by byte range; the Claimed replacement lands in the SAME
+//! workitems.anthill (the store's SingleFile convention — one flush
+//! applies a retract and a write to one file). Untargeted facts are
+//! untouched.
 
 mod common;
 
@@ -47,16 +49,20 @@ fact WorkItem(
 
     let inner = proj.join("anthill-todo");
     let workitems = fs::read_to_string(inner.join("workitems.anthill")).unwrap();
-    // WI-001's Open block must be gone from workitems.anthill.
-    assert!(!workitems.contains("\"WI-001\""),
-        "WI-001 Open block should have been retracted: {workitems}");
+    // WI-001's Open block must be gone, and its Claimed replacement must be
+    // in the SAME workitems.anthill (SingleFile convention) — so exactly one
+    // `status: Open)` remains (WI-002's) and WI-001 reads Claimed.
+    assert_eq!(workitems.matches("status: Open)").count(), 1,
+        "only WI-002 should still be Open: {workitems}");
+    assert!(workitems.contains("status: Claimed(agent: \"claude\""),
+        "WI-001 Claimed replacement should be in workitems.anthill: {workitems}");
     // WI-002 untouched.
     assert!(workitems.contains("\"WI-002\""),
         "WI-002 should be intact: {workitems}");
 
     // The Claimed replacement landed in some .anthill file — the
-    // persist-side facts.anthill — and includes the agent and a Z-
-    // suffixed timestamp.
+    // SingleFile convention targets workitems.anthill — and includes
+    // the agent and a Z-suffixed timestamp.
     let mut found_claimed = false;
     for entry in fs::read_dir(&inner).unwrap() {
         let path = entry.unwrap().path();

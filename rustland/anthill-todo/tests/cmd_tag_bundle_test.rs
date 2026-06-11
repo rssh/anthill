@@ -1,10 +1,10 @@
 //! WI-009 (bundle catalogue): `tag` / `untag` through the `--anthill` bundle
 //! path — the WI-388 named-list primitives previously implemented only in the
 //! native (clap) CLI. Mirrors `cmd_tag_test`'s native cases and adds
-//! CROSS-PATH interop: the two paths write new facts to different files
-//! (bundle `persist` → facts.anthill, native append → workitems.anthill),
-//! both read every project .anthill file, so each must see and remove the
-//! other's Tag facts.
+//! CROSS-PATH interop: both paths now target workitems.anthill (the
+//! bundle store's SingleFile convention; native appends directly), and
+//! both read every project .anthill file, so each must see and remove
+//! the other's Tag facts.
 
 mod common;
 
@@ -68,6 +68,19 @@ fn bundle_tag_persists_and_reports() {
     assert!(combined.contains("fact Tag("), "no Tag fact written: {combined}");
     assert!(combined.contains("workitem: \"WI-001\""));
     assert!(combined.contains("name: \"typing\""));
+
+    // The SingleFile convention targets the legacy layout: the persisted
+    // fact must land in workitems.anthill itself, not a side facts.anthill.
+    let workitems = std::fs::read_to_string(proj.join("anthill-todo/workitems.anthill"))
+        .expect("read workitems.anthill");
+    assert!(
+        workitems.contains("fact Tag("),
+        "Tag fact not in workitems.anthill: {workitems}"
+    );
+    assert!(
+        !proj.join("anthill-todo/facts.anthill").exists(),
+        "facts.anthill should not be created"
+    );
 }
 
 #[test]
@@ -135,8 +148,7 @@ fn native_tag_bundle_untag_interop() {
     assert!(!combined.contains("fact Tag("), "Tag fact survived: {combined}");
 }
 
-/// Bundle-written tag (facts.anthill) must be visible to and removable by
-/// the native path.
+/// Bundle-written tag must be visible to and removable by the native path.
 #[test]
 fn bundle_tag_native_untag_interop() {
     let tmp = tempfile::tempdir().expect("tempdir");

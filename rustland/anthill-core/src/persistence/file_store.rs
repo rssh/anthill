@@ -28,13 +28,18 @@ use super::{BulkStore, PersistenceError, Store};
 
 // ── File naming convention ─────────────────────────────────────
 
-/// How facts map to file paths.
+/// How facts map to file paths (proposal 007 §"File conventions").
 #[derive(Clone, Debug)]
 pub enum FileConvention {
     /// All facts go to a single `facts.anthill` file.
     Flat,
     /// Facts are grouped by their domain name: `<domain>.anthill`.
     ByDomain,
+    /// All facts go to a single named file under the root — the legacy
+    /// anthill-todo layout, where every runtime-persisted fact lands in
+    /// the same `workitems.anthill` the loader reads and the native CLI
+    /// appends to.
+    SingleFile(String),
 }
 
 // ── Pending operations ─────────────────────────────────────────
@@ -76,6 +81,7 @@ impl FileStore {
     fn fact_path(&self, kb: &KnowledgeBase, _sort: TermId, domain: TermId) -> PathBuf {
         match &self.convention {
             FileConvention::Flat => self.root.join("facts.anthill"),
+            FileConvention::SingleFile(name) => self.root.join(name),
             FileConvention::ByDomain => {
                 let printer = print::TermPrinter::new(kb);
                 let domain_name = printer.print_term(domain);

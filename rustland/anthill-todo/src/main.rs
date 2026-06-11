@@ -2147,26 +2147,31 @@ fn run_anthill_bundle(argv: &[String]) -> ExitCode {
     // commands (add / feedback / claim / ...) call `Store.persist` /
     // `Store.flush` on this entity; the registry routes the dispatch to
     // the matching FileStore instance backing the project's anthill-todo/
-    // directory. `Flat` convention matches the legacy on-disk layout
-    // (one workitems.anthill, no per-fact subfolders).
+    // directory. `SingleFile("workitems.anthill")` matches the legacy
+    // on-disk layout: every runtime-persisted fact lands in the same
+    // workitems.anthill the native CLI appends to (`Flat` would write a
+    // separate facts.anthill — proposal 007's custom-persistence
+    // conventions exist precisely so the store can target the project's
+    // real file).
     let store_root = scan_dir(&project_dir);
     let store_root_str = store_root.to_string_lossy().to_string();
     let store_value = {
         use anthill_core::persistence::file_store::FileConvention;
         use anthill_core::persistence::indexed_file_store::IndexedFileStore;
         let fs_sym = interp.kb_mut().intern("FileStore");
-        let flat_sym = interp.kb_mut().intern("Flat");
+        let single_file_sym = interp.kb_mut().intern("SingleFile");
         let root_field = interp.kb_mut().intern("root");
         let conv_field = interp.kb_mut().intern("convention");
+        let file_field = interp.kb_mut().intern("file");
         let v = Value::Entity {
             functor: fs_sym,
             pos: vec![].into(),
             named: vec![
                 (root_field, Value::Str(store_root_str.clone())),
                 (conv_field, Value::Entity {
-                    functor: flat_sym,
+                    functor: single_file_sym,
                     pos: vec![].into(),
-                    named: vec![].into(),
+                    named: vec![(file_field, Value::Str("workitems.anthill".to_string()))].into(),
                 }),
             ].into(),
         };
@@ -2183,7 +2188,10 @@ fn run_anthill_bundle(argv: &[String]) -> ExitCode {
         // of the corresponding parsed Item::Fact spans. Retract on
         // any source-loaded RuleId then knows exactly which file and
         // byte range to drop.
-        let mut store = IndexedFileStore::new(store_root, FileConvention::Flat);
+        let mut store = IndexedFileStore::new(
+            store_root,
+            FileConvention::SingleFile("workitems.anthill".to_string()),
+        );
         for (file, result) in project_items.iter()
             .zip(per_file_results.iter().skip(project_offset))
         {

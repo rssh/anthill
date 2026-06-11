@@ -6,10 +6,10 @@
 //! binary against it, and asserts a Feedback fact lands in the project
 //! directory through the FileStore persist+flush path.
 //!
-//! The bundle's FileConvention::Flat writes to facts.anthill (not
-//! workitems.anthill the legacy text-append shim used). Both files are
-//! `.anthill` and BulkStore::pull at next startup picks both up — the
-//! persistence layer is filename-blind by design.
+//! The bundle's store uses FileConvention::SingleFile("workitems.anthill"),
+//! so runtime-persisted facts land in the same workitems.anthill the
+//! legacy text-append shim used (BulkStore::pull is filename-blind, so
+//! older facts.anthill files from the previous Flat convention still load).
 
 mod common;
 
@@ -51,8 +51,8 @@ fn feedback_persists_fact_to_project_dir() {
     assert!(stdout.contains("feedback on WI-001: ported from anthill bundle"),
         "unexpected stdout: {stdout}");
 
-    // The fact lands in some `.anthill` file under anthill-todo/. The
-    // FileStore's Flat convention writes facts.anthill; the test is
+    // The fact lands in some `.anthill` file under anthill-todo/ (the
+    // SingleFile convention targets workitems.anthill); the test is
     // tolerant of any landing site so a future routing change doesn't
     // require a fixture rewrite.
     let inner = proj.join("anthill-todo");
