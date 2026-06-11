@@ -189,6 +189,14 @@ pub enum LoadError {
         position: &'static str,
         name: String,
     },
+    /// WI-440: an unresolved name inside a `-E` effect-absence label
+    /// (`-Modify[zzz]` with no such binder/value in scope). Load-BLOCKING —
+    /// the declared lacks-constraint would be VACUOUS (nothing could ever
+    /// match the place), so a typo would silently disable the check the
+    /// author wrote.
+    UnresolvedEffectPlace {
+        name: String,
+    },
 }
 
 impl LoadError {
@@ -237,6 +245,13 @@ impl LoadError {
                     position, name,
                 )
             }
+            LoadError::UnresolvedEffectPlace { name } => {
+                format!(
+                    "unresolved place `{}` in a `-…` effect-absence label — \
+                     the lacks-constraint would be vacuous",
+                    name,
+                )
+            }
         }
     }
 
@@ -255,7 +270,9 @@ impl LoadError {
             | LoadError::IncompatibleOverride { .. }
             // WI-366: a value-in-type in a sort-relation position is not yet
             // resolvable — fail loudly rather than run with an unenforced clause.
-            | LoadError::ValueInTypeNotResolved { .. })
+            | LoadError::ValueInTypeNotResolved { .. }
+            // WI-440: a typo'd place in a `-…` absence label = vacuous constraint.
+            | LoadError::UnresolvedEffectPlace { .. })
     }
 }
 
@@ -297,6 +314,13 @@ impl std::fmt::Display for LoadError {
                     f,
                     "value-in-type binding in {position} (`{name}[…]`) is not yet \
                      resolved (gated on effect-expressions-as-types)"
+                )
+            }
+            LoadError::UnresolvedEffectPlace { name } => {
+                write!(
+                    f,
+                    "unresolved place `{name}` in a `-…` effect-absence label — \
+                     the lacks-constraint would be vacuous"
                 )
             }
         }
@@ -4127,6 +4151,12 @@ struct Loader<'a> {
     // canonical name from the op frame, doc §2) rather than failing as an
     // unresolved name. Empty except during that one arrow-type conversion.
     arrow_binder_scope: HashMap<String, Symbol>,
+    // WI-440: true while lowering the INNER label of a `-E` absence atom
+    // (`TypeExpr::EffectAbsent`). An unresolved name there is upgraded from the
+    // advisory `UnresolvedName` to the load-BLOCKING `ValueInTypeNotResolved`:
+    // a typo'd place (`-Modify[zzz]`) would otherwise load as a vacuous
+    // constraint with only a warning — silently unenforced.
+    in_effect_absence: bool,
     // Description index counter per target (keyed by TermId raw)
     desc_index: HashMap<u32, i64>,
     // ── Occurrence tracking ─────────────────────────────────────
@@ -4270,6 +4300,7 @@ impl<'a> Loader<'a> {
             desc_index: HashMap::new(),
             type_param_vars: HashMap::new(),
             arrow_binder_scope: HashMap::new(),
+            in_effect_absence: false,
             defined_sorts: Vec::new(),
             fact_rule_ids: Vec::new(),
             source_id,
@@ -4513,11 +4544,20 @@ impl<'a> Loader<'a> {
                     }
                 }
                 let sym = self.kb.symbols.intern(&lookup_name);
-                self.errors.push(LoadError::UnresolvedName {
-                    name: lookup_name,
-                    span: name.span,
-                    scope_name: self.scope_display_name(),
-                });
+                // WI-440: inside a `-E` absence label, an unresolved name means
+                // the declared constraint is VACUOUS (nothing would ever match
+                // the place) — fail loudly instead of warning and proceeding.
+                if self.in_effect_absence {
+                    self.errors.push(LoadError::UnresolvedEffectPlace {
+                        name: lookup_name,
+                    });
+                } else {
+                    self.errors.push(LoadError::UnresolvedName {
+                        name: lookup_name,
+                        span: name.span,
+                        scope_name: self.scope_display_name(),
+                    });
+                }
                 sym
             }
         }
@@ -6503,6 +6543,14 @@ impl<'a> Loader<'a> {
                     .iter()
                     .map(|e| self.type_expr_to_child(e, span, owner))
                     .collect();
+                // WI-440 (row-openness decision): an absence-only annotation
+                // (`@ -Modify[x]`) stays a CLOSED row carrying the lacks atom —
+                // openness is written EXPLICITLY with a row variable
+                // (`@ {Eff, -Modify[x]}`, `Eff` an op type param the HOF also
+                // declares via `effects Eff`). An implicit fresh tail was tried
+                // and reverted: the minted var is unnameable, so a HOF APPLYING
+                // the callback surfaced an "undeclared effect ?ρ" it had no
+                // syntax to declare.
                 let any_node = matches!(param_child, TypeChild::Node(_))
                     || matches!(result_child, TypeChild::Node(_))
                     || effect_children.iter().any(|c| matches!(c, TypeChild::Node(_)));
@@ -6582,7 +6630,12 @@ impl<'a> Loader<'a> {
                 // `-E` lacks-atom: ground inner ⇒ hash-consed `absent` term
                 // (mirror `type_expr_to_child`); a denoted-bearing inner ⇒ the
                 // occurrence `absent` form (carries the poison).
-                match self.type_expr_to_child(inner, span, owner) {
+                // WI-440: flag the inner lowering so an unresolved name there
+                // is a load-blocking error (a vacuous absence), not a warning.
+                let saved_absence = std::mem::replace(&mut self.in_effect_absence, true);
+                let inner_child = self.type_expr_to_child(inner, span, owner);
+                self.in_effect_absence = saved_absence;
+                match inner_child {
                     node_occurrence::TypeChild::Ground(t) => {
                         node_occurrence::TypeChild::Ground(self.kb.make_effect_expression_absent(t))
                     }
@@ -6662,8 +6715,20 @@ impl<'a> Loader<'a> {
         use node_occurrence::TypeChild;
         let mut row = TypeChild::Node(self.kb.make_empty_row_occ(span, owner));
         for (e, child) in effects.iter().zip(effect_children.into_iter()).rev() {
+            // WI-440: a row-tail VARIABLE element (an op-level row param in a
+            // mixed annotation, `@ {Eff, -Modify[x]}`) folds as `open(?Eff)` —
+            // wrapping it in `present(?Eff)` would decompose the VAR as a
+            // present LABEL, losing the tail (the ground path's
+            // `build_canonical_effects_rows` already special-cases the Var).
+            let is_row_var = matches!(
+                &child,
+                TypeChild::Ground(t)
+                    if matches!(self.kb.get_term(*t), Term::Var(Var::Global(_)))
+            );
             let atom = if matches!(e, TypeExpr::EffectAbsent(_)) {
                 child
+            } else if is_row_var {
+                TypeChild::Node(self.kb.make_open_occ(child, span, owner))
             } else {
                 TypeChild::Node(self.kb.make_present_occ(child, span, owner))
             };

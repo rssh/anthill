@@ -3554,7 +3554,18 @@ fn check_apply_iter(
                     // WI-398: validate against the ELIMINATED type for a projection param
                     // (`s.cell.T` → `String`); the raw type for a non-projection param.
                     let param_type = effective_param_types.get(param_sym).unwrap_or(param_type);
-                    if let Some(err) = validate_arg_against_param(
+                    // WI-440: the lacks/closed-row CHECKING direction for an
+                    // eta'd callback argument (binder-aligned row validation).
+                    // Runs FIRST: when both it and the generic subtype check
+                    // would reject (e.g. a ground `@ {}` arrow), this one names
+                    // the offending effect label, where the generic mismatch
+                    // prints two identically-displayed arrow types.
+                    if let Some(err) = validate_callback_effect_row(
+                        kb, &subst, fn_sym, *param_sym, param_type,
+                        &pos_args[i], &arg_result.ty, span,
+                    ) {
+                        arg_type_errors.push(err);
+                    } else if let Some(err) = validate_arg_against_param(
                         kb, &mut subst, &arg_result.ty, param_type, span,
                         TypeErrorContext::OperationArgument { op_name: fn_sym, param: *param_sym },
                         false, // operation args stay strict (no Option-wrapping interim)
@@ -3564,12 +3575,18 @@ fn check_apply_iter(
                 }
             }
         }
-        for (i, (arg_name, _)) in named_args.iter().enumerate() {
+        for (i, (arg_name, arg_occ)) in named_args.iter().enumerate() {
             if let Ok(ref arg_result) = named_results[i] {
                 if let Some((param_sym, param_type)) = op.params.iter().find(|(s, _)| *s == *arg_name) {
                     // WI-398: validate against the eliminated projection type (above).
                     let param_type = effective_param_types.get(param_sym).unwrap_or(param_type);
-                    if let Some(err) = validate_arg_against_param(
+                    // WI-440: callback row check first — see the positional loop.
+                    if let Some(err) = validate_callback_effect_row(
+                        kb, &subst, fn_sym, *param_sym, param_type,
+                        arg_occ, &arg_result.ty, span,
+                    ) {
+                        arg_type_errors.push(err);
+                    } else if let Some(err) = validate_arg_against_param(
                         kb, &mut subst, &arg_result.ty, param_type, span,
                         TypeErrorContext::OperationArgument { op_name: fn_sym, param: *param_sym },
                         false, // operation args stay strict (no Option-wrapping interim)
@@ -8000,6 +8017,155 @@ fn validate_arg_against_param(
         expected: declared_g,
         actual: actual_g,
     })
+}
+
+/// WI-440: two effect labels match modulo POSITIONAL binder alignment.
+/// Direct structural equality first ([`resolved_labels_equal`]); otherwise an
+/// applied-effect pair (`Modify[c]` vs `Modify[x]`) matches when the base
+/// effect sorts are EQUAL and the resources are corresponding places under
+/// `place_map` (actual-side place → declared-side place) — the positional
+/// binder correspondence between an eta'd op's own params and the declared
+/// callback's registered `CallbackParam` places.
+fn labels_match_aligned(
+    kb: &KnowledgeBase,
+    subst: &Substitution,
+    place_map: &HashMap<Symbol, Symbol>,
+    a: &Value,
+    e: &Value,
+) -> bool {
+    if resolved_labels_equal(kb, subst, a, e) {
+        return true;
+    }
+    let (
+        TypeExtractor::Parameterized { base: a_base, .. },
+        TypeExtractor::Parameterized { base: e_base, .. },
+    ) = (extract_type(kb, a), extract_type(kb, e))
+    else {
+        return false;
+    };
+    if a_base != e_base {
+        return false;
+    }
+    match (extract_effect_resource_sym(kb, a), extract_effect_resource_sym(kb, e)) {
+        (Some(ar), Some(er)) => ar == er || place_map.get(&ar) == Some(&er),
+        _ => false,
+    }
+}
+
+/// WI-440 — the `-Modify[binder]` CHECKING direction: validate a callback
+/// argument's effect row against the declared callback parameter's row,
+/// aligning the two binder spaces positionally. The declared row's labels
+/// name the callback's registered `CallbackParam` places (`<op>.f.x`, the
+/// WI-341 binder→place resolution); an eta'd operation argument's row names
+/// that op's OWN param places (`<pred>.c`) — param i of one corresponds to
+/// param i of the other (`arg_places` order on both symbols).
+///
+/// For each PRESENT label of the actual row:
+///   * covered by a declared PRESENT label (mod alignment) → ok;
+///   * matching a declared ABSENT label (mod alignment) → REJECT — the
+///     lacks-constraint violation (`Modify[c]` against `-Modify[x]`);
+///   * otherwise: declared row OPEN → absorbed; CLOSED → REJECT — an effect
+///     the declared row does not admit, which would escape the WI-352/353
+///     boundary propagation (that derives from the DECLARED callback row,
+///     not from the argument actually passed).
+///
+/// Conservative skips (return `None`, no check): a non-arrow/`Function`
+/// declared or actual type, a missing effects child, a non-eta argument
+/// (a lambda synthesizes its row against the declared hint elsewhere), an
+/// actual row that is OPEN or carries its own absents, or a row that fails
+/// to decompose. VALIDATION-only: `subst` is read (label walking / bound
+/// row-tail resolution) and never extended — inference stays with the
+/// `unify_types` pass that precedes this check.
+fn validate_callback_effect_row(
+    kb: &mut KnowledgeBase,
+    subst: &Substitution,
+    fn_sym: Symbol,
+    param_sym: Symbol,
+    declared: &Value,
+    arg_occ: &Rc<NodeOccurrence>,
+    actual: &Value,
+    span: Option<Span>,
+) -> Option<TypeError> {
+    let arg_op_sym = extract_var_ref_sym_node(arg_occ)?;
+    // Cheap head gate before `arrow_parts` (which interns its child keys on
+    // every call): most var-ref args land in non-callable param slots.
+    let head_is_callable = match type_head(kb, declared) {
+        TypeHead::Arrow => true,
+        TypeHead::Parameterized { base } => {
+            kb.qualified_name_of(base) == "anthill.prelude.Function"
+        }
+        _ => false,
+    };
+    if !head_is_callable {
+        return None;
+    }
+    let (_, _, act_eff) = arrow_parts(kb, actual)?;
+    let act_eff = act_eff?;
+    let act_row = canonical_effects_row(kb, &act_eff);
+    let (a_present, a_tail, a_absent) = decompose_effect_row(kb, subst, &act_row)?;
+    if a_present.is_empty() || a_tail.is_some() || !a_absent.is_empty() {
+        // A pure actual row conforms to any declared row (subset semantics);
+        // an open / absent-carrying actual is left to the unify path (v1).
+        return None;
+    }
+    let (_, _, decl_eff) = arrow_parts(kb, declared)?;
+    let decl_eff = decl_eff?;
+    let decl_row = canonical_effects_row(kb, &decl_eff);
+    let (e_present, e_tail, e_absent) = decompose_effect_row(kb, subst, &decl_row)?;
+    let actual_places = kb.symbols.arg_places(arg_op_sym);
+    let declared_places = kb.symbols.arg_places(param_sym);
+    // Positional alignment is meaningful only for EQUAL arities — a mismatch
+    // (which the generic arg validation rejects on the param type) must not
+    // silently truncate the map and mis-align the surviving places.
+    if actual_places.len() != declared_places.len() {
+        return None;
+    }
+    let place_map: HashMap<Symbol, Symbol> = actual_places
+        .iter()
+        .copied()
+        .zip(declared_places.iter().copied())
+        .collect();
+    for la in &a_present {
+        if e_present.iter().any(|le| labels_match_aligned(kb, subst, &place_map, la, le)) {
+            continue;
+        }
+        if let Some(viol) =
+            e_absent.iter().find(|le| labels_match_aligned(kb, subst, &place_map, la, le))
+        {
+            return Some(TypeError::Other {
+                span,
+                context: TypeErrorContext::OperationArgument { op_name: fn_sym, param: param_sym },
+                expected: format!(
+                    "callback for parameter `{}` of `{}` to lack `{}` (its `-…` lacks-constraint)",
+                    kb.resolve_sym(param_sym),
+                    kb.qualified_name_of(fn_sym),
+                    type_display_name_value(kb, viol),
+                ),
+                actual: format!(
+                    "operation `{}` declares `{}` on the corresponding parameter",
+                    kb.qualified_name_of(arg_op_sym),
+                    type_display_name_value(kb, la),
+                ),
+            });
+        }
+        if e_tail.is_none() {
+            return Some(TypeError::Other {
+                span,
+                context: TypeErrorContext::OperationArgument { op_name: fn_sym, param: param_sym },
+                expected: format!(
+                    "callback effects admitted by parameter `{}` of `{}` (a closed row)",
+                    kb.resolve_sym(param_sym),
+                    kb.qualified_name_of(fn_sym),
+                ),
+                actual: format!(
+                    "operation `{}` declares `{}`, which the closed row does not admit",
+                    kb.qualified_name_of(arg_op_sym),
+                    type_display_name_value(kb, la),
+                ),
+            });
+        }
+    }
+    None
 }
 
 /// Extract the underlying sort symbol from a term in any of the

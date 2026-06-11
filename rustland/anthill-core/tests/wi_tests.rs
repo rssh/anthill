@@ -240,3 +240,6 @@ mod wi424_iterable_members_test;
 
 #[path = "include/wi439_iterable_filter_test.rs"]
 mod wi439_iterable_filter_test;
+
+#[path = "include/wi440_callback_lacks_test.rs"]
+mod wi440_callback_lacks_test;

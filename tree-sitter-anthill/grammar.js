@@ -434,9 +434,13 @@ module.exports = grammar({
     // error recovery across the enclosing sort body. With `(` rejected
     // up-front the parser fails at the bad token and resyncs at the
     // next clause keyword.
+    // WI-440: `commaSep` (not `commaSep1`) so the explicit closed-empty row
+    // `{}` parses — previously `@ {}` failed the braced form and error-
+    // recovered into a zero-width `simple_type` (an empty-name unresolved-
+    // symbol warning downstream, with the annotation silently dropped).
     _effect_set: $ => choice(
       $._effect_type,                                   // single: E
-      seq('{', commaSep1($._effect_type), '}'),         // multiple: {A, B}
+      seq('{', commaSep($._effect_type), '}'),          // braced: {A, B} / {}
     ),
 
     // WI-327: extended `_effect_type` admits the proposal-045 surface
