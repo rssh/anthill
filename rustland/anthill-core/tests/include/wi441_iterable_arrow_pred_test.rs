@@ -111,6 +111,56 @@ end
     );
 }
 
+/// THE user-story shape, end to end: allocate a `List[Cell[Int64]]` and
+/// `find` over it. A pred whose body REALLY mutates the cell it is handed
+/// (`Cell.set`) must NOT compile — rejected by the `-Modify[x]` lacks at
+/// the call site. The read-only pred (`Cell.get`) on the IDENTICAL setup
+/// compiles, so the rejection is the lacks check, not an artifact of the
+/// allocation. (The ops declare `Modify[result]`: the fresh cells escape
+/// via the returned `Option[Cell]` — the WI-314 result-region obligation.)
+#[test]
+fn find_over_cell_list_rejects_mutating_pred_accepts_reader() {
+    let mutating = r#"
+namespace wi441.cells
+  import anthill.prelude.{List, Option, Bool, Int64, Cell, Modify}
+  import anthill.prelude.Iterable.{find}
+
+  operation poke(c: Cell[V = Int64]) -> Bool effects Modify[c] =
+    let u = Cell.set(c, 99)
+    true
+
+  operation boom() -> Option[T = Cell[V = Int64]] effects Modify[result] =
+    let xs = [Cell.new(1), Cell.new(2)]
+    find(xs, poke)
+end
+"#;
+    let errs = load_errors(&[mutating]);
+    assert!(
+        errs.iter().any(|e| e.contains("lack") && e.contains("Modify")),
+        "find over List[Cell] with a REALLY-mutating pred (Cell.set in the \
+         body) must be rejected by the -Modify[x] lacks; got: {errs:?}",
+    );
+
+    let reading = r#"
+namespace wi441.cellsok
+  import anthill.prelude.{List, Option, Bool, Int64, Cell, Modify}
+  import anthill.prelude.Iterable.{find}
+
+  operation peek(c: Cell[V = Int64]) -> Bool =
+    Cell.get(c) > 1
+
+  operation ok() -> Option[T = Cell[V = Int64]] effects Modify[result] =
+    let xs = [Cell.new(1), Cell.new(2)]
+    find(xs, peek)
+end
+"#;
+    let errs = load_errors(&[reading]);
+    assert!(
+        errs.is_empty(),
+        "the same find with a READ-ONLY pred (Cell.get) must compile; got: {errs:?}",
+    );
+}
+
 /// The LAZY half threads too: an effectful pred's row rides the produced
 /// stream (`Stream[Element, {E, EffP}]`, the two-row FilteredStream carrier)
 /// and is paid on CONSUMPTION — the collecting caller must declare it.
