@@ -20,13 +20,13 @@ namespace anthill.stage0.workflow
 
   rule all_deps_verified(?wi)
     :- WorkItem(id: ?wi, depends_on: cons(head: ?dep, tail: ?rest)),
-       WorkItem(id: ?dep, status: Verified(?)),
+       WorkItem(id: ?dep, status: Verified(at: ?)),
        all_deps_verified_rest(?rest)
 
   rule all_deps_verified_rest(nil())
 
   rule all_deps_verified_rest(cons(head: ?dep, tail: ?rest))
-    :- WorkItem(id: ?dep, status: Verified(?)),
+    :- WorkItem(id: ?dep, status: Verified(at: ?)),
        all_deps_verified_rest(?rest)
 
   -- ================================================================
