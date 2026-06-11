@@ -237,3 +237,6 @@ mod wi407_provider_edges_test;
 
 #[path = "include/wi424_iterable_members_test.rs"]
 mod wi424_iterable_members_test;
+
+#[path = "include/wi439_iterable_filter_test.rs"]
+mod wi439_iterable_filter_test;

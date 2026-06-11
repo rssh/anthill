@@ -22,7 +22,7 @@ fn run_int(interp: &mut anthill_core::eval::Interpreter, op: &str) -> i64 {
     }
 }
 
-fn load_errors(extras: &[&str]) -> Vec<String> {
+pub(crate) fn load_errors(extras: &[&str]) -> Vec<String> {
     let dir = crate::common::stdlib_dir();
     let files = crate::common::collect_anthill_files(&dir);
     let mut parsed: Vec<_> = files

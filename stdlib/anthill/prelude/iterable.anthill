@@ -12,6 +12,7 @@
 sort anthill.prelude.Iterable
   import anthill.prelude.{Stream, Option, Bool, Function}
   import anthill.prelude.MappedStream.{mapped}
+  import anthill.prelude.FilteredStream.{filtered}
 
   sort C = ?                          -- carrier (the collection)
   sort Element = ?
@@ -31,4 +32,11 @@ sort anthill.prelude.Iterable
   -- iterator (admissible as a Stream — MappedStream provides Stream).
   operation map[Dst](c: C, f: Function[Element, Dst, E]) -> Stream[Dst, E] =
     mapped(iterator(c), f)
+
+  -- filter PRODUCES a stream, so it returns the lazy `filtered` carrier over
+  -- the iterator (WI-439; admissible as a Stream — FilteredStream provides
+  -- Stream). Tying pred's row to the access row E forces a PURE pred when
+  -- E = {} (e.g. List); the decoupled `-Modify[x]` arrow form is WI-441.
+  operation filter(c: C, pred: Function[Element, Bool, E]) -> Stream[Element, E] =
+    filtered(iterator(c), pred)
 end
