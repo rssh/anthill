@@ -18,7 +18,7 @@ namespace anthill.todo
   import anthill.prelude.{List, Stream, Map, Unit}
   import anthill.prelude.Map.{empty, put, get, contains}
   import anthill.prelude.Bool.{not}
-  import anthill.prelude.String.{length, substring, toUpper, toLower}
+  import anthill.prelude.String.{length, substring, toUpper, toLower, padRight}
   import anthill.prelude.Console.{console, println, eprintln,
                                   ConsoleOutput, ConsoleError}
   import anthill.cli.parse.{parse_argv, ParseResult, ParsedArgs,
@@ -35,6 +35,7 @@ namespace anthill.todo
   import anthill.prelude.Int64.{to_string}
   import anthill.prelude.String.{concat}
   import anthill.prelude.List.{cons, nil}
+  import anthill.prelude.Iterable.{find, size}
   import anthill.reflect.{Term, Substitution, term_functor_name,
                           term_field, term_as_string, term_as_entity,
                           fresh_var, make_fn, as_term, term_to_string,
@@ -462,15 +463,15 @@ namespace anthill.todo
                       concat(name, "'")))))
                 1
 
-    -- Find the first Binding with the given name; none() otherwise.
+    -- Find the first Binding with the given name; none() otherwise
+    -- (the stdlib `Iterable.find` + unwrap to the binding's value;
+    -- the `args.find(...)` dot form is WI-443).
     operation get_arg(args: List[Binding], name: String) -> Option[String] =
-      match args
-        case nil() -> none()
-        case cons(b, rest) ->
+      match find(args, lambda b ->
           match b
-            case Binding(bname, bvalue) ->
-              if eq(bname, name) then some(bvalue)
-              else get_arg(rest, name)
+            case Binding(bname, _) -> eq(bname, name))
+        case none() -> none()
+        case some(Binding(_, bvalue)) -> some(bvalue)
 
     operation not_yet(name: String) -> Int64
       effects ConsoleError
@@ -504,12 +505,8 @@ namespace anthill.todo
           let _ = match sp
             case OperationSpec(name, description, _, _) ->
               println(console(),
-                concat("  ", concat(pad_right(name, 20), description)))
+                concat("  ", concat(padRight(name, 20), description)))
           print_help_lines(rest)
-
-    operation pad_right(s: String, width: Int64) -> String =
-      if lt(length(s), width) then pad_right(concat(s, " "), width)
-      else s
 
     -- Bump the count for `status` in `acc`, appending a new entry
     -- if absent. Returns the rebuilt list (immutable).
@@ -578,18 +575,13 @@ namespace anthill.todo
         case cons(w, rest) ->
           tally_w(rest, bump(acc, status_name_w(w)))
 
-    operation count_items_w(items: List[WorkItem]) -> Int64 =
-      match items
-        case nil() -> 0
-        case cons(_, rest) -> 1 + count_items_w(rest)
-
     -- Total count line, then per-status breakdown ordered alphabetically
     -- by status name. Mirrors the legacy `run_status` output shape.
     operation cmd_status(s: Cell[State]) -> Int64
       effects {ConsoleOutput, Error}
     =
       let items = WorkItemStore.all(s)
-      let total = count_items_w(items)
+      let total = size(items)
       if eq(total, 0) then
         let _ = println(console(), "No work items found.")
         0
