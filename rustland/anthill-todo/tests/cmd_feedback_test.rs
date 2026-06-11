@@ -8,8 +8,10 @@
 //!
 //! The bundle's store uses FileConvention::SingleFile("workitems.anthill"),
 //! so runtime-persisted facts land in the same workitems.anthill the
-//! legacy text-append shim used (BulkStore::pull is filename-blind, so
-//! older facts.anthill files from the previous Flat convention still load).
+//! legacy text-append shim used. (No real project ever carried a
+//! facts.anthill: the bundle path was always behind the hidden
+//! --anthill flag, so the earlier Flat convention only ever wrote to
+//! throwaway test dirs.)
 
 mod common;
 
