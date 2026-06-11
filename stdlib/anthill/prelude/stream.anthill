@@ -65,8 +65,13 @@ sort anthill.prelude.Stream
       case none() -> none
       case some(pair(h, rest)) ->
         if pred(h) then some(h) else find(rest, pred)
-  operation isEmpty[Elem, Eff](s: Stream[Elem, Eff]) -> Bool
-    effects Eff
+  -- Default body (WI-362 pattern, like takeN/collect): the interpreter has no
+  -- equational-rewrite fallback, so the law rules below alone make isEmpty
+  -- resolvable but not evaluable; the body is the same one splitFirst step.
+  operation isEmpty[Elem, Eff](s: Stream[Elem, Eff]) -> Bool effects Eff =
+    match splitFirst(s)
+      case none() -> true
+      case some(_) -> false
 
   -- Stream trivially provides Iterable (proposal library/002, "Relationship to
   -- Stream"): a Stream IS its own iterator, so `iterator(s) = s`. This gives

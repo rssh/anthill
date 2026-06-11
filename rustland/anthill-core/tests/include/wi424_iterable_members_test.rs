@@ -115,6 +115,25 @@ end
     );
 }
 
+/// `Iterable.isEmpty` on a List typechecks PURE (List's access row is `{}`)
+/// and evaluates: one `splitFirst` step of the produced iterator.
+#[test]
+fn iterable_is_empty_on_list() {
+    let src = r#"
+namespace test.wi424.isempty_list
+  import anthill.prelude.{List, Int64, Bool}
+  import anthill.prelude.Iterable.{isEmpty}
+
+  operation check(xs: List[T = Int64]) -> Bool = isEmpty(xs)
+  operation on_empty() -> Int64 = if check([]) then 1 else 0
+  operation on_full() -> Int64 = if check([1, 2]) then 1 else 0
+end
+"#;
+    let mut interp = crate::common::interp_for(src);
+    assert_eq!(run_int(&mut interp, "test.wi424.isempty_list.on_empty"), 1);
+    assert_eq!(run_int(&mut interp, "test.wi424.isempty_list.on_full"), 0);
+}
+
 /// A NON-Stream Iterable carrier: `BoxColl` provides Iterable (with its own
 /// `iterator` unwrapping to a List) but does NOT provide Stream — so
 /// `find`/`map` reach it ONLY through the Iterable members, never through
@@ -125,7 +144,7 @@ fn iterable_members_on_non_stream_carrier() {
 namespace test.wi424.boxcoll
   import anthill.prelude.{List, Int64, Option, Bool, Stream, Iterable}
   import anthill.prelude.Option.{some, none}
-  import anthill.prelude.Iterable.{find}
+  import anthill.prelude.Iterable.{find, isEmpty}
 
   sort BoxColl
     import anthill.prelude.{List, Int64, Stream, Iterable}
@@ -145,11 +164,15 @@ namespace test.wi424.boxcoll
 
   operation found() -> Int64 = unwrap(find(boxed([1, 2, 3, 4]), is_big))
   operation found_none() -> Int64 = unwrap(find(boxed([1, 2]), is_big))
+  operation empty_box() -> Int64 = if isEmpty(boxed([])) then 1 else 0
+  operation full_box() -> Int64 = if isEmpty(boxed([1])) then 1 else 0
 end
 "#;
     let mut interp = crate::common::interp_for(src);
     assert_eq!(run_int(&mut interp, "test.wi424.boxcoll.found"), 3);
     assert_eq!(run_int(&mut interp, "test.wi424.boxcoll.found_none"), -1);
+    assert_eq!(run_int(&mut interp, "test.wi424.boxcoll.empty_box"), 1);
+    assert_eq!(run_int(&mut interp, "test.wi424.boxcoll.full_box"), 0);
 }
 
 /// EVAL: Iterable.find / Iterable.map run end-to-end on a List.

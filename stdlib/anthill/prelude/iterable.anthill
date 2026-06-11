@@ -41,6 +41,12 @@ sort anthill.prelude.Iterable
   operation find[EffP](c: C, pred: (x: Element) -> Bool @ {EffP, -Modify[x]}) -> Option[Element] effects {E, EffP} =
     Stream.find(iterator(c), pred)
 
+  -- isEmpty: a read observation derivable from the iterator alone, so it
+  -- lives here (not on the build algebras Persistent/MutableCollection).
+  -- It pays E: checking costs one splitFirst step of the produced stream.
+  operation isEmpty(c: C) -> Bool effects E =
+    Stream.isEmpty(iterator(c))
+
   -- map PRODUCES a stream, so it returns the lazy `mapped` carrier over the
   -- iterator (admissible as a Stream — MappedStream provides Stream).
   operation map[Dst, EffP](c: C, f: (x: Element) -> Dst @ {EffP, -Modify[x]}) -> Stream[Dst, {E, EffP}] =
