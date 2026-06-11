@@ -165,7 +165,7 @@ Emits:
 
 ```
 SortAlias(Eq.T, ?)                                    -- type parameter (Var)
-Description(Eq.T, "The element type")                 -- description fact
+Description(Eq.T, "The element type", 0)              -- description fact (0-based index)
 ```
 
 ### 6. Merge `Term::Unspecified` into `Term::Var`
@@ -308,13 +308,35 @@ describe Account.balance {<
 
 ## Implementation status
 
+### Correction (2026-06-11): implemented fact shape
+
+The proposal body writes descriptions as `Description(target, text)` (and sketches an
+ordered content list within a single fact). The implementation stores **one fact per
+`{< >}` block** with an explicit order index as a third argument:
+
+```
+Description(target, text, index)
+```
+
+- `index` is 0-based per target, in declaration order (`emit_desc_fact` in `kb/load.rs`).
+- The index counter is per file (each file gets a fresh `Loader`), so a `describe` in
+  another file appends further facts but restarts its index at 0 — order is encoded
+  within a file, not across files.
+- Multiple blocks on one target are therefore separate facts, never merged into a list;
+  the stored `index` enables reassembly in declaration order. (The current readers —
+  `kb_descriptions` in `anthill-stl` and the bridge `descriptions()` — do not yet read
+  it: they substitute enumeration order / omit the field.)
+
+`kernel-language.md` §4.1 documents this shape (corrected the same day). The status
+bullets and the "Emits:" example below have been updated to match.
+
 ### Implemented
 
 - **§1 Clean separation** — fully implemented
 - **§2 Description block syntax** — `description_block` token in grammar, parsed and converted
 - **§3 Inline variable descriptions** — fully implemented in both term and type positions. `? {< text >}` works in rules, operation params, entity fields, return types, sort bindings, and `sort T = ? {< text >}`. Variables (`?`, `?name`) are valid as types everywhere via `variable_term` in the `_type` grammar rule. Named type variables share identity within scope.
-- **§4 The `describe` construct** — `describe Name {< text >}` grammar rule, parse IR (`Item::Describe`), converter, loader emitting `Description(target, text)` facts
-- **§5 Representation** — descriptions stored as `Description(target, text)` KB facts. Content is plain text (structured content model with `@Name` references and `## heading` sections is a tooling concern — see below).
+- **§4 The `describe` construct** — `describe Name {< text >}` grammar rule, parse IR (`Item::Describe`), converter, loader emitting `Description(target, text, index)` facts
+- **§5 Representation** — descriptions stored as `Description(target, text, index)` KB facts, one per block (see Correction above). Content is plain text (structured content model with `@Name` references and `## heading` sections is a tooling concern — see below).
 - **§6 Remove `Term::Unspecified`** — fully removed from grammar (`unspecified_term`), parse IR, converter, term store, KB operations (collect_vars, apply_subst, reify, subst_term), discrimination tree, loader, printer, codegen
 - **§8 Agent-requested descriptions** — no language changes needed. Agents can already assert `fact DescRequest(target, agent, context)` and query with `by_functor("DescRequest")`. Workitem integration uses existing Stage 0 syntax.
 - **§10 Deprecation of `<"...">` syntax** — fully removed

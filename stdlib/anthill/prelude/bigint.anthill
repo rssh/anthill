@@ -11,7 +11,7 @@ sort anthill.prelude.BigInt
 
   -- Conversion operations
   operation to_bigint(n: Int64) -> BigInt
-  operation to_int(n: BigInt) -> Option[T = Int64]
+  operation to_int(n: BigInt) -> Option[Int64]
   -- BigInt → Float. Lossy for values beyond f64's precision (~2^53) —
   -- rounds to nearest representable Float, may saturate to Infinity.
   -- Total function: all inputs produce a defined Float (possibly Inf).

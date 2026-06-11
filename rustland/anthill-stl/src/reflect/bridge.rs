@@ -675,7 +675,9 @@ impl KB for KbBridge {
     fn descriptions(&self, target: Option<&str>) -> Vec<DescriptionInfo> {
         let mut results = vec![];
 
-        // Description facts: Description(target_term, text_term)
+        // Description facts: Description(target_term, text_term, index_term).
+        // The stored per-target index (pos[2]) is not yet read here —
+        // DescriptionInfo carries no index field; results ride fact order.
         for (_rid, head) in self.facts_by_sort_name("Description") {
             let pos = self.term_pos_args(head);
             if pos.len() < 2 {

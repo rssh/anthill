@@ -11,7 +11,7 @@ sort anthill.prelude.Map
   operation put(m: Map, key: K, value: V) -> Map
 
   -- Lookup
-  operation get(m: Map, key: K) -> Option[T = V]
+  operation get(m: Map, key: K) -> Option[V]
   operation contains(m: Map, key: K) -> Bool
 
   -- Removal

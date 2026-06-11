@@ -12,7 +12,7 @@ This specification is **self-contained**: it can be implemented without referenc
 
 3. **Algebraic specification.** The kernel is in the tradition of algebraic specification languages (OBJ, CafeOBJ, Maude): a namespace declares sorts (unspecified, type aliases, or defined types), operations (typed behavioral specs with contracts), and rules (laws).
 
-4. **Partial formalization.** Any declaration can have one or more **description blocks** (`{< >}`) — free-form text preserved as KB facts. Multiple blocks are stored as an ordered list within a single fact. Combined with anonymous variables (`?`), this allows a spectrum from fully informal to fully formal within the same language.
+4. **Partial formalization.** Any declaration can have one or more **description blocks** (`{< >}`) — free-form text preserved as KB facts. Each block is stored as its own indexed `Description` fact. Combined with anonymous variables (`?`), this allows a spectrum from fully informal to fully formal within the same language.
 
 5. **Everything carries metadata.** Every fact has provenance (who, when, trust level, iteration). Trust is attached to facts, not to agents.
 
@@ -109,7 +109,7 @@ Term ::= Const(type, value)            -- ground value: 42 : Int64, "hello" : St
 
 ### 4.1 Description Blocks
 
-Description blocks (`{< >}`) attach human-readable text to declarations. Unlike comments (`--`, `{- -}`), description blocks are **structural** — they are preserved as `Description` facts in the KB. Multiple description blocks can be attached to the same target; they are stored as an ordered list within a single `Description` fact.
+Description blocks (`{< >}`) attach human-readable text to declarations. Unlike comments (`--`, `{- -}`), description blocks are **structural** — they are preserved as `Description` facts in the KB. Multiple description blocks can be attached to the same target; each block is stored as its own `Description` fact, ordered by an index argument.
 
 ```
 -- Inline description on an abstract sort:
@@ -142,9 +142,9 @@ Description blocks can appear in three positions:
 2. **After `describe Name`** — standalone, can reference any named symbol. Appends to existing descriptions.
 3. **After a variable (`?` or `?name`), closed by trailing `?`** — describes what the variable represents in that rule, constraint, fact, or operation contract. The trailing `?` delimiter disambiguates variable descriptions from declaration descriptions.
 
-Multiple `{< >}` blocks on the same target are collected into an ordered list, preserving declaration order. The `describe` construct appends to the existing list if a `Description` fact already exists for that target, enabling incremental annotation across files.
+Multiple `{< >}` blocks on the same target each emit a separate fact with an increasing index, preserving declaration order. The `describe` construct emits additional `Description` facts for its target, enabling incremental annotation across files (the index counter is per file, so declaration order is encoded within a file, not across files).
 
-Descriptions are stored as `Description(target, [text₁, text₂, …])` facts, queryable via `by_functor("Description")`. For variables, the target is the variable's term in the KB.
+Descriptions are stored as `Description(target, text, index)` facts — one fact per block, with a 0-based per-target `index` — queryable via `by_functor("Description")`. For variables, the target is the variable's term in the KB.
 
 | Purpose | Syntax | Structural? |
 |---------|--------|-------------|
@@ -1805,6 +1805,7 @@ ImportPath  ::= Name                                           -- import a name
               | Name '.' '*'                                   -- wildcard import
 NameList    ::= Name (',' Name)*
 SortBinding ::= Name ['=' Type]                 -- without '= Type': punning (Eq[T] = Eq[T = T])
+              | Type                            -- positional: next unfilled param in declaration order (§5.2)
               | VariableTerm                    -- variable binding: Modify[?], Modify[?r]
 
 NamespaceContent ::= Import | Export

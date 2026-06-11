@@ -70,7 +70,7 @@ enum anthill.prelude.List
   -- `provides` clause (not `fact Stream[…]`) is used so the row `{}` lowers
   -- through the type-aware path (the fact-head term path makes `Ref("{}")` →
   -- unresolved). `iterator` then writes both the threaded element `[Elem]` and
-  -- the pure effect, so `Stream[T = Elem, E = {}]` is fully in the type.
+  -- the pure effect, so `Stream[Elem, {}]` is fully in the type.
   provides Stream[T, {}]
   -- WI-424: the Iterable provision also WRITES the observation effect `E = {}`
   -- (same WI-387 reasoning as the Stream provision above — `provides`, not

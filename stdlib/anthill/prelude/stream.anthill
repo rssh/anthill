@@ -19,26 +19,26 @@ sort anthill.prelude.Stream
   -- `sort E = ? requires EffectsRuntime[Effects = E]`).
   effects E = ?           -- effect row required to observe
 
-  operation splitFirst[Elem, Eff](s: Stream[T = Elem, E = Eff]) -> Option[T = Pair[A = Elem, B = Stream[T = Elem, E = Eff]]]
+  operation splitFirst[Elem, Eff](s: Stream[Elem, Eff]) -> Option[Pair[A = Elem, B = Stream[Elem, Eff]]]
     effects Eff
-  operation head[Elem, Eff](s: Stream[T = Elem, E = Eff]) -> Option[T = Elem]
+  operation head[Elem, Eff](s: Stream[Elem, Eff]) -> Option[Elem]
     effects Eff
-  operation tail[Elem, Eff](s: Stream[T = Elem, E = Eff]) -> Stream[T = Elem, E = Eff]
+  operation tail[Elem, Eff](s: Stream[Elem, Eff]) -> Stream[Elem, Eff]
     effects Eff
   -- Default definitions over the primitive `splitFirst` (WI-362, enabled by
   -- WI-365 abstract spec-op self-typing). A carrier supplies only `splitFirst`;
   -- these derive `takeN` / `collect` once for every `fact Stream[X]` provider.
   -- WI-380: each op declares its OWN element `Elem` / effect `Eff` type params
-  -- (042), bound from the receiver `Stream[T = Elem, E = Eff]` at the call site;
+  -- (042), bound from the receiver `Stream[Elem, Eff]` at the call site;
   -- the self-receiver call `splitFirst(s)` threads them via the rigid-param check
   -- (WI-392, body side) and the carrier effect-row binding (WI-393, consumption).
-  operation takeN[Elem, Eff](s: Stream[T = Elem, E = Eff], n: Int64) -> List[T = Elem] effects Eff =
+  operation takeN[Elem, Eff](s: Stream[Elem, Eff], n: Int64) -> List[T = Elem] effects Eff =
     if gt(n, 0) then
       match splitFirst(s)
         case none() -> nil
         case some(pair(h, rest)) -> cons(head: h, tail: takeN(rest, sub(n, 1)))
     else nil
-  operation collect[Elem, Eff](s: Stream[T = Elem, E = Eff]) -> List[T = Elem] effects Eff =
+  operation collect[Elem, Eff](s: Stream[Elem, Eff]) -> List[T = Elem] effects Eff =
     match splitFirst(s)
       case none() -> nil
       case some(pair(h, rest)) -> cons(head: h, tail: collect(rest))
@@ -47,20 +47,20 @@ sort anthill.prelude.Stream
   -- `init`); the transform / predicate is a `Function` value applied directly
   -- (WI-275 HOF). `map` / `filter` (which PRODUCE a stream) are the lazy
   -- carriers in combinators.anthill, not here.
-  operation fold_left[Elem, Eff, Acc](s: Stream[T = Elem, E = Eff], init: Acc, f: Function[A = (Acc, Elem), B = Acc, E = Eff]) -> Acc effects Eff =
+  operation fold_left[Elem, Eff, Acc](s: Stream[Elem, Eff], init: Acc, f: Function[(Acc, Elem), Acc, Eff]) -> Acc effects Eff =
     match splitFirst(s)
       case none() -> init
       case some(pair(h, rest)) -> fold_left(rest, f((init, h)), f)
-  operation fold_right[Elem, Eff, Acc](s: Stream[T = Elem, E = Eff], init: Acc, f: Function[A = (Elem, Acc), B = Acc, E = Eff]) -> Acc effects Eff =
+  operation fold_right[Elem, Eff, Acc](s: Stream[Elem, Eff], init: Acc, f: Function[(Elem, Acc), Acc, Eff]) -> Acc effects Eff =
     match splitFirst(s)
       case none() -> init
       case some(pair(h, rest)) -> f((h, fold_right(rest, init, f)))
-  operation find[Elem, Eff](s: Stream[T = Elem, E = Eff], pred: Function[A = Elem, B = Bool, E = Eff]) -> Option[T = Elem] effects Eff =
+  operation find[Elem, Eff](s: Stream[Elem, Eff], pred: Function[Elem, Bool, Eff]) -> Option[Elem] effects Eff =
     match splitFirst(s)
       case none() -> none
       case some(pair(h, rest)) ->
         if pred(h) then some(h) else find(rest, pred)
-  operation isEmpty[Elem, Eff](s: Stream[T = Elem, E = Eff]) -> Bool
+  operation isEmpty[Elem, Eff](s: Stream[Elem, Eff]) -> Bool
     effects Eff
 
   -- Stream trivially provides Iterable (proposal library/002, "Relationship to
