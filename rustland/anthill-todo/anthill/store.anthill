@@ -10,7 +10,7 @@
 -- pattern-matchable `WorkItem` entities instead of opaque `Term`s.
 
 namespace anthill.todo.store
-  import anthill.stage0.{WorkItem, WorkStatus, Feedback}
+  import anthill.stage0.{WorkItem, WorkStatus, Feedback, Tag}
   import anthill.persistence.filesystem.{IndexedFileStore}
   import anthill.persistence.{persist, retract, flush}
   import anthill.prelude.{Cell, Option, List, Int64, String, Unit, Bool}
@@ -53,6 +53,14 @@ namespace anthill.todo.store
     -- (no separate FileStore handle threaded through dispatch).
     operation commit_feedback(s: Cell[V = State], fb: Feedback) -> Unit
       effects {Modify[s], Error}
+    -- Tag persistence (the WI-388 named-list primitives in the bundle):
+    -- tag_item persists a `fact Tag(workitem, name)` through the same
+    -- backend; untag_item retracts the matching Tag fact. Existence
+    -- checks live in the cmd layer via has_tag.
+    operation tag_item(s: Cell[V = State], id: String, name: String) -> Unit
+      effects {Modify[s], Error}
+    operation untag_item(s: Cell[V = State], id: String, name: String) -> Unit
+      effects {Modify[s], Error}
 
     -- Read-only ops: typed WorkItem returns (WI-204 phase B1). They may raise
     -- `Error` (the backing store can fail on read) — declared here so a concrete
@@ -63,6 +71,8 @@ namespace anthill.todo.store
       -> List[T = WorkItem]
       effects Error
     operation all(s: Cell[V = State]) -> List[T = WorkItem]
+      effects Error
+    operation has_tag(s: Cell[V = State], id: String, name: String) -> Bool
       effects Error
   end
 
@@ -274,5 +284,66 @@ namespace anthill.todo.store
       let _ = persist_buffer(s, as_term(new_wi))
       let _ = flush_backend(s)
       ()
+
+    -- True when `t` is a Tag fact term carrying workitem == id AND
+    -- name == name (both string-literal fields). The synthetic
+    -- entity-declaration fact filters out naturally: its field slots
+    -- hold type expressions, so term_as_string yields none.
+    operation tag_term_matches(t: Term, id: String, name: String) -> Bool =
+      match term_field(t, "workitem")
+        case none() -> false
+        case some(wt) ->
+          match term_as_string(wt)
+            case none() -> false
+            case some(w) ->
+              if eq(w, id) then
+                match term_field(t, "name")
+                  case none() -> false
+                  case some(nt) ->
+                    match term_as_string(nt)
+                      case none() -> false
+                      case some(n) -> eq(n, name)
+              else false
+
+    operation find_tag_term(ts: List[T = Term], id: String, name: String)
+      -> Option[T = Term]
+    =
+      match ts
+        case nil() -> none()
+        case cons(t, rest) ->
+          if tag_term_matches(t, id, name) then some(t)
+          else find_tag_term(rest, id, name)
+
+    operation has_tag(s: Cell[V = WIS], id: String, name: String) -> Bool
+      effects Error
+    =
+      match Cell.get(s)
+        case wis(_, _) ->
+          match find_tag_term(facts_of(kb(), Tag), id, name)
+            case none() -> false
+            case some(_) -> true
+
+    operation tag_item(s: Cell[V = WIS], id: String, name: String) -> Unit
+      effects {Modify[s], Error}
+    =
+      persist_through(s, as_term(Tag(workitem: id, name: name)))
+
+    -- Retract the Tag fact matching (id, name), then flush. The cmd
+    -- layer guards existence via has_tag, so a missing fact is a silent
+    -- no-op here (the same contract as forget_buffer).
+    operation untag_item(s: Cell[V = WIS], id: String, name: String) -> Unit
+      effects {Modify[s], Error}
+    =
+      match Cell.get(s)
+        case wis(b, _) ->
+          match find_tag_term(facts_of(kb(), Tag), id, name)
+            case none() -> ()
+            case some(t) ->
+              match find_fact(t)
+                case none() -> ()
+                case some(fid) ->
+                  let _ = retract(b, fid)
+                  let _ = flush(b, nil())
+                  ()
   end
 end

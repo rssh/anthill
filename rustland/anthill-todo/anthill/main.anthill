@@ -44,7 +44,8 @@ namespace anthill.todo
   import anthill.todo.store.{WorkItemStore}
   import anthill.todo.store.WorkItemStore.{lookup, by_status_of, all,
                                            next_id, commit, replace, forget,
-                                           commit_feedback}
+                                           commit_feedback, has_tag,
+                                           tag_item, untag_item}
   export Main, specs
 
   -- The 16-subcommand registry, mirroring the legacy Rust binary's
@@ -66,6 +67,8 @@ namespace anthill.todo
     , spec_update()
     , spec_dep_change("add-dependency",    "Add a dependency to a work item")
     , spec_dep_change("remove-dependency", "Remove a dependency from a work item")
+    , spec_tag_change("tag",          "Add a work item to a named list")
+    , spec_tag_change("untag",        "Remove a work item from a named list")
     , spec_named("graph",             "Show dependency graph")
     , spec_named("skill",             "Print Claude Code skill definition")
     ]
@@ -110,6 +113,27 @@ namespace anthill.todo
             kind: positional(),
             required: true,
             description: "Dependency work item id"),
+          nil())),
+      parent: none())
+
+  -- `tag / untag <id> <name>` take two positionals: the work item id
+  -- and the tag (named-list) name.
+  operation spec_tag_change(name: String, description: String) -> OperationSpec =
+    OperationSpec(
+      name: name,
+      description: description,
+      params: cons(
+        ParamSpec(
+          name: "id",
+          kind: positional(),
+          required: true,
+          description: "Work item id (e.g. WI-009)"),
+        cons(
+          ParamSpec(
+            name: "name",
+            kind: positional(),
+            required: true,
+            description: "Tag name (e.g. typing)"),
           nil())),
       parent: none())
 
@@ -304,7 +328,75 @@ namespace anthill.todo
         cmd_add_dependency(args, store, s)
       else if eq(name, "remove-dependency") then
         cmd_remove_dependency(args, store, s)
+      else if eq(name, "tag") then cmd_tag(args, s)
+      else if eq(name, "untag") then cmd_untag(args, s)
       else not_yet(name)
+
+    -- `tag <id> <name>` — attach a named-list tag to a work item.
+    -- Validation order mirrors the legacy run_tag: non-empty name,
+    -- item exists, not already tagged. (The legacy require_tag_entity
+    -- gate is structural here: the bundle imports Tag from stage0.)
+    operation cmd_tag(args: List[Binding], s: Cell[State]) -> Int64
+      effects {ConsoleOutput, ConsoleError, Modify[s], Error}
+    =
+      match get_arg(args, "id")
+        case none() ->
+          let _ = eprintln(console(), "tag: missing id")
+          2
+        case some(id) ->
+          match get_arg(args, "name")
+            case none() ->
+              let _ = eprintln(console(), "tag: missing name")
+              2
+            case some(name) ->
+              if eq(name, "") then
+                let _ = eprintln(console(), "error: tag name must be non-empty")
+                1
+              else
+                match WorkItemStore.lookup(s, id)
+                  case none() ->
+                    let _ = eprintln(console(),
+                      concat("error: work item '", concat(id, "' not found")))
+                    1
+                  case some(_) ->
+                    if WorkItemStore.has_tag(s, id, name) then
+                      let _ = eprintln(console(),
+                        concat("error: '",
+                          concat(id, concat("' is already tagged '",
+                            concat(name, "'")))))
+                      1
+                    else
+                      let _ = WorkItemStore.tag_item(s, id, name)
+                      let _ = println(console(),
+                        concat("tagged: ", concat(id, concat(" +", name))))
+                      0
+
+    -- `untag <id> <name>` — detach a tag. Mirrors the legacy run_untag:
+    -- the only validation is that the tag exists.
+    operation cmd_untag(args: List[Binding], s: Cell[State]) -> Int64
+      effects {ConsoleOutput, ConsoleError, Modify[s], Error}
+    =
+      match get_arg(args, "id")
+        case none() ->
+          let _ = eprintln(console(), "untag: missing id")
+          2
+        case some(id) ->
+          match get_arg(args, "name")
+            case none() ->
+              let _ = eprintln(console(), "untag: missing name")
+              2
+            case some(name) ->
+              if WorkItemStore.has_tag(s, id, name) then
+                let _ = WorkItemStore.untag_item(s, id, name)
+                let _ = println(console(),
+                  concat("untagged: ", concat(id, concat(" -", name))))
+                0
+              else
+                let _ = eprintln(console(),
+                  concat("error: '",
+                    concat(id, concat("' is not tagged '",
+                      concat(name, "'")))))
+                1
 
     -- Find the first Binding with the given name; none() otherwise.
     operation get_arg(args: List[Binding], name: String) -> Option[String] =
