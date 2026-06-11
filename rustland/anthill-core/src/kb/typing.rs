@@ -11868,12 +11868,18 @@ fn types_compatible_term_dispatch(kb: &mut KnowledgeBase, subst: &mut Substituti
             {
                 return types_compatible(kb, subst, &TermIdView(shape), &TermIdView(expected));
             }
-            // bare `S` vs `B[…]`: nominal base-sort compatibility only (provider
-            // admissibility is confined to the bare↔bare arm above). WI-361:
-            // `parameterized_base_sym` reads the base sort form-agnostically
-            // (deep `base` field or the term-backed functor).
+            // bare `S` vs `B[…]`: nominal base-sort compatibility, then (WI-402)
+            // BINDING-PRECISE provider admissibility — a concrete carrier vs a
+            // parameterized spec it provides checks every expected binding against
+            // the provider fact's value, so the bindings are never dropped (the
+            // hazard that confines the bare-spec accept to the bare↔bare arm
+            // above). WI-361: `parameterized_base_sym` reads the base sort
+            // form-agnostically (deep `base` field or the term-backed functor).
             match (extract_sort_ref_sym(kb, &TermIdView(actual)), parameterized_base_sym(kb, expected)) {
-                (Some(a), Some(eb)) => sort_sym_compatible(kb, a, eb),
+                (Some(a), Some(eb)) => {
+                    sort_sym_compatible(kb, a, eb)
+                        || bare_provider_binding_precise(kb, subst, a, &TermIdView(expected))
+                }
                 _ => false,
             }
         }
@@ -12001,7 +12007,12 @@ fn types_compatible_view_structural<A: TermView, B: TermView>(
                 return types_compatible(kb, subst, &TermIdView(shape), &e);
             }
             match (sort_functor_of_view(kb, &a), sort_functor_of_view(kb, &e)) {
-                (Some(av), Some(eb)) => sort_sym_compatible(kb, av, eb),
+                // Nominal base, then (WI-402) binding-precise provider admissibility —
+                // mirrors the term dispatch so the relation stays carrier-symmetric.
+                (Some(av), Some(eb)) => {
+                    sort_sym_compatible(kb, av, eb)
+                        || bare_provider_binding_precise(kb, subst, av, &e)
+                }
                 _ => false,
             }
         }
@@ -12697,6 +12708,69 @@ fn sort_provides_admissibly(kb: &KnowledgeBase, actual_sym: Symbol, expected_sym
         }
     }
     false
+}
+
+/// WI-402 (bound/manifest half): BINDING-PRECISE provider admissibility — a value of a
+/// bare concrete carrier sort conforms to a PARAMETERIZED spec type when the carrier
+/// (or, for an entity, its parent sort — `sort_provides_admissibly`'s hop) PROVIDES the
+/// spec and every binding the expected type carries checks against the value the
+/// provider fact supplies for that param (matched by short name, the provider-view
+/// convention). This is the bare↔parameterized counterpart of
+/// [`parameterized_compatible_view`]'s WI-387 FIX 2 cross-sort arm: a bare carrier has
+/// no bindings of its own, so EVERY expected binding resolves through the provider
+/// view. The case `sort_provides_admissibly`'s doc deferred ("admitting it needs
+/// binding-precise resolution") — `SubscriberStore provides DataProvider[K = String]`
+/// now conforms to `DataProvider[K = String]`, while `DataProvider[K = Int64]` (binding
+/// contradicted) and a non-provider stay mismatches.
+///
+/// A param the provider leaves unbound, or binds to a structured value the leaf
+/// normalizer refuses, REJECTS — never silently passes (the expected binding is a
+/// demand; an unverifiable supply must not discharge it). Purely a LOOSENING of the
+/// `(sort_ref, parameterized)` arms: reached only after `sort_sym_compatible` refused,
+/// so no existing accept changes. The WI-401 abstracting-return gate is unaffected — it
+/// runs AFTER conformance and still rejects a PARTIAL manifest (an expected type that
+/// omits some spec member entirely).
+fn bare_provider_binding_precise<E: TermView>(
+    kb: &mut KnowledgeBase,
+    subst: &mut Substitution,
+    actual_sym: Symbol,
+    expected: &E,
+) -> bool {
+    let TypeExtractor::Parameterized { base: expected_base, bindings: expected_bindings } =
+        extract_type(kb, expected)
+    else {
+        return false;
+    };
+    let mut carrier = actual_sym;
+    let provider_view = loop {
+        if let Some(view) = provider_spec_view_bindings(kb, carrier, expected_base) {
+            break view;
+        }
+        // Entity → parent sort. The chain is acyclic (a parent is a sort, never a
+        // constructor), mirroring `sort_provides_admissibly`'s recursion.
+        let Some(parent_tid) = kb.constructor_parent_sort(carrier) else { return false };
+        let Term::Fn { functor: parent_functor, .. } = kb.get_term(parent_tid) else {
+            return false;
+        };
+        carrier = *parent_functor;
+    };
+    for (param, ev) in &expected_bindings {
+        let short = short_name_of(kb.resolve_sym(*param)).to_owned();
+        let pv = provider_view
+            .iter()
+            .find(|(p, _)| short_name_of(kb.resolve_sym(*p)) == short)
+            .map(|(_, v)| *v);
+        // Normalize the provider's leaf shape before the variance check — the provides
+        // fact stores a plain sort name as a nullary `Fn{S}`, not the `Ref(S)` type
+        // shape (the WI-428 `normalize_spec_binding_type` divergence).
+        let Some(pv) = pv.and_then(|v| normalize_spec_binding_type(kb, v)) else {
+            return false;
+        };
+        if !check_binding_by_variance(kb, subst, expected_base, *param, &TermIdView(pv), ev) {
+            return false;
+        }
+    }
+    true
 }
 
 /// WI-401 — detect an ABSTRACTING (sealing) return so the base model stays escape-free
