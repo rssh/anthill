@@ -1,14 +1,13 @@
 //! WI-441: the arrow-typed dependent-absence pred form on the Iterable
-//! members — `pred: (x: Element) -> Bool @ {E, -Modify[x]}` on `find` /
-//! `filter`, `f: (x: Element) -> Dst @ {E, -Modify[x]}` on `map`.
-//!
-//! v1 semantics (scope item b, option 2): the pred's row stays TIED to the
-//! collection's access row `E` — `{E | -Modify[x]}` — so the form gains
-//! MUTATION SAFETY (the WI-440 checking direction rejects a pred that
-//! modifies its element) while keeping today's row semantics (a List's
-//! `E = {}` still forces an otherwise-pure pred). The decoupled independent
-//! pred row + result-row merge is the deferred half (blocked on the
-//! WI-440-recorded boundary gaps).
+//! members. `find` carries the DECOUPLED rows (user direction 2026-06-11):
+//! `find[EffP](c: C, pred: (x: Element) -> Bool @ {EffP, -Modify[x]})
+//! effects {E, EffP}` — the pred's row is its OWN (`EffP`), the op's effect
+//! the MERGE of the access row and the pred row. An effectful-but-element-
+//! pure pred works on a PURE carrier (List), and its effects THREAD to the
+//! caller's boundary (undeclared → loud). The lazy `filter`/`map` stay on
+//! the TIED form `{E, -Modify[x]}` (their decoupling needs merge-rows in
+//! the result TYPE position — the produced stream pays the pred row on
+//! consumption).
 
 fn load_errors(extras: &[&str]) -> Vec<String> {
     crate::wi424_iterable_members_test::load_errors(extras)
@@ -71,16 +70,32 @@ end
     );
 }
 
-/// v1 row-tie documented behavior: on a List (`E = {}`) the pred's row closes
-/// to `{ -Modify[x] }`, so an UNRELATED effect is also rejected — the same
-/// pure-pred-forced-on-List semantics the Function[…, E] form had, now with a
-/// loud row message instead of a silent unify discard. (The decoupled
-/// independent pred row is the deferred WI-441 half.)
+/// THE decoupled-row payoff: an effectful-but-element-pure pred works on a
+/// PURE carrier (List) — `EffP := {Beep}` independent of `E := {}` — and the
+/// pred's effects THREAD through `find` to the CALLER's boundary: declaring
+/// `effects Beep` loads; omitting it is the loud undeclared-effect error.
 #[test]
-fn unrelated_effect_pred_on_list_rejected_under_v1_row_tie() {
-    let src = r#"
-namespace wi441.rowtie
-  import anthill.prelude.{Effect, List, Option, Bool, Int64, Modify}
+fn effectful_element_pure_pred_threads_to_caller() {
+    let declared = r#"
+namespace wi441.thread
+  import anthill.prelude.{Effect, List, Option, Bool, Int64}
+  import anthill.prelude.Iterable.{find}
+  sort Beep end
+  fact Effect[T = Beep]
+  operation noisy(n: Int64) -> Bool effects Beep = true
+  operation ok(xs: List[T = Int64]) -> Option[T = Int64] effects Beep = find(xs, noisy)
+end
+"#;
+    let errs = load_errors(&[declared]);
+    assert!(
+        errs.is_empty(),
+        "a Beep pred on a List must typecheck when the caller declares Beep \
+         (EffP decoupled from E); got: {errs:?}",
+    );
+
+    let undeclared = r#"
+namespace wi441.thread2
+  import anthill.prelude.{Effect, List, Option, Bool, Int64}
   import anthill.prelude.Iterable.{find}
   sort Beep end
   fact Effect[T = Beep]
@@ -88,11 +103,11 @@ namespace wi441.rowtie
   operation boom(xs: List[T = Int64]) -> Option[T = Int64] = find(xs, noisy)
 end
 "#;
-    let errs = load_errors(&[src]);
+    let errs = load_errors(&[undeclared]);
     assert!(
-        !errs.is_empty(),
-        "a Beep pred on a List (E = {{}}) must be rejected under the v1 \
-         row-tie (pred row = {{E | -Modify[x]}} with E := {{}}); got clean load",
+        errs.iter().any(|e| e.contains("undeclared effect") && e.contains("Beep")),
+        "the pred's Beep must surface at the CALLER's boundary when \
+         undeclared; got: {errs:?}",
     );
 }
 

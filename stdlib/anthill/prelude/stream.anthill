@@ -12,6 +12,7 @@ sort anthill.prelude.Stream
   import anthill.prelude.Numeric.{sub}
   import anthill.prelude.Function
   import anthill.prelude.Iterable
+  import anthill.prelude.Modify
 
   sort T = ?              -- element type
   -- WI-320 / proposal 045: `effects E = ?` lifts E to a row variable with
@@ -55,7 +56,11 @@ sort anthill.prelude.Stream
     match splitFirst(s)
       case none() -> init
       case some(pair(h, rest)) -> f((h, fold_right(rest, init, f)))
-  operation find[Elem, Eff](s: Stream[Elem, Eff], pred: Function[Elem, Bool, Eff]) -> Option[Elem] effects Eff =
+  -- find (WI-441 decoupled rows): the pred carries its OWN row `EffP` —
+  -- open, minus Modify on the element under test — instead of being tied to
+  -- the stream's observation row `Eff`; find's effect is the MERGE of both
+  -- (`effects {Eff, EffP}`: splitFirst pays Eff, applying pred pays EffP).
+  operation find[Elem, Eff, EffP](s: Stream[Elem, Eff], pred: (x: Elem) -> Bool @ {EffP, -Modify[x]}) -> Option[Elem] effects {Eff, EffP} =
     match splitFirst(s)
       case none() -> none
       case some(pair(h, rest)) ->

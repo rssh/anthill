@@ -946,7 +946,105 @@ fn substitute_ref_syms_value(
 fn walk_type_deep_value(kb: &mut KnowledgeBase, subst: &Substitution, e: &Value) -> Value {
     match e {
         Value::Term(t) => Value::Term(walk_type_deep(kb, subst, *t)),
+        // WI-441: a NODE-carried type DOES carry type-param vars — a callback
+        // arrow's effect-row tail (`@ {EffP, -Modify[x]}`) is a GROUND child
+        // Var inside the occurrence tree. The old "Nodes carry Refs, not
+        // type-param vars" assumption left those un-walked, so the rigidify
+        // pass missed them (the body then unified/leaked the raw Global).
+        // Rebuild share-preservingly: unchanged subtrees keep their Rc.
+        Value::Node(occ) => Value::Node(rewrite_type_occ_deep(kb, subst, occ)),
         other => other.clone(),
+    }
+}
+
+/// WI-441: deep-resolve vars inside a NODE-carried type occurrence by
+/// rebuilding it with every `TypeChild::Ground` mapped through
+/// [`walk_type_deep`] and every `TypeChild::Node` recursed. Share-preserving:
+/// an unchanged subtree returns its original `Rc` (so an all-ground-stable
+/// tree costs only the traversal). `Denoted` (a VALUE occurrence — no type
+/// vars), `NamedTuple` (Value-carried fields list) and `ExprCarried` (an
+/// expression receiver) are returned as-is — none of them can embed a row
+/// var today; extend when one does.
+fn rewrite_type_occ_deep(
+    kb: &mut KnowledgeBase,
+    subst: &Substitution,
+    occ: &Rc<NodeOccurrence>,
+) -> Rc<NodeOccurrence> {
+    fn child(
+        kb: &mut KnowledgeBase,
+        subst: &Substitution,
+        c: &TypeChild,
+        changed: &mut bool,
+    ) -> TypeChild {
+        match c {
+            TypeChild::Ground(t) => {
+                let w = walk_type_deep(kb, subst, *t);
+                if w != *t {
+                    *changed = true;
+                }
+                TypeChild::Ground(w)
+            }
+            TypeChild::Node(n) => {
+                let r = rewrite_type_occ_deep(kb, subst, n);
+                if !Rc::ptr_eq(&r, n) {
+                    *changed = true;
+                }
+                TypeChild::Node(r)
+            }
+        }
+    }
+    let mut changed = false;
+    let rebuilt: Option<NodeKind> = match &occ.kind {
+        NodeKind::Type(node) => match node {
+            TypeNode::Arrow { param, result, effects } => {
+                let (p, r, e) = (
+                    child(kb, subst, param, &mut changed),
+                    child(kb, subst, result, &mut changed),
+                    child(kb, subst, effects, &mut changed),
+                );
+                Some(NodeKind::Type(TypeNode::Arrow { param: p, result: r, effects: e }))
+            }
+            TypeNode::Parameterized { base, bindings } => {
+                let b = child(kb, subst, base, &mut changed);
+                let bs: Vec<(Symbol, TypeChild)> = bindings
+                    .iter()
+                    .map(|(s, c)| (*s, child(kb, subst, c, &mut changed)))
+                    .collect();
+                Some(NodeKind::Type(TypeNode::Parameterized { base: b, bindings: bs }))
+            }
+            TypeNode::EffectsRows { effects_expr } => {
+                let e = child(kb, subst, effects_expr, &mut changed);
+                Some(NodeKind::Type(TypeNode::EffectsRows { effects_expr: e }))
+            }
+            TypeNode::Denoted { .. } | TypeNode::NamedTuple { .. } | TypeNode::ExprCarried { .. } => None,
+        },
+        NodeKind::EffectExpr(node) => match node {
+            EffectExprNode::Merge { left, right } => {
+                let (l, r) = (
+                    child(kb, subst, left, &mut changed),
+                    child(kb, subst, right, &mut changed),
+                );
+                Some(NodeKind::EffectExpr(EffectExprNode::Merge { left: l, right: r }))
+            }
+            EffectExprNode::Present { label } => {
+                let l = child(kb, subst, label, &mut changed);
+                Some(NodeKind::EffectExpr(EffectExprNode::Present { label: l }))
+            }
+            EffectExprNode::Absent { label } => {
+                let l = child(kb, subst, label, &mut changed);
+                Some(NodeKind::EffectExpr(EffectExprNode::Absent { label: l }))
+            }
+            EffectExprNode::Open { tail } => {
+                let t = child(kb, subst, tail, &mut changed);
+                Some(NodeKind::EffectExpr(EffectExprNode::Open { tail: t }))
+            }
+            EffectExprNode::EmptyRow => None,
+        },
+        _ => None,
+    };
+    match rebuilt {
+        Some(kind) if changed => Rc::new(NodeOccurrence { kind, span: occ.span, owner: occ.owner }),
+        _ => Rc::clone(occ),
     }
 }
 
@@ -8019,6 +8117,55 @@ fn validate_arg_against_param(
     })
 }
 
+/// WI-441: explode a ROW-shaped effect value into its component atoms —
+/// the present labels plus the row-tail var (as a bare `Value::Term` Var
+/// atom). Returns `None` when `effect` is not row-shaped (an ordinary
+/// label like `Modify[c]` / `Error` / a bare row var — those compare
+/// atom-to-atom as before). Row-shaped = the `effects_rows` wrapper OR a
+/// bare `EffectExpression` node (`merge`/`present`/`absent`/`open`/
+/// `empty_row`, matched by QUALIFIED functor so a user sort named `merge`
+/// is not misclassified) — a bound row var walks to the bare form.
+/// Absent atoms are DROPPED: they are constraints on the row, not effects
+/// the body incurs.
+fn explode_incurred_effect_row(kb: &mut KnowledgeBase, effect: &Value) -> Option<Vec<Value>> {
+    let is_rows_wrapper = matches!(type_dispatch_name_view(kb, effect), Some("effects_rows"));
+    let head_is_row_expr = match effect.head(kb) {
+        ViewHead::Functor { functor: Some(sym), .. } => {
+            let qn = kb.qualified_name_of(sym);
+            matches!(
+                qn.strip_prefix("anthill.prelude.EffectExpression."),
+                Some("merge" | "present" | "absent" | "open" | "empty_row")
+            )
+        }
+        _ => false,
+    };
+    if !is_rows_wrapper && !head_is_row_expr {
+        return None;
+    }
+    let row: Value = if is_rows_wrapper {
+        effect.clone()
+    } else {
+        // Wrap the bare EffectExpression so `decompose_effect_row` sees the
+        // canonical `effects_rows(…)` shape.
+        match effect {
+            Value::Term(t) => Value::Term(kb.make_effects_rows_type(*t)),
+            Value::Node(occ) => Value::Node(kb.make_effects_rows_occ(
+                TypeChild::Node(Rc::clone(occ)),
+                occ.span,
+                occ.owner,
+            )),
+            _ => return None,
+        }
+    };
+    let subst = Substitution::new();
+    let (present, tail, _absent) = decompose_effect_row(kb, &subst, &row)?;
+    let mut atoms = present;
+    if let Some(t) = tail {
+        atoms.push(Value::Term(t));
+    }
+    Some(atoms)
+}
+
 /// WI-440: two effect labels match modulo POSITIONAL binder alignment.
 /// Direct structural equality first ([`resolved_labels_equal`]); otherwise an
 /// applied-effect pair (`Modify[c]` vs `Modify[x]`) matches when the base
@@ -11735,6 +11882,33 @@ fn unify_effect_rows<EA: TermView, EB: TermView>(
                 all_extras.extend(only_b.iter().cloned());
                 return bind_row_tail(kb, subst, a_walked, &all_extras, Some(fresh_var));
             }
+            // WI-441: tail-to-tail aliasing when ONE side's tail is a RIGID
+            // (forall-Skolem) row var — the FORWARDING shape (`find(rest,
+            // pred)` / `Stream.find(iterator(c), pred)` passes the enclosing
+            // op's callback straight through, its row tail rigidified by the
+            // body check). The rigid is un-bindable (WI-336), so the
+            // symmetric fresh-tail step below would fail and leave the
+            // callee's row param unconstrained. With no extras to push INTO
+            // the rigid side, the flexible tail simply ALIASES the rigid
+            // (a flexible var solves TO a rigid, the ordinary direction).
+            // Note: the flexible side's lacks are not propagated onto the
+            // rigid continuation (`bind_row_tail` propagates onto `Global`
+            // continuations only) — the rigid's constraints are enforced at
+            // its own instantiation site.
+            let a_rigid = matches!(kb.get_term(a_walked), Term::Var(Var::Rigid(_)));
+            let b_rigid = matches!(kb.get_term(b_walked), Term::Var(Var::Rigid(_)));
+            match (a_rigid, b_rigid) {
+                (true, false) if only_b.is_empty() => {
+                    return bind_row_tail(kb, subst, b_walked, &only_a, Some(a_walked));
+                }
+                (false, true) if only_a.is_empty() => {
+                    return bind_row_tail(kb, subst, a_walked, &only_b, Some(b_walked));
+                }
+                // Two DISTINCT rigids (the a_walked == b_walked case returned
+                // above) never alias; a rigid that must absorb extras fails.
+                (true, _) | (_, true) => return false,
+                (false, false) => {}
+            }
             // Distinct tails: fresh shared tail var ρ'. Both sides extend
             // their respective labels and end in `open(ρ')` — afterward a
             // future decompose_effect_row reveals (only_a + only_b) as
@@ -11863,6 +12037,23 @@ fn subtype_effect_rows<EA: TermView, EB: TermView>(
                 all_extras.extend(only_a.iter().cloned());
                 all_extras.extend(only_e.iter().cloned());
                 return bind_row_tail(kb, subst, a_walked, &all_extras, Some(fresh_var));
+            }
+            // WI-441: tail-to-tail aliasing when one tail is RIGID — see the
+            // analogous arm in `unify_effect_rows` (the forwarding shape).
+            // actual ⊆ expected: a rigid ACTUAL tail can't absorb expected's
+            // extras (require none), the flexible expected tail aliases it;
+            // symmetric for a rigid EXPECTED tail.
+            let a_rigid = matches!(kb.get_term(a_walked), Term::Var(Var::Rigid(_)));
+            let e_rigid = matches!(kb.get_term(e_walked), Term::Var(Var::Rigid(_)));
+            match (a_rigid, e_rigid) {
+                (true, false) if only_e.is_empty() => {
+                    return bind_row_tail(kb, subst, e_walked, &only_a, Some(a_walked));
+                }
+                (false, true) if only_a.is_empty() => {
+                    return bind_row_tail(kb, subst, a_walked, &only_e, Some(e_walked));
+                }
+                (true, _) | (_, true) => return false,
+                (false, false) => {}
             }
             // Distinct tails: each side's tail absorbs the other's
             // extras + a fresh shared continuation. Symmetric Rémy
@@ -14576,6 +14767,15 @@ fn check_operation_bodies(kb: &mut KnowledgeBase, op_syms: &[Symbol], errors: &m
         /// rigids; installed on the body env so same-sort sibling calls seed
         /// their substitution with the enclosing instance's params.
         sort_param_rigids: Rc<Vec<(VarId, TermId)>>,
+        /// WI-441 — the full type-param rigidify substitution (op + enclosing
+        /// sort params). The boundary effects check walks BOTH sides through
+        /// it: `walk_type_deep_value` cannot rewrite inside a `Value::Node`
+        /// carrier (occurrences are shared, not rebuilt), so a Node-carried
+        /// callback arrow's row TAIL stays the original Global var while the
+        /// declared atom was rigidified — the same param then compared
+        /// unequal (`?Eff` vs `?Eff`). Resolving incurred components through
+        /// this subst maps that Global to the same Rigid.
+        rigidify: Rc<Substitution>,
     }
 
     let mut ops_to_check = Vec::new();
@@ -14629,6 +14829,7 @@ fn check_operation_bodies(kb: &mut KnowledgeBase, op_syms: &[Symbol], errors: &m
             .map(|p| sort_type_params_as_pairs(kb, p))
             .unwrap_or_default();
         let mut sort_param_rigids: Vec<(VarId, TermId)> = Vec::new();
+        let mut rigidify_subst = Substitution::new();
         let (params, return_type, declared_effects) = if rec.type_params.is_empty()
             && parent_sort_params.is_empty()
         {
@@ -14656,6 +14857,7 @@ fn check_operation_bodies(kb: &mut KnowledgeBase, op_syms: &[Symbol], errors: &m
                 .iter()
                 .map(|e| walk_type_deep_value(kb, &rigidify, e))
                 .collect();
+            rigidify_subst = rigidify;
             (params, return_type, declared_effects)
         };
         ops_to_check.push(OpInfo {
@@ -14666,6 +14868,7 @@ fn check_operation_bodies(kb: &mut KnowledgeBase, op_syms: &[Symbol], errors: &m
             params,
             span,
             sort_param_rigids: Rc::new(sort_param_rigids),
+            rigidify: Rc::new(rigidify_subst),
         });
     }
 
@@ -14845,7 +15048,12 @@ fn check_operation_bodies(kb: &mut KnowledgeBase, op_syms: &[Symbol], errors: &m
                 // walks to itself; a denoted `Modify[c]` (a `Value::Node`)
                 // compares structurally against another via the same `TermView`
                 // recursion. Diagnostics still render the raw (readable) names.
-                let canon_subst = Substitution::new();
+                // WI-441: the op's rigidify subst (not an empty one) — a
+                // Node-carried callback arrow's row tail reaches here as the
+                // ORIGINAL Global var (`walk_type_deep_value` does not rewrite
+                // inside occurrence carriers), so resolving through the
+                // rigidify maps it to the same Rigid the declared atom became.
+                let canon_subst = (*op.rigidify).clone();
                 let declared_canon: Vec<Value> = op.declared_effects.iter()
                     .map(|e| walk_type_deep_value(kb, &canon_subst, e))
                     .collect();
@@ -14853,16 +15061,35 @@ fn check_operation_bodies(kb: &mut KnowledgeBase, op_syms: &[Symbol], errors: &m
                     .map(|e| type_display_name_value(kb, e))
                     .collect();
                 for effect in &ext_effects {
-                    let effect_canon = walk_type_deep_value(kb, &canon_subst, effect);
-                    let declared = declared_canon.iter()
-                        .any(|d| views_structurally_equal(kb, &effect_canon, d));
-                    if !declared {
-                        errors.push(TypeError::Other {
-                            span: op.span,
-                            context: TypeErrorContext::OperationEffects { op_name: op.op_sym },
-                            expected: format!("declared: [{}]", declared_display.join(", ")),
-                            actual: format!("undeclared effect: {}", type_display_name_value(kb, effect)),
-                        });
+                    // WI-441: a ROW-shaped incurred effect — a callback's row
+                    // value flowing into the body effects (applying a
+                    // `@ {EffP, -…}` callback incurs its whole row; a declared
+                    // row var bound at a call site walks to a `merge(…)`
+                    // structure) — EXPLODES into its components: each present
+                    // label and each row-tail var is checked against the
+                    // declared atoms individually. Absences are constraints,
+                    // not incurred effects, and `empty_row` contributes
+                    // nothing. A non-row effect stays a single atom. Each
+                    // component is canon-walked AFTER the explode: a
+                    // Node-carried row's tail extracts as the raw Global var,
+                    // which only the per-component walk maps to its Rigid.
+                    let components: Vec<Value> =
+                        match explode_incurred_effect_row(kb, effect) {
+                            Some(atoms) => atoms,
+                            None => vec![effect.clone()],
+                        };
+                    for comp in &components {
+                        let comp_canon = walk_type_deep_value(kb, &canon_subst, comp);
+                        let declared = declared_canon.iter()
+                            .any(|d| views_structurally_equal(kb, &comp_canon, d));
+                        if !declared {
+                            errors.push(TypeError::Other {
+                                span: op.span,
+                                context: TypeErrorContext::OperationEffects { op_name: op.op_sym },
+                                expected: format!("declared: [{}]", declared_display.join(", ")),
+                                actual: format!("undeclared effect: {}", type_display_name_value(kb, &comp_canon)),
+                            });
+                        }
                     }
                 }
 

@@ -26,14 +26,18 @@ sort anthill.prelude.Iterable
   -- an unqualified `find(...)` here would self-dispatch back to Iterable.find
   -- (the WI-411 short-name hazard), not value-dispatch on the produced Stream.
   --
-  -- The callback type is the WI-441 dependent-absence arrow: `{E, -Modify[x]}`
-  -- ties the callback's row to the access row E (a List's E = {} still forces
-  -- an otherwise-pure callback) and FORBIDS modifying the element under test
-  -- (checked at each call site, binder-aligned — WI-440; a lazy carrier
-  -- re-walks, so a mutating callback would make the view inconsistent).
-  -- Deferred: a callback row INDEPENDENT of E (with the result row merging
-  -- both) — blocked on the boundary row-threading gaps recorded on WI-440.
-  operation find(c: C, pred: (x: Element) -> Bool @ {E, -Modify[x]}) -> Option[Element] effects E =
+  -- The callback types are the WI-441 dependent-absence arrows: `-Modify[x]`
+  -- FORBIDS modifying the element under test (checked at each call site,
+  -- binder-aligned — WI-440; a lazy carrier re-walks, so a mutating callback
+  -- would make the view inconsistent).
+  --
+  -- find (DECOUPLED rows): pred's row `EffP` is its OWN, not tied to the
+  -- access row E — an effectful-but-element-pure pred works on a pure
+  -- carrier (List) and its effects THREAD to the caller; the op's effect is
+  -- the merge `{E, EffP}`. The lazy map/filter stay on the TIED `{E, -…}`
+  -- form: the produced stream pays the callback row on CONSUMPTION, so
+  -- decoupling them needs the row-merge in the result TYPE position.
+  operation find[EffP](c: C, pred: (x: Element) -> Bool @ {EffP, -Modify[x]}) -> Option[Element] effects {E, EffP} =
     Stream.find(iterator(c), pred)
 
   -- map PRODUCES a stream, so it returns the lazy `mapped` carrier over the
