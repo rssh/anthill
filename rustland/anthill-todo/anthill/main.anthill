@@ -55,6 +55,7 @@ namespace anthill.todo
   operation specs() -> List[OperationSpec] =
     [ spec_named("init",              "Initialize a new anthill-todo project")
     , spec_add()
+    , spec_insert()
     , spec_named("status",            "Show work item counts by status")
     , spec_list()
     , spec_next()
@@ -192,7 +193,53 @@ namespace anthill.todo
               kind: flag(),
               required: false,
               description: "Acceptance tool name (repeatable, default: cargo-test)"),
-            nil()))),
+            cons(
+              ParamSpec(
+                name: "tag",
+                kind: flag(),
+                required: false,
+                description: "Named list to tag the new item with (repeatable)"),
+              nil())))),
+      parent: none())
+
+  -- `insert <description> --before <id>`: create a new work item, tag it,
+  -- and make <id> depend on it — placing the new item earlier in any
+  -- dependency-ordered sequence (the build loop's "insert prerequisite").
+  operation spec_insert() -> OperationSpec =
+    OperationSpec(
+      name: "insert",
+      description: "Add a new work item before an existing one in a sequence",
+      params: cons(
+        ParamSpec(
+          name: "description",
+          kind: positional(),
+          required: true,
+          description: "Description of the new work item"),
+        cons(
+          ParamSpec(
+            name: "before",
+            kind: flag(),
+            required: true,
+            description: "Existing work item the new one is inserted before"),
+          cons(
+            ParamSpec(
+              name: "tag",
+              kind: flag(),
+              required: false,
+              description: "Named list to tag the new item with (repeatable)"),
+            cons(
+              ParamSpec(
+                name: "depends",
+                kind: flag(),
+                required: false,
+                description: "Dependency work item id (repeatable)"),
+              cons(
+                ParamSpec(
+                  name: "acceptance",
+                  kind: flag(),
+                  required: false,
+                  description: "Acceptance tool name (repeatable)"),
+                nil()))))),
       parent: none())
 
   -- `feedback <id> <text>` records a Feedback fact against a work
@@ -330,6 +377,7 @@ namespace anthill.todo
         cmd_remove_dependency(args, store, s)
       else if eq(name, "tag") then cmd_tag(args, s)
       else if eq(name, "untag") then cmd_untag(args, s)
+      else if eq(name, "insert") then cmd_insert(args, s)
       else not_yet(name)
 
     -- `tag <id> <name>` — attach a named-list tag to a work item.
@@ -1227,11 +1275,13 @@ namespace anthill.todo
         case some(description) ->
           do_add(s, description,
                  collect_all_args(args, "depends"),
-                 collect_all_args(args, "acceptance"))
+                 collect_all_args(args, "acceptance"),
+                 collect_all_args(args, "tag"))
 
     operation do_add(s: Cell[State], description: String,
                      depends_on: List[String],
-                     raw_acceptance: List[String]) -> Int64
+                     raw_acceptance: List[String],
+                     tags: List[String]) -> Int64
       effects {ConsoleOutput, Modify[s], Error}
     =
       let id = WorkItemStore.next_id(s)
@@ -1241,10 +1291,141 @@ namespace anthill.todo
         acceptance: resolve_acceptance(raw_acceptance),
         depends_on: depends_on,
         status: Open()))
+      let _ = apply_tags(s, id, tags)
       let _ = println(console(),
                       concat("added: ",
-                        concat(id, concat(" — ", description))))
+                        concat(id, concat(" — ",
+                          concat(description, tag_note(tags))))))
       0
+
+    -- ` [tags: a, b]` suffix on add/insert output; empty for no tags.
+    operation tag_note(tags: List[String]) -> String =
+      match tags
+        case nil() -> ""
+        case cons(_, _) ->
+          concat(" [tags: ", concat(join_strings(tags, ", "), "]"))
+
+    -- Persist one Tag fact per name (a fresh item can't carry
+    -- duplicates, so no already-tagged check here).
+    operation apply_tags(s: Cell[State], id: String, tags: List[String]) -> Unit
+      effects {Modify[s], Error}
+    =
+      match tags
+        case nil() -> ()
+        case cons(t, rest) ->
+          let _ = WorkItemStore.tag_item(s, id, t)
+          apply_tags(s, id, rest)
+
+    -- ── cmd_insert ───────────────────────────────────────────────
+    -- `insert <description> --before <id> [--tag t]* [--depends d]*
+    -- [--acceptance a]*` — create the item, tag it, and make the
+    -- --before target depend on it (the build loop's "insert
+    -- prerequisite"). Mirrors the native run_insert: the --before
+    -- target must exist, and a --depends that is (or transitively
+    -- reaches) the target is a cycle and rejected loudly.
+    operation cmd_insert(args: List[Binding], s: Cell[State]) -> Int64
+      effects {ConsoleOutput, ConsoleError, Modify[s], Error}
+    =
+      match get_arg(args, "description")
+        case none() ->
+          let _ = eprintln(console(), "insert: missing description")
+          2
+        case some(description) ->
+          match get_arg(args, "before")
+            case none() ->
+              let _ = eprintln(console(), "insert: missing --before")
+              2
+            case some(before) ->
+              match WorkItemStore.lookup(s, before)
+                case none() ->
+                  let _ = eprintln(console(),
+                    concat("error: --before target '",
+                      concat(before, "' not found")))
+                  1
+                case some(before_wi) ->
+                  do_insert(s, description, before, before_wi,
+                            collect_all_args(args, "tag"),
+                            collect_all_args(args, "depends"),
+                            collect_all_args(args, "acceptance"))
+
+    operation do_insert(s: Cell[State], description: String,
+                        before: String, before_wi: WorkItem,
+                        tags: List[String],
+                        depends_on: List[String],
+                        raw_acceptance: List[String]) -> Int64
+      effects {ConsoleOutput, ConsoleError, Modify[s], Error}
+    =
+      match first_cycle_dep(s, depends_on, before)
+        case some(d) ->
+          let _ = eprintln(console(),
+            concat("error: inserting before ",
+              concat(before, concat(" with dependency ",
+                concat(d, " would create a cycle")))))
+          1
+        case none() ->
+          -- Native ordering: allocate the id and rewrite the --before
+          -- target's depends_on FIRST, so a failing rewrite can't leave
+          -- an orphaned, unlinked item behind.
+          let id = WorkItemStore.next_id(s)
+          let current = deps_of_w(before_wi)
+          let new_deps =
+            if list_contains_string(current, id) then current
+            else append_string(current, id)
+          let _ = WorkItemStore.replace(s, before,
+                    with_deps(before_wi, new_deps))
+          let _ = WorkItemStore.commit(s, WorkItem(
+            id: id,
+            description: description,
+            acceptance: resolve_acceptance(raw_acceptance),
+            depends_on: depends_on,
+            status: Open()))
+          let _ = apply_tags(s, id, tags)
+          let _ = println(console(),
+            concat("inserted: ",
+              concat(id, concat(" before ",
+                concat(before, concat(tag_note(tags),
+                  concat(" (", concat(before,
+                    concat(" now depends on ",
+                      concat(id, ")"))))))))))
+          0
+
+    -- The first --depends entry that equals the --before target or
+    -- transitively reaches it (closing a cycle once the target depends
+    -- on the new item); none() when the insert is safe.
+    operation first_cycle_dep(s: Cell[State], deps: List[String],
+                              before: String) -> Option[T = String]
+      effects Error
+    =
+      match deps
+        case nil() -> none()
+        case cons(d, rest) ->
+          if eq(d, before) then some(d)
+          else if reaches_dep(s, d, before, nil()) then some(d)
+          else first_cycle_dep(s, rest, before)
+
+    -- True when `from` transitively depends on `target`. `seen` guards
+    -- against re-visiting (a corrupt cyclic store must not hang the CLI).
+    operation reaches_dep(s: Cell[State], from: String, target: String,
+                          seen: List[String]) -> Bool
+      effects Error
+    =
+      if list_contains_string(seen, from) then false
+      else
+        match WorkItemStore.lookup(s, from)
+          case none() -> false
+          case some(wi) ->
+            any_dep_reaches(s, deps_of_w(wi), target, cons(from, seen))
+
+    operation any_dep_reaches(s: Cell[State], deps: List[String],
+                              target: String, seen: List[String]) -> Bool
+      effects Error
+    =
+      match deps
+        case nil() -> false
+        case cons(d, rest) ->
+          if eq(d, target) then true
+          else if reaches_dep(s, d, target, seen) then true
+          else any_dep_reaches(s, rest, target, seen)
 
     -- Default acceptance to a single `cargo-test` tool when no
     -- --acceptance flag is supplied; otherwise lift each tool name.
