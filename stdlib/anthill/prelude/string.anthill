@@ -3,6 +3,8 @@
 -- binding files (e.g. rustland/anthill-stl/anthill/string.anthill) — see proposal 038.
 sort anthill.prelude.String
   import anthill.prelude.{Eq, Ordered}
+  import anthill.prelude.Ordered.{gt}
+  import anthill.prelude.Numeric.{sub}
 
   operation {
     concat(a: String, b: String) -> String
@@ -18,7 +20,16 @@ sort anthill.prelude.String
     toUpper(s: String) -> String
     toLower(s: String) -> String
     split(s: String, sep: String) -> List[T = String]
+    repeat(s: String, n: Int64) -> String          -- n copies of s; n <= 0 → ""
   }
+
+  -- padRight: s padded with trailing spaces to `width`; unchanged when
+  -- already that wide. The deficit is computed once and filled with one
+  -- repeat + one concat — O(width), replacing the quadratic
+  -- one-space-per-recursion shape callers used to hand-roll.
+  operation padRight(s: String, width: Int64) -> String =
+    let d = sub(width, length(s))
+    if gt(d, 0) then concat(s, repeat(" ", d)) else s
 
   -- Laws
   rule isEmpty(?s) = eq(length(?s), 0)

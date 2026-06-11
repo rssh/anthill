@@ -784,6 +784,39 @@ end
 }
 
 #[test]
+fn string_repeat_and_pad_right() {
+    // `repeat` (builtin primitive) + `padRight` (anthill default body over
+    // repeat: deficit computed once, one concat). Shapes checked via the
+    // registered String builtins (length/startsWith/endsWith) to avoid
+    // depending on Eq[String].
+    let src = r#"
+namespace test.strpad
+  import anthill.prelude.{String, Int64, Bool}
+  import anthill.prelude.String.{length, repeat, padRight, startsWith, endsWith}
+
+  operation rep_len() -> Int64 = length(repeat("ab", 3))
+  operation rep_zero_len() -> Int64 = length(repeat("ab", 0))
+  operation pad_len() -> Int64 = length(padRight("ab", 5))
+  operation pad_noop_len() -> Int64 = length(padRight("abcdef", 3))
+  operation pad_shape() -> Int64 =
+    if startsWith(padRight("ab", 5), "ab") then
+      if endsWith(padRight("ab", 5), "   ") then 1 else 0
+    else 0
+end
+"#;
+    let mut interp = crate::common::interp_for(src);
+    let run = |interp: &mut Interpreter, op: &str| {
+        expect_int(interp.call(op, &[]).unwrap_or_else(|e| panic!("call {op}: {e:?}")))
+    };
+    assert_eq!(run(&mut interp, "test.strpad.rep_len"), 6);
+    assert_eq!(run(&mut interp, "test.strpad.rep_zero_len"), 0);
+    assert_eq!(run(&mut interp, "test.strpad.pad_len"), 5);
+    // Already wider than the target width: unchanged, NOT truncated.
+    assert_eq!(run(&mut interp, "test.strpad.pad_noop_len"), 6);
+    assert_eq!(run(&mut interp, "test.strpad.pad_shape"), 1);
+}
+
+#[test]
 fn wi413_lazy_filter_skips_via_self_recursion() {
     // WI-413 / WI-410: the lazy `FilteredStream` carrier runs end-to-end. Its
     // `splitFirst` SELF-RECURSES on a reconstructed `filtered(rest, pred)` to

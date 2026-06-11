@@ -58,6 +58,7 @@ pub fn register_standard_builtins(interp: &mut Interpreter) -> Result<(), EvalEr
     register_if_present(interp, "anthill.prelude.String.substring", string_substring)?;
     register_if_present(interp, "anthill.prelude.String.toUpper", string_to_upper)?;
     register_if_present(interp, "anthill.prelude.String.toLower", string_to_lower)?;
+    register_if_present(interp, "anthill.prelude.String.repeat", string_repeat)?;
 
     register_if_present(interp, "anthill.prelude.BigInt.to_bigint", bigint_to_bigint)?;
     register_if_present(interp, "anthill.prelude.BigInt.to_int", bigint_to_int)?;
@@ -547,6 +548,26 @@ fn string_substring(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalE
     drop(prefix);
     let out: String = iter.take(hi - lo).collect();
     Ok(Value::Str(out))
+}
+
+// repeat(s, n) — n copies of s concatenated; n <= 0 yields the empty string.
+// The byte total is checked up front: `str::repeat` PANICS on capacity
+// overflow, so an absurd n must surface as a loud EvalError, not a process
+// abort (the same defensive stance as substring's bounds clamping).
+fn string_repeat(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    let [s, n] = expect_args::<2>("String.repeat", args)?;
+    let s = match &s { Value::Str(x) => x.clone(), _ => return Err(type_mismatch("String", &s, None)) };
+    let n = n.as_int().ok_or_else(|| type_mismatch("Int64", &n, None))?;
+    if n <= 0 {
+        return Ok(Value::Str(String::new()));
+    }
+    let fits = usize::try_from(n).ok()
+        .and_then(|n| s.len().checked_mul(n))
+        .is_some_and(|total| total <= isize::MAX as usize);
+    if !fits {
+        return Err(EvalError::Overflow { op: "String.repeat" });
+    }
+    Ok(Value::Str(s.repeat(n as usize)))
 }
 
 // ── LogicalStream / KB.execute ─────────────────────────────────
