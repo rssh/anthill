@@ -9,8 +9,7 @@ sort anthill.prelude.Stream
   import anthill.prelude.Pair.{pair}
   import anthill.prelude.List.{nil, cons}
   import anthill.prelude.Ordered.{gt}
-  import anthill.prelude.Numeric.{sub}
-  import anthill.prelude.Function
+  import anthill.prelude.Numeric.{sub, add}
   import anthill.prelude.Iterable
   import anthill.prelude.Modify
 
@@ -45,14 +44,26 @@ sort anthill.prelude.Stream
       case some(pair(h, rest)) -> cons(head: h, tail: collect(rest))
   -- Eager combinators (WI-064): consume the stream via `splitFirst`, like
   -- `collect`. `Acc` is each fold's own accumulator type param (bound from
-  -- `init`); the transform / predicate is a `Function` value applied directly
-  -- (WI-275 HOF). `map` / `filter` (which PRODUCE a stream) are the lazy
-  -- carriers in combinators.anthill, not here.
-  operation foldLeft[Elem, Eff, Acc](s: Stream[Elem, Eff], init: Acc, f: Function[(Acc, Elem), Acc, Eff]) -> Acc effects Eff =
+  -- `init`). Decoupled rows (WI-441, like find): the callback carries its
+  -- OWN row `EffP`, paid eagerly alongside the observation row
+  -- (`effects {Eff, EffP}`). DELIBERATELY no `-Modify[x]` lacks on the fold
+  -- callbacks: a fold is the run-once terminal consumer — unlike map/filter
+  -- the callback is not captured in a re-walkable lazy view, so element
+  -- mutation cannot make a view inconsistent; an in-place sweep (e.g.
+  -- sum-and-reset over List[Cell]) is a legitimate fold. (A Modify-bearing
+  -- callback is still row-inference-gated today: its denoted-bearing eta
+  -- arrow leaves EffP unconstrained — a loud error, not a rejection by
+  -- design.) The callback param is the WI-355 positional-tuple arrow
+  -- `((Acc, Elem)) -> Acc`, applied `f((init, h))`: a TWO-param arrow
+  -- `(acc: Acc, x: Elem) -> ...` does not yet bind EffP from the argument
+  -- (named-binder fields vs the eta arrow's `_1`/`_2` tuple — WI-442). `map` /
+  -- `filter` (which PRODUCE a stream) are the lazy carriers in
+  -- combinators.anthill, not here.
+  operation foldLeft[Elem, Eff, EffP, Acc](s: Stream[Elem, Eff], init: Acc, f: ((Acc, Elem)) -> Acc @ {EffP}) -> Acc effects {Eff, EffP} =
     match splitFirst(s)
       case none() -> init
       case some(pair(h, rest)) -> foldLeft(rest, f((init, h)), f)
-  operation foldRight[Elem, Eff, Acc](s: Stream[Elem, Eff], init: Acc, f: Function[(Elem, Acc), Acc, Eff]) -> Acc effects Eff =
+  operation foldRight[Elem, Eff, EffP, Acc](s: Stream[Elem, Eff], init: Acc, f: ((Elem, Acc)) -> Acc @ {EffP}) -> Acc effects {Eff, EffP} =
     match splitFirst(s)
       case none() -> init
       case some(pair(h, rest)) -> f((h, foldRight(rest, init, f)))
@@ -72,6 +83,15 @@ sort anthill.prelude.Stream
     match splitFirst(s)
       case none() -> true
       case some(_) -> false
+  -- count: consume the whole stream and count its elements — a consumption
+  -- VERB like collect/takeN/find, deliberately not named `size` (a property
+  -- name would mislead: this walks everything and diverges on an infinite
+  -- stream). The property-flavored `size` lives on Iterable, where the
+  -- carrier is a re-walkable collection.
+  operation count[Elem, Eff](s: Stream[Elem, Eff]) -> Int64 effects Eff =
+    match splitFirst(s)
+      case none() -> 0
+      case some(pair(_, rest)) -> add(1, count(rest))
 
   -- Stream trivially provides Iterable (proposal library/002, "Relationship to
   -- Stream"): a Stream IS its own iterator, so `iterator(s) = s`. This gives
