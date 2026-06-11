@@ -87,6 +87,8 @@ pub fn register_standard_builtins(interp: &mut Interpreter) -> Result<(), EvalEr
     register_if_present(interp, "anthill.reflect.extract", extract_type_builtin)?;
     register_if_present(interp, "anthill.reflect.term_field", term_field)?;
     register_if_present(interp, "anthill.reflect.term_as_string", term_as_string)?;
+    register_if_present(interp, "anthill.reflect.term_to_string", reflect_term_to_string)?;
+    register_if_present(interp, "anthill.reflect.term_list_items", reflect_term_list_items)?;
     register_if_present(interp, "anthill.reflect.term_as_entity", term_as_entity)?;
     register_if_present(interp, "anthill.reflect.as_term", as_term)?;
     register_if_present(interp, "anthill.reflect.fresh_var", reflect_fresh_var)?;
@@ -849,6 +851,72 @@ fn term_field(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalErr
             named: Vec::new().into(),
         },
     })
+}
+
+/// `anthill.reflect.term_to_string(t: Term) -> String` — the canonical
+/// printed text of a term, via `TermPrinter` (the renderer the persistence
+/// layer writes with). Total: any non-Term value lowers through
+/// `alloc_from_value` first, so an entity prints as its canonical term.
+fn reflect_term_to_string(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    let [v] = expect_args::<1>("term_to_string", args)?;
+    let tid = match &v {
+        Value::Term(tid) => *tid,
+        other => interp
+            .kb
+            .alloc_from_value(other)
+            .map_err(|e| EvalError::Internal(format!("term_to_string: lower: {e:?}")))?,
+    };
+    let printer = crate::persistence::print::TermPrinter::new(&interp.kb);
+    Ok(Value::Str(printer.print_term(tid)))
+}
+
+/// `anthill.reflect.term_list_items(t: Term) -> List[Term]` — the element
+/// terms of a cons/nil list term. Tolerates BOTH encodings — named
+/// (`cons(head: …, tail: …)`) and positional (`cons(…, …)`) — unlike the
+/// legacy CLI's named-only walk. A non-list term yields the empty list.
+fn reflect_term_list_items(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    let [v] = expect_args::<1>("term_list_items", args)?;
+    let mut tid = match &v {
+        Value::Term(t) => *t,
+        other => interp
+            .kb
+            .alloc_from_value(other)
+            .map_err(|e| EvalError::Internal(format!("term_list_items: lower: {e:?}")))?,
+    };
+    let mut items: Vec<Value> = Vec::new();
+    loop {
+        let crate::kb::term::Term::Fn { functor, pos_args, named_args } =
+            interp.kb.get_term(tid)
+        else {
+            break;
+        };
+        let name = interp.kb.resolve_sym(*functor);
+        let short = name.rsplit('.').next().unwrap_or(name);
+        if short == "nil" {
+            break;
+        }
+        if short != "cons" {
+            break;
+        }
+        let named_head = named_args
+            .iter()
+            .find(|(s, _)| interp.kb.resolve_sym(*s) == "head")
+            .map(|(_, t)| *t);
+        let named_tail = named_args
+            .iter()
+            .find(|(s, _)| interp.kb.resolve_sym(*s) == "tail")
+            .map(|(_, t)| *t);
+        let (head, tail) = match (named_head, named_tail) {
+            (Some(h), Some(t)) => (h, t),
+            _ if pos_args.len() == 2 => (pos_args[0], pos_args[1]),
+            _ => break,
+        };
+        items.push(Value::Term(head));
+        tid = tail;
+    }
+    interp
+        .build_list_value(items, &[])
+        .map_err(|e| EvalError::Internal(format!("term_list_items: build list: {e}")))
 }
 
 /// `anthill.reflect.term_as_string(t: Term) -> Option[String]`.

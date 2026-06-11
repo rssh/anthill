@@ -237,10 +237,12 @@ fn insert_unknown_before_errors_and_creates_nothing() {
 }
 
 #[test]
-fn insert_before_non_bracket_depends_fails_without_orphan() {
-    // `before`'s depends_on is `nil()` (not a `[...]` literal), which the
-    // source-rewrite cannot edit. The insert must fail cleanly and leave no
-    // orphaned work item — the dependency rewrite happens before the append.
+fn insert_before_non_bracket_depends_succeeds() {
+    // `before`'s depends_on is `nil()` (not a `[...]` literal). The legacy
+    // text surgery could not edit that form and had to fail-without-orphan;
+    // the bundle's replace path rewrites the whole block, so the insert now
+    // simply WORKS — the orphan hazard the old test guarded is structurally
+    // gone (WI-009 cutover).
     let tmp = tempfile::tempdir().expect("tempdir");
     let proj = setup_project(&tmp, r#"
 fact WorkItem(
@@ -252,12 +254,14 @@ fact WorkItem(
 "#);
 
     let out = run(&proj, &["insert", "prereq", "--before", "WI-001", "--tag", "typing"]);
-    assert!(!out.status.success(), "insert should fail when before's depends_on is not editable");
+    assert!(out.status.success(),
+        "insert must rewrite a non-bracket depends_on: stderr={}",
+        String::from_utf8_lossy(&out.stderr));
     let combined = read_combined(&proj.join("anthill-todo"));
-    assert!(!combined.contains("id: \"WI-002\""),
-        "no orphan item should be left when the dependency rewrite fails:\n{combined}");
-    assert!(!combined.contains("description: \"prereq\""),
-        "the new item must not be appended on failure:\n{combined}");
+    assert!(combined.contains("description: \"prereq\""),
+        "the new item should be persisted:\n{combined}");
+    assert!(workitem_block_contains(&combined, "WI-001", "WI-002"),
+        "WI-001 should now depend on the inserted WI-002:\n{combined}");
 }
 
 // ── escaping: a tag name with special characters round-trips ─────

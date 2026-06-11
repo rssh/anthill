@@ -37,7 +37,8 @@ namespace anthill.todo
   import anthill.prelude.List.{cons, nil}
   import anthill.reflect.{Term, Substitution, term_functor_name,
                           term_field, term_as_string, term_as_entity,
-                          fresh_var, make_fn, as_term}
+                          fresh_var, make_fn, as_term, term_to_string,
+                          term_list_items}
   import anthill.stage0.WorkStatus.{Claimed, Delivered, Verified}
   import anthill.reflect.KB.{kb, execute, facts_of}
   import anthill.reflect.LogicalQuery.{pattern_query}
@@ -46,7 +47,8 @@ namespace anthill.todo
                                            next_id, commit, replace, forget,
                                            commit_feedback, has_tag,
                                            tag_item, untag_item,
-                                           items_with_tag}
+                                           items_with_tag, tags_of,
+                                           raw_term_of}
   export Main, specs
 
   -- The 16-subcommand registry, mirroring the legacy Rust binary's
@@ -339,11 +341,17 @@ namespace anthill.todo
       match parse_argv(specs(), args)
         case parse_err(no_subcommand()) ->
           let _ = eprintln(console(),
-            "anthill-todo: no subcommand. Try `anthill-todo skill` for usage.")
+            "anthill-todo: no subcommand. Try `anthill-todo --help` for usage.")
           1
-        case parse_err(unknown_subcommand(_)) ->
-          let _ = eprintln(console(), "anthill-todo: unknown subcommand")
-          2
+        case parse_err(unknown_subcommand(given)) ->
+          if eq(given, "--help") then print_help(specs())
+          else if eq(given, "-h") then print_help(specs())
+          else if eq(given, "help") then print_help(specs())
+          else
+            let _ = eprintln(console(),
+              concat("anthill-todo: unknown subcommand '",
+                concat(given, "'. Try `anthill-todo --help`.")))
+            2
         case parse_err(_) ->
           let _ = eprintln(console(), "anthill-todo: argument error")
           2
@@ -469,6 +477,38 @@ namespace anthill.todo
       let _ = eprintln(console(), "anthill-todo: subcommand not yet ported to anthill")
       let _ = eprintln(console(), name)
       2
+
+    -- `--help` / `-h` / `help`: spec-driven command summary (the
+    -- OperationSpec catalogue is the single source of truth, so this can
+    -- never drift from the actual dispatch the way a hand-written help
+    -- text would).
+    operation print_help(ss: List[OperationSpec]) -> Int64
+      effects ConsoleOutput
+    =
+      let _ = println(console(), "Structured work management powered by anthill")
+      let _ = println(console(), "")
+      let _ = println(console(),
+        "Usage: anthill-todo [-d <DIR>] [--agent <NAME>] <COMMAND> [ARGS]")
+      let _ = println(console(), "")
+      let _ = println(console(), "Commands:")
+      let _ = print_help_lines(ss)
+      0
+
+    operation print_help_lines(ss: List[OperationSpec]) -> Unit
+      effects ConsoleOutput
+    =
+      match ss
+        case nil() -> ()
+        case cons(sp, rest) ->
+          let _ = match sp
+            case OperationSpec(name, description, _, _) ->
+              println(console(),
+                concat("  ", concat(pad_right(name, 20), description)))
+          print_help_lines(rest)
+
+    operation pad_right(s: String, width: Int64) -> String =
+      if lt(length(s), width) then pad_right(concat(s, " "), width)
+      else s
 
     -- Bump the count for `status` in `acc`, appending a new entry
     -- if absent. Returns the rebuilt list (immutable).
@@ -617,7 +657,88 @@ namespace anthill.todo
               let _ = print_description_w(wi)
               let _ = print_status_line_w(wi)
               let _ = print_deps_w(wi)
+              let _ = print_tags_w(s, id)
+              let _ = print_term_section_w(s, id, "context", "Context:")
+              let _ = print_term_section_w(s, id, "acceptance", "Acceptance:")
+              let _ = print_feedback_w(id)
               0
+
+    operation print_tags_w(s: Cell[State], id: String) -> Unit
+      effects {ConsoleOutput, Error}
+    =
+      let tags = sort_strings_unique(WorkItemStore.tags_of(s, id))
+      match tags
+        case nil() -> ()
+        case cons(_, _) ->
+          println(console(),
+                  concat("Tags:        ", join_strings(tags, ", ")))
+
+    -- Print a list-valued field of the STORED fact term, one element per
+    -- "  - " line in the canonical TermPrinter text — exactly what the
+    -- legacy run_show rendered. Reading the raw term (not the entity)
+    -- keeps the sub-term shapes verbatim.
+    operation print_term_section_w(s: Cell[State], id: String,
+                                   field: String, label: String) -> Unit
+      effects {ConsoleOutput, Error}
+    =
+      match WorkItemStore.raw_term_of(s, id)
+        case none() -> ()
+        case some(t) ->
+          match term_field(t, field)
+            case none() -> ()
+            case some(ft) ->
+              match term_list_items(ft)
+                case nil() -> ()
+                case cons(h, rest) ->
+                  let _ = println(console(), label)
+                  print_term_lines(cons(h, rest))
+
+    operation print_term_lines(ts: List[T = Term]) -> Unit
+      effects ConsoleOutput
+    =
+      match ts
+        case nil() -> ()
+        case cons(t, rest) ->
+          let _ = println(console(), concat("  - ", term_to_string(t)))
+          print_term_lines(rest)
+
+    operation print_feedback_w(id: String) -> Unit
+      effects {ConsoleOutput, Error}
+    =
+      print_fb_items(facts_of(kb(), Feedback), id)
+
+    operation print_fb_items(ts: List[T = Term], id: String) -> Unit
+      effects ConsoleOutput
+    =
+      match ts
+        case nil() -> ()
+        case cons(t, rest) ->
+          let _ = print_fb_one(t, id)
+          print_fb_items(rest, id)
+
+    operation print_fb_one(t: Term, id: String) -> Unit
+      effects ConsoleOutput
+    =
+      match term_field(t, "workitem")
+        case none() -> ()
+        case some(wt) ->
+          match term_as_string(wt)
+            case none() -> ()
+            case some(w) ->
+              if eq(w, id) then
+                println(console(),
+                  concat("Feedback (",
+                    concat(string_field_or(t, "author", "?"),
+                      concat("): ", string_field_or(t, "content", "")))))
+              else ()
+
+    operation string_field_or(t: Term, field: String, default: String) -> String =
+      match term_field(t, field)
+        case none() -> default
+        case some(ft) ->
+          match term_as_string(ft)
+            case none() -> default
+            case some(v) -> v
 
     operation print_description_w(w: WorkItem) -> Unit
       effects ConsoleOutput
@@ -1914,6 +2035,17 @@ namespace anthill.todo
           concat("error: '", concat(id,
             concat("' already depends on '", concat(dep, "'")))))
         1
+      -- Cycle guard (the legacy run_add_dependency check): adding
+      -- id -> dep closes a cycle iff dep already transitively
+      -- depends on id.
+      else if reaches_dep(s, dep, id, nil()) then
+        let _ = eprintln(console(),
+          concat("error: adding ", concat(id,
+            concat(" -> ", concat(dep,
+              concat(" would create a cycle (", concat(dep,
+                concat(" already transitively depends on ",
+                  concat(id, ")")))))))))
+        1
       else
         let _ = WorkItemStore.replace(s, id,
           with_deps(wi, append_string(current, dep)))
@@ -2071,7 +2203,11 @@ namespace anthill.todo
     =
       if eq(limit, 0) then printed
       else
-        match splitFirst(stream)
+        -- QUALIFIED dispatch (WI-411): the bare `splitFirst(stream)` on an
+        -- abstract Stream receiver self-dispatches and dies at eval with
+        -- "unknown operation: splitFirst"; Stream.splitFirst routes through
+        -- the spec and reaches the runtime LogicalStream impl.
+        match Stream.splitFirst(stream)
           case none() -> printed
           case some(p) ->
             match p

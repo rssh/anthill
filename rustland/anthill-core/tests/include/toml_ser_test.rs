@@ -161,7 +161,10 @@ tags = ["rust", "core"]
 
     let printer = TermPrinter::new(&kb);
     let text = printer.print_term(kb.rule_head(results[0]));
-    assert!(text.contains("cons"), "expected cons-list in: {text}");
+    // Ground cons/nil spines print as list literals (the round-trippable
+    // form — a bare `nil`/`cons` print reloads as a name reference that
+    // no longer unifies with list patterns; see TermPrinter).
+    assert!(text.contains("[\"rust\", \"core\"]"), "expected list literal in: {text}");
 }
 
 // ── Multiple entries ────────────────────────────────────────────

@@ -78,6 +78,13 @@ namespace anthill.todo.store
     -- store holds duplicate Tag facts; callers sort/dedup).
     operation items_with_tag(s: Cell[V = State], name: String) -> List[T = String]
       effects Error
+    -- Tag names carried by work item `id` (unordered; callers sort/dedup).
+    operation tags_of(s: Cell[V = State], id: String) -> List[T = String]
+      effects Error
+    -- The stored fact TERM for `id` — for consumers that must render the
+    -- original sub-terms verbatim (show's Context/Acceptance sections).
+    operation raw_term_of(s: Cell[V = State], id: String) -> Option[T = Term]
+      effects Error
   end
 
   -- ─── 2. File-backed impl ────────────────────────────────────────
@@ -356,6 +363,41 @@ namespace anthill.todo.store
     =
       match Cell.get(s)
         case wis(_, _) -> collect_tagged(facts_of(kb(), Tag), name)
+
+    -- The mirror of tagged_id_of: the tag NAME when the fact's workitem
+    -- matches `id`.
+    operation tag_name_of(t: Term, id: String) -> Option[T = String] =
+      match term_field(t, "workitem")
+        case none() -> none()
+        case some(wt) ->
+          match term_as_string(wt)
+            case none() -> none()
+            case some(w) ->
+              if eq(w, id) then
+                match term_field(t, "name")
+                  case none() -> none()
+                  case some(nt) -> term_as_string(nt)
+              else none()
+
+    operation collect_item_tags(ts: List[T = Term], id: String) -> List[T = String] =
+      match ts
+        case nil() -> nil()
+        case cons(t, rest) ->
+          match tag_name_of(t, id)
+            case some(n) -> cons(n, collect_item_tags(rest, id))
+            case none() -> collect_item_tags(rest, id)
+
+    operation tags_of(s: Cell[V = WIS], id: String) -> List[T = String]
+      effects Error
+    =
+      match Cell.get(s)
+        case wis(_, _) -> collect_item_tags(facts_of(kb(), Tag), id)
+
+    operation raw_term_of(s: Cell[V = WIS], id: String) -> Option[T = Term]
+      effects Error
+    =
+      match Cell.get(s)
+        case wis(_, _) -> find_term_by_id(facts_of(kb(), WorkItem), id)
 
     operation tag_item(s: Cell[V = WIS], id: String, name: String) -> Unit
       effects {Modify[s], Error}

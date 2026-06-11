@@ -446,6 +446,51 @@ impl<'a, V: TermSource + ?Sized> TermPrinter<'a, V> {
         }
     }
 
+    /// The element terms of a GROUND cons/nil list spine (named
+    /// `cons(head: …, tail: …)` or positional `cons(…, …)`, ending in a
+    /// nullary `nil`), or `None` for anything else — a var tail, a
+    /// non-nil end, a non-list term. Used by `write_term` to print list
+    /// spines as `[…]` literals: the bare-name nullary print (`nil`)
+    /// reloads as a NAME REFERENCE, which no longer unifies with
+    /// `nil()` / `cons(…)` patterns — the round-trip bug that made
+    /// runtime-persisted work items invisible to the workflow rules.
+    fn unwrap_list_spine(&self, id: TermId) -> Option<Vec<TermId>> {
+        let mut items = Vec::new();
+        let mut cur = id;
+        loop {
+            match self.view.term(cur) {
+                Term::Fn { functor, pos_args, named_args } => {
+                    let fname = self.view.sym_name(*functor);
+                    let short = fname.rsplit('.').next().unwrap_or(fname);
+                    if short == "nil" && pos_args.is_empty() && named_args.is_empty() {
+                        return Some(items);
+                    }
+                    if short != "cons" {
+                        return None;
+                    }
+                    let named_head = named_args
+                        .iter()
+                        .find(|(s, _)| self.view.sym_name(*s) == "head")
+                        .map(|(_, t)| *t);
+                    let named_tail = named_args
+                        .iter()
+                        .find(|(s, _)| self.view.sym_name(*s) == "tail")
+                        .map(|(_, t)| *t);
+                    let (head, tail) = match (named_head, named_tail) {
+                        (Some(h), Some(t)) => (h, t),
+                        _ if pos_args.len() == 2 && named_args.is_empty() => {
+                            (pos_args[0], pos_args[1])
+                        }
+                        _ => return None,
+                    };
+                    items.push(head);
+                    cur = tail;
+                }
+                _ => return None,
+            }
+        }
+    }
+
     fn write_term(&self, id: TermId, buf: &mut String) {
         match self.view.term(id) {
             Term::Const(lit) => self.write_literal(lit, buf),
@@ -461,6 +506,15 @@ impl<'a, V: TermSource + ?Sized> TermPrinter<'a, V> {
                 buf.push_str(self.view.sym_name(vid.name()));
             }
             Term::Fn { functor, pos_args, named_args } => {
+                // A ground cons/nil spine prints as a list literal (see
+                // `unwrap_list_spine` for why the cons form must not be
+                // written to disk).
+                if let Some(items) = self.unwrap_list_spine(id) {
+                    buf.push('[');
+                    self.write_comma_sep(&items, buf);
+                    buf.push(']');
+                    return;
+                }
                 let fname = self.view.sym_name(*functor);
                 // Round-trip the forall_impl encoding produced by
                 // convert_nested_implication back to surface syntax.

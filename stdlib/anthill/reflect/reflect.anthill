@@ -128,6 +128,15 @@ namespace anthill.reflect
   -- term is exactly `Const(StringLiteral(_))`.
   operation term_as_string(t: Term) -> Option[T = String]
 
+  -- The canonical printed text of a term — the TermPrinter rendering the
+  -- persistence layer writes. Total over terms.
+  operation term_to_string(t: Term) -> String
+
+  -- The element terms of a cons/nil list term, tolerating both the named
+  -- (`cons(head: …, tail: …)`) and positional (`cons(…, …)`) encodings.
+  -- A non-list term yields the empty list.
+  operation term_list_items(t: Term) -> List[T = Term]
+
   -- Materialize a `Term::Fn` whose functor is a known constructor into a
   -- typed `Value::Entity`, using the KB's `entity_field_types` index to
   -- recover the declared fields. Literal field values become typed scalars

@@ -1,0 +1,133 @@
+$ anthill-todo add base work --acceptance cargo-test
+added: WI-001 — base work
+[exit=0]
+$ anthill-todo add second work --depends WI-001 --tag seq
+added: WI-002 — second work [tags: seq]
+[exit=0]
+$ anthill-todo add third work --depends WI-002 --tag seq
+added: WI-003 — third work [tags: seq]
+[exit=0]
+$ anthill-todo insert prereq for third --before WI-003 --depends WI-001 --tag seq
+inserted: WI-004 before WI-003 [tags: seq] (WI-003 now depends on WI-004)
+[exit=0]
+$ anthill-todo tag WI-001 seq
+tagged: WI-001 +seq
+[exit=0]
+$ anthill-todo status
+4 work item(s):
+  Open: 4
+[exit=0]
+$ anthill-todo list
+  WI-001 [Open] base work [unblocks 4]
+
+  -- blocked --
+  WI-002 [Open] second work (depends: WI-001)
+  WI-003 [Open] third work (depends: WI-002, WI-004)
+  WI-004 [Open] prereq for third (depends: WI-001)
+4 item(s)
+[exit=0]
+$ anthill-todo list --all
+  WI-001 [Open] base work [unblocks 4]
+
+  -- blocked --
+  WI-002 [Open] second work (depends: WI-001)
+  WI-003 [Open] third work (depends: WI-002, WI-004)
+  WI-004 [Open] prereq for third (depends: WI-001)
+4 item(s)
+[exit=0]
+$ anthill-todo list --status open
+  WI-001 [Open] base work [unblocks 4]
+
+  -- blocked --
+  WI-002 [Open] second work (depends: WI-001)
+  WI-003 [Open] third work (depends: WI-002, WI-004)
+  WI-004 [Open] prereq for third (depends: WI-001)
+4 item(s)
+[exit=0]
+$ anthill-todo list --tag seq
+tag 'seq' (4 item(s), sequence order):
+  WI-001 [Open] base work  <- next
+  WI-002 [Open] second work (blocked: WI-001)
+  WI-004 [Open] prereq for third (blocked: WI-001)
+  WI-003 [Open] third work (blocked: WI-002, WI-004)
+4 item(s)
+[exit=0]
+$ anthill-todo show WI-001
+ID:          WI-001
+Description: base work
+Status:      Open
+Tags:        seq
+Acceptance:
+  - ToolPasses(tool: "cargo-test", params: ?params)
+[exit=0]
+$ anthill-todo next
+  WI-001 — base work
+[exit=0]
+$ anthill-todo graph
+WI-001 [Open]
+   ├─ WI-002 [Open]
+   │  └─ WI-003 [Open]
+   └─ WI-004 [Open]
+      └─ WI-003 [Open]
+[exit=0]
+$ anthill-todo --agent claude claim WI-001
+claimed: WI-001 by claude
+[exit=0]
+$ anthill-todo --agent claude deliver WI-001
+delivered: WI-001 by claude
+[exit=0]
+$ anthill-todo verify WI-001
+verified: WI-001
+[exit=0]
+$ anthill-todo --agent claude feedback WI-002 some feedback text
+feedback on WI-002: some feedback text
+[exit=0]
+$ anthill-todo show WI-002
+ID:          WI-002
+Description: second work
+Status:      Open
+Depends on:  WI-001
+Tags:        seq
+Acceptance:
+  - ToolPasses(tool: "cargo-test", params: ?params)
+Feedback (claude): some feedback text
+[exit=0]
+$ anthill-todo update WI-002 --description second work updated
+updated WI-002: description
+[exit=0]
+$ anthill-todo add-dependency WI-003 WI-001
+added dependency: WI-003 -> WI-001
+[exit=0]
+$ anthill-todo add-dependency WI-001 WI-002
+error: adding WI-001 -> WI-002 would create a cycle (WI-002 already transitively depends on WI-001)
+[exit=1]
+$ anthill-todo remove-dependency WI-003 WI-001
+removed dependency: WI-003 -> WI-001
+[exit=0]
+$ anthill-todo untag WI-004 seq
+untagged: WI-004 -seq
+[exit=0]
+$ anthill-todo list --tag seq
+tag 'seq' (3 item(s), sequence order):
+  WI-001 [Verified] base work
+  WI-002 [Open] second work updated  <- next
+  WI-003 [Open] third work (blocked: WI-002, WI-004)
+3 item(s)
+[exit=0]
+$ anthill-todo delete WI-004
+deleted: WI-004
+[exit=0]
+$ anthill-todo list --all
+  WI-001 [Verified] base work [unblocks 2]
+  WI-002 [Open] second work updated (depends: WI-001) [unblocks 1] [has feedback]
+
+  -- blocked --
+  WI-003 [Open] third work (depends: WI-002, WI-004)
+3 item(s)
+[exit=0]
+$ anthill-todo show WI-999
+error: work item 'WI-999' not found
+[exit=1]
+$ anthill-todo nonexistent-subcommand
+anthill-todo: unknown subcommand 'nonexistent-subcommand'. Try `anthill-todo --help`.
+[exit=2]

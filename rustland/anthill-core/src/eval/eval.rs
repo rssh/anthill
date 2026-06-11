@@ -487,9 +487,18 @@ impl Interpreter {
         let spec_sort = lookup_spec_op_dispatch(&self.kb, spec_op)?;
         let rec = crate::kb::op_info::lookup_operation_info(&self.kb, spec_op)?;
         // The carrier sort a runtime argument value names: entity functor →
-        // its parent sort's base symbol.
+        // its parent sort's base symbol. A runtime stream handle IS a
+        // LogicalStream value — since WI-385 widened consumer params from
+        // LogicalStream to the Stream SPEC, the typer no longer statically
+        // rewrites those calls, so THIS dynamic path must classify the
+        // handle's carrier or every spec op on an `execute()` stream dies
+        // as UnknownOperation (the regression that silently broke `next`).
         let carrier_of = |i: usize| -> Option<Symbol> {
-            let functor = value_functor(&self.kb, arg_values.get(i)?)?;
+            let arg = arg_values.get(i)?;
+            if matches!(arg, Value::Stream(_)) {
+                return self.kb.try_resolve_symbol("anthill.prelude.LogicalStream");
+            }
+            let functor = value_functor(&self.kb, arg)?;
             let parent_tid = self.kb.constructor_parent_sort(functor)?;
             match self.kb.get_term(parent_tid) {
                 Term::Fn { functor, .. } | Term::Ref(functor) | Term::Ident(functor) => {
