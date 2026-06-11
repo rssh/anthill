@@ -74,6 +74,10 @@ namespace anthill.todo.store
       effects Error
     operation has_tag(s: Cell[V = State], id: String, name: String) -> Bool
       effects Error
+    -- Work-item ids carrying tag `name` (unordered, may repeat if the
+    -- store holds duplicate Tag facts; callers sort/dedup).
+    operation items_with_tag(s: Cell[V = State], name: String) -> List[T = String]
+      effects Error
   end
 
   -- ─── 2. File-backed impl ────────────────────────────────────────
@@ -322,6 +326,36 @@ namespace anthill.todo.store
           match find_tag_term(facts_of(kb(), Tag), id, name)
             case none() -> false
             case some(_) -> true
+
+    -- The workitem id of a Tag fact whose name matches; none() for a
+    -- non-matching or malformed term (incl. the synthetic entity-decl
+    -- fact, whose field slots aren't string literals).
+    operation tagged_id_of(t: Term, name: String) -> Option[T = String] =
+      match term_field(t, "name")
+        case none() -> none()
+        case some(nt) ->
+          match term_as_string(nt)
+            case none() -> none()
+            case some(n) ->
+              if eq(n, name) then
+                match term_field(t, "workitem")
+                  case none() -> none()
+                  case some(wt) -> term_as_string(wt)
+              else none()
+
+    operation collect_tagged(ts: List[T = Term], name: String) -> List[T = String] =
+      match ts
+        case nil() -> nil()
+        case cons(t, rest) ->
+          match tagged_id_of(t, name)
+            case some(id) -> cons(id, collect_tagged(rest, name))
+            case none() -> collect_tagged(rest, name)
+
+    operation items_with_tag(s: Cell[V = WIS], name: String) -> List[T = String]
+      effects Error
+    =
+      match Cell.get(s)
+        case wis(_, _) -> collect_tagged(facts_of(kb(), Tag), name)
 
     operation tag_item(s: Cell[V = WIS], id: String, name: String) -> Unit
       effects {Modify[s], Error}

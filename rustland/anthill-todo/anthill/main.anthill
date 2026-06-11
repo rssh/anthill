@@ -18,7 +18,7 @@ namespace anthill.todo
   import anthill.prelude.{List, Stream, Map, Unit}
   import anthill.prelude.Map.{empty, put, get, contains}
   import anthill.prelude.Bool.{not}
-  import anthill.prelude.String.{length, substring, toUpper}
+  import anthill.prelude.String.{length, substring, toUpper, toLower}
   import anthill.prelude.Console.{console, println, eprintln,
                                   ConsoleOutput, ConsoleError}
   import anthill.cli.parse.{parse_argv, ParseResult, ParsedArgs,
@@ -45,7 +45,8 @@ namespace anthill.todo
   import anthill.todo.store.WorkItemStore.{lookup, by_status_of, all,
                                            next_id, commit, replace, forget,
                                            commit_feedback, has_tag,
-                                           tag_item, untag_item}
+                                           tag_item, untag_item,
+                                           items_with_tag}
   export Main, specs
 
   -- The 16-subcommand registry, mirroring the legacy Rust binary's
@@ -295,7 +296,13 @@ namespace anthill.todo
             kind: bool_flag(),
             required: false,
             description: "Include delivered/verified items"),
-          nil())),
+          cons(
+            ParamSpec(
+              name: "tag",
+              kind: flag(),
+              required: false,
+              description: "Show a named list in dependency (sequence) order"),
+            nil()))),
       parent: none())
 
   -- Per-WorkItem row precomputed for `cmd_list`. Walking a term's named
@@ -670,20 +677,12 @@ namespace anthill.todo
       else if eq(status, "Verified") then true
       else false
 
-    -- Status filter match. The legacy CLI uses eq_ignore_ascii_case;
-    -- emulate via a "Capitalize first letter, lowercase rest" pass so
-    -- "open" / "OPEN" / "Open" all match WorkStatus names that begin
-    -- with a single uppercase letter.
+    -- Status filter match — the legacy CLI's eq_ignore_ascii_case, done
+    -- honestly: lowercase both sides. (The previous "Capitalize first
+    -- letter" emulation claimed to match "OPEN" but didn't — capitalizing
+    -- "OPEN" yields "OPEN", not "Open".)
     operation matches_filter(status: String, filter: String) -> Bool =
-      if eq(status, filter) then true
-      else if eq(status, capitalized(filter)) then true
-      else false
-
-    -- Capitalize "open" → "Open". toUpper is a builtin (String.toUpper).
-    operation capitalized(s: String) -> String =
-      if eq(length(s), 0) then s
-      else concat(toUpper(substring(s, 0, 1)),
-                  substring(s, 1, length(s)))
+      eq(toLower(status), toLower(filter))
 
     operation filter_rows(rows: List[Row],
                           status_filter: Option[String],
@@ -1095,6 +1094,13 @@ namespace anthill.todo
     operation cmd_list(args: List[Binding], s: Cell[State]) -> Int64
       effects {ConsoleOutput, Error}
     =
+      match get_arg(args, "tag")
+        case some(t) -> cmd_list_tagged(s, t, get_arg(args, "status"))
+        case none() -> cmd_list_plain(args, s)
+
+    operation cmd_list_plain(args: List[Binding], s: Cell[State]) -> Int64
+      effects {ConsoleOutput, Error}
+    =
       let status_filter = get_arg(args, "status")
       let show_all = match get_arg(args, "all")
         case some(_) -> true
@@ -1126,6 +1132,178 @@ namespace anthill.todo
         let _ = println(console(),
                         concat(to_string(count_rows(filtered)), " item(s)"))
         0
+
+    -- ── cmd_list --tag (the named-list sequence view) ─────────────
+    -- Items in dependency (topological) order; the first undelivered
+    -- item whose deps are all satisfied is marked `<- next`; unmet deps
+    -- show `(blocked: …)`. Mirrors the native run_list_tagged: Kahn
+    -- with smallest-id tie-break over edges "b transitively depends on
+    -- a" (reach goes THROUGH untagged intermediates), a tag pointing at
+    -- a missing id prints `[missing]` (a data error stays visible), and
+    -- the status filter is applied per row AFTER ordering.
+    operation cmd_list_tagged(s: Cell[State], tag_name: String,
+                              status_filter: Option[String]) -> Int64
+      effects {ConsoleOutput, Error}
+    =
+      let ids = sort_strings_unique(WorkItemStore.items_with_tag(s, tag_name))
+      match ids
+        case nil() ->
+          let _ = println(console(),
+            concat("No work items tagged '", concat(tag_name, "'.")))
+          0
+        case cons(_, _) ->
+          let row_map = build_row_map(rows_of_w(WorkItemStore.all(s)))
+          let ordered = topo_order_tagged(row_map, ids)
+          let _ = println(console(),
+            concat("tag '", concat(tag_name,
+              concat("' (", concat(to_string(count_strings(ordered)),
+                " item(s), sequence order):")))))
+          let shown = print_tagged_rows(ordered, row_map, status_filter,
+                                        false, 0)
+          let _ = println(console(), concat(to_string(shown), " item(s)"))
+          0
+
+    -- Kahn's algorithm with the smallest-id tie-break: `pending` is
+    -- kept id-sorted, so the first pending id that depends on no OTHER
+    -- pending id is exactly the minimal ready node. A cycle leaves no
+    -- ready node — the remainder is appended in id order rather than
+    -- silently dropped (the native fallback).
+    operation topo_order_tagged(row_map: Map[String, Row],
+                                pending: List[String]) -> List[String] =
+      match find_ready(row_map, pending, pending)
+        case none() -> pending
+        case some(n) ->
+          cons(n, topo_order_tagged(row_map, remove_string(pending, n)))
+
+    operation find_ready(row_map: Map[String, Row], scan: List[String],
+                         pending: List[String]) -> Option[T = String] =
+      match scan
+        case nil() -> none()
+        case cons(n, rest) ->
+          if reaches_any_other(row_map, n, pending) then
+            find_ready(row_map, rest, pending)
+          else some(n)
+
+    operation reaches_any_other(row_map: Map[String, Row], n: String,
+                                pending: List[String]) -> Bool =
+      match pending
+        case nil() -> false
+        case cons(m, rest) ->
+          if eq(m, n) then reaches_any_other(row_map, n, rest)
+          else if row_reaches(row_map, n, m, nil()) then true
+          else reaches_any_other(row_map, n, rest)
+
+    -- True when `from` transitively depends on `target`, walking through
+    -- ALL items (tagged or not). `seen` guards re-visits so a corrupt
+    -- cyclic store can't hang the view.
+    operation row_reaches(row_map: Map[String, Row], from: String,
+                          target: String, seen: List[String]) -> Bool =
+      if list_contains_string(seen, from) then false
+      else
+        match get(row_map, from)
+          case none() -> false
+          case some(r) ->
+            match r
+              case Row(_, _, _, deps, _, _) ->
+                row_deps_reach(row_map, deps, target, cons(from, seen))
+
+    operation row_deps_reach(row_map: Map[String, Row], deps: List[String],
+                             target: String, seen: List[String]) -> Bool =
+      match deps
+        case nil() -> false
+        case cons(d, rest) ->
+          if eq(d, target) then true
+          else if row_reaches(row_map, d, target, seen) then true
+          else row_deps_reach(row_map, rest, target, seen)
+
+    operation print_tagged_rows(ids: List[String],
+                                row_map: Map[String, Row],
+                                status_filter: Option[String],
+                                next_marked: Bool, shown: Int64) -> Int64
+      effects ConsoleOutput
+    =
+      match ids
+        case nil() -> shown
+        case cons(id, rest) ->
+          match get(row_map, id)
+            case none() ->
+              let _ = println(console(),
+                concat("  ", concat(id, " [missing] (no such work item)")))
+              print_tagged_rows(rest, row_map, status_filter,
+                                next_marked, shown + 1)
+            case some(r) ->
+              match r
+                case Row(_, status, desc, deps, _, _) ->
+                  let pass = match status_filter
+                    case none() -> true
+                    case some(f) -> matches_filter(status, f)
+                  if pass then
+                    let unmet = unmet_deps(deps, row_map)
+                    let is_next =
+                      if next_marked then false
+                      else if is_satisfied(status) then false
+                      else match unmet
+                        case nil() -> true
+                        case cons(_, _) -> false
+                    let blocked = match unmet
+                      case nil() -> ""
+                      case cons(_, _) ->
+                        concat(" (blocked: ",
+                          concat(join_strings(unmet, ", "), ")"))
+                    let marker = if is_next then "  <- next" else ""
+                    let marked_after = if is_next then true else next_marked
+                    let _ = println(console(),
+                      concat("  ", concat(id,
+                        concat(" [", concat(status,
+                          concat("] ", concat(truncate_desc(desc),
+                            concat(blocked, marker))))))))
+                    print_tagged_rows(rest, row_map, status_filter,
+                                      marked_after, shown + 1)
+                  else
+                    print_tagged_rows(rest, row_map, status_filter,
+                                      next_marked, shown)
+
+    -- Deps not yet Delivered/Verified. A dep id with no row counts as
+    -- unmet — a dangling reference must stay visible, never read as met.
+    operation unmet_deps(deps: List[String],
+                         row_map: Map[String, Row]) -> List[String] =
+      match deps
+        case nil() -> nil()
+        case cons(d, rest) ->
+          match get(row_map, d)
+            case none() -> cons(d, unmet_deps(rest, row_map))
+            case some(r) ->
+              match r
+                case Row(_, st, _, _, _, _) ->
+                  if is_satisfied(st) then unmet_deps(rest, row_map)
+                  else cons(d, unmet_deps(rest, row_map))
+
+    -- First 100 chars + '…' (native truncate_desc(s, 100); substring /
+    -- length are char-based builtins, so multibyte text truncates
+    -- identically to the native chars() walk).
+    operation truncate_desc(s: String) -> String =
+      if lt(length(s), 101) then s
+      else concat(substring(s, 0, 100), "…")
+
+    -- Insertion sort, ascending, dropping duplicates (the native view
+    -- collects tag members into a set before ordering).
+    operation sort_strings_unique(xs: List[String]) -> List[String] =
+      match xs
+        case nil() -> nil()
+        case cons(x, rest) -> insert_string_sorted(sort_strings_unique(rest), x)
+
+    operation insert_string_sorted(xs: List[String], x: String) -> List[String] =
+      match xs
+        case nil() -> cons(x, nil())
+        case cons(h, rest) ->
+          if eq(x, h) then xs
+          else if lt(x, h) then cons(x, xs)
+          else cons(h, insert_string_sorted(rest, x))
+
+    operation count_strings(xs: List[String]) -> Int64 =
+      match xs
+        case nil() -> 0
+        case cons(_, rest) -> 1 + count_strings(rest)
 
     -- ── cmd_graph ─────────────────────────────────────────────────
 
