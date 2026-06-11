@@ -48,14 +48,14 @@ sort anthill.prelude.Stream
   -- `init`); the transform / predicate is a `Function` value applied directly
   -- (WI-275 HOF). `map` / `filter` (which PRODUCE a stream) are the lazy
   -- carriers in combinators.anthill, not here.
-  operation fold_left[Elem, Eff, Acc](s: Stream[Elem, Eff], init: Acc, f: Function[(Acc, Elem), Acc, Eff]) -> Acc effects Eff =
+  operation foldLeft[Elem, Eff, Acc](s: Stream[Elem, Eff], init: Acc, f: Function[(Acc, Elem), Acc, Eff]) -> Acc effects Eff =
     match splitFirst(s)
       case none() -> init
-      case some(pair(h, rest)) -> fold_left(rest, f((init, h)), f)
-  operation fold_right[Elem, Eff, Acc](s: Stream[Elem, Eff], init: Acc, f: Function[(Elem, Acc), Acc, Eff]) -> Acc effects Eff =
+      case some(pair(h, rest)) -> foldLeft(rest, f((init, h)), f)
+  operation foldRight[Elem, Eff, Acc](s: Stream[Elem, Eff], init: Acc, f: Function[(Elem, Acc), Acc, Eff]) -> Acc effects Eff =
     match splitFirst(s)
       case none() -> init
-      case some(pair(h, rest)) -> f((h, fold_right(rest, init, f)))
+      case some(pair(h, rest)) -> f((h, foldRight(rest, init, f)))
   -- find (WI-441 decoupled rows): the pred carries its OWN row `EffP` —
   -- open, minus Modify on the element under test — instead of being tied to
   -- the stream's observation row `Eff`; find's effect is the MERGE of both

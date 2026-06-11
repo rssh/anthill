@@ -1,7 +1,7 @@
 -- Lazy stream-producing combinator (WI-064): map.
 --
--- Unlike the eager consumers on `Stream` (collect / takeN / fold_left /
--- fold_right / find, which fold the stream down to a value), `map` PRODUCES a
+-- Unlike the eager consumers on `Stream` (collect / takeN / foldLeft /
+-- foldRight / find, which fold the stream down to a value), `map` PRODUCES a
 -- new stream, so it is a lazy carrier: a small entity that wraps the source
 -- stream plus the transform and PROVIDES Stream by defining `splitFirst` over
 -- the source. The carrier's output element param is named `T` and its effect

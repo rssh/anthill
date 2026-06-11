@@ -719,7 +719,7 @@ fn wi064_stdlib_combinators_fold_map_find() {
     // WI-064: the stdlib higher-order combinators run end-to-end on a List
     // (admissible as a Stream via `List provides Stream`). The transforms /
     // predicate are named ops (eta-lifted to function values, WI-275).
-    //   * fold_left / fold_right reduce a list to its sum (the acceptance);
+    //   * foldLeft / foldRight reduce a list to its sum (the acceptance);
     //   * map (the lazy `mapped` carrier that provides Stream) transforms each
     //     element — `collect`-ed back to a List;
     //   * find returns the first matching element.
@@ -730,7 +730,7 @@ namespace test.wi064
   import anthill.prelude.{List, Int64, Stream, Bool, Option}
   import anthill.prelude.List.{nil, cons}
   import anthill.prelude.Option.{some, none}
-  import anthill.prelude.Stream.{collect, fold_left, fold_right, find}
+  import anthill.prelude.Stream.{collect, foldLeft, foldRight, find}
   import anthill.prelude.MappedStream.{map}
 
   operation addp(a: Int64, b: Int64) -> Int64 = a + b
@@ -743,16 +743,16 @@ namespace test.wi064
       case cons(a, cons(b, cons(c, _))) -> a * 100 + b * 10 + c
       case _ -> 0
 
-  operation sum() -> Int64 = fold_left([1, 2, 3, 4], 0, addp)
-  operation sumr() -> Int64 = fold_right([1, 2, 3, 4], 0, addp)
+  operation sum() -> Int64 = foldLeft([1, 2, 3, 4], 0, addp)
+  operation sumr() -> Int64 = foldRight([1, 2, 3, 4], 0, addp)
   -- Non-commutative `subt` separates the two folds (and would catch a swapped
-  -- tuple order): fold_left ((0-1)-2)-3 = -6; fold_right 1-(2-(3-0)) = 2.
-  operation foldl_sub() -> Int64 = fold_left([1, 2, 3], 0, subt)
-  operation foldr_sub() -> Int64 = fold_right([1, 2, 3], 0, subt)
+  -- tuple order): foldLeft ((0-1)-2)-3 = -6; foldRight 1-(2-(3-0)) = 2.
+  operation foldl_sub() -> Int64 = foldLeft([1, 2, 3], 0, subt)
+  operation foldr_sub() -> Int64 = foldRight([1, 2, 3], 0, subt)
   -- map (+1) over [1,2,3] ⇒ [2,3,4]: collect ⇒ 234; folded ⇒ 9; empty ⇒ 0.
   operation mapped_inc() -> Int64 = encode3(collect(map[Dst = Int64, EffS = {}, EffP = {}]([1, 2, 3], inc)))
-  operation mapped_sum() -> Int64 = fold_left(map[Dst = Int64, EffS = {}, EffP = {}]([1, 2, 3], inc), 0, addp)
-  operation mapped_empty() -> Int64 = fold_left(map[Dst = Int64, EffS = {}, EffP = {}]([], inc), 0, addp)
+  operation mapped_sum() -> Int64 = foldLeft(map[Dst = Int64, EffS = {}, EffP = {}]([1, 2, 3], inc), 0, addp)
+  operation mapped_empty() -> Int64 = foldLeft(map[Dst = Int64, EffS = {}, EffP = {}]([], inc), 0, addp)
   -- find: first match mid-list, first match at head, and no match (none).
   operation found() -> Int64 = unwrap(find([1, 2, 3, 4], is_big))
   operation found_first() -> Int64 = unwrap(find([3, 1, 2], is_big))
@@ -767,7 +767,7 @@ end
     let run = |interp: &mut Interpreter, op: &str| {
         expect_int(interp.call(op, &[]).unwrap_or_else(|e| panic!("call {op}: {e:?}")))
     };
-    // fold_left / fold_right sum: 1+2+3+4 = 10 (the reduce-to-sum acceptance).
+    // foldLeft / foldRight sum: 1+2+3+4 = 10 (the reduce-to-sum acceptance).
     assert_eq!(run(&mut interp, "test.wi064.sum"), 10);
     assert_eq!(run(&mut interp, "test.wi064.sumr"), 10);
     // Direction-sensitive (non-commutative subtraction): left ≠ right.
@@ -789,14 +789,14 @@ fn wi413_lazy_filter_skips_via_self_recursion() {
     // `splitFirst` SELF-RECURSES on a reconstructed `filtered(rest, pred)` to
     // SKIP a dropped element — the shape that leaked an undeclared `??_` effect
     // before WI-413. `filter` returns a Stream, so it composes with the eager
-    // consumers (`collect` / `fold_left`). The predicate is a named op
+    // consumers (`collect` / `foldLeft`). The predicate is a named op
     // (eta-lifted to a function value, WI-275); `filter` takes explicit
     // `[S, EffS, EffP]` like its sibling `map[Dst, EffS, EffP]`.
     let src = r#"
 namespace test.wi413filter
   import anthill.prelude.{List, Int64, Stream, Bool, Option}
   import anthill.prelude.List.{nil, cons}
-  import anthill.prelude.Stream.{collect, fold_left}
+  import anthill.prelude.Stream.{collect, foldLeft}
   import anthill.prelude.FilteredStream.{filter}
 
   operation addp(a: Int64, b: Int64) -> Int64 = a + b
@@ -811,13 +811,13 @@ namespace test.wi413filter
   -- filter (n > 2) over [1,2,3,4] ⇒ [3,4]: the leading 1 and 2 are SKIPPED by
   -- the self-recursion. collect ⇒ 34; sum ⇒ 7.
   operation kept_collect() -> Int64 = encode2(collect(filter[S = Int64, EffS = {}, EffP = {}]([1, 2, 3, 4], is_big)))
-  operation kept_sum() -> Int64 = fold_left(filter[S = Int64, EffS = {}, EffP = {}]([1, 2, 3, 4], is_big), 0, addp)
+  operation kept_sum() -> Int64 = foldLeft(filter[S = Int64, EffS = {}, EffP = {}]([1, 2, 3, 4], is_big), 0, addp)
   -- A leading run of drops then a single keep: [1,2,3] ⇒ [3] ⇒ 3.
-  operation kept_last() -> Int64 = fold_left(filter[S = Int64, EffS = {}, EffP = {}]([1, 2, 3], is_big), 0, addp)
+  operation kept_last() -> Int64 = foldLeft(filter[S = Int64, EffS = {}, EffP = {}]([1, 2, 3], is_big), 0, addp)
   -- All dropped ⇒ empty ⇒ 0 (every element skipped via self-recursion to none).
-  operation kept_none() -> Int64 = fold_left(filter[S = Int64, EffS = {}, EffP = {}]([1, 2], is_big), 0, addp)
+  operation kept_none() -> Int64 = foldLeft(filter[S = Int64, EffS = {}, EffP = {}]([1, 2], is_big), 0, addp)
   -- All kept ⇒ no skips: [3,4,5] ⇒ 12.
-  operation kept_all() -> Int64 = fold_left(filter[S = Int64, EffS = {}, EffP = {}]([3, 4, 5], is_big), 0, addp)
+  operation kept_all() -> Int64 = foldLeft(filter[S = Int64, EffS = {}, EffP = {}]([3, 4, 5], is_big), 0, addp)
 end
 "#;
     let mut interp = crate::common::interp_for(src);
