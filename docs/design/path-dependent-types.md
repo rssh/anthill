@@ -853,6 +853,129 @@ The neutral forms stay in the reflected `TypeExtractor` *deliberately*: the
 enum-representability property exists for the self-hosted typer (WI-010 / WI-079), and
 that consumer must case over neutrals to implement δ/ζ at all.
 
+## 5.4 Higher-kinded emulation — applications, fill-as-requirement-discharge, instance facts (decided 2026-06-11)
+
+Driven by proposal 002's `CpsMonad` (the dotty-cps `CpsMonad[F[_]]` shape) and **WI-383**
+(structured sort params + `T.V`, whose immediate driver is the sound `Modify` value-type
+tie). **Probed 2026-06-11: 002's surface already loads** — a structured member sort
+(`sort F` with nested `sort T = ?`, the body form) with applications `F[T = A]` /
+`F[T = B]` in operation signatures parses, loads, and passes `anthill check`. The
+application is an ordinary term whose functor is the **rigid param symbol** `F` — the
+head is never a logic variable, so the fragment stays first-order and decidable (the
+Miller-pattern concern of 002 §Higher-Order Unification arises only in rule bodies,
+where heads can be flexible). What is missing is purely the instantiation-time
+semantics (WI-383: "no semantic support").
+
+### The two rigid heads — the algebra
+
+| head | example | decomposition | role |
+|---|---|---|---|
+| `RigidTypeProjection` (§5.3) | `C.Elem` | **non-injective — never decompose** (`p.M ≟ q.M` ⇏ `p ≟ q`, the WI-400 rule) | read a member |
+| rigid-functor **application** | `F[T = A]` | **injective — always decompose** (`F[T=A] ≟ F[T=B]` ⟹ `A ≟ B`; once `F` fills, `F[T=A] ≟ List[T=Int]` ⟹ `F := List, A := Int`) | construct an instance of the family |
+
+The two are related by the conversion laws — **β**: `F[T = A].T ≡ A` (projection of an
+explicit application reduces), and **η**: `C ≡ Fam(C)[T = C.Elem]` for a family member.
+The injectivity of applications is what makes inference work: calling `fmap` on a
+`List[Int]` pins `F` and `A` by ordinary decomposition — no relational solving.
+
+### Fill ⟹ check/add require — the substitution model
+
+(User-proposed 2026-06-11; generalizes WI-383's recorded desugaring
+`get(target: T) -> T.V ≡ get[Vi](target: T) -> Vi requires T[V = Vi]`.)
+
+A projection/application over an abstract subject is a fresh type var plus a
+**requirement**. Substitution never rewrites the rigid term; instead, **filling the
+subject discharges or propagates the requirement**:
+
+- **concrete fill** (`F := Option`) → **CHECK**: resolve the requirement against the
+  `provides` facts by ordinary SLD; the fresh var binds; δ-grounding falls out of
+  requirement discharge. No substitution-through-terms — this *dissolves* the WI-428
+  increment-B problem (the `walk_type_deep` opacity exists precisely because rewriting
+  through the term destroys subject identity; here nothing rewrites);
+- **abstract fill** (the caller is itself generic) → **ADD**: forward the requirement
+  to the caller's interface — the WI-415/WI-418 dict-forwarding discipline. The
+  type-level obligation and the value-level dictionary are the *same requirement*,
+  discharged by one mechanism at two levels;
+- residuals read off §4's three levels (discharged / interface-rooted obligation /
+  refuted), and the escape-free model (§5/WI-401) guarantees an undischarged
+  obligation has an interface to root at.
+
+**One mechanism, three consumers**: WI-428's remaining increment B (projection-fill),
+WI-383's `T.V` plumbing, and the HK application fill are the same check/add step.
+
+### Implicit licensing — decided (Option 1)
+
+Two surfaces were weighed (2026-06-11): **explicit** — no abstract application syntax;
+the programmer writes the fresh carrier vars + `requires Applied[F = F, T = A, R = FA]`
+clauses (the triple form, undisguised) — vs **implicit** — `F[T = B]` is licensed by
+the bound that introduces `F` (`requires CpsMonad[F]`, or the enclosing spec's own
+structured param), and the loader **mints** the application obligations. The tell is
+`flatten(ffa: F[T = F[T = A]])`: explicit costs one extra var and one extra clause per
+nesting level (the boilerplate associated-type encodings are notorious for).
+**Decided: implicit.** The explicit `Applied`-clause form is the **lowering** — what
+the loader emits and reflection shows — never the required surface. An application of
+a subject NO bound licenses is a loud load/type error. The two spellings are the same
+semantics; only authorship of the clauses differs.
+
+### Instance facts — retroactive typeclasses (decided 2026-06-11)
+
+Adding a typeclass to a carrier must **not** modify the carrier. The substrate already
+exists — provisions are **facts**, assertable anywhere: `fact Eq[T = Type]` /
+`fact Lattice[T = Type]` attach specs to `Type` retroactively in the stdlib itself, the
+third-party form `fact Iterable[MyVec[T], T]` is the recorded WI-424 pattern, and the
+carrier is **derived from the binding value** (WI-387/WI-407, load-order-independent).
+
+The new primitive: **op-valued bindings in the provision fact are the dictionary**:
+
+```anthill
+-- a third file; touches neither Option nor CpsMonad
+namespace app.optionInstance
+  import anthill.prelude.Option
+  import app.monad.CpsMonad
+
+  operation optionPure(a: A) -> Option[T = A] = some(a)
+  operation optionFlatMap(fa: Option[T = A], f: (A) -> Option[T = B]) -> Option[T = B]
+    = case fa of
+        some(x) -> f(x)
+        none    -> none
+
+  fact CpsMonad[F = Option, pure = optionPure, flatMap = optionFlatMap]
+end
+```
+
+The surface is already sketched by the stdlib (`requires Monoid[T = Int64,
+combine = add]` — the documented op-binding example). At eval, requirements already
+travel as dictionaries (`__req` / `req_insertion` / `build_concrete_dispatch_dict`);
+the instance fact is exactly the material the dict builder needs, read from the fact's
+bindings instead of (only) the carrier sort's own ops. Three rules:
+
+1. **Coverage moves to the fact**: every spec op bound in the fact or defaulted on the
+   spec — checked loudly at the fact declaration, replacing the carrier-side
+   `provides … but backs no operation` coupling for retroactive instances (derived ops
+   like `flatten` stay defaults on the spec).
+2. **Coherence is loud**: two loaded instance facts covering the same (spec, carrier)
+   → ambiguity error at the use site, keyed on the full canonical application (the
+   WI-419 / §5.3 identity rule). Scoped / named instance selection is the deferred
+   refinement.
+3. **The witness-sort spelling is NOT supported as the provision**: a
+   `sort OptionMonad / provides CpsMonad[F = Option] / …ops…` indexes the provision by
+   the *declaring* sort (`sort_ref`), but dispatch looks provisions up by the
+   *receiver's carrier* — the witness's ops are invisible to `Option`-valued
+   receivers. The fact form avoids this by carrier derivation; a witness sort is at
+   most a place to put the implementation operations.
+
+### Seam split
+
+WI-383 retains the mechanism core, in four pieces: (1) structured-param member
+registration through the loader (so `F`'s `T` feeds the declared-interface lookups
+exactly as a `requires`-lent member does); (2) **fill-time check/add-require** — the
+one new typer mechanism, co-delivering WI-428's increment B; (3) injective
+decomposition for rigid-functor applications (possibly already free via the
+parameterized unify arm — probe with bodies); (4) the Miller-fragment guard for
+flexible heads in rule bodies. The **instance-fact** primitive is its own ticket
+(op-valued fact bindings are new; the binding-lowering question is WI-391's
+fact-vs-provides decision, which it depends on).
+
 ## 6. Seam map
 
 | piece | seam |
@@ -869,6 +992,8 @@ that consumer must case over neutrals to implement δ/ζ at all.
 | Capitalized dotted fall-through in type position → **hard error** (today: warning + degenerate nominal; a false reject *and* a false accept, §5.3) | **WI-429** (fix vs the delivered WI-376 classifier; independent of WI-428, deliverable first) |
 | type-receiver projection `RigidTypeProjection` (§5.3): classifier arm, δ-at-formation / δ-through-the-bound, ζ by σ-class, bare-spec sugar, `TypeExtractor` entity | **WI-428** |
 | carrier-precise `requires` matching for `ExprCarried` neutrals (promoted from WI-400's deferred list; end-state = the §5.3 convergence onto var-keying) | **WI-430** |
+| HK emulation (§5.4): structured-param member registration, **fill-as-requirement-discharge** (co-delivers WI-428 increment B), injective application decomposition, Miller guard for rule bodies | **WI-383** (re-pointed onto the §5.4 model, 2026-06-11) |
+| instance facts (§5.4): op-valued provision-fact bindings → dict builder, fact-side coverage, loud-ambiguity coherence | **WI-431** (depends WI-391, the fact-binding lowering decision) |
 
 The parametric working example of §1 needs **WI-384 + WI-376 + WI-397 + WI-398**, the
 two rules of §3, and the conversion/delay discipline of §4 (its soundness rule is

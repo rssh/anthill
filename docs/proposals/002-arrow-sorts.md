@@ -254,6 +254,18 @@ end
 
 The full monad specification (cf. `dotty-cps-async`'s `CpsMonad[F[_]]`):
 
+> **Model decided (2026-06-11)** — see `docs/design/path-dependent-types.md` §5.4. This
+> surface (the structured member sort `F` + applications `F[T = A]`) loads today as
+> rigid-functor terms (probe-confirmed); the instantiation semantics is
+> **fill-as-requirement-discharge** (filling `F` checks/adds the licensing bound's
+> requirement — concrete fill resolves it by SLD, abstract fill forwards it as a dict),
+> applications decompose **injectively** (dual to the non-injective projections of
+> §5.3), licensing is **implicit** (the `requires CpsMonad[F]`-style bound licenses
+> the applications; the `Applied`-clause form is the lowering, not the surface), and
+> instances are retroactive **provision facts with op-valued bindings**
+> (`fact CpsMonad[F = Option, pure = optionPure, …]`). Build: WI-383 (mechanism) +
+> WI-431 (instance facts).
+
 ```anthill
 sort CpsMonad
   sort F
