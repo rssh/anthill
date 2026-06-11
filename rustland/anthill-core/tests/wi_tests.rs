@@ -243,3 +243,6 @@ mod wi439_iterable_filter_test;
 
 #[path = "include/wi440_callback_lacks_test.rs"]
 mod wi440_callback_lacks_test;
+
+#[path = "include/wi441_iterable_arrow_pred_test.rs"]
+mod wi441_iterable_arrow_pred_test;
