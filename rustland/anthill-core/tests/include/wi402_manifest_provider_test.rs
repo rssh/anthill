@@ -155,6 +155,55 @@ end
     assert!(errs.is_empty(), "fully-bound two-backend factory must typecheck, got: {errs:?}");
 }
 
+/// ACCEPTANCE ANCHOR (WI-391-gated): a provider binding to a STRUCTURED value
+/// (`K = List[T = Int64]`) should conform when the expected binding matches
+/// structurally. Today it false-rejects: the provides fact stores the NESTED plain
+/// sort name (`Int64`) as a nullary `Fn{S}`, which `type_head` classifies as `Error`
+/// — the §5.3 extractability-criterion violation whose global lowering decision is
+/// WI-391. Un-ignore when WI-391 lowers fact-binding values to extractable shapes.
+#[test]
+#[ignore = "WI-391: nested provider-binding leaves ride the nullary-Fn shape; lowering decision pending"]
+fn structured_provider_binding_accepted() {
+    let src = r#"
+namespace test.wi402.structok
+  import anthill.prelude.{Int64, List}
+  sort DataProvider
+    sort K = ?
+  end
+  sort BatchStore
+    provides DataProvider[K = List[T = Int64]]
+    entity batchStore
+  end
+  operation open(b: BatchStore) -> DataProvider[K = List[T = Int64]] = b
+end
+"#;
+    let errs = load_errors(&[src]);
+    assert!(errs.is_empty(), "structured provider binding must typecheck, got: {errs:?}");
+}
+
+/// Structured-binding twin of the wrong-binding rejection.
+#[test]
+fn structured_provider_binding_mismatch_rejected() {
+    let src = r#"
+namespace test.wi402.structwrong
+  import anthill.prelude.{Int64, String, List}
+  sort DataProvider
+    sort K = ?
+  end
+  sort BatchStore
+    provides DataProvider[K = List[T = Int64]]
+    entity batchStore
+  end
+  operation open(b: BatchStore) -> DataProvider[K = List[T = String]] = b
+end
+"#;
+    let errs = load_errors(&[src]);
+    assert!(
+        errs.iter().any(|e| e.contains("type mismatch")),
+        "structurally different provider binding must be rejected, got: {errs:?}"
+    );
+}
+
 /// A PARTIAL manifest still escapes (§5: "a partial ensures still escapes") — the
 /// WI-401 abstracting-return gate keeps firing for the member the manifest leaves
 /// unbound, even now that the conformance check itself accepts matching bindings.

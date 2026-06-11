@@ -11993,7 +11993,8 @@ fn types_compatible_view_structural<A: TermView, B: TermView>(
             arrow_function_compatible(kb, subst, &a, &e)
         }
         (Some("named_tuple"), Some("named_tuple")) => named_tuple_compatible(kb, subst, &a, &e),
-        // Bare `S` vs `B[…]`: nominal base-sort compatibility only (mirrors
+        // Bare `S` vs `B[…]`: nominal base-sort compatibility, then WI-402
+        // binding-precise provider admissibility (mirrors
         // `types_compatible_term_dispatch`). `sort_sym_compatible` takes
         // (sort_ref-side sym, parameterized-side base); `sort_functor_of_view`
         // surfaces the head sym for a `sort_ref` and the base for a `parameterized`.
@@ -12693,9 +12694,10 @@ fn sort_sym_compatible(kb: &KnowledgeBase, actual_sym: Symbol, expected_sym: Sym
 /// parameterized case (`List[T]` vs `Stream[T]`) reaches here only through
 /// `parameterized_compatible`'s base check — where its per-binding loop
 /// validates the bindings separately. The bare-value-vs-parameterized-spec
-/// case (`Widget` vs `Comparable[T = Widget]`) stays rejected, as before;
-/// admitting it needs binding-precise resolution (a follow-up, cf. WI-274's
-/// `spec_resolves_at_bindings` for field positions). The fact is trusted to
+/// case (`Widget` vs `Comparable[T = Widget]`) is handled by the
+/// binding-PRECISE [`bare_provider_binding_precise`] (WI-402), which checks
+/// every expected binding against the provider fact instead of dropping
+/// them — the follow-up this doc used to defer. The fact is trusted to
 /// mean `actual` implements `expected` (WI-343 validates that separately).
 fn sort_provides_admissibly(kb: &KnowledgeBase, actual_sym: Symbol, expected_sym: Symbol) -> bool {
     if sort_provides(kb, actual_sym, expected_sym) {
@@ -12723,13 +12725,18 @@ fn sort_provides_admissibly(kb: &KnowledgeBase, actual_sym: Symbol, expected_sym
 /// now conforms to `DataProvider[K = String]`, while `DataProvider[K = Int64]` (binding
 /// contradicted) and a non-provider stay mismatches.
 ///
-/// A param the provider leaves unbound, or binds to a structured value the leaf
-/// normalizer refuses, REJECTS — never silently passes (the expected binding is a
-/// demand; an unverifiable supply must not discharge it). Purely a LOOSENING of the
-/// `(sort_ref, parameterized)` arms: reached only after `sort_sym_compatible` refused,
-/// so no existing accept changes. The WI-401 abstracting-return gate is unaffected — it
-/// runs AFTER conformance and still rejects a PARTIAL manifest (an expected type that
-/// omits some spec member entirely).
+/// A param the provider leaves unbound REJECTS — never silently passes (the expected
+/// binding is a demand; an unverifiable supply must not discharge it). Purely a
+/// LOOSENING of the `(sort_ref, parameterized)` arms: reached only after
+/// `sort_sym_compatible` refused, so no existing accept changes. The WI-401
+/// abstracting-return gate is unaffected — it runs AFTER conformance and still rejects
+/// a PARTIAL manifest (an expected type that omits some spec member entirely).
+///
+/// The binding loop runs on a PROBE substitution, committed only on success — the arm
+/// was substitution-pure before WI-402, and a failed multi-binding check must not leak
+/// the prefix's bindings (e.g. a row-tail var bound by an effects binding) into the
+/// caller's threaded subst (the per-direction hygiene `check_binding_by_variance`'s own
+/// Invariant arm uses, one level up).
 fn bare_provider_binding_precise<E: TermView>(
     kb: &mut KnowledgeBase,
     subst: &mut Substitution,
@@ -12754,22 +12761,32 @@ fn bare_provider_binding_precise<E: TermView>(
         };
         carrier = *parent_functor;
     };
+    let mut probe = subst.clone();
     for (param, ev) in &expected_bindings {
-        let short = short_name_of(kb.resolve_sym(*param)).to_owned();
-        let pv = provider_view
+        let short = short_name_of(kb.resolve_sym(*param));
+        let Some(pv) = provider_view
             .iter()
             .find(|(p, _)| short_name_of(kb.resolve_sym(*p)) == short)
-            .map(|(_, v)| *v);
-        // Normalize the provider's leaf shape before the variance check — the provides
-        // fact stores a plain sort name as a nullary `Fn{S}`, not the `Ref(S)` type
-        // shape (the WI-428 `normalize_spec_binding_type` divergence).
-        let Some(pv) = pv.and_then(|v| normalize_spec_binding_type(kb, v)) else {
+            .map(|(_, v)| *v)
+        else {
             return false;
         };
-        if !check_binding_by_variance(kb, subst, expected_base, *param, &TermIdView(pv), ev) {
+        // Normalize a plain-sort-name leaf before the variance check — the provides
+        // fact stores it as a nullary `Fn{S}`, not the `Ref(S)` type shape (the WI-428
+        // `normalize_spec_binding_type` divergence). A STRUCTURED binding value
+        // (`K = List[T = Int64]`) rides raw and today REJECTS: its NESTED leaves carry
+        // the same nullary-Fn shape, which `type_head` classifies as `Error` — the
+        // §5.3 extractability criterion's known violation, whose global lowering
+        // decision is WI-391 (a local deep-normalize here would have to distinguish
+        // sort applications from effect-row / arrow forms, so it deliberately rides
+        // that decision). Conservative: a false REJECT only, never a false accept —
+        // anchored by the `#[ignore]`d wi402 structured-accept test.
+        let pv = normalize_spec_binding_type(kb, pv).unwrap_or(pv);
+        if !check_binding_by_variance(kb, &mut probe, expected_base, *param, &TermIdView(pv), ev) {
             return false;
         }
     }
+    *subst = probe;
     true
 }
 
