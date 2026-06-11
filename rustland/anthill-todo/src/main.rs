@@ -256,32 +256,15 @@ fn collect_workitems(kb: &KnowledgeBase) -> Vec<WorkItemInfo> {
 /// All `(workitem, tag-name)` pairs from `anthill.stage0.Tag` facts.
 /// Tag names attached to a work item (sorted, deduped).
 /// Work item IDs carrying the given tag.
-/// True if work item `id` already carries tag `name`.
 /// The stage0 `Tag` entity must be defined in the project's domain for tag
 /// facts to resolve on reload. Returns true if present; otherwise prints a
 /// remediation error and returns false.
-// ── Command implementations ─────────────────────────────────────
-
 /// Topologically order a set of work item IDs by the dependency graph:
 /// if item B (transitively) depends on item A, then A comes before B.
 /// Independent items are ordered by id for a deterministic sequence.
 /// Reachability is computed over the *full* graph, so two tagged items
 /// are ordered correctly even when the dependency path between them runs
 /// through untagged items.
-/// `list --tag <name>`: the named-list sequence view. Items are shown in
-/// dependency (topological) order with status; the first undelivered item
-/// whose dependencies are all satisfied is marked `<- next` (the ticket the
-/// build loop would pick), and items with unmet deps show `(blocked: …)`.
-// ── Term manipulation helpers ───────────────────────────────────
-
-/// Find the `fact ...()` block in source files whose body contains the given id.
-/// Returns (file_path, source_text, block_start, block_end).
-/// Byte index just past the closing `)` of the `fact ...(...)` block
-/// starting at `fact_start`. The depth counter ignores `(` / `)` inside
-/// string literals and `--` / `{- -}` comments, so an unbalanced paren
-/// in a description doesn't desync the scan. Returns `None` if no
-/// closing paren is reached — the caller must bail rather than retry
-/// at the same offset.
 // ── Init command ────────────────────────────────────────────────
 
 fn run_init(project_name: Option<&str>) {
@@ -319,21 +302,6 @@ fn run_init(project_name: Option<&str>) {
     println!("  workitems.anthill — work items (empty)");
 }
 
-// ── Add command ─────────────────────────────────────────────────
-
-/// A `Tag` fact attaching `name` to work item `id`. Field order is fixed
-/// here for readable source; the loader resolves named args by field name.
-/// Render the trailing " [tags: a, b]" note (empty when there are no tags).
-/// Append a WorkItem block (plus a Tag fact per tag) for the given id.
-/// Allocate the next id, append a new WorkItem (plus any tag facts), and return
-/// its id. Returns None on error (already reported). Shared by `add` and `insert`.
-// ── Tag / Insert commands ───────────────────────────────────────
-
-/// Remove the first `fact Tag(...)` block matching both `workitem: "<id>"`
-/// and `name: "<name>"`. Returns Ok(true) if one was removed.
-/// `insert <description> --before <id>`: create a new work item, tag it,
-/// and make `<id>` depend on it — placing the new item earlier in any
-/// dependency-ordered sequence (the build loop's "insert prerequisite").
 // ── Entry point ─────────────────────────────────────────────────
 
 fn main() -> ExitCode {
@@ -362,13 +330,56 @@ fn run_anthill_bundle(argv: &[String]) -> ExitCode {
     use anthill_core::eval::{builtins, EvalError, Interpreter, Value};
     use anthill_core::kb::load::NullResolver;
 
+    // Strip the global flags FIRST (`-d <dir>` / `--dir`, `--agent <name>`,
+    // `=`-joined forms included) so the host interceptions below and the
+    // bundle dispatch both see only the subcommand argv — the documented
+    // invocation form puts `-d "$PWD"` BEFORE the subcommand, so an
+    // argv[0]-only check would miss `-d X init`/`-d X skill` entirely.
+    // The bundle's parse_argv doesn't know about globals yet — once
+    // OperationSpec gains a `globals` field this can move into anthill code.
+    let mut bundle_argv: Vec<String> = Vec::with_capacity(argv.len());
+    let mut explicit_dir: Option<PathBuf> = None;
+    let mut agent: String = "user".to_string();
+    let mut iter = argv.iter();
+    while let Some(arg) = iter.next() {
+        if arg == "-d" || arg == "--dir" {
+            match iter.next() {
+                Some(dir) => explicit_dir = Some(PathBuf::from(dir)),
+                None => {
+                    eprintln!("error: {arg} requires a value");
+                    return ExitCode::from(EXIT_COMPILE);
+                }
+            }
+        } else if let Some(dir) = arg.strip_prefix("-d=").or_else(|| arg.strip_prefix("--dir=")) {
+            explicit_dir = Some(PathBuf::from(dir));
+        } else if arg == "--agent" {
+            match iter.next() {
+                Some(a) => agent = a.clone(),
+                None => {
+                    eprintln!("error: --agent requires a value");
+                    return ExitCode::from(EXIT_COMPILE);
+                }
+            }
+        } else if let Some(a) = arg.strip_prefix("--agent=") {
+            agent = a.to_string();
+        } else if arg == "--stdlib" || arg.starts_with("--stdlib=") {
+            eprintln!(
+                "error: the --stdlib flag was removed in the WI-009 cutover — \
+                 the stdlib is embedded in the binary (rebuild to pick up stdlib edits)"
+            );
+            return ExitCode::from(EXIT_COMPILE);
+        } else {
+            bundle_argv.push(arg.clone());
+        }
+    }
+
     // `init` runs before any KB exists — it scaffolds the project's
     // anthill-todo/ directory. Reuse the legacy implementation; once
     // there's a project to load, the bundle takes over.
-    if argv.first().map(|s| s.as_str()) == Some("init") {
+    if bundle_argv.first().map(|s| s.as_str()) == Some("init") {
         // `init --name <name>` (the legacy clap flag) or `init <name>`.
-        let name = match argv.get(1).map(|s| s.as_str()) {
-            Some("--name") => argv.get(2).map(|s| s.as_str()),
+        let name = match bundle_argv.get(1).map(|s| s.as_str()) {
+            Some("--name") => bundle_argv.get(2).map(|s| s.as_str()),
             other => other,
         };
         run_init(name);
@@ -378,31 +389,10 @@ fn run_anthill_bundle(argv: &[String]) -> ExitCode {
     // `skill` is a static doc print — served host-side so the output stays
     // byte-identical to the legacy CLI (YAML frontmatter included; the
     // Claude Code skill installation parses it) and no KB load is paid.
-    if argv.first().map(|s| s.as_str()) == Some("skill") {
+    // (The bundle has no skill dispatch arm — this is the one impl.)
+    if bundle_argv.first().map(|s| s.as_str()) == Some("skill") {
         print!("{}", SKILL_MD);
         return ExitCode::SUCCESS;
-    }
-
-    // Strip the global flags `-d <dir>` (`--dir`) and `--agent <name>` so
-    // the bundle dispatch sees only its own subcommand args. The bundle's
-    // parse_argv doesn't know about globals yet — once OperationSpec gains
-    // a `globals` field this can move into anthill code.
-    let mut bundle_argv: Vec<String> = Vec::with_capacity(argv.len());
-    let mut explicit_dir: Option<PathBuf> = None;
-    let mut agent: String = "user".to_string();
-    let mut iter = argv.iter();
-    while let Some(arg) = iter.next() {
-        if arg == "-d" || arg == "--dir" {
-            if let Some(dir) = iter.next() {
-                explicit_dir = Some(PathBuf::from(dir));
-            }
-        } else if arg == "--agent" {
-            if let Some(a) = iter.next() {
-                agent = a.clone();
-            }
-        } else {
-            bundle_argv.push(arg.clone());
-        }
     }
 
     let (stdlib_parsed, stdlib_errors) = stdlib_embedded::parse_embedded_stdlib();

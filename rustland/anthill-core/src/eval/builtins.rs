@@ -871,49 +871,28 @@ fn reflect_term_to_string(interp: &mut Interpreter, args: &[Value]) -> Result<Va
 }
 
 /// `anthill.reflect.term_list_items(t: Term) -> List[Term]` — the element
-/// terms of a cons/nil list term. Tolerates BOTH encodings — named
-/// (`cons(head: …, tail: …)`) and positional (`cons(…, …)`) — unlike the
-/// legacy CLI's named-only walk. A non-list term yields the empty list.
+/// terms of a GROUND cons/nil list term, via the printer's strict spine
+/// walker (ONE walker, one semantics: named `cons(head:…, tail:…)` or
+/// positional `cons(…, …)` with no extra args, ending in a nullary nil).
+/// A non-list or malformed spine (var tail, extra args, non-nil end)
+/// yields the EMPTY list — all-or-nothing, never a silently truncated
+/// prefix.
 fn reflect_term_list_items(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [v] = expect_args::<1>("term_list_items", args)?;
-    let mut tid = match &v {
+    let tid = match &v {
         Value::Term(t) => *t,
         other => interp
             .kb
             .alloc_from_value(other)
             .map_err(|e| EvalError::Internal(format!("term_list_items: lower: {e:?}")))?,
     };
-    let mut items: Vec<Value> = Vec::new();
-    loop {
-        let crate::kb::term::Term::Fn { functor, pos_args, named_args } =
-            interp.kb.get_term(tid)
-        else {
-            break;
-        };
-        let name = interp.kb.resolve_sym(*functor);
-        let short = name.rsplit('.').next().unwrap_or(name);
-        if short == "nil" {
-            break;
-        }
-        if short != "cons" {
-            break;
-        }
-        let named_head = named_args
-            .iter()
-            .find(|(s, _)| interp.kb.resolve_sym(*s) == "head")
-            .map(|(_, t)| *t);
-        let named_tail = named_args
-            .iter()
-            .find(|(s, _)| interp.kb.resolve_sym(*s) == "tail")
-            .map(|(_, t)| *t);
-        let (head, tail) = match (named_head, named_tail) {
-            (Some(h), Some(t)) => (h, t),
-            _ if pos_args.len() == 2 => (pos_args[0], pos_args[1]),
-            _ => break,
-        };
-        items.push(Value::Term(head));
-        tid = tail;
-    }
+    let printer = crate::persistence::print::TermPrinter::new(&interp.kb);
+    let items: Vec<Value> = printer
+        .unwrap_list_spine(tid)
+        .unwrap_or_default()
+        .into_iter()
+        .map(Value::Term)
+        .collect();
     interp
         .build_list_value(items, &[])
         .map_err(|e| EvalError::Internal(format!("term_list_items: build list: {e}")))

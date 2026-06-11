@@ -11,7 +11,10 @@
 //!   3. `delete` prints `deleted: <id>` without the file path (the store
 //!      abstraction doesn't leak file names);
 //!   4. unknown subcommands get the bundle's one-line error, not clap's
-//!      usage dump; `--help` is the spec-driven catalogue.
+//!      usage dump; `--help` is the spec-driven catalogue;
+//!   5. exit codes are LOUD: `show`/`delete` on an unknown id exit 1
+//!      (legacy printed the error but exited 0 — the "exit-0-with-stderr"
+//!      display-command convention is retired with the native dispatch).
 //! Everything else — every message, marker, ordering, and exit code — is
 //! the legacy behavior.
 

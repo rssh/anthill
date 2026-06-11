@@ -454,7 +454,7 @@ impl<'a, V: TermSource + ?Sized> TermPrinter<'a, V> {
     /// reloads as a NAME REFERENCE, which no longer unifies with
     /// `nil()` / `cons(…)` patterns — the round-trip bug that made
     /// runtime-persisted work items invisible to the workflow rules.
-    fn unwrap_list_spine(&self, id: TermId) -> Option<Vec<TermId>> {
+    pub fn unwrap_list_spine(&self, id: TermId) -> Option<Vec<TermId>> {
         let mut items = Vec::new();
         let mut cur = id;
         loop {
@@ -477,8 +477,15 @@ impl<'a, V: TermSource + ?Sized> TermPrinter<'a, V> {
                         .find(|(s, _)| self.view.sym_name(*s) == "tail")
                         .map(|(_, t)| *t);
                     let (head, tail) = match (named_head, named_tail) {
-                        (Some(h), Some(t)) => (h, t),
-                        _ if pos_args.len() == 2 && named_args.is_empty() => {
+                        // EXACTLY head+tail — a cons carrying extra named or
+                        // positional args is not a list spine; folding it
+                        // would silently drop the extras.
+                        (Some(h), Some(t))
+                            if named_args.len() == 2 && pos_args.is_empty() =>
+                        {
+                            (h, t)
+                        }
+                        (None, None) if pos_args.len() == 2 && named_args.is_empty() => {
                             (pos_args[0], pos_args[1])
                         }
                         _ => return None,
@@ -516,6 +523,17 @@ impl<'a, V: TermSource + ?Sized> TermPrinter<'a, V> {
                     return;
                 }
                 let fname = self.view.sym_name(*functor);
+                // The parse-IR list form (`[…]` parses to `Fn(ListLiteral,
+                // pos_args)`) prints back as a bracket literal too, so the
+                // KB-side and parse-side canonical forms agree — the
+                // content-keyed retract match in the file store compares
+                // exactly these two prints.
+                if fname == "ListLiteral" && named_args.is_empty() {
+                    buf.push('[');
+                    self.write_comma_sep(pos_args, buf);
+                    buf.push(']');
+                    return;
+                }
                 // Round-trip the forall_impl encoding produced by
                 // convert_nested_implication back to surface syntax.
                 if fname == "forall_impl"

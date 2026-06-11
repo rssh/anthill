@@ -373,8 +373,9 @@ namespace anthill.todo
       effects {ConsoleOutput, ConsoleError, Modify[store], Modify[s],
                Error, Clock}
     =
-      if eq(name, "skill") then cmd_skill()
-      else if eq(name, "status") then cmd_status(s)
+      -- `skill` and `init` are intercepted host-side (static doc print /
+      -- pre-KB scaffolding); their specs stay in the catalogue for --help.
+      if eq(name, "status") then cmd_status(s)
       else if eq(name, "show") then cmd_show(args, s)
       else if eq(name, "list") then cmd_list(args, s)
       else if eq(name, "graph") then cmd_graph(s)
@@ -2146,18 +2147,6 @@ namespace anthill.todo
       let _ = println(console(),
                       concat("feedback on ",
                         concat(id, concat(": ", text))))
-      0
-
-    operation cmd_skill() -> Int64
-      effects ConsoleOutput
-    =
-      let _ = println(console(), "anthill-todo")
-      let _ = println(console(),
-        "Manage structured work items via the anthill-todo CLI.")
-      let _ = println(console(), "")
-      let _ = println(console(), "Subcommands: skill, init, status, list, next, show,")
-      let _ = println(console(), "  add, feedback, claim, deliver, verify, update, delete,")
-      let _ = println(console(), "  add-dependency, remove-dependency, graph.")
       0
 
     -- ── cmd_next ─────────────────────────────────────────────────
