@@ -3390,3 +3390,10 @@ fact WorkItem(
   depends_on: [],
   status: Open)
 
+fact WorkItem(
+  id: "WI-434",
+  description: "anthill-todo: per-project VERSIONING + startup PRESCAN of the project's todo files (user request 2026-06-11; driver = the 9fa0da6 incident: a broken rules.anthill template copy persisted SILENTLY in every project scaffolded by an older 'anthill-todo init', breaking claim/next with no diagnostic). Two halves, one mechanism: (1) VERSION STAMPS -- 'anthill-todo init' stamps every scaffolded file (rules.anthill, domain.anthill, ...) AND the workitems data format with a version fact (e.g. fact TemplateInfo(file: \"rules\", version: N) / fact StoreFormat(version: N)); the binary embeds the current versions next to its include_str! templates. (2) PRESCAN at CLI startup, before any subcommand executes against the project: compare stamped versions vs the binary's; on mismatch warn LOUDLY (loud-error principle -- the motivating bug was a silent never-match) naming file, found/current versions, and the upgrade path; a missing stamp = pre-versioning project, warn once. (3) UPGRADE path: 'anthill-todo migrate' (or init --refresh) rewrites an outdated template ONLY if unmodified (hash against known historical template versions; locally-edited files are reported, never overwritten); data-format bumps get explicit migrators. RELATION: rides naturally AFTER WI-009 (prescan belongs in the anthill bundle, not new native run_* logic); not a cutover blocker. Project-side twin of WI-412 (embedded-stdlib drift) and sibling of WI-433 (the never-match the stale template carried).",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: [],
+  status: Open)
+
