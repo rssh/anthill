@@ -853,6 +853,37 @@ The neutral forms stay in the reflected `TypeExtractor` *deliberately*: the
 enum-representability property exists for the self-hosted typer (WI-010 / WI-079), and
 that consumer must case over neutrals to implement δ/ζ at all.
 
+**Extractability criterion (added 2026-06-11).** Totality of `extract` is not enough —
+the `Error` variant satisfies it vacuously. The committed criterion is stronger:
+
+> **No type is ever represented as an opaque value. Every type value's backing term
+> has a clear term identity and classifies into exactly one *structural*
+> `TypeExtractor` variant. `TypeExtractor.Error` is reserved for genuinely malformed
+> USER input — it is never a shape the system itself mints or stores.**
+
+(`sort Type = ?` being an opaque *handle* is unaffected — WI-361's contract is exactly
+that the handle's backing term carries the reflected structure; this criterion pins
+that the backing term always *has* extractable structure.) Consequences, with the known
+violation named:
+
+- every new type form ships with its `TypeExtractor` variant + recognition **as part
+  of the form** (§5.3's `RigidTypeProjection` complied; §5.4's application classifies
+  as `Parameterized` with a rigid-param base — whether that reading or a dedicated
+  variant is the honest one is decided at WI-383's implementation, but it must
+  classify);
+- **known violation**: `provides`/`requires` binding values store plain sort names as
+  a NULLARY `Fn{S}` (`name_to_sort_term`), which `extract` classifies as `Error` — the
+  Ref-vs-nullary-Fn divergence WI-391 decides. This criterion is decision pressure for
+  WI-391: whatever the fact-side reading, a binding value **used in a type position**
+  must lower to the extractable type shape (`Ref(S)` / `Fn{S, named}`), not the opaque
+  nullary functor. WI-428's `normalize_ground_leaf` is this criterion's *local* fix at
+  one consumer (δ-grounding); the WI-391 decision is the global one;
+- a spec-application record (`SortView`) is not a type value: where one would flow
+  into a type position (δ-through-the-bound), it must normalize or fail loudly —
+  never be stored as the type (the §5.3 eliminator already complies);
+- instance-fact bindings (§5.4 / WI-431) inherit the rule: the fact's type-valued
+  bindings must lower extractably before they reach any type position.
+
 ## 5.4 Higher-kinded emulation — applications, fill-as-requirement-discharge, instance facts (decided 2026-06-11)
 
 Driven by proposal 002's `CpsMonad` (the dotty-cps `CpsMonad[F[_]]` shape) and **WI-383**
