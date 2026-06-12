@@ -977,12 +977,12 @@ namespace anthill.todo
         case nil() -> acc
         case cons(t, rest) ->
           match term_field(t, "workitem")
+            case none() -> collect_feedback_set(rest, acc)
             case some(wi_term) ->
               match term_as_string(wi_term)
+                case none() -> collect_feedback_set(rest, acc)
                 case some(wi_id) ->
                   collect_feedback_set(rest, put(acc, wi_id, true))
-                case none() -> collect_feedback_set(rest, acc)
-            case none() -> collect_feedback_set(rest, acc)
 
     -- ── Annotate rows with has_feedback only ───────────────────────
     -- `unblocks` is filled in later for the (much smaller) ready

@@ -2888,9 +2888,20 @@ fn unroll_annotation_with_inferred(
     kb: &mut KnowledgeBase,
     ann: &Value,
     vty: &Value,
+    span: crate::span::SourceSpan,
+    owner: Option<Symbol>,
 ) -> Option<Value> {
-    // Annotation side: bare ref (alias-shape resolved) or partial application.
-    let (ann_base, ann_bindings): (Symbol, Vec<(Symbol, Value)>) =
+    // Value side FIRST — cheap (no KB scan): nothing to keep unless the value's
+    // type is a sort application carrying bindings. The annotation side may pay
+    // a SortAlias fact scan (`resolve_alias_shape`), so it only runs after this
+    // gate — `let n : Int64 = 5` never reaches it.
+    let (v_base, v_bindings) = match extract_type(kb, vty) {
+        TypeExtractor::Parameterized { base, bindings } => (base, bindings),
+        _ => return None,
+    };
+    // Annotation side: bare ref (alias-shape resolved, WI-381) or partial
+    // application; its bindings seed the merge as the written-authoritative set.
+    let (ann_base, mut merged): (Symbol, Vec<(Symbol, Value)>) =
         if let Some(s) = extract_sort_ref_sym(kb, ann) {
             match resolve_alias_shape(kb, s) {
                 Some(shape) => match extract_type(kb, &TermIdView(shape)) {
@@ -2905,70 +2916,31 @@ fn unroll_annotation_with_inferred(
                 _ => return None,
             }
         };
-    let (v_base, v_bindings) = match extract_type(kb, vty) {
-        TypeExtractor::Parameterized { base, bindings } => (base, bindings),
-        _ => return None,
-    };
     if kb.canonical_sort_sym(ann_base) != kb.canonical_sort_sym(v_base) {
         return None;
     }
-    let mut merged = ann_bindings;
-    let mut added = false;
+    let mut changed = false;
     for (p, v) in &v_bindings {
-        if !merged.iter().any(|(q, _)| q == p) {
-            merged.push((*p, v.clone()));
-            added = true;
+        match merged.iter_mut().find(|(q, _)| q == p) {
+            // A written WILDCARD (`Stream[T = ?]`) pins nothing — the value's
+            // inferred binding replaces it instead of being erased under it
+            // (the wildcard already passed conformance against anything).
+            Some(slot) if matches!(extract_type(kb, &slot.1), TypeExtractor::TypeVar(_)) => {
+                slot.1 = v.clone();
+                changed = true;
+            }
+            Some(_) => {}
+            None => {
+                merged.push((*p, v.clone()));
+                changed = true;
+            }
         }
     }
-    if !added {
+    if !changed {
         return None;
     }
-    // All-ground bindings build the hash-consed term (canonical named-arg
-    // order); a `Value::Node` binding (a written effect-row, a denoted) keeps
-    // the Node carrier — its span/owner come from whichever side carried it.
-    if merged.iter().all(|(_, v)| matches!(v, Value::Term(_))) {
-        let term_bindings: Vec<(Symbol, TermId)> = merged
-            .iter()
-            .map(|(s, v)| match v {
-                Value::Term(t) => (*s, *t),
-                _ => unreachable!("all-Term checked above"),
-            })
-            .collect();
-        let base = kb.make_sort_ref(ann_base);
-        return Some(Value::Term(kb.make_parameterized_type(base, &term_bindings)));
-    }
-    let span_src = match (vty, ann) {
-        (Value::Node(n), _) | (_, Value::Node(n)) => Rc::clone(n),
-        _ => unreachable!("a Node binding implies a Node carrier on one side"),
-    };
-    let base_ref = kb.make_sort_ref(ann_base);
-    let mut bindings: Vec<(Symbol, TypeChild)> = merged
-        .into_iter()
-        .map(|(s, v)| {
-            let child = match v {
-                Value::Term(t) => TypeChild::Ground(t),
-                Value::Node(n) => TypeChild::Node(n),
-                other => {
-                    // Loud over silent: a type binding must be Term- or
-                    // Node-carried; any other carrier is a producer bug.
-                    unreachable!(
-                        "unroll_annotation_with_inferred: non-type binding carrier {}",
-                        other.type_name()
-                    )
-                }
-            };
-            (s, child)
-        })
-        .collect();
-    bindings.sort_by_key(|(s, _)| s.index());
-    Some(Value::Node(Rc::new(NodeOccurrence {
-        kind: NodeKind::Type(TypeNode::Parameterized {
-            base: TypeChild::Ground(base_ref),
-            bindings,
-        }),
-        span: span_src.span,
-        owner: span_src.owner,
-    })))
+    let base = kb.make_sort_ref(ann_base);
+    Some(parameterized_value(kb, base, &merged, span, owner))
 }
 
 /// Assemble a Let / Match / Lambda result from its child results.
@@ -3210,7 +3182,8 @@ fn build_type(
             // value's inferred params (WI-374; conformance already checked above).
             let bound_ty = match (annotation, value_ty) {
                 (Some(ann), Some(vty)) => Some(
-                    unroll_annotation_with_inferred(kb, &ann, &vty).unwrap_or(ann),
+                    unroll_annotation_with_inferred(kb, &ann, &vty, occ.span, occ.owner)
+                        .unwrap_or(ann),
                 ),
                 (ann, vty) => ann.or(vty),
             };
@@ -3293,9 +3266,14 @@ fn build_type(
             // candidate set. The scrutinee sort's own constructors are that
             // set — resolving against them replaces the removed global
             // short→qualified fallback the late lookup relied on.
+            // WI-374: read the BASE sort through `sort_functor_of_view`, not
+            // `extract_sort_ref_sym` — a parameterized scrutinee type
+            // (`Option[T = Int64]`, now also produced by the let-annotation
+            // rewrite) must resolve its constructor set exactly like a bare
+            // one; the bare-ref-only read silently skipped it.
             let scrutinee_ctors: Vec<Symbol> = scr_ty
                 .as_ref()
-                .and_then(|sty| extract_sort_ref_sym(kb, sty))
+                .and_then(|sty| sort_functor_of_view(kb, sty))
                 .map(|s| {
                     let sort_term = kb.make_name_term_from_sym(s);
                     sort_constructor_syms(kb, sort_term)
@@ -3394,7 +3372,10 @@ fn build_type(
             let mut result_env = (*outer_env).clone();
             if !has_wildcard {
                 if let Some(sty) = scr_ty {
-                    if let Some(sort_sym) = extract_sort_ref_sym(kb, &sty) {
+                    // WI-374: base sort via `sort_functor_of_view` so a
+                    // PARAMETERIZED scrutinee keeps its exhaustiveness check
+                    // (the bare-ref-only read silently skipped it).
+                    if let Some(sort_sym) = sort_functor_of_view(kb, &sty) {
                         let sort_term = kb.make_name_term_from_sym(sort_sym);
                         if kb.sort_kind(sort_term) == Some(SortKind::Enum) {
                             let all_entities = sort_constructor_syms(kb, sort_term);
@@ -3916,17 +3897,45 @@ fn check_apply_iter(
         // per-argument validation (whose precise diagnostics take precedence)
         // and BEFORE the expected-seeding below, whose failed unify against a
         // pinned slot is a DELIBERATE silent no-op (WI-367/WI-379) that must
-        // not trip this. GATED to the callee's OWN sort's param vars: only the
-        // member tie is enforced (§3 bullet 1); a FOREIGN sort's canonical var
-        // contradicted through two independent bare refs (§3 bullet 2 says
-        // those are independent) stays unenforced until foreign refs are
+        // not trip this. Scoping (review round, same day):
+        //  - the callee's parent must be a SORT — `impl_parent_of_op` yields
+        //    the NAMESPACE symbol for a top-level op, and a namespace prefix
+        //    would sweep in every sort it contains, enforcing a "member tie"
+        //    on §3-bullet-2 foreign refs;
+        //  - EVERY per-var detail is scanned (a single first-detail would let
+        //    an earlier benign foreign conflict mask a member violation);
+        //  - a conflict whose prior binding is the body's WI-424 seeded rigid
+        //    is exempt — a same-sort sibling call at a different instance
+        //    keeps its pre-WI-374 acceptance (enforcing the rigid tie is a
+        //    separate decision);
+        //  - a UNIFIABLE pair (bare `List` vs `List[T = Int64]`, a `?_`
+        //    wildcard vs a concrete, equal rows in different carriers/orders)
+        //    is refinement, not violation — bind-level TermId/structural
+        //    inequality over-reports, so re-test through the real relation.
+        // A FOREIGN sort's var contradicted through two independent bare refs
+        // (§3 bullet 2: independent) stays unenforced until foreign refs are
         // normalized to per-occurrence vars (remaining WI-374 scope).
-        if subst.is_contradiction() {
-            if let Some((vid, prior, attempted)) = subst.contradiction_detail.as_deref() {
-                let member_tie = impl_parent_of_op(kb, fn_sym).is_some_and(|parent| {
-                    sort_canonical_param_vids(kb, parent).contains(vid)
-                });
-                if member_tie {
+        if subst.is_contradiction() && !subst.contradiction_details.is_empty() {
+            let parent_sort = impl_parent_of_op(kb, fn_sym)
+                .filter(|p| matches!(kb.kind_of(*p), Some(crate::intern::SymbolKind::Sort)));
+            if let Some(parent) = parent_sort {
+                let member_vids = sort_canonical_param_vids(kb, parent);
+                let details = subst.contradiction_details.clone();
+                for (vid, prior, attempted) in &details {
+                    if !member_vids.contains(vid) {
+                        continue;
+                    }
+                    if env
+                        .enclosing_sort_param_rigids()
+                        .iter()
+                        .any(|(v, r)| v == vid && matches!(prior, Value::Term(t) if t == r))
+                    {
+                        continue;
+                    }
+                    let mut scratch = Substitution::new();
+                    if unify_types(kb, &mut scratch, prior, attempted) {
+                        continue;
+                    }
                     return Err(TypeError::Other {
                         span,
                         context: TypeErrorContext::OperationTypeParams { op_name: fn_sym },
@@ -11641,6 +11650,11 @@ fn sort_canonical_param_vids(kb: &KnowledgeBase, sort_sym: Symbol) -> SmallVec<[
         if !(alias_name.starts_with(&sort_name)
             && alias_name.as_bytes().get(sort_name.len()) == Some(&b'.'))
         {
+            continue;
+        }
+        // IMMEDIATE params only: a remainder with further dots is a nested
+        // sort's param (`ns.Box.T` under `ns`), not this sort's.
+        if alias_name[sort_name.len() + 1..].contains('.') {
             continue;
         }
         if let Term::Var(Var::Global(vid)) = kb.get_term(pos_args[1]) {

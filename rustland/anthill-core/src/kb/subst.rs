@@ -21,12 +21,13 @@ pub struct Substitution {
     pub parent: Option<Box<Substitution>>,
     /// Set to true when a variable is bound to two different concrete terms.
     pub contradiction: bool,
-    /// WI-374: the FIRST contradicting rebind, recorded for diagnostics —
-    /// `(var, prior binding, attempted binding)`. Boxed so the happy path
-    /// carries one pointer. Subsequent contradictions keep the first detail
-    /// (the root cause); direct `contradiction = true` writers leave it
-    /// `None` (readers must tolerate that).
-    pub contradiction_detail: Option<Box<(VarId, Value, Value)>>,
+    /// WI-374: contradicting rebinds recorded for diagnostics — the FIRST
+    /// conflicting `(prior, attempted)` PER VAR (one detail per var: a single
+    /// detail for the whole substitution would let an earlier benign conflict
+    /// on one var mask a later enforced one on another). Empty on the happy
+    /// path; direct `contradiction = true` writers record nothing (readers
+    /// must tolerate an empty list with the flag set).
+    pub contradiction_details: Vec<(VarId, Value, Value)>,
     /// WI-328 (proposal 045 §5.5 / §7.1) — `lacks` constraints on
     /// (unbound) row-tail variables: each effect-row tail `ρ` may carry a
     /// set of effect-label types it is forbidden to present (`- e` /
@@ -52,7 +53,7 @@ impl Substitution {
             bindings: HashMap::new(),
             parent: None,
             contradiction: false,
-            contradiction_detail: None,
+            contradiction_details: Vec::new(),
             lacks: HashMap::new(),
         }
     }
@@ -62,17 +63,9 @@ impl Substitution {
             bindings: HashMap::new(),
             parent: Some(Box::new(parent)),
             contradiction: false,
-            contradiction_detail: None,
+            contradiction_details: Vec::new(),
             lacks: HashMap::new(),
         }
-    }
-
-    /// WI-374: flag a contradiction, keeping the FIRST detail as the root cause.
-    fn note_contradiction(&mut self, var: VarId, prior: Value, attempted: Value) {
-        if !self.contradiction {
-            self.contradiction_detail = Some(Box::new((var, prior, attempted)));
-        }
-        self.contradiction = true;
     }
 
     /// Covering resolve: returns any binding as a `Value` — the
@@ -101,8 +94,13 @@ impl Substitution {
             match existing {
                 Value::Term(existing_tid) if *existing_tid == term => return,
                 _ => {
-                    let prior = existing.clone();
-                    self.note_contradiction(var, prior, Value::Term(term));
+                    // Record the first conflict PER VAR; the clone is paid only
+                    // then (a repeat conflict on the same var records nothing).
+                    if !self.contradiction_details.iter().any(|(v, _, _)| *v == var) {
+                        let prior = existing.clone();
+                        self.contradiction_details.push((var, prior, Value::Term(term)));
+                    }
+                    self.contradiction = true;
                     return;
                 }
             }
@@ -118,8 +116,12 @@ impl Substitution {
     pub fn bind_value(&mut self, var: VarId, val: Value) {
         if let Some(existing) = self.bindings.get(&var) {
             if !existing.structural_eq(&val) {
-                let prior = existing.clone();
-                self.note_contradiction(var, prior, val);
+                // First conflict per var — see `bind_term`.
+                if !self.contradiction_details.iter().any(|(v, _, _)| *v == var) {
+                    let prior = existing.clone();
+                    self.contradiction_details.push((var, prior, val));
+                }
+                self.contradiction = true;
             }
             return;
         }

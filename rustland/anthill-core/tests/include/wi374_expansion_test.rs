@@ -154,6 +154,148 @@ end
     assert!(errs.is_empty(), "foreign bare refs are independent (§3 bullet 2): {errs:#?}");
 }
 
+/// Review-fix regression: REFINEMENT is not violation. A bare `List` element
+/// against a `List[T = Int64]` element of the SAME sort param differs at the
+/// raw-bind level (distinct TermIds) but unifies — the tie check must re-test
+/// through the real relation, not TermId equality.
+#[test]
+fn member_tie_refinement_accepted() {
+    let src = r#"
+namespace test.wi374.tie_refine
+  import anthill.prelude.{Int64, List, Option, nil, cons, append, some, none}
+
+  operation listy() -> List =
+    append(cons(head: nil, tail: nil), cons(head: cons(head: 1, tail: nil), tail: nil))
+
+  operation opty() -> List =
+    append(cons(head: none, tail: nil), cons(head: some(1), tail: nil))
+end
+"#;
+    let errs = load_errors(&[src]);
+    assert!(errs.is_empty(), "bare-vs-parameterized same-sort bindings unify (refinement): {errs:#?}");
+}
+
+/// Review-fix regression: a same-sort SIBLING member call at a DIFFERENT
+/// instance keeps its acceptance — the conflict against the body's WI-424
+/// seeded rigid is exempt from the tie check (enforcing the rigid tie is a
+/// separate, undecided question).
+#[test]
+fn sibling_member_call_at_different_instance_accepted() {
+    let src = r#"
+namespace test.wi374.sibling
+  import anthill.prelude.{Int64}
+
+  sort Box
+    sort T = ?
+    entity mk(v: T)
+    operation helper(b2: Box) -> Int64 = 42
+    operation use(b: Box) -> Int64 = helper(mk(v: 1))
+  end
+end
+"#;
+    let errs = load_errors(&[src]);
+    assert!(errs.is_empty(), "sibling member call at a fresh instance must stay accepted: {errs:#?}");
+}
+
+/// Review-fix regression: a TOP-LEVEL op in the SAME namespace as the sort is
+/// still FOREIGN — `impl_parent_of_op` yields the namespace symbol for it, and
+/// the tie gate must not treat namespace containment as sort membership.
+#[test]
+fn same_namespace_top_level_op_stays_foreign() {
+    let src = r#"
+namespace test.wi374.ns_foreign
+  import anthill.prelude.{Int64, String}
+
+  sort Box
+    sort T = ?
+    entity mk(v: T)
+  end
+
+  operation twoBoxes(a: Box, b: Box) -> Int64 = 42
+
+  operation driver() -> Int64 = twoBoxes(mk(v: 1), mk(v: "x"))
+end
+"#;
+    let errs = load_errors(&[src]);
+    assert!(errs.is_empty(), "same-namespace top-level op is foreign (§3 bullet 2): {errs:#?}");
+}
+
+/// Review-fix regression: an EARLIER benign foreign conflict must not mask a
+/// member-tie violation in the same call — details are recorded per var and
+/// all of them are scanned.
+#[test]
+fn masked_member_violation_still_rejected() {
+    let src = r#"
+namespace test.wi374.masking
+  import anthill.prelude.{Int64, String, List, nil, cons}
+
+  sort Box
+    sort T = ?
+    entity mk(v: T)
+    operation combine(x: List, y: List, a: Box, b: Box) -> Int64 = 42
+  end
+
+  operation driver() -> Int64 =
+    combine(
+      cons(head: 1, tail: nil),
+      cons(head: "s", tail: nil),
+      mk(v: 1),
+      mk(v: "z"))
+end
+"#;
+    let errs = load_errors(&[src]);
+    assert!(
+        !errs.is_empty(),
+        "the Box.T violation must be caught even when a foreign List.T conflict records first"
+    );
+}
+
+/// Review-fix regression: the let-annotation rewrite must NOT cost the match
+/// checks their scrutinee sort — a parameterized scrutinee type resolves its
+/// constructor set and exhaustiveness through the base sort.
+#[test]
+fn annotated_let_match_exhaustiveness_kept() {
+    let src = r#"
+namespace test.wi374.exhaustive
+  import anthill.prelude.{Int64, Option, some, none}
+
+  operation f() -> Int64 =
+    let o : Option = some(5)
+    match o
+      case some(x) -> x
+end
+"#;
+    let errs = load_errors(&[src]);
+    assert!(
+        !errs.is_empty(),
+        "non-exhaustive match on an annotated let scrutinee must still be reported"
+    );
+}
+
+/// ANCHOR (pre-existing gap, not a WI-374 regression): a written WILDCARD
+/// binding (`Stream[T = ?]`) should pin nothing — the value's inferred binding
+/// should replace it. The merge handles this (the `TypeVar` arm in
+/// `unroll_annotation_with_inferred`), but the PRE-EXISTING WI-379 let
+/// conformance check rejects the value against the `?`-carrying annotation
+/// first ("expected Stream[T = ?_], got Stream[E = {}, T = Int64]") — the
+/// written-`?` slot reads as an incompatible head in `types_compatible`.
+/// Un-ignore when that conformance gap is fixed.
+#[test]
+#[ignore = "pre-existing: types_compatible rejects a written `?` binding slot (see header)"]
+fn wildcard_annotation_keeps_inferred() {
+    let src = r#"
+namespace test.wi374.wildcard_ann
+  import anthill.prelude.{Int64, List, Stream, nil, cons}
+
+  operation driver() -> Int64 =
+    let s : Stream[T = ?] = anthill.prelude.List.iterator(cons(head: 1, tail: nil))
+    anthill.prelude.Stream.count(s)
+end
+"#;
+    let errs = load_errors(&[src]);
+    assert!(errs.is_empty(), "a written wildcard must take the inferred binding: {errs:#?}");
+}
+
 /// Type-not-provenance boundary (§5): expansion supplies VARIABLES, never
 /// values. A producer that erases its params (bare `-> Stream` return) cannot
 /// have them reconstructed by an annotation — the downstream consumer still
@@ -180,3 +322,4 @@ end
         "an erased producer return must stay rejected (no reconstruction)"
     );
 }
+

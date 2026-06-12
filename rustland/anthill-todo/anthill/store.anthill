@@ -158,23 +158,27 @@ namespace anthill.todo.store
         case nil() -> none()
         case cons(t, rest) ->
           match term_field(t, "id")
+            case none() -> find_term_by_id(rest, target)
             case some(id_term) ->
               match term_as_string(id_term)
+                case none() -> find_term_by_id(rest, target)
                 case some(id_str) ->
                   if eq(id_str, target) then some(t)
                   else find_term_by_id(rest, target)
-                case none() -> find_term_by_id(rest, target)
-            case none() -> find_term_by_id(rest, target)
 
     -- Identify the status functor short name of a WorkItem term; "" when
     -- the term lacks a recognizable status field.
+    -- NOTE arm order: the `none` arm comes FIRST because a trailing `case`
+    -- after a nested match attaches to the INNER match (dangling-case
+    -- attachment) — written last, the outer match silently loses its `none`
+    -- arm (caught by the WI-374 exhaustiveness coverage).
     operation status_short(t: Term) -> String =
       match term_field(t, "status")
+        case none() -> ""
         case some(st_term) ->
           match term_functor_name(st_term)
             case some(n) -> n
             case none() -> ""
-        case none() -> ""
 
     operation filter_by_status(ts: List[T = Term], target: String) -> List[T = Term] =
       match ts
