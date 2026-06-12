@@ -296,6 +296,95 @@ end
     assert!(errs.is_empty(), "a written wildcard must take the inferred binding: {errs:#?}");
 }
 
+/// CONSTRUCTOR tie, enforced (same §3-bullet-1 decision, field peer): two
+/// fields typed at the sort's own param must agree — `pair2(1, "x")` with
+/// `entity pair2(a: T, b: T)` was silently accepted (the contradiction was
+/// recorded but never consulted; the built type carried `T = Int64` with a
+/// String inside).
+#[test]
+fn ctor_member_tie_conflicting_fields_rejected() {
+    let src = r#"
+namespace test.wi374.ctor_tie
+  import anthill.prelude.{Int64, String}
+
+  sort Box
+    sort T = ?
+    entity pair2(a: T, b: T)
+  end
+
+  operation driver() -> Box = pair2(a: 1, b: "x")
+end
+"#;
+    let errs = load_errors(&[src]);
+    assert!(
+        !errs.is_empty(),
+        "conflicting bindings of the sort's T across constructor fields must be rejected"
+    );
+}
+
+/// …and a bare self-sort FIELD (`cons`'s `tail: List`) ties the same way:
+/// consing an Int64 head onto a String-element tail is rejected.
+#[test]
+fn ctor_member_tie_self_sort_field_rejected() {
+    let src = r#"
+namespace test.wi374.ctor_tail
+  import anthill.prelude.{Int64, String, List, nil, cons}
+
+  operation driver() -> List =
+    cons(head: 1, tail: cons(head: "x", tail: nil))
+end
+"#;
+    let errs = load_errors(&[src]);
+    assert!(
+        !errs.is_empty(),
+        "cons(Int64 head, String-element tail) must be rejected (field tie, enforced)"
+    );
+}
+
+/// Consistent constructor fields stay accepted, and bare-vs-parameterized
+/// same-sort field bindings are refinement (re-unified), not violation.
+#[test]
+fn ctor_member_tie_consistent_and_refinement_accepted() {
+    let src = r#"
+namespace test.wi374.ctor_ok
+  import anthill.prelude.{Int64, List, nil, cons}
+
+  sort Box
+    sort T = ?
+    entity pair2(a: T, b: T)
+  end
+
+  operation consistent() -> Box = pair2(a: 1, b: 2)
+
+  operation refine() -> Box =
+    pair2(a: nil, b: cons(head: 1, tail: nil))
+end
+"#;
+    let errs = load_errors(&[src]);
+    assert!(errs.is_empty(), "consistent / refining constructor fields must stay accepted: {errs:#?}");
+}
+
+/// Signature expansion end-to-end sanity: a FOREIGN op with a bare `List`
+/// return loads (its body checks against the expanded return), its call
+/// narrows through a partial annotation, and the result is usable.
+#[test]
+fn foreign_bare_return_op_loads_and_narrows() {
+    let src = r#"
+namespace test.wi374.foreign_ret
+  import anthill.prelude.{Int64, Option, List, nil, cons}
+  import anthill.prelude.List.{nth}
+
+  operation makeList() -> List = cons(head: 1, tail: nil)
+
+  operation driver() -> Option[T = Int64] =
+    let l : List[T = Int64] = makeList()
+    nth(l, 0)
+end
+"#;
+    let errs = load_errors(&[src]);
+    assert!(errs.is_empty(), "foreign bare-return op must load and narrow via annotation: {errs:#?}");
+}
+
 /// Type-not-provenance boundary (§5): expansion supplies VARIABLES, never
 /// values. A producer that erases its params (bare `-> Stream` return) cannot
 /// have them reconstructed by an annotation — the downstream consumer still

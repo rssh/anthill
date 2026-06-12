@@ -3641,7 +3641,40 @@ fn check_apply_iter(
     }
 
     // Path 1: known operation — unify args with params to instantiate type params
-    if let Some(op) = lookup_operation_info_full(kb, fn_sym) {
+    if let Some(mut op) = lookup_operation_info_full(kb, fn_sym) {
+        // WI-374 (§8.1, site-scoped): expand FOREIGN bare/partial parametric
+        // sort applications in the callee's signature to per-call fresh-var
+        // applications, so two foreign occurrences never alias and the
+        // foreign sort's canonical vars are no longer touched by this call's
+        // argument unification. Member self-sort refs are left bare — the §3
+        // bullet-1 parametricity tie keeps riding the canonical channel
+        // (`unify_parameterized_with_sort_ref` + the per-call subst).
+        //
+        // The expansion serves INFERENCE only: the WI-385 validation below
+        // keeps checking each argument against the param type AS WRITTEN
+        // (`written_params`) — an expanded param whose fresh var an
+        // incompatible argument failed to bind is non-ground, and the
+        // validation's groundness gate would silently skip the rejection
+        // (`Function[Int64, Int64]` with open `E` vs a `String -> Bool`
+        // argument must still be a loud mismatch).
+        let written_params = op.params.clone();
+        {
+            let callee_parent_canon = impl_parent_of_op(kb, fn_sym)
+                .filter(|p| matches!(kb.kind_of(*p), Some(crate::intern::SymbolKind::Sort)))
+                .map(|p| kb.canonical_sort_sym(p));
+            for i in 0..op.params.len() {
+                if let Some(exp) =
+                    expand_foreign_sort_application(kb, &op.params[i].1, callee_parent_canon)
+                {
+                    op.params[i].1 = exp;
+                }
+            }
+            if let Some(exp) =
+                expand_foreign_sort_application(kb, &op.return_type, callee_parent_canon)
+            {
+                op.return_type = exp;
+            }
+        }
         let mut subst = Substitution::new();
         // WI-269 Phase D: explicit call-site `op[bindings]` bindings
         // seed the substitution first. Returns `NoSuchTypeParam` on
@@ -3831,7 +3864,9 @@ fn check_apply_iter(
         let mut some_wraps: Vec<(usize, Value)> = Vec::new();
         for (i, _) in pos_args.iter().enumerate() {
             if let Ok(ref arg_result) = pos_results[i] {
-                if let Some((param_sym, param_type)) = op.params.get(i) {
+                // WI-374: validate against the param AS WRITTEN, not the
+                // inference-expanded copy (see `written_params` above).
+                if let Some((param_sym, param_type)) = written_params.get(i) {
                     // WI-398: validate against the ELIMINATED type for a projection param
                     // (`s.cell.T` → `String`); the raw type for a non-projection param.
                     let param_type = effective_param_types.get(param_sym).unwrap_or(param_type);
@@ -3861,7 +3896,10 @@ fn check_apply_iter(
         }
         for (i, (arg_name, arg_occ)) in named_args.iter().enumerate() {
             if let Ok(ref arg_result) = named_results[i] {
-                if let Some((param_sym, param_type)) = op.params.iter().find(|(s, _)| *s == *arg_name) {
+                // WI-374: validate against the param AS WRITTEN (see above).
+                if let Some((param_sym, param_type)) =
+                    written_params.iter().find(|(s, _)| *s == *arg_name)
+                {
                     // WI-398: validate against the eliminated projection type (above).
                     let param_type = effective_param_types.get(param_sym).unwrap_or(param_type);
                     // WI-440: callback row check first — see the positional loop.
@@ -3913,40 +3951,15 @@ fn check_apply_iter(
         //    is refinement, not violation — bind-level TermId/structural
         //    inequality over-reports, so re-test through the real relation.
         // A FOREIGN sort's var contradicted through two independent bare refs
-        // (§3 bullet 2: independent) stays unenforced until foreign refs are
-        // normalized to per-occurrence vars (remaining WI-374 scope).
-        if subst.is_contradiction() && !subst.contradiction_details.is_empty() {
-            let parent_sort = impl_parent_of_op(kb, fn_sym)
-                .filter(|p| matches!(kb.kind_of(*p), Some(crate::intern::SymbolKind::Sort)));
-            if let Some(parent) = parent_sort {
-                let member_vids = sort_canonical_param_vids(kb, parent);
-                let details = subst.contradiction_details.clone();
-                for (vid, prior, attempted) in &details {
-                    if !member_vids.contains(vid) {
-                        continue;
-                    }
-                    if env
-                        .enclosing_sort_param_rigids()
-                        .iter()
-                        .any(|(v, r)| v == vid && matches!(prior, Value::Term(t) if t == r))
-                    {
-                        continue;
-                    }
-                    let mut scratch = Substitution::new();
-                    if unify_types(kb, &mut scratch, prior, attempted) {
-                        continue;
-                    }
-                    return Err(TypeError::Other {
-                        span,
-                        context: TypeErrorContext::OperationTypeParams { op_name: fn_sym },
-                        expected: format!(
-                            "consistent bindings for the sort's shared type parameter (first bound to {})",
-                            type_display_name_value(kb, prior),
-                        ),
-                        actual: type_display_name_value(kb, attempted),
-                    });
-                }
-            }
+        // (§3 bullet 2: independent) is not scanned — and with the signature
+        // expansion above, foreign refs no longer touch canonical vars at all.
+        let op_parent_sort = impl_parent_of_op(kb, fn_sym)
+            .filter(|p| matches!(kb.kind_of(*p), Some(crate::intern::SymbolKind::Sort)));
+        if let Some(parent) = op_parent_sort {
+            enforce_member_tie(
+                kb, &subst, parent, fn_sym, span,
+                env.enclosing_sort_param_rigids(),
+            )?;
         }
         // WI-408: materialize the recorded some-coercions — wrap each flagged
         // argument's typed node in a synthesized `some(...)` and reassemble
@@ -8985,6 +8998,23 @@ fn check_constructor_iter(
     if !field_type_errors.is_empty() {
         return Err(aggregate_errors(field_type_errors));
     }
+    // WI-374 (user-decided 2026-06-12): ENFORCE the §3 parametricity tie for
+    // CONSTRUCTOR fields — the field loops bind the parent sort's canonical
+    // param vars through `T`-typed and bare-self-sort fields, and a
+    // conflicting rebind was recorded but never consulted: `cons(head: 1,
+    // tail: strList)` built `List[T = Int64]` with a String inside. Same
+    // shared gate as the op-call check (per-var details, refinement
+    // re-unified, parent's own params only); no rigid exemption — a rigid
+    // reaches this subst only through a real field argument, where the
+    // conflict is a genuine parametricity violation. Runs BEFORE the
+    // expected-seed below, whose contradicting-hint unify is a deliberate
+    // ignored no-op.
+    if let Some(parent_tid) = parent_sort {
+        if let Term::Fn { functor, .. } = kb.get_term(parent_tid) {
+            let parent_sym = *functor;
+            enforce_member_tie(kb, &subst, parent_sym, ctor_sym, span, &[])?;
+        }
+    }
     // WI-408: materialize the recorded some-coercions (see check_apply_iter) —
     // every return below reads the (possibly rebuilt) `occ`.
     let rebuilt_occ;
@@ -11620,6 +11650,136 @@ pub(crate) fn resolve_sort_alias(kb: &KnowledgeBase, sym: Symbol) -> Option<Term
     };
     find(|_, f, s, _| f == s)
         .or_else(|| find(|kb, f, _, n| kb.resolve_sym(f) == n))
+}
+
+/// WI-374 (§8.1, site-scoped): expand a FOREIGN bare/partial parametric sort
+/// application in a callee-signature position to its full application form,
+/// minting a FRESH logic var per unwritten declared parameter (type params
+/// and effect-row params alike — an unbound plain var IS a row var). Runs
+/// per call, so freshness is per application — two occurrences never alias
+/// and the foreign sort's canonical vars stay untouched (§3 bullet 2).
+///
+/// Returns `None` (keep the form as written — today's behavior) when:
+/// - the type is `Value::Node`-carried (rebuilding needs occurrence span
+///   plumbing; the canonical channel still serves it),
+/// - it is not a sort application, or the sort declares no parameters,
+/// - it is the callee's OWN sort (the §3-bullet-1 member tie stays on the
+///   canonical channel),
+/// - every declared parameter is already written.
+///
+/// Scope: the TOP-LEVEL form of a param/return position only — a bare ref
+/// NESTED inside a written binding (`Pair[B = List]`) is not yet expanded
+/// (deliberate; deep expansion is follow-on scope). An alias resolves to its
+/// shape first (WI-381), so only genuinely-open positions get fresh vars.
+fn expand_foreign_sort_application(
+    kb: &mut KnowledgeBase,
+    ty: &Value,
+    callee_parent_canon: Option<Symbol>,
+) -> Option<Value> {
+    if !matches!(ty, Value::Term(_)) {
+        return None;
+    }
+    let (base, written): (Symbol, Vec<(Symbol, Value)>) =
+        if let Some(s) = extract_sort_ref_sym(kb, ty) {
+            match resolve_alias_shape(kb, s) {
+                Some(shape) => match extract_type(kb, &TermIdView(shape)) {
+                    TypeExtractor::Parameterized { base, bindings } => (base, bindings),
+                    _ => (s, vec![]),
+                },
+                None => (s, vec![]),
+            }
+        } else {
+            match extract_type(kb, ty) {
+                TypeExtractor::Parameterized { base, bindings } => (base, bindings),
+                _ => return None,
+            }
+        };
+    if callee_parent_canon.is_some_and(|p| p == kb.canonical_sort_sym(base)) {
+        return None;
+    }
+    let declared = kb.type_params_of_sort(base);
+    if declared.is_empty() {
+        return None;
+    }
+    let mut bindings: Vec<(Symbol, TermId)> = Vec::with_capacity(declared.len());
+    let mut filled = false;
+    for name in &declared {
+        match written.iter().find(|(q, _)| kb.resolve_sym(*q) == name) {
+            Some((q, v)) => match v {
+                Value::Term(t) => bindings.push((*q, *t)),
+                // A Term carrier's children are Term-carried; guard anyway.
+                _ => return None,
+            },
+            None => {
+                let var_sym = kb.intern(&format!("?{name}"));
+                let vid = kb.fresh_var(var_sym);
+                let var_t = kb.alloc(Term::Var(Var::Global(vid)));
+                let name_sym = kb.intern(name);
+                bindings.push((name_sym, var_t));
+                filled = true;
+            }
+        }
+    }
+    if !filled {
+        return None;
+    }
+    let base_ref = kb.make_sort_ref(base);
+    Some(Value::Term(kb.make_parameterized_type(base_ref, &bindings)))
+}
+
+/// WI-374 (user-decided 2026-06-12): ENFORCE the §3-bullet-1 parametricity
+/// tie — shared by the operation-call and constructor checkers. Scans the
+/// per-var contradiction details recorded during argument/field unification;
+/// a conflict on one of `owner_sort`'s OWN canonical param vars is an error
+/// unless (a) its prior binding is one of the `exempt_rigids` (the WI-424
+/// seeded body rigids — a same-sort sibling call at a different instance
+/// keeps its pre-WI-374 acceptance; enforcing the rigid tie is a separate
+/// decision), or (b) the pair RE-UNIFIES through the real relation (bare
+/// `List` vs `List[T = Int64]`, wildcards, equal rows in different
+/// carriers/orders are refinement — raw bind-level inequality over-reports).
+/// A FOREIGN sort's var conflicting through two foreign-typed positions is
+/// not scanned (§3 bullet 2: independent).
+fn enforce_member_tie(
+    kb: &mut KnowledgeBase,
+    subst: &Substitution,
+    owner_sort: Symbol,
+    error_name: Symbol,
+    span: Option<Span>,
+    exempt_rigids: &[(VarId, TermId)],
+) -> Result<(), TypeError> {
+    if !subst.is_contradiction() || subst.contradiction_details.is_empty() {
+        return Ok(());
+    }
+    let member_vids = sort_canonical_param_vids(kb, owner_sort);
+    if member_vids.is_empty() {
+        return Ok(());
+    }
+    let details = subst.contradiction_details.clone();
+    for (vid, prior, attempted) in &details {
+        if !member_vids.contains(vid) {
+            continue;
+        }
+        if exempt_rigids
+            .iter()
+            .any(|(v, r)| v == vid && matches!(prior, Value::Term(t) if t == r))
+        {
+            continue;
+        }
+        let mut scratch = Substitution::new();
+        if unify_types(kb, &mut scratch, prior, attempted) {
+            continue;
+        }
+        return Err(TypeError::Other {
+            span,
+            context: TypeErrorContext::OperationTypeParams { op_name: error_name },
+            expected: format!(
+                "consistent bindings for the sort's shared type parameter (first bound to {})",
+                type_display_name_value(kb, prior),
+            ),
+            actual: type_display_name_value(kb, attempted),
+        });
+    }
+    Ok(())
 }
 
 /// WI-374: the canonical param Vars of a sort's declared type parameters
