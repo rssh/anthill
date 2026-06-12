@@ -174,18 +174,7 @@ private class AnthillParserImpl(
   private def typeExpr[$: P]: P[TypeExpr] = P(arrowType | nonArrowType)
 
   private def nonArrowType[$: P]: P[TypeExpr] =
-    P(parameterizedType | tupleType | setType | variableType | simpleType)
-
-  /** Type-positioned set literal: `{e1, e2, …}` (or empty `{}`). Used in
-    * fact bindings like `fact Collection[Effect = {}]` (proposal 020 effect
-    * sets). Stored as a `Variable` wrapping a SetLiteral term so it round-
-    * trips through the existing `typeExprToRef` lowering. */
-  private def setType[$: P]: P[TypeExpr] =
-    P("{" ~ typeExpr.rep(sep = ",") ~ "}").map { elems =>
-      val elemTerms = elems.map(typeExprToRef).toIndexedSeq
-      val setTerm = terms.alloc(Term.Fn(intern("SetLiteral"), IArray.from(elemTerms), IArray.empty))
-      TypeExpr.Variable(setTerm, IndexedSeq.empty)
-    }
+    P(parameterizedType | tupleType | variableType | simpleType)
 
   private def simpleType[$: P]: P[TypeExpr] = P(name).map(TypeExpr.Simple(_))
 
@@ -196,9 +185,31 @@ private class AnthillParserImpl(
 
   private def sortBinding[$: P]: P[SortBinding] =
     P(
-      (name ~ "=" ~ typeExpr).map { case (n, t) => SortBinding(Some(n), t) } |
-      typeExpr.map(t => SortBinding(None, t))
+      (name ~ "=" ~ commonTypeExpr).map { case (n, t) => SortBinding(Some(n), t) } |
+      commonTypeExpr.map(t => SortBinding(None, t))
     )
+
+  /** The value slot of a sort binding — what may appear as a type argument.
+    * Mirrors rustland's `_common_type_expr`: a type, a literal value-in-type
+    * (`Denoted`, WI-302), or a written effect-row (`EffectRow`, WI-375).
+    * Effect-row and literal are tried before `typeExpr`: a `{`-prefixed row is
+    * disjoint from every type form, and a literal would otherwise be misread
+    * (`true`/`false` as a `simple_type` name). A projection like `l.T` needs no
+    * special form — it parses through `typeExpr` as a dotted name. */
+  private def commonTypeExpr[$: P]: P[TypeExpr] =
+    P(effectRowType | denotedLiteral | typeExpr)
+
+  /** WI-302: a literal in a type-argument slot (`Vector[Int64, 3]`, `Fin[n = 8]`). */
+  private def denotedLiteral[$: P]: P[TypeExpr] =
+    P(literal).map(TypeExpr.Denoted(_))
+
+  /** WI-375: a written effect-row `{ e1, e2, … }` (or empty `{}`) in a
+    * type-argument value slot. Mirrors rustland's `effect_row` node
+    * (`{ commaSep(_effect_type) }`). The cut after `{` commits — a `{` in a
+    * binding value is always a row, never a set literal (this retired the old
+    * `setType` rule, whose only use — `Collection[Effect = {}]` — lands here). */
+  private def effectRowType[$: P]: P[TypeExpr] =
+    P("{" ~/ effectType.rep(sep = ",") ~ "}").map(es => TypeExpr.EffectRow(es.toIndexedSeq))
 
   private def variableType[$: P]: P[TypeExpr] =
     P(Tokens.variableToken).map { varName =>
@@ -452,6 +463,16 @@ private class AnthillParserImpl(
                (intern("result"), resultTerm))))
     case TypeExpr.TupleType(fields) =>
       namedTupleTypeTerm(fields)
+    // WI-302: a denoted value-in-type rides as the raw literal term (rustland
+    // retired the `make_denoted` wrapper in WI-366 — the value rides as a Node).
+    case TypeExpr.Denoted(value) => value
+    // WI-375: a written effect-row lowers to an opaque `effects_rows(e1, …)`
+    // term (rustland builds an EffectExpression; scaland has no effect
+    // machinery, so the row rides as a plain functor term — this also subsumes
+    // the retired `setType`'s `SetLiteral` lowering for binding-value `{}`).
+    case TypeExpr.EffectRow(effects) =>
+      terms.alloc(Term.Fn(intern("effects_rows"),
+        IArray.from(effects.map(typeExprToRef)), IArray.empty))
 
   /** Build `anthill.prelude.TypeExtractor.NamedTuple(fields: List[NamedTupleElement])`
     * from `(name, type)` field pairs. Shared by tuple types and multi-parameter

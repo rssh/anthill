@@ -26,6 +26,13 @@ object TypeGen:
       // Pure arrow in scala_std (effects shape result type for cc only).
       val ps = if params.isEmpty then "()" else params.map(render(sym, _)).mkString("(", ", ", ")")
       s"$ps => ${render(sym, ret)}"
+    case TypeExpr.Denoted(_) =>
+      // Value-in-type (`Vector[Int64, 3]`) has no Scala type form — placeholder.
+      "Any"
+    case TypeExpr.EffectRow(_) =>
+      // Written effect-row (`Stream[E = {Modify[c]}]`) — effects erased in
+      // scala_std; placeholder.
+      "Any"
 
   /** Map prelude type names to their Scala stdlib counterparts.
     * Mirrors the type_map facts in `stdlib/anthill/realization/scala_std.anthill`.
