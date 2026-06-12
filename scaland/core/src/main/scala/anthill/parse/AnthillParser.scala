@@ -855,17 +855,17 @@ private class AnthillParserImpl(
   private def singleOperation[$: P]: P[Item] =
     P(visibility.? ~ simpleName ~ operationTypeParamList.? ~ "(" ~ param.rep(sep = ",") ~ ")" ~ "->" ~ typeExpr ~
       operationClauses ~ ("=" ~/ exprBody).? ~ metaBlock.?
-    ).map { case (vis, n, tps, params, retType, (reqs, enss, effs), opBody, meta) =>
+    ).map { case (vis, n, tps, params, retType, (reqs, enss, effs, clauseMeta), opBody, trailingMeta) =>
       Item.OperationItem(Operation(vis, n, tps.getOrElse(IndexedSeq.empty), params.toIndexedSeq, retType,
-        reqs, enss, effs, opBody, meta, mkSpan(0, 0)))
+        reqs, enss, effs, opBody, combineMeta(clauseMeta, trailingMeta), mkSpan(0, 0)))
     }
 
   private def operationEntry[$: P]: P[Operation] =
     P(visibility.? ~ simpleName ~ operationTypeParamList.? ~ "(" ~ param.rep(sep = ",") ~ ")" ~ "->" ~ typeExpr ~
       operationClauses ~ ("=" ~/ exprBody).? ~ metaBlock.?
-    ).map { case (vis, n, tps, params, retType, (reqs, enss, effs), opBody, meta) =>
+    ).map { case (vis, n, tps, params, retType, (reqs, enss, effs, clauseMeta), opBody, trailingMeta) =>
       Operation(vis, n, tps.getOrElse(IndexedSeq.empty), params.toIndexedSeq, retType,
-        reqs, enss, effs, opBody, meta, mkSpan(0, 0))
+        reqs, enss, effs, opBody, combineMeta(clauseMeta, trailingMeta), mkSpan(0, 0))
     }
 
   /** Operation type-parameter list `[T, U = Int]` (WI-269). A distinct
@@ -881,19 +881,31 @@ private class AnthillParserImpl(
       TypeParam(n, default, mkSpan(0, 0))
     }
 
-  private def operationClauses[$: P]: P[(IndexedSeq[IndexedSeq[TermId]], IndexedSeq[IndexedSeq[TermId]], IndexedSeq[Effect])] =
+  private def operationClauses[$: P]: P[(IndexedSeq[IndexedSeq[TermId]], IndexedSeq[IndexedSeq[TermId]], IndexedSeq[Effect], IndexedSeq[MetaEntry])] =
     P(operationClause.rep).map { clauses =>
       val reqs = ArrayBuffer.empty[IndexedSeq[TermId]]
       val enss = ArrayBuffer.empty[IndexedSeq[TermId]]
       val effs = ArrayBuffer.empty[Effect]
+      val metas = ArrayBuffer.empty[MetaEntry]
       clauses.foreach {
         case (0, terms: IndexedSeq[TermId] @unchecked) => reqs += terms
         case (1, terms: IndexedSeq[TermId] @unchecked) => enss += terms
         case (2, effects: IndexedSeq[Effect] @unchecked) => effs ++= effects
+        // WI-087: `meta [...]` clause entries accumulate (matching effects/
+        // requires/ensures — no silent last-wins drop), merged with a trailing
+        // bare meta_block by `combineMeta`.
+        case (3, entries: IndexedSeq[MetaEntry] @unchecked) => metas ++= entries
         case _ =>
       }
-      (reqs.toIndexedSeq, enss.toIndexedSeq, effs.toIndexedSeq)
+      (reqs.toIndexedSeq, enss.toIndexedSeq, effs.toIndexedSeq, metas.toIndexedSeq)
     }
+
+  /** WI-087: merge `meta [...]` operation-clause entries with a trailing
+    * `[...]` meta block (clause entries first, then trailing). `None` when
+    * both are empty, so clauseless ops keep `meta = None`. */
+  private def combineMeta(clauseEntries: IndexedSeq[MetaEntry], trailing: Option[MetaBlock]): Option[MetaBlock] =
+    val all = clauseEntries ++ trailing.map(_.entries).getOrElse(IndexedSeq.empty)
+    if all.isEmpty then None else Some(MetaBlock(all))
 
   private def operationClause[$: P]: P[(Int, IndexedSeq[?])] =
     P(
@@ -902,7 +914,12 @@ private class AnthillParserImpl(
       // Mirrors rustland's `_effect_set` shared between operation
       // `effects` and arrow-type `@`: bare single type or braced list
       // (possibly with trailing comma).
-      (keyword("effects") ~/ effectSet).map(ts => (2, ts.map(Effect(_)).toIndexedSeq))
+      (keyword("effects") ~/ effectSet).map(ts => (2, ts.map(Effect(_)).toIndexedSeq)) |
+      // WI-087: operation attributes — a keyword-introduced `meta [...]`
+      // clause carrying the existing meta_block. The `meta` keyword
+      // disambiguates from return-type application args (`-> Vec3[...]`).
+      // (Unblocks the C++ mapping codegen, which reads operation meta.)
+      (keyword("meta") ~/ metaBlock).map(mb => (3, mb.entries))
     )
 
   private def requiresDeclItem[$: P]: P[Item] =

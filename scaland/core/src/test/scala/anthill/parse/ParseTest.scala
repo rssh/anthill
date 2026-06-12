@@ -393,6 +393,26 @@ class ParseTest extends munit.FunSuite:
       .head.items.collect { case Item.OperationItem(o) => o }.head
     (pf, op)
 
+  // WI-087: operation attributes via a `meta [...]` clause (re-ported from the
+  // retired wi068 branch — unblocks the C++ mapping codegen, which reads op meta).
+  test("WI-087: operation `meta [...]` clause is captured in Operation.meta") {
+    val (pf, op) = parseDemoOp("""  operation get() -> T meta [inline, CppName: "get_t"]""")
+    val keys = op.meta.map(_.entries).getOrElse(IndexedSeq.empty)
+      .map(e => pf.symbols.name(e.key.last)).toSet
+    assertEquals(keys, Set("inline", "CppName"))
+  }
+
+  test("WI-087: `meta [...]` composes with an effects clause") {
+    probeOk("op-meta-effects",
+      """sort Demo
+        |  sort Modifies = ?
+        |  operation put(x: T) -> T
+        |    effects Modifies
+        |    meta [host: "rust"]
+        |end""".stripMargin)
+  }
+
+
   /** Named-arg keys of a `Fn` term, by interned name. */
   private def namedKeys(pf: ParsedFile, tid: TermId): Set[String] =
     pf.terms.get(tid) match
