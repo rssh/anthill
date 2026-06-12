@@ -309,13 +309,67 @@ private class AnthillParserImpl(
         Pratt.desugar(operands.toIndexedSeq, opSymbols.toIndexedSeq, symbols.name, terms.alloc, symbols.intern)
     }
 
+  /** A base atom followed by a dotted access/call chain. WI-278: a chain
+    * segment over a *value* receiver (`?x`, a call result, a literal, …)
+    * becomes `dot_apply(receiver, name, ...args)`; a *name* receiver keeps
+    * the `field_access` builtin. `Foo.bar` never reaches here — `name`
+    * greedily consumes consecutive `.ident`, so the only bases carrying
+    * trailing dots are values. A method call `?x.m(args)` is one segment
+    * with `(args)`; a plain field `?x.f` is one segment with no args. */
   private def atomWithFieldAccess[$: P]: P[TermId] =
-    P(atomBase ~ ("." ~ ident).rep).map { case (base, fields) =>
-      fields.foldLeft(base) { (obj, field) =>
-        val fieldRef = terms.alloc(Term.Ref(field))
-        terms.alloc(Term.Fn(intern("field_access"), IArray(obj, fieldRef), IArray.empty))
+    P(atomBase ~ dotSegment.rep).map { case (base, segs) =>
+      segs.foldLeft(base) { (obj, seg) =>
+        val (field, callArgs) = seg
+        // A name receiver carrying call args (`Foo.bar(args)`) is consumed by
+        // `name`/`nameSuffix` and never reaches here, so a name receiver always
+        // has `callArgs == None`; route any value receiver — incl. the
+        // call/instantiation `Fn` shapes — through `dot_apply` so args are never
+        // dropped.
+        if isValueReceiver(obj) || callArgs.isDefined then buildDotApply(obj, field, callArgs)
+        else
+          val fieldRef = terms.alloc(Term.Ref(field))
+          terms.alloc(Term.Fn(fieldAccessSym, IArray(obj, fieldRef), IArray.empty))
       }
     }
+
+  /** One `.name` access, optionally a call `.name(args)` (WI-278). */
+  private def dotSegment[$: P]: P[(TermSymbol, Option[IndexedSeq[Either[TermId, (TermSymbol, TermId)]]])] =
+    P("." ~ ident ~ fnArgsList.?)
+
+  private lazy val fieldAccessSym = intern("field_access")
+  private lazy val dotApplySym = intern("dot_apply")
+
+  /** WI-278: whether `tid` denotes a runtime *value* (→ `dot_apply`) rather
+    * than a sort/namespace *name* (→ `field_access`). Walks the `field_access`
+    * chain to its root atom: a `Ref`/`Ident` root is a name; anything else (a
+    * `Var`, a call/instantiation `Fn`, a literal, a collection) is a value.
+    * Mirrors rustland's `is_value_receiver` CST walk. (Scaland collapses a
+    * call and an instantiation to the same `Fn` shape, so `Name[B].field` —
+    * a name receiver in rustland — reads as a value here; this affects only
+    * that edge form, which no loaded stdlib uses.) */
+  private def isValueReceiver(tid: TermId): Boolean =
+    terms.get(tid) match
+      case Term.Ident(_) => false
+      case Term.Ref(_)   => false
+      case Term.Fn(f, posArgs, _) if f == fieldAccessSym && posArgs.nonEmpty =>
+        isValueReceiver(posArgs(0))
+      case _ => true
+
+  /** WI-278: build `dot_apply(receiver, Ident(name), ...positional, named...)`,
+    * matching rustland's `BuildFrame::DotApply` drain layout. */
+  private def buildDotApply(
+    receiver: TermId,
+    field: TermSymbol,
+    callArgs: Option[IndexedSeq[Either[TermId, (TermSymbol, TermId)]]]
+  ): TermId =
+    val nameTerm = terms.alloc(Term.Ident(field))
+    val posArgs = ArrayBuffer(receiver, nameTerm)
+    val namedArgs = ArrayBuffer.empty[(TermSymbol, TermId)]
+    callArgs.foreach(_.foreach {
+      case Left(tid)     => posArgs += tid
+      case Right((k, v)) => namedArgs += ((k, v))
+    })
+    terms.alloc(Term.Fn(dotApplySym, IArray.from(posArgs), IArray.from(namedArgs)))
 
   private def atomBase[$: P]: P[TermId] =
     P(

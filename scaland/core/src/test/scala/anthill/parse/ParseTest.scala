@@ -629,3 +629,49 @@ class ParseTest extends munit.FunSuite:
           case other => fail(s"expected Simple(l.T), got $other")
       case other => fail(s"expected Parameterized, got $other")
   }
+
+  // ── WI-278b: value-receiver dot forms lower to `dot_apply` ──
+  //   Re-ported from the retired wi068 branch onto main's current parser.
+
+  test("WI-278: value-receiver field `?x.field` lowers to dot_apply(receiver, name)") {
+    val (pf, t) = factTerm("fact ?x.field")
+    t match
+      case Term.Fn(f, pos, named) =>
+        assertEquals(pf.symbols.name(f), "dot_apply")
+        assertEquals(pos.length, 2)
+        assert(pf.terms.get(pos(0)).isInstanceOf[Term.Var], "receiver should be a Var")
+        pf.terms.get(pos(1)) match
+          case Term.Ident(s) => assertEquals(pf.symbols.name(s), "field")
+          case other => fail(s"expected Ident(field), got $other")
+      case other => fail(s"expected dot_apply Fn, got $other")
+  }
+
+  test("WI-278: method call `?x.method(?a, ?b)` → dot_apply with args") {
+    val (pf, t) = factTerm("fact ?x.method(?a, ?b)")
+    t match
+      case Term.Fn(f, pos, _) =>
+        assertEquals(pf.symbols.name(f), "dot_apply")
+        assertEquals(pos.length, 4) // receiver, Ident(method), a, b
+        pf.terms.get(pos(1)) match
+          case Term.Ident(s) => assertEquals(pf.symbols.name(s), "method")
+          case other => fail(s"expected Ident(method), got $other")
+      case other => fail(s"expected dot_apply Fn, got $other")
+  }
+
+  test("WI-278: chained value dots `?x.a.b` nest dot_apply") {
+    val (pf, t) = factTerm("fact ?x.a.b")
+    t match
+      case Term.Fn(f, pos, _) =>
+        assertEquals(pf.symbols.name(f), "dot_apply")
+        pf.terms.get(pos(0)) match
+          case Term.Fn(inner, _, _) => assertEquals(pf.symbols.name(inner), "dot_apply")
+          case other => fail(s"expected inner dot_apply, got $other")
+      case other => fail(s"expected dot_apply Fn, got $other")
+  }
+
+  test("WI-278: name receiver `Foo.bar` keeps field_access (not dot_apply)") {
+    val (pf, t) = factTerm("fact Foo.bar")
+    t match
+      case Term.Fn(f, _, _) => assertEquals(pf.symbols.name(f), "field_access")
+      case other => fail(s"expected field_access Fn, got $other")
+  }
