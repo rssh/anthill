@@ -1,5 +1,6 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # Report progress of an in-flight cargo test run started by scripts/test.sh.
+# POSIX sh — survives `sh scripts/test-status.sh` (dash) as well as bash.
 #
 # Reads the latest log (or one passed as $1) and prints:
 #   - the most recent "Running .../target/debug/deps/<name>-<hash>" line
@@ -11,11 +12,13 @@
 #   rustland/scripts/test-status.sh
 #   rustland/scripts/test-status.sh path/to/test-run-XXXX.log
 
-set -euo pipefail
+# No pipefail (not POSIX): the only pipeline below already masks failure
+# with `|| true`.
+set -eu
 cd "$(dirname "$0")/.."
 
 log="${1:-target/test-run-latest.log}"
-if [[ ! -e "${log}" ]]; then
+if [ ! -e "${log}" ]; then
   echo "no log at: rustland/${log}" >&2
   echo "run scripts/test.sh first" >&2
   exit 1
@@ -28,7 +31,7 @@ echo "log: ${real}"
 echo
 
 last_running=$(grep -n "Running " "${real}" | tail -1 || true)
-if [[ -n "${last_running}" ]]; then
+if [ -n "${last_running}" ]; then
   echo "current/last binary:"
   echo "  ${last_running}"
 fi
