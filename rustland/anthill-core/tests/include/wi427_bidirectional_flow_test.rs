@@ -6,10 +6,10 @@
 //! context.
 //!
 //! These are the **acceptance checklist anchors** for the bidirectional-flow example in
-//! `docs/design/path-dependent-types.md` §4.1. They are `#[ignore]`'d until WI-427 lands
-//! (today the argument is synthesized in isolation via `push_visit_no_hint`, so `poly`'s
-//! `X` is reported "unconstrained" before the param type can pin it — confirmed by probe
-//! 2026-06-09). Three flows must meet for the example to typecheck:
+//! `docs/design/path-dependent-types.md` §4.1, live since WI-427 landed (before it, the
+//! argument was synthesized in isolation via `push_visit_no_hint`, so `poly`'s `X` was
+//! reported "unconstrained" before the param type could pin it). Three flows must meet
+//! for the example to typecheck:
 //!   1. expected → argument (WI-427): the param `Wrapper[P = Inner[T = String]]` pins
 //!      `poly()`'s `X = String`;
 //!   2. projection off the grounded receiver (WI-398, delivered): `s.cell.T = String`;
