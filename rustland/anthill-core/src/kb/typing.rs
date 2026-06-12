@@ -2901,21 +2901,7 @@ fn unroll_annotation_with_inferred(
     };
     // Annotation side: bare ref (alias-shape resolved, WI-381) or partial
     // application; its bindings seed the merge as the written-authoritative set.
-    let (ann_base, mut merged): (Symbol, Vec<(Symbol, Value)>) =
-        if let Some(s) = extract_sort_ref_sym(kb, ann) {
-            match resolve_alias_shape(kb, s) {
-                Some(shape) => match extract_type(kb, &TermIdView(shape)) {
-                    TypeExtractor::Parameterized { base, bindings } => (base, bindings),
-                    _ => (s, vec![]),
-                },
-                None => (s, vec![]),
-            }
-        } else {
-            match extract_type(kb, ann) {
-                TypeExtractor::Parameterized { base, bindings } => (base, bindings),
-                _ => return None,
-            }
-        };
+    let (ann_base, mut merged) = sort_application_parts(kb, ann)?;
     if kb.canonical_sort_sym(ann_base) != kb.canonical_sort_sym(v_base) {
         return None;
     }
@@ -2941,6 +2927,41 @@ fn unroll_annotation_with_inferred(
     }
     let base = kb.make_sort_ref(ann_base);
     Some(parameterized_value(kb, base, &merged, span, owner))
+}
+
+/// WI-374: read a type as a SORT APPLICATION — `(base sort, written
+/// bindings)` — resolving a defined-type / alias to its shape first (WI-381),
+/// so a structured alias contributes its definition-fixed bindings and a bare
+/// alias OF a bare sort reports the UNDERLYING base (`sort MyList = List`
+/// participates like `List`). `None` when the type is not a sort application
+/// (arrow, tuple, projection, var, …). Shared by the let-annotation merge and
+/// the signature expansion so WI-381 alias semantics live in one place.
+fn sort_application_parts(
+    kb: &mut KnowledgeBase,
+    ty: &Value,
+) -> Option<(Symbol, Vec<(Symbol, Value)>)> {
+    if let Some(s) = extract_sort_ref_sym(kb, ty) {
+        // A parametric sort is never an alias: a non-empty memoized param set
+        // (WI-424 cache) skips the alias-shape fact scans on the hot path.
+        if !sort_type_params_as_pairs(kb, s).is_empty() {
+            return Some((s, vec![]));
+        }
+        match resolve_alias_shape(kb, s) {
+            Some(shape) => match extract_type(kb, &TermIdView(shape)) {
+                TypeExtractor::Parameterized { base, bindings } => Some((base, bindings)),
+                _ => Some((
+                    extract_sort_ref_sym(kb, &TermIdView(shape)).unwrap_or(s),
+                    vec![],
+                )),
+            },
+            None => Some((s, vec![])),
+        }
+    } else {
+        match extract_type(kb, ty) {
+            TypeExtractor::Parameterized { base, bindings } => Some((base, bindings)),
+            _ => None,
+        }
+    }
 }
 
 /// Assemble a Let / Match / Lambda result from its child results.
@@ -3669,11 +3690,12 @@ fn check_apply_iter(
                     op.params[i].1 = exp;
                 }
             }
-            if let Some(exp) =
-                expand_foreign_sort_application(kb, &op.return_type, callee_parent_canon)
-            {
-                op.return_type = exp;
-            }
+            // The RETURN is deliberately NOT expanded: a bare return is an
+            // ERASED relationship (§5 — variables reconstruct nothing), and
+            // carrying unbound fresh vars in `resolved_ret` would un-ground
+            // the ARGUMENT side of a downstream WI-385 validation (silent
+            // skip where bare was a loud mismatch) and stamp dangling vars
+            // into annotated-let merges.
         }
         let mut subst = Substitution::new();
         // WI-269 Phase D: explicit call-site `op[bindings]` bindings
@@ -3825,9 +3847,13 @@ fn check_apply_iter(
         // VALIDATION below checks the argument against `String`, not the un-eliminated
         // `s.cell.T`. A projection that cannot resolve (abstract receiver, missing
         // member) is a loud error here, never a silent skip.
+        // WI-374: eliminate from the WRITTEN params, not the expanded copies —
+        // an expanded partial application's unbound fresh var would make the
+        // eliminated type non-ground, and the WI-385 groundness gate below
+        // would silently skip a mismatch the written form rejects loudly.
         let mut effective_param_types: HashMap<Symbol, Value> = HashMap::new();
         if params_have_projection {
-            for (param_sym, param_type) in &op.params {
+            for (param_sym, param_type) in &written_params {
                 if !value_contains_projection(kb, param_type) {
                     continue;
                 }
@@ -11679,43 +11705,36 @@ fn expand_foreign_sort_application(
     if !matches!(ty, Value::Term(_)) {
         return None;
     }
-    let (base, written): (Symbol, Vec<(Symbol, Value)>) =
-        if let Some(s) = extract_sort_ref_sym(kb, ty) {
-            match resolve_alias_shape(kb, s) {
-                Some(shape) => match extract_type(kb, &TermIdView(shape)) {
-                    TypeExtractor::Parameterized { base, bindings } => (base, bindings),
-                    _ => (s, vec![]),
-                },
-                None => (s, vec![]),
-            }
-        } else {
-            match extract_type(kb, ty) {
-                TypeExtractor::Parameterized { base, bindings } => (base, bindings),
-                _ => return None,
-            }
-        };
+    let (base, written) = sort_application_parts(kb, ty)?;
     if callee_parent_canon.is_some_and(|p| p == kb.canonical_sort_sym(base)) {
         return None;
     }
-    let declared = kb.type_params_of_sort(base);
+    // The WI-424 memoized pairs — `(qualified param sym, canonical Var term)`
+    // — double as the declared-param list, so the per-call path never walks
+    // the symbol table or SortAlias facts for an already-seen sort.
+    let declared = sort_type_params_as_pairs(kb, base);
     if declared.is_empty() {
         return None;
     }
-    let mut bindings: Vec<(Symbol, TermId)> = Vec::with_capacity(declared.len());
+    let declared_syms: Vec<Symbol> = declared.iter().map(|(q, _)| *q).collect();
+    let mut bindings: Vec<(Symbol, TermId)> = Vec::with_capacity(declared_syms.len());
     let mut filled = false;
-    for name in &declared {
-        match written.iter().find(|(q, _)| kb.resolve_sym(*q) == name) {
-            Some((q, v)) => match v {
-                Value::Term(t) => bindings.push((*q, *t)),
+    for qsym in declared_syms {
+        let short = kb.resolve_sym(qsym).to_string();
+        match written.iter().find(|(k, _)| kb.resolve_sym(*k) == short) {
+            Some((k, v)) => match v {
+                Value::Term(t) => bindings.push((*k, *t)),
                 // A Term carrier's children are Term-carried; guard anyway.
                 _ => return None,
             },
             None => {
-                let var_sym = kb.intern(&format!("?{name}"));
+                let var_sym = kb.intern(&format!("?{short}"));
                 let vid = kb.fresh_var(var_sym);
                 let var_t = kb.alloc(Term::Var(Var::Global(vid)));
-                let name_sym = kb.intern(name);
-                bindings.push((name_sym, var_t));
+                // The SHORT symbol — the named-arg key convention the
+                // (parameterized, parameterized) unify matches on.
+                let short_sym = kb.intern(&short);
+                bindings.push((short_sym, var_t));
                 filled = true;
             }
         }
@@ -11750,7 +11769,14 @@ fn enforce_member_tie(
     if !subst.is_contradiction() || subst.contradiction_details.is_empty() {
         return Ok(());
     }
-    let member_vids = sort_canonical_param_vids(kb, owner_sort);
+    // The WI-424 memoized pairs supply the owner's canonical param vids.
+    let member_vids: SmallVec<[VarId; 4]> = sort_type_params_as_pairs(kb, owner_sort)
+        .iter()
+        .filter_map(|(_, target)| match kb.get_term(*target) {
+            Term::Var(Var::Global(v)) => Some(*v),
+            _ => None,
+        })
+        .collect();
     if member_vids.is_empty() {
         return Ok(());
     }
@@ -11780,48 +11806,6 @@ fn enforce_member_tie(
         });
     }
     Ok(())
-}
-
-/// WI-374: the canonical param Vars of a sort's declared type parameters
-/// (`sort T = ?` / `effects E = ?` registrations) — every `SortAlias` fact
-/// whose alias name is `<sort>.<Param>` with a logic-`Var` target. Used to
-/// gate the member-tie enforcement to the callee's OWN sort's params.
-fn sort_canonical_param_vids(kb: &KnowledgeBase, sort_sym: Symbol) -> SmallVec<[VarId; 4]> {
-    let mut out: SmallVec<[VarId; 4]> = SmallVec::new();
-    let Some(alias_sym) = kb.try_resolve_symbol("SortAlias") else {
-        return out;
-    };
-    let sort_name = kb.qualified_name_of(sort_sym).to_string();
-    for rid in kb.rules_by_functor(alias_sym) {
-        if !kb.is_fact(rid) {
-            continue;
-        }
-        // A value-fact SortAlias carries no ground Var target — skip (and avoid
-        // the term-only `rule_head` panic), as in `resolve_sort_alias`.
-        let Some(head) = kb.fact_head_term(rid) else { continue };
-        let Term::Fn { pos_args, .. } = kb.get_term(head) else { continue };
-        if pos_args.len() < 2 {
-            continue;
-        }
-        let Term::Fn { functor, .. } = kb.get_term(pos_args[0]) else { continue };
-        let alias_name = kb.qualified_name_of(*functor);
-        // `<sort>.` prefix with the boundary dot — see the constructor-path
-        // twin for why the bare prefix is not enough (`Effect` ⊂ `Effects`).
-        if !(alias_name.starts_with(&sort_name)
-            && alias_name.as_bytes().get(sort_name.len()) == Some(&b'.'))
-        {
-            continue;
-        }
-        // IMMEDIATE params only: a remainder with further dots is a nested
-        // sort's param (`ns.Box.T` under `ns`), not this sort's.
-        if alias_name[sort_name.len() + 1..].contains('.') {
-            continue;
-        }
-        if let Term::Var(Var::Global(vid)) = kb.get_term(pos_args[1]) {
-            out.push(*vid);
-        }
-    }
-    out
 }
 
 /// WI-381: resolve a defined-type / alias reference (`SortRef(S)`) to its underlying

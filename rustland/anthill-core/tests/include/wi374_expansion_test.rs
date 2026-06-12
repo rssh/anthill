@@ -365,8 +365,10 @@ end
 }
 
 /// Signature expansion end-to-end sanity: a FOREIGN op with a bare `List`
-/// return loads (its body checks against the expanded return), its call
-/// narrows through a partial annotation, and the result is usable.
+/// return loads, and its call site stays usable through an annotation. (The
+/// return itself is deliberately NOT expanded — a bare return is erased, §5;
+/// the annotation-as-bound-type is what carries the element here, the same
+/// bare-vs-parameterized width acceptance as before WI-374.)
 #[test]
 fn foreign_bare_return_op_loads_and_narrows() {
     let src = r#"
