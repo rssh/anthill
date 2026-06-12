@@ -49,6 +49,16 @@ enum TypeExpr:
     * requires at least one element (`commaSep1`), so emptiness can only
     * come from a missing annotation. Mirrors `rustland` `TypeExpr::Arrow`. */
   case Arrow(params: IndexedSeq[TypeExpr], returnType: TypeExpr, effects: IndexedSeq[TypeExpr])
+  /** WI-302: a literal value standing in a type-argument slot — value-in-type,
+    * e.g. `Vector[Int64, 3]` / `Fin[n = 8]`. The loader/typer (rust-only)
+    * classifies it; scaland lowers it to the raw literal term. Mirrors
+    * rustland's `TypeExpr::Denoted`. */
+  case Denoted(value: TermId)
+  /** WI-375: a written effect-row in a type-argument value slot, e.g.
+    * `Stream[E = {}]` / `Stream[E = {Modify[c]}]`. A distinct node (not a set
+    * literal) per rustland's named-`effect_row` decision — `{X}` is a
+    * one-effect row, not the type `X`. Mirrors rustland's `TypeExpr::EffectRow`. */
+  case EffectRow(effects: IndexedSeq[TypeExpr])
 
 case class SortBinding(param: Option[Name], bound: TypeExpr)
 

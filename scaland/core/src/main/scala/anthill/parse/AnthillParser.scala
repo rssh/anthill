@@ -174,18 +174,7 @@ private class AnthillParserImpl(
   private def typeExpr[$: P]: P[TypeExpr] = P(arrowType | nonArrowType)
 
   private def nonArrowType[$: P]: P[TypeExpr] =
-    P(parameterizedType | tupleType | setType | variableType | simpleType)
-
-  /** Type-positioned set literal: `{e1, e2, …}` (or empty `{}`). Used in
-    * fact bindings like `fact Collection[Effect = {}]` (proposal 020 effect
-    * sets). Stored as a `Variable` wrapping a SetLiteral term so it round-
-    * trips through the existing `typeExprToRef` lowering. */
-  private def setType[$: P]: P[TypeExpr] =
-    P("{" ~ typeExpr.rep(sep = ",") ~ "}").map { elems =>
-      val elemTerms = elems.map(typeExprToRef).toIndexedSeq
-      val setTerm = terms.alloc(Term.Fn(intern("SetLiteral"), IArray.from(elemTerms), IArray.empty))
-      TypeExpr.Variable(setTerm, IndexedSeq.empty)
-    }
+    P(parameterizedType | tupleType | variableType | simpleType)
 
   private def simpleType[$: P]: P[TypeExpr] = P(name).map(TypeExpr.Simple(_))
 
@@ -196,9 +185,31 @@ private class AnthillParserImpl(
 
   private def sortBinding[$: P]: P[SortBinding] =
     P(
-      (name ~ "=" ~ typeExpr).map { case (n, t) => SortBinding(Some(n), t) } |
-      typeExpr.map(t => SortBinding(None, t))
+      (name ~ "=" ~ commonTypeExpr).map { case (n, t) => SortBinding(Some(n), t) } |
+      commonTypeExpr.map(t => SortBinding(None, t))
     )
+
+  /** The value slot of a sort binding — what may appear as a type argument.
+    * Mirrors rustland's `_common_type_expr`: a type, a literal value-in-type
+    * (`Denoted`, WI-302), or a written effect-row (`EffectRow`, WI-375).
+    * Effect-row and literal are tried before `typeExpr`: a `{`-prefixed row is
+    * disjoint from every type form, and a literal would otherwise be misread
+    * (`true`/`false` as a `simple_type` name). A projection like `l.T` needs no
+    * special form — it parses through `typeExpr` as a dotted name. */
+  private def commonTypeExpr[$: P]: P[TypeExpr] =
+    P(effectRowType | denotedLiteral | typeExpr)
+
+  /** WI-302: a literal in a type-argument slot (`Vector[Int64, 3]`, `Fin[n = 8]`). */
+  private def denotedLiteral[$: P]: P[TypeExpr] =
+    P(literal).map(TypeExpr.Denoted(_))
+
+  /** WI-375: a written effect-row `{ e1, e2, … }` (or empty `{}`) in a
+    * type-argument value slot. Mirrors rustland's `effect_row` node
+    * (`{ commaSep(_effect_type) }`). The cut after `{` commits — a `{` in a
+    * binding value is always a row, never a set literal (this retired the old
+    * `setType` rule, whose only use — `Collection[Effect = {}]` — lands here). */
+  private def effectRowType[$: P]: P[TypeExpr] =
+    P("{" ~/ effectType.rep(sep = ",") ~ "}").map(es => TypeExpr.EffectRow(es.toIndexedSeq))
 
   private def variableType[$: P]: P[TypeExpr] =
     P(Tokens.variableToken).map { varName =>
@@ -298,13 +309,67 @@ private class AnthillParserImpl(
         Pratt.desugar(operands.toIndexedSeq, opSymbols.toIndexedSeq, symbols.name, terms.alloc, symbols.intern)
     }
 
+  /** A base atom followed by a dotted access/call chain. WI-278: a chain
+    * segment over a *value* receiver (`?x`, a call result, a literal, …)
+    * becomes `dot_apply(receiver, name, ...args)`; a *name* receiver keeps
+    * the `field_access` builtin. `Foo.bar` never reaches here — `name`
+    * greedily consumes consecutive `.ident`, so the only bases carrying
+    * trailing dots are values. A method call `?x.m(args)` is one segment
+    * with `(args)`; a plain field `?x.f` is one segment with no args. */
   private def atomWithFieldAccess[$: P]: P[TermId] =
-    P(atomBase ~ ("." ~ ident).rep).map { case (base, fields) =>
-      fields.foldLeft(base) { (obj, field) =>
-        val fieldRef = terms.alloc(Term.Ref(field))
-        terms.alloc(Term.Fn(intern("field_access"), IArray(obj, fieldRef), IArray.empty))
+    P(atomBase ~ dotSegment.rep).map { case (base, segs) =>
+      segs.foldLeft(base) { (obj, seg) =>
+        val (field, callArgs) = seg
+        // A name receiver carrying call args (`Foo.bar(args)`) is consumed by
+        // `name`/`nameSuffix` and never reaches here, so a name receiver always
+        // has `callArgs == None`; route any value receiver — incl. the
+        // call/instantiation `Fn` shapes — through `dot_apply` so args are never
+        // dropped.
+        if isValueReceiver(obj) || callArgs.isDefined then buildDotApply(obj, field, callArgs)
+        else
+          val fieldRef = terms.alloc(Term.Ref(field))
+          terms.alloc(Term.Fn(fieldAccessSym, IArray(obj, fieldRef), IArray.empty))
       }
     }
+
+  /** One `.name` access, optionally a call `.name(args)` (WI-278). */
+  private def dotSegment[$: P]: P[(TermSymbol, Option[IndexedSeq[Either[TermId, (TermSymbol, TermId)]]])] =
+    P("." ~ ident ~ fnArgsList.?)
+
+  private lazy val fieldAccessSym = intern("field_access")
+  private lazy val dotApplySym = intern("dot_apply")
+
+  /** WI-278: whether `tid` denotes a runtime *value* (→ `dot_apply`) rather
+    * than a sort/namespace *name* (→ `field_access`). Walks the `field_access`
+    * chain to its root atom: a `Ref`/`Ident` root is a name; anything else (a
+    * `Var`, a call/instantiation `Fn`, a literal, a collection) is a value.
+    * Mirrors rustland's `is_value_receiver` CST walk. (Scaland collapses a
+    * call and an instantiation to the same `Fn` shape, so `Name[B].field` —
+    * a name receiver in rustland — reads as a value here; this affects only
+    * that edge form, which no loaded stdlib uses.) */
+  private def isValueReceiver(tid: TermId): Boolean =
+    terms.get(tid) match
+      case Term.Ident(_) => false
+      case Term.Ref(_)   => false
+      case Term.Fn(f, posArgs, _) if f == fieldAccessSym && posArgs.nonEmpty =>
+        isValueReceiver(posArgs(0))
+      case _ => true
+
+  /** WI-278: build `dot_apply(receiver, Ident(name), ...positional, named...)`,
+    * matching rustland's `BuildFrame::DotApply` drain layout. */
+  private def buildDotApply(
+    receiver: TermId,
+    field: TermSymbol,
+    callArgs: Option[IndexedSeq[Either[TermId, (TermSymbol, TermId)]]]
+  ): TermId =
+    val nameTerm = terms.alloc(Term.Ident(field))
+    val posArgs = ArrayBuffer(receiver, nameTerm)
+    val namedArgs = ArrayBuffer.empty[(TermSymbol, TermId)]
+    callArgs.foreach(_.foreach {
+      case Left(tid)     => posArgs += tid
+      case Right((k, v)) => namedArgs += ((k, v))
+    })
+    terms.alloc(Term.Fn(dotApplySym, IArray.from(posArgs), IArray.from(namedArgs)))
 
   private def atomBase[$: P]: P[TermId] =
     P(
@@ -452,6 +517,16 @@ private class AnthillParserImpl(
                (intern("result"), resultTerm))))
     case TypeExpr.TupleType(fields) =>
       namedTupleTypeTerm(fields)
+    // WI-302: a denoted value-in-type rides as the raw literal term (rustland
+    // retired the `make_denoted` wrapper in WI-366 — the value rides as a Node).
+    case TypeExpr.Denoted(value) => value
+    // WI-375: a written effect-row lowers to an opaque `effects_rows(e1, …)`
+    // term (rustland builds an EffectExpression; scaland has no effect
+    // machinery, so the row rides as a plain functor term — this also subsumes
+    // the retired `setType`'s `SetLiteral` lowering for binding-value `{}`).
+    case TypeExpr.EffectRow(effects) =>
+      terms.alloc(Term.Fn(intern("effects_rows"),
+        IArray.from(effects.map(typeExprToRef)), IArray.empty))
 
   /** Build `anthill.prelude.TypeExtractor.NamedTuple(fields: List[NamedTupleElement])`
     * from `(name, type)` field pairs. Shared by tuple types and multi-parameter
@@ -855,17 +930,17 @@ private class AnthillParserImpl(
   private def singleOperation[$: P]: P[Item] =
     P(visibility.? ~ simpleName ~ operationTypeParamList.? ~ "(" ~ param.rep(sep = ",") ~ ")" ~ "->" ~ typeExpr ~
       operationClauses ~ ("=" ~/ exprBody).? ~ metaBlock.?
-    ).map { case (vis, n, tps, params, retType, (reqs, enss, effs), opBody, meta) =>
+    ).map { case (vis, n, tps, params, retType, (reqs, enss, effs, clauseMeta), opBody, trailingMeta) =>
       Item.OperationItem(Operation(vis, n, tps.getOrElse(IndexedSeq.empty), params.toIndexedSeq, retType,
-        reqs, enss, effs, opBody, meta, mkSpan(0, 0)))
+        reqs, enss, effs, opBody, combineMeta(clauseMeta, trailingMeta), mkSpan(0, 0)))
     }
 
   private def operationEntry[$: P]: P[Operation] =
     P(visibility.? ~ simpleName ~ operationTypeParamList.? ~ "(" ~ param.rep(sep = ",") ~ ")" ~ "->" ~ typeExpr ~
       operationClauses ~ ("=" ~/ exprBody).? ~ metaBlock.?
-    ).map { case (vis, n, tps, params, retType, (reqs, enss, effs), opBody, meta) =>
+    ).map { case (vis, n, tps, params, retType, (reqs, enss, effs, clauseMeta), opBody, trailingMeta) =>
       Operation(vis, n, tps.getOrElse(IndexedSeq.empty), params.toIndexedSeq, retType,
-        reqs, enss, effs, opBody, meta, mkSpan(0, 0))
+        reqs, enss, effs, opBody, combineMeta(clauseMeta, trailingMeta), mkSpan(0, 0))
     }
 
   /** Operation type-parameter list `[T, U = Int]` (WI-269). A distinct
@@ -881,19 +956,31 @@ private class AnthillParserImpl(
       TypeParam(n, default, mkSpan(0, 0))
     }
 
-  private def operationClauses[$: P]: P[(IndexedSeq[IndexedSeq[TermId]], IndexedSeq[IndexedSeq[TermId]], IndexedSeq[Effect])] =
+  private def operationClauses[$: P]: P[(IndexedSeq[IndexedSeq[TermId]], IndexedSeq[IndexedSeq[TermId]], IndexedSeq[Effect], IndexedSeq[MetaEntry])] =
     P(operationClause.rep).map { clauses =>
       val reqs = ArrayBuffer.empty[IndexedSeq[TermId]]
       val enss = ArrayBuffer.empty[IndexedSeq[TermId]]
       val effs = ArrayBuffer.empty[Effect]
+      val metas = ArrayBuffer.empty[MetaEntry]
       clauses.foreach {
         case (0, terms: IndexedSeq[TermId] @unchecked) => reqs += terms
         case (1, terms: IndexedSeq[TermId] @unchecked) => enss += terms
         case (2, effects: IndexedSeq[Effect] @unchecked) => effs ++= effects
+        // WI-087: `meta [...]` clause entries accumulate (matching effects/
+        // requires/ensures — no silent last-wins drop), merged with a trailing
+        // bare meta_block by `combineMeta`.
+        case (3, entries: IndexedSeq[MetaEntry] @unchecked) => metas ++= entries
         case _ =>
       }
-      (reqs.toIndexedSeq, enss.toIndexedSeq, effs.toIndexedSeq)
+      (reqs.toIndexedSeq, enss.toIndexedSeq, effs.toIndexedSeq, metas.toIndexedSeq)
     }
+
+  /** WI-087: merge `meta [...]` operation-clause entries with a trailing
+    * `[...]` meta block (clause entries first, then trailing). `None` when
+    * both are empty, so clauseless ops keep `meta = None`. */
+  private def combineMeta(clauseEntries: IndexedSeq[MetaEntry], trailing: Option[MetaBlock]): Option[MetaBlock] =
+    val all = clauseEntries ++ trailing.map(_.entries).getOrElse(IndexedSeq.empty)
+    if all.isEmpty then None else Some(MetaBlock(all))
 
   private def operationClause[$: P]: P[(Int, IndexedSeq[?])] =
     P(
@@ -902,7 +989,12 @@ private class AnthillParserImpl(
       // Mirrors rustland's `_effect_set` shared between operation
       // `effects` and arrow-type `@`: bare single type or braced list
       // (possibly with trailing comma).
-      (keyword("effects") ~/ effectSet).map(ts => (2, ts.map(Effect(_)).toIndexedSeq))
+      (keyword("effects") ~/ effectSet).map(ts => (2, ts.map(Effect(_)).toIndexedSeq)) |
+      // WI-087: operation attributes — a keyword-introduced `meta [...]`
+      // clause carrying the existing meta_block. The `meta` keyword
+      // disambiguates from return-type application args (`-> Vec3[...]`).
+      // (Unblocks the C++ mapping codegen, which reads operation meta.)
+      (keyword("meta") ~/ metaBlock).map(mb => (3, mb.entries))
     )
 
   private def requiresDeclItem[$: P]: P[Item] =

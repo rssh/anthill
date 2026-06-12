@@ -393,6 +393,26 @@ class ParseTest extends munit.FunSuite:
       .head.items.collect { case Item.OperationItem(o) => o }.head
     (pf, op)
 
+  // WI-087: operation attributes via a `meta [...]` clause (re-ported from the
+  // retired wi068 branch — unblocks the C++ mapping codegen, which reads op meta).
+  test("WI-087: operation `meta [...]` clause is captured in Operation.meta") {
+    val (pf, op) = parseDemoOp("""  operation get() -> T meta [inline, CppName: "get_t"]""")
+    val keys = op.meta.map(_.entries).getOrElse(IndexedSeq.empty)
+      .map(e => pf.symbols.name(e.key.last)).toSet
+    assertEquals(keys, Set("inline", "CppName"))
+  }
+
+  test("WI-087: `meta [...]` composes with an effects clause") {
+    probeOk("op-meta-effects",
+      """sort Demo
+        |  sort Modifies = ?
+        |  operation put(x: T) -> T
+        |    effects Modifies
+        |    meta [host: "rust"]
+        |end""".stripMargin)
+  }
+
+
   /** Named-arg keys of a `Fn` term, by interned name. */
   private def namedKeys(pf: ParsedFile, tid: TermId): Set[String] =
     pf.terms.get(tid) match
@@ -512,4 +532,146 @@ class ParseTest extends munit.FunSuite:
         case Left(es) => Some(s"$rel: ${es.head.message}")
     }
     assert(failures.isEmpty, s"stdlib files failing to parse:\n  ${failures.mkString("\n  ")}")
+  }
+
+  // ── WI-424: value-in-type + effect-rows (port rust WI-302/375/373) ──
+  //   Re-ported from the retired wi068 branch onto main's current parser.
+
+  private def factTerm(src: String): (ParsedFile, Term) =
+    val pf = Parser.parse(src, "<fact>").toOption.getOrElse(fail(s"parse failed: $src"))
+    val fact = pf.items.collectFirst { case Item.FactItem(f) => f }
+      .getOrElse(fail(s"no fact in: $src"))
+    (pf, pf.terms.get(fact.term))
+
+  /** Return type of a single `get()` op in a Demo body (parsed). */
+  private def parseReturnType(retSrc: String): (ParsedFile, TypeExpr) =
+    val (pf, op) = parseDemoOp(s"  operation get() -> $retSrc")
+    (pf, op.returnType)
+
+  // WI-302: a literal value in a type-argument slot → Denoted.
+  test("WI-302: positional literal `Vector[Int, 3]` parses as a Denoted binding") {
+    val (pf, te) = parseReturnType("Vector[Int, 3]")
+    te match
+      case TypeExpr.Parameterized(_, bindings) =>
+        assertEquals(bindings.length, 2)
+        bindings(1).bound match
+          case TypeExpr.Denoted(v) =>
+            pf.terms.get(v) match
+              case Term.Const(Literal.IntLit(3)) => ()
+              case other => fail(s"expected IntLit(3), got $other")
+          case other => fail(s"expected Denoted, got $other")
+      case other => fail(s"expected Parameterized, got $other")
+  }
+
+  test("WI-302: named literal binding `Fin[n = 8]` parses as Denoted") {
+    val (pf, te) = parseReturnType("Fin[n = 8]")
+    te match
+      case TypeExpr.Parameterized(_, bs) if bs.length == 1 =>
+        assertEquals(bs.head.param.map(p => pf.symbols.name(p.last)), Some("n"))
+        assert(bs.head.bound.isInstanceOf[TypeExpr.Denoted], s"expected Denoted, got ${bs.head.bound}")
+      case other => fail(s"expected single-binding Parameterized, got $other")
+  }
+
+  test("WI-302: literal type-arg lowers to the raw literal term") {
+    val (pf, t) = factTerm("fact Vector[Int, 3]")
+    t match
+      case Term.Fn(f, pos, _) =>
+        assertEquals(pf.symbols.name(f), "Vector")
+        assertEquals(pos.length, 2)
+        pf.terms.get(pos(1)) match
+          case Term.Const(Literal.IntLit(3)) => ()
+          case other => fail(s"expected IntLit(3) raw term, got $other")
+      case other => fail(s"expected Vector Fn, got $other")
+  }
+
+  // WI-375: a written effect-row in a type-argument slot → EffectRow.
+  test("WI-375: empty effect-row `Stream[E = {}]` parses as EffectRow([])") {
+    val (pf, te) = parseReturnType("Stream[E = {}]")
+    te match
+      case TypeExpr.Parameterized(_, bs) if bs.length == 1 =>
+        assertEquals(bs.head.param.map(p => pf.symbols.name(p.last)), Some("E"))
+        bs.head.bound match
+          case TypeExpr.EffectRow(effs) => assertEquals(effs.length, 0)
+          case other => fail(s"expected EffectRow, got $other")
+      case other => fail(s"expected Parameterized, got $other")
+  }
+
+  test("WI-375: effect-row `Stream[E = {Modify[c]}]` parses as EffectRow([Modify])") {
+    val (pf, te) = parseReturnType("Stream[E = {Modify[c]}]")
+    te match
+      case TypeExpr.Parameterized(_, bs) if bs.length == 1 =>
+        bs.head.bound match
+          case TypeExpr.EffectRow(effs) => assertEquals(effs.length, 1)
+          case other => fail(s"expected EffectRow, got $other")
+      case other => fail(s"expected Parameterized, got $other")
+  }
+
+  test("WI-375: effect-row lowers to an `effects_rows(...)` term") {
+    val (pf, t) = factTerm("fact Stream[E = {Modify[c]}]")
+    t match
+      case Term.Fn(_, _, named) =>
+        val e = named.find((k, _) => pf.symbols.name(k) == "E").map(_._2)
+          .getOrElse(fail("no E named arg"))
+        pf.terms.get(e) match
+          case Term.Fn(g, _, _) => assertEquals(pf.symbols.name(g), "effects_rows")
+          case other => fail(s"expected effects_rows, got $other")
+      case other => fail(s"expected Stream Fn, got $other")
+  }
+
+  // WI-373: projection types parse as dotted names — no special grammar.
+  test("WI-373: projection type `Stream[l.T]` parses as a dotted name (no new node)") {
+    val (pf, te) = parseReturnType("Stream[l.T]")
+    te match
+      case TypeExpr.Parameterized(_, bs) if bs.length == 1 =>
+        bs.head.bound match
+          case TypeExpr.Simple(n) =>
+            assertEquals(n.segments.map(pf.symbols.name).mkString("."), "l.T")
+          case other => fail(s"expected Simple(l.T), got $other")
+      case other => fail(s"expected Parameterized, got $other")
+  }
+
+  // ── WI-278b: value-receiver dot forms lower to `dot_apply` ──
+  //   Re-ported from the retired wi068 branch onto main's current parser.
+
+  test("WI-278: value-receiver field `?x.field` lowers to dot_apply(receiver, name)") {
+    val (pf, t) = factTerm("fact ?x.field")
+    t match
+      case Term.Fn(f, pos, named) =>
+        assertEquals(pf.symbols.name(f), "dot_apply")
+        assertEquals(pos.length, 2)
+        assert(pf.terms.get(pos(0)).isInstanceOf[Term.Var], "receiver should be a Var")
+        pf.terms.get(pos(1)) match
+          case Term.Ident(s) => assertEquals(pf.symbols.name(s), "field")
+          case other => fail(s"expected Ident(field), got $other")
+      case other => fail(s"expected dot_apply Fn, got $other")
+  }
+
+  test("WI-278: method call `?x.method(?a, ?b)` → dot_apply with args") {
+    val (pf, t) = factTerm("fact ?x.method(?a, ?b)")
+    t match
+      case Term.Fn(f, pos, _) =>
+        assertEquals(pf.symbols.name(f), "dot_apply")
+        assertEquals(pos.length, 4) // receiver, Ident(method), a, b
+        pf.terms.get(pos(1)) match
+          case Term.Ident(s) => assertEquals(pf.symbols.name(s), "method")
+          case other => fail(s"expected Ident(method), got $other")
+      case other => fail(s"expected dot_apply Fn, got $other")
+  }
+
+  test("WI-278: chained value dots `?x.a.b` nest dot_apply") {
+    val (pf, t) = factTerm("fact ?x.a.b")
+    t match
+      case Term.Fn(f, pos, _) =>
+        assertEquals(pf.symbols.name(f), "dot_apply")
+        pf.terms.get(pos(0)) match
+          case Term.Fn(inner, _, _) => assertEquals(pf.symbols.name(inner), "dot_apply")
+          case other => fail(s"expected inner dot_apply, got $other")
+      case other => fail(s"expected dot_apply Fn, got $other")
+  }
+
+  test("WI-278: name receiver `Foo.bar` keeps field_access (not dot_apply)") {
+    val (pf, t) = factTerm("fact Foo.bar")
+    t match
+      case Term.Fn(f, _, _) => assertEquals(pf.symbols.name(f), "field_access")
+      case other => fail(s"expected field_access Fn, got $other")
   }
