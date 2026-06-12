@@ -104,22 +104,28 @@ fn dot_apply_functor(kb: &KnowledgeBase) -> Option<Symbol> {
     kb.try_resolve_symbol("anthill.reflect.Expr.dot_apply")
 }
 
+/// A field key the dot_apply encoding uses, panicking if it was never
+/// interned: any KB holding a DotApply occurrence interned them all when the
+/// loader built the occurrence's term twin (`ExprSyms`), so a miss is an
+/// inconsistent KB — and silently dropping a key would desync `named_keys`
+/// from `head`'s `named_arity` and mis-depth a discrim walk.
+fn dot_apply_key(kb: &KnowledgeBase, k: &str) -> Symbol {
+    kb.lookup_symbol(k).unwrap_or_else(|| {
+        panic!(
+            "dot_apply view: field key `{k}` not interned — KB holds a \
+             DotApply occurrence but never built a dot_apply term twin"
+        )
+    })
+}
+
 /// The named-child keys of a `dot_apply` term in the loader's builder order:
-/// `receiver`, `name`, `args`. Panics if a key was never interned: any KB
-/// holding a DotApply occurrence interned all three when the loader built the
-/// occurrence's term twin (`ExprSyms`), so a miss is an inconsistent KB — and
-/// silently dropping a key would desync `named_keys` from `head`'s
-/// `named_arity` and mis-depth a discrim walk.
+/// `receiver`, `name`, `args`.
 fn dot_apply_keys(kb: &KnowledgeBase) -> [Symbol; 3] {
-    let key = |k: &str| {
-        kb.lookup_symbol(k).unwrap_or_else(|| {
-            panic!(
-                "dot_apply view: field key `{k}` not interned — KB holds a \
-                 DotApply occurrence but never built a dot_apply term twin"
-            )
-        })
-    };
-    [key("receiver"), key("name"), key("args")]
+    [
+        dot_apply_key(kb, "receiver"),
+        dot_apply_key(kb, "name"),
+        dot_apply_key(kb, "args"),
+    ]
 }
 
 /// Synthesize a DotApply occurrence's `args` child — the `List[ApplyArg]`
@@ -129,7 +135,14 @@ fn dot_apply_keys(kb: &KnowledgeBase) -> [Symbol; 3] {
 /// spine over the prelude List constructors. The arg-value children are the
 /// existing occurrences (shared `Rc`s); only the spine is fresh per call —
 /// same cost class as the `name` child's synthesized `Ref`. Panics on an
-/// unresolvable constructor for the same reason as [`dot_apply_keys`].
+/// unresolvable constructor for the same reason as [`dot_apply_key`].
+///
+/// NOT `build_occurrence_cons_list`: that helper follows the bare-pattern
+/// convention — nullary `nil` as an `Expr::Ref` leaf, matching how a bare
+/// `nil` in source loads (`Term::Ref`) — whereas the dot_apply term twin's
+/// `build_list` emits a nullary `Fn{nil}`, which reads as a `Functor` head.
+/// Reusing it would re-open exactly the cross-carrier key divergence this
+/// function exists to close (the Ref ≡ nullary-Fn identification is WI-436).
 fn dot_apply_args_child(
     occ: &NodeOccurrence,
     kb: &KnowledgeBase,
@@ -144,21 +157,13 @@ fn dot_apply_args_child(
             )
         })
     };
-    let key = |k: &str| {
-        kb.lookup_symbol(k).unwrap_or_else(|| {
-            panic!(
-                "dot_apply view: field key `{k}` not interned — KB holds a \
-                 DotApply occurrence but never built a dot_apply term twin"
-            )
-        })
-    };
     let cons = resolve("anthill.prelude.List.cons");
     let nil = resolve("anthill.prelude.List.nil");
     let some = resolve("anthill.prelude.Option.some");
     let none = resolve("anthill.prelude.Option.none");
     let apply_arg = resolve("anthill.reflect.ApplyArg");
-    let (k_head, k_tail) = (key("head"), key("tail"));
-    let (k_name, k_value) = (key("name"), key("value"));
+    let (k_head, k_tail) = (dot_apply_key(kb, "head"), dot_apply_key(kb, "tail"));
+    let (k_name, k_value) = (dot_apply_key(kb, "name"), dot_apply_key(kb, "value"));
     let mk = |name: Symbol, named: Vec<(Symbol, Rc<NodeOccurrence>)>| {
         NodeOccurrence::new_expr(
             Expr::Constructor { name, pos_args: Vec::new(), named_args: named },
