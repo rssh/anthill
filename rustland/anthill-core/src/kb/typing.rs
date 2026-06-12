@@ -173,6 +173,10 @@ pub enum TypeErrorContext {
     /// chain — the runtime `Value::OpRef` cannot carry the requirement
     /// dictionary yet, so it would crash at eval on an unbound `__req_*`.
     OperationAsFunctionValue { op_name: Symbol },
+    /// WI-374: a call whose arguments bind a SHARED type parameter
+    /// inconsistently — the §3 parametricity tie, enforced:
+    /// `append(intList, strList)` binds `List.T` to both elements.
+    OperationTypeParams { op_name: Symbol },
 }
 
 impl TypeErrorContext {
@@ -185,7 +189,8 @@ impl TypeErrorContext {
             | TypeErrorContext::OperationMatch { op_name } => kb.resolve_sym(*op_name).to_string(),
             TypeErrorContext::Rule { name, .. } => kb.resolve_sym(*name).to_string(),
             TypeErrorContext::LetBinding { var } => kb.resolve_sym(*var).to_string(),
-            TypeErrorContext::OperationAsFunctionValue { op_name } => {
+            TypeErrorContext::OperationAsFunctionValue { op_name }
+            | TypeErrorContext::OperationTypeParams { op_name } => {
                 kb.resolve_sym(*op_name).to_string()
             }
         }
@@ -201,6 +206,7 @@ impl TypeErrorContext {
             TypeErrorContext::Rule { field, .. } => field.name().to_string(),
             TypeErrorContext::LetBinding { .. } => "annotation".to_string(),
             TypeErrorContext::OperationAsFunctionValue { .. } => "function-value".to_string(),
+            TypeErrorContext::OperationTypeParams { .. } => "type_args".to_string(),
         }
     }
 }
@@ -2859,6 +2865,112 @@ fn fire_simp(kb: &mut KnowledgeBase, node: &Rc<NodeOccurrence>) -> Option<Rc<Nod
     super::simp_rewrite::try_fire(kb, node, pass)
 }
 
+/// WI-374 (kernel-language §8.1 expansion, let-annotation site): rewrite a bare
+/// or PARTIAL parametric-sort annotation to KEEP the value's inferred
+/// parameters instead of erasing them. Annotation-written bindings stay
+/// authoritative; every param the annotation leaves unwritten takes the
+/// value's inferred binding: `let s : Stream = List.iterator(xs)` binds `s` at
+/// `Stream[T = Int64, E = {}]`, and `let s : Stream[T = Int64] = …` keeps its
+/// written `T` while taking `E` from the value. A defined-type / alias
+/// annotation resolves to its shape FIRST (WI-381), so its definition-fixed
+/// bindings count as written.
+///
+/// This is the site-scoped form of §8.1: the annotation occurrence is the
+/// per-occurrence identity, and the value's type supplies the bindings the
+/// expansion's fresh vars would have unified against — no transient vars
+/// needed. Returns `None` (annotation kept as written, today's behavior) when
+/// there is nothing to keep: a non-sort-application annotation, a value type
+/// carrying no parameters, or a CROSS-SORT pair (the value's base merely
+/// *provides* the annotated spec — enrichment there must read the provider
+/// fact's view, not name-aligned params; conformance was already checked by
+/// the caller either way).
+fn unroll_annotation_with_inferred(
+    kb: &mut KnowledgeBase,
+    ann: &Value,
+    vty: &Value,
+) -> Option<Value> {
+    // Annotation side: bare ref (alias-shape resolved) or partial application.
+    let (ann_base, ann_bindings): (Symbol, Vec<(Symbol, Value)>) =
+        if let Some(s) = extract_sort_ref_sym(kb, ann) {
+            match resolve_alias_shape(kb, s) {
+                Some(shape) => match extract_type(kb, &TermIdView(shape)) {
+                    TypeExtractor::Parameterized { base, bindings } => (base, bindings),
+                    _ => (s, vec![]),
+                },
+                None => (s, vec![]),
+            }
+        } else {
+            match extract_type(kb, ann) {
+                TypeExtractor::Parameterized { base, bindings } => (base, bindings),
+                _ => return None,
+            }
+        };
+    let (v_base, v_bindings) = match extract_type(kb, vty) {
+        TypeExtractor::Parameterized { base, bindings } => (base, bindings),
+        _ => return None,
+    };
+    if kb.canonical_sort_sym(ann_base) != kb.canonical_sort_sym(v_base) {
+        return None;
+    }
+    let mut merged = ann_bindings;
+    let mut added = false;
+    for (p, v) in &v_bindings {
+        if !merged.iter().any(|(q, _)| q == p) {
+            merged.push((*p, v.clone()));
+            added = true;
+        }
+    }
+    if !added {
+        return None;
+    }
+    // All-ground bindings build the hash-consed term (canonical named-arg
+    // order); a `Value::Node` binding (a written effect-row, a denoted) keeps
+    // the Node carrier — its span/owner come from whichever side carried it.
+    if merged.iter().all(|(_, v)| matches!(v, Value::Term(_))) {
+        let term_bindings: Vec<(Symbol, TermId)> = merged
+            .iter()
+            .map(|(s, v)| match v {
+                Value::Term(t) => (*s, *t),
+                _ => unreachable!("all-Term checked above"),
+            })
+            .collect();
+        let base = kb.make_sort_ref(ann_base);
+        return Some(Value::Term(kb.make_parameterized_type(base, &term_bindings)));
+    }
+    let span_src = match (vty, ann) {
+        (Value::Node(n), _) | (_, Value::Node(n)) => Rc::clone(n),
+        _ => unreachable!("a Node binding implies a Node carrier on one side"),
+    };
+    let base_ref = kb.make_sort_ref(ann_base);
+    let mut bindings: Vec<(Symbol, TypeChild)> = merged
+        .into_iter()
+        .map(|(s, v)| {
+            let child = match v {
+                Value::Term(t) => TypeChild::Ground(t),
+                Value::Node(n) => TypeChild::Node(n),
+                other => {
+                    // Loud over silent: a type binding must be Term- or
+                    // Node-carried; any other carrier is a producer bug.
+                    unreachable!(
+                        "unroll_annotation_with_inferred: non-type binding carrier {}",
+                        other.type_name()
+                    )
+                }
+            };
+            (s, child)
+        })
+        .collect();
+    bindings.sort_by_key(|(s, _)| s.index());
+    Some(Value::Node(Rc::new(NodeOccurrence {
+        kind: NodeKind::Type(TypeNode::Parameterized {
+            base: TypeChild::Ground(base_ref),
+            bindings,
+        }),
+        span: span_src.span,
+        owner: span_src.owner,
+    })))
+}
+
 /// Assemble a Let / Match / Lambda result from its child results.
 fn build_type(
     kb: &mut KnowledgeBase,
@@ -3093,8 +3205,15 @@ fn build_type(
                     return;
                 }
             }
-            // Prefer an explicit annotation (already `Value`, S4a) over the value type.
-            let bound_ty = annotation.or(value_ty);
+            // Prefer an explicit annotation (already `Value`, S4a) over the value type —
+            // but a bare/partial parametric annotation is first REWRITTEN to keep the
+            // value's inferred params (WI-374; conformance already checked above).
+            let bound_ty = match (annotation, value_ty) {
+                (Some(ann), Some(vty)) => Some(
+                    unroll_annotation_with_inferred(kb, &ann, &vty).unwrap_or(ann),
+                ),
+                (ann, vty) => ann.or(vty),
+            };
             extend_env_from_pattern(kb, &mut ext_env, pattern, bound_ty);
             if let Some(var_name) = extract_pattern_var_name(kb, pattern) {
                 ext_env.declare_local_resource(var_name);
@@ -3787,6 +3906,38 @@ fn check_apply_iter(
         }
         if !arg_type_errors.is_empty() {
             return Err(aggregate_errors(arg_type_errors));
+        }
+        // WI-374 (user-decided 2026-06-12): ENFORCE the §3 parametricity tie.
+        // The argument loops bind a sort's canonical param vars through bare
+        // member params (`append(xs: List, ys: List)` both bind `List.T`); a
+        // conflicting rebind records a contradiction that was never consulted,
+        // so `append(intList, strList)` was silently accepted with
+        // first-binding-wins threading. Checked HERE — after the WI-385
+        // per-argument validation (whose precise diagnostics take precedence)
+        // and BEFORE the expected-seeding below, whose failed unify against a
+        // pinned slot is a DELIBERATE silent no-op (WI-367/WI-379) that must
+        // not trip this. GATED to the callee's OWN sort's param vars: only the
+        // member tie is enforced (§3 bullet 1); a FOREIGN sort's canonical var
+        // contradicted through two independent bare refs (§3 bullet 2 says
+        // those are independent) stays unenforced until foreign refs are
+        // normalized to per-occurrence vars (remaining WI-374 scope).
+        if subst.is_contradiction() {
+            if let Some((vid, prior, attempted)) = subst.contradiction_detail.as_deref() {
+                let member_tie = impl_parent_of_op(kb, fn_sym).is_some_and(|parent| {
+                    sort_canonical_param_vids(kb, parent).contains(vid)
+                });
+                if member_tie {
+                    return Err(TypeError::Other {
+                        span,
+                        context: TypeErrorContext::OperationTypeParams { op_name: fn_sym },
+                        expected: format!(
+                            "consistent bindings for the sort's shared type parameter (first bound to {})",
+                            type_display_name_value(kb, prior),
+                        ),
+                        actual: type_display_name_value(kb, attempted),
+                    });
+                }
+            }
         }
         // WI-408: materialize the recorded some-coercions — wrap each flagged
         // argument's typed node in a synthesized `some(...)` and reassemble
@@ -11460,6 +11611,43 @@ pub(crate) fn resolve_sort_alias(kb: &KnowledgeBase, sym: Symbol) -> Option<Term
     };
     find(|_, f, s, _| f == s)
         .or_else(|| find(|kb, f, _, n| kb.resolve_sym(f) == n))
+}
+
+/// WI-374: the canonical param Vars of a sort's declared type parameters
+/// (`sort T = ?` / `effects E = ?` registrations) — every `SortAlias` fact
+/// whose alias name is `<sort>.<Param>` with a logic-`Var` target. Used to
+/// gate the member-tie enforcement to the callee's OWN sort's params.
+fn sort_canonical_param_vids(kb: &KnowledgeBase, sort_sym: Symbol) -> SmallVec<[VarId; 4]> {
+    let mut out: SmallVec<[VarId; 4]> = SmallVec::new();
+    let Some(alias_sym) = kb.try_resolve_symbol("SortAlias") else {
+        return out;
+    };
+    let sort_name = kb.qualified_name_of(sort_sym).to_string();
+    for rid in kb.rules_by_functor(alias_sym) {
+        if !kb.is_fact(rid) {
+            continue;
+        }
+        // A value-fact SortAlias carries no ground Var target — skip (and avoid
+        // the term-only `rule_head` panic), as in `resolve_sort_alias`.
+        let Some(head) = kb.fact_head_term(rid) else { continue };
+        let Term::Fn { pos_args, .. } = kb.get_term(head) else { continue };
+        if pos_args.len() < 2 {
+            continue;
+        }
+        let Term::Fn { functor, .. } = kb.get_term(pos_args[0]) else { continue };
+        let alias_name = kb.qualified_name_of(*functor);
+        // `<sort>.` prefix with the boundary dot — see the constructor-path
+        // twin for why the bare prefix is not enough (`Effect` ⊂ `Effects`).
+        if !(alias_name.starts_with(&sort_name)
+            && alias_name.as_bytes().get(sort_name.len()) == Some(&b'.'))
+        {
+            continue;
+        }
+        if let Term::Var(Var::Global(vid)) = kb.get_term(pos_args[1]) {
+            out.push(*vid);
+        }
+    }
+    out
 }
 
 /// WI-381: resolve a defined-type / alias reference (`SortRef(S)`) to its underlying

@@ -21,6 +21,12 @@ pub struct Substitution {
     pub parent: Option<Box<Substitution>>,
     /// Set to true when a variable is bound to two different concrete terms.
     pub contradiction: bool,
+    /// WI-374: the FIRST contradicting rebind, recorded for diagnostics —
+    /// `(var, prior binding, attempted binding)`. Boxed so the happy path
+    /// carries one pointer. Subsequent contradictions keep the first detail
+    /// (the root cause); direct `contradiction = true` writers leave it
+    /// `None` (readers must tolerate that).
+    pub contradiction_detail: Option<Box<(VarId, Value, Value)>>,
     /// WI-328 (proposal 045 §5.5 / §7.1) — `lacks` constraints on
     /// (unbound) row-tail variables: each effect-row tail `ρ` may carry a
     /// set of effect-label types it is forbidden to present (`- e` /
@@ -46,6 +52,7 @@ impl Substitution {
             bindings: HashMap::new(),
             parent: None,
             contradiction: false,
+            contradiction_detail: None,
             lacks: HashMap::new(),
         }
     }
@@ -55,8 +62,17 @@ impl Substitution {
             bindings: HashMap::new(),
             parent: Some(Box::new(parent)),
             contradiction: false,
+            contradiction_detail: None,
             lacks: HashMap::new(),
         }
+    }
+
+    /// WI-374: flag a contradiction, keeping the FIRST detail as the root cause.
+    fn note_contradiction(&mut self, var: VarId, prior: Value, attempted: Value) {
+        if !self.contradiction {
+            self.contradiction_detail = Some(Box::new((var, prior, attempted)));
+        }
+        self.contradiction = true;
     }
 
     /// Covering resolve: returns any binding as a `Value` — the
@@ -85,7 +101,8 @@ impl Substitution {
             match existing {
                 Value::Term(existing_tid) if *existing_tid == term => return,
                 _ => {
-                    self.contradiction = true;
+                    let prior = existing.clone();
+                    self.note_contradiction(var, prior, Value::Term(term));
                     return;
                 }
             }
@@ -101,7 +118,8 @@ impl Substitution {
     pub fn bind_value(&mut self, var: VarId, val: Value) {
         if let Some(existing) = self.bindings.get(&var) {
             if !existing.structural_eq(&val) {
-                self.contradiction = true;
+                let prior = existing.clone();
+                self.note_contradiction(var, prior, val);
             }
             return;
         }

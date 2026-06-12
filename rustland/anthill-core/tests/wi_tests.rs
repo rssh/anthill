@@ -257,3 +257,6 @@ mod wi443_identifier_dot_call_test;
 
 #[path = "include/wi408_some_coercion_test.rs"]
 mod wi408_some_coercion_test;
+
+#[path = "include/wi374_expansion_test.rs"]
+mod wi374_expansion_test;

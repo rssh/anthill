@@ -96,24 +96,56 @@ picks one); (b) when you want no new surface.
   own definition** — its constructors and own operations (`cons(head: T, tail:
   List)` ⇒ `tail` is a `List` of *this* sort's `T`). That is parametricity, and
   it is the *only* implicit tie, because the `sort T = ?` line *is* the
-  declaration of it.
-- It is **not** a cross-signature threading mechanism. Two references to a sort
-  do **not** silently share a variable across a signature. `f(a: List, b: List)`
-  leaves `a` and `b`'s elements **independent**; to relate them you write a name
-  — `f(a: List[T = ?t], b: List[T = ?t])` ties, `List[T = ?x]` / `List[T = ?y]`
-  splits, `List[Int64]` / `List[String]` fixes.
+  declaration of it. **Within the sort's own definition, a bare self-sort
+  reference participates in that tie**: `append(xs: List, ys: List)` declared
+  *inside* `sort List` ties both parameters (and the return) to *this* sort's
+  `T`. The tie is **enforced** (decided 2026-06-12, WI-374):
+  `append(intList, strList)` is rejected — the conflicting binding of the
+  shared `T` is a type error, not a silent first-binding-wins.
+- It is **not** a cross-signature threading mechanism for **foreign**
+  references — a sort referenced *outside its own definition*. Two foreign
+  references to a sort do **not** silently share a variable across a
+  signature: a top-level `f(a: List, b: List)` leaves `a` and `b`'s elements
+  **independent**; to relate them you write a name — `f(a: List[T = ?t], b:
+  List[T = ?t])` ties, `List[T = ?x]` / `List[T = ?y]` splits, `List[Int64]` /
+  `List[String]` fixes.
 
-This is what removes the "accidental substitution" fragility: nothing is the
-same variable unless you wrote it so.
+The member/foreign split is decided by the **declaration context** of the type
+expression — where it was *written*, not where a unification later runs. That
+context is exported into the term *before* the unify boundary (the loader
+knows a signature's enclosing sort; a typing site knows an annotation's
+scope), so `unify_types` itself stays a pure, context-free term relation: by
+the time two types meet, each bare reference already carries the right
+variable identities. This is what removes the "accidental substitution"
+fragility: nothing is the same variable unless the declaration context says
+so.
 
 ## 4. Bare references still expand (WI-374) — but as a convenience
 
-A bare or partial parametric sort still expands at the unification boundary —
-`Stream` ≡ `Stream[T = ?, E = ?]`, `Stream[T = Int64]` ≡ `Stream[T = Int64, E = ?]`
-— minting a **fresh variable per ungrounded position**, **per occurrence**, so
-two independent bare uses never alias. This keeps an *unannotated* reference
-usable; it is **not** how relationships are threaded (that is §2). It never
-*reconstructs* an erased relationship (§5).
+A bare or partial parametric sort still expands — `Stream` ≡ `Stream[T = ?, E
+= ?]`, `Stream[T = Int64]` ≡ `Stream[T = Int64, E = ?]` — a **fresh variable
+per ungrounded position**, **per occurrence**, so two independent bare uses
+never alias. The expansion is **site-scoped** (it runs where the declaration
+context is known, *before* the unify boundary — see §3's closing paragraph),
+it keeps an *unannotated* reference usable, it is **not** how relationships
+are threaded (that is §2), and it never *reconstructs* an erased relationship
+(§5).
+
+Delivered increments (2026-06-12):
+
+- **Let-annotation rewrite.** A bare/partial parametric annotation is
+  rewritten at the binding site to KEEP the value's inferred parameters
+  instead of erasing them: `let s : Stream = List.iterator(xs)` binds `s` at
+  `Stream[T = Int64, E = {}]`; `let s : Stream[T = Int64] = …` keeps its
+  written `T` and takes `E` from the value. Written bindings stay
+  authoritative (a contradicting one is still a mismatch); an alias annotation
+  resolves to its shape first (WI-381).
+- **Member-tie enforcement** (§3 bullet 1) — see above.
+- **Remaining:** foreign bare refs in operation signatures still share the
+  foreign sort's canonical vars internally (benign today — gated out of the
+  enforcement, and nothing outside the sort can name `Sort.T`); normalizing
+  them to per-occurrence variables at signature processing is the open
+  WI-374 scope.
 
 ## 5. The boundary — type, not provenance
 
