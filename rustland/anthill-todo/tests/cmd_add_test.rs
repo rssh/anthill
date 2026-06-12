@@ -57,7 +57,7 @@ fact WorkItem(
     assert!(combined.contains("id: \"WI-006\""),
         "WI-006 not persisted: {combined}");
     // WI-408: optional fields persist in the explicit some()/none() format.
-    assert!(combined.contains("description: some(\"next item\")"),
+    assert!(combined.contains("description: some(value: \"next item\")"),
         "description not in explicit some() format: {combined}");
     assert!(combined.contains("status: Open"));
 }

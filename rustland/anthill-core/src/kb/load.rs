@@ -4801,17 +4801,18 @@ impl<'a> Loader<'a> {
                 // `some`'s own declared field type is just the type-param `T`,
                 // so without this a `depends_on: some(["WI-1"])` payload literal
                 // would lose the `List[String]` hint and never desugar.
-                let some_payload_hint: Option<TermId> =
-                    if self.kb.qualified_name_of(new_functor) == "anthill.prelude.Option.some" {
-                        expected
-                            .filter(|e| super::typing::is_option_type(self.kb, &TermIdView(*e)))
-                            .and_then(|e| {
-                                super::typing::extract_type_param(self.kb, &TermIdView(e), "T")
-                            })
-                            .and_then(|v| v.as_term())
-                    } else {
-                        None
-                    };
+                let is_some_ctor =
+                    self.kb.qualified_name_of(new_functor) == "anthill.prelude.Option.some";
+                let some_payload_hint: Option<TermId> = if is_some_ctor {
+                    expected
+                        .filter(|e| super::typing::is_option_type(self.kb, &TermIdView(*e)))
+                        .and_then(|e| {
+                            super::typing::extract_type_param(self.kb, &TermIdView(e), "T")
+                        })
+                        .and_then(|v| v.as_term())
+                } else {
+                    None
+                };
                 let mut new_pos: SmallVec<[TermId; 4]> = pos_args
                     .iter()
                     .enumerate()
@@ -4869,10 +4870,7 @@ impl<'a> Loader<'a> {
                 // term-world unification does not bridge positional↔named, so
                 // without this a hand-written `some(...)` rule pattern would
                 // never match a wrapped or persisted fact.
-                if self.kb.qualified_name_of(new_functor) == "anthill.prelude.Option.some"
-                    && new_pos.len() == 1
-                    && new_named.is_empty()
-                {
+                if is_some_ctor && new_pos.len() == 1 && new_named.is_empty() {
                     let value_sym = self.kb.intern("value");
                     new_named.push((value_sym, new_pos.pop().expect("len checked")));
                 }

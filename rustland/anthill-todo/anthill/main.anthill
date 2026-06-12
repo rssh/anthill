@@ -37,8 +37,8 @@ namespace anthill.todo
   import anthill.prelude.List.{cons, nil}
   import anthill.prelude.Iterable.{size}
   import anthill.reflect.{Term, Substitution, term_functor_name,
-                          term_field, term_as_string, term_as_entity,
-                          fresh_var, make_fn, as_term, term_to_string,
+                          term_field, term_as_string,
+                          fresh_var, make_fn, term_to_string,
                           term_list_items}
   import anthill.stage0.WorkStatus.{Claimed, Delivered, Verified}
   import anthill.reflect.KB.{kb, execute, facts_of}

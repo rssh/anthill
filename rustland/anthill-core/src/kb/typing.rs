@@ -8163,12 +8163,15 @@ fn synthesize_some_wrap(
     declared: &Value,
 ) -> Rc<NodeOccurrence> {
     let some_sym = kb.resolve_symbol("anthill.prelude.Option.some");
+    let value_sym = kb.intern("value");
     let pass = super::simp_rewrite::simp_pass(kb);
+    // Named form `some(value: child)` — the canonical `some` shape (the
+    // loader canonicalizes source-written positional `some(x)` to it too).
     let node = NodeOccurrence::synthesized_expr(
         Expr::Constructor {
             name: some_sym,
-            pos_args: vec![Rc::clone(child)],
-            named_args: Vec::new(),
+            pos_args: Vec::new(),
+            named_args: vec![(value_sym, Rc::clone(child))],
         },
         Rc::clone(child),
         pass,
