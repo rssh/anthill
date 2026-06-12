@@ -6669,9 +6669,10 @@ impl<'a> Loader<'a> {
                 // projection `s.T` / `s.Sort` — the type-member sibling of the
                 // single-segment `denoted` value-in-type below. Classify it HERE,
                 // before `remap_name`, which would otherwise join the segments
-                // (`"s.T"`) and raise `UnresolvedName`. A qualified sort ref
-                // (`anthill.prelude.List`, head = namespace) is NOT a value head, so
-                // it falls through to the normal sort-ref path.
+                // (`"s.T"`) and raise the load-blocking `UnresolvedTypeName`
+                // (WI-429). A qualified sort ref (`anthill.prelude.List`, head =
+                // namespace) is NOT a value head, so it falls through to the
+                // normal sort-ref path.
                 if name.segments.len() >= 2 {
                     if let Some(child) = self.try_expr_carried_projection(name, span, owner) {
                         return child;
@@ -7612,6 +7613,15 @@ impl<'a> Loader<'a> {
                 };
                 match self.kb.symbols.resolve_in_scope(&lookup, self.current_scope.raw()) {
                     ResolveResult::Found(s) => s == sort_functor,
+                    // Preserve remap_name's qualified-name fallback so a
+                    // fully-qualified self-reference (`t: my.ns.Tree` inside
+                    // `sort Tree`) still flags recursive.
+                    ResolveResult::NotFound if n.segments.len() > 1 => self
+                        .kb
+                        .symbols
+                        .by_qualified_name
+                        .get(&lookup)
+                        .is_some_and(|&s| s == sort_functor),
                     _ => false,
                 }
             }
