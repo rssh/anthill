@@ -258,7 +258,7 @@ fact WorkItem(
         "insert must rewrite a non-bracket depends_on: stderr={}",
         String::from_utf8_lossy(&out.stderr));
     let combined = read_combined(&proj.join("anthill-todo"));
-    assert!(combined.contains("description: \"prereq\""),
+    assert!(combined.contains("description: some(\"prereq\")"),
         "the new item should be persisted:\n{combined}");
     assert!(workitem_block_contains(&combined, "WI-001", "WI-002"),
         "WI-001 should now depend on the inserted WI-002:\n{combined}");

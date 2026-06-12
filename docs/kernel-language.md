@@ -218,7 +218,25 @@ sort anthill.prelude.Option
   entity none                                        -- absent
   entity some(value: T)                              -- present
 end
+```
 
+**`some`-coercion (WI-408).** A value of type `T` supplied for an
+`Option[T]` slot — an entity field or an operation argument — is implicitly
+wrapped in `some(...)`, so the value is properly `Option`-typed at runtime
+(the first slice of the implicit-conversion framework; the general framework
+is deferred). The insertion happens once per boundary: in the typer for
+operation-body constructors and calls (a synthesized `some(...)` node), and
+in the loader for term-world content asserted before the typing pass —
+fact fields and rule-body entity atoms, so a bare pattern (`depends_on:
+cons(...)`) matches the wrapped facts. A variable in the slot binds the
+whole `Option` value and is never wrapped; a value already headed by
+`some`/`none` is left alone; a bare value under a *nested*
+`Option[Option[T]]` is rejected (one wrap is inserted, never a guessed
+double-wrap). The canonical in-KB term form of `some` is the named
+`some(value: v)`; a source-written positional `some(v)` is canonicalized at
+load.
+
+```
 -- Eq: equality
 sort anthill.prelude.Eq
   export eq, neq

@@ -39,9 +39,9 @@ fn update_description_rewrites_workitem() {
     assert!(stdout.contains("updated WI-001: description"), "stdout: {stdout}");
 
     let combined = read_combined(&proj.join("anthill-todo"));
-    assert!(combined.contains("description: \"rewritten\""),
+    assert!(combined.contains("description: some(\"rewritten\")"),
         "new description not persisted: {combined}");
-    assert!(!combined.contains("description: \"first\""),
+    assert!(!combined.contains("\"first\""),
         "old description lingered: {combined}");
 }
 

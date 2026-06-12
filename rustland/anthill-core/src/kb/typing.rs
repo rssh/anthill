@@ -1740,12 +1740,14 @@ pub fn type_check_node(
 ) -> Result<TypeResult, TypeError> {
     let mut work: Vec<TypeWorkOp> = Vec::with_capacity(32);
     let mut results: Vec<Result<TypeResult, TypeError>> = Vec::with_capacity(32);
-    // WI-283: gate the in-typer `[simp]` firing AND the tree reassembly on
-    // whether any rewrite can occur — read once per walk, so the common
-    // no-rewrite case pays nothing per node. WI-443: a loaded `dot_apply`
-    // also enables the gate — DotApply nodes are always rewritten (to the
-    // dispatched call), and without ancestor reassembly the rewrite would
-    // never reach the stored body (eval would see a raw DotApply).
+    // WI-283: gate the in-typer `[simp]` firing on whether any rule can fire —
+    // read once per walk. WI-443: a loaded `dot_apply` also enables the gate —
+    // DotApply nodes are always rewritten (to the dispatched call). Tree
+    // REASSEMBLY is no longer gated on this (WI-408): the typer itself now
+    // synthesizes rewrites (`some(...)` coercion insertion), so every wrapper
+    // frame reassembles from its children's `TypeResult.node`s unconditionally
+    // — `reassemble`'s ptr-eq short-circuit keeps the no-rewrite case
+    // allocation-free.
     let simp_enabled = super::simp_rewrite::has_simp_equations(kb) || kb.has_dot_applies;
     // WI-283: `[simp]` fire-fuel rides on each `Visit` (not the host stack).
     // When an Apply/Constructor fires, the synthesized RHS is re-`Visit`ed
@@ -2701,17 +2703,15 @@ fn reassemble_children(
 }
 
 /// [`reassemble_children`] for a contiguous slice of child results (the
-/// `for_each_child`-ordered `group` the wrapper frames drain), gated on
-/// `simp_enabled`: with no `[simp]` rules nothing was rewritten, so the
-/// node is the unchanged `occ` and the per-node collect+walk is skipped.
-fn reassemble_if_enabled(
-    simp_enabled: bool,
+/// `for_each_child`-ordered `group` the wrapper frames drain). WI-408:
+/// unconditional — the typer itself produces rewrites (`some(...)` coercion
+/// insertion), not just `[simp]` firings, so a rewritten child must always
+/// propagate; `reassemble`'s ptr-eq short-circuit keeps the unchanged case
+/// allocation-free.
+fn reassemble_group(
     occ: &Rc<NodeOccurrence>,
     child_results: &[Result<TypeResult, TypeError>],
 ) -> Rc<NodeOccurrence> {
-    if !simp_enabled {
-        return Rc::clone(occ);
-    }
     let refs: Vec<&Result<TypeResult, TypeError>> = child_results.iter().collect();
     reassemble_children(occ, &refs)
 }
@@ -2788,14 +2788,16 @@ fn build_type(
                 results.drain(drain_start..).collect();
             let named_results = arg_results.split_off(pos_args.len());
             let pos_results = arg_results;
-            // WI-283: when `[simp]` rules exist, reassemble this Apply from
-            // its children's (possibly-rewritten) `.node`s and fire a rule
-            // at it *before* classifying (a fired node is discarded, so
+            // WI-283: reassemble this Apply from its children's (possibly-
+            // rewritten) `.node`s, then — when `[simp]` rules exist — fire a
+            // rule at it *before* classifying (a fired node is discarded, so
             // classifying it would be wasted); on a fire, re-type the RHS so
             // chains/cascades reach fixpoint and the produced apply gets
-            // classified for req_insertion. With no `[simp]` rules the node
-            // is the unchanged input occ — no reassembly, no per-node cost.
-            let node = if simp_enabled {
+            // classified for req_insertion. WI-408: the reassembly itself is
+            // unconditional (a typer-inserted `some(...)` coercion below must
+            // propagate even with no `[simp]` rules); `reassemble`'s ptr-eq
+            // short-circuit keeps the unchanged case allocation-free.
+            let node = {
                 // Surface an ill-typed child first — we need `Ok` children to
                 // read their `.node` (check_apply_iter aggregates the same).
                 if let Err(e) = collect_arg_errors(pos_results.iter().chain(named_results.iter())) {
@@ -2809,15 +2811,13 @@ fn build_type(
                 // with `fuel - 1` on this same work-stack (no host recursion)
                 // so the chain is bounded — a non-terminating rule bottoms
                 // out at fuel 0 leaving a partial redex, not a stack overflow.
-                if fuel > 0 {
+                if simp_enabled && fuel > 0 {
                     if let Some(rhs) = fire_simp(kb, &node) {
                         push_visit(work, rhs, env, expected, fuel - 1);
                         return;
                     }
                 }
                 node
-            } else {
-                occ
             };
             let span = Some(node.span.span);
             let r = check_apply_iter(
@@ -2836,7 +2836,7 @@ fn build_type(
             // WI-283: reassemble + fire (gated on `[simp]` rules existing) —
             // mirrors the Apply arm (a `[simp]` rule may target a domain
             // constructor too, e.g. `transpose(transpose(?m)) = ?m`).
-            let node = if simp_enabled {
+            let node = {
                 if let Err(e) = collect_arg_errors(pos_results.iter().chain(named_results.iter())) {
                     results.push(Err(e));
                     return;
@@ -2844,15 +2844,13 @@ fn build_type(
                 let child_refs: Vec<&Result<TypeResult, TypeError>> =
                     pos_results.iter().chain(named_results.iter()).collect();
                 let node = reassemble_children(&occ, &child_refs);
-                if fuel > 0 {
+                if simp_enabled && fuel > 0 {
                     if let Some(rhs) = fire_simp(kb, &node) {
                         push_visit(work, rhs, env, expected, fuel - 1);
                         return;
                     }
                 }
                 node
-            } else {
-                occ
             };
             let r = check_constructor_iter(
                 kb, &*env, ctor_sym, &pos_args, &named_args,
@@ -3031,7 +3029,7 @@ fn build_type(
             // (`for_each_child(Let)` order, WI-318 added pattern) so a
             // rewrite in any of them propagates. The pattern itself is
             // passed through unchanged (typer doesn't rewrite patterns).
-            let node = if simp_enabled {
+            let node = {
                 let pattern_clone = match occ.as_expr() {
                     Some(Expr::Let { pattern, .. }) => Rc::clone(pattern),
                     _ => Rc::clone(&occ), // defensive; unreachable for Let frame
@@ -3040,8 +3038,6 @@ fn build_type(
                     &occ,
                     &[pattern_clone, value_node, Rc::clone(&body_r.node)],
                 )
-            } else {
-                Rc::clone(&occ)
             };
             results.push(Ok(TypeResult {
                 ty: body_r.ty,
@@ -3146,11 +3142,7 @@ fn build_type(
             // WI-283: reassemble the `Match` from the (rewritten) scrutinee
             // and branch bodies (guards re-read from `occ`, unchanged) before
             // `branch_results` is consumed below.
-            let node = if simp_enabled {
-                reassemble_match(&occ, &scr_node, &branch_results)
-            } else {
-                Rc::clone(&occ)
-            };
+            let node = reassemble_match(&occ, &scr_node, &branch_results);
             let mut effects = scr_effects;
             // WI-342: branch types are carrier-agnostic `Value`s — a branch may be
             // a `Value::Node` lambda arrow; the join carries it (no re-grounding).
@@ -3241,14 +3233,12 @@ fn build_type(
                 // propagates up. The param is passed through unchanged
                 // (typer doesn't rewrite patterns).
                 Ok(ref r) => {
-                    let node = if simp_enabled {
+                    let node = {
                         let param_clone = match occ.as_expr() {
                             Some(Expr::Lambda { param, .. }) => Rc::clone(param),
                             _ => Rc::clone(&occ), // defensive; unreachable
                         };
                         super::simp_rewrite::reassemble(&occ, &[param_clone, Rc::clone(&r.node)])
-                    } else {
-                        Rc::clone(&occ)
                     };
                     results.push(Ok(TypeResult {
                         ty: fn_ty,
@@ -3270,7 +3260,7 @@ fn build_type(
             }
             // WI-283: reassemble from [cond, then, else] (before consuming
             // `group`) so a `[simp]` rewrite inside a branch propagates up.
-            let node = reassemble_if_enabled(simp_enabled, &occ, &group);
+            let node = reassemble_group(&occ, &group);
             let mut it = group.into_iter().map(|r| r.expect("aggregator"));
             let cond_r = it.next().unwrap();
             let then_r = it.next().unwrap();
@@ -3306,7 +3296,7 @@ fn build_type(
                 return;
             }
             // WI-283: reassemble from the (possibly-rewritten) elements.
-            let node = reassemble_if_enabled(simp_enabled, &occ, &group);
+            let node = reassemble_group(&occ, &group);
             let (span, owner) = (occ.span, occ.owner);
             let mut effects = Vec::new();
             // WI-342: keep the element type carrier-agnostic so a `Value::Node`
@@ -3342,7 +3332,7 @@ fn build_type(
                 return;
             }
             // WI-283: reassemble from the (possibly-rewritten) elements.
-            let node = reassemble_if_enabled(simp_enabled, &occ, &group);
+            let node = reassemble_group(&occ, &group);
             let (span, owner) = (occ.span, occ.owner);
             let mut effects = Vec::new();
             // WI-342: carrier-agnostic element type (carry a `Value::Node` element).
@@ -3376,7 +3366,7 @@ fn build_type(
                 return;
             }
             // WI-283: reassemble from [positional…, named…] elements.
-            let node = reassemble_if_enabled(simp_enabled, &occ, &group);
+            let node = reassemble_group(&occ, &group);
             let (span, owner) = (occ.span, occ.owner);
             let mut effects = Vec::new();
             // WI-342: keep field types carrier-agnostic so a `Value::Node` field
@@ -3636,6 +3626,9 @@ fn check_apply_iter(
         // contradicting `b:"x"` is still caught. Bail on an ill-typed call
         // (aggregating sibling mismatches) rather than building its return type.
         let mut arg_type_errors: Vec<TypeError> = Vec::new();
+        // WI-408: bare-`T`-vs-`Option[T]` args accepted via some-coercion —
+        // (child-index, declared Option type), materialized after the loops.
+        let mut some_wraps: Vec<(usize, Value)> = Vec::new();
         for (i, _) in pos_args.iter().enumerate() {
             if let Ok(ref arg_result) = pos_results[i] {
                 if let Some((param_sym, param_type)) = op.params.get(i) {
@@ -3653,12 +3646,15 @@ fn check_apply_iter(
                         &pos_args[i], &arg_result.ty, span,
                     ) {
                         arg_type_errors.push(err);
-                    } else if let Some(err) = validate_arg_against_param(
-                        kb, &mut subst, &arg_result.ty, param_type, span,
-                        TypeErrorContext::OperationArgument { op_name: fn_sym, param: *param_sym },
-                        false, // operation args stay strict (no Option-wrapping interim)
-                    ) {
-                        arg_type_errors.push(err);
+                    } else {
+                        match validate_arg_against_param(
+                            kb, &mut subst, &arg_result.ty, param_type, span,
+                            TypeErrorContext::OperationArgument { op_name: fn_sym, param: *param_sym },
+                        ) {
+                            ArgValidation::Ok => {}
+                            ArgValidation::WrapSome { declared } => some_wraps.push((i, declared)),
+                            ArgValidation::Fail(err) => arg_type_errors.push(err),
+                        }
                     }
                 }
             }
@@ -3674,12 +3670,17 @@ fn check_apply_iter(
                         arg_occ, &arg_result.ty, span,
                     ) {
                         arg_type_errors.push(err);
-                    } else if let Some(err) = validate_arg_against_param(
-                        kb, &mut subst, &arg_result.ty, param_type, span,
-                        TypeErrorContext::OperationArgument { op_name: fn_sym, param: *param_sym },
-                        false, // operation args stay strict (no Option-wrapping interim)
-                    ) {
-                        arg_type_errors.push(err);
+                    } else {
+                        match validate_arg_against_param(
+                            kb, &mut subst, &arg_result.ty, param_type, span,
+                            TypeErrorContext::OperationArgument { op_name: fn_sym, param: *param_sym },
+                        ) {
+                            ArgValidation::Ok => {}
+                            ArgValidation::WrapSome { declared } => {
+                                some_wraps.push((pos_args.len() + i, declared));
+                            }
+                            ArgValidation::Fail(err) => arg_type_errors.push(err),
+                        }
                     }
                 }
             }
@@ -3687,6 +3688,20 @@ fn check_apply_iter(
         if !arg_type_errors.is_empty() {
             return Err(aggregate_errors(arg_type_errors));
         }
+        // WI-408: materialize the recorded some-coercions — wrap each flagged
+        // argument's typed node in a synthesized `some(...)` and reassemble
+        // this apply from the new children. MUST run before any annotation
+        // write (`set_resolved_type_args` / `classify` below): the rebuilt
+        // node starts with fresh annotation cells. The parent reassembles in
+        // turn from `TypeResult.node` (WI-283), and the root reaches the
+        // stored body via `set_op_body_node`.
+        let rebuilt_occ;
+        let occ = if some_wraps.is_empty() {
+            occ
+        } else {
+            rebuilt_occ = wrap_some_children(kb, occ, &some_wraps, pos_results, named_results);
+            &rebuilt_occ
+        };
 
         // WI-376: discharge expression-carried type projections (`s.T` / `s.Sort`) in
         // the declared return type — and any effect rows that carry one — by projecting
@@ -8004,8 +8019,9 @@ fn is_reflect_term_type<V: TermView>(kb: &KnowledgeBase, ty: &V) -> bool {
 }
 
 /// WI-385: is this resolved type an `anthill.prelude.Option` — bare `Option` or
-/// applied `Option[T = …]`? The element peel for the Option-wrapping interim.
-fn is_option_type<V: TermView>(kb: &KnowledgeBase, ty: &V) -> bool {
+/// applied `Option[T = …]`? The element peel for the WI-408 some-coercion
+/// (`pub(crate)`: the loader's fact-field wrap tests field types with it).
+pub(crate) fn is_option_type<V: TermView>(kb: &KnowledgeBase, ty: &V) -> bool {
     match type_head(kb, ty) {
         TypeHead::Parameterized { base } => kb.qualified_name_of(base) == "anthill.prelude.Option",
         TypeHead::SortRef(s) => kb.qualified_name_of(s) == "anthill.prelude.Option",
@@ -8023,31 +8039,43 @@ fn type_base_sort_view<V: TermView>(kb: &KnowledgeBase, ty: &V) -> Option<Symbol
     }
 }
 
+/// WI-408: outcome of validating one supplied argument / field value against
+/// its declared type.
+enum ArgValidation {
+    /// Conforms as-is, or unchecked (a non-ground / polymorphic position is
+    /// left for spec-op dispatch / return conformance).
+    Ok,
+    /// Bare `T` supplied for a declared `Option[T]`: accepted by INSERTING a
+    /// `some(...)` coercion around the argument occurrence (the WI-408
+    /// some-insertion pass — first slice of the implicit-conversion
+    /// framework). The payload is the resolved declared `Option` type, which
+    /// the caller stamps onto the synthesized wrapper node.
+    WrapSome { declared: Value },
+    /// Concrete, ground, and non-conforming.
+    Fail(TypeError),
+}
+
 /// WI-385: subtype-check one supplied value's type (`actual`) against a declared
 /// parameter / field type (`declared`), GATED on groundness. Both sides are
 /// first walked through the inference `subst` (so a param a prior argument
 /// already pinned reads as its concrete type); the check fires ONLY when both
 /// resolve to a fully-concrete type (`resolved_type_is_ground`) — a polymorphic
 /// or still-free position is left for spec-op dispatch / return conformance.
-/// Returns a `TypeMismatch` carrying the RESOLVED forms (a clean "expected Int,
-/// got String", never a raw `?_`) when the concrete actual does not conform;
-/// `None` when unchecked or conforming. The shared core of the operation-
-/// argument (`check_apply_iter`) and entity-field (`check_constructor_iter`)
-/// validation.
+/// `Fail` carries the RESOLVED forms (a clean "expected Int, got String",
+/// never a raw `?_`) when the concrete actual does not conform. The shared
+/// core of the operation-argument (`check_apply_iter`) and entity-field
+/// (`check_constructor_iter`) validation.
 ///
 /// Two boundary CONVERSIONS are accepted rather than flagged:
 ///  - **value→Term reflection** (`is_reflect_term_type`): total, both positions.
-///  - **Option-wrapping** (`allow_option_wrap`, FIELD positions only): a bare `T`
-///    against a declared `Option[T]` is accepted by peeling the Option and
-///    re-checking `actual` against the element `T`. On-disk facts and convenience
-///    builders write the optional value UNWRAPPED (`depends_on: []`, not
-///    `some([])`); the SOUND fix is a typer some-coercion-insertion pass (its own
-///    follow-on ticket — the first slice of the deferred implicit-conversion
-///    framework), so this is an explicit INTERIM: the value stays bare in memory
-///    and on disk (`normalize_deps`'s reflect-launder is still required). Confined
-///    to FIELD positions — an operation argument stays strict, since with no
-///    coercion inserted a bare value bound to an `Option` param would fail a
-///    `some/none` match at runtime.
+///  - **some-coercion** (WI-408, both positions): a bare `T` against a declared
+///    `Option[T]` validates `actual` against the element `T` and, on success,
+///    returns `WrapSome` — the caller wraps the argument occurrence in a
+///    synthesized `some(...)`, so the value is PROPERLY Option-typed at
+///    runtime (replaces WI-385's lenient-accept interim, under which the
+///    value stayed bare in memory). A bare value that would need a NESTED
+///    insertion (`Option[Option[T]]` supplied a bare `T`) is rejected loudly —
+///    one wrap is inserted, never a silent double-wrap.
 fn validate_arg_against_param(
     kb: &mut KnowledgeBase,
     subst: &mut Substitution,
@@ -8055,34 +8083,52 @@ fn validate_arg_against_param(
     declared: &Value,
     span: Option<Span>,
     context: TypeErrorContext,
-    allow_option_wrap: bool,
-) -> Option<TypeError> {
+) -> ArgValidation {
     let actual_g = walk_view(kb, subst, actual);
     let declared_g = walk_view(kb, subst, declared);
     if !resolved_type_is_ground(kb, &actual_g) || !resolved_type_is_ground(kb, &declared_g) {
-        return None;
+        return ArgValidation::Ok;
     }
     // value→Term reflection: total conversion, accept any actual vs declared Term.
     if is_reflect_term_type(kb, &declared_g) {
-        return None;
-    }
-    // Option-wrapping INTERIM (field positions): a bare `T` against `Option[T]`
-    // re-checks against the element `T` (so `description: "…"` peels to a Term and
-    // the reflection above accepts it). See the doc comment.
-    if allow_option_wrap && !is_option_type(kb, &actual_g) && is_option_type(kb, &declared_g) {
-        match extract_type_param(kb, &declared_g, "T") {
-            Some(inner) => {
-                return validate_arg_against_param(
-                    kb, subst, &actual_g, &inner, span, context, allow_option_wrap,
-                );
-            }
-            // A bare `Option` (unconstrained element) has no element to re-check —
-            // accept any value as its implicit `some` payload under the interim.
-            None => return None,
-        }
+        return ArgValidation::Ok;
     }
     if types_compatible(kb, subst, &actual_g, &declared_g) {
-        return None;
+        return ArgValidation::Ok;
+    }
+    // WI-408 some-coercion: a non-conforming value against `Option[T]`
+    // re-checks against the element `T` (so `description: "…"` peels to a
+    // Term and the reflection above accepts it) and reports the wrap. Runs
+    // AFTER `types_compatible` so an already-conforming Option is never
+    // re-wrapped; an `Option[T]` actual against `Option[Option[T]]` declared
+    // is a valid PAYLOAD and takes the one outer wrap.
+    if is_option_type(kb, &declared_g) {
+        match extract_type_param(kb, &declared_g, "T") {
+            Some(inner) => {
+                return match validate_arg_against_param(
+                    kb, subst, &actual_g, &inner, span, context.clone(),
+                ) {
+                    ArgValidation::Ok => ArgValidation::WrapSome { declared: declared_g },
+                    // WrapSome: the value is bare at BOTH depths of a nested
+                    // Option — a single wrap cannot repair it; demand the
+                    // explicit inner `some(...)` rather than silently
+                    // guessing the nesting depth. Fail: report the OUTER
+                    // expected/actual pair (clearer than the peeled element
+                    // mismatch).
+                    ArgValidation::WrapSome { .. } | ArgValidation::Fail(_) => {
+                        ArgValidation::Fail(TypeError::TypeMismatch {
+                            span,
+                            context,
+                            expected: declared_g,
+                            actual: actual_g,
+                        })
+                    }
+                };
+            }
+            // A bare `Option` (unconstrained element) has no element to
+            // re-check — any value is its `some` payload.
+            None => return ArgValidation::WrapSome { declared: declared_g },
+        }
     }
     // WI-385: a concrete carrier conforms to a BARE spec it PROVIDES — e.g.
     // `List[Int]` passed where `Stream` is declared (`List provides Stream`).
@@ -8096,15 +8142,65 @@ fn validate_arg_against_param(
         (type_base_sort_view(kb, &actual_g), extract_sort_ref_sym(kb, &declared_g))
     {
         if sort_provides_admissibly(kb, actual_base, declared_sort) {
-            return None;
+            return ArgValidation::Ok;
         }
     }
-    Some(TypeError::TypeMismatch {
+    ArgValidation::Fail(TypeError::TypeMismatch {
         span,
         context,
         expected: declared_g,
         actual: actual_g,
     })
+}
+
+/// WI-408: the synthesized `some(value)` constructor occurrence around a
+/// coerced argument / field node. `declared` (the resolved `Option[T]`) is
+/// stamped as the wrapper's inferred type here — the `Stamp` frame only
+/// stamps the enclosing node's own result, never an inserted child.
+fn synthesize_some_wrap(
+    kb: &mut KnowledgeBase,
+    child: &Rc<NodeOccurrence>,
+    declared: &Value,
+) -> Rc<NodeOccurrence> {
+    let some_sym = kb.resolve_symbol("anthill.prelude.Option.some");
+    let pass = super::simp_rewrite::simp_pass(kb);
+    let node = NodeOccurrence::synthesized_expr(
+        Expr::Constructor {
+            name: some_sym,
+            pos_args: vec![Rc::clone(child)],
+            named_args: Vec::new(),
+        },
+        Rc::clone(child),
+        pass,
+        child.owner,
+    );
+    node.set_inferred_type(declared.clone());
+    node
+}
+
+/// WI-408: rebuild `occ` with `some(...)` wrappers around the flagged
+/// children. `wraps` carries `(child-index, declared-Option-type)` pairs —
+/// indices in reassembly order (positional args, then named args); every
+/// other slot takes the child's TYPED result node (itself possibly
+/// rewritten). The rebuilt node starts with fresh annotation cells, so the
+/// caller must rebuild BEFORE writing `classification` /
+/// `resolved_type_args` onto the apply/constructor occurrence.
+fn wrap_some_children(
+    kb: &mut KnowledgeBase,
+    occ: &Rc<NodeOccurrence>,
+    wraps: &[(usize, Value)],
+    pos_results: &[Result<TypeResult, TypeError>],
+    named_results: &[Result<TypeResult, TypeError>],
+) -> Rc<NodeOccurrence> {
+    let mut children: Vec<Rc<NodeOccurrence>> = pos_results
+        .iter()
+        .chain(named_results.iter())
+        .map(|r| Rc::clone(&r.as_ref().expect("wrap_some_children: Ok child").node))
+        .collect();
+    for (idx, declared) in wraps {
+        children[*idx] = synthesize_some_wrap(kb, &children[*idx], declared);
+    }
+    super::simp_rewrite::reassemble(occ, &children)
 }
 
 /// WI-441: explode a ROW-shaped effect value into its component atoms —
@@ -8546,17 +8642,22 @@ fn check_constructor_iter(
     // `pair(fst: A, …)` stays unchecked — the return-conformance path settles it),
     // emitting a loud `TypeMismatch` under the existing `EntityField` context. Run
     // BEFORE the expected-seed and bail before the type is built for a constructor
-    // we've proven ill-formed.
+    // we've proven ill-formed. WI-408: a bare `T` in an `Option[T]` field is
+    // accepted by RECORDING a some-coercion, materialized below.
     let mut field_type_errors: Vec<TypeError> = Vec::new();
+    let mut some_wraps: Vec<(usize, Value)> = Vec::new();
     for (field_sym, declared_type) in &field_types {
         if let Some((idx, _)) = named_args.iter().enumerate().find(|(_, (s, _))| s == field_sym) {
             if let Ok(ref r) = named_results[idx] {
-                if let Some(err) = validate_arg_against_param(
+                match validate_arg_against_param(
                     kb, &mut subst, &r.ty, declared_type, span,
                     TypeErrorContext::EntityField { entity: ctor_sym, field: *field_sym },
-                    true, // fields: bare-T-vs-Option[T] interim accept (WI-385)
                 ) {
-                    field_type_errors.push(err);
+                    ArgValidation::Ok => {}
+                    ArgValidation::WrapSome { declared } => {
+                        some_wraps.push((pos_results.len() + idx, declared));
+                    }
+                    ArgValidation::Fail(err) => field_type_errors.push(err),
                 }
             }
         }
@@ -8564,12 +8665,13 @@ fn check_constructor_iter(
     for (i, r_opt) in pos_results.iter().enumerate() {
         if let Some((field_sym, declared_type)) = field_types.get(i) {
             if let Ok(r) = r_opt {
-                if let Some(err) = validate_arg_against_param(
+                match validate_arg_against_param(
                     kb, &mut subst, &r.ty, declared_type, span,
                     TypeErrorContext::EntityField { entity: ctor_sym, field: *field_sym },
-                    true, // fields: bare-T-vs-Option[T] interim accept (WI-385)
                 ) {
-                    field_type_errors.push(err);
+                    ArgValidation::Ok => {}
+                    ArgValidation::WrapSome { declared } => some_wraps.push((i, declared)),
+                    ArgValidation::Fail(err) => field_type_errors.push(err),
                 }
             }
         }
@@ -8577,6 +8679,15 @@ fn check_constructor_iter(
     if !field_type_errors.is_empty() {
         return Err(aggregate_errors(field_type_errors));
     }
+    // WI-408: materialize the recorded some-coercions (see check_apply_iter) —
+    // every return below reads the (possibly rebuilt) `occ`.
+    let rebuilt_occ;
+    let occ = if some_wraps.is_empty() {
+        occ
+    } else {
+        rebuilt_occ = wrap_some_children(kb, occ, &some_wraps, pos_results, named_results);
+        &rebuilt_occ
+    };
 
     // WI-384 / WI-270: now seed the caller `expected` — it fills params the fields left
     // free (so a 0-arg `nil()` with a `List[Int]` hint still gets `T = Int`), and a

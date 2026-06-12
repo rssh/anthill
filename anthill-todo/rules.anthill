@@ -40,22 +40,22 @@ namespace anthill.stage0.workflow
 
   -- Find all open work items
   rule open_item(?id, ?desc)
-    :- WorkItem(id: ?id, status: Open, description: ?desc)
+    :- WorkItem(id: ?id, status: Open, description: some(?desc))
 
   -- Find all work items ready to be claimed
   -- (Open + all dependencies satisfied)
   rule claimable(?id, ?desc)
-    :- WorkItem(id: ?id, status: Open, description: ?desc),
+    :- WorkItem(id: ?id, status: Open, description: some(?desc)),
        all_deps_satisfied(?id)
 
   -- Find blocked work items
   -- (Open but dependencies NOT all satisfied)
   rule blocked(?id, ?desc)
-    :- WorkItem(id: ?id, status: Open, description: ?desc),
+    :- WorkItem(id: ?id, status: Open, description: some(?desc)),
        not(all_deps_satisfied(?id))
 
   -- Find delivered items awaiting review
   rule needs_review(?id, ?desc)
-    :- WorkItem(id: ?id, status: Delivered(agent: ?, at: ?), description: ?desc)
+    :- WorkItem(id: ?id, status: Delivered(agent: ?, at: ?), description: some(?desc))
 
 end

@@ -4602,8 +4602,9 @@ impl<'a> Loader<'a> {
     /// `Some(element_hint)` if `ty` is List-shaped, else `None` — outer
     /// `Some` signals "desugar ListLiteral here" (WI-007), inner `Option`
     /// is the element-type hint to propagate. Recurses through wrappers like
-    /// `Option[T = List[T = X]]` since the runtime stores the inner list
-    /// directly without the `some(…)` envelope.
+    /// `Option[T = List[T = X]]`: the literal is the wrapper's PAYLOAD —
+    /// desugared here, then wrapped in `some(…)` by `wrap_bare_option_value`
+    /// (WI-408).
     fn find_list_element_type(kb: &KnowledgeBase, ty: TermId) -> Option<Option<TermId>> {
         if Self::is_list_sort_ref(kb, ty) { return Some(None); }
         // WI-361: a parameterized `List[T=X]` is deep `parameterized(base: List,
@@ -4633,6 +4634,36 @@ impl<'a> Loader<'a> {
             }
         }
         None
+    }
+
+    /// WI-408 (loader leg of the some-insertion pass): a bare value supplied
+    /// for an `Option[…]`-typed entity field is wrapped in `some(…)` at
+    /// conversion time, so term-world content asserted BEFORE the typing pass
+    /// — on-disk facts, rule-body entity atoms — carries properly
+    /// Option-typed slots (the on-disk format may still say `depends_on:
+    /// [...]`; it loads as `some([...])` and round-trips explicit). Skipped
+    /// for: a non-Option (or absent/denoted) field hint; a variable (it binds
+    /// the WHOLE Option value, `some(…)`/`none()` alike); a value already
+    /// headed by `Option.some`/`Option.none`. A constructor PATTERN in an
+    /// Option slot (`depends_on: cons(…)` in a rule body) wraps like a value
+    /// — the pattern then matches the wrapped facts, preserving rule meaning.
+    fn wrap_bare_option_value(&mut self, term: TermId, expected: Option<TermId>) -> TermId {
+        let Some(exp) = expected else { return term };
+        if !super::typing::is_option_type(self.kb, &TermIdView(exp)) {
+            return term;
+        }
+        let head_functor = match self.kb.get_term(term) {
+            Term::Var(_) => return term,
+            Term::Fn { functor, .. } | Term::Ref(functor) | Term::Ident(functor) => Some(*functor),
+            _ => None, // Const literal — always a bare payload
+        };
+        if let Some(f) = head_functor {
+            let qn = self.kb.qualified_name_of(f);
+            if qn == "anthill.prelude.Option.some" || qn == "anthill.prelude.Option.none" {
+                return term;
+            }
+        }
+        build_some(self.kb, term)
     }
 
     /// Convert a parse-time TermId to a KB TermId, re-allocating into the hash-consed store.
@@ -4765,16 +4796,35 @@ impl<'a> Loader<'a> {
                     return kb_id;
                 }
 
-                let new_pos: SmallVec<[TermId; 4]> = pos_args
+                // WI-408: an explicit `some(payload)` under an `Option[…]`-typed
+                // slot threads the PEELED element type into its payload —
+                // `some`'s own declared field type is just the type-param `T`,
+                // so without this a `depends_on: some(["WI-1"])` payload literal
+                // would lose the `List[String]` hint and never desugar.
+                let some_payload_hint: Option<TermId> =
+                    if self.kb.qualified_name_of(new_functor) == "anthill.prelude.Option.some" {
+                        expected
+                            .filter(|e| super::typing::is_option_type(self.kb, &TermIdView(*e)))
+                            .and_then(|e| {
+                                super::typing::extract_type_param(self.kb, &TermIdView(e), "T")
+                            })
+                            .and_then(|v| v.as_term())
+                    } else {
+                        None
+                    };
+                let mut new_pos: SmallVec<[TermId; 4]> = pos_args
                     .iter()
                     .enumerate()
                     .map(|(i, &id)| {
                         // WI-342: field types are carrier-agnostic; the
                         // conversion hint only wants a ground `TermId` (a
                         // denoted-bearing field is no literal-typing hint → None).
-                        let exp = self.kb.entity_field_types(new_functor)
-                            .and_then(|ft| ft.get(i).and_then(|(_, t)| t.as_term()));
-                        self.convert_term_with_expected(id, exp)
+                        let exp = some_payload_hint.or_else(|| {
+                            self.kb.entity_field_types(new_functor)
+                                .and_then(|ft| ft.get(i).and_then(|(_, t)| t.as_term()))
+                        });
+                        let converted = self.convert_term_with_expected(id, exp);
+                        self.wrap_bare_option_value(converted, exp)
                     })
                     .collect();
                 // WI-271: skip parse-only ParseAux children (let_expr's
@@ -4801,11 +4851,31 @@ impl<'a> Loader<'a> {
                     .into_iter()
                     .map(|(sym, id)| {
                         let new_sym = self.reintern(sym);
-                        let exp = self.kb.entity_field_types(new_functor)
-                            .and_then(|ft| ft.iter().find(|(s, _)| *s == new_sym).and_then(|(_, t)| t.as_term()));
-                        (new_sym, self.convert_term_with_expected(id, exp))
+                        // WI-408: `some(value: x)` payload takes the peeled hint
+                        // (see `some_payload_hint` above the positional loop).
+                        let exp = some_payload_hint.or_else(|| {
+                            self.kb.entity_field_types(new_functor)
+                                .and_then(|ft| ft.iter().find(|(s, _)| *s == new_sym).and_then(|(_, t)| t.as_term()))
+                        });
+                        let converted = self.convert_term_with_expected(id, exp);
+                        (new_sym, self.wrap_bare_option_value(converted, exp))
                     })
                     .collect();
+
+                // WI-408: canonicalize a source-written positional `some(x)` to
+                // the NAMED form `some(value: x)` — the one in-KB term shape for
+                // `some`. The loader's coercion wrap (`build_some`) and the
+                // CLI's value→term reflection both emit the named form;
+                // term-world unification does not bridge positional↔named, so
+                // without this a hand-written `some(...)` rule pattern would
+                // never match a wrapped or persisted fact.
+                if self.kb.qualified_name_of(new_functor) == "anthill.prelude.Option.some"
+                    && new_pos.len() == 1
+                    && new_named.is_empty()
+                {
+                    let value_sym = self.kb.intern("value");
+                    new_named.push((value_sym, new_pos.pop().expect("len checked")));
+                }
 
                 // Expand partial named args: fill missing entity fields with fresh vars
                 // Always sort named args to match entity field order.

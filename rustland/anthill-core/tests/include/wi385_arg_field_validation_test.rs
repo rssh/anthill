@@ -7,9 +7,11 @@
 //! and the two boundary CONVERSIONS it accepts rather than flags:
 //!   1. value→Term reflection — TOTAL (`as_term[E]`, WI-406), so any value
 //!      conforms to a declared reflect `Term`.
-//!   2. bare-`T`-vs-`Option[T]` in a FIELD position — an explicit INTERIM
-//!      (on-disk facts persist optionals UNWRAPPED, e.g. `depends_on: []`); the
-//!      sound `some`-coercion-insertion pass is a follow-on ticket.
+//!   2. bare-`T`-vs-`Option[T]` — accepted via the WI-408 some-coercion
+//!      INSERTION (a synthesized `some(...)` wraps the value, so it is
+//!      properly Option-typed at runtime); these tests assert only that the
+//!      forms LOAD clean — the runtime some-shape is pinned in
+//!      `wi408_some_coercion_test.rs`.
 
 use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::load::{self, NullResolver};
@@ -135,10 +137,10 @@ end
     );
 }
 
-// ── Accepted CONVERSION 2: bare T vs Option[T] in a FIELD (interim) ──────────
+// ── Accepted CONVERSION 2: bare T vs Option[T] (WI-408 some-coercion) ────────
 
 #[test]
-fn option_field_accepts_bare_value_interim() {
+fn option_field_accepts_bare_value() {
     let src = r#"
 namespace test.wi385.optfield
   import anthill.prelude.{Int64, Option}
@@ -148,12 +150,12 @@ end
 "#;
     let errs = try_load(src);
     eprintln!(
-        "=== option_field_accepts_bare_value_interim ===\n{}",
+        "=== option_field_accepts_bare_value ===\n{}",
         errors_text(&errs)
     );
     assert!(
         errs.is_empty(),
-        "bare Int64 in an Option[Int64] field is accepted (Option-wrapping interim): {}",
+        "bare Int64 in an Option[Int64] field is accepted (some-coercion, WI-408): {}",
         errors_text(&errs)
     );
 }
@@ -209,8 +211,8 @@ end
 
 #[test]
 fn bare_option_field_accepts_value() {
-    // A bare `Option` (no `[T = …]`) has no element to re-check; the interim
-    // accepts any value as its implicit `some` payload.
+    // A bare `Option` (no `[T = …]`) has no element to re-check; any value
+    // is its `some` payload (wrapped by the WI-408 insertion).
     let src = r#"
 namespace test.wi385.bareopt
   import anthill.prelude.{Int64, Option}
@@ -222,7 +224,7 @@ end
     eprintln!("=== bare_option_field_accepts_value ===\n{}", errors_text(&errs));
     assert!(
         errs.is_empty(),
-        "bare Option field accepts any value under the interim: {}",
+        "bare Option field accepts any value (some-coercion): {}",
         errors_text(&errs)
     );
 }

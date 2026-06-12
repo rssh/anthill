@@ -56,7 +56,9 @@ fact WorkItem(
     let combined = read_all_anthill(&proj.join("anthill-todo"));
     assert!(combined.contains("id: \"WI-006\""),
         "WI-006 not persisted: {combined}");
-    assert!(combined.contains("description: \"next item\""));
+    // WI-408: optional fields persist in the explicit some()/none() format.
+    assert!(combined.contains("description: some(\"next item\")"),
+        "description not in explicit some() format: {combined}");
     assert!(combined.contains("status: Open"));
 }
 

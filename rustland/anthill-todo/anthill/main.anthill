@@ -604,10 +604,10 @@ namespace anthill.todo
         case cons(s, rest) -> concat(s, join_strings_inner(rest, sep))
 
     -- Extract `depends_on` from a materialized WorkItem as a List[String].
-    -- The entity declares the field as `Option[List[String]]`, but the
-    -- on-disk fact form stores the value unwrapped (`depends_on: [...]`,
-    -- not `some([...])`) — so the materialized slot can be `none()`
-    -- (absent field), `some(list)`, or the bare cons/nil chain.
+    -- WI-408: the loader's some-coercion wraps a bare on-disk value
+    -- (`depends_on: [...]`) in `some(...)` at load, so the slot is always a
+    -- proper Option — `none()` (absent field) or `some(list)`; the old
+    -- bare-chain reflect-launder is gone.
     operation deps_of_w(w: WorkItem) -> List[String] =
       match w
         case WorkItem(_, _, _, _, deps, _, _, _) -> normalize_deps(deps)
@@ -616,19 +616,6 @@ namespace anthill.todo
       match d
         case none() -> nil()
         case some(xs) -> xs
-        -- depends_on is stored UNWRAPPED on disk (`depends_on: [...]`, not
-        -- `some([...])`), so a present slot materializes as a bare List[String]
-        -- chain typed (incoherently) as this Option -- never `some`. Matching
-        -- it against List patterns (nil/cons) here mis-binds the element (the
-        -- typer reads the whole list as the head), yielding List[List[String]].
-        -- Reinterpret the value at its true List type across the reflect
-        -- boundary (WI-406): `as_term` lifts it, then `term_as_entity` reads it
-        -- back as the `List[String]` it actually is.
-        case _ ->
-          let recovered: Option[T = List[T = String]] = term_as_entity(as_term(d))
-          match recovered
-            case some(xs) -> xs
-            case none() -> nil()
 
     -- Print id / description / status / depends_on for a single WorkItem.
     operation cmd_show(args: List[Binding], s: Cell[State]) -> Int64
@@ -738,9 +725,14 @@ namespace anthill.todo
     =
       match w
         case WorkItem(_, description, _, _, _, _, _, _) ->
-          match term_as_string(description)
-            case some(s) -> println(console(), concat("Description: ", s))
+          -- WI-408: the slot is a proper Option — peel it, then read the
+          -- payload Term as a String.
+          match description
             case none() -> ()
+            case some(t) ->
+              match term_as_string(t)
+                case some(s) -> println(console(), concat("Description: ", s))
+                case none() -> ()
 
     operation print_status_line_w(w: WorkItem) -> Unit
       effects ConsoleOutput
@@ -769,9 +761,13 @@ namespace anthill.todo
     operation row_of_w(w: WorkItem) -> Row =
       match w
         case WorkItem(id, desc, _, _, _, _, _, _) ->
-          let desc_str = match term_as_string(desc)
-            case some(s) -> s
+          -- WI-408: peel the Option, then read the payload Term.
+          let desc_str = match desc
             case none() -> ""
+            case some(t) ->
+              match term_as_string(t)
+                case some(s) -> s
+                case none() -> ""
           Row(
             id: id,
             status: status_name_w(w),

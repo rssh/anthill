@@ -35,18 +35,18 @@ namespace anthill.stage0.workflow
 
   -- Find all open work items
   rule open_item(?id, ?desc)
-    :- WorkItem(id: ?id, status: Open, description: ?desc)
+    :- WorkItem(id: ?id, status: Open, description: some(?desc))
 
   -- Find all work items ready to be claimed
   -- (Open + all dependencies verified)
   rule claimable(?id, ?desc)
-    :- WorkItem(id: ?id, status: Open, description: ?desc),
+    :- WorkItem(id: ?id, status: Open, description: some(?desc)),
        all_deps_verified(?id)
 
   -- Find blocked work items
   -- (Open but dependencies NOT all verified)
   rule blocked(?id, ?desc)
-    :- WorkItem(id: ?id, status: Open, description: ?desc),
+    :- WorkItem(id: ?id, status: Open, description: some(?desc)),
        not(all_deps_verified(?id))
 
 end
