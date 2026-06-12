@@ -197,6 +197,17 @@ pub enum LoadError {
     UnresolvedEffectPlace {
         name: String,
     },
+    /// WI-429: an unresolvable Capitalized dotted name in TYPE position.
+    /// Previously this fell through to `remap_name`'s advisory
+    /// `UnresolvedName` and minted a degenerate nominal sort literally named
+    /// e.g. `"Storage.Key"` — false-rejecting valid programs (the nominal
+    /// matches nothing) and false-accepting invalid ones (two such positions
+    /// conflate to one meaningless global nominal). Load-blocking.
+    UnresolvedTypeName {
+        name: String,
+        span: Span,
+        scope_name: String,
+    },
 }
 
 impl LoadError {
@@ -252,6 +263,16 @@ impl LoadError {
                     name,
                 )
             }
+            LoadError::UnresolvedTypeName { name, span, scope_name } => {
+                let (line, col) = Span::line_col(source, span.start);
+                format!(
+                    "{}:{}: unresolved type name '{}' in scope '{}' — not a value \
+                     projection (`s.Member` off a param/local/field), not a \
+                     type-parameter or sort projection (`P.Member` / `Sort.Member`), \
+                     and not a resolvable qualified sort reference",
+                    line, col, name, scope_name,
+                )
+            }
         }
     }
 
@@ -272,7 +293,10 @@ impl LoadError {
             // resolvable — fail loudly rather than run with an unenforced clause.
             | LoadError::ValueInTypeNotResolved { .. }
             // WI-440: a typo'd place in a `-…` absence label = vacuous constraint.
-            | LoadError::UnresolvedEffectPlace { .. })
+            | LoadError::UnresolvedEffectPlace { .. }
+            // WI-429: an unresolvable Capitalized dotted name in type position
+            // would otherwise load as a degenerate nominal sort.
+            | LoadError::UnresolvedTypeName { .. })
     }
 }
 
@@ -321,6 +345,16 @@ impl std::fmt::Display for LoadError {
                     f,
                     "unresolved place `{name}` in a `-…` effect-absence label — \
                      the lacks-constraint would be vacuous"
+                )
+            }
+            LoadError::UnresolvedTypeName { name, span, scope_name } => {
+                write!(
+                    f,
+                    "unresolved type name '{}' in scope '{}' at {}..{} — not a value \
+                     projection (`s.Member` off a param/local/field), not a \
+                     type-parameter or sort projection (`P.Member` / `Sort.Member`), \
+                     and not a resolvable qualified sort reference",
+                    name, scope_name, span.start, span.end,
                 )
             }
         }
@@ -2140,6 +2174,14 @@ fn load_phase_inner(
     // req_insertion, eval, and codegen see the rewritten form. The former
     // pre-typer `simp_rewrite::run` pass (WI-277, guard-free, type-blind)
     // is retired from the pipeline; its machinery is reused by the typer.
+    // WI-429: formation sweep for stored `RigidTypeProjection` terms — a
+    // malformed projection in a position the typer never eliminates (entity
+    // field types, fact/rule type slots) must fail the load, not sit silent.
+    // Runs once requires/provides info is complete (after
+    // `resolve_instantiations`), before the typer (whose elimination sites
+    // re-validate the eliminated subset with the same logic).
+    all_errors.extend(super::typing::validate_rigid_projection_formations(kb));
+    mark!("validate_rigid_projection_formations");
     all_errors.extend(super::typing::type_check_sorts(kb, &all_sorts));
     mark!(&format!("type_check_sorts ({} sorts)", all_sorts.len()));
     // WI-231: the typer tagged each spec-op call site's occurrence
@@ -4157,6 +4199,13 @@ struct Loader<'a> {
     // a typo'd place (`-Modify[zzz]`) would otherwise load as a vacuous
     // constraint with only a warning — silently unenforced.
     in_effect_absence: bool,
+    // WI-429: true while lowering a TYPE expression (`type_expr_to_child` and
+    // everything beneath it). An unresolvable Capitalized DOTTED name there is
+    // upgraded from the advisory `UnresolvedName` (+ degenerate minted nominal)
+    // to the load-blocking `UnresolvedTypeName` — a typo'd `Sort.Member` /
+    // `s.Member` spelling must never load as an opaque nominal sort literally
+    // named "Sort.Member".
+    in_type_position: bool,
     // Description index counter per target (keyed by TermId raw)
     desc_index: HashMap<u32, i64>,
     // ── Occurrence tracking ─────────────────────────────────────
@@ -4301,6 +4350,7 @@ impl<'a> Loader<'a> {
             type_param_vars: HashMap::new(),
             arrow_binder_scope: HashMap::new(),
             in_effect_absence: false,
+            in_type_position: false,
             defined_sorts: Vec::new(),
             fact_rule_ids: Vec::new(),
             source_id,
@@ -4558,6 +4608,29 @@ impl<'a> Loader<'a> {
                 if self.in_effect_absence {
                     self.errors.push(LoadError::UnresolvedEffectPlace {
                         name: lookup_name,
+                    });
+                } else if self.in_type_position
+                    && name.segments.len() > 1
+                    && self
+                        .parsed
+                        .symbols
+                        .name(*name.segments.last().unwrap())
+                        .chars()
+                        .next()
+                        .is_some_and(|c| c.is_uppercase())
+                {
+                    // WI-429: an unresolvable Capitalized DOTTED name in type
+                    // position is a hard error — every legitimate spelling
+                    // (value projection, type-receiver projection, qualified
+                    // child / sort ref) was already classified or resolved
+                    // before reaching this arm, so what's left is a typo that
+                    // would mint a degenerate nominal sort. A lowercase-member
+                    // dotted name (a value place like `Modify[result.a]`)
+                    // keeps the advisory path.
+                    self.errors.push(LoadError::UnresolvedTypeName {
+                        name: lookup_name,
+                        span: name.span,
+                        scope_name: self.scope_display_name(),
                     });
                 } else {
                     self.errors.push(LoadError::UnresolvedName {
@@ -6366,7 +6439,7 @@ impl<'a> Loader<'a> {
                 // anything else stays on the `remap_name` path.
                 if segs.len() == 2 {
                     if let Some(child) =
-                        self.try_rigid_type_projection(resolved, &head_name, &member_name)
+                        self.try_rigid_type_projection(resolved, &head_name, &member_name, span)
                     {
                         return Some(child);
                     }
@@ -6451,6 +6524,7 @@ impl<'a> Loader<'a> {
         head_resolved: Symbol,
         head_name: &str,
         member_name: &str,
+        span: SourceSpan,
     ) -> Option<node_occurrence::TypeChild> {
         let head_short = self.kb.resolve_sym(head_resolved).to_owned();
         let qn = self.kb.qualified_name_of(head_resolved).to_owned();
@@ -6480,9 +6554,10 @@ impl<'a> Loader<'a> {
                         .unwrap_or(&head_resolved);
                     let member_sym = self.kb.intern(member_name);
                     let subject = self.kb.alloc(Term::Ref(subject_sym));
-                    return Some(node_occurrence::TypeChild::Ground(
-                        self.kb.make_rigid_projection(decl_sort, subject, member_sym),
-                    ));
+                    let proj = self.kb.make_rigid_projection(decl_sort, subject, member_sym);
+                    // WI-429: record for the end-of-load formation sweep.
+                    self.kb.rigid_projection_formations.push((proj, span));
+                    return Some(node_occurrence::TypeChild::Ground(proj));
                 }
             }
         }
@@ -6547,12 +6622,29 @@ impl<'a> Loader<'a> {
         // and LOUDLY rejects a bare-spec projection (the `T#K` guard).
         let member_sym = self.kb.intern(member_name);
         let subject = self.kb.alloc(Term::Ref(head_sort_sym));
-        Some(node_occurrence::TypeChild::Ground(
-            self.kb.make_rigid_projection(head_sort_sym, subject, member_sym),
-        ))
+        let proj = self.kb.make_rigid_projection(head_sort_sym, subject, member_sym);
+        // WI-429: record for the end-of-load formation sweep.
+        self.kb.rigid_projection_formations.push((proj, span));
+        Some(node_occurrence::TypeChild::Ground(proj))
     }
 
     fn type_expr_to_child(
+        &mut self,
+        ty: &TypeExpr,
+        span: SourceSpan,
+        owner: Option<Symbol>,
+    ) -> node_occurrence::TypeChild {
+        // WI-429: everything beneath here is TYPE position — an unresolvable
+        // Capitalized dotted name is load-blocking (`remap_name`'s
+        // `UnresolvedTypeName` arm). Save/restore (not just set) so a value
+        // sub-context a future arm introduces can opt back out.
+        let saved_type_pos = std::mem::replace(&mut self.in_type_position, true);
+        let child = self.type_expr_to_child_inner(ty, span, owner);
+        self.in_type_position = saved_type_pos;
+        child
+    }
+
+    fn type_expr_to_child_inner(
         &mut self,
         ty: &TypeExpr,
         span: SourceSpan,
@@ -7504,7 +7596,25 @@ impl<'a> Loader<'a> {
     /// because parameterised sorts skip induction emission upstream.
     fn field_is_recursive(&mut self, ty: &TypeExpr, sort_functor: Symbol) -> bool {
         match ty {
-            TypeExpr::Simple(n) => self.remap_name(n) == sort_functor,
+            // Resolve WITHOUT `remap_name`'s error-pushing path: this is a
+            // structural probe ("does the field type name the enclosing
+            // sort?"), not the field type's authoritative lowering (that is
+            // `type_expr_to_value`, which classifies projections). A name that
+            // doesn't resolve here — e.g. a projection spelling `P.Key`, which
+            // the type lowering classifies separately — is simply not the
+            // recursive sort; pushing `UnresolvedName` from here duplicated
+            // (WI-429: and falsely failed) the real lowering's diagnostics.
+            TypeExpr::Simple(n) => {
+                let lookup = if n.segments.len() == 1 {
+                    self.parsed.symbols.name(n.segments[0]).to_owned()
+                } else {
+                    join_segments(&self.parsed.symbols, &n.segments)
+                };
+                match self.kb.symbols.resolve_in_scope(&lookup, self.current_scope.raw()) {
+                    ResolveResult::Found(s) => s == sort_functor,
+                    _ => false,
+                }
+            }
             _ => false,
         }
     }

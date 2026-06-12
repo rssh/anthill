@@ -4,7 +4,7 @@
 /// Types are TermId values in the KB (types are terms in anthill).
 /// Effects are tracked as List[Type] alongside the value type.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use smallvec::SmallVec;
@@ -6452,6 +6452,49 @@ fn candidate_sub_goals_owned(
 ///    wildcard). Recovering precision for that shape needs the loader to
 ///    record the cross-param binding — a separate change.
 ///
+/// WI-429: end-of-load formation validation for STORED `RigidTypeProjection`
+/// terms. The typer validates a projection where it ELIMINATES one (op
+/// signatures, call sites, let annotations — `resolve_rigid_projection`), but
+/// a projection stored in a position the typer never eliminates (an entity
+/// FIELD type, a fact / constraint / rule type slot) previously loaded
+/// SILENTLY — a typo'd member (`MemStore.Kye`) or a bare-spec subject
+/// (`Storage.Key` outside the sort) sat in the KB as a malformed type. The
+/// loader records every formation (`kb.rigid_projection_formations`, with
+/// source spans); this sweep re-runs the eliminator's own
+/// `resolve_rigid_projection` on each — requires/provides info is complete by
+/// this point in the load pipeline — and surfaces any rejection as a
+/// load-blocking error. Valid outcomes (`Grounded` / `Neutral`) pass; the
+/// sweep validates formation only and stores nothing, so a projection in an
+/// eliminated position is at worst validated twice with the same verdict.
+pub fn validate_rigid_projection_formations(
+    kb: &mut KnowledgeBase,
+) -> Vec<super::load::LoadError> {
+    let formations = std::mem::take(&mut kb.rigid_projection_formations);
+    let mut errors = Vec::new();
+    let mut seen: HashSet<TermId> = HashSet::new();
+    for (tid, source_span) in formations {
+        // One hash-consed projection can be formed at many sites; one verdict
+        // suffices (the first formation's span reports it).
+        if !seen.insert(tid) {
+            continue;
+        }
+        let TypeExtractor::RigidTypeProjection { sort, subject, member } =
+            extract_type(kb, &TermIdView(tid))
+        else {
+            unreachable!(
+                "rigid_projection_formations holds a non-RigidTypeProjection term \
+                 — loader recording bug"
+            );
+        };
+        let ctx = TypeErrorContext::EntityField { entity: sort, field: member };
+        let span = Some(Span::new(source_span.start(), source_span.end()));
+        if let Err(te) = resolve_rigid_projection(kb, sort, &subject, member, &ctx, span) {
+            errors.push(te.to_load_error(kb));
+        }
+    }
+    errors
+}
+
 /// The `EffectsRuntime` kind-anchor (synthesized from `effects E = ?`) is
 /// skipped: it is satisfied structurally by the effect-row machinery, never
 /// by a carrier `fact`.

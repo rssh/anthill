@@ -31,7 +31,7 @@ use std::rc::Rc;
 use smallvec::SmallVec;
 
 use crate::intern::{SymbolTable, SymbolDef, SymbolKind, Symbol};
-use crate::span::SourceRegistry;
+use crate::span::{SourceRegistry, SourceSpan};
 use term::{Term, TermId, TermStore, TermSource, Var, VarId};
 use node_occurrence::NodeOccurrence;
 use discrim::SubstTree;
@@ -341,6 +341,15 @@ pub struct KnowledgeBase {
     /// thus eval) even when no `[simp]` equation is loaded.
     pub(crate) has_dot_applies: bool,
 
+    /// WI-429: every `RigidTypeProjection` the loader FORMS, with its source
+    /// span — the work-list for the end-of-load formation sweep
+    /// (`typing::validate_rigid_projection_formations`). A projection stored
+    /// in a position the typer never eliminates (an entity field type, a
+    /// fact/rule type slot) would otherwise carry a malformed projection
+    /// (typo'd member, bare-spec subject) silently. Drained by the sweep at
+    /// the end of each load phase.
+    pub(crate) rigid_projection_formations: Vec<(TermId, SourceSpan)>,
+
     // WI-348 (value-fact payoff): the `op_effects` side-table is GONE. A
     // `denoted`-bearing effect label (`Modify[c]`) now lives in the
     // `OperationInfo` fact itself — the loader builds that fact as a *value
@@ -460,6 +469,7 @@ impl KnowledgeBase {
             functor_spans: HashMap::new(),
             op_bodies: HashMap::new(),
             has_dot_applies: false,
+            rigid_projection_formations: Vec::new(),
             entity_field_types: HashMap::new(),
             resolved_requires_facts: HashSet::new(),
             sources: SourceRegistry::new(),
