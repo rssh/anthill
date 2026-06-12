@@ -51,7 +51,6 @@ fn load_errors(extras: &[&str]) -> Vec<String> {
 /// polymorphic argument's return-only `X` (expected → argument), the projection grounds
 /// off the receiver, and the `String` value checks against `k`.
 #[test]
-#[ignore = "WI-427: expected→argument inference not yet built; poly's X is unconstrained"]
 fn bidirectional_flow_conforms() {
     let ok = r#"
 namespace test.wi427.ok
@@ -80,7 +79,6 @@ end
 /// `String`, so passing `42` (Int64) must be rejected — and for the RIGHT reason
 /// (String/Int64 mismatch), not the current "X unconstrained".
 #[test]
-#[ignore = "WI-427: expected→argument inference not yet built; rejection is currently for the wrong reason (X unconstrained)"]
 fn bidirectional_flow_wrong_value_rejected_for_right_reason() {
     let wrong = r#"
 namespace test.wi427.wrong
@@ -104,4 +102,31 @@ end
         "k : s.cell.T is String (via the pinned X), so 42 must be rejected as String/Int64; \
          got: {errs:?}",
     );
+}
+
+/// The constructor-field twin: a nested call in an ENTITY FIELD slot whose declared
+/// field type is ground pins the same way (`hold(poly())` — `poly`'s return-only `X`
+/// is pinned by the field type `w: Wrapper[P = Inner[T = String]]`).
+#[test]
+fn bidirectional_flow_constructor_field_pins() {
+    let ok = r#"
+namespace test.wi427.ctor
+  import anthill.prelude.String
+  sort Inner
+    sort T = ?
+    entity inner(v: T)
+  end
+  sort Wrapper
+    sort P = ?
+    entity wrap(cell: P)
+  end
+  sort Holder
+    entity hold(w: Wrapper[P = Inner[T = String]])
+  end
+  operation poly[X]() -> Wrapper[P = Inner[T = X]]
+  operation caller() -> Holder = hold(poly())
+end
+"#;
+    let errs = load_errors(&[ok]);
+    assert!(errs.is_empty(), "constructor-field twin: {errs:?}");
 }

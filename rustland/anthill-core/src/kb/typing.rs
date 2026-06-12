@@ -1978,6 +1978,62 @@ fn hof_arg_hint(
     }
 }
 
+/// WI-427: true iff the type term mentions a `TypeExtractor.TypeVar` form
+/// anywhere — an operation's own type parameter, which is out of scope as a
+/// top-down hint for a *different* call (and a wildcard in the subtype
+/// relation, so it could never pin by equality anyway). The recursive
+/// complement of [`type_value_is_ground`], which catches logic vars and
+/// SORT-param refs but keys its functor test on sort-param symbols only.
+fn type_term_mentions_type_var(kb: &KnowledgeBase, tid: TermId) -> bool {
+    match kb.get_term(tid) {
+        Term::Fn { functor, pos_args, named_args } => {
+            kb.qualified_name_of(*functor) == "anthill.prelude.TypeExtractor.TypeVar"
+                || pos_args.iter().any(|a| type_term_mentions_type_var(kb, *a))
+                || named_args.iter().any(|(_, a)| type_term_mentions_type_var(kb, *a))
+        }
+        _ => false,
+    }
+}
+
+/// WI-427: the expected-type hint for a nested-call argument — the
+/// `expected → argument` half of bidirectional inference (WI-379 delivered
+/// the `argument → expected` half). The declared param type flows *down*
+/// into an argument that is itself a call, so a callee type-param that
+/// appears ONLY in the argument's return type
+/// (`poly[X]() -> Wrapper[P = Inner[T = X]]` in a
+/// `Wrapper[P = Inner[T = String]]` slot) is pinned by the call context
+/// instead of failing "X unconstrained".
+///
+/// SOUNDNESS (the WI-379 variance sidestep, expansion-during-unification.md):
+/// the hint is pushed only where it pins by EQUALITY — a fully-GROUND
+/// declared param type (no logic var, no sort-param ref, no TypeVar
+/// anywhere). A projection param type (`k: s.cell.T`) rides a non-`Term`
+/// carrier and is skipped by the same gate (its elimination is the
+/// call-site's job, after the args are typed). Inside the argument's own
+/// `check_apply_iter` the hint is consulted only AFTER its arguments pinned
+/// the params (the WI-270/379 fill-only-still-free order) and a
+/// contradicting hint binds nothing — so a wrong hint cannot mask the
+/// normal arg-vs-param mismatch diagnostic, and no metavariable is ever
+/// solved through a `<:` constraint.
+fn nested_call_arg_hint(
+    kb: &KnowledgeBase,
+    arg: &Rc<NodeOccurrence>,
+    param_type: Option<&Value>,
+) -> Option<Value> {
+    let pt = param_type?;
+    let is_call_arg = matches!(
+        &arg.kind,
+        NodeKind::Expr { expr: Expr::Apply { .. }, .. }
+    );
+    let pins_by_equality = resolved_type_is_ground(kb, pt)
+        && !matches!(pt, Value::Term(t) if type_term_mentions_type_var(kb, *t));
+    if is_call_arg && pins_by_equality {
+        Some(pt.clone())
+    } else {
+        None
+    }
+}
+
 /// Aggregate sibling errors into one `TypeError`. Flattens nested
 /// `Multiple` so the result has a single-level error vec. Single-
 /// error fast-path avoids the Vec allocation when one ill-typed
@@ -2482,9 +2538,13 @@ fn visit_type(
             // types its parameter from `A` instead of leaving it an unconstrained
             // var (which makes an overloaded body call like `add(x, 1)` dispatch-
             // ambiguous), and a bare op name is eta-lifted to a function value.
-            // Other args take no hint, preserving the WI-379 args-before-expected
-            // order that lets a value/literal arg's own type drive dispatch. The
-            // lookup is gated on the call actually having a lambda/ref argument.
+            // Value/literal args take no hint, preserving the WI-379
+            // args-before-expected order that lets their own type drive
+            // dispatch. WI-427: a NESTED-CALL argument additionally gets the
+            // declared param type as its hint when that type pins by equality
+            // (fully ground) — the `expected → argument` half of bidirectional
+            // inference (`nested_call_arg_hint`). The lookup is gated on the
+            // call actually having a lambda/ref or nested-call argument.
             let has_hof_arg = pos_args
                 .iter()
                 .chain(named_args.iter().map(|(_, a)| a))
@@ -2492,7 +2552,11 @@ fn visit_type(
                     &a.kind,
                     NodeKind::Expr { expr: Expr::Lambda { .. } | Expr::VarRef { .. }, .. }
                 ));
-            let op_params = if has_hof_arg {
+            let has_call_arg = pos_args
+                .iter()
+                .chain(named_args.iter().map(|(_, a)| a))
+                .any(|a| matches!(&a.kind, NodeKind::Expr { expr: Expr::Apply { .. }, .. }));
+            let op_params = if has_hof_arg || has_call_arg {
                 lookup_operation_info_full(kb, functor).map(|op| op.params)
             } else {
                 None
@@ -2502,7 +2566,8 @@ fn visit_type(
                 .enumerate()
                 .map(|(i, arg)| {
                     let pt = op_params.as_ref().and_then(|ps| ps.get(i)).map(|(_, t)| t.clone());
-                    hof_arg_hint(kb, arg, pt)
+                    hof_arg_hint(kb, arg, pt.clone())
+                        .or_else(|| nested_call_arg_hint(kb, arg, pt.as_ref()))
                 })
                 .collect();
             let named_hints: Vec<Option<Value>> = named_args
@@ -2512,7 +2577,8 @@ fn visit_type(
                         .as_ref()
                         .and_then(|ps| ps.iter().find(|(s, _)| s == name))
                         .map(|(_, t)| t.clone());
-                    hof_arg_hint(kb, arg, pt)
+                    hof_arg_hint(kb, arg, pt.clone())
+                        .or_else(|| nested_call_arg_hint(kb, arg, pt.as_ref()))
                 })
                 .collect();
             work.push(TypeWorkOp::Build(TypeBuildFrame::Apply {
@@ -2535,6 +2601,40 @@ fn visit_type(
             let name = *name;
             let pos_args = pos_args.clone();
             let named_args = named_args.clone();
+            // WI-427: the constructor-field twin of the nested-call hint — a
+            // GROUND declared field type flows down into a field value that is
+            // itself a call, so `hold(poly())` pins poly's return-only type
+            // param exactly like an operation param slot does. Same gate, same
+            // soundness argument (`nested_call_arg_hint`); a field type that
+            // mentions the sort's own params (`cell: P`) is non-ground and
+            // takes no hint. Other field values stay unhinted.
+            let has_call_field = pos_args
+                .iter()
+                .chain(named_args.iter().map(|(_, a)| a))
+                .any(|a| matches!(&a.kind, NodeKind::Expr { expr: Expr::Apply { .. }, .. }));
+            let field_types = if has_call_field {
+                kb.entity_field_types(name).map(|ft| ft.to_vec())
+            } else {
+                None
+            };
+            let pos_hints: Vec<Option<Value>> = pos_args
+                .iter()
+                .enumerate()
+                .map(|(i, arg)| {
+                    let ft = field_types.as_ref().and_then(|fs| fs.get(i)).map(|(_, t)| t.clone());
+                    nested_call_arg_hint(kb, arg, ft.as_ref())
+                })
+                .collect();
+            let named_hints: Vec<Option<Value>> = named_args
+                .iter()
+                .map(|(fname, arg)| {
+                    let ft = field_types
+                        .as_ref()
+                        .and_then(|fs| fs.iter().find(|(s, _)| s == fname))
+                        .map(|(_, t)| t.clone());
+                    nested_call_arg_hint(kb, arg, ft.as_ref())
+                })
+                .collect();
             work.push(TypeWorkOp::Build(TypeBuildFrame::Constructor {
                 occ: Rc::clone(&occ),
                 ctor_sym: name,
@@ -2545,11 +2645,11 @@ fn visit_type(
                 expected,
                 fuel,
             }));
-            for (_, arg) in named_args.iter().rev() {
-                push_visit_no_hint(work, Rc::clone(arg), Rc::clone(&env), fuel);
+            for ((_, arg), hint) in named_args.iter().zip(named_hints.iter()).rev() {
+                push_visit(work, Rc::clone(arg), Rc::clone(&env), hint.clone(), fuel);
             }
-            for arg in pos_args.iter().rev() {
-                push_visit_no_hint(work, Rc::clone(arg), Rc::clone(&env), fuel);
+            for (arg, hint) in pos_args.iter().zip(pos_hints.iter()).rev() {
+                push_visit(work, Rc::clone(arg), Rc::clone(&env), hint.clone(), fuel);
             }
         }
 
