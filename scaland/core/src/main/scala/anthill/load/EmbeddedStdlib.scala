@@ -43,16 +43,20 @@ object EmbeddedStdlib:
     "anthill.prelude.lattice",
     // ── effects + I/O
     "anthill.prelude.effects",
-    "anthill.prelude.effect-set",
+    "anthill.prelude.effects-runtime",
     "anthill.prelude.console",
     // ── collections
     "anthill.prelude.iteration",
     "anthill.prelude.collection",
+    "anthill.prelude.iterable",
     "anthill.prelude.indexed_seq",
     "anthill.prelude.list",
     "anthill.prelude.set",
     "anthill.prelude.map",
     "anthill.prelude.stream",
+    // combinators defines MappedStream/FilteredStream — imported by iterable.
+    // (Loader is 2-phase scan-then-resolve, so the forward ref is fine.)
+    "anthill.prelude.combinators",
     "anthill.prelude.logical_stream",
     // ── meta + reflect
     "anthill.prelude.sort",
