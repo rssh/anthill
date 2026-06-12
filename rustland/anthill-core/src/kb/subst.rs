@@ -21,12 +21,17 @@ pub struct Substitution {
     pub parent: Option<Box<Substitution>>,
     /// Set to true when a variable is bound to two different concrete terms.
     pub contradiction: bool,
-    /// WI-374: contradicting rebinds recorded for diagnostics — the FIRST
-    /// conflicting `(prior, attempted)` PER VAR (one detail per var: a single
-    /// detail for the whole substitution would let an earlier benign conflict
-    /// on one var mask a later enforced one on another). Empty on the happy
-    /// path; direct `contradiction = true` writers record nothing (readers
-    /// must tolerate an empty list with the flag set).
+    /// WI-374: contradicting rebinds recorded for diagnostics — every
+    /// conflicting `(prior, attempted)` pair, deduplicated by structurally
+    /// equal `attempted` per var. Per-var completeness matters twice over: a
+    /// single detail for the whole substitution would let a conflict on one
+    /// var mask one on another, and a single detail PER var would let a
+    /// benign first conflict (a `?_` wildcard pair) mask a later genuine one
+    /// on the same var. Growth is bounded by distinct attempted values per
+    /// var, and contradicted substitutions are discarded promptly on every
+    /// consumer path. Empty on the happy path; direct `contradiction = true`
+    /// writers record nothing (readers must tolerate an empty list with the
+    /// flag set).
     pub contradiction_details: Vec<(VarId, Value, Value)>,
     /// WI-328 (proposal 045 §5.5 / §7.1) — `lacks` constraints on
     /// (unbound) row-tail variables: each effect-row tail `ρ` may carry a
@@ -94,11 +99,17 @@ impl Substitution {
             match existing {
                 Value::Term(existing_tid) if *existing_tid == term => return,
                 _ => {
-                    // Record the first conflict PER VAR; the clone is paid only
-                    // then (a repeat conflict on the same var records nothing).
-                    if !self.contradiction_details.iter().any(|(v, _, _)| *v == var) {
+                    // Record every DISTINCT conflict per var (an identical
+                    // repeat records nothing); see the field doc for why
+                    // first-per-var is not enough.
+                    let attempted = Value::Term(term);
+                    if !self
+                        .contradiction_details
+                        .iter()
+                        .any(|(v, _, a)| *v == var && a.structural_eq(&attempted))
+                    {
                         let prior = existing.clone();
-                        self.contradiction_details.push((var, prior, Value::Term(term)));
+                        self.contradiction_details.push((var, prior, attempted));
                     }
                     self.contradiction = true;
                     return;
@@ -116,8 +127,12 @@ impl Substitution {
     pub fn bind_value(&mut self, var: VarId, val: Value) {
         if let Some(existing) = self.bindings.get(&var) {
             if !existing.structural_eq(&val) {
-                // First conflict per var — see `bind_term`.
-                if !self.contradiction_details.iter().any(|(v, _, _)| *v == var) {
+                // Every distinct conflict per var — see `bind_term`.
+                if !self
+                    .contradiction_details
+                    .iter()
+                    .any(|(v, _, a)| *v == var && a.structural_eq(&val))
+                {
                     let prior = existing.clone();
                     self.contradiction_details.push((var, prior, val));
                 }

@@ -2908,10 +2908,19 @@ fn unroll_annotation_with_inferred(
     let mut changed = false;
     for (p, v) in &v_bindings {
         match merged.iter_mut().find(|(q, _)| q == p) {
-            // A written WILDCARD (`Stream[T = ?]`) pins nothing — the value's
-            // inferred binding replaces it instead of being erased under it
-            // (the wildcard already passed conformance against anything).
-            Some(slot) if matches!(extract_type(kb, &slot.1), TypeExtractor::TypeVar(_)) => {
+            // A written ANONYMOUS wildcard (`Stream[T = ?]`) pins nothing —
+            // the value's inferred binding replaces it instead of being
+            // erased under it (the wildcard already passed conformance
+            // against anything). A NAMED var (`Pair[A = ?t, B = ?t]`) is NOT
+            // replaced: independently overwriting each slot would silently
+            // lose the same-var tie the user wrote.
+            Some(slot)
+                if matches!(
+                    extract_type(kb, &slot.1),
+                    TypeExtractor::TypeVar(name)
+                        if matches!(kb.resolve_sym(name), "?" | "?_")
+                ) =>
+            {
                 slot.1 = v.clone();
                 changed = true;
             }
@@ -11791,8 +11800,14 @@ fn enforce_member_tie(
         {
             continue;
         }
+        // Walk both sides through the LIVE subst first — a recorded pair may
+        // contain a var the call has since pinned (`Box[T = ?x]` with `?x`
+        // later bound to Int64); re-testing the unwalked pair in an empty
+        // scratch would spuriously re-unify and skip a genuine violation.
+        let prior_w = walk_type_deep_value(kb, subst, prior);
+        let attempted_w = walk_type_deep_value(kb, subst, attempted);
         let mut scratch = Substitution::new();
-        if unify_types(kb, &mut scratch, prior, attempted) {
+        if unify_types(kb, &mut scratch, &prior_w, &attempted_w) {
             continue;
         }
         return Err(TypeError::Other {
@@ -11800,9 +11815,9 @@ fn enforce_member_tie(
             context: TypeErrorContext::OperationTypeParams { op_name: error_name },
             expected: format!(
                 "consistent bindings for the sort's shared type parameter (first bound to {})",
-                type_display_name_value(kb, prior),
+                type_display_name_value(kb, &prior_w),
             ),
-            actual: type_display_name_value(kb, attempted),
+            actual: type_display_name_value(kb, &attempted_w),
         });
     }
     Ok(())

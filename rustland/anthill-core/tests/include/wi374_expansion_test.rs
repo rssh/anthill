@@ -364,6 +364,52 @@ end
     assert!(errs.is_empty(), "consistent / refining constructor fields must stay accepted: {errs:#?}");
 }
 
+/// Review-fix regression (round 3): enforcement must be ORDER-INDEPENDENT on
+/// one var — a benign first conflict (a WI-384 `?_` wildcard pair from the
+/// arity-keeping constructor build) must not mask a later genuine violation
+/// on the SAME var. `mkA(a: 2)` carries `B = ?_`; both argument orders of the
+/// Int64-vs-String `B` conflict must reject.
+#[test]
+fn member_tie_wildcard_first_still_rejected() {
+    let benign_first = r#"
+namespace test.wi374.order1
+  import anthill.prelude.{Int64, String}
+
+  sort Pair2
+    sort A = ?
+    sort B = ?
+    entity mkA(a: A)
+    entity mkB(b: B)
+    operation comb(x: Pair2, y: Pair2, z: Pair2) -> Int64 = 42
+  end
+
+  operation driver() -> Int64 = comb(mkB(b: 1), mkA(a: 2), mkB(b: "x"))
+end
+"#;
+    let genuine_first = r#"
+namespace test.wi374.order2
+  import anthill.prelude.{Int64, String}
+
+  sort Pair2
+    sort A = ?
+    sort B = ?
+    entity mkA(a: A)
+    entity mkB(b: B)
+    operation comb(x: Pair2, y: Pair2, z: Pair2) -> Int64 = 42
+  end
+
+  operation driver() -> Int64 = comb(mkB(b: 1), mkB(b: "x"), mkA(a: 2))
+end
+"#;
+    for (label, src) in [("benign-first", benign_first), ("genuine-first", genuine_first)] {
+        let errs = load_errors(&[src]);
+        assert!(
+            !errs.is_empty(),
+            "{label}: the Int64-vs-String conflict on Pair2.B must reject regardless of order"
+        );
+    }
+}
+
 /// Signature expansion end-to-end sanity: a FOREIGN op with a bare `List`
 /// return loads, and its call site stays usable through an annotation. (The
 /// return itself is deliberately NOT expanded — a bare return is erased, §5;
