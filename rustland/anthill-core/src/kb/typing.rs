@@ -1559,19 +1559,22 @@ enum TypeBuildFrame {
         /// WI-283: fire-fuel — see [`TypeBuildFrame::Apply::fuel`].
         fuel: usize,
     },
-    /// WI-279: all DotApply children finished (drain order
-    /// `[receiver, ...pos, ...named]`). Resolve `member` against the
-    /// receiver's least sort (`min_sort`, read from the receiver child's
-    /// result type), then synthesize the dispatched `Apply` and re-`Visit`
-    /// it — so the produced call rides normal Apply typing + type-param
-    /// inference + req_insertion. `pos_count` / `named_keys` size the drain
-    /// and rebuild the synthesized call's args from the (typed) child nodes.
-    /// No match ⇒ a `DotDispatchNoMatch` diagnostic at the dot span.
+    /// WI-279: the DotApply RECEIVER finished (the only pre-typed child).
+    /// Resolve `member` against the receiver's least sort (`min_sort`, read
+    /// from the receiver child's result type), then synthesize the
+    /// dispatched `Apply` from the RAW arg occurrences carried here and
+    /// re-`Visit` it — so the produced call rides normal Apply typing +
+    /// type-param inference + req_insertion. WI-443: the args are
+    /// deliberately NOT pre-typed at this frame — a callback argument (a
+    /// lambda) needs the callee's param-type hint, which exists only inside
+    /// the synthesized call; pre-typing it hintless mis-fired dispatch
+    /// (`gt` coherence on an untyped lambda param). No match ⇒ a
+    /// `DotDispatchNoMatch` diagnostic at the dot span.
     DotApply {
         occ: Rc<NodeOccurrence>,
         member: Symbol,
-        pos_count: usize,
-        named_keys: Vec<Symbol>,
+        pos_args: Vec<Rc<NodeOccurrence>>,
+        named_args: Vec<(Symbol, Rc<NodeOccurrence>)>,
         env: Rc<TypingEnv>,
         expected: Option<Value>,
         /// WI-283: fire-fuel inherited from this node's `Visit`; spent
@@ -1737,10 +1740,13 @@ pub fn type_check_node(
 ) -> Result<TypeResult, TypeError> {
     let mut work: Vec<TypeWorkOp> = Vec::with_capacity(32);
     let mut results: Vec<Result<TypeResult, TypeError>> = Vec::with_capacity(32);
-    // WI-283: gate the in-typer `[simp]` firing on whether any `[simp]`
-    // equation is indexed at all — read once per walk, so the common
-    // no-rule case pays nothing per node.
-    let simp_enabled = super::simp_rewrite::has_simp_equations(kb);
+    // WI-283: gate the in-typer `[simp]` firing AND the tree reassembly on
+    // whether any rewrite can occur — read once per walk, so the common
+    // no-rewrite case pays nothing per node. WI-443: a loaded `dot_apply`
+    // also enables the gate — DotApply nodes are always rewritten (to the
+    // dispatched call), and without ancestor reassembly the rewrite would
+    // never reach the stored body (eval would see a raw DotApply).
+    let simp_enabled = super::simp_rewrite::has_simp_equations(kb) || kb.has_dot_applies;
     // WI-283: `[simp]` fire-fuel rides on each `Visit` (not the host stack).
     // When an Apply/Constructor fires, the synthesized RHS is re-`Visit`ed
     // with `fuel - 1` on this same work-stack — so a non-terminating /
@@ -2648,26 +2654,19 @@ fn visit_type(
         Expr::DotApply { receiver, name, pos_args, named_args } => {
             let member = *name;
             let receiver = Rc::clone(receiver);
-            let pos_args = pos_args.clone();
-            let named_args = named_args.clone();
-            let named_keys: Vec<Symbol> = named_args.iter().map(|(k, _)| *k).collect();
+            // WI-443: only the receiver is pre-typed (its sort drives the
+            // dispatch); the raw arg occurrences ride on the frame and are
+            // typed exactly once — with the callee's param hints — inside
+            // the synthesized call.
             work.push(TypeWorkOp::Build(TypeBuildFrame::DotApply {
                 occ: Rc::clone(&occ),
                 member,
-                pos_count: pos_args.len(),
-                named_keys,
+                pos_args: pos_args.clone(),
+                named_args: named_args.clone(),
                 env: Rc::clone(&env),
                 expected,
                 fuel,
             }));
-            // Drain order is `[receiver, ...pos, ...named]` (matches
-            // `for_each_child`): push reversed so the receiver pops first.
-            for (_, arg) in named_args.iter().rev() {
-                push_visit_no_hint(work, Rc::clone(arg), Rc::clone(&env), fuel);
-            }
-            for arg in pos_args.iter().rev() {
-                push_visit_no_hint(work, Rc::clone(arg), Rc::clone(&env), fuel);
-            }
             push_visit_no_hint(work, receiver, env, fuel);
         }
         // Post-elaboration forms — emitted by req_insertion, not the
@@ -2861,19 +2860,17 @@ fn build_type(
             );
             results.push(r);
         }
-        TypeBuildFrame::DotApply { occ, member, pos_count, named_keys, env, expected, fuel } => {
-            // Children were drained in `[receiver, ...pos, ...named]` order.
-            let total = 1 + pos_count + named_keys.len();
-            let drain_start = results.len() - total;
-            let child_results: Vec<Result<TypeResult, TypeError>> =
-                results.drain(drain_start..).collect();
-            // Surface an ill-typed child first — `Ok` children are needed to
-            // read their result `.node` / `.ty`.
-            if let Err(e) = collect_arg_errors(child_results.iter()) {
-                results.push(Err(e));
-                return;
-            }
-            let recv = child_results[0].as_ref().expect("DotApply: Ok receiver");
+        TypeBuildFrame::DotApply {
+            occ, member, pos_args: pos_nodes, named_args: named_nodes, env, expected, fuel,
+        } => {
+            // Only the receiver was pre-typed (WI-443) — pop its result.
+            let recv = match results.pop().expect("DotApply: missing receiver result") {
+                Ok(r) => r,
+                Err(e) => {
+                    results.push(Err(e));
+                    return;
+                }
+            };
             let receiver_node = Rc::clone(&recv.node);
             // `min_sort`: widen the receiver to its least declared sort. Read
             // the child's result type directly (don't depend on the receiver's
@@ -2881,17 +2878,10 @@ fn build_type(
             // in place — a `Value::Node` receiver type need not be re-grounded.
             let recv_sort = sort_functor_of_view(kb, &recv.ty);
             let dot_span = Some(occ.span.span);
-            // The (typed) arg occurrences — used by both the dot-rule override
-            // and the default method fallback.
-            let pos_nodes: Vec<Rc<NodeOccurrence>> = child_results[1..1 + pos_count]
-                .iter()
-                .map(|r| Rc::clone(&r.as_ref().expect("DotApply: Ok positional arg").node))
-                .collect();
-            let named_nodes: Vec<(Symbol, Rc<NodeOccurrence>)> = named_keys
-                .iter()
-                .zip(&child_results[1 + pos_count..])
-                .map(|(k, r)| (*k, Rc::clone(&r.as_ref().expect("DotApply: Ok named arg").node)))
-                .collect();
+            // `pos_nodes` / `named_nodes` are the RAW arg occurrences — used
+            // by both the dot-rule override and the default method fallback,
+            // and typed once inside the synthesized call (with the callee's
+            // param hints).
 
             // INC2: a sort-specific `[simp]` dot rule (declared in the
             // receiver's sort) OVERRIDES the default. Fire it first; only fall
@@ -2932,7 +2922,7 @@ fn build_type(
                     .or_else(|| find_spec_op_for_provided_sort(kb, s, &short))
             });
             if let Some(op_sym) = op_sym {
-                let mut synth_pos: Vec<Rc<NodeOccurrence>> = Vec::with_capacity(1 + pos_count);
+                let mut synth_pos: Vec<Rc<NodeOccurrence>> = Vec::with_capacity(1 + pos_nodes.len());
                 synth_pos.push(receiver_node);
                 synth_pos.extend(pos_nodes);
                 let pass = super::simp_rewrite::simp_pass(kb);

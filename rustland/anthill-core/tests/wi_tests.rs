@@ -246,3 +246,5 @@ mod wi440_callback_lacks_test;
 
 #[path = "include/wi441_iterable_arrow_pred_test.rs"]
 mod wi441_iterable_arrow_pred_test;
+#[path = "include/wi443_identifier_dot_call_test.rs"]
+mod wi443_identifier_dot_call_test;

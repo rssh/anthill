@@ -35,7 +35,7 @@ namespace anthill.todo
   import anthill.prelude.Int64.{to_string}
   import anthill.prelude.String.{concat}
   import anthill.prelude.List.{cons, nil}
-  import anthill.prelude.Iterable.{find, size}
+  import anthill.prelude.Iterable.{size}
   import anthill.reflect.{Term, Substitution, term_functor_name,
                           term_field, term_as_string, term_as_entity,
                           fresh_var, make_fn, as_term, term_to_string,
@@ -464,10 +464,10 @@ namespace anthill.todo
                 1
 
     -- Find the first Binding with the given name; none() otherwise
-    -- (the stdlib `Iterable.find` + unwrap to the binding's value;
-    -- the `args.find(...)` dot form is WI-443).
+    -- (the stdlib `Iterable.find` via the WI-443 identifier-receiver dot
+    -- form + unwrap to the binding's value).
     operation get_arg(args: List[Binding], name: String) -> Option[String] =
-      match find(args, lambda b ->
+      match args.find(lambda b ->
           match b
             case Binding(bname, _) -> eq(bname, name))
         case none() -> none()

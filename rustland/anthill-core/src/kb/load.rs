@@ -4437,7 +4437,15 @@ impl<'a> Loader<'a> {
     /// `y` doesn't accidentally pull in `Float.atan2.y` via
     /// `resolve_by_short_name`.
     fn remap_symbol(&mut self, sym: Symbol) -> Symbol {
-        let name = self.parsed.symbols.name(sym);
+        let name = self.parsed.symbols.name(sym).to_owned();
+        self.remap_name_str(&name)
+    }
+
+    /// [`remap_symbol`] on a raw name string. WI-443 needs the string form:
+    /// the dot member of an identifier-receiver call exists only as a
+    /// segment of the flattened functor name, never as a parse `Symbol`.
+    /// (Distinct from `remap_name`, which takes the structured parse `Name`.)
+    fn remap_name_str(&mut self, name: &str) -> Symbol {
         if let Some(local) = self.lookup_local_name(name) {
             return local;
         }
@@ -5141,6 +5149,19 @@ impl<'a> Loader<'a> {
                         let named_keys: SmallVec<[Symbol; 2]> =
                             visible_named.iter().map(|&(sym, _)| sym).collect();
                         let pos_count = pos_args.len();
+                        // WI-443: an identifier-receiver dot call — re-routed
+                        // to the DotApply path when the dotted functor's head
+                        // segment names a local binding. Gated on no
+                        // type-args (the filtered ParseAux children):
+                        // `dot_apply` has no type-args channel, and silently
+                        // dropping them would be worse than the loud flatten.
+                        if named_args.len() == visible_named.len()
+                            && self.try_identifier_dot_call(
+                                parse_id, &name, &pos_args, &visible_named, work, results,
+                            )
+                        {
+                            return;
+                        }
                         work.push(LoadWorkOp::Build(LoadBuildFrame::ApplyOrConstructor {
                             outer_parse_id: parse_id,
                             functor,
@@ -5196,6 +5217,73 @@ impl<'a> Loader<'a> {
                 self.push_leaf_occ(kb_id);
             }
         }
+    }
+
+    /// WI-443: re-route an identifier-receiver dot call. The scope-blind
+    /// converter flattens `args.find(...)` into the single dotted functor
+    /// name `"args.find"` — at parse time it is indistinguishable from a
+    /// sort-companion call like `Stream.find(...)`. Here the scope IS known:
+    /// when the head segment names a local binding — a let/lambda/match
+    /// binder or an op param — the call becomes the same `Expr::DotApply`
+    /// the `?x.m(...)` form produces (typer dot-dispatch on the receiver's
+    /// sort, WI-279), with a synthesized `var_ref` receiver (there is no
+    /// parse node to Visit). Locals are checked before scope resolution, so
+    /// a binder shadows a same-named sort. A head naming a sort/namespace —
+    /// or nothing in scope — keeps qualified-name flattening (and its
+    /// existing loud unknown-functor diagnostic). Multi-segment tails
+    /// (`p.x.m(...)`) are conservatively NOT re-routed (kept flattening,
+    /// loud) until chained-receiver synthesis is wanted.
+    fn try_identifier_dot_call(
+        &mut self,
+        parse_id: TermId,
+        functor_name: &str,
+        pos_args: &[TermId],
+        visible_named: &[(Symbol, TermId)],
+        work: &mut Vec<LoadWorkOp>,
+        results: &mut Vec<TermId>,
+    ) -> bool {
+        let Some((head, member)) = functor_name.split_once('.') else {
+            return false;
+        };
+        if member.contains('.') {
+            return false;
+        }
+        let head_binder = self.lookup_local_name(head).or_else(|| {
+            match self.kb.symbols.resolve_in_scope(head, self.current_scope.raw()) {
+                ResolveResult::Found(s) => match self.kb.symbols.get(s) {
+                    SymbolDef::Resolved { kind: SymbolKind::Param, .. } => Some(s),
+                    _ => None,
+                },
+                _ => None,
+            }
+        });
+        let Some(head_sym) = head_binder else {
+            return false;
+        };
+        // Synthesized receiver: the `var_ref(name: Ref(binder))` shape
+        // `load_var_ref` builds for a bare identifier reference, plus its
+        // leaf occurrence — pushed BEFORE the arg Visits so it lands in the
+        // DotApply build frame's receiver slot (`results[drain_start]`).
+        let receiver_kb = self.mk_var_ref(head_sym);
+        results.push(receiver_kb);
+        self.push_leaf_occ(receiver_kb);
+        let member_sym = self.remap_name_str(member);
+        let name_ref = self.kb.alloc(Term::Ref(member_sym));
+        let named_keys: SmallVec<[Symbol; 2]> =
+            visible_named.iter().map(|&(sym, _)| sym).collect();
+        work.push(LoadWorkOp::Build(LoadBuildFrame::DotApply {
+            outer_parse_id: parse_id,
+            name_ref,
+            pos_count: pos_args.len(),
+            named_keys,
+        }));
+        for &(_, tid) in visible_named.iter().rev() {
+            work.push(LoadWorkOp::Visit(tid));
+        }
+        for &tid in pos_args.iter().rev() {
+            work.push(LoadWorkOp::Visit(tid));
+        }
+        true
     }
 
     /// WI-304: push the native leaf `NodeOccurrence` for a just-built leaf
@@ -5505,6 +5593,9 @@ impl<'a> Loader<'a> {
                 // named args. Build the reflect `dot_apply(receiver, name,
                 // args: List[ApplyArg])` — the same ApplyArg encoding the
                 // apply path uses, so `materialize_from_handle` round-trips it.
+                // WI-443: flag the KB — the typer must reassemble ancestor
+                // trees for the dot rewrite to persist, even with no [simp].
+                self.kb.has_dot_applies = true;
                 let total = 1 + pos_count + named_keys.len();
                 let drain_start = results.len() - total;
                 let receiver = results[drain_start];
@@ -5883,12 +5974,24 @@ impl<'a> Loader<'a> {
 
     fn load_var_ref(&mut self, parse_id: TermId) -> TermId {
         let parse_term = self.parsed.terms.get(parse_id).clone();
-        let name_ref = if let Term::Ident(sym) = parse_term {
+        if let Term::Ident(sym) = parse_term {
             let kb_sym = self.remap_symbol(sym);
-            self.kb.alloc(Term::Ref(kb_sym))
+            self.mk_var_ref(kb_sym)
         } else {
-            self.convert_term(parse_id)
-        };
+            let name_ref = self.convert_term(parse_id);
+            self.mk_var_ref_from_term(name_ref)
+        }
+    }
+
+    /// Build the canonical `var_ref(name: Ref(sym))` expression term for a
+    /// resolved identifier. Shared by `load_var_ref` (parse-node references)
+    /// and the WI-443 synthesized dot-call receiver (no parse node).
+    fn mk_var_ref(&mut self, kb_sym: Symbol) -> TermId {
+        let name_ref = self.kb.alloc(Term::Ref(kb_sym));
+        self.mk_var_ref_from_term(name_ref)
+    }
+
+    fn mk_var_ref_from_term(&mut self, name_ref: TermId) -> TermId {
         let var_ref_sym = self.kb.resolve_symbol("anthill.reflect.Expr.var_ref");
         let name_key = self.kb.intern("name");
         self.kb.alloc(Term::Fn {

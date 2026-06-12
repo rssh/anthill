@@ -334,6 +334,13 @@ pub struct KnowledgeBase {
     /// body stays here, reachable relationally via `operation_body`.
     pub(crate) op_bodies: HashMap<Symbol, Rc<NodeOccurrence>>,
 
+    /// WI-443 — true once the loader has built any `dot_apply` expression.
+    /// The typer's tree-reassembly gate reads it: a DotApply is ALWAYS
+    /// rewritten by the typer (to the dispatched call), so its ancestors
+    /// must be reassembled for the rewrite to reach the stored body (and
+    /// thus eval) even when no `[simp]` equation is loaded.
+    pub(crate) has_dot_applies: bool,
+
     // WI-348 (value-fact payoff): the `op_effects` side-table is GONE. A
     // `denoted`-bearing effect label (`Modify[c]`) now lives in the
     // `OperationInfo` fact itself — the loader builds that fact as a *value
@@ -452,6 +459,7 @@ impl KnowledgeBase {
             term_spans: HashMap::new(),
             functor_spans: HashMap::new(),
             op_bodies: HashMap::new(),
+            has_dot_applies: false,
             entity_field_types: HashMap::new(),
             resolved_requires_facts: HashSet::new(),
             sources: SourceRegistry::new(),
