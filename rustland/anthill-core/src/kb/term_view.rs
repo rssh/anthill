@@ -82,10 +82,110 @@ impl ViewItem<'_> {
 // ── Occurrence views (WI-276) ──────────────────────────────────
 //
 // `Value::Node` / `ViewItem::Node` expose a reflect `Expr` occurrence to the
-// matcher. Only the Apply / Constructor / leaf forms are made structural —
-// those a `[simp]` rule LHS matches; control-flow forms (Match / If / Let /
-// Lambda / collection literals / *Within / …) stay `Opaque`. `Expr::DotApply`
-// (added by WI-278) will get an arm here mapping to a `dot_apply` functor.
+// matcher. Only the Apply / Constructor / DotApply / leaf forms are made
+// structural — those a `[simp]` rule LHS matches; control-flow forms (Match /
+// If / Let / Lambda / collection literals / *Within / …) stay `Opaque`.
+
+// ── DotApply ↔ `dot_apply` term isomorphism (WI-425) ────────────
+//
+// A DotApply occurrence reads byte-identically to the term twin the loader
+// emits for the same `r.name(args)` — `dot_apply(receiver, name,
+// args: List[ApplyArg])`, always arity-3 named, `args = nil` for a bare field
+// access (load.rs `LoadBuildFrame::DotApply` / `convert_term`'s dot_apply
+// re-encode). Same head, same named keys in the same (builder slice) order,
+// same `args` list structure — so the two carriers produce identical discrim
+// keys and a fact stored under one carrier matches a query in the other
+// (discrim-query-is-the-unifier: a cross-carrier miss is a wrong answer).
+
+/// The `dot_apply` functor symbol, or `None` when reflect isn't loaded — the
+/// occurrence then reads `Opaque` (fail-soft: such a KB cannot hold a
+/// loader-built DotApply occurrence anyway).
+fn dot_apply_functor(kb: &KnowledgeBase) -> Option<Symbol> {
+    kb.try_resolve_symbol("anthill.reflect.Expr.dot_apply")
+}
+
+/// The named-child keys of a `dot_apply` term in the loader's builder order:
+/// `receiver`, `name`, `args`. Panics if a key was never interned: any KB
+/// holding a DotApply occurrence interned all three when the loader built the
+/// occurrence's term twin (`ExprSyms`), so a miss is an inconsistent KB — and
+/// silently dropping a key would desync `named_keys` from `head`'s
+/// `named_arity` and mis-depth a discrim walk.
+fn dot_apply_keys(kb: &KnowledgeBase) -> [Symbol; 3] {
+    let key = |k: &str| {
+        kb.lookup_symbol(k).unwrap_or_else(|| {
+            panic!(
+                "dot_apply view: field key `{k}` not interned — KB holds a \
+                 DotApply occurrence but never built a dot_apply term twin"
+            )
+        })
+    };
+    [key("receiver"), key("name"), key("args")]
+}
+
+/// Synthesize a DotApply occurrence's `args` child — the `List[ApplyArg]`
+/// occurrence mirroring the loader's `mk_apply_arg` + `build_list` encoding:
+/// a positional call arg rides as `ApplyArg(name: none(), value: …)`, a named
+/// one as `ApplyArg(name: some(value: Ref(k)), value: …)`, on a cons/nil
+/// spine over the prelude List constructors. The arg-value children are the
+/// existing occurrences (shared `Rc`s); only the spine is fresh per call —
+/// same cost class as the `name` child's synthesized `Ref`. Panics on an
+/// unresolvable constructor for the same reason as [`dot_apply_keys`].
+fn dot_apply_args_child(
+    occ: &NodeOccurrence,
+    kb: &KnowledgeBase,
+    pos_args: &[Rc<NodeOccurrence>],
+    named_args: &[(Symbol, Rc<NodeOccurrence>)],
+) -> Rc<NodeOccurrence> {
+    let resolve = |q: &str| {
+        kb.try_resolve_symbol(q).unwrap_or_else(|| {
+            panic!(
+                "dot_apply view: `{q}` unresolved — KB holds a DotApply \
+                 occurrence but never built a dot_apply term twin"
+            )
+        })
+    };
+    let key = |k: &str| {
+        kb.lookup_symbol(k).unwrap_or_else(|| {
+            panic!(
+                "dot_apply view: field key `{k}` not interned — KB holds a \
+                 DotApply occurrence but never built a dot_apply term twin"
+            )
+        })
+    };
+    let cons = resolve("anthill.prelude.List.cons");
+    let nil = resolve("anthill.prelude.List.nil");
+    let some = resolve("anthill.prelude.Option.some");
+    let none = resolve("anthill.prelude.Option.none");
+    let apply_arg = resolve("anthill.reflect.ApplyArg");
+    let (k_head, k_tail) = (key("head"), key("tail"));
+    let (k_name, k_value) = (key("name"), key("value"));
+    let mk = |name: Symbol, named: Vec<(Symbol, Rc<NodeOccurrence>)>| {
+        NodeOccurrence::new_expr(
+            Expr::Constructor { name, pos_args: Vec::new(), named_args: named },
+            occ.span,
+            occ.owner,
+        )
+    };
+    let none_occ = mk(none, Vec::new());
+    let mut items: Vec<Rc<NodeOccurrence>> =
+        Vec::with_capacity(pos_args.len() + named_args.len());
+    for value in pos_args {
+        items.push(mk(
+            apply_arg,
+            vec![(k_name, Rc::clone(&none_occ)), (k_value, Rc::clone(value))],
+        ));
+    }
+    for (arg_sym, value) in named_args {
+        let name_ref = NodeOccurrence::new_expr(Expr::Ref(*arg_sym), occ.span, occ.owner);
+        let some_occ = mk(some, vec![(k_value, name_ref)]);
+        items.push(mk(apply_arg, vec![(k_name, some_occ), (k_value, Rc::clone(value))]));
+    }
+    let mut list = mk(nil, Vec::new());
+    for item in items.into_iter().rev() {
+        list = mk(cons, vec![(k_head, item), (k_tail, list)]);
+    }
+    list
+}
 
 fn occ_head(occ: &NodeOccurrence, kb: &KnowledgeBase) -> ViewHead {
     // WI-342: a Value-carried Type / EffectExpression occurrence reads through
@@ -113,25 +213,18 @@ fn occ_head(occ: &NodeOccurrence, kb: &KnowledgeBase) -> ViewHead {
         Some(Expr::Ref(s)) => ViewHead::Ref(*s),
         Some(Expr::Ident(s)) => ViewHead::Ident(*s),
         Some(Expr::Var(Var::Global(vid))) => ViewHead::Var(*vid),
-        // WI-278 / WI-397: a dot form `r.name(args)` reads STRUCTURALLY as its
-        // reflect `dot_apply(name, receiver[, args])` term twin — head functor
-        // `dot_apply`, NOT opaque — so a fact embedding a DotApply (e.g. a
-        // compound-projection receiver `s.cell`) indexes/matches like any term
-        // instead of hitting the discrim opaque-head guard. `name` + `receiver`
-        // are named children (the field form `r.name` has `named_arity = 2`, no
-        // positional); a method form's call args ride directly as positional /
-        // named (the reflect args-list flattening is not mirrored — unreachable
-        // via this view today, and sound as a discrim pre-filter regardless).
-        Some(Expr::DotApply { pos_args, named_args, .. }) => {
-            match kb.try_resolve_symbol("anthill.reflect.Expr.dot_apply") {
-                Some(da) => ViewHead::Functor {
-                    functor: Some(da),
-                    pos_arity: pos_args.len(),
-                    named_arity: 2 + named_args.len(),
-                },
-                None => ViewHead::Opaque,
+        // WI-278 / WI-397 / WI-425: a dot form `r.name(args)` reads
+        // STRUCTURALLY as its `dot_apply(receiver, name, args: List[ApplyArg])`
+        // term twin — always arity-3 named, no positionals, call args folded
+        // into the `args` list child — so a fact embedding a DotApply (e.g. a
+        // compound-projection receiver `s.cell`) indexes/matches identically
+        // to the term the loader emits for the same source.
+        Some(Expr::DotApply { .. }) => match dot_apply_functor(kb) {
+            Some(da) => {
+                ViewHead::Functor { functor: Some(da), pos_arity: 0, named_arity: 3 }
             }
-        }
+            None => ViewHead::Opaque,
+        },
         // Rigid / DeBruijn vars, control-flow and post-elaboration forms,
         // and rule-head occurrences are opaque to rule-LHS matching.
         _ => ViewHead::Opaque,
@@ -158,11 +251,10 @@ fn occ_index_var(occ: &Rc<NodeOccurrence>) -> Option<Var> {
 /// positional), so this is `None` for them.
 fn occ_pos_child(occ: &NodeOccurrence, _kb: &KnowledgeBase, i: usize) -> Option<Rc<NodeOccurrence>> {
     match occ.as_expr()? {
-        // WI-397: a DotApply's positional children are its method-call args (the
-        // field form has none); `name` / `receiver` are NAMED children (occ_named_child).
+        // WI-425: a DotApply has NO positional children — its call args live
+        // inside the `args` named child, mirroring the term twin.
         Expr::Apply { pos_args, .. }
-        | Expr::Constructor { pos_args, .. }
-        | Expr::DotApply { pos_args, .. } => pos_args.get(i).map(Rc::clone),
+        | Expr::Constructor { pos_args, .. } => pos_args.get(i).map(Rc::clone),
         _ => None,
     }
 }
@@ -175,17 +267,25 @@ fn occ_pos_child(occ: &NodeOccurrence, _kb: &KnowledgeBase, i: usize) -> Option<
 /// callers go through [`type_node_named`] / [`effect_expr_named`] (returning a
 /// `ViewItem`) instead. This `Rc`-returning helper stays Expr-only.
 fn occ_named_child(occ: &NodeOccurrence, kb: &KnowledgeBase, sym: Symbol) -> Option<Rc<NodeOccurrence>> {
-    // WI-278 / WI-397: a DotApply exposes `name` (a synthesized `Ref` to the method
-    // symbol) and `receiver` as named children — mirroring its `dot_apply(name,
-    // receiver)` term twin — plus any named call args.
-    if let Some(Expr::DotApply { receiver, name, named_args, .. }) = occ.as_expr() {
-        if kb.lookup_symbol("receiver") == Some(sym) {
+    // WI-278 / WI-397 / WI-425: a DotApply exposes exactly the term twin's
+    // three named children — `receiver`, `name` (a synthesized `Ref` to the
+    // member symbol), and `args` (the synthesized `List[ApplyArg]` of its call
+    // args). Named call args are NOT directly addressable — they live inside
+    // `args`, as in the term.
+    if let Some(Expr::DotApply { receiver, name, pos_args, named_args }) = occ.as_expr() {
+        // Reflect not loaded ⇒ the head reads `Opaque` (no children).
+        dot_apply_functor(kb)?;
+        let [k_receiver, k_name, k_args] = dot_apply_keys(kb);
+        if sym == k_receiver {
             return Some(Rc::clone(receiver));
         }
-        if kb.lookup_symbol("name") == Some(sym) {
+        if sym == k_name {
             return Some(NodeOccurrence::new_expr(Expr::Ref(*name), occ.span, occ.owner));
         }
-        return named_args.iter().find(|(s, _)| *s == sym).map(|(_, c)| Rc::clone(c));
+        if sym == k_args {
+            return Some(dot_apply_args_child(occ, kb, pos_args, named_args));
+        }
+        return None;
     }
     let named = match occ.as_expr()? {
         Expr::Apply { named_args, .. } | Expr::Constructor { named_args, .. } => named_args,
@@ -205,17 +305,16 @@ fn occ_named_keys(occ: &NodeOccurrence, kb: &KnowledgeBase) -> Vec<Symbol> {
         Some(Expr::Apply { named_args, .. }) | Some(Expr::Constructor { named_args, .. }) => {
             named_args.iter().map(|(s, _)| *s).collect()
         }
-        // WI-397: `name` + `receiver` (the dot_apply term twin's named children) plus
-        // any named call args, in canonical symbol order (matches the sorted term form,
-        // and keeps insert/query descent in lockstep).
-        Some(Expr::DotApply { named_args, .. }) => {
-            let mut keys: Vec<Symbol> = Vec::with_capacity(2 + named_args.len());
-            if let Some(n) = kb.lookup_symbol("name") { keys.push(n); }
-            if let Some(r) = kb.lookup_symbol("receiver") { keys.push(r); }
-            keys.extend(named_args.iter().map(|(s, _)| *s));
-            keys.sort_by_key(|s| s.index());
-            keys
-        }
+        // WI-425: the dot_apply term twin's keys in the loader's builder slice
+        // order — `receiver`, `name`, `args` (load.rs; the term is NOT sorted
+        // by field name here). The discrim walk descends named children in
+        // `named_keys` order, so matching the term's stored order is what
+        // keeps a term-side insert and an occurrence-side query in lockstep.
+        Some(Expr::DotApply { .. }) => match dot_apply_functor(kb) {
+            Some(_) => dot_apply_keys(kb).to_vec(),
+            // Reflect not loaded ⇒ the head reads `Opaque` (no children).
+            None => Vec::new(),
+        },
         _ => Vec::new(),
     }
 }

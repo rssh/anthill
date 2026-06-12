@@ -205,6 +205,9 @@ mod wi397_compound_projection_test;
 #[path = "include/wi398_cross_param_projection_test.rs"]
 mod wi398_cross_param_projection_test;
 
+#[path = "include/wi425_dotapply_view_isomorphism_test.rs"]
+mod wi425_dotapply_view_isomorphism_test;
+
 #[path = "include/wi399_let_projection_test.rs"]
 mod wi399_let_projection_test;
 

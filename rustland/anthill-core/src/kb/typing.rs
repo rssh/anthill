@@ -14160,6 +14160,13 @@ fn type_head<V: TermView>(kb: &KnowledgeBase, ty: &V) -> TypeHead {
                 "anthill.prelude.TypeExtractor.EffectsRows" => TypeHead::EffectsRows,
                 "anthill.prelude.TypeExtractor.Arrow" => TypeHead::Arrow,
                 "anthill.prelude.TypeExtractor.NamedTuple" => TypeHead::NamedTuple,
+                // WI-425: a bare DotApply expression carrier (`s.cell` outside
+                // an ExprCarried wrapper) is NOT a type — without this arm the
+                // named_arity>0 fallthrough below would classify it as a
+                // parameterized type over a phantom sort named `dot_apply`
+                // (and `sort_functor_of_view` would report that as a real
+                // sort head).
+                "anthill.reflect.Expr.dot_apply" => TypeHead::Error,
                 // Parameterized: the functor IS the base sort, the named args ARE
                 // the bindings. A no-arg `Fn{f}` is malformed (a bare sort is
                 // `Ref(S)`, never `Fn{S}`).
