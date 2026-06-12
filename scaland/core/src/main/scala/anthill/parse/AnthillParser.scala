@@ -213,32 +213,62 @@ private class AnthillParserImpl(
     }
 
   /** Effect set, shared by arrow `@` and operation `effects`. Mirrors
-    * rustland's `_effect_set` (`commaSep1`):
+    * rustland's `_effect_set` (`commaSep`, WI-440):
     *   - single:  `E`            → `IndexedSeq(E)`
     *   - braced:  `{E1, E2, …}`  → `IndexedSeq(E1, E2, …)`
+    *   - empty:   `{}`           → `IndexedSeq.empty` (explicit closed-empty row)
     *
-    * The braced form requires at least one element and no trailing
-    * comma, matching the rust grammar exactly. The cut after `{`
-    * prevents the bare branch from rescuing `{}` via `setType`. */
+    * The braced form allows ZERO elements (WI-440: `@ {}` / `effects {}`
+    * is the explicit pure/closed-empty row). The cut after `{` commits to
+    * the braced branch so `{}` is never rescued as a `setType`. */
   private def effectSet[$: P]: P[IndexedSeq[TypeExpr]] =
     P(
-      ("{" ~/ effectType.rep(1, sep = ",") ~ "}").map(_.toIndexedSeq) |
+      ("{" ~/ effectType.rep(sep = ",") ~ "}").map(_.toIndexedSeq) |
       effectType.map(IndexedSeq(_))
     )
 
-  /** Single effect type. Mirrors rustland's `_effect_type` (WI-092):
-    * `simple_type | parameterized_type | variable_term` only. Tuple and
-    * arrow types are deliberately rejected — neither is meaningful as an
-    * effect, and accepting a leading `(` would let a typo like
-    * `effects (Modify self)` consume the `(` as an arrow/tuple type and
-    * cascade error recovery across the enclosing body. With `(` rejected
-    * up front the parser fails at the bad token and resyncs at the next
-    * clause keyword. */
+  /** Single effect type. Mirrors rustland's `_effect_type` (WI-092 +
+    * WI-327): the base `simple_type | parameterized_type | variable_term`
+    * (`simpleEffect`) plus the proposal-045 surface algebra — explicit
+    * `+E` presence and `-E` absence (lacks-constraint). `merge(...)` union
+    * sugar is not yet used by any loaded file, so it is omitted here.
+    * Tuple and arrow types are deliberately rejected — neither is
+    * meaningful as an effect, and accepting a leading `(` would let a typo
+    * like `effects (Modify self)` consume the `(` as an arrow/tuple type. */
   private def effectType[$: P]: P[TypeExpr] =
+    P(effectPresence | effectAbsence | simpleEffect)
+
+  /** `_simple_effect` (WI-327): a bare effect with no composite prefix —
+    * what `+`/`-` attach to. */
+  private def simpleEffect[$: P]: P[TypeExpr] =
     P(parameterizedType | variableType | simpleType)
 
+  /** `+E` explicit presence → `present(E)`; `-E` absence/lacks → `absent(E)`
+    * (mirrors rustland's `effect_presence`/`effect_absence` lowering). scaland
+    * has no typer, so these lower to plain functor terms that round-trip
+    * through `typeExprToRef`; the lacks-semantics live only in the rust typer. */
+  private def effectPresence[$: P]: P[TypeExpr] =
+    P("+" ~/ simpleEffect).map(wrapEffectOp("present"))
+
+  private def effectAbsence[$: P]: P[TypeExpr] =
+    P("-" ~/ simpleEffect).map(wrapEffectOp("absent"))
+
+  private def wrapEffectOp(op: String)(e: TypeExpr): TypeExpr =
+    val inner = typeExprToRef(e)
+    TypeExpr.Variable(terms.alloc(Term.Fn(intern(op), IArray(inner), IArray.empty)), IndexedSeq.empty)
+
   private def arrowParams[$: P]: P[IndexedSeq[TypeExpr]] =
-    P("(" ~ typeExpr.rep(sep = ",") ~ ")").map(_.toIndexedSeq)
+    P("(" ~ arrowParam.rep(sep = ",") ~ ")").map(_.toIndexedSeq)
+
+  /** An arrow parameter may carry an optional binder NAME — `(x: Elem) -> Bool`
+    * — so a dependent-absence row `-Modify[x]` can reference it (WI-441).
+    * scaland has no typer, so the binder name is dropped and only the type is
+    * kept (matching scaland's single-param arrow lowering, which never
+    * captured binder names). NO cut after `:`, so a NAMED TUPLE type
+    * `(a: T, b: U)` — for which arrow's `->` is absent — still backtracks
+    * cleanly to `tupleType`. */
+  private def arrowParam[$: P]: P[TypeExpr] =
+    P((ident ~ ":" ~ typeExpr).map { case (_, t) => t } | typeExpr)
 
   case class TupleField(name: TermSymbol, ty: TypeExpr)
 
@@ -379,9 +409,13 @@ private class AnthillParserImpl(
     P("(" ~ fnArg.rep(sep = ",") ~ ")").map(_.toIndexedSeq)
 
   private def fnArg[$: P]: P[Either[TermId, (TermSymbol, TermId)]] =
+    // The unnamed value is an `exprBody`, not a bare `term`, so a call
+    // argument may itself be a `lambda`/`match`/`if`/`let` expression
+    // (e.g. `find(specs, lambda s -> match s case ...)`, stdlib cli/parse).
+    // `exprBody` falls through to `term`, so ordinary args are unchanged.
     P(
       (ident ~ ":" ~/ term).map { case (k, v) => Right((k, v)) } |
-      term.map(Left(_))
+      exprBody.map(Left(_))
     )
 
   private def instArgsList[$: P]: P[IndexedSeq[SortBinding]] =
@@ -548,14 +582,15 @@ private class AnthillParserImpl(
         terms.alloc(Term.Fn(intern("if_expr"), IArray(cond, thenB, elseB), IArray.empty))
     }
 
-  /** `let pat [: T] = value in body`. The optional `: T` annotation
-    * (proposal 035 form (1), WI-185) supplies an expected-type hint to the
-    * typer for the value position. Mirrors rustland: encoded as a
-    * `type_name` named-arg child holding the type lowered to a term; the
-    * positional args stay `(pattern, value, body)` so the bare form is
-    * unchanged. */
+  /** `let pat [: T] = value [in] body`. The `in` keyword is OPTIONAL:
+    * rustland's canonical form is block-style (`let x = value \n body`, no
+    * `in` — see grammar `let_chain`); the `in` form is also accepted for
+    * back-compat. The optional `: T` annotation (proposal 035 form (1),
+    * WI-185) supplies an expected-type hint for the value position. Mirrors
+    * rustland: encoded as a `type_name` named-arg child holding the type
+    * lowered to a term; positional args stay `(pattern, value, body)`. */
   private def letExpr[$: P]: P[TermId] =
-    P(keyword("let") ~/ pattern ~ (":" ~ typeExpr).? ~ "=" ~ exprBody ~ keyword("in") ~ exprBody).map {
+    P(keyword("let") ~/ pattern ~ (":" ~ typeExpr).? ~ "=" ~ exprBody ~ keyword("in").? ~ exprBody).map {
       case (pat, tyAnno, value, body) =>
         val named = tyAnno match
           case Some(ty) => IArray((intern("type_name"), typeExprToRef(ty)))
@@ -713,6 +748,20 @@ private class AnthillParserImpl(
         Item.SortWithBodyItem(SortWithBody(vis, n, IndexedSeq.empty, imports, exports, items, meta, mkSpan(0, 0), SortDeclKind.Sort))
     }
 
+  /** `effects E = ?` (or `= X`) at sort-item position (WI-320 / proposal
+    * 045). Rustland (`effects_sort_item`) desugars this to the pair
+    * `sort E = ? + requires EffectsRuntime[Effects = E]`. scaland keeps the
+    * `sort E = ?` half as an `AbstractSort` and OMITS the
+    * `requires EffectsRuntime` anchor: that anchor exists solely to give the
+    * row variable a kind reachable at typing time, and scaland has no typer,
+    * so it would be inert load. The mandatory `=` disambiguates from the
+    * operation-clause `effects E` (which never appears at body level). */
+  private def effectsSortItem[$: P]: P[Item] =
+    P(visibility.? ~ keyword("effects") ~ name ~ "=" ~/ typeExpr ~ metaBlock.?).map {
+      case (vis, n, defn, meta) =>
+        Item.AbstractSortItem(AbstractSort(vis, n, defn, IndexedSeq.empty, meta, mkSpan(0, 0)))
+    }
+
   /** `enum NAME ... end` — same body shape as `sort NAME ... end` but the
     * declaration kind is recorded as `Enum` (proposal 025). */
   private def enumDecl[$: P]: P[Item] =
@@ -862,7 +911,9 @@ private class AnthillParserImpl(
     }
 
   private def entityDecl[$: P]: P[Item] =
-    P(visibility.? ~ keyword("entity") ~/ simpleName ~ ("(" ~ fieldDecl.rep(1, sep = ",") ~ ")").? ~ metaBlock.?
+    // `name` (not `simpleName`): rustland allows a qualified entity name
+    // (`entity anthill.prelude.TypeBinding(...)`, stdlib sort.anthill).
+    P(visibility.? ~ keyword("entity") ~/ name ~ ("(" ~ fieldDecl.rep(1, sep = ",") ~ ")").? ~ metaBlock.?
     ).map { case (vis, n, fields, meta) =>
       Item.EntityItem(Entity(vis, n, fields.map(_.toIndexedSeq).getOrElse(IndexedSeq.empty), meta, mkSpan(0, 0)))
     }
@@ -1057,6 +1108,7 @@ private class AnthillParserImpl(
     P(
       namespaceDecl |
       sortDecl |
+      effectsSortItem |
       enumDecl |
       ruleDecl |
       operationDecl |

@@ -328,8 +328,11 @@ class ParseTest extends munit.FunSuite:
       case Right(_) => fail(s"expected parse failure for $label")
       case Left(_) => ()
 
-  test("arrow type empty braced effect set `@ {}` is rejected") {
-    parseRejected("(A) -> B @ {}", "empty braced effect set")
+  test("arrow type empty braced effect set `@ {}` parses as the closed-empty row (WI-440)") {
+    // WI-440: `@ {}` / `effects {}` is the explicit pure / closed-empty row
+    // (`commaSep`, not `commaSep1`). Previously rejected; now an empty effect set.
+    val a = parseArrowParam("(A) -> B @ {}")
+    assertEquals(a.effects.length, 0)
   }
 
   test("arrow type trailing comma `@ {Modifies,}` is rejected") {
