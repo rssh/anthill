@@ -7309,12 +7309,20 @@ fn contains_type_param(kb: &KnowledgeBase, value: TermId) -> bool {
 /// `spec_qn`. Determined by checking whether `<spec_qn>.<short>`
 /// resolves to a SortAlias-bearing symbol — only spec params do.
 fn is_type_param_binding(kb: &KnowledgeBase, short: Symbol, spec_qn: &str) -> bool {
+    type_param_sym_of_binding(kb, short, spec_qn).is_some()
+}
+
+/// WI-431 (B): if `short` (a provision binding key) names a type parameter of the
+/// spec `spec_qn`, return the RESOLVED spec-parameter symbol — the one the spec
+/// operations' types actually reference (`Combiner.combine`'s `Ref(Combiner.T)`)
+/// — so a σ keyed on it actually substitutes. The raw binding key can be a
+/// different `Symbol` copy (resolved in the fact's scope), against which
+/// `substitute_impl_params_alloc`'s `Symbol`-equality match is a silent no-op.
+fn type_param_sym_of_binding(kb: &KnowledgeBase, short: Symbol, spec_qn: &str) -> Option<Symbol> {
     let short_name = kb.resolve_sym(short).to_string();
     let qn = format!("{spec_qn}.{short_name}");
-    let Some(s) = kb.try_resolve_symbol(&qn) else {
-        return false;
-    };
-    resolve_sort_alias(kb, s).is_some()
+    let s = kb.try_resolve_symbol(&qn)?;
+    resolve_sort_alias(kb, s).map(|_| s)
 }
 
 /// WI-347 — operation-override refinement check. A carrier's own operation
@@ -7469,6 +7477,176 @@ pub fn check_override_refinement(kb: &mut KnowledgeBase) -> Vec<super::load::Loa
         }
     }
     errors
+}
+
+/// WI-431 (B) — INSTANCE-FACT op-binding SIGNATURE validation. An instance fact
+/// `fact Spec[<carrier param> = C, op = boundOp, …]` makes `boundOp` back the
+/// spec op `Spec.op` for carrier `C` (rule 1 coverage + increments 2/4 dispatch).
+/// Nothing else checks `boundOp`'s SIGNATURE against `Spec.op`'s, so a mis-bound
+/// op (`combine = unrelatedOp`) would load and then dispatch to a wrongly-typed
+/// impl. This pass checks, with σ (the spec's type parameter → its provision
+/// binding) applied to the spec op's types: same param ARITY; each PARAM type
+/// contravariantly compatible (the bound op accepts the spec's arg type); the
+/// RETURN type covariantly compatible. Type comparisons are GROUND-GATED — only
+/// when the σ-substituted spec type and the bound type are both ground
+/// `Value::Term` — so a higher-kinded binding whose param stays parametric
+/// (`pure : F[T = A]`) fails open, deferred to WI-383. Arity is always checked.
+/// A dedicated pass (not folded into [`check_override_refinement`]) so the
+/// carrier-own override path is untouched; instance facts have no stdlib presence
+/// yet, so this can be strict without regressing existing providers.
+pub fn check_instance_fact_op_signatures(kb: &mut KnowledgeBase) -> Vec<super::load::LoadError> {
+    use super::load::LoadError;
+    let Some(provides_sym) = kb.try_resolve_symbol("anthill.reflect.SortProvidesInfo") else {
+        return Vec::new();
+    };
+    // Spec's own declared ops, to resolve a binding key's short name → the spec op.
+    let own: HashMap<Symbol, Vec<Symbol>> =
+        super::load::sorts_and_own_ops(kb).into_iter().collect();
+
+    // Snapshot the INSTANCE-FACT provisions before the (mutating) type checks:
+    // carrier, spec base, σ (type-param bindings), and the op-valued bindings
+    // (binding-key short name → bound operation). A provision with no op binding
+    // is a plain type-only provision and is skipped.
+    struct Prov {
+        carrier: Symbol,
+        spec: Symbol,
+        sigma: Vec<(Symbol, TermId)>,
+        ops: Vec<(String, Symbol)>,
+    }
+    let mut provs: Vec<Prov> = Vec::new();
+    for rid in kb.rules_by_functor(provides_sym) {
+        if !kb.is_fact(rid) {
+            continue;
+        }
+        let Some(named) = kb.fact_head_named_args(rid) else { continue };
+        let Some(sr) = get_named_arg(kb, &named, "sort_ref") else { continue };
+        let Some(carrier) = super::load::sort_ref_functor(kb, sr) else { continue };
+        let Some(spec_view) = get_named_arg(kb, &named, "spec") else { continue };
+        let Some((spec_base, bindings)) = unwrap_spec_view(kb, spec_view) else { continue };
+        let spec_qn = kb.qualified_name_of(spec_base).to_string();
+        let mut sigma: Vec<(Symbol, TermId)> = Vec::new();
+        let mut ops: Vec<(String, Symbol)> = Vec::new();
+        for (k, v) in &bindings {
+            // σ keys on the RESOLVED spec-param symbol (the one the spec op types
+            // reference), not the raw binding key copy — else the substitution
+            // silently no-ops and every type check falls open.
+            if let Some(param_sym) = type_param_sym_of_binding(kb, *k, &spec_qn) {
+                sigma.push((param_sym, *v));
+            } else if let Some(bound_op) = binding_op_symbol(kb, *v) {
+                ops.push((short_name_of(kb.qualified_name_of(*k)).to_string(), bound_op));
+            }
+        }
+        if ops.is_empty() {
+            continue;
+        }
+        provs.push(Prov { carrier, spec: spec_base, sigma, ops });
+    }
+
+    let mut errors = Vec::new();
+    for p in &provs {
+        let Some(spec_ops) = own.get(&p.spec) else { continue };
+        // Per-provision invariants — hoisted out of the per-binding loop.
+        let carrier_qn = kb.qualified_name_of(p.carrier).to_string();
+        let spec_qn = kb.qualified_name_of(p.spec).to_string();
+        for (op_short, bound_op) in &p.ops {
+            // The spec op the binding key names. A key naming no spec op is the
+            // coverage check's concern, not this one.
+            let Some(&spec_op) = spec_ops
+                .iter()
+                .find(|&&o| short_name_of(kb.qualified_name_of(o)) == *op_short)
+            else {
+                continue;
+            };
+            let Some(spec_info) = super::op_info::lookup_operation_info(kb, spec_op) else { continue };
+            let Some(bound_info) = super::op_info::lookup_operation_info(kb, *bound_op) else { continue };
+            let bound_qn = kb.qualified_name_of(*bound_op).to_string();
+
+            // ── arity (always checkable) ────────────────────────────────────
+            if spec_info.params.len() != bound_info.params.len() {
+                errors.push(LoadError::IncompatibleInstanceBinding {
+                    carrier: carrier_qn.clone(),
+                    spec: spec_qn.clone(),
+                    op: op_short.clone(),
+                    reason: format!(
+                        "the spec operation takes {} parameter(s) but the bound operation '{}' takes {}",
+                        spec_info.params.len(), bound_qn, bound_info.params.len()),
+                });
+                continue;
+            }
+
+            // ── per-param type (contravariant: σ(spec_param) <: bound_param) ─
+            for (i, ((_, spec_pty), (_, bound_pty))) in spec_info
+                .params
+                .iter()
+                .zip(bound_info.params.iter())
+                .enumerate()
+            {
+                if instance_binding_type_ok(kb, spec_pty, bound_pty, &p.sigma, false) == Some(false) {
+                    let bound_disp = type_display_name_value(kb, bound_pty);
+                    let spec_disp = type_display_name_value(kb, spec_pty);
+                    errors.push(LoadError::IncompatibleInstanceBinding {
+                        carrier: carrier_qn.clone(),
+                        spec: spec_qn.clone(),
+                        op: op_short.clone(),
+                        reason: format!(
+                            "parameter {} of the bound operation has type `{}`, incompatible with the spec parameter type `{}`",
+                            i + 1, bound_disp, spec_disp),
+                    });
+                }
+            }
+
+            // ── return type (covariant: bound_ret <: σ(spec_ret)) ───────────
+            if instance_binding_type_ok(kb, &spec_info.return_type, &bound_info.return_type, &p.sigma, true)
+                == Some(false)
+            {
+                let bound_disp = type_display_name_value(kb, &bound_info.return_type);
+                let spec_disp = type_display_name_value(kb, &spec_info.return_type);
+                errors.push(LoadError::IncompatibleInstanceBinding {
+                    carrier: carrier_qn.clone(),
+                    spec: spec_qn.clone(),
+                    op: op_short.clone(),
+                    reason: format!(
+                        "the bound operation returns `{}`, incompatible with the spec return type `{}`",
+                        bound_disp, spec_disp),
+                });
+            }
+        }
+    }
+    errors
+}
+
+/// WI-431 (B): compare one bound-op type against the σ-substituted spec-op type.
+/// `Some(true)` confidently compatible, `Some(false)` a confident GROUND mismatch
+/// (→ a loud error), `None` not confident (a non-ground / `Value::Node`
+/// parametric type — fail open, the higher-kinded case deferred to WI-383).
+/// `bound_is_subtype`: the return is covariant (`bound <: σ(spec)`), a param is
+/// contravariant (`σ(spec) <: bound` — the bound op must accept the spec's arg).
+fn instance_binding_type_ok(
+    kb: &mut KnowledgeBase,
+    spec_ty: &Value,
+    bound_ty: &Value,
+    sigma: &[(Symbol, TermId)],
+    bound_is_subtype: bool,
+) -> Option<bool> {
+    let Value::Term(spec_t) = spec_ty else { return None };
+    let Value::Term(bound_t) = bound_ty else { return None };
+    let spec_sub = if sigma.is_empty() {
+        *spec_t
+    } else {
+        substitute_impl_params_alloc(kb, *spec_t, sigma)
+    };
+    // Confident only when both sides are ground — no spec/op type parameter left.
+    if contains_type_param(kb, spec_sub) || contains_type_param(kb, *bound_t) {
+        return None;
+    }
+    let spec_v = Value::Term(spec_sub);
+    let bound_v = Value::Term(*bound_t);
+    let mut subst = Substitution::new();
+    Some(if bound_is_subtype {
+        types_compatible(kb, &mut subst, &bound_v, &spec_v)
+    } else {
+        types_compatible(kb, &mut subst, &spec_v, &bound_v)
+    })
 }
 
 /// User precondition clauses of an operation — its `requires` field minus the

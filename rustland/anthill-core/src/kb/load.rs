@@ -192,6 +192,21 @@ pub enum LoadError {
         op: String,
         reason: String,
     },
+    /// WI-431 (B): an INSTANCE FACT binds a spec operation to an op whose
+    /// SIGNATURE does not match the spec operation's, with the carrier substituted
+    /// for the spec's type parameter — e.g. `fact Combiner[T = Tag, combine =
+    /// wrongOp]` where `wrongOp` has the wrong arity or an unrelated param/return
+    /// type. The bound op IS the dictionary entry dispatch now calls (WI-431
+    /// increments 2/4), so a mis-typed binding would dispatch to a wrongly-typed
+    /// impl. Load-blocking. Checked only when the substituted spec type and the
+    /// bound type are both ground (a higher-kinded binding whose param stays
+    /// parametric — `CpsMonad.pure : F[T = A]` — fails open, deferred to WI-383).
+    IncompatibleInstanceBinding {
+        carrier: String,
+        spec: String,
+        op: String,
+        reason: String,
+    },
     Other {
         message: String,
     },
@@ -267,6 +282,10 @@ impl LoadError {
                 format!("'{}' overrides '{}.{}' (it provides '{}') but the override does not refine it: {}",
                     carrier, spec, op, spec, reason)
             }
+            LoadError::IncompatibleInstanceBinding { carrier, spec, op, reason } => {
+                format!("instance fact `{}[…]` binds operation '{}.{}' to an operation whose signature does not match (with '{}' substituted for the spec's type parameter): {}",
+                    spec, spec, op, carrier, reason)
+            }
             LoadError::Other { message } => {
                 format!("load error: {}", message)
             }
@@ -313,6 +332,9 @@ impl LoadError {
             // choice — block rather than silently pick the first.
             | LoadError::AmbiguousInstanceFact { .. }
             | LoadError::IncompatibleOverride { .. }
+            // WI-431 (B): a mis-typed instance-fact op binding would dispatch to
+            // a wrongly-typed impl — block.
+            | LoadError::IncompatibleInstanceBinding { .. }
             // WI-366: a value-in-type in a sort-relation position is not yet
             // resolvable — fail loudly rather than run with an unenforced clause.
             | LoadError::ValueInTypeNotResolved { .. }
@@ -357,6 +379,9 @@ impl std::fmt::Display for LoadError {
             }
             LoadError::IncompatibleOverride { carrier, spec, op, reason } => {
                 write!(f, "'{}' overrides '{}.{}' but does not refine it: {}", carrier, spec, op, reason)
+            }
+            LoadError::IncompatibleInstanceBinding { carrier, spec, op, reason } => {
+                write!(f, "instance fact '{}' binds '{}.{}' to a signature-incompatible operation (carrier '{}'): {}", spec, spec, op, carrier, reason)
             }
             LoadError::Other { message } => {
                 write!(f, "load error: {}", message)
@@ -2242,6 +2267,12 @@ fn load_phase_inner(
     // (unsound override), so it lands in `all_errors`.
     all_errors.extend(super::typing::check_override_refinement(kb));
     mark!("check_override_refinement");
+    // WI-431 (B): instance-fact op-binding signature validation — a bound op
+    // (`fact Combiner[T = Tag, combine = wrongOp]`) must match the spec op's
+    // signature with the carrier substituted. Load-blocking (a mis-bound op would
+    // dispatch to a wrongly-typed impl via WI-431 increments 2/4).
+    all_errors.extend(super::typing::check_instance_fact_op_signatures(kb));
+    mark!("check_instance_fact_op_signatures");
     // WI-346: requires-shadow lint — advisory (non-fatal), so it lands in
     // `all_warnings`, not `all_errors`. A legal-but-suspicious same-named op on
     // a `requires`-user (which does NOT override) should be flagged, not block.

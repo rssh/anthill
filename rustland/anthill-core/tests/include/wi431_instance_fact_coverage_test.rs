@@ -369,6 +369,150 @@ end
     );
 }
 
+// ── (B) op-binding SIGNATURE validation ─────────────────────────────────────
+
+/// (B) ACCEPT: a well-typed first-order binding — `combine = tagCombine` where
+/// `tagCombine : (Tag, Tag) -> Tag` exactly matches `Combiner.combine` with
+/// `T := Tag` — passes signature validation (loads clean).
+#[test]
+fn instance_fact_well_typed_binding_passes_signature_check() {
+    let snippet = r#"namespace test.wi431.sig_ok
+  import anthill.prelude.Int64
+
+  sort Combiner
+    sort T = ?
+    operation combine(x: T, y: T) -> T
+  end
+
+  sort Tag
+    entity tag(n: Int64)
+  end
+  operation tagCombine(x: Tag, y: Tag) -> Tag = tag(n: 1)
+  fact Combiner[T = Tag, combine = tagCombine]
+end
+"#;
+    let errs = load_errors(&[snippet]);
+    assert!(
+        !errs.iter().any(|e| e.contains("signature")),
+        "a binding whose signature matches the spec op (with T:=Tag) must load clean: {errs:?}"
+    );
+}
+
+/// (B) REJECT (arity): `combine` bound to a UNARY op — the spec op takes two
+/// parameters — is a loud signature error at the fact.
+#[test]
+fn instance_fact_binding_wrong_arity_is_loud() {
+    let snippet = r#"namespace test.wi431.sig_arity
+  import anthill.prelude.Int64
+
+  sort Combiner
+    sort T = ?
+    operation combine(x: T, y: T) -> T
+  end
+
+  sort Tag
+    entity tag(n: Int64)
+  end
+  operation badCombine(x: Tag) -> Tag = x
+  fact Combiner[T = Tag, combine = badCombine]
+end
+"#;
+    let errs = load_errors(&[snippet]);
+    assert!(
+        errs.iter().any(|e| e.contains("signature-incompatible") && e.contains("parameter")),
+        "binding combine to a unary op (spec takes 2) must be a loud arity error: {errs:?}"
+    );
+}
+
+/// (B) REJECT (parameter type): `combine` bound to an op taking `Int64` params —
+/// `T := Tag`, so the spec expects `Tag` params — is a loud signature error.
+#[test]
+fn instance_fact_binding_wrong_param_type_is_loud() {
+    let snippet = r#"namespace test.wi431.sig_param
+  import anthill.prelude.Int64
+
+  sort Combiner
+    sort T = ?
+    operation combine(x: T, y: T) -> T
+  end
+
+  sort Tag
+    entity tag(n: Int64)
+  end
+  operation badParam(x: Int64, y: Int64) -> Tag = tag(n: 0)
+  fact Combiner[T = Tag, combine = badParam]
+end
+"#;
+    let errs = load_errors(&[snippet]);
+    assert!(
+        errs.iter().any(|e| e.contains("signature-incompatible") && e.contains("parameter")),
+        "binding combine to an op with Int64 params (spec expects Tag) must be loud: {errs:?}"
+    );
+}
+
+/// (B) REJECT (return type): `combine` bound to an op returning `Int64` — `T :=
+/// Tag`, so the spec returns `Tag` — is a loud signature error even though the
+/// parameter types match (isolates the covariant return check).
+#[test]
+fn instance_fact_binding_wrong_return_type_is_loud() {
+    let snippet = r#"namespace test.wi431.sig_return
+  import anthill.prelude.Int64
+
+  sort Combiner
+    sort T = ?
+    operation combine(x: T, y: T) -> T
+  end
+
+  sort Tag
+    entity tag(n: Int64)
+  end
+  operation badReturn(x: Tag, y: Tag) -> Int64 = 0
+  fact Combiner[T = Tag, combine = badReturn]
+end
+"#;
+    let errs = load_errors(&[snippet]);
+    assert!(
+        errs.iter().any(|e| e.contains("signature-incompatible") && e.contains("return")),
+        "binding combine to an op returning Int64 (spec returns Tag) must be loud: {errs:?}"
+    );
+}
+
+/// (B) HIGHER-KINDED binding fails OPEN (deferred to WI-383): the §5.4 `CpsMonad`
+/// instance binds `pure`/`flatMap`, whose types stay parametric after σ
+/// (`F := Option` leaves `F[T = A]` ⇒ `Option[T = A]`, still containing the op's
+/// own `A`). The ground gate skips them, so a well-formed HK instance loads clean
+/// (no false signature error) — the HK signature check rides WI-383.
+#[test]
+fn instance_fact_higher_kinded_binding_signature_fails_open() {
+    let snippet = r#"namespace test.wi431.sig_hk
+  import anthill.prelude.Option
+
+  sort CpsMonad
+    sort F
+      sort T = ?
+    end
+    sort A = ?
+    sort B = ?
+    operation pure(a: A) -> F[T = A]
+    operation flatMap(fa: F[T = A], f: (A) -> F[T = B]) -> F[T = B]
+  end
+
+  operation optionPure[A](a: A) -> Option[T = A] = some(a)
+  operation optionFlatMap[A, B](fa: Option[T = A], f: (A) -> Option[T = B]) -> Option[T = B] =
+    match fa
+      case some(x) -> f(x)
+      case none() -> none
+
+  fact CpsMonad[F = Option, pure = optionPure, flatMap = optionFlatMap]
+end
+"#;
+    let errs = load_errors(&[snippet]);
+    assert!(
+        !errs.iter().any(|e| e.contains("signature")),
+        "a well-formed higher-kinded instance binding must fail open (no signature error): {errs:?}"
+    );
+}
+
 /// COHERENCE (rule 2): two instance facts covering the same (spec, carrier) with
 /// DIFFERENT op bindings are a LOUD ambiguity error (design §5.4 rule 2, keyed on
 /// the full canonical application / WI-419 identity). Each supplies a different
