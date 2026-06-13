@@ -41,10 +41,16 @@ use stream::StreamArenaRef;
 /// - `depth_cap` bounds the activation stack. Non-tail recursion needs
 ///   O(n) frames and will trip this; tail recursion (TCO) stays O(1) and
 ///   is unaffected.
-/// - `step_cap` bounds the total number of `step()` iterations, i.e.
-///   wall-time work. TCO turns `loop() = loop()` into a constant-depth
-///   infinite loop that `depth_cap` alone can't catch — only `step_cap`
-///   can. Off by default so ordinary batch evaluation isn't capped.
+/// - `step_cap` bounds total interpreter work — one tick per `run()` trampoline
+///   iteration, covering BOTH a `step()` reduction AND a value delivery. TCO
+///   turns `loop() = loop()` into a constant-depth infinite loop that
+///   `depth_cap` can't catch; likewise a dispatch/deliver value-cascade that
+///   re-dispatches forever (a mis-resolved spec op) stays at constant
+///   activation depth — both iterate on the trampoline, so each costs one step
+///   and `step_cap` is the single guard that bounds them. On exhaustion the
+///   `StepsExhausted` error carries the recent-dispatch ring, naming the
+///   looping operations. Off by default so ordinary batch evaluation isn't
+///   capped; the CLI binaries opt into a backstop cap (see `anthill::runner`).
 #[derive(Clone, Copy, Debug)]
 pub struct EvalConfig {
     pub depth_cap: Option<usize>,
@@ -269,6 +275,12 @@ pub struct Interpreter {
     /// `config.step_cap`. Not a permanent counter — after a call returns
     /// the host can inspect and reset via `config_mut()`.
     pub(crate) step_count: u64,
+    /// Bounded ring of the most recent dispatch targets (newest at the back),
+    /// reset per top-level call. Maintained only when a `step_cap` is set (its
+    /// sole reader is `StepsExhausted`, which can only fire under a cap); on
+    /// that error its contents name the looping operations (a loop repeats its
+    /// ops, so they fill the ring).
+    pub(crate) recent_dispatches: std::collections::VecDeque<Symbol>,
 }
 
 /// Collect the top-`n` profiler entries from a thread-local counter map,
@@ -319,6 +331,7 @@ impl Interpreter {
             profiling: std::env::var_os("ANTHILL_PROFILE").is_some(),
             config,
             step_count: 0,
+            recent_dispatches: std::collections::VecDeque::new(),
         }
     }
 
@@ -545,6 +558,7 @@ impl Interpreter {
             locals.push((*pname, args[i].clone()));
         }
         self.step_count = 0;
+        self.recent_dispatches.clear();
         self.stack.push(Frame {
             op: sym,
             expr: body_term,
@@ -706,6 +720,7 @@ impl Interpreter {
     ) -> Result<Value, EvalError> {
         let op = self.kb.intern("__test_requirement_eval");
         self.step_count = 0;
+        self.recent_dispatches.clear();
         // Test-entry materializes a NodeOccurrence from the test's
         // legacy Term::Fn input. The materializer handles both Handle-
         // wrapped trees (loader output) and naked Fn shapes (test
