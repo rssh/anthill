@@ -253,6 +253,9 @@ mod wi381_alias_resolution_test;
 #[path = "include/wi407_provider_edges_test.rs"]
 mod wi407_provider_edges_test;
 
+#[path = "include/wi431_instance_fact_coverage_test.rs"]
+mod wi431_instance_fact_coverage_test;
+
 #[path = "include/wi424_iterable_members_test.rs"]
 mod wi424_iterable_members_test;
 
