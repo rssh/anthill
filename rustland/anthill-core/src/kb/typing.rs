@@ -8065,12 +8065,10 @@ fn bind_ground_value_params_from_provider(
         if subst.resolve_as_value(spec_vid).is_some() {
             continue;
         }
-        // `provides` stores a sort name as a nullary `Fn{S}`; normalize to `Ref(S)` so the
-        // bound member unifies with the declared return's plain type shape (WI-428).
-        let bound = match normalize_ground_leaf(kb, Value::Term(*carrier_value)) {
-            Value::Term(t) => t,
-            _ => continue,
-        };
+        // WI-391: the producer emits the canonical `Ref(S)` binding shape (a bare sort is
+        // `Ref(S)`, never the former nullary `Fn{S}` that extracted as `Error`), so the
+        // carrier value binds directly — no late `Fn{S}→Ref(S)` normalization needed.
+        let bound = *carrier_value;
         if !occurs_in(kb, spec_vid, bound) {
             subst.bind_term(spec_vid, bound);
             any = true;
@@ -10464,9 +10462,9 @@ fn resolve_rigid_projection(
         if same_symbol(kb, subject_sym, decl_sort) {
             let recv = Value::Term(kb.make_sort_ref(subject_sym));
             return match project_type_member(kb, &recv, &member_str, None, ctx, span)? {
-                // Normalize a nullary-`Fn` ground leaf (the shape `provides` bindings
-                // store via `name_to_sort_term`) to the plain `Ref(s)` type shape.
-                ProjResult::Grounded(v) => Ok(ProjResult::Grounded(normalize_ground_leaf(kb, v))),
+                // WI-391: a ground member projects to the canonical `Ref(s)` shape (the
+                // producer no longer emits a nullary `Fn{s}` binding here).
+                ProjResult::Grounded(v) => Ok(ProjResult::Grounded(v)),
                 ProjResult::Neutral => {
                     let sort_name = kb.qualified_name_of(subject_sym).to_owned();
                     let short = kb.resolve_sym(subject_sym).to_owned();
@@ -10640,20 +10638,6 @@ fn spec_mentions_key(kb: &KnowledgeBase, spec: TermId, key: SubjectKey) -> bool 
     named_args.iter().any(|(_, v)| {
         subject_key_of_term(kb, *v).is_some_and(|k| subject_keys_equal(kb, k, key))
     })
-}
-
-/// WI-428: normalize a ground LEAF value (a nullary `Fn{s}` / deep `sort_ref` — the
-/// shapes `provides` / spec bindings store via `name_to_sort_term`) to the plain
-/// `Ref(s)` type shape via [`normalize_spec_binding_type`]; a non-leaf (a real
-/// parameterized type) passes through unchanged.
-fn normalize_ground_leaf(kb: &mut KnowledgeBase, v: Value) -> Value {
-    match &v {
-        Value::Term(t) => match normalize_spec_binding_type(kb, *t) {
-            Some(n) => Value::Term(n),
-            None => v,
-        },
-        _ => v,
-    }
 }
 
 /// The head symbol of a `requires`-application binding VALUE leaf, across the shapes
@@ -11891,13 +11875,9 @@ fn ground_rigid_projection_if_concrete(
         else {
             continue;
         };
-        // WI-428 `normalize_ground_leaf`: a `provides` binding stores a sort name as a
-        // nullary `Fn{S}`; normalize to the plain `Ref(S)` type shape so the grounded
-        // member unifies with the expected type (else `Int64` ≠ `Int64`).
-        return match normalize_ground_leaf(kb, Value::Term(bound)) {
-            Value::Term(g) => Some(walk_type_deep(kb, subst, g)),
-            _ => None,
-        };
+        // WI-391: the provider binding is the canonical `Ref(S)` shape, so the grounded
+        // member walks directly (the late nullary-`Fn` normalization is retired).
+        return Some(walk_type_deep(kb, subst, bound));
     }
     // WI-383 SELF-CARRIER (implicit licensing): no `requires` bound mentions the subject,
     // so the projection is self-licensed — `T.member` reads the carrier's OWN declared
@@ -11924,10 +11904,9 @@ fn ground_rigid_projection_if_concrete(
                     // (`sort V = W`, resolves to a sort-param ref) is NOT ground and stays
                     // the neutral (rejected downstream).
                     if type_value_is_ground(kb, g) {
-                        return match normalize_ground_leaf(kb, Value::Term(g)) {
-                            Value::Term(n) => Some(n),
-                            _ => None,
-                        };
+                        // WI-391: the SortAlias target is the canonical `Ref(S)` shape
+                        // (`type_expr_to_value`), so the manifest member grounds directly.
+                        return Some(g);
                     }
                 }
             }

@@ -269,13 +269,16 @@ fn resolve_sort_inst_param_extracts_type_binding() {
     assert!(!solutions2.is_empty(), "resolve_sort_instantiation_param should succeed for T");
 
     let val_tid = kb.reify(var_val, &solutions2[0].subst).as_term().unwrap();
-    match kb.get_term(val_tid) {
-        Term::Fn { functor, .. } => {
-            let name = kb.resolve_sym(*functor);
-            assert!(name == "Int64" || name.ends_with(".Int64"), "T should resolve to Int64, got: {name}");
-        }
-        other => panic!("T value should be Int64(), got: {:?}", other),
-    }
+    // WI-391: a concrete bare-sort binding value is the canonical `Ref(Int64)` (the
+    // extractable bare-sort shape), not the former nullary `Fn{Int64}`. This substitution
+    // test cares about the bound VALUE (Int64), not its carrier shape, so accept either the
+    // canonical `Ref(S)` or a (legacy) nullary `Fn{S}` — both name the sort.
+    let name = match kb.get_term(val_tid) {
+        Term::Ref(s) => kb.resolve_sym(*s).to_owned(),
+        Term::Fn { functor, .. } => kb.resolve_sym(*functor).to_owned(),
+        other => panic!("T value should be Int64 (Ref(Int64) or Int64()), got: {:?}", other),
+    };
+    assert!(name == "Int64" || name.ends_with(".Int64"), "T should resolve to Int64, got: {name}");
 }
 
 #[test]

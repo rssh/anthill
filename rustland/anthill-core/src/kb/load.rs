@@ -7006,6 +7006,33 @@ impl<'a> Loader<'a> {
         TypeChild::Node(self.kb.make_effects_rows_occ(row, span, owner))
     }
 
+    /// WI-391: lower a spec BINDING VALUE (the `Int` in `provides Spec[T = Int]`, or a
+    /// positional binding) to its CANONICAL type shape. A bare sort lowers to `Ref(S)` —
+    /// the one extractable bare-sort shape (`type_head` classifies a no-arg `Fn{S}` as
+    /// MALFORMED → `TypeExtractor::Error`; only `Ref(S)` is a bare sort) and byte-identical
+    /// to the `fact`-head path (parse `convert_type_value` → `Ref(S)`), never the
+    /// `name_to_sort_term` nullary `Fn`. This is the binding-VALUE counterpart of
+    /// [`sort_inst_to_value`]'s spec-IDENTITY lowering, whose bare-`Simple` arm must stay
+    /// the `Fn{S}` functor the spec readers (`unwrap_spec_view`) require — the two slots
+    /// carry the same syntax (`Spec`) but different roles. Whether `S` is a type-PARAM (a
+    /// dispatch wildcard) or a CONCRETE sort is recovered DOWNSTREAM from the symbol's kind
+    /// (`is_sort_param_symbol`, consulted by `dispatch_values_match`), never from the lowered
+    /// shape, so one canonical `Ref` serves both. Normalizing here — at the producer — is
+    /// the "normalize early" point that lets type-position consumers drop the late
+    /// `Fn{S}→Ref(S)` patch (`normalize_ground_leaf`); subsumes WI-387 (which aligned only
+    /// the `T = T` param half). A parameterized / effect-row / other binding delegates to
+    /// [`sort_inst_to_value`] unchanged.
+    fn sort_binding_to_value(&mut self, ty: &TypeExpr) -> crate::eval::value::Value {
+        use crate::eval::value::Value;
+        match ty {
+            TypeExpr::Simple(name) => {
+                let sort_sym = self.remap_name(name);
+                Value::Term(self.kb.make_sort_ref(sort_sym))
+            }
+            _ => self.sort_inst_to_value(ty),
+        }
+    }
+
     /// WI-366 — lower a `requires` / `provides` spec to a sort instantiation
     /// (`SortView`), as a carrier-agnostic [`Value`](crate::eval::value::Value): a
     /// fully-ground spec rides as `Value::Term` (the hash-consed `SortView` / sort
@@ -7029,6 +7056,12 @@ impl<'a> Loader<'a> {
                 // dispatch (wi210). A universal `provides Spec[T = T]` IS a wildcard
                 // provision, exactly like `fact Spec[T = T]` — the two must emit
                 // structurally identical `SortProvidesInfo` bindings.
+                //
+                // NOTE this arm is reached for BOTH the whole spec when it is a bare
+                // `provides Spec` (the spec-IDENTITY slot, which the spec readers need
+                // as the `Fn{Spec}` functor) AND a nested binding VALUE. A concrete
+                // bare sort stays the `Fn{S}` functor here; the binding-value position
+                // canonicalizes to `Ref(S)` separately (WI-391, `sort_binding_to_value`).
                 let sort_sym = self.remap_name(name);
                 let short_name = self.kb.resolve_sym(sort_sym).to_owned();
                 if self.kb.symbols.is_type_param(self.current_scope.raw(), &short_name) {
@@ -7060,7 +7093,7 @@ impl<'a> Loader<'a> {
                 // the whole spec to a value carrier.
                 let mut any_value = false;
                 for b in bindings {
-                    let bound = self.sort_inst_to_value(&b.bound);
+                    let bound = self.sort_binding_to_value(&b.bound);
                     if !matches!(bound, Value::Term(_)) {
                         any_value = true;
                     }
