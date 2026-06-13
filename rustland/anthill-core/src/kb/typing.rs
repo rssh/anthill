@@ -11600,20 +11600,109 @@ fn walk_type_deep(kb: &mut KnowledgeBase, subst: &Substitution, ty: TermId) -> T
     let resolved = walk_type(kb, subst, ty);
     match kb.get_term(resolved) {
         Term::Fn { .. } => {
-            // WI-428: a rigid type-receiver projection is OPAQUE to the deep walk —
-            // its `var` child is an IDENTITY slot (the projection subject), not a
-            // unification position; substituting through it (e.g. the WI-392/424
-            // body-site rigidify map resolving a param `Ref` into a fresh rigid var)
-            // would erase the subject identity the eliminator's carrier-precise
-            // `requires` lookup keys on. `resolve_rigid_projection` is the sole
-            // reader of the projection's children.
+            // WI-428/WI-383: a rigid type-receiver projection's `var` child is the
+            // projection SUBJECT — an identity slot the eliminator's carrier-precise
+            // `requires` lookup keys on, not a unification position. The deep walk must
+            // NOT substitute through it while the subject is still ABSTRACT (a var, incl.
+            // the WI-392/424 rigidify pass's fresh rigid var) — that would erase the
+            // identity (and the WI-400 non-injectivity `P.K ≢ Q.K`). But once the subject
+            // has resolved to a CONCRETE sort, there is no identity left to protect:
+            // `P.V` with `P := CounterState` is the determined δ-reduction `CounterState.V`
+            // (the §5.4 concrete fill ⟹ CHECK). Ground that case; stay opaque otherwise.
             if matches!(type_head(kb, &TermIdView(resolved)), TypeHead::RigidProjection) {
-                return resolved;
+                return ground_rigid_projection_if_concrete(kb, subst, resolved)
+                    .unwrap_or(resolved);
             }
             kb.map_fn_children(resolved, |kb, child| walk_type_deep(kb, subst, child))
         }
         _ => resolved,
     }
+}
+
+/// WI-383: δ-ground a `RigidProjection` when its subject has resolved (through `subst`) to
+/// a CONCRETE sort — the call-time concrete-fill CHECK. The member resolves off the
+/// carrier via [`project_type_member`] (including through the carrier's `provides` facts,
+/// the WI-376 path). Returns `None` — leaving the projection the opaque rigid neutral —
+/// when the subject is still abstract (a var / rigidify-pass rigid var / an enclosing
+/// sort-param carrier, i.e. the §5.4 abstract fill ⟹ ADD/forward case) or when the member
+/// does not ground off the carrier (the un-discharged requirement surfaces at the call's
+/// own `requires` check, not here). Soundness: WI-400's rule forbids BINDING vars to force
+/// `P.K ≡ Q.K`; reading a member off an ALREADY-concrete subject binds nothing.
+fn ground_rigid_projection_if_concrete(
+    kb: &mut KnowledgeBase,
+    subst: &Substitution,
+    proj: TermId,
+) -> Option<TermId> {
+    let TypeExtractor::RigidTypeProjection { sort, subject, member } =
+        extract_type(kb, &TermIdView(proj))
+    else {
+        return None;
+    };
+    // WI-383: only an OPERATION-type-param projection grounds here (decl_sort = the op). A
+    // SORT-type-param projection (decl_sort = a sort) keeps the WI-428 opacity untouched —
+    // its grounding rides the existing eliminator path.
+    if kb.kind_of(sort) != Some(crate::intern::SymbolKind::Operation) {
+        return None;
+    }
+    // The subject `Ref` is a DISTINCT registration of the op type-param from the canonical
+    // inference var the call binds (there is no `SortAlias` bridge for op type-params, so
+    // `walk_type(subject)` lands on an unbound sibling var). Bridge by name to the op's own
+    // `OperationInfo.type_params`, whose var IS the one arg-inference binds.
+    let Value::Term(subj_t) = subject else { return None };
+    let subj_sym = extract_sort_ref_sym(kb, &TermIdView(subj_t))?;
+    let subj_name = kb.resolve_sym(subj_sym).to_owned();
+    let rec = super::op_info::lookup_operation_info(kb, sort)?;
+    let tp_var = rec
+        .type_params
+        .iter()
+        .find(|(n, _)| kb.resolve_sym(*n) == subj_name)
+        .map(|(_, v)| *v)?;
+    let walked = walk_type(kb, subst, tp_var);
+    let s = extract_sort_ref_sym(kb, &TermIdView(walked))?;
+    // A genuine concrete sort only: never a sort-type-param (abstract carrier → forward),
+    // and not an operation / other kind.
+    if is_sort_param_symbol(kb, s)
+        || kb.kind_of(s) != Some(crate::intern::SymbolKind::Sort)
+    {
+        return None;
+    }
+    // SOUND grounding (WI-383 /code-review): read `member` ONLY through a spec that
+    // LICENSES this projection — an op `requires Spec[C = subject]` clause that declares
+    // `member` and mentions the subject — AND that the carrier `s` actually PROVIDES; then
+    // read `member`'s binding from THAT provision. NOT the spec-agnostic
+    // `project_type_member` first-match over the carrier's provides: that read the member
+    // off an arbitrary (possibly UNLICENSED) provided spec and made the result depend on
+    // `provides` declaration order (two soundness holes). A carrier that does not provide
+    // the licensing spec leaves the projection the opaque neutral — the requirement is
+    // unmet and the call is rejected downstream, never silently ground to a wrong member.
+    let member_str = kb.resolve_sym(member).to_owned();
+    let key = subject_key_of_term(kb, subj_t)?;
+    for e in op_requires_entries(kb, sort) {
+        if !kb.type_params_of_sort(e.required_sort).iter().any(|d| d.as_str() == member_str) {
+            continue;
+        }
+        if !spec_mentions_key(kb, e.spec, key) {
+            continue;
+        }
+        let Some(bindings) = provider_spec_view_bindings(kb, s, e.required_sort) else {
+            continue;
+        };
+        let Some(bound) = bindings
+            .iter()
+            .find(|(n, _)| kb.resolve_sym(*n) == member_str)
+            .map(|(_, b)| *b)
+        else {
+            continue;
+        };
+        // WI-428 `normalize_ground_leaf`: a `provides` binding stores a sort name as a
+        // nullary `Fn{S}`; normalize to the plain `Ref(S)` type shape so the grounded
+        // member unifies with the expected type (else `Int64` ≠ `Int64`).
+        return match normalize_ground_leaf(kb, Value::Term(bound)) {
+            Value::Term(g) => Some(walk_type_deep(kb, subst, g)),
+            _ => None,
+        };
+    }
+    None
 }
 
 /// Walk a type term through the substitution, resolving Vars and type params.
