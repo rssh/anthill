@@ -14,10 +14,13 @@
 //! every spec op is bound in the fact OR defaulted on the spec, and a spec op
 //! that is NEITHER is still a loud `UnbackedProviderOperation` error.
 //!
-//! This increment is the LOADER coverage half only. The runtime dict-builder
-//! reading these op bindings (eval dispatch), the op-binding signature
-//! validation, the coherence rule (two instance facts ⇒ loud ambiguity), and the
-//! witness-sort non-provision rule are subsequent WI-431 increments.
+//! Increment 1 was the LOADER coverage half (rule 1); increment 2 added the
+//! value-directed eval dispatch reading these op bindings; increment 3 adds rule
+//! 2 — COHERENCE: two DISTINCT instance facts for the same (spec, carrier) are a
+//! loud ambiguity at load (`duplicate_instance_facts_are_a_loud_ambiguity`),
+//! while identical facts stay idempotent. The op-binding signature validation,
+//! the dict-threaded dispatch path, and the witness-sort non-provision rule are
+//! subsequent WI-431 increments.
 
 use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::load::{self, NullResolver};
@@ -197,15 +200,14 @@ end
     );
 }
 
-/// COHERENCE (rule 2) ANCHOR — deferred. Two instance facts covering the same
-/// (spec, carrier) with DIFFERENT op bindings must be a LOUD ambiguity error
-/// (design §5.4 rule 2, keyed on the full canonical application / WI-419
-/// identity). Today they load clean and eval dispatch picks the FIRST via
-/// `provider_spec_view_bindings`' pre-existing first-provider-wins contract
-/// (shared with WI-402/415..423 dispatch) — silent, not loud. `#[ignore]`'d
-/// until the coherence increment lands; un-ignore it then.
+/// COHERENCE (rule 2): two instance facts covering the same (spec, carrier) with
+/// DIFFERENT op bindings are a LOUD ambiguity error (design §5.4 rule 2, keyed on
+/// the full canonical application / WI-419 identity). Each supplies a different
+/// dictionary and there is no scoped/named instance selection yet, so before this
+/// increment eval dispatch silently picked the FIRST via
+/// `provider_spec_view_bindings`' first-provider-wins contract (shared with
+/// WI-402/415..423 dispatch). Now `check_provider_operations` rejects it at load.
 #[test]
-#[ignore = "WI-431 coherence (rule 2) not yet implemented — instance-fact ambiguity is silent"]
 fn duplicate_instance_facts_are_a_loud_ambiguity() {
     let snippet = r#"namespace test.wi431.coherence
   import anthill.prelude.Int64
@@ -229,5 +231,182 @@ end
     assert!(
         errs.iter().any(|e| e.contains("ambigu") || e.contains("coheren")),
         "two instance facts for (Combiner, Tag) must be a loud ambiguity error; got: {errs:?}"
+    );
+}
+
+/// COHERENCE (rule 2) — non-regression: the ambiguity is keyed on the full
+/// canonical application, so two instance facts for the same (spec, carrier) that
+/// bind the SAME op are IDENTICAL provisions (hash-consed to one `spec_view`) —
+/// idempotent, not ambiguous. A crude "more than one fact for (spec, carrier)"
+/// check would over-reject this; the real rule (distinct canonical applications)
+/// must not.
+#[test]
+fn identical_instance_facts_are_idempotent_not_ambiguous() {
+    let snippet = r#"namespace test.wi431.coherence_idem
+  import anthill.prelude.Int64
+
+  sort Combiner
+    sort T = ?
+    operation combine(x: T, y: T) -> T
+  end
+
+  sort Tag
+    entity tag(n: Int64)
+  end
+  operation tagCombine(x: Tag, y: Tag) -> Tag = tag(n: 7)
+
+  fact Combiner[T = Tag, combine = tagCombine]
+  fact Combiner[T = Tag, combine = tagCombine]
+end
+"#;
+    let errs = load_errors(&[snippet]);
+    assert!(
+        !errs.iter().any(|e| e.contains("ambigu") || e.contains("coheren")),
+        "two IDENTICAL instance facts for (Combiner, Tag) are idempotent, not ambiguous: {errs:?}"
+    );
+}
+
+/// COHERENCE (rule 2) — non-regression: the canonical-application identity must
+/// be insensitive to WRITTEN FIELD ORDER. `fact Combiner[T = Tag, combine = c]`
+/// and `fact Combiner[combine = c, T = Tag]` are the SAME instance — named args
+/// canonicalize — so they must be idempotent, not a false ambiguity. (Guards the
+/// spec_view-TermId dedup against an order-sensitive lowering.)
+#[test]
+fn identical_instance_facts_different_field_order_are_idempotent() {
+    let snippet = r#"namespace test.wi431.coherence_order
+  import anthill.prelude.Int64
+
+  sort Combiner
+    sort T = ?
+    operation combine(x: T, y: T) -> T
+  end
+
+  sort Tag
+    entity tag(n: Int64)
+  end
+  operation tagCombine(x: Tag, y: Tag) -> Tag = tag(n: 7)
+
+  fact Combiner[T = Tag, combine = tagCombine]
+  fact Combiner[combine = tagCombine, T = Tag]
+end
+"#;
+    let errs = load_errors(&[snippet]);
+    assert!(
+        !errs.iter().any(|e| e.contains("ambigu") || e.contains("coheren")),
+        "the same instance written in different field order is idempotent, not ambiguous: {errs:?}"
+    );
+}
+
+/// COHERENCE (rule 2) — the ambiguity must be caught even when the two instance
+/// facts live in DIFFERENT namespaces (third-party instance modules), where the
+/// spec/carrier symbols are resolved in distinct import scopes and may be
+/// interned under different `Symbol` copies. The grouping key canonicalizes
+/// (matching the dispatch-side `provider_spec_view_bindings`), so the two still
+/// collide.
+#[test]
+fn cross_namespace_distinct_instances_are_ambiguous() {
+    let base = r#"namespace test.wi431.xbase
+  import anthill.prelude.Int64
+  export Combiner, Tag, combineA, combineB
+
+  sort Combiner
+    sort T = ?
+    operation combine(x: T, y: T) -> T
+  end
+
+  sort Tag
+    entity tag(n: Int64)
+  end
+  operation combineA(x: Tag, y: Tag) -> Tag = tag(n: 1)
+  operation combineB(x: Tag, y: Tag) -> Tag = tag(n: 2)
+end
+"#;
+    let inst_a = r#"namespace test.wi431.xinstA
+  import test.wi431.xbase.{Combiner, Tag, combineA}
+  fact Combiner[T = Tag, combine = combineA]
+end
+"#;
+    let inst_b = r#"namespace test.wi431.xinstB
+  import test.wi431.xbase.{Combiner, Tag, combineB}
+  fact Combiner[T = Tag, combine = combineB]
+end
+"#;
+    let errs = load_errors(&[base, inst_a, inst_b]);
+    assert!(
+        errs.iter().any(|e| e.contains("ambigu") || e.contains("coheren")),
+        "two instance facts for (Combiner, Tag) in different namespaces must still be a loud ambiguity: {errs:?}"
+    );
+}
+
+/// COHERENCE (rule 2) — flip side of the cross-namespace case: two IDENTICAL
+/// instance facts in different namespaces (same spec, carrier, and op) are the
+/// same canonical application and must stay idempotent — the cross-scope
+/// canonicalization must not turn copy-divergent-but-identical facts into a false
+/// ambiguity.
+#[test]
+fn cross_namespace_identical_instances_are_idempotent() {
+    let base = r#"namespace test.wi431.ybase
+  import anthill.prelude.Int64
+  export Combiner, Tag, tagCombine
+
+  sort Combiner
+    sort T = ?
+    operation combine(x: T, y: T) -> T
+  end
+
+  sort Tag
+    entity tag(n: Int64)
+  end
+  operation tagCombine(x: Tag, y: Tag) -> Tag = tag(n: 7)
+end
+"#;
+    let inst_a = r#"namespace test.wi431.yinstA
+  import test.wi431.ybase.{Combiner, Tag, tagCombine}
+  fact Combiner[T = Tag, combine = tagCombine]
+end
+"#;
+    let inst_b = r#"namespace test.wi431.yinstB
+  import test.wi431.ybase.{Combiner, Tag, tagCombine}
+  fact Combiner[T = Tag, combine = tagCombine]
+end
+"#;
+    let errs = load_errors(&[base, inst_a, inst_b]);
+    assert!(
+        !errs.iter().any(|e| e.contains("ambigu") || e.contains("coheren")),
+        "identical instance facts in different namespaces are idempotent, not ambiguous: {errs:?}"
+    );
+}
+
+/// COHERENCE (rule 2) — non-regression: distinct CARRIERS are independent
+/// instances. `fact Combiner[T = Tag, …]` and `fact Combiner[T = Ring, …]` cover
+/// different (spec, carrier) pairs, so neither collides — only same-carrier
+/// op-binding conflicts are ambiguous.
+#[test]
+fn instance_facts_for_distinct_carriers_do_not_collide() {
+    let snippet = r#"namespace test.wi431.coherence_carriers
+  import anthill.prelude.Int64
+
+  sort Combiner
+    sort T = ?
+    operation combine(x: T, y: T) -> T
+  end
+
+  sort Tag
+    entity tag(n: Int64)
+  end
+  sort Ring
+    entity ring(n: Int64)
+  end
+  operation tagCombine(x: Tag, y: Tag) -> Tag = tag(n: 1)
+  operation ringCombine(x: Ring, y: Ring) -> Ring = ring(n: 2)
+
+  fact Combiner[T = Tag, combine = tagCombine]
+  fact Combiner[T = Ring, combine = ringCombine]
+end
+"#;
+    let errs = load_errors(&[snippet]);
+    assert!(
+        !errs.iter().any(|e| e.contains("ambigu") || e.contains("coheren")),
+        "instance facts for distinct carriers (Tag, Ring) must not collide: {errs:?}"
     );
 }

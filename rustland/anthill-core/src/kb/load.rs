@@ -162,6 +162,23 @@ pub enum LoadError {
         spec: String,
         op: String,
     },
+    /// WI-431 (rule 2 — COHERENCE): two or more DISTINCT instance facts (op-valued
+    /// provisions, `fact Combiner[T = Tag, combine = combineA]` /
+    /// `… combine = combineB]`) cover the same `(spec, carrier)`. Each supplies a
+    /// different dictionary, and scoped/named instance selection is not yet
+    /// implemented, so dispatch would silently pick the first (the
+    /// `provider_spec_view_bindings` first-provider-wins contract). Load-blocking:
+    /// the choice of implementation is ambiguous with no way to disambiguate.
+    /// Keyed on the full canonical application (the WI-419 / §5.4 identity rule):
+    /// identical instance facts hash-cons to one provision and are idempotent;
+    /// only facts that differ (in carrier-or-op bindings) collide here. A
+    /// type-only provision (`provides Stream[T = X]`, no op binding) supplies no
+    /// dictionary and never participates.
+    AmbiguousInstanceFact {
+        carrier: String,
+        spec: String,
+        count: usize,
+    },
     /// WI-347: an operation override violates behavioral subtyping — a
     /// carrier's own operation that implements/overrides a spec operation does
     /// not *refine* it. `reason` names the specific violation: an effect not
@@ -242,6 +259,10 @@ impl LoadError {
                 format!("'{}' provides '{}' but does not back operation '{}.{}': there is no default on '{}' (an `operation {}(…) = …` body or a derivation rule) and '{}' supplies no own '{}' (add a body/rule on '{}' or an `operation {}(…)` on '{}')",
                     carrier, spec, spec, op, spec, op, carrier, op, spec, op, carrier)
             }
+            LoadError::AmbiguousInstanceFact { carrier, spec, count } => {
+                format!("ambiguous instance: {} distinct instance facts provide '{}' for carrier '{}' — each binds the spec's operations differently, and there is no way to select between them (scoped/named instance selection is not yet supported); keep exactly one `fact {}[…]` per (spec, carrier)",
+                    count, spec, carrier, spec)
+            }
             LoadError::IncompatibleOverride { carrier, spec, op, reason } => {
                 format!("'{}' overrides '{}.{}' (it provides '{}') but the override does not refine it: {}",
                     carrier, spec, op, spec, reason)
@@ -288,6 +309,9 @@ impl LoadError {
             | LoadError::UnresolvedImport { .. }
             | LoadError::UnsatisfiedProviderRequires { .. }
             | LoadError::UnbackedProviderOperation { .. }
+            // WI-431 rule 2: ambiguous instance facts give dispatch no sound
+            // choice — block rather than silently pick the first.
+            | LoadError::AmbiguousInstanceFact { .. }
             | LoadError::IncompatibleOverride { .. }
             // WI-366: a value-in-type in a sort-relation position is not yet
             // resolvable — fail loudly rather than run with an unenforced clause.
@@ -326,6 +350,10 @@ impl std::fmt::Display for LoadError {
             LoadError::UnbackedProviderOperation { carrier, spec, op } => {
                 write!(f, "'{}' provides '{}' but backs no operation '{}.{}' (no default on '{}', no own '{}' on '{}')",
                     carrier, spec, spec, op, spec, op, carrier)
+            }
+            LoadError::AmbiguousInstanceFact { carrier, spec, count } => {
+                write!(f, "ambiguous instance: {} distinct instance facts provide '{}' for carrier '{}' (keep exactly one)",
+                    count, spec, carrier)
             }
             LoadError::IncompatibleOverride { carrier, spec, op, reason } => {
                 write!(f, "'{}' overrides '{}.{}' but does not refine it: {}", carrier, spec, op, reason)

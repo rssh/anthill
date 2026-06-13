@@ -6997,6 +6997,58 @@ pub fn check_provider_operations(kb: &mut KnowledgeBase) -> Vec<super::load::Loa
             });
         }
     }
+
+    // WI-431 rule 2 — COHERENCE. Two DISTINCT instance facts (op-valued
+    // provisions) for the same (spec, carrier) each supply a different
+    // dictionary; with no scoped/named instance selection yet, dispatch would
+    // silently pick the first (the `provider_spec_view_bindings`
+    // first-provider-wins contract honored by increment 2's eval dispatch). Make
+    // it loud at load. Identity is the full canonical application (the WI-419 /
+    // §5.4 rule): spec views hash-cons, so identical instance facts share one
+    // `spec_view` (idempotent — collapsed by the per-group distinctness check)
+    // and only genuinely-differing facts collide. Restricted to op-binding
+    // provisions: a type-only provision (`provides Stream[T = X]`) supplies no
+    // dictionary and never participates, so existing `provides` / type-only
+    // `fact`s (e.g. `fact ModifyRuntime[T = Cell, V = V]`) are never
+    // over-rejected. Insertion-order grouping keeps the diagnostics deterministic.
+    //
+    // Symbol identity: the `(spec, carrier)` key and the `spec_view` are compared
+    // RAW (no `canonical_sort_sym`). Sound because this is a PROVIDER-to-PROVIDER
+    // comparison — both come from `SortProvidesInfo` facts resolved post-load, so
+    // two providers for one logical instance share the same canonical symbols and
+    // hash-cons to the same `spec_view` (verified across namespaces by
+    // `cross_namespace_{distinct,identical}_instances_*`). This differs from
+    // `provider_spec_view_bindings`, which compares a CALLER's spec symbol
+    // (resolved in a different scope) to providers and so must canonicalize;
+    // canonicalizing only the key here (without the `spec_view`) would instead
+    // FALSE-flag copy-divergent-but-identical facts.
+    let mut coherence_groups: Vec<((Symbol, Symbol), SmallVec<[TermId; 2]>)> = Vec::new();
+    for p in &provisions {
+        if !provision_binds_any_op(kb, p.spec_view) {
+            continue;
+        }
+        match coherence_groups
+            .iter_mut()
+            .find(|(key, _)| *key == (p.spec, p.carrier))
+        {
+            Some((_, views)) => {
+                if !views.contains(&p.spec_view) {
+                    views.push(p.spec_view);
+                }
+            }
+            None => coherence_groups.push(((p.spec, p.carrier), SmallVec::from_elem(p.spec_view, 1))),
+        }
+    }
+    for ((spec, carrier), views) in &coherence_groups {
+        if views.len() > 1 {
+            errors.push(LoadError::AmbiguousInstanceFact {
+                carrier: kb.qualified_name_of(*carrier).to_string(),
+                spec: kb.qualified_name_of(*spec).to_string(),
+                count: views.len(),
+            });
+        }
+    }
+
     errors
 }
 
@@ -7019,9 +7071,36 @@ fn instance_fact_op_in_bindings(
         if short_name_of(kb.qualified_name_of(*key)) != op_short {
             return None;
         }
-        super::load::provides_spec_base_sym(kb, *value)
-            .filter(|s| matches!(kb.kind_of(*s), Some(crate::intern::SymbolKind::Operation)))
+        binding_op_symbol(kb, *value)
     })
+}
+
+/// WI-431: the OPERATION symbol an instance-fact binding `value` denotes
+/// (`pure = optionPure` ⇒ `optionPure`), or `None` when the binding is not
+/// op-valued (a type binding `F = Option`, a `Sort`). The single op-discriminator
+/// shared by fact-coverage (rule 1), eval dispatch (increment 2), and coherence
+/// (rule 2): a binding backs a spec op iff its base symbol — read via
+/// `provides_spec_base_sym`, which also unwraps a parameterized `SortView` — is an
+/// `Operation`. Folding all three callers through this one predicate keeps them
+/// from disagreeing about what an op-valued binding is.
+fn binding_op_symbol(kb: &KnowledgeBase, value: TermId) -> Option<Symbol> {
+    super::load::provides_spec_base_sym(kb, value)
+        .filter(|s| matches!(kb.kind_of(*s), Some(crate::intern::SymbolKind::Operation)))
+}
+
+/// WI-431 coherence (rule 2): true iff the provision's spec view binds AT LEAST
+/// ONE operation — i.e. it is an INSTANCE FACT supplying a dictionary, not a
+/// type-only provision (`provides Stream[T = X]`). Only instance facts
+/// participate in dictionary coherence: a type-only provision contributes no
+/// dispatch target, so it can never be the ambiguous one (and an existing
+/// `provides` / type-only `fact` is never over-rejected).
+fn provision_binds_any_op(kb: &KnowledgeBase, spec_view: TermId) -> bool {
+    match unwrap_spec_view(kb, spec_view) {
+        Some((_, bindings)) => bindings
+            .iter()
+            .any(|(_, value)| binding_op_symbol(kb, *value).is_some()),
+        None => false,
+    }
 }
 
 /// WI-431 loader coverage: true iff the provision's spec view binds `op_short`
