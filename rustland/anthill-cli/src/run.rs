@@ -6,7 +6,8 @@
 use std::fs;
 use std::path::PathBuf;
 
-use anthill_core::eval::{builtins, value::Value, EvalError, Interpreter};
+use anthill::{runner, stdlib};
+use anthill_core::eval::Interpreter;
 use anthill_core::intern::Symbol;
 use anthill_core::kb::load::{self, FileSourceResolver};
 use anthill_core::kb::term::{Term, TermId};
@@ -15,20 +16,9 @@ use anthill_core::parse;
 use anthill_core::parse::ir::ParsedFile;
 use clap::Parser;
 
-use crate::stdlib_embedded;
-
-// ── Exit codes ──────────────────────────────────────────────────────
-
-/// Compilation failure — parse, load, typecheck errors, or no entry found.
-const EXIT_COMPILE: i32 = 2;
-
-/// Runtime failure — evaluator errored during `main`.
-const EXIT_RUNTIME: i32 = 1;
-
-/// Substituted for a `main` return value outside the 0..=255 range. Distinct
-/// from EXIT_RUNTIME so an out-of-range exit can be distinguished from an
-/// evaluator error.
-const EXIT_OUT_OF_RANGE: i32 = 255;
+// Exit-code conventions (EXIT_COMPILE / EXIT_RUNTIME / EXIT_OUT_OF_RANGE), the
+// builtins/effect-handler registration, and the `main`-result → exit-code
+// mapping are shared with anthill-todo via `anthill::runner`.
 
 // ── Args ────────────────────────────────────────────────────────────
 
@@ -155,14 +145,14 @@ fn parse_user_files(paths: &[PathBuf]) -> (Vec<ParsedFile>, Vec<String>) {
 }
 
 fn build_kb(paths: &[PathBuf]) -> Result<KnowledgeBase, i32> {
-    let (stdlib_parsed, stdlib_errors) = stdlib_embedded::parse_embedded_stdlib();
+    let (stdlib_parsed, stdlib_errors) = stdlib::parse_embedded();
     if !stdlib_errors.is_empty() {
         // Embedded stdlib failing to parse is a build-level regression, not a
         // user-facing recoverable warning.
         for e in &stdlib_errors {
             eprintln!("error: {e}");
         }
-        return Err(EXIT_COMPILE);
+        return Err(runner::EXIT_COMPILE);
     }
 
     let (user_parsed, user_errors) = parse_user_files(paths);
@@ -170,7 +160,7 @@ fn build_kb(paths: &[PathBuf]) -> Result<KnowledgeBase, i32> {
         for e in &user_errors {
             eprintln!("error: {e}");
         }
-        return Err(EXIT_COMPILE);
+        return Err(runner::EXIT_COMPILE);
     }
 
     let mut kb = KnowledgeBase::new();
@@ -200,7 +190,7 @@ fn build_kb(paths: &[PathBuf]) -> Result<KnowledgeBase, i32> {
                 }
             }
             if had_type_error {
-                return Err(EXIT_COMPILE);
+                return Err(runner::EXIT_COMPILE);
             }
         }
     }
@@ -243,37 +233,12 @@ fn run_inner(args: &RunArgs) -> Result<i32, i32> {
     let main_qname = format!("{}.main", kb.qualified_name_of(chosen));
 
     let mut interp = Interpreter::new(kb);
-    builtins::register_standard_builtins(&mut interp)
-        .map_err(|e| { eprintln!("error: registering builtins: {e}"); EXIT_RUNTIME })?;
-    interp.register_standard_effect_handlers()
-        .map_err(|e| { eprintln!("error: registering effect handlers: {e}"); EXIT_RUNTIME })?;
+    runner::register_runtime(&mut interp)?;
 
-    let elements: Vec<Value> = args.args.iter().map(|s| Value::Str(s.clone())).collect();
-    let args_value = interp.build_list_value(elements, &[])
-        .map_err(|e| { eprintln!("error: {e}"); EXIT_RUNTIME })?;
+    let args_value = runner::build_args_value(&mut interp, &args.args)
+        .map_err(|e| { eprintln!("error: {e}"); runner::EXIT_RUNTIME })?;
 
-    match interp.call(&main_qname, &[args_value]) {
-        Ok(Value::Int(n)) => Ok(clamp_exit(n)),
-        Ok(other) => {
-            eprintln!("error: main returned non-Int64 value: {other:?}");
-            Err(EXIT_RUNTIME)
-        }
-        // Top-level Error handler (WI-195): an `Error` effect that propagated
-        // out of the entry op arrives as `Raised`; format its payload as the
-        // canonical `error: ...` line (Raised's Display drops the payload).
-        Err(EvalError::Raised { payload }) => {
-            let msg = match &payload {
-                Value::Str(s) => s.clone(),
-                other => format!("{other:?}"),
-            };
-            eprintln!("error: {msg}");
-            Err(EXIT_RUNTIME)
-        }
-        Err(e) => {
-            eprintln!("error: {e}");
-            Err(EXIT_RUNTIME)
-        }
-    }
+    Ok(runner::exit_code_from_main(interp.call(&main_qname, &[args_value])))
 }
 
 fn select_entry(
@@ -284,7 +249,7 @@ fn select_entry(
     match providers.len() {
         0 => {
             eprintln!("error: no program entry found (expected `sort … requires anthill.cli.Main`)");
-            Err(EXIT_COMPILE)
+            Err(runner::EXIT_COMPILE)
         }
         1 => {
             let only = providers[0];
@@ -294,7 +259,7 @@ fn select_entry(
                         "error: --entry {req} does not match the sole program entry {}",
                         kb.qualified_name_of(only)
                     );
-                    return Err(EXIT_COMPILE);
+                    return Err(runner::EXIT_COMPILE);
                 }
             }
             Ok(only)
@@ -304,7 +269,7 @@ fn select_entry(
                 eprintln!("error: ambiguous program entry — {n} sorts provide anthill.cli.Main");
                 print_candidates(kb, providers);
                 eprintln!("pass --entry <sort> to select one");
-                Err(EXIT_COMPILE)
+                Err(runner::EXIT_COMPILE)
             }
             Some(req) => providers
                 .iter()
@@ -313,15 +278,8 @@ fn select_entry(
                 .ok_or_else(|| {
                     eprintln!("error: --entry {req} is not among the program entries");
                     print_candidates(kb, providers);
-                    EXIT_COMPILE
+                    runner::EXIT_COMPILE
                 }),
         },
     }
-}
-
-/// Coerce `main`'s return value to a process exit code. Values outside
-/// 0..=255 clamp to EXIT_OUT_OF_RANGE (distinct from EXIT_RUNTIME so a
-/// nonsense return can be distinguished from an evaluator error).
-fn clamp_exit(n: i64) -> i32 {
-    if (0..=255).contains(&n) { n as i32 } else { EXIT_OUT_OF_RANGE }
 }

@@ -10,6 +10,7 @@ path = "src/main.rs"
 
 [dependencies]
 anthill-core = { path = "../anthill-core" }
+anthill-stl = { path = "../anthill-stl" }
 chrono = "0.4"
 smallvec = "1"
 
