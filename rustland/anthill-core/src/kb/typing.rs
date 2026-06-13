@@ -950,15 +950,33 @@ fn substitute_ref_syms_value(
 /// correct, not merely deferred. (A future Node label that nests an unresolved
 /// type-var in a binding would need an occurrence walk here; none is minted.)
 fn walk_type_deep_value(kb: &mut KnowledgeBase, subst: &Substitution, e: &Value) -> Value {
+    walk_type_deep_value_g(kb, subst, e, false)
+}
+
+/// The grounding sibling of [`walk_type_deep_value`] — see [`walk_type_deep_g`]. δ-grounds
+/// a concrete-subject `RigidProjection` (incl. one nested in a `Value::Node` binding) at
+/// the call-site result-resolve points; otherwise identical pure-σ propagation.
+fn resolve_type_deep_value(kb: &mut KnowledgeBase, subst: &Substitution, e: &Value) -> Value {
+    walk_type_deep_value_g(kb, subst, e, true)
+}
+
+/// Shared body of [`walk_type_deep_value`] (`ground = false`, pure σ) and
+/// [`resolve_type_deep_value`] (`ground = true`, σ + call-time concrete-fill).
+fn walk_type_deep_value_g(
+    kb: &mut KnowledgeBase,
+    subst: &Substitution,
+    e: &Value,
+    ground: bool,
+) -> Value {
     match e {
-        Value::Term(t) => Value::Term(walk_type_deep(kb, subst, *t)),
+        Value::Term(t) => Value::Term(walk_type_deep_g(kb, subst, *t, ground)),
         // WI-441: a NODE-carried type DOES carry type-param vars — a callback
         // arrow's effect-row tail (`@ {EffP, -Modify[x]}`) is a GROUND child
         // Var inside the occurrence tree. The old "Nodes carry Refs, not
         // type-param vars" assumption left those un-walked, so the rigidify
         // pass missed them (the body then unified/leaked the raw Global).
         // Rebuild share-preservingly: unchanged subtrees keep their Rc.
-        Value::Node(occ) => Value::Node(rewrite_type_occ_deep(kb, subst, occ)),
+        Value::Node(occ) => Value::Node(rewrite_type_occ_deep(kb, subst, occ, ground)),
         other => other.clone(),
     }
 }
@@ -975,23 +993,25 @@ fn rewrite_type_occ_deep(
     kb: &mut KnowledgeBase,
     subst: &Substitution,
     occ: &Rc<NodeOccurrence>,
+    ground: bool,
 ) -> Rc<NodeOccurrence> {
     fn child(
         kb: &mut KnowledgeBase,
         subst: &Substitution,
         c: &TypeChild,
+        ground: bool,
         changed: &mut bool,
     ) -> TypeChild {
         match c {
             TypeChild::Ground(t) => {
-                let w = walk_type_deep(kb, subst, *t);
+                let w = walk_type_deep_g(kb, subst, *t, ground);
                 if w != *t {
                     *changed = true;
                 }
                 TypeChild::Ground(w)
             }
             TypeChild::Node(n) => {
-                let r = rewrite_type_occ_deep(kb, subst, n);
+                let r = rewrite_type_occ_deep(kb, subst, n, ground);
                 if !Rc::ptr_eq(&r, n) {
                     *changed = true;
                 }
@@ -1004,22 +1024,22 @@ fn rewrite_type_occ_deep(
         NodeKind::Type(node) => match node {
             TypeNode::Arrow { param, result, effects } => {
                 let (p, r, e) = (
-                    child(kb, subst, param, &mut changed),
-                    child(kb, subst, result, &mut changed),
-                    child(kb, subst, effects, &mut changed),
+                    child(kb, subst, param, ground, &mut changed),
+                    child(kb, subst, result, ground, &mut changed),
+                    child(kb, subst, effects, ground, &mut changed),
                 );
                 Some(NodeKind::Type(TypeNode::Arrow { param: p, result: r, effects: e }))
             }
             TypeNode::Parameterized { base, bindings } => {
-                let b = child(kb, subst, base, &mut changed);
+                let b = child(kb, subst, base, ground, &mut changed);
                 let bs: Vec<(Symbol, TypeChild)> = bindings
                     .iter()
-                    .map(|(s, c)| (*s, child(kb, subst, c, &mut changed)))
+                    .map(|(s, c)| (*s, child(kb, subst, c, ground, &mut changed)))
                     .collect();
                 Some(NodeKind::Type(TypeNode::Parameterized { base: b, bindings: bs }))
             }
             TypeNode::EffectsRows { effects_expr } => {
-                let e = child(kb, subst, effects_expr, &mut changed);
+                let e = child(kb, subst, effects_expr, ground, &mut changed);
                 Some(NodeKind::Type(TypeNode::EffectsRows { effects_expr: e }))
             }
             TypeNode::Denoted { .. } | TypeNode::NamedTuple { .. } | TypeNode::ExprCarried { .. } => None,
@@ -1027,21 +1047,21 @@ fn rewrite_type_occ_deep(
         NodeKind::EffectExpr(node) => match node {
             EffectExprNode::Merge { left, right } => {
                 let (l, r) = (
-                    child(kb, subst, left, &mut changed),
-                    child(kb, subst, right, &mut changed),
+                    child(kb, subst, left, ground, &mut changed),
+                    child(kb, subst, right, ground, &mut changed),
                 );
                 Some(NodeKind::EffectExpr(EffectExprNode::Merge { left: l, right: r }))
             }
             EffectExprNode::Present { label } => {
-                let l = child(kb, subst, label, &mut changed);
+                let l = child(kb, subst, label, ground, &mut changed);
                 Some(NodeKind::EffectExpr(EffectExprNode::Present { label: l }))
             }
             EffectExprNode::Absent { label } => {
-                let l = child(kb, subst, label, &mut changed);
+                let l = child(kb, subst, label, ground, &mut changed);
                 Some(NodeKind::EffectExpr(EffectExprNode::Absent { label: l }))
             }
             EffectExprNode::Open { tail } => {
-                let t = child(kb, subst, tail, &mut changed);
+                let t = child(kb, subst, tail, ground, &mut changed);
                 Some(NodeKind::EffectExpr(EffectExprNode::Open { tail: t }))
             }
             EffectExprNode::EmptyRow => None,
@@ -4089,6 +4109,16 @@ fn check_apply_iter(
             // `bind_value` (WI-375, the `E = {Modify[c]}` path) would otherwise
             // leak as `?_`. The compose keeps the deep walk (for nested term vars)
             // and adds the recursive Node surface (chained var→…→Node bindings).
+            //
+            // PURE σ here (NOT the grounding `resolve_type_deep_value` used for
+            // `resolved_ret`): the effect row carries no δ-groundable projection. An
+            // effect-position projection is an `ExprCarried` (`effects s.E`, WI-396),
+            // already eliminated when `proj_effects` was built above; and an
+            // op-type-param `RigidProjection` δ-grounds VALUE members only — the
+            // concrete-fill is Sort-kind-gated and a provider fact cannot bind an effect
+            // member (effects aren't expressible as type args, WI-301) — so there is
+            // nothing in the effect row for the grounding variant to reduce. (Revisit if
+            // effect members ever become δ-groundable.)
             let deep = walk_type_deep_value(kb, &subst, e);
             let walked = walk_value_to_resolved(kb, &subst, deep);
             if matches!(type_head(kb, &walked), TypeHead::EffectsRows) {
@@ -4106,7 +4136,7 @@ fn check_apply_iter(
         // carrier-agnostic walk (the return type is a `Value`). `mut`: a
         // concretely-dispatched self-receiver spec op re-walks it below once
         // the carrier pins the spec's element params (WI-357).
-        let mut resolved_ret = walk_type_deep_value(kb, &subst, &proj_return_type);
+        let mut resolved_ret = resolve_type_deep_value(kb, &subst, &proj_return_type);
 
         // WI-270: every declared op type-parameter must be pinned by
         // some combination of: explicit `[bindings]`, caller-side
@@ -4158,7 +4188,7 @@ fn check_apply_iter(
                         kb, &mut subst, &op, spec_sort, carrier_sym,
                         named_args, pos_results, named_results,
                     ) {
-                        resolved_ret = walk_type_deep_value(kb, &subst, &proj_return_type);
+                        resolved_ret = resolve_type_deep_value(kb, &subst, &proj_return_type);
                     }
                     let closed_op_effects: Vec<Value> = substituted_op_effects
                         .iter()
@@ -4221,7 +4251,7 @@ fn check_apply_iter(
                     named_args, pos_results, named_results,
                 );
                 if late_bound {
-                    resolved_ret = walk_type_deep_value(kb, &subst, &proj_return_type);
+                    resolved_ret = resolve_type_deep_value(kb, &subst, &proj_return_type);
                 }
                 // Close the spec op's OWN polymorphic effect row at this
                 // concrete carrier. The provider fact cannot yet bind the
@@ -11606,30 +11636,56 @@ fn occurs_in(kb: &KnowledgeBase, vid: VarId, term: TermId) -> bool {
     }
 }
 
-/// Like [`walk_type`] but recurses into `Term::Fn` children so Var
-/// bindings propagate into nested positions like `Option[T = Var(vid)]`.
-/// Used at call-site result-resolve points (return type, effect row);
-/// internal unification keeps using the shallow `walk_type` since the
-/// per-functor `unify_parameterized` / `unify_arrow` arms already
+/// Like [`walk_type`] but recurses into `Term::Fn` children so Var bindings propagate
+/// into nested positions like `Option[T = Var(vid)]`. PURE σ-propagation: a NEUTRAL head
+/// (`RigidProjection` / `ExprCarried`) is an inert leaf — the walk never σ-substitutes or
+/// δ-grounds it (see [`walk_type_deep_g`]). The call-site result-resolve points use the
+/// grounding sibling [`resolve_type_deep_value`]; internal unification keeps using the shallow
+/// `walk_type` since the per-functor `unify_parameterized` / `unify_arrow` arms already
 /// recurse structurally.
 fn walk_type_deep(kb: &mut KnowledgeBase, subst: &Substitution, ty: TermId) -> TermId {
+    walk_type_deep_g(kb, subst, ty, false)
+}
+
+/// Shared body of [`walk_type_deep`] (`ground = false`, pure σ) and the grounding entry
+/// [`resolve_type_deep_value`] (`ground = true`). When `ground` is set, the call-time
+/// concrete-fill (δ-reduction) applies: a `RigidProjection` whose subject has resolved
+/// (through `subst`) to a CONCRETE sort grounds via [`ground_rigid_projection_if_concrete`]
+/// (the §5.4 concrete fill ⟹ CHECK); an abstract-subject projection stays the rigid
+/// neutral. Keeping that grounding OUT of the `ground = false` walk is what lets the
+/// ordinary σ-walk (rigidify, effect resolution, goal canonicalization) never accidentally
+/// ground — or σ-substitute through — a projection's identity slot.
+fn walk_type_deep_g(
+    kb: &mut KnowledgeBase,
+    subst: &Substitution,
+    ty: TermId,
+    ground: bool,
+) -> TermId {
     let resolved = walk_type(kb, subst, ty);
     match kb.get_term(resolved) {
         Term::Fn { .. } => {
-            // WI-428/WI-383: a rigid type-receiver projection's `var` child is the
-            // projection SUBJECT — an identity slot the eliminator's carrier-precise
-            // `requires` lookup keys on, not a unification position. The deep walk must
-            // NOT substitute through it while the subject is still ABSTRACT (a var, incl.
-            // the WI-392/424 rigidify pass's fresh rigid var) — that would erase the
-            // identity (and the WI-400 non-injectivity `P.K ≢ Q.K`). But once the subject
-            // has resolved to a CONCRETE sort, there is no identity left to protect:
-            // `P.V` with `P := CounterState` is the determined δ-reduction `CounterState.V`
-            // (the §5.4 concrete fill ⟹ CHECK). Ground that case; stay opaque otherwise.
-            if matches!(type_head(kb, &TermIdView(resolved)), TypeHead::RigidProjection) {
-                return ground_rigid_projection_if_concrete(kb, subst, resolved)
-                    .unwrap_or(resolved);
+            // PURE σ STOPS AT A NEUTRAL HEAD. A `RigidProjection`'s `subject` and an
+            // `ExprCarried`'s receiver are IDENTITY slots — `expr_carried_zeta` compares
+            // two neutrals by them STRUCTURALLY, never a unification position — and the
+            // WI-392/424 rigidify pass must not rewrite them either (that would erase the
+            // identity and the WI-400 non-injectivity `P.K ≢ Q.K`). So the deep walk
+            // treats both as inert leaves. δ-grounding a CONCRETE-subject `RigidProjection`
+            // (`P.V` with `P := CounterState` ⟹ `CounterState.V`, the §5.4 concrete fill ⟹
+            // CHECK) happens ONLY when `ground` is set — i.e. through [`resolve_type_deep_value`]
+            // at the call-site result-resolve points — never as a side effect of an
+            // ordinary σ-walk.
+            let head = type_head(kb, &TermIdView(resolved));
+            if matches!(head, TypeHead::RigidProjection) {
+                return if ground {
+                    ground_rigid_projection_if_concrete(kb, subst, resolved).unwrap_or(resolved)
+                } else {
+                    resolved
+                };
             }
-            kb.map_fn_children(resolved, |kb, child| walk_type_deep(kb, subst, child))
+            if matches!(head, TypeHead::ExprCarried) {
+                return resolved;
+            }
+            kb.map_fn_children(resolved, |kb, child| walk_type_deep_g(kb, subst, child, ground))
         }
         _ => resolved,
     }
