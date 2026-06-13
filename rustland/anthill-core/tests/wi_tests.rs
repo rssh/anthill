@@ -226,6 +226,9 @@ mod wi402_manifest_provider_test;
 #[path = "include/wi428_rigid_projection_test.rs"]
 mod wi428_rigid_projection_test;
 
+#[path = "include/wi430_carrier_precise_projection_test.rs"]
+mod wi430_carrier_precise_projection_test;
+
 #[path = "include/wi383_op_type_param_projection_test.rs"]
 mod wi383_op_type_param_projection_test;
 

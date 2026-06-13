@@ -10238,12 +10238,28 @@ fn project_type_member(
     // (`State requires DataProvider[P]` ⟹ `P` has DataProvider's `K`). A member no bound
     // declares (or no declaring sort in hand) is a loud error, never a silent neutral.
     if let Some(decl_sort) = recv_decl_sort {
-        if abstract_member_declared_by_requires(kb, decl_sort, member) {
-            return Ok(ProjResult::Neutral);
+        // WI-430: carrier-precise neutral formation. The abstract receiver IS one of
+        // `decl_sort`'s type-parameters (`s.provider : P`); only a `requires` bound whose
+        // CARRIER is THIS param lends it the member. Consulting the whole `requires` chain
+        // (the pre-WI-430 behavior) over-accepts a member projection off the WRONG param
+        // when a sort has several params each carrying their own `requires` (`State[P, Q]
+        // requires DataProvider[P], OtherProvider[Q]` would wrongly accept `s.provider.M`,
+        // `M` being `Q`'s member, off the `P`-typed `s.provider`). Match the receiver's
+        // carrier key — the var-id all the param's spellings share (WI-428 `SubjectKey`) —
+        // against each bound, the `ExprCarried`-side counterpart of `resolve_rigid_-
+        // projection`'s candidate filter (`spec_mentions_key`).
+        let carrier_key = match arg_ty {
+            Value::Term(t) => subject_key_of_term(kb, *t),
+            _ => None,
+        };
+        if let Some(key) = carrier_key {
+            if abstract_member_declared_by_requires(kb, decl_sort, key, member) {
+                return Ok(ProjResult::Neutral);
+            }
         }
         return Err(projection_type_error(ctx, span, &format!(
-            "no `requires` bound on '{}' declares a member '{member}' for its abstract type \
-             parameter; cannot project '{member}'",
+            "no `requires` bound on '{}' whose carrier is this abstract type parameter \
+             declares a member '{member}'; cannot project '{member}'",
             kb.qualified_name_of(decl_sort).to_owned(),
         )));
     }
@@ -10252,31 +10268,54 @@ fn project_type_member(
     )))
 }
 
-/// WI-400: does any `requires Spec[…]` bound on `decl_sort` lend its abstract type
-/// parameter the member `member`? The carrier of `requires Spec[param]` (here
-/// `decl_sort`'s own param) gains `Spec`'s interface, so `member` is declared iff some
-/// required spec declares it as a type-parameter (`State requires DataProvider[P]` ⟹ `P`
-/// has DataProvider's `K`). The declared-interface-member reading (design
-/// path-dependent-types.md §1, §4.1) — the dual of a concrete carrier's `provides`.
-///
-/// Consults `decl_sort`'s whole `requires` chain rather than matching the requires whose
-/// carrier is this specific param; carrier-precise matching (relevant only when a sort has
-/// several parameters each with their own `requires`) is a documented refinement.
+/// WI-400/430: does ANY `requires Spec[…]` bound on `decl_sort` lend the abstract type
+/// parameter identified by `carrier_key` the member `member`? Consults `decl_sort`'s whole
+/// (transitive) `requires` chain, accepting iff some entry [`requires_entry_lends_member`]
+/// — i.e. declares `member` AND carries `carrier_key`. The `ExprCarried` neutral-formation
+/// gate for an abstract-receiver projection (`s.provider.K`, `s.provider : P` an abstract
+/// type-parameter of `decl_sort`); design path-dependent-types.md §1, §4.1.
 fn abstract_member_declared_by_requires(
     kb: &mut KnowledgeBase,
     decl_sort: Symbol,
+    carrier_key: SubjectKey,
     member: &str,
 ) -> bool {
-    for entry in requires_chain(kb, decl_sort) {
-        if kb
-            .type_params_of_sort(entry.required_sort)
-            .iter()
-            .any(|d| d.as_str() == member)
-        {
-            return true;
-        }
-    }
-    false
+    requires_chain(kb, decl_sort)
+        .iter()
+        .any(|entry| requires_entry_lends_member(kb, entry, carrier_key, member))
+}
+
+/// WI-400/428/430 — THE carrier-precise candidate predicate: does a single `requires`
+/// entry lend `member` to the type parameter identified by `carrier_key`? Both halves must
+/// hold: (a) the required spec DECLARES `member` as one of its type-parameters
+/// (`DataProvider` declares `K`), and (b) the spec application MENTIONS `carrier_key` among
+/// its binding values — so the bound's carrier IS this param. `requires DataProvider[P]`
+/// auto-completes (WI-359 loader normalization) to a named binding carrying `P`, which
+/// [`spec_mentions_key`] reads; a positional carrier never survives to here.
+///
+/// Shared by the two pure-filter sites — the `ExprCarried` neutral gate
+/// ([`abstract_member_declared_by_requires`], WI-430) and [`resolve_rigid_projection`]'s
+/// rigid-projection candidate collection (WI-428) — so the carrier-precision rule has ONE
+/// source of truth: both decide the same soundness question (which bound's carrier is this
+/// subject), and a refinement to either half must move both at once.
+/// (`ground_rigid_projection_if_concrete` calls the two component checks SEPARATELY — it
+/// needs the carrier-mention outcome on its own to drive a self-carrier fallback — so it is
+/// deliberately not routed through this helper.)
+///
+/// NB `spec_mentions_key` matches `carrier_key` in ANY top-level binding value, not strictly
+/// the spec's carrier slot — the documented WI-428 conservative reading (a param mentioned
+/// as a non-carrier binding still licenses); exact carrier-slot precision is the §5.3
+/// normalization end-state, shared with the rigid path.
+fn requires_entry_lends_member(
+    kb: &KnowledgeBase,
+    entry: &RequiresEntry,
+    carrier_key: SubjectKey,
+    member: &str,
+) -> bool {
+    kb.type_params_of_sort(entry.required_sort)
+        .iter()
+        .any(|d| d.as_str() == member)
+        && spec_mentions_key(kb, entry.spec, carrier_key)
 }
 
 /// WI-376 (cross-sort provider divergent member name): project `member` off a CONCRETE
@@ -10453,14 +10492,13 @@ fn resolve_rigid_projection(
     } else {
         requires_chain(kb, decl_sort)
     };
-    let mut candidates: Vec<&RequiresEntry> = Vec::new();
-    for e in &chain {
-        if kb.type_params_of_sort(e.required_sort).iter().any(|d| d.as_str() == member_str)
-            && spec_mentions_key(kb, e.spec, key)
-        {
-            candidates.push(e);
-        }
-    }
+    // WI-428/430: the carrier-precise candidate filter — the SAME `requires_entry_lends_-
+    // member` predicate the `ExprCarried` neutral gate uses (one source of truth for which
+    // bound's carrier is this subject).
+    let candidates: Vec<&RequiresEntry> = chain
+        .iter()
+        .filter(|e| requires_entry_lends_member(kb, e, key, &member_str))
+        .collect();
     match candidates.as_slice() {
         [] => {
             // WI-383 SELF-CARRIER (implicit licensing): an OPERATION type-param projection
