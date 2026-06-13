@@ -1928,14 +1928,7 @@ impl<'a> Converter<'a> {
 
         let definition = self.field(node, "definition")
             .map(|def| self.convert_type(def))
-            .unwrap_or_else(|| {
-                // Fallback: anonymous variable
-                let sym = self.intern("_");
-                let vid = crate::kb::term::VarId::new(self.next_var, sym);
-                self.next_var += 1;
-                let tid = self.terms.alloc(Term::Var(Var::Global(vid)), span);
-                TypeExpr::Variable { term_id: tid, descriptions: Vec::new() }
-            });
+            .unwrap_or_else(|| self.fresh_anon_type_var(span));
 
         // Descriptions: collect abstract_sort's own description fields first,
         // then hoist from variable_term's descriptions if empty.
@@ -1984,15 +1977,7 @@ impl<'a> Converter<'a> {
 
         let definition = self.field(node, "definition")
             .map(|def| self.convert_type(def))
-            .unwrap_or_else(|| {
-                // Same fallback shape as `convert_abstract_sort`: a fresh
-                // anonymous logical variable bound to a `Term::Var(Global)`.
-                let sym = self.intern("_");
-                let vid = crate::kb::term::VarId::new(self.next_var, sym);
-                self.next_var += 1;
-                let tid = self.terms.alloc(Term::Var(Var::Global(vid)), span);
-                TypeExpr::Variable { term_id: tid, descriptions: Vec::new() }
-            });
+            .unwrap_or_else(|| self.fresh_anon_type_var(span));
 
         let mut descriptions: Vec<String> = self.fields_by_name(node, "description")
             .into_iter()
@@ -2135,24 +2120,29 @@ impl<'a> Converter<'a> {
             });
         }
 
-        // Simple: `A` (bare → `sort A = ?`) or `A = Default`.
-        let definition = self.field(node, "default")
-            .map(|t| self.convert_type(t))
-            .unwrap_or_else(|| {
-                let sym = self.intern("_");
-                let vid = crate::kb::term::VarId::new(self.next_var, sym);
-                self.next_var += 1;
-                let tid = self.terms.alloc(Term::Var(Var::Global(vid)), span);
-                TypeExpr::Variable { term_id: tid, descriptions: Vec::new() }
-            });
+        // Simple: `A` → `sort A = ?` (a non-rigid type-param variable). No
+        // `= default` form — sort-param defaults are undefined by §5.4 and the
+        // grammar does not admit one here.
         Item::AbstractSort(AbstractSort {
             visibility: None,
             name,
-            definition,
+            definition: self.fresh_anon_type_var(span),
             descriptions: Vec::new(),
             meta: None,
             span,
         })
+    }
+
+    /// A fresh anonymous type variable — the `?` an unspecified `sort X = ?`
+    /// carries (a `Term::Var(Global)` wrapped in `TypeExpr::Variable`). Shared by
+    /// `convert_abstract_sort`'s and `convert_effects_sort_item`'s missing-`=`
+    /// fallbacks and the WI-451 type-param desugar, which all produce this IR.
+    fn fresh_anon_type_var(&mut self, span: Span) -> TypeExpr {
+        let sym = self.intern("_");
+        let vid = crate::kb::term::VarId::new(self.next_var, sym);
+        self.next_var += 1;
+        let tid = self.terms.alloc(Term::Var(Var::Global(vid)), span);
+        TypeExpr::Variable { term_id: tid, descriptions: Vec::new() }
     }
 
     fn convert_field_decl(&mut self, node: Node) -> FieldDecl {

@@ -242,19 +242,23 @@ module.exports = grammar({
       field('name', $.name),
       // WI-451 (§5.4): operation-style enclosing type-param list AFTER the name
       // — `sort CpsMonad[F[T]]`. Each param is a NON-RIGID type variable; a
-      // higher-kinded param carries its own bracketed member (`F[T]`). Mirrors
-      // `operation_type_param_list`. Convert desugars it into marked body items.
+      // higher-kinded param carries its own bracketed member (`F[T]`). Like an
+      // `operation_type_param_list` in position, but a param may be HK (`F[T]`),
+      // which that flat list cannot express. Convert desugars it into marked
+      // body items.
       optional($.sort_type_param_list),
       $._body_sort,
       optional($.meta_block),
     ),
 
     // WI-451 (§5.4 non-rigid type-variable marker). A sort's type-parameter
-    // binders, after the name, op-style: `[F[T], A, B]`. A param may be SIMPLE
+    // binders, after the name, op-style: `[F[T], A, B]`. A param is either SIMPLE
     // (`A`, desugars to `sort A = ?`) or HIGHER-KINDED (`F[T]`, a binder that
     // itself carries a bracketed member — the one shape the flat
     // `operation_type_param_list` lacks). Recursive: the member list reuses this
-    // rule.
+    // rule. No `= default` form — sort-param defaults are undefined by §5.4 (the
+    // examples are bare `[F[T]]` / `[A, B]`); a defaulted sort is the `sort X = T`
+    // body form.
     sort_type_param_list: $ => seq(
       '[',
       commaSep1($.sort_type_param),
@@ -264,7 +268,6 @@ module.exports = grammar({
     sort_type_param: $ => seq(
       field('name', $.identifier),
       optional($.sort_type_param_list),
-      optional(seq('=', field('default', $._type))),
     ),
 
     // WI-320 / proposal 045: effects-keyword sugar for an effect-row

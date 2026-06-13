@@ -34,20 +34,3 @@ end
         name: (identifier))
       (sort_type_param
         name: (identifier)))))
-
-=====================================
-sort type param with default
-=====================================
-
-sort Holder[T = Int]
-end
-
----
-
-(source_file
-  (sort_with_body
-    name: (name (identifier))
-    (sort_type_param_list
-      (sort_type_param
-        name: (identifier)
-        default: (simple_type (name (identifier)))))))
