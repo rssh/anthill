@@ -229,6 +229,9 @@ mod wi428_rigid_projection_test;
 #[path = "include/wi383_op_type_param_projection_test.rs"]
 mod wi383_op_type_param_projection_test;
 
+#[path = "include/wi383_hk_application_test.rs"]
+mod wi383_hk_application_test;
+
 #[path = "include/wi427_bidirectional_flow_test.rs"]
 mod wi427_bidirectional_flow_test;
 
