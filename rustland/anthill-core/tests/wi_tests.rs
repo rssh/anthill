@@ -256,6 +256,9 @@ mod wi407_provider_edges_test;
 #[path = "include/wi431_instance_fact_coverage_test.rs"]
 mod wi431_instance_fact_coverage_test;
 
+#[path = "include/wi451_sort_type_param_binders_test.rs"]
+mod wi451_sort_type_param_binders_test;
+
 #[path = "include/wi424_iterable_members_test.rs"]
 mod wi424_iterable_members_test;
 

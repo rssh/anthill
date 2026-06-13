@@ -2063,11 +2063,18 @@ impl<'a> Converter<'a> {
         }
 
         let mut items = Vec::new();
+        // WI-451 (§5.4): an enclosing type-param list `sort Spec[F[T], A, B]`
+        // desugars into marked body items, PREPENDED so the params precede the
+        // members that reference them. A simple param `A` → `sort A = ?`; a
+        // higher-kinded `F[T]` → a `sort F { sort T = ? }` marked `is_type_param`.
+        if let Some(list) = self.child_by_kind(node, "sort_type_param_list") {
+            items.extend(self.desugar_sort_type_param_list(list));
+        }
         let mut cursor = node.walk();
         for child in node.named_children(&mut cursor) {
             match child.kind() {
                 "name" | "visibility" | "import_clause" | "export_clause" | "meta_block"
-                | "description_block" => {}
+                | "description_block" | "sort_type_param_list" => {}
                 _ => {
                     let converted = self.convert_items_at(child);
                     items.extend(converted);
@@ -2077,6 +2084,7 @@ impl<'a> Converter<'a> {
 
         Some(SortWithBody {
             kind,
+            is_type_param: false,
             visibility,
             name,
             descriptions,
@@ -2084,6 +2092,65 @@ impl<'a> Converter<'a> {
             exports,
             items,
             meta,
+            span,
+        })
+    }
+
+    /// WI-451 (§5.4 non-rigid type-variable marker): desugar an enclosing sort
+    /// type-param list `[F[T], A, B]` into marked body items.
+    fn desugar_sort_type_param_list(&mut self, list: Node) -> Vec<Item> {
+        self.children_by_kind(list, "sort_type_param")
+            .into_iter()
+            .map(|p| self.desugar_sort_type_param(p))
+            .collect()
+    }
+
+    /// One enclosing type-param binder. A SIMPLE param `A` becomes `sort A = ?`
+    /// (an `AbstractSort` whose definition is a fresh anonymous variable —
+    /// byte-identical to the existing type-param form). A HIGHER-KINDED param
+    /// `F[T]` becomes a `SortWithBody` marked `is_type_param: true` whose body
+    /// holds its members (recursively desugared); the loader (WI-452) reads the
+    /// marker to mint the carrier's backing var. A `= Default` keeps the default.
+    fn desugar_sort_type_param(&mut self, node: Node) -> Item {
+        let span = self.span(node);
+        let name_sym = self.field(node, "name")
+            .map(|n| self.intern(self.text(n)))
+            .unwrap_or_else(|| self.intern("?"));
+        let name = Name::simple(name_sym, span);
+
+        // Higher-kinded: `F[T]` — a binder carrying its own member list.
+        if let Some(members) = self.child_by_kind(node, "sort_type_param_list") {
+            let items = self.desugar_sort_type_param_list(members);
+            return Item::SortWithBody(SortWithBody {
+                kind: SortDeclKind::Sort,
+                is_type_param: true,
+                visibility: None,
+                name,
+                descriptions: Vec::new(),
+                imports: Vec::new(),
+                exports: Vec::new(),
+                items,
+                meta: None,
+                span,
+            });
+        }
+
+        // Simple: `A` (bare → `sort A = ?`) or `A = Default`.
+        let definition = self.field(node, "default")
+            .map(|t| self.convert_type(t))
+            .unwrap_or_else(|| {
+                let sym = self.intern("_");
+                let vid = crate::kb::term::VarId::new(self.next_var, sym);
+                self.next_var += 1;
+                let tid = self.terms.alloc(Term::Var(Var::Global(vid)), span);
+                TypeExpr::Variable { term_id: tid, descriptions: Vec::new() }
+            });
+        Item::AbstractSort(AbstractSort {
+            visibility: None,
+            name,
+            definition,
+            descriptions: Vec::new(),
+            meta: None,
             span,
         })
     }

@@ -322,6 +322,16 @@ pub enum SortDeclKind {
 #[derive(Debug)]
 pub struct SortWithBody {
     pub kind: SortDeclKind,
+    /// WI-451 (§5.4 non-rigid type-variable marker): this structured sort is a
+    /// NON-RIGID TYPE PARAMETER (the higher-kinded carrier `F` of a spec),
+    /// not a concrete nested sort. Set when desugared from an enclosing
+    /// type-param list `sort Spec[F[T]]` (the HK param `F`) — its member sub-decls
+    /// live in `items` as `sort T = ?`. The loader (WI-452) reads this to mint a
+    /// backing var (`Spec.F ↦ ?F`); until then it is inert and `F` loads as a
+    /// concrete nested sort (byte-identical to the body form). `false` for an
+    /// ordinary `sort F { … }` — the marked/unmarked split is the distinction
+    /// between a parameter-variable and a concrete nested sort.
+    pub is_type_param: bool,
     pub visibility: Option<Visibility>,
     pub name: Name,
     pub descriptions: Vec<String>,

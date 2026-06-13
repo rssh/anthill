@@ -240,8 +240,31 @@ module.exports = grammar({
       optional($.visibility),
       'sort',
       field('name', $.name),
+      // WI-451 (§5.4): operation-style enclosing type-param list AFTER the name
+      // — `sort CpsMonad[F[T]]`. Each param is a NON-RIGID type variable; a
+      // higher-kinded param carries its own bracketed member (`F[T]`). Mirrors
+      // `operation_type_param_list`. Convert desugars it into marked body items.
+      optional($.sort_type_param_list),
       $._body_sort,
       optional($.meta_block),
+    ),
+
+    // WI-451 (§5.4 non-rigid type-variable marker). A sort's type-parameter
+    // binders, after the name, op-style: `[F[T], A, B]`. A param may be SIMPLE
+    // (`A`, desugars to `sort A = ?`) or HIGHER-KINDED (`F[T]`, a binder that
+    // itself carries a bracketed member — the one shape the flat
+    // `operation_type_param_list` lacks). Recursive: the member list reuses this
+    // rule.
+    sort_type_param_list: $ => seq(
+      '[',
+      commaSep1($.sort_type_param),
+      ']',
+    ),
+
+    sort_type_param: $ => seq(
+      field('name', $.identifier),
+      optional($.sort_type_param_list),
+      optional(seq('=', field('default', $._type))),
     ),
 
     // WI-320 / proposal 045: effects-keyword sugar for an effect-row
