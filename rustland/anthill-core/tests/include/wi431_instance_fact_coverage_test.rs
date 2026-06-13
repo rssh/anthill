@@ -15,12 +15,15 @@
 //! that is NEITHER is still a loud `UnbackedProviderOperation` error.
 //!
 //! Increment 1 was the LOADER coverage half (rule 1); increment 2 added the
-//! value-directed eval dispatch reading these op bindings; increment 3 adds rule
+//! value-directed eval dispatch reading these op bindings; increment 3 added rule
 //! 2 — COHERENCE: two DISTINCT instance facts for the same (spec, carrier) are a
 //! loud ambiguity at load (`duplicate_instance_facts_are_a_loud_ambiguity`),
-//! while identical facts stay idempotent. The op-binding signature validation,
-//! the dict-threaded dispatch path, and the witness-sort non-provision rule are
-//! subsequent WI-431 increments.
+//! while identical facts stay idempotent; increment 4 (A2) adds the DICT-THREADED
+//! dispatch path — a generic `requires Spec[T]` body dispatches a spec op via the
+//! requirement dict built from the instance fact
+//! (`instance_fact_op_dispatches_via_threaded_dict`), the only route when the
+//! carrier is not in an argument. The op-binding signature validation and the
+//! witness-sort non-provision rule are subsequent WI-431 increments.
 
 use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::load::{self, NullResolver};
@@ -162,6 +165,172 @@ end
             "combine(tag, tag) should dispatch via the instance fact to tagCombine; got {other:?}"
         ),
     }
+}
+
+/// EVAL — DICT-THREADED dispatch (increment 4 / A2): the spec op `zero() -> T`
+/// carries the carrier `T` ONLY in its return type — no `T`-typed argument — so
+/// value-directed dispatch (`resolve_spec_op_target_by_value`, increment 2)
+/// CANNOT classify the carrier from a runtime value and the threaded dispatching
+/// dict is the ONLY route. (A `combine(x: T, y: T)`-style op would be rescued by
+/// value-directed dispatch reading `T` from an arg, masking this gap — see the
+/// trace in WI-431 increment-4 notes.) A parameterized sort `Box` with
+/// `requires HasZero[T]` calls `zero()` on its abstract `T`; at the call
+/// `zeroLike(box(tag))` the receiver pins `T := Tag`, the `HasZero[T = Tag]` dict
+/// is built by SLD against the instance fact's `SortProvidesInfo`
+/// (`build_dep_projection` Strategy 3 ⇒ `construct_requirement(Tag, nil)`) and
+/// threaded in; inside, `zero` dispatches via `dispatch_via_sort_ops_table`,
+/// which must read the instance fact's `zero = tagZero` binding (Tag owns no real
+/// `zero`). Without the increment-4 fallback this dies (the body-less spec op has
+/// no impl and no value to re-derive from); result `42` ⇒ `tagZero` ran.
+#[test]
+fn instance_fact_op_dispatches_via_threaded_dict() {
+    let src = r#"namespace test.wi431.threaded
+  import anthill.prelude.Int64
+
+  sort HasZero
+    sort T = ?
+    operation zero() -> T
+  end
+
+  sort Tag
+    entity tag(n: Int64)
+  end
+  operation tagZero() -> Tag = tag(n: 42)
+  fact HasZero[T = Tag, zero = tagZero]
+
+  sort Box
+    sort T = ?
+    requires HasZero[T]
+    entity box(content: T)
+    operation zeroLike(b: Box) -> T =
+      match b
+        case box(_) -> zero()
+  end
+
+  operation runThreaded() -> Int64 =
+    match zeroLike(box(content: tag(n: 1)))
+      case tag(v) -> v
+end
+"#;
+    let mut interp = crate::common::interp_for(src);
+    match interp.call("test.wi431.threaded.runThreaded", &[]) {
+        Ok(anthill_core::eval::Value::Int(n)) => assert_eq!(
+            n, 42,
+            "zeroLike must thread a HasZero[T=Tag] dict from the instance fact and dispatch zero to tagZero (n = 42); got {n}"
+        ),
+        other => panic!(
+            "zeroLike should dispatch zero via the threaded instance-fact dict to tagZero; got {other:?}"
+        ),
+    }
+}
+
+/// EVAL — DICT-THREADED dispatch when the spec ITSELF `requires` another spec
+/// (regression guard): `HasZ requires MyEq` and is provided retroactively by
+/// `fact HasZ[T = Tag, hzero = tagZero]` (with `fact MyEq[T = Tag]` satisfying the
+/// provider-requires). The nullary `hzero() -> T` forces the threaded path (no
+/// carrier arg ⇒ no value-directed rescue), and the target `tagZero` is a
+/// namespace-level instance-fact op with no parent sort. An instance-fact-derived
+/// dict is a LEAF (`construct_requirement(Tag, nil)`, arity 0) — it does NOT
+/// bundle the spec's `MyEq` sub-requirement — so `expand_dispatching_dict`'s
+/// arity check (`dict.arity()` vs the target's requires-chain) is `0 == 0` and
+/// does not spuriously fire `EvalError::Internal`. Result `7` ⇒ `tagZero` ran.
+#[test]
+fn instance_fact_op_dispatches_when_spec_has_requires() {
+    let src = r#"namespace test.wi431.subreq
+  import anthill.prelude.{Int64, Bool}
+
+  sort MyEq
+    sort T = ?
+    operation myeq(x: T, y: T) -> Bool
+  end
+
+  sort HasZ
+    sort T = ?
+    requires MyEq[T]
+    operation hzero() -> T
+  end
+
+  sort Tag
+    entity tag(n: Int64)
+  end
+  operation tagEq(x: Tag, y: Tag) -> Bool =
+    match x
+      case tag(a) ->
+        match y
+          case tag(b) -> eq(a, b)
+  operation tagZero() -> Tag = tag(n: 7)
+  fact MyEq[T = Tag, myeq = tagEq]
+  fact HasZ[T = Tag, hzero = tagZero]
+
+  sort Box
+    sort T = ?
+    requires HasZ[T]
+    entity box(content: T)
+    operation zeroLike(b: Box) -> T =
+      match b
+        case box(_) -> hzero()
+  end
+
+  operation run() -> Int64 =
+    match zeroLike(box(content: tag(n: 1)))
+      case tag(v) -> v
+end
+"#;
+    let mut interp = crate::common::interp_for(src);
+    match interp.call("test.wi431.subreq.run", &[]) {
+        Ok(anthill_core::eval::Value::Int(n)) => assert_eq!(
+            n, 7,
+            "hzero must dispatch via the threaded instance-fact dict to tagZero even though HasZ requires MyEq (n = 7); got {n}"
+        ),
+        other => panic!(
+            "zeroLike should dispatch hzero via the threaded instance-fact dict (no spurious arity error); got {other:?}"
+        ),
+    }
+}
+
+/// EVAL — REALISTIC retroactive instance through a STDLIB collection op (the
+/// actual use case for instance facts): `Color` gets `Eq` retroactively via
+/// `fact Eq[T = Color, eq = colorEq]` — neither `Color` nor `Eq` is modified —
+/// then `List.member` (which `requires Eq[T]` and calls `eq` internally) finds a
+/// `Color` in a `List[Color]`. The `Eq[T = Color]` requirement dict is built from
+/// the instance fact and threaded into `member`. (`eq` takes `T`-typed args, so
+/// value-directed dispatch would also resolve this — this is end-to-end
+/// integration coverage of an instance fact in a real stdlib collection, not the
+/// strict A2 isolation that `instance_fact_op_dispatches_via_threaded_dict`
+/// provides.) `member(color 2, [color 1, color 2]) = true ⇒ 1`; a miss ⇒ `0`.
+#[test]
+fn instance_fact_eq_powers_list_member() {
+    let src = r#"namespace test.wi431.member
+  import anthill.prelude.{List, Int64, Bool, Eq}
+  import anthill.prelude.List.{member}
+
+  sort Color
+    entity color(code: Int64)
+  end
+  operation colorEq(x: Color, y: Color) -> Bool =
+    match x
+      case color(a) ->
+        match y
+          case color(b) -> eq(a, b)
+  fact Eq[T = Color, eq = colorEq]
+
+  operation hasMatch() -> Int64 =
+    if member(color(code: 2), [color(code: 1), color(code: 2)]) then 1 else 0
+  operation hasNoMatch() -> Int64 =
+    if member(color(code: 9), [color(code: 1), color(code: 2)]) then 1 else 0
+end
+"#;
+    let mut interp = crate::common::interp_for(src);
+    let hit = match interp.call("test.wi431.member.hasMatch", &[]) {
+        Ok(anthill_core::eval::Value::Int(n)) => n,
+        other => panic!("member(color 2, [color 1, color 2]) should eval via the instance-fact Eq; got {other:?}"),
+    };
+    assert_eq!(hit, 1, "member must find color 2 using the instance-fact-provided colorEq");
+    let miss = match interp.call("test.wi431.member.hasNoMatch", &[]) {
+        Ok(anthill_core::eval::Value::Int(n)) => n,
+        other => panic!("member(color 9, …) should eval via the instance-fact Eq; got {other:?}"),
+    };
+    assert_eq!(miss, 0, "member must not find an absent color (colorEq distinguishes codes)");
 }
 
 /// Rule 1 (default coexists): a spec op with a DEFAULT body (`idF`, a derived op

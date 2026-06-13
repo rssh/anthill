@@ -455,12 +455,34 @@ impl Interpreter {
             return fn_sym;
         };
         let impl_sym = dispatching_dict.functor();
-        match self.kb.lookup_symbol(op_short) {
-            Some(op_short_sym) => {
-                self.kb.sort_ops_lookup(impl_sym, op_short_sym).unwrap_or(fn_sym)
-            }
-            None => fn_sym,
-        }
+        let Some(op_short_sym) = self.kb.lookup_symbol(op_short) else {
+            return fn_sym;
+        };
+        // The carrier's own table entry: a real override (`S.<op>` with a body),
+        // or the spec op itself — which is EITHER a genuine spec rewrite-rule /
+        // builtin default (runnable) OR, for a RETROACTIVE INSTANCE FACT, the
+        // inherited body-less placeholder with no impl. Filter that placeholder
+        // out so it doesn't mask the instance fact below; a genuine default still
+        // rides the `fn_sym` fall-through (its rewrite rule / builtin runs).
+        let own = self
+            .kb
+            .sort_ops_lookup(impl_sym, op_short_sym)
+            .filter(|&op| op != fn_sym);
+        // WI-431 increment 4 (A2): a retroactive instance fact binds the op in
+        // the provision (`fact HasZero[T = Tag, zero = tagZero]`) instead of on
+        // the carrier. The dict's functor IS the carrier (built by
+        // `build_dep_projection` Strategy 3 against the instance fact's
+        // `SortProvidesInfo`), so read the op-valued binding when the carrier owns
+        // no real override — the SAME fallback the value-directed path (increment
+        // 2) uses, now on the dict-threaded path. This is the ONLY route for a
+        // spec op whose carrier appears only in the result (`zero() -> T`): with
+        // no carrier-typed argument, value-directed dispatch cannot re-derive the
+        // impl, so a miss here dies `UnknownOperation`.
+        own.or_else(|| {
+            let spec = crate::kb::typing::lookup_spec_op_dispatch(&self.kb, fn_sym)?;
+            crate::kb::typing::instance_fact_op_binding(&self.kb, impl_sym, spec, op_short)
+        })
+        .unwrap_or(fn_sym)
     }
 
     /// WI-350 — value-directed dispatch for a body-less spec op the typer
