@@ -8039,9 +8039,10 @@ fn bind_spec_params_from_carrier_param(
 ///
 /// The STILL-FREE gate is the discriminator: a param an argument pinned (Iterable's
 /// `Element` via the callback, the carrier param via the receiver arg) is bound by now and
-/// skipped; only a never-threaded return-only value-param (`V`) is free. The value is
-/// [`normalize_ground_leaf`]'d — a `provides` binding stores a sort name as a nullary
-/// `Fn{S}` — so the bound `Int64` unifies with the declared return's `Ref(Int64)`.
+/// skipped; only a never-threaded return-only value-param (`V`) is free. WI-391: the
+/// provider binding is the canonical `Ref(S)` shape (a bare sort lowers to `Ref(S)` at the
+/// producer, `sort_binding_to_value`), so the bound `Ref(Int64)` unifies with the declared
+/// return's `Ref(Int64)` directly — no late leaf normalization.
 fn bind_ground_value_params_from_provider(
     kb: &mut KnowledgeBase,
     subst: &mut Substitution,
@@ -14338,16 +14339,14 @@ fn bare_provider_binding_precise<E: TermView>(
         else {
             return false;
         };
-        // Normalize a plain-sort-name leaf before the variance check — the provides
-        // fact stores it as a nullary `Fn{S}`, not the `Ref(S)` type shape (the WI-428
-        // `normalize_spec_binding_type` divergence). A STRUCTURED binding value
-        // (`K = List[T = Int64]`) rides raw and today REJECTS: its NESTED leaves carry
-        // the same nullary-Fn shape, which `type_head` classifies as `Error` — the
-        // §5.3 extractability criterion's known violation, whose global lowering
-        // decision is WI-391 (a local deep-normalize here would have to distinguish
-        // sort applications from effect-row / arrow forms, so it deliberately rides
-        // that decision). Conservative: a false REJECT only, never a false accept —
-        // anchored by the `#[ignore]`d wi402 structured-accept test.
+        // WI-391: a plain-sort-name leaf binding is now the canonical `Ref(S)` (normalized
+        // at the producer, `sort_binding_to_value`), so `normalize_spec_binding_type` is a
+        // no-op for it; retained as a defensive leaf-normalizer for any non-`Ref` shape. A
+        // STRUCTURED binding value (`K = List[T = Int64]`) still rides raw and today REJECTS
+        // — the deep/positional canonicalization (and the §5.3 extractability of structured
+        // shapes) is the deferred fact-path / structured-binding work. Conservative: a false
+        // REJECT only, never a false accept — anchored by the `#[ignore]`d wi402
+        // structured-accept test.
         let pv = normalize_spec_binding_type(kb, pv).unwrap_or(pv);
         if !check_binding_by_variance(kb, &mut probe, expected_base, *param, &TermIdView(pv), ev) {
             return false;
