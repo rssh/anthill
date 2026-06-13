@@ -482,7 +482,8 @@ impl Interpreter {
         arg_values: &[Value],
     ) -> Option<Symbol> {
         use crate::kb::typing::{
-            carrier_param_receiver_for_values, lookup_spec_op_dispatch, self_receiver_param_index,
+            carrier_param_receiver_for_values, instance_fact_op_binding, lookup_spec_op_dispatch,
+            self_receiver_param_index,
         };
         let spec_sort = lookup_spec_op_dispatch(&self.kb, spec_op)?;
         let rec = crate::kb::op_info::lookup_operation_info(&self.kb, spec_op)?;
@@ -526,7 +527,20 @@ impl Interpreter {
         let op_qn = self.kb.qualified_name_of(spec_op);
         let op_short = op_qn.rsplit('.').next().unwrap_or(op_qn);
         let op_short_sym = self.kb.lookup_symbol(op_short)?;
-        self.kb.sort_ops_lookup(carrier, op_short_sym)
+        // A carrier that OWNS the op (its own override) wins. `sort_ops_lookup`
+        // returns the body-less spec op itself when the carrier merely inherits
+        // it (no real impl) — filter that placeholder out so it doesn't mask the
+        // instance fact below.
+        let own = self
+            .kb
+            .sort_ops_lookup(carrier, op_short_sym)
+            .filter(|&op| op != spec_op);
+        // WI-431: a RETROACTIVE INSTANCE FACT binds the op in the provision
+        // (`fact Combiner[T = Tag, combine = tagCombine]`) instead of on the
+        // carrier — the op-valued binding IS the dictionary entry. Fall back to
+        // it so a spec-op call on an instance-fact carrier dispatches to the
+        // bound op instead of dying `UnknownOperation`.
+        own.or_else(|| instance_fact_op_binding(&self.kb, carrier, spec_sort, op_short))
     }
 
     // ── Binder starts: update top.awaiting, push child frame. ──────

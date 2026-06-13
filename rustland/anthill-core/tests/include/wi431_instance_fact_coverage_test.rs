@@ -120,6 +120,47 @@ end
     );
 }
 
+/// EVAL — op-valued bindings ARE the dictionary: a call to the spec op `combine` on
+/// `Tag` values dispatches to the instance fact's bound `tagCombine`, even though
+/// `Tag` owns no `combine` op of its own (`sort_ops_lookup(Tag, combine)` returns only
+/// the inherited body-less spec op — no real impl — and the instance-fact binding is
+/// the dictionary entry that backs it). First-order spec (no higher-kinded `F`), so
+/// the typer binds `T := Tag` from the argument with no concrete-fill and leaves the
+/// call for value-directed dispatch; the gap is purely the eval-side dispatch reading
+/// the fact's op binding. Result `99` ⇒ `tagCombine` ran (not some other path).
+#[test]
+fn instance_fact_op_dispatches_at_eval() {
+    let src = r#"namespace test.wi431.eval
+  import anthill.prelude.Int64
+
+  sort Combiner
+    sort T = ?
+    operation combine(x: T, y: T) -> T
+  end
+
+  sort Tag
+    entity tag(n: Int64)
+  end
+  operation tagCombine(x: Tag, y: Tag) -> Tag = tag(n: 99)
+  fact Combiner[T = Tag, combine = tagCombine]
+
+  operation runCombine() -> Int64 =
+    match combine(tag(n: 1), tag(n: 2))
+      case tag(v) -> v
+end
+"#;
+    let mut interp = crate::common::interp_for(src);
+    match interp.call("test.wi431.eval.runCombine", &[]) {
+        Ok(anthill_core::eval::Value::Int(n)) => assert_eq!(
+            n, 99,
+            "combine(tag, tag) must dispatch to the instance-fact-bound tagCombine (n = 99); got {n}"
+        ),
+        other => panic!(
+            "combine(tag, tag) should dispatch via the instance fact to tagCombine; got {other:?}"
+        ),
+    }
+}
+
 /// Rule 1 (default coexists): a spec op with a DEFAULT body (`idF`, a derived op
 /// like §5.4's `flatten`) stays a spec default — it needs no instance-fact
 /// binding. The fact binds only the primitives `pure`/`flatMap`; `idF` is
@@ -153,5 +194,40 @@ end
     assert!(
         errs.is_empty(),
         "a spec-defaulted op (idF) needs no instance-fact binding; fact should load clean: {errs:?}"
+    );
+}
+
+/// COHERENCE (rule 2) ANCHOR — deferred. Two instance facts covering the same
+/// (spec, carrier) with DIFFERENT op bindings must be a LOUD ambiguity error
+/// (design §5.4 rule 2, keyed on the full canonical application / WI-419
+/// identity). Today they load clean and eval dispatch picks the FIRST via
+/// `provider_spec_view_bindings`' pre-existing first-provider-wins contract
+/// (shared with WI-402/415..423 dispatch) — silent, not loud. `#[ignore]`'d
+/// until the coherence increment lands; un-ignore it then.
+#[test]
+#[ignore = "WI-431 coherence (rule 2) not yet implemented — instance-fact ambiguity is silent"]
+fn duplicate_instance_facts_are_a_loud_ambiguity() {
+    let snippet = r#"namespace test.wi431.coherence
+  import anthill.prelude.Int64
+
+  sort Combiner
+    sort T = ?
+    operation combine(x: T, y: T) -> T
+  end
+
+  sort Tag
+    entity tag(n: Int64)
+  end
+  operation combineA(x: Tag, y: Tag) -> Tag = tag(n: 1)
+  operation combineB(x: Tag, y: Tag) -> Tag = tag(n: 2)
+
+  fact Combiner[T = Tag, combine = combineA]
+  fact Combiner[T = Tag, combine = combineB]
+end
+"#;
+    let errs = load_errors(&[snippet]);
+    assert!(
+        errs.iter().any(|e| e.contains("ambigu") || e.contains("coheren")),
+        "two instance facts for (Combiner, Tag) must be a loud ambiguity error; got: {errs:?}"
     );
 }

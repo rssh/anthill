@@ -7000,33 +7000,51 @@ pub fn check_provider_operations(kb: &mut KnowledgeBase) -> Vec<super::load::Loa
     errors
 }
 
-/// WI-431: true iff the provision's spec view (the `SortView` of a `fact
-/// Spec[…, op = backingOp, …]`) binds the spec operation `op_short` to an
-/// OPERATION symbol — the instance-fact dictionary entry that backs the op.
-/// Distinguished from a type-valued binding (`F = Option`, a `Sort`) purely by
-/// the bound value's symbol kind, so a plain type-only provision (`provides
-/// Stream[T = X]`) never matches and existing op-coverage is unchanged.
-fn op_bound_in_instance_fact(kb: &KnowledgeBase, spec_view: TermId, op_short: &str) -> bool {
-    let Some((_, bindings)) = unwrap_spec_view(kb, spec_view) else {
-        return false;
-    };
-    bindings.iter().any(|(key, value)| {
-        short_name_of(kb.qualified_name_of(*key)) == op_short
-            && binding_value_is_operation(kb, *value)
+/// WI-431: the OPERATION symbol an instance fact binds for `op_short` among a
+/// provision's `SortView` `bindings` (`pure = optionPure` ⇒ `optionPure`), or
+/// `None` if `op_short` is not bound to an operation. The op-valued binding IS
+/// the dictionary entry that backs the spec op — read at the fact-coverage check
+/// (loader) and at spec-op dispatch (eval) through this one accessor. The bound
+/// value's base symbol is read via `provides_spec_base_sym` (the same
+/// op-discriminator [`sort_view_substitution`](super::load) uses, which also
+/// unwraps a `SortView`-wrapped parameterized value); a type-valued binding
+/// (`F = Option`, a `Sort`) yields `None`, so a plain type-only provision
+/// (`provides Stream[T = X]`) never matches.
+fn instance_fact_op_in_bindings(
+    kb: &KnowledgeBase,
+    bindings: &[(Symbol, TermId)],
+    op_short: &str,
+) -> Option<Symbol> {
+    bindings.iter().find_map(|(key, value)| {
+        if short_name_of(kb.qualified_name_of(*key)) != op_short {
+            return None;
+        }
+        super::load::provides_spec_base_sym(kb, *value)
+            .filter(|s| matches!(kb.kind_of(*s), Some(crate::intern::SymbolKind::Operation)))
     })
 }
 
-/// True iff `value` (a spec-view binding value) names an OPERATION symbol — the
-/// op-valued instance-fact binding (`pure = optionPure`) as opposed to a
-/// type-valued one (`F = Option`, a `Sort`). Reads the value's base symbol the
-/// same way [`sort_view_substitution`](super::load) does — via
-/// `provides_spec_base_sym`, which also unwraps a `SortView`-wrapped
-/// parameterized value — so the two op-binding discriminators stay in lockstep.
-fn binding_value_is_operation(kb: &KnowledgeBase, value: TermId) -> bool {
-    match super::load::provides_spec_base_sym(kb, value) {
-        Some(s) => matches!(kb.kind_of(s), Some(crate::intern::SymbolKind::Operation)),
+/// WI-431 loader coverage: true iff the provision's spec view binds `op_short`
+/// to an operation — the instance-fact backing for that spec op.
+fn op_bound_in_instance_fact(kb: &KnowledgeBase, spec_view: TermId, op_short: &str) -> bool {
+    match unwrap_spec_view(kb, spec_view) {
+        Some((_, bindings)) => instance_fact_op_in_bindings(kb, &bindings, op_short).is_some(),
         None => false,
     }
+}
+
+/// WI-431 eval dispatch: the operation backing spec op `op_short` for `carrier`
+/// through an instance fact `SortProvidesInfo(carrier, Spec[…, op_short = op])`.
+/// The dispatch fallback when `carrier` owns no `op_short` of its own — a
+/// retroactive instance binds the op in the fact instead of on the carrier.
+pub(crate) fn instance_fact_op_binding(
+    kb: &KnowledgeBase,
+    carrier: Symbol,
+    spec_sort: Symbol,
+    op_short: &str,
+) -> Option<Symbol> {
+    let bindings = provider_spec_view_bindings(kb, carrier, spec_sort)?;
+    instance_fact_op_in_bindings(kb, &bindings, op_short)
 }
 
 /// True iff the operation `op_short` (declared by the provided spec, as
