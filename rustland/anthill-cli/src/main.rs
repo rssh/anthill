@@ -18,7 +18,6 @@ use anthill_core::persistence::term_ser;
 mod check;
 mod prove;
 mod run;
-mod stdlib_embedded;
 mod witness;
 
 // ── CLI types ───────────────────────────────────────────────────────
@@ -464,7 +463,7 @@ fn load_kb_with_stdlib(paths: &[PathBuf], verbose: bool, include_stdlib: bool)
     let mut errors = Vec::new();
 
     if include_stdlib {
-        let (stdlib_files, stdlib_errors) = stdlib_embedded::parse_embedded_stdlib();
+        let (stdlib_files, stdlib_errors) = anthill::stdlib::parse_embedded();
         if verbose {
             eprintln!("included {} embedded stdlib file(s)", stdlib_files.len());
         }

@@ -78,6 +78,7 @@ dependencies = [
  "anthill-cpp-gen",
  "anthill-rust-gen",
  "anthill-smt-gen",
+ "anthill-stl",
  "clap",
  "serde_json",
  "smallvec",
@@ -144,6 +145,7 @@ name = "anthill-todo"
 version = "0.1.0"
 dependencies = [
  "anthill-core",
+ "anthill-stl",
  "chrono",
  "smallvec",
  "tempfile",

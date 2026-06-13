@@ -10,6 +10,7 @@ path = "src/main.rs"
 
 [dependencies]
 anthill-core = { path = "../anthill-core" }
+anthill-stl = { path = "../anthill-stl" }
 anthill-cpp-gen = { path = "../anthill-cpp-gen" }
 anthill-rust-gen = { path = "../anthill-rust-gen" }
 anthill-smt-gen = { path = "../anthill-smt-gen" }

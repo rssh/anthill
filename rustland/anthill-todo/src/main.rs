@@ -2,6 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+use anthill::{runner, stdlib};
 use anthill_core::kb::load;
 use anthill_core::kb::term::{Literal, Term, TermId};
 use anthill_core::kb::KnowledgeBase;
@@ -10,7 +11,6 @@ use anthill_core::parse::ir::ParsedFile;
 
 use smallvec::SmallVec;
 
-mod stdlib_embedded;
 mod anthill_bundle;
 
 static SKILL_MD: &str = r#"---
@@ -313,21 +313,18 @@ fn main() -> ExitCode {
         raw_args.remove(idx);
     }
     raw_args.remove(0);
-    run_anthill_bundle(&raw_args)
+    ExitCode::from(run_anthill_bundle(&raw_args) as u8)
 }
 
 // ── Anthill-bundle entry point ──────────────────────────────────
 
-/// Compilation failure — parse, load, or build error.
-const EXIT_COMPILE: u8 = 2;
-/// Runtime failure — interpreter errored during `main`.
-const EXIT_RUNTIME: u8 = 1;
-/// Substituted for a `main` return value outside 0..=255 so an
-/// out-of-range exit can be distinguished from a legitimate 255.
-const EXIT_OUT_OF_RANGE: u8 = 255;
+// Exit-code conventions (EXIT_COMPILE / EXIT_RUNTIME / EXIT_OUT_OF_RANGE), the
+// builtins/effect-handler registration, and the `main`-result → exit-code
+// mapping are shared with anthill-cli via `anthill::runner`. This entry point
+// returns the raw `i32` exit code; `main` wraps it in `ExitCode` once.
 
-fn run_anthill_bundle(argv: &[String]) -> ExitCode {
-    use anthill_core::eval::{builtins, EvalError, Interpreter, Value};
+fn run_anthill_bundle(argv: &[String]) -> i32 {
+    use anthill_core::eval::{Interpreter, Value};
     use anthill_core::kb::load::NullResolver;
 
     // Strip the global flags FIRST (`-d <dir>` / `--dir`, `--agent <name>`,
@@ -347,7 +344,7 @@ fn run_anthill_bundle(argv: &[String]) -> ExitCode {
                 Some(dir) => explicit_dir = Some(PathBuf::from(dir)),
                 None => {
                     eprintln!("error: {arg} requires a value");
-                    return ExitCode::from(EXIT_COMPILE);
+                    return runner::EXIT_COMPILE;
                 }
             }
         } else if let Some(dir) = arg.strip_prefix("-d=").or_else(|| arg.strip_prefix("--dir=")) {
@@ -357,7 +354,7 @@ fn run_anthill_bundle(argv: &[String]) -> ExitCode {
                 Some(a) => agent = a.clone(),
                 None => {
                     eprintln!("error: --agent requires a value");
-                    return ExitCode::from(EXIT_COMPILE);
+                    return runner::EXIT_COMPILE;
                 }
             }
         } else if let Some(a) = arg.strip_prefix("--agent=") {
@@ -367,7 +364,7 @@ fn run_anthill_bundle(argv: &[String]) -> ExitCode {
                 "error: the --stdlib flag was removed in the WI-009 cutover — \
                  the stdlib is embedded in the binary (rebuild to pick up stdlib edits)"
             );
-            return ExitCode::from(EXIT_COMPILE);
+            return runner::EXIT_COMPILE;
         } else {
             bundle_argv.push(arg.clone());
         }
@@ -383,7 +380,7 @@ fn run_anthill_bundle(argv: &[String]) -> ExitCode {
             other => other,
         };
         run_init(name);
-        return ExitCode::SUCCESS;
+        return 0;
     }
 
     // `skill` is a static doc print — served host-side so the output stays
@@ -392,16 +389,16 @@ fn run_anthill_bundle(argv: &[String]) -> ExitCode {
     // (The bundle has no skill dispatch arm — this is the one impl.)
     if bundle_argv.first().map(|s| s.as_str()) == Some("skill") {
         print!("{}", SKILL_MD);
-        return ExitCode::SUCCESS;
+        return 0;
     }
 
-    let (stdlib_parsed, stdlib_errors) = stdlib_embedded::parse_embedded_stdlib();
+    let (stdlib_parsed, stdlib_errors) = stdlib::parse_embedded();
     let (bundle_parsed, bundle_errors) = anthill_bundle::parse_embedded_bundle();
     for e in stdlib_errors.iter().chain(bundle_errors.iter()) {
         eprintln!("error: {e}");
     }
     if !stdlib_errors.is_empty() || !bundle_errors.is_empty() {
-        return ExitCode::from(EXIT_COMPILE);
+        return runner::EXIT_COMPILE;
     }
 
     // Bulk-pull the project's anthill-todo/ files: domain.anthill defines
@@ -412,7 +409,7 @@ fn run_anthill_bundle(argv: &[String]) -> ExitCode {
         Ok(d) => d,
         Err(e) => {
             eprintln!("error: {e}");
-            return ExitCode::FAILURE;
+            return runner::EXIT_RUNTIME;
         }
     };
     let scan = scan_dir(&project_dir);
@@ -459,19 +456,14 @@ fn run_anthill_bundle(argv: &[String]) -> ExitCode {
                     eprintln!("warning: {e}");
                 }
             }
-            if had_fatal { return ExitCode::from(EXIT_COMPILE); }
+            if had_fatal { return runner::EXIT_COMPILE; }
             Vec::new()
         }
     };
 
     let mut interp = Interpreter::new(kb);
-    if let Err(e) = builtins::register_standard_builtins(&mut interp) {
-        eprintln!("error: registering builtins: {e}");
-        return ExitCode::from(EXIT_RUNTIME);
-    }
-    if let Err(e) = interp.register_standard_effect_handlers() {
-        eprintln!("error: registering effect handlers: {e}");
-        return ExitCode::from(EXIT_RUNTIME);
+    if let Err(code) = runner::register_runtime(&mut interp) {
+        return code;
     }
 
     // Build the FileStore handle the anthill side will receive. Mutating
@@ -510,7 +502,7 @@ fn run_anthill_bundle(argv: &[String]) -> ExitCode {
             Ok(k) => k,
             Err(e) => {
                 eprintln!("error: computing store key: {e}");
-                return ExitCode::from(EXIT_RUNTIME);
+                return runner::EXIT_RUNTIME;
             }
         };
 
@@ -536,12 +528,11 @@ fn run_anthill_bundle(argv: &[String]) -> ExitCode {
         v
     };
 
-    let elements: Vec<Value> = bundle_argv.iter().map(|s| Value::Str(s.clone())).collect();
-    let args_value = match interp.build_list_value(elements, &[]) {
+    let args_value = match runner::build_args_value(&mut interp, &bundle_argv) {
         Ok(v) => v,
         Err(e) => {
             eprintln!("error: building args list: {e}");
-            return ExitCode::from(EXIT_RUNTIME);
+            return runner::EXIT_RUNTIME;
         }
     };
     let agent_value = Value::Str(agent);
@@ -615,40 +606,12 @@ fn run_anthill_bundle(argv: &[String]) -> ExitCode {
         out
     };
 
-    match interp.call_with_requirements("anthill.todo.Main.main",
-                      &[args_value, store_value, wis_cell_value, agent_value],
-                      chain_dicts) {
-        Ok(Value::Int(n)) => {
-            if (0..=255).contains(&n) {
-                ExitCode::from(n as u8)
-            } else {
-                eprintln!("warning: main returned {n}, outside 0..=255 — clamped");
-                ExitCode::from(EXIT_OUT_OF_RANGE)
-            }
-        }
-        Ok(other) => {
-            eprintln!("error: main returned non-Int64 value: {other:?}");
-            ExitCode::from(EXIT_RUNTIME)
-        }
-        // Top-level Error handler (WI-195): an anthill `Error` effect that
-        // propagated out of Main (e.g. a `persist`/`flush` store I/O failure
-        // raised through the Error effect) arrives here as `Raised`. Format
-        // its payload as the canonical `error: ...` line and exit RUNTIME —
-        // no Rust panic / backtrace. (Raised's own Display drops the payload,
-        // so we render it here.)
-        Err(EvalError::Raised { payload }) => {
-            let msg = match &payload {
-                Value::Str(s) => s.clone(),
-                // v1: builtins raise String payloads; a user-raised entity
-                // falls back to a debug rendering until a Value printer lands.
-                other => format!("{other:?}"),
-            };
-            eprintln!("error: {msg}");
-            ExitCode::from(EXIT_RUNTIME)
-        }
-        Err(e) => {
-            eprintln!("error: {e}");
-            ExitCode::from(EXIT_RUNTIME)
-        }
-    }
+    // The main-result → exit-code mapping (Int clamp, non-Int, top-level
+    // `Raised` Error effect per WI-195, other evaluator errors) is shared with
+    // anthill-cli's `run`.
+    runner::exit_code_from_main(interp.call_with_requirements(
+        "anthill.todo.Main.main",
+        &[args_value, store_value, wis_cell_value, agent_value],
+        chain_dicts,
+    ))
 }
