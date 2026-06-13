@@ -988,12 +988,30 @@ bindings instead of (only) the carrier sort's own ops. Three rules:
    → ambiguity error at the use site, keyed on the full canonical application (the
    WI-419 / §5.3 identity rule). Scoped / named instance selection is the deferred
    refinement.
-3. **The witness-sort spelling is NOT supported as the provision**: a
-   `sort OptionMonad / provides CpsMonad[F = Option] / …ops…` indexes the provision by
-   the *declaring* sort (`sort_ref`), but dispatch looks provisions up by the
-   *receiver's carrier* — the witness's ops are invisible to `Option`-valued
-   receivers. The fact form avoids this by carrier derivation; a witness sort is at
-   most a place to put the implementation operations.
+3. **The witness-sort spelling is a valid provider; value-directed dispatch should
+   resolve it like `requires`** (rule 3 reframed 2026-06-13 by the WI-431 (D) probe
+   + decision — the original "NOT supported / invisible" claim below was too
+   strong): a `sort OptionMonad / provides CpsMonad[F = Option] / …ops…` files the
+   provision under the *declaring* sort (`sort_ref = OptionMonad`), not the carrier
+   `Option`. It IS a sound `CpsMonad[Option]` provider: `requires CpsMonad[F]`
+   -polymorphic code resolves it, because the `requires`-dict path **unifies the
+   spec application** (`CpsMonad[F = Option]`) against provisions — it privileges no
+   parameter and never consults `sort_ref`. What it does NOT *yet* do is resolve a
+   spec op called directly on a carrier **value** (`flatMap(opt, f)`): value-directed
+   dispatch collapses the structured bindings the typer already computed (`F :=
+   Option`) down to "the value's sort, looked up by `sort_ref`", and the witness is
+   filed elsewhere. That **"carrier" — privileging one type parameter as the dispatch
+   key — is an implementation artifact of that value→sort→`sort_ref` lookup, not a
+   principle**; the fix is to make value-directed dispatch *also* unify the spec
+   application (reusing the typer's bindings), after which a witness resolves
+   identically to a `fact` and the carrier concept disappears. Tracked in **WI-450**.
+   Until then, the `fact` form (which files under the carrier) is the way to make a
+   carrier *value* directly dispatchable. (Two genuinely-different shapes are out of
+   scope of WI-450 and singled out for real reasons: self-receiver specs like
+   `Stream.splitFirst(s: Stream)` — no parameter is pinned by an argument, WI-357;
+   and result-determined params like `pure(a: A) -> F[T = A]` — `F` is only in the
+   result, so it comes from the expected type, WI-383.) A witness sort remains a
+   legitimate place to put the implementation operations.
 
 ### Seam split
 
