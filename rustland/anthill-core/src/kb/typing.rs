@@ -7083,7 +7083,7 @@ fn instance_fact_op_in_bindings(
 /// `provides_spec_base_sym`, which also unwraps a parameterized `SortView` — is an
 /// `Operation`. Folding all three callers through this one predicate keeps them
 /// from disagreeing about what an op-valued binding is.
-fn binding_op_symbol(kb: &KnowledgeBase, value: TermId) -> Option<Symbol> {
+pub(crate) fn binding_op_symbol(kb: &KnowledgeBase, value: TermId) -> Option<Symbol> {
     super::load::provides_spec_base_sym(kb, value)
         .filter(|s| matches!(kb.kind_of(*s), Some(crate::intern::SymbolKind::Operation)))
 }

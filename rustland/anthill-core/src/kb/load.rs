@@ -22,7 +22,7 @@ use super::{KnowledgeBase, SortKind};
 use super::term::{Term, TermId, Var, VarId, Literal};
 use super::node_occurrence::{self, Expr, NodeOccurrence};
 use super::term_view::{TermIdView, TermView};
-use super::typing::{extract_sort_ref_sym, extract_type, TypeExtractor};
+use super::typing::{binding_op_symbol, extract_sort_ref_sym, extract_type, TypeExtractor};
 use crate::eval::value::Value;
 
 // ── Load result ──────────────────────────────────────────────
@@ -207,6 +207,18 @@ pub enum LoadError {
         op: String,
         reason: String,
     },
+    /// WI-431 (E): a parametric INSTANCE FACT (an op-valued provision, `fact
+    /// CpsMonad[pure = …, flatMap = …]`) at namespace level binds operations but
+    /// its CARRIER cannot be derived — the spec's first type parameter (the
+    /// carrier slot, `carrier_param`) is not bound to a concrete sort/entity.
+    /// Dispatch files and looks instances up BY carrier, so without one the whole
+    /// instance — and its coverage / coherence / signature checks — would be
+    /// silently dropped (the pre-(E) early-return). Load-blocking: a missing or
+    /// mis-typed carrier binding must not quietly disable the instance.
+    UnresolvableInstanceCarrier {
+        spec: String,
+        carrier_param: String,
+    },
     Other {
         message: String,
     },
@@ -286,6 +298,10 @@ impl LoadError {
                 format!("instance fact `{}[…]` binds operation '{}.{}' to an operation whose signature does not match (with '{}' substituted for the spec's type parameter): {}",
                     spec, spec, op, carrier, reason)
             }
+            LoadError::UnresolvableInstanceCarrier { spec, carrier_param } => {
+                format!("instance fact `{}[…]` binds operations but its carrier cannot be derived: the carrier type parameter '{}' is not bound to a concrete sort (write `fact {}[{} = SomeSort, …]`)",
+                    spec, carrier_param, spec, carrier_param)
+            }
             LoadError::Other { message } => {
                 format!("load error: {}", message)
             }
@@ -335,6 +351,9 @@ impl LoadError {
             // WI-431 (B): a mis-typed instance-fact op binding would dispatch to
             // a wrongly-typed impl — block.
             | LoadError::IncompatibleInstanceBinding { .. }
+            // WI-431 (E): an op-bearing instance fact whose carrier cannot be
+            // derived would be silently dropped — block instead.
+            | LoadError::UnresolvableInstanceCarrier { .. }
             // WI-366: a value-in-type in a sort-relation position is not yet
             // resolvable — fail loudly rather than run with an unenforced clause.
             | LoadError::ValueInTypeNotResolved { .. }
@@ -382,6 +401,9 @@ impl std::fmt::Display for LoadError {
             }
             LoadError::IncompatibleInstanceBinding { carrier, spec, op, reason } => {
                 write!(f, "instance fact '{}' binds '{}.{}' to a signature-incompatible operation (carrier '{}'): {}", spec, spec, op, carrier, reason)
+            }
+            LoadError::UnresolvableInstanceCarrier { spec, carrier_param } => {
+                write!(f, "instance fact '{}' binds operations but its carrier ('{}') is not bound to a sort", spec, carrier_param)
             }
             LoadError::Other { message } => {
                 write!(f, "load error: {}", message)
@@ -7184,10 +7206,19 @@ impl<'a> Loader<'a> {
     fn assemble_sort_view_value(
         &mut self,
         pos: Vec<crate::eval::value::Value>,
-        named: Vec<(Symbol, crate::eval::value::Value)>,
+        mut named: Vec<(Symbol, crate::eval::value::Value)>,
     ) -> crate::eval::value::Value {
         use crate::eval::value::Value;
         let sort_view_sym = self.kb.resolve_symbol("anthill.reflect.SortView");
+        // Canonicalize the named bindings by SYMBOL INDEX — `kb.alloc` hash-conses
+        // a `Term::Fn` with its `named_args` AS GIVEN (unlike the `make_*`
+        // builders, it does not sort), so two specs that differ only in written
+        // field order (`Spec[a = …, b = …]` vs `Spec[b = …, a = …]`) would
+        // otherwise lower to DISTINCT spec views and read as a false coherence
+        // ambiguity (WI-431 rule 2). Sorting here makes the spec view
+        // order-insensitive for every caller (fact + provides), so the WI-449
+        // byte-identity holds regardless of source order.
+        named.sort_by_key(|(s, _)| s.index());
         // A spec is ground iff every binding is ground; any non-`Term` binding
         // poisons the whole spec to a value carrier (no information lost).
         let any_value = pos.iter().any(|v| !matches!(v, Value::Term(_)))
@@ -8068,21 +8099,61 @@ impl<'a> Loader<'a> {
         let sort_ref_term = match self.kb.kind_of(domain_functor) {
             Some(SymbolKind::Sort) => domain,
             Some(SymbolKind::Namespace) => {
-                // Derive carrier from the first binding's value. For a
-                // PARAMETRIC spec the positional was translated into `named_terms`
-                // above (`fact Ring[Float]` → `named[0] = (T, Float)`), so the
-                // carrier is that first binding's value. WI-407: for a
-                // NON-parametric spec there is no param to bind to, so the raw
-                // leading positional IS the carrier (`fact BulkStore[IFS]` →
-                // carrier `IFS`).
+                // Derive the carrier from the spec's CARRIER ("Self") TYPE
+                // PARAMETER — the first-declared TYPE binding — NOT
+                // `named_terms.first()`. Two reasons the first binding is not
+                // reliably the carrier: (1) a POSITIONAL binding is translated and
+                // APPENDED after the named ones, so in `fact Combiner[Tag, combine
+                // = tagCombine]` the leading binding is the OP `combine`; (2)
+                // `fact_value_to_sort_sym` returns the symbol of a bare
+                // `Ref`/`Ident` WITHOUT a Sort check, so an op binding would file
+                // the provision under the operation `tagCombine` instead of `Tag`
+                // (WI-431 (E)). Selecting the non-op binding with the lowest SYMBOL
+                // INDEX (= earliest declared) finds the carrier regardless of
+                // written order, skips op bindings, and works for a structured /
+                // higher-kinded carrier param (`CpsMonad`'s `F`) that
+                // `type_params_of_sort` does not list. WI-407: a NON-parametric
+                // spec has no type param, so the raw leading positional IS the
+                // carrier (`fact BulkStore[IndexedFileStore]` ⇒ `IndexedFileStore`).
                 let carrier_val = named_terms
-                    .first()
-                    .map(|(_, val)| *val)
+                    .iter()
+                    .filter(|(_, v)| binding_op_symbol(self.kb, *v).is_none())
+                    .min_by_key(|(s, _)| s.index())
+                    .map(|(_, v)| *v)
                     .or_else(|| fact_pos_args.first().copied());
-                let carrier_sym = carrier_val.and_then(|val| self.fact_value_to_sort_sym(val));
+                // The carrier must be a TYPE (Sort or namespace-level Entity),
+                // never an operation — a binding to an op value is a
+                // mis-derivation, not a carrier.
+                let carrier_sym = carrier_val
+                    .and_then(|val| self.fact_value_to_sort_sym(val))
+                    .filter(|s| !matches!(self.kb.kind_of(*s), Some(SymbolKind::Operation)));
                 match carrier_sym {
                     Some(sym) => self.kb.make_name_term_from_sym(sym),
-                    None => return,
+                    // WI-431 (E): a parametric INSTANCE FACT (binds ≥1 op) whose
+                    // carrier cannot be derived is malformed — be LOUD instead of
+                    // silently dropping the whole provision (and with it the
+                    // coverage / coherence / signature checks). A type-only or bare
+                    // provider fact (no op binding) keeps the lenient path: it may
+                    // legitimately have no carrier here (a bare `fact BulkStore`).
+                    None => {
+                        // Loud only for a PARAMETRIC instance fact — `binds_any_op`
+                        // AND a carrier type-param slot (`spec_params.first()`). A
+                        // non-parametric spec has no carrier param to forget, and a
+                        // type-only / bare provider fact (no op binding) keeps the
+                        // lenient path.
+                        let binds_any_op = named_terms
+                            .iter()
+                            .any(|(_, v)| binding_op_symbol(self.kb, *v).is_some());
+                        if binds_any_op {
+                            if let Some(carrier_param) = spec_params.first() {
+                                self.errors.push(LoadError::UnresolvableInstanceCarrier {
+                                    spec: self.kb.qualified_name_of(fact_functor).to_string(),
+                                    carrier_param: carrier_param.clone(),
+                                });
+                            }
+                        }
+                        return;
+                    }
                 }
             }
             _ => return,
@@ -8119,9 +8190,14 @@ impl<'a> Loader<'a> {
         );
     }
 
-    /// Extract the underlying sort symbol from a fact-binding value
-    /// term. Handles `Ref`, `Ident`, and nullary `Fn` shapes — the
-    /// forms `convert_term` produces for plain sort references.
+    /// Extract the underlying nominal symbol from a fact-binding value
+    /// term. Handles `Ref`, `Ident`, and `Fn` shapes — the forms
+    /// `convert_term` produces for a plain type reference (a sort or a
+    /// namespace-level entity). NOTE: a bare `Ref`/`Ident` is returned
+    /// unfiltered (it may resolve to a non-type symbol such as an operation);
+    /// the carrier-derivation caller excludes `Operation` kinds itself, since a
+    /// type carrier may legitimately be an `Entity` (`IndexedFileStore`) as well
+    /// as a `Sort`.
     fn fact_value_to_sort_sym(&self, value: TermId) -> Option<Symbol> {
         match self.kb.get_term(value) {
             Term::Ref(s) | Term::Ident(s) => Some(*s),

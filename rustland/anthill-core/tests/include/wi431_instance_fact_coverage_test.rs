@@ -723,3 +723,113 @@ end
         "instance facts for distinct carriers (Tag, Ring) must not collide: {errs:?}"
     );
 }
+
+// ── (E) carrier-derivation robustness ───────────────────────────────────────
+
+/// (E) The carrier is derived from the spec's FIRST TYPE PARAMETER, matched by
+/// NAME among the bindings — not `named_terms.first()`. Named args canonicalize by
+/// SYMBOL INDEX (declaration order), and a POSITIONAL carrier is translated and
+/// appended AFTER the named bindings, so in `fact Combiner[Tag, combine =
+/// tagCombine]` (positional carrier `Tag`, named op `combine`) the first canonical
+/// binding is `combine = tagCombine`. The pre-(E) `named_terms.first()` heuristic
+/// then derived the carrier from the OP value `tagCombine` —
+/// `fact_value_to_sort_sym` returns the symbol of a `Ref`/`Ident` WITHOUT checking
+/// it is a Sort — filing the provision under `SortProvidesInfo(carrier =
+/// tagCombine, …)` instead of `Tag`. A `combine(tag, tag)` call then value-directs
+/// to carrier `Tag`, looks up `SortProvidesInfo(Tag, Combiner)`, finds nothing
+/// (the provision is under `tagCombine`), and dies `UnknownOperation`. Deriving
+/// the carrier from `Combiner`'s first type param `T` (matched by name) finds the
+/// `Tag` binding regardless of order; result `99` ⇒ `tagCombine` ran.
+#[test]
+fn instance_fact_carrier_param_after_op_resolves_and_dispatches() {
+    let src = r#"namespace test.wi431.carrier_order
+  import anthill.prelude.Int64
+
+  sort Combiner
+    sort T = ?
+    operation combine(x: T, y: T) -> T
+  end
+
+  sort Tag
+    entity tag(n: Int64)
+  end
+  operation tagCombine(x: Tag, y: Tag) -> Tag = tag(n: 99)
+  fact Combiner[Tag, combine = tagCombine]
+
+  operation runCombine() -> Int64 =
+    match combine(tag(n: 1), tag(n: 2))
+      case tag(v) -> v
+end
+"#;
+    let mut interp = crate::common::interp_for(src);
+    match interp.call("test.wi431.carrier_order.runCombine", &[]) {
+        Ok(anthill_core::eval::Value::Int(n)) => assert_eq!(
+            n, 99,
+            "combine must dispatch to the instance-fact-bound tagCombine even though the carrier \
+             `Tag` was written POSITIONALLY (canonically ordered after the `combine` binding) \
+             (n = 99); got {n}"
+        ),
+        other => panic!(
+            "combine(tag, tag) should dispatch via the instance fact whose carrier binding is not \
+             first in canonical order; got {other:?}"
+        ),
+    }
+}
+
+/// (E, LOUD) An op-bearing instance fact whose carrier cannot be derived — the
+/// carrier type parameter `T` is simply not bound — is a LOUD load error, not a
+/// silent drop. Pre-(E) the `named_terms.first()` heuristic picked the only
+/// binding (`combine = tagCombine`, an Operation), `fact_value_to_sort_sym`
+/// returned `None`, and the loader returned early WITHOUT emitting the provision
+/// or any diagnostic — so a fact that forgot its carrier loaded clean and the
+/// instance silently did not exist (coverage/coherence/signature never ran).
+#[test]
+fn instance_fact_unresolvable_carrier_is_loud() {
+    let snippet = r#"namespace test.wi431.no_carrier
+  import anthill.prelude.Int64
+
+  sort Combiner
+    sort T = ?
+    operation combine(x: T, y: T) -> T
+  end
+
+  sort Tag
+    entity tag(n: Int64)
+  end
+  operation tagCombine(x: Tag, y: Tag) -> Tag = tag(n: 1)
+  fact Combiner[combine = tagCombine]
+end
+"#;
+    let errs = load_errors(&[snippet]);
+    assert!(
+        errs.iter().any(|e| e.contains("carrier")),
+        "an op-bearing instance fact whose carrier param is unbound must be a loud \
+         carrier-derivation error, not a silent drop: {errs:?}"
+    );
+}
+
+/// (E) non-regression: a TYPE-ONLY provider fact (no op binding) whose carrier
+/// param is unbound keeps the lenient path — it is not an instance fact, so the
+/// loud carrier check does not fire. (`fact BulkStore` / bare provider facts rely
+/// on this; here a parametric type-only `fact Holder` with no binding must not
+/// newly error.)
+#[test]
+fn type_only_fact_unbound_carrier_stays_lenient() {
+    let snippet = r#"namespace test.wi431.type_only
+  import anthill.prelude.Int64
+
+  sort Holder
+    sort T = ?
+    operation hold(x: T) -> T = x
+  end
+
+  fact Holder
+end
+"#;
+    let errs = load_errors(&[snippet]);
+    assert!(
+        !errs.iter().any(|e| e.contains("carrier")),
+        "a bare type-only provider fact (no op binding) must not trigger the loud carrier \
+         check: {errs:?}"
+    );
+}
