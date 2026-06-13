@@ -231,7 +231,6 @@ end
 /// `-> Int64` read conforms. (The REF shape `fact Box[T=Cell, V=V]` already worked via
 /// WI-424; this closes the GROUND-valued case for entity resources.)
 #[test]
-#[ignore = "WI-383 B (provider-fact ground bind): needs a LATE pass (bind still-free ground value-params after per-call threading) — an early bind disrupts WI-424/441 Iterable threading (EffP). Root cause + fix direction in WI-383 feedback."]
 fn provider_fact_ground_value_ties_spec_op() {
     let snippet = r#"namespace test.wi383.pf
   import anthill.prelude.{Int64, String}
@@ -257,7 +256,6 @@ end
 /// PROVIDER-FACT BIND soundness: the tie is real — `Box.rd(c) : Int64`, so a `-> String`
 /// read is REJECTED (this is the exact value-untied soundness hole the Modify model named).
 #[test]
-#[ignore = "WI-383 B (provider-fact ground bind): the value-untied soundness hole — `Box.rd(c) : V` floats free, so a String read is wrongly accepted until the LATE-pass ground bind lands. Anchor."]
 fn provider_fact_ground_value_rejects_wrong_type() {
     let snippet = r#"namespace test.wi383.pfbad
   import anthill.prelude.{Int64, String}

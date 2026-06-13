@@ -3772,7 +3772,18 @@ fn check_apply_iter(
         // element, and the outer return-type check rejects the differing
         // declared return. `carrier_bound` is reused below to gate the WI-357
         // effect-close, which the early bind would otherwise steal.
-        let carrier_bound = match self_receiver_spec_sort(kb, &op, fn_sym) {
+        let self_recv_spec = self_receiver_spec_sort(kb, &op, fn_sym);
+        // WI-383 B: capture the CARRIER-PARAM provision (the `Iterable.find(c: C)` /
+        // `ModifyRuntime.get(target: T)` shape — receiver typed by the spec's own carrier
+        // param, not the spec sort) so the LATE ground-value bind below can reuse its
+        // `view` without re-scanning the provider facts. Only when there is no
+        // self-receiver (the two shapes are mutually exclusive).
+        let carrier_param_info = if self_recv_spec.is_some() {
+            None
+        } else {
+            carrier_param_receiver(kb, &op, fn_sym, named_args, pos_results, named_results)
+        };
+        let carrier_bound = match self_recv_spec {
             Some(spec_sort) => match receiver_carrier(
                 kb, &op, spec_sort, named_args, pos_results, named_results,
             ) {
@@ -3786,11 +3797,11 @@ fn check_apply_iter(
             // (`Iterable.find(c: C, …)`): ground the spec's params (`Element`,
             // the written `E` row) from the concrete carrier's provision, with
             // the same bind-before-expected-seeding rationale as the arm above.
-            None => match carrier_param_receiver(
-                kb, &op, fn_sym, named_args, pos_results, named_results,
-            ) {
+            None => match &carrier_param_info {
                 Some((spec_sort, _carrier_sym, recv_ty, view)) => {
-                    bind_spec_params_from_carrier_param(kb, &mut subst, spec_sort, recv_ty, view)
+                    bind_spec_params_from_carrier_param(
+                        kb, &mut subst, *spec_sort, *recv_ty, view.clone(),
+                    )
                 }
                 None => false,
             },
@@ -4055,6 +4066,21 @@ fn check_apply_iter(
         } else {
             (op.return_type.clone(), op.effects.clone())
         };
+
+        // WI-383 B (Modify provider-fact GROUND value bind): bind a still-FREE spec
+        // value-param from the carrier's GROUND provider-fact binding
+        // (`fact Box[T = IntCell, V = Int64]` ⟹ `Box.V := Int64`, the entity-resource
+        // Modify tie). Runs HERE — AFTER the argument loops (so a param threaded by an
+        // argument, e.g. Iterable's `Element` via the predicate, is already bound and the
+        // still-FREE gate skips it; binding it EARLY regresses WI-424/441 effect-row
+        // threading) and BEFORE expected-seeding (so the resource's declared value type
+        // wins over the caller's `-> String` claim — the value-untied soundness hole the
+        // Modify model names). The REF-shaped binding (`V ↦ Cell.V`) is already threaded
+        // by `bind_spec_params_from_carrier_param` above; this closes only the
+        // GROUND-valued case it skips.
+        if let Some((spec_sort, _carrier_sym, _recv_ty, view)) = &carrier_param_info {
+            bind_ground_value_params_from_provider(kb, &mut subst, *spec_sort, view);
+        }
 
         // WI-270 / WI-379: now that the arguments have been synthesized,
         // consult the caller-side `expected` type via `op.return_type`. Running
@@ -7989,6 +8015,65 @@ fn bind_spec_params_from_carrier_param(
                 subst.bind_term(spec_vid, concrete);
                 any = true;
             }
+        }
+    }
+    any
+}
+
+/// WI-383 B — the LATE, GROUND-valued companion to [`bind_spec_params_from_carrier_param`].
+/// Binds a spec value-param that is STILL FREE after the argument loops to its GROUND
+/// provider-fact value (`fact Box[T = IntCell, V = Int64]` ⟹ `Box.V := Int64`). This is the
+/// entity-resource Modify tie: `ModifyRuntime.get(target: T) -> V` consumed on a resource
+/// whose provider fact pins `V` to a concrete sort. `V` appears only in the RETURN, so no
+/// argument ever threads it; left free, the value-untied return is filled from the caller's
+/// `expected`, accepting ANY declared return (the soundness hole the Modify model names).
+///
+/// Why it is a SEPARATE late pass, not folded into the early
+/// [`bind_spec_params_from_carrier_param`]:
+///  - a leaf sort ref (`Int64`) is indistinguishable from a type-param ref by
+///    [`typaram_ref_short_name`], so it takes the receiver-type-arg lookup path and misses
+///    (a bare entity carrier has no type args) — never reaching that fn's ground arm;
+///  - binding such a ground value EARLY (before the argument loops) pre-empts the WI-424/441
+///    carrier threading — an Iterable's GROUND `Element` would bind before the predicate's
+///    effect row threads, leaving the effect param unconstrained.
+///
+/// The STILL-FREE gate is the discriminator: a param an argument pinned (Iterable's
+/// `Element` via the callback, the carrier param via the receiver arg) is bound by now and
+/// skipped; only a never-threaded return-only value-param (`V`) is free. The value is
+/// [`normalize_ground_leaf`]'d — a `provides` binding stores a sort name as a nullary
+/// `Fn{S}` — so the bound `Int64` unifies with the declared return's `Ref(Int64)`.
+fn bind_ground_value_params_from_provider(
+    kb: &mut KnowledgeBase,
+    subst: &mut Substitution,
+    spec_sort: Symbol,
+    view_bindings: &SmallVec<[(Symbol, TermId); 2]>,
+) -> bool {
+    let mut any = false;
+    for (spec_param_sym, carrier_value) in view_bindings {
+        // GROUND value only (a concrete sort `Int64`): a type-param ref (`V ↦ Cell.V`) is
+        // threaded by the early `bind_spec_params_from_carrier_param`, and the carrier
+        // application / a still-abstract binding is filled by argument unification.
+        if !type_value_is_ground(kb, *carrier_value) {
+            continue;
+        }
+        let Some(spec_vid) = type_param_vid_in_sort(kb, spec_sort, *spec_param_sym) else {
+            continue;
+        };
+        // STILL-FREE gate (see the fn doc): only a never-threaded value-param is bound; a
+        // param an argument already pinned (the carrier param, an Iterable `Element`) is
+        // left untouched.
+        if subst.resolve_as_value(spec_vid).is_some() {
+            continue;
+        }
+        // `provides` stores a sort name as a nullary `Fn{S}`; normalize to `Ref(S)` so the
+        // bound member unifies with the declared return's plain type shape (WI-428).
+        let bound = match normalize_ground_leaf(kb, Value::Term(*carrier_value)) {
+            Value::Term(t) => t,
+            _ => continue,
+        };
+        if !occurs_in(kb, spec_vid, bound) {
+            subst.bind_term(spec_vid, bound);
+            any = true;
         }
     }
     any
