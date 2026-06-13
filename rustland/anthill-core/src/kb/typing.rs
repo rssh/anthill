@@ -15943,10 +15943,19 @@ fn rigidify_op_type_params(
     type_params: &[(Symbol, TermId)],
 ) -> Substitution {
     let mut rigidify = Substitution::new();
-    for (_, var_tid) in type_params {
+    for (param_sym, var_tid) in type_params {
         if let Term::Var(Var::Global(vid)) = kb.get_term(*var_tid) {
             let vid = *vid;
-            let fresh = kb.fresh_var(vid.name());
+            // Name the rigid after the PARAMETER's short name, not the alias var's name.
+            // `sort A = ?` aliases to an ANONYMOUS `?` var, so inheriting `vid.name()`
+            // renders every skolemized param as `?_` — a clash then reads the unhelpful
+            // `expected F[T = ?_], got F[T = ?_]` (both rigids print identically). The
+            // short name makes it `?A` vs `?B`. Purely cosmetic: a rigid's identity is its
+            // fresh `VarId`, never its name (unification compares VarIds; `SubjectKey` keys
+            // on `v.raw()`), so the rename cannot affect any judgement.
+            let name = short_name_of(kb.resolve_sym(*param_sym)).to_owned();
+            let name_sym = kb.intern(&name);
+            let fresh = kb.fresh_var(name_sym);
             let rigid_term = kb.alloc(Term::Var(Var::Rigid(fresh)));
             rigidify.bind_term(vid, rigid_term);
         }

@@ -107,9 +107,14 @@ fn rigid_functor_application_rejects_wrong_binding() {
 end
 "#;
     let errs = load_errors(&[snippet]);
+    // The rejection is sound AND the diagnostic DISTINGUISHES the bindings: the skolemized
+    // params print as `?A` vs `?B` (not two identical `?_`), so `expected != got` is legible
+    // — `rigidify_op_type_params` names each rigid after its parameter's short name.
     assert!(
-        errs.iter().any(|e| e.contains("wrongFmap") && e.contains("mismatch")),
-        "wrongFmap (-> F[T=A], returns F[T=B]) MUST be rejected; got: {errs:?}"
+        errs.iter().any(|e| {
+            e.contains("wrongFmap") && e.contains("mismatch") && e.contains("?A") && e.contains("?B")
+        }),
+        "wrongFmap must be rejected with a binding-distinct diagnostic (?A vs ?B); got: {errs:?}"
     );
 }
 
