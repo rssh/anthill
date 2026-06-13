@@ -3388,10 +3388,13 @@ fn sort_view_substitution(
 ) -> Vec<(String, String)> {
     use crate::intern::SymbolKind;
     let mut sub: Vec<(String, String)> = named_args.iter().filter_map(|(k_sym, v_tid)| {
-        let value_sym = match kb.get_term(*v_tid) {
-            Term::Fn { functor, .. } | Term::Ref(functor) | Term::Ident(functor) => Some(*functor),
-            _ => None,
-        };
+        // The base sort the binding names. WI-449: a parameterized binding value
+        // rides a `SortView(base, …)` wrapper (`C = List[T]` → `SortView(List, …)`)
+        // on BOTH the `provides` and the now-aligned `fact` path — `provides_spec_base_sym`
+        // unwraps it to `List`, where a raw functor read would yield the literal
+        // `SortView`. A bare op-valued binding stays its own functor, so the
+        // operation skip below is unaffected.
+        let value_sym = provides_spec_base_sym(kb, *v_tid);
         if let Some(vs) = value_sym {
             if matches!(kb.kind_of(vs), Some(SymbolKind::Operation)) {
                 return None;
@@ -7088,15 +7091,8 @@ impl<'a> Loader<'a> {
                 let base_sym = self.remap_name(name);
                 let declared_params = self.kb.type_params_of_sort(base_sym);
                 let mut positional_index: usize = 0;
-                // A spec is ground iff every binding is ground; any non-`Term`
-                // binding (a `Node`, or a nested value `SortView` `Entity`) poisons
-                // the whole spec to a value carrier.
-                let mut any_value = false;
                 for b in bindings {
                     let bound = self.sort_binding_to_value(&b.bound);
-                    if !matches!(bound, Value::Term(_)) {
-                        any_value = true;
-                    }
                     let param_sym = match &b.param {
                         Some(p) => Some(self.reintern(p.last())),
                         None if positional_index < declared_params.len() => {
@@ -7111,32 +7107,52 @@ impl<'a> Loader<'a> {
                         None => pos.push(bound),
                     }
                 }
-                let sort_view_sym = self.kb.resolve_symbol("anthill.reflect.SortView");
-                if any_value {
-                    Value::Entity {
-                        functor: sort_view_sym,
-                        pos: std::rc::Rc::from(pos),
-                        named: std::rc::Rc::from(named),
-                    }
-                } else {
-                    // All-ground ⇒ assemble the hash-consed `SortView` term (the
-                    // same shape the prior ground-only `sort_inst_to_term` built).
-                    let pos_args: SmallVec<[TermId; 4]> = pos
-                        .iter()
-                        .map(|v| v.as_term().expect("all-ground ⇒ Value::Term"))
-                        .collect();
-                    let named_args: SmallVec<[(Symbol, TermId); 2]> = named
-                        .iter()
-                        .map(|(s, v)| (*s, v.as_term().expect("all-ground ⇒ Value::Term")))
-                        .collect();
-                    Value::Term(self.kb.alloc(Term::Fn {
-                        functor: sort_view_sym,
-                        pos_args,
-                        named_args,
-                    }))
-                }
+                self.assemble_sort_view_value(pos, named)
             }
             _ => self.type_expr_to_value(ty),
+        }
+    }
+
+    /// Assemble a `SortView` carrier from its positional slot (the base sort's name
+    /// term in `pos[0]`, plus any binding left unmapped) and its named bindings,
+    /// choosing the faithful representation: a `Value::Entity` when ANY binding
+    /// carries a non-`Term` value (a denoted `Node`, a nested value `SortView` —
+    /// information a hash-consed `Term` cannot hold), else the all-ground
+    /// hash-consed `Value::Term(SortView…)`. The single decision point shared by
+    /// [`sort_inst_to_value`] (the `provides` / `requires` path) and
+    /// [`canonicalize_fact_binding_value`] (the fact path), so the two emit
+    /// BYTE-IDENTICAL specs and a binding's value is never silently dropped.
+    fn assemble_sort_view_value(
+        &mut self,
+        pos: Vec<crate::eval::value::Value>,
+        named: Vec<(Symbol, crate::eval::value::Value)>,
+    ) -> crate::eval::value::Value {
+        use crate::eval::value::Value;
+        let sort_view_sym = self.kb.resolve_symbol("anthill.reflect.SortView");
+        // A spec is ground iff every binding is ground; any non-`Term` binding
+        // poisons the whole spec to a value carrier (no information lost).
+        let any_value = pos.iter().any(|v| !matches!(v, Value::Term(_)))
+            || named.iter().any(|(_, v)| !matches!(v, Value::Term(_)));
+        if any_value {
+            Value::Entity {
+                functor: sort_view_sym,
+                pos: std::rc::Rc::from(pos),
+                named: std::rc::Rc::from(named),
+            }
+        } else {
+            let pos_args: SmallVec<[TermId; 4]> = pos
+                .iter()
+                .map(|v| v.as_term().expect("all-ground ⇒ Value::Term"))
+                .collect();
+            let named_args: SmallVec<[(Symbol, TermId); 2]> = named
+                .iter()
+                .map(|(s, v)| (*s, v.as_term().expect("all-ground ⇒ Value::Term")))
+                .collect();
+            Value::Term(self.kb.alloc(Term::Fn {
+                functor: sort_view_sym,
+                pos_args,
+                named_args,
+            }))
         }
     }
 
@@ -7834,6 +7850,80 @@ impl<'a> Loader<'a> {
         self.current_owner = prev_owner;
     }
 
+    /// WI-449: canonicalize a FACT-derived spec binding VALUE to the canonical,
+    /// `provides`-identical [`Value`](crate::eval::value::Value) — the fact-path
+    /// counterpart of [`sort_inst_to_value`]'s recursive lowering. The parser builds
+    /// a parameterized binding value POSITIONALLY (`fact Effect[T = Modify[?]]` → the
+    /// `Modify[?]` value is `Fn{Modify, pos:[?], named:[]}`; a nested
+    /// `fact IndexedSeq[List[T], T]` → the `List[T]` value is `Fn{List, pos:[T]}`),
+    /// because parse has no `type_params_of_sort` to map positional args onto the
+    /// base sort's declared params, and a positional-only `Fn` is MALFORMED for
+    /// `type_head` (only `Fn{base, named}` is `Parameterized`; a no-named-arg `Fn`
+    /// → `TypeExtractor::Error`). Re-lower it here — at the load-time producer of the
+    /// `SortProvidesInfo` `SortView` — into the SAME `SortView(base, …named)` carrier
+    /// `sort_inst_to_value` builds: positional args map onto the base sort's declared
+    /// params, recursively. The result is byte-identical to the `provides` emission
+    /// and is read by the SAME `unwrap_spec_view` / `provides_spec_base_sym` dispatch
+    /// machinery (which reads named bindings only off a `SortView` wrapper, never off
+    /// a bare `Fn`). A leaf (`Ref` / `Ident` / a literal) or a NON-sort `Fn` (a reflect
+    /// constructor) is already a canonical `Value::Term` and passes through unchanged.
+    ///
+    /// Reachable for every parameterized fact binding, and lossless. The return is
+    /// ALWAYS a `Value::Term`: a user `fact` head is built by `convert_term` and
+    /// asserted via `assert_fact` (there is no value-fact head for user facts), so
+    /// the `value` reaching here is a hash-consed `Term` — even a denoted place
+    /// `Modify[c]` rides as `Ref(c)`, never a `Value::Node`. Every leaf is therefore
+    /// a `Value::Term` and `assemble_sort_view_value` collapses to a hash-consed
+    /// `SortView` term, preserving every argument (the positional→named remap is the
+    /// only reshaping). `Value` is the return type purely to share
+    /// `assemble_sort_view_value` with the `provides` path, whose `type_expr_to_value`
+    /// CAN lower a denoted place to a real `Value::Node` (the only `Value::Entity`
+    /// producer).
+    fn canonicalize_fact_binding_value(&mut self, value: TermId) -> crate::eval::value::Value {
+        use crate::eval::value::Value;
+        let (functor, pos_args, named_args) = match self.kb.get_term(value) {
+            Term::Fn { functor, pos_args, named_args } => {
+                (*functor, pos_args.clone(), named_args.clone())
+            }
+            _ => return Value::Term(value),
+        };
+        // Only a parameterized SORT instantiation re-lowers to a `SortView`.
+        if !matches!(self.kb.kind_of(functor), Some(SymbolKind::Sort)) {
+            return Value::Term(value);
+        }
+        let params = self.kb.type_params_of_sort(functor);
+        // `pos[0]` is the base sort's name term (the SortView's subject), mirroring
+        // `sort_inst_to_value`. Recurse into any explicit named values, then map each
+        // positional arg onto the base sort's declared param in order.
+        let name_term = self.kb.make_name_term_from_sym(functor);
+        let mut pos: Vec<Value> = vec![Value::Term(name_term)];
+        let mut named: Vec<(Symbol, Value)> = named_args
+            .iter()
+            .map(|(s, v)| (*s, self.canonicalize_fact_binding_value(*v)))
+            .collect();
+        let mut positional_index: usize = 0;
+        for pos_val in pos_args.iter() {
+            let cv = self.canonicalize_fact_binding_value(*pos_val);
+            match params.get(positional_index) {
+                Some(param_name) => {
+                    positional_index += 1;
+                    let param_sym = self.kb.intern(param_name);
+                    // A name given both positionally and explicitly is a malformed
+                    // double-bind; keep the positional rather than silently drop it.
+                    if named.iter().any(|(s, _)| *s == param_sym) {
+                        pos.push(cv);
+                    } else {
+                        named.push((param_sym, cv));
+                    }
+                }
+                // More positional args than declared params — a malformed
+                // instantiation; keep the arg positional rather than drop it.
+                None => pos.push(cv),
+            }
+        }
+        self.assemble_sort_view_value(pos, named)
+    }
+
     /// If `fact_term` is `Spec[bindings]` claiming spec satisfaction,
     /// emit a `SortProvidesInfo(sort_ref=<carrier>, spec=SortView(Spec,
     /// <named bindings>))` alongside the bare fact. Two recognised
@@ -7888,12 +7978,14 @@ impl<'a> Loader<'a> {
             return;
         }
 
-        // Translate positional bindings → named, using the spec's
-        // declared parameter order. type_params_of_sort returns short
-        // names; positional[i] binds to params[i]. Empty for a
-        // non-parametric spec — the loop does nothing and `named` stays
-        // whatever the user wrote (typically nothing).
-        let mut named: SmallVec<[(Symbol, TermId); 2]> = fact_named_args.clone();
+        use crate::eval::value::Value;
+        // Translate positional bindings → named, using the spec's declared
+        // parameter order. type_params_of_sort returns short names; positional[i]
+        // binds to params[i]. Empty for a non-parametric spec — the loop does
+        // nothing and `named_terms` stays whatever the user wrote (typically
+        // nothing). These are the ORIGINAL (parse-shape) term bindings; the carrier
+        // is read off them (its base sort is unaffected by canonicalization).
+        let mut named_terms: SmallVec<[(Symbol, TermId); 2]> = fact_named_args.clone();
         for (i, pos_val) in fact_pos_args.iter().enumerate() {
             let param_name = match spec_params.get(i) {
                 Some(n) => n.clone(),
@@ -7901,10 +7993,10 @@ impl<'a> Loader<'a> {
             };
             let param_sym = self.kb.intern(&param_name);
             // Skip if user already supplied this name explicitly.
-            if named.iter().any(|(s, _)| *s == param_sym) {
+            if named_terms.iter().any(|(s, _)| *s == param_sym) {
                 continue;
             }
-            named.push((param_sym, *pos_val));
+            named_terms.push((param_sym, *pos_val));
         }
 
         // Determine sort_ref (the carrier). For sort-body facts, it's
@@ -7918,13 +8010,13 @@ impl<'a> Loader<'a> {
             Some(SymbolKind::Sort) => domain,
             Some(SymbolKind::Namespace) => {
                 // Derive carrier from the first binding's value. For a
-                // PARAMETRIC spec the positional was translated into `named`
+                // PARAMETRIC spec the positional was translated into `named_terms`
                 // above (`fact Ring[Float]` → `named[0] = (T, Float)`), so the
                 // carrier is that first binding's value. WI-407: for a
                 // NON-parametric spec there is no param to bind to, so the raw
                 // leading positional IS the carrier (`fact BulkStore[IFS]` →
                 // carrier `IFS`).
-                let carrier_val = named
+                let carrier_val = named_terms
                     .first()
                     .map(|(_, val)| *val)
                     .or_else(|| fact_pos_args.first().copied());
@@ -7937,31 +8029,35 @@ impl<'a> Loader<'a> {
             _ => return,
         };
 
-        // Build SortView(spec_name_term, …named bindings).
-        let sort_view_sym = self.kb.resolve_symbol("anthill.reflect.SortView");
+        // WI-449: re-lower each binding VALUE to its faithful, `provides`-identical
+        // `Value` (`canonicalize_fact_binding_value` maps positional→named and rides
+        // a denoted binding as a `Value::Entity`), then assemble the spec the SAME
+        // way `sort_inst_to_value` does — so the fact and `provides` emissions are
+        // byte-identical and a denoted binding is never flattened to a `TermId`.
+        let named_values: Vec<(Symbol, Value)> = named_terms
+            .iter()
+            .map(|(s, v)| (*s, self.canonicalize_fact_binding_value(*v)))
+            .collect();
         let spec_name_term = self.kb.make_name_term_from_sym(fact_functor);
-        let sort_view_term = self.kb.alloc(Term::Fn {
-            functor: sort_view_sym,
-            pos_args: SmallVec::from_elem(spec_name_term, 1),
-            named_args: named,
-        });
+        let spec_value = self.assemble_sort_view_value(vec![Value::Term(spec_name_term)], named_values);
 
-        // Build SortProvidesInfo(sort_ref, spec).
+        // Assert SortProvidesInfo(sort_ref, spec) through the Value carrier — the
+        // SAME path `load_provides_clause` uses, so an all-ground spec rides as a
+        // hash-consed `Term::Fn` and a denoted-bearing one as a `Value::Entity`
+        // value fact (one carrier decision, in `assert_fact_carrier`).
         let provides_sym = self.kb.resolve_symbol("anthill.reflect.SortProvidesInfo");
         let sort_ref_arg = self.kb.intern("sort_ref");
         let spec_arg = self.kb.intern("spec");
         self.kb.register_entity_fields(provides_sym, vec![sort_ref_arg, spec_arg]);
-        let provides_term = self.kb.alloc(Term::Fn {
-            functor: provides_sym,
-            pos_args: SmallVec::new(),
-            named_args: SmallVec::from_slice(&[
-                (sort_ref_arg, sort_ref_term),
-                (spec_arg, sort_view_term),
-            ]),
-        });
-
         let provides_sort = self.kb.make_name_term("Requirement");
-        self.kb.assert_fact(provides_term, provides_sort, domain, None);
+        self.kb.assert_fact_carrier(
+            provides_sym,
+            Vec::new(),
+            vec![(sort_ref_arg, Value::Term(sort_ref_term)), (spec_arg, spec_value)],
+            provides_sort,
+            domain,
+            None,
+        );
     }
 
     /// Extract the underlying sort symbol from a fact-binding value

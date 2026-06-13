@@ -1544,17 +1544,20 @@ impl<'a> Converter<'a> {
                         pos_args.push(self.terms.alloc(Term::Ref(sym), p_span));
                     }
                     (None, Some(t)) => {
-                        // Positional binding. Bare names (`List[Int]`) and
-                        // parameterised types (`Tree[List[Int]]`) become
-                        // `Term::Ref(Name)`; variable forms and tuple/arrow
-                        // types fall through to `convert_term`.
-                        let t_span = self.span(t);
+                        // Positional binding. WI-449: a parameterized positional
+                        // value (`fact IndexedSeq[List[T], T]` → the `List[T]`
+                        // slot) must PRESERVE its inner args rather than flatten to
+                        // a bare `Ref(List)` (the old lossy "preserve compatibility"
+                        // path, which diverged from the structure-keeping `provides`
+                        // lowering and dropped `T`). Route through `convert_type_value`
+                        // — the SAME structure-preserving converter the named arm
+                        // above uses — so a `simple_type` still lowers to `Ref(Name)`
+                        // but an `application` keeps its `Fn{base, …}` shape, letting
+                        // the loader's `canonicalize_fact_binding_value` map it
+                        // positional→named (byte-identical to `sort_inst_to_value`).
+                        // Variable / tuple / arrow shapes keep `convert_term`.
                         let tid = match t.kind() {
-                            "simple_type" | "application" => {
-                                let name = self.convert_type_to_name(t);
-                                let sym = self.intern_name(&name);
-                                self.terms.alloc(Term::Ref(sym), t_span)
-                            }
+                            "simple_type" | "application" => self.convert_type_value(t),
                             _ => self.convert_term(t),
                         };
                         pos_args.push(tid);
