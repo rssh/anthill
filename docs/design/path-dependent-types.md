@@ -895,7 +895,9 @@ application is an ordinary term whose functor is the **rigid param symbol** `F` 
 head is never a logic variable, so the fragment stays first-order and decidable (the
 Miller-pattern concern of 002 §Higher-Order Unification arises only in rule bodies,
 where heads can be flexible). What is missing is purely the instantiation-time
-semantics (WI-383: "no semantic support").
+semantics (WI-383: "no semantic support") — supplied by **marking the carrier a
+non-rigid type variable** so it has a backing var to fill (*The carrier is a non-rigid
+type variable*, below).
 
 ### The two rigid heads — the algebra
 
@@ -908,6 +910,83 @@ The two are related by the conversion laws — **β**: `F[T = A].T ≡ A` (proje
 explicit application reduces), and **η**: `C ≡ Fam(C)[T = C.Elem]` for a family member.
 The injectivity of applications is what makes inference work: calling `fmap` on a
 `List[Int]` pins `F` and `A` by ordinary decomposition — no relational solving.
+
+### The carrier is a non-rigid type variable — the surface marker (decided 2026-06-13)
+
+The probe above loads `sort F` (the body form) as a **rigid nominal sort**: it has no
+backing logic var — `type_params_of_sort` omits it, and unlike `sort T = ?` it carries
+no `SortAlias → Var::Global`. That is exactly why the fill stalls. At a use
+`flatMap(o, …)` with `o : Option[T = Int]`, or `unit(42)` against an expected
+`Option[T = Int]`, the unifier meets `F[T = A] ≟ Option[T = X]` and **cannot bind the
+rigid `F`** — the typer reports `got F[T = …]`. (First-order `T` fills precisely
+*because* it is a var; the carrier `F` is not one.)
+
+**Resolution: mark the carrier a non-rigid type variable.** A type-parameter variable —
+something the loader gives a backing var and the unifier may fill — has three
+**synonymous** spellings:
+
+```
+sort T = ?     ≡     sort ?T     ≡     sort [T]
+```
+
+the existing hole form, the `?`-prefix (the same `?x` marker logical variables use
+everywhere), and the operation-style bracket binder (`operation f[T](…)` already
+introduces a type variable exactly this way). A **structured / higher-kinded**
+parameter is then just a marked variable carrying a *body of members*:
+
+```
+sort ?F { sort T = ? }    ≡    sort [F] { sort [T] }     -- F : a carrier of kind (member T)
+```
+
+This is the `(requires, non-rigid-var, member)` form written on the surface: `?F` /
+`[F]` is the **non-rigid var** (the slot that gets a backing var), the member body
+(`sort [T]`) is the **member**, and the bound that introduces `F` — `requires
+CpsMonad[F]`, or the enclosing spec's own structured param — is the **requirement** the
+loader mints (implicit licensing, below).
+
+**Every spelling desugars to one alias.** The loader registers the qualified
+`CpsMonad.F` as a `SortAlias → Var::Global` — a non-rigid var — exactly as `sort T = ?`
+registers `CpsMonad.T`, with the member sub-declarations (`sort [T]`) hung off it. Every
+reference to `F` inside the spec then resolves *through* that alias to the var, so the
+binder placement is **free**: a per-parameter `sort [F] …` statement and an
+operation-style enclosing list `sort CpsMonad[F[T]]` are the same desugaring
+(`CpsMonad.F ↦ ?F`). The enclosing list goes **after the name**, mirroring
+`operation name[…](…)` (grammar `operation_type_param_list`), and reuses the flat
+op-param shape for any simple params; the kind `F[T]` is the one new addition — a param
+whose binder carries its own bracketed member.
+
+**`CpsMonad`'s only parameter is its type constructor `F[T]`.** The element types `A` /
+`B` are **per-operation** type params — `operation unit[A](a: A) -> F[T = A]`,
+`operation flatMap[A, B](…)` — universally quantified *per call*, not part of the
+monad's identity (exactly as Haskell's `class Monad m` is parameterized by `m` alone,
+with `a` / `b` quantified per method). The current fixtures wrongly declare them as sort
+params (`sort A = ?`); moving them to op type-params is part of the migration. Two
+consequences carry the decision:
+
+- **The marker distinguishes a parameter-variable from a concrete nested sort.**
+  Unmarked `sort F { … }` stays a genuine structured sort — e.g. `sort Modify { sort T
+  = ? entity Modify(target: T) }`, a rigid inhabitant, never filled. Marked `sort [F] {
+  … }` is the fillable carrier. There was previously no way to tell the two apart (the
+  "nested sort vs pattern" question); the marker *is* the distinction.
+- **The marker is what makes the fill ordinary.** Minting the backing var is the *only*
+  new loader work: with it, `F[T = A] ≟ Option[T = X]` is the existing injective
+  parameterized arm (`F := Option, A := X`), and the implicit `requires CpsMonad[F]`
+  discharges by CHECK against `fact CpsMonad[F = Option, …]`. No bespoke "open the
+  structured carrier" code path — the fill rides the machinery WI-383/WI-431 already
+  delivered.
+
+**Rigid at the definition site, filled at the use site.** Inside the spec's own
+operation bodies the marked `?F` skolemizes to a rigid — you are proving `∀F`, so
+`reFmap`/`wrongFmap` decompose against a fixed-but-arbitrary `F` and `wrongFmap :
+F[T = A]` vs `F[T = B]` still rejects. At an external call it is the fillable
+existential. This is the ordinary universal-at-binder / instantiate-at-use treatment of
+any `?`-variable: the decidability argument above (rigid head, no flexible functor) is
+the *definition-site* reading, preserved verbatim; the use-site fill is unification
+against a *concrete* functor, never relational.
+
+*Remaining surface point (the semantics above are fixed): the migration sweep — every
+current structured param is written unmarked (`CpsMonad.F` in the §5.4 fixtures, the
+WI-383/WI-431 tests), so each moves to the marked form to keep its param-ness.*
 
 ### Fill ⟹ check/add require — the substitution model
 
@@ -964,8 +1043,8 @@ namespace app.optionInstance
   import anthill.prelude.Option
   import app.monad.CpsMonad
 
-  operation optionPure(a: A) -> Option[T = A] = some(a)
-  operation optionFlatMap(fa: Option[T = A], f: (A) -> Option[T = B]) -> Option[T = B]
+  operation optionPure[A](a: A) -> Option[T = A] = some(a)
+  operation optionFlatMap[A, B](fa: Option[T = A], f: (A) -> Option[T = B]) -> Option[T = B]
     = case fa of
         some(x) -> f(x)
         none    -> none
@@ -1015,9 +1094,11 @@ bindings instead of (only) the carrier sort's own ops. Three rules:
 
 ### Seam split
 
-WI-383 retains the mechanism core, in four pieces: (1) structured-param member
-registration through the loader (so `F`'s `T` feeds the declared-interface lookups
-exactly as a `requires`-lent member does); (2) **fill-time check/add-require** — the
+WI-383 retains the mechanism core, in four pieces: (1) **marked** structured-param
+registration through the loader — **mint the carrier's backing var** and register its
+members (so `F`'s `T` feeds the declared-interface lookups exactly as a `requires`-lent
+member does); the marker (`?F` / `[F]`) is what licenses minting the var (*The carrier
+is a non-rigid type variable*, above); (2) **fill-time check/add-require** — the
 one new typer mechanism, co-delivering WI-428's increment B; (3) injective
 decomposition for rigid-functor applications (possibly already free via the
 parameterized unify arm — probe with bodies); (4) the Miller-fragment guard for
