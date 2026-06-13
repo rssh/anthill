@@ -6538,9 +6538,14 @@ impl<'a> Loader<'a> {
         // qualified ref).
         if let Some((parent_qn, _)) = sort_qn.rsplit_once('.') {
             if let Some(&decl_sort) = self.kb.symbols.by_qualified_name.get(parent_qn) {
+                // The parent is the scope whose `requires` chain lends the subject its
+                // members. A SORT parent's chain is the sort-level `requires` facts; an
+                // OPERATION parent (an op type-param `getV.T`, WI-383) lends them through
+                // the operation's own `requires` clause — `resolve_rigid_projection`
+                // reads `OperationInfo.requires` for that case.
                 if matches!(
                     self.kb.symbols.get(decl_sort),
-                    SymbolDef::Resolved { kind: SymbolKind::Sort, .. }
+                    SymbolDef::Resolved { kind: SymbolKind::Sort | SymbolKind::Operation, .. }
                 ) && self.kb.type_params_of_sort(decl_sort).iter().any(|p| p == &head_short)
                 {
                     // Subject = the param's LOGICAL registration (`ns.W.P`), so every

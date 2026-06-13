@@ -10223,6 +10223,51 @@ fn project_via_provided_spec(
     None
 }
 
+/// WI-383: the `requires`-clause specs of an OPERATION, decoded to `RequiresEntry`s —
+/// the op-type-param analogue of [`requires_chain`] (which reads a SORT's
+/// `SortRequiresInfo`). An op type-param `getV.T` is lent its members by the operation's
+/// OWN `requires Spec[C = T]` clause, stored on `OperationInfo.requires`. Each spec
+/// application becomes one entry (`required_sort` = the spec base functor).
+///
+/// LIMITATION (vs the sort path): this reads the op's DIRECT requires only — it does NOT
+/// transitively close (a member declared by a *transitively* required spec, e.g.
+/// `requires Ordered[T]` lending `Eq`'s members, is not reached). The candidate filter
+/// then finds no bound, so the projection is conservatively rejected (sound — never a
+/// wrong ground type). Transitive op-requires lending is deferred (no motivating driver).
+fn op_requires_entries(kb: &KnowledgeBase, op_sym: Symbol) -> Vec<RequiresEntry> {
+    let Some(rec) = super::op_info::lookup_operation_info(kb, op_sym) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for v in &rec.requires {
+        if let Value::Term(tid) = v {
+            push_op_requires_clause(kb, *tid, &mut out);
+        }
+    }
+    out
+}
+
+/// Decode one operation `requires` clause term into [`RequiresEntry`]s. A multi-goal
+/// clause (`requires A, B`) lowers to `conjunction(A, B)` (load's `convert_clause_list`),
+/// so flatten it into its conjuncts — otherwise the conjunction functor would mask both
+/// specs and silently drop them. A single spec application is itself one entry; a clause
+/// with no resolvable spec functor carries no projectable members (skipped — it can never
+/// satisfy the member-declared + mentions-subject candidate filter regardless).
+fn push_op_requires_clause(kb: &KnowledgeBase, tid: TermId, out: &mut Vec<RequiresEntry>) {
+    match kb.get_term(tid) {
+        Term::Fn { functor, pos_args, .. } if kb.resolve_sym(*functor) == "conjunction" => {
+            let conjuncts: Vec<TermId> = pos_args.iter().copied().collect();
+            for c in conjuncts {
+                push_op_requires_clause(kb, c, out);
+            }
+        }
+        Term::Fn { functor, .. } | Term::Ref(functor) => {
+            out.push(RequiresEntry { required_sort: *functor, spec: tid });
+        }
+        _ => {}
+    }
+}
+
 /// WI-428: resolve a RIGID type-receiver projection (`P.Key` / `MemStore.Key`) at an
 /// elimination site — the formation-validation rules of design §5.3, run in the typer
 /// (where the `requires` chain is complete regardless of source order), not the loader
@@ -10285,7 +10330,14 @@ fn resolve_rigid_projection(
     // Rigid type-parameter subject: carrier-precise bound lookup, keyed by the
     // canonical SubjectKey (the param's alias-var id — stable across the param's
     // symbol registrations and the deep walk's alias resolution / rigidification).
-    let chain = requires_chain(kb, decl_sort);
+    // WI-383: when the subject is an OPERATION type-parameter, the licensing bound is
+    // the operation's OWN `requires Spec[C = T]` clause (on `OperationInfo.requires`),
+    // NOT a sort-level `SortRequiresInfo` chain — so consult the op's requires there.
+    let chain = if kb.kind_of(decl_sort) == Some(crate::intern::SymbolKind::Operation) {
+        op_requires_entries(kb, decl_sort)
+    } else {
+        requires_chain(kb, decl_sort)
+    };
     let mut candidates: Vec<&RequiresEntry> = Vec::new();
     for e in &chain {
         if kb.type_params_of_sort(e.required_sort).iter().any(|d| d.as_str() == member_str)
