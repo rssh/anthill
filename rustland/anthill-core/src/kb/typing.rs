@@ -10347,13 +10347,29 @@ fn resolve_rigid_projection(
         }
     }
     match candidates.as_slice() {
-        [] => Err(projection_type_error(ctx, span, &format!(
-            "no `requires` bound on '{}' mentioning '{}' declares a member '{member_str}'; \
-             cannot project '{}.{member_str}'",
-            kb.qualified_name_of(decl_sort).to_owned(),
-            type_display_name_value(kb, subject),
-            type_display_name_value(kb, subject),
-        ))),
+        [] => {
+            // WI-383 SELF-CARRIER (implicit licensing): an OPERATION type-param projection
+            // `T.member` whose op has NO `requires` bound mentioning the subject is
+            // SELF-LICENSED — the obligation "the carrier bound to T has member `member`"
+            // is forwarded, discharged at a concrete call against the carrier's OWN
+            // declared `sort <member>` (ground_rigid_projection_if_concrete's self-carrier
+            // arm). It stays the rigid NEUTRAL here. A bound that DOES mention the subject
+            // but fails to declare `member` is a typo (or a sort-type-param projection),
+            // not self-carrier → keep the loud error.
+            let is_op = kb.kind_of(decl_sort) == Some(crate::intern::SymbolKind::Operation);
+            let mentions_subject = chain.iter().any(|e| spec_mentions_key(kb, e.spec, key));
+            if is_op && !mentions_subject {
+                Ok(ProjResult::Neutral)
+            } else {
+                Err(projection_type_error(ctx, span, &format!(
+                    "no `requires` bound on '{}' mentioning '{}' declares a member '{member_str}'; \
+                     cannot project '{}.{member_str}'",
+                    kb.qualified_name_of(decl_sort).to_owned(),
+                    type_display_name_value(kb, subject),
+                    type_display_name_value(kb, subject),
+                )))
+            }
+        }
         [entry] => match spec_binding_value(kb, entry.spec, &member_str) {
             // δ-through-the-bound. The stored application is AUTO-COMPLETED: an
             // unwritten member's binding is a placeholder ref to the SPEC'S OWN param
@@ -11677,11 +11693,13 @@ fn ground_rigid_projection_if_concrete(
     // unmet and the call is rejected downstream, never silently ground to a wrong member.
     let member_str = kb.resolve_sym(member).to_owned();
     let key = subject_key_of_term(kb, subj_t)?;
+    let mut mentions_subject = false;
     for e in op_requires_entries(kb, sort) {
-        if !kb.type_params_of_sort(e.required_sort).iter().any(|d| d.as_str() == member_str) {
+        if !spec_mentions_key(kb, e.spec, key) {
             continue;
         }
-        if !spec_mentions_key(kb, e.spec, key) {
+        mentions_subject = true;
+        if !kb.type_params_of_sort(e.required_sort).iter().any(|d| d.as_str() == member_str) {
             continue;
         }
         let Some(bindings) = provider_spec_view_bindings(kb, s, e.required_sort) else {
@@ -11701,6 +11719,65 @@ fn ground_rigid_projection_if_concrete(
             Value::Term(g) => Some(walk_type_deep(kb, subst, g)),
             _ => None,
         };
+    }
+    // WI-383 SELF-CARRIER (implicit licensing): no `requires` bound mentions the subject,
+    // so the projection is self-licensed — `T.member` reads the carrier's OWN declared
+    // `sort <member>` (the resource-declares-its-value-type tie). Ground only a MANIFEST
+    // member (`sort V = Int64`, whose SortAlias target is a concrete sort); an abstract
+    // `sort V = ?` (target a Var) or a carrier lacking the member stays the neutral
+    // (rejected downstream). Gated on `!mentions_subject` so an EXTERNAL licensing bound
+    // the carrier failed to provide is NEVER bypassed by reading the carrier's own member
+    // (the Q3 soundness rule).
+    if !mentions_subject {
+        let member_qn = format!("{}.{}", kb.qualified_name_of(s).to_owned(), member_str);
+        if let Some(member_sym) = kb.symbols.by_qualified_name.get(&member_qn).copied() {
+            // Must be the carrier's OWN declared abstract-sort member (`sort <member> = …`):
+            // a Sort symbol with an EXACT `SortAlias`. `resolve_sort_alias`'s short-name
+            // FALLBACK is deliberately NOT used here — it would return an UNRELATED sort's
+            // same-named member when this child is an entity/operation/body-sort that merely
+            // shares the name (a soundness hole). `sort_alias_target_exact` matches only this
+            // symbol.
+            if kb.kind_of(member_sym) == Some(crate::intern::SymbolKind::Sort) {
+                if let Some(target) = sort_alias_target_exact(kb, member_sym) {
+                    let g = walk_type_deep(kb, subst, target);
+                    // Ground ONLY a manifest member (`sort V = Int64`). An abstract
+                    // `sort V = ?` (resolves to a Var) or a sibling-param alias
+                    // (`sort V = W`, resolves to a sort-param ref) is NOT ground and stays
+                    // the neutral (rejected downstream).
+                    if type_value_is_ground(kb, g) {
+                        return match normalize_ground_leaf(kb, Value::Term(g)) {
+                            Value::Term(n) => Some(n),
+                            _ => None,
+                        };
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+/// The `SortAlias` target for EXACTLY `sym` — the exact-match half of
+/// [`resolve_sort_alias`] WITHOUT its short-name fallback. The self-carrier projection
+/// grounding (`ground_rigid_projection_if_concrete`) must read the carrier's OWN declared
+/// member; the fallback would return an unrelated sort's same-named member when the looked-
+/// up child is not itself a `sort X = …` alias, grounding `T.member` to a wrong type.
+fn sort_alias_target_exact(kb: &KnowledgeBase, sym: Symbol) -> Option<TermId> {
+    let alias_sym = kb.try_resolve_symbol("SortAlias")?;
+    for rid in kb.rules_by_functor(alias_sym) {
+        if !kb.is_fact(rid) {
+            continue;
+        }
+        let Some(head) = kb.fact_head_term(rid) else { continue };
+        if let Term::Fn { pos_args, .. } = kb.get_term(head) {
+            if pos_args.len() >= 2 {
+                if let Term::Fn { functor, .. } = kb.get_term(pos_args[0]) {
+                    if *functor == sym {
+                        return Some(pos_args[1]);
+                    }
+                }
+            }
+        }
     }
     None
 }

@@ -131,6 +131,99 @@ fn op_type_param_projection_grounds_at_concrete_call() {
     );
 }
 
+/// SELF-CARRIER implicit licensing: `getV[T](target: T) -> T.V` with NO `requires` —
+/// self-licensed, the obligation forwarded. At a concrete call `getV(c)` it grounds `T.V`
+/// to the carrier's OWN declared `sort V = Int64` (the resource-declares-its-value-type
+/// tie), so a `-> Int64` body conforms.
+#[test]
+fn self_carrier_grounds_via_declared_member() {
+    let snippet = r#"namespace test.wi383.sc
+  import anthill.prelude.{Int64, String}
+  sort CounterState
+    sort V = Int64
+    entity Counter(n: Int64)
+  end
+  operation getV[T](target: T) -> T.V
+  operation useGood(c: CounterState) -> Int64 = getV(c)
+end
+"#;
+    let errs = load_errors(&[snippet]);
+    assert!(
+        errs.is_empty(),
+        "self-carrier T.V should ground to the carrier's declared V (Int64); got: {errs:?}"
+    );
+}
+
+/// SELF-CARRIER soundness: the declared-member grounding is real — `getV(c) : Int64`, so a
+/// `-> String` body is REJECTED.
+#[test]
+fn self_carrier_rejects_wrong_type() {
+    let snippet = r#"namespace test.wi383.scbad
+  import anthill.prelude.{Int64, String}
+  sort CounterState
+    sort V = Int64
+    entity Counter(n: Int64)
+  end
+  operation getV[T](target: T) -> T.V
+  operation useBad(c: CounterState) -> String = getV(c)
+end
+"#;
+    let errs = load_errors(&[snippet]);
+    assert!(
+        errs.iter().any(|e| e.contains("String") || e.contains("Int64")),
+        "self-carrier T.V grounds to Int64; a String body must be rejected; got: {errs:?}"
+    );
+}
+
+/// SELF-CARRIER abstract member stays NEUTRAL (no spurious grounding): a carrier whose
+/// `sort V = ?` is abstract leaves `T.V` un-ground, so forcing it to a concrete `-> Int64`
+/// is REJECTED — the element type is genuinely unknown for that carrier.
+#[test]
+fn self_carrier_abstract_member_does_not_ground() {
+    let snippet = r#"namespace test.wi383.scabs
+  import anthill.prelude.Int64
+  sort Opaque
+    sort V = ?
+    entity Mk(n: Int64)
+  end
+  operation getV[T](target: T) -> T.V
+  operation useInt(c: Opaque) -> Int64 = getV(c)
+end
+"#;
+    let errs = load_errors(&[snippet]);
+    assert!(
+        !errs.is_empty(),
+        "an abstract `sort V = ?` must NOT spuriously ground T.V to Int64; useInt should be rejected"
+    );
+}
+
+/// SELF-CARRIER soundness (review): a carrier whose child sharing the member NAME is NOT
+/// a declared `sort` member (here an ENTITY `Velem`) must NOT ground off an UNRELATED
+/// sort's same-named member (`Other`'s `sort Velem = String`). The exact-alias lookup
+/// reads only the carrier's own declared member, so `Carrier` (no `sort Velem`) leaves
+/// `T.Velem` neutral and the `-> String` body is REJECTED.
+#[test]
+fn self_carrier_name_collision_does_not_ground() {
+    let snippet = r#"namespace test.wi383.collide
+  import anthill.prelude.{Int64, String}
+  sort Other
+    sort Velem = String
+    entity Mk(n: Int64)
+  end
+  sort Carrier
+    entity Velem(n: Int64)
+  end
+  operation getV[T](target: T) -> T.Velem
+  operation useStr(c: Carrier) -> String = getV(c)
+end
+"#;
+    let errs = load_errors(&[snippet]);
+    assert!(
+        !errs.is_empty(),
+        "T.Velem must not ground off Other's same-named member; Carrier has no `sort Velem`, so useStr should be rejected"
+    );
+}
+
 /// SOUNDNESS (review Q2 — licensing-spec-precise, NOT `provides`-order-dependent): a
 /// carrier provides BOTH the licensing `Resource[V = Int64]` AND an unrelated
 /// `Other[V = String]`, with `Other` declared FIRST. `getV` is licensed by
