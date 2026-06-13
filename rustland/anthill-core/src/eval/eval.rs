@@ -29,6 +29,13 @@ pub enum StepOutcome {
     /// Advance the driver: `step()` either pushed a child, transitioned a
     /// wait-state, or rewrote the top frame's expr in place.
     Continue,
+    /// A value was produced and must be delivered to the parent frame. The
+    /// `run()` trampoline picks it up and calls `deliver` on the next
+    /// iteration. Returning this — rather than calling `self.deliver(v)`
+    /// inline — is what keeps the value-cascade (`dispatch → deliver →
+    /// dispatch`) on the heap activation stack instead of the native Rust
+    /// stack, so host call depth stays O(1) for any program depth.
+    Deliver(Value),
 }
 
 // Interpreter profiler, enabled by the `ANTHILL_PROFILE` env var. Exact
@@ -60,21 +67,42 @@ impl Interpreter {
     /// hanging the host.
     pub fn run(&mut self) -> Result<Value, EvalError> {
         let prof = self.profiling;
+        // `pending` carries a produced value awaiting delivery to its parent
+        // frame. The trampoline alternates between reducing the top frame
+        // (`step`) and delivering a value (`deliver`); both return their next
+        // action as a `StepOutcome` rather than calling each other natively, so
+        // the value-cascade stays on the heap stack. `step_cap` is the single
+        // runaway guard: EVERY iteration — a reduction OR a delivery — is one
+        // tick, so a no-reduction dispatch/deliver cascade (a self-redispatching
+        // spec op) is bounded too, not just `step()`-driven loops.
+        let mut pending: Option<Value> = None;
         loop {
             if let Some(cap) = self.config.step_cap {
                 if self.step_count >= cap {
-                    return Err(EvalError::StepsExhausted { cap });
+                    return Err(EvalError::StepsExhausted {
+                        cap,
+                        chain: self.recent_dispatch_chain(),
+                    });
                 }
             }
             self.step_count = self.step_count.saturating_add(1);
-            if prof {
-                if let Some(op) = self.stack.top().map(|f| f.op) {
-                    OP_PROF.with(|p| p.borrow_mut().entry(op).or_insert((0, 0)).1 += 1);
+            let outcome = match pending.take() {
+                Some(v) => self.deliver(v)?,
+                None => {
+                    // Profiling attributes a reduction to the executing op —
+                    // only `step()` iterations are reductions, deliveries aren't.
+                    if prof {
+                        if let Some(op) = self.stack.top().map(|f| f.op) {
+                            OP_PROF.with(|p| p.borrow_mut().entry(op).or_insert((0, 0)).1 += 1);
+                        }
+                    }
+                    self.step()?
                 }
-            }
-            match self.step()? {
+            };
+            match outcome {
                 StepOutcome::Done(v) => return Ok(v),
                 StepOutcome::Continue => {}
+                StepOutcome::Deliver(v) => pending = Some(v),
             }
         }
     }
@@ -121,7 +149,7 @@ impl Interpreter {
         match expr {
             Expr::Const(lit) => {
                 let v = self.literal_to_value(lit.clone())?;
-                self.deliver(v)
+                Ok(StepOutcome::Deliver(v))
             }
             Expr::Ref(sym) | Expr::Ident(sym) => self.reduce_var(*sym, occ),
             Expr::VarRef { name } => self.reduce_var(*name, occ),
@@ -239,13 +267,13 @@ impl Interpreter {
                 })
         };
         if let Some(v) = bound {
-            return self.deliver(v);
+            return Ok(StepOutcome::Deliver(v));
         }
         // A bare reference to a free-standing entity (e.g. `WorkItem` in
         // `facts_of(kb(), WorkItem)`) is the entity as a type value, not a call.
         if self.kb.is_free_standing_entity(sym) {
             let tid = self.kb.alloc(crate::kb::term::Term::Ref(sym));
-            return self.deliver(Value::Term(tid));
+            return Ok(StepOutcome::Deliver(Value::Term(tid)));
         }
         // WI-365: a bare reference to a NULLARY constructor — an enum variant
         // with no fields, e.g. `none` in `Option`'s `case nil() -> none` (and
@@ -284,7 +312,7 @@ impl Interpreter {
                 // concrete one builds from its `fact` — and capture it on the
                 // OpRef for the apply path to install into the callee frame.
                 let dict = self.eta_dispatch_dict(occ)?;
-                return self.deliver(Value::OpRef { op: sym, dict });
+                return Ok(StepOutcome::Deliver(Value::OpRef { op: sym, dict }));
             }
         }
         self.dispatch_call(sym, Vec::new(), SmallVec::new())
@@ -357,7 +385,7 @@ impl Interpreter {
             requirements,
             type_args,
         });
-        self.deliver(Value::Closure(handle))
+        Ok(StepOutcome::Deliver(Value::Closure(handle)))
     }
 
     // ── Requirement-typed value reductions (WI-223) ────────────────
@@ -375,7 +403,7 @@ impl Interpreter {
     ) -> Result<StepOutcome, EvalError> {
         let parent = self.eval_requirement_chain_node(chain)?;
         let projected = parent.project(slot as usize);
-        self.deliver(Value::Requirement(projected))
+        Ok(StepOutcome::Deliver(Value::Requirement(projected)))
     }
 
     fn reduce_construct_requirement_node(
@@ -388,7 +416,7 @@ impl Interpreter {
             handles.push(self.eval_requirement_chain_node(occ)?);
         }
         let new_handle = self.requirements.alloc(impl_functor, handles);
-        self.deliver(Value::Requirement(new_handle))
+        Ok(StepOutcome::Deliver(Value::Requirement(new_handle)))
     }
 
     /// Synchronously reduce a requirement-typed NodeOccurrence to a
@@ -955,7 +983,51 @@ impl Interpreter {
         )
     }
 
+    /// Records each dispatch into the recent-dispatch ring (for the
+    /// `StepsExhausted` diagnostic) before delegating to the inner dispatch.
+    /// The runaway guard itself is `step_cap`, enforced by the `run()`
+    /// trampoline — the dispatch value-cascade is iterative, so a
+    /// self-redispatching op ticks `step_cap` like any other loop; this
+    /// wrapper only feeds the ring that names the looping ops on exhaustion.
     fn dispatch_call_with_requirements(
+        &mut self,
+        target: Symbol,
+        arg_values: Vec<Value>,
+        requirements: SmallVec<[(Symbol, super::value::RequirementHandle); 2]>,
+        type_args: FrameTypeArgs,
+    ) -> Result<StepOutcome, EvalError> {
+        self.note_dispatch(target);
+        self.dispatch_call_with_requirements_inner(
+            target, arg_values, requirements, type_args,
+        )
+    }
+
+    /// Push `target` onto the bounded recent-dispatch ring (newest at the
+    /// back). Skipped entirely when no `step_cap` is set — the ring's only
+    /// reader is `StepsExhausted`, which cannot fire without a cap, so the
+    /// per-dispatch bookkeeping would be pure waste on the uncapped hot path.
+    fn note_dispatch(&mut self, target: Symbol) {
+        if self.config.step_cap.is_none() {
+            return;
+        }
+        const RING: usize = 32;
+        if self.recent_dispatches.len() == RING {
+            self.recent_dispatches.pop_front();
+        }
+        self.recent_dispatches.push_back(target);
+    }
+
+    /// The recent-dispatch ring as qualified operation names, oldest-first —
+    /// surfaced in `StepsExhausted` so the looping source is easy to locate
+    /// (a loop repeats its operations, so they fill the ring).
+    fn recent_dispatch_chain(&self) -> Vec<String> {
+        self.recent_dispatches
+            .iter()
+            .map(|s| self.kb.qualified_name_of(*s).to_string())
+            .collect()
+    }
+
+    fn dispatch_call_with_requirements_inner(
         &mut self,
         target: Symbol,
         arg_values: Vec<Value>,
@@ -989,6 +1061,17 @@ impl Interpreter {
                 return self.enter_closure(handle, arg_values);
             }
             Some(Value::OpRef { op, dict }) => {
+                // NOTE (known limitation): this OpRef redispatch tail-calls the
+                // dispatch path NATIVELY (it does not return to the `run()`
+                // trampoline between hops), so a pathological eta-chain — each
+                // resolved `op` itself locally bound to another OpRef — recurses
+                // on the host stack and can overflow it before `step_cap` ticks.
+                // The value-cascade (builtin/operation results) IS trampolined;
+                // routing this redispatch through the trampoline too (a
+                // `StepOutcome::Dispatch{…}` re-entered by `run()`) is the deeper
+                // fix, deferred as its own work item. In practice eta-chains are
+                // 1 hop (the resolved op is rarely a local OpRef), so this is a
+                // narrow edge, not the common path.
                 // WI-275: applying an eta'd operation reference dispatches to the
                 // operation itself, spreading a single tuple argument across its
                 // parameters (`cmp((x, y))` ⇒ `op(x, y)`) — the runtime mirror of
@@ -1033,7 +1116,7 @@ impl Interpreter {
             } else {
                 (builtin)(self, &arg_values)?
             };
-            return self.deliver(result);
+            return Ok(StepOutcome::Deliver(result));
         }
 
         // 3. Anthill-defined operation body.
@@ -1071,7 +1154,7 @@ impl Interpreter {
             if impl_target != target {
                 if let Some(builtin) = self.builtins.get(&impl_target).cloned() {
                     let result = (builtin)(self, &arg_values)?;
-                    return self.deliver(result);
+                    return Ok(StepOutcome::Deliver(result));
                 }
                 if let Some((body_node, params)) = self.cached_operation_body(impl_target) {
                     return self.enter_operation(
@@ -1447,7 +1530,7 @@ impl Interpreter {
         } else {
             Value::Entity { functor: ctor_sym, pos: pos.into(), named: named.into() }
         };
-        self.deliver(value)
+        Ok(StepOutcome::Deliver(value))
     }
 
     /// Build a `cons(head, tail)` chain ending in `nil()`. A `tail` named

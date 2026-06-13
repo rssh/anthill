@@ -169,7 +169,15 @@ end
     );
     let err = interp.call("test.m1_loop.main", &[]).unwrap_err();
     match err {
-        EvalError::StepsExhausted { cap } => assert_eq!(cap, 1_000),
+        EvalError::StepsExhausted { cap, chain } => {
+            assert_eq!(cap, 1_000);
+            // The recent-dispatch ring (maintained because step_cap is set)
+            // names the looping op — the diagnostic that locates the source.
+            assert!(
+                chain.iter().any(|op| op.ends_with("loop")),
+                "StepsExhausted chain should name the looping op `loop`, got {chain:?}"
+            );
+        }
         other => panic!("expected StepsExhausted, got {other:?}"),
     }
 }

@@ -19,7 +19,15 @@ pub enum EvalError {
     DivisionByZero { op: &'static str },
     Overflow { op: &'static str },
     DepthExceeded { cap: usize },
-    StepsExhausted { cap: u64 },
+    /// The `step_cap` work budget was exhausted: a non-terminating computation
+    /// (a tail loop, OR a dispatch/deliver value-cascade — both now iterate on
+    /// the heap trampoline and tick one step per iteration), or a real
+    /// computation that genuinely needs a higher cap. `chain` is the
+    /// recent-dispatch ring (most recent last); since a loop repeats its
+    /// operations, it names the offending sources so they can be located
+    /// quickly. Empty when no `step_cap` was set (the ring is only maintained
+    /// when a cap could fire).
+    StepsExhausted { cap: u64, chain: Vec<String> },
     MatchFailed { scrutinee: String },
     UnhandledEffect { effect: Symbol, payload: Option<TermId> },
     /// An anthill-level `Error` effect was raised (proposal 027 §Error).
@@ -64,7 +72,30 @@ impl std::fmt::Display for EvalError {
             EvalError::DivisionByZero { op } => write!(f, "{op}: division by zero"),
             EvalError::Overflow { op } => write!(f, "{op}: integer overflow"),
             EvalError::DepthExceeded { cap } => write!(f, "activation stack depth exceeded cap of {cap}"),
-            EvalError::StepsExhausted { cap } => write!(f, "step budget exhausted after {cap} steps"),
+            EvalError::StepsExhausted { cap, chain } => {
+                write!(
+                    f,
+                    "evaluation exceeded the step budget of {cap} (a non-terminating loop, or a \
+                     real computation needing a higher step_cap)"
+                )?;
+                if !chain.is_empty() {
+                    // Distinct ops in the ring are the loop body — surface them
+                    // up front, then the ordered chain that exhibits the cycle.
+                    let mut distinct: Vec<&String> = Vec::new();
+                    for op in chain {
+                        if !distinct.contains(&op) {
+                            distinct.push(op);
+                        }
+                    }
+                    write!(
+                        f,
+                        ".\n  operations involved: {}\n  recent dispatches (most recent last): {}",
+                        distinct.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", "),
+                        chain.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(" -> "),
+                    )?;
+                }
+                Ok(())
+            }
             EvalError::MatchFailed { scrutinee } => write!(f, "pattern match failed on {scrutinee}"),
             EvalError::UnhandledEffect { .. } => write!(f, "unhandled effect"),
             EvalError::Raised { .. } => write!(f, "raised error"),
