@@ -2200,6 +2200,7 @@ fn find_spec_op_for_provided_sort(
     // Snapshot the provided specs first: the resolution loop below mutates `kb`
     // (`alloc` / `find_operation_in_scope`), so it can't run while iterating.
     let mut spec_syms: Vec<Symbol> = Vec::new();
+    let recv_canon = kb.canonical_sort_sym(recv_sort);
     for rid in kb.rules_by_functor(provides_sym) {
         if !kb.is_fact(rid) {
             continue;
@@ -2210,13 +2211,22 @@ fn find_spec_op_for_provided_sort(
         let Some(named) = kb.fact_head_named_args(rid) else { continue };
         let Some(sr) = get_named_arg(kb, &named, "sort_ref") else { continue };
         let Some(carrier) = super::load::sort_ref_functor(kb, sr) else { continue };
-        // `same_symbol`, not `==`: a sort carries distinct Symbol ids
-        // (bare-interned vs fully-qualified) — match `try_fire_dot_rule`.
-        if !same_symbol(kb, carrier, recv_sort) {
-            continue;
-        }
         let Some(spec_t) = get_named_arg(kb, &named, "spec") else { continue };
-        if let Some(spec_sym) = super::load::provides_spec_base_sym(kb, spec_t) {
+        let Some(spec_sym) = super::load::provides_spec_base_sym(kb, spec_t) else { continue };
+        // Carrier-keyed: the receiver's sort IS the provider — `(3).min(5)` →
+        // `Ordered.min` via `fact Ordered[Int]`. `same_symbol`, not `==`: a sort
+        // carries distinct Symbol ids (bare-interned vs fully-qualified).
+        let carrier_match = same_symbol(kb, carrier, recv_sort);
+        // WI-450 witness: the receiver's sort is the spec's CARRIER-PARAM VALUE of a
+        // provider whose `sort_ref` is some OTHER (witness) sort — `tag.combine(t)`
+        // → `Combiner.combine` via `sort TagCombiner provides Combiner[T = Tag]`. The
+        // dot-call synthesises a `combine(tag, t)` Apply that then value-directs to
+        // the witness impl at eval (param-agnostic, like the non-dot call form).
+        let witness_match = !carrier_match
+            && provision_carrier_sort(kb, spec_sym, spec_t)
+                .map(|c| kb.canonical_sort_sym(c) == recv_canon)
+                .unwrap_or(false);
+        if carrier_match || witness_match {
             spec_syms.push(spec_sym);
         }
     }
@@ -7149,7 +7159,90 @@ pub fn check_provider_operations(kb: &mut KnowledgeBase) -> Vec<super::load::Loa
         }
     }
 
+    // WI-450 witness coherence (rule 2, witness flavor): two distinct WITNESS sorts
+    // that provide the SAME spec application supply conflicting dictionaries through
+    // their member ops. Unlike an instance fact — whose op-valued binding makes two
+    // conflicting instances DIFFER in their `spec_view` (caught above) — a witness's
+    // op lives in the provider SORT, so two witnesses for one application share ONE
+    // hash-consed `spec_view`. Group by (spec, dispatch carrier) and flag >1 distinct
+    // PROVIDER.
+    //
+    // A provision is a WITNESS only when the spec's carrier param (its first type
+    // parameter) is bound to a concrete sort DISTINCT from the provider — `sort
+    // TagCombiner provides Combiner[T = Tag]` (carrier `Tag` ≠ provider
+    // `TagCombiner`). This excludes (a) instance facts and normal self-providers,
+    // whose derived/own carrier IS the provider (so they never collide here — facts
+    // ride the spec_view rule above), and (b) bare / carrier-less provisions
+    // (`provides Store`), which name no dispatch carrier. An idempotent re-record of
+    // one witness shares its provider and collapses.
+    let mut witness_groups: Vec<((Symbol, Symbol), SmallVec<[Symbol; 2]>)> = Vec::new();
+    for p in &provisions {
+        // Only a spec that declares OPS has a dictionary to be ambiguous about — a
+        // bare carrier spec (`sort W449Outer { sort C = ? }`, no ops) provided by two
+        // carriers is binding-extraction plumbing, not a dispatch conflict. (Mirrors
+        // the `provision_binds_any_op` gate the instance-fact rule above applies.)
+        if own_ops.get(&p.spec).map_or(true, |ops| ops.is_empty()) {
+            continue;
+        }
+        // A pure DICTIONARY witness has no constructors — its only role is to back
+        // the spec's ops for the carrier. A CONCRETE provider (with constructors) is
+        // a backend whose VALUES carry their own sort, so value-directed dispatch
+        // distinguishes them by the value (a self-receiver spec, OUT OF SCOPE): two
+        // concrete backends providing one spec at the same bindings is the existential
+        // / manifest-provider pattern (`MemStore` / `DiskStore` provide `KVStore[K =
+        // String]`, design §5 — selected by the `ensures` return), NOT an ambiguity.
+        if concrete.contains(&p.carrier) {
+            continue;
+        }
+        let Some(carrier) = provision_carrier_sort(kb, p.spec, p.spec_view) else { continue };
+        let carrier_canon = kb.canonical_sort_sym(carrier);
+        // Provider IS the carrier ⇒ a fact / normal self-provider, not a witness.
+        if kb.canonical_sort_sym(p.carrier) == carrier_canon {
+            continue;
+        }
+        let key = (kb.canonical_sort_sym(p.spec), carrier_canon);
+        match witness_groups.iter_mut().find(|(k, _)| *k == key) {
+            Some((_, providers)) => {
+                let pc = kb.canonical_sort_sym(p.carrier);
+                if !providers.iter().any(|q| kb.canonical_sort_sym(*q) == pc) {
+                    providers.push(p.carrier);
+                }
+            }
+            None => witness_groups.push((key, SmallVec::from_elem(p.carrier, 1))),
+        }
+    }
+    for ((spec, carrier), providers) in &witness_groups {
+        if providers.len() > 1 {
+            errors.push(LoadError::AmbiguousWitness {
+                carrier: kb.qualified_name_of(*carrier).to_string(),
+                spec: kb.qualified_name_of(*spec).to_string(),
+                count: providers.len(),
+            });
+        }
+    }
+
     errors
+}
+
+/// WI-450 — the concrete SORT the spec's carrier param (its first type parameter)
+/// is bound to in a provision's `spec_view` (`Combiner[T = Tag]` ⇒ `Tag`), or
+/// `None` for a bare / carrier-less provision or a non-sort binding. Used by witness
+/// coherence to tell a WITNESS (carrier ≠ provider sort) from a fact / self-provider
+/// (carrier IS the provider).
+fn provision_carrier_sort(
+    kb: &KnowledgeBase,
+    spec_sort: Symbol,
+    spec_view: TermId,
+) -> Option<Symbol> {
+    let params = sort_type_params_as_pairs(kb, spec_sort);
+    let carrier_param = params.first()?.0;
+    let carrier_short = short_name_of(kb.resolve_sym(carrier_param));
+    let (_, bindings) = unwrap_spec_view(kb, spec_view)?;
+    let val = bindings
+        .iter()
+        .find_map(|(k, v)| (short_name_of(kb.resolve_sym(*k)) == carrier_short).then_some(*v))?;
+    super::load::provides_spec_base_sym(kb, val)
+        .filter(|s| matches!(kb.kind_of(*s), Some(crate::intern::SymbolKind::Sort)))
 }
 
 /// WI-431: the OPERATION symbol an instance fact binds for `op_short` among a
@@ -7224,6 +7317,75 @@ pub(crate) fn instance_fact_op_binding(
 ) -> Option<Symbol> {
     let bindings = provider_spec_view_bindings(kb, carrier, spec_sort)?;
     instance_fact_op_in_bindings(kb, &bindings, op_short)
+}
+
+/// WI-450: the first WITNESS provision of `spec_sort` for `carrier` — a provider
+/// whose `sort_ref` is NOT the carrier but which binds `carrier` as a spec
+/// type-param VALUE (`sort TagCombiner provides Combiner[T = Tag]` ⇒ provider
+/// `TagCombiner`, carrier `Tag` bound to `T`). Returns `(provider sort, the
+/// provision's type-param bindings)`.
+///
+/// This is the param-agnostic dual of the carrier-keyed
+/// [`provider_spec_view_bindings`] (which keys `sort_ref == carrier`): a witness's
+/// `sort_ref` is the witness sort, not the carrier, so the carrier-keyed path
+/// cannot see it — a `fact Combiner[T = Tag, …]` works only because its DERIVED
+/// carrier IS `Tag`. Coherence (two witnesses for one application) is rejected at
+/// load by [`check_provider_operations`], so first-match is the sole instance.
+fn witness_provision(
+    kb: &KnowledgeBase,
+    spec_sort: Symbol,
+    carrier: Symbol,
+) -> Option<(Symbol, SmallVec<[(Symbol, TermId); 2]>)> {
+    let provides_sym = kb.try_resolve_symbol("anthill.reflect.SortProvidesInfo")?;
+    let carrier_canon = kb.canonical_sort_sym(carrier);
+    let spec_canon = kb.canonical_sort_sym(spec_sort);
+    for rid in kb.rules_by_functor(provides_sym) {
+        if !kb.is_fact(rid) {
+            continue;
+        }
+        let Some(named) = kb.fact_head_named_args(rid) else { continue };
+        let Some(sr) = get_named_arg(kb, &named, "sort_ref") else { continue };
+        let Some(provider) = super::load::sort_ref_functor(kb, sr) else { continue };
+        // Witness = provider distinct from the carrier. `provider == carrier`
+        // (facts whose carrier IS the sort_ref, normal providers) is the
+        // carrier-keyed path's job — never re-handled here.
+        if kb.canonical_sort_sym(provider) == carrier_canon {
+            continue;
+        }
+        let Some(spec_t) = get_named_arg(kb, &named, "spec") else { continue };
+        let Some((base, bindings)) = unwrap_spec_view(kb, spec_t) else { continue };
+        if kb.canonical_sort_sym(base) != spec_canon {
+            continue;
+        }
+        // The dispatch carrier must appear as a SORT-valued type-param binding (the
+        // witness binds `Combiner[T = Tag]` — `Tag` is the carrier). An op-valued
+        // binding (`combine = c`) is an Operation, filtered out by the Sort kind.
+        let binds_carrier = bindings.iter().any(|(_, v)| {
+            super::load::provides_spec_base_sym(kb, *v)
+                .filter(|s| matches!(kb.kind_of(*s), Some(crate::intern::SymbolKind::Sort)))
+                .map(|s| kb.canonical_sort_sym(s) == carrier_canon)
+                .unwrap_or(false)
+        });
+        if binds_carrier {
+            return Some((provider, bindings));
+        }
+    }
+    None
+}
+
+/// WI-450: resolve a spec op through a WITNESS SORT — the param-agnostic dual of
+/// [`instance_fact_op_binding`]. The witness owns the impl (`combine`) as a MEMBER
+/// of the witness sort (`TagCombiner.combine`), resolved through the sort_ops table
+/// like any provider's own op. The ADDITIVE fallback for the `sort_ref != carrier`
+/// case — the carrier-keyed path stays primary, so the hot path is undisturbed.
+pub(crate) fn witness_op_for_carrier(
+    kb: &KnowledgeBase,
+    spec_sort: Symbol,
+    carrier: Symbol,
+    op_short: Symbol,
+) -> Option<Symbol> {
+    let (provider, _) = witness_provision(kb, spec_sort, carrier)?;
+    kb.sort_ops_lookup(provider, op_short)
 }
 
 /// True iff the operation `op_short` (declared by the provided spec, as
@@ -8128,15 +8290,33 @@ fn provision_binds_param_to_carrier(
     pvid: VarId,
     carrier_sym: Symbol,
 ) -> Option<SmallVec<[(Symbol, TermId); 2]>> {
-    let view = provider_spec_view_bindings(kb, carrier_sym, spec_sort)?;
     let carrier_canon = kb.canonical_sort_sym(carrier_sym);
-    let is_carrier_param = view.iter().any(|(sp_sym, sp_val)| {
-        type_param_vid_in_sort(kb, spec_sort, *sp_sym) == Some(pvid)
-            && super::load::provides_spec_base_sym(kb, *sp_val)
-                .map(|b| kb.canonical_sort_sym(b))
-                == Some(carrier_canon)
-    });
-    is_carrier_param.then_some(view)
+    let binds_pvid_to_carrier = |view: &SmallVec<[(Symbol, TermId); 2]>| {
+        view.iter().any(|(sp_sym, sp_val)| {
+            type_param_vid_in_sort(kb, spec_sort, *sp_sym) == Some(pvid)
+                && super::load::provides_spec_base_sym(kb, *sp_val)
+                    .map(|b| kb.canonical_sort_sym(b))
+                    == Some(carrier_canon)
+        })
+    };
+    // Primary: the carrier-keyed provision (`sort_ref == carrier`) — a fact whose
+    // derived carrier IS the value's sort, or a normal provider whose own sort IS
+    // the carrier. Unchanged hot path (Iterable.iterator on a List, Eq on Int64).
+    if let Some(view) = provider_spec_view_bindings(kb, carrier_sym, spec_sort) {
+        if binds_pvid_to_carrier(&view) {
+            return Some(view);
+        }
+    }
+    // WI-450: a WITNESS provision (`sort_ref != carrier`) of `spec_sort` that binds
+    // this param to the carrier — `sort TagCombiner provides Combiner[T = Tag]`
+    // classifies a `T`-typed arg valued `Tag` as the carrier param even though the
+    // provider sort is `TagCombiner`, not `Tag`.
+    if let Some((_, view)) = witness_provision(kb, spec_sort, carrier_sym) {
+        if binds_pvid_to_carrier(&view) {
+            return Some(view);
+        }
+    }
+    None
 }
 
 /// WI-424 — eval-side CARRIER-PARAM receiver: among the params typed as one of

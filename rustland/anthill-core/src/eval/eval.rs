@@ -533,7 +533,7 @@ impl Interpreter {
     ) -> Option<Symbol> {
         use crate::kb::typing::{
             carrier_param_receiver_for_values, instance_fact_op_binding, lookup_spec_op_dispatch,
-            self_receiver_param_index,
+            self_receiver_param_index, witness_op_for_carrier,
         };
         let spec_sort = lookup_spec_op_dispatch(&self.kb, spec_op)?;
         let rec = crate::kb::op_info::lookup_operation_info(&self.kb, spec_op)?;
@@ -590,7 +590,13 @@ impl Interpreter {
         // carrier — the op-valued binding IS the dictionary entry. Fall back to
         // it so a spec-op call on an instance-fact carrier dispatches to the
         // bound op instead of dying `UnknownOperation`.
+        // WI-450: a WITNESS SORT (`sort TagCombiner provides Combiner[T = Tag]`
+        // with a member `combine`) provides the spec for `carrier` without binding
+        // the op in the provision and without being the carrier itself — the
+        // carrier-keyed `instance_fact_op_binding` misses it. Resolve it
+        // param-agnostically by the provision's application.
         own.or_else(|| instance_fact_op_binding(&self.kb, carrier, spec_sort, op_short))
+            .or_else(|| witness_op_for_carrier(&self.kb, spec_sort, carrier, op_short_sym))
     }
 
     // ── Binder starts: update top.awaiting, push child frame. ──────

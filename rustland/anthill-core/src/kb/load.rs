@@ -179,6 +179,18 @@ pub enum LoadError {
         spec: String,
         count: usize,
     },
+    /// WI-450 witness coherence (rule 2, witness flavor): two distinct WITNESS
+    /// SORTS provide one spec at the same application — `sort TagCombinerA provides
+    /// Combiner[T = Tag]` and `sort TagCombinerB provides Combiner[T = Tag]`, each
+    /// backing the spec's ops with its own member impls. Like two instance facts
+    /// they give value-directed dispatch no sound choice (it would pick the first),
+    /// but the conflict is between provider SORTS, not `fact` op-bindings — hence a
+    /// distinct diagnostic. Load-blocking; keyed on (spec, dispatch carrier).
+    AmbiguousWitness {
+        carrier: String,
+        spec: String,
+        count: usize,
+    },
     /// WI-347: an operation override violates behavioral subtyping — a
     /// carrier's own operation that implements/overrides a spec operation does
     /// not *refine* it. `reason` names the specific violation: an effect not
@@ -290,6 +302,10 @@ impl LoadError {
                 format!("ambiguous instance: {} distinct instance facts provide '{}' for carrier '{}' — each binds the spec's operations differently, and there is no way to select between them (scoped/named instance selection is not yet supported); keep exactly one `fact {}[…]` per (spec, carrier)",
                     count, spec, carrier, spec)
             }
+            LoadError::AmbiguousWitness { carrier, spec, count } => {
+                format!("ambiguous witness: {} distinct witness sorts provide '{}' for carrier '{}' — each backs the spec's operations with its own member ops, and there is no way to select between them (scoped/named instance selection is not yet supported); keep exactly one `sort … provides {}[…]` witness per (spec, carrier)",
+                    count, spec, carrier, spec)
+            }
             LoadError::IncompatibleOverride { carrier, spec, op, reason } => {
                 format!("'{}' overrides '{}.{}' (it provides '{}') but the override does not refine it: {}",
                     carrier, spec, op, spec, reason)
@@ -345,8 +361,10 @@ impl LoadError {
             | LoadError::UnsatisfiedProviderRequires { .. }
             | LoadError::UnbackedProviderOperation { .. }
             // WI-431 rule 2: ambiguous instance facts give dispatch no sound
-            // choice — block rather than silently pick the first.
+            // choice — block rather than silently pick the first. WI-450: the
+            // witness flavor (two provider sorts) is equally unsound.
             | LoadError::AmbiguousInstanceFact { .. }
+            | LoadError::AmbiguousWitness { .. }
             | LoadError::IncompatibleOverride { .. }
             // WI-431 (B): a mis-typed instance-fact op binding would dispatch to
             // a wrongly-typed impl — block.
@@ -394,6 +412,10 @@ impl std::fmt::Display for LoadError {
             }
             LoadError::AmbiguousInstanceFact { carrier, spec, count } => {
                 write!(f, "ambiguous instance: {} distinct instance facts provide '{}' for carrier '{}' (keep exactly one)",
+                    count, spec, carrier)
+            }
+            LoadError::AmbiguousWitness { carrier, spec, count } => {
+                write!(f, "ambiguous witness: {} distinct witness sorts provide '{}' for carrier '{}' (keep exactly one)",
                     count, spec, carrier)
             }
             LoadError::IncompatibleOverride { carrier, spec, op, reason } => {
