@@ -284,3 +284,6 @@ mod wi408_some_coercion_test;
 
 #[path = "include/wi374_expansion_test.rs"]
 mod wi374_expansion_test;
+
+#[path = "include/wi448_comment_before_op_requires_test.rs"]
+mod wi448_comment_before_op_requires_test;

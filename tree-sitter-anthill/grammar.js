@@ -444,7 +444,18 @@ module.exports = grammar({
       field('type', $._type),
     ),
 
-    requires_clause: $ => seq('requires', $.rule_body),
+    // WI-448: a trailing `requires` after an operation's return type is the
+    // operation's clause (op-scoped), NOT a standalone `requires_declaration`
+    // (which is sort/namespace-scoped). Both begin with the `requires` token,
+    // so the GLR conflict `[$.operation_declaration]` (above) explores both
+    // parses. Their costs are otherwise equal, and a comment (line or block)
+    // preceding the operation tips the tie toward the standalone declaration —
+    // silently re-scoping the clause's names (e.g. op-type-params) to the
+    // enclosing namespace. `prec.dynamic` breaks the tie deterministically
+    // toward the op-clause, matching the comment-free behavior regardless of
+    // any preceding comment.
+    // (`ensures` has no standalone form, so it needs no bias.)
+    requires_clause: $ => prec.dynamic(1, seq('requires', $.rule_body)),
     ensures_clause: $ => seq('ensures', $.rule_body),
     effects_clause: $ => seq('effects', $._effect_set),
 
