@@ -3186,9 +3186,75 @@ fn build_type(
                 return;
             }
 
-            // No match → clear diagnostic at the dot span. (INC 1b — a zero-arg
-            // member resolving to a field on a free-standing-entity receiver —
-            // is a follow-up; until then a field dot also lands here.)
+            // INC 1b: a zero-arg member naming a FIELD of the receiver's sort.
+            // The method fallback ran first (an operation of that name wins), so
+            // only a non-operation member reaches here. Synthesize
+            // `field_access(receiver, "field")` — the reflect field-access
+            // desugaring (reflect.anthill) whose eval-side twin reads the named
+            // field off the runtime `Value::Entity`. The result type is the
+            // field's type with the receiver's type-args substituted
+            // (`resolve_field_type`, the same projection pattern field types use).
+            // The synthesized call has no field-specific signature to re-type
+            // against, so the type is set DIRECTLY rather than via `push_visit`.
+            if pos_nodes.is_empty() && named_nodes.is_empty() {
+                if let Some(rs) = recv_sort {
+                    // The surface `?o.value` interns `value` in the use-site
+                    // scope, which need not equal the declaring entity's field
+                    // symbol — `resolve_field_type` matches the field by symbol
+                    // identity. Resolve `member` to the receiver sort's actual
+                    // field symbol by SHORT name first. (Inherits
+                    // `resolve_field_type`'s contract that a given field name is
+                    // the same symbol across a sort's constructors; a multi-
+                    // variant short-name collision resolves via the first.)
+                    let member_short = short_name_of(kb.resolve_sym(member)).to_string();
+                    let field_sym = kb.constructors_of_sort(rs).into_iter().find_map(|ctor| {
+                        kb.entity_field_types(ctor).and_then(|fields| {
+                            fields.iter()
+                                .find(|(f, _)| short_name_of(kb.resolve_sym(*f)) == member_short)
+                                .map(|(f, _)| *f)
+                        })
+                    });
+                    if let Some((field_ty, fa_sym)) = field_sym.and_then(|fsym| {
+                        let ctx = TypeErrorContext::EntityField { entity: rs, field: fsym };
+                        let field_ty = resolve_field_type(kb, &recv.ty, fsym, &ctx, dot_span).ok()?;
+                        let fa_sym = kb.try_resolve_symbol("anthill.reflect.field_access")?;
+                        Some((field_ty.0, fa_sym))
+                    }) {
+                        let field_name_node = NodeOccurrence::new_expr(
+                            Expr::Const(Literal::String(member_short)),
+                            occ.span,
+                            occ.owner,
+                        );
+                        let pass = super::simp_rewrite::simp_pass(kb);
+                        let synth = NodeOccurrence::synthesized_expr(
+                            Expr::Apply {
+                                functor: fa_sym,
+                                pos_args: vec![receiver_node, field_name_node],
+                                named_args: Vec::new(),
+                                type_args: Vec::new(),
+                            },
+                            Rc::clone(&occ),
+                            pass,
+                            occ.owner,
+                        );
+                        // The synth isn't re-typed (no field-specific signature
+                        // to re-type against), so stamp its inferred type here —
+                        // downstream passes shouldn't see an untyped node. Eval
+                        // dispatches the builtin via the functor with no
+                        // classification, so none is needed.
+                        synth.set_inferred_type(field_ty.clone());
+                        results.push(Ok(TypeResult {
+                            ty: field_ty,
+                            env: recv.env,
+                            effects: recv.effects.clone(),
+                            node: synth,
+                        }));
+                        return;
+                    }
+                }
+            }
+
+            // No method and no field matched → clear diagnostic at the dot span.
             results.push(Err(TypeError::DotDispatchNoMatch {
                 span: dot_span,
                 member,
