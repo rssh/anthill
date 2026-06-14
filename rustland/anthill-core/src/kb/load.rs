@@ -7330,29 +7330,60 @@ impl<'a> Loader<'a> {
         self.current_scope = prev_scope;
     }
 
-    fn load_abstract_sort(&mut self, s: &AbstractSort, domain: TermId) {
-        let sort_term = self.name_to_sort_term(&s.name);
-        let sort_sort = self.kb.make_name_term("Sort");
-
-        // Skip re-registration if this AbstractSort has already been
-        // loaded — load_sort_with_body's pre-pass calls us early so
-        // SortAlias is in place before entity FieldInfo builds; the
-        // later load_items pass would otherwise allocate a *second*
-        // SortAlias with a fresh target Var, leaving each type-param
-        // backed by two distinct Vars (`find_sort_alias_var` then
-        // returns the first by `rules_by_functor` order, which may differ
-        // from the Var the entity field already captured).
+    /// True iff a `SortAlias(sort_term, _)` fact is already asserted. Reads pos 0
+    /// carrier-agnostically (via `rule_head_value` / `pos_arg`) so a value-fact
+    /// SortAlias head (a denoted target, e.g. `sort T = Vector[Int64, 3]`) dedups
+    /// without panicking on the term-only `rule_head`. Shared by `load_abstract_sort`
+    /// (`sort T = ?`) and `emit_type_param_backing_var` (WI-452 marked params): the
+    /// pre-pass and `load_items` both reach a declaration, and a second SortAlias
+    /// with a fresh target Var would leave the param backed by two divergent Vars.
+    fn sort_alias_exists(&mut self, sort_term: TermId) -> bool {
         let alias_sym = self.kb.resolve_symbol("SortAlias");
         for rid in self.kb.rules_by_functor(alias_sym) {
-            if !self.kb.is_fact(rid) { continue; }
-            // Carrier-agnostic dedup on the sort ref (pos 0, always a ground sort
-            // term). A value-fact SortAlias (denoted-bearing target, e.g.
-            // `sort T = Vector[Int64, 3]`) must still dedup, so read via `TermView`
-            // rather than the term-only `rule_head` (which panics on a value head).
+            if !self.kb.is_fact(rid) {
+                continue;
+            }
             let head = self.kb.rule_head_value(rid);
             if head.pos_arg(self.kb, 0).and_then(|p| p.as_term_id()) == Some(sort_term) {
-                return;
+                return true;
             }
+        }
+        false
+    }
+
+    /// Assert a positional `SortAlias(sort_ref, target)` fact. Shared emission for
+    /// `load_abstract_sort` and `emit_type_param_backing_var`.
+    fn assert_sort_alias(
+        &mut self,
+        sort_term: TermId,
+        target: crate::eval::value::Value,
+        domain: TermId,
+    ) {
+        use crate::eval::value::Value;
+        let alias_sym = self.kb.resolve_symbol("SortAlias");
+        let sort_sort = self.kb.make_name_term("Sort");
+        self.kb.assert_fact_carrier(
+            alias_sym,
+            vec![Value::Term(sort_term), target],
+            Vec::new(),
+            sort_sort,
+            domain,
+            None,
+        );
+    }
+
+    fn load_abstract_sort(&mut self, s: &AbstractSort, domain: TermId) {
+        let sort_term = self.name_to_sort_term(&s.name);
+
+        // Skip re-registration if this AbstractSort has already been loaded —
+        // `load_sort_with_body`'s pre-pass calls us early so SortAlias is in place
+        // before entity FieldInfo builds; the later `load_items` pass would
+        // otherwise allocate a *second* SortAlias with a fresh target Var, leaving
+        // each type-param backed by two distinct Vars (`find_sort_alias_var` then
+        // returns the first by `rules_by_functor` order, which may differ from the
+        // Var the entity field already captured).
+        if self.sort_alias_exists(sort_term) {
+            return;
         }
 
         self.kb.register_sort(sort_term, SortKind::Sort);
@@ -7371,20 +7402,12 @@ impl<'a> Loader<'a> {
             }
             _ => self.type_expr_to_value(&s.definition),
         };
-        use crate::eval::value::Value;
         // WI-390: lower a denoted-bearing alias target (value-in-type, e.g.
         // `sort T = Vector[Int64, 3]`) to a `TermId` so the SortAlias head stays a
         // hash-consed `Term::Fn`.
         let target_value = self.lower_value_or_gate(target_value, "sort alias", &s.definition);
         // SortAlias is positional: `SortAlias(sort_ref, target)`.
-        self.kb.assert_fact_carrier(
-            alias_sym,
-            vec![Value::Term(sort_term), target_value],
-            Vec::new(),
-            sort_sort,
-            domain,
-            None,
-        );
+        self.assert_sort_alias(sort_term, target_value, domain);
 
         // Emit Description facts for all description blocks
         for desc_text in &s.descriptions {
@@ -7398,31 +7421,18 @@ impl<'a> Loader<'a> {
     /// `load_abstract_sort`'s `sort T = ?` path. `find_sort_alias_var` /
     /// `resolve_sort_alias` then return this `Var`, so F appears in
     /// `sort_type_params_as_pairs` and unifies/fills like any other type param.
-    /// Dedup-guarded (like `load_abstract_sort`) so a second encounter in load
-    /// order does not allocate a second, divergent Var for the same carrier.
+    /// Emitted from `load_sort_with_body`'s pre-pass (before the entity FieldInfo
+    /// build) so a reference to F resolves to this var, not a fresh divergent one.
+    /// Dedup-guarded (shared `sort_alias_exists`) for a second load-order encounter.
     fn emit_type_param_backing_var(&mut self, sort_term: TermId, domain: TermId) {
         use crate::eval::value::Value;
-        let alias_sym = self.kb.resolve_symbol("SortAlias");
-        for rid in self.kb.rules_by_functor(alias_sym) {
-            if !self.kb.is_fact(rid) { continue; }
-            let head = self.kb.rule_head_value(rid);
-            if head.pos_arg(self.kb, 0).and_then(|p| p.as_term_id()) == Some(sort_term) {
-                return;
-            }
+        if self.sort_alias_exists(sort_term) {
+            return;
         }
-        let sort_sort = self.kb.make_name_term("Sort");
         let var_sym = self.kb.intern("_");
         let vid = self.kb.fresh_var(var_sym);
         let var_term = self.kb.alloc(Term::Var(Var::Global(vid)));
-        // SortAlias is positional: `SortAlias(sort_ref, target)`.
-        self.kb.assert_fact_carrier(
-            alias_sym,
-            vec![Value::Term(sort_term), Value::Term(var_term)],
-            Vec::new(),
-            sort_sort,
-            domain,
-            None,
-        );
+        self.assert_sort_alias(sort_term, Value::Term(var_term), domain);
     }
 
     fn load_sort_with_body(&mut self, s: &SortWithBody, parent_domain: TermId) {
@@ -7436,17 +7446,6 @@ impl<'a> Loader<'a> {
             SortDeclKind::Sort => (SortKind::Sort, "sort"),
         };
         self.kb.register_sort(sort_term, sort_kind);
-
-        // WI-452 (§5.4): a MARKED structured param (`sort [F] { … }`) is a
-        // NON-RIGID type variable — emit its backing var as `SortAlias(F, Var)`,
-        // exactly as `load_abstract_sort` does for `sort T = ?`. The member
-        // sub-decls (`sort T = ?`) load below as F's own params. The WI-451
-        // desugar PREPENDS F into the enclosing sort's items, so F is loaded
-        // before the operations that reference `F[T = A]`, and they resolve to
-        // this same backing var (`sort_type_params_as_pairs` / `type_param_var`).
-        if s.is_type_param {
-            self.emit_type_param_backing_var(sort_term, parent_domain);
-        }
 
         // Emit Description facts for all description blocks
         for desc_text in &s.descriptions {
@@ -7465,23 +7464,32 @@ impl<'a> Loader<'a> {
         let fields_field_sym = self.kb.intern("fields");
         self.kb.register_entity_fields(entity_info_sym, vec![fi_name_sym, fields_field_sym]);
 
-        // Pre-load nested `sort X = ?` declarations so their SortAlias
-        // is in place before entity FieldInfo build calls
-        // `type_expr_to_value` on field types that reference them. Without
-        // this, `entity foo(x: T)` runs before `sort T = ?` in source
-        // order, hits `type_expr_to_child`'s fallback (no SortAlias yet),
-        // and allocates a fresh `Var(name="T")` — a different Var than
-        // the SortAlias's `Var(name="_")` registered later. The two Vars
-        // never unify, so pattern substitution misses and the typer
-        // sees `head: Var(...)` where it should see `head: String`.
-        // `load_abstract_sort` dedupes on already-asserted SortAlias,
-        // so `load_items` below safely re-encounters these and no-ops.
-        // Pass `sort_term` (the enclosing sort's own domain) so the
-        // SortAlias fact lives in the same domain the second pass
-        // would have used.
+        // Pre-load nested type-param SortAliases so they are in place before the
+        // entity FieldInfo build calls `type_expr_to_value` on field types that
+        // reference them. Without this, `entity foo(x: T)` runs before `sort T = ?`
+        // in source order, hits `type_expr_to_child`'s fallback (no SortAlias yet),
+        // and allocates a fresh `Var(name="T")` — a different Var than the
+        // SortAlias's `Var(name="_")` registered later. The two Vars never unify, so
+        // pattern substitution misses and the typer sees `head: Var(...)` where it
+        // should see `head: String`. Both `load_abstract_sort` and
+        // `emit_type_param_backing_var` dedupe on an already-asserted SortAlias, so
+        // `load_items` below safely re-encounters these and no-ops. Pass `sort_term`
+        // (the enclosing sort's own domain) so the SortAlias fact lives in the same
+        // domain the second pass would have used.
+        //
+        // WI-452 (§5.4): a MARKED structured param (`sort [F] { … }`, the HK carrier
+        // of `sort Spec[F[T]]`) needs its `SortAlias → Var` here too — same ordering
+        // reason: a bare or applied `F` in a field/op resolved during the entity
+        // build below must find F's canonical backing var, not a fresh divergent
+        // one. (`load_items` later loads F's own body / members.)
         for item in &s.items {
-            if let Item::AbstractSort(abs) = item {
-                self.load_abstract_sort(abs, sort_term);
+            match item {
+                Item::AbstractSort(abs) => self.load_abstract_sort(abs, sort_term),
+                Item::SortWithBody(inner) if inner.is_type_param => {
+                    let f_term = self.name_to_sort_term(&inner.name);
+                    self.emit_type_param_backing_var(f_term, sort_term);
+                }
+                _ => {}
             }
         }
 

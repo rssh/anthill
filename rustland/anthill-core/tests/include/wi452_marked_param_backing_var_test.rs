@@ -130,6 +130,92 @@ end
     );
 }
 
+/// The HK carrier's MEMBER `T` (`sort T = ?` inside the marked `F`) is itself a
+/// var-backed type param of `F` — so `F[T = A]`'s binding label resolves. (Emitted
+/// by `load_abstract_sort`, not the WI-452 helper, but part of the same `F ↦ ?F`
+/// promise that the marked carrier "carries its member sub-decls".)
+#[test]
+fn marked_param_member_is_also_var_backed() {
+    let src = r#"namespace test.wi452.member
+  sort CpsMonad[F[T]]
+    operation unit[A](a: A) -> F[T = A]
+  end
+end
+"#;
+    let (kb, errs) = load_kb(src);
+    assert!(errs.is_empty(), "should load clean: {errs:?}");
+    let f_t = kb
+        .try_resolve_symbol("test.wi452.member.CpsMonad.F.T")
+        .expect("CpsMonad.F.T symbol");
+    assert!(
+        has_backing_var(&kb, f_t),
+        "F's member T must itself have a SortAlias → Var (it is `sort T = ?` inside F)"
+    );
+}
+
+/// NESTED marked params `sort Outer[F[G[H]]]`: each marked level (`F`, `G`) is a
+/// var-backed type param of its enclosing level, recursively — the pre-pass emits
+/// the carrier var at every nesting depth. Locks in the recursion.
+#[test]
+fn nested_marked_params_each_var_backed() {
+    let src = r#"namespace test.wi452.nest
+  sort Outer[F[G[H]]]
+  end
+end
+"#;
+    let (kb, errs) = load_kb(src);
+    assert!(errs.is_empty(), "nested marked params should load clean: {errs:?}");
+    for (sort, param) in [
+        ("test.wi452.nest.Outer", "F"),
+        ("test.wi452.nest.Outer.F", "G"),
+        ("test.wi452.nest.Outer.F.G", "H"),
+    ] {
+        let sym = kb.try_resolve_symbol(sort).unwrap_or_else(|| panic!("{sort} symbol"));
+        assert!(
+            kb.type_params_of_sort(sym).iter().any(|p| p == param),
+            "{param} must be a type param of {sort}; got {:?}",
+            kb.type_params_of_sort(sym)
+        );
+    }
+    // The two MARKED carriers (F, G) carry backing vars (H is `sort H = ?`, also).
+    for sort in ["test.wi452.nest.Outer.F", "test.wi452.nest.Outer.F.G"] {
+        let sym = kb.try_resolve_symbol(sort).unwrap_or_else(|| panic!("{sort} symbol"));
+        assert!(has_backing_var(&kb, sym), "marked carrier {sort} must have a backing var");
+    }
+}
+
+/// The ordering the pre-pass fix targets: a marked carrier `F` referenced by an
+/// ENTITY FIELD (`content: F[T = Int64]`) is resolved during the entity FieldInfo
+/// build — which runs BEFORE `F`'s own body loads. Emitting F's backing var in the
+/// pre-pass (not inline in F's later load) means the field resolves to F's
+/// canonical var, and the spec loads clean with F still a var-backed param.
+#[test]
+fn marked_carrier_in_entity_field_loads_clean() {
+    let src = r#"namespace test.wi452.field
+  import anthill.prelude.Int64
+  sort Boxed[F[T]]
+    entity boxed(content: F[T = Int64])
+  end
+end
+"#;
+    let (kb, errs) = load_kb(src);
+    assert!(
+        errs.is_empty(),
+        "a marked carrier referenced in an entity field should load clean: {errs:?}"
+    );
+    let boxed = kb
+        .try_resolve_symbol("test.wi452.field.Boxed")
+        .expect("Boxed symbol");
+    assert!(
+        kb.type_params_of_sort(boxed).iter().any(|p| p == "F"),
+        "F must still be a var-backed type param of Boxed even when referenced by a field"
+    );
+    let f = kb
+        .try_resolve_symbol("test.wi452.field.Boxed.F")
+        .expect("Boxed.F symbol");
+    assert!(has_backing_var(&kb, f), "Boxed.F must have a backing var");
+}
+
 /// An UNMARKED nested `sort F { … }` (the body form, no enclosing list) stays a
 /// CONCRETE nested sort: NOT a type param of the enclosing sort, NO backing var.
 #[test]
