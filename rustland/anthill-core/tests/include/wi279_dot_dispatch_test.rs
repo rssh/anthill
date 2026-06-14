@@ -276,3 +276,101 @@ fn dot_rule_nonlinear_lhs_does_not_fire_on_distinct_args() {
     assert!(text.contains("no such member (dot dispatch)") && text.contains("special"),
         "expected a dot-dispatch no-match naming 'special'; got:\n{text}");
 }
+
+// ── Acceptance: `?x.field` constructor-field access (INC 1b) ────────────
+
+/// Call a nullary op and expect an Int64 result.
+fn run_int(interp: &mut anthill_core::eval::Interpreter, op: &str) -> i64 {
+    match interp.call(op, &[]).unwrap_or_else(|e| panic!("call {op}: {e:?}")) {
+        anthill_core::eval::Value::Int(i) => i,
+        other => panic!("call {op}: expected Int, got {other:?}"),
+    }
+}
+
+#[test]
+fn dot_field_reads_entity_field_and_evals() {
+    // `?b.value`: `value` is not an operation on Box, so the method fallback
+    // misses; the field fallback synthesizes `field_access(b, "value")`, typed
+    // as the field's type (Int64) and evaluated by reading the named field off
+    // the runtime entity.
+    let src = r#"
+namespace wi279.field
+  import anthill.prelude.Int64
+  sort Box
+    entity box(value: Int64)
+    operation read(b: Box) -> Int64 = ?b.value
+  end
+  operation t() -> Int64 = read(box(value: 42))
+end
+"#;
+    let (_kb, errs) = load_capturing_errors(src);
+    assert!(errs.is_empty(),
+        "expected ?b.value to dispatch to the field; got:\n{}", errors_text(&errs));
+    let mut interp = crate::common::interp_for(src);
+    assert_eq!(run_int(&mut interp, "wi279.field.t"), 42);
+}
+
+#[test]
+fn dot_field_generic_param_substitutes_and_evals() {
+    // `?o.value` on `o: Option[T = Int64]`: the field `value: T` resolves with
+    // the receiver's type-arg substituted (T = Int64, via `resolve_field_type`),
+    // and at runtime reads the `some` payload — the substitution path threaded
+    // end to end through the field fallback.
+    let src = r#"
+namespace wi279.genfield
+  import anthill.prelude.{Int64, Option}
+  import anthill.prelude.Option.some
+  operation read(o: Option[T = Int64]) -> Int64 = ?o.value
+  operation t() -> Int64 = read(some(value: 42))
+end
+"#;
+    let (_kb, errs) = load_capturing_errors(src);
+    assert!(errs.is_empty(),
+        "expected ?o.value to dispatch with T = Int64; got:\n{}", errors_text(&errs));
+    let mut interp = crate::common::interp_for(src);
+    assert_eq!(run_int(&mut interp, "wi279.genfield.t"), 42);
+}
+
+#[test]
+fn dot_field_unknown_member_reports_no_match() {
+    // `?b.nope`: not an operation and not a field of Box → the field fallback's
+    // `resolve_field_type` miss falls through to a clean no-match at the dot span.
+    let src = r#"
+        namespace wi279.nofield
+          export Box
+          sort Box
+            entity box(value: Int64)
+            operation use_bad(b: Box) -> Int64 = ?b.nope
+          end
+        end
+    "#;
+    let (_kb, errs) = load_capturing_errors(src);
+    let text = errors_text(&errs);
+    assert!(!errs.is_empty(), "expected a no-match error for ?b.nope");
+    assert!(text.contains("no such member (dot dispatch)") && text.contains("nope"),
+        "expected a dot-dispatch no-match naming 'nope'; got:\n{text}");
+}
+
+#[test]
+fn dot_method_and_field_eval_end_to_end() {
+    // End-to-end runnability of the `?x` value-receiver dot forms (eval now
+    // resolves the `Expr::Var(Global)` receiver by name): `?b.total(10)` →
+    // `total(b, 10)`, whose body reads `?b.value` (field) and adds. With
+    // `box(value: 5)` the result is `5 + 10 = 15`.
+    let src = r#"
+namespace wi279.e2e
+  import anthill.prelude.Int64
+  sort Box
+    entity box(value: Int64)
+    operation total(b: Box, n: Int64) -> Int64 = ?b.value + n
+    operation run(b: Box) -> Int64 = ?b.total(10)
+  end
+  operation t() -> Int64 = run(box(value: 5))
+end
+"#;
+    let (_kb, errs) = load_capturing_errors(src);
+    assert!(errs.is_empty(),
+        "expected ?b.total(10) + ?b.value to dispatch; got:\n{}", errors_text(&errs));
+    let mut interp = crate::common::interp_for(src);
+    assert_eq!(run_int(&mut interp, "wi279.e2e.t"), 15);
+}

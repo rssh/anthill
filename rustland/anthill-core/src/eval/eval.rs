@@ -238,8 +238,15 @@ impl Interpreter {
                 "unhandled Expr variant in eval: {:?}",
                 std::mem::discriminant(expr),
             ))),
+            // A `Global` var carries a name (WI-279: a value-receiver `?x` in a
+            // dot form reaches eval as `Expr::Var(Global)` — the only op-body
+            // var that isn't already a `Ref`/`VarRef`). Resolve it by name like
+            // the other reference forms. `DeBruijn` (unopened param — frame setup
+            // substitutes those away) and `Rigid` (a skolemized type-param,
+            // type-level only) are never runnable values: a loud error.
+            Expr::Var(crate::kb::term::Var::Global(vid)) => self.reduce_var(vid.name(), occ),
             Expr::Var(_) => Err(EvalError::Internal(
-                "unexpected unopened DeBruijn variable in expression body".into(),
+                "unexpected unopened / type-level variable in expression body".into(),
             )),
             Expr::Bottom => Err(EvalError::Internal(
                 "unexpected Expr::Bottom in expression body".into(),

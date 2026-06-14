@@ -91,6 +91,7 @@ pub fn register_standard_builtins(interp: &mut Interpreter) -> Result<(), EvalEr
     register_if_present(interp, "anthill.reflect.term_to_string", reflect_term_to_string)?;
     register_if_present(interp, "anthill.reflect.term_list_items", reflect_term_list_items)?;
     register_if_present(interp, "anthill.reflect.term_as_entity", term_as_entity)?;
+    register_if_present(interp, "anthill.reflect.field_access", reflect_field_access)?;
     register_if_present(interp, "anthill.reflect.as_term", as_term)?;
     register_if_present(interp, "anthill.reflect.fresh_var", reflect_fresh_var)?;
     register_if_present(interp, "anthill.reflect.make_fn", reflect_make_fn)?;
@@ -137,6 +138,37 @@ where
         Ok(()) => Ok(()),
         Err(EvalError::UnknownOperation { .. }) => Ok(()),
         Err(other) => Err(other),
+    }
+}
+
+/// WI-279 INC1b: eval-side `field_access` — the runtime twin of the SLD
+/// `field_access` builtin (`BuiltinTag::FieldAccess`). The typer rewrites a
+/// zero-arg `?x.field` `DotApply` into `field_access(receiver, "field")`; here
+/// the receiver has evaluated to a `Value::Entity`, and we return its named
+/// field by short name. (The SLD twin projects fields off reflect `Term`s
+/// during resolution; eval needs this `Value`-level reader because the
+/// rewritten call runs inside an operation body.)
+fn reflect_field_access(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    let [receiver, field] = expect_args::<2>("anthill.reflect.field_access", args)?;
+    let field_name = match &field {
+        Value::Str(s) => s.clone(),
+        other => return Err(EvalError::Internal(format!(
+            "field_access: field name must be a string, got {}", other.type_name()))),
+    };
+    match &receiver {
+        Value::Entity { named, .. } => {
+            for (sym, val) in named.iter() {
+                let full = interp.kb().resolve_sym(*sym);
+                let short = full.rsplit('.').next().unwrap_or(full);
+                if short == field_name.as_str() {
+                    return Ok(val.clone());
+                }
+            }
+            Err(EvalError::Internal(format!(
+                "field_access: entity has no field '{}'", field_name)))
+        }
+        other => Err(EvalError::Internal(format!(
+            "field_access: receiver is not an entity (got {})", other.type_name()))),
     }
 }
 
