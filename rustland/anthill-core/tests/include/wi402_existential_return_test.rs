@@ -165,6 +165,66 @@ end
     assert!(errs.is_empty(), "concrete return + ensures postcondition must still load, got: {errs:?}");
 }
 
+/// REGRESSION (review finding): the ensures-aware gate skip must be SCOPED to ops the
+/// loader actually existential-rewrote — NOT any op whose `ensures` names the bare return
+/// sort. A bare REAL-sort return (`-> DataProvider`, the WI-401 sealing escape) carrying an
+/// `ensures DataProvider[K = String]` is NOT rewritten (the written type is a concrete sort),
+/// so its abstract member would still escape — it must stay rejected.
+#[test]
+fn bare_real_sort_return_with_ensures_still_rejected() {
+    let src = r#"
+namespace test.wi402x.seal
+  import anthill.prelude.String
+  sort DataProvider
+    sort K = ?
+  end
+  sort SubscriberStore
+    provides DataProvider[K = String]
+    entity subscriberStore
+  end
+  operation seal(s: SubscriberStore) -> DataProvider ensures DataProvider[K = String] = s
+end
+"#;
+    let errs = load_errors(&[src]);
+    assert!(
+        errs.iter().any(|e| e.contains("abstracting return") || e.contains("escape")),
+        "a bare real-sort return is not existential-rewritten; its `ensures` must NOT admit \
+         the sealing escape, got: {errs:?}"
+    );
+}
+
+/// REGRESSION (review finding): stripping the carrier must drop ONLY the carrier SLOT (the
+/// first positional), never a named member binding whose VALUE is the carrier (`V = C`, a
+/// member typed as the result itself). The rewritten return must still carry `V = C` — proven
+/// here by the diagnostic naming it (`expected Spec[K = String, V = C]`); were `V` dropped as
+/// if it were the carrier, the diagnostic would read `Spec[K = String]` (a silently partial
+/// manifest). NB the carrier-valued-member FORM itself — unifying the abstract carrier `C`
+/// with a provider's concrete `V` — is a separate, not-yet-supported conformance gap (so this
+/// op does not fully type-check); the test pins only that the member is not silently stripped.
+#[test]
+fn carrier_valued_member_binding_is_kept() {
+    let src = r#"
+namespace test.wi402x.selfval
+  import anthill.prelude.String
+  sort Spec
+    sort K = ?
+    sort V = ?
+  end
+  sort Node
+    provides Spec[K = String, V = Node]
+    entity node
+  end
+  operation make(n: Node) -> C ensures Spec[C, K = String, V = C] = n
+end
+"#;
+    let errs = load_errors(&[src]);
+    assert!(
+        errs.iter().any(|e| e.contains("V = C")),
+        "the `V = C` member must be KEPT in the rewritten return (not stripped as the carrier \
+         slot) — the diagnostic must name it, got: {errs:?}"
+    );
+}
+
 /// CALLER: the existential result is usable through the spec interface — `store.describe()`
 /// on an `openStore(…) : KVStore` (abstract carrier) resolves against `KVStore.describe`.
 #[test]

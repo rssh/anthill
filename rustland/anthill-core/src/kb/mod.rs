@@ -350,6 +350,14 @@ pub struct KnowledgeBase {
     /// the end of each load phase.
     pub(crate) rigid_projection_formations: Vec<(TermId, SourceSpan)>,
 
+    /// WI-402 (existential half): the operations whose return type the loader
+    /// REWROTE from an existential carrier (`-> C ensures Spec[C, …]` → the spec
+    /// with the carrier dropped). The `abstracting_return` (WI-401) gate skips
+    /// exactly these — an `ensures` admits the abstract return only when the loader
+    /// actually formed the existential, NOT for any op that merely names the return
+    /// sort in an `ensures` (that stays the strict escape). Keyed on the op symbol.
+    pub(crate) existential_return_ops: std::collections::HashSet<Symbol>,
+
     // WI-348 (value-fact payoff): the `op_effects` side-table is GONE. A
     // `denoted`-bearing effect label (`Modify[c]`) now lives in the
     // `OperationInfo` fact itself — the loader builds that fact as a *value
@@ -470,6 +478,7 @@ impl KnowledgeBase {
             op_bodies: HashMap::new(),
             has_dot_applies: false,
             rigid_projection_formations: Vec::new(),
+            existential_return_ops: std::collections::HashSet::new(),
             entity_field_types: HashMap::new(),
             resolved_requires_facts: HashSet::new(),
             sources: SourceRegistry::new(),

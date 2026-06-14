@@ -657,12 +657,13 @@ type variable so the `ensures` clause itself still resolves. Consequences, both 
   branch-join takes the spec as its upper bound for the divergent backends and the WI-401
   gate sees all members bound (no escape). No new typer code beyond the rewrite.
 - The **unbound** case (`ensures Spec[C]`) is a bare-`Spec` return; the WI-401
-  `abstracting_return_error` gate gains an **`ensures`-aware skip** (`op_ensures_vouches_for`,
-  the output dual of `op_requires_entries`): a bare/partial upcast is admitted *iff* an
-  `ensures` clause names the return spec — otherwise it still escapes and is rejected
-  (strict base model intact). The caller sees `store : Spec` (carrier abstract) and dispatches
-  through the interface via the ordinary abstract-receiver path; eval dispatches on the
-  concrete value's runtime sort (value-directed dispatch — the dict flows out, no new code).
+  `abstracting_return_error` gate **skips exactly the ops the loader existential-rewrote**
+  (recorded in `kb.existential_return_ops`). The skip is keyed on *the rewrite having
+  happened*, NOT on an `ensures` merely naming the return sort — so a bare `-> Spec` return
+  whose written type is a real sort (the WI-401 sealing escape) is still rejected even with an
+  `ensures`. The caller sees `store : Spec` (carrier abstract) and dispatches through the
+  interface via the ordinary abstract-receiver path; eval dispatches on the concrete value's
+  runtime sort (value-directed dispatch — the dict flows out, no new code).
 
 **Caveat / deferred.** The dispatch surface is the **dotted/receiver form** (`store.op(…)` /
 `Spec.op(store, …)`); a direct `op(store)` call to a body-less spec op does not resolve
@@ -670,9 +671,12 @@ regardless of the existential (a pre-existing spec-op-call limitation). Two refi
 deferred (sound, no driver): the named carrier `C` is *dropped* by the rewrite rather than
 preserved as a distinct nominal, so two existentials returning the same spec are not kept
 non-injectively distinct (matters only for the multi-existential abstract-member case — the
-worked example uses a single result through the interface); and a bare abstracting return via
-an `if`-join *without* an `ensures` is currently accepted (a pre-existing WI-401 gap for
-join-typed bodies, orthogonal to this work — the direct upcast is correctly rejected).
+worked example uses a single result through the interface); a **carrier-valued member**
+(`ensures Spec[C, V = C]`, a member typed as the result itself) is kept by the rewrite but
+does not fully type-check — the abstract carrier `C` is not unified with a provider's concrete
+member, a separate conformance gap; and a bare abstracting return via an `if`-join *without*
+an `ensures` is currently accepted (a pre-existing WI-401 gap for join-typed bodies, orthogonal
+to this work — the direct upcast is correctly rejected).
 
 ## 5.1 Value-position projection — projection is one arm of the *generic dot*
 

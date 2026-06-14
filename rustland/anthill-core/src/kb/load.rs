@@ -8456,24 +8456,28 @@ impl<'a> Loader<'a> {
     /// Drop the existential carrier from a converted spec application — the
     /// caller-visible spec type (`KVStore[C, K = String, V = String]` ⟹
     /// `KVStore[K = String, V = String]`; the unbound `KVStore[C]` ⟹ bare `KVStore`).
-    /// Filters a positional carrier OR a named carrier binding whose value names
-    /// `carrier`, so either spec-application shape lowers correctly.
+    /// Drops ONLY the carrier SLOT — the first positional argument (the carrier per
+    /// `ensures_atom_carrier_name`). Named member bindings are kept verbatim, including
+    /// one whose VALUE is the carrier (`V = C`, a member typed as the carrier): that is
+    /// a legitimate member binding, not the carrier slot, and must survive.
     fn strip_spec_carrier(&mut self, spec_term: TermId, carrier: &str) -> TermId {
         let Term::Fn { functor, pos_args, named_args } =
             self.kb.get_term(spec_term).clone()
         else {
             return spec_term;
         };
-        let new_pos: SmallVec<[TermId; 4]> = pos_args
-            .iter()
-            .copied()
-            .filter(|&a| self.kb_leaf_name(a).as_deref() != Some(carrier))
-            .collect();
-        let new_named: SmallVec<[(Symbol, TermId); 2]> = named_args
-            .iter()
-            .copied()
-            .filter(|&(_, v)| self.kb_leaf_name(v).as_deref() != Some(carrier))
-            .collect();
+        // Drop exactly the first positional whose leaf names the carrier; keep any
+        // other positionals and ALL named bindings.
+        let mut new_pos: SmallVec<[TermId; 4]> = SmallVec::new();
+        let mut dropped_carrier = false;
+        for a in pos_args {
+            if !dropped_carrier && self.kb_leaf_name(a).as_deref() == Some(carrier) {
+                dropped_carrier = true;
+                continue;
+            }
+            new_pos.push(a);
+        }
+        let new_named = named_args;
         if new_pos.is_empty() && new_named.is_empty() {
             // Unbound existential (`ensures Spec[C]`) → the bare spec. Its canonical
             // form is `Ref(S)`, NOT a nullary `Fn{S}` — the latter `type_head`
@@ -8559,6 +8563,9 @@ impl<'a> Loader<'a> {
         // with a concrete provider; the caller sees the spec, carrier abstract).
         let return_value = match self.detect_existential_carrier(o) {
             Some((carrier, spec_atom)) => {
+                // Record that THIS op's return was existential-rewritten, so the WI-401
+                // abstracting-return gate admits its abstract return — and ONLY its.
+                self.kb.existential_return_ops.insert(functor);
                 self.build_existential_return(&carrier, spec_atom, op_qualified.as_str(), op_scope, domain)
             }
             None => self.type_expr_to_value(&o.return_type),
