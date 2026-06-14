@@ -16,3 +16,6 @@ back-references).
 - [unification-framework.md](unification-framework.md) — unification as a
   framework of per-sort registered algorithms; the substrate for WI-010
   (resolver-as-type-checker).
+- [first-class-operations.md](first-class-operations.md) — a bare operation name
+  as a first-class function value (`Value::OpRef`), `()` as uniform application;
+  the operation half deferred from proposal 039 (term-level constants).

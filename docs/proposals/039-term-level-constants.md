@@ -2,13 +2,25 @@
 
 ## Status
 
-Draft — cleanup pass 2026-05-28: dropped stale Cell.new "effect-pure" threads (superseded by 027.1), pinned the foldable subset and cycle-detection stage, resolved the original Open Questions, surfaced four new ones (A–D) that gate Phase 3+4.
+Draft — cleanup pass 2026-05-28: dropped stale Cell.new "effect-pure" threads (superseded by 027.1), pinned the foldable subset and cycle-detection stage, resolved the original Open Questions, surfaced four new ones (A–D) that gate Phase 3+4. **2026-06-15 revision** (see *Design revision* below): `const` reframed as a memoized value binding, the foldable subset replaced by "pure + `step_cap`", operations-as-first-class deferred to `future/first-class-operations.md`, and Open Questions A–D all resolved.
 
 Driver is WI-084: webots binding sentinels and safety-proof magic numbers need a named, typed, single-point-of-definition shape that is unifiable as the underlying primitive type at every use site. Today's workarounds — `entity NAME` + a side fact, or unit-sort-with-coercion — fail that requirement.
 
+## Design revision (2026-06-15) — `()` is application; operations are first-class; `const` is a memoized value binding
+
+This supersedes the original "`const` is sugar for a 0-arg operation + bare-call sugar" framing throughout the body below. Three decisions:
+
+1. **DEFERRED → [`future/first-class-operations.md`](future/first-class-operations.md).** The enabling idea that motivated this revision — a bare operation name as a first-class function value (`Value::OpRef`) with `()` as uniform application — is a language-wide change, and **039 does not depend on it.** 039 ships decisions 2–3 (`const` as a memoized value binding) standalone; until first-class operations land, operations keep today's `g()` invocation and a `const` is the way to expose a bare value. When it lands it composes with 039 (both `const`s and bare op references are value-denoting, and Open Question B's ambiguity rule already covers both).
+
+2. **`const` is a value binding, not an operation.** `const NAME: T [= body]` binds a name to a value; a bare `NAME` *is* that value, with no accessor to invoke. See §Call-site semantics for the full statement (function-valued consts, thunks, ambiguity).
+
+3. **A `const` is memoized: its body is evaluated at most once and the value is shared across all references.** Sound because a const body is pure / referentially transparent (the §Validator purity gate). For the foldable consts this proposal targets, the single evaluation is **eager, at load time** (the §Validator fold; the emitted `Constant` fact *is* the memo). The guarantee is "≤ 1 evaluation," independent of whether a future relaxation evaluates lazily on first use. Memoization covers the const's **value**: a function-valued const builds its closure once; *applying* it (`g()`) still runs each time — memoizing applications would be a separate "lazy val" feature. Operations are **not** memoized (each `f()` runs the body) — which is exactly the value-vs-computation line between `const` and `operation`.
+
+Consequence: the old "parenless 0-arg-op invocation" (bare `Map.empty`, `Numeric.zero-val`) is **dropped** — invoke a 0-arg op with `()`; declare a `const` to expose a bare value. Backward-compatible for existing `op()` call sites (`kb()` still invokes). In the deeper body (§Validator/§Reflection), read "the const's desugared 0-arg operation" as "the const's folded value binding"; the folding and `Constant`-fact lifecycle are unchanged.
+
 ## Depends on
 
-- [018-expressions-and-operation-implementation](018-expressions-and-operation-implementation.md) — operation expression bodies. A constant is a 0-arg operation whose body is the value.
+- [018-expressions-and-operation-implementation](018-expressions-and-operation-implementation.md) — operation expression bodies; a `const` body reuses the same expression grammar (the const is a value binding whose body is folded at load, not a 0-arg operation — see *Design revision 2026-06-15*).
 - [026-expression-evaluator](026-expression-evaluator.md) — load-time evaluator. The §Validator runs the evaluator over the body in a foldable-subset mode (see §Validator for the subset).
 - [027.1-alloc-effect-and-allocator-revision](027.1-alloc-effect-and-allocator-revision.md) — fresh allocators carry `effects Modify[result]`. This is what excludes `Cell.new`, `Map.empty`, etc. from const-foldability without a special case.
 - [045-effect-sets-and-expressions](045-effect-sets-and-expressions.md) — effect-row language. The foldability and bare-call rules are phrased over the declared effect row.
@@ -23,7 +35,7 @@ Driver is WI-084: webots binding sentinels and safety-proof magic numbers need a
 
 - Kernel-language spec §5 (new sugar form documented as §6.X under "Syntactic Sugar"), §6.
 - Grammar (`grammar.js`): one new construct `Const`, with-body and bodyless. Slots into both `_body_namespace` and `_body_sort` (the same positions as `operation_declaration`).
-- Resolver: new symbol-kind check at term-position resolution (bare-call sugar for 0-arg ops with empty declared effect row — broader than just constants; see §Call-site sugar).
+- Resolver: term-position resolution treats a `const` as value-denoting and applies the ambiguity rule (Open Question B); see §Call-site semantics. (The bare-operation-as-function-value half is deferred — `future/first-class-operations.md`.)
 - Stdlib + examples: opportunistic adoption (webots sentinels first; safety_common's `D_MIN`/`D_MAX` second).
 
 ## Motivation
@@ -60,7 +72,7 @@ The host-binding case and algebraic-identity case are the load-bearing drivers; 
 
 ## Design
 
-A `const` is sugar for a **0-arg operation with an empty declared effect row**, optionally with an expression body. The kernel never sees a `Const` construct — it sees the desugared operation. The §Validator is what gives `const` its meaning.
+A `const` is a **value binding**: a name bound to a value — the body folded at load time (§Validator), memoized and shared across all references. (Revised 2026-06-15 — see *Design revision* above; the original "sugar for a 0-arg operation with an empty declared effect row" model is superseded.) The §Validator is what gives `const` its meaning.
 
 ### Surface form
 
@@ -109,7 +121,7 @@ operation NAME -> T
 -- (no body — open obligation, filled by an implementation)
 ```
 
-Both forms produce a 0-arg operation with no `effects` clause (i.e. an empty declared effect row). This is what makes the call-site sugar apply (§Call-site sugar) and what permits load-time folding (§Validator).
+Both forms are value bindings with no `effects` clause (the `const` grammar position admits none — an empty declared effect row). The empty row is what permits load-time folding (§Validator) and makes the bare name value-denoting (§Call-site semantics).
 
 ### Validator
 
@@ -117,22 +129,20 @@ Both forms produce a 0-arg operation with no `effects` clause (i.e. an empty dec
 
 1. **Zero arguments.** Required by the surface grammar — `const NAME: T = ...` has no parameter list.
 2. **Empty declared effect row.** The desugared operation has no `effects` clause (equivalently, `effects ()` once 045's empty-set syntax is in). User attempts to add one are rejected at parse time — the `const` keyword's grammar position doesn't admit an effects clause.
-3. **Foldable body** (when body is present). See §Foldable subset below. A `const` whose body is not foldable is a load-time error with a pointer to the offending sub-expression.
+3. **Bounded fold** (when body is present). The body — any pure expression (condition 2) — must evaluate to a value within the fold budget (`step_cap`). See §Foldability below. Non-termination / over-budget / a dependency cycle is a load-time error naming the const.
 
 The same foldability check applies to **every anthill-side body** that fills the obligation — whether it is the declaration body, or a body supplied later via an `Implementation` fact's rule clauses. Host-language `Implementation`s (Rust / Scala / C++) waive the check, since the kernel cannot inspect their body; the resulting `Constant` reflection fact (see §Reflection) is omitted in the host-language case until codegen has produced a folded literal it can echo back.
 
-#### Foldable subset
+#### Foldability — pure + bounded (no syntactic subset) — decided 2026-06-15 (Open Question A)
 
-A body is **foldable** iff it lies in the following closed grammar, evaluated by proposal 026's evaluator in *fold mode* (no environment, no allocation, no effects):
+A body is foldable iff it **evaluates to a value, purely, within the fold budget**. There is **no closed-grammar subset**: the body may be any expression the real evaluator (WI-179's iterative evaluator) accepts — `let`, `match`, recursion, calls to other pure operations, entity construction, references to other `const`s — provided:
 
-- **Literals** of the primitive sorts: `Int64`, `BigInt`, `Float`, `String`, `Bool`, `Char`.
-- **References** to other `const`-declared names whose own bodies are foldable. (Forward references across files are allowed within one load pipeline pass; see §Cycle detection.)
-- **Calls to operations whose declared effect row is empty** *and* whose body is itself foldable. This recursively excludes allocators (`Cell.new`, `Map.empty`, `Substitution.empty`) since they carry `Modify[result]` per 027.1.
-- **Entity construction** with foldable arguments — `Point(x: 1.0, y: 2.0)` is foldable; an entity field set to a Cell or arena handle is not.
+- **Purity** — an empty declared effect row (condition 2). This recursively excludes allocators (`Cell.new`, `Map.empty`, `Substitution.empty`), which carry `Modify[result]` per 027.1, and any call into an effectful operation. Purity is what makes the const referentially transparent and therefore safe to memoize (§Design revision decision 3). A body that does not reduce to a value (e.g. free logical variables `?`/`?name`, an unresolved name) simply fails to fold.
+- **Termination within budget** — folding runs the real evaluator under the `step_cap` runaway guard (WI-179). A body that does not reduce to a value within the cap (non-terminating, or pathologically expensive) is a load-time error ("const X exceeded the fold budget"), naming the const.
 
-Explicitly **not** foldable: logical variables (`?`, `?name`); operation calls with any declared effect; expressions that depend on the evaluator's activation stack (let-bindings inside a body — discussed under §Open Questions whether to admit); KB queries; pattern matching (use the long-form operation if you need it).
+Rationale: the earlier closed-grammar "subset" (literals + prim ops + const-refs + entity construction) was a *static over-approximation* of "evaluable at load." Reusing the real evaluator + `step_cap` expresses the same intent directly, **dissolves** the old "are let-bindings in the subset?" question (the evaluator handles `let`/`match`/recursion natively), and avoids maintaining a second, drift-prone fold-only evaluator. The only static gate is purity; termination is a dynamic, budgeted check.
 
-Implementation note: fold mode is a designated entry point on proposal 026's evaluator that returns `Result<Value, FoldError>` instead of the streaming `LogicalStream`. The check is *static* — no runtime branch reads the value; foldability failure is a load-time diagnostic.
+Folding is **eager, at load time**, in reverse-topological order of the const-dependency graph (§Cycle detection); the resulting value is memoized as the `Constant` fact (§Reflection). (A lazy, first-use variant would relax the load-time termination requirement but lose compile-time-known values — out of scope; see §Design revision decision 3.)
 
 #### Cycle detection
 
@@ -144,28 +154,33 @@ Cross-namespace forward refs are allowed (the dependency graph is built over the
 
 For declaration-with-body `const`, the `Constant(name, type, value)` fact is asserted at the end of fold-mode execution for that declaration — i.e. once during load, in topological order.
 
-For bodyless `const` declarations filled by an `Implementation` fact, the fact is asserted **at Implementation pairing**: when the loader pairs an `Implementation[S]` fact with the obligation `S.NAME`, it re-runs fold mode over the supplied rule body. Success asserts the `Constant` fact; failure rejects the Implementation.
+For bodyless `const` declarations filled by an `Implementation` fact, the fact is asserted **at Implementation pairing**: when the loader pairs an `Implementation[S]` fact with the obligation `S.NAME`, it re-runs the foldability check (§Foldability) over the supplied rule body. Success asserts the `Constant` fact; failure rejects the Implementation.
 
 Under proposal 037's profile-keyed Implementations, multiple Implementations may coexist (one per profile). Each emits its own `Constant` fact keyed by profile — the reflection schema is `Constant(name, type, value, profile)` (profile defaults to a `default` symbol when the Implementation does not declare one). The load-time selector picks one Implementation per profile and binds the corresponding `Constant` for downstream queries.
 
-### Call-site sugar — bare for empty-row 0-arg, parens for everything else
+### Call-site semantics — `const` is its value; operations are first-class; `()` applies (decided 2026-06-15)
 
-In term position, an identifier `Name` resolves to a 0-arg operation call when `Name` denotes an operation whose **declared effect row is empty** (no `effects` clause, or `effects ()`). For 0-arg operations with any declared effect, the explicit `Name()` form is required.
+> **Scope:** 039 normatively specifies only the **`const`** (value-binding) semantics here. The **operation** bullet — bare operation as a first-class function value, `()` as uniform application — is **deferred** to [`future/first-class-operations.md`](future/first-class-operations.md) and shown here only for the composed picture. Until it lands, operations keep today's `g()` invocation.
 
-`Name` covers both short names (`BROADCAST_CHANNEL`, `zero-val`) and qualified paths (`PersistentMap.empty`, `anthill.prelude.Numeric.zero-val`). The resolver's existing dotted-path lookup runs first; the call-site sugar then applies uniformly to whatever symbol the path resolves to. As of today, a qualified bare form like `PersistentMap.empty` (no parens) is reported as an unresolved name (the dotted-path resolver returns the operation symbol but the term-position rule expects a value); Phase 2 lifts both short and qualified bare forms in one go.
+`()` is **uniformly application/invocation**. A bare name is the value it denotes; for an `operation` that value is the operation itself as a **first-class function** (runtime `Value::OpRef`), and for a `const` it is the bound (memoized) value.
+
+- **Operation `f`** — `f` is the function value; `f(args)` applies it; a 0-arg op `g` is invoked `g()` (apply to the unit tuple `()`). Effects ride on the function value and are paid at application, so there is no pure-vs-effectful special case at the call site. Operations are thus passable to HOFs directly: `map(xs, increment)` (no lambda wrapper). `kb()` keeps invoking the ambient-KB op; bare `kb` is now *the function* `() -> KB`, not the KB.
+- **Non-function const `K: Int64 = -1`** — `K` *is* `-1`. `K()` = "apply `-1` to `()`" = a **type error**. You write `K`, never `K()`.
+- **Function const `f: (A) -> B`** — `f` is the function value; `f(a)` applies it (identically to a function-typed parameter, WI-275/441); `f()` applies to the unit tuple (a type error for a unary `f`).
+- **Nullary-function const `g: () -> B`** — a **thunk**: `g` is the suspended function, `g()` forces it (applies to `()`). So `g ≠ g()`. (Const memoization builds the closure once; each `g()` still runs — see Design revision decision 3.)
+
+This composes with the tuple model rather than adding syntax: `f(a, b)` applies to `(a, b)`, `f()` applies to the zero-element tuple `()` (unit) — no separate "zero arguments" concept.
+
+**Bare-name resolution (Open Question B, decided 2026-06-15 — ambiguity is an error).** A `const` and a bare operation reference are both value-denoting candidates that join the **same candidate set** the resolver already arbitrates for bare names (locals, ADT variants via *variant exposure*; kernel-language §6). No precedence ladder: scope-nearest wins; a same-step tie of ≥2 candidates (e.g. a `const nil` and `List.nil` in scope) is an **ambiguous error** — qualify (`List.nil`) to disambiguate. This is §6's existing ambiguity rule (≥2 distinct symbols at a step = load/query error); the only spec addition is that `const`s and bare operation references are value-denoting in term position. No new precedence text.
 
 ```anthill
-set_channel(em, BROADCAST_CHANNEL)        -- bare; BROADCAST_CHANNEL is a 0-arg op with empty row (a const)
-let c = Cell.new(0)                        -- parens required: Cell.new has effects Modify[result] (027.1)
-let m = Map.empty()                        -- parens required: Map.empty has effects Modify[result] (027.1)
-let zv = anthill.prelude.Numeric.zero-val  -- bare; zero-val is a 0-arg op with empty row
+set_channel(em, BROADCAST_CHANNEL)         -- BROADCAST_CHANNEL is the Int64 -1 (a const value binding)
+map(xs, increment)                          -- pass the operation directly as a function value, no lambda
+let k  = kb()                               -- invoke the 0-arg op; bare `kb` would be the function () -> KB
+let c  = Cell.new(0)                        -- Cell.new is an operation: invoke with (); effect paid here (027.1)
 ```
 
-This is broader than constants — it's a property of 0-arg operations with empty rows generally. `const`-declared names ride on the same rule. Cf. Scala 3's `def x = 42` (parenless) vs `def x() = 42`; the opposite of Eiffel's uniform-access principle, which hides effects and is widely cited as the wrong call.
-
-The rule applies to the **declared** effect row, not to the inferred body-flow row. A 0-arg op declared `effects ()` whose body calls `Cell.new` is still bare-callable at the use site — the discrepancy between declared and inferred row is a separate diagnostic (proposal 045) and not this proposal's concern.
-
-A row-polymorphic declaration (`effects ?E` with `E` unbound) is **not** an empty row; such ops require parens. This is conservative — if a future caller could instantiate `?E` to a non-empty set, the call site shouldn't be bare.
+This **drops** the proposal's earlier "parenless 0-arg-op invocation": a 0-arg op is invoked with `()`. To expose a bare *value*, declare a `const`; to expose a *computation*, declare an `operation`. The earlier "the parens form still works for any operation" statement is replaced by "`()` is application." (The Eiffel uniform-access principle — hiding effects behind a uniform syntax — is deliberately *not* followed: a `const` is a transparent value, an `operation` is an explicit call.)
 
 ### Reflection
 
@@ -277,7 +292,7 @@ operation new(v: V) -> Cell
   effects Modify[result]
 ```
 
-Their declared effect row is non-empty, so the §Validator rejects them as `const` bodies and the §Call-site sugar requires parens. `const COUNTER: Cell[Int64] = Cell.new(0)` is a load-time error: "body calls operation `Cell.new` with non-empty effect row `{Modify[result]}` — not foldable."
+Their declared effect row is non-empty, so the §Validator rejects them as `const` bodies (and `Cell.new` is an operation, invoked with `()`). `const COUNTER: Cell[Int64] = Cell.new(0)` is a load-time error: "body calls operation `Cell.new` with non-empty effect row `{Modify[result]}` — not foldable."
 
 This is the intended result. A const denotes value-level referential transparency: two reads of the same const are observationally indistinguishable. An allocator violates that — two reads of a load-time-initialised cell are the *same handle*, but the user-level semantics ("this constant has identity, mutating it from one site changes the other") rarely matches what a reader of `const COUNTER: ...` expects. If a load-time singleton is genuinely wanted, declare the operation explicitly:
 
@@ -314,15 +329,18 @@ The following were open in earlier drafts and are now settled:
 
 ## Open questions
 
-These are the live questions surfaced in the cleanup pass; the proposal can land Phase 1+2 without resolving them, but Phase 3+4 are blocked until they are.
+All four were **resolved 2026-06-15** (see the per-item notes below and the *Design revision* at the top). They were surfaced in the 2026-05-28 cleanup pass and gated Phase 3+4; that gate is now lifted.
 
-A. **Foldable-subset boundary — let-bindings in const bodies?** §Foldable subset currently excludes let-bindings inside a body (they require the evaluator's activation stack). But `const TWO_PI: Float = 2.0 * PI` already requires the evaluator to consult the const-environment. Letting `const X: Float = { let p = PI; 2.0 * p }` work is a small extension if the foldable subset is "literals + prim ops + const-refs + entity construction + let over the same." Decide before Phase 3.
+A. **Foldable-subset boundary — let-bindings in const bodies? — RESOLVED 2026-06-15: there is no subset.** Foldability is now "pure + evaluates to a value within `step_cap`," run by the real evaluator (§Foldability). `let` / `match` / recursion are handled natively, so the let-binding question dissolves; e.g. `const X: Float = { let p = PI; 2.0 * p }` just folds. The only static gate is purity (empty declared row); termination is a budgeted dynamic check; dependency cycles are caught by §Cycle detection. This also drops the bespoke "fold-mode" evaluator in favour of reusing WI-179's.
 
-B. **Bare-name precedence vs ADT-variant resolution.** Kernel-language §6 (around line 1419-1423) declares bare names like `Open` may resolve to an ADT variant (`WorkStatus.Open`) and explicitly prefers "ambiguous error" over silent wins. Phase 2 adds 0-arg-op call as a new candidate. When the same bare name has both a 0-arg-op-with-empty-row and an ADT-variant binding in scope, what does the resolver do — ambiguous error, or new precedence rule? The cleanest answer is "ambiguous error" — but that breaks any name that happens to collide (e.g. `nil` as an ADT variant of `List` and as a 0-arg op somewhere else).
+B. **Bare-name precedence vs ADT-variant resolution. — RESOLVED 2026-06-15: ambiguity-is-an-error, no precedence ladder.** Kernel-language §6 declares bare names like `Open` may resolve to an ADT variant (`WorkStatus.Open`, via *variant exposure*) and a step resolving to ≥2 distinct symbols is an ambiguous load/query error. The decision: a `const` (and a bare operation reference, now a first-class function value) simply **joins that existing candidate set** — it is *not* a new precedence question. Scope-nearest still wins; a same-step tie (e.g. `const nil` and `List.nil` both in scope) is an ambiguous error you fix by qualifying. The blast radius (a colliding bare name like `nil` becoming ambiguous) is the pre-existing cost of *any* two same-short-name symbols, not new to const. Needs no new §6 precedence text — only one sentence making `const`s and bare operation references value-denoting in term position. See §Call-site semantics for the full statement (and the related value-semantics / first-class-operation decisions in the *Design revision 2026-06-15*).
 
-C. **Foldability of Implementation-supplied bodies — host-language case.** §Validator says host-language `Implementation`s waive the foldability check and the `Constant` fact emission is deferred to codegen echo-back. But codegen doesn't always run in the same load cycle (e.g. spec-only verification mode). Specify whether `Constant` is asserted at codegen-completion or whether a separate trust marker (e.g. `TrustedConstant`) is asserted at Implementation-pairing pending codegen confirmation.
+C. **Foldability of Implementation-supplied bodies — host-language case. — RESOLVED 2026-06-15: reuse the realization obligation lifecycle.** A bodyless host-supplied `const` (value from the host, e.g. `webots::…::CHANNEL_BROADCAST`) is just a realization obligation (`Implementation`/`Obligation`/`CarrierBinding`), so it rides that lifecycle rather than a const-specific trust path:
+   - **spec-only mode** (no codegen): assert the obligation `TrustedConstant(name, type[, profile])` (type known, value pending); uses of the const stay **symbolic** — typed against `T`, not folded to a literal. Correct for spec verification (reason about the type + that a host supplies it).
+   - **codegen**: when it echoes back the host value, **discharge** to the full `Constant(name, type, value, profile)`.
+   This composes with §Foldability: anthill-bodied consts fold eagerly at load (value known); host-bodied consts ride the obligation track until codegen. `TrustedConstant` *is* the obligation; `Constant` *is* the realized fact — no new mechanism.
 
-D. **Profile-keyed `Constant` reflection — concrete schema.** §Validator → `Constant` fact lifecycle proposes `Constant(name, type, value, profile)`. The kernel-language spec doesn't yet have a "current profile" concept the resolver can scope a query against — KB queries match `Constant(name: "X", ?)` and get all profile variants. Confirm this is the wanted semantics (downstream consumer filters), or whether the resolver should pre-filter by an ambient profile binding.
+D. **Profile-keyed `Constant` reflection — concrete schema. — RESOLVED 2026-06-15: downstream-filter, no ambient profile.** This is the host-supplied axis of C: an **anthill-bodied** const has one profile-independent value (pure body, folded once) → `profile = default`, single fact; a **host-supplied** const is the only one that can differ per target → per-profile `Constant(name, type, value, profile)` facts emitted as each profile's `Implementation` discharges. Queries match `Constant(name: "X", ?)` and get all profile variants; the **consumer filters**. No "current profile" concept is added to the resolver/typer — that is a broad new ambient context, and the driving case (lf1 webots) is single-profile, so it would be speculative. Revisit only when a genuine multi-profile const appears.
 
 ## Migration / phasing
 
@@ -332,12 +350,12 @@ Each phase lands independently with its own tests, except where a phase depends 
 
 Independent of any other in-flight proposal.
 
-**Phase 2 — call-site sugar.** Extend the resolver: an identifier in term position that resolves to a 0-arg op with empty declared effect row is treated as a call. Test that bare `BROADCAST_CHANNEL` works at use sites; the parens form still works for any operation; ops with any declared effect still require parens.
+**Phase 2 — call-site value-denotation.** Extend the resolver: a bare `const` reference denotes its (memoized) value; a bare `operation` reference denotes the operation as a first-class function value (`Value::OpRef`); `()` is application/invocation. Tests: bare `BROADCAST_CHANNEL` is its value; `map(xs, increment)` passes an op without a lambda; `f(a)` applies a function-valued const; `g()` forces a nullary-function const (`g ≠ g()`); `K()` on a non-function const is a type error; `kb()` still invokes; a same-step tie of ≥2 value-denoting candidates is an ambiguous load error.
 
-Precondition: Open Question B (bare-name precedence vs ADT-variant resolution) is resolved.
+Open Question B is resolved (see Open questions); no remaining precondition. NOTE: the "bare operation = first-class function value" half is a language-wide addition (runtime `Value::OpRef` exists; source-level eta + effect-row-on-op-value needs typer wiring) and may be split into its own proposal (see *Design revision 2026-06-15*).
 
 **Phase 3 — validator.** Add the foldability check at load time. Land:
-- The foldable-subset checker (§Foldable subset).
+- The foldability check (§Foldability): the purity gate + `step_cap`-bounded eager fold via the real evaluator (WI-179) — no separate fold-only evaluator.
 - Cycle detection over the const-dependency graph (§Cycle detection).
 - `Constant` reflection-fact emission (§Validator → `Constant` fact lifecycle).
 - The same check applied at `Implementation`-pairing for bodyless consts.
