@@ -6590,15 +6590,7 @@ impl<'a> Loader<'a> {
             };
             // A projection's receiver is a VALUE; a namespace / sort head is a qualified
             // sort ref, handled by the normal `remap_name` path (return `None`).
-            let is_value_head = matches!(
-                self.kb.symbols.get(resolved),
-                SymbolDef::Resolved {
-                    kind: SymbolKind::Param | SymbolKind::Field | SymbolKind::LocalLet
-                        | SymbolKind::OpResult | SymbolKind::CallbackParam | SymbolKind::CallbackResult,
-                    ..
-                }
-            );
-            if !is_value_head {
+            if !self.symbol_is_value_place(resolved) {
                 // WI-428: a TYPE head — a rigid type-parameter (`P.Key`) or a sort
                 // (`MemStore.Key`) — classifies as a `RigidTypeProjection`, the
                 // type-keyed sibling of `ExprCarried` (design §5.3). Two-segment only;
@@ -6650,6 +6642,90 @@ impl<'a> Loader<'a> {
                 self.kb.make_expr_carried_occ(receiver, member_sym, span, owner),
             ))
         }
+    }
+
+    /// Is `sym` a VALUE PLACE — a param / field / local / op-result / callback
+    /// binder? This is the value-vs-sort discriminator the three value-in-type
+    /// classifiers share (the single-segment `denoted` arm, the compound `denoted`
+    /// path [`Self::try_denoted_value_path`], and the type-projection head in
+    /// [`Self::try_expr_carried_projection`]) — ONE source of truth so the set cannot
+    /// drift between copies. NB the SINGLE-segment denoted arm additionally treats a
+    /// zero-arg `Operation` as a value (WI-313 ambient-KB accessor — `Modify[op]`); a
+    /// field path projected off an operation NAME is not a value place, so the
+    /// compound heads here deliberately omit `Operation`.
+    fn symbol_is_value_place(&self, sym: Symbol) -> bool {
+        matches!(
+            self.kb.symbols.get(sym),
+            SymbolDef::Resolved {
+                kind: SymbolKind::Param | SymbolKind::Field | SymbolKind::LocalLet
+                    | SymbolKind::OpResult | SymbolKind::CallbackParam | SymbolKind::CallbackResult,
+                ..
+            }
+        )
+    }
+
+    /// WI-302 (proposal 027.1 per-projection): classify a MULTI-segment dotted name
+    /// in a type-argument slot whose HEAD resolves (in scope) to a VALUE and whose
+    /// last segment is a VALUE FIELD (lowercase) — `Modify[result.a]`,
+    /// `Modify[c.contents]` — as a value-in-type DENOTED PLACE: the value `c.contents`
+    /// (the field-access chain) indexing the effect/type. This is the COMPOUND peer of
+    /// the single-segment `denoted` value-in-type (the `is_value` arm below) and the
+    /// lowercase-last twin of [`Self::try_expr_carried_projection`]'s uppercase-last
+    /// TYPE projection. Without it, `type_expr_to_child_inner`'s `remap_name` fallback
+    /// joins the segments into an unresolvable `"c.contents"` and emits a stray
+    /// `unresolved name` diagnostic (the silent-skip the loud-error principle forbids).
+    ///
+    /// Returns `None` when the head is NOT a value (a qualified sort ref / namespace
+    /// path, or an unresolved name) so the caller falls back to the normal path — the
+    /// same value-head discriminator the projection sibling uses. The whole segment
+    /// path (including the last) is a value field access, so unlike the projection it
+    /// has no separate "member"; the value occurrence carries every `.field` segment.
+    fn try_denoted_value_path(
+        &mut self,
+        name: &Name,
+        span: SourceSpan,
+        owner: Option<Symbol>,
+    ) -> Option<node_occurrence::TypeChild> {
+        let segs = &name.segments;
+        let head_name = self.parsed.symbols.name(segs[0]).to_owned();
+        // A let / lambda / match LOCAL is a value head (mirrors the projection sibling);
+        // otherwise the head must resolve to a value binder. A namespace / sort head is
+        // a qualified ref, left to the normal path (`None`).
+        let head_sym = if let Some(local) = self.lookup_local_name(&head_name) {
+            local
+        } else {
+            let resolved = match self.kb.symbols.resolve_in_scope(&head_name, self.current_scope.raw()) {
+                ResolveResult::Found(s) => s,
+                _ => return None,
+            };
+            if !self.symbol_is_value_place(resolved) {
+                return None;
+            }
+            resolved
+        };
+        // Build the value field-access path over ALL segments (`Ref(head)` then a
+        // `.field` `DotApply` per remaining segment), then wrap it in a `denoted`
+        // occurrence — the value indexing the type. The field names are interned raw;
+        // the access resolves at the elimination/eval site (the v1 representation, like
+        // the single-ref `denoted` carrier).
+        let mut value = NodeOccurrence::new_expr(Expr::Ref(head_sym), span, owner);
+        for &field_seg in &segs[1..] {
+            let field_name = self.parsed.symbols.name(field_seg).to_owned();
+            let field_sym = self.kb.intern(&field_name);
+            value = NodeOccurrence::new_expr(
+                Expr::DotApply {
+                    receiver: value,
+                    name: field_sym,
+                    pos_args: Vec::new(),
+                    named_args: Vec::new(),
+                },
+                span,
+                owner,
+            );
+        }
+        Some(node_occurrence::TypeChild::Node(
+            self.kb.make_denoted_occ(value, span, owner),
+        ))
     }
 
     /// WI-428: the LOGICAL sort qualified name behind a resolved symbol that may be
@@ -6848,6 +6924,15 @@ impl<'a> Loader<'a> {
                     if let Some(child) = self.try_expr_carried_projection(name, span, owner) {
                         return child;
                     }
+                    // WI-302 (proposal 027.1): a value FIELD-access path (`result.a`,
+                    // `c.contents`, lowercase last segment off a value head) is a
+                    // value-in-type DENOTED place — the compound peer of the
+                    // single-segment `denoted` below. Classify it before `remap_name`,
+                    // which would otherwise join the segments into an unresolvable
+                    // `"c.contents"` and emit a stray `unresolved name`.
+                    if let Some(child) = self.try_denoted_value_path(name, span, owner) {
+                        return child;
+                    }
                 }
                 let sort_sym = self.remap_name(name);
                 let short_name = self.kb.resolve_sym(sort_sym).to_owned();
@@ -6862,16 +6947,14 @@ impl<'a> Loader<'a> {
                 // WI-302/WI-313: a name resolving to a VALUE in a type slot is
                 // value-in-type (`Modify[c]`) — the `denoted` source. Mint it as
                 // a `Value::Node` occurrence rather than the ground `make_denoted`.
-                let is_value = matches!(
-                    self.kb.symbols.get(sort_sym),
-                    SymbolDef::Resolved {
-                        kind: SymbolKind::Param | SymbolKind::Field | SymbolKind::Operation
-                            // WI-352: operation-frame places are value-binders too
-                            // (`Modify[result]` / `Modify[f.a]` denote values).
-                            | SymbolKind::OpResult | SymbolKind::CallbackParam
-                            | SymbolKind::CallbackResult | SymbolKind::LocalLet, ..
-                    }
-                );
+                // Shared value-place set + a zero-arg `Operation` (the WI-313
+                // ambient-KB accessor `Modify[op]`, value-producing) — the one kind
+                // the compound-path heads omit (a field off an op name is not a place).
+                let is_value = self.symbol_is_value_place(sort_sym)
+                    || matches!(
+                        self.kb.symbols.get(sort_sym),
+                        SymbolDef::Resolved { kind: SymbolKind::Operation, .. }
+                    );
                 if is_value {
                     node_occurrence::TypeChild::Node(
                         self.kb.make_denoted_occ_ref(sort_sym, span, owner),

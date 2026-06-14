@@ -228,6 +228,185 @@ end
 }
 
 #[test]
+fn modify_compound_value_path_in_effects_is_denoted() {
+    // WI-302 (proposal 027.1 per-projection): a COMPOUND value field-access in a
+    // type-argument slot — `effects Modify[b.contents]`, where `b` is a value
+    // parameter and `contents` a lowercase value FIELD — lowers to
+    // `denoted(value: b.contents)`, the field-access value indexing the effect. The
+    // lowercase last segment makes it a value place (NOT a type projection / ExprCarried,
+    // which is the uppercase-last sibling). Before the fix the loader joined the segments
+    // into an unresolvable `"b.contents"` and emitted a stray `unresolved name`.
+    use anthill_core::kb::node_occurrence::{Expr, NodeKind, TypeChild, TypeNode};
+
+    let kb = load_with_stdlib(r#"
+namespace test.wi302.compound
+  import anthill.prelude.{Int64}
+
+  sort Box
+    sort T = ?
+    entity box(contents: T)
+  end
+
+  operation touch(b: Box) -> Int64
+    effects Modify[b.contents]
+end
+"#);
+
+    let sym = kb.try_resolve_symbol("test.wi302.compound.touch").expect("touch symbol");
+    let effects = anthill_core::kb::op_info::lookup_operation_info(&kb, sym)
+        .expect("OperationInfo for touch")
+        .effects;
+    assert_eq!(effects.len(), 1, "expected one effect (Modify[b.contents])");
+
+    let occ = match &effects[0] {
+        anthill_core::eval::Value::Node(o) => o,
+        other => panic!("Modify[b.contents] should be a value-carried Node label, got {other:?}"),
+    };
+    let bindings = match &occ.kind {
+        NodeKind::Type(TypeNode::Parameterized { bindings, .. }) => bindings,
+        other => panic!("expected a parameterized Type carrier, got {other:?}"),
+    };
+    assert_eq!(bindings.len(), 1, "Modify[b.contents] has one binding");
+
+    let binding_node = match &bindings[0].1 {
+        TypeChild::Node(n) => n,
+        TypeChild::Ground(g) => panic!(
+            "binding value must be a denoted Node, got ground term {:?}",
+            kb.get_term(*g),
+        ),
+    };
+    let denoted_value = match &binding_node.kind {
+        NodeKind::Type(TypeNode::Denoted { value }) => value,
+        other => panic!("compound value path `b.contents` must lower to denoted, got {other:?}"),
+    };
+    // The denoted value is the field-access chain `b.contents` = DotApply{Ref(b), contents}.
+    match &denoted_value.kind {
+        NodeKind::Expr { expr: Expr::DotApply { receiver, name, pos_args, named_args }, .. } => {
+            assert!(pos_args.is_empty() && named_args.is_empty(), "a field access has no call args");
+            assert_eq!(kb.resolve_sym(*name), "contents", "outer access is `.contents`");
+            match &receiver.kind {
+                NodeKind::Expr { expr: Expr::Ref(s), .. } => {
+                    assert_eq!(kb.resolve_sym(*s), "b", "receiver of `.contents` is Ref(b)")
+                }
+                other => panic!("expected Ref(b) as the receiver, got {other:?}"),
+            }
+        }
+        other => panic!("expected DotApply(Ref(b), contents) inside denoted, got {other:?}"),
+    }
+}
+
+#[test]
+fn compound_value_path_denoted_lowers_to_term_twin() {
+    // WI-302 / WI-390 lossless lowering: the compound denoted's `DotApply` value
+    // lowers to its `dot_apply` term twin (no `⊥` / debug-panic), ISOMORPHIC to the
+    // occurrence under the WI-425 view — so a compound-denoted-bearing type round-
+    // trips the term store (residual / dedup key / persistence) faithfully, like the
+    // single-`Ref` denoted already does.
+    use anthill_core::eval::Value;
+    use anthill_core::kb::node_occurrence::{occurrence_to_term, NodeKind, TypeChild, TypeNode};
+    use anthill_core::kb::term_view::{views_structurally_equal, TermIdView};
+
+    let mut kb = load_with_stdlib(r#"
+namespace test.wi302.lower
+  import anthill.prelude.{Int64}
+  sort Box
+    sort T = ?
+    entity box(contents: T)
+  end
+  operation touch(b: Box) -> Int64
+    effects Modify[b.contents]
+end
+"#);
+    let sym = kb.try_resolve_symbol("test.wi302.lower.touch").expect("touch symbol");
+    // Extract the `b.contents` denoted VALUE occurrence (the DotApply chain).
+    let value_occ = {
+        let effects = anthill_core::kb::op_info::lookup_operation_info(&kb, sym)
+            .expect("OperationInfo for touch")
+            .effects;
+        let occ = match &effects[0] {
+            Value::Node(o) => std::rc::Rc::clone(o),
+            other => panic!("Modify[b.contents] should be a Node label, got {other:?}"),
+        };
+        let bindings = match &occ.kind {
+            NodeKind::Type(TypeNode::Parameterized { bindings, .. }) => bindings.clone(),
+            other => panic!("expected parameterized carrier, got {other:?}"),
+        };
+        match &bindings[0].1 {
+            TypeChild::Node(n) => match &n.kind {
+                NodeKind::Type(TypeNode::Denoted { value }) => std::rc::Rc::clone(value),
+                other => panic!("expected denoted, got {other:?}"),
+            },
+            TypeChild::Ground(g) => panic!("expected a denoted Node, got ground {:?}", kb.get_term(*g)),
+        }
+    };
+    // Lower the DotApply value to its term twin (must NOT panic / reify to bottom).
+    let term = occurrence_to_term(&mut kb, &value_occ);
+    // The twin is isomorphic to the occurrence under the WI-425 view — same dot_apply
+    // head, keys, and `b.contents` children — so cross-carrier discrim agrees.
+    assert!(
+        views_structurally_equal(&kb, &TermIdView(term), &Value::Node(std::rc::Rc::clone(&value_occ))),
+        "lowered `b.contents` term must be isomorphic to its DotApply occurrence; term = {:?}",
+        kb.get_term(term),
+    );
+}
+
+#[test]
+fn compound_value_path_effect_rekeys_at_call_site() {
+    // WI-302 downstream consistency: a callee's COMPOUND value-in-type effect
+    // `Modify[d.contents]` must RE-KEY to the caller's argument at the call site
+    // (`d -> c`), exactly like the single-segment `Modify[d] -> Modify[c]`. The
+    // caller declaring the re-keyed `Modify[c.contents]` then loads clean. Without
+    // the DotApply-aware `rewrite_ref_expr` re-key, the un-substituted
+    // `Modify[d.contents]` would fail to unify with the declared `Modify[c.contents]`
+    // and surface as a SPURIOUS undeclared effect.
+    let ok = r#"
+namespace test.wi302.rekey
+  import anthill.prelude.{Int64}
+  sort Box
+    sort T = ?
+    entity box(contents: T)
+  end
+  operation poke(d: Box) -> Box effects Modify[d.contents]
+  operation wrap(c: Box) -> Box effects Modify[c.contents] = poke(c)
+end
+"#;
+    let res = try_load_with_stdlib(ok);
+    assert!(
+        res.is_ok(),
+        "compound value-path effect must re-key d->c at the call site and unify with the \
+         declared Modify[c.contents]; got: {:?}",
+        res.err(),
+    );
+}
+
+#[test]
+fn compound_value_path_undeclared_effect_is_named() {
+    // The undeclared compound effect must surface LOUDLY and NAME the field path
+    // (`c.contents`), not the bare `?` — `denoted_value_display` renders the DotApply
+    // value. (Also confirms the re-key path is real: the effect IS incurred and checked.)
+    let bad = r#"
+namespace test.wi302.undecl
+  import anthill.prelude.{Int64}
+  sort Box
+    sort T = ?
+    entity box(contents: T)
+  end
+  operation poke(d: Box) -> Box effects Modify[d.contents]
+  operation wrap(c: Box) -> Box = poke(c)
+end
+"#;
+    let errs = try_load_with_stdlib(bad)
+        .err()
+        .expect("an undeclared Modify[c.contents] must be rejected");
+    let msgs: Vec<String> = errs.iter().map(|e| e.to_string()).collect();
+    assert!(
+        msgs.iter().any(|m| m.contains("c.contents")),
+        "the undeclared-effect diagnostic must name the field path `c.contents` (not `?`); \
+         got: {msgs:?}",
+    );
+}
+
+#[test]
 fn wi342_e2_modify_c_loads_value_carried() {
     // WI-342 E2 / WI-348 (value-fact payoff): an operation declaring
     // `effects Modify[c]` (where `c` is a value-parameter) is the canonical

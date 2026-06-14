@@ -1184,12 +1184,25 @@ fn type_display_name_value(kb: &KnowledgeBase, v: &Value) -> String {
 /// carried value; `parameterized` shows `base[p = v, …]`; `effects_rows` shows
 /// `{…}`) so a declared label and a structurally-equal actual label compare
 /// equal regardless of which carrier each rode in on.
+/// Render a `denoted`'s carried VALUE occurrence to a display string: a single
+/// `Ref(c)` shows `c`; a WI-302 field path `DotApply(Ref(c), contents)` shows
+/// `c.contents` (recursing the receiver spine), so a diagnostic naming a compound
+/// value-in-type label is legible instead of the bare `?`. Mirrors how
+/// `persistence::print` renders the same occurrence (the carrier-paired-display
+/// contract). An unrecognized carried shape stays `?`.
+fn denoted_value_display(kb: &KnowledgeBase, occ: &Rc<NodeOccurrence>) -> String {
+    match &occ.kind {
+        NodeKind::Expr { expr: Expr::Ref(s), .. } => kb.resolve_sym(*s).to_string(),
+        NodeKind::Expr { expr: Expr::DotApply { receiver, name, .. }, .. } => {
+            format!("{}.{}", denoted_value_display(kb, receiver), kb.resolve_sym(*name))
+        }
+        _ => "?".to_string(),
+    }
+}
+
 fn type_display_name_occ(kb: &KnowledgeBase, occ: &Rc<NodeOccurrence>) -> String {
     match &occ.kind {
-        NodeKind::Type(TypeNode::Denoted { value }) => match &value.kind {
-            NodeKind::Expr { expr: Expr::Ref(s), .. } => kb.resolve_sym(*s).to_string(),
-            _ => "?".to_string(),
-        },
+        NodeKind::Type(TypeNode::Denoted { value }) => denoted_value_display(kb, value),
         NodeKind::Type(TypeNode::Parameterized { base, bindings }) => {
             let base_name = type_child_display_name(kb, base);
             if bindings.is_empty() {
@@ -12225,9 +12238,23 @@ fn unify_denoted_view<A: TermView, B: TermView>(kb: &mut KnowledgeBase, a: &A, b
                 _ => false,
             }
         }
-        // A non-`Ref` carried value that is not a plain binder reference
-        // (a nested apply, a literal) is not yet comparable — refuse.
-        _ => false,
+        // WI-302: a non-`Ref` carried value — a COMPOUND value FIELD-PATH
+        // (`c.contents` / `result.a`, a `DotApply` chain) — compares by STRUCTURAL
+        // equality of the two carried value occurrences. The value is opaque (it
+        // INDEXES the type; there is no binding to unify, exactly as the `sa == sb`
+        // Ref arm is plain identity), so two such denoteds are the same type iff their
+        // value paths are structurally identical — `Modify[c.contents]` unifies with
+        // `Modify[c.contents]` but not `Modify[d.contents]`. (A literal carried value
+        // compares structurally too; a bound-name nested apply still needs alpha-aware
+        // comparison — deferred, and `views_structurally_equal` conservatively refuses
+        // it, never a wrong accept.)
+        _ => {
+            let value_key = kb.intern("value");
+            match (a.named_arg(kb, value_key), b.named_arg(kb, value_key)) {
+                (Some(va), Some(vb)) => views_structurally_equal(kb, &va, &vb),
+                _ => false,
+            }
+        }
     }
 }
 
@@ -12308,8 +12335,9 @@ fn occ_contains_var(kb: &KnowledgeBase, vid: VarId, occ: &Rc<NodeOccurrence>) ->
     };
     if let Some(tn) = occ.as_type() {
         return match tn {
-            // A `denoted`'s carried value is an `Expr::Ref` (a value ref), never a
-            // type var, so it cannot capture `vid`.
+            // A `denoted`'s carried value is a VALUE reference — an `Expr::Ref` or a
+            // WI-302 field-access path (`c.contents`, a `DotApply` chain over value
+            // Refs + field names) — never a type var, so it cannot capture `vid`.
             TypeNode::Denoted { .. } => false,
             TypeNode::Parameterized { base, bindings } => {
                 child(kb, base) || bindings.iter().any(|(_, c)| child(kb, c))

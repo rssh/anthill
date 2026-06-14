@@ -2277,6 +2277,34 @@ pub fn try_occurrence_to_term(kb: &mut KnowledgeBase, occ: &Rc<NodeOccurrence>) 
         | Some(Expr::Instantiation { name, pos_args, named_args }) => {
             occ_build_fn(kb, *name, pos_args, named_args)
         }
+        // WI-302 (WI-390 lossless lowering): a value FIELD-PATH (`c.contents`,
+        // the carried value of a compound `denoted`) lowers to its `dot_apply`
+        // term twin — `dot_apply(receiver, name, args: nil)` — built BYTE-IDENTICAL
+        // to the loader's `LoadBuildFrame::DotApply` (same functor, same
+        // `[receiver, name, args]` key order, same nullary-`nil` args list), so the
+        // WI-425 occurrence↔term isomorphism holds and a compound-denoted-bearing
+        // type round-trips through the term store instead of asserting to `⊥`. Only
+        // the ARG-LESS field access is minted in a denoted; an args-bearing dot CALL
+        // stays a non-goal `None` (reified by the `_` arm — not minted here).
+        Some(Expr::DotApply { receiver, name, pos_args, named_args })
+            if pos_args.is_empty() && named_args.is_empty() =>
+        {
+            let recv = occurrence_to_term(kb, receiver);
+            let dot_apply = kb.resolve_symbol("anthill.reflect.Expr.dot_apply");
+            let name_ref = kb.alloc(Term::Ref(*name));
+            let args_nil = build_list_termid(kb, &[]);
+            let (k_receiver, k_name, k_args) =
+                (kb.intern("receiver"), kb.intern("name"), kb.intern("args"));
+            kb.alloc(Term::Fn {
+                functor: dot_apply,
+                pos_args: smallvec::SmallVec::new(),
+                named_args: smallvec::SmallVec::from_slice(&[
+                    (k_receiver, recv),
+                    (k_name, name_ref),
+                    (k_args, args_nil),
+                ]),
+            })
+        }
         Some(Expr::Bottom) | None => kb.alloc(Term::Bottom),
         // Child-bearing / non-goal form: no goal-term shape.
         _ => return None,
@@ -3247,18 +3275,46 @@ fn rewrite_ref_value(value: &Value, map: &std::collections::HashMap<Symbol, Symb
     }
 }
 
-/// Re-key a `denoted`'s carried value when it is an `Expr::Ref(s)` — the only
-/// carried-value shape minted today. A richer carried value (bound-name
-/// reference, nested apply) needs alpha-aware rewrite — deferred with the same
-/// TODO as `unify_denoted_view`; it passes through unchanged for now.
+/// Re-key a `denoted`'s carried value. A single `Expr::Ref(s)` (`Modify[c]`) is
+/// the common shape; WI-302 also mints a `DotApply` FIELD-PATH chain
+/// (`Modify[c.contents]` / `Modify[result.a]`, proposal 027.1), whose head value
+/// `Ref` must be re-keyed exactly like the single-`Ref` case — the field segments
+/// are not values to re-map. So recurse the receiver spine and re-key its head;
+/// the field names pass through. A richer carried value (bound-name reference,
+/// nested NON-field apply) still needs alpha-aware rewrite — deferred with the
+/// same TODO as `unify_denoted_view`; it passes through unchanged.
 fn rewrite_ref_expr(
     occ: &Rc<NodeOccurrence>,
     map: &std::collections::HashMap<Symbol, Symbol>,
 ) -> Rc<NodeOccurrence> {
-    if let NodeKind::Expr { expr: Expr::Ref(s), .. } = &occ.kind {
-        if let Some(&new_sym) = map.get(s) {
-            return NodeOccurrence::new_expr(Expr::Ref(new_sym), occ.span, occ.owner);
+    match &occ.kind {
+        NodeKind::Expr { expr: Expr::Ref(s), .. } => {
+            if let Some(&new_sym) = map.get(s) {
+                return NodeOccurrence::new_expr(Expr::Ref(new_sym), occ.span, occ.owner);
+            }
         }
+        // WI-302: a value field-access path (`c.contents`) — re-key the receiver's
+        // head `Ref` (the value being substituted at the call site); a field access
+        // carries no call args.
+        NodeKind::Expr {
+            expr: Expr::DotApply { receiver, name, pos_args, named_args },
+            ..
+        } if pos_args.is_empty() && named_args.is_empty() => {
+            let new_recv = rewrite_ref_expr(receiver, map);
+            if !Rc::ptr_eq(&new_recv, receiver) {
+                return NodeOccurrence::new_expr(
+                    Expr::DotApply {
+                        receiver: new_recv,
+                        name: *name,
+                        pos_args: Vec::new(),
+                        named_args: Vec::new(),
+                    },
+                    occ.span,
+                    occ.owner,
+                );
+            }
+        }
+        _ => {}
     }
     Rc::clone(occ)
 }
