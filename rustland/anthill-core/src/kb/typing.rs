@@ -11498,6 +11498,19 @@ fn unify_view_structural<A: TermView, B: TermView>(
 /// `Value` carrier route here. Bases unify via the generic [`unify_types`];
 /// bindings are matched by param name (a-side bindings present on the b-side
 /// must unify; b-only bindings are width-ignored).
+/// The base of a parameterized type as a unifiable term (WI-453). A type-param base
+/// — the marked carrier `F` of a `sort Spec[F[T]]`, var-backed by WI-452's
+/// `SortAlias` — resolves to its backing `Var` so the parameterized unify can FILL
+/// it (`F[T=A] ≟ Option[T=X]` ⟹ `F := Option` at a use-site; `F → skolem` at a
+/// def-site, so `F[T=A] ≟ F[T=B]` stays a rigid decomposition). A concrete base
+/// (`Option`, `List`) has no var-target SortAlias and stays `Ref(base)`. Only
+/// reached when the two bases DIFFER (same-functor unify never needs the alias scan).
+fn parameterized_base_term(kb: &mut KnowledgeBase, base: Symbol) -> TermId {
+    let var = resolve_sort_alias(kb, base)
+        .filter(|t| matches!(kb.get_term(*t), Term::Var(Var::Global(_))));
+    var.unwrap_or_else(|| kb.alloc(Term::Ref(base)))
+}
+
 fn unify_parameterized_view<A: TermView, B: TermView>(
     kb: &mut KnowledgeBase,
     subst: &mut Substitution,
@@ -11517,8 +11530,15 @@ fn unify_parameterized_view<A: TermView, B: TermView>(
         TypeExtractor::Parameterized { base, bindings } => (base, bindings),
         _ => return false,
     };
-    let a_base_ty = kb.alloc(Term::Ref(a_base));
-    let b_base_ty = kb.alloc(Term::Ref(b_base));
+    // WI-453 (§5.4): when the two bases DIFFER, a type-param base (the marked
+    // carrier `F`) resolves to its backing Var so `F[T=A] ≟ Option[T=X]` FILLS
+    // `F := Option` (use-site) / skolem-compares (def-site). Same-functor unify
+    // (`List ≟ List`, `F ≟ F`) takes the trivial Ref path — no alias scan.
+    let (a_base_ty, b_base_ty) = if a_base == b_base {
+        (kb.alloc(Term::Ref(a_base)), kb.alloc(Term::Ref(b_base)))
+    } else {
+        (parameterized_base_term(kb, a_base), parameterized_base_term(kb, b_base))
+    };
     if !unify_types(kb, subst, &TermIdView(a_base_ty), &TermIdView(b_base_ty)) {
         return false;
     }
@@ -12073,6 +12093,23 @@ fn walk_type_deep(kb: &mut KnowledgeBase, subst: &Substitution, ty: TermId) -> T
     walk_type_deep_g(kb, subst, ty, false)
 }
 
+/// WI-453 (§5.4 concrete fill): if `functor` is a marked carrier (a type-param with a
+/// `SortAlias → Var`, WI-452) that has FILLED to a CONCRETE sort through `subst`
+/// (`F := Option`), return that sort. An unfilled / abstract / skolemized carrier — the
+/// var resolves to itself, a rigid skolem, or another sort-param — yields `None`, so the
+/// application keeps its symbol functor (def-site decomposition unaffected; the
+/// undischarged fill surfaces as a loud no-instance error at dispatch, not here).
+fn filled_carrier_sort(kb: &KnowledgeBase, subst: &Substitution, functor: Symbol) -> Option<Symbol> {
+    let var_t = resolve_sort_alias(kb, functor)
+        .filter(|t| matches!(kb.get_term(*t), Term::Var(Var::Global(_))))?;
+    let walked = walk_type(kb, subst, var_t);
+    let s = extract_sort_ref_sym(kb, &TermIdView(walked))?;
+    if is_sort_param_symbol(kb, s) || kb.kind_of(s) != Some(crate::intern::SymbolKind::Sort) {
+        return None;
+    }
+    Some(s)
+}
+
 /// Shared body of [`walk_type_deep`] (`ground = false`, pure σ) and the grounding entry
 /// [`resolve_type_deep_value`] (`ground = true`). When `ground` is set, the call-time
 /// concrete-fill (δ-reduction) applies: a `RigidProjection` whose subject has resolved
@@ -12110,6 +12147,35 @@ fn walk_type_deep_g(
             }
             if matches!(head, TypeHead::ExprCarried) {
                 return resolved;
+            }
+            // WI-453 (§5.4 concrete fill, INJECTIVE application): when grounding, a
+            // parameterized type whose FUNCTOR is a marked carrier `F` filled to a
+            // concrete sort `C` grounds its base — `F[T=A]` with `F := Option` ⟹
+            // `Option[T=A]` (the table's `F := List` decomposition). Gated on `ground`
+            // (the call-site result-resolve points), like the RigidProjection fill: a
+            // pure σ walk leaves the symbol functor alone, so the def-site
+            // `F[T=A] ≟ F[T=B]` decomposition (base-symbol equality) is untouched. Sound
+            // because the application is injective — there is no non-injective neutral
+            // identity to protect (that is the §5.3 projection, handled above).
+            if ground {
+                let functor = match kb.get_term(resolved) {
+                    Term::Fn { functor, .. } => Some(*functor),
+                    _ => None,
+                };
+                if let Some(c) = functor.and_then(|f| filled_carrier_sort(kb, subst, f)) {
+                    let named: Vec<(Symbol, TermId)> = match kb.get_term(resolved) {
+                        Term::Fn { named_args, .. } => {
+                            named_args.iter().map(|(s, t)| (*s, *t)).collect()
+                        }
+                        _ => Vec::new(),
+                    };
+                    let walked: Vec<(Symbol, TermId)> = named
+                        .into_iter()
+                        .map(|(s, t)| (s, walk_type_deep_g(kb, subst, t, ground)))
+                        .collect();
+                    let base = kb.alloc(Term::Ref(c));
+                    return kb.make_parameterized_type(base, &walked);
+                }
             }
             kb.map_fn_children(resolved, |kb, child| walk_type_deep_g(kb, subst, child, ground))
         }
