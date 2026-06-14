@@ -4260,37 +4260,85 @@ fn check_apply_iter(
             // result-carrier (`unit(42):Option`, carrier only in the return). A
             // first-order carrier param has no members, so it keeps the
             // receiver-carrier / value-directed path unchanged.
-            let hk_carrier = sort_type_params_as_pairs(kb, spec_sort)
-                .iter()
-                .filter(|(p, _)| !kb.type_params_of_sort(*p).is_empty())
-                .find_map(|(_, var)| {
-                    let walked = walk_type(kb, &subst, *var);
-                    let c = extract_sort_ref_sym(kb, &TermIdView(walked))?;
-                    (!is_sort_param_symbol(kb, c)
-                        && kb.kind_of(c) == Some(crate::intern::SymbolKind::Sort))
-                    .then_some(c)
-                });
+            // PERF gate: the HK fill only applies to an op whose signature USES a
+            // higher-kinded carrier — i.e. has a parameterized type (`F[T=A]`) in the
+            // return or a param. A bare first-order op (`combine(x:T, y:T) -> T`) skips
+            // the probe entirely, so the common case never pays the `type_params_of_sort`
+            // / `sort_type_params_as_pairs` scans below.
+            let op_has_parameterized_sig =
+                matches!(type_head(kb, &op.return_type), TypeHead::Parameterized { .. })
+                    || op.params.iter().any(|(_, t)| {
+                        matches!(type_head(kb, t), TypeHead::Parameterized { .. })
+                    });
+            let hk_carrier = op_has_parameterized_sig
+                .then(|| {
+                    sort_type_params_as_pairs(kb, spec_sort)
+                        .iter()
+                        .filter(|(p, _)| !kb.type_params_of_sort(*p).is_empty())
+                        .find_map(|(_, var)| {
+                            let walked = walk_type(kb, &subst, *var);
+                            let c = extract_sort_ref_sym(kb, &TermIdView(walked))?;
+                            (!is_sort_param_symbol(kb, c)
+                                && kb.kind_of(c) == Some(crate::intern::SymbolKind::Sort))
+                            .then_some(c)
+                        })
+                })
+                .flatten();
             if let Some(c) = hk_carrier {
                 // DISCHARGE the implicit `Spec[F = C]` obligation: confirm `C` provides
-                // the spec (the WI-431 instance fact). No provision ⟹ undischarged ⟹
-                // a loud no-instance error (never a silent accept of `unit(42):MyBox`).
+                // the spec (the WI-431 instance fact). No provision ⟹ undischarged: a
+                // USER spec (warrants the abstract check) is a loud no-instance error
+                // (never a silent accept of `unit(42):MyBox`); a host-builtin spec (no
+                // fact by design) leaves the call as the spec op for the runtime to
+                // resolve — the same escape the normal `NoCandidates` arm takes.
                 if provider_spec_view_bindings(kb, c, spec_sort).is_none() {
-                    return Err(TypeError::DispatchNoMatch { span, op: fn_sym });
+                    if spec_warrants_abstract_check(kb, spec_sort) {
+                        return Err(TypeError::DispatchNoMatch { span, op: fn_sym });
+                    }
+                    return Ok(TypeResult {
+                        ty: resolved_ret.clone(),
+                        env: env.clone(),
+                        effects,
+                        node: Rc::clone(occ),
+                    });
                 }
-                // DISPATCH to the instance's bound impl (`unit ↦ optionUnit`). PinNow so
-                // eval calls the impl directly — the result-carrier `unit` has no carrier
-                // VALUE to value-direct on (F is only in the return), so the typer-resolved
-                // dispatch is the route; the arg-carrier shares it. A spec-DEFAULT op (not
-                // bound in the fact) keeps its default body (no rewrite). `dispatch_spec_op_-
-                // cached`'s SLD does not read instance-fact op-bindings (WI-431 inc 2), so
-                // the impl is read straight from the fact here.
+                // DISPATCH to the instance's bound impl (`unit ↦ optionUnit`). The
+                // result-carrier `unit` has no carrier VALUE to value-direct on (F is
+                // only in the return), so the typer-resolved dispatch is the route; the
+                // arg-carrier shares it. A spec-DEFAULT op (not bound in the fact) keeps
+                // its body. `dispatch_spec_op_cached`'s SLD does not read instance-fact
+                // op-bindings (WI-431 inc 2), so the impl is read straight from the fact.
                 if let Some(impl_op) = instance_fact_op_binding(kb, c, spec_sort, short_name_of(&op_qn)) {
-                    if op_has_runnable_body(kb, impl_op) {
-                        classify(
-                            kb,
-                            occ,
-                            CallClass::PinNow { spec_op_sym: fn_sym, impl_op_sym: impl_op },
+                    // WI-453 effect soundness (the WI-365 dual): surface the impl's real
+                    // effects — the instance signature validator checks arity/param/return
+                    // but NOT effects, so an effectful impl bound to a pure-declared spec
+                    // op would otherwise mask its effect at the consumption site.
+                    if impl_op != fn_sym {
+                        let derived = dispatched_impl_effects(
+                            kb, impl_op, &op.params, &subst, pos_args, named_args,
                         );
+                        effects = merge_effects(&effects, &derived);
+                    }
+                    // PinNow, or ConcreteApplyWithin when the impl's OWN sort declares
+                    // `requires` (so its dict threads) — the Unique-arm discipline. Only
+                    // a runnable impl is rewritten (a body-less one stays the spec op).
+                    if op_has_runnable_body(kb, impl_op) {
+                        let impl_sort = impl_parent_of_op(kb, impl_op);
+                        let needs_reqs =
+                            impl_sort.map(|s| !requires_chain(kb, s).is_empty()).unwrap_or(false);
+                        let class = if needs_reqs {
+                            CallClass::ConcreteApplyWithin {
+                                fn_target_sym: impl_op,
+                                callee_spec_sort: impl_sort.unwrap(),
+                                spec_op_sym: fn_sym,
+                                enclosing_sort,
+                                resolved_tree: None,
+                                dispatch_dict: None,
+                            }
+                        } else {
+                            CallClass::PinNow { spec_op_sym: fn_sym, impl_op_sym: impl_op }
+                        };
+                        classify(kb, occ, class);
                     }
                 }
                 return Ok(TypeResult {

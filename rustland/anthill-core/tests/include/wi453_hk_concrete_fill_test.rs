@@ -112,6 +112,32 @@ fn no_instance_carrier_is_loud() {
     );
 }
 
+/// EFFECT SOUNDNESS (the WI-365 dual): an EFFECTFUL instance impl bound to a
+/// pure-declared spec op must SURFACE its effect at the dispatch — the instance
+/// signature validator checks arity/param/return but not effects, so the HK dispatch
+/// grounds the impl's effects so a pure consumer is rejected. `optionUnit … effects
+/// Error` bound to the pure `unit`: a pure `pureConsumer` calling `unit(42)` is loud.
+#[test]
+fn effectful_instance_impl_effect_is_surfaced() {
+    // Bespoke spec (not cps_src) so the bound impl is effectful.
+    let src = r#"namespace test.wi453.eff
+  import anthill.prelude.{Option, Int64}
+  sort CpsMonad[F[T]]
+    operation unit[A](a: A) -> F[T = A]
+  end
+  operation optionUnit[A](a: A) -> Option[T = A] effects Error = some(a)
+  fact CpsMonad[F = Option, unit = optionUnit]
+  operation pureConsumer() -> Option[T = Int64] = unit(42)
+end
+"#;
+    let errs = load_errors(src);
+    assert!(
+        errs.iter().any(|e| e.contains("pureConsumer") && e.contains("Error")),
+        "a pure consumer of an effectful instance impl (optionUnit effects Error) must be \
+         rejected — the impl's effect surfaces through the HK dispatch: {errs:?}"
+    );
+}
+
 // ── Eval: the discharge dispatches to the instance's bound impl ──────────────
 
 /// RESULT-carrier dispatch: `unit(42)` (annotated `: Option`) dispatches to the
