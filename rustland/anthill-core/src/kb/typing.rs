@@ -13055,7 +13055,68 @@ fn enforce_member_tie(
 fn resolve_alias_shape(kb: &KnowledgeBase, sym: Symbol) -> Option<TermId> {
     let mut visited: Vec<Symbol> = vec![sym];
     let shape = resolve_alias_shape_chain(kb, sym, &mut visited)?;
-    type_value_is_ground(kb, shape).then_some(shape)
+    if !type_value_is_ground(kb, shape) {
+        return None;
+    }
+    // WI-405: refuse a NON-WELL-FOUNDED alias — one whose ground shape transitively
+    // references itself through a binding (`sort A = List[T = B]; sort B = List[T =
+    // A]`). It has no finite expansion, so resolving it to a one-step shape and
+    // re-dispatching through `types_compatible` (the WI-381 / WI-405 alias arms)
+    // would recurse forever (a stack overflow on load). This generalizes
+    // `resolve_alias_shape_chain`'s bare-ref cycle guard to DEEP structural cycles;
+    // such an alias stays OPAQUE (a sound, terminating nominal comparison) exactly
+    // as a bare-ref cycle does.
+    if !alias_shape_well_founded(kb, shape, &mut vec![sym]) {
+        return None;
+    }
+    Some(shape)
+}
+
+/// WI-405: a ground alias shape is WELL-FOUNDED iff fully expanding the aliases it
+/// references — through bindings, recursively — terminates. `path` holds the alias
+/// names on the current expansion path; encountering one already on the path is a
+/// structural cycle (`sort A = List[T = B]; sort B = List[T = A]`), so the alias has
+/// no finite shape. A non-alias sort-ref leaf, a logic var, or an atom is trivially
+/// well-founded. The walk re-expands each alias reference with its own cycle
+/// tracking, so it is robust to a bare-ref CHAIN that skipped intermediate names.
+fn alias_shape_well_founded(kb: &KnowledgeBase, tid: TermId, path: &mut Vec<Symbol>) -> bool {
+    // A bare sort-ref leaf (`Ref(S)` / nullary `Fn{S}`): expand if it names an alias.
+    if let Some(s) = extract_sort_ref_sym(kb, &TermIdView(tid)) {
+        return alias_sym_well_founded(kb, s, path);
+    }
+    // A parameterized / structural type: its base (the `Fn` functor) AND every
+    // binding can name an alias, so check all of them. Collect the functor symbol
+    // and child `TermId`s (cheap, `Copy`) so the immutable `kb` borrow from
+    // `get_term` is released before the recursive calls re-borrow `kb`.
+    let (functor, children): (Option<Symbol>, Vec<TermId>) = match kb.get_term(tid) {
+        Term::Fn { functor, pos_args, named_args } => (
+            Some(*functor),
+            pos_args.iter().copied().chain(named_args.iter().map(|(_, a)| *a)).collect(),
+        ),
+        _ => return true,
+    };
+    if let Some(f) = functor {
+        if !alias_sym_well_founded(kb, f, path) {
+            return false;
+        }
+    }
+    children.iter().all(|c| alias_shape_well_founded(kb, *c, path))
+}
+
+/// Expand a single sort symbol for [`alias_shape_well_founded`]: a non-alias name
+/// bottoms out as well-founded; an alias is expanded under the path cycle guard
+/// (revisiting a name already on the path = a structural cycle ⟹ not well-founded).
+fn alias_sym_well_founded(kb: &KnowledgeBase, s: Symbol, path: &mut Vec<Symbol>) -> bool {
+    let Some(target) = resolve_sort_alias(kb, s) else {
+        return true;
+    };
+    if path.contains(&s) {
+        return false;
+    }
+    path.push(s);
+    let wf = alias_shape_well_founded(kb, target, path);
+    path.pop();
+    wf
 }
 
 /// The structural half of [`resolve_alias_shape`]: follow `SortAlias` (and bare-ref
@@ -14191,11 +14252,49 @@ fn types_compatible_term_dispatch(kb: &mut KnowledgeBase, subst: &mut Substituti
             // bare↔bare arm so it never rides the `sort_ref ↔ parameterized`
             // base check and drops a parameterized spec's bindings — see
             // `sort_provides_admissibly`.
-            sort_ref_compatible(kb, actual, expected)
-                || match (extract_sort_ref_sym(kb, &TermIdView(actual)), extract_sort_ref_sym(kb, &TermIdView(expected))) {
-                    (Some(a), Some(e)) => sort_provides_admissibly(kb, a, e),
-                    _ => false,
+            if sort_ref_compatible(kb, actual, expected) {
+                return true;
+            }
+            if let (Some(a), Some(e)) = (
+                extract_sort_ref_sym(kb, &TermIdView(actual)),
+                extract_sort_ref_sym(kb, &TermIdView(expected)),
+            ) {
+                if sort_provides_admissibly(kb, a, e) {
+                    return true;
                 }
+            }
+            // WI-405 FACET B: resolve a structured (ground) alias on EITHER side and
+            // re-dispatch — so two aliases of the same shape (`sort IntList = List[T =
+            // Int64]; sort IntList2 = List[T = Int64]`) compare by their underlying shapes,
+            // not by nominal NAME only. WI-381 wired alias resolution into the
+            // bare↔parameterized arms but NOT here; this applies it UNIFORMLY (the WI-405
+            // root cause). Reached only after the nominal + provider checks fail (a pure
+            // loosening). Each re-dispatch runs on a PROBE clone committed only on success,
+            // so a failed branch can never leak partial bindings into the next branch or the
+            // caller (mirrors `bare_provider_binding_precise`); the bare↔bare comparison is
+            // ground-vs-ground, so a success commits no new bindings anyway. Termination:
+            // `resolve_alias_shape` is `None` for a non-alias AND (WI-405) for a
+            // non-well-founded recursive alias, so the recursion bottoms out.
+            for (shape_side, other, shape_is_actual) in [
+                (actual, expected, true),
+                (expected, actual, false),
+            ] {
+                if let Some(shape) =
+                    extract_sort_ref_sym(kb, &TermIdView(shape_side)).and_then(|s| resolve_alias_shape(kb, s))
+                {
+                    let mut probe = subst.clone();
+                    let ok = if shape_is_actual {
+                        types_compatible(kb, &mut probe, &TermIdView(shape), &TermIdView(other))
+                    } else {
+                        types_compatible(kb, &mut probe, &TermIdView(other), &TermIdView(shape))
+                    };
+                    if ok {
+                        *subst = probe;
+                        return true;
+                    }
+                }
+            }
+            false
         }
         (Some("parameterized"), Some("parameterized")) => {
             // WI-342 dispatch consolidation: route through the carrier-agnostic
@@ -14247,7 +14346,16 @@ fn types_compatible_term_dispatch(kb: &mut KnowledgeBase, subst: &mut Substituti
                 return types_compatible(kb, subst, &TermIdView(actual), &TermIdView(shape));
             }
             match (extract_sort_ref_sym(kb, &TermIdView(expected)), parameterized_base_sym(kb, actual)) {
-                (Some(e), Some(ab)) => sort_sym_compatible(kb, e, ab),
+                // WI-405 FACET A: a parameterized carrier `S[bindings]` — including a
+                // PARTIAL form such as a constructor result `S[A = ?_]` — conforms to a
+                // BARE provider spec it provides. `sort_provides_admissibly` is base-only,
+                // which is sound here precisely because the expected spec is bare (it
+                // carries no bindings to drop) — the same reasoning that confines the
+                // WI-344 accept to the bare↔bare arm. Applying it here too makes provider
+                // admissibility UNIFORM across the dispatch arms (the WI-405 root cause).
+                (Some(e), Some(ab)) => {
+                    sort_sym_compatible(kb, e, ab) || sort_provides_admissibly(kb, ab, e)
+                }
                 _ => false,
             }
         }
@@ -14390,7 +14498,11 @@ fn types_compatible_view_structural<A: TermView, B: TermView>(
                 return types_compatible(kb, subst, &a, &TermIdView(shape));
             }
             match (sort_functor_of_view(kb, &e), sort_functor_of_view(kb, &a)) {
-                (Some(ev), Some(ab)) => sort_sym_compatible(kb, ev, ab),
+                // WI-405 FACET A: parameterized carrier vs bare provider spec — mirror the
+                // term dispatch so provider admissibility stays carrier-symmetric.
+                (Some(ev), Some(ab)) => {
+                    sort_sym_compatible(kb, ev, ab) || sort_provides_admissibly(kb, ab, ev)
+                }
                 _ => false,
             }
         }
@@ -15081,21 +15193,23 @@ fn sort_sym_compatible(kb: &KnowledgeBase, actual_sym: Symbol, expected_sym: Sym
 /// that `requires`-resolution and field-membership checks consult — see
 /// `check_value_sort_membership`).
 ///
-/// Deliberately base-only and called ONLY from the `(sort_ref, sort_ref)`
-/// arm of [`types_compatible`] — NOT from `sort_sym_compatible`, because
-/// that is also reached from the `sort_ref ↔ parameterized` arms' base
-/// check, which drops the parameterized side's bindings. A
-/// base-only accept there would admit a binding mismatch (a `Widget`
-/// providing `Comparable[T = Widget]` accepted where `Comparable[T =
-/// Gadget]` is expected). Restricting to `(sort_ref, sort_ref)` keeps it
-/// sound: a bare spec carries no bindings, and the same-parameter
-/// parameterized case (`List[T]` vs `Stream[T]`) reaches here only through
-/// `parameterized_compatible`'s base check — where its per-binding loop
-/// validates the bindings separately. The bare-value-vs-parameterized-spec
-/// case (`Widget` vs `Comparable[T = Widget]`) is handled by the
-/// binding-PRECISE [`bare_provider_binding_precise`] (WI-402), which checks
-/// every expected binding against the provider fact instead of dropping
-/// them — the follow-up this doc used to defer. The fact is trusted to
+/// Deliberately base-only, and called only from arms of [`types_compatible`]
+/// where the EXPECTED side is a BARE spec (carries no bindings to drop) — NOT
+/// from `sort_sym_compatible`, because that is also reached from the
+/// `sort_ref ↔ parameterized` arms' base check, where a base-only accept would
+/// admit a binding mismatch (a `Widget` providing `Comparable[T = Widget]`
+/// accepted where `Comparable[T = Gadget]` is expected). Two such bare-expected
+/// call sites: the original `(sort_ref, sort_ref)` arm (WI-344), and — uniformly
+/// since WI-405 FACET A — the `(parameterized, sort_ref)` arm (a parameterized
+/// carrier `S[bindings]` vs a bare spec it provides) and its carrier-agnostic
+/// peer in [`types_compatible_view_structural`]. The accept stays sound at every
+/// site for the same reason: the spec is bare. The same-parameter parameterized
+/// case (`List[T]` vs `Stream[T]`) reaches subtyping only through
+/// `parameterized_compatible`'s base check — where its per-binding loop validates
+/// the bindings separately. The bare-value-vs-PARAMETERIZED-spec case (`Widget`
+/// vs `Comparable[T = Widget]`) is handled by the binding-PRECISE
+/// [`bare_provider_binding_precise`] (WI-402), which checks every expected binding
+/// against the provider fact instead of dropping them. The fact is trusted to
 /// mean `actual` implements `expected` (WI-343 validates that separately).
 fn sort_provides_admissibly(kb: &KnowledgeBase, actual_sym: Symbol, expected_sym: Symbol) -> bool {
     if sort_provides(kb, actual_sym, expected_sym) {

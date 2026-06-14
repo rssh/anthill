@@ -226,6 +226,9 @@ mod wi402_manifest_provider_test;
 #[path = "include/wi402_existential_return_test.rs"]
 mod wi402_existential_return_test;
 
+#[path = "include/wi405_uniform_subtype_test.rs"]
+mod wi405_uniform_subtype_test;
+
 #[path = "include/wi428_rigid_projection_test.rs"]
 mod wi428_rigid_projection_test;
 
