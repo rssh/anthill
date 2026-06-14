@@ -2606,7 +2606,17 @@ pub fn term_to_param_occurrence(
                         .iter()
                         .map(|&t| term_to_param_occurrence(kb, t, span))
                         .collect();
-                    Pattern::Constructor { name, pos_args, named_args: Vec::new() }
+                    // WI-445: named sub-patterns (`Box(v: some(x))`) ride a
+                    // `named: List[NamedPattern]` field; surface each
+                    // `(field, sub-pattern occurrence)` so the typer / eval
+                    // bind them by field name.
+                    let named_subs: Vec<(Symbol, Rc<NodeOccurrence>)> =
+                        extract_named_list(kb, &named_args, "named")
+                            .iter()
+                            .filter_map(|&np| read_named_pattern_term(kb, np))
+                            .map(|(field, sub)| (field, term_to_param_occurrence(kb, sub, span)))
+                            .collect();
+                    Pattern::Constructor { name, pos_args, named_args: named_subs }
                 }
                 None => return term_pattern_as_expr_occ(kb, tid, span),
             }
@@ -2763,6 +2773,43 @@ fn term_pattern_child_as_occ(
     }
 }
 
+/// WI-445: build a reflect `NamedPattern(name: Ref(field), pattern: sub)` term
+/// — the element shape of a constructor pattern's `named` list. The single
+/// source of truth for that shape, shared by the loader
+/// (`LoadBuildFrame::PatternConstructor`) and [`pattern_to_term`] so the
+/// occurrence↔term round-trip cannot drift. Read back with
+/// [`read_named_pattern_term`].
+pub(crate) fn build_named_pattern_term(
+    kb: &mut KnowledgeBase,
+    field: Symbol,
+    sub_pattern: TermId,
+) -> TermId {
+    use smallvec::SmallVec;
+    let np_functor = kb.resolve_symbol("anthill.reflect.NamedPattern");
+    let name_key = kb.intern("name");
+    let pattern_key = kb.intern("pattern");
+    let field_ref = kb.alloc(Term::Ref(field));
+    kb.alloc(Term::Fn {
+        functor: np_functor,
+        pos_args: SmallVec::new(),
+        named_args: SmallVec::from_slice(&[(name_key, field_ref), (pattern_key, sub_pattern)]),
+    })
+}
+
+/// WI-445: read a reflect `NamedPattern(name: Ref(field), pattern: sub)` term
+/// into `(field_symbol, sub_pattern_term)`. The element shape of a constructor
+/// pattern's `named` list. Returns `None` for a malformed element. Shared by
+/// the typer (`extend_env_from_pattern`) and eval (`match_constructor_pattern`).
+pub(crate) fn read_named_pattern_term(kb: &KnowledgeBase, tid: TermId) -> Option<(Symbol, TermId)> {
+    let Term::Fn { named_args, .. } = kb.get_term(tid) else { return None; };
+    let field = extract_term_ref_sym(kb, named_args, "name")?;
+    let pat = named_args
+        .iter()
+        .find(|(s, _)| kb.resolve_sym(*s) == "pattern")
+        .map(|(_, t)| *t)?;
+    Some((field, pat))
+}
+
 fn extract_term_ref_sym(
     kb: &KnowledgeBase,
     named_args: &[(Symbol, TermId)],
@@ -2868,13 +2915,13 @@ pub fn pattern_to_term(kb: &mut KnowledgeBase, occ: &Rc<NodeOccurrence>) -> Term
                 named_args: SmallVec::from_slice(&[(value_key, value_tid)]),
             })
         }
-        Pattern::Constructor { name, pos_args, .. } => {
+        Pattern::Constructor { name, pos_args, named_args } => {
             // Constructor patterns canonically lower to
-            // `constructor_pattern(name: Ref, args: List[...])`. Named
-            // sub-patterns aren't part of the surface today (the loader's
-            // `LoadBuildFrame::PatternConstructor` consumes positional only),
-            // so this mirror handles only the positional form. If the future
-            // grammar adds `named_pattern_field` lowering, extend here.
+            // `constructor_pattern(name: Ref, args: List[Pattern])`, plus a
+            // `named: List[NamedPattern]` (WI-445) for `Foo(field: pat)`
+            // sub-patterns — the inverse of `term_to_param_occurrence`. The
+            // `named` key is omitted when empty, keeping the positional form
+            // byte-identical.
             let name_ref = kb.alloc(Term::Ref(*name));
             let args: Vec<TermId> = pos_args
                 .iter()
@@ -2882,11 +2929,21 @@ pub fn pattern_to_term(kb: &mut KnowledgeBase, occ: &Rc<NodeOccurrence>) -> Term
                 .collect();
             let args_list = build_list_termid(kb, &args);
             let functor = kb.resolve_symbol("anthill.reflect.Pattern.constructor_pattern");
-            kb.alloc(Term::Fn {
-                functor,
-                pos_args: SmallVec::new(),
-                named_args: SmallVec::from_slice(&[(name_key, name_ref), (args_key, args_list)]),
-            })
+            let mut na: SmallVec<[(Symbol, TermId); 2]> =
+                SmallVec::from_slice(&[(name_key, name_ref), (args_key, args_list)]);
+            if !named_args.is_empty() {
+                let named_key = kb.intern("named");
+                let elems: Vec<TermId> = named_args
+                    .iter()
+                    .map(|(field, sub)| {
+                        let sub_term = pattern_to_term(kb, sub);
+                        build_named_pattern_term(kb, *field, sub_term)
+                    })
+                    .collect();
+                let named_list = build_list_termid(kb, &elems);
+                na.push((named_key, named_list));
+            }
+            kb.alloc(Term::Fn { functor, pos_args: SmallVec::new(), named_args: na })
         }
         Pattern::Tuple { positional, .. } => {
             // Tuple patterns lower to `tuple_pattern(elements: List[...])`.

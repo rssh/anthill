@@ -108,18 +108,48 @@ fn match_constructor_pattern(
     let ctor_sym = term_as_symbol(kb, name_tid)?;
     let args_tid = lookup(named_args, interp.fields.args)?;
     let sub_patterns = list_to_vec(kb, args_tid);
+    // WI-445: named sub-patterns (`Box(v: some(x))`) ride a `named:
+    // List[NamedPattern]` field (absent for the all-positional form).
+    let named_subs: Vec<(Symbol, TermId)> = lookup(named_args, interp.fields.named)
+        .map(|t| list_to_vec(kb, t))
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|&np| crate::kb::node_occurrence::read_named_pattern_term(kb, np))
+        .collect();
 
     // Pattern-match uniformity: present positional-then-named for both
-    // lineage forms so the positional sub-pattern loop is agnostic.
-    // Arity-strict: a 3-pattern constructor_pattern only matches a
-    // 3-positional value — previously `<` would happily bind the first
-    // N of an N+1 value and discard the rest.
+    // lineage forms so the positional sub-pattern loop is agnostic. The
+    // scrutinee's sub-values are in declaration order (positional fields then
+    // `sort_named_canonical`-ordered named fields), so a named sub-pattern
+    // maps to its field's declaration index.
+    // Arity-strict: the total of positional + named sub-patterns must equal
+    // the value's field count, with no field covered twice — previously `<`
+    // would happily bind the first N of an N+1 value and discard the rest.
     let sub_values = constructor_sub_values(kb, ctor_sym, scrutinee)?;
-    if sub_values.len() != sub_patterns.len() { return None; }
+    let n = sub_values.len();
+    if sub_patterns.len() + named_subs.len() != n {
+        return None;
+    }
 
+    let mut covered = vec![false; n];
     let mut bindings = SmallVec::new();
-    for (sub_pat, sub_val) in sub_patterns.iter().zip(sub_values.iter()) {
-        let mut sub_b = match_pattern(interp, *sub_pat, sub_val)?;
+    // Positional sub-patterns fill the leading field indices.
+    for (i, sub_pat) in sub_patterns.iter().enumerate() {
+        covered[i] = true;
+        let mut sub_b = match_pattern(interp, *sub_pat, &sub_values[i])?;
+        bindings.append(&mut sub_b);
+    }
+    // Named sub-patterns resolve to their field's declaration index. A field
+    // the constructor doesn't declare, an out-of-range index, or a double
+    // cover is no match (mirrors the arity-strict positional behaviour).
+    let field_order = kb.entity_field_names(ctor_sym);
+    for (field_sym, sub_pat) in named_subs {
+        let idx = field_order.and_then(|order| order.iter().position(|f| *f == field_sym))?;
+        if idx >= n || covered[idx] {
+            return None;
+        }
+        covered[idx] = true;
+        let mut sub_b = match_pattern(interp, sub_pat, &sub_values[idx])?;
         bindings.append(&mut sub_b);
     }
     Some(bindings)

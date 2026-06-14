@@ -439,7 +439,10 @@ namespace anthill.reflect
     entity var_pattern(name: Symbol, type_ann: Option[Term])
     entity tuple_pattern(elements: List[Pattern])
     entity named_tuple_pattern(fields: List[NamedPattern])
-    entity constructor_pattern(name: Symbol, args: List[Pattern])
+    -- `named` carries `Foo(field: pat)` sub-patterns (WI-445); omitted (empty)
+    -- for the all-positional form. Field→position is resolved by the typer/eval,
+    -- so it is robust to the constructor's declaration order.
+    entity constructor_pattern(name: Symbol, args: List[Pattern], named: List[NamedPattern])
     entity literal_pattern(value: Term)
     entity wildcard
   end

@@ -11274,44 +11274,60 @@ fn extend_env_from_pattern(
                 if let (Some(ctor_sym), Some(args)) = (name_sym, args_tid) {
                     let field_types = kb.entity_field_types(ctor_sym).map(|f| f.to_vec());
                     let sub_patterns = list_to_vec(kb, args);
-                    if let Some(fields) = field_types {
-                        // Substitute the scrutinee's type args into the
-                        // constructor's declared field types. For
-                        // `case some(name)` over `Option[T = String]`,
-                        // `some.value`'s declared type `T` resolves to
-                        // `String` — without this `name` binds to the
-                        // raw type-param term and surfaces as a bare
-                        // `TermId` in later return-type checks.
-                        let parent_sort = kb.constructor_parent_sort(ctor_sym)
-                            .and_then(|t| match kb.get_term(t) {
-                                Term::Fn { functor, .. } => Some(*functor),
-                                Term::Ref(s) => Some(*s),
-                                _ => None,
-                            });
-                        let subst = scrutinee_type
-                            .as_ref()
-                            .zip(parent_sort)
-                            .and_then(|(st, p)| build_pattern_subst(kb, st, p));
-                        for (i, sub_pat) in sub_patterns.iter().enumerate() {
-                            // WI-342: the field type is a carrier-agnostic `Value`
-                            // (`entity_field_types`); resolve its sort-level type
-                            // params through the pattern subst without re-grounding.
-                            // Deep-walk: a parameterized field type
-                            // (`source: Stream[T = T, E = E]`) carries its type
-                            // params NESTED in the `Fn`, which the shallow
-                            // `walk_type_value` left unsubstituted — so the
-                            // destructure did not thread the scrutinee's element /
-                            // effect into the sub-pattern var (WI-413).
-                            let field_type = match (fields.get(i), &subst) {
+                    // Substitute the scrutinee's type args into the
+                    // constructor's declared field types. For `case some(name)`
+                    // over `Option[T = String]`, `some.value`'s declared type
+                    // `T` resolves to `String` — without this `name` binds to
+                    // the raw type-param term and surfaces as a bare `TermId`
+                    // in later return-type checks.
+                    let parent_sort = kb.constructor_parent_sort(ctor_sym)
+                        .and_then(|t| match kb.get_term(t) {
+                            Term::Fn { functor, .. } => Some(*functor),
+                            Term::Ref(s) => Some(*s),
+                            _ => None,
+                        });
+                    let subst = scrutinee_type
+                        .as_ref()
+                        .zip(parent_sort)
+                        .and_then(|(st, p)| build_pattern_subst(kb, st, p));
+                    // POSITIONAL sub-patterns: zip against field types by index.
+                    for (i, sub_pat) in sub_patterns.iter().enumerate() {
+                        // WI-342: the field type is a carrier-agnostic `Value`
+                        // (`entity_field_types`); resolve its sort-level type
+                        // params through the pattern subst without re-grounding.
+                        // Deep-walk: a parameterized field type
+                        // (`source: Stream[T = T, E = E]`) carries its type
+                        // params NESTED in the `Fn`, which the shallow
+                        // `walk_type_value` left unsubstituted — so the
+                        // destructure did not thread the scrutinee's element /
+                        // effect into the sub-pattern var (WI-413).
+                        let field_type = match (field_types.as_ref().and_then(|f| f.get(i)), &subst) {
+                            (Some((_, ty)), Some(s)) => Some(walk_pattern_field_type_deep(kb, s, ty)),
+                            (Some((_, ty)), None) => Some(ty.clone()),
+                            (None, _) => None,
+                        };
+                        extend_env_from_pattern(kb, env, *sub_pat, field_type);
+                    }
+                    // WI-445: NAMED sub-patterns (`case Box(v: some(x))`) bind by
+                    // FIELD NAME — order-independent, so robust to declaration
+                    // order. The loader preserves them as `named:
+                    // List[NamedPattern]` (raw at load, since the entity's fields
+                    // may not be registered yet); the field type is resolved here,
+                    // where the typer pass always has the entity in hand.
+                    if let Some(named_tid) = get_named_arg(kb, &named_args, "named") {
+                        for np in list_to_vec(kb, named_tid) {
+                            let Some((field_sym, sub_pat)) =
+                                super::node_occurrence::read_named_pattern_term(kb, np)
+                            else { continue };
+                            let found = field_types
+                                .as_ref()
+                                .and_then(|fields| fields.iter().find(|(fname, _)| *fname == field_sym));
+                            let field_type = match (found, &subst) {
                                 (Some((_, ty)), Some(s)) => Some(walk_pattern_field_type_deep(kb, s, ty)),
                                 (Some((_, ty)), None) => Some(ty.clone()),
                                 (None, _) => None,
                             };
-                            extend_env_from_pattern(kb, env, *sub_pat, field_type);
-                        }
-                    } else {
-                        for sub_pat in &sub_patterns {
-                            extend_env_from_pattern(kb, env, *sub_pat, None);
+                            extend_env_from_pattern(kb, env, sub_pat, field_type);
                         }
                     }
                 }

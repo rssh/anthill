@@ -181,6 +181,9 @@ pub(crate) struct FieldSymbols {
     pub body: Symbol,
     pub fn_: Symbol,
     pub args: Symbol,
+    /// WI-445: `constructor_pattern.named` — the `List[NamedPattern]` of
+    /// `Foo(field: pat)` named sub-patterns.
+    pub named: Symbol,
     pub params: Symbol,
     pub type_name: Symbol,
     pub scrutinee: Symbol,
@@ -214,6 +217,7 @@ impl FieldSymbols {
             body: kb.intern("body"),
             fn_: kb.intern("fn"),
             args: kb.intern("args"),
+            named: kb.intern("named"),
             params: kb.intern("params"),
             type_name: kb.intern("type_name"),
             scrutinee: kb.intern("scrutinee"),

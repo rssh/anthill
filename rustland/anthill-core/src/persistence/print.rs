@@ -76,11 +76,19 @@ impl<'a> TermPrinter<'a, KnowledgeBase> {
             }
             Pattern::Wildcard => buf.push('_'),
             Pattern::Literal { value } => self.write_literal(value, buf),
-            Pattern::Constructor { name, pos_args, .. } => {
+            Pattern::Constructor { name, pos_args, named_args } => {
                 buf.push_str(self.view.sym_name(*name));
                 buf.push('(');
                 for (i, p) in pos_args.iter().enumerate() {
                     if i > 0 { buf.push_str(", "); }
+                    self.write_pattern(p, buf);
+                }
+                // WI-445: named sub-patterns render `field: pat` after the
+                // positionals (the `Foo(field: pat)` surface form).
+                for (i, (field, p)) in named_args.iter().enumerate() {
+                    if i > 0 || !pos_args.is_empty() { buf.push_str(", "); }
+                    buf.push_str(self.view.sym_name(*field));
+                    buf.push_str(": ");
                     self.write_pattern(p, buf);
                 }
                 buf.push(')');

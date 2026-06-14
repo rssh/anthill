@@ -1972,6 +1972,10 @@ fn register_stdlib_scopes(kb: &mut KnowledgeBase, global_raw: u32) {
     // anthill.reflect standalone entities for expressions
     kb.symbols.define("MatchBranch", "anthill.reflect.MatchBranch", SymbolKind::Entity, reflect_term.raw());
     kb.symbols.define("ApplyArg", "anthill.reflect.ApplyArg", SymbolKind::Entity, reflect_term.raw());
+    // WI-445: a `case Foo(field: pat)` named sub-pattern rides a NamedPattern
+    // (the same reflect entity `named_tuple_pattern` uses); register it
+    // programmatically so `ExprBuilderSyms` can resolve it during load.
+    kb.symbols.define("NamedPattern", "anthill.reflect.NamedPattern", SymbolKind::Entity, reflect_term.raw());
 
     // anthill.reflect.TypedExpr sort
     let typed_expr_sym = kb.symbols.define("TypedExpr", "anthill.reflect.TypedExpr", SymbolKind::Sort, reflect_term.raw());
@@ -4237,6 +4241,10 @@ enum LoadBuildFrame {
         outer_parse_id: TermId,
         name_ref: TermId,
         sub_pattern_count: usize,
+        /// WI-445: the (reinterned) field names of named sub-patterns
+        /// (`Box(v: some(x))`), in the order their sub-patterns are visited
+        /// — drained alongside `sub_pattern_count` positional results.
+        named_fields: Vec<Symbol>,
     },
     PatternTuple {
         outer_parse_id: TermId,
@@ -4378,6 +4386,7 @@ struct ExprBuilderSyms {
     k_name: Symbol,
     k_receiver: Symbol,
     k_args: Symbol,
+    k_named: Symbol,
     k_elements: Symbol,
     k_fn: Symbol,
     k_type_args: Symbol,
@@ -4411,6 +4420,7 @@ impl ExprBuilderSyms {
             k_name: kb.intern("name"),
             k_receiver: kb.intern("receiver"),
             k_args: kb.intern("args"),
+            k_named: kb.intern("named"),
             k_elements: kb.intern("elements"),
             k_fn: kb.intern("fn"),
             k_type_args: kb.intern("type_args"),
@@ -5313,11 +5323,30 @@ impl<'a> Loader<'a> {
                             self.convert_term(pos_args[0])
                         };
                         let sub_pattern_count = pos_args.len() - 1;
+                        // WI-445: named sub-patterns (`Box(v: some(x))`) ride the
+                        // parse term's `named_args`; the old handler read only
+                        // `pos_args`, so they were silently dropped at load and
+                        // never bound in the typer/eval. Reintern each field name
+                        // and Visit its sub-pattern so it survives. Field→position
+                        // is resolved later (typer/eval), where the entity's fields
+                        // are registered regardless of declaration order.
+                        let named_fields: Vec<Symbol> = named_args
+                            .iter()
+                            .map(|(field_sym, _)| self.reintern(*field_sym))
+                            .collect();
                         work.push(LoadWorkOp::Build(LoadBuildFrame::PatternConstructor {
                             outer_parse_id: parse_id,
                             name_ref,
                             sub_pattern_count,
+                            named_fields,
                         }));
+                        // Push named children FIRST (deeper on the work stack),
+                        // then positional (on top), so results drain as
+                        // [positional…, named…] — the order the Build frame and
+                        // `named_fields` expect.
+                        for &(_, child) in named_args.iter().rev() {
+                            work.push(LoadWorkOp::Visit(child));
+                        }
                         for &child in pos_args[1..].iter().rev() {
                             work.push(LoadWorkOp::Visit(child));
                         }
@@ -5699,18 +5728,40 @@ impl<'a> Loader<'a> {
                 outer_parse_id,
                 name_ref,
                 sub_pattern_count,
+                named_fields,
             } => {
-                let drain_start = results.len() - sub_pattern_count;
-                let args_list = build_list(self.kb, &results[drain_start..]);
+                // Results drain as [positional…, named…] (see the Visit handler).
+                let named_count = named_fields.len();
+                let drain_start = results.len() - sub_pattern_count - named_count;
+                let pos_end = drain_start + sub_pattern_count;
+                let args_list = build_list(self.kb, &results[drain_start..pos_end]);
+                // WI-445: each named sub-pattern becomes a reflect
+                // `NamedPattern(name: Ref(field), pattern: sub)`, collected under
+                // the `named` key — mirroring `named_tuple_pattern`'s
+                // `List[NamedPattern]`. Omitted entirely when there are none, so
+                // all-positional patterns keep their byte-identical 2-field shape.
+                // Shared builder with `pattern_to_term` so the round-trip shape
+                // cannot drift.
+                let named_subs: Vec<TermId> = named_fields
+                    .iter()
+                    .zip(results[pos_end..].iter())
+                    .map(|(field, &sub_pat)| {
+                        node_occurrence::build_named_pattern_term(self.kb, *field, sub_pat)
+                    })
+                    .collect();
                 results.truncate(drain_start);
                 let s = &self.expr_syms;
+                let mut np: SmallVec<[(Symbol, TermId); 2]> =
+                    SmallVec::from_slice(&[(s.k_name, name_ref), (s.k_args, args_list)]);
+                if named_count > 0 {
+                    let named_list = build_list(self.kb, &named_subs);
+                    let k_named = self.expr_syms.k_named;
+                    np.push((k_named, named_list));
+                }
                 let kb_id = self.kb.alloc(Term::Fn {
-                    functor: s.constructor_pattern,
+                    functor: self.expr_syms.constructor_pattern,
                     pos_args: SmallVec::new(),
-                    named_args: SmallVec::from_slice(&[
-                        (s.k_name, name_ref),
-                        (s.k_args, args_list),
-                    ]),
+                    named_args: np,
                 });
                 self.create_occurrence(outer_parse_id, kb_id);
                 results.push(kb_id);
