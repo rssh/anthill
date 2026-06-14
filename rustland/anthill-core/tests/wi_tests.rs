@@ -262,6 +262,9 @@ mod wi451_sort_type_param_binders_test;
 #[path = "include/wi452_marked_param_backing_var_test.rs"]
 mod wi452_marked_param_backing_var_test;
 
+#[path = "include/wi453_hk_concrete_fill_test.rs"]
+mod wi453_hk_concrete_fill_test;
+
 #[path = "include/wi424_iterable_members_test.rs"]
 mod wi424_iterable_members_test;
 

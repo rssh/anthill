@@ -4248,6 +4248,58 @@ fn check_apply_iter(
             // (its carrier is not a type-parameter, so the per-call subst
             // never pins it); an abstract spec value (`s : Stream[T]`)
             // carries no concrete impl and types through the interface.
+            // WI-453 (§5.4 requirement-discharge): if a STRUCTURED carrier param
+            // (`CpsMonad`'s `F` — the higher-kinded one, which has its own members)
+            // has FILLED to a concrete sort through the arg/expected unify, THAT sort
+            // is the dispatch carrier. Discharging the implicit `Spec[F = C]`
+            // obligation IS confirming `C` provides the spec (the WI-431 instance
+            // fact): no provision ⟹ a loud no-instance error here (closing the
+            // otherwise-silent accept of `unit(42) : MyBox`); a provision ⟹
+            // `dispatch_spec_op_cached` below routes to the instance's bound impl —
+            // ONE mechanism for the arg-carrier (`flatMap(o:Option,…)`) and the
+            // result-carrier (`unit(42):Option`, carrier only in the return). A
+            // first-order carrier param has no members, so it keeps the
+            // receiver-carrier / value-directed path unchanged.
+            let hk_carrier = sort_type_params_as_pairs(kb, spec_sort)
+                .iter()
+                .filter(|(p, _)| !kb.type_params_of_sort(*p).is_empty())
+                .find_map(|(_, var)| {
+                    let walked = walk_type(kb, &subst, *var);
+                    let c = extract_sort_ref_sym(kb, &TermIdView(walked))?;
+                    (!is_sort_param_symbol(kb, c)
+                        && kb.kind_of(c) == Some(crate::intern::SymbolKind::Sort))
+                    .then_some(c)
+                });
+            if let Some(c) = hk_carrier {
+                // DISCHARGE the implicit `Spec[F = C]` obligation: confirm `C` provides
+                // the spec (the WI-431 instance fact). No provision ⟹ undischarged ⟹
+                // a loud no-instance error (never a silent accept of `unit(42):MyBox`).
+                if provider_spec_view_bindings(kb, c, spec_sort).is_none() {
+                    return Err(TypeError::DispatchNoMatch { span, op: fn_sym });
+                }
+                // DISPATCH to the instance's bound impl (`unit ↦ optionUnit`). PinNow so
+                // eval calls the impl directly — the result-carrier `unit` has no carrier
+                // VALUE to value-direct on (F is only in the return), so the typer-resolved
+                // dispatch is the route; the arg-carrier shares it. A spec-DEFAULT op (not
+                // bound in the fact) keeps its default body (no rewrite). `dispatch_spec_op_-
+                // cached`'s SLD does not read instance-fact op-bindings (WI-431 inc 2), so
+                // the impl is read straight from the fact here.
+                if let Some(impl_op) = instance_fact_op_binding(kb, c, spec_sort, short_name_of(&op_qn)) {
+                    if op_has_runnable_body(kb, impl_op) {
+                        classify(
+                            kb,
+                            occ,
+                            CallClass::PinNow { spec_op_sym: fn_sym, impl_op_sym: impl_op },
+                        );
+                    }
+                }
+                return Ok(TypeResult {
+                    ty: resolved_ret.clone(),
+                    env: env.clone(),
+                    effects,
+                    node: Rc::clone(occ),
+                });
+            }
             let carrier = receiver_carrier(
                 kb, &op, spec_sort, named_args, pos_results, named_results,
             );
