@@ -296,3 +296,6 @@ mod wi374_expansion_test;
 
 #[path = "include/wi448_comment_before_op_requires_test.rs"]
 mod wi448_comment_before_op_requires_test;
+
+#[path = "include/wi459_projection_delta_recursion_test.rs"]
+mod wi459_projection_delta_recursion_test;

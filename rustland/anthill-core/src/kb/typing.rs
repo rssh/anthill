@@ -2418,7 +2418,10 @@ fn visit_type(
                     let var =
                         extract_pattern_var_name(kb, pattern).unwrap_or_else(|| kb.intern("_"));
                     let ctx = TypeErrorContext::LetBinding { var };
-                    match eliminate_type_projections(kb, &ann, &env.var_bindings, &ctx, occ_span) {
+                    // WI-459: a let-annotation is a BODY-site projection — the receiver is
+                    // the in-scope value itself, there is no call argument to re-key to
+                    // (`None`).
+                    match eliminate_type_projections(kb, &ann, &env.var_bindings, None, &ctx, occ_span) {
                         Ok(elim) => Some(elim),
                         Err(e) => {
                             results.push(Err(e));
@@ -3969,12 +3972,14 @@ fn check_apply_iter(
         // would silently skip a mismatch the written form rejects loudly.
         let mut effective_param_types: HashMap<Symbol, Value> = HashMap::new();
         if params_have_projection {
+            // WI-459: re-key a cross-param projection NEUTRAL to the caller's argument too.
+            let arg_syms = (!param_to_arg_sym.is_empty()).then_some(&param_to_arg_sym);
             for (param_sym, param_type) in &written_params {
                 if !value_contains_projection(kb, param_type) {
                     continue;
                 }
                 let eff = eliminate_type_projections(
-                    kb, param_type, &param_to_arg_type,
+                    kb, param_type, &param_to_arg_type, arg_syms,
                     &TypeErrorContext::OperationReturn { op_name: fn_sym }, span,
                 )?;
                 // `unify_types` borrows the arg type (it is `A: TermView`), so no clone.
@@ -4133,10 +4138,16 @@ fn check_apply_iter(
         // error — `E` is never silently defaulted to pure (design §5).
         let (proj_return_type, proj_effects): (Value, Vec<Value>) = if op_has_projection {
             let ret_ctx = TypeErrorContext::OperationReturn { op_name: fn_sym };
-            let rt = eliminate_type_projections(kb, &op.return_type, &param_to_arg_type, &ret_ctx, span)?;
+            // WI-459: pass the formal→argument value-reference map so a projection NEUTRAL
+            // formed off a formal param is RE-KEYED to the caller's actual receiver (see
+            // `rewrite_term_projections`).
+            let arg_syms = (!param_to_arg_sym.is_empty()).then_some(&param_to_arg_sym);
+            let rt = eliminate_type_projections(
+                kb, &op.return_type, &param_to_arg_type, arg_syms, &ret_ctx, span)?;
             let mut effs: Vec<Value> = Vec::with_capacity(op.effects.len());
             for e in &op.effects {
-                effs.push(eliminate_type_projections(kb, e, &param_to_arg_type, &ret_ctx, span)?);
+                effs.push(eliminate_type_projections(
+                    kb, e, &param_to_arg_type, arg_syms, &ret_ctx, span)?);
             }
             (rt, effs)
         } else {
@@ -4186,7 +4197,23 @@ fn check_apply_iter(
         } else {
             proj_effects
                 .iter()
-                .map(|e| substitute_ref_syms_value(kb, e, &param_to_arg_sym))
+                .map(|e| {
+                    // WI-459: a PROJECTION-bearing effect (`s.E`) was already eliminated
+                    // AND re-keyed surgically by `eliminate_type_projections` (its Neutral
+                    // branch re-forms the projection off the CALLER's argument). A blanket
+                    // `Ref`-substitution here would WRONGLY re-key a δ-REDUCED projection
+                    // receiver: the self-recursive `count(rest)` grounds `s.E` to the
+                    // enclosing `count.s.E`, whose receiver IS the callee formal `s` — so
+                    // the blanket map (`s ↦ rest`) would corrupt it to `rest.E` (exactly the
+                    // ticket's "undeclared effect: s.E, body's s.E = rest.E"). Re-key only
+                    // the GROUND effect labels (`Modify[c]` → `Modify[s]`, WI-209), which
+                    // carry no projection and which the surgical pass never touches.
+                    if value_contains_projection(kb, e) {
+                        e.clone()
+                    } else {
+                        substitute_ref_syms_value(kb, e, &param_to_arg_sym)
+                    }
+                })
                 .collect()
         };
         // Walk each effect through `walk_type_deep` so arg-unification bindings
@@ -10538,12 +10565,13 @@ fn eliminate_type_projections(
     kb: &mut KnowledgeBase,
     ty: &Value,
     arg_types: &HashMap<Symbol, Value>,
+    arg_syms: Option<&HashMap<Symbol, Symbol>>,
     ctx: &TypeErrorContext,
     span: Option<Span>,
 ) -> Result<Value, TypeError> {
     match ty {
         Value::Term(t) => {
-            Ok(Value::Term(rewrite_term_projections(kb, *t, arg_types, ctx, span)?))
+            Ok(Value::Term(rewrite_term_projections(kb, *t, arg_types, arg_syms, ctx, span)?))
         }
         Value::Node(_) => {
             // WI-397: a top-level COMPOUND-receiver projection (`a.b.T`) rides a
@@ -10554,7 +10582,15 @@ fn eliminate_type_projections(
                 return match resolve_compound_projection(kb, &value, member, arg_types, ctx, span)? {
                     ProjResult::Grounded(v) => Ok(v),
                     // WI-400: abstract receiver, member declared — keep the original
-                    // compound `ExprCarried` Node as the rigid neutral.
+                    // compound `ExprCarried` Node as the rigid neutral. WI-459 NOTE: unlike
+                    // the single-`Ref` `Value::Term` path, this compound (`a.b.T`) neutral is
+                    // NOT re-keyed to the caller's argument (`arg_syms` is not threaded into
+                    // `resolve_compound_projection`). A forwarded compound projection through
+                    // a call therefore stays callee-keyed and fails the ζ identity check —
+                    // a LOUD over-rejection (sound, never a wrong accept), not a regression
+                    // (the compound path never re-keyed). The WI-447 stdlib threading uses
+                    // only single-`Ref` receivers (`s`/`xs`/`rest`); compound-receiver
+                    // re-keying is a recorded follow-on.
                     ProjResult::Neutral => Ok(ty.clone()),
                 };
             }
@@ -10719,6 +10755,7 @@ fn rewrite_term_projections(
     kb: &mut KnowledgeBase,
     t: TermId,
     arg_types: &HashMap<Symbol, Value>,
+    arg_syms: Option<&HashMap<Symbol, Symbol>>,
     ctx: &TypeErrorContext,
     span: Option<Span>,
 ) -> Result<TermId, TypeError> {
@@ -10769,9 +10806,27 @@ fn rewrite_term_projections(
             // follow-on; loud rather than silently dropped.
             ProjResult::Grounded(_) => Err(projection_type_error(ctx, span,
                 "type projection resolved to a non-term carrier, which is not yet supported")),
-            // WI-400: the receiver is abstract but the member is declared — keep the
-            // original `ExprCarried` term `t` as the rigid neutral (path-identity).
-            ProjResult::Neutral => Ok(t),
+            // WI-400: the receiver is abstract but the member is declared — the rigid
+            // NEUTRAL (path-identity). WI-459: RE-KEY its receiver from the callee's formal
+            // parameter to the CALLER's argument value-reference when this is a call-site
+            // elimination (`arg_syms` present) and the argument is a simple value reference.
+            // The projection stayed abstract precisely because the argument's TYPE did not
+            // bind the member (`sfd(xs)` with the bare `xs : List`), so the receiver VALUE
+            // is exactly that argument — `sfd.xs.T` is definitionally `collectd.xs.T`. The
+            // grounded arms above never reach here, so a member the argument's type DID bind
+            // (the recursive `collectd(rest)`, where `rest : List[T = xs.T]` δ-reduces `T`
+            // to `xs.T`) keeps its δ-reduced value un-re-keyed. A non-value-ref argument has
+            // no `arg_syms` entry → left as the callee-keyed neutral (deferred-receiver
+            // follow-on). Re-forming `ExprCarried{Ref(arg_sym), member}` here is what makes
+            // the SAME definitional projection compare EQUAL under the non-decomposing ζ arm
+            // (WI-400) instead of two identically-printed-yet-distinct neutrals.
+            ProjResult::Neutral => Ok(match arg_syms.and_then(|m| m.get(&receiver)) {
+                Some(&arg_sym) => {
+                    let recv_term = kb.alloc(Term::Ref(arg_sym));
+                    kb.make_expr_carried(recv_term, member)
+                }
+                None => t,
+            }),
         };
     }
     // Recurse into `Fn` children, rebuilding only if a child changed. Index-based so
@@ -10781,7 +10836,7 @@ fn rewrite_term_projections(
         let mut changed = false;
         let mut new_pos = pos_args;
         for i in 0..new_pos.len() {
-            let nc = rewrite_term_projections(kb, new_pos[i], arg_types, ctx, span)?;
+            let nc = rewrite_term_projections(kb, new_pos[i], arg_types, arg_syms, ctx, span)?;
             if nc != new_pos[i] {
                 new_pos[i] = nc;
                 changed = true;
@@ -10789,7 +10844,7 @@ fn rewrite_term_projections(
         }
         let mut new_named = named_args;
         for i in 0..new_named.len() {
-            let nc = rewrite_term_projections(kb, new_named[i].1, arg_types, ctx, span)?;
+            let nc = rewrite_term_projections(kb, new_named[i].1, arg_types, arg_syms, ctx, span)?;
             if nc != new_named[i].1 {
                 new_named[i].1 = nc;
                 changed = true;
@@ -16902,6 +16957,7 @@ fn check_operation_bodies(kb: &mut KnowledgeBase, op_syms: &[Symbol], errors: &m
                             kb,
                             &cur,
                             &decl,
+                            None,
                             &TypeErrorContext::OperationArgument { op_name: op.op_sym, param: *name },
                             op.span,
                         ) {
@@ -16929,6 +16985,7 @@ fn check_operation_bodies(kb: &mut KnowledgeBase, op_syms: &[Symbol], errors: &m
                         kb,
                         &cur,
                         &decl,
+                        None,
                         &TypeErrorContext::OperationArgument { op_name: op.op_sym, param: *name },
                         op.span,
                     ) {
