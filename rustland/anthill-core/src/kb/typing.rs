@@ -7357,15 +7357,16 @@ fn witness_provision(
         if kb.canonical_sort_sym(base) != spec_canon {
             continue;
         }
-        // The dispatch carrier must appear as a SORT-valued type-param binding (the
-        // witness binds `Combiner[T = Tag]` — `Tag` is the carrier). An op-valued
-        // binding (`combine = c`) is an Operation, filtered out by the Sort kind.
-        let binds_carrier = bindings.iter().any(|(_, v)| {
-            super::load::provides_spec_base_sym(kb, *v)
-                .filter(|s| matches!(kb.kind_of(*s), Some(crate::intern::SymbolKind::Sort)))
-                .map(|s| kb.canonical_sort_sym(s) == carrier_canon)
-                .unwrap_or(false)
-        });
+        // The CARRIER PARAM (the spec's first type parameter — `Combiner.T`) must be
+        // bound to the dispatch carrier. Uses the SAME `provision_carrier_sort` the
+        // coherence pass and `find_spec_op_for_provided_sort` use, so witness
+        // detection is identical across dispatch / classification / coherence — a
+        // NON-carrier param of a multi-param spec that merely happens to bind the
+        // carrier sort (`Spec[A = Other, B = Tag]` for carrier `Tag`) does not
+        // spuriously match.
+        let binds_carrier = provision_carrier_sort(kb, spec_sort, spec_t)
+            .map(|c| kb.canonical_sort_sym(c) == carrier_canon)
+            .unwrap_or(false);
         if binds_carrier {
             return Some((provider, bindings));
         }
