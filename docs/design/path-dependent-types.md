@@ -638,12 +638,41 @@ is a constant — just binding-precise admissibility). The *unbound* case needs 
 dual plumbing the `requires` code lacks: the op constructs the evidence and the caller receives
 it on the result value (dict-out). Symmetric in concept, new implementation.
 
-**Status / driver.** No *current* operation needs to return an interface — the §1 /
-`DataProvider` use-case, the combinators, and the CLI are all input-side (`requires`) or
-concrete — so this is **designed, not yet built** (matching the WI's own "add when a real
-translucent-return need appears"). The first real driver is the **anthill-todo pluggable
-backend** (`examples/github-todo/docs/pluggable-backend.md`), scheduled **after WI-009**; this
-KVStore example is its standalone rehearsal.
+**Status / driver.** **DELIVERED 2026-06-14 (WI-402 existential half).** Both regimes
+work end-to-end against the KVStore factory fixture (`wi402_existential_return_test.rs`):
+load + admit, branch-join on the ensures bound, dotted dispatch at the caller, and the
+dict-out at eval. The first real driver remains the **anthill-todo pluggable backend**
+(`examples/github-todo/docs/pluggable-backend.md`); this KVStore example was its rehearsal.
+
+**Implementation (the load-bearing choices).** The carrier `C` is introduced *implicitly* —
+no separate binder — when the return type is an undeclared Capitalized name that is also the
+carrier (first positional) of an `ensures Spec[C, …]` clause (the loader's
+`detect_existential_carrier`; a concrete-sort return carrying an `ensures` is left alone).
+The loader then **rewrites the return type to the ensures spec with the carrier dropped**
+(`Spec[K = String]` bound, or a bare `Ref(Spec)` unbound) and registers `C` as an op-scoped
+type variable so the `ensures` clause itself still resolves. Consequences, both deliberate:
+
+- The **bound** case (`ensures Spec[C, K = String, V = …]`) reduces *exactly* to the
+  delivered manifest-return half — the rewritten return is a full manifest, so the WI-287
+  branch-join takes the spec as its upper bound for the divergent backends and the WI-401
+  gate sees all members bound (no escape). No new typer code beyond the rewrite.
+- The **unbound** case (`ensures Spec[C]`) is a bare-`Spec` return; the WI-401
+  `abstracting_return_error` gate gains an **`ensures`-aware skip** (`op_ensures_vouches_for`,
+  the output dual of `op_requires_entries`): a bare/partial upcast is admitted *iff* an
+  `ensures` clause names the return spec — otherwise it still escapes and is rejected
+  (strict base model intact). The caller sees `store : Spec` (carrier abstract) and dispatches
+  through the interface via the ordinary abstract-receiver path; eval dispatches on the
+  concrete value's runtime sort (value-directed dispatch — the dict flows out, no new code).
+
+**Caveat / deferred.** The dispatch surface is the **dotted/receiver form** (`store.op(…)` /
+`Spec.op(store, …)`); a direct `op(store)` call to a body-less spec op does not resolve
+regardless of the existential (a pre-existing spec-op-call limitation). Two refinements are
+deferred (sound, no driver): the named carrier `C` is *dropped* by the rewrite rather than
+preserved as a distinct nominal, so two existentials returning the same spec are not kept
+non-injectively distinct (matters only for the multi-existential abstract-member case — the
+worked example uses a single result through the interface); and a bare abstracting return via
+an `if`-join *without* an `ensures` is currently accepted (a pre-existing WI-401 gap for
+join-typed bodies, orthogonal to this work — the direct upcast is correctly rejected).
 
 ## 5.1 Value-position projection — projection is one arm of the *generic dot*
 

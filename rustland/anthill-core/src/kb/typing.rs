@@ -10839,6 +10839,36 @@ fn push_op_requires_clause(kb: &KnowledgeBase, tid: TermId, out: &mut Vec<Requir
     }
 }
 
+/// WI-402 (existential half): the `ensures`-clause specs of an OPERATION, decoded to
+/// [`RequiresEntry`]s — the output dual of [`op_requires_entries`]. An `ensures Spec[C]`
+/// clause names a spec the result is guaranteed to provide; the same clause shape and
+/// decoder ([`push_op_requires_clause`]) serve both directions.
+fn op_ensures_entries(kb: &KnowledgeBase, op_sym: Symbol) -> Vec<RequiresEntry> {
+    let Some(rec) = super::op_info::lookup_operation_info(kb, op_sym) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for v in &rec.ensures {
+        if let Value::Term(tid) = v {
+            push_op_requires_clause(kb, *tid, &mut out);
+        }
+    }
+    out
+}
+
+/// WI-402: does the operation carry an `ensures Spec[C]` clause whose spec base sort is
+/// `ret_sort`? Such a clause vouches for an abstract `Spec` return (the existential output
+/// dual of `requires`): the operation's body must produce a value providing `Spec`, so the
+/// otherwise-escaping abstract members are rooted at the operation INTERFACE (§5 escape
+/// table, middle row — never escapes), not minted as a hidden local. The `abstracting_return`
+/// gate is then satisfied — the `ensures` is precisely the "made so by an `ensures` manifest"
+/// admit-form WI-401's rule already names.
+fn op_ensures_vouches_for(kb: &KnowledgeBase, op_sym: Symbol, ret_sort: Symbol) -> bool {
+    op_ensures_entries(kb, op_sym)
+        .iter()
+        .any(|e| same_symbol(kb, e.required_sort, ret_sort))
+}
+
 /// WI-428: resolve a RIGID type-receiver projection (`P.Key` / `MemStore.Key`) at an
 /// elimination site — the formation-validation rules of design §5.3, run in the typer
 /// (where the `requires` chain is complete regardless of source order), not the loader
@@ -14871,6 +14901,14 @@ fn abstracting_return_error(
         return None;
     }
     if !sort_provides_admissibly(kb, body_sort, ret_sort) {
+        return None;
+    }
+    // WI-402 (existential half): an `ensures Spec[C]` clause admits this abstract `Spec`
+    // return — the output dual of `requires`. The operation guarantees the result provides
+    // `Spec`, so the abstract members are interface-rooted (not a hidden local) and the
+    // existential is escape-free. Without such a clause the bare/partial upcast still
+    // escapes (the strict base model) and is rejected below.
+    if op_ensures_vouches_for(kb, op_sym, ret_sort) {
         return None;
     }
     // Manifest iff every one of the spec's members has a binding in the return type. A

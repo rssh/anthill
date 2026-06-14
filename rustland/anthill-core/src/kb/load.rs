@@ -8363,6 +8363,144 @@ impl<'a> Loader<'a> {
         self.current_owner = prev_owner;
     }
 
+    /// WI-402 (existential half): detect `-> C ensures Spec[C, …]`. `C` is an
+    /// op-discharged EXISTENTIAL carrier — the output dual of `requires Spec[C]`:
+    /// the body witnesses it with a concrete provider, the caller sees the spec with
+    /// the carrier abstract, and at eval the dictionary flows OUT with the value.
+    ///
+    /// The pattern: the return type is a single-segment Capitalized name that ALSO
+    /// appears as the carrier (first positional) of an `ensures` spec, and is neither
+    /// a declared op type-param (those are universal — caller-supplied) nor a
+    /// resolvable sort (a CONCRETE return carrying an `ensures` postcondition is a
+    /// different, valid case — never rewritten). Returns the carrier short name and the
+    /// matching `ensures` spec atom (the raw parse `TermId`, for the return-type rewrite).
+    fn detect_existential_carrier(&self, o: &Operation) -> Option<(String, TermId)> {
+        let TypeExpr::Simple(ret_name) = &o.return_type else { return None };
+        if ret_name.segments.len() != 1 {
+            return None;
+        }
+        let ret_str = self.parsed.symbols.name(ret_name.segments[0]).to_owned();
+        if !ret_str.chars().next().is_some_and(|c| c.is_uppercase()) {
+            return None;
+        }
+        if o.type_params.iter().any(|tp| self.parsed.symbols.name(tp.name) == ret_str) {
+            return None;
+        }
+        if !matches!(
+            self.kb.symbols.resolve_in_scope(&ret_str, self.current_scope.raw()),
+            ResolveResult::NotFound
+        ) {
+            return None;
+        }
+        let spec_atom = o
+            .ensures
+            .iter()
+            .flatten()
+            .copied()
+            .find(|&atom| self.ensures_atom_carrier_name(atom).as_deref() == Some(ret_str.as_str()))?;
+        Some((ret_str, spec_atom))
+    }
+
+    /// The carrier (first positional) short-name of an `ensures` spec atom
+    /// (`KVStore[C, …]` ⟹ `Some("C")`), read from the RAW parse term.
+    fn ensures_atom_carrier_name(&self, atom: TermId) -> Option<String> {
+        let Term::Fn { pos_args, .. } = self.parsed.terms.get(atom) else { return None };
+        self.parse_bare_name(*pos_args.first()?)
+    }
+
+    /// Short name of a bare-name parse term (the carrier-slot shapes: `Ident` / `Ref`
+    /// / nullary `Fn`).
+    fn parse_bare_name(&self, tid: TermId) -> Option<String> {
+        match self.parsed.terms.get(tid) {
+            Term::Ident(s) | Term::Ref(s) => Some(self.parsed.symbols.name(*s).to_owned()),
+            Term::Fn { functor, pos_args, named_args }
+                if pos_args.is_empty() && named_args.is_empty() =>
+            {
+                Some(self.parsed.symbols.name(*functor).to_owned())
+            }
+            _ => None,
+        }
+    }
+
+    /// WI-402: register the existential carrier `C` as an op-scoped type variable and
+    /// build the caller-visible return type = the `ensures` spec with the carrier
+    /// dropped. The BOUND case (`ensures Spec[C, K = String]`) yields the manifest
+    /// `Spec[K = String]` — reducing to the delivered manifest-return half; the
+    /// UNBOUND case (`ensures Spec[C]`) yields a bare `Spec`, admitted by the
+    /// ensures-aware `abstracting_return_error` gate. Registering `C` (symbol +
+    /// type-param flag + `SortAlias` backing var, like `sort C = ?`) lets the
+    /// `ensures` clause resolve the carrier and `sym_subject_key` treat it as a var.
+    fn build_existential_return(
+        &mut self,
+        carrier: &str,
+        spec_atom: TermId,
+        op_qualified: &str,
+        op_scope: TermId,
+        domain: TermId,
+    ) -> crate::eval::value::Value {
+        let qualified = format!("{op_qualified}.{carrier}");
+        let c_sym = self.kb.symbols.define(carrier, &qualified, SymbolKind::Sort, op_scope.raw());
+        self.kb.symbols.add_type_param(op_scope.raw(), carrier);
+        let c_sort_term = self.kb.alloc(Term::Fn {
+            functor: c_sym,
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::new(),
+        });
+        self.emit_type_param_backing_var(c_sort_term, domain);
+
+        let spec_term = self.convert_term(spec_atom);
+        let return_term = self.strip_spec_carrier(spec_term, carrier);
+        crate::eval::value::Value::Term(return_term)
+    }
+
+    /// Drop the existential carrier from a converted spec application — the
+    /// caller-visible spec type (`KVStore[C, K = String, V = String]` ⟹
+    /// `KVStore[K = String, V = String]`; the unbound `KVStore[C]` ⟹ bare `KVStore`).
+    /// Filters a positional carrier OR a named carrier binding whose value names
+    /// `carrier`, so either spec-application shape lowers correctly.
+    fn strip_spec_carrier(&mut self, spec_term: TermId, carrier: &str) -> TermId {
+        let Term::Fn { functor, pos_args, named_args } =
+            self.kb.get_term(spec_term).clone()
+        else {
+            return spec_term;
+        };
+        let new_pos: SmallVec<[TermId; 4]> = pos_args
+            .iter()
+            .copied()
+            .filter(|&a| self.kb_leaf_name(a).as_deref() != Some(carrier))
+            .collect();
+        let new_named: SmallVec<[(Symbol, TermId); 2]> = named_args
+            .iter()
+            .copied()
+            .filter(|&(_, v)| self.kb_leaf_name(v).as_deref() != Some(carrier))
+            .collect();
+        if new_pos.is_empty() && new_named.is_empty() {
+            // Unbound existential (`ensures Spec[C]`) → the bare spec. Its canonical
+            // form is `Ref(S)`, NOT a nullary `Fn{S}` — the latter `type_head`
+            // classifies as `Error` (the WI-391 leaf shape), so a bare-spec return
+            // would not be recognized as a provider upcast at the conformance check.
+            return self.kb.alloc(Term::Ref(functor));
+        }
+        self.kb.alloc(Term::Fn { functor, pos_args: new_pos, named_args: new_named })
+    }
+
+    /// Short name of a kb-term leaf (`Ref` / `Ident` / `Var` / nullary `Fn`), for
+    /// carrier matching when stripping the existential carrier.
+    fn kb_leaf_name(&self, tid: TermId) -> Option<String> {
+        match self.kb.get_term(tid) {
+            Term::Ref(s) | Term::Ident(s) => Some(self.kb.resolve_sym(*s).to_owned()),
+            Term::Var(Var::Global(vid) | Var::Rigid(vid)) => {
+                Some(self.kb.resolve_sym(vid.name()).to_owned())
+            }
+            Term::Fn { functor, pos_args, named_args }
+                if pos_args.is_empty() && named_args.is_empty() =>
+            {
+                Some(self.kb.resolve_sym(*functor).to_owned())
+            }
+            _ => None,
+        }
+    }
+
     fn load_operation(&mut self, o: &Operation, domain: TermId) {
         let op_sort = self.kb.make_name_term("Operation");
         let functor = self.remap_name(&o.name);
@@ -8416,7 +8554,15 @@ impl<'a> Loader<'a> {
         // WI-341: the whole operation SIGNATURE flows through the Value path — a
         // denoted-bearing return type (an op returning a `Modify`-carrying
         // callback) is a `Value::Node`, never re-grounded via `type_expr_to_value`.
-        let return_value = self.type_expr_to_value(&o.return_type);
+        // WI-402 (existential half): `-> C ensures Spec[C, …]` rewrites the return
+        // type to the ensures spec with the carrier dropped (the body witnesses C
+        // with a concrete provider; the caller sees the spec, carrier abstract).
+        let return_value = match self.detect_existential_carrier(o) {
+            Some((carrier, spec_atom)) => {
+                self.build_existential_return(&carrier, spec_atom, op_qualified.as_str(), op_scope, domain)
+            }
+            None => self.type_expr_to_value(&o.return_type),
+        };
 
         // Build FieldInfo list for params
         let field_info_sym = self.kb.resolve_symbol("anthill.reflect.FieldInfo");

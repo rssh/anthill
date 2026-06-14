@@ -223,6 +223,9 @@ mod wi401_escape_free_return_test;
 #[path = "include/wi402_manifest_provider_test.rs"]
 mod wi402_manifest_provider_test;
 
+#[path = "include/wi402_existential_return_test.rs"]
+mod wi402_existential_return_test;
+
 #[path = "include/wi428_rigid_projection_test.rs"]
 mod wi428_rigid_projection_test;
 
