@@ -235,14 +235,8 @@ The kernel checks this restriction when a rule is declared and rejects rules out
 ### Functor
 
 ```anthill
-sort Functor
-  sort F
-    sort T = ?
-  end
-  sort A = ?
-  sort B = ?
-
-  operation map(fa: F[T = A], f: (A) -> B) -> F[T = B]
+sort Functor[F[T]]
+  operation map[A, B](fa: F[T = A], f: (A) -> B) -> F[T = B]
 
   -- Laws
   rule identity:    map(?fa, lambda x -> x) = ?fa
@@ -254,37 +248,36 @@ end
 
 The full monad specification (cf. `dotty-cps-async`'s `CpsMonad[F[_]]`):
 
-> **Model decided (2026-06-11)** — see `docs/design/path-dependent-types.md` §5.4. This
-> surface (the structured member sort `F` + applications `F[T = A]`) loads today as
-> rigid-functor terms (probe-confirmed); the instantiation semantics is
-> **fill-as-requirement-discharge** (filling `F` checks/adds the licensing bound's
-> requirement — concrete fill resolves it by SLD, abstract fill forwards it as a dict),
-> applications decompose **injectively** (dual to the non-injective projections of
-> §5.3), licensing is **implicit** (the `requires CpsMonad[F]`-style bound licenses
-> the applications; the `Applied`-clause form is the lowering, not the surface), and
-> instances are retroactive **provision facts with op-valued bindings**
-> (`fact CpsMonad[F = Option, pure = optionPure, …]`). Build: WI-383 (mechanism) +
-> WI-431 (instance facts).
+> **Model decided (2026-06-11), DELIVERED (2026-06-14)** — see
+> `docs/design/path-dependent-types.md` §5.4. The type constructor is written in the
+> MARKED enclosing-list form `sort CpsMonad[F[T]]` (WI-451), which gives `F` a backing
+> var to fill (WI-452); the element types `A` / `B` / `C` are **per-operation** type
+> params (`operation map[A, B](…)`), not part of the monad's identity. The
+> instantiation semantics is **fill-as-requirement-discharge** (filling `F` checks/adds
+> the licensing bound's requirement — concrete fill resolves it by SLD, abstract fill
+> forwards it as a dict, WI-453), applications decompose **injectively** (dual to the
+> non-injective projections of §5.3), licensing is **implicit** (the
+> `requires CpsMonad[F]`-style bound licenses the applications; the `Applied`-clause
+> form is the lowering, not the surface), and instances are retroactive **provision
+> facts with op-valued bindings** (`fact CpsMonad[F = Option, pure = optionPure, …]`).
+> Build: WI-383 (mechanism) + WI-451/452/453 (the marked carrier + fill) + WI-431
+> (instance facts). The earlier unmarked body form (`sort CpsMonad … sort F … end`)
+> still parses but loads `F` as a rigid nominal sort (never filled — a *concrete*
+> structured sort, e.g. `Modify`); the marker is what distinguishes a fillable
+> parameter from a concrete nested sort.
 
 ```anthill
-sort CpsMonad
-  sort F
-    sort T = ?
-  end
-  sort A = ?
-  sort B = ?
-  sort C = ?
-
-  operation pure(a: A) -> F[T = A]
-  operation map(fa: F[T = A], f: (A) -> B) -> F[T = B]
-  operation flatMap(fa: F[T = A], f: (A) -> F[T = B]) -> F[T = B]
+sort CpsMonad[F[T]]
+  operation pure[A](a: A) -> F[T = A]
+  operation map[A, B](fa: F[T = A], f: (A) -> B) -> F[T = B]
+  operation flatMap[A, B](fa: F[T = A], f: (A) -> F[T = B]) -> F[T = B]
 
   -- Derived
-  operation flatten(ffa: F[T = F[T = A]]) -> F[T = A]
+  operation flatten[A](ffa: F[T = F[T = A]]) -> F[T = A]
   rule flatten(?ffa) = flatMap(?ffa, lambda x -> x)
 
   -- Kleisli composition
-  operation bind-then(f: (A) -> F[T = B], g: (B) -> F[T = C])
+  operation bind-then[A, B, C](f: (A) -> F[T = B], g: (B) -> F[T = C])
     -> (A) -> F[T = C]
   rule bind-then(?f, ?g)(?x) = flatMap(?f(?x), ?g)
 
@@ -301,12 +294,12 @@ Error-handling extension (cf. `dotty-cps-async`'s `CpsTryMonad[F[_]]`):
 
 ```anthill
 sort CpsTryMonad
-  import CpsMonad
+  import CpsMonad          -- inherits the marked carrier F[T]
   sort Err = ?
 
-  operation error(e: Err) -> F[T = A]
-  operation flatMapTry(fa: F[T = A], f: (Try[T = A]) -> F[T = B]) -> F[T = B]
-  operation restore(fa: F[T = A], handler: (Err) -> F[T = A]) -> F[T = A]
+  operation error[A](e: Err) -> F[T = A]
+  operation flatMapTry[A, B](fa: F[T = A], f: (Try[T = A]) -> F[T = B]) -> F[T = B]
+  operation restore[A](fa: F[T = A], handler: (Err) -> F[T = A]) -> F[T = A]
 
   -- Laws
   rule error_left:    flatMap(error(?e), ?f) = error(?e)

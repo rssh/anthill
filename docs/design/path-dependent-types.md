@@ -984,9 +984,11 @@ any `?`-variable: the decidability argument above (rigid head, no flexible funct
 the *definition-site* reading, preserved verbatim; the use-site fill is unification
 against a *concrete* functor, never relational.
 
-*Remaining surface point (the semantics above are fixed): the migration sweep — every
-current structured param is written unmarked (`CpsMonad.F` in the §5.4 fixtures, the
-WI-383/WI-431 tests), so each moves to the marked form to keep its param-ness.*
+*Migration sweep — DONE (WI-383 close, 2026-06-14): every structured param that was
+written unmarked (`CpsMonad.F` in proposal 002's §Examples and the WI-383/WI-431 test
+fixtures) now uses the marked enclosing form `sort …[F[T]]`, with the element types
+moved to per-operation type params (`operation map[A, B](…)`); the unmarked body form is
+reserved for concrete structured sorts (`Modify`).*
 
 ### Fill ⟹ check/add require — the substitution model
 
@@ -1122,7 +1124,7 @@ fact-vs-provides decision, which it depends on).
 | Capitalized dotted fall-through in type position → **hard error** (today: warning + degenerate nominal; a false reject *and* a false accept, §5.3) | **WI-429** (fix vs the delivered WI-376 classifier; independent of WI-428, deliverable first) |
 | type-receiver projection `RigidTypeProjection` (§5.3): classifier arm, δ-at-formation / δ-through-the-bound, ζ by σ-class, bare-spec sugar, `TypeExtractor` entity | **WI-428** |
 | carrier-precise `requires` matching for `ExprCarried` neutrals (promoted from WI-400's deferred list; end-state = the §5.3 convergence onto var-keying) | **WI-430** |
-| HK emulation (§5.4): structured-param member registration, **fill-as-requirement-discharge** (co-delivers WI-428 increment B), injective application decomposition, Miller guard for rule bodies | **WI-383** (re-pointed onto the §5.4 model, 2026-06-11) |
+| HK emulation (§5.4): structured-param member registration, **fill-as-requirement-discharge** (co-delivers WI-428 increment B), injective application decomposition, Miller guard for rule bodies | **WI-383** ✓ **DELIVERED** (2026-06-14): the op-type-param projection `T.V` (forms + grounds via explicit-requires, self-carrier structured member, entity-resource provider-fact bind), the marked carrier `sort …[F[T]]` (WI-451/452) + concrete fill `F := Option` (WI-453, requirement-discharge), and injective application decomposition (free via the parameterized unify arm) are end-to-end. The rule-body Miller-fragment guard is a resolver/SLD refinement (deferred — flexible `?f(?x)` heads load; the guard fires only once concrete monad values flow through the law rules, downstream of instances) |
 | instance facts (§5.4): op-valued provision-fact bindings → dict builder, fact-side coverage, loud-ambiguity coherence | **WI-431** (depends WI-391, the fact-binding lowering decision) |
 
 The parametric working example of §1 needs **WI-384 + WI-376 + WI-397 + WI-398**, the

@@ -63,14 +63,9 @@ fn instance_fact_op_binding_satisfies_coverage() {
     let snippet = r#"namespace test.wi431.cps_accept
   import anthill.prelude.Option
 
-  sort CpsMonad
-    sort F
-      sort T = ?
-    end
-    sort A = ?
-    sort B = ?
-    operation pure(a: A) -> F[T = A]
-    operation flatMap(fa: F[T = A], f: (A) -> F[T = B]) -> F[T = B]
+  sort CpsMonad[F[T]]
+    operation pure[A](a: A) -> F[T = A]
+    operation flatMap[A, B](fa: F[T = A], f: (A) -> F[T = B]) -> F[T = B]
   end
 
   operation optionPure[A](a: A) -> Option[T = A] = some(a)
@@ -99,14 +94,9 @@ fn instance_fact_missing_op_binding_is_loud() {
     let snippet = r#"namespace test.wi431.cps_missing
   import anthill.prelude.Option
 
-  sort CpsMonad
-    sort F
-      sort T = ?
-    end
-    sort A = ?
-    sort B = ?
-    operation pure(a: A) -> F[T = A]
-    operation flatMap(fa: F[T = A], f: (A) -> F[T = B]) -> F[T = B]
+  sort CpsMonad[F[T]]
+    operation pure[A](a: A) -> F[T = A]
+    operation flatMap[A, B](fa: F[T = A], f: (A) -> F[T = B]) -> F[T = B]
   end
 
   operation optionPure[A](a: A) -> Option[T = A] = some(a)
@@ -342,15 +332,10 @@ fn instance_fact_spec_default_op_needs_no_binding() {
     let snippet = r#"namespace test.wi431.cps_default
   import anthill.prelude.Option
 
-  sort CpsMonad
-    sort F
-      sort T = ?
-    end
-    sort A = ?
-    sort B = ?
-    operation pure(a: A) -> F[T = A]
-    operation flatMap(fa: F[T = A], f: (A) -> F[T = B]) -> F[T = B]
-    operation idF(fa: F[T = A]) -> F[T = A] = fa
+  sort CpsMonad[F[T]]
+    operation pure[A](a: A) -> F[T = A]
+    operation flatMap[A, B](fa: F[T = A], f: (A) -> F[T = B]) -> F[T = B]
+    operation idF[A](fa: F[T = A]) -> F[T = A] = fa
   end
 
   operation optionPure[A](a: A) -> Option[T = A] = some(a)
@@ -487,14 +472,9 @@ fn instance_fact_higher_kinded_binding_signature_fails_open() {
     let snippet = r#"namespace test.wi431.sig_hk
   import anthill.prelude.Option
 
-  sort CpsMonad
-    sort F
-      sort T = ?
-    end
-    sort A = ?
-    sort B = ?
-    operation pure(a: A) -> F[T = A]
-    operation flatMap(fa: F[T = A], f: (A) -> F[T = B]) -> F[T = B]
+  sort CpsMonad[F[T]]
+    operation pure[A](a: A) -> F[T = A]
+    operation flatMap[A, B](fa: F[T = A], f: (A) -> F[T = B]) -> F[T = B]
   end
 
   operation optionPure[A](a: A) -> Option[T = A] = some(a)
