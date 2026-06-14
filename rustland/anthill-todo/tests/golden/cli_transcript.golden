@@ -18,30 +18,33 @@ $ anthill-todo status
   Open: 4
 [exit=0]
 $ anthill-todo list
+Open:
   WI-001 [Open] base work [unblocks 4]
 
   -- blocked --
   WI-002 [Open] second work (depends: WI-001)
-  WI-003 [Open] third work (depends: WI-002, WI-004)
   WI-004 [Open] prereq for third (depends: WI-001)
+  WI-003 [Open] third work (depends: WI-002, WI-004)
 4 item(s)
 [exit=0]
 $ anthill-todo list --all
+Open:
   WI-001 [Open] base work [unblocks 4]
 
   -- blocked --
   WI-002 [Open] second work (depends: WI-001)
-  WI-003 [Open] third work (depends: WI-002, WI-004)
   WI-004 [Open] prereq for third (depends: WI-001)
+  WI-003 [Open] third work (depends: WI-002, WI-004)
 4 item(s)
 [exit=0]
 $ anthill-todo list --status open
+Open:
   WI-001 [Open] base work [unblocks 4]
 
   -- blocked --
   WI-002 [Open] second work (depends: WI-001)
-  WI-003 [Open] third work (depends: WI-002, WI-004)
   WI-004 [Open] prereq for third (depends: WI-001)
+  WI-003 [Open] third work (depends: WI-002, WI-004)
 4 item(s)
 [exit=0]
 $ anthill-todo list --tag seq
@@ -118,11 +121,14 @@ $ anthill-todo delete WI-004
 deleted: WI-004
 [exit=0]
 $ anthill-todo list --all
-  WI-001 [Verified] base work [unblocks 2]
+Open:
   WI-002 [Open] second work updated (depends: WI-001) [unblocks 1] [has feedback]
 
   -- blocked --
   WI-003 [Open] third work (depends: WI-002, WI-004)
+
+Verified:
+  WI-001 [Verified] base work [unblocks 2]
 3 item(s)
 [exit=0]
 $ anthill-todo show WI-999

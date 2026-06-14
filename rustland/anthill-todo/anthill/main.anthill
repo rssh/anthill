@@ -1058,39 +1058,148 @@ namespace anthill.todo
                   match split_half_go(slow1, fast2)
                     case pair(l, r) -> pair(cons(s, l), r)
 
-    -- Order key for "ready": (unblocks desc, id asc). Returns true when
-    -- `a` should come strictly before `b`.
-    operation ready_lt(a: Row, b: Row) -> Bool =
-      match a
-        case Row(aid, _, _, _, ac, _) ->
-          match b
-            case Row(bid, _, _, _, bc, _) ->
-              if eq(ac, bc) then lt(aid, bid)
-              else if lt(ac, bc) then false  -- larger count first
-              else true
+    -- ── Chronological + topological order (WI-174) ────────────────
+    -- Walk a section's rows in id order; for each not-yet-emitted row,
+    -- postorder-emit its in-section, not-yet-emitted dependencies first,
+    -- then the row itself. Each item thus appears after all its
+    -- (in-section) dependencies, while the top-level cursor advances
+    -- chronologically — the earliest item anchors a cluster of its
+    -- dependencies immediately before it. Deps that live OUTSIDE this
+    -- section (a different status group, or the ready/blocked
+    -- counterpart) are absent from `section_map` and skipped: they are
+    -- satisfied anchors, displayed under their own section. This is the
+    -- general replacement for the old unblocks-count ready ordering;
+    -- `unblocks` survives as display-only annotation, no longer a sort key.
+    --
+    -- Rows are identified by id here, exactly as `build_row_map` keys the
+    -- ready/blocked classification this same command relies on. Two rows
+    -- sharing BOTH id and status (which `add` precludes — ids are
+    -- auto-assigned) would therefore collapse to one in this walk; the
+    -- one benign historical duplicate (WI-169) carries two different
+    -- statuses, so it lands in two distinct groups and both rows show.
+    operation chrono_topo(rows: List[Row]) -> List[Row] =
+      let sorted = sort_by_id(rows)
+      let section_map = build_row_map(sorted)
+      match chrono_topo_walk(sorted, section_map, empty(), nil())
+        case pair(_, acc) -> reverse_rows(acc)
 
-    -- Left-biased merge: take from `ys` only when it is strictly before
-    -- the `xs` head, so equal keys keep `xs` (the earlier half) first.
-    operation merge_ready(xs: List[Row], ys: List[Row]) -> List[Row] =
+    operation chrono_topo_walk(rows: List[Row],
+                               section_map: Map[String, Row],
+                               emitted: Map[String, Bool],
+                               acc: List[Row])
+      -> Pair[Map[String, Bool], List[Row]]
+    =
+      match rows
+        case nil() -> pair(emitted, acc)
+        case cons(r, rest) ->
+          match emit_row(r, section_map, emitted, acc)
+            case pair(e2, a2) -> chrono_topo_walk(rest, section_map, e2, a2)
+
+    -- Postorder emit of `r`: mark on entry (so a cyclic dep can't
+    -- re-enter and loop), recurse into in-section deps, then prepend
+    -- self. `acc` is built reversed; chrono_topo reverses at the end.
+    operation emit_row(r: Row,
+                       section_map: Map[String, Row],
+                       emitted: Map[String, Bool],
+                       acc: List[Row])
+      -> Pair[Map[String, Bool], List[Row]]
+    =
+      match r
+        case Row(rid, _, _, deps, _, _) ->
+          if contains(emitted, rid) then pair(emitted, acc)
+          else
+            let emitted1 = put(emitted, rid, true)
+            match emit_deps(deps, section_map, emitted1, acc)
+              case pair(e2, a2) -> pair(e2, cons(r, a2))
+
+    operation emit_deps(deps: List[String],
+                        section_map: Map[String, Row],
+                        emitted: Map[String, Bool],
+                        acc: List[Row])
+      -> Pair[Map[String, Bool], List[Row]]
+    =
+      match deps
+        case nil() -> pair(emitted, acc)
+        case cons(d, rest) ->
+          match get(section_map, d)
+            case none() -> emit_deps(rest, section_map, emitted, acc)
+            case some(dep_row) ->
+              match emit_row(dep_row, section_map, emitted, acc)
+                case pair(e2, a2) -> emit_deps(rest, section_map, e2, a2)
+
+    operation reverse_rows(xs: List[Row]) -> List[Row] =
+      reverse_rows_acc(xs, nil())
+
+    operation reverse_rows_acc(xs: List[Row], acc: List[Row]) -> List[Row] =
       match xs
-        case nil() -> ys
-        case cons(x, xrest) ->
-          match ys
-            case nil() -> xs
-            case cons(y, yrest) ->
-              if ready_lt(y, x) then cons(y, merge_ready(xs, yrest))
-              else cons(x, merge_ready(xrest, ys))
+        case nil() -> acc
+        case cons(h, rest) -> reverse_rows_acc(rest, cons(h, acc))
 
-    operation sort_ready(rs: List[Row]) -> List[Row] =
-      match rs
+    -- ── Status grouping (WI-174) ──────────────────────────────────
+    -- Top-level grouping is by status: Open, then Claimed, then
+    -- Delivered, then Verified (Verified/Delivered hidden by default via
+    -- `keep`), then any other status. `ordered_present_statuses` returns
+    -- exactly the statuses that occur in `filtered` (so every row lands
+    -- in one group — nothing is silently dropped), ranked by lifecycle
+    -- with an alphabetical tie-break for unknowns.
+    -- Lifecycle order for the WorkStatus enum (domain.anthill): active
+    -- queue first (Open → Claimed), then done (Delivered → Verified),
+    -- then the backlog (PreOpened) and terminal off-ramps (Rejected,
+    -- Stale). An unrecognised status sorts last (alphabetically among
+    -- its peers via status_before's tie-break) — visible, never dropped.
+    operation status_rank(status: String) -> Int64 =
+      if eq(status, "Open") then 0
+      else if eq(status, "Claimed") then 1
+      else if eq(status, "Delivered") then 2
+      else if eq(status, "Verified") then 3
+      else if eq(status, "PreOpened") then 4
+      else if eq(status, "Rejected") then 5
+      else if eq(status, "Stale") then 6
+      else 7
+
+    operation status_before(a: String, b: String) -> Bool =
+      let ra = status_rank(a)
+      let rb = status_rank(b)
+      if eq(ra, rb) then lt(a, b)
+      else lt(ra, rb)
+
+    operation ordered_present_statuses(rows: List[Row]) -> List[String] =
+      insertion_sort_statuses(distinct_statuses(rows, nil()), nil())
+
+    operation distinct_statuses(rows: List[Row], acc: List[String])
+      -> List[String]
+    =
+      match rows
+        case nil() -> acc
+        case cons(r, rest) ->
+          match r
+            case Row(_, st, _, _, _, _) ->
+              if list_contains_string(acc, st) then distinct_statuses(rest, acc)
+              else distinct_statuses(rest, cons(st, acc))
+
+    operation insertion_sort_statuses(xs: List[String], sorted: List[String])
+      -> List[String]
+    =
+      match xs
+        case nil() -> sorted
+        case cons(x, rest) ->
+          insertion_sort_statuses(rest, insert_status(x, sorted))
+
+    operation insert_status(x: String, sorted: List[String]) -> List[String] =
+      match sorted
+        case nil() -> cons(x, nil())
+        case cons(h, rest) ->
+          if status_before(x, h) then cons(x, cons(h, rest))
+          else cons(h, insert_status(x, rest))
+
+    operation rows_with_status(rows: List[Row], status: String) -> List[Row] =
+      match rows
         case nil() -> nil()
-        case cons(_, rest) ->
-          match rest
-            case nil() -> rs
-            case cons(_, _) ->
-              match split_half(rs)
-                case pair(left, right) ->
-                  merge_ready(sort_ready(left), sort_ready(right))
+        case cons(r, rest) ->
+          match r
+            case Row(_, st, _, _, _, _) ->
+              if eq(st, status) then cons(r, rows_with_status(rest, status))
+              else rows_with_status(rest, status)
 
     -- Stable merge sort by id. Ties retain input order (legacy
     -- slice::sort_by is stable; the data has duplicate WI-169 ids).
@@ -1199,6 +1308,46 @@ namespace anthill.todo
         case nil() -> 0
         case cons(_, rest) -> 1 + count_rows(rest)
 
+    -- Print each status group in turn (WI-174). `first` suppresses the
+    -- leading blank-line separator for the very first group. Every status
+    -- in `statuses` is present in `filtered`, so each group is non-empty
+    -- and always prints a header.
+    operation print_groups(statuses: List[String],
+                           filtered: List[Row],
+                           row_map: Map[String, Row],
+                           dep_map: Map[String, List[String]],
+                           first: Bool) -> Unit
+      effects ConsoleOutput
+    =
+      match statuses
+        case nil() -> ()
+        case cons(st, rest) ->
+          let group = rows_with_status(filtered, st)
+          let _ = if first then () else println(console(), "")
+          let _ = println(console(), concat(st, ":"))
+          let _ = print_group_body(group, row_map, dep_map)
+          print_groups(rest, filtered, row_map, dep_map, false)
+
+    -- One status group's body: ready then (if any) the `-- blocked --`
+    -- section, each ordered chrono+topo. `unblocks` is filled only on the
+    -- ready slice (display-only; the blocked render omits it).
+    operation print_group_body(group: List[Row],
+                               row_map: Map[String, Row],
+                               dep_map: Map[String, List[String]]) -> Unit
+      effects ConsoleOutput
+    =
+      let ready = chrono_topo(fill_unblocks(partition_ready(group, row_map), dep_map))
+      let blocked = chrono_topo(partition_blocked(group, row_map))
+      let _ = print_rows_ready(ready)
+      match blocked
+        case nil() -> ()
+        case cons(_, _) ->
+          let _ = match ready
+            case nil() -> ()
+            case cons(_, _) -> println(console(), "")
+          let _ = println(console(), "  -- blocked --")
+          print_rows_blocked(blocked)
+
     -- ── cmd_list itself ───────────────────────────────────────────
 
     operation cmd_list(args: List[Binding], s: Cell[State]) -> Int64
@@ -1225,20 +1374,12 @@ namespace anthill.todo
         let _ = println(console(), "No work items found.")
         0
       else
-        -- Compute `unblocks` only for the (smaller) ready slice; the
-        -- blocked slice doesn't display the count.
-        let ready_unfilled = partition_ready(filtered, row_map)
-        let ready = sort_ready(fill_unblocks(ready_unfilled, dep_map))
-        let blocked = sort_by_id(partition_blocked(filtered, row_map))
-        let _ = print_rows_ready(ready)
-        let _ = match blocked
-          case nil() -> ()
-          case cons(_, _) ->
-            let _ = match ready
-              case nil() -> ()
-              case cons(_, _) -> println(console(), "")
-            let _ = println(console(), "  -- blocked --")
-            print_rows_blocked(blocked)
+        -- WI-174: group by status (Open → Claimed → Delivered → …); each
+        -- group splits into ready / blocked, each section ordered
+        -- chrono+topo (chrono_topo). `row_map` spans ALL rows so the
+        -- ready/blocked split sees deps that live in other groups.
+        let statuses = ordered_present_statuses(filtered)
+        let _ = print_groups(statuses, filtered, row_map, dep_map, true)
         let _ = println(console(),
                         concat(to_string(count_rows(filtered)), " item(s)"))
         0
