@@ -938,6 +938,15 @@ fn scan_items_pass1(
                         is_enclosing: false,
                     });
                 }
+                // WI-452 (§5.4): a MARKED structured param (`sort [F] { … }`, the
+                // higher-kinded carrier of `sort Spec[F[T]]`) is a NON-RIGID type
+                // parameter of the enclosing sort — register it like the
+                // `sort T = ?` arm below does (the `add_type_param` half; the
+                // SortAlias → Var backing var is emitted in `load_sort_with_body`).
+                // An UNMARKED `sort F { … }` stays a concrete nested sort.
+                if s.is_type_param && is_sort_scope(kb, scope) {
+                    kb.symbols.add_type_param(scope.raw(), &short);
+                }
                 // Recurse into sort body with the sort's qualified name as prefix
                 scan_items_pass1(kb, &s.items, parse_sym, parse_terms, sort_term, &qualified);
             }
@@ -7383,6 +7392,39 @@ impl<'a> Loader<'a> {
         }
     }
 
+    /// WI-452 (§5.4): emit `SortAlias(sort_term, Var)` — the non-rigid backing
+    /// var that turns a MARKED structured sort param (`sort [F] { … }`, the HK
+    /// carrier of `sort Spec[F[T]]`) into a type variable, mirroring
+    /// `load_abstract_sort`'s `sort T = ?` path. `find_sort_alias_var` /
+    /// `resolve_sort_alias` then return this `Var`, so F appears in
+    /// `sort_type_params_as_pairs` and unifies/fills like any other type param.
+    /// Dedup-guarded (like `load_abstract_sort`) so a second encounter in load
+    /// order does not allocate a second, divergent Var for the same carrier.
+    fn emit_type_param_backing_var(&mut self, sort_term: TermId, domain: TermId) {
+        use crate::eval::value::Value;
+        let alias_sym = self.kb.resolve_symbol("SortAlias");
+        for rid in self.kb.rules_by_functor(alias_sym) {
+            if !self.kb.is_fact(rid) { continue; }
+            let head = self.kb.rule_head_value(rid);
+            if head.pos_arg(self.kb, 0).and_then(|p| p.as_term_id()) == Some(sort_term) {
+                return;
+            }
+        }
+        let sort_sort = self.kb.make_name_term("Sort");
+        let var_sym = self.kb.intern("_");
+        let vid = self.kb.fresh_var(var_sym);
+        let var_term = self.kb.alloc(Term::Var(Var::Global(vid)));
+        // SortAlias is positional: `SortAlias(sort_ref, target)`.
+        self.kb.assert_fact_carrier(
+            alias_sym,
+            vec![Value::Term(sort_term), Value::Term(var_term)],
+            Vec::new(),
+            sort_sort,
+            domain,
+            None,
+        );
+    }
+
     fn load_sort_with_body(&mut self, s: &SortWithBody, parent_domain: TermId) {
         let sort_term = self.name_to_sort_term(&s.name);
         self.defined_sorts.push(sort_term);
@@ -7394,6 +7436,17 @@ impl<'a> Loader<'a> {
             SortDeclKind::Sort => (SortKind::Sort, "sort"),
         };
         self.kb.register_sort(sort_term, sort_kind);
+
+        // WI-452 (§5.4): a MARKED structured param (`sort [F] { … }`) is a
+        // NON-RIGID type variable — emit its backing var as `SortAlias(F, Var)`,
+        // exactly as `load_abstract_sort` does for `sort T = ?`. The member
+        // sub-decls (`sort T = ?`) load below as F's own params. The WI-451
+        // desugar PREPENDS F into the enclosing sort's items, so F is loaded
+        // before the operations that reference `F[T = A]`, and they resolve to
+        // this same backing var (`sort_type_params_as_pairs` / `type_param_var`).
+        if s.is_type_param {
+            self.emit_type_param_backing_var(sort_term, parent_domain);
+        }
 
         // Emit Description facts for all description blocks
         for desc_text in &s.descriptions {
