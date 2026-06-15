@@ -782,6 +782,14 @@ fn parameterized_value(
     span: crate::span::SourceSpan,
     owner: Option<Symbol>,
 ) -> Value {
+    // WI-470 scope: a parameterized type stays HASH-CONSED when closed — a `TermId`
+    // `Fn{S, named}` carries its bindings fully (no erasure) and is the load-bearing
+    // index key (`by_sort`/`fact_dedup`), exactly the "nominal, heavily-shared"
+    // structure the representation note keeps hash-consed. Only a POISONED binding
+    // value (a `denoted` that cannot hash-cons) forces the `Value::Node` carrier; the
+    // arrow→effect-row spine is what this migration moves to occurrence-primary, not
+    // `List[T]`. (Flipping closed parameterizeds to `Node` added erasure risk at every
+    // `.as_term()` consumer for no payoff — reverted.)
     if bindings.iter().any(|(_, v)| matches!(v, Value::Node(_))) {
         let mut children: Vec<(Symbol, TypeChild)> = Vec::with_capacity(bindings.len());
         for (s, v) in bindings {
@@ -789,11 +797,10 @@ fn parameterized_value(
         }
         Value::Node(kb.make_parameterized_occ(TypeChild::Ground(base), children, span, owner))
     } else {
-        // Ground branch: no binding is a `Value::Node` (checked above), so every
-        // value is a `Value::Term` — unwrap it directly for the hash-consed builder.
+        // Closed: every binding is a `Value::Term` (checked above) — hash-consed.
         let mut terms: Vec<(Symbol, TermId)> = Vec::with_capacity(bindings.len());
         for (s, v) in bindings {
-            terms.push((*s, v.as_term().expect("parameterized_value ground branch: Term binding")));
+            terms.push((*s, v.as_term().expect("parameterized_value closed branch: Term binding")));
         }
         Value::Term(kb.make_parameterized_type(base, &terms))
     }
@@ -8536,24 +8543,29 @@ fn bind_spec_params_from_carrier(
         return false;
     };
     let param_name = op.params[idx].0;
-    let recv_ty = pos_results
+    // WI-470: read the receiver's inferred type as a carrier-agnostic `Value`, NOT via
+    // `.as_term()` — an occurrence-primary `List[T = Int]` is a `Value::Node`, and
+    // `.as_term()` would return `None` and drop the carrier (erasing its `T`/`Eff`
+    // bindings → a spurious `Eff unconstrained`). The binding is read below through
+    // `parameterized_short_bindings` (carrier-agnostic), so it is preserved.
+    let recv_ty: Option<Value> = pos_results
         .get(idx)
         .and_then(|r| r.as_ref().ok())
-        .and_then(|r| r.ty.as_term())
+        .map(|r| r.ty.clone())
         .or_else(|| {
             named_args
                 .iter()
                 .position(|(n, _)| *n == param_name)
                 .and_then(|j| named_results.get(j))
                 .and_then(|r| r.as_ref().ok())
-                .and_then(|r| r.ty.as_term())
+                .map(|r| r.ty.clone())
         });
     let Some(recv_ty) = recv_ty else {
         return false;
     };
 
     // The receiver's own type arguments, keyed by carrier-param short name.
-    let recv_bindings = parameterized_short_bindings(kb, recv_ty);
+    let recv_bindings = parameterized_short_bindings(kb, &recv_ty);
     if recv_bindings.is_empty() {
         return false;
     }
@@ -8725,7 +8737,7 @@ fn bind_spec_params_from_carrier_param(
     recv_ty: TermId,
     view_bindings: SmallVec<[(Symbol, TermId); 2]>,
 ) -> bool {
-    let recv_bindings = parameterized_short_bindings(kb, recv_ty);
+    let recv_bindings = parameterized_short_bindings(kb, &TermIdView(recv_ty));
     let mut any = false;
     for (spec_param_sym, carrier_value) in view_bindings {
         let concrete: Option<TermId> = match typaram_ref_short_name(kb, carrier_value) {
@@ -8810,10 +8822,13 @@ fn bind_ground_value_params_from_provider(
 /// [`extract_type`], re-keys by short name (the form `bind_spec_params_from_carrier`
 /// matches against), and keeps only `Value::Term` values (a parameterized type's
 /// bindings are ground terms).
-fn parameterized_short_bindings(kb: &KnowledgeBase, ty: TermId) -> Vec<(String, TermId)> {
-    // WI-361: a parameterized type is the term backing `Fn{S, named}`
-    // (`List[T = Int]` = `Fn{List, named:[(T, Int)]}`).
-    let TypeExtractor::Parameterized { bindings, .. } = extract_type(kb, &TermIdView(ty)) else {
+fn parameterized_short_bindings(kb: &KnowledgeBase, ty: &impl TermView) -> Vec<(String, TermId)> {
+    // WI-361: a parameterized type's bindings (`List[T = Int]` ⇒ `[(T, Int)]`), read
+    // carrier-agnostically through `extract_type` (WI-470: the receiver type is now a
+    // `Value::Node` for an occurrence-primary `List[T = …]`, but its binding `T = Int`
+    // is CARRIED in the node — never erased; `extract_type` reads it the same as the
+    // hash-consed `Fn{S, named}` twin, so the spec-param grounding stays sound).
+    let TypeExtractor::Parameterized { bindings, .. } = extract_type(kb, ty) else {
         return Vec::new();
     };
     bindings
@@ -18642,6 +18657,41 @@ mod p4_tests {
         let store = kb.symbols.define("store", "wi470.test.store", SymbolKind::Entity, 0);
         let global_ref = NodeOccurrence::new_expr(Expr::Ref(store), span(), None);
         assert!(denoted_value_is_closed(&kb, &global_ref), "a global (non-place) ref is closed");
+    }
+
+    /// WI-470: a parameterized type's binding is READ identically whether the type is a
+    /// hash-consed `TermId` (`Fn{List,[T=Int64]}`) or a `Value::Node` occurrence (the
+    /// poisoned-receiver shape) — the carrier never erases the binding. This is the
+    /// invariant `bind_spec_params_from_carrier` relies on after switching from
+    /// `.as_term()` (which dropped the binding of a Node carrier) to the carrier-
+    /// agnostic `parameterized_short_bindings`.
+    #[test]
+    fn wi470_parameterized_short_bindings_reads_both_carriers() {
+        use super::parameterized_short_bindings;
+        use crate::eval::value::Value;
+        use crate::kb::term_view::TermIdView;
+        let mut kb = kb_with_prelude();
+        let list = kb.intern("List");
+        let t = kb.intern("T");
+        let int = kb.intern("Int64");
+        let int_ref = kb.make_sort_ref(int);
+        let list_ref = kb.make_sort_ref(list);
+
+        // Hash-consed (closed) carrier `List[T = Int64]` = `Fn{List, [T = Int64]}`.
+        let term_ty = kb.make_parameterized_type(list_ref, &[(t, int_ref)]);
+        let from_term = parameterized_short_bindings(&kb, &TermIdView(term_ty));
+
+        // Occurrence carrier (the poisoned-receiver shape) `parameterized{List, [T = Int64]}`.
+        let node = kb.make_parameterized_occ(
+            TypeChild::Ground(list_ref),
+            vec![(t, TypeChild::Ground(int_ref))],
+            span(),
+            None,
+        );
+        let from_node = parameterized_short_bindings(&kb, &Value::Node(node));
+
+        assert_eq!(from_term, vec![("T".to_string(), int_ref)], "binding read from the TermId carrier");
+        assert_eq!(from_node, from_term, "Node carrier yields the SAME binding (never erased)");
     }
 
     /// WI-361 regression: `more_general_type`'s bare-vs-parameterized join
