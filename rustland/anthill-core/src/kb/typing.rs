@@ -14890,7 +14890,27 @@ fn parameterized_compatible_view<A: TermView, B: TermView>(
                 });
                 match pv {
                     Some(pv) => {
-                        check_binding_by_variance(kb, subst, expected_base, *param, &TermIdView(pv), ev)
+                        // WI-461: the provider value carries the carrier's canonical param
+                        // refs (`provides Stream[T, {}]` holds List's `T`), which the
+                        // instantiation above bound to THIS instance's bindings. Resolve it
+                        // through `subst` — deeply, so a `Ref(<carrier>.P)` chases its
+                        // `SortAlias` var to the bound value (`l.T`) — before the variance
+                        // check, so a concrete / NEUTRAL expected (`l.T`) compares against
+                        // the instance's value, not the raw canon ref. (A type-VAR expected
+                        // short-circuits via the wildcard either way, so the delivered
+                        // cross-sort cases — wi387/wi424/wi441 — are unaffected; their
+                        // expected bindings are vars.) Try the raw value first so this is
+                        // strictly additive: the resolved form is a fallback that can only
+                        // ACCEPT more, never reject what the raw value already accepted.
+                        let mut probe = subst.clone();
+                        if check_binding_by_variance(kb, &mut probe, expected_base, *param, &TermIdView(pv), ev) {
+                            *subst = probe;
+                            true
+                        } else {
+                            let pvr = walk_type_deep(kb, subst, pv);
+                            pvr != pv
+                                && check_binding_by_variance(kb, subst, expected_base, *param, &TermIdView(pvr), ev)
+                        }
                     }
                     None => false,
                 }
@@ -17124,6 +17144,53 @@ fn rigidify_op_type_params(
     rigidify
 }
 
+/// WI-461: a bare self-receiver IDENTITY body — `operation iterator(l: List) -> … = l` —
+/// infers the BARE carrier sort `List` as its body type, leaving the carrier's type params
+/// unbound. But the returned VALUE is the receiver `l`, whose members ARE its projections
+/// (`l.T`, the WI-374 member tie). Refine the bare body type to `List[T = l.T, …]` — pin
+/// each of the carrier's type params to its projection off the receiver — so a declared
+/// PROVIDED return that threads the projection (`Stream[T = l.T, E = {}]`) conforms via the
+/// `parameterized` cross-sort-provider path (the same machinery the explicit
+/// `iterator[Elem](l: List[Elem]) -> Stream[Elem, {}]` form already rides), while a
+/// DIFFERENT receiver's projection (`Stream[T = xs.T]`) still fails (`l.T` ≠ `xs.T`, two
+/// distinct neutrals) — sound. The caller applies this ONLY as a fallback after the
+/// unrefined check fails, so it can never reject a body that conforms today.
+///
+/// `None` (no refinement) unless ALL hold: the body is a stable single-segment value
+/// reference (`l` — not a call/literal/constructor/field path); its inferred type is a BARE
+/// `sort_ref` (no bindings); the carrier declares ≥1 type param; and each param resolves to
+/// a `<carrier>.<P>` symbol. The projection value is built byte-identical to the loader's
+/// `l.T` (`make_expr_carried(Ref(recv), intern(short))`, the SHORT member name), and the
+/// binding KEY is the carrier's own `<carrier>.<P>` param symbol so the cross-sort-provider
+/// instantiation resolves its canonical var.
+fn refine_self_receiver_body_type(
+    kb: &mut KnowledgeBase,
+    body: &Rc<NodeOccurrence>,
+    body_ty: &Value,
+) -> Option<Value> {
+    let segs = stable_receiver_path(body)?;
+    let [recv] = segs.as_slice() else { return None };
+    let recv = *recv;
+    let TypeExtractor::SortRef(carrier) = extract_type(kb, body_ty) else {
+        return None;
+    };
+    let param_names = kb.type_params_of_sort(carrier);
+    if param_names.is_empty() {
+        return None;
+    }
+    let carrier_qn = kb.qualified_name_of(carrier).to_owned();
+    let recv_term = kb.alloc(Term::Ref(recv));
+    let mut bindings: Vec<(Symbol, TermId)> = Vec::with_capacity(param_names.len());
+    for short in &param_names {
+        let param_sym = kb.try_resolve_symbol(&format!("{carrier_qn}.{short}"))?;
+        let member_sym = kb.intern(short);
+        let proj = kb.make_expr_carried(recv_term, member_sym);
+        bindings.push((param_sym, proj));
+    }
+    let base = kb.make_sort_ref(carrier);
+    Some(Value::Term(kb.make_parameterized_type(base, &bindings)))
+}
+
 /// Check operation bodies against their declared return types.
 fn check_operation_bodies(kb: &mut KnowledgeBase, op_syms: &[Symbol], errors: &mut Vec<TypeError>) {
     struct OpInfo {
@@ -17367,7 +17434,24 @@ fn check_operation_bodies(kb: &mut KnowledgeBase, op_syms: &[Symbol], errors: &m
                 // lambda's `Value::Node` arrow flows cross-carrier against the
                 // declared return arrow. `TypeError` fields are `Value` (S2), so
                 // the carrier flows straight into the diagnostic (no re-grounding).
-                if !types_compatible(kb, &mut subst, &result.ty, &op.return_type) {
+                // WI-461: a bare self-receiver identity body (`= l`) infers the bare
+                // carrier sort; if it does not conform directly, retry with the body type
+                // refined to the receiver's projections (`List` → `List[T = l.T]`) so a
+                // provided return threading the projection conforms. Purely additive — only
+                // attempted on the unrefined failure — so no delivered accept regresses.
+                let conforms = types_compatible(kb, &mut subst, &result.ty, &op.return_type)
+                    || match refine_self_receiver_body_type(kb, &result.node, &result.ty) {
+                        Some(refined) => {
+                            let mut probe = Substitution::new();
+                            let ok = types_compatible(kb, &mut probe, &refined, &op.return_type);
+                            if ok {
+                                subst = probe;
+                            }
+                            ok
+                        }
+                        None => false,
+                    };
+                if !conforms {
                     errors.push(TypeError::TypeMismatch {
                         span: None,
                         context: TypeErrorContext::OperationReturn { op_name: op.op_sym },

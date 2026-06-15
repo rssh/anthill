@@ -311,3 +311,6 @@ mod wi448_comment_before_op_requires_test;
 
 #[path = "include/wi459_projection_delta_recursion_test.rs"]
 mod wi459_projection_delta_recursion_test;
+
+#[path = "include/wi461_self_receiver_provider_test.rs"]
+mod wi461_self_receiver_provider_test;
