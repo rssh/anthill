@@ -329,3 +329,6 @@ mod wi466_swapped_nominal_subtype_test;
 
 #[path = "include/wi469_callback_arg_validation_test.rs"]
 mod wi469_callback_arg_validation_test;
+
+#[path = "include/wi474_dispatched_projection_test.rs"]
+mod wi474_dispatched_projection_test;
