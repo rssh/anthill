@@ -277,6 +277,9 @@ mod wi453_hk_concrete_fill_test;
 #[path = "include/wi454_per_statement_binders_test.rs"]
 mod wi454_per_statement_binders_test;
 
+#[path = "include/wi457_join_escape_gate_test.rs"]
+mod wi457_join_escape_gate_test;
+
 #[path = "include/wi424_iterable_members_test.rs"]
 mod wi424_iterable_members_test;
 

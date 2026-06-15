@@ -15372,6 +15372,74 @@ fn abstracting_return_error(
     })
 }
 
+/// WI-457: the WI-401 escape gate applied to the LEAVES of a branching body.
+///
+/// A join body (`-> KVStore = if persistent then diskStore else memStore`) widens
+/// divergent concrete providers up to the bare/partial spec, so the joined
+/// `body_ty` equals the declared return sort. The DIRECT [`abstracting_return_error`]
+/// short-circuits on `same_symbol(body_sort, ret_sort)` and so MISSES it — the
+/// abstract member (`KVStore.K`) would escape via the join without an `ensures`
+/// vouching for it, the gap WI-401 left for join bodies. We re-apply the gate to
+/// each branch LEAF's own (typer-stamped) inferred type: a leaf that is itself a
+/// provider-upcast to the bare spec is the escape, exactly as the direct
+/// `-> KVStore = memStore` form is rejected.
+///
+/// This naturally honours WI-457's "must NOT reject" constraints, because every
+/// leaf goes through the UNCHANGED [`abstracting_return_error`]: a same-sort leaf
+/// (an input-rooted `KVStore` value) short-circuits on `same_symbol`; a leaf under
+/// a fully-manifest return has no unbound member; an `ensures`-vouched op is in
+/// `existential_return_ops`. It walks the TAIL positions of the body — both arms of
+/// each `if`, every `match` arm body, and a `let` BODY — so a join nested or wrapped
+/// by a `let` in tail position is reached. Runs only AFTER the direct gate passes;
+/// a non-branching body's sole leaf is the body itself (already judged there).
+///
+/// SCOPE: a join bound to a `let` VALUE and returned through the variable
+/// (`let s : Spec = if … ; s`) launders its abstract type via the binding's
+/// annotation — a SEPARATE WI-401 escape vector (it leaks even with no join, e.g.
+/// `let s : Spec = concreteProvider ; s`), not a join-body escape, so it is out of
+/// scope here and tracked as its own ticket. The walk is ITERATIVE (an explicit
+/// stack) — op bodies nest `else if` arbitrarily deep (cf. wi285_unrec), so host
+/// recursion here would risk the very stack overflow the iterative typer avoids.
+fn branch_leaf_abstracting_return_error(
+    kb: &KnowledgeBase,
+    body: &Rc<NodeOccurrence>,
+    ret_ty: &Value,
+    op_sym: Symbol,
+) -> Option<TypeError> {
+    // Only a branching / let body can hide a widened-provider join behind a
+    // `body_ty == ret_sort` the direct gate skips; a plain body is fully judged there.
+    if !matches!(
+        body.as_expr(),
+        Some(Expr::If { .. } | Expr::Match { .. } | Expr::Let { .. })
+    ) {
+        return None;
+    }
+    let mut stack: Vec<Rc<NodeOccurrence>> = vec![Rc::clone(body)];
+    while let Some(node) = stack.pop() {
+        match node.as_expr() {
+            Some(Expr::If { then_branch, else_branch, .. }) => {
+                stack.push(Rc::clone(then_branch));
+                stack.push(Rc::clone(else_branch));
+            }
+            Some(Expr::Match { branches, .. }) => {
+                for b in branches {
+                    stack.push(Rc::clone(&b.body));
+                }
+            }
+            Some(Expr::Let { body, .. }) => stack.push(Rc::clone(body)),
+            // A tail leaf: re-apply the escape gate to its own stamped type.
+            _ => {
+                if let Some(leaf_ty) = node.inferred_type() {
+                    if let Some(e) = abstracting_return_error(kb, &leaf_ty, ret_ty, op_sym) {
+                        return Some(e);
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
 // ── Requires chain ─────────────────────────────────────────────
 
 /// A direct requires entry: sort A requires spec B with the given SortView term.
@@ -17188,6 +17256,17 @@ fn check_operation_bodies(kb: &mut KnowledgeBase, op_syms: &[Symbol], errors: &m
                     // WI-401: the body conforms, but only by a provider UPCAST to a bare
                     // abstract spec — the sealing return that would let an abstract member
                     // escape its scope. Forbidden so the base model stays escape-free (§5).
+                    errors.push(e);
+                } else if let Some(e) = branch_leaf_abstracting_return_error(
+                    kb,
+                    &result.node,
+                    &op.return_type,
+                    op.op_sym,
+                ) {
+                    // WI-457: a JOIN body widened divergent concrete providers up to the
+                    // bare spec, so the joined `body_ty == ret_sort` slipped the direct
+                    // gate above. Re-apply it per branch leaf — the same escape, hidden
+                    // behind the branch join.
                     errors.push(e);
                 }
 
