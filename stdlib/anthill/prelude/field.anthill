@@ -13,8 +13,8 @@ sort anthill.prelude.Field
   requires Numeric[T]
 
   operation {
-    div(a: T, b: T) -> T                -- `a * inv(b)` for b ≠ 0
-    recip(a: T) -> T                    -- `1 / a` for a ≠ 0
+    div(a: T, b: T) -> T effects Error[DivisionByZero]    -- `a * inv(b)`; partial: b ≠ 0
+    recip(a: T) -> T effects Error[DivisionByZero]         -- `1 / a`; partial: a ≠ 0
   }
 
   -- Inverse law: div really is the inverse of mul — but only for b ≠ 0.

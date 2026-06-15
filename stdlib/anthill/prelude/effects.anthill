@@ -103,6 +103,16 @@ namespace anthill.prelude
     entity match_failed(occurrence: NodeOccurrence, scrutinee: Term)
   end
 
+  -- Payload for division-by-zero errors. Carried by `Error[DivisionByZero]` on
+  -- the partial integer operations (`Int64.div` / `mod` / `rem` / `divExact`)
+  -- and `Field.div` / `Field.recip` (WI-066). A nullary marker — the divisor is
+  -- zero by definition, so there is nothing to carry. Like `MatchFailed`, the
+  -- evaluator surfaces the failure as a dedicated `EvalError` (`DivisionByZero`);
+  -- this sort is the type-level witness the typer threads through callers' rows.
+  sort DivisionByZero
+    entity division_by_zero
+  end
+
   -- Register as effects
   fact Effect[T = Modify[?]]
   fact Effect[T = Error[?]]

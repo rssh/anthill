@@ -1508,7 +1508,7 @@ pub const PRELUDE_SORTS: &[&str] = &["Int64", "BigInt", "Float", "String", "Bool
 /// global scope's import list reproduces the implicit-prelude behaviour
 /// that file-top-level bare `sort X` declarations had before WI-215.
 pub const IMPLICIT_PRELUDE_EFFECTS: &[&str] =
-    &["Modify", "Error", "Suspension", "Branch", "MatchFailed"];
+    &["Modify", "Error", "Suspension", "Branch", "MatchFailed", "DivisionByZero"];
 
 /// Wire the implicit-prelude effect sorts (Modify, Error, …) into the
 /// global scope's imports. Called after `scan_definitions` so the

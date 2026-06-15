@@ -68,6 +68,9 @@ mod wi205_cell_test;
 #[path = "include/wi210_dispatch_test.rs"]
 mod wi210_dispatch_test;
 
+#[path = "include/wi066_division_effect_test.rs"]
+mod wi066_division_effect_test;
+
 #[path = "include/wi211_typing_test.rs"]
 mod wi211_typing_test;
 
