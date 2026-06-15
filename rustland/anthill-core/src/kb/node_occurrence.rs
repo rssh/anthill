@@ -7,7 +7,7 @@
 /// bindings are cheap (`Rc::clone`), eval can stash on its frame stack
 /// without lifetime threading, and cross-pass identity is `Rc::ptr_eq`.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use crate::intern::Symbol;
@@ -17,7 +17,7 @@ pub use super::occurrence::PassId;
 use super::subst::Substitution;
 use super::term::{Literal, Term, TermId, Var, VarId};
 use super::typing::{get_named_arg, list_to_vec, unwrap_option};
-use super::KnowledgeBase;
+use super::{KbId, KnowledgeBase};
 use crate::eval::value::Value;
 
 // ── Origin ──────────────────────────────────────────────────────
@@ -47,6 +47,15 @@ pub struct NodeOccurrence {
     /// Symbol of the enclosing declaration (operation, rule label, ...).
     /// `None` for top-level / unknown context.
     pub owner: Option<Symbol>,
+    /// WI-471: lazily-materialized, memoized intrinsic term form of this
+    /// occurrence — `(KbId, TermId)`, the `KbId` tagging which store the
+    /// `TermId` belongs to. Set once by [`cached_term`]; σ-independent (reads
+    /// only the immutable structural spine, never the typer's `RefCell`
+    /// annotations), so never invalidated. The cache owns the `+1` `alloc`
+    /// returns and never releases it (pin-for-lifetime; `Drop` cannot reach the
+    /// store), so it is excluded from the structural `Drop` walk — nothing to
+    /// drain. Reclamation (deferred-release queue keyed by the `KbId`) is WI-472.
+    pub(crate) term_cache: Cell<Option<(KbId, TermId)>>,
 }
 
 /// Iterative `Drop` for `NodeOccurrence`. The default Drop walks
@@ -302,6 +311,7 @@ impl NodeOccurrence {
             },
             span,
             owner,
+            term_cache: Cell::new(None),
         })
     }
 
@@ -324,6 +334,7 @@ impl NodeOccurrence {
             },
             span,
             owner,
+            term_cache: Cell::new(None),
         })
     }
 
@@ -343,6 +354,7 @@ impl NodeOccurrence {
             },
             span,
             owner,
+            term_cache: Cell::new(None),
         })
     }
 
@@ -352,6 +364,7 @@ impl NodeOccurrence {
             kind: NodeKind::Pattern(pattern),
             span,
             owner,
+            term_cache: Cell::new(None),
         })
     }
 
@@ -362,6 +375,7 @@ impl NodeOccurrence {
             kind: NodeKind::Type(ty),
             span,
             owner,
+            term_cache: Cell::new(None),
         })
     }
 
@@ -375,6 +389,7 @@ impl NodeOccurrence {
             kind: NodeKind::EffectExpr(expr),
             span,
             owner,
+            term_cache: Cell::new(None),
         })
     }
 
@@ -2201,6 +2216,46 @@ fn effect_expr_node_eq(a: &EffectExprNode, b: &EffectExprNode) -> bool {
         (EffectExprNode::EmptyRow, EffectExprNode::EmptyRow) => true,
         _ => false,
     }
+}
+
+/// WI-471: the occurrence's intrinsic structural term form, materialized on
+/// demand and memoized in `occ.term_cache`. Because `alloc` hash-conses, two
+/// structurally-identical occurrences yield the SAME `TermId` — recovering
+/// hash-cons identity for a `Node` without making it term-backed (the
+/// drift-proof alternative to a separate structural fingerprint: it routes
+/// through the one `Term` `Eq`/`Hash`, adding no second definition of
+/// structural equality).
+///
+/// **Ownership: the returned `TermId` is BORROWED.** The cache owns the single
+/// `+1` the final `alloc` returns and never releases it (pin-for-lifetime;
+/// `Drop` cannot reach the store), so the term lives until KB teardown. Callers
+/// must NOT `release` the result — unlike [`occurrence_to_term`], whose result
+/// is *owned* — because releasing it would drop the cache's only refcount and
+/// dangle the memoized id. The stamped `KbId` lets a future deferred-release
+/// queue (WI-472) reclaim it.
+///
+/// Reads only the immutable structural spine (never the typer's `RefCell`
+/// annotations), so the result is stable for the occurrence's life — set once,
+/// never invalidated. Only the ROOT occurrence is memoized; children are
+/// re-materialized by `occurrence_to_term` on each miss (their own `term_cache`
+/// is untouched here). Takes `&Rc<NodeOccurrence>` (like [`occurrence_to_term`]);
+/// a caller holding an occurrence reachable from `kb` clones the `Rc` out first
+/// to avoid the `&mut kb` / `&occ` borrow clash.
+pub fn cached_term(kb: &mut KnowledgeBase, occ: &Rc<NodeOccurrence>) -> TermId {
+    // A hit is valid only for the KB that stamped it — a `TermId` indexes one
+    // `TermStore`. Same KB → return the memoized id. A foreign stamp (the same
+    // occurrence read against a different KB; rare, occurrences are normally
+    // single-KB) is re-materialized against THIS store and re-stamped — never
+    // returned blindly (that would index the wrong store). The prior store's
+    // `+1` stays pinned there, reclaimed at its own teardown.
+    if let Some((id, t)) = occ.term_cache.get() {
+        if id == kb.id {
+            return t;
+        }
+    }
+    let t = occurrence_to_term(kb, occ);
+    occ.term_cache.set(Some((kb.id, t)));
+    t
 }
 
 /// WI-246: reify a rule-body-atom occurrence to a hash-consed `TermId` — the
@@ -4593,6 +4648,63 @@ mod tests {
             panic!("type_args entry should open to Global, got {:?}", kb.get_term(*ta));
         };
         assert_eq!(*vid, v0, "type_args DeBruijn(0) must open to fresh Global(v0)");
+    }
+
+    #[test]
+    fn wi471_cached_term_recovers_hash_cons_identity() {
+        // WI-471: cached_term materializes (through the hash-consing TermStore)
+        // and memoizes an occurrence's intrinsic term form. Verifies (1) two
+        // distinct occurrences of the SAME structure → the SAME TermId; (2) a
+        // DIFFERENT structure → a DIFFERENT TermId; (3) set-once / KbId-stamped /
+        // idempotent; (4) a read against a FOREIGN KB re-materializes + re-stamps
+        // (the KbId guard) rather than returning a TermId from the wrong store.
+        let mut kb = KnowledgeBase::new();
+        let f = kb.intern("f");
+        let span = make_span();
+        let build = |n: i64| {
+            let arg = NodeOccurrence::new_expr(Expr::Const(Literal::Int(n)), span, None);
+            NodeOccurrence::new_expr(
+                Expr::Apply {
+                    functor: f,
+                    pos_args: vec![arg],
+                    named_args: vec![],
+                    type_args: vec![],
+                },
+                span,
+                None,
+            )
+        };
+        let o1 = build(42);
+        let o2 = build(42);
+        assert!(!std::rc::Rc::ptr_eq(&o1, &o2), "distinct Rc allocations");
+        assert!(o1.term_cache.get().is_none(), "cache starts empty");
+
+        // (1) identical structure → identical hash-consed TermId.
+        let t1 = cached_term(&mut kb, &o1);
+        let t2 = cached_term(&mut kb, &o2);
+        assert_eq!(t1, t2, "structurally-identical occurrences share one TermId");
+
+        // (2) different structure → different TermId (a constant-returning stub
+        // would fail here).
+        let o3 = build(43);
+        assert_ne!(cached_term(&mut kb, &o3), t1, "f(43) must not collide with f(42)");
+
+        // (3) memoized: populated, stamped with this KB's id, idempotent.
+        let cached = o1.term_cache.get().expect("cache populated after demand");
+        assert_eq!(cached.1, t1, "cache holds the materialized TermId");
+        assert_eq!(cached.0, kb.id, "cache stamped with this KB's id");
+        assert_eq!(cached_term(&mut kb, &o1), t1, "second demand is idempotent");
+
+        // (4) KbId guard: reading o1 against a FOREIGN KB re-materializes against
+        // that store and re-stamps — it must NOT return kb's TermId blindly.
+        let mut kb2 = KnowledgeBase::new();
+        assert_ne!(kb.id, kb2.id, "distinct KBs get distinct ids");
+        let t_in_kb2 = cached_term(&mut kb2, &o1);
+        assert_eq!(o1.term_cache.get().unwrap().0, kb2.id, "re-stamped for the foreign KB");
+        assert!(
+            matches!(kb2.get_term(t_in_kb2), Term::Fn { .. }),
+            "returned id is a live term in kb2's store",
+        );
     }
 
     #[test]
