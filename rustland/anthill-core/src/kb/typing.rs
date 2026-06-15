@@ -10586,7 +10586,7 @@ fn eliminate_type_projections(
         Value::Term(t) => {
             Ok(Value::Term(rewrite_term_projections(kb, *t, arg_types, arg_syms, ctx, span)?))
         }
-        Value::Node(_) => {
+        Value::Node(occ) => {
             // WI-397: a top-level COMPOUND-receiver projection (`a.b.T`) rides a
             // `TypeNode::ExprCarried` Node carrier (its receiver is a field-access
             // occurrence). Resolve the receiver path's static type and project the
@@ -10607,21 +10607,145 @@ fn eliminate_type_projections(
                     ProjResult::Neutral => Ok(ty.clone()),
                 };
             }
-            // A projection nested INSIDE a denoted-bearing `Value::Node` (e.g.
-            // `Stream[T = l.T, E = {Modify[c]}]`) is not yet rewritten through the Node
-            // carrier — surface it loudly rather than leaking the un-eliminated
-            // projection. A Node with no projection is a plain denoted type, unchanged.
+            // WI-460: a projection nested INSIDE a denoted-bearing `Value::Node` — e.g.
+            // `s.T` in the param of a callback arrow `(x: s.T) -> Bool @ {EffP, -Modify[x]}`,
+            // or `l.T` in `Stream[T = l.T, E = {Modify[c]}]` — is rewritten THROUGH the Node
+            // carrier rather than bailed: descend the occurrence tree, eliminate each
+            // projection child against the receiver's argument type (the same discharge the
+            // `Value::Term` path does), and rebuild the carrier with the denoted children
+            // (`-Modify[x]`, `Modify[c]`) preserved. A Node with no projection is a plain
+            // denoted type, returned as-is. An UNSUPPORTED nested shape (a projection inside a
+            // `named_tuple` carrier) still bails loudly in the descent — never a silent leak.
             if value_contains_projection(kb, ty) {
-                return Err(projection_type_error(
-                    ctx,
-                    span,
-                    "a type projection nested in a denoted-bearing type (a written effect row / \
-                     value-in-type) is not yet supported",
-                ));
+                return eliminate_node_projections(kb, occ, arg_types, arg_syms, ctx, span);
             }
             Ok(ty.clone())
         }
         other => Ok(other.clone()),
+    }
+}
+
+/// WI-460: eliminate expression-carried projections nested INSIDE a denoted-bearing
+/// `Value::Node` carrier — an arrow / parameterized / effect-row occurrence that also
+/// carries a `denoted` value-in-type, e.g. the callback param `(x: s.T) -> Bool @
+/// {EffP, -Modify[x]}` or `Stream[T = l.T, E = {Modify[c]}]`. The Node twin of
+/// [`rewrite_term_projections`]'s recursion into `Term::Fn` children: descend the
+/// occurrence tree, route each GROUND (`TypeChild::Ground`) child through
+/// `rewrite_term_projections` and each NODE child through this function, then rebuild the
+/// carrier with the `make_*_occ` builders. A child that GROUNDS from a Node to a concrete
+/// `Term` (a compound `a.b.T` reducing to `Int64`) collapses to `TypeChild::Ground` via
+/// [`value_to_type_child`]. `denoted` values (`Modify[c]`, `-Modify[x]`) carry no type
+/// projection and are returned untouched. A `named_tuple` carrier holding a projection is
+/// NOT yet rewritten (its fields ride a `Value`-carried list the `TypeChild` descent does
+/// not reach) — it bails loudly, never leaking an un-eliminated projection.
+fn eliminate_node_projections(
+    kb: &mut KnowledgeBase,
+    occ: &Rc<NodeOccurrence>,
+    arg_types: &HashMap<Symbol, Value>,
+    arg_syms: Option<&HashMap<Symbol, Symbol>>,
+    ctx: &TypeErrorContext,
+    span: Option<Span>,
+) -> Result<Value, TypeError> {
+    // Eliminate one structural child: a ground term rewrites via the `Term` path; a Node
+    // child recurses (and may collapse Node→Term when a compound projection grounds).
+    fn elim_child(
+        kb: &mut KnowledgeBase,
+        c: &TypeChild,
+        arg_types: &HashMap<Symbol, Value>,
+        arg_syms: Option<&HashMap<Symbol, Symbol>>,
+        ctx: &TypeErrorContext,
+        span: Option<Span>,
+    ) -> Result<TypeChild, TypeError> {
+        match c {
+            TypeChild::Ground(t) => Ok(TypeChild::Ground(rewrite_term_projections(
+                kb, *t, arg_types, arg_syms, ctx, span,
+            )?)),
+            TypeChild::Node(n) => {
+                let v = eliminate_node_projections(kb, n, arg_types, arg_syms, ctx, span)?;
+                Ok(value_to_type_child(kb, &v))
+            }
+        }
+    }
+    let sp = occ.span;
+    let owner = occ.owner;
+    match &occ.kind {
+        NodeKind::Type(node) => match node {
+            TypeNode::Arrow { param, result, effects } => {
+                let p = elim_child(kb, param, arg_types, arg_syms, ctx, span)?;
+                let r = elim_child(kb, result, arg_types, arg_syms, ctx, span)?;
+                let e = elim_child(kb, effects, arg_types, arg_syms, ctx, span)?;
+                Ok(Value::Node(kb.make_arrow_occ(p, r, e, sp, owner)))
+            }
+            TypeNode::Parameterized { base, bindings } => {
+                let b = elim_child(kb, base, arg_types, arg_syms, ctx, span)?;
+                let mut bs: Vec<(Symbol, TypeChild)> = Vec::with_capacity(bindings.len());
+                for (s, c) in bindings {
+                    bs.push((*s, elim_child(kb, c, arg_types, arg_syms, ctx, span)?));
+                }
+                Ok(Value::Node(kb.make_parameterized_occ(b, bs, sp, owner)))
+            }
+            TypeNode::EffectsRows { effects_expr } => {
+                let e = elim_child(kb, effects_expr, arg_types, arg_syms, ctx, span)?;
+                Ok(Value::Node(kb.make_effects_rows_occ(e, sp, owner)))
+            }
+            // A `denoted` value-in-type (`Modify[c]`) carries no type projection — as-is.
+            TypeNode::Denoted { .. } => Ok(Value::Node(Rc::clone(occ))),
+            // A nested COMPOUND projection (`a.b.T`) Node — resolve it exactly as the
+            // top-level `ExprCarried` arm of `eliminate_type_projections` does (callee-keyed;
+            // the WI-459 re-key is single-`Ref` only, see that arm's note).
+            TypeNode::ExprCarried { .. } => {
+                if let TypeExtractor::ExprCarried { value, member } =
+                    extract_type(kb, &Value::Node(Rc::clone(occ)))
+                {
+                    match resolve_compound_projection(kb, &value, member, arg_types, ctx, span)? {
+                        ProjResult::Grounded(v) => Ok(v),
+                        ProjResult::Neutral => Ok(Value::Node(Rc::clone(occ))),
+                    }
+                } else {
+                    // An `ExprCarried` carrier whose `member` is not a ground `Ref` is
+                    // malformed (the builders always store a ground `Ref` member). Bail
+                    // loudly rather than silently passing the projection through — `value_-
+                    // contains_projection` already classified this node as projection-bearing.
+                    Err(projection_type_error(
+                        ctx,
+                        span,
+                        "a type projection nested in a denoted-bearing type has a non-Ref \
+                         projection member (malformed carrier)",
+                    ))
+                }
+            }
+            // A projection inside a `named_tuple` carrier is the remaining follow-on: its
+            // `fields` ride a `Value`-carried list (not `TypeChild` children), so the
+            // structural descent above does not reach them. Bail loudly rather than leak.
+            TypeNode::NamedTuple { .. } => Err(projection_type_error(
+                ctx,
+                span,
+                "a type projection nested in a named-tuple denoted-bearing type is not yet supported",
+            )),
+        },
+        NodeKind::EffectExpr(node) => match node {
+            EffectExprNode::Merge { left, right } => {
+                let l = elim_child(kb, left, arg_types, arg_syms, ctx, span)?;
+                let r = elim_child(kb, right, arg_types, arg_syms, ctx, span)?;
+                Ok(Value::Node(kb.make_merge_occ(l, r, sp, owner)))
+            }
+            EffectExprNode::Present { label } => {
+                let l = elim_child(kb, label, arg_types, arg_syms, ctx, span)?;
+                Ok(Value::Node(kb.make_present_occ(l, sp, owner)))
+            }
+            EffectExprNode::Absent { label } => {
+                let l = elim_child(kb, label, arg_types, arg_syms, ctx, span)?;
+                Ok(Value::Node(kb.make_absent_occ(l, sp, owner)))
+            }
+            EffectExprNode::Open { tail } => {
+                let t = elim_child(kb, tail, arg_types, arg_syms, ctx, span)?;
+                Ok(Value::Node(kb.make_open_occ(t, sp, owner)))
+            }
+            EffectExprNode::EmptyRow => Ok(Value::Node(Rc::clone(occ))),
+        },
+        // A non-type / non-effect occurrence (Expr / Pattern) in a type position is not a
+        // projection carrier — return as-is (defensive; the descent never targets one).
+        _ => Ok(Value::Node(Rc::clone(occ))),
     }
 }
 

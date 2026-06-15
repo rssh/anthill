@@ -306,13 +306,73 @@ end
     );
 }
 
-/// A projection nested in a denoted-bearing type — `Stream[T = l.T, E = {Modify[c]}]`
-/// rides a `Value::Node` carrier — is rejected loudly rather than leaking the
-/// un-eliminated `l.T` into the inferred type (the Node-carrier rewrite is a follow-on).
+// ── WI-460: a projection NESTED in a denoted-bearing `Value::Node` carrier ──
+//
+// The headline shape is `find`'s callback param `(x: s.T) -> Bool @ {EffP, -Modify[x]}`:
+// the `-Modify[x]` binder makes the arrow a `Value::Node`, and `s.T` rides inside it.
+// WI-460 rewrites the projection THROUGH the Node carrier (descend the occurrence tree,
+// eliminate each `ExprCarried` child against the receiver's argument type, rebuild the
+// carrier with the denoted children preserved) instead of bailing with the old
+// "not yet supported" error. The threading stays REAL — a wrong declared element is
+// still rejected — and the descent reaches a `parameterized` carrier (`Stream[T = l.T,
+// E = {Modify[c]}]`) too.
+
+/// The `find`-pred shape: `s.T` nested in a denoted-bearing arrow `(x: s.T) -> Bool @
+/// {EffP, -Modify[x]}`, with a projection-only return `Option[T = s.T]`. The projection
+/// threads through the Node carrier, so calling it on a `Stream[T = Int64]` and declaring
+/// the result `Option[T = Int64]` conforms — no more formation bail.
 #[test]
-fn projection_in_denoted_node_is_rejected() {
+fn projection_in_denoted_arrow_threads() {
+    let ok = r#"
+namespace test.wi460.arrow_ok
+  import anthill.prelude.{Stream, Int64, Bool, Option, Cell, Modify}
+  operation find2[EffP](s: Stream, pred: (x: s.T) -> Bool @ {EffP, -Modify[x]})
+    -> Option[T = s.T] effects {s.E, EffP}
+  operation use_find(es: Stream[T = Int64, E = {}], p: (x: Int64) -> Bool @ {})
+    -> Option[T = Int64] = find2(es, p)
+end
+"#;
+    assert!(
+        load_errors(&[ok]).is_empty(),
+        "s.T nested in the denoted pred arrow (-Modify[x]) must thread through the Node \
+         carrier so find2(es, p) is Option[Int64]; got: {:?}",
+        load_errors(&[ok]),
+    );
+}
+
+/// The threaded element is REAL: `find2(es, p)` on a `Stream[T = Int64]` is
+/// `Option[T = Int64]`, so declaring the result `Option[T = String]` is rejected — the
+/// projection inside the denoted arrow did not invent a fresh element.
+#[test]
+fn projection_in_denoted_arrow_wrong_element_rejected() {
+    let wrong = r#"
+namespace test.wi460.arrow_wrong
+  import anthill.prelude.{Stream, Int64, String, Bool, Option, Cell, Modify}
+  operation find2[EffP](s: Stream, pred: (x: s.T) -> Bool @ {EffP, -Modify[x]})
+    -> Option[T = s.T] effects {s.E, EffP}
+  operation use_find(es: Stream[T = Int64, E = {}], p: (x: Int64) -> Bool @ {})
+    -> Option[T = String] = find2(es, p)
+end
+"#;
+    let errs = load_errors(&[wrong]);
+    assert!(
+        errs.iter().any(|e| e.contains("Int64") && e.contains("String")),
+        "the threaded element is Int64, not String — the wrong declared return must be \
+         rejected; got: {errs:?}",
+    );
+}
+
+/// The descent also reaches a `parameterized` carrier: `Stream[T = l.T, E = {Modify[c]}]`
+/// rides a `Value::Node` (the `Modify[c]` denoted binding). WI-460 eliminates `l.T` →
+/// `Int64` THROUGH that carrier — so the old formation bail ("not yet supported") is gone
+/// and no un-eliminated `l.T` leaks. (The residual `Modify[c]` effect-row equality across
+/// the call is an orthogonal, pre-existing denoted-row limitation — independent of the
+/// projection, it fails even with no projection at all — so this asserts only that the
+/// projection no longer bails and threads to the concrete element.)
+#[test]
+fn projection_in_denoted_parameterized_no_longer_bails() {
     let src = r#"
-namespace test.wi376.node
+namespace test.wi460.param
   import anthill.prelude.{List, Stream, Int64, Cell, Modify}
   operation src(l: List, c: Cell[V = Int64]) -> Stream[T = l.T, E = {Modify[c]}]
   operation use_src(xs: List[T = Int64], c: Cell[V = Int64]) -> Int64 = src(xs, c)
@@ -320,9 +380,47 @@ end
 "#;
     let errs = load_errors(&[src]);
     assert!(
-        errs.iter().any(|e| e.contains("denoted-bearing") || e.contains("not yet supported")),
-        "a projection inside a denoted-bearing type must be a loud error, not a leak; got: {errs:?}",
+        !errs.iter().any(|e| e.contains("not yet supported") || e.contains("denoted-bearing")),
+        "the projection l.T must no longer bail at formation inside the denoted carrier; \
+         got: {errs:?}",
     );
+    // The projection was eliminated (the GOT type threads the concrete `T = Int64`); a
+    // leaked `l.T` would print in the residual mismatch.
+    assert!(
+        !errs.iter().any(|e| e.contains("l.T")),
+        "no un-eliminated `l.T` must leak into the inferred type; got: {errs:?}",
+    );
+}
+
+/// EVAL: a non-recursive op carrying the denoted-arrow projection param runs end-to-end —
+/// the callback `(x: xs.T) -> Bool @ {EffP, -Modify[x]}` is applied to the list head, so
+/// WI-460's rewrite is exercised at run time, not only at type-check.
+#[test]
+fn projection_in_denoted_arrow_evals() {
+    let src = r#"
+namespace test.wi460.eval
+  import anthill.prelude.{List, Int64, Bool, Cell, Modify}
+  import anthill.prelude.List.{cons, nil}
+  operation check_first[EffP](xs: List, pred: (x: xs.T) -> Bool @ {EffP, -Modify[x]})
+    -> Bool effects EffP =
+    match xs
+      case nil() -> false
+      case cons(h, t) -> pred(h)
+  operation is_big(n: Int64) -> Bool = n > 2
+  operation big_first() -> Int64 = if check_first([3, 1, 2], is_big) then 1 else 0
+  operation small_first() -> Int64 = if check_first([1, 3, 2], is_big) then 1 else 0
+end
+"#;
+    assert!(load_errors(&[src]).is_empty(), "eval fixture must typecheck; got: {:?}", load_errors(&[src]));
+    let mut interp = crate::common::interp_for(src);
+    let run = |interp: &mut anthill_core::eval::Interpreter, op: &str| -> i64 {
+        match interp.call(op, &[]).unwrap_or_else(|e| panic!("call {op}: {e:?}")) {
+            anthill_core::eval::Value::Int(i) => i,
+            other => panic!("call {op}: expected Int, got {other:?}"),
+        }
+    };
+    assert_eq!(run(&mut interp, "test.wi460.eval.big_first"), 1, "head 3 is_big → true");
+    assert_eq!(run(&mut interp, "test.wi460.eval.small_first"), 0, "head 1 not is_big → false");
 }
 
 // ── WI-376 (final): cross-sort provider DIVERGENT member name (the retained acceptance) ──
