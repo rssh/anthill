@@ -158,15 +158,13 @@ fn nested_join_inner_provider_upcast_rejected() {
     );
 }
 
-/// WI-468 (deferred, sibling vector): a LET-binding ANNOTATION launders a provider
-/// upcast past the gate — `let s : KVStore = memStore ; s` widens `s` to the bare
-/// spec, so the returned tail leaf carries `KVStore` (== ret_sort) and slips
-/// `same_symbol`. This is NOT the WI-457 join vector (it leaks with no `if`/`match`
-/// at all — see the body here), so WI-457 deliberately does not catch it; the gate
-/// walks tail leaves, and the leaf `s` is genuinely typed `KVStore`. Un-ignore when
-/// WI-468 lands (see through a returned let-bound variable to its value).
+/// WI-468: a LET-binding ANNOTATION launders a provider upcast past the gate —
+/// `let s : KVStore = memStore ; s` widens `s` to the bare spec, so the returned
+/// tail leaf carries `KVStore` (== ret_sort) and slips `same_symbol`. This is NOT
+/// the WI-457 join vector (it leaks with no `if`/`match` at all — see the body
+/// here). The fix sees through the returned let-bound `s` to its VALUE node
+/// (`memStore`, stamped its own `MemStore`), re-applying the gate to that.
 #[test]
-#[ignore = "WI-468: let-binding annotation launders a provider upcast (separate escape vector)"]
 fn let_value_annotation_laundering_escape() {
     let src = format!(
         "namespace test.wi457.launder\n{PRELUDE}\n  operation openStore(m: MemStore) -> KVStore =\n    let s: KVStore = m\n    s\nend\n"
@@ -175,5 +173,80 @@ fn let_value_annotation_laundering_escape() {
     assert!(
         is_escape(&errs),
         "a let-annotation-laundered provider upcast must be flagged (WI-468), got: {errs:?}",
+    );
+}
+
+/// WI-468: a join bound to a `let` VALUE and returned through the variable launders
+/// the same way (`let s : KVStore = if … ; s`). The see-through pushes the value
+/// node (the `if`) back onto the walk, so its concrete branch leaves are gated.
+#[test]
+fn let_value_join_laundering_escape() {
+    let src = format!(
+        "namespace test.wi457.launderjoin\n{PRELUDE}\n  operation openStore(persistent: Bool) -> KVStore =\n    let s: KVStore = if persistent then diskStore(\"/tmp/kv\") else memStore\n    s\nend\n"
+    );
+    let errs = load_errors(&[&src]);
+    assert!(
+        is_escape(&errs),
+        "a let-value JOIN laundered through a returned variable must be flagged (WI-468), got: {errs:?}",
+    );
+}
+
+/// WI-468: the see-through chains through multiple let hops — `let a = m ; let s =
+/// a ; s` resolves `s` → `a` → `m` (`MemStore`), still an escape.
+#[test]
+fn let_value_chained_alias_laundering_escape() {
+    let src = format!(
+        "namespace test.wi457.launderchain\n{PRELUDE}\n  operation openStore(m: MemStore) -> KVStore =\n    let a: KVStore = m\n    let s: KVStore = a\n    s\nend\n"
+    );
+    let errs = load_errors(&[&src]);
+    assert!(
+        is_escape(&errs),
+        "a chained let-alias laundering must be flagged through the multi-hop see-through (WI-468), got: {errs:?}",
+    );
+}
+
+/// WI-468 must-NOT-reject: a let-bound provider NOT in return position is fine —
+/// the body returns something else, so the variable is never a tail leaf and the
+/// see-through never reaches its value. (`s` is bound but unused in the return.)
+#[test]
+fn let_value_not_returned_not_flagged() {
+    let src = format!(
+        "namespace test.wi457.notret\n{PRELUDE}\n  operation openStore(m: MemStore) -> Bool =\n    let s: KVStore = m\n    true\nend\n"
+    );
+    let errs = load_errors(&[&src]);
+    assert!(
+        errs.is_empty(),
+        "a let-bound provider that is NOT returned must not be flagged (WI-468), got: {errs:?}",
+    );
+}
+
+/// WI-468 must-NOT-reject: a same-sort (input-rooted) let — `f(k: KVStore) -> KVStore
+/// = let s: KVStore = k ; s` — sees through `s` to `k` (`KVStore`), which
+/// short-circuits on `same_symbol`. No hidden local escapes (the abstractness is the
+/// input's, interface-rooted).
+#[test]
+fn let_value_same_sort_input_rooted_not_flagged() {
+    let src = format!(
+        "namespace test.wi457.sameinput\n{PRELUDE}\n  operation openStore(k: KVStore) -> KVStore =\n    let s: KVStore = k\n    s\nend\n"
+    );
+    let errs = load_errors(&[&src]);
+    assert!(
+        errs.is_empty(),
+        "a same-sort input-rooted let-return must not be flagged (WI-468), got: {errs:?}",
+    );
+}
+
+/// WI-468 must-NOT-reject: a MANIFEST return through a laundering let — the
+/// annotation and return bind every member (`KVStore[K = String, V = String]`), so
+/// the seen-through value's gate finds no unbound member and admits it.
+#[test]
+fn let_value_manifest_return_not_flagged() {
+    let src = format!(
+        "namespace test.wi457.manifest\n{PRELUDE}\n  operation openStore(m: MemStore) -> KVStore[K = String, V = String] =\n    let s: KVStore[K = String, V = String] = m\n    s\nend\n"
+    );
+    let errs = load_errors(&[&src]);
+    assert!(
+        errs.is_empty(),
+        "a manifest-spec return (all members bound) through a let must not be flagged (WI-468), got: {errs:?}",
     );
 }

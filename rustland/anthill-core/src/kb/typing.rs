@@ -12,7 +12,7 @@ use smallvec::SmallVec;
 use super::term::{Term, TermId, Literal, Var, VarId};
 use super::node_occurrence::{
     for_each_child, for_each_pattern_child, materialize_from_handle, occurrence_structural_eq,
-    EffectExprNode, Expr, MatchBranch, NodeKind, NodeOccurrence, TypeChild, TypeNode,
+    EffectExprNode, Expr, MatchBranch, NodeKind, NodeOccurrence, Pattern, TypeChild, TypeNode,
 };
 use super::persist_subst::BindValue;
 use super::term_view::{views_structurally_equal, TermIdView, TermView, ViewHead, ViewItem};
@@ -16043,13 +16043,30 @@ fn abstracting_return_error(
 /// by a `let` in tail position is reached. Runs only AFTER the direct gate passes;
 /// a non-branching body's sole leaf is the body itself (already judged there).
 ///
-/// SCOPE: a join bound to a `let` VALUE and returned through the variable
-/// (`let s : Spec = if … ; s`) launders its abstract type via the binding's
-/// annotation — a SEPARATE WI-401 escape vector (it leaks even with no join, e.g.
-/// `let s : Spec = concreteProvider ; s`), not a join-body escape, so it is out of
-/// scope here and tracked as its own ticket. The walk is ITERATIVE (an explicit
-/// stack) — op bodies nest `else if` arbitrarily deep (cf. wi285_unrec), so host
-/// recursion here would risk the very stack overflow the iterative typer avoids.
+/// WI-468 (let-value laundering, sibling vector): a join — or even a plain
+/// concrete provider — bound to a `let` VALUE and returned through the variable
+/// (`let s : Spec = if … ; s`, or `let s : Spec = concreteProvider ; s`) launders
+/// its abstract type via the binding's ANNOTATION. The body env binds `s` to the
+/// bare-spec annotation (`check_bare_ref` reads `env.lookup_var`), so the returned
+/// tail leaf `s` is genuinely typed `Spec == ret_sort` and the per-leaf gate
+/// short-circuits on `same_symbol` — yet the abstract member still escapes. The
+/// fix is DATAFLOW: see through a returned let-bound variable to the binding's
+/// VALUE node, which the typer stamped with its OWN synthesized type (`MemStore`,
+/// the concrete provider), not the laundering annotation. Re-processing the value
+/// node re-applies the UNCHANGED [`abstracting_return_error`] to that synthesized
+/// type, so the launder is caught exactly as the direct `-> Spec = concreteProvider`
+/// form is — and the value may itself be a join (`let s = if … ; s`), reached
+/// because the value node is pushed back onto the walk.
+///
+/// This only flags a variable in TAIL (return) position — the walk reaches a
+/// let-bound var only through the body's tail leaves, never through a value used
+/// internally (`let s = m ; someOp(s)`, where the tail leaf is the `someOp(...)`
+/// apply, not `s`). The see-through resolves each value in the scope in force
+/// WHERE it was bound (an `Rc`-shared cons list), so a shadowing rebind
+/// (`let x = m ; let s = x ; let x = other ; s`) resolves `s`'s `x` to `m`, not
+/// `other`. The walk is ITERATIVE (an explicit stack) — op bodies nest `else if`
+/// arbitrarily deep (cf. wi285_unrec), so host recursion here would risk the very
+/// stack overflow the iterative typer avoids.
 fn branch_leaf_abstracting_return_error(
     kb: &KnowledgeBase,
     body: &Rc<NodeOccurrence>,
@@ -16064,21 +16081,53 @@ fn branch_leaf_abstracting_return_error(
     ) {
         return None;
     }
-    let mut stack: Vec<Rc<NodeOccurrence>> = vec![Rc::clone(body)];
-    while let Some(node) = stack.pop() {
+    // Each entry pairs a tail node with the let-scope (name -> value node) in force.
+    let mut stack: Vec<(Rc<NodeOccurrence>, Rc<LeafScope>)> =
+        vec![(Rc::clone(body), Rc::new(LeafScope::Empty))];
+    // Backstop: a malformed binding cycle (not reachable in well-typed scope, but
+    // the leaf see-through follows value nodes) must terminate rather than spin.
+    let mut hops = 0usize;
+    const MAX_LEAF_HOPS: usize = 100_000;
+    while let Some((node, scope)) = stack.pop() {
         match node.as_expr() {
             Some(Expr::If { then_branch, else_branch, .. }) => {
-                stack.push(Rc::clone(then_branch));
-                stack.push(Rc::clone(else_branch));
+                stack.push((Rc::clone(then_branch), Rc::clone(&scope)));
+                stack.push((Rc::clone(else_branch), Rc::clone(&scope)));
             }
             Some(Expr::Match { branches, .. }) => {
                 for b in branches {
-                    stack.push(Rc::clone(&b.body));
+                    stack.push((Rc::clone(&b.body), Rc::clone(&scope)));
                 }
             }
-            Some(Expr::Let { body, .. }) => stack.push(Rc::clone(body)),
-            // A tail leaf: re-apply the escape gate to its own stamped type.
+            Some(Expr::Let { pattern, value, body, .. }) => {
+                // Record the binding (the value resolves in the scope BEFORE this
+                // let), then descend into the BODY only — a let value is not itself
+                // a tail position; it escapes solely via a returned reference.
+                let body_scope = match let_bound_var_name(pattern) {
+                    Some(name) => Rc::new(LeafScope::Bind {
+                        name,
+                        value: Rc::clone(value),
+                        parent: Rc::clone(&scope),
+                    }),
+                    None => Rc::clone(&scope),
+                };
+                stack.push((Rc::clone(body), body_scope));
+            }
+            // A tail leaf.
             _ => {
+                // WI-468: see through a returned let-bound variable to its value
+                // node (carrying the value's own synthesized type), resolving in the
+                // scope where it was bound. A free var (param / outer binder) is not
+                // in scope here → fall through to its own stamped type.
+                if let Some(name) = leaf_var_ref(&node) {
+                    if let Some((value, value_scope)) = scope.resolve(kb, name) {
+                        hops += 1;
+                        if hops <= MAX_LEAF_HOPS {
+                            stack.push((value, value_scope));
+                            continue;
+                        }
+                    }
+                }
                 if let Some(leaf_ty) = node.inferred_type() {
                     if let Some(e) = abstracting_return_error(kb, &leaf_ty, ret_ty, op_sym) {
                         return Some(e);
@@ -16088,6 +16137,61 @@ fn branch_leaf_abstracting_return_error(
         }
     }
     None
+}
+
+/// WI-468: the let-binding scope threaded through
+/// [`branch_leaf_abstracting_return_error`]'s leaf walk — an `Rc`-shared cons list
+/// mapping a let-bound variable to the binding's VALUE node. Immutable so each
+/// branch push is O(1). A binding's `parent` is the scope in force BEFORE that
+/// `let`, which is also the scope its value resolves in — so a reference to a
+/// rebound name sees the value it was actually bound to, not a later shadow.
+enum LeafScope {
+    Empty,
+    Bind { name: Symbol, value: Rc<NodeOccurrence>, parent: Rc<LeafScope> },
+}
+
+impl LeafScope {
+    /// Resolve a tail-position variable to `(value node, the scope that value
+    /// resolves in)`. `None` for a free variable (a parameter or outer binder),
+    /// whose own stamped type is then read directly.
+    fn resolve(
+        self: &Rc<Self>,
+        kb: &KnowledgeBase,
+        name: Symbol,
+    ) -> Option<(Rc<NodeOccurrence>, Rc<LeafScope>)> {
+        let mut cur = self;
+        loop {
+            match cur.as_ref() {
+                LeafScope::Empty => return None,
+                LeafScope::Bind { name: n, value, parent } => {
+                    if same_symbol(kb, *n, name) {
+                        return Some((Rc::clone(value), Rc::clone(parent)));
+                    }
+                    cur = parent;
+                }
+            }
+        }
+    }
+}
+
+/// The variable a `let` pattern binds, for a plain `Pattern::Var` binder (the only
+/// form that introduces a single name the leaf walk can see through). A
+/// destructuring pattern binds no single name and yields `None`.
+fn let_bound_var_name(pattern: &Rc<NodeOccurrence>) -> Option<Symbol> {
+    match pattern.as_pattern() {
+        Some(Pattern::Var { name, .. }) => Some(*name),
+        _ => None,
+    }
+}
+
+/// The variable a tail leaf references, if it is a bare value reference (the forms
+/// `value_references` enumerates: `Ident` / `Ref` / `VarRef`).
+fn leaf_var_ref(node: &Rc<NodeOccurrence>) -> Option<Symbol> {
+    match node.as_expr() {
+        Some(Expr::Ident(s)) | Some(Expr::Ref(s)) => Some(*s),
+        Some(Expr::VarRef { name }) => Some(*name),
+        _ => None,
+    }
 }
 
 // ── Requires chain ─────────────────────────────────────────────
