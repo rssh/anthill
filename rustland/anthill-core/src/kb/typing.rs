@@ -15338,15 +15338,17 @@ fn widen_value(kb: &mut KnowledgeBase, v: &Value) -> Option<Value> {
 /// exactly one type conforms to the other (`types_compatible`, covering
 /// entity→sort and `requires`-refine) the supertype wins; when both
 /// directions hold (identical, or bare-vs-parameterized) [`more_general_type`]
-/// decides; failing both, the sides are widened one level up the
-/// entity→enclosing-sort chain and retried. The climb is bounded — each
-/// step strictly ascends or a side stops widening — so it terminates.
+/// decides; failing both, two SAME-BASE parameterized types get a real
+/// parameterized LUB built per-binding by declared variance (WI-464,
+/// [`join_parameterized_same_base`]), and otherwise the nominal sides are widened
+/// one level up the entity→enclosing-sort chain and retried. The climb is bounded
+/// — each step strictly ascends or a side stops widening — so it terminates.
 fn join_types(kb: &mut KnowledgeBase, a: Value, b: Value) -> Option<Value> {
     // WI-342: carrier-agnostic — `a`/`b` are `Value`s (a branch may be a
-    // `Value::Node` lambda arrow). The join only ever RETURNS one of its inputs
-    // (or widens a nominal side up the lattice); it never constructs a new type,
-    // so no occurrence-level lub is needed. `types_compatible` is already
-    // carrier-agnostic; we pass the `Value`s directly rather than re-grounding.
+    // `Value::Node` lambda arrow). WI-464: the join RETURNS one of its inputs, or
+    // (for two same-base parameterized types) CONSTRUCTS the parameterized LUB
+    // recursively, or widens a nominal side up the lattice. `types_compatible` is
+    // already carrier-agnostic; we pass the `Value`s directly rather than re-grounding.
     // WI-361: dispatch on the CANONICAL type tag (`type_dispatch_name_view`), not
     // the raw functor — a term-backed type_var is `Fn{TypeExtractor.TypeVar, …}`
     // whose raw functor name is "TypeVar", so a raw `== "type_var"` check would
@@ -15382,16 +15384,22 @@ fn join_types(kb: &mut KnowledgeBase, a: Value, b: Value) -> Option<Value> {
             // parameterized arm checks bindings — so they fall through to
             // the widen step.)
             (true, true) => return Some(more_general_type(kb, &a, &b)),
-            // Incomparable: widen the entity side(s) one level and retry.
-            // WI-293/WI-382: for two same-base parameterized types
-            // (`Option[T=Cat]` / `Option[T=Dog]`) the STRICT lub would recurse
-            // into the bindings by variance — covariant `join(av,bv)`, invariant
-            // `av==bv`, contravariant `meet(av,bv)` — yielding `Option[T=Animal]`.
-            // That CONSTRUCTS a type (join never does today) and needs a `meet`
-            // (absent), so it is deferred to the WI-382 per-sort ORDER-relation
-            // framework (join/meet as registered order ops). Until then we widen
-            // the nominal side — a sound common supertype, not the strict lub.
+            // Incomparable. WI-464: two same-base parameterized types
+            // (`Option[T=Cat]` / `Option[T=Dog]`) get a real parameterized LUB —
+            // recurse per binding by the parameter's DECLARED variance (covariant
+            // `join(av,bv)`, contravariant `meet(av,bv)`, invariant `av≡bv`),
+            // yielding `Option[T=Animal]`. When a binding can't be combined (no
+            // common supertype, or unequal invariant bindings) the helper falls
+            // back to the bare base sort — still a sound common supertype. (The
+            // earlier WI-382 deferral was wrong: `meet_types` is just `join_types`'s
+            // dual over the same lattice, built directly in Rust like the WI-293
+            // subtyping half — no per-sort-algorithm framework needed.)
             (false, false) => {
+                if let Some(lub) = join_parameterized_same_base(kb, &a, &b) {
+                    return Some(lub);
+                }
+                // Not same-base parameterized: widen the entity side(s) one level
+                // (entity → enclosing sort) up the nominal lattice and retry.
                 let wa = widen_value(kb, &a);
                 let wb = widen_value(kb, &b);
                 if wa.is_none() && wb.is_none() {
@@ -15441,6 +15449,206 @@ fn more_general_type(kb: &KnowledgeBase, a: &Value, b: &Value) -> Value {
 /// it and mis-normalize the join to the over-specific side.
 fn more_general_form(kb: &KnowledgeBase, v: &Value) -> Option<&'static str> {
     type_dispatch_name_view(kb, v)
+}
+
+/// WI-464: which lattice bound a per-binding combine computes — the least upper
+/// bound (`Lub`, used by [`join_types`]) or the greatest lower bound (`Glb`, used
+/// by [`meet_types`]). Threaded through [`combine_parameterized_same_base`] so the
+/// shared per-binding-by-variance skeleton serves both; a CONTRAVARIANT parameter
+/// flips it (the dual bound).
+#[derive(Clone, Copy)]
+enum LatticeDir {
+    Lub,
+    Glb,
+}
+
+impl LatticeDir {
+    /// The dual direction — a contravariant parameter computes the opposite bound
+    /// of its enclosing type (the LUB of `Fn[A=…]` meets the two `A`s).
+    fn flip(self) -> Self {
+        match self {
+            LatticeDir::Lub => LatticeDir::Glb,
+            LatticeDir::Glb => LatticeDir::Lub,
+        }
+    }
+}
+
+/// WI-464: the GREATEST LOWER BOUND of two branch types — the lattice DUAL of
+/// [`join_types`]. The Type lattice has a bottom (`nothing`), so the meet is
+/// TOTAL: two types always have a GLB (at worst `nothing`), unlike the top-less
+/// join (which returns `None` for incomparable nominal types). Used for the
+/// CONTRAVARIANT-parameter arm of the parameterized LUB (a contravariant param's
+/// join is the meet of its two binding values) and, dually, for the covariant arm
+/// of the parameterized GLB.
+///
+/// Mirrors [`join_types`] arm-for-arm with the order reversed: a `type_var`
+/// wildcard meets to the other side; when one type conforms to the other the
+/// SUBtype wins (vs the supertype for join); mutually-compatible types meet to the
+/// MORE-SPECIFIC side ([`more_specific_type`], dual of [`more_general_type`]); two
+/// same-base parameterized types recurse per declared variance; incomparable types
+/// meet to `nothing`. Commutative, like [`join_types`].
+fn meet_types(kb: &mut KnowledgeBase, a: Value, b: Value) -> Value {
+    if type_dispatch_name_view(kb, &a) == Some("type_var") {
+        return b;
+    }
+    if type_dispatch_name_view(kb, &b) == Some("type_var") {
+        return a;
+    }
+    // WI-335: each direction of the lattice check is independent — per-direction
+    // substs, exactly as [`join_types`].
+    let mut subst_ab = Substitution::new();
+    let mut subst_ba = Substitution::new();
+    match (
+        types_compatible(kb, &mut subst_ab, &a, &b),
+        types_compatible(kb, &mut subst_ba, &b, &a),
+    ) {
+        // `a <: b`: `a` is the SUBtype, hence the lower bound (dual of join).
+        (true, false) => a,
+        // `b <: a`: `b` is the lower bound.
+        (false, true) => b,
+        // Mutually compatible (identical, or bare-vs-parameterized): the
+        // more-SPECIFIC side is the GLB (dual of join's more-general choice).
+        (true, true) => more_specific_type(kb, &a, &b),
+        // Incomparable: a same-base parameterized GLB if both qualify, else the
+        // bottom type — two incomparable nominal types share no lower bound but
+        // `nothing`.
+        (false, false) => meet_parameterized_same_base(kb, &a, &b)
+            .unwrap_or_else(|| Value::Term(kb.make_nothing_type())),
+    }
+}
+
+/// WI-464: dual of [`more_general_type`] — between two MUTUALLY-compatible types
+/// (identical, or the bare-vs-parameterized normalization where each conforms to
+/// the other) the GLB keeps the MORE-SPECIFIC side: `Option` meet `Option[T = Int]`
+/// is `Option[T = Int]`. Returns `a` when neither side is parameterized (identical
+/// types). Keeps [`meet_types`] commutative.
+fn more_specific_type(kb: &KnowledgeBase, a: &Value, b: &Value) -> Value {
+    match (more_general_form(kb, a), more_general_form(kb, b)) {
+        (Some("sort_ref"), Some("parameterized")) => b.clone(),
+        (Some("parameterized"), Some("sort_ref")) => a.clone(),
+        _ => a.clone(),
+    }
+}
+
+/// WI-464: two types are EQUIVALENT when each is a subtype of the other — the
+/// equality an INVARIANT parameter demands of its two binding values for the
+/// parameterized LUB/GLB to keep that binding (else the whole type falls back to
+/// its conservative bound). Context-free, like [`is_subtype`]: a fresh subst per
+/// direction.
+fn types_equivalent(kb: &mut KnowledgeBase, a: &Value, b: &Value) -> bool {
+    let mut s1 = Substitution::new();
+    if !types_compatible(kb, &mut s1, a, b) {
+        return false;
+    }
+    let mut s2 = Substitution::new();
+    types_compatible(kb, &mut s2, b, a)
+}
+
+/// WI-464: combine two SAME-BASE parameterized types into their LUB (`Lub`) or GLB
+/// (`Glb`), recursing per binding by the parameter's DECLARED variance ([`declared_variance`]).
+/// The shared skeleton behind [`join_parameterized_same_base`] /
+/// [`meet_parameterized_same_base`]: a COVARIANT parameter combines in the
+/// enclosing `dir`, a CONTRAVARIANT one in the dual ([`LatticeDir::flip`]), an
+/// INVARIANT one requires its two values be [`types_equivalent`], and a BIVARIANT
+/// one (variance both ways ⇒ irrelevant to subtyping) takes `dir` for a sound,
+/// commutative representative.
+///
+/// Returns `None` when the two are NOT same-base parameterized (the caller then
+/// widens for a join, or bottoms-out for a meet). When a binding cannot be combined
+/// — a covariant/contravariant sub-combine has no result, an invariant param's
+/// values differ, or param sets don't line up — it returns the CONSERVATIVE
+/// whole-type bound: the bare base sort `S` for the LUB (every `S[..] <: S`), the
+/// bottom type for the GLB. Construction stays on the hash-consed term path (the
+/// nominal, heavily-shared structure that should remain a `TermId`); a `Value::Node`
+/// combined binding (an arrow / denoted type — exotic for a branch join) falls back
+/// to the conservative bound rather than minting a Node-carried type.
+fn combine_parameterized_same_base(
+    kb: &mut KnowledgeBase,
+    dir: LatticeDir,
+    a: &Value,
+    b: &Value,
+) -> Option<Value> {
+    let (a_base, a_binds) = match extract_type(kb, a) {
+        TypeExtractor::Parameterized { base, bindings } => (base, bindings),
+        _ => return None,
+    };
+    let (b_base, b_binds) = match extract_type(kb, b) {
+        TypeExtractor::Parameterized { base, bindings } => (base, bindings),
+        _ => return None,
+    };
+    // Different base sorts: not a same-base combine — let the caller widen (LUB)
+    // or bottom-out (GLB).
+    if a_base != b_base {
+        return None;
+    }
+    // The conservative whole-type bound when a binding can't be combined.
+    let fallback = |kb: &mut KnowledgeBase| -> Value {
+        match dir {
+            LatticeDir::Lub => Value::Term(kb.make_sort_ref(a_base)),
+            LatticeDir::Glb => Value::Term(kb.make_nothing_type()),
+        }
+    };
+    // Same base sort ⇒ same params; guard a malformed/partial binding set.
+    if a_binds.len() != b_binds.len() {
+        return Some(fallback(kb));
+    }
+    let mut result: Vec<(Symbol, TermId)> = Vec::with_capacity(a_binds.len());
+    for (param, av) in &a_binds {
+        let Some((_, bv)) = b_binds.iter().find(|(q, _)| q == param) else {
+            return Some(fallback(kb));
+        };
+        let combined: Value = match declared_variance(kb, a_base, *param) {
+            Variance::Covariant | Variance::Bivariant => {
+                match combine_binding(kb, dir, av.clone(), bv.clone()) {
+                    Some(v) => v,
+                    None => return Some(fallback(kb)),
+                }
+            }
+            Variance::Contravariant => {
+                match combine_binding(kb, dir.flip(), av.clone(), bv.clone()) {
+                    Some(v) => v,
+                    None => return Some(fallback(kb)),
+                }
+            }
+            Variance::Invariant => {
+                if types_equivalent(kb, av, bv) {
+                    av.clone()
+                } else {
+                    return Some(fallback(kb));
+                }
+            }
+        };
+        match combined {
+            Value::Term(t) => result.push((*param, t)),
+            // A Node-carried combined binding: stay off the Node path; bail.
+            _ => return Some(fallback(kb)),
+        }
+    }
+    let base_ref = kb.make_sort_ref(a_base);
+    Some(Value::Term(kb.make_parameterized_type(base_ref, &result)))
+}
+
+/// WI-464: combine one binding's two values per the lattice `dir`. `Lub` is the
+/// partial [`join_types`] (the Type lattice is top-less, so `None` propagates);
+/// `Glb` is the total [`meet_types`] (a bottom exists, so always `Some`).
+fn combine_binding(kb: &mut KnowledgeBase, dir: LatticeDir, a: Value, b: Value) -> Option<Value> {
+    match dir {
+        LatticeDir::Lub => join_types(kb, a, b),
+        LatticeDir::Glb => Some(meet_types(kb, a, b)),
+    }
+}
+
+/// WI-464: the parameterized LUB of two same-base parameterized types — the
+/// `Lub` instance of [`combine_parameterized_same_base`]. `join(Option[T = Cat],
+/// Option[T = Dog]) = Option[T = Animal]`.
+fn join_parameterized_same_base(kb: &mut KnowledgeBase, a: &Value, b: &Value) -> Option<Value> {
+    combine_parameterized_same_base(kb, LatticeDir::Lub, a, b)
+}
+
+/// WI-464: the parameterized GLB of two same-base parameterized types — the `Glb`
+/// instance of [`combine_parameterized_same_base`].
+fn meet_parameterized_same_base(kb: &mut KnowledgeBase, a: &Value, b: &Value) -> Option<Value> {
+    combine_parameterized_same_base(kb, LatticeDir::Glb, a, b)
 }
 
 /// WI-287: the result type of a branching expression (`match` / `if`),
@@ -19083,3 +19291,196 @@ end
 }
 
 
+
+/// WI-464 — variance-aware parameterized join (LUB) / meet (GLB). The join now
+/// CONSTRUCTS a parameterized type per-binding by declared variance instead of only
+/// widening the nominal side, and `meet_types` is its lattice dual (GLB down to the
+/// `nothing` bottom). Loads the real stdlib (for the proposal-035 variance facts:
+/// Option/Function covariance, Function.A contravariance) plus a small Animal/Box
+/// fixture, then drives the private lattice ops directly.
+#[cfg(test)]
+mod wi464_variance_join_meet_tests {
+    use super::{extract_sort_ref_sym, extract_type, join_types, meet_types, type_dispatch_name_view, TypeExtractor};
+    use crate::eval::value::Value;
+    use crate::intern::Symbol;
+    use crate::kb::load::{self, NullResolver};
+    use crate::kb::term::TermId;
+    use crate::kb::KnowledgeBase;
+    use crate::parse;
+    use std::path::{Path, PathBuf};
+
+    const SRC: &str = r#"namespace test.wi464
+  import anthill.prelude.{Option, Function, Int64}
+
+  sort Animal
+    entity cat
+    entity dog
+  end
+
+  -- No variance fact ⇒ INVARIANT in T (the safe default for a mutable-shaped sort).
+  sort Box
+    sort T = ?
+    entity box(v: T)
+  end
+end
+"#;
+
+    fn collect(dir: &Path, out: &mut Vec<PathBuf>) {
+        if dir.is_dir() {
+            for e in std::fs::read_dir(dir).unwrap() {
+                let p = e.unwrap().path();
+                if p.is_dir() {
+                    collect(&p, out);
+                } else if p.extension().is_some_and(|x| x == "anthill") {
+                    out.push(p);
+                }
+            }
+        }
+    }
+
+    fn load_kb() -> KnowledgeBase {
+        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../stdlib/anthill");
+        let mut files = Vec::new();
+        collect(&dir, &mut files);
+        let mut parsed: Vec<_> = files
+            .iter()
+            .map(|p| parse::parse(&std::fs::read_to_string(p).unwrap()).unwrap())
+            .collect();
+        parsed.push(parse::parse(SRC).expect("parse fixture"));
+        let refs: Vec<_> = parsed.iter().collect();
+        let mut kb = KnowledgeBase::new();
+        load::register_prelude(&mut kb);
+        kb.register_standard_builtins();
+        if let Err(errs) = load::load_all(&mut kb, &refs, &NullResolver) {
+            panic!(
+                "fixture load errors: {:?}",
+                errs.iter().map(|e| e.to_string()).collect::<Vec<_>>()
+            );
+        }
+        kb
+    }
+
+    fn sym(kb: &KnowledgeBase, qn: &str) -> Symbol {
+        kb.try_resolve_symbol(qn).unwrap_or_else(|| panic!("resolve {qn}"))
+    }
+
+    /// A bare `sort_ref` Value for the sort named `qn`.
+    fn bare(kb: &mut KnowledgeBase, qn: &str) -> Value {
+        let s = sym(kb, qn);
+        Value::Term(kb.make_sort_ref(s))
+    }
+
+    /// A parameterized Value `Base[param = arg, …]`, each arg a bare sort named by qn.
+    fn param(kb: &mut KnowledgeBase, base_qn: &str, binds: &[(&str, &str)]) -> Value {
+        let base_sym = sym(kb, base_qn);
+        let base_ref = kb.make_sort_ref(base_sym);
+        let term_binds: Vec<(Symbol, TermId)> = binds
+            .iter()
+            .map(|(p, arg_qn)| {
+                let p_sym = kb.intern(p);
+                let arg_sym = sym(kb, arg_qn);
+                (p_sym, kb.make_sort_ref(arg_sym))
+            })
+            .collect();
+        Value::Term(kb.make_parameterized_type(base_ref, &term_binds))
+    }
+
+    /// Decompose a parameterized result into (base sort, bindings).
+    fn as_param(kb: &KnowledgeBase, v: &Value) -> (Symbol, Vec<(Symbol, Value)>) {
+        match extract_type(kb, v) {
+            TypeExtractor::Parameterized { base, bindings } => (base, bindings),
+            other => panic!("expected a parameterized type, got {other:?}"),
+        }
+    }
+
+    /// The value bound to the parameter whose short name is `name`.
+    fn binding<'a>(kb: &KnowledgeBase, binds: &'a [(Symbol, Value)], name: &str) -> &'a Value {
+        binds
+            .iter()
+            .find(|(p, _)| kb.resolve_sym(*p) == name)
+            .map(|(_, v)| v)
+            .unwrap_or_else(|| panic!("no `{name}` binding among the result bindings"))
+    }
+
+    fn is_sort(kb: &KnowledgeBase, v: &Value, want: Symbol) -> bool {
+        extract_sort_ref_sym(kb, v) == Some(want)
+    }
+    fn is_nothing(kb: &KnowledgeBase, v: &Value) -> bool {
+        type_dispatch_name_view(kb, v) == Some("nothing")
+    }
+
+    /// COVARIANT: `join(Option[T = cat], Option[T = dog]) = Option[T = Animal]` — the
+    /// element parameter's two incomparable values join up the sort lattice to their
+    /// common parent, and the result is a freshly CONSTRUCTED parameterized type (the
+    /// behaviour join never had before WI-464).
+    #[test]
+    fn covariant_join_builds_parameterized_lub() {
+        let mut kb = load_kb();
+        let (animal, option) = (sym(&kb, "test.wi464.Animal"), sym(&kb, "anthill.prelude.Option"));
+        let a = param(&mut kb, "anthill.prelude.Option", &[("T", "test.wi464.Animal.cat")]);
+        let b = param(&mut kb, "anthill.prelude.Option", &[("T", "test.wi464.Animal.dog")]);
+        let j = join_types(&mut kb, a, b).expect("Option[cat] and Option[dog] have a join");
+        let (base, binds) = as_param(&kb, &j);
+        assert_eq!(base, option, "join base sort is Option");
+        assert!(is_sort(&kb, binding(&kb, &binds, "T"), animal), "T binding joins cat/dog to Animal");
+    }
+
+    /// INVARIANT: `Box` has no variance fact, so its `T` is invariant. The two
+    /// binding values differ, so there is no parameterized LUB — the join falls back
+    /// to the conservative common supertype, the bare base sort `Box`.
+    #[test]
+    fn invariant_join_falls_back_to_bare_base() {
+        let mut kb = load_kb();
+        let box_sym = sym(&kb, "test.wi464.Box");
+        let a = param(&mut kb, "test.wi464.Box", &[("T", "test.wi464.Animal.cat")]);
+        let b = param(&mut kb, "test.wi464.Box", &[("T", "test.wi464.Animal.dog")]);
+        let j = join_types(&mut kb, a, b).expect("the bare base sort is a common supertype");
+        assert!(is_sort(&kb, &j, box_sym), "an unequal invariant binding widens to bare Box, got {j:?}");
+    }
+
+    /// CONTRAVARIANT: `Function.A` is contravariant, so its arm of the join takes the
+    /// MEET of the two argument types — `meet(cat, dog) = nothing` — while the
+    /// covariant `B` joins normally: `join(Function[A=cat,B=Int], Function[A=dog,B=Int])
+    /// = Function[A = nothing, B = Int]`.
+    #[test]
+    fn contravariant_join_uses_meet() {
+        let mut kb = load_kb();
+        let (function, int) = (sym(&kb, "anthill.prelude.Function"), sym(&kb, "anthill.prelude.Int64"));
+        let a = param(&mut kb, "anthill.prelude.Function",
+            &[("A", "test.wi464.Animal.cat"), ("B", "anthill.prelude.Int64")]);
+        let b = param(&mut kb, "anthill.prelude.Function",
+            &[("A", "test.wi464.Animal.dog"), ("B", "anthill.prelude.Int64")]);
+        let j = join_types(&mut kb, a, b).expect("two Function types have a join");
+        let (base, binds) = as_param(&kb, &j);
+        assert_eq!(base, function, "join base sort is Function");
+        assert!(is_nothing(&kb, binding(&kb, &binds, "A")), "contravariant A meets cat/dog to nothing");
+        assert!(is_sort(&kb, binding(&kb, &binds, "B"), int), "covariant B joins Int/Int to Int");
+    }
+
+    /// GLB basics — `meet_types` is total (the lattice has a `nothing` bottom):
+    /// `meet(Animal, cat) = cat` (the subtype), `meet(cat, dog) = nothing`
+    /// (incomparable siblings), and a covariant parameterized meet recurses:
+    /// `meet(Option[T=cat], Option[T=dog]) = Option[T = nothing]`.
+    #[test]
+    fn meet_glb_basics() {
+        let mut kb = load_kb();
+        let (cat, option) = (sym(&kb, "test.wi464.Animal.cat"), sym(&kb, "anthill.prelude.Option"));
+
+        let animal_v = bare(&mut kb, "test.wi464.Animal");
+        let cat_v = bare(&mut kb, "test.wi464.Animal.cat");
+        let m1 = meet_types(&mut kb, animal_v, cat_v);
+        assert!(is_sort(&kb, &m1, cat), "meet(Animal, cat) is the subtype cat, got {m1:?}");
+
+        let cat_v = bare(&mut kb, "test.wi464.Animal.cat");
+        let dog_v = bare(&mut kb, "test.wi464.Animal.dog");
+        let m2 = meet_types(&mut kb, cat_v, dog_v);
+        assert!(is_nothing(&kb, &m2), "meet(cat, dog) is the bottom type nothing, got {m2:?}");
+
+        let oa = param(&mut kb, "anthill.prelude.Option", &[("T", "test.wi464.Animal.cat")]);
+        let ob = param(&mut kb, "anthill.prelude.Option", &[("T", "test.wi464.Animal.dog")]);
+        let m3 = meet_types(&mut kb, oa, ob);
+        let (base, binds) = as_param(&kb, &m3);
+        assert_eq!(base, option, "meet base sort is Option");
+        assert!(is_nothing(&kb, binding(&kb, &binds, "T")), "covariant T meets cat/dog to nothing");
+    }
+}
