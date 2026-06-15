@@ -14762,8 +14762,18 @@ fn types_compatible_term_dispatch(kb: &mut KnowledgeBase, subst: &mut Substituti
                 // carries no bindings to drop) — the same reasoning that confines the
                 // WI-344 accept to the bare↔bare arm. Applying it here too makes provider
                 // admissibility UNIFORM across the dispatch arms (the WI-405 root cause).
+                //
+                // WI-466: the parameterized side is the ACTUAL, the sort_ref side the
+                // EXPECTED, so the nominal check is `sort_sym_compatible(actual=ab,
+                // expected=e)` — matching the `(sort_ref, parameterized)` sibling arm and
+                // the `sort_provides_admissibly(ab, e)` beside it. The pre-WI-466 call
+                // passed `(e, ab)` (swapped): it (1) false-REJECTED a parameterized actual
+                // whose base refines/is-entity-of the bare expected (`Refined[T=Int64]` vs
+                // `Base` where `Refined requires Base`), and (2) false-ACCEPTED the reverse
+                // (a `Base[..]` where an expected spec that refines `Base` was demanded) —
+                // a soundness hole.
                 (Some(e), Some(ab)) => {
-                    sort_sym_compatible(kb, e, ab) || sort_provides_admissibly(kb, ab, e)
+                    sort_sym_compatible(kb, ab, e) || sort_provides_admissibly(kb, ab, e)
                 }
                 _ => false,
             }
@@ -14909,8 +14919,11 @@ fn types_compatible_view_structural<A: TermView, B: TermView>(
             match (sort_functor_of_view(kb, &e), sort_functor_of_view(kb, &a)) {
                 // WI-405 FACET A: parameterized carrier vs bare provider spec — mirror the
                 // term dispatch so provider admissibility stays carrier-symmetric.
+                // WI-466: nominal check is `(actual=ab, expected=ev)` — the parameterized
+                // side is the ACTUAL, the sort_ref the EXPECTED (the pre-WI-466 `(ev, ab)`
+                // was swapped; see the term-dispatch twin for the two latent defects).
                 (Some(ev), Some(ab)) => {
-                    sort_sym_compatible(kb, ev, ab) || sort_provides_admissibly(kb, ab, ev)
+                    sort_sym_compatible(kb, ab, ev) || sort_provides_admissibly(kb, ab, ev)
                 }
                 _ => false,
             }
