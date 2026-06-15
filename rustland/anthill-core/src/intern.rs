@@ -63,6 +63,28 @@ pub enum SymbolKind {
     LocalLet,
 }
 
+impl SymbolKind {
+    /// True for the frame-/instance-relative VALUE-PLACE kinds — an operation or
+    /// callback parameter, a result binder, an entity field, or a `let`-local.
+    /// These name a place WITHIN some binder's scope, NOT a global identity
+    /// (`Sort`/`Entity`/`Operation`/…), so a reference to one is binder-relative:
+    /// meaningful only up to binder alignment. The single source of truth for that
+    /// classification — used by the loader's value-in-type lowering
+    /// (`symbol_is_value_place`) and the typer's value-in-type groundness gate
+    /// (`denoted_value_is_closed`, WI-470), which must agree on the set.
+    pub fn is_value_place(self) -> bool {
+        matches!(
+            self,
+            SymbolKind::Param
+                | SymbolKind::Field
+                | SymbolKind::LocalLet
+                | SymbolKind::OpResult
+                | SymbolKind::CallbackParam
+                | SymbolKind::CallbackResult
+        )
+    }
+}
+
 #[derive(Clone, Debug)]
 pub enum SymbolDef {
     Unresolved {
