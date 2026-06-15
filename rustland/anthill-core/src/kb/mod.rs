@@ -1709,6 +1709,16 @@ impl KnowledgeBase {
         &self.rules[id.index()].body_nodes
     }
 
+    /// WI-282: replace a rule's body atoms with their typer-rewritten form (the
+    /// rule-body peer of [`set_op_body_node`]). Used after dot dispatch rewrites a
+    /// body's `Expr::DotApply` to its `Apply`/`field_access` form. Dispatch never
+    /// changes a body's variable set (the receiver var is reused, the synthesized
+    /// field-name is a `Ref` constant), so the rule's `arity`/`globals`/
+    /// `shared_arity` stay valid and the head-indexed discrim entry is untouched.
+    pub fn set_rule_body_nodes(&mut self, id: RuleId, body_nodes: Vec<Rc<NodeOccurrence>>) {
+        self.rules[id.index()].body_nodes = body_nodes;
+    }
+
     /// Get the sort of a rule.
     pub fn rule_sort(&self, id: RuleId) -> TermId {
         self.rules[id.index()].sort

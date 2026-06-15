@@ -536,6 +536,18 @@ pub struct TypingEnv {
     /// spec-op call site under this body; caching once per body avoids
     /// re-walking `SortRequiresInfo` per apply.
     enclosing: Option<EnclosingSort>,
+    /// WI-282: the enclosing RULE's De Bruijn variable types, keyed by De Bruijn
+    /// index — the rule-body analog of `var_bindings` (which is keyed by the
+    /// SYMBOL name a param/let/lambda binds under). A rule body has no lexical
+    /// param env; a body var is an `Expr::Var(Var::DeBruijn(i))` whose type is
+    /// inferred from its use in the goals (`collect_occurrence_type_constraints`).
+    /// Installed so a value-receiver `?x.field` / `?x.method(...)` in a rule body
+    /// resolves `?x` to a concrete sort and dispatches, exactly as an op-body dot
+    /// does ("dot means the same in all expression positions"). Empty outside a
+    /// rule-body dot-dispatch walk. `Rc`: the env is cloned on every Visit push of
+    /// the iterative typer and this is set once per rule, so clones are a refcount
+    /// bump, not a map copy.
+    debruijn_types: Rc<HashMap<u32, Value>>,
     pub diagnostics: Vec<String>,
 }
 
@@ -553,8 +565,21 @@ impl TypingEnv {
             enclosing_sort_param_rigids: Rc::new(Vec::new()),
             local_resources: Vec::new(),
             enclosing: None,
+            debruijn_types: Rc::new(HashMap::new()),
             diagnostics: Vec::new(),
         }
+    }
+
+    /// WI-282: install the enclosing rule's De Bruijn var → type map (see the
+    /// field doc). `Rc` clone is a refcount bump.
+    pub fn set_debruijn_types(&mut self, types: Rc<HashMap<u32, Value>>) {
+        self.debruijn_types = types;
+    }
+
+    /// WI-282: the type a rule body's `Expr::Var(Var::DeBruijn(idx))` was
+    /// constrained to by the goals, or `None` for a genuinely-free body var.
+    fn lookup_debruijn(&self, idx: u32) -> Option<Value> {
+        self.debruijn_types.get(&idx).cloned()
     }
 
     /// WI-424 — install the enclosing sort's param-var → rigid map for the
@@ -2914,6 +2939,14 @@ fn visit_type(
                 Var::Global(vid) => env
                     .lookup_var(vid.name())
                     .or_else(|| lookup_binding_by_short_name(kb, &env, vid.name())),
+                // WI-282: a RULE-body var is De Bruijn-encoded (rules carry no
+                // lexical param env); its type comes from the rule's constraint
+                // collection, installed on the env as `debruijn_types`. This is
+                // what gives a rule-body `?x.field` / `?x.method(...)` receiver a
+                // concrete sort to dispatch on — the op-body path's `lookup_var`
+                // peer. A free body var (no constraint) misses and gets a fresh
+                // type-var, as a free op-body `?x` does.
+                Var::DeBruijn(idx) => env.lookup_debruijn(*idx),
                 _ => None,
             };
             let ty = bound.unwrap_or_else(|| {
@@ -17282,6 +17315,14 @@ pub fn type_check_sorts_typed(kb: &mut KnowledgeBase, sort_terms: &[TermId]) -> 
     // sort/body split above, so a body-less FREE spec is covered too.
     errors.extend(check_operation_signatures(kb));
 
+    // WI-282: rewrite every rule body's `Expr::DotApply` to its dispatched form
+    // (method `Apply` / `field_access`) so the resolver opens the dispatched
+    // body, not a structural `dot_apply` goal that would match nothing. Runs
+    // over ALL rules (the sort-scoped `check_rule_typing` above misses free
+    // namespace-level rules). After signature checks, so operation/entity
+    // metadata the dispatch reads is settled.
+    errors.extend(dispatch_rule_body_dots(kb));
+
     errors
 }
 
@@ -18524,30 +18565,11 @@ fn check_rule_typing(kb: &mut KnowledgeBase, sort_term: TermId, errors: &mut Vec
         if kb.is_fact(rid) { continue; } // facts have no body — nothing to check
 
         let head = kb.rule_head(rid);
-        let mut subst = Substitution::new();
-        // WI-342 P3: keyed by var id → its constrained type, carried
-        // carrier-agnostically as `Value` (today every entry is `Value::Term`
-        // from `OperationInfo`/entity-field metadata; it holds a `Value::Node`
-        // type unchanged once those producers migrate in P4).
-        let mut var_types: HashMap<u32, Value> = std::collections::HashMap::new();
-
-        // Collect type constraints from the head (still a hash-consed term).
-        collect_term_type_constraints(kb, head, &mut var_types, &mut subst);
-
-        // Collect type constraints from the body goals (WI-246: the occurrence
-        // body, not the term body). The head term and the body occurrences are
-        // closed against the same `vars`, so their De Bruijn idx keys align.
-        // WI-307: `collect_occurrence_type_constraints` now takes `&mut kb`
-        // (so `unify_types` can allocate fresh row tails); the body-node
-        // slice is cloned out first so the immutable borrow doesn't conflict
-        // with the inner mutable kb pass.
         let body_nodes: Vec<Rc<NodeOccurrence>> = kb.rule_body_nodes(rid).to_vec();
-        for node in &body_nodes {
-            collect_occurrence_type_constraints(kb, node, &mut var_types, &mut subst);
-        }
+        let (_var_types, contradiction) = collect_rule_var_types(kb, head, &body_nodes);
 
         // Check for contradictions in the substitution
-        if subst.is_contradiction() {
+        if contradiction {
             let head_sym = match kb.get_term(head) {
                 Term::Fn { functor, .. } => *functor,
                 _ => continue,
@@ -18561,6 +18583,172 @@ fn check_rule_typing(kb: &mut KnowledgeBase, sort_term: TermId, errors: &mut Vec
             });
         }
     }
+}
+
+/// WI-282: dispatch every rule body's `Expr::DotApply` to its method / field
+/// form *before* the body reaches SLD — the rule-body peer of the op-body dot
+/// dispatch (WI-279). "dot means the same in all expression positions":
+/// `?pose.position.x` reads identically in a rule body and an operation body.
+///
+/// Runs over ALL live non-fact rules — sort-scoped AND free namespace-level —
+/// unlike [`check_rule_typing`], which `by_domain`-iterates only sorts carrying
+/// `SortInfo` (a free rule's domain is its namespace, which has none). A
+/// dot-free body pays only a cheap structural scan; a body with a dot has its
+/// constrained var types recomputed (the receiver's concrete sort) and each dot
+/// dispatched via the typer's own walk.
+fn dispatch_rule_body_dots(kb: &mut KnowledgeBase) -> Vec<TypeError> {
+    let mut errors: Vec<TypeError> = Vec::new();
+    for rid in kb.live_rule_ids() {
+        if kb.is_fact(rid) {
+            continue; // facts have no body
+        }
+        // Cheap structural gate on the BORROWED body slice: skip the
+        // overwhelming majority of dot-free bodies before cloning the body Vec or
+        // paying for var-type collection / env build. (The KB-global
+        // `has_dot_applies` flag is NOT a valid gate — it is set only by the
+        // EXPR-occurrence load path [op bodies]; a rule body loads its dot via
+        // term→occurrence materialization, which does not set it.)
+        if !kb.rule_body_nodes(rid).iter().any(occ_contains_dot_apply) {
+            continue;
+        }
+        let body_nodes: Vec<Rc<NodeOccurrence>> = kb.rule_body_nodes(rid).to_vec();
+        // A value-carrier (denoted) head has no hash-consed term to read
+        // constraints from; such heads are facts in practice, but guard rather
+        // than panic in `rule_head`.
+        let head = match kb.rule_head_value(rid).clone() {
+            Value::Term(t) => t,
+            _ => continue,
+        };
+        // Recompute the rule's De Bruijn var types (head + body constraints) —
+        // the same collection `check_rule_typing` does. On a contradiction the
+        // receiver sort would be unreliable, so skip dispatch (the contradiction
+        // itself is reported by `check_rule_typing` for sort-scoped rules).
+        let (var_types, contradiction) = collect_rule_var_types(kb, head, &body_nodes);
+        if contradiction {
+            continue;
+        }
+
+        // Install the var types so a receiver `?x` (an `Expr::Var(DeBruijn)`)
+        // resolves to its concrete sort, exactly as an operation's param env
+        // resolves an op-body receiver. The env is otherwise empty — a rule body
+        // carries no enclosing sort / lexical params; any let/lambda/match inside
+        // a dot subtree introduces its own (named `Global`) bindings, threaded by
+        // the typer's normal env handling.
+        let mut env = TypingEnv::empty();
+        env.set_debruijn_types(Rc::new(var_types));
+        let mut changed = false;
+        let new_body: Vec<Rc<NodeOccurrence>> = body_nodes
+            .iter()
+            .map(|n| {
+                let rewritten = dispatch_dots_in_occ(kb, &env, n, &mut errors);
+                if !Rc::ptr_eq(&rewritten, n) {
+                    changed = true;
+                }
+                rewritten
+            })
+            .collect();
+        // `reassemble`'s ptr-eq short-circuit means an unchanged body re-clones
+        // the same `Rc`s; only write back when a dot actually fired.
+        if changed {
+            kb.set_rule_body_nodes(rid, new_body);
+        }
+    }
+    errors
+}
+
+/// WI-282: recursively rewrite `Expr::DotApply` nodes to their dispatched form,
+/// preserving all non-dot structure (`reassemble`'s ptr-eq short-circuit keeps
+/// unchanged subtrees allocation-free). A DotApply is dispatched as a unit via
+/// the typer's own walk (`type_check_node`), which recurses into the receiver —
+/// so a nested `?x.a.b` chain dispatches outward-in through one call, never
+/// double-visited here. A pattern occurrence (`as_expr` = `None`) is left
+/// unchanged: a dot in a pattern's type annotation is a TYPE projection, not a
+/// value dispatch.
+fn dispatch_dots_in_occ(
+    kb: &mut KnowledgeBase,
+    env: &TypingEnv,
+    occ: &Rc<NodeOccurrence>,
+    errors: &mut Vec<TypeError>,
+) -> Rc<NodeOccurrence> {
+    match occ.as_expr() {
+        Some(Expr::DotApply { .. }) => match type_check_node(kb, env, occ, None) {
+            // `result.node` is the dispatched tree (method `Apply` / reflect
+            // `field_access`), re-typed and redex-free — the same form an op
+            // body's dot rewrites to.
+            Ok(result) => result.node,
+            // A genuine member-not-found on a KNOWN receiver sort (`?p: Point`,
+            // `?p.bogus`) is a loud error at the dot span. An UNRESOLVED receiver
+            // (`receiver_sort: None`) is left untouched — it is not a value
+            // dispatch we can decide: either a polymorphic body var with no
+            // constraining goal, or (load-bearing) the reflect `Expr.dot_apply`
+            // CONSTRUCTOR carried as data in a rule body (an `Expr` induction
+            // principle, a reflection rule), which `materialize_from_handle`
+            // collapses to `Expr::DotApply` via the WI-425 isomorphism. Erroring
+            // there would reject every program defining such a sort; leaving it is
+            // the pre-WI-282 status quo (the dot flows to SLD structurally).
+            Err(e @ TypeError::DotDispatchNoMatch { receiver_sort: Some(_), .. }) => {
+                errors.push(e);
+                Rc::clone(occ)
+            }
+            Err(_) => Rc::clone(occ),
+        },
+        Some(expr) => {
+            // Collect child clones first so the immutable borrow on `occ` ends
+            // before the mutable-`kb` recursion below.
+            let mut children: Vec<Rc<NodeOccurrence>> = Vec::new();
+            for_each_child(expr, |c| children.push(Rc::clone(c)));
+            let new_children: Vec<Rc<NodeOccurrence>> = children
+                .iter()
+                .map(|c| dispatch_dots_in_occ(kb, env, c, errors))
+                .collect();
+            super::simp_rewrite::reassemble(occ, &new_children)
+        }
+        None => Rc::clone(occ),
+    }
+}
+
+/// WI-282: does `occ` carry an `Expr::DotApply` anywhere in its expression
+/// subtree? A cheap pre-scan so the dispatch walk skips dot-free rule bodies.
+/// Explicit-stack walk (matching its sibling [`occurrence_contains_functor`]) so
+/// a deeply-nested body can't overflow the host stack.
+fn occ_contains_dot_apply(occ: &Rc<NodeOccurrence>) -> bool {
+    let mut stack: Vec<Rc<NodeOccurrence>> = vec![Rc::clone(occ)];
+    while let Some(o) = stack.pop() {
+        if let Some(expr) = o.as_expr() {
+            if matches!(expr, Expr::DotApply { .. }) {
+                return true;
+            }
+            for_each_child(expr, |c| stack.push(Rc::clone(c)));
+        }
+    }
+    false
+}
+
+/// WI-282 / WI-307: collect a rule's De Bruijn variable types from its head term
+/// and body occurrences (op-argument / entity-field positions), returning the
+/// `var id → type` map plus whether the constraints are contradictory. Head and
+/// body are closed against the same De Bruijn vars, so their idx keys align.
+///
+/// Shared by [`check_rule_typing`] (which reports the contradiction) and
+/// [`dispatch_rule_body_dots`] (which skips a contradictory rule's dispatch —
+/// the receiver sort would be unreliable). `var_types` is carried
+/// carrier-agnostically as `Value` (WI-342 P3): today every entry is a
+/// `Value::Term` from `OperationInfo` / entity-field metadata; it holds a
+/// `Value::Node` type unchanged once those producers migrate in P4. WI-307: the
+/// body-node slice is taken by reference (the caller clones it out first) so the
+/// immutable borrow does not conflict with the inner `&mut kb` constraint pass.
+fn collect_rule_var_types(
+    kb: &mut KnowledgeBase,
+    head: TermId,
+    body_nodes: &[Rc<NodeOccurrence>],
+) -> (HashMap<u32, Value>, bool) {
+    let mut subst = Substitution::new();
+    let mut var_types: HashMap<u32, Value> = HashMap::new();
+    collect_term_type_constraints(kb, head, &mut var_types, &mut subst);
+    for node in body_nodes {
+        collect_occurrence_type_constraints(kb, node, &mut var_types, &mut subst);
+    }
+    (var_types, subst.is_contradiction())
 }
 
 /// Collect type constraints from a term: for each variable in an operation/entity
