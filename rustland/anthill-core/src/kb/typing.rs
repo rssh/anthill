@@ -10929,6 +10929,15 @@ fn eliminate_type_projections(
 ) -> Result<Value, TypeError> {
     match ty {
         Value::Term(t) => {
+            // WI-475: a TOP-LEVEL single-ref `ExprCarried` (`effects s.E`, or a projection-
+            // typed return `-> s.Sort`) may project to a `Value::Node` (e.g. the effect row
+            // `{Modify[p]}`) — representable here (the result IS the whole eliminated value),
+            // unlike a projection NESTED in a `Term` tree (which `rewrite_term_projections`
+            // cannot hold mid-tree). Return the projected `Value` directly so the effect-row
+            // / return Node threads to the caller (the undeclared-effect check then fires).
+            if matches!(type_head(kb, &TermIdView(*t)), TypeHead::ExprCarried) {
+                return eliminate_expr_carried_projection(kb, *t, arg_types, arg_syms, ctx, span);
+            }
             Ok(Value::Term(rewrite_term_projections(kb, *t, arg_types, arg_syms, ctx, span)?))
         }
         Value::Node(occ) => {
@@ -11230,6 +11239,71 @@ fn resolve_field_type(
     Ok((resolved, decl_sort))
 }
 
+/// WI-475: project a single-ref `ExprCarried` term (`s.M`) against the receiver's
+/// argument type, returning the eliminated type as a `Value` — which MAY be a
+/// `Value::Node` (e.g. `s.E` projecting to a Modify-bearing effect row `{Modify[p]}`,
+/// or `s.Sort` of a denoted-bearing argument). A Node result is only representable at
+/// the TOP level of an eliminated type (an effect-row / return type that IS the whole
+/// projected value); [`eliminate_type_projections`] returns it directly there, while
+/// [`rewrite_term_projections`] (rebuilding a `Term` tree) can use only the `Value::Term`
+/// case. Shared by both so the projection + WI-459 re-keying logic lives in one place.
+fn eliminate_expr_carried_projection(
+    kb: &mut KnowledgeBase,
+    t: TermId,
+    arg_types: &HashMap<Symbol, Value>,
+    arg_syms: Option<&HashMap<Symbol, Symbol>>,
+    ctx: &TypeErrorContext,
+    span: Option<Span>,
+) -> Result<Value, TypeError> {
+    let TypeExtractor::ExprCarried { value, member } = extract_type(kb, &TermIdView(t)) else {
+        return Ok(Value::Term(t));
+    };
+    // A supported projection's receiver is a single value reference `Ref(s)`
+    // (classified as `SortRef`); a compound receiver is rejected at load, so this
+    // is defensive.
+    let receiver = extract_sort_ref_sym(kb, &value).ok_or_else(|| {
+        projection_type_error(ctx, span, "type projection receiver is not a simple value reference")
+    })?;
+    let arg_ty = match arg_types.get(&receiver) {
+        Some(v) => v.clone(),
+        None => {
+            return Err(projection_type_error(ctx, span, &format!(
+                "type projection receiver '{}' is not an argument-bound parameter of this call",
+                kb.resolve_sym(receiver),
+            )));
+        }
+    };
+    let member_str = kb.resolve_sym(member).to_owned();
+    // Single-ref receiver: the arg's inferred type (a concrete sort, or a bound
+    // type-param). No abstract-type-param declaring sort is in hand here (that arises
+    // only on the compound field-projection path) — `None`.
+    match project_type_member(kb, &arg_ty, &member_str, None, ctx, span)? {
+        // Term OR Node — the caller decides whether a Node is representable in its position.
+        ProjResult::Grounded(v) => Ok(v),
+        // WI-400: the receiver is abstract but the member is declared — the rigid
+        // NEUTRAL (path-identity). WI-459: RE-KEY its receiver from the callee's formal
+        // parameter to the CALLER's argument value-reference when this is a call-site
+        // elimination (`arg_syms` present) and the argument is a simple value reference.
+        // The projection stayed abstract precisely because the argument's TYPE did not
+        // bind the member (`sfd(xs)` with the bare `xs : List`), so the receiver VALUE
+        // is exactly that argument — `sfd.xs.T` is definitionally `collectd.xs.T`. The
+        // grounded arm above never reaches here, so a member the argument's type DID bind
+        // (the recursive `collectd(rest)`, where `rest : List[T = xs.T]` δ-reduces `T`
+        // to `xs.T`) keeps its δ-reduced value un-re-keyed. A non-value-ref argument has
+        // no `arg_syms` entry → left as the callee-keyed neutral (deferred-receiver
+        // follow-on). Re-forming `ExprCarried{Ref(arg_sym), member}` here is what makes
+        // the SAME definitional projection compare EQUAL under the non-decomposing ζ arm
+        // (WI-400) instead of two identically-printed-yet-distinct neutrals.
+        ProjResult::Neutral => Ok(Value::Term(match arg_syms.and_then(|m| m.get(&receiver)) {
+            Some(&arg_sym) => {
+                let recv_term = kb.alloc(Term::Ref(arg_sym));
+                kb.make_expr_carried(recv_term, member)
+            }
+            None => t,
+        })),
+    }
+}
+
 /// Recursive term rewrite for [`eliminate_type_projections`]: an `ExprCarried` head is
 /// projected and replaced; any other `Fn` is rebuilt only if a child changed; leaves
 /// pass through.
@@ -11259,56 +11333,16 @@ fn rewrite_term_projections(
         };
     }
     if matches!(type_head(kb, &TermIdView(t)), TypeHead::ExprCarried) {
-        let TypeExtractor::ExprCarried { value, member } = extract_type(kb, &TermIdView(t)) else {
-            return Ok(t);
-        };
-        // A supported projection's receiver is a single value reference `Ref(s)`
-        // (classified as `SortRef`); a compound receiver is rejected at load, so this
-        // is defensive.
-        let receiver = extract_sort_ref_sym(kb, &value).ok_or_else(|| {
-            projection_type_error(ctx, span, "type projection receiver is not a simple value reference")
-        })?;
-        let arg_ty = match arg_types.get(&receiver) {
-            Some(v) => v.clone(),
-            None => {
-                return Err(projection_type_error(ctx, span, &format!(
-                    "type projection receiver '{}' is not an argument-bound parameter of this call",
-                    kb.resolve_sym(receiver),
-                )));
-            }
-        };
-        let member_str = kb.resolve_sym(member).to_owned();
-        // Single-ref receiver: the arg's inferred type (a concrete sort, or a bound
-        // type-param). No abstract-type-param declaring sort is in hand here (that arises
-        // only on the compound field-projection path) — `None`.
-        return match project_type_member(kb, &arg_ty, &member_str, None, ctx, span)? {
-            ProjResult::Grounded(Value::Term(pt)) => Ok(pt),
-            // A projection resolving to a Node carrier (e.g. `s.Sort` of a denoted-
-            // bearing argument) would poison the enclosing return type to a Node — the
-            // follow-on; loud rather than silently dropped.
-            ProjResult::Grounded(_) => Err(projection_type_error(ctx, span,
+        // WI-475: a single-ref `ExprCarried` (`s.M`) projects to a `Value` that MAY be a
+        // Node carrier (e.g. `s.E` → a Modify-bearing effect row `{Modify[p]}`). A Node
+        // cannot be embedded mid-`Term`-tree, so it is representable only at the TOP level
+        // (`eliminate_type_projections` handles that and returns the Node `Value`). Reaching
+        // here means the `ExprCarried` is NESTED inside a larger `Term` — a Node result
+        // there is the genuine follow-on (loud, never silently dropped).
+        return match eliminate_expr_carried_projection(kb, t, arg_types, arg_syms, ctx, span)? {
+            Value::Term(pt) => Ok(pt),
+            _ => Err(projection_type_error(ctx, span,
                 "type projection resolved to a non-term carrier, which is not yet supported")),
-            // WI-400: the receiver is abstract but the member is declared — the rigid
-            // NEUTRAL (path-identity). WI-459: RE-KEY its receiver from the callee's formal
-            // parameter to the CALLER's argument value-reference when this is a call-site
-            // elimination (`arg_syms` present) and the argument is a simple value reference.
-            // The projection stayed abstract precisely because the argument's TYPE did not
-            // bind the member (`sfd(xs)` with the bare `xs : List`), so the receiver VALUE
-            // is exactly that argument — `sfd.xs.T` is definitionally `collectd.xs.T`. The
-            // grounded arms above never reach here, so a member the argument's type DID bind
-            // (the recursive `collectd(rest)`, where `rest : List[T = xs.T]` δ-reduces `T`
-            // to `xs.T`) keeps its δ-reduced value un-re-keyed. A non-value-ref argument has
-            // no `arg_syms` entry → left as the callee-keyed neutral (deferred-receiver
-            // follow-on). Re-forming `ExprCarried{Ref(arg_sym), member}` here is what makes
-            // the SAME definitional projection compare EQUAL under the non-decomposing ζ arm
-            // (WI-400) instead of two identically-printed-yet-distinct neutrals.
-            ProjResult::Neutral => Ok(match arg_syms.and_then(|m| m.get(&receiver)) {
-                Some(&arg_sym) => {
-                    let recv_term = kb.alloc(Term::Ref(arg_sym));
-                    kb.make_expr_carried(recv_term, member)
-                }
-                None => t,
-            }),
         };
     }
     // Recurse into `Fn` children, rebuilding only if a child changed. Index-based so

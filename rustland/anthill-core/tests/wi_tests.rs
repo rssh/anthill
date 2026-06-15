@@ -332,3 +332,6 @@ mod wi469_callback_arg_validation_test;
 
 #[path = "include/wi474_dispatched_projection_test.rs"]
 mod wi474_dispatched_projection_test;
+
+#[path = "include/wi475_effects_projection_test.rs"]
+mod wi475_effects_projection_test;
