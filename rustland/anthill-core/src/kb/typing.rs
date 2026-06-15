@@ -782,6 +782,14 @@ fn parameterized_value(
     span: crate::span::SourceSpan,
     owner: Option<Symbol>,
 ) -> Value {
+    // WI-470 scope: a parameterized type stays HASH-CONSED when closed — a `TermId`
+    // `Fn{S, named}` carries its bindings fully (no erasure) and is the load-bearing
+    // index key (`by_sort`/`fact_dedup`), exactly the "nominal, heavily-shared"
+    // structure the representation note keeps hash-consed. Only a POISONED binding
+    // value (a `denoted` that cannot hash-cons) forces the `Value::Node` carrier; the
+    // arrow→effect-row spine is what this migration moves to occurrence-primary, not
+    // `List[T]`. (Flipping closed parameterizeds to `Node` added erasure risk at every
+    // `.as_term()` consumer for no payoff — reverted.)
     if bindings.iter().any(|(_, v)| matches!(v, Value::Node(_))) {
         let mut children: Vec<(Symbol, TypeChild)> = Vec::with_capacity(bindings.len());
         for (s, v) in bindings {
@@ -789,11 +797,10 @@ fn parameterized_value(
         }
         Value::Node(kb.make_parameterized_occ(TypeChild::Ground(base), children, span, owner))
     } else {
-        // Ground branch: no binding is a `Value::Node` (checked above), so every
-        // value is a `Value::Term` — unwrap it directly for the hash-consed builder.
+        // Closed: every binding is a `Value::Term` (checked above) — hash-consed.
         let mut terms: Vec<(Symbol, TermId)> = Vec::with_capacity(bindings.len());
         for (s, v) in bindings {
-            terms.push((*s, v.as_term().expect("parameterized_value ground branch: Term binding")));
+            terms.push((*s, v.as_term().expect("parameterized_value closed branch: Term binding")));
         }
         Value::Term(kb.make_parameterized_type(base, &terms))
     }
@@ -855,15 +862,17 @@ fn thread_expected_tuple_field(
     }
 }
 
-/// WI-342: build an `arrow(param, result, effects)` type carrier-agnostically.
-/// When any of `param` / `result` / an effect label is a `Value::Node`
-/// (denoted-bearing — e.g. a lambda body effect `Modify[c]`), mint a `Value::Node`
-/// arrow occurrence so the poisoned child is CARRIED, not re-grounded; the
-/// op-boundary return check then compares it cross-carrier (`arrow_compatible_view`
-/// + `subtype_effect_rows`). When everything is ground, build the hash-consed
-/// `make_arrow_type` (its children are then provably `Value::Term`, unwrapped via
-/// `as_term`). Label order is not load-bearing — row unify/subtype compare label
-/// sets. `span`/`owner` stamp a Node-carried occurrence.
+/// WI-470: build an `arrow(param, result, effects)` type as an occurrence —
+/// always a `Value::Node` (occurrence-primary; the representation note disclaims
+/// hash-consing for arrows/binders). A ground child rides as `TypeChild::Ground`
+/// (poison flows up, not down), so a fully-ground arrow is a Node spine over
+/// interned leaves; a denoted-bearing child (e.g. a lambda body effect `Modify[c]`)
+/// is CARRIED as a poisoned `TypeChild::Node`. Consumers read either through
+/// `TermView` (`arrow_compatible_view` / `subtype_effect_rows` at the op-boundary
+/// return check); a genuine TermId demand recovers identity via `cached_term`
+/// (WI-471). Label order is not load-bearing — row unify/subtype compare label
+/// sets. `span`/`owner` stamp the occurrences. (WI-342 introduced the Node arm for
+/// poisoned arrows; WI-470 made it the sole arm.)
 fn make_arrow_value(
     kb: &mut KnowledgeBase,
     param: &Value,
@@ -872,31 +881,47 @@ fn make_arrow_value(
     span: crate::span::SourceSpan,
     owner: Option<Symbol>,
 ) -> Value {
-    let poisoned = matches!(param, Value::Node(_))
-        || matches!(result, Value::Node(_))
-        || effects.iter().any(|e| matches!(e, Value::Node(_)));
-    if poisoned {
-        let mut row = kb.make_empty_row_occ(span, owner);
-        for label in effects.iter().rev() {
-            let label_child = value_to_type_child(kb, label);
-            let present = kb.make_present_occ(label_child, span, owner);
-            row = kb.make_merge_occ(TypeChild::Node(present), TypeChild::Node(row), span, owner);
-        }
-        let effects_child =
-            TypeChild::Node(kb.make_effects_rows_occ(TypeChild::Node(row), span, owner));
-        let param_child = value_to_type_child(kb, param);
-        let result_child = value_to_type_child(kb, result);
-        let arrow = kb.make_arrow_occ(param_child, result_child, effects_child, span, owner);
-        Value::Node(arrow)
-    } else {
-        let p = param.as_term().expect("make_arrow_value: ground param");
-        let r = result.as_term().expect("make_arrow_value: ground result");
-        let effect_tids: Vec<TermId> = effects
-            .iter()
-            .map(|e| e.as_term().expect("make_arrow_value: ground effect"))
-            .collect();
-        Value::Term(kb.make_arrow_type(p, r, &effect_tids))
+    // WI-470 (occurrence-primary): an inferred arrow is minted unconditionally as
+    // a `Value::Node` occurrence — the representation note disclaims hash-consing
+    // for arrows/binders, so the typer no longer chooses the hash-consed
+    // `make_arrow_type` for the ground case. A ground child still rides as
+    // `TypeChild::Ground(TermId)` (poison flows up, not down), so a fully-ground
+    // arrow is a Node spine over interned leaves; consumers read it through
+    // `TermView` (already carrier-agnostic — `unify_*`, `extract_type`,
+    // `decompose_effect_row`), and a genuine TermId demand recovers identity via
+    // `cached_term` (WI-471). Label order is not load-bearing (rows compare as
+    // sets). The former `if poisoned` ground fast-path is retired: the hash-consed
+    // arrow is now a *derived* form, not the primary one.
+    let mut row = kb.make_empty_row_occ(span, owner);
+    for label in effects.iter().rev() {
+        // WI-470: a row-tail `Var` (a row-polymorphic body's open tail, threaded
+        // here as `Value::Term(Var::Global)` by `effect_row_present_values`) folds
+        // as `open(tail)`, NOT `present(var)` — mirroring the canonicalization the
+        // retired ground path got from `build_canonical_effects_rows`. Wrapping a
+        // tail var in `present` would make `decompose_effect_row` read it as a
+        // present LABEL rather than the row tail (the WI-441 bug class), corrupting
+        // row unify/subtype of an inferred row-polymorphic function value. (Present
+        // labels here are bare sort_ref/parameterized atoms — `op.effects` /
+        // inferred `body_effects` never carry pre-built `present`/`absent` atoms,
+        // so no atom-preservation arm is needed, unlike the loader's row lowering.)
+        let atom = match label {
+            Value::Term(t) if kb.row_tail_var_of(*t).is_some() => {
+                let tail = kb.row_tail_var_of(*t).expect("checked is_some");
+                kb.make_open_occ(TypeChild::Ground(tail), span, owner)
+            }
+            _ => {
+                let label_child = value_to_type_child(kb, label);
+                kb.make_present_occ(label_child, span, owner)
+            }
+        };
+        row = kb.make_merge_occ(TypeChild::Node(atom), TypeChild::Node(row), span, owner);
     }
+    let effects_child =
+        TypeChild::Node(kb.make_effects_rows_occ(TypeChild::Node(row), span, owner));
+    let param_child = value_to_type_child(kb, param);
+    let result_child = value_to_type_child(kb, result);
+    let arrow = kb.make_arrow_occ(param_child, result_child, effects_child, span, owner);
+    Value::Node(arrow)
 }
 
 /// Merge two effect lists (set union). WI-342 effects-vertical: dedup
@@ -3657,12 +3682,11 @@ fn build_type(
                 .ok()
                 .map(|r| r.effects.clone())
                 .unwrap_or_default();
-            // WI-342: build the arrow carrier-agnostically. When a child (param,
-            // result, or a body effect) is carrier-poisoned (a denoted-bearing
-            // `Modify[c]` rode in as `Value::Node`), the arrow is minted as a
-            // `Value::Node` so the effect is CARRIED on the lambda's type rather
-            // than re-grounded; the op-boundary return check compares it
-            // cross-carrier. A fully-ground lambda still builds a hash-consed arrow.
+            // WI-470: the lambda's arrow type is minted as an occurrence
+            // (`Value::Node`, occurrence-primary). A denoted-bearing child (a
+            // `Modify[c]` body effect) is CARRIED as a poisoned child rather than
+            // re-grounded; a ground child rides as `TypeChild::Ground`. The
+            // op-boundary return check compares it cross-carrier via `TermView`.
             let fn_ty = make_arrow_value(kb, &param_type, &body_ty, &body_effects, occ.span, occ.owner);
             // Creating a lambda is itself pure — body effects live in the type.
             // If the body itself errored, propagate that error rather than
@@ -8612,24 +8636,29 @@ fn bind_spec_params_from_carrier(
         return false;
     };
     let param_name = op.params[idx].0;
-    let recv_ty = pos_results
+    // WI-470: read the receiver's inferred type as a carrier-agnostic `Value`, NOT via
+    // `.as_term()` — an occurrence-primary `List[T = Int]` is a `Value::Node`, and
+    // `.as_term()` would return `None` and drop the carrier (erasing its `T`/`Eff`
+    // bindings → a spurious `Eff unconstrained`). The binding is read below through
+    // `parameterized_short_bindings` (carrier-agnostic), so it is preserved.
+    let recv_ty: Option<Value> = pos_results
         .get(idx)
         .and_then(|r| r.as_ref().ok())
-        .and_then(|r| r.ty.as_term())
+        .map(|r| r.ty.clone())
         .or_else(|| {
             named_args
                 .iter()
                 .position(|(n, _)| *n == param_name)
                 .and_then(|j| named_results.get(j))
                 .and_then(|r| r.as_ref().ok())
-                .and_then(|r| r.ty.as_term())
+                .map(|r| r.ty.clone())
         });
     let Some(recv_ty) = recv_ty else {
         return false;
     };
 
     // The receiver's own type arguments, keyed by carrier-param short name.
-    let recv_bindings = parameterized_short_bindings(kb, recv_ty);
+    let recv_bindings = parameterized_short_bindings(kb, &recv_ty);
     if recv_bindings.is_empty() {
         return false;
     }
@@ -8801,7 +8830,7 @@ fn bind_spec_params_from_carrier_param(
     recv_ty: TermId,
     view_bindings: SmallVec<[(Symbol, TermId); 2]>,
 ) -> bool {
-    let recv_bindings = parameterized_short_bindings(kb, recv_ty);
+    let recv_bindings = parameterized_short_bindings(kb, &TermIdView(recv_ty));
     let mut any = false;
     for (spec_param_sym, carrier_value) in view_bindings {
         let concrete: Option<TermId> = match typaram_ref_short_name(kb, carrier_value) {
@@ -8886,10 +8915,13 @@ fn bind_ground_value_params_from_provider(
 /// [`extract_type`], re-keys by short name (the form `bind_spec_params_from_carrier`
 /// matches against), and keeps only `Value::Term` values (a parameterized type's
 /// bindings are ground terms).
-fn parameterized_short_bindings(kb: &KnowledgeBase, ty: TermId) -> Vec<(String, TermId)> {
-    // WI-361: a parameterized type is the term backing `Fn{S, named}`
-    // (`List[T = Int]` = `Fn{List, named:[(T, Int)]}`).
-    let TypeExtractor::Parameterized { bindings, .. } = extract_type(kb, &TermIdView(ty)) else {
+fn parameterized_short_bindings(kb: &KnowledgeBase, ty: &impl TermView) -> Vec<(String, TermId)> {
+    // WI-361: a parameterized type's bindings (`List[T = Int]` ⇒ `[(T, Int)]`), read
+    // carrier-agnostically through `extract_type` (WI-470: the receiver type is now a
+    // `Value::Node` for an occurrence-primary `List[T = …]`, but its binding `T = Int`
+    // is CARRIED in the node — never erased; `extract_type` reads it the same as the
+    // hash-consed `Fn{S, named}` twin, so the spec-param grounding stays sound).
+    let TypeExtractor::Parameterized { bindings, .. } = extract_type(kb, ty) else {
         return Vec::new();
     };
     bindings
@@ -9266,8 +9298,116 @@ fn type_value_is_ground(kb: &KnowledgeBase, tid: TermId) -> bool {
 fn resolved_type_is_ground(kb: &KnowledgeBase, v: &Value) -> bool {
     match v {
         Value::Term(t) => type_value_is_ground(kb, *t),
+        // WI-470: an occurrence-primary type (the flipped arrow / row / parameterized
+        // form) is ground exactly when its spine carries no free type-var / sort-param
+        // / row-tail leaf — the same predicate `type_value_is_ground` applies to the
+        // hash-consed twin, walked structurally so a flipped GROUND arrow reads as
+        // ground (and is WI-385-checked) instead of being skipped as "non-Term".
+        Value::Node(occ) => node_type_is_ground(kb, occ),
         _ => false,
     }
+}
+
+/// WI-470: groundness of a `Value::Node`-carried type, walking the occurrence
+/// `Type`/`EffectExpression` spine directly (no interning / materialization, so it
+/// stays on the immutable `&KnowledgeBase` `resolved_type_is_ground` runs on).
+/// Carrier-symmetric with the hash-consed twin [`type_value_is_ground`]: a ground
+/// `TypeChild` defers to it (which rejects `Var` / sort-param leaves — so a row's
+/// open `tail` Var makes the row non-ground), a poisoned child recurses, and a
+/// `denoted` is ground iff its carried value has no free logical var (the same
+/// answer `type_value_is_ground(make_denoted(value))` gives). Nothing is skipped:
+/// every form's true groundness is computed.
+fn node_type_is_ground(kb: &KnowledgeBase, occ: &Rc<NodeOccurrence>) -> bool {
+    let child_ground = |c: &TypeChild| match c {
+        TypeChild::Ground(t) => type_value_is_ground(kb, *t),
+        TypeChild::Node(n) => node_type_is_ground(kb, n),
+    };
+    match &occ.kind {
+        NodeKind::Type(tn) => match tn {
+            // WI-470: a denoted (value-in-type) is ground for THIS gate iff its value
+            // is CLOSED — see [`denoted_value_is_closed`]. A closed denoted
+            // (`Vector[Int64, 3]`, `Modify[store]`) is conformance-checked; a var-bearing
+            // (`Vector[Int64, ?n]`) or binder-relative (`Modify[c]`, `c` a callback param)
+            // denoted is deferred to the validator that can decide it (unification /
+            // the alignment-aware `validate_callback_effect_row`). Nothing is skipped.
+            TypeNode::Denoted { value } => denoted_value_is_closed(kb, value),
+            TypeNode::Parameterized { base, bindings } => {
+                child_ground(base) && bindings.iter().all(|(_, c)| child_ground(c))
+            }
+            TypeNode::EffectsRows { effects_expr } => child_ground(effects_expr),
+            TypeNode::Arrow { param, result, effects } => {
+                child_ground(param) && child_ground(result) && child_ground(effects)
+            }
+            TypeNode::ExprCarried { value, member } => child_ground(value) && child_ground(member),
+            TypeNode::NamedTuple { fields } => list_records_to_pairs(kb, fields, "name", "type")
+                .iter()
+                .all(|(_, t)| resolved_type_is_ground(kb, t)),
+        },
+        NodeKind::EffectExpr(en) => match en {
+            EffectExprNode::Merge { left, right } => child_ground(left) && child_ground(right),
+            EffectExprNode::Present { label } | EffectExprNode::Absent { label } => {
+                child_ground(label)
+            }
+            // An open row carries a row-tail Var ⇒ not ground.
+            EffectExprNode::Open { tail } => child_ground(tail),
+            EffectExprNode::EmptyRow => true,
+        },
+        // Not a type occurrence (an Expr/Pattern/RuleHead node never stands in a
+        // type slot here) — conservatively unground (skip), as before.
+        _ => false,
+    }
+}
+
+/// WI-470: is a `denoted`'s carried VALUE closed — i.e. decidable by the generic
+/// closed-type conformance check? Closed iff the value occurrence has NO free
+/// logical var and NO reference to a binder-local parameter (`SymbolKind::Param`).
+/// The non-closed shapes each route to the validator that CAN decide them, so
+/// nothing is skipped:
+///   * a free `Var` (`Vector[Int64, ?n]`) → inference (`unify_types`), not this gate;
+///   * a binder-local param ref (`Modify[c]`, `c` the callback's OWN param) → the
+///     label is meaningful only up to BINDER ALIGNMENT, which the generic structural
+///     comparison cannot perform — `validate_callback_effect_row` owns it (it builds
+///     the actual↔declared place map and compares aligned), so the generic gate must
+///     defer rather than reject the alpha-equivalent `Modify[c]` vs `Modify[a]`;
+///   * a closed value (`Vector[Int64, 3]` literal, `Modify[store]` global resource)
+///     → IS closed → ground → conformance-checked here.
+/// (A `denoted` always poisons to `Value::Node`, so it reaches the gate only through
+/// [`node_type_is_ground`], never the term-side `type_value_is_ground` — the
+/// param-relative refinement lives on the one carrier it flows through.)
+fn denoted_value_is_closed(kb: &KnowledgeBase, value: &Rc<NodeOccurrence>) -> bool {
+    let mut stack: Vec<Rc<NodeOccurrence>> = vec![Rc::clone(value)];
+    while let Some(occ) = stack.pop() {
+        match occ.as_expr() {
+            // Any logic var ⇒ not closed — matching the term-side `type_value_is_ground`,
+            // which rejects every `Term::Var` (Global = inference, deferred to unify;
+            // DeBruijn/Rigid are not concrete either).
+            Some(Expr::Var(_)) => return false,
+            // A value-PLACE reference (op/callback param, result, field, let-local) is
+            // binder-relative — meaningful only up to BINDER ALIGNMENT, which the generic
+            // structural compare cannot do — so it is NOT closed; the alignment-aware
+            // `validate_callback_effect_row` owns it. `is_value_place` is the shared
+            // set the loader's `symbol_is_value_place` uses (no drift — the CallbackParam
+            // own-param case `Modify[a]` is the one this gate must defer).
+            Some(Expr::Ref(s)) | Some(Expr::Ident(s))
+                if kb.kind_of(*s).is_some_and(|k| k.is_value_place()) =>
+            {
+                return false;
+            }
+            // A bare local-binder read (`?x` — a let/lambda binder) is binder-relative too.
+            Some(Expr::VarRef { .. }) => return false,
+            // A literal / global ref (Sort/Entity/Operation) / compound value — recurse
+            // children (a field-path receiver may still reach a value-place ref).
+            Some(e) => for_each_child(e, |c| stack.push(Rc::clone(c))),
+            // A denoted's value is always an `Expr` occurrence; a non-`Expr` here is a
+            // construction bug — surface it (loud) and conservatively defer, rather than
+            // silently judging it closed.
+            None => {
+                debug_assert!(false, "denoted value occurrence is not an Expr: {:?}", occ.kind);
+                return false;
+            }
+        }
+    }
+    true
 }
 
 /// WI-385: is this resolved type the reflect `Term` sort (`anthill.reflect.Term`)?
@@ -12049,11 +12189,17 @@ pub fn unify_types<A: TermView, B: TermView>(
     let a = walk_view(kb, subst, a);
     let b = walk_view(kb, subst, b);
 
-    // Identity fast-path — only hash-consed TermId carriers have O(1) eq.
-    if let (Value::Term(x), Value::Term(y)) = (&a, &b) {
-        if x == y {
-            return true;
-        }
+    // Identity fast-path. A hash-consed `TermId` carrier has O(1) structural eq
+    // (shared id ⇒ equal). WI-470: an occurrence-carried type (now the primary
+    // arrow/row form) recovers a cheap fast-path via `Rc::ptr_eq` — two slots
+    // holding the SAME occurrence are trivially unifiable. This catches shared
+    // spines (the common case: one inferred type threaded to two sites) without
+    // materializing; structurally-distinct-but-equal Node arrows fall through to
+    // the carrier-agnostic structural arms below (correct, just not O(1)).
+    match (&a, &b) {
+        (Value::Term(x), Value::Term(y)) if x == y => return true,
+        (Value::Node(x), Value::Node(y)) if Rc::ptr_eq(x, y) => return true,
+        _ => {}
     }
 
     // Var arms — a logic var may be a hash-consed `Term::Var(Global)` or a
@@ -18523,6 +18669,140 @@ mod p4_tests {
             span(),
             None,
         )
+    }
+
+    /// WI-470 regression: the occurrence-primary `make_arrow_value` must fold a
+    /// row-tail `Var` (a row-polymorphic body's open tail) as `open(tail)`, NOT
+    /// `present(var)`. The retired ground path got this from
+    /// `build_canonical_effects_rows`; the always-Node path re-derives it. Without
+    /// the fix the tail var is present-wrapped, so `decompose_effect_row` reads it
+    /// as a present LABEL (the WI-441 bug class) — a closed row with a spurious var
+    /// label instead of an open row.
+    #[test]
+    fn wi470_inferred_arrow_folds_row_tail_var_as_open_not_present() {
+        use super::{arrow_parts, decompose_effect_row, make_arrow_value};
+        use crate::eval::value::Value;
+        use crate::kb::term::Var;
+        let mut kb = kb_with_prelude();
+        let int = Value::Term(kb.make_sort_ref_by_name("anthill.prelude.Int64"));
+        let label_t = kb.make_sort_ref_by_name("anthill.prelude.Bool");
+        // A bare Global logic var is a row tail (a row-polymorphic open tail).
+        let rho = kb.intern("rho");
+        let vid = kb.fresh_var(rho);
+        let tail_t = kb.alloc(Term::Var(Var::Global(vid)));
+        assert!(kb.row_tail_var_of(tail_t).is_some(), "sanity: bare Global is a row tail");
+
+        // Inferred arrow `Int64 -> Int64 @ {Bool, ?rho}` — one present label + an
+        // open tail. WI-470: occurrence-primary (`Value::Node`).
+        let arrow = make_arrow_value(
+            &mut kb,
+            &int,
+            &int,
+            &[Value::Term(label_t), Value::Term(tail_t)],
+            span(),
+            None,
+        );
+        assert!(matches!(arrow, Value::Node(_)), "WI-470: inferred arrow is occurrence-primary");
+
+        let (_, _, effects) = arrow_parts(&mut kb, &arrow).expect("arrow has effects parts");
+        let effects = effects.expect("arrow synthesizes an effects child");
+        let subst = Substitution::new();
+        let (present, tails, _absent) =
+            decompose_effect_row(&mut kb, &subst, &effects).expect("effects row decomposes");
+        assert!(tails.contains(&tail_t), "row-tail var folds as open(tail); tails={tails:?}");
+        assert_eq!(present.len(), 1, "exactly the real label is present (NOT the tail); present={present:?}");
+        assert!(
+            present.iter().any(|p| matches!(p, Value::Term(t) if *t == label_t)),
+            "the present label is Bool; present={present:?}",
+        );
+    }
+
+    /// WI-470: `denoted_value_is_closed` distinguishes the three value-in-type shapes
+    /// so the WI-385 groundness gate routes each to the validator that can DECIDE it —
+    /// a closed value is conformance-checked here; a free var defers to inference; a
+    /// binder-local param ref defers to the alignment-aware `validate_callback_effect_row`.
+    /// None is silently skipped.
+    #[test]
+    fn wi470_denoted_value_is_closed_distinguishes_binder_relative() {
+        use super::denoted_value_is_closed;
+        use crate::intern::SymbolKind;
+        use crate::kb::node_occurrence::Expr;
+        use crate::kb::term::{Literal, Var};
+        let mut kb = kb_with_prelude();
+
+        // Closed: a literal value-in-type (the `3` of `Vector[Int64, 3]`).
+        let lit = NodeOccurrence::new_expr(Expr::Const(Literal::Int(3)), span(), None);
+        assert!(denoted_value_is_closed(&kb, &lit), "a literal value is closed");
+
+        // Not closed: a free logical var (the `?n` of `Vector[Int64, ?n]`) — inference.
+        let n = kb.intern("n");
+        let vid = kb.fresh_var(n);
+        let var = NodeOccurrence::new_expr(Expr::Var(Var::Global(vid)), span(), None);
+        assert!(!denoted_value_is_closed(&kb, &var), "a free var is not closed");
+
+        // Not closed: each value-PLACE kind is binder-relative (deferred to the
+        // alignment-aware checker). Crucially `CallbackParam` — the `a` of a declared
+        // `(a) -> Unit @ Modify[a]` — is the production own-param case the gate MUST
+        // defer (testing `Param` alone masked the original miss; see WI-470 review).
+        for (i, kind) in [
+            SymbolKind::Param,
+            SymbolKind::CallbackParam,
+            SymbolKind::CallbackResult,
+            SymbolKind::OpResult,
+            SymbolKind::Field,
+            SymbolKind::LocalLet,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let s = kb.symbols.define(&format!("p{i}"), &format!("wi470.test.p{i}"), kind, 0);
+            let r = NodeOccurrence::new_expr(Expr::Ref(s), span(), None);
+            assert!(
+                !denoted_value_is_closed(&kb, &r),
+                "a value-place ref ({kind:?}) is binder-relative, not closed",
+            );
+        }
+
+        // Closed: a ref to a GLOBAL identity (Sort/Entity/Operation) — the `store` of
+        // `Modify[store]` (a global resource), compared by symbol identity, not alignment.
+        let store = kb.symbols.define("store", "wi470.test.store", SymbolKind::Entity, 0);
+        let global_ref = NodeOccurrence::new_expr(Expr::Ref(store), span(), None);
+        assert!(denoted_value_is_closed(&kb, &global_ref), "a global (non-place) ref is closed");
+    }
+
+    /// WI-470: a parameterized type's binding is READ identically whether the type is a
+    /// hash-consed `TermId` (`Fn{List,[T=Int64]}`) or a `Value::Node` occurrence (the
+    /// poisoned-receiver shape) — the carrier never erases the binding. This is the
+    /// invariant `bind_spec_params_from_carrier` relies on after switching from
+    /// `.as_term()` (which dropped the binding of a Node carrier) to the carrier-
+    /// agnostic `parameterized_short_bindings`.
+    #[test]
+    fn wi470_parameterized_short_bindings_reads_both_carriers() {
+        use super::parameterized_short_bindings;
+        use crate::eval::value::Value;
+        use crate::kb::term_view::TermIdView;
+        let mut kb = kb_with_prelude();
+        let list = kb.intern("List");
+        let t = kb.intern("T");
+        let int = kb.intern("Int64");
+        let int_ref = kb.make_sort_ref(int);
+        let list_ref = kb.make_sort_ref(list);
+
+        // Hash-consed (closed) carrier `List[T = Int64]` = `Fn{List, [T = Int64]}`.
+        let term_ty = kb.make_parameterized_type(list_ref, &[(t, int_ref)]);
+        let from_term = parameterized_short_bindings(&kb, &TermIdView(term_ty));
+
+        // Occurrence carrier (the poisoned-receiver shape) `parameterized{List, [T = Int64]}`.
+        let node = kb.make_parameterized_occ(
+            TypeChild::Ground(list_ref),
+            vec![(t, TypeChild::Ground(int_ref))],
+            span(),
+            None,
+        );
+        let from_node = parameterized_short_bindings(&kb, &Value::Node(node));
+
+        assert_eq!(from_term, vec![("T".to_string(), int_ref)], "binding read from the TermId carrier");
+        assert_eq!(from_node, from_term, "Node carrier yields the SAME binding (never erased)");
     }
 
     /// WI-361 regression: `more_general_type`'s bare-vs-parameterized join

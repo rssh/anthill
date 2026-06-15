@@ -6656,11 +6656,7 @@ impl<'a> Loader<'a> {
     fn symbol_is_value_place(&self, sym: Symbol) -> bool {
         matches!(
             self.kb.symbols.get(sym),
-            SymbolDef::Resolved {
-                kind: SymbolKind::Param | SymbolKind::Field | SymbolKind::LocalLet
-                    | SymbolKind::OpResult | SymbolKind::CallbackParam | SymbolKind::CallbackResult,
-                ..
-            }
+            SymbolDef::Resolved { kind, .. } if kind.is_value_place()
         )
     }
 
