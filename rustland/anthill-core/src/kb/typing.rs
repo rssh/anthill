@@ -835,6 +835,33 @@ fn named_tuple_value(
     }
 }
 
+/// WI-462: thread one tuple-literal component's EXPECTED type into its inferred type.
+/// If `exp_fields` (the expected named-tuple's component types) has an entry whose SHORT
+/// name matches `field_name`, unify the component's inferred `ty` against it (binding a free
+/// element var — `h : ?_` ⟹ `xs.T`) and return the σ-walked result; otherwise return `ty`
+/// unchanged. Matched by short name so the `_1`/`_2` positional convention and any declared
+/// names line up regardless of symbol identity (mirrors `named_tuple_compatible`).
+fn thread_expected_tuple_field(
+    kb: &mut KnowledgeBase,
+    subst: &mut Substitution,
+    exp_fields: &[(Symbol, Value)],
+    field_name: Symbol,
+    ty: &Value,
+) -> Value {
+    let short = short_name_of(kb.resolve_sym(field_name)).to_owned();
+    let exp_ty = exp_fields
+        .iter()
+        .find(|(n, _)| short_name_of(kb.resolve_sym(*n)) == short)
+        .map(|(_, v)| v.clone());
+    match exp_ty {
+        Some(exp_ty) => {
+            unify_types(kb, subst, ty, &exp_ty);
+            walk_type_deep_value(kb, subst, ty)
+        }
+        None => ty.clone(),
+    }
+}
+
 /// WI-470: build an `arrow(param, result, effects)` type as an occurrence —
 /// always a `Value::Node` (occurrence-primary; the representation note disclaims
 /// hash-consing for arrows/binders). A ground child rides as `TypeChild::Ground`
@@ -2103,6 +2130,38 @@ fn nested_call_arg_hint(
     }
 }
 
+/// WI-462: the expected type a TUPLE-LITERAL constructor field value should receive — the
+/// `expected → field-value` push the constructor BUILD already performs via unify, surfaced
+/// here as a top-down hint. A tuple literal carries no constructor of its own, so the
+/// constructor's expected-seed binds its component vars only AFTER it is typed (too late to
+/// shape the built tuple type). Here we replay that seed in a SCRATCH subst — unify the
+/// parent sort type against the constructor's `expected`, then walk the field's declared
+/// type through it — to derive the field value's expected (`some(...)` whose declared field
+/// is `value: T` and whose expected is `Option[T = (xs.T, …)]` yields `(xs.T, …)`). `None`
+/// unless `expected` is a parameterized type of the constructor's parent sort and the walk
+/// SPECIALIZES the field type to a `named_tuple` (the only shape a tuple literal threads).
+fn tuple_field_expected_from_ctor(
+    kb: &mut KnowledgeBase,
+    ctor_sym: Symbol,
+    field_sym: Symbol,
+    expected: &Option<Value>,
+) -> Option<Value> {
+    let exp = expected.as_ref()?;
+    let field_types = kb.entity_field_types(ctor_sym)?.to_vec();
+    let (_, field_decl) = field_types.iter().find(|(s, _)| *s == field_sym)?;
+    let field_decl = field_decl.clone();
+    let parent_tid = kb.constructor_parent_sort(ctor_sym)?;
+    let parent_type = sort_term_to_type(kb, parent_tid);
+    let mut subst = Substitution::new();
+    if !unify_types(kb, &mut subst, &TermIdView(parent_type), exp) {
+        return None;
+    }
+    let walked = walk_type_deep_value(kb, &subst, &field_decl);
+    // Only a useful hint if the walk produced a concrete tuple type (a still-abstract
+    // field param, or a non-tuple field, leaves a tuple literal nothing to thread).
+    matches!(extract_type(kb, &walked), TypeExtractor::NamedTuple(_)).then_some(walked)
+}
+
 /// Aggregate sibling errors into one `TypeError`. Flattens nested
 /// `Multiple` so the result has a single-level error vec. Single-
 /// error fast-path avoids the Vec allocation when one ill-typed
@@ -2690,11 +2749,33 @@ fn visit_type(
             // soundness argument (`nested_call_arg_hint`); a field type that
             // mentions the sort's own params (`cell: P`) is non-ground and
             // takes no hint. Other field values stay unhinted.
+            // WI-462: a positional/named tuple `(h, t)` lowers to a `Constructor{TupleLiteral}`
+            // (named `_1`/`_2`/declared fields) — that, not `Expr::TupleLit`, is the surface
+            // form (`convert.rs` `TupleLiteral` build) and the one `check_tuple_literal_-
+            // constructor` threads. (The `Expr::TupleLit` IR is a non-surface shape whose build
+            // frame takes no expected, so a hint on it would be dropped — not recognized here.)
+            fn is_tuple_lit(kb: &KnowledgeBase, arg: &Rc<NodeOccurrence>) -> bool {
+                matches!(
+                    &arg.kind,
+                    NodeKind::Expr { expr: Expr::Constructor { name, .. }, .. }
+                        if kb.qualified_name_of(*name) == "anthill.reflect.TupleLiteral"
+                )
+            }
             let has_call_field = pos_args
                 .iter()
                 .chain(named_args.iter().map(|(_, a)| a))
                 .any(|a| matches!(&a.kind, NodeKind::Expr { expr: Expr::Apply { .. }, .. }));
-            let field_types = if has_call_field {
+            // WI-462: a TUPLE-LITERAL field value gets the constructor's expected pushed
+            // down to its component types (so `some((h, t))` under `Option[(xs.T, …)]`
+            // threads `h ⟹ xs.T`); other field values keep the nested-call hint.
+            let has_tuple_field = pos_args
+                .iter()
+                .chain(named_args.iter().map(|(_, a)| a))
+                .any(|a| is_tuple_lit(kb, a));
+            // Owned field-type list (Symbol + declared Value), looked up once when any
+            // field needs a hint — used both for the nested-call hint and to find a
+            // tuple-literal field's declared symbol for the WI-462 expected derivation.
+            let field_types: Option<Vec<(Symbol, Value)>> = if has_call_field || has_tuple_field {
                 kb.entity_field_types(name).map(|ft| ft.to_vec())
             } else {
                 None
@@ -2703,13 +2784,25 @@ fn visit_type(
                 .iter()
                 .enumerate()
                 .map(|(i, arg)| {
-                    let ft = field_types.as_ref().and_then(|fs| fs.get(i)).map(|(_, t)| t.clone());
-                    nested_call_arg_hint(kb, arg, ft.as_ref())
+                    let field = field_types.as_ref().and_then(|fs| fs.get(i)).cloned();
+                    if is_tuple_lit(kb, arg) {
+                        if let Some((fs, _)) = &field {
+                            if let Some(h) = tuple_field_expected_from_ctor(kb, name, *fs, &expected) {
+                                return Some(h);
+                            }
+                        }
+                    }
+                    nested_call_arg_hint(kb, arg, field.as_ref().map(|(_, t)| t))
                 })
                 .collect();
             let named_hints: Vec<Option<Value>> = named_args
                 .iter()
                 .map(|(fname, arg)| {
+                    if is_tuple_lit(kb, arg) {
+                        if let Some(h) = tuple_field_expected_from_ctor(kb, name, *fname, &expected) {
+                            return Some(h);
+                        }
+                    }
                     let ft = field_types
                         .as_ref()
                         .and_then(|fs| fs.iter().find(|(s, _)| s == fname))
@@ -9772,6 +9865,7 @@ fn check_tuple_literal_constructor(
     named_args: &[(Symbol, Rc<NodeOccurrence>)],
     pos_results: &[Result<TypeResult, TypeError>],
     named_results: &[Result<TypeResult, TypeError>],
+    expected: Option<Value>,
     occ: &Rc<NodeOccurrence>,
 ) -> Result<TypeResult, TypeError> {
     if pos_results.is_empty() && named_results.is_empty() {
@@ -9794,11 +9888,28 @@ fn check_tuple_literal_constructor(
         labeled.push((*name, r.as_ref().expect("aggregator")));
     }
 
+    // WI-462: thread the EXPECTED tuple component types into the elements. A component's
+    // inferred type can be a free var (`cons(h, t)` over a bare `xs : List` binds `h` to a
+    // fresh `?_`); the declared return `(xs.T, …)` carries the real type, but the later
+    // conformance check (`types_compatible`) does NOT bind a var — it only subtype-checks,
+    // and a raw `Var::Global` is not a wildcard there. So unify each element's type against
+    // its expected component (matched by `_1`/`_2`/name), binding the free var (`h ⟹ xs.T`),
+    // then walk it into the built tuple type. (A `pair(h, t)` constructor threads this way
+    // for free — its build seeds the expected; a tuple literal has no constructor to do so.)
+    // No / non-tuple expected leaves the inferred types unchanged.
+    let exp_fields: Vec<(Symbol, Value)> = match &expected {
+        Some(e) if matches!(extract_type(kb, e), TypeExtractor::NamedTuple(_)) => {
+            named_tuple_fields(kb, e)
+        }
+        _ => Vec::new(),
+    };
+    let mut tsubst = Substitution::new();
     let mut effects: Vec<Value> = Vec::new();
     // WI-342: carrier-agnostic field types (carry a `Value::Node` field).
     let mut tuple_fields: Vec<(Symbol, Value)> = Vec::new();
     for (label, r) in labeled {
-        tuple_fields.push((label, r.ty.clone()));
+        let ty = thread_expected_tuple_field(kb, &mut tsubst, &exp_fields, label, &r.ty);
+        tuple_fields.push((label, ty));
         effects = merge_effects(&effects, &r.effects);
     }
     let tuple_ty = named_tuple_value(kb, &tuple_fields, occ.span, occ.owner);
@@ -9876,7 +9987,7 @@ fn check_constructor_iter(
     // tuple semantics instead.
     if kb.qualified_name_of(ctor_sym) == "anthill.reflect.TupleLiteral" {
         return check_tuple_literal_constructor(
-            kb, env, named_args, pos_results, named_results, occ,
+            kb, env, named_args, pos_results, named_results, expected, occ,
         );
     }
     // WI-289: `[...]` / `{...}` that wasn't desugared to cons/nil (no
