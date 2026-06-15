@@ -302,6 +302,41 @@ over-approximation of runtime behavior. The guard is a **static** (type-level) d
 only the inferred effect row, never runtime behavior. The runtime failure path is unchanged from
 WI-066 (today `EvalError::DivisionByZero`; the handler-catchable bridge is a separate follow-up).
 
+### Discharge is constructive refutation, not negation-as-failure
+
+The conservative default above is load-bearing and easy to get subtly wrong, because it runs at the
+**opposite polarity** from the negation-as-failure (NAF) the resolver uses everywhere else. NAF
+concludes `not G` when proving `G` finitely *fails* (closed-world: unknown ⇒ false). A guarded
+effect must do the dual: an *unrefutable* guard keeps its effect (unknown ⇒ present). So discharge
+may **never** read "we could not prove the guard ⇒ treat it as false ⇒ drop the effect" — that is
+NAF, and it is unsound, because a guard over a symbolic parameter is unprovable for the trivial
+reason that the parameter is unknown, not because it is false at runtime. Dropping requires a
+*positive* proof of `¬guard` from the discharge sources (a ground/literal argument, an in-scope
+disequality fact, an enclosing flow guard, an explicit proof).
+
+Concretely, refuting `eq(b, 0)` runs `neq(b, 0)`, which the stdlib defines as `not(eq(b, 0))`
+(`eq.anthill`: `rule neq(?a, ?b) = not(eq(?a, ?b))`) — i.e. it *is* NAF. Soundness then rests
+entirely on the resolver's **floundering prevention** (`resolve.rs`: a non-ground inner goal of
+`not(…)` *delays* rather than succeeding): for a symbolic divisor `b`, `eq(b, 0)` is non-ground, so
+`not(eq(b, 0))` delays, `neq(b, 0)` is not derived, and the effect is **kept**. Discharge therefore
+fires only on a genuinely ground/decidable guard. An implementation that bypassed floundering
+prevention — or called `neq` at a point where it treated the symbolic parameter as a finitely-failed
+goal — would silently drop real effects. This is why the guard is written as the **positive**
+presence condition `:- eq(b, 0)` and *refuted*, rather than as `unless neq(b, 0)` *discharged by
+NAF*: the proof obligation sits on the safe (dropping) side.
+
+The one-line way to say all of this: **an effect *guard* is evaluated open-world, while the effect
+*row* stays closed-world over its labels** (045: an unlisted label is absent — what makes
+`{ Modify[c] }` mean "only Modify[c]"; a *guarded* label is still listed, just conditional). NAF is
+the closed-world reading of `:-`; an effect guard is the **open-world** reading of the *same* `:-`.
+The connective is identical; the world differs, and not arbitrarily — a `rule`/`constraint` body
+ranges over the closed KB (so unstated ⇒ false is sound), whereas a guard ranges over a runtime
+parameter not in the KB (so unstated ⇒ *unknown*, and a sound effect system keeps the unknown).
+Floundering prevention is exactly this open-world treatment made operational: it refuses the
+closed-world assumption on an unground goal. So the `:-` "polarity" stumble (open question G) needs
+no new syntax — only one sentence: **inside a guard the world is open.** Keep `Error[D] :- eq(b, 0)`;
+just do not read its guard closed-world.
+
 ## Phasing
 
 1. **Grammar + representation** — admit `Effect :- guard` in effect rows; the loader stores the
@@ -329,7 +364,11 @@ WI-066 (today `EvalError::DivisionByZero`; the handler-catchable bridge is a sep
   `constraint div_nonzero_primary: neq(?b, 0) :- div(?_, ?b)`. Is the guarded effect **derived**
   from that constraint (DRY — one statement of the precondition) or **declared independently** on
   the op (`:- eq(b, 0)`)? Lean: declare on the op; keep the constraint as an integrity guard. They
-  state the same fact from two angles; decide whether to couple them.
+  state the same fact from two angles; decide whether to couple them. Extra reason not to couple:
+  the constraint's `neq` is `not(eq)` (NAF), so *deriving* the guard's refutation from it would route
+  discharge through NAF — exactly the polarity hazard the "Discharge is constructive refutation"
+  section warns against. Declaring the positive `:- eq(b, 0)` and refuting it constructively keeps
+  the obligation on the safe side.
 - **D. Interaction with absence atoms.** Can a guard combine with a 045 absence atom
   (`-Modify[x]`)? Defer until a concrete need.
 - **E. Runtime catchability.** When divide-by-zero is eventually routed through `raise_error` so an
@@ -352,3 +391,68 @@ WI-066 (today `EvalError::DivisionByZero`; the handler-catchable bridge is a sep
     fast-path actually pays) would let the guard be `List[NodeOccurrence]`, uniform with rule/op
     bodies, dissolving the term-vs-occurrence split. Larger than 048 — tracked as **WI-470**; until
     then 048 uses `List[Term]` (with `Positioned` for local-binder goals).
+- **G. Notation: the `:-` stumble — resolved by open-world guards.** `:- guard` reuses the
+  rule/constraint arrow. A reader who knows NAF may import the *closed-world* reading and expect an
+  undischarged guard to drop the effect (unstated ⇒ absent) — backwards for an effect, which must
+  over-approximate. **The principled resolution (see "Discharge is constructive refutation"): a
+  guard is evaluated *open-world*, while the row stays closed over its labels — same `:-`, the world
+  differs because the guard ranges over runtime values, not KB facts. That keeps `Error[D] :- eq(b,
+  0)` (option (a)) as the lean, with no new syntax and no second conditional notation.** The surface
+  and structural alternatives below were explored before settling there; all compile to the one
+  representation (`guarded(label, guard)`, discharge ⇒ `present` **or drop to `{}`** — never an
+  enforcing absence):
+  - **(a) Keep `:- eq(b, 0)` — lean.** Justified by the open-world-guard reading: same `:-`, the
+    guard's world is open, the undetermined case over-approximates to present. The one teaching cost
+    — a NAF reader's *habit* for the undetermined case points the wrong way — is a single sentence
+    ("guards are open-world"), not a reversal of `:-`, and it is the same over-approximation any
+    sound static analysis already assumes.
+  - **(b) A distinct keyword — `Error[DivisionByZero] drop_if neq(b, 0)` — recommended.** It does not
+    reuse `:-`; its default-present reading lives in the word; and the author writes the *literal*
+    discharge goal (`neq`) rather than a presence condition to be mentally negated. Crucially its
+    discharge yields **`{}`** (drops the atom), the `merge` **unit**, which composes with everything.
+    *Symbolic* spellings of the same drop-arrow were weighed and set aside: `!Error[D] :- neq` reuses
+    the existing prefix-not (`_prefix_op: '!' | 'not'`) so it reparses as a logical-not **absence
+    claim** — the (c) trap; `Error[D] !- neq` (a `!-` drop-arrow) keeps the head positive and is
+    semantically clean, but sits one glyph from `:-` — the exact misread the NAF reader makes — and
+    overloads `!`/`!=`; `Error[D] :- <> neq` keeps the misleading `:-` and `<>` carries the wrong
+    (modal-possibility) connotation beside `!=`. A *word* cannot be misread and states default-present
+    in itself; if a symbol is wanted anyway, `!-` is the only coherent one (positive head ⇒ `{}`).
+  - **(c) Rejected — point `:-` at a 045 absence atom (`-Error[DivisionByZero] :- neq(b, 0)`).**
+    Tempting because `:-` would keep its ordinary closed-world meaning, but 045's `-e` is a `lacks`
+    *constraint* (it **forbids** the label), not a subtraction: a present base `Error[D]` beside
+    `-Error[D]` is a `merge` **conflict** (045 §merge: `{ Modify[c], -Modify[c] }` is *incompatible*),
+    and even if admitted the `lacks` would forbid an *unrelated* caller's `Error[D]`. Enforcing
+    absence is a row-global claim; a dropped effect is a local non-contribution — only `{}` models
+    "this call no longer raises". (Guarding a *genuine* enforcing `-` — "provably never touches kb,
+    when …" — is the separate open question D.)
+  - **(d) Flip to the necessary-condition direction — `eq(b, 0) :- Error[DivisionByZero]`.** Here `:-`
+    keeps its **exact ordinary** meaning (body→head: *the effect occurs only if b=0*), and discharge
+    is textbook **modus tollens** — prove `neq(b, 0)`, conclude `¬Error[D]`, drop — not "refute the
+    guard under floundering". As a *row element* it denotes the same guarded atom as (a) (the family
+    `present-where-eq`), so it is a notational choice, not new power; but it reads as a logical formula
+    with a *non-effect* head inside `effects {}`, trading polarity-confusion for shape-confusion. Its
+    natural home is therefore **beside** the row, as an operation-level *characterization clause*:
+    keep the row plain WI-066 `effects Error[D]` and let the clause drive contrapositive discharge.
+    That is open question C's "derived" option given a clean logical story, and it stays effect-native
+    (refuting a necessary condition makes the effect impossible — **no obligation**, unlike the
+    rejected precondition-constraint `neq(b, 0) :- div(…)`, which forces the caller). Cost: two
+    declarations (row + clause) and a reflective effect-atom in body position (only ever used in
+    contrapositive — refuted, never asserted).
+
+  So the choice is no longer "which separator" but **where the guard lives and which way `:-` points**:
+  *fused + sufficient* (`{ Error[D] :- eq(b, 0) }`, one element, teach the over-approx default) vs
+  *beside + necessary* ((d): `effects Error[D]` + `eq(b, 0) :- Error[D]`, `:-` fully ordinary,
+  discharge = modus tollens, merges with open-Q-C, at two declarations). Both compile to the one
+  representation (`guarded`, discharge ⇒ present-or-drop-to-`{}`); within the fused home the residual
+  surface choice is: `:- eq` (fire condition, reuses `:-`) vs **`drop_if neq` (discharge goal, new
+  keyword — lean)**.
+
+  The principle under all of this: the relation is **asymmetric** — `Error[D]` is present *by
+  default*, the guard is an *escape* that must be **proven** to drop it — so the notation should name
+  that asymmetry. A directional arrow can (but `:-` points the NAF-wrong way); a *symmetric* operator
+  cannot. Hence a disjunctive `Error[D] || eq(b, 0)` is rejected even though it brushes the right
+  theory: classically the clause **is** the disjunction `Error[D] ∨ neq(b, 0)` (its Clark completion —
+  precisely why proving `neq` discharges it, by resolution), but (i) the true disjunct is `neq`, not
+  the written `eq`; (ii) `||` reads as a runtime boolean-OR of *values*, not a type-level
+  effect/proposition split; and (iii) being symmetric it hides which side is the default. An
+  asymmetric word that names the escape (`drop_if neq` / `unless`) is what survives.
