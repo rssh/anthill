@@ -2724,16 +2724,17 @@ fn visit_type(
             // soundness argument (`nested_call_arg_hint`); a field type that
             // mentions the sort's own params (`cell: P`) is non-ground and
             // takes no hint. Other field values stay unhinted.
-            // WI-462: a positional tuple `(h, t)` lowers to a `Constructor{TupleLiteral}`
-            // (named `_1`/`_2` fields), NOT an `Expr::TupleLit` — recognize both.
+            // WI-462: a positional/named tuple `(h, t)` lowers to a `Constructor{TupleLiteral}`
+            // (named `_1`/`_2`/declared fields) — that, not `Expr::TupleLit`, is the surface
+            // form (`convert.rs` `TupleLiteral` build) and the one `check_tuple_literal_-
+            // constructor` threads. (The `Expr::TupleLit` IR is a non-surface shape whose build
+            // frame takes no expected, so a hint on it would be dropped — not recognized here.)
             fn is_tuple_lit(kb: &KnowledgeBase, arg: &Rc<NodeOccurrence>) -> bool {
-                match &arg.kind {
-                    NodeKind::Expr { expr: Expr::TupleLit { .. }, .. } => true,
-                    NodeKind::Expr { expr: Expr::Constructor { name, .. }, .. } => {
-                        kb.qualified_name_of(*name) == "anthill.reflect.TupleLiteral"
-                    }
-                    _ => false,
-                }
+                matches!(
+                    &arg.kind,
+                    NodeKind::Expr { expr: Expr::Constructor { name, .. }, .. }
+                        if kb.qualified_name_of(*name) == "anthill.reflect.TupleLiteral"
+                )
             }
             let has_call_field = pos_args
                 .iter()

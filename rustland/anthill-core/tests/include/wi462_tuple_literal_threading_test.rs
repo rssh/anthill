@@ -103,8 +103,34 @@ end
     );
 }
 
+/// A NAMED tuple literal `(head: h, rest: t)` threads against a named-tuple type
+/// `(head: xs.T, rest: List[T = xs.T])` too — `thread_expected_tuple_field` matches the
+/// declared field names (not just the positional `_1`/`_2`), so the named form reaches
+/// parity with the positional one.
+#[test]
+fn named_tuple_literal_threads() {
+    let ok = r#"
+namespace test.wi462.named
+  import anthill.prelude.{List, Option}
+  import anthill.prelude.Option.{some, none}
+  import anthill.prelude.List.{cons, nil}
+  operation split(xs: List) -> Option[T = (head: xs.T, rest: List[T = xs.T])] =
+    match xs
+      case nil() -> none
+      case cons(h, t) -> some((head: h, rest: t))
+end
+"#;
+    assert!(
+        load_errors(&[ok]).is_empty(),
+        "a named tuple literal must thread its declared component types; got: {:?}",
+        load_errors(&[ok]),
+    );
+}
+
 /// Soundness: a CONCRETE element that genuinely mismatches the declared component is still
 /// rejected — `xs : List[T = Int64]` makes `h : Int64`, so declaring `(String, …)` fails.
+/// (Guards that the threading did not LOOSEN rejection: a concrete head is never silently
+/// re-bound to the declared type the way a free `?_` head is.)
 #[test]
 fn tuple_concrete_wrong_component_rejected() {
     let wrong = r#"
