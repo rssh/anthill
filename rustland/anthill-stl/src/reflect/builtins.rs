@@ -558,9 +558,7 @@ fn kb_rules(
         // A `Rule` fact head is the rule's predicate term — always hash-consed
         // (rules are not value facts), so the carrier-agnostic head reifies via
         // its `TermId`.
-        let head_tid = head
-            .as_term()
-            .expect("a Rule fact head is a hash-consed predicate term");
+        let head_tid = head.expect_term();
         items.push(reify_term_to_value(kb, syms, head_tid));
     }
     Ok(build_list_value(syms, items))

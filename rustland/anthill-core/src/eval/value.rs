@@ -201,12 +201,24 @@ impl Value {
         if let Value::Int(n) = self { Some(*n) } else { None }
     }
 
-    /// Unwrap the hash-consed `Value::Term` variant. The occurrence-native
-    /// resolver (WI-246) carries goals as `Value`; this is the unwrap at the
-    /// shrinking term-only boundary where a builtin still needs a `TermId`.
-    /// `Value::Node` goals (rule-body occurrences) return `None`.
-    pub fn as_term(&self) -> Option<TermId> {
-        if let Value::Term(t) = self { Some(*t) } else { None }
+    /// Unwrap the hash-consed `Value::Term` variant, panicking LOUDLY on any
+    /// other carrier. WI-477: this replaces the old silent `as_term() ->
+    /// Option<TermId>`, whose `None` on a `Value::Node`/`Entity`/scalar was read
+    /// as "no term" and silently dropped the carrier (the binding-erasure class).
+    /// Use this ONLY where a `Term` carrier is *guaranteed* (a branch already
+    /// narrowed by `matches!(v, Value::Term(_))`, a fact head known hash-consed)
+    /// or genuinely DEMANDED (a term-only boundary that cannot proceed otherwise)
+    /// — so a stray non-`Term` is a bug that fails loud, never a silent skip. A
+    /// caller that legitimately handles a non-`Term` carrier narrows explicitly
+    /// (`if let Value::Term(t) = …`) or reads carrier-agnostically via `TermView`.
+    pub fn expect_term(&self) -> TermId {
+        match self {
+            Value::Term(t) => *t,
+            other => panic!(
+                "expect_term: expected a hash-consed Value::Term, got Value::{}",
+                other.type_name(),
+            ),
+        }
     }
 
     pub fn as_bool(&self) -> Option<bool> {

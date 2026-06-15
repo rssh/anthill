@@ -809,7 +809,13 @@ impl KnowledgeBase {
         // effectively shadowed during resolution.
         let head: crate::eval::value::Value = head.into();
         let is_fact = body_nodes.is_empty();
-        let head_term = head.as_term();
+        // The hash-consed head term for the ground-fact dedup index below — only a
+        // `Value::Term` head has one; a `Node`/`Entity` head is keyless (a dedup-miss,
+        // not unsoundness — WI-348 Phase B). Read before `head` moves into the entry.
+        let head_term = match &head {
+            crate::eval::value::Value::Term(t) => Some(*t),
+            _ => None,
+        };
         let rule_id = self.push_value_head_entry(head, body_nodes, sort, domain, meta);
 
         // WI-233: ground-fact dedup index. Inserted only for body-empty entries
@@ -2001,9 +2007,10 @@ impl KnowledgeBase {
         match self.terms.get(term).clone() {
             // Term-world substitution: a non-`Term` carrier (a `Value::Node`)
             // can't be a `Term` child, so a var bound to one stays the var.
-            Term::Var(Var::Global(vid)) => {
-                subst.resolve_as_value(vid).and_then(|v| v.as_term()).unwrap_or(term)
-            }
+            Term::Var(Var::Global(vid)) => match subst.resolve_as_value(vid) {
+                Some(crate::eval::value::Value::Term(t)) => *t,
+                _ => term,
+            },
             Term::Var(Var::DeBruijn(_)) => term,
             Term::Fn { .. } => self.map_fn_children(term, |kb, id| kb.apply_subst(id, subst)),
             _ => term,
@@ -2087,8 +2094,11 @@ impl KnowledgeBase {
     /// the answer; recursing into such a carrier's own children to chase a
     /// nested unbound var is unnecessary until value *rule* heads land
     /// (WI-348 Phase C, no consumer yet). Read an answer binding with this; a
-    /// caller that genuinely needs a term narrows the result via
-    /// [`crate::eval::value::Value::as_term`].
+    /// caller that handles a non-`Term` carrier narrows explicitly (`if let
+    /// Value::Term(t) = …`) or reads it carrier-agnostically via
+    /// [`crate::kb::term_view::TermView`], while one that genuinely demands a
+    /// hash-consed term uses [`crate::eval::value::Value::expect_term`] (which
+    /// fails loud on a non-`Term` carrier — WI-477).
     pub fn reify(&mut self, term: TermId, subst: &subst::Substitution) -> crate::eval::value::Value {
         use crate::eval::value::Value;
         // Chase the var chain carrier-faithfully — `walk_view` surfaces a
@@ -2132,10 +2142,10 @@ impl KnowledgeBase {
             && named.iter().all(|(_, v)| matches!(v, Value::Term(_)));
         if all_term {
             let pos_args: SmallVec<[TermId; 4]> =
-                pos.iter().map(|v| v.as_term().expect("all_term ⇒ Value::Term")).collect();
+                pos.iter().map(|v| v.expect_term()).collect();
             let named_args: SmallVec<[(Symbol, TermId); 2]> = named
                 .iter()
-                .map(|(s, v)| (*s, v.as_term().expect("all_term ⇒ Value::Term")))
+                .map(|(s, v)| (*s, v.expect_term()))
                 .collect();
             Value::Term(self.alloc(Term::Fn { functor, pos_args, named_args }))
         } else {
@@ -2696,7 +2706,10 @@ impl KnowledgeBase {
                 // Term-narrow: a non-`Term` carrier here would need De Bruijn
                 // opening over an occurrence (WI-348 Phase C) — until then a
                 // Node binding falls through to a fresh var, as before.
-                if let Some(bound) = tree_subst.resolve_as_value(*vid).and_then(|v| v.as_term()) {
+                if let Some(crate::eval::value::Value::Term(bound)) =
+                    tree_subst.resolve_as_value(*vid)
+                {
+                    let bound = *bound;
                     if !matches!(self.terms.get(bound), Term::Var(_)) {
                         rename.bind(*vid, bound);
                         continue;
@@ -2722,10 +2735,10 @@ impl KnowledgeBase {
                 match self.terms.get(bound_term) {
                     Term::Var(Var::Global(rule_vid)) => {
                         let rule_vid = *rule_vid;
-                        if let Some(renamed) =
-                            rename.resolve_as_value(rule_vid).and_then(|v| v.as_term())
+                        if let Some(crate::eval::value::Value::Term(renamed)) =
+                            rename.resolve_as_value(rule_vid)
                         {
-                            answer_links.bind(ts_vid, renamed);
+                            answer_links.bind(ts_vid, *renamed);
                         }
                     }
                     _ => {
@@ -3961,7 +3974,7 @@ mod tests {
             other => panic!("alpha should bind the Node, got {other:?}"),
         }
         assert_eq!(
-            results[0].1.resolve_as_value(yv).and_then(|v| v.as_term()),
+            results[0].1.resolve_as_value(yv).map(|v| v.expect_term()),
             Some(beta_t),
             "beta must bind its ground term by key, not by position",
         );
@@ -4398,8 +4411,8 @@ mod tests {
         });
         let sols = kb.resolve(&[q_var], &config);
         assert_eq!(sols.len(), 1, "vf(g(?y)) should resolve through the value rule head");
-        let bound = kb.reify(yt, &sols[0].subst).as_term();
-        assert_eq!(bound, Some(active), "nested ?y must bind to \"active\", got {:?}", bound);
+        let bound = kb.reify(yt, &sols[0].subst).expect_term();
+        assert_eq!(bound, active, "nested ?y must bind to \"active\", got {:?}", bound);
 
         // Query vf(g("active")) → succeeds (body thing("active") holds).
         let g_active = kb.alloc(Term::Fn {
@@ -4455,7 +4468,7 @@ mod tests {
         let target = kb.alloc(Term::Const(Literal::Int(42)));
 
         let s = kb.match_term(var_term, target).expect("should match");
-        assert_eq!(s.resolve_as_value(vid).and_then(|v| v.as_term()), Some(target));
+        assert_eq!(s.resolve_as_value(vid).map(|v| v.expect_term()), Some(target));
     }
 
     #[test]
@@ -4551,7 +4564,7 @@ mod tests {
             other => panic!("expected Value::Str, got {other:?}"),
         }
         // resolve() returns None because the binding isn't a TermId.
-        assert!(subst.resolve_as_value(xv).and_then(|v| v.as_term()).is_none());
+        assert!(!matches!(subst.resolve_as_value(xv), Some(Value::Term(_))));
     }
 
     #[test]
@@ -4625,8 +4638,8 @@ mod tests {
         }
 
         // Both variables bind to non-Term Values → resolve() returns None.
-        assert!(subst.resolve_as_value(xv).and_then(|v| v.as_term()).is_none());
-        assert!(subst.resolve_as_value(yv).and_then(|v| v.as_term()).is_none());
+        assert!(!matches!(subst.resolve_as_value(xv), Some(Value::Term(_))));
+        assert!(!matches!(subst.resolve_as_value(yv), Some(Value::Term(_))));
     }
 
     #[test]
@@ -4688,8 +4701,8 @@ mod tests {
             other => panic!("expected Value::Node for ?b, got {other:?}"),
         }
         // Non-Term bindings → narrowing to a term returns None (lineage preserved).
-        assert!(subst.resolve_as_value(av).and_then(|v| v.as_term()).is_none());
-        assert!(subst.resolve_as_value(bv).and_then(|v| v.as_term()).is_none());
+        assert!(!matches!(subst.resolve_as_value(av), Some(Value::Term(_))));
+        assert!(!matches!(subst.resolve_as_value(bv), Some(Value::Term(_))));
     }
 
     #[test]
@@ -4873,8 +4886,8 @@ mod tests {
         let via_term = kb.match_term(pattern, target).expect("match_term");
         let via_view = kb.match_view(pattern, &TermIdView(target)).expect("match_view");
 
-        assert_eq!(via_term.resolve_as_value(xv).and_then(|v| v.as_term()), via_view.resolve_as_value(xv).and_then(|v| v.as_term()));
-        assert_eq!(via_term.resolve_as_value(xv).and_then(|v| v.as_term()), Some(a));
+        assert_eq!(via_term.resolve_as_value(xv).map(|v| v.expect_term()), via_view.resolve_as_value(xv).map(|v| v.expect_term()));
+        assert_eq!(via_term.resolve_as_value(xv).map(|v| v.expect_term()), Some(a));
     }
 
     #[test]
@@ -4979,7 +4992,7 @@ mod tests {
         let results = kb.query(pattern);
         assert_eq!(results.len(), 1);
         let (_, ref s) = results[0];
-        assert_eq!(s.resolve_as_value(vid).and_then(|v| v.as_term()), Some(alice));
+        assert_eq!(s.resolve_as_value(vid).map(|v| v.expect_term()), Some(alice));
     }
 
     #[test]
@@ -5029,7 +5042,7 @@ mod tests {
         assert_eq!(node_hits.len(), term_hits.len(), "same candidate count as TermId goal");
         assert_eq!(node_hits[0].0, term_hits[0].0, "same matched rule/fact");
         assert_eq!(
-            node_hits[0].1.resolve_as_value(vid).and_then(|v| v.as_term()),
+            node_hits[0].1.resolve_as_value(vid).map(|v| v.expect_term()),
             Some(alice),
             "?x bound to \"alice\" via the occurrence goal",
         );

@@ -93,7 +93,7 @@ fn stream_head_on_concrete_stream_yields_option_with_concrete_t() {
         .expect("Stream.head(s) for s:Stream[T=Term,E=Error] should type-check");
     // .expect on Result yields T directly on Ok, panic-formats Err.
     // WI-342: TypeResult.ty is carrier-agnostic; this return type is ground.
-    let ty = result.ty.as_term().expect("ground return type");
+    let ty = result.ty.expect_term();
     let ty_str = TermPrinter::new(&kb).print_term(ty);
 
     // The return type must be parameterized(Option, [T = sort_ref(Term)]).

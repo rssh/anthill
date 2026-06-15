@@ -600,8 +600,8 @@ pub fn emit_entity_struct_by_symbol(
         // WI-342: field types are carrier-agnostic; codegen handles only ground
         // types (a value-in-type / denoted field is not C++-representable and
         // does not occur in codegen'd entities).
-        let Some(type_tid) = type_term.as_term() else { continue };
-        let cpp_type = lower_type(ctx, type_tid)?;
+        let Value::Term(type_tid) = type_term else { continue };
+        let cpp_type = lower_type(ctx, *type_tid)?;
         let field_name = kb.resolve_sym(*field_sym);
         fields_text.push_str(
             &TEMPLATE_FIELD
@@ -1275,8 +1275,8 @@ fn constructor_uses_params(
     let Some(fields) = kb.entity_field_types(entity_sym) else { return false };
     for (_, type_term) in fields {
         // WI-342: ground field types only (denoted fields don't occur in codegen).
-        if let Some(t) = type_term.as_term() {
-            if term_references_param(kb, t, param_names) {
+        if let Value::Term(t) = type_term {
+            if term_references_param(kb, *t, param_names) {
                 return true;
             }
         }
@@ -1470,8 +1470,8 @@ fn collect_entity_deps(
     let Some(fields) = kb.entity_field_types(entity_sym) else { return };
     for (_, type_term) in fields {
         // WI-342: ground field types only (denoted fields don't occur in codegen).
-        if let Some(t) = type_term.as_term() {
-            collect_type_term_refs(kb, t, in_band, out);
+        if let Value::Term(t) = type_term {
+            collect_type_term_refs(kb, *t, in_band, out);
         }
     }
 }

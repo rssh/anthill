@@ -472,7 +472,13 @@ impl SearchStream {
                 walked
             }
         };
-        let goal_t = goal_val.as_term();
+        // The hash-consed `TermId` carrier of the goal, if any — a `Value::Node`
+        // occurrence goal has none and is lowered on demand via `reify_goal_value`
+        // below.
+        let goal_t = match &goal_val {
+            Value::Term(t) => Some(*t),
+            _ => None,
+        };
         let frame = self.stack.last().unwrap();
 
         // Scoping / hereditary-Harrop markers (`__pop_assumption`,
@@ -1507,7 +1513,13 @@ impl KnowledgeBase {
             // term-world rewrite continuation narrows to a term — a non-term RHS
             // is unreachable today and not further term-rewritable (Phase C).
             let rhs_value = self.reify(result_var, &tree_subst);
-            let rhs = rhs_value.as_term().unwrap_or(result_var);
+            let rhs = match &rhs_value {
+                Value::Term(t) => *t,
+                // A non-term RHS is unreachable today and not further term-rewritable
+                // (Phase C); narrow to the result var so the continuation stays in
+                // the term world.
+                _ => result_var,
+            };
 
             changes.push(EqChange {
                 rule_id: rid,
@@ -1555,16 +1567,15 @@ impl KnowledgeBase {
         answer_subst: &Substitution,
     ) -> BuiltinResult {
         // Builtins not yet migrated to `TermView` still need a hash-consed
-        // term goal. The remaining `as_term` builtins (qualified_name,
+        // term goal. The remaining term-only builtins (qualified_name,
         // short_name, lookup_symbol, resolve_sort_inst_param, field_access) are
         // op-body/eval-only — no rule body reaches them (the full suite is
         // green). A `Value::Node` goal hitting one means a new rule uses it;
         // fail loud naming the tag so it gets migrated.
-        // TODO(WI-246 follow-up): migrate these to TermView and drop `as_term`.
-        let as_term = |g: &Value| {
-            g.as_term().unwrap_or_else(|| {
-                panic!("WI-246: builtin {tag:?} got a Value::Node goal — not yet migrated to TermView")
-            })
+        // TODO(WI-246 follow-up): migrate these to TermView and drop this narrow.
+        let as_term = |g: &Value| match g {
+            Value::Term(t) => *t,
+            _ => panic!("WI-246: builtin {tag:?} got a Value::Node goal — not yet migrated to TermView"),
         };
         match tag {
             BuiltinTag::NonVar => self.builtin_nonvar(goal, answer_subst),
@@ -1749,7 +1760,13 @@ impl KnowledgeBase {
     /// removal diagnostic proved no rule body binds a non-`Term` into a builtin
     /// arg; this makes that boundary explicit and forward-correct.
     fn walk_arg_term(&self, arg: TermId, subst: &Substitution) -> Option<TermId> {
-        self.walk_view(arg, subst).as_term()
+        // Narrow to the hash-consed `Term` carrier; a var bound to a non-`Term`
+        // (a `Value::Node` denoted/occurrence, a scalar) is `None` here, which each
+        // caller turns into its failure path (see the doc above).
+        match self.walk_view(arg, subst) {
+            Value::Term(t) => Some(t),
+            _ => None,
+        }
     }
 
     fn builtin_qualified_name(&mut self, goal: TermId, subst: &Substitution) -> BuiltinResult {
@@ -2137,9 +2154,12 @@ impl KnowledgeBase {
         // arg0 must be a term-shaped Symbol (Ref/Ident/Fn-functor). A non-term
         // Value (Node / scalar / tuple) is simply not an operation symbol — fail
         // cleanly rather than panic (don't route through `reify_goal_value`).
-        let op_sym = match op_val.as_term().map(|t| self.terms.get(t)) {
-            Some(Term::Ref(s) | Term::Ident(s)) => *s,
-            Some(Term::Fn { functor, .. }) => *functor,
+        let op_sym = match &op_val {
+            Value::Term(t) => match self.terms.get(*t) {
+                Term::Ref(s) | Term::Ident(s) => *s,
+                Term::Fn { functor, .. } => *functor,
+                _ => return BuiltinResult::Failure,
+            },
             _ => return BuiltinResult::Failure,
         };
         // arg1 — the result pattern (mirror occurrence_arg_and_pattern's arg1 block).
@@ -2470,7 +2490,7 @@ impl KnowledgeBase {
             }
             ResultTarget::Compare(Some(v)) => {
                 let bound = self.normalize_value(v);
-                if bound.as_term() == Some(value) {
+                if matches!(bound, Value::Term(t) if t == value) {
                     BuiltinResult::Success
                 } else {
                     BuiltinResult::Failure
@@ -2550,9 +2570,10 @@ impl KnowledgeBase {
         let value = match self.value_num(&arg) {
             Some(Num::Int(n)) => self.alloc(Term::Const(Literal::BigInt(num_bigint::BigInt::from(n)))),
             // Already a BigInt — pass the term through, or promote a scalar.
-            Some(Num::Big(n)) => arg
-                .as_term()
-                .unwrap_or_else(|| self.alloc(Term::Const(Literal::BigInt(n)))),
+            Some(Num::Big(n)) => match &arg {
+                Value::Term(t) => *t,
+                _ => self.alloc(Term::Const(Literal::BigInt(n))),
+            },
             _ => return BuiltinResult::Failure,
         };
         self.finish_result(target, value)
@@ -2930,7 +2951,7 @@ mod tests {
         let val = kb.alloc(Term::Const(Literal::Int(42)));
 
         let s = kb.match_term(var_x, val).expect("should match");
-        assert_eq!(s.resolve_as_value(vid).and_then(|v| v.as_term()), Some(val));
+        assert_eq!(s.resolve_as_value(vid).map(|v| v.expect_term()), Some(val));
     }
 
     #[test]
@@ -2954,7 +2975,7 @@ mod tests {
         });
 
         let s = kb.match_term(t1, t2).expect("should match");
-        assert_eq!(s.resolve_as_value(vx).and_then(|v| v.as_term()), Some(val));
+        assert_eq!(s.resolve_as_value(vx).map(|v| v.expect_term()), Some(val));
     }
 
     #[test]
@@ -2987,18 +3008,18 @@ mod tests {
 
         // x → y
         s.bind_compressed([(vx, var_y)], &kb.terms);
-        assert_eq!(s.resolve_as_value(vx).and_then(|v| v.as_term()), Some(var_y));
+        assert_eq!(s.resolve_as_value(vx).map(|v| v.expect_term()), Some(var_y));
 
         // y → z: should also compress x → z
         s.bind_compressed([(vy, var_z)], &kb.terms);
-        assert_eq!(s.resolve_as_value(vy).and_then(|v| v.as_term()), Some(var_z));
-        assert_eq!(s.resolve_as_value(vx).and_then(|v| v.as_term()), Some(var_z));
+        assert_eq!(s.resolve_as_value(vy).map(|v| v.expect_term()), Some(var_z));
+        assert_eq!(s.resolve_as_value(vx).map(|v| v.expect_term()), Some(var_z));
 
         // z → 99: should compress x → 99 and y → 99
         s.bind_compressed([(vz, val)], &kb.terms);
-        assert_eq!(s.resolve_as_value(vz).and_then(|v| v.as_term()), Some(val));
-        assert_eq!(s.resolve_as_value(vy).and_then(|v| v.as_term()), Some(val));
-        assert_eq!(s.resolve_as_value(vx).and_then(|v| v.as_term()), Some(val));
+        assert_eq!(s.resolve_as_value(vz).map(|v| v.expect_term()), Some(val));
+        assert_eq!(s.resolve_as_value(vy).map(|v| v.expect_term()), Some(val));
+        assert_eq!(s.resolve_as_value(vx).map(|v| v.expect_term()), Some(val));
     }
 
     // ── Reify tests ─────────────────────────────────────────────
@@ -3026,7 +3047,7 @@ mod tests {
         s.bind(vx, var_y);
         s.bind(vy, val);
 
-        let result = kb.reify(term, &s).as_term().unwrap();
+        let result = kb.reify(term, &s).expect_term();
         match kb.get_term(result) {
             Term::Fn { pos_args, .. } => {
                 assert_eq!(pos_args[0], val);
@@ -3114,7 +3135,7 @@ mod tests {
         let results = kb.resolve(&[goal], &config);
         assert_eq!(results.len(), 1);
         // answer_subst is flat — resolve directly, no walk needed
-        assert_eq!(results[0].subst.resolve_as_value(vx).and_then(|v| v.as_term()), Some(alice));
+        assert_eq!(results[0].subst.resolve_as_value(vx).map(|v| v.expect_term()), Some(alice));
     }
 
     #[test]
@@ -3188,8 +3209,8 @@ mod tests {
         let results = kb.resolve(&[goal], &config);
         assert_eq!(results.len(), 1);
         // Use reify to resolve through fresh var chains
-        assert_eq!(kb.reify(var_a, &results[0].subst).as_term().unwrap(), alice);
-        assert_eq!(kb.reify(var_b, &results[0].subst).as_term().unwrap(), charlie);
+        assert_eq!(kb.reify(var_a, &results[0].subst).expect_term(), alice);
+        assert_eq!(kb.reify(var_b, &results[0].subst).expect_term(), charlie);
     }
 
     #[test]
@@ -3285,7 +3306,7 @@ mod tests {
 
         // Should find: ancestor(alice, bob) and ancestor(alice, charlie)
         let bound: Vec<TermId> = results.iter()
-            .map(|sol| kb.reify(var_w, &sol.subst).as_term().unwrap())
+            .map(|sol| kb.reify(var_w, &sol.subst).expect_term())
             .collect();
         assert_eq!(bound.len(), 2);
         assert!(bound.contains(&bob));
@@ -3656,7 +3677,7 @@ mod tests {
         assert_eq!(result, four);
         assert_eq!(changes.len(), 1);
         assert_eq!(changes[0].original, lhs);
-        assert_eq!(changes[0].rewritten.as_term(), Some(four));
+        assert_eq!(changes[0].rewritten.expect_term(), four);
     }
 
     // ── Builtin dispatch + delay tests ─────────────────────────
@@ -3706,7 +3727,7 @@ mod tests {
         let results = kb.resolve(&[goal_f, goal_nonvar], &config);
         assert_eq!(results.len(), 1);
         assert!(results[0].residual.is_empty());
-        assert_eq!(kb.reify(var_x, &results[0].subst).as_term().unwrap(), hello);
+        assert_eq!(kb.reify(var_x, &results[0].subst).expect_term(), hello);
     }
 
     #[test]
@@ -3746,7 +3767,7 @@ mod tests {
         let results = kb.resolve(&[goal_nonvar, goal_f], &config);
         assert_eq!(results.len(), 1);
         assert!(results[0].residual.is_empty());
-        assert_eq!(kb.reify(var_x, &results[0].subst).as_term().unwrap(), hello);
+        assert_eq!(kb.reify(var_x, &results[0].subst).expect_term(), hello);
     }
 
     #[test]
@@ -3769,7 +3790,7 @@ mod tests {
         let results = kb.resolve(&[goal], &config);
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].residual.len(), 1);
-        assert_eq!(results[0].residual[0].as_term(), Some(goal));
+        assert_eq!(results[0].residual[0].expect_term(), goal);
     }
 
     #[test]
@@ -3886,7 +3907,7 @@ mod tests {
         let results = kb.resolve(&[goal], &config);
         assert_eq!(results.len(), 1);
         assert!(results[0].residual.is_empty());
-        assert_eq!(results[0].subst.resolve_as_value(vx).and_then(|v| v.as_term()), Some(val));
+        assert_eq!(results[0].subst.resolve_as_value(vx).map(|v| v.expect_term()), Some(val));
     }
 
     #[test]
@@ -4002,7 +4023,7 @@ mod tests {
         let results = kb.resolve(&[q_check, q_bind], &config);
         assert_eq!(results.len(), 1);
         assert!(results[0].residual.is_empty());
-        assert_eq!(kb.reify(var_a, &results[0].subst).as_term().unwrap(), val_42);
+        assert_eq!(kb.reify(var_a, &results[0].subst).expect_term(), val_42);
     }
 
     #[test]
@@ -4140,7 +4161,7 @@ mod tests {
         let results = kb.resolve(&[q_foo], &config);
         assert_eq!(results.len(), 1);
         assert!(results[0].residual.is_empty());
-        assert_eq!(kb.reify(var_a, &results[0].subst).as_term().unwrap(), val_99);
+        assert_eq!(kb.reify(var_a, &results[0].subst).expect_term(), val_99);
     }
 
     // ── SearchStream (lazy) tests ───────────────────────────────
@@ -4266,7 +4287,7 @@ mod tests {
 
         let (sol, stream) = stream.split_first(&mut kb).expect("should residualize");
         assert_eq!(sol.residual.len(), 1);
-        assert_eq!(sol.residual[0].as_term(), Some(goal));
+        assert_eq!(sol.residual[0].expect_term(), goal);
 
         // No more solutions
         assert!(stream.split_first(&mut kb).is_none());
@@ -4365,10 +4386,10 @@ mod tests {
         let stream = kb.resolve_lazy(&[goal], &config);
 
         let (sol1, stream) = stream.split_first(&mut kb).expect("first ancestor");
-        let r1 = kb.reify(var_w, &sol1.subst).as_term().unwrap();
+        let r1 = kb.reify(var_w, &sol1.subst).expect_term();
 
         let (sol2, stream) = stream.split_first(&mut kb).expect("second ancestor");
-        let r2 = kb.reify(var_w, &sol2.subst).as_term().unwrap();
+        let r2 = kb.reify(var_w, &sol2.subst).expect_term();
 
         // Should find bob and charlie (in some order)
         let mut results = vec![r1, r2];
@@ -4411,7 +4432,7 @@ mod tests {
 
         let solutions = kb.resolve(&[goal], &ResolveConfig::default());
         assert_eq!(solutions.len(), 1, "qualified_name should produce 1 solution");
-        let resolved = solutions[0].subst.resolve_as_value(result_vid).and_then(|v| v.as_term()).expect("result should be bound");
+        let resolved = solutions[0].subst.resolve_as_value(result_vid).map(|v| v.expect_term()).expect("result should be bound");
         match kb.get_term(resolved) {
             Term::Const(Literal::String(s)) => assert_eq!(s, "foo.Bar"),
             other => panic!("expected String const 'foo.Bar', got {:?}", other),
@@ -4443,7 +4464,7 @@ mod tests {
 
         let solutions = kb.resolve(&[goal], &ResolveConfig::default());
         assert_eq!(solutions.len(), 1);
-        let resolved = solutions[0].subst.resolve_as_value(result_vid).and_then(|v| v.as_term()).expect("result should be bound");
+        let resolved = solutions[0].subst.resolve_as_value(result_vid).map(|v| v.expect_term()).expect("result should be bound");
         match kb.get_term(resolved) {
             Term::Const(Literal::String(s)) => assert_eq!(s, "Baz"),
             other => panic!("expected String const 'Baz', got {:?}", other),
@@ -4475,7 +4496,7 @@ mod tests {
 
         let solutions = kb.resolve(&[goal], &ResolveConfig::default());
         assert_eq!(solutions.len(), 1);
-        let resolved = solutions[0].subst.resolve_as_value(result_vid).and_then(|v| v.as_term()).expect("result should be bound");
+        let resolved = solutions[0].subst.resolve_as_value(result_vid).map(|v| v.expect_term()).expect("result should be bound");
         match kb.get_term(resolved) {
             Term::Ref(sym) => assert_eq!(*sym, qux_sym),
             other => panic!("expected Ref(Qux), got {:?}", other),
@@ -4623,7 +4644,7 @@ mod tests {
         });
         let solutions = kb.resolve(&[goal], &ResolveConfig::default());
         assert_eq!(solutions.len(), 1, "add(3, 4, ?x) should have 1 solution");
-        let result = kb.reify(var_x, &solutions[0].subst).as_term().unwrap();
+        let result = kb.reify(var_x, &solutions[0].subst).expect_term();
         assert_eq!(kb.get_term(result), &Term::Const(Literal::Int(7)));
     }
 
@@ -4781,7 +4802,7 @@ mod tests {
         assert_eq!(solutions.len(), 1, "should have one solution");
         assert!(solutions[0].residual.is_empty(), "no residual expected");
         // ?x should be bound to a
-        let bound = solutions[0].subst.resolve_as_value(vx).and_then(|v| v.as_term());
+        let bound = solutions[0].subst.resolve_as_value(vx).map(|v| v.expect_term());
         assert!(bound.is_some(), "?x should be bound");
     }
 
@@ -4913,7 +4934,7 @@ mod tests {
         assert_eq!(solutions.len(), 1, "should have exactly one solution (safe(a))");
         assert!(solutions[0].residual.is_empty(), "no residual expected");
         // Reify to follow the full binding chain through fresh vars
-        let resolved = kb.reify(var_q, &solutions[0].subst).as_term().unwrap();
+        let resolved = kb.reify(var_q, &solutions[0].subst).expect_term();
         assert_eq!(resolved, a, "?q should resolve to 'a'");
     }
 
@@ -4982,11 +5003,11 @@ mod tests {
         assert_eq!(solutions.len(), 4, "should get 4 solutions");
 
         // Solution 0: nat(zero()) → ?x = zero()
-        let r0 = kb.reify(var_x, &solutions[0].subst).as_term().unwrap();
+        let r0 = kb.reify(var_x, &solutions[0].subst).expect_term();
         assert_eq!(r0, zero_term, "first solution should be zero()");
 
         // Solution 1: nat(succ(zero())) → ?x = succ(zero())
-        let r1 = kb.reify(var_x, &solutions[1].subst).as_term().unwrap();
+        let r1 = kb.reify(var_x, &solutions[1].subst).expect_term();
         match kb.get_term(r1) {
             Term::Fn { functor, pos_args, .. } => {
                 assert_eq!(*functor, succ_sym);
@@ -4997,7 +5018,7 @@ mod tests {
         }
 
         // Solution 2: nat(succ(succ(zero()))) → ?x = succ(succ(zero()))
-        let r2 = kb.reify(var_x, &solutions[2].subst).as_term().unwrap();
+        let r2 = kb.reify(var_x, &solutions[2].subst).expect_term();
         match kb.get_term(r2) {
             Term::Fn { functor, pos_args, .. } => {
                 assert_eq!(*functor, succ_sym);
@@ -5111,7 +5132,7 @@ mod tests {
         });
         let sols = kb.resolve(&[q_var], &config);
         assert_eq!(sols.len(), 1, "shared(?q) should have 1 solution");
-        let bound = kb.reify(var_q, &sols[0].subst).as_term().unwrap();
+        let bound = kb.reify(var_q, &sols[0].subst).expect_term();
         assert_eq!(bound, yes, "?q should resolve to \"yes\"");
     }
 
@@ -5147,8 +5168,8 @@ mod tests {
         let config = ResolveConfig::default();
         let sols = kb.resolve(&[query], &config);
         assert_eq!(sols.len(), 1, "holds(state(?x)) should find the fact");
-        let bound = kb.reify(var_x, &sols[0].subst).as_term();
-        assert_eq!(bound, Some(active), "nested ?x must bind to active, got {:?}", bound);
+        let bound = kb.reify(var_x, &sols[0].subst).expect_term();
+        assert_eq!(bound, active, "nested ?x must bind to active, got {:?}", bound);
     }
 
     /// Multiple anonymous variables get distinct DeBruijn indices.
@@ -5587,7 +5608,7 @@ mod tests {
 
         let mut xs: Vec<String> = solutions.iter()
             .filter_map(|sol| {
-                let t = kb.reify(var_q, &sol.subst).as_term().unwrap();
+                let t = kb.reify(var_q, &sol.subst).expect_term();
                 match kb.get_term(t) {
                     Term::Const(Literal::String(s)) => Some(s.clone()),
                     _ => None,

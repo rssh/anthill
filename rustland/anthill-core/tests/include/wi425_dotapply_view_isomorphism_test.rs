@@ -191,7 +191,7 @@ fn dotapply_occurrence_goal_var_binds_through_args_list() {
     let hits = kb.query_view(&goal);
     assert_eq!(hits.len(), 1, "var-arg occurrence goal matches the fact");
     assert_eq!(
-        hits[0].1.resolve_as_value(vid).and_then(|v| v.as_term()),
+        hits[0].1.resolve_as_value(vid).map(|v| v.expect_term()),
         Some(one),
         "?x bound to the fact's positional arg value through the args list",
     );

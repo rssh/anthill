@@ -800,7 +800,7 @@ fn parameterized_value(
         // Closed: every binding is a `Value::Term` (checked above) — hash-consed.
         let mut terms: Vec<(Symbol, TermId)> = Vec::with_capacity(bindings.len());
         for (s, v) in bindings {
-            terms.push((*s, v.as_term().expect("parameterized_value closed branch: Term binding")));
+            terms.push((*s, v.expect_term()));
         }
         Value::Term(kb.make_parameterized_type(base, &terms))
     }
@@ -829,7 +829,7 @@ fn named_tuple_value(
         // value is a `Value::Term` — unwrap it directly for the hash-consed builder.
         let mut terms: Vec<(Symbol, TermId)> = Vec::with_capacity(fields.len());
         for (s, v) in fields {
-            terms.push((*s, v.as_term().expect("named_tuple_value ground branch: Term field")));
+            terms.push((*s, v.expect_term()));
         }
         Value::Term(kb.make_named_tuple_type(&terms))
     }
@@ -4014,7 +4014,7 @@ fn check_apply_iter(
             None => match &carrier_param_info {
                 Some((spec_sort, _carrier_sym, recv_ty, view)) => {
                     bind_spec_params_from_carrier_param(
-                        kb, &mut subst, *spec_sort, *recv_ty, view.clone(),
+                        kb, &mut subst, *spec_sort, recv_ty, view.clone(),
                     )
                 }
                 None => false,
@@ -8479,10 +8479,12 @@ pub(crate) fn self_receiver_param_index(
 }
 
 /// WI-350 — the base sort symbol of a value standing in *type* position
-/// (an argument's inferred `TypeResult.ty`). Type results are carried as
-/// `Value::Term` of a typer-reflect Type shape, read by [`sort_functor_of`].
+/// (an argument's inferred `TypeResult.ty`). WI-477: read carrier-agnostically
+/// through `sort_functor_of_view` — an occurrence-primary type result is a
+/// `Value::Node`, and `.as_term()` would drop it; a structural carrier (arrow /
+/// effect-row / denoted) has no sort head and yields `None` here, as before.
 fn carrier_sort_of_value(kb: &KnowledgeBase, v: &Value) -> Option<Symbol> {
-    sort_functor_of(kb, v.as_term()?)
+    sort_functor_of_view(kb, v)
 }
 
 /// WI-424 — the canonical param `VarId` a declared parameter type stands for:
@@ -8493,9 +8495,12 @@ fn declared_type_param_vid(kb: &KnowledgeBase, pty: &Value) -> Option<VarId> {
     if let Some(v) = resolved_var(kb, pty) {
         return Some(v);
     }
-    let t = pty.as_term()?;
-    let sym = match kb.get_term(t) {
-        Term::Ref(s) | Term::Ident(s) => *s,
+    // WI-477: read the head carrier-agnostically — a sort type-param ref (`c: C`
+    // ⇒ `Ref(S.C)`) reads as `ViewHead::Ref`/`Ident` whether the param type rides
+    // as a `TermId` or a `Value::Node`; a structural carrier (arrow/row) has no
+    // such head → `None`, as before.
+    let sym = match pty.head(kb) {
+        ViewHead::Ref(s) | ViewHead::Ident(s) => s,
         _ => return None,
     };
     match kb.get_term(resolve_sort_alias(kb, sym)?) {
@@ -8775,7 +8780,7 @@ fn carrier_param_receiver(
     named_args: &[(Symbol, Rc<NodeOccurrence>)],
     pos_results: &[Result<TypeResult, TypeError>],
     named_results: &[Result<TypeResult, TypeError>],
-) -> Option<(Symbol, Symbol, TermId, SmallVec<[(Symbol, TermId); 2]>)> {
+) -> Option<(Symbol, Symbol, Value, SmallVec<[(Symbol, TermId); 2]>)> {
     let spec_sort = impl_parent_of_op(kb, fn_sym)?;
     let spec_params = sort_type_params_as_pairs(kb, spec_sort);
     if spec_params.is_empty() {
@@ -8788,20 +8793,26 @@ fn carrier_param_receiver(
         }) {
             continue;
         }
+        // WI-477: read the receiver's inferred type as a carrier-agnostic `Value`
+        // (NOT `.as_term()`) — an occurrence-primary `List[T = …]` is a `Value::Node`
+        // whose `T`/`E` bindings live in the node; `.as_term()` would drop the carrier
+        // and leak `Eff unconstrained`. The bindings are read below through the
+        // carrier-agnostic `parameterized_short_bindings`. Mirrors the self-receiver
+        // twin `bind_spec_params_from_carrier` (WI-470 d42682c).
         let recv_ty = pos_results
             .get(i)
             .and_then(|r| r.as_ref().ok())
-            .and_then(|r| r.ty.as_term())
+            .map(|r| r.ty.clone())
             .or_else(|| {
                 named_args
                     .iter()
                     .position(|(n, _)| n == pname)
                     .and_then(|j| named_results.get(j))
                     .and_then(|r| r.as_ref().ok())
-                    .and_then(|r| r.ty.as_term())
+                    .map(|r| r.ty.clone())
             });
         let Some(recv_ty) = recv_ty else { continue };
-        let Some(carrier_sym) = sort_functor_of(kb, recv_ty) else { continue };
+        let Some(carrier_sym) = sort_functor_of_view(kb, &recv_ty) else { continue };
         let Some(view) = provision_binds_param_to_carrier(kb, spec_sort, pvid, carrier_sym)
         else {
             continue;
@@ -8827,10 +8838,10 @@ fn bind_spec_params_from_carrier_param(
     kb: &mut KnowledgeBase,
     subst: &mut Substitution,
     spec_sort: Symbol,
-    recv_ty: TermId,
+    recv_ty: &Value,
     view_bindings: SmallVec<[(Symbol, TermId); 2]>,
 ) -> bool {
-    let recv_bindings = parameterized_short_bindings(kb, &TermIdView(recv_ty));
+    let recv_bindings = parameterized_short_bindings(kb, recv_ty);
     let mut any = false;
     for (spec_param_sym, carrier_value) in view_bindings {
         let concrete: Option<TermId> = match typaram_ref_short_name(kb, carrier_value) {
@@ -8926,10 +8937,17 @@ fn parameterized_short_bindings(kb: &KnowledgeBase, ty: &impl TermView) -> Vec<(
     };
     bindings
         .into_iter()
-        .filter_map(|(param, value)| {
-            value
-                .as_term()
-                .map(|t| (short_name_of(kb.resolve_sym(param)).to_string(), t))
+        .filter_map(|(param, value)| match value {
+            // A concrete parameterized carrier's binding is a ground sort term
+            // (`List[T = Int]` ⇒ `Int`) — thread it. WI-477: a non-`Term` (Node)
+            // binding — a carrier parameterized by a poisoned/occurrence type — is
+            // not the ground `TermId` the carrier-grounding consumers `bind_term`;
+            // leaving it unthreaded surfaces a LOUD `unconstrained` downstream (cf.
+            // the `type_value_is_ground` guard in `bind_spec_params_from_carrier`)
+            // rather than a silently-wrong bind. Threading such a compound is WI-380
+            // follow-up work.
+            Value::Term(t) => Some((short_name_of(kb.resolve_sym(param)).to_string(), t)),
+            _ => None,
         })
         .collect()
 }
@@ -13220,13 +13238,18 @@ fn walk_type(kb: &KnowledgeBase, subst: &Substitution, ty: TermId) -> TermId {
         if visited.contains(&vid) {
             return alias_target; // WI-416: cycle — the alias var represents it.
         }
-        match subst.resolve_as_value(vid).and_then(|v| v.as_term()) {
-            Some(bound) => {
+        match subst.resolve_as_value(vid) {
+            // Term-narrow (term-world alias chase): only a `Value::Term` binding
+            // is a `TermId` this loop can chase; a non-`Term` carrier (a `Value::Node`
+            // effect-row/occurrence binding) is not representable here, so the alias
+            // var represents it — as before.
+            Some(Value::Term(bound)) => {
+                let bound = *bound;
                 visited.push(vid);
                 ty = bound;
                 continue;
             }
-            None => return alias_target,
+            _ => return alias_target,
         }
     }
 }
@@ -17540,8 +17563,10 @@ fn check_operation_bodies(kb: &mut KnowledgeBase, op_syms: &[Symbol], errors: &m
             for (_, var_tid) in parent_sort_params.iter() {
                 if let Term::Var(Var::Global(vid)) = kb.get_term(*var_tid) {
                     let vid = *vid;
-                    if let Some(rigid) = rigidify.resolve_as_value(vid).and_then(|v| v.as_term()) {
-                        sort_param_rigids.push((vid, rigid));
+                    // `rigidify` binds each sort param to its fresh `Rigid` term — always
+                    // a `Value::Term`; a non-`Term` binding would not be a rigid here.
+                    if let Some(Value::Term(rigid)) = rigidify.resolve_as_value(vid) {
+                        sort_param_rigids.push((vid, *rigid));
                     }
                 }
             }

@@ -302,7 +302,7 @@ mod tests {
         let s = SmallSubst::new()
             .with_binding(vid, BindValue::Term(tid));
         let sub = s.resolve_leaf(&env.terms, TermId::from_raw(0));
-        assert_eq!(sub.resolve_as_value(vid).and_then(|v| v.as_term()), Some(tid));
+        assert_eq!(sub.resolve_as_value(vid).map(|v| v.expect_term()), Some(tid));
     }
 
     #[test]
@@ -320,7 +320,7 @@ mod tests {
         let s = SmallSubst::new()
             .with_binding(vid, BindValue::Path(VarPath::root().appended(ArgPos::Positional(0))));
         let sub = s.resolve_leaf(&env.terms, fact_term);
-        assert_eq!(sub.resolve_as_value(vid).and_then(|v| v.as_term()), Some(val));
+        assert_eq!(sub.resolve_as_value(vid).map(|v| v.expect_term()), Some(val));
     }
 
     #[test]
@@ -336,12 +336,12 @@ mod tests {
             .with_binding(vid2, BindValue::Term(tid));
 
         let sub1 = s1.resolve_leaf(&env.terms, TermId::from_raw(0));
-        assert_eq!(sub1.resolve_as_value(vid1).and_then(|v| v.as_term()), Some(tid));
-        assert_eq!(sub1.resolve_as_value(vid2).and_then(|v| v.as_term()), None);
+        assert_eq!(sub1.resolve_as_value(vid1).map(|v| v.expect_term()), Some(tid));
+        assert!(sub1.resolve_as_value(vid2).is_none());
 
         let sub2 = s2.resolve_leaf(&env.terms, TermId::from_raw(0));
-        assert_eq!(sub2.resolve_as_value(vid1).and_then(|v| v.as_term()), Some(tid));
-        assert_eq!(sub2.resolve_as_value(vid2).and_then(|v| v.as_term()), Some(tid));
+        assert_eq!(sub2.resolve_as_value(vid1).map(|v| v.expect_term()), Some(tid));
+        assert_eq!(sub2.resolve_as_value(vid2).map(|v| v.expect_term()), Some(tid));
     }
 
     #[test]
@@ -353,7 +353,7 @@ mod tests {
         let s = SharedSubst::new()
             .with_binding(vid, BindValue::Term(tid));
         let sub = s.resolve_leaf(&env.terms, TermId::from_raw(0));
-        assert_eq!(sub.resolve_as_value(vid).and_then(|v| v.as_term()), Some(tid));
+        assert_eq!(sub.resolve_as_value(vid).map(|v| v.expect_term()), Some(tid));
     }
 
     #[test]
@@ -369,11 +369,11 @@ mod tests {
             .with_binding(vid2, BindValue::Term(tid));
 
         let sub1 = s1.resolve_leaf(&env.terms, TermId::from_raw(0));
-        assert_eq!(sub1.resolve_as_value(vid2).and_then(|v| v.as_term()), None);
+        assert!(sub1.resolve_as_value(vid2).is_none());
 
         let sub2 = s2.resolve_leaf(&env.terms, TermId::from_raw(0));
-        assert_eq!(sub2.resolve_as_value(vid1).and_then(|v| v.as_term()), Some(tid));
-        assert_eq!(sub2.resolve_as_value(vid2).and_then(|v| v.as_term()), Some(tid));
+        assert_eq!(sub2.resolve_as_value(vid1).map(|v| v.expect_term()), Some(tid));
+        assert_eq!(sub2.resolve_as_value(vid2).map(|v| v.expect_term()), Some(tid));
     }
 
     // ── Path extraction tests ───────────────────────────────────

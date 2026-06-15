@@ -123,7 +123,7 @@ fn claimable_resolves_only_wi_auth_001() {
     let sol = &solutions[0];
     let query_vars = kb.collect_vars(query);
     let id_var = query_vars.iter().find(|v| kb.resolve_sym(v.name()) == "id").unwrap();
-    let id_val = sol.subst.resolve_as_value(*id_var).and_then(|v| v.as_term())
+    let id_val = sol.subst.resolve_as_value(*id_var).map(|v| v.expect_term())
         .and_then(|t| extract_string(&kb, t));
     assert_eq!(id_val.as_deref(), Some("WI-AUTH-001"));
 }
@@ -138,7 +138,7 @@ fn blocked_resolves_three() {
     let query_vars = kb.collect_vars(query);
     let id_var = query_vars.iter().find(|v| kb.resolve_sym(v.name()) == "id").unwrap();
     let mut ids: Vec<String> = solutions.iter()
-        .filter_map(|sol| sol.subst.resolve_as_value(*id_var).and_then(|v| v.as_term()).and_then(|t| extract_string(&kb, t)))
+        .filter_map(|sol| sol.subst.resolve_as_value(*id_var).map(|v| v.expect_term()).and_then(|t| extract_string(&kb, t)))
         .collect();
     ids.sort();
     assert_eq!(ids, vec!["WI-AUTH-002", "WI-AUTH-003", "WI-AUTH-004"]);

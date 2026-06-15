@@ -285,7 +285,7 @@ fn extract_sort_ref_from_parameterized_type() {
     let results = kb.resolve(&[goal], &default_config());
     assert_eq!(results.len(), 1, "extract_sort_ref should succeed");
 
-    let bound = kb.reify(var_result, &results[0].subst).as_term().unwrap();
+    let bound = kb.reify(var_result, &results[0].subst).expect_term();
     // extract_sort_ref emits the canonical nullary-Fn shape used by
     // load.rs for sort references (so the result can flow into rule
     // heads / fact field positions that expect Fn(name, [], [])).
@@ -312,7 +312,7 @@ fn extract_sort_ref_from_simple_ref() {
     let results = kb.resolve(&[goal], &default_config());
     assert_eq!(results.len(), 1, "extract_sort_ref from Ref should succeed");
 
-    let bound = kb.reify(var_result, &results[0].subst).as_term().unwrap();
+    let bound = kb.reify(var_result, &results[0].subst).expect_term();
     match kb.get_term(bound) {
         Term::Fn { functor, pos_args, named_args } if pos_args.is_empty() && named_args.is_empty() => {
             assert_eq!(kb.resolve_sym(*functor), "Eq");
@@ -747,7 +747,7 @@ sort Color {
     assert_eq!(results.len(), 1, "scope(red, ?parent) should find exactly 1 parent");
 
     // Verify the parent is Color (scope returns the sort term Fn, not a Ref)
-    let bound = kb.reify(var_p, &results[0].subst).as_term().unwrap();
+    let bound = kb.reify(var_p, &results[0].subst).expect_term();
     let color_term = kb.resolve_qualified_name_term("Color");
     assert_eq!(bound, color_term, "scope of red should be Color");
 }
@@ -855,7 +855,7 @@ sort Color {
     assert_eq!(results.len(), 1, "entity_of(red, ?sort) should find exactly 1 parent");
 
     // Verify the parent is Color
-    let bound = kb.reify(var_sort, &results[0].subst).as_term().unwrap();
+    let bound = kb.reify(var_sort, &results[0].subst).expect_term();
     let color_term = kb.resolve_qualified_name_term("Color");
     assert_eq!(bound, color_term, "entity_of(red, ?sort) should bind ?sort to Color");
 }
@@ -930,7 +930,7 @@ sort Shape {
     let goal1 = make_goal(&mut kb, "anthill.reflect.typing.entity_of", &[red_term, var_sort1]);
     let results1 = kb.resolve(&[goal1], &default_config());
     assert_eq!(results1.len(), 1);
-    let bound1 = kb.reify(var_sort1, &results1[0].subst).as_term().unwrap();
+    let bound1 = kb.reify(var_sort1, &results1[0].subst).expect_term();
     assert_eq!(bound1, color_term, "red's parent should be Color");
 
     // entity_of(circle, ?sort) → Shape
@@ -938,7 +938,7 @@ sort Shape {
     let goal2 = make_goal(&mut kb, "anthill.reflect.typing.entity_of", &[circle_term, var_sort2]);
     let results2 = kb.resolve(&[goal2], &default_config());
     assert_eq!(results2.len(), 1);
-    let bound2 = kb.reify(var_sort2, &results2[0].subst).as_term().unwrap();
+    let bound2 = kb.reify(var_sort2, &results2[0].subst).expect_term();
     assert_eq!(bound2, shape_term, "circle's parent should be Shape");
 
     // entity_of(red, Shape) should fail — wrong parent
@@ -1098,7 +1098,7 @@ fn field_access_entity_extracts_field() {
     let solutions = kb.resolve(&[goal], &ResolveConfig::default());
     assert!(!solutions.is_empty(), "field_access should produce a solution");
     let sol = &solutions[0];
-    let resolved = sol.subst.resolve_as_value(result_var).and_then(|v| v.as_term()).expect("result should be bound");
+    let resolved = sol.subst.resolve_as_value(result_var).map(|v| v.expect_term()).expect("result should be bound");
     // The resolved value should be 42 (the fs field)
     match kb.get_term(resolved) {
         Term::Const(anthill_core::kb::term::Literal::Int(n)) => {
@@ -1198,7 +1198,7 @@ fn field_access_sort_component() {
     let solutions = kb.resolve(&[goal], &ResolveConfig::default());
     assert!(!solutions.is_empty(), "field_access for sort component should succeed");
     let sol = &solutions[0];
-    let resolved = sol.subst.resolve_as_value(result_var).and_then(|v| v.as_term()).expect("result should be bound");
+    let resolved = sol.subst.resolve_as_value(result_var).map(|v| v.expect_term()).expect("result should be bound");
     // Should resolve to Carrier sort term (nullary Fn)
     match kb.get_term(resolved) {
         Term::Fn { functor, .. } => {
@@ -1317,7 +1317,7 @@ fn wi297_occurrence_term_literal_synth_resolves() {
         "probe should resolve once via synth/occurrence_term on a literal occurrence"
     );
 
-    let bound = kb.reify(var_t, &results[0].subst).as_term().unwrap();
+    let bound = kb.reify(var_t, &results[0].subst).expect_term();
     match kb.get_term(bound) {
         Term::Fn { functor, named_args, .. } => {
             assert_eq!(kb.resolve_sym(*functor), "SortRef", "synth should yield SortRef(...)");
@@ -1374,14 +1374,14 @@ fn wi297_occurrence_term_discriminates_literal_kind() {
     let g_int = make_goal(&mut kb, "wi297.b.probe_int", &[var_i]);
     let r_int = kb.resolve(&[g_int], &default_config());
     assert_eq!(r_int.len(), 1, "an int literal should select exactly the int_lit synth rule");
-    let t_int = kb.reify(var_i, &r_int[0].subst).as_term().unwrap();
+    let t_int = kb.reify(var_i, &r_int[0].subst).expect_term();
     assert_eq!(sort_ref_name(&kb, t_int), "Int64");
 
     let var_s = make_var(&mut kb, "Ts");
     let g_str = make_goal(&mut kb, "wi297.b.probe_str", &[var_s]);
     let r_str = kb.resolve(&[g_str], &default_config());
     assert_eq!(r_str.len(), 1, "a string literal should select exactly the string_lit synth rule");
-    let t_str = kb.reify(var_s, &r_str[0].subst).as_term().unwrap();
+    let t_str = kb.reify(var_s, &r_str[0].subst).expect_term();
     assert_eq!(sort_ref_name(&kb, t_str), "String");
 }
 
@@ -1400,7 +1400,7 @@ fn wi297_occurrence_span_builds_source_span() {
     let goal = make_goal(&mut kb, "wi297.sp.probe", &[var_s]);
     let results = kb.resolve(&[goal], &default_config());
     assert_eq!(results.len(), 1, "occurrence_span should produce a span term");
-    let bound = kb.reify(var_s, &results[0].subst).as_term().unwrap();
+    let bound = kb.reify(var_s, &results[0].subst).expect_term();
     match kb.get_term(bound) {
         Term::Fn { functor, named_args, .. } => {
             assert_eq!(kb.resolve_sym(*functor), "source_span");
@@ -1433,14 +1433,14 @@ fn wi297_sub_occurrences_empty_vs_nonempty() {
     let g_lit = make_goal(&mut kb, "wi297.su.probe_lit", &[var_k]);
     let r_lit = kb.resolve(&[g_lit], &default_config());
     assert_eq!(r_lit.len(), 1, "a literal occurrence has no sub-occurrences (nil)");
-    let t_lit = kb.reify(var_k, &r_lit[0].subst).as_term().unwrap();
+    let t_lit = kb.reify(var_k, &r_lit[0].subst).expect_term();
     assert_eq!(kb.get_term(t_lit), &Term::Const(Literal::Int(0)));
 
     let var_k2 = make_var(&mut kb, "k2");
     let g_cmp = make_goal(&mut kb, "wi297.su.probe_compound", &[var_k2]);
     let r_cmp = kb.resolve(&[g_cmp], &default_config());
     assert_eq!(r_cmp.len(), 1, "a constructor occurrence has sub-occurrences (cons)");
-    let t_cmp = kb.reify(var_k2, &r_cmp[0].subst).as_term().unwrap();
+    let t_cmp = kb.reify(var_k2, &r_cmp[0].subst).expect_term();
     assert_eq!(kb.get_term(t_cmp), &Term::Const(Literal::Int(1)));
 }
 
@@ -1482,7 +1482,7 @@ fn wi297_occurrence_span_structured_pattern_matches() {
     let goal = make_goal(&mut kb, "wi297.sps.probe", &[var_s]);
     let results = kb.resolve(&[goal], &default_config());
     assert_eq!(results.len(), 1, "structured source_span pattern should match (field order aligned)");
-    let bound = kb.reify(var_s, &results[0].subst).as_term().unwrap();
+    let bound = kb.reify(var_s, &results[0].subst).expect_term();
     assert!(
         matches!(kb.get_term(bound), Term::Const(Literal::Int(_))),
         "start_byte should bind to an Int64, got {:?}", kb.get_term(bound)
@@ -2562,7 +2562,7 @@ fn row_unify_open_closed_tail_absorbs() {
     let mut subst = Substitution::new();
     assert!(unify_types(&mut kb, &mut subst, &TermIdView(open_row), &TermIdView(closed_row)),
         "open row should unify with closed row of same labels + extras");
-    assert!(subst.resolve_as_value(rho_vid).and_then(|v| v.as_term()).is_some(),
+    assert!(matches!(subst.resolve_as_value(rho_vid), Some(anthill_core::eval::Value::Term(_))),
         "?rho should be bound after row unification");
 }
 
@@ -2638,9 +2638,9 @@ fn row_unify_open_open_disjoint_extras() {
     let mut subst = Substitution::new();
     assert!(unify_types(&mut kb, &mut subst, &TermIdView(arrow_a), &TermIdView(arrow_b)),
         "open/open with disjoint extras must unify (Rémy fresh-tail case)");
-    assert!(subst.resolve_as_value(rho_a_vid).and_then(|v| v.as_term()).is_some(),
+    assert!(matches!(subst.resolve_as_value(rho_a_vid), Some(anthill_core::eval::Value::Term(_))),
         "?rho_a should be bound");
-    assert!(subst.resolve_as_value(rho_b_vid).and_then(|v| v.as_term()).is_some(),
+    assert!(matches!(subst.resolve_as_value(rho_b_vid), Some(anthill_core::eval::Value::Term(_))),
         "?rho_b should be bound");
 }
 
@@ -2697,7 +2697,7 @@ fn row_lacks_unify_non_conflicting_label_ok() {
     let mut subst = Substitution::new();
     assert!(unify_types(&mut kb, &mut subst, &TermIdView(closed_other), &TermIdView(lacks_row)),
         "{{Other}} unifies with {{-Error | ρ}} — Other is not the lacked Error");
-    assert!(subst.resolve_as_value(rho_vid).and_then(|v| v.as_term()).is_some(),
+    assert!(matches!(subst.resolve_as_value(rho_vid), Some(anthill_core::eval::Value::Term(_))),
         "ρ should be bound (absorbs Other, closing the row)");
 }
 
@@ -3613,7 +3613,7 @@ fn unify_arrow_shared_rho_with_extras() {
     let mut subst = Substitution::new();
     assert!(unify_types(&mut kb, &mut subst, &TermIdView(arrow_a), &TermIdView(arrow_b)),
         "unify of arrows sharing rho with one side carrying extras must succeed");
-    assert!(subst.resolve_as_value(rho_vid).and_then(|v| v.as_term()).is_some(),
+    assert!(matches!(subst.resolve_as_value(rho_vid), Some(anthill_core::eval::Value::Term(_))),
         "?rho should be bound after unification");
 }
 
@@ -4119,7 +4119,7 @@ fn unify_var_binds_to_type() {
     let var_term = kb.alloc(Term::Var(anthill_core::kb::term::Var::Global(vid)));
     let mut subst = Substitution::new();
     assert!(unify_types(&mut kb, &mut subst, &TermIdView(var_term), &TermIdView(int_ty)), "Var unifies with Int64");
-    assert_eq!(subst.resolve_as_value(vid).and_then(|v| v.as_term()), Some(int_ty), "Var should be bound to Int64");
+    assert_eq!(subst.resolve_as_value(vid).map(|v| v.expect_term()), Some(int_ty), "Var should be bound to Int64");
 }
 
 #[test]
@@ -4134,7 +4134,7 @@ fn unify_both_vars_bind() {
     let mut subst = Substitution::new();
     assert!(unify_types(&mut kb, &mut subst, &TermIdView(var1), &TermIdView(var2)), "two vars unify");
     // One should be bound to the other
-    assert!(subst.resolve_as_value(vid1).and_then(|v| v.as_term()).is_some() || subst.resolve_as_value(vid2).and_then(|v| v.as_term()).is_some(),
+    assert!(matches!(subst.resolve_as_value(vid1), Some(anthill_core::eval::Value::Term(_))) || matches!(subst.resolve_as_value(vid2), Some(anthill_core::eval::Value::Term(_))),
         "at least one var should be bound");
 }
 
@@ -4164,7 +4164,7 @@ fn unify_parameterized_with_var_binding() {
 
     let mut subst = Substitution::new();
     assert!(unify_types(&mut kb, &mut subst, &TermIdView(list_var), &TermIdView(list_int)), "List[T=?X] unifies with List[T=Int64]");
-    assert_eq!(subst.resolve_as_value(x_vid).and_then(|v| v.as_term()), Some(int_ty), "?X should be bound to Int64");
+    assert_eq!(subst.resolve_as_value(x_vid).map(|v| v.expect_term()), Some(int_ty), "?X should be bound to Int64");
 }
 
 #[test]
@@ -4186,8 +4186,8 @@ fn unify_arrow_with_var_binding() {
 
     let mut subst = Substitution::new();
     assert!(unify_types(&mut kb, &mut subst, &TermIdView(arrow_var), &TermIdView(arrow_concrete)), "(?A -> ?B) unifies with (Int64 -> String)");
-    assert_eq!(subst.resolve_as_value(a_vid).and_then(|v| v.as_term()), Some(int_ty), "?A = Int64");
-    assert_eq!(subst.resolve_as_value(b_vid).and_then(|v| v.as_term()), Some(str_ty), "?B = String");
+    assert_eq!(subst.resolve_as_value(a_vid).map(|v| v.expect_term()), Some(int_ty), "?A = Int64");
+    assert_eq!(subst.resolve_as_value(b_vid).map(|v| v.expect_term()), Some(str_ty), "?B = String");
 }
 
 #[test]

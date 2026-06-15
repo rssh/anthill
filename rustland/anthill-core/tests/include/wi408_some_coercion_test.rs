@@ -229,7 +229,7 @@ end
         });
         let solutions = kb.resolve(&[goal], &config);
         assert!(!solutions.is_empty(), "{rule} should match the wrapped fact");
-        let d_tid = kb.reify(var_d, &solutions[0].subst).as_term().unwrap();
+        let d_tid = kb.reify(var_d, &solutions[0].subst).expect_term();
         match kb.get_term(d_tid).clone() {
             Term::Const(anthill_core::kb::term::Literal::String(s)) => {
                 assert_eq!(s, "x", "{rule}: first dep is \"x\"");
@@ -249,7 +249,7 @@ end
     });
     let solutions = kb.resolve(&[goal], &config);
     assert!(!solutions.is_empty(), "deps_of should match");
-    let o_tid = kb.reify(var_o, &solutions[0].subst).as_term().unwrap();
+    let o_tid = kb.reify(var_o, &solutions[0].subst).expect_term();
     match kb.get_term(o_tid).clone() {
         Term::Fn { functor, .. } => {
             let qn = kb.qualified_name_of(functor).to_string();
@@ -268,7 +268,7 @@ end
     });
     let solutions = kb.resolve(&[goal], &config);
     assert!(!solutions.is_empty(), "deps_of(b) should match");
-    let o_tid = kb.reify(var_o2, &solutions[0].subst).as_term().unwrap();
+    let o_tid = kb.reify(var_o2, &solutions[0].subst).expect_term();
     let functor = match kb.get_term(o_tid) {
         Term::Fn { functor, .. } => *functor,
         Term::Ref(f) | Term::Ident(f) => *f,

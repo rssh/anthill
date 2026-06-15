@@ -80,7 +80,7 @@ fn push_choice_yields_two_solutions_via_facts() {
     let b1 = ref_term(&mut kb, "test.pc.both.Branch.b1");
     let b2 = ref_term(&mut kb, "test.pc.both.Branch.b2");
     let mut bindings: Vec<u32> = solutions.iter()
-        .map(|sol| kb.reify(x_term, &sol.subst).as_term().unwrap().raw())
+        .map(|sol| kb.reify(x_term, &sol.subst).expect_term().raw())
         .collect();
     bindings.sort();
     let mut expected = vec![b1.raw(), b2.raw()];
@@ -119,7 +119,7 @@ fn push_choice_yields_one_solution_when_only_one_branch_matches() {
     let solutions = kb.resolve(&[goal], &cfg);
     assert_eq!(solutions.len(), 1, "only the second branch should succeed");
     let b1 = ref_term(&mut kb, "test.pc.one.Branch.b1");
-    assert_eq!(kb.reify(x_term, &solutions[0].subst).as_term().unwrap(), b1);
+    assert_eq!(kb.reify(x_term, &solutions[0].subst).expect_term(), b1);
 }
 
 #[test]
@@ -183,7 +183,7 @@ fn or_rule_succeeds_via_either_branch_with_facts() {
     let t1 = ref_term(&mut kb, "test.pc.or_rule.Tag.t1");
     let t2 = ref_term(&mut kb, "test.pc.or_rule.Tag.t2");
     let mut bindings: Vec<u32> = solutions.iter()
-        .map(|sol| kb.reify(x_term, &sol.subst).as_term().unwrap().raw())
+        .map(|sol| kb.reify(x_term, &sol.subst).expect_term().raw())
         .collect();
     bindings.sort();
     let mut expected = vec![t1.raw(), t2.raw()];
@@ -232,14 +232,14 @@ fn push_choice_shares_tail_with_both_branches() {
 
     let m1 = ref_term(&mut kb, "test.pc.tail.Marker.m1");
     for sol in &solutions {
-        let y_reified = kb.reify(y_term, &sol.subst).as_term().unwrap();
+        let y_reified = kb.reify(y_term, &sol.subst).expect_term();
         assert_eq!(y_reified, m1, "tail goal must run on each branch");
     }
 
     let t1 = ref_term(&mut kb, "test.pc.tail.Tag.t1");
     let t2 = ref_term(&mut kb, "test.pc.tail.Tag.t2");
     let mut x_bindings: Vec<u32> = solutions.iter()
-        .map(|sol| kb.reify(x_term, &sol.subst).as_term().unwrap().raw())
+        .map(|sol| kb.reify(x_term, &sol.subst).expect_term().raw())
         .collect();
     x_bindings.sort();
     let mut expected = vec![t1.raw(), t2.raw()];
@@ -286,7 +286,7 @@ fn or_rule_handles_nested_disjunction() {
     let tb = ref_term(&mut kb, "test.pc.nested.Tag.tb");
     let tc = ref_term(&mut kb, "test.pc.nested.Tag.tc");
     let mut bindings: Vec<u32> = solutions.iter()
-        .map(|sol| kb.reify(x_term, &sol.subst).as_term().unwrap().raw())
+        .map(|sol| kb.reify(x_term, &sol.subst).expect_term().raw())
         .collect();
     bindings.sort();
     let mut expected = vec![ta.raw(), tb.raw(), tc.raw()];
@@ -330,7 +330,7 @@ fn or_rule_isolates_substitutions_across_branches() {
     let ta = ref_term(&mut kb, "test.pc.isolate.Tag.ta");
     let tb = ref_term(&mut kb, "test.pc.isolate.Tag.tb");
     let bindings: std::collections::HashSet<u32> = solutions.iter()
-        .map(|sol| kb.reify(x_term, &sol.subst).as_term().unwrap().raw())
+        .map(|sol| kb.reify(x_term, &sol.subst).expect_term().raw())
         .collect();
     let expected: std::collections::HashSet<u32> = [ta.raw(), tb.raw()].into_iter().collect();
     assert_eq!(bindings, expected,

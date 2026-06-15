@@ -1096,7 +1096,10 @@ fn materialize_entity(interp: &mut Interpreter, tid: crate::kb::term::TermId) ->
             .find(|(s, _)| *s == *fname)
             .map(|(_, t)| *t)
             .or_else(|| pos_args.get(idx).copied());
-        let is_opt = ftype.as_term().is_some_and(|t| is_option_type(interp, t));
+        // WI-477: read the field type's head carrier-agnostically — `Value::Term` or
+        // `Value::Node` (an occurrence-primary type) alike — via the shared TermView
+        // predicate, instead of narrowing to a `TermId` first (which dropped a Node).
+        let is_opt = crate::kb::typing::is_option_type(&interp.kb, ftype);
         match field_tid {
             // The loader's partial-named-arg expansion (kb/load.rs:2752)
             // fills absent slots with a fresh Var so the discrim tree
@@ -1127,23 +1130,6 @@ fn materialize_entity(interp: &mut Interpreter, tid: crate::kb::term::TermId) ->
     }
 
     Some(Value::Entity { functor: canonical, pos: Vec::new().into(), named: named.into() })
-}
-
-/// True when `ftype` is `Option` or `Option[T = …]` (qualified or short).
-/// Used by `materialize_entity` to decide whether a missing field should
-/// default to `none()` rather than aborting the materialization.
-fn is_option_type(interp: &Interpreter, ftype: crate::kb::term::TermId) -> bool {
-    use crate::kb::term::Term as CoreTerm;
-    // WI-361: a field type is term-backed — bare `Ref(Option)` or `Fn{Option, …}`
-    // (the base sort IS the functor; no `sort_ref`/`parameterized` wrapper). Read
-    // the head sort symbol directly.
-    let sym = match interp.kb.get_term(ftype) {
-        CoreTerm::Fn { functor, .. } => *functor,
-        CoreTerm::Ref(s) => *s,
-        _ => return false,
-    };
-    let name = interp.kb.resolve_sym(sym);
-    name == "Option" || name == "anthill.prelude.Option"
 }
 
 fn term_to_value(interp: &mut Interpreter, tid: crate::kb::term::TermId) -> Value {

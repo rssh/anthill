@@ -576,7 +576,7 @@ fn wi350_abstract_stream_receiver_types_via_interface_with_two_impls() {
 
     let result = type_check_expr(&mut kb, &env, apply_term)
         .expect("head(s) on abstract Stream[T] must type-check (not Ambiguous) with ≥2 impls");
-    let ty = result.ty.as_term().expect("ground return type");
+    let ty = result.ty.expect_term();
     let ty_str = TermPrinter::new(&kb).print_term(ty);
     // WI-361: term-backed `Option[T = …]` = `Fn{Option, named}` — the base sort
     // IS the functor (no deep `parameterized(base: sort_ref(…))` wrapper).

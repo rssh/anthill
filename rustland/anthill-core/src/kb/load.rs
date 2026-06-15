@@ -5007,7 +5007,12 @@ impl<'a> Loader<'a> {
                         .and_then(|e| {
                             super::typing::extract_type_param(self.kb, &TermIdView(e), "T")
                         })
-                        .and_then(|v| v.as_term())
+                        // A denoted/occurrence (`Value::Node`) payload type is no
+                        // literal-typing hint — narrow to the ground `TermId` only.
+                        .and_then(|v| match v {
+                            Value::Term(t) => Some(t),
+                            _ => None,
+                        })
                 } else {
                     None
                 };
@@ -5020,7 +5025,10 @@ impl<'a> Loader<'a> {
                         // denoted-bearing field is no literal-typing hint → None).
                         let exp = some_payload_hint.or_else(|| {
                             self.kb.entity_field_types(new_functor)
-                                .and_then(|ft| ft.get(i).and_then(|(_, t)| t.as_term()))
+                                .and_then(|ft| ft.get(i).and_then(|(_, t)| match t {
+                                    Value::Term(t) => Some(*t),
+                                    _ => None,
+                                }))
                         });
                         let converted = self.convert_term_with_expected(id, exp);
                         self.wrap_bare_option_value(converted, exp)
@@ -5054,7 +5062,10 @@ impl<'a> Loader<'a> {
                         // (see `some_payload_hint` above the positional loop).
                         let exp = some_payload_hint.or_else(|| {
                             self.kb.entity_field_types(new_functor)
-                                .and_then(|ft| ft.iter().find(|(s, _)| *s == new_sym).and_then(|(_, t)| t.as_term()))
+                                .and_then(|ft| ft.iter().find(|(s, _)| *s == new_sym).and_then(|(_, t)| match t {
+                                    Value::Term(t) => Some(*t),
+                                    _ => None,
+                                }))
                         });
                         let converted = self.convert_term_with_expected(id, exp);
                         (new_sym, self.wrap_bare_option_value(converted, exp))
@@ -7393,11 +7404,11 @@ impl<'a> Loader<'a> {
         } else {
             let pos_args: SmallVec<[TermId; 4]> = pos
                 .iter()
-                .map(|v| v.as_term().expect("all-ground ⇒ Value::Term"))
+                .map(|v| v.expect_term())
                 .collect();
             let named_args: SmallVec<[(Symbol, TermId); 2]> = named
                 .iter()
-                .map(|(s, v)| (*s, v.as_term().expect("all-ground ⇒ Value::Term")))
+                .map(|(s, v)| (*s, v.expect_term()))
                 .collect();
             Value::Term(self.kb.alloc(Term::Fn {
                 functor: sort_view_sym,
@@ -8110,7 +8121,7 @@ impl<'a> Loader<'a> {
         if field_types.iter().all(|(_, v)| matches!(v, Value::Term(_))) {
             let named_args: SmallVec<[(Symbol, TermId); 2]> = field_types
                 .iter()
-                .map(|(s, v)| (*s, v.as_term().expect("all-ground ⇒ field type is Value::Term")))
+                .map(|(s, v)| (*s, v.expect_term()))
                 .collect();
             let entity_term = self.kb.alloc(Term::Fn { functor, pos_args: SmallVec::new(), named_args });
             self.kb.assert_fact(entity_term, entity_sort, domain, None);

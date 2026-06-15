@@ -79,7 +79,10 @@ impl Substitution {
     /// literals, or a denoted/occurrence answer (`Value::Node`). The single
     /// substitution reader (WI-348 retired the term-only `resolve_with_term`,
     /// which silently dropped non-`Term` bindings); a caller that genuinely
-    /// needs a `TermId` narrows explicitly with `.and_then(Value::as_term)`.
+    /// needs a `TermId` narrows explicitly at the site (`if let
+    /// Some(Value::Term(t)) = …`), so a non-`Term` binding is consciously
+    /// handled, not silently erased (WI-477 removed the blanket `Value::as_term`
+    /// downgrade for the same reason).
     pub fn resolve_as_value(&self, var: VarId) -> Option<&Value> {
         if let Some(v) = self.bindings.get(&var) {
             return Some(v);
@@ -268,7 +271,7 @@ mod tests {
         let v = vid(1);
         let t = TermId::from_raw(42);
         s.bind_term(v, t);
-        assert_eq!(s.resolve_as_value(v).and_then(|v| v.as_term()), Some(t));
+        assert_eq!(s.resolve_as_value(v).map(|v| v.expect_term()), Some(t));
         match s.resolve_as_value(v) {
             Some(Value::Term(tid)) => assert_eq!(*tid, t),
             other => panic!("expected Value::Term, got {other:?}"),
@@ -281,7 +284,7 @@ mod tests {
         let v = vid(1);
         s.bind_value(v, Value::Int(42));
         // resolve (TermId-only path) returns None for non-Term bindings.
-        assert_eq!(s.resolve_as_value(v).and_then(|v| v.as_term()), None);
+        assert!(!matches!(s.resolve_as_value(v), Some(Value::Term(_))));
         // lookup surfaces the full Value.
         match s.resolve_as_value(v) {
             Some(Value::Int(42)) => {}
@@ -335,7 +338,7 @@ mod tests {
         let mut parent = Substitution::new();
         parent.bind_term(vid(1), TermId::from_raw(10));
         let child = Substitution::with_parent(parent);
-        assert_eq!(child.resolve_as_value(vid(1)).and_then(|v| v.as_term()), Some(TermId::from_raw(10)));
+        assert_eq!(child.resolve_as_value(vid(1)).map(|v| v.expect_term()), Some(TermId::from_raw(10)));
         matches!(child.resolve_as_value(vid(1)), Some(Value::Term(_)));
     }
 
@@ -365,7 +368,7 @@ mod tests {
             named: vec![(key, Value::Bool(true))].into(),
         };
         s.bind_value(v, entity);
-        assert_eq!(s.resolve_as_value(v).and_then(|v| v.as_term()), None);
+        assert!(!matches!(s.resolve_as_value(v), Some(Value::Term(_))));
         match s.resolve_as_value(v) {
             Some(Value::Entity { functor: f, pos, named }) => {
                 assert_eq!(*f, functor);
@@ -387,7 +390,7 @@ mod tests {
             named: vec![].into(),
         };
         s.bind_value(v, tuple);
-        assert_eq!(s.resolve_as_value(v).and_then(|v| v.as_term()), None);
+        assert!(!matches!(s.resolve_as_value(v), Some(Value::Term(_))));
         match s.resolve_as_value(v) {
             Some(Value::Tuple { pos, named }) => {
                 assert_eq!(pos.len(), 3);
@@ -465,7 +468,7 @@ mod tests {
         s.bind_compressed(std::iter::once((v1, target)), &store);
 
         // v2's binding now points through to `target`.
-        assert_eq!(s.resolve_as_value(v2).and_then(|v| v.as_term()), Some(target));
+        assert_eq!(s.resolve_as_value(v2).map(|v| v.expect_term()), Some(target));
         // v3's non-Term binding is preserved as-is.
         assert!(matches!(s.resolve_as_value(vid(3)), Some(Value::Int(77))));
     }
