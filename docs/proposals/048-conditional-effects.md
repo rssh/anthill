@@ -99,9 +99,19 @@ call context:
   error);
 - **undecided → conservatively present** (contributes the concrete effect).
 
-The contribution to the caller's row is therefore always a **concrete** row — guarded elements
-live only in *declarations* and are resolved per call. **Row unification / composition is
-unchanged**; nothing guarded ever propagates upward.
+What the call contributes depends on what each guard's variables are bound to:
+
+- a **ground** argument (a literal, or a value the call context pins down) lets the typer run the
+  refutation, yielding a **concrete** contribution (`{}` if refuted, the bare effect otherwise);
+- an argument that is the **enclosing operation's own parameter** cannot be refuted there, so the
+  guard **propagates upward with the parameter substituted** — `div(a, b)` inside `f(a, b)` makes
+  `f` itself carry `Error[DivisionByZero] :- eq(b, 0)`, exactly as the value-dependent
+  `Modify[c] ↦ Modify[s]` rewrite already substitutes (the `substitute_ref_syms` path).
+
+So guarded elements are **not** confined to declarations: an operation's *inferred* row can carry
+them, and a row collapses to a fully concrete one only at a ground call site. Row unification is
+therefore **extended**, not bypassed, to relate guarded rows — see *Lattice of guarded rows
+(merge and subtyping)* below.
 
 The sources of a refutation of `eq(b, 0)` (i.e. a proof of `neq(b, 0)`) are precisely the existing
 discharge mechanisms (018 §"Discharge mechanisms"), which is why this needs no new *proof* surface:
@@ -114,10 +124,67 @@ discharge mechanisms (018 §"Discharge mechanisms"), which is why this needs no 
 
 ### An effect row is a Horn theory
 
-A row `{ E1, E2, E3 :- g }` is a small Horn theory; discharge is **SLD refutation** over it. That
-aligns guarded-effect discharge with the resolver-as-type-checker direction (WI-010 / WI-382): the
-per-element guard check is the *same* resolution engine, not a bespoke conditional bolted onto the
-effect checker.
+Each guarded element `Ei :- gi` is its own Horn clause ("`Ei` holds when `gi`"); a row
+`{ E1, E2, E3 :- g3 }` is their conjunction — `E1`, `E2` unconditional, `E3` guarded by `g3` (the
+`:- g3` binds the **single** preceding element, not the row). Discharge is **SLD refutation** of an
+individual `gi`. That aligns guarded-effect discharge with the resolver-as-type-checker direction
+(WI-010 / WI-382): the per-element guard check is the *same* resolution engine, not a bespoke
+conditional bolted onto the effect checker.
+
+### Lattice of guarded rows (merge and subtyping)
+
+Because guards propagate (above), a row is not always concrete, so the two declarative relations on
+rows — the order (**subtyping**) and the join (**merge**) — must be defined on *guarded* rows, not
+only concrete ones. Denote a guarded row as a **context-indexed family** of concrete rows: for a
+valuation `γ` of the operation's parameters,
+
+```
+R(γ)  =  { unguarded atoms }  ∪  { E | (E :- g) ∈ R, γ ⊨ g }
+```
+
+— a guarded atom `E :- g` contributes `E` exactly in the contexts where its guard holds.
+
+**Subtyping** is this family lifted pointwise (`R1 <: R2  ⟺  ∀γ. R1(γ) ⊆ R2(γ)`), which per shared
+label reduces to **guard entailment**:
+
+```
+(E :- g1) <: (E :- g2)   ⟺   g1 ⊨ g2
+```
+
+For a fixed label the guards form the Boolean lattice ordered by entailment: `:- false` is ⊥ (pure
+/ never fires), `:- true` is ⊤ (the unconditional WI-066 effect), and the row is the per-label
+product. Consequences: `{E :- g} <: {E}` always; `{} <:` everything; `{E :- g} <: {}` iff `g` is
+unsatisfiable. **A tighter guard is the more-pure subtype.** This — not structural set inclusion —
+is the relation the refinement checks must use: operation-override (WI-347) requires the refining
+atom's guard to entail the base's (`g_sub ⊨ g_base`); spec-vs-carrier dispatch (WI-350, open
+question B) requires `g_carrier ⊨ g_spec`; `requires`-satisfaction likewise.
+
+**Merge (join / least upper bound)** is row union, with same-label guards joined by **disjunction**
+(meet, rarely needed, is conjunction):
+
+```
+(E :- g1) ⊔ (E :- g2)  =  E :- (g1 ∨ g2)
+```
+
+This is what a body accumulating effects from two undischargeable calls computes. The existing
+value-level union (`merge_effects`, structural-dedup) already *keeps* both `E :- g1` and `E :- g2`
+as distinct atoms — which **is** the unreduced disjunction (present iff either guard holds) — so
+the implementation cost is normalization, not a new merge: a row may stay an unreduced multiset
+(implicit DNF), and entailment `g1 ⊨ g2` is decided only when subtyping demands it.
+
+**Composition degrades guards through computed arguments.** Substituting a guard's variable with a
+*variable* (a threaded-through parameter) keeps it refutable; substituting it with a *computed,
+opaque* expression does not. In `lambda x -> op2(op1(x))`, `op1`'s guards thread out over the
+lambda's parameter `x`, but `op2`'s guard over its parameter `y := op1(x)` becomes a predicate over
+an opaque effectful result — outside the refutable (and arguably the representable) fragment — and
+stays conservatively present. The honest law: **a guard survives composition only as far as its
+guarded parameter is threaded through as a variable**; the first link of a pipeline keeps its
+guards, later links degrade. This bounds how far discharge reaches.
+
+**Decidability.** Both discharge (refute `g`) and subtyping (decide `g1 ⊨ g2`) run on the same KB
+resolution engine under the `step_cap` runaway guard (cf. WI-179); an undecided entailment falls
+back to treating the guards as opaque/distinct — sound, because that keeps more effects and rejects
+more refinements.
 
 ### `div`, restated
 
@@ -162,9 +229,64 @@ One mechanism for every partiality — the altitude that two-ops and overloading
 
 ## Grammar delta
 
-An effect-row element gains an optional trailing `:- guard`, where `guard` is a boolean term over
-the operation's parameters. Builds on the `effect_row` node (WI-375). Unguarded elements are
-unchanged; the addition is conflict-local to the row production.
+An effect-row element gains an optional trailing `:- guard`. Builds on the `effect_row` node
+(WI-375); unguarded elements are unchanged. Two productions extend `_effect_type`:
+
+```
+guarded_effect:       seq(_simple_effect, ':-', _term)                 -- bare:  E :- p
+paren_guarded_effect: seq('(', _simple_effect, ':-', rule_body, ')')   -- paren: ( E :- p, q )
+```
+
+The plain-vs-guarded choice is a clean one-token decision (is the token after the label `:-`?).
+
+The guard binds to the **single preceding element** (per-element, not the row):
+`{ Modify[s], Error[…] :- eq(b, 0) }` guards only `Error[…]`.
+
+- A **bare** guard (`guarded_effect`) is a single goal `$._term` (`:- eq(b, 0)`), so the row `,`
+  stays the outer separator. It cannot be a bare conjunction `:- p, q` (the second comma reads as
+  the next element), nor `:- (p, q)` (`(p, q)` parses as a *tuple*, not a conjunction).
+- A **conjunctive** guard parenthesizes the whole element (`paren_guarded_effect`), so the `:-`
+  body is a real Horn `rule_body` delimited by `)`: `{ (E1 :- p, q), E2, E3 :- r }`. The parens are
+  an *element* delimiter, not a guard wrapper. (Equivalently, name the conjunction as a derived
+  predicate — `rule g(?x, ?y) :- p(?x), q(?y)` then `… :- g(x, y)` — which needs no grammar; the
+  paren form is the inline convenience.)
+
+`paren_guarded_effect` reopens `(` in effect position, which `_effect_set` otherwise rejects to
+fail fast on the `effects (Modify self)` typo (grammar.js: "the single-effect form rejects type
+variants that begin with `(`"). The **mandatory `:-`** preserves that protection: a bare `( E )`
+without a guard is still not admitted, so the typo fails at the missing `:-` rather than consuming
+the `(` as an arrow/tuple type.
+
+This per-element scoping is the *inverse* of `:-` in a `rule`, where the comma-conjunction body is
+the outer structure (the source of the "row- or element-scoped?" confusion); see open question A.
+
+## Representation (`anthill.prelude.sort`)
+
+The stored form is a new `EffectExpression` element beside `present` / `absent` / `open` / `merge`
+(`stdlib/anthill/prelude/sort.anthill`):
+
+```anthill
+entity guarded(label: Type, guard: List[anthill.reflect.Term])
+```
+
+`label` is the effect `Type` (as in `present`); `guard` is the guard's **Horn body** — a
+conjunction of goal terms over the operation's parameters, mirroring `rule_body`
+(`commaSep1($._term)`). A bare `E :- p` stores `[p]`; the paren element `( E :- p, q )` stores
+`[p, q]`; `present(label)` is the degenerate empty guard `guarded(label, [])` (`:- true`).
+
+The guard's carrier **follows `EffectExpression`'s, and is contingent — not fundamental.** Today
+`EffectExpression` is a *hash-consed term* (it rides in the arrow's `effects` field), and
+occurrences cannot be hash-consed term args (WI-251), so the guard is `List[Term]` and at discharge
+is materialized to occurrence goals via `term_body_to_nodes` (the same terms→nodes path a rule body
+takes at assert) and refuted by the resolver. But hash-consing is a storage optimization, **not** a
+property of type-hood (CLAUDE.md representation note), and term-backing arrows in particular cuts
+against that note; the node-world migration already moved rule bodies
+(`RuleEntry.body_nodes: Vec<Rc<NodeOccurrence>>`, WI-246) and op bodies to `NodeOccurrence`. Under a
+node-world `Type`/`EffectExpression` the guard would simply be `List[NodeOccurrence]`, **uniform
+with rule/op bodies**, and the term-vs-occurrence split disappears — see open question F. The
+disjunctive merge above needs **no** new constructor — two `guarded` atoms on one label *are* the
+unreduced `g1 ∨ g2`. `open` (row tail) and `absent` are unaffected; `decompose_effect_row` gains a
+`guarded` arm that, after discharge, yields a `present` or drops the atom.
 
 ## Typer delta (this is WI-067)
 
@@ -182,8 +304,9 @@ WI-066 (today `EvalError::DivisionByZero`; the handler-catchable bridge is a sep
 
 ## Phasing
 
-1. **Grammar** — admit `Effect :- guard` in effect rows; the loader stores the guard alongside the
-   element.
+1. **Grammar + representation** — admit `Effect :- guard` in effect rows; the loader stores the
+   guard as the `EffectExpression.guarded` element (the representation is already in
+   `anthill.prelude.sort`).
 2. **Typer discharge (WI-067)** — refute guards at call sites; literal (abstract-interp) and
    flow-fact (`if`/`match`) sources first, then KB resolution.
 3. **Migrate the partial primitives** — change `Int64.div` / `mod` / `rem` / `divExact` (and
@@ -212,3 +335,20 @@ WI-066 (today `EvalError::DivisionByZero`; the handler-catchable bridge is a sep
 - **E. Runtime catchability.** When divide-by-zero is eventually routed through `raise_error` so an
   Error handler can catch it (the WI-066 review's Finding-1 follow-up), the static guard discharge
   and the dynamic handler must agree on when the effect is "really" present. Separate, but track it.
+- **F. Carrier of `EffectExpression` (and the guard).** The guard is `List[Term]` only because
+  `EffectExpression` rides inside a hash-consed arrow term; per the representation note hash-consing
+  is not required for types (and is disclaimed for binders/arrows), so this is contingent. Two
+  consequences:
+  - A guard goal referencing a **local binder** (a lambda/`let` variable, not just an op parameter
+    — the `lambda x -> op2(op1(x))` case) is still term-representable today: it rides an
+    `anthill.reflect.Positioned(pos, internal)` leaf (`make_positioned`) — the same hash-consed
+    bridge `denoted` value-in-type uses, where `pos` reifies the binder's absolute binding-site so
+    alpha-distinct locals don't collide in the global store. This does **not** violate WI-251
+    (`Positioned`'s args are `Term`, not a raw `NodeOccurrence`); it is the term-world *encoding* of
+    occurrence content. So `List[Term]` is not limited to op-parameter guards.
+  - `Positioned` is the existence proof that the term↔occurrence divide is bridgeable. A node-world
+    `Type`/`EffectExpression` with an on-demand `Node → TermId` mapping (the inversion: occurrences
+    primary; hash-consed terms a *derived* index where dedup / the `unify_effect_rows` identity
+    fast-path actually pays) would let the guard be `List[NodeOccurrence]`, uniform with rule/op
+    bodies, dissolving the term-vs-occurrence split. Larger than 048 — tracked as **WI-470**; until
+    then 048 uses `List[Term]` (with `Positioned` for local-binder goals).

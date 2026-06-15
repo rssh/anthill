@@ -61,6 +61,8 @@ end
    checks it, is the implementation step tracked by WI-307; this sort is the
    agreed representation it targets. >}
 enum anthill.prelude.EffectExpression
+  import anthill.prelude.{List}
+  import anthill.reflect.{Term}
 
   -- `{}` — the closed empty row (pure: nothing present, no open tail).
   -- Named `empty_row` (not `empty`) to avoid colliding with the various
@@ -71,6 +73,20 @@ enum anthill.prelude.EffectExpression
   -- listing a label means presence). `label` is the effect Type — term-backed
   -- `Fn{Modify, named:[(<param>, TypeExtractor.Denoted(c))]}` (WI-361).
   entity present(label: Type)
+
+  -- `e :- g` — a CONDITIONAL (guarded) present effect (proposal 048): present
+  -- iff its guard `g` is not refuted at the call site. `label` is the effect
+  -- Type (as in `present`); `guard` is the guard's Horn body — a CONJUNCTION of
+  -- goal terms over the operation's parameters (`[eq(b, 0)]` for `Int64.div`;
+  -- `[p(a), q(b)]` for a `( E :- p(a), q(b) )` element), mirroring `rule_body`.
+  -- Discharge — refuting the conjunction from the call context — DROPS the
+  -- element (→ `{}`); an unrefuted guard keeps it (→ `present`), so the row stays
+  -- a sound over-approximation. `present(label)` is the degenerate empty-guard
+  -- (`:- true`) case. Per-element by construction (the guard binds ONE label), so
+  -- a row freely mixes guarded and unguarded elements; two `guarded` atoms on one
+  -- label are the unreduced `g1 ∨ g2` merge-join, and subtyping is guard
+  -- entailment (`g1 ⊨ g2`) — see proposal 048 §"Lattice of guarded rows".
+  entity guarded(label: Type, guard: List[Term])
 
   -- `- e` — a guaranteed-absent effect: a `lacks` constraint on the tail.
   -- The only load-bearing marker, since presence is the default.
