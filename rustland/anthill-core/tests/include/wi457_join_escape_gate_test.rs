@@ -158,15 +158,15 @@ fn nested_join_inner_provider_upcast_rejected() {
     );
 }
 
-/// WI-467 (deferred, sibling vector): a LET-binding ANNOTATION launders a provider
+/// WI-468 (deferred, sibling vector): a LET-binding ANNOTATION launders a provider
 /// upcast past the gate — `let s : KVStore = memStore ; s` widens `s` to the bare
 /// spec, so the returned tail leaf carries `KVStore` (== ret_sort) and slips
 /// `same_symbol`. This is NOT the WI-457 join vector (it leaks with no `if`/`match`
 /// at all — see the body here), so WI-457 deliberately does not catch it; the gate
 /// walks tail leaves, and the leaf `s` is genuinely typed `KVStore`. Un-ignore when
-/// WI-467 lands (see through a returned let-bound variable to its value).
+/// WI-468 lands (see through a returned let-bound variable to its value).
 #[test]
-#[ignore = "WI-467: let-binding annotation launders a provider upcast (separate escape vector)"]
+#[ignore = "WI-468: let-binding annotation launders a provider upcast (separate escape vector)"]
 fn let_value_annotation_laundering_escape() {
     let src = format!(
         "namespace test.wi457.launder\n{PRELUDE}\n  operation openStore(m: MemStore) -> KVStore =\n    let s: KVStore = m\n    s\nend\n"
@@ -174,6 +174,6 @@ fn let_value_annotation_laundering_escape() {
     let errs = load_errors(&[&src]);
     assert!(
         is_escape(&errs),
-        "a let-annotation-laundered provider upcast must be flagged (WI-467), got: {errs:?}",
+        "a let-annotation-laundered provider upcast must be flagged (WI-468), got: {errs:?}",
     );
 }
