@@ -239,10 +239,30 @@ pub(crate) struct SortOpsTable {
 
 // ── KnowledgeBase ───────────────────────────────────────────────
 
+/// A process-unique identity for a [`KnowledgeBase`], assigned at `new()` from a
+/// monotonic counter so distinct KBs — including the many created across tests —
+/// never collide. WI-471 stamps it onto cached `TermId`s in
+/// `NodeOccurrence::term_cache` so a future (WI-472) deferred term-release queue
+/// can tell which store a queued `TermId` belongs to.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct KbId(u64);
+
+impl KbId {
+    fn next() -> Self {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(1);
+        KbId(COUNTER.fetch_add(1, Ordering::Relaxed))
+    }
+}
+
 pub struct KnowledgeBase {
     // Term storage (hash-consed, refcounted)
     pub(crate) terms: TermStore,
     pub(crate) symbols: SymbolTable,
+    /// WI-471: process-unique id, stamped onto cached occurrence `TermId`s
+    /// (`NodeOccurrence::term_cache`) so a future deferred-release queue can
+    /// route a queued `TermId` back to this store.
+    pub(crate) id: KbId,
 
     // Rules (facts are rules with empty body)
     rules: Vec<RuleEntry>,
@@ -454,6 +474,7 @@ impl KnowledgeBase {
         Self {
             terms: TermStore::new(),
             symbols: SymbolTable::new(),
+            id: KbId::next(),
             rules: Vec::new(),
             by_sort: HashMap::new(),
             rules_by_functor: HashMap::new(),

@@ -1096,7 +1096,12 @@ fn rewrite_type_occ_deep(
         _ => None,
     };
     match rebuilt {
-        Some(kind) if changed => Rc::new(NodeOccurrence { kind, span: occ.span, owner: occ.owner }),
+        Some(kind) if changed => Rc::new(NodeOccurrence {
+            kind,
+            span: occ.span,
+            owner: occ.owner,
+            term_cache: std::cell::Cell::new(None),
+        }),
         _ => Rc::clone(occ),
     }
 }
