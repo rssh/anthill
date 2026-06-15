@@ -79,9 +79,10 @@ const WITNESS_SRC: &str = r#"namespace test.wi450.eval
         case box(c) -> combine(c, c)
   end
 
-  -- Direct value-directed call. QUALIFIED `Combiner.combine` to resolve to the spec
-  -- op (an UNqualified `combine(tag, tag)` is currently ambiguous with the witness
-  -- member `TagCombiner.combine` — a name-resolution concern tracked separately).
+  -- Direct value-directed call, QUALIFIED `Combiner.combine`. The UNqualified form
+  -- `combine(tag, tag)` (the spec op imported into scope, no collision with the
+  -- witness member `TagCombiner.combine`) was a name-resolution concern dissolved by
+  -- WI-476 and verified for the witness in WI-463 (wi463_unqualified_witness_dispatch_test).
   operation runDirect() -> Int64 =
     match Combiner.combine(tag(n: 1), tag(n: 2))
       case tag(v) -> v

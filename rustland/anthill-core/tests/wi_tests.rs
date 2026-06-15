@@ -318,5 +318,8 @@ mod wi461_self_receiver_provider_test;
 #[path = "include/wi462_tuple_literal_threading_test.rs"]
 mod wi462_tuple_literal_threading_test;
 
+#[path = "include/wi463_unqualified_witness_dispatch_test.rs"]
+mod wi463_unqualified_witness_dispatch_test;
+
 #[path = "include/wi476_scope_chain_test.rs"]
 mod wi476_scope_chain_test;
