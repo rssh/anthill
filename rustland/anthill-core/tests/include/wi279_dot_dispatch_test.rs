@@ -300,7 +300,7 @@ namespace wi279.field
     entity box(value: Int64)
     operation read(b: Box) -> Int64 = ?b.value
   end
-  operation t() -> Int64 = read(box(value: 42))
+  operation t() -> Int64 = box(value: 42).read()
 end
 "#;
     let (_kb, errs) = load_capturing_errors(src);
@@ -365,7 +365,7 @@ namespace wi279.e2e
     operation total(b: Box, n: Int64) -> Int64 = ?b.value + n
     operation run(b: Box) -> Int64 = ?b.total(10)
   end
-  operation t() -> Int64 = run(box(value: 5))
+  operation t() -> Int64 = box(value: 5).run()
 end
 "#;
     let (_kb, errs) = load_capturing_errors(src);

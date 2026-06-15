@@ -56,6 +56,7 @@ fn recursive_projection_consumer_delta_reduces() {
     let ok = r#"
 namespace test.wi459.collectd
   import anthill.prelude.{List, Option, Pair}
+  import anthill.prelude.Pair.{pair}
   operation sfd(xs: List) -> Option[Pair[A = xs.T, B = List[T = xs.T]]]
     = match xs
         case nil -> none
@@ -85,6 +86,7 @@ fn recursive_projection_consumer_effect_dual_delta_reduces() {
     let ok = r#"
 namespace test.wi459.counte
   import anthill.prelude.{Option, Pair, Int64, EffectsRuntime}
+  import anthill.prelude.Pair.{pair}
   import anthill.prelude.Numeric.{add}
   sort Src
     import anthill.prelude.EffectsRuntime
@@ -119,6 +121,7 @@ fn neutral_element_under_concrete_return_rejected() {
     let wrong = r#"
 namespace test.wi459.first_wrong
   import anthill.prelude.{List, Option, Pair, Int64}
+  import anthill.prelude.Pair.{pair}
   operation sfd(xs: List) -> Option[Pair[A = xs.T, B = List[T = xs.T]]]
     = match xs
         case nil -> none

@@ -1,5 +1,6 @@
 -- Eq: equality
 sort anthill.prelude.Eq
+  import anthill.reflect.{not}
 
   sort T = ?
   operation {

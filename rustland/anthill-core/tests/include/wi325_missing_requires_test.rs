@@ -139,6 +139,7 @@ fn user_defined_spec_without_providers_errors_on_abstract_call() {
     let src = r#"
 namespace test.wi325.user_spec_no_provider
   import anthill.prelude.Bool
+  import test.wi325.user_spec_no_provider.MySpec.{describe}
 
   sort MySpec
     sort T = ?
@@ -177,6 +178,7 @@ fn user_defined_self_receiver_spec_without_providers_errors_on_abstract_call() {
     let src = r#"
 namespace test.wi325.user_self_receiver_no_provider
   import anthill.prelude.Bool
+  import test.wi325.user_self_receiver_no_provider.Widget.{render}
 
   sort Widget
     sort T = ?

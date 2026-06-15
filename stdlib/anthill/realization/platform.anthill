@@ -21,6 +21,8 @@ namespace anthill.realization.platform
   import anthill.prelude.{Timestamp}
   import anthill.reflect.{Term, KB}
   import anthill.realization.{LanguageMapping}
+  -- `needs_rebuild` below uses the Filesystem operations as relations.
+  import anthill.realization.platform.Filesystem.{exists, status}
 
   -- ================================================================
   -- ExecutionPlatform

@@ -6,6 +6,7 @@
 
 namespace anthill.stage0.workflow
   import anthill.prelude.{List, Option}
+  import anthill.reflect.{not}
 
   -- ================================================================
   -- Dependency checking

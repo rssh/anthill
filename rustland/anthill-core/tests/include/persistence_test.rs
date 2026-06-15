@@ -403,11 +403,12 @@ fn full_round_trip() {
     let facts = kb2.by_sort(fact_sort2);
     assert_eq!(facts.len(), 2, "should have 2 facts after round-trip");
 
-    // Verify we can find the Eq fact by functor
-    // After round-trip, "Eq" may resolve to the qualified anthill.prelude.Eq symbol
-    let eq_sym2 = kb2.try_resolve_symbol("Eq")
-        .or_else(|| kb2.try_resolve_symbol("anthill.prelude.Eq"))
-        .unwrap_or_else(|| kb2.intern("Eq"));
+    // Verify we can find the Eq fact by functor. The fact was hand-built under
+    // the bare `Eq` symbol and persisted as the unqualified short name; with no
+    // import in the round-tripped file it stays a bare symbol on reload (WI-476:
+    // no global short-name fallback rewrites it to `anthill.prelude.Eq`), so the
+    // round-trip is faithful — look it up under the same bare name.
+    let eq_sym2 = kb2.intern("Eq");
     let eq_results = kb2.rules_by_functor(eq_sym2);
     assert_eq!(eq_results.len(), 1, "should find 1 Eq fact");
 

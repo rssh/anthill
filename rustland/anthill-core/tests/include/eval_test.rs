@@ -1232,6 +1232,7 @@ fn m3_float_nan_detection() {
     let src = r#"
 namespace test.m3_float_nan
   import anthill.prelude.Float.{div, isNaN, isInfinite, isFinite}
+  import anthill.prelude.Bool.{and}
 
   operation nan_of_zero_over_zero() -> Bool = isNaN(0.0 / 0.0)
   operation inf_of_one_over_zero() -> Bool = isInfinite(1.0 / 0.0)

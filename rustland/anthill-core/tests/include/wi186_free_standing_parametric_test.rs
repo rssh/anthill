@@ -93,6 +93,7 @@ fn make_pair_free_standing_parametric_returns_pair() {
     let src = r#"
 namespace test.wi186_make_pair
   import anthill.prelude.{Pair}
+  import anthill.prelude.Pair.{pair}
   operation make_pair(a: ?a, b: ?b) -> Pair[A = ?a, B = ?b]
     = pair(a, b)
   operation main() -> Pair[A = String, B = Int64]

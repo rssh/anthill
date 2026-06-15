@@ -82,11 +82,11 @@ fn key_changes_on_referenced_fact_change() {
     // proof_a must reference Cfg for the fact to land in the dep set.
     let with_ref = with_fact.replace(
         "rule proof_a(?r) :- b(?r), c(?r), d(?r)",
-        "rule proof_a(?r) :- b(?r), c(?r), d(?r), Cfg(scale: ?_s)",
+        "rule proof_a(?r) :- b(?r), c(?r), d(?r), test.cache_facts.Cfg(scale: ?_s)",
     );
     let mod_with_ref = modified.replace(
         "rule proof_a(?r) :- b(?r), c(?r), d(?r)",
-        "rule proof_a(?r) :- b(?r), c(?r), d(?r), Cfg(scale: ?_s)",
+        "rule proof_a(?r) :- b(?r), c(?r), d(?r), test.cache_facts.Cfg(scale: ?_s)",
     );
 
     let kb1 = common::load_kb_with(&with_ref);

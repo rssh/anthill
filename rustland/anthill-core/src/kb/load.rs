@@ -557,7 +557,72 @@ pub fn scan_definitions(kb: &mut KnowledgeBase, files: &[&ParsedFile]) -> Vec<Lo
             None => errors.push(LoadError::UnresolvedImport { path: p.qualified, span: p.span }),
         }
     }
+
+    // WI-476: global-import the kernel DESUGARING VOCAB — the reflect `Expr` /
+    // `Pattern` constructors and the field-access helper that the converter and
+    // loader SYNTHESIZE into every body (for `match` / `if` / `let` / `lambda`,
+    // member access, literals, patterns). A user never writes these names, so
+    // they cannot be expected to import them; like `cons` / `some` they are
+    // visible from any scope that chains to `_global`. Done here (after all
+    // files are scanned) so the stdlib-defined member (`anthill.reflect.
+    // field_access`) already exists in `by_qualified_name`.
+    register_kernel_vocab_imports(kb);
+
     errors
+}
+
+/// WI-476: list of fully-qualified KERNEL DESUGARING NAMES that the converter /
+/// loader emit into bodies but a user never writes. Each is global-imported
+/// (short name → symbol at `_global`) so it resolves through the ordinary scope
+/// chain, dissolving the reliance on the global short-name fallback.
+const KERNEL_VOCAB_QUALIFIED: &[&str] = &[
+    // reflect.Expr constructors (synthetic `match` / `if` / `let` / `lambda`
+    // and higher-order / dotted application + literals)
+    "anthill.reflect.Expr.match_expr",
+    "anthill.reflect.Expr.if_expr",
+    "anthill.reflect.Expr.let_expr",
+    "anthill.reflect.Expr.lambda_expr",
+    "anthill.reflect.Expr.ho_apply",
+    "anthill.reflect.Expr.dot_apply",
+    "anthill.reflect.Expr.var_ref",
+    "anthill.reflect.Expr.int_lit",
+    "anthill.reflect.Expr.bigint_lit",
+    "anthill.reflect.Expr.float_lit",
+    "anthill.reflect.Expr.string_lit",
+    "anthill.reflect.Expr.bool_lit",
+    // reflect.Pattern constructors (synthetic match/let/lambda patterns)
+    "anthill.reflect.Pattern.var_pattern",
+    "anthill.reflect.Pattern.tuple_pattern",
+    "anthill.reflect.Pattern.named_tuple_pattern",
+    "anthill.reflect.Pattern.constructor_pattern",
+    "anthill.reflect.Pattern.literal_pattern",
+    "anthill.reflect.Pattern.wildcard",
+    // Reflection PRIMITIVES — reflect-specific introspection helpers the
+    // converter emits or reflection code uses, with no plausible user-name clash.
+    // `field_access` (`x.field`) is emitted for every member access.
+    // NOTE: names that ARE plausible user definitions (`kind`, `fields`, `rules`,
+    // `kb`, `constructor`) are intentionally NOT global-imported — a global import
+    // would shadow a user `rule kind(…)` / `entity constructor`. `not` is also
+    // excluded: `anthill.prelude.Bool.not` shares the short name, so a global
+    // `reflect.not` would make every `Bool`-importing scope's `not` ambiguous;
+    // code that wants negation-as-failure imports `anthill.reflect.{not}`.
+    "anthill.reflect.field_access",
+    "anthill.reflect.as_term",
+    "anthill.reflect.SourceSpan.source_span",
+    "anthill.reflect.occurrence_owner",
+    "anthill.reflect.occurrence_span",
+    "anthill.reflect.occurrence_term",
+    "anthill.reflect.sub_occurrences",
+];
+
+fn register_kernel_vocab_imports(kb: &mut KnowledgeBase) {
+    let global_raw = kb.make_name_term("_global").raw();
+    for qn in KERNEL_VOCAB_QUALIFIED {
+        if let Some(&sym) = kb.symbols.by_qualified_name.get(*qn) {
+            let short = qn.rsplit('.').next().unwrap_or(qn);
+            kb.symbols.add_import(global_raw, short, sym);
+        }
+    }
 }
 
 /// Check if a scope term represents a sort (vs. the global scope or a namespace).
@@ -4112,76 +4177,20 @@ fn resolve_name_in_kb(kb: &mut KnowledgeBase, name: &str, scope_raw: u32) -> Sym
         .unwrap_or_else(|| kb.intern(name))
 }
 
-/// Try to resolve a name in the KB: qualified name first, then scope-aware resolution,
-/// then fallback search by short name across all defined symbols.
-/// TODO: The short-name fallback masks missing imports. Track as a bug to fix scope chain.
+/// Try to resolve a name in the KB: qualified name first, then scope-aware
+/// resolution. WI-476: there is NO global short-name fallback — a name resolves
+/// only within its local environment (qualified path / enclosing scope / imports
+/// / `requires`). An unresolved name returns `None`, and the caller interns it as
+/// a bare symbol (a data name in a query pattern), surfacing a genuine
+/// missing-import as a non-matching query rather than silently rescuing it.
 fn resolve_name_in_kb_opt(kb: &KnowledgeBase, name: &str, scope_raw: u32) -> Option<Symbol> {
     if let Some(&sym) = kb.symbols.by_qualified_name.get(name) {
         return Some(sym);
     }
     match kb.symbols.resolve_in_scope(name, scope_raw) {
         ResolveResult::Found(sym) => Some(sym),
-        _ => resolve_by_short_name(kb, name),
+        _ => None,
     }
-}
-
-/// Search all qualified names for one whose short name matches.
-/// This is a workaround for incomplete scope resolution — names should
-/// be resolvable via the scope chain without this fallback.
-///
-/// `SymbolKind::Param` symbols are skipped: operation parameters and
-/// fields are encapsulated to their op body's scope and must NOT leak
-/// out via short-name fallback. Pre-WI-264 a body's bare `y` could
-/// accidentally resolve to (e.g.) `anthill.prelude.Float.atan2.y` —
-/// the stdlib operation's parameter — and the typer's silent-None bail
-/// masked the consequences. With the typer's Result propagation any
-/// such mis-qualification surfaces as `UnresolvedName`, so the fallback
-/// must not introduce it in the first place.
-fn resolve_by_short_name(kb: &KnowledgeBase, name: &str) -> Option<Symbol> {
-    use crate::intern::{SymbolDef, SymbolKind};
-
-    // Scan by_qualified_name for matching short name
-    let mut found: Option<Symbol> = None;
-    let mut found_is_builtin = false;
-    for (qname, &sym) in &kb.symbols.by_qualified_name {
-        let short = qname.rsplit('.').next().unwrap_or(qname);
-        if short != name {
-            continue;
-        }
-        // Encapsulated kinds: never reachable by short-name fallback.
-        // Op params and entity fields are local to their declaring
-        // scope; reaching them via global short-name lookup is a leak.
-        if let SymbolDef::Resolved { kind, .. } = kb.symbols.get(sym) {
-            // WI-352: operation-frame places (result / callback binders / let
-            // locals) are scope-local too — encapsulated like params/fields.
-            if matches!(
-                kind,
-                SymbolKind::Param
-                    | SymbolKind::Field
-                    | SymbolKind::OpResult
-                    | SymbolKind::CallbackParam
-                    | SymbolKind::CallbackResult
-                    | SymbolKind::LocalLet
-            ) {
-                continue;
-            }
-        }
-        let is_builtin = kb.builtins.contains_key(&sym);
-        if found.is_some() {
-            if is_builtin && !found_is_builtin {
-                found = Some(sym);
-                found_is_builtin = true;
-            } else if !is_builtin && found_is_builtin {
-                // Keep existing builtin
-            } else {
-                return None; // ambiguous
-            }
-        } else {
-            found = Some(sym);
-            found_is_builtin = is_builtin;
-        }
-    }
-    found
 }
 
 // WI-233: per-item-kind aggregator (count, total time). Gated by
@@ -4221,7 +4230,7 @@ enum LoadWorkOp {
     /// (name → symbol) entries shadow same-named rules / params /
     /// constructors / etc. during the body's visit, so the body's
     /// bare-name reference resolves to the let-bound symbol instead
-    /// of an unrelated qualified one found by `resolve_by_short_name`.
+    /// of an unrelated same-short-name definition elsewhere.
     PushLocalScope(HashMap<String, Symbol>),
     /// Close the topmost local-name scope. Paired with a preceding
     /// `PushLocalScope` so push/pop nest correctly under iterative
@@ -4373,9 +4382,9 @@ struct Loader<'a> {
     // Name resolution in `remap_symbol` consults this stack before
     // walking the `current_scope` chain so a body's reference to a
     // let-bound name doesn't accidentally resolve to an unrelated
-    // rule / op / param of the same short name via
-    // `resolve_by_short_name`. Pushed by the let/match/lambda visit
-    // arms; popped by `LoadWorkOp::PopLocalScope`.
+    // rule / op / param of the same short name elsewhere in scope.
+    // Pushed by the let/match/lambda visit arms; popped by
+    // `LoadWorkOp::PopLocalScope`.
     local_names_stack: Vec<HashMap<String, Symbol>>,
 }
 
@@ -4609,8 +4618,7 @@ impl<'a> Loader<'a> {
     /// Consults the let/lambda/match-branch local-name scope stack
     /// first. A pattern-bound name in scope shadows any same-short-name
     /// rule / op / param / etc., so a body's reference to a let-bound
-    /// `y` doesn't accidentally pull in `Float.atan2.y` via
-    /// `resolve_by_short_name`.
+    /// `y` resolves to the binder, not an unrelated definition elsewhere.
     fn remap_symbol(&mut self, sym: Symbol) -> Symbol {
         let name = self.parsed.symbols.name(sym).to_owned();
         self.remap_name_str(&name)
@@ -4658,13 +4666,15 @@ impl<'a> Loader<'a> {
                         }
                     }
                 }
-                // Fallback: global short-name search by qualified-name suffix.
-                let interned = self.kb.symbols.intern(name);
-                if let Some(sym) = resolve_by_short_name(self.kb, name) {
-                    sym
-                } else {
-                    interned
-                }
+                // WI-476: name not resolvable in the local environment. A
+                // functor / identifier that names nothing in scope is interned as
+                // a bare symbol (a data name, or a genuinely-unknown functor the
+                // typer then rejects as an unknown operation). This replaced the
+                // global short-name fallback (`resolve_by_short_name`), which
+                // silently rescued such names by scanning every qualified name in
+                // the KB and so masked missing imports — see the model note in
+                // `resolve_in_scope`'s callers.
+                self.kb.symbols.intern(name)
             }
         }
     }

@@ -332,7 +332,7 @@ namespace test.wi400.let_unstable
     operation pick(p: DataProvider) -> DataProvider
   end
   operation g(p: DataProvider, k: p.K) -> p.K =
-    let y = pick(p)
+    let y = p.pick()
     let m: y.K = k
     m
 end
@@ -360,7 +360,7 @@ namespace test.wi400.let_rebind
   end
   operation g(p: DataProvider, k: p.K) -> p.K =
     let y = p
-    let y = pick(p)
+    let y = p.pick()
     let m: y.K = k
     m
 end

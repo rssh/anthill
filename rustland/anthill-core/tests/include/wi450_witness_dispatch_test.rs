@@ -87,7 +87,7 @@ const WITNESS_SRC: &str = r#"namespace test.wi450.eval
       case tag(v) -> v
 
   operation runGeneric() -> Int64 =
-    match combineBox(box(content: tag(n: 5)))
+    match box(content: tag(n: 5)).combineBox()
       case tag(v) -> v
 
   -- Dot-call sugar `tag.combine(tag)` resolves `combine` to the spec op via the

@@ -6,7 +6,7 @@
 sort anthill.prelude.Stream
   import anthill.prelude.{Option, Pair, List, Bool, Int64}
   import anthill.prelude.Option.{some, none}
-  import anthill.prelude.Pair.{pair}
+  import anthill.prelude.Pair.{pair, fst, snd}
   import anthill.prelude.List.{nil, cons}
   import anthill.prelude.Ordered.{gt}
   import anthill.prelude.Numeric.{sub, add}

@@ -5333,6 +5333,7 @@ fn wi186_free_standing_parameterized_return_type() {
     let source = r#"
 namespace test.wi186_pair
   import anthill.prelude.{Pair}
+  import anthill.prelude.Pair.{pair}
   operation make_pair(a: ?a, b: ?b) -> Pair[A = ?a, B = ?b]
     = pair(a, b)
 end
@@ -5353,6 +5354,7 @@ fn wi186_free_standing_call_site_concrete() {
     let source = r#"
 namespace test.wi186_call
   import anthill.prelude.{Pair}
+  import anthill.prelude.Pair.{pair}
   operation make_pair(a: ?a, b: ?b) -> Pair[A = ?a, B = ?b]
     = pair(a, b)
   operation main() -> Pair[A = String, B = Int64]
@@ -5373,6 +5375,7 @@ fn wi186_free_standing_call_site_int_pair() {
     let source = r#"
 namespace test.wi186_call_int
   import anthill.prelude.{Pair}
+  import anthill.prelude.Pair.{pair}
   operation make_pair(a: ?a, b: ?b) -> Pair[A = ?a, B = ?b]
     = pair(a, b)
   operation main() -> Pair[A = Int64, B = Int64]

@@ -21,6 +21,7 @@ fn cps_src(body: &str) -> String {
     format!(
         r#"namespace test.wi453
   import anthill.prelude.{{Option, Int64}}
+  import test.wi453.CpsMonad.{{unit, flatMap}}
 
   sort CpsMonad[F[T]]
     operation unit[A](a: A) -> F[T = A]
@@ -122,6 +123,7 @@ fn effectful_instance_impl_effect_is_surfaced() {
     // Bespoke spec (not cps_src) so the bound impl is effectful.
     let src = r#"namespace test.wi453.eff
   import anthill.prelude.{Option, Int64}
+  import test.wi453.eff.CpsMonad.{unit}
   sort CpsMonad[F[T]]
     operation unit[A](a: A) -> F[T = A]
   end

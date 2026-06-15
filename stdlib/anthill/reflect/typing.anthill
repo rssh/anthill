@@ -1,5 +1,7 @@
 namespace anthill.reflect.typing
   import anthill.prelude.{List, Bool}
+  -- Sorts named in the variance facts below (`Covariant`/`Contravariant`).
+  import anthill.prelude.{Option, Stream, Pair, Function, Iterable, IndexedSeq}
 
   import anthill.reflect.{Term, Symbol, KB, SortInfo, OperationInfo, EntityInfo, SortRequiresInfo, SortProvidesInfo, scope}
 

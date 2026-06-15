@@ -128,6 +128,7 @@ end
 fn instance_fact_op_dispatches_at_eval() {
     let src = r#"namespace test.wi431.eval
   import anthill.prelude.Int64
+  import test.wi431.eval.Combiner.{combine}
 
   sort Combiner
     sort T = ?
@@ -198,7 +199,7 @@ fn instance_fact_op_dispatches_via_threaded_dict() {
   end
 
   operation runThreaded() -> Int64 =
-    match zeroLike(box(content: tag(n: 1)))
+    match box(content: tag(n: 1)).zeroLike()
       case tag(v) -> v
 end
 "#;
@@ -262,7 +263,7 @@ fn instance_fact_op_dispatches_when_spec_has_requires() {
   end
 
   operation run() -> Int64 =
-    match zeroLike(box(content: tag(n: 1)))
+    match box(content: tag(n: 1)).zeroLike()
       case tag(v) -> v
 end
 "#;
@@ -724,6 +725,7 @@ end
 fn instance_fact_carrier_param_after_op_resolves_and_dispatches() {
     let src = r#"namespace test.wi431.carrier_order
   import anthill.prelude.Int64
+  import test.wi431.carrier_order.Combiner.{combine}
 
   sort Combiner
     sort T = ?
