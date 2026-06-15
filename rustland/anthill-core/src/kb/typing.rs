@@ -9513,6 +9513,22 @@ fn validate_arg_against_param(
     let actual_g = walk_view(kb, subst, actual);
     let declared_g = walk_view(kb, subst, declared);
     if !resolved_type_is_ground(kb, &actual_g) || !resolved_type_is_ground(kb, &declared_g) {
+        // WI-469: a denoted-bearing arrow callback param whose EFFECTS row is
+        // non-ground (it carries the op's `EffP` type-param and a binder-relative
+        // `-Modify[x]`) makes the WHOLE arrow non-ground, so the gate above would
+        // skip it — silently accepting a callback whose CONCRETE param/result
+        // element type is wrong (a `(String) -> Bool` where `(Int64) -> Bool` is
+        // declared). When the arrow's param/result ARE concrete, validate them
+        // here (contravariant param, covariant result); the effects-row alignment
+        // stays deferred to dispatch / `validate_callback_effect_row`. A genuinely
+        // polymorphic param/result (a free type-var) stays non-ground and is left
+        // for dispatch — distinguishing polymorphic-non-ground from denoted-but-
+        // concrete, the WI-385 groundness discipline.
+        if let Some(err) =
+            validate_arrow_param_result(kb, subst, &actual_g, &declared_g, span, &context)
+        {
+            return ArgValidation::Fail(err);
+        }
         return ArgValidation::Ok;
     }
     // value→Term reflection: total conversion, accept any actual vs declared Term.
@@ -9577,6 +9593,61 @@ fn validate_arg_against_param(
         expected: declared_g,
         actual: actual_g,
     })
+}
+
+/// WI-469: validate a callback argument's CONCRETE arrow param/result element
+/// types against the declared arrow param, for the case the
+/// [`validate_arg_against_param`] groundness gate skips: a denoted-bearing arrow
+/// whose EFFECTS row is non-ground (an `EffP` type-param + a binder-relative
+/// `-Modify[x]`) but whose PARAM and RESULT types are concrete. Returns
+/// `Some(error)` when a concrete component is decisively incompatible; `None`
+/// when neither side is an arrow, or a relevant component is non-ground (left for
+/// dispatch / unification — a genuinely polymorphic callback must NOT be rejected
+/// here).
+///
+/// Variance follows function subtyping (the same relation [`arrow_compatible_view`]
+/// uses, but component-wise so the non-ground effects row is left untouched):
+///   * param is CONTRAVARIANT — the callback must accept the value the declared
+///     arrow is called with (`declared.param <: actual.param`);
+///   * result is COVARIANT — the callback's result must satisfy the declared
+///     result (`actual.result <: declared.result`).
+/// Each component check fires only when BOTH sides of it are ground, so a
+/// polymorphic actual / declared component is conservatively skipped.
+fn validate_arrow_param_result(
+    kb: &mut KnowledgeBase,
+    subst: &mut Substitution,
+    actual: &Value,
+    declared: &Value,
+    span: Option<Span>,
+    context: &TypeErrorContext,
+) -> Option<TypeError> {
+    let (Some((Some(d_param), d_result, _)), Some((Some(a_param), a_result, _))) =
+        (arrow_parts(kb, declared), arrow_parts(kb, actual))
+    else {
+        // Not both arrows (or a param-less form) — nothing this helper can decide.
+        return None;
+    };
+    let mismatch = || TypeError::TypeMismatch {
+        span,
+        context: context.clone(),
+        expected: declared.clone(),
+        actual: actual.clone(),
+    };
+    // Contravariant param: `declared.param <: actual.param`.
+    if resolved_type_is_ground(kb, &d_param)
+        && resolved_type_is_ground(kb, &a_param)
+        && !types_compatible(kb, subst, &d_param, &a_param)
+    {
+        return Some(mismatch());
+    }
+    // Covariant result: `actual.result <: declared.result`.
+    if resolved_type_is_ground(kb, &d_result)
+        && resolved_type_is_ground(kb, &a_result)
+        && !types_compatible(kb, subst, &a_result, &d_result)
+    {
+        return Some(mismatch());
+    }
+    None
 }
 
 /// WI-408: the synthesized `some(value)` constructor occurrence around a

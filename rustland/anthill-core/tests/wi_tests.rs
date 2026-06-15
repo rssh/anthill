@@ -326,3 +326,6 @@ mod wi476_scope_chain_test;
 
 #[path = "include/wi466_swapped_nominal_subtype_test.rs"]
 mod wi466_swapped_nominal_subtype_test;
+
+#[path = "include/wi469_callback_arg_validation_test.rs"]
+mod wi469_callback_arg_validation_test;
