@@ -314,3 +314,6 @@ mod wi459_projection_delta_recursion_test;
 
 #[path = "include/wi461_self_receiver_provider_test.rs"]
 mod wi461_self_receiver_provider_test;
+
+#[path = "include/wi462_tuple_literal_threading_test.rs"]
+mod wi462_tuple_literal_threading_test;
