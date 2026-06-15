@@ -274,6 +274,9 @@ mod wi452_marked_param_backing_var_test;
 #[path = "include/wi453_hk_concrete_fill_test.rs"]
 mod wi453_hk_concrete_fill_test;
 
+#[path = "include/wi454_per_statement_binders_test.rs"]
+mod wi454_per_statement_binders_test;
+
 #[path = "include/wi424_iterable_members_test.rs"]
 mod wi424_iterable_members_test;
 

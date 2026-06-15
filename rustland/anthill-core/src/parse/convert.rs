@@ -320,6 +320,7 @@ impl<'a> Converter<'a> {
             "namespace_declaration" => self.convert_namespace(node).map(Item::Namespace),
             "abstract_sort" => self.convert_abstract_sort(node).map(Item::AbstractSort),
             "sort_with_body" => self.convert_sort_like(node, SortDeclKind::Sort).map(Item::SortWithBody),
+            "sort_var_binder" | "sort_bracket_binder" => self.convert_sort_binder(node),
             "enum_declaration" => self.convert_sort_like(node, SortDeclKind::Enum).map(Item::SortWithBody),
             "rule_declaration" => self.convert_rule(node).map(Item::Rule),
             "operation_declaration" => self.convert_operation(node).map(Item::Operation),
@@ -2103,34 +2104,105 @@ impl<'a> Converter<'a> {
             .unwrap_or_else(|| self.intern("?"));
         let name = Name::simple(name_sym, span);
 
-        // Higher-kinded: `F[T]` — a binder carrying its own member list.
-        if let Some(members) = self.child_by_kind(node, "sort_type_param_list") {
-            let items = self.desugar_sort_type_param_list(members);
-            return Item::SortWithBody(SortWithBody {
+        // Higher-kinded `F[T]` carries its own member list → marked carrier; a simple
+        // `A` → `sort A = ?`. No `= default` form (sort-param defaults are undefined by
+        // §5.4 and the grammar does not admit one here). Shares the IR construction
+        // with the WI-454 per-statement binder via `make_type_param_item`.
+        let members = self
+            .child_by_kind(node, "sort_type_param_list")
+            .map(|list| self.desugar_sort_type_param_list(list));
+        self.make_type_param_item(name, members, None, None, span)
+    }
+
+    /// WI-454 (§5.4 surface sugar): a per-statement non-rigid type-variable binder
+    /// — `sort ?X` (the `?x` logical-var marker as the binder name) or `sort [X]`
+    /// (standalone bracket binder). Desugars to EXACTLY the IR the WI-451
+    /// enclosing-list param produces (`desugar_sort_type_param`): a BARE binder →
+    /// `sort X = ?` (an `AbstractSort` with a fresh anonymous var); a STRUCTURED
+    /// binder `sort ?F { sort ?T }` / `sort [F] { sort [T] }` → a `SortWithBody`
+    /// marked `is_type_param` whose body holds the (recursively converted) members.
+    /// So `sort CpsMonad\n  sort [F] { sort [T] }\n  sort [A]\nend` is
+    /// parse-IR-equivalent to `sort CpsMonad[F[T], A]`.
+    fn convert_sort_binder(&mut self, node: Node) -> Option<Item> {
+        let span = self.span(node);
+        let visibility = self.convert_visibility(node);
+        // Name: a `?X` marker (strip the leading `?`) or a bracket `[X]` identifier.
+        let name = if let Some(m) = self.field(node, "marker") {
+            let text = self.text(m).to_string();
+            let stripped = text.strip_prefix('?').unwrap_or(&text);
+            // A bare `sort ?` (anonymous marker, no name) binds nothing referenceable
+            // — a loud error, not a silent `_` (the `?`-each-occurrence-distinct
+            // semantics elsewhere has no meaning for a NAMED type-param declaration).
+            if stripped.is_empty() {
+                self.err(
+                    "anonymous `sort ?` binder binds no referenceable type variable — \
+                     give it a name (`sort ?X`)"
+                        .to_string(),
+                    node,
+                );
+                return None;
+            }
+            Name::simple(self.intern(stripped), span)
+        } else if let Some(n) = self.field(node, "name") {
+            Name::simple(self.intern(self.text(n)), self.span(n))
+        } else {
+            self.err("sort binder is missing a name".to_string(), node);
+            return None;
+        };
+
+        // A structured binder carries its (binder-only, grammar-enforced) members in
+        // a brace body — `Some(members)` mints the `is_type_param`-marked carrier; a
+        // bare binder (`None`) is the simple `sort X = ?` form.
+        let members = self.child_by_kind(node, "sort_binder_body").map(|body| {
+            let mut items = Vec::new();
+            let mut cursor = body.walk();
+            for child in body.named_children(&mut cursor) {
+                items.extend(self.convert_items_at(child));
+            }
+            items
+        });
+        let meta = self.convert_meta_block(node);
+        Some(self.make_type_param_item(name, members, visibility, meta, span))
+    }
+
+    /// Construct a non-rigid type-parameter `Item` — the SHARED desugar target of
+    /// the WI-451 enclosing-list param (`desugar_sort_type_param`) and the WI-454
+    /// per-statement binder (`convert_sort_binder`), so the two surface spellings
+    /// cannot drift in the IR they produce. `Some(members)` → a higher-kinded
+    /// carrier `F[…]`: a `SortWithBody` MARKED `is_type_param` whose body holds the
+    /// (already-desugared) members. `None` → a simple param: `sort X = ?` (an
+    /// `AbstractSort` with a fresh `?`). The loader (WI-452) reads the marker to mint
+    /// the carrier's backing var.
+    fn make_type_param_item(
+        &mut self,
+        name: Name,
+        members: Option<Vec<Item>>,
+        visibility: Option<Visibility>,
+        meta: Option<MetaBlock>,
+        span: Span,
+    ) -> Item {
+        match members {
+            Some(items) => Item::SortWithBody(SortWithBody {
                 kind: SortDeclKind::Sort,
                 is_type_param: true,
-                visibility: None,
+                visibility,
                 name,
                 descriptions: Vec::new(),
                 imports: Vec::new(),
                 exports: Vec::new(),
                 items,
-                meta: None,
+                meta,
                 span,
-            });
+            }),
+            None => Item::AbstractSort(AbstractSort {
+                visibility,
+                name,
+                definition: self.fresh_anon_type_var(span),
+                descriptions: Vec::new(),
+                meta,
+                span,
+            }),
         }
-
-        // Simple: `A` → `sort A = ?` (a non-rigid type-param variable). No
-        // `= default` form — sort-param defaults are undefined by §5.4 and the
-        // grammar does not admit one here.
-        Item::AbstractSort(AbstractSort {
-            visibility: None,
-            name,
-            definition: self.fresh_anon_type_var(span),
-            descriptions: Vec::new(),
-            meta: None,
-            span,
-        })
     }
 
     /// A fresh anonymous type variable — the `?` an unspecified `sort X = ?`

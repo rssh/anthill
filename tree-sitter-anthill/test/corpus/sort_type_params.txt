@@ -34,3 +34,61 @@ end
         name: (identifier))
       (sort_type_param
         name: (identifier)))))
+
+=====================================
+WI-454 bare bracket binder
+=====================================
+
+sort [A]
+
+---
+
+(source_file
+  (sort_bracket_binder
+    name: (identifier)))
+
+=====================================
+WI-454 bare var-marker binder
+=====================================
+
+sort ?A
+
+---
+
+(source_file
+  (sort_var_binder
+    marker: (variable)))
+
+=====================================
+WI-454 structured bracket binder
+=====================================
+
+sort [F] {
+  sort [T]
+}
+
+---
+
+(source_file
+  (sort_bracket_binder
+    name: (identifier)
+    (sort_binder_body
+      (sort_bracket_binder
+        name: (identifier)))))
+
+=====================================
+WI-454 structured var-marker binder
+=====================================
+
+sort ?F {
+  sort ?T
+}
+
+---
+
+(source_file
+  (sort_var_binder
+    marker: (variable)
+    (sort_binder_body
+      (sort_var_binder
+        marker: (variable)))))

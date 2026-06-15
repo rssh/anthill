@@ -67,6 +67,8 @@ module.exports = grammar({
       $.namespace_declaration,
       $.abstract_sort,
       $.sort_with_body,
+      $.sort_var_binder,
+      $.sort_bracket_binder,
       $.enum_declaration,
       $.rule_declaration,
       $.operation_declaration,
@@ -179,6 +181,8 @@ module.exports = grammar({
       $.namespace_declaration,
       $.abstract_sort,
       $.sort_with_body,
+      $.sort_var_binder,
+      $.sort_bracket_binder,
       $.enum_declaration,
       $.rule_declaration,
       $.operation_declaration,
@@ -204,6 +208,8 @@ module.exports = grammar({
       $.namespace_declaration,
       $.abstract_sort,
       $.sort_with_body,
+      $.sort_var_binder,
+      $.sort_bracket_binder,
       $.effects_sort_item,
       $.enum_declaration,
       $.rule_declaration,
@@ -268,6 +274,51 @@ module.exports = grammar({
     sort_type_param: $ => seq(
       field('name', $.identifier),
       optional($.sort_type_param_list),
+    ),
+
+    // WI-454 (§5.4 surface sugar): PER-STATEMENT non-rigid type-variable binder
+    // synonyms of the WI-451 enclosing-list param. `sort ?X` reuses the `?x`
+    // logical-var marker as the binder name; `sort [X]` is the standalone bracket
+    // binder. Both fit NEITHER `abstract_sort` (needs `= type`) NOR
+    // `sort_with_body` (needs a body AND a plain `name`, not a `?`-marker / a
+    // leading `[`), so they get their own productions. The token after `sort`
+    // disambiguates: a plain `name` → abstract_sort / sort_with_body, a `variable`
+    // (`?X`) → here, a leading `[` → the bracket binder. A structured binder
+    // carries members in a BRACE body (`sort ?F { sort ?T }` / `sort [F] { sort
+    // [T] }`) — brace-only on purpose: an optional `end`-form body would create a
+    // dangling-`end` ambiguity (bare binder + parent `end` vs an empty own body).
+    // Convert desugars all four to the SAME IR the enclosing-list form produces.
+    sort_var_binder: $ => seq(
+      repeat(field('description', $.description_block)),
+      optional($.visibility),
+      'sort',
+      field('marker', $.variable),
+      optional($.sort_binder_body),
+      optional($.meta_block),
+    ),
+
+    sort_bracket_binder: $ => seq(
+      repeat(field('description', $.description_block)),
+      optional($.visibility),
+      'sort',
+      '[',
+      field('name', $.identifier),
+      ']',
+      optional($.sort_binder_body),
+      optional($.meta_block),
+    ),
+
+    // A structured binder's members are themselves type-variable binders ONLY
+    // (`sort ?T` / `sort [T]`, possibly nested HK) — exactly mirroring the enclosing
+    // HK member list `F[T, …]` (`sort_type_param_list = [ commaSep1(sort_type_param) ]`).
+    // `repeat1` (not `repeat`) so an empty `sort [F] {}` is a loud parse error rather
+    // than a degenerate zero-member HK carrier; admitting arbitrary `_sort_content`
+    // (ops / entities / facts) would let a type parameter silently carry real
+    // declarations the enclosing form cannot express.
+    sort_binder_body: $ => seq(
+      '{',
+      repeat1(choice($.sort_var_binder, $.sort_bracket_binder)),
+      '}',
     ),
 
     // WI-320 / proposal 045: effects-keyword sugar for an effect-row
