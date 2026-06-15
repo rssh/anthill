@@ -1109,7 +1109,8 @@ fn m3_int_mod() {
     let src = r#"
 namespace test.m3_mod
   import anthill.prelude.Int64.{mod}
-  operation main() -> Int64 = mod(17, 5)
+  import anthill.prelude.{Error, DivisionByZero}
+  operation main() -> Int64 effects Error[DivisionByZero] = mod(17, 5)
 end
 "#;
     let mut interp = interp_for(src);
@@ -1170,7 +1171,8 @@ fn m3_int_division() {
     let src = r#"
 namespace test.m3_div
   import anthill.prelude.Int64.{div}
-  operation main() -> Int64 = 7 / 2
+  import anthill.prelude.{Error, DivisionByZero}
+  operation main() -> Int64 effects Error[DivisionByZero] = 7 / 2
 end
 "#;
     let mut interp = interp_for(src);
@@ -1183,7 +1185,8 @@ fn m3_int_division_by_zero() {
     let src = r#"
 namespace test.m3_div0
   import anthill.prelude.Int64.{div}
-  operation main() -> Int64 = 10 / 0
+  import anthill.prelude.{Error, DivisionByZero}
+  operation main() -> Int64 effects Error[DivisionByZero] = 10 / 0
 end
 "#;
     let mut interp = interp_for(src);
