@@ -103,6 +103,7 @@ namespace anthill.stage0
 
   enum WorkStatus
     entity Draft
+    entity PreOpened     -- captured idea / future direction; not yet committed to the active queue (cannot be claimed until promoted to Open)
     entity Open
     entity Claimed(agent: String, since: String)
     entity Delivered(agent: String, at: String)
