@@ -21,14 +21,16 @@
 //! `projected_effect_propagates_and_rejects_pure_caller` test pins that the
 //! projected effect is genuinely enforced, not silently dropped.
 //!
-//! KNOWN LIMITATION (pre-existing, shared by the whole projection path, not in
-//! WI-262's scope — tracked as WI-489): the denoted place is a v1 representation
-//! that interns field names raw and resolves them at the elimination/eval site,
-//! so a NON-existent field in a type-position projection
-//! (`Modify[result.nonexistent]`) is NOT rejected at load. (The HEAD is still
+//! WI-489 (CLOSED the v1 limitation): the denoted place still interns field names
+//! raw and resolves them at the elimination/eval site, but when the projection
+//! HEAD's type is statically known — a param / `result` of entity or named-tuple
+//! type — the loader now validates each tail segment names a real field and emits
+//! a loud `InvalidFieldProjection` load error otherwise. (The HEAD was always
 //! validated — an unresolved head is a loud error, see
-//! `unresolved_projection_head_is_rejected`.) `bogus_field_projection_is_not_yet_rejected`
-//! pins the current behavior so WI-489 flips it deliberately.
+//! `unresolved_projection_head_is_rejected`.) `bogus_field_projection_is_rejected`
+//! pins the rejection; `abstract_head_field_projection_defers` pins that the
+//! legitimately-deferred case (an abstract receiver whose fields are unknowable
+//! until the carrier is concrete — `s.T` / `s.E`, WI-376/WI-475) still loads.
 
 use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::load::{self, NullResolver};
@@ -161,14 +163,12 @@ end
     assert!(errs.is_empty(), "a sort-headed parameterized type must still load; got: {errs:?}");
 }
 
-/// KNOWN LIMITATION (pre-existing, documented above; tracked as WI-489): the v1
-/// denoted place defers field resolution to the elimination site, so a
-/// non-existent field in a TYPE-position projection is not rejected at load.
-/// Verified identical with and without the removed WI-261 stopgap (the
-/// projection path intercepts before `remap_name` either way). Pinned so WI-489
-/// flips it to a loud rejection deliberately rather than silently.
+/// WI-489: a projection onto a NON-EXISTENT field of a concrete-typed head —
+/// `result.nonexistent` where the return is the named tuple `(a:.., b:..)` — is a
+/// loud `InvalidFieldProjection` load error (the head's type is statically known,
+/// so the field is checkable at load), not the old silent accept.
 #[test]
-fn bogus_field_projection_is_not_yet_rejected() {
+fn bogus_field_projection_is_rejected() {
     let src = r#"
 namespace wi262.bogus
   import anthill.prelude.{Cell, Int64}
@@ -178,11 +178,79 @@ end
 "#;
     let errs = load_errors(&[src]);
     assert!(
+        errs.iter().any(|e| e.contains("field projection") && e.contains("nonexistent")),
+        "a bogus field in a value-in-type projection off a concrete-typed head must \
+         be a loud load error; got: {errs:?}",
+    );
+}
+
+/// WI-489: the entity-param twin — `Modify[c.bogus]` for a param `c` of a known
+/// ENTITY type whose constructor has no `bogus` field is rejected at load.
+#[test]
+fn bogus_entity_param_field_projection_is_rejected() {
+    let src = r#"
+namespace wi262.bogusentity
+  import anthill.prelude.{Int64, Modify, EffectsRuntime}
+  sort Cellish
+    entity cellish(backend: Int64)
+  end
+  operation touch(c: Cellish) -> Int64
+    effects Modify[c.bogus]
+end
+"#;
+    let errs = load_errors(&[src]);
+    assert!(
+        errs.iter().any(|e| e.contains("field projection") && e.contains("bogus")),
+        "a bogus field off a concrete entity param must be rejected; got: {errs:?}",
+    );
+}
+
+/// WI-489: a bogus field at a DEEPER level of a multi-level path
+/// (`c.inner.bogus`) is rejected too — the walk threads the intermediate field's
+/// type (`Mid.inner : Leaf`) and validates `bogus` against `Leaf`.
+#[test]
+fn bogus_deep_field_projection_is_rejected() {
+    let src = r#"
+namespace wi262.bogusdeep
+  import anthill.prelude.{Int64, Modify, EffectsRuntime}
+  sort Leaf
+    entity leaf(slot: Int64)
+  end
+  sort Mid
+    import wi262.bogusdeep.Leaf
+    entity mid(inner: Leaf)
+  end
+  operation touch(c: Mid) -> Int64
+    effects Modify[c.inner.bogus]
+end
+"#;
+    let errs = load_errors(&[src]);
+    assert!(
+        errs.iter().any(|e| e.contains("field projection") && e.contains("bogus")),
+        "a bogus field at a deeper path level must be rejected; got: {errs:?}",
+    );
+}
+
+/// WI-489 (the must-NOT-regress half): when the projection head's type is ABSTRACT
+/// — here a param of an operation type-parameter type `c: T` — the field is only
+/// knowable once the carrier is concrete, so validation DEFERS and the projection
+/// still loads. This is the legitimately-deferred case the `s.T` / `s.E` abstract
+/// projections (WI-376/WI-475) rely on; a field check must not false-reject it.
+#[test]
+fn abstract_head_field_projection_defers() {
+    let src = r#"
+namespace wi262.abstracthead
+  import anthill.prelude.{Int64, Modify, EffectsRuntime}
+  operation touch[T](c: T) -> Int64
+    effects Modify[c.whatever]
+end
+"#;
+    let errs = load_errors(&[src]);
+    assert!(
         errs.is_empty(),
-        "DOCUMENTED v1 limitation: a type-position projection defers field \
-         resolution, so a bogus field is not yet rejected at load. If this now \
-         errors, the projection path gained field validation — update this test \
-         to assert the (better) loud rejection. Got: {errs:?}",
+        "a field projection off an ABSTRACT-typed head must DEFER (load clean), not \
+         false-reject — its fields are unknowable until the carrier is concrete; \
+         got: {errs:?}",
     );
 }
 

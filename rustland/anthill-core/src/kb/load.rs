@@ -264,6 +264,20 @@ pub enum LoadError {
         span: Span,
         scope_name: String,
     },
+    /// WI-489: a value-in-type field projection (`Modify[result.nonexistent]`,
+    /// `Modify[c.bogus]`) names a field the head's statically-known CONCRETE type
+    /// (an entity / named-tuple param or `result`) does not declare. The v1 denoted
+    /// place interns field names raw and defers resolution to the elimination/eval
+    /// site, so without this the bogus field would be silently accepted at load.
+    /// Load-blocking: the projected resource/type names nothing. `path` is the full
+    /// projection up to and including the bad field; `type_display` the type that
+    /// lacks it.
+    InvalidFieldProjection {
+        path: String,
+        field: String,
+        type_display: String,
+        span: Span,
+    },
 }
 
 impl LoadError {
@@ -345,6 +359,13 @@ impl LoadError {
                     line, col, name, scope_name,
                 )
             }
+            LoadError::InvalidFieldProjection { path, field, type_display, span } => {
+                let (line, col) = Span::line_col(source, span.start);
+                format!(
+                    "{}:{}: field projection '{}': {} has no field '{}'",
+                    line, col, path, type_display, field,
+                )
+            }
         }
     }
 
@@ -379,7 +400,10 @@ impl LoadError {
             | LoadError::UnresolvedEffectPlace { .. }
             // WI-429: an unresolvable Capitalized dotted name in type position
             // would otherwise load as a degenerate nominal sort.
-            | LoadError::UnresolvedTypeName { .. })
+            | LoadError::UnresolvedTypeName { .. }
+            // WI-489: a value-in-type field projection onto a non-existent field
+            // names nothing — block rather than defer to a silent accept.
+            | LoadError::InvalidFieldProjection { .. })
     }
 }
 
@@ -452,6 +476,13 @@ impl std::fmt::Display for LoadError {
                      type-parameter or sort projection (`P.Member` / `Sort.Member`), \
                      and not a resolvable qualified sort reference",
                     name, scope_name, span.start, span.end,
+                )
+            }
+            LoadError::InvalidFieldProjection { path, field, type_display, span } => {
+                write!(
+                    f,
+                    "field projection '{}' at {}..{}: {} has no field '{}'",
+                    path, span.start, span.end, type_display, field,
                 )
             }
         }
@@ -4390,6 +4421,15 @@ struct Loader<'a> {
     // `WorkItemStore.State` ≡ WIS inside that sort) instead of minting a fresh
     // existential. Empty outside a sort body; saved/restored around nested sorts.
     current_sort_carrier_bindings: HashMap<(Symbol, Symbol), TermId>,
+    // WI-489: the statically-known type of each VALUE PLACE in the operation
+    // signature CURRENTLY being loaded — param symbols → their declared type, the
+    // `result` binder → the return type. Populated in `load_operation` BEFORE the
+    // effects clause is converted (return + params come first), so a value-in-type
+    // field projection (`Modify[result.a]`, `Modify[c.backend]`) can validate its
+    // field path against the head's concrete type at load (`try_denoted_value_path`)
+    // and reject a non-existent field loudly. Empty outside an operation signature
+    // (a local / cross-context head is absent ⇒ validation defers, never rejects).
+    signature_place_types: HashMap<Symbol, Value>,
 }
 
 /// WI-201: per-operation accumulator for the carrier-direct bare-spec-member sugar.
@@ -4403,6 +4443,20 @@ struct BareSpecSugar {
     /// source for the drain — the requires clause `Spec[Member = ?P]` is reconstructed
     /// from each entry, so there is no second list to keep in sync.
     minted: Vec<((Symbol, Symbol), TermId)>,
+}
+
+/// WI-489: the outcome of resolving one field segment of a value-in-type projection
+/// against the running type ([`Loader::field_step_in_value`]).
+enum FieldStep {
+    /// The field exists; carries its declared type so a multi-level walk continues.
+    Found(Value),
+    /// A CONCRETE data type (entity / named-tuple) that does not declare the field —
+    /// a loud rejection. `type_display` names the type for the diagnostic.
+    NoField { type_display: String },
+    /// The running type is not a concretely-known data shape (abstract type-param,
+    /// spec/builtin with no registered fields, arrow, effect row, projection neutral):
+    /// the field is only knowable at the elimination site, so validation defers.
+    Defer,
 }
 
 /// Pre-resolved symbols used by `build_load`. Populated once at
@@ -4515,6 +4569,7 @@ impl<'a> Loader<'a> {
             local_names_stack: Vec::new(),
             bare_spec_sugar: None,
             current_sort_carrier_bindings: HashMap::new(),
+            signature_place_types: HashMap::new(),
         }
     }
 
@@ -6883,6 +6938,15 @@ impl<'a> Loader<'a> {
             }
             resolved
         };
+        // WI-489: validate the field path against the head's statically-known type
+        // (a param / `result` of the signature being loaded). The v1 denoted place
+        // interns field names raw and defers resolution to the elimination/eval site,
+        // so a projection onto a NON-EXISTENT field of a concrete-typed head
+        // (`Modify[result.nonexistent]`, `Modify[c.bogus]`) would otherwise be
+        // silently accepted at load. The head is already validated (an unresolved head
+        // returned `None` above ⇒ loud unresolved-name); this validates the tail.
+        // Honors the repo "loud error over silent skip" principle.
+        self.validate_denoted_field_path(head_sym, segs, &head_name, span);
         // Build the value field-access path over ALL segments (`Ref(head)` then a
         // `.field` `DotApply` per remaining segment), then wrap it in a `denoted`
         // occurrence — the value indexing the type. The field names are interned raw;
@@ -6906,6 +6970,132 @@ impl<'a> Loader<'a> {
         Some(node_occurrence::TypeChild::Node(
             self.kb.make_denoted_occ(value, span, owner),
         ))
+    }
+
+    /// WI-489: validate a value-in-type field projection's tail against the head's
+    /// statically-known type. `head_sym` is the resolved projection head (segs[0]);
+    /// `segs[1..]` are the field segments. When the head is a param / `result` of the
+    /// signature being loaded (in [`Self::signature_place_types`]), walk each segment
+    /// against the running type: a NON-EXISTENT field on a CONCRETE type (entity /
+    /// named-tuple) is a loud load error; an ABSTRACT / unknown running type (a bare
+    /// type-param, a spec with no fields, a builtin, a non-data shape) DEFERS — the
+    /// field is genuinely unknowable until the carrier is concrete (the legitimately-
+    /// deferred `s.T` / `s.E` projections, WI-376/WI-475, must not regress). A head not
+    /// in the map (a local, a cross-context place) also defers — never a false reject.
+    fn validate_denoted_field_path(
+        &mut self,
+        head_sym: Symbol,
+        segs: &[Symbol],
+        head_name: &str,
+        span: SourceSpan,
+    ) {
+        let Some(head_ty) = self.signature_place_types.get(&head_sym).cloned() else {
+            return;
+        };
+        let mut running = head_ty;
+        let mut path = head_name.to_owned();
+        for &field_seg in &segs[1..] {
+            let field_name = self.parsed.symbols.name(field_seg).to_owned();
+            match self.field_step_in_value(&running, &field_name) {
+                FieldStep::Found(next) => {
+                    running = next;
+                    path = format!("{path}.{field_name}");
+                }
+                FieldStep::NoField { type_display } => {
+                    self.errors.push(LoadError::InvalidFieldProjection {
+                        path: format!("{path}.{field_name}"),
+                        field: field_name,
+                        type_display,
+                        span: span.span,
+                    });
+                    return;
+                }
+                // Abstract / unknown running type: resolution is genuinely deferred to
+                // the elimination site — stop walking (a later segment is unknowable).
+                FieldStep::Defer => return,
+            }
+        }
+    }
+
+    /// WI-489: resolve one field segment against a type [`Value`], for
+    /// [`Self::validate_denoted_field_path`]. Returns the field's declared type
+    /// ([`FieldStep::Found`]) so a multi-level path (`c.inner.slot`) keeps walking; a
+    /// concrete type that lacks the field ([`FieldStep::NoField`]); or
+    /// [`FieldStep::Defer`] when the type is not a concretely-known data shape (a bare
+    /// type-param, a sort with no registered fields — a spec / builtin — an arrow, an
+    /// effect row, a denoted/projection neutral), where the field is only knowable once
+    /// the carrier is concrete.
+    fn field_step_in_value(&mut self, ty: &Value, field_name: &str) -> FieldStep {
+        match extract_type(self.kb, ty) {
+            TypeExtractor::NamedTuple(fields) => {
+                // Named field first (a field literally named `_1` wins over positional).
+                if let Some((_, v)) =
+                    fields.iter().find(|(s, _)| self.kb.resolve_sym(*s) == field_name)
+                {
+                    return FieldStep::Found(v.clone());
+                }
+                // Positional `_n` (1-based) into the tuple's fields — `result._1`. The
+                // field-ORDER semantics are the eliminator's; for existence an in-range
+                // index suffices, so this never falsely rejects a valid positional ref.
+                if let Some(idx) = field_name
+                    .strip_prefix('_')
+                    .and_then(|n| n.parse::<usize>().ok())
+                    .filter(|&n| n >= 1)
+                {
+                    if let Some((_, v)) = fields.get(idx - 1) {
+                        return FieldStep::Found(v.clone());
+                    }
+                }
+                FieldStep::NoField { type_display: "named tuple".to_owned() }
+            }
+            TypeExtractor::SortRef(sort) | TypeExtractor::Parameterized { base: sort, .. } => {
+                let field_sym = self.kb.intern(field_name);
+                let mut found: Option<Value> = None;
+                let mut divergent = false;
+                let mut has_fields = false;
+                // WI-490: `field_constructors_of_sort` adds a free-standing entity's own
+                // symbol (whose `entity_field_types` carries fields a parent-keyed
+                // `constructors_of_sort` would miss), so this covers both an entity
+                // variant of a sort and a free-standing `entity Pose(x, y)`.
+                //
+                // Collect from EVERY constructor (no break) so the result is INDEPENDENT
+                // of the `field_constructors_of_sort` (HashMap) iteration order, mirroring
+                // the eliminator's `resolve_field_type`. If variants declare the field at
+                // structurally DIFFERENT types, the continued-walk type is ambiguous —
+                // DEFER (the field still EXISTS, so never a false reject; a deeper segment
+                // is left to the eliminator, which reports the divergence) rather than
+                // pick an order-dependent type.
+                for ctor in self.kb.field_constructors_of_sort(sort) {
+                    if let Some(fields) = self.kb.entity_field_types(ctor) {
+                        has_fields = true;
+                        if let Some((_, v)) = fields.iter().find(|(f, _)| *f == field_sym) {
+                            match &found {
+                                None => found = Some(v.clone()),
+                                Some(prev) if prev.structural_eq(v) => {}
+                                Some(_) => divergent = true,
+                            }
+                        }
+                    }
+                }
+                match found {
+                    // Field exists with one agreed type ⇒ continue the walk.
+                    Some(v) if !divergent => FieldStep::Found(v),
+                    // Field exists but variants disagree on its type ⇒ exists, so not a
+                    // reject; defer the (ambiguous) continued walk to the eliminator.
+                    Some(_) => FieldStep::Defer,
+                    // A data sort that declares fields but not THIS one ⇒ loud reject.
+                    None if has_fields => {
+                        FieldStep::NoField { type_display: self.kb.qualified_name_of(sort).to_owned() }
+                    }
+                    // No registered fields at all — a spec / builtin / abstract sort:
+                    // its fields are not statically known here, so defer.
+                    None => FieldStep::Defer,
+                }
+            }
+            // A bare type-param, an arrow, an effect row, a denoted/projection neutral,
+            // or a malformed type: not a concretely-known data shape ⇒ defer.
+            _ => FieldStep::Defer,
+        }
     }
 
     /// WI-428: the LOGICAL sort qualified name behind a resolved symbol that may be
@@ -9021,6 +9211,12 @@ impl<'a> Loader<'a> {
         let prev_bare_spec_sugar =
             std::mem::replace(&mut self.bare_spec_sugar, Some(BareSpecSugar::default()));
 
+        // WI-489: a fresh place→type map for THIS signature (params + `result`),
+        // populated below as each is converted and consulted by
+        // `try_denoted_value_path` to validate value-in-type field projections.
+        // Save/restore so it never leaks across operations.
+        let prev_place_types = std::mem::take(&mut self.signature_place_types);
+
         let op_qualified = self.kb.qualified_name_of(functor).to_owned();
 
         // `result` as a parameter name collides with the reserved
@@ -9071,6 +9267,18 @@ impl<'a> Loader<'a> {
             None => self.type_expr_to_value(&o.return_type),
         };
 
+        // WI-489: record the `result` binder's static type so a `Modify[result.a]`
+        // projection in the effects clause (converted below) validates its field
+        // path. An existential-rewritten return is recorded too — its abstract spec
+        // shape simply causes the field walk to DEFER (not reject) when it cannot be
+        // resolved concretely. Keyed by the SAME `result` symbol that
+        // `try_denoted_value_path` resolves (`resolve_in_scope` from the op scope).
+        if let ResolveResult::Found(result_sym) =
+            self.kb.symbols.resolve_in_scope("result", op_scope.raw())
+        {
+            self.signature_place_types.insert(result_sym, return_value.clone());
+        }
+
         // Build FieldInfo list for params
         let field_info_sym = self.kb.resolve_symbol("anthill.reflect.FieldInfo");
         let fi_name_sym = self.kb.intern("name");
@@ -9099,6 +9307,13 @@ impl<'a> Loader<'a> {
                 self.set_arrow_binder_scope(field_sym);
                 let type_value = self.type_expr_to_value(&p.ty);
                 self.arrow_binder_scope.clear();
+                // WI-489: record this param's static type so a value-in-type field
+                // projection off it (`Modify[c.backend]`) validates its field path in
+                // the effects clause converted below. `field_sym` is the param's place
+                // symbol (`<op>.<param>`) — the same one `try_denoted_value_path`
+                // resolves for the head. Records incrementally, so a cross-parameter
+                // projection (`b: a.head`) sees an earlier param's type.
+                self.signature_place_types.insert(field_sym, type_value.clone());
                 match type_value {
                     crate::eval::value::Value::Node(_) => {
                         // Denoted-bearing param type → value FieldInfo entity.
@@ -9205,6 +9420,8 @@ impl<'a> Loader<'a> {
 
         self.current_scope = prev_scope;
         self.current_owner = prev_owner;
+        // WI-489: drop this signature's place→type map (restoring any enclosing one).
+        self.signature_place_types = prev_place_types;
 
         // Build OperationInfo term with named args matching the entity definition
         let op_info_sym = self.kb.resolve_symbol("anthill.reflect.OperationInfo");
