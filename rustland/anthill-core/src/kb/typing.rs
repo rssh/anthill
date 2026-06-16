@@ -11045,27 +11045,17 @@ pub(crate) fn effects_rows_to_flat_list(kb: &KnowledgeBase, ty: TermId) -> Vec<T
     // Dispatch via Symbol identity (code-review #5) rather than short-name
     // compare so a user-defined `effects_rows` entity in another namespace
     // isn't misrouted here.
-    let effects_rows_sym = kb.try_resolve_symbol("anthill.prelude.TypeExtractor.EffectsRows");
-    let expr = match (effects_rows_sym, kb.get_term(ty)) {
-        (Some(er), Term::Fn { functor, named_args, .. }) if *functor == er => {
-            match get_named_arg(kb, named_args, "effects_expr") {
-                Some(e) => e,
-                None => {
-                    debug_assert!(
-                        false,
-                        "effects_rows term missing effects_expr field"
-                    );
-                    return Vec::new();
-                }
-            }
-        }
-        _ => {
-            // Legacy: caller passed an unwrapped List or some other shape.
-            // OperationInfo.effects (still List) and Function[E] with a
-            // legacy List binding hit this; the typer's transient terms
-            // before make_arrow_type also can.
-            return list_to_vec(kb, ty);
-        }
+    // WI-493: unwrap the `effects_rows(…)` wrapper via the single shared tolerance
+    // (matched by qualified symbol, so a same-short-named functor elsewhere is not
+    // misrouted here). A ground wrapper's inner is always a `Value::Term`.
+    let expr = match effects_rows_inner(kb, &TermIdView(ty)) {
+        Some(Value::Term(e)) => e,
+        // Not a well-formed `effects_rows` wrapper — a legacy unwrapped `List`
+        // (OperationInfo.effects, Function[E] with a legacy List binding) or a
+        // transient pre-`make_arrow_type` term flows through the flat-list walk,
+        // as before. (A malformed wrapper, never produced by `make_effects_rows_*`,
+        // also lands here rather than tripping a debug-assert.)
+        _ => return list_to_vec(kb, ty),
     };
 
     // Structural walk over the EffectExpression algebra (any associativity).
@@ -14291,6 +14281,27 @@ fn resolve_alias_shape_chain(
 
 // ── WI-307 v1a row unification ──────────────────────────────────────────
 
+/// WI-493: THE single bare-vs-wrapped effect-row tolerance. An `effects_rows(<EE>)`
+/// wrapper unwraps to its bare inner `EffectExpression` `<EE>`; anything else is
+/// `None`. A row tail / row value can be bound to EITHER a bare EffectExpression
+/// (the canonical [`bind_row_tail`] shape, and a `provides … E = {}` fact's bare
+/// binding) OR a WRAPPED `effects_rows(…)` (a written `E = {…}` row, or a provided
+/// `E` row bound whole onto the tail var across unify / subtype / provider
+/// admissibility). The two row-binding sources disagree on shape, so every
+/// row-tail walker routes its unwrap through THIS one helper — so a new row
+/// consumer cannot drift into mis-decomposing a wrapped tail (WI-493 consolidates
+/// what WI-278 first patched inline in `decompose_effect_row`). Matched on the
+/// qualified `EffectsRows` functor symbol, never the short name.
+fn effects_rows_inner<V: TermView>(kb: &KnowledgeBase, v: &V) -> Option<Value> {
+    let er = kb.try_resolve_symbol("anthill.prelude.TypeExtractor.EffectsRows")?;
+    match v.head(kb) {
+        ViewHead::Functor { functor: Some(f), .. } if f == er => {
+            view_child_value(kb, v, "effects_expr")
+        }
+        _ => None,
+    }
+}
+
 /// Decompose an arrow.effects field (`effects_rows(EffectExpression)` Type)
 /// into (present_labels, open_tail, absent_labels) by structurally walking
 /// the EffectExpression algebra through the current substitution.
@@ -14333,26 +14344,17 @@ fn decompose_effect_row(
     // resolves the same names via `lookup_symbol`) so the rest of the walk is
     // read-only. Labels surface as owned `Value`s; the tail materializes to a
     // hash-consed `TermId` Var (row tails are always plain logic vars).
-    let effects_expr_key = kb.intern("effects_expr");
     let label_key = kb.intern("label");
     let tail_key = kb.intern("tail");
     let left_key = kb.intern("left");
     let right_key = kb.intern("right");
 
     let walked = walk_view(kb, subst, effects);
-    // Match the wrapper by its fully-qualified symbol (not the short name), as
-    // the pre-P4 `TermId` walk did — a same-short-named functor in another
-    // namespace must NOT be mistaken for the prelude `Type.effects_rows`.
-    let effects_rows_sym = kb.try_resolve_symbol("anthill.prelude.TypeExtractor.EffectsRows");
-    let is_effects_rows = matches!(
-        walked.head(kb),
-        ViewHead::Functor { functor: Some(f), .. } if Some(f) == effects_rows_sym
-    );
-    let expr: Value = if is_effects_rows {
-        match named_child_value(kb, &walked, effects_expr_key) {
-            Some(e) => e,
-            None => return Some((Vec::new(), Vec::new(), Vec::new())),
-        }
+    // WI-493: unwrap the `effects_rows(…)` wrapper via the single shared tolerance
+    // (matched by qualified symbol, so a same-short-named functor elsewhere is not
+    // mistaken for the prelude `Type.effects_rows`).
+    let expr: Value = if let Some(e) = effects_rows_inner(kb, &walked) {
+        e
     } else if value_is_bare_effect_expr(kb, &walked) {
         // WI-441: a BARE EffectExpression node (`open(?ρ)` — a row var's
         // BINDING shape from `bind_row_tail`; a `merge(…)` a bound row var
@@ -14388,29 +14390,18 @@ fn decompose_effect_row(
             continue;
         }
 
-        // WI-278: an open row-tail (or merge child) may have been bound to a
-        // WRAPPED row — `effects_rows(empty_row)` — rather than a bare
-        // EffectExpression. The two row-binding sources disagree on shape: the
-        // lazy combinators' `{E, EffP}` result row unions List's iterable `E`
-        // (bound bare, from a `provides Iterable[…, E = {}]` fact) with the
-        // callback's `EffP` (bound to a wrapped row by lambda-effect inference),
-        // so one tail of the merge is bare and the other wrapped. Unwrap the
-        // wrapper mid-walk — mirroring the top-level unwrap above — so a wrapped
-        // tail decomposes identically to a bare one instead of tripping the
-        // hard reject below as an "unknown functor".
-        if matches!(
-            node.head(kb),
-            ViewHead::Functor { functor: Some(f), .. } if Some(f) == effects_rows_sym
-        ) {
-            match named_child_value(kb, &node, effects_expr_key) {
-                Some(inner) => stack.push(inner),
-                // A recognized `effects_rows` wrapper missing its only field is
-                // malformed — hard-reject like the unknown-functor arm below
-                // (WI-339 F13), not a silent drop (CLAUDE.md: loud error over
-                // silent skip). `make_effects_rows_*` always sets the child, so
-                // this never fires on well-formed input.
-                None => return None,
-            }
+        // WI-278/WI-493: a row-tail (or merge child) may have been bound to a
+        // WRAPPED row — `effects_rows(…)` — rather than a bare EffectExpression
+        // (the two row-binding sources disagree on shape: a `provides … E = {}`
+        // fact binds bare, while a written / provided `E` row binds the wrapper
+        // whole onto the tail var across unify / subtype / provider admissibility).
+        // Unwrap it mid-walk via the SINGLE shared tolerance so a wrapped tail
+        // decomposes identically to a bare one. A MALFORMED wrapper (no
+        // `effects_expr` child, never produced by `make_effects_rows_*`) returns
+        // `None` here, falls through, and the `_` arm below hard-rejects it as an
+        // unknown functor (WI-339 F13) — loud, not a silent drop.
+        if let Some(inner) = effects_rows_inner(kb, &node) {
+            stack.push(inner);
             continue;
         }
 
@@ -14586,18 +14577,10 @@ fn row_inner_value(
     subst: &Substitution,
     row: &impl TermView,
 ) -> Option<Value> {
-    let effects_expr_key = kb.intern("effects_expr");
     let walked = walk_view(kb, subst, row);
-    let effects_rows_sym = kb.try_resolve_symbol("anthill.prelude.TypeExtractor.EffectsRows");
-    let is_wrapper = matches!(
-        walked.head(kb),
-        ViewHead::Functor { functor: Some(f), .. } if Some(f) == effects_rows_sym
-    );
-    if is_wrapper {
-        named_child_value(kb, &walked, effects_expr_key)
-    } else {
-        Some(walked)
-    }
+    // WI-493: unwrap via the single shared tolerance; a bare row Var / expression
+    // (not a wrapper) is its own inner.
+    Some(effects_rows_inner(kb, &walked).unwrap_or(walked))
 }
 
 /// A row-tail [`TermId`] if `node` resolves to a logic var, else `None`. A
