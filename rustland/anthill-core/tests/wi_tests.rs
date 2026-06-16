@@ -205,6 +205,9 @@ mod wi368_iterator_threading_test;
 #[path = "include/wi376_projection_test.rs"]
 mod wi376_projection_test;
 
+#[path = "include/wi485_find_dot_call_test.rs"]
+mod wi485_find_dot_call_test;
+
 #[path = "include/wi397_compound_projection_test.rs"]
 mod wi397_compound_projection_test;
 

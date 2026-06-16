@@ -2099,6 +2099,47 @@ fn hof_arg_hint(
     }
 }
 
+/// WI-485: the type of an argument occurrence that is a plain variable / operation
+/// REFERENCE, read straight from the typing env WITHOUT synthesizing it. The receiver
+/// arg `xs` of `findX(xs, lambda …)` (or the dot-call `xs.findX(…)`) is a `VarRef` whose
+/// `List[Int64]` type is already bound in `env`, so a sibling callback param's projection
+/// (`pred: (x: s.T) -> …`) can be eliminated against it at HINT time.
+fn varref_arg_env_type(env: &TypingEnv, arg: &Rc<NodeOccurrence>) -> Option<Value> {
+    if let NodeKind::Expr { expr, .. } = &arg.kind {
+        let name = match expr {
+            Expr::VarRef { name } => *name,
+            Expr::Ref(name) | Expr::Ident(name) => *name,
+            _ => return None,
+        };
+        return env.lookup_var(name);
+    }
+    None
+}
+
+/// WI-485: eliminate a cross-param projection in a callback PARAM type (e.g. find's
+/// `pred: (x: s.T) -> Bool @ {EffP, -Modify[x]}`) against the receiver param's argument
+/// type, so a LAMBDA callback's param is hinted with the THREADED element
+/// (`s.T ⟹ Int64` when the receiver `s`'s argument is `xs: List[Int64]`). The WI-398
+/// call-site elimination runs only AFTER every argument is synthesized — too late for a
+/// lambda, whose BODY is checked at synthesis against the pushed param hint (a named-op
+/// callback is unaffected: its own declared param drives, and the arrow conforms after the
+/// WI-398 elimination). Returns the eliminated type, or `None` to keep the original when
+/// the projection's receiver arg is not a known `VarRef`; an un-eliminable projection is
+/// swallowed here (the later call-site elimination still reports a genuine bad projection
+/// loudly), never silently grounded.
+fn eliminate_callback_hint_projection(
+    kb: &mut KnowledgeBase,
+    pt: &Value,
+    param_arg_types: &HashMap<Symbol, Value>,
+    fn_sym: Symbol,
+) -> Option<Value> {
+    if param_arg_types.is_empty() || !value_contains_projection(kb, pt) {
+        return None;
+    }
+    let ctx = TypeErrorContext::OperationReturn { op_name: fn_sym };
+    eliminate_type_projections(kb, pt, param_arg_types, None, &ctx, None).ok()
+}
+
 /// WI-427: true iff the type term mentions a `TypeExtractor.TypeVar` form
 /// anywhere — an operation's own type parameter, which is out of scope as a
 /// top-down hint for a *different* call (and a wildcard in the subtype
@@ -2727,12 +2768,40 @@ fn visit_type(
             } else {
                 None
             };
+            // WI-485: partial param→arg-type map from args whose type is known WITHOUT
+            // synthesis (VarRef args, via env), so a sibling callback param's projection
+            // (`pred: (x: s.T) -> …`) can be eliminated BEFORE it hints a lambda. Built
+            // once, only when a higher-order arg is present.
+            let known_param_arg_types: HashMap<Symbol, Value> = match (&op_params, has_hof_arg) {
+                (Some(ps), true) => {
+                    let mut m = HashMap::new();
+                    for (i, (psym, _)) in ps.iter().enumerate() {
+                        let arg = pos_args.get(i).or_else(|| {
+                            named_args.iter().find(|(n, _)| n == psym).map(|(_, a)| a)
+                        });
+                        if let Some(a) = arg {
+                            if let Some(t) = varref_arg_env_type(&env, a) {
+                                m.insert(*psym, t);
+                            }
+                        }
+                    }
+                    m
+                }
+                _ => HashMap::new(),
+            };
             let pos_hints: Vec<Option<Value>> = pos_args
                 .iter()
                 .enumerate()
                 .map(|(i, arg)| {
                     let pt = op_params.as_ref().and_then(|ps| ps.get(i)).map(|(_, t)| t.clone());
-                    hof_arg_hint(kb, arg, pt.clone())
+                    // WI-485: eliminate a callback param projection for the lambda hint
+                    // (`s.T ⟹ Int64`); keep the original `pt` for the nested-call hint
+                    // (that path is gated on a ground type and rides the call-site path).
+                    let pt_hof = pt
+                        .as_ref()
+                        .and_then(|t| eliminate_callback_hint_projection(kb, t, &known_param_arg_types, functor))
+                        .or_else(|| pt.clone());
+                    hof_arg_hint(kb, arg, pt_hof)
                         .or_else(|| nested_call_arg_hint(kb, arg, pt.as_ref()))
                 })
                 .collect();
@@ -2743,7 +2812,11 @@ fn visit_type(
                         .as_ref()
                         .and_then(|ps| ps.iter().find(|(s, _)| s == name))
                         .map(|(_, t)| t.clone());
-                    hof_arg_hint(kb, arg, pt.clone())
+                    let pt_hof = pt
+                        .as_ref()
+                        .and_then(|t| eliminate_callback_hint_projection(kb, t, &known_param_arg_types, functor))
+                        .or_else(|| pt.clone());
+                    hof_arg_hint(kb, arg, pt_hof)
                         .or_else(|| nested_call_arg_hint(kb, arg, pt.as_ref()))
                 })
                 .collect();
