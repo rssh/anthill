@@ -19441,7 +19441,21 @@ fn check_ho_apply_pattern_occ(
     span: Option<Span>,
     errors: &mut Vec<TypeError>,
 ) {
-    let Some(expr) = occ.as_expr() else { return };
+    let Some(expr) = occ.as_expr() else {
+        // WI-323: a Pattern-kind occurrence (Lambda.param / LambdaWithin.param /
+        // Let.pattern / MatchBranch.pattern lifted to Pattern-kind by WI-319)
+        // can carry an Expr child in a nested type-annotation slot. Descend so
+        // an `ho_apply` smuggled inside a Pattern.type_ann Expr child still gets
+        // the rules-1/2/3/3b pattern-fragment check instead of evading it via
+        // the `as_expr()` early-return. Mirror of `collect_occurrence_global_vars`'s
+        // Pattern arm — recurse via `for_each_pattern_child`.
+        if let Some(pat) = occ.as_pattern() {
+            for_each_pattern_child(pat, |c| {
+                check_ho_apply_pattern_occ(kb, c, ho_apply_sym, rule_sym, span, errors);
+            });
+        }
+        return;
+    };
 
     // The ho_apply-specific fragment rules apply to the functor-bearing forms
     // (Apply/Constructor/Instantiation) — the occurrence analogue of `Term::Fn`.
@@ -19528,6 +19542,13 @@ fn occurrence_contains_functor(occ: &Rc<NodeOccurrence>, target: Symbol) -> bool
                 return true;
             }
             for_each_child(expr, |c| stack.push(Rc::clone(c)));
+        } else if let Some(pat) = o.as_pattern() {
+            // WI-323: descend into Pattern children so a target functor nested
+            // in a Pattern.type_ann Expr leaf is found. Without this the rules-1/3b
+            // head-vs-body co-occurrence test (`check_pattern_fragment`) would
+            // miss a functor smuggled inside a Pattern-kind occurrence. Mirror of
+            // `collect_occurrence_global_vars`'s Pattern arm.
+            for_each_pattern_child(pat, |c| stack.push(Rc::clone(c)));
         }
     }
     false
@@ -19933,6 +19954,117 @@ fn constrain_occ_var_type(
         _ => return,
     };
     constrain_vid(kb, vid, expected_type, var_types, subst);
+}
+
+#[cfg(test)]
+mod wi323_pattern_type_ann_walker_tests {
+    //! WI-323: the two typing.rs pattern-fragment walkers
+    //! (`check_ho_apply_pattern_occ` and `occurrence_contains_functor`)
+    //! early-returned on a Pattern-kind occurrence via `as_expr()`, so an
+    //! `ho_apply` smuggled into a `Pattern.Var.type_ann` Expr child evaded the
+    //! hereditary-Harrop pattern-fragment rules (1/2/3/3b). WI-319 lifted
+    //! Lambda.param / Let.pattern / MatchBranch.pattern to Pattern-kind
+    //! occurrences and WI-298 taught six OTHER walkers to descend into pattern
+    //! children, but these two were left on the `as_expr()` early-return. The
+    //! load path never populates `Pattern.Var.type_ann` today (load.rs
+    //! `load_pattern_var` → None), so the defect is latent — these tests build
+    //! the occurrence DIRECTLY (the level at which the gap is reproducible) and
+    //! assert both walkers now descend into a pattern's type-annotation child.
+    use super::{check_ho_apply_pattern_occ, occurrence_contains_functor, Expr, NodeOccurrence, Pattern};
+    use crate::intern::Symbol;
+    use crate::kb::term::{Literal, Var};
+    use crate::kb::KnowledgeBase;
+    use crate::span::{SourceId, SourceSpan};
+    use std::rc::Rc;
+
+    fn make_span() -> SourceSpan {
+        SourceSpan::new(SourceId::from_raw(0), 0, 10)
+    }
+
+    /// `ho_apply(?P, ?x, ?x)` as an Expr-kind occurrence — a rule-3
+    /// (duplicate-variable in predicate args) violation, with `ho_apply_sym` as
+    /// the functor.
+    fn dup_var_ho_apply(ho_apply_sym: Symbol, span: SourceSpan) -> Rc<NodeOccurrence> {
+        let pred = NodeOccurrence::new_expr(Expr::Var(Var::DeBruijn(0)), span, None);
+        let x1 = NodeOccurrence::new_expr(Expr::Var(Var::DeBruijn(1)), span, None);
+        let x2 = NodeOccurrence::new_expr(Expr::Var(Var::DeBruijn(1)), span, None);
+        NodeOccurrence::new_expr(
+            Expr::Apply {
+                functor: ho_apply_sym,
+                pos_args: vec![pred, x1, x2],
+                named_args: vec![],
+                type_args: vec![],
+            },
+            span,
+            None,
+        )
+    }
+
+    /// A rule body `let p: <ho_apply(?P,?x,?x)> = 0 in 1` — the ho_apply lives in
+    /// the Pattern.Var.type_ann slot. Before WI-323 the walker reached the
+    /// pattern child, `as_expr()` returned None, and it early-returned, silently
+    /// missing the rule-3 violation. ACCEPTANCE (WI-323).
+    #[test]
+    fn ho_apply_in_let_pattern_type_ann_triggers_violation() {
+        let mut kb = KnowledgeBase::new();
+        let ho_apply_sym = kb.intern("anthill.reflect.Expr.ho_apply");
+        let rule_sym = kb.intern("test_rule");
+        let pat_name = kb.intern("p");
+        let span = make_span();
+
+        let ho = dup_var_ho_apply(ho_apply_sym, span);
+        let pattern = NodeOccurrence::new_pattern(
+            Pattern::Var { name: pat_name, type_ann: Some(ho) },
+            span,
+            None,
+        );
+        let value = NodeOccurrence::new_expr(Expr::Const(Literal::Int(0)), span, None);
+        let body = NodeOccurrence::new_expr(Expr::Const(Literal::Int(1)), span, None);
+        let let_occ = NodeOccurrence::new_expr(
+            Expr::Let { pattern, type_annotation: None, value, body },
+            span,
+            None,
+        );
+
+        let mut errors = Vec::new();
+        check_ho_apply_pattern_occ(&kb, &let_occ, ho_apply_sym, rule_sym, Some(span.span), &mut errors);
+        assert!(
+            !errors.is_empty(),
+            "ho_apply in Pattern.Var.type_ann must trigger the rule-fragment violation (WI-323)"
+        );
+    }
+
+    /// The head-vs-body co-occurrence helper (rules 1/3b) must find a functor
+    /// nested in a Pattern's type-annotation Expr child.
+    #[test]
+    fn occurrence_contains_functor_descends_into_pattern_type_ann() {
+        let mut kb = KnowledgeBase::new();
+        let ho_apply_sym = kb.intern("anthill.reflect.Expr.ho_apply");
+        let pat_name = kb.intern("p");
+        let span = make_span();
+
+        let ho = dup_var_ho_apply(ho_apply_sym, span);
+        let pattern = NodeOccurrence::new_pattern(
+            Pattern::Var { name: pat_name, type_ann: Some(ho) },
+            span,
+            None,
+        );
+        assert!(
+            occurrence_contains_functor(&pattern, ho_apply_sym),
+            "occurrence_contains_functor must find a functor nested in Pattern.Var.type_ann (WI-323)"
+        );
+
+        // A pattern with no type_ann must still report false (no spurious match).
+        let plain = NodeOccurrence::new_pattern(
+            Pattern::Var { name: pat_name, type_ann: None },
+            span,
+            None,
+        );
+        assert!(
+            !occurrence_contains_functor(&plain, ho_apply_sym),
+            "a pattern with no nested functor must not spuriously match"
+        );
+    }
 }
 
 #[cfg(test)]
