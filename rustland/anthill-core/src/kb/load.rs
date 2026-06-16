@@ -5503,6 +5503,16 @@ impl<'a> Loader<'a> {
                         {
                             return;
                         }
+                        // WI-280: a bare-identifier value-receiver FIELD access
+                        // (`p.x`) reaches the loader as `field_access(p, Ident(x))`
+                        // — the no-call sibling of the WI-443 method-call re-route.
+                        // Routed to a zero-arg DotApply when `p`'s root names a
+                        // local value; otherwise it keeps the `field_access` path.
+                        if name == "field_access"
+                            && self.try_identifier_dot_field(parse_id, &pos_args, work)
+                        {
+                            return;
+                        }
                         work.push(LoadWorkOp::Build(LoadBuildFrame::ApplyOrConstructor {
                             outer_parse_id: parse_id,
                             functor,
@@ -5595,16 +5605,7 @@ impl<'a> Loader<'a> {
         if member.contains('.') {
             return false;
         }
-        let head_binder = self.lookup_local_name(head).or_else(|| {
-            match self.kb.symbols.resolve_in_scope(head, self.current_scope.raw()) {
-                ResolveResult::Found(s) => match self.kb.symbols.get(s) {
-                    SymbolDef::Resolved { kind: SymbolKind::Param, .. } => Some(s),
-                    _ => None,
-                },
-                _ => None,
-            }
-        });
-        let Some(head_sym) = head_binder else {
+        let Some(head_sym) = self.dot_receiver_binder(head) else {
             return false;
         };
         // Synthesized receiver: the `var_ref(name: Ref(binder))` shape
@@ -5631,6 +5632,96 @@ impl<'a> Loader<'a> {
             work.push(LoadWorkOp::Visit(tid));
         }
         true
+    }
+
+    /// The binder a dot-receiver HEAD identifier names, IF it denotes a local
+    /// VALUE: a let/lambda/match binder (local-name scope) or an op parameter.
+    /// Returns `None` for a sort/namespace head or an unbound name — the
+    /// discriminator that keeps those on the qualified-name / `field_access`
+    /// path. Locals are consulted first, so a binder shadows a same-named sort.
+    /// Shared by the WI-443 method-call re-route ([`Self::try_identifier_dot_call`])
+    /// and the WI-280 field-access re-route ([`Self::try_identifier_dot_field`]).
+    fn dot_receiver_binder(&self, head: &str) -> Option<Symbol> {
+        self.lookup_local_name(head).or_else(|| {
+            match self.kb.symbols.resolve_in_scope(head, self.current_scope.raw()) {
+                ResolveResult::Found(s) => match self.kb.symbols.get(s) {
+                    SymbolDef::Resolved { kind: SymbolKind::Param, .. } => Some(s),
+                    _ => None,
+                },
+                _ => None,
+            }
+        })
+    }
+
+    /// WI-280: re-route a bare-identifier value-receiver FIELD access. The
+    /// scope-blind converter lowers `p.x` — a NAME-rooted receiver, since the
+    /// `?x.field` VALUE form already became `dot_apply` — to
+    /// `field_access(receiver, Ident(x))`. Here the scope IS known: when the
+    /// receiver's syntactic ROOT identifier names a local value (a let/lambda/
+    /// match binder or an op param), the access becomes the same zero-arg
+    /// `Expr::DotApply` the `?x.field` form produces — dispatched by the typer's
+    /// field-fallback on the receiver's sort (WI-279). A head naming a
+    /// sort/namespace — or an `application` receiver (`Map[K=..].x`) — keeps the
+    /// `field_access` path (`false`). The receiver (the parse `field_access`
+    /// object) is Visited rather than synthesized, so a chained `p.x.y`
+    /// re-routes level by level (each inner `field_access` revisits this arm).
+    fn try_identifier_dot_field(
+        &mut self,
+        parse_id: TermId,
+        pos_args: &[TermId],
+        work: &mut Vec<LoadWorkOp>,
+    ) -> bool {
+        // The converter shape is exactly `field_access(object, Ident(field))`.
+        if pos_args.len() != 2 {
+            return false;
+        }
+        let Term::Ident(member) = self.parsed.terms.get(pos_args[1]).clone() else {
+            return false;
+        };
+        // Decide by the receiver's root identifier (walk down the `field_access`
+        // object chain): re-route iff it names a local value place.
+        if self.field_access_root_is_value(pos_args[0]).is_none() {
+            return false;
+        }
+        // The member is field metadata — resolve to a `Ref` (the field is keyed
+        // by short name against the receiver's sort at the typer, not in scope),
+        // matching the `dot_apply` arm's name handling.
+        let kb_member = self.remap_symbol(member);
+        let name_ref = self.kb.alloc(Term::Ref(kb_member));
+        work.push(LoadWorkOp::Build(LoadBuildFrame::DotApply {
+            outer_parse_id: parse_id,
+            name_ref,
+            pos_count: 0,
+            named_keys: SmallVec::new(),
+        }));
+        // Visit the receiver (object) so it lands in the DotApply receiver slot.
+        work.push(LoadWorkOp::Visit(pos_args[0]));
+        true
+    }
+
+    /// Walk a parse receiver down its `field_access` object chain to the root
+    /// atom; if that root is a bare identifier naming a local value, return its
+    /// binder symbol. The load-time peer of the converter's `is_value_receiver`
+    /// root walk — only NAME-rooted receivers reach the loader as `field_access`
+    /// (a value-rooted one already became `dot_apply` in the converter), so the
+    /// root identifier is the value-vs-name discriminator.
+    fn field_access_root_is_value(&self, receiver: TermId) -> Option<Symbol> {
+        let mut cur = receiver;
+        loop {
+            match self.parsed.terms.get(cur) {
+                Term::Ident(sym) => {
+                    let name = self.parsed.symbols.name(*sym).to_owned();
+                    return self.dot_receiver_binder(&name);
+                }
+                Term::Fn { functor, pos_args, .. }
+                    if self.parsed.symbols.name(*functor) == "field_access"
+                        && !pos_args.is_empty() =>
+                {
+                    cur = pos_args[0];
+                }
+                _ => return None,
+            }
+        }
     }
 
     /// WI-304: push the native leaf `NodeOccurrence` for a just-built leaf

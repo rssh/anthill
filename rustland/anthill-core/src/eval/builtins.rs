@@ -156,12 +156,46 @@ fn reflect_field_access(interp: &mut Interpreter, args: &[Value]) -> Result<Valu
             "field_access: field name must be a string, got {}", other.type_name()))),
     };
     match &receiver {
-        Value::Entity { named, .. } => {
+        Value::Entity { functor, pos, named } => {
+            // A field supplied by NAME — match by short name.
             for (sym, val) in named.iter() {
                 let full = interp.kb().resolve_sym(*sym);
                 let short = full.rsplit('.').next().unwrap_or(full);
                 if short == field_name.as_str() {
                     return Ok(val.clone());
+                }
+            }
+            // A field supplied POSITIONALLY (`box(42)`, not `box(value: 42)`):
+            // `pos` holds only the positionally-supplied args in source order,
+            // so the target field's slot is its RANK among the declared fields
+            // NOT supplied by name (a field given by name consumes no `pos`
+            // slot) — not its absolute declared index. Walking the declared
+            // fields with a cursor that advances only past not-named fields
+            // handles every positional/named ordering, not just positional-first.
+            let field_syms: Option<Vec<crate::intern::Symbol>> =
+                interp.kb().entity_field_names(*functor).map(|f| f.to_vec());
+            if let Some(field_syms) = field_syms {
+                let mut pos_cursor = 0;
+                for f in &field_syms {
+                    let short = {
+                        let full = interp.kb().resolve_sym(*f);
+                        full.rsplit('.').next().unwrap_or(full).to_string()
+                    };
+                    // A field supplied by name (matched above) consumes no `pos` slot.
+                    let supplied_by_name = named.iter().any(|(s, _)| {
+                        let nf = interp.kb().resolve_sym(*s);
+                        nf.rsplit('.').next().unwrap_or(nf) == short
+                    });
+                    if supplied_by_name {
+                        continue;
+                    }
+                    if short == field_name.as_str() {
+                        if let Some(val) = pos.get(pos_cursor) {
+                            return Ok(val.clone());
+                        }
+                        break;
+                    }
+                    pos_cursor += 1;
                 }
             }
             Err(EvalError::Internal(format!(
