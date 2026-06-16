@@ -41,18 +41,15 @@ sort anthill.prelude.MappedStream
   -- output element type comes from `fn`'s return `B = T`, so it threads even
   -- though the bound `h`'s own type does not (cf. the filter note above).
   --
-  -- The inner call is QUALIFIED `Stream.splitFirst` (not the bare `splitFirst`
-  -- the other carriers use) and this is REQUIRED, not stylistic: a carrier
-  -- whose provided op shares its short name with the abstract op it calls on an
-  -- abstract receiver self-dispatches to its OWN impl when unqualified — here
-  -- `splitFirst(src)` would re-enter `MappedStream.splitFirst` (unbounded
-  -- recursion / a match failure on the source's `cons`) instead of value-
-  -- dispatching on `src`'s real carrier. `List.splitFirst` never hits this (its
-  -- body destructures `cons`/`nil` directly, with no nested abstract call).
+  -- The inner `splitFirst(src)` is the BARE spec op: `src` is the abstract source
+  -- `Stream`, so (WI-411) the unqualified call value-dispatches on `src`'s real
+  -- carrier rather than self-dispatching to this `MappedStream.splitFirst`. The
+  -- typer redirects an unqualified self-named spec-op call to the spec op when the
+  -- receiver is not the enclosing carrier; a concrete receiver pins statically.
   operation splitFirst(m: MappedStream) -> Option[Pair[A = T, B = MappedStream]] effects {ES, EF} =
     match m
       case mapped(src, fn) ->
-        match Stream.splitFirst(src)
+        match splitFirst(src)
           case none() -> none
           case some(pair(h, rest)) -> some(pair(fn(h), mapped(rest, fn)))
 
@@ -95,14 +92,16 @@ sort anthill.prelude.FilteredStream
 
   provides Stream[T = T, E = {ES, EF}]
 
-  -- The inner call is QUALIFIED `Stream.splitFirst` (cf. MappedStream): an
-  -- unqualified `splitFirst(src)` would re-enter THIS impl on the source. The
-  -- RECURSIVE `splitFirst(filtered(rest, pred))` is intentionally unqualified —
-  -- it must self-dispatch back here to drop the next element.
+  -- Both inner calls are the BARE spec op (WI-411): the source peel `splitFirst(src)`
+  -- has the abstract source `Stream` as receiver, so it value-dispatches on `src`'s
+  -- real carrier; the RECURSIVE `splitFirst(filtered(rest, pred))` has the concrete
+  -- enclosing carrier as receiver, so the typer keeps it a STATIC self-dispatch back
+  -- here (the receiver type already singles out this impl) — which is what drops the
+  -- next element and threads the carrier effect (WI-413).
   operation splitFirst[Elem, EffS, EffP](f: FilteredStream[T = Elem, ES = EffS, EF = EffP]) -> Option[Pair[A = Elem, B = FilteredStream[T = Elem, ES = EffS, EF = EffP]]] effects {EffS, EffP} =
     match f
       case filtered(src, pred) ->
-        match Stream.splitFirst(src)
+        match splitFirst(src)
           case none() -> none
           case some(pair(h, rest)) ->
             if pred(h) then some(pair(h, filtered(rest, pred)))

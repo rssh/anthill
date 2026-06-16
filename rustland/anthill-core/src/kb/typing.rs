@@ -2417,6 +2417,64 @@ fn find_spec_op_for_provided_sort(
     None
 }
 
+/// WI-411 — redirect an UNQUALIFIED self-named spec-op call inside a provider's OWN
+/// impl to the spec op, so it value-dispatches on the receiver's carrier instead of
+/// statically self-dispatching to the enclosing impl.
+///
+/// Inside `MappedStream.splitFirst`'s body, `splitFirst(src)` resolves (at load, by
+/// scope chain) to the enclosing member `MappedStream.splitFirst`, shadowing the spec
+/// op `Stream.splitFirst` — the typer would then treat it as a direct concrete call
+/// and never dispatch, so at eval a `List` source's value hits `MappedStream`'s
+/// `case mapped` arm and fails. The dot form `src.splitFirst` already resolves
+/// type-directed via [`find_spec_op_for_provided_sort`]; this brings the unqualified
+/// function-call form into line. Returns the spec op `Spec.<op>` when ALL hold:
+///   * there is an enclosing sort and `fn_sym` is ITS OWN member (`parent ==
+///     enclosing`) — a qualified `Stream.splitFirst` already names the spec op
+///     (`parent != enclosing`), so it is untouched;
+///   * the call has a positional receiver whose static type is NOT that enclosing
+///     carrier. A receiver that IS the enclosing carrier (a concrete same-sort
+///     self-recursion such as `FilteredStream`'s `splitFirst(filtered(...))`) keeps
+///     its static self-call — the receiver's type already singles out the impl, so
+///     the spec-op dispatch would only `PinNow` back to it, and keeping the direct
+///     call leaves the WI-424 same-sort seeding / WI-413 effect threading untouched;
+///   * the enclosing sort `provides Spec` and `Spec` declares an op of the same short
+///     name (the spec op, distinct from `fn_sym`).
+/// The existing spec-op dispatch then resolves the impl by the receiver's static type
+/// (`PinNow` for a concrete carrier, `DeferToRequirement` / value-directed for an
+/// abstract `Stream` receiver) — exactly what the qualified `Stream.splitFirst` form
+/// already produces.
+///
+/// The receiver is taken as the FIRST positional argument's type (`recv_ty`) — the
+/// self-receiver in every spec op the stdlib overrides. This heuristic governs only
+/// the redirect DECISION; the downstream dispatch finds the real receiver via
+/// `self_receiver_param_index`, so a future spec op whose self-receiver is not the
+/// first positional arg would only mis-decide redirect-vs-static, never corrupt the
+/// dispatch. `recv_ty` is read carrier-agnostically and only after the cheap
+/// enclosing-member gate, so the common (non-self-member) call pays nothing.
+fn redirect_provider_self_spec_op(
+    kb: &mut KnowledgeBase,
+    env: &TypingEnv,
+    fn_sym: Symbol,
+    recv_ty: Option<&Value>,
+) -> Option<Symbol> {
+    let enclosing = env.enclosing_sort()?;
+    let parent = impl_parent_of_op(kb, fn_sym)?;
+    if kb.canonical_sort_sym(parent) != kb.canonical_sort_sym(enclosing) {
+        return None;
+    }
+    // Receiver IS the enclosing carrier (concrete same-sort) → keep the static self-
+    // call. `None` (an abstract / type-var receiver) falls through to the redirect,
+    // which is the value-dispatch case the ticket targets. Computed AFTER the gate
+    // above so the type-head read is skipped for the common non-self-member call.
+    let recv_sort = recv_ty.and_then(|ty| sort_functor_of_view(kb, ty));
+    if recv_sort.is_some_and(|rs| kb.canonical_sort_sym(rs) == kb.canonical_sort_sym(enclosing)) {
+        return None;
+    }
+    let short = short_name_of(kb.resolve_sym(fn_sym)).to_string();
+    let spec_op = find_spec_op_for_provided_sort(kb, enclosing, &short)?;
+    (spec_op != fn_sym).then_some(spec_op)
+}
+
 /// Match a reflect `dot_apply(receiver:, name:, args:List[ApplyArg])` rule LHS
 /// against a DotApply occurrence's parts, binding the LHS's logical vars to the
 /// (typed) receiver / arg occurrences. Handles a *var* receiver and *positional
@@ -3315,6 +3373,50 @@ fn build_type(
                 }
                 node
             };
+            // WI-411: an UNQUALIFIED self-named spec-op call inside a provider's own
+            // impl (`splitFirst(src)` in `MappedStream.splitFirst`) is bound at load to
+            // the enclosing member, shadowing the spec op. When the receiver is NOT the
+            // enclosing carrier, redirect to the spec op so the call value-dispatches on
+            // the receiver's runtime carrier. Done as a tree-producing rewrite (synthesize
+            // the spec-op Apply + re-Visit, like `fire_simp` and the dot form) so the
+            // STORED occurrence carries the spec-op functor — req_insertion and eval
+            // dispatch it, not just the typer. The re-Visit's `fn_sym` is the spec op
+            // (`parent != enclosing`), so the redirect does not re-fire (no loop).
+            if !pos_results.is_empty() {
+                let recv_ty = pos_results
+                    .first()
+                    .and_then(|r| r.as_ref().ok())
+                    .map(|tr| &tr.ty);
+                if let Some(spec_op) =
+                    redirect_provider_self_spec_op(kb, &env, fn_sym, recv_ty)
+                {
+                    // `node` was `reassemble_children` of this Apply frame's occurrence,
+                    // so it is always an `Expr::Apply` here — a non-Apply would be a
+                    // build-frame invariant break, not a silent skip (which would
+                    // resurface the bug as the original eval MatchFailed).
+                    let NodeKind::Expr {
+                        expr: Expr::Apply { pos_args: np, named_args: nn, type_args: ta, .. },
+                        ..
+                    } = &node.kind
+                    else {
+                        unreachable!("WI-411: build_type Apply arm reassembled a non-Apply node");
+                    };
+                    let pass = super::simp_rewrite::simp_pass(kb);
+                    let synth = NodeOccurrence::synthesized_expr(
+                        Expr::Apply {
+                            functor: spec_op,
+                            pos_args: np.clone(),
+                            named_args: nn.clone(),
+                            type_args: ta.clone(),
+                        },
+                        Rc::clone(&node),
+                        pass,
+                        node.owner,
+                    );
+                    push_visit(work, synth, env, expected, fuel.saturating_sub(1));
+                    return;
+                }
+            }
             let span = Some(node.span.span);
             let r = check_apply_iter(
                 kb, &*env, &node, fn_sym, &pos_args, &named_args,
