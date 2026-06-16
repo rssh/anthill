@@ -473,13 +473,17 @@ namespace anthill.reflect.typing_pass
         let info = lookup_operation(kb, fn_name)
         let param_types = extract_param_types(info)
         let callee_effects = operation_effects(info)
-        match ar
+        -- Bind the nested match to a `let`: a bare trailing `match` would
+        -- greedily absorb the following outer `case` arms (dangling-case
+        -- hazard, WI-446); the trailing `ar_result` reference terminates it.
+        let ar_result = match ar
           case ArgsResult(types: arg_types, env: arg_env) ->
             let ur = unify_param_types(kb, arg_env, param_types, arg_types)
             let ret = apply_type_subst(result_env(ur), return_type(info))
             -- Effects = arg effects ∪ callee's declared effects
             let all_effects = merge_effects(result_effects(ur), callee_effects)
             TypeResult(type: ret, env: result_env(ur), effects: all_effects)
+        ar_result
 
       -- If: effects = cond ∪ then ∪ else
       case if_expr(cond: c, then_branch: t, else_branch: e) ->
@@ -772,7 +776,9 @@ namespace anthill.reflect.typing_pass
     match op
       case OperationInfo(name: op_name, params: params, return_type: ret,
                          effects: declared_effects) ->
-        match operation_body(op_name)
+        -- Bind the nested match to a `let` so it doesn't absorb the outer
+        -- `case _` arm below (dangling-case hazard, WI-446).
+        let body_result = match operation_body(op_name)
           case some(value: body_occ) ->
             let sort_env = env_from_sort_scope(kb, op_name)
             let env = env_from_params(sort_env, params)
@@ -783,6 +789,7 @@ namespace anthill.reflect.typing_pass
             let _ = check_effects(kb, body_occ, ext_effects, declared_effects)
             type_of(occ: body_occ, type: result_type(ur))
           case none -> ?
+        body_result
       case _ -> ?
 
   -- ================================================================

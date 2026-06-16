@@ -77,6 +77,52 @@ end
                 (identifier)))))))))
 
 =====================================
+Dangling case attaches to inner match (WI-446)
+=====================================
+
+operation f(x: Int) -> Int =
+  match outer
+    case a -> match inner
+                case b -> 1
+    case c -> 2
+
+---
+
+; Pins the grammar's attachment: the trailing `case c` (visually an arm of the
+; OUTER match) binds to the INNER match — the outer keeps a single branch.
+; The anthill converter rejects this via an indentation guard (WI-446); this
+; corpus test ensures any grammar change to the attachment is deliberate.
+(source_file
+  (operation_declaration
+    name: (name
+      (identifier))
+    (param
+      name: (identifier)
+      type: (simple_type
+        (name
+          (identifier))))
+    return_type: (simple_type
+      (name
+        (identifier)))
+    body: (match_expr
+      scrutinee: (name
+        (identifier))
+      (match_branch
+        pattern: (pattern_var
+          (identifier))
+        body: (match_expr
+          scrutinee: (name
+            (identifier))
+          (match_branch
+            pattern: (pattern_var
+              (identifier))
+            body: (integer_literal))
+          (match_branch
+            pattern: (pattern_var
+              (identifier))
+            body: (integer_literal)))))))
+
+=====================================
 Operation with if/then/else body
 =====================================
 

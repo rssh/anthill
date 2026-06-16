@@ -209,6 +209,60 @@ impl<'a> Converter<'a> {
         self.errors.push(ParseError::new(msg, self.span(node)));
     }
 
+    /// WI-446: dangling-`case` attachment hazard. The grammar attaches a
+    /// trailing `case` arm to the innermost open `match` (`match_expr` is
+    /// `prec.right(repeat1(match_branch))`, with no indentation awareness),
+    /// so an arm the author indented for an ENCLOSING `match` silently lands
+    /// on a nested one instead — dropping the outer arm with no syntax error.
+    ///
+    /// The parse tree alone can't recover intent, but the source indentation
+    /// can: a branch indented strictly LESS than this match's first branch
+    /// was visually written for an outer match. Flag the mismatch loudly
+    /// (CLAUDE.md: "prefer a loud error over a silent skip"). A `match` has no
+    /// closing delimiter in the grammar, so the remedy is to make the inner
+    /// `match` the enclosing match's LAST arm, or bind it to a `let` (the
+    /// trailing reference terminates the inner branch list).
+    ///
+    /// Indentation is compared by leading-whitespace PREFIX, not by column:
+    /// tree-sitter's column is a byte offset, so a tab (1 byte) would look
+    /// shallower than spaces and spuriously reject valid tab-indented code.
+    /// A branch is "shallower" only when its leading whitespace is a proper
+    /// prefix of the first branch's — tab/space-mix safe, and conservative
+    /// (incomparable indentation is left alone). Branches that don't start
+    /// their own line (arms written inline on one line) carry no indentation
+    /// signal and are skipped — so single-line nested matches aren't checked,
+    /// but there the parse matches the visual reading anyway.
+    fn check_dangling_case(&mut self, branches: &[Node]) {
+        let Some(base) = branches.first().and_then(|b| self.line_indent(*b)) else {
+            return;
+        };
+        for branch in &branches[1..] {
+            if let Some(indent) = self.line_indent(*branch) {
+                if indent.len() < base.len() && base.starts_with(indent) {
+                    self.err(
+                        "this `case` is less indented than the match's first \
+                         arm, so it was likely written for an enclosing \
+                         `match` but binds to this nested one (silently \
+                         dropping the outer arm); make the inner `match` the \
+                         enclosing match's last arm, or bind it to a `let`",
+                        *branch,
+                    );
+                }
+            }
+        }
+    }
+
+    /// The leading whitespace of `node`'s line, IF `node` is the first
+    /// non-whitespace token on that line; otherwise `None` (e.g. an arm
+    /// written inline after other tokens). Returned as the raw source slice
+    /// so indentation can be compared by prefix rather than by byte column.
+    fn line_indent(&self, node: Node) -> Option<&'a str> {
+        let start = node.start_byte();
+        let line_start = self.source[..start].rfind('\n').map_or(0, |i| i + 1);
+        let prefix = &self.source[line_start..start];
+        prefix.bytes().all(|b| b == b' ' || b == b'\t').then_some(prefix)
+    }
+
     /// Allocate a fresh VarId or reuse one from the current scope.
     fn get_or_create_var(&mut self, name: Symbol) -> VarId {
         if let Some(&vid) = self.var_scope.get(&name) {
@@ -1008,6 +1062,7 @@ impl<'a> Converter<'a> {
                 let scrutinee = self.field(node, "scrutinee");
                 let branches: SmallVec<[Node<'t>; 4]> =
                     self.children_by_kind(node, "match_branch").into_iter().collect();
+                self.check_dangling_case(&branches);
                 let branch_count = branches.len();
                 work.push(WorkOp::Build(BuildFrame::MatchExpr { node, branch_count }));
                 for branch in branches.iter().rev() {

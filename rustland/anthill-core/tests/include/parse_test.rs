@@ -3717,6 +3717,72 @@ fn parse_operation_with_match_body() {
     }
 }
 
+// WI-446: a `case` arm indented for an enclosing match but parsed onto a
+// nested one (dangling-case hazard) is rejected loudly instead of silently
+// dropping the outer arm.
+#[test]
+fn parse_dangling_case_rejected() {
+    // `case none` is indented for the OUTER match, but the grammar attaches it
+    // to the inner `match st`; its shallower indentation than the inner match's
+    // first arm (`case wrapped`) trips the guard.
+    let source = r#"operation describe(t: Term) -> String =
+  match term_field(t)
+    case some(st) -> match st
+                       case wrapped(w) -> "w"
+    case none -> ""
+"#;
+    let errs = parse::parse(source).expect_err("dangling case should be rejected");
+    assert!(
+        errs.iter().any(|e| e.message.contains("less indented")),
+        "expected a dangling-case diagnostic, got: {errs:?}"
+    );
+}
+
+// WI-446: binding the inner match to a `let` terminates its branch list (the
+// trailing `r` reference is not a `case`), so the outer match keeps both arms
+// and no diagnostic fires.
+#[test]
+fn parse_let_bound_inner_match_ok() {
+    let source = r#"operation describe(t: Term) -> String =
+  match term_field(t)
+    case some(st) ->
+      let r = match st
+        case wrapped(w) -> "w"
+      r
+    case none -> ""
+"#;
+    let parsed = parse::parse(source).expect("let-bound inner match should parse");
+    // Outer match keeps both arms (scrutinee + 2 branches).
+    match &parsed.items[0] {
+        Item::Operation(op) => match parsed.terms.get(op.body.unwrap()) {
+            Term::Fn { functor, pos_args, .. } => {
+                assert_eq!(parsed.symbols.name(*functor), "match_expr");
+                assert_eq!(pos_args.len(), 3, "outer match: 1 scrutinee + 2 branches");
+            }
+            other => panic!("expected match_expr, got {other:?}"),
+        },
+        other => panic!("expected Operation, got {:?}", std::mem::discriminant(other)),
+    }
+}
+
+// WI-446: arms on a single line have increasing columns but none is shallower
+// than the first, so the guard does not false-positive.
+#[test]
+fn parse_single_line_match_arms_ok() {
+    let source = "operation pick(b: Bool) -> Int64 = match b case true -> 1 case false -> 0\n";
+    parse::parse(source).expect("single-line match arms should parse");
+}
+
+// WI-446: indentation is compared by leading-whitespace prefix, not byte
+// column, so a flat (non-nested) match whose arms mix tab and space
+// indentation is NOT falsely rejected. (A tab is one byte; a byte-column
+// check would read it as shallower than space-indented siblings.)
+#[test]
+fn parse_mixed_indent_flat_match_ok() {
+    let source = "operation f(x: Int64) -> Int64 =\n  match x\n        case a -> 1\n\tcase b -> 2\n";
+    parse::parse(source).expect("mixed tab/space flat match should parse");
+}
+
 #[test]
 fn parse_operation_with_if_body() {
     let source = "operation abs(x: Int64) -> Int64 = if x > 0 then x else 0 - x\n";
