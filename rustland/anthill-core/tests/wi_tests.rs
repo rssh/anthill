@@ -392,3 +392,6 @@ mod wi404_denoted_self_conformance_test;
 
 #[path = "include/wi411_unqualified_spec_op_dispatch_test.rs"]
 mod wi411_unqualified_spec_op_dispatch_test;
+
+#[path = "include/wi426_named_arg_op_call_test.rs"]
+mod wi426_named_arg_op_call_test;

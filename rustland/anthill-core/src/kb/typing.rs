@@ -2863,7 +2863,8 @@ fn visit_type(
                     let mut m = HashMap::new();
                     for (i, (psym, _)) in ps.iter().enumerate() {
                         let arg = pos_args.get(i).or_else(|| {
-                            named_args.iter().find(|(n, _)| n == psym).map(|(_, a)| a)
+                            // WI-426: named labels bind to params by NAME, not symbol identity.
+                            named_args.iter().find(|(n, _)| same_symbol(kb, *n, *psym)).map(|(_, a)| a)
                         });
                         if let Some(a) = arg {
                             if let Some(t) = varref_arg_env_type(&env, a) {
@@ -2896,7 +2897,8 @@ fn visit_type(
                 .map(|(name, arg)| {
                     let pt = op_params
                         .as_ref()
-                        .and_then(|ps| ps.iter().find(|(s, _)| s == name))
+                        // WI-426: match the named-arg label to its param by name.
+                        .and_then(|ps| ps.iter().find(|(s, _)| same_symbol(kb, *s, *name)))
                         .map(|(_, t)| t.clone());
                     let pt_hof = pt
                         .as_ref()
@@ -4106,6 +4108,26 @@ fn classify(_kb: &mut KnowledgeBase, occ: &Rc<NodeOccurrence>, class: CallClass)
 
 // ── Expression form checkers ───────────────────────────────────
 
+/// WI-426: resolve a named-argument label to the callee parameter it names.
+/// A named arg binds by LABEL NAME, not symbol identity: the label is interned
+/// at parse as a use-site (unresolved) symbol, distinct from the callee's
+/// scoped, resolved param symbol even when both short-print the same name. So a
+/// symbol-identity `find` silently dropped every named operation argument.
+/// Match by short name and return the param's `(symbol, declared-type)` so the
+/// caller keys the per-call maps (`param_to_arg_type` / `param_to_arg_sym`) and
+/// the validation context by the PARAM symbol — consistent with the positional
+/// loop and with what the projection eliminator / WI-385 validation look up.
+fn match_named_arg_param<'a>(
+    kb: &KnowledgeBase,
+    params: &'a [(Symbol, Value)],
+    arg_name: Symbol,
+) -> Option<&'a (Symbol, Value)> {
+    // `same_symbol` relates a use-site label to a resolved param across
+    // resolution states (identity / qualified equality / bare-vs-qualified last
+    // segment) — the same comparison the dot-call named-arg path uses.
+    params.iter().find(|(s, _)| same_symbol(kb, *s, arg_name))
+}
+
 /// apply(fn, args): type-check with type parameter instantiation.
 /// 1. fn is a known operation → unify arg types with param types, resolve return type
 /// 2. fn is a variable with arrow type → extract return type and effects
@@ -4305,20 +4327,25 @@ fn check_apply_iter(
         }
 
         for (i, (arg_name, arg_occ)) in named_args.iter().enumerate() {
+            // WI-426: match the label to its param by name, then key the per-call
+            // maps by the PARAM symbol (not the use-site label symbol) so the
+            // positional loop above, the projection eliminator, and param_to_arg_sym
+            // all agree on one key.
+            let matched = match_named_arg_param(kb, &op.params, *arg_name)
+                .map(|(s, t)| (*s, t.clone()));
             if let Some(arg_var_sym) = extract_var_ref_sym_node(arg_occ) {
-                param_to_arg_sym.insert(*arg_name, arg_var_sym);
+                if let Some((param_sym, _)) = &matched {
+                    param_to_arg_sym.insert(*param_sym, arg_var_sym);
+                }
             }
             if let Ok(ref arg_result) = named_results[i] {
-                if let Some(param_type) = op.params.iter()
-                    .find(|(s, _)| *s == *arg_name)
-                    .map(|(_, t)| t)
-                {
+                if let Some((param_sym, param_type)) = &matched {
                     // WI-398: defer a projection param's unify (see the positional loop).
                     if !(op_has_projection && value_contains_projection(kb, param_type)) {
                         unify_types(kb, &mut subst, &arg_result.ty, param_type);
                     }
                     if op_has_projection {
-                        param_to_arg_type.insert(*arg_name, arg_result.ty.clone());
+                        param_to_arg_type.insert(*param_sym, arg_result.ty.clone());
                     }
                 }
                 arg_effects = merge_effects(&arg_effects, &arg_result.effects);
@@ -4415,8 +4442,9 @@ fn check_apply_iter(
         for (i, (arg_name, arg_occ)) in named_args.iter().enumerate() {
             if let Ok(ref arg_result) = named_results[i] {
                 // WI-374: validate against the param AS WRITTEN (see above).
+                // WI-426: match the label to its param by name (not symbol identity).
                 if let Some((param_sym, param_type)) =
-                    written_params.iter().find(|(s, _)| *s == *arg_name)
+                    match_named_arg_param(kb, &written_params, *arg_name)
                 {
                     // WI-398: validate against the eliminated projection type (above).
                     let param_type = effective_param_types.get(param_sym).unwrap_or(param_type);
@@ -4438,6 +4466,37 @@ fn check_apply_iter(
                             ArgValidation::Fail(err) => arg_type_errors.push(err),
                         }
                     }
+                }
+            }
+        }
+        // WI-426: named-argument COVERAGE. Each label must name a DISTINCT param
+        // not already filled positionally. An unknown label (typo) or one that
+        // duplicates a positionally-bound param must be a LOUD error — without
+        // this the label is silently dropped here and `reorder_named_args_in_apply`
+        // sorts it last, so eval (which binds positionally) rebinds an omitted
+        // param to the stray value. Missing params are NOT checked here (partial
+        // application is legal — WI-374); only unknown/duplicate labels.
+        if !named_args.is_empty() {
+            let mut covered = vec![false; op.params.len()];
+            for slot in covered.iter_mut().take(pos_args.len()) {
+                *slot = true;
+            }
+            for (arg_name, _) in named_args.iter() {
+                let err = match op.params.iter().position(|(s, _)| same_symbol(kb, *s, *arg_name)) {
+                    None => Some("names no parameter of this operation"),
+                    Some(idx) if covered[idx] => Some("binds a parameter already given"),
+                    Some(idx) => {
+                        covered[idx] = true;
+                        None
+                    }
+                };
+                if let Some(reason) = err {
+                    arg_type_errors.push(TypeError::Other {
+                        span,
+                        context: TypeErrorContext::OperationArgument { op_name: fn_sym, param: *arg_name },
+                        expected: "a named argument matching a distinct unbound parameter".to_string(),
+                        actual: format!("named argument '{}' {}", short_name_of(kb.resolve_sym(*arg_name)), reason),
+                    });
                 }
             }
         }
@@ -4486,8 +4545,28 @@ fn check_apply_iter(
         // node starts with fresh annotation cells. The parent reassembles in
         // turn from `TypeResult.node` (WI-283), and the root reaches the
         // stored body via `set_op_body_node`.
+        // WI-426: when the call has NAMED args, rebuild the node with them
+        // reordered into the callee's parameter order (also applying any
+        // some-wraps), so eval's positional binding is correct. Falls back to
+        // the some-wrap-only rebuild for a non-`Apply` node or when there are no
+        // named args.
         let rebuilt_occ;
-        let occ = if some_wraps.is_empty() {
+        let occ = if !named_args.is_empty() {
+            match reorder_named_args_in_apply(
+                kb, occ, &written_params, pos_args.len(), &some_wraps,
+                pos_results, named_results,
+            ) {
+                Some(r) => {
+                    rebuilt_occ = r;
+                    &rebuilt_occ
+                }
+                None if some_wraps.is_empty() => occ,
+                None => {
+                    rebuilt_occ = wrap_some_children(kb, occ, &some_wraps, pos_results, named_results);
+                    &rebuilt_occ
+                }
+            }
+        } else if some_wraps.is_empty() {
             occ
         } else {
             rebuilt_occ = wrap_some_children(kb, occ, &some_wraps, pos_results, named_results);
@@ -8837,8 +8916,9 @@ fn receiver_carrier(
         .map(|r| &r.ty)
         .or_else(|| {
             named_args
+                // WI-426: a named label binds to its param by name, not symbol identity.
                 .iter()
-                .position(|(n, _)| *n == param_name)
+                .position(|(n, _)| same_symbol(kb, *n, param_name))
                 .and_then(|j| named_results.get(j))
                 .and_then(|r| r.as_ref().ok())
                 .map(|r| &r.ty)
@@ -9394,8 +9474,9 @@ fn carrier_param_receiver(
             .map(|r| r.ty.clone())
             .or_else(|| {
                 named_args
+                    // WI-426: a named label binds to its param by name, not symbol identity.
                     .iter()
-                    .position(|(n, _)| n == pname)
+                    .position(|(n, _)| same_symbol(kb, *n, *pname))
                     .and_then(|j| named_results.get(j))
                     .and_then(|r| r.as_ref().ok())
                     .map(|r| r.ty.clone())
@@ -9652,7 +9733,8 @@ fn dispatched_impl_effects(
         if arg_sym.is_none() {
             if let Some((spec_name, _)) = spec_params.get(i) {
                 for (n, occ) in named_args.iter() {
-                    if n == spec_name {
+                    // WI-426: a named label binds to its param by name, not symbol identity.
+                    if same_symbol(kb, *n, *spec_name) {
                         arg_sym = extract_var_ref_sym_node(occ);
                         break;
                     }
@@ -10295,6 +10377,77 @@ fn wrap_some_children(
         children[*idx] = synthesize_some_wrap(kb, &children[*idx], declared);
     }
     super::simp_rewrite::reassemble(occ, &children)
+}
+
+/// WI-426: rebuild an operation-call `Apply` with its NAMED arguments reordered
+/// into the callee's PARAMETER declaration order. Eval binds arguments
+/// positionally — `start_apply` discards the labels and appends the named args
+/// after the positional ones (eval.rs), delegating ordering to the typer — so
+/// without this reorder a call written `two(b: …, a: …)` binds the value meant
+/// for `b` to param `a` at runtime. The named labels match params by NAME
+/// (see [`match_named_arg_param`]), not symbol identity. `some_wraps` (combined
+/// pos+named indices in original order) are applied first so their indices stay
+/// valid, then the named tail is sorted by each label's matched param index (an
+/// unmatched label — a missing-param call, reported elsewhere — sorts last,
+/// never silently rebinding). Returns `None` when `occ` is not a plain `Apply`.
+fn reorder_named_args_in_apply(
+    kb: &mut KnowledgeBase,
+    occ: &Rc<NodeOccurrence>,
+    params: &[(Symbol, Value)],
+    pos_count: usize,
+    some_wraps: &[(usize, Value)],
+    pos_results: &[Result<TypeResult, TypeError>],
+    named_results: &[Result<TypeResult, TypeError>],
+) -> Option<Rc<NodeOccurrence>> {
+    let (functor, labels, type_args) = match occ.as_expr()? {
+        Expr::Apply { functor, named_args, type_args, .. } => (
+            *functor,
+            named_args.iter().map(|(s, _)| *s).collect::<Vec<Symbol>>(),
+            type_args.clone(),
+        ),
+        _ => return None,
+    };
+    // Children in combined [pos…, named…] order, some-wrapped by combined index
+    // (mirrors `wrap_some_children`; `some_wraps` indices are into this order).
+    let mut children: Vec<Rc<NodeOccurrence>> = pos_results
+        .iter()
+        .chain(named_results.iter())
+        .map(|r| Rc::clone(&r.as_ref().expect("reorder_named_args: Ok child").node))
+        .collect();
+    for (idx, declared) in some_wraps {
+        children[*idx] = synthesize_some_wrap(kb, &children[*idx], declared);
+    }
+    let named_children = children.split_off(pos_count);
+    let pos_children = children;
+    // Precompute each label's matched param index (immutable kb borrow) before
+    // sorting, so the sort key needs no kb access. Every label matches a distinct
+    // param here — the caller's named-arg COVERAGE check already rejected unknown
+    // / duplicate labels with a loud error — so `usize::MAX` is defensive only.
+    let keys: Vec<usize> = labels
+        .iter()
+        .map(|&label| {
+            params
+                .iter()
+                .position(|(s, _)| same_symbol(kb, *s, label))
+                .unwrap_or(usize::MAX)
+        })
+        .collect();
+    let mut triples: Vec<(usize, Symbol, Rc<NodeOccurrence>)> = keys
+        .into_iter()
+        .zip(labels)
+        .zip(named_children)
+        .map(|((k, l), c)| (k, l, c))
+        .collect();
+    triples.sort_by_key(|(k, _, _)| *k);
+    let named_pairs: Vec<(Symbol, Rc<NodeOccurrence>)> =
+        triples.into_iter().map(|(_, l, c)| (l, c)).collect();
+    let pass = super::simp_rewrite::simp_pass(kb);
+    Some(NodeOccurrence::synthesized_expr(
+        Expr::Apply { functor, pos_args: pos_children, named_args: named_pairs, type_args },
+        Rc::clone(occ),
+        pass,
+        occ.owner,
+    ))
 }
 
 /// WI-441: explode a ROW-shaped effect value into its component atoms —
