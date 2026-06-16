@@ -65,6 +65,7 @@ namespace anthill.todo
     , spec_next()
     , spec_with_id("show",            "Show details of a work item")
     , spec_with_id("claim",           "Claim a work item")
+    , spec_with_id("unclaim",         "Release a claimed work item back to Open")
     , spec_with_id("deliver",         "Mark a work item as delivered")
     , spec_with_id("verify",          "Mark a delivered work item as verified")
     , spec_feedback()
@@ -384,6 +385,7 @@ namespace anthill.todo
       else if eq(name, "feedback") then cmd_feedback(args, store, agent, s)
       else if eq(name, "add") then cmd_add(args, store, s)
       else if eq(name, "claim") then cmd_claim(args, store, agent, s)
+      else if eq(name, "unclaim") then cmd_unclaim(args, store, agent, s)
       else if eq(name, "deliver") then cmd_deliver(args, store, agent, s)
       else if eq(name, "verify") then cmd_verify(args, store, s)
       else if eq(name, "delete") then cmd_delete(args, store, s)
@@ -1959,6 +1961,48 @@ namespace anthill.todo
       let _ = println(console(),
         concat("claimed: ", concat(id, concat(" by ", agent))))
       0
+
+    -- ── cmd_unclaim ──────────────────────────────────────────────
+    -- `unclaim <id>`: Claimed → Open, the inverse of `claim`. Only
+    -- valid from Claimed — any other status is an error (there is no
+    -- claim to release), so a typo or a double-unclaim fails loudly
+    -- rather than silently no-op'ing. Replacing the whole status with
+    -- Open() clears the agent/since the Claimed status carried. Honors
+    -- --agent only for the audit line (Open carries no claimant).
+    operation cmd_unclaim(args: List[Binding],
+                           store: FileStore,
+                           agent: String,
+                           s: Cell[State]) -> Int64
+      effects {ConsoleOutput, ConsoleError, Modify[s], Error}
+    =
+      match get_arg(args, "id")
+        case none() ->
+          let _ = eprintln(console(), "unclaim: missing id")
+          2
+        case some(id) ->
+          match WorkItemStore.lookup(s, id)
+            case none() ->
+              let _ = eprintln(console(),
+                concat("error: work item '", concat(id, "' not found")))
+              1
+            case some(wi) -> do_unclaim(s, agent, id, wi)
+
+    operation do_unclaim(s: Cell[State], agent: String,
+                         id: String, wi: WorkItem) -> Int64
+      effects {ConsoleOutput, ConsoleError, Modify[s], Error}
+    =
+      let st = status_name_w(wi)
+      if eq(st, "Claimed") then
+        let _ = WorkItemStore.replace(s, id, with_status(wi, Open()))
+        let _ = println(console(),
+          concat("unclaimed: ", concat(id, concat(" by ", agent))))
+        0
+      else
+        let _ = eprintln(console(),
+          concat("error: work item '",
+            concat(id, concat("' is not claimed (status: ",
+              concat(st, "); nothing to release")))))
+        1
 
     -- ── cmd_deliver ──────────────────────────────────────────────
     -- `deliver <id>`: Claimed → Delivered(agent, at).
