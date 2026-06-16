@@ -14,6 +14,9 @@ mod wi278_dot_chain_test;
 #[path = "include/wi492_transitive_provision_test.rs"]
 mod wi492_transitive_provision_test;
 
+#[path = "include/wi491_covariant_return_test.rs"]
+mod wi491_covariant_return_test;
+
 #[path = "include/wi279_dot_dispatch_test.rs"]
 mod wi279_dot_dispatch_test;
 

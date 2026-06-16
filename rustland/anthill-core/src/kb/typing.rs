@@ -18986,6 +18986,40 @@ fn check_operation_bodies(kb: &mut KnowledgeBase, op_syms: &[Symbol], errors: &m
             }
         }
 
+        // WI-491: a COVARIANT return rooted at the receiver — a TOP-LEVEL
+        // expression-carried projection of one parameter's own type
+        // (`operation iterator(m: MappedStream) -> m.Sort = m`, `m.Sort` = the
+        // whole type of `m`; also a member form `m.T`) — is eliminated against
+        // the op's own parameter types BEFORE the conformance and escape checks.
+        // Then the body (`= m`, type `MappedStream`) conforms to the projected
+        // type, and the WI-401 avoidance gate sees the input-rooted concrete type
+        // (`m.Sort` ⟹ `MappedStream`, same sort as the body ⟹ admitted) rather
+        // than the raw `ExprCarried`, which has no sort functor. Only the
+        // WHOLE-TYPE top-level form is rewritten here; a NESTED projection in the
+        // return (`Stream[T = l.T, E = {}]`, List's iterator) is left to the
+        // existing conformance machinery (`refine_self_receiver_body_type` + the
+        // ζ/neutral arms of `unify_types`). An un-dischargeable projection (the
+        // receiver is not a parameter, or the member is missing) keeps the raw
+        // return so the conformance check below surfaces the real error.
+        let effective_return = if matches!(
+            extract_type(kb, &op.return_type),
+            TypeExtractor::ExprCarried { .. }
+        ) {
+            let param_map: HashMap<Symbol, Value> =
+                op.params.iter().map(|(n, t)| (*n, t.clone())).collect();
+            eliminate_type_projections(
+                kb,
+                &op.return_type,
+                &param_map,
+                None,
+                &TypeErrorContext::OperationReturn { op_name: op.op_sym },
+                op.span,
+            )
+            .unwrap_or_else(|_| op.return_type.clone())
+        } else {
+            op.return_type.clone()
+        };
+
         // WI-270: thread the declared return type as the body's
         // top-down `expected`. The body's `let v: T = …`-style
         // annotations and inner Apply/Constructor calls then see a
@@ -18993,7 +19027,7 @@ fn check_operation_bodies(kb: &mut KnowledgeBase, op_syms: &[Symbol], errors: &m
         // WI-341: `type_check_node`'s top-down hint is a ground `TermId`; pass it
         // for a ground return type, drop it (`None`) for a `Value::Node` (denoted-
         // bearing) return — never materialize the occurrence into the hint.
-        match type_check_node(kb, &env, &op.body_node, Some(op.return_type.clone())) {
+        match type_check_node(kb, &env, &op.body_node, Some(effective_return.clone())) {
             Ok(result) => {
                 // WI-283: the typer is tree-producing — `result.node` is
                 // the (possibly `[simp]`-rewritten) body. Write the
@@ -19015,11 +19049,11 @@ fn check_operation_bodies(kb: &mut KnowledgeBase, op_syms: &[Symbol], errors: &m
                 // refined to the receiver's projections (`List` → `List[T = l.T]`) so a
                 // provided return threading the projection conforms. Purely additive — only
                 // attempted on the unrefined failure — so no delivered accept regresses.
-                let conforms = types_compatible(kb, &mut subst, &result.ty, &op.return_type)
+                let conforms = types_compatible(kb, &mut subst, &result.ty, &effective_return)
                     || match refine_self_receiver_body_type(kb, &result.node, &result.ty) {
                         Some(refined) => {
                             let mut probe = Substitution::new();
-                            let ok = types_compatible(kb, &mut probe, &refined, &op.return_type);
+                            let ok = types_compatible(kb, &mut probe, &refined, &effective_return);
                             if ok {
                                 subst = probe;
                             }
@@ -19031,11 +19065,11 @@ fn check_operation_bodies(kb: &mut KnowledgeBase, op_syms: &[Symbol], errors: &m
                     errors.push(TypeError::TypeMismatch {
                         span: None,
                         context: TypeErrorContext::OperationReturn { op_name: op.op_sym },
-                        expected: op.return_type.clone(),
+                        expected: effective_return.clone(),
                         actual: result.ty.clone(),
                     });
                 } else if let Some(e) =
-                    abstracting_return_error(kb, &result.ty, &op.return_type, op.op_sym)
+                    abstracting_return_error(kb, &result.ty, &effective_return, op.op_sym)
                 {
                     // WI-401: the body conforms, but only by a provider UPCAST to a bare
                     // abstract spec — the sealing return that would let an abstract member
@@ -19044,7 +19078,7 @@ fn check_operation_bodies(kb: &mut KnowledgeBase, op_syms: &[Symbol], errors: &m
                 } else if let Some(e) = branch_leaf_abstracting_return_error(
                     kb,
                     &result.node,
-                    &op.return_type,
+                    &effective_return,
                     op.op_sym,
                 ) {
                     // WI-457: a JOIN body widened divergent concrete providers up to the
