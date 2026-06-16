@@ -31,10 +31,9 @@ module.exports = grammar({
   ],
 
   conflicts: $ => [
-    // rule <head> could start a single rule or a rule block
-    [$.rule_declaration, $.rule_entry],
-    // operation <name>(...) could start a single operation or an operation block
-    [$.operation_declaration, $.operation_entry],
+    // (removed: rule_declaration vs rule_entry and operation_declaration vs
+    // operation_entry conflicts — brace-less rule/operation blocks dropped in
+    // WI-497, so a block no longer shares a prefix with a single declaration)
     // (removed: abstract_sort vs sort_with_body conflict — `= ?` disambiguates)
     // After operation clauses, `requires` could be another clause or a standalone declaration
     [$.operation_declaration],
@@ -819,10 +818,7 @@ module.exports = grammar({
 
     operation_block: $ => seq(
       'operation',
-      choice(
-        seq('{', repeat($.operation_entry), '}'),
-        seq(repeat($.operation_entry), 'end'),
-      ),
+      '{', repeat($.operation_entry), '}',
     ),
 
     operation_entry: $ => seq(
@@ -844,10 +840,7 @@ module.exports = grammar({
 
     rule_block: $ => seq(
       'rule',
-      choice(
-        seq('{', repeat($.rule_entry), '}'),
-        seq(repeat($.rule_entry), 'end'),
-      ),
+      '{', repeat($.rule_entry), '}',
     ),
 
     rule_entry: $ => seq(

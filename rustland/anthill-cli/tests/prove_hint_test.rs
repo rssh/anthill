@@ -29,17 +29,18 @@ fn hint_attributed_rule_auto_included_in_proof() {
     // explicitly, but Z3 still sees the lifted forall of bound_d's
     // conclusion, which lets target discharge.
     //
-    // The two rules use the braced `rule { ... }` block: a brace-less
-    // `rule X: ...` sequence is `rule <entry>* end`, which greedily
-    // swallows the following `proof ... end` (the proof's `end` closes
-    // the block). The braces delimit the block unambiguously.
+    // The two rules are written as separate single `rule X: ...`
+    // declarations. Before WI-497 this snippet was a parser trap: the
+    // brace-less `rule <entry>* end` block form was GLR-ambiguous with a
+    // single rule_declaration, so the parser could merge the two rules
+    // into one block and greedily swallow the following `proof ... end`
+    // (the proof's `end` closing the block). WI-497 removed the
+    // brace-less block form, so these parse as two rule_declarations.
     let src = r#"
         namespace test.hint.basic
 
-          rule {
-            bound_d: gte(?x, 3.0) :- gte(?x, 5.0) [hint]
-            target:  gte(?x, 3.0) :- gte(?x, 5.0)
-          }
+          rule bound_d: gte(?x, 3.0) :- gte(?x, 5.0) [hint]
+          rule target:  gte(?x, 3.0) :- gte(?x, 5.0)
 
           proof bound_d
             by z3(logic: "LRA")

@@ -573,10 +573,10 @@ Operation body in block
 =====================================
 
 sort Math
-  operation
+  operation {
     double(x: Int) -> Int = x + x
     triple(x: Int) -> Int = x + x + x
-  end
+  }
 end
 
 ---

@@ -3941,10 +3941,10 @@ fn parse_operation_body_with_clauses() {
 #[test]
 fn parse_operation_body_in_block() {
     let source = r#"sort Math
-  operation
+  operation {
     double(x: Int64) -> Int64 = x + x
     triple(x: Int64) -> Int64 = x + x + x
-  end
+  }
 end
 "#;
     let parsed = parse::parse(source).expect("parse failed");
