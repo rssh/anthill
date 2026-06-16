@@ -1566,33 +1566,34 @@ impl KnowledgeBase {
         goal: &Value,
         answer_subst: &Substitution,
     ) -> BuiltinResult {
-        // Builtins not yet migrated to `TermView` still need a hash-consed
-        // term goal. The remaining term-only builtins (qualified_name,
-        // short_name, lookup_symbol, resolve_sort_inst_param, field_access) are
-        // op-body/eval-only — no rule body reaches them (the full suite is
-        // green). A `Value::Node` goal hitting one means a new rule uses it;
-        // fail loud naming the tag so it gets migrated.
-        // TODO(WI-246 follow-up): migrate these to TermView and drop this narrow.
-        let as_term = |g: &Value| match g {
+        // The symbol-reflection builtins (qualified_name, short_name,
+        // lookup_symbol, resolve_sort_inst_param) operate on term-shaped symbol
+        // data and keep their hash-consed `TermId` goal signature. A rule-body
+        // goal arrives as a `Value::Node` occurrence (WI-246); lower it to a
+        // term here so they handle it uniformly (no panic narrow). `field_access`
+        // is fully `TermView`-migrated below (WI-482) — it reads its receiver
+        // carrier-agnostically, so a `Value::Node` receiver (a denoted entity)
+        // is projected without lowering.
+        let as_term = |kb: &mut KnowledgeBase, g: &Value| match g {
             Value::Term(t) => *t,
-            _ => panic!("WI-246: builtin {tag:?} got a Value::Node goal — not yet migrated to TermView"),
+            _ => reify_goal_value(kb, g),
         };
         match tag {
             BuiltinTag::NonVar => self.builtin_nonvar(goal, answer_subst),
             BuiltinTag::Ground => self.builtin_ground(goal, answer_subst),
-            BuiltinTag::QualifiedName => self.builtin_qualified_name(as_term(goal), answer_subst),
-            BuiltinTag::ShortName => self.builtin_short_name(as_term(goal), answer_subst),
-            BuiltinTag::LookupSymbol => self.builtin_lookup_symbol(as_term(goal), answer_subst),
+            BuiltinTag::QualifiedName => { let t = as_term(self, goal); self.builtin_qualified_name(t, answer_subst) }
+            BuiltinTag::ShortName => { let t = as_term(self, goal); self.builtin_short_name(t, answer_subst) }
+            BuiltinTag::LookupSymbol => { let t = as_term(self, goal); self.builtin_lookup_symbol(t, answer_subst) }
             BuiltinTag::IsEntityOf => self.builtin_is_entity_of(goal, answer_subst),
             BuiltinTag::ExtractSort => self.builtin_extract_sort(goal, answer_subst),
             BuiltinTag::Not => unreachable!("Not is handled in step_init, not execute_builtin"),
             BuiltinTag::HoApply => unreachable!("HoApply is handled in step_init, not execute_builtin"),
             BuiltinTag::PushChoice => unreachable!("PushChoice is handled in step_init, not execute_builtin"),
-            BuiltinTag::ResolveSortInstParam => self.builtin_resolve_sort_inst_param(as_term(goal), answer_subst),
+            BuiltinTag::ResolveSortInstParam => { let t = as_term(self, goal); self.builtin_resolve_sort_inst_param(t, answer_subst) }
             BuiltinTag::Scope => self.builtin_scope(goal, answer_subst),
             BuiltinTag::Kind => self.builtin_kind(goal, answer_subst),
             BuiltinTag::Provenance => self.builtin_provenance(goal, answer_subst),
-            BuiltinTag::FieldAccess => self.builtin_field_access(as_term(goal), answer_subst),
+            BuiltinTag::FieldAccess => self.builtin_field_access(goal, answer_subst),
             BuiltinTag::Eq => self.builtin_eq(goal, answer_subst),
             BuiltinTag::Neq => self.builtin_neq(goal, answer_subst),
             BuiltinTag::Gt => self.builtin_cmp(goal, answer_subst, |ord| ord == std::cmp::Ordering::Greater),
@@ -2324,29 +2325,6 @@ impl KnowledgeBase {
         }
     }
 
-    /// Try to bind a result argument to a computed value.
-    /// If the result is an unbound Var, bind it. If already bound, check equality.
-    fn try_bind_result(&self, result_arg: TermId, value: TermId, subst: &Substitution) -> BuiltinResult {
-        let Some(walked_result) = self.walk_arg_term(result_arg, subst) else {
-            return BuiltinResult::Failure;
-        };
-        match self.terms.get(walked_result) {
-            Term::Var(Var::Global(vid)) => {
-                let vid = *vid;
-                let mut extra = Substitution::new();
-                extra.bind(vid, value);
-                BuiltinResult::SuccessWithBindings(extra)
-            }
-            _ => {
-                if walked_result == value {
-                    BuiltinResult::Success
-                } else {
-                    BuiltinResult::Failure
-                }
-            }
-        }
-    }
-
     // ── Equality and comparison builtins ─────────────────────
 
     /// `eq(?a, ?b)` — structural equality after walking. Succeeds if both
@@ -2386,6 +2364,10 @@ impl KnowledgeBase {
             (Some(a), Some(b)) => (a, b),
             _ => return EqOperands::Absent,
         };
+        // WI-482: reduce a dispatched dot operand (`eq(?v, ?p.x)`) to its
+        // projected field value before comparing.
+        let a = self.reduce_dot_value(a, subst);
+        let b = self.reduce_dot_value(b, subst);
         // Reify literal occurrence args to terms so structural_eq compares
         // them by hash-consed identity (a Node-vs-Node compare is otherwise
         // conservatively false).
@@ -2412,6 +2394,10 @@ impl KnowledgeBase {
             (Some(a), Some(b)) => (a, b),
             _ => return BuiltinResult::Failure,
         };
+        // WI-482: reduce a dispatched dot operand (`lt(?p.x, ?limit)`) to its
+        // projected field value before comparing.
+        let a = self.reduce_dot_value(a, subst);
+        let b = self.reduce_dot_value(b, subst);
         if self.value_is_unbound_var(&a) || self.value_is_unbound_var(&b) {
             return BuiltinResult::Delay;
         }
@@ -2529,11 +2515,20 @@ impl KnowledgeBase {
             Some(b) => b,
             None => return BuiltinResult::Failure,
         };
+        // WI-482: reduce a dispatched dot operand (`mul(?p.x, ?dt)`) to its
+        // projected field value before computing.
+        let a = self.reduce_dot_value(a, subst);
+        let b = self.reduce_dot_value(b, subst);
         if self.value_is_unbound_var(&a) || self.value_is_unbound_var(&b) {
             return BuiltinResult::Delay;
         }
         let target = (pos_arity >= 3).then(|| self.resolve_result_target(goal.pos_arg(self, 2), subst));
 
+        // Reify literal occurrence operands (a numeric literal written in a rule
+        // body reads as `Value::Node`) so `value_num` can extract from
+        // `Value::Term` — the same normalization `cmp`/`eq` apply (WI-482).
+        let a = self.normalize_value(a);
+        let b = self.normalize_value(b);
         let result_term = match (self.value_num(&a), self.value_num(&b)) {
             (Some(Num::Int(x)), Some(Num::Int(y))) => {
                 self.alloc(Term::Const(Literal::Int(int_op(x, y))))
@@ -2692,90 +2687,172 @@ impl KnowledgeBase {
         self.finish_result(target, kind_term)
     }
 
-    /// `field_access(?object, ?field, ?result)` — dot projection builtin.
+    /// `field_access(?object, ?field, ?result)` — dot projection builtin
+    /// (WI-279/WI-282), `TermView`-generic so a rule-body `Value::Node` goal
+    /// (a dispatched `?p.x`) resolves without lowering (WI-482).
     ///
-    /// Two dispatch modes based on the object term:
-    /// 1. Entity instance: object is `Fn { functor, named_args, .. }` where functor
-    ///    is in the `entity_fields` registry → extract the named field from args.
-    /// 2. Sort component: object is `Fn { functor, .. }` where functor is a sort →
-    ///    look up field in the sort's scope via qualified name.
+    /// Two dispatch modes (see [`Self::project_field`]):
+    /// 1. Entity instance: `object` is `Fn { functor, named_args, .. }` with the
+    ///    functor in `entity_fields` → return the named field's value.
+    /// 2. Sort component: `object` is `Fn { functor, .. }` with `functor` a sort →
+    ///    look up the field in the sort's scope via qualified name.
     ///
-    /// When the goal has only 2 args (from desugared `?x.y`), the builtin
-    /// cannot bind a result — it succeeds only for structural matching.
-    fn builtin_field_access(&mut self, goal: TermId, subst: &Substitution) -> BuiltinResult {
-        let (obj_arg, field_arg, result_arg) = match self.terms.get(goal) {
-            Term::Fn { pos_args, .. } if pos_args.len() >= 3 => {
-                (pos_args[0], pos_args[1], Some(pos_args[2]))
-            }
-            Term::Fn { pos_args, .. } if pos_args.len() >= 2 => {
-                (pos_args[0], pos_args[1], None)
-            }
+    /// The 3-arg form binds/compares a `?result`; the 2-arg form (a desugared
+    /// bare `?x.y`) is a projection test — success iff the field exists.
+    fn builtin_field_access<V: TermView>(&mut self, goal: &V, subst: &Substitution) -> BuiltinResult {
+        let pos_arity = match goal.head(self) {
+            ViewHead::Functor { pos_arity, .. } if pos_arity >= 2 => pos_arity,
             _ => return BuiltinResult::Failure,
         };
-
-        let Some(walked_obj) = self.walk_arg_term(obj_arg, subst) else {
-            return BuiltinResult::Failure;
+        // Resolve operands (and the 3-arg result target) to owned values up
+        // front — a `ViewItem` borrows the KB, so this must finish before the
+        // `&mut self` reify/alloc below.
+        let obj = match self.walk_arg(goal.pos_arg(self, 0), subst) {
+            Some(v) => v,
+            None => return BuiltinResult::Failure,
         };
-        let Some(walked_field) = self.walk_arg_term(field_arg, subst) else {
-            return BuiltinResult::Failure;
+        let field = match self.walk_arg(goal.pos_arg(self, 1), subst) {
+            Some(v) => v,
+            None => return BuiltinResult::Failure,
         };
-
-        // Extract field symbol from Ref, Ident, or Fn
-        let field_sym = match self.terms.get(walked_field) {
-            Term::Ref(s) | Term::Ident(s) => *s,
-            Term::Fn { functor, .. } => *functor,
-            Term::Var(_) => return BuiltinResult::Delay,
-            _ => return BuiltinResult::Failure,
-        };
-
-        // Object must be a bound Fn term
-        let (functor, named_args) = match self.terms.get(walked_obj) {
-            Term::Var(_) => return BuiltinResult::Delay,
-            Term::Fn { functor, named_args, .. } => (*functor, named_args.clone()),
-            _ => return BuiltinResult::Failure,
-        };
-
-        // Get the field's short name for matching (owned to avoid borrow conflicts)
-        let field_name = self.symbols.name(field_sym).to_owned();
-
-        // Dispatch 1: Entity field access — functor is in entity_fields registry
-        if self.entity_fields.contains_key(&functor) {
-            // Look up by short name match in named_args
-            for &(arg_sym, arg_val) in named_args.iter() {
-                if self.symbols.name(arg_sym) == field_name {
-                    return self.bind_or_succeed(result_arg, arg_val, subst);
-                }
-            }
-            return BuiltinResult::Failure;
+        if self.value_is_unbound_var(&obj) || self.value_is_unbound_var(&field) {
+            return BuiltinResult::Delay;
         }
+        let target = (pos_arity >= 3).then(|| self.resolve_result_target(goal.pos_arg(self, 2), subst));
 
-        // Dispatch 2: Sort component access — look up field in functor's scope
-        let functor_qname = match self.symbols.get(functor) {
-            crate::intern::SymbolDef::Resolved { qualified_name, .. } => qualified_name.clone(),
-            _ => return BuiltinResult::Failure,
+        // The receiver must be a structural carrier (entity/sort term, or a
+        // denoted-occurrence twin); a scalar receiver has no fields.
+        let Some(obj_term) = self.carrier_term(&obj) else {
+            return BuiltinResult::Failure;
         };
-        let target_qname = format!("{}.{}", functor_qname, field_name);
-        if let Some(&resolved_sym) = self.symbols.by_qualified_name.get(&target_qname) {
-            // Found the component — return as nullary Fn for sorts/entities, Ref otherwise
-            let result_term = match self.symbols.get(resolved_sym) {
-                crate::intern::SymbolDef::Resolved { kind, .. }
-                    if matches!(kind, crate::intern::SymbolKind::Sort | crate::intern::SymbolKind::Entity) =>
-                {
-                    self.make_name_term_from_sym(resolved_sym)
-                }
-                _ => self.alloc(Term::Ref(resolved_sym)),
-            };
-            return self.bind_or_succeed(result_arg, result_term, subst);
+        let Some(field_name) = self.field_name_from_value(&field) else {
+            return BuiltinResult::Failure;
+        };
+        match self.project_field(obj_term, &field_name) {
+            Some(val) => match target {
+                Some(t) => self.finish_result(t, val),
+                None => BuiltinResult::Success,
+            },
+            None => BuiltinResult::Failure,
         }
-
-        BuiltinResult::Failure
     }
 
-    /// Bind a value to an optional result arg, or succeed if no result arg.
-    fn bind_or_succeed(&self, result_arg: Option<TermId>, value: TermId, subst: &Substitution) -> BuiltinResult {
-        match result_arg {
-            Some(ra) => self.try_bind_result(ra, value, subst),
-            None => BuiltinResult::Success,
+    /// The field's short name from a `field_access` field operand `Value`: a
+    /// `String` scalar / `Const`-string (the dispatched-dot form, whose eval
+    /// twin also takes a string — `eval::builtins::reflect_field_access`), or a
+    /// `Ref`/`Ident`/`Fn` symbol (the reflection-rule form). `None` otherwise.
+    fn field_name_from_value(&mut self, v: &Value) -> Option<String> {
+        if let Value::Str(s) = v {
+            return Some(s.clone());
+        }
+        let t = self.carrier_term(v)?;
+        self.field_operand_name(t)
+    }
+
+    /// The hash-consed term carrier of a structural value — a `Value::Term`
+    /// unwrapped, a `Value::Node` occurrence reified via `occurrence_to_term`.
+    /// `None` for a scalar / value-level var carrier, which has no fields (the
+    /// caller fails or leaves the operand unreduced). Shared by the
+    /// `field_access` builtin, `field_name_from_value`, and `reduce_dot_value`
+    /// (WI-482).
+    fn carrier_term(&mut self, v: &Value) -> Option<TermId> {
+        match v {
+            Value::Term(_) | Value::Node(_) => Some(reify_goal_value(self, v)),
+            _ => None,
+        }
+    }
+
+    /// The field's short name from a reified field operand term — a `Ref`/`Ident`
+    /// symbol or `Fn` functor → its short name, a `String` const → the string.
+    fn field_operand_name(&self, field_term: TermId) -> Option<String> {
+        match self.terms.get(field_term) {
+            Term::Ref(s) | Term::Ident(s) => Some(self.symbols.name(*s).to_owned()),
+            Term::Fn { functor, .. } => Some(self.symbols.name(*functor).to_owned()),
+            Term::Const(Literal::String(s)) => Some(s.clone()),
+            _ => None,
+        }
+    }
+
+    /// WI-482: the field-projection core shared by the `field_access` builtin (a
+    /// dot goal) and [`Self::reduce_dot_value`] (a dot in operand position).
+    /// Returns the projected value term for an entity instance's named field or
+    /// a sort-scope component, or `None` if the object carries no such field.
+    /// Pure lookup — no result binding, no delay.
+    fn project_field(&mut self, obj_term: TermId, field_name: &str) -> Option<TermId> {
+        let (functor, named_args) = match self.terms.get(obj_term) {
+            Term::Fn { functor, named_args, .. } => (*functor, named_args.clone()),
+            _ => return None,
+        };
+        // Dispatch 1: entity field access — match the named arg by short name.
+        if self.entity_fields.contains_key(&functor) {
+            return named_args
+                .iter()
+                .find(|(arg_sym, _)| self.symbols.name(*arg_sym) == field_name)
+                .map(|(_, v)| *v);
+        }
+        // Dispatch 2: sort component access — resolve `functor_qname.field`.
+        let functor_qname = match self.symbols.get(functor) {
+            crate::intern::SymbolDef::Resolved { qualified_name, .. } => qualified_name.clone(),
+            _ => return None,
+        };
+        let target_qname = format!("{}.{}", functor_qname, field_name);
+        let resolved_sym = *self.symbols.by_qualified_name.get(&target_qname)?;
+        // A sort/entity component is a nullary name term; anything else a Ref.
+        Some(match self.symbols.get(resolved_sym) {
+            crate::intern::SymbolDef::Resolved { kind, .. }
+                if matches!(kind, crate::intern::SymbolKind::Sort | crate::intern::SymbolKind::Entity) =>
+            {
+                self.make_name_term_from_sym(resolved_sym)
+            }
+            _ => self.alloc(Term::Ref(resolved_sym)),
+        })
+    }
+
+    /// WI-482: reduce a σ-walked operand `Value` that is a dispatched dot
+    /// (`field_access(receiver, "field")` — the form a rule-body `?p.x` rewrites
+    /// to) to the projected field value, so a dot in OPERAND position
+    /// (`eq(?v, ?p.x)`, `mul(?p.x, ?dt)`) computes — not only a top-level dot
+    /// goal. The receiver is reduced first so a chain `?p.a.b` collapses
+    /// inside-out. A non-dot value, or a dot whose receiver/field is unbound or
+    /// names no such field, is returned UNCHANGED — the caller's comparison then
+    /// sees the residual node and fails/delays (no silent success).
+    fn reduce_dot_value(&mut self, v: Value, subst: &Substitution) -> Value {
+        let occ = match &v {
+            Value::Node(o) => Rc::clone(o),
+            _ => return v,
+        };
+        let is_field_access = matches!(
+            occ.as_expr(),
+            Some(Expr::Apply { functor, .. })
+                if self.builtins.get(functor).copied() == Some(BuiltinTag::FieldAccess)
+        );
+        if !is_field_access {
+            return v;
+        }
+        // Receiver (arg 0) and field name (arg 1), σ-walked. The receiver may
+        // itself be a dot — reduce it first.
+        let recv = match self.walk_arg(occ.pos_arg(self, 0), subst) {
+            Some(r) => r,
+            None => return v,
+        };
+        let recv = self.reduce_dot_value(recv, subst);
+        let field = match self.walk_arg(occ.pos_arg(self, 1), subst) {
+            Some(f) => f,
+            None => return v,
+        };
+        if self.value_is_unbound_var(&recv) || self.value_is_unbound_var(&field) {
+            return v;
+        }
+        // Scalar receiver: no fields — leave the operand unreduced.
+        let Some(obj_term) = self.carrier_term(&recv) else {
+            return v;
+        };
+        let Some(field_name) = self.field_name_from_value(&field) else {
+            return v;
+        };
+        match self.project_field(obj_term, &field_name) {
+            Some(val) => Value::Term(val),
+            None => v,
         }
     }
 
