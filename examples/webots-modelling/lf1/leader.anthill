@@ -23,9 +23,6 @@ namespace anthill.examples.lf1.leader
   import anthill.prelude.IndexedSeq.{nth}
   import anthill.geometry.{Vec3}
 
-  export Pose, Controls
-  export Waypoint, WaypointSequence, LeaderState
-  export LeaderController
 
   -- =================================================================
   -- Geometry / kinematics value types

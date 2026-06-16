@@ -63,7 +63,6 @@ fn load_errors(extras: &[&str]) -> Vec<String> {
 const VEC: &str = r#"
 namespace test.wi404.vec
   import anthill.prelude.{Int64}
-  export Vec, mk
   sort Vec
     sort T = ?
     sort N = ?
@@ -128,7 +127,6 @@ fn denoted_value_place_conforms_to_itself() {
     let vec = r#"
 namespace test.wi404.vpvec
   import anthill.prelude.{Int64}
-  export Vec, Producer, mk
   sort Vec
     sort T = ?
     sort N = ?
@@ -157,7 +155,6 @@ fn differing_denoted_value_place_rejected() {
     let vec = r#"
 namespace test.wi404.vpmvec
   import anthill.prelude.{Int64}
-  export Vec, Producer, mk
   sort Vec
     sort T = ?
     sort N = ?
@@ -190,7 +187,6 @@ fn denoted_bearing_alias_conforms_to_definition() {
     let vec = r#"
 namespace test.wi404.alvec
   import anthill.prelude.{Int64}
-  export Vec, Vec3i, mk
   sort Vec
     sort T = ?
     sort N = ?
@@ -217,7 +213,6 @@ fn denoted_member_op_return_conforms() {
     let vec = r#"
 namespace test.wi404.mvec
   import anthill.prelude.{Int64}
-  export Vec
   sort Vec
     sort T = ?
     sort N = ?

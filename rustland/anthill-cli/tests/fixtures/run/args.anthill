@@ -2,7 +2,6 @@ namespace my.args
   import anthill.cli.Main
   import anthill.prelude.Console.{console, println, ConsoleOutput}
   import anthill.prelude.{Int64, String, List}
-  export Argv
 
   sort Argv
     requires anthill.cli.Main

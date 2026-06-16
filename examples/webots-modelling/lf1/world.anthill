@@ -21,7 +21,6 @@
 namespace anthill.examples.lf1.world
   import anthill.prelude.{String, List}
   import anthill.examples.lf1.webots.robot_kinds.{NamedDevice}
-  export WorldRobot
 
   -- A robot instance in a webots world.
   --   world: the .wbt's logical name (lf1: multirotor_leader_follower1)

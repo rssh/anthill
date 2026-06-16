@@ -279,7 +279,6 @@ pub enum Item {
 pub struct Namespace {
     pub name: Name,
     pub imports: Vec<Import>,
-    pub exports: Vec<Name>,
     pub items: Vec<Item>,
     pub span: Span,
 }
@@ -336,7 +335,6 @@ pub struct SortWithBody {
     pub name: Name,
     pub descriptions: Vec<String>,
     pub imports: Vec<Import>,
-    pub exports: Vec<Name>,
     pub items: Vec<Item>,
     pub meta: Option<MetaBlock>,
     pub span: Span,
@@ -473,7 +471,6 @@ pub struct Describe {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Visibility {
     Internal,
-    Export,
     Public,
 }
 

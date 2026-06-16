@@ -46,7 +46,6 @@ fn provider_missing_required_subspec_errors() {
     // NOT `Nameable` → the satisfaction fact is unsound and must be rejected.
     let src = r#"
         namespace wi343.missing
-          export Nameable, Comparable, Widget
           sort Nameable
             sort T = ?
             operation tag(x: T) -> Int64
@@ -82,7 +81,6 @@ fn provider_with_required_subspec_loads() {
     // false-positive on a satisfied requirement.)
     let src = r#"
         namespace wi343.complete
-          export Nameable, Comparable, Widget
           sort Nameable
             sort T = ?
             operation tag(x: T) -> Int64
@@ -116,7 +114,6 @@ fn provider_of_requireless_spec_loads() {
     // specs — the common case.)
     let src = r#"
         namespace wi343.requireless
-          export Tagged, Gizmo
           sort Tagged
             sort T = ?
             operation label(x: T) -> Int64
@@ -148,7 +145,6 @@ fn provider_satisfies_subspec_at_wrong_bindings_errors() {
     // reject it. Pins WI-356 point (a).
     let src = r#"
         namespace wi356.wrongbind
-          export Ring, VS, Carrier, NonRing
           sort Ring
             sort F = ?
             operation rtag(x: F) -> Int64
@@ -192,7 +188,6 @@ fn provider_transitive_requires_gap_errors() {
     // unsound. Pins WI-356 point (c).
     let src = r#"
         namespace wi356.transitive
-          export B, A, Spec, Thing
           sort B
             sort T = ?
             operation btag(x: T) -> Int64
@@ -240,7 +235,6 @@ fn shorthand_requires_binding_precise_wrong_field_errors() {
     // `Ring` — must error, even though the carrier provides `Ring` at `Carrier`.
     let src = r#"
         namespace wi359.shorthand
-          export Ring, VS, Carrier, NonRing
           sort Ring
             sort T = ?
             operation rtag(x: T) -> Int64
@@ -280,7 +274,6 @@ fn shorthand_requires_binding_precise_right_field_loads() {
     // precise path. Pins that WI-359 didn't just make everything error.
     let src = r#"
         namespace wi359.shorthand_ok
-          export Ring, VS, Carrier
           sort Ring
             sort T = ?
             operation rtag(x: T) -> Int64

@@ -22,7 +22,6 @@ fn if_then_else_literal_branches() {
     let source = r#"
         namespace test.expr_b
           import anthill.prelude.{Int64, Bool}
-          export Calc
           sort Calc
             operation pick(b: Bool) -> Int64 = if b then 1 else 0
           end
@@ -46,7 +45,6 @@ fn if_then_else_with_call_in_condition() {
     let source = r#"
         namespace test.expr_b
           import anthill.prelude.{Int64, Bool}
-          export Calc
           sort Calc
             operation abs(n: Int64) -> Int64 = if gt(n, 0) then n else 0
           end
@@ -71,7 +69,6 @@ fn nested_if_then_else() {
     let source = r#"
         namespace test.expr_b
           import anthill.prelude.{Int64, Bool}
-          export Calc
           sort Calc
             operation sign(b1: Bool, b2: Bool) -> Int64 =
               if b1 then 1 else if b2 then 0 else (-1)
@@ -101,7 +98,6 @@ fn field_access_emits_dot_syntax() {
     let source = r#"
         namespace test.expr_b_field
           import anthill.prelude.{Float}
-          export Pose, Calc
           entity Pose(x: Float, y: Float)
           sort Calc
             operation pos_x(p: Pose) -> Float = (p).x
@@ -126,7 +122,6 @@ fn field_access_in_expression_position() {
     let source = r#"
         namespace test.expr_b_field2
           import anthill.prelude.{Float}
-          export Pose, Calc
           entity Pose(x: Float, y: Float)
           sort Calc
             operation sum_xy(p: Pose) -> Float = add((p).x, (p).y)

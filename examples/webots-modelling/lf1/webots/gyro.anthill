@@ -9,8 +9,6 @@
 sort anthill.examples.lf1.webots.Gyro
   import anthill.prelude.{Int64, Unit, Modify}
   import anthill.geometry.{Vec3}
-  export Gyro
-  export enable, disable, get_sampling_period, get_values
 
   operation enable(self: Gyro, sampling_period: Int64) -> Unit
     effects Modify[self]

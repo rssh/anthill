@@ -21,9 +21,6 @@ fn inductive_kb() -> anthill_core::kb::KnowledgeBase {
           import anthill.prelude.Float.{div, abs}
           import anthill.prelude.Ordered.{lte, lt, gt}
 
-          export LinkParameters, KinematicAssumptions, GpsErrorBound, DistanceBounds
-          export comm_delay_max, step_distance_bound
-          export lower_violation, upper_violation
 
           entity LinkParameters(
             range_max: Float, signal_speed: Float, baud_rate: Float,

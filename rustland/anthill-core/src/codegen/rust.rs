@@ -281,7 +281,7 @@ impl<'a> RustCodegen<'a> {
 
     fn visibility_prefix(&self, vis: Option<Visibility>) -> &'static str {
         match vis {
-            Some(Visibility::Export) | Some(Visibility::Public) => "pub ",
+            Some(Visibility::Public) => "pub ",
             _ => {
                 if self.config.default_pub { "pub " } else { "" }
             }

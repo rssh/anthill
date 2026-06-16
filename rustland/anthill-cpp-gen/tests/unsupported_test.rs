@@ -33,7 +33,6 @@ fn recursive_anonymous_lambda_rejected() {
     let source = r#"
         namespace test.unsupported
           import anthill.prelude.{Int64}
-          export Calc
           sort Calc
             operation lam(n: Int64) -> Int64 =
               let f = lambda x -> f(x)
@@ -64,7 +63,6 @@ fn non_recursive_let_lambda_still_works() {
     let source = r#"
         namespace test.unsupported_ok
           import anthill.prelude.{Int64}
-          export Calc
           sort Calc
             operation lam(n: Int64) -> Int64 =
               let g = lambda x -> add(x, 1)
@@ -89,7 +87,6 @@ fn reflect_sort_in_signature_rejected() {
     let source = r#"
         namespace test.unsupported_reflect
           import anthill.reflect.{TermRepr}
-          export Inspector
           sort Inspector
             operation peek() -> TermRepr
           end
@@ -119,7 +116,6 @@ fn persistence_sort_in_signature_rejected() {
         namespace test.unsupported_persistence
           import anthill.persistence.{Store}
           import anthill.prelude.{Unit}
-          export Bridge
           sort Bridge
             operation tell(s: Store) -> Unit
           end

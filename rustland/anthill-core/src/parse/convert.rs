@@ -1781,7 +1781,6 @@ impl<'a> Converter<'a> {
         self.child_by_kind(node, "visibility").map(|v| {
             match self.text(v) {
                 "internal" => Visibility::Internal,
-                "export" => Visibility::Export,
                 "public" => Visibility::Public,
                 other => {
                     self.err(format!("unknown visibility: {other}"), v);
@@ -1839,19 +1838,12 @@ impl<'a> Converter<'a> {
             .map(|ic| self.convert_import(ic))
             .collect();
 
-        let mut exports = Vec::new();
-        for ec in self.children_by_kind(node, "export_clause") {
-            for n in self.children_by_kind(ec, "name") {
-                exports.push(self.convert_name(n));
-            }
-        }
-
         // Namespace body items
         let mut items = Vec::new();
         let mut cursor = node.walk();
         for child in node.named_children(&mut cursor) {
             match child.kind() {
-                "name" | "import_clause" | "export_clause" => {}
+                "name" | "import_clause" => {}
                 _ => {
                     let converted = self.convert_items_at(child);
                     items.extend(converted);
@@ -1862,7 +1854,6 @@ impl<'a> Converter<'a> {
         Some(Namespace {
             name,
             imports,
-            exports,
             items,
             span,
         })
@@ -2041,13 +2032,6 @@ impl<'a> Converter<'a> {
             .map(|ic| self.convert_import(ic))
             .collect();
 
-        let mut exports = Vec::new();
-        for ec in self.children_by_kind(node, "export_clause") {
-            for n in self.children_by_kind(ec, "name") {
-                exports.push(self.convert_name(n));
-            }
-        }
-
         let mut items = Vec::new();
         // WI-451 (§5.4): an enclosing type-param list `sort Spec[F[T], A, B]`
         // desugars into marked body items, PREPENDED so the params precede the
@@ -2059,7 +2043,7 @@ impl<'a> Converter<'a> {
         let mut cursor = node.walk();
         for child in node.named_children(&mut cursor) {
             match child.kind() {
-                "name" | "visibility" | "import_clause" | "export_clause" | "meta_block"
+                "name" | "visibility" | "import_clause" | "meta_block"
                 | "description_block" | "sort_type_param_list" => {}
                 _ => {
                     let converted = self.convert_items_at(child);
@@ -2075,7 +2059,6 @@ impl<'a> Converter<'a> {
             name,
             descriptions,
             imports,
-            exports,
             items,
             meta,
             span,
@@ -2189,7 +2172,6 @@ impl<'a> Converter<'a> {
                 name,
                 descriptions: Vec::new(),
                 imports: Vec::new(),
-                exports: Vec::new(),
                 items,
                 meta,
                 span,

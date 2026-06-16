@@ -24,7 +24,6 @@ fn entity_constructor_literal_emits_brace_init() {
     let source = r#"
         namespace test.expr_d
           import anthill.prelude.{Int64}
-          export Pose, Calc
           entity Pose(x: Int64, y: Int64)
           sort Calc
             operation make_pose(x: Int64) -> Pose = Pose(x: x, y: 0)
@@ -49,7 +48,6 @@ fn entity_constructor_named_args_reorder_to_field_order() {
     let source = r#"
         namespace test.expr_d_reorder
           import anthill.prelude.{Int64}
-          export Pose, Calc
           entity Pose(x: Int64, y: Int64)
           sort Calc
             operation make_pose(a: Int64, b: Int64) -> Pose = Pose(y: b, x: a)
@@ -71,7 +69,6 @@ fn list_literal_emits_brace_init() {
     let source = r#"
         namespace test.expr_d_list
           import anthill.prelude.{Int64, List}
-          export Calc
           sort Calc
             operation triple(x: Int64) -> List[T = Int64] = [x, 1, 2]
           end
@@ -95,7 +92,6 @@ fn match_over_nullary_sum_emits_holds_alternative_chain() {
     let source = r#"
         namespace test.expr_d_match
           import anthill.prelude.{Int64}
-          export Color, Red, Green, Blue, Calc
           enum Color
             entity Red
             entity Green
@@ -132,7 +128,6 @@ fn match_with_let_in_branch_body() {
     let source = r#"
         namespace test.expr_d_compose
           import anthill.prelude.{Int64}
-          export Sign, Pos, Neg, Calc
           enum Sign
             entity Pos
             entity Neg
@@ -168,7 +163,6 @@ fn entity_constructor_literal_compiles() {
     let source = r#"
         namespace test.expr_d_compile
           import anthill.prelude.{Int64}
-          export Pose, Calc
           entity Pose(x: Int64, y: Int64)
           sort Calc
             operation origin() -> Pose = Pose(x: 0, y: 0)

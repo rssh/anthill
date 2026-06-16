@@ -15,7 +15,6 @@ fn generated_facts_are_extracted_with_source_artifact_and_kind() {
         namespace test.gen_facts
           import anthill.prelude.{Option}
           import anthill.realization.{Generated}
-          export Calc
 
           sort Calc
             operation tick() -> Bool = true
@@ -50,7 +49,6 @@ fn generated_facts_with_none_profile_resolve_to_none() {
         namespace test.gen_no_profile
           import anthill.prelude.{Option}
           import anthill.realization.{Generated}
-          export Calc
 
           sort Calc
             operation tick() -> Bool = true
@@ -81,7 +79,6 @@ fn no_facts_yields_empty_list() {
     let source = r#"
         namespace test.gen_empty
           import anthill.prelude.{Bool}
-          export Calc
           sort Calc
             operation tick() -> Bool = true
           end

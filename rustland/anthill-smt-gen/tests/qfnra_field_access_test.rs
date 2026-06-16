@@ -30,8 +30,6 @@ fn build_kb() -> anthill_core::kb::KnowledgeBase {
           import anthill.prelude.Numeric.{add, sub, mul}
           import anthill.prelude.Ordered.{lt, gte}
 
-          export Drone, Vec3, Pose, DistanceBounds
-          export real_pose_at, distance_sq, violation
 
           enum Drone
             entity Leader

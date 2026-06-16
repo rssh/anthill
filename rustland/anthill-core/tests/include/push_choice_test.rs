@@ -51,7 +51,6 @@ fn push_choice_yields_two_solutions_via_facts() {
     // with the goal. Each branch yields one solution.
     let src = r#"
         namespace test.pc.both
-          export Branch
           sort Branch
             entity b1
             entity b2
@@ -95,7 +94,6 @@ fn push_choice_yields_one_solution_when_only_one_branch_matches() {
     // second branch.
     let src = r#"
         namespace test.pc.one
-          export Branch
           sort Branch
             entity b1
             entity b2
@@ -127,7 +125,6 @@ fn push_choice_yields_zero_solutions_when_both_branches_fail() {
     // Both branches' predicates have no matching facts.
     let src = r#"
         namespace test.pc.none
-          export Branch
           sort Branch
             entity b1
           end
@@ -155,7 +152,6 @@ fn or_rule_succeeds_via_either_branch_with_facts() {
     // The derived `or` rule lifts push_choice to a regular head functor.
     let src = r#"
         namespace test.pc.or_rule
-          export Tag
           sort Tag
             entity t1
             entity t2
@@ -198,7 +194,6 @@ fn push_choice_shares_tail_with_both_branches() {
     // contract: both Continuation candidates inherit frame.goals[1..].
     let src = r#"
         namespace test.pc.tail
-          export Tag, Marker
           sort Tag
             entity t1
             entity t2
@@ -255,7 +250,6 @@ fn or_rule_handles_nested_disjunction() {
     // the `or` rule unfolding) and that all three leaf solutions surface.
     let src = r#"
         namespace test.pc.nested
-          export Tag
           sort Tag
             entity ta
             entity tb
@@ -302,7 +296,6 @@ fn or_rule_isolates_substitutions_across_branches() {
     // pinned to ta).
     let src = r#"
         namespace test.pc.isolate
-          export Tag
           sort Tag
             entity ta
             entity tb

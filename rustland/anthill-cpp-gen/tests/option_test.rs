@@ -16,7 +16,6 @@ fn option_some_lowers_to_make_optional() {
         namespace test.opt_some
           import anthill.prelude.{Int64, Option}
           import anthill.prelude.Option.{some}
-          export Calc
           sort Calc
             operation lift(x: Int64) -> Option[T = Int64] = some(x)
           end
@@ -40,7 +39,6 @@ fn option_none_lowers_to_nullopt() {
         namespace test.opt_none
           import anthill.prelude.{Int64, Option}
           import anthill.prelude.Option.{none}
-          export Calc
           sort Calc
             operation empty() -> Option[T = Int64] = none
           end

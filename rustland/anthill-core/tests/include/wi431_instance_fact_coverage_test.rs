@@ -601,7 +601,6 @@ end
 fn cross_namespace_distinct_instances_are_ambiguous() {
     let base = r#"namespace test.wi431.xbase
   import anthill.prelude.Int64
-  export Combiner, Tag, combineA, combineB
 
   sort Combiner
     sort T = ?
@@ -641,7 +640,6 @@ end
 fn cross_namespace_identical_instances_are_idempotent() {
     let base = r#"namespace test.wi431.ybase
   import anthill.prelude.Int64
-  export Combiner, Tag, tagCombine
 
   sort Combiner
     sort T = ?

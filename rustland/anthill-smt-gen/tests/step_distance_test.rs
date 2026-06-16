@@ -26,8 +26,6 @@ fn lf1_with_step_bound_kb() -> anthill_core::kb::KnowledgeBase {
           import anthill.prelude.Numeric.{add, mul}
           import anthill.prelude.Float.{div}
 
-          export LinkParameters, KinematicAssumptions, GpsErrorBound
-          export comm_delay_max, step_distance_bound
 
           entity LinkParameters(
             range_max:    Float,

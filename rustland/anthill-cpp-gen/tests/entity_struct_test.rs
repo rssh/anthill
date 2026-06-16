@@ -14,7 +14,6 @@ fn vec3_entity_emits_cpp_struct() {
     let source = r#"
         namespace test.geom
           import anthill.prelude.{Float}
-          export Vec3
           entity Vec3(x: Float, y: Float, z: Float)
         end
     "#;
@@ -39,7 +38,6 @@ fn entity_with_int_and_string_fields() {
     let source = r#"
         namespace test.account
           import anthill.prelude.{Int64, String}
-          export Account
           entity Account(id: Int64, name: String)
         end
     "#;

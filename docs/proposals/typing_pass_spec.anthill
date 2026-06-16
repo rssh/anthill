@@ -53,15 +53,6 @@ namespace anthill.reflect.typing_pass
 
   import anthill.prelude.{Error, Modify}
 
-  export TypingEnv, TypeResult, type_check, type_check_operation
-  export type_check_unit
-  export unify_types, assert_compatible, fresh_type_var, is_ground
-  export TypeError, error_span, error_message
-
-  -- Part I (declarative specification) exports
-  export Context, synth, check, wf_type
-  export lookup_var, lookup_type, lub
-
   -- ################################################################
   -- PART I — THE TYPING RELATION  (declarative specification)
   -- ################################################################

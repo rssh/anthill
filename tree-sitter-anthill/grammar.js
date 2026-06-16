@@ -167,11 +167,6 @@ module.exports = grammar({
     // effect-row use is wired (the effect-SET-as-type-argument is unbuilt).
     effect_row: $ => seq('{', commaSep($._effect_type), '}'),
 
-    export_clause: $ => seq(
-      'export',
-      commaSep1($.name),
-    ),
-
     _body_namespace: $ => choice(
       seq('{', repeat($._namespace_content), '}'),
       seq(repeat($._namespace_content), 'end', optional($.name)),
@@ -194,7 +189,6 @@ module.exports = grammar({
       $.rule_block,
       $.describe_declaration,
       $.import_clause,
-      $.export_clause,
       $.proof_declaration,
       $.provides_block,
     ),
@@ -222,7 +216,6 @@ module.exports = grammar({
       $.rule_block,
       $.describe_declaration,
       $.import_clause,
-      $.export_clause,
       $.proof_declaration,
       $.provides_clause,
     ),
@@ -374,7 +367,6 @@ module.exports = grammar({
       $.rule_block,
       $.describe_declaration,
       $.import_clause,
-      $.export_clause,
       $.proof_declaration,
       $.provides_clause,
     ),
@@ -914,7 +906,7 @@ module.exports = grammar({
     // Visibility
     // =========================================================
 
-    visibility: $ => choice('internal', 'export', 'public'),
+    visibility: $ => choice('internal', 'public'),
 
     // =========================================================
     // Terms

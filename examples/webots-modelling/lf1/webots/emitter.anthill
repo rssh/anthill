@@ -15,9 +15,6 @@
 
 sort anthill.examples.lf1.webots.Emitter
   import anthill.prelude.{Int64, Float, Unit, String, Bool, Modify}
-  export Emitter, BROADCAST_CHANNEL
-  export send, set_channel, get_channel
-  export set_range, get_range, get_buffer_size
 
   -- Sentinel for broadcast (mirrors webots::Emitter::CHANNEL_BROADCAST = -1).
   -- TODO: model as a constant once anthill has term-level constants.

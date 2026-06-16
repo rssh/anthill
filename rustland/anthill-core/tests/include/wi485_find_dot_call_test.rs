@@ -39,7 +39,6 @@ namespace test.wi485.strm
   import anthill.prelude.{Option, Pair, Bool, Modify}
   import anthill.prelude.Option.{some, none}
   import anthill.prelude.Pair.{pair}
-  export Strm
   sort Strm
     sort T = ?
     operation splitFirstX(s: Strm) -> Option[T = Pair[A = s.T, B = Strm[T = s.T]]]
@@ -55,7 +54,6 @@ namespace test.wi485.lst
   import anthill.prelude.Option.{some, none}
   import anthill.prelude.Pair.{pair}
   import test.wi485.strm.{Strm}
-  export Lst
   sort Lst
     sort T = ?
     provides Strm[T = T]

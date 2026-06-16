@@ -49,7 +49,6 @@ fn requires_shadow_emits_warning() {
     // hold, so flag it.
     let src = r#"
         namespace wi346.shadow
-          export Sp, Carrier, Req
           sort Sp
             sort T = ?
             operation s_op(x: T) -> T
@@ -78,7 +77,6 @@ fn requires_disjoint_op_name_no_warning() {
     // `Sp`'s ops — no shadow, no warning. (Guards against false positives.)
     let src = r#"
         namespace wi346.disjoint
-          export Sp, Carrier, Req
           sort Sp
             sort T = ?
             operation s_op(x: T) -> T
@@ -108,7 +106,6 @@ fn provider_override_no_warning() {
     // enters the shadow check.
     let src = r#"
         namespace wi346.provides
-          export Sp, Carrier, Prov
           sort Sp
             sort T = ?
             operation s_op(x: T) -> T
@@ -139,7 +136,6 @@ fn requires_and_provides_no_warning() {
     // chain, but providing the spec makes the own op a real override.
     let src = r#"
         namespace wi346.both
-          export Sp, Both
           sort Sp
             sort T = ?
             operation s_op(x: T) -> T

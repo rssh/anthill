@@ -626,7 +626,6 @@ fn parse_fact_with_meta() {
 #[test]
 fn parse_namespace_with_entity_and_operation() {
     let source = r#"namespace banking
-  export Account, Money, deposit
   entity Account(id: AccountId, balance: Money)
   operation deposit(a: Account, m: Money) -> Account
     requires gt(m, zero-val)
@@ -638,7 +637,6 @@ end
     match &parsed.items[0] {
         Item::Namespace(n) => {
             assert_eq!(parsed.symbols.name(n.name.last()), "banking");
-            assert_eq!(n.exports.len(), 3);
             assert_eq!(n.items.len(), 2); // entity + operation
 
             // Check entity
@@ -741,7 +739,6 @@ fn load_fact_and_query_by_sort() {
 #[test]
 fn load_banking_namespace() {
     let source = r#"namespace banking
-  export Account, Money, deposit
 
   sort AccountId = ?
 
@@ -1991,7 +1988,6 @@ fn selective_import_finds_enum_entity_by_short_name() {
     // import like `import <ns>.{entity}` must still find it via the
     // nested-scope fallback.
     let source = r#"namespace test.parse
-  export Result, ok, err
   enum Result
     entity ok(value: String)
     entity err(reason: String)

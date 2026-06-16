@@ -28,10 +28,6 @@ namespace anthill.examples.lf1.follower_transponder
   import anthill.prelude.Float.{abs, neg}
   import anthill.examples.lf1.leader.{Pose, Controls}
 
-  export TransponderReading
-  export TransponderFollowerConfig
-  export TransponderFollowerState
-  export TransponderFollowerController
 
   -- =================================================================
   -- Sensor reading

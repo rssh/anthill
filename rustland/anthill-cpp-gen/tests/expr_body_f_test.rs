@@ -19,7 +19,6 @@ fn error_effect_wraps_return_in_tl_expected() {
     let source = r#"
         namespace test.expr_f_err
           import anthill.prelude.{Int64}
-          export Calc
           sort Calc
             operation safe_div(a: Int64, b: Int64) -> Int64 effects Error = a
           end
@@ -46,7 +45,6 @@ fn raise_lowers_to_make_unexpected() {
         namespace test.expr_f_raise
           import anthill.prelude.{Int64, Error}
           import anthill.prelude.Error.{raise}
-          export Calc
           sort Calc
             operation always_fail() -> Int64 effects Error =
               raise("boom")
@@ -74,7 +72,6 @@ fn error_effect_in_effects_set_still_wraps() {
     let source = r#"
         namespace test.expr_f_multi
           import anthill.prelude.{Int64}
-          export Calc
           entity Calc(state: Int64)
           sort CalcOps
             operation step(self: Calc) -> Int64 effects {Error, Modify[self]} = 0
@@ -97,7 +94,6 @@ fn no_error_effect_keeps_plain_return_type() {
     let source = r#"
         namespace test.expr_f_modify_only
           import anthill.prelude.{Int64}
-          export Calc
           entity Calc(state: Int64)
           sort CalcOps
             operation poke(self: Calc) -> Int64 effects Modify[self] = 0
@@ -126,7 +122,6 @@ fn wildcard_let_emits_discard_statement() {
     let source = r#"
         namespace test.expr_f_void
           import anthill.prelude.{Int64}
-          export Calc
           sort Calc
             operation sink(x: Int64) -> Int64 = x
             operation chain(x: Int64) -> Int64 =
@@ -152,7 +147,6 @@ fn wildcard_let_followed_by_named_let_composes() {
     let source = r#"
         namespace test.expr_f_mix
           import anthill.prelude.{Int64}
-          export Calc
           sort Calc
             operation sink(x: Int64) -> Int64 = x
             operation step(x: Int64) -> Int64 =

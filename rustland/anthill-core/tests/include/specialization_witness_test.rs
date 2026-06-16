@@ -47,7 +47,6 @@ fn provides_clause_emits_specialization_proof_record() {
     // referencing A.requires.Eq_T plus the [T = B] substitution.
     let src = r#"
         namespace test.provides_alpha8
-          export A, B
           sort A
             sort T = ?
             requires anthill.prelude.Eq[T = T]
@@ -79,7 +78,6 @@ fn provides_clause_emits_specialization_proof_record() {
 fn provides_emission_is_idempotent_across_loads() {
     let src = r#"
         namespace test.provides_alpha8_idem
-          export AA, CC
           sort AA
             sort T = ?
             requires anthill.prelude.Eq[T = T]

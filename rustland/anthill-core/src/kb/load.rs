@@ -552,7 +552,7 @@ impl std::error::Error for LoadError {}
 /// operations, rules) and build the scope inclusion chain (requires, imports).
 ///
 /// Two sub-passes over all files:
-/// - Pass 1: Define all names, record exports and type params
+/// - Pass 1: Define all names, record exposed variants and type params
 /// - Pass 2: Process `requires` and `import` declarations → build parent scope chain
 pub fn scan_definitions(kb: &mut KnowledgeBase, files: &[&ParsedFile]) -> Vec<LoadError> {
     let global = kb.make_name_term("_global");
@@ -898,7 +898,7 @@ fn register_callback_places(
     }
 }
 
-/// Sub-pass 1: define all names, record exports and type params.
+/// Sub-pass 1: define all names, record exposed variants and type params.
 ///
 /// `prefix` is the fully-qualified path of the enclosing scope (empty at top level).
 /// Nested items get `qualified_name = prefix + "." + name`.
@@ -1007,22 +1007,22 @@ fn scan_items_pass1(
                         is_enclosing: true,
                     });
                 }
-                // Model C / job 2: user `export` statements (s.exports) have
-                // NO effect — names are visible by default. The `exports` set
+                // Model C / job 2 (proposal 044): names are visible by default;
+                // the `export` statement was removed (WI-291). The `exposed` set
                 // now holds ONLY entity-variant names (populated below), so the
-                // export-filter on the variant-exposure parent link leaks just
-                // the constructor variants, never the sort's operations.
+                // exposed-set filter on the variant-exposure parent link leaks
+                // just the constructor variants, never the sort's operations.
                 //
                 // Expose the sort's constructor variants to the enclosing
                 // scope: add each `entity` child short-name to the sort's
-                // exports and link the sort scope as a non-enclosing parent of
-                // `actual_scope`. The export-filtered parent walk in
+                // `exposed` set and link the sort scope as a non-enclosing
+                // parent of `actual_scope`. The exposed-filtered parent walk in
                 // `resolve_in_scope` then resolves bare `Open` to
                 // `WorkStatus.Open` from the namespace, and two sorts sharing a
                 // variant name resolve to `Ambiguous` rather than one winning.
                 //
                 // The parent link is added only when the sort has variants: an
-                // empty `exports` set disables the filter (a no-entity sort, e.g.
+                // empty `exposed` set disables the filter (a no-entity sort, e.g.
                 // a spec, is reachable only via `requires`/wildcard, which should
                 // see all its operations).
                 let mut has_variant = false;
@@ -1097,8 +1097,8 @@ fn scan_items_pass1(
                     });
                     (sym, ns_term)
                 };
-                // Model C / job 2: user `export` statements (n.exports) have no
-                // effect — namespace members are visible by default.
+                // Model C / job 2 (proposal 044): namespace members are visible
+                // by default; the `export` statement was removed (WI-291).
                 // Recurse into namespace body with the namespace's qualified name as prefix
                 scan_items_pass1(kb, &n.items, parse_sym, parse_terms, ns_term, &qualified);
             }

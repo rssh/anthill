@@ -24,7 +24,6 @@ fn write_temp(name: &str, contents: &str) -> PathBuf {
 
 const SRC_BOTH_UNSAT: &str = r#"
     namespace test.ranking.ok
-      export rank_proof, bound_violation, decrease_violation
       entity State(upc: Int64, upc_next: Int64)
 
       -- Ranking function: R(upc) = -upc. Post-armed invariant: -6 ≤ upc < 0.
@@ -81,7 +80,6 @@ fn ranking_with_failing_decrease_disproves() {
     // sub-query name.
     let src = r#"
         namespace test.ranking.fail
-          export rank_proof_bad, bound_ok, decrease_bad
           entity Cfg(scale: Int64)
           fact Cfg(scale: 5)
 

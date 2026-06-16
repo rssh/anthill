@@ -8,7 +8,7 @@ How to add a new webots device sort to this project, given the C++ header at `$W
 2. **Top-of-file comment**: paste the relevant subset of the C++ class's public surface so the reader sees the source-of-truth alongside the anthill model.
 3. **Sort declaration**: `sort anthill.examples.lf1.webots.<DeviceName> ... end`.
 4. **Imports**: `Int64`, `Float`, `Unit`, `Bool`, `String` from `anthill.prelude` as needed; `Vec3` from `anthill.examples.lf1.webots.types` for fixed-size double-array returns.
-5. **Exports**: list the sort name and every operation, one or more `export` clauses.
+5. **Visibility**: nothing to do — anthill names (the sort and its operations) are visible by default. (Mark a name `internal` only to hide it.)
 6. **Operations**:
    - **Public C++ method → `operation`** with `self: <DeviceName>` as the first argument.
    - **`const` method** → no `effects` clause.

@@ -48,7 +48,6 @@ fn pin_now_threads_conditional_tree_into_nested_construct_requirement() {
     let src = r#"
 namespace test.wi228.pin_now_tree
   import anthill.prelude.{Eq, List, Int64, Bool}
-  export EqList, Driver
   sort EqList
     sort A = ?
     requires Eq[T = A]

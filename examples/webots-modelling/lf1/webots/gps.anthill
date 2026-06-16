@@ -11,9 +11,6 @@
 sort anthill.examples.lf1.webots.GPS
   import anthill.prelude.{Int64, Float, Unit, Modify}
   import anthill.geometry.{Vec3}
-  export GPS
-  export enable, disable, get_sampling_period
-  export get_values, get_speed, get_speed_vector
 
   -- GPS is a handle obtained from Robot.get_gps; carrier-bound to a
   -- non-owning webots::GPS* on the C++ side (see realization.anthill).

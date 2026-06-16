@@ -14,7 +14,6 @@ fn carrier_artifact_becomes_include_directive() {
         namespace test.car_inc.dev
           import anthill.prelude.{List, Option, String}
           import anthill.realization.{Implementation, CarrierBinding}
-          export GPS
 
           sort GPS end
 
@@ -33,7 +32,6 @@ fn carrier_artifact_becomes_include_directive() {
         namespace test.car_inc
           import anthill.prelude.{Int64}
           import test.car_inc.dev.{GPS}
-          export Sensors
           sort Sensors
             operation read(g: GPS) -> Int64 = 0
           end

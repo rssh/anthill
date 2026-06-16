@@ -57,7 +57,6 @@ fn collect_global_var_names(occ: &Rc<NodeOccurrence>, out: &mut Vec<Symbol>) {
 fn op_body_param_var_shares_operationinfo_symbol() {
     let src = r#"
         namespace wi487.peek
-          export Box
           sort Box
             entity box(value: Int64)
             operation peek(b: Box) -> Int64 = 42
@@ -106,7 +105,6 @@ fn op_body_param_var_shares_operationinfo_symbol() {
 fn op_body_non_param_var_still_loads() {
     let src = r#"
         namespace wi487.local
-          export Box
           sort Box
             entity box(value: Int64)
             operation twice(b: Box) -> Int64 =
@@ -131,8 +129,6 @@ fn op_body_non_param_var_still_loads() {
 fn op_body_shadowed_and_param_var_resolve_independently() {
     let src = r#"
         namespace wi487.shadow
-          export Box
-          export Tag
           sort Box
             entity box(value: Int64)
             operation peek(b: Box) -> Int64 = 42

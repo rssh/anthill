@@ -17,7 +17,6 @@
 
 sort anthill.examples.lf1.webots.SimulationRuntime
   import anthill.examples.lf1.webots.{Robot}
-  export SimulationRuntime, main_robot
 
   -- No anthill-side constructor — the runtime is provided by the
   -- host at controller startup. The codegen entry point receives a

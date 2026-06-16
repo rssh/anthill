@@ -73,7 +73,7 @@ enum ParseLiteral:
 // ── Visibility ──────────────────────────────────────────────────
 
 enum Visibility:
-  case Internal, Export, Public
+  case Internal, Public
 
 // ── Items ───────────────────────────────────────────────────────
 
@@ -104,7 +104,6 @@ enum Item:
 case class Namespace(
   name: Name,
   imports: IndexedSeq[Import],
-  exports: IndexedSeq[Name],
   items: IndexedSeq[Item],
   span: Span
 )
@@ -137,7 +136,6 @@ case class SortWithBody(
   name: Name,
   descriptions: IndexedSeq[String],
   imports: IndexedSeq[Import],
-  exports: IndexedSeq[Name],
   items: IndexedSeq[Item],
   meta: Option[MetaBlock],
   span: Span,

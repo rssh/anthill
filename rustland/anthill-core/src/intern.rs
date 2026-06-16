@@ -113,7 +113,7 @@ pub struct ScopeInclusion {
     pub parent_scope_raw: u32,
     pub instantiation_term_raw: u32,
     /// If true, this is an enclosing-scope relationship (sort/namespace body)
-    /// and export filtering is bypassed.
+    /// and the variant-exposure (`exposed`-set) filter is bypassed.
     pub is_enclosing: bool,
 }
 
@@ -139,8 +139,8 @@ pub struct Scope {
     /// (non-enclosing) variant-exposure parent link — populated from a sort's
     /// entity-variant short names ONLY. An empty set disables the filter (the
     /// scope is reachable only via `requires`/wildcard, which see everything).
-    /// User `export` statements do NOT populate this — names are visible by
-    /// default (proposal 044).
+    /// Names are visible by default (proposal 044); the `export` statement that
+    /// once restricted this was removed in WI-291.
     pub exposed: HashSet<String>,
     /// Parent scope inclusions (enclosing + requires + imports)
     pub parents: Vec<ScopeInclusion>,

@@ -2,7 +2,6 @@ namespace my.app
   import anthill.cli.Main
   import anthill.prelude.Console.{console, println, ConsoleOutput}
   import anthill.prelude.{Int64, String, List}
-  export Hello
 
   sort Hello
     requires anthill.cli.Main

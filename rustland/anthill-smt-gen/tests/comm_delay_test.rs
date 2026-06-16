@@ -18,7 +18,6 @@ fn lf1_safety_kb() -> anthill_core::kb::KnowledgeBase {
           import anthill.prelude.Numeric.{add, mul}
           import anthill.prelude.Float.{div}
 
-          export LinkParameters, KinematicAssumptions, comm_delay_max
 
           entity LinkParameters(
             range_max:    Float,

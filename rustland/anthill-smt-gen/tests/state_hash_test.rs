@@ -28,7 +28,6 @@ fn hash_for(src: &str) -> String {
 
 const BASE_SRC: &str = r#"
     namespace test.cache
-      export proof_a, b, c, d, d_a, d_b
       rule proof_a(?r) :- b(?r), c(?r), d(?r)
       rule b(?r)       :- eq(?r, 1)
       rule c(?r)       :- eq(?r, 2)
@@ -67,7 +66,7 @@ fn changes_on_transitive_dep_body_change() {
 #[test]
 fn changes_on_referenced_fact_change() {
     let with_fact = format!(
-        "{BASE_SRC}\n    namespace test.cache_facts\n      export Cfg\n      \
+        "{BASE_SRC}\n    namespace test.cache_facts\n      \
          entity Cfg(scale: Int64)\n      fact Cfg(scale: 5)\n    end\n"
     );
     let modified = with_fact.replace("fact Cfg(scale: 5)", "fact Cfg(scale: 6)");

@@ -103,7 +103,6 @@ fn dispatch_defers_when_call_reaches_spec_via_requires() {
     let mut kb = load_with(r#"
         namespace test.wi221.open_bound
           import anthill.prelude.{Eq, Int64}
-          export Wi221Box
           sort Wi221Box
             requires Eq[T = Int64]
           end
@@ -148,7 +147,6 @@ fn dispatch_pins_when_enclosing_sort_does_not_require_spec() {
     // genuinely reached via `requires`.
     let mut kb = load_with(r#"
         namespace test.wi221.no_require
-          export Wi221Plain
           sort Wi221Plain
             entity wi221_plain
           end
@@ -187,7 +185,6 @@ fn dispatch_defers_when_requires_uses_open_param() {
     let mut kb = load_with(r#"
         namespace test.wi221.open_t
           import anthill.prelude.Eq
-          export Wi221Generic
           sort Wi221Generic
             sort T = ?
             requires Eq[T]

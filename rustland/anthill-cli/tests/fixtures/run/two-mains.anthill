@@ -2,7 +2,6 @@ namespace my.two
   import anthill.cli.Main
   import anthill.prelude.Console.{console, println, ConsoleOutput}
   import anthill.prelude.{Int64, String, List}
-  export One, Two
 
   sort One
     requires anthill.cli.Main

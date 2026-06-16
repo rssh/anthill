@@ -54,7 +54,6 @@ fn dot_method_dispatches_via_provided_spec() {
     // Ordered.min` shape, self-contained so it needs no anthill-stl Int64 facts.)
     let src = r#"
         namespace wi281.provided
-          export Comparable, Widget
           sort Comparable
             sort T = ?
             operation pick(a: T, b: T) -> T
@@ -85,7 +84,6 @@ fn dot_spec_method_threads_requires() {
     // because the requirement chain is satisfied.
     let src = r#"
         namespace wi281.requires
-          export Nameable, Comparable, Widget
           sort Nameable
             sort T = ?
             operation tag(x: T) -> Int64
@@ -121,7 +119,6 @@ fn dot_no_provided_spec_still_reports_no_match() {
     // is unchanged (the spec fallback only adds matches, never hides them).
     let src = r#"
         namespace wi281.nomatch
-          export Comparable, Widget
           sort Comparable
             sort T = ?
             operation pick(a: T, b: T) -> T
@@ -175,7 +172,6 @@ fn dot_min_dispatches_via_int_ordered() {
     // provided). Without WI-281 this is a `DotDispatchNoMatch` (Int64.min = None).
     let src = r#"
         namespace wi281.intmin
-          export Calc
           sort Calc
             entity calc(v: Int64)
             operation pick_min(x: Int64, y: Int64) -> Int64 = ?x.min(?y)
@@ -199,7 +195,6 @@ fn dot_spec_method_unsatisfied_requires_errors_wi343() {
     // known gap pinned here before WI-343 landed.)
     let src = r#"
         namespace wi281.unsat
-          export Nameable, Comparable, Gadget
           sort Nameable
             sort T = ?
             operation tag(x: T) -> Int64

@@ -15,7 +15,6 @@ fn simple_sort_with_two_operations() {
         namespace test.simple
           import anthill.prelude.{Int64, Unit, String, Modify, Option}
           import anthill.realization.{Implementation, CarrierBinding}
-          export Greeter
 
           sort Greeter
             operation greet(self: Greeter, name: String) -> Unit
@@ -66,7 +65,6 @@ fn emitted_bodies_actually_compile() {
         namespace test.bodies
           import anthill.prelude.{Int64, Unit, String, Modify, Option}
           import anthill.realization.{Implementation, CarrierBinding}
-          export Counter
 
           sort Counter
             operation increment(self: Counter) -> Unit
@@ -192,7 +190,6 @@ fn parameterized_return_bodies_compile() {
         namespace test.params_compile
           import anthill.prelude.{Int64, Float, Unit, List, Option, Modify}
           import anthill.realization.{Implementation, CarrierBinding}
-          export Sensor
 
           sort Sensor
             operation samples(self: Sensor) -> List[T = Float]
@@ -284,7 +281,6 @@ fn parameterized_return_types_emit_bodies() {
         namespace test.params_in_ops
           import anthill.prelude.{Int64, Float, Unit, String, Modify, List, Option}
           import anthill.realization.{Implementation, CarrierBinding}
-          export Sensor, Sample
 
           entity Sample(value: Float)
 
@@ -344,7 +340,6 @@ fn sort_with_no_operations_errors() {
     let source = r#"
         namespace test.empty_ops
           import anthill.prelude.{Float}
-          export Vec3
           entity Vec3(x: Float, y: Float, z: Float)
         end
     "#;

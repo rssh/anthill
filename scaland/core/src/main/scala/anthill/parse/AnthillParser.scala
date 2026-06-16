@@ -724,11 +724,10 @@ private class AnthillParserImpl(
   private def visibility[$: P]: P[Visibility] =
     P(
       keyword("internal").map(_ => Visibility.Internal) |
-      keyword("export").map(_ => Visibility.Export) |
       keyword("public").map(_ => Visibility.Public)
     )
 
-  // ── Import / Export ──────────────────────────────────────────
+  // ── Import ───────────────────────────────────────────────────
 
   private def importClause[$: P]: P[Import] =
     P(keyword("import") ~/ importPath)
@@ -757,9 +756,6 @@ private class AnthillParserImpl(
   private def wildcardImport[$: P]: P[ImportKind] =
     P("*").map(_ => ImportKind.Wildcard)
 
-  private def exportClause[$: P]: P[IndexedSeq[Name]] =
-    P(keyword("export") ~/ name.rep(1, sep = ",")).map(_.toIndexedSeq)
-
   // ── Meta block ───────────────────────────────────────────────
 
   private def metaBlock[$: P]: P[MetaBlock] =
@@ -777,50 +773,47 @@ private class AnthillParserImpl(
 
   // ── Body content (shared by namespace and sort) ──────────────
 
-  private type BodyContent = Either[Either[Import, IndexedSeq[Name]], Item]
+  private type BodyContent = Either[Import, Item]
 
   private def bodyContent[$: P]: P[BodyContent] =
     P(
-      importClause.map(i => Left(Left(i))) |
-      exportClause.map(e => Left(Right(e))) |
+      importClause.map(Left(_)) |
       declaration.map(Right(_))
     )
 
   private def processContent(
     content: Seq[BodyContent]
-  ): (IndexedSeq[Import], IndexedSeq[Name], IndexedSeq[Item]) =
+  ): (IndexedSeq[Import], IndexedSeq[Item]) =
     val imports = ArrayBuffer.empty[Import]
-    val exports = ArrayBuffer.empty[Name]
     val items = ArrayBuffer.empty[Item]
     content.foreach {
-      case Left(Left(imp)) => imports += imp
-      case Left(Right(exps)) => exports ++= exps
+      case Left(imp) => imports += imp
       case Right(item) => items += item
     }
-    (imports.toIndexedSeq, exports.toIndexedSeq, items.toIndexedSeq)
+    (imports.toIndexedSeq, items.toIndexedSeq)
 
-  private def bracedBody[$: P]: P[(IndexedSeq[Import], IndexedSeq[Name], IndexedSeq[Item])] =
+  private def bracedBody[$: P]: P[(IndexedSeq[Import], IndexedSeq[Item])] =
     P("{" ~/ bodyContent.rep ~ "}").map(cs => processContent(cs))
 
-  private def endBody[$: P]: P[(IndexedSeq[Import], IndexedSeq[Name], IndexedSeq[Item])] =
+  private def endBody[$: P]: P[(IndexedSeq[Import], IndexedSeq[Item])] =
     P(bodyContent.rep ~ keyword("end")).map(cs => processContent(cs))
 
-  private def body[$: P]: P[(IndexedSeq[Import], IndexedSeq[Name], IndexedSeq[Item])] =
+  private def body[$: P]: P[(IndexedSeq[Import], IndexedSeq[Item])] =
     P(bracedBody | endBody)
 
   // ── Declarations ─────────────────────────────────────────────
 
   private def namespaceDecl[$: P]: P[Item] =
-    P(keyword("namespace") ~/ name ~ body).map { case (n, (imports, exports, items)) =>
-      Item.NamespaceItem(Namespace(n, imports, exports, items, mkSpan(0, 0)))
+    P(keyword("namespace") ~/ name ~ body).map { case (n, (imports, items)) =>
+      Item.NamespaceItem(Namespace(n, imports, items, mkSpan(0, 0)))
     }
 
   private def sortDecl[$: P]: P[Item] =
     P(visibility.? ~ keyword("sort") ~/ name ~ (abstractSortRest | sortWithBodyRest)).map {
       case (vis, n, Left((defn, meta))) =>
         Item.AbstractSortItem(AbstractSort(vis, n, defn, IndexedSeq.empty, meta, mkSpan(0, 0)))
-      case (vis, n, Right((imports, exports, items, meta))) =>
-        Item.SortWithBodyItem(SortWithBody(vis, n, IndexedSeq.empty, imports, exports, items, meta, mkSpan(0, 0), SortDeclKind.Sort))
+      case (vis, n, Right((imports, items, meta))) =>
+        Item.SortWithBodyItem(SortWithBody(vis, n, IndexedSeq.empty, imports, items, meta, mkSpan(0, 0), SortDeclKind.Sort))
     }
 
   /** `effects E = ?` (or `= X`) at sort-item position (WI-320 / proposal
@@ -841,21 +834,20 @@ private class AnthillParserImpl(
     * declaration kind is recorded as `Enum` (proposal 025). */
   private def enumDecl[$: P]: P[Item] =
     P(visibility.? ~ keyword("enum") ~/ name ~ body ~ metaBlock.?).map {
-      case (vis, n, (imports, exports, items), meta) =>
-        Item.SortWithBodyItem(SortWithBody(vis, n, IndexedSeq.empty, imports, exports, items, meta, mkSpan(0, 0), SortDeclKind.Enum))
+      case (vis, n, (imports, items), meta) =>
+        Item.SortWithBodyItem(SortWithBody(vis, n, IndexedSeq.empty, imports, items, meta, mkSpan(0, 0), SortDeclKind.Enum))
     }
 
   private def abstractSortRest[$: P]: P[Left[(TypeExpr, Option[MetaBlock]), Nothing]] =
     P("=" ~/ typeExpr ~ metaBlock.?).map { case (te, mb) => Left((te, mb)) }
 
-  private def sortWithBodyRest[$: P]: P[Right[Nothing, (IndexedSeq[Import], IndexedSeq[Name], IndexedSeq[Item], Option[MetaBlock])]] =
+  private def sortWithBodyRest[$: P]: P[Right[Nothing, (IndexedSeq[Import], IndexedSeq[Item], Option[MetaBlock])]] =
     P(body ~ metaBlock.?).map { tup =>
-      // fastparse flattens: (imports, exports, items, meta)
+      // fastparse flattens: (imports, items, meta)
       val imports = tup._1
-      val exports = tup._2
-      val items = tup._3
-      val meta = tup._4
-      Right((imports, exports, items, meta))
+      val items = tup._2
+      val meta = tup._3
+      Right((imports, items, meta))
     }
 
   private def ruleDecl[$: P]: P[Item] =

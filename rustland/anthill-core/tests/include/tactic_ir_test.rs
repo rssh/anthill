@@ -31,7 +31,6 @@ fn tactic_of(src: &str) -> Tactic {
 fn legacy_z3_logic_lra() -> &'static str {
     r#"
         namespace test.tac.legacy
-          export r
           rule r(?x) :- eq(?x, 1)
           proof r by z3(logic: "LRA") end
         end
@@ -62,7 +61,6 @@ fn explicit_smt_tactic_named_arg() {
     // Equivalent explicit form: by z3(tactic: smt(logic: "LIA")).
     let src = r#"
         namespace test.tac.smt
-          export r
           rule r(?x) :- eq(?x, 1)
           proof r by z3(tactic: smt(logic: "LIA")) end
         end
@@ -81,7 +79,6 @@ fn explicit_smt_tactic_named_arg() {
 fn then_combinator_with_two_bare_tactics() {
     let src = r#"
         namespace test.tac.then
-          export r
           rule r(?x) :- eq(?x, 1)
           proof r by z3(tactic: then(simplify, smt)) end
         end
@@ -104,7 +101,6 @@ fn then_combinator_with_two_bare_tactics() {
 fn or_else_with_nested_smt_apps() {
     let src = r#"
         namespace test.tac.or_else
-          export r
           rule r(?x) :- eq(?x, 1)
           proof r by z3(tactic: or_else(smt(logic: "LRA"), smt(logic: "NRA"))) end
         end
@@ -120,7 +116,6 @@ fn raw_escape_carries_string_payload() {
     // is the host strategy; `tactic:` selects the actual tactic.
     let src = r#"
         namespace test.tac.raw
-          export r
           rule r(?x) :- eq(?x, 1)
           proof r by z3(tactic: raw("(then simplify (using-params smt :random_seed 42))")) end
         end
@@ -138,7 +133,6 @@ fn raw_escape_carries_string_payload() {
 fn induction_meta_tactic_with_over_and_step() {
     let src = r#"
         namespace test.tac.induction
-          export r
           rule r(?x) :- eq(?x, 1)
           proof r by z3(tactic: induction(over: List, step: smt(logic: "LIA"))) end
         end
@@ -157,7 +151,6 @@ fn induction_meta_tactic_with_over_and_step() {
 fn non_z3_strategy_has_no_tactic_ir() {
     let src = r#"
         namespace test.tac.derivation
-          export Light, shines
           entity Light(state: String)
           fact Light(state: "bright")
           rule shines(?b) :- Light(state: ?b)

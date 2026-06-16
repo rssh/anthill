@@ -48,7 +48,6 @@ fn load_errors(extras: &[&str]) -> Vec<String> {
 const SPEC_AND_CARRIER: &str = r#"
 namespace test.wi481.strm
   import anthill.prelude.{Bool, Modify, EffectsRuntime}
-  export Strm
   sort Strm
     sort T = ?
     effects E = ?
@@ -58,7 +57,6 @@ end
 namespace test.wi481.carrier
   import anthill.prelude.{Int64, Modify, EffectsRuntime}
   import test.wi481.strm.{Strm}
-  export Producer
   sort Producer
     operation pure_stream(p: Producer) -> Strm[T = Int64, E = {}]
     operation eff_stream(p: Producer) -> Strm[T = Int64, E = {Modify[p]}]

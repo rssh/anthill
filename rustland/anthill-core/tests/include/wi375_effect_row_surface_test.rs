@@ -57,7 +57,6 @@ fn load_errors(extras: &[&str]) -> Vec<String> {
 const CARRIER: &str = r#"
 namespace test.wi375.carrier
   import anthill.prelude.{Int64, Stream, Modify, EffectsRuntime}
-  export Producer
 
   sort Producer
     -- A pure stream: nothing is incurred to observe it.

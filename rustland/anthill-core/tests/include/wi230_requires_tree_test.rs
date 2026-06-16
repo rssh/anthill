@@ -47,7 +47,6 @@ fn tree_shape_mirrors_declared_requires_hierarchy() {
     //   [ Middle-node with sub_requires = [ Leaf-node with sub_requires = [] ] ]
     let src = r#"
 namespace test.wi230.tree_shape
-  export Wi230Outer, Wi230Middle, Wi230Leaf
   sort Wi230Leaf
     sort T = ?
   end
@@ -100,7 +99,6 @@ fn substitution_composes_through_chain_to_root_scope() {
     // composition — NOT `T = Ref(Wi230Middle.T)` (the declared form).
     let src = r#"
 namespace test.wi230.subst_compose
-  export Wi230Outer, Wi230Middle, Wi230Leaf
   sort Wi230Leaf
     sort T = ?
   end
@@ -187,7 +185,6 @@ fn requires_chain_flatten_matches_required_sorts() {
     // now applied) but the required_sort sequence is invariant.
     let src = r#"
 namespace test.wi230.flatten
-  export Wi230Outer, Wi230Middle, Wi230Leaf
   sort Wi230Leaf
     sort T = ?
   end
@@ -241,7 +238,6 @@ fn requires_chain_does_not_collide_on_short_name() {
     // Symbol / qualified name, not the short name.
     let src = r#"
 namespace test.collide.outer
-  export Main
   sort Spec
     sort T = ?
   end

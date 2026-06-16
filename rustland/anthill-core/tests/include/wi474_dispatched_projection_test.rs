@@ -69,7 +69,6 @@ fn dispatched_spec_splitfirst_threads_element_bare_form() {
     let src = r#"
 namespace test.wi474.strm
   import anthill.prelude.{Option, Pair}
-  export Strm
   sort Strm
     sort T = ?
     operation splitFirstX(s: Strm) -> Option[T = Pair[A = s.T, B = Strm[T = s.T]]]
@@ -80,7 +79,6 @@ namespace test.wi474.lst
   import anthill.prelude.Option.{some, none}
   import anthill.prelude.Pair.{pair}
   import test.wi474.strm.{Strm}
-  export Lst
   sort Lst
     sort T = ?
     provides Strm[T = T]
@@ -120,7 +118,6 @@ fn dispatched_spec_splitfirst_wrong_return_rejected() {
     let src = r#"
 namespace test.wi474w.strm
   import anthill.prelude.{Option, Pair}
-  export Strm
   sort Strm
     sort T = ?
     operation splitFirstX(s: Strm) -> Option[T = Pair[A = s.T, B = Strm[T = s.T]]]
@@ -131,7 +128,6 @@ namespace test.wi474w.lst
   import anthill.prelude.Option.{some, none}
   import anthill.prelude.Pair.{pair}
   import test.wi474w.strm.{Strm}
-  export Lst
   sort Lst
     sort T = ?
     provides Strm[T = T]
@@ -177,7 +173,6 @@ namespace test.wi474h.strm
   import anthill.prelude.{Option, Pair}
   import anthill.prelude.Option.{some, none}
   import anthill.prelude.Pair.{pair}
-  export Strm
   sort Strm
     sort T = ?
     operation splitFirstX(s: Strm) -> Option[T = Pair[A = s.T, B = Strm[T = s.T]]]
@@ -192,7 +187,6 @@ namespace test.wi474h.lst
   import anthill.prelude.Option.{some, none}
   import anthill.prelude.Pair.{pair}
   import test.wi474h.strm.{Strm}
-  export Lst
   sort Lst
     sort T = ?
     provides Strm[T = T]
@@ -232,7 +226,6 @@ namespace test.wi474hw.strm
   import anthill.prelude.{Option, Pair}
   import anthill.prelude.Option.{some, none}
   import anthill.prelude.Pair.{pair}
-  export Strm
   sort Strm
     sort T = ?
     operation splitFirstX(s: Strm) -> Option[T = Pair[A = s.T, B = Strm[T = s.T]]]
@@ -247,7 +240,6 @@ namespace test.wi474hw.lst
   import anthill.prelude.Option.{some, none}
   import anthill.prelude.Pair.{pair}
   import test.wi474hw.strm.{Strm}
-  export Lst
   sort Lst
     sort T = ?
     provides Strm[T = T]

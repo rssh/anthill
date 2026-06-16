@@ -32,7 +32,6 @@ fn sat_proof_with_model_flag_emits_get_model_in_smt() {
     // includes `(set-option :produce-models true)` and `(get-model)`.
     let src = r#"
         namespace test.outcome.sat
-          export sat_witness
           entity Cfg(scale: Int64)
           fact Cfg(scale: 5)
           rule sat_witness(?marker)
@@ -56,7 +55,6 @@ fn unsat_proof_with_cores_flag_emits_get_unsat_core() {
     if !z3_available() { return; }
     let src = r#"
         namespace test.outcome.cores
-          export cores_witness
           entity Cfg(scale: Int64)
           fact Cfg(scale: 5)
           rule cores_witness(?marker)
@@ -80,7 +78,6 @@ fn no_outcome_flags_keeps_legacy_smt() {
     if !z3_available() { return; }
     let src = r#"
         namespace test.outcome.legacy
-          export legacy
           entity Cfg(scale: Int64)
           fact Cfg(scale: 5)
           rule legacy(?marker)
@@ -106,7 +103,6 @@ fn sat_verdict_with_model_populates_cli_output() {
     if !z3_available() { return; }
     let src = r#"
         namespace test.outcome.live
-          export sat_live
           entity Cfg(scale: Int64)
           fact Cfg(scale: 5)
           rule sat_live(?marker)
@@ -132,7 +128,6 @@ fn cache_entry_carries_model_text() {
     use std::fs;
     let src = r#"
         namespace test.outcome.cache
-          export sat_for_cache
           entity Cfg(scale: Int64)
           fact Cfg(scale: 7)
           rule sat_for_cache(?marker)

@@ -181,7 +181,6 @@ fn assign_default_namespace(pf: &mut ParsedFile) {
     pf.items.push(Item::Namespace(Namespace {
         name,
         imports: Vec::new(),
-        exports: Vec::new(),
         items,
         span: Span::default(),
     }));

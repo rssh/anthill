@@ -17,7 +17,6 @@ fn write_temp(name: &str, contents: &str) -> PathBuf {
 fn by_derivation_discharges_simple_horn_rule() {
     let src = r#"
         namespace test.derive.simple
-          export Light, shines
           entity Light(state: String)
           fact Light(state: "bright")
 
@@ -43,7 +42,6 @@ fn by_derivation_discharges_simple_horn_rule() {
 fn by_derivation_reports_unknown_when_unsatisfiable() {
     let src = r#"
         namespace test.derive.fail
-          export Light, dark
           entity Light(state: String)
           fact Light(state: "bright")
 

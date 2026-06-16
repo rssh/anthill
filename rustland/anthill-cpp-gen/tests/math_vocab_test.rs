@@ -16,7 +16,6 @@ fn float_trig_calls_lower_to_std() {
         namespace test.math_trig
           import anthill.prelude.{Float}
           import anthill.prelude.Float.{sin, cos, atan2}
-          export Calc
           sort Calc
             operation s(x: Float) -> Float = sin(x)
             operation c(x: Float) -> Float = cos(x)
@@ -38,7 +37,6 @@ fn float_misc_math_calls_lower_to_std() {
         namespace test.math_misc
           import anthill.prelude.{Float}
           import anthill.prelude.Float.{sqrt, hypot, log10, fmod}
-          export Calc
           sort Calc
             operation r(x: Float) -> Float = sqrt(x)
             operation h(a: Float, b: Float) -> Float = hypot(a, b)
@@ -62,7 +60,6 @@ fn pi_constant_lowers_to_literal() {
         namespace test.math_pi
           import anthill.prelude.{Float}
           import anthill.prelude.Float.{pi}
-          export Calc
           sort Calc
             operation p() -> Float = pi
           end
@@ -85,7 +82,6 @@ fn cmath_include_added_to_header() {
         namespace test.math_inc
           import anthill.prelude.{Float}
           import anthill.prelude.Float.{sin}
-          export Calc
           sort Calc
             operation rotated(x: Float) -> Float = sin(x)
           end
