@@ -1318,6 +1318,32 @@ impl SearchStream {
     }
 }
 
+/// WI-483: walk an op-body occurrence and bind every param-named var to its
+/// call arg in `fold`. WI-487 mints a fresh `VarId` per param occurrence (all
+/// sharing the param Symbol), so this collects them ALL — matching by the
+/// interned param Symbol (`vid.name()`), the by-symbol fold. Vars not naming a
+/// param are left unbound (`substitute_occurrence` keeps them as var leaves).
+///
+/// This is NOT scope-aware: a `let`/`lambda`/`match` binder that SHADOWS a param
+/// name would be wrongly bound here. That is currently harmless because any body
+/// introducing such a binder is an `Expr::Let`/`Lambda`/`Match` node, which does
+/// not reduce to a value (COMPLEX) and so the folded result is discarded — no
+/// wrong value escapes. If foldability is ever extended to bodies with binders,
+/// this walk must become scope-aware (stop descending past a shadowing binder).
+fn collect_param_var_bindings(
+    occ: &Rc<NodeOccurrence>,
+    param_args: &HashMap<Symbol, Value>,
+    fold: &mut Substitution,
+) {
+    let Some(expr) = occ.as_expr() else { return };
+    if let Expr::Var(Var::Global(vid)) = expr {
+        if let Some(arg) = param_args.get(&vid.name()) {
+            fold.bind_value(*vid, arg.clone());
+        }
+    }
+    node_occurrence::for_each_child(expr, |c| collect_param_var_bindings(c, param_args, fold));
+}
+
 // ── SLD Resolution ──────────────────────────────────────────────
 
 impl KnowledgeBase {
@@ -2364,10 +2390,18 @@ impl KnowledgeBase {
             (Some(a), Some(b)) => (a, b),
             _ => return EqOperands::Absent,
         };
-        // WI-482: reduce a dispatched dot operand (`eq(?v, ?p.x)`) to its
-        // projected field value before comparing.
-        let a = self.reduce_dot_value(a, subst);
-        let b = self.reduce_dot_value(b, subst);
+        // WI-482: project a dispatched dot operand (`eq(?v, ?p.x)`); WI-483: fold a
+        // dispatched method-op operand (`eq(?v, ?b.peek())`) to its value.
+        let a = self.reduce_operand(a, subst);
+        let b = self.reduce_operand(b, subst);
+        // WI-483: a residual (complex, unfolded) op-call operand is treated as
+        // un-ground — delay rather than fail, so a complex callee residualizes
+        // (substitution transparency), not silently mismatches. Checked BEFORE
+        // `normalize_value`, which would materialize the op-call `Node` into a
+        // `Term` and hide it from `is_unreduced_op_call`.
+        if self.is_unreduced_op_call(&a) || self.is_unreduced_op_call(&b) {
+            return EqOperands::Delay;
+        }
         // Reify literal occurrence args to terms so structural_eq compares
         // them by hash-consed identity (a Node-vs-Node compare is otherwise
         // conservatively false).
@@ -2394,11 +2428,14 @@ impl KnowledgeBase {
             (Some(a), Some(b)) => (a, b),
             _ => return BuiltinResult::Failure,
         };
-        // WI-482: reduce a dispatched dot operand (`lt(?p.x, ?limit)`) to its
-        // projected field value before comparing.
-        let a = self.reduce_dot_value(a, subst);
-        let b = self.reduce_dot_value(b, subst);
-        if self.value_is_unbound_var(&a) || self.value_is_unbound_var(&b) {
+        // WI-482: project a dispatched dot operand (`lt(?p.x, ?limit)`); WI-483:
+        // fold a method-op operand (`lt(?b.peek(), ?limit)`).
+        let a = self.reduce_operand(a, subst);
+        let b = self.reduce_operand(b, subst);
+        // WI-483: a residual complex op-call operand is un-ground → delay.
+        if self.value_is_unbound_var(&a) || self.value_is_unbound_var(&b)
+            || self.is_unreduced_op_call(&a) || self.is_unreduced_op_call(&b)
+        {
             return BuiltinResult::Delay;
         }
         // Reify literal occurrence args (a numeric literal in the goal reads
@@ -2515,11 +2552,14 @@ impl KnowledgeBase {
             Some(b) => b,
             None => return BuiltinResult::Failure,
         };
-        // WI-482: reduce a dispatched dot operand (`mul(?p.x, ?dt)`) to its
-        // projected field value before computing.
-        let a = self.reduce_dot_value(a, subst);
-        let b = self.reduce_dot_value(b, subst);
-        if self.value_is_unbound_var(&a) || self.value_is_unbound_var(&b) {
+        // WI-482: project a dispatched dot operand (`mul(?p.x, ?dt)`); WI-483:
+        // fold a method-op operand (`mul(?b.peek(), ?dt)`).
+        let a = self.reduce_operand(a, subst);
+        let b = self.reduce_operand(b, subst);
+        // WI-483: a residual complex op-call operand is un-ground → delay.
+        if self.value_is_unbound_var(&a) || self.value_is_unbound_var(&b)
+            || self.is_unreduced_op_call(&a) || self.is_unreduced_op_call(&b)
+        {
             return BuiltinResult::Delay;
         }
         let target = (pos_arity >= 3).then(|| self.resolve_result_target(goal.pos_arg(self, 2), subst));
@@ -2853,6 +2893,109 @@ impl KnowledgeBase {
         match self.project_field(obj_term, &field_name) {
             Some(val) => Value::Term(val),
             None => v,
+        }
+    }
+
+    /// WI-483: reduce a dispatched rule-body method-op call operand
+    /// (`Expr::Apply{op, args}` where `op` is a CONCRETE operation) by inlining
+    /// the operation body with the call args substituted into its param vars BY
+    /// SYMBOL — the param Symbol WI-487 stamps on op-body param vars — then
+    /// reducing the folded body through the existing field-access reduction. The
+    /// substitution-transparent peer of [`Self::reduce_dot_value`] for op-calls:
+    /// `peek(?b)` ≡ its body `?b.value`, so inlining the definition is sound.
+    ///
+    /// FOLDABLE (the folded body collapses to a value — a `field_access` chain):
+    /// returns that value. COMPLEX (arithmetic / `match` / `if` / `let` /
+    /// recursion — the folded body does not collapse): returns the call
+    /// UNCHANGED. The operand sites then treat a residual op-call as un-ground
+    /// (delay) via [`Self::is_unreduced_op_call`], per the WI-483 decision —
+    /// leave a complex callee uninterpreted, NEVER loud, so a rule's validity
+    /// never depends on its callee's body complexity (substitution transparency).
+    /// The interpreter bridge for complex bodies is a deferred follow-up.
+    fn reduce_op_value(&mut self, v: Value, subst: &Substitution, depth: usize) -> Value {
+        const FOLD_DEPTH_CAP: usize = 64;
+        let occ = match &v {
+            Value::Node(o) => Rc::clone(o),
+            _ => return v,
+        };
+        let op = match occ.as_expr() {
+            Some(Expr::Apply { functor, .. }) => *functor,
+            _ => return v,
+        };
+        // A builtin (field_access, arith, eq, …) is reduced by its own path, not
+        // folded. Only a CONCRETE operation (one with a stored body) folds; an
+        // abstract / spec op has no body (its requires are abstract) — leave it.
+        if self.builtins.get(&op).is_some() {
+            return v;
+        }
+        let body = match self.op_body_node(op) {
+            Some(b) => Rc::clone(b),
+            None => return v, // abstract op (no concrete body) → leave un-ground
+        };
+        // Recursion guard: a self-recursive op never folds to a value — treat it
+        // as complex and leave it un-ground rather than looping.
+        if depth >= FOLD_DEPTH_CAP {
+            return v;
+        }
+        // Param symbols in declaration order — the WI-352 arg-place list (the same
+        // symbols WI-487 stamps on the body's param vars), read O(1) off the op
+        // symbol rather than rescanning every `OperationInfo` fact per fold.
+        let params: Vec<Symbol> = self.symbols.arg_places(op).to_vec();
+        if params.is_empty() {
+            return v; // nullary / unscanned op — nothing to fold
+        }
+        // σ-walk each POSITIONAL call arg to a Value (mirrors the receiver walk in
+        // `reduce_dot_value`). The WI-279/WI-282 method dispatch puts the receiver
+        // + positional args here; a NAMED-arg method call (`?b.m(k: 1)`) leaves a
+        // param without a positional arg → the fold leaves the call un-ground
+        // (residualizes), safe per the WI-483 leave-uninterpreted rule.
+        let mut param_args: HashMap<Symbol, Value> = HashMap::new();
+        for (i, &p) in params.iter().enumerate() {
+            match self.walk_arg(occ.pos_arg(self, i), subst) {
+                Some(a) => { param_args.insert(p, a); }
+                None => return v,
+            }
+        }
+        // Build the fold substitution: every op-body var named after a param maps
+        // to its call arg. WI-487 mints a FRESH VarId per param occurrence (all
+        // sharing the param Symbol), so bind every such VarId by Symbol — the
+        // by-symbol fold (no string name-matching, no occurrence→term lowering).
+        let mut fold = Substitution::new();
+        collect_param_var_bindings(&body, &param_args, &mut fold);
+        let folded = node_occurrence::substitute_occurrence(self, &body, &fold);
+        // Reduce the folded body via field-access reduction; recurse for a nested
+        // op-call. A value (Term/scalar) ⇒ FOLDABLE; a residual `Node` (arith /
+        // match / unfoldable op-call) ⇒ COMPLEX → return the ORIGINAL call.
+        let reduced = self.reduce_dot_value(Value::Node(folded), subst);
+        let reduced = self.reduce_op_value(reduced, subst, depth + 1);
+        match reduced {
+            Value::Node(_) => v,
+            other => other,
+        }
+    }
+
+    /// WI-482 + WI-483: reduce a builtin operand to its value — project a
+    /// dispatched `field_access` dot (`?p.x`), then fold a dispatched method-op
+    /// call (`?b.peek()`). The single operand-reduction pipeline shared by
+    /// `eq`/`cmp`/`arith`. A residual (complex) op-call is left as-is here; the
+    /// caller delays on it via [`Self::is_unreduced_op_call`].
+    fn reduce_operand(&mut self, v: Value, subst: &Substitution) -> Value {
+        let v = self.reduce_dot_value(v, subst);
+        self.reduce_op_value(v, subst, 0)
+    }
+
+    /// WI-483: is `v` a residual (unfolded) method-op call operand — a
+    /// `Value::Node` applying a CONCRETE operation that [`Self::reduce_op_value`]
+    /// left un-reduced (a complex body)? Such an operand is treated as un-ground
+    /// (delay) by `eq`/`cmp`/`arith`, so a complex callee residualizes rather
+    /// than failing — the substitution-transparency rule.
+    fn is_unreduced_op_call(&self, v: &Value) -> bool {
+        let Value::Node(occ) = v else { return false };
+        match occ.as_expr() {
+            Some(Expr::Apply { functor, .. }) => {
+                self.builtins.get(functor).is_none() && self.op_body_node(*functor).is_some()
+            }
+            _ => false,
         }
     }
 
