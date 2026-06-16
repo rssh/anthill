@@ -8,6 +8,9 @@ mod wi009_phase3_builtins_test;
 #[path = "include/wi275_hof_inference_test.rs"]
 mod wi275_hof_inference_test;
 
+#[path = "include/wi278_dot_chain_test.rs"]
+mod wi278_dot_chain_test;
+
 #[path = "include/wi279_dot_dispatch_test.rs"]
 mod wi279_dot_dispatch_test;
 

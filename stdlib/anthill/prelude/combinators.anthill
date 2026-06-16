@@ -36,6 +36,16 @@ sort anthill.prelude.MappedStream
 
   provides Stream[T = T, E = {ES, EF}]
 
+  -- WI-278: a mapped stream IS iterable. Declared EXPLICITLY (as `List` does),
+  -- since provision is NOT transitive — `Stream` trivially provides `Iterable`
+  -- (stream.anthill), but that does not propagate to `Stream` providers. The
+  -- chain `xs.map(f).filter(p)` dispatches `.filter` via `Iterable.filter`,
+  -- whose `iterator(c)` must resolve on the lazy `mapped` carrier at runtime;
+  -- `iterator(m) = m` (the mapped value is already a Stream). Qualified name to
+  -- avoid the import cycle (Iterable imports MappedStream).
+  provides anthill.prelude.Iterable[C = MappedStream, Element = T, E = {ES, EF}]
+  operation iterator[Elem, EffS, EffP](m: MappedStream[T = Elem, ES = EffS, EF = EffP]) -> Stream[T = Elem, E = {EffS, EffP}] = m
+
   -- Stream primitive for a mapped stream: peel the source's head, apply the
   -- transform, and re-wrap the source's tail so the result stays lazy. The
   -- output element type comes from `fn`'s return `B = T`, so it threads even
@@ -91,6 +101,11 @@ sort anthill.prelude.FilteredStream
   entity filtered(source: Stream[T, ES], pred: (T) -> Bool @ {EF})
 
   provides Stream[T = T, E = {ES, EF}]
+
+  -- WI-278: a filtered stream IS iterable (cf. MappedStream / List). Explicit
+  -- because provision is not transitive; `iterator(f) = f` (already a Stream).
+  provides anthill.prelude.Iterable[C = FilteredStream, Element = T, E = {ES, EF}]
+  operation iterator[Elem, EffS, EffP](f: FilteredStream[T = Elem, ES = EffS, EF = EffP]) -> Stream[T = Elem, E = {EffS, EffP}] = f
 
   -- Both inner calls are the BARE spec op (WI-411): the source peel `splitFirst(src)`
   -- has the abstract source `Stream` as receiver, so it value-dispatches on `src`'s
