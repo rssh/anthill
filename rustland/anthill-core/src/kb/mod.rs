@@ -1525,6 +1525,25 @@ impl KnowledgeBase {
         out
     }
 
+    /// Constructors to inspect when resolving a FIELD of `sort_sym`: its entity
+    /// variants ([`Self::constructors_of_sort`]) PLUS `sort_sym` itself when it
+    /// is a free-standing entity. A top-level `entity Pose(x, y)` is its own
+    /// constructor with no parent sort, so `constructors_of_sort` is empty for
+    /// it, yet `entity_field_types(Pose)` holds its fields — the same
+    /// free-standing-entity case `check_constructor_iter` handles ("the entity
+    /// is its own type"). Field lookups that only walked `constructors_of_sort`
+    /// thus missed every field of a free-standing entity (WI-490: a `(p).x` on
+    /// such a receiver failed dot dispatch). Self is appended (deduped) so a
+    /// normal multi-variant sort — whose own symbol carries no
+    /// `entity_field_types` — is unaffected.
+    pub fn field_constructors_of_sort(&self, sort_sym: Symbol) -> Vec<Symbol> {
+        let mut out = self.constructors_of_sort(sort_sym);
+        if self.entity_field_types(sort_sym).is_some() && !out.contains(&sort_sym) {
+            out.push(sort_sym);
+        }
+        out
+    }
+
     /// Does `sort_sym` have any entity constructor — i.e. is it a
     /// constructor-shaped DATA sort rather than an abstract spec? Used by the
     /// provider-info loader (WI-407) to tell `sort QueryableStore { fact Store }`

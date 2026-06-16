@@ -3562,7 +3562,10 @@ fn build_type(
                     // the same symbol across a sort's constructors; a multi-
                     // variant short-name collision resolves via the first.)
                     let member_short = short_name_of(kb.resolve_sym(member)).to_string();
-                    let field_sym = kb.constructors_of_sort(rs).into_iter().find_map(|ctor| {
+                    // WI-490: include `rs` itself when it is a free-standing entity
+                    // (its own constructor) so `(p).x` on an `entity Pose(x, y)`
+                    // receiver resolves the field instead of failing dot dispatch.
+                    let field_sym = kb.field_constructors_of_sort(rs).into_iter().find_map(|ctor| {
                         kb.entity_field_types(ctor).and_then(|fields| {
                             fields.iter()
                                 .find(|(f, _)| short_name_of(kb.resolve_sym(*f)) == member_short)
@@ -11562,7 +11565,10 @@ fn resolve_field_type(
     // access on a multi-variant sort is well-defined only when all variants agree on the
     // field's type; a divergence is a LOUD error, never an order-dependent pick.
     let mut resolved: Option<Value> = None;
-    for ctor in kb.constructors_of_sort(sort_sym) {
+    // WI-490: `field_constructors_of_sort` adds a free-standing entity's own
+    // symbol, whose `entity_field_types` carries the fields that
+    // `constructors_of_sort` (parent-keyed, empty for such an entity) misses.
+    for ctor in kb.field_constructors_of_sort(sort_sym) {
         // Scope the `entity_field_types` borrow so the `&mut kb` subst call below is
         // free; `continue` to the next constructor if this one lacks the field.
         let declared = {

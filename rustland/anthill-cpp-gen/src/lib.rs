@@ -1920,10 +1920,15 @@ fn lower_let_chain_node(
     Ok(out)
 }
 
-/// Extract the field name from an Apply arg whose payload is a
-/// `var_ref(Ref(<field>))` occurrence — used for the second arg of
-/// `field_access(object, field)` where the loader wraps the field
-/// identifier as a var_ref.
+/// Extract the field name from the 2nd arg of `field_access(object, field)`.
+/// Two producers feed this, with different field-name encodings:
+///   - the typer's `DotApply` field-fallback (WI-279/WI-490) synthesizes the
+///     field as a `Const(String("<field>"))` — the form the eval-side
+///     `reflect_field_access` reads (`Value::Str`), so the canonical one;
+///   - the loader/converter `field_access` builtin wraps the field identifier
+///     as a `var_ref`/`Ref`/`Ident` symbol reference.
+/// Accept both so cpp-gen lowers a field access regardless of which path built
+/// the body node.
 fn field_name_from_node(
     kb: &KnowledgeBase,
     occ: &std::rc::Rc<anthill_core::kb::node_occurrence::NodeOccurrence>,
@@ -1931,6 +1936,7 @@ fn field_name_from_node(
     use anthill_core::kb::node_occurrence::{Expr, NodeKind};
     if let NodeKind::Expr { expr, .. } = &occ.kind {
         match expr {
+            Expr::Const(Literal::String(s)) => return Ok(s.clone()),
             Expr::VarRef { name } | Expr::Ref(name) | Expr::Ident(name) => {
                 let qn = kb.qualified_name_of(*name);
                 return Ok(short_name_of(qn).to_string());
@@ -1939,7 +1945,7 @@ fn field_name_from_node(
         }
     }
     Err(CppCodegenError {
-        message: "field_access: 2nd arg isn't a var_ref or symbol reference".into(),
+        message: "field_access: 2nd arg isn't a string literal or symbol reference".into(),
     })
 }
 

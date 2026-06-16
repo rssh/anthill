@@ -90,14 +90,14 @@ fn nested_if_then_else() {
 
 #[test]
 fn field_access_emits_dot_syntax() {
-    // `p.x` desugars to `field_access(p, x)` in the parse converter
-    // and is wrapped as `Expr.apply(fn: Ref(field_access), args: [..])`
-    // by the loader. The lowering recognises the field_access functor
-    // and emits dot syntax instead of a function call.
+    // `(p).x` is a value-receiver field access: the loader re-routes it to a
+    // zero-arg `DotApply` (WI-280) and the typer's field fallback rewrites it
+    // to `field_access(p, "x")` once it resolves `x` against `Pose` — which,
+    // as a free-standing entity, is its own constructor (WI-490). The lowering
+    // recognises the `field_access` functor and emits dot syntax.
     //
-    // Type checking on field_access isn't implemented yet (it returns
-    // a synthetic Pose-typed result), so we use the lenient loader to
-    // keep the diagnostic out of the test body.
+    // The lenient loader is retained so the test is robust to unrelated load
+    // diagnostics; the field access itself now type-checks cleanly.
     let source = r#"
         namespace test.expr_b_field
           import anthill.prelude.{Float}
