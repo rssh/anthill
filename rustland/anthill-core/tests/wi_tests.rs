@@ -20,6 +20,9 @@ mod wi491_covariant_return_test;
 #[path = "include/wi173_type_print_test.rs"]
 mod wi173_type_print_test;
 
+#[path = "include/wi495_non_stream_iterable_test.rs"]
+mod wi495_non_stream_iterable_test;
+
 #[path = "include/wi279_dot_dispatch_test.rs"]
 mod wi279_dot_dispatch_test;
 
