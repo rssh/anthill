@@ -76,6 +76,15 @@ enum anthill.prelude.List
   -- (same WI-387 reasoning as the Stream provision above — `provides`, not
   -- `fact`, so the row literal lowers through the type-aware path), letting a
   -- concrete `Iterable.find/map` call site ground `E` instead of leaking `?_`.
+  --
+  -- WI-492 kept this EXPLICIT (unlike the lazy MappedStream/FilteredStream
+  -- carriers, which now derive Iterable transitively through Stream): a `List`
+  -- value's STATIC type is the concrete `List`, so the TYPER classifies it as
+  -- the Iterable carrier directly and must compose `Element`/`E` from List's
+  -- provision of Stream — a typer-side transitive-binding composition not yet
+  -- built (the eval-only transitive resolution does not reach it). Dropping
+  -- this clause makes every `Iterable.find/map/size` on a List leak `?_` for
+  -- the effect row. Removing it is the typer half of WI-492 (filed as WI-495).
   provides Iterable[C = List[T], Element = T, E = {}]
   operation iterator(l: List) -> Stream[T = l.T, E = {}] = l
 
