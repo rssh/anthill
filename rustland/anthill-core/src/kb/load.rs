@@ -4386,6 +4386,39 @@ struct Loader<'a> {
     // Pushed by the let/match/lambda visit arms; popped by
     // `LoadWorkOp::PopLocalScope`.
     local_names_stack: Vec<HashMap<String, Symbol>>,
+    // WI-201: bare-spec-member sugar accumulator. `Some` ONLY while loading an
+    // operation SIGNATURE (set up at the top of `load_operation`, drained at its
+    // end). A bare `Spec.Member` in a signature type position — `Member` a
+    // declared type-param of the spec sort `Spec`, no carrier in scope — lowers
+    // CARRIER-DIRECT (design path-dependent-types.md §5.4 / WI-201, user-confirmed
+    // 2026-06-16) to a fresh op type-param `?P` (the type at that position IS `?P`)
+    // plus a synthesized `requires Spec[Member = ?P]`. Deduped per `(spec, member)`
+    // so two `WorkItemStore.State` refs in one signature share one `?P`; a distinct
+    // operation gets a fresh accumulator → a distinct `?P`. Outside an op signature
+    // the field is `None`, so the bare-spec arm keeps its loud `RigidTypeProjection`
+    // conflation error (the sugar never fires for sort/entity/fact type positions).
+    bare_spec_sugar: Option<BareSpecSugar>,
+    // WI-201: carrier bindings of the sort CURRENTLY being loaded — `(spec base sym,
+    // member sym)` → the bound value term, pre-scanned from the sort's `provides` /
+    // `fact` items BEFORE any operation in its body is loaded (so it is order-
+    // independent). Lets the bare-spec sugar NARROW `Spec.Member` to the concrete
+    // carrier an enclosing impl binds (`fact WorkItemStore[State = WIS]` ⟹
+    // `WorkItemStore.State` ≡ WIS inside that sort) instead of minting a fresh
+    // existential. Empty outside a sort body; saved/restored around nested sorts.
+    current_sort_carrier_bindings: HashMap<(Symbol, Symbol), TermId>,
+}
+
+/// WI-201: per-operation accumulator for the carrier-direct bare-spec-member sugar.
+/// Built fresh per `load_operation`; drained into the op's `type_params` (the minted
+/// `?P` vars) and `requires` (the `Spec[Member = ?P]` clauses, rebuilt from `minted`)
+/// once the whole signature has been converted.
+#[derive(Default)]
+struct BareSpecSugar {
+    /// Dedup + insertion order: `(spec base sym, member sym)` → the minted `?P` var
+    /// term. A repeated `Spec.Member` in the same signature reuses its `?P`. The sole
+    /// source for the drain — the requires clause `Spec[Member = ?P]` is reconstructed
+    /// from each entry, so there is no second list to keep in sync.
+    minted: Vec<((Symbol, Symbol), TermId)>,
 }
 
 /// Pre-resolved symbols used by `build_load`. Populated once at
@@ -4496,6 +4529,8 @@ impl<'a> Loader<'a> {
             expr_match_metas: Vec::new(),
             occ_suppress: 0,
             local_names_stack: Vec::new(),
+            bare_spec_sugar: None,
+            current_sort_carrier_bindings: HashMap::new(),
         }
     }
 
@@ -6859,6 +6894,22 @@ impl<'a> Loader<'a> {
                     ));
                 }
             }
+            // WI-201: bare-spec-member sugar (carrier-direct, Reading A). We are in an
+            // operation signature (`bare_spec_sugar` active) and `head.member` names a
+            // declared type-param of the SPEC sort `head` with no carrier in scope (the
+            // self-qualified check above did not fire). Desugar to a fresh op type-param
+            // `?P` whose synthesized `requires <head>[member = ?P]` constrains it to be
+            // the spec's `member`; the type at this position IS `?P`. Two refs to the
+            // same `Spec.Member` in one signature share `?P` (dedup in the accumulator).
+            //
+            // ONLY for a spec (an interface — a Sort with no constructors): a
+            // parameterized DATA sort (`Option`, `List`, a user enum) declares its
+            // type-param too, but `Option.T` is a data param, not an associated spec
+            // member to existentialize — it stays the loud conflation error, as before.
+            if self.bare_spec_sugar.is_some() && !self.kb.sort_has_constructors(head_sort_sym) {
+                let var = self.mint_bare_spec_carrier(head_sort_sym, member_name);
+                return Some(node_occurrence::TypeChild::Ground(var));
+            }
         } else {
             // A NON-param child of the head sort (`Outer.Inner` for a nested alias
             // sort, `Enum.Entity`) is a legitimate qualified CHILD reference, not a
@@ -6890,6 +6941,135 @@ impl<'a> Loader<'a> {
         // WI-429: record for the end-of-load formation sweep.
         self.kb.rigid_projection_formations.push((proj, span));
         Some(node_occurrence::TypeChild::Ground(proj))
+    }
+
+    /// WI-201: mint (or reuse) the carrier-direct `?P` for a bare `Spec.Member` in the
+    /// current operation signature, recording the synthesized `requires Spec[member =
+    /// ?P]`. Deduped per `(spec, member)` within the one operation, so two occurrences
+    /// of the same `Spec.Member` share `?P` (and a distinct operation, with its own
+    /// accumulator, gets a distinct `?P`). Returns the `?P` var term — the type at the
+    /// sugar position (design Reading A: the parameter IS the existential carrier, NOT a
+    /// `?P.member` projection; the latter cannot infer `?P` from an argument when the
+    /// projected member is itself the carrier, the WorkItemStore.State driving case).
+    ///
+    /// No symbol-table registration: the typer reads each var's surface name via
+    /// `vid.name()` and treats EVERY var listed in `OperationInfo.type_params` as an
+    /// inferable op type-parameter, so adding the minted var there (at the drain in
+    /// `load_operation`) suffices. The synthesized `requires Spec[member = ?P]` is
+    /// rebuilt from the recorded entry at the drain. Precondition:
+    /// `self.bare_spec_sugar.is_some()`.
+    fn mint_bare_spec_carrier(&mut self, spec: Symbol, member_name: &str) -> TermId {
+        let member_sym = self.kb.intern(member_name);
+        // WI-201 carrier-in-scope NARROWING: when the enclosing sort BINDS this spec
+        // member to a CONCRETE carrier (`fact WorkItemStore[State = WIS]` / `provides …`),
+        // the bare `Spec.Member` denotes that carrier — return it directly (no fresh
+        // `?P`, no synthesized requires). The bindings were pre-scanned order-
+        // independently in `load_sort_with_body` (already filtered to concrete,
+        // unambiguous carriers, so a logic-var or conflicting binding falls through to a
+        // fresh existential here rather than leaking an uninferable term).
+        if let Some(&bound) = self.current_sort_carrier_bindings.get(&(spec, member_sym)) {
+            return bound;
+        }
+        // Reuse an already-minted carrier for this `(spec, member)` in this signature.
+        if let Some(sugar) = self.bare_spec_sugar.as_ref() {
+            if let Some((_, var)) =
+                sugar.minted.iter().find(|((s, m), _)| *s == spec && *m == member_sym)
+            {
+                return *var;
+            }
+        }
+        // Fresh `?P`, named after the member so a diagnostic reads naturally
+        // (`expected a type for 'State'`). The licensing `requires Spec[member = ?P]` is
+        // synthesized from this entry at the drain.
+        let vid = self.kb.fresh_var(member_sym);
+        let var = self.kb.alloc(Term::Var(Var::Global(vid)));
+        if let Some(sugar) = self.bare_spec_sugar.as_mut() {
+            sugar.minted.push(((spec, member_sym), var));
+        }
+        var
+    }
+
+    /// WI-201: is `t` a CONCRETE carrier the bare-spec sugar may narrow to — a sort
+    /// reference / application, never a logic var (a non-ground binding like `fact
+    /// Spec[State = ?x]`). Narrowing to a var would leak a term that is NOT in the op's
+    /// `type_params` and so cannot be inferred at a call; such a binding instead falls
+    /// back to the fresh existential `?P`.
+    fn is_concrete_carrier(&self, t: TermId) -> bool {
+        matches!(self.kb.get_term(t), Term::Ref(_) | Term::Ident(_) | Term::Fn { .. })
+    }
+
+    /// WI-201: pre-scan a sort body's `provides` / `fact` items for spec-application
+    /// bindings `Spec[… member = X …]`, mapping `(spec base sym, member sym)` → the
+    /// bound value term `X`. Feeds the bare-spec sugar's carrier-in-scope narrowing
+    /// (an impl that binds `WorkItemStore[State = WIS]` makes `WorkItemStore.State` ≡
+    /// WIS inside its body). Read from the PARSE items before any operation in the body
+    /// is loaded, so the narrowing does not depend on source order of fact-vs-op.
+    /// Positional bindings (`fact Spec[WIS]`) are mapped to the spec's declared
+    /// parameter order, mirroring [`Self::maybe_emit_fact_provides_info`].
+    fn scan_sort_carrier_bindings(&mut self, items: &[Item]) -> HashMap<(Symbol, Symbol), TermId> {
+        use crate::eval::value::Value;
+        let mut out = HashMap::new();
+        for item in items {
+            // `fact Spec[…]` carries a parse-time term; `provides Spec[…]` a TypeExpr.
+            let spec_term = match item {
+                Item::Fact(f) => self.convert_term(f.term),
+                Item::ProvidesClause(pc) => match self.sort_inst_to_value(&pc.spec) {
+                    Value::Term(t) => t,
+                    // A denoted-bearing spec carries no concrete carrier to narrow to.
+                    _ => continue,
+                },
+                _ => continue,
+            };
+            let (functor, pos_args, named_args) = match self.kb.get_term(spec_term) {
+                Term::Fn { functor, pos_args, named_args } => {
+                    (*functor, pos_args.clone(), named_args.clone())
+                }
+                _ => continue,
+            };
+            // Only a SPEC (an interface — a Sort with no constructors) lends carrier
+            // members; skip a non-Sort fact term and a parameterized DATA sort (`List`,
+            // `Option`, a user enum), matching the firing gate in the sugar itself.
+            if !matches!(self.kb.kind_of(functor), Some(SymbolKind::Sort))
+                || self.kb.sort_has_constructors(functor)
+            {
+                continue;
+            }
+            // Translate positional bindings to the spec's declared parameter order, so
+            // `Spec[WIS]` and `Spec[Member = WIS]` record the same carrier; a named
+            // binding for a slot wins over the positional one.
+            let params = self.kb.type_params_of_sort(functor);
+            let mut bindings: SmallVec<[(Symbol, TermId); 2]> = named_args.clone();
+            for (i, val) in pos_args.iter().enumerate() {
+                if let Some(name) = params.get(i) {
+                    let key = self.kb.intern(name);
+                    if !bindings.iter().any(|(s, _)| *s == key) {
+                        bindings.push((key, *val));
+                    }
+                }
+            }
+            for (key, val) in bindings {
+                // Narrow ONLY to a concrete carrier (never a logic var / placeholder),
+                // and only when UNAMBIGUOUS: a second fact binding the same `(spec,
+                // member)` to a different carrier drops the entry, so the sugar mints a
+                // fresh existential (and the duplicate-provider coherence check surfaces
+                // the real error) rather than silently picking a source-order winner.
+                if !self.is_concrete_carrier(val) {
+                    continue;
+                }
+                use std::collections::hash_map::Entry;
+                match out.entry((functor, key)) {
+                    Entry::Occupied(e) => {
+                        if *e.get() != val {
+                            e.remove();
+                        }
+                    }
+                    Entry::Vacant(e) => {
+                        e.insert(val);
+                    }
+                }
+            }
+        }
+        out
     }
 
     fn type_expr_to_child(
@@ -7775,8 +7955,19 @@ impl<'a> Loader<'a> {
         // Emit member facts for direct children
         self.emit_member_facts_for_items(&s.items, sort_term);
 
+        // WI-201: pre-scan this sort's `provides` / `fact` carrier bindings so the
+        // bare-spec sugar can NARROW `Spec.Member` to a bound carrier (`fact
+        // WorkItemStore[State = WIS]` ⟹ `WorkItemStore.State` ≡ WIS) regardless of
+        // whether the binding appears before or after the using operation. Saved/
+        // restored around the body load so a nested sort's bindings don't leak out.
+        let sort_carrier_bindings = self.scan_sort_carrier_bindings(&s.items);
+        let prev_sort_carrier_bindings =
+            std::mem::replace(&mut self.current_sort_carrier_bindings, sort_carrier_bindings);
+
         // Load all items within this sort's domain scope
         self.load_items(&s.items, Some(sort_term));
+
+        self.current_sort_carrier_bindings = prev_sort_carrier_bindings;
 
         // Now collect constructors, operations, parameters, requires from child items
         // (after loading, so all names are resolved in sort scope)
@@ -8694,6 +8885,14 @@ impl<'a> Loader<'a> {
         let op_scope = self.kb.make_name_term_from_sym(functor);
         self.current_scope = op_scope;
 
+        // WI-201: arm the bare-spec-member sugar for this operation's SIGNATURE. A bare
+        // `Spec.Member` in a param / return / effect type position now mints a fresh op
+        // type-param `?P` + a synthesized `requires Spec[Member = ?P]` (drained below,
+        // before the requires / type_params lists are built). Restored after the
+        // signature so it never leaks into the body or the next operation.
+        let prev_bare_spec_sugar =
+            std::mem::replace(&mut self.bare_spec_sugar, Some(BareSpecSugar::default()));
+
         let op_qualified = self.kb.qualified_name_of(functor).to_owned();
 
         // `result` as a parameter name collides with the reserved
@@ -8823,7 +9022,25 @@ impl<'a> Loader<'a> {
         // variable in the effects clause — see `infer_effects_row_requires`
         // for the row-variable heuristic and the spec examples.
         let auto_requires_terms = self.infer_effects_row_requires(o);
-        let requires_list = self.convert_clause_list_with_extra(&o.requires, &auto_requires_terms);
+        // WI-201: disarm + drain the bare-spec sugar (the whole signature — return,
+        // params, effects — has now been converted). Each minted carrier becomes an
+        // extra op type-param AND a synthesized `requires Spec[Member = ?P]` clause
+        // (rebuilt from the entry — `minted` is the single source), extending the
+        // requires extra-terms alongside the WI-320 auto-requires. The candidate filter
+        // `requires_entry_lends_member` accepts it: the spec DECLARES `member` and the
+        // application MENTIONS `?P`, so it licenses dispatch and constrains `?P`.
+        let sugar = std::mem::replace(&mut self.bare_spec_sugar, prev_bare_spec_sugar)
+            .unwrap_or_default();
+        let mut extra_requires = auto_requires_terms;
+        for ((spec, member), var) in &sugar.minted {
+            type_param_var_terms.push(*var);
+            extra_requires.push(self.kb.alloc(Term::Fn {
+                functor: *spec,
+                pos_args: SmallVec::new(),
+                named_args: SmallVec::from_slice(&[(*member, *var)]),
+            }));
+        }
+        let requires_list = self.convert_clause_list_with_extra(&o.requires, &extra_requires);
         let ensures_list = self.convert_clause_list(&o.ensures);
 
         // Convert expression body if present. WI-305: discard the term handle;

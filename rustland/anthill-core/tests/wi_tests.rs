@@ -341,3 +341,6 @@ mod wi474_dispatched_projection_test;
 
 #[path = "include/wi475_effects_projection_test.rs"]
 mod wi475_effects_projection_test;
+
+#[path = "include/wi201_bare_spec_member_sugar_test.rs"]
+mod wi201_bare_spec_member_sugar_test;

@@ -254,19 +254,25 @@ fn concrete_sort_subject_wrong_return_rejected() {
     );
 }
 
-/// The `T#K` guard: projecting off the BARE SPEC SORT itself (`Storage.Key` outside
-/// the sort) would conflate distinct carriers — loudly rejected, never the old
-/// warning + degenerate nominal.
+/// The `T#K` guard: projecting off the BARE SPEC SORT itself (`Storage.Key`) in a
+/// NON-operation-signature position (here an entity field) would conflate distinct
+/// carriers — loudly rejected, never the old warning + degenerate nominal.
+///
+/// NB WI-201 supersedes the rejection in an OPERATION SIGNATURE: there a bare
+/// `Spec.Member` is now the carrier-direct sugar (a fresh `?P` + synthesized `requires
+/// Spec[Member = ?P]`), so `operation probe(k: Storage.Key)` LOADS. The conflation
+/// guard remains for every other type position (fields, facts, sort-level), as this
+/// field case pins; the sugar is covered by `wi201_bare_spec_member_sugar_test`.
 #[test]
 fn bare_spec_subject_rejected() {
     let src = with_storage(
         "bare_spec",
-        "  operation probe(s: Storage, k: Storage.Key) -> Storage.Key = k\n",
+        "  sort Holder\n    entity holder(k: Storage.Key)\n  end\n",
     );
     let errs = load_errors(&[&src]);
     assert!(
         errs.iter().any(|e| e.contains("conflate distinct carriers")),
-        "Storage.Key off the bare spec is the T#K conflation — loud; got: {errs:?}",
+        "Storage.Key off the bare spec in a field is the T#K conflation — loud; got: {errs:?}",
     );
 }
 
