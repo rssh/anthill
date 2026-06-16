@@ -57,20 +57,20 @@ sort anthill.prelude.Stream
   -- sum-and-reset over List[Cell]) is a legitimate fold. (A Modify-bearing
   -- callback is still row-inference-gated today: its denoted-bearing eta
   -- arrow leaves EffP unconstrained — a loud error, not a rejection by
-  -- design.) The callback param is the WI-355 positional-tuple arrow
-  -- `((Acc, Elem)) -> Acc`, applied `f((init, h))`: a TWO-param arrow
-  -- `(acc: Acc, x: Elem) -> ...` does not yet bind EffP from the argument
-  -- (named-binder fields vs the eta arrow's `_1`/`_2` tuple — WI-442). `map` /
-  -- `filter` (which PRODUCE a stream) are the lazy carriers in
-  -- combinators.anthill, not here.
-  operation foldLeft[EffP, Acc](s: Stream, init: Acc, f: ((Acc, s.T)) -> Acc @ {EffP}) -> Acc effects {s.E, EffP} =
+  -- design.) The callback param is the TWO-param named-binder arrow
+  -- `(acc: Acc, x: s.T) -> Acc`, applied `f(init, h)`: WI-442 aligns the
+  -- named binders against a multi-param op's eta arrow `(_1, _2)` by position,
+  -- so the callback's row `EffP` binds from the argument with no explicit
+  -- `[EffP = …]` at the call site. `map` / `filter` (which PRODUCE a stream)
+  -- are the lazy carriers in combinators.anthill, not here.
+  operation foldLeft[EffP, Acc](s: Stream, init: Acc, f: (acc: Acc, x: s.T) -> Acc @ {EffP}) -> Acc effects {s.E, EffP} =
     match splitFirst(s)
       case none() -> init
-      case some(pair(h, rest)) -> foldLeft(rest, f((init, h)), f)
-  operation foldRight[EffP, Acc](s: Stream, init: Acc, f: ((s.T, Acc)) -> Acc @ {EffP}) -> Acc effects {s.E, EffP} =
+      case some(pair(h, rest)) -> foldLeft(rest, f(init, h), f)
+  operation foldRight[EffP, Acc](s: Stream, init: Acc, f: (x: s.T, acc: Acc) -> Acc @ {EffP}) -> Acc effects {s.E, EffP} =
     match splitFirst(s)
       case none() -> init
-      case some(pair(h, rest)) -> f((h, foldRight(rest, init, f)))
+      case some(pair(h, rest)) -> f(h, foldRight(rest, init, f))
   -- find (WI-441 decoupled rows): the pred carries its OWN row `EffP` —
   -- open, minus Modify on the element under test — instead of being tied to
   -- the stream's observation row `Eff`; find's effect is the MERGE of both

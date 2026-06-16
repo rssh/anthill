@@ -209,15 +209,21 @@ end
     );
 }
 
-/// PINS the fold-mutation design + the current engine gap. DESIGN: the fold
+/// PINS the fold-mutation design + the remaining engine gap. DESIGN: the fold
 /// callback carries NO `-Modify[x]` lacks (a fold is the run-once terminal
 /// consumer — an in-place sweep is legitimate), so a `Modify[c]`-declaring
 /// callback must NOT be rejected by a lacks constraint (contrast
-/// `find_over_cell_list_rejects_mutating_pred_accepts_reader`). ENGINE GAP:
-/// the denoted-bearing eta arrow does not yet bind `EffP`, so the call
-/// today fails LOUDLY as unconstrained-EffP. When row inference learns this
-/// binding (WI-442 territory), this test flips: replace it with an eval
-/// test of the sweep.
+/// `find_over_cell_list_rejects_mutating_pred_accepts_reader`). ENGINE GAP
+/// (post-WI-442): WI-442 fixed the named-binder→eta-arrow alignment, so a
+/// GROUND-effect callback now binds `EffP` from the argument
+/// (see `iterable_fold_effectful_callback_decoupled_row`, `EffP := {Beep}`).
+/// This case stays LOUD for a SEPARATE reason: the callback's effect
+/// `Modify[c]` is DENOTED on the callback's OWN bound parameter `c`, so
+/// binding the caller-side row var `EffP` to `{Modify[c]}` would ESCAPE `c`
+/// out of the arrow scope — a dependent-effect abstraction the row machinery
+/// does not yet perform (proposal 046 / modify-effect-derive territory), not
+/// the named-binder issue. When that lands, this test flips: replace it with
+/// an eval test of the sweep.
 #[test]
 fn iterable_fold_mutating_callback_not_lacks_rejected_but_row_gated() {
     let src = r#"

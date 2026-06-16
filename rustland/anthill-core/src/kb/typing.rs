@@ -14956,11 +14956,83 @@ fn subtype_effect_rows<EA: TermView, EB: TermView>(
     }
 }
 
-/// Unify two named tuple types: matching fields must unify.
+/// WI-442: are these named-tuple fields the canonical POSITIONAL convention —
+/// exactly `_1, _2, …, _n` in order? This is the field-name shape the WI-355
+/// tuple-arrow lowering and the [`operation_as_function_value`] eta arrow mint
+/// for an UNNAMED arrow param / multi-param op (spec §4.5). Detecting it lets
+/// [`align_named_tuple_fields`] relate such a tuple to a NAMED-binder arrow
+/// (`(acc, x)`) by position rather than by name. The index check requires the
+/// field at position `i` to be named `_{i+1}`, so it (and the zip in
+/// `align_named_tuple_fields`) relies on [`named_tuple_fields`] yielding fields
+/// in construction/declaration order — which it does (it reads the `fields`
+/// list spine in order; only the per-element record args are name-sorted, not
+/// the list). Allocation-free: read each field's interned name and digit-parse
+/// its `_n` suffix rather than `format!`-ing and re-interning a probe symbol.
+fn is_positional_tuple_names(kb: &KnowledgeBase, fields: &[(Symbol, Value)]) -> bool {
+    !fields.is_empty()
+        && fields.iter().enumerate().all(|(i, (name, _))| {
+            kb.resolve_sym(*name)
+                .strip_prefix('_')
+                .and_then(|d| d.parse::<usize>().ok())
+                == Some(i + 1)
+        })
+}
+
+/// WI-442: align two named-tuple field lists into the `(a_type, b_type)` pairs a
+/// field-wise relation (unify / subtype) should relate, or `None` when the shapes
+/// are incompatible.
+///
+/// * By NAME (the default, width subtyping): every `b` field must have a
+///   same-named `a` field; extra `a` fields are ignored. Returns those pairs in
+///   `b` order. This is the original [`unify_named_tuple`] /
+///   [`named_tuple_compatible`] behavior.
+/// * By POSITION (WI-442 fallback): when the names don't line up but the arities
+///   are equal and ONE side is the canonical `_1.._n` positional convention
+///   (a WI-355 tuple-arrow / eta-arrow param), align by index instead — so a
+///   named-binder callback arrow `(acc: Acc, x: Elem)` relates to a multi-param
+///   op's eta arrow `(_1, _2)`, binding the callback's row var at the call site
+///   (the bug this ticket closes). Both field lists are in declaration /
+///   positional order (the `named_tuple` builders preserve list order), so a
+///   straight index zip is the correct correspondence.
+///
+/// A genuine mismatch — two DIFFERENTLY-named tuples, neither positional — fails
+/// by name and is rejected (no silent positional coercion).
+fn align_named_tuple_fields(
+    kb: &KnowledgeBase,
+    a_fields: &[(Symbol, Value)],
+    b_fields: &[(Symbol, Value)],
+) -> Option<Vec<(Value, Value)>> {
+    let by_name: Option<Vec<(Value, Value)>> = b_fields
+        .iter()
+        .map(|(b_name, b_type)| {
+            a_fields
+                .iter()
+                .find(|(n, _)| n == b_name)
+                .map(|(_, a_type)| (a_type.clone(), b_type.clone()))
+        })
+        .collect();
+    if by_name.is_some() {
+        return by_name;
+    }
+    if a_fields.len() == b_fields.len()
+        && (is_positional_tuple_names(kb, a_fields) || is_positional_tuple_names(kb, b_fields))
+    {
+        return Some(
+            a_fields
+                .iter()
+                .zip(b_fields.iter())
+                .map(|((_, a_type), (_, b_type))| (a_type.clone(), b_type.clone()))
+                .collect(),
+        );
+    }
+    None
+}
+
 /// WI-342: the sole `named_tuple` unification, carrier-agnostic over [`TermView`]
 /// (both the `TermId` dispatch via [`TermIdView`] and the `Value` carrier route
-/// here). Fields are read by name via [`named_tuple_fields`] on each carrier; every
-/// `b` field must have a matching `a` field whose type unifies.
+/// here). Fields are read by name via [`named_tuple_fields`] on each carrier;
+/// every `b` field must have a matching `a` field whose type unifies — or, when
+/// one side is the WI-442 positional `_1.._n` convention, by position.
 fn unify_named_tuple<A: TermView, B: TermView>(
     kb: &mut KnowledgeBase,
     subst: &mut Substitution,
@@ -14969,17 +15041,10 @@ fn unify_named_tuple<A: TermView, B: TermView>(
 ) -> bool {
     let a_fields = named_tuple_fields(kb, a);
     let b_fields = named_tuple_fields(kb, b);
-    for (b_name, b_type) in &b_fields {
-        match a_fields.iter().find(|(n, _)| n == b_name) {
-            Some((_, a_type)) => {
-                if !unify_types(kb, subst, a_type, b_type) {
-                    return false;
-                }
-            }
-            None => return false,
-        }
+    match align_named_tuple_fields(kb, &a_fields, &b_fields) {
+        Some(pairs) => pairs.iter().all(|(a_type, b_type)| unify_types(kb, subst, a_type, b_type)),
+        None => false,
     }
-    true
 }
 
 // ── Type compatibility (subtyping) ─────────────────────────────
@@ -17716,7 +17781,10 @@ pub fn simp_fire_guard_holds(kb: &KnowledgeBase, redex: &NodeOccurrence) -> bool
 /// Depth subtyping: each expected field's type must be a supertype of actual's.
 /// WI-342: the sole `named_tuple` subtyping, carrier-agnostic over [`TermView`].
 /// Width subtyping: every `expected` field must have a matching `actual` field
-/// whose type is compatible. Fields are read by name via [`named_tuple_fields`].
+/// whose type is compatible. Fields are read by name via [`named_tuple_fields`]
+/// — or, when one side is the WI-442 positional `_1.._n` convention, by position
+/// (so a named-binder callback arrow's contravariant param check accepts a
+/// multi-param op's eta arrow).
 fn named_tuple_compatible<A: TermView, B: TermView>(
     kb: &mut KnowledgeBase,
     subst: &mut Substitution,
@@ -17725,17 +17793,12 @@ fn named_tuple_compatible<A: TermView, B: TermView>(
 ) -> bool {
     let actual_fields = named_tuple_fields(kb, actual);
     let expected_fields = named_tuple_fields(kb, expected);
-    for (exp_name, exp_type) in &expected_fields {
-        match actual_fields.iter().find(|(n, _)| n == exp_name) {
-            Some((_, act_type)) => {
-                if !types_compatible(kb, subst, act_type, exp_type) {
-                    return false;
-                }
-            }
-            None => return false,
+    match align_named_tuple_fields(kb, &actual_fields, &expected_fields) {
+        Some(pairs) => {
+            pairs.iter().all(|(act_type, exp_type)| types_compatible(kb, subst, act_type, exp_type))
         }
+        None => false,
     }
-    true
 }
 
 // ── Unified type checking ──────────────────────────────────────

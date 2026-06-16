@@ -60,12 +60,12 @@ sort anthill.prelude.Iterable
   -- on the fold callback: it runs once per element and is not captured in a
   -- re-walkable lazy view (the map/filter hazard), so element mutation is
   -- allowed — an in-place sweep (sum-and-reset over a List[Cell]) is a
-  -- legitimate fold. Callback param = the WI-355 positional-tuple arrow
-  -- (see Stream.foldLeft for why not a two-param arrow — WI-442).
-  operation foldLeft[Acc, EffP](c: C, init: Acc, f: ((Acc, Element)) -> Acc @ {EffP}) -> Acc effects {E, EffP} =
+  -- legitimate fold. Callback param = the TWO-param named-binder arrow
+  -- (see Stream.foldLeft; WI-442 binds EffP via positional eta-arrow alignment).
+  operation foldLeft[Acc, EffP](c: C, init: Acc, f: (acc: Acc, x: Element) -> Acc @ {EffP}) -> Acc effects {E, EffP} =
     Stream.foldLeft(iterator(c), init, f)
 
-  operation foldRight[Acc, EffP](c: C, init: Acc, f: ((Element, Acc)) -> Acc @ {EffP}) -> Acc effects {E, EffP} =
+  operation foldRight[Acc, EffP](c: C, init: Acc, f: (x: Element, acc: Acc) -> Acc @ {EffP}) -> Acc effects {E, EffP} =
     Stream.foldRight(iterator(c), init, f)
 
   -- map PRODUCES a stream, so it returns the lazy `mapped` carrier over the
