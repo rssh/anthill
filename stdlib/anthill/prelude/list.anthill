@@ -69,15 +69,15 @@ enum anthill.prelude.List
   -- for effectful carriers — see expansion-during-unification.md §5). A
   -- `provides` clause (not `fact Stream[…]`) is used so the row `{}` lowers
   -- through the type-aware path (the fact-head term path makes `Ref("{}")` →
-  -- unresolved). `iterator` then writes both the threaded element `[Elem]` and
-  -- the pure effect, so `Stream[Elem, {}]` is fully in the type.
+  -- unresolved). `iterator` then writes both the threaded element (`T = l.T`) and
+  -- the pure effect (`E = {}`), so `Stream[T = l.T, E = {}]` is fully in the type.
   provides Stream[T, {}]
   -- WI-424: the Iterable provision also WRITES the observation effect `E = {}`
   -- (same WI-387 reasoning as the Stream provision above — `provides`, not
   -- `fact`, so the row literal lowers through the type-aware path), letting a
   -- concrete `Iterable.find/map` call site ground `E` instead of leaking `?_`.
   provides Iterable[C = List[T], Element = T, E = {}]
-  operation iterator[Elem](l: List[Elem]) -> Stream[Elem, {}] = l
+  operation iterator(l: List) -> Stream[T = l.T, E = {}] = l
 
   -- Stream primitive: peel the head and return the tail (itself a List, hence
   -- a Stream). `pair`-shaped (not Iteration's tuple `split`) so Stream's
@@ -89,7 +89,7 @@ enum anthill.prelude.List
   -- delivered by WI-357. The effect dual — threading `E` through the nested
   -- `Stream` in a destructured Pair across a carrier-impl self-recursion (the
   -- lazy `filter` carrier) — is still open; see WI-413.
-  operation splitFirst[Elem](xs: List[Elem]) -> Option[Pair[Elem, List[Elem]]] =
+  operation splitFirst(xs: List) -> Option[Pair[A = xs.T, B = List[T = xs.T]]] =
     match xs
       case nil() -> none
       case cons(h, t) -> some(pair(h, t))
@@ -104,7 +104,7 @@ enum anthill.prelude.List
   -- than destructuring `cons` directly — the cons tail is bare `List` (cons
   -- cannot carry `List[T]`: a self-referential field type overflows the type
   -- walk), so a direct `nth(t, …)` could not infer the recursive `Elem`.
-  operation nth[Elem](xs: List[Elem], i: Int64) -> Option[Elem] =
+  operation nth(xs: List, i: Int64) -> Option[xs.T] =
     match splitFirst(xs)
       case none() -> none
       case some(pair(h, rest)) ->
@@ -127,12 +127,14 @@ enum anthill.prelude.List
   -- grounded to {} at consumption (045 row model; WI-357 / WI-365).
   fact Iteration[List[T], T]
 
-  -- Iteration.split for List. Tuple-shaped `(Elem, List[Elem])` to conform to
+  -- Iteration.split for List. Tuple-shaped `(xs.T, List[T = xs.T])` to conform to
   -- Iteration's `split -> Option[(Element, Iterator)]` (cf. Stream's
-  -- `splitFirst -> Option[Pair[…]]`, which is Pair-shaped). The explicit `[Elem]`
-  -- param + parameterized receiver `List[Elem]` threads the destructured head's
-  -- element type into the tuple (a bare `xs: List` leaves it `?_` — WI-357).
-  operation split[Elem](xs: List[Elem]) -> Option[(Elem, List[Elem])] =
+  -- `splitFirst -> Option[Pair[…]]`, which is Pair-shaped). The bare receiver
+  -- `xs: List` carries the element via the `xs.T` projection (WI-376); the
+  -- destructured head `h` threads into the tuple literal `(h, t)` via the
+  -- tuple-literal element threading (WI-462), so `split` on a `List[Int64]` types
+  -- the head as `Int64` with no explicit `[Elem]` param.
+  operation split(xs: List) -> Option[(xs.T, List[T = xs.T])] =
     match xs
       case nil() -> none
       case cons(h, t) -> some((h, t))

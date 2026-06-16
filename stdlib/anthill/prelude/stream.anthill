@@ -19,26 +19,30 @@ sort anthill.prelude.Stream
   -- `sort E = ? requires EffectsRuntime[Effects = E]`).
   effects E = ?           -- effect row required to observe
 
-  operation splitFirst[Elem, Eff](s: Stream[Elem, Eff]) -> Option[Pair[A = Elem, B = Stream[Elem, Eff]]]
-    effects Eff
-  operation head[Elem, Eff](s: Stream[Elem, Eff]) -> Option[Elem]
-    effects Eff
-  operation tail[Elem, Eff](s: Stream[Elem, Eff]) -> Stream[Elem, Eff]
-    effects Eff
+  operation splitFirst(s: Stream) -> Option[Pair[A = s.T, B = Stream[T = s.T, E = s.E]]]
+    effects s.E
+  operation head(s: Stream) -> Option[s.T]
+    effects s.E
+  operation tail(s: Stream) -> Stream[T = s.T, E = s.E]
+    effects s.E
   -- Default definitions over the primitive `splitFirst` (WI-362, enabled by
   -- WI-365 abstract spec-op self-typing). A carrier supplies only `splitFirst`;
   -- these derive `takeN` / `collect` once for every `fact Stream[X]` provider.
-  -- WI-380: each op declares its OWN element `Elem` / effect `Eff` type params
-  -- (042), bound from the receiver `Stream[Elem, Eff]` at the call site;
-  -- the self-receiver call `splitFirst(s)` threads them via the rigid-param check
-  -- (WI-392, body side) and the carrier effect-row binding (WI-393, consumption).
-  operation takeN[Elem, Eff](s: Stream[Elem, Eff], n: Int64) -> List[T = Elem] effects Eff =
+  -- WI-447: the canonical SHORT bare-member form — the self-receiver is the bare
+  -- sort `s: Stream` (the sec.3-bullet-1 tie enforced by WI-374), and every
+  -- element/effect relationship is WRITTEN as a WI-376 projection off it
+  -- (`s.T` element, `s.E` observation row). The self-receiver call `splitFirst(s)`
+  -- threads them via the projection-neutral identity through recursion (WI-459),
+  -- the cross-sort element projection (WI-461/WI-474), the cross-sort WRITTEN
+  -- effect-row projection (WI-484), and — for `find`'s lambda predicate — the
+  -- callback-param projection hint (WI-485).
+  operation takeN(s: Stream, n: Int64) -> List[T = s.T] effects s.E =
     if gt(n, 0) then
       match splitFirst(s)
         case none() -> nil
         case some(pair(h, rest)) -> cons(head: h, tail: takeN(rest, sub(n, 1)))
     else nil
-  operation collect[Elem, Eff](s: Stream[Elem, Eff]) -> List[T = Elem] effects Eff =
+  operation collect(s: Stream) -> List[T = s.T] effects s.E =
     match splitFirst(s)
       case none() -> nil
       case some(pair(h, rest)) -> cons(head: h, tail: collect(rest))
@@ -59,11 +63,11 @@ sort anthill.prelude.Stream
   -- (named-binder fields vs the eta arrow's `_1`/`_2` tuple — WI-442). `map` /
   -- `filter` (which PRODUCE a stream) are the lazy carriers in
   -- combinators.anthill, not here.
-  operation foldLeft[Elem, Eff, EffP, Acc](s: Stream[Elem, Eff], init: Acc, f: ((Acc, Elem)) -> Acc @ {EffP}) -> Acc effects {Eff, EffP} =
+  operation foldLeft[EffP, Acc](s: Stream, init: Acc, f: ((Acc, s.T)) -> Acc @ {EffP}) -> Acc effects {s.E, EffP} =
     match splitFirst(s)
       case none() -> init
       case some(pair(h, rest)) -> foldLeft(rest, f((init, h)), f)
-  operation foldRight[Elem, Eff, EffP, Acc](s: Stream[Elem, Eff], init: Acc, f: ((Elem, Acc)) -> Acc @ {EffP}) -> Acc effects {Eff, EffP} =
+  operation foldRight[EffP, Acc](s: Stream, init: Acc, f: ((s.T, Acc)) -> Acc @ {EffP}) -> Acc effects {s.E, EffP} =
     match splitFirst(s)
       case none() -> init
       case some(pair(h, rest)) -> f((h, foldRight(rest, init, f)))
@@ -71,7 +75,7 @@ sort anthill.prelude.Stream
   -- open, minus Modify on the element under test — instead of being tied to
   -- the stream's observation row `Eff`; find's effect is the MERGE of both
   -- (`effects {Eff, EffP}`: splitFirst pays Eff, applying pred pays EffP).
-  operation find[Elem, Eff, EffP](s: Stream[Elem, Eff], pred: (x: Elem) -> Bool @ {EffP, -Modify[x]}) -> Option[Elem] effects {Eff, EffP} =
+  operation find[EffP](s: Stream, pred: (x: s.T) -> Bool @ {EffP, -Modify[x]}) -> Option[s.T] effects {s.E, EffP} =
     match splitFirst(s)
       case none() -> none
       case some(pair(h, rest)) ->
@@ -79,7 +83,7 @@ sort anthill.prelude.Stream
   -- Default body (WI-362 pattern, like takeN/collect): the interpreter has no
   -- equational-rewrite fallback, so the law rules below alone make isEmpty
   -- resolvable but not evaluable; the body is the same one splitFirst step.
-  operation isEmpty[Elem, Eff](s: Stream[Elem, Eff]) -> Bool effects Eff =
+  operation isEmpty(s: Stream) -> Bool effects s.E =
     match splitFirst(s)
       case none() -> true
       case some(_) -> false
@@ -88,7 +92,7 @@ sort anthill.prelude.Stream
   -- name would mislead: this walks everything and diverges on an infinite
   -- stream). The property-flavored `size` lives on Iterable, where the
   -- carrier is a re-walkable collection.
-  operation count[Elem, Eff](s: Stream[Elem, Eff]) -> Int64 effects Eff =
+  operation count(s: Stream) -> Int64 effects s.E =
     match splitFirst(s)
       case none() -> 0
       case some(pair(_, rest)) -> add(1, count(rest))
