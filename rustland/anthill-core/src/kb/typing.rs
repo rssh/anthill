@@ -18183,16 +18183,16 @@ pub fn type_check_sorts(kb: &mut KnowledgeBase, sort_terms: &[TermId]) -> Vec<Lo
 /// Feature flag — type-check + simp-rewrite operations declared at
 /// *namespace* level (free functions, e.g. the `anthill.cli.parse` parser).
 /// They have bodies in `op_bodies` but no `SortInfo`, so the sort loop in
-/// [`type_check_sorts_typed`] never reaches them — meaning they are
-/// currently **not type-checked at all** (a pre-existing gap, independent
-/// of WI-283).
+/// [`type_check_sorts_typed`] never reaches them; before WI-289 they were
+/// **not type-checked at all** (a pre-existing gap, independent of WI-283).
 ///
-/// **OFF** until the typer can actually handle free-op bodies: a trial
-/// sweep surfaced ~25 eval-fixture failures from constructs the
-/// eval/interpreter supports but the typer (only ever run on sort ops)
-/// does not — higher-order calls of `Function[A,B]`-typed values
-/// (`f(f(x))`), effect-declaration checks, and some name resolution. Flip
-/// to `true` and fix those under **WI-289**.
+/// **ON (WI-289, delivered).** The typer now handles the free-op-body
+/// constructs that the trial sweep surfaced — higher-order calls of
+/// `Function[A, B]`-typed values (`f(f(x))`, via [`arrow_function_compatible`]),
+/// effect-declaration checks, and name resolution — and the eval fixtures that
+/// genuinely lacked a declaration were fixed. Kept as a named marker for the
+/// free-op sweep below (and so the acceptance's `TYPECHECK_FREE_OPS = true`
+/// stays greppable); the `false` path is retained only as a debug kill-switch.
 const TYPECHECK_FREE_OPS: bool = true;
 
 pub fn type_check_sorts_typed(kb: &mut KnowledgeBase, sort_terms: &[TermId]) -> Vec<TypeError> {
@@ -18224,7 +18224,7 @@ pub fn type_check_sorts_typed(kb: &mut KnowledgeBase, sort_terms: &[TermId]) -> 
         }
     }
 
-    // WI-289 (gated OFF — see [`TYPECHECK_FREE_OPS`]): type-check +
+    // WI-289 (ON — see [`TYPECHECK_FREE_OPS`]): type-check +
     // simp-rewrite every operation body not owned by a sort. Snapshot first
     // — typing mutates `op_bodies` via the simp write-back; `check_operation_
     // bodies` skips body-less / OperationInfo-less symbols and derives each
