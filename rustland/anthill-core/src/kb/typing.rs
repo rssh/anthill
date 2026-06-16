@@ -11617,13 +11617,8 @@ fn project_via_provided_spec(
         else {
             continue;
         };
-        // WI-396: an EFFECT-row member (`E`) is NEVER projected via `provides` — the
-        // written row is its route, never a silent pure default (`List provides
-        // Stream[T, {}]` must NOT make `l.E` ground to `{}`). The carrier binding for an
-        // effect member is an effect row; skip it, leaving the loud missing-member error.
-        if matches!(type_head(kb, &Value::Term(carrier_val)), TypeHead::EffectsRows) {
-            continue;
-        }
+        let is_effect_member =
+            matches!(type_head(kb, &Value::Term(carrier_val)), TypeHead::EffectsRows);
         // Ground the carrier-side type (`List`'s `T`) against the receiver's type-args, so
         // a concrete `List[T = Int64]` grounds `Element` to `Int64`; a bare `List` leaves
         // it an unbound `T` ⟹ neutral.
@@ -11631,12 +11626,22 @@ fn project_via_provided_spec(
             Some(s) => walk_pattern_field_type_deep(kb, &s, &Value::Term(carrier_val)),
             None => Value::Term(carrier_val),
         };
+        let is_ground = resolved_type_is_ground(kb, &grounded);
+        // WI-484 (vs WI-396): an EFFECT-row member projects via `provides` ONLY when the
+        // provision WROTE a GROUND row (`List provides Stream[T, {}]` ⟹ `l.E = {}`).
+        // Reading back a written, ground effect is sound — it is NOT the "silent pure
+        // default" WI-396 excluded (reconstructing `{}` for an UNwritten effect). A
+        // non-ground / unwritten effect binding still skips → loud missing-member,
+        // preserving WI-396 for the case it actually guarded.
+        if is_effect_member && !is_ground {
+            continue;
+        }
         // Grounded ONLY when the result is FULLY concrete (deep `resolved_type_is_ground`,
         // not a head-only check): a structured binding still resting on an unbound carrier
         // param (`Element = Pair[A, B]` on a bare receiver) stays NEUTRAL, never a Grounded
         // type that would absorb demand downstream. A non-Term carrier is conservatively
         // neutral too.
-        return Some(if resolved_type_is_ground(kb, &grounded) {
+        return Some(if is_ground {
             Ok(ProjResult::Grounded(grounded))
         } else {
             Ok(ProjResult::Neutral)

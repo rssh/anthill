@@ -270,13 +270,15 @@ end
     );
 }
 
-/// `l.E` on a `List` is a loud missing-member error: `List` declares no effect member
-/// `E`, so the projection cannot resolve (design §5 — the written row is the route to
-/// carry `E`, not a projection). Never a silent fresh / pure default.
+/// WI-484 (revises WI-396): `l.E` on a `List` projects to the effect row the provision
+/// WROTE — `List provides Stream[T, {}]` makes `l.E = {}` (pure), so a PURE caller of an
+/// op declared `effects l.E` conforms. Reading back a WRITTEN, ground row is not the
+/// "silent pure default" WI-396 guarded against (that was reconstructing `{}` for an
+/// UNWRITTEN effect — still loud, see `effect_projection_unwritten_member_is_loud`).
 #[test]
-fn effect_projection_missing_member_is_loud() {
+fn effect_projection_written_row_projects() {
     let src = r#"
-namespace test.wi396.eff_missing
+namespace test.wi484.eff_written
   import anthill.prelude.{List, Int64}
   operation bad(l: List) -> Int64 effects l.E
   operation caller(xs: List[T = Int64]) -> Int64 = bad(xs)
@@ -284,8 +286,31 @@ end
 "#;
     let errs = load_errors(&[src]);
     assert!(
+        errs.is_empty(),
+        "l.E projects to the WRITTEN `List provides Stream[T, {{}}]` row ({{}}), so a pure \
+         caller of `bad` (effects l.E = {{}}) must conform; got: {errs:?}",
+    );
+}
+
+/// WI-484 preserves the WI-396 guard for the UNWRITTEN case: a sort that does NOT write
+/// an effect (no `provides Stream[..., {…}]`, no effect member) leaves `f.E` a loud
+/// missing-member error — never a silently-invented pure default.
+#[test]
+fn effect_projection_unwritten_member_is_loud() {
+    let src = r#"
+namespace test.wi484.eff_unwritten
+  import anthill.prelude.Int64
+  sort Foo
+    entity foo
+  end
+  operation bad(f: Foo) -> Int64 effects f.E
+  operation caller(x: Foo) -> Int64 = bad(x)
+end
+"#;
+    let errs = load_errors(&[src]);
+    assert!(
         errs.iter().any(|e| e.contains("no member 'E'") || e.contains("has no member")),
-        "List has no effect member 'E'; projecting l.E must be a loud error; got: {errs:?}",
+        "Foo writes no effect; projecting f.E must stay a loud error; got: {errs:?}",
     );
 }
 
