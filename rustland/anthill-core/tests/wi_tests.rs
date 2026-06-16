@@ -315,6 +315,9 @@ mod wi443_identifier_dot_call_test;
 #[path = "include/wi280_dot_field_test.rs"]
 mod wi280_dot_field_test;
 
+#[path = "include/wi262_type_level_projection_test.rs"]
+mod wi262_type_level_projection_test;
+
 #[path = "include/wi408_some_coercion_test.rs"]
 mod wi408_some_coercion_test;
 
