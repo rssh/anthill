@@ -303,13 +303,13 @@ end
 /// WI-444: a carrier's OWN member OVERRIDES a DEFAULTED spec op (typeclass
 /// default-method semantics — defaults fill gaps, they do NOT shadow).
 /// `Counted` declares its own O(1) `size` (stored count 99, deliberately
-/// disagreeing with the walk's 3); the Iterable-imported `size` call must
-/// dispatch to it. `BoxColl` (no own `size`) still falls back to the spec's
-/// default walk — defaults fire for carriers WITHOUT an override.
-///   * `probe` — concrete carrier (`counted(…)` literal): the typer statically
-///     PinNows to `Counted.size`.
-///   * `probe_via_abstract` — abstract receiver (`c: Counted` param read back
-///     through the Iterable interface): eval's value-directed override fires.
+/// disagreeing with the walk's 3); the Iterable-imported `size` call on a
+/// CONCRETE carrier (`counted(…)` literal) is statically PinNow'd to
+/// `Counted.size` by the typer. `Plain` (no own `size`) still falls back to the
+/// spec's default walk (3) — defaults fire for carriers WITHOUT an override,
+/// and the override does not leak across carriers. The ABSTRACT-receiver
+/// (eval value-directed) half is covered by
+/// [`defaulted_spec_op_override_via_abstract_receiver`].
 #[test]
 fn iterable_size_carrier_override() {
     let src = r#"
@@ -355,6 +355,49 @@ end
         "a carrier WITHOUT its own `size` must still use the spec default walk (3) \
          — defaults fill gaps, the override does not leak to other carriers",
     );
+}
+
+/// WI-444 EVAL HALF: a DEFAULTED spec op called on a STATICALLY-ABSTRACT
+/// receiver (typed as the bare spec sort) cannot be PinNow'd by the typer, so
+/// the override is resolved at runtime from the receiver value's own sort —
+/// eval's value-directed `resolve_carrier_override_by_value`, the dynamic dual
+/// of the typer's static PinNow. `Describable.describe` has a pure default body
+/// returning 0; `Widget` provides `Describable` with its own `describe`
+/// returning the stored field. `via_spec(d: Describable)` reads `d` through the
+/// abstract interface; calling it with a `Widget` value must run `Widget.describe`
+/// (42), NOT the default (0). A pure user spec (no effect param) keeps the
+/// abstract call off the orthogonal effect-row-closing path (WI-415..423).
+#[test]
+fn defaulted_spec_op_override_via_abstract_receiver() {
+    let src = r#"
+namespace test.wi444.evalhalf
+  import anthill.prelude.{Int64}
+
+  sort Describable
+    sort T = ?
+    operation describe(x: Describable) -> Int64 = 0
+  end
+
+  sort Widget
+    import anthill.prelude.{Int64}
+    entity widget(n: Int64)
+    provides Describable[T = Int64]
+    operation describe(x: Widget) -> Int64 =
+      match x
+        case widget(n) -> n
+  end
+
+  operation via_spec(d: Describable) -> Int64 = Describable.describe(d)
+  operation use_it() -> Int64 = via_spec(widget(42))
+  operation default_fires() -> Int64 = via_spec(widget(7))
+end
+"#;
+    let mut interp = crate::common::interp_for(src);
+    // The abstract-receiver call dispatches to Widget's own `describe` (the
+    // stored field), NOT the spec default (0). If this returns 0, the eval
+    // value-directed override did not fire.
+    assert_eq!(run_int(&mut interp, "test.wi444.evalhalf.use_it"), 42);
+    assert_eq!(run_int(&mut interp, "test.wi444.evalhalf.default_fires"), 7);
 }
 
 /// EVAL: Iterable.find / Iterable.map run end-to-end on a List.
