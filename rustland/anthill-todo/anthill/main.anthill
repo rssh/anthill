@@ -14,7 +14,7 @@ namespace anthill.todo
   import anthill.prelude.Meta.{Meta}
   import anthill.prelude.Time.{now, Clock}
   import anthill.stage0.{Feedback, WorkItem, ToolPasses, AcceptanceCriterion}
-  import anthill.stage0.WorkStatus.{Open}
+  import anthill.stage0.WorkStatus.{Open, PreOpened}
   import anthill.prelude.{List, Stream, Map, Unit}
   import anthill.prelude.Map.{empty, put, get, contains}
   import anthill.prelude.Bool.{not}
@@ -66,6 +66,8 @@ namespace anthill.todo
     , spec_with_id("show",            "Show details of a work item")
     , spec_with_id("claim",           "Claim a work item")
     , spec_with_id("unclaim",         "Release a claimed work item back to Open")
+    , spec_with_id("preopen",         "Demote an Open work item to PreOpened (backlog)")
+    , spec_with_id("promote",         "Promote a PreOpened work item to Open")
     , spec_with_id("deliver",         "Mark a work item as delivered")
     , spec_with_id("verify",          "Mark a delivered work item as verified")
     , spec_feedback()
@@ -386,6 +388,8 @@ namespace anthill.todo
       else if eq(name, "add") then cmd_add(args, store, s)
       else if eq(name, "claim") then cmd_claim(args, store, agent, s)
       else if eq(name, "unclaim") then cmd_unclaim(args, store, agent, s)
+      else if eq(name, "preopen") then cmd_preopen(args, store, agent, s)
+      else if eq(name, "promote") then cmd_promote(args, store, agent, s)
       else if eq(name, "deliver") then cmd_deliver(args, store, agent, s)
       else if eq(name, "verify") then cmd_verify(args, store, s)
       else if eq(name, "delete") then cmd_delete(args, store, s)
@@ -2002,6 +2006,70 @@ namespace anthill.todo
           concat("error: work item '",
             concat(id, concat("' is not claimed (status: ",
               concat(st, "); nothing to release")))))
+        1
+
+    -- ── cmd_preopen / cmd_promote ────────────────────────────────
+    -- The Open boundary, as an inverse pair: `preopen <id>` demotes an
+    -- Open item back to PreOpened (the backlog — no longer claimable);
+    -- `promote <id>` lifts a PreOpened item into the active Open queue.
+    -- Each is valid ONLY from its source status (a loud error otherwise),
+    -- so a typo can't silently move an item out of an unexpected state.
+    -- Open and PreOpened carry no fields, so neither stamps a timestamp
+    -- (no Clock effect). Both share `set_status_cmd` — the transition is
+    -- identical bar the from/to status and the audit verb.
+
+    operation cmd_preopen(args: List[Binding],
+                          store: FileStore,
+                          agent: String,
+                          s: Cell[State]) -> Int64
+      effects {ConsoleOutput, ConsoleError, Modify[s], Error}
+    =
+      set_status_cmd(args, s, agent, "preopen", "Open", PreOpened(), "preopened")
+
+    operation cmd_promote(args: List[Binding],
+                          store: FileStore,
+                          agent: String,
+                          s: Cell[State]) -> Int64
+      effects {ConsoleOutput, ConsoleError, Modify[s], Error}
+    =
+      set_status_cmd(args, s, agent, "promote", "PreOpened", Open(), "promoted")
+
+    -- Shared body for the Open↔PreOpened transitions: read the id, look the
+    -- item up, then hand off to do_set_status (which gates on `from`).
+    -- `label` names the command in the missing-id diagnostic.
+    operation set_status_cmd(args: List[Binding], s: Cell[State],
+                             agent: String, label: String, from: String,
+                             to: WorkStatus, verb: String) -> Int64
+      effects {ConsoleOutput, ConsoleError, Modify[s], Error}
+    =
+      match get_arg(args, "id")
+        case none() ->
+          let _ = eprintln(console(), concat(label, ": missing id"))
+          2
+        case some(id) ->
+          match WorkItemStore.lookup(s, id)
+            case none() ->
+              let _ = eprintln(console(),
+                concat("error: work item '", concat(id, "' not found")))
+              1
+            case some(wi) -> do_set_status(s, agent, id, wi, from, to, verb)
+
+    operation do_set_status(s: Cell[State], agent: String, id: String,
+                            wi: WorkItem, from: String, to: WorkStatus,
+                            verb: String) -> Int64
+      effects {ConsoleOutput, ConsoleError, Modify[s], Error}
+    =
+      let st = status_name_w(wi)
+      if eq(st, from) then
+        let _ = WorkItemStore.replace(s, id, with_status(wi, to))
+        let _ = println(console(),
+          concat(verb, concat(": ", concat(id, concat(" by ", agent)))))
+        0
+      else
+        let _ = eprintln(console(),
+          concat("error: work item '",
+            concat(id, concat("' is not ",
+              concat(from, concat(" (status: ", concat(st, ")")))))))
         1
 
     -- ── cmd_deliver ──────────────────────────────────────────────

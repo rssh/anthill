@@ -12,7 +12,8 @@ use smallvec::SmallVec;
 use super::term::{Term, TermId, Literal, Var, VarId};
 use super::node_occurrence::{
     for_each_child, for_each_pattern_child, materialize_from_handle, occurrence_structural_eq,
-    EffectExprNode, Expr, MatchBranch, NodeKind, NodeOccurrence, Pattern, TypeChild, TypeNode,
+    value_to_term, EffectExprNode, Expr, MatchBranch, NodeKind, NodeOccurrence, Pattern, TypeChild,
+    TypeNode,
 };
 use super::persist_subst::BindValue;
 use super::term_view::{views_structurally_equal, TermIdView, TermView, ViewHead, ViewItem};
@@ -4663,6 +4664,11 @@ fn check_apply_iter(
             let mut resolved: Vec<(Symbol, TermId)> = Vec::with_capacity(op.type_params.len());
             for (name, var_term) in &op.type_params {
                 let walked = walk_type_deep(kb, &subst, *var_term);
+                // WI-394: the deep walk stops at a non-`Term` (`Value::Node`)
+                // binding, leaving a bare var; surface it so the eval installs
+                // the resolved type arg (`find_type_arg(...).map(Value::Term)`)
+                // rather than a stale unresolved var.
+                let walked = surface_node_binding_to_term(kb, &subst, walked);
                 resolved.push((*name, walked));
             }
             occ.set_resolved_type_args(resolved);
@@ -4754,8 +4760,14 @@ fn check_apply_iter(
                         .iter()
                         .filter(|(p, _)| !kb.type_params_of_sort(*p).is_empty())
                         .find_map(|(_, var)| {
-                            let walked = walk_type(kb, &subst, *var);
-                            let c = extract_sort_ref_sym(kb, &TermIdView(walked))?;
+                            // WI-394: walk to a `Value` so a non-`Term`
+                            // (`Value::Node`) carrier binding resolves through
+                            // the view. A `Term` carrier views identically to
+                            // the old `TermIdView` path; a `Node` that is not a
+                            // concrete `sort_ref` yields `None` ("no HK
+                            // carrier"), unchanged.
+                            let walked = walk_term_to_resolved(kb, &subst, *var);
+                            let c = extract_sort_ref_sym(kb, &walked)?;
                             (!is_sort_param_symbol(kb, c)
                                 && kb.kind_of(c) == Some(crate::intern::SymbolKind::Sort))
                             .then_some(c)
@@ -12921,6 +12933,48 @@ fn walk_value_to_resolved(kb: &KnowledgeBase, subst: &Substitution, val: Value) 
     }
 }
 
+/// WI-394: a `TermId`-consuming caller that walked a var which actually
+/// resolved to a non-`Term` carrier (a `Value::Node` denoted / written
+/// effect-row binding) would misread the bare var as unresolved — both
+/// `walk_type` and `walk_type_deep` deliberately STOP at a non-`Term`
+/// binding, returning the var unchanged. Surface such a binding by lowering
+/// it faithfully to a `TermId` (`value_to_term`, lossless for a `Node` via
+/// WI-390 `occurrence_to_term`). A `Term` binding, an unbound var, or an
+/// un-lowerable carrier returns `walked` unchanged (the pre-WI-394 behavior).
+/// Callers that can consume a `Value` directly should instead walk via
+/// `walk_term_to_resolved` / `walk_value_to_resolved`; this is the bridge for
+/// the sites that genuinely need a `TermId` (storage / structural compare).
+fn surface_node_binding_to_term(
+    kb: &mut KnowledgeBase,
+    subst: &Substitution,
+    walked: TermId,
+) -> TermId {
+    let vid = match kb.get_term(walked) {
+        Term::Var(Var::Global(vid)) => *vid,
+        _ => return walked,
+    };
+    let bound = match subst.resolve_as_value(vid) {
+        Some(v) if !matches!(v, Value::Term(_)) => v.clone(),
+        _ => return walked,
+    };
+    match value_to_term(kb, &bound) {
+        Ok(t) => t,
+        Err(e) => {
+            // A var bound to a non-`Term`, non-lowerable carrier (opaque / Unit
+            // / Tuple / a runtime-only `Value`) standing in a TYPE slot is a
+            // malformation, not a benign miss — surface it loudly (mirrors the
+            // `walk_view` Path-carrier guard). Release stays strictly no-worse
+            // than the pre-WI-394 walk: keep the bare var.
+            debug_assert!(
+                false,
+                "surface_node_binding_to_term: type var {vid:?} bound to an \
+                 un-lowerable carrier {bound:?}: {e:?}"
+            );
+            walked
+        }
+    }
+}
+
 /// The logic-var id a resolved type *is*, if any — a hash-consed
 /// `Term::Var(Global)` or a `Value::Var(Global)`.
 fn resolved_var(kb: &KnowledgeBase, r: &Value) -> Option<VarId> {
@@ -13314,8 +13368,11 @@ fn walk_type_deep(kb: &mut KnowledgeBase, subst: &Substitution, ty: TermId) -> T
 fn filled_carrier_sort(kb: &KnowledgeBase, subst: &Substitution, functor: Symbol) -> Option<Symbol> {
     let var_t = resolve_sort_alias(kb, functor)
         .filter(|t| matches!(kb.get_term(*t), Term::Var(Var::Global(_))))?;
-    let walked = walk_type(kb, subst, var_t);
-    let s = extract_sort_ref_sym(kb, &TermIdView(walked))?;
+    // WI-394: walk to a `Value` so a non-`Term` (`Value::Node`) fill is seen
+    // through the view; a `Node` that is not a concrete `sort_ref` yields
+    // `None` ("not filled to a concrete sort"), the same as a bare var.
+    let walked = walk_term_to_resolved(kb, subst, var_t);
+    let s = extract_sort_ref_sym(kb, &walked)?;
     if is_sort_param_symbol(kb, s) || kb.kind_of(s) != Some(crate::intern::SymbolKind::Sort) {
         return None;
     }
@@ -13433,8 +13490,11 @@ fn ground_rigid_projection_if_concrete(
         .iter()
         .find(|(n, _)| kb.resolve_sym(*n) == subj_name)
         .map(|(_, v)| *v)?;
-    let walked = walk_type(kb, subst, tp_var);
-    let s = extract_sort_ref_sym(kb, &TermIdView(walked))?;
+    // WI-394: walk to a `Value` so a non-`Term` (`Value::Node`) subject fill is
+    // seen through the view; a `Node` that is not a concrete `sort_ref` yields
+    // `None`, keeping the projection the abstract neutral (as a bare var did).
+    let walked = walk_term_to_resolved(kb, subst, tp_var);
+    let s = extract_sort_ref_sym(kb, &walked)?;
     // A genuine concrete sort only: never a sort-type-param (abstract carrier → forward),
     // and not an operation / other kind.
     if is_sort_param_symbol(kb, s)
@@ -15568,6 +15628,12 @@ fn parameterized_compatible_view<A: TermView, B: TermView>(
                             true
                         } else {
                             let pvr = walk_type_deep(kb, subst, pv);
+                            // WI-394: surface a non-`Term` (`Value::Node`)
+                            // binding so the "did it resolve further?" probe
+                            // (`pvr != pv`) sees the resolved carrier instead
+                            // of the bare var (which equals `pv` and would
+                            // spuriously fail the binding).
+                            let pvr = surface_node_binding_to_term(kb, subst, pvr);
                             pvr != pv
                                 && check_binding_by_variance(kb, subst, expected_base, *param, &TermIdView(pvr), ev)
                         }
@@ -19455,6 +19521,89 @@ mod wi417_cycle_tests {
             Value::Var(Var::Global(v)) => assert!(v == a || v == b, "a cycle representative"),
             other => panic!("expected a cycle-representative var, got {other:?}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod wi394_surface_node_binding_tests {
+    //! WI-394: a `TermId`-consuming caller (op type-arg write-back at the apply
+    //! occurrence, the provider-binding "did it resolve?" probe) that walked a
+    //! var resolving to a NON-`Term` carrier — a `Value::Node` denoted / written
+    //! effect-row binding — must NOT misread the bare var as unresolved, since
+    //! `walk_type` / `walk_type_deep` deliberately STOP at a non-`Term` binding.
+    //! `surface_node_binding_to_term` lowers such a binding faithfully to a
+    //! `TermId`; a `Term` binding / unbound var / un-lowerable carrier passes
+    //! through unchanged (the pre-WI-394 behavior, so all existing term-world
+    //! paths are inert).
+    use super::surface_node_binding_to_term;
+    use crate::eval::value::Value;
+    use crate::kb::subst::Substitution;
+    use crate::kb::term::{Literal, Term, Var};
+    use crate::kb::KnowledgeBase;
+
+    fn fresh_var_term(kb: &mut KnowledgeBase, name: &str) -> (Var, Term) {
+        let sym = kb.intern(name);
+        let vid = kb.fresh_var(sym);
+        (Var::Global(vid), Term::Var(Var::Global(vid)))
+    }
+
+    #[test]
+    fn surfaces_non_term_binding_as_lowered_term() {
+        // A var bound to a NON-`Term` value (here `Value::Int`, standing in for
+        // any non-`Term` carrier — a `Value::Node`/entity lowers through the
+        // same `value_to_term`). The term-only walk would stop at the var; the
+        // surface lowers the binding so a TermId consumer sees the real value.
+        let mut kb = KnowledgeBase::new();
+        let (var, var_t) = fresh_var_term(&mut kb, "V");
+        let var_term = kb.alloc(var_t);
+        let Var::Global(vid) = var else { unreachable!() };
+        let mut subst = Substitution::new();
+        subst.bind_value(vid, Value::Int(42));
+        let out = surface_node_binding_to_term(&mut kb, &subst, var_term);
+        assert_ne!(out, var_term, "must not keep the bare var");
+        assert!(
+            matches!(kb.get_term(out), Term::Const(Literal::Int(42))),
+            "expected the lowered Const(Int(42)), got {:?}",
+            kb.get_term(out)
+        );
+    }
+
+    #[test]
+    fn passes_through_non_var_term_unchanged() {
+        // For a `Value::Term` binding the deep walk already produced a concrete
+        // term; the surface sees no var and returns it untouched.
+        let mut kb = KnowledgeBase::new();
+        let concrete = kb.alloc(Term::Const(Literal::Int(7)));
+        let subst = Substitution::new();
+        let out = surface_node_binding_to_term(&mut kb, &subst, concrete);
+        assert_eq!(out, concrete, "a non-var term passes through");
+    }
+
+    #[test]
+    fn passes_through_unbound_var_unchanged() {
+        let mut kb = KnowledgeBase::new();
+        let (_, var_t) = fresh_var_term(&mut kb, "V");
+        let var_term = kb.alloc(var_t);
+        let subst = Substitution::new();
+        let out = surface_node_binding_to_term(&mut kb, &subst, var_term);
+        assert_eq!(out, var_term, "an unbound var passes through");
+    }
+
+    #[test]
+    fn passes_through_term_bound_var_via_walked_input() {
+        // A `Value::Term` binding is term-world: even if the surface is handed
+        // the raw var, it must NOT treat the `Value::Term` binding as a
+        // surface-able non-`Term` carrier (the `matches!(v, Value::Term(_))`
+        // guard) — it returns the var, letting the term-world walk handle it.
+        let mut kb = KnowledgeBase::new();
+        let (var, var_t) = fresh_var_term(&mut kb, "V");
+        let var_term = kb.alloc(var_t);
+        let Var::Global(vid) = var else { unreachable!() };
+        let concrete = kb.alloc(Term::Const(Literal::Int(7)));
+        let mut subst = Substitution::new();
+        subst.bind_value(vid, Value::Term(concrete));
+        let out = surface_node_binding_to_term(&mut kb, &subst, var_term);
+        assert_eq!(out, var_term, "a Term binding is not surfaced here");
     }
 }
 
