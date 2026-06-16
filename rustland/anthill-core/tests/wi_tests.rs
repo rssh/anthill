@@ -298,6 +298,9 @@ mod wi457_join_escape_gate_test;
 #[path = "include/wi480_destructure_escape_gate_test.rs"]
 mod wi480_destructure_escape_gate_test;
 
+#[path = "include/wi488_producer_component_escape_test.rs"]
+mod wi488_producer_component_escape_test;
+
 #[path = "include/wi424_iterable_members_test.rs"]
 mod wi424_iterable_members_test;
 

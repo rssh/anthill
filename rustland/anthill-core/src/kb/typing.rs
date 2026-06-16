@@ -16577,6 +16577,35 @@ fn abstracting_return_error(
     ret_ty: &Value,
     op_sym: Symbol,
 ) -> Option<TypeError> {
+    // WI-488: a TUPLE / named_tuple return carries no sort functor, so the
+    // sort-based gate below (which bails on `sort_functor_of_view == None`)
+    // never inspects it — `mkBare(m: MemStore) -> (KVStore, Bool) = (m, true)`
+    // used to load clean. Recurse into the components, re-applying the SAME
+    // bare-vs-manifest-vs-ensures gate per component: an abstracting tuple
+    // element is the §5 escape exactly as a bare top-level return is. Components
+    // are aligned the SAME way conformance aligned them — by NAME, with the
+    // WI-442 positional `_1.._n` fallback ([`align_named_tuple_fields`], passing
+    // body as `actual` so each pair is `(body_component, ret_component)`). A raw
+    // positional `zip` would mispair a NAMED tuple whose body/return field orders
+    // differ (`(a: m, b: true)` vs `-> (b: Bool, a: KVStore)`) and let the escape
+    // slip. The gate's own `same_symbol` short-circuit spares an input-rooted /
+    // equal component, and its `unbound` check spares a manifest one — so the
+    // per-component reuse honours the "must NOT reject" cases without restating
+    // them. Tuple components are the only gap here: a NOMINAL parameterized return
+    // abstracting a type-arg (`-> Box[T = KVStore]` from a body `Box[T = MemStore]`)
+    // is rejected even earlier, as an invariant-param TYPE MISMATCH.
+    if named_tuple_field_types(kb, body_ty).is_some()
+        && named_tuple_field_types(kb, ret_ty).is_some()
+    {
+        let body_fields = named_tuple_fields(kb, body_ty);
+        let ret_fields = named_tuple_fields(kb, ret_ty);
+        return align_named_tuple_fields(kb, &body_fields, &ret_fields).and_then(|pairs| {
+            pairs
+                .iter()
+                .find_map(|(bc, rc)| abstracting_return_error(kb, bc, rc, op_sym))
+        });
+    }
+
     let body_sort = sort_functor_of_view(kb, body_ty)?;
     let ret_sort = sort_functor_of_view(kb, ret_ty)?;
     if same_symbol(kb, body_sort, ret_sort) {

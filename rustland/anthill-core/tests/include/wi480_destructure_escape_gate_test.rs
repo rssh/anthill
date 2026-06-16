@@ -23,10 +23,14 @@
 //! upcast (flagged) and an interface-rooted abstract (spared).
 //!
 //! Consistent-model decision (user, 2026-06-16): the BARE interface-propagation case
-//! `let (s, _) = mkBare(m) ; s` (mkBare `-> (KVStore, Bool)`, no annotation) is NOT
-//! flagged — the bare component is exposed by mkBare's own signature, and the
-//! producer `mkBare` is itself not flagged (tuple-component escapes are a separate,
-//! producer-side concern). Flagging the consumer there would be inconsistent.
+//! `let (s, _) = mkBareOk(k) ; s` (the producer exposes a bare-spec tuple component
+//! through its OWN signature) is NOT flagged — the component roots in the producer's
+//! declared interface, so the consumer adds no hidden abstraction. The PRODUCER's own
+//! tuple-component escape is a separate, producer-side concern, gated since WI-488
+//! (a producer abstracting a CONCRETE component up to a bare spec, like
+//! `mkBare(m: MemStore) -> (KVStore, Bool)`, is now flagged at the producer); the
+//! interface-propagation producer used here is unflagged because its bare component
+//! is INPUT-ROOTED.
 //!
 //! Must NOT reject (verified below): a destructured value NOT in return position, a
 //! same-sort / input-rooted destructure, a manifest destructure, and the bare
@@ -81,7 +85,6 @@ const PRELUDE: &str = r#"
     entity boxed(item: KVStore)
   end
   operation mkConcrete(m: MemStore) -> (MemStore, Bool) = (m, true)
-  operation mkBare(m: MemStore) -> (KVStore, Bool) = (m, true)
 "#;
 
 fn is_escape(errs: &[String]) -> bool {
@@ -135,22 +138,23 @@ fn opaque_concrete_annotation_destructure_laundering_escape() {
     );
 }
 
-/// MUST NOT REJECT — the BARE interface-propagation case: `let (s, _) = mkBare(m) ; s`
-/// where `mkBare -> (KVStore, Bool)` already declares a bare-spec component (no
-/// annotation laundering at the let). The abstract `KVStore` is exposed by mkBare's
-/// OWN signature, and the producer `mkBare` is itself not flagged for it — so flagging
-/// the consumer would be inconsistent (tuple-component escapes are a producer-side
-/// concern, a separate ticket). Seen through at the TYPE level, the component is the
-/// bare `KVStore == ret_sort`, which `same_symbol` spares.
+/// MUST NOT REJECT — the BARE interface-propagation case:
+/// `let (s, _) = mkBareOk(k) ; s` where `mkBareOk -> (KVStore, Bool)` exposes a
+/// bare-spec component through its OWN signature (no annotation laundering at the
+/// let). The abstract `KVStore` roots in mkBareOk's declared interface, so the
+/// consumer adds no hidden abstraction — seen through at the TYPE level the component
+/// is the bare `KVStore == ret_sort`, which `same_symbol` spares. mkBareOk itself is
+/// unflagged because its bare component is INPUT-ROOTED (WI-488 flags only a producer
+/// abstracting a CONCRETE component up to a bare spec — see the producer-side test).
 #[test]
 fn opaque_bare_interface_propagation_not_flagged() {
     let src = format!(
-        "namespace test.wi480.barexx\n{PRELUDE}\n  operation openStore(m: MemStore) -> KVStore =\n    let (s, _) = mkBare(m)\n    s\nend\n"
+        "namespace test.wi480.barexx\n{PRELUDE}\n  operation mkBareOk(k: KVStore) -> (KVStore, Bool) = (k, true)\n  operation openStore(k: KVStore) -> KVStore =\n    let (s, _) = mkBareOk(k)\n    s\nend\n"
     );
     let errs = load_errors(&[&src]);
     assert!(
         errs.is_empty(),
-        "a bare interface-propagation destructure must NOT be flagged (consistent with the producer; WI-480), got: {errs:?}",
+        "a bare interface-propagation destructure must NOT be flagged (consistent with the input-rooted producer; WI-480/WI-488), got: {errs:?}",
     );
 }
 
