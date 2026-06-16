@@ -575,7 +575,7 @@ fact WorkItem(
   description: "anthill.realization.directMemory: a system-modeling sublibrary capturing host-language memory/ownership concerns. Parameterized sorts: Borrowed[T] (non-owning const ref), BorrowedMut[T] (non-owning mut ref), Owned[T] (explicit owned), Shared[T] (refcounted), Pinned[T] (non-movable). C++ codegen lowers each via a CarrierBinding on the wrapper sort itself. Lets specs express 'this handle borrows from its owner' instead of relying on convention + raw pointer carriers. Driver: lf1 webots bindings (Robot::getGPS returns webots::GPS *, semantically Borrowed[T = GPS]); future use cases include smart-pointer-heavy APIs, hardware MMIO, async self-references. Until this lands, lf1 elides borrow semantics and relies on raw-pointer carriers + codegen convention. Open design questions: auto-deref vs explicit unwrap; how Borrowed interacts with effects (Modify self); whether Borrowed[T] auto-satisfies sorts that T satisfies; aliasing/exclusivity rules.",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: [],
-  status: Open)
+  status: PreOpened)
 
 fact WorkItem(
   id: "WI-087",
@@ -610,7 +610,7 @@ fact WorkItem(
   description: "WI-085 fix verification: round-trip with quotes \"inline\" and em-dash — works.",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: [],
-  status: Open)
+  status: Rejected(reason: "verification artifact for WI-085; round-trip confirmed working", at: "2026-06-16T00:00:00Z"))
 
 fact WorkItem(
   id: "WI-092",
