@@ -44,7 +44,8 @@ fn collect_iterator_list_is_pure() {
     let src = r#"
 namespace test.wi368.pure
   import anthill.prelude.{List, Int64}
-  import anthill.prelude.List.{iterator, length}
+  import anthill.prelude.List.{length}
+  import anthill.prelude.Iterable.{iterator}
   import anthill.prelude.Stream.{collect}
   operation walk(xs: List[T = Int64]) -> Int64 = length(collect(iterator(xs)))
 end
@@ -64,7 +65,7 @@ fn collect_iterator_threads_element_int() {
     let ok = r#"
 namespace test.wi368.elem_ok
   import anthill.prelude.{List, Int64}
-  import anthill.prelude.List.{iterator}
+  import anthill.prelude.Iterable.{iterator}
   import anthill.prelude.Stream.{collect}
   operation gather(xs: List[T = Int64]) -> List[T = Int64] = collect(iterator(xs))
 end
@@ -78,7 +79,7 @@ end
     let wrong = r#"
 namespace test.wi368.elem_wrong
   import anthill.prelude.{List, Int64, String}
-  import anthill.prelude.List.{iterator}
+  import anthill.prelude.Iterable.{iterator}
   import anthill.prelude.Stream.{collect}
   operation gather(xs: List[T = Int64]) -> List[T = String] = collect(iterator(xs))
 end

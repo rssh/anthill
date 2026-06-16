@@ -82,14 +82,13 @@ enum anthill.prelude.List
   -- spec walk. So `xs.find(p)` / `xs.map(f)` on a `List` still type-check pure
   -- and thread the element, with no per-carrier Iterable declaration.
   --
-  -- `iterator` is KEPT as List's explicit List→Stream view (a List IS a Stream).
-  -- It is not removable yet: the body-less `Iterable.iterator` spec op dispatched
-  -- EXPLICITLY on a concrete `List` (`iterator(xs)`) needs a direct impl — the
-  -- typer's body-less spec-op DISPATCH is not transitive (it matches impls via
-  -- direct provider facts), unlike the carrier-param grounding and dot dispatch
-  -- above. Making that dispatch transitive (then resolving `iterator(xs)` to
-  -- `Stream.iterator` and dropping this op) is the remaining follow-up.
-  operation iterator(l: List) -> Stream[T = l.T, E = {}] = l
+  -- WI-496: List's explicit `operation iterator(l: List) = l` is GONE too. A
+  -- body-less `Iterable.iterator` spec op called EXPLICITLY on a concrete `List`
+  -- (`iterator(xs)`) now resolves transitively — `List provides Stream` +
+  -- `Stream provides Iterable`, so `iterator(xs)` is `Stream.iterator(xs) = xs`
+  -- (the identity this op used to spell out). The typer leaves the call as the
+  -- spec op (its return type threads from the transitive provision view) and
+  -- eval's value-directed dispatch (WI-492) routes it to `Stream.iterator`.
 
   -- Stream primitive: peel the head and return the tail (itself a List, hence
   -- a Stream). `pair`-shaped (not Iteration's tuple `split`) so Stream's

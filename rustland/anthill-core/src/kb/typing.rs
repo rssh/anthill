@@ -4248,7 +4248,7 @@ fn check_apply_iter(
             // the written `E` row) from the concrete carrier's provision, with
             // the same bind-before-expected-seeding rationale as the arm above.
             None => match &carrier_param_info {
-                Some((spec_sort, _carrier_sym, recv_ty, view)) => {
+                Some((spec_sort, _carrier_sym, recv_ty, view, _transitive)) => {
                     bind_spec_params_from_carrier_param(
                         kb, &mut subst, *spec_sort, recv_ty, view.clone(),
                     )
@@ -4561,7 +4561,7 @@ fn check_apply_iter(
         // Modify model names). The REF-shaped binding (`V ↦ Cell.V`) is already threaded
         // by `bind_spec_params_from_carrier_param` above; this closes only the
         // GROUND-valued case it skips.
-        if let Some((spec_sort, _carrier_sym, _recv_ty, view)) = &carrier_param_info {
+        if let Some((spec_sort, _carrier_sym, _recv_ty, view, _transitive)) = &carrier_param_info {
             bind_ground_value_params_from_provider(kb, &mut subst, *spec_sort, view);
         }
 
@@ -4753,7 +4753,7 @@ fn check_apply_iter(
                         ReceiverCarrier::Concrete(c) => Some(c),
                         _ => None,
                     },
-                    None => carrier_param_info.as_ref().map(|(_, c, _, _)| *c),
+                    None => carrier_param_info.as_ref().map(|(_, c, _, _, _)| *c),
                 };
                 if let Some(carrier_sym) = carrier {
                     let op_qn = kb.qualified_name_of(fn_sym).to_string();
@@ -5058,6 +5058,31 @@ fn check_apply_iter(
                         node: Rc::clone(occ),
                     });
                 }
+            }
+            // WI-496: a body-less CARRIER-PARAM spec op (`Iterable.iterator(c: C)`)
+            // on a concrete carrier that provides the spec only TRANSITIVELY — a
+            // `List`, whose Iterable-ness rides through `List provides Stream` +
+            // `Stream provides Iterable` with no direct `List provides Iterable`
+            // fact (the `transitive` flag the classification above already set on
+            // `carrier_param_info`). Direct dispatch cannot resolve it:
+            // `dispatch_spec_op_cached` LOOSELY matches `Stream provides Iterable`
+            // (List ≤ Stream, provider admissibility) and then recurses into
+            // Stream's `requires EffectsRuntime`, which an identity iterator never
+            // threads → a spurious `DispatchNoMatch`. Leave the call as the spec op
+            // — its return type is already threaded from that same transitive
+            // provision view — and let eval's value-directed dispatch (WI-492,
+            // `transitive_carrier_for_param` → `Stream.iterator`) resolve the impl
+            // from the runtime value's own sort, exactly the deferral the abstract-
+            // receiver arm above takes. A DIRECT (`IntBag provides Iterable[C =
+            // IntBag]`) or WITNESS (`IntBar provides Bar[T = Int64]`, WI-450)
+            // provider has `transitive == false` and still dispatches concretely.
+            if matches!(&carrier_param_info, Some((.., true))) {
+                return Ok(TypeResult {
+                    ty: resolved_ret.clone(),
+                    env: env.clone(),
+                    effects,
+                    node: Rc::clone(occ),
+                });
             }
             let carrier_sym = match carrier {
                 ReceiverCarrier::Concrete(c) => Some(c),
@@ -9068,24 +9093,33 @@ fn compose_provision_views(
 /// provides, find the one that (transitively) owns `spec_sort` with `pvid`
 /// bound, and compose its view back through each hop's carrier→intermediate
 /// bindings via [`compose_provision_views`]. `visited` guards a cyclic chain.
+///
+/// The returned flag is `true` iff the view came via the TRANSITIVE (provides-
+/// chain) branch at the top level — `carrier_sym` does not itself bind the carrier
+/// param, the impl lives on an intermediate spec sort. WI-496 reads it to leave a
+/// body-less spec-op call (`iterator(xs:List)`) as the spec op for eval rather
+/// than attempting concrete dispatch (which would die on the intermediate's own
+/// `requires`); a DIRECT / WITNESS provider (flag `false`) still dispatches
+/// concretely. No separate walk is needed — the branch that built the view IS the
+/// classification.
 fn transitive_provision_view(
     kb: &KnowledgeBase,
     spec_sort: Symbol,
     pvid: VarId,
     carrier_sym: Symbol,
     visited: &mut SmallVec<[Symbol; 8]>,
-) -> Option<SmallVec<[(Symbol, TermId); 2]>> {
+) -> Option<(SmallVec<[(Symbol, TermId); 2]>, bool)> {
     if visited.iter().any(|&v| same_symbol(kb, v, carrier_sym)) {
         return None;
     }
     visited.push(carrier_sym);
     // Direct: the carrier itself provides spec_sort binding the carrier param.
     if let Some(view) = provision_binds_param_to_carrier(kb, spec_sort, pvid, carrier_sym) {
-        return Some(view);
+        return Some((view, false));
     }
     // Transitive: an intermediate spec the carrier provides owns spec_sort.
     for intermediate in directly_provided_specs(kb, carrier_sym) {
-        let Some(outer_view) =
+        let Some((outer_view, _)) =
             transitive_provision_view(kb, spec_sort, pvid, intermediate, visited)
         else {
             continue;
@@ -9094,7 +9128,7 @@ fn transitive_provision_view(
         let Some(inner_view) = provider_spec_view_bindings(kb, carrier_sym, intermediate) else {
             continue;
         };
-        return Some(compose_provision_views(kb, &outer_view, &inner_view));
+        return Some((compose_provision_views(kb, &outer_view, &inner_view), true));
     }
     None
 }
@@ -9324,8 +9358,10 @@ fn bind_spec_params_from_carrier(
 /// carrier itself ([`provision_binds_param_to_carrier`] — distinguishing the
 /// carrier param from an element-like param). First match wins. Returns
 /// `(spec sort, carrier sort, receiver's inferred type, the provision's view
-/// bindings)` — the view rides along so the binder does not re-scan the
-/// provider facts.
+/// bindings, transitive?)` — the view rides along so the binder does not re-scan
+/// the provider facts, and `transitive?` (WI-496) is `true` iff the carrier
+/// provides the spec only through a provides-chain (the impl lives on an
+/// intermediate spec sort), the bit the dispatch gate reads to defer to eval.
 fn carrier_param_receiver(
     kb: &KnowledgeBase,
     op: &OperationInfoFull,
@@ -9333,7 +9369,7 @@ fn carrier_param_receiver(
     named_args: &[(Symbol, Rc<NodeOccurrence>)],
     pos_results: &[Result<TypeResult, TypeError>],
     named_results: &[Result<TypeResult, TypeError>],
-) -> Option<(Symbol, Symbol, Value, SmallVec<[(Symbol, TermId); 2]>)> {
+) -> Option<(Symbol, Symbol, Value, SmallVec<[(Symbol, TermId); 2]>, bool)> {
     let spec_sort = impl_parent_of_op(kb, fn_sym)?;
     let spec_params = sort_type_params_as_pairs(kb, spec_sort);
     if spec_params.is_empty() {
@@ -9370,12 +9406,12 @@ fn carrier_param_receiver(
         // view COMPOSED through transitive provision (a `List` carrier whose
         // Iterable-ness rides through `Stream`), so `Element`/`E` still ground.
         let mut visited: SmallVec<[Symbol; 8]> = SmallVec::new();
-        let Some(view) =
+        let Some((view, transitive)) =
             transitive_provision_view(kb, spec_sort, pvid, carrier_sym, &mut visited)
         else {
             continue;
         };
-        return Some((spec_sort, carrier_sym, recv_ty, view));
+        return Some((spec_sort, carrier_sym, recv_ty, view, transitive));
     }
     None
 }

@@ -49,7 +49,7 @@ namespace test.wi374.bare_ann
   import anthill.prelude.{Int64, List, Stream, nil, cons}
 
   operation driver() -> Int64 =
-    let s : Stream = anthill.prelude.List.iterator(cons(head: 1, tail: nil))
+    let s : Stream = anthill.prelude.Iterable.iterator(cons(head: 1, tail: nil))
     anthill.prelude.Stream.count(s)
 end
 "#;
@@ -67,7 +67,7 @@ namespace test.wi374.partial_ann
   import anthill.prelude.{Int64, List, Stream, nil, cons}
 
   operation driver() -> Int64 =
-    let s : Stream[T = Int64] = anthill.prelude.List.iterator(cons(head: 1, tail: nil))
+    let s : Stream[T = Int64] = anthill.prelude.Iterable.iterator(cons(head: 1, tail: nil))
     anthill.prelude.Stream.count(s)
 end
 "#;
@@ -84,7 +84,7 @@ namespace test.wi374.wrong_ann
   import anthill.prelude.{Int64, String, List, Stream, nil, cons}
 
   operation driver() -> Int64 =
-    let s : Stream[T = String] = anthill.prelude.List.iterator(cons(head: 1, tail: nil))
+    let s : Stream[T = String] = anthill.prelude.Iterable.iterator(cons(head: 1, tail: nil))
     anthill.prelude.Stream.count(s)
 end
 "#;
@@ -288,7 +288,7 @@ namespace test.wi374.wildcard_ann
   import anthill.prelude.{Int64, List, Stream, nil, cons}
 
   operation driver() -> Int64 =
-    let s : Stream[T = ?] = anthill.prelude.List.iterator(cons(head: 1, tail: nil))
+    let s : Stream[T = ?] = anthill.prelude.Iterable.iterator(cons(head: 1, tail: nil))
     anthill.prelude.Stream.count(s)
 end
 "#;
@@ -445,7 +445,7 @@ namespace test.wi374.bare_value
 
   sort Src
     entity mkSrc
-    operation produce(s: Src) -> Stream = anthill.prelude.List.iterator(cons(head: 1, tail: nil))
+    operation produce(s: Src) -> Stream = anthill.prelude.Iterable.iterator(cons(head: 1, tail: nil))
   end
 
   operation driver() -> Int64 =
