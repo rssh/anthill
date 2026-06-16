@@ -18998,24 +18998,35 @@ fn check_operation_bodies(kb: &mut KnowledgeBase, op_syms: &[Symbol], errors: &m
         // WHOLE-TYPE top-level form is rewritten here; a NESTED projection in the
         // return (`Stream[T = l.T, E = {}]`, List's iterator) is left to the
         // existing conformance machinery (`refine_self_receiver_body_type` + the
-        // ζ/neutral arms of `unify_types`). An un-dischargeable projection (the
-        // receiver is not a parameter, or the member is missing) keeps the raw
-        // return so the conformance check below surfaces the real error.
+        // ζ/neutral arms of `unify_types`); an abstract receiver eliminates to the
+        // same neutral (`-> p.K = m`, WI-400), unchanged.
         let effective_return = if matches!(
             extract_type(kb, &op.return_type),
             TypeExtractor::ExprCarried { .. }
         ) {
             let param_map: HashMap<Symbol, Value> =
                 op.params.iter().map(|(n, t)| (*n, t.clone())).collect();
-            eliminate_type_projections(
+            match eliminate_type_projections(
                 kb,
                 &op.return_type,
                 &param_map,
                 None,
                 &TypeErrorContext::OperationReturn { op_name: op.op_sym },
                 op.span,
-            )
-            .unwrap_or_else(|_| op.return_type.clone())
+            ) {
+                Ok(elim) => elim,
+                // The projection is un-dischargeable: the receiver is not a
+                // parameter (`-> result.Sort`) or names a member the receiver's
+                // type does not have (`-> m.Nonexistent`). Surface the PRECISE
+                // elimination error and skip this op's body check — never swallow
+                // it behind a vaguer conformance mismatch (project principle:
+                // loud error early, no fallback). Mirrors the param-projection
+                // `proj_failed` skip above.
+                Err(e) => {
+                    errors.push(e);
+                    continue;
+                }
+            }
         } else {
             op.return_type.clone()
         };

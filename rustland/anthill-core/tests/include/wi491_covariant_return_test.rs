@@ -105,6 +105,26 @@ end
     );
 }
 
+/// WI-491 surfaces a PRECISE error (not a vague conformance mismatch, and never a
+/// silent accept) when the projection return names a member the receiver's type
+/// does not have: `-> m.Nonexistent` reports "no member 'Nonexistent'" — the
+/// elimination error itself, loud and early (project principle: no fallback).
+#[test]
+fn bogus_member_projection_return_reports_precise_error() {
+    let src = r#"
+namespace wi491.bogusmember
+  import anthill.prelude.{MappedStream, Stream}
+  operation bad(m: MappedStream) -> m.Nonexistent = m
+end
+"#;
+    let errs = crate::common::try_load_kb_with(src).err().unwrap_or_default();
+    assert!(
+        errs.iter().any(|e| e.contains("Nonexistent") && e.contains("no member")),
+        "a bogus projection-return member must report the precise elimination error \
+         ('no member ...'), not a vague conformance mismatch; got: {errs:?}",
+    );
+}
+
 /// WI-491 must NOT open an escape hole: a BARE abstract-spec return (`-> Stream`,
 /// whose members T,E are left unbound) is still REJECTED by the WI-401 avoidance
 /// gate — only the input-rooted `m.Sort` projection is admitted.
