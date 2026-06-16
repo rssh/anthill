@@ -350,3 +350,6 @@ mod wi475_effects_projection_test;
 
 #[path = "include/wi201_bare_spec_member_sugar_test.rs"]
 mod wi201_bare_spec_member_sugar_test;
+
+#[path = "include/wi481_modify_row_equality_test.rs"]
+mod wi481_modify_row_equality_test;

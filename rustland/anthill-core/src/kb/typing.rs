@@ -4371,6 +4371,31 @@ fn check_apply_iter(
             (op.return_type.clone(), op.effects.clone())
         };
 
+        // WI-481: a value-in-type (denoted) reference to a callee PARAMETER inside the
+        // RETURN TYPE — `eff_stream(p) -> Strm[T = Int64, E = {Modify[p]}]`, where `p`
+        // is the param and `Modify[p]` is a denoted value-in-type effect carried IN the
+        // return type's `E` binding — must be re-keyed to the caller's actual argument,
+        // exactly as a declared `effects Modify[c]` label is (`pre_substituted` below).
+        // The effect re-keying only touches `op.effects`; a value-in-type embedded in the
+        // return type was never re-keyed, so the result type — and any `s.E` projection a
+        // consumer reads off it — carried the CALLEE's param symbol. A correctly-declared
+        // `effects {Modify[p]}` consumer was then rejected as undeclared because the
+        // declared and incurred `Modify[p]` named DIFFERENT `p` symbols (caller's vs
+        // callee's).
+        //
+        // Gate on `!op_has_projection`: when the op HAS a projection the return type was
+        // already run through `eliminate_type_projections` above, whose `Denoted` arm now
+        // re-keys the value-in-type via this same `param_to_arg_sym` (so a MIXED return
+        // `Strm[T = s.T, E = {Modify[p]}]` re-keys the `Modify[p]` there, alongside the
+        // projection — and a δ-reduced projection NEUTRAL's receiver is left to that arm's
+        // surgical, WI-459-aware handling rather than corrupted by a blanket `Ref`-sub
+        // here). The projection-free case never reaches elimination, so re-key it here.
+        let proj_return_type = if !param_to_arg_sym.is_empty() && !op_has_projection {
+            substitute_ref_syms_value(kb, &proj_return_type, &param_to_arg_sym)
+        } else {
+            proj_return_type
+        };
+
         // WI-383 B (Modify provider-fact GROUND value bind): bind a still-FREE spec
         // value-param from the carrier's GROUND provider-fact binding
         // (`fact Box[T = IntCell, V = Int64]` ⟹ `Box.V := Int64`, the entity-resource
@@ -11124,8 +11149,20 @@ fn eliminate_node_projections(
                 let e = elim_child(kb, effects_expr, arg_types, arg_syms, ctx, span)?;
                 Ok(Value::Node(kb.make_effects_rows_occ(e, sp, owner)))
             }
-            // A `denoted` value-in-type (`Modify[c]`) carries no type projection — as-is.
-            TypeNode::Denoted { .. } => Ok(Value::Node(Rc::clone(occ))),
+            // A `denoted` value-in-type (`Modify[c]`) carries no type projection, but it
+            // DOES carry a callee-parameter reference by VALUE. WI-481: re-key it to the
+            // caller's argument via `arg_syms` (the same `param_to_arg_sym` rewrite the
+            // projection-free return path applies at the call site), so a `Modify[p]`
+            // sitting beside a projection in a MIXED return (`Strm[T = s.T, E = {Modify[p]}]`)
+            // is re-keyed here too — not left bearing the callee's `p`. No projection
+            // inside ⇒ no neutral receiver to corrupt, so re-key unconditionally when a
+            // map is present.
+            TypeNode::Denoted { .. } => match arg_syms {
+                Some(map) => Ok(Value::Node(
+                    super::node_occurrence::substitute_ref_syms_occ(occ, map),
+                )),
+                None => Ok(Value::Node(Rc::clone(occ))),
+            },
             // A nested COMPOUND projection (`a.b.T`) Node — resolve it exactly as the
             // top-level `ExprCarried` arm of `eliminate_type_projections` does (callee-keyed;
             // the WI-459 re-key is single-`Ref` only, see that arm's note).
