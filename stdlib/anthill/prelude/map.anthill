@@ -1,10 +1,22 @@
 -- Map: abstract key-value association (requires Eq on keys)
 sort anthill.prelude.Map
-  import anthill.prelude.{Option, List, Pair, Bool, Int64, Eq}
+  import anthill.prelude.{Option, List, Pair, Bool, Int64, Eq, Iterable, Stream}
 
   sort K = ?
   sort V = ?
   requires Eq[T = K]
+
+  -- WI-495: a Map is a GENUINE non-Stream Iterable — it can be walked (produces
+  -- a Stream of its entries) but is NOT itself a Stream (it has no `splitFirst`
+  -- primitive; a hash/tree map is not a linear sequence). So unlike List /
+  -- MappedStream / FilteredStream — which provide Stream and derive Iterable
+  -- transitively with an IDENTITY iterator — Map declares `provides Iterable`
+  -- EXPLICITLY, with a NON-identity `iterator` that materializes the entries as
+  -- a List (which provides Stream, so it is admissible as the produced Stream).
+  -- This is exactly the carrier the Iterable≠Stream split exists for (proposal
+  -- library/002: "Iterable PRODUCES an iterator, Iteration/Stream IS one").
+  provides Iterable[C = Map, Element = Pair[A = K, B = V], E = {}]
+  operation iterator(m: Map) -> Stream[T = Pair[A = K, B = V], E = {}] = entries(m)
 
   -- Construction
   operation empty() -> Map
@@ -21,6 +33,13 @@ sort anthill.prelude.Map
   operation keys(m: Map) -> List[T = K]
   operation values(m: Map) -> List[T = V]
   operation entries(m: Map) -> List[T = Pair[A = K, B = V]]
+  -- Map's OWN O(1) size. Note (WI-444): now that Map provides Iterable, the
+  -- inherited `Iterable.size` default (an O(N) `Stream.count(iterator(m))` walk)
+  -- shares this short name. A dot call `m.size()` resolves to THIS own op; a
+  -- spec-op call `Iterable.size(m)` runs the default walk, because the carrier
+  -- override (WI-444) only fires for a RUNNABLE-bodied own op and this one is
+  -- law-backed (body-less). Same answer either way; a concrete Map impl with a
+  -- runnable `size` body gets the O(1) override. Closing the body-less gap is WI-444.
   operation size(m: Map) -> Int64
 
   -- Laws (algebraic specification)

@@ -2409,6 +2409,23 @@ fn find_spec_op_for_provided_sort(
             spec_syms.push(spec_sym);
         }
     }
+    // WI-495: a member can live on a TRANSITIVELY-provided spec — `xs.map` on a
+    // `List` is `Iterable.map`, reached via `List provides Stream` + `Stream
+    // provides Iterable` (List no longer declares `provides Iterable` directly).
+    // BFS-expand the directly-provided set with each spec's own provisions; the
+    // direct specs stay at the front, so a directly-provided member still wins
+    // over a transitively-inherited one (more-specific-first). `same_symbol`
+    // dedup guards a cyclic `provides` chain.
+    let mut i = 0;
+    while i < spec_syms.len() {
+        let s = spec_syms[i];
+        for next in directly_provided_specs(kb, s) {
+            if !spec_syms.iter().any(|&x| same_symbol(kb, x, next)) {
+                spec_syms.push(next);
+            }
+        }
+        i += 1;
+    }
     for spec_sym in spec_syms {
         let spec_term = kb.alloc(Term::Ref(spec_sym));
         if let Some(op) = super::load::find_operation_in_scope(kb, spec_term, short) {
@@ -8920,7 +8937,6 @@ fn directly_provided_specs(kb: &KnowledgeBase, carrier_sym: Symbol) -> SmallVec<
     let Some(provides_sym) = kb.try_resolve_symbol("anthill.reflect.SortProvidesInfo") else {
         return out;
     };
-    let carrier_canon = kb.canonical_sort_sym(carrier_sym);
     for rid in kb.rules_by_functor(provides_sym) {
         if !kb.is_fact(rid) {
             continue;
@@ -8928,7 +8944,14 @@ fn directly_provided_specs(kb: &KnowledgeBase, carrier_sym: Symbol) -> SmallVec<
         let Some(named) = kb.fact_head_named_args(rid) else { continue };
         let Some(sr) = get_named_arg(kb, &named, "sort_ref") else { continue };
         let Some(carrier) = super::load::sort_ref_functor(kb, sr) else { continue };
-        if kb.canonical_sort_sym(carrier) != carrier_canon {
+        // `same_symbol`, not `canonical_sort_sym` equality: the `provides`-clause
+        // path stores `sort_ref = domain` (the enclosing sort term) which may be a
+        // bare-interned `List` whose qualified name differs from a `fact`-form
+        // carrier's — `canonical_sort_sym` then maps them to distinct symbols and
+        // silently drops the provides-clause provision (the `provides Stream`
+        // edge), while `same_symbol` bridges bare/qualified (matches the dedup
+        // below).
+        if !same_symbol(kb, carrier, carrier_sym) {
             continue;
         }
         let Some(spec_t) = get_named_arg(kb, &named, "spec") else { continue };
@@ -8991,6 +9014,89 @@ fn transitive_carrier_for_param(
     }
     let mut visited: SmallVec<[Symbol; 8]> = SmallVec::new();
     walk(kb, spec_sort, pvid, value_sort, &mut visited)
+}
+
+/// WI-495 — compose two provision views, eliminating the intermediate spec.
+/// `outer_view` maps `spec_sort`'s params to values written in terms of the
+/// INTERMEDIATE spec's params (`Stream provides Iterable[Element = T, E = E]` ⇒
+/// `{Element ↦ Stream.T, E ↦ Stream.E}`); `inner_view` maps the intermediate
+/// spec's params to CARRIER-relative values (`List provides Stream[T = T, E = {}]`
+/// ⇒ `{Stream.T ↦ List.T, Stream.E ↦ {}}`). The result maps `spec_sort`'s params
+/// to carrier-relative values (`{Element ↦ List.T, E ↦ {}}`) — exactly the shape
+/// the carrier's DIRECT provision of `spec_sort` would have, so the existing
+/// [`bind_spec_params_from_carrier_param`] grounds them against the receiver's
+/// type args / a written row with no further change.
+///
+/// An outer value that is a bare type-param ref of the intermediate (`Stream.T`)
+/// is substituted by the inner binding for that param (matched by short name); a
+/// ground value (a written `{}` row) or a value not referencing an intermediate
+/// param (the carrier application `C ↦ Stream`) is kept verbatim. A COMPOUND that
+/// merely MENTIONS an intermediate param (`Element = Pair[A = Stream.T]`) is kept
+/// verbatim un-substituted — `bind_spec_params_from_carrier_param` then skips it
+/// as non-ground non-ref and the param surfaces a LOUD `?_` rather than a
+/// silently-wrong bind (deep compound substitution is follow-up, cf. WI-380).
+fn compose_provision_views(
+    kb: &KnowledgeBase,
+    outer_view: &SmallVec<[(Symbol, TermId); 2]>,
+    inner_view: &SmallVec<[(Symbol, TermId); 2]>,
+) -> SmallVec<[(Symbol, TermId); 2]> {
+    outer_view
+        .iter()
+        .map(|(spec_param, val)| {
+            if let Some(inter_short) = typaram_ref_short_name(kb, *val) {
+                if let Some((_, inner_val)) = inner_view
+                    .iter()
+                    .find(|(p, _)| short_name_of(kb.resolve_sym(*p)) == inter_short)
+                {
+                    return (*spec_param, *inner_val);
+                }
+            }
+            (*spec_param, *val)
+        })
+        .collect()
+}
+
+/// WI-495 — the provision view of `carrier_sym` for `spec_sort` (binding the
+/// carrier param `pvid`), DIRECT or composed through TRANSITIVE provision. The
+/// typer-side companion to [`transitive_carrier_for_param`] (the eval path): a
+/// `List` value's STATIC type is the concrete `List`, so the typer classifies it
+/// as the Iterable carrier directly and must GROUND `Iterable`'s `Element` / `E`
+/// from `List`'s provision of `Stream` — `List provides Stream` + `Stream
+/// provides Iterable`, with no direct `List provides Iterable` fact. Direct
+/// provision wins (returns the carrier's own view unchanged — the explicit-
+/// `provides Iterable` hot path). Otherwise descend the specs `carrier_sym`
+/// provides, find the one that (transitively) owns `spec_sort` with `pvid`
+/// bound, and compose its view back through each hop's carrier→intermediate
+/// bindings via [`compose_provision_views`]. `visited` guards a cyclic chain.
+fn transitive_provision_view(
+    kb: &KnowledgeBase,
+    spec_sort: Symbol,
+    pvid: VarId,
+    carrier_sym: Symbol,
+    visited: &mut SmallVec<[Symbol; 8]>,
+) -> Option<SmallVec<[(Symbol, TermId); 2]>> {
+    if visited.iter().any(|&v| same_symbol(kb, v, carrier_sym)) {
+        return None;
+    }
+    visited.push(carrier_sym);
+    // Direct: the carrier itself provides spec_sort binding the carrier param.
+    if let Some(view) = provision_binds_param_to_carrier(kb, spec_sort, pvid, carrier_sym) {
+        return Some(view);
+    }
+    // Transitive: an intermediate spec the carrier provides owns spec_sort.
+    for intermediate in directly_provided_specs(kb, carrier_sym) {
+        let Some(outer_view) =
+            transitive_provision_view(kb, spec_sort, pvid, intermediate, visited)
+        else {
+            continue;
+        };
+        // The carrier→intermediate bindings, to eliminate the intermediate's params.
+        let Some(inner_view) = provider_spec_view_bindings(kb, carrier_sym, intermediate) else {
+            continue;
+        };
+        return Some(compose_provision_views(kb, &outer_view, &inner_view));
+    }
+    None
 }
 
 /// WI-424 — eval-side CARRIER-PARAM receiver: among the params typed as one of
@@ -9260,7 +9366,12 @@ fn carrier_param_receiver(
             });
         let Some(recv_ty) = recv_ty else { continue };
         let Some(carrier_sym) = sort_functor_of_view(kb, &recv_ty) else { continue };
-        let Some(view) = provision_binds_param_to_carrier(kb, spec_sort, pvid, carrier_sym)
+        // WI-495: DIRECT provision (the explicit `provides Iterable` hot path) or a
+        // view COMPOSED through transitive provision (a `List` carrier whose
+        // Iterable-ness rides through `Stream`), so `Element`/`E` still ground.
+        let mut visited: SmallVec<[Symbol; 8]> = SmallVec::new();
+        let Some(view) =
+            transitive_provision_view(kb, spec_sort, pvid, carrier_sym, &mut visited)
         else {
             continue;
         };

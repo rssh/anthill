@@ -7,8 +7,9 @@
 //! `mapped(iterator(c), f)`) exercise the abstract-carrier iterator-walk: the
 //! sibling `iterator(c)` must thread Iterable's own `Element` / `E` into the
 //! produced Stream. The concrete call sites ground `Element`/`E` through the
-//! written provisions (`provides Iterable[C = List[T], Element = T, E = {}]`,
-//! `provides Iterable[C = Stream, Element = T, E = E]`).
+//! written provisions — `provides Iterable[C = Stream, Element = T, E = E]`, and
+//! for a `List` (since WI-495) the COMPOSED transitive view `List provides
+//! Stream[T, {}]` ∘ `Stream provides Iterable` ⇒ `{Element = List.T, E = {}}`.
 
 use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::load::{self, NullResolver};

@@ -84,9 +84,10 @@ namespace anthill.cli.parse
   -- helpers --
   --
   -- The recursive list SEARCHES below use the stdlib `find` combinator —
-  -- since WI-424 the GENERAL `Iterable.find` member (a List provides Iterable;
-  -- the member derives via `iterator(c)` and delegates to the `Stream.find`
-  -- engine), so the same import serves any future non-Stream carrier.
+  -- since WI-424 the GENERAL `Iterable.find` member (a List IS Iterable — since
+  -- WI-495 derived transitively via `List provides Stream` + `Stream provides
+  -- Iterable`; the member delegates to the `Stream.find` engine), so the same
+  -- import serves any future non-Stream carrier.
   -- The predicate is an INLINE lambda closing over the runtime target
   -- (`name`/`acc`); the element type is pinned by the concrete receiver's
   -- Iterable provision, so the lambda parameter and its `Bool` result

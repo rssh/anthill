@@ -72,20 +72,23 @@ enum anthill.prelude.List
   -- unresolved). `iterator` then writes both the threaded element (`T = l.T`) and
   -- the pure effect (`E = {}`), so `Stream[T = l.T, E = {}]` is fully in the type.
   provides Stream[T, {}]
-  -- WI-424: the Iterable provision also WRITES the observation effect `E = {}`
-  -- (same WI-387 reasoning as the Stream provision above — `provides`, not
-  -- `fact`, so the row literal lowers through the type-aware path), letting a
-  -- concrete `Iterable.find/map` call site ground `E` instead of leaking `?_`.
+  -- WI-495: the explicit `provides Iterable[C = List[T], Element = T, E = {}]`
+  -- clause is GONE — List's Iterable-ness is now DERIVED transitively from
+  -- `List provides Stream` (above) + `Stream provides Iterable` (stream.anthill).
+  -- The typer composes Iterable's `Element`/`E` through Stream (Element ← Stream.T
+  -- ← List.T; E ← Stream.E ← {}) via `transitive_provision_view`, and the
+  -- dot/value-directed dispatch of `Iterable.find/map/filter/size/isEmpty/fold`
+  -- on a List resolves through `find_spec_op_for_provided_sort`'s transitive
+  -- spec walk. So `xs.find(p)` / `xs.map(f)` on a `List` still type-check pure
+  -- and thread the element, with no per-carrier Iterable declaration.
   --
-  -- WI-492 kept this EXPLICIT (unlike the lazy MappedStream/FilteredStream
-  -- carriers, which now derive Iterable transitively through Stream): a `List`
-  -- value's STATIC type is the concrete `List`, so the TYPER classifies it as
-  -- the Iterable carrier directly and must compose `Element`/`E` from List's
-  -- provision of Stream — a typer-side transitive-binding composition not yet
-  -- built (the eval-only transitive resolution does not reach it). Dropping
-  -- this clause makes every `Iterable.find/map/size` on a List leak `?_` for
-  -- the effect row. Removing it is the typer half of WI-492 (filed as WI-495).
-  provides Iterable[C = List[T], Element = T, E = {}]
+  -- `iterator` is KEPT as List's explicit List→Stream view (a List IS a Stream).
+  -- It is not removable yet: the body-less `Iterable.iterator` spec op dispatched
+  -- EXPLICITLY on a concrete `List` (`iterator(xs)`) needs a direct impl — the
+  -- typer's body-less spec-op DISPATCH is not transitive (it matches impls via
+  -- direct provider facts), unlike the carrier-param grounding and dot dispatch
+  -- above. Making that dispatch transitive (then resolving `iterator(xs)` to
+  -- `Stream.iterator` and dropping this op) is the remaining follow-up.
   operation iterator(l: List) -> Stream[T = l.T, E = {}] = l
 
   -- Stream primitive: peel the head and return the tail (itself a List, hence
