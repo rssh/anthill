@@ -300,16 +300,18 @@ end
     assert_eq!(run_int(&mut interp, "test.wi424.boxcoll.box_size"), 3);
 }
 
-/// PINS the spec-default-vs-carrier-override gap (WI-444). A carrier with
-/// its OWN O(1) `size` (stored count 99, deliberately disagreeing with the
-/// walk's 3): the INTENDED typeclass semantics is that the carrier member
-/// wins at the Iterable-imported call site (defaults fill gaps, they do
-/// not shadow). TODAY the spec's default body shadows it: the WI-210
-/// rewrite and eval's step-3b receiver dispatch are both body-less-only,
-/// so eval step 3 runs the spec body without consulting the receiver's
-/// sort. When WI-444 lands, this flips to 99 — update the assertion.
+/// WI-444: a carrier's OWN member OVERRIDES a DEFAULTED spec op (typeclass
+/// default-method semantics — defaults fill gaps, they do NOT shadow).
+/// `Counted` declares its own O(1) `size` (stored count 99, deliberately
+/// disagreeing with the walk's 3); the Iterable-imported `size` call must
+/// dispatch to it. `BoxColl` (no own `size`) still falls back to the spec's
+/// default walk — defaults fire for carriers WITHOUT an override.
+///   * `probe` — concrete carrier (`counted(…)` literal): the typer statically
+///     PinNows to `Counted.size`.
+///   * `probe_via_abstract` — abstract receiver (`c: Counted` param read back
+///     through the Iterable interface): eval's value-directed override fires.
 #[test]
-fn iterable_size_carrier_override_currently_shadowed() {
+fn iterable_size_carrier_override() {
     let src = r#"
 namespace test.wi424.sizedbox
   import anthill.prelude.{List, Int64, Stream, Iterable}
@@ -327,16 +329,31 @@ namespace test.wi424.sizedbox
         case counted(_, n) -> n
   end
 
+  -- No own `size` — must keep the spec default (the walk).
+  sort Plain
+    import anthill.prelude.{List, Int64, Stream, Iterable}
+    entity plain(items: List[T = Int64])
+    provides Iterable[C = Plain, Element = Int64, E = {}]
+    operation iterator(b: Plain) -> Stream[Int64, {}] =
+      match b
+        case plain(items) -> items
+  end
+
   operation probe() -> Int64 = size(counted([1, 2, 3], 99))
+  operation default_still_fires() -> Int64 = size(plain([1, 2, 3]))
 end
 "#;
     let mut interp = crate::common::interp_for(src);
     assert_eq!(
         run_int(&mut interp, "test.wi424.sizedbox.probe"),
+        99,
+        "the carrier's own `size` (99) must OVERRIDE the spec default walk (3)",
+    );
+    assert_eq!(
+        run_int(&mut interp, "test.wi424.sizedbox.default_still_fires"),
         3,
-        "PINNED current behavior: the spec's default body (the walk, 3) \
-         shadows the carrier's own size (99). If this now returns 99, \
-         WI-444's override dispatch landed — update this test to assert 99",
+        "a carrier WITHOUT its own `size` must still use the spec default walk (3) \
+         — defaults fill gaps, the override does not leak to other carriers",
     );
 }
 

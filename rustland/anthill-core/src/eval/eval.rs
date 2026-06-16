@@ -538,11 +538,69 @@ impl Interpreter {
         spec_op: Symbol,
         arg_values: &[Value],
     ) -> Option<Symbol> {
+        use crate::kb::typing::{instance_fact_op_binding, witness_op_for_carrier};
+        let (spec_sort, carrier) = self.spec_call_runtime_carrier(spec_op, arg_values)?;
+        let op_qn = self.kb.qualified_name_of(spec_op);
+        let op_short = op_qn.rsplit('.').next().unwrap_or(op_qn);
+        let op_short_sym = self.kb.lookup_symbol(op_short)?;
+        // A carrier that OWNS the op (its own override) wins. `sort_ops_lookup`
+        // returns the body-less spec op itself when the carrier merely inherits
+        // it (no real impl) — filter that placeholder out so it doesn't mask the
+        // instance fact below.
+        let own = self
+            .kb
+            .sort_ops_lookup(carrier, op_short_sym)
+            .filter(|&op| op != spec_op);
+        // WI-431: a RETROACTIVE INSTANCE FACT binds the op in the provision
+        // (`fact Combiner[T = Tag, combine = tagCombine]`) instead of on the
+        // carrier — the op-valued binding IS the dictionary entry. Fall back to
+        // it so a spec-op call on an instance-fact carrier dispatches to the
+        // bound op instead of dying `UnknownOperation`.
+        // WI-450: a WITNESS SORT (`sort TagCombiner provides Combiner[T = Tag]`
+        // with a member `combine`) provides the spec for `carrier` without binding
+        // the op in the provision and without being the carrier itself — the
+        // carrier-keyed `instance_fact_op_binding` misses it. Resolve it
+        // param-agnostically by the provision's application.
+        own.or_else(|| instance_fact_op_binding(&self.kb, carrier, spec_sort, op_short))
+            .or_else(|| witness_op_for_carrier(&self.kb, spec_sort, carrier, op_short_sym))
+    }
+
+    /// WI-444 — the GENUINE carrier override of a (possibly defaulted) spec op,
+    /// resolved from a runtime receiver value. Returns the carrier sort's OWN
+    /// member backing `spec_op` (declared IN the carrier), or `None` when the
+    /// carrier merely inherits the spec default (`carrier_override_op` rejects
+    /// both the spec op itself and a DIFFERENT spec's same-short-name default
+    /// the carrier also inherits). Stricter than [`Self::resolve_spec_op_target_by_value`]
+    /// — it never dispatches to another spec's default body — so the eval step-3
+    /// override path runs the genuine override or the spec's OWN default,
+    /// nothing in between.
+    fn resolve_carrier_override_by_value(
+        &self,
+        spec_op: Symbol,
+        arg_values: &[Value],
+    ) -> Option<Symbol> {
+        let (_spec_sort, carrier) = self.spec_call_runtime_carrier(spec_op, arg_values)?;
+        let op_qn = self.kb.qualified_name_of(spec_op);
+        let op_short = op_qn.rsplit('.').next().unwrap_or(op_qn);
+        let op_short_sym = self.kb.lookup_symbol(op_short)?;
+        crate::kb::typing::carrier_override_op(&self.kb, carrier, spec_op, op_short_sym)
+    }
+
+    /// WI-350/WI-444 — the `(spec_sort, carrier_sort)` a spec-op call names at
+    /// runtime: the spec op's parent sort (body-agnostic — WI-444 admits a
+    /// DEFAULTED op so its carrier can still override), and the receiver
+    /// argument value's own carrier sort. Mirrors the typer's `receiver_carrier`
+    /// / `carrier_param_receiver` classification so the static and dynamic paths
+    /// never disagree about which argument names the carrier.
+    fn spec_call_runtime_carrier(
+        &self,
+        spec_op: Symbol,
+        arg_values: &[Value],
+    ) -> Option<(Symbol, Symbol)> {
         use crate::kb::typing::{
-            carrier_param_receiver_for_values, instance_fact_op_binding, lookup_spec_op_dispatch,
-            self_receiver_param_index, witness_op_for_carrier,
+            carrier_param_receiver_for_values, self_receiver_param_index, spec_op_parent_sort,
         };
-        let spec_sort = lookup_spec_op_dispatch(&self.kb, spec_op)?;
+        let spec_sort = spec_op_parent_sort(&self.kb, spec_op)?;
         let rec = crate::kb::op_info::lookup_operation_info(&self.kb, spec_op)?;
         // The carrier sort a runtime argument value names: entity functor →
         // its parent sort's base symbol. A runtime stream handle IS a
@@ -581,29 +639,7 @@ impl Interpreter {
                 carrier_param_receiver_for_values(&self.kb, &rec.params, spec_sort, &carrier_of)?.1
             }
         };
-        let op_qn = self.kb.qualified_name_of(spec_op);
-        let op_short = op_qn.rsplit('.').next().unwrap_or(op_qn);
-        let op_short_sym = self.kb.lookup_symbol(op_short)?;
-        // A carrier that OWNS the op (its own override) wins. `sort_ops_lookup`
-        // returns the body-less spec op itself when the carrier merely inherits
-        // it (no real impl) — filter that placeholder out so it doesn't mask the
-        // instance fact below.
-        let own = self
-            .kb
-            .sort_ops_lookup(carrier, op_short_sym)
-            .filter(|&op| op != spec_op);
-        // WI-431: a RETROACTIVE INSTANCE FACT binds the op in the provision
-        // (`fact Combiner[T = Tag, combine = tagCombine]`) instead of on the
-        // carrier — the op-valued binding IS the dictionary entry. Fall back to
-        // it so a spec-op call on an instance-fact carrier dispatches to the
-        // bound op instead of dying `UnknownOperation`.
-        // WI-450: a WITNESS SORT (`sort TagCombiner provides Combiner[T = Tag]`
-        // with a member `combine`) provides the spec for `carrier` without binding
-        // the op in the provision and without being the carrier itself — the
-        // carrier-keyed `instance_fact_op_binding` misses it. Resolve it
-        // param-agnostically by the provision's application.
-        own.or_else(|| instance_fact_op_binding(&self.kb, carrier, spec_sort, op_short))
-            .or_else(|| witness_op_for_carrier(&self.kb, spec_sort, carrier, op_short_sym))
+        Some((spec_sort, carrier))
     }
 
     // ── Binder starts: update top.awaiting, push child frame. ──────
@@ -1134,6 +1170,32 @@ impl Interpreter {
 
         // 3. Anthill-defined operation body.
         if let Some((body_node, params)) = self.cached_operation_body(target) {
+            // WI-444: a DEFAULTED spec op must not SHADOW a carrier's own member
+            // (typeclass default-method semantics — defaults fill GAPS, they do
+            // not shadow). When `target` is a spec op and the receiver value's
+            // runtime sort declares its OWN impl of it, dispatch to that override
+            // instead of running the spec's default body. This is the dynamic
+            // dual of the typer's static PinNow: it fires for an abstract-receiver
+            // call the typer could not pin (the concrete-carrier call is already
+            // rewritten to the impl op, whose `target` is not a spec op so this
+            // resolves `None`). The STRICT resolver returns only a GENUINE carrier
+            // override (a member declared in the carrier sort itself), never
+            // another spec's same-short-name default — so a carrier that merely
+            // inherits the default runs it, unchanged; a normal (non-spec) op
+            // resolves `None` and runs its body directly.
+            if let Some(impl_target) = self.resolve_carrier_override_by_value(target, &arg_values) {
+                if impl_target != target {
+                    if let Some(builtin) = self.builtins.get(&impl_target).cloned() {
+                        let result = (builtin)(self, &arg_values)?;
+                        return Ok(StepOutcome::Deliver(result));
+                    }
+                    if let Some((impl_body, impl_params)) = self.cached_operation_body(impl_target) {
+                        return self.enter_operation(
+                            impl_target, impl_body, &impl_params, arg_values, requirements, type_args,
+                        );
+                    }
+                }
+            }
             return self.enter_operation(
                 target, body_node, &params, arg_values, requirements, type_args,
             );

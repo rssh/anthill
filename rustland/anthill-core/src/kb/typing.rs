@@ -4710,6 +4710,69 @@ fn check_apply_iter(
             }
         }
 
+        // WI-444: a DEFAULTED spec op (has its own body, so
+        // `lookup_spec_op_dispatch` returned `None` and the body-less dispatch
+        // block below is skipped) consumed on a CONCRETE carrier that declares
+        // its OWN member backing the op must dispatch to that member —
+        // typeclass default-method semantics (defaults fill GAPS, they do not
+        // SHADOW). Statically PinNow to the carrier op, surfacing its real
+        // effects (the WI-453 pattern — an override may incur an effect the
+        // spec's default did not). The concrete carrier comes from whichever
+        // shape `receiver_carrier` / `carrier_param_info` already classified:
+        // the self-receiver (`collect(s: Stream)`) or carrier-param
+        // (`size(c: C)`) form. A carrier WITHOUT an override classifies nothing
+        // and falls through to run the default body. Eval's value-directed
+        // override (eval.rs step 3) is the dynamic dual for an ABSTRACT-receiver
+        // call this cannot pin.
+        if lookup_spec_op_dispatch(kb, fn_sym).is_none() {
+            if let Some(spec_sort) = spec_op_parent_sort(kb, fn_sym) {
+                let carrier = match self_recv_spec {
+                    Some(_) => match receiver_carrier(
+                        kb, &op, spec_sort, named_args, pos_results, named_results,
+                    ) {
+                        ReceiverCarrier::Concrete(c) => Some(c),
+                        _ => None,
+                    },
+                    None => carrier_param_info.as_ref().map(|(_, c, _, _)| *c),
+                };
+                if let Some(carrier_sym) = carrier {
+                    let op_qn = kb.qualified_name_of(fn_sym).to_string();
+                    let op_short_sym = kb.intern(short_name_of(&op_qn));
+                    if let Some(impl_op) =
+                        carrier_override_op(kb, carrier_sym, fn_sym, op_short_sym)
+                    {
+                        let derived = dispatched_impl_effects(
+                            kb, impl_op, &op.params, &subst, pos_args, named_args,
+                        );
+                        effects = merge_effects(&effects, &derived);
+                        let impl_sort = impl_parent_of_op(kb, impl_op);
+                        let needs_reqs = impl_sort
+                            .map(|s| !requires_chain(kb, s).is_empty())
+                            .unwrap_or(false);
+                        let class = if needs_reqs {
+                            CallClass::ConcreteApplyWithin {
+                                fn_target_sym: impl_op,
+                                callee_spec_sort: impl_sort.unwrap(),
+                                spec_op_sym: fn_sym,
+                                enclosing_sort: env.enclosing_sort(),
+                                resolved_tree: None,
+                                dispatch_dict: None,
+                            }
+                        } else {
+                            CallClass::PinNow { spec_op_sym: fn_sym, impl_op_sym: impl_op }
+                        };
+                        classify(kb, occ, class);
+                        return Ok(TypeResult {
+                            ty: resolved_ret,
+                            env: env.clone(),
+                            effects,
+                            node: Rc::clone(occ),
+                        });
+                    }
+                }
+            }
+        }
+
         // WI-210 phase 3 dispatch (proposal 038): if `fn_sym` is a spec
         // op (declared without body on a parametric sort), look up the
         // unique impl op based on the per-call substitution. The proposal-
@@ -6158,14 +6221,18 @@ fn check_unconstrained_type_params(
     Ok(())
 }
 
-/// WI-210 — `op_sym` is a "spec operation" if it is declared in a sort
-/// that has at least one `sort <Param> = ?` declaration AND the
-/// operation has no body. Spec operations are subject to call-site
-/// dispatch via `SortProvidesInfo` lookup.
+/// The parent sort of `op_sym` when it is a SPEC operation — declared in a
+/// parametric sort (one with at least one `sort <Param> = ?` declaration),
+/// REGARDLESS of whether it has a default body. Returns the spec sort symbol,
+/// or `None` when `op_sym` is not a member of a parametric sort.
 ///
-/// Returns the *parent sort* symbol (the spec sort) when `op_sym`
-/// qualifies; `None` otherwise.
-pub fn lookup_spec_op_dispatch(kb: &KnowledgeBase, op_sym: Symbol) -> Option<Symbol> {
+/// WI-444: this is the body-agnostic core. [`lookup_spec_op_dispatch`] layers
+/// the body-less gate on top (a body-less spec op is the call-site dispatch
+/// target via `SortProvidesInfo`); a DEFAULTED spec op (with its own body) is
+/// not a body-less dispatch target but is still a spec op whose carrier may
+/// OVERRIDE it (typeclass default-method semantics — defaults fill gaps, they
+/// do not shadow), so the override paths gate on this instead.
+pub(crate) fn spec_op_parent_sort(kb: &KnowledgeBase, op_sym: Symbol) -> Option<Symbol> {
     use crate::intern::{SymbolDef, SymbolKind};
 
     // The parent sort's qualified name is the op's qualified name
@@ -6183,15 +6250,51 @@ pub fn lookup_spec_op_dispatch(kb: &KnowledgeBase, op_sym: Symbol) -> Option<Sym
     if kb.type_params_of_sort(parent_sym).is_empty() {
         return None;
     }
+    Some(parent_sym)
+}
 
-    // The op must be body-less (declaration only). We reuse the same
-    // OperationInfo lookup machinery as `lookup_operation_info_full`
-    // but read the `body` field instead.
+/// WI-210 — `op_sym` is a "spec operation" if it is declared in a sort
+/// that has at least one `sort <Param> = ?` declaration AND the
+/// operation has no body. Spec operations are subject to call-site
+/// dispatch via `SortProvidesInfo` lookup.
+///
+/// Returns the *parent sort* symbol (the spec sort) when `op_sym`
+/// qualifies; `None` otherwise.
+pub fn lookup_spec_op_dispatch(kb: &KnowledgeBase, op_sym: Symbol) -> Option<Symbol> {
+    // The op must be body-less (declaration only): a DEFAULTED spec op is a
+    // normal-bodied op the runtime can run directly, not a call-site dispatch
+    // placeholder. (Its carrier-override path is the body-agnostic
+    // [`spec_op_parent_sort`] — WI-444.)
+    let parent_sym = spec_op_parent_sort(kb, op_sym)?;
     if !operation_has_no_body(kb, op_sym) {
         return None;
     }
-
     Some(parent_sym)
+}
+
+/// WI-444 — the carrier sort's OWN member backing a (possibly defaulted) spec
+/// op, when it genuinely OVERRIDES the spec rather than merely inheriting it.
+/// `carrier`'s `sort_ops` entry for the op's short name, filtered to a runnable
+/// impl that is DECLARED IN the carrier sort itself (`impl_parent_of_op == carrier`).
+/// The two non-`carrier` cases the parent check rejects are NOT overrides:
+///   * the spec op itself — a carrier that only INHERITS the default;
+///   * a DIFFERENT spec's same-short-name default the carrier also inherits
+///     (`Stream.find` when resolving `Iterable.find` on a `List` that provides
+///     both `Stream` and `Iterable`) — `sort_ops_lookup` returns one arbitrarily,
+///     and it is not the carrier's own member.
+/// Returns the override op symbol, or `None` (run the spec's default body).
+pub(crate) fn carrier_override_op(
+    kb: &KnowledgeBase,
+    carrier: Symbol,
+    spec_op: Symbol,
+    op_short_sym: Symbol,
+) -> Option<Symbol> {
+    let carrier_canon = kb.canonical_sort_sym(carrier);
+    kb.sort_ops_lookup(carrier, op_short_sym)
+        .filter(|&o| o != spec_op && op_has_runnable_body(kb, o))
+        .filter(|&o| {
+            impl_parent_of_op(kb, o).map(|p| kb.canonical_sort_sym(p)) == Some(carrier_canon)
+        })
 }
 
 /// WI-231 — per-call-site classification produced by the typer for
