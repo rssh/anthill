@@ -14188,6 +14188,32 @@ fn decompose_effect_row(
             continue;
         }
 
+        // WI-278: an open row-tail (or merge child) may have been bound to a
+        // WRAPPED row — `effects_rows(empty_row)` — rather than a bare
+        // EffectExpression. The two row-binding sources disagree on shape: the
+        // lazy combinators' `{E, EffP}` result row unions List's iterable `E`
+        // (bound bare, from a `provides Iterable[…, E = {}]` fact) with the
+        // callback's `EffP` (bound to a wrapped row by lambda-effect inference),
+        // so one tail of the merge is bare and the other wrapped. Unwrap the
+        // wrapper mid-walk — mirroring the top-level unwrap above — so a wrapped
+        // tail decomposes identically to a bare one instead of tripping the
+        // hard reject below as an "unknown functor".
+        if matches!(
+            node.head(kb),
+            ViewHead::Functor { functor: Some(f), .. } if Some(f) == effects_rows_sym
+        ) {
+            match named_child_value(kb, &node, effects_expr_key) {
+                Some(inner) => stack.push(inner),
+                // A recognized `effects_rows` wrapper missing its only field is
+                // malformed — hard-reject like the unknown-functor arm below
+                // (WI-339 F13), not a silent drop (CLAUDE.md: loud error over
+                // silent skip). `make_effects_rows_*` always sets the child, so
+                // this never fires on well-formed input.
+                None => return None,
+            }
+            continue;
+        }
+
         match resolved_functor_name(kb, &node) {
             Some("empty_row") => {}
             Some("present") => {
