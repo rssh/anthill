@@ -3255,14 +3255,19 @@ sort Host {
     assert_eq!(names, vec!["Modifies".to_owned(), "Reads".to_owned()],
         "effect bases should be Modifies, Reads in canonical (alphabetic) order");
 
-    // Printer regression: the arrow's pretty-print must still mention
-    // every effect base name regardless of how `effects` is shaped.
+    // WI-173: the arrow's pretty-print is now SURFACE syntax — `(<param>) ->
+    // <result> @ {<e1>, <e2>}` — not the `Arrow(param: …, effects:
+    // EffectsRows(…))` cons-list blob. It still mentions every effect base name,
+    // carries the arrow `->` and the braced effect SET, and no longer leaks the
+    // internal `EffectsRows`/`effects:` field shape.
     let printer = anthill_core::persistence::print::TermPrinter::new(&kb);
     let printed = printer.print_term(arrow_term);
     assert!(printed.contains("Modifies") && printed.contains("Reads"),
         "printer output should mention both effect bases; got `{}`", printed);
-    assert!(printed.contains("effects"),
-        "printer output should mention the effects field; got `{}`", printed);
+    assert!(printed.contains("->") && printed.contains("@ {"),
+        "printer output should be surface arrow + braced effect set; got `{}`", printed);
+    assert!(!printed.contains("EffectsRows") && !printed.contains("effects:"),
+        "printer output must not leak the internal effects-row blob; got `{}`", printed);
 }
 
 // ── WI-327 EffectExpression surface grammar ─────────────────────────────

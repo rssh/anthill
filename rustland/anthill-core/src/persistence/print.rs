@@ -563,6 +563,19 @@ impl<'a, V: TermSource + ?Sized> TermPrinter<'a, V> {
                         return;
                     }
                 }
+                // WI-173: a hash-consed TYPE term carries a distinct
+                // `TypeExtractor.*` functor (arrow / named_tuple / …) — print it
+                // in surface syntax (`(A) -> B @ {E}`, `(a: T, …)`) instead of the
+                // generic `Arrow(param: …, effects: EffectsRows(…))` blob. Matched
+                // on the QUALIFIED name so a user sort sharing a short name
+                // (`Arrow`) is unaffected. A bare parameterized type `Fn{S, named}`
+                // is NOT delegated here — it is structurally identical to a data
+                // term (WI-361), so only a type already KNOWN to be one (reached as
+                // a child inside `write_type_term`) renders as `S[k = v]`.
+                if self.is_type_functor(*functor) {
+                    self.write_type_term(id, buf);
+                    return;
+                }
                 buf.push_str(fname);
                 if !pos_args.is_empty() || !named_args.is_empty() {
                     buf.push('(');
@@ -605,6 +618,280 @@ impl<'a, V: TermSource + ?Sized> TermPrinter<'a, V> {
                     ParseAux::SortBindings(b) => buf.push_str(&format!("<type-args {:?}>", b)),
                 }
             }
+        }
+    }
+
+    /// WI-173: is `functor` one of the distinct `TypeExtractor.*` type functors
+    /// `write_term` should render in surface syntax? Matched on the QUALIFIED
+    /// name so a user sort/entity sharing a short name is never misread as a type.
+    /// EffectExpression atoms (`present`/`merge`/…) and `NamedTupleElement` are
+    /// deliberately absent: they appear only WITHIN an effects row / tuple-fields
+    /// list, never standalone, and are rendered by the dedicated walkers below.
+    fn is_type_functor(&self, functor: Symbol) -> bool {
+        matches!(
+            self.view.qualified_name(functor),
+            "anthill.prelude.TypeExtractor.Arrow"
+                | "anthill.prelude.TypeExtractor.NamedTuple"
+                | "anthill.prelude.TypeExtractor.EffectsRows"
+                | "anthill.prelude.TypeExtractor.Denoted"
+                | "anthill.prelude.TypeExtractor.ExprCarried"
+                | "anthill.prelude.TypeExtractor.RigidTypeProjection"
+                | "anthill.prelude.TypeExtractor.TypeVar"
+                | "anthill.prelude.TypeExtractor.Nothing"
+        )
+    }
+
+    /// First named arg whose key short-name is `key` (type terms have few args;
+    /// a linear scan is cheaper than building a map).
+    fn named_arg(&self, named: &[(Symbol, TermId)], key: &str) -> Option<TermId> {
+        named
+            .iter()
+            .find(|(s, _)| self.view.sym_name(*s) == key)
+            .map(|(_, t)| *t)
+    }
+
+    /// WI-173: render a hash-consed TYPE term in surface syntax. The caller has
+    /// established `id` is a type (it hit a distinct `TypeExtractor.*` functor in
+    /// `write_term`, or it is the child of a type already being printed), so a
+    /// bare `Fn{S, named}` here is the PARAMETERIZED type `S[k = v]` —
+    /// unambiguous in type context, unlike generic `write_term`, where the same
+    /// shape is indistinguishable from a data term `S(k: v)` (WI-361: types and
+    /// data share the `Fn{S, named}` carrier). `Ref(S)` is the bare sort `S`.
+    fn write_type_term(&self, id: TermId, buf: &mut String) {
+        match self.view.term(id) {
+            Term::Ref(s) | Term::Ident(s) => buf.push_str(self.view.sym_name(*s)),
+            Term::Fn { functor, pos_args, named_args } => {
+                match self.view.qualified_name(*functor) {
+                    "anthill.prelude.TypeExtractor.Arrow" => {
+                        self.write_arrow_type(named_args, buf)
+                    }
+                    "anthill.prelude.TypeExtractor.NamedTuple" => {
+                        self.write_named_tuple_type(named_args, buf)
+                    }
+                    "anthill.prelude.TypeExtractor.EffectsRows" => {
+                        // A standalone effect-row type renders its braced row.
+                        match self.named_arg(named_args, "effects_expr") {
+                            Some(ee) => self.write_effect_row(ee, buf),
+                            None => buf.push_str("{}"),
+                        }
+                    }
+                    "anthill.prelude.TypeExtractor.Denoted" => {
+                        // A value-in-type (`Modify[c]`'s `c`) — print the carried
+                        // value. The value is an ordinary (non-type) term, so the
+                        // generic writer renders it.
+                        match self.named_arg(named_args, "value") {
+                            Some(v) => self.write_term(v, buf),
+                            None => buf.push('?'),
+                        }
+                    }
+                    "anthill.prelude.TypeExtractor.ExprCarried" => {
+                        // `s.member` — receiver value then `.member`.
+                        if let Some(v) = self.named_arg(named_args, "value") {
+                            self.write_term(v, buf);
+                        }
+                        buf.push('.');
+                        if let Some(m) = self.named_arg(named_args, "member") {
+                            self.write_term(m, buf);
+                        }
+                    }
+                    "anthill.prelude.TypeExtractor.RigidTypeProjection" => {
+                        // `subject.member` — the type-receiver projection (`P.Key`).
+                        if let Some(v) = self.named_arg(named_args, "var") {
+                            self.write_term(v, buf);
+                        }
+                        buf.push('.');
+                        if let Some(m) = self.named_arg(named_args, "member") {
+                            self.write_term(m, buf);
+                        }
+                    }
+                    "anthill.prelude.TypeExtractor.TypeVar" => {
+                        // A type variable prints as the inference var `?name`.
+                        buf.push('?');
+                        if let Some(n) = self.named_arg(named_args, "name") {
+                            self.write_term(n, buf);
+                        }
+                    }
+                    "anthill.prelude.TypeExtractor.Nothing" => buf.push_str("nothing"),
+                    // Any other functor in type context is the parameterized type
+                    // `S[k = v, …]` (WI-361: base sort IS the functor, bindings ARE
+                    // the named args). A no-arg `Fn{S}` is the bare sort `S`.
+                    base => {
+                        buf.push_str(base.rsplit('.').next().unwrap_or(base));
+                        if !pos_args.is_empty() || !named_args.is_empty() {
+                            buf.push('[');
+                            let mut first = true;
+                            for &t in pos_args.iter() {
+                                if !first { buf.push_str(", "); }
+                                first = false;
+                                self.write_type_term(t, buf);
+                            }
+                            for &(sym, t) in named_args.iter() {
+                                if !first { buf.push_str(", "); }
+                                first = false;
+                                buf.push_str(self.view.sym_name(sym));
+                                buf.push_str(" = ");
+                                self.write_type_term(t, buf);
+                            }
+                            buf.push(']');
+                        }
+                    }
+                }
+            }
+            // Vars (`?T`), value-in-type literals, etc. carry no type-specific
+            // surface — the generic term writer renders them.
+            _ => self.write_term(id, buf),
+        }
+    }
+
+    /// WI-173: `arrow(param, result, effects)` → `(<param>) -> <result>` with an
+    /// optional `@ <effects>`. When `param` is itself a `named_tuple` its own
+    /// parenthesised form is used directly (avoids double-wrapping `((a: T)) ->`).
+    fn write_arrow_type(&self, named: &[(Symbol, TermId)], buf: &mut String) {
+        match self.named_arg(named, "param") {
+            Some(p) if self.is_named_tuple_term(p) => self.write_type_term(p, buf),
+            Some(p) => {
+                buf.push('(');
+                self.write_type_term(p, buf);
+                buf.push(')');
+            }
+            None => buf.push_str("()"),
+        }
+        buf.push_str(" -> ");
+        match self.named_arg(named, "result") {
+            Some(r) => self.write_type_term(r, buf),
+            None => buf.push('?'),
+        }
+        // Effects: `effects` is an `EffectsRows` wrapper; render `@ E` for a single
+        // atom, `@ {E1, E2}` for a set, and nothing for the pure (`empty_row`) row.
+        if let Some(e) = self.named_arg(named, "effects") {
+            if let Term::Fn { named_args, .. } = self.view.term(e) {
+                if let Some(ee) = self.named_arg(named_args, "effects_expr") {
+                    let atoms = self.effect_atoms(ee);
+                    if !atoms.is_empty() {
+                        buf.push_str(" @ ");
+                        if atoms.len() == 1 {
+                            buf.push_str(&atoms[0]);
+                        } else {
+                            buf.push('{');
+                            buf.push_str(&atoms.join(", "));
+                            buf.push('}');
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// WI-173: `named_tuple(fields)` → `(<f1>, <f2>, …)`. A positional field
+    /// (name `_N`) prints as the bare type; a named field as `n: T`.
+    fn write_named_tuple_type(&self, named: &[(Symbol, TermId)], buf: &mut String) {
+        buf.push('(');
+        if let Some(fields) = self.named_arg(named, "fields") {
+            if let Some(elems) = self.unwrap_list_spine(fields) {
+                for (i, &elem) in elems.iter().enumerate() {
+                    if i > 0 { buf.push_str(", "); }
+                    self.write_named_tuple_element(elem, buf);
+                }
+            }
+        }
+        buf.push(')');
+    }
+
+    /// One `NamedTupleElement(name, type)` → `n: T`, or bare `T` for a positional
+    /// `_N` field name (the surface tuple form `(A, B)` has no field labels).
+    fn write_named_tuple_element(&self, elem: TermId, buf: &mut String) {
+        let Term::Fn { named_args, .. } = self.view.term(elem) else {
+            self.write_type_term(elem, buf);
+            return;
+        };
+        let name = self.named_arg(named_args, "name");
+        let ty = self.named_arg(named_args, "type");
+        let positional = name
+            .map(|n| self.is_positional_name(n))
+            .unwrap_or(true);
+        if !positional {
+            if let Some(n) = name {
+                self.write_term(n, buf);
+                buf.push_str(": ");
+            }
+        }
+        match ty {
+            Some(t) => self.write_type_term(t, buf),
+            None => buf.push('?'),
+        }
+    }
+
+    /// A positional tuple-field name is `_1`, `_2`, … (the surface `(A, B)` form).
+    fn is_positional_name(&self, name: TermId) -> bool {
+        if let Term::Ref(s) = self.view.term(name) {
+            let n = self.view.sym_name(*s);
+            n.strip_prefix('_').is_some_and(|d| !d.is_empty() && d.bytes().all(|b| b.is_ascii_digit()))
+        } else {
+            false
+        }
+    }
+
+    fn is_named_tuple_term(&self, id: TermId) -> bool {
+        matches!(self.view.term(id),
+            Term::Fn { functor, .. }
+            if self.view.qualified_name(*functor) == "anthill.prelude.TypeExtractor.NamedTuple")
+    }
+
+    /// WI-173: render a whole effect row (the `EffectsRows.effects_expr` tree) as a
+    /// braced surface row `{E1, E2}` / `{}` (used for a standalone effect-row type).
+    fn write_effect_row(&self, ee: TermId, buf: &mut String) {
+        buf.push('{');
+        buf.push_str(&self.effect_atoms(ee).join(", "));
+        buf.push('}');
+    }
+
+    /// WI-173: collect an `EffectExpression` tree's atoms as rendered surface
+    /// strings — `present(L)` → `L`, `absent(L)` → `-L`, `open(tail)` → the tail
+    /// variable, `merge(a, b)` → both, `empty_row` → none. The right-folded
+    /// `merge` chain `build_canonical_effects_rows` produces flattens back to the
+    /// ordered atom list the surface row `{…}` parses from.
+    fn effect_atoms(&self, ee: TermId) -> Vec<String> {
+        let mut out = Vec::new();
+        self.collect_effect_atoms(ee, &mut out);
+        out
+    }
+
+    fn collect_effect_atoms(&self, ee: TermId, out: &mut Vec<String>) {
+        let Term::Fn { functor, named_args, .. } = self.view.term(ee) else {
+            return;
+        };
+        match self.view.qualified_name(*functor) {
+            "anthill.prelude.EffectExpression.empty_row" => {}
+            "anthill.prelude.EffectExpression.present" => {
+                if let Some(l) = self.named_arg(named_args, "label") {
+                    let mut s = String::new();
+                    self.write_type_term(l, &mut s);
+                    out.push(s);
+                }
+            }
+            "anthill.prelude.EffectExpression.absent" => {
+                if let Some(l) = self.named_arg(named_args, "label") {
+                    let mut s = String::from("-");
+                    self.write_type_term(l, &mut s);
+                    out.push(s);
+                }
+            }
+            "anthill.prelude.EffectExpression.open" => {
+                if let Some(tail) = self.named_arg(named_args, "tail") {
+                    let mut s = String::new();
+                    self.write_term(tail, &mut s);
+                    out.push(s);
+                }
+            }
+            "anthill.prelude.EffectExpression.merge" => {
+                if let Some(l) = self.named_arg(named_args, "left") {
+                    self.collect_effect_atoms(l, out);
+                }
+                if let Some(r) = self.named_arg(named_args, "right") {
+                    self.collect_effect_atoms(r, out);
+                }
+            }
+            _ => {}
         }
     }
 

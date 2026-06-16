@@ -17,6 +17,9 @@ mod wi492_transitive_provision_test;
 #[path = "include/wi491_covariant_return_test.rs"]
 mod wi491_covariant_return_test;
 
+#[path = "include/wi173_type_print_test.rs"]
+mod wi173_type_print_test;
+
 #[path = "include/wi279_dot_dispatch_test.rs"]
 mod wi279_dot_dispatch_test;
 

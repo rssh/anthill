@@ -3847,6 +3847,9 @@ impl TermSource for KnowledgeBase {
     fn sym_name(&self, sym: Symbol) -> &str {
         self.symbols.name(sym)
     }
+    fn qualified_name(&self, sym: Symbol) -> &str {
+        self.qualified_name_of(sym)
+    }
 }
 
 #[cfg(test)]

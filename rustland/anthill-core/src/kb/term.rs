@@ -427,4 +427,13 @@ mod tests {
 pub trait TermSource {
     fn term(&self, id: TermId) -> &Term;
     fn sym_name(&self, sym: Symbol) -> &str;
+    /// Fully-qualified name of a symbol — for collision-free functor matching
+    /// (WI-173: distinguishing the type functor
+    /// `anthill.prelude.TypeExtractor.Arrow` / `…EffectExpression.merge` from a
+    /// user sort/entity that happens to share the short name `Arrow`/`merge`).
+    /// Defaults to the short name for views with no qualified-name table
+    /// (e.g. parse-side `ParsedFile`), which simply keeps the generic Fn form.
+    fn qualified_name(&self, sym: Symbol) -> &str {
+        self.sym_name(sym)
+    }
 }
