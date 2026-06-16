@@ -16283,6 +16283,27 @@ fn abstracting_return_error(
 /// `other`. The walk is ITERATIVE (an explicit stack) — op bodies nest `else if`
 /// arbitrarily deep (cf. wi285_unrec), so host recursion here would risk the very
 /// stack overflow the iterative typer avoids.
+///
+/// WI-480 (DESTRUCTURING-pattern laundering, sibling of WI-468): a destructuring
+/// `let` binder (`let (s, _): (Spec, …) = (concreteProvider, …) ; s`,
+/// `let boxed(s): Box = boxed(concreteProvider) ; s`) launders the same way — the
+/// component var `s` is bound to its laundered annotation-component type and slips
+/// `same_symbol`. WI-468's `let_bound_var_name` only saw a single `Pattern::Var`, so
+/// these were never tracked. The see-through is generalised to a SELECTOR PATH: a
+/// destructuring binder records each destructured name → `(binding value node,
+/// path)`, where the path is the tuple-position / constructor-field selectors from
+/// the value down to that name. The walk threads the path — a literal tuple /
+/// constructor is projected STRUCTURALLY to the concrete element node (chased on as
+/// WI-468), and an opaque value (a call result) or an input parameter is projected
+/// at the TYPE level (the value's own component type). In every case the UNCHANGED
+/// [`abstracting_return_error`] is re-applied to the seen-through component type, so
+/// its `same_symbol` short-circuit remains the line between a laundered concrete
+/// upcast (flagged: the value's component is a concrete provider widened at the let,
+/// exactly like `-> Spec = concreteProvider`) and an interface-rooted abstract
+/// (spared: an input-rooted component, or one a producer's signature already exposes
+/// as the bare spec — `let (s,_) = mkBare(m)` with `mkBare -> (Spec, …)`, which is
+/// consistent with the unflagged producer; tuple-component escapes at the producer
+/// are a separate, producer-side concern).
 fn branch_leaf_abstracting_return_error(
     kb: &KnowledgeBase,
     body: &Rc<NodeOccurrence>,
@@ -16297,57 +16318,91 @@ fn branch_leaf_abstracting_return_error(
     ) {
         return None;
     }
-    // Each entry pairs a tail node with the let-scope (name -> value node) in force.
-    let mut stack: Vec<(Rc<NodeOccurrence>, Rc<LeafScope>)> =
-        vec![(Rc::clone(body), Rc::new(LeafScope::Empty))];
+    // Each entry pairs a tail node with the let-scope in force and the still-to-apply
+    // SELECTOR PATH (empty for a whole value; non-empty for a destructured component).
+    let mut stack: Vec<(Rc<NodeOccurrence>, Rc<LeafScope>, Vec<LeafSelector>)> =
+        vec![(Rc::clone(body), Rc::new(LeafScope::Empty), Vec::new())];
     // Backstop: a malformed binding cycle (not reachable in well-typed scope, but
     // the leaf see-through follows value nodes) must terminate rather than spin.
     let mut hops = 0usize;
     const MAX_LEAF_HOPS: usize = 100_000;
-    while let Some((node, scope)) = stack.pop() {
+    while let Some((node, scope, path)) = stack.pop() {
         match node.as_expr() {
             Some(Expr::If { then_branch, else_branch, .. }) => {
-                stack.push((Rc::clone(then_branch), Rc::clone(&scope)));
-                stack.push((Rc::clone(else_branch), Rc::clone(&scope)));
+                stack.push((Rc::clone(then_branch), Rc::clone(&scope), path.clone()));
+                stack.push((Rc::clone(else_branch), Rc::clone(&scope), path));
             }
             Some(Expr::Match { branches, .. }) => {
                 for b in branches {
-                    stack.push((Rc::clone(&b.body), Rc::clone(&scope)));
+                    stack.push((Rc::clone(&b.body), Rc::clone(&scope), path.clone()));
                 }
             }
             Some(Expr::Let { pattern, value, body, .. }) => {
-                // Record the binding (the value resolves in the scope BEFORE this
-                // let), then descend into the BODY only — a let value is not itself
-                // a tail position; it escapes solely via a returned reference.
-                let body_scope = match let_bound_var_name(pattern) {
-                    Some(name) => Rc::new(LeafScope::Bind {
+                // Record each binding the pattern introduces (the value resolves in
+                // the scope BEFORE this let), then descend into the BODY only — a let
+                // value is not itself a tail position; it escapes solely via a
+                // returned reference. A destructuring pattern yields one binding per
+                // destructured name, each with its selector path into `value`.
+                let mut bindings = Vec::new();
+                destructure_bindings(pattern, &[], &mut bindings);
+                let mut body_scope = Rc::clone(&scope);
+                for (name, bpath) in bindings {
+                    body_scope = Rc::new(LeafScope::Bind {
                         name,
-                        value: Rc::clone(value),
-                        parent: Rc::clone(&scope),
-                    }),
-                    None => Rc::clone(&scope),
-                };
-                stack.push((Rc::clone(body), body_scope));
+                        base: Rc::clone(value),
+                        path: bpath,
+                        parent: body_scope,
+                    });
+                }
+                stack.push((Rc::clone(body), body_scope, path));
             }
-            // A tail leaf.
+            // A literal aggregate WITH a remaining selector path: project the
+            // component node STRUCTURALLY and chase it (so `(concreteProvider, …)`
+            // sees the element's own stamped type, and an input-rooted element
+            // `(param, …)` short-circuits on `same_symbol`).
+            Some(Expr::TupleLit { .. } | Expr::Constructor { .. } | Expr::ConstructorWithin { .. })
+                if !path.is_empty() =>
+            {
+                if let Some(child) = project_node_component(kb, &node, &path[0]) {
+                    stack.push((child, scope, path[1..].to_vec()));
+                } else if let Some(e) = gate_component_type(kb, &node, &path, ret_ty, op_sym) {
+                    // A structural mismatch (pattern/value arity or named/positional
+                    // form differs) — fall back to projecting the component TYPE.
+                    return Some(e);
+                }
+            }
+            // A tail leaf (a bare value reference, an opaque call, a literal value).
             _ => {
-                // WI-468: see through a returned let-bound variable to its value
-                // node (carrying the value's own synthesized type), resolving in the
-                // scope where it was bound. A free var (param / outer binder) is not
-                // in scope here → fall through to its own stamped type.
+                // WI-468/480: see through a returned let-bound variable to its
+                // binding (value node + path), resolving in the scope where it was
+                // bound. A free var (param / outer binder) is not in scope here →
+                // fall through to its own stamped type (path empty) or a TYPE
+                // projection of it (path non-empty, an input-rooted component).
                 if let Some(name) = leaf_var_ref(&node) {
-                    if let Some((value, value_scope)) = scope.resolve(kb, name) {
+                    if let Some((base, base_path, base_scope)) = scope.resolve(kb, name) {
                         hops += 1;
                         if hops <= MAX_LEAF_HOPS {
-                            stack.push((value, value_scope));
+                            // The variable denotes `base` projected by `base_path`;
+                            // any outer projection applies on top of that.
+                            let mut combined = base_path;
+                            combined.extend(path);
+                            stack.push((base, base_scope, combined));
                             continue;
                         }
                     }
                 }
-                if let Some(leaf_ty) = node.inferred_type() {
-                    if let Some(e) = abstracting_return_error(kb, &leaf_ty, ret_ty, op_sym) {
-                        return Some(e);
+                if path.is_empty() {
+                    // The whole value is returned: re-apply the gate to its own type.
+                    if let Some(leaf_ty) = node.inferred_type() {
+                        if let Some(e) = abstracting_return_error(kb, &leaf_ty, ret_ty, op_sym) {
+                            return Some(e);
+                        }
                     }
+                } else if let Some(e) = gate_component_type(kb, &node, &path, ret_ty, op_sym) {
+                    // An opaque value (a call) or an input parameter with a remaining
+                    // projection — no element node to see through, so gate the
+                    // component TYPE (the value's own, NOT the laundering annotation).
+                    return Some(e);
                 }
             }
         }
@@ -16355,33 +16410,59 @@ fn branch_leaf_abstracting_return_error(
     None
 }
 
-/// WI-468: the let-binding scope threaded through
+/// WI-480: re-apply [`abstracting_return_error`] to a node's component TYPE — its
+/// stamped `inferred_type` projected along `path` (tuple positions / constructor
+/// fields). Used where no structural element node exists to see through: an opaque
+/// call result, or an input parameter. Yields `None` when the type can't be
+/// projected (a non-tuple/entity carrier) — conservatively unflagged.
+fn gate_component_type(
+    kb: &KnowledgeBase,
+    node: &Rc<NodeOccurrence>,
+    path: &[LeafSelector],
+    ret_ty: &Value,
+    op_sym: Symbol,
+) -> Option<TypeError> {
+    let mut ty = node.inferred_type()?;
+    for sel in path {
+        ty = project_type_component(kb, &ty, sel)?;
+    }
+    abstracting_return_error(kb, &ty, ret_ty, op_sym)
+}
+
+/// WI-468/480: the let-binding scope threaded through
 /// [`branch_leaf_abstracting_return_error`]'s leaf walk — an `Rc`-shared cons list
-/// mapping a let-bound variable to the binding's VALUE node. Immutable so each
-/// branch push is O(1). A binding's `parent` is the scope in force BEFORE that
-/// `let`, which is also the scope its value resolves in — so a reference to a
-/// rebound name sees the value it was actually bound to, not a later shadow.
+/// mapping a let-bound variable to its binding's VALUE node plus the SELECTOR PATH
+/// from that value down to the variable (empty for a single `Pattern::Var`,
+/// non-empty for a destructured component — WI-480). Immutable so each branch push
+/// is O(1). A binding's `parent` is the scope in force BEFORE that `let`, which is
+/// also the scope its value resolves in — so a reference to a rebound name sees the
+/// value it was actually bound to, not a later shadow.
 enum LeafScope {
     Empty,
-    Bind { name: Symbol, value: Rc<NodeOccurrence>, parent: Rc<LeafScope> },
+    Bind {
+        name: Symbol,
+        base: Rc<NodeOccurrence>,
+        path: Vec<LeafSelector>,
+        parent: Rc<LeafScope>,
+    },
 }
 
 impl LeafScope {
-    /// Resolve a tail-position variable to `(value node, the scope that value
-    /// resolves in)`. `None` for a free variable (a parameter or outer binder),
-    /// whose own stamped type is then read directly.
+    /// Resolve a tail-position variable to `(base value node, selector path, the
+    /// scope that base resolves in)`. `None` for a free variable (a parameter or
+    /// outer binder), whose own stamped type is then read directly.
     fn resolve(
         self: &Rc<Self>,
         kb: &KnowledgeBase,
         name: Symbol,
-    ) -> Option<(Rc<NodeOccurrence>, Rc<LeafScope>)> {
+    ) -> Option<(Rc<NodeOccurrence>, Vec<LeafSelector>, Rc<LeafScope>)> {
         let mut cur = self;
         loop {
             match cur.as_ref() {
                 LeafScope::Empty => return None,
-                LeafScope::Bind { name: n, value, parent } => {
+                LeafScope::Bind { name: n, base, path, parent } => {
                     if same_symbol(kb, *n, name) {
-                        return Some((Rc::clone(value), Rc::clone(parent)));
+                        return Some((Rc::clone(base), path.clone(), Rc::clone(parent)));
                     }
                     cur = parent;
                 }
@@ -16390,13 +16471,144 @@ impl LeafScope {
     }
 }
 
-/// The variable a `let` pattern binds, for a plain `Pattern::Var` binder (the only
-/// form that introduces a single name the leaf walk can see through). A
-/// destructuring pattern binds no single name and yields `None`.
-fn let_bound_var_name(pattern: &Rc<NodeOccurrence>) -> Option<Symbol> {
+/// WI-480: a selector into a destructured value — a tuple position / constructor
+/// positional field (`Pos`) or a named tuple element / constructor field (`Named`).
+#[derive(Clone)]
+enum LeafSelector {
+    Pos(usize),
+    Named(Symbol),
+}
+
+/// WI-480: decompose a `let` pattern into the (name, selector-path) bindings it
+/// introduces, recursively. A `Pattern::Var` is a single binding at the current
+/// path; a tuple / constructor pattern recurses into each sub-pattern with the
+/// position / field selector appended. Wildcard / literal patterns bind nothing.
+fn destructure_bindings(
+    pattern: &Rc<NodeOccurrence>,
+    prefix: &[LeafSelector],
+    out: &mut Vec<(Symbol, Vec<LeafSelector>)>,
+) {
     match pattern.as_pattern() {
-        Some(Pattern::Var { name, .. }) => Some(*name),
+        Some(Pattern::Var { name, .. }) => out.push((*name, prefix.to_vec())),
+        Some(Pattern::Tuple { positional, named }) => {
+            for (i, sub) in positional.iter().enumerate() {
+                let mut p = prefix.to_vec();
+                p.push(LeafSelector::Pos(i));
+                destructure_bindings(sub, &p, out);
+            }
+            for (sym, sub) in named {
+                let mut p = prefix.to_vec();
+                p.push(LeafSelector::Named(*sym));
+                destructure_bindings(sub, &p, out);
+            }
+        }
+        Some(Pattern::Constructor { pos_args, named_args, .. }) => {
+            for (i, sub) in pos_args.iter().enumerate() {
+                let mut p = prefix.to_vec();
+                p.push(LeafSelector::Pos(i));
+                destructure_bindings(sub, &p, out);
+            }
+            for (sym, sub) in named_args {
+                let mut p = prefix.to_vec();
+                p.push(LeafSelector::Named(*sym));
+                destructure_bindings(sub, &p, out);
+            }
+        }
+        _ => {} // Wildcard, Literal — bind nothing
+    }
+}
+
+/// WI-480: structurally project one selector from a LITERAL aggregate value node
+/// (tuple / constructor). A constructor maps `Pos`↔`Named` through the entity's
+/// declared field order, so a positional pattern over a named value (or vice versa)
+/// still sees through. `None` when the selector doesn't resolve (caller falls back
+/// to a TYPE projection).
+fn project_node_component(
+    kb: &KnowledgeBase,
+    node: &Rc<NodeOccurrence>,
+    sel: &LeafSelector,
+) -> Option<Rc<NodeOccurrence>> {
+    match node.as_expr()? {
+        Expr::TupleLit { positional, named } => match sel {
+            LeafSelector::Pos(i) => positional.get(*i).map(Rc::clone),
+            LeafSelector::Named(s) => named
+                .iter()
+                .find(|(k, _)| same_symbol(kb, *k, *s))
+                .map(|(_, v)| Rc::clone(v)),
+        },
+        Expr::Constructor { name, pos_args, named_args }
+        | Expr::ConstructorWithin { name, pos_args, named_args, .. } => {
+            project_constructor_arg(kb, *name, pos_args, named_args, sel)
+        }
         _ => None,
+    }
+}
+
+/// One constructor argument by selector, bridging positional↔named via the entity's
+/// declared field order. A surface tuple literal `(a, b)` is a `TupleLiteral`
+/// pseudo-constructor with NO registered field types and `_1`/`_2`-keyed named args
+/// (see `convert.rs` `push_tuple_literal`), so a `Pos(i)` selector over it maps to
+/// the synthesized `_{i+1}` field name — letting a tuple element that is itself a
+/// laundered let-var (`let x: Spec = m ; let (s,_) = (x, …) ; s`) be chased
+/// structurally to its value, which a TYPE projection (reading `x`'s laundered
+/// stamped type) would miss.
+fn project_constructor_arg(
+    kb: &KnowledgeBase,
+    ctor: Symbol,
+    pos_args: &[Rc<NodeOccurrence>],
+    named_args: &[(Symbol, Rc<NodeOccurrence>)],
+    sel: &LeafSelector,
+) -> Option<Rc<NodeOccurrence>> {
+    match sel {
+        LeafSelector::Pos(i) => {
+            if let Some(a) = pos_args.get(*i) {
+                return Some(Rc::clone(a));
+            }
+            // No positional arg at `i`: map index → field name and look up the named
+            // arg. A real entity uses its declared field order; a tuple-literal
+            // pseudo-constructor (no registered fields) uses the `_{i+1}` tuple key.
+            match kb.entity_field_types(ctor).and_then(|f| f.get(*i)) {
+                Some((fname, _)) => named_args
+                    .iter()
+                    .find(|(k, _)| same_symbol(kb, *k, *fname))
+                    .map(|(_, v)| Rc::clone(v)),
+                None => {
+                    let want = format!("_{}", *i + 1);
+                    named_args
+                        .iter()
+                        .find(|(k, _)| kb.resolve_sym(*k) == want)
+                        .map(|(_, v)| Rc::clone(v))
+                }
+            }
+        }
+        LeafSelector::Named(s) => {
+            if let Some((_, a)) = named_args.iter().find(|(k, _)| same_symbol(kb, *k, *s)) {
+                return Some(Rc::clone(a));
+            }
+            let idx = kb
+                .entity_field_types(ctor)?
+                .iter()
+                .position(|(k, _)| same_symbol(kb, *k, *s))?;
+            pos_args.get(idx).map(Rc::clone)
+        }
+    }
+}
+
+/// WI-480: project one selector from a tuple / entity TYPE (carrier-agnostic). Used
+/// when no structural value node exists (an opaque call result, an input param). A
+/// tuple type indexes its named-tuple components in field order (matching how
+/// [`extend_env_from_pattern`] binds the destructured var's type); a `Named`
+/// selector matches by field name. `None` for a non-tuple carrier.
+fn project_type_component(kb: &KnowledgeBase, ty: &Value, sel: &LeafSelector) -> Option<Value> {
+    match sel {
+        LeafSelector::Pos(i) => named_tuple_field_types(kb, ty)?.get(*i).cloned(),
+        LeafSelector::Named(s) => match extract_type(kb, ty) {
+            TypeExtractor::NamedTuple(fields) => fields
+                .into_iter()
+                .find(|(k, _)| same_symbol(kb, *k, *s))
+                .map(|(_, v)| v),
+            _ => None,
+        },
     }
 }
 
