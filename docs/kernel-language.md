@@ -69,8 +69,8 @@ All keywords are **context-dependent** (soft), following the Scala 3 approach: a
 | Context | Soft keywords |
 |---------|--------------|
 | Top level / namespace body | `namespace`, `sort`, `rule`, `operation`, `requires`, `entity`, `fact`, `constraint` |
-| Namespace header | `import`, `export`, `end` |
-| Visibility (prefix) | `internal`, `export`, `public` |
+| Namespace header | `import`, `end` |
+| Visibility (prefix) | `internal`, `public` |
 | Operation | `requires`, `ensures`, `effects` |
 | Rule | `:-` (operator, not keyword) |
 | Infix operators (word) | `or`, `and`, `mod`, `div` |
@@ -199,8 +199,6 @@ sort anthill.prelude.Timestamp {
 
 -- List: a parametric sort (T is the unspecified sort parameter)
 sort anthill.prelude.List
-  export List, nil, cons, length
-
   sort T = ?                                         -- type parameter (unspecified)
   entity nil                                         -- empty list
   entity cons(head: T, tail: List)                   -- cons cell
@@ -212,8 +210,6 @@ end
 
 -- Option: a parametric sort
 sort anthill.prelude.Option
-  export Option, none, some
-
   sort T = ?                                         -- type parameter (unspecified)
   entity none                                        -- absent
   entity some(value: T)                              -- present
@@ -239,8 +235,6 @@ load.
 ```
 -- Eq: equality
 sort anthill.prelude.Eq
-  export eq, neq
-
   sort T = ?
   operation {
     eq(a: T, b: T) -> Bool          -- =
@@ -251,8 +245,6 @@ end
 
 -- Ordered: total ordering (requires Eq)
 sort anthill.prelude.Ordered
-  export gt, gte, lt, lte
-
   sort T = ?
   requires Eq[T]
 
@@ -273,8 +265,6 @@ end
 
 -- Numeric: basic arithmetic (requires Ordered)
 sort anthill.prelude.Numeric
-  export add, sub, mul, zero-val
-
   sort T = ?
   requires Ordered[T]
 
@@ -496,7 +486,6 @@ Namespace ::= DescriptionBlock*
               Body[NamespaceContent*]
 
 Import ::= 'import' ImportPath
-Export ::= 'export' NameList
 ImportPath ::= Name                               -- import a specific name
              | Name '.' '{' NameList '}'           -- selective: specific names from a namespace
              | Name '.' '*'                        -- wildcard: everything from a namespace
@@ -559,17 +548,16 @@ default**; the modifiers adjust that (full algorithm in §8.6):
 ```
 Visibility ::= 'internal'    -- hidden from outside the declaring scope
              | 'public'      -- visible everywhere, even without import
-             | 'export'      -- DEPRECATED: no effect (visible by default)
 ```
 
-A name is visible to importers and requirers unless marked `internal`. The
-standalone `export` statement is likewise a no-op, retained only for backward
-compatibility. See §8.6 for the complete name-resolution algorithm.
+A name is visible to importers and requirers unless marked `internal`. See §8.6
+for the complete name-resolution algorithm. (The `export` statement and `export`
+visibility prefix, formerly no-ops, were removed in WI-291.)
 
 **Namespace content** — what can appear inside a namespace:
 
 ```
-NamespaceContent ::= Import | Export               -- statements can appear anywhere in the body
+NamespaceContent ::= Import                        -- statements can appear anywhere in the body
                    | Sort | Rule | Operation      -- Sort: sorts-with-body or type aliases (not unspecified)
                    | RequiresDecl                -- sort-level constraint (see §5.2)
                    | Entity                      -- sugar (desugars to single-constructor Sort, see §6.3)
@@ -600,7 +588,7 @@ FieldList   ::= Field (',' Field)*
 Field       ::= Name ':' Type
 ```
 
-`SortContent` mirrors `NamespaceContent`: imports and exports are ordinary statements that can appear anywhere in the body, interleaved with sorts, entities, rules, operations, sugar forms, descriptions, or even nested namespaces.
+`SortContent` mirrors `NamespaceContent`: imports are ordinary statements that can appear anywhere in the body, interleaved with sorts, entities, rules, operations, sugar forms, descriptions, or even nested namespaces.
 
 **Unspecified sort** (`sort Name = ?`) — declares that a type exists without specifying its representation. Unspecified sorts appear inside sort bodies, where they serve as **type parameters** — their carrier is provided later by an implementation or by inline instantiation.
 
@@ -749,7 +737,7 @@ The forall-quantification covers every free SMT variable of the lemma (the `var_
 
 Rules can optionally be **named** (e.g., `non_negative:`) for reference in error messages, retractions, and documentation. Named rules with positive heads are also the citation handles for `using <Name>`.
 
-**Rule head functors are scoped definitions.** The functor (predicate name) of a rule's head term is defined as a named symbol in the enclosing scope, just like sorts, entities, and operations. Multiple rules with the same head functor in the same scope share a single symbol. This means rule predicates participate in the namespace import/export system — they can be exported from a namespace and imported elsewhere. For example, `refines` defined inside `anthill.reflect.typing` has the qualified name `anthill.reflect.typing.refines` and is visible from other scopes via import.
+**Rule head functors are scoped definitions.** The functor (predicate name) of a rule's head term is defined as a named symbol in the enclosing scope, just like sorts, entities, and operations. Multiple rules with the same head functor in the same scope share a single symbol. This means rule predicates participate in the namespace import system — they are visible by default and can be imported elsewhere. For example, `refines` defined inside `anthill.reflect.typing` has the qualified name `anthill.reflect.typing.refines` and is visible from other scopes via import.
 
 ### 5.4 Operation
 
@@ -1237,7 +1225,6 @@ Every fact in the KB carries metadata. `Meta` is an **entity** in the `anthill.p
 ```
 namespace anthill.prelude.Meta
   import anthill.prelude.Option
-  export Meta, Trust, ProofResult
 
   -- Meta is an open-keyed entity: it has well-known fields,
   -- but any Name : Term pair is allowed as an entry.
@@ -1450,8 +1437,9 @@ sort boundaries, to importers and requirers. The modifiers adjust this:
 - **`internal`** — hides the name from cross-scope resolution (it remains
   resolvable within its own scope). This is the only hide gate.
 - **`public`** — visible everywhere, including without an `import`.
-- **`export`** — accepted for backward compatibility but has **no effect**
-  (a name is already visible by default). It is being removed.
+
+The former `export` statement and `export` visibility prefix (no-ops under this
+model) were removed in WI-291.
 
 **`resolve_in_scope(name, scope)`** — the resolution order:
 
@@ -1605,8 +1593,6 @@ A complete algebra with type parameters, operations, contracts, and laws. Becaus
 
 ```
 sort banking
-  export Account, Money, deposit, withdraw, balance
-
   sort Money = ?                                     -- type parameter (unspecified)
   requires Numeric[T = Money]                        -- gives us +, -, >, >=, = for Money
 
@@ -1640,8 +1626,6 @@ With infix sugar (once defined), the same algebra reads more naturally:
 
 ```
 sort banking
-  export Account, Money, deposit, withdraw, balance
-
   sort Money = ?
   requires Numeric[T = Money]
 
@@ -1672,8 +1656,6 @@ Abstract algebra with sort variables, instantiated by different implementations.
 
 ```
 sort linear_algebra
-  export Scalar, Vector, add, scale, dot, dim
-
   sort Scalar = ?                                    -- type parameter (unspecified)
   sort Vector = ?                                    -- type parameter (unspecified)
 
@@ -1732,7 +1714,6 @@ fact Implementation("linear_algebra",
 ```
 namespace finance
   import banking.{Account, Money}
-  export risk, audit
 
   namespace risk {
     sort RiskLevel {                              -- defined sort (not unspecified)
@@ -1819,7 +1800,6 @@ Namespace   ::= DescriptionBlock*
                 Body[NamespaceContent*]
 
 Import      ::= 'import' ImportPath
-Export      ::= 'export' NameList
 ImportPath  ::= Name                                           -- import a name
               | Name '.' '{' NameList '}'                      -- selective import
               | Name '.' '*'                                   -- wildcard import
@@ -1828,7 +1808,7 @@ SortBinding ::= Name ['=' Type]                 -- without '= Type': punning (Eq
               | Type                            -- positional: next unfilled param in declaration order (§5.2)
               | VariableTerm                    -- variable binding: Modify[?], Modify[?r]
 
-NamespaceContent ::= Import | Export
+NamespaceContent ::= Import
                    | Sort | Rule | Operation
                    | RequiresDecl                 -- sort-level constraint
                    | Entity                       -- sugar (§6.3)
@@ -1837,7 +1817,7 @@ NamespaceContent ::= Import | Export
                    | Describe                     -- description (§4.1)
                    | Namespace
 
-Visibility  ::= 'internal' | 'export' | 'public'
+Visibility  ::= 'internal' | 'public'
 
 Sort        ::= DescriptionBlock*
                   [Visibility] 'sort' Name '=' VariableTerm        -- unspecified (only in SortContent)
@@ -1854,7 +1834,7 @@ Sort        ::= DescriptionBlock*
 -- as type parameters. Type aliases (second form) may appear in sort or namespace bodies.
 -- Namespaces contain sorts-with-body and type aliases (not unspecified sorts).
 
-SortContent ::= Import | Export
+SortContent ::= Import
               | Sort | Entity | Operation | Rule
               | RequiresDecl
               | Fact | Constraint | OperationBlock | RuleBlock

@@ -34,7 +34,6 @@ fn induction_with_base_and_step_proved_combines_to_proved() {
     if !z3_available() { return; }
     let src = r#"
         namespace test.induction.ok
-          export ind_ok, base_violation, step_violation
           entity Bound(lo: Int64, hi: Int64)
           fact Bound(lo: 0, hi: 10)
 
@@ -80,7 +79,6 @@ fn induction_with_failing_step_disproves() {
     // Step is satisfiable — the obligation has a counterexample.
     let src = r#"
         namespace test.induction.fail
-          export ind_bad, base_unsat, step_sat
           entity Cfg(scale: Int64)
           fact Cfg(scale: 5)
 
@@ -120,7 +118,6 @@ fn induction_dispatches_three_positional_cases() {
     if !z3_available() { return; }
     let src = r#"
         namespace test.induction.multi
-          export ind_multi, c1, c2, c3
           entity Cfg(scale: Int64)
           fact Cfg(scale: 5)
 

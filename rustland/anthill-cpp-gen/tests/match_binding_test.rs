@@ -16,7 +16,6 @@ fn option_some_binding_lowers_to_value_iife() {
     let source = r#"
         namespace test.mb_opt
           import anthill.prelude.{Int64, Option}
-          export Calc
           sort Calc
             operation unwrap(o: Option[T = Int64]) -> Int64 =
               match o
@@ -53,7 +52,6 @@ fn variant_constructor_pattern_binds_fields() {
     let source = r#"
         namespace test.mb_var
           import anthill.prelude.{Int64}
-          export Shape, Circle, Square, Calc
           enum Shape
             entity Circle(radius: Int64)
             entity Square(side: Int64)
@@ -91,7 +89,6 @@ fn nested_let_inside_branch_body_works() {
     let source = r#"
         namespace test.mb_nested
           import anthill.prelude.{Int64, Option}
-          export Calc
           sort Calc
             operation double_or_zero(o: Option[T = Int64]) -> Int64 =
               match o
@@ -126,7 +123,6 @@ fn wildcard_branch_after_constructor_works() {
     let source = r#"
         namespace test.mb_wild
           import anthill.prelude.{Int64, Option}
-          export Calc
           sort Calc
             operation safe(o: Option[T = Int64]) -> Int64 =
               match o

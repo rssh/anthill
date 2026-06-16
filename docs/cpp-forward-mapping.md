@@ -69,7 +69,7 @@ namespace anthill.prelude    →   namespace anthill::prelude { ... }
 namespace banking            →   namespace banking { ... }
 ```
 
-Names are lowercased; dots become C++17 nested-namespace syntax. `export`-prefixed items have no extra decoration (everything in a namespace is accessible by qualified name); `internal` items go inside an unnamed `namespace { ... }` block.
+Names are lowercased; dots become C++17 nested-namespace syntax. Default-visible items have no extra decoration (everything in a namespace is accessible by qualified name); `internal` items go inside an unnamed `namespace { ... }` block.
 
 ### 3.2 Sort with operations → traits-class template
 

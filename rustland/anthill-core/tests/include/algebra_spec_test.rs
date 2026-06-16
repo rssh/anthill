@@ -29,7 +29,6 @@ fn load_with(extra: &str) -> KnowledgeBase {
 fn ring_spec_loads_and_resolves() {
     let kb = load_with(r#"
         namespace test.algebra.ring_smoke
-          export Marker
           rule Marker(?x) :- ?x = 1
         end
     "#);
@@ -52,7 +51,6 @@ fn ring_spec_loads_and_resolves() {
 fn vector_space_spec_loads_and_resolves() {
     let kb = load_with(r#"
         namespace test.algebra.vs_smoke
-          export Marker
           rule Marker(?x) :- ?x = 1
         end
     "#);
@@ -79,7 +77,6 @@ fn float_provides_ring_and_vec3_provides_vector_space() {
     // the rules_by_functor index.
     let kb = load_with(r#"
         namespace test.algebra.satisfaction
-          export Marker
           rule Marker(?x) :- ?x = 1
         end
     "#);

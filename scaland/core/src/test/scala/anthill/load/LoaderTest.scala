@@ -129,7 +129,6 @@ class LoaderTest extends munit.FunSuite:
     val ns = Namespace(
       name = nsName,
       imports = IndexedSeq.empty,
-      exports = IndexedSeq.empty,
       items = IndexedSeq(Item.FactItem(Fact(factTerm, None, emptySpan))),
       span = emptySpan
     )
@@ -166,7 +165,6 @@ class LoaderTest extends munit.FunSuite:
       name = natName,
       descriptions = IndexedSeq.empty,
       imports = IndexedSeq.empty,
-      exports = IndexedSeq.empty,
       items = IndexedSeq(Item.EntityItem(zeroEntity)),
       meta = None,
       span = emptySpan
@@ -217,9 +215,9 @@ class LoaderTest extends munit.FunSuite:
     val tagsField = FieldDecl(symbols.intern("tags"), TypeExpr.Simple(Name.simple(symbols.intern("List"), emptySpan)))
     val taskEntity = Entity(None, taskName, IndexedSeq(idField, tagsField), None, emptySpan)
     val taskSortName = Name.simple(symbols.intern("TaskSort"), emptySpan)
-    val taskSort = SortWithBody(None, taskSortName, IndexedSeq.empty, IndexedSeq.empty, IndexedSeq.empty,
+    val taskSort = SortWithBody(None, taskSortName, IndexedSeq.empty, IndexedSeq.empty,
       IndexedSeq(Item.EntityItem(taskEntity)), None, emptySpan)
-    val ns = Namespace(testNs, IndexedSeq.empty, IndexedSeq.empty,
+    val ns = Namespace(testNs, IndexedSeq.empty,
       IndexedSeq(Item.SortWithBodyItem(taskSort)), emptySpan)
 
     // Build the ListLiteral term
@@ -264,7 +262,7 @@ class LoaderTest extends munit.FunSuite:
 
     val redEntity = Entity(None, redName, IndexedSeq.empty, None, emptySpan)
     val blueEntity = Entity(None, blueName, IndexedSeq.empty, None, emptySpan)
-    val colorSort = SortWithBody(None, colorName, IndexedSeq.empty, IndexedSeq.empty, IndexedSeq.empty,
+    val colorSort = SortWithBody(None, colorName, IndexedSeq.empty, IndexedSeq.empty,
       IndexedSeq(Item.EntityItem(redEntity), Item.EntityItem(blueEntity)), None, emptySpan)
 
     val items = ArrayBuffer[Item](Item.SortWithBodyItem(colorSort))

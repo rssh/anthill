@@ -49,7 +49,6 @@ fn dot_method_zero_arg_dispatches_via_param_receiver() {
     // declared on Box → dispatch synthesizes `peek(b)` → Int64. No import.
     let src = r#"
         namespace wi279.method
-          export Box
           sort Box
             entity box(value: Int64)
             operation peek(b: Box) -> Int64 = 42
@@ -69,7 +68,6 @@ fn dot_method_with_args_dispatches() {
     // arg, the call's own args follow.
     let src = r#"
         namespace wi279.method_args
-          export Box
           sort Box
             entity box(value: Int64)
             operation add_to(b: Box, k: Int64) -> Int64 = k
@@ -90,7 +88,6 @@ fn dot_method_dispatches_with_no_import_across_sorts() {
     // field of `Holder`'s constructor via the match binding.
     let src = r#"
         namespace wi279.cross
-          export Box, Holder
           sort Box
             entity box(value: Int64)
             operation peek(b: Box) -> Int64 = 7
@@ -116,7 +113,6 @@ fn dot_method_chaining_dispatches_each_level() {
     // the (rewritten) receiver's sort.
     let src = r#"
         namespace wi279.chain
-          export Box
           sort Box
             entity box(value: Int64)
             operation bump(b: Box) -> Box = b
@@ -137,7 +133,6 @@ fn dot_method_generic_type_param_infers_through_dispatch() {
     // so the call's return type is Int64 and the body type-checks.
     let src = r#"
         namespace wi279.generic
-          export Box
           sort Box
             entity box(value: Int64)
             operation idfn[U](b: Box, u: U) -> U = u
@@ -158,7 +153,6 @@ fn dot_let_bound_receiver_dispatches() {
     // `let x = b` binds x: Box; `?x.peek()` resolves x and dispatches.
     let src = r#"
         namespace wi279.letbound
-          export Box
           sort Box
             entity box(value: Int64)
             operation peek(b: Box) -> Int64 = 1
@@ -182,7 +176,6 @@ fn dot_no_match_reports_clear_error_at_span() {
     // a DotDispatchNoMatch naming the member and the receiver's sort.
     let src = r#"
         namespace wi279.nomatch
-          export Box
           sort Box
             entity box(value: Int64)
             operation use_bad(b: Box) -> Int64 = ?b.nope()
@@ -207,7 +200,6 @@ fn dot_rule_override_enables_dispatch() {
     // `regular(b, x)` — so the body type-checks ONLY IF the override fires.
     let src = r#"
         namespace wi279.override
-          export Box
           sort Box
             entity box(value: Int64)
             operation regular(b: Box, x: Int64) -> Int64 = x
@@ -231,7 +223,6 @@ fn dot_rule_override_is_sort_scoped() {
     // the Box rule does not hijack the member name across sorts.
     let src = r#"
         namespace wi279.override_scoped
-          export Box, Other
           sort Box
             entity box(value: Int64)
             operation regular(b: Box, x: Int64) -> Int64 = x
@@ -260,7 +251,6 @@ fn dot_rule_nonlinear_lhs_does_not_fire_on_distinct_args() {
     // the result is a clean no-match, not an unsound rewrite to `regular(b)`.
     let src = r#"
         namespace wi279.nonlinear
-          export Box
           sort Box
             entity box(value: Int64)
             operation regular(b: Box) -> Int64 = 0
@@ -337,7 +327,6 @@ fn dot_field_unknown_member_reports_no_match() {
     // `resolve_field_type` miss falls through to a clean no-match at the dot span.
     let src = r#"
         namespace wi279.nofield
-          export Box
           sort Box
             entity box(value: Int64)
             operation use_bad(b: Box) -> Int64 = ?b.nope

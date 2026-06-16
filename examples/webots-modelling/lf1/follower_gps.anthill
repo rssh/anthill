@@ -12,7 +12,6 @@ namespace anthill.examples.lf1.follower_gps
   import anthill.geometry.{Vec3}
   import anthill.examples.lf1.leader.{Pose, Controls}
 
-  export FollowerState, FollowerController
 
   entity FollowerState(
     offset:        Vec3,                -- offset in leader body frame

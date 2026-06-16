@@ -15,7 +15,6 @@ fn entity_with_list_field() {
     let source = r#"
         namespace test.params
           import anthill.prelude.{Float, List}
-          export Polyline
           entity Polyline(points: List[T = Float])
         end
     "#;
@@ -34,7 +33,6 @@ fn entity_with_option_field() {
     let source = r#"
         namespace test.params
           import anthill.prelude.{Int64, String, Option}
-          export User
           entity User(name: String, age: Option[T = Int64])
         end
     "#;
@@ -60,7 +58,6 @@ fn two_param_field_lowers_in_declaration_order() {
     let source = r#"
         namespace test.params
           import anthill.prelude.{Int64, String}
-          export Pair, Holder
           sort Pair
             sort Z = ?
             sort A = ?
@@ -82,7 +79,6 @@ fn nested_parameterization() {
     let source = r#"
         namespace test.params
           import anthill.prelude.{Float, List, Option}
-          export OptionalSamples
           entity OptionalSamples(samples: Option[T = List[T = Float]])
         end
     "#;
@@ -103,7 +99,6 @@ fn namespace_header_with_parameterized_emits_includes() {
     let source = r#"
         namespace test.params
           import anthill.prelude.{Float, Int64, String, List, Option}
-          export Polyline, User
 
           entity Polyline(points: List[T = Float])
           entity User(name: String, age: Option[T = Int64])
@@ -171,7 +166,6 @@ fn carrier_overrides_parameterized_default() {
         namespace test.params
           import anthill.prelude.{Float, List, Option}
           import anthill.realization.{Implementation, CarrierBinding}
-          export Polyline
 
           entity Polyline(points: List[T = Float])
 

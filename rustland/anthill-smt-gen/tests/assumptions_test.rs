@@ -16,7 +16,6 @@ fn build_kb() -> anthill_core::kb::KnowledgeBase {
           import anthill.prelude.{Float, Int64}
           import anthill.prelude.Ordered.{lt}
 
-          export DistanceBounds, violation
 
           entity DistanceBounds(d_min: Float, d_max: Float)
           fact DistanceBounds(d_min: 1.0, d_max: 10.0)

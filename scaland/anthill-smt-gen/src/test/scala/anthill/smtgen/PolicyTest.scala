@@ -5,7 +5,6 @@ class PolicyTest extends munit.FunSuite:
   test("no_explicit_policy_no_cites_inlines") {
     val kb = Common.loadKbWith("""
       namespace test.policy.inline
-        export foo
         rule foo(?x) :- gte(?x, 0)
       end
     """)
@@ -23,7 +22,6 @@ class PolicyTest extends munit.FunSuite:
     // citedPredicates set, independent of the rule's body shape.
     val kb = Common.loadKbWith("""
       namespace test.policy.lifted
-        export foo
         rule foo(?x) :- gte(?x, 0)
       end
     """)
@@ -39,7 +37,6 @@ class PolicyTest extends munit.FunSuite:
     val kb = Common.loadKbWith("""
       namespace test.policy.explicit
         import anthill.realization.policy.{TranslationPolicy, DeclareFun}
-        export bar
 
         rule bar(?x) :- gte(?x, 0)
 

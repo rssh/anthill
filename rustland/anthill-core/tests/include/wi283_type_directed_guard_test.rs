@@ -30,7 +30,6 @@ namespace test.wi283guard
   import test.wi283guard.Magma.{op2}
 
   sort Magma
-    export op2
     sort T = ?
     requires Eq[T]
     operation {
@@ -106,7 +105,6 @@ namespace test.wi283carrier
   import test.wi283carrier.Box.{wrap}
 
   sort Box
-    export wrap
     sort T = ?
     requires Eq[T]
     operation {

@@ -17,7 +17,6 @@ fn literal_int_body() {
     let source = r#"
         namespace test.expr_a
           import anthill.prelude.{Int64}
-          export Calc
           sort Calc
             operation forty_two() -> Int64 = 42
           end
@@ -38,7 +37,6 @@ fn literal_float_and_string_bodies() {
     let source = r#"
         namespace test.expr_a
           import anthill.prelude.{Float, String}
-          export Constants
           sort Constants
             operation pi()    -> Float  = 3.14
             operation hello() -> String = "world"
@@ -66,7 +64,6 @@ fn parameter_reference_body() {
     let source = r#"
         namespace test.expr_a
           import anthill.prelude.{Int64}
-          export Identity
           sort Identity
             operation id(x: Int64) -> Int64 = x
           end
@@ -90,7 +87,6 @@ fn simple_function_call_body() {
     let source = r#"
         namespace test.expr_a
           import anthill.prelude.{Int64}
-          export Counter
           sort Counter
             operation step(x: Int64) -> Int64 = x
             operation use(x: Int64) -> Int64 = step(x)
@@ -114,7 +110,6 @@ fn nested_call_body() {
     let source = r#"
         namespace test.expr_a
           import anthill.prelude.{Int64}
-          export NestedCalls
           sort NestedCalls
             operation inc(x: Int64) -> Int64 = x
             operation triple_inc(x: Int64) -> Int64 = inc(inc(inc(x)))
@@ -141,7 +136,6 @@ fn expression_body_takes_precedence_over_carrier_dispatch() {
         namespace test.expr_a
           import anthill.prelude.{Int64}
           import anthill.realization.{Implementation, CarrierBinding}
-          export Calc
           sort Calc
             operation get(self: Calc) -> Int64 = 99
           end
@@ -178,7 +172,6 @@ fn literal_int_body_compiles() {
     let source = r#"
         namespace test.expr_a_compile
           import anthill.prelude.{Int64}
-          export Calc
           sort Calc
             operation forty_two() -> Int64 = 42
           end

@@ -10,7 +10,7 @@ import scala.collection.mutable.{ArrayBuffer, HashMap, HashSet}
   * (non-enclosing) variant-exposure parent link — a sort's entity-variant
   * short names ONLY (proposal 044 job 2). An empty set disables the filter
   * (the scope is reachable only via `requires`/wildcard, which see all of it).
-  * Names are visible by default; user `export` statements have no effect. */
+  * Names are visible by default; the `export` statement was removed in WI-291. */
 class Scope:
   val locals: HashMap[String, TermSymbol] = HashMap.empty
   val imports: HashMap[String, TermSymbol] = HashMap.empty

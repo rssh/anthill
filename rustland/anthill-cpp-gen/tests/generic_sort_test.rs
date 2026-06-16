@@ -22,7 +22,6 @@ use common::{load_kb_with, load_kb_with_lenient};
 fn generic_entity_emits_template_prefix() {
     let source = r#"
         namespace test.gen_box
-          export Box
           sort Box
             sort T = ?
             entity Box(value: ?T)
@@ -43,7 +42,6 @@ fn generic_entity_emits_template_prefix() {
 fn multi_param_entity_emits_template_with_two_args() {
     let source = r#"
         namespace test.gen_pair
-          export Pair
           sort Pair
             sort A = ?
             sort B = ?
@@ -71,7 +69,6 @@ fn non_generic_entity_keeps_no_prefix() {
     let source = r#"
         namespace test.plain
           import anthill.prelude.{Int64}
-          export Pose
           entity Pose(x: Int64, y: Int64)
         end
     "#;
@@ -92,7 +89,6 @@ fn generic_traits_class_emits_template_prefix() {
     // and substitutes `?T` in operation parameter / return types.
     let source = r#"
         namespace test.gen_id
-          export Identity
           sort Identity
             sort T = ?
             operation pass(x: ?T) -> ?T = x
@@ -120,7 +116,6 @@ fn keyword_clash_gets_suffixed() {
     // so the emitted template stays valid.
     let source = r#"
         namespace test.gen_kw
-          export Holder
           sort Holder
             sort class = ?
             entity Holder(value: ?class)

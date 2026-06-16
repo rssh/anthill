@@ -24,7 +24,6 @@ fn typer_populates_classifications() {
 namespace test.wi231.classifications
   import anthill.prelude.Eq.{eq}
   import anthill.prelude.{Eq, Bool}
-  export Wi231Defer
   sort Wi231Defer
     sort T = ?
     requires Eq[T]
@@ -96,7 +95,6 @@ fn req_insertion_run_emits_dispatch_rewrites() {
 namespace test.wi231.emits_rewrites
   import anthill.prelude.Eq.{eq}
   import anthill.prelude.{Eq, Bool}
-  export Wi231Emits
   sort Wi231Emits
     sort T = ?
     requires Eq[T]
@@ -134,7 +132,6 @@ fn skipping_req_insertion_leaves_dispatch_rewrites_empty() {
 namespace test.wi231.skip_pass
   import anthill.prelude.Eq.{eq}
   import anthill.prelude.{Eq, Bool}
-  export Wi231Skip
   sort Wi231Skip
     sort T = ?
     requires Eq[T]
@@ -218,7 +215,6 @@ fn wi232_resolved_spec_carries_matched_entry_not_just_symbol() {
 namespace test.wi232.resolved_spec
   import anthill.prelude.Eq.{eq, neq}
   import anthill.prelude.{Eq, Bool}
-  export Wi232Two
   sort Wi232Two
     sort T = ?
     requires Eq[T]

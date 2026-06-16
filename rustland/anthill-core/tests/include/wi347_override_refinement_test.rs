@@ -48,7 +48,6 @@ fn override_widening_effect_rejected() {
     let src = r#"
         namespace wi347.widen
           import anthill.prelude.{Effect, Int64}
-          export Eff1, Eff2, Sp, Carrier
           sort Eff1 end
           sort Eff2 end
           fact Effect[T = Eff1]
@@ -80,7 +79,6 @@ fn override_matching_effect_loads() {
     let src = r#"
         namespace wi347.match
           import anthill.prelude.{Effect, Int64}
-          export Eff1, Sp, Carrier
           sort Eff1 end
           fact Effect[T = Eff1]
           sort Sp
@@ -107,7 +105,6 @@ fn override_pure_op_loads() {
     let src = r#"
         namespace wi347.pure
           import anthill.prelude.{Int64}
-          export Sp, Carrier
           sort Sp
             sort T = ?
             operation op(x: T) -> T
@@ -134,7 +131,6 @@ fn override_dropping_effect_loads() {
     let src = r#"
         namespace wi347.narrow
           import anthill.prelude.{Effect, Int64}
-          export Eff1, Sp, Carrier
           sort Eff1 end
           fact Effect[T = Eff1]
           sort Sp
@@ -164,7 +160,6 @@ fn override_strengthening_precondition_rejected() {
         namespace wi347.pre_strong
           import anthill.prelude.{Int64}
           import anthill.prelude.Ordered.{gt}
-          export Sp, Carrier
           sort Sp
             sort T = ?
             operation op(x: T) -> T
@@ -193,7 +188,6 @@ fn override_weakening_postcondition_rejected() {
         namespace wi347.post_weak
           import anthill.prelude.{Int64}
           import anthill.prelude.Ordered.{gt}
-          export Sp, Carrier
           sort Sp
             sort T = ?
             operation op(x: T) -> T ensures gt(x, 0)
@@ -223,7 +217,6 @@ fn override_matching_contract_loads() {
         namespace wi347.contract_ok
           import anthill.prelude.{Int64}
           import anthill.prelude.Ordered.{gt}
-          export Sp, Carrier
           sort Sp
             sort T = ?
             operation op(x: T) -> T requires gt(x, 0) ensures gt(x, 0)

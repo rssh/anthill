@@ -27,7 +27,6 @@ fn numeric_add_emits_plus() {
     let source = r#"
         namespace test.expr_e_add
           import anthill.prelude.{Int64}
-          export Calc
           sort Calc
             operation inc(x: Int64) -> Int64 = add(x, 1)
           end
@@ -47,7 +46,6 @@ fn numeric_sub_mul_emit_operators() {
     let source = r#"
         namespace test.expr_e_arith
           import anthill.prelude.{Int64}
-          export Calc
           sort Calc
             operation diff(a: Int64, b: Int64) -> Int64 = sub(a, b)
             operation prod(a: Int64, b: Int64) -> Int64 = mul(a, b)
@@ -66,7 +64,6 @@ fn ordered_comparators_emit_relational_ops() {
     let source = r#"
         namespace test.expr_e_cmp
           import anthill.prelude.{Int64, Bool}
-          export Calc
           sort Calc
             operation g(a: Int64, b: Int64)  -> Bool = gt(a, b)
             operation l(a: Int64, b: Int64)  -> Bool = lt(a, b)
@@ -90,7 +87,6 @@ fn eq_neq_emit_double_equals() {
         namespace test.expr_e_eq
           import anthill.prelude.{Int64, Bool}
           import anthill.prelude.Eq.{eq, neq}
-          export Calc
           sort Calc
             operation same(a: Int64, b: Int64) -> Bool = eq(a, b)
             operation diff(a: Int64, b: Int64) -> Bool = neq(a, b)
@@ -110,7 +106,6 @@ fn bool_logical_ops_emit_and_or_not() {
         namespace test.expr_e_bool
           import anthill.prelude.{Bool}
           import anthill.prelude.Bool.{and, or, not}
-          export Calc
           sort Calc
             operation both(a: Bool, b: Bool) -> Bool = and(a, b)
             operation any(a: Bool, b: Bool)  -> Bool = or(a, b)
@@ -135,7 +130,6 @@ fn user_named_add_does_not_get_rewritten() {
     let source = r#"
         namespace test.expr_e_user
           import anthill.prelude.{Int64}
-          export Calc
           sort Calc
             operation add(a: Int64, b: Int64) -> Int64 = a
             operation use(a: Int64, b: Int64) -> Int64 = add(a, b)
@@ -157,7 +151,6 @@ fn arithmetic_in_if_compiles() {
     let source = r#"
         namespace test.expr_e_compile
           import anthill.prelude.{Int64}
-          export Calc
           sort Calc
             operation abs(n: Int64) -> Int64 = if gt(n, 0) then n else sub(0, n)
           end

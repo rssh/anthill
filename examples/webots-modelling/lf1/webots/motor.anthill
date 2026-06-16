@@ -11,9 +11,6 @@
 
 sort anthill.examples.lf1.webots.Motor
   import anthill.prelude.{Float, Unit, Modify}
-  export Motor
-  export set_position, set_velocity
-  export get_max_velocity, get_min_position, get_max_position
 
   -- Position setpoint (rad or m depending on motor type).
   -- Pass +infinity to switch to pure velocity control.

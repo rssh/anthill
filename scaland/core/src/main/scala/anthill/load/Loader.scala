@@ -71,8 +71,8 @@ object Loader:
           val qualName = makeQualified(prefix, shortName)
           val sym = kb.symbols.define(shortName, qualName, SymbolKind.Namespace, scopeTerm.raw)
           val nsTerm = kb.makeNameTermFromSym(sym)
-          // Enclosing scope. (Model C: names visible by default; user `export`
-          // statements have no effect, so ns.exports is ignored.)
+          // Enclosing scope. (Model C / proposal 044: names visible by default;
+          // the `export` statement was removed in WI-291.)
           kb.symbols.addParent(nsTerm.raw, ScopeInclusion(scopeTerm.raw, 0, isEnclosing = true))
           scanItemsPass1(kb, ns.items, fileSym, fileTerms, nsTerm, qualName)
 
@@ -86,8 +86,8 @@ object Loader:
           // Variant exposure (proposal 044 job 2): a sort exposes ONLY its
           // entity-variant names to the enclosing scope, linked as a
           // non-enclosing parent — so bare `Open` resolves to `WorkStatus.Open`
-          // while operations never leak as bare names. User `export` statements
-          // have no effect (sort.exports ignored).
+          // while operations never leak as bare names. (Names are visible by
+          // default; the `export` statement was removed in WI-291.)
           val variants = sort.items.collect {
             case Item.EntityItem(e) => joinSegments(fileSym, e.name.segments)
           }

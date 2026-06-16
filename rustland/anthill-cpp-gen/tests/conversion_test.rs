@@ -25,7 +25,6 @@ fn return_type_conversion_wraps_carrier_call() {
           import anthill.prelude.{Float, Int64, Unit, Modify}
           import anthill.realization.{Implementation, CarrierBinding}
           import anthill.realization.cpp_std.{ReturnTypeConversion}
-          export Vec3, Sensor
 
           entity Vec3(x: Float, y: Float, z: Float)
 
@@ -79,7 +78,6 @@ fn no_conversion_fact_keeps_decl_only_for_entity_returns() {
         namespace test.no_conv
           import anthill.prelude.{Float, Modify}
           import anthill.realization.{Implementation, CarrierBinding}
-          export Vec3, Sensor
 
           entity Vec3(x: Float, y: Float, z: Float)
 
@@ -118,7 +116,6 @@ fn conversion_wrapped_body_compiles() {
           import anthill.prelude.{Float, Modify}
           import anthill.realization.{Implementation, CarrierBinding}
           import anthill.realization.cpp_std.{ReturnTypeConversion}
-          export Vec3, Sensor
 
           entity Vec3(x: Float, y: Float, z: Float)
 

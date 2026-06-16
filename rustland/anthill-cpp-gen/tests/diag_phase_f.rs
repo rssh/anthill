@@ -11,7 +11,6 @@ fn dump_phase_f_shapes() {
         namespace test.dumpf
           import anthill.prelude.{Int64, Error}
           import anthill.prelude.Error.{raise}
-          export Calc
           sort Calc
             operation a(x: Int64) -> Int64 effects Error = x
             operation r() -> Int64 effects Error = raise("boom")

@@ -56,13 +56,11 @@ fn equational_indexed_count(mut kb: KnowledgeBase) -> usize {
 fn bare_equational_rule_is_excluded_from_rules_by_functor() {
     let baseline = equational_indexed_count(load_with(r#"
         namespace test.eqattr.bare
-          export Marker
           rule Marker(?x) :- ?x = 1
         end
     "#));
     let with_law = equational_indexed_count(load_with(r#"
         namespace test.eqattr.bare
-          export Marker, my_law
           rule Marker(?x) :- ?x = 1
           rule {
             my_law: foo(?a, ?b) = foo(?b, ?a)
@@ -81,13 +79,11 @@ fn simp_attributed_equational_rule_is_indexed() {
     // Top-level rule_declaration with attached meta_block.
     let baseline = equational_indexed_count(load_with(r#"
         namespace test.eqattr.simp_baseline
-          export Marker
           rule Marker(?x) :- ?x = 1
         end
     "#));
     let with_simp = equational_indexed_count(load_with(r#"
         namespace test.eqattr.simp_with
-          export Marker
           rule Marker(?x) :- ?x = 1
           rule my_def: foo(?a) = bar(?a) [simp]
         end
@@ -103,13 +99,11 @@ fn simp_attributed_equational_rule_is_indexed() {
 fn unfold_attributed_equational_rule_is_indexed() {
     let baseline = equational_indexed_count(load_with(r#"
         namespace test.eqattr.unfold_baseline
-          export Marker
           rule Marker(?x) :- ?x = 1
         end
     "#));
     let with_unfold = equational_indexed_count(load_with(r#"
         namespace test.eqattr.unfold_with
-          export Marker
           rule Marker(?x) :- ?x = 1
           rule my_def: g(?a) = h(?a) [unfold]
         end
@@ -131,13 +125,11 @@ fn hint_attributed_equational_rule_stays_unindexed_in_v0() {
     // discharge's preamble within scope.
     let baseline = equational_indexed_count(load_with(r#"
         namespace test.eqattr.hint
-          export Marker
           rule Marker(?x) :- ?x = 1
         end
     "#));
     let with_hint = equational_indexed_count(load_with(r#"
         namespace test.eqattr.hint
-          export Marker, my_lemma
           rule Marker(?x) :- ?x = 1
           rule {
             my_lemma: comm(?a, ?b) = comm(?b, ?a)
@@ -159,7 +151,6 @@ fn horn_rule_is_indexed_regardless_of_attributes() {
     // rules_by_functor for SLD goal resolution.
     let kb = load_with(r#"
         namespace test.eqattr.horn
-          export horny
           rule horny(?x, ?y)
             :- ?x = 1,
                ?y = 2

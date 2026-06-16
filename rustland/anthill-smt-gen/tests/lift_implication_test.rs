@@ -18,7 +18,6 @@ fn build_simple_kb() -> anthill_core::kb::KnowledgeBase {
           import anthill.prelude.{Float}
           import anthill.prelude.Ordered.{gte}
 
-          export simple_lemma
 
           rule simple_lemma: gte(?x, 3.0)
             :- gte(?x, 5.0)
@@ -85,7 +84,6 @@ fn lift_refuses_rule_without_conclusion_clause() {
           import anthill.prelude.{Float}
           import anthill.prelude.Ordered.{gte, lt}
 
-          export violation_only
 
           rule violation_only: ⊥
             :- gte(?x, 5.0),
@@ -110,7 +108,6 @@ fn build_band_kb() -> anthill_core::kb::KnowledgeBase {
           import anthill.prelude.{Float}
           import anthill.prelude.Ordered.{gte, lte}
 
-          export band_lemma
 
           rule band_lemma: gte(?x, 5.0), lte(?x, 10.0)
             :- gte(?x, 5.0),

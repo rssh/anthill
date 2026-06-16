@@ -101,8 +101,6 @@ fn rule_body_field_access_dispatches() {
     // `?p.x` must dispatch to a `field_access`, leaving NO DotApply in the body.
     let src = r#"
         namespace wi282.field
-          export Point
-          export Wrapper
           sort Point
             entity point(x: Int64, y: Int64)
           end
@@ -129,8 +127,6 @@ fn rule_body_method_call_dispatches() {
     // dispatch to `peek(?b)` — an `Apply` of the operation, no DotApply left.
     let src = r#"
         namespace wi282.method
-          export Box
-          export Holder
           sort Box
             entity box(value: Int64)
             operation peek(b: Box) -> Int64 = ?b.value
@@ -162,8 +158,6 @@ fn rule_body_dot_no_such_member_errors() {
     // pass-through into SLD.
     let src = r#"
         namespace wi282.nomatch
-          export Point
-          export Wrapper
           sort Point
             entity point(x: Int64, y: Int64)
           end
@@ -191,7 +185,6 @@ fn rule_body_dot_unresolved_receiver_left_alone() {
     // do NOT error (the pre-WI-282 status quo: it flows to SLD structurally).
     let src = r#"
         namespace wi282.poly
-          export P
           sort P
             entity p(x: Int64)
           end
@@ -268,8 +261,6 @@ fn make_point(kb: &mut KnowledgeBase, point_qn: &str, x: i64, y: i64) -> anthill
 fn dispatched_nested_field_access_resolves_without_panic() {
     let src = r#"
         namespace wi282.res
-          export Point
-          export Wrapper
           sort Point
             entity point(x: Int64, y: Int64)
           end
@@ -300,8 +291,6 @@ fn dispatched_top_level_field_goal_resolves_without_panic() {
     // It must resolve without panic.
     let src = r#"
         namespace wi282.toplevel
-          export Box
-          export Holder
           sort Box
             entity box(flag: Bool, value: Int64)
           end
@@ -338,8 +327,6 @@ fn rule_body_nested_field_access_evaluates_in_eq() {
     // `xcoord(point(7,8), 7)` succeeds, `xcoord(point(7,8), 99)` fails.
     let src = r#"
         namespace wi282.eval
-          export Point
-          export Wrapper
           sort Point
             entity point(x: Int64, y: Int64)
           end
@@ -375,8 +362,6 @@ fn rule_body_nested_field_access_evaluates_in_arith() {
     // fails.
     let src = r#"
         namespace wi282.arith
-          export Point
-          export Wrapper
           sort Point
             entity point(x: Int64, y: Int64)
           end
@@ -412,9 +397,6 @@ fn rule_body_nested_field_access_chain_evaluates() {
     // it inside-out. `inner(wrap(point(5,6)), 5)` succeeds, `…(…, 6)` fails.
     let src = r#"
         namespace wi282.chain
-          export Point
-          export Wrapper
-          export Outer
           sort Point
             entity point(x: Int64, y: Int64)
           end

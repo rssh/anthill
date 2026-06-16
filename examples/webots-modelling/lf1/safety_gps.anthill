@@ -30,12 +30,6 @@ namespace anthill.examples.lf1.safety.gps
   }
   import anthill.examples.lf1.safety.common.Drone.{Leader, Follower}
 
-  export GpsErrorBound, LinkParameters
-  export comm_delay_max, gps_drift_axiom
-  export step_distance_bound
-  export safety_min_distance, safety_max_distance
-  export inductive_invariant, lower_violation, upper_violation
-  export base_lower_violation, base_upper_violation, reachability_band
 
   -- =================================================================
   -- Sensor / link parameters

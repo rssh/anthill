@@ -17,7 +17,6 @@ Namespace with entity and operation
 =====================================
 
 namespace banking
-  export Account, Money, deposit
   entity Account(id: AccountId, balance: Money)
   operation deposit(a: Account, m: Money) -> Account
     requires gt(m, zero-val)
@@ -30,13 +29,6 @@ end
   (namespace_declaration
     name: (name
       (identifier))
-    (export_clause
-      (name
-        (identifier))
-      (name
-        (identifier))
-      (name
-        (identifier)))
     (entity_declaration
       name: (name
         (identifier))
@@ -224,12 +216,11 @@ sort Ordered {
           (identifier))))))
 
 =====================================
-Sort with import/export statements
+Sort with import statement
 =====================================
 
 sort math
   import anthill.prelude.Numeric
-  export add, zero-val
 
   operation add(x: Int, y: Int) -> Int
 end
@@ -244,11 +235,6 @@ end
       (import_path
         (identifier)
         (identifier)
-        (identifier)))
-    (export_clause
-      (name
-        (identifier))
-      (name
         (identifier)))
     (operation_declaration
       name: (name

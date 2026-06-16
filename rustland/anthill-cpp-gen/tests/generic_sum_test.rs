@@ -20,7 +20,6 @@ fn generic_sum_emits_templated_alias() {
     // Option = Some(value: T) | None — Some is templated, None is not.
     let source = r#"
         namespace test.gen_opt
-          export Option, Some, None
           enum Option
             sort T = ?
             entity Some(value: ?T)
@@ -54,7 +53,6 @@ fn generic_sum_with_two_params_emits_two_arg_template() {
     // Either = Left(value: L) | Right(value: R) — both templated.
     let source = r#"
         namespace test.gen_either
-          export Either, Left, Right
           enum Either
             sort L = ?
             sort R = ?
@@ -86,7 +84,6 @@ fn nullary_sum_unchanged_by_generic_machinery() {
     // Regression: a non-generic enum still emits without `template<>`.
     let source = r#"
         namespace test.gen_nullary
-          export StepResult, Running, Quit
           enum StepResult
             entity Running
             entity Quit

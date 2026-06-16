@@ -24,7 +24,6 @@ namespace anthill.todo.store
   import anthill.reflect.{Term, term_as_entity, term_field, term_as_string,
                           term_functor_name, find_fact, as_term}
   import anthill.reflect.KB.{kb, facts_of}
-  export WorkItemStore, FileBasedWorkitemStore, WIS
 
   -- ─── 1. Spec ────────────────────────────────────────────────────
   -- Operations declared once, parameterized by State. Each impl

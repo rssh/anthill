@@ -10,7 +10,6 @@ fn dump_phase_d_shapes() {
     let source = r#"
         namespace test.dumpd
           import anthill.prelude.{Int64, Bool, List}
-          export Color, Calc
           sort Color
             entity Red
             entity Green

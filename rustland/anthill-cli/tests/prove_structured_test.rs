@@ -35,7 +35,6 @@ fn structured_proof_two_steps_chain_to_parent_discharge() {
     // the parent rule's claim `?x >= 0`.
     let src = r#"
         namespace test.structured.chain
-          export big_lemma
 
           rule big_lemma: gte(?x, 0.0)
             :- gte(?x, 5.0)
@@ -74,7 +73,6 @@ fn structured_proof_step_failure_aborts_chain() {
     // than reporting the parent rule as failed without context.
     let src = r#"
         namespace test.structured.fail
-          export oops
 
           rule oops: gte(?x, 0.0)
             :- gte(?x, 5.0)
@@ -111,7 +109,6 @@ fn structured_proof_with_trust_step_produces_metacompose_witness() {
     // round-trip through the dispatcher without panicking.
     let src = r#"
         namespace test.structured.trust
-          export claim
 
           rule claim: gte(?x, 0.0)
             :- gte(?x, 5.0)
@@ -147,7 +144,6 @@ fn structured_proof_witness_sidecar_replays_through_check() {
     // confirms the proposal-031 claim that "Phase c is essentially free".
     let src = r#"
         namespace test.structured.replay
-          export claim
 
           rule claim: gte(?x, 0.0)
             :- gte(?x, 5.0)

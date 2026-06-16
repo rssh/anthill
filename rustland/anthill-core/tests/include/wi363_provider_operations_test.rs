@@ -51,7 +51,6 @@ fn provider_missing_op_backing_errors() {
     // `needed` either → the op has no implementation anywhere → unsound.
     let src = r#"
         namespace wi363.missing
-          export Spec, Carrier
           sort Spec
             sort T = ?
             operation needed(x: T) -> Int64
@@ -80,7 +79,6 @@ fn provider_with_spec_default_rule_loads() {
     // that the check recognizes spec-level equational defaults.
     let src = r#"
         namespace wi363.specdefault
-          export Spec, Carrier
           sort Spec
             sort T = ?
             operation needed(x: T) -> Int64
@@ -107,7 +105,6 @@ fn provider_with_own_op_loads() {
     // counts as backing.
     let src = r#"
         namespace wi363.carrierop
-          export Spec, Carrier
           sort Spec
             sort T = ?
             operation needed(x: T) -> Int64

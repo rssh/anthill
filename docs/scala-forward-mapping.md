@@ -98,7 +98,7 @@ namespace anthill.prelude        →  package anthill.prelude { ... }
 namespace banking.transfers      →  package banking { object transfers { ... } }
 ```
 
-Exports: `export`-prefixed items keep their default Scala visibility (public). `internal` items get `private[packageName]`.
+Visibility: items keep their default Scala visibility (public) — anthill names are visible by default. `internal` items get `private[packageName]`.
 
 ### 2.2 Sort with Operations (No Constructors) → Trait
 

@@ -28,16 +28,18 @@ fn hint_attributed_rule_auto_included_in_proof() {
     // scope auto-cites it. `target` doesn't write `using bound_d`
     // explicitly, but Z3 still sees the lifted forall of bound_d's
     // conclusion, which lets target discharge.
+    //
+    // The two rules use the braced `rule { ... }` block: a brace-less
+    // `rule X: ...` sequence is `rule <entry>* end`, which greedily
+    // swallows the following `proof ... end` (the proof's `end` closes
+    // the block). The braces delimit the block unambiguously.
     let src = r#"
         namespace test.hint.basic
-          export bound_d, target
 
-          rule bound_d: gte(?x, 3.0)
-            :- gte(?x, 5.0)
-            [hint]
-
-          rule target: gte(?x, 3.0)
-            :- gte(?x, 5.0)
+          rule {
+            bound_d: gte(?x, 3.0) :- gte(?x, 5.0) [hint]
+            target:  gte(?x, 3.0) :- gte(?x, 5.0)
+          }
 
           proof bound_d
             by z3(logic: "LRA")

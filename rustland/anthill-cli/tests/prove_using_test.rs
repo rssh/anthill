@@ -63,7 +63,6 @@ fn proof_with_using_clause_dispatches_lemma_as_hypothesis() {
     // verbose output for `using=bound_d`.
     let src = r#"
         namespace test.using.basic
-          export bound_d, target_violation
 
           rule bound_d: gte(?x, 3.0)
             :- gte(?x, 5.0)
@@ -106,7 +105,6 @@ fn citing_un_discharged_lemma_fails_loudly() {
     // amounted to silent axiom acceptance).
     let src = r#"
         namespace test.using.no_record
-          export some_rule, target
 
           rule some_rule: gte(?x, 3.0)
             :- gte(?x, 5.0)

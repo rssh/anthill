@@ -41,7 +41,6 @@ fn proof_records(kb: &mut KnowledgeBase) -> Vec<String> {
 fn requires_clause_emits_scope_axiom_proof_record() {
     let src = r#"
         namespace test.scope_axiom
-          export A
           sort A
             requires anthill.prelude.Eq[T = A]
           end
@@ -68,7 +67,6 @@ fn requires_clause_emits_scope_axiom_proof_record() {
 fn auto_registration_is_idempotent_across_loads() {
     let src = r#"
         namespace test.scope_axiom_idem
-          export A
           sort A
             requires anthill.prelude.Eq[T = A]
           end

@@ -33,7 +33,6 @@ fn vec_ops_symbols_resolve() {
     // need to invoke the resolver.
     let kb = load_with(r#"
         namespace test.vec3.smoke
-          export Marker
           rule Marker(?x) :- ?x = 1
         end
     "#);
@@ -57,7 +56,6 @@ fn vec_ops_callable_from_user_rule() {
     let kb = load_with(r#"
         namespace test.vec3.use
           import anthill.geometry.{Vec3, vec_add}
-          export try_add
 
           rule try_add(?c)
             :- vec_add(Vec3(x: 1.0, y: 2.0, z: 3.0),
@@ -75,7 +73,6 @@ fn vec_ops_callable_from_user_rule() {
 fn algebraic_law_rules_present() {
     let kb = load_with(r#"
         namespace test.vec3.laws
-          export Marker
           rule Marker(?x) :- ?x = 1
         end
     "#);

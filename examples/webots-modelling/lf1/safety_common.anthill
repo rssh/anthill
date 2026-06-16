@@ -52,12 +52,6 @@ namespace anthill.examples.lf1.safety.common
   import anthill.geometry.{Vec3}
   import anthill.examples.lf1.leader.{Pose}
 
-  export Drone
-  export DistanceBounds, KinematicAssumptions
-  export reachable_real
-  export RealVelocity, real_velocity_at, real_pose_at, distance_at_step
-  export position_distance, position_distance_sq
-  export step_distance_lemma, triangle_inequality, velocity_envelope
 
   -- =================================================================
   -- Drone identity

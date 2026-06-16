@@ -138,7 +138,6 @@ fn one_level_conditional_resolves_via_subgoal() {
     let src = r#"
         namespace test.wi224.one_level
           import anthill.prelude.{Eq, List, Int64}
-          export EqList
           sort EqList
             sort A = ?
             requires Eq[T = A]
@@ -190,7 +189,6 @@ fn two_level_conditional_chains_recursively() {
     let src = r#"
         namespace test.wi224.two_level
           import anthill.prelude.{Eq, List, Int64}
-          export EqList
           sort EqList
             sort A = ?
             requires Eq[T = A]
@@ -259,7 +257,6 @@ fn ambiguous_when_two_impls_collide_without_specificity_order() {
     // surface as Ambiguous with both carrier names in the diagnostic.
     let src = r#"
         namespace test.wi224.amb
-          export AmbSpec, AmbCarrier, AmbA, AmbB
           sort AmbSpec
             sort T = ?
             operation amb_op(x: T) -> T
@@ -304,7 +301,6 @@ fn cyclic_when_conditional_subgoal_recurses() {
     // detector must reject with `Cyclic`.
     let src = r#"
         namespace test.wi224.cyc
-          export CycSpec, CarA, CarB, CyclicA, CyclicB
           sort CycSpec
             sort T = ?
             operation cyc_op(x: T) -> T
@@ -347,7 +343,6 @@ fn no_match_when_no_candidate_for_bindings() {
     let src = r#"
         namespace test.wi224.nm
           import anthill.prelude.{Int64, Bool}
-          export NoMatchSpec, OnlyForInt
           sort NoMatchSpec
             sort T = ?
             operation nm_op(x: T) -> T
@@ -386,7 +381,6 @@ fn diamond_coherence_picks_same_a_impl_for_both_branches() {
     // ends of the diamond agree on which A is used.
     let src = r#"
         namespace test.wi224.diamond
-          export DiamondA, DiamondB, DiamondC, CarrierA, CarrierB, CarrierC
           import anthill.prelude.Int64
           sort DiamondA
             sort T = ?
@@ -483,7 +477,6 @@ fn available_requires_match_short_circuits_resolution() {
     let src = r#"
         namespace test.wi224.scope
           import anthill.prelude.{Eq, Int64}
-          export Wi224Holder
           sort Wi224Holder
             requires Eq[T = Int64]
           end

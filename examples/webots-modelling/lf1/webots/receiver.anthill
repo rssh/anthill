@@ -16,11 +16,6 @@
 sort anthill.examples.lf1.webots.Receiver
   import anthill.prelude.{Int64, Float, Unit, String, Bool, Modify}
   import anthill.geometry.{Vec3}
-  export Receiver
-  export enable, disable, get_sampling_period
-  export set_channel, get_channel
-  export get_queue_length, next_packet, get_data_size, get_data
-  export get_signal_strength, get_emitter_direction
 
   -- Lifecycle.
   operation enable(self: Receiver, sampling_period: Int64) -> Unit

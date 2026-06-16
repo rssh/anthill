@@ -39,7 +39,6 @@ fn induction_rule_head_for(kb: &KnowledgeBase, qn_prefix: &str) -> Option<TermId
 fn finite_enum_induction_rule_is_emitted() {
     let src = r#"
         namespace test.induction.color
-          export Color
           enum Color
             entity red
             entity blue
@@ -80,7 +79,6 @@ fn recursive_enum_induction_rule_has_one_case_per_constructor() {
     // exercise the recursive shape on a monomorphic enum instead.
     let src = r#"
         namespace test.induction.list
-          export IntList
           enum IntList
             entity nil
             entity cons(head: Int64, tail: IntList)
@@ -107,7 +105,6 @@ fn recursive_enum_induction_rule_has_one_case_per_constructor() {
 fn no_entities_no_induction_rule() {
     let src = r#"
         namespace test.induction.empty
-          export Pure
           sort Pure
           end
         end
@@ -127,7 +124,6 @@ fn recursive_field_emits_inductive_hypothesis() {
     // case `nil` stays as a flat ho_apply.
     let src = r#"
         namespace test.induction.ih
-          export IntList
           enum IntList
             entity nil
             entity cons(head: Int64, tail: IntList)
@@ -174,7 +170,6 @@ fn recursive_field_emits_inductive_hypothesis() {
 fn nullary_constructor_uses_ref_term() {
     let src = r#"
         namespace test.induction.nullary
-          export Bit
           enum Bit
             entity zero
             entity one

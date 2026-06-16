@@ -48,7 +48,7 @@ namespace banking           →  pub mod banking { ... }
 namespace anthill.prelude    →  pub mod anthill { pub mod prelude { ... } }
 ```
 
-Exports control visibility: `export`-prefixed items become `pub`, `internal` items have no `pub`.
+Visibility: items are `pub` by default (anthill names are visible by default); `internal` items have no `pub`. (`public` is also `pub`.)
 
 ### 2.2 Sort with Operations (No Constructors) → Trait
 

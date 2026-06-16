@@ -38,7 +38,6 @@ fn deferred_call_rewrites_to_apply_within_with_spec_op_fn() {
 namespace test.wi222.defer_rewrite
   import anthill.prelude.Eq.{eq}
   import anthill.prelude.{Eq, Bool}
-  export Wi222Box
   sort Wi222Box
     sort T = ?
     requires Eq[T]
@@ -181,7 +180,6 @@ fn requirement_name_tracks_requires_chain_entry() {
 namespace test.wi222.multi_requires
   import anthill.prelude.Ordered.{compare}
   import anthill.prelude.{Eq, Ordered, Int64}
-  export Wi222Multi
   sort Wi222Multi
     sort T = ?
     requires Eq[T]
@@ -257,7 +255,6 @@ fn dispatching_dict_is_caller_direct_requirement_var_ref() {
 namespace test.wi222.proj_deps
   import anthill.prelude.Ordered.{compare}
   import anthill.prelude.{Ordered, Int64}
-  export Wi222Outer
   sort Wi222Outer
     sort T = ?
     requires Ordered[T]
@@ -352,7 +349,6 @@ fn pin_now_upgrades_to_apply_within_when_impl_parent_has_requires() {
     let src = r#"
 namespace test.wi222.phase_e_pin_now
   import anthill.prelude.{Eq, Int64, Bool}
-  export Wi222ESpec, Wi222EImpl, Wi222EDriver
   sort Wi222ESpec
     sort T = ?
     operation act(x: T) -> Bool
@@ -463,7 +459,6 @@ fn synth_req_names_for_multi_requires_is_direct_no_dup() {
     let src = r#"
 namespace test.wi239.multi
   import anthill.prelude.{Eq, Ordered, Int64}
-  export Wi239Multi
   sort Wi239Multi
     sort T = ?
     requires Eq[T]
@@ -506,7 +501,6 @@ fn transitive_eq_call_classifies_as_nested_deferral() {
 namespace test.wi239.nested
   import anthill.prelude.Eq.{eq}
   import anthill.prelude.{Eq, Ordered, Bool}
-  export Wi239Nested
   sort Wi239Nested
     sort T = ?
     requires Ordered[T]

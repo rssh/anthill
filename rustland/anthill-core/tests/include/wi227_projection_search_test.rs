@@ -62,7 +62,6 @@ fn flat_path_emits_var_ref_named_requirement() {
 namespace test.wi227.flat
   import anthill.prelude.Eq.{eq}
   import anthill.prelude.{Eq, Bool}
-  export Wi227Flat
   sort Wi227Flat
     sort T = ?
     requires Eq[T]

@@ -50,7 +50,6 @@ namespace anthill.todo
                                            tag_item, untag_item,
                                            items_with_tag, tags_of,
                                            raw_term_of}
-  export Main, specs
 
   -- The 16-subcommand registry, mirroring the legacy Rust binary's
   -- TodoCommand enum. Specs carry no params yet — per-subcommand flag

@@ -9,10 +9,6 @@ sort anthill.examples.lf1.webots.Robot
   import anthill.prelude.{Int64, Float, Unit, String, Bool, Modify}
   import anthill.examples.lf1.webots.{GPS, Gyro, InertialUnit, Motor,
                                        Emitter, Receiver}
-  export Robot, StepResult, Running, Quit
-  export get_basic_time_step, step
-  export get_gps, get_gyro, get_inertial_unit, get_motor
-  export get_emitter, get_receiver
 
   -- Robot is a sort without a constructor — there is no anthill-side
   -- way to "create a Robot." Robot values come from

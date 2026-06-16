@@ -70,7 +70,6 @@ namespace test.wi413.rec
   import anthill.prelude.{Stream, Option, Pair, EffectsRuntime}
   import anthill.prelude.Option.{some, none}
   import anthill.prelude.Pair.{pair}
-  export Rec
 
   sort Rec
     sort T = ?

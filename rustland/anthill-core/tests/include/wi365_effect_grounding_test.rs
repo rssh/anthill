@@ -65,7 +65,6 @@ fn load_errors(extras: &[&str]) -> Vec<String> {
 const CARRIER: &str = r#"
 namespace test.wi365.carrier
   import anthill.prelude.{Int64, Modify, EffectsRuntime}
-  export Box, MutBox
 
   sort Box
     effects Effect = ?

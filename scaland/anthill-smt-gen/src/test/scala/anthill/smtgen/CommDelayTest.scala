@@ -17,8 +17,6 @@ class CommDelayTest extends munit.FunSuite:
       import anthill.prelude.Numeric.{add, mul}
       import anthill.prelude.Float.{div}
 
-      export LinkParameters, KinematicAssumptions, comm_delay_max
-
       entity LinkParameters(
         range_max:    Float,
         signal_speed: Float,

@@ -76,7 +76,6 @@ fn fact_clause_inside_sort_body_emits_provides_info() {
     // downstream consumers find it.
     let src = r#"
         namespace wi210.fact_emits
-          export Wi210SpecA, Wi210ImplB
           sort Wi210SpecA
             sort State = ?
           end
@@ -105,7 +104,6 @@ fn fact_clause_at_namespace_emits_with_carrier_as_sort_ref() {
     // which will let stdlib put these facts inside a real sort body.
     let src = r#"
         namespace wi210.ns_emits
-          export Wi210NsSpec, Wi210NsCarrier
           sort Wi210NsSpec
             sort State = ?
           end
@@ -132,7 +130,6 @@ fn fact_for_non_spec_sort_does_not_emit_provides_info() {
     // claiming spec satisfaction. Must NOT emit SortProvidesInfo.
     let src = r#"
         namespace wi210.non_spec
-          export Wi210Color, Wi210Holder
           sort Wi210Color
             entity wi210_red
             entity wi210_green
@@ -166,7 +163,6 @@ fn lookup_spec_op_dispatch_recognizes_body_less_op_on_parametric_sort() {
     // this op is dispatch-eligible.
     let src = r#"
         namespace wi210p2.spec
-          export Wi210Spec
           sort Wi210Spec
             sort State = ?
             operation wi210_op(s: State) -> State
@@ -189,7 +185,6 @@ fn lookup_spec_op_dispatch_rejects_op_with_body() {
     // op is the impl, not the spec.
     let src = r#"
         namespace wi210p2.with_body
-          export Wi210Impl
           sort Wi210Impl
             sort State = ?
             operation wi210_op(s: State) -> State = s
@@ -209,7 +204,6 @@ fn lookup_spec_op_dispatch_rejects_op_on_non_parametric_sort() {
     // free-standing operation, not a spec op.
     let src = r#"
         namespace wi210p2.no_params
-          export Wi210Plain
           sort Wi210Plain
             entity wi210_e
             operation wi210_op(x: Wi210Plain) -> Wi210Plain
@@ -393,7 +387,6 @@ fn dispatch_ambiguous_when_two_impls_match_same_binding() {
     // impl sorts that each provide AmbSpec at T=AmbCarrier.
     let mut kb = load_with(r#"
         namespace wi210p3.amb
-          export AmbSpec, AmbCarrier, AmbA, AmbB
           sort AmbSpec
             sort T = ?
             operation amb_op(x: T) -> T
@@ -430,7 +423,6 @@ fn dispatch_ambiguous_when_two_impls_match_same_binding() {
 fn load_box_two_carriers() -> KnowledgeBase {
     load_with(r#"
         namespace wi350.box
-          export Box, ListBox, StreamBox
           sort Box
             sort T = ?
             operation peek(b: Box) -> T
@@ -818,7 +810,6 @@ fn dispatch_int_add_x_x_type_checks_via_spec_satisfaction() {
 fn requires_user_with_same_named_op_does_not_provide_or_override() {
     let (mut kb, load_result, _errs) = load_capturing_errors(r#"
         namespace ovr.req_vs_prov
-          export OvrSpec, OvrCarrier, OvrProv, OvrReq
           sort OvrSpec
             sort T = ?
             operation ovr_op(x: T) -> T

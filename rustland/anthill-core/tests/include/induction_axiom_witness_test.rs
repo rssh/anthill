@@ -42,7 +42,6 @@ fn proof_records(kb: &mut KnowledgeBase) -> Vec<String> {
 fn enum_sort_emits_induction_proof_record() {
     let src = r#"
         namespace test.induction_axiom
-          export Color
           enum Color
             entity Red
             entity Green
@@ -69,7 +68,6 @@ fn enum_sort_emits_induction_proof_record() {
 fn induction_registration_is_idempotent_across_loads() {
     let src = r#"
         namespace test.induction_idem
-          export Mode
           enum Mode
             entity One
             entity Two

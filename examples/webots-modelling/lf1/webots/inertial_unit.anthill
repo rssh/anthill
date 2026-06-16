@@ -12,9 +12,6 @@
 sort anthill.examples.lf1.webots.InertialUnit
   import anthill.prelude.{Int64, Float, Unit, Modify}
   import anthill.geometry.{EulerAngles}
-  export InertialUnit
-  export enable, disable, get_sampling_period
-  export get_roll_pitch_yaw, get_noise
 
   operation enable(self: InertialUnit, sampling_period: Int64) -> Unit
     effects Modify[self]

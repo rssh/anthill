@@ -10,7 +10,6 @@ use anthill_smt_gen::policy::{policy_for, PredicatePolicy};
 fn no_explicit_policy_no_cites_inlines() {
     let kb = common::load_kb_with(r#"
         namespace test.policy.inline
-          export foo
           rule foo(?x) :- gte(?x, 0)
         end
     "#);
@@ -26,7 +25,6 @@ fn no_explicit_policy_no_cites_inlines() {
 fn no_explicit_policy_with_cite_lifts_axiom() {
     let kb = common::load_kb_with(r#"
         namespace test.policy.lifted
-          export foo
           rule foo(?x) :- gte(?x, 0)
         end
     "#);
@@ -47,7 +45,6 @@ fn explicit_policy_overrides_default() {
     let kb = common::load_kb_with(r#"
         namespace test.policy.explicit
           import anthill.realization.policy.{TranslationPolicy, DeclareFun}
-          export bar
 
           rule bar(?x) :- gte(?x, 0)
 

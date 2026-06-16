@@ -26,7 +26,6 @@ fn write_temp(name: &str, contents: &str) -> PathBuf {
 fn trust_tactic_discharges_with_reason() {
     let src = r#"
         namespace test.trust.basic
-          export geometric_law
 
           rule geometric_law: gte(?x, 0.0)
             :- gte(?x, 0.0)
@@ -56,7 +55,6 @@ fn citing_trusted_rule_warns_but_proceeds() {
     // a warning naming the trust reason.
     let src = r#"
         namespace test.trust.cite
-          export axiom_lemma, consumer
 
           rule axiom_lemma: gte(?x, 3.0)
             :- gte(?x, 5.0)
