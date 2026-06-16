@@ -1292,7 +1292,7 @@ fact WorkItem(
   description: "Variance inference algorithm — populate inferred_covariant / inferred_contravariant rules. Proposal 035 lands the entity/predicate scaffolding (entity Covariant, entity Contravariant, effective_covariant rule unioning declared + inferred) but leaves the inference rule bodies empty. This WI lands the actual algorithm: walk OperationInfo for each parametric sort, classify each parameter by its position usage across all operation signatures, emit inferred_covariant / inferred_contravariant facts. Standard recipe (Pierce TAPL ch. 15 / ATAPL ch. 14): a parameter T appearing only in covariant positions of operation results is co; only in contravariant positions of operation arguments is contra; both -> invariant; neither -> bivariant. Recursive for nested types: cov compose cov = cov, cov compose contra = contra, etc. Plus needs to handle requires-spec positions: a parameter K appearing in 'requires Eq T=K' inherits the variance of T in Eq composed with K's outer position. Acceptance: (a) tests covering all four classifications across single-level and nested cases; (b) the prelude's existing manual Covariant facts for List/Option/Stream/Pair can be removed and the system re-derives them; (c) explicit Covariant fact + inference disagreement still loads cleanly (bivariance under proposal 035's conflict semantics); optional consistency-warning rule. Driver: proposal 035; once this lands users get correct variance for free on user-defined parametric sorts. Out of scope: use-site variance, F-bounded polymorphism, higher-rank polymorphism (all flagged as separate follow-ups in 035).",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: [],
-  status: Open)
+  status: PreOpened)
 
 fact WorkItem(
   id: "WI-185",
