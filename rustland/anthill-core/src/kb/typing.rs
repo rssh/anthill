@@ -2261,27 +2261,6 @@ fn collect_arg_errors<'a>(
     }
 }
 
-/// Resolve a binding by short (last-segment) name against an env's var
-/// bindings. WI-279: a value-receiver `?x` interns to a plain symbol, while
-/// a parameter is bound under a scope-qualified symbol — an exact
-/// `lookup_var` then misses, so a `?x` naming a param resolves here by short
-/// name. Within one operation body short names are unique, so the match is
-/// unambiguous. Returns the first binding whose key's short name equals
-/// `short_name_of(var_sym)`.
-fn lookup_binding_by_short_name(
-    kb: &KnowledgeBase,
-    env: &TypingEnv,
-    var_sym: Symbol,
-) -> Option<Value> {
-    // `resolve_sym` borrows `kb` immutably; the closure re-borrows it the same
-    // way, so `target` and each key's name coexist as shared borrows (no clone).
-    let target = short_name_of(kb.resolve_sym(var_sym));
-    env.var_bindings
-        .iter()
-        .find(|(s, _)| short_name_of(kb.resolve_sym(**s)) == target)
-        .map(|(_, t)| t.clone())
-}
-
 // ── WI-279 INC2: sort-specific `[simp]` dot-rule override ────────────────
 //
 // A dot rule like `dot_apply(?e, map, ?f) = either_map(?e, ?f) [simp]`
@@ -3002,16 +2981,13 @@ fn visit_type(
         // type-checks and declared signatures resolve it on the consumer
         // side.
         Expr::Var(var) => {
-            // Exact-symbol lookup resolves let/lambda/match-bound `?x` (binder
-            // and body var share an intern). A param binds under a
-            // scope-qualified symbol while a body `?x` is a plain intern, so an
-            // exact match misses — fall back to a short-name match (unique
-            // within one body). A genuinely-free `?x` matches neither and gets
-            // a fresh type-var.
+            // Exact-symbol lookup resolves any in-scope `?x` — let/lambda/match
+            // binders share an intern with their body var, and WI-487 makes an
+            // op-body `?b` referencing a param carry that param's own Symbol (the
+            // key `env.bind_var` uses), so the param case now hits exactly too.
+            // A genuinely-free `?x` matches nothing and gets a fresh type-var.
             let bound = match var {
-                Var::Global(vid) => env
-                    .lookup_var(vid.name())
-                    .or_else(|| lookup_binding_by_short_name(kb, &env, vid.name())),
+                Var::Global(vid) => env.lookup_var(vid.name()),
                 // WI-282: a RULE-body var is De Bruijn-encoded (rules carry no
                 // lexical param env); its type comes from the rule's constraint
                 // collection, installed on the env as `debruijn_types`. This is

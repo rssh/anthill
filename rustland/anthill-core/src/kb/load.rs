@@ -5530,6 +5530,12 @@ impl<'a> Loader<'a> {
                 results.push(kb_id);
                 self.push_leaf_occ(kb_id);
             }
+            Term::Var(Var::Global(vid)) => {
+                let kb_id = self.load_op_body_var(parse_id, vid);
+                self.create_occurrence(parse_id, kb_id);
+                results.push(kb_id);
+                self.push_leaf_occ(kb_id);
+            }
             Term::ParseAux(_) => {
                 // WI-366 B1: a written effect-row binding value in an op-body
                 // type-expression (`operation f() -> Type = Spec[E = {}]`),
@@ -6344,6 +6350,53 @@ impl<'a> Loader<'a> {
             let name_ref = self.convert_term(parse_id);
             self.mk_var_ref_from_term(name_ref)
         }
+    }
+
+    /// WI-487: convert an op-body logical variable (`Expr::Var(Global)`). A
+    /// surface `?b` whose name resolves to an op parameter — and is not shadowed
+    /// by an in-scope let/lambda/match binder — *refers to* that parameter. The
+    /// generic `convert_term` would mint a FRESH logical var, re-interning the
+    /// name to a new Symbol, so the body var and the OperationInfo param carry
+    /// distinct Symbols and only bridge by short name downstream (eval
+    /// `find_local`, the typer's short-name fallback). Bind the body var to the
+    /// param's own Symbol instead, so an op_body_node param var Symbol == the
+    /// matching `OperationInfo.params[i]` Symbol: the typer's exact `lookup_var`
+    /// hits NOW (its short-name fallback is retired), and the shared identity
+    /// unblocks the WI-483 method-op fold's symbol-keyed param match. (Eval's
+    /// `find_local` still compares short names, so it is unaffected either way.)
+    /// Any other `?x` — a genuinely-free var, or one bound by a local binder —
+    /// keeps the generic behavior (a fresh var bridged by name).
+    ///
+    /// The param case is resolved PER OCCURRENCE, NOT via the parse-`vid`-keyed
+    /// `var_map`: the parser shares ONE `vid` for every `?b` in an operation
+    /// regardless of which binding each occurrence refers to (the param in one
+    /// branch, a `b`-named let/match/lambda binder in another — locals are
+    /// referenced as `?b` too). Caching by `vid` would let the first-visited
+    /// occurrence's Symbol leak onto the others, mistyping a shadowed sibling.
+    /// A fresh var per param occurrence is harmless: nothing keys op-body param
+    /// vars by var identity (the typer/eval resolve them by name/Symbol, and op
+    /// bodies are never De Bruijn-closed). Non-param `?b` (a local-binder ref or
+    /// a free var) keeps the generic `var_map`-shared behavior via `convert_term`;
+    /// the param path never reads or writes `var_map`, so the two cannot
+    /// cross-contaminate even when they share a parse `vid`.
+    fn load_op_body_var(&mut self, parse_id: TermId, vid: VarId) -> TermId {
+        let name = self.parsed.symbols.name(vid.name()).to_owned();
+        if self.lookup_local_name(&name).is_none() {
+            if let ResolveResult::Found(sym) =
+                self.kb.symbols.resolve_in_scope(&name, self.current_scope.raw())
+            {
+                if matches!(
+                    self.kb.symbols.get(sym),
+                    SymbolDef::Resolved { kind: SymbolKind::Param, .. }
+                ) {
+                    let kb_vid = self.kb.fresh_var(sym);
+                    let kb_id = self.kb.alloc(Term::Var(Var::Global(kb_vid)));
+                    self.term_map.insert(parse_id.raw(), kb_id);
+                    return kb_id;
+                }
+            }
+        }
+        self.convert_term(parse_id)
     }
 
     /// Build the canonical `var_ref(name: Ref(sym))` expression term for a
