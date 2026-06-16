@@ -792,30 +792,14 @@ fn scan_operation_params(
     // masking key on this kind; no side-table registration.
     kb.symbols.define("result", &result_qualified, SymbolKind::OpResult, op_term.raw());
 
-    // Pre-register `result.<field>` for each named-tuple return component.
-    // Effects rows take *types*, not general term expressions, so the dot
-    // in `Modify[result.a]` is treated as part of a qualified name rather
-    // than as field-access (§6.7). Pre-registering these locals lets
-    // qualified-name lookup find them.
-    //
-    // Workaround pending WI-262 (type-level field projection). When that
-    // lands this block can be removed and projection handled uniformly by
-    // the resolver/typer for params of entity/tuple type as well.
-    if let crate::parse::ir::TypeExpr::Tuple(fields) = &op.return_type {
-        for (field_sym, _field_ty) in fields {
-            let field_name = parse_sym.name(*field_sym);
-            let dotted = format!("result.{}", field_name);
-            let qualified = make_qualified(prefix, &dotted);
-            // WI-352: keep `result.<field>` as `Param` (NOT `OpResult`): the bare
-            // `result` is the WI-314 masking binder (`is_result_binder`), but a
-            // result COMPONENT is not — classifying it `OpResult` would widen
-            // `is_result_binder` and re-key per-component `Modify[result.a]` to
-            // `Modify[result]` (a precision loss / behavior change). Its precise
-            // classification (a result projection) is deferred; not a flow node
-            // in v1 (no tuple-result HOF), so its provenance is never consulted.
-            kb.symbols.define(&dotted, &qualified, SymbolKind::Param, op_term.raw());
-        }
-    }
+    // WI-262: `result.<field>` per-component projection (`Modify[result.a]`) is
+    // now lowered uniformly by the type-level projection path — the dotted name's
+    // head `result` (an `OpResult` value place) routes through
+    // `try_denoted_value_path`, which builds the value-in-type `denoted` place
+    // BEFORE the qualified-name `remap_name` fallback. So no synthetic
+    // `result.<field>` symbol is needed (this is the same path that serves
+    // `Modify[c.field]` for an entity/tuple-typed param). The WI-261 workaround
+    // that pre-registered those symbols is removed.
 }
 
 /// WI-352: recursively define the places of a callback (arrow) type rooted at
