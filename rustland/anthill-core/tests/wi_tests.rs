@@ -356,3 +356,6 @@ mod wi201_bare_spec_member_sugar_test;
 
 #[path = "include/wi481_modify_row_equality_test.rs"]
 mod wi481_modify_row_equality_test;
+
+#[path = "include/wi404_denoted_self_conformance_test.rs"]
+mod wi404_denoted_self_conformance_test;

@@ -1278,7 +1278,38 @@ fn denoted_value_display(kb: &KnowledgeBase, occ: &Rc<NodeOccurrence>) -> String
         NodeKind::Expr { expr: Expr::DotApply { receiver, name, .. }, .. } => {
             format!("{}.{}", denoted_value_display(kb, receiver), kb.resolve_sym(*name))
         }
+        // WI-404: a value-in-type LITERAL (`3` in `Vec[N = 3]`, carried as
+        // `Expr::Const` — see `value_term_to_occ`) renders as the literal value, so a
+        // type error naming a denoted-bearing parameterized type is legible (`N = 3`
+        // vs `N = 4`) rather than the `?` fallthrough that hid which binding clashed.
+        // The comparison itself was already correct (it reads the carried value, not
+        // this display); this is the rendering half of the ticket's symptom.
+        NodeKind::Expr { expr: Expr::Const(lit), .. } => literal_display(lit),
         _ => "?".to_string(),
+    }
+}
+
+/// A legible rendering of a `Literal` for type-error messages (mirrors
+/// `persistence::print`'s `write_literal`: a float keeps its decimal point, a
+/// string is quoted). Display-only — not a round-trip-faithful serialization.
+fn literal_display(lit: &Literal) -> String {
+    match lit {
+        Literal::Int(n) => n.to_string(),
+        Literal::BigInt(n) => n.to_string(),
+        Literal::Float(f) => {
+            let s = f.to_string();
+            if s.contains('.') { s } else { format!("{s}.0") }
+        }
+        Literal::String(s) => {
+            // The canonical `.anthill` string escaper (shared with `TermPrinter`), so
+            // a denoted string literal renders identically across carriers rather than
+            // via Rust `Debug`, which diverges on control/unicode chars.
+            let mut buf = String::new();
+            crate::persistence::print::write_anthill_string(s, &mut buf);
+            buf
+        }
+        Literal::Bool(b) => if *b { "true" } else { "false" }.to_string(),
+        Literal::Handle(kind, id) => format!("<handle:{kind:?}:{id}>"),
     }
 }
 
