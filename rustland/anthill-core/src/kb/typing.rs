@@ -8911,6 +8911,88 @@ fn provision_binds_param_to_carrier(
     None
 }
 
+/// WI-492 — the specs a carrier sort DIRECTLY provides (base symbols), read
+/// from its carrier-keyed `SortProvidesInfo` facts. The transitive-provision
+/// hop set for [`transitive_carrier_for_param`] (a single carrier-keyed scan,
+/// mirroring the edge extraction in [`sort_provides`]).
+fn directly_provided_specs(kb: &KnowledgeBase, carrier_sym: Symbol) -> SmallVec<[Symbol; 4]> {
+    let mut out: SmallVec<[Symbol; 4]> = SmallVec::new();
+    let Some(provides_sym) = kb.try_resolve_symbol("anthill.reflect.SortProvidesInfo") else {
+        return out;
+    };
+    let carrier_canon = kb.canonical_sort_sym(carrier_sym);
+    for rid in kb.rules_by_functor(provides_sym) {
+        if !kb.is_fact(rid) {
+            continue;
+        }
+        let Some(named) = kb.fact_head_named_args(rid) else { continue };
+        let Some(sr) = get_named_arg(kb, &named, "sort_ref") else { continue };
+        let Some(carrier) = super::load::sort_ref_functor(kb, sr) else { continue };
+        if kb.canonical_sort_sym(carrier) != carrier_canon {
+            continue;
+        }
+        let Some(spec_t) = get_named_arg(kb, &named, "spec") else { continue };
+        let Some(spec_sym) = super::load::provides_spec_base_sym(kb, spec_t) else { continue };
+        if !out.iter().any(|&s| same_symbol(kb, s, spec_sym)) {
+            out.push(spec_sym);
+        }
+    }
+    out
+}
+
+/// WI-492 — the EFFECTIVE carrier sort that owns `spec_sort`'s implementation
+/// for a runtime value of sort `value_sort`, following TRANSITIVE provision.
+/// Provision is NOT transitive in the stored `SortProvidesInfo` facts: a
+/// `MappedStream provides Stream` fact and a `Stream provides Iterable[C =
+/// Stream]` fact both exist, but no `MappedStream provides Iterable` fact does
+/// — yet a `MappedStream` value must dispatch the Iterable ops (`iterator`, and
+/// the inherited `find`/`map`/`filter`), since its Iterable-ness rides through
+/// Stream. (The TYPER never hits this — `xs.map(f)` has the declared return
+/// type `Stream`, so the static receiver of a downstream `.filter` is already
+/// `Stream`, which directly provides Iterable; the gap is only the RUNTIME
+/// value, a `mapped(…)` entity of sort `MappedStream`.)
+///
+/// Resolve to the INTERMEDIATE spec that DIRECTLY binds the carrier param
+/// `pvid` to itself — `Stream`, whose `iterator(s) = s` is the genuine impl —
+/// so the value-directed op resolution (`sort_ops_lookup(Stream, iterator)`)
+/// finds the inherited member instead of dying `UnknownOperation`. A DIRECT
+/// provider wins unchanged (returns `value_sort` itself — the `iterator`-on-a-
+/// `List`, `Eq`-on-`Int64` hot path). Otherwise walk the specs `value_sort`
+/// provides, depth-first, first match wins; `visited` guards a cyclic
+/// `provides` chain (cf. [`sort_provides_reach`]).
+fn transitive_carrier_for_param(
+    kb: &KnowledgeBase,
+    spec_sort: Symbol,
+    pvid: VarId,
+    value_sort: Symbol,
+) -> Option<Symbol> {
+    fn walk(
+        kb: &KnowledgeBase,
+        spec_sort: Symbol,
+        pvid: VarId,
+        sort: Symbol,
+        visited: &mut SmallVec<[Symbol; 8]>,
+    ) -> Option<Symbol> {
+        if visited.iter().any(|&v| same_symbol(kb, v, sort)) {
+            return None;
+        }
+        visited.push(sort);
+        // This sort directly binds the carrier param to itself — it owns the impl.
+        if provision_binds_param_to_carrier(kb, spec_sort, pvid, sort).is_some() {
+            return Some(sort);
+        }
+        // Otherwise descend through the specs this sort itself provides.
+        for intermediate in directly_provided_specs(kb, sort) {
+            if let Some(found) = walk(kb, spec_sort, pvid, intermediate, visited) {
+                return Some(found);
+            }
+        }
+        None
+    }
+    let mut visited: SmallVec<[Symbol; 8]> = SmallVec::new();
+    walk(kb, spec_sort, pvid, value_sort, &mut visited)
+}
+
 /// WI-424 — eval-side CARRIER-PARAM receiver: among the params typed as one of
 /// `spec_sort`'s own type-param vars (`Iterable.iterator(c: C)`), the first
 /// whose RUNTIME value's carrier sort (`carrier_of(i)`) provides the spec WITH
@@ -8937,8 +9019,15 @@ pub(crate) fn carrier_param_receiver_for_values(
             continue;
         }
         let Some(carrier_sym) = carrier_of(i) else { continue };
-        if provision_binds_param_to_carrier(kb, spec_sort, pvid, carrier_sym).is_some() {
-            return Some((i, carrier_sym));
+        // WI-492: a value whose sort provides `spec_sort` only TRANSITIVELY
+        // (a `MappedStream` value of `Iterable`, via `MappedStream provides
+        // Stream provides Iterable`) dispatches through the intermediate
+        // spec that owns the impl — `transitive_carrier_for_param` returns
+        // `carrier_sym` unchanged for a direct provider.
+        if let Some(eff_carrier) =
+            transitive_carrier_for_param(kb, spec_sort, pvid, carrier_sym)
+        {
+            return Some((i, eff_carrier));
         }
     }
     None
