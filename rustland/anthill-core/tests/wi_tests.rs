@@ -395,3 +395,6 @@ mod wi411_unqualified_spec_op_dispatch_test;
 
 #[path = "include/wi426_named_arg_op_call_test.rs"]
 mod wi426_named_arg_op_call_test;
+
+#[path = "include/wi433_positional_ctor_desugar_test.rs"]
+mod wi433_positional_ctor_desugar_test;

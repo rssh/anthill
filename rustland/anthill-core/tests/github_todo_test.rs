@@ -45,6 +45,38 @@ fn load_github_todo_kb() -> KnowledgeBase {
     kb
 }
 
+/// Load stdlib + github-todo example + an extra inline source (additional
+/// `anthill.stage0` facts). Used by the WI-433 coverage test to add a dependent
+/// whose deps are Verified without mutating the shared example fixture.
+fn load_github_todo_kb_with_extra(extra: &str) -> KnowledgeBase {
+    let stdlib_dir = common::stdlib_dir();
+    let example_dir = common::examples_dir().join("github-todo");
+
+    let mut files = common::collect_anthill_files(&stdlib_dir);
+    files.extend(common::collect_anthill_files(&example_dir));
+
+    let mut parsed: Vec<_> = files.iter()
+        .map(|path| {
+            let source = std::fs::read_to_string(path)
+                .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+            parse::parse(&source)
+                .unwrap_or_else(|e| panic!("parse {}: {e:?}", path.display()))
+        })
+        .collect();
+    parsed.push(parse::parse(extra).expect("parse extra source"));
+
+    let refs: Vec<_> = parsed.iter().collect();
+    let mut kb = KnowledgeBase::new();
+    load::register_prelude(&mut kb);
+    kb.register_standard_builtins();
+    load::load_all(&mut kb, &refs, &NullResolver)
+        .unwrap_or_else(|errs| {
+            for e in &errs { eprintln!("Load error: {e}"); }
+            panic!("load failed with {} errors", errs.len());
+        });
+    kb
+}
+
 fn resolve_config() -> ResolveConfig {
     ResolveConfig { max_solutions: 20, ..ResolveConfig::default() }
 }
@@ -126,6 +158,43 @@ fn claimable_resolves_only_wi_auth_001() {
     let id_val = sol.subst.resolve_as_value(*id_var).map(|v| v.expect_term())
         .and_then(|t| extract_string(&kb, t));
     assert_eq!(id_val.as_deref(), Some("WI-AUTH-001"));
+}
+
+/// WI-433 coverage hole: the example only had claimable items with EMPTY deps,
+/// so the positional-vs-named never-match (a dependent with VERIFIED deps wrongly
+/// rejected) was invisible. Add a Verified dep + a dependent and assert the
+/// dependent is claimable. The dep's status is written POSITIONALLY
+/// (`Verified("…")`) to exercise the WI-433 desugar against the named
+/// `Verified(at: ?)` rule pattern.
+#[test]
+fn wi433_claimable_with_verified_deps() {
+    let extra = r#"
+namespace anthill.stage0
+  fact WorkItem(id: "WI-DEP-V", description: "a verified dependency",
+                depends_on: [], status: Verified("2026-06-17"))
+  fact WorkItem(id: "WI-CHILD", description: "depends on a verified item",
+                depends_on: ["WI-DEP-V"], status: Open)
+end
+"#;
+    let mut kb = load_github_todo_kb_with_extra(extra);
+    let query = make_query2(&mut kb, "anthill.stage0.workflow.claimable", "id", "desc");
+    let solutions = kb.resolve(&[query], &resolve_config());
+
+    let query_vars = kb.collect_vars(query);
+    let id_var = query_vars.iter().find(|v| kb.resolve_sym(v.name()) == "id").unwrap();
+    let ids: Vec<String> = solutions.iter()
+        .filter_map(|sol| sol.subst.resolve_as_value(*id_var).map(|v| v.expect_term()).and_then(|t| extract_string(&kb, t)))
+        .collect();
+
+    assert!(
+        ids.contains(&"WI-CHILD".to_string()),
+        "a dependent whose deps are all Verified must be claimable; claimable = {ids:?}",
+    );
+    // The dep is itself Verified (not Open), so it is NOT claimable.
+    assert!(
+        !ids.contains(&"WI-DEP-V".to_string()),
+        "a Verified item is not claimable; claimable = {ids:?}",
+    );
 }
 
 #[test]

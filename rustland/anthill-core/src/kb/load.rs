@@ -4094,7 +4094,7 @@ pub fn convert_query_term(
         Term::Fn { functor, pos_args, named_args } => {
             let functor_name = parse_symbols.name(functor);
             let kb_functor = resolve_name_in_kb(kb, functor_name, scope_raw);
-            let new_pos: SmallVec<[TermId; 4]> = pos_args
+            let mut new_pos: SmallVec<[TermId; 4]> = pos_args
                 .iter()
                 .map(|&id| convert_query_term(kb, parse_terms, parse_symbols, id, scope_raw, var_map))
                 .collect();
@@ -4106,6 +4106,35 @@ pub fn convert_query_term(
                     (kb_sym, convert_query_term(kb, parse_terms, parse_symbols, id, scope_raw, var_map))
                 })
                 .collect();
+
+            // WI-433: DESUGAR a positional constructor QUERY to the canonical
+            // NAMED form, mirroring the fact/rule term path
+            // (`convert_term_with_expected`) so a CLI query `WorkItem(?, Verified(?))`
+            // matches the named-arg facts via the discrim tree. Positional args fill
+            // the fields NOT already given by name, in declaration order (the same
+            // rank-among-not-named rule). Reflect / `anthill.reflect.*` meta-ctors
+            // keep their positional shape. A query is transient with no load error
+            // channel, so an over-arity query is left positional (it simply finds no
+            // match) rather than aborting — unlike a stored fact/rule, a malformed
+            // query corrupts nothing.
+            if !new_pos.is_empty()
+                && !node_occurrence::is_reflect_form_functor(kb, kb_functor)
+                && !kb.qualified_name_of(kb_functor).starts_with("anthill.reflect.")
+            {
+                if let Some(all_fields) = kb.entity_field_names(kb_functor).map(|f| f.to_vec()) {
+                    let named_set: HashSet<Symbol> = new_named.iter().map(|(s, _)| *s).collect();
+                    let unfilled: Vec<Symbol> = all_fields
+                        .iter()
+                        .copied()
+                        .filter(|f| !named_set.contains(f))
+                        .collect();
+                    if new_pos.len() <= unfilled.len() {
+                        for (i, pos_val) in new_pos.drain(..).enumerate() {
+                            new_named.push((unfilled[i], pos_val));
+                        }
+                    }
+                }
+            }
 
             // Expand partial named args: fill missing entity fields with fresh vars
             // Always sort named args to match entity field order (required for
@@ -5166,6 +5195,59 @@ impl<'a> Loader<'a> {
                 if is_some_ctor && new_pos.len() == 1 && new_named.is_empty() {
                     let value_sym = self.kb.intern("value");
                     new_named.push((value_sym, new_pos.pop().expect("len checked")));
+                }
+
+                // WI-433: DESUGAR positional constructor args to NAMED. Positional
+                // and named constructor terms must share ONE in-KB shape — a stored
+                // fact's named args (sorted by field) never unify with a positional
+                // pattern via the discrim tree, so a positional `Verified(?)`
+                // pattern silently NEVER matched the named `Verified(at: …)` facts.
+                // "Positional application is sugar for names" (kernel spec §5.2;
+                // generalizes the `some(x)` case just above). Positional args fill
+                // the declared fields NOT already given by name, in declaration
+                // order (matching the materializer's rank-among-not-named read, so
+                // `pair2(a: 10, 20)` fills `b` and `pair2(1, b: 2)` fills `a`).
+                // More positional args than unfilled fields is a loud error (the
+                // loud-error principle — never a silent never-match). EXCLUDED: a
+                // non-entity functor (tuple / builtin / generic application — no
+                // declared fields), and the `anthill.reflect.*` Expr meta-ctors
+                // (`ho_apply` / `match_expr` / `if_expr` / …) whose positional shape
+                // is the reflect encoding, not user named-field application.
+                if !new_pos.is_empty()
+                    && !node_occurrence::is_reflect_form_functor(self.kb, new_functor)
+                    && !self.kb.qualified_name_of(new_functor).starts_with("anthill.reflect.")
+                {
+                    if let Some(all_fields) =
+                        self.kb.entity_field_names(new_functor).map(|f| f.to_vec())
+                    {
+                        let named_set: HashSet<Symbol> =
+                            new_named.iter().map(|(s, _)| *s).collect();
+                        let unfilled: Vec<Symbol> = all_fields
+                            .iter()
+                            .copied()
+                            .filter(|f| !named_set.contains(f))
+                            .collect();
+                        if new_pos.len() > unfilled.len() {
+                            let fields = all_fields
+                                .iter()
+                                .map(|s| self.kb.resolve_sym(*s).to_string())
+                                .collect::<Vec<_>>()
+                                .join(", ");
+                            self.errors.push(LoadError::Other {
+                                message: format!(
+                                    "constructor '{}' given {} positional argument(s) but has {} unfilled field(s) (declares: {})",
+                                    self.kb.resolve_sym(new_functor),
+                                    new_pos.len(),
+                                    unfilled.len(),
+                                    fields,
+                                ),
+                            });
+                        } else {
+                            for (i, pos_val) in new_pos.drain(..).enumerate() {
+                                new_named.push((unfilled[i], pos_val));
+                            }
+                        }
+                    }
                 }
 
                 // Expand partial named args: fill missing entity fields with fresh vars
