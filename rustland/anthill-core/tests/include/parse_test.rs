@@ -3738,6 +3738,31 @@ fn parse_dangling_case_rejected() {
     );
 }
 
+// WI-303: tree-sitter recovers from malformed input by inserting ERROR /
+// MISSING nodes and continuing; the converter walks past anything it doesn't
+// recognise. `parse()` must surface those nodes as errors instead of silently
+// dropping the broken construct (CLAUDE.md: "avoid fallbacks, know about
+// errors early"). Covers both branches of `collect_syntax_errors`.
+#[test]
+fn parse_fires_on_syntax_error() {
+    // MISSING branch: an unclosed namespace leaves the `}` missing.
+    let missing = parse::parse("namespace test {\n")
+        .expect_err("unclosed namespace must fail parse");
+    assert!(
+        missing.iter().any(|e| e.message.contains("missing")),
+        "expected a `missing` diagnostic, got: {missing:?}",
+    );
+
+    // ERROR branch: a malformed operation header tree-sitter cannot recover
+    // into a valid node.
+    let error = parse::parse("operation f( -> Int64\n")
+        .expect_err("malformed operation header must fail parse");
+    assert!(
+        error.iter().any(|e| e.message.contains("syntax error")),
+        "expected a `syntax error` diagnostic, got: {error:?}",
+    );
+}
+
 // WI-446: binding the inner match to a `let` terminates its branch list (the
 // trailing `r` reference is not a `case`), so the outer match keeps both arms
 // and no diagnostic fires.
