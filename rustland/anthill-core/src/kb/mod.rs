@@ -2871,6 +2871,30 @@ impl KnowledgeBase {
         })
     }
 
+    /// Allocate an entity `Term::Fn`, canonicalizing its named args to the
+    /// functor's declared field order via [`Self::sort_named_canonical`]. This
+    /// is the single funnel for Rust-side entity-term construction (WI-299):
+    /// the discrimination matcher (`discrim.rs`) descends named keys
+    /// *positionally* and the loader canonicalizes loaded patterns/facts to
+    /// declared field order (`load.rs` via `entity_field_names`), so a built
+    /// term MUST use that same order or it silently matches zero solutions.
+    /// Builders route through here instead of sorting named args ad-hoc by
+    /// `Symbol::index()` (interning order), which only *coincidentally* equals
+    /// declared order and would break under any change to interning order, with
+    /// no error. `pos_args` pass through unchanged (positional order is already
+    /// significant). When the functor has no registered field list,
+    /// `sort_named_canonical` falls back to interning order — preserving the
+    /// prior behavior for anonymous shapes.
+    pub fn make_entity_term(
+        &mut self,
+        functor: Symbol,
+        pos_args: SmallVec<[TermId; 4]>,
+        mut named_args: SmallVec<[(Symbol, TermId); 2]>,
+    ) -> TermId {
+        self.sort_named_canonical(functor, &mut named_args);
+        self.alloc(Term::Fn { functor, pos_args, named_args })
+    }
+
     // ── List construction ────────────────────────────────────────
 
     /// Build a cons-list term from a slice of TermIds.
@@ -2889,12 +2913,7 @@ impl KnowledgeBase {
             let mut args: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
             args.push((head_sym, item));
             args.push((tail_sym, list));
-            args.sort_by_key(|(s, _)| s.index());
-            list = self.alloc(Term::Fn {
-                functor: cons_sym,
-                pos_args: SmallVec::new(),
-                named_args: args,
-            });
+            list = self.make_entity_term(cons_sym, SmallVec::new(), args);
         }
         list
     }
@@ -3145,13 +3164,8 @@ impl KnowledgeBase {
             // non-parametric sort whose stray bindings were dropped at load.
             return self.alloc(Term::Ref(base_sym));
         }
-        let mut named_args: SmallVec<[(Symbol, TermId); 2]> = bindings.iter().copied().collect();
-        named_args.sort_by_key(|(s, _)| s.index());
-        self.alloc(Term::Fn {
-            functor: base_sym,
-            pos_args: SmallVec::new(),
-            named_args,
-        })
+        let named_args: SmallVec<[(Symbol, TermId); 2]> = bindings.iter().copied().collect();
+        self.make_entity_term(base_sym, SmallVec::new(), named_args)
     }
 
     /// arrow(param: <type>, result: <type>, effects: <effects_rows Type>).
@@ -3208,12 +3222,7 @@ impl KnowledgeBase {
         named_args.push((effects_key, effects_rows));
         named_args.push((param_key, param));
         named_args.push((result_key, result));
-        named_args.sort_by_key(|(s, _)| s.index());
-        self.alloc(Term::Fn {
-            functor: arrow_sym,
-            pos_args: SmallVec::new(),
-            named_args,
-        })
+        self.make_entity_term(arrow_sym, SmallVec::new(), named_args)
     }
 
     // ── EffectExpression builders (WI-307 v1a) ──────────────────────────
@@ -3255,21 +3264,8 @@ impl KnowledgeBase {
         let expr_key = self.intern("effects_expr");
         let mut named_args: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
         named_args.push((expr_key, empty));
-        named_args.sort_by_key(|(s, _)| s.index());
-        Some(self.alloc(Term::Fn {
-            functor: rows_sym,
-            pos_args: SmallVec::new(),
-            named_args,
-        }))
+        Some(self.make_entity_term(rows_sym, SmallVec::new(), named_args))
     }
-
-    // WI-307 code-review #11: every EffectExpression / effects_rows
-    // builder calls `sort_by_key` on named_args before allocating, even
-    // when only one field is pushed. This is a no-op today (single-element
-    // SmallVec is trivially sorted), but uniformly enforcing the
-    // "named args sorted by field name" convention (per CLAUDE.md) keeps
-    // hash-cons identity stable if any peer later gains a second field —
-    // otherwise push-order would silently determine the SmallVec layout.
 
     /// EffectExpression `present(label: Type)` — a single present effect.
     pub fn make_effect_expression_present(&mut self, label: TermId) -> TermId {
@@ -3277,12 +3273,7 @@ impl KnowledgeBase {
         let label_key = self.intern("label");
         let mut named_args: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
         named_args.push((label_key, label));
-        named_args.sort_by_key(|(s, _)| s.index());
-        self.alloc(Term::Fn {
-            functor: sym,
-            pos_args: SmallVec::new(),
-            named_args,
-        })
+        self.make_entity_term(sym, SmallVec::new(), named_args)
     }
 
     /// EffectExpression `absent(label: Type)` — `-e` absence guarantee.
@@ -3292,12 +3283,7 @@ impl KnowledgeBase {
         let label_key = self.intern("label");
         let mut named_args: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
         named_args.push((label_key, label));
-        named_args.sort_by_key(|(s, _)| s.index());
-        self.alloc(Term::Fn {
-            functor: sym,
-            pos_args: SmallVec::new(),
-            named_args,
-        })
+        self.make_entity_term(sym, SmallVec::new(), named_args)
     }
 
     /// EffectExpression `open(tail: Type)` — a row variable tail, carrying
@@ -3308,12 +3294,7 @@ impl KnowledgeBase {
         let tail_key = self.intern("tail");
         let mut named_args: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
         named_args.push((tail_key, tail));
-        named_args.sort_by_key(|(s, _)| s.index());
-        self.alloc(Term::Fn {
-            functor: sym,
-            pos_args: SmallVec::new(),
-            named_args,
-        })
+        self.make_entity_term(sym, SmallVec::new(), named_args)
     }
 
     /// EffectExpression `merge(left, right)` — union of two expressions.
@@ -3326,12 +3307,7 @@ impl KnowledgeBase {
         let mut named_args: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
         named_args.push((left_key, left));
         named_args.push((right_key, right));
-        named_args.sort_by_key(|(s, _)| s.index());
-        self.alloc(Term::Fn {
-            functor: sym,
-            pos_args: SmallVec::new(),
-            named_args,
-        })
+        self.make_entity_term(sym, SmallVec::new(), named_args)
     }
 
     /// Wrap an EffectExpression in the `effects_rows(effects_expr: …)` Type
@@ -3343,12 +3319,7 @@ impl KnowledgeBase {
         let expr_key = self.intern("effects_expr");
         let mut named_args: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
         named_args.push((expr_key, expr));
-        named_args.sort_by_key(|(s, _)| s.index());
-        self.alloc(Term::Fn {
-            functor: sym,
-            pos_args: SmallVec::new(),
-            named_args,
-        })
+        self.make_entity_term(sym, SmallVec::new(), named_args)
     }
 
     /// Build a canonical `effects_rows(EffectExpression)` Type from a flat
@@ -3471,11 +3442,7 @@ impl KnowledgeBase {
         let name_val = self.alloc(Term::Ref(name));
         let mut named_args: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
         named_args.push((name_key, name_val));
-        self.alloc(Term::Fn {
-            functor: type_var_sym,
-            pos_args: SmallVec::new(),
-            named_args,
-        })
+        self.make_entity_term(type_var_sym, SmallVec::new(), named_args)
     }
 
     /// denoted(value: <term>) — a value-in-type carried faithfully as a hash-consed
@@ -3488,11 +3455,7 @@ impl KnowledgeBase {
         let value_key = self.intern("value");
         let mut named_args: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
         named_args.push((value_key, value));
-        self.alloc(Term::Fn {
-            functor: denoted_sym,
-            pos_args: SmallVec::new(),
-            named_args,
-        })
+        self.make_entity_term(denoted_sym, SmallVec::new(), named_args)
     }
 
     /// expr_carried(value: <term>, member: Ref(<sym>)) — the term twin of an
@@ -3510,14 +3473,7 @@ impl KnowledgeBase {
         let mut named_args: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
         named_args.push((value_key, value));
         named_args.push((member_key, member_val));
-        // Canonical named-arg order is by symbol index (codebase convention), so the
-        // hash-consed `ExprCarried` term is order-stable regardless of build site.
-        named_args.sort_by_key(|(s, _)| s.index());
-        self.alloc(Term::Fn {
-            functor: expr_carried_sym,
-            pos_args: SmallVec::new(),
-            named_args,
-        })
+        self.make_entity_term(expr_carried_sym, SmallVec::new(), named_args)
     }
 
     /// rigid_type_projection(sort: Ref(<decl>), var: <subject>, member: Ref(<sym>)) —
@@ -3544,14 +3500,7 @@ impl KnowledgeBase {
         named_args.push((sort_key, sort_val));
         named_args.push((var_key, subject));
         named_args.push((member_key, member_val));
-        // Canonical named-arg order is by symbol index (codebase convention), so the
-        // hash-consed projection term is order-stable regardless of build site.
-        named_args.sort_by_key(|(s, _)| s.index());
-        self.alloc(Term::Fn {
-            functor,
-            pos_args: SmallVec::new(),
-            named_args,
-        })
+        self.make_entity_term(functor, SmallVec::new(), named_args)
     }
 
     /// Occurrence twin of [`Self::make_expr_carried`] for a COMPOUND receiver
@@ -3593,16 +3542,7 @@ impl KnowledgeBase {
         let mut named_args: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
         named_args.push((pos_key, pos));
         named_args.push((internal_key, internal));
-        // Canonical field order via the shared helper — once `Positioned` is
-        // declared in stdlib reflect.anthill its registered field order is the
-        // source of truth (else `Symbol::index()`), so the built term matches what
-        // any discrim/reflect reader expects.
-        self.sort_named_canonical(positioned_sym, &mut named_args);
-        self.alloc(Term::Fn {
-            functor: positioned_sym,
-            pos_args: SmallVec::new(),
-            named_args,
-        })
+        self.make_entity_term(positioned_sym, SmallVec::new(), named_args)
     }
 
     /// named_tuple(fields: List[NamedTupleElement]).
@@ -3618,23 +3558,14 @@ impl KnowledgeBase {
             let mut args: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
             args.push((name_key, name_ref));
             args.push((type_key, *field_type));
-            args.sort_by_key(|(s, _)| s.index());
-            self.alloc(Term::Fn {
-                functor: element_sym,
-                pos_args: SmallVec::new(),
-                named_args: args,
-            })
+            self.make_entity_term(element_sym, SmallVec::new(), args)
         }).collect();
 
         let fields_list = self.build_list(&field_terms);
 
         let mut named_args: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
         named_args.push((fields_key, fields_list));
-        self.alloc(Term::Fn {
-            functor: named_tuple_sym,
-            pos_args: SmallVec::new(),
-            named_args,
-        })
+        self.make_entity_term(named_tuple_sym, SmallVec::new(), named_args)
     }
 
     /// nothing — bottom type.
@@ -3878,6 +3809,64 @@ mod tests {
         let results = kb.by_sort(sort_account);
         assert_eq!(results.len(), 1);
         assert_eq!(results[0], fid);
+    }
+
+    #[test]
+    fn make_entity_term_orders_named_by_declared_field_not_interning() {
+        // WI-299: `make_entity_term` must order named args by the functor's
+        // DECLARED field order, not by `Symbol::index()` (interning order). We
+        // intern the fields in the REVERSE of their declared order so the two
+        // orders disagree; an ad-hoc `s.index()` sort would mis-order the term
+        // and silently miss the loader-canonicalized pattern in the (positional)
+        // discrimination matcher.
+        let mut kb = KnowledgeBase::new();
+
+        // Intern `second` BEFORE `first`, so index(second) < index(first) — the
+        // OPPOSITE of the declared `[first, second]` order registered below.
+        let second = kb.intern("second");
+        let first = kb.intern("first");
+        assert!(
+            second.index() < first.index(),
+            "test setup: interning order must invert declared order"
+        );
+
+        let functor = kb.intern("Pair");
+        kb.register_entity_fields(functor, vec![first, second]);
+
+        let v1 = kb.alloc(Term::Const(Literal::Int(1)));
+        let v2 = kb.alloc(Term::Const(Literal::Int(2)));
+        let mut named: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
+        named.push((second, v2));
+        named.push((first, v1));
+        let term = kb.make_entity_term(functor, SmallVec::new(), named);
+
+        match kb.terms.get(term) {
+            Term::Fn { named_args, .. } => {
+                let order: Vec<Symbol> = named_args.iter().map(|(s, _)| *s).collect();
+                assert_eq!(
+                    order,
+                    vec![first, second],
+                    "named args must follow declared field order, not interning order"
+                );
+            }
+            other => panic!("expected Term::Fn, got {other:?}"),
+        }
+
+        // With NO registered field list, `make_entity_term` falls back to
+        // interning order (anonymous shape) — preserving prior behavior.
+        let anon = kb.intern("Anon");
+        let mut named2: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
+        named2.push((first, v1));
+        named2.push((second, v2));
+        let anon_term = kb.make_entity_term(anon, SmallVec::new(), named2);
+        match kb.terms.get(anon_term) {
+            Term::Fn { named_args, .. } => {
+                let order: Vec<Symbol> = named_args.iter().map(|(s, _)| *s).collect();
+                // `second` was interned first, so it sorts first under the fallback.
+                assert_eq!(order, vec![second, first]);
+            }
+            other => panic!("expected Term::Fn, got {other:?}"),
+        }
     }
 
     #[test]

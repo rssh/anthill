@@ -1586,7 +1586,11 @@ impl Interpreter {
         pos: Vec<Value>,
         mut named: Vec<(Symbol, Value)>,
     ) -> Result<StepOutcome, EvalError> {
-        sort_named_canonical(&self.kb, ctor_sym, &mut named);
+        // Shared with the Term-side builders (WI-299): `KnowledgeBase::sort_named_canonical`
+        // is generic over the arg value type, so Value- and Term-carried entities
+        // canonicalize to the SAME declared-field order (else they'd hash-cons /
+        // discrim-match as distinct shapes).
+        self.kb.sort_named_canonical(ctor_sym, &mut named);
         let value = if Some(ctor_sym) == self.reflect.list_literal {
             self.build_list_value(pos, &named)?
         } else if is_tuple_literal {
@@ -1793,21 +1797,6 @@ fn classify_ctor_arg(
         }
         Some(sym) => named.push((sym, value)),
         None => pos.push(value),
-    }
-}
-
-/// Sort named args by the entity's declared field order when the functor
-/// is registered, falling back to `Symbol::index()` for anonymous shapes.
-/// Mirrors `alloc_from_value` in `kb/execute.rs` so Value and Term share
-/// the same canonical form.
-fn sort_named_canonical(kb: &KnowledgeBase, functor: Symbol, named: &mut Vec<(Symbol, Value)>) {
-    if named.len() < 2 {
-        return;
-    }
-    match kb.entity_field_names(functor) {
-        Some(order) => named.sort_by_key(|(s, _)|
-            order.iter().position(|f| f == s).unwrap_or(usize::MAX)),
-        None => named.sort_by_key(|(s, _)| s.index()),
     }
 }
 

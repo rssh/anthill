@@ -2253,8 +2253,7 @@ impl KnowledgeBase {
         named.push((file_k, file_v));
         named.push((start_k, start_v));
         named.push((end_k, end_v));
-        self.sort_named_canonical(functor, &mut named);
-        Some(self.alloc(Term::Fn { functor, pos_args: SmallVec::new(), named_args: named }))
+        Some(self.make_entity_term(functor, SmallVec::new(), named))
     }
 
     /// Sort named args into the functor's canonical (declared field) order —

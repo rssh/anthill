@@ -2486,8 +2486,11 @@ fn type_node_to_term(kb: &mut KnowledgeBase, tn: &TypeNode) -> TermId {
                     let mut named: smallvec::SmallVec<[(Symbol, TermId); 2]> = smallvec::SmallVec::new();
                     named.push((vk, v));
                     named.push((mk, m));
-                    named.sort_by_key(|(s, _)| s.index());
-                    kb.alloc(Term::Fn { functor: ec, pos_args: smallvec::SmallVec::new(), named_args: named })
+                    // Canonicalize via the same funnel as `make_expr_carried` (WI-299) so this
+                    // hand-built twin shares the declared-field-order layout — else the two
+                    // would hash-cons to distinct `ExprCarried` TermIds for the same logical
+                    // projection and the positional discrim matcher would silently miss.
+                    kb.make_entity_term(ec, smallvec::SmallVec::new(), named)
                 }
             }
         }
