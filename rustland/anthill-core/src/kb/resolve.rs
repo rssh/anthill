@@ -3118,12 +3118,27 @@ impl KnowledgeBase {
                 continue;
             }
             let Some(arg) = node_first_pos_arg(node) else { continue };
+            let mut unbound = Vec::new();
+            // Value-arg delay: the builtin delays when its first arg resolves to
+            // an unbound var (the occurrence twin of `builtin_would_delay`'s
+            // non-`Not` arm). A compound first arg gives the builtin a concrete-
+            // headed value structure, so it does NOT delay on value vars (the
+            // builtin binds them via unification) — hence the bare-var gate.
             if self.occ_top_resolves_to_var(&arg, subst) {
-                let mut unbound = Vec::new();
                 self.collect_unbound_vars_node(&arg, subst, &mut unbound);
-                if unbound.iter().any(|v| caller_fresh_vars.contains(v)) {
-                    return true;
-                }
+            }
+            // Type-position delay (WI-322): a caller var inside the first arg's
+            // own `type_args` / `type_annotation` (`f[T = ?caller_var](…)`)
+            // blocks a type-dispatching builtin even when its value structure is
+            // ground — resolving the typed call needs `T` bound first. Unlike
+            // value structure, a type-position var is NOT something the builtin
+            // binds, so it must propagate delay. Latent until typer/simp
+            // populates type_args at a builtin first-arg position.
+            if let Some(expr) = arg.as_expr() {
+                self.collect_expr_type_field_unbound_vars(expr, subst, &mut unbound);
+            }
+            if unbound.iter().any(|v| caller_fresh_vars.contains(v)) {
+                return true;
             }
         }
         false
@@ -3202,8 +3217,85 @@ impl KnowledgeBase {
                 node_occurrence::for_each_child(expr, |c| {
                     self.collect_unbound_vars_node(c, subst, out)
                 });
+                // WI-322: `for_each_child` walks the value children but NOT the
+                // TermId-typed type fields (`type_args` / `type_annotation`);
+                // descend them too so a caller var living inside an op type-arg
+                // (`f[T = ?caller_var](…)`) is counted. Symmetric with the
+                // loader's `collect_occurrence_global_vars_ordered`, which pairs
+                // `for_each_child` with `collect_expr_termid_field_vars`.
+                self.collect_expr_type_field_unbound_vars(expr, subst, out);
             }
             None => {}
+        }
+    }
+
+    /// WI-322: collect the unbound `Global` vars living in an `Expr`'s
+    /// TermId-typed type fields — the `type_args` of an `Apply`/`ApplyWithin`
+    /// and the `type_annotation` of a `Let`. The subst-aware twin of the
+    /// loader's [`node_occurrence::collect_expr_termid_field_vars`]: it walks
+    /// the SAME fields, but reads each type `Value` through the substitution so
+    /// only vars still unbound here are reported. A `Value::Node` type spine /
+    /// scalar carries no Global vars at resolution time (see the
+    /// `Expr::Apply.type_args` doc), so it contributes nothing.
+    fn collect_expr_type_field_unbound_vars(
+        &self,
+        expr: &Expr,
+        subst: &Substitution,
+        out: &mut Vec<VarId>,
+    ) {
+        match expr {
+            Expr::Apply { type_args, .. } | Expr::ApplyWithin { type_args, .. } => {
+                for (_, v) in type_args {
+                    self.collect_type_value_unbound_vars(v, subst, out);
+                }
+            }
+            Expr::Let { type_annotation: Some(v), .. } => {
+                self.collect_type_value_unbound_vars(v, subst, out);
+            }
+            _ => {}
+        }
+    }
+
+    /// Collect the unbound `Global` vars of a type `Value` (WI-322) — the
+    /// subst-aware twin of the loader's `collect_value_type` (node_occurrence),
+    /// walking the SAME carriers so collect / open / close / σ stay in lockstep
+    /// over the type spine (the WI-378 invariant):
+    /// - `Value::Term` is chased through the existing [`Self::collect_unbound_vars`]
+    ///   term walker (the WI's stated mechanism), which follows var→var alias
+    ///   chains so a type-arg aliased to a caller var is found. (A var bound to a
+    ///   non-`Term` carrier is conservatively reported here — `walk` stops at it —
+    ///   matching the term walker used by the value-arg path; at worst an
+    ///   over-delay, never a missed one.)
+    /// - `Value::Node` (a denoted / value-in-type spine) descends via the
+    ///   occurrence walker [`Self::collect_unbound_vars_node`] — the loader twin
+    ///   likewise descends `Value::Node` (via `collect_type_or_expr_node_vars`);
+    ///   skipping it here would miss a caller var that `with_fresh_vars` opened
+    ///   from a DeBruijn var inside the spine (under-delay). A `Type`/`EffectExpr`
+    ///   -kind spine is reached only down to its `Expr` leaves — full subst-aware
+    ///   Type-spine var collection rides the pending WI-378 type-field→child
+    ///   migration (the boundary the loader's `for_each_child` var walk asserts on).
+    /// - a tuple / named-tuple type value recurses into its element types.
+    /// - scalars / runtime handles carry no type vars (the loader twin's tail
+    ///   likewise skips them, and `Value::Var` — which never lands in a type
+    ///   position, the opener leaves it inert — falls here too).
+    fn collect_type_value_unbound_vars(
+        &self,
+        v: &Value,
+        subst: &Substitution,
+        out: &mut Vec<VarId>,
+    ) {
+        match v {
+            Value::Term(t) => self.collect_unbound_vars(*t, subst, out),
+            Value::Node(occ) => self.collect_unbound_vars_node(occ, subst, out),
+            Value::Entity { pos, named, .. } | Value::Tuple { pos, named } => {
+                for c in pos.iter() {
+                    self.collect_type_value_unbound_vars(c, subst, out);
+                }
+                for (_, c) in named.iter() {
+                    self.collect_type_value_unbound_vars(c, subst, out);
+                }
+            }
+            _ => {}
         }
     }
 
@@ -5908,5 +6000,219 @@ mod tests {
         // Head-var dedup: "ok" and "fail" each appear once
         assert_eq!(xs, vec!["fail", "ok"],
             "head-var dedup should yield exactly 2 distinct solutions");
+    }
+
+    // ── WI-322: caller-var delay through op type_args ────────────
+
+    /// A delayed builtin whose first arg is `g[T = ?caller_var](1)` — the
+    /// caller var lives in the typed call's `type_args`, not its value
+    /// structure. The delay pre-check must detect it through the type-arg
+    /// `Value` and propagate rule delay (WI-322). Latent in the prelude (no
+    /// builtin first-arg carries type_args yet), so this exercises it directly.
+    #[test]
+    fn delay_propagates_on_caller_var_in_type_args() {
+        let mut kb = KnowledgeBase::new();
+        let builtin_sym = kb.intern("test_builtin");
+        // Register `test_builtin` as a non-Not/PushChoice builtin so the
+        // pre-check classifies the goal (Eq is an arbitrary qualifying tag).
+        kb.builtins.insert(builtin_sym, BuiltinTag::Eq);
+
+        let g_sym = kb.intern("g");
+        let t_sym = kb.intern("T");
+        let caller_sym = kb.intern("caller");
+        let caller_vid = kb.fresh_var(caller_sym);
+        let caller_term = kb.alloc(Term::Var(Var::Global(caller_vid)));
+
+        let span = crate::span::SourceSpan::new(crate::span::SourceId::from_raw(0), 0, 0);
+
+        // g[T = ?caller_var](1) — concrete value arg, caller var only in type_args.
+        let concrete = NodeOccurrence::new_expr(Expr::Const(Literal::Int(1)), span, None);
+        let g_call = NodeOccurrence::new_expr(
+            Expr::Apply {
+                functor: g_sym,
+                pos_args: vec![concrete],
+                named_args: vec![],
+                type_args: vec![(Some(t_sym), Value::Term(caller_term))],
+            },
+            span,
+            None,
+        );
+        // test_builtin( g[T = ?caller_var](1) )
+        let goal = NodeOccurrence::new_expr(
+            Expr::Apply {
+                functor: builtin_sym,
+                pos_args: vec![g_call],
+                named_args: vec![],
+                type_args: vec![],
+            },
+            span,
+            None,
+        );
+
+        let subst = Substitution::new();
+        // ?caller_var IS a caller var → the rule must delay.
+        assert!(
+            kb.body_builtins_delay_on_caller_vars_nodes(
+                std::slice::from_ref(&goal),
+                &[caller_vid],
+                &subst,
+            ),
+            "caller var inside the first arg's type_args must propagate delay"
+        );
+        // Control: not a caller var → no delay (the type-arg var is internal,
+        // bindable by the rule's own body).
+        assert!(
+            !kb.body_builtins_delay_on_caller_vars_nodes(&[goal], &[], &subst),
+            "an internal (non-caller) type-arg var must not force delay"
+        );
+    }
+
+    /// Twin guard: a caller var in the first arg's *value* structure
+    /// (`g(?caller_var)`, no type_args) must NOT propagate delay — a compound
+    /// value arg is bound by the builtin via unification, so the bare-var gate
+    /// deliberately excludes it (WI-322 keeps this behavior intact).
+    #[test]
+    fn no_delay_on_caller_var_in_value_structure() {
+        let mut kb = KnowledgeBase::new();
+        let builtin_sym = kb.intern("test_builtin");
+        kb.builtins.insert(builtin_sym, BuiltinTag::Eq);
+
+        let g_sym = kb.intern("g");
+        let caller_sym = kb.intern("caller");
+        let caller_vid = kb.fresh_var(caller_sym);
+
+        let span = crate::span::SourceSpan::new(crate::span::SourceId::from_raw(0), 0, 0);
+
+        // g(?caller_var) — caller var in a positional value slot, no type_args.
+        let caller_occ = NodeOccurrence::new_expr(Expr::Var(Var::Global(caller_vid)), span, None);
+        let g_call = NodeOccurrence::new_expr(
+            Expr::Apply {
+                functor: g_sym,
+                pos_args: vec![caller_occ],
+                named_args: vec![],
+                type_args: vec![],
+            },
+            span,
+            None,
+        );
+        let goal = NodeOccurrence::new_expr(
+            Expr::Apply {
+                functor: builtin_sym,
+                pos_args: vec![g_call],
+                named_args: vec![],
+                type_args: vec![],
+            },
+            span,
+            None,
+        );
+
+        let subst = Substitution::new();
+        assert!(
+            !kb.body_builtins_delay_on_caller_vars_nodes(&[goal], &[caller_vid], &subst),
+            "a caller var in value structure (not a type position) must not force delay"
+        );
+    }
+
+    /// Direct coverage of the WI-322 `collect_unbound_vars_node` extension: as a
+    /// complete unbound-var collector it must report BOTH the value-structure
+    /// var (`?y`, via `for_each_child`) AND the type-arg var (`?x`, via the new
+    /// type-field descent) of `g[T = ?x](?y)`.
+    #[test]
+    fn collect_unbound_vars_node_descends_type_args() {
+        let mut kb = KnowledgeBase::new();
+        let g_sym = kb.intern("g");
+        let t_sym = kb.intern("T");
+        let x_sym = kb.intern("x");
+        let y_sym = kb.intern("y");
+        let vx = kb.fresh_var(x_sym);
+        let vy = kb.fresh_var(y_sym);
+        let x_term = kb.alloc(Term::Var(Var::Global(vx)));
+
+        let span = crate::span::SourceSpan::new(crate::span::SourceId::from_raw(0), 0, 0);
+        let y_occ = NodeOccurrence::new_expr(Expr::Var(Var::Global(vy)), span, None);
+        let g_call = NodeOccurrence::new_expr(
+            Expr::Apply {
+                functor: g_sym,
+                pos_args: vec![y_occ],
+                named_args: vec![],
+                type_args: vec![(Some(t_sym), Value::Term(x_term))],
+            },
+            span,
+            None,
+        );
+
+        let subst = Substitution::new();
+        let mut out = Vec::new();
+        kb.collect_unbound_vars_node(&g_call, &subst, &mut out);
+        out.sort_by_key(|v| v.raw());
+        let mut expected = vec![vx, vy];
+        expected.sort_by_key(|v| v.raw());
+        assert_eq!(out, expected, "both the type-arg var and the value var must be collected");
+    }
+
+    /// WI-322 (review fix): a caller var inside a `Value::Node` type-arg spine —
+    /// here a value-in-type that is itself a typed call `h[S = ?caller]` — must
+    /// be detected. The collector descends `Value::Node` via the occurrence
+    /// walker (the loader twin descends Node too); skipping it would under-delay
+    /// a var that `with_fresh_vars` opened from a DeBruijn var in the spine.
+    #[test]
+    fn delay_propagates_on_caller_var_in_node_type_arg_spine() {
+        let mut kb = KnowledgeBase::new();
+        let builtin_sym = kb.intern("test_builtin");
+        kb.builtins.insert(builtin_sym, BuiltinTag::Eq);
+
+        let g_sym = kb.intern("g");
+        let h_sym = kb.intern("h");
+        let t_sym = kb.intern("T");
+        let s_sym = kb.intern("S");
+        let caller_sym = kb.intern("caller");
+        let caller_vid = kb.fresh_var(caller_sym);
+        let caller_term = kb.alloc(Term::Var(Var::Global(caller_vid)));
+
+        let span = crate::span::SourceSpan::new(crate::span::SourceId::from_raw(0), 0, 0);
+
+        // The Node-carried type-arg: a value-in-type `h[S = ?caller]` occurrence.
+        let h_call = NodeOccurrence::new_expr(
+            Expr::Apply {
+                functor: h_sym,
+                pos_args: vec![],
+                named_args: vec![],
+                type_args: vec![(Some(s_sym), Value::Term(caller_term))],
+            },
+            span,
+            None,
+        );
+        // g[T = «Node(h[S = ?caller])»](1)
+        let concrete = NodeOccurrence::new_expr(Expr::Const(Literal::Int(1)), span, None);
+        let g_call = NodeOccurrence::new_expr(
+            Expr::Apply {
+                functor: g_sym,
+                pos_args: vec![concrete],
+                named_args: vec![],
+                type_args: vec![(Some(t_sym), Value::Node(h_call))],
+            },
+            span,
+            None,
+        );
+        let goal = NodeOccurrence::new_expr(
+            Expr::Apply {
+                functor: builtin_sym,
+                pos_args: vec![g_call],
+                named_args: vec![],
+                type_args: vec![],
+            },
+            span,
+            None,
+        );
+
+        let subst = Substitution::new();
+        assert!(
+            kb.body_builtins_delay_on_caller_vars_nodes(
+                std::slice::from_ref(&goal),
+                &[caller_vid],
+                &subst,
+            ),
+            "a caller var inside a Value::Node type-arg spine must propagate delay"
+        );
     }
 }
