@@ -125,13 +125,13 @@ object Loader:
         case Item.OperationItem(op) =>
           val shortName = joinSegments(fileSym, op.name.segments)
           val qualName = makeQualified(prefix, shortName)
-          kb.symbols.define(shortName, qualName, SymbolKind.Operation, scopeTerm.raw)
+          defineOperationOnce(kb, shortName, qualName, scopeTerm)
 
         case Item.OperationBlockItem(block) =>
           for op <- block.entries do
             val shortName = joinSegments(fileSym, op.name.segments)
             val qualName = makeQualified(prefix, shortName)
-            kb.symbols.define(shortName, qualName, SymbolKind.Operation, scopeTerm.raw)
+            defineOperationOnce(kb, shortName, qualName, scopeTerm)
 
         case Item.RuleItem(rule) =>
           rule.label.foreach { label =>
@@ -149,6 +149,26 @@ object Loader:
             }
 
         case _ => // Other items don't define symbols in pass 1
+
+  /** Define an operation symbol unless its qualified name is already
+    * registered — mirrors rustland's `is_new` reuse gate (load.rs:1110, the
+    * entity arm). A kernel operation such as `anthill.reflect.not` is FIRST
+    * registered as a builtin by `Prelude.registerStandardBuiltins` (into the
+    * prelude's `anthill.reflect` scope); the stdlib then ALSO declares
+    * `operation not(...)` in reflect.anthill. Because scaland scans a re-opened
+    * namespace into a fresh scope (it does not yet reuse the prelude's scope),
+    * a plain `define` here would mint a SECOND `anthill.reflect.not` symbol in a
+    * different scope — and a bare rule-body use (`:- not(...)` in typing.anthill)
+    * would then collect both via `resolveInScope` and report `AmbiguousSymbol`
+    * (WI-212). Reusing the already-registered symbol keeps exactly one. */
+  private def defineOperationOnce(
+    kb: KnowledgeBase,
+    shortName: String,
+    qualName: String,
+    scopeTerm: TermId
+  ): Unit =
+    if !kb.symbols.byQualifiedName.contains(qualName) then
+      kb.symbols.define(shortName, qualName, SymbolKind.Operation, scopeTerm.raw)
 
   // ── Pass 2: Process requires/imports ─────────────────────────
 
