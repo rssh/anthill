@@ -231,3 +231,77 @@ fn tooldef_loaded() {
     // project.anthill imports cargo-build, cargo-test, cargo-clippy + tools.anthill defines lint-all
     assert!(results.len() >= 1, "expected at least 1 ToolDef fact, got {}", results.len());
 }
+
+/// WI-501: a fact serialized to a persisted store (TOML) and reloaded must
+/// hash-cons-match the SAME fact loaded from .anthill source. The serializer is
+/// lossy without types (it strips `some(value: x)` → `x`, drops `none()`, and
+/// renders nullary entities like `Open` as bare strings); the type-directed
+/// deserializer rebuilds each field from its declared type so the round-trip is
+/// faithful. Uses a fact with all fields explicitly valued (no omitted→fresh-var
+/// fields, which carry distinct VarIds and so cannot hash-cons-match).
+#[test]
+fn wi501_workitem_round_trips_through_store() {
+    use anthill_core::persistence::term_ser;
+    let extra = r#"
+namespace anthill.stage0
+  fact WorkItem(id: "WI-RT", description: some(value: "round trip"),
+                context: none, acceptance: [], depends_on: none,
+                generates: none, requires_capability: none, status: Open)
+end
+"#;
+    let mut kb = load_github_todo_kb_with_extra(extra);
+    let wi = kb.try_resolve_symbol("anthill.stage0.WorkItem").unwrap();
+
+    let printer = TermPrinter::new(&kb);
+    let before: Vec<_> = kb.rules_by_functor(wi).to_vec();
+    let src_rid = *before.iter()
+        .find(|r| printer.print_term(kb.rule_head(**r)).contains("WI-RT"))
+        .expect("source WI-RT fact present");
+    let src_head = kb.rule_head(src_rid);
+    drop(printer);
+
+    // Serialize just this fact, then reload it into the same KB.
+    let toml = term_ser::serialize_toml(&kb, "anthill.stage0.WorkItem", &[src_rid])
+        .expect("serialize");
+    let domain = kb.make_name_term("store");
+    let n = term_ser::load_toml(&mut kb, &toml, domain).expect("reload");
+    assert_eq!(n, 1);
+
+    let after: Vec<_> = kb.rules_by_functor(wi).to_vec();
+    let de_rid = *after.iter().find(|r| !before.contains(*r)).expect("reloaded fact");
+    let de_head = kb.rule_head(de_rid);
+
+    let printer = TermPrinter::new(&kb);
+    assert_eq!(
+        src_head, de_head,
+        "reloaded fact must hash-cons-match the source-loaded form (WI-501).\n\
+         source:   {}\n  reloaded: {}",
+        printer.print_term(src_head),
+        printer.print_term(de_head),
+    );
+}
+
+/// WI-501: a persisted entity missing a REQUIRED (non-Option) field is store
+/// corruption — the deserializer fails loudly rather than building a silent
+/// partial fact. (An absent Option field is fine — restored to none().)
+#[test]
+fn wi501_missing_required_field_errors_loudly() {
+    use anthill_core::persistence::term_ser;
+    let mut kb = load_github_todo_kb();
+    let domain = kb.make_name_term("store");
+    // Omit the required `id` field; acceptance + status present, options omitted.
+    let toml_src = r#"
+[meta]
+entity = "anthill.stage0.WorkItem"
+
+[data]
+acceptance = []
+status = "Open"
+"#;
+    let errs = term_ser::load_toml(&mut kb, toml_src, domain)
+        .expect_err("missing required field must error");
+    assert!(
+        errs.iter().any(|e| matches!(e, term_ser::SerError::MissingField { field, .. } if field == "id")),
+        "expected MissingField for 'id', got: {errs:?}"
+    );
+}

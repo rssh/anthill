@@ -23,6 +23,7 @@ pub enum SerError {
     MissingMeta(String),
     UnknownEntity(String),
     UnknownField { entity: String, field: String },
+    MissingField { entity: String, field: String },
     InvalidValue(String),
 }
 
@@ -34,6 +35,13 @@ impl std::fmt::Display for SerError {
             SerError::UnknownEntity(name) => write!(f, "unknown entity: {name}"),
             SerError::UnknownField { entity, field } => {
                 write!(f, "unknown field '{field}' on entity '{entity}'")
+            }
+            SerError::MissingField { entity, field } => {
+                write!(
+                    f,
+                    "required field '{field}' absent from persisted entity '{entity}' \
+                     (only an Option field may be omitted)"
+                )
             }
             SerError::InvalidValue(msg) => write!(f, "invalid value: {msg}"),
         }
@@ -118,7 +126,17 @@ fn toml_to_json(val: toml::Value) -> serde_json::Value {
 
 fn json_to_toml(val: &serde_json::Value) -> Result<toml::Value, String> {
     match val {
-        serde_json::Value::Null => Ok(toml::Value::String("".into())),
+        // WI-501: TOML has no null. A `none()` field is dropped before reaching
+        // here (an absent field reloads as none), so the only null that arrives
+        // is a `none()` sitting INSIDE a list/tuple — which TOML genuinely cannot
+        // represent. Erroring loudly beats the old silent `null → ""`, which
+        // reloaded as `some(value: "")` and corrupted the round-trip. (Use JSON
+        // for stores with none-valued list elements.)
+        serde_json::Value::Null => Err(
+            "cannot serialize a none()/null inside a list to TOML (TOML has no null); \
+             use JSON for this entity"
+                .into(),
+        ),
         serde_json::Value::Bool(b) => Ok(toml::Value::Boolean(*b)),
         serde_json::Value::Number(n) => {
             if let Some(i) = n.as_i64() {
@@ -274,7 +292,16 @@ fn entity_sort(kb: &mut KnowledgeBase, functor: Symbol) -> TermId {
     }
 }
 
-/// Load a single data entry into a KB term.
+/// Load a single data entry into a KB term, reconstructing each field
+/// type-directedly (WI-501). The serializer is lossy without types — it strips
+/// `some(value: x)` to `x`, DROPS `none()` entirely (the field becomes absent),
+/// renders nullary entities (`Open`, enum variants) as bare strings, and flattens
+/// lists — so reload MUST consult each field's DECLARED type to rebuild the
+/// `Option` wrapper, the entity `Ref`, the cons-list, or the literal, or the
+/// reloaded term silently fails to hash-cons- / discrim-match the source-loaded
+/// form (the named-arg ORDER fix, WI-498, is necessary but not sufficient — the
+/// VALUES must reconstruct too). An absent declared Option field is `none()`; an
+/// absent required field is store corruption — a loud error.
 fn load_entry(
     kb: &mut KnowledgeBase,
     entry: &serde_json::Value,
@@ -286,6 +313,7 @@ fn load_entry(
         SerError::InvalidValue("data entry must be an object".into())
     })?;
 
+    let field_types = entity_field_type_map(kb, functor);
     let mut var_map: HashMap<String, VarId> = HashMap::new();
     let mut named_args: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
 
@@ -299,9 +327,12 @@ fn load_entry(
             });
         }
 
-        let term = value_to_term(kb, value, &mut var_map)?;
+        let ty = field_type_of(&field_types, field_sym);
+        let term = value_to_term_typed(kb, value, ty, &mut var_map)?;
         named_args.push((field_sym, term));
     }
+
+    backfill_absent_fields(kb, fields, &field_types, &mut named_args, entity_name)?;
 
     // WI-498: canonicalize named args to DECLARED field order via the WI-299
     // funnel (not `Symbol::index()` interning order). The loader canonicalizes
@@ -312,21 +343,102 @@ fn load_entry(
     Ok(kb.make_entity_term(functor, SmallVec::new(), named_args))
 }
 
-/// Convert a JSON value to a KB term.
-fn value_to_term(
+/// An entity's declared field types as `(field, ground-type-term)` pairs,
+/// dropping any non-ground (`Value::Node`, dependent) field type. Empty when the
+/// functor has no registered schema (a schema-less functor keeps the untyped
+/// reconstruction path, preserving prior behavior).
+fn entity_field_type_map(kb: &KnowledgeBase, functor: Symbol) -> Vec<(Symbol, TermId)> {
+    kb.entity_field_types(functor)
+        .map(|fts| {
+            fts.iter()
+                .filter_map(|(s, v)| match v {
+                    crate::eval::value::Value::Term(t) => Some((*s, *t)),
+                    _ => None,
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn field_type_of(field_types: &[(Symbol, TermId)], field: Symbol) -> Option<TermId> {
+    field_types.iter().find(|(s, _)| *s == field).map(|(_, t)| *t)
+}
+
+/// Backfill declared fields that are ABSENT from the persisted data: an Option
+/// field is restored to `none()` (the value the serializer dropped); any other
+/// (required) field is store corruption — a loud error, not a silent partial.
+/// No-op for a schema-less functor (`fields` empty).
+fn backfill_absent_fields(
+    kb: &mut KnowledgeBase,
+    fields: &[Symbol],
+    field_types: &[(Symbol, TermId)],
+    named_args: &mut SmallVec<[(Symbol, TermId); 2]>,
+    entity_name: &str,
+) -> Result<(), SerError> {
+    if fields.is_empty() {
+        return Ok(());
+    }
+    let option_sym = kb.try_resolve_symbol("anthill.prelude.Option");
+    let absent: Vec<Symbol> = fields
+        .iter()
+        .copied()
+        .filter(|f| !named_args.iter().any(|(s, _)| s == f))
+        .collect();
+    for field in absent {
+        let is_option = field_type_of(field_types, field).is_some_and(|t| {
+            let (head, _) = type_head_and_inner(kb, t);
+            head.is_some() && head == option_sym
+        });
+        if is_option {
+            let none = option_none_ref(kb);
+            named_args.push((field, none));
+        } else {
+            return Err(SerError::MissingField {
+                entity: entity_name.into(),
+                field: kb.resolve_sym(field).to_string(),
+            });
+        }
+    }
+    Ok(())
+}
+
+/// Convert a JSON value to a KB term, reconstructing it to match the source-
+/// loaded form using the declared type `ty` (WI-501). An `Option[T = U]` field
+/// stores `some(value: x)` as the bare `x` and `none()` as JSON null / an absent
+/// field, so a present value is re-wrapped in `some(...)` (recursing on `U`) and
+/// a null is `none()`. Lists, entity variants, and literals are reconstructed by
+/// [`value_to_term_typed`]'s kind dispatch below. With `ty = None` this is the
+/// prior untyped behavior, except nullary entities now rebuild as `Ref` (the
+/// loader's form) rather than `Fn` so they hash-cons-match.
+fn value_to_term_typed(
     kb: &mut KnowledgeBase,
     value: &serde_json::Value,
+    ty: Option<TermId>,
     var_map: &mut HashMap<String, VarId>,
 ) -> Result<TermId, SerError> {
+    if let Some(t) = ty {
+        let (head, inner) = type_head_and_inner(kb, t);
+        if head.is_some() && head == kb.try_resolve_symbol("anthill.prelude.Option") {
+            if value.is_null() {
+                return Ok(option_none_ref(kb));
+            }
+            let inner_term = value_to_term_typed(kb, value, inner, var_map)?;
+            return Ok(some_wrap(kb, inner_term));
+        }
+    }
     match value {
+        // A null is `none()` only for an Option field (handled by the peel above)
+        // or when the type is unknown (schema-less, can't tell). A null under a
+        // KNOWN non-Option type is store corruption — loud error, not a silent
+        // wrong-typed none() (loud-error principle).
         serde_json::Value::Null => {
-            // null → none()
-            let none_sym = resolve_or_intern(kb, "none");
-            Ok(kb.alloc(Term::Fn {
-                functor: none_sym,
-                pos_args: SmallVec::new(),
-                named_args: SmallVec::new(),
-            }))
+            if ty.is_some() {
+                Err(SerError::InvalidValue(
+                    "null value for a non-Option field".into(),
+                ))
+            } else {
+                Ok(option_none_ref(kb))
+            }
         }
         serde_json::Value::Bool(b) => Ok(kb.alloc(Term::Const(Literal::Bool(*b)))),
         serde_json::Value::Number(n) => {
@@ -338,148 +450,227 @@ fn value_to_term(
                 Err(SerError::InvalidValue(format!("unsupported number: {n}")))
             }
         }
-        serde_json::Value::String(s) => string_to_term(kb, s, var_map),
-        serde_json::Value::Array(arr) => array_to_list_term(kb, arr, var_map),
-        serde_json::Value::Object(map) => object_to_term(kb, map, var_map),
-    }
-}
-
-/// Convert a string value, handling variable (`?name`) and escape (`\?`) prefixes.
-fn string_to_term(
-    kb: &mut KnowledgeBase,
-    s: &str,
-    var_map: &mut HashMap<String, VarId>,
-) -> Result<TermId, SerError> {
-    if let Some(var_name) = s.strip_prefix('?') {
-        // Variable
-        if var_name.is_empty() {
-            // Anonymous variable `?`
-            let anon_sym = kb.intern("_");
-            let vid = kb.fresh_var(anon_sym);
-            Ok(kb.alloc(Term::Var(Var::Global(vid))))
-        } else {
-            let vid = var_map
-                .entry(var_name.to_string())
-                .or_insert_with(|| {
-                    let sym = kb.intern(var_name);
-                    kb.fresh_var(sym)
-                });
-            Ok(kb.alloc(Term::Var(Var::Global(*vid))))
-        }
-    } else if let Some(rest) = s.strip_prefix("\\?") {
-        // Escaped: literal string starting with ?
-        let literal = format!("?{rest}");
-        Ok(kb.alloc(Term::Const(Literal::String(literal))))
-    } else {
-        // Check if this is a known entity/constructor name (nullary)
-        if let Some(sym) = kb.try_resolve_symbol(s) {
-            // Check if it's a known entity with no fields (nullary constructor)
-            if kb.entity_field_names(sym).map_or(false, |f| f.is_empty()) {
-                return Ok(kb.alloc(Term::Fn {
-                    functor: sym,
-                    pos_args: SmallVec::new(),
-                    named_args: SmallVec::new(),
-                }));
+        serde_json::Value::String(s) => string_to_term_typed(kb, s, ty, var_map),
+        serde_json::Value::Array(arr) => {
+            // Thread the element type for a `List[T = U]` field so list elements
+            // (entity variants, options, nested lists) reconstruct correctly.
+            let elem_ty = ty.and_then(|t| {
+                let (head, inner) = type_head_and_inner(kb, t);
+                if head.is_some() && head == kb.try_resolve_symbol("anthill.prelude.List") {
+                    inner
+                } else {
+                    None
+                }
+            });
+            let mut items = Vec::with_capacity(arr.len());
+            for it in arr {
+                items.push(value_to_term_typed(kb, it, elem_ty, var_map)?);
             }
+            Ok(build_cons_list(kb, &items))
         }
-        // Plain string literal
-        Ok(kb.alloc(Term::Const(Literal::String(s.to_string()))))
+        serde_json::Value::Object(map) => object_to_term_typed(kb, map, ty, var_map),
     }
 }
 
-
-/// Convert a JSON array to a cons/nil list term.
-fn array_to_list_term(
-    kb: &mut KnowledgeBase,
-    arr: &[serde_json::Value],
-    var_map: &mut HashMap<String, VarId>,
-) -> Result<TermId, SerError> {
-    let nil_sym = resolve_or_intern(kb, "nil");
-    let cons_sym = resolve_or_intern(kb, "cons");
+/// Build a cons/nil list, preferring the canonical `anthill.prelude.List.cons/nil`
+/// symbols (matching the source loader so the list hash-cons-matches) but falling
+/// back to bare interned `cons`/`nil` when the prelude `List` is not loaded — so a
+/// schema-less deserialize never panics (unlike [`KnowledgeBase::build_list`],
+/// which resolves-or-panics).
+fn build_cons_list(kb: &mut KnowledgeBase, items: &[TermId]) -> TermId {
+    let nil_sym = match kb.try_resolve_symbol("anthill.prelude.List.nil") {
+        Some(s) => s,
+        None => resolve_or_intern(kb, "nil"),
+    };
+    let cons_sym = match kb.try_resolve_symbol("anthill.prelude.List.cons") {
+        Some(s) => s,
+        None => resolve_or_intern(kb, "cons"),
+    };
     let head_sym = kb.intern("head");
     let tail_sym = kb.intern("tail");
-
-    let mut result = kb.alloc(Term::Fn {
+    let mut list = kb.alloc(Term::Fn {
         functor: nil_sym,
         pos_args: SmallVec::new(),
         named_args: SmallVec::new(),
     });
-
-    // Build list from back to front
-    for item in arr.iter().rev() {
-        let head_term = value_to_term(kb, item, var_map)?;
+    for &item in items.iter().rev() {
         let mut named: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
-        named.push((head_sym, head_term));
-        named.push((tail_sym, result));
-        // WI-498: canonicalize cons named args to declared field order (funnel).
-        result = kb.make_entity_term(cons_sym, SmallVec::new(), named);
+        named.push((head_sym, item));
+        named.push((tail_sym, list));
+        list = kb.make_entity_term(cons_sym, SmallVec::new(), named);
     }
-
-    Ok(result)
+    list
 }
 
-/// Convert a JSON object to a term.
-///
-/// - Single key → constructor: look up key as entity/constructor name
-/// - Multiple keys → entity with named fields
-fn object_to_term(
+/// Convert a string value, handling `?name` variables, `\?` escapes, and (WI-501)
+/// type-directed nullary entity / enum-variant references: a string whose declared
+/// sort has a variant named `s` is that variant as a `Ref` (the loader's form),
+/// not a string literal.
+fn string_to_term_typed(
+    kb: &mut KnowledgeBase,
+    s: &str,
+    ty: Option<TermId>,
+    var_map: &mut HashMap<String, VarId>,
+) -> Result<TermId, SerError> {
+    if let Some(var_name) = s.strip_prefix('?') {
+        if var_name.is_empty() {
+            // Anonymous variable `?`
+            let anon_sym = kb.intern("_");
+            let vid = kb.fresh_var(anon_sym);
+            return Ok(kb.alloc(Term::Var(Var::Global(vid))));
+        }
+        let vid = *var_map.entry(var_name.to_string()).or_insert_with(|| {
+            let sym = kb.intern(var_name);
+            kb.fresh_var(sym)
+        });
+        return Ok(kb.alloc(Term::Var(Var::Global(vid))));
+    }
+    if let Some(rest) = s.strip_prefix("\\?") {
+        // Escaped: literal string starting with ?
+        return Ok(kb.alloc(Term::Const(Literal::String(format!("?{rest}")))));
+    }
+    // Type-directed: a string under a declared entity/enum sort is a nullary
+    // variant of that sort, resolved within the sort's namespace → `Ref(variant)`.
+    // When the declared type IS known, it is authoritative: if the string is not
+    // a variant of that sort it is a plain literal (a `String`-typed field whose
+    // value happens to equal a qualified entity name stays a literal — we do NOT
+    // fall through to the global entity heuristic below, which would mis-type it).
+    if let Some(t) = ty {
+        if let (Some(sort), _) = type_head_and_inner(kb, t) {
+            let qualified = format!("{}.{}", kb.qualified_name_of(sort), s);
+            if let Some(vsym) = kb.try_resolve_symbol(&qualified) {
+                return Ok(kb.alloc(Term::Ref(vsym)));
+            }
+        }
+        return Ok(kb.alloc(Term::Const(Literal::String(s.to_string()))));
+    }
+    // No declared type (schema-less): a globally-known nullary entity is a `Ref`
+    // (matching the loader); otherwise a plain string literal.
+    if let Some(sym) = kb.try_resolve_symbol(s) {
+        if kb.entity_field_names(sym).map_or(false, |f| f.is_empty()) {
+            return Ok(kb.alloc(Term::Ref(sym)));
+        }
+    }
+    Ok(kb.alloc(Term::Const(Literal::String(s.to_string()))))
+}
+
+/// Head sort symbol + first type-argument of a ground type term: for
+/// `Option[T = U]` / `List[T = U]` returns `(Option/List, Some(U))`; for a bare
+/// `Ref(S)` returns `(S, None)`.
+fn type_head_and_inner(kb: &KnowledgeBase, ty: TermId) -> (Option<Symbol>, Option<TermId>) {
+    match kb.get_term(ty) {
+        Term::Fn { functor, named_args, .. } => {
+            (Some(*functor), named_args.first().map(|(_, v)| *v))
+        }
+        Term::Ref(sym) => (Some(*sym), None),
+        _ => (None, None),
+    }
+}
+
+/// `anthill.prelude.Option.none` as a `Ref` — the SAME form the source loader
+/// emits for a written `none`, so a backfilled / null-derived none hash-cons-
+/// matches the source.
+fn option_none_ref(kb: &mut KnowledgeBase) -> TermId {
+    let none_sym = match kb.try_resolve_symbol("anthill.prelude.Option.none") {
+        Some(s) => s,
+        None => resolve_or_intern(kb, "none"),
+    };
+    kb.alloc(Term::Ref(none_sym))
+}
+
+/// Wrap `inner` as `anthill.prelude.Option.some(value: inner)` — the SAME form
+/// the loader emits, so a re-wrapped Option value hash-cons-matches the source.
+fn some_wrap(kb: &mut KnowledgeBase, inner: TermId) -> TermId {
+    let some_sym = match kb.try_resolve_symbol("anthill.prelude.Option.some") {
+        Some(s) => s,
+        None => resolve_or_intern(kb, "some"),
+    };
+    let value_sym = kb.intern("value");
+    let mut named: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
+    named.push((value_sym, inner));
+    kb.make_entity_term(some_sym, SmallVec::new(), named)
+}
+
+
+/// Convert a single-key JSON object `{ Variant: payload }` to a constructor /
+/// enum-variant term (WI-501, type-directed). The variant name is resolved
+/// within the declared sort `ty`'s namespace first (so `{ Verified: … }` under a
+/// `WorkStatus` field becomes `anthill.stage0.WorkStatus.Verified`), then
+/// globally, then interned.
+fn object_to_term_typed(
     kb: &mut KnowledgeBase,
     map: &serde_json::Map<String, serde_json::Value>,
+    ty: Option<TermId>,
     var_map: &mut HashMap<String, VarId>,
 ) -> Result<TermId, SerError> {
     if map.len() == 1 {
         let (key, value) = map.iter().next().unwrap();
-        // Try as constructor name
-        if let Some(ctor_sym) = kb.try_resolve_symbol(key) {
-            return build_constructor_term(kb, ctor_sym, value, var_map);
-        }
-        // Unknown single-key object: treat as constructor with interned name
-        let ctor_sym = kb.intern(key);
-        return build_constructor_term(kb, ctor_sym, value, var_map);
+        let ctor_sym = resolve_variant_sym(kb, key, ty);
+        return build_constructor_term_typed(kb, ctor_sym, value, var_map);
     }
 
-    // Multiple keys: not a standard pattern in the envelope format,
-    // but handle as an inline record
+    // Multiple keys: not a standard pattern in the envelope format.
     Err(SerError::InvalidValue(
         "inline object with multiple keys must be inside a data entry".into(),
     ))
 }
 
-/// Build a constructor term from a key-value pair.
-fn build_constructor_term(
+/// Resolve a constructor/variant name: within the declared sort `ty`'s namespace
+/// first, then as a global name, finally interning it.
+fn resolve_variant_sym(kb: &mut KnowledgeBase, key: &str, ty: Option<TermId>) -> Symbol {
+    if let Some(t) = ty {
+        if let (Some(sort), _) = type_head_and_inner(kb, t) {
+            let qualified = format!("{}.{}", kb.qualified_name_of(sort), key);
+            if let Some(vsym) = kb.try_resolve_symbol(&qualified) {
+                return vsym;
+            }
+        }
+    }
+    match kb.try_resolve_symbol(key) {
+        Some(s) => s,
+        None => kb.intern(key),
+    }
+}
+
+/// Build a constructor term, reconstructing each field type-directedly from the
+/// constructor's own declared field types (WI-501) and backfilling its absent
+/// Option fields. The single-field shorthand (`{ ToolPasses: "cargo-test" }`)
+/// fills the lone declared field; with no schema it falls back to positional.
+fn build_constructor_term_typed(
     kb: &mut KnowledgeBase,
     ctor_sym: Symbol,
     value: &serde_json::Value,
     var_map: &mut HashMap<String, VarId>,
 ) -> Result<TermId, SerError> {
+    let fields = kb.entity_field_names(ctor_sym).map(|f| f.to_vec()).unwrap_or_default();
+    let field_types = entity_field_type_map(kb, ctor_sym);
     match value {
         serde_json::Value::Object(inner) => {
             // Constructor with named fields: { "Verified": { "at": "2027" } }
-            let fields = kb.entity_field_names(ctor_sym).map(|f| f.to_vec()).unwrap_or_default();
             let mut named_args: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
             for (k, v) in inner {
                 let field_sym = find_field_sym(kb, &fields, k);
-                let term = value_to_term(kb, v, var_map)?;
+                let fty = field_type_of(&field_types, field_sym);
+                let term = value_to_term_typed(kb, v, fty, var_map)?;
                 named_args.push((field_sym, term));
             }
+            let ctor_name = kb.resolve_sym(ctor_sym).to_string();
+            backfill_absent_fields(kb, &fields, &field_types, &mut named_args, &ctor_name)?;
             // WI-498: canonicalize named-constructor / enum-variant args to
             // declared field order via the funnel (not interning order).
             Ok(kb.make_entity_term(ctor_sym, SmallVec::new(), named_args))
         }
         _ => {
             // Single-field shorthand: { "ToolPasses": "cargo-test" }
-            let fields = kb.entity_field_names(ctor_sym).map(|f| f.to_vec()).unwrap_or_default();
-            let inner_term = value_to_term(kb, value, var_map)?;
             if fields.len() == 1 {
+                let fty = field_type_of(&field_types, fields[0]);
+                let inner_term = value_to_term_typed(kb, value, fty, var_map)?;
                 let mut named_args: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
                 named_args.push((fields[0], inner_term));
-                Ok(kb.alloc(Term::Fn {
-                    functor: ctor_sym,
-                    pos_args: SmallVec::new(),
-                    named_args,
-                }))
+                Ok(kb.make_entity_term(ctor_sym, SmallVec::new(), named_args))
             } else {
-                // No field schema or zero/multiple fields — use positional
+                // No field schema or zero/multiple fields — use positional.
+                let inner_term = value_to_term_typed(kb, value, None, var_map)?;
                 Ok(kb.alloc(Term::Fn {
                     functor: ctor_sym,
                     pos_args: SmallVec::from_elem(inner_term, 1),
@@ -653,6 +844,15 @@ fn term_to_value(kb: &KnowledgeBase, term: TermId) -> Result<serde_json::Value, 
             Ok(serde_json::Value::Object(wrapper))
         }
         Term::Ref(sym) => {
+            // WI-501: a written `none` loads as `Ref(anthill.prelude.Option.none)`
+            // (a nullary entity is a `Ref`, not a `Fn`). Render it to JSON null so
+            // the entity-field loop DROPS it — an absent field means `none` and is
+            // restored by the type-directed deserializer's backfill (see
+            // `value_to_term_typed`). Any other nullary entity (`Open`, an enum
+            // variant) stays its short-name string and is rebuilt type-directedly.
+            if kb.qualified_name_of(*sym) == "anthill.prelude.Option.none" {
+                return Ok(serde_json::Value::Null);
+            }
             let name = kb.resolve_sym(*sym);
             Ok(serde_json::Value::String(name.to_string()))
         }
