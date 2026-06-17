@@ -24,16 +24,22 @@ fn entity_named(functor: anthill_core::intern::Symbol, named: Vec<(anthill_core:
 fn q3_alloc_from_value_scalars_and_entity() {
     // alloc_from_value promotes runtime Values into hash-consed TermIds.
     // Two structurally equal Entities should dedupe to the same TermId.
+    // The entity declares three fields so the mixed positional+named build is
+    // well-formed (WI-500 made alloc_from_value reject an over-arity ctor — a
+    // positional arg with no field to fill — like the loader does).
     let mut kb = load_kb_with(r#"
 namespace test.q3_alloc
+  import anthill.prelude.{Int64, String, Bool}
   sort Color
-    entity red
+    import anthill.prelude.{Int64, String, Bool}
+    entity red(x: Int64, y: String, n: Bool)
   end
 end
 "#);
     let red_sym = kb.try_resolve_symbol("test.q3_alloc.Color.red").expect("red symbol");
     let int_field = kb.intern("n");
 
+    // pos fills the unfilled `x`, `y` (in declaration order); `n` is named.
     let v1 = Value::Entity {
         functor: red_sym,
         pos: vec![Value::Int(1), Value::Str("hi".into())].into(),

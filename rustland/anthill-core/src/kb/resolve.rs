@@ -25,6 +25,30 @@ use crate::eval::value::Value;
 use super::RuleId;
 use super::KnowledgeBase;
 
+/// WI-500: how a constructor's POSITIONAL args map onto its declared field
+/// NAMES — the loader's "rank-among-not-named" rule, factored out so the runtime
+/// value→term lowering (`alloc_from_value`, `value_to_term`) canonicalizes to the
+/// SAME named shape the loader produces for source terms (`convert_term_with_expected`).
+/// That one shape is what the discrim tree / hash-cons store keys on; without it a
+/// runtime-built positional entity persisted (`alloc_from_value` → `assert_fact`)
+/// is stored positionally and never unifies with the canonical named pattern — the
+/// WI-433 never-match bug class on the non-loader path. Computed by
+/// [`KnowledgeBase::positional_to_named_plan`].
+pub(crate) enum PositionalPlan {
+    /// Keep the positional args as-is: there are none, the functor is a
+    /// reflect-form meta-ctor (whose positional shape IS the encoding), or it has
+    /// no registered fields to map onto (anonymous tuple / ad-hoc structure).
+    Skip,
+    /// Assign `fields[i]` to the i-th positional arg (`fields.len()` equals the
+    /// requested positional count). The fields are the declared fields NOT
+    /// already given by name, in declaration order.
+    Assign(SmallVec<[Symbol; 4]>),
+    /// More positional args than unfilled fields — the loud, never-a-silent-
+    /// never-match case. `declared` is the full declared field list (for the
+    /// error message); `unfilled` is how many fields were actually open.
+    OverArity { declared: SmallVec<[Symbol; 4]>, unfilled: usize },
+}
+
 /// Capture a `TermView`'s top-level carrier as an owned `Value` goal (WI-349) —
 /// `Value::Term` for a hash-consed pattern, the cloned `Value`/`Value::Node` for
 /// a value/occurrence goal. The owned form the mutable search frame needs.
@@ -2274,6 +2298,51 @@ impl KnowledgeBase {
             }
             None => named.sort_by_key(|(s, _)| s.index()),
         }
+    }
+
+    /// WI-500: plan the positional→named desugar for a constructor — the loader's
+    /// "rank-among-not-named" rule ([`crate::kb::load`]'s `convert_term_with_expected`),
+    /// shared so runtime value→term lowering canonicalizes to the SAME named shape
+    /// (see [`PositionalPlan`]). `named_fields` are the field symbols already given
+    /// by name; `pos_count` is the number of positional args. Positional args fill
+    /// the declared fields NOT already named, in declaration order. Reflect-form
+    /// meta-ctors and field-less functors keep their positional shape ([`PositionalPlan::Skip`]).
+    pub(crate) fn positional_to_named_plan(
+        &self,
+        functor: Symbol,
+        named_fields: &[Symbol],
+        pos_count: usize,
+    ) -> PositionalPlan {
+        if pos_count == 0 {
+            return PositionalPlan::Skip;
+        }
+        // The reflect `Expr` / `Pattern` meta-ctors (`ho_apply`, `match_expr`, …)
+        // carry a positional shape that IS the reflect encoding, not user
+        // named-field application — mirrors the loader's exclusion.
+        if node_occurrence::is_reflect_form_functor(self, functor)
+            || self.qualified_name_of(functor).starts_with("anthill.reflect.")
+        {
+            return PositionalPlan::Skip;
+        }
+        let Some(all_fields) = self.entity_field_names(functor) else {
+            // No declared fields (anonymous tuple / ad-hoc structure): nothing to
+            // map onto, leave positional.
+            return PositionalPlan::Skip;
+        };
+        let unfilled: SmallVec<[Symbol; 4]> = all_fields
+            .iter()
+            .copied()
+            .filter(|f| !named_fields.contains(f))
+            .collect();
+        if pos_count > unfilled.len() {
+            return PositionalPlan::OverArity {
+                declared: all_fields.iter().copied().collect(),
+                unfilled: unfilled.len(),
+            };
+        }
+        let mut assign = unfilled;
+        assign.truncate(pos_count);
+        PositionalPlan::Assign(assign)
     }
 
     /// `resolve_sort_instantiation_param(?spec, ?param_name, ?value)` —

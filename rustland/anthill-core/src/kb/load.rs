@@ -21,6 +21,7 @@ use crate::span::{Span, SourceId, SourceSpan};
 use super::{KnowledgeBase, SortKind};
 use super::term::{Term, TermId, Var, VarId, Literal};
 use super::node_occurrence::{self, Expr, NodeOccurrence};
+use super::resolve::PositionalPlan;
 use super::term_view::{TermIdView, TermView};
 use super::typing::{binding_op_symbol, extract_sort_ref_sym, extract_type, TypeExtractor};
 use crate::eval::value::Value;
@@ -4164,21 +4165,16 @@ pub fn convert_query_term(
             // channel, so an over-arity query is left positional (it simply finds no
             // match) rather than aborting — unlike a stored fact/rule, a malformed
             // query corrupts nothing.
-            if !new_pos.is_empty()
-                && !node_occurrence::is_reflect_form_functor(kb, kb_functor)
-                && !kb.qualified_name_of(kb_functor).starts_with("anthill.reflect.")
-            {
-                if let Some(all_fields) = kb.entity_field_names(kb_functor).map(|f| f.to_vec()) {
-                    let named_set: HashSet<Symbol> = new_named.iter().map(|(s, _)| *s).collect();
-                    let unfilled: Vec<Symbol> = all_fields
-                        .iter()
-                        .copied()
-                        .filter(|f| !named_set.contains(f))
-                        .collect();
-                    if new_pos.len() <= unfilled.len() {
-                        for (i, pos_val) in new_pos.drain(..).enumerate() {
-                            new_named.push((unfilled[i], pos_val));
-                        }
+            if !new_pos.is_empty() {
+                let named_syms: SmallVec<[Symbol; 2]> = new_named.iter().map(|(s, _)| *s).collect();
+                // A transient query has no load-error channel, so an over-arity
+                // query is left positional (it simply finds no match) rather than
+                // aborting — only the `Assign` plan rewrites.
+                if let PositionalPlan::Assign(fields) =
+                    kb.positional_to_named_plan(kb_functor, &named_syms, new_pos.len())
+                {
+                    for (i, pos_val) in new_pos.drain(..).enumerate() {
+                        new_named.push((fields[i], pos_val));
                     }
                 }
             }
@@ -5260,22 +5256,18 @@ impl<'a> Loader<'a> {
                 // declared fields), and the `anthill.reflect.*` Expr meta-ctors
                 // (`ho_apply` / `match_expr` / `if_expr` / …) whose positional shape
                 // is the reflect encoding, not user named-field application.
-                if !new_pos.is_empty()
-                    && !node_occurrence::is_reflect_form_functor(self.kb, new_functor)
-                    && !self.kb.qualified_name_of(new_functor).starts_with("anthill.reflect.")
-                {
-                    if let Some(all_fields) =
-                        self.kb.entity_field_names(new_functor).map(|f| f.to_vec())
-                    {
-                        let named_set: HashSet<Symbol> =
-                            new_named.iter().map(|(s, _)| *s).collect();
-                        let unfilled: Vec<Symbol> = all_fields
-                            .iter()
-                            .copied()
-                            .filter(|f| !named_set.contains(f))
-                            .collect();
-                        if new_pos.len() > unfilled.len() {
-                            let fields = all_fields
+                if !new_pos.is_empty() {
+                    let named_syms: SmallVec<[Symbol; 2]> =
+                        new_named.iter().map(|(s, _)| *s).collect();
+                    match self.kb.positional_to_named_plan(new_functor, &named_syms, new_pos.len()) {
+                        PositionalPlan::Skip => {}
+                        PositionalPlan::Assign(fields) => {
+                            for (i, pos_val) in new_pos.drain(..).enumerate() {
+                                new_named.push((fields[i], pos_val));
+                            }
+                        }
+                        PositionalPlan::OverArity { declared, unfilled } => {
+                            let fields = declared
                                 .iter()
                                 .map(|s| self.kb.resolve_sym(*s).to_string())
                                 .collect::<Vec<_>>()
@@ -5285,14 +5277,10 @@ impl<'a> Loader<'a> {
                                     "constructor '{}' given {} positional argument(s) but has {} unfilled field(s) (declares: {})",
                                     self.kb.resolve_sym(new_functor),
                                     new_pos.len(),
-                                    unfilled.len(),
+                                    unfilled,
                                     fields,
                                 ),
                             });
-                        } else {
-                            for (i, pos_val) in new_pos.drain(..).enumerate() {
-                                new_named.push((unfilled[i], pos_val));
-                            }
                         }
                     }
                 }

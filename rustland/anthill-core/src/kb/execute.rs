@@ -22,7 +22,7 @@ use smallvec::SmallVec;
 use crate::eval::value::Value;
 use crate::intern::Symbol;
 
-use super::resolve::{ResolveConfig, SearchStream};
+use super::resolve::{PositionalPlan, ResolveConfig, SearchStream};
 use super::term::{Literal, Term, TermId};
 use super::KnowledgeBase;
 
@@ -46,6 +46,17 @@ pub enum LowerError {
     /// resolver yet. Kept separate from `UnsupportedVariant` so call sites
     /// can distinguish "design hole" from "garbage input".
     NotYetImplemented(&'static str),
+    /// WI-500: a runtime-built positional constructor has more positional args
+    /// than the entity has unfilled fields. Lowering it would store a positional
+    /// term that silently never matches the canonical named pattern, so fail
+    /// loudly (the loud-error principle; the loader rejects the same shape at
+    /// load time).
+    OverArityConstructor {
+        functor: String,
+        given: usize,
+        unfilled: usize,
+        declared: String,
+    },
 }
 
 impl std::fmt::Display for LowerError {
@@ -61,6 +72,12 @@ impl std::fmt::Display for LowerError {
                 write!(f, "sort_query: unknown sort `{}`", name),
             LowerError::NotYetImplemented(what) =>
                 write!(f, "LogicalQuery lowering not yet implemented: {}", what),
+            LowerError::OverArityConstructor { functor, given, unfilled, declared } =>
+                write!(
+                    f,
+                    "constructor '{}' given {} positional argument(s) but has {} unfilled field(s) (declares: {})",
+                    functor, given, unfilled, declared,
+                ),
         }
     }
 }
@@ -200,6 +217,34 @@ impl KnowledgeBase {
                 let mut named_args: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
                 for (sym, nv) in named.iter() {
                     named_args.push((*sym, self.alloc_from_value(nv)?));
+                }
+                // WI-500: desugar positional → named (declaration order,
+                // fields-not-named) so a runtime-built positional entity lowers to
+                // the SAME canonical named term the loader produces — the shape
+                // `assert_fact` / the discrim tree keys on. Without it the stored
+                // fact stays positional and never unifies with a named pattern (the
+                // WI-433 never-match on the persist/value→term path).
+                let named_syms: SmallVec<[Symbol; 2]> =
+                    named_args.iter().map(|(s, _)| *s).collect();
+                match self.positional_to_named_plan(*functor, &named_syms, pos_args.len()) {
+                    PositionalPlan::Skip => {}
+                    PositionalPlan::Assign(fields) => {
+                        for (i, pv) in std::mem::take(&mut pos_args).into_iter().enumerate() {
+                            named_args.push((fields[i], pv));
+                        }
+                    }
+                    PositionalPlan::OverArity { declared, unfilled } => {
+                        return Err(LowerError::OverArityConstructor {
+                            functor: self.resolve_sym(*functor).to_string(),
+                            given: pos_args.len(),
+                            unfilled,
+                            declared: declared
+                                .iter()
+                                .map(|s| self.resolve_sym(*s).to_string())
+                                .collect::<Vec<_>>()
+                                .join(", "),
+                        });
+                    }
                 }
                 // Sort named_args to match the loader's canonical form
                 // (load.rs:1730) — declaration order for registered entities,

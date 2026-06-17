@@ -2567,6 +2567,32 @@ pub fn value_to_term(
             for (sym, nv) in named.iter() {
                 named_args.push((*sym, value_to_term(kb, nv)?));
             }
+            // WI-500: desugar positional → named (the shared rank-among-not-named
+            // rule) BEFORE the canonical sort, so a positional entity lowers to the
+            // SAME named shape the loader / discrim tree key on — mirrors
+            // `alloc_from_value`.
+            let named_syms: smallvec::SmallVec<[Symbol; 2]> =
+                named_args.iter().map(|(s, _)| *s).collect();
+            match kb.positional_to_named_plan(*functor, &named_syms, pos_args.len()) {
+                crate::kb::resolve::PositionalPlan::Skip => {}
+                crate::kb::resolve::PositionalPlan::Assign(fields) => {
+                    for (i, pv) in std::mem::take(&mut pos_args).into_iter().enumerate() {
+                        named_args.push((fields[i], pv));
+                    }
+                }
+                crate::kb::resolve::PositionalPlan::OverArity { declared, unfilled } => {
+                    return Err(crate::kb::execute::LowerError::OverArityConstructor {
+                        functor: kb.resolve_sym(*functor).to_string(),
+                        given: pos_args.len(),
+                        unfilled,
+                        declared: declared
+                            .iter()
+                            .map(|s| kb.resolve_sym(*s).to_string())
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                    });
+                }
+            }
             // Canonical named-arg order via the shared `sort_named_canonical` (the
             // single source of truth the discrim tree matches against) — declared
             // field order, else `Symbol::index()`.

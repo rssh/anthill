@@ -401,3 +401,6 @@ mod wi433_positional_ctor_desugar_test;
 
 #[path = "include/wi499_forward_ref_ctor_test.rs"]
 mod wi499_forward_ref_ctor_test;
+
+#[path = "include/wi500_runtime_positional_ctor_test.rs"]
+mod wi500_runtime_positional_ctor_test;
