@@ -2080,7 +2080,7 @@ fn attach_eta_dispatch_dict(
     }
     let caller_requires: Vec<RequiresEntry> =
         env.enclosing_requires().map(|r| r.to_vec()).unwrap_or_default();
-    match build_concrete_dispatch_dict(kb, &subst, parent, env.enclosing_sort(), &caller_requires) {
+    match build_concrete_dispatch_dict(kb, &subst, parent, env.enclosing_sort(), &caller_requires, env.enclosing_sort_param_rigids()) {
         Some(dict) => {
             occ.set_classification(CallClass::EtaOpRef { dict });
             Ok(())
@@ -5446,6 +5446,7 @@ fn check_apply_iter(
                         env.enclosing_requires().unwrap_or(&[]).to_vec();
                     let dispatch_dict = build_concrete_dispatch_dict(
                         kb, &subst, parent_sym, enclosing_sort, &caller_requires,
+                        env.enclosing_sort_param_rigids(),
                     );
                     classify(
                         kb,
@@ -5652,6 +5653,9 @@ fn build_dispatching_dict_direct(
     let callee_chain = direct_requires_chain(kb, callee_spec_sort);
     build_dispatching_dict_from_chain(
         kb, callee_spec_sort, &callee_chain, caller_sort, caller_requires, syms, false,
+        // WI-419: req-insertion diagnostic path — the call-site subst is gone
+        // here, so Strategy 1 keeps its first-match behavior.
+        None,
     )
 }
 
@@ -5683,6 +5687,9 @@ fn build_dispatching_dict_from_chain(
     caller_requires: &[RequiresEntry],
     syms: &ProjectionSyms,
     require_complete: bool,
+    // WI-419: call-site context for Strategy 1 same-spec disambiguation; `None`
+    // on the req-insertion diagnostic path (`build_dispatching_dict_direct`).
+    disambig: Option<&SameSpecDisambig>,
 ) -> Option<TermId> {
     // Hoist Strategy 2's per-slot direct-requires walk out of the dep loop:
     // it depends only on `caller_requires`, not on the current dep, so the
@@ -5698,7 +5705,7 @@ fn build_dispatching_dict_from_chain(
     let mut proj_terms: Vec<TermId> = Vec::with_capacity(chain.len());
     for dep in chain {
         match build_dep_projection(
-            kb, dep, caller_sort, caller_requires, &caller_sub_chains, syms,
+            kb, dep, caller_sort, caller_requires, &caller_sub_chains, syms, disambig,
         ) {
             Some(t) => proj_terms.push(t),
             None if require_complete => return None,
@@ -5742,6 +5749,10 @@ fn build_concrete_dispatch_dict(
     callee_spec_sort: Symbol,
     caller_sort: Option<Symbol>,
     caller_requires: &[RequiresEntry],
+    // WI-419: the enclosing sort's param→rigid map (`env.enclosing_sort_param_
+    // rigids()`), needed to disambiguate a forward among two+ same-spec caller
+    // requires (a callee element unified with a rigidified caller param).
+    sort_param_rigids: &[(VarId, TermId)],
 ) -> Option<TermId> {
     // WI-418: a SAME-SORT call inherits the enclosing frame's requirements at
     // eval (`start_apply_same_sort` checks `inherit` — callee parent == caller
@@ -5772,8 +5783,13 @@ fn build_concrete_dispatch_dict(
     let syms = ProjectionSyms::resolve(kb)?;
     // `require_complete = true`: every direct requirement must project into the
     // dict, else fall back to no dict (a short dict fails eval's arity check).
+    // WI-419: pass the call-site context so Strategy 1 can disambiguate a caller
+    // that declares two+ `requires` of the same spec over distinct element
+    // params (forward the dict for the element this call actually uses).
+    let disambig = SameSpecDisambig { subst, sort_param_rigids };
     build_dispatching_dict_from_chain(
         kb, callee_spec_sort, &concrete_chain, caller_sort, caller_requires, &syms, true,
+        Some(&disambig),
     )
 }
 
@@ -5876,6 +5892,11 @@ pub fn build_dep_projection(
     caller_requires: &[RequiresEntry],
     caller_sub_chains: &[Vec<RequiresEntry>],
     syms: &ProjectionSyms,
+    // WI-419: the call-site context, when available (the WI-415/418
+    // concrete-dispatch path). Used ONLY to disambiguate Strategy 1 when two+
+    // same-spec caller requires cover the dep; `None` (the req-insertion
+    // diagnostic path) keeps the original first-match behavior.
+    disambig: Option<&SameSpecDisambig>,
 ) -> Option<TermId> {
     // WI-424: the `EffectsRuntime` kind-anchor (synthesized from `effects
     // E = ?`) is satisfied STRUCTURALLY by the effect-row machinery — there is
@@ -5898,10 +5919,30 @@ pub fn build_dep_projection(
     // Strategy 1 — named-param, binding-aware. Match by (required_sort,
     // bindings) so a caller with Eq[T=X] does NOT match dep Eq[T=Y]
     // (WI-226 correctness fix).
-    if let Some(i) = caller_requires
+    //
+    // WI-419: `entries_cover` is wildcard-tolerant — a caller `Eq[A]` covers a
+    // dep `Eq[B]` whenever either element is a type param. With a SINGLE
+    // covering entry that is correct (and is the only shape any code exercised
+    // before WI-419). But a caller declaring TWO `requires` of the same spec
+    // over DISTINCT element params (`requires Eq[A], Eq[B]`) has BOTH cover a
+    // dep over one of them, and a blind first-match forwards the wrong
+    // dictionary (a soundness bug — wrong runtime dispatch). When more than one
+    // entry covers, disambiguate by σ-class: prefer the unique covering entry
+    // whose element resolves, through the call-site `subst`, to the SAME
+    // unification variable as the dep's element. A single covering entry, or an
+    // ambiguous / subst-less tie, keeps the original first-match.
+    let covering: SmallVec<[usize; 2]> = caller_requires
         .iter()
-        .position(|c| entries_cover(kb, c, dep))
-    {
+        .enumerate()
+        .filter(|(_, c)| entries_cover(kb, c, dep))
+        .map(|(i, _)| i)
+        .collect();
+    let chosen = match covering.as_slice() {
+        [] => None,
+        [only] => Some(*only),
+        many => disambiguate_covering_by_sigma(kb, disambig, caller_requires, dep, many),
+    };
+    if let Some(i) = chosen {
         let name = req_name_for_chain_index(kb, caller_sort?, i)?;
         return Some(build_req_var_ref(kb, syms, name));
     }
@@ -5984,6 +6025,194 @@ fn entries_cover(kb: &mut KnowledgeBase, caller: &RequiresEntry, dep: &RequiresE
         }
     }
     true
+}
+
+/// WI-419: call-site context for Strategy 1 same-spec disambiguation — the
+/// per-call substitution plus the enclosing sort's param→rigid map. A callee
+/// element is unified at the call against a RIGIDIFIED caller param (WI-392/424:
+/// `Wrap.W := Var(Rigid(B))`), while the caller's `requires` entries are written
+/// over the canonical param symbol (`Tag[B]`, ↦ `Var::Global`). The rigids map
+/// bridges the two var spaces so the dep and the right caller entry compare
+/// equal. `sort_param_rigids` is `(canonical-global-var, rigid-term)` per
+/// enclosing param, exactly as `TypingEnv::enclosing_sort_param_rigids` holds.
+pub struct SameSpecDisambig<'a> {
+    subst: &'a Substitution,
+    sort_param_rigids: &'a [(VarId, TermId)],
+}
+
+/// WI-419: among the `covering` caller-requirement indices that all
+/// `entries_cover` the same `dep` (which only happens when the caller declares
+/// two+ `requires` of the same spec over distinct element params), pick the
+/// unique one whose element σ-class matches the dep's under the call-site
+/// context. Falls back to the first covering index — the pre-WI-419 behavior —
+/// when there is no call context, or when zero or more than one entry matches
+/// by σ-class (genuinely ambiguous, so no worse than before).
+fn disambiguate_covering_by_sigma(
+    kb: &mut KnowledgeBase,
+    disambig: Option<&SameSpecDisambig>,
+    caller_requires: &[RequiresEntry],
+    dep: &RequiresEntry,
+    covering: &[usize],
+) -> Option<usize> {
+    let first = covering.first().copied();
+    let Some(disambig) = disambig else { return first };
+    let precise: SmallVec<[usize; 2]> = covering
+        .iter()
+        .copied()
+        .filter(|&i| entry_sigma_matches(kb, disambig, &caller_requires[i], dep))
+        .collect();
+    match precise.as_slice() {
+        [one] => Some(*one),
+        _ => first,
+    }
+}
+
+/// WI-419: σ-class-precise variant of [`entries_cover`], used ONLY to
+/// tie-break among same-spec covering entries. Identical to `entries_cover`
+/// EXCEPT the type-param-vs-type-param case: rather than accepting any two
+/// wildcards, it requires the caller's and the dep's element to resolve to the
+/// SAME unification variable under `subst` (the dep's callee-param element
+/// having been unified with one of the caller's element params at the call
+/// site). A mixed concrete/wildcard pair — which `entries_cover` accepts
+/// loosely — is NOT a precise match. Concrete/concrete bindings use the same
+/// `dispatch_values_match` as `entries_cover`.
+fn entry_sigma_matches(
+    kb: &mut KnowledgeBase,
+    disambig: &SameSpecDisambig,
+    caller: &RequiresEntry,
+    dep: &RequiresEntry,
+) -> bool {
+    if !same_symbol(kb, caller.required_sort, dep.required_sort) {
+        return false;
+    }
+    let Some((_, caller_bindings)) = unwrap_spec_view(kb, caller.spec) else {
+        return false;
+    };
+    let Some((_, dep_bindings)) = unwrap_spec_view(kb, dep.spec) else {
+        return false;
+    };
+    if dep_bindings.is_empty() {
+        return true;
+    }
+    let spec_qn = kb.qualified_name_of(dep.required_sort).to_string();
+    for (dep_k, dep_val) in &dep_bindings {
+        if !is_type_param_binding(kb, *dep_k, &spec_qn) {
+            continue;
+        }
+        let Some(caller_val) = caller_bindings
+            .iter()
+            .find(|(ck, _)| same_symbol(kb, *ck, *dep_k))
+            .map(|(_, v)| *v)
+        else {
+            return false;
+        };
+        let caller_tp = is_type_param_value(kb, caller_val);
+        let dep_tp = is_type_param_value(kb, *dep_val);
+        match (caller_tp, dep_tp) {
+            (true, true) => {
+                // σ-class identity: both elements must resolve to the same var.
+                match (
+                    element_repr_var(kb, disambig, caller_val),
+                    element_repr_var(kb, disambig, *dep_val),
+                ) {
+                    (Some(a), Some(b)) if a == b => continue,
+                    _ => return false,
+                }
+            }
+            // One concrete, one wildcard: `entries_cover` accepts this loosely,
+            // but a wildcard does not PIN a concrete element, so it is not the
+            // precise slot for tie-breaking.
+            (true, false) | (false, true) => return false,
+            (false, false) => {
+                if !dispatch_values_match(kb, caller_val, *dep_val)
+                    && !dispatch_values_match(kb, *dep_val, caller_val)
+                {
+                    return false;
+                }
+            }
+        }
+    }
+    true
+}
+
+/// WI-419: the representative unification variable of a type-param element
+/// binding VALUE under the call context. Walk to a canonical representative: at
+/// each step map the current term to a logical var (a `Global`/`Rigid`
+/// directly, or a sort-parameter `Ref`/`Ident`/nullary-`Fn` via its sort alias —
+/// mirroring [`resolve_param_value_via_subst`]), then chase what `subst` binds
+/// that var to. The chase follows BOTH var→var and var→sort-param-`Ref`
+/// bindings. A `Var::Rigid` is terminal (a per-body skolem — never re-bound).
+/// An unbound `Global` is the representative, but is first canonicalized through
+/// the enclosing-sort param→rigid map: the dep element resolves (via the call
+/// `subst`) to the rigidified caller param `Var(Rigid(B))`, while the caller
+/// `requires` entry resolves to the canonical `Var::Global(B)`, so mapping the
+/// global to its rigid lands both on the same id. `None` when the value is not a
+/// recognizable type-param. Bounded against a pathological cycle.
+fn element_repr_var(
+    kb: &KnowledgeBase,
+    disambig: &SameSpecDisambig,
+    value: TermId,
+) -> Option<VarId> {
+    let mut cur = value;
+    for _ in 0..128 {
+        let (vid, is_rigid) = elem_var_step(kb, cur)?;
+        if is_rigid {
+            return Some(vid);
+        }
+        match disambig.subst.resolve_as_value(vid) {
+            Some(Value::Term(t)) => cur = *t,
+            _ => return Some(canonical_global_var(kb, vid, disambig.sort_param_rigids)),
+        }
+    }
+    None
+}
+
+/// WI-419: map an element term to a logical var, returning `(var, is_rigid)`.
+/// `is_rigid` marks a terminal skolem (`Var::Rigid`); a `Global` (direct or via
+/// a sort-param alias) is chaseable. `None` for a concrete / unrecognized term.
+fn elem_var_step(kb: &KnowledgeBase, tid: TermId) -> Option<(VarId, bool)> {
+    match kb.get_term(tid) {
+        Term::Var(Var::Rigid(v)) => Some((*v, true)),
+        Term::Var(Var::Global(v)) => Some((*v, false)),
+        Term::Ref(sym) | Term::Ident(sym) if is_sort_param_symbol(kb, *sym) => {
+            type_param_global_var(kb, *sym).map(|g| (g, false))
+        }
+        Term::Fn { functor, pos_args, named_args }
+            if pos_args.is_empty()
+                && named_args.is_empty()
+                && is_sort_param_symbol(kb, *functor) =>
+        {
+            type_param_global_var(kb, *functor).map(|g| (g, false))
+        }
+        _ => None,
+    }
+}
+
+/// WI-419: canonicalize a `Global` param var to the per-body `Var::Rigid` id the
+/// enclosing-sort rigidification minted for it, or return it unchanged when it
+/// is not an enclosing-sort param (no rigid mapping).
+fn canonical_global_var(
+    kb: &KnowledgeBase,
+    g: VarId,
+    sort_param_rigids: &[(VarId, TermId)],
+) -> VarId {
+    for (canonical, rigid_term) in sort_param_rigids {
+        if *canonical == g {
+            if let Term::Var(Var::Rigid(rv)) = kb.get_term(*rigid_term) {
+                return *rv;
+            }
+        }
+    }
+    g
+}
+
+/// WI-419: the `Global` var a sort-parameter symbol aliases to, or `None` when
+/// it does not alias to one.
+fn type_param_global_var(kb: &KnowledgeBase, sym: Symbol) -> Option<VarId> {
+    match kb.get_term(resolve_sort_alias(kb, sym)?) {
+        Term::Var(Var::Global(v)) => Some(*v),
+        _ => None,
+    }
 }
 
 /// WI-227: translate a `ResolvedRequiresNode` into a projection IR term.

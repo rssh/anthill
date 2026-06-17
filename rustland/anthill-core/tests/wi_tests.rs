@@ -5,6 +5,9 @@ mod common;
 #[path = "include/wi009_phase3_builtins_test.rs"]
 mod wi009_phase3_builtins_test;
 
+#[path = "include/wi419_same_spec_requires_test.rs"]
+mod wi419_same_spec_requires_test;
+
 #[path = "include/wi275_hof_inference_test.rs"]
 mod wi275_hof_inference_test;
 

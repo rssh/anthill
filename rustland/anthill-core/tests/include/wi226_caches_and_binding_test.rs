@@ -187,7 +187,7 @@ fn binding_aware_match_rejects_wrong_binding_at_flat_slot() {
     // enclosing sort; Strategy 1/2 won't fire anyway (binding mismatch),
     // so the name lookup is never reached.
     let projection = build_dep_projection(
-        &mut kb, &dep, None, &caller_requires, &caller_sub_chains, &syms,
+        &mut kb, &dep, None, &caller_requires, &caller_sub_chains, &syms, None,
     )
     .expect("Strategy 3 must resolve Eq[T=String] via the String carrier");
 
