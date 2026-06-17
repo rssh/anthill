@@ -602,27 +602,23 @@ impl Interpreter {
         };
         let spec_sort = spec_op_parent_sort(&self.kb, spec_op)?;
         let rec = crate::kb::op_info::lookup_operation_info(&self.kb, spec_op)?;
-        // The carrier sort a runtime argument value names: entity functor →
-        // its parent sort's base symbol. A runtime stream handle IS a
-        // LogicalStream value — since WI-385 widened consumer params from
-        // LogicalStream to the Stream SPEC, the typer no longer statically
-        // rewrites those calls, so THIS dynamic path must classify the
-        // handle's carrier or every spec op on an `execute()` stream dies
-        // as UnknownOperation (the regression that silently broke `next`).
-        let carrier_of = |i: usize| -> Option<Symbol> {
-            let arg = arg_values.get(i)?;
-            if matches!(arg, Value::Stream(_)) {
-                return self.kb.try_resolve_symbol("anthill.prelude.LogicalStream");
-            }
-            let functor = value_functor(&self.kb, arg)?;
-            let parent_tid = self.kb.constructor_parent_sort(functor)?;
-            match self.kb.get_term(parent_tid) {
-                Term::Fn { functor, .. } | Term::Ref(functor) | Term::Ident(functor) => {
-                    Some(*functor)
-                }
-                _ => None,
-            }
-        };
+        // The carrier sort a runtime argument value names. Entity/Term values
+        // derive it from their constructor's parent sort; HANDLE / SCALAR values
+        // (a stream cursor, a `Map`, a `Cell`, a closure, a boxed scalar) carry no
+        // constructor functor, so they map to a FIXED prelude sort. Since WI-385
+        // widened consumer params from concrete handle types to the SPEC (e.g.
+        // `LogicalStream` → `Stream`), the typer no longer statically rewrites those
+        // calls, so THIS dynamic path must classify the handle's carrier or every
+        // spec op consuming one dies `UnknownOperation` — the regression that
+        // silently broke `next` on a stream, and `isEmpty`/`find` on a `Map`
+        // (WI-435 generalized the WI-009 `Value::Stream` special-case into
+        // `runtime_carrier_sort`). Classifying handle receivers also closes the
+        // WI-424 "non-receiver slot steals dispatch" gap: a receiver that returned
+        // `None` here was skipped, so a later carrier-typed arg won the first-passing
+        // `carrier_param_receiver_for_values` loop; now the receiver classifies and
+        // wins, matching the typer's `carrier_param_receiver` index.
+        let carrier_of =
+            |i: usize| -> Option<Symbol> { runtime_carrier_sort(&self.kb, arg_values.get(i)?) };
         // Same self-receiver classification the typer's `receiver_carrier`
         // uses, so the two never disagree about which argument names the
         // carrier. `arg_values` is in callee-parameter order here (the typer
@@ -1761,6 +1757,57 @@ pub(crate) fn value_functor(kb: &KnowledgeBase, value: &Value) -> Option<Symbol>
             Term::Ref(sym) => Some(*sym),
             _ => None,
         },
+        _ => None,
+    }
+}
+
+/// The prelude carrier sort a runtime VALUE names, for dynamic spec-op
+/// dispatch — the runtime twin of the typer's `carrier_sort_of_value` (which
+/// keys on a TYPE). `Entity` / `Term` values derive the carrier from their
+/// constructor's parent sort; HANDLE and SCALAR values carry no constructor
+/// functor, so each maps to a FIXED prelude sort (a stream cursor → `LogicalStream`,
+/// a `Map` → `Map`, a `Cell` → `Cell`, a closure / op-ref → `Function`, a boxed
+/// scalar → its primitive sort).
+///
+/// The match is EXHAUSTIVE over `Value` (mirrors [`Value::type_name`], no `_`
+/// arm) so a new variant must declare its carrier here rather than silently
+/// fall through to `None` and dispatch as `UnknownOperation` — the exact
+/// WI-385-widening regression class WI-435 closes (the WI-009 `Value::Stream →
+/// LogicalStream` patch generalized to every handle). A value that never names a
+/// spec receiver (unit, tuple, lazy thunk, substitution, requirement dict, raw
+/// node, logic var) maps to `None`.
+pub(crate) fn runtime_carrier_sort(kb: &KnowledgeBase, value: &Value) -> Option<Symbol> {
+    // Handle / scalar values: a FIXED prelude carrier sort per variant.
+    let qualified: Option<&str> = match value {
+        Value::Stream(_) => Some("anthill.prelude.LogicalStream"),
+        Value::Map(_) => Some("anthill.prelude.Map"),
+        Value::Cell(_) => Some("anthill.prelude.Cell"),
+        Value::Closure(_) | Value::OpRef { .. } => Some("anthill.prelude.Function"),
+        Value::Int(_) => Some("anthill.prelude.Int64"),
+        Value::BigInt(_) => Some("anthill.prelude.BigInt"),
+        Value::Float(_) => Some("anthill.prelude.Float"),
+        Value::Str(_) => Some("anthill.prelude.String"),
+        Value::Bool(_) => Some("anthill.prelude.Bool"),
+        // Structured values: the carrier is the constructor's parent sort (below).
+        Value::Entity { .. } | Value::Term(_) => None,
+        // Values that never name a spec receiver — no carrier sort. Listed
+        // explicitly (no `_` arm) so a new `Value` variant forces a decision.
+        Value::Unit
+        | Value::Tuple { .. }
+        | Value::Lazy(_)
+        | Value::Substitution(_)
+        | Value::Requirement(_)
+        | Value::Node(_)
+        | Value::Var(_) => return None,
+    };
+    if let Some(qn) = qualified {
+        return kb.try_resolve_symbol(qn);
+    }
+    // Entity / Term: the carrier is the constructor's parent-sort base symbol.
+    let functor = value_functor(kb, value)?;
+    let parent_tid = kb.constructor_parent_sort(functor)?;
+    match kb.get_term(parent_tid) {
+        Term::Fn { functor, .. } | Term::Ref(functor) | Term::Ident(functor) => Some(*functor),
         _ => None,
     }
 }

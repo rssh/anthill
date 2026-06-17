@@ -772,6 +772,43 @@ end
     );
 }
 
+/// WI-435: dynamic spec-op dispatch must classify a HANDLE-valued receiver's
+/// carrier, not just entity/term values. `Map` provides `Iterable`, but a Map
+/// runtime value is a `Value::Map` handle with no constructor functor — so
+/// `value_functor` returns `None` and, pre-fix, `carrier_of` could not name its
+/// carrier. An Iterable combinator that Map does NOT override (`isEmpty`) runs
+/// Iterable's default body → `iterator(c)` on the Map value, which died
+/// `UnknownOperation { name: "iterator" }`. `runtime_carrier_sort` now maps
+/// `Value::Map → Map` (and every other handle/scalar), so the call dispatches to
+/// `Map.iterator`. The List control (an entity value) worked before and still
+/// does — pinning the fix to the handle-value gap.
+#[test]
+fn wi435_iterable_op_on_map_handle_value_dispatches() {
+    let src = r#"
+namespace test.wi435
+  import anthill.prelude.{Map, List, Iterable, Int64, String, Bool}
+  import anthill.prelude.Map.{empty, put}
+  import anthill.prelude.List.{cons, nil}
+  import anthill.prelude.Iterable.{isEmpty}
+
+  -- Map HANDLE value: isEmpty runs Iterable's default body -> iterator(map).
+  operation fullMap() -> Bool = isEmpty(put(empty(), "a", 1))
+  -- List ENTITY value: the control that worked pre-fix.
+  operation fullList() -> Bool = isEmpty(cons(1, nil()))
+end
+"#;
+    let mut interp = crate::common::interp_for(src);
+    // The whole point of WI-435: this no longer dies UnknownOperation { iterator }.
+    assert!(
+        !expect_bool(interp.call("test.wi435.fullMap", &[]).expect("fullMap runs")),
+        "isEmpty on a non-empty Map HANDLE value must dispatch and be false (WI-435)",
+    );
+    assert!(
+        !expect_bool(interp.call("test.wi435.fullList", &[]).expect("fullList runs")),
+        "isEmpty on a non-empty List entity value is false (control)",
+    );
+}
+
 #[test]
 fn wi064_stdlib_combinators_fold_map_find() {
     // WI-064: the stdlib higher-order combinators run end-to-end on a List
