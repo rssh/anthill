@@ -3225,7 +3225,24 @@ impl KnowledgeBase {
                 // `for_each_child` with `collect_expr_termid_field_vars`.
                 self.collect_expr_type_field_unbound_vars(expr, subst, out);
             }
-            None => {}
+            None => {
+                // Not an Expr. A `Type`/`EffectExpr`-kind occurrence reaching
+                // here (via the `Value::Node` type-arg arm of
+                // `collect_type_value_unbound_vars`) is the pending subst-aware
+                // Type-spine var walk (WI-504, riding WI-378 step 2's
+                // type-field→child migration): its vars are NOT collected, so a
+                // caller var in the spine would be silently missed → under-delay.
+                // Surface it loudly rather than dropping it, mirroring the
+                // loader's `collect_occurrence_global_vars_ordered`. A `RuleHead`
+                // (the other non-Expr/non-Pattern kind) carries no goal vars, so
+                // it is legitimately empty — matching the loader's `RuleHead` arm.
+                debug_assert!(
+                    arg.as_type().is_none() && arg.as_effect_expr().is_none(),
+                    "WI-504: subst-aware Type/EffectExpr-spine var collection not yet wired \
+                     (rides WI-378 type-field→child migration) — a caller var in this spine \
+                     would be missed by the rule-delay pre-check"
+                );
+            }
         }
     }
 
