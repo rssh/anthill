@@ -722,6 +722,56 @@ end
     );
 }
 
+/// WI-423 (loader/resolution): the structural twin of WI-422 for kernel
+/// META-SORTS. A user sort whose name collides with one of the 10 kernel
+/// meta-sort names (`Sort`/`Entity`/`Fact`/`Member`/`Constraint`/… — here
+/// `Member`) is referenced BARE as a type inside a `requires`-bearing sort. The
+/// `requires Eq[T]` link opens a scope path (Box → Eq → prelude → _global);
+/// pre-fix the kernel meta-sort `Member` was a bare global *local*, so that path
+/// bypassed the enclosing-chain view of the user's `Member` and resurfaced the
+/// kernel one as a phantom rival → `ambiguous symbol 'Member'` (a non-blocking
+/// `LoadError`, so the bare ref then interned a fresh UNRESOLVED `Member`,
+/// divorced from the user sort — the "unresolved cascade"). The fix registers the
+/// meta-sorts qualified-only (never a global local), mirroring WI-422's functor
+/// fix. This pins both halves of the acceptance: the file loads error-free (no
+/// ambiguity warning) AND the bare `Member` resolves to the USER sort — its
+/// `mk(7)` / `.id` thread through `Box.idOf` to yield 7.
+#[test]
+fn wi423_user_sort_shadowing_kernel_meta_sort_resolves() {
+    let src = r#"
+namespace test.wi423
+  import anthill.prelude.{List, Int64, Bool, Eq}
+  -- user sort whose name collides with the kernel meta-sort `Member`
+  sort Member
+    entity mk(id: Int64)
+  end
+  sort Box
+    sort T = ?
+    requires Eq[T]
+    -- `Member` (a kernel meta-sort name) referenced BARE as a type inside the
+    -- requires-bearing sort: the WI-423 trigger.
+    operation idOf(x: T, m: Member) -> Int64 = m.id
+  end
+  operation run() -> Int64 = Box.idOf(1, Member.mk(7))
+end
+"#;
+    // No ambiguity / unresolved cascade: the whole file loads error-free.
+    // (An `ambiguous symbol 'Member'` is a non-blocking LoadError, so `load_all`
+    // still returns `Err` — `try_load_kb_with` surfaces it.)
+    assert!(
+        crate::common::try_load_kb_with(src).is_ok(),
+        "bare `Member` (a kernel meta-sort name) in a requires-bearing sort must \
+         resolve to the user sort, not raise `ambiguous symbol` (WI-423)",
+    );
+    // And it resolves to the USER `Member`: `Member.mk(7).id` threads through.
+    let mut interp = crate::common::interp_for(src);
+    assert_eq!(
+        expect_int(interp.call("test.wi423.run", &[]).expect("run evaluates")),
+        7,
+        "the user `Member.mk(7)` flows through `Box.idOf` to its `id` field (WI-423)",
+    );
+}
+
 #[test]
 fn wi064_stdlib_combinators_fold_map_find() {
     // WI-064: the stdlib higher-order combinators run end-to-end on a List

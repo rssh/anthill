@@ -1654,6 +1654,19 @@ pub fn register_implicit_prelude_effects(kb: &mut KnowledgeBase) {
 
 /// KB-internal meta-sort names. Used as sort-of-sort markers (e.g. the sort
 /// of a Fact entry is `Fact`). Not defined in any `.anthill` file.
+///
+/// Registered *qualified-only* (see [`SymbolTable::define_qualified_only`] and
+/// the `KERNEL_FUNCTORS` note below): the loader emits the reflection facts that
+/// carry these sorts via `make_name_term("Member")` etc., which INTERNS the name
+/// (a separate intern-map symbol), never scope-resolves it — so keeping them out
+/// of every scope's `locals` is transparent to fact emission. Previously they
+/// were bare global *locals* via `define()`, which let a `requires`-induced scope
+/// link (sort -> spec -> prelude -> _global) bypass a user's enclosing-chain
+/// alias and resurface the kernel meta-sort as a phantom rival to a user sort of
+/// the same name (e.g. `sort Member` / `sort Constraint`) referenced bare inside
+/// a `requires`-bearing sort -> `ambiguous symbol` (WI-423, the structural twin
+/// of the WI-422 functor leak). No `.anthill` source or Rust resolver references
+/// these names by scope, so delocalizing closes the leak with no capability loss.
 const KERNEL_META_SORTS: &[&str] = &[
     "Sort", "Entity", "Fact", "Rule", "Operation", "Namespace",
     "Requirement", "Description", "Constraint", "Member",
@@ -1695,9 +1708,8 @@ pub fn register_prelude(kb: &mut KnowledgeBase) {
     let global = kb.make_name_term("_global");
     let global_raw = global.raw();
     for &name in KERNEL_META_SORTS {
-        if !kb.symbols.by_qualified_name.contains_key(name) {
-            kb.symbols.define(name, name, SymbolKind::Sort, global_raw);
-        }
+        kb.symbols
+            .define_qualified_only(name, name, SymbolKind::Sort, global_raw);
     }
     for &(short, qualified) in KERNEL_FUNCTORS {
         kb.symbols
