@@ -398,3 +398,6 @@ mod wi426_named_arg_op_call_test;
 
 #[path = "include/wi433_positional_ctor_desugar_test.rs"]
 mod wi433_positional_ctor_desugar_test;
+
+#[path = "include/wi499_forward_ref_ctor_test.rs"]
+mod wi499_forward_ref_ctor_test;

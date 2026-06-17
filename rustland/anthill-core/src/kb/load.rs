@@ -734,6 +734,47 @@ fn ensure_intermediate_namespaces(
     (segments.last().unwrap().to_string(), current_scope)
 }
 
+/// WI-499: register an entity's ordered field NAMES into the KB during
+/// `scan_definitions` pass-1 — BEFORE any term conversion — so the WI-433
+/// positional→named desugar, the partial-named-arg expansion, and the
+/// over-arity loud check (all of which gate on `kb.entity_field_names`) are
+/// load-order-INDEPENDENT. A positional constructor whose entity is declared
+/// textually AFTER the referencing fact/rule (same namespace), or in a
+/// later-loaded file, used to see `entity_field_names = None` at convert time
+/// and silently stay positional (the WI-433 never-match, just reordered) while
+/// the over-arity error was silently skipped — because field names were only
+/// registered later, in `load_entity` during the source-order load pass.
+///
+/// Field NAMES only: the field TYPES (literal-typing hints) need the type-aware
+/// `type_expr_to_value` lowering and stay in `load_entity`. Names are registered
+/// under both the resolved entity symbol (the `remap_name` / `remap_symbol` key
+/// the convert path uses) and the bare-interned short name (the key
+/// sugar-generated facts use), mirroring the dual registration the loader did.
+///
+/// Idempotent (`register_entity_fields` overwrites): a re-scanned or
+/// prelude-bootstrapped entity simply re-registers the same names.
+fn register_entity_field_names_scan(
+    kb: &mut KnowledgeBase,
+    parse_sym: &crate::intern::SymbolTable,
+    e: &Entity,
+    entity_sym: Symbol,
+    short: &str,
+) {
+    let field_names: Vec<Symbol> = e
+        .fields
+        .iter()
+        .map(|f| kb.intern(parse_sym.name(f.name)))
+        .collect();
+    kb.register_entity_fields(entity_sym, field_names.clone());
+    // Sugar-generated facts reference the bare short name (`kb.intern("WorkItem")`,
+    // an Unresolved symbol distinct from the resolved entity symbol), so register
+    // under it too — unless it coincides with the resolved symbol.
+    let short_sym = kb.intern(short);
+    if short_sym != entity_sym {
+        kb.register_entity_fields(short_sym, field_names);
+    }
+}
+
 /// Create an operation scope and define its parameters plus the reserved
 /// `result` name (proposal 041).
 ///
@@ -1107,9 +1148,15 @@ fn scan_items_pass1(
                 let (short, actual_scope) = ensure_intermediate_namespaces(kb, &name, scope, prefix);
                 let qualified = make_qualified(prefix, &name);
                 // Reuse existing entity symbol if already defined (e.g. by register_prelude)
-                if !kb.symbols.by_qualified_name.contains_key(&qualified) {
-                    kb.symbols.define(&short, &qualified, SymbolKind::Entity, actual_scope.raw());
-                }
+                let entity_sym = if let Some(&existing) = kb.symbols.by_qualified_name.get(&qualified) {
+                    existing
+                } else {
+                    kb.symbols.define(&short, &qualified, SymbolKind::Entity, actual_scope.raw())
+                };
+                // WI-499: register field NAMES now, before any term conversion, so the
+                // positional→named desugar / partial-expansion / over-arity check are
+                // load-order-independent. Field TYPES stay in load_entity.
+                register_entity_field_names_scan(kb, parse_sym, e, entity_sym, &short);
             }
             Item::Operation(o) => {
                 let name = join_segments(parse_sym, &o.name.segments);
@@ -8701,23 +8748,13 @@ impl<'a> Loader<'a> {
             .map(|f| (self.reintern(f.name), self.type_expr_to_value(&f.ty)))
             .collect();
 
-        // Register entity field names for partial named-arg expansion.
-        // Register under both the qualified symbol (from remap_name) and
-        // the short name, so that sugar-generated facts (which use unqualified
-        // functor names like "WorkItem") can also look up entity fields.
-        let field_names: Vec<Symbol> = field_types.iter().map(|(s, _)| *s).collect();
-        self.kb.register_entity_fields(functor, field_names.clone());
+        // Register entity field TYPES (the carrier-agnostic literal-typing
+        // hints) under the resolved entity symbol. WI-499: field NAMES are now
+        // registered earlier, in `scan_definitions` pass-1
+        // (`register_entity_field_names_scan`), so the positional→named desugar
+        // and partial-expansion are load-order-independent; only the type-aware
+        // lowering stays here.
         self.kb.register_entity_field_types(functor, field_types.clone());
-        let short_name = if e.name.segments.len() == 1 {
-            self.parsed.symbols.name(e.name.segments[0]).to_owned()
-        } else {
-            // For multi-segment names, use the last segment as short name
-            self.parsed.symbols.name(*e.name.segments.last().unwrap()).to_owned()
-        };
-        let short_sym = self.kb.intern(&short_name);
-        if short_sym != functor {
-            self.kb.register_entity_fields(short_sym, field_names);
-        }
 
         // WI-342: build the Entity schema fact carrier-agnostically. A
         // value-in-type field (`Vector[Int64, 3]`) lowers to a `Value::Node`,
