@@ -7980,6 +7980,16 @@ impl<'a> Loader<'a> {
         // ambiguity (WI-431 rule 2). Sorting here makes the spec view
         // order-insensitive for every caller (fact + provides), so the WI-449
         // byte-identity holds regardless of source order.
+        //
+        // WI-498: this index sort is DELIBERATE and does NOT route through the
+        // `make_entity_term` / `sort_named_canonical` funnel (unlike the
+        // persistence term builders). The named keys here are the viewed spec's
+        // TYPE-PARAM bindings (`T`, `E` of `Spec[T = …, E = …]`), not declared
+        // fields of the `SortView` entity (whose `entity_field_names` are a fixed
+        // reflect schema that does not contain `T`/`E`). Funneling would sort the
+        // type-param bindings against SortView's own field list — all unmatched,
+        // collapsing to `usize::MAX` and a non-index order — breaking the WI-449
+        // byte-identity. Index order is the right canonical key for this slot.
         named.sort_by_key(|(s, _)| s.index());
         // A spec is ground iff every binding is ground; any non-`Term` binding
         // poisons the whole spec to a value carrier (no information lost).

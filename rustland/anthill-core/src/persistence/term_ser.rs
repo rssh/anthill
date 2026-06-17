@@ -303,14 +303,13 @@ fn load_entry(
         named_args.push((field_sym, term));
     }
 
-    // Sort named_args by Symbol index for hash-consing consistency
-    named_args.sort_by_key(|(sym, _)| sym.index());
-
-    Ok(kb.alloc(Term::Fn {
-        functor,
-        pos_args: SmallVec::new(),
-        named_args,
-    }))
+    // WI-498: canonicalize named args to DECLARED field order via the WI-299
+    // funnel (not `Symbol::index()` interning order). The loader canonicalizes
+    // source-loaded facts to declared order and the discrim matcher descends
+    // named keys positionally, so a fact reloaded from a persisted store must
+    // use the same order or it silently fails to hash-cons- / discrim-match the
+    // same fact loaded from .anthill source.
+    Ok(kb.make_entity_term(functor, SmallVec::new(), named_args))
 }
 
 /// Convert a JSON value to a KB term.
@@ -409,15 +408,11 @@ fn array_to_list_term(
     // Build list from back to front
     for item in arr.iter().rev() {
         let head_term = value_to_term(kb, item, var_map)?;
-        let mut named = SmallVec::new();
+        let mut named: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
         named.push((head_sym, head_term));
         named.push((tail_sym, result));
-        named.sort_by_key(|&(sym, _): &(Symbol, TermId)| sym.index());
-        result = kb.alloc(Term::Fn {
-            functor: cons_sym,
-            pos_args: SmallVec::new(),
-            named_args: named,
-        });
+        // WI-498: canonicalize cons named args to declared field order (funnel).
+        result = kb.make_entity_term(cons_sym, SmallVec::new(), named);
     }
 
     Ok(result)
@@ -467,12 +462,9 @@ fn build_constructor_term(
                 let term = value_to_term(kb, v, var_map)?;
                 named_args.push((field_sym, term));
             }
-            named_args.sort_by_key(|(sym, _)| sym.index());
-            Ok(kb.alloc(Term::Fn {
-                functor: ctor_sym,
-                pos_args: SmallVec::new(),
-                named_args,
-            }))
+            // WI-498: canonicalize named-constructor / enum-variant args to
+            // declared field order via the funnel (not interning order).
+            Ok(kb.make_entity_term(ctor_sym, SmallVec::new(), named_args))
         }
         _ => {
             // Single-field shorthand: { "ToolPasses": "cargo-test" }

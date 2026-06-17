@@ -476,6 +476,107 @@ fn round_trip_json() {
     assert_eq!(count2, 1);
 }
 
+// ── WI-498: canonicalization across the persistence boundary ────
+
+/// A fact reloaded from a persisted store must hash-cons-match the SAME fact
+/// loaded from .anthill source, even when the entity's declared field order
+/// differs from symbol interning order. The loader canonicalizes source facts
+/// to declared field order and the discrim matcher descends named keys
+/// positionally, so the deserializer must canonicalize the same way (via the
+/// `make_entity_term` funnel) — not sort by `Symbol::index()`.
+#[test]
+fn wi498_deserialized_entity_matches_source_loaded_form() {
+    // Top-level entities (like the github-todo `anthill.stage0` domain) so the
+    // qualified entity name resolves to a functor carrying registered field
+    // names — the deserializer's `entity_field_names` lookup then sees declared
+    // order. `aafield` is interned first (in `Pre`), so it gets a LOWER symbol
+    // index than `zzfield` (first seen in `Rec`); but `Rec` DECLARES `zzfield`
+    // first, so declared order [zzfield, aafield] is the REVERSE of index order
+    // [aafield, zzfield] — the same shape as the real `WorkItem` entity, whose
+    // `id` is declared first but interned after `description`/`status`.
+    let src = r#"
+namespace test
+entity Pre(aafield: String)
+entity Rec(zzfield: String, aafield: String)
+fact Rec(zzfield: "z", aafield: "a")
+end
+"#;
+    let parsed = parse::parse(src).expect("parse");
+    let mut kb = KnowledgeBase::new();
+    load::register_prelude(&mut kb);
+    kb.register_standard_builtins();
+    let _ = load::load_all(&mut kb, &[&parsed], &load::NullResolver);
+
+    let rec_sym = kb.try_resolve_symbol("test.Rec").expect("Rec resolved");
+
+    // Precondition: the fixture must actually exercise the bug — declared field
+    // order must differ from interning order, else the test is a silent no-op.
+    let declared = kb
+        .entity_field_names(rec_sym)
+        .expect("Rec has declared fields")
+        .to_vec();
+    assert_eq!(declared.len(), 2);
+    assert!(
+        declared[0].index() > declared[1].index(),
+        "fixture must produce interning order != declared order to exercise \
+         WI-498 (declared[0]={}, declared[1]={}); adjust field names if \
+         interning changed",
+        declared[0].index(),
+        declared[1].index(),
+    );
+
+    // The source-loaded data fact `Rec(zzfield:"z", aafield:"a")`, canonicalized
+    // to declared field order by the loader. (`rules_by_functor` also returns the
+    // entity SCHEMA fact `Rec(zzfield: String, aafield: String)`; the data fact
+    // is the one carrying the string value.)
+    let printer = TermPrinter::new(&kb);
+    let before = kb.rules_by_functor(rec_sym);
+    let source_rid = *before
+        .iter()
+        .find(|r| printer.print_term(kb.rule_head(**r)).contains("\"z\""))
+        .expect("source data fact present");
+    let source_head = kb.rule_head(source_rid);
+    // Confirm the loader canonicalized the source fact to DECLARED order
+    // (zzfield before aafield) — otherwise the comparison below would pass
+    // vacuously (both sides in index order).
+    let printed = printer.print_term(source_head);
+    assert!(
+        printed.find("zzfield") < printed.find("aafield"),
+        "source fact must be in declared order zzfield-then-aafield: {printed}"
+    );
+    drop(printer);
+
+    // Deserialize the SAME entity from a persisted (TOML) store, with the
+    // fields written in NON-declared order to stress the canonicalization.
+    let domain = kb.make_name_term("persisted");
+    let toml_src = r#"
+[meta]
+entity = "test.Rec"
+
+[data]
+aafield = "a"
+zzfield = "z"
+"#;
+    let count = term_ser::load_toml(&mut kb, toml_src, domain).expect("reload from store");
+    assert_eq!(count, 1);
+
+    let after = kb.rules_by_functor(rec_sym);
+    let deser_rid = *after
+        .iter()
+        .find(|r| !before.contains(*r))
+        .expect("deserialized fact present");
+    let deser_head = kb.rule_head(deser_rid);
+
+    // Hash-consing means structurally identical terms share one TermId; with
+    // the WI-498 fix the deserialized term canonicalizes to declared order and
+    // is the SAME term as the source-loaded fact. Before the fix it sorted by
+    // index order and produced a DISTINCT, non-matching term.
+    assert_eq!(
+        source_head, deser_head,
+        "reloaded term must hash-cons-match the source-loaded form (WI-498)"
+    );
+}
+
 // ── Error cases ─────────────────────────────────────────────────
 
 #[test]
