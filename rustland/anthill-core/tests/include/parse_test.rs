@@ -3763,6 +3763,36 @@ fn parse_fires_on_syntax_error() {
     );
 }
 
+// WI-110: the original `parse()` flagged only *top-level* ERROR nodes, so a
+// malformed construct that tree-sitter buried inside an otherwise-valid subtree
+// slipped through and the converter silently dropped it — `ho_bigint_induction_parses`
+// rode an unanchored `-:` deep in a rule body for several revisions before
+// WI-C1's grammar change happened to promote the ERROR to the top level and
+// exposed it. `collect_syntax_errors` descends the whole CST, so a deeply-
+// embedded ERROR is surfaced exactly like a top-level one. Guard that contract
+// directly with the exact historical shape so a future "only check the root"
+// regression can't quietly reopen the permissive-recovery gap.
+#[test]
+fn parse_fires_on_embedded_syntax_error() {
+    // Valid `rule` head and a body whose leading goals parse cleanly; the
+    // unparenthesised `-:` (the WI-108 nested-implication arrow needs the outer
+    // parens) has no grammar anchor in this position, so tree-sitter buries an
+    // ERROR node deep in the rule body rather than at the top of the file. The
+    // grammar-supported parenthesised form is exercised by
+    // `ho_bigint_induction_parses` in typing_test.rs.
+    let source = r#"
+rule bigint_induction(?P)
+  :- ?P(0),
+     forall(?n), gt(?n, 0), ?P(sub(?n, 1)) -: ?P(?n)
+"#;
+    let errs = parse::parse(source)
+        .expect_err("an embedded ERROR node must fail parse, not be silently dropped");
+    assert!(
+        errs.iter().any(|e| e.message.contains("syntax error")),
+        "expected a `syntax error` diagnostic for the embedded `-:`, got: {errs:?}",
+    );
+}
+
 // WI-446: binding the inner match to a `let` terminates its branch list (the
 // trailing `r` reference is not a `case`), so the outer match keeps both arms
 // and no diagnostic fires.
