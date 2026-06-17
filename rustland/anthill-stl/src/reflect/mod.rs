@@ -125,6 +125,9 @@ pub struct FieldInfo {
 pub struct DescriptionInfo {
     pub target: Term,
     pub content: String,
+    /// 0-based per-target description index (the stored `Description(target,
+    /// text, index)` pos[2]; `reflect.anthill` declares `index: Int64`).
+    pub index: i64,
 }
 
 // ── Substitution trait ──────────────────────────────────────────

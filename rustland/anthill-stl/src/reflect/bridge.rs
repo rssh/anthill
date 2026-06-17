@@ -676,15 +676,20 @@ impl KB for KbBridge {
         let mut results = vec![];
 
         // Description facts: Description(target_term, text_term, index_term).
-        // The stored per-target index (pos[2]) is not yet read here —
-        // DescriptionInfo carries no index field; results ride fact order.
+        // pos[2] is the STORED 0-based per-target index (kb/load.rs
+        // emit_desc_fact); read it so a target-filtered query reports each
+        // target's own [0, 1, …] instead of dropping the index (WI-438).
         for (_rid, head) in self.facts_by_sort_name("Description") {
             let pos = self.term_pos_args(head);
-            if pos.len() < 2 {
+            if pos.len() < 3 {
                 continue;
             }
             let desc_target_tid = pos[0];
             let desc_content = self.term_display_name(pos[1]);
+            let desc_index = match self.kb.borrow().get_term(pos[2]) {
+                CoreTerm::Const(Literal::Int(n)) => *n,
+                _ => continue,
+            };
 
             if let Some(t) = target {
                 let desc_target_name = self.term_display_name(desc_target_tid);
@@ -696,6 +701,7 @@ impl KB for KbBridge {
             results.push(DescriptionInfo {
                 target: desc_target_tid,
                 content: desc_content,
+                index: desc_index,
             });
         }
 

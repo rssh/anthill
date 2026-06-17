@@ -575,11 +575,20 @@ fn kb_descriptions(
 
     let mut items: Vec<Value> = Vec::new();
     let facts = facts_by_sort_name(kb, "Description");
-    for (idx, (_rid, head)) in facts.into_iter().enumerate() {
+    for (_rid, head) in facts {
         let pos = term_pos_args(kb, &head);
-        if pos.len() < 2 { continue; }
+        // Description(target, text, index) — the index (pos[2]) is the STORED
+        // 0-based per-target index (kb/load.rs emit_desc_fact), NOT a global
+        // enumeration over all Description facts: a target-filtered query must
+        // report each target's own [0, 1, …], not non-contiguous [3, 7, …]
+        // (WI-438).
+        if pos.len() < 3 { continue; }
         let desc_target_tid = pos[0];
         let desc_content = term_display_name(kb, pos[1]);
+        let desc_index = match kb.get_term(pos[2]) {
+            CoreTerm::Const(Literal::Int(n)) => *n,
+            _ => continue,
+        };
 
         if let Some(ref t) = target {
             let desc_target_name = term_display_name(kb, desc_target_tid);
@@ -589,7 +598,7 @@ fn kb_descriptions(
         let fields = vec![
             (syms.f_target, Value::Term(desc_target_tid)),
             (syms.f_content, Value::Str(desc_content)),
-            (syms.f_index, Value::Int(idx as i64)),
+            (syms.f_index, Value::Int(desc_index)),
         ];
         items.push(make_entity(kb, syms.description_info, fields));
     }
@@ -1269,6 +1278,91 @@ end
             }
         }
         assert!(count >= 2, "expected at least 2 sorts (Color + Shape), got {count}");
+    }
+
+    #[test]
+    fn kb_descriptions_index_is_per_target_not_global() {
+        // WI-438: Description(target, text, index) stores a 0-based PER-TARGET
+        // index (kb/load.rs emit_desc_fact). A target-filtered query must report
+        // that stored index, not a global enumeration over ALL Description facts.
+        // Alpha's two descriptions precede Beta's, so a global counter would give
+        // Beta's descriptions indices [2, 3]; the stored per-target indices are
+        // [0, 1]. The bug filled DescriptionInfo.index with the global enumerate
+        // counter (and bridge.rs dropped the index entirely).
+        let mut interp = load_stdlib_and_source(
+            r#"
+namespace test.wi438
+  sort Alpha = ?
+  sort Beta = ?
+  describe Alpha {< first alpha >}
+  describe Alpha {< second alpha >}
+  describe Beta {< first beta >}
+  describe Beta {< second beta >}
+end
+"#,
+        );
+        let some_sym = interp
+            .kb_mut()
+            .try_resolve_symbol("anthill.prelude.Option.some")
+            .expect("Option.some");
+        let value_sym = interp.kb_mut().intern("value");
+        let target = Value::Entity {
+            functor: some_sym,
+            pos: Vec::new().into(),
+            named: vec![(value_sym, Value::Str("Beta".into()))].into(),
+        };
+        let result = interp
+            .call("anthill.reflect.KB.descriptions", &[Value::Unit, target])
+            .expect("descriptions call");
+
+        // Walk the cons-list, collecting (content, index) per DescriptionInfo.
+        let mut pairs: Vec<(String, i64)> = Vec::new();
+        let mut cur = result;
+        while let Value::Entity { functor, named, .. } = cur {
+            let fname = interp.kb().resolve_sym(functor).to_string();
+            if fname == "nil" {
+                break;
+            }
+            assert_eq!(fname, "cons", "expected cons in result list");
+            let head = named
+                .iter()
+                .find(|(s, _)| interp.kb().resolve_sym(*s) == "head")
+                .map(|(_, v)| v.clone())
+                .expect("cons head");
+            let tail = named
+                .iter()
+                .find(|(s, _)| interp.kb().resolve_sym(*s) == "tail")
+                .map(|(_, v)| v.clone())
+                .expect("cons tail");
+            match head {
+                Value::Entity { named: dn, .. } => {
+                    let content = dn
+                        .iter()
+                        .find(|(s, _)| interp.kb().resolve_sym(*s) == "content")
+                        .and_then(|(_, v)| v.as_str().map(str::to_string))
+                        .expect("content field");
+                    let index = dn
+                        .iter()
+                        .find(|(s, _)| interp.kb().resolve_sym(*s) == "index")
+                        .and_then(|(_, v)| v.as_int())
+                        .expect("index field");
+                    pairs.push((content, index));
+                }
+                other => panic!("expected DescriptionInfo entity, got {other:?}"),
+            }
+            cur = tail;
+        }
+
+        pairs.sort();
+        assert_eq!(
+            pairs,
+            vec![
+                ("first beta".to_string(), 0),
+                ("second beta".to_string(), 1),
+            ],
+            "Beta's descriptions must carry the STORED per-target index [0, 1], \
+             not a global enumeration [2, 3] (WI-438)",
+        );
     }
 
     #[test]
