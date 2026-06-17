@@ -39,9 +39,11 @@ module.exports = grammar({
     [$.operation_declaration],
     [$.variable_term],
     [$.variable_term, $.fn_term],
-    // `p.x` / `?x.m` is field_access; `p.x(...)` / `?x.m(...)` extends it into
-    // a fn_term. Explore both branches, pick by whether `(` follows.
-    [$._atom_term, $.fn_term],
+    // `?x.m` is field_access; `?x.m(...)` extends it into a fn_term. Explore
+    // both branches, pick by whether `(` follows. WI-312: field_access lives in
+    // the factored `_non_name_atom_term` subrule, so the conflict is declared
+    // there (it subsumes the former `[$._atom_term, $.fn_term]` declaration).
+    [$._non_name_atom_term, $.fn_term],
     // [ after rule head could be meta_block or start of next rule_entry with collection_literal
     [$.rule_entry],
   ],
@@ -914,10 +916,23 @@ module.exports = grammar({
     // infix_term and prefix_term to force flat chains.
     // WI-311: the bare-reference atom is `$.name` (was `$.identifier`), so a
     // dotted application base (`scala.prelude.List[Int]`) and a qualified ref
-    // share one production; field_access (prec 10) still grabs `.field` so
-    // `p.x` is `field_access(object: name, field)`, and the loader classifies
-    // a name as ref / qualified / projection via SymbolKind.
+    // share one production.
+    // WI-312: factored into `_non_name_atom_term` (the dot-receivable atoms)
+    // plus the low-prec `name`. A bare/dotted identifier path is now a `name`
+    // node in term position too, so `p.x` / `a.b.c` / `Foo.bar` are `name`
+    // (not field_access); the loader classifies ref / qualified / projection
+    // via SymbolKind. `field_access` is reserved for a `_non_name_atom_term`
+    // receiver (`?x.y`, `42.foo()`, `[1,2].map(f)`, `(e).y`, `Map[…].empty`).
     _atom_term: $ => choice(
+      $._non_name_atom_term,
+      prec(-1, $.name),
+    ),
+
+    // Every atom whose head is not a bare/dotted `name` path. This is exactly
+    // the set a `field_access` object (dot receiver) may take; keeping it as a
+    // shared rule guarantees the receiver set never drifts from `_atom_term`
+    // when a new atom kind is added.
+    _non_name_atom_term: $ => choice(
       $.string_literal,
       $.integer_literal,
       $.float_literal,
@@ -933,7 +948,6 @@ module.exports = grammar({
       $.ref_term,
       $.prefix_term,
       $.field_access,
-      prec(-1, $.name),
     ),
 
     // Nested implication inside a forall binder, used as a body goal.
@@ -956,8 +970,17 @@ module.exports = grammar({
     // Field access: ?x.y, expr.field — dot projection.
     // Desugars to field_access(object, field) in the converter.
     // Highest precedence, left-associative: ?x.y.z → (?x.y).z
+    // WI-312: the object is a `_non_name_atom_term` (any atom except a bare
+    // `name`). A bare/dotted identifier path (`p.x`, `a.b.c`, `Foo.bar`) is a
+    // `name` node everywhere — both type and term position — so `field_access`
+    // is reserved for value receivers (`?x.y`, `42.foo()`, `[1,2].map(f)`,
+    // `(e).y`) and the qualified-companion case (`Map[K=…].empty`, an
+    // `application` receiver). The converter folds a multi-segment standalone
+    // `name` into the same `field_access(object, Ident(field))` builtin, so the
+    // loader sees an unchanged term and still classifies the path (projection
+    // vs qualified-ref vs application) via SymbolKind.
     field_access: $ => prec.left(10, seq(
-      field('object', $._atom_term),
+      field('object', $._non_name_atom_term),
       '.',
       field('field', $.identifier),
     )),

@@ -443,26 +443,25 @@ impl<'a> Converter<'a> {
         if let Some(o) = object {
             if o.kind() == "field_access" {
                 self.collect_field_access_segments(o, segments);
-            } else if o.kind() == "name" {
-                // WI-311: a field_access receiver is now a `name` (was a bare
-                // `identifier`); push all its segments to flatten the path.
-                let nm = self.convert_name(o);
-                for seg in nm.segments.iter() {
-                    segments.push(*seg);
-                }
             } else if o.kind() == "application" {
                 // Form (3) of proposal 035: `Map[K = String, V = Int].empty()`.
                 // The application names a (possibly qualified) sort with type
                 // bindings; for the runtime call path we need the sort's name
-                // segments (bindings erased). WI-311: the base is a `name` node
-                // and may be dotted (`a.b.Map[…].empty()`), so push all its
-                // segments rather than interning the joined text as one symbol.
+                // segments (bindings erased). The base is a `name` node and may
+                // be dotted (`a.b.Map[…].empty()`), so push all its segments
+                // rather than interning the joined text as one symbol.
                 let inst_name = self.field(o, "name").unwrap_or(o);
                 let nm = self.convert_name(inst_name);
                 for seg in nm.segments.iter() {
                     segments.push(*seg);
                 }
             }
+            // WI-312: a bare `name` object is no longer possible — a bare/dotted
+            // identifier path is a `name` node (not a `field_access`), so a
+            // qualified-companion `field_access` only ever has an `application`
+            // receiver or a nested `field_access`. (A degenerate paren-wrapped
+            // path like `(p).y` reaches here with a `paren_expr` object; its
+            // segments are dropped as before — pre-existing, out of scope.)
         }
         if let Some(f) = field {
             let sym = self.intern(self.text(f));
@@ -727,14 +726,16 @@ impl<'a> Converter<'a> {
                 results.push(self.terms.alloc(Term::Ident(sym), span));
             }
             "name" => {
-                // WI-311: the bare-reference atom is now `$.name` (was
+                // The bare-reference atom is `$.name` (WI-311; was
                 // `$.identifier`). A single segment is a plain ref, identical
-                // to the former `identifier` atom. A multi-segment standalone
-                // name folds into the same `field_access(object, Ident(field))`
-                // builtin that an identifier-rooted projection produced, so the
-                // loader sees an unchanged term. (In practice a dotted term
-                // path parses as `field_access` — prec 10 grabs the `.` — so
-                // this arm gets a single segment; the fold is defensive.)
+                // to the former `identifier` atom. WI-312: a dotted term path
+                // (`p.x`, `a.b.c`) now parses as a `name` too — `field_access`
+                // is reserved for value receivers — so this arm folds a
+                // multi-segment name into the same
+                // `field_access(object, Ident(field))` builtin an
+                // identifier-rooted projection produces. The loader sees a term
+                // identical to the former field_access shape and classifies the
+                // path (projection vs qualified-ref) via SymbolKind.
                 let nm = self.convert_name(node);
                 let segs = nm.segments;
                 let mut acc = self.terms.alloc(Term::Ident(segs[0]), span);

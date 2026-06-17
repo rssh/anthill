@@ -57,7 +57,7 @@ fact f(?a.b, ?c)
         (variable)))))
 
 =====================================
-Field access on plain identifier in function call
+Plain-identifier path in function call (name, not field_access)
 =====================================
 
 fact g(p.x, q.y)
@@ -69,17 +69,15 @@ fact g(p.x, q.y)
     term: (fn_term
       name: (name
         (identifier))
-      (field_access
-        object: (name
-          (identifier))
-        field: (identifier))
-      (field_access
-        object: (name
-          (identifier))
-        field: (identifier)))))
+      (name
+        (identifier)
+        (identifier))
+      (name
+        (identifier)
+        (identifier)))))
 
 =====================================
-Chained field access on plain identifier in function call
+Chained plain-identifier path in function call (name)
 =====================================
 
 fact f(state.waypoints.points)
@@ -91,15 +89,13 @@ fact f(state.waypoints.points)
     term: (fn_term
       name: (name
         (identifier))
-      (field_access
-        object: (field_access
-          object: (name
-            (identifier))
-          field: (identifier))
-        field: (identifier)))))
+      (name
+        (identifier)
+        (identifier)
+        (identifier)))))
 
 =====================================
-Qualified function call with field-access args
+Qualified call with plain-identifier-path args
 =====================================
 
 fact wrap(Foo.bar(p.x, q.y))
@@ -112,18 +108,15 @@ fact wrap(Foo.bar(p.x, q.y))
       name: (name
         (identifier))
       (fn_term
-        name: (field_access
-          object: (name
-            (identifier))
-          field: (identifier))
-        (field_access
-          object: (name
-            (identifier))
-          field: (identifier))
-        (field_access
-          object: (name
-            (identifier))
-          field: (identifier))))))
+        name: (name
+          (identifier)
+          (identifier))
+        (name
+          (identifier)
+          (identifier))
+        (name
+          (identifier)
+          (identifier))))))
 
 =====================================
 Field access in rule body
@@ -164,10 +157,9 @@ fact Namespace.Sort()
 (source_file
   (fact_declaration
     term: (fn_term
-      name: (field_access
-        object: (name
-          (identifier))
-        field: (identifier)))))
+      name: (name
+        (identifier)
+        (identifier)))))
 
 =====================================
 Field access on parenthesized expression
