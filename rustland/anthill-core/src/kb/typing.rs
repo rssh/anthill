@@ -1530,13 +1530,20 @@ fn extract_ref_field(kb: &KnowledgeBase, named_args: &SmallVec<[(Symbol, TermId)
 
 /// Functor symbols of a sort's constructor children.
 fn sort_constructor_syms(kb: &KnowledgeBase, sort_term: TermId) -> Vec<Symbol> {
-    kb.sort_children(sort_term)
-        .iter()
-        .filter_map(|&et| match kb.get_term(et) {
-            Term::Fn { functor, .. } => Some(*functor),
-            _ => None,
-        })
-        .collect()
+    // WI-511 prep (WI-348 migration): read each entity identity's functor through
+    // `TermView::head().functor_sym()` so a 0-ary constructor identity reads
+    // carrier-agnostically — `Ref(c)` or `Fn{c}` both yield `c` — making the
+    // future storage flip (`Fn{c}→Ref(c)`) a no-op here. Dedup guards against the
+    // entity-identity dual-keying.
+    let mut out: Vec<Symbol> = Vec::new();
+    for &et in kb.sort_children(sort_term) {
+        if let Some(f) = TermIdView(et).head(kb).functor_sym() {
+            if !out.contains(&f) {
+                out.push(f);
+            }
+        }
+    }
+    out
 }
 
 /// Convert a raw sort term (Fn { functor: sym }) to a sort_ref type term.
@@ -3784,16 +3791,17 @@ fn build_type(
                 .unwrap_or_default();
             let mut branch_envs: Vec<Rc<TypingEnv>> = Vec::with_capacity(branches.len());
             for branch in &branches {
-                // WI-318: branch.pattern is a Pattern-kind occurrence;
-                // bridge to TermId for the existing term-based helpers.
-                let pattern_tid = super::node_occurrence::pattern_to_term(kb, &branch.pattern);
+                // WI-511: coverage reads the Pattern occurrence directly (no
+                // `pattern_to_term`). `extend_env_from_pattern` still bridges to a
+                // term — migrating it is a follow-on in the same WI-348 pass.
                 collect_covered_entities(
                     kb,
-                    pattern_tid,
+                    &branch.pattern,
                     &scrutinee_ctors,
                     &mut covered_entities,
                     &mut has_wildcard,
                 );
+                let pattern_tid = super::node_occurrence::pattern_to_term(kb, &branch.pattern);
                 let mut branch_env = (*outer_env).clone();
                 extend_env_from_pattern(kb, &mut branch_env, pattern_tid, scr_ty.clone());
                 branch_envs.push(Rc::new(branch_env));
@@ -20001,51 +20009,41 @@ fn check_operation_bodies(kb: &mut KnowledgeBase, op_syms: &[Symbol], errors: &m
 }
 
 
-/// Collect which entity constructors a pattern covers (recursively).
+/// Collect which entity constructors a pattern covers.
+///
+/// WI-511 (WI-348): reads the `Pattern` occurrence DIRECTLY — its constructor
+/// name is already a `Symbol`, so there is no `pattern_to_term` lowering and no
+/// `Ref`/`Fn` carrier to disambiguate. Carrier-agnostic by construction, and
+/// immune to the 0-ary-constructor storage representation.
 fn collect_covered_entities(
     kb: &KnowledgeBase,
-    pattern: TermId,
+    pattern: &NodeOccurrence,
     scrutinee_ctors: &[Symbol],
     covered: &mut Vec<Symbol>,
     has_wildcard: &mut bool,
 ) {
-    if let Term::Fn { functor, named_args, pos_args, .. } = kb.get_term(pattern) {
-        let fname = kb.resolve_sym(*functor).to_string();
-        match fname.as_str() {
-            "wildcard" => { *has_wildcard = true; }
-            "var_pattern" => {
-                // A var_pattern might actually be a nullary constructor (e.g.
-                // `case red`). The pattern name is stored bare (it could be a
-                // binding), so recognize it by matching against the scrutinee
-                // sort's constructors — `red` against `Color.red` modulo
-                // short/qualified — rather than a global name lookup. A name
-                // that matches no constructor is a binding (catch-all).
-                if let Some(sym) = extract_sym_arg(kb, named_args, pos_args, "name") {
-                    if let Some(&ctor) = scrutinee_ctors.iter().find(|&&c| same_symbol(kb, c, sym)) {
-                        covered.push(ctor);
-                    } else if kb.is_constructor_symbol(sym) || kb.constructor_parent_sort(sym).is_some() {
-                        covered.push(sym);
-                    } else {
-                        *has_wildcard = true;
-                    }
-                } else {
-                    *has_wildcard = true;
-                }
-            }
-            "constructor_pattern" => {
-                // constructor_pattern(name: sym, args: ...)
-                if let Some(sym) = extract_sym_arg(kb, named_args, pos_args, "name") {
-                    covered.push(sym);
-                }
-            }
-            "literal_pattern" => {
-                // literal patterns don't cover enum entities — skip
-            }
-            _ => {
-                // Unknown pattern form — be conservative, treat as wildcard
+    let NodeKind::Pattern(pat) = &pattern.kind else { return; };
+    match pat {
+        Pattern::Wildcard => { *has_wildcard = true; }
+        Pattern::Var { name, .. } => {
+            // A var pattern is either a nullary constructor (`case red`) or a
+            // binding (`case x`). Recognize it as a constructor by matching the
+            // scrutinee sort's constructors (modulo short/qualified); a name that
+            // matches none is a catch-all binding.
+            if let Some(&ctor) = scrutinee_ctors.iter().find(|&&c| same_symbol(kb, c, *name)) {
+                covered.push(ctor);
+            } else if kb.is_constructor_symbol(*name) || kb.constructor_parent_sort(*name).is_some() {
+                covered.push(*name);
+            } else {
                 *has_wildcard = true;
             }
         }
+        Pattern::Constructor { name, .. } => { covered.push(*name); }
+        // Literals don't cover enum entities.
+        Pattern::Literal { .. } => {}
+        // A tuple pattern matches a tuple, not an enum constructor — conservative
+        // (mirrors the old term-reader's unknown-form fallthrough).
+        Pattern::Tuple { .. } => { *has_wildcard = true; }
     }
 }
 
