@@ -15,6 +15,15 @@ use crate::intern::Symbol;
 use crate::kb::term::{Literal, Term, TermId, Var, VarId};
 use crate::kb::{KnowledgeBase, RuleId};
 
+// Qualified names of the prelude `Option`/`List` constructors. The (de)serializer
+// detects these wrappers by QUALIFIED name (WI-503) so a user entity merely named
+// `some`/`none`/`cons`/`nil` in another namespace isn't mistaken for one. Defined
+// once here rather than re-spelled at each call site.
+const OPTION_SOME: &str = "anthill.prelude.Option.some";
+const OPTION_NONE: &str = "anthill.prelude.Option.none";
+const LIST_CONS: &str = "anthill.prelude.List.cons";
+const LIST_NIL: &str = "anthill.prelude.List.nil";
+
 // ── Error type ─────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
@@ -478,11 +487,11 @@ fn value_to_term_typed(
 /// schema-less deserialize never panics (unlike [`KnowledgeBase::build_list`],
 /// which resolves-or-panics).
 fn build_cons_list(kb: &mut KnowledgeBase, items: &[TermId]) -> TermId {
-    let nil_sym = match kb.try_resolve_symbol("anthill.prelude.List.nil") {
+    let nil_sym = match kb.try_resolve_symbol(LIST_NIL) {
         Some(s) => s,
         None => resolve_or_intern(kb, "nil"),
     };
-    let cons_sym = match kb.try_resolve_symbol("anthill.prelude.List.cons") {
+    let cons_sym = match kb.try_resolve_symbol(LIST_CONS) {
         Some(s) => s,
         None => resolve_or_intern(kb, "cons"),
     };
@@ -571,7 +580,7 @@ fn type_head_and_inner(kb: &KnowledgeBase, ty: TermId) -> (Option<Symbol>, Optio
 /// emits for a written `none`, so a backfilled / null-derived none hash-cons-
 /// matches the source.
 fn option_none_ref(kb: &mut KnowledgeBase) -> TermId {
-    let none_sym = match kb.try_resolve_symbol("anthill.prelude.Option.none") {
+    let none_sym = match kb.try_resolve_symbol(OPTION_NONE) {
         Some(s) => s,
         None => resolve_or_intern(kb, "none"),
     };
@@ -581,7 +590,7 @@ fn option_none_ref(kb: &mut KnowledgeBase) -> TermId {
 /// Wrap `inner` as `anthill.prelude.Option.some(value: inner)` — the SAME form
 /// the loader emits, so a re-wrapped Option value hash-cons-matches the source.
 fn some_wrap(kb: &mut KnowledgeBase, inner: TermId) -> TermId {
-    let some_sym = match kb.try_resolve_symbol("anthill.prelude.Option.some") {
+    let some_sym = match kb.try_resolve_symbol(OPTION_SOME) {
         Some(s) => s,
         None => resolve_or_intern(kb, "some"),
     };
@@ -668,8 +677,21 @@ fn build_constructor_term_typed(
                 let mut named_args: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
                 named_args.push((fields[0], inner_term));
                 Ok(kb.make_entity_term(ctor_sym, SmallVec::new(), named_args))
+            } else if fields.len() > 1 {
+                // WI-503 gap (3): a multi-field constructor needs its named fields,
+                // which only an object payload carries. A scalar/array payload
+                // (foreign / hand-authored store only — our serializer never emits
+                // one) would build a positional `Term::Fn` that never discrim-matches
+                // the named pattern (and an array silently drops all but its first
+                // element). Error loudly rather than build a fact that can never match.
+                Err(SerError::InvalidValue(format!(
+                    "constructor '{}' has {} named fields but the persisted payload is a \
+                     scalar/array, not an object — cannot reconstruct its named fields",
+                    kb.resolve_sym(ctor_sym),
+                    fields.len(),
+                )))
             } else {
-                // No field schema or zero/multiple fields — use positional.
+                // No field schema (`fields` empty) — nothing better than positional.
                 let inner_term = value_to_term_typed(kb, value, None, var_map)?;
                 Ok(kb.alloc(Term::Fn {
                     functor: ctor_sym,
@@ -733,6 +755,16 @@ fn facts_to_value(
     Ok(serde_json::Value::Object(result))
 }
 
+/// WI-503: detect the prelude `Option`/`List` wrappers by QUALIFIED name. The
+/// deserializer resolves `some`/`none`/`cons`/`nil` by qualified name; the
+/// serializer must too, or a user entity literally named `some`/`none`/`cons`/
+/// `nil` in another namespace is mis-flattened as a prelude wrapper. (The
+/// `none`-Ref serialize check already gates on the qualified name — these extend
+/// the same discipline to the `Fn` forms.)
+fn is_prelude(kb: &KnowledgeBase, sym: Symbol, qualified: &str) -> bool {
+    kb.qualified_name_of(sym) == qualified
+}
+
 /// Convert a KB term to a JSON value.
 fn term_to_value(kb: &KnowledgeBase, term: TermId) -> Result<serde_json::Value, SerError> {
     match kb.get_term(term) {
@@ -757,24 +789,45 @@ fn term_to_value(kb: &KnowledgeBase, term: TermId) -> Result<serde_json::Value, 
             let named_args = named_args.clone();
             let name = kb.resolve_sym(functor);
 
-            // Check for list cons/nil
-            if name == "nil" && pos_args.is_empty() && named_args.is_empty() {
+            // Check for list cons/nil (WI-503: qualified-gated, see `is_prelude`).
+            if is_prelude(kb, functor, LIST_NIL)
+                && pos_args.is_empty() && named_args.is_empty() {
                 return Ok(serde_json::Value::Array(vec![]));
             }
-            if name == "cons" {
+            if is_prelude(kb, functor, LIST_CONS) {
                 return cons_to_json_array(kb, term);
             }
 
-            // Check for Option some/none
-            if name == "some" {
-                if let Some((_, val_id)) = named_args.iter().find(|(s, _)| kb.resolve_sym(*s) == "value") {
-                    return term_to_value(kb, *val_id);
+            // Check for Option some/none (WI-503: qualified-gated).
+            if is_prelude(kb, functor, OPTION_SOME) {
+                let inner_id = named_args.iter()
+                    .find(|(s, _)| kb.resolve_sym(*s) == "value")
+                    .map(|(_, id)| *id)
+                    .or_else(|| (pos_args.len() == 1).then(|| pos_args[0]));
+                if let Some(inner_id) = inner_id {
+                    let inner = term_to_value(kb, inner_id)?;
+                    // WI-503 gap (1): `some(none())` (present-but-empty) collapses —
+                    // the inner `none` serializes to JSON null, the field is dropped,
+                    // and reload restores `none()` (absent), silently losing the
+                    // present/absent distinction for `Option[T = Option[U]]`. The
+                    // flattened TOML/JSON format genuinely cannot represent it (the
+                    // self-describing redesign was declined for WI-501), so error
+                    // loudly rather than round-trip to the wrong value.
+                    if inner.is_null() {
+                        return Err(SerError::InvalidValue(
+                            "Option[T = Option[U]] value some(none()) cannot be represented \
+                             in the flattened persistence format — it would round-trip to \
+                             none(), silently dropping the present-but-empty distinction; \
+                             this nested-Option shape is unsupported".into(),
+                        ));
+                    }
+                    return Ok(inner);
                 }
-                if pos_args.len() == 1 {
-                    return term_to_value(kb, pos_args[0]);
-                }
+                // A `some` with neither a `value` field nor a single positional arg is
+                // malformed; fall through to the generic entity handling below.
             }
-            if name == "none" && pos_args.is_empty() && named_args.is_empty() {
+            if is_prelude(kb, functor, OPTION_NONE)
+                && pos_args.is_empty() && named_args.is_empty() {
                 return Ok(serde_json::Value::Null);
             }
 
@@ -850,7 +903,7 @@ fn term_to_value(kb: &KnowledgeBase, term: TermId) -> Result<serde_json::Value, 
             // restored by the type-directed deserializer's backfill (see
             // `value_to_term_typed`). Any other nullary entity (`Open`, an enum
             // variant) stays its short-name string and is rebuilt type-directedly.
-            if kb.qualified_name_of(*sym) == "anthill.prelude.Option.none" {
+            if is_prelude(kb, *sym, OPTION_NONE) {
                 return Ok(serde_json::Value::Null);
             }
             let name = kb.resolve_sym(*sym);
@@ -877,11 +930,10 @@ fn cons_to_json_array(
         // Extract head/tail TermIds from the cons cell without holding the borrow
         let cell = match kb.get_term(term) {
             Term::Fn { functor, named_args, .. } => {
-                let name = kb.resolve_sym(*functor);
-                if name == "nil" {
+                if is_prelude(kb, *functor, LIST_NIL) {
                     break;
                 }
-                if name == "cons" {
+                if is_prelude(kb, *functor, LIST_CONS) {
                     let head = named_args.iter()
                         .find(|(s, _)| kb.resolve_sym(*s) == "head")
                         .map(|(_, id)| *id);
@@ -894,7 +946,7 @@ fn cons_to_json_array(
                 }
             }
             // WI-511: the canonical nullary `nil` terminator is `Ref(nil)`.
-            Term::Ref(s) if kb.resolve_sym(*s) == "nil" => break,
+            Term::Ref(s) if is_prelude(kb, *s, LIST_NIL) => break,
             _ => None,
         };
         match cell {

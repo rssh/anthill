@@ -644,3 +644,146 @@ x = 1
     let result = term_ser::load_toml(&mut kb, toml_src, domain);
     assert!(result.is_err(), "should fail with unknown entity");
 }
+
+// ── WI-503: residual round-trip gaps left by WI-501 ─────────────
+
+/// Load `src` (referencing the stdlib) into a fresh KB. Helper for the WI-503
+/// fixtures, which need custom sorts plus the prelude `Option`/`List`.
+fn load_kb_with_stdlib(src: &str) -> KnowledgeBase {
+    let parsed = parse::parse(src).expect("test source should parse");
+    let mut kb = KnowledgeBase::new();
+    let resolver = FileSourceResolver::new(vec![std::path::PathBuf::from("../../stdlib")]);
+    let _ = load::load_all(&mut kb, &[&parsed], &resolver);
+    kb
+}
+
+/// WI-503 gap (1): `some(none())` — a present-but-empty `Option[T = Option[U]]` —
+/// cannot be represented in the flattened TOML/JSON format. The inner `none`
+/// serializes to JSON null, the field is dropped, and reload restores `none()`
+/// (absent), silently losing the present/absent distinction. The serializer must
+/// error loudly rather than round-trip to the wrong value.
+#[test]
+fn serialize_nested_option_some_none_errors_loudly() {
+    let mut kb = load_kb_with_stdlib(r#"
+namespace test
+sort Box { entity Box(inner: Option[T = Option[T = Int]]) }
+end
+"#);
+
+    // Build `inner = some(value: none())` directly (the lossy shape).
+    let none_sym = kb.try_resolve_symbol("anthill.prelude.Option.none").expect("Option.none");
+    let some_sym = kb.try_resolve_symbol("anthill.prelude.Option.some").expect("Option.some");
+    let value_sym = kb.intern("value");
+    let none_t = kb.alloc(Term::Ref(none_sym));
+    let mut some_named: SmallVec<[(anthill_core::intern::Symbol, TermId); 2]> = SmallVec::new();
+    some_named.push((value_sym, none_t));
+    let some_none = kb.alloc(Term::Fn {
+        functor: some_sym,
+        pos_args: SmallVec::new(),
+        named_args: some_named,
+    });
+
+    let box_sym = kb.try_resolve_symbol("test.Box").expect("Box resolved");
+    let inner_sym = kb.intern("inner");
+    let mut box_named: SmallVec<[(anthill_core::intern::Symbol, TermId); 2]> = SmallVec::new();
+    box_named.push((inner_sym, some_none));
+    let box_term = kb.alloc(Term::Fn {
+        functor: box_sym,
+        pos_args: SmallVec::new(),
+        named_args: box_named,
+    });
+    let sort = kb.make_name_term("Fact");
+    let domain = kb.make_name_term("d");
+    let rid = kb.assert_fact(box_term, sort, domain, None);
+
+    let err = term_ser::serialize_json(&kb, "test.Box", &[rid])
+        .expect_err("some(none()) must error loudly, not silently collapse");
+    assert!(
+        matches!(err, term_ser::SerError::InvalidValue(_)),
+        "expected InvalidValue for nested-Option collapse, got: {err:?}"
+    );
+}
+
+/// WI-503 gap (2): the serializer detects prelude `List`/`Option` by QUALIFIED
+/// name. A user entity literally named `cons` in another namespace is NOT a list;
+/// the old short-name check flattened it to an empty array, silently dropping its
+/// fields. It must serialize as an ordinary entity instead.
+#[test]
+fn serialize_user_entity_named_cons_is_not_flattened_as_list() {
+    let mut kb = load_kb_with_stdlib(r#"
+namespace test
+sort Holder { entity Holder(c: Pair, tags: List[Int]) }
+sort Pair { entity cons(x: Int, y: Int) }
+end
+"#);
+
+    let cons_sym = kb.try_resolve_symbol("test.Pair.cons").expect("test.Pair.cons resolved");
+    assert_ne!(
+        kb.qualified_name_of(cons_sym), "anthill.prelude.List.cons",
+        "fixture must use a DISTINCT user `cons`, not the prelude one",
+    );
+
+    let x_sym = kb.intern("x");
+    let y_sym = kb.intern("y");
+    let one = kb.alloc(Term::Const(Literal::Int(1)));
+    let two = kb.alloc(Term::Const(Literal::Int(2)));
+    let mut cons_named: SmallVec<[(anthill_core::intern::Symbol, TermId); 2]> = SmallVec::new();
+    cons_named.push((x_sym, one));
+    cons_named.push((y_sym, two));
+    cons_named.sort_by_key(|&(s, _)| s.index());
+    let cons_term = kb.alloc(Term::Fn {
+        functor: cons_sym,
+        pos_args: SmallVec::new(),
+        named_args: cons_named,
+    });
+
+    let holder_sym = kb.try_resolve_symbol("test.Holder").expect("Holder resolved");
+    let c_sym = kb.intern("c");
+    let mut holder_named: SmallVec<[(anthill_core::intern::Symbol, TermId); 2]> = SmallVec::new();
+    holder_named.push((c_sym, cons_term));
+    let holder_term = kb.alloc(Term::Fn {
+        functor: holder_sym,
+        pos_args: SmallVec::new(),
+        named_args: holder_named,
+    });
+    let sort = kb.make_name_term("Fact");
+    let domain = kb.make_name_term("d");
+    let rid = kb.assert_fact(holder_term, sort, domain, None);
+
+    let json = term_ser::serialize_json(&kb, "test.Holder", &[rid]).expect("serialize");
+    assert!(
+        json.contains("\"cons\""),
+        "user `cons` entity must keep its name (not be flattened as a list), got: {json}"
+    );
+    assert!(
+        json.contains("\"x\"") && json.contains("\"y\"") && json.contains('1') && json.contains('2'),
+        "user `cons` fields must survive serialization, got: {json}"
+    );
+}
+
+/// WI-503 gap (3): a multi-field constructor given a non-object scalar payload
+/// (a foreign / hand-authored store — our serializer never emits this) cannot
+/// fill its named fields. The old positional fallback built a `Term::Fn` that
+/// never discrim-matched the named pattern; the deserializer must error loudly.
+#[test]
+fn deserialize_multifield_ctor_scalar_payload_errors_loudly() {
+    let mut kb = load_kb_with_stdlib(r#"
+namespace test
+sort Rec { entity Rec(outcome: Outcome) }
+sort Outcome { entity Verified(at: String, by: String)  entity Pending }
+end
+"#);
+
+    let domain = kb.make_name_term("d");
+    // `Verified` needs `at` + `by`; a bare scalar can't supply them.
+    let json_src = r#"{
+        "meta": { "entity": "test.Rec" },
+        "data": { "outcome": { "Verified": "2027-01-01" } }
+    }"#;
+    let errs = term_ser::load_json(&mut kb, json_src, domain)
+        .expect_err("multi-field ctor with a scalar payload must error loudly");
+    assert!(
+        errs.iter().any(|e| matches!(e, term_ser::SerError::InvalidValue(_))),
+        "expected InvalidValue for foreign positional payload, got: {errs:?}"
+    );
+}
