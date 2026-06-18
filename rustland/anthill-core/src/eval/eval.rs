@@ -1592,12 +1592,18 @@ impl Interpreter {
         } else if is_tuple_literal {
             Value::Tuple { pos: pos.into(), named: named.into() }
         } else if Some(ctor_sym) == self.reflect.set_literal {
-            // SetLiteral has set semantics: dedup via `structural_eq` so
+            // SetLiteral has set semantics: dedup by structural equality so
             // nested tuples/entities compare by shape, not identity. Opaque
             // handles (Closure/Stream/Lazy) still compare as distinct.
+            // WI-511: carrier-aware via `views_structurally_equal` so a 0-ary
+            // constructor dedups across carriers (`Entity{c}` vs `Term(Ref(c))`),
+            // matching the `eq`/`neq` builtins.
+            let kb: &KnowledgeBase = &self.kb;
             let mut deduped: Vec<Value> = Vec::with_capacity(pos.len());
             for v in pos {
-                if !deduped.iter().any(|existing| existing.structural_eq(&v)) {
+                if !deduped.iter().any(|existing| {
+                    crate::kb::term_view::views_structurally_equal(kb, existing, &v)
+                }) {
                     deduped.push(v);
                 }
             }

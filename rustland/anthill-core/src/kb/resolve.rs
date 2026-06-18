@@ -2429,7 +2429,7 @@ impl KnowledgeBase {
         match self.eq_operands(goal, subst) {
             EqOperands::Delay => BuiltinResult::Delay,
             EqOperands::Ready(a, b) => {
-                if a.structural_eq(&b) { BuiltinResult::Success } else { BuiltinResult::Failure }
+                if self.values_equal(&a, &b) { BuiltinResult::Success } else { BuiltinResult::Failure }
             }
             EqOperands::Absent => BuiltinResult::Failure,
         }
@@ -2440,10 +2440,21 @@ impl KnowledgeBase {
         match self.eq_operands(goal, subst) {
             EqOperands::Delay => BuiltinResult::Delay,
             EqOperands::Ready(a, b) => {
-                if a.structural_eq(&b) { BuiltinResult::Failure } else { BuiltinResult::Success }
+                if self.values_equal(&a, &b) { BuiltinResult::Failure } else { BuiltinResult::Success }
             }
             EqOperands::Absent => BuiltinResult::Failure,
         }
+    }
+
+    /// WI-511: structural value equality that is CARRIER-AWARE — routes through
+    /// [`views_structurally_equal`] so a 0-ary constructor compares equal across
+    /// carriers (`Value::Entity{c}` vs `Value::Term(Ref(c))`), the cross-carrier
+    /// case `Value::structural_eq` explicitly leaves to `TermView` (its doc, 026.1
+    /// Q2). The `eq`/`neq` operands are already walked (flex vars `Delay`, so none
+    /// reach here) and a rigid var compares by `Var` identity in both — so this
+    /// only ADDS the cross-carrier bridge, with no same-carrier regression.
+    fn values_equal(&self, a: &Value, b: &Value) -> bool {
+        crate::kb::term_view::views_structurally_equal(self, a, b)
     }
 
     /// Walk the two operands of an `eq`/`neq` goal: `Delay` if either is flex
