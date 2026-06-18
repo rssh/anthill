@@ -870,10 +870,11 @@ impl KnowledgeBase {
         }
 
         // Top-level functor via the head's `TermView` (any carrier — WI-348).
-        let head_functor = match term_view::TermView::head(&head, self) {
-            term_view::ViewHead::Functor { functor: Some(f), .. } => Some(f),
-            _ => None,
-        };
+        // WI-436: a 0-ary constructor head reads as the bare `Ref(c)`; `functor_sym`
+        // reads `c` off either spelling so a nullary-constructor fact (`fact none`)
+        // is still indexed under its functor symbol, mirroring the discrim tree
+        // (which indexes it as `Ref(c)`).
+        let head_functor = term_view::TermView::head(&head, self).functor_sym();
 
         self.rules.push(RuleEntry {
             head: head.clone(),
@@ -1410,10 +1411,10 @@ impl KnowledgeBase {
             v.retain(|&rid| rid != id);
         }
         // rules_by_functor via the head's `TermView` functor (any carrier — WI-348).
-        let head_functor = match term_view::TermView::head(&head_val, self) {
-            term_view::ViewHead::Functor { functor: Some(f), .. } => Some(f),
-            _ => None,
-        };
+        // WI-436: `functor_sym` reads a 0-ary constructor's symbol off its bare
+        // `Ref(c)` head, so retract removes from the SAME `rules_by_functor` bucket
+        // `assert` populated (insert/retract stay symmetric).
+        let head_functor = term_view::TermView::head(&head_val, self).functor_sym();
         if let Some(f) = head_functor {
             if let Some(v) = self.rules_by_functor.get_mut(&f) {
                 v.retain(|&rid| rid != id);

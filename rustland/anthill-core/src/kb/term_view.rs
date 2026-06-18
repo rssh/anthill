@@ -48,6 +48,55 @@ pub enum ViewHead {
     Opaque,
 }
 
+impl ViewHead {
+    /// WI-436 — the head's functor symbol, treating a bare [`ViewHead::Ref`] as
+    /// the 0-ary application it denotes: `Ref(c) ≡ Fn{c}`. Returns the symbol for
+    /// both a `Functor { functor: Some(s), .. }` and a `Ref(s)` head, and `None`
+    /// for a functor-less aggregate / var / const / opaque head.
+    ///
+    /// The reader counterpart of the canonicalization in [`functor_view_head`]: a
+    /// 0-ary constructor canonicalizes to the bare `Ref`, so a reader that
+    /// identifies a head by its *symbol* (an effect-row label, a reflect Expr
+    /// ctor, a sort functor) must read `c` off either spelling. Keying on the
+    /// symbol is also stronger than a qualified-name string match — symbol
+    /// identity can't collide with a same-named user sort.
+    pub(crate) fn functor_sym(&self) -> Option<Symbol> {
+        match self {
+            ViewHead::Functor { functor: Some(s), .. } => Some(*s),
+            ViewHead::Ref(s) => Some(*s),
+            _ => None,
+        }
+    }
+}
+
+/// WI-436 — canonicalize a functor application head: a **0-ary application of a
+/// registered constructor** reads as the bare [`ViewHead::Ref`]. A 0-ary
+/// constructor `c` has two indistinguishable spellings — bare `Ref(c)` and the
+/// nullary application `Fn{c}` / `Constructor{c}` / `Entity{c}` — that PRINT
+/// identically (`c`); the bare `Ref` is the single canonical form (the only one
+/// `print → parse` produces). So every carrier reads a 0-ary constructor THROUGH
+/// `Ref`, closing the divergence where a fact stored as `Fn{c}` was invisible to
+/// a rule spelled `Ref(c)` (and vice versa).
+///
+/// SOUND and KIND-ISOLATED via the `is_constructor_symbol` gate: an op-as-value
+/// is a `Value::OpRef`, never a `Term::Ref`, so no op/eta case depends on the
+/// `Ref`-vs-`Fn` shape; and a concrete SORT (`Fn{Int}`) or type-PARAM is not a
+/// constructor, so the type/dispatch wildcard-vs-concrete distinction (WI-391,
+/// recovered from the symbol's kind) is untouched. Readers that identify a head
+/// by symbol use [`ViewHead::functor_sym`] to accept the `Ref` spelling.
+fn functor_view_head(
+    kb: &KnowledgeBase,
+    functor: Symbol,
+    pos_arity: usize,
+    named_arity: usize,
+) -> ViewHead {
+    if pos_arity == 0 && named_arity == 0 && kb.is_constructor_symbol(functor) {
+        ViewHead::Ref(functor)
+    } else {
+        ViewHead::Functor { functor: Some(functor), pos_arity, named_arity }
+    }
+}
+
 /// A child of a [`TermView`] — a `TermId` (borrowed from the KB's
 /// hash-consed store), a `Value` (borrowed from the owning [`TermView`]),
 /// or a reflect `Expr` occurrence child (`Node`). The `Node` variant *owns*
@@ -204,16 +253,12 @@ fn occ_head(occ: &NodeOccurrence, kb: &KnowledgeBase) -> ViewHead {
         return effect_expr_head(en, kb);
     }
     match occ.as_expr() {
-        Some(Expr::Apply { functor, pos_args, named_args, .. }) => ViewHead::Functor {
-            functor: Some(*functor),
-            pos_arity: pos_args.len(),
-            named_arity: named_args.len(),
-        },
-        Some(Expr::Constructor { name, pos_args, named_args }) => ViewHead::Functor {
-            functor: Some(*name),
-            pos_arity: pos_args.len(),
-            named_arity: named_args.len(),
-        },
+        Some(Expr::Apply { functor, pos_args, named_args, .. }) => {
+            functor_view_head(kb, *functor, pos_args.len(), named_args.len())
+        }
+        Some(Expr::Constructor { name, pos_args, named_args }) => {
+            functor_view_head(kb, *name, pos_args.len(), named_args.len())
+        }
         Some(Expr::Const(lit)) => ViewHead::Const(lit.clone()),
         Some(Expr::Ref(s)) => ViewHead::Ref(*s),
         Some(Expr::Ident(s)) => ViewHead::Ident(*s),
@@ -769,11 +814,9 @@ impl TermView for TermIdView {
             Term::Var(Var::Rigid(_)) => ViewHead::Opaque,
             Term::Var(Var::DeBruijn(_)) => ViewHead::Opaque,
             Term::Const(lit) => ViewHead::Const(lit.clone()),
-            Term::Fn { functor, pos_args, named_args } => ViewHead::Functor {
-                functor: Some(*functor),
-                pos_arity: pos_args.len(),
-                named_arity: named_args.len(),
-            },
+            Term::Fn { functor, pos_args, named_args } => {
+                functor_view_head(kb, *functor, pos_args.len(), named_args.len())
+            }
             Term::Ref(s) => ViewHead::Ref(*s),
             Term::Ident(s) => ViewHead::Ident(*s),
             Term::Bottom => ViewHead::Bottom,
@@ -835,11 +878,9 @@ impl TermView for TermId {
             Term::Var(Var::Global(vid)) => ViewHead::Var(*vid),
             Term::Var(Var::Rigid(_)) | Term::Var(Var::DeBruijn(_)) => ViewHead::Opaque,
             Term::Const(lit) => ViewHead::Const(lit.clone()),
-            Term::Fn { functor, pos_args, named_args } => ViewHead::Functor {
-                functor: Some(*functor),
-                pos_arity: pos_args.len(),
-                named_arity: named_args.len(),
-            },
+            Term::Fn { functor, pos_args, named_args } => {
+                functor_view_head(kb, *functor, pos_args.len(), named_args.len())
+            }
             Term::Ref(s) => ViewHead::Ref(*s),
             Term::Ident(s) => ViewHead::Ident(*s),
             Term::Bottom => ViewHead::Bottom,
@@ -898,11 +939,9 @@ impl TermView for Value {
                 pos_arity: pos.len(),
                 named_arity: named.len(),
             },
-            Value::Entity { functor, pos, named } => ViewHead::Functor {
-                functor: Some(*functor),
-                pos_arity: pos.len(),
-                named_arity: named.len(),
-            },
+            Value::Entity { functor, pos, named } => {
+                functor_view_head(kb, *functor, pos.len(), named.len())
+            }
             // WI-276: a reflect Expr occurrence is structural — expose its Expr.
             // WI-342: Type / EffectExpr occurrences expose their functor too.
             Value::Node(occ) => occ_head(occ, kb),
@@ -1214,5 +1253,93 @@ impl TermView for ReflectedExpr {
         // If the whole reflected term binds a var (`occurrence_term(?e, ?t)`),
         // bind the occurrence itself — identity preserved.
         BindValue::Value(Value::Node(Rc::clone(&self.occ)))
+    }
+}
+
+#[cfg(test)]
+mod wi436_tests {
+    //! WI-436 — a 0-ary constructor reads as the bare `Ref(c)` across every
+    //! carrier (stored `Term`, `Value::Entity`, reflect `Expr` occurrence), so
+    //! `Ref(c)` and the nullary application `Fn{c}` are one representation. A
+    //! non-constructor functor keeps its `Functor` head (the gate is exactly
+    //! `is_constructor_symbol`, isolating the rule by symbol kind).
+    use super::*;
+    use crate::span::{SourceId, SourceSpan};
+    use smallvec::SmallVec;
+    use std::rc::Rc;
+
+    fn dummy_span() -> SourceSpan {
+        SourceSpan::new(SourceId::from_raw(0), 0, 0)
+    }
+
+    /// A KB with `red` registered as a constructor of sort `Color`, plus a
+    /// non-constructor functor `plain` of the same (zero) arity for the control.
+    fn kb_with_constructor() -> (KnowledgeBase, Symbol, Symbol) {
+        let mut kb = KnowledgeBase::new();
+        let red = kb.intern("Color.red");
+        let color = kb.intern("Color");
+        let red_entity = kb.alloc(Term::Fn {
+            functor: red,
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::new(),
+        });
+        let color_t = kb.alloc(Term::Ref(color));
+        kb.register_entity_of(red_entity, color_t);
+        assert!(kb.is_constructor_symbol(red));
+        let plain = kb.intern("plain");
+        assert!(!kb.is_constructor_symbol(plain));
+        (kb, red, plain)
+    }
+
+    #[test]
+    fn nullary_constructor_reads_as_bare_ref_across_carriers() {
+        let (mut kb, red, _) = kb_with_constructor();
+
+        let bare_ref = kb.alloc(Term::Ref(red));
+        let nullary_fn = kb.alloc(Term::Fn {
+            functor: red,
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::new(),
+        });
+        let entity_val = Value::Entity {
+            functor: red,
+            pos: Rc::from(Vec::<Value>::new()),
+            named: Rc::from(Vec::<(Symbol, Value)>::new()),
+        };
+        let ctor_occ = Value::Node(NodeOccurrence::new_expr(
+            Expr::Constructor { name: red, pos_args: Vec::new(), named_args: Vec::new() },
+            dummy_span(),
+            None,
+        ));
+
+        // Every carrier's head is the bare `Ref(red)` — not a `Functor` — and
+        // `functor_sym` reads `red` off it.
+        for h in [bare_ref.head(&kb), nullary_fn.head(&kb), entity_val.head(&kb), ctor_occ.head(&kb)] {
+            assert!(matches!(h, ViewHead::Ref(s) if s == red));
+            assert_eq!(h.functor_sym(), Some(red));
+        }
+
+        // …so all four compare structurally equal in both directions.
+        assert!(views_structurally_equal(&kb, &bare_ref, &nullary_fn));
+        assert!(views_structurally_equal(&kb, &nullary_fn, &bare_ref));
+        assert!(views_structurally_equal(&kb, &bare_ref, &entity_val));
+        assert!(views_structurally_equal(&kb, &bare_ref, &ctor_occ));
+        assert!(views_structurally_equal(&kb, &entity_val, &ctor_occ));
+    }
+
+    #[test]
+    fn nullary_non_constructor_stays_functor_and_distinct_from_ref() {
+        let (mut kb, _, plain) = kb_with_constructor();
+        let plain_ref = kb.alloc(Term::Ref(plain));
+        let plain_fn = kb.alloc(Term::Fn {
+            functor: plain,
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::new(),
+        });
+        assert!(matches!(
+            plain_fn.head(&kb),
+            ViewHead::Functor { functor: Some(s), pos_arity: 0, named_arity: 0 } if s == plain
+        ));
+        assert!(!views_structurally_equal(&kb, &plain_ref, &plain_fn));
     }
 }

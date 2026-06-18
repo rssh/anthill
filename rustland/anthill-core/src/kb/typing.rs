@@ -10948,16 +10948,15 @@ fn reorder_named_args_in_apply(
 /// the body incurs.
 fn explode_incurred_effect_row(kb: &mut KnowledgeBase, effect: &Value) -> Option<Vec<Value>> {
     let is_rows_wrapper = matches!(type_dispatch_name_view(kb, effect), Some("effects_rows"));
-    let head_is_row_expr = match effect.head(kb) {
-        ViewHead::Functor { functor: Some(sym), .. } => {
-            let qn = kb.qualified_name_of(sym);
-            matches!(
-                qn.strip_prefix("anthill.prelude.EffectExpression."),
-                Some("merge" | "present" | "absent" | "open" | "empty_row")
-            )
-        }
-        _ => false,
-    };
+    // WI-436: `empty_row` is a 0-ary constructor → bare `Ref` head; read the
+    // functor symbol off either spelling so the empty row is still recognized
+    // as row-shaped (not leaked as an undeclared `empty_row` effect label).
+    let head_is_row_expr = effect.head(kb).functor_sym().is_some_and(|sym| {
+        matches!(
+            kb.qualified_name_of(sym).strip_prefix("anthill.prelude.EffectExpression."),
+            Some("merge" | "present" | "absent" | "open" | "empty_row")
+        )
+    });
     if !is_rows_wrapper && !head_is_row_expr {
         return None;
     }
@@ -14005,10 +14004,11 @@ fn bind_resolved(kb: &mut KnowledgeBase, subst: &mut Substitution, vid: VarId, o
 
 /// Short functor name of a resolved type, carrier-agnostically (via [`TermView`]).
 fn resolved_functor_name<'a>(kb: &'a KnowledgeBase, r: &impl TermView) -> Option<&'a str> {
-    match r.head(kb) {
-        ViewHead::Functor { functor: Some(sym), .. } => Some(kb.resolve_sym(sym)),
-        _ => None,
-    }
+    // WI-436: a bare `Ref(c)` is the 0-ary application of `c` — read its functor
+    // symbol off either spelling (`functor_sym` accepts both `Functor` and
+    // `Ref`), so a 0-ary EffectExpression / reflect constructor canonicalized to
+    // the bare `Ref` (`empty_row`, `wildcard`, …) is still recognized by name.
+    r.head(kb).functor_sym().map(|sym| kb.resolve_sym(sym))
 }
 
 /// WI-342 P3: unify two `denoted` types by their carried value. For the value
@@ -15236,16 +15236,15 @@ fn multi_tail_rows_compat(
 /// binding (`open(?ρ)` from `bind_row_tail`) and a walked bound row are bare
 /// expressions, not `effects_rows` wrappers.
 fn value_is_bare_effect_expr(kb: &KnowledgeBase, v: &impl TermView) -> bool {
-    match v.head(kb) {
-        ViewHead::Functor { functor: Some(sym), .. } => {
-            let qn = kb.qualified_name_of(sym);
-            matches!(
-                qn.strip_prefix("anthill.prelude.EffectExpression."),
-                Some("merge" | "present" | "absent" | "open" | "empty_row")
-            )
-        }
-        _ => false,
-    }
+    // WI-436: `empty_row` is a 0-ary constructor → bare `Ref` head; read the
+    // functor symbol off either spelling so a bare empty row is still classified
+    // as a bare EffectExpression node.
+    v.head(kb).functor_sym().is_some_and(|sym| {
+        matches!(
+            kb.qualified_name_of(sym).strip_prefix("anthill.prelude.EffectExpression."),
+            Some("merge" | "present" | "absent" | "open" | "empty_row")
+        )
+    })
 }
 
 /// WI-441: row-shaped = an `effects_rows` wrapper OR a bare `EffectExpression`
@@ -18546,36 +18545,43 @@ enum TypeHead {
 /// sort is `Ref(S)` and a parameterized type is `Fn{S, named}` (functor = base
 /// sort) on both carriers — there is no deep `sort_ref`/`parameterized` wrapper.
 fn type_head<V: TermView>(kb: &KnowledgeBase, ty: &V) -> TypeHead {
-    match ty.head(kb) {
-        // Term-backed bare sort `Ref(S)`.
-        ViewHead::Ref(s) => TypeHead::SortRef(s),
-        ViewHead::Functor { functor: Some(f), named_arity, .. } => {
-            match kb.qualified_name_of(f) {
-                "anthill.prelude.TypeExtractor.TypeVar" => match view_child_sym(kb, ty, "name") {
-                    Some(s) => TypeHead::TypeVar(s),
-                    None => TypeHead::Error,
-                },
-                "anthill.prelude.TypeExtractor.Nothing" => TypeHead::Nothing,
-                "anthill.prelude.TypeExtractor.Denoted" => TypeHead::Denoted,
-                "anthill.prelude.TypeExtractor.ExprCarried" => TypeHead::ExprCarried,
-                "anthill.prelude.TypeExtractor.RigidTypeProjection" => TypeHead::RigidProjection,
-                "anthill.prelude.TypeExtractor.EffectsRows" => TypeHead::EffectsRows,
-                "anthill.prelude.TypeExtractor.Arrow" => TypeHead::Arrow,
-                "anthill.prelude.TypeExtractor.NamedTuple" => TypeHead::NamedTuple,
-                // WI-425: a bare DotApply expression carrier (`s.cell` outside
-                // an ExprCarried wrapper) is NOT a type — without this arm the
-                // named_arity>0 fallthrough below would classify it as a
-                // parameterized type over a phantom sort named `dot_apply`
-                // (and `sort_functor_of_view` would report that as a real
-                // sort head).
-                "anthill.reflect.Expr.dot_apply" => TypeHead::Error,
-                // Parameterized: the functor IS the base sort, the named args ARE
-                // the bindings. A no-arg `Fn{f}` is malformed (a bare sort is
-                // `Ref(S)`, never `Fn{S}`).
-                _ if named_arity > 0 => TypeHead::Parameterized { base: f },
-                _ => TypeHead::Error,
-            }
-        }
+    // WI-436: a 0-ary TypeExtractor meta-ctor (`Nothing`) canonicalizes to a bare
+    // `Ref` head, so classify by the functor SYMBOL read off either spelling
+    // (`functor_sym` accepts `Ref` and `Functor`) — otherwise `Nothing` would be
+    // mis-read as a bare SortRef. A `Ref` whose symbol is an ordinary sort (NOT a
+    // TypeExtractor meta-ctor) is the bare sort reference `Ref(S)` (WI-361).
+    let head = ty.head(kb);
+    let named_arity = match &head {
+        ViewHead::Functor { named_arity, .. } => *named_arity,
+        _ => 0,
+    };
+    let is_bare_ref = matches!(head, ViewHead::Ref(_));
+    let Some(f) = head.functor_sym() else {
+        return TypeHead::Error;
+    };
+    match kb.qualified_name_of(f) {
+        "anthill.prelude.TypeExtractor.TypeVar" => match view_child_sym(kb, ty, "name") {
+            Some(s) => TypeHead::TypeVar(s),
+            None => TypeHead::Error,
+        },
+        "anthill.prelude.TypeExtractor.Nothing" => TypeHead::Nothing,
+        "anthill.prelude.TypeExtractor.Denoted" => TypeHead::Denoted,
+        "anthill.prelude.TypeExtractor.ExprCarried" => TypeHead::ExprCarried,
+        "anthill.prelude.TypeExtractor.RigidTypeProjection" => TypeHead::RigidProjection,
+        "anthill.prelude.TypeExtractor.EffectsRows" => TypeHead::EffectsRows,
+        "anthill.prelude.TypeExtractor.Arrow" => TypeHead::Arrow,
+        "anthill.prelude.TypeExtractor.NamedTuple" => TypeHead::NamedTuple,
+        // WI-425: a bare DotApply expression carrier (`s.cell` outside an
+        // ExprCarried wrapper) is NOT a type — without this arm the named_arity>0
+        // fallthrough below would classify it as a parameterized type over a
+        // phantom sort named `dot_apply` (and `sort_functor_of_view` would report
+        // that as a real sort head).
+        "anthill.reflect.Expr.dot_apply" => TypeHead::Error,
+        // An ordinary (non-meta-ctor) bare `Ref(S)` is the sort reference; a
+        // `Fn{S, named}` with bindings is a parameterized type; a no-arg `Fn{S}`
+        // of an ordinary sort is malformed (a bare sort is `Ref(S)`, never `Fn{S}`).
+        _ if is_bare_ref => TypeHead::SortRef(f),
+        _ if named_arity > 0 => TypeHead::Parameterized { base: f },
         _ => TypeHead::Error,
     }
 }

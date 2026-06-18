@@ -891,6 +891,50 @@ mod tests {
     }
 
     #[test]
+    fn wi436_nullary_constructor_fn_matches_bare_ref() {
+        // WI-436: a fact whose arg is a nullary constructor APPLICATION `Fn{red}`
+        // must be found by a query spelling the same constructor BARE `Ref(red)`
+        // (and vice versa) — the two are one value. Both insert and query key the
+        // arg under `DiscrimKey::Ref(red)` via the canonicalized `head()`.
+        let mut env = TestEnv::new();
+        let red = env.intern("Color.red");
+        let color = env.intern("Color");
+        // register `red` as a constructor of sort `Color` (Fn-form entity identity).
+        let red_entity = env.alloc(Term::Fn {
+            functor: red, pos_args: SmallVec::new(), named_args: SmallVec::new(),
+        });
+        let color_t = env.alloc(Term::Ref(color));
+        env.kb.register_entity_of(red_entity, color_t);
+        assert!(env.kb.is_constructor_symbol(red));
+
+        let holds = env.intern("holds");
+        let red_fn = env.alloc(Term::Fn {
+            functor: red, pos_args: SmallVec::new(), named_args: SmallVec::new(),
+        });
+        let red_ref = env.alloc(Term::Ref(red));
+        let fact_fn = env.alloc(Term::Fn {
+            functor: holds, pos_args: SmallVec::from_elem(red_fn, 1), named_args: SmallVec::new(),
+        });
+        let query_ref = env.alloc(Term::Fn {
+            functor: holds, pos_args: SmallVec::from_elem(red_ref, 1), named_args: SmallVec::new(),
+        });
+
+        // fact stored in `Fn{red}` form, queried in bare `Ref(red)` form → match.
+        let mut tree: SubstTree<u32> = SubstTree::new();
+        tree.insert_ground(&env.kb, &view(fact_fn), 1);
+        let res = make_resolver(vec![(1, fact_fn)]);
+        assert_eq!(tree.query_resolved(&env.kb, &view(query_ref), &res).len(), 1,
+            "bare Ref(red) query must match a stored nullary Fn{{red}} fact");
+
+        // …and the reverse: fact stored bare `Ref(red)`, queried as `Fn{red}`.
+        let mut tree2: SubstTree<u32> = SubstTree::new();
+        tree2.insert_ground(&env.kb, &view(query_ref), 2);
+        let res2 = make_resolver(vec![(2, query_ref)]);
+        assert_eq!(tree2.query_resolved(&env.kb, &view(fact_fn), &res2).len(), 1,
+            "nullary Fn{{red}} query must match a stored bare Ref(red) fact");
+    }
+
+    #[test]
     fn multiple_facts_same_functor() {
         let mut env = TestEnv::new();
         let mut tree: SubstTree<u32> = SubstTree::new();
