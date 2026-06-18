@@ -5207,6 +5207,25 @@ fn check_apply_iter(
             let (outcome, resolved_tree) = dispatch_spec_op_cached(
                 kb, &subst, spec_sort, op_short_sym, enclosing_requires, carrier_sym,
             );
+            // WI-508: a NULLARY spec op (`new() -> C`, carrier only in the
+            // RESULT) gets no carrier from value args, so value-directed
+            // dispatch finds nothing. Resolve the carrier from the EXPECTED
+            // RETURN TYPE (a concrete annotation pins it) or, failing that, from
+            // a UNIQUE provider (information hiding); 2+ providers with nothing
+            // pinning the carrier is a loud ambiguity. A `requires`-covered call
+            // (a generic consumer over `requires MutableCollection`) already
+            // took the Deferred path in `dispatch_spec_op_cached`, so this only
+            // fires for the concrete / standalone call.
+            let outcome = if op.params.is_empty()
+                && matches!(outcome, DispatchOutcome::NoCandidates)
+            {
+                resolve_nullary_result_carrier(
+                    kb, spec_sort, fn_sym, op_short_sym, &resolved_ret,
+                )
+                .unwrap_or(DispatchOutcome::NoCandidates)
+            } else {
+                outcome
+            };
             match outcome {
                 DispatchOutcome::NoCandidates => {
                     // WI-325: distinguish concrete-binding NoCandidates
@@ -7345,6 +7364,123 @@ fn spec_has_any_providers(kb: &KnowledgeBase, spec_sort: Symbol) -> bool {
         }
     }
     false
+}
+
+/// WI-508: distinct carrier sorts that `provides` `spec_sort` (canonical,
+/// deduped, the spec sort itself excluded). Used to resolve a nullary
+/// carrier-only-in-result spec op (`new()`) from a UNIQUE provider when the call
+/// site pins no carrier. Mirrors `spec_has_any_providers`' indexed walk.
+fn impl_sorts_providing_spec(kb: &KnowledgeBase, spec_sort: Symbol) -> Vec<Symbol> {
+    let mut out: Vec<Symbol> = Vec::new();
+    let Some(provides_sym) = kb.try_resolve_symbol("anthill.reflect.SortProvidesInfo") else {
+        return out;
+    };
+    let spec_canon = kb.canonical_sort_sym(spec_sort);
+    for rid in kb.rules_by_functor(provides_sym) {
+        if !kb.is_fact(rid) {
+            continue;
+        }
+        let Some(head_named) = kb.fact_head_named_args(rid) else { continue };
+        let Some(sort_ref_tid) = get_named_arg(kb, &head_named, "sort_ref") else { continue };
+        let Some(spec_view_tid) = get_named_arg(kb, &head_named, "spec") else { continue };
+        let Some((view_base_sym, _)) = unwrap_spec_view(kb, spec_view_tid) else { continue };
+        if kb.canonical_sort_sym(view_base_sym) != spec_canon {
+            continue;
+        }
+        let impl_sort = match kb.get_term(sort_ref_tid) {
+            Term::Fn { functor, .. } | Term::Ref(functor) | Term::Ident(functor) => *functor,
+            _ => continue,
+        };
+        let carrier = kb.canonical_sort_sym(impl_sort);
+        if carrier != spec_canon && !out.contains(&carrier) {
+            out.push(carrier);
+        }
+    }
+    out
+}
+
+/// WI-508: resolve a NULLARY spec op (carrier only in the result, e.g.
+/// `MutableCollection.new() -> C`) to its concrete impl op when value-directed
+/// dispatch found no candidate (the carrier is not pinned by any argument).
+///
+/// Priority:
+/// - (a) the EXPECTED RETURN TYPE names a concrete carrier sort ⇒ that carrier
+///   is PINNED; use its override (or give up — never silently pick a different
+///   provider for an explicitly named carrier);
+/// - (b) no carrier pinned and exactly ONE sort provides the spec ⇒ use it
+///   (information hiding);
+/// - (c) no carrier pinned and 2+ providers ⇒ `Ambiguous` (a loud error).
+///
+/// `None` keeps the caller's `NoCandidates` (no provider; a named carrier that
+/// does not provide the spec; or a provider whose nullary override needs a
+/// dispatch dict — see `nullary_carrier_impl_op`).
+fn resolve_nullary_result_carrier(
+    kb: &mut KnowledgeBase,
+    spec_sort: Symbol,
+    spec_op_sym: Symbol,
+    op_short_sym: Symbol,
+    resolved_ret: &Value,
+) -> Option<DispatchOutcome> {
+    let spec_canon = kb.canonical_sort_sym(spec_sort);
+    // (a) A concrete (non-type-param) carrier named by the expected return type
+    // is PINNED: resolve through it exclusively. A still-abstract return (the
+    // spec's own carrier param, e.g. an unannotated `let x = new()`) falls
+    // through to the provider-count path below.
+    if let Some(base) = carrier_sort_of_value(kb, resolved_ret) {
+        if !is_sort_param_symbol(kb, base) {
+            let carrier = kb.canonical_sort_sym(base);
+            if carrier != spec_canon {
+                return if sort_provides(kb, carrier, spec_sort) {
+                    nullary_carrier_impl_op(kb, carrier, spec_op_sym, op_short_sym)
+                        .map(DispatchOutcome::Unique)
+                } else {
+                    None
+                };
+            }
+        }
+    }
+    // (b)/(c) No carrier pinned — unique provider, else ambiguous.
+    let providers = impl_sorts_providing_spec(kb, spec_sort);
+    match providers.as_slice() {
+        [] => None,
+        [one] => {
+            nullary_carrier_impl_op(kb, *one, spec_op_sym, op_short_sym)
+                .map(DispatchOutcome::Unique)
+        }
+        _ => Some(DispatchOutcome::Ambiguous),
+    }
+}
+
+/// WI-508 helper: a carrier's RUNNABLE override of a nullary spec op, usable via
+/// a plain PinNow redirect. `None` when the carrier does not override the op
+/// (the body-less spec op is returned), or when the resolved op's OWN defining
+/// sort declares `requires` — such an op would be classified `ConcreteApplyWithin`
+/// (needing a dispatch dict) by the `Unique` arm, which this nullary path does
+/// not build; it falls through to the caller's existing diagnostic rather than
+/// emit a dict-less classification eval can't honor.
+///
+/// The requires-check keys on `impl_parent_of_op(impl_op)`, NOT on `carrier`, to
+/// mirror the `Unique` arm's own PinNow-vs-`ConcreteApplyWithin` decision. They
+/// coincide when the carrier overrides the op (the op's parent IS the carrier),
+/// but diverge for an INHERITED defaulted op (`build_sort_ops_table` pass 2
+/// records an intermediate spec's runnable default for a non-overriding carrier):
+/// a requires-bearing default on a requires-free carrier would otherwise slip a
+/// carrier-only check and reach a dict-less `ConcreteApplyWithin`.
+fn nullary_carrier_impl_op(
+    kb: &mut KnowledgeBase,
+    carrier: Symbol,
+    spec_op_sym: Symbol,
+    op_short_sym: Symbol,
+) -> Option<Symbol> {
+    let impl_op = kb.sort_ops_lookup(carrier, op_short_sym)?;
+    if impl_op == spec_op_sym || !op_has_runnable_body(kb, impl_op) {
+        return None;
+    }
+    let impl_parent = impl_parent_of_op(kb, impl_op)?;
+    if !requires_chain(kb, impl_parent).is_empty() {
+        return None;
+    }
+    Some(impl_op)
 }
 
 fn collect_provides_candidates(

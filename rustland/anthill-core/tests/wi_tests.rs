@@ -38,6 +38,9 @@ mod wi364_mutable_stack_test;
 #[path = "include/wi507_carrier_only_dispatch_test.rs"]
 mod wi507_carrier_only_dispatch_test;
 
+#[path = "include/wi508_nullary_carrier_dispatch_test.rs"]
+mod wi508_nullary_carrier_dispatch_test;
+
 #[path = "include/wi506_modify_field_coverage_test.rs"]
 mod wi506_modify_field_coverage_test;
 

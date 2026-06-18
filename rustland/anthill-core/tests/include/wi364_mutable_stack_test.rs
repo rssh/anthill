@@ -21,21 +21,19 @@ use crate::common::{interp_for, register_modify_handler};
 /// sentinel for empty) so the assertions stay simple; `depth` walks via
 /// `iterator` (Iterable.size), exercising the read bridge.
 ///
-/// One call-form choice sidesteps a remaining dispatch gap the WI-364 probe
-/// found (a filed follow-up; the carrier itself is unaffected):
-/// `MutableStack.new()` (the carrier's own constructor) rather than the
-/// abstract `MutableCollection.new()` (WI-508, nullary result-only carrier).
-/// The bare carrier-only `clear(s)` (WI-507) now dispatches end-to-end, so
-/// `wipe` uses it directly. The element is concrete (`MutableStack[T = Int64]`)
-/// so the carrier-only `clear`/`size` resolve `Element`.
+/// The MutableCollection interface is exercised through its ABSTRACT spec ops:
+/// `new()` (WI-508 — carrier pinned by the `MutableStack[T = Int64]` return
+/// type), `insert`/`clear` (WI-507 — carrier-only bare calls). All dispatch
+/// end-to-end now; the element is concrete (`MutableStack[T = Int64]`) so the
+/// carrier-only ops resolve `Element`.
 const SRC: &str = r#"
 namespace test.wi364.stack
   import anthill.prelude.{Int64, Bool, Unit, MutableStack}
   import anthill.prelude.Option.{none, some}
-  import anthill.prelude.MutableCollection.{insert, clear}
+  import anthill.prelude.MutableCollection.{new, insert, clear}
   import anthill.prelude.Iterable.{size}
 
-  operation fresh() -> MutableStack[T = Int64] effects Modify[result] = MutableStack.new()
+  operation fresh() -> MutableStack[T = Int64] effects Modify[result] = new()
   operation pushN(s: MutableStack[T = Int64], x: Int64) -> Unit effects Modify[s] = MutableStack.push(s, x)
 
   -- the MutableCollection view of adding (insert returns the "was new" witness)
