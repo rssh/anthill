@@ -279,6 +279,19 @@ pub enum LoadError {
         type_display: String,
         span: Span,
     },
+    /// WI-369: a cross-scope reference to a name declared `internal` — a
+    /// constructor, sort, or operation that is "hidden from outside the
+    /// declaring scope" (kernel-language.md §8.6). The name resolves to a real
+    /// internal symbol, but the referencing scope is neither its declaring scope
+    /// nor a lexical descendant, so the reference is forbidden. Load-blocking:
+    /// `internal` exists to encapsulate stateful carriers (a `MutableStack`'s
+    /// `rep` cell), so silently allowing the alias would defeat the guarantee.
+    ForbiddenInternalAccess {
+        name: String,
+        declared_in: String,
+        scope_name: String,
+        span: Span,
+    },
 }
 
 impl LoadError {
@@ -367,6 +380,13 @@ impl LoadError {
                     line, col, path, type_display, field,
                 )
             }
+            LoadError::ForbiddenInternalAccess { name, declared_in, scope_name, span } => {
+                let (line, col) = Span::line_col(source, span.start);
+                format!(
+                    "{}:{}: '{}' is internal to '{}' and cannot be referenced from scope '{}'",
+                    line, col, name, declared_in, scope_name,
+                )
+            }
         }
     }
 
@@ -404,7 +424,10 @@ impl LoadError {
             | LoadError::UnresolvedTypeName { .. }
             // WI-489: a value-in-type field projection onto a non-existent field
             // names nothing — block rather than defer to a silent accept.
-            | LoadError::InvalidFieldProjection { .. })
+            | LoadError::InvalidFieldProjection { .. }
+            // WI-369: a cross-scope reference to an `internal` name defeats the
+            // encapsulation it was declared for — block.
+            | LoadError::ForbiddenInternalAccess { .. })
     }
 }
 
@@ -484,6 +507,13 @@ impl std::fmt::Display for LoadError {
                     f,
                     "field projection '{}' at {}..{}: {} has no field '{}'",
                     path, span.start, span.end, type_display, field,
+                )
+            }
+            LoadError::ForbiddenInternalAccess { name, declared_in, scope_name, span } => {
+                write!(
+                    f,
+                    "'{}' is internal to '{}' and cannot be referenced from scope '{}' at {}..{}",
+                    name, declared_in, scope_name, span.start, span.end,
                 )
             }
         }
@@ -1031,6 +1061,15 @@ fn unlabeled_head_functor_name<'a>(
     None
 }
 
+/// WI-369: record the parse-IR `internal` visibility flag on a defined symbol,
+/// so cross-scope resolution hides it (kernel-language.md §8.6). `public` /
+/// unspecified is the visible default and records nothing.
+fn record_internal(kb: &mut KnowledgeBase, sym: Symbol, vis: Option<Visibility>) {
+    if vis == Some(Visibility::Internal) {
+        kb.symbols.mark_internal(sym);
+    }
+}
+
 fn scan_items_pass1(
     kb: &mut KnowledgeBase,
     items: &[Item],
@@ -1051,6 +1090,7 @@ fn scan_items_pass1(
                 } else {
                     (kb.symbols.define(&short, &qualified, SymbolKind::Sort, actual_scope.raw()), true)
                 };
+                record_internal(kb, sym, s.visibility);
                 let sort_term = kb.alloc(Term::Fn {
                     functor: sym,
                     pos_args: SmallVec::new(),
@@ -1113,7 +1153,8 @@ fn scan_items_pass1(
                 let name = join_segments(parse_sym, &s.name.segments);
                 let (short, actual_scope) = ensure_intermediate_namespaces(kb, &name, scope, prefix);
                 let qualified = make_qualified(prefix, &name);
-                let _sym = kb.symbols.define(&short, &qualified, SymbolKind::Sort, actual_scope.raw());
+                let abstract_sym = kb.symbols.define(&short, &qualified, SymbolKind::Sort, actual_scope.raw());
+                record_internal(kb, abstract_sym, s.visibility);
                 // `sort T = ?` inside a SortWithBody or EnumDecl = type parameter
                 if matches!(s.definition, TypeExpr::Variable { .. }) && is_sort_scope(kb, scope) {
                     kb.symbols.add_type_param(scope.raw(), &short);
@@ -1169,6 +1210,7 @@ fn scan_items_pass1(
                 } else {
                     kb.symbols.define(&short, &qualified, SymbolKind::Entity, actual_scope.raw())
                 };
+                record_internal(kb, entity_sym, e.visibility);
                 // WI-499: register field NAMES now, before any term conversion, so the
                 // positional→named desugar / partial-expansion / over-arity check are
                 // load-order-independent. Field TYPES stay in load_entity.
@@ -1179,6 +1221,7 @@ fn scan_items_pass1(
                 let (short, actual_scope) = ensure_intermediate_namespaces(kb, &name, scope, prefix);
                 let qualified = make_qualified(prefix, &name);
                 let op_sym = kb.symbols.define(&short, &qualified, SymbolKind::Operation, actual_scope.raw());
+                record_internal(kb, op_sym, o.visibility);
                 scan_operation_params(kb, parse_sym, o, op_sym, actual_scope, &qualified);
             }
             Item::OperationBlock(ob) => {
@@ -1186,6 +1229,7 @@ fn scan_items_pass1(
                     let name = join_segments(parse_sym, &op.name.segments);
                     let qualified = make_qualified(prefix, &name);
                     let op_sym = kb.symbols.define(&name, &qualified, SymbolKind::Operation, scope.raw());
+                    record_internal(kb, op_sym, op.visibility);
                     scan_operation_params(kb, parse_sym, op, op_sym, scope, &qualified);
                 }
             }
@@ -1512,6 +1556,45 @@ struct PendingImport {
     span: Span,
 }
 
+/// WI-369: reject importing an `internal` name into a scope that cannot see it.
+/// The `by_qualified_name` / nested-scope import-resolution paths bypass
+/// `resolve_in_scope`'s `internal` filter, so the visibility gate is applied
+/// here explicitly. Returns `true` (recording a `ForbiddenInternalAccess`) when
+/// the import is forbidden, so the caller skips the `add_import`.
+fn forbid_internal_import(
+    kb: &KnowledgeBase,
+    sym: Symbol,
+    short: &str,
+    scope: TermId,
+    span: Span,
+    errors: &mut Vec<LoadError>,
+) -> bool {
+    if kb.symbols.internal_visible_from(sym, scope.raw()) {
+        return false;
+    }
+    let declared_in = match kb.symbols.get(sym) {
+        SymbolDef::Resolved { qualified_name, .. } => qualified_name
+            .rsplit_once('.')
+            .map(|(p, _)| p.to_owned())
+            .unwrap_or_else(|| qualified_name.clone()),
+        SymbolDef::Unresolved { name } => name.clone(),
+    };
+    let scope_name = match kb.get_term(scope) {
+        Term::Fn { functor, .. } => match kb.symbols.get(*functor) {
+            SymbolDef::Resolved { short_name, .. } => short_name.clone(),
+            SymbolDef::Unresolved { name } => name.clone(),
+        },
+        _ => "_unknown".to_owned(),
+    };
+    errors.push(LoadError::ForbiddenInternalAccess {
+        name: short.to_owned(),
+        declared_in,
+        scope_name,
+        span,
+    });
+    true
+}
+
 /// Process `import` declarations → register imported names and parent scopes.
 /// Unresolvable import paths produce errors (deferred predicate imports go to
 /// `pending` for the post-pass-3 retry — see `PendingImport`).
@@ -1551,7 +1634,11 @@ fn process_imports(
                 let found = kb.symbols.by_qualified_name.get(&path).copied();
                 if let Some(original_sym) = found {
                     let short = last_segment(&path);
-                    kb.symbols.add_import(scope.raw(), short, original_sym);
+                    // WI-369: a plain import of an `internal` name across scopes
+                    // is a forbidden reference.
+                    if !forbid_internal_import(kb, original_sym, short, scope, imp.path.span, errors) {
+                        kb.symbols.add_import(scope.raw(), short, original_sym);
+                    }
                 }
                 if let Some(target_scope) = find_scope_by_name(kb, &path) {
                     kb.symbols.add_parent(scope.raw(), ScopeInclusion {
@@ -1605,7 +1692,11 @@ fn process_imports(
                         })
                         .or_else(|| find_in_nested_scope(kb, &path, &short));
                     if let Some(sym) = original_sym {
-                        kb.symbols.add_import(scope.raw(), &short, sym);
+                        // WI-369: a selective import of an `internal` name into a
+                        // scope that can't see it is a forbidden reference.
+                        if !forbid_internal_import(kb, sym, &short, scope, name.span, errors) {
+                            kb.symbols.add_import(scope.raw(), &short, sym);
+                        }
                     } else {
                         // WI-295: a rule-defined predicate's head-functor symbol
                         // isn't registered until sub-pass 3 (scan_rule_goal),
@@ -4299,7 +4390,12 @@ fn resolve_name_in_kb(kb: &mut KnowledgeBase, name: &str, scope_raw: u32) -> Sym
 /// missing-import as a non-matching query rather than silently rescuing it.
 fn resolve_name_in_kb_opt(kb: &KnowledgeBase, name: &str, scope_raw: u32) -> Option<Symbol> {
     if let Some(&sym) = kb.symbols.by_qualified_name.get(name) {
-        return Some(sym);
+        // WI-369: the qualified path bypasses `resolve_in_scope`'s `internal`
+        // filter, so apply the visibility gate here. A hidden-internal hit falls
+        // through to the (also-filtered) scope walk and resolves to `None`.
+        if kb.symbols.internal_visible_from(sym, scope_raw) {
+            return Some(sym);
+        }
     }
     match kb.symbols.resolve_in_scope(name, scope_raw) {
         ResolveResult::Found(sym) => Some(sym),
@@ -4783,6 +4879,61 @@ impl<'a> Loader<'a> {
         }).collect()
     }
 
+    /// WI-369: if `name` (resolved while IGNORING the `internal` filter) names an
+    /// `internal` symbol not visible from the current scope, return it. Lets the
+    /// resolvers tell a forbidden cross-scope reference to an internal name apart
+    /// from a genuinely-unknown name, so they can emit a precise
+    /// `ForbiddenInternalAccess` instead of a bare `UnresolvedName`.
+    fn hidden_internal(&self, name: &str) -> Option<Symbol> {
+        let scope = self.current_scope.raw();
+        if let ResolveResult::Found(sym) =
+            self.kb.symbols.resolve_in_scope_ignoring_internal(name, scope)
+        {
+            if !self.kb.symbols.internal_visible_from(sym, scope) {
+                return Some(sym);
+            }
+        }
+        None
+    }
+
+    /// WI-369: whether a `by_qualified_name` hit is visible from the current
+    /// scope — the qualified path bypasses `resolve_in_scope`'s `internal`
+    /// filter, so it must apply the same visibility gate explicitly.
+    fn qualified_visible(&self, sym: Symbol) -> bool {
+        self.kb.symbols.internal_visible_from(sym, self.current_scope.raw())
+    }
+
+    /// WI-369: record a `ForbiddenInternalAccess` for `sym` (referenced as
+    /// `name` at `span`) and return a bare interned symbol so the term stays
+    /// well-formed; the load fails on the recorded (load-blocking) error.
+    /// `declared_in` is derived from the symbol's qualified name.
+    fn push_forbidden_internal(&mut self, sym: Symbol, name: &str, span: Span) -> Symbol {
+        let declared_in = match self.kb.symbols.get(sym) {
+            SymbolDef::Resolved { qualified_name, .. } => qualified_name
+                .rsplit_once('.')
+                .map(|(p, _)| p.to_owned())
+                .unwrap_or_else(|| qualified_name.clone()),
+            SymbolDef::Unresolved { name } => name.clone(),
+        };
+        self.errors.push(LoadError::ForbiddenInternalAccess {
+            name: name.to_owned(),
+            declared_in,
+            scope_name: self.scope_display_name(),
+            span,
+        });
+        self.kb.symbols.intern(name)
+    }
+
+    /// WI-369: NotFound-arm helper for the resolvers — if `name` is a forbidden
+    /// cross-scope reference to an `internal` symbol, record a
+    /// `ForbiddenInternalAccess` (load-blocking) and return a bare interned
+    /// symbol so the term stays well-formed. Returns `None` when `name` is not a
+    /// hidden-internal reference (the caller proceeds with its normal fallback).
+    fn forbid_if_internal(&mut self, name: &str, span: Span) -> Option<Symbol> {
+        let sym = self.hidden_internal(name)?;
+        Some(self.push_forbidden_internal(sym, name, span))
+    }
+
     /// Scope-aware symbol resolution for functors and type/sort references.
     /// If resolution finds a defined symbol, returns it; otherwise falls
     /// back to plain intern (term-level functors may be undefined data names).
@@ -4835,9 +4986,20 @@ impl<'a> Loader<'a> {
                         };
                         let probe = format!("{}.{}", head_qualified, tail);
                         if let Some(&q_sym) = self.kb.symbols.by_qualified_name.get(&probe) {
-                            return q_sym;
+                            // WI-369: the qualified path bypasses the `internal`
+                            // filter. Return the hit if visible here; otherwise
+                            // it is a forbidden cross-scope internal reference.
+                            if self.qualified_visible(q_sym) {
+                                return q_sym;
+                            }
+                            return self.push_forbidden_internal(q_sym, name, Span::default());
                         }
                     }
+                }
+                // WI-369: distinguish a forbidden cross-scope reference to an
+                // `internal` name from a genuinely-unknown one before falling back.
+                if let Some(sym) = self.forbid_if_internal(name, Span::default()) {
+                    return sym;
                 }
                 // WI-476: name not resolvable in the local environment. A
                 // functor / identifier that names nothing in scope is interned as
@@ -4870,6 +5032,11 @@ impl<'a> Loader<'a> {
                 self.kb.symbols.intern(name)
             }
             ResolveResult::NotFound => {
+                // WI-369: a forbidden cross-scope `internal` reference gets a
+                // precise diagnostic rather than a misleading "unresolved name".
+                if let Some(sym) = self.forbid_if_internal(name, Span::default()) {
+                    return sym;
+                }
                 let sym = self.kb.symbols.intern(name);
                 self.errors.push(LoadError::UnresolvedName {
                     name: name.to_owned(),
@@ -4906,8 +5073,17 @@ impl<'a> Loader<'a> {
                 // an intermediate namespace not yet in our scope chain)
                 if name.segments.len() > 1 {
                     if let Some(&sym) = self.kb.symbols.by_qualified_name.get(&lookup_name) {
-                        return sym;
+                        // WI-369: qualified path bypasses the `internal` filter.
+                        if self.qualified_visible(sym) {
+                            return sym;
+                        }
+                        return self.push_forbidden_internal(sym, &lookup_name, name.span);
                     }
+                }
+                // WI-369: precise diagnostic for a forbidden cross-scope
+                // `internal` reference before the unresolved-name fallbacks.
+                if let Some(sym) = self.forbid_if_internal(&lookup_name, name.span) {
+                    return sym;
                 }
                 let sym = self.kb.symbols.intern(&lookup_name);
                 // WI-440: inside a `-E` absence label, an unresolved name means

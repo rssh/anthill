@@ -422,3 +422,6 @@ mod wi500_runtime_positional_ctor_test;
 
 #[path = "include/wi321_cross_file_mutual_recursion_test.rs"]
 mod wi321_cross_file_mutual_recursion_test;
+
+#[path = "include/wi369_internal_visibility_test.rs"]
+mod wi369_internal_visibility_test;

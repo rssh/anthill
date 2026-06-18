@@ -124,6 +124,16 @@ pub enum TypeError {
         member: Symbol,
         receiver_sort: Option<Symbol>,
     },
+    /// WI-369: a cross-scope projection (`s.field`) of a field whose owning
+    /// entity is declared `internal`. The field name resolves, but the entity
+    /// that declares it is hidden from the access scope (kernel-language.md
+    /// §8.6), so reading the field would alias encapsulated state. `entity` is
+    /// the owning (internal) constructor. Reported at the dot span.
+    ForbiddenInternalField {
+        span: Option<Span>,
+        entity: Symbol,
+        field: Symbol,
+    },
     /// Aggregation node — collects multiple sibling failures
     /// (e.g. a list literal with two ill-typed elements).
     Multiple {
@@ -297,6 +307,12 @@ impl TypeError {
                     ),
                 }
             }
+            TypeError::ForbiddenInternalField { entity, field, .. } => {
+                format!(
+                    "'{}' is an internal field of {} and cannot be projected from another scope",
+                    kb.resolve_sym(*field), kb.qualified_name_of(*entity),
+                )
+            }
             TypeError::Multiple { errors } => {
                 let parts: Vec<String> = errors.iter().map(|e| e.format(kb)).collect();
                 parts.join("; ")
@@ -320,6 +336,7 @@ impl TypeError {
             | TypeError::UnconstrainedTypeParam { span, .. }
             | TypeError::MissingRequiresForSpecOp { span, .. }
             | TypeError::DotDispatchNoMatch { span, .. }
+            | TypeError::ForbiddenInternalField { span, .. }
             | TypeError::BottomExpr { span } => *span,
             TypeError::Other { span, .. } => *span,
             TypeError::NoParentSort { .. } => None,
@@ -468,6 +485,18 @@ impl TypeError {
                 actual_type: "no such member (dot dispatch)".to_string(),
                 span: self.span(kb),
             },
+            TypeError::ForbiddenInternalField { entity, field, .. } => {
+                let declared_in = {
+                    let q = kb.qualified_name_of(*entity);
+                    q.rsplit_once('.').map(|(p, _)| p.to_string()).unwrap_or_else(|| q.to_string())
+                };
+                LoadError::ForbiddenInternalAccess {
+                    name: kb.resolve_sym(*field).to_string(),
+                    declared_in,
+                    scope_name: "another scope".to_string(),
+                    span: self.span(kb).unwrap_or_default(),
+                }
+            }
             TypeError::Multiple { errors } => {
                 // Lossy: keep the first error's structured form so legacy
                 // single-error consumers see something. Callers that care
@@ -3599,13 +3628,29 @@ fn build_type(
                     // WI-490: include `rs` itself when it is a free-standing entity
                     // (its own constructor) so `(p).x` on an `entity Pose(x, y)`
                     // receiver resolves the field instead of failing dot dispatch.
-                    let field_sym = kb.field_constructors_of_sort(rs).into_iter().find_map(|ctor| {
+                    let field_match = kb.field_constructors_of_sort(rs).into_iter().find_map(|ctor| {
                         kb.entity_field_types(ctor).and_then(|fields| {
                             fields.iter()
                                 .find(|(f, _)| short_name_of(kb.resolve_sym(*f)) == member_short)
-                                .map(|(f, _)| *f)
+                                .map(|(f, _)| (ctor, *f))
                         })
                     });
+                    // WI-369: a cross-scope projection of a field whose owning
+                    // entity is `internal` would alias encapsulated state — reject
+                    // with a precise diagnostic. A read inside the declaring sort's
+                    // own ops stays clean (the enclosing-sort scope reaches the
+                    // entity's declaring scope).
+                    if let Some((ctor, fsym)) = field_match {
+                        if internal_field_hidden_from(kb, &env, ctor) {
+                            results.push(Err(TypeError::ForbiddenInternalField {
+                                span: dot_span,
+                                entity: ctor,
+                                field: fsym,
+                            }));
+                            return;
+                        }
+                    }
+                    let field_sym = field_match.map(|(_, f)| f);
                     if let Some((field_ty, fa_sym)) = field_sym.and_then(|fsym| {
                         let ctx = TypeErrorContext::EntityField { entity: rs, field: fsym };
                         let field_ty = resolve_field_type(kb, &recv.ty, fsym, &ctx, dot_span).ok()?;
@@ -4193,6 +4238,63 @@ fn field_access_projection_type(
     resolve_field_type(kb, &recv_ty, field_sym, &ctx, span).ok().map(|t| t.0)
 }
 
+/// WI-369: the `(owning entity, field)` a desugared `field_access(receiver,
+/// "field")` projects, or `None` if `fn_sym`/args aren't that form or the field
+/// doesn't resolve. Companion to [`field_access_projection_type`] used to
+/// enforce `internal` field visibility on the `?x.field` projection path.
+/// WI-369: whether projecting a field of `ctor` is forbidden from `env`'s
+/// enclosing scope — true when `ctor` is declared `internal` and the enclosing
+/// sort's body scope cannot see it (kernel-language.md §8.6). The enclosing
+/// sort's body scope is the hash-consed `Fn{sort}` term raw — the same scope id
+/// the loader recorded — so a projection inside the declaring sort's own ops
+/// (`s.rep` in `MutableStack.push`) is visible, while one from another sort is
+/// not. With no enclosing sort (a free op / top-level), there is no lexical
+/// scope to test against, so enforcement is skipped (permissive).
+fn internal_field_hidden_from(kb: &mut KnowledgeBase, env: &TypingEnv, ctor: Symbol) -> bool {
+    if !kb.symbols.is_internal(ctor) {
+        return false;
+    }
+    match env.enclosing_sort() {
+        Some(s) => {
+            let scope = kb
+                .alloc(Term::Fn {
+                    functor: s,
+                    pos_args: SmallVec::new(),
+                    named_args: SmallVec::new(),
+                })
+                .raw();
+            !kb.symbols.internal_visible_from(ctor, scope)
+        }
+        None => false,
+    }
+}
+
+fn field_access_owning_ctor(
+    kb: &mut KnowledgeBase,
+    fn_sym: Symbol,
+    pos_args: &[Rc<NodeOccurrence>],
+    named_args: &[(Symbol, Rc<NodeOccurrence>)],
+    pos_results: &[Result<TypeResult, TypeError>],
+) -> Option<(Symbol, Symbol)> {
+    let fa_sym = kb.try_resolve_symbol("anthill.reflect.field_access")?;
+    if fn_sym != fa_sym || pos_args.len() != 2 || !named_args.is_empty() {
+        return None;
+    }
+    let field_name = match pos_args[1].as_expr() {
+        Some(Expr::Const(Literal::String(s))) => s.clone(),
+        _ => return None,
+    };
+    let recv_ty = pos_results.first()?.as_ref().ok().map(|r| r.ty.clone())?;
+    let recv_sort = sort_functor_of_view(kb, &recv_ty)?;
+    kb.field_constructors_of_sort(recv_sort).into_iter().find_map(|ctor| {
+        kb.entity_field_types(ctor).and_then(|fields| {
+            fields.iter()
+                .find(|(f, _)| short_name_of(kb.resolve_sym(*f)) == field_name)
+                .map(|(f, _)| (ctor, *f))
+        })
+    })
+}
+
 fn check_apply_iter(
     kb: &mut KnowledgeBase,
     env: &TypingEnv,
@@ -4232,6 +4334,20 @@ fn check_apply_iter(
     // spurious errors. Resolving the field type here makes the rewrite
     // idempotent (the effect re-key idempotency is handled in
     // `stable_receiver_path`).
+    // WI-369: a desugared `field_access` projecting a field whose owning entity
+    // is `internal`, from outside its declaring scope, aliases encapsulated
+    // state — reject before typing it as the field projection. The access scope
+    // is the enclosing declaration (`occ.owner`); a projection inside the
+    // declaring sort's own ops stays clean (its scope reaches the entity's
+    // declaring scope by enclosing links). `owner == None` is left permissive.
+    if let Some((ctor, fsym)) =
+        field_access_owning_ctor(kb, fn_sym, pos_args, named_args, pos_results)
+    {
+        if internal_field_hidden_from(kb, env, ctor) {
+            return Err(TypeError::ForbiddenInternalField { span, entity: ctor, field: fsym });
+        }
+    }
+
     if let Some(ty) = field_access_projection_type(kb, fn_sym, pos_args, named_args, pos_results, span) {
         let effects = pos_results.first()
             .and_then(|r| r.as_ref().ok())

@@ -25,8 +25,11 @@ sort anthill.prelude.MutableStack
   sort T = ?
 
   -- The carrier: a wrapper around the backing cell of stack contents
-  -- (head of the list = top of the stack).
-  entity mutableStack(rep: Cell[V = List[T]])
+  -- (head of the list = top of the stack). `internal` (WI-369): the backing
+  -- cell is private to MutableStack's own operations — external code must go
+  -- through new/push/pop/… and cannot construct the wrapper around (or alias)
+  -- a cell it controls, which would break the in-place invariants.
+  internal entity mutableStack(rep: Cell[V = List[T]])
 
   -- Allocate a fresh, empty stack. The fresh cell escapes via the returned
   -- wrapper, so `Modify[result]` is declared (proposal 027.1).

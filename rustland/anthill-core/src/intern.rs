@@ -166,6 +166,11 @@ pub struct SymbolTable {
     pub by_qualified_name: HashMap<String, Symbol>,
     /// All per-scope data: scope_raw → Scope
     scopes: HashMap<u32, Scope>,
+    /// WI-369: symbols declared `internal` — hidden from cross-scope resolution
+    /// (kernel-language.md §8.6). A name is visible by default; only `internal`
+    /// hides it. Recorded by raw symbol index; the empty set is the all-visible
+    /// default, so `public`/unspecified declarations cost nothing here.
+    internal_syms: HashSet<u32>,
 }
 
 impl SymbolTable {
@@ -280,6 +285,54 @@ impl SymbolTable {
         }
     }
 
+    /// WI-369: record that `sym` was declared `internal`, so cross-scope
+    /// resolution hides it (kernel-language.md §8.6). No-op-safe to call more
+    /// than once.
+    pub fn mark_internal(&mut self, sym: Symbol) {
+        self.internal_syms.insert(sym.0);
+    }
+
+    /// WI-369: whether `sym` was declared `internal`.
+    pub fn is_internal(&self, sym: Symbol) -> bool {
+        self.internal_syms.contains(&sym.0)
+    }
+
+    /// WI-369: is `sym` visible from `from_scope_raw`? A non-`internal` symbol
+    /// is visible everywhere (the default). An `internal` symbol is visible only
+    /// within its declaring scope and that scope's lexical descendants — i.e.
+    /// `from_scope_raw` is the declaring scope, or reaches it by following
+    /// `is_enclosing` parent links (the sort/namespace body chain). Crossing any
+    /// non-enclosing edge (`import`/`requires`/wildcard/variant exposure) leaves
+    /// the lexical scope, so the internal name is hidden there.
+    pub fn internal_visible_from(&self, sym: Symbol, from_scope_raw: u32) -> bool {
+        if !self.is_internal(sym) {
+            return true;
+        }
+        let decl_scope = match self.defs.get(sym.0 as usize) {
+            Some(SymbolDef::Resolved { scope_raw, .. }) => *scope_raw,
+            _ => return true, // unresolved/unknown — nothing to hide
+        };
+        // Walk the enclosing-parent chain up from `from_scope_raw`.
+        let mut stack = vec![from_scope_raw];
+        let mut visited = HashSet::new();
+        while let Some(s) = stack.pop() {
+            if s == decl_scope {
+                return true;
+            }
+            if !visited.insert(s) {
+                continue;
+            }
+            if let Some(scope) = self.scopes.get(&s) {
+                for p in &scope.parents {
+                    if p.is_enclosing {
+                        stack.push(p.parent_scope_raw);
+                    }
+                }
+            }
+        }
+        false
+    }
+
     /// Mark a name as exposed from a scope to its enclosing scope via the
     /// variant-exposure parent link (populated from entity variants only).
     pub fn add_exposed(&mut self, scope_raw: u32, name: &str) {
@@ -340,8 +393,57 @@ impl SymbolTable {
     ///    a variant-exposure link, excluding type params)
     /// 3. NotFound if nothing matches
     pub fn resolve_in_scope(&self, name: &str, scope_raw: u32) -> ResolveResult {
+        // WI-369: resolve IGNORING `internal`, then drop any matched symbol not
+        // visible from the ENTRY scope (kernel-language.md §8.6). Visibility is
+        // applied as a post-filter on the resolved symbol(s), not as a per-hop
+        // parent filter, because it is a property of the symbol relative to the
+        // entry scope — an internal name reached transitively (through a
+        // non-enclosing parent's enclosing grandparent) or re-exported via a
+        // descendant's imports must be hidden the same as a direct member.
+        // Filtering at collection time also keeps internal names from polluting
+        // the candidate set with a spurious ambiguity (the spec's step-3 intent).
+        let raw = self.resolve_in_scope_ignoring_internal(name, scope_raw);
+        self.filter_internal_visibility(raw, scope_raw)
+    }
+
+    /// WI-369 diagnostic twin of [`Self::resolve_in_scope`] that does NOT apply
+    /// the `internal` visibility filter — so a name hidden only by visibility
+    /// still resolves here. Used to tell a genuine missing-name (unresolved)
+    /// apart from a forbidden access to an `internal` symbol, so the loader can
+    /// emit a precise `ForbiddenInternalAccess` rather than a bare
+    /// `UnresolvedName`.
+    pub fn resolve_in_scope_ignoring_internal(&self, name: &str, scope_raw: u32) -> ResolveResult {
         let mut visited = std::collections::HashSet::new();
         self.resolve_in_scope_recursive(name, scope_raw, &mut visited)
+    }
+
+    /// WI-369: drop matched symbols not visible from `from_scope` (the entry
+    /// scope of the resolution). A hidden `internal` symbol becomes `NotFound`
+    /// (the loader then probes [`Self::resolve_in_scope_ignoring_internal`] to
+    /// emit a precise `ForbiddenInternalAccess`); an ambiguity keeps only its
+    /// visible candidates, so an `internal` name never shadows a visible peer.
+    fn filter_internal_visibility(&self, r: ResolveResult, from_scope: u32) -> ResolveResult {
+        match r {
+            ResolveResult::Found(sym) => {
+                if self.internal_visible_from(sym, from_scope) {
+                    ResolveResult::Found(sym)
+                } else {
+                    ResolveResult::NotFound
+                }
+            }
+            ResolveResult::Ambiguous(cands) => {
+                let kept: Vec<Symbol> = cands
+                    .into_iter()
+                    .filter(|&s| self.internal_visible_from(s, from_scope))
+                    .collect();
+                match kept.len() {
+                    0 => ResolveResult::NotFound,
+                    1 => ResolveResult::Found(kept[0]),
+                    _ => ResolveResult::Ambiguous(kept),
+                }
+            }
+            ResolveResult::NotFound => ResolveResult::NotFound,
+        }
     }
 
     fn resolve_in_scope_recursive(
@@ -368,6 +470,9 @@ impl SymbolTable {
             }
 
             // 2. Filter parent scopes by type_params and the `exposed` set.
+            // `internal` visibility is NOT filtered per-hop here — it is applied
+            // as a post-filter on the matched symbol in `resolve_in_scope` (so a
+            // transitively-reached or re-exported internal name is hidden too).
             // `exposed` holds a sort's entity variants (proposal 044 job 2): a
             // non-empty set leaks only those variants to the enclosing scope; an
             // empty set (specs, namespaces) is fully visible via requires/wildcard.
