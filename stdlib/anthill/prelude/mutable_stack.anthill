@@ -10,17 +10,13 @@
 -- enclosing sort, and Cell is generic).
 --
 -- Mutation rides the existing Cell arena + Modify handler (proposal 037
--- §"Cell[V]"; docs/design/cell-runtime.md). The bodies PATTERN-MATCH the
--- wrapper to bind the inner cell `r`: a pattern-bound resource is a local
--- (WI-219), so `Cell.set(r, …)`'s `Modify[r]` is elided at the boundary and
--- the op's declared `Modify[s]` is the honest caller-visible effect (the
--- cell is reachable from `s`). This is the WorkItemStore idiom
--- (rustland/anthill-todo/anthill/store.anthill: `match Cell.get(s) case
--- wis(b, _) -> persist(b, …)`). WI-506 now makes the effect side of a
--- field-projection body (`Cell.set(s.rep, …)` under declared `Modify[s]`)
--- typecheck, but a separate field-access typing fragility (WI-509) perturbs
--- unrelated code when such a body lives in the loaded stdlib — so the
--- pattern-match idiom stays here until WI-509 is fixed.
+-- §"Cell[V]"; docs/design/cell-runtime.md). The bodies FIELD-PROJECT the
+-- backing cell directly (`Cell.set(s.rep, …)` / `Cell.get(s.rep)`): the
+-- declared `Modify[s]` covers the incurred `Modify[s.rep]` (WI-506), and the
+-- desugared `field_access` node round-trips a re-type-check (WI-509), so a
+-- field-projection body is safe in the loaded stdlib. (The earlier
+-- pattern-match idiom — `match s case mutableStack(r) -> Cell.set(r, …)`,
+-- binding the inner cell as a WI-219 local — is no longer needed here.)
 sort anthill.prelude.MutableStack
   import anthill.prelude.{Bool, Unit, Option, Cell, List, Stream, Modifiable}
   import anthill.prelude.List.{nil, cons}
@@ -43,30 +39,24 @@ sort anthill.prelude.MutableStack
   operation push(s: MutableStack, elem: T) -> Unit
     effects Modify[s]
   =
-    match s
-      case mutableStack(r) ->
-        Cell.set(r, cons(head: elem, tail: Cell.get(r)))
+    Cell.set(s.rep, cons(head: elem, tail: Cell.get(s.rep)))
 
   -- Pop the top: remove it and return it, or `none` if the stack is empty.
   operation pop(s: MutableStack) -> Option[T]
     effects Modify[s]
   =
-    match s
-      case mutableStack(r) ->
-        match Cell.get(r)
-          case nil() -> none()
-          case cons(h, t) ->
-            let _ = Cell.set(r, t)
-            some(h)
+    match Cell.get(s.rep)
+      case nil() -> none()
+      case cons(h, t) ->
+        let _ = Cell.set(s.rep, t)
+        some(h)
 
   -- Peek at the top WITHOUT removing it — a read observation, no effect.
   operation top(s: MutableStack) -> Option[T]
   =
-    match s
-      case mutableStack(r) ->
-        match Cell.get(r)
-          case nil() -> none()
-          case cons(h, _) -> some(h)
+    match Cell.get(s.rep)
+      case nil() -> none()
+      case cons(h, _) -> some(h)
 
   -- Iterable bridge: a snapshot of the current contents, top to bottom.
   -- `Cell.get(r)` yields the backing `List[T]`, admissible as a `Stream`
@@ -76,8 +66,7 @@ sort anthill.prelude.MutableStack
   -- time) — the "snapshot, not live cursor" reading in the proposal.
   operation iterator(s: MutableStack) -> Stream[T, {}]
   =
-    match s
-      case mutableStack(r) -> Cell.get(r)
+    Cell.get(s.rep)
 
   -- MutableCollection.insert: the collection view of `push`. Returns the
   -- membership witness ("was new") — vacuously `true` for a stack/bag
@@ -92,8 +81,7 @@ sort anthill.prelude.MutableStack
   operation clear(s: MutableStack) -> Unit
     effects Modify[s]
   =
-    match s
-      case mutableStack(r) -> Cell.set(r, nil())
+    Cell.set(s.rep, nil())
 
   -- A MutableStack admits Modify (the typing-level token; the runtime
   -- mutation rides Cell's handler via `rep`), and provides both the in-place

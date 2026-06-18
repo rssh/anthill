@@ -4,9 +4,9 @@
 //! `MutableStack` (stdlib/anthill/prelude/mutable_stack.anthill) is a nominal
 //! `mutableStack(rep: Cell[V = List[T]])` wrapper (head of the list = top):
 //! the handle is a Cell, so `Modify[s]` rides the existing Cell arena + Modify
-//! handler. The provision bodies pattern-match the wrapper to bind the inner
-//! cell (the WorkItemStore idiom, WI-219), so the inner `Modify[rep]` is elided
-//! as a local and the declared `Modify[s]` is the honest caller-visible effect.
+//! handler. The provision bodies FIELD-PROJECT the backing cell (`Cell.set(s.rep,
+//! …)`): the declared `Modify[s]` covers the incurred `Modify[s.rep]` (WI-506)
+//! and the desugared `field_access` node round-trips a re-type-check (WI-509).
 //!
 //! These tests pin the full mutable lifecycle under effect tracking, threading
 //! ONE handle across calls so the in-place mutations are observed:

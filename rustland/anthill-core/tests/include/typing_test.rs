@@ -1829,6 +1829,33 @@ fn type_check_stdlib_no_spurious_errors() {
     assert!(errors.is_empty(), "stdlib should produce no type errors, got: {:?}", errors);
 }
 
+// WI-509: a FIELD-PROJECTION op body (`Cell.set(b.cell, x)`) must round-trip a
+// RE-type-check. The typer rewrites `b.cell` to `field_access(b, "cell")` and
+// stamps the field type without re-typing; a later pass (here a second
+// `type_check_sorts` whose `sort_terms` omit `Box`, so `Box.put` falls into the
+// free-op sweep — the same path an incremental load takes) re-visits the stored
+// node. Before the fix it re-typed as the generic `field_access(...) -> Term`
+// (and the `Const(String)` name failed `field: Symbol`), and the WI-506 effect
+// re-key lost the `Modify[b]` head — surfacing spurious errors in unrelated
+// fixtures. It must now re-type clean.
+#[test]
+fn wi509_field_projection_body_roundtrips_retype() {
+    let source = r#"
+sort Box
+  entity box(cell: anthill.prelude.Cell[V = Int64])
+  operation put(b: Box, x: Int64) -> anthill.prelude.Unit effects anthill.prelude.Modify[b] = anthill.prelude.Cell.set(b.cell, x)
+end
+"#;
+    let (mut kb, result) = load_with_result(source);
+    // First pass: type + rewrite `Box.put`'s `b.cell` to `field_access`.
+    let errors1 = type_check_sorts(&mut kb, &result.defined_sorts);
+    assert!(errors1.is_empty(), "first type-check should be clean, got: {:?}", errors1);
+    // Re-type-check with no sort owning `Box.put`: the free-op sweep re-visits
+    // the rewritten body — the WI-509 path. Must stay clean.
+    let errors2 = type_check_sorts(&mut kb, &[]);
+    assert!(errors2.is_empty(), "re-type-check of a field-projection body must be clean, got: {:?}", errors2);
+}
+
 // ══════════════════════════════════════════════════════════════════
 // type_check_sorts tests (operations)
 // ══════════════════════════════════════════════════════════════════

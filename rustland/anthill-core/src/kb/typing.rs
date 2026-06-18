@@ -3699,7 +3699,7 @@ fn build_type(
                 // `var_name` canonicalizes to the aliased receiver (`let y = z ⟹
                 // y.M ≡ z.M`). An unstable value (`let y = f()`) records nothing — it is
                 // its own neutral receiver.
-                match stable_receiver_path(&value_node) {
+                match stable_receiver_path(kb, &value_node) {
                     Some(path) => ext_env.bind_receiver_alias(var_name, path),
                     // A re-bind to an UNSTABLE value must CLEAR any stale alias from an
                     // outer `let` of the same name — else `let y = p; let y = f(); … : y.M`
@@ -4136,6 +4136,49 @@ fn match_named_arg_param<'a>(
 /// (pre-computed by the iterative typer's Build phase) instead of
 /// calling `type_check_node` itself. This is the function the iterative
 /// `Build::Apply` arm calls.
+/// WI-509: the field's actual type for a desugared `field_access(receiver,
+/// "field")` call — the typer's `?x.field` rewrite. `Some(ty)` makes the
+/// rewritten `field_access` node round-trip through the typer (re-type to the
+/// field type, mirroring the DotApply INC-1b synthesis) instead of typing it as
+/// the generic `field_access(...) -> Term` op. `None` ⇒ not a resolvable field
+/// projection (functor isn't `field_access`, not the 2-arg form, a non-literal
+/// field name, an unresolved receiver sort, or no such field) — fall through to
+/// ordinary op typing, the only case a genuine `field_access` op call takes.
+fn field_access_projection_type(
+    kb: &mut KnowledgeBase,
+    fn_sym: Symbol,
+    pos_args: &[Rc<NodeOccurrence>],
+    named_args: &[(Symbol, Rc<NodeOccurrence>)],
+    pos_results: &[Result<TypeResult, TypeError>],
+    span: Option<Span>,
+) -> Option<Value> {
+    let fa_sym = kb.try_resolve_symbol("anthill.reflect.field_access")?;
+    // The desugar emits exactly two positional args and no named args; a call
+    // carrying named args is not the projection form and must not bypass arg
+    // validation here — symmetric with the `stable_receiver_path` Apply arm.
+    if fn_sym != fa_sym || pos_args.len() != 2 || !named_args.is_empty() {
+        return None;
+    }
+    // The field NAME is a String literal (the desugaring's canonical form).
+    let field_name = match pos_args[1].as_expr() {
+        Some(Expr::Const(Literal::String(s))) => s.clone(),
+        _ => return None,
+    };
+    let recv_ty = pos_results.first()?.as_ref().ok().map(|r| r.ty.clone())?;
+    let recv_sort = sort_functor_of_view(kb, &recv_ty)?;
+    // Resolve the field symbol by SHORT name on the receiver sort's constructors
+    // — the same lookup the DotApply INC-1b synthesis uses.
+    let field_sym = kb.field_constructors_of_sort(recv_sort).into_iter().find_map(|ctor| {
+        kb.entity_field_types(ctor).and_then(|fields| {
+            fields.iter()
+                .find(|(f, _)| short_name_of(kb.resolve_sym(*f)) == field_name)
+                .map(|(f, _)| *f)
+        })
+    })?;
+    let ctx = TypeErrorContext::EntityField { entity: recv_sort, field: field_sym };
+    resolve_field_type(kb, &recv_ty, field_sym, &ctx, span).ok().map(|t| t.0)
+}
+
 fn check_apply_iter(
     kb: &mut KnowledgeBase,
     env: &TypingEnv,
@@ -4160,6 +4203,27 @@ fn check_apply_iter(
         return check_constructor_iter(
             kb, env, fn_sym, pos_args, named_args, pos_results, named_results, span, expected, occ,
         );
+    }
+
+    // WI-509: a desugared `field_access(receiver, "field")` (the typer's
+    // `?x.field` rewrite, INC 1b in the DotApply frame) must re-type to the
+    // FIELD's actual type, not the generic `field_access(object, field) -> Term`
+    // op signature. The DotApply synthesis stamps the field type but is never
+    // re-typed at that site; a LATER pass DOES re-visit the stored, rewritten
+    // `field_access` Apply (the explicit stdlib re-type-check in
+    // `type_check_stdlib_no_spurious_errors`, or the free-op sweep over a
+    // non-`sort_terms` op). Typing it as the plain op loses the field type
+    // (`-> Term`) and checks the `Const(String)` name against `field: Symbol`,
+    // so re-typing a field-projection body (`Cell.set(s.rep, …)`) raised
+    // spurious errors. Resolving the field type here makes the rewrite
+    // idempotent (the effect re-key idempotency is handled in
+    // `stable_receiver_path`).
+    if let Some(ty) = field_access_projection_type(kb, fn_sym, pos_args, named_args, pos_results, span) {
+        let effects = pos_results.first()
+            .and_then(|r| r.as_ref().ok())
+            .map(|r| r.effects.clone())
+            .unwrap_or_default();
+        return Ok(TypeResult { ty, env: env.clone(), effects, node: Rc::clone(occ) });
     }
 
     // Path 1: known operation — unify args with params to instantiate type params
@@ -4317,7 +4381,7 @@ fn check_apply_iter(
             } else if let Some((param_sym, _)) = op.params.get(i) {
                 // WI-506: a field-projection argument (`s.rep`) — record param → head
                 // for the effects-only re-key (see `param_to_arg_head`).
-                if let Some(head) = stable_receiver_path(arg_occ).and_then(|p| p.into_iter().next()) {
+                if let Some(head) = stable_receiver_path(kb, arg_occ).and_then(|p| p.into_iter().next()) {
                     param_to_arg_head.insert(*param_sym, head);
                 }
             }
@@ -4355,7 +4419,7 @@ fn check_apply_iter(
                 }
             } else if let Some((param_sym, _)) = &matched {
                 // WI-506: a field-projection named argument — effects-only head re-key.
-                if let Some(head) = stable_receiver_path(arg_occ).and_then(|p| p.into_iter().next()) {
+                if let Some(head) = stable_receiver_path(kb, arg_occ).and_then(|p| p.into_iter().next()) {
                     param_to_arg_head.insert(*param_sym, head);
                 }
             }
@@ -11880,7 +11944,7 @@ fn receiver_path_segs(kb: &KnowledgeBase, receiver: &Value) -> Option<Vec<Symbol
 /// path — a call (`let y = f()`), a literal, a constructor — so an unstable binding mints
 /// its OWN neutral receiver rather than aliasing (the §4.1 stability rule). The occurrence
 /// twin of [`receiver_path_segs`] (which reads a type-level receiver value).
-fn stable_receiver_path(occ: &Rc<NodeOccurrence>) -> Option<Vec<Symbol>> {
+fn stable_receiver_path(kb: &mut KnowledgeBase, occ: &Rc<NodeOccurrence>) -> Option<Vec<Symbol>> {
     match occ.as_expr()? {
         // A value reference is an `Expr::VarRef` (an unqualified let/lambda/param binder
         // read) or a `Ref`/`Ident` (a resolved reference); all denote a stable name.
@@ -11889,8 +11953,29 @@ fn stable_receiver_path(occ: &Rc<NodeOccurrence>) -> Option<Vec<Symbol>> {
         Expr::DotApply { receiver, name, pos_args, named_args }
             if pos_args.is_empty() && named_args.is_empty() =>
         {
-            let mut segs = stable_receiver_path(receiver)?;
-            segs.push(*name);
+            let name = *name;
+            let mut segs = stable_receiver_path(kb, receiver)?;
+            segs.push(name);
+            Some(segs)
+        }
+        // WI-509: the typer's `?x.field` rewrite — `field_access(receiver,
+        // "field")`. The same stable path as the surface `DotApply`: recurse the
+        // receiver and append the field-name segment. Without this, the WI-506
+        // effect re-key (which reads the projection HEAD off a `Cell.set` arg to
+        // map `Modify[c]` → `Modify[arg]`) loses the head once a field-projection
+        // op body is re-typed from its already-rewritten form, surfacing a
+        // spurious undeclared `Modify`.
+        Expr::Apply { functor, pos_args, named_args, .. }
+            if named_args.is_empty()
+                && pos_args.len() == 2
+                && kb.try_resolve_symbol("anthill.reflect.field_access") == Some(*functor) =>
+        {
+            let field_name = match pos_args[1].as_expr() {
+                Some(Expr::Const(Literal::String(s))) => s.clone(),
+                _ => return None,
+            };
+            let mut segs = stable_receiver_path(kb, &pos_args[0])?;
+            segs.push(kb.intern(&field_name));
             Some(segs)
         }
         _ => None,
@@ -19447,7 +19532,7 @@ fn refine_self_receiver_body_type(
     body: &Rc<NodeOccurrence>,
     body_ty: &Value,
 ) -> Option<Value> {
-    let segs = stable_receiver_path(body)?;
+    let segs = stable_receiver_path(kb, body)?;
     let [recv] = segs.as_slice() else { return None };
     let recv = *recv;
     let TypeExtractor::SortRef(carrier) = extract_type(kb, body_ty) else {
