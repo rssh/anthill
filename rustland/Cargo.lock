@@ -79,6 +79,7 @@ dependencies = [
  "anthill-rust-gen",
  "anthill-smt-gen",
  "anthill-stl",
+ "anthill-version",
  "clap",
  "serde_json",
  "smallvec",
@@ -146,9 +147,17 @@ version = "0.1.0"
 dependencies = [
  "anthill-core",
  "anthill-stl",
+ "anthill-version",
  "chrono",
  "smallvec",
  "tempfile",
+]
+
+[[package]]
+name = "anthill-version"
+version = "0.1.0"
+dependencies = [
+ "chrono",
 ]
 
 [[package]]

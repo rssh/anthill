@@ -23,7 +23,11 @@ mod witness;
 // ── CLI types ───────────────────────────────────────────────────────
 
 #[derive(Parser)]
-#[command(name = "anthill", about = "Anthill language toolkit")]
+#[command(
+    name = "anthill",
+    about = "Anthill language toolkit",
+    version = anthill_version::clap_version!()
+)]
 struct Cli {
     #[command(subcommand)]
     command: Command,

@@ -1,0 +1,8 @@
+[package]
+name = "anthill-version"
+version = "0.1.0"
+edition = "2021"
+description = "Shared build-time version stamp (semver + git SHA + build date) for Anthill workspace CLIs"
+
+[build-dependencies]
+chrono = "0.4"

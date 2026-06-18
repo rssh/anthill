@@ -336,9 +336,19 @@ fn run_anthill_bundle(argv: &[String]) -> i32 {
     let mut bundle_argv: Vec<String> = Vec::with_capacity(argv.len());
     let mut explicit_dir: Option<PathBuf> = None;
     let mut agent: String = "user".to_string();
+    // `--version` / `-V` is a global flag (WI-160) — recognised only ahead of
+    // the subcommand (e.g. `anthill-todo --version`, `-d X --version`), i.e.
+    // while no subcommand token has been pushed yet (`bundle_argv` empty).
+    // Once a subcommand is seen, a literal `--version` / `-V` token is data
+    // (e.g. a work-item description word) and passes through to the bundle —
+    // otherwise a multi-word `add … --version …` would be hijacked. An exact
+    // `version` subcommand token is handled after the loop.
+    let mut want_version = false;
     let mut iter = argv.iter();
     while let Some(arg) = iter.next() {
-        if arg == "-d" || arg == "--dir" {
+        if (arg == "--version" || arg == "-V") && bundle_argv.is_empty() {
+            want_version = true;
+        } else if arg == "-d" || arg == "--dir" {
             match iter.next() {
                 Some(dir) => explicit_dir = Some(PathBuf::from(dir)),
                 None => {
@@ -368,6 +378,24 @@ fn run_anthill_bundle(argv: &[String]) -> i32 {
             bundle_argv.push(arg.clone());
         }
     }
+
+    // `--version` / `-V` (any position) and the `version` subcommand print
+    // the build stamp and exit (WI-160). Served host-side like `init` /
+    // `skill` — no KB load or project directory required, so the stamp is
+    // available everywhere (the whole point is identifying a stale binary).
+    if want_version || bundle_argv.first().map(|s| s.as_str()) == Some("version") {
+        println!("{}", anthill_version::version_string!());
+        return 0;
+    }
+
+    // A top-level help request (`--help` / `-h` / `help` in the subcommand
+    // position, matching the bundle's own check) gets the build stamp
+    // appended as a footer once the bundle prints its spec-driven command
+    // list (WI-160).
+    let help_mode = matches!(
+        bundle_argv.first().map(|s| s.as_str()),
+        Some("--help") | Some("-h") | Some("help")
+    );
 
     // `init` runs before any KB exists — it scaffolds the project's
     // anthill-todo/ directory. Reuse the legacy implementation; once
@@ -608,9 +636,17 @@ fn run_anthill_bundle(argv: &[String]) -> i32 {
     // The main-result → exit-code mapping (Int clamp, non-Int, top-level
     // `Raised` Error effect per WI-195, other evaluator errors) is shared with
     // anthill-cli's `run`.
-    runner::exit_code_from_main(interp.call_with_requirements(
+    let code = runner::exit_code_from_main(interp.call_with_requirements(
         "anthill.todo.Main.main",
         &[args_value, store_value, wis_cell_value, agent_value],
         chain_dicts,
-    ))
+    ));
+
+    // The bundle has just printed the spec-driven command list; surface the
+    // build stamp as the `--help` footer (WI-160).
+    if help_mode {
+        println!();
+        println!("{}", anthill_version::version_string!());
+    }
+    code
 }

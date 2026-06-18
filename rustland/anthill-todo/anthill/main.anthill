@@ -78,6 +78,7 @@ namespace anthill.todo
     , spec_tag_change("untag",        "Remove a work item from a named list")
     , spec_named("graph",             "Show dependency graph")
     , spec_named("skill",             "Print Claude Code skill definition")
+    , spec_named("version",           "Print version (semver + git SHA + build date)")
     ]
 
   operation spec_named(name: String, description: String) -> OperationSpec =
