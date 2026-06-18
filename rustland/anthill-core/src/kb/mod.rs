@@ -445,20 +445,27 @@ pub struct KnowledgeBase {
     pub(crate) sort_param_pairs_cache: RefCell<HashMap<Symbol, Rc<Vec<(Symbol, TermId)>>>>,
 
     // WI-226 Cache B — memoized spec-op SLD dispatch results, keyed by
-    // `(SortGoal, scope)`. Saves re-walking `SortProvidesInfo` for
-    // repeated spec-op calls at the same (spec, bindings, scope) — common
-    // in bodies that call `eq(a, b); eq(c, d); …` at the same T.
+    // `(op_short, SortGoal, scope)`. Saves re-walking `SortProvidesInfo`
+    // for repeated spec-op calls at the same (spec, bindings, scope) —
+    // common in bodies that call `eq(a, b); eq(c, d); …` at the same T.
     //
     // The scope is captured as `Vec<RequiresEntry>` in the key, so calls
     // from different enclosing sorts don't collide. Within one body the
-    // scope is fixed and the key effectively reduces to the goal.
+    // scope is fixed and the key effectively reduces to the goal + op.
+    //
+    // WI-507: the op's short-name symbol is part of the key. The cached
+    // `DispatchOutcome` resolves the impl op via `sort_ops_lookup(impl_sort,
+    // op_short)`, so two DIFFERENT carrier-only ops on the SAME carrier
+    // (e.g. `clear(s)` and `insert(s, x)` on a `MutableStack`) produce the
+    // same goal but must NOT share a memo entry — without `op_short` the
+    // first-resolved op poisons the other (`clear` → `MutableStack.insert`).
     //
     // Same lifetime caveat as Cache A: callers asserting new
     // `SortProvidesInfo` post-typing must call
     // `invalidate_resolve_cache`.
     pub(crate) resolve_cache: RefCell<
         HashMap<
-            (crate::kb::typing::SortGoal, Vec<crate::kb::typing::RequiresEntry>),
+            (Symbol, crate::kb::typing::SortGoal, Vec<crate::kb::typing::RequiresEntry>),
             (crate::kb::typing::DispatchOutcome, Option<crate::kb::typing::ResolvedRequiresNode>),
         >,
     >,

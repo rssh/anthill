@@ -21,14 +21,13 @@ use crate::common::{interp_for, register_modify_handler};
 /// sentinel for empty) so the assertions stay simple; `depth` walks via
 /// `iterator` (Iterable.size), exercising the read bridge.
 ///
-/// Two call-form choices sidestep dispatch gaps the WI-364 probe found (each a
-/// filed follow-up; the carrier itself is unaffected): `MutableStack.new()`
-/// (the carrier's own constructor) rather than the abstract
-/// `MutableCollection.new()` (WI-508, nullary result-only carrier), and
-/// `s.clear()` (dot) rather than the bare `clear(s)` (WI-507, carrier-only
-/// mutating spec op eval-arity). The element is concrete
-/// (`MutableStack[T = Int64]`) so the carrier-only `clear`/`size` resolve
-/// `Element`.
+/// One call-form choice sidesteps a remaining dispatch gap the WI-364 probe
+/// found (a filed follow-up; the carrier itself is unaffected):
+/// `MutableStack.new()` (the carrier's own constructor) rather than the
+/// abstract `MutableCollection.new()` (WI-508, nullary result-only carrier).
+/// The bare carrier-only `clear(s)` (WI-507) now dispatches end-to-end, so
+/// `wipe` uses it directly. The element is concrete (`MutableStack[T = Int64]`)
+/// so the carrier-only `clear`/`size` resolve `Element`.
 const SRC: &str = r#"
 namespace test.wi364.stack
   import anthill.prelude.{Int64, Bool, Unit, MutableStack}
@@ -53,7 +52,7 @@ namespace test.wi364.stack
       case none() -> d
 
   operation depth(s: MutableStack[T = Int64]) -> Int64 = size(s)
-  operation wipe(s: MutableStack[T = Int64]) -> Unit effects Modify[s] = s.clear()
+  operation wipe(s: MutableStack[T = Int64]) -> Unit effects Modify[s] = clear(s)
 end
 "#;
 

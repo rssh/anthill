@@ -7556,6 +7556,23 @@ fn match_candidate_against_goal(
     // (1) Candidate side is an impl-param ref → bind it (or check
     // consistency with an earlier binding).
     if let Some(p) = impl_param_ref(kb, candidate_value, impl_params) {
+        // WI-507: a type-param WILDCARD on the per-call side — the enclosing
+        // sort's own param left unpinned because no call arg determined it
+        // (a carrier-only `clear(c)` pins only the carrier `C`, so the spec's
+        // sibling `Element` arrives as `Ref(Sort.Element)`) — matches any
+        // impl-param binding WITHOUT constraining it: the concrete carrier
+        // already pins the shared impl param `T`, and this sibling is whatever
+        // that pinning implies via the provider's `provides` fact. Without this
+        // the sibling clashes with the already-bound `T` (`values_structurally_
+        // equal(Int64, Ref(Sort.Element))`), defeating dispatch-dict resolution
+        // and leaving the body's deferred spec-op call with no `__req_*` to
+        // read at eval. The all-wildcard call already resolves (its carrier is
+        // a wildcard too, so `T` never pins); this extends the same leniency to
+        // the carrier-concrete / sibling-abstract mix — matching the wildcard
+        // tolerance the parametric arm below and `entries_cover` already apply.
+        if is_type_param_value(kb, per_call_value) {
+            return true;
+        }
         if let Some((_, prev)) = impl_subst.iter().find(|(k, _)| *k == p) {
             return values_structurally_equal(kb, *prev, per_call_value);
         }
@@ -10108,7 +10125,11 @@ pub fn dispatch_spec_op_cached(
     // same `Stream[T = Int]` goal must not share a memo entry) and reaches
     // `collect_provides_candidates`' impl-sort filter.
     let goal = sort_goal_from_subst(kb, subst, spec_sort, carrier);
-    let key = (goal.clone(), enclosing_requires.to_vec());
+    // WI-507: `op_short_sym` is part of the key — `resolve_at_goal`'s outcome
+    // resolves the impl op via `sort_ops_lookup(impl_sort, op_short_sym)`, so
+    // two carrier-only ops on the same carrier (`clear(s)` / `insert(s, x)` on
+    // a `MutableStack`) share a goal but must NOT share a memo entry.
+    let key = (op_short_sym, goal.clone(), enclosing_requires.to_vec());
     if let Some(cached) = kb.resolve_cache.borrow().get(&key) {
         return cached.clone();
     }
