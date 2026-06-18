@@ -656,6 +656,22 @@ impl KnowledgeBase {
 
     /// Allocate a term (hash-consed, refcounted).
     pub fn alloc(&mut self, term: Term) -> TermId {
+        // WI-511: a nullary application of a registered constructor is stored in
+        // its bare `Ref` form, so a fact written as `Fn{c}` and a rule pattern
+        // spelled `Ref(c)` share ONE TermId. This ELIMINATES the dual
+        // representation that WI-436 only bridged at the view layer
+        // (`functor_view_head`): with a single storage form, raw `Term::Fn`
+        // readers and `head()`-routed readers agree without a canonicalizer.
+        // Gated on `is_constructor_symbol` (kind-isolated, same as the bridge):
+        // ops-as-values are `Value::OpRef`, never `Term::Ref`, and sorts/params
+        // aren't constructors, so the WI-391 `Ref`=wildcard / `Fn`=concrete
+        // TYPE-dispatch distinction is untouched.
+        if let Term::Fn { functor, pos_args, named_args } = &term {
+            if pos_args.is_empty() && named_args.is_empty() && self.is_constructor_symbol(*functor) {
+                let f = *functor;
+                return self.terms.alloc(Term::Ref(f));
+            }
+        }
         self.terms.alloc(term)
     }
 
@@ -1475,8 +1491,23 @@ impl KnowledgeBase {
             .or_default()
             .push(entity);
         self.entity_parent.insert(entity, parent);
-        if let Term::Fn { functor, .. } = *self.terms.get(entity) {
-            self.constructor_symbols.insert(functor);
+        // WI-511: an entity identity may be built as `Fn{c}` (before `c` is a
+        // known constructor) OR as the canonical `Ref(c)` (alloc canonicalizes
+        // once `c` is registered). Extract the functor from either carrier and
+        // dual-key the canonical `Ref(c)` form, so an entity *value* that
+        // arrives as `Ref(c)` (post-flip alloc) resolves to the same parent via
+        // `is_entity_of` / `entity_parent_sort` as the `Fn{c}` identity does.
+        let functor = match *self.terms.get(entity) {
+            Term::Fn { functor, .. } => Some(functor),
+            Term::Ref(s) => Some(s),
+            _ => None,
+        };
+        if let Some(f) = functor {
+            self.constructor_symbols.insert(f);
+            let ref_tid = self.terms.alloc(Term::Ref(f));
+            if ref_tid != entity {
+                self.entity_parent.entry(ref_tid).or_insert(parent);
+            }
         }
     }
 
@@ -1497,10 +1528,14 @@ impl KnowledgeBase {
     /// Searches entity_parent for any entity whose functor matches.
     pub fn constructor_parent_sort(&self, functor: Symbol) -> Option<TermId> {
         for (&entity_tid, &parent_tid) in &self.entity_parent {
-            if let Term::Fn { functor: f, .. } = *self.terms.get(entity_tid) {
-                if f == functor {
-                    return Some(parent_tid);
-                }
+            // WI-511: an entity identity is `Fn{c}` or the canonical `Ref(c)`.
+            let f = match *self.terms.get(entity_tid) {
+                Term::Fn { functor: f, .. } => Some(f),
+                Term::Ref(s) => Some(s),
+                _ => None,
+            };
+            if f == Some(functor) {
+                return Some(parent_tid);
             }
         }
         None
@@ -2792,9 +2827,11 @@ impl KnowledgeBase {
     // ── Helpers ─────────────────────────────────────────────────
 
     /// Convenience: allocate a nullary functor term (name with no args).
+    /// WI-511: routes through [`Self::alloc`], so a constructor symbol
+    /// canonicalizes to `Ref(c)` (a sort / non-constructor name stays `Fn`).
     pub fn make_name_term(&mut self, name: &str) -> TermId {
         let sym = self.symbols.intern(name);
-        self.terms.alloc(Term::Fn {
+        self.alloc(Term::Fn {
             functor: sym,
             pos_args: SmallVec::new(),
             named_args: SmallVec::new(),
@@ -2871,8 +2908,10 @@ impl KnowledgeBase {
     }
 
     /// Allocate a nullary functor term from an already-interned symbol.
+    /// WI-511: routes through [`Self::alloc`], so a constructor symbol
+    /// canonicalizes to `Ref(c)` (a sort / non-constructor name stays `Fn`).
     pub fn make_name_term_from_sym(&mut self, sym: Symbol) -> TermId {
-        self.terms.alloc(Term::Fn {
+        self.alloc(Term::Fn {
             functor: sym,
             pos_args: SmallVec::new(),
             named_args: SmallVec::new(),

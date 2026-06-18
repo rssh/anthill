@@ -2603,6 +2603,8 @@ fn collect_positional_arg_value_pats(kb: &KnowledgeBase, args_t: TermId) -> Opti
         let name_t = get_named_arg(kb, &aargs, "name")?;
         let name_functor = match kb.get_term(name_t) {
             Term::Fn { functor, .. } => *functor,
+            // WI-511: the nullary `none()` constructor canonicalizes to `Ref(none)`.
+            Term::Ref(s) => *s,
             _ => return None,
         };
         if short_name_of(kb.resolve_sym(name_functor)) != "none" {
@@ -11792,6 +11794,10 @@ pub(crate) fn effects_rows_to_flat_list(kb: &KnowledgeBase, ty: TermId) -> Vec<T
                     }
                 }
             }
+            // WI-511: a 0-ary effect constructor (`empty_row`) is stored as the
+            // canonical `Ref` form after the alloc flip; the closed empty row
+            // carries no atoms — same as the `Fn{empty_row}` arm above.
+            Term::Ref(s) if kb.resolve_sym(*s) == "empty_row" => {}
             // Term::Ref / Const / Ident / Bottom inside an EffectExpression
             // are ill-typed — surface in dev, ignore in release.
             _ => {

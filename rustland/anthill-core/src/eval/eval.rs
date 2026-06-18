@@ -357,12 +357,9 @@ impl Interpreter {
         param: Rc<NodeOccurrence>,
         body: Rc<NodeOccurrence>,
     ) -> Result<StepOutcome, EvalError> {
-        // WI-318: `param` is a Pattern-kind Rc<NodeOccurrence>. The
-        // closure still stores it as a TermId (`Closure.param_pattern`)
-        // for `match_pattern` to consume — bridge via `pattern_to_term`
-        // for now. A follow-up should make `match_pattern` dispatch on
-        // the Pattern enum directly.
-        let param: TermId = crate::kb::node_occurrence::pattern_to_term(&mut self.kb, &param);
+        // WI-511: `param` is a Pattern-kind Rc<NodeOccurrence>, stored
+        // directly on the closure and read by `match_pattern` on the Pattern
+        // enum — no `pattern_to_term` bridge.
         // Any pattern is legal as a lambda param; match_pattern unpacks it
         // at call time. `lambda (a, b) -> body` is a tuple pattern against
         // a single tuple arg; `lambda _` ignores the arg; `lambda x` is
@@ -661,13 +658,11 @@ impl Interpreter {
         value: &Rc<NodeOccurrence>,
         body: &Rc<NodeOccurrence>,
     ) -> Result<StepOutcome, EvalError> {
-        // WI-318: pattern is a Pattern-kind occurrence. The LetBind
-        // AwaitState still stores it as a TermId for `match_pattern` —
-        // bridge via `pattern_to_term`.
-        let pattern_tid = crate::kb::node_occurrence::pattern_to_term(&mut self.kb, &pattern);
+        // WI-511: pattern is a Pattern-kind occurrence, stored directly on the
+        // LetBind AwaitState and read by `match_pattern` — no bridge.
         self.suspend_and_push(
             AwaitState::LetBind {
-                pattern: pattern_tid,
+                pattern,
                 body: body.clone(),
             },
             value.clone(),
@@ -1369,9 +1364,9 @@ impl Interpreter {
                 c.requirements.iter().cloned().collect();
             let ta: FrameTypeArgs =
                 c.type_args.iter().cloned().collect();
-            (c.param_pattern, c.body.clone(), reqs, ta)
+            (c.param_pattern.clone(), c.body.clone(), reqs, ta)
         });
-        let bindings = match_pattern(self, param_pattern, &arg).ok_or_else(|| {
+        let bindings = match_pattern(self, &param_pattern, &arg).ok_or_else(|| {
             EvalError::MatchFailed { scrutinee: scrutinee_diag(&self.kb, &arg) }
         })?;
         let mut locals: SmallVec<[(Symbol, Value); 4]> = self.closures.clone_env(&handle);
@@ -1426,7 +1421,7 @@ impl Interpreter {
                 AwaitState::LetBind { pattern, body } => {
                     // Hoist the pattern-match result out of the borrow so we
                     // don't hold a `&self` while we mutate `top.locals`.
-                    let bindings = match_pattern(self, pattern, &v).ok_or_else(|| {
+                    let bindings = match_pattern(self, &pattern, &v).ok_or_else(|| {
                         EvalError::MatchFailed { scrutinee: scrutinee_diag(&self.kb, &v) }
                     })?;
                     let top = self.stack.top_mut().unwrap();
@@ -1440,21 +1435,16 @@ impl Interpreter {
                     let scrutinee_functor = value_functor(&self.kb, &v);
                     let mut picked: Option<(Rc<NodeOccurrence>, super::pattern::Bindings)> = None;
                     for branch in &branches {
-                        // WI-318: branch.pattern is a Pattern-kind
-                        // occurrence; bridge to TermId for the existing
-                        // term-based `match_pattern` / `constructor_
-                        // pattern_name` helpers.
-                        let pat_tid = crate::kb::node_occurrence::pattern_to_term(
-                            &mut self.kb,
-                            &branch.pattern,
-                        );
+                        // WI-511: branch.pattern is a Pattern-kind occurrence,
+                        // read directly by `match_pattern` / `constructor_
+                        // pattern_name` — no `pattern_to_term` bridge.
                         // Cheap pre-filter: constructor-pattern functor
                         // mismatch can skip the full match attempt.
                         // `functor_matches` collapses short vs. qualified
                         // — `wis(_, _)` patterns compare equal to host-
                         // built `…FileBasedWorkitemStore.wis` values.
                         if let (Some(pat_name), Some(scr_name)) =
-                            (constructor_pattern_name(self, pat_tid), scrutinee_functor)
+                            (constructor_pattern_name(&branch.pattern), scrutinee_functor)
                         {
                             if !super::pattern::functor_matches(
                                 &self.kb, pat_name, scr_name,
@@ -1462,7 +1452,7 @@ impl Interpreter {
                                 continue;
                             }
                         }
-                        if let Some(bindings) = match_pattern(self, pat_tid, &v) {
+                        if let Some(bindings) = match_pattern(self, &branch.pattern, &v) {
                             picked = Some((branch.body.clone(), bindings));
                             break;
                         }

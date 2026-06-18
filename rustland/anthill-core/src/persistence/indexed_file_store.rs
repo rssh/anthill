@@ -158,10 +158,12 @@ impl Store for IndexedFileStore {
         // Slow path: walk rules_by_functor (already retract-filtered),
         // pattern-match each candidate. Multi-store disambiguation is
         // out of v0.1 scope.
-        let Term::Fn { functor, .. } = kb.get_term(pattern) else {
-            return Ok(Vec::new());
+        // WI-511: a nullary-constructor query pattern is the canonical `Ref(c)`.
+        let functor = match kb.get_term(pattern) {
+            Term::Fn { functor, .. } => *functor,
+            Term::Ref(s) => *s,
+            _ => return Ok(Vec::new()),
         };
-        let functor = *functor;
         Ok(kb.rules_by_functor(functor)
             .into_iter()
             .map(|rid| kb.rule_head(rid))

@@ -501,6 +501,14 @@ impl<'a, V: TermSource + ?Sized> TermPrinter<'a, V> {
                     items.push(head);
                     cur = tail;
                 }
+                // WI-511: the canonical nullary `nil` terminator is the bare
+                // `Ref(nil)` form (the alloc flip stores 0-ary constructors as
+                // `Ref`), so an empty / terminated spine ends here.
+                Term::Ref(s)
+                    if self.view.sym_name(*s).rsplit('.').next().unwrap_or("") == "nil" =>
+                {
+                    return Some(items);
+                }
                 _ => return None,
             }
         }
@@ -596,7 +604,14 @@ impl<'a, V: TermSource + ?Sized> TermPrinter<'a, V> {
                 }
             }
             Term::Ref(sym) => {
-                buf.push_str(self.view.sym_name(*sym));
+                // WI-511: a nullary TypeExtractor (only `Nothing`) is the
+                // canonical `Ref` form; render it in type surface syntax,
+                // mirroring the `Fn` arm's `is_type_functor` route.
+                if self.is_type_functor(*sym) {
+                    self.write_type_term(id, buf);
+                } else {
+                    buf.push_str(self.view.sym_name(*sym));
+                }
             }
             Term::Ident(sym) => {
                 buf.push_str(self.view.sym_name(*sym));
@@ -659,6 +674,14 @@ impl<'a, V: TermSource + ?Sized> TermPrinter<'a, V> {
     /// data share the `Fn{S, named}` carrier). `Ref(S)` is the bare sort `S`.
     fn write_type_term(&self, id: TermId, buf: &mut String) {
         match self.view.term(id) {
+            // WI-511: the nullary `Nothing` type extractor is the canonical
+            // `Ref(Nothing)`; render it in surface syntax (mirrors the `Fn` arm
+            // below), not as the bare constructor name.
+            Term::Ref(s) | Term::Ident(s)
+                if self.view.qualified_name(*s) == "anthill.prelude.TypeExtractor.Nothing" =>
+            {
+                buf.push_str("nothing")
+            }
             Term::Ref(s) | Term::Ident(s) => buf.push_str(self.view.sym_name(*s)),
             Term::Fn { functor, pos_args, named_args } => {
                 match self.view.qualified_name(*functor) {

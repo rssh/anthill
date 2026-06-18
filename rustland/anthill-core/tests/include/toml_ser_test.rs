@@ -405,6 +405,41 @@ fn serialize_simple_facts_json() {
     assert!(json_str.contains("\"meta\""), "expected 'meta' in: {json_str}");
 }
 
+#[test]
+fn serialize_json_list_field_has_no_trailing_nil() {
+    // WI-511: a nullary `nil` list terminator is the canonical `Ref(nil)`.
+    // `cons_to_json_array` must recognize it as the spine end, not append the
+    // bare `nil` cell as a stray final array element (which it did when it
+    // only matched the `Fn{nil}` form).
+    let mut kb = build_test_kb();
+    let domain = kb.make_name_term("test_domain");
+
+    let toml_src = r#"
+[meta]
+entity = "test.Task"
+
+[data]
+id = "T-001"
+description = "Test task"
+status = "Open"
+tags = ["rust", "core"]
+"#;
+    term_ser::load_toml(&mut kb, toml_src, domain).expect("load_toml");
+    let task_sym = kb.try_resolve_symbol("test.Task").expect("Task resolved");
+    let facts = kb.rules_by_functor(task_sym);
+    assert_eq!(facts.len(), 1);
+
+    let json_str = term_ser::serialize_json(&kb, "test.Task", &facts)
+        .expect("serialize_json should succeed");
+    // The fixture's strings ("T-001", "Test task", "Open", "rust", "core")
+    // contain no "nil"; a stray terminator element would surface as one.
+    assert!(json_str.contains("rust") && json_str.contains("core"),
+        "expected the list elements in: {json_str}");
+    assert!(!json_str.contains("nil"),
+        "tags array must end at the `nil` terminator, not append it as an \
+         element; got: {json_str}");
+}
+
 // ── Round-trip tests ────────────────────────────────────────────
 
 #[test]

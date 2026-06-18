@@ -893,6 +893,8 @@ fn cons_to_json_array(
                     None
                 }
             }
+            // WI-511: the canonical nullary `nil` terminator is `Ref(nil)`.
+            Term::Ref(s) if kb.resolve_sym(*s) == "nil" => break,
             _ => None,
         };
         match cell {

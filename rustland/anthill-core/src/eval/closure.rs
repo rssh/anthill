@@ -17,7 +17,6 @@ use smallvec::SmallVec;
 
 use crate::intern::Symbol;
 use crate::kb::node_occurrence::NodeOccurrence;
-use crate::kb::term::TermId;
 
 use super::value::Value;
 
@@ -31,8 +30,9 @@ pub struct Closure {
     /// The full param pattern (var / tuple / constructor / literal / wildcard).
     /// Matched against the arg at call time via `pattern::match_pattern`, so
     /// `lambda (a, b) -> ...` works naturally — the caller passes a tuple
-    /// and the closure destructures it on entry.
-    pub param_pattern: TermId,
+    /// and the closure destructures it on entry. WI-511: a `NodeKind::Pattern`
+    /// occurrence read directly by `match_pattern` (no `pattern_to_term` bridge).
+    pub param_pattern: Rc<NodeOccurrence>,
     pub body: Rc<NodeOccurrence>,
     pub env: SmallVec<[(Symbol, Value); 4]>,
     /// WI-223: requirement scope to install in `frame.requirements` when
@@ -233,11 +233,11 @@ mod tests {
     use super::*;
 
     fn dummy_closure() -> Closure {
-        use crate::kb::node_occurrence::Expr;
+        use crate::kb::node_occurrence::{Expr, Pattern};
         use crate::span::{SourceId, SourceSpan};
         let span = SourceSpan::new(SourceId::from_raw(0), 0, 0);
         Closure {
-            param_pattern: TermId::from_raw(0),
+            param_pattern: NodeOccurrence::new_pattern(Pattern::Wildcard, span, None),
             body: NodeOccurrence::new_expr(Expr::Bottom, span, None),
             env: SmallVec::new(),
             requirements: SmallVec::new(),
@@ -277,18 +277,19 @@ mod tests {
 
     #[test]
     fn with_reads_closure() {
-        use crate::kb::node_occurrence::Expr;
+        use crate::kb::node_occurrence::{Expr, Pattern};
         use crate::span::{SourceId, SourceSpan};
         let arena = ClosureArenaRef::new();
         let span = SourceSpan::new(SourceId::from_raw(0), 0, 0);
+        let param = NodeOccurrence::new_pattern(Pattern::Wildcard, span, None);
         let h = arena.alloc(Closure {
-            param_pattern: TermId::from_raw(7),
+            param_pattern: Rc::clone(&param),
             body: NodeOccurrence::new_expr(Expr::Bottom, span, None),
             env: SmallVec::new(),
             requirements: SmallVec::new(),
             type_args: SmallVec::new(),
         });
-        let pat = arena.with(&h, |c| c.param_pattern);
-        assert_eq!(pat, TermId::from_raw(7));
+        let pat = arena.with(&h, |c| c.param_pattern.clone());
+        assert!(Rc::ptr_eq(&pat, &param));
     }
 }

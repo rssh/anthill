@@ -259,7 +259,9 @@ impl KnowledgeBase {
                 } else {
                     named_args.sort_by_key(|(s, _)| s.index());
                 }
-                Ok(self.terms.alloc(Term::Fn {
+                // WI-511: route through `alloc` so a 0-ary constructor entity
+                // lowers to the canonical `Ref(c)`, not a divergent `Fn{c}`.
+                Ok(self.alloc(Term::Fn {
                     functor: *functor,
                     pos_args,
                     named_args,

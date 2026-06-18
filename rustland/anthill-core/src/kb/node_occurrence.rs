@@ -2655,21 +2655,24 @@ pub fn term_to_param_occurrence(
     tid: TermId,
     span: SourceSpan,
 ) -> Rc<NodeOccurrence> {
+    use smallvec::SmallVec;
     let term = kb.get_term(tid).clone();
-    let Term::Fn { functor, named_args, .. } = term else {
+    // WI-511: a 0-ary pattern reflect constructor (only `wildcard`) is stored
+    // in the canonical `Ref(c)` form after the alloc flip, so treat `Ref(c)` as
+    // the nullary application `Fn{c,[],[]}` and dispatch on the functor exactly
+    // like the `Fn` form. A `Ref` that is NOT a reflect pattern constructor
+    // falls to the `_ =>` arm below (`term_pattern_as_expr_occ` → `Expr::Ref`),
+    // identical to the old Expr-leaf behaviour.
+    let (functor, named_args): (Symbol, SmallVec<[(Symbol, TermId); 2]>) = match &term {
+        Term::Fn { functor, named_args, .. } => (*functor, named_args.clone()),
+        Term::Ref(s) => (*s, SmallVec::new()),
         // Logical Var in pattern position → reflection meta-var.
-        if let Term::Var(v) = kb.get_term(tid) {
-            return NodeOccurrence::new_expr(Expr::Var(*v), span, None);
-        }
-        // Other non-Fn terms (Const / Ref / Ident / Bottom) — surface
+        Term::Var(v) => return NodeOccurrence::new_expr(Expr::Var(*v), span, None),
+        // Other non-Fn/Ref terms (Const / Ident / Bottom) — surface
         // as an Expr leaf so the walkers stay uniform.
-        let expr = match kb.get_term(tid) {
-            Term::Const(lit) => Expr::Const(lit.clone()),
-            Term::Ref(s) => Expr::Ref(*s),
-            Term::Ident(s) => Expr::Ident(*s),
-            _ => Expr::Bottom,
-        };
-        return NodeOccurrence::new_expr(expr, span, None);
+        Term::Const(lit) => return NodeOccurrence::new_expr(Expr::Const(lit.clone()), span, None),
+        Term::Ident(s) => return NodeOccurrence::new_expr(Expr::Ident(*s), span, None),
+        _ => return NodeOccurrence::new_expr(Expr::Bottom, span, None),
     };
     // WI-318: dispatch on QUALIFIED name (not short name) to avoid
     // collisions with user-defined entities whose short name happens to
@@ -2879,6 +2882,12 @@ fn term_pattern_child_as_occ(
         }
         Term::Var(v) => NodeOccurrence::new_expr(Expr::Var(*v), span, None),
         Term::Const(lit) => NodeOccurrence::new_expr(Expr::Const(lit.clone()), span, None),
+        // WI-511: the nullary `wildcard` pattern is the canonical `Ref(wildcard)`;
+        // route it through `term_to_param_occurrence` so it surfaces as
+        // Pattern::Wildcard, not an `Expr::Ref` data leaf.
+        Term::Ref(s) if kb.resolve_sym(*s) == "wildcard" => {
+            term_to_param_occurrence(kb, tid, span)
+        }
         Term::Ref(s) => NodeOccurrence::new_expr(Expr::Ref(*s), span, None),
         Term::Ident(s) => NodeOccurrence::new_expr(Expr::Ident(*s), span, None),
         _ => NodeOccurrence::new_expr(Expr::Bottom, span, None),

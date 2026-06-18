@@ -132,7 +132,9 @@ end
     let tail_tid = get_named_arg(kb, &reqs_named, "tail").expect("cons tail");
     let tail_functor = match kb.get_term(tail_tid) {
         Term::Fn { functor, .. } => *functor,
-        other => panic!("tail must be Fn (nil); got {other:?}"),
+        // WI-511: the empty list is canonicalized to the bare `Ref(nil)` form.
+        Term::Ref(s) => *s,
+        other => panic!("tail must be Fn (nil) or Ref (nil); got {other:?}"),
     };
     assert_eq!(tail_functor, nil_sym, "single-entry list's tail must be nil");
 }
@@ -288,7 +290,9 @@ fn ground_dep_emits_construct_requirement() {
         get_named_arg(&kb, &named_args, "requirements").expect("requirements arg");
     let sub_functor = match kb.get_term(sub_reqs_tid) {
         Term::Fn { functor, .. } => *functor,
-        other => panic!("requirements must be Fn (list); got {other:?}"),
+        // WI-511: the empty list is canonicalized to the bare `Ref(nil)` form.
+        Term::Ref(s) => *s,
+        other => panic!("requirements must be Fn (list) or Ref (nil); got {other:?}"),
     };
     assert_eq!(
         sub_functor, syms.nil,

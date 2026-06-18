@@ -8312,6 +8312,9 @@ impl<'a> Loader<'a> {
                 // Build FieldInfo list for entity fields
                 let ctor_functor = match self.kb.get_term(ctor_term) {
                     Term::Fn { functor, .. } => *functor,
+                    // WI-511: a registered nullary constructor identity is the
+                    // canonical `Ref(c)`.
+                    Term::Ref(s) => *s,
                     _ => self.kb.intern("_unknown"),
                 };
                 let ctor_qualified = match self.kb.symbols.get(ctor_functor) {

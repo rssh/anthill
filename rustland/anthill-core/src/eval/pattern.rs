@@ -4,119 +4,81 @@
 //! matches both `Value::Entity { functor: F, .. }` and `Value::Term(tid)`
 //! where `kb.get_term(tid) = Term::Fn { functor: F, .. }`. Consumers don't
 //! care which lineage produced the scrutinee.
+//!
+//! WI-511: the pattern side reads the [`Pattern`] enum (a `NodeKind::Pattern`
+//! occurrence) DIRECTLY — it is never serialized to a reflect `Term::Fn`
+//! first — so the matcher is independent of the `Ref(c)` vs `Fn{c}` storage
+//! form for nullary constructors (notably `wildcard`). The scrutinee side
+//! still bridges `Value::Entity` and `Value::Term` (see `constructor_sub_values`).
+
+use std::rc::Rc;
 
 use smallvec::SmallVec;
 
 use crate::intern::Symbol;
-use crate::kb::term::{Literal, Term, TermId};
-use crate::kb::typing::list_to_vec;
+use crate::kb::node_occurrence::{NodeOccurrence, Pattern};
+use crate::kb::term::{Literal, Term};
 
 use super::value::Value;
 use super::Interpreter;
 
 pub type Bindings = SmallVec<[(Symbol, Value); 4]>;
 
-/// Try to match `scrutinee` against the pattern term. Returns the bindings
-/// produced by the pattern's variables (empty for wildcard / literal).
-/// Returns `None` if the pattern doesn't match.
+/// Try to match `scrutinee` against the pattern occurrence. Returns the
+/// bindings produced by the pattern's variables (empty for wildcard /
+/// literal). Returns `None` if the pattern doesn't match.
 pub fn match_pattern(
     interp: &Interpreter,
-    pattern_tid: TermId,
+    pattern: &Rc<NodeOccurrence>,
     scrutinee: &Value,
 ) -> Option<Bindings> {
-    let kb = &interp.kb;
-    let term = kb.get_term(pattern_tid).clone();
-
-    match &term {
-        Term::Fn { functor, named_args, .. } => {
-            let f = Some(*functor);
-            if f == interp.reflect.var_pattern {
-                let sym = var_pattern_name(interp, named_args)?;
-                let mut b = SmallVec::new();
-                b.push((sym, scrutinee.clone()));
-                Some(b)
-            } else if f == interp.reflect.wildcard {
+    // WI-511: reflection meta-var params (`lambda(param: ?x, …)` built as
+    // reflective data) surface as Expr-kind occurrences, not Pattern. They
+    // never name a bindable runtime pattern, so they don't match — mirroring
+    // the old term path, where an `Expr::Var` serialized to a `Term::Var`
+    // that the `Term::Fn` matcher rejected.
+    match pattern.as_pattern()? {
+        Pattern::Var { name, .. } => {
+            let mut b = SmallVec::new();
+            b.push((*name, scrutinee.clone()));
+            Some(b)
+        }
+        Pattern::Wildcard => Some(SmallVec::new()),
+        Pattern::Literal { value } => {
+            if literal_matches(value, scrutinee) {
                 Some(SmallVec::new())
-            } else if f == interp.reflect.literal_pattern {
-                let value_tid = lookup(named_args, interp.fields.value)?;
-                if literal_matches(kb, value_tid, scrutinee) {
-                    Some(SmallVec::new())
-                } else {
-                    None
-                }
-            } else if f == interp.reflect.constructor_pattern {
-                match_constructor_pattern(interp, named_args, scrutinee)
-            } else if f == interp.reflect.tuple_pattern {
-                match_tuple_pattern(interp, named_args, scrutinee)
             } else {
                 None
             }
         }
-        _ => None,
+        Pattern::Constructor { name, pos_args, named_args } => {
+            match_constructor_pattern(interp, *name, pos_args, named_args, scrutinee)
+        }
+        Pattern::Tuple { positional, .. } => {
+            match_tuple_pattern(interp, positional, scrutinee)
+        }
     }
 }
 
-/// Extract the bound-variable `Symbol` from a `var_pattern` term. Used by
-/// both the var_pattern arm of [`match_pattern`] and [`Interpreter::reduce_lambda`]
-/// (lambdas accept a restricted var_pattern param). Returns `None` when the
-/// term isn't a var_pattern or lacks a `name` field.
-pub fn extract_var_pattern_sym(interp: &Interpreter, pat_tid: TermId) -> Option<Symbol> {
-    let kb = &interp.kb;
-    match kb.get_term(pat_tid) {
-        Term::Fn { functor, named_args, .. } if Some(*functor) == interp.reflect.var_pattern => {
-            var_pattern_name(interp, named_args)
-        }
-        _ => None,
-    }
-}
-
-/// Peek at a constructor pattern's `name` field without allocating a full
-/// match attempt. Returns `None` if `pat_tid` isn't a constructor pattern.
-pub fn constructor_pattern_name(
-    interp: &Interpreter,
-    pat_tid: TermId,
-) -> Option<Symbol> {
-    let kb = &interp.kb;
-    match kb.get_term(pat_tid) {
-        Term::Fn { functor, named_args, .. }
-            if Some(*functor) == interp.reflect.constructor_pattern =>
-        {
-            let name_tid = lookup(named_args, interp.fields.name)?;
-            term_as_symbol(kb, name_tid)
-        }
+/// Peek at a constructor pattern's name without a full match attempt. Returns
+/// `None` if the occurrence isn't a constructor pattern.
+pub fn constructor_pattern_name(pattern: &Rc<NodeOccurrence>) -> Option<Symbol> {
+    match pattern.as_pattern()? {
+        Pattern::Constructor { name, .. } => Some(*name),
         _ => None,
     }
 }
 
 // ── internals ───────────────────────────────────────────────────
 
-fn var_pattern_name(
-    interp: &Interpreter,
-    named_args: &smallvec::SmallVec<[(Symbol, TermId); 2]>,
-) -> Option<Symbol> {
-    let name_tid = lookup(named_args, interp.fields.name)?;
-    term_as_symbol(&interp.kb, name_tid)
-}
-
 fn match_constructor_pattern(
     interp: &Interpreter,
-    named_args: &smallvec::SmallVec<[(Symbol, TermId); 2]>,
+    ctor_sym: Symbol,
+    pos_args: &[Rc<NodeOccurrence>],
+    named_args: &[(Symbol, Rc<NodeOccurrence>)],
     scrutinee: &Value,
 ) -> Option<Bindings> {
     let kb = &interp.kb;
-    let name_tid = lookup(named_args, interp.fields.name)?;
-    let ctor_sym = term_as_symbol(kb, name_tid)?;
-    let args_tid = lookup(named_args, interp.fields.args)?;
-    let sub_patterns = list_to_vec(kb, args_tid);
-    // WI-445: named sub-patterns (`Box(v: some(x))`) ride a `named:
-    // List[NamedPattern]` field (absent for the all-positional form).
-    let named_subs: Vec<(Symbol, TermId)> = lookup(named_args, interp.fields.named)
-        .map(|t| list_to_vec(kb, t))
-        .unwrap_or_default()
-        .iter()
-        .filter_map(|&np| crate::kb::node_occurrence::read_named_pattern_term(kb, np))
-        .collect();
-
     // Pattern-match uniformity: present positional-then-named for both
     // lineage forms so the positional sub-pattern loop is agnostic. The
     // scrutinee's sub-values are in declaration order (positional fields then
@@ -127,24 +89,25 @@ fn match_constructor_pattern(
     // would happily bind the first N of an N+1 value and discard the rest.
     let sub_values = constructor_sub_values(kb, ctor_sym, scrutinee)?;
     let n = sub_values.len();
-    if sub_patterns.len() + named_subs.len() != n {
+    if pos_args.len() + named_args.len() != n {
         return None;
     }
 
     let mut covered = vec![false; n];
     let mut bindings = SmallVec::new();
     // Positional sub-patterns fill the leading field indices.
-    for (i, sub_pat) in sub_patterns.iter().enumerate() {
+    for (i, sub_pat) in pos_args.iter().enumerate() {
         covered[i] = true;
-        let mut sub_b = match_pattern(interp, *sub_pat, &sub_values[i])?;
+        let mut sub_b = match_pattern(interp, sub_pat, &sub_values[i])?;
         bindings.append(&mut sub_b);
     }
-    // Named sub-patterns resolve to their field's declaration index. A field
-    // the constructor doesn't declare, an out-of-range index, or a double
-    // cover is no match (mirrors the arity-strict positional behaviour).
+    // WI-445: named sub-patterns (`Box(v: some(x))`) resolve to their field's
+    // declaration index. A field the constructor doesn't declare, an
+    // out-of-range index, or a double cover is no match (mirrors the
+    // arity-strict positional behaviour).
     let field_order = kb.entity_field_names(ctor_sym);
-    for (field_sym, sub_pat) in named_subs {
-        let idx = field_order.and_then(|order| order.iter().position(|f| *f == field_sym))?;
+    for (field_sym, sub_pat) in named_args {
+        let idx = field_order.and_then(|order| order.iter().position(|f| *f == *field_sym))?;
         if idx >= n || covered[idx] {
             return None;
         }
@@ -157,21 +120,18 @@ fn match_constructor_pattern(
 
 fn match_tuple_pattern(
     interp: &Interpreter,
-    named_args: &smallvec::SmallVec<[(Symbol, TermId); 2]>,
+    positional: &[Rc<NodeOccurrence>],
     scrutinee: &Value,
 ) -> Option<Bindings> {
-    let kb = &interp.kb;
-    let elems_tid = lookup(named_args, interp.fields.elements)?;
-    let sub_patterns = list_to_vec(kb, elems_tid);
     let pos = match scrutinee {
         Value::Tuple { pos, .. } => pos,
         _ => return None,
     };
-    if pos.len() != sub_patterns.len() { return None; }
+    if pos.len() != positional.len() { return None; }
 
     let mut bindings = SmallVec::new();
-    for (sub_pat, sub_val) in sub_patterns.iter().zip(pos.iter()) {
-        let mut sub_b = match_pattern(interp, *sub_pat, sub_val)?;
+    for (sub_pat, sub_val) in positional.iter().zip(pos.iter()) {
+        let mut sub_b = match_pattern(interp, sub_pat, sub_val)?;
         bindings.append(&mut sub_b);
     }
     Some(bindings)
@@ -199,12 +159,11 @@ fn constructor_sub_values(
                 all.extend(named_args.iter().map(|(_, t)| Value::Term(*t)));
                 Some(all)
             }
-            // Term::Fn with no args round-trips through the printer as a
-            // bare identifier (the printer omits parens for 0-arg shapes),
-            // and the parser then loads it back as Term::Ref / Term::Ident.
-            // Accept those as a 0-arg constructor so a `case nil()` arm
-            // matches both `cons("x", nil)` (after reload) and the
-            // original Fn(nil, []) shape.
+            // A 0-arg constructor stored as `Term::Ref` (WI-436/WI-511: the
+            // canonical nullary-constructor form) or reloaded as
+            // `Term::Ref`/`Term::Ident` (the printer renders a 0-arg shape as a
+            // bare identifier). Accept those so a `case nil()` arm matches both
+            // `cons("x", nil)` and the bare `nil`.
             Term::Ref(sym) | Term::Ident(sym) => {
                 if !functor_matches(kb, expected, *sym) { return None; }
                 Some(Vec::new())
@@ -232,26 +191,12 @@ pub(crate) fn functor_matches(
     !pattern_short.is_empty() && pattern_short == scrut_short
 }
 
-fn literal_matches(kb: &crate::kb::KnowledgeBase, lit_tid: TermId, scrutinee: &Value) -> bool {
-    match (kb.get_term(lit_tid), scrutinee) {
-        (Term::Const(Literal::Int(a)), Value::Int(b)) => *a == *b,
-        (Term::Const(Literal::Bool(a)), Value::Bool(b)) => *a == *b,
-        (Term::Const(Literal::String(a)), Value::Str(b)) => a == b,
-        (Term::Const(Literal::Float(a)), Value::Float(b)) => a.into_inner() == *b,
+fn literal_matches(lit: &Literal, scrutinee: &Value) -> bool {
+    match (lit, scrutinee) {
+        (Literal::Int(a), Value::Int(b)) => *a == *b,
+        (Literal::Bool(a), Value::Bool(b)) => *a == *b,
+        (Literal::String(a), Value::Str(b)) => a == b,
+        (Literal::Float(a), Value::Float(b)) => a.into_inner() == *b,
         _ => false,
-    }
-}
-
-/// Symbol-keyed named-arg lookup. Cheap because keys are pre-interned in
-/// `FieldSymbols`; we never pay the `kb.resolve_sym(*s) == "…"` string
-/// compare `kb::typing::get_named_arg` would do.
-fn lookup(args: &smallvec::SmallVec<[(Symbol, TermId); 2]>, key: Symbol) -> Option<TermId> {
-    args.iter().find(|(s, _)| *s == key).map(|(_, v)| *v)
-}
-
-fn term_as_symbol(kb: &crate::kb::KnowledgeBase, tid: TermId) -> Option<Symbol> {
-    match kb.get_term(tid) {
-        Term::Ref(s) | Term::Ident(s) => Some(*s),
-        _ => None,
     }
 }

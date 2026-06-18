@@ -150,7 +150,9 @@ end
         .expect("cons must carry `tail`");
     let tail_functor = match kb.get_term(tail_tid) {
         Term::Fn { functor, .. } => *functor,
-        other => panic!("tail must be a Fn (nil); got {other:?}"),
+        // WI-511: the empty list is canonicalized to the bare `Ref(nil)` form.
+        Term::Ref(s) => *s,
+        other => panic!("tail must be a Fn (nil) or Ref (nil); got {other:?}"),
     };
     assert_eq!(tail_functor, nil_sym,
         "single-entry list's tail must be nil; got {}",
@@ -325,7 +327,9 @@ end
         .expect("cons must carry `tail`");
     let tail_functor = match kb.get_term(tail_tid) {
         Term::Fn { functor, .. } => *functor,
-        other => panic!("tail must be Fn (nil); got {other:?}"),
+        // WI-511: the empty list is canonicalized to the bare `Ref(nil)` form.
+        Term::Ref(s) => *s,
+        other => panic!("tail must be Fn (nil) or Ref (nil); got {other:?}"),
     };
     assert_eq!(tail_functor, nil_sym,
         "single-entry channel's tail must be nil; got {}",

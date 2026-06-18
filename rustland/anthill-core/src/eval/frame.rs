@@ -37,9 +37,10 @@ pub enum AwaitState {
         else_branch: Rc<NodeOccurrence>,
     },
     /// `let_expr` rhs is being evaluated; on delivery match the pattern,
-    /// extend locals, and reduce the body in this frame.
+    /// extend locals, and reduce the body in this frame. WI-511: `pattern` is
+    /// the `NodeKind::Pattern` occurrence, read directly by `match_pattern`.
     LetBind {
-        pattern: TermId,
+        pattern: Rc<NodeOccurrence>,
         body: Rc<NodeOccurrence>,
     },
     /// `match_expr` scrutinee is being evaluated; on delivery try each
