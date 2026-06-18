@@ -85,9 +85,15 @@ Variables: `?name` (named, shared within scope), `?` (anonymous, each occurrence
 
 ```
 .anthill source → parse (tree-sitter or fastparse) → ParsedFile (typed IR)
-  → scan_definitions (2-pass: define names, process imports)
+  → scan_definitions (4-pass: 1 define all names, 2 requires/imports,
+                      3 rule-head Goals, 4 deferred predicate imports)
   → load → KnowledgeBase
 ```
+
+**Cross-file mutual recursion is supported** (WI-321): pass 1 defines every name
+across every file before any pass 2 runs, so two files whose sorts reference each
+other both load. This ordering is load-bearing — see the `scan_definitions`
+invariant comment and `wi321_cross_file_mutual_recursion_test`.
 
 ### Key Concepts
 

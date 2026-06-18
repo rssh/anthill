@@ -552,9 +552,24 @@ impl std::error::Error for LoadError {}
 /// Scan all parsed files to define symbols (sorts, namespaces, entities,
 /// operations, rules) and build the scope inclusion chain (requires, imports).
 ///
-/// Two sub-passes over all files:
+/// Four sub-passes over all files:
 /// - Pass 1: Define all names, record exposed variants and type params
 /// - Pass 2: Process `requires` and `import` declarations → build parent scope chain
+/// - Pass 3: Register unlabeled rule head-functor Goals (proposal 044 / B2)
+/// - Pass 4: Retry deferred cross-namespace predicate imports (WI-295)
+///
+/// INVARIANT (WI-321) — cross-file mutual structural recursion is SUPPORTED.
+/// Pass 1 defines EVERY name across EVERY file before ANY pass 2 runs, so two
+/// files whose sorts/entities reference each other (`a.anthill` has `entity
+/// Node(child: B)` while `b.anthill` has `entity Leaf(parent: A)`, plus a mutual
+/// `import` cycle) BOTH load: each file's pass 1 ignores the other's content, so
+/// both names exist before either file's imports/field-types resolve. This is
+/// the standard "collect all top-level names, then resolve bodies" technique
+/// (cf. SML/Haskell mutual recursion) — deliberate, not incidental. It is
+/// LOAD-BEARING: a future single-pass / streaming loader, or imports evolving to
+/// carry pass-1-needed info, must preserve the "all pass 1, then all pass 2"
+/// ordering or the cycle deadlocks. Pinned by
+/// `wi321_cross_file_mutual_recursion_test`.
 pub fn scan_definitions(kb: &mut KnowledgeBase, files: &[&ParsedFile]) -> Vec<LoadError> {
     let global = kb.make_name_term("_global");
 

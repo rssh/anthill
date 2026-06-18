@@ -85,6 +85,15 @@ pub fn load_kb_with(source: &str) -> KnowledgeBase {
 /// `LoadError`s. Parse failures still panic (they are test-authoring bugs).
 #[allow(dead_code)]
 pub fn try_load_kb_with(source: &str) -> Result<KnowledgeBase, Vec<String>> {
+    try_load_kb_with_files(&[source])
+}
+
+/// Like [`try_load_kb_with`] but loads MULTIPLE user source strings as SEPARATE
+/// files (each its own `ParsedFile`) alongside the stdlib — for asserting
+/// cross-file load behavior, e.g. WI-321 cross-file mutual structural recursion
+/// (two files whose entities reference each other's sorts must both load).
+#[allow(dead_code)]
+pub fn try_load_kb_with_files(sources: &[&str]) -> Result<KnowledgeBase, Vec<String>> {
     let files = collect_stdlib_and_rust_bindings();
     assert!(!files.is_empty(), "stdlib empty");
 
@@ -95,7 +104,9 @@ pub fn try_load_kb_with(source: &str) -> Result<KnowledgeBase, Vec<String>> {
             parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
         })
         .collect();
-    parsed.push(parse::parse(source).expect("parse user source"));
+    for source in sources {
+        parsed.push(parse::parse(source).expect("parse user source"));
+    }
 
     let refs: Vec<_> = parsed.iter().collect();
     let mut kb = KnowledgeBase::new();
