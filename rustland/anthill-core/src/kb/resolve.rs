@@ -16,7 +16,9 @@ use std::rc::Rc;
 use smallvec::SmallVec;
 
 use super::subst::Substitution;
-use super::node_occurrence::{self, Expr, NodeOccurrence};
+use super::node_occurrence::{
+    self, EffectExprNode, Expr, NodeOccurrence, TypeChild, TypeNode,
+};
 use super::term::{Literal, Term, TermId, Var, VarId};
 use super::term_view::{goal_fingerprint, GoalKey, ReflectedExpr, ReflectSyms, TermIdView, TermView, ViewHead, ViewItem};
 use super::persist_subst::BindValue;
@@ -3237,22 +3239,22 @@ impl KnowledgeBase {
                 self.collect_expr_type_field_unbound_vars(expr, subst, out);
             }
             None => {
-                // Not an Expr. A `Type`/`EffectExpr`-kind occurrence reaching
-                // here (via the `Value::Node` type-arg arm of
-                // `collect_type_value_unbound_vars`) is the pending subst-aware
-                // Type-spine var walk (WI-504, riding WI-378 step 2's
-                // type-field→child migration): its vars are NOT collected, so a
-                // caller var in the spine would be silently missed → under-delay.
-                // Surface it loudly rather than dropping it, mirroring the
-                // loader's `collect_occurrence_global_vars_ordered`. A `RuleHead`
-                // (the other non-Expr/non-Pattern kind) carries no goal vars, so
-                // it is legitimately empty — matching the loader's `RuleHead` arm.
-                debug_assert!(
-                    arg.as_type().is_none() && arg.as_effect_expr().is_none(),
-                    "WI-504: subst-aware Type/EffectExpr-spine var collection not yet wired \
-                     (rides WI-378 type-field→child migration) — a caller var in this spine \
-                     would be missed by the rule-delay pre-check"
-                );
+                // Not an Expr or Pattern. A `Type`/`EffectExpr`-kind occurrence
+                // reaching here (via the `Value::Node` type-arg arm of
+                // `collect_type_value_unbound_vars`, or a `TypeChild::Node` of an
+                // enclosing spine) descends subst-aware into the spine (WI-504) —
+                // the resolve-time twin of the loader's
+                // `collect_type_or_expr_node_vars` — so a caller var inside a
+                // Type-kind Node type-arg is detected, not silently dropped (which
+                // would under-delay the exact failure-class WI-322 closed). A
+                // `RuleHead` (the only other non-Expr/non-Pattern kind) carries no
+                // goal vars, so it is legitimately empty — matching the loader's
+                // `RuleHead` arm.
+                if let Some(tn) = arg.as_type() {
+                    self.collect_type_node_unbound_vars(tn, subst, out);
+                } else if let Some(en) = arg.as_effect_expr() {
+                    self.collect_effect_node_unbound_vars(en, subst, out);
+                }
             }
         }
     }
@@ -3299,9 +3301,13 @@ impl KnowledgeBase {
     ///   likewise descends `Value::Node` (via `collect_type_or_expr_node_vars`);
     ///   skipping it here would miss a caller var that `with_fresh_vars` opened
     ///   from a DeBruijn var inside the spine (under-delay). A `Type`/`EffectExpr`
-    ///   -kind spine is reached only down to its `Expr` leaves — full subst-aware
-    ///   Type-spine var collection rides the pending WI-378 type-field→child
-    ///   migration (the boundary the loader's `for_each_child` var walk asserts on).
+    ///   -kind spine is walked subst-aware to its leaves (WI-504): the `None` arm
+    ///   of `collect_unbound_vars_node` dispatches into
+    ///   [`Self::collect_type_node_unbound_vars`] /
+    ///   [`Self::collect_effect_node_unbound_vars`] — the resolve-time twins of
+    ///   the loader's `collect_type_node_vars` / `collect_effect_node_vars` —
+    ///   chasing a `TypeChild::Ground` term via [`Self::collect_unbound_vars`] and
+    ///   recursing a `TypeChild::Node` back through the occurrence walker.
     /// - a tuple / named-tuple type value recurses into its element types.
     /// - scalars / runtime handles carry no type vars (the loader twin's tail
     ///   likewise skips them, and `Value::Var` — which never lands in a type
@@ -3324,6 +3330,88 @@ impl KnowledgeBase {
                 }
             }
             _ => {}
+        }
+    }
+
+    /// WI-504: collect the unbound `Global` vars of a `TypeNode` — the
+    /// resolve-time, subst-aware twin of the loader's `collect_type_node_vars`
+    /// (node_occurrence), walking the SAME children so collect / open / close / σ
+    /// stay in lockstep over the type spine (the WI-378 invariant). Each child is
+    /// routed through [`Self::collect_type_child_unbound_vars`], which reads
+    /// ground terms / occurrence vars through the substitution so only vars still
+    /// unbound here are reported. A `NamedTuple`'s `Value`-carried field list
+    /// rides back through [`Self::collect_type_value_unbound_vars`].
+    fn collect_type_node_unbound_vars(
+        &self,
+        tn: &TypeNode,
+        subst: &Substitution,
+        out: &mut Vec<VarId>,
+    ) {
+        match tn {
+            TypeNode::Denoted { value } => self.collect_unbound_vars_node(value, subst, out),
+            TypeNode::Parameterized { base, bindings } => {
+                self.collect_type_child_unbound_vars(base, subst, out);
+                for (_, c) in bindings {
+                    self.collect_type_child_unbound_vars(c, subst, out);
+                }
+            }
+            TypeNode::EffectsRows { effects_expr } => {
+                self.collect_type_child_unbound_vars(effects_expr, subst, out)
+            }
+            TypeNode::Arrow { param, result, effects } => {
+                self.collect_type_child_unbound_vars(param, subst, out);
+                self.collect_type_child_unbound_vars(result, subst, out);
+                self.collect_type_child_unbound_vars(effects, subst, out);
+            }
+            TypeNode::ExprCarried { value, member } => {
+                self.collect_type_child_unbound_vars(value, subst, out);
+                self.collect_type_child_unbound_vars(member, subst, out);
+            }
+            TypeNode::NamedTuple { fields } => {
+                self.collect_type_value_unbound_vars(fields, subst, out)
+            }
+        }
+    }
+
+    /// WI-504: resolve-time, subst-aware twin of the loader's
+    /// `collect_effect_node_vars` (node_occurrence) — walk an `EffectExprNode`'s
+    /// children gathering the `Global` vars that remain unbound under `subst`.
+    fn collect_effect_node_unbound_vars(
+        &self,
+        en: &EffectExprNode,
+        subst: &Substitution,
+        out: &mut Vec<VarId>,
+    ) {
+        match en {
+            EffectExprNode::Merge { left, right } => {
+                self.collect_type_child_unbound_vars(left, subst, out);
+                self.collect_type_child_unbound_vars(right, subst, out);
+            }
+            EffectExprNode::Present { label } | EffectExprNode::Absent { label } => {
+                self.collect_type_child_unbound_vars(label, subst, out)
+            }
+            EffectExprNode::Open { tail } => self.collect_type_child_unbound_vars(tail, subst, out),
+            EffectExprNode::EmptyRow => {}
+        }
+    }
+
+    /// WI-504: resolve-time, subst-aware twin of the loader's `collect_type_child`
+    /// (node_occurrence). A `TypeChild::Ground` term is chased through the
+    /// existing subst-aware term walker [`Self::collect_unbound_vars`] (so a
+    /// ground `Term::Var(Global)` opened from a DeBruijn var — and any var→var
+    /// alias chain it sits in — is resolved to its final var before the caller-var
+    /// membership test). A `TypeChild::Node` recurses through the occurrence
+    /// walker [`Self::collect_unbound_vars_node`], whose `None` arm re-dispatches
+    /// a nested Type/EffectExpr spine.
+    fn collect_type_child_unbound_vars(
+        &self,
+        child: &TypeChild,
+        subst: &Substitution,
+        out: &mut Vec<VarId>,
+    ) {
+        match child {
+            TypeChild::Ground(t) => self.collect_unbound_vars(*t, subst, out),
+            TypeChild::Node(n) => self.collect_unbound_vars_node(n, subst, out),
         }
     }
 
@@ -6241,6 +6329,140 @@ mod tests {
                 &subst,
             ),
             "a caller var inside a Value::Node type-arg spine must propagate delay"
+        );
+    }
+
+    /// WI-504: a caller var inside a `Value::Node` type-arg spine that is a
+    /// `Type`-kind occurrence (not an `Expr` leaf) — here a parameterized type
+    /// `List[Elem = ?caller]` whose binding rides a `TypeChild::Ground(Var)` — must
+    /// be detected. Before the fix the occurrence walker's `None` arm dropped a
+    /// Type/EffectExpr spine, so a caller var that `with_fresh_vars` opened from a
+    /// DeBruijn var inside it would be silently missed (the exact under-delay
+    /// failure-class WI-322 closed, for the Type-kind Node carrier only).
+    #[test]
+    fn delay_propagates_on_caller_var_in_type_node_spine() {
+        let mut kb = KnowledgeBase::new();
+        let builtin_sym = kb.intern("test_builtin");
+        kb.builtins.insert(builtin_sym, BuiltinTag::Eq);
+
+        let g_sym = kb.intern("g");
+        let t_sym = kb.intern("T");
+        let list_sym = kb.intern("List");
+        let elem_sym = kb.intern("Elem");
+        let caller_sym = kb.intern("caller");
+        let caller_vid = kb.fresh_var(caller_sym);
+        let caller_term = kb.alloc(Term::Var(Var::Global(caller_vid)));
+        let list_ref = kb.alloc(Term::Ref(list_sym));
+
+        let span = crate::span::SourceSpan::new(crate::span::SourceId::from_raw(0), 0, 0);
+
+        // The Node-carried type-arg: a Type-kind occurrence `List[Elem = ?caller]`,
+        // the caller var living in a `TypeChild::Ground(Var)` binding.
+        let list_type = NodeOccurrence::new_type(
+            TypeNode::Parameterized {
+                base: TypeChild::Ground(list_ref),
+                bindings: vec![(elem_sym, TypeChild::Ground(caller_term))],
+            },
+            span,
+            None,
+        );
+        // g[T = «Type(List[Elem = ?caller])»](1)
+        let concrete = NodeOccurrence::new_expr(Expr::Const(Literal::Int(1)), span, None);
+        let g_call = NodeOccurrence::new_expr(
+            Expr::Apply {
+                functor: g_sym,
+                pos_args: vec![concrete],
+                named_args: vec![],
+                type_args: vec![(Some(t_sym), Value::Node(list_type))],
+            },
+            span,
+            None,
+        );
+        let goal = NodeOccurrence::new_expr(
+            Expr::Apply {
+                functor: builtin_sym,
+                pos_args: vec![g_call],
+                named_args: vec![],
+                type_args: vec![],
+            },
+            span,
+            None,
+        );
+
+        let subst = Substitution::new();
+        assert!(
+            kb.body_builtins_delay_on_caller_vars_nodes(
+                std::slice::from_ref(&goal),
+                &[caller_vid],
+                &subst,
+            ),
+            "a caller var inside a Type-kind Node type-arg spine must propagate delay"
+        );
+        // Control: an internal (non-caller) spine var must not force delay.
+        assert!(
+            !kb.body_builtins_delay_on_caller_vars_nodes(&[goal], &[], &subst),
+            "an internal (non-caller) Type-spine var must not force delay"
+        );
+    }
+
+    /// WI-504 (direct collector coverage): the Type/EffectExpr-spine walk is
+    /// subst-aware — an unbound spine var IS collected while a spine var already
+    /// bound to a concrete term under σ is NOT. Also exercises the `EffectExpr`
+    /// arm (`effects_rows(present(label: ?var))`) and the `TypeChild::Node`
+    /// recursion (a `Denoted` Expr leaf).
+    #[test]
+    fn collect_type_node_spine_is_subst_aware() {
+        let mut kb = KnowledgeBase::new();
+        let free_sym = kb.intern("free");
+        let bound_sym = kb.intern("bound");
+        let denoted_sym = kb.intern("denoted_free");
+        let v_free = kb.fresh_var(free_sym);
+        let v_bound = kb.fresh_var(bound_sym);
+        let v_denoted = kb.fresh_var(denoted_sym);
+        let free_term = kb.alloc(Term::Var(Var::Global(v_free)));
+        let bound_term = kb.alloc(Term::Var(Var::Global(v_bound)));
+        let concrete = kb.alloc(Term::Const(Literal::Int(7)));
+
+        let span = crate::span::SourceSpan::new(crate::span::SourceId::from_raw(0), 0, 0);
+
+        // effects_rows(present(label: ?free)) — caller var in an EffectExpr spine.
+        let present = NodeOccurrence::new_effect_expr(
+            EffectExprNode::Present { label: TypeChild::Ground(free_term) },
+            span,
+            None,
+        );
+        // A Denoted Expr leaf carrying ?denoted via a TypeChild::Node.
+        let denoted_leaf =
+            NodeOccurrence::new_expr(Expr::Var(Var::Global(v_denoted)), span, None);
+        // arrow(param: «effects_rows…», result: Denoted(?denoted), effects: ?bound)
+        // — three spine children of distinct kinds, plus a bound var.
+        let arrow = Value::Node(NodeOccurrence::new_type(
+            TypeNode::Arrow {
+                param: TypeChild::Node(present),
+                result: TypeChild::Node(NodeOccurrence::new_type(
+                    TypeNode::Denoted { value: denoted_leaf },
+                    span,
+                    None,
+                )),
+                effects: TypeChild::Ground(bound_term),
+            },
+            span,
+            None,
+        ));
+
+        // ?bound is already bound to a concrete term under σ.
+        let mut subst = Substitution::new();
+        subst.bind_term(v_bound, concrete);
+
+        let mut out = Vec::new();
+        kb.collect_type_value_unbound_vars(&arrow, &subst, &mut out);
+        out.sort_by_key(|v| v.raw());
+        let mut expected = vec![v_free, v_denoted];
+        expected.sort_by_key(|v| v.raw());
+        assert_eq!(
+            out, expected,
+            "the unbound EffectExpr-spine var and the Denoted-leaf var must be \
+             collected; the σ-bound spine var must not be"
         );
     }
 }
