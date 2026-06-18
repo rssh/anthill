@@ -139,7 +139,14 @@ case class SortWithBody(
   items: IndexedSeq[Item],
   meta: Option[MetaBlock],
   span: Span,
-  kind: SortDeclKind = SortDeclKind.Sort
+  kind: SortDeclKind = SortDeclKind.Sort,
+  /** WI-451 (§5.4): set when this `SortWithBody` is the higher-kinded carrier of
+    * an enclosing sort type-param (`F` in `sort Spec[F[T]]`, or the structured
+    * binder `sort [F] { sort [T] }`) — a NON-RIGID type variable, not a concrete
+    * nested sort. The loader reads this to register the carrier as a type param
+    * of the enclosing sort (mirrors the `sort T = ?` abstract-sort arm). An
+    * UNMARKED `sort F { … }` stays a concrete nested sort. */
+  isTypeParam: Boolean = false
 )
 
 case class FieldDecl(name: TermSymbol, ty: TypeExpr)

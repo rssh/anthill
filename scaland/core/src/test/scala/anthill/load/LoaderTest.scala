@@ -288,3 +288,26 @@ class LoaderTest extends munit.FunSuite:
     assert(kb.isConstructorSymbol(blueSym), "Blue should be a constructor symbol")
     assert(!kb.isConstructorSymbol(colorSym), "Color should not be a constructor symbol")
   }
+
+  // WI-451/WI-452 (§5.4): the enclosing-list HK sort type-param form loads, and
+  // both the higher-kinded carrier `F` and the simple param `A` register as type
+  // parameters of the enclosing sort (the marker the resolver/codegen read; scaland
+  // emits no `SortAlias` backing var — it has no typer).
+  test("WI-452: `sort CpsMonad[F[T], A]` registers F and A as type params") {
+    val kb = KnowledgeBase()
+    Prelude.register(kb)
+    val parsed = Parser.parse(
+      """sort CpsMonad[F[T], A]
+        |  operation unit(x: A) -> F
+        |end""".stripMargin, "<wi452>").toOption.getOrElse(fail("parse failed"))
+    val errors = Loader.loadAll(kb, IndexedSeq(parsed))
+    assert(errors.isEmpty, s"Load errors: $errors")
+
+    val globalRaw = kb.makeNameTerm("_global").raw
+    val cpsSym = kb.symbols.scope(globalRaw).flatMap(_.locals.get("CpsMonad"))
+      .getOrElse(fail("CpsMonad not defined in global scope"))
+    val cpsScope = kb.symbols.scope(kb.makeNameTermFromSym(cpsSym).raw)
+      .getOrElse(fail("no CpsMonad scope"))
+    assert(cpsScope.typeParams.contains("F"), s"F should be a type param, got ${cpsScope.typeParams}")
+    assert(cpsScope.typeParams.contains("A"), s"A should be a type param, got ${cpsScope.typeParams}")
+  }

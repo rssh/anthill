@@ -76,6 +76,14 @@ private class AnthillParserImpl(
     val anonSym = symbols.intern("?")
     val id = nextVar; nextVar += 1; VarId(id, anonSym)
 
+  /** A fresh anonymous type variable — the `?` an unspecified `sort X = ?`
+    * carries. Mirrors rustland's shared `fresh_anon_type_var` (convert.rs),
+    * reused by `variableType`'s anonymous branch and the WI-451 type-param
+    * desugar so the `?`-var IR cannot drift (the loader's `sort T = ?`
+    * type-param arm matches on exactly this `TypeExpr.Variable` shape). */
+  private def freshAnonTypeVar(): TypeExpr.Variable =
+    TypeExpr.Variable(terms.alloc(Term.Var(freshAnonymousVar())), IndexedSeq.empty)
+
   // ── Helpers ──────────────────────────────────────────────────
 
   private def mkSpan(s: Int, e: Int): Span = Span(fileName, s, e, 0, 0, 0, 0)
@@ -213,9 +221,8 @@ private class AnthillParserImpl(
 
   private def variableType[$: P]: P[TypeExpr] =
     P(Tokens.variableToken).map { varName =>
-      val vid = if varName.isEmpty then freshAnonymousVar()
-                else getOrCreateVar(intern(varName))
-      TypeExpr.Variable(terms.alloc(Term.Var(vid)), IndexedSeq.empty)
+      if varName.isEmpty then freshAnonTypeVar()
+      else TypeExpr.Variable(terms.alloc(Term.Var(getOrCreateVar(intern(varName)))), IndexedSeq.empty)
     }
 
   private def arrowType[$: P]: P[TypeExpr] =
@@ -842,13 +849,47 @@ private class AnthillParserImpl(
     P("=" ~/ typeExpr ~ metaBlock.?).map { case (te, mb) => Left((te, mb)) }
 
   private def sortWithBodyRest[$: P]: P[Right[Nothing, (IndexedSeq[Import], IndexedSeq[Item], Option[MetaBlock])]] =
-    P(body ~ metaBlock.?).map { tup =>
-      // fastparse flattens: (imports, items, meta)
-      val imports = tup._1
-      val items = tup._2
-      val meta = tup._3
-      Right((imports, items, meta))
+    P(sortTypeParamList.? ~ body ~ metaBlock.?).map { case (paramsOpt, (imports, items), meta) =>
+      // WI-451 (§5.4): an enclosing type-param list desugars into body items
+      // PREPENDED so the params precede the members that reference them. The list
+      // lives only in this body branch (not `abstractSortRest`), so `sort X[A] = T`
+      // — a param list with no body — is a loud parse error, mirroring rustland
+      // (`sort_type_param_list` belongs to `sort_with_body`, not `abstract_sort`).
+      val paramItems = paramsOpt.getOrElse(IndexedSeq.empty).map(desugarSortTypeParam)
+      Right((imports, paramItems ++ items, meta))
     }
+
+  // WI-451 (§5.4): an enclosing operation-style type-param list after a sort name
+  // — `sort CpsMonad[F[T], A, B]`. Each param is a NON-RIGID type variable; a
+  // higher-kinded param carries its own bracketed member list (`F[T]`, the one
+  // shape the flat parameterized-type binding cannot express). Mirrors rustland's
+  // `sort_type_param_list` / `desugar_sort_type_param`.
+  private case class SortTypeParam(name: TermSymbol, members: Option[IndexedSeq[SortTypeParam]])
+
+  private def sortTypeParamList[$: P]: P[IndexedSeq[SortTypeParam]] =
+    P("[" ~ sortTypeParam.rep(1, sep = ",") ~ "]").map(_.toIndexedSeq)
+
+  private def sortTypeParam[$: P]: P[SortTypeParam] =
+    P(ident ~ sortTypeParamList.?).map { case (n, members) => SortTypeParam(n, members) }
+
+  /** Desugar one enclosing type-param binder to the SAME IR rustland's
+    * `desugar_sort_type_param` produces, so the surface form and the body form
+    * cannot drift: a SIMPLE param `A` → `sort A = ?` (an `AbstractSort` with a
+    * fresh anonymous `?` — picked up by the loader's `sort T = ?` type-param arm);
+    * a HIGHER-KINDED param `F[T]` → a `SortWithBody` MARKED `isTypeParam` whose
+    * body holds the recursively-desugared members (the loader mints F as a type
+    * param of the enclosing sort). No `= default` form (sort-param defaults are
+    * undefined by §5.4). */
+  private def desugarSortTypeParam(p: SortTypeParam): Item =
+    val nm = Name.simple(p.name, mkSpan(0, 0))
+    p.members match
+      case Some(members) =>
+        Item.SortWithBodyItem(SortWithBody(
+          None, nm, IndexedSeq.empty, IndexedSeq.empty,
+          members.map(desugarSortTypeParam), None, mkSpan(0, 0),
+          SortDeclKind.Sort, isTypeParam = true))
+      case None =>
+        Item.AbstractSortItem(AbstractSort(None, nm, freshAnonTypeVar(), IndexedSeq.empty, None, mkSpan(0, 0)))
 
   private def ruleDecl[$: P]: P[Item] =
     P(keyword("rule") ~/ (

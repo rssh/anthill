@@ -94,6 +94,14 @@ object Loader:
           for v <- variants do kb.symbols.addExposed(sortTerm.raw, v)
           if variants.nonEmpty then
             kb.symbols.addParent(scopeTerm.raw, ScopeInclusion(sortTerm.raw, 0, isEnclosing = false))
+          // WI-452 (§5.4): a MARKED structured param (`sort [F] { … }`, the
+          // higher-kinded carrier of `sort Spec[F[T]]`) is a NON-RIGID type
+          // parameter of the enclosing sort — register it like the `sort T = ?`
+          // abstract-sort arm below. An UNMARKED `sort F { … }` stays a concrete
+          // nested sort. (scaland emits no `SortAlias` backing-var fact — it has
+          // no typer; the type-param marker is what the resolver and codegen read.)
+          if sort.isTypeParam && isSortScope(kb, scopeTerm) then
+            kb.symbols.addTypeParam(scopeTerm.raw, shortName)
           scanItemsPass1(kb, sort.items, fileSym, fileTerms, sortTerm, qualName)
 
         case Item.AbstractSortItem(sort) =>

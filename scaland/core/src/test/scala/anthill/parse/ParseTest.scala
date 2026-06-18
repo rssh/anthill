@@ -280,6 +280,66 @@ class ParseTest extends munit.FunSuite:
     probeStdlibOk("anthill/cli/parse.anthill")
   }
 
+  // ── WI-451: enclosing-list sort type-param binders (§5.4) ──────
+
+  test("WI-451: `sort CpsMonad[F[T], A]` desugars into marked HK carrier + simple param") {
+    val pf = Parser.parse(
+      """sort CpsMonad[F[T], A]
+        |  operation unit(x: A) -> F
+        |end""".stripMargin, "<wi451>").toOption
+      .getOrElse(fail("parse failed"))
+    val st = pf.symbols
+    val cps = pf.items.collect { case Item.SortWithBodyItem(s) => s }.head
+
+    // Higher-kinded `F[T]` → a `SortWithBody` MARKED `isTypeParam`, whose body is
+    // the recursively-desugared member `T` (an AbstractSort with a `?` definition).
+    val fParam = cps.items.collect {
+      case Item.SortWithBodyItem(s) if st.name(s.name.last) == "F" => s
+    }.head
+    assert(fParam.isTypeParam, "F must be marked is_type_param")
+    val tMember = fParam.items.collect { case Item.AbstractSortItem(a) => a }.head
+    assertEquals(st.name(tMember.name.last), "T")
+    assert(tMember.definition.isInstanceOf[TypeExpr.Variable],
+      s"T must desugar to a `?` variable, got ${tMember.definition}")
+
+    // Simple param `A` → `sort A = ?` (an AbstractSort with a fresh `?`).
+    val aParam = cps.items.collect {
+      case Item.AbstractSortItem(a) if st.name(a.name.last) == "A" => a
+    }.head
+    assert(aParam.definition.isInstanceOf[TypeExpr.Variable],
+      s"A must desugar to a `?` variable, got ${aParam.definition}")
+
+    // Params are PREPENDED before the members that reference them.
+    val firstOpIdx = cps.items.indexWhere(_.isInstanceOf[Item.OperationItem])
+    val fIdx = cps.items.indexWhere {
+      case Item.SortWithBodyItem(s) => st.name(s.name.last) == "F"
+      case _ => false
+    }
+    assert(fIdx < firstOpIdx, "type params must precede the operation members")
+  }
+
+  test("WI-451: a plain nested `sort F { … }` stays UNMARKED (concrete nested sort)") {
+    val pf = Parser.parse(
+      """sort Outer
+        |  sort F
+        |    sort T = ?
+        |  end
+        |end""".stripMargin, "<wi451-unmarked>").toOption
+      .getOrElse(fail("parse failed"))
+    val st = pf.symbols
+    val outer = pf.items.collect { case Item.SortWithBodyItem(s) => s }.head
+    val f = outer.items.collect {
+      case Item.SortWithBodyItem(s) if st.name(s.name.last) == "F" => s
+    }.head
+    assert(!f.isTypeParam, "an unmarked `sort F { … }` must NOT be a type param")
+  }
+
+  test("WI-451: a type-param list with no body (`sort X[A] = T`) is a loud parse error") {
+    Parser.parse("sort Bad[A] = Int64", "<wi451-reject>") match
+      case Right(_) => fail("expected parse failure for `sort X[A] = T`")
+      case Left(_)  => ()
+  }
+
   // ── Arrow type effect annotations (mirrors rustland 9615010) ────
 
   /** Pull the arrow type out of `operation run(f: <arrow>) -> B`. */
