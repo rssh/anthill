@@ -1,0 +1,104 @@
+-- MutableStack: a concrete MutableCollection carrier (proposal
+-- docs/proposals/library/002-iteration-collection.md, Phase 4) — the first
+-- in-place builder in the stdlib, and an in-place LIFO stack on top.
+--
+-- Representation: a one-field wrapper holding the backing mutable cell. The
+-- cell holds the contents as a List, head = TOP of the stack; `push`/`pop`
+-- mutate it in place. The wrapper is a nominal sort so it can carry the
+-- `MutableCollection` / `Iterable` provisions and dispatch like any other
+-- carrier (a bare `Cell[List[T]]` cannot: a provision's carrier is its
+-- enclosing sort, and Cell is generic).
+--
+-- Mutation rides the existing Cell arena + Modify handler (proposal 037
+-- §"Cell[V]"; docs/design/cell-runtime.md). The bodies PATTERN-MATCH the
+-- wrapper to bind the inner cell `r`: a pattern-bound resource is a local
+-- (WI-219), so `Cell.set(r, …)`'s `Modify[r]` is elided at the boundary and
+-- the op's declared `Modify[s]` is the honest caller-visible effect (the
+-- cell is reachable from `s`). This is the WorkItemStore idiom
+-- (rustland/anthill-todo/anthill/store.anthill: `match Cell.get(s) case
+-- wis(b, _) -> persist(b, …)`). Once WI-506 lands (a declared `Modify[s]`
+-- covers an incurred `Modify[s.field]`), the bodies could project `s.rep`
+-- directly instead of pattern-matching.
+sort anthill.prelude.MutableStack
+  import anthill.prelude.{Bool, Unit, Option, Cell, List, Stream, Modifiable}
+  import anthill.prelude.List.{nil, cons}
+  import anthill.prelude.Option.{none, some}
+
+  sort T = ?
+
+  -- The carrier: a wrapper around the backing cell of stack contents
+  -- (head of the list = top of the stack).
+  entity mutableStack(rep: Cell[V = List[T]])
+
+  -- Allocate a fresh, empty stack. The fresh cell escapes via the returned
+  -- wrapper, so `Modify[result]` is declared (proposal 027.1).
+  operation new() -> MutableStack
+    effects Modify[result]
+  =
+    mutableStack(rep: Cell.new(nil()))
+
+  -- Push `elem` onto the top, in place.
+  operation push(s: MutableStack, elem: T) -> Unit
+    effects Modify[s]
+  =
+    match s
+      case mutableStack(r) ->
+        Cell.set(r, cons(head: elem, tail: Cell.get(r)))
+
+  -- Pop the top: remove it and return it, or `none` if the stack is empty.
+  operation pop(s: MutableStack) -> Option[T]
+    effects Modify[s]
+  =
+    match s
+      case mutableStack(r) ->
+        match Cell.get(r)
+          case nil() -> none()
+          case cons(h, t) ->
+            let _ = Cell.set(r, t)
+            some(h)
+
+  -- Peek at the top WITHOUT removing it — a read observation, no effect.
+  operation top(s: MutableStack) -> Option[T]
+  =
+    match s
+      case mutableStack(r) ->
+        match Cell.get(r)
+          case nil() -> none()
+          case cons(h, _) -> some(h)
+
+  -- Iterable bridge: a snapshot of the current contents, top to bottom.
+  -- `Cell.get(r)` yields the backing `List[T]`, admissible as a `Stream`
+  -- (List provides Stream — WI-344). The access effect is pure `{}`: reading
+  -- a snapshot mutates nothing, and a later `push`/`pop` does not perturb an
+  -- already-produced snapshot (it is the List value captured at `iterator`
+  -- time) — the "snapshot, not live cursor" reading in the proposal.
+  operation iterator(s: MutableStack) -> Stream[T, {}]
+  =
+    match s
+      case mutableStack(r) -> Cell.get(r)
+
+  -- MutableCollection.insert: the collection view of `push`. Returns the
+  -- membership witness ("was new") — vacuously `true` for a stack/bag
+  -- (proposal library/002 Open Q 4).
+  operation insert(s: MutableStack, elem: T) -> Bool
+    effects Modify[s]
+  =
+    let _ = push(s, elem)
+    true
+
+  -- MutableCollection.clear: reset to empty, in place.
+  operation clear(s: MutableStack) -> Unit
+    effects Modify[s]
+  =
+    match s
+      case mutableStack(r) -> Cell.set(r, nil())
+
+  -- A MutableStack admits Modify (the typing-level token; the runtime
+  -- mutation rides Cell's handler via `rep`), and provides both the in-place
+  -- builder and the shared read layer. `E = {}` is written so the pure access
+  -- row lowers into the type (the iterator-consumption row does not float —
+  -- cf. List's `provides Stream[T, {}]`).
+  fact Modifiable[T = MutableStack]
+  provides MutableCollection[C = MutableStack[T], Element = T, E = {}]
+  provides Iterable[C = MutableStack[T], Element = T, E = {}]
+end

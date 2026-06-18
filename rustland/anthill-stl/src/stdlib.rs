@@ -60,7 +60,7 @@ pub static SOURCES: &[(&str, &str)] = &[
     ("anthill/prelude/effects", include_str!("../../../stdlib/anthill/prelude/effects.anthill")),
     ("anthill/prelude/effects-runtime", include_str!("../../../stdlib/anthill/prelude/effects-runtime.anthill")),
     ("anthill/prelude/cell", include_str!("../../../stdlib/anthill/prelude/cell.anthill")),
-    ("anthill/prelude/mutable_list", include_str!("../../../stdlib/anthill/prelude/mutable_list.anthill")),
+    ("anthill/prelude/mutable_stack", include_str!("../../../stdlib/anthill/prelude/mutable_stack.anthill")),
     ("anthill/prelude/console", include_str!("../../../stdlib/anthill/prelude/console.anthill")),
     ("anthill/prelude/time", include_str!("../../../stdlib/anthill/prelude/time.anthill")),
     ("anthill/prelude/algebra", include_str!("../../../stdlib/anthill/prelude/algebra.anthill")),
