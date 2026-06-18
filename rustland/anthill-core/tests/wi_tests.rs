@@ -35,6 +35,9 @@ mod wi496_transitive_iterator_test;
 #[path = "include/wi364_mutable_stack_test.rs"]
 mod wi364_mutable_stack_test;
 
+#[path = "include/wi506_modify_field_coverage_test.rs"]
+mod wi506_modify_field_coverage_test;
+
 #[path = "include/wi279_dot_dispatch_test.rs"]
 mod wi279_dot_dispatch_test;
 

@@ -4284,6 +4284,16 @@ fn check_apply_iter(
         // that an argument pinned.
         let mut arg_effects: Vec<Value> = Vec::new();
         let mut param_to_arg_sym: HashMap<Symbol, Symbol> = HashMap::new();
+        // WI-506: EFFECTS-ONLY re-key additions for a field-projection argument.
+        // `Cell.set(c.rep, …)` passes `c.rep`, which has no single value-ref sym, so
+        // `param_to_arg_sym` skips it and the callee's `Modify[<param>]` would survive
+        // un-re-keyed (a spurious "undeclared effect"). A `Modify` on a projection
+        // argument coarsens to the projection's HEAD parameter (`Modify[c.rep]` is
+        // covered by `Modify[c]`; proposal 037 §"Effect-row convention"), so record
+        // param → head HERE — kept out of `param_to_arg_sym` because the head loses the
+        // `.rep`, which a re-keyed RETURN type (where the exact projection matters, and a
+        // sym cannot represent it) must not do.
+        let mut param_to_arg_head: HashMap<Symbol, Symbol> = HashMap::new();
         // WI-376/398: only ops whose signature actually carries a projection pay for the
         // per-call elimination — the >99% that don't skip the param_to_arg_type clones
         // and the rewrite walk entirely. WI-398 adds the PARAMETER positions: a param
@@ -4303,6 +4313,12 @@ fn check_apply_iter(
             if let Some(arg_var_sym) = extract_var_ref_sym_node(arg_occ) {
                 if let Some((param_sym, _)) = op.params.get(i) {
                     param_to_arg_sym.insert(*param_sym, arg_var_sym);
+                }
+            } else if let Some((param_sym, _)) = op.params.get(i) {
+                // WI-506: a field-projection argument (`s.rep`) — record param → head
+                // for the effects-only re-key (see `param_to_arg_head`).
+                if let Some(head) = stable_receiver_path(arg_occ).and_then(|p| p.into_iter().next()) {
+                    param_to_arg_head.insert(*param_sym, head);
                 }
             }
             if let Ok(ref arg_result) = pos_results[i] {
@@ -4336,6 +4352,11 @@ fn check_apply_iter(
             if let Some(arg_var_sym) = extract_var_ref_sym_node(arg_occ) {
                 if let Some((param_sym, _)) = &matched {
                     param_to_arg_sym.insert(*param_sym, arg_var_sym);
+                }
+            } else if let Some((param_sym, _)) = &matched {
+                // WI-506: a field-projection named argument — effects-only head re-key.
+                if let Some(head) = stable_receiver_path(arg_occ).and_then(|p| p.into_iter().next()) {
+                    param_to_arg_head.insert(*param_sym, head);
                 }
             }
             if let Ok(ref arg_result) = named_results[i] {
@@ -4667,7 +4688,22 @@ fn check_apply_iter(
         // (e.g. `Stream.head`'s `effects E` → `Error` once `vid_E` is
         // bound by `unify_parameterized_with_sort_ref`). Skip the
         // param-name walk when no var_ref args were seen.
-        let pre_substituted: Vec<Value> = if param_to_arg_sym.is_empty() {
+        // WI-506: the effect re-key uses the VarRef map PLUS the projection-head
+        // additions (a `Modify` on a projection arg coarsens to the head param). The
+        // owned merge is built only when a projection arg was actually seen (the rare
+        // case); the common path borrows `param_to_arg_sym` with no clone.
+        let eff_rekey_owned;
+        let eff_rekey_map: &HashMap<Symbol, Symbol> = if param_to_arg_head.is_empty() {
+            &param_to_arg_sym
+        } else {
+            let mut m = param_to_arg_sym.clone();
+            for (k, v) in &param_to_arg_head {
+                m.entry(*k).or_insert(*v);
+            }
+            eff_rekey_owned = m;
+            &eff_rekey_owned
+        };
+        let pre_substituted: Vec<Value> = if eff_rekey_map.is_empty() {
             proj_effects.clone()
         } else {
             proj_effects
@@ -4686,7 +4722,7 @@ fn check_apply_iter(
                     if value_contains_projection(kb, e) {
                         e.clone()
                     } else {
-                        substitute_ref_syms_value(kb, e, &param_to_arg_sym)
+                        substitute_ref_syms_value(kb, e, eff_rekey_map)
                     }
                 })
                 .collect()

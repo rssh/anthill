@@ -16,9 +16,11 @@
 -- the op's declared `Modify[s]` is the honest caller-visible effect (the
 -- cell is reachable from `s`). This is the WorkItemStore idiom
 -- (rustland/anthill-todo/anthill/store.anthill: `match Cell.get(s) case
--- wis(b, _) -> persist(b, …)`). Once WI-506 lands (a declared `Modify[s]`
--- covers an incurred `Modify[s.field]`), the bodies could project `s.rep`
--- directly instead of pattern-matching.
+-- wis(b, _) -> persist(b, …)`). WI-506 now makes the effect side of a
+-- field-projection body (`Cell.set(s.rep, …)` under declared `Modify[s]`)
+-- typecheck, but a separate field-access typing fragility (WI-509) perturbs
+-- unrelated code when such a body lives in the loaded stdlib — so the
+-- pattern-match idiom stays here until WI-509 is fixed.
 sort anthill.prelude.MutableStack
   import anthill.prelude.{Bool, Unit, Option, Cell, List, Stream, Modifiable}
   import anthill.prelude.List.{nil, cons}
