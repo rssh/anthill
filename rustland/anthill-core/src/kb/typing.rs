@@ -1749,7 +1749,9 @@ enum TypeBuildFrame {
     /// passed forward to the body Visit per WI-270.
     LetAfterValue {
         occ: Rc<NodeOccurrence>,
-        pattern: TermId,
+        // WI-511: the let pattern occurrence, read occurrence-native by
+        // `extend_env_from_pattern` / `extract_pattern_var_name`.
+        pattern: Rc<NodeOccurrence>,
         annotation: Option<Value>,
         body_occ: Rc<NodeOccurrence>,
         body_expected: Option<Value>,
@@ -2650,9 +2652,9 @@ fn visit_type(
     match expr {
         // ── Iterative cases ─────────────────────────────────────
         Expr::Let { pattern, type_annotation, value, body } => {
-            // WI-318: pattern is now a Pattern-kind occurrence; bridge
-            // to TermId for the existing term-based env-extension path.
-            let pattern = super::node_occurrence::pattern_to_term(kb, pattern);
+            // WI-511: pattern is a Pattern-kind occurrence, read occurrence-native
+            // by the env-extension helpers — no `pattern_to_term` bridge.
+            let pattern = Rc::clone(pattern);
             let annotation = type_annotation.clone();
             // WI-399: discharge an expression-carried projection (`s.cell.T`) in the
             // let annotation HERE, where `env` resolves the receiver's type — the
@@ -2679,7 +2681,7 @@ fn visit_type(
                         occ.span,
                     );
                     let var =
-                        extract_pattern_var_name(kb, pattern).unwrap_or_else(|| kb.intern("_"));
+                        extract_pattern_var_name(&pattern).unwrap_or_else(|| kb.intern("_"));
                     let ctx = TypeErrorContext::LetBinding { var };
                     // WI-459: a let-annotation is a BODY-site projection — the receiver is
                     // the in-scope value itself, there is no call argument to re-key to
@@ -2734,12 +2736,10 @@ fn visit_type(
             push_visit_no_hint(work, scrutinee_occ, env, fuel);
         }
         Expr::Lambda { param, body } => {
-            // WI-318: `param` is now a Pattern-kind Rc<NodeOccurrence>.
-            // The typer's existing helpers (extract_pattern_type_ann /
-            // extend_env_from_pattern) operate on the reflect-Term shape,
-            // so bridge via `pattern_to_term` for now. A follow-up should
-            // rewrite those helpers to consume Pattern natively.
-            let param = super::node_occurrence::pattern_to_term(kb, param);
+            // WI-511: `param` is a Pattern-kind Rc<NodeOccurrence>, read
+            // occurrence-native by the typer's pattern helpers — no
+            // `pattern_to_term` bridge.
+            let param = Rc::clone(param);
             let body_occ = Rc::clone(body);
             // Lambda param type, in priority order:
             //   1. explicit annotation on the pattern,
@@ -2754,8 +2754,14 @@ fn visit_type(
             // WI-342: the param type is carrier-agnostic (`Value`) — the env binds
             // it directly, and `LambdaBody` builds the arrow's param slot from it
             // (a `Value::Node` denoted-bearing param is carried, not re-grounded).
-            let param_type: Value = extract_pattern_type_ann(kb, param)
-                .map(Value::Term)
+            // WI-511: a `let p: T` annotation rides the Pattern occurrence's
+            // `type_ann` child; ground it to a `Value::Term` (mirroring the old
+            // `unwrap_option`-of-the-`type_ann`-field path). The grammar's
+            // `pattern_var` doesn't surface one today, so this is normally None.
+            let ann_type: Option<Value> = extract_pattern_type_ann(&param).map(|ann_occ| {
+                Value::Term(super::node_occurrence::occurrence_to_term(kb, ann_occ))
+            });
+            let param_type: Value = ann_type
                 .or_else(|| {
                     // Checking direction: the expected arrow's param slot, as-is.
                     expected.as_ref().and_then(|exp| extract_function_param_type(kb, exp))
@@ -2765,7 +2771,7 @@ fn visit_type(
                     Value::Term(kb.make_type_var(fresh))
                 });
             let mut lambda_env = (*env).clone();
-            extend_env_from_pattern(kb, &mut lambda_env, param, Some(param_type.clone()));
+            extend_env_from_pattern(kb, &mut lambda_env, &param, Some(param_type.clone()));
             // WI-270: if expected is `arrow(param, result, effects)`,
             // decompose and pass `result` to the body. Mismatching
             // shapes (or `None`) leave the body without a hint. WI-342 S3a: the
@@ -3678,7 +3684,7 @@ fn build_type(
             if let (Some(ann), Some(vty)) = (annotation.as_ref(), value_ty.as_ref()) {
                 let mut subst = Substitution::new();
                 if !types_compatible(kb, &mut subst, vty, ann) {
-                    let var = extract_pattern_var_name(kb, pattern)
+                    let var = extract_pattern_var_name(&pattern)
                         .unwrap_or_else(|| kb.intern("_"));
                     results.push(Err(TypeError::TypeMismatch {
                         span: None,
@@ -3699,8 +3705,8 @@ fn build_type(
                 ),
                 (ann, vty) => ann.or(vty),
             };
-            extend_env_from_pattern(kb, &mut ext_env, pattern, bound_ty);
-            if let Some(var_name) = extract_pattern_var_name(kb, pattern) {
+            extend_env_from_pattern(kb, &mut ext_env, &pattern, bound_ty);
+            if let Some(var_name) = extract_pattern_var_name(&pattern) {
                 ext_env.declare_local_resource(var_name);
                 // WI-400 increment C (eager let-alias): if the value is a STABLE receiver
                 // path (a var / field-access chain — immutable `let` ⟹ one runtime value),
@@ -3793,9 +3799,8 @@ fn build_type(
                 .unwrap_or_default();
             let mut branch_envs: Vec<Rc<TypingEnv>> = Vec::with_capacity(branches.len());
             for branch in &branches {
-                // WI-511: coverage reads the Pattern occurrence directly (no
-                // `pattern_to_term`). `extend_env_from_pattern` still bridges to a
-                // term — migrating it is a follow-on in the same WI-348 pass.
+                // WI-511: coverage AND env-extension both read the Pattern
+                // occurrence directly — no `pattern_to_term` bridge.
                 collect_covered_entities(
                     kb,
                     &branch.pattern,
@@ -3803,9 +3808,8 @@ fn build_type(
                     &mut covered_entities,
                     &mut has_wildcard,
                 );
-                let pattern_tid = super::node_occurrence::pattern_to_term(kb, &branch.pattern);
                 let mut branch_env = (*outer_env).clone();
-                extend_env_from_pattern(kb, &mut branch_env, pattern_tid, scr_ty.clone());
+                extend_env_from_pattern(kb, &mut branch_env, &branch.pattern, scr_ty.clone());
                 branch_envs.push(Rc::new(branch_env));
             }
 
@@ -11851,14 +11855,13 @@ fn named_tuple_field_types<V: TermView>(kb: &KnowledgeBase, ty: &V) -> Option<Ve
 }
 
 /// Extract the variable name symbol from a `var_pattern`.
-fn extract_pattern_var_name(kb: &KnowledgeBase, pattern: TermId) -> Option<Symbol> {
-    if let Term::Fn { functor, named_args, pos_args, .. } = kb.get_term(pattern) {
-        let fname = kb.resolve_sym(*functor);
-        if fname == "var_pattern" {
-            return extract_sym_arg(kb, named_args, pos_args, "name");
-        }
+/// WI-511 (WI-348): reads the `Pattern` occurrence directly — its var name is
+/// already a `Symbol`, no `pattern_to_term` lowering.
+fn extract_pattern_var_name(pattern: &Rc<NodeOccurrence>) -> Option<Symbol> {
+    match pattern.as_pattern()? {
+        Pattern::Var { name, .. } => Some(*name),
+        _ => None,
     }
-    None
 }
 
 
@@ -13328,138 +13331,115 @@ fn type_param_vid_in_sort(
     }
 }
 
+/// WI-511 (WI-348): reads the `Pattern` occurrence DIRECTLY (no `pattern_to_term`
+/// lowering, no `Ref`/`Fn` carrier to disambiguate). The sub-patterns are
+/// already `Rc<NodeOccurrence>` children, so the recursion threads occurrences.
 fn extend_env_from_pattern(
     kb: &mut KnowledgeBase,
     env: &mut TypingEnv,
-    pattern: TermId,
+    pattern: &Rc<NodeOccurrence>,
     scrutinee_type: Option<Value>,
 ) {
-    if let Term::Fn { functor, named_args, pos_args } = kb.get_term(pattern).clone() {
-        let functor_name = kb.resolve_sym(functor).to_string();
-        match functor_name.as_str() {
-            "var_pattern" => {
-                if let Some(sym) = extract_sym_arg(kb, &named_args, &pos_args, "name") {
-                    // Bind the pattern var even when its type is unknown —
-                    // a pattern-bound name is in scope regardless. Without
-                    // this, tuple-destructuring lambda params
-                    // (`lambda (a, b) -> ...`, whose sub-patterns recurse
-                    // here with no component type) and match vars over an
-                    // un-inferred scrutinee stayed unbound and every
-                    // reference failed as `UnresolvedName`. (WI-289)
-                    // WI-342: the env binds a carrier-agnostic `Value`, so a
-                    // `Value::Node` component type is preserved, not re-grounded.
-                    let ty = scrutinee_type.unwrap_or_else(|| {
-                        let fresh = kb.intern("?pat");
-                        Value::Term(kb.make_type_var(fresh))
-                    });
-                    env.bind_var(sym, ty);
-                    // Pattern-bound names are local — effects on them
-                    // shouldn't escape the surrounding match/case scope
-                    // (matches `check_let_expr`'s declare_local_resource
-                    // for let bindings). Without this, a body like
-                    //   match Cell.get(s) case wis(b, _) -> persist(b, ...)
-                    // would surface persist's `Modify[b]` as an external
-                    // effect even though b's lifetime ends at case end.
-                    env.declare_local_resource(sym);
-                }
-            }
-            "constructor_pattern" => {
-                let name_sym = extract_sym_arg(kb, &named_args, &pos_args, "name");
-                let args_tid = get_named_arg(kb, &named_args, "args");
-                if let (Some(ctor_sym), Some(args)) = (name_sym, args_tid) {
-                    let field_types = kb.entity_field_types(ctor_sym).map(|f| f.to_vec());
-                    let sub_patterns = list_to_vec(kb, args);
-                    // Substitute the scrutinee's type args into the
-                    // constructor's declared field types. For `case some(name)`
-                    // over `Option[T = String]`, `some.value`'s declared type
-                    // `T` resolves to `String` — without this `name` binds to
-                    // the raw type-param term and surfaces as a bare `TermId`
-                    // in later return-type checks.
-                    let parent_sort = kb.constructor_parent_sort(ctor_sym)
-                        .and_then(|t| match kb.get_term(t) {
-                            Term::Fn { functor, .. } => Some(*functor),
-                            Term::Ref(s) => Some(*s),
-                            _ => None,
-                        });
-                    let subst = scrutinee_type
-                        .as_ref()
-                        .zip(parent_sort)
-                        .and_then(|(st, p)| build_pattern_subst(kb, st, p));
-                    // POSITIONAL sub-patterns: zip against field types by index.
-                    for (i, sub_pat) in sub_patterns.iter().enumerate() {
-                        // WI-342: the field type is a carrier-agnostic `Value`
-                        // (`entity_field_types`); resolve its sort-level type
-                        // params through the pattern subst without re-grounding.
-                        // Deep-walk: a parameterized field type
-                        // (`source: Stream[T = T, E = E]`) carries its type
-                        // params NESTED in the `Fn`, which the shallow
-                        // `walk_type_value` left unsubstituted — so the
-                        // destructure did not thread the scrutinee's element /
-                        // effect into the sub-pattern var (WI-413).
-                        let field_type = match (field_types.as_ref().and_then(|f| f.get(i)), &subst) {
-                            (Some((_, ty)), Some(s)) => Some(walk_pattern_field_type_deep(kb, s, ty)),
-                            (Some((_, ty)), None) => Some(ty.clone()),
-                            (None, _) => None,
-                        };
-                        extend_env_from_pattern(kb, env, *sub_pat, field_type);
-                    }
-                    // WI-445: NAMED sub-patterns (`case Box(v: some(x))`) bind by
-                    // FIELD NAME — order-independent, so robust to declaration
-                    // order. The loader preserves them as `named:
-                    // List[NamedPattern]` (raw at load, since the entity's fields
-                    // may not be registered yet); the field type is resolved here,
-                    // where the typer pass always has the entity in hand.
-                    if let Some(named_tid) = get_named_arg(kb, &named_args, "named") {
-                        for np in list_to_vec(kb, named_tid) {
-                            let Some((field_sym, sub_pat)) =
-                                super::node_occurrence::read_named_pattern_term(kb, np)
-                            else { continue };
-                            let found = field_types
-                                .as_ref()
-                                .and_then(|fields| fields.iter().find(|(fname, _)| *fname == field_sym));
-                            let field_type = match (found, &subst) {
-                                (Some((_, ty)), Some(s)) => Some(walk_pattern_field_type_deep(kb, s, ty)),
-                                (Some((_, ty)), None) => Some(ty.clone()),
-                                (None, _) => None,
-                            };
-                            extend_env_from_pattern(kb, env, sub_pat, field_type);
-                        }
-                    }
-                }
-            }
-            "tuple_pattern" => {
-                // Loaded tuple patterns store their sub-patterns under the
-                // `elements` list (load.rs `PatternTuple` build), not
-                // `args` — the old `args`/`pos_args.first()` lookup always
-                // missed, leaving `lambda (a, b) -> ...` params unbound.
-                // When the scrutinee is a tuple type, bind each
-                // sub-pattern to its component type — so `lambda (a, b) ->
-                // a + b` checked against `Function[(Int, Int), Int]` types
-                // a/b as Int and `+` dispatches uniquely. Otherwise the
-                // component type is unknown and var_pattern mints a fresh
-                // type var.
-                if let Some(elements) = get_named_arg(kb, &named_args, "elements") {
-                    let sub_patterns = list_to_vec(kb, elements);
-                    let components = scrutinee_type
-                        .as_ref()
-                        .and_then(|t| named_tuple_field_types(kb, t));
-                    for (i, sub_pat) in sub_patterns.iter().enumerate() {
-                        let comp = components.as_ref().and_then(|c| c.get(i).cloned());
-                        extend_env_from_pattern(kb, env, *sub_pat, comp);
-                    }
-                }
-            }
-            _ => {} // wildcard, literal_pattern — no bindings
+    let Some(pat) = pattern.as_pattern() else { return; };
+    match pat {
+        Pattern::Var { name, .. } => {
+            // Bind the pattern var even when its type is unknown — a
+            // pattern-bound name is in scope regardless. Without this,
+            // tuple-destructuring lambda params (`lambda (a, b) -> ...`, whose
+            // sub-patterns recurse here with no component type) and match vars
+            // over an un-inferred scrutinee stayed unbound and every reference
+            // failed as `UnresolvedName`. (WI-289)
+            // WI-342: the env binds a carrier-agnostic `Value`, so a
+            // `Value::Node` component type is preserved, not re-grounded.
+            let ty = scrutinee_type.unwrap_or_else(|| {
+                let fresh = kb.intern("?pat");
+                Value::Term(kb.make_type_var(fresh))
+            });
+            env.bind_var(*name, ty);
+            // Pattern-bound names are local — effects on them shouldn't escape
+            // the surrounding match/case scope (matches `check_let_expr`'s
+            // declare_local_resource for let bindings). Without this, a body
+            // like `match Cell.get(s) case wis(b, _) -> persist(b, ...)` would
+            // surface persist's `Modify[b]` as an external effect even though
+            // b's lifetime ends at case end.
+            env.declare_local_resource(*name);
         }
+        Pattern::Constructor { name, pos_args, named_args } => {
+            let ctor_sym = *name;
+            let field_types = kb.entity_field_types(ctor_sym).map(|f| f.to_vec());
+            // Substitute the scrutinee's type args into the constructor's
+            // declared field types. For `case some(name)` over
+            // `Option[T = String]`, `some.value`'s declared type `T` resolves
+            // to `String` — without this `name` binds to the raw type-param
+            // term and surfaces as a bare `TermId` in later return-type checks.
+            let parent_sort = kb.constructor_parent_sort(ctor_sym)
+                .and_then(|t| match kb.get_term(t) {
+                    Term::Fn { functor, .. } => Some(*functor),
+                    Term::Ref(s) => Some(*s),
+                    _ => None,
+                });
+            let subst = scrutinee_type
+                .as_ref()
+                .zip(parent_sort)
+                .and_then(|(st, p)| build_pattern_subst(kb, st, p));
+            // POSITIONAL sub-patterns: zip against field types by index.
+            for (i, sub_pat) in pos_args.iter().enumerate() {
+                // WI-342: the field type is a carrier-agnostic `Value`
+                // (`entity_field_types`); resolve its sort-level type params
+                // through the pattern subst without re-grounding. Deep-walk: a
+                // parameterized field type (`source: Stream[T = T, E = E]`)
+                // carries its type params NESTED in the `Fn`, which the shallow
+                // `walk_type_value` left unsubstituted — so the destructure did
+                // not thread the scrutinee's element / effect into the
+                // sub-pattern var (WI-413).
+                let field_type = match (field_types.as_ref().and_then(|f| f.get(i)), &subst) {
+                    (Some((_, ty)), Some(s)) => Some(walk_pattern_field_type_deep(kb, s, ty)),
+                    (Some((_, ty)), None) => Some(ty.clone()),
+                    (None, _) => None,
+                };
+                extend_env_from_pattern(kb, env, sub_pat, field_type);
+            }
+            // WI-445: NAMED sub-patterns (`case Box(v: some(x))`) bind by FIELD
+            // NAME — order-independent, so robust to declaration order. The
+            // field type is resolved here, where the typer pass always has the
+            // entity in hand.
+            for (field_sym, sub_pat) in named_args {
+                let found = field_types
+                    .as_ref()
+                    .and_then(|fields| fields.iter().find(|(fname, _)| *fname == *field_sym));
+                let field_type = match (found, &subst) {
+                    (Some((_, ty)), Some(s)) => Some(walk_pattern_field_type_deep(kb, s, ty)),
+                    (Some((_, ty)), None) => Some(ty.clone()),
+                    (None, _) => None,
+                };
+                extend_env_from_pattern(kb, env, sub_pat, field_type);
+            }
+        }
+        Pattern::Tuple { positional, .. } => {
+            // When the scrutinee is a tuple type, bind each sub-pattern to its
+            // component type — so `lambda (a, b) -> a + b` checked against
+            // `Function[(Int, Int), Int]` types a/b as Int and `+` dispatches
+            // uniquely. Otherwise the component type is unknown and the
+            // sub-pattern var mints a fresh type var.
+            let components = scrutinee_type
+                .as_ref()
+                .and_then(|t| named_tuple_field_types(kb, t));
+            for (i, sub_pat) in positional.iter().enumerate() {
+                let comp = components.as_ref().and_then(|c| c.get(i).cloned());
+                extend_env_from_pattern(kb, env, sub_pat, comp);
+            }
+        }
+        // wildcard, literal_pattern — no bindings
+        Pattern::Wildcard | Pattern::Literal { .. } => {}
     }
 }
 
-fn extract_pattern_type_ann(kb: &KnowledgeBase, pattern: TermId) -> Option<TermId> {
-    if let Term::Fn { named_args, .. } = kb.get_term(pattern) {
-        let type_ann = get_named_arg(kb, named_args, "type_ann")?;
-        unwrap_option(kb, type_ann)
-    } else {
-        None
+/// WI-511 (WI-348): the optional type annotation occurrence of a `var_pattern`
+/// (`let p: T`), read off the `Pattern` enum directly.
+fn extract_pattern_type_ann(pattern: &Rc<NodeOccurrence>) -> Option<&Rc<NodeOccurrence>> {
+    match pattern.as_pattern()? {
+        Pattern::Var { type_ann, .. } => type_ann.as_ref(),
+        _ => None,
     }
 }
 
