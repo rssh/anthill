@@ -1,0 +1,24 @@
+{< Monad: the minimal monadic interface — `pure` + `flatMap` (+ `map`).
+   This is the contract that effect interpretation (proposal 047,
+   "effects as monads via Filinski reflection") realizes: an effectful
+   computation denotes a monadic value, and the interpreter runs the
+   effect by `pure`/`flatMap` over the selected monad.
+
+   `M` is a higher-kinded carrier (member `T`): a per-call element type
+   `A` is wrapped as `M[T = A]`. The element types `A`/`B` are
+   per-operation type parameters, not part of the monad's identity.
+
+   Names: `flatMap`/`map`/`pure`, NOT Haskell's `bind`/`return` — those
+   read as names only inside do-notation, which anthill does not have, so
+   the method-call spellings that work in direct call syntax are correct.
+
+   Effect denotations (047 §2) are instances of THIS sort —
+   `fact Monad[M = Result[E]]` (Error), `fact Monad[M = Stream]` (Branch),
+   `fact Monad[M = State[S]]` (Modify) — and a transformer stack is the
+   conditional instance `fact Monad[M = StateT[S, M]] :- Monad[M = ?M]`.
+   An instance lives with its carrier (see Option in option.anthill). >}
+sort anthill.prelude.Monad[M[T]]                       -- M : carrier, member T
+  operation pure[A](a: A) -> M[T = A]
+  operation flatMap[A, B, EffP](m: M[T = A], f: (A) -> M[T = B] @ {EffP}) -> M[T = B] effects {EffP}
+  operation map[A, B, EffP](m: M[T = A], f: (A) -> B @ {EffP}) -> M[T = B] effects {EffP}
+end

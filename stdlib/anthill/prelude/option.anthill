@@ -1,7 +1,25 @@
 -- Option: a parametric sort
 enum anthill.prelude.Option
+  import anthill.prelude.{Monad}
 
   sort T = ?                                           -- type parameter (abstract)
   entity none                                        -- absent
   entity some(value: T)                              -- present
+
+  -- Option is a Monad. Op-value bindings (not a bare `fact Monad[Option]`)
+  -- because Monad.pure is result-determined — it has no Option argument to
+  -- dispatch on, so each witness op is named explicitly in the fact.
+  operation optionPure[A](a: A) -> Option[T = A] = some(a)
+
+  operation optionFlatMap[A, B, EffP](m: Option[T = A], f: (A) -> Option[T = B] @ {EffP}) -> Option[T = B] effects {EffP} =
+    match m
+      case none() -> none
+      case some(x) -> f(x)
+
+  operation optionMap[A, B, EffP](m: Option[T = A], f: (A) -> B @ {EffP}) -> Option[T = B] effects {EffP} =
+    match m
+      case none() -> none
+      case some(x) -> some(f(x))
+
+  fact Monad[M = Option, pure = optionPure, flatMap = optionFlatMap, map = optionMap]
 end
