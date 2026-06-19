@@ -245,6 +245,56 @@ Reflection (§3) sits **on top of** this interface: Filinski's `reflect`/`reify`
 monad's `pure`/`bind` (+ shift/reset). So the `Monad` sort above is a **companion/prerequisite** of
 this proposal, not a competitor — it supplies the `pure`/`bind` the reflection runs over.
 
+### Graded `DelayMonad` — captured effects in the type (delivered: typeclass; instance blocked on WI-516)
+
+The `Monad` above is the **eager** monad: `flatMap` runs the continuation now, so its effect
+surfaces in the operation's `effects` clause. The dual — a `Delay`/`IO`/`Suspend` monad — *captures*
+an effectful computation as a pure value and performs it only later (the `reify` direction, §3; the
+`Suspension ↦ F[]:Suspend` row of §2). Tracking *what it captured* in the carrier's type makes it a
+**graded (effect-indexed) monad** (Katsumata, *Parametric Effect Monads and Semantics of Effect
+Systems*, POPL 2014): a SECOND type parameter `E` holds the captured effect set.
+
+```anthill
+sort anthill.prelude.DelayMonad[M[T, E]]                       -- E : captured effect set
+  operation pure[A](a: A) -> M[T = A, E = {}]                                  -- captures nothing
+  operation delay[A, EffP](thunk: () -> A @ EffP) -> M[T = A, E = EffP]        -- capture: ambient row -> E
+  operation flatMap[A, B, E1, E2](m: M[T = A, E = E1],
+                                  f: (A) -> M[T = B, E = E2]) -> M[T = B, E = {E1, E2}]  -- compose; UNION
+  operation force[A, Eff](m: M[T = A, E = Eff]) -> A effects Eff               -- perform (run at Eff = {})
+end
+```
+
+The captured set is a **monoid**, and anthill's effect rows already *are* that monoid (`{}` unit,
+`{E1, E2}` union — WI-307), so "track captured effects in the type" reuses the row algebra; it adds no
+new mechanism. Contrast the eager `Monad`: there the continuation's effect rides the `effects` clause
+(performed now); here it is captured into `E` and surfaced only at `force`.
+
+**Effect-set-as-type, bridge = identity.** `E` is an ordinary type parameter holding an effect-set
+*term*; types-are-terms makes that term a type-level value, so the *same* term serves as both an
+arrow's effect row (`@ E`) and the type-param `E` — the reify bridge between "ambient effect" and
+"captured effect" is the **identity** (verified: `delay`/`force` load with the same `EffP`/`Eff` in
+both positions). A single captured row is the bare variable `E` (not `{E}`, which would read `E` as
+one present label); `{E1, E2}` is a union, `{}` the empty row.
+
+**Interpretation = lowering `E`** — this is what earns the second parameter. A handler/interpreter is
+typed as *reducing* the captured set: `runError : M[T, {Error, ρ}] -> M[Result[T], ρ]` peels `Error`
+off `E`; `force`/`run` is total only at `E = {}`. So §3's layered interpretation becomes a
+**type-level invariant**: a computation cannot be `run` until every captured effect has been
+interpreted away. `Delay` is the *free* graded instance (captures everything, interprets nothing);
+concrete instances (a State/Error interpreter) give an effect a denotation and lower `E`.
+
+**Aside, not a proposal.** The captured-effect set `E` is the same information a capture-checking type
+system (Scala 3) tracks as a capture set — here it falls out of effects-as-rows × rows-as-type-parameters
+rather than a bespoke checker.
+
+**Status.** The `DelayMonad` typeclass is in stdlib (`anthill.prelude.DelayMonad`, `delay.anthill`) and
+loads; `pure`/`delay`/`force` type-check. The canonical `Delay` instance (a suspended `() -> T @ E`
+thunk) is **blocked on WI-516**: the typer represents an effect-set-valued row variable inconsistently
+between `{E1, E2}` position (open tails) and forced/`effects` position (present labels), so `flatMap`'s
+body cannot conform to its declared `E = {E1, E2}` return — only the merge fails. Landing WI-516 lands
+the instance. (En route: a lambda is now admissible as a *named* argument, and lambda syntax is
+specified in kernel-language.md §4.7.)
+
 ### Monad stacks (cheap here), effect rows, and reflection — all three, at different levels
 
 "Monad or monad stack / MTL vs `Eff`?" — anthill can host **both**, at different levels:

@@ -1,0 +1,42 @@
+{< DelayMonad: a graded (effect-indexed) monad — a monad whose carrier tracks,
+   in a SECOND type parameter `E`, the effect set it has *captured* but not yet
+   performed. This is the type-level form of "a Delay/IO/Suspend monad eats
+   effects": `delay` captures an effectful thunk as a pure value (the effect
+   moves from the ambient row into `E`); `flatMap` composes purely and UNIONS
+   the captured effects; `force` finally performs them.
+
+   `E` is an ordinary type parameter holding an effect-set TERM — there is no
+   special effect-kind machinery, because types are terms: the effect set is a
+   term, hence a type-level value, so it drops into `E` and the reify bridge
+   between an arrow's effect row (`@ E`) and the type-param `E` is the IDENTITY
+   (the same term in both positions). A SINGLE captured row is the bare
+   variable `E` (not `{E}`); `{E1, E2}` is a union, `{}` the empty row.
+
+   Captured-effect tracking via `E` is, incidentally, the same information a
+   capture-checking type system tracks as a capture set; here it falls out of
+   effects-as-rows + rows-as-type-parameters rather than a bespoke checker.
+
+   Contrast `anthill.prelude.monad.Monad`: that is the EAGER monad — `flatMap`
+   runs the continuation now, so its effect surfaces in the `effects` clause;
+   here the continuation is captured and the effect is deferred into `E`,
+   surfaced only at `force`. See proposal 047 (effects as monads).
+
+   Reference: Katsumata, "Parametric Effect Monads and Semantics of Effect
+   Systems" (POPL 2014) — the graded-monad foundation. >}
+sort anthill.prelude.DelayMonad[M[T, E]]                 -- E : captured effect set (a row, held as a type)
+  operation pure[A](a: A) -> M[T = A, E = {}]                                  -- captures nothing
+  operation delay[A, EffP](thunk: () -> A @ EffP) -> M[T = A, E = EffP]        -- capture: row -> E
+  operation flatMap[A, B, E1, E2](m: M[T = A, E = E1],
+                                  f: (A) -> M[T = B, E = E2])
+            -> M[T = B, E = {E1, E2}]                                          -- compose; UNION captured
+  operation force[A, Eff](m: M[T = A, E = Eff]) -> A effects Eff               -- perform captured (run at Eff = {})
+end
+
+-- The canonical instance `Delay` (the free graded monad — a suspended thunk
+-- `() -> T @ E`, captures everything, interprets nothing) is BLOCKED on WI-516:
+-- the typer represents an effect-set-valued row variable inconsistently between
+-- `{E1, E2}` position (open tails) and forced/`effects` position (present
+-- labels), so `delayFlatMap`'s body cannot conform to its declared
+-- `E = {E1, E2}` return. `pure`/`delay`/`force` type-check; only the `flatMap`
+-- merge fails. The full Delay design is written up in proposal 047. Once WI-516
+-- lands, the instance lands here.
