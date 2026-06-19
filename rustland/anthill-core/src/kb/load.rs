@@ -249,6 +249,16 @@ pub enum LoadError {
     ConstraintViolated {
         label: Option<String>,
     },
+    /// WI-514: a registered integrity constraint rides occurrence (`Value::Node`)
+    /// leaves the term-based resolver cannot evaluate yet (gated on the WI-246
+    /// resolver occurrence migration). The post-load `check_all_guards` pass
+    /// reports it loudly. Load-BLOCKING: the constraint cannot be enforced, so
+    /// loading anyway would silently run with an unchecked invariant — the very
+    /// silent-skip the "surfaced loudly" intent forbids. (Was routed through the
+    /// non-blocking `Other` variant, which only surfaced as a warning.)
+    ConstraintGated {
+        label: Option<String>,
+    },
     /// WI-023: a constraint uses a form the guard engine cannot yet enforce
     /// CORRECTLY — e.g. a `forall` with a multi-atom / nested `-:` body (whose
     /// negation needs `¬(Q1 ∧ Q2)`, which the per-goal negation can't express).
@@ -381,6 +391,13 @@ impl LoadError {
             LoadError::ConstraintViolated { label } => {
                 format!("integrity constraint{} is violated by the loaded facts", label_suffix(label))
             }
+            LoadError::ConstraintGated { label } => {
+                format!(
+                    "integrity constraint{} uses occurrence patterns the resolver \
+                     cannot yet evaluate (gated on the WI-246 occurrence migration)",
+                    label_suffix(label),
+                )
+            }
             LoadError::UnsupportedConstraintForm { label, detail, span } => {
                 let (line, col) = Span::line_col(source, span.start);
                 format!("{}:{}: constraint{} uses an unsupported form: {}", line, col, label_suffix(label), detail)
@@ -468,12 +485,15 @@ impl LoadError {
             // integrity constraint are both unsound to run with.
             | LoadError::AggregationConstraintUnsupported { .. }
             | LoadError::ConstraintViolated { .. }
+            // WI-514: a gated (occurrence-leaf) constraint cannot be enforced —
+            // load-blocking so we never run with a silently-unchecked invariant.
+            | LoadError::ConstraintGated { .. }
             | LoadError::UnsupportedConstraintForm { .. })
     }
 }
 
 /// Render a constraint label as ` 'label'` for diagnostics, or `""` if unlabeled.
-fn label_suffix(label: &Option<String>) -> String {
+pub(crate) fn label_suffix(label: &Option<String>) -> String {
     match label {
         Some(l) => format!(" '{l}'"),
         None => String::new(),
@@ -559,6 +579,9 @@ impl std::fmt::Display for LoadError {
             }
             LoadError::ConstraintViolated { label } => {
                 write!(f, "integrity constraint{} is violated by the loaded facts", label_suffix(label))
+            }
+            LoadError::ConstraintGated { label } => {
+                write!(f, "integrity constraint{} uses occurrence patterns the resolver cannot yet evaluate (gated on the WI-246 occurrence migration)", label_suffix(label))
             }
             LoadError::UnsupportedConstraintForm { label, detail, span } => {
                 write!(f, "constraint{} uses an unsupported form ({}) at {}..{}", label_suffix(label), detail, span.start, span.end)
@@ -2677,13 +2700,13 @@ fn load_phase_inner(
             super::GuardCheck::Violated(label) => {
                 all_errors.push(LoadError::ConstraintViolated { label });
             }
+            // WI-514: route through the dedicated load-BLOCKING variant. Was
+            // `LoadError::Other`, which `is_load_blocking` excludes — so a gated
+            // constraint surfaced as a non-fatal warning and the KB loaded with
+            // the invariant unenforced (the opposite of the "surfaced loudly"
+            // intent).
             super::GuardCheck::Gated(label) => {
-                all_errors.push(LoadError::Other {
-                    message: format!(
-                        "integrity constraint{} uses occurrence patterns the resolver cannot yet evaluate (gated on the WI-246 occurrence migration)",
-                        label_suffix(&label),
-                    ),
-                });
+                all_errors.push(LoadError::ConstraintGated { label });
             }
         }
     }

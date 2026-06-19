@@ -113,6 +113,7 @@ struct Guard {
 }
 
 /// Outcome of evaluating one registered guard in the WI-023 post-load check.
+#[derive(Debug, PartialEq, Eq)]
 pub enum GuardCheck {
     /// The constraint holds under the current facts.
     Holds,
@@ -132,6 +133,26 @@ fn value_goal_term(v: &crate::eval::value::Value) -> Option<TermId> {
         crate::eval::value::Value::Term(t) => Some(*t),
         _ => None,
     }
+}
+
+/// WI-514: a guard's `LogicalQuery` could not be lowered to term-based resolution
+/// goals because some leaf is an occurrence (`Value::Node`) — or any non-term
+/// `Value` — that the term-based resolver cannot evaluate yet (gated on the
+/// WI-246 resolver occurrence migration). [`lower_logical_query`] signals this
+/// instead of silently dropping the leaf, so [`KnowledgeBase::check_all_guards`]
+/// reports a load-BLOCKING [`GuardCheck::Gated`] and [`KnowledgeBase::assert_checked`]
+/// refuses the fact rather than enforcing nothing. The single source of truth for
+/// "is this guard evaluable today?" — it replaces the prior separate `guard_evaluable`
+/// pre-walk, which could (and did) diverge from the lowering it was meant to gate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct GuardGated;
+
+/// A single `LogicalQuery` leaf as a resolution goal: `Ok(vec![t])` if it carries
+/// a hash-consed `TermId`, else `Err(GuardGated)`. The one place the leaf-gating
+/// policy lives (WI-514): a non-term occurrence leaf — or an absent (`None`) child
+/// — is gated, never silently dropped to an empty goal list.
+fn leaf_goal(v: Option<&crate::eval::value::Value>) -> Result<Vec<TermId>, GuardGated> {
+    v.and_then(value_goal_term).map(|t| vec![t]).ok_or(GuardGated)
 }
 
 // ── Rule entry ──────────────────────────────────────────────────
@@ -1150,11 +1171,33 @@ impl KnowledgeBase {
 
         for &idx in &guard_indices {
             let query = self.guards[idx].query.clone();
-            // A gated (occurrence-leaf) guard cannot be enforced here — the batch
-            // post-load check reports it loudly; this per-assert path skips it.
-            if self.guard_evaluable(&query) && !self.evaluate_guard(&query) {
-                self.retract(rule_id);
-                return None;
+            match self.evaluate_guard(&query) {
+                Ok(true) => {}
+                Ok(false) => {
+                    self.retract(rule_id);
+                    return None;
+                }
+                // WI-514: a gated (occurrence-leaf) guard cannot be enforced on
+                // this per-assert runtime path. The old behavior silently kept the
+                // fact (the `&&` short-circuit), running with an unchecked invariant.
+                //
+                // This is a genuine invariant tripwire, NOT an inconsistency with the
+                // graceful load-time path: a gated guard is `is_load_blocking`, so a
+                // KB never finishes loading with one registered. Reaching it here thus
+                // means occurrence guards were enabled without wiring this runtime path
+                // (gated on WI-246) — a programmer error, not user input. Retract and
+                // panic loudly rather than silently asserting.
+                Err(GuardGated) => {
+                    self.retract(rule_id);
+                    let label = self.guards[idx].label.clone();
+                    panic!(
+                        "assert_checked: integrity constraint{} carries occurrence \
+                         (Value::Node) leaves the term-based resolver cannot \
+                         evaluate yet — this per-assert runtime guard path is gated \
+                         on the WI-246 resolver occurrence migration (WI-514)",
+                        load::label_suffix(&label),
+                    );
+                }
             }
         }
 
@@ -1169,50 +1212,18 @@ impl KnowledgeBase {
         for idx in 0..self.guards.len() {
             let query = self.guards[idx].query.clone();
             let label = self.guards[idx].label.clone();
-            if !self.guard_evaluable(&query) {
-                out.push(GuardCheck::Gated(label));
-            } else if self.evaluate_guard(&query) {
-                out.push(GuardCheck::Holds);
-            } else {
-                out.push(GuardCheck::Violated(label));
+            // WI-514: `evaluate_guard` is the single source of truth — a gated
+            // (occurrence-leaf) guard returns `Err(GuardGated)`, routed to a
+            // load-BLOCKING `GuardCheck::Gated` rather than the prior non-blocking
+            // `LoadError::Other`. (Was a separate `guard_evaluable` pre-walk that
+            // could diverge from the lowering it gated.)
+            match self.evaluate_guard(&query) {
+                Ok(true) => out.push(GuardCheck::Holds),
+                Ok(false) => out.push(GuardCheck::Violated(label)),
+                Err(GuardGated) => out.push(GuardCheck::Gated(label)),
             }
         }
         out
-    }
-
-    /// Whether a guard's `LogicalQuery` lowers to goals the resolver can evaluate
-    /// today: every `pattern_query` leaf must carry a hash-consed `TermId` (the
-    /// resolver is still term-based — occurrence/`Value::Node` leaves are gated on
-    /// the WI-246 resolver migration). Read-only; carrier-agnostic via `TermView`.
-    fn guard_evaluable(&self, view: &crate::eval::value::Value) -> bool {
-        use term_view::{TermView, ViewHead};
-        let head = TermView::head(view, self);
-        let Some(functor) = head.functor_sym() else { return true };
-        if self.resolve_sym(functor) == "pattern_query" {
-            let inner = self.lookup_symbol("term")
-                .and_then(|s| TermView::named_arg(view, self, s))
-                .or_else(|| TermView::pos_arg(view, self, 0));
-            return inner.map_or(true, |c| c.as_term_id().is_some());
-        }
-        let pos_arity = match &head {
-            ViewHead::Functor { pos_arity, .. } => *pos_arity,
-            _ => 0,
-        };
-        for k in TermView::named_keys(view, self) {
-            if let Some(c) = TermView::named_arg(view, self, k) {
-                if !self.guard_evaluable(&c.to_value()) {
-                    return false;
-                }
-            }
-        }
-        for i in 0..pos_arity {
-            if let Some(c) = TermView::pos_arg(view, self, i) {
-                if !self.guard_evaluable(&c.to_value()) {
-                    return false;
-                }
-            }
-        }
-        true
     }
 
     /// Read a named child of a `LogicalQuery` view as an owned, carrier-agnostic
@@ -1222,10 +1233,15 @@ impl KnowledgeBase {
         term_view::TermView::named_arg(view, self, sym).map(|c| c.to_value())
     }
 
-    /// Evaluate a `LogicalQuery` guard (read through `TermView`). True if it holds.
-    fn evaluate_guard(&mut self, guard: &crate::eval::value::Value) -> bool {
+    /// Evaluate a `LogicalQuery` guard (read through `TermView`). `Ok(true)` if it
+    /// holds, `Ok(false)` if violated, `Err(GuardGated)` if a leaf is an
+    /// occurrence the term-based resolver cannot evaluate yet (WI-514).
+    fn evaluate_guard(&mut self, guard: &crate::eval::value::Value) -> Result<bool, GuardGated> {
         let Some(functor) = term_view::TermView::head(guard, self).functor_sym() else {
-            return true; // non-functor head: vacuously true
+            // A bare leaf as a whole guard is not a quantified constraint we
+            // enforce, but lowering still gates a non-term occurrence leaf rather
+            // than silently holding (WI-514).
+            return self.lower_logical_query(guard).map(|_| true);
         };
         match self.resolve_sym(functor).to_string().as_str() {
             "lone_q" => self.eval_count_guard(guard, 0, 1),
@@ -1234,7 +1250,23 @@ impl KnowledgeBase {
             "no_q" => self.eval_count_guard(guard, 0, 0),
             "forall_q" => self.eval_forall_guard(guard),
             "negation" => self.eval_negation_guard(guard),
-            _ => true, // unknown guard kind: vacuously true
+            // Any other ctor — a top-level `pattern_query` / `conjunction` from a
+            // NON-quantified constraint, or a not-yet-supported query kind — is not
+            // enforced (vacuously holds), but we still LOWER it so an occurrence
+            // leaf surfaces as `Err(GuardGated)`. Lowering is the single gate; this
+            // restores the whole-tree occurrence coverage the deleted
+            // `guard_evaluable` pre-walk had (it caught leaves under any functor,
+            // not just the six quantifier/negation ctors). `.map(|_| true)` discards
+            // the goals: we don't run the constraint, only check it is groundable.
+            //
+            // NOTE the term-carried unsupported-ctor gap is NOT closed here: a
+            // `Value::Term` `disjunction`/`sort_query`/`count_q`/… lowers as one
+            // opaque goal (`leaf_goal` → `Ok(vec![whole_term])`) and resolves to no
+            // matches → vacuously holds, silently unenforced. That predates this WI
+            // and `build_logical_query` never emits those ctors today; making the
+            // unsupported *constructor* loud is WI-513's job (consolidate onto the
+            // loud `execute.rs::lower_query`). WI-514 only hardens occurrence leaves.
+            _ => self.lower_logical_query(guard).map(|_| true),
         }
     }
 
@@ -1244,22 +1276,22 @@ impl KnowledgeBase {
         guard: &crate::eval::value::Value,
         min: usize,
         max: usize,
-    ) -> bool {
+    ) -> Result<bool, GuardGated> {
         let condition = self.guard_child(guard, "condition");
         let body = self.guard_child(guard, "body");
 
         let mut goals = Vec::new();
         if let Some(c) = &condition {
-            goals.extend(self.lower_logical_query(c));
+            goals.extend(self.lower_logical_query(c)?);
         }
         if let Some(b) = &body {
             // empty_query produces no goals — treat as trivially true
-            goals.extend(self.lower_logical_query(b));
+            goals.extend(self.lower_logical_query(b)?);
         }
 
         if goals.is_empty() {
             // No goals means trivially satisfied; count depends on context
-            return min == 0;
+            return Ok(min == 0);
         }
 
         let config = resolve::ResolveConfig {
@@ -1272,22 +1304,22 @@ impl KnowledgeBase {
         };
         let solutions = self.resolve(&goals, &config);
         let count = solutions.len();
-        count >= min && count <= max
+        Ok(count >= min && count <= max)
     }
 
     /// Evaluate forall_q(var, condition, body): condition AND body must hold
     /// for all solutions. Equivalent to: no solutions of (condition AND NOT body).
-    fn eval_forall_guard(&mut self, guard: &crate::eval::value::Value) -> bool {
+    fn eval_forall_guard(&mut self, guard: &crate::eval::value::Value) -> Result<bool, GuardGated> {
         let condition = self.guard_child(guard, "condition");
         let body = self.guard_child(guard, "body");
 
         // forall x: P -: Q ≡ no x: P -: not(Q)
         let mut goals = Vec::new();
         if let Some(c) = &condition {
-            goals.extend(self.lower_logical_query(c));
+            goals.extend(self.lower_logical_query(c)?);
         }
         if let Some(b) = &body {
-            let body_goals = self.lower_logical_query(b);
+            let body_goals = self.lower_logical_query(b)?;
             if !body_goals.is_empty() {
                 // Negate the body: build not(body_goal) for each
                 let not_sym = self.intern("not");
@@ -1303,7 +1335,7 @@ impl KnowledgeBase {
         }
 
         if goals.is_empty() {
-            return true;
+            return Ok(true);
         }
 
         // If any solution exists, the forall is violated
@@ -1312,75 +1344,67 @@ impl KnowledgeBase {
             ..resolve::ResolveConfig::default()
         };
         let solutions = self.resolve(&goals, &config);
-        solutions.is_empty()
+        Ok(solutions.is_empty())
     }
 
     /// Evaluate negation(query): the inner query must have no solutions.
-    fn eval_negation_guard(&mut self, guard: &crate::eval::value::Value) -> bool {
+    fn eval_negation_guard(&mut self, guard: &crate::eval::value::Value) -> Result<bool, GuardGated> {
         let inner = self.guard_child(guard, "query");
 
         if let Some(inner) = &inner {
-            let goals = self.lower_logical_query(inner);
+            let goals = self.lower_logical_query(inner)?;
             if goals.is_empty() {
-                return false; // negation of empty_query (always true) = false
+                return Ok(false); // negation of empty_query (always true) = false
             }
             let config = resolve::ResolveConfig {
                 max_solutions: 1,
                 ..resolve::ResolveConfig::default()
             };
             let solutions = self.resolve(&goals, &config);
-            solutions.is_empty() // negation holds if no solutions
+            Ok(solutions.is_empty()) // negation holds if no solutions
         } else {
-            true
+            Ok(true)
         }
     }
 
-    /// Lower a `LogicalQuery` (read through `TermView`) to resolution goals. A
-    /// `pattern_query` leaf must carry a hash-consed `TermId` (the resolver is
-    /// term-based); a non-term occurrence leaf is gated and pre-filtered by
-    /// [`guard_evaluable`](Self::guard_evaluable), so reaching one here is a bug
-    /// (loud in debug, no goal in release).
-    fn lower_logical_query(&mut self, lq: &crate::eval::value::Value) -> Vec<TermId> {
+    /// Lower a `LogicalQuery` (read through `TermView`) to resolution goals. A leaf
+    /// goal must carry a hash-consed `TermId` (the resolver is term-based); a
+    /// non-term occurrence leaf yields `Err(GuardGated)` (WI-514) rather than being
+    /// silently dropped — gated on the WI-246 resolver occurrence migration. This
+    /// is the single gate: the caller ([`evaluate_guard`](Self::evaluate_guard))
+    /// turns `Err` into a load-BLOCKING `GuardCheck::Gated` / a refused assertion.
+    fn lower_logical_query(&mut self, lq: &crate::eval::value::Value) -> Result<Vec<TermId>, GuardGated> {
         let Some(functor) = term_view::TermView::head(lq, self).functor_sym() else {
-            // A bare leaf with no functor head (var / const) — a single goal if
-            // it is a hash-consed term, mirroring the old `_ => vec![lq_term]`.
-            return value_goal_term(lq).into_iter().collect();
+            // A bare leaf with no functor head (var / const) — a single goal if it
+            // is a hash-consed term, mirroring the old `_ => vec![lq_term]`.
+            return leaf_goal(Some(lq));
         };
         match self.resolve_sym(functor).to_string().as_str() {
             "pattern_query" => {
                 let inner = self.guard_child(lq, "term").or_else(|| {
                     term_view::TermView::pos_arg(lq, self, 0).map(|c| c.to_value())
                 });
-                match inner.as_ref().and_then(value_goal_term) {
-                    Some(t) => vec![t],
-                    None => {
-                        debug_assert!(
-                            false,
-                            "occurrence-leaf guard goal not yet evaluable (resolver TermId-goal gate)"
-                        );
-                        Vec::new()
-                    }
-                }
+                leaf_goal(inner.as_ref())
             }
             "conjunction" => {
                 let left = self.guard_child(lq, "left");
                 let right = self.guard_child(lq, "right");
                 let mut goals = Vec::new();
                 if let Some(l) = &left {
-                    goals.extend(self.lower_logical_query(l));
+                    goals.extend(self.lower_logical_query(l)?);
                 }
                 if let Some(r) = &right {
-                    goals.extend(self.lower_logical_query(r));
+                    goals.extend(self.lower_logical_query(r)?);
                 }
-                goals
+                Ok(goals)
             }
-            "empty_query" => Vec::new(),
+            "empty_query" => Ok(Vec::new()),
             "negation" => {
                 let inner = self.guard_child(lq, "query");
                 if let Some(inner) = &inner {
-                    let inner_goals = self.lower_logical_query(inner);
+                    let inner_goals = self.lower_logical_query(inner)?;
                     if inner_goals.is_empty() {
-                        return Vec::new();
+                        return Ok(Vec::new());
                     }
                     if inner_goals.len() == 1 {
                         let not_sym = self.intern("not");
@@ -1389,19 +1413,19 @@ impl KnowledgeBase {
                             pos_args: SmallVec::from_slice(&inner_goals),
                             named_args: SmallVec::new(),
                         });
-                        vec![not_term]
+                        Ok(vec![not_term])
                     } else {
                         // Multiple goals: negate as conjunction
                         // TODO: proper conjunction wrapping
-                        inner_goals
+                        Ok(inner_goals)
                     }
                 } else {
-                    Vec::new()
+                    Ok(Vec::new())
                 }
             }
             // Unknown LogicalQuery ctor: the whole view as one goal if it is a
-            // hash-consed term (old `_ => vec![lq_term]`).
-            _ => value_goal_term(lq).into_iter().collect(),
+            // hash-consed term (old `_ => vec![lq_term]`); a non-term is gated.
+            _ => leaf_goal(Some(lq)),
         }
     }
 
@@ -5422,5 +5446,228 @@ mod tests {
         kb.retract(rid);
         assert_eq!(kb.rule_count(), 0);
         assert_eq!(kb.fact_count(), 0);
+    }
+}
+
+/// WI-514: a guard riding an occurrence (`Value::Node`) leaf the term-based
+/// resolver cannot evaluate yet (gated on WI-246) must surface LOUDLY, never as a
+/// silent skip:
+///   1. `check_all_guards` reports `GuardCheck::Gated`, which the loader routes to
+///      the load-BLOCKING `LoadError::ConstraintGated` (was a non-blocking `Other`);
+///   2. `lower_logical_query` signals the non-term leaf via `Err(GuardGated)` (was a
+///      `debug_assert!(false)` + empty goals — silent in release);
+///   3. `assert_checked` panics rather than silently asserting with the constraint
+///      unenforced.
+///
+/// The loader always builds `Value::Term` guards today, so these paths are dormant
+/// in normal loads — exercised here by constructing an occurrence-leaf guard
+/// directly (the post-WI-246 shape).
+#[cfg(test)]
+mod wi514_guard_gating_tests {
+    use super::*;
+    use crate::eval::value::Value;
+    use crate::intern::Symbol;
+    use crate::kb::load::LoadError;
+    use crate::kb::node_occurrence::{Expr, NodeOccurrence};
+    use crate::span::{SourceId, SourceSpan};
+    use smallvec::SmallVec;
+    use std::rc::Rc;
+
+    /// Build `no_q(condition: pattern_query(term: <leaf>), body: empty_query)` — a
+    /// quantified guard around `leaf`. The top level is a quantifier so
+    /// `evaluate_guard` descends into `lower_logical_query` (a bare `pattern_query`
+    /// would be treated as vacuously true and never lowered). Pass a `Value::Node`
+    /// for the gated shape, a `Value::Term` for the ordinary shape.
+    fn no_q_guard(kb: &mut KnowledgeBase, leaf: Value) -> Value {
+        let no_q = kb.intern("no_q");
+        let condition = kb.intern("condition");
+        let body = kb.intern("body");
+        let pattern_query = kb.intern("pattern_query");
+        let term = kb.intern("term");
+        let empty_query = kb.intern("empty_query");
+
+        let pq = Value::Entity {
+            functor: pattern_query,
+            pos: Rc::from(Vec::<Value>::new()),
+            named: Rc::from(vec![(term, leaf)]),
+        };
+        let empty = Value::Entity {
+            functor: empty_query,
+            pos: Rc::from(Vec::<Value>::new()),
+            named: Rc::from(Vec::<(Symbol, Value)>::new()),
+        };
+        Value::Entity {
+            functor: no_q,
+            pos: Rc::from(Vec::<Value>::new()),
+            named: Rc::from(vec![(condition, pq), (body, empty)]),
+        }
+    }
+
+    /// An occurrence (`Value::Node`) leaf the term-based resolver cannot lower —
+    /// the post-WI-246 guard shape these tests exercise (the loader builds only
+    /// `Value::Term` guards today, so the gated paths are otherwise dormant).
+    fn occurrence_leaf() -> Value {
+        Value::Node(NodeOccurrence::new_expr(
+            Expr::Bottom,
+            SourceSpan::new(SourceId::from_raw(0), 0, 0),
+            None,
+        ))
+    }
+
+    /// (1) `check_all_guards` reports `Gated` (not `Holds`/`Violated`) for an
+    /// occurrence-leaf guard, carrying the source label.
+    #[test]
+    fn occurrence_leaf_guard_reports_gated() {
+        let mut kb = KnowledgeBase::new();
+        let query = no_q_guard(&mut kb, occurrence_leaf());
+        kb.add_guard_labeled(query, Some("occ_constraint".to_string()));
+
+        let checks = kb.check_all_guards();
+        assert_eq!(
+            checks,
+            vec![GuardCheck::Gated(Some("occ_constraint".to_string()))],
+            "an occurrence (Value::Node) leaf must make the guard Gated, not silently Holds",
+        );
+    }
+
+    /// (1, blocking half) the dedicated `ConstraintGated` variant the loader routes
+    /// `GuardCheck::Gated` to is load-BLOCKING — the prior `LoadError::Other` was not.
+    #[test]
+    fn constraint_gated_error_is_load_blocking() {
+        assert!(LoadError::ConstraintGated { label: None }.is_load_blocking());
+        assert!(LoadError::ConstraintGated { label: Some("c".to_string()) }.is_load_blocking());
+    }
+
+    /// (3) the per-assert runtime path panics loudly on a gated guard rather than
+    /// silently asserting the fact with the constraint unenforced.
+    #[test]
+    #[should_panic(expected = "WI-514")]
+    fn assert_checked_panics_on_gated_guard() {
+        let mut kb = KnowledgeBase::new();
+        let query = no_q_guard(&mut kb, occurrence_leaf());
+        let cid = kb.add_guard_labeled(query, Some("occ_constraint".to_string()));
+
+        // Wire the gated guard to the asserted fact's sort — the synthetic
+        // occurrence query carries no resolvable trigger sort, so the per-assert
+        // lookup (`guards_by_sort`) would otherwise miss it and skip the check.
+        let sort = kb.make_name_term("Widget");
+        kb.guards_by_sort.entry(sort).or_default().push(cid.index());
+
+        let domain = kb.make_name_term("test");
+        let functor = kb.intern("w");
+        let fact = kb.alloc(Term::Fn {
+            functor,
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::new(),
+        });
+        kb.assert_checked(fact, sort, domain, None);
+    }
+
+    /// A term-leaf guard (the only shape the loader builds today) is unaffected:
+    /// `check_all_guards` evaluates it normally — `no_q` with no matching facts
+    /// holds. Guards against the gating change regressing ordinary constraints.
+    #[test]
+    fn term_leaf_guard_still_evaluates() {
+        let mut kb = KnowledgeBase::new();
+        // A hash-consed TermId leaf (a nullary `widget` atom) — never matched by
+        // any fact, so `no_q` holds.
+        let widget = kb.intern("widget");
+        let leaf_term = kb.alloc(Term::Fn {
+            functor: widget,
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::new(),
+        });
+        let query = no_q_guard(&mut kb, Value::Term(leaf_term));
+        kb.add_guard_labeled(query, Some("term_constraint".to_string()));
+
+        assert_eq!(
+            kb.check_all_guards(),
+            vec![GuardCheck::Holds],
+            "a term-leaf `no_q` with no matching facts must hold (not Gated)",
+        );
+    }
+
+    /// The coverage gap the WI-514 review surfaced: a NON-quantified constraint
+    /// lowers to a TOP-LEVEL `pattern_query` (not a quantifier), so `evaluate_guard`
+    /// reaches its catch-all arm. An occurrence leaf there must still be `Gated`,
+    /// not silently `Holds` — the deleted `guard_evaluable` whole-tree pre-walk
+    /// caught this; the single-gate `evaluate_guard` must too.
+    #[test]
+    fn top_level_pattern_query_occurrence_leaf_reports_gated() {
+        let mut kb = KnowledgeBase::new();
+        let pattern_query = kb.intern("pattern_query");
+        let term = kb.intern("term");
+        let query = Value::Entity {
+            functor: pattern_query,
+            pos: Rc::from(Vec::<Value>::new()),
+            named: Rc::from(vec![(term, occurrence_leaf())]),
+        };
+        kb.add_guard_labeled(query, Some("bare_constraint".to_string()));
+
+        assert_eq!(
+            kb.check_all_guards(),
+            vec![GuardCheck::Gated(Some("bare_constraint".to_string()))],
+            "a top-level pattern_query with an occurrence leaf must be Gated, not Holds",
+        );
+    }
+
+    /// `Err(GuardGated)` must propagate out of `lower_logical_query`'s RECURSIVE
+    /// `conjunction` arm — the `?` in `goals.extend(self.lower_logical_query(l)?)`
+    /// is the load-bearing new wiring (a term leaf on the left, an occurrence leaf
+    /// nested on the right). Without the propagation the conjunction would lower to
+    /// just the left goal and the gated right leaf would be silently dropped.
+    #[test]
+    fn conjunction_with_nested_occurrence_leaf_reports_gated() {
+        let mut kb = KnowledgeBase::new();
+        let no_q = kb.intern("no_q");
+        let condition = kb.intern("condition");
+        let body = kb.intern("body");
+        let conjunction = kb.intern("conjunction");
+        let left = kb.intern("left");
+        let right = kb.intern("right");
+        let pattern_query = kb.intern("pattern_query");
+        let term = kb.intern("term");
+        let empty_query = kb.intern("empty_query");
+
+        // A hash-consed term leaf on the left (lowers fine)…
+        let widget = kb.intern("widget");
+        let term_leaf = kb.alloc(Term::Fn {
+            functor: widget,
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::new(),
+        });
+        let pq_term = Value::Entity {
+            functor: pattern_query,
+            pos: Rc::from(Vec::<Value>::new()),
+            named: Rc::from(vec![(term, Value::Term(term_leaf))]),
+        };
+        // …an occurrence leaf nested on the right (must gate the whole conjunction).
+        let pq_occ = Value::Entity {
+            functor: pattern_query,
+            pos: Rc::from(Vec::<Value>::new()),
+            named: Rc::from(vec![(term, occurrence_leaf())]),
+        };
+        let conj = Value::Entity {
+            functor: conjunction,
+            pos: Rc::from(Vec::<Value>::new()),
+            named: Rc::from(vec![(left, pq_term), (right, pq_occ)]),
+        };
+        let empty = Value::Entity {
+            functor: empty_query,
+            pos: Rc::from(Vec::<Value>::new()),
+            named: Rc::from(Vec::<(Symbol, Value)>::new()),
+        };
+        let query = Value::Entity {
+            functor: no_q,
+            pos: Rc::from(Vec::<Value>::new()),
+            named: Rc::from(vec![(condition, conj), (body, empty)]),
+        };
+        kb.add_guard_labeled(query, Some("conj_constraint".to_string()));
+
+        assert_eq!(
+            kb.check_all_guards(),
+            vec![GuardCheck::Gated(Some("conj_constraint".to_string()))],
+            "an occurrence leaf nested in a conjunction must gate the whole guard",
+        );
     }
 }
