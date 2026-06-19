@@ -437,11 +437,73 @@ pub struct Fact {
 #[derive(Debug)]
 pub struct Constraint {
     pub label: Option<Name>,
-    pub head: Vec<TermId>,
-    pub guard: Option<Vec<TermId>>,
+    pub body: ConstraintBody,
     pub meta: Option<MetaBlock>,
     pub span: Span,
 }
+
+/// WI-023: the shape of a constraint. The plain `[head] [:- guard]` denial form,
+/// a quantified form (`forall/some/one/lone/no ?x [: cond] -: body`), or an
+/// aggregation form (`count/sum/min/max(?x: cond -: body) op bound`).
+#[derive(Debug)]
+pub enum ConstraintBody {
+    /// `constraint [label:] head [:- guard]` — the invariant/denial form.
+    /// `guard = None` is the bare always-checked invariant. This is the only
+    /// form the loader currently stores as an inert `Constraint` fact (its
+    /// historical behavior); the others lower to a `LogicalQuery` guard.
+    Denial {
+        head: Vec<TermId>,
+        guard: Option<Vec<TermId>>,
+    },
+    /// `forall/some/one/lone/no ?x [: condition] -: body`. `condition` is the
+    /// conjunction of patterns gating the binder (empty = no gate); `body` is
+    /// the nested constraint the bound rows must satisfy.
+    Quantified {
+        quantifier: Quantifier,
+        /// Binder name (the `?x` without its `?`). Carried for reflection; the
+        /// guard engine identifies the variable structurally, not by this name.
+        var: String,
+        condition: Vec<TermId>,
+        body: Box<ConstraintBody>,
+    },
+    /// A leaf query body — a conjunction of patterns reached as the `-: body`
+    /// of a quantifier when that body is not itself quantified.
+    Patterns(Vec<TermId>),
+    /// `count/sum/min/max(?x: condition -: body) op bound`. Parsed and carried
+    /// faithfully, but the guard engine cannot yet evaluate aggregation, so the
+    /// loader reports it as a loud "not yet enforced" error (WI-023 decision)
+    /// rather than registering a vacuously-true guard.
+    Aggregation {
+        aggregate: Aggregate,
+        var: String,
+        condition: Vec<TermId>,
+        body: Vec<TermId>,
+        op: CompareOp,
+        bound: TermId,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Quantifier { Forall, Some, One, Lone, No }
+
+impl Quantifier {
+    /// The `LogicalQuery` constructor name this quantifier lowers to.
+    pub fn logical_query_functor(self) -> &'static str {
+        match self {
+            Quantifier::Forall => "forall_q",
+            Quantifier::Some => "some_q",
+            Quantifier::One => "one_q",
+            Quantifier::Lone => "lone_q",
+            Quantifier::No => "no_q",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Aggregate { Count, Sum, Min, Max }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompareOp { Le, Ge, Lt, Gt, Eq, Ne }
 
 // ── Sugar: blocks ───────────────────────────────────────────────
 

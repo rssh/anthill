@@ -5,6 +5,9 @@ mod common;
 #[path = "include/wi009_phase3_builtins_test.rs"]
 mod wi009_phase3_builtins_test;
 
+#[path = "include/wi023_quantified_constraint_test.rs"]
+mod wi023_quantified_constraint_test;
+
 #[path = "include/wi419_same_spec_requires_test.rs"]
 mod wi419_same_spec_requires_test;
 

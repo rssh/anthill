@@ -235,6 +235,30 @@ pub enum LoadError {
     Other {
         message: String,
     },
+    /// WI-023: an `aggregation` constraint (`count/sum/min/max(…) op bound`). The
+    /// parser and loader carry it faithfully, but the guard engine cannot yet
+    /// evaluate aggregation — so the loader reports it loudly (load-blocking)
+    /// rather than registering a vacuously-true guard that would never fire.
+    AggregationConstraintUnsupported {
+        label: Option<String>,
+        span: Span,
+    },
+    /// WI-023: a registered integrity constraint is violated by the loaded facts
+    /// (the post-load `check_all_guards` pass). Load-blocking — the KB does not
+    /// satisfy its own stated invariant.
+    ConstraintViolated {
+        label: Option<String>,
+    },
+    /// WI-023: a constraint uses a form the guard engine cannot yet enforce
+    /// CORRECTLY — e.g. a `forall` with a multi-atom / nested `-:` body (whose
+    /// negation needs `¬(Q1 ∧ Q2)`, which the per-goal negation can't express).
+    /// Reported loudly (load-blocking) rather than registered as a guard that
+    /// would silently mis-evaluate.
+    UnsupportedConstraintForm {
+        label: Option<String>,
+        detail: String,
+        span: Span,
+    },
     /// WI-366: a value-in-type binding (a denoted value like `Vector[Int64, 3]`, or
     /// a `Modify[c]` effect row) in a sort-relation position (`sort T = …`, a
     /// `requires` / `provides` spec). It rides faithfully as a `Value::Node` fact,
@@ -349,6 +373,18 @@ impl LoadError {
             LoadError::Other { message } => {
                 format!("load error: {}", message)
             }
+            LoadError::AggregationConstraintUnsupported { label, span } => {
+                let (line, col) = Span::line_col(source, span.start);
+                format!("{}:{}: aggregation constraint{} is not yet enforced (the guard engine cannot evaluate count/sum/min/max)",
+                    line, col, label_suffix(label))
+            }
+            LoadError::ConstraintViolated { label } => {
+                format!("integrity constraint{} is violated by the loaded facts", label_suffix(label))
+            }
+            LoadError::UnsupportedConstraintForm { label, detail, span } => {
+                let (line, col) = Span::line_col(source, span.start);
+                format!("{}:{}: constraint{} uses an unsupported form: {}", line, col, label_suffix(label), detail)
+            }
             LoadError::ValueInTypeNotResolved { position, name } => {
                 format!(
                     "value-in-type binding in {} (`{}[…]`) is not yet resolved \
@@ -427,7 +463,47 @@ impl LoadError {
             | LoadError::InvalidFieldProjection { .. }
             // WI-369: a cross-scope reference to an `internal` name defeats the
             // encapsulation it was declared for — block.
-            | LoadError::ForbiddenInternalAccess { .. })
+            | LoadError::ForbiddenInternalAccess { .. }
+            // WI-023: an unenforceable aggregation constraint and a violated
+            // integrity constraint are both unsound to run with.
+            | LoadError::AggregationConstraintUnsupported { .. }
+            | LoadError::ConstraintViolated { .. }
+            | LoadError::UnsupportedConstraintForm { .. })
+    }
+}
+
+/// Render a constraint label as ` 'label'` for diagnostics, or `""` if unlabeled.
+fn label_suffix(label: &Option<String>) -> String {
+    match label {
+        Some(l) => format!(" '{l}'"),
+        None => String::new(),
+    }
+}
+
+/// WI-023: a quantifier body the guard evaluator cannot enforce CORRECTLY, with a
+/// human detail; `None` if the form is supported. Two cases: (1) a `forall` whose
+/// `-:` body is not a single pattern — its negation needs `¬(Q1 ∧ Q2)`, which the
+/// per-goal negation can't express (it would compute `¬Q1 ∧ ¬Q2`); (2) ANY
+/// quantifier with a NESTED quantified/aggregation body — `lower_logical_query`
+/// only lowers a pattern conjunction, so a nested quantifier would be treated as a
+/// single opaque goal. Pattern-conjunction bodies of `no`/`some`/`one`/`lone` are
+/// fine.
+fn unsupported_quantifier_form(body: &ConstraintBody) -> Option<String> {
+    let ConstraintBody::Quantified { quantifier, body, .. } = body else {
+        return None;
+    };
+    match body.as_ref() {
+        ConstraintBody::Patterns(v) => {
+            if *quantifier == Quantifier::Forall && v.len() != 1 {
+                Some("`forall` with a multi-atom `-:` body is not yet supported \
+                      (its negation needs ¬(Q1 ∧ Q2)); use a single body atom or \
+                      split into separate constraints".to_string())
+            } else {
+                None
+            }
+        }
+        _ => Some("a quantifier with a nested quantified/aggregation `-:` body is \
+                   not yet supported".to_string()),
     }
 }
 
@@ -477,6 +553,15 @@ impl std::fmt::Display for LoadError {
             }
             LoadError::Other { message } => {
                 write!(f, "load error: {}", message)
+            }
+            LoadError::AggregationConstraintUnsupported { label, span } => {
+                write!(f, "aggregation constraint{} is not yet enforced at {}..{}", label_suffix(label), span.start, span.end)
+            }
+            LoadError::ConstraintViolated { label } => {
+                write!(f, "integrity constraint{} is violated by the loaded facts", label_suffix(label))
+            }
+            LoadError::UnsupportedConstraintForm { label, detail, span } => {
+                write!(f, "constraint{} uses an unsupported form ({}) at {}..{}", label_suffix(label), detail, span.start, span.end)
             }
             LoadError::ValueInTypeNotResolved { position, name } => {
                 write!(
@@ -2581,6 +2666,28 @@ fn load_phase_inner(
     // a `requires`-user (which does NOT override) should be flagged, not block.
     all_warnings.extend(check_requires_shadows(kb));
     mark!("check_requires_shadows");
+    // WI-023: post-load integrity-constraint check. Every quantified constraint
+    // registered as a guard (via `load_constraint`) is evaluated against the now-
+    // complete fact set; a violation is load-blocking, an unevaluable (occurrence-
+    // leaf) guard is surfaced loudly rather than silently passing. No-op when no
+    // guards are registered (the common case — no quantified constraints).
+    for check in kb.check_all_guards() {
+        match check {
+            super::GuardCheck::Holds => {}
+            super::GuardCheck::Violated(label) => {
+                all_errors.push(LoadError::ConstraintViolated { label });
+            }
+            super::GuardCheck::Gated(label) => {
+                all_errors.push(LoadError::Other {
+                    message: format!(
+                        "integrity constraint{} uses occurrence patterns the resolver cannot yet evaluate (gated on the WI-246 occurrence migration)",
+                        label_suffix(&label),
+                    ),
+                });
+            }
+        }
+    }
+    mark!("check_all_guards");
     if all_errors.is_empty() {
         Ok((
             LoadResult { defined_sorts: all_sorts, fact_rule_ids: all_fact_ids, warnings: all_warnings },
@@ -9920,16 +10027,64 @@ impl<'a> Loader<'a> {
     }
 
     fn load_constraint(&mut self, c: &Constraint, domain: TermId) {
+        let label = c.label.as_ref().map(|n| join_segments(&self.parsed.symbols, &n.segments));
+        match &c.body {
+            ConstraintBody::Denial { head, guard } => {
+                // Historical behavior: store an inert `Constraint(head:, guard:)`
+                // fact. Denial/invariant constraints are NOT registered as guards
+                // (WI-023 wires only the quantified forms; enforcing the existing
+                // denial constraints is a separate concern with its own regression
+                // surface — the stdlib relies on them being inert today).
+                self.store_denial_constraint_fact(head, guard.as_deref(), domain);
+            }
+            ConstraintBody::Quantified { .. } | ConstraintBody::Patterns(_) => {
+                // WI-023: the guard EVALUATOR lowers a quantifier body as a pattern
+                // conjunction and negates `forall` bodies per-goal. A `forall` whose
+                // `-:` body is not a single pattern, or any quantifier with a NESTED
+                // quantified/aggregation body, would mis-evaluate — reject loudly
+                // rather than register a silently-wrong guard.
+                if let Some(detail) = unsupported_quantifier_form(&c.body) {
+                    self.errors.push(LoadError::UnsupportedConstraintForm {
+                        label,
+                        detail,
+                        span: c.span,
+                    });
+                    return;
+                }
+                // WI-023: lower to a `LogicalQuery` guard and register it. The guard
+                // is built as a hash-consed `TermId` (a stored structural reflect
+                // value, legitimately hash-consable) and handed to the carrier-
+                // agnostic `add_guard` via its `TermView` door.
+                if let Some(lq) = self.build_logical_query(&c.body) {
+                    self.kb.add_guard_labeled(lq, label);
+                    self.store_logical_query_constraint_fact(lq, domain);
+                }
+            }
+            ConstraintBody::Aggregation { .. } => {
+                // WI-023 decision: parsed + carried faithfully, but the guard engine
+                // cannot yet evaluate aggregation — a loud "not enforced" error
+                // rather than a silently-vacuous guard.
+                self.errors.push(LoadError::AggregationConstraintUnsupported {
+                    label,
+                    span: c.span,
+                });
+            }
+        }
+    }
+
+    /// Store the inert `Constraint(head(…) [, guard(…)])` reflection fact for a
+    /// denial/invariant constraint (the pre-WI-023 representation, unchanged).
+    fn store_denial_constraint_fact(
+        &mut self,
+        head: &[TermId],
+        guard: Option<&[TermId]>,
+        domain: TermId,
+    ) {
         let constraint_sort = self.kb.make_name_term("Constraint");
         let constraint_sym = self.kb.resolve_symbol("Constraint");
 
-        let head_pos: SmallVec<[TermId; 4]> = c.head
-            .iter()
-            .map(|&tid| self.convert_term(tid))
-            .collect();
-
+        let head_pos: SmallVec<[TermId; 4]> = head.iter().map(|&tid| self.convert_term(tid)).collect();
         let mut pos_args: SmallVec<[TermId; 4]> = SmallVec::new();
-
         let head_sym = self.kb.intern("head");
         let head_term = self.kb.alloc(Term::Fn {
             functor: head_sym,
@@ -9938,11 +10093,8 @@ impl<'a> Loader<'a> {
         });
         pos_args.push(head_term);
 
-        if let Some(guard) = &c.guard {
-            let guard_pos: SmallVec<[TermId; 4]> = guard
-                .iter()
-                .map(|&tid| self.convert_term(tid))
-                .collect();
+        if let Some(guard) = guard {
+            let guard_pos: SmallVec<[TermId; 4]> = guard.iter().map(|&tid| self.convert_term(tid)).collect();
             let guard_sym = self.kb.intern("guard");
             let guard_term = self.kb.alloc(Term::Fn {
                 functor: guard_sym,
@@ -9957,8 +10109,112 @@ impl<'a> Loader<'a> {
             pos_args,
             named_args: SmallVec::new(),
         });
-
         self.kb.assert_fact(constraint_term, constraint_sort, domain, None);
+    }
+
+    /// Store a queryable `Constraint(guard(<LogicalQuery>))` reflection fact for a
+    /// guard-registered (quantified) constraint, for parity with the denial form.
+    fn store_logical_query_constraint_fact(&mut self, lq: TermId, domain: TermId) {
+        let constraint_sort = self.kb.make_name_term("Constraint");
+        let constraint_sym = self.kb.resolve_symbol("Constraint");
+        let guard_sym = self.kb.intern("guard");
+        let guard_term = self.kb.alloc(Term::Fn {
+            functor: guard_sym,
+            pos_args: SmallVec::from_elem(lq, 1),
+            named_args: SmallVec::new(),
+        });
+        let constraint_term = self.kb.alloc(Term::Fn {
+            functor: constraint_sym,
+            pos_args: SmallVec::from_elem(guard_term, 1),
+            named_args: SmallVec::new(),
+        });
+        self.kb.assert_fact(constraint_term, constraint_sort, domain, None);
+    }
+
+    /// Resolve a `LogicalQuery` constructor symbol (`pattern_query`, `conjunction`,
+    /// `forall_q`, …). `None` (with a loud load error) if `anthill.reflect` is not
+    /// loaded, since a quantified constraint cannot then be lowered.
+    fn logical_query_ctor(&mut self, short: &str) -> Option<Symbol> {
+        let qn = format!("anthill.reflect.LogicalQuery.{short}");
+        let sym = self.kb.try_resolve_symbol(&qn);
+        if sym.is_none() {
+            self.errors.push(LoadError::Other {
+                message: format!("cannot lower quantified constraint: `{qn}` is unavailable (is anthill.reflect loaded?)"),
+            });
+        }
+        sym
+    }
+
+    /// WI-023: build the `LogicalQuery` guard term for a quantified/leaf body.
+    /// Returns `None` (with a load error already pushed) if a needed reflect
+    /// constructor is unavailable.
+    fn build_logical_query(&mut self, body: &ConstraintBody) -> Option<TermId> {
+        match body {
+            ConstraintBody::Quantified { quantifier, var, condition, body } => {
+                let ctor = self.logical_query_ctor(quantifier.logical_query_functor())?;
+                let cond_lq = self.build_patterns_lq(condition)?;
+                let body_lq = self.build_logical_query(body)?;
+                // The `var` slot carries the binder name (the engine identifies the
+                // variable structurally, not by this name).
+                let var_term = self.kb.alloc(Term::Const(Literal::String(var.clone())));
+                let var_sym = self.kb.intern("var");
+                let cond_sym = self.kb.intern("condition");
+                let body_sym = self.kb.intern("body");
+                let mut named_args: SmallVec<[(Symbol, TermId); 2]> = SmallVec::from_slice(&[
+                    (var_sym, var_term),
+                    (cond_sym, cond_lq),
+                    (body_sym, body_lq),
+                ]);
+                // Canonical named-arg order (matches every other term builder /
+                // the discrim index), so the reflect `Constraint(guard(…))` fact
+                // hash-conses and unifies with a sorted-order LogicalQuery term.
+                self.kb.sort_named_canonical(ctor, &mut named_args);
+                Some(self.kb.alloc(Term::Fn { functor: ctor, pos_args: SmallVec::new(), named_args }))
+            }
+            ConstraintBody::Patterns(terms) => self.build_patterns_lq(terms),
+            ConstraintBody::Denial { .. } | ConstraintBody::Aggregation { .. } => None,
+        }
+    }
+
+    /// Fold a conjunction of patterns into a `LogicalQuery`: empty → `empty_query`,
+    /// one → `pattern_query(term: p)`, many → right-nested `conjunction(…)`.
+    fn build_patterns_lq(&mut self, patterns: &[TermId]) -> Option<TermId> {
+        if patterns.is_empty() {
+            let empty = self.logical_query_ctor("empty_query")?;
+            return Some(self.kb.alloc(Term::Fn {
+                functor: empty,
+                pos_args: SmallVec::new(),
+                named_args: SmallVec::new(),
+            }));
+        }
+        let pattern_ctor = self.logical_query_ctor("pattern_query")?;
+        let conj_ctor = self.logical_query_ctor("conjunction")?;
+        let term_sym = self.kb.intern("term");
+        let left_sym = self.kb.intern("left");
+        let right_sym = self.kb.intern("right");
+        let mut acc: Option<TermId> = None;
+        for &p in patterns.iter().rev() {
+            let kb_pattern = self.convert_term(p);
+            let pq = self.kb.alloc(Term::Fn {
+                functor: pattern_ctor,
+                pos_args: SmallVec::new(),
+                named_args: SmallVec::from_slice(&[(term_sym, kb_pattern)]),
+            });
+            acc = Some(match acc {
+                None => pq,
+                Some(rest) => {
+                    let mut named_args: SmallVec<[(Symbol, TermId); 2]> =
+                        SmallVec::from_slice(&[(left_sym, pq), (right_sym, rest)]);
+                    self.kb.sort_named_canonical(conj_ctor, &mut named_args);
+                    self.kb.alloc(Term::Fn {
+                        functor: conj_ctor,
+                        pos_args: SmallVec::new(),
+                        named_args,
+                    })
+                }
+            });
+        }
+        acc
     }
 
     /// WI-366: surface a value-in-type binding in a sort-relation position

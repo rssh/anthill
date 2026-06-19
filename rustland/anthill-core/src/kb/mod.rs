@@ -98,11 +98,40 @@ enum GuardKind {
 struct Guard {
     #[allow(dead_code)]
     id: ConstraintId,
-    term: TermId,
+    /// The guard's `LogicalQuery`, carried carrier-agnostically (WI-023): a
+    /// `Value::Term` for the hash-consed structural form the loader builds today,
+    /// a `Value::Node` occurrence when a guard rides denoted patterns. Read only
+    /// through [`TermView`](term_view::TermView), so the engine never assumes a
+    /// `TermId`.
+    query: crate::eval::value::Value,
     #[allow(dead_code)]
     kind: GuardKind,
     #[allow(dead_code)]
     trigger_sorts: Vec<TermId>,
+    /// Source `constraint` label, for violation diagnostics. `None` if unlabeled.
+    label: Option<String>,
+}
+
+/// Outcome of evaluating one registered guard in the WI-023 post-load check.
+pub enum GuardCheck {
+    /// The constraint holds under the current facts.
+    Holds,
+    /// The constraint is violated. Carries the source label, if any.
+    Violated(Option<String>),
+    /// The guard rides occurrence (`Value::Node`) leaves the resolver cannot yet
+    /// evaluate (term-goal gate); enforcement is deferred and surfaced loudly
+    /// rather than silently passing. Carries the source label, if any.
+    Gated(Option<String>),
+}
+
+/// The hash-consed goal `TermId` a `LogicalQuery` leaf carries, if it is a term
+/// carrier. A `Value::Node` occurrence (or any non-term `Value`) yields `None` —
+/// it is gated on the resolver occurrence migration (WI-246), not a goal today.
+fn value_goal_term(v: &crate::eval::value::Value) -> Option<TermId> {
+    match v {
+        crate::eval::value::Value::Term(t) => Some(*t),
+        _ => None,
+    }
 }
 
 // ── Rule entry ──────────────────────────────────────────────────
@@ -951,51 +980,81 @@ impl KnowledgeBase {
 
     // ── Guards ───────────────────────────────────────────────────
 
-    /// Register a guard on the KB. Trigger sorts are auto-extracted from
-    /// the LogicalQuery tree.
-    pub fn add_guard(&mut self, guard_term: TermId) -> ConstraintId {
-        let trigger_sorts = self.extract_trigger_sorts(guard_term);
+    /// Register a guard on the KB (WI-023). The guard is any [`TermView`] — a
+    /// hash-consed `TermId` `LogicalQuery` (the loader's form today), a `Value`,
+    /// or a `Value::Node` occurrence — stored carrier-agnostically and read back
+    /// only through `TermView`, so the engine never assumes a `TermId`. Trigger
+    /// sorts are auto-extracted from the structure.
+    ///
+    /// [`TermView`]: term_view::TermView
+    pub fn add_guard<V: term_view::TermView>(&mut self, guard: V) -> ConstraintId {
+        self.add_guard_labeled(guard, None)
+    }
+
+    /// [`add_guard`](Self::add_guard) carrying the source constraint's label for
+    /// violation diagnostics.
+    pub fn add_guard_labeled<V: term_view::TermView>(
+        &mut self,
+        guard: V,
+        label: Option<String>,
+    ) -> ConstraintId {
+        use crate::eval::value::Value;
+        use crate::kb::persist_subst::BindValue;
+        // Own the guard carrier-agnostically. `as_bind_value` captures the whole
+        // structure (a `TermId` IS its structure; a `Value`/`Node` clones cheaply)
+        // and never yields a `Path` (that variant is for deferred subst leaves).
+        let query = match guard.as_bind_value() {
+            BindValue::Term(t) => Value::Term(t),
+            BindValue::Value(v) => v,
+            BindValue::Path(_) => unreachable!("TermView::as_bind_value never yields a Path"),
+        };
+        let trigger_sorts = self.extract_trigger_sorts(&query);
         let id = ConstraintId(self.guards.len() as u32);
-        self.terms.incref(guard_term);
+        // Keep any hash-consed leaves alive for the guard's lifetime. Guards are
+        // never retracted, so this incref is matched by no decref (as before).
+        let mut grounds = Vec::new();
+        collect_value_ground_terms_into(self, &query, &mut grounds);
+        for t in grounds {
+            self.terms.incref(t);
+        }
         for &s in &trigger_sorts {
             self.guards_by_sort.entry(s).or_default().push(id.index());
         }
         self.guards.push(Guard {
             id,
-            term: guard_term,
+            query,
             kind: GuardKind::General,
             trigger_sorts,
+            label,
         });
         id
     }
 
     /// Empty if reflect stdlib not loaded — guard then triggers on no sorts.
-    fn extract_trigger_sorts(&mut self, guard_term: TermId) -> Vec<TermId> {
+    fn extract_trigger_sorts(&mut self, guard: &crate::eval::value::Value) -> Vec<TermId> {
         let syms = execute::LogicalQuerySymbols::resolve(self);
         let mut out = Vec::new();
-        self.collect_trigger_sorts(guard_term, &syms, &mut out);
+        self.collect_trigger_sorts(guard, &syms, &mut out);
         out
     }
 
+    /// Carrier-agnostic structural walk (WI-023): reads the `LogicalQuery` through
+    /// [`TermView`](term_view::TermView), so a `TermId` and a `Value::Node`
+    /// occurrence carrying the same query extract identical trigger sorts.
     fn collect_trigger_sorts(
         &mut self,
-        term: TermId,
+        view: &crate::eval::value::Value,
         syms: &execute::LogicalQuerySymbols,
         out: &mut Vec<TermId>,
     ) {
-        let (functor, named, pos) = match self.terms.get(term) {
-            Term::Fn { functor, named_args, pos_args } => {
-                (*functor, named_args.clone(), pos_args.clone())
-            }
-            _ => return,
-        };
+        use term_view::{TermView, ViewHead};
+        let head = TermView::head(view, self);
+        let Some(functor) = head.functor_sym() else { return };
 
         if Some(functor) == syms.pattern_query {
-            let inner = named.iter()
-                .find(|(s, _)| *s == syms.term)
-                .map(|(_, t)| *t);
-            if let Some(inner_tid) = inner {
-                if let Some(sort) = self.term_to_trigger_sort(inner_tid) {
+            let inner = TermView::named_arg(view, self, syms.term).map(|c| c.to_value());
+            if let Some(inner) = inner {
+                if let Some(sort) = self.view_to_trigger_sort(&inner) {
                     if !out.contains(&sort) {
                         out.push(sort);
                     }
@@ -1005,10 +1064,10 @@ impl KnowledgeBase {
         }
 
         if Some(functor) == syms.sort_query {
-            let name = named.iter()
-                .find(|(s, _)| *s == syms.sort_name)
-                .and_then(|(_, t)| match self.terms.get(*t) {
-                    Term::Const(term::Literal::String(s)) => Some(s.clone()),
+            let name = TermView::named_arg(view, self, syms.sort_name)
+                .map(|c| c.to_value())
+                .and_then(|v| match TermView::head(&v, self) {
+                    ViewHead::Const(term::Literal::String(s)) => Some(s),
                     _ => None,
                 });
             if let Some(name) = name {
@@ -1022,20 +1081,28 @@ impl KnowledgeBase {
             return;
         }
 
-        for (_, t) in &named {
-            self.collect_trigger_sorts(*t, syms, out);
+        // Recurse into every structural child (named then positional). Own each
+        // child as a `Value` before recursing so no borrow of `self` is held.
+        let pos_arity = match &head {
+            ViewHead::Functor { pos_arity, .. } => *pos_arity,
+            _ => 0,
+        };
+        for k in TermView::named_keys(view, self) {
+            let child = TermView::named_arg(view, self, k).map(|c| c.to_value());
+            if let Some(child) = child {
+                self.collect_trigger_sorts(&child, syms, out);
+            }
         }
-        for &t in &pos {
-            self.collect_trigger_sorts(t, syms, out);
+        for i in 0..pos_arity {
+            let child = TermView::pos_arg(view, self, i).map(|c| c.to_value());
+            if let Some(child) = child {
+                self.collect_trigger_sorts(&child, syms, out);
+            }
         }
     }
 
-    fn term_to_trigger_sort(&mut self, t: TermId) -> Option<TermId> {
-        let functor = match self.terms.get(t) {
-            Term::Fn { functor, .. } => *functor,
-            Term::Ref(s) => *s,
-            _ => return None,
-        };
+    fn view_to_trigger_sort(&mut self, view: &crate::eval::value::Value) -> Option<TermId> {
+        let functor = term_view::TermView::head(view, self).functor_sym()?;
         if let Some(parent) = self.constructor_parent_sort(functor) {
             return Some(parent);
         }
@@ -1077,12 +1144,15 @@ impl KnowledgeBase {
             return Some(self.assert_fact(term, sort, domain, meta));
         }
 
-        // General path: insert tentatively, check guards, retract on failure
+        // General path: insert tentatively, check guards, retract on failure.
+        // Carrier-agnostic: the guard is read through `TermView` (WI-023).
         let rule_id = self.assert_fact(term, sort, domain, meta);
 
         for &idx in &guard_indices {
-            let guard_term = self.guards[idx].term;
-            if !self.evaluate_guard(guard_term) {
+            let query = self.guards[idx].query.clone();
+            // A gated (occurrence-leaf) guard cannot be enforced here — the batch
+            // post-load check reports it loudly; this per-assert path skips it.
+            if self.guard_evaluable(&query) && !self.evaluate_guard(&query) {
                 self.retract(rule_id);
                 return None;
             }
@@ -1091,51 +1161,100 @@ impl KnowledgeBase {
         Some(rule_id)
     }
 
-    /// Evaluate a LogicalQuery guard term. Returns true if the guard holds.
-    fn evaluate_guard(&mut self, guard_term: TermId) -> bool {
-        let term = self.terms.get(guard_term).clone();
-        match term {
-            Term::Fn { functor, named_args, .. } => {
-                let name = self.resolve_sym(functor);
-                match name {
-                    "lone_q" => self.eval_count_guard(&named_args, 0, 1),
-                    "one_q" => self.eval_count_guard(&named_args, 1, 1),
-                    "some_q" => self.eval_count_guard(&named_args, 1, usize::MAX),
-                    "no_q" => self.eval_count_guard(&named_args, 0, 0),
-                    "forall_q" => self.eval_forall_guard(&named_args),
-                    "negation" => self.eval_negation_guard(&named_args),
-                    _ => true, // unknown guard kind: vacuously true
+    /// Evaluate every registered guard against the current KB — the WI-023
+    /// post-load constraint check. Carrier-agnostic: each guard is read through
+    /// [`TermView`](term_view::TermView).
+    pub fn check_all_guards(&mut self) -> Vec<GuardCheck> {
+        let mut out = Vec::with_capacity(self.guards.len());
+        for idx in 0..self.guards.len() {
+            let query = self.guards[idx].query.clone();
+            let label = self.guards[idx].label.clone();
+            if !self.guard_evaluable(&query) {
+                out.push(GuardCheck::Gated(label));
+            } else if self.evaluate_guard(&query) {
+                out.push(GuardCheck::Holds);
+            } else {
+                out.push(GuardCheck::Violated(label));
+            }
+        }
+        out
+    }
+
+    /// Whether a guard's `LogicalQuery` lowers to goals the resolver can evaluate
+    /// today: every `pattern_query` leaf must carry a hash-consed `TermId` (the
+    /// resolver is still term-based — occurrence/`Value::Node` leaves are gated on
+    /// the WI-246 resolver migration). Read-only; carrier-agnostic via `TermView`.
+    fn guard_evaluable(&self, view: &crate::eval::value::Value) -> bool {
+        use term_view::{TermView, ViewHead};
+        let head = TermView::head(view, self);
+        let Some(functor) = head.functor_sym() else { return true };
+        if self.resolve_sym(functor) == "pattern_query" {
+            let inner = self.lookup_symbol("term")
+                .and_then(|s| TermView::named_arg(view, self, s))
+                .or_else(|| TermView::pos_arg(view, self, 0));
+            return inner.map_or(true, |c| c.as_term_id().is_some());
+        }
+        let pos_arity = match &head {
+            ViewHead::Functor { pos_arity, .. } => *pos_arity,
+            _ => 0,
+        };
+        for k in TermView::named_keys(view, self) {
+            if let Some(c) = TermView::named_arg(view, self, k) {
+                if !self.guard_evaluable(&c.to_value()) {
+                    return false;
                 }
             }
-            _ => true,
+        }
+        for i in 0..pos_arity {
+            if let Some(c) = TermView::pos_arg(view, self, i) {
+                if !self.guard_evaluable(&c.to_value()) {
+                    return false;
+                }
+            }
+        }
+        true
+    }
+
+    /// Read a named child of a `LogicalQuery` view as an owned, carrier-agnostic
+    /// `Value` (dropping any borrow of `self`).
+    fn guard_child(&mut self, view: &crate::eval::value::Value, field: &str) -> Option<crate::eval::value::Value> {
+        let sym = self.intern(field);
+        term_view::TermView::named_arg(view, self, sym).map(|c| c.to_value())
+    }
+
+    /// Evaluate a `LogicalQuery` guard (read through `TermView`). True if it holds.
+    fn evaluate_guard(&mut self, guard: &crate::eval::value::Value) -> bool {
+        let Some(functor) = term_view::TermView::head(guard, self).functor_sym() else {
+            return true; // non-functor head: vacuously true
+        };
+        match self.resolve_sym(functor).to_string().as_str() {
+            "lone_q" => self.eval_count_guard(guard, 0, 1),
+            "one_q" => self.eval_count_guard(guard, 1, 1),
+            "some_q" => self.eval_count_guard(guard, 1, usize::MAX),
+            "no_q" => self.eval_count_guard(guard, 0, 0),
+            "forall_q" => self.eval_forall_guard(guard),
+            "negation" => self.eval_negation_guard(guard),
+            _ => true, // unknown guard kind: vacuously true
         }
     }
 
     /// Evaluate a counting quantifier guard (lone_q, one_q, some_q, no_q).
-    /// Named args: (var: Symbol, condition: LogicalQuery, body: LogicalQuery)
     fn eval_count_guard(
         &mut self,
-        named_args: &SmallVec<[(Symbol, TermId); 2]>,
+        guard: &crate::eval::value::Value,
         min: usize,
         max: usize,
     ) -> bool {
-        // Extract condition and body from named args
-        let condition = named_args.iter()
-            .find(|(s, _)| self.resolve_sym(*s) == "condition")
-            .map(|(_, t)| *t);
-        let body = named_args.iter()
-            .find(|(s, _)| self.resolve_sym(*s) == "body")
-            .map(|(_, t)| *t);
+        let condition = self.guard_child(guard, "condition");
+        let body = self.guard_child(guard, "body");
 
-        // Lower condition + body to resolution goals
         let mut goals = Vec::new();
-        if let Some(cond) = condition {
-            goals.extend(self.lower_logical_query(cond));
+        if let Some(c) = &condition {
+            goals.extend(self.lower_logical_query(c));
         }
-        if let Some(b) = body {
-            let body_goals = self.lower_logical_query(b);
+        if let Some(b) = &body {
             // empty_query produces no goals — treat as trivially true
-            goals.extend(body_goals);
+            goals.extend(self.lower_logical_query(b));
         }
 
         if goals.is_empty() {
@@ -1144,7 +1263,11 @@ impl KnowledgeBase {
         }
 
         let config = resolve::ResolveConfig {
-            max_solutions: max + 1, // one extra to detect overflow
+            // One extra to detect overflow. `saturating_add` guards `some_q`,
+            // whose `max` is `usize::MAX` (an unbounded upper bound) — a plain
+            // `+ 1` would overflow-panic in debug / wrap to 0 (= unlimited) in
+            // release.
+            max_solutions: max.saturating_add(1),
             ..resolve::ResolveConfig::default()
         };
         let solutions = self.resolve(&goals, &config);
@@ -1154,24 +1277,16 @@ impl KnowledgeBase {
 
     /// Evaluate forall_q(var, condition, body): condition AND body must hold
     /// for all solutions. Equivalent to: no solutions of (condition AND NOT body).
-    fn eval_forall_guard(
-        &mut self,
-        named_args: &SmallVec<[(Symbol, TermId); 2]>,
-    ) -> bool {
-        let condition = named_args.iter()
-            .find(|(s, _)| self.resolve_sym(*s) == "condition")
-            .map(|(_, t)| *t);
-        let body = named_args.iter()
-            .find(|(s, _)| self.resolve_sym(*s) == "body")
-            .map(|(_, t)| *t);
+    fn eval_forall_guard(&mut self, guard: &crate::eval::value::Value) -> bool {
+        let condition = self.guard_child(guard, "condition");
+        let body = self.guard_child(guard, "body");
 
         // forall x: P -: Q ≡ no x: P -: not(Q)
-        // Check: condition goals + negation of body goals must have no solutions
         let mut goals = Vec::new();
-        if let Some(c) = condition {
+        if let Some(c) = &condition {
             goals.extend(self.lower_logical_query(c));
         }
-        if let Some(b) = body {
+        if let Some(b) = &body {
             let body_goals = self.lower_logical_query(b);
             if !body_goals.is_empty() {
                 // Negate the body: build not(body_goal) for each
@@ -1201,17 +1316,11 @@ impl KnowledgeBase {
     }
 
     /// Evaluate negation(query): the inner query must have no solutions.
-    fn eval_negation_guard(
-        &mut self,
-        named_args: &SmallVec<[(Symbol, TermId); 2]>,
-    ) -> bool {
-        // negation has a single positional arg or named "query"
-        let inner = named_args.iter()
-            .find(|(s, _)| self.resolve_sym(*s) == "query")
-            .map(|(_, t)| *t);
+    fn eval_negation_guard(&mut self, guard: &crate::eval::value::Value) -> bool {
+        let inner = self.guard_child(guard, "query");
 
-        if let Some(inner_term) = inner {
-            let goals = self.lower_logical_query(inner_term);
+        if let Some(inner) = &inner {
+            let goals = self.lower_logical_query(inner);
             if goals.is_empty() {
                 return false; // negation of empty_query (always true) = false
             }
@@ -1226,63 +1335,73 @@ impl KnowledgeBase {
         }
     }
 
-    /// Convert a LogicalQuery term to resolution goals.
-    fn lower_logical_query(&mut self, lq_term: TermId) -> Vec<TermId> {
-        let term = self.terms.get(lq_term).clone();
-        match term {
-            Term::Fn { functor, pos_args, named_args } => {
-                let name = self.resolve_sym(functor).to_string();
-                match name.as_str() {
-                    "pattern_query" => {
-                        let pattern = named_args.iter()
-                            .find(|(s, _)| self.resolve_sym(*s) == "term")
-                            .map(|(_, t)| *t)
-                            .or_else(|| pos_args.first().copied());
-                        pattern.into_iter().collect()
+    /// Lower a `LogicalQuery` (read through `TermView`) to resolution goals. A
+    /// `pattern_query` leaf must carry a hash-consed `TermId` (the resolver is
+    /// term-based); a non-term occurrence leaf is gated and pre-filtered by
+    /// [`guard_evaluable`](Self::guard_evaluable), so reaching one here is a bug
+    /// (loud in debug, no goal in release).
+    fn lower_logical_query(&mut self, lq: &crate::eval::value::Value) -> Vec<TermId> {
+        let Some(functor) = term_view::TermView::head(lq, self).functor_sym() else {
+            // A bare leaf with no functor head (var / const) — a single goal if
+            // it is a hash-consed term, mirroring the old `_ => vec![lq_term]`.
+            return value_goal_term(lq).into_iter().collect();
+        };
+        match self.resolve_sym(functor).to_string().as_str() {
+            "pattern_query" => {
+                let inner = self.guard_child(lq, "term").or_else(|| {
+                    term_view::TermView::pos_arg(lq, self, 0).map(|c| c.to_value())
+                });
+                match inner.as_ref().and_then(value_goal_term) {
+                    Some(t) => vec![t],
+                    None => {
+                        debug_assert!(
+                            false,
+                            "occurrence-leaf guard goal not yet evaluable (resolver TermId-goal gate)"
+                        );
+                        Vec::new()
                     }
-                    "conjunction" => {
-                        let left = named_args.iter()
-                            .find(|(s, _)| self.resolve_sym(*s) == "left")
-                            .map(|(_, t)| *t);
-                        let right = named_args.iter()
-                            .find(|(s, _)| self.resolve_sym(*s) == "right")
-                            .map(|(_, t)| *t);
-                        let mut goals = Vec::new();
-                        if let Some(l) = left { goals.extend(self.lower_logical_query(l)); }
-                        if let Some(r) = right { goals.extend(self.lower_logical_query(r)); }
-                        goals
-                    }
-                    "empty_query" => Vec::new(),
-                    "negation" => {
-                        let inner = named_args.iter()
-                            .find(|(s, _)| self.resolve_sym(*s) == "query")
-                            .map(|(_, t)| *t);
-                        if let Some(inner_term) = inner {
-                            let inner_goals = self.lower_logical_query(inner_term);
-                            if inner_goals.is_empty() {
-                                return Vec::new();
-                            }
-                            if inner_goals.len() == 1 {
-                                let not_sym = self.intern("not");
-                                let not_term = self.alloc(Term::Fn {
-                                    functor: not_sym,
-                                    pos_args: SmallVec::from_slice(&inner_goals),
-                                    named_args: SmallVec::new(),
-                                });
-                                vec![not_term]
-                            } else {
-                                // Multiple goals: negate as conjunction
-                                // TODO: proper conjunction wrapping
-                                inner_goals
-                            }
-                        } else {
-                            Vec::new()
-                        }
-                    }
-                    _ => vec![lq_term],
                 }
             }
-            _ => vec![lq_term],
+            "conjunction" => {
+                let left = self.guard_child(lq, "left");
+                let right = self.guard_child(lq, "right");
+                let mut goals = Vec::new();
+                if let Some(l) = &left {
+                    goals.extend(self.lower_logical_query(l));
+                }
+                if let Some(r) = &right {
+                    goals.extend(self.lower_logical_query(r));
+                }
+                goals
+            }
+            "empty_query" => Vec::new(),
+            "negation" => {
+                let inner = self.guard_child(lq, "query");
+                if let Some(inner) = &inner {
+                    let inner_goals = self.lower_logical_query(inner);
+                    if inner_goals.is_empty() {
+                        return Vec::new();
+                    }
+                    if inner_goals.len() == 1 {
+                        let not_sym = self.intern("not");
+                        let not_term = self.alloc(Term::Fn {
+                            functor: not_sym,
+                            pos_args: SmallVec::from_slice(&inner_goals),
+                            named_args: SmallVec::new(),
+                        });
+                        vec![not_term]
+                    } else {
+                        // Multiple goals: negate as conjunction
+                        // TODO: proper conjunction wrapping
+                        inner_goals
+                    }
+                } else {
+                    Vec::new()
+                }
+            }
+            // Unknown LogicalQuery ctor: the whole view as one goal if it is a
+            // hash-consed term (old `_ => vec![lq_term]`).
+            _ => value_goal_term(lq).into_iter().collect(),
         }
     }
 

@@ -2482,13 +2482,147 @@ impl<'a> Converter<'a> {
         let span = self.span(node);
         let label = self.field(node, "label")
             .map(|n| self.convert_name(n));
-        let head = self.field(node, "head")
+        // `head` resolves the `_constraint_body` choice: a `quantified_constraint`
+        // / `aggregation_constraint` node, or a `rule_body` for the plain denial
+        // form (whose `:- guard` is hoisted to this `constraint_declaration` node).
+        let head_node = self.field(node, "head")?;
+        let body = match head_node.kind() {
+            "quantified_constraint" => self.convert_quantified(head_node)?,
+            "aggregation_constraint" => self.convert_aggregation(head_node)?,
+            _ => {
+                let head = self.convert_rule_body(head_node);
+                let guard = self.field(node, "guard")
+                    .map(|b| self.convert_rule_body(b));
+                // WI-023: the `head -: conclusion` implication form is parsed but
+                // not yet lowered/enforced — reject loudly rather than silently
+                // dropping the conclusion.
+                if self.field(node, "conclusion").is_some() {
+                    self.err(
+                        "constraint implication form `head -: conclusion` is not yet \
+                         supported (use `:- guard`)",
+                        node,
+                    );
+                }
+                ConstraintBody::Denial { head, guard }
+            }
+        };
+        let meta = self.convert_meta_block(node);
+        Some(Constraint { label, body, meta, span })
+    }
+
+    fn convert_quantified(&mut self, node: Node) -> Option<ConstraintBody> {
+        let quantifier = match self.field(node, "quantifier").map(|n| self.text(n)) {
+            Some("forall") => Quantifier::Forall,
+            Some("some") => Quantifier::Some,
+            Some("one") => Quantifier::One,
+            Some("lone") => Quantifier::Lone,
+            Some("no") => Quantifier::No,
+            _ => return None,
+        };
+        // Three binder shapes (grammar): `(?x: T)` typed sugar, `?x: cond`, `?x`.
+        let (var, condition) = if let Some(tb) = self.field(node, "typed_binding") {
+            self.convert_typed_binding(tb)
+        } else {
+            let var = self.field(node, "var")
+                .map(|n| self.variable_name(n))
+                .unwrap_or_default();
+            let condition = self.field(node, "condition")
+                .map(|b| self.convert_rule_body(b))
+                .unwrap_or_default();
+            (var, condition)
+        };
+        let body_node = self.field(node, "body")?;
+        // WI-023: a `:- guard` / `-: conclusion` on the quantifier's `-:` body
+        // hoists (via the inlined `_constraint_body`) onto this node; the loader
+        // does not lower it, so reject loudly rather than silently dropping it.
+        if self.field(node, "guard").is_some() || self.field(node, "conclusion").is_some() {
+            self.err(
+                "a `:- guard` / `-: conclusion` on a quantifier body is not yet supported",
+                node,
+            );
+        }
+        let body = Box::new(self.convert_constraint_inner_body(body_node));
+        Some(ConstraintBody::Quantified { quantifier, var, condition, body })
+    }
+
+    /// Recursive `_constraint_body` in a quantifier's `-: body` slot: a nested
+    /// quantifier/aggregation, or a leaf conjunction of patterns.
+    fn convert_constraint_inner_body(&mut self, node: Node) -> ConstraintBody {
+        match node.kind() {
+            "quantified_constraint" => match self.convert_quantified(node) {
+                Some(b) => b,
+                None => {
+                    self.err("malformed nested quantified constraint", node);
+                    ConstraintBody::Patterns(Vec::new())
+                }
+            },
+            "aggregation_constraint" => match self.convert_aggregation(node) {
+                Some(b) => b,
+                None => {
+                    self.err("malformed nested aggregation constraint", node);
+                    ConstraintBody::Patterns(Vec::new())
+                }
+            },
+            _ => ConstraintBody::Patterns(self.convert_rule_body(node)),
+        }
+    }
+
+    /// `(?x: T)` desugars (per grammar) to binder `x` with condition
+    /// `TypeOf(occ: ?x, type: T)`.
+    fn convert_typed_binding(&mut self, node: Node) -> (String, Vec<TermId>) {
+        let var_node = self.field(node, "var");
+        let var = var_node.map(|n| self.variable_name(n)).unwrap_or_default();
+        let mut condition = Vec::new();
+        if let (Some(vn), Some(tn)) = (var_node, self.field(node, "type")) {
+            let span = self.span(node);
+            let occ_term = self.convert_variable_node(vn);
+            let type_term = self.convert_term(tn);
+            let occ_field = self.intern("occ");
+            let type_field = self.intern("type");
+            let functor = self.intern("TypeOf");
+            let named_args: SmallVec<[(Symbol, TermId); 2]> =
+                SmallVec::from_slice(&[(occ_field, occ_term), (type_field, type_term)]);
+            condition.push(self.terms.alloc(
+                Term::Fn { functor, pos_args: SmallVec::new(), named_args },
+                span,
+            ));
+        }
+        (var, condition)
+    }
+
+    fn convert_aggregation(&mut self, node: Node) -> Option<ConstraintBody> {
+        let aggregate = match self.field(node, "aggregate").map(|n| self.text(n)) {
+            Some("count") => Aggregate::Count,
+            Some("sum") => Aggregate::Sum,
+            Some("min") => Aggregate::Min,
+            Some("max") => Aggregate::Max,
+            _ => return None,
+        };
+        let var = self.field(node, "var")
+            .map(|n| self.variable_name(n))
+            .unwrap_or_default();
+        let condition = self.field(node, "condition")
             .map(|b| self.convert_rule_body(b))
             .unwrap_or_default();
-        let guard = self.field(node, "guard")
-            .map(|b| self.convert_rule_body(b));
-        let meta = self.convert_meta_block(node);
-        Some(Constraint { label, head, guard, meta, span })
+        let body = self.field(node, "body")
+            .map(|b| self.convert_rule_body(b))
+            .unwrap_or_default();
+        let op = match self.field(node, "op").map(|n| self.text(n)) {
+            Some("<=") => CompareOp::Le,
+            Some(">=") => CompareOp::Ge,
+            Some("<") => CompareOp::Lt,
+            Some(">") => CompareOp::Gt,
+            Some("=") => CompareOp::Eq,
+            Some("!=") => CompareOp::Ne,
+            _ => return None,
+        };
+        let bound = self.field(node, "bound").map(|n| self.convert_term(n))?;
+        Some(ConstraintBody::Aggregation { aggregate, var, condition, body, op, bound })
+    }
+
+    /// Binder name: the variable's source text without its leading `?`.
+    fn variable_name(&self, node: Node) -> String {
+        self.text(node).strip_prefix('?').unwrap_or("").to_string()
     }
 
     // ── Sugar: blocks ───────────────────────────────────────────

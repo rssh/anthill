@@ -126,6 +126,19 @@ impl ViewItem<'_> {
             _ => None,
         }
     }
+
+    /// Materialize this child as an owned, carrier-agnostic [`Value`] — a cheap
+    /// clone (`Term`→`Value::Term`, `Node`→`Rc` clone, borrowed `Value`→clone).
+    /// Lets a `&mut KnowledgeBase` walker (e.g. the guard engine reading a
+    /// `LogicalQuery` through [`TermView`]) own each structural child without
+    /// holding a borrow of the parent across a mutating call.
+    pub fn to_value(&self) -> Value {
+        match self {
+            ViewItem::Term(t) => Value::Term(*t),
+            ViewItem::Value(v) => (*v).clone(),
+            ViewItem::Node(occ) => Value::Node(Rc::clone(occ)),
+        }
+    }
 }
 
 // ── Occurrence views (WI-276) ──────────────────────────────────
