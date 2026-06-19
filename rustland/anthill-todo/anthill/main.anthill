@@ -13,8 +13,9 @@ namespace anthill.todo
   import anthill.prelude.{Cell}
   import anthill.prelude.Meta.{Meta}
   import anthill.prelude.Time.{now, Clock}
-  import anthill.stage0.{Feedback, WorkItem, ToolPasses, AcceptanceCriterion}
-  import anthill.stage0.WorkStatus.{Open, PreOpened}
+  import anthill.stage0.{Feedback, WorkItem, ToolPasses, AcceptanceCriterion,
+                         WorkStatus}
+  import anthill.stage0.WorkStatus.{Open, PreOpened, Draft}
   import anthill.prelude.{List, Stream, Map, Unit}
   import anthill.prelude.Map.{empty, put, get, contains}
   import anthill.prelude.Bool.{not}
@@ -41,6 +42,7 @@ namespace anthill.todo
                           fresh_var, make_fn, term_to_string,
                           term_list_items}
   import anthill.stage0.WorkStatus.{Claimed, Delivered, Verified}
+  import anthill.stage0.WorkStatus.{Rejected, ProposalRejected, Stale}
   import anthill.reflect.KB.{kb, execute, facts_of}
   import anthill.reflect.LogicalQuery.{pattern_query}
   import anthill.todo.store.{WorkItemStore}
@@ -145,11 +147,15 @@ namespace anthill.todo
           nil())),
       parent: none())
 
-  -- `update <id> [--description X] [--acceptance Y]` updates a work
-  -- item's description and/or acceptance criteria. --acceptance is
-  -- repeatable; passing the flag at least once replaces the entire
-  -- acceptance list (cannot append a single tool — that's by design,
-  -- matching the legacy run_update).
+  -- `update <id> [--description X] [--acceptance Y] [--status S]
+  -- [--reason R]` updates a work item's description, acceptance
+  -- criteria and/or status. --acceptance is repeatable; passing the flag
+  -- at least once replaces the entire acceptance list (cannot append a
+  -- single tool — that's by design, matching the legacy run_update).
+  -- --status sets the lifecycle status directly (the correction route —
+  -- WI-395 — for reverting Delivered->Claimed, releasing a claim, or
+  -- marking Rejected/Stale); --reason supplies the justification the
+  -- Rejected/ProposalRejected/Stale statuses carry.
   operation spec_update() -> OperationSpec =
     OperationSpec(
       name: "update",
@@ -172,7 +178,20 @@ namespace anthill.todo
               kind: flag(),
               required: false,
               description: "Acceptance tool name (repeatable, replaces all)"),
-            nil()))),
+            cons(
+              ParamSpec(
+                name: "status",
+                kind: flag(),
+                required: false,
+                description:
+                  "New status (Open, PreOpened, Draft, Claimed, Delivered, Verified, Rejected, ProposalRejected, Stale)"),
+              cons(
+                ParamSpec(
+                  name: "reason",
+                  kind: flag(),
+                  required: false,
+                  description: "Justification for Rejected/ProposalRejected/Stale"),
+                nil()))))),
       parent: none())
 
   -- `add <description>` creates a new Open WorkItem. --depends and
@@ -322,6 +341,22 @@ namespace anthill.todo
     unblocks: Int64,
     has_feedback: Bool)
 
+  -- Result of resolving an `update --status <name> [--reason r]` request
+  -- (status_for). Each outcome is an explicit variant so the caller
+  -- dispatches with a total `match` — no string-keyed fallback, and every
+  -- not-ok case carries its own loud diagnostic:
+  --   status_ok            — name recognised, status built (reason folded
+  --                          in for Rejected/ProposalRejected/Stale)
+  --   status_needs_reason  — a reason-carrying status, but no --reason
+  --   status_reason_unused — a non-reason status given a stray --reason
+  --   status_unknown       — name not a WorkStatus
+  sort UpdateStatus
+    entity status_ok(status: WorkStatus)
+    entity status_needs_reason
+    entity status_reason_unused
+    entity status_unknown
+  end
+
   sort Main
     sort State = ?
     requires anthill.cli.Main
@@ -393,7 +428,7 @@ namespace anthill.todo
       else if eq(name, "deliver") then cmd_deliver(args, store, agent, s)
       else if eq(name, "verify") then cmd_verify(args, store, s)
       else if eq(name, "delete") then cmd_delete(args, store, s)
-      else if eq(name, "update") then cmd_update(args, store, s)
+      else if eq(name, "update") then cmd_update(args, store, agent, s)
       else if eq(name, "add-dependency") then
         cmd_add_dependency(args, store, s)
       else if eq(name, "remove-dependency") then
@@ -2157,14 +2192,26 @@ namespace anthill.todo
               0
 
     -- ── cmd_update ───────────────────────────────────────────────
-    -- `update <id> [--description X] [--acceptance Y]+` rewrites a
-    -- work item's description and/or acceptance criteria. Passing
-    -- --acceptance at least once replaces the entire acceptance list
-    -- (no append mode — matches legacy run_update).
+    -- `update <id> [--description X] [--acceptance Y]+ [--status S]
+    -- [--reason R]` rewrites a work item's description, acceptance
+    -- criteria and/or status in ONE atomic replace. Passing --acceptance
+    -- at least once replaces the entire acceptance list (no append mode —
+    -- matches legacy run_update).
+    --
+    -- --status (WI-395) is the general status-correction route: it sets
+    -- ANY lifecycle status, including transitions the targeted commands
+    -- (claim/unclaim/deliver/verify/preopen/promote) can't reach — revert
+    -- Delivered->Claimed, un-verify, or mark Rejected/Stale. The agent +
+    -- timestamp are stamped exactly as claim/deliver/verify do: Claimed
+    -- and Delivered carry (--agent, now()); Verified carries now();
+    -- Open/PreOpened/Draft carry nothing (clearing any prior claimant);
+    -- Rejected/ProposalRejected/Stale carry (--reason, now()) and so
+    -- REQUIRE --reason — a rejection with no reason is a silent gap.
     operation cmd_update(args: List[Binding],
                           store: FileStore,
+                          agent: String,
                           s: Cell[State]) -> Int64
-      effects {ConsoleOutput, ConsoleError, Modify[s], Error}
+      effects {ConsoleOutput, ConsoleError, Modify[s], Error, Clock}
     =
       match get_arg(args, "id")
         case none() ->
@@ -2177,37 +2224,183 @@ namespace anthill.todo
                 concat("error: work item '", concat(id, "' not found")))
               1
             case some(wi) ->
-              let new_desc = get_arg(args, "description")
-              let raw_acc = collect_all_args(args, "acceptance")
-              do_update(s, id, wi, new_desc, raw_acc)
+              do_update(s, id, wi,
+                        get_arg(args, "description"),
+                        collect_all_args(args, "acceptance"),
+                        get_arg(args, "status"),
+                        get_arg(args, "reason"),
+                        agent)
 
     operation do_update(s: Cell[State], id: String, wi: WorkItem,
                         new_desc: Option[String],
-                        raw_acc: List[String]) -> Int64
-      effects {ConsoleOutput, ConsoleError, Modify[s], Error}
+                        raw_acc: List[String],
+                        status_opt: Option[String],
+                        reason_opt: Option[String],
+                        agent: String) -> Int64
+      effects {ConsoleOutput, ConsoleError, Modify[s], Error, Clock}
     =
       let has_desc = opt_string_present(new_desc)
       let has_acc = match raw_acc
         case nil() -> false
         case cons(_, _) -> true
-      if not(has_desc) then
-        if not(has_acc) then
-          let _ = eprintln(console(),
-            "update: nothing to change — pass --description and/or --acceptance")
-          2
-        else
-          let _ = WorkItemStore.replace(s, id,
-            with_acceptance(wi, tools_to_acceptance(raw_acc)))
-          let _ = println(console(),
-            concat("updated ", concat(id, ": acceptance")))
-          0
+      let has_status = opt_string_present(status_opt)
+      if no_update_flags(has_desc, has_acc, has_status) then
+        let _ = eprintln(console(),
+          "update: nothing to change — pass --description, --acceptance and/or --status")
+        2
       else
-        let new_wi = update_fields(wi, new_desc, has_acc, raw_acc)
-        let _ = WorkItemStore.replace(s, id, new_wi)
-        let summary = if has_acc then "description, acceptance" else "description"
-        let _ = println(console(), concat("updated ",
-          concat(id, concat(": ", summary))))
-        0
+        -- Rebuild description/acceptance first; the status (which may still
+        -- fail on an unknown name or a missing --reason) is folded in by
+        -- finish_update, so a bad --status writes nothing.
+        let wi1 = apply_desc_acc(wi, new_desc, has_desc, has_acc, raw_acc)
+        finish_update(s, id, wi1, status_opt, reason_opt, agent,
+                      update_summary(has_desc, has_acc, has_status))
+
+    -- True when none of the three updatable fields were supplied.
+    operation no_update_flags(d: Bool, a: Bool, st: Bool) -> Bool =
+      if d then false
+      else if a then false
+      else if st then false
+      else true
+
+    -- Apply --description / --acceptance to wi (immutable rebuild),
+    -- leaving status untouched. update_fields already folds an optional
+    -- acceptance over a new description.
+    operation apply_desc_acc(wi: WorkItem, new_desc: Option[String],
+                             has_desc: Bool, has_acc: Bool,
+                             raw_acc: List[String]) -> WorkItem =
+      if has_desc then update_fields(wi, new_desc, has_acc, raw_acc)
+      else if has_acc then with_acceptance(wi, tools_to_acceptance(raw_acc))
+      else wi
+
+    -- Persist wi1, folding in --status when present. With no --status this
+    -- is the plain description/acceptance commit; with --status it routes
+    -- through set_update_status, which gates on the status name.
+    operation finish_update(s: Cell[State], id: String, wi1: WorkItem,
+                            status_opt: Option[String],
+                            reason_opt: Option[String], agent: String,
+                            summary: String) -> Int64
+      effects {ConsoleOutput, ConsoleError, Modify[s], Error, Clock}
+    =
+      match status_opt
+        case some(name) ->
+          set_update_status(s, id, wi1, name, agent, reason_opt, summary)
+        case none() ->
+          -- --reason only ever attaches to a reason-carrying --status; a
+          -- bare --reason here would be silently dropped, so reject it.
+          -- (This nested match is the enclosing match's last arm — the
+          -- grammar binds a nested match to the final arm only.)
+          match reason_opt
+            case some(_) ->
+              let _ = eprintln(console(), reason_unused_msg())
+              2
+            case none() ->
+              let _ = WorkItemStore.replace(s, id, wi1)
+              let _ = println(console(),
+                concat("updated ", concat(id, concat(": ", summary))))
+              0
+
+    -- Resolve `name` (case-insensitive) to a WorkStatus and commit it.
+    -- The classification lives entirely in status_for; this just turns its
+    -- four outcomes into the commit or the matching loud diagnostic. An
+    -- unknown name, a reason-carrying status with no --reason, or a stray
+    -- --reason on a non-reason status all fail (exit 2) and write nothing.
+    operation set_update_status(s: Cell[State], id: String, wi1: WorkItem,
+                                name: String, agent: String,
+                                reason_opt: Option[String],
+                                summary: String) -> Int64
+      effects {ConsoleOutput, ConsoleError, Modify[s], Error, Clock}
+    =
+      match status_for(toLower(name), agent, reason_opt)
+        case status_ok(st) -> commit_status(s, id, wi1, st, summary)
+        case status_needs_reason() ->
+          let _ = eprintln(console(),
+            concat("update: --status ",
+              concat(name, " requires --reason <text>")))
+          2
+        case status_reason_unused() ->
+          let _ = eprintln(console(), reason_unused_msg())
+          2
+        case status_unknown() ->
+          let _ = eprintln(console(),
+            concat("update: unknown status '",
+              concat(name,
+                "' (valid: Open, PreOpened, Draft, Claimed, Delivered, Verified, Rejected, ProposalRejected, Stale)")))
+          2
+
+    -- The single status-name -> outcome classifier. `n` is already
+    -- lowercased. Reason-carrying statuses fold --reason in (or report it
+    -- missing); the others reject a stray --reason via ok_simple; anything
+    -- else is status_unknown — no default-status fallback.
+    operation status_for(n: String, agent: String,
+                         reason_opt: Option[String]) -> UpdateStatus
+      effects Clock
+    =
+      if eq(n, "open") then ok_simple(Open(), reason_opt)
+      else if eq(n, "preopened") then ok_simple(PreOpened(), reason_opt)
+      else if eq(n, "draft") then ok_simple(Draft(), reason_opt)
+      else if eq(n, "claimed") then
+        ok_simple(Claimed(agent: agent, since: now()), reason_opt)
+      else if eq(n, "delivered") then
+        ok_simple(Delivered(agent: agent, at: now()), reason_opt)
+      else if eq(n, "verified") then ok_simple(Verified(at: now()), reason_opt)
+      else if eq(n, "rejected") then
+        ok_reason(reason_opt, Rejected(reason: reason_of(reason_opt), at: now()))
+      else if eq(n, "proposalrejected") then
+        ok_reason(reason_opt, ProposalRejected(reason: reason_of(reason_opt), at: now()))
+      else if eq(n, "stale") then
+        ok_reason(reason_opt, Stale(reason: reason_of(reason_opt), since: now()))
+      else status_unknown()
+
+    -- A non-reason status is OK only when no --reason was supplied;
+    -- a stray --reason would otherwise be silently dropped.
+    operation ok_simple(st: WorkStatus, reason_opt: Option[String])
+      -> UpdateStatus
+    =
+      match reason_opt
+        case none() -> status_ok(st)
+        case some(_) -> status_reason_unused()
+
+    -- A reason-carrying status is OK only when --reason was supplied; the
+    -- already-built `st` (constructed with reason_of) is used in that case.
+    operation ok_reason(reason_opt: Option[String], st: WorkStatus)
+      -> UpdateStatus
+    =
+      match reason_opt
+        case none() -> status_needs_reason()
+        case some(_) -> status_ok(st)
+
+    operation reason_of(reason_opt: Option[String]) -> String =
+      match reason_opt
+        case some(r) -> r
+        case none() -> ""
+
+    -- Shared diagnostic for a --reason that has no reason-carrying --status
+    -- to attach to (bare --reason, or --reason on a non-reason status).
+    operation reason_unused_msg() -> String =
+      "update: --reason applies only to --status Rejected, ProposalRejected, or Stale"
+
+    -- Commit wi1 with status `st` set, printing the change summary. Takes
+    -- an already-built WorkStatus value, so no Clock effect of its own.
+    operation commit_status(s: Cell[State], id: String, wi1: WorkItem,
+                            st: WorkStatus, summary: String) -> Int64
+      effects {ConsoleOutput, Modify[s], Error}
+    =
+      let _ = WorkItemStore.replace(s, id, with_status(wi1, st))
+      let _ = println(console(),
+        concat("updated ", concat(id, concat(": ", summary))))
+      0
+
+    -- Join the changed-field labels in canonical order for the summary
+    -- line ("description", "acceptance", "status"); reproduces the legacy
+    -- single-field output ("updated WI-x: description") exactly.
+    operation update_summary(d: Bool, a: Bool, st: Bool) -> String =
+      join_strings(summary_parts(d, a, st), ", ")
+
+    operation summary_parts(d: Bool, a: Bool, st: Bool) -> List[String] =
+      let with_st = if st then cons("status", nil()) else nil()
+      let with_a = if a then cons("acceptance", with_st) else with_st
+      if d then cons("description", with_a) else with_a
 
     operation opt_string_present(o: Option[String]) -> Bool =
       match o
