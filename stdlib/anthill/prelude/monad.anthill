@@ -5,8 +5,9 @@
    effect by `pure`/`flatMap` over the selected monad.
 
    `M` is a higher-kinded carrier (member `T`): a per-call element type
-   `A` is wrapped as `M[T = A]`. The element types `A`/`B` are
-   per-operation type parameters, not part of the monad's identity.
+   `A` is wrapped as `M[A]` (positional application of the sole member `T`;
+   equivalently `M[T = A]`). The element types `A`/`B` are per-operation
+   type parameters, not part of the monad's identity.
 
    Names: `flatMap`/`map`/`pure`, NOT Haskell's `bind`/`return` — those
    read as names only inside do-notation, which anthill does not have, so
@@ -18,7 +19,7 @@
    conditional instance `fact Monad[M = StateT[S, M]] :- Monad[M = ?M]`.
    An instance lives with its carrier (see Option in option.anthill). >}
 sort anthill.prelude.Monad[M[T]]                       -- M : carrier, member T
-  operation pure[A](a: A) -> M[T = A]
-  operation flatMap[A, B, EffP](m: M[T = A], f: (A) -> M[T = B] @ {EffP}) -> M[T = B] effects {EffP}
-  operation map[A, B, EffP](m: M[T = A], f: (A) -> B @ {EffP}) -> M[T = B] effects {EffP}
+  operation pure[A](a: A) -> M[A]
+  operation flatMap[A, B, EffP](m: M[A], f: (A) -> M[B] @ {EffP}) -> M[B] effects {EffP}
+  operation map[A, B, EffP](m: M[A], f: (A) -> B @ {EffP}) -> M[B] effects {EffP}
 end
