@@ -119,6 +119,12 @@ pub enum GuardCheck {
     Holds,
     /// The constraint is violated. Carries the source label, if any.
     Violated(Option<String>),
+    /// The constraint uses a `LogicalQuery` form the shared lowerer cannot
+    /// handle — an unknown constructor, or a non-goal-shaped leaf (WI-513).
+    /// Carries the source label (if any) and the lowering-error detail. The
+    /// loader routes this to a load-BLOCKING error rather than silently loading
+    /// with the invariant unenforced.
+    Unsupported(Option<String>, String),
 }
 
 // ── Rule entry ──────────────────────────────────────────────────
@@ -1140,9 +1146,28 @@ impl KnowledgeBase {
             // WI-518: `evaluate_guard` resolves the constraint outright — occurrence
             // (`Value::Node`) leaves now resolve through `resolve_goals` like term
             // leaves, so there is no longer a gated outcome to defer here.
-            if !self.evaluate_guard(&query) {
-                self.retract(rule_id);
-                return None;
+            match self.evaluate_guard(&query) {
+                Ok(true) => {}
+                Ok(false) => {
+                    self.retract(rule_id);
+                    return None;
+                }
+                // WI-513: an unsupported-form lowering error on this per-assert
+                // runtime path is an internal invariant violation — the post-load
+                // `check_all_guards` pass makes such a constraint load-BLOCKING, so a
+                // KB never finishes loading with one registered. Reaching it here
+                // means a guard was registered without going through that check (a
+                // programmer error, not user input). Retract and surface loudly.
+                Err(e) => {
+                    self.retract(rule_id);
+                    let label = self.guards[idx].label.clone();
+                    panic!(
+                        "assert_checked: integrity constraint{} uses an unsupported \
+                         LogicalQuery form ({}) — should have been rejected as \
+                         load-blocking by check_all_guards (WI-513)",
+                        load::label_suffix(&label), e,
+                    );
+                }
             }
         }
 
@@ -1157,13 +1182,15 @@ impl KnowledgeBase {
         for idx in 0..self.guards.len() {
             let query = self.guards[idx].query.clone();
             let label = self.guards[idx].label.clone();
-            // WI-518: occurrence (`Value::Node`) leaves now resolve through
-            // `resolve_goals` exactly as term leaves do, so a guard either holds or
-            // is violated — there is no longer a gated-on-occurrences outcome.
-            if self.evaluate_guard(&query) {
-                out.push(GuardCheck::Holds);
-            } else {
-                out.push(GuardCheck::Violated(label));
+            // WI-513: `evaluate_guard` lowers the constraint through the shared
+            // carrier-neutral `lower_query`, which surfaces an unsupported
+            // LogicalQuery form (unknown ctor / non-goal leaf) loudly as a
+            // `LowerError` rather than silently treating it as vacuously true.
+            // WI-518: occurrence (`Value::Node`) leaves resolve like term leaves.
+            match self.evaluate_guard(&query) {
+                Ok(true) => out.push(GuardCheck::Holds),
+                Ok(false) => out.push(GuardCheck::Violated(label)),
+                Err(e) => out.push(GuardCheck::Unsupported(label, e.to_string())),
             }
         }
         out
@@ -1171,37 +1198,44 @@ impl KnowledgeBase {
 
     /// Read a named child of a `LogicalQuery` view as an owned, carrier-agnostic
     /// `Value` (dropping any borrow of `self`).
-    fn guard_child(&mut self, view: &crate::eval::value::Value, field: &str) -> Option<crate::eval::value::Value> {
-        let sym = self.intern(field);
-        term_view::TermView::named_arg(view, self, sym).map(|c| c.to_value())
+    fn guard_child(&mut self, view: &crate::eval::value::Value, field: Symbol) -> Option<crate::eval::value::Value> {
+        term_view::TermView::named_arg(view, self, field).map(|c| c.to_value())
     }
 
-    /// Evaluate a `LogicalQuery` guard (read through `TermView`): `true` if it
-    /// holds, `false` if violated. Carrier-agnostic — occurrence (`Value::Node`)
-    /// and term leaves both resolve through `resolve_goals` (WI-518).
-    fn evaluate_guard(&mut self, guard: &crate::eval::value::Value) -> bool {
+    /// Evaluate a `LogicalQuery` guard (read through `TermView`): `Ok(true)` if it
+    /// holds, `Ok(false)` if violated, `Err(LowerError)` if the constraint uses a
+    /// LogicalQuery form the shared lowerer cannot handle (WI-513 — surfaced loudly
+    /// instead of vacuously holding). Carrier-agnostic — occurrence (`Value::Node`)
+    /// and term leaves both resolve through `resolve_goals` (WI-518). Quantifier
+    /// dispatch compares interned [`LogicalQuerySymbols`] (no per-node `String`).
+    fn evaluate_guard(&mut self, guard: &crate::eval::value::Value) -> Result<bool, execute::LowerError> {
+        let syms = execute::LogicalQuerySymbols::resolve(self);
         let Some(functor) = term_view::TermView::head(guard, self).functor_sym() else {
             // A bare leaf as a whole guard is not a quantified constraint we
             // enforce — it vacuously holds.
-            return true;
+            return Ok(true);
         };
-        match self.resolve_sym(functor).to_string().as_str() {
-            "lone_q" => self.eval_count_guard(guard, 0, 1),
-            "one_q" => self.eval_count_guard(guard, 1, 1),
-            "some_q" => self.eval_count_guard(guard, 1, usize::MAX),
-            "no_q" => self.eval_count_guard(guard, 0, 0),
-            "forall_q" => self.eval_forall_guard(guard),
-            "negation" => self.eval_negation_guard(guard),
-            // Any other ctor — a top-level `pattern_query` / `conjunction` from a
-            // NON-quantified constraint, or a not-yet-supported query kind — is not
-            // enforced and vacuously holds.
-            //
-            // NOTE the unsupported-ctor gap is NOT closed here: a
-            // `disjunction`/`sort_query`/`count_q`/… is treated as vacuously true,
-            // silently unenforced. That predates this WI and `build_logical_query`
-            // never emits those ctors today; making the unsupported *constructor*
-            // loud is WI-513's job (consolidate onto the loud `execute.rs::lower_query`).
-            _ => true,
+        let f = Some(functor);
+        if f == syms.lone_q {
+            self.eval_count_guard(guard, &syms, 0, 1)
+        } else if f == syms.one_q {
+            self.eval_count_guard(guard, &syms, 1, 1)
+        } else if f == syms.some_q {
+            self.eval_count_guard(guard, &syms, 1, usize::MAX)
+        } else if f == syms.no_q {
+            self.eval_count_guard(guard, &syms, 0, 0)
+        } else if f == syms.forall_q {
+            self.eval_forall_guard(guard, &syms)
+        } else if f == syms.negation {
+            self.eval_negation_guard(guard, &syms)
+        } else {
+            // Any other constructor — a top-level `pattern_query` / `conjunction`
+            // from a NON-quantified constraint, or an unsupported kind — is not
+            // ENFORCED (vacuously holds), but we still LOWER it so an unsupported
+            // form surfaces as `Err(LowerError)` rather than silently passing
+            // (WI-513). `.map(|_| true)` discards the goals: we validate the form,
+            // we don't run the constraint.
+            self.lower_query_with(guard, &syms).map(|_| true)
         }
     }
 
@@ -1209,24 +1243,25 @@ impl KnowledgeBase {
     fn eval_count_guard(
         &mut self,
         guard: &crate::eval::value::Value,
+        syms: &execute::LogicalQuerySymbols,
         min: usize,
         max: usize,
-    ) -> bool {
-        let condition = self.guard_child(guard, "condition");
-        let body = self.guard_child(guard, "body");
+    ) -> Result<bool, execute::LowerError> {
+        let condition = self.guard_child(guard, syms.condition);
+        let body = self.guard_child(guard, syms.body);
 
         let mut goals: Vec<crate::eval::value::Value> = Vec::new();
         if let Some(c) = &condition {
-            goals.extend(self.lower_logical_query(c));
+            goals.extend(self.lower_query_with(c, syms)?);
         }
         if let Some(b) = &body {
             // empty_query produces no goals — treat as trivially true
-            goals.extend(self.lower_logical_query(b));
+            goals.extend(self.lower_query_with(b, syms)?);
         }
 
         if goals.is_empty() {
             // No goals means trivially satisfied; count depends on context
-            return min == 0;
+            return Ok(min == 0);
         }
 
         let config = resolve::ResolveConfig {
@@ -1239,31 +1274,48 @@ impl KnowledgeBase {
         };
         let solutions = self.resolve_goals(goals, &config);
         let count = solutions.len();
-        count >= min && count <= max
+        Ok(count >= min && count <= max)
     }
 
     /// Evaluate forall_q(var, condition, body): condition AND body must hold
     /// for all solutions. Equivalent to: no solutions of (condition AND NOT body).
-    fn eval_forall_guard(&mut self, guard: &crate::eval::value::Value) -> bool {
-        let condition = self.guard_child(guard, "condition");
-        let body = self.guard_child(guard, "body");
+    fn eval_forall_guard(
+        &mut self,
+        guard: &crate::eval::value::Value,
+        syms: &execute::LogicalQuerySymbols,
+    ) -> Result<bool, execute::LowerError> {
+        let condition = self.guard_child(guard, syms.condition);
+        let body = self.guard_child(guard, syms.body);
 
         // forall x: P -: Q ≡ no x: P -: not(Q)
         let mut goals: Vec<crate::eval::value::Value> = Vec::new();
         if let Some(c) = &condition {
-            goals.extend(self.lower_logical_query(c));
+            goals.extend(self.lower_query_with(c, syms)?);
         }
         if let Some(b) = &body {
-            let body_goals = self.lower_logical_query(b);
-            // Negate the body: build not(body_goal) for each, carrier-agnostic
-            // (WI-518) — the goal stays a `Value` (Term OR occurrence Node).
-            for g in body_goals {
-                goals.push(self.make_not_goal(g));
+            let body_goals = self.lower_query_with(b, syms)?;
+            if !body_goals.is_empty() {
+                // Negate each body goal: `not(g)`, carrier-faithful (WI-518) — `g`
+                // may be a Term or an occurrence Node. Use the QUALIFIED NAF builtin
+                // symbol `anthill.reflect.not` (`syms.not`), the SAME symbol the
+                // shared lowerer's `negation` arm uses, so `get_builtin_view`
+                // classifies the goal as `BuiltinTag::Not` and NAF fires. A bare
+                // `intern("not")` is a DIFFERENT, unregistered symbol — `not(g)`
+                // would then resolve as an ordinary unmatched predicate (0
+                // solutions), so a VIOLATED forall would silently "hold" (the
+                // loud-over-silent rule's classic failure). Loud if reflect's `not`
+                // is unavailable, mirroring the `negation` arm.
+                let not_sym = syms.not.ok_or(execute::LowerError::NotYetImplemented(
+                    "forall body negation without loaded anthill.reflect.not",
+                ))?;
+                for g in body_goals {
+                    goals.push(self.make_goal_value(not_sym, vec![g]));
+                }
             }
         }
 
         if goals.is_empty() {
-            return true;
+            return Ok(true);
         }
 
         // If any solution exists, the forall is violated
@@ -1272,106 +1324,30 @@ impl KnowledgeBase {
             ..resolve::ResolveConfig::default()
         };
         let solutions = self.resolve_goals(goals, &config);
-        solutions.is_empty()
+        Ok(solutions.is_empty())
     }
 
     /// Evaluate negation(query): the inner query must have no solutions.
-    fn eval_negation_guard(&mut self, guard: &crate::eval::value::Value) -> bool {
-        let inner = self.guard_child(guard, "query");
+    fn eval_negation_guard(
+        &mut self,
+        guard: &crate::eval::value::Value,
+        syms: &execute::LogicalQuerySymbols,
+    ) -> Result<bool, execute::LowerError> {
+        let inner = self.guard_child(guard, syms.query);
 
         if let Some(inner) = &inner {
-            let goals = self.lower_logical_query(inner);
+            let goals = self.lower_query_with(inner, syms)?;
             if goals.is_empty() {
-                return false; // negation of empty_query (always true) = false
+                return Ok(false); // negation of empty_query (always true) = false
             }
             let config = resolve::ResolveConfig {
                 max_solutions: 1,
                 ..resolve::ResolveConfig::default()
             };
             let solutions = self.resolve_goals(goals, &config);
-            solutions.is_empty() // negation holds if no solutions
+            Ok(solutions.is_empty()) // negation holds if no solutions
         } else {
-            true
-        }
-    }
-
-    /// Wrap a goal `Value` in the negation-as-failure builtin
-    /// `not(goal)` (WI-518). Built as a `Value::Entity` whose functor is the
-    /// resolver's `not` symbol so the goal stays carrier-agnostic — `goal` may be
-    /// a `Value::Term` or a `Value::Node` occurrence; the resolver's NAF path
-    /// (`step_naf`) reads the inner goal carrier-faithfully and sub-resolves it.
-    /// (Was an `alloc(Term::Fn { not })`, which forced the inner goal to a term.)
-    fn make_not_goal(&mut self, goal: crate::eval::value::Value) -> crate::eval::value::Value {
-        let not_sym = self.intern("not");
-        crate::eval::value::Value::Entity {
-            functor: not_sym,
-            pos: std::rc::Rc::from(vec![goal]),
-            named: std::rc::Rc::from(Vec::<(Symbol, crate::eval::value::Value)>::new()),
-        }
-    }
-
-    /// Lower a `LogicalQuery` (read through `TermView`) to resolution goals
-    /// (WI-518). Carrier-neutral: each leaf is passed through as a `Value` — a
-    /// `Value::Term` for the hash-consed case, a `Value::Node` for a `denoted`
-    /// occurrence — and resolved through `resolve_goals` rather than extracted to
-    /// a `TermId`. This is what dissolves the WI-514 occurrence gate: an
-    /// occurrence guard leaf now resolves like any other goal instead of being
-    /// reported `Gated`.
-    fn lower_logical_query(&mut self, lq: &crate::eval::value::Value) -> Vec<crate::eval::value::Value> {
-        let Some(functor) = term_view::TermView::head(lq, self).functor_sym() else {
-            // A bare leaf with no functor head (var / const) — a single goal,
-            // carrier-faithful.
-            return vec![lq.clone()];
-        };
-        match self.resolve_sym(functor).to_string().as_str() {
-            "pattern_query" => {
-                let inner = self.guard_child(lq, "term").or_else(|| {
-                    term_view::TermView::pos_arg(lq, self, 0).map(|c| c.to_value())
-                });
-                match inner {
-                    Some(v) => vec![v],
-                    // `build_logical_query` always sets the `term` field, so an
-                    // absent leaf is a construction bug, not user input — surface
-                    // it loudly rather than silently dropping the goal.
-                    None => panic!(
-                        "lower_logical_query: pattern_query has neither a `term` field \
-                         nor a positional leaf — malformed guard query",
-                    ),
-                }
-            }
-            "conjunction" => {
-                let left = self.guard_child(lq, "left");
-                let right = self.guard_child(lq, "right");
-                let mut goals: Vec<crate::eval::value::Value> = Vec::new();
-                if let Some(l) = &left {
-                    goals.extend(self.lower_logical_query(l));
-                }
-                if let Some(r) = &right {
-                    goals.extend(self.lower_logical_query(r));
-                }
-                goals
-            }
-            "empty_query" => Vec::new(),
-            "negation" => {
-                let inner = self.guard_child(lq, "query");
-                if let Some(inner) = &inner {
-                    let inner_goals = self.lower_logical_query(inner);
-                    if inner_goals.is_empty() {
-                        return Vec::new();
-                    }
-                    if inner_goals.len() == 1 {
-                        vec![self.make_not_goal(inner_goals.into_iter().next().unwrap())]
-                    } else {
-                        // Multiple goals: negate as conjunction
-                        // TODO: proper conjunction wrapping
-                        inner_goals
-                    }
-                } else {
-                    Vec::new()
-                }
-            }
-            // Unknown LogicalQuery ctor: the whole view as one goal, carrier-faithful.
-            _ => vec![lq.clone()],
+            Ok(true)
         }
     }
 
@@ -5416,18 +5392,31 @@ mod wi518_occurrence_guard_resolution_tests {
         SourceSpan::new(SourceId::from_raw(0), 0, 0)
     }
 
+    /// Register a `LogicalQuery` constructor symbol under its qualified name
+    /// (`anthill.reflect.LogicalQuery.<short>`) and return it — mirroring the
+    /// loader's `logical_query_ctor`. WI-513: the guard engine dispatches by the
+    /// interned qualified `LogicalQuerySymbols`, so a guard built in a bare KB must
+    /// use the SAME qualified symbol `LogicalQuerySymbols::resolve` will look up
+    /// (an `intern("no_q")` short name would not match). Field-key symbols
+    /// (`condition`/`body`/`term`/…) stay short-name interned — both sides intern
+    /// them identically.
+    fn lq_ctor(kb: &mut KnowledgeBase, short: &str) -> Symbol {
+        let qn = format!("anthill.reflect.LogicalQuery.{short}");
+        kb.symbols.define(short, &qn, SymbolKind::Operation, 0)
+    }
+
     /// Build `no_q(condition: pattern_query(term: <leaf>), body: empty_query)` — a
     /// quantified guard around `leaf` (the top level is a quantifier so
-    /// `evaluate_guard` descends into `lower_logical_query`). The leaf is any goal
+    /// `evaluate_guard` descends into the shared lowerer). The leaf is any goal
     /// `Value`: a `Value::Term` for the hash-consed case, a `Value::Node` for an
     /// occurrence goal.
     fn no_q_guard(kb: &mut KnowledgeBase, leaf: Value) -> Value {
-        let no_q = kb.intern("no_q");
+        let no_q = lq_ctor(kb, "no_q");
         let condition = kb.intern("condition");
         let body = kb.intern("body");
-        let pattern_query = kb.intern("pattern_query");
+        let pattern_query = lq_ctor(kb, "pattern_query");
         let term = kb.intern("term");
-        let empty_query = kb.intern("empty_query");
+        let empty_query = lq_ctor(kb, "empty_query");
 
         let pq = Value::Entity {
             functor: pattern_query,
@@ -5600,15 +5589,15 @@ mod wi518_occurrence_guard_resolution_tests {
         });
         kb.assert_fact(flag_fact, sort, domain, None);
 
-        let no_q = kb.intern("no_q");
+        let no_q = lq_ctor(&mut kb, "no_q");
         let condition = kb.intern("condition");
         let body = kb.intern("body");
-        let conjunction = kb.intern("conjunction");
+        let conjunction = lq_ctor(&mut kb, "conjunction");
         let left = kb.intern("left");
         let right = kb.intern("right");
-        let pattern_query = kb.intern("pattern_query");
+        let pattern_query = lq_ctor(&mut kb, "pattern_query");
         let term = kb.intern("term");
-        let empty_query = kb.intern("empty_query");
+        let empty_query = lq_ctor(&mut kb, "empty_query");
 
         // Left: a hash-consed `flag()` term leaf.
         let flag_leaf = kb.alloc(Term::Fn {

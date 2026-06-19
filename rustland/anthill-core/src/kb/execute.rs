@@ -316,15 +316,51 @@ impl KnowledgeBase {
     /// the trivial-collapse semantics (empty body succeeds → wrapping
     /// disjunction unconditionally true / wrapping negation unconditionally
     /// false) is almost always a caller bug rather than intent.
-    fn coerce_to_single_goal(
+    /// Carrier-neutral single-goal coercion (WI-513): collapse a goal list into
+    /// one goal `Value` for a `not`/`or` wrapper. A single goal passes through as
+    /// its `Value` (Term OR occurrence Node); multiple goals reify to terms and
+    /// synthesize a fresh `_synth_N(?vars) :- goals` conjunction-rule head
+    /// (term-level, since the head is a freshly-allocated rule), returned as a
+    /// `Value::Term`. Empty is rejected (almost always a caller bug).
+    fn coerce_to_single_goal_value(
         &mut self,
-        goals: Vec<TermId>,
+        goals: Vec<Value>,
         empty_err: &'static str,
-    ) -> Result<TermId, LowerError> {
+    ) -> Result<Value, LowerError> {
         match goals.len() {
             0 => Err(LowerError::NotYetImplemented(empty_err)),
-            1 => Ok(goals[0]),
-            _ => Ok(self.synthesize_conjunction_rule(goals)),
+            1 => Ok(goals.into_iter().next().unwrap()),
+            _ => {
+                let mut tids: Vec<TermId> = Vec::with_capacity(goals.len());
+                for g in &goals {
+                    tids.push(self.goal_value_to_term(g)?);
+                }
+                Ok(Value::Term(self.synthesize_conjunction_rule(tids)))
+            }
+        }
+    }
+
+    /// Reify a goal `Value` to a hash-consed `TermId` at a genuine term boundary
+    /// (the multi-goal conjunction-rule synthesis). A `Value::Node` occurrence
+    /// materializes via `occurrence_to_term`; every other carrier goes through
+    /// `alloc_from_value` (loud on a non-goal carrier).
+    fn goal_value_to_term(&mut self, v: &Value) -> Result<TermId, LowerError> {
+        match v {
+            Value::Node(occ) => Ok(super::node_occurrence::occurrence_to_term(self, occ)),
+            other => self.alloc_from_value(other),
+        }
+    }
+
+    /// Build a builtin-goal `Value` `functor(args...)` as a `Value::Entity`
+    /// (WI-513) — used for the `not`/`or` wrappers `lower_query` synthesizes. The
+    /// entity carrier keeps the wrapped goals carrier-faithful (a `Value::Node`
+    /// occurrence stays an occurrence), and the resolver classifies the builtin
+    /// by reading `functor` through `TermView` (`get_builtin_view`).
+    pub(crate) fn make_goal_value(&mut self, functor: Symbol, args: Vec<Value>) -> Value {
+        Value::Entity {
+            functor,
+            pos: std::rc::Rc::from(args),
+            named: std::rc::Rc::from(Vec::<(Symbol, Value)>::new()),
         }
     }
 
@@ -332,9 +368,18 @@ impl KnowledgeBase {
     /// resolver. Errors surface unsupported shapes cleanly (rather than
     /// silently evaluating to "always true").
     ///
+    /// WI-513: carrier-neutral — goals are `Value`s, not `TermId`s. A leaf
+    /// (`pattern_query` term / `guarded` condition) passes through
+    /// [`Self::lower_leaf`]: an occurrence (`Value::Node`) stays an occurrence
+    /// goal (resolves via `query_view`, preserving WI-518), every other carrier
+    /// reifies to a canonical `Value::Term`. This is the SINGLE lowerer shared
+    /// by the eval-side [`Self::execute_logical_query`] and the guard engine
+    /// (`evaluate_guard` and the quantifier evaluators in `kb/mod.rs`), replacing
+    /// the guard engine's old partial `lower_logical_query` re-implementation.
+    ///
     /// Cross-constructor notes:
     /// - `empty_query` → `[]` (no constraints = vacuously true).
-    /// - `pattern_query(t)` → `[alloc_from_value(t)]`.
+    /// - `pattern_query(t)` → `[lower_leaf(t)]`.
     /// - `conjunction(l, r)` → `lower(l) ++ lower(r)` — shared variables
     ///   form a natural join because goals all live in the same
     ///   substitution frame.
@@ -348,38 +393,58 @@ impl KnowledgeBase {
     /// - `disjunction(l, r)` → `[or(l_goal, r_goal)]` via the same
     ///   single-goal coercion; `or` is the rule-form lift over push_choice
     ///   (proposal 033 §M3).
-    /// - `guarded(q, cond)` → `lower(q) ++ [alloc_from_value(cond)]`.
+    /// - `guarded(q, cond)` → `lower(q) ++ [lower_leaf(cond)]`.
     /// - `projected(q, _)` / `limited(q, _)` → for the resolver-level
     ///   view, projection and cardinality limits are post-processing on
     ///   the solution stream; here we return the underlying query's
     ///   goals and document that the caller must honor the wrapper's
     ///   semantics downstream (tracked in the wrapper Value, not the
-    ///   lowered TermId list).
+    ///   lowered goal list).
     ///
     /// Quantifiers (`forall_q` / `some_q` / ...) and aggregations
-    /// (`count_q` / ...) remain `NotYetImplemented` pending M4's
-    /// `LogicalStream` plumbing (WI-048), which is where their semantics
-    /// need a streaming execution context rather than a flat goal list.
-    pub fn lower_query(&mut self, q: &Value) -> Result<Vec<TermId>, LowerError> {
+    /// (`count_q` / ...) remain `NotYetImplemented` here pending M4's
+    /// `LogicalStream` plumbing (WI-048); the guard engine evaluates the
+    /// counting/forall quantifiers itself (it calls this lowerer only on the
+    /// quantifier's non-quantifier condition/body sub-queries).
+    pub fn lower_query(&mut self, q: &Value) -> Result<Vec<Value>, LowerError> {
         let syms = LogicalQuerySymbols::resolve(self);
         self.lower_query_with(q, &syms)
     }
 
-    fn lower_query_with(
+    /// Lower a single goal-atom leaf carrier-neutrally (WI-513). An occurrence
+    /// (`Value::Node`) is kept as-is — it resolves as an occurrence goal via
+    /// `query_view` (WI-518) and must not be reified (reifying would discard its
+    /// source spans, and `alloc_from_value` rejects it anyway). Every other
+    /// carrier reifies to a canonical `Value::Term` via `alloc_from_value`,
+    /// which also surfaces a non-goal carrier (Closure/Stream/…) loudly.
+    pub(crate) fn lower_leaf(&mut self, v: &Value) -> Result<Value, LowerError> {
+        match v {
+            Value::Node(_) => Ok(v.clone()),
+            other => Ok(Value::Term(self.alloc_from_value(other)?)),
+        }
+    }
+
+    /// Read a named field of a `LogicalQuery` value carrier-agnostically through
+    /// `TermView`, as an owned `Value` (WI-513). Works for both a `Value::Entity`
+    /// (eval path) and a `Value::Term` hash-consed LogicalQuery (loader/guard
+    /// path) — the latter is why the structure read can't pattern-match `Entity`.
+    fn lq_field(&self, q: &Value, field: Symbol) -> Option<Value> {
+        super::term_view::TermView::named_arg(q, self, field).map(|c| c.to_value())
+    }
+
+    pub(crate) fn lower_query_with(
         &mut self,
         q: &Value,
         syms: &LogicalQuerySymbols,
-    ) -> Result<Vec<TermId>, LowerError> {
-        let (functor, named) = match q {
-            Value::Entity { functor, named, .. } => (*functor, &named[..]),
-            Value::Term(_) => {
-                // Bare Term values are not LogicalQuery constructors.
-                return Err(LowerError::NotALogicalQuery { got: "Term".into() });
-            }
-            other => return Err(LowerError::NotALogicalQuery {
-                got: other.type_name().into(),
-            }),
-        };
+    ) -> Result<Vec<Value>, LowerError> {
+        // WI-513: read the LogicalQuery structure carrier-agnostically through
+        // `TermView`, so this single lowerer accepts BOTH a `Value::Entity` (the
+        // eval-side reflect path) and a `Value::Term` hash-consed LogicalQuery
+        // (the loader/guard path — `build_logical_query` builds `Term::Fn{no_q,…}`).
+        // The old `match q { Value::Entity … }` rejected the term carrier, which is
+        // why the guard engine needed its own parallel `lower_logical_query`.
+        let functor = super::term_view::TermView::head(q, self).functor_sym()
+            .ok_or_else(|| LowerError::NotALogicalQuery { got: q.type_name().into() })?;
 
         // `empty_query` has no fields, handle up-front.
         if Some(functor) == syms.empty_query {
@@ -387,39 +452,39 @@ impl KnowledgeBase {
         }
 
         if Some(functor) == syms.pattern_query {
-            let term_v = find_named(named, syms.term)
+            let term_v = self.lq_field(q, syms.term)
                 .ok_or(LowerError::MissingField {
                     entity: "pattern_query", field: "term",
                 })?;
-            return Ok(vec![self.alloc_from_value(term_v)?]);
+            return Ok(vec![self.lower_leaf(&term_v)?]);
         }
 
         if Some(functor) == syms.conjunction {
-            let left = find_named(named, syms.left).ok_or(LowerError::MissingField {
+            let left = self.lq_field(q, syms.left).ok_or(LowerError::MissingField {
                 entity: "conjunction", field: "left",
             })?;
-            let right = find_named(named, syms.right).ok_or(LowerError::MissingField {
+            let right = self.lq_field(q, syms.right).ok_or(LowerError::MissingField {
                 entity: "conjunction", field: "right",
             })?;
-            let mut goals = self.lower_query_with(left, syms)?;
-            goals.extend(self.lower_query_with(right, syms)?);
+            let mut goals = self.lower_query_with(&left, syms)?;
+            goals.extend(self.lower_query_with(&right, syms)?);
             return Ok(goals);
         }
 
         if Some(functor) == syms.guarded {
-            let inner = find_named(named, syms.query).ok_or(LowerError::MissingField {
+            let inner = self.lq_field(q, syms.query).ok_or(LowerError::MissingField {
                 entity: "guarded", field: "query",
             })?;
-            let cond = find_named(named, syms.condition).ok_or(LowerError::MissingField {
+            let cond = self.lq_field(q, syms.condition).ok_or(LowerError::MissingField {
                 entity: "guarded", field: "condition",
             })?;
-            let mut goals = self.lower_query_with(inner, syms)?;
-            goals.push(self.alloc_from_value(cond)?);
+            let mut goals = self.lower_query_with(&inner, syms)?;
+            goals.push(self.lower_leaf(&cond)?);
             return Ok(goals);
         }
 
         if Some(functor) == syms.sort_query {
-            let name_v = find_named(named, syms.sort_name).ok_or(LowerError::MissingField {
+            let name_v = self.lq_field(q, syms.sort_name).ok_or(LowerError::MissingField {
                 entity: "sort_query", field: "sort_name",
             })?;
             let name = match name_v {
@@ -442,53 +507,58 @@ impl KnowledgeBase {
                 pos_args: SmallVec::from_slice(&[var_term, sort_ref]),
                 named_args: SmallVec::new(),
             });
-            return Ok(vec![goal]);
+            return Ok(vec![Value::Term(goal)]);
         }
 
         if Some(functor) == syms.negation {
-            let inner = find_named(named, syms.query).ok_or(LowerError::MissingField {
+            let inner = self.lq_field(q, syms.query).ok_or(LowerError::MissingField {
                 entity: "negation", field: "query",
             })?;
-            let inner_goals = self.lower_query_with(inner, syms)?;
+            let inner_goals = self.lower_query_with(&inner, syms)?;
             let not_sym = syms.not.ok_or(LowerError::NotYetImplemented(
                 "negation without loaded anthill.reflect.not",
             ))?;
-            let arg = self.coerce_to_single_goal(
+            let arg = self.coerce_to_single_goal_value(
                 inner_goals,
                 "negation of empty_query (semantically `false`)",
             )?;
-            let goal = self.terms.alloc(Term::Fn {
-                functor: not_sym,
-                pos_args: SmallVec::from_slice(&[arg]),
-                named_args: SmallVec::new(),
-            });
-            return Ok(vec![goal]);
+            return Ok(vec![self.make_goal_value(not_sym, vec![arg])]);
         }
 
         // `or` is the rule-lifted form of push_choice; no extra lifting needed.
         // Multi-goal branches synthesize a fresh conjunction-rule head
         // (proposal 033 §M4 / WI-076).
         if Some(functor) == syms.disjunction {
-            let left = find_named(named, syms.left).ok_or(LowerError::MissingField {
+            let left = self.lq_field(q, syms.left).ok_or(LowerError::MissingField {
                 entity: "disjunction", field: "left",
             })?;
-            let right = find_named(named, syms.right).ok_or(LowerError::MissingField {
+            let right = self.lq_field(q, syms.right).ok_or(LowerError::MissingField {
                 entity: "disjunction", field: "right",
             })?;
-            let l_goals = self.lower_query_with(left, syms)?;
-            let r_goals = self.lower_query_with(right, syms)?;
+            let l_goals = self.lower_query_with(&left, syms)?;
+            let r_goals = self.lower_query_with(&right, syms)?;
             let or_sym = syms.or.ok_or(LowerError::NotYetImplemented(
                 "disjunction without loaded anthill.kernel.or",
             ))?;
             let empty_msg = "disjunction with empty_query branch (empty branch trivially succeeds)";
-            let l = self.coerce_to_single_goal(l_goals, empty_msg)?;
-            let r = self.coerce_to_single_goal(r_goals, empty_msg)?;
+            // `or` lowers to the stdlib rule `or(?a, ?b) :- push_choice(?a, ?b)`,
+            // and push_choice's arg extraction (`resolve_push_choice_args`) is
+            // term-based (`kb.walk` → `TermId`). So the `or` wrapper must be a
+            // hash-consed `Term::Fn`, not a carrier-neutral `Value::Entity` — a
+            // `Value::Entity` branch arg would not flow through push_choice (a
+            // nested `or` branch would be silently lost). Disjunction is an
+            // eval-side form whose branches are always reifiable goals (never
+            // occurrences), so reifying each branch to a `TermId` here is sound.
+            let l_val = self.coerce_to_single_goal_value(l_goals, empty_msg)?;
+            let r_val = self.coerce_to_single_goal_value(r_goals, empty_msg)?;
+            let l = self.goal_value_to_term(&l_val)?;
+            let r = self.goal_value_to_term(&r_val)?;
             let goal = self.terms.alloc(Term::Fn {
                 functor: or_sym,
                 pos_args: SmallVec::from_slice(&[l, r]),
                 named_args: SmallVec::new(),
             });
-            return Ok(vec![goal]);
+            return Ok(vec![Value::Term(goal)]);
         }
 
         // Projection / limit are wrappers over the inner stream. Flatten
@@ -496,10 +566,10 @@ impl KnowledgeBase {
         // applying projection/limit semantics on the resulting solution
         // sequence — the resolver itself has nothing to do differently.
         if Some(functor) == syms.projected || Some(functor) == syms.limited {
-            let inner = find_named(named, syms.query).ok_or(LowerError::MissingField {
+            let inner = self.lq_field(q, syms.query).ok_or(LowerError::MissingField {
                 entity: "projected/limited", field: "query",
             })?;
-            return self.lower_query_with(inner, syms);
+            return self.lower_query_with(&inner, syms);
         }
 
         // Quantifiers / aggregations: pending M4 LogicalStream (WI-048).
@@ -540,10 +610,6 @@ impl KnowledgeBase {
         Ok(self.resolve_lazy(&goals, &ResolveConfig::default()))
     }
 
-}
-
-fn find_named<'a>(named: &'a [(Symbol, Value)], key: Symbol) -> Option<&'a Value> {
-    named.iter().find(|(s, _)| *s == key).map(|(_, v)| v)
 }
 
 #[cfg(test)]

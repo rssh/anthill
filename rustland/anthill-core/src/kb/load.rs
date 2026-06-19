@@ -249,6 +249,17 @@ pub enum LoadError {
     ConstraintViolated {
         label: Option<String>,
     },
+    /// WI-513: a registered integrity constraint uses a `LogicalQuery` form the
+    /// shared lowerer (`execute.rs::lower_query`) cannot handle — an unknown
+    /// constructor (`disjunction`/`sort_query`/an aggregation/…) or a non-goal-
+    /// shaped leaf. Surfaced loudly by the post-load `check_all_guards` pass.
+    /// Load-BLOCKING: the constraint cannot be lowered to goals, so loading anyway
+    /// would silently run with an unchecked invariant — the silent-skip the
+    /// loud-error principle forbids. Carries the source label and lowering detail.
+    ConstraintLoweringFailed {
+        label: Option<String>,
+        detail: String,
+    },
     /// WI-023: a constraint uses a form the guard engine cannot yet enforce
     /// CORRECTLY — e.g. a `forall` with a multi-atom / nested `-:` body (whose
     /// negation needs `¬(Q1 ∧ Q2)`, which the per-goal negation can't express).
@@ -381,6 +392,12 @@ impl LoadError {
             LoadError::ConstraintViolated { label } => {
                 format!("integrity constraint{} is violated by the loaded facts", label_suffix(label))
             }
+            LoadError::ConstraintLoweringFailed { label, detail } => {
+                format!(
+                    "integrity constraint{} uses a LogicalQuery form the resolver cannot lower: {}",
+                    label_suffix(label), detail,
+                )
+            }
             LoadError::UnsupportedConstraintForm { label, detail, span } => {
                 let (line, col) = Span::line_col(source, span.start);
                 format!("{}:{}: constraint{} uses an unsupported form: {}", line, col, label_suffix(label), detail)
@@ -468,6 +485,7 @@ impl LoadError {
             // integrity constraint are both unsound to run with.
             | LoadError::AggregationConstraintUnsupported { .. }
             | LoadError::ConstraintViolated { .. }
+            | LoadError::ConstraintLoweringFailed { .. }
             | LoadError::UnsupportedConstraintForm { .. })
     }
 }
@@ -559,6 +577,9 @@ impl std::fmt::Display for LoadError {
             }
             LoadError::ConstraintViolated { label } => {
                 write!(f, "integrity constraint{} is violated by the loaded facts", label_suffix(label))
+            }
+            LoadError::ConstraintLoweringFailed { label, detail } => {
+                write!(f, "integrity constraint{} uses a LogicalQuery form the resolver cannot lower: {}", label_suffix(label), detail)
             }
             LoadError::UnsupportedConstraintForm { label, detail, span } => {
                 write!(f, "constraint{} uses an unsupported form ({}) at {}..{}", label_suffix(label), detail, span.start, span.end)
@@ -2668,14 +2689,18 @@ fn load_phase_inner(
     mark!("check_requires_shadows");
     // WI-023: post-load integrity-constraint check. Every quantified constraint
     // registered as a guard (via `load_constraint`) is evaluated against the now-
-    // complete fact set; a violation is load-blocking, an unevaluable (occurrence-
-    // leaf) guard is surfaced loudly rather than silently passing. No-op when no
-    // guards are registered (the common case — no quantified constraints).
+    // complete fact set; a violation is load-blocking, and (WI-513) a constraint
+    // whose LogicalQuery the shared lowerer cannot handle is surfaced loudly as a
+    // load-blocking error rather than silently passing. No-op when no guards are
+    // registered (the common case — no quantified constraints).
     for check in kb.check_all_guards() {
         match check {
             super::GuardCheck::Holds => {}
             super::GuardCheck::Violated(label) => {
                 all_errors.push(LoadError::ConstraintViolated { label });
+            }
+            super::GuardCheck::Unsupported(label, detail) => {
+                all_errors.push(LoadError::ConstraintLoweringFailed { label, detail });
             }
         }
     }

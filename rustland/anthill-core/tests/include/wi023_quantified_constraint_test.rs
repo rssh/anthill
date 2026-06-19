@@ -81,6 +81,31 @@ fn forall_single_atom_body_loads() {
     assert_eq!(kb.guard_count(), 1);
 }
 
+/// A single-atom `forall` whose body is VIOLATED must BLOCK the load. With edges
+/// a→b, a→c, b→a, `forall ?x: a→x -: x→a` fails for x = c (a→c holds but c→a is
+/// absent), so the load is rejected with a labeled ConstraintViolated error.
+///
+/// Regression for WI-513: the forall→`no … not(body)` transform must build the
+/// `not(body)` goal with the registered NAF builtin symbol `anthill.reflect.not`,
+/// not a bare `intern("not")`. With the wrong symbol NAF never fires, the body
+/// negation matches nothing, every forall reports "holds", and a violated forall
+/// loads silently — the exact silent-skip the loud-error principle forbids. The
+/// only prior forall test covered the SATISFIED case, which passes either way.
+#[test]
+fn forall_single_atom_body_violated_fails() {
+    let source = format!(
+        "{GRAPH}\n  constraint all_link_back: forall ?x: edge(from: a, to: ?x) -: edge(from: ?x, to: a)\n  fact edge(from: a, to: b)\n  fact edge(from: a, to: c)\n  fact edge(from: b, to: a)\nend\n"
+    );
+    let errs = match try_load_kb_with(&source) {
+        Ok(_) => panic!("x = c has no back-edge, so the forall is violated, but load succeeded"),
+        Err(errs) => errs,
+    };
+    assert!(
+        errs.iter().any(|e| e.contains("violated") && e.contains("all_link_back")),
+        "expected a ConstraintViolated error mentioning the label, got: {errs:?}"
+    );
+}
+
 /// A: a `forall` with a multi-atom `-:` body cannot be negated correctly
 /// (¬(Q1∧Q2) ≠ ¬Q1∧¬Q2), so it is rejected loudly rather than mis-evaluated.
 #[test]
