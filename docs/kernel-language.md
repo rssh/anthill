@@ -451,6 +451,35 @@ rule first([?h | ?_]) = ?h
 rule take_two([?a, ?b | ?rest]) = ((?a, ?b), ?rest)
 ```
 
+### 4.7 Lambda
+
+**Lambda expressions** construct anonymous functions — values of arrow sort `(P) -> R` (with effects `(P) -> R @ {E}` when the body is effectful).
+
+```
+LambdaExpr ::= 'lambda' Pattern '->' Expr
+```
+
+A lambda binds **exactly one** parameter, which is a full pattern. Multiple parameters are expressed by destructuring a (named) tuple. This single-binder rule is deliberate, not a limitation: it avoids comma ambiguity when a lambda is passed as a call argument (`map(lambda x -> f(x), xs)`) — the tuple parens delimit the parameter, so the enclosing call's commas separate arguments unambiguously.
+
+A lambda's type is the arrow sort `(P) -> R`: `P` is the parameter pattern's type, `R` the body's type, and any effects the body performs annotate the arrow (`@ {E}`). A lambda captures its enclosing bindings (a closure).
+
+**Examples:**
+
+```
+lambda x -> x                              -- identity
+lambda x -> add(x, 1)                      -- single parameter
+lambda (a, b) -> add(a, b)                 -- tuple destructuring (two parameters)
+lambda (acc: A, elem: B) -> add(acc, elem) -- with type annotations
+
+-- as a closure in an operation body:
+operation make_adder(x: Int64) -> (Int64) -> Int64 = lambda y -> add(x, y)
+
+-- as a call argument:
+map(xs, lambda x -> add(x, 1))
+```
+
+A lambda always binds at least one parameter; a nullary thunk is written with a `Unit` parameter — `lambda (u: Unit) -> body`.
+
 ## 5. Kernel Constructs
 
 Four constructs the reasoning engine understands natively.

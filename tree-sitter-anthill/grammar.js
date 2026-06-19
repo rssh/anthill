@@ -1034,7 +1034,10 @@ module.exports = grammar({
     named_arg: $ => seq(
       field('name', $.identifier),
       ':',
-      field('value', $._term),
+      // A lambda is admissible as a named-arg value too (not just positional —
+      // `_fn_arg`); its `_expr_body` cannot consume the argument-separating
+      // comma, so `f(k: lambda x -> g(x), j: 2)` stays unambiguous.
+      field('value', choice($._term, $.lambda_expr)),
     ),
 
     // Set literal: {x, y, z} desugars to add(add(add(empty(), x), y), z).

@@ -370,6 +370,48 @@ end
               (identifier))))))))
 
 =====================================
+Lambda as a named call argument
+=====================================
+
+sort S
+  operation g(xs: List) -> List =
+    reduce(xs, seed: lambda x -> h(x))
+end
+
+---
+
+(source_file
+  (sort_with_body
+    name: (name
+      (identifier))
+    (operation_declaration
+      name: (name
+        (identifier))
+      (param
+        name: (identifier)
+        type: (simple_type
+          (name
+            (identifier))))
+      return_type: (simple_type
+        (name
+          (identifier)))
+      body: (fn_term
+        name: (name
+          (identifier))
+        (name
+          (identifier))
+        (named_arg
+          name: (identifier)
+          value: (lambda_expr
+            param: (pattern_var
+              (identifier))
+            body: (fn_term
+              name: (name
+                (identifier))
+              (name
+                (identifier)))))))))
+
+=====================================
 Pattern: wildcard
 =====================================
 
