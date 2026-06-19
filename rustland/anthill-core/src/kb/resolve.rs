@@ -1204,6 +1204,17 @@ impl SearchStream {
             Candidate::Continuation(_) => unreachable!("handled above"),
         };
 
+        // WI-512: a NON-LINEAR goal atom (a query var repeated within one atom,
+        // e.g. `edge(from: ?n, to: ?n)`) binds that var to two different fact
+        // subterms during the discrim match — the tree indexes each var position
+        // independently (it is a linear index), so it cannot enforce the repeat.
+        // `resolve_leaf` records the conflict as `is_contradiction()` (the same
+        // machinery the simp matcher honors); a contradictory candidate is a FALSE
+        // match, so drop it rather than count it as a solution.
+        if tree_subst.is_contradiction() {
+            return Some(StepResult::Continue);
+        }
+
         // A fact (empty body) or a non-rule candidate (external row / no rid).
         let is_fact = opt_rid.map_or(true, |rid| kb.is_fact(rid));
 
@@ -3632,6 +3643,53 @@ mod tests {
         assert_eq!(results.len(), 1);
         // answer_subst is flat — resolve directly, no walk needed
         assert_eq!(results[0].subst.resolve_as_value(vx).map(|v| v.expect_term()), Some(alice));
+    }
+
+    /// WI-512: a non-linear goal (a query var repeated within one atom) must
+    /// match only when the repeated positions are equal. `rel(?x, ?x)` matches
+    /// the self-loop `rel("a","a")` but NOT `rel("a","b")` — the discrim walk
+    /// binds `?x` to both positions (same global var), `resolve_leaf` flags the
+    /// `a`≠`b` candidate as `is_contradiction`, and `step_choice` drops it.
+    #[test]
+    fn resolve_nonlinear_goal_drops_conflicting_match() {
+        let mut kb = KnowledgeBase::new();
+        let sort = kb.make_name_term("Fact");
+        let domain = kb.make_name_term("test");
+        let rel = kb.intern("rel");
+
+        let a = kb.alloc(Term::Const(Literal::String("a".into())));
+        let b = kb.alloc(Term::Const(Literal::String("b".into())));
+
+        let f_ab = kb.alloc(Term::Fn {
+            functor: rel,
+            pos_args: SmallVec::from_slice(&[a, b]),
+            named_args: SmallVec::new(),
+        });
+        let f_aa = kb.alloc(Term::Fn {
+            functor: rel,
+            pos_args: SmallVec::from_slice(&[a, a]),
+            named_args: SmallVec::new(),
+        });
+        kb.assert_fact(f_ab, sort, domain, None);
+        kb.assert_fact(f_aa, sort, domain, None);
+
+        // Query: rel(?x, ?x)
+        let x_sym = kb.intern("x");
+        let vx = kb.fresh_var(x_sym);
+        let var_x = kb.alloc(Term::Var(Var::Global(vx)));
+        let goal = kb.alloc(Term::Fn {
+            functor: rel,
+            pos_args: SmallVec::from_slice(&[var_x, var_x]),
+            named_args: SmallVec::new(),
+        });
+
+        let config = ResolveConfig::default();
+        let results = kb.resolve(&[goal], &config);
+        assert_eq!(results.len(), 1, "rel(?x,?x) must match only the self-loop rel(a,a)");
+        assert_eq!(
+            results[0].subst.resolve_as_value(vx).map(|v| v.expect_term()),
+            Some(a),
+        );
     }
 
     #[test]
