@@ -85,7 +85,7 @@ fn subst_with_param(
     let carrier_term = kb.make_sort_ref(carrier_sym);
 
     let mut subst = Substitution::new();
-    subst.bind_term(param_var, carrier_term);
+    subst.bind_term(kb, param_var, carrier_term);
     subst
 }
 

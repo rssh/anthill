@@ -346,14 +346,16 @@ fn int_sign(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
 
 // ── Eq / Ordered ───────────────────────────────────────────────
 
-fn builtin_eq(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+fn builtin_eq(i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [a, b] = expect_args::<2>("Eq.eq", args)?;
-    Ok(Value::Bool(a.structural_eq(&b)))
+    // WI-486: carrier-agnostic structural compare — a `Value::Term` operand and
+    // its structurally-equal `Value::Node`/`Entity` twin must compare equal.
+    Ok(Value::Bool(crate::kb::term_view::views_structurally_equal(i.kb(), &a, &b)))
 }
 
-fn builtin_neq(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+fn builtin_neq(i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [a, b] = expect_args::<2>("Eq.neq", args)?;
-    Ok(Value::Bool(!a.structural_eq(&b)))
+    Ok(Value::Bool(!crate::kb::term_view::views_structurally_equal(i.kb(), &a, &b)))
 }
 
 /// Total order on primitive scalars. Floats use `total_cmp` so NaN has a

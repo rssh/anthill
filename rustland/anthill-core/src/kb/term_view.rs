@@ -269,13 +269,22 @@ fn occ_head(occ: &NodeOccurrence, kb: &KnowledgeBase) -> ViewHead {
         Some(Expr::Apply { functor, pos_args, named_args, .. }) => {
             functor_view_head(kb, *functor, pos_args.len(), named_args.len())
         }
-        Some(Expr::Constructor { name, pos_args, named_args }) => {
+        // WI-520: `Instantiation` (`Name{bindings}`) is shaped exactly like
+        // `Constructor` and `occurrence_to_term` materializes BOTH via the same
+        // `Term::Fn{name, …}` twin — so it reads the same `Functor` head (a
+        // reflect-`Expr` instantiation occurrence must match its own term twin,
+        // not collapse to `Opaque`).
+        Some(Expr::Constructor { name, pos_args, named_args })
+        | Some(Expr::Instantiation { name, pos_args, named_args }) => {
             functor_view_head(kb, *name, pos_args.len(), named_args.len())
         }
         Some(Expr::Const(lit)) => ViewHead::Const(lit.clone()),
         Some(Expr::Ref(s)) => ViewHead::Ref(*s),
         Some(Expr::Ident(s)) => ViewHead::Ident(*s),
         Some(Expr::Var(Var::Global(vid))) => ViewHead::Var(*vid),
+        // WI-520: a concrete nullary leaf whose term twin is `Term::Bottom`
+        // (`ViewHead::Bottom`) — not opaque.
+        Some(Expr::Bottom) => ViewHead::Bottom,
         // WI-278 / WI-397 / WI-425: a dot form `r.name(args)` reads
         // STRUCTURALLY as its `dot_apply(receiver, name, args: List[ApplyArg])`
         // term twin — always arity-3 named, no positionals, call args folded
@@ -317,7 +326,9 @@ fn occ_pos_child(occ: &NodeOccurrence, _kb: &KnowledgeBase, i: usize) -> Option<
         // WI-425: a DotApply has NO positional children — its call args live
         // inside the `args` named child, mirroring the term twin.
         Expr::Apply { pos_args, .. }
-        | Expr::Constructor { pos_args, .. } => pos_args.get(i).map(Rc::clone),
+        | Expr::Constructor { pos_args, .. }
+        // WI-520: `Instantiation` reads like `Constructor` — expose its children.
+        | Expr::Instantiation { pos_args, .. } => pos_args.get(i).map(Rc::clone),
         _ => None,
     }
 }
@@ -351,7 +362,10 @@ fn occ_named_child(occ: &NodeOccurrence, kb: &KnowledgeBase, sym: Symbol) -> Opt
         return None;
     }
     let named = match occ.as_expr()? {
-        Expr::Apply { named_args, .. } | Expr::Constructor { named_args, .. } => named_args,
+        Expr::Apply { named_args, .. }
+        | Expr::Constructor { named_args, .. }
+        // WI-520: `Instantiation` reads like `Constructor`.
+        | Expr::Instantiation { named_args, .. } => named_args,
         _ => return None,
     };
     named.iter().find(|(s, _)| *s == sym).map(|(_, c)| Rc::clone(c))
@@ -365,7 +379,10 @@ fn occ_named_keys(occ: &NodeOccurrence, kb: &KnowledgeBase) -> Vec<Symbol> {
         return effect_expr_keys(en, kb);
     }
     match occ.as_expr() {
-        Some(Expr::Apply { named_args, .. }) | Some(Expr::Constructor { named_args, .. }) => {
+        Some(Expr::Apply { named_args, .. })
+        | Some(Expr::Constructor { named_args, .. })
+        // WI-520: `Instantiation` reads like `Constructor`.
+        | Some(Expr::Instantiation { named_args, .. }) => {
             named_args.iter().map(|(s, _)| *s).collect()
         }
         // WI-425: the dot_apply term twin's keys in the loader's builder slice
@@ -656,15 +673,15 @@ pub trait TermView {
 /// compare by `VarId`, constants by value, functors/refs/idents by symbol plus
 /// recursive children. `Opaque` heads (closures, streams, Rigid/DeBruijn vars)
 /// and head-kind mismatches are conservatively unequal — there is no shared
-/// structure to compare (mirrors `Value::structural_eq`, which this generalizes
-/// to the cross-carrier `Term`-vs-`Node` case the former leaves `false`).
+/// structure to compare. WI-486 made this the SINGLE structural `Value` compare,
+/// replacing the carrier-blind `Value::structural_eq` (which returned `false` for
+/// every cross-carrier `Term`-vs-`Node`/`Entity` pair) and subsuming the
+/// `Value::Node`-only `occurrence_structural_eq`.
 ///
 /// Purely structural: it does NOT resolve a substitution or a `SortAlias`.
 /// Callers that need two differently-encoded-but-equal forms to agree (e.g.
 /// `Ref(S.E)` vs its alias `Var`) canonicalize first (walk through the subst),
-/// then compare. Distinct from `Value::structural_eq` (inherent, single-carrier,
-/// no walk) — kept separate so the carrier-blind comparison has an unambiguous
-/// name.
+/// then compare.
 pub fn views_structurally_equal<A: TermView, B: TermView>(
     kb: &KnowledgeBase,
     a: &A,
@@ -1354,5 +1371,65 @@ mod wi436_tests {
             ViewHead::Functor { functor: Some(s), pos_arity: 0, named_arity: 0 } if s == plain
         ));
         assert!(!views_structurally_equal(&kb, &plain_ref, &plain_fn));
+    }
+}
+
+#[cfg(test)]
+mod wi520_tests {
+    //! WI-520 — a reflect-`Expr` `Instantiation`/`Bottom` occurrence reads through
+    //! the SAME head as its `occurrence_to_term` twin (`Term::Fn{name}` /
+    //! `Term::Bottom`) instead of collapsing to `Opaque`. So `views_structurally_equal`
+    //! (the single WI-486 comparator) compares two such occurrences structurally,
+    //! and an `Instantiation` occurrence matches its own materialized term.
+    use super::*;
+    use crate::kb::node_occurrence::occurrence_to_term;
+    use crate::kb::term::Literal;
+    use crate::span::{SourceId, SourceSpan};
+    use std::rc::Rc;
+
+    fn span() -> SourceSpan {
+        SourceSpan::new(SourceId::from_raw(0), 0, 0)
+    }
+
+    fn inst(name: Symbol, key: Symbol, child: Expr) -> Rc<NodeOccurrence> {
+        NodeOccurrence::new_expr(
+            Expr::Instantiation {
+                name,
+                pos_args: Vec::new(),
+                named_args: vec![(key, NodeOccurrence::new_expr(child, span(), None))],
+            },
+            span(),
+            None,
+        )
+    }
+
+    #[test]
+    fn instantiation_reads_like_its_term_twin_and_compares_structurally() {
+        let mut kb = KnowledgeBase::new();
+        let foo = kb.intern("Foo");
+        let x = kb.intern("x");
+
+        let a = inst(foo, x, Expr::Const(Literal::Int(1)));
+        let b = inst(foo, x, Expr::Const(Literal::Int(1))); // structurally equal
+        let c = inst(foo, x, Expr::Const(Literal::Int(2))); // distinct child
+
+        let av = Value::Node(Rc::clone(&a));
+        // Head is the SAME `Functor` head its term twin produces — NOT `Opaque`.
+        assert!(matches!(av.head(&kb), ViewHead::Functor { functor: Some(s), .. } if s == foo));
+        let twin = occurrence_to_term(&mut kb, &a);
+        assert_eq!(av.head(&kb).functor_sym(), twin.head(&kb).functor_sym());
+
+        // Two structurally-equal instantiations compare equal; a distinct one not.
+        assert!(views_structurally_equal(&kb, &av, &Value::Node(b)));
+        assert!(!views_structurally_equal(&kb, &av, &Value::Node(c)));
+    }
+
+    #[test]
+    fn bottom_occurrence_reads_as_bottom_not_opaque() {
+        let kb = KnowledgeBase::new();
+        let a = Value::Node(NodeOccurrence::new_expr(Expr::Bottom, span(), None));
+        let b = Value::Node(NodeOccurrence::new_expr(Expr::Bottom, span(), None));
+        assert!(matches!(a.head(&kb), ViewHead::Bottom));
+        assert!(views_structurally_equal(&kb, &a, &b));
     }
 }

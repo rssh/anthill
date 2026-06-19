@@ -64,7 +64,7 @@ fn assert_node_identity(kb: &mut KnowledgeBase, input: &Rc<NodeOccurrence>) {
     // structurally; `Value` has no `PartialEq`).
     let stamped = r.node.inferred_type();
     assert!(
-        stamped.as_ref().is_some_and(|s| s.structural_eq(&r.ty)),
+        stamped.as_ref().is_some_and(|s| anthill_core::kb::term_view::views_structurally_equal(kb, s, &r.ty)),
         "the result's node carries the inferred type the Stamp frame recorded: \
          stamped {stamped:?} vs ty {:?}",
         r.ty,

@@ -2826,10 +2826,10 @@ impl KnowledgeBase {
                 match val {
                     crate::eval::value::Value::Node(occ) => {
                         let t = node_occurrence::occurrence_to_term(self, &occ);
-                        norm.bind(vid, t);
+                        norm.bind(self, vid, t);
                     }
-                    crate::eval::value::Value::Term(t) => norm.bind(vid, t),
-                    other => norm.bind_value(vid, other),
+                    crate::eval::value::Value::Term(t) => norm.bind(self, vid, t),
+                    other => norm.bind_value(self, vid, other),
                 }
             }
             normalized = norm;
@@ -2867,11 +2867,11 @@ impl KnowledgeBase {
                 if is_synthetic {
                     let db_index = (u32::MAX - ts_vid.raw()) as usize;
                     if let Some(&fresh_vid) = fresh_vars.get(db_index) {
-                        body_rename.bind(fresh_vid, bound_term);
+                        body_rename.bind(self, fresh_vid, bound_term);
                     }
                 } else {
                     let opened = self.term_from_debruijn(bound_term, &fresh_vars);
-                    answer_links.bind(ts_vid, opened);
+                    answer_links.bind(self, ts_vid, opened);
                 }
             }
 
@@ -2926,13 +2926,13 @@ impl KnowledgeBase {
                 {
                     let bound = *bound;
                     if !matches!(self.terms.get(bound), Term::Var(_)) {
-                        rename.bind(*vid, bound);
+                        rename.bind(self, *vid, bound);
                         continue;
                     }
                 }
                 let fresh = self.fresh_var(vid.name());
                 let fresh_term = self.alloc(Term::Var(Var::Global(fresh)));
-                rename.bind(*vid, fresh_term);
+                rename.bind(self, *vid, fresh_term);
             }
 
             // Occurrence body: legacy bodies already use Global vars, so just
@@ -2953,12 +2953,12 @@ impl KnowledgeBase {
                         if let Some(crate::eval::value::Value::Term(renamed)) =
                             rename.resolve_as_value(rule_vid)
                         {
-                            answer_links.bind(ts_vid, *renamed);
+                            answer_links.bind(self, ts_vid, *renamed);
                         }
                     }
                     _ => {
                         let renamed_term = self.apply_subst(bound_term, &rename);
-                        answer_links.bind(ts_vid, renamed_term);
+                        answer_links.bind(self, ts_vid, renamed_term);
                     }
                 }
             }
@@ -5386,7 +5386,7 @@ mod tests {
         });
 
         let mut s = subst::Substitution::new();
-        s.bind(vid, val);
+        s.bind(&kb, vid, val);
         let result = kb.apply_subst(term, &s);
 
         match kb.get_term(result) {

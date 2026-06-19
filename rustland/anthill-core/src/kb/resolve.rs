@@ -611,7 +611,7 @@ impl SearchStream {
                     let new_goals = frame.goals[1..].to_vec();
                     let mut new_subst = frame.subst.clone();
                     for (var, val) in extra.bindings.iter() {
-                        new_subst.bind_value(*var, val.clone());
+                        new_subst.bind_value(kb, *var, val.clone());
                     }
                     let new_depth = depth + 1;
                     let new_delay = delay_mode.reset();
@@ -1240,7 +1240,7 @@ impl SearchStream {
             // an external row enters σ as its raw `Value` shape.
             for (vid, val) in tree_subst.iter() {
                 if !matches!(val, Value::Term(_)) {
-                    merged.bind_value(*vid, val.clone());
+                    merged.bind_value(kb, *vid, val.clone());
                 }
             }
             let new_delay = delay_mode.reset();
@@ -1368,6 +1368,7 @@ impl SearchStream {
 /// wrong value escapes. If foldability is ever extended to bodies with binders,
 /// this walk must become scope-aware (stop descending past a shadowing binder).
 fn collect_param_var_bindings(
+    kb: &KnowledgeBase,
     occ: &Rc<NodeOccurrence>,
     param_args: &HashMap<Symbol, Value>,
     fold: &mut Substitution,
@@ -1375,10 +1376,10 @@ fn collect_param_var_bindings(
     let Some(expr) = occ.as_expr() else { return };
     if let Expr::Var(Var::Global(vid)) = expr {
         if let Some(arg) = param_args.get(&vid.name()) {
-            fold.bind_value(*vid, arg.clone());
+            fold.bind_value(kb, *vid, arg.clone());
         }
     }
-    node_occurrence::for_each_child(expr, |c| collect_param_var_bindings(c, param_args, fold));
+    node_occurrence::for_each_child(expr, |c| collect_param_var_bindings(kb, c, param_args, fold));
 }
 
 // ── SLD Resolution ──────────────────────────────────────────────
@@ -1850,7 +1851,7 @@ impl KnowledgeBase {
                     Term::Var(Var::Global(vid)) => {
                         let vid = *vid;
                         let mut extra = Substitution::new();
-                        extra.bind(vid, str_term);
+                        extra.bind(self, vid, str_term);
                         BuiltinResult::SuccessWithBindings(extra)
                     }
                     _ => {
@@ -1888,7 +1889,7 @@ impl KnowledgeBase {
                     Term::Var(Var::Global(vid)) => {
                         let vid = *vid;
                         let mut extra = Substitution::new();
-                        extra.bind(vid, str_term);
+                        extra.bind(self, vid, str_term);
                         BuiltinResult::SuccessWithBindings(extra)
                     }
                     _ => {
@@ -1927,7 +1928,7 @@ impl KnowledgeBase {
                             Term::Var(Var::Global(vid)) => {
                                 let vid = *vid;
                                 let mut extra = Substitution::new();
-                                extra.bind(vid, ref_term);
+                                extra.bind(self, vid, ref_term);
                                 BuiltinResult::SuccessWithBindings(extra)
                             }
                             _ => {
@@ -2416,7 +2417,7 @@ impl KnowledgeBase {
                     Term::Var(Var::Global(vid)) => {
                         let vid = *vid;
                         let mut extra = Substitution::new();
-                        extra.bind(vid, val);
+                        extra.bind(self, vid, val);
                         BuiltinResult::SuccessWithBindings(extra)
                     }
                     _ => {
@@ -2462,18 +2463,18 @@ impl KnowledgeBase {
     /// WI-511: structural value equality that is CARRIER-AWARE — routes through
     /// [`views_structurally_equal`] so a 0-ary constructor compares equal across
     /// carriers (`Value::Entity{c}` vs `Value::Term(Ref(c))`), the cross-carrier
-    /// case `Value::structural_eq` explicitly leaves to `TermView` (its doc, 026.1
-    /// Q2). The `eq`/`neq` operands are already walked (flex vars `Delay`, so none
-    /// reach here) and a rigid var compares by `Var` identity in both — so this
-    /// only ADDS the cross-carrier bridge, with no same-carrier regression.
+    /// case the now-removed carrier-blind `Value::structural_eq` (WI-486) left to
+    /// `TermView`. The `eq`/`neq` operands are already walked (flex vars `Delay`,
+    /// so none reach here) and a rigid var compares by `Var` identity in both — so
+    /// this only ADDS the cross-carrier bridge, with no same-carrier regression.
     fn values_equal(&self, a: &Value, b: &Value) -> bool {
         crate::kb::term_view::views_structurally_equal(self, a, b)
     }
 
     /// Walk the two operands of an `eq`/`neq` goal: `Delay` if either is flex
-    /// (`Var::Global`), else the two `Value`s. For two term values
-    /// `structural_eq` falls to hash-consed-`TermId` identity (= the original
-    /// `a == b` test); occurrence values compare structurally (WI-246).
+    /// (`Var::Global`), else the two `Value`s. Two term values compare by
+    /// hash-consed-`TermId` identity (= the original `a == b` test); occurrence
+    /// values compare structurally (WI-246) — both via `views_structurally_equal`.
     fn eq_operands<V: TermView>(&mut self, goal: &V, subst: &Substitution) -> EqOperands {
         let (a, b) = match (
             self.walk_arg(goal.pos_arg(self, 0), subst),
@@ -2600,7 +2601,7 @@ impl KnowledgeBase {
         match target {
             ResultTarget::Bind(vid) => {
                 let mut extra = Substitution::new();
-                extra.bind(vid, value);
+                extra.bind(self, vid, value);
                 BuiltinResult::SuccessWithBindings(extra)
             }
             ResultTarget::Compare(Some(v)) => {
@@ -3053,7 +3054,7 @@ impl KnowledgeBase {
         // sharing the param Symbol), so bind every such VarId by Symbol — the
         // by-symbol fold (no string name-matching, no occurrence→term lowering).
         let mut fold = Substitution::new();
-        collect_param_var_bindings(&body, &param_args, &mut fold);
+        collect_param_var_bindings(self, &body, &param_args, &mut fold);
         let folded = node_occurrence::substitute_occurrence(self, &body, &fold);
         // Reduce the folded body via field-access reduction; recurse for a nested
         // op-call. A value (Term/scalar) ⇒ FOLDABLE; a residual `Node` (arith /
@@ -3551,8 +3552,8 @@ mod tests {
         });
 
         let mut s = Substitution::new();
-        s.bind(vx, var_y);
-        s.bind(vy, val);
+        s.bind(&kb, vx, var_y);
+        s.bind(&kb, vy, val);
 
         let result = kb.reify(term, &s).expect_term();
         match kb.get_term(result) {
@@ -6510,7 +6511,7 @@ mod tests {
 
         // ?bound is already bound to a concrete term under σ.
         let mut subst = Substitution::new();
-        subst.bind_term(v_bound, concrete);
+        subst.bind_term(&kb, v_bound, concrete);
 
         let mut out = Vec::new();
         kb.collect_type_value_unbound_vars(&arrow, &subst, &mut out);

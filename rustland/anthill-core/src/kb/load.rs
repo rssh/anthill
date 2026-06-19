@@ -7521,7 +7521,13 @@ impl<'a> Loader<'a> {
                         if let Some((_, v)) = fields.iter().find(|(f, _)| *f == field_sym) {
                             match &found {
                                 None => found = Some(v.clone()),
-                                Some(prev) if prev.structural_eq(v) => {}
+                                // WI-486: carrier-agnostic compare — two field
+                                // types of the same structure may ride as
+                                // different `Value` carriers across constructors.
+                                Some(prev)
+                                    if crate::kb::term_view::views_structurally_equal(
+                                        &self.kb, prev, v,
+                                    ) => {}
                                 Some(_) => divergent = true,
                             }
                         }

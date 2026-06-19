@@ -163,11 +163,15 @@ fn rekey_resource_value(kb: &mut KnowledgeBase, effect: &Value, from: Symbol, to
 }
 
 /// Push `effect` into `out` unless a structurally-equal label is already present.
-/// `Value` has no `PartialEq`; [`Value::structural_eq`] dedups ground labels by
-/// `TermId` and a now-live `Value::Node` label (`Modify[c]`) by occurrence
-/// structure.
-fn push_effect_dedup(out: &mut Vec<Value>, effect: Value) {
-    if !out.iter().any(|e| e.structural_eq(&effect)) {
+/// `Value` has no `PartialEq`; WI-486 dedups via the carrier-aware
+/// [`views_structurally_equal`] so a ground `Value::Term` label and a now-live
+/// `Value::Node` label (`Modify[c]`) of the same structure dedup across carriers
+/// (the old carrier-blind compare called those distinct).
+fn push_effect_dedup(kb: &KnowledgeBase, out: &mut Vec<Value>, effect: Value) {
+    if !out
+        .iter()
+        .any(|e| crate::kb::term_view::views_structurally_equal(kb, e, &effect))
+    {
         out.push(effect);
     }
 }
@@ -224,7 +228,7 @@ pub(crate) fn op_boundary_effects(
                         Some(target) => rekey_resource_value(kb, &effect, sym, target),
                         None => effect,
                     };
-                    push_effect_dedup(&mut out, kept);
+                    push_effect_dedup(kb, &mut out, kept);
                 }
                 // else: the fresh region cannot reach the result — drop.
             }
@@ -268,7 +272,7 @@ pub(crate) fn op_boundary_effects(
                         continue;
                     }
                     let kept = rekey_resource_value(kb, &effect, sym, into);
-                    push_effect_dedup(&mut out, kept);
+                    push_effect_dedup(kb, &mut out, kept);
                 }
                 // No candidate held → drop. Sound when the WI-352 flow facts
                 // fully captured the feed: the callback was fed a fresh,
@@ -285,7 +289,7 @@ pub(crate) fn op_boundary_effects(
             }
             _ => {
                 // Parameter / unknown resource — external, keep.
-                push_effect_dedup(&mut out, effect);
+                push_effect_dedup(kb, &mut out, effect);
             }
         }
     }

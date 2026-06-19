@@ -2087,137 +2087,6 @@ fn collect_option_value(
     }
 }
 
-/// WI-246: structural equality of two occurrences — used by
-/// `Value::structural_eq` so the resolver's non-linear-pattern consistency
-/// check (a head var bound at two goal positions) treats two structurally-
-/// equal-but-distinct occurrence sub-parts as equal (e.g. the two `green`s in
-/// `list_contains(green, cons(head: green, …))`). Compares the goal-relevant
-/// forms (Apply / Constructor / Instantiation / leaves) recursively; other
-/// forms compare unequal (conservative).
-pub fn occurrence_structural_eq(a: &Rc<NodeOccurrence>, b: &Rc<NodeOccurrence>) -> bool {
-    if Rc::ptr_eq(a, b) {
-        return true;
-    }
-    // WI-342: two Value-carried types/effects are equal iff their kind + spine
-    // match structurally (distinct `Rc`s of the same `{-Modify[c]}` must compare
-    // equal — `bind_value`'s contradiction check relies on this so binding a var
-    // twice to equal carriers is consistent, not a false contradiction). Kept in
-    // lockstep with `unify_denoted_view`: a `denoted` compares its value occ.
-    if let (Some(ta), Some(tb)) = (a.as_type(), b.as_type()) {
-        return type_node_eq(ta, tb);
-    }
-    if let (Some(ea), Some(eb)) = (a.as_effect_expr(), b.as_effect_expr()) {
-        return effect_expr_node_eq(ea, eb);
-    }
-    match (a.as_expr(), b.as_expr()) {
-        (Some(Expr::Var(x)), Some(Expr::Var(y))) => x == y,
-        (Some(Expr::Const(x)), Some(Expr::Const(y))) => x == y,
-        (Some(Expr::Ref(x)), Some(Expr::Ref(y))) => x == y,
-        (Some(Expr::Ident(x)), Some(Expr::Ident(y))) => x == y,
-        (Some(Expr::Bottom), Some(Expr::Bottom)) => true,
-        (
-            Some(Expr::Apply { functor: fa, pos_args: pa, named_args: na, .. }),
-            Some(Expr::Apply { functor: fb, pos_args: pb, named_args: nb, .. }),
-        ) => fa == fb && occ_children_eq(pa, na, pb, nb),
-        (
-            Some(Expr::Constructor { name: fa, pos_args: pa, named_args: na })
-            | Some(Expr::Instantiation { name: fa, pos_args: pa, named_args: na }),
-            Some(Expr::Constructor { name: fb, pos_args: pb, named_args: nb })
-            | Some(Expr::Instantiation { name: fb, pos_args: pb, named_args: nb }),
-        ) => fa == fb && occ_children_eq(pa, na, pb, nb),
-        // WI-400: a field-access / method-call receiver `s.provider` is a `DotApply`
-        // occurrence — two are structurally equal iff same member name, same receiver,
-        // same call args. Reached by the ζ receiver-equality check (a compound
-        // expression-carried projection `s.provider.K` embeds its receiver here).
-        (
-            Some(Expr::DotApply { receiver: ra, name: na, pos_args: pa, named_args: naa }),
-            Some(Expr::DotApply { receiver: rb, name: nb, pos_args: pb, named_args: nab }),
-        ) => {
-            na == nb
-                && occurrence_structural_eq(ra, rb)
-                && occ_children_eq(pa, naa, pb, nab)
-        }
-        _ => false,
-    }
-}
-
-fn occ_children_eq(
-    pa: &[Rc<NodeOccurrence>],
-    na: &[(Symbol, Rc<NodeOccurrence>)],
-    pb: &[Rc<NodeOccurrence>],
-    nb: &[(Symbol, Rc<NodeOccurrence>)],
-) -> bool {
-    pa.len() == pb.len()
-        && na.len() == nb.len()
-        && pa.iter().zip(pb).all(|(x, y)| occurrence_structural_eq(x, y))
-        && na.iter().zip(nb).all(|((ka, va), (kb, vb))| ka == kb && occurrence_structural_eq(va, vb))
-}
-
-/// WI-342: structural equality of a `TypeChild` — a ground subtree by `TermId`
-/// identity (hash-consed, so `==` is exact), a poisoned subtree recursively.
-fn type_child_eq(a: &TypeChild, b: &TypeChild) -> bool {
-    match (a, b) {
-        (TypeChild::Ground(x), TypeChild::Ground(y)) => x == y,
-        (TypeChild::Node(x), TypeChild::Node(y)) => occurrence_structural_eq(x, y),
-        _ => false,
-    }
-}
-
-/// WI-342: structural equality of two [`TypeNode`]s (same variant + children).
-fn type_node_eq(a: &TypeNode, b: &TypeNode) -> bool {
-    match (a, b) {
-        (TypeNode::Denoted { value: va }, TypeNode::Denoted { value: vb }) => {
-            occurrence_structural_eq(va, vb)
-        }
-        (
-            TypeNode::Parameterized { base: ba, bindings: bsa },
-            TypeNode::Parameterized { base: bb, bindings: bsb },
-        ) => {
-            type_child_eq(ba, bb)
-                && bsa.len() == bsb.len()
-                && bsa
-                    .iter()
-                    .zip(bsb)
-                    .all(|((ka, va), (kb, vb))| ka == kb && type_child_eq(va, vb))
-        }
-        (
-            TypeNode::EffectsRows { effects_expr: ea },
-            TypeNode::EffectsRows { effects_expr: eb },
-        ) => type_child_eq(ea, eb),
-        (
-            TypeNode::Arrow { param: pa, result: ra, effects: ea },
-            TypeNode::Arrow { param: pb, result: rb, effects: eb },
-        ) => type_child_eq(pa, pb) && type_child_eq(ra, rb) && type_child_eq(ea, eb),
-        (
-            TypeNode::ExprCarried { value: va, member: ma },
-            TypeNode::ExprCarried { value: vb, member: mb },
-        ) => type_child_eq(va, vb) && type_child_eq(ma, mb),
-        // WI-361: `fields` is a `Value`-carried `List[TypeField]` — compare with
-        // `Value::structural_eq` (canonical-ordered, so positional compare holds).
-        (TypeNode::NamedTuple { fields: fa }, TypeNode::NamedTuple { fields: fb }) => {
-            fa.structural_eq(fb)
-        }
-        _ => false,
-    }
-}
-
-/// WI-342: structural equality of two [`EffectExprNode`]s.
-fn effect_expr_node_eq(a: &EffectExprNode, b: &EffectExprNode) -> bool {
-    match (a, b) {
-        (
-            EffectExprNode::Merge { left: la, right: ra },
-            EffectExprNode::Merge { left: lb, right: rb },
-        ) => type_child_eq(la, lb) && type_child_eq(ra, rb),
-        (EffectExprNode::Present { label: a }, EffectExprNode::Present { label: b })
-        | (EffectExprNode::Absent { label: a }, EffectExprNode::Absent { label: b }) => {
-            type_child_eq(a, b)
-        }
-        (EffectExprNode::Open { tail: a }, EffectExprNode::Open { tail: b }) => type_child_eq(a, b),
-        (EffectExprNode::EmptyRow, EffectExprNode::EmptyRow) => true,
-        _ => false,
-    }
-}
-
 /// WI-471: the occurrence's intrinsic structural term form, materialized on
 /// demand and memoized in `occ.term_cache`. Because `alloc` hash-conses, two
 /// structurally-identical occurrences yield the SAME `TermId` — recovering
@@ -4875,7 +4744,7 @@ mod tests {
         );
         let int_ref = kb.alloc(Term::Ref(int_sym));
         let mut subst = Substitution::new();
-        subst.bind(v0, int_ref);
+        subst.bind(&kb, v0, int_ref);
 
         let out = substitute_occurrence(&mut kb, &atom, &subst);
         let Some(Expr::Apply { type_args, .. }) = out.as_expr() else {
@@ -4920,7 +4789,7 @@ mod tests {
         );
         let int_ref = kb.alloc(Term::Ref(int_sym));
         let mut subst = Substitution::new();
-        subst.bind(v0, int_ref);
+        subst.bind(&kb, v0, int_ref);
 
         let out = substitute_occurrence(&mut kb, &let_occ, &subst);
         let Some(Expr::Let { type_annotation, .. }) = out.as_expr() else {
@@ -5059,7 +4928,7 @@ mod tests {
         let mut kb = KnowledgeBase::new();
         let (atom, v0, _gt, three) = gt_atom(&mut kb);
         let mut subst = Substitution::new();
-        subst.bind_value(v0, Value::Int(42));
+        subst.bind_value(&kb, v0, Value::Int(42));
         let out = substitute_occurrence(&mut kb, &atom, &subst);
         match out.as_expr() {
             Some(Expr::Apply { pos_args, .. }) => {
@@ -5082,7 +4951,7 @@ mod tests {
         let (atom, v0, _gt, _three) = gt_atom(&mut kb);
         let payload = NodeOccurrence::new_expr(Expr::Bottom, make_span(), None);
         let mut subst = Substitution::new();
-        subst.bind_value(v0, Value::Node(Rc::clone(&payload)));
+        subst.bind_value(&kb, v0, Value::Node(Rc::clone(&payload)));
         let out = substitute_occurrence(&mut kb, &atom, &subst);
         match out.as_expr() {
             Some(Expr::Apply { pos_args, .. }) => assert!(
@@ -5112,7 +4981,7 @@ mod tests {
             named_args: SmallVec::new(),
         });
         let mut subst = Substitution::new();
-        subst.bind_value(v0, Value::Term(compound));
+        subst.bind_value(&kb, v0, Value::Term(compound));
         let out = substitute_occurrence(&mut kb, &atom, &subst);
         match out.as_expr() {
             Some(Expr::Apply { pos_args, .. }) => match pos_args[0].as_expr() {
@@ -5156,7 +5025,7 @@ mod tests {
             None,
         );
         let mut subst = Substitution::new();
-        subst.bind_value(vy, Value::Int(99)); // bind only the named arg
+        subst.bind_value(&kb, vy, Value::Int(99)); // bind only the named arg
         let out = substitute_occurrence(&mut kb, &atom, &subst);
         match out.as_expr() {
             Some(Expr::Apply { pos_args, named_args, .. }) => {
@@ -5386,7 +5255,7 @@ mod tests {
         // σ = { vg ↦ 7 }. The ground binding's Var(vg) becomes 7; vn unbound stays.
         let seven = kb.alloc(Term::Const(Literal::Int(7)));
         let mut subst = Substitution::new();
-        subst.bind(vg, seven);
+        subst.bind(&kb, vg, seven);
         let out = substitute_occurrence(&mut kb, &ty, &subst);
         let (bg, bn) = param_bindings(&out);
         match bg {
