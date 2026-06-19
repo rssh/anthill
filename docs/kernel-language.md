@@ -459,9 +459,9 @@ rule take_two([?a, ?b | ?rest]) = ((?a, ?b), ?rest)
 LambdaExpr ::= 'lambda' Pattern '->' Expr
 ```
 
-A lambda binds **exactly one** parameter, which is a full pattern. Multiple parameters are expressed by destructuring a (named) tuple. This single-binder rule is deliberate, not a limitation: it avoids comma ambiguity when a lambda is passed as a call argument (`map(lambda x -> f(x), xs)`) — the tuple parens delimit the parameter, so the enclosing call's commas separate arguments unambiguously.
+A lambda binds **exactly one** pattern. Multiple parameters are expressed by destructuring a tuple (`lambda (a, b) -> …`); a nullary thunk binds the empty tuple (`lambda () -> …`). This single-pattern rule is deliberate, not a limitation: it avoids comma ambiguity when a lambda is passed as a call argument (`map(lambda x -> f(x), xs)`) — the tuple parens delimit the parameter, so the enclosing call's commas separate arguments unambiguously.
 
-A lambda's type is the arrow sort `(P) -> R`: `P` is the parameter pattern's type, `R` the body's type, and any effects the body performs annotate the arrow (`@ {E}`). A lambda captures its enclosing bindings (a closure).
+A lambda's type is the arrow sort `(P) -> R`: `P` is the parameter pattern's type, `R` the body's type, and any effects the body performs annotate the arrow (`@ {E}`). A lambda captures its enclosing bindings (a closure). Lambda binders carry **no type annotations** — each binder's type is inferred from the expected arrow type at the use site (the HOF parameter's declared type, the operation's return type, etc.). *(Optional `: Type` annotations on lambda binders — `lambda (x: T) -> …` — are a planned surface convenience, not yet parsed; tracked in WI-517.)*
 
 **Examples:**
 
@@ -469,7 +469,7 @@ A lambda's type is the arrow sort `(P) -> R`: `P` is the parameter pattern's typ
 lambda x -> x                              -- identity
 lambda x -> add(x, 1)                      -- single parameter
 lambda (a, b) -> add(a, b)                 -- tuple destructuring (two parameters)
-lambda (acc: A, elem: B) -> add(acc, elem) -- with type annotations
+lambda () -> compute()                     -- nullary thunk: type () -> R
 
 -- as a closure in an operation body:
 operation make_adder(x: Int64) -> (Int64) -> Int64 = lambda y -> add(x, y)
@@ -478,7 +478,7 @@ operation make_adder(x: Int64) -> (Int64) -> Int64 = lambda y -> add(x, y)
 map(xs, lambda x -> add(x, 1))
 ```
 
-A lambda always binds at least one parameter; a nullary thunk is written with a `Unit` parameter — `lambda (u: Unit) -> body`.
+The parameter pattern is a bare variable (`x`), a tuple destructuring (`(a, b)`, two or more binders), or the empty tuple (`()`) for a nullary thunk; the nullary form has arrow type `() -> R`.
 
 ## 5. Kernel Constructs
 

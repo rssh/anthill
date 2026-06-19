@@ -3503,16 +3503,32 @@ impl KnowledgeBase {
     /// An empty input list with no tail yields `effects_rows(empty_row)` — the
     /// closed pure row.
     /// WI-441: the row-tail Var a term denotes — the term itself for a bare
-    /// `Var::Global`, the `SortAlias` target Var for a `Ref(S.E)` (a sort-level
-    /// row param referenced from an op signature, which lowers as a Ref).
-    /// `None` for anything else (a label, a ground type, a rigid).
+    /// `Var::Global` / `Var::Rigid`, the `SortAlias` target Var for a `Ref(S.E)`
+    /// (a sort-level row param referenced from an op signature, which lowers as a
+    /// Ref). `None` for anything else (a label, a ground type, a `DeBruijn`).
+    ///
+    /// WI-516: `Var::Rigid` counts as a row tail. An effect-set-valued type param
+    /// is rigidified (Skolemized) while an operation body is checked, so a forced/
+    /// performed captured effect — a `@ Eff` row whose tail is the op's `Eff`
+    /// param — surfaces in the body's inferred effect list as a bare `Var::Rigid`.
+    /// Re-canonicalizing that list (here, and at the arrow-occ build site
+    /// typing.rs `make_*_occ`) MUST fold it as `open(tail)`, NOT `present(label)`:
+    /// a rigid set-valued var is a row VARIABLE, not a single concrete label.
+    /// This matches the decompose side (`row_tail_termid` / `effects_rows_to_flat_list`),
+    /// which already treat any/bare `Var` as a tail. `Var::DeBruijn` (rule-side,
+    /// pre-binder-open; proposal 025 Skolems are minted as Rigid, not DeBruijn)
+    /// stays excluded — it never reaches a typed op-signature effect row.
     pub(crate) fn row_tail_var_of(&self, t: TermId) -> Option<TermId> {
         use crate::kb::term::{Term as T, Var as V};
+        let is_tail_var = |v: &V| matches!(v, V::Global(_) | V::Rigid(_));
         match self.get_term(t) {
-            T::Var(V::Global(_)) => Some(t),
+            T::Var(v) if is_tail_var(v) => Some(t),
             T::Ref(sym) => {
                 let target = crate::kb::typing::resolve_sort_alias(self, *sym)?;
-                matches!(self.get_term(target), T::Var(V::Global(_))).then_some(target)
+                match self.get_term(target) {
+                    T::Var(v) if is_tail_var(v) => Some(target),
+                    _ => None,
+                }
             }
             _ => None,
         }
@@ -3525,13 +3541,14 @@ impl KnowledgeBase {
         // into the atoms list (canonical form still parses; row
         // unification surfaces the malformed shape).
         //
-        // WI-307 code-review #6: only Var::Global qualifies as a row-tail.
-        // Var::DeBruijn (rule-side, pre-binder-open) and Var::Rigid (forall
-        // Skolems) have different unification semantics — silently treating
-        // them as row tails muddles WI-307 v1a's row-unification. Variants
-        // other than Global fall through to the atoms arm, where row
-        // unification will surface them as schema-shape failures rather
-        // than silent mis-classification.
+        // WI-307 code-review #6 / WI-516: `Var::Global` and `Var::Rigid`
+        // qualify as row tails (see `row_tail_var_of`). A rigid arises when an
+        // effect-set type param is Skolemized during op-body checking; it is a
+        // row VARIABLE and folds as `open(tail)`. `Var::DeBruijn` (rule-side,
+        // pre-binder-open) stays excluded — it has different unification
+        // semantics and never reaches a typed op-signature effect row; it falls
+        // through to the atoms arm, where row unification surfaces it as a
+        // schema-shape failure rather than a silent mis-classification.
         //
         // WI-327: pre-built `present` / `absent` atoms (e.g. `-E` from
         // surface grammar lowered via `make_effect_expression_absent`)

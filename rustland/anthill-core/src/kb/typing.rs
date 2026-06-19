@@ -5722,7 +5722,17 @@ fn check_apply_iter(
     // both flow through `extract_function_type_parts`, the occurrence never
     // re-grounded.
     if let Some(fn_type) = env.lookup_var(fn_sym) {
-        if let Some((ret_ty, effects)) = extract_function_type_parts(kb, &fn_type) {
+        if let Some((ret_ty, call_effects)) = extract_function_type_parts(kb, &fn_type) {
+            // WI-516: `f(arg…)` performs the arrow's OWN call effect UNIONED with
+            // the effects of EVALUATING each argument — the same arg-effect
+            // accumulation Path 1 (known op) and Path 3 (unknown functor) do.
+            // Omitting it dropped an effectful nested argument: `f(delayForce(m))`
+            // lost the inner `delayForce(m)`'s effect (only `let a = delayForce(m);
+            // f(a)` accumulated it), under-reporting a call's effect row.
+            let mut effects = call_effects;
+            for r in pos_results.iter().chain(named_results.iter()).flatten() {
+                effects = merge_effects(&effects, &r.effects);
+            }
             return Ok(TypeResult { ty: ret_ty, env: env.clone(), effects, node: Rc::clone(occ) });
         }
     }
@@ -11650,17 +11660,33 @@ fn check_constructor_iter(
                                     Some(Value::Term(bound_type)) => {
                                         alias_info.push((param_short, Some(*bound_type)))
                                     }
-                                    // denoted Node alias binding: `alias_info` is
-                                    // TermId-keyed — WI-348 Phase C, asserted unreachable.
-                                    // NOT pushed as a `?_` wildcard: that would lose the
-                                    // concrete denoted value-in-type (e.g. the `3` in
-                                    // `Vector[Int, 3]`) and over-accept, so this path
-                                    // stays a (release-only, unreached) drop until Phase C.
-                                    Some(other) => debug_assert!(
-                                        false,
-                                        "WI-348: denoted {} alias binding — carrier-agnostic alias_info is Phase C",
-                                        other.type_name(),
-                                    ),
+                                    // WI-516: a param bound to an occurrence (`Value::Node`)
+                                    // — e.g. Delay's `E` bound to the inferred lambda-body
+                                    // arrow's effect-row occurrence. Lower it losslessly to a
+                                    // Term (WI-390 `occurrence_to_term` faithfully carries a
+                                    // denoted value-in-type too — the `3` in `Vector[Int, 3]`),
+                                    // so the reconstructed parameterized type KEEPS the binding
+                                    // rather than dropping it. (This is the carrier-agnostic
+                                    // shape WI-348 Phase C generalizes; the bridge is sound now
+                                    // because the lowering is faithful, not a re-grounding.)
+                                    Some(other) => {
+                                        let other = other.clone();
+                                        match value_to_term(kb, &other) {
+                                            Ok(t) => alias_info.push((param_short, Some(t))),
+                                            Err(e) => {
+                                                // A non-lowerable carrier (opaque / runtime-only
+                                                // Value) in a type slot is a malformation — keep
+                                                // the param present (freshened to `?_` below) so
+                                                // arity is preserved, but surface it loudly in dev.
+                                                debug_assert!(
+                                                    false,
+                                                    "WI-516: param `{param_short}` bound to un-lowerable carrier {}: {e:?}",
+                                                    other.type_name(),
+                                                );
+                                                alias_info.push((param_short, None));
+                                            }
+                                        }
+                                    }
                                     // WI-384: a param the fields + expected left UNBOUND
                                     // is present-but-unconstrained — record it (a fresh
                                     // `?_` is minted below) rather than DROPPING it, which

@@ -32,11 +32,41 @@ sort anthill.prelude.DelayMonad[M[T, E]]                 -- E : captured effect 
   operation force[A, Eff](m: M[T = A, E = Eff]) -> A effects Eff               -- perform captured (run at Eff = {})
 end
 
--- The canonical instance `Delay` (the free graded monad — a suspended thunk
--- `() -> T @ E`, captures everything, interprets nothing) is BLOCKED on WI-516:
--- the typer represents an effect-set-valued row variable inconsistently between
--- `{E1, E2}` position (open tails) and forced/`effects` position (present
--- labels), so `delayFlatMap`'s body cannot conform to its declared
--- `E = {E1, E2}` return. `pure`/`delay`/`force` type-check; only the `flatMap`
--- merge fails. The full Delay design is written up in proposal 047. Once WI-516
--- lands, the instance lands here.
+-- The canonical instance `Delay` — the FREE graded monad: a suspended thunk
+-- `() -> T @ E` that captures everything and interprets nothing. The whole
+-- captured computation lives in the thunk; `E` tracks (in the type) exactly the
+-- effect row that thunk will perform when forced. (Landed with WI-516, which
+-- reconciled the effect-set-valued row variable across `{E1, E2}` row-literal
+-- position and `effects`/`@` position. Full design: proposal 047 §8.)
+sort anthill.prelude.Delay
+  import anthill.prelude.{DelayMonad, Unit}
+
+  sort T = ?                                   -- result type
+  sort E = ?                                   -- captured effect set (a row, held as a type)
+  entity delayed(thunk: () -> T @ E)           -- the suspended computation
+
+  -- `pure a` captures nothing: a thunk that just returns `a`, effect row `{}`.
+  operation delayPure[A](a: A) -> Delay[T = A, E = {}] =
+    delayed(lambda () -> a)
+
+  -- `delay thunk` captures the thunk as-is; its ambient effect row `EffP`
+  -- moves into the type parameter `E` (the @-row ↔ `E` reify bridge = identity).
+  operation delayDelay[A, EffP](thunk: () -> A @ EffP) -> Delay[T = A, E = EffP] =
+    delayed(thunk)
+
+  -- `force m` performs the captured row: run the thunk, surfacing `Eff` in the
+  -- operation's own `effects` clause (the captured effects become ambient again).
+  operation delayForce[A, Eff](m: Delay[T = A, E = Eff]) -> A effects Eff =
+    match m
+      case delayed(t) -> t()
+
+  -- `flatMap` composes purely and UNIONS the captured rows: the result thunk
+  -- forces `m` (performing `E1`), feeds its value to `f`, then forces `f`'s
+  -- Delay (performing `E2`) — so the new thunk's effect row is `{E1, E2}`.
+  operation delayFlatMap[A, B, E1, E2](m: Delay[T = A, E = E1],
+                                       f: (A) -> Delay[T = B, E = E2])
+            -> Delay[T = B, E = {E1, E2}] =
+    delayed(lambda () -> delayForce(f(delayForce(m))))
+
+  fact DelayMonad[M = Delay, pure = delayPure, delay = delayDelay, flatMap = delayFlatMap, force = delayForce]
+end

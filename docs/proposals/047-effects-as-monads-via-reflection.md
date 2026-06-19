@@ -245,7 +245,7 @@ Reflection (§3) sits **on top of** this interface: Filinski's `reflect`/`reify`
 monad's `pure`/`bind` (+ shift/reset). So the `Monad` sort above is a **companion/prerequisite** of
 this proposal, not a competitor — it supplies the `pure`/`bind` the reflection runs over.
 
-### Graded `DelayMonad` — captured effects in the type (delivered: typeclass; instance blocked on WI-516)
+### Graded `DelayMonad` — captured effects in the type (delivered: typeclass + `Delay` instance, WI-516)
 
 The `Monad` above is the **eager** monad: `flatMap` runs the continuation now, so its effect
 surfaces in the operation's `effects` clause. The dual — a `Delay`/`IO`/`Suspend` monad — *captures*
@@ -287,13 +287,17 @@ concrete instances (a State/Error interpreter) give an effect a denotation and l
 system (Scala 3) tracks as a capture set — here it falls out of effects-as-rows × rows-as-type-parameters
 rather than a bespoke checker.
 
-**Status.** The `DelayMonad` typeclass is in stdlib (`anthill.prelude.DelayMonad`, `delay.anthill`) and
-loads; `pure`/`delay`/`force` type-check. The canonical `Delay` instance (a suspended `() -> T @ E`
-thunk) is **blocked on WI-516**: the typer represents an effect-set-valued row variable inconsistently
-between `{E1, E2}` position (open tails) and forced/`effects` position (present labels), so `flatMap`'s
-body cannot conform to its declared `E = {E1, E2}` return — only the merge fails. Landing WI-516 lands
-the instance. (En route: a lambda is now admissible as a *named* argument, and lambda syntax is
-specified in kernel-language.md §4.7.)
+**Status (delivered).** The `DelayMonad` typeclass and the canonical `Delay` instance (a suspended
+`() -> T @ E` thunk) both ship in stdlib (`anthill.prelude.DelayMonad` / `Delay`, `delay.anthill`);
+`pure`/`delay`/`force`/`flatMap` type-check and the `fact DelayMonad[M = Delay, …]` loads.
+**WI-516** landed the two typer fixes that unblocked the instance: (1) an effect-set-valued type param
+is rigidified during op-body checking, and a rigid var in `effects`/`@`-position now folds as an *open
+tail* (`row_tail_var_of` accepts `Var::Rigid`), matching how the same var reads in `{E1, E2}` row-literal
+position — so `flatMap`'s body conforms to its declared `E = {E1, E2}`; (2) applying an arrow-typed
+*variable* (`f(arg)`) now unions the argument-evaluation effects, so a nested effectful argument
+(`delayForce(f(delayForce(m)))`) no longer drops the inner effect. (En route: a lambda is now
+admissible as a *named* argument; a nullary thunk is `lambda () -> body` — typed lambda binders are
+tracked separately in WI-517 — and lambda syntax is specified in kernel-language.md §4.7.)
 
 ### Monad stacks (cheap here), effect rows, and reflection — all three, at different levels
 
