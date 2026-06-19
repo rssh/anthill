@@ -5862,7 +5862,7 @@ impl<'a> Loader<'a> {
                         work.push(LoadWorkOp::PushOccSuppress);
                     }
                     "pattern_var" => {
-                        let kb_id = self.load_pattern_var(&pos_args);
+                        let kb_id = self.load_pattern_var(parse_id, &pos_args);
                         self.create_occurrence(parse_id, kb_id);
                         results.push(kb_id);
                         self.push_leaf_occ(kb_id);
@@ -7041,7 +7041,16 @@ impl<'a> Loader<'a> {
     // ── Pattern conversion ───────────────────────────────────────
 
     /// pattern_var: pos_args[0] = Ident(name)
-    fn load_pattern_var(&mut self, pos_args: &SmallVec<[TermId; 4]>) -> TermId {
+    ///
+    /// WI-517: a type-annotated lambda binder (`lambda (x: T) -> …`, or a
+    /// tuple element `lambda (a: A, b: B) -> …`) lowers to this SAME functor
+    /// but carries its declared type as a `ParseAux::TypeExpr` under the
+    /// `type` named arg (set by `convert.rs`'s `typed_binder` arm). When
+    /// present, lower it via the SAME `type_expr_to_value` the let-annotation
+    /// path uses and materialize a TermId for the var_pattern's `type_ann`
+    /// slot, which the typer reads to constrain inference. A bare binder has
+    /// no `type` arg, so `type_ann` stays `none()`.
+    fn load_pattern_var(&mut self, parse_id: TermId, pos_args: &SmallVec<[TermId; 4]>) -> TermId {
         let name_term = self.parsed.terms.get(pos_args[0]).clone();
         let name_ref = if let Term::Ident(sym) = name_term {
             let kb_sym = self.reintern(sym);
@@ -7049,7 +7058,28 @@ impl<'a> Loader<'a> {
         } else {
             self.convert_term(pos_args[0])
         };
-        let type_ann = build_none(self.kb);
+        let type_ann = match self.read_parse_aux(parse_id, "type", |aux| match aux {
+            crate::parse::ir::ParseAux::TypeExpr(ty) => Some(ty.clone()),
+            _ => None,
+        }) {
+            Some(ty_expr) => {
+                let value = self.type_expr_to_value(&ty_expr);
+                // `value_to_term` is the total Value→Term boundary (WI-390):
+                // `type_expr_to_value` yields only `Term`/`Node`, both of which
+                // lower without error (ground types ride through unchanged, a
+                // `denoted`-bearing type lowers losslessly), so the `Err` branch
+                // can't fire. Guard it loudly (debug-assert) rather than
+                // silently dropping the annotation — mirrors the `value_to_term`
+                // call in `node_occurrence::type_node_to_term`.
+                let type_tid = node_occurrence::value_to_term(&mut self.kb, &value)
+                    .unwrap_or_else(|e| {
+                        debug_assert!(false, "WI-517: binder type annotation not term-representable: {e:?}");
+                        self.kb.alloc(Term::Bottom)
+                    });
+                build_some(self.kb, type_tid)
+            }
+            None => build_none(self.kb),
+        };
         let var_pattern_sym = self.kb.resolve_symbol("anthill.reflect.Pattern.var_pattern");
         let name_key = self.kb.intern("name");
         let type_ann_key = self.kb.intern("type_ann");

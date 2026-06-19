@@ -1130,6 +1130,55 @@ impl<'a> Converter<'a> {
                 let tid = self.alloc_fn_term("pattern_var", SmallVec::from_elem(name_tid, 1), span);
                 results.push(tid);
             }
+            // WI-517: the parenthesized single typed binder `(x: T)` wraps a
+            // `typed_binder` in a named node (so the lambda's `param` field
+            // resolves cleanly). Unwrap to the inner binder — it lowers to a
+            // single typed `pattern_var`, NOT a 1-tuple.
+            "pattern_typed" => {
+                match self.child_by_kind(node, "typed_binder") {
+                    Some(binder) => self.visit_pattern(binder, work, results),
+                    None => {
+                        self.err("pattern_typed: missing typed_binder".to_string(), node);
+                        results.push(self.alloc_bottom(span));
+                    }
+                }
+            }
+            // WI-517: a type-annotated lambda binder (`(x: T)` or a tuple
+            // element `(a: A, b: B)`). Lowers to the SAME `pattern_var`
+            // functor as a bare binder — so name-collection and the pattern
+            // recognizers stay unchanged — but carries the declared type as
+            // a `ParseAux::TypeExpr` under the `type` named arg. The loader
+            // (`load_pattern_var`) lowers it into the var_pattern's `type_ann`
+            // slot, which the typer reads to constrain inference.
+            "typed_binder" => {
+                let name_node = self.field(node, "name").unwrap_or(node);
+                let sym = self.intern(self.text(name_node));
+                let name_tid = self.terms.alloc(Term::Ident(sym), self.span(name_node));
+                let type_tid = match self.field(node, "type") {
+                    Some(t) => {
+                        let te = self.convert_type(t);
+                        self.terms.alloc(
+                            Term::ParseAux(Box::new(ParseAux::TypeExpr(te))),
+                            self.span(t),
+                        )
+                    }
+                    None => {
+                        self.err("typed_binder: missing type annotation".to_string(), node);
+                        self.alloc_bottom(span)
+                    }
+                };
+                let functor = self.intern("pattern_var");
+                let type_key = self.intern("type");
+                let tid = self.terms.alloc(
+                    Term::Fn {
+                        functor,
+                        pos_args: SmallVec::from_elem(name_tid, 1),
+                        named_args: SmallVec::from_slice(&[(type_key, type_tid)]),
+                    },
+                    span,
+                );
+                results.push(tid);
+            }
             "pattern_literal" => {
                 let child = node.named_child(0).unwrap_or(node);
                 work.push(WorkOp::Build(BuildFrame::PatternLiteral { node }));
@@ -3114,6 +3163,8 @@ fn is_pattern_kind(kind: &str) -> bool {
         kind,
         "pattern_wildcard"
             | "pattern_var"
+            | "typed_binder"
+            | "pattern_typed"
             | "pattern_literal"
             | "pattern_constructor"
             | "pattern_tuple"

@@ -431,3 +431,7 @@ mod wi369_internal_visibility_test;
 
 #[path = "include/wi516_graded_effect_row_test.rs"]
 mod wi516_graded_effect_row_test;
+
+#[path = "include/wi517_typed_lambda_binder_test.rs"]
+mod wi517_typed_lambda_binder_test;
+

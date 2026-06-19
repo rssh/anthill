@@ -330,6 +330,93 @@ operation make_adder(x: Int) -> Fun = lambda y -> x + y
           (identifier))))))
 
 =====================================
+Lambda with a type-annotated binder
+=====================================
+
+operation make_adder(x: Int) -> Fun = lambda (y: Int) -> add(x, y)
+
+---
+
+(source_file
+  (operation_declaration
+    name: (name
+      (identifier))
+    (param
+      name: (identifier)
+      type: (simple_type
+        (name
+          (identifier))))
+    return_type: (simple_type
+      (name
+        (identifier)))
+    body: (lambda_expr
+      param: (pattern_typed
+        (typed_binder
+          name: (identifier)
+          type: (simple_type
+            (name
+              (identifier)))))
+      body: (fn_term
+        name: (name
+          (identifier))
+        (name
+          (identifier))
+        (name
+          (identifier))))))
+
+=====================================
+Lambda with type-annotated tuple binders
+=====================================
+
+sort S
+  operation g(xs: List) -> Int =
+    foldLeft(xs, 0, lambda (acc: Int, elem: Int) -> add(acc, elem))
+end
+
+---
+
+(source_file
+  (sort_with_body
+    name: (name
+      (identifier))
+    (operation_declaration
+      name: (name
+        (identifier))
+      (param
+        name: (identifier)
+        type: (simple_type
+          (name
+            (identifier))))
+      return_type: (simple_type
+        (name
+          (identifier)))
+      body: (fn_term
+        name: (name
+          (identifier))
+        (name
+          (identifier))
+        (integer_literal)
+        (lambda_expr
+          param: (pattern_tuple
+            (typed_binder
+              name: (identifier)
+              type: (simple_type
+                (name
+                  (identifier))))
+            (typed_binder
+              name: (identifier)
+              type: (simple_type
+                (name
+                  (identifier)))))
+          body: (fn_term
+            name: (name
+              (identifier))
+            (name
+              (identifier))
+            (name
+              (identifier))))))))
+
+=====================================
 Lambda as a call argument
 =====================================
 

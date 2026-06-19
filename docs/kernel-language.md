@@ -461,15 +461,23 @@ LambdaExpr ::= 'lambda' Pattern '->' Expr
 
 A lambda binds **exactly one** pattern. Multiple parameters are expressed by destructuring a tuple (`lambda (a, b) -> …`); a nullary thunk binds the empty tuple (`lambda () -> …`). This single-pattern rule is deliberate, not a limitation: it avoids comma ambiguity when a lambda is passed as a call argument (`map(lambda x -> f(x), xs)`) — the tuple parens delimit the parameter, so the enclosing call's commas separate arguments unambiguously.
 
-A lambda's type is the arrow sort `(P) -> R`: `P` is the parameter pattern's type, `R` the body's type, and any effects the body performs annotate the arrow (`@ {E}`). A lambda captures its enclosing bindings (a closure). Lambda binders carry **no type annotations** — each binder's type is inferred from the expected arrow type at the use site (the HOF parameter's declared type, the operation's return type, etc.). *(Optional `: Type` annotations on lambda binders — `lambda (x: T) -> …` — are a planned surface convenience, not yet parsed; tracked in WI-517.)*
+A lambda's type is the arrow sort `(P) -> R`: `P` is the parameter pattern's type, `R` the body's type, and any effects the body performs annotate the arrow (`@ {E}`). A lambda captures its enclosing bindings (a closure).
+
+A lambda binder may carry an **optional `: Type` annotation**, written in parens: a single binder `lambda (x: T) -> …`, or per-element in a tuple `lambda (a: A, b: B) -> …` (WI-517). The parens are required — a bare `lambda x: T -> …` would clash with the `->` separator. The annotation pins the binder's type, so a lambda can be written **without** an expected-type context (e.g. `let f = lambda (x: Int64) -> add(x, 1)`, where no use site supplies the parameter type) and so foldLeft-style callbacks can document their parameters. When an expected arrow type is also available at the use site, the annotation must be consistent with it — a genuine contradiction is rejected (for a single binder, the lambda's arrow carries the annotation and is checked against the expected type; for tuple binders, the surrounding component type drives the binding, so a conflict surfaces through the body's use of the binder). A binder written without an annotation infers its type from the expected arrow at the use site (the HOF parameter's declared type, the operation's return type, etc.).
 
 **Examples:**
 
 ```
-lambda x -> x                              -- identity
+lambda x -> x                              -- identity (type inferred at use site)
 lambda x -> add(x, 1)                      -- single parameter
 lambda (a, b) -> add(a, b)                 -- tuple destructuring (two parameters)
 lambda () -> compute()                     -- nullary thunk: type () -> R
+
+lambda (x: Int64) -> add(x, 1)             -- annotated single binder (parens required)
+lambda (acc: Int64, elem: Int64) -> add(acc, elem)   -- annotated tuple binders
+
+-- annotation lets a lambda stand on its own, with no expected-type context:
+let f = lambda (x: Int64) -> add(x, 1)
 
 -- as a closure in an operation body:
 operation make_adder(x: Int64) -> (Int64) -> Int64 = lambda y -> add(x, y)
@@ -478,7 +486,7 @@ operation make_adder(x: Int64) -> (Int64) -> Int64 = lambda y -> add(x, y)
 map(xs, lambda x -> add(x, 1))
 ```
 
-The parameter pattern is a bare variable (`x`), a tuple destructuring (`(a, b)`, two or more binders), or the empty tuple (`()`) for a nullary thunk; the nullary form has arrow type `() -> R`.
+The parameter pattern is a bare variable (`x`), a single parenthesized typed binder (`(x: T)`), a tuple destructuring (`(a, b)` or `(a: A, b: B)`, two or more binders), or the empty tuple (`()`) for a nullary thunk; the nullary form has arrow type `() -> R`.
 
 ## 5. Kernel Constructs
 

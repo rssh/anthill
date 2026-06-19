@@ -13486,19 +13486,40 @@ fn extend_env_from_pattern(
 ) {
     let Some(pat) = pattern.as_pattern() else { return; };
     match pat {
-        Pattern::Var { name, .. } => {
+        Pattern::Var { name, type_ann } => {
             // Bind the pattern var even when its type is unknown — a
             // pattern-bound name is in scope regardless. Without this,
             // tuple-destructuring lambda params (`lambda (a, b) -> ...`, whose
             // sub-patterns recurse here with no component type) and match vars
             // over an un-inferred scrutinee stayed unbound and every reference
             // failed as `UnresolvedName`. (WI-289)
+            // WI-517: a binder may carry its own `: Type` annotation
+            // (`lambda (a: A, b: B) -> ...`). The type threaded from the
+            // surrounding context (`scrutinee_type` — a constructor field, a
+            // tuple component of a KNOWN scrutinee/expected type) takes
+            // PRIORITY: it is what the value actually is, and the body is
+            // checked against it. The binder's own annotation is used only as a
+            // FALLBACK when the context type is unknown — the no-expected-arrow
+            // case the WI targets (`let f = lambda (a: A, b: B) -> add(a, b)`),
+            // where the threaded type is None and each element would otherwise
+            // mint a fresh var and leave `add` dispatch-ambiguous. Letting the
+            // context win (not the annotation) keeps this sound: a contradicting
+            // annotation in a known-context position surfaces loudly through the
+            // body's own use of the binder (bound to the real type), instead of
+            // the lambda's arrow advertising one type while its body assumes
+            // another. (The single-binder `lambda (x: T) -> ...` path pins
+            // `param_type` from the annotation at the lambda level, so its arrow
+            // reflects the annotation and a mismatch is caught by subsumption.)
             // WI-342: the env binds a carrier-agnostic `Value`, so a
             // `Value::Node` component type is preserved, not re-grounded.
-            let ty = scrutinee_type.unwrap_or_else(|| {
-                let fresh = kb.intern("?pat");
-                Value::Term(kb.make_type_var(fresh))
-            });
+            let ty = scrutinee_type
+                .or_else(|| type_ann
+                    .as_ref()
+                    .map(|ann| Value::Term(super::node_occurrence::occurrence_to_term(kb, ann))))
+                .unwrap_or_else(|| {
+                    let fresh = kb.intern("?pat");
+                    Value::Term(kb.make_type_var(fresh))
+                });
             env.bind_var(*name, ty);
             // Pattern-bound names are local — effects on them shouldn't escape
             // the surrounding match/case scope (matches `check_let_expr`'s

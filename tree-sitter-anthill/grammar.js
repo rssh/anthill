@@ -1159,7 +1159,17 @@ module.exports = grammar({
       $.pattern_literal,
       $.pattern_wildcard,
       $.pattern_var,
+      $.pattern_typed,
     ),
+
+    // A single parenthesized type-annotated binder, e.g.
+    // `lambda (x: Int64) -> x`. The parens are required (a bare `x: T`
+    // would clash with the `->` separator / the let-level `: type`), and a
+    // single element is NOT a tuple — it lowers to the same typed
+    // `pattern_var` the typer reads via the var's `type_ann` slot. A
+    // dedicated NAMED node (rather than an inline `seq('(', ...)`) so a
+    // lambda's `param` field resolves to exactly one node. See WI-517.
+    pattern_typed: $ => seq('(', $.typed_binder, ')'),
 
     pattern_wildcard: $ => prec(2, '_'),
 
@@ -1193,7 +1203,26 @@ module.exports = grammar({
 
     pattern_tuple: $ => choice(
       seq('(', ')'),
-      seq('(', $._pattern, ',', commaSep1($._pattern), ')'),
+      seq('(', $._tuple_pattern_elem, ',', commaSep1($._tuple_pattern_elem), ')'),
+    ),
+
+    // A tuple-pattern element is a plain pattern or a type-annotated
+    // binder (`lambda (acc: A, elem: B) -> add(acc, elem)`). The typed
+    // form pins/documents each parameter's type without an expected
+    // arrow context. See WI-517.
+    _tuple_pattern_elem: $ => choice(
+      $._pattern,
+      $.typed_binder,
+    ),
+
+    // `name: Type` — a binder carrying its declared type. Distinct from
+    // `named_pattern_field` (`field: subpattern`, used only inside
+    // constructor patterns) and from `field_decl` (entity/arrow params).
+    // Lowers to a `pattern_var` whose `type_ann` constrains inference.
+    typed_binder: $ => seq(
+      field('name', $.identifier),
+      ':',
+      field('type', $._type),
     ),
 
     // =========================================================
