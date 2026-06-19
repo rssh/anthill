@@ -13,6 +13,8 @@
 use std::collections::HashMap;
 
 use super::term::{Term, TermId, TermStore, Var, VarId};
+use super::term_view::views_structurally_equal;
+use super::KnowledgeBase;
 use crate::eval::value::Value;
 
 #[derive(Clone, Debug)]
@@ -97,27 +99,36 @@ impl Substitution {
     /// the `TermId` as `Value::Term(tid)` for storage. If the variable is
     /// already bound to a different concrete term, marks the substitution
     /// as contradictory.
-    pub fn bind_term(&mut self, var: VarId, term: TermId) {
+    pub fn bind_term(&mut self, kb: &KnowledgeBase, var: VarId, term: TermId) {
         if let Some(existing) = self.bindings.get(&var) {
-            match existing {
-                Value::Term(existing_tid) if *existing_tid == term => return,
-                _ => {
-                    // Record every DISTINCT conflict per var (an identical
-                    // repeat records nothing); see the field doc for why
-                    // first-per-var is not enough.
-                    let attempted = Value::Term(term);
-                    if !self
-                        .contradiction_details
-                        .iter()
-                        .any(|(v, _, a)| *v == var && a.structural_eq(&attempted))
-                    {
-                        let prior = existing.clone();
-                        self.contradiction_details.push((var, prior, attempted));
-                    }
-                    self.contradiction = true;
-                    return;
-                }
+            let consistent = match existing {
+                // Both hash-consed terms: structural equality IS `TermId` identity
+                // (the store dedups by structure), so a `u32` compare is exact AND
+                // skips decoding two possibly-deep terms on the conflict path.
+                Value::Term(t) => *t == term,
+                // WI-486: cross-carrier re-bind — an existing `Value::Node`/`Entity`
+                // structurally equal to `term` (same logical value, different
+                // carrier) is consistent, not a conflict. Decide via the
+                // carrier-aware comparator, NOT the carrier-blind `==` that would
+                // false-flag the cross-carrier-equal case.
+                _ => views_structurally_equal(kb, existing, &Value::Term(term)),
+            };
+            if consistent {
+                return;
             }
+            // Record every DISTINCT conflict per var (an identical repeat records
+            // nothing); see the field doc for why first-per-var is not enough.
+            let attempted = Value::Term(term);
+            if !self
+                .contradiction_details
+                .iter()
+                .any(|(v, _, a)| *v == var && views_structurally_equal(kb, a, &attempted))
+            {
+                let prior = existing.clone();
+                self.contradiction_details.push((var, prior, attempted));
+            }
+            self.contradiction = true;
+            return;
         }
         self.bindings.insert(var, Value::Term(term));
     }
@@ -127,14 +138,23 @@ impl Substitution {
     /// literals decoded from rule bodies. Preserves lineage — an incoming
     /// `Value::Entity` stays as such rather than being promoted to
     /// `Value::Term` via `TermStore::alloc`.
-    pub fn bind_value(&mut self, var: VarId, val: Value) {
+    pub fn bind_value(&mut self, kb: &KnowledgeBase, var: VarId, val: Value) {
         if let Some(existing) = self.bindings.get(&var) {
-            if !existing.structural_eq(&val) {
+            // WI-486: carrier-aware structural compare — a `Value::Term` existing
+            // and a structurally-equal `Value::Node`/`Entity` incoming (or vice
+            // versa) are the same logical value, not a contradiction. The blind
+            // `Value::structural_eq` returned `false` on every cross-carrier pair.
+            // Two hash-consed terms fast-path to a `TermId` compare (exact, no decode).
+            let consistent = match (existing, &val) {
+                (Value::Term(a), Value::Term(b)) => a == b,
+                _ => views_structurally_equal(kb, existing, &val),
+            };
+            if !consistent {
                 // Every distinct conflict per var — see `bind_term`.
                 if !self
                     .contradiction_details
                     .iter()
-                    .any(|(v, _, a)| *v == var && a.structural_eq(&val))
+                    .any(|(v, _, a)| *v == var && views_structurally_equal(kb, a, &val))
                 {
                     let prior = existing.clone();
                     self.contradiction_details.push((var, prior, val));
@@ -149,8 +169,8 @@ impl Substitution {
     /// Legacy alias for `bind_term`. New code should prefer the explicit
     /// name to make the fast-path vs. value-path choice visible.
     #[inline]
-    pub fn bind(&mut self, var: VarId, term: TermId) {
-        self.bind_term(var, term);
+    pub fn bind(&mut self, kb: &KnowledgeBase, var: VarId, term: TermId) {
+        self.bind_term(kb, var, term);
     }
 
     /// Whether this substitution contains a contradiction
@@ -260,6 +280,7 @@ impl Default for Substitution {
 mod tests {
     use super::*;
     use crate::intern::Symbol;
+    use crate::kb::term::Literal;
 
     fn vid(id: u32) -> VarId {
         VarId::new(id, Symbol::from_raw(0))
@@ -268,9 +289,10 @@ mod tests {
     #[test]
     fn bind_term_roundtrips_as_value_term() {
         let mut s = Substitution::new();
+        let kb = KnowledgeBase::new();
         let v = vid(1);
         let t = TermId::from_raw(42);
-        s.bind_term(v, t);
+        s.bind_term(&kb, v, t);
         assert_eq!(s.resolve_as_value(v).map(|v| v.expect_term()), Some(t));
         match s.resolve_as_value(v) {
             Some(Value::Term(tid)) => assert_eq!(*tid, t),
@@ -281,8 +303,9 @@ mod tests {
     #[test]
     fn bind_value_accepts_non_term() {
         let mut s = Substitution::new();
+        let kb = KnowledgeBase::new();
         let v = vid(1);
-        s.bind_value(v, Value::Int(42));
+        s.bind_value(&kb, v, Value::Int(42));
         // resolve (TermId-only path) returns None for non-Term bindings.
         assert!(!matches!(s.resolve_as_value(v), Some(Value::Term(_))));
         // lookup surfaces the full Value.
@@ -295,48 +318,58 @@ mod tests {
     #[test]
     fn bind_twice_same_term_is_not_contradiction() {
         let mut s = Substitution::new();
+        let kb = KnowledgeBase::new();
         let v = vid(1);
         let t = TermId::from_raw(7);
-        s.bind_term(v, t);
-        s.bind_term(v, t);
+        s.bind_term(&kb, v, t);
+        s.bind_term(&kb, v, t);
         assert!(!s.is_contradiction());
     }
 
     #[test]
     fn bind_twice_different_term_is_contradiction() {
+        let mut kb = KnowledgeBase::new();
         let mut s = Substitution::new();
         let v = vid(1);
-        s.bind_term(v, TermId::from_raw(1));
-        s.bind_term(v, TermId::from_raw(2));
+        // WI-486: the contradiction check now decodes the terms (carrier-aware),
+        // so use REAL distinct hash-consed terms rather than opaque raw ids.
+        let t1 = kb.alloc(Term::Const(Literal::Int(1)));
+        let t2 = kb.alloc(Term::Const(Literal::Int(2)));
+        s.bind_term(&kb, v, t1);
+        s.bind_term(&kb, v, t2);
         assert!(s.is_contradiction());
     }
 
     #[test]
     fn bind_term_then_value_is_contradiction_when_distinct() {
+        let mut kb = KnowledgeBase::new();
         let mut s = Substitution::new();
         let v = vid(1);
-        s.bind_term(v, TermId::from_raw(1));
-        // A non-Term value can't be equal to a Value::Term under scalar_eq
-        // (cross-variant compare is `false`) — so rebinding flags a
-        // contradiction, preserving the "same var, different concrete
-        // binding" invariant across lineage boundaries.
-        s.bind_value(v, Value::Int(99));
+        let t1 = kb.alloc(Term::Const(Literal::Int(1)));
+        s.bind_term(&kb, v, t1);
+        // WI-486: a Term and a structurally-DISTINCT non-Term value still
+        // conflict (Term `Int(1)` vs scalar `Int(99)`). NB WI-486 also made a
+        // Term and a structurally-EQUAL non-Term compare equal — see the
+        // typing-side `bind_value_structural_eq_no_false_contradiction` test.
+        s.bind_value(&kb, v, Value::Int(99));
         assert!(s.is_contradiction());
     }
 
     #[test]
     fn bind_value_equal_scalar_not_contradiction() {
         let mut s = Substitution::new();
+        let kb = KnowledgeBase::new();
         let v = vid(1);
-        s.bind_value(v, Value::Int(42));
-        s.bind_value(v, Value::Int(42));
+        s.bind_value(&kb, v, Value::Int(42));
+        s.bind_value(&kb, v, Value::Int(42));
         assert!(!s.is_contradiction());
     }
 
     #[test]
     fn lookup_walks_parent_chain() {
         let mut parent = Substitution::new();
-        parent.bind_term(vid(1), TermId::from_raw(10));
+        let kb = KnowledgeBase::new();
+        parent.bind_term(&kb, vid(1), TermId::from_raw(10));
         let child = Substitution::with_parent(parent);
         assert_eq!(child.resolve_as_value(vid(1)).map(|v| v.expect_term()), Some(TermId::from_raw(10)));
         matches!(child.resolve_as_value(vid(1)), Some(Value::Term(_)));
@@ -345,9 +378,10 @@ mod tests {
     #[test]
     fn iter_terms_filters_out_non_term_values() {
         let mut s = Substitution::new();
-        s.bind_term(vid(1), TermId::from_raw(100));
-        s.bind_value(vid(2), Value::Int(42));
-        s.bind_term(vid(3), TermId::from_raw(300));
+        let kb = KnowledgeBase::new();
+        s.bind_term(&kb, vid(1), TermId::from_raw(100));
+        s.bind_value(&kb, vid(2), Value::Int(42));
+        s.bind_term(&kb, vid(3), TermId::from_raw(300));
         let pairs: Vec<(VarId, TermId)> = s.iter_terms().collect();
         assert_eq!(pairs.len(), 2);
         // Sort for deterministic compare (HashMap iter order isn't stable).
@@ -359,6 +393,7 @@ mod tests {
     #[test]
     fn bind_value_stores_structured_entity() {
         let mut s = Substitution::new();
+        let kb = KnowledgeBase::new();
         let v = vid(1);
         let functor = Symbol::from_raw(7);
         let key = Symbol::from_raw(8);
@@ -367,7 +402,7 @@ mod tests {
             pos: vec![Value::Int(10), Value::Str("hi".into())].into(),
             named: vec![(key, Value::Bool(true))].into(),
         };
-        s.bind_value(v, entity);
+        s.bind_value(&kb, v, entity);
         assert!(!matches!(s.resolve_as_value(v), Some(Value::Term(_))));
         match s.resolve_as_value(v) {
             Some(Value::Entity { functor: f, pos, named }) => {
@@ -384,12 +419,13 @@ mod tests {
     #[test]
     fn bind_value_stores_structured_tuple() {
         let mut s = Substitution::new();
+        let kb = KnowledgeBase::new();
         let v = vid(1);
         let tuple = Value::Tuple {
             pos: vec![Value::Int(1), Value::Int(2), Value::Int(3)].into(),
             named: vec![].into(),
         };
-        s.bind_value(v, tuple);
+        s.bind_value(&kb, v, tuple);
         assert!(!matches!(s.resolve_as_value(v), Some(Value::Term(_))));
         match s.resolve_as_value(v) {
             Some(Value::Tuple { pos, named }) => {
@@ -403,22 +439,24 @@ mod tests {
     #[test]
     fn bind_value_equal_entity_not_contradiction() {
         let mut s = Substitution::new();
+        let kb = KnowledgeBase::new();
         let v = vid(1);
         let make_entity = || Value::Entity {
             functor: Symbol::from_raw(7),
             pos: vec![Value::Int(10), Value::Str("hi".into())].into(),
             named: vec![(Symbol::from_raw(8), Value::Bool(true))].into(),
         };
-        s.bind_value(v, make_entity());
-        s.bind_value(v, make_entity());
+        s.bind_value(&kb, v, make_entity());
+        s.bind_value(&kb, v, make_entity());
         assert!(!s.is_contradiction());
     }
 
     #[test]
     fn bind_value_different_entity_is_contradiction() {
         let mut s = Substitution::new();
+        let kb = KnowledgeBase::new();
         let v = vid(1);
-        s.bind_value(
+        s.bind_value(&kb, 
             v,
             Value::Entity {
                 functor: Symbol::from_raw(7),
@@ -426,7 +464,7 @@ mod tests {
                 named: vec![].into(),
             },
         );
-        s.bind_value(
+        s.bind_value(&kb,
             v,
             Value::Entity {
                 functor: Symbol::from_raw(7),
@@ -437,9 +475,55 @@ mod tests {
         assert!(s.is_contradiction());
     }
 
+    /// WI-486 — the core cross-carrier fix. Binding a var once as a hash-consed
+    /// `Value::Term` and once as the structurally-EQUAL `Value::Entity` (the same
+    /// logical value in two carriers) must NOT be a contradiction. Before WI-486
+    /// the carrier-blind `Value::structural_eq` returned `false` on the
+    /// `(Term, Entity)` pair, so this consistent rebind was wrongly flagged as a
+    /// conflict (and a downstream WI-512 consumer would drop the substitution).
+    #[test]
+    fn bind_cross_carrier_equal_term_and_entity_not_contradiction() {
+        let mut kb = KnowledgeBase::new();
+        let v = vid(1);
+        let foo = kb.intern("foo");
+        let entity = Value::Entity {
+            functor: foo,
+            pos: vec![Value::Int(1)].into(),
+            named: vec![].into(),
+        };
+        // The faithful Term form of `entity` — same structure, `Term` carrier.
+        let t = crate::kb::node_occurrence::value_to_term(&mut kb, &entity).unwrap();
+        let mut s = Substitution::new();
+        s.bind_term(&kb, v, t);
+        s.bind_value(&kb, v, entity);
+        assert!(
+            !s.is_contradiction(),
+            "a Term and its structurally-equal Entity twin must agree across carriers",
+        );
+    }
+
+    /// WI-486 negative peer: structurally DISTINCT values still conflict across
+    /// carriers (`foo(1)` as a `Term` vs `foo(2)` as an `Entity`).
+    #[test]
+    fn bind_cross_carrier_distinct_term_and_entity_is_contradiction() {
+        let mut kb = KnowledgeBase::new();
+        let v = vid(1);
+        let foo = kb.intern("foo");
+        let one =
+            Value::Entity { functor: foo, pos: vec![Value::Int(1)].into(), named: vec![].into() };
+        let two =
+            Value::Entity { functor: foo, pos: vec![Value::Int(2)].into(), named: vec![].into() };
+        let t1 = crate::kb::node_occurrence::value_to_term(&mut kb, &one).unwrap();
+        let mut s = Substitution::new();
+        s.bind_term(&kb, v, t1);
+        s.bind_value(&kb, v, two);
+        assert!(s.is_contradiction());
+    }
+
     #[test]
     fn bind_value_nested_entity_equal_not_contradiction() {
         let mut s = Substitution::new();
+        let kb = KnowledgeBase::new();
         let v = vid(1);
         let make = || Value::Entity {
             functor: Symbol::from_raw(7),
@@ -449,8 +533,8 @@ mod tests {
             }].into(),
             named: vec![].into(),
         };
-        s.bind_value(v, make());
-        s.bind_value(v, make());
+        s.bind_value(&kb, v, make());
+        s.bind_value(&kb, v, make());
         assert!(!s.is_contradiction());
     }
 

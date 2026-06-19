@@ -377,7 +377,7 @@ impl Interpreter {
 
     /// Compute the canonical-key string for a store value (`Value::Entity`).
     /// Same string for any two values that compare equal under
-    /// `Value::structural_eq` modulo named-arg ordering.
+    /// `views_structurally_equal` modulo named-arg ordering.
     pub fn store_canonical_key(&self, v: &Value) -> Result<String, EvalError> {
         let mut buf = String::new();
         self.write_value_canonical(v, &mut buf)?;

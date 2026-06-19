@@ -72,7 +72,7 @@ fn goal_for(kb: &mut KnowledgeBase, spec_qn: &str, param_short: &str, carrier_qn
         .unwrap_or_else(|| panic!("{carrier_qn} not registered"));
     let carrier_term = kb.make_sort_ref(carrier_sym);
     let mut subst = Substitution::new();
-    subst.bind_term(param_var, carrier_term);
+    subst.bind_term(kb, param_var, carrier_term);
     // WI-350: these SLD-resolution tests dispatch by binding (the carrier
     // here is the binding *value*, not a self-receiver carrier).
     sort_goal_from_subst(kb, &subst, spec_sym, None)

@@ -474,7 +474,7 @@ impl<L: Clone> SubstTree<L> {
         self.query_raw(kb, query).into_iter()
             .map(|(leaf, subst)| {
                 let fact_term = resolve_term(&leaf);
-                let s = subst.resolve_leaf(&kb.terms, fact_term);
+                let s = subst.resolve_leaf(kb, fact_term);
                 (leaf, s)
             })
             .collect()
@@ -501,7 +501,7 @@ impl<L: Clone> SubstTree<L> {
             .map(|(leaf, subst)| {
                 let head = resolve_head(&leaf);
                 let s = match &head {
-                    Value::Term(t) => subst.resolve_leaf(&kb.terms, *t),
+                    Value::Term(t) => subst.resolve_leaf(kb, *t),
                     _ => subst.resolve_leaf_view(kb, &head),
                 };
                 (leaf, s)

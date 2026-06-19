@@ -151,7 +151,7 @@ pub(crate) fn extract_value_at_path(kb: &KnowledgeBase, head: &Value, path: &Var
 pub(crate) trait PersistSubst: Clone {
     fn new() -> Self;
     fn with_binding(self, var: VarId, value: BindValue) -> Self;
-    fn resolve_leaf(self, terms: &TermStore, fact_term: TermId) -> Substitution;
+    fn resolve_leaf(self, kb: &KnowledgeBase, fact_term: TermId) -> Substitution;
 
     /// Carrier-faithful peer of [`resolve_leaf`] (WI-348 Phase B): resolve
     /// deferred paths against a `Value` fact head instead of a hash-consed
@@ -177,13 +177,15 @@ impl PersistSubst for SmallSubst {
         self
     }
 
-    fn resolve_leaf(self, terms: &TermStore, fact_term: TermId) -> Substitution {
+    fn resolve_leaf(self, kb: &KnowledgeBase, fact_term: TermId) -> Substitution {
         let mut s = Substitution::new();
         for (vid, val) in self.bindings {
             match val {
-                BindValue::Term(tid) => s.bind_term(vid, tid),
-                BindValue::Path(path) => s.bind_term(vid, extract_at_path(terms, fact_term, &path)),
-                BindValue::Value(v) => s.bind_value(vid, v),
+                BindValue::Term(tid) => s.bind_term(kb, vid, tid),
+                BindValue::Path(path) => {
+                    s.bind_term(kb, vid, extract_at_path(&kb.terms, fact_term, &path))
+                }
+                BindValue::Value(v) => s.bind_value(kb, vid, v),
             }
         }
         s
@@ -193,11 +195,11 @@ impl PersistSubst for SmallSubst {
         let mut s = Substitution::new();
         for (vid, val) in self.bindings {
             match val {
-                BindValue::Term(tid) => s.bind_term(vid, tid),
+                BindValue::Term(tid) => s.bind_term(kb, vid, tid),
                 BindValue::Path(path) => {
-                    s.bind_value(vid, extract_value_at_path(kb, fact_head, &path))
+                    s.bind_value(kb, vid, extract_value_at_path(kb, fact_head, &path))
                 }
-                BindValue::Value(v) => s.bind_value(vid, v),
+                BindValue::Value(v) => s.bind_value(kb, vid, v),
             }
         }
         s
@@ -232,14 +234,16 @@ impl PersistSubst for SharedSubst {
         }
     }
 
-    fn resolve_leaf(self, terms: &TermStore, fact_term: TermId) -> Substitution {
+    fn resolve_leaf(self, kb: &KnowledgeBase, fact_term: TermId) -> Substitution {
         let mut s = Substitution::new();
         let mut cur = &self.head;
         while let Some(cell) = cur {
             match &cell.value {
-                BindValue::Term(tid) => s.bind_term(cell.var, *tid),
-                BindValue::Path(path) => s.bind_term(cell.var, extract_at_path(terms, fact_term, path)),
-                BindValue::Value(v) => s.bind_value(cell.var, v.clone()),
+                BindValue::Term(tid) => s.bind_term(kb, cell.var, *tid),
+                BindValue::Path(path) => {
+                    s.bind_term(kb, cell.var, extract_at_path(&kb.terms, fact_term, path))
+                }
+                BindValue::Value(v) => s.bind_value(kb, cell.var, v.clone()),
             }
             cur = &cell.tail;
         }
@@ -251,11 +255,11 @@ impl PersistSubst for SharedSubst {
         let mut cur = &self.head;
         while let Some(cell) = cur {
             match &cell.value {
-                BindValue::Term(tid) => s.bind_term(cell.var, *tid),
+                BindValue::Term(tid) => s.bind_term(kb, cell.var, *tid),
                 BindValue::Path(path) => {
-                    s.bind_value(cell.var, extract_value_at_path(kb, fact_head, path))
+                    s.bind_value(kb, cell.var, extract_value_at_path(kb, fact_head, path))
                 }
-                BindValue::Value(v) => s.bind_value(cell.var, v.clone()),
+                BindValue::Value(v) => s.bind_value(kb, cell.var, v.clone()),
             }
             cur = &cell.tail;
         }
@@ -268,23 +272,24 @@ impl PersistSubst for SharedSubst {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::intern::Interner;
     use super::super::term::{Literal, Term, TermId};
 
+    // WI-486: `resolve_leaf` now takes `&KnowledgeBase` (its bind/path-extract
+    // need the carrier-aware comparator + the kb's term store), so the fixture
+    // wraps a real KB rather than a bare `TermStore`.
     struct TestEnv {
-        terms: TermStore,
-        interner: Interner,
+        kb: KnowledgeBase,
         next_var: u32,
     }
 
     impl TestEnv {
         fn new() -> Self {
-            TestEnv { terms: TermStore::new(), interner: Interner::new(), next_var: 0 }
+            TestEnv { kb: KnowledgeBase::new(), next_var: 0 }
         }
-        fn intern(&mut self, s: &str) -> Symbol { self.interner.intern(s) }
-        fn alloc(&mut self, term: Term) -> TermId { self.terms.alloc(term) }
+        fn intern(&mut self, s: &str) -> Symbol { self.kb.intern(s) }
+        fn alloc(&mut self, term: Term) -> TermId { self.kb.alloc(term) }
         fn fresh_var(&mut self, name: &str) -> VarId {
-            let sym = self.interner.intern(name);
+            let sym = self.kb.intern(name);
             let id = self.next_var;
             self.next_var += 1;
             VarId::new(id, sym)
@@ -301,7 +306,7 @@ mod tests {
 
         let s = SmallSubst::new()
             .with_binding(vid, BindValue::Term(tid));
-        let sub = s.resolve_leaf(&env.terms, TermId::from_raw(0));
+        let sub = s.resolve_leaf(&env.kb, TermId::from_raw(0));
         assert_eq!(sub.resolve_as_value(vid).map(|v| v.expect_term()), Some(tid));
     }
 
@@ -319,7 +324,7 @@ mod tests {
 
         let s = SmallSubst::new()
             .with_binding(vid, BindValue::Path(VarPath::root().appended(ArgPos::Positional(0))));
-        let sub = s.resolve_leaf(&env.terms, fact_term);
+        let sub = s.resolve_leaf(&env.kb, fact_term);
         assert_eq!(sub.resolve_as_value(vid).map(|v| v.expect_term()), Some(val));
     }
 
@@ -335,11 +340,11 @@ mod tests {
         let s2 = s1.clone()
             .with_binding(vid2, BindValue::Term(tid));
 
-        let sub1 = s1.resolve_leaf(&env.terms, TermId::from_raw(0));
+        let sub1 = s1.resolve_leaf(&env.kb, TermId::from_raw(0));
         assert_eq!(sub1.resolve_as_value(vid1).map(|v| v.expect_term()), Some(tid));
         assert!(sub1.resolve_as_value(vid2).is_none());
 
-        let sub2 = s2.resolve_leaf(&env.terms, TermId::from_raw(0));
+        let sub2 = s2.resolve_leaf(&env.kb, TermId::from_raw(0));
         assert_eq!(sub2.resolve_as_value(vid1).map(|v| v.expect_term()), Some(tid));
         assert_eq!(sub2.resolve_as_value(vid2).map(|v| v.expect_term()), Some(tid));
     }
@@ -352,7 +357,7 @@ mod tests {
 
         let s = SharedSubst::new()
             .with_binding(vid, BindValue::Term(tid));
-        let sub = s.resolve_leaf(&env.terms, TermId::from_raw(0));
+        let sub = s.resolve_leaf(&env.kb, TermId::from_raw(0));
         assert_eq!(sub.resolve_as_value(vid).map(|v| v.expect_term()), Some(tid));
     }
 
@@ -368,10 +373,10 @@ mod tests {
         let s2 = s1.clone()
             .with_binding(vid2, BindValue::Term(tid));
 
-        let sub1 = s1.resolve_leaf(&env.terms, TermId::from_raw(0));
+        let sub1 = s1.resolve_leaf(&env.kb, TermId::from_raw(0));
         assert!(sub1.resolve_as_value(vid2).is_none());
 
-        let sub2 = s2.resolve_leaf(&env.terms, TermId::from_raw(0));
+        let sub2 = s2.resolve_leaf(&env.kb, TermId::from_raw(0));
         assert_eq!(sub2.resolve_as_value(vid1).map(|v| v.expect_term()), Some(tid));
         assert_eq!(sub2.resolve_as_value(vid2).map(|v| v.expect_term()), Some(tid));
     }
@@ -382,7 +387,7 @@ mod tests {
     fn extract_at_path_root() {
         let mut env = TestEnv::new();
         let tid = env.alloc(Term::Const(Literal::Int(42)));
-        assert_eq!(extract_at_path(&env.terms, tid, &VarPath::root()), tid);
+        assert_eq!(extract_at_path(&env.kb.terms, tid, &VarPath::root()), tid);
     }
 
     #[test]
@@ -396,8 +401,8 @@ mod tests {
             pos_args: SmallVec::from_slice(&[val0, val1]),
             named_args: SmallVec::new(),
         });
-        assert_eq!(extract_at_path(&env.terms, term, &VarPath::root().appended(ArgPos::Positional(0))), val0);
-        assert_eq!(extract_at_path(&env.terms, term, &VarPath::root().appended(ArgPos::Positional(1))), val1);
+        assert_eq!(extract_at_path(&env.kb.terms, term, &VarPath::root().appended(ArgPos::Positional(0))), val0);
+        assert_eq!(extract_at_path(&env.kb.terms, term, &VarPath::root().appended(ArgPos::Positional(1))), val1);
     }
 
     #[test]
@@ -411,7 +416,7 @@ mod tests {
             pos_args: SmallVec::new(),
             named_args: SmallVec::from_slice(&[(k_sym, val)]),
         });
-        assert_eq!(extract_at_path(&env.terms, term, &VarPath::root().appended(ArgPos::Named(k_sym))), val);
+        assert_eq!(extract_at_path(&env.kb.terms, term, &VarPath::root().appended(ArgPos::Named(k_sym))), val);
     }
 
     #[test]
@@ -431,8 +436,8 @@ mod tests {
         let path = VarPath::root()
             .appended(ArgPos::Positional(0))
             .appended(ArgPos::Positional(0));
-        assert_eq!(extract_at_path(&env.terms, f, &path), inner);
+        assert_eq!(extract_at_path(&env.kb.terms, f, &path), inner);
         // One step short reaches the intermediate g(inner).
-        assert_eq!(extract_at_path(&env.terms, f, &VarPath::root().appended(ArgPos::Positional(0))), g);
+        assert_eq!(extract_at_path(&env.kb.terms, f, &VarPath::root().appended(ArgPos::Positional(0))), g);
     }
 }

@@ -46,8 +46,8 @@ pub enum Value {
     // Invariant: `named` is sorted canonically (declared field order when
     // the functor is registered, `Symbol::index()` otherwise) — matches
     // the KB-side `Term::Fn { named_args }` invariant. Enforced at
-    // construction in `finish_constructor`; `structural_eq` relies on it
-    // for positional compare.
+    // construction in `finish_constructor`; `views_structurally_equal` relies
+    // on it for positional named-arg compare.
     // Payloads are `Rc<[…]>` rather than `Vec<…>` so `Value::clone` is an
     // O(1) refcount bump instead of a deep copy. This matters because an
     // anthill list is a chain of `cons(head, tail)` entities: with `Vec`
@@ -151,9 +151,14 @@ impl From<TermId> for Value {
 
 impl Value {
     /// Scalar-leaf equality. Tuples / Entities / Closures / Streams / Lazies
-    /// compare as unequal here — for shape-aware compare on Value-to-Value
-    /// see [`Self::structural_eq`]; for cross-lineage compare (Value vs
-    /// `(&KB, TermId)`) see 026.1 Q2's `TermView` work.
+    /// compare as unequal here. For shape-aware, CARRIER-AGNOSTIC structural
+    /// compare on any two `Value`s — including the cross-carrier `Value::Term`
+    /// vs `Value::Node`/`Entity` case — use
+    /// [`crate::kb::term_view::views_structurally_equal`] (needs `&KnowledgeBase`
+    /// to decode a `Value::Term`). WI-486 removed the carrier-blind
+    /// `Value::structural_eq` that silently called every cross-carrier pair
+    /// unequal; `scalar_eq` survives only as the leaf primitive that comparator
+    /// and a few ground-label dedups build on.
     pub fn scalar_eq(&self, other: &Value) -> bool {
         match (self, other) {
             (Value::Int(x), Value::Int(y)) => x == y,
@@ -167,33 +172,6 @@ impl Value {
             // the same variable (kind + id; `VarId` compares by id only).
             (Value::Var(x), Value::Var(y)) => x == y,
             _ => false,
-        }
-    }
-
-    /// Structural equality over `Value` — scalars compare by value, Entities
-    /// and Tuples recurse on positional and named children. Named args
-    /// compare by position, relying on the canonical-order invariant on
-    /// `Value::Entity::named`. Opaque handles (Closure / Stream / Lazy)
-    /// remain unequal. Cross-lineage comparisons (e.g. `Value::Term` vs
-    /// `Value::Entity`) are conservatively false; unifying those is
-    /// 026.1 Q2's `TermView` job.
-    pub fn structural_eq(&self, other: &Value) -> bool {
-        match (self, other) {
-            (Value::Tuple { pos: p1, named: n1 }, Value::Tuple { pos: p2, named: n2 }) => {
-                children_eq(p1, n1, p2, n2)
-            }
-            (
-                Value::Entity { functor: f1, pos: p1, named: n1 },
-                Value::Entity { functor: f2, pos: p2, named: n2 },
-            ) => f1 == f2 && children_eq(p1, n1, p2, n2),
-            // WI-246: two occurrence sub-parts compare structurally (the
-            // resolver's non-linear-pattern consistency check binds a head var
-            // to occurrence goals at two positions; distinct `Rc`s of the same
-            // structure must be equal).
-            (Value::Node(a), Value::Node(b)) => {
-                crate::kb::node_occurrence::occurrence_structural_eq(a, b)
-            }
-            _ => self.scalar_eq(other),
         }
     }
 
@@ -254,18 +232,6 @@ impl Value {
     }
 }
 
-fn children_eq(
-    p1: &[Value],
-    n1: &[(Symbol, Value)],
-    p2: &[Value],
-    n2: &[(Symbol, Value)],
-) -> bool {
-    p1.len() == p2.len()
-        && n1.len() == n2.len()
-        && p1.iter().zip(p2).all(|(a, b)| a.structural_eq(b))
-        && n1.iter().zip(n2).all(|((k1, v1), (k2, v2))| k1 == k2 && v1.structural_eq(v2))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -305,25 +271,42 @@ mod tests {
             assert_eq!(Value::Var(Var::DeBruijn(0)).type_name(), "Var");
         }
 
+        // WI-486: `Value::structural_eq` was removed; structural compare now
+        // routes through the carrier-aware `views_structurally_equal` (an empty
+        // KB suffices — var values carry no `Value::Term` to decode).
+        use crate::kb::term_view::views_structurally_equal;
+        use crate::kb::KnowledgeBase;
+
         #[test]
         fn same_var_is_equal_name_irrelevant() {
+            let kb = KnowledgeBase::new();
             // VarId compares by id only — display name is irrelevant.
-            assert!(global(7, 1).structural_eq(&global(7, 2)));
+            assert!(views_structurally_equal(&kb, &global(7, 1), &global(7, 2)));
             assert!(global(7, 1).scalar_eq(&global(7, 1)));
         }
 
         #[test]
         fn distinct_vars_and_kinds_differ() {
-            assert!(!global(1, 0).structural_eq(&global(2, 0)));
+            let kb = KnowledgeBase::new();
+            assert!(!views_structurally_equal(&kb, &global(1, 0), &global(2, 0)));
             // Same numeric payload, different kind ⇒ not equal.
-            assert!(!global(0, 0).structural_eq(&Value::Var(Var::DeBruijn(0))));
-            assert!(Value::Var(Var::DeBruijn(3)).structural_eq(&Value::Var(Var::DeBruijn(3))));
+            assert!(!views_structurally_equal(
+                &kb,
+                &global(0, 0),
+                &Value::Var(Var::DeBruijn(0))
+            ));
+            assert!(views_structurally_equal(
+                &kb,
+                &Value::Var(Var::DeBruijn(3)),
+                &Value::Var(Var::DeBruijn(3))
+            ));
         }
 
         #[test]
         fn var_not_equal_to_non_var() {
-            assert!(!global(0, 0).structural_eq(&Value::Int(0)));
-            assert!(!Value::Int(0).structural_eq(&global(0, 0)));
+            let kb = KnowledgeBase::new();
+            assert!(!views_structurally_equal(&kb, &global(0, 0), &Value::Int(0)));
+            assert!(!views_structurally_equal(&kb, &Value::Int(0), &global(0, 0)));
         }
     }
 }

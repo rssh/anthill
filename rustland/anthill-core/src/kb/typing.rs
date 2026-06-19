@@ -11,7 +11,7 @@ use smallvec::SmallVec;
 
 use super::term::{Term, TermId, Literal, Var, VarId};
 use super::node_occurrence::{
-    for_each_child, for_each_pattern_child, materialize_from_handle, occurrence_structural_eq,
+    for_each_child, for_each_pattern_child, materialize_from_handle,
     value_to_term, EffectExprNode, Expr, MatchBranch, NodeKind, NodeOccurrence, Pattern, TypeChild,
     TypeNode,
 };
@@ -980,15 +980,17 @@ fn make_arrow_value(
 }
 
 /// Merge two effect lists (set union). WI-342 effects-vertical: dedup
-/// carrier-agnostically via [`Value::structural_eq`] — ground labels compare by
-/// `TermId` (its `scalar_eq` fallback), and a `Value::Node` label (now live —
-/// `Modify[c]`) compares by occurrence structure rather than never-dedup. Set
-/// semantics thus hold for both carriers at the merge point, not only after the
-/// row canonicalizer.
-fn merge_effects(a: &[Value], b: &[Value]) -> Vec<Value> {
+/// carrier-agnostically via [`views_structurally_equal`] (WI-486) — a ground
+/// `Value::Term` label and a `Value::Node` label (now live — `Modify[c]`) of the
+/// same structure dedup ACROSS carriers, not just within one. Set semantics thus
+/// hold for both carriers at the merge point, not only after the row
+/// canonicalizer.
+fn merge_effects(kb: &KnowledgeBase, a: &[Value], b: &[Value]) -> Vec<Value> {
     let mut result = a.to_vec();
     for e in b {
-        if !result.iter().any(|r| r.structural_eq(e)) {
+        // WI-486: carrier-agnostic dedup so a ground `Value::Term` label and a
+        // `Value::Node` `Modify[c]` of the same structure collapse across carriers.
+        if !result.iter().any(|r| views_structurally_equal(kb, r, e)) {
             result.push(e.clone());
         }
     }
@@ -2592,7 +2594,7 @@ fn bind_var_pattern_to_node(
 ) -> Option<()> {
     match kb.get_term(pat) {
         Term::Var(Var::Global(vid)) => {
-            subst.bind_value(*vid, Value::Node(Rc::clone(occ)));
+            subst.bind_value(kb, *vid, Value::Node(Rc::clone(occ)));
             Some(())
         }
         _ => None,
@@ -3779,7 +3781,7 @@ fn build_type(
                     return;
                 }
             };
-            let effects = merge_effects(&value_effects, &body_r.effects);
+            let effects = merge_effects(kb, &value_effects, &body_r.effects);
             // WI-283: reassemble the `Let` from [pattern, value, body]
             // (`for_each_child(Let)` order, WI-318 added pattern) so a
             // rewrite in any of them propagates. The pattern itself is
@@ -3914,7 +3916,7 @@ fn build_type(
                 // pattern-bound resources don't leak past the case
                 // arm (their bindings live only inside the branch).
                 let branch_external = external_effects(kb, &*branch_envs[i], &body_r.effects);
-                effects = merge_effects(&effects, &branch_external);
+                effects = merge_effects(kb, &effects, &branch_external);
             }
 
             // WI-287: the match's result type accounts for *every* branch,
@@ -4027,9 +4029,9 @@ fn build_type(
             let then_r = it.next().unwrap();
             let else_r = it.next().unwrap();
             let mut effects = Vec::new();
-            effects = merge_effects(&effects, &cond_r.effects);
-            effects = merge_effects(&effects, &then_r.effects);
-            effects = merge_effects(&effects, &else_r.effects);
+            effects = merge_effects(kb, &effects, &cond_r.effects);
+            effects = merge_effects(kb, &effects, &then_r.effects);
+            effects = merge_effects(kb, &effects, &else_r.effects);
             // WI-287: the if's type is the join of both branches (checked
             // against `expected` when present), not just the then-branch
             // type — an `if` with incompatible arms is otherwise silently
@@ -4068,7 +4070,7 @@ fn build_type(
                 if element_type.is_none() {
                     element_type = Some(r.ty.clone());
                 }
-                effects = merge_effects(&effects, &r.effects);
+                effects = merge_effects(kb, &effects, &r.effects);
             }
             let t_val = element_type.unwrap_or_else(|| {
                 let fresh = kb.intern("?T");
@@ -4103,7 +4105,7 @@ fn build_type(
                 if element_type.is_none() {
                     element_type = Some(r.ty.clone());
                 }
-                effects = merge_effects(&effects, &r.effects);
+                effects = merge_effects(kb, &effects, &r.effects);
             }
             let t_val = element_type.unwrap_or_else(|| {
                 let fresh = kb.intern("?T");
@@ -4143,12 +4145,12 @@ fn build_type(
                 // treat `_N` positionally, so the base is invisible to them.
                 let field_name = kb.intern(&format!("_{}", i + 1));
                 field_types.push((field_name, r.ty.clone()));
-                effects = merge_effects(&effects, &r.effects);
+                effects = merge_effects(kb, &effects, &r.effects);
             }
             for name in named_names {
                 let r = it.next().unwrap().expect("aggregator");
                 field_types.push((name, r.ty.clone()));
-                effects = merge_effects(&effects, &r.effects);
+                effects = merge_effects(kb, &effects, &r.effects);
             }
             let tuple_type = named_tuple_value(kb, &field_types, span, owner);
             results.push(Ok(TypeResult { ty: tuple_type, env: unwrap_env(env), effects, node }));
@@ -4417,7 +4419,7 @@ fn check_apply_iter(
             if same_sort {
                 for (vid, rigid) in env.enclosing_sort_param_rigids().iter() {
                     if subst.resolve_as_value(*vid).is_none() {
-                        subst.bind_term(*vid, *rigid);
+                        subst.bind_term(kb, *vid, *rigid);
                     }
                 }
             }
@@ -4532,7 +4534,7 @@ fn check_apply_iter(
                         param_to_arg_type.insert(*param_sym, arg_result.ty.clone());
                     }
                 }
-                arg_effects = merge_effects(&arg_effects, &arg_result.effects);
+                arg_effects = merge_effects(kb, &arg_effects, &arg_result.effects);
             }
         }
 
@@ -4563,7 +4565,7 @@ fn check_apply_iter(
                         param_to_arg_type.insert(*param_sym, arg_result.ty.clone());
                     }
                 }
-                arg_effects = merge_effects(&arg_effects, &arg_result.effects);
+                arg_effects = merge_effects(kb, &arg_effects, &arg_result.effects);
             }
         }
 
@@ -4963,7 +4965,7 @@ fn check_apply_iter(
         }
         // `mut`: a concretely-dispatched self-receiver spec op closes its
         // polymorphic effect row at the carrier below (WI-357).
-        let mut effects = merge_effects(&substituted_op_effects, &arg_effects);
+        let mut effects = merge_effects(kb, &substituted_op_effects, &arg_effects);
 
         // Resolve return type deeply so `Option[T = Var(vid_T)]`
         // collapses to `Option[T = Term]` once `vid_T` is bound. WI-341:
@@ -5034,7 +5036,7 @@ fn check_apply_iter(
                         .filter(|e| !effect_is_unresolved_var(kb, e))
                         .cloned()
                         .collect();
-                    effects = merge_effects(&closed_op_effects, &arg_effects);
+                    effects = merge_effects(kb, &closed_op_effects, &arg_effects);
                 }
             }
         }
@@ -5073,7 +5075,7 @@ fn check_apply_iter(
                         let derived = dispatched_impl_effects(
                             kb, impl_op, &op.params, &subst, pos_args, named_args,
                         );
-                        effects = merge_effects(&effects, &derived);
+                        effects = merge_effects(kb, &effects, &derived);
                         let impl_sort = impl_parent_of_op(kb, impl_op);
                         let needs_reqs = impl_sort
                             .map(|s| !requires_chain(kb, s).is_empty())
@@ -5199,7 +5201,7 @@ fn check_apply_iter(
                         let derived = dispatched_impl_effects(
                             kb, impl_op, &op.params, &subst, pos_args, named_args,
                         );
-                        effects = merge_effects(&effects, &derived);
+                        effects = merge_effects(kb, &effects, &derived);
                     }
                     // PinNow, or ConcreteApplyWithin when the impl's OWN sort declares
                     // `requires` (so its dict threads) — the Unique-arm discipline. Only
@@ -5290,7 +5292,7 @@ fn check_apply_iter(
                         .filter(|e| !effect_is_unresolved_var(kb, e))
                         .cloned()
                         .collect();
-                    effects = merge_effects(&closed_op_effects, &arg_effects);
+                    effects = merge_effects(kb, &closed_op_effects, &arg_effects);
                 }
             }
 
@@ -5589,8 +5591,8 @@ fn check_apply_iter(
                             .filter(|e| !effect_is_unresolved_var(kb, e))
                             .cloned()
                             .collect();
-                        let op_and_impl = merge_effects(&closed_op_effects, &derived);
-                        effects = merge_effects(&op_and_impl, &arg_effects);
+                        let op_and_impl = merge_effects(kb, &closed_op_effects, &derived);
+                        effects = merge_effects(kb, &op_and_impl, &arg_effects);
                     }
                     // WI-231: tag the call site. The requirement-
                     // insertion pass (`req_insertion::run`) reads the
@@ -5731,7 +5733,7 @@ fn check_apply_iter(
             // f(a)` accumulated it), under-reporting a call's effect row.
             let mut effects = call_effects;
             for r in pos_results.iter().chain(named_results.iter()).flatten() {
-                effects = merge_effects(&effects, &r.effects);
+                effects = merge_effects(kb, &effects, &r.effects);
             }
             return Ok(TypeResult { ty: ret_ty, env: env.clone(), effects, node: Rc::clone(occ) });
         }
@@ -5742,7 +5744,7 @@ fn check_apply_iter(
     let mut effects: Vec<Value> = Vec::new();
     for r in pos_results.iter().chain(named_results.iter()) {
         if let Ok(r) = r {
-            effects = merge_effects(&effects, &r.effects);
+            effects = merge_effects(kb, &effects, &r.effects);
         }
     }
     let _ = pos_args;
@@ -10021,7 +10023,7 @@ fn bind_spec_params_from_carrier(
         if is_ref.is_some() {
             if let Some(spec_vid) = type_param_vid_in_sort(kb, spec_sort, spec_param_sym) {
                 if subst.resolve_as_value(spec_vid).is_none() && !occurs_in(kb, spec_vid, concrete) {
-                    subst.bind_term(spec_vid, concrete);
+                    subst.bind_term(kb, spec_vid, concrete);
                     any = true;
                 }
             }
@@ -10035,7 +10037,7 @@ fn bind_spec_params_from_carrier(
         if let Some((_, op_param_val)) = op_param_map.iter().find(|(s, _)| *s == spec_short) {
             if let Some(op_vid) = resolved_var(kb, op_param_val) {
                 if subst.resolve_as_value(op_vid).is_none() && !occurs_in(kb, op_vid, concrete) {
-                    subst.bind_term(op_vid, concrete);
+                    subst.bind_term(kb, op_vid, concrete);
                     any = true;
                 }
             }
@@ -10152,7 +10154,7 @@ fn bind_spec_params_from_carrier_param(
         let Some(concrete) = concrete else { continue };
         if let Some(spec_vid) = type_param_vid_in_sort(kb, spec_sort, spec_param_sym) {
             if subst.resolve_as_value(spec_vid).is_none() && !occurs_in(kb, spec_vid, concrete) {
-                subst.bind_term(spec_vid, concrete);
+                subst.bind_term(kb, spec_vid, concrete);
                 any = true;
             }
         }
@@ -10211,7 +10213,7 @@ fn bind_ground_value_params_from_provider(
         // carrier value binds directly — no late `Fn{S}→Ref(S)` normalization needed.
         let bound = *carrier_value;
         if !occurs_in(kb, spec_vid, bound) {
-            subst.bind_term(spec_vid, bound);
+            subst.bind_term(kb, spec_vid, bound);
             any = true;
         }
     }
@@ -11371,7 +11373,7 @@ fn check_tuple_literal_constructor(
     for (label, r) in labeled {
         let ty = thread_expected_tuple_field(kb, &mut tsubst, &exp_fields, label, &r.ty);
         tuple_fields.push((label, ty));
-        effects = merge_effects(&effects, &r.effects);
+        effects = merge_effects(kb, &effects, &r.effects);
     }
     let tuple_ty = named_tuple_value(kb, &tuple_fields, occ.span, occ.owner);
     Ok(TypeResult { ty: tuple_ty, env: env.clone(), effects, node: Rc::clone(occ) })
@@ -11403,7 +11405,7 @@ fn check_seq_literal_constructor(
         if element_type.is_none() {
             element_type = Some(r.ty.clone());
         }
-        effects = merge_effects(&effects, &r.effects);
+        effects = merge_effects(kb, &effects, &r.effects);
     }
     let t_val = element_type.unwrap_or_else(|| {
         let fresh = kb.intern("?T");
@@ -11508,7 +11510,7 @@ fn check_constructor_iter(
         if let Some((idx, _)) = named_args.iter().enumerate().find(|(_, (s, _))| s == field_sym) {
             if let Ok(ref r) = named_results[idx] {
                 unify_types(kb, &mut subst, &r.ty, declared_type);
-                effects = merge_effects(&effects, &r.effects);
+                effects = merge_effects(kb, &effects, &r.effects);
             }
         }
     }
@@ -11517,7 +11519,7 @@ fn check_constructor_iter(
         if let Some((_, declared_type)) = field_types.get(i) {
             if let Ok(r) = r_opt {
                 unify_types(kb, &mut subst, &r.ty, declared_type);
-                effects = merge_effects(&effects, &r.effects);
+                effects = merge_effects(kb, &effects, &r.effects);
             }
         }
     }
@@ -12628,7 +12630,7 @@ fn resolve_field_type(
         };
         match &resolved {
             None => resolved = Some(this),
-            Some(prev) if prev.structural_eq(&this) => {}
+            Some(prev) if views_structurally_equal(kb, prev, &this) => {}
             Some(_) => {
                 return Err(projection_type_error(ctx, span, &format!(
                     "field '{}' is declared with differing types across the constructors of \
@@ -13414,7 +13416,7 @@ fn build_pattern_subst(
             // binding via `resolve_as_value` (it may surface the Node); a ground
             // `Value::Term` binding is still read by `walk_type` (which narrows
             // to `Value::Term`).
-            subst.bind_value(vid, value.clone());
+            subst.bind_value(kb, vid, value.clone());
             any = true;
         }
     }
@@ -13673,7 +13675,7 @@ fn expr_carried_zeta<A: TermView, B: TermView>(kb: &KnowledgeBase, a: &A, b: &B)
                 TypeExtractor::ExprCarried { value: va, member: ma },
                 TypeExtractor::ExprCarried { value: vb, member: mb },
             ) => {
-                return Some(same_symbol(kb, ma, mb) && va.structural_eq(&vb));
+                return Some(same_symbol(kb, ma, mb) && views_structurally_equal(kb, &va, &vb));
             }
             (
                 TypeExtractor::RigidTypeProjection { sort: sa, subject: va, member: ma },
@@ -13687,10 +13689,10 @@ fn expr_carried_zeta<A: TermView, B: TermView>(kb: &KnowledgeBase, a: &A, b: &B)
                     (Value::Term(ta), Value::Term(tb)) => {
                         match (subject_key_of_term(kb, *ta), subject_key_of_term(kb, *tb)) {
                             (Some(ka), Some(kb2)) => subject_keys_equal(kb, ka, kb2),
-                            _ => va.structural_eq(&vb),
+                            _ => views_structurally_equal(kb, &va, &vb),
                         }
                     }
-                    _ => va.structural_eq(&vb),
+                    _ => views_structurally_equal(kb, &va, &vb),
                 };
                 return Some(
                     same_symbol(kb, ma, mb) && same_symbol(kb, sa, sb) && subjects_eq,
@@ -14126,13 +14128,13 @@ fn bind_resolved(kb: &mut KnowledgeBase, subst: &mut Substitution, vid: VarId, o
             if occurs_in(kb, vid, t) {
                 return false;
             }
-            subst.bind_term(vid, t);
+            subst.bind_term(kb, vid, t);
         }
         other => {
             if occurs_in_view(kb, vid, &other) {
                 return false;
             }
-            subst.bind_value(vid, other);
+            subst.bind_value(kb, vid, other);
         }
     }
     !subst.is_contradiction()
@@ -14453,14 +14455,14 @@ fn unify_parameterized_with_sort_ref<P: TermView, S: TermView>(
             // Ground (term-carried): bind after the occurs-check guards a cycle.
             Value::Term(t) => {
                 if !occurs_in(kb, vid, *t) {
-                    subst.bind(vid, *t);
+                    subst.bind(kb, vid, *t);
                 }
             }
             // Guaranteed an effect-row Node by `is_effect_row_node` above. (The
             // occurs-check is term-only; a freshly-opened alias Var never occurs
             // inside a user-written row, so no cycle arises here.)
             _ => {
-                subst.bind_value(vid, value.clone());
+                subst.bind_value(kb, vid, value.clone());
             }
         }
     }
@@ -15271,8 +15273,9 @@ fn decompose_effect_row(
 
     // WI-328 (piece d / proposal §7.2): a row presenting and absenting the
     // SAME label (`{ e, - e }`) is malformed. Compared through the substitution
-    // (carrier-agnostically): two ground labels match by resolved `TermId`, two
-    // occurrence labels by `occurrence_structural_eq`.
+    // carrier-agnostically via `views_structurally_equal` — a ground `Value::Term`
+    // label and a structurally-equal `Value::Node` occurrence label match across
+    // carriers.
     for p in &present {
         for a in &absent {
             if resolved_labels_equal(kb, subst, p, a) {
@@ -15355,7 +15358,7 @@ fn multi_tail_rows_compat(
                 // arm in the single-tail case).
             }
         }
-        subst.bind_value(vid, inner.clone());
+        subst.bind_value(kb, vid, inner.clone());
         !subst.is_contradiction()
     };
     if a_present.is_empty() && a_absent.is_empty() && a_set.len() == 1 {
@@ -15435,18 +15438,19 @@ fn named_child_value(kb: &KnowledgeBase, v: &impl TermView, key: Symbol) -> Opti
     v.named_arg(kb, key).map(|it| view_item_value(&it))
 }
 
-/// Resolve two effect-row labels through `subst` and compare structurally,
-/// carrier-agnostically: ground labels by `TermId` identity, occurrence labels
-/// by [`occurrence_structural_eq`]. Used for the present/absent same-label
+/// Resolve two effect-row labels through `subst` and compare structurally via
+/// the carrier-aware [`views_structurally_equal`] (WI-486) — a ground
+/// `Value::Term` label and a structurally-equal `Value::Node` occurrence label
+/// compare equal ACROSS carriers (the prior hand-rolled match returned `false`
+/// for any cross-carrier pair). Used for the present/absent same-label
 /// malformed-row check (NOT a unification — it must not bind variables).
 fn resolved_labels_equal(kb: &KnowledgeBase, subst: &Substitution, a: &Value, b: &Value) -> bool {
     let ra = walk_value_to_resolved(kb, subst, a.clone());
     let rb = walk_value_to_resolved(kb, subst, b.clone());
-    match (&ra, &rb) {
-        (Value::Term(x), Value::Term(y)) => x == y,
-        (Value::Node(x), Value::Node(y)) => occurrence_structural_eq(x, y),
-        _ => false,
-    }
+    // WI-486: one carrier-aware compare for all carriers — Term-vs-Term,
+    // Node-vs-Node, AND the cross-carrier Term-vs-Node case the old hand-rolled
+    // match silently returned `false` for.
+    views_structurally_equal(kb, &ra, &rb)
 }
 
 /// Pair present-labels from two rows by greedy structural unification.
@@ -15688,7 +15692,7 @@ fn bind_row_tail(
     if occurs_in(kb, vid, acc) {
         return false;
     }
-    subst.bind(vid, acc);
+    subst.bind(kb, vid, acc);
     if subst.is_contradiction() {
         return false;
     }
@@ -16796,7 +16800,7 @@ fn parameterized_compatible_view<A: TermView, B: TermView>(
             let Term::Var(Var::Global(vid)) = kb.get_term(target) else { continue };
             let vid = *vid;
             if subst.resolve_as_value(vid).is_none() {
-                subst.bind_value(vid, av.clone());
+                subst.bind_value(kb, vid, av.clone());
             }
         }
     }
@@ -19373,7 +19377,7 @@ fn check_value_against_parameterized(
         if let Some(vid) = type_param_vid_in_sort(kb, base_sym, *psym) {
             // WI-342: bind carrier-agnostically (`bind_value`) so a `Value::Node`
             // binding is carried; `walk_type_value` resolves a field type through it.
-            subst.bind_value(vid, value_type.clone());
+            subst.bind_value(kb, vid, value_type.clone());
         }
     }
 
@@ -19644,7 +19648,7 @@ fn rigidify_op_type_params(
             let name_sym = kb.intern(&name);
             let fresh = kb.fresh_var(name_sym);
             let rigid_term = kb.alloc(Term::Var(Var::Rigid(fresh)));
-            rigidify.bind_term(vid, rigid_term);
+            rigidify.bind_term(kb, vid, rigid_term);
         }
     }
     rigidify
@@ -19870,7 +19874,7 @@ fn check_operation_bodies(kb: &mut KnowledgeBase, op_syms: &[Symbol], errors: &m
                             &TypeErrorContext::OperationArgument { op_name: op.op_sym, param: *name },
                             op.span,
                         ) {
-                            if !elim.structural_eq(&cur) {
+                            if !views_structurally_equal(kb, &elim, &cur) {
                                 decl.insert(*name, elim);
                                 changed = true;
                             }
@@ -20888,8 +20892,8 @@ mod wi417_cycle_tests {
         let ta = kb.alloc(Term::Var(Var::Global(a)));
         let tb = kb.alloc(Term::Var(Var::Global(b)));
         let mut subst = Substitution::new();
-        subst.bind_value(a, Value::Term(tb));
-        subst.bind_value(b, Value::Term(ta));
+        subst.bind_value(kb, a, Value::Term(tb));
+        subst.bind_value(kb, b, Value::Term(ta));
         (subst, ta, a, b)
     }
 
@@ -20930,8 +20934,8 @@ mod wi417_cycle_tests {
         let a = fresh(&mut kb, "A");
         let b = fresh(&mut kb, "B");
         let mut subst = Substitution::new();
-        subst.bind_value(a, Value::Var(Var::Global(b)));
-        subst.bind_value(b, Value::Var(Var::Global(a)));
+        subst.bind_value(&kb, a, Value::Var(Var::Global(b)));
+        subst.bind_value(&kb, b, Value::Var(Var::Global(a)));
         match walk_value_to_resolved(&kb, &subst, Value::Var(Var::Global(a))) {
             Value::Var(Var::Global(v)) => assert!(v == a || v == b, "a cycle representative"),
             other => panic!("expected a cycle-representative var, got {other:?}"),
@@ -20973,7 +20977,7 @@ mod wi394_surface_node_binding_tests {
         let var_term = kb.alloc(var_t);
         let Var::Global(vid) = var else { unreachable!() };
         let mut subst = Substitution::new();
-        subst.bind_value(vid, Value::Int(42));
+        subst.bind_value(&kb, vid, Value::Int(42));
         let out = surface_node_binding_to_term(&mut kb, &subst, var_term);
         assert_ne!(out, var_term, "must not keep the bare var");
         assert!(
@@ -21016,7 +21020,7 @@ mod wi394_surface_node_binding_tests {
         let Var::Global(vid) = var else { unreachable!() };
         let concrete = kb.alloc(Term::Const(Literal::Int(7)));
         let mut subst = Substitution::new();
-        subst.bind_value(vid, Value::Term(concrete));
+        subst.bind_value(&kb, vid, Value::Term(concrete));
         let out = surface_node_binding_to_term(&mut kb, &subst, var_term);
         assert_eq!(out, var_term, "a Term binding is not surfaced here");
     }
@@ -21081,9 +21085,9 @@ mod p3_tests {
     // `value_value_parameterized_denoted_unify`; mixed TermId-vs-Node dispatch by
     // `occurs_check_var_in_node_tuple_field`.
 
-    /// `bind_value` contradiction via the extended `occurrence_structural_eq`:
-    /// binding a var twice to structurally-equal (distinct `Rc`) Value-carried
-    /// types must NOT contradict; to a different one must.
+    /// `bind_value` contradiction via the carrier-aware `views_structurally_equal`
+    /// (WI-486): binding a var twice to structurally-equal (distinct `Rc`)
+    /// Value-carried types must NOT contradict; to a different one must.
     #[test]
     fn bind_value_structural_eq_no_false_contradiction() {
         let mut kb = kb_with_prelude();
@@ -21095,10 +21099,10 @@ mod p3_tests {
         let occ_d = kb.make_denoted_occ_ref(d, span(), None);
 
         let mut s = Substitution::new();
-        s.bind_value(vid, Value::Node(occ_c1));
-        s.bind_value(vid, Value::Node(occ_c2));
+        s.bind_value(&kb, vid, Value::Node(occ_c1));
+        s.bind_value(&kb, vid, Value::Node(occ_c2));
         assert!(!s.is_contradiction(), "equal Value-carried types must not contradict");
-        s.bind_value(vid, Value::Node(occ_d));
+        s.bind_value(&kb, vid, Value::Node(occ_d));
         assert!(s.is_contradiction(), "a distinct Value-carried type contradicts");
     }
 }
