@@ -1347,8 +1347,28 @@ fn scan_rule_goal(
             kb.symbols.resolve_in_scope(functor_name, scope.raw()),
             crate::intern::ResolveResult::NotFound
         ) {
-            let qualified = make_qualified(prefix, functor_name);
-            kb.symbols.define(functor_name, &qualified, SymbolKind::Goal, scope.raw());
+            // WI-530: don't shadow an equation-connective head. `eq` / `unify`
+            // are the `=` / `<=>` desugar (proposal 049) and live in the implicit
+            // prelude, so they resolve to the canonical `anthill.prelude.Eq.eq` /
+            // `anthill.kernel.unify` at load time (`remap_name_str` consults
+            // `implicit_qualified`). Minting a `<ns>.eq` / `<ns>.unify` Goal here
+            // would instead index a (migrated) equation under that local shadow,
+            // silently hiding it from `apply_eq_rules`, whose selection keys on the
+            // canonical functor — and would force every `<=>` equation to carry an
+            // `import anthill.kernel.{unify}`. The skip is deliberately NARROW (only
+            // these two connectives) so a user PREDICATE rule with any other
+            // reserved-name head (`or` / `not` / …) still gets its own Goal symbol
+            // rather than silently rerouting to the kernel primitive — the
+            // regression the broad "skip every implicit name" attempt hit (WI-523
+            // handoff). The check is the STATIC `implicit_qualified` const, not the
+            // load-order-dependent `by_qualified_name` lookup that made that attempt
+            // flaky.
+            let is_equation_connective = (functor_name == "eq" || functor_name == "unify")
+                && implicit_qualified(functor_name).is_some();
+            if !is_equation_connective {
+                let qualified = make_qualified(prefix, functor_name);
+                kb.symbols.define(functor_name, &qualified, SymbolKind::Goal, scope.raw());
+            }
         }
     }
 }
@@ -4172,10 +4192,14 @@ pub fn is_equational_head(kb: &KnowledgeBase, head: TermId) -> bool {
     if let Term::Fn { functor, .. } = kb.get_term(head) {
         let qn = kb.qualified_name_of(*functor);
         let short = qn.rsplit('.').next().unwrap_or(qn);
-        // The kernel's equality predicate. Aliases that resolve to
-        // the same builtin are normalised at scan-time, so this
-        // suffix-match is sufficient.
-        return short == "=" || short == "eq";
+        // The kernel's equality / unification predicates. Aliases that resolve
+        // to the same builtin are normalised at scan-time, so this suffix-match
+        // is sufficient. WI-526 (proposal 049): a `<=>`-spelled equation carries
+        // the `unify` head, and must stay cite-required-by-default exactly like
+        // its `=`/`eq` predecessor — otherwise the `=`→`<=>` relabel would
+        // silently flip plain equations from cite-required laws to indexed,
+        // auto-applied rewrites.
+        return short == "=" || short == "eq" || short == "unify";
     }
     false
 }
