@@ -200,3 +200,57 @@ rule r: ?a mod ?b
           (variable))
         (variable_term
           (variable))))))
+
+=====================================
+Unify operator (proposal 049)
+=====================================
+
+rule r: h(?x) :- ?a <=> ?b
+
+---
+
+(source_file
+  (rule_declaration
+    label: (name
+      (identifier))
+    heads: (rule_heads
+      (fn_term
+        name: (name
+          (identifier))
+        (variable_term
+          (variable))))
+    body: (rule_body
+      (infix_term
+        (variable_term
+          (variable))
+        (operator_symbol)
+        (variable_term
+          (variable))))))
+
+=====================================
+Goal-position let binding (proposal 049)
+=====================================
+
+rule r: h(?x) :- let ?v = g(?x)
+
+---
+
+(source_file
+  (rule_declaration
+    label: (name
+      (identifier))
+    heads: (rule_heads
+      (fn_term
+        name: (name
+          (identifier))
+        (variable_term
+          (variable))))
+    body: (rule_body
+      (let_binding
+        var: (variable_term
+          (variable))
+        value: (fn_term
+          name: (name
+            (identifier))
+          (variable_term
+            (variable)))))))
