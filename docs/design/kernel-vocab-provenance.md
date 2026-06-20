@@ -1,6 +1,20 @@
 # Kernel Desugaring Vocab — Provenance-Based Resolution
 
-## Status: Draft
+## Status: DELIVERED (2026-06-20)
+
+**WI-040** (commit `88ae38c`) and **WI-521** (commit `7688c83`) both shipped. The
+mechanism that landed is the **reserved-name / lowest-precedence fallback** (this
+doc's "Primary approach" below), *not* node-keyed converter provenance (kept below
+as a documented escape hatch only) and *not* a literal `anthill.prelude` import
+edge. Concretely: one `pub(crate) fn implicit_qualified(name)` =
+`kernel_vocab_qualified(name).or_else(prelude_qualified(name))` over two
+fully-qualified `&[&str]` lists, consulted *after* scope resolution fails in
+**three** resolvers — `remap_name_str` (loader), `resolve_name_in_kb_opt` (query
+patterns), and `KnowledgeBase::resolve_name_in_global` (the reflect bridge). A user
+name in scope always wins, so a name can never go `Ambiguous` against a user name —
+which dissolved the WI-476 collision blocklist. The boolean-`!` / NAF-`not` split
+was deferred to **WI-529**. The rest of this doc is the design reasoning that led
+there; read §"Primary approach" for what shipped.
 
 This is an **implementation design** doc, not a proposal. There is no user-facing
 language change here — the surface syntax (`match` / `if` / `let` / `lambda`,
