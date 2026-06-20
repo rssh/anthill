@@ -741,23 +741,25 @@ pub fn scan_definitions(kb: &mut KnowledgeBase, files: &[&ParsedFile]) -> Vec<Lo
         }
     }
 
-    // WI-476: global-import the kernel DESUGARING VOCAB — the reflect `Expr` /
-    // `Pattern` constructors and the field-access helper that the converter and
-    // loader SYNTHESIZE into every body (for `match` / `if` / `let` / `lambda`,
-    // member access, literals, patterns). A user never writes these names, so
-    // they cannot be expected to import them; like `cons` / `some` they are
-    // visible from any scope that chains to `_global`. Done here (after all
-    // files are scanned) so the stdlib-defined member (`anthill.reflect.
-    // field_access`) already exists in `by_qualified_name`.
-    register_kernel_vocab_imports(kb);
-
+    // WI-040: the kernel DESUGARING VOCAB (reflect `Expr` / `Pattern`
+    // constructors, `field_access`, literal carriers, reflection primitives) is
+    // NOT global-imported. It resolves directly to its reserved qualified home
+    // via `kernel_vocab_qualified` in `remap_name_str`, so it never enters the
+    // user name namespace — dissolving the collision blocklist WI-476 needed.
     errors
 }
 
-/// WI-476: list of fully-qualified KERNEL DESUGARING NAMES that the converter /
-/// loader emit into bodies but a user never writes. Each is global-imported
-/// (short name → symbol at `_global`) so it resolves through the ordinary scope
-/// chain, dissolving the reliance on the global short-name fallback.
+/// WI-040: fully-qualified KERNEL DESUGARING NAMES that the converter / loader
+/// SYNTHESIZE into bodies (for `match` / `if` / `let` / `lambda`, member access,
+/// literals, patterns) but a user never writes. These are RESERVED: a bare
+/// reference resolves directly to the qualified target here (see
+/// `kernel_vocab_qualified`), NOT through a `_global` import — so they never sit
+/// in the user name namespace and need no collision blocklist. Resolution is a
+/// fallback (reached only when the name is unresolvable in scope), so a
+/// user-written same-spelling name still wins. Reflect-API names that ARE
+/// plausible user definitions (`kind`, `fields`, `rules`, `kb`, `constructor`,
+/// `not`) are deliberately NOT in this list — they are not converter-synthesized
+/// and resolve via explicit import.
 const KERNEL_VOCAB_QUALIFIED: &[&str] = &[
     // reflect.Expr constructors (synthetic `match` / `if` / `let` / `lambda`
     // and higher-order / dotted application + literals)
@@ -780,15 +782,15 @@ const KERNEL_VOCAB_QUALIFIED: &[&str] = &[
     "anthill.reflect.Pattern.constructor_pattern",
     "anthill.reflect.Pattern.literal_pattern",
     "anthill.reflect.Pattern.wildcard",
-    // Reflection PRIMITIVES — reflect-specific introspection helpers the
-    // converter emits or reflection code uses, with no plausible user-name clash.
-    // `field_access` (`x.field`) is emitted for every member access.
-    // NOTE: names that ARE plausible user definitions (`kind`, `fields`, `rules`,
-    // `kb`, `constructor`) are intentionally NOT global-imported — a global import
-    // would shadow a user `rule kind(…)` / `entity constructor`. `not` is also
-    // excluded: `anthill.prelude.Bool.not` shares the short name, so a global
-    // `reflect.not` would make every `Bool`-importing scope's `not` ambiguous;
-    // code that wants negation-as-failure imports `anthill.reflect.{not}`.
+    // Literal carriers — `[…]` / `{…}` / `(…)` lower to these (WI-007 / WI-285).
+    // `convert_term_with_expected` keys its context-aware desugaring on the
+    // resolved qualified name (`anthill.reflect.ListLiteral`), so the carrier
+    // MUST resolve here, not bare-intern.
+    "anthill.reflect.ListLiteral",
+    "anthill.reflect.SetLiteral",
+    "anthill.reflect.TupleLiteral",
+    // Reflection PRIMITIVES — `field_access` (`x.field`) is emitted for every
+    // member access; the rest are reflect-specific introspection helpers.
     "anthill.reflect.field_access",
     "anthill.reflect.as_term",
     "anthill.reflect.SourceSpan.source_span",
@@ -798,14 +800,13 @@ const KERNEL_VOCAB_QUALIFIED: &[&str] = &[
     "anthill.reflect.sub_occurrences",
 ];
 
-fn register_kernel_vocab_imports(kb: &mut KnowledgeBase) {
-    let global_raw = kb.make_name_term("_global").raw();
-    for qn in KERNEL_VOCAB_QUALIFIED {
-        if let Some(&sym) = kb.symbols.by_qualified_name.get(*qn) {
-            let short = qn.rsplit('.').next().unwrap_or(qn);
-            kb.symbols.add_import(global_raw, short, sym);
-        }
-    }
+/// WI-040: short name → qualified target for the reserved kernel desugaring vocab,
+/// or `None` if `name` is not reserved. Resolved directly (no `_global` import).
+fn kernel_vocab_qualified(name: &str) -> Option<&'static str> {
+    KERNEL_VOCAB_QUALIFIED
+        .iter()
+        .copied()
+        .find(|qn| qn.rsplit('.').next() == Some(name))
 }
 
 /// Check if a scope term represents a sort (vs. the global scope or a namespace).
@@ -2289,9 +2290,12 @@ fn register_stdlib_scopes(kb: &mut KnowledgeBase, global_raw: u32) {
     let sort_requires_info_sym = kb.symbols.define("SortRequiresInfo", "anthill.reflect.SortRequiresInfo", SymbolKind::Entity, reflect_term.raw());
     let sort_provides_info_sym = kb.symbols.define("SortProvidesInfo", "anthill.reflect.SortProvidesInfo", SymbolKind::Entity, reflect_term.raw());
     let sort_view_sym = kb.symbols.define("SortView", "anthill.reflect.SortView", SymbolKind::Entity, reflect_term.raw());
-    let set_literal_sym = kb.symbols.define("SetLiteral", "anthill.reflect.SetLiteral", SymbolKind::Entity, reflect_term.raw());
-    let tuple_literal_sym = kb.symbols.define("TupleLiteral", "anthill.reflect.TupleLiteral", SymbolKind::Entity, reflect_term.raw());
-    let list_literal_sym = kb.symbols.define("ListLiteral", "anthill.reflect.ListLiteral", SymbolKind::Entity, reflect_term.raw());
+    // WI-040: the literal carriers are DEFINED here (registers them in
+    // `by_qualified_name`) but NOT `_global`-imported — they resolve directly via
+    // `kernel_vocab_qualified`. So the returned symbols are intentionally unused.
+    kb.symbols.define("SetLiteral", "anthill.reflect.SetLiteral", SymbolKind::Entity, reflect_term.raw());
+    kb.symbols.define("TupleLiteral", "anthill.reflect.TupleLiteral", SymbolKind::Entity, reflect_term.raw());
+    kb.symbols.define("ListLiteral", "anthill.reflect.ListLiteral", SymbolKind::Entity, reflect_term.raw());
     // WI-390 — Positioned(pos, internal): a local-binder reference carried with its
     // absolute binding-site identity (`pos`) so two distinct locals don't collide as
     // hash-consed terms. Built by `make_positioned`; leaf-only; unifies structurally.
@@ -2422,9 +2426,8 @@ fn register_stdlib_scopes(kb: &mut KnowledgeBase, global_raw: u32) {
     kb.symbols.add_import(global_raw, "SortRequiresInfo", sort_requires_info_sym);
     kb.symbols.add_import(global_raw, "SortProvidesInfo", sort_provides_info_sym);
     kb.symbols.add_import(global_raw, "SortView", sort_view_sym);
-    kb.symbols.add_import(global_raw, "SetLiteral", set_literal_sym);
-    kb.symbols.add_import(global_raw, "TupleLiteral", tuple_literal_sym);
-    kb.symbols.add_import(global_raw, "ListLiteral", list_literal_sym);
+    // WI-040: SetLiteral / TupleLiteral / ListLiteral are NOT `_global`-imported —
+    // they resolve directly via `kernel_vocab_qualified` (reserved desugaring vocab).
 
     // Kernel builtins: globally visible (language primitives, not importable names)
     if let Some(&not_sym) = kb.symbols.by_qualified_name.get("anthill.reflect.not") {
@@ -4523,7 +4526,15 @@ fn resolve_name_in_kb_opt(kb: &KnowledgeBase, name: &str, scope_raw: u32) -> Opt
     }
     match kb.symbols.resolve_in_scope(name, scope_raw) {
         ResolveResult::Found(sym) => Some(sym),
-        _ => None,
+        // WI-040: reserved kernel desugaring vocab resolves directly to its
+        // qualified home in query patterns too — parity with `remap_name_str`, so
+        // a reflection query naming `field_access` / `ListLiteral` / `match_expr`
+        // bare still matches after the `_global` import was removed. Fallback only:
+        // scope resolution already failed, so a user-defined same-spelling name has
+        // won. (Distinct from WI-476's deliberate no-rescue for arbitrary user
+        // short-names — these names are RESERVED and always denote their target.)
+        _ => kernel_vocab_qualified(name)
+            .and_then(|qn| kb.symbols.by_qualified_name.get(qn).copied()),
     }
 }
 
@@ -5118,6 +5129,18 @@ impl<'a> Loader<'a> {
                             }
                             return self.push_forbidden_internal(q_sym, name, Span::default());
                         }
+                    }
+                }
+                // WI-040: reserved kernel desugaring vocab (synthesized
+                // `match_expr` / `field_access` / `ListLiteral` / …) resolves
+                // directly to its qualified home, replacing the old `_global`
+                // import. This is a FALLBACK (we are already past scope
+                // resolution), so a user-written same-spelling name has won
+                // already; the reserved name only catches the synthesized
+                // reference no scope defines.
+                if let Some(qn) = kernel_vocab_qualified(name) {
+                    if let Some(&sym) = self.kb.symbols.by_qualified_name.get(qn) {
+                        return sym;
                     }
                 }
                 // WI-369: distinguish a forbidden cross-scope reference to an

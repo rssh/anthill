@@ -387,6 +387,9 @@ mod wi463_unqualified_witness_dispatch_test;
 #[path = "include/wi476_scope_chain_test.rs"]
 mod wi476_scope_chain_test;
 
+#[path = "include/wi040_reserved_vocab_test.rs"]
+mod wi040_reserved_vocab_test;
+
 #[path = "include/wi466_swapped_nominal_subtype_test.rs"]
 mod wi466_swapped_nominal_subtype_test;
 
