@@ -150,6 +150,89 @@ touches disjoint imports, so it does not conflict. Part A (WI-040) is purely
 compiler-internal names; Part C (WI-521) is purely user-facing names. They must not
 be conflated again.
 
+## Two loader paths (derisk, 2026-06-20)
+
+A read-only probe of the loader corrected a wrong assumption in the first draft:
+there are **two** paths that turn a parse term into a resolved KB term, and they
+handle the kernel vocab *differently today*.
+
+1. **Op-body path** (`build_load` / `LoadBuildFrame`, load.rs ~6223+). The
+   synthesized Expr/Pattern frames (`MatchExpr`, `IfExpr`, `LetExpr`, `Lambda`,
+   `PatternConstructor`, `PatternTuple`, `DotApply`) are built from
+   **`ExprBuilderSyms`** (load.rs ~4785), a struct whose fields are populated by
+   **direct `kb.resolve_symbol("anthill.reflect.Expr.match_expr")`** lookups. This
+   path **already resolves the vocab directly**, scope-independently — it is
+   *frame-structural provenance* (the `LoadBuildFrame` variant itself is the
+   "synthesized" tag) and does **not** rely on the `_global` imports. Only user
+   `ApplyOrConstructor` frames go through `remap_symbol`. **Nothing to change here.**
+
+2. **Rule/fact term path** (`convert_term_with_expected`, load.rs ~5334). Resolves
+   *every* functor — including synthesized `field_access` (from `x.f`), `dot_apply`,
+   and the literal carriers — as a generic `Term::Fn` via `remap_symbol` (~5425) →
+   the `_global` import. This is the **only** path that genuinely needs node-keyed
+   provenance, because here name alone cannot distinguish a synthesized
+   `field_access` from a user identifier `field_access`.
+
+So this design's mechanism applies to **path 2 only**. The op-body path is the
+existence proof that direct resolution works; node-keyed provenance is simply how
+path 2 catches up, since (unlike path 2's generic `Term::Fn`) the op-body builder
+already knows structurally which nodes it synthesized.
+
+The reflect Expr/Pattern *constructor* names (`match_expr`, `if_expr`, …) are
+defined in `reflect.anthill` (self-scope); a grep finds no stdlib rule naming them
+bare via the `_global` import, so deleting those imports is likely safe — but
+**confirm against the `reflect.typing_pass` reflection rules** before deleting, in
+case a reflection rule body relies on the bare name.
+
+## Primary approach (2026-06-20): reserved names, direct resolution
+
+The synthesized vocab **already has reserved qualified homes** — every name lives in
+`anthill.reflect.*` (the `Expr`/`Pattern` constructors, `field_access`, `dot_apply`,
+`occurrence_*`), `anthill.prelude.List.*` (`cons`/`nil`), or `anthill.kernel.*`. So
+the simplest correct fix is not provenance at all: **treat these as kernel-reserved
+names and resolve every synthesized reference directly to its qualified target**,
+the way path 1's `ExprBuilderSyms` already does. Generalize that resolved-symbol
+cache to path 2 (`convert_term`): for the names `convert_term` itself synthesizes
+(`field_access`, `dot_apply`, the literal carriers), resolve via a direct
+name→qualified map instead of `remap_symbol`. Both paths then bypass `_global`
+entirely.
+
+**Why this needs no node-keying and no collision blocklist.** Node-keying was the
+draft's answer to "a user might write `match_expr` and mean their own thing." But
+the names the converter actually *synthesizes* are kernel-owned and not plausible
+user definitions — and the genuinely user-definable names the blocklist guarded
+(`kind`, `fields`, `rules`, `kb`, `constructor`) are **not in the synthesized set at
+all** (grep of `convert.rs` finds no `intern("kind")` etc.; they are reflect-API
+names that resolve via explicit import and are untouched). So a synthesized
+reference resolving unconditionally to its reserved qualified target shadows
+nothing. We stop `_global`-importing the synthesized vocab entirely, and the
+blocklist dissolves because there is no longer a kernel/user name overlap in
+`_global` to guard.
+
+This collapses WI-040 to: **path 2 mirrors path 1** (a direct name→qualified map),
+plus deleting the `_global` imports of the synthesized vocab and the blocklist.
+No `ParsedFile` change, no converter side-table.
+
+The one accepted trade-off: a reserved name (`field_access`, `match_expr`, …)
+becomes **non-shadowable** — a user cannot define their own `field_access` operation
+that wins over `reflect.field_access`. Given these are kernel desugaring targets,
+that is the correct semantics (it matches how `+`/`match` are reserved). If a future
+desugaring ever needs a name that *is* legitimately user-definable, the node-keyed
+provenance mechanism below is the escape hatch — but the current vocab needs none of
+it.
+
+The candidate namespaces the user floated (`reflect` / `kernel` / `bootstrap` /
+`prelude`) are about *where* the reserved ops live. The existing `reflect` / `kernel`
+/ `prelude.List` homes already suffice; a dedicated `anthill.kernel` (or a new
+`anthill.bootstrap`) namespace consolidating them is optional polish, not required.
+
+## Fallback mechanism: node-keyed provenance
+
+> Retained for the record and as the escape hatch named above. **Not needed for the
+> current synthesized vocab** — prefer the reserved-name approach. Node-keying earns
+> its cost only for a synthesized name that genuinely collides with a user-definable
+> name in the same position; the present vocab has none.
+
 ## Production: converter side (`parse/convert.rs`)
 
 Provenance must key on the **emitted node**, not the symbol. The converter interns
@@ -203,10 +286,19 @@ if let Some(&q) = self.parsed.kernel_refs.get(&parse_id) {
 
 The carrier handling at ~5425 (`new_functor = self.remap_symbol(functor)`, where
 `functor` is `ListLiteral`) now takes its functor from this guard instead of the
-global import, so the WI-007 desugaring downstream is unaffected. The occurrence
-path (`convert_expr` → `node_occurrence`) needs the same node-keyed guard wherever
-it resolves a synthesized functor; both paths carry the parse `TermId`, so neither
-needs `remap_symbol` itself to change.
+global import, so the WI-007 desugaring downstream is unaffected.
+
+The **op-body path needs no guard** (see §"Two loader paths"): its synthesized
+frames already resolve directly via `ExprBuilderSyms`. An alternative to the
+converter side-table — worth weighing during implementation — is to give path 2 the
+same treatment structurally: where `convert_term_with_expected` *itself* synthesizes
+a node (e.g. the `field_access`/`dot_apply` it builds from a parse `field_access`),
+resolve via a cached `ExprBuilderSyms`-style symbol directly, and reserve node-keyed
+`kernel_refs` only for cases where path 2 cannot tell synthesized from user-written
+structurally. If every synthesized node in path 2 turns out to be loader-recognizable
+(as the op-body frames are), the converter side-table may be unnecessary and the
+whole fix collapses to "path 2 mirrors path 1." Resolve this before building the
+side-table — it is the crux of the remaining design work.
 
 ## Why node-keyed (and not a `Term` variant)
 
