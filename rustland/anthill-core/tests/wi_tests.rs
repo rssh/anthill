@@ -8,6 +8,9 @@ mod wi009_phase3_builtins_test;
 #[path = "include/wi023_quantified_constraint_test.rs"]
 mod wi023_quantified_constraint_test;
 
+#[path = "include/wi525_naf_allowedness_test.rs"]
+mod wi525_naf_allowedness_test;
+
 #[path = "include/wi419_same_spec_requires_test.rs"]
 mod wi419_same_spec_requires_test;
 
@@ -58,6 +61,9 @@ mod wi282_rule_body_dot_test;
 
 #[path = "include/wi487_op_body_param_symbol_test.rs"]
 mod wi487_op_body_param_symbol_test;
+
+#[path = "include/wi523_unify_test.rs"]
+mod wi523_unify_test;
 
 #[path = "include/wi483_rule_body_method_eval_test.rs"]
 mod wi483_rule_body_method_eval_test;

@@ -114,6 +114,12 @@ pub enum BuiltinTag {
     Eq,
     /// `anthill.prelude.Eq.neq(?a, ?b)` — structural inequality (succeeds/fails).
     Neq,
+    /// `anthill.kernel.unify(?a, ?b)` — structural unification (proposal 049).
+    /// The bind-counterpart of `Eq`: same structural walk, but a flex var head
+    /// **binds** to the other side (an occurs-checked frame effect →
+    /// `SuccessWithBindings`) instead of merely comparing. The object-level face
+    /// of `<=>` (and `let ?v = e`). Carrier-agnostic, never dispatches.
+    Unify,
     /// `anthill.prelude.Ordered.gt(?a, ?b)` — greater-than on Int/Float constants.
     Gt,
     /// `anthill.prelude.Ordered.lt(?a, ?b)` — less-than on Int/Float constants.
@@ -327,6 +333,18 @@ enum EqOperands {
     Ready(Value, Value),
     Delay,
     Absent,
+}
+
+/// Outcome of the structural unification walk (`builtin_unify`, proposal 049).
+/// The recursion's three-valued signal, mapped to a [`BuiltinResult`] at the
+/// top: `Ok` carries its bindings in the working substitution, `Fail` is no
+/// unifier (functor/arity/scalar mismatch or occurs-check), `Delay` defers the
+/// whole goal on an unreduced complex op-call operand (substitution
+/// transparency, WI-483).
+enum UnifyOutcome {
+    Ok,
+    Fail,
+    Delay,
 }
 
 /// A comparable number extracted from a goal-arg `Value` for `cmp` (WI-246).
@@ -1539,19 +1557,30 @@ impl KnowledgeBase {
         let r_vid = self.fresh_var(r_sym);
         let result_var = self.alloc(Term::Var(Var::Global(r_vid)));
 
-        // The canonical equality functor — the symbol loaded equations
-        // carry (`anthill.prelude.Eq.eq`), not a freshly-interned bare
-        // `eq`. Querying under it lets the resolver's equational fallback
-        // find loaded `[simp]` rules, matching the typer firing site
-        // (`simp_rewrite`) — "one rewriter, two phases" (WI-283).
+        // The canonical equational functors — the symbols loaded equations
+        // carry (`anthill.prelude.Eq.eq` for `=`, `anthill.kernel.unify` for the
+        // `<=>` head, proposal 049), not a freshly-interned bare name. Querying
+        // under each lets the resolver's equational fallback find loaded `[simp]`
+        // rules of either spelling — discrim selection stays indexed (the
+        // functor pins the trie root), matching the typer firing site
+        // (`simp_rewrite`) — "one rewriter, two phases" (WI-283). Both queries
+        // run while WI-526's `=`→`<=>` relabel is in flight; the inactive one
+        // returns nothing.
         let eq_sym = self.eq_functor();
-        let pattern = self.alloc(Term::Fn {
-            functor: eq_sym,
-            pos_args: SmallVec::from_slice(&[current, result_var]),
-            named_args: SmallVec::new(),
-        });
-
-        let candidates = self.query(pattern);
+        let unify_sym = self.unify_functor();
+        let mk_pattern = |kb: &mut Self, functor: Symbol| {
+            kb.alloc(Term::Fn {
+                functor,
+                pos_args: SmallVec::from_slice(&[current, result_var]),
+                named_args: SmallVec::new(),
+            })
+        };
+        let eq_pattern = mk_pattern(self, eq_sym);
+        let mut candidates = self.query(eq_pattern);
+        if unify_sym != eq_sym {
+            let unify_pattern = mk_pattern(self, unify_sym);
+            candidates.extend(self.query(unify_pattern));
+        }
 
         for (rid, tree_subst) in candidates {
             if !self.is_equation(rid) {
@@ -1660,6 +1689,7 @@ impl KnowledgeBase {
             BuiltinTag::FieldAccess => self.builtin_field_access(goal, answer_subst),
             BuiltinTag::Eq => self.builtin_eq(goal, answer_subst),
             BuiltinTag::Neq => self.builtin_neq(goal, answer_subst),
+            BuiltinTag::Unify => self.builtin_unify(goal, answer_subst),
             BuiltinTag::Gt => self.builtin_cmp(goal, answer_subst, |ord| ord == std::cmp::Ordering::Greater),
             BuiltinTag::Lt => self.builtin_cmp(goal, answer_subst, |ord| ord == std::cmp::Ordering::Less),
             BuiltinTag::Gte => self.builtin_cmp(goal, answer_subst, |ord| ord != std::cmp::Ordering::Less),
@@ -2506,6 +2536,247 @@ impl KnowledgeBase {
         EqOperands::Ready(a, b)
     }
 
+    // ── Unification builtin (proposal 049) ───────────────────────
+
+    /// `unify(?a, ?b)` — structural unification, the object-level face of `<=>`
+    /// (and `let ?v = e`). The bind-counterpart of [`Self::builtin_eq`]: the
+    /// same structural walk, but a flex var head **binds** to the other side (an
+    /// occurs-checked substitution effect) instead of being compared, and a
+    /// functor match recurses binding sub-vars on EITHER side (`some(?x) <=>
+    /// some(3)` binds `?x ↦ 3`, which `eq` instead fails). Returns
+    /// `SuccessWithBindings` carrying the new bindings as a frame effect, plain
+    /// `Success` when the two sides are already equal with nothing to bind,
+    /// `Delay` on a complex op-call operand (substitution transparency), and
+    /// `Failure` on a mismatch or occurs-check violation. Carrier-agnostic and
+    /// structural-only — it never dispatches (the proposal Invariant).
+    fn builtin_unify<V: TermView>(&mut self, goal: &V, subst: &Substitution) -> BuiltinResult {
+        let (a, b) = match (
+            self.walk_arg(goal.pos_arg(self, 0), subst),
+            self.walk_arg(goal.pos_arg(self, 1), subst),
+        ) {
+            (Some(a), Some(b)) => (a, b),
+            _ => return BuiltinResult::Failure,
+        };
+        // Accumulate new bindings in a working substitution chained over the
+        // caller's σ: the parent gives read-through so a var bound earlier in
+        // THIS unify is chased on its next occurrence, while only `work`'s own
+        // top-level bindings travel back via `SuccessWithBindings` (the resolver
+        // lifts `extra.bindings`, never the parent).
+        let mut work = Substitution::with_parent(subst.clone());
+        match self.unify_values(a, b, &mut work) {
+            UnifyOutcome::Delay => BuiltinResult::Delay,
+            UnifyOutcome::Fail => BuiltinResult::Failure,
+            // A binding to two structurally-distinct values surfaces as a
+            // `work` contradiction (the chase prevents it on the linear-var
+            // path; this is the carrier-edge backstop) — no unifier.
+            UnifyOutcome::Ok if work.is_contradiction() => BuiltinResult::Failure,
+            UnifyOutcome::Ok if work.bindings.is_empty() => BuiltinResult::Success,
+            UnifyOutcome::Ok => BuiltinResult::SuccessWithBindings(work),
+        }
+    }
+
+    /// Term-level structural unification (proposal 049's "honest signature"):
+    /// the most general unifier of `a` and `b` as a substitution, or `None`
+    /// when they do not unify. The DATA face shared with the object-level
+    /// `<=>` builtin — `<=>` installs this σ as a frame effect, the term-level
+    /// `reflect.unify` returns it as data (for reflection and the WI-010
+    /// self-hosted resolver). Occurs-checked; a delaying op-call operand (only
+    /// reachable from occurrence-carried inputs) reads as non-unifiable here.
+    pub fn unify_terms(&mut self, a: TermId, b: TermId) -> Option<Substitution> {
+        let mut work = Substitution::new();
+        match self.unify_values(Value::Term(a), Value::Term(b), &mut work) {
+            UnifyOutcome::Ok if !work.is_contradiction() => Some(work),
+            _ => None,
+        }
+    }
+
+    /// The recursive core (proposal 049 steps 1–6). Chases each side's head var
+    /// through `work`, head-normalizes it on reach (project `?p.x` / fold a
+    /// foldable `peek(?b)` — head-only, no descent into constructor args), then:
+    /// a complex op-call head delays; a flex var head binds (occurs-checked) to
+    /// the other side; two concrete heads compare structurally and recurse on a
+    /// functor match. Children are head-normalized on their own reach (the
+    /// laziness — a bound cell keeps its interior unreduced).
+    fn unify_values(&mut self, a: Value, b: Value, work: &mut Substitution) -> UnifyOutcome {
+        // Step 1: chase head vars through σ (including bindings made earlier in
+        // THIS unify), then head-normalize on reach.
+        let a = self.chase_value(a, work);
+        let b = self.chase_value(b, work);
+        let a = self.reduce_operand(a, work);
+        let b = self.reduce_operand(b, work);
+        // Step 2: an unreduced complex op-call head ⇒ delay the whole goal
+        // (never commit to a structural verdict over an uninterpreted callee).
+        if self.is_unreduced_op_call(&a) || self.is_unreduced_op_call(&b) {
+            return UnifyOutcome::Delay;
+        }
+        // Step 3: a flex var on either side ⇒ occurs-checked bind-and-stop.
+        if let Some(vid) = self.unify_flex_var(&a) {
+            return self.unify_bind(vid, b, work);
+        }
+        if let Some(vid) = self.unify_flex_var(&b) {
+            return self.unify_bind(vid, a, work);
+        }
+        // Steps 4–6: both heads concrete — structural compare + recurse.
+        self.unify_concrete(&a, &b, work)
+    }
+
+    /// Step 3: bind flex `vid` to the head-normalized `other` side, occurs-checked.
+    /// `?v <=> f(?v)` fails (no cyclic term — "know errors early"); `?v <=> ?v`
+    /// binds nothing. The bound value's interior stays unreduced.
+    fn unify_bind(&mut self, vid: VarId, other: Value, work: &mut Substitution) -> UnifyOutcome {
+        if self.unify_flex_var(&other) == Some(vid) {
+            return UnifyOutcome::Ok; // ?v <=> ?v
+        }
+        if self.occurs_in_value(vid, &other, work) {
+            return UnifyOutcome::Fail; // occurs-check
+        }
+        work.bind_value(self, vid, other);
+        UnifyOutcome::Ok
+    }
+
+    /// Steps 4–6: unify two concrete-headed values structurally, recursing on a
+    /// functor match (positional then named children, head-normalized on reach)
+    /// and binding sub-vars on either side; fail-fast on any
+    /// functor/arity/scalar/head-kind mismatch BEFORE reducing children — the
+    /// work a bottom-first derive pass would forfeit. The bind-enabled twin of
+    /// [`views_structurally_equal`] (which only tests).
+    fn unify_concrete(&mut self, a: &Value, b: &Value, work: &mut Substitution) -> UnifyOutcome {
+        let eq_or = |same: bool| if same { UnifyOutcome::Ok } else { UnifyOutcome::Fail };
+        // Rigid (skolem) / DeBruijn vars head as `Opaque` but carry a comparable
+        // identity — mirror [`views_structurally_equal`] (WI-108): two occurrences
+        // of the SAME such var unify (reflexivity, no binding); a rigid var vs a
+        // different var or a concrete term does NOT (a skolem must never bind, per
+        // `Var::Rigid`'s "unifies only with another Rigid carrying the same id").
+        // Flex `Global` vars were already bound by `unify_values` before reaching
+        // here; without this arm `!k <=> !k` would wrongly hit the `_ => Fail`
+        // catch-all below, diverging from `eq`.
+        if let (Some(va), Some(vb)) = (a.index_var(self), b.index_var(self)) {
+            if va.is_rigid() || va.is_debruijn() || vb.is_rigid() || vb.is_debruijn() {
+                return eq_or(va == vb);
+            }
+        }
+        match (a.head(self), b.head(self)) {
+            (ViewHead::Const(la), ViewHead::Const(lb)) => eq_or(la == lb),
+            (ViewHead::Ref(sa), ViewHead::Ref(sb)) => eq_or(sa == sb),
+            (ViewHead::Ident(sa), ViewHead::Ident(sb)) => eq_or(sa == sb),
+            (ViewHead::Bottom, ViewHead::Bottom) => UnifyOutcome::Ok,
+            (
+                ViewHead::Functor { functor: fa, pos_arity: pa, named_arity: na },
+                ViewHead::Functor { functor: fb, pos_arity: pb, named_arity: nb },
+            ) => {
+                if fa != fb || pa != pb || na != nb {
+                    return UnifyOutcome::Fail; // step 4: fail-fast, no child reduction
+                }
+                for i in 0..pa {
+                    let (ca, cb) = match (a.pos_arg(self, i), b.pos_arg(self, i)) {
+                        (Some(ca), Some(cb)) => (ca.to_value(), cb.to_value()),
+                        _ => return UnifyOutcome::Fail,
+                    };
+                    match self.unify_values(ca, cb, work) {
+                        UnifyOutcome::Ok => {}
+                        other => return other,
+                    }
+                }
+                // Equal `named_arity` + every `a` key found-and-unified in `b`
+                // ⇒ identical key sets (named args are duplicate-free, canonical
+                // order), mirroring `views_structurally_equal`.
+                for key in a.named_keys(self) {
+                    let (ca, cb) = match (a.named_arg(self, key), b.named_arg(self, key)) {
+                        (Some(ca), Some(cb)) => (ca.to_value(), cb.to_value()),
+                        _ => return UnifyOutcome::Fail,
+                    };
+                    match self.unify_values(ca, cb, work) {
+                        UnifyOutcome::Ok => {}
+                        other => return other,
+                    }
+                }
+                UnifyOutcome::Ok
+            }
+            // Var heads are handled before reaching here; rigid / DeBruijn /
+            // opaque heads and any head-kind mismatch have no shared structure.
+            _ => UnifyOutcome::Fail,
+        }
+    }
+
+    /// The flex (`Global`) var id at a σ-walked value head across all carriers —
+    /// `Value::Term(Var::Global)`, `Value::Node(Expr::Var(Global))`, and the
+    /// value-level `Value::Var(Global)` (WI-109). The unify-side companion of
+    /// [`Self::value_global_var`], which omits the `Value::Var` arm (eq/neq
+    /// never meet one); unify must, since a bound child can ride as `Value::Var`.
+    fn unify_flex_var(&self, v: &Value) -> Option<VarId> {
+        match v {
+            Value::Var(Var::Global(vid)) => Some(*vid),
+            _ => self.value_global_var(v),
+        }
+    }
+
+    /// Resolve a value's head var through σ (no structural descent) — the
+    /// value-level analogue of [`Self::walk`]. A flex var bound in `work` is
+    /// replaced by its binding, chased transitively; a self-referential binding
+    /// or an unbound var stops the chase. Everything else is returned unchanged.
+    fn chase_value(&self, v: Value, work: &Substitution) -> Value {
+        let mut cur = v;
+        loop {
+            let Some(vid) = self.unify_flex_var(&cur) else { return cur };
+            match work.resolve_as_value(vid) {
+                Some(bound) => {
+                    let bound = bound.clone();
+                    if self.unify_flex_var(&bound) == Some(vid) {
+                        return bound; // ?v ↦ ?v
+                    }
+                    cur = bound;
+                }
+                None => return cur, // unbound flex var
+            }
+        }
+    }
+
+    /// Occurs-check: does flex `vid` appear anywhere in `value` after resolving
+    /// through `work`? Walks every carrier structurally via [`TermView`].
+    /// Rejects `?v <=> f(?v)` (proposal 049 step 3) before a cyclic term forms.
+    fn occurs_in_value(&self, vid: VarId, value: &Value, work: &Substitution) -> bool {
+        // A var head: identity hit, or chase its binding (so `?w ↦ f(?v)` is
+        // caught through `?v <=> ?w`).
+        if let Some(w) = self.unify_flex_var(value) {
+            if w == vid {
+                return true;
+            }
+            return match work.resolve_as_value(w) {
+                Some(bound) => {
+                    let bound = bound.clone();
+                    // Self-referential binding — no further structure to chase.
+                    if self.unify_flex_var(&bound) == Some(w) {
+                        false
+                    } else {
+                        self.occurs_in_value(vid, &bound, work)
+                    }
+                }
+                None => false, // distinct unbound var
+            };
+        }
+        match value.head(self) {
+            ViewHead::Functor { pos_arity, .. } => {
+                for i in 0..pos_arity {
+                    if let Some(child) = value.pos_arg(self, i) {
+                        if self.occurs_in_value(vid, &child.to_value(), work) {
+                            return true;
+                        }
+                    }
+                }
+                for key in value.named_keys(self) {
+                    if let Some(child) = value.named_arg(self, key) {
+                        if self.occurs_in_value(vid, &child.to_value(), work) {
+                            return true;
+                        }
+                    }
+                }
+                false
+            }
+            // Const / Ref / Ident / Bottom / Opaque carry no flex vars.
+            _ => false,
+        }
+    }
+
     /// Generic comparison builtin for gt/lt/gte/lte.
     /// Compares Int/BigInt/Float values; delays if unbound, fails on type mismatch.
     fn builtin_cmp<V: TermView>(
@@ -3124,9 +3395,12 @@ impl KnowledgeBase {
     /// rule), other body goals may bind it — fine, no propagation needed. But
     /// if it delays on a caller variable (one that came from the query via
     /// `answer_links`), the whole rule should delay. `Not` is skipped (NAF
-    /// delays via goal rotation at resolution time) and `PushChoice` is skipped
-    /// (a control primitive that fires immediately), so the only delay
-    /// condition checked is "the builtin's first arg resolves to a var". The
+    /// delays via goal rotation at resolution time), `PushChoice` is skipped
+    /// (a control primitive that fires immediately), and `Unify` is skipped
+    /// (proposal 049: a bare-var first operand of `<=>` / `let ?v = e` is the
+    /// variable the goal exists to BIND — pre-residualizing it would defeat the
+    /// point), so the only delay condition checked is "the builtin's first arg
+    /// resolves to a var". The
     /// chase goes through `resolve_as_value` (WI-348): a `Value::Term`-bound var
     /// follows the term chain as before, while a var bound to a concrete
     /// non-`Term` carrier (a `Value::Node`) resolves as *bound* — it is not a
@@ -3139,7 +3413,7 @@ impl KnowledgeBase {
     ) -> bool {
         for node in nodes {
             let Some(tag) = self.get_builtin_view(node) else { continue };
-            if tag == BuiltinTag::Not || tag == BuiltinTag::PushChoice {
+            if tag == BuiltinTag::Not || tag == BuiltinTag::PushChoice || tag == BuiltinTag::Unify {
                 continue;
             }
             let Some(arg) = node_first_pos_arg(node) else { continue };

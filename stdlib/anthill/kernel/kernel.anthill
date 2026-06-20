@@ -5,10 +5,19 @@
 namespace anthill.kernel
   import anthill.reflect.{Term}
 
+  sort T = ?
+
   -- Binary choice point. Splits the current goal queue into two branches
   -- that share the frame's tail: [?a, ...tail] tried first, [?b, ...tail]
   -- on backtrack. Both branches inherit σ unchanged.
   operation push_choice(a: Term, b: Term) -> Bool
+
+  -- Structural unification (proposal 049). The object-level face of `<=>`
+  -- (and `let ?v = e`): resolver-implemented, carrier-agnostic, binding via a
+  -- frame effect rather than a return value (parallels Eq.eq). `-> Bool` names
+  -- the test outcome; the substitution it really produces is the term-level
+  -- `anthill.reflect.unify` face. Never dispatches — structural only.
+  operation unify(a: T, b: T) -> Bool
 
   -- Derived disjunction. Lifts the WAM "captured continuation" idiom to a
   -- regular rule head so callers don't need direct access to the primitive.
