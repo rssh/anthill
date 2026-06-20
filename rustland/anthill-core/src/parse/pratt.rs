@@ -49,6 +49,10 @@ fn infix_entry(op: &str) -> Option<&'static InfixEntry> {
         ("and",InfixEntry { priority: 2, assoc: Assoc::Left,  functor: "and", continuation: None }),
         ("=",  InfixEntry { priority: 3, assoc: Assoc::None,  functor: "eq",  continuation: None }),
         ("!=", InfixEntry { priority: 3, assoc: Assoc::None,  functor: "neq", continuation: None }),
+        // WI-522 / proposal 049: `<=>` = unify (anthill.kernel.unify). It lexes as one
+        // `operator_symbol` token (the regex matches the longest run, so `<=>` wins over
+        // `<=`); here it maps to the `unify` functor. The resolver `builtin_unify` is WI-523.
+        ("<=>",InfixEntry { priority: 3, assoc: Assoc::None,  functor: "unify", continuation: None }),
         ("<",  InfixEntry { priority: 4, assoc: Assoc::None,  functor: "lt",  continuation: None }),
         ("<=", InfixEntry { priority: 4, assoc: Assoc::None,  functor: "lte", continuation: None }),
         (">",  InfixEntry { priority: 4, assoc: Assoc::None,  functor: "gt",  continuation: None }),
@@ -352,6 +356,10 @@ mod tests {
 
         let (terms, symbols, result) = run(&["a", "%", "b"]);
         assert_eq!(fmt_term(&terms, &symbols, result), "mod(a, b)");
+
+        // WI-522 / proposal 049: `<=>` desugars to the `unify` functor (greedy over `<=`).
+        let (terms, symbols, result) = run(&["a", "<=>", "b"]);
+        assert_eq!(fmt_term(&terms, &symbols, result), "unify(a, b)");
     }
 
     #[test]

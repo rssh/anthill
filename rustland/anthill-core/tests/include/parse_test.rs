@@ -2672,6 +2672,47 @@ fn parse_right_assoc_pow() {
     assert_eq!(fmt_ir_term(&terms, &symbols, head), "pow(?a, pow(?b, ?c))");
 }
 
+// ── Unify `<=>` and goal-position `let` (proposal 049 / WI-522) ──────
+
+/// Helper: parse a rule body and return its goal terms.
+fn parse_rule_body_goals_ir(
+    body: &str,
+) -> (SimpleTermStore, anthill_core::intern::SymbolTable, Vec<TermId>) {
+    let source = format!("rule r: h(?x) :- {body}\n");
+    let parsed = parse::parse(&source).expect("parse failed");
+    let goals = match &parsed.items[0] {
+        Item::Rule(r) => r.body.clone().expect("expected a rule body"),
+        other => panic!("expected Rule, got {:?}", std::mem::discriminant(other)),
+    };
+    (parsed.terms, parsed.symbols, goals)
+}
+
+#[test]
+fn parse_unify_operator_desugars_to_unify() {
+    // `?v <=> e` desugars to unify(?v, e) (greedy-lexed over `<=`).
+    let (terms, symbols, goals) = parse_rule_body_goals_ir("?v <=> f(?y)");
+    assert_eq!(goals.len(), 1);
+    assert_eq!(fmt_ir_term(&terms, &symbols, goals[0]), "unify(?v, f(?y))");
+}
+
+#[test]
+fn parse_let_binding_desugars_to_unify() {
+    // Goal-position `let ?v = e` is sugar for `?v <=> e` — the same unify(?v, e) IR;
+    // a following goal is unaffected.
+    let (terms, symbols, goals) = parse_rule_body_goals_ir("let ?v = f(?y), g(?v)");
+    assert_eq!(goals.len(), 2);
+    assert_eq!(fmt_ir_term(&terms, &symbols, goals[0]), "unify(?v, f(?y))");
+    assert_eq!(fmt_ir_term(&terms, &symbols, goals[1]), "g(?v)");
+}
+
+#[test]
+fn parse_let_in_rule_head_is_rejected() {
+    // A head is a conclusion, not a binding goal: heads/body share `_goal` in the
+    // grammar, so a `let` parses there, but the converter rejects it loudly.
+    let result = parse::parse("rule r: let ?v = f(?x) :- g(?v)\n");
+    assert!(result.is_err(), "expected `let` in a rule head to be rejected");
+}
+
 #[test]
 fn parse_prefix_not() {
     // add(!?a, ?b) → add(not(?a), ?b)

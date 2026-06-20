@@ -686,6 +686,13 @@ impl<'a> Converter<'a> {
                 results.push(tid);
             }
             "fn_term" => self.push_fn_term(node, work),
+            "let_binding" => {
+                // proposal 049: `let ?v = e` is sugar for `?v <=> e`; lower to the same
+                // `unify(?v, e)` IR pratt builds for `<=>` (WI-522). Per-goal depth is
+                // bounded, so the recursive `convert_term` on the children is fine.
+                let tid = self.convert_let_binding(node);
+                results.push(tid);
+            }
             "nested_implication" => {
                 // Rare in expression contexts (rule bodies only) — stays
                 // recursive since `convert_rule_body` re-enters
@@ -2365,8 +2372,34 @@ impl<'a> Converter<'a> {
         let mut cursor = node.walk();
         node.named_children(&mut cursor)
             .filter(|c| is_term_kind(c.kind()))
-            .map(|c| RuleHead::Term(self.convert_term(c)))
+            .filter_map(|c| {
+                // proposal 049: heads and body share the `_goal` rule, so a `let_binding`
+                // can appear here syntactically — reject it loudly (a head is a conclusion,
+                // not a binding goal).
+                if c.kind() == "let_binding" {
+                    self.err("`let` binding is not allowed in a rule head", c);
+                    None
+                } else {
+                    Some(RuleHead::Term(self.convert_term(c)))
+                }
+            })
             .collect()
+    }
+
+    /// proposal 049: lower a goal-position `let ?v = expr` to `unify(?v, expr)` — the same
+    /// IR pratt builds for `?v <=> expr`. The bound var is a `variable_term`; the value is
+    /// a `_term`. A malformed binding (a missing field) is a loud error.
+    fn convert_let_binding(&mut self, node: Node) -> TermId {
+        let span = self.span(node);
+        let var = self.field(node, "var").map(|n| self.convert_term(n));
+        let value = self.field(node, "value").map(|n| self.convert_term(n));
+        match (var, value) {
+            (Some(v), Some(e)) => self.alloc_fn_term("unify", SmallVec::from_slice(&[v, e]), span),
+            _ => {
+                self.err("malformed `let` binding (expected `let ?v = expr`)", node);
+                self.alloc_fn_term("unify", SmallVec::new(), span)
+            }
+        }
     }
 
     // ── Operation ───────────────────────────────────────────────
@@ -3140,6 +3173,9 @@ fn is_term_kind(kind: &str) -> bool {
             // so the other `is_term_kind` call sites (infix operands, dot
             // receivers, pattern contexts) never receive one.
             | "lambda_expr"
+            // Goal-position `let ?v = expr` (proposal 049); lowered to `unify(?v, expr)`
+            // by `visit_term`. Rejected in head position by `convert_rule_heads`.
+            | "let_binding"
     )
 }
 

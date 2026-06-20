@@ -419,10 +419,24 @@ module.exports = grammar({
 
     rule_heads: $ => choice(
       '⊥',
-      commaSep1($._term),
+      commaSep1($._goal),
     ),
 
-    rule_body: $ => commaSep1($._term),
+    rule_body: $ => commaSep1($._goal),
+
+    // A goal: a regular `_term`, or the goal-position `let ?v = expr` binding
+    // (proposal 049). Shared by `rule_heads` and `rule_body` so their comma-lists parse
+    // identically (no GLR split between heads and body). A `let_binding` is meaningful
+    // only in a body; the converter lowers a body one to `?v <=> expr` (unify) and
+    // rejects one in head position (loud).
+    _goal: $ => choice($.let_binding, $._term),
+
+    // Goal-position `let ?v = expr` (proposal 049): directed binding sugar, distinct from
+    // the expression-position `let_chain` (which carries a continuation body).
+    let_binding: $ => seq(
+      'let', field('var', $.variable_term),
+      '=', field('value', $._term),
+    ),
 
     // =========================================================
     // Operation
