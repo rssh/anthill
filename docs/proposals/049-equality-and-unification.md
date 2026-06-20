@@ -68,10 +68,18 @@ There is no fifth concept. The design names the two cells we use (`=`, `<=>`) an
 
 ### `<=>` ≜ `anthill.kernel.unify`
 
+`<=>` has two surfaces over one `builtin_unify` — a **typed object-level** face (returns
+`Bool`, binds via a frame effect) and a **term-level `reflect`** face (returns the
+substitution as data). Both are defined here; *why* there are two and how they coincide is
+*Two faces of one search* below.
+
 ```anthill
 namespace anthill.kernel
-  export unify
-  operation unify(a: T, b: T) -> Bool   -- parallels Eq.eq(a, b); resolver-implemented
+  operation unify(a: T, b: T) -> Bool                                    -- object-level: resolver-implemented; binds via a frame effect (parallels Eq.eq)
+end
+
+namespace anthill.reflect
+  operation unify(a: Term, b: Term, kb: KB) -> Option[T = Substitution]  -- term-level: none = no unifier; some(σ) = mgu (the substitution, as data)
 end
 ```
 
@@ -261,16 +269,11 @@ return, per Motivation), but wrong for the two consumers that live *at* the subs
 reflection, and the self-hosted type resolver (WI-010), which runs typing rules over **raw
 terms with no typing in scope**. They need the substitution as a value.
 
-So `<=>` gets a second, de-sugared representation — already half-present in `reflect`,
-which carries a `Substitution` sort (`apply` / `compose` / `lookup`, "bindings from
-query/unification", `reflect.anthill:561`), the `Term` ↔ `TermRepr` bridge, and KB
-`query`. The missing piece is the pairwise operation:
-
-```anthill
-namespace anthill.reflect
-  operation unify(a: Term, b: Term, kb: KB) -> Option[T = Substitution]   -- none = no unifier; some(σ) = mgu
-end
-```
+So `<=>` gets a second, de-sugared representation — the **term-level `reflect.unify`**
+defined alongside the kernel face above. It is already half-present in `reflect`, which
+carries a `Substitution` sort (`apply` / `compose` / `lookup`, "bindings from
+query/unification", `reflect.anthill:561`), the `Term` ↔ `TermRepr` bridge, and KB `query`;
+the pairwise `unify` is the missing piece.
 
 This is the **honest signature**: term-level (no `T`), substitution-returning, no sugar.
 `<=>` is its object-level face — `a <=> b` ≡ *compute `reflect.unify(a, b)`, then install
