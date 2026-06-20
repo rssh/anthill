@@ -13,8 +13,8 @@ fully-qualified `&[&str]` lists, consulted *after* scope resolution fails in
 patterns), and `KnowledgeBase::resolve_name_in_global` (the reflect bridge). A user
 name in scope always wins, so a name can never go `Ambiguous` against a user name —
 which dissolved the WI-476 collision blocklist. The boolean-`!` / NAF-`not` split
-was deferred to **WI-529**. The rest of this doc is the design reasoning that led
-there; read §"Primary approach" for what shipped.
+was deferred to **WI-529**; its decided shape is **§C.1**. The rest of this doc is the
+design reasoning that led there; read §"Primary approach" for what shipped.
 
 This is an **implementation design** doc, not a proposal. There is no user-facing
 language change here — the surface syntax (`match` / `if` / `let` / `lambda`,
@@ -163,6 +163,68 @@ sequenced after WI-040 (so `_global` holds no kernel-internal names by then) but
 touches disjoint imports, so it does not conflict. Part A (WI-040) is purely
 compiler-internal names; Part C (WI-521) is purely user-facing names. They must not
 be conflated again.
+
+### C.1 The boolean-operator / logic-primitive split (WI-529 — decided 2026-06-20, impl pending)
+
+WI-521 left the boolean operators routed to logic primitives, deferred here. The fix is the
+*same* problem as the Part-C operator targets (a pratt operator functor that must point at the
+right operation), with one wrinkle: three of these operators name **two different things at two
+layers** — exactly the split **proposal 049** draws for `=` vs `<=>`.
+
+**The layer split (049, applied to the boolean family).** A dispatched, carrier-specific,
+value-producing **operation** vs. a carrier-agnostic **resolver primitive** the engine
+implements. 049's rows are `=`→`Eq.eq` vs `<=>`→`kernel.unify`; the boolean rows are:
+
+| operator | value expression (dispatched op) | rule-body goal (resolver primitive) |
+|----------|----------------------------------|-------------------------------------|
+| `!` / `not` | `Bool.not` | `anthill.reflect.not` (NAF over a `Term`) |
+| `\|` / `or` | `Bool.or` | `anthill.kernel.or` (disjunction; `or(?a,?b) :- push_choice(?a,?b)`) |
+| `&` / `and` | `Bool.and` | conjunction — **the comma**; there is no `kernel.and` primitive |
+| prefix `-` | `Numeric.neg` | — (no goal sense) |
+
+**Correction (the dispatched ops already exist).** Contrary to this section's first draft, the
+value-side ops are *already implemented*: `bool.anthill` declares `sort anthill.prelude.Bool`
+with `not` / `and` / `or` / `ite`, a full Boolean-algebra rule set (`not_true`, `not_false`,
+`not_not`, de Morgan, …), **and** registered evaluator builtins (`bool_not` / `bool_and` /
+`bool_or`, `eval/builtins.rs:50-52`). So there is **no `Bool.not` home to invent** — the home
+is `anthill.prelude.Bool`, and most of WI-529 is **resolution routing**, not new stdlib.
+
+**What the routing is today** (`load.rs` implicit-prelude fallback): `not` → `reflect.not`
+(line 846, conflation deferred), `or` → `kernel.or` (line 847), `and` → *no entry*, prefix
+`-`/`neg` → *nothing*. So `a | b` on two `Bool` values currently hits the disjunction
+primitive, not `Bool.or` — the same NAF-vs-boolean confusion as `not`.
+
+**Decision: disambiguate by syntactic position, not by operand type or a distinct glyph.** A
+`not(arg)` / `or(a,b)` term resolves to the **resolver primitive** (`reflect.not` / `kernel.or`)
+in a **body goal** position and to the **`Bool` operation** as a **value sub-expression**.
+`and` is value-only (`Bool.and`); goal conjunction stays the comma. This mirrors 049's
+*classification-driven* split (an `is_equation` rule head migrates `=`→`<=>`; a body-position
+`=` guard stays a test) and needs no type-directed resolution: position is what the loader
+already knows, and the two surfaces converge on the same functor term regardless of glyph, so a
+glyph split would not help. The WI's old hedge ("likely type-directed or distinct functors") is
+resolved against both.
+
+**The only new stdlib: `Numeric.neg`.** `neg` is the one operator with no existing op —
+`Numeric` (numeric.anthill) has add/sub/mul/zero-val but no `neg`, and only `Int64` declares
+its own (`neg(?a) = sub(0, ?a)`). Add `operation neg(a: T) -> T` to `Numeric` with default law
+`neg(?a) = sub(zero-val, ?a)` so prefix `-` is polymorphic like binary `-`→`Numeric.sub`;
+Int64's existing `neg` becomes the carrier instance (WI-444 carrier-override). Routed via the
+implicit-Prelude fallback like the other math operators; *not* position-directed.
+
+**Build-independent of 049.** WI-529 consumes only *already-shipped* machinery (`reflect.not`,
+`kernel.or`, `Bool.*`); it does not depend on any unbuilt 049 ticket (WI-522–528), nor they on
+it — siblings in design, orthogonal in build order. WI-529 also *sharpens* 049's "NAF
+discipline for `<=>`": once the value ops (`Bool.not`/`or`/`and`) and the goal primitives
+(`reflect.not`/`kernel.or`) are distinct, "a variable in a `<=>` under `not`" unambiguously
+means "under NAF."
+
+**No new proposal.** 049 supplies the principle; this section (Part C already owns
+operator-target resolution) records the decision with a cross-reference to 049.
+
+**Spec updated** (this session): kernel-language.md §6.6 — prefix table (Origin column,
+`-`→`neg` row) and a boolean-family position note covering `not` / `or` / `and`; plus the
+§"Infix and prefix operators" paragraph (the old "`!a` desugars to `not(a)`" implied a single
+`not` operation).
 
 ## Two loader paths (derisk, 2026-06-20)
 
