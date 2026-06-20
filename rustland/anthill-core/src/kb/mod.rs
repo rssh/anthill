@@ -2958,7 +2958,13 @@ impl KnowledgeBase {
         let global = self.make_name_term("_global");
         match self.symbols.resolve_in_scope(name, global.raw()) {
             crate::intern::ResolveResult::Found(s) => Some(s),
-            _ => None,
+            // WI-040 / WI-521: the reserved kernel vocab and the implicit prelude
+            // resolve via the same lowest-precedence fallback the loader uses, so a
+            // bare reflection name (`OperationInfo`, …) or prelude name still
+            // resolves here (e.g. the reflect bridge's `SortQuery`) after the
+            // `_global` imports were removed.
+            _ => crate::kb::load::implicit_qualified(name)
+                .and_then(|qn| self.symbols.by_qualified_name.get(qn).copied()),
         }
     }
 

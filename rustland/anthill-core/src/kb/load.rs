@@ -809,6 +809,77 @@ fn kernel_vocab_qualified(name: &str) -> Option<&'static str> {
         .find(|qn| qn.rsplit('.').next() == Some(name))
 }
 
+/// WI-521: the implicit PRELUDE — user-facing names auto-available in every
+/// namespace without an `import` line: the fundamental constructors, the
+/// arithmetic / comparison operator targets (`+` → `add`, `=` → `eq`, …, via
+/// `parse/pratt.rs`), and the logic operators (`not` / `or`). Like the kernel
+/// vocab (WI-040), these resolve via a LOWEST-PRECEDENCE fallback rather than a
+/// `_global` import: a user's local definition or explicit import always wins
+/// (the fallback fires only when scope resolution fails) and the import can never
+/// go AMBIGUOUS against a user name — the failure mode the old flat
+/// `add_import(_global, …)` had, which forced the WI-476 collision blocklist.
+///
+/// `not` → `anthill.reflect.not` keeps the boolean-`!` / negation-as-failure
+/// conflation INTACT (a deliberate, separate decision — its own ticket).
+/// `push_choice` (the kernel disjunction primitive that `or` lifts) is here too:
+/// it is a globally-visible language primitive, named bare from any namespace.
+/// The reflection `*Info` result sorts are here as well — a reflection vocabulary
+/// queried bare by reflection infrastructure (the `anthill-stl` bridge / CLI);
+/// `reflect/typing.anthill` still imports them explicitly (the fallback is below
+/// that import in precedence, so the import wins where present).
+const PRELUDE_QUALIFIED: &[&str] = &[
+    "anthill.prelude.List.cons",
+    "anthill.prelude.List.nil",
+    "anthill.prelude.Option.some",
+    "anthill.prelude.Option.none",
+    "anthill.prelude.Eq.eq",
+    "anthill.prelude.Eq.neq",
+    "anthill.prelude.Ordered.gt",
+    "anthill.prelude.Ordered.lt",
+    "anthill.prelude.Ordered.gte",
+    "anthill.prelude.Ordered.lte",
+    "anthill.prelude.Numeric.add",
+    "anthill.prelude.Numeric.sub",
+    "anthill.prelude.Numeric.mul",
+    "anthill.prelude.BigInt.to_bigint",
+    "anthill.prelude.BigInt.to_int",
+    "anthill.reflect.not",         // logic operator `not` / `!` (NAF; conflation deferred)
+    "anthill.kernel.or",           // logic operator `or` / `|`
+    "anthill.kernel.push_choice",  // kernel disjunction primitive (`or` lifts it)
+    // Reflection result sorts — a reflection VOCABULARY queried bare (by short
+    // name) from reflection infrastructure (the `anthill-stl` reflect bridge's
+    // `SortQuery`, CLI reflection queries). Globally resolvable like the rest, and
+    // — being on the fallback — still shadowable and never ambiguous against a
+    // user sort of the same name (e.g. a user `entity SortView`).
+    "anthill.reflect.SortInfo",
+    "anthill.reflect.FieldInfo",
+    "anthill.reflect.OperationInfo",
+    "anthill.reflect.EntityInfo",
+    "anthill.reflect.SortRequiresInfo",
+    "anthill.reflect.SortProvidesInfo",
+    "anthill.reflect.SortView",
+];
+
+/// WI-521: short name → qualified target for the implicit prelude, or `None`.
+/// Resolved as a lowest-precedence fallback (no `_global` import); a user name
+/// in scope always shadows it.
+fn prelude_qualified(name: &str) -> Option<&'static str> {
+    PRELUDE_QUALIFIED
+        .iter()
+        .copied()
+        .find(|qn| qn.rsplit('.').next() == Some(name))
+}
+
+/// WI-040 / WI-521: short name → qualified target for ALL implicitly-available
+/// names — the reserved kernel desugaring vocab and the implicit prelude — or
+/// `None`. The single source every resolver consults as a LOWEST-PRECEDENCE
+/// fallback (after scope resolution fails), so a user name in scope always wins.
+/// Callers: `remap_name_str` (loader), `resolve_name_in_kb_opt` (query patterns),
+/// `KnowledgeBase::resolve_name_in_global` (the reflect bridge).
+pub(crate) fn implicit_qualified(name: &str) -> Option<&'static str> {
+    kernel_vocab_qualified(name).or_else(|| prelude_qualified(name))
+}
+
 /// Check if a scope term represents a sort (vs. the global scope or a namespace).
 /// Heuristic: if the scope has a symbol defined as Sort kind, it's a sort scope.
 fn is_sort_scope(kb: &KnowledgeBase, scope: TermId) -> bool {
@@ -2101,8 +2172,10 @@ fn register_stdlib_scopes(kb: &mut KnowledgeBase, global_raw: u32) {
         instantiation_term_raw: prelude_term.raw(),
         is_enclosing: true,
     });
-    let cons_sym = kb.symbols.define("cons", "anthill.prelude.List.cons", SymbolKind::Entity, list_term.raw());
-    let nil_sym = kb.symbols.define("nil", "anthill.prelude.List.nil", SymbolKind::Entity, list_term.raw());
+    // WI-521: defined (registers in `by_qualified_name`) but NOT `_global`-imported
+    // — the prelude resolves these via the `prelude_qualified` fallback.
+    kb.symbols.define("cons", "anthill.prelude.List.cons", SymbolKind::Entity, list_term.raw());
+    kb.symbols.define("nil", "anthill.prelude.List.nil", SymbolKind::Entity, list_term.raw());
 
     // anthill.prelude.Type sort — the opaque, term-backed type handle (WI-361).
     // Its structural forms now live in `TypeExtractor` (below); `Type` itself is
@@ -2200,8 +2273,9 @@ fn register_stdlib_scopes(kb: &mut KnowledgeBase, global_raw: u32) {
         instantiation_term_raw: prelude_term.raw(),
         is_enclosing: true,
     });
-    let some_sym = kb.symbols.define("some", "anthill.prelude.Option.some", SymbolKind::Entity, option_term.raw());
-    let none_sym = kb.symbols.define("none", "anthill.prelude.Option.none", SymbolKind::Entity, option_term.raw());
+    // WI-521: defined but NOT `_global`-imported (prelude_qualified fallback).
+    kb.symbols.define("some", "anthill.prelude.Option.some", SymbolKind::Entity, option_term.raw());
+    kb.symbols.define("none", "anthill.prelude.Option.none", SymbolKind::Entity, option_term.raw());
 
     // anthill.prelude.Eq sort (operations: eq, neq)
     let eq_sort_sym = kb.symbols.define("Eq", "anthill.prelude.Eq", SymbolKind::Sort, prelude_term.raw());
@@ -2283,13 +2357,16 @@ fn register_stdlib_scopes(kb: &mut KnowledgeBase, global_raw: u32) {
         instantiation_term_raw: anthill_term.raw(),
         is_enclosing: true,
     });
-    let sort_info_sym = kb.symbols.define("SortInfo", "anthill.reflect.SortInfo", SymbolKind::Entity, reflect_term.raw());
-    let field_info_sym = kb.symbols.define("FieldInfo", "anthill.reflect.FieldInfo", SymbolKind::Entity, reflect_term.raw());
-    let op_info_sym = kb.symbols.define("OperationInfo", "anthill.reflect.OperationInfo", SymbolKind::Entity, reflect_term.raw());
-    let entity_info_sym = kb.symbols.define("EntityInfo", "anthill.reflect.EntityInfo", SymbolKind::Entity, reflect_term.raw());
-    let sort_requires_info_sym = kb.symbols.define("SortRequiresInfo", "anthill.reflect.SortRequiresInfo", SymbolKind::Entity, reflect_term.raw());
-    let sort_provides_info_sym = kb.symbols.define("SortProvidesInfo", "anthill.reflect.SortProvidesInfo", SymbolKind::Entity, reflect_term.raw());
-    let sort_view_sym = kb.symbols.define("SortView", "anthill.reflect.SortView", SymbolKind::Entity, reflect_term.raw());
+    // WI-521: the reflection `*Info` sorts are defined (registered in
+    // `by_qualified_name`) but NOT `_global`-imported — reflection code reaches
+    // them by explicit import (`reflect/typing.anthill`) or self-scope.
+    kb.symbols.define("SortInfo", "anthill.reflect.SortInfo", SymbolKind::Entity, reflect_term.raw());
+    kb.symbols.define("FieldInfo", "anthill.reflect.FieldInfo", SymbolKind::Entity, reflect_term.raw());
+    kb.symbols.define("OperationInfo", "anthill.reflect.OperationInfo", SymbolKind::Entity, reflect_term.raw());
+    kb.symbols.define("EntityInfo", "anthill.reflect.EntityInfo", SymbolKind::Entity, reflect_term.raw());
+    kb.symbols.define("SortRequiresInfo", "anthill.reflect.SortRequiresInfo", SymbolKind::Entity, reflect_term.raw());
+    kb.symbols.define("SortProvidesInfo", "anthill.reflect.SortProvidesInfo", SymbolKind::Entity, reflect_term.raw());
+    kb.symbols.define("SortView", "anthill.reflect.SortView", SymbolKind::Entity, reflect_term.raw());
     // WI-040: the literal carriers are DEFINED here (registers them in
     // `by_qualified_name`) but NOT `_global`-imported — they resolve directly via
     // `kernel_vocab_qualified`. So the returned symbols are intentionally unused.
@@ -2413,51 +2490,20 @@ fn register_stdlib_scopes(kb: &mut KnowledgeBase, global_raw: u32) {
     kb.symbols.define("push_choice", "anthill.kernel.push_choice", SymbolKind::Operation, kernel_term.raw());
     kb.symbols.define("or", "anthill.kernel.or", SymbolKind::Operation, kernel_term.raw());
 
-    // Global imports: make fundamental constructors visible from any scope
-    // that walks up to _global (like Haskell's Prelude auto-import).
-    kb.symbols.add_import(global_raw, "cons", cons_sym);
-    kb.symbols.add_import(global_raw, "nil", nil_sym);
-    kb.symbols.add_import(global_raw, "some", some_sym);
-    kb.symbols.add_import(global_raw, "none", none_sym);
-    kb.symbols.add_import(global_raw, "SortInfo", sort_info_sym);
-    kb.symbols.add_import(global_raw, "FieldInfo", field_info_sym);
-    kb.symbols.add_import(global_raw, "OperationInfo", op_info_sym);
-    kb.symbols.add_import(global_raw, "EntityInfo", entity_info_sym);
-    kb.symbols.add_import(global_raw, "SortRequiresInfo", sort_requires_info_sym);
-    kb.symbols.add_import(global_raw, "SortProvidesInfo", sort_provides_info_sym);
-    kb.symbols.add_import(global_raw, "SortView", sort_view_sym);
-    // WI-040: SetLiteral / TupleLiteral / ListLiteral are NOT `_global`-imported —
-    // they resolve directly via `kernel_vocab_qualified` (reserved desugaring vocab).
-
-    // Kernel builtins: globally visible (language primitives, not importable names)
-    if let Some(&not_sym) = kb.symbols.by_qualified_name.get("anthill.reflect.not") {
-        kb.symbols.add_import(global_raw, "not", not_sym);
-    }
-    if let Some(&push_choice_sym) = kb.symbols.by_qualified_name.get("anthill.kernel.push_choice") {
-        kb.symbols.add_import(global_raw, "push_choice", push_choice_sym);
-    }
-    if let Some(&or_sym) = kb.symbols.by_qualified_name.get("anthill.kernel.or") {
-        kb.symbols.add_import(global_raw, "or", or_sym);
-    }
-
-    // Arithmetic and comparison: globally importable (like Haskell Prelude).
-    // Qualified names are guaranteed present — defined above in this function.
-    for (qualified, short) in [
-        ("anthill.prelude.Eq.eq", "eq"),
-        ("anthill.prelude.Eq.neq", "neq"),
-        ("anthill.prelude.Ordered.gt", "gt"),
-        ("anthill.prelude.Ordered.lt", "lt"),
-        ("anthill.prelude.Ordered.gte", "gte"),
-        ("anthill.prelude.Ordered.lte", "lte"),
-        ("anthill.prelude.Numeric.add", "add"),
-        ("anthill.prelude.Numeric.sub", "sub"),
-        ("anthill.prelude.Numeric.mul", "mul"),
-        ("anthill.prelude.BigInt.to_bigint", "to_bigint"),
-        ("anthill.prelude.BigInt.to_int", "to_int"),
-    ] {
-        let sym = kb.symbols.by_qualified_name[qualified];
-        kb.symbols.add_import(global_raw, short, sym);
-    }
+    // WI-521: the user-facing PRELUDE (cons / nil / some / none, the arithmetic
+    // and comparison operator targets eq / neq / gt / lt / gte / lte / add / sub /
+    // mul / to_bigint / to_int, and the logic operators not / or) is NOT
+    // `_global`-imported. It resolves via the lowest-precedence `prelude_qualified`
+    // fallback in `remap_name_str` / `resolve_name_in_kb_opt`: a user's local
+    // definition or explicit import always wins, and the prelude name can never go
+    // AMBIGUOUS against a user name (the failure mode the old flat `_global`
+    // injection had — see the WI-476 collision blocklist that WI-040 removed).
+    //
+    // The reflection `*Info` result sorts (SortInfo / FieldInfo / …) also resolve
+    // via `prelude_qualified` (a reflection vocabulary, queried bare by the
+    // reflect bridge / CLI). Their `define` calls remain (registering them in
+    // `by_qualified_name`, which the fallback looks up); only the `_global` imports
+    // are gone.
 }
 
 // ══════════════════════════════════════════════════════════════════
@@ -4526,14 +4572,15 @@ fn resolve_name_in_kb_opt(kb: &KnowledgeBase, name: &str, scope_raw: u32) -> Opt
     }
     match kb.symbols.resolve_in_scope(name, scope_raw) {
         ResolveResult::Found(sym) => Some(sym),
-        // WI-040: reserved kernel desugaring vocab resolves directly to its
-        // qualified home in query patterns too — parity with `remap_name_str`, so
-        // a reflection query naming `field_access` / `ListLiteral` / `match_expr`
-        // bare still matches after the `_global` import was removed. Fallback only:
-        // scope resolution already failed, so a user-defined same-spelling name has
-        // won. (Distinct from WI-476's deliberate no-rescue for arbitrary user
-        // short-names — these names are RESERVED and always denote their target.)
-        _ => kernel_vocab_qualified(name)
+        // WI-040 / WI-521: reserved kernel desugaring vocab AND the implicit
+        // prelude resolve directly to their qualified home in query patterns too —
+        // parity with `remap_name_str`, so a reflection query naming `field_access`
+        // / `ListLiteral` or a prelude name like `eq` / `cons` bare still matches
+        // after the `_global` imports were removed. Fallback only: scope resolution
+        // already failed, so a user-defined same-spelling name has won. (Distinct
+        // from WI-476's deliberate no-rescue for arbitrary user short-names — these
+        // are RESERVED / PRELUDE names that always denote their target.)
+        _ => implicit_qualified(name)
             .and_then(|qn| kb.symbols.by_qualified_name.get(qn).copied()),
     }
 }
@@ -5131,14 +5178,14 @@ impl<'a> Loader<'a> {
                         }
                     }
                 }
-                // WI-040: reserved kernel desugaring vocab (synthesized
-                // `match_expr` / `field_access` / `ListLiteral` / …) resolves
-                // directly to its qualified home, replacing the old `_global`
-                // import. This is a FALLBACK (we are already past scope
+                // WI-040 / WI-521: reserved kernel desugaring vocab (synthesized
+                // `match_expr` / `field_access` / `ListLiteral` / …) and the
+                // implicit PRELUDE (`cons` / `some` / `eq` / `add` / `not` / …)
+                // resolve directly to their qualified home, replacing the old
+                // `_global` imports. This is a FALLBACK (we are already past scope
                 // resolution), so a user-written same-spelling name has won
-                // already; the reserved name only catches the synthesized
-                // reference no scope defines.
-                if let Some(qn) = kernel_vocab_qualified(name) {
+                // already; these names only catch a reference no scope defines.
+                if let Some(qn) = implicit_qualified(name) {
                     if let Some(&sym) = self.kb.symbols.by_qualified_name.get(qn) {
                         return sym;
                     }
