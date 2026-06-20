@@ -29,10 +29,10 @@ sort anthill.prelude.Int64
   }
 
   -- Laws
-  rule neg(?a) = sub(0, ?a)
-  rule abs(?a) = max(?a, neg(?a))
-  rule sign(?a) = ite(gt(?a, 0), 1, ite(lt(?a, 0), neg(1), 0))
-  rule divExact(?a, ?b) = div(?a, ?b)
+  rule neg(?a) <=> sub(0, ?a)
+  rule abs(?a) <=> max(?a, neg(?a))
+  rule sign(?a) <=> ite(gt(?a, 0), 1, ite(lt(?a, 0), neg(1), 0))
+  rule divExact(?a, ?b) <=> div(?a, ?b)
 
   -- Constraints: invariant :- guard
   constraint div_nonzero_primary: neq(?b, 0) :- div(?_, ?b)

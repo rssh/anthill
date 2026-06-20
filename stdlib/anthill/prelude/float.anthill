@@ -50,10 +50,10 @@ sort anthill.prelude.Float
   }
 
   -- Laws
-  rule neg(?a) = sub(0.0, ?a)
-  rule abs(?a) = max(?a, neg(?a))
-  rule recip(?a) = div(1.0, ?a)
-  rule tau = mul(2.0, pi)
+  rule neg(?a) <=> sub(0.0, ?a)
+  rule abs(?a) <=> max(?a, neg(?a))
+  rule recip(?a) <=> div(1.0, ?a)
+  rule tau <=> mul(2.0, pi)
 
   -- Constraints
   constraint recip_nonzero: neq(?a, 0.0) :- recip(?a)

@@ -11,6 +11,6 @@ enum anthill.prelude.Pair
   -- and `p.fst` currently fail the typer with "expected A, got Term" — the entity-field
   -- sort doesn't propagate through self-typed match/access in concrete enum sorts. The
   -- rules below remain as the de-facto implementation until the typer issue is fixed.
-  rule fst(pair(?a, ?b)) = ?a
-  rule snd(pair(?a, ?b)) = ?b
+  rule fst(pair(?a, ?b)) <=> ?a
+  rule snd(pair(?a, ?b)) <=> ?b
 end

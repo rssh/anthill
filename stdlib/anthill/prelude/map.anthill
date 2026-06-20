@@ -43,15 +43,15 @@ sort anthill.prelude.Map
   operation size(m: Map) -> Int64
 
   -- Laws (algebraic specification)
-  rule get(empty, ?) = none
-  rule get(put(?m, ?k, ?v), ?k) = some(?v)
+  rule get(empty, ?) <=> none
+  rule get(put(?m, ?k, ?v), ?k) <=> some(?v)
   rule get(put(?m, ?k2, ?v), ?k) = get(?m, ?k)
     :- neq(?k, ?k2)
 
-  rule contains(?m, ?k) = neq(get(?m, ?k), none)
+  rule contains(?m, ?k) <=> neq(get(?m, ?k), none)
 
-  rule remove(empty, ?) = empty
-  rule get(remove(?m, ?k), ?k) = none
+  rule remove(empty, ?) <=> empty
+  rule get(remove(?m, ?k), ?k) <=> none
 
-  rule size(empty) = 0
+  rule size(empty) <=> 0
 end

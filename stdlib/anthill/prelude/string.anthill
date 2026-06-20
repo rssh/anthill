@@ -32,10 +32,10 @@ sort anthill.prelude.String
     if gt(d, 0) then concat(s, repeat(" ", d)) else s
 
   -- Laws
-  rule isEmpty(?s) = eq(length(?s), 0)
-  rule concat("", ?s) = ?s
-  rule concat(?s, "") = ?s
-  rule startsWith(?s, "") = true
-  rule endsWith(?s, "") = true
-  rule contains(?s, "") = true
+  rule isEmpty(?s) <=> eq(length(?s), 0)
+  rule concat("", ?s) <=> ?s
+  rule concat(?s, "") <=> ?s
+  rule startsWith(?s, "") <=> true
+  rule endsWith(?s, "") <=> true
+  rule contains(?s, "") <=> true
 end

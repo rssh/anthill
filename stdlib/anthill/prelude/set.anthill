@@ -14,11 +14,11 @@ sort anthill.prelude.Set
   operation difference(s1: S, s2: S) -> S
 
   -- Laws
-  rule member(?x, insert(?s, ?x)) = true
-  rule insert(insert(?s, ?x), ?x) = insert(?s, ?x)              -- idempotent
-  rule insert(insert(?s, ?x), ?y) = insert(insert(?s, ?y), ?x)  -- commutative
-  rule member(?, empty()) = false
-  rule subset(empty(), ?) = true
-  rule union(empty(), ?s) = ?s
-  rule union(?s, empty()) = ?s
+  rule member(?x, insert(?s, ?x)) <=> true
+  rule insert(insert(?s, ?x), ?x) <=> insert(?s, ?x)              -- idempotent
+  rule insert(insert(?s, ?x), ?y) <=> insert(insert(?s, ?y), ?x)  -- commutative
+  rule member(?, empty()) <=> false
+  rule subset(empty(), ?) <=> true
+  rule union(empty(), ?s) <=> ?s
+  rule union(?s, empty()) <=> ?s
 end

@@ -26,8 +26,8 @@ enum anthill.prelude.List
       case nil() -> 0
       case cons(_, xs) -> add(1, length(xs))
   -- Laws (also serve as rewrite/proof obligations):
-  rule length(nil) = 0
-  rule length(cons(?x, ?xs)) = add(1, length(?xs))
+  rule length(nil) <=> 0
+  rule length(cons(?x, ?xs)) <=> add(1, length(?xs))
 
   -- member: deterministic Bool. The Prolog-style rules below preserve the
   -- backtracking-relation semantics for resolver-mode queries; the operation
@@ -44,8 +44,8 @@ enum anthill.prelude.List
     match xs
       case nil() -> ys
       case cons(x, rest) -> cons(head: x, tail: append(rest, ys))
-  rule append(nil, ?ys) = ?ys
-  rule append(cons(head: ?x, tail: ?xs), ?ys) = cons(head: ?x, tail: append(?xs, ?ys))
+  rule append(nil, ?ys) <=> ?ys
+  rule append(cons(head: ?x, tail: ?xs), ?ys) <=> cons(head: ?x, tail: append(?xs, ?ys))
 
   -- List satisfies PersistentCollection (pure). Effect left unbound by
   -- design: under proposal 045's row model a closed effect is not a type
@@ -122,17 +122,17 @@ enum anthill.prelude.List
         if eq(i, 0) then some(h)
         else if gt(i, 0) then nth(rest, sub(i, 1))
         else none
-  rule nth(nil, ?_) = none
-  rule nth(cons(?h, ?_), 0) = some(?h)
+  rule nth(nil, ?_) <=> none
+  rule nth(cons(?h, ?_), 0) <=> some(?h)
   rule nth(cons(?_, ?t), ?i) = nth(?t, sub(?i, 1)) :- gt(?i, 0)
 
   -- PersistentCollection.insert for List: prepend element
   operation insert(c: List, elem: T) -> List = cons(head: elem, tail: c)
-  rule insert(?c, ?elem) = cons(head: ?elem, tail: ?c)
+  rule insert(?c, ?elem) <=> cons(head: ?elem, tail: ?c)
 
   -- PersistentCollection.empty for List
   operation empty() -> List = nil
-  rule empty() = nil
+  rule empty() <=> nil
 
   -- List satisfies Iteration (pure). Effect left unbound by design —
   -- grounded to {} at consumption (045 row model; WI-357 / WI-365).
@@ -149,6 +149,6 @@ enum anthill.prelude.List
     match xs
       case nil() -> none
       case cons(h, t) -> some((h, t))
-  rule split(cons(head: ?h, tail: ?t)) = some((?h, ?t))
-  rule split(nil) = none
+  rule split(cons(head: ?h, tail: ?t)) <=> some((?h, ?t))
+  rule split(nil) <=> none
 end
