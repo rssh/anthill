@@ -95,6 +95,30 @@ fn neg_evals_via_numeric_neg() {
     assert_eq!(expect_int(negvar), -7, "neg(x) with x=7 is -7");
 }
 
+/// Regression (review finding): a namespace may BOTH `import anthill.reflect.{not}`
+/// (to use NAF `not(goal)` in its rules) AND use `not(x)` in an OPERATION body. The
+/// import resolves `not` → reflect.not via a `Found` hit, which would shadow the op-body
+/// routing; the post-resolution redirect maps reflect.not → Bool.not in op-body context
+/// regardless, so `flip()` evaluates as boolean negation while the rule's `not` stays NAF.
+#[test]
+fn op_body_not_is_bool_even_when_reflect_not_imported() {
+    let src = r#"
+namespace test.wi529.shadow
+  import anthill.reflect.{not}
+  import anthill.prelude.{Bool}
+  fact p(1)
+  rule has_p() :- not(p(2))            -- rule-body NAF: stays reflect.not
+  operation flip() -> Bool = not(true) -- op-body value: must be Bool.not
+end
+"#;
+    let mut interp = interp_for(src);
+    let r = interp.call("test.wi529.shadow.flip", &[]).expect("call flip");
+    assert!(
+        !expect_bool(r),
+        "op-body not(true) = false (Bool.not) even though reflect.not is imported"
+    );
+}
+
 /// Contrast: in a RULE BODY, `not(goal)` is still negation-as-failure
 /// (`anthill.reflect.not`), unaffected by the op-body Bool routing. `allowed(?x)`
 /// holds for the `num` that is not `blocked` — pure NAF semantics.

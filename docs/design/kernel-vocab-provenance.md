@@ -225,11 +225,15 @@ operator-target resolution) records the decision with a cross-reference to 049.
 position note covering `not` / `or` / `and`; plus the §"Infix and prefix operators" paragraph
 (the old "`!a` desugars to `not(a)`" implied a single `not` operation).
 
-**Delivered** (Rust): the op-body/resolver cut is implemented as a `Loader::in_op_body_value`
-flag set inside `convert_expr_term` (the sole, non-reentrant op-body builder); `remap_name_str`
-consults `op_body_boolean_qualified` (`not`→`Bool.not`, `or`→`Bool.or`) only when that flag is
-set, *before* the `implicit_qualified` fallback — so the resolver-world default (`reflect.not`/
-`kernel.or`) is byte-for-byte unchanged (neq, NAF, `push_choice` disjunction all untouched).
+**Delivered** (Rust): the op-body/resolver cut is a `Loader::in_op_body_value` flag set inside
+`convert_expr_term` (the sole, non-reentrant op-body builder — guarded by an entry
+`debug_assert`). `remap_name_str` resolves normally, then in op-body context **redirects the
+resolver primitives to their Bool value ops** (`reflect.not`→`Bool.not`, `kernel.or`→`Bool.or`)
+*after* resolution — so it catches `not`/`or` however they resolved: the implicit fallback OR an
+explicit `import anthill.reflect.{not}` (which resolves via a `Found` hit and would otherwise
+shadow the routing). A user's own `not`/`or` operation is a different symbol and is left
+untouched. The resolver-world default (`reflect.not`/`kernel.or`) is byte-for-byte unchanged
+outside op bodies (neq, NAF, `push_choice` disjunction all untouched).
 `Bool.and` and `Numeric.neg` were added to the general `PRELUDE_QUALIFIED` fallback (value-only;
 not position-directed). Stdlib: `Numeric.neg` op + `neg_def: neg(?a) = sub(zero-val, ?a)` in
 numeric.anthill (Int64/Float keep their carrier `neg` as overrides); a `numeric_neg` eval

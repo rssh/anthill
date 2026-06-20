@@ -887,21 +887,6 @@ pub(crate) fn implicit_qualified(name: &str) -> Option<&'static str> {
     kernel_vocab_qualified(name).or_else(|| prelude_qualified(name))
 }
 
-/// WI-529: short name → dispatched Bool VALUE op for the POSITION-DIRECTED boolean
-/// operators. Consulted ONLY inside an operation body (`Loader::in_op_body_value`),
-/// where `not`/`or` mean boolean negation/disjunction of Bool values (these have eval
-/// builtins, `eval/builtins.rs`). In every other (resolver) context they keep their
-/// `implicit_qualified` targets — `reflect.not` (NAF) and `kernel.or` (disjunction).
-/// `and`→`Bool.and` is value-only and lives in the general fallback, so it is absent
-/// here; `neg`→`Numeric.neg` is likewise not position-directed.
-fn op_body_boolean_qualified(name: &str) -> Option<&'static str> {
-    match name {
-        "not" => Some("anthill.prelude.Bool.not"),
-        "or" => Some("anthill.prelude.Bool.or"),
-        _ => None,
-    }
-}
-
 /// Check if a scope term represents a sort (vs. the global scope or a namespace).
 /// Heuristic: if the scope has a symbol defined as Sort kind, it's a sort scope.
 fn is_sort_scope(kb: &KnowledgeBase, scope: TermId) -> bool {
@@ -5167,6 +5152,40 @@ impl<'a> Loader<'a> {
     /// segment of the flattened functor name, never as a parse `Symbol`.
     /// (Distinct from `remap_name`, which takes the structured parse `Name`.)
     fn remap_name_str(&mut self, name: &str) -> Symbol {
+        let sym = self.remap_name_str_inner(name);
+        // WI-529: an operation body is value/eval context, so the boolean operators
+        // `not`/`or` mean the dispatched Bool VALUE ops, NEVER the resolver primitives
+        // (`reflect.not` NAF / `kernel.or` disjunction — neither has an eval builtin).
+        // Redirect AFTER resolution so it catches the name however `not`/`or` resolved:
+        // the implicit fallback OR an explicit `import anthill.reflect.{not}` (which
+        // would otherwise shadow the routing via a `Found` hit). A user's own `not`/`or`
+        // operation resolves to a different symbol and is left untouched. No-op outside
+        // an op body.
+        if self.in_op_body_value {
+            return self.redirect_op_body_boolean(sym);
+        }
+        sym
+    }
+
+    /// WI-529: in op-body value context, map a resolved resolver-primitive symbol to
+    /// its dispatched Bool value-op counterpart (`reflect.not` → `Bool.not`,
+    /// `kernel.or` → `Bool.or`). Returns `sym` unchanged when it is neither primitive
+    /// (or when the Bool target is not loaded). `and`/`neg` need no entry — they have no
+    /// resolver primitive and already route to `Bool.and` / `Numeric.neg` everywhere.
+    fn redirect_op_body_boolean(&self, sym: Symbol) -> Symbol {
+        let map = |from: &str, to: &str| -> Option<Symbol> {
+            if self.kb.symbols.by_qualified_name.get(from).copied() != Some(sym) {
+                return None;
+            }
+            self.kb.symbols.by_qualified_name.get(to).copied()
+        };
+        map("anthill.reflect.not", "anthill.prelude.Bool.not")
+            .or_else(|| map("anthill.kernel.or", "anthill.prelude.Bool.or"))
+            .unwrap_or(sym)
+    }
+
+    /// `remap_name_str` without the op-body boolean redirect (the resolution itself).
+    fn remap_name_str_inner(&mut self, name: &str) -> Symbol {
         if let Some(local) = self.lookup_local_name(name) {
             return local;
         }
@@ -5207,19 +5226,6 @@ impl<'a> Loader<'a> {
                                 return q_sym;
                             }
                             return self.push_forbidden_internal(q_sym, name, Span::default());
-                        }
-                    }
-                }
-                // WI-529: inside an operation body (value/eval context) the boolean
-                // operators `not`/`or` are the dispatched Bool VALUE ops (Bool.not /
-                // Bool.or, which have eval builtins), NOT the resolver primitives
-                // (reflect.not NAF / kernel.or disjunction, which have none). This
-                // override is position-directed — it fires only here; the rule/fact
-                // resolver path keeps the primitives via the general fallback below.
-                if self.in_op_body_value {
-                    if let Some(qn) = op_body_boolean_qualified(name) {
-                        if let Some(&sym) = self.kb.symbols.by_qualified_name.get(qn) {
-                            return sym;
                         }
                     }
                 }
@@ -5837,7 +5843,11 @@ impl<'a> Loader<'a> {
         self.expr_match_metas.clear();
         debug_assert_eq!(self.occ_suppress, 0, "convert_expr_term: stale occ_suppress on entry");
         // WI-529: an operation body is value/eval context — `not`/`or` here mean the
-        // dispatched Bool VALUE ops, selected in remap_name_str via this flag.
+        // dispatched Bool VALUE ops, selected in remap_name_str via this flag. Reset to
+        // false at the single exit below; assert it is clean on entry so a future
+        // reentrant/second caller (this method is documented non-reentrant) trips the
+        // assert instead of silently mis-routing the outer frame's boolean operators.
+        debug_assert!(!self.in_op_body_value, "convert_expr_term: reentered with in_op_body_value set");
         self.in_op_body_value = true;
         work.push(LoadWorkOp::Visit(parse_id));
         while let Some(op) = work.pop() {
