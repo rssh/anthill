@@ -453,3 +453,6 @@ mod wi517_typed_lambda_binder_test;
 #[path = "include/wi529_boolean_operator_split_test.rs"]
 mod wi529_boolean_operator_split_test;
 
+#[path = "include/wi077_long_stream_stress_test.rs"]
+mod wi077_long_stream_stress_test;
+
