@@ -573,6 +573,14 @@ namespace anthill.reflect
     operation lookup(s: Substitution, name: String) -> Option[T = Term]
   end
 
+  -- Term-level structural unification (proposal 049). The "honest signature"
+  -- of `<=>`: term-level (no carried type), returning the most general unifier
+  -- as DATA — `none` when the two terms do not unify, `some(σ)` otherwise.
+  -- `<=>` is its object-level face (it installs σ into the resolver frame
+  -- instead of returning it); this face is for reflection and the self-hosted
+  -- type resolver (WI-010), which run over raw terms with no typing in scope.
+  operation unify(a: Term, b: Term, kb: KB) -> Option[T = Substitution]
+
   -- ================================================================
   -- LogicalQuery: first-class query representation
   -- ================================================================

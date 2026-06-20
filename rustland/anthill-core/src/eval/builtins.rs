@@ -84,6 +84,7 @@ pub fn register_standard_builtins(interp: &mut Interpreter) -> Result<(), EvalEr
     register_if_present(interp, "anthill.reflect.KB.execute", kb_execute)?;
     register_if_present(interp, "anthill.reflect.KB.facts_of", kb_facts_of)?;
     register_if_present(interp, "anthill.reflect.Substitution.lookup", subst_lookup)?;
+    register_if_present(interp, "anthill.reflect.unify", reflect_unify)?;
     register_if_present(interp, "anthill.reflect.term_functor_name", term_functor_name)?;
     register_if_present(interp, "anthill.reflect.extract", extract_type_builtin)?;
     register_if_present(interp, "anthill.reflect.term_field", term_field)?;
@@ -1515,6 +1516,47 @@ fn subst_lookup(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalE
             pos: Vec::new().into(),
             named: vec![(value_key, value)].into(),
         }),
+        None => Ok(Value::Entity {
+            functor: none_sym,
+            pos: Vec::new().into(),
+            named: Vec::new().into(),
+        }),
+    }
+}
+
+/// `reflect.unify(a: Term, b: Term, kb: KB) -> Option[Substitution]` — the
+/// term-level DATA face of `<=>` (proposal 049, "Two faces of one search").
+/// Runs the same `builtin_unify` core over two raw terms and returns the
+/// resulting most general unifier as a `Value::Substitution` wrapped in
+/// `some(...)`, or `none` when they do not unify. `<=>` is the object-level
+/// face (it installs σ into the resolver frame); this face hands σ back as a
+/// value, for reflection and the WI-010 self-hosted resolver, which run over
+/// raw terms with no typing in scope. The `kb` arg is the ambient-KB sentinel
+/// (the `KB.execute` convention) — unification runs on the interpreter's KB.
+fn reflect_unify(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    let [a_val, b_val, _kb_arg] = expect_args::<3>("reflect.unify", args)?;
+    // A reflect `Term` rides as `Value::Term(TermId)`; a non-`Term` carrier is a
+    // type error here (loud, not a silent mismatch).
+    let a = match &a_val {
+        Value::Term(t) => *t,
+        _ => return Err(type_mismatch("Term", &a_val, None)),
+    };
+    let b = match &b_val {
+        Value::Term(t) => *t,
+        _ => return Err(type_mismatch("Term", &b_val, None)),
+    };
+    let some_sym = require_symbol(interp, "anthill.prelude.Option.some", "some")?;
+    let none_sym = require_symbol(interp, "anthill.prelude.Option.none", "none")?;
+    let value_key = interp.kb.intern("value");
+    match interp.kb.unify_terms(a, b) {
+        Some(sigma) => {
+            let handle = interp.alloc_subst(sigma);
+            Ok(Value::Entity {
+                functor: some_sym,
+                pos: Vec::new().into(),
+                named: vec![(value_key, Value::Substitution(handle))].into(),
+            })
+        }
         None => Ok(Value::Entity {
             functor: none_sym,
             pos: Vec::new().into(),

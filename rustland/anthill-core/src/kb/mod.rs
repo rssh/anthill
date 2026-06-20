@@ -2661,8 +2661,21 @@ impl KnowledgeBase {
             .unwrap_or_else(|| self.intern("eq"))
     }
 
-    /// Check if a rule is an equation: head functor is "eq" with 2 positional
-    /// args and body is empty.
+    /// The canonical unification functor — `anthill.kernel.unify`, the head an
+    /// `<=>`-spelled equation carries (proposal 049). The bind-side peer of
+    /// [`Self::eq_functor`]: equational rule selection (`apply_eq_rules`, the
+    /// typer's `try_fire`) queries/scans under BOTH so a migrated `<=>` equation
+    /// and a legacy `=` one are both found while WI-526's `=`→`<=>` relabel is
+    /// in flight. Falls back to a bare `unify` only for kernel-less unit KBs.
+    pub fn unify_functor(&mut self) -> Symbol {
+        self.try_resolve_symbol("anthill.kernel.unify")
+            .unwrap_or_else(|| self.intern("unify"))
+    }
+
+    /// Check if a rule is an equation: head functor is "eq" or "unify" (the
+    /// `<=>` head, proposal 049) with 2 positional args and an empty body. The
+    /// classification is **type-independent** — purely the head shape — so it
+    /// recognizes a migrated `<=>` equation identically to a legacy `=` one.
     pub fn is_equation(&self, id: RuleId) -> bool {
         let entry = &self.rules[id.index()];
         if !entry.body_nodes.is_empty() || entry.retracted {
@@ -2679,7 +2692,8 @@ impl KnowledgeBase {
         // never `eq`-headed — falls through to `false` as it always should.
         match term_view::TermView::head(&entry.head, self) {
             term_view::ViewHead::Functor { functor: Some(functor), pos_arity, .. } => {
-                self.symbols.name(functor) == "eq" && pos_arity == 2
+                let name = self.symbols.name(functor);
+                (name == "eq" || name == "unify") && pos_arity == 2
             }
             _ => false,
         }
@@ -3833,8 +3847,9 @@ impl KnowledgeBase {
         self.register_builtin("anthill.reflect.feed.provenance", BuiltinTag::Provenance);
         self.register_builtin("anthill.reflect.field_access", BuiltinTag::FieldAccess);
         self.register_builtin("anthill.reflect.Expr.ho_apply", BuiltinTag::HoApply);
-        // Resolver primitives (proposal 033)
+        // Resolver primitives (proposal 033 / 049)
         self.register_builtin("anthill.kernel.push_choice", BuiltinTag::PushChoice);
+        self.register_builtin("anthill.kernel.unify", BuiltinTag::Unify);
         // Arithmetic and comparison
         self.register_builtin("anthill.prelude.Eq.eq", BuiltinTag::Eq);
         self.register_builtin("anthill.prelude.Eq.neq", BuiltinTag::Neq);

@@ -266,9 +266,20 @@ pub(super) fn try_fire(
         return None;
     }
     let eq_sym = kb.eq_functor();
-    // All equational rule heads are indexed under `eq`; WI-139 keeps only
-    // `[simp]`/`[unfold]`-tagged equations in the index. Reuse that index.
-    for rid in kb.rules_by_functor(eq_sym) {
+    let unify_sym = kb.unify_functor();
+    // Equational rule heads are indexed under their head functor — `eq` for a
+    // legacy `=` equation, `unify` for the `<=>` head (proposal 049); WI-139
+    // keeps only `[simp]`/`[unfold]`-tagged equations in the index. Scan both
+    // so an `<=>`-spelled `[simp]` rule fires identically to an `=` one. (The
+    // sequential `rules_by_functor` scan is the established mechanism; moving
+    // selection onto most-specific-first `query()` is proposal 043 §4.6,
+    // deferred — type-independent recognition needs only that both functors are
+    // covered.)
+    let mut rids = kb.rules_by_functor(eq_sym);
+    if unify_sym != eq_sym {
+        rids.extend(kb.rules_by_functor(unify_sym));
+    }
+    for rid in rids {
         if !kb.is_equation(rid) || !meta_has_flag(kb, kb.rule_meta(rid), "simp") {
             continue;
         }

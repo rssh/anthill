@@ -59,6 +59,9 @@ mod wi282_rule_body_dot_test;
 #[path = "include/wi487_op_body_param_symbol_test.rs"]
 mod wi487_op_body_param_symbol_test;
 
+#[path = "include/wi523_unify_test.rs"]
+mod wi523_unify_test;
+
 #[path = "include/wi483_rule_body_method_eval_test.rs"]
 mod wi483_rule_body_method_eval_test;
 
