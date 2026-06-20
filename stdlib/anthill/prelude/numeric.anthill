@@ -6,7 +6,8 @@ sort anthill.prelude.Numeric
 
   operation {
     add(a: T, b: T) -> T           -- +
-    sub(a: T, b: T) -> T           -- -
+    sub(a: T, b: T) -> T           -- - (binary)
+    neg(a: T) -> T                 -- - (prefix); defaulted to sub(zero-val, a)
     mul(a: T, b: T) -> T           -- *
     zero-val() -> T                -- additive identity
   }
@@ -15,5 +16,7 @@ sort anthill.prelude.Numeric
     add_comm:  add(?a, ?b) = add(?b, ?a)
     add_assoc: add(add(?a, ?b), ?c) = add(?a, add(?b, ?c))
     add_identity: add(?a, zero-val) = ?a
+    -- prefix `-`: default impl; a carrier (e.g. Int64) may override it.
+    neg_def:   neg(?a) = sub(zero-val, ?a)
   }
 end

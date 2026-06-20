@@ -841,6 +841,13 @@ const PRELUDE_QUALIFIED: &[&str] = &[
     "anthill.prelude.Numeric.add",
     "anthill.prelude.Numeric.sub",
     "anthill.prelude.Numeric.mul",
+    "anthill.prelude.Numeric.neg",  // prefix `-` (WI-529); not position-directed
+    // WI-529: `&`/word-`and` is value-only (no goal connective — conjunction is the
+    // comma, there is no kernel.and), so it resolves to the dispatched Bool op
+    // everywhere via this general fallback. `not`/`or` are position-directed instead
+    // (resolver primitives by default; Bool.not/Bool.or only inside an operation body,
+    // handled in remap_name_str via in_op_body_value).
+    "anthill.prelude.Bool.and",
     "anthill.prelude.BigInt.to_bigint",
     "anthill.prelude.BigInt.to_int",
     "anthill.reflect.not",         // logic operator `not` / `!` (NAF; conflation deferred)
@@ -878,6 +885,21 @@ fn prelude_qualified(name: &str) -> Option<&'static str> {
 /// `KnowledgeBase::resolve_name_in_global` (the reflect bridge).
 pub(crate) fn implicit_qualified(name: &str) -> Option<&'static str> {
     kernel_vocab_qualified(name).or_else(|| prelude_qualified(name))
+}
+
+/// WI-529: short name → dispatched Bool VALUE op for the POSITION-DIRECTED boolean
+/// operators. Consulted ONLY inside an operation body (`Loader::in_op_body_value`),
+/// where `not`/`or` mean boolean negation/disjunction of Bool values (these have eval
+/// builtins, `eval/builtins.rs`). In every other (resolver) context they keep their
+/// `implicit_qualified` targets — `reflect.not` (NAF) and `kernel.or` (disjunction).
+/// `and`→`Bool.and` is value-only and lives in the general fallback, so it is absent
+/// here; `neg`→`Numeric.neg` is likewise not position-directed.
+fn op_body_boolean_qualified(name: &str) -> Option<&'static str> {
+    match name {
+        "not" => Some("anthill.prelude.Bool.not"),
+        "or" => Some("anthill.prelude.Bool.or"),
+        _ => None,
+    }
 }
 
 /// Check if a scope term represents a sort (vs. the global scope or a namespace).
@@ -4730,6 +4752,15 @@ struct Loader<'a> {
     // `s.Member` spelling must never load as an opaque nominal sort literally
     // named "Sort.Member".
     in_type_position: bool,
+    // WI-529: true while building an OPERATION BODY (`convert_expr_term`), which is
+    // EVALUATED, not resolved. The boolean operators `not`/`or` are position-directed:
+    // a value expression in an op body means the dispatched Bool VALUE op
+    // (`Bool.not`/`Bool.or`, which have eval builtins), whereas a rule-body goal means
+    // the resolver primitive (`reflect.not` NAF / `kernel.or` disjunction, which have
+    // NO eval builtin). This flag selects the Bool target in `remap_name_str`; outside
+    // an op body the primitives stay the default. (`and` is value-only — handled by the
+    // general fallback — and `neg`→`Numeric.neg` is not position-directed.)
+    in_op_body_value: bool,
     // Description index counter per target (keyed by TermId raw)
     desc_index: HashMap<u32, i64>,
     // ── Occurrence tracking ─────────────────────────────────────
@@ -4933,6 +4964,7 @@ impl<'a> Loader<'a> {
             arrow_binder_scope: HashMap::new(),
             in_effect_absence: false,
             in_type_position: false,
+            in_op_body_value: false,
             defined_sorts: Vec::new(),
             fact_rule_ids: Vec::new(),
             source_id,
@@ -5175,6 +5207,19 @@ impl<'a> Loader<'a> {
                                 return q_sym;
                             }
                             return self.push_forbidden_internal(q_sym, name, Span::default());
+                        }
+                    }
+                }
+                // WI-529: inside an operation body (value/eval context) the boolean
+                // operators `not`/`or` are the dispatched Bool VALUE ops (Bool.not /
+                // Bool.or, which have eval builtins), NOT the resolver primitives
+                // (reflect.not NAF / kernel.or disjunction, which have none). This
+                // override is position-directed — it fires only here; the rule/fact
+                // resolver path keeps the primitives via the general fallback below.
+                if self.in_op_body_value {
+                    if let Some(qn) = op_body_boolean_qualified(name) {
+                        if let Some(&sym) = self.kb.symbols.by_qualified_name.get(qn) {
+                            return sym;
                         }
                     }
                 }
@@ -5791,6 +5836,9 @@ impl<'a> Loader<'a> {
         self.expr_occ_results.clear();
         self.expr_match_metas.clear();
         debug_assert_eq!(self.occ_suppress, 0, "convert_expr_term: stale occ_suppress on entry");
+        // WI-529: an operation body is value/eval context — `not`/`or` here mean the
+        // dispatched Bool VALUE ops, selected in remap_name_str via this flag.
+        self.in_op_body_value = true;
         work.push(LoadWorkOp::Visit(parse_id));
         while let Some(op) = work.pop() {
             match op {
@@ -5810,6 +5858,7 @@ impl<'a> Loader<'a> {
                 }
             }
         }
+        self.in_op_body_value = false; // WI-529: leave op-body value context
         debug_assert_eq!(results.len(), 1, "iterative loader: expected exactly one result");
         let kb_id = results.pop().expect("iterative loader: empty result stack");
         self.expr_work = work;

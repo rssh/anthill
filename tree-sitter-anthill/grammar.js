@@ -1091,6 +1091,14 @@ module.exports = grammar({
 
     // Prefix operators: restricted to specific tokens that cannot
     // start an _infix_op, avoiding ambiguity in flat chains.
+    //
+    // WI-529 note: prefix `-` (→ `neg`) is intentionally NOT here. `-` is both
+    // `operator_symbol` (binary `sub`) AND the leading sign of a negative
+    // `integer_literal`/`float_literal` (`/-?[0-9]+/`), so adding it as a prefix op
+    // collides with negative-literal lexing (it broke `eq(state.seq, -1)` in the lf1
+    // spec). Prefix negation of a NON-LITERAL is written `neg(x)`; negative literals
+    // (`-1`, `-0.45`) and `neg(...)` already cover the need. Unifying `-x` syntax with
+    // negative-literal lexing is a separate grammar task.
     prefix_term: $ => seq($._prefix_op, $._atom_term),
 
     _prefix_op: $ => choice('!', 'not'),

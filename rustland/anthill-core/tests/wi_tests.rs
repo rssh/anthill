@@ -441,3 +441,6 @@ mod wi516_graded_effect_row_test;
 #[path = "include/wi517_typed_lambda_binder_test.rs"]
 mod wi517_typed_lambda_binder_test;
 
+#[path = "include/wi529_boolean_operator_split_test.rs"]
+mod wi529_boolean_operator_split_test;
+

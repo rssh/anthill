@@ -164,7 +164,7 @@ touches disjoint imports, so it does not conflict. Part A (WI-040) is purely
 compiler-internal names; Part C (WI-521) is purely user-facing names. They must not
 be conflated again.
 
-### C.1 The boolean-operator / logic-primitive split (WI-529 — decided 2026-06-20, impl pending)
+### C.1 The boolean-operator / logic-primitive split (WI-529 — DELIVERED 2026-06-20)
 
 WI-521 left the boolean operators routed to logic primitives, deferred here. The fix is the
 *same* problem as the Part-C operator targets (a pratt operator functor that must point at the
@@ -221,10 +221,32 @@ means "under NAF."
 **No new proposal.** 049 supplies the principle; this section (Part C already owns
 operator-target resolution) records the decision with a cross-reference to 049.
 
-**Spec updated** (this session): kernel-language.md §6.6 — prefix table (Origin column,
-`-`→`neg` row) and a boolean-family position note covering `not` / `or` / `and`; plus the
-§"Infix and prefix operators" paragraph (the old "`!a` desugars to `not(a)`" implied a single
-`not` operation).
+**Spec updated**: kernel-language.md §6.6 — prefix table (Origin column) and a boolean-family
+position note covering `not` / `or` / `and`; plus the §"Infix and prefix operators" paragraph
+(the old "`!a` desugars to `not(a)`" implied a single `not` operation).
+
+**Delivered** (Rust): the op-body/resolver cut is implemented as a `Loader::in_op_body_value`
+flag set inside `convert_expr_term` (the sole, non-reentrant op-body builder); `remap_name_str`
+consults `op_body_boolean_qualified` (`not`→`Bool.not`, `or`→`Bool.or`) only when that flag is
+set, *before* the `implicit_qualified` fallback — so the resolver-world default (`reflect.not`/
+`kernel.or`) is byte-for-byte unchanged (neq, NAF, `push_choice` disjunction all untouched).
+`Bool.and` and `Numeric.neg` were added to the general `PRELUDE_QUALIFIED` fallback (value-only;
+not position-directed). Stdlib: `Numeric.neg` op + `neg_def: neg(?a) = sub(zero-val, ?a)` in
+numeric.anthill (Int64/Float keep their carrier `neg` as overrides); a `numeric_neg` eval
+builtin (eval/builtins.rs) so `neg` evaluates on every Numeric carrier. Test:
+`wi529_boolean_operator_split_test.rs` (op-body `not`/`!`/`and`/`or` eval as Bool; `neg(x)` eval;
+rule-body `not` stays NAF). Full workspace green.
+
+**Deferred — prefix `-x` on non-literals.** Adding `-` to the tree-sitter `_prefix_op` was
+attempted and **reverted**: `-` is also the leading sign of negative `integer_literal` /
+`float_literal` (`/-?[0-9]+/`), so a prefix `-` collides with negative-literal lexing — it broke
+`eq(state.seq, -1)` in the lf1 spec, and `tree-sitter generate` did **not** flag the conflict
+(it surfaced only at parse time). Negation is therefore written `neg(x)` (call form, → `Numeric.neg`)
+and negative literals (`-1`, `-0.45`) lex directly; both work. Unifying a `-x` prefix *operator*
+with negative-literal lexing (e.g. dropping `-?` from the literal regexes and routing all negation
+through prefix `-`) is a broad, separate grammar task — its blast radius (every negative literal's
+AST, SMT emission, pattern matching) is why it is not bundled here. **scaland NOT mirrored** — it
+has no eval/typer (flag if its fastparse grammar/loader diverges).
 
 ## Two loader paths (derisk, 2026-06-20)
 

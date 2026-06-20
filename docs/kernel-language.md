@@ -286,7 +286,7 @@ sort anthill.prelude.Numeric
 end
 ```
 
-**Infix and prefix operators** are sugar for function application — `a + b` desugars to `add(a, b)`, `!a` to `not(a)`, `-a` to `neg(a)`, etc. The full operator table is in §6.6. The prelude sorts above define the operations these operators desugar to; the operators are available when the corresponding sort is required (e.g. `requires Numeric[T = Money]`). One target is **position-directed**: `not(…)` is negation-as-failure (`anthill.reflect.not`, a resolver primitive over a `Term`) in a rule-body goal position, but boolean negation (`Bool.not`, a dispatched operation) as a value expression — see §6.6.
+**Infix and prefix operators** are sugar for function application — `a + b` desugars to `add(a, b)`, `!a` to `not(a)`, etc. The full operator table is in §6.6. The prelude sorts above define the operations these operators desugar to; the operators are available when the corresponding sort is required (e.g. `requires Numeric[T = Money]`). One target is **position-directed**: `not(…)` is negation-as-failure (`anthill.reflect.not`, a resolver primitive over a `Term`) in a rule-body goal position, but boolean negation (`Bool.not`, a dispatched operation) as a value expression — see §6.6.
 
 **Instantiation** — via inline type expressions (`Name[bindings]`):
 
@@ -1211,11 +1211,10 @@ Higher priority binds tighter: `a + b * c` desugars to `add(a, mul(b, c))`. Left
 |----------|----------|---------|--------|
 | `!` | 9 | `not` | `Bool` (value) / `anthill.reflect` (NAF) |
 | `not` | 9 | `not` | `Bool` (value) / `anthill.reflect` (NAF) |
-| `-` | 9 | `neg` | `Numeric` |
 
 Prefix binds tighter than all infix operators: `!?a + ?b` desugars to `add(not(?a), ?b)`.
 
-**Boolean operators are position-directed.** `not`, `or`, and `and` each name a dispatched **value** operation on `Bool` (`Bool.not` / `Bool.or` / `Bool.and`) in a value expression, but a **goal** form in a rule body: `not(goal)` is negation-as-failure (`anthill.reflect.not`), `or(g1, g2)` is disjunction (`anthill.kernel.or`), and goal conjunction is the comma (there is no `kernel.and`). Resolution is by syntactic position, not by a distinct glyph or operand type. Prefix `-a` is `neg(a)` → `Numeric.neg`. (This position-directed boolean resolution and `Numeric.neg` are pending **WI-529**; until it lands, `!`/`not`→NAF, `|`/`or`→disjunction, and prefix `-` is unresolved.)
+**Boolean operators are position-directed** (WI-529). `not`, `or`, and `and` each name a dispatched **value** operation on `Bool` (`Bool.not` / `Bool.or` / `Bool.and`) inside an **operation body** (evaluated), but a **goal** form in a **rule body** (resolved): `not(goal)` is negation-as-failure (`anthill.reflect.not`), `or(g1, g2)` is disjunction (`anthill.kernel.or`), and goal conjunction is the comma (there is no `kernel.and`). Resolution is by syntactic position, not by a distinct glyph or operand type. Negation of a numeric value is written `neg(x)` → `Numeric.neg` (a defaulted spec op, `neg(?a) = sub(zero-val, ?a)`); negative literals (`-1`, `-0.45`) are lexed directly. A prefix `-` *operator* on non-literal expressions is not provided (it would collide with negative-literal lexing — WI-529).
 
 **Desugaring examples:**
 

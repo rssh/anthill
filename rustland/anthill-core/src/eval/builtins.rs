@@ -25,6 +25,7 @@ pub fn register_standard_builtins(interp: &mut Interpreter) -> Result<(), EvalEr
     register_if_present(interp, "anthill.prelude.Numeric.add", numeric_add)?;
     register_if_present(interp, "anthill.prelude.Numeric.sub", numeric_sub)?;
     register_if_present(interp, "anthill.prelude.Numeric.mul", numeric_mul)?;
+    register_if_present(interp, "anthill.prelude.Numeric.neg", numeric_neg)?;
 
     register_if_present(interp, "anthill.prelude.Int64.neg", int_neg)?;
     register_if_present(interp, "anthill.prelude.Int64.abs", int_abs)?;
@@ -267,6 +268,21 @@ fn numeric_mul(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError>
         (Value::BigInt(x), Value::BigInt(y)) => Ok(Value::BigInt(x * y)),
         (Value::Float(x), Value::Float(y)) => Ok(Value::Float(x * y)),
         _ => Err(type_mismatch("matching Int, BigInt, or Float", &a, Some(&b))),
+    }
+}
+
+// WI-529: prefix `-` (`neg`) at the Numeric level — handles every Numeric carrier
+// (Int / BigInt / Float), mirroring numeric_add/sub/mul. Int64/Float keep their own
+// carrier `neg` builtins too (used when neg dispatches via the carrier override).
+fn numeric_neg(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    let [a] = expect_args::<1>("Numeric.neg", args)?;
+    match a {
+        Value::Int(x) => x.checked_neg()
+            .map(Value::Int)
+            .ok_or(EvalError::Overflow { op: "Numeric.neg" }),
+        Value::BigInt(x) => Ok(Value::BigInt(-x)),
+        Value::Float(x) => Ok(Value::Float(-x)),
+        other => Err(type_mismatch("Int, BigInt, or Float", &other, None)),
     }
 }
 
