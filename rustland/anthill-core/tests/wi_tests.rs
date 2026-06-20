@@ -14,6 +14,9 @@ mod wi525_naf_allowedness_test;
 #[path = "include/wi526_equational_migration_test.rs"]
 mod wi526_equational_migration_test;
 
+#[path = "include/wi519_residual_honesty_test.rs"]
+mod wi519_residual_honesty_test;
+
 #[path = "include/wi419_same_spec_requires_test.rs"]
 mod wi419_same_spec_requires_test;
 

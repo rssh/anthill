@@ -208,6 +208,16 @@ pub struct ResolveConfig {
     pub max_solutions: usize,
     /// Whether to apply equational rewriting as fallback during resolution.
     pub simplify: bool,
+    /// WI-519 (residual honesty): when `true`, a FLOUNDERED solution (one with
+    /// a non-empty `residual` — an undischarged goal the search couldn't decide)
+    /// is NOT yielded; the search skips it and continues. So such a result never
+    /// counts toward `max_solutions` and never masquerades as a definite answer.
+    /// Decision boundaries that ask "is there a (definite) solution?" — the
+    /// prover, constraint guards — set this; the cap then counts only definite
+    /// solutions. Default `false`: residual solutions ARE returned, for
+    /// residual-honest consumers that inspect [`Solution::is_definite`] (and the
+    /// resolver tests that pin the residual mechanism).
+    pub definite_only: bool,
 }
 
 impl Default for ResolveConfig {
@@ -216,6 +226,7 @@ impl Default for ResolveConfig {
             max_depth: 100,
             max_solutions: 0,
             simplify: false,
+            definite_only: false,
         }
     }
 }
@@ -235,6 +246,18 @@ impl Default for ResolveConfig {
 pub struct Solution {
     pub subst: Substitution,
     pub residual: Vec<Value>,
+}
+
+impl Solution {
+    /// WI-519: a *definite* solution is one with no undischarged goals — an
+    /// empty `residual`. A non-empty residual means the search FLOUNDERED (it
+    /// delayed a goal whose variables never got bound and gave up), so the
+    /// "answer" proves nothing. The codified form of the convention every
+    /// honest consumer was hand-rolling as `sol.residual.is_empty()`; a
+    /// floundered solution must never be counted as a definite answer.
+    pub fn is_definite(&self) -> bool {
+        self.residual.is_empty()
+    }
 }
 
 // ── EqChange ────────────────────────────────────────────────────
@@ -459,8 +482,15 @@ impl SearchStream {
                 // materialize-to-`TermId`, so a goal mentioning a `Value::Node`
                 // keeps its occurrence identity.
                 let residual: Vec<Value> = frame.goals.clone();
-                let sol = Solution { subst, residual };
                 self.stack.pop();
+                // WI-519: this is a FLOUNDERED branch (delay-and-rotate exhausted
+                // with goals still undischarged). In definite-only mode it is not
+                // a solution — skip it so it never counts toward `max_solutions`
+                // or masquerades as success.
+                if self.config.definite_only {
+                    return Some(StepResult::Continue);
+                }
+                let sol = Solution { subst, residual };
                 self.record_solution_in_ancestors();
                 return Some(StepResult::YieldSolution(sol));
             }
@@ -649,10 +679,15 @@ impl SearchStream {
                     match delay_mode {
                         DelayMode::Normal => {
                             if frame.goals.len() == 1 {
-                                // Only goal — residualize
+                                // Only goal — residualize (WI-519: or skip in
+                                // definite-only mode — a floundered residual is
+                                // not a definite solution).
                                 let subst = frame.subst.clone();
                                 let residual = vec![goal_val.clone()];
                                 self.stack.pop();
+                                if self.config.definite_only {
+                                    return Some(StepResult::Continue);
+                                }
                                 self.record_solution_in_ancestors();
                                 return Some(StepResult::YieldSolution(Solution { subst, residual }));
                             } else {
@@ -1056,8 +1091,13 @@ impl SearchStream {
             match delay_mode {
                 DelayMode::Normal => {
                     if goals_len == 1 {
-                        let residual = vec![goal.clone()];
                         self.stack.pop();
+                        // WI-519: a floundered `not(P)` (non-ground inner) is not
+                        // a definite solution — skip in definite-only mode.
+                        if self.config.definite_only {
+                            return Some(StepResult::Continue);
+                        }
+                        let residual = vec![goal.clone()];
                         self.record_solution_in_ancestors();
                         return Some(StepResult::YieldSolution(Solution { subst, residual }));
                     } else {
@@ -1087,24 +1127,52 @@ impl SearchStream {
                 }
             }
         } else {
-            // Ground: sub-resolve the goal (σ applied, carrier-faithful) and
-            // check whether the inner goal has any solution.
+            // Ground: classify the inner goal P three ways (WI-519). Pull the
+            // inner stream until a DEFINITE (empty-residual) solution appears (P
+            // holds → stop early) or it is exhausted, tracking whether any
+            // FLOUNDERED (residual) solution was seen. `definite_only` is OFF for
+            // this sub-search so residuals stay observable for the flounder check.
             let goal_v = kb.reify_value(&inner, &subst);
             let remaining_depth = self.config.max_depth.saturating_sub(depth);
             let sub_config = ResolveConfig {
                 max_depth: remaining_depth,
-                max_solutions: 1,
+                max_solutions: 0,
                 simplify: self.config.simplify,
+                definite_only: false,
             };
-            let sub_stream = kb.resolve_lazy_goals(vec![goal_v], &sub_config);
-            let has_solution = sub_stream.split_first(kb).is_some();
+            let mut sub_stream = kb.resolve_lazy_goals(vec![goal_v], &sub_config);
+            let mut inner_definite = false;
+            let mut inner_floundered = false;
+            while let Some((sol, rest)) = sub_stream.split_first(kb) {
+                if sol.is_definite() {
+                    inner_definite = true;
+                    break;
+                }
+                inner_floundered = true;
+                sub_stream = rest;
+            }
 
-            if has_solution {
-                // Inner goal succeeded → not() FAILS — backtrack
+            if inner_definite {
+                // P has a definite solution → P holds → not(P) FAILS — backtrack.
                 self.stack.pop();
                 return Some(StepResult::Continue);
+            } else if inner_floundered {
+                // P only FLOUNDERED (a residual, no definite solution) → P is
+                // undecided, so `not(P)` is undecided too: it must NOT silently
+                // succeed (the old `is_some()` instead treated the residual as
+                // "P holds" and made `not` wrongly FAIL). Propagate the
+                // undecidedness as a residual `not(P)` — or skip it in
+                // definite-only mode (a floundered goal is not a definite
+                // solution). WI-519.
+                self.stack.pop();
+                if self.config.definite_only {
+                    return Some(StepResult::Continue);
+                }
+                let residual = vec![goal.clone()];
+                self.record_solution_in_ancestors();
+                return Some(StepResult::YieldSolution(Solution { subst, residual }));
             } else {
-                // Inner goal has no solutions → not() SUCCEEDS
+                // P has no solution at all → P is false → not(P) SUCCEEDS.
                 let new_delay = delay_mode.reset();
                 let f = self.stack.last_mut().unwrap();
                 let new_goals = f.goals[1..].to_vec();
@@ -1434,6 +1502,9 @@ impl KnowledgeBase {
                 max_depth: config.max_depth,
                 max_solutions: config.max_solutions,
                 simplify: config.simplify,
+                // WI-519: thread the residual-honesty mode into the stream's
+                // config so the step functions skip floundered yields.
+                definite_only: config.definite_only,
             },
             query_cache: HashMap::new(),
             stats: ResolveStats::default(),
@@ -5826,7 +5897,7 @@ mod tests {
             named_args: SmallVec::new(),
         });
 
-        let config = ResolveConfig { max_depth: 20, max_solutions: 4, simplify: false };
+        let config = ResolveConfig { max_depth: 20, max_solutions: 4, simplify: false, definite_only: false };
         let solutions = kb.resolve(&[query], &config);
 
         assert_eq!(solutions.len(), 4, "should get 4 solutions");
@@ -6161,6 +6232,7 @@ mod tests {
                     max_depth: usize::MAX,
                     max_solutions: 1,
                     simplify: false,
+                    definite_only: false,
                 };
 
                 let start = std::time::Instant::now();
@@ -6249,6 +6321,7 @@ mod tests {
             max_depth: usize::MAX,
             max_solutions: 1,
             simplify: false,
+            definite_only: false,
         };
         let (sols, stats) = kb.resolve_with_stats(&[query], &config);
         assert_eq!(sols.len(), 1);
@@ -6282,6 +6355,7 @@ mod tests {
                     max_depth: usize::MAX,
                     max_solutions: 1,
                     simplify: false,
+                    definite_only: false,
                 };
 
                 let run = |n: usize| -> ResolveStats {

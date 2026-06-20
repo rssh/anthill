@@ -1270,6 +1270,9 @@ impl KnowledgeBase {
             // `+ 1` would overflow-panic in debug / wrap to 0 (= unlimited) in
             // release.
             max_solutions: max.saturating_add(1),
+            // WI-519: count only DEFINITE solutions — a floundered residual
+            // (an undischarged goal) must not inflate the quantifier count.
+            definite_only: true,
             ..resolve::ResolveConfig::default()
         };
         let solutions = self.resolve_goals(goals, &config);
@@ -1318,9 +1321,12 @@ impl KnowledgeBase {
             return Ok(true);
         }
 
-        // If any solution exists, the forall is violated
+        // If any DEFINITE solution exists, the forall is violated. WI-519: a
+        // floundered residual must NOT count — counting it would report the
+        // forall violated on an undecided (undischarged) witness.
         let config = resolve::ResolveConfig {
             max_solutions: 1,
+            definite_only: true,
             ..resolve::ResolveConfig::default()
         };
         let solutions = self.resolve_goals(goals, &config);
@@ -1342,6 +1348,9 @@ impl KnowledgeBase {
             }
             let config = resolve::ResolveConfig {
                 max_solutions: 1,
+                // WI-519: only a DEFINITE inner solution refutes the negation; a
+                // floundered residual is undecided, not a refutation.
+                definite_only: true,
                 ..resolve::ResolveConfig::default()
             };
             let solutions = self.resolve_goals(goals, &config);

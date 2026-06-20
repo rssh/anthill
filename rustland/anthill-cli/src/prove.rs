@@ -926,6 +926,12 @@ fn dispatch_derivation(
         max_depth,
         max_solutions: max_solutions.max(1),
         simplify: true,
+        // WI-519: a proof must be DEFINITE. A floundered residual (an
+        // undischarged goal) is not a derivation, so it must not yield
+        // `Verdict::Proved` — with `definite_only`, the SLD resolution below
+        // reports a solution only on a real definite derivation; an undecided
+        // body then falls through to `Verdict::Unknown` ("no derivation found").
+        definite_only: true,
     };
     // SLD-derivation witness: phase α.3 produces a placeholder
     // tree_hash referencing the rule QN. Phase α.5 introduces

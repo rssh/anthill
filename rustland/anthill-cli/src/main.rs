@@ -1163,6 +1163,10 @@ fn run_query(args: &QueryArgs) -> Result<(), i32> {
                             max_depth: args.max_depth,
                             max_solutions: args.max_results,
                             simplify: false,
+                            // Interactive query: keep residual solutions so
+                            // `print_solutions` can DISPLAY the `residual:` line
+                            // (floundered goals) rather than hide them (WI-519).
+                            definite_only: false,
                         };
                         let solutions = kb.resolve(&[qt], &config);
                         print_solutions(&kb, &solutions, qt, args.max_results);
