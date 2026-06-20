@@ -310,25 +310,32 @@ fastparse grammar. scaland **mirrors grammar + loader only** (no typer).
 
 ## Build order
 
-1. **Residual-honesty fix** — decision-free, independent of `<=>`; an undischarged flex
-   `=`/goal stops counting as a solution. Lands first.
-2. **Grammar** — `<=>` (+ `let`) in tree-sitter and fastparse; greedy lex.
-3. **Kernel `unify`** — `anthill.kernel.unify` decl + `builtin_unify` (per-node
-   head-normalize via `reduce_operand` → fail-fast structural unify →
-   `SuccessWithBindings`, **occurs-checked** on bind) + relax the caller-var pre-check
-   for `<=>`. Also expose the term-level `reflect.unify(a: Term, b: Term, kb) ->
-   Option[Substitution]` face — a thin wrapper that returns `builtin_unify`'s substitution
-   as data instead of effecting it — for reflection and the WI-010 self-hosted resolver.
-4. **`let` desugar** to `<=>` in the loader.
-5. **NAF allowedness** — static load-time check for `<=>` under `not`.
-6. **Radius-3 migration** — `is_equation` heads `=` → `<=>` across prelude/stdlib
-   (classification-driven; contracts/guards untouched). Teach `is_equation` /
-   `eq_functor()` / the `apply_eq_rules` query pattern to recognize `<=>` heads, and move
-   the typer's `try_fire` off its `rules_by_functor` scan onto `query()` (one-sided match
-   mode) so selection stays discrim-indexed ([043](043-simp-rewrite.md) §4.6).
-7. **Docs** — `kernel-language.md` (Eq/Ordered/Numeric examples, rule-semantics §) and
-   proposal 043 (`lhs = rhs` → `lhs <=> rhs`).
-8. **scaland** — grammar + loader mirror.
+1. **Residual-honesty fix** (**WI-519**) — decision-free, independent of `<=>`; an
+   undischarged flex `=`/`<=>`/goal stops counting as a solution. Lands first.
+2. **Grammar** (**WI-522**) — `<=>` (+ `let`) in tree-sitter and fastparse; greedy lex.
+3. **Kernel `unify`** (**WI-523**) — `anthill.kernel.unify` decl + `builtin_unify`
+   (per-node head-normalize via `reduce_operand` → fail-fast structural unify →
+   `SuccessWithBindings`, **occurs-checked** on bind) + relax the caller-var pre-check for
+   `<=>`. Teach `is_equation` / `eq_functor()` / `apply_eq_rules` + the typer's `try_fire`
+   to recognize `<=>`-headed equations, moving `try_fire` off its `rules_by_functor` scan
+   onto `query()` (one-sided match mode; the type-independent half of
+   [043](043-simp-rewrite.md) §4.6). Also expose the term-level
+   `reflect.unify(a: Term, b: Term, kb) -> Option[Substitution]` face — a thin wrapper
+   returning `builtin_unify`'s substitution as data — for reflection and the WI-010
+   self-hosted resolver.
+4. **`let` desugar** (**WI-524**) to `<=>` in the loader.
+5. **NAF allowedness** (**WI-525**) — static load-time check for `<=>` under `not`.
+6. **Radius-3 migration** (**WI-526**) — `is_equation` heads `=` → `<=>` across
+   prelude/stdlib (classification-driven; contracts/constraints/guards untouched). Needs
+   the `<=>`-equation recognition from step 3 (WI-523).
+7. **Docs** (**WI-527**) — `kernel-language.md` (Eq/Ordered/Numeric examples,
+   rule-semantics §) and proposal 043 (`lhs = rhs` → `lhs <=> rhs`).
+8. **scaland** (**WI-528**) — grammar + loader mirror.
+
+**Typed half — parked, separate from this type-erased sequence:** carried-`min_sort`
+type-directed `[simp]` firing, **WI-502** (design = the
+[typed-term carrier](design/typed-term-carrier.md)) and **WI-292** (impl); hangs off step
+3, deferred pending linked type-design issues.
 
 ## Non-goals
 
