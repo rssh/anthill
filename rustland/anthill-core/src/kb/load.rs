@@ -21,7 +21,7 @@ use crate::span::{Span, SourceId, SourceSpan};
 use super::{KnowledgeBase, SortKind};
 use super::term::{Term, TermId, Var, VarId, Literal};
 use super::node_occurrence::{self, Expr, NodeOccurrence};
-use super::resolve::PositionalPlan;
+use super::resolve::{BuiltinTag, PositionalPlan};
 use super::term_view::{TermIdView, TermView};
 use super::typing::{binding_op_symbol, extract_sort_ref_sym, extract_type, TypeExtractor};
 use crate::eval::value::Value;
@@ -327,6 +327,33 @@ pub enum LoadError {
         scope_name: String,
         span: Span,
     },
+    /// WI-525 (proposal 049, NAF discipline): a `<=>` (unify) goal occurs under
+    /// `not(...)` in a rule body with a variable that no EARLIER positive goal
+    /// binds. `<=>` BINDS, and NAF on a non-ground goal is unsound — so a
+    /// negated unify whose variables aren't range-restricted by a preceding
+    /// positive goal would flounder (delay forever) or silently mis-behave.
+    /// Load-blocking ("know errors early"); the undischarged-residual honesty
+    /// backstop (WI-519) is the runtime fallback. EVERY variable counts,
+    /// including the anonymous `?`: anthill's NAF requires a GROUND inner goal
+    /// (`step_naf` delays otherwise), so an unbound var on either side of the
+    /// unify makes `not` flounder — the Prolog "x is not of shape `f(_)`" idiom
+    /// genuinely does not work soundly here.
+    UnsafeNegatedUnify {
+        var_name: String,
+        span: Span,
+    },
+    /// WI-525 (proposal 049, NAF discipline): a BINDING `<=>` / `let` goal (both
+    /// lower to `unify(?v, e)`) appears in a contract position — an operation
+    /// `requires` / `ensures` clause, or a `constraint` body. Contracts TEST
+    /// (`=`), they must never BIND: a postcondition that binds a fresh variable
+    /// is not a verifiable claim. Load-blocking — use `=` (a test) instead. A
+    /// `unify` under `not(...)` is a TEST (NAF), not a binding, so it is not
+    /// flagged here.
+    BindingInContract {
+        /// `"requires"` / `"ensures"` / `"constraint"`.
+        position: String,
+        span: Span,
+    },
 }
 
 impl LoadError {
@@ -440,6 +467,23 @@ impl LoadError {
                     line, col, name, declared_in, scope_name,
                 )
             }
+            LoadError::UnsafeNegatedUnify { var_name, span } => {
+                let (line, col) = Span::line_col(source, span.start);
+                format!(
+                    "{}:{}: variable '{}' in a `<=>` (unify) under `not` is not bound by \
+                     an earlier positive goal — negation-as-failure on an unbound \
+                     unification is unsound; bind it positively first",
+                    line, col, var_name,
+                )
+            }
+            LoadError::BindingInContract { position, span } => {
+                let (line, col) = Span::line_col(source, span.start);
+                format!(
+                    "{}:{}: a binding `<=>` / `let` is not allowed in a {} contract — \
+                     contracts must TEST, not bind; use `=` (equality test) instead",
+                    line, col, position,
+                )
+            }
         }
     }
 
@@ -481,6 +525,11 @@ impl LoadError {
             // WI-369: a cross-scope reference to an `internal` name defeats the
             // encapsulation it was declared for — block.
             | LoadError::ForbiddenInternalAccess { .. }
+            // WI-525 (proposal 049): an unsound negated unify and a binding
+            // unify in a contract are both load-time NAF/contract-discipline
+            // violations — block ("know errors early").
+            | LoadError::UnsafeNegatedUnify { .. }
+            | LoadError::BindingInContract { .. }
             // WI-023: an unenforceable aggregation constraint and a violated
             // integrity constraint are both unsound to run with.
             | LoadError::AggregationConstraintUnsupported { .. }
@@ -495,6 +544,66 @@ pub(crate) fn label_suffix(label: &Option<String>) -> String {
     match label {
         Some(l) => format!(" '{l}'"),
         None => String::new(),
+    }
+}
+
+/// WI-525 (proposal 049, Part A): walk a `not(...)` body occurrence and record,
+/// for every `<=>` (unify) goal nested anywhere beneath it, each variable not in
+/// `bound` (the set of vars range-restricted by earlier positive goals). A `not`
+/// may wrap a compound (`not(conjunction(...))`) or another `not`, so the whole
+/// subtree is scanned; nested `not` nodes are transparent (an inner unify is
+/// still under negation). EVERY variable counts — including the anonymous `?`
+/// (interned as `"_"`): anthill's NAF requires a ground inner goal, so an unbound
+/// var on either side floounders the `not` regardless of how it is spelled (and a
+/// named `?_` is interned to `"_"` too, so a name test could not distinguish the
+/// two anyway).
+fn collect_negated_unify_violations(
+    kb: &KnowledgeBase,
+    not_node: &Rc<NodeOccurrence>,
+    bound: &HashSet<u32>,
+    out: &mut Vec<(String, Span)>,
+) {
+    let mut stack: Vec<Rc<NodeOccurrence>> = vec![Rc::clone(not_node)];
+    // One diagnostic per offending variable across this `not`.
+    let mut reported: HashSet<u32> = HashSet::new();
+    while let Some(occ) = stack.pop() {
+        if kb.get_builtin_view(&occ) == Some(BuiltinTag::Unify) {
+            let mut vars = Vec::new();
+            let mut seen = HashSet::new();
+            node_occurrence::collect_occurrence_global_vars(&occ, &mut vars, &mut seen);
+            for v in vars {
+                if !bound.contains(&v.raw()) && reported.insert(v.raw()) {
+                    out.push((kb.symbols.name(v.name()).to_string(), occ.span.span));
+                }
+            }
+        }
+        if let node_occurrence::NodeKind::Expr { expr, .. } = &occ.kind {
+            node_occurrence::for_each_child(expr, |c| stack.push(Rc::clone(c)));
+        }
+    }
+}
+
+/// WI-525 (proposal 049, Part B): collect every goal `TermId` appearing in a
+/// constraint body, across all forms (denial head + guard, quantified condition
+/// + nested body, leaf patterns, aggregation condition + body). Each is a
+/// candidate contract goal the binding-unify check classifies.
+fn collect_constraint_body_goal_tids(body: &ConstraintBody, out: &mut Vec<TermId>) {
+    match body {
+        ConstraintBody::Denial { head, guard } => {
+            out.extend(head.iter().copied());
+            if let Some(g) = guard {
+                out.extend(g.iter().copied());
+            }
+        }
+        ConstraintBody::Quantified { condition, body, .. } => {
+            out.extend(condition.iter().copied());
+            collect_constraint_body_goal_tids(body, out);
+        }
+        ConstraintBody::Patterns(p) => out.extend(p.iter().copied()),
+        ConstraintBody::Aggregation { condition, body, .. } => {
+            out.extend(condition.iter().copied());
+            out.extend(body.iter().copied());
+        }
     }
 }
 
@@ -620,6 +729,22 @@ impl std::fmt::Display for LoadError {
                     f,
                     "'{}' is internal to '{}' and cannot be referenced from scope '{}' at {}..{}",
                     name, declared_in, scope_name, span.start, span.end,
+                )
+            }
+            LoadError::UnsafeNegatedUnify { var_name, span } => {
+                write!(
+                    f,
+                    "variable '{}' in a `<=>` (unify) under `not` is not bound by an \
+                     earlier positive goal (unsound NAF) at {}..{}",
+                    var_name, span.start, span.end,
+                )
+            }
+            LoadError::BindingInContract { position, span } => {
+                write!(
+                    f,
+                    "a binding `<=>` / `let` is not allowed in a {} contract \
+                     (contracts test, not bind; use `=`) at {}..{}",
+                    position, span.start, span.end,
                 )
             }
         }
@@ -9549,6 +9674,12 @@ impl<'a> Loader<'a> {
                 body_nodes.push(self.build_body_atom_occurrence(tid));
             }
         }
+
+        // WI-525 (proposal 049, Part A): a `<=>` (unify) under `not` must have
+        // every variable bound by an earlier positive goal — else NAF on an
+        // unbound unification is unsound.
+        self.check_negated_unify_allowedness(&body_nodes);
+
         let meta = r.meta.as_ref().map(|mb| self.load_meta_block(mb));
 
         // Proposal 032: head IS the rule's claim. Labeled rules
@@ -9597,6 +9728,59 @@ impl<'a> Loader<'a> {
         }
 
         self.current_owner = prev_owner;
+    }
+
+    /// WI-525 (proposal 049, NAF discipline — Part A): a `<=>` (unify) goal
+    /// under `not(...)` binds, and negation-as-failure on a non-ground goal is
+    /// unsound. Statically require that every variable in a negated unify is
+    /// already bound by an EARLIER positive goal (strict left-to-right
+    /// range-restriction, per the proposal; the looser order-independent form is
+    /// a WI-526 revisit if a migrated rule false-positives). Operates on the
+    /// BUILT occurrence body (resolved functors), classifying each atom with the
+    /// same `get_builtin_view` the resolver uses, so `unify` / `not` are matched
+    /// by their canonical `anthill.kernel.unify` / `anthill.reflect.not`
+    /// symbols, not by parse-time spelling.
+    fn check_negated_unify_allowedness(&mut self, body_nodes: &[Rc<NodeOccurrence>]) {
+        let mut violations: Vec<(String, Span)> = Vec::new();
+        // Var identity keyed by `VarId::raw()` (VarId is not `Hash`).
+        let mut bound: HashSet<u32> = HashSet::new();
+        for node in body_nodes {
+            if self.kb.get_builtin_view(node) == Some(BuiltinTag::Not) {
+                // A negated goal does NOT contribute bindings to the positive
+                // store; instead, every unify nested under it is checked against
+                // what the earlier positive goals have already bound.
+                collect_negated_unify_violations(self.kb, node, &bound, &mut violations);
+            } else {
+                // A positive goal (including a positive `unify`, which binds)
+                // range-restricts its variables.
+                let mut vars = Vec::new();
+                let mut seen = HashSet::new();
+                node_occurrence::collect_occurrence_global_vars(node, &mut vars, &mut seen);
+                for v in vars {
+                    bound.insert(v.raw());
+                }
+            }
+        }
+        for (var_name, span) in violations {
+            self.errors.push(LoadError::UnsafeNegatedUnify { var_name, span });
+        }
+    }
+
+    /// WI-525 (proposal 049, NAF discipline — Part B): reject a BINDING `<=>` /
+    /// `let` goal (both lower to `unify(?v, e)`) in a contract position. A
+    /// contract must TEST, never bind. Classifies the goal's TOP-LEVEL functor:
+    /// a `unify` under `not(...)` reads as `not` here and is left alone (it is a
+    /// test via NAF). `parse_tid` is converted (memoized — the normal contract
+    /// path converts the same term) so the functor resolves to its canonical
+    /// `anthill.kernel.unify` before classification.
+    fn reject_binding_unify_in_contract(&mut self, parse_tid: TermId, position: &str) {
+        let goal = self.convert_term(parse_tid);
+        if self.kb.get_builtin(goal) == Some(BuiltinTag::Unify) {
+            self.errors.push(LoadError::BindingInContract {
+                position: position.to_string(),
+                span: self.parsed.terms.span(parse_tid),
+            });
+        }
     }
 
     /// WI-402 (existential half): detect `-> C ensures Spec[C, …]`. `C` is an
@@ -9940,6 +10124,22 @@ impl<'a> Loader<'a> {
         let requires_list = self.convert_clause_list_with_extra(&o.requires, &extra_requires);
         let ensures_list = self.convert_clause_list(&o.ensures);
 
+        // WI-525 (proposal 049, Part B): a contract TESTS, it never binds — so a
+        // binding `<=>` / `let` (a `unify` goal) in a `requires` / `ensures`
+        // clause is rejected. Only the user-written clauses are checked; the
+        // synthesized auto-requires / bare-spec extras are spec applications,
+        // never unify.
+        for clause in &o.requires {
+            for &tid in clause {
+                self.reject_binding_unify_in_contract(tid, "requires");
+            }
+        }
+        for clause in &o.ensures {
+            for &tid in clause {
+                self.reject_binding_unify_in_contract(tid, "ensures");
+            }
+        }
+
         // Convert expression body if present. WI-305: discard the term handle;
         // the occurrence is the sole stored body (op_body_node side-table). The
         // handle is no longer kept in any fact field (OperationInfo/OperationImpl
@@ -10152,6 +10352,16 @@ impl<'a> Loader<'a> {
 
     fn load_constraint(&mut self, c: &Constraint, domain: TermId) {
         let label = c.label.as_ref().map(|n| join_segments(&self.parsed.symbols, &n.segments));
+
+        // WI-525 (proposal 049, Part B): a `constraint` body is a contract — it
+        // TESTS, never binds. Reject any binding `<=>` / `let` (a `unify` goal)
+        // anywhere in it, across all constraint forms.
+        let mut constraint_goals: Vec<TermId> = Vec::new();
+        collect_constraint_body_goal_tids(&c.body, &mut constraint_goals);
+        for tid in constraint_goals {
+            self.reject_binding_unify_in_contract(tid, "constraint");
+        }
+
         match &c.body {
             ConstraintBody::Denial { head, guard } => {
                 // Historical behavior: store an inert `Constraint(head:, guard:)`
