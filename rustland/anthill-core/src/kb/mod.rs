@@ -713,6 +713,14 @@ impl KnowledgeBase {
         self.op_bodies.iter().map(|(s, n)| (*s, n))
     }
 
+    /// Proposal 039 / WI-084 — iterate every anthill-bodied constant's
+    /// `(symbol, body NodeOccurrence)`. The load-time purity gate consumes this
+    /// to reject an effectful const body. Bodyless (host-supplied) consts have
+    /// no entry. Iteration order is unspecified.
+    pub fn const_bodies_iter(&self) -> impl Iterator<Item = (Symbol, &Rc<NodeOccurrence>)> + '_ {
+        self.const_bodies.iter().map(|(s, n)| (*s, n))
+    }
+
     // ── Term allocation ─────────────────────────────────────────
 
     /// Allocate a term (hash-consed, refcounted).

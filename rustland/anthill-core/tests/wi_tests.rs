@@ -468,3 +468,6 @@ mod wi084_const_phase2_test;
 #[path = "include/wi084_const_phase3_test.rs"]
 mod wi084_const_phase3_test;
 
+#[path = "include/wi084_const_purity_test.rs"]
+mod wi084_const_purity_test;
+

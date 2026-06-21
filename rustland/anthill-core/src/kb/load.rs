@@ -2761,6 +2761,171 @@ pub fn load_all_per_file(
     load_phase_inner(kb, files, resolver)
 }
 
+/// Proposal 039 / WI-084 — the const purity gate. An anthill-bodied `const`
+/// must fold to a value PURELY: its body may not invoke an effectful operation
+/// (one with a non-empty declared effect row — e.g. an allocator's
+/// `Modify[result]`, per 027.1). A const denotes one MEMOIZED value shared by
+/// every reference, so an effectful body is unsound (the generativity hazard:
+/// `Cell.new()` ≠ `Cell.new()`). Checked statically at load — by now every
+/// operation's `OperationInfo` effect row is present. Bodyless (host-supplied)
+/// consts have no body to check and are trusted. Returns one `LoadError` per
+/// impure const.
+fn check_const_purity(kb: &KnowledgeBase) -> Vec<LoadError> {
+    // Snapshot (sym, body) so the walk can re-borrow `kb` for effect lookups.
+    let consts: Vec<(Symbol, std::rc::Rc<NodeOccurrence>)> = kb
+        .const_bodies_iter()
+        .map(|(s, n)| (s, std::rc::Rc::clone(n)))
+        .collect();
+    let mut errors = Vec::new();
+    for (sym, body) in &consts {
+        if let Err(reason) = const_node_is_pure(kb, body) {
+            errors.push(LoadError::Other {
+                message: format!(
+                    "const `{}` has a non-foldable body — it {reason}. A const denotes a single \
+                     memoized value, so its body must be pure (empty effect row); use an \
+                     operation (which can declare effects) if you need an effectful computation.",
+                    kb.qualified_name_of(*sym),
+                ),
+            });
+        }
+    }
+    errors
+}
+
+/// Recursively verify a const body occurrence is pure. CONSERVATIVE by
+/// construction: only forms whose purity is statically provable are accepted;
+/// any unrecognized or dynamically-dispatched form (higher-order / dot calls,
+/// generic instantiation, the post-elaboration `*Within` forms a raw const body
+/// never contains) is REJECTED — so the gate can never silently admit an effect.
+/// Returns `Err(reason)` for the first offending form (reason is a fragment that
+/// reads after "it …", e.g. "calls effectful operation `Cell.new`").
+fn const_node_is_pure(kb: &KnowledgeBase, occ: &std::rc::Rc<NodeOccurrence>) -> Result<(), String> {
+    // Only Expr-kind occurrences compute; Pattern / Type carry no effects.
+    let expr = match &occ.kind {
+        node_occurrence::NodeKind::Expr { expr, .. } => expr,
+        _ => return Ok(()),
+    };
+    match expr {
+        // Pure leaves. (`Bottom`/`Var` won't fold to a value, but neither is an
+        // effect — a non-reducing body fails the fold separately.)
+        Expr::Const(_) | Expr::Var(_) | Expr::Bottom => Ok(()),
+        // A bare reference: a nullary OPERATION reference is a zero-arg call (so
+        // an effectful one is impure); a multi-arg op ref is eta (a pure closure
+        // value); a const / constructor / param ref is pure.
+        Expr::Ref(s) | Expr::Ident(s) | Expr::VarRef { name: s } => const_ref_is_pure(kb, *s),
+        // A lambda is a pure VALUE — folding yields a closure; its body's effects
+        // (if any) are deferred to application, not performed at fold.
+        Expr::Lambda { .. } => Ok(()),
+        // Pure composition / construction: recurse into the evaluated children.
+        Expr::Let { value, body, .. } => {
+            const_node_is_pure(kb, value)?;
+            const_node_is_pure(kb, body)
+        }
+        Expr::If { condition, then_branch, else_branch } => {
+            const_node_is_pure(kb, condition)?;
+            const_node_is_pure(kb, then_branch)?;
+            const_node_is_pure(kb, else_branch)
+        }
+        Expr::Match { scrutinee, branches } => {
+            const_node_is_pure(kb, scrutinee)?;
+            for b in branches {
+                if let Some(g) = &b.guard {
+                    const_node_is_pure(kb, g)?;
+                }
+                const_node_is_pure(kb, &b.body)?;
+            }
+            Ok(())
+        }
+        Expr::TupleLit { positional, named } => {
+            for c in positional {
+                const_node_is_pure(kb, c)?;
+            }
+            for (_, c) in named {
+                const_node_is_pure(kb, c)?;
+            }
+            Ok(())
+        }
+        Expr::ListLit(items) | Expr::SetLit(items) => {
+            for c in items {
+                const_node_is_pure(kb, c)?;
+            }
+            Ok(())
+        }
+        Expr::Constructor { pos_args, named_args, .. } => {
+            // Entity construction is pure; check the field expressions.
+            for c in pos_args {
+                const_node_is_pure(kb, c)?;
+            }
+            for (_, c) in named_args {
+                const_node_is_pure(kb, c)?;
+            }
+            Ok(())
+        }
+        // A direct operation call: the callee must be effect-free, and so must
+        // every argument.
+        Expr::Apply { functor, pos_args, named_args, .. } => {
+            const_callee_is_pure(kb, *functor)?;
+            for c in pos_args {
+                const_node_is_pure(kb, c)?;
+            }
+            for (_, c) in named_args {
+                const_node_is_pure(kb, c)?;
+            }
+            Ok(())
+        }
+        // Everything else — higher-order / dot dispatch, generic instantiation,
+        // and the post-elaboration `*Within` / requirement forms (which a raw,
+        // un-elaborated const body never contains) — cannot be proven pure here.
+        other => Err(format!(
+            "uses a form whose purity cannot be statically verified ({})",
+            const_expr_form_name(other),
+        )),
+    }
+}
+
+/// A callee in APPLY position is pure unless it is an operation with a non-empty
+/// declared effect row.
+fn const_callee_is_pure(kb: &KnowledgeBase, functor: Symbol) -> Result<(), String> {
+    if kb.kind_of(functor) == Some(crate::intern::SymbolKind::Operation) {
+        if let Some(info) = crate::kb::op_info::lookup_operation_info(kb, functor) {
+            if !info.effects.is_empty() {
+                return Err(format!("calls effectful operation `{}`", kb.qualified_name_of(functor)));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// A bare REFERENCE is pure unless it names a NULLARY operation with effects (a
+/// zero-arg effectful call). A multi-arg op ref is eta — a pure closure value.
+fn const_ref_is_pure(kb: &KnowledgeBase, sym: Symbol) -> Result<(), String> {
+    if kb.kind_of(sym) == Some(crate::intern::SymbolKind::Operation) {
+        if let Some(info) = crate::kb::op_info::lookup_operation_info(kb, sym) {
+            if info.params.is_empty() && !info.effects.is_empty() {
+                return Err(format!(
+                    "references effectful nullary operation `{}` (a zero-arg call)",
+                    kb.qualified_name_of(sym)
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Human-readable name for an `Expr` form rejected by the purity gate.
+fn const_expr_form_name(e: &Expr) -> &'static str {
+    match e {
+        Expr::HoApply { .. } | Expr::HoApplyWithin { .. } => "higher-order application",
+        Expr::DotApply { .. } => "method/dot call",
+        Expr::Instantiation { .. } => "generic instantiation",
+        Expr::ApplyWithin { .. } => "apply-within",
+        Expr::ConstructorWithin { .. } => "constructor-within",
+        Expr::LambdaWithin { .. } => "lambda-within",
+        Expr::RequirementAtSort { .. } | Expr::ConstructRequirement { .. } => "requirement form",
+        _ => "unsupported expression form",
+    }
+}
+
 #[allow(unused_assignments)]
 fn load_phase_inner(
     kb: &mut KnowledgeBase,
@@ -2895,6 +3060,12 @@ fn load_phase_inner(
     // dispatch to a wrongly-typed impl via WI-431 increments 2/4).
     all_errors.extend(super::typing::check_instance_fact_op_signatures(kb));
     mark!("check_instance_fact_op_signatures");
+    // Proposal 039 / WI-084: the const purity gate. An anthill-bodied const whose
+    // body invokes an effectful operation (e.g. an allocator) is load-blocking —
+    // memoizing an effectful value is unsound. Runs after all operations load, so
+    // every effect row is queryable.
+    all_errors.extend(check_const_purity(kb));
+    mark!("check_const_purity");
     // WI-346: requires-shadow lint — advisory (non-fatal), so it lands in
     // `all_warnings`, not `all_errors`. A legal-but-suspicious same-named op on
     // a `requires`-user (which does NOT override) should be flagged, not block.
