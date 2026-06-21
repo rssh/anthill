@@ -657,50 +657,226 @@ fn consts_in_scope(
 
     let mut out = Vec::with_capacity(syms.len());
     for sym in syms {
-        let qn = kb.qualified_name_of(sym).to_string();
-        let name = short_name_of(&qn).to_string();
-
-        // Declared type: `const_type` is a `Value`; a simple sort type (the
-        // common case — `Int64`, `Float`) lowers as a ground `Value::Term`.
-        let cpp_type = match kb.const_type(sym) {
-            Some(anthill_core::eval::value::Value::Term(tid)) => {
-                let t = lower_type(ctx, *tid)?;
-                // A `String` const cannot be `constexpr std::string` — std::string
-                // is not a literal type before C++20. `std::string_view` is literal
-                // and binds a string literal directly, so it works under C++17.
-                if t == "std::string" { "std::string_view".to_string() } else { t }
-            }
-            Some(other) => {
-                return Err(CppCodegenError {
-                    message: format!(
-                        "const '{qn}': declared type is a non-ground value ({}) — \
-                         value-in-type const types are not supported by cpp-gen yet",
-                        other.type_name()
-                    ),
-                });
-            }
-            None => {
-                return Err(CppCodegenError {
-                    message: format!("const '{qn}': no declared type recorded in the KB"),
-                });
-            }
-        };
-
-        // Value: lower the anthill body when present; a bodyless host-supplied
-        // const (WI-532) maps to its target expression (the Float IEEE specials).
-        let cpp_value = match kb.const_body_node(sym) {
-            Some(body) => lower_node(ctx, body)?,
-            None => render_as_float_special(&qn).ok_or_else(|| CppCodegenError {
-                message: format!(
-                    "const '{qn}': bodyless host-supplied const has no C++ value mapping \
-                     (only the Float IEEE specials infinity/negativeInfinity/nan are mapped)"
-                ),
-            })?,
-        };
-
+        let name = short_name_of(kb.qualified_name_of(sym)).to_string();
+        let (cpp_type, cpp_value) = lower_one_const(ctx, sym)?;
         out.push(ConstSig { name, cpp_type, cpp_value });
     }
     Ok(out)
+}
+
+/// Lower a single const's declared type and value to C++. Shared by
+/// `consts_in_scope` (struct/namespace members) and
+/// `carrier_bound_const_companions` (WI-536 namespace companions).
+fn lower_one_const(ctx: &CodegenContext, sym: Symbol) -> Result<(String, String), CppCodegenError> {
+    let kb = ctx.kb;
+    let qn = kb.qualified_name_of(sym).to_string();
+
+    // Declared type: `const_type` is a `Value`; a simple sort type (the
+    // common case — `Int64`, `Float`) lowers as a ground `Value::Term`.
+    let cpp_type = match kb.const_type(sym) {
+        Some(anthill_core::eval::value::Value::Term(tid)) => {
+            let t = lower_type(ctx, *tid)?;
+            // A `String` const cannot be `constexpr std::string` — std::string
+            // is not a literal type before C++20. `std::string_view` is literal
+            // and binds a string literal directly, so it works under C++17.
+            if t == "std::string" { "std::string_view".to_string() } else { t }
+        }
+        Some(other) => {
+            return Err(CppCodegenError {
+                message: format!(
+                    "const '{qn}': declared type is a non-ground value ({}) — \
+                     value-in-type const types are not supported by cpp-gen yet",
+                    other.type_name()
+                ),
+            });
+        }
+        None => {
+            return Err(CppCodegenError {
+                message: format!("const '{qn}': no declared type recorded in the KB"),
+            });
+        }
+    };
+
+    // Value: lower the anthill body when present; a bodyless host-supplied
+    // const (WI-532) maps to its target expression (the Float IEEE specials).
+    let cpp_value = match kb.const_body_node(sym) {
+        Some(body) => lower_node(ctx, body)?,
+        None => render_as_float_special(&qn).ok_or_else(|| CppCodegenError {
+            message: format!(
+                "const '{qn}': bodyless host-supplied const has no C++ value mapping \
+                 (only the Float IEEE specials infinity/negativeInfinity/nan are mapped)"
+            ),
+        })?,
+    };
+
+    Ok((cpp_type, cpp_value))
+}
+
+/// WI-536: carrier-bound sorts are excluded from struct emission (their carrier
+/// owns the type), so a const declared inside one has nowhere to live. Emit each
+/// as a namespace-scope companion named `Sort_NAME` (non-shadowing) so a
+/// reference can resolve to a named constant. Returns the companions for the
+/// carrier-bound sorts declared one level under `namespace`, sorted by const
+/// qualified name for determinism. `const_ref_cpp` produces the matching
+/// reference form.
+fn carrier_bound_const_companions(
+    ctx: &CodegenContext,
+    namespace: &str,
+) -> Result<Vec<ConstSig>, CppCodegenError> {
+    let kb = ctx.kb;
+    let prefix = format!("{namespace}.");
+    let mut syms: Vec<Symbol> = kb
+        .const_types_iter()
+        .filter(|(sym, _)| {
+            let Some(parent) = parent_qualified_name(kb, *sym) else { return false };
+            parent.starts_with(&prefix)
+                && !parent[prefix.len()..].contains('.')
+                && ctx.carriers.lookup(&parent).is_some()
+                && matches!(
+                    kb.try_resolve_symbol(&parent).and_then(|s| kb.kind_of(s)),
+                    Some(SymbolKind::Sort)
+                )
+        })
+        .map(|(sym, _)| sym)
+        .collect();
+    syms.sort_by(|a, b| kb.qualified_name_of(*a).cmp(kb.qualified_name_of(*b)));
+
+    let mut out = Vec::with_capacity(syms.len());
+    for sym in syms {
+        let name = companion_name(kb, sym);
+        let (cpp_type, cpp_value) = lower_one_const(ctx, sym)?;
+        out.push(ConstSig { name, cpp_type, cpp_value });
+    }
+    Ok(out)
+}
+
+/// The namespace-scope companion identifier for a carrier-bound sort's const:
+/// `Sort_NAME`. Single source of truth shared by the declaration site
+/// (`carrier_bound_const_companions`) and the reference site (`const_ref_cpp`),
+/// so the two cannot drift out of sync.
+fn companion_name(kb: &KnowledgeBase, const_sym: Symbol) -> String {
+    let qn = kb.qualified_name_of(const_sym);
+    let parent = parent_qualified_name(kb, const_sym);
+    let sort_short = parent.as_deref().map(short_name_of).unwrap_or("");
+    format!("{sort_short}_{}", short_name_of(qn))
+}
+
+/// WI-536: C++ reference expression for a term-level const — a NAMED constant,
+/// not the inlined value. A const in a carrier-bound sort uses the namespace
+/// companion `Sort_NAME`; a const in an emitted (non-carrier) sort uses the
+/// struct member `Sort::NAME`; a namespace-level const uses `NAME`. References
+/// from another namespace are fully qualified and pull in the declaring
+/// namespace's header.
+fn const_ref_cpp(ctx: &CodegenContext, sym: Symbol) -> String {
+    let kb = ctx.kb;
+    let qn = kb.qualified_name_of(sym).to_string();
+    let name = short_name_of(&qn);
+    let Some(parent) = parent_qualified_name(kb, sym) else {
+        return name.to_string();
+    };
+    let parent_is_sort = matches!(
+        kb.try_resolve_symbol(&parent).and_then(|s| kb.kind_of(s)),
+        Some(SymbolKind::Sort)
+    );
+
+    // (declaring namespace, identifier within that namespace)
+    let (decl_ns, in_ns): (String, String) = if parent_is_sort {
+        let sort_ns = parent_namespace_of(&parent).unwrap_or("").to_string();
+        if ctx.carriers.lookup(&parent).is_some() {
+            (sort_ns, companion_name(kb, sym)) // namespace companion
+        } else {
+            (sort_ns, format!("{}::{name}", short_name_of(&parent))) // emitted struct member
+        }
+    } else {
+        // Namespace-level const: the parent qualified name IS the namespace.
+        (parent, name.to_string())
+    };
+
+    let current = ctx.emitting_namespace.borrow().clone();
+    match current {
+        Some(cur) if cur == decl_ns => in_ns,
+        _ => {
+            if !decl_ns.is_empty() {
+                let header = header_filename_for_namespace(&decl_ns);
+                ctx.requested_includes
+                    .borrow_mut()
+                    .insert(format!("#include \"{header}\""));
+                format!("::{}::{}", decl_ns.replace('.', "::"), in_ns)
+            } else {
+                format!("::{in_ns}")
+            }
+        }
+    }
+}
+
+/// Order namespace-scope const-likes (WI-533 namespace consts + WI-536
+/// carrier-bound companions) so a const whose lowered value references another
+/// const in the same band is emitted AFTER it — a C++ `inline constexpr`
+/// initializer must name only already-declared constants. Dependency is read
+/// off the lowered value strings: const A depends on const B when B's emitted
+/// identifier appears as a whole token in A's value. Ready nodes are taken in
+/// the band's incoming (qualified-name) order for determinism. A dependency
+/// cycle (a pair of consts referencing each other) cannot be a constexpr and is
+/// a loud error. WI-536.
+fn topo_sort_const_likes(band: Vec<ConstSig>) -> Result<Vec<ConstSig>, CppCodegenError> {
+    let n = band.len();
+    // deps[i] = indices j (j != i) whose emitted name appears in band[i]'s value.
+    let deps: Vec<Vec<usize>> = (0..n)
+        .map(|i| {
+            (0..n)
+                .filter(|&j| j != i && value_references_token(&band[i].cpp_value, &band[j].name))
+                .collect()
+        })
+        .collect();
+
+    let mut done = vec![false; n];
+    let mut order: Vec<usize> = Vec::with_capacity(n);
+    for _ in 0..n {
+        // Smallest index whose dependencies are all already emitted.
+        match (0..n).find(|&i| !done[i] && deps[i].iter().all(|&j| done[j])) {
+            Some(i) => {
+                done[i] = true;
+                order.push(i);
+            }
+            None => {
+                let cyclic: Vec<&str> =
+                    (0..n).filter(|&i| !done[i]).map(|i| band[i].name.as_str()).collect();
+                return Err(CppCodegenError {
+                    message: format!(
+                        "const dependency cycle among {cyclic:?} — a cyclic constant cannot be \
+                         emitted as a C++ constexpr"
+                    ),
+                });
+            }
+        }
+    }
+
+    let mut slots: Vec<Option<ConstSig>> = band.into_iter().map(Some).collect();
+    Ok(order.into_iter().map(|i| slots[i].take().expect("each index taken once")).collect())
+}
+
+/// True if `name` occurs in `haystack` as a whole C++ identifier token — not as
+/// a substring of a larger identifier (so `BROADCAST` does not match inside
+/// `BROADCAST_CHANNEL`, and `BROADCAST_CHANNEL` does not match inside
+/// `Emitter_BROADCAST_CHANNEL`).
+fn value_references_token(haystack: &str, name: &str) -> bool {
+    if name.is_empty() {
+        return false;
+    }
+    let bytes = haystack.as_bytes();
+    let is_ident = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+    let mut from = 0;
+    while let Some(pos) = haystack[from..].find(name) {
+        let start = from + pos;
+        let end = start + name.len();
+        let before_ok = start == 0 || !is_ident(bytes[start - 1]);
+        let after_ok = end == bytes.len() || !is_ident(bytes[end]);
+        if before_ok && after_ok {
+            return true;
+        }
+        from = start + 1;
+    }
+    false
 }
 
 pub fn emit_traits_struct(
@@ -1200,10 +1376,16 @@ pub fn emit_namespace_header_in(
     let _ns_guard = ctx.enter_namespace(namespace);
     let (entities, sums, traits) = classify_namespace(ctx, namespace);
     // Namespace-level term-level constants (WI-533) declared directly under
-    // this namespace (not inside a sort body — those emit as struct members).
-    let consts = consts_in_scope(ctx, namespace)?;
+    // this namespace (not inside a sort body — those emit as struct members),
+    // plus the WI-536 `Sort_NAME` companions for consts inside carrier-bound
+    // sorts (excluded from struct emission). One band, topologically ordered so
+    // a const that references another is declared after it.
+    let mut const_band = consts_in_scope(ctx, namespace)?;
+    const_band.extend(carrier_bound_const_companions(ctx, namespace)?);
+    let const_band = topo_sort_const_likes(const_band)?;
 
-    if entities.is_empty() && sums.is_empty() && traits.is_empty() && consts.is_empty() {
+    if entities.is_empty() && sums.is_empty() && traits.is_empty() && const_band.is_empty()
+    {
         return Err(CppCodegenError {
             message: format!(
                 "no entities, sum sorts, sort-with-operations, or constants to emit \
@@ -1238,10 +1420,10 @@ pub fn emit_namespace_header_in(
 
     let mut items = String::new();
     let mut needs = Includes::default();
-    // Namespace-level constants first, so any later struct or method body that
-    // references one sees its declaration (a const of a primitive type carries
-    // no forward dependency on a same-namespace struct).
-    for c in &consts {
+    // Namespace-scope constants (incl. companions) first, so any later struct
+    // or method body that references one sees its declaration (a const of a
+    // primitive type carries no forward dependency on a same-namespace struct).
+    for c in &const_band {
         let block = format!(
             "inline constexpr {} {} = {};\n",
             c.cpp_type, c.name, c.cpp_value
@@ -1249,7 +1431,7 @@ pub fn emit_namespace_header_in(
         needs.scan(&block);
         items.push_str(&block);
     }
-    if !consts.is_empty() {
+    if !const_band.is_empty() {
         items.push('\n');
     }
     for sym in data_order {
@@ -1763,6 +1945,12 @@ fn lower_node(
             if let Some(rendered) = render_as_float_special(qn) {
                 return Ok(rendered);
             }
+            // WI-536: a reference to a term-level const resolves to its named
+            // constant (struct member or namespace companion), not the bare
+            // short name (which would not be in scope at the C++ use site).
+            if kb.kind_of(*sym) == Some(SymbolKind::Const) {
+                return Ok(const_ref_cpp(ctx, *sym));
+            }
             Ok(short_name_of(qn).to_string())
         }
         Expr::VarRef { name } => {
@@ -1777,8 +1965,13 @@ fn lower_node(
                 return Ok(rendered);
             }
             let short = short_name_of(qn);
+            // A let-local / pattern binding shadows a same-named const.
             if let Some(access) = ctx.lookup_value_binding(short) {
                 return Ok(access);
+            }
+            // WI-536: otherwise a const reference resolves to its named constant.
+            if kb.kind_of(*name) == Some(SymbolKind::Const) {
+                return Ok(const_ref_cpp(ctx, *name));
             }
             Ok(short.to_string())
         }
