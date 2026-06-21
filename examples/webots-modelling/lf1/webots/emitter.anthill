@@ -17,9 +17,10 @@ sort anthill.examples.lf1.webots.Emitter
   import anthill.prelude.{Int64, Float, Unit, String, Bool, Modify}
 
   -- Sentinel for broadcast (mirrors webots::Emitter::CHANNEL_BROADCAST = -1).
-  -- TODO: model as a constant once anthill has term-level constants.
-  -- For now, callers pass -1 directly to set_channel.
-  entity BROADCAST_CHANNEL
+  -- A term-level constant (WI-084 / proposal 039): it IS the Int64 `-1` at every
+  -- use site, so `set_channel(em, BROADCAST_CHANNEL)` type-checks against the
+  -- `channel: Int64` parameter — no entity-as-sentinel workaround, no bare `-1`.
+  const BROADCAST_CHANNEL: Int64 = -1
 
   -- Send a payload. The C++ API takes (data, size); on the anthill
   -- side we model the payload as a string (or once we have richer

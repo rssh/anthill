@@ -52,7 +52,7 @@ How to add a new webots device sort to this project, given the C++ header at `$W
 
 - **Vec3** lives in `anthill.examples.lf1.webots.types`. When WI-081 (math library) lands, lift to a shared location.
 - **Profile** is `cpp20-stl` for every binding; the project uses `-std=c++20`.
-- **Channel sentinel** (`CHANNEL_BROADCAST = -1`): for now, callers pass `-1` directly. A term-level constant once anthill grows that.
+- **Channel sentinel** (`CHANNEL_BROADCAST = -1`): modeled as `const BROADCAST_CHANNEL: Int64 = -1` on `Emitter` (WI-084 / proposal 039 — term-level constants). It types as `Int64`, so `set_channel(em, BROADCAST_CHANNEL)` checks against the `channel: Int64` parameter directly.
 - **Payload bytes**: `send`/`get_data` model the payload as `String`. Replace with a proper byte-array sort once anthill has one.
 
 ## What lives in lf1 vs. what to lift later
