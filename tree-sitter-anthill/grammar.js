@@ -578,6 +578,8 @@ module.exports = grammar({
       $.effect_presence,
       $.effect_absence,
       $.effect_merge,
+      $.guarded_effect,
+      $.paren_guarded_effect,
     ),
 
     // `+E` — explicit presence. Sugar; the bare `E` form already defaults
@@ -598,6 +600,34 @@ module.exports = grammar({
       'merge',
       '(',
       commaSep1(field('effect', $._effect_type)),
+      ')',
+    ),
+
+    // WI-478 (proposal 048 §"Grammar delta"): a guarded effect-row element
+    // `E :- guard` — present iff the guard is not refuted at the call site
+    // (discharge is WI-067; this phase only parses + loads it). The `:- guard`
+    // binds the SINGLE preceding effect, per-element, not the row.
+    //
+    // Bare form: the guard is a single goal `$._term`, so the row `,` stays the
+    // OUTER separator (`{ A, E :- p }` is two elements, not `E` guarded by the
+    // conjunction `p, …`). A conjunctive guard must use the parenthesized form.
+    guarded_effect: $ => seq(
+      field('effect', $._simple_effect),
+      ':-',
+      field('guard', $._term),
+    ),
+
+    // Parenthesized form: the `:-` body is a full Horn `rule_body` delimited by
+    // `)`, so a conjunctive guard `( E :- p, q )` is expressible. The parens are
+    // an ELEMENT delimiter, not a guard wrapper. The MANDATORY `:-` preserves
+    // the `_effect_set` `(`-typo protection (the `effects (Modify self)` typo):
+    // a bare `( E )` with no `:-` is still not admitted, so the typo fails at
+    // the missing `:-` rather than consuming `(` as an arrow/tuple type.
+    paren_guarded_effect: $ => seq(
+      '(',
+      field('effect', $._simple_effect),
+      ':-',
+      field('guard', $.rule_body),
       ')',
     ),
 

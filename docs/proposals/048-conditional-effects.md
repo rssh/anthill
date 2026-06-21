@@ -274,19 +274,28 @@ conjunction of goal terms over the operation's parameters, mirroring `rule_body`
 (`commaSep1($._term)`). A bare `E :- p` stores `[p]`; the paren element `( E :- p, q )` stores
 `[p, q]`; `present(label)` is the degenerate empty guard `guarded(label, [])` (`:- true`).
 
-The guard's carrier **follows `EffectExpression`'s, and is contingent — not fundamental.** Today
-`EffectExpression` is a *hash-consed term* (it rides in the arrow's `effects` field), and
-occurrences cannot be hash-consed term args (WI-251), so the guard is `List[Term]` and at discharge
-is materialized to occurrence goals via `term_body_to_nodes` (the same terms→nodes path a rule body
-takes at assert) and refuted by the resolver. But hash-consing is a storage optimization, **not** a
-property of type-hood (CLAUDE.md representation note), and term-backing arrows in particular cuts
-against that note; the node-world migration already moved rule bodies
-(`RuleEntry.body_nodes: Vec<Rc<NodeOccurrence>>`, WI-246) and op bodies to `NodeOccurrence`. Under a
-node-world `Type`/`EffectExpression` the guard would simply be `List[NodeOccurrence]`, **uniform
-with rule/op bodies**, and the term-vs-occurrence split disappears — see open question F. The
-disjunctive merge above needs **no** new constructor — two `guarded` atoms on one label *are* the
-unreduced `g1 ∨ g2`. `open` (row tail) and `absent` are unaffected; `decompose_effect_row` gains a
-`guarded` arm that, after discharge, yields a `present` or drops the atom.
+The guard is `List[anthill.reflect.Term]` — and a `reflect.Term` is **not** the Rust hash-consed
+`Term`/`TermId`; it is a term read through `TermView` and carried as a `Value` (`Value::Term(TermId)`
+for a hash-consed term, `Value::Node` for an occurrence). So the guard is **carrier-agnostic by
+construction**: it rides as a single `List[reflect.Term]` child carried as a `TypeChild`
+(`Ground` | `Node`) — exactly like the `label` child of `present` — and is read back as a `Value` by
+`decompose_effect_row` / `TermView`. A **ground** guard (over op parameters, `eq(b, 0)`) hash-conses
+as a `Value::Term`, and the guarded atom / its row / the arrow stay hash-consed; a guard goal that
+carries a **denoted value or a local binder** rides on the occurrence carrier (`Value::Node`),
+poisoning just that atom's row to the node carrier as a `denoted` label already does
+(`fold_effect_row_occ`).
+
+Hash-consing is therefore **not** a constraint on the guard's carrier: a node-carried atom indexes
+and matches identically through structural discrim keys (CLAUDE.md representation note — the discrim
+tree never keys on `TermId` identity), and where the dedup / identity fast-path pays, the occurrence
+**generates and caches its hash-consed term twin** via `occurrence_to_term` (WI-390 / WI-471) — a
+boundary/index op, consistent with WI-348 (logic reads through `TermView`, never materializing a
+`TermId` from a `Value`). This needs **no** node-world `Type`/`EffectExpression` migration (no WI-470
+dependency) — see open question F. The disjunctive merge above needs **no** new constructor — two
+`guarded` atoms on one label *are* the unreduced `g1 ∨ g2`. `open` (row tail) and `absent` are
+unaffected; `decompose_effect_row` gains a `guarded` arm that, after discharge (WI-067), yields a
+`present` or drops the atom; until discharge lands (it is out of 048's scope) a guarded atom is
+**conservatively present**.
 
 ## Typer delta (this is WI-067)
 
@@ -374,23 +383,28 @@ just do not read its guard closed-world.
 - **E. Runtime catchability.** When divide-by-zero is eventually routed through `raise_error` so an
   Error handler can catch it (the WI-066 review's Finding-1 follow-up), the static guard discharge
   and the dynamic handler must agree on when the effect is "really" present. Separate, but track it.
-- **F. Carrier of `EffectExpression` (and the guard).** The guard is `List[Term]` only because
-  `EffectExpression` rides inside a hash-consed arrow term; per the representation note hash-consing
-  is not required for types (and is disclaimed for binders/arrows), so this is contingent. Two
-  consequences:
-  - A guard goal referencing a **local binder** (a lambda/`let` variable, not just an op parameter
-    — the `lambda x -> op2(op1(x))` case) is still term-representable today: it rides an
-    `anthill.reflect.Positioned(pos, internal)` leaf (`make_positioned`) — the same hash-consed
-    bridge `denoted` value-in-type uses, where `pos` reifies the binder's absolute binding-site so
-    alpha-distinct locals don't collide in the global store. This does **not** violate WI-251
-    (`Positioned`'s args are `Term`, not a raw `NodeOccurrence`); it is the term-world *encoding* of
-    occurrence content. So `List[Term]` is not limited to op-parameter guards.
-  - `Positioned` is the existence proof that the term↔occurrence divide is bridgeable. A node-world
-    `Type`/`EffectExpression` with an on-demand `Node → TermId` mapping (the inversion: occurrences
-    primary; hash-consed terms a *derived* index where dedup / the `unify_effect_rows` identity
-    fast-path actually pays) would let the guard be `List[NodeOccurrence]`, uniform with rule/op
-    bodies, dissolving the term-vs-occurrence split. Larger than 048 — tracked as **WI-470**; until
-    then 048 uses `List[Term]` (with `Positioned` for local-binder goals).
+- **F. Carrier of the guard — resolved: carrier-agnostic via `TermView`/`Value`.** A
+  `anthill.reflect.Term` is **not** the Rust hash-consed `Term`/`TermId`; it is a term read through
+  `TermView` and carried as a `Value` (`Value::Term(TermId)` for a hash-consed term, `Value::Node`
+  for an occurrence). So the guard — `List[reflect.Term]` — is carrier-agnostic by construction: it
+  rides as a single child carried as a `TypeChild` (`Ground` | `Node`), exactly like the `label`
+  child of `present`, and is read back as a `Value`. There is **no** "`List[Term]` now vs
+  `List[NodeOccurrence]` later" dichotomy — that was an artifact of mis-reading `reflect.Term` as the
+  Rust `TermId`.
+  - A **ground** guard (over op parameters: `eq(b, 0)`) hash-conses as a `Value::Term`; the guarded
+    atom, its row, and the arrow stay hash-consed.
+  - A guard goal that carries a **denoted value or a local binder** (the `lambda x -> op2(op1(x))`
+    case) rides on the occurrence carrier (`Value::Node`), poisoning just that atom's row to the node
+    carrier — exactly as a `denoted` value-in-type label already does (`fold_effect_row_occ`). No
+    `Positioned` term-leaf bridge is needed; the occurrence *is* the representation.
+  - Hash-consing is not lost on the node carrier: a node-carried atom indexes and matches identically
+    through structural discrim keys (representation note — the discrim tree never keys on `TermId`
+    identity), and where dedup / the `unify_effect_rows` identity fast-path pays, the occurrence
+    **generates and caches its hash-consed term twin** via `occurrence_to_term` (WI-390 / WI-471).
+    This is a boundary/index op, consistent with WI-348 (logic reads through `TermView`, never
+    materializing a `TermId` from a `Value`). So 048 needs **no** node-world `Type`/`EffectExpression`
+    migration — **WI-470 is no longer a dependency** (it remains the separate, larger inversion that
+    would make occurrences the primary store and hash-consed terms the derived index).
 - **G. Notation: the `:-` stumble — resolved by open-world guards.** `:- guard` reuses the
   rule/constraint arrow. A reader who knows NAF may import the *closed-world* reading and expect an
   undischarged guard to drop the effect (unstated ⇒ absent) — backwards for an effect, which must

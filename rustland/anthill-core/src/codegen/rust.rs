@@ -444,6 +444,9 @@ impl<'a> RustCodegen<'a> {
             // annotation, not a value-carrying Rust type — emit `()` like the
             // effect-bearing arrow / absence forms above.
             TypeExpr::EffectRow(_) => "()".to_owned(),
+            // WI-478: a guarded effect is an effect-position construct, not a Rust
+            // type — emit `()` like the other effect forms.
+            TypeExpr::EffectGuarded { .. } => "()".to_owned(),
         }
     }
 
@@ -506,6 +509,8 @@ impl<'a> RustCodegen<'a> {
             TypeExpr::EffectAbsent(_) => "()".to_owned(),
             // WI-375: written effect-row — an annotation, not a Rust type.
             TypeExpr::EffectRow(_) => "()".to_owned(),
+            // WI-478: guarded effect — an effect-position construct, not a Rust type.
+            TypeExpr::EffectGuarded { .. } => "()".to_owned(),
         }
     }
 
@@ -1409,6 +1414,18 @@ fn analyze_effects(effects: &[Effect], symbols: &SymbolTable, type_params: &[Str
             // WI-375: a written effect-row in a type-arg slot is not an
             // operation effects-clause — no Modify/Error contribution here.
             TypeExpr::EffectRow(_) => {}
+            // WI-478: a guarded effect is CONSERVATIVELY PRESENT (phase 1 — discharge
+            // is WI-067), so it contributes the SAME Modify/Error analysis its bare
+            // label would (a `Error[X] :- g` still yields the `Error[X]` Result, not a
+            // silent drop). Recurse on the label and merge.
+            TypeExpr::EffectGuarded { label, .. } => {
+                let inner = Effect { type_expr: (**label).clone() };
+                let sub = analyze_effects(std::slice::from_ref(&inner), symbols, type_params);
+                info.modifies_targets.extend(sub.modifies_targets);
+                if info.errors_type.is_none() {
+                    info.errors_type = sub.errors_type;
+                }
+            }
         }
     }
 
@@ -1453,6 +1470,7 @@ fn should_collapse_self(info: &SortInfo, symbols: &SymbolTable) -> bool {
             TypeExpr::Denoted(_) => "Denoted".to_owned(),
             TypeExpr::EffectAbsent(_) => "EffectAbsent".to_owned(),
             TypeExpr::EffectRow(_) => "EffectRow".to_owned(),
+            TypeExpr::EffectGuarded { .. } => "EffectGuarded".to_owned(),
         };
 
         if first_type != *param_name {
@@ -1589,6 +1607,7 @@ fn type_expr_name(symbols: &SymbolTable, ty: &TypeExpr) -> String {
         TypeExpr::Denoted(_) => "Denoted".to_owned(),
         TypeExpr::EffectAbsent(_) => "EffectAbsent".to_owned(),
         TypeExpr::EffectRow(_) => "EffectRow".to_owned(),
+        TypeExpr::EffectGuarded { .. } => "EffectGuarded".to_owned(),
     }
 }
 

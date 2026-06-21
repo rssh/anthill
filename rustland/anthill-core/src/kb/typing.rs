@@ -1165,6 +1165,17 @@ fn rewrite_type_occ_deep(
                 let l = child(kb, subst, label, ground, &mut changed);
                 Some(NodeKind::EffectExpr(EffectExprNode::Present { label: l }))
             }
+            EffectExprNode::Guarded { label, guard } => {
+                // Substitute the label (a `TypeChild`, like `Present`); the guard
+                // `Value` is inert phase-1 metadata (decompose treats guarded as
+                // present), carried unchanged — as `TypeNode::NamedTuple` is not
+                // descended by this `TypeChild`-only walk either.
+                let l = child(kb, subst, label, ground, &mut changed);
+                Some(NodeKind::EffectExpr(EffectExprNode::Guarded {
+                    label: l,
+                    guard: guard.clone(),
+                }))
+            }
             EffectExprNode::Absent { label } => {
                 let l = child(kb, subst, label, ground, &mut changed);
                 Some(NodeKind::EffectExpr(EffectExprNode::Absent { label: l }))
@@ -1378,7 +1389,11 @@ fn type_display_name_occ(kb: &KnowledgeBase, occ: &Rc<NodeOccurrence>) -> String
             format!("({})", parts.join(", "))
         }
         NodeKind::EffectExpr(EffectExprNode::Present { label })
-        | NodeKind::EffectExpr(EffectExprNode::Absent { label }) => {
+        | NodeKind::EffectExpr(EffectExprNode::Absent { label })
+        // WI-478: a guarded atom displays as its label (the conservatively-present
+        // view), like `present`/`absent` — so a Node-form guarded effect named in a
+        // diagnostic is legible rather than the `?` fallthrough.
+        | NodeKind::EffectExpr(EffectExprNode::Guarded { label, .. }) => {
             type_child_display_name(kb, label)
         }
         NodeKind::EffectExpr(EffectExprNode::Merge { left, right }) => format!(
@@ -10678,6 +10693,10 @@ fn node_type_is_ground(kb: &KnowledgeBase, occ: &Rc<NodeOccurrence>) -> bool {
             EffectExprNode::Present { label } | EffectExprNode::Absent { label } => {
                 child_ground(label)
             }
+            // WI-478: phase-1 ground-ness mirrors `present` — only the label counts.
+            // The guard is conservatively-present metadata not used in resolution
+            // (decompose ignores it), so its goal vars don't make the row non-ground.
+            EffectExprNode::Guarded { label, .. } => child_ground(label),
             // An open row carries a row-tail Var ⇒ not ground.
             EffectExprNode::Open { tail } => child_ground(tail),
             EffectExprNode::EmptyRow => true,
@@ -11104,7 +11123,10 @@ fn explode_incurred_effect_row(kb: &mut KnowledgeBase, effect: &Value) -> Option
     let head_is_row_expr = effect.head(kb).functor_sym().is_some_and(|sym| {
         matches!(
             kb.qualified_name_of(sym).strip_prefix("anthill.prelude.EffectExpression."),
-            Some("merge" | "present" | "absent" | "open" | "empty_row")
+            // WI-478: a bare `guarded(…)` atom is row-shaped (it explodes via
+            // `decompose_effect_row`'s guarded arm → its label, conservatively
+            // present) — without it, a guarded incurred effect surfaces whole.
+            Some("merge" | "present" | "guarded" | "absent" | "open" | "empty_row")
         )
     });
     if !is_rows_wrapper && !head_is_row_expr {
@@ -11917,6 +11939,15 @@ pub(crate) fn effects_rows_to_flat_list(kb: &KnowledgeBase, ty: TermId) -> Vec<T
                             out.push(label);
                         }
                     }
+                    // WI-478: a guarded atom is CONSERVATIVELY PRESENT (no discharge
+                    // in phase 1) — surface its label exactly like `present`, dropping
+                    // the `guard`. So a guarded effect propagates / is satisfiable like
+                    // the unconditional one until discharge (WI-067) lands.
+                    "guarded" => {
+                        if let Some(label) = get_named_arg(kb, named_args, "label") {
+                            out.push(label);
+                        }
+                    }
                     "absent" => {
                         // v1a presence-only — lacks-constraint slot lands w/ v1b.
                     }
@@ -12510,6 +12541,13 @@ fn eliminate_node_projections(
             EffectExprNode::Present { label } => {
                 let l = elim_child(kb, label, arg_types, arg_syms, ctx, span)?;
                 Ok(Value::Node(kb.make_present_occ(l, sp, owner)))
+            }
+            EffectExprNode::Guarded { label, guard } => {
+                // Only the label participates in projection elimination (type-param
+                // substitution in the effect label); the guard is carried through
+                // unchanged (conservatively-present metadata, no discharge in phase 1).
+                let l = elim_child(kb, label, arg_types, arg_syms, ctx, span)?;
+                Ok(Value::Node(kb.make_guarded_occ(l, guard.clone(), sp, owner)))
             }
             EffectExprNode::Absent { label } => {
                 let l = elim_child(kb, label, arg_types, arg_syms, ctx, span)?;
@@ -14339,6 +14377,11 @@ fn occ_contains_var(kb: &KnowledgeBase, vid: VarId, occ: &Rc<NodeOccurrence>) ->
     if let Some(en) = occ.as_effect_expr() {
         return match en {
             EffectExprNode::Present { label } | EffectExprNode::Absent { label } => child(kb, label),
+            // WI-478: the var may occur in the label (a `TypeChild`) or inside the
+            // guard's `Value`-carried goal list (`occurs_in_view`, as NamedTuple).
+            EffectExprNode::Guarded { label, guard } => {
+                child(kb, label) || occurs_in_view(kb, vid, guard)
+            }
             EffectExprNode::Merge { left, right } => child(kb, left) || child(kb, right),
             EffectExprNode::Open { tail } => child(kb, tail),
             EffectExprNode::EmptyRow => false,
@@ -15275,6 +15318,16 @@ fn decompose_effect_row(
                     present.push(l);
                 }
             }
+            // WI-478 (proposal 048): a `guarded(label, guard)` atom is
+            // CONSERVATIVELY PRESENT here — discharge (refuting the guard to drop
+            // the label) is WI-067, out of phase 1's scope. So it contributes its
+            // label exactly like `present`, ignoring the `guard` child. This keeps
+            // the row a sound over-approximation until discharge lands.
+            Some("guarded") => {
+                if let Some(l) = named_child_value(kb, &node, label_key) {
+                    present.push(l);
+                }
+            }
             Some("absent") => {
                 if let Some(l) = named_child_value(kb, &node, label_key) {
                     absent.push(l);
@@ -15410,7 +15463,11 @@ fn value_is_bare_effect_expr(kb: &KnowledgeBase, v: &impl TermView) -> bool {
     v.head(kb).functor_sym().is_some_and(|sym| {
         matches!(
             kb.qualified_name_of(sym).strip_prefix("anthill.prelude.EffectExpression."),
-            Some("merge" | "present" | "absent" | "open" | "empty_row")
+            // WI-478: a bare `guarded(…)` atom is a complete EffectExpression node
+            // (kept in step with the same list in `explode_incurred_effect_row`), so
+            // a top-level bare guarded atom is row-shaped and decomposes via the row
+            // algebra rather than falling through as an opaque value.
+            Some("merge" | "present" | "guarded" | "absent" | "open" | "empty_row")
         )
     })
 }

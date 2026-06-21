@@ -163,6 +163,12 @@ fn drain_effect_expr_node(en: &mut EffectExprNode, stack: &mut Vec<Rc<NodeOccurr
         EffectExprNode::Present { label } | EffectExprNode::Absent { label } => {
             drain_type_child(label, stack)
         }
+        EffectExprNode::Guarded { label, guard: _ } => {
+            drain_type_child(label, stack);
+            // `guard` is a `Value`-carried `List[reflect.Term]`; its `Value::Node`
+            // leaves Drop iteratively and the cons spine is shallow — nothing to
+            // hoist onto the work stack (as `TypeNode::NamedTuple`'s `fields`).
+        }
         EffectExprNode::Open { tail } => drain_type_child(tail, stack),
         EffectExprNode::EmptyRow => {}
     }
@@ -854,6 +860,14 @@ pub enum EffectExprNode {
     Merge { left: TypeChild, right: TypeChild },
     /// `present(label: Type)` — a single present effect label.
     Present { label: TypeChild },
+    /// `guarded(label: Type, guard: List[reflect.Term])` — a CONDITIONAL present
+    /// effect (proposal 048 / WI-478): present iff `guard` is not refuted at the
+    /// call site (discharge is WI-067; conservatively present until then). `label`
+    /// is the effect `Type` (as in `Present`); `guard` is a `Value`-carried
+    /// `List[reflect.Term]` of goal terms — mirroring [`TypeNode::NamedTuple`]'s
+    /// `fields: Value`, so a ground guard rides as `Value::Term` and a denoted /
+    /// occurrence-bearing one as `Value::Node`, read identically through `TermView`.
+    Guarded { label: TypeChild, guard: Value },
     /// `absent(label: Type)` — a `-e` absence guarantee.
     Absent { label: TypeChild },
     /// `open(tail: Type)` — a row-variable tail.
@@ -1704,6 +1718,11 @@ fn map_effect_node<R: TypeChildRewrite>(
             let (nl, ch) = map_type_child(r, kb, label);
             (EffectExprNode::Present { label: nl }, ch)
         }
+        EffectExprNode::Guarded { label, guard } => {
+            let (nl, c1) = map_type_child(r, kb, label);
+            let (ng, c2) = map_value_type(r, kb, guard);
+            (EffectExprNode::Guarded { label: nl, guard: ng }, c1 || c2)
+        }
         EffectExprNode::Absent { label } => {
             let (nl, ch) = map_type_child(r, kb, label);
             (EffectExprNode::Absent { label: nl }, ch)
@@ -2058,6 +2077,10 @@ fn collect_effect_node_vars(
         EffectExprNode::Present { label } | EffectExprNode::Absent { label } => {
             collect_type_child(kb, label, vars, seen)
         }
+        EffectExprNode::Guarded { label, guard } => {
+            collect_type_child(kb, label, vars, seen);
+            collect_value_type(kb, guard, vars, seen);
+        }
         EffectExprNode::Open { tail } => collect_type_child(kb, tail, vars, seen),
         EffectExprNode::EmptyRow => {}
     }
@@ -2394,6 +2417,18 @@ fn effect_node_to_term(kb: &mut KnowledgeBase, en: &EffectExprNode) -> TermId {
         EffectExprNode::Present { label } => {
             let l = type_child_to_term(kb, label);
             kb.make_effect_expression_present(l)
+        }
+        EffectExprNode::Guarded { label, guard } => {
+            let l = type_child_to_term(kb, label);
+            // `guard` is a `Value`-carried `List[reflect.Term]`; lower it via the
+            // total `value_to_term` boundary (as `NamedTuple`'s `fields`). Goal
+            // terms / occurrences are always term-representable, so the `Err`
+            // branch is a loud guard, never a silent drop.
+            let guard_t = value_to_term(kb, guard).unwrap_or_else(|e| {
+                debug_assert!(false, "guarded guard not term-representable: {e:?}");
+                kb.alloc(Term::Bottom)
+            });
+            kb.make_effect_expression_guarded(l, guard_t)
         }
         EffectExprNode::Absent { label } => {
             let l = type_child_to_term(kb, label);
@@ -3188,6 +3223,10 @@ pub(crate) fn substitute_ref_syms_occ(
                 },
                 EffectExprNode::Present { label } => EffectExprNode::Present {
                     label: rewrite_ref_child(label, map),
+                },
+                EffectExprNode::Guarded { label, guard } => EffectExprNode::Guarded {
+                    label: rewrite_ref_child(label, map),
+                    guard: rewrite_ref_value(guard, map),
                 },
                 EffectExprNode::Absent { label } => EffectExprNode::Absent {
                     label: rewrite_ref_child(label, map),

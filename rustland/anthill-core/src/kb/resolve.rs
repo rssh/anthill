@@ -3748,6 +3748,10 @@ impl KnowledgeBase {
             EffectExprNode::Present { label } | EffectExprNode::Absent { label } => {
                 self.collect_type_child_unbound_vars(label, subst, out)
             }
+            EffectExprNode::Guarded { label, guard } => {
+                self.collect_type_child_unbound_vars(label, subst, out);
+                self.collect_type_value_unbound_vars(guard, subst, out);
+            }
             EffectExprNode::Open { tail } => self.collect_type_child_unbound_vars(tail, subst, out),
             EffectExprNode::EmptyRow => {}
         }

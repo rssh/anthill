@@ -1,0 +1,86 @@
+==================================
+Bare guarded effect in a mixed row (E :- guard) [WI-478]
+==================================
+
+operation f(b: Int) -> Unit
+  effects { Modify[c], Error :- eq(b, 0) }
+
+---
+
+(source_file
+  (operation_declaration
+    name: (name
+      (identifier))
+    (param
+      name: (identifier)
+      type: (simple_type
+        (name
+          (identifier))))
+    return_type: (simple_type
+      (name
+        (identifier)))
+    (operation_clause
+      (effects_clause
+        (application
+          name: (name
+            (identifier))
+          (sort_binding
+            type: (simple_type
+              (name
+                (identifier)))))
+        (guarded_effect
+          effect: (simple_type
+            (name
+              (identifier)))
+          guard: (fn_term
+            name: (name
+              (identifier))
+            (name
+              (identifier))
+            (integer_literal)))))))
+
+==================================
+Parenthesized guarded effect with a conjunctive guard ( E :- p, q ) [WI-478]
+==================================
+
+operation g(a: Int, b: Int) -> Unit
+  effects { ( Error :- eq(b, 0), eq(a, 0) ) }
+
+---
+
+(source_file
+  (operation_declaration
+    name: (name
+      (identifier))
+    (param
+      name: (identifier)
+      type: (simple_type
+        (name
+          (identifier))))
+    (param
+      name: (identifier)
+      type: (simple_type
+        (name
+          (identifier))))
+    return_type: (simple_type
+      (name
+        (identifier)))
+    (operation_clause
+      (effects_clause
+        (paren_guarded_effect
+          effect: (simple_type
+            (name
+              (identifier)))
+          guard: (rule_body
+            (fn_term
+              name: (name
+                (identifier))
+              (name
+                (identifier))
+              (integer_literal))
+            (fn_term
+              name: (name
+                (identifier))
+              (name
+                (identifier))
+              (integer_literal))))))))

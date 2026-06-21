@@ -213,6 +213,23 @@ pub enum TypeExpr {
     /// for genuine effect params; a type mismatch otherwise), not reclassified
     /// as a set here.
     EffectRow(Vec<TypeExpr>),
+    /// WI-478 (proposal 048): a guarded effect-row element `E :- guard` — present
+    /// iff its guard is not refuted (discharge is WI-067; this phase only parses +
+    /// stores it). `label` is the guarded effect (the `_simple_effect`, a `Simple`
+    /// label / `Parameterized` / `Denoted` application); `guard` is the guard's Horn
+    /// body — a conjunction of goal terms over the operation's parameters (parse-store
+    /// `TermId`s, the same shape `convert_rule_body` produces). A bare `E :- p` stores
+    /// `[p]`; a paren `( E :- p, q )` stores `[p, q]`. The loader lowers this to the
+    /// `EffectExpression.guarded(label, guard: List[reflect.Term])` element; the empty
+    /// guard `[]` is the degenerate `present(label)` case (not produced here — a bare
+    /// label lowers to `present` directly).
+    ///
+    /// Only meaningful inside an effect-clause / effect-row position; the converter
+    /// places it only where `EffectAbsent` / `EffectRow` are placed.
+    EffectGuarded {
+        label: Box<TypeExpr>,
+        guard: Vec<TermId>,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]

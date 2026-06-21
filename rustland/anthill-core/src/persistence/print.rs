@@ -194,6 +194,23 @@ impl<'a> TermPrinter<'a, KnowledgeBase> {
                 self.write_type_child(right, buf);
             }
             EffectExprNode::Present { label } => self.write_type_child(label, buf),
+            EffectExprNode::Guarded { label, guard } => {
+                // WI-478: `E :- g1` (single goal) / `( E :- g1, g2 )` (conjunctive,
+                // parenthesized so it round-trips). Only the NODE form reaches here
+                // (a denoted-bearing label); the common ground guarded atom is a
+                // hash-consed term rendered by `collect_effect_atoms`.
+                let goals = self.guard_goal_value_strings(guard);
+                let multi = goals.len() > 1;
+                if multi {
+                    buf.push_str("( ");
+                }
+                self.write_type_child(label, buf);
+                buf.push_str(" :- ");
+                buf.push_str(&goals.join(", "));
+                if multi {
+                    buf.push_str(" )");
+                }
+            }
             EffectExprNode::Absent { label } => {
                 buf.push('-');
                 self.write_type_child(label, buf);
@@ -201,6 +218,28 @@ impl<'a> TermPrinter<'a, KnowledgeBase> {
             EffectExprNode::Open { tail } => self.write_type_child(tail, buf),
             EffectExprNode::EmptyRow => buf.push_str("{}"),
         }
+    }
+
+    /// WI-478: walk a NODE-form guard — a `Value`-carried `List[reflect.Term]`
+    /// cons-spine — into its rendered goal strings. A `nil` (no `head`/`tail`) ends
+    /// the walk.
+    fn guard_goal_value_strings(&self, guard: &Value) -> Vec<String> {
+        let mut goals: Vec<String> = Vec::new();
+        let mut cur = guard;
+        while let Value::Entity { named, .. } = cur {
+            let head = named.iter().find(|(s, _)| self.view.sym_name(*s) == "head");
+            let tail = named.iter().find(|(s, _)| self.view.sym_name(*s) == "tail");
+            match (head, tail) {
+                (Some((_, h)), Some((_, t))) => {
+                    let mut s = String::new();
+                    self.write_type_value(h, &mut s);
+                    goals.push(s);
+                    cur = t;
+                }
+                _ => break,
+            }
+        }
+        goals
     }
 
     fn write_occurrence(&self, occ: &NodeOccurrence, buf: &mut String) {
@@ -892,6 +931,22 @@ impl<'a, V: TermSource + ?Sized> TermPrinter<'a, V> {
                     out.push(s);
                 }
             }
+            // WI-478: `guarded(label, guard)` renders as the surface `E :- g1, …` —
+            // a single goal uses the bare form, a conjunctive guard the
+            // parenthesized `( E :- g1, g2 )` so it round-trips through the parser.
+            "anthill.prelude.EffectExpression.guarded" => {
+                if let Some(l) = self.named_arg(named_args, "label") {
+                    let mut label_s = String::new();
+                    self.write_type_term(l, &mut label_s);
+                    let goals = self.guard_goal_term_strings(self.named_arg(named_args, "guard"));
+                    let body = goals.join(", ");
+                    out.push(if goals.len() > 1 {
+                        format!("( {label_s} :- {body} )")
+                    } else {
+                        format!("{label_s} :- {body}")
+                    });
+                }
+            }
             "anthill.prelude.EffectExpression.absent" => {
                 if let Some(l) = self.named_arg(named_args, "label") {
                     let mut s = String::from("-");
@@ -916,6 +971,29 @@ impl<'a, V: TermSource + ?Sized> TermPrinter<'a, V> {
             }
             _ => {}
         }
+    }
+
+    /// WI-478: walk a TERM-form guard — a hash-consed `List[reflect.Term]`
+    /// cons-spine — into its rendered goal strings (the term peer of
+    /// `guard_goal_value_strings`). A `nil` / non-cons head ends the walk.
+    fn guard_goal_term_strings(&self, guard: Option<TermId>) -> Vec<String> {
+        let mut goals: Vec<String> = Vec::new();
+        let mut cur = guard;
+        while let Some(g) = cur {
+            let Term::Fn { functor, named_args, .. } = self.view.term(g) else {
+                break;
+            };
+            if self.view.qualified_name(*functor) != "anthill.prelude.List.cons" {
+                break;
+            }
+            if let Some(h) = self.named_arg(named_args, "head") {
+                let mut s = String::new();
+                self.write_term(h, &mut s);
+                goals.push(s);
+            }
+            cur = self.named_arg(named_args, "tail");
+        }
+        goals
     }
 
     fn write_literal(&self, lit: &Literal, buf: &mut String) {

@@ -3286,6 +3286,26 @@ impl KnowledgeBase {
         )
     }
 
+    /// EffectExpression `guarded(label, guard)` carried as an occurrence — minted
+    /// when the guarded effect's `label` is `denoted`-bearing (a `Value::Node`).
+    /// `guard` is the `Value`-carried `List[reflect.Term]` the
+    /// [`node_occurrence::EffectExprNode::Guarded`] carrier stores (build it with
+    /// [`crate::kb::load::build_value_list`] over the goal `Value`s — a ground goal
+    /// rides as `Value::Term`, a poisoned one as `Value::Node`).
+    pub fn make_guarded_occ(
+        &self,
+        label: node_occurrence::TypeChild,
+        guard: crate::eval::value::Value,
+        span: crate::span::SourceSpan,
+        owner: Option<Symbol>,
+    ) -> Rc<NodeOccurrence> {
+        NodeOccurrence::new_effect_expr(
+            node_occurrence::EffectExprNode::Guarded { label, guard },
+            span,
+            owner,
+        )
+    }
+
     /// EffectExpression `absent(label)` carried as an occurrence.
     pub fn make_absent_occ(
         &self,
@@ -3474,6 +3494,22 @@ impl KnowledgeBase {
         self.make_entity_term(sym, SmallVec::new(), named_args)
     }
 
+    /// EffectExpression `guarded(label: Type, guard: List[reflect.Term])` — a
+    /// CONDITIONAL present effect (proposal 048 / WI-478). `guard` is an
+    /// already-assembled `List[reflect.Term]` term (build it with [`Self::build_list`]
+    /// over the guard's goal terms); the degenerate empty guard is the bare
+    /// `present(label)` (not produced here). Conservatively present until discharge
+    /// (WI-067).
+    pub fn make_effect_expression_guarded(&mut self, label: TermId, guard: TermId) -> TermId {
+        let sym = self.resolve_symbol("anthill.prelude.EffectExpression.guarded");
+        let label_key = self.intern("label");
+        let guard_key = self.intern("guard");
+        let mut named_args: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
+        named_args.push((label_key, label));
+        named_args.push((guard_key, guard));
+        self.make_entity_term(sym, SmallVec::new(), named_args)
+    }
+
     /// EffectExpression `absent(label: Type)` — `-e` absence guarantee.
     /// Unused in v1a (presence-only); reserved for v1b's `lacks` constraints.
     pub fn make_effect_expression_absent(&mut self, label: TermId) -> TermId {
@@ -3595,6 +3631,12 @@ impl KnowledgeBase {
         let present_sym = self.try_resolve_symbol(
             "anthill.prelude.EffectExpression.present",
         );
+        // WI-478: a `guarded(label, guard)` atom (a ground guarded effect) is, like
+        // `present`/`absent`, already a complete EffectExpression atom — keep it
+        // as-is rather than wrapping the whole `guarded(…)` Fn in `present(…)`.
+        let guarded_sym = self.try_resolve_symbol(
+            "anthill.prelude.EffectExpression.guarded",
+        );
         let mut atoms: Vec<TermId> = Vec::new();
         // WI-441: ALL row-tail Vars are collected — a row UNION (`{ES, EF}`,
         // the lazy combinators' merge row) folds each as its own `open(…)`.
@@ -3616,11 +3658,12 @@ impl KnowledgeBase {
                 }
                 Term::Fn { functor, .. }
                     if Some(*functor) == absent_sym
-                        || Some(*functor) == present_sym =>
+                        || Some(*functor) == present_sym
+                        || Some(*functor) == guarded_sym =>
                 {
                     // Pre-built EffectExpression atom (WI-327 `-E` →
-                    // `absent(E)`, or any prior `present(E)` wrapper).
-                    // Keep as-is.
+                    // `absent(E)`, any prior `present(E)` wrapper, or a WI-478
+                    // `guarded(label, guard)`). Keep as-is.
                     atoms.push(e);
                 }
                 _ => {

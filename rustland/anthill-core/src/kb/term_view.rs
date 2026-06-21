@@ -551,6 +551,7 @@ fn effect_expr_head(en: &EffectExprNode, kb: &KnowledgeBase) -> ViewHead {
     let (short, named_arity) = match en {
         EffectExprNode::Merge { .. } => ("merge", 2),
         EffectExprNode::Present { .. } => ("present", 1),
+        EffectExprNode::Guarded { .. } => ("guarded", 2),
         EffectExprNode::Absent { .. } => ("absent", 1),
         EffectExprNode::Open { .. } => ("open", 1),
         EffectExprNode::EmptyRow => ("empty_row", 0),
@@ -565,6 +566,9 @@ fn effect_expr_keys(en: &EffectExprNode, kb: &KnowledgeBase) -> Vec<Symbol> {
     let keys: &[&str] = match en {
         EffectExprNode::Merge { .. } => &["left", "right"],
         EffectExprNode::Present { .. } | EffectExprNode::Absent { .. } => &["label"],
+        // Declared field order `guarded(label, guard)` — matches the term twin's
+        // canonical named-arg order (as `merge`'s `[left, right]`).
+        EffectExprNode::Guarded { .. } => &["label", "guard"],
         EffectExprNode::Open { .. } => &["tail"],
         EffectExprNode::EmptyRow => &[],
     };
@@ -572,7 +576,7 @@ fn effect_expr_keys(en: &EffectExprNode, kb: &KnowledgeBase) -> Vec<Symbol> {
 }
 
 fn effect_expr_named<'a>(
-    en: &EffectExprNode,
+    en: &'a EffectExprNode,
     kb: &KnowledgeBase,
     sym: Symbol,
 ) -> Option<ViewItem<'a>> {
@@ -591,6 +595,17 @@ fn effect_expr_named<'a>(
             if Some(sym) == key("label") =>
         {
             Some(type_child_view_item(label))
+        }
+        // `label` is a `TypeChild`; `guard` is the `Value`-carried `List[reflect.Term]`
+        // (borrowed as `ViewItem::Value`, walked like the term's list — as NamedTuple).
+        EffectExprNode::Guarded { label, guard } => {
+            if Some(sym) == key("label") {
+                Some(type_child_view_item(label))
+            } else if Some(sym) == key("guard") {
+                Some(ViewItem::Value(guard))
+            } else {
+                None
+            }
         }
         EffectExprNode::Open { tail } if Some(sym) == key("tail") => {
             Some(type_child_view_item(tail))

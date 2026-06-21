@@ -1698,6 +1698,8 @@ fn type_expr_base_name(parse_sym: &crate::intern::SymbolTable, ty: &TypeExpr) ->
         TypeExpr::EffectAbsent(inner) => type_expr_base_name(parse_sym, inner),
         // WI-375: a written effect-row's base is the `effects_rows` bridge entity.
         TypeExpr::EffectRow(_) => "TypeExtractor.EffectsRows".to_owned(),
+        // WI-478: a guarded effect's base is its guarded label (peek past the guard).
+        TypeExpr::EffectGuarded { label, .. } => type_expr_base_name(parse_sym, label),
     }
 }
 
@@ -1869,6 +1871,10 @@ fn build_instantiation_term(
         // `-E` here it'll surface as a malformed-name binding rather
         // than a panic.
         TypeExpr::EffectAbsent(_) => kb.make_name_term("?absent"),
+        // WI-478: guarded effects appear only in effects positions (lowered via
+        // `type_expr_to_child`), never in this instantiation-term free-fn path.
+        // Placeholder so the match stays total (mirrors `EffectAbsent`).
+        TypeExpr::EffectGuarded { .. } => kb.make_name_term("?guarded"),
         // WI-375: a WRITTEN effect-row in this ground free-fn lowering path
         // (`Stream[E = {}]` instantiation). Lower each element to a ground term
         // and assemble the canonical `effects_rows(EffectExpression)` Type — the
@@ -8622,6 +8628,40 @@ impl<'a> Loader<'a> {
             // (`Stream[E = {}]` / `Stream[E = {Modify[c]}]`) → the KB
             // `effects_rows(EffectExpression)` Type (the WI-320 bridge).
             TypeExpr::EffectRow(effects) => self.lower_effect_row(effects, span, owner),
+            // WI-478 (proposal 048): a guarded effect `E :- guard` → the
+            // `guarded(label, guard: List[reflect.Term])` EffectExpression atom.
+            // The guard goals convert in the CURRENT (op) scope, so param refs
+            // (`eq(b, 0)`) resolve. A GROUND label hash-conses the whole atom (term
+            // form); a denoted-bearing label poisons it to the node form, the guard
+            // goals carried as `Value`s. Like `EffectAbsent`, this arm produces a
+            // COMPLETE EffectExpression atom — the row folders carry it BARE (never
+            // wrap it in `present`).
+            TypeExpr::EffectGuarded { label, guard } => {
+                let guard_terms: Vec<TermId> =
+                    guard.iter().map(|g| self.convert_term(*g)).collect();
+                let label_child = self.type_expr_to_child(label, span, owner);
+                match label_child {
+                    node_occurrence::TypeChild::Ground(label_t) => {
+                        let guard_list = self.kb.build_list(&guard_terms);
+                        node_occurrence::TypeChild::Ground(
+                            self.kb.make_effect_expression_guarded(label_t, guard_list),
+                        )
+                    }
+                    node_occurrence::TypeChild::Node(label_o) => {
+                        let guard_values: Vec<crate::eval::value::Value> = guard_terms
+                            .into_iter()
+                            .map(crate::eval::value::Value::Term)
+                            .collect();
+                        let guard_value = build_value_list(self.kb, guard_values);
+                        node_occurrence::TypeChild::Node(self.kb.make_guarded_occ(
+                            node_occurrence::TypeChild::Node(label_o),
+                            guard_value,
+                            span,
+                            owner,
+                        ))
+                    }
+                }
+            }
         }
     }
 
@@ -8699,7 +8739,10 @@ impl<'a> Loader<'a> {
                 TypeChild::Ground(t) => self.kb.row_tail_var_of(*t),
                 TypeChild::Node(_) => None,
             };
-            let atom = if matches!(e, TypeExpr::EffectAbsent(_)) {
+            // WI-478: a guarded atom (like an `EffectAbsent` `absent(…)`) is already
+            // a COMPLETE EffectExpression atom from `type_expr_to_child` — carry it
+            // bare; wrapping it in `present(…)` would yield malformed `present(guarded(…))`.
+            let atom = if matches!(e, TypeExpr::EffectAbsent(_) | TypeExpr::EffectGuarded { .. }) {
                 child
             } else if let Some(v) = row_var {
                 TypeChild::Node(self.kb.make_open_occ(TypeChild::Ground(v), span, owner))

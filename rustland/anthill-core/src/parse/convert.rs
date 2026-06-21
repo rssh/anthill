@@ -1881,11 +1881,40 @@ impl<'a> Converter<'a> {
             | "effect_absence" => {
                 out.push(Effect { type_expr: self.convert_type(node) });
             }
+            // WI-478 (proposal 048): a guarded effect `E :- guard` (bare or
+            // parenthesized) → one `EffectGuarded` entry.
+            "guarded_effect" | "paren_guarded_effect" => {
+                out.push(Effect { type_expr: self.convert_guarded_effect(node) });
+            }
             _ => {
                 // Unknown node — skip silently (mirrors prior behavior
                 // for unexpected children).
             }
         }
+    }
+
+    /// WI-478: lower a `guarded_effect` (`E :- p`) or `paren_guarded_effect`
+    /// (`( E :- p, q )`) CST node into a [`TypeExpr::EffectGuarded`]. The `effect`
+    /// field is the guarded label (`_simple_effect`); the `guard` field is a single
+    /// `_term` (bare) or a `rule_body` (paren) — both collected to a `Vec<TermId>`
+    /// of goal terms.
+    fn convert_guarded_effect(&mut self, node: Node) -> TypeExpr {
+        let label = self.field(node, "effect")
+            .map(|n| self.convert_type(n))
+            .unwrap_or_else(|| {
+                self.err("guarded effect missing label", node);
+                let sym = self.intern("?");
+                TypeExpr::Simple(Name::simple(sym, self.span(node)))
+            });
+        let guard: Vec<TermId> = match self.field(node, "guard") {
+            Some(g) if g.kind() == "rule_body" => self.convert_rule_body(g),
+            Some(g) => vec![self.convert_term(g)],
+            None => {
+                self.err("guarded effect missing guard", node);
+                Vec::new()
+            }
+        };
+        TypeExpr::EffectGuarded { label: Box::new(label), guard }
     }
 
     // ── Visibility ──────────────────────────────────────────────
