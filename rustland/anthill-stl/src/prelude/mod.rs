@@ -22,3 +22,14 @@ pub use meta::Meta;
 /// methods — runtime dispatch lives in `anthill-core`'s effect-handler /
 /// cell-arena machinery, not in trait impls.
 pub trait Modifiable {}
+
+/// Opaque host stubs for the kernel `Type` / `TypeExtractor` sorts (WI-540).
+/// The generated reflect subset emits `use crate::prelude::{Type}` /
+/// `{TypeExtractor}` from `reflect.anthill`'s imports; these appear only in
+/// loud-stubbed (`KB.facts_of` / `assert`) or excluded paths, so they need
+/// only exist as a host type.
+#[derive(Clone, Debug)]
+pub struct Type;
+
+#[derive(Clone, Debug)]
+pub struct TypeExtractor;

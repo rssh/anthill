@@ -484,3 +484,77 @@ end
     assert!(out.contains("pub const infinity: f64 = f64::INFINITY;"), "output:\n{out}");
     assert!(out.contains("pub const nan: f64 = f64::NAN;"), "output:\n{out}");
 }
+
+// ── Test 26: WI-540 boxed_trait_objects mode (position-aware) ─────
+
+#[test]
+fn boxed_trait_objects_mode_position_aware() {
+    use anthill_core::codegen::{generate_rust_with_config, collect_trait_sorts, CodegenConfig};
+
+    // `S` is a trait sort (ops, no entities); `E` is an enum with a field of
+    // trait type `S`. Exercises every position: receiver, non-receiver param,
+    // return, enum field.
+    let src = r#"sort S
+  operation f(s: S, x: S) -> S
+end
+enum E
+  entity wrap(s: S)
+end
+"#;
+    let parsed = parse::parse(src).expect("parse");
+    let refs = vec![&parsed];
+    let traits = collect_trait_sorts(&refs);
+
+    // Flag ON → trait objects, object-safe.
+    let cfg = CodegenConfig { boxed_trait_objects: true, default_pub: true, ..Default::default() };
+    let on = generate_rust_with_config(&parsed, &traits, &cfg).expect("gen on");
+    assert!(on.contains("x: &dyn S"), "non-receiver Self param → &dyn S:\n{on}");
+    assert!(on.contains("-> Box<dyn S>"), "Self return → Box<dyn S>:\n{on}");
+    // `s: Box<dyn S>` (not the bare `Box<dyn S>` substring, which the return
+    // type already supplies) so this independently catches a field-wrap regression.
+    assert!(on.contains("s: Box<dyn S>"), "enum field of trait type → Box<dyn S>:\n{on}");
+    // Receiver stays &self (not &dyn S).
+    assert!(on.contains("fn f(&self,"), "receiver stays &self:\n{on}");
+
+    // Flag OFF (default) → original skeleton forms; never a trait object.
+    let off = gen(src);
+    assert!(!off.contains("&dyn S"), "off must not emit &dyn:\n{off}");
+    assert!(!off.contains("Box<dyn S>"), "off must not box:\n{off}");
+    assert!(off.contains("-> impl S") || off.contains("-> Self"), "off keeps impl/Self return:\n{off}");
+}
+
+#[test]
+fn emit_only_filters_to_named_items() {
+    // WI-540: `emit_only` generates just the named items (here `Keep`) and omits
+    // the rest (`Drop`) plus the free-op module trait. `None` emits everything.
+    use anthill_core::codegen::{generate_rust_with_config, collect_trait_sorts, CodegenConfig};
+
+    let src = r#"namespace demo
+  enum Keep
+    entity a(x: Int64)
+  end
+  enum Drop
+    entity b(y: Int64)
+  end
+  operation free_op(x: Int64) -> Int64
+end
+"#;
+    let parsed = parse::parse(src).expect("parse");
+    let refs = vec![&parsed];
+    let traits = collect_trait_sorts(&refs);
+
+    let cfg = CodegenConfig {
+        emit_only: Some(vec!["Keep".into()]),
+        default_pub: true,
+        ..Default::default()
+    };
+    let out = generate_rust_with_config(&parsed, &traits, &cfg).expect("gen");
+    assert!(out.contains("enum Keep"), "Keep must be emitted:\n{out}");
+    assert!(!out.contains("enum Drop"), "Drop must be filtered out:\n{out}");
+    assert!(!out.contains("free_op"), "free op (module trait) must be omitted:\n{out}");
+
+    // None → everything emitted.
+    let all = gen(src);
+    assert!(all.contains("enum Keep") && all.contains("enum Drop"),
+        "default (None) emits all:\n{all}");
+}

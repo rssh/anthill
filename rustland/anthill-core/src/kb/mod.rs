@@ -2372,7 +2372,12 @@ impl KnowledgeBase {
     /// hash-consed term. Distinct from `reify_goal_value` (resolve.rs), the
     /// term-only materializer (`Value -> TermId`, no `σ`) the remaining
     /// term-structured goal-handlers still use.
-    pub(crate) fn reify_value(
+    ///
+    /// WI-535: `pub` so the host reflect bridge (`anthill-stl`) realizes its
+    /// carrier-faithful `Substitution.apply` / `KB.apply_core_subst` over a
+    /// `Value`-carried `Term` through this — an occurrence-carried goal keeps
+    /// its identity/span instead of being reified to a bare `TermId`.
+    pub fn reify_value(
         &mut self,
         v: &crate::eval::value::Value,
         subst: &subst::Substitution,

@@ -34,6 +34,7 @@ impl std::error::Error for CodegenError {}
 ///
 /// Default produces skeleton output (existing behavior).
 /// Non-default values produce compilable output for STL generation.
+#[derive(Clone)]
 pub struct CodegenConfig {
     /// Skip the outer `pub mod name { }` wrapper (file IS the module).
     pub flatten_top_namespace: bool,
@@ -49,6 +50,33 @@ pub struct CodegenConfig {
     pub derives: Vec<String>,
     /// Make all items public (for compilable library output).
     pub default_pub: bool,
+    /// Render a trait-typed position as a trait OBJECT rather than `impl Trait`
+    /// (WI-540): a return / field becomes `Box<dyn Trait<…>>` and a non-receiver
+    /// parameter `&dyn Trait`, instead of `impl Trait` (returns) or a bare trait
+    /// name (params, which is invalid Rust). This keeps a generated trait
+    /// object-safe — required for a host `&dyn KB` and for a recursive `Stream`
+    /// (`tail -> Stream`) or a trait-typed enum field (`Solution.definite(subst:
+    /// Substitution)`). Off by default → existing skeleton output is unchanged.
+    pub boxed_trait_objects: bool,
+    /// Emit ONLY the named top-level items (WI-540): when `Some`, a sort / enum /
+    /// entity whose short name is not in the set is skipped, and the synthesized
+    /// namespace-level free-op "module trait" is omitted entirely. Used to
+    /// generate just the KB-bridge subset of `reflect.anthill` (the `KB` /
+    /// `Substitution` traits + `Solution` / `LogicalQuery` / introspection data
+    /// types) without the occurrence IR or the free reflect ops. `None` →
+    /// everything is emitted (existing behavior).
+    pub emit_only: Option<Vec<String>>,
+}
+
+impl CodegenConfig {
+    /// Whether a top-level item named `name` should be emitted under
+    /// [`Self::emit_only`] (always true when the filter is `None`).
+    fn emits(&self, name: &str) -> bool {
+        match &self.emit_only {
+            None => true,
+            Some(names) => names.iter().any(|n| n == name),
+        }
+    }
 }
 
 impl Default for CodegenConfig {
@@ -60,6 +88,8 @@ impl Default for CodegenConfig {
             namespace_map: HashMap::new(),
             derives: Vec::new(),
             default_pub: false,
+            boxed_trait_objects: false,
+            emit_only: None,
         }
     }
 }
@@ -295,15 +325,76 @@ impl<'a> RustCodegen<'a> {
 
     // ── Trait return wrapping ─────────────────────────────────────
 
-    /// If the outermost type of a return type is a known trait sort,
-    /// wrap it with `impl` (e.g. `Stream<T>` → `impl Stream<T>`).
+    /// True when `ty`'s outermost name (before any `<`) is a known trait sort.
+    /// Drives the WI-540 trait-object wrapping; a `Self` collapse is handled at
+    /// the call site (it is a trait by construction inside a trait method).
+    fn is_trait_type(&self, ty: &str) -> bool {
+        let base = ty.split('<').next().unwrap_or(ty).trim();
+        self.trait_sorts.contains(base)
+    }
+
+    /// If the outermost type of a return type is a known trait sort, wrap it:
+    /// `Box<dyn Stream<T>>` when [`CodegenConfig::boxed_trait_objects`] (keeps
+    /// the trait object-safe), else `impl Stream<T>` (the original skeleton form).
     fn wrap_trait_return(&self, ret: &str) -> String {
-        // Extract the outermost type name (before '<' if generic)
-        let base = ret.split('<').next().unwrap_or(ret).trim();
-        if self.trait_sorts.contains(base) {
-            format!("impl {ret}")
+        if self.is_trait_type(ret) {
+            if self.config.boxed_trait_objects {
+                format!("Box<dyn {ret}>")
+            } else {
+                format!("impl {ret}")
+            }
         } else {
             ret.to_owned()
+        }
+    }
+
+    /// Return-position wrapping that also resolves a `Self` collapse (WI-540).
+    /// `type_to_rust_in_sort` renders the enclosing sort's own type as `"Self"`;
+    /// in a trait method a `Self` return breaks object-safety, so under
+    /// `boxed_trait_objects` it becomes `Box<dyn <SortName>>`. A non-trait
+    /// enclosing sort (enum impl method) keeps `Self` (delegates to
+    /// [`Self::wrap_trait_return`], which leaves non-trait names untouched).
+    fn wrap_trait_return_in_sort(&self, ret: &str, sort_name: &str) -> String {
+        if self.config.boxed_trait_objects
+            && ret == "Self"
+            && self.trait_sorts.contains(sort_name)
+        {
+            format!("Box<dyn {sort_name}>")
+        } else {
+            self.wrap_trait_return(ret)
+        }
+    }
+
+    /// Parameter-position wrapping (WI-540). A non-receiver parameter of a trait
+    /// type must be a trait object reference under `boxed_trait_objects`: the
+    /// enclosing trait's own type (`"Self"`) → `&dyn <SortName>`, a different
+    /// trait → `&dyn Trait`. Off / non-trait carriers keep the original
+    /// `should_ref_param` behaviour (`&Self`, or the bare type).
+    fn wrap_trait_param(&self, ptype: &str, sort_name: &str) -> String {
+        if self.config.boxed_trait_objects {
+            if ptype == "Self" && self.trait_sorts.contains(sort_name) {
+                return format!("&dyn {sort_name}");
+            }
+            if self.is_trait_type(ptype) {
+                return format!("&dyn {ptype}");
+            }
+        }
+        if should_ref_param(ptype) {
+            format!("&{ptype}")
+        } else {
+            ptype.to_owned()
+        }
+    }
+
+    /// Field-position wrapping (WI-540): a struct/enum field of trait type
+    /// becomes `Box<dyn Trait<…>>` under `boxed_trait_objects` (e.g.
+    /// `Solution.definite(subst: Substitution)` → `subst: Box<dyn Substitution>`).
+    /// A non-trait field (or the flag off) is unchanged.
+    fn wrap_trait_field(&self, ty: &str) -> String {
+        if self.config.boxed_trait_objects && self.is_trait_type(ty) {
+            format!("Box<dyn {ty}>")
+        } else {
+            ty.to_owned()
         }
     }
 
@@ -385,6 +476,18 @@ impl<'a> RustCodegen<'a> {
             let vis = if in_trait { "" } else { self.visibility_prefix(c.visibility) };
             self.line(&format!("{vis}const {name}: {ty} = {val};"));
         }
+    }
+
+    /// WI-540: a struct/enum with a trait-object field (`Box<dyn Trait>`, under
+    /// `boxed_trait_objects`) cannot `derive(Clone, Debug)` — a trait object is
+    /// neither unless the trait requires it. Such a type (e.g.
+    /// `Solution.definite(subst: Substitution)`) must skip the derive attr.
+    /// Only ever true under `boxed_trait_objects`, so default output is
+    /// unaffected. (Outer-name check — a trait *inside* a `List`/`Option` is not
+    /// flagged; the reflect subset has none.)
+    fn has_trait_object_field<'b>(&self, tys: impl Iterator<Item = &'b TypeExpr>) -> bool {
+        self.config.boxed_trait_objects
+            && tys.into_iter().any(|ty| self.is_trait_type(&self.type_expr_short_name(ty)))
     }
 
     // ── Type expression mapping ──────────────────────────────────
@@ -671,6 +774,21 @@ impl<'a> RustCodegen<'a> {
             if consumed_ops.contains(&idx) || consumed_facts.contains(&idx) {
                 continue;
             }
+            // WI-540 `emit_only`: skip a sort/enum/entity not in the subset, and
+            // skip namespace-level facts entirely (the supertrait facts are
+            // already folded into `sort_supertraits` above).
+            if self.config.emit_only.is_some() {
+                let skip = match item {
+                    Item::SortWithBody(s) => !self.config.emits(&self.resolve(&s.name)),
+                    Item::AbstractSort(s) => !self.config.emits(&self.resolve(&s.name)),
+                    Item::Entity(e) => !self.config.emits(&self.resolve(&e.name)),
+                    Item::Fact(_) => true,
+                    _ => false,
+                };
+                if skip {
+                    continue;
+                }
+            }
             match item {
                 Item::SortWithBody(s) => {
                     if !first { self.blank(); }
@@ -693,8 +811,12 @@ impl<'a> RustCodegen<'a> {
                         if !first { self.blank(); }
                         self.emit_abstract_sort_as_trait(s, &ops, &extra_supers);
                     } else {
-                        // No operations → emit as unit struct
+                        // No operations → emit as unit struct. Derive like other
+                        // generated types (WI-540) so an opaque sort (e.g.
+                        // `NodeOccurrence`) can sit in a `derive(Clone, Debug)`
+                        // struct field. (No-op when `derives` is empty.)
                         if !first { self.blank(); }
+                        self.emit_derive_attr();
                         let vis = self.visibility_prefix(s.visibility);
                         self.line(&format!("{vis}struct {sname};"));
                     }
@@ -733,8 +855,10 @@ impl<'a> RustCodegen<'a> {
             first = false;
         }
 
-        // Emit module trait for orphan operations (compilable mode only)
-        if !orphan_ops.is_empty() {
+        // Emit module trait for orphan operations (compilable mode only).
+        // WI-540 `emit_only`: the free reflect ops are interpreter-only — omit
+        // the module trait entirely under the subset filter.
+        if !orphan_ops.is_empty() && self.config.emit_only.is_none() {
             self.blank();
             self.emit_module_trait(ns, &orphan_ops);
         }
@@ -887,7 +1011,9 @@ impl<'a> RustCodegen<'a> {
         let vis = self.visibility_prefix(entity.visibility);
         let name = self.resolve(&entity.name);
 
-        self.emit_derive_attr();
+        if !self.has_trait_object_field(entity.fields.iter().map(|f| &f.ty)) {
+            self.emit_derive_attr();
+        }
         if entity.fields.is_empty() {
             self.line(&format!("{vis}struct {name};"));
         } else {
@@ -895,7 +1021,7 @@ impl<'a> RustCodegen<'a> {
             self.indent();
             for field in &entity.fields {
                 let fname = to_snake_case(&self.resolve_sym(field.name));
-                let ftype = self.type_to_rust(&field.ty);
+                let ftype = self.wrap_trait_field(&self.type_to_rust(&field.ty));
                 self.line(&format!("pub {fname}: {ftype},"));
             }
             self.dedent();
@@ -963,7 +1089,9 @@ impl<'a> RustCodegen<'a> {
             format!("<{}>", info.type_params.join(", "))
         };
 
-        self.emit_derive_attr();
+        if !self.has_trait_object_field(info.entities.iter().flat_map(|e| e.fields.iter().map(|f| &f.ty))) {
+            self.emit_derive_attr();
+        }
         self.line(&format!("{vis}enum {sort_name}{generics} {{"));
         self.indent();
 
@@ -1113,7 +1241,8 @@ impl<'a> RustCodegen<'a> {
             if type_params.contains(&type_name) {
                 type_name
             } else {
-                rust_type
+                // WI-540: a trait-typed enum field becomes `Box<dyn Trait>`.
+                self.wrap_trait_field(&rust_type)
             }
         }
     }
@@ -1151,21 +1280,26 @@ impl<'a> RustCodegen<'a> {
             }
             let pname = to_snake_case(&self.resolve_sym(param.name));
             let ptype = self.type_to_rust_in_sort(&param.ty, sort_name, type_params, collapse_self);
-            // Non-self params of sort type or type-param type get &-ref
-            let ptype = if should_ref_param(&ptype) {
-                format!("&{ptype}")
-            } else {
-                ptype
-            };
+            let ptype = self.wrap_trait_param(&ptype, sort_name);
             params_str.push_str(&format!("{pname}: {ptype}"));
         }
 
         // Return type
         let raw_ret = self.type_to_rust_in_sort(&op.return_type, sort_name, type_params, collapse_self);
-        let raw_ret = self.wrap_trait_return(&raw_ret);
+        let raw_ret = self.wrap_trait_return_in_sort(&raw_ret, sort_name);
         let ret = wrap_return_type(&raw_ret, &effects);
 
-        self.line(&format!("fn {op_name}({params_str}) -> {ret};"));
+        // Object-safety: a self-less trait method (e.g. a factory like
+        // `kb() -> Box<dyn KB>`) makes the trait non-`dyn`-compatible. Under
+        // `boxed_trait_objects` — where the trait IS used as `&dyn Trait` — bound
+        // it on `Self: Sized` so it is excluded from the vtable and the trait
+        // stays object-safe. Gated by the flag to keep default output unchanged.
+        let where_clause = if !has_self && self.config.boxed_trait_objects {
+            " where Self: Sized"
+        } else {
+            ""
+        };
+        self.line(&format!("fn {op_name}({params_str}) -> {ret}{where_clause};"));
     }
 
     fn emit_method_signature(
@@ -1198,11 +1332,18 @@ impl<'a> RustCodegen<'a> {
             }
             let pname = to_snake_case(&self.resolve_sym(param.name));
             let ptype = self.type_to_rust_in_sort(&param.ty, sort_name, type_params, false);
+            // Preserve the original bare-param emission when the flag is off;
+            // only trait-object wrapping is opt-in (WI-540).
+            let ptype = if self.config.boxed_trait_objects {
+                self.wrap_trait_param(&ptype, sort_name)
+            } else {
+                ptype
+            };
             params_str.push_str(&format!("{pname}: {ptype}"));
         }
 
         let raw_ret = self.type_to_rust_in_sort(&op.return_type, sort_name, type_params, false);
-        let raw_ret = self.wrap_trait_return(&raw_ret);
+        let raw_ret = self.wrap_trait_return_in_sort(&raw_ret, sort_name);
         let ret = wrap_return_type(&raw_ret, &effects);
 
         self.line(&format!("{vis}fn {op_name}({params_str}) -> {ret};"));
