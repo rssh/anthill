@@ -44,6 +44,11 @@ fn main() {
         carrier_bindings: HashMap::from([
             ("Term".into(), "ReflectTerm".into()),
             ("Symbol".into(), "ReflectSymbol".into()),
+            // WI-545: `NodeOccurrence` (declared in reflect.anthill, so the
+            // codegen carrier-alias fires) binds to an opaque `Value` carrier so
+            // `OperationInfo.requires`/`ensures` can hold the loader's stored
+            // clause Values.
+            ("NodeOccurrence".into(), "ReflectNodeOccurrence".into()),
             ("FactId".into(), "anthill_core::kb::RuleId".into()),
         ]),
         boxed_trait_objects: true,

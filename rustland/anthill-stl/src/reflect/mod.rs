@@ -46,6 +46,29 @@ impl ReflectSymbol {
     }
 }
 
+/// The host realization of the reflect `NodeOccurrence` sort (WI-545). The
+/// spec types `OperationInfo.requires`/`ensures` as `List[NodeOccurrence]`, but
+/// the loader stores each precondition/postcondition clause as a carrier-
+/// agnostic `Value` — a `Value::Term` goal (or `conjunction(...)`) for the
+/// common case, a `Value::Node` only for a denoted-bearing value fact. So this
+/// carries the clause `Value` directly (carrier-faithful, like `ReflectTerm`),
+/// NOT an `Rc<NodeOccurrence>`: a plain goal term is not a positioned
+/// occurrence, and forcing one would fabricate a span.
+#[derive(Clone, Debug)]
+pub struct ReflectNodeOccurrence(Value);
+
+impl ReflectNodeOccurrence {
+    pub(crate) fn new(v: Value) -> Self {
+        ReflectNodeOccurrence(v)
+    }
+    /// The carried clause `Value`. Read by tests now; a future host occurrence
+    /// op (or the interpreter-parity follow-up) will consume it in lib code.
+    #[allow(dead_code)]
+    pub(crate) fn value(&self) -> &Value {
+        &self.0
+    }
+}
+
 // ── Error (Rust-only infra) ─────────────────────────────────────
 
 #[derive(Clone, Debug)]

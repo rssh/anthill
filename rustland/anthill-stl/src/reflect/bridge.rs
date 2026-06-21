@@ -28,6 +28,14 @@ fn term(id: TermId) -> Term {
     ReflectTerm::new(Value::Term(id))
 }
 
+/// Lift a contract-clause `TermId` into the reflect `NodeOccurrence` (WI-545).
+/// The loader stores op `requires`/`ensures` clauses as goal terms, so the
+/// carrier is a `Value::Term`.
+#[inline]
+fn nocc(id: TermId) -> NodeOccurrence {
+    ReflectNodeOccurrence::new(Value::Term(id))
+}
+
 /// Map a core [`Literal`] to its host [`LiteralRepr`] (struct-variant form).
 /// A `BigInt` maps to the first-class `BigIntLiteral` (WI-543) — carrier-
 /// faithful, so it is no longer indistinguishable from a real string. A
@@ -692,9 +700,21 @@ impl KB for KbBridge {
                 .map(|t| self.collect_list_terms(t).into_iter().map(term).collect())
                 .unwrap_or_default();
 
+            // `requires`/`ensures` are lists of contract-clause goal terms in
+            // the fact (same list encoding as `effects`); wrap each as a
+            // `NodeOccurrence` carrier (WI-545). `requires` includes the loader's
+            // auto-inferred `EffectsRuntime[Effects=E]` clause (WI-320); `ensures`
+            // is user clauses only. A Node-carrying value fact (denoted effect)
+            // is still skipped upstream by `facts_by_sort_name`.
+            let requires = field("requires")
+                .map(|t| self.collect_list_terms(t).into_iter().map(nocc).collect())
+                .unwrap_or_default();
+            let ensures = field("ensures")
+                .map(|t| self.collect_list_terms(t).into_iter().map(nocc).collect())
+                .unwrap_or_default();
+
             // `meta` is a `Term`; default to a bare `meta` ref when the fact
-            // lacks it. `requires`/`ensures` (NodeOccurrence lists) are not yet
-            // surfaced host-side (Foundation) → empty.
+            // lacks it.
             let meta_tid = match field("meta") {
                 Some(t) => t,
                 None => {
@@ -709,16 +729,8 @@ impl KB for KbBridge {
                 params,
                 return_type: term(return_type_tid),
                 effects,
-                // FOUNDATION LIMITATION (WI-540 follow-up): the spec's
-                // `requires`/`ensures` are `List[NodeOccurrence]` — real
-                // pre/postcondition occurrences the loader stores and the typer
-                // reads (`load.rs` `OperationInfo.requires`). The host bridge does
-                // not yet surface them as occurrences (`NodeOccurrence` is an
-                // opaque host carrier here), so it reports them EMPTY. NOT a
-                // silent drop: a host consumer must read these as "not yet
-                // populated by the bridge", not "the op has no contracts".
-                requires: vec![],
-                ensures: vec![],
+                requires,
+                ensures,
                 meta: term(meta_tid),
             });
         }
@@ -1219,6 +1231,34 @@ fact blue(shade: 3)
                     assert_eq!(value, 5, "`{name}` should be 5"),
                 other => panic!("`{name}` should reify to IntLiteral(5), got {other:?}"),
             }
+        }
+    }
+
+    #[test]
+    fn operations_surfaces_requires_and_ensures() {
+        // An op with explicit `requires`/`ensures` contract clauses surfaces
+        // them as `NodeOccurrence` carriers (WI-545). `ensures` carries only
+        // user clauses (no synthetic EffectsRuntime), so it's the clean signal.
+        let bridge = load_source_bridge(r#"
+sort Tank {
+  entity tank(fuel: Int64)
+  entity Full(t: Tank)
+  operation fill(t: Tank) -> Tank requires Full(t) ensures Full(t)
+}
+"#);
+        let ops = bridge.operations("Tank".into());
+        let short_name = |o: &OperationInfo| {
+            let kb = bridge.kb.borrow();
+            let n = kb.resolve_sym(o.name.symbol()).to_string();
+            n.rsplit('.').next().unwrap_or(&n).to_string()
+        };
+        let fill = ops.iter().find(|o| short_name(o) == "fill").expect("fill op");
+        assert!(!fill.ensures.is_empty(), "fill should surface its `ensures` clause");
+        assert!(!fill.requires.is_empty(), "fill should surface its `requires` clause");
+        // Each clause is carried as a goal-term Value.
+        match fill.ensures[0].value() {
+            Value::Term(_) => {}
+            other => panic!("ensures clause should be a Value::Term goal, got {other:?}"),
         }
     }
 
