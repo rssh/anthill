@@ -137,6 +137,10 @@ pub(crate) struct ReflectSymbols {
     pub set_literal: Option<Symbol>,
     pub cons: Option<Symbol>,
     pub nil: Option<Symbol>,
+    // WI-531: reflect `Solution` variants — the element shape `KB.execute`
+    // streams now yield (`definite(subst)` / `undecided(subst, residual)`).
+    pub solution_definite: Option<Symbol>,
+    pub solution_undecided: Option<Symbol>,
 }
 
 impl ReflectSymbols {
@@ -173,6 +177,8 @@ impl ReflectSymbols {
             set_literal: r("anthill.reflect.SetLiteral"),
             cons: r("anthill.prelude.List.cons"),
             nil: r("anthill.prelude.List.nil"),
+            solution_definite: r("anthill.reflect.Solution.definite"),
+            solution_undecided: r("anthill.reflect.Solution.undecided"),
         }
     }
 }
@@ -204,6 +210,9 @@ pub(crate) struct FieldSymbols {
     pub param: Symbol,
     pub head: Symbol,
     pub tail: Symbol,
+    // WI-531 — reflect `Solution` field keys.
+    pub subst: Symbol,
+    pub residual: Symbol,
     // WI-222 / WI-223 — requirement IR field keys.
     pub slot: Symbol,
     pub op: Symbol,
@@ -238,6 +247,8 @@ impl FieldSymbols {
             param: kb.intern("param"),
             head: kb.intern("head"),
             tail: kb.intern("tail"),
+            subst: kb.intern("subst"),
+            residual: kb.intern("residual"),
             slot: kb.intern("slot"),
             op: kb.intern("op"),
             chain: kb.intern("chain"),
@@ -823,9 +834,13 @@ impl Interpreter {
     /// it's the same slot advanced in place; for `MPlus` with `left`
     /// exhausted, it's the `right` child's handle.
     ///
-    /// Resolver yields land as `Value::Substitution(handle)` pointing into
-    /// the per-interpreter substitution arena; anthill code reads individual
-    /// bindings via `Substitution.apply`.
+    /// Resolver yields land as a reflect `Solution` value (WI-531) —
+    /// `definite(subst)` or `undecided(subst, residual)` — built by
+    /// [`Self::make_solution_value`]. `subst` is a `Value::Substitution`
+    /// handle into the per-interpreter arena (read via `Substitution.lookup` /
+    /// `.apply`); the floundered `undecided` case additionally carries the
+    /// undischarged goals as a `List[Term]`, so the residual is no longer
+    /// silently dropped here.
     pub fn stream_split_first(
         &mut self,
         handle: &value::StreamHandle,
@@ -875,8 +890,8 @@ impl Interpreter {
                         stream_arena.with_source_mut(handle, |_| {
                             (StreamSource::Resolver(Some(rest)), ())
                         });
-                        let subst_handle = self.substs.alloc(sol.subst);
-                        Ok(Some((Value::Substitution(subst_handle), handle.clone())))
+                        let solution = self.make_solution_value(sol)?;
+                        Ok(Some((solution, handle.clone())))
                     }
                     None => {
                         stream_arena.with_source_mut(handle, |_| (StreamSource::Empty, ()));
@@ -895,5 +910,52 @@ impl Interpreter {
                 None => self.stream_split_first(&right),
             },
         }
+    }
+
+    /// WI-531: wrap a resolver [`Solution`](crate::kb::resolve::Solution) as a
+    /// reflect `Solution` value. A *definite* solution (empty residual) becomes
+    /// `definite(subst)`; a *floundered* one becomes `undecided(subst,
+    /// residual)`, carrying its undischarged goals as a `List[Term]` so anthill
+    /// consumers (the WI-010 self-hosted type resolver) can inspect WHICH goals
+    /// stayed pending — keeping reflect a faithful description of the core.
+    /// Undecidedness is a third logical outcome carried as DATA, never raised
+    /// on `execute`'s `E = Error` channel.
+    fn make_solution_value(
+        &mut self,
+        sol: crate::kb::resolve::Solution,
+    ) -> Result<Value, EvalError> {
+        let definite = sol.is_definite();
+        // Resolve the variant functor BEFORE allocating into the subst arena, so
+        // a missing-stdlib early-return can't strand a freshly-allocated slot.
+        let functor = if definite {
+            self.reflect.solution_definite
+        } else {
+            self.reflect.solution_undecided
+        }
+        .ok_or_else(|| EvalError::Internal(
+            "anthill.reflect.Solution not loaded — stdlib missing the Solution enum".into(),
+        ))?;
+        let residual = sol.residual;
+        let subst_value = Value::Substitution(self.substs.alloc(sol.subst));
+        let mut named = if definite {
+            vec![(self.fields.subst, subst_value)]
+        } else {
+            // Carrier-faithful (WI-348): the residual goals stay as their original
+            // `Value`s — a goal mentioning a `Value::Node` keeps its source
+            // occurrence rather than being reified to a bare `TermId` (which would
+            // drop span/identity that the core deliberately preserves). Surfaced as
+            // `List[Term]`: a pending goal IS a term, occurrence-carried or not, and
+            // is inspected through the occurrence-aware reflect / `TermView` ops.
+            let residual_list = self.build_list_value(residual, &[])?;
+            vec![
+                (self.fields.subst, subst_value),
+                (self.fields.residual, residual_list),
+            ]
+        };
+        // Canonical (declared) field order — mirrors `finish_constructor` — so a
+        // positional pattern (`case undecided(subst, residual)`) binds the right
+        // field; `subst`/`residual` are NOT in alphabetical order.
+        self.kb.sort_named_canonical(functor, &mut named);
+        Ok(Value::Entity { functor, pos: Vec::new().into(), named: named.into() })
     }
 }

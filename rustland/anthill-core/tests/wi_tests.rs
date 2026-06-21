@@ -107,6 +107,9 @@ mod wi182_fresh_var_test;
 #[path = "include/kb_query_test.rs"]
 mod kb_query_test;
 
+#[path = "include/wi531_solution_residual_test.rs"]
+mod wi531_solution_residual_test;
+
 #[path = "include/wi186_free_standing_parametric_test.rs"]
 mod wi186_free_standing_parametric_test;
 

@@ -25,7 +25,8 @@ namespace test.kb_query
   import anthill.prelude.LogicalStream.{splitFirst}
   import anthill.prelude.Pair.{pair}
   import anthill.prelude.Option.{some, none}
-  import anthill.reflect.{Term, Substitution, fresh_var, term_as_string, as_term}
+  import anthill.reflect.{Term, Substitution, Solution, fresh_var, term_as_string, as_term}
+  import anthill.reflect.Solution.{definite, undecided}
   import anthill.reflect.KB.{kb, execute}
   import anthill.reflect.LogicalQuery.{pattern_query}
   import anthill.reflect.Substitution.{lookup}
@@ -45,9 +46,18 @@ namespace test.kb_query
       case none()   -> "no-admin"
       case some(p)  -> name_of(p)
 
-  operation name_of(p: Pair[Substitution, LogicalStream]) -> String =
+  -- WI-531: execute now streams `Solution` (definite | undecided), not bare
+  -- Substitution — so the consumer DECIDES. Here we just read the bindings
+  -- from either arm (this admin query is definite; the undecided arm exercises
+  -- the residual-carrying shape).
+  operation name_of(p: Pair[Solution, LogicalStream]) -> String =
     match p
-      case pair(subst, _) -> string_of(lookup(subst, "n"))
+      case pair(sol, _) -> string_of(lookup(subst_of(sol), "n"))
+
+  operation subst_of(sol: Solution) -> Substitution =
+    match sol
+      case definite(subst)     -> subst
+      case undecided(subst, _) -> subst
 
   operation string_of(opt: Option[T = Term]) -> String =
     match opt

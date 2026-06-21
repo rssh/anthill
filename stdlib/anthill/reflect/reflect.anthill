@@ -277,12 +277,16 @@ namespace anthill.reflect
     -- Returns DELAY during SLD resolution if ?x contains variables.
     operation ground(kb: KB, x: Term) -> Bool
 
-    -- Query execution
-    -- Returns a stream of fully-resolved substitutions.
-    -- Creation can fail (invalid query). Iteration can also fail
-    -- (residual errors, depth limits) — captured by E = Error on the stream.
+    -- Query execution.
+    -- Returns a stream of `Solution`s — each pull is either `definite(subst)`
+    -- (a committed answer) or `undecided(subst, residual)` (a floundered
+    -- branch carrying its undischarged goals as data). Undecidedness rides in
+    -- the stream as the `undecided` DATA case, NOT on `E = Error`; `E = Error`
+    -- is reserved for GENUINE errors — an invalid query, a depth limit, or an
+    -- `Error.raise` from an operation body evaluated during resolution. This
+    -- keeps `execute` a faithful description of the core `Solution` (WI-531).
     operation execute(kb: KB, query: LogicalQuery)
-      -> Stream[T = Substitution, E = Error]
+      -> Stream[T = Solution, E = Error]
       effects Error
 
     -- Direct enumeration of asserted facts whose head functor is the given
@@ -580,6 +584,32 @@ namespace anthill.reflect
   -- instead of returning it); this face is for reflection and the self-hosted
   -- type resolver (WI-010), which run over raw terms with no typing in scope.
   operation unify(a: Term, b: Term, kb: KB) -> Option[T = Substitution]
+
+  -- ================================================================
+  -- Solution: one answer from KB.execute (proposal 049 / WI-531)
+  -- ================================================================
+
+  -- A single resolution outcome, faithfully mirroring the core
+  -- `Solution { subst, residual }`. Resolution is a TRICHOTOMY — success,
+  -- failure (a branch absent from the stream), and *undecided* (floundered: a
+  -- goal was delayed but its variables never got bound, so the search gave up
+  -- without deciding it). Undecidedness is a THIRD logical outcome carried as
+  -- DATA here, never raised on `execute`'s `E = Error` channel — so the core
+  -- never lies through reflect, and a consumer (e.g. the WI-010 self-hosted
+  -- type resolver) can COLLECT the residual goals as pending constraints
+  -- rather than aborting on them.
+  enum Solution
+    -- The search committed: `subst` is a definite answer, nothing pending.
+    entity definite(subst: Substitution)
+    -- The search floundered: `subst` holds the bindings made so far and
+    -- `residual` lists the undischarged goals still pending. Each goal is a
+    -- term; one that carries a source occurrence keeps it (the core does not
+    -- reify it away), so inspect residual elements through the occurrence-aware
+    -- reflect ops, not assuming a bare term handle. Each consumer DECIDES what
+    -- this means — a prover reads it as "not proved"; the typer reads it as
+    -- "constraints still to solve".
+    entity undecided(subst: Substitution, residual: List[T = Term])
+  end
 
   -- ================================================================
   -- LogicalQuery: first-class query representation

@@ -660,8 +660,10 @@ fn string_repeat(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalErro
 use crate::eval::stream::StreamSource;
 
 /// `splitFirst(s: LogicalStream[T]) -> Option[Pair[T, LogicalStream[T]]]`.
-/// Pumps the stream one step; yielded substitutions are placeholder
-/// `Value::Unit`s for v1 (see `Interpreter::stream_split_first` doc).
+/// Pumps the stream one step. For a resolver stream the yielded element is a
+/// reflect `Solution` (`definite(subst)` / `undecided(subst, residual)`,
+/// WI-531); it is passed through opaquely here, wrapped in `Pair` with the
+/// continuation (see `Interpreter::stream_split_first`).
 fn logical_stream_split_first(
     interp: &mut Interpreter,
     args: &[Value],
@@ -716,11 +718,13 @@ fn kb_ambient(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalErr
     Ok(Value::Entity { functor, pos: Vec::new().into(), named: Vec::new().into() })
 }
 
-/// `KB.execute(kb: KB, q: LogicalQuery) -> Stream[Substitution]`. The KB
-/// argument is a sentinel — `Value::Unit` or any placeholder — because the
-/// evaluator has no first-class KB values and always uses the interpreter's
-/// own KB. The query value is lowered via `KnowledgeBase::execute_logical_query`
-/// (proposal 026.1 Q3) and wrapped in `StreamSource::Resolver`.
+/// `KB.execute(kb: KB, q: LogicalQuery) -> Stream[Solution]` (WI-531; each
+/// element is `definite(subst)` or `undecided(subst, residual)`, materialized
+/// lazily by `Interpreter::stream_split_first`). The KB argument is a
+/// sentinel — `Value::Unit` or any placeholder — because the evaluator has no
+/// first-class KB values and always uses the interpreter's own KB. The query
+/// value is lowered via `KnowledgeBase::execute_logical_query` (proposal
+/// 026.1 Q3) and wrapped in `StreamSource::Resolver`.
 fn kb_execute(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [_kb_arg, query] = expect_args::<2>("KB.execute", args)?;
     let search = interp.kb.execute_logical_query(&query)

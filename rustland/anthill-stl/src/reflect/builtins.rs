@@ -1590,10 +1590,12 @@ end
     }
 
     #[test]
-    fn split_first_yields_substitution_values() {
+    fn split_first_yields_solution_values() {
         // Execute a simple pattern query via KB.execute → splitFirst → the
-        // first element of the pair should be a Value::Substitution now,
-        // not the placeholder Value::Unit from pre-WI-047-batch-2.
+        // first element of the pair is a reflect `Solution` (WI-531):
+        // `definite(subst)` here (the query is decidable), carrying the
+        // Value::Substitution in its `subst` field — no longer a bare
+        // Value::Substitution element (and never the pre-WI-047 Value::Unit).
         let mut interp = load_stdlib_and_source(r#"
 namespace test.subst_stream
   sort Color
@@ -1631,7 +1633,7 @@ end
         let pumped = interp.call("anthill.prelude.LogicalStream.splitFirst", &[stream])
             .expect("splitFirst");
 
-        // Unwrap Option.some → Pair.pair → fst = Value::Substitution.
+        // Unwrap Option.some → Pair.pair → fst = the Solution element.
         let fst = match pumped {
             Value::Entity { named: some_named, .. } => {
                 let pair = &some_named[0].1;
@@ -1646,9 +1648,26 @@ end
             }
             other => panic!("expected Option.some, got {other:?}"),
         };
+        // WI-531: the element is a reflect `Solution` (definite | undecided),
+        // not a bare Substitution. This fact-pattern query is decidable, so the
+        // first answer is `definite(subst)`; assert the Solution shape and that
+        // its `subst` field carries the Value::Substitution.
         match fst {
-            Value::Substitution(_) => { /* expected */ }
-            other => panic!("expected Value::Substitution, got {other:?}"),
+            Value::Entity { functor, named, .. } => {
+                let ctor = interp.kb().resolve_sym(functor).to_string();
+                assert!(
+                    ctor.ends_with("definite") || ctor.ends_with("undecided"),
+                    "expected a Solution (definite/undecided), got functor {ctor}",
+                );
+                let subst = named.iter().find(|(s, _)|
+                    interp.kb().resolve_sym(*s) == "subst"
+                ).map(|(_, v)| v.clone()).expect("subst field on Solution");
+                match subst {
+                    Value::Substitution(_) => { /* expected */ }
+                    other => panic!("expected Solution.subst = Value::Substitution, got {other:?}"),
+                }
+            }
+            other => panic!("expected a Solution entity, got {other:?}"),
         }
     }
 

@@ -59,7 +59,8 @@ namespace test.wi182_query
   import anthill.prelude.LogicalStream.{splitFirst}
   import anthill.prelude.Pair.{pair}
   import anthill.prelude.Option.{some, none}
-  import anthill.reflect.{Term, Substitution, fresh_var, as_term}
+  import anthill.reflect.{Term, Substitution, Solution, fresh_var, as_term}
+  import anthill.reflect.Solution.{definite, undecided}
   import anthill.reflect.KB.{kb, execute}
   import anthill.reflect.LogicalQuery.{pattern_query}
   import anthill.reflect.Substitution.{lookup}
@@ -87,9 +88,12 @@ namespace test.wi182_query
       case none() -> "no-solution"
       case some(p) -> after_split(p)
 
-  operation after_split(p: Pair[A = Substitution, B = LogicalStream]) -> String =
+  -- WI-531: the stream element is a `Solution` (definite | undecided); read the
+  -- binding off whichever arm (this Item query is definite).
+  operation after_split(p: Pair[A = Solution, B = LogicalStream]) -> String =
     match p
-      case pair(subst, _) -> after_lookup(lookup(subst, "p"))
+      case pair(definite(subst), _)     -> after_lookup(lookup(subst, "p"))
+      case pair(undecided(subst, _), _) -> after_lookup(lookup(subst, "p"))
 
   operation after_lookup(opt: Option[T = Term]) -> String =
     match opt

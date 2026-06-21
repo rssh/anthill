@@ -37,10 +37,11 @@ namespace anthill.todo
   import anthill.prelude.String.{concat}
   import anthill.prelude.List.{cons, nil}
   import anthill.prelude.Iterable.{size}
-  import anthill.reflect.{Term, Substitution, term_functor_name,
+  import anthill.reflect.{Term, Substitution, Solution, term_functor_name,
                           term_field, term_as_string,
                           fresh_var, make_fn, term_to_string,
                           term_list_items}
+  import anthill.reflect.Solution.{definite, undecided}
   import anthill.stage0.WorkStatus.{Claimed, Delivered, Verified}
   import anthill.stage0.WorkStatus.{Rejected, ProposalRejected, Stale}
   import anthill.reflect.KB.{kb, execute, facts_of}
@@ -2611,13 +2612,15 @@ namespace anthill.todo
     -- branch, so the deepest stack is bounded by `limit` (1000). No
     -- intermediate list — `append_pair`-style quadratic build was the
     -- cause of the stack overflow on real workitem sets.
-    -- WI-385: `execute` returns the ABSTRACT `Stream[Substitution, Error]`;
-    -- this consumer only uses `splitFirst` (a Stream primitive), so it takes the
-    -- producer's type. The value is a `LogicalStream` at runtime (which provides
-    -- Stream), so `splitFirst` dispatches to it. Declaring the param as the
-    -- concrete `LogicalStream` was a latent over-narrowing (a Stream-vs-LogicalStream
+    -- WI-385 / WI-531: `execute` returns the ABSTRACT `Stream[Solution, Error]`
+    -- (each element a `definite`/`undecided` Solution — `next` extracts the
+    -- substitution from either via `solution_subst`). This consumer only uses
+    -- `splitFirst` (a Stream primitive), so it takes the producer's type. The
+    -- value is a `LogicalStream` at runtime (which provides Stream), so
+    -- `splitFirst` dispatches to it. Declaring the param as the concrete
+    -- `LogicalStream` was a latent over-narrowing (a Stream-vs-LogicalStream
     -- downcast) the discarded arg-unify masked before arg validation.
-    operation walk_solutions(stream: Stream[T = Substitution, E = Error],
+    operation walk_solutions(stream: Stream[T = Solution, E = Error],
                               show_all: Bool,
                               limit: Int64,
                               seen: List[String],
@@ -2634,22 +2637,31 @@ namespace anthill.todo
           case none() -> printed
           case some(p) ->
             match p
-              case pair(subst, rest) ->
-                let id = extract_string_field(subst, "id", "?")
-                let desc = extract_string_field(subst, "desc", "")
-                if list_contains_string(seen, id) then
-                  walk_solutions(rest, show_all, limit + (0 - 1), seen, printed)
-                else
-                  let _ = println(console(),
-                                  concat("  ",
-                                    concat(id, concat(" — ", desc))))
-                  if show_all then
-                    walk_solutions(rest, show_all,
-                                   limit + (0 - 1),
-                                   cons(id, seen),
-                                   printed + 1)
-                  else
-                    printed + 1
+              case pair(sol, rest) ->
+                match sol
+                  -- A floundered (undecided) `claimable` cannot be confirmed
+                  -- claimable, so skip it rather than list it as a definite item
+                  -- (WI-519/531 verdict honesty). `claimable` resolves over ground
+                  -- facts, so this arm is not expected to fire; handling it keeps
+                  -- the match total and honest if it ever does.
+                  case undecided(_, _) ->
+                    walk_solutions(rest, show_all, limit + (0 - 1), seen, printed)
+                  case definite(subst) ->
+                    let id = extract_string_field(subst, "id", "?")
+                    let desc = extract_string_field(subst, "desc", "")
+                    if list_contains_string(seen, id) then
+                      walk_solutions(rest, show_all, limit + (0 - 1), seen, printed)
+                    else
+                      let _ = println(console(),
+                                      concat("  ",
+                                        concat(id, concat(" — ", desc))))
+                      if show_all then
+                        walk_solutions(rest, show_all,
+                                       limit + (0 - 1),
+                                       cons(id, seen),
+                                       printed + 1)
+                      else
+                        printed + 1
 
     operation list_contains_string(xs: List[String], needle: String) -> Bool =
       match xs

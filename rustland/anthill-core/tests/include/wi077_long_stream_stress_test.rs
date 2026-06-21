@@ -8,9 +8,10 @@
 //!   (a) all N solutions surface (exact count — no drops, no duplicates),
 //!   (b) the stream arena slot is reclaimed once its handles drop
 //!       (`stream_arena_live_count()` returns to 0),
-//!   (c) memory does not blow up with N — every per-solution
-//!       `Value::Substitution` slot is freed as its `Value` drops, so
-//!       `subst_arena_live_count()` is flat (0) at the end rather than O(N).
+//!   (c) memory does not blow up with N — each per-solution `Solution` value
+//!       carries a `Value::Substitution` whose arena slot is freed as the
+//!       value drops, so `subst_arena_live_count()` is flat (0) at the end
+//!       rather than O(N).
 //!
 //! The second test reuses the same harness over an `MPlus` of two long
 //! resolver branches, which is the coverage WI-075 (disjunction) needs:
@@ -109,10 +110,13 @@ fn wi077_resolver_long_stream_surfaces_all_n_solutions() {
     // whole stream; `rest` is just a clone of `handle` and drops each turn.
     let mut count = 0i64;
     while let Some((v, _rest)) = interp.stream_split_first(&handle).expect("pump ok") {
-        // Each resolver yield lands as a Value::Substitution into the
-        // per-interp subst arena; dropping `v` at the end of this iteration
-        // frees that slot, which is what keeps memory flat across N.
-        assert!(matches!(&v, Value::Substitution(_)), "resolver yields substitutions");
+        // WI-531: each resolver yield is now a `Solution` entity that CARRIES
+        // its `Value::Substitution` (the `subst` field) into the per-interp
+        // subst arena; dropping `v` at the end of this iteration frees that
+        // slot, which is what keeps memory flat across N.
+        let carries_subst = matches!(&v, Value::Entity { named, .. }
+            if named.iter().any(|(_, fv)| matches!(fv, Value::Substitution(_))));
+        assert!(carries_subst, "resolver yields a Solution carrying a Substitution, got {v:?}");
         count += 1;
     }
 
