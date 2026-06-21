@@ -3,7 +3,7 @@ use std::rc::Rc;
 
 use anthill_core::eval::Value;
 use anthill_core::kb::KnowledgeBase;
-use anthill_core::kb::term::{Term as CoreTerm, TermId, Literal, Var};
+use anthill_core::kb::term::{Term as CoreTerm, TermId, Literal, Var, VarId};
 use anthill_core::kb::term_view::{TermView, ViewHead};
 use anthill_core::kb::resolve::{SearchStream, ResolveConfig};
 
@@ -876,6 +876,21 @@ impl KB for KbBridge {
 // `lookup` need only the wrapped core substitution (the trait's `&dyn KB`
 // param is the spec shape but unused here — the host carries its KB).
 
+impl SubstBridge {
+    /// The `VarId` a variable-`Term` carries — as produced by `bindings`
+    /// (`Value::Term(Var)`) or a raw `Value::Var`. `None` for a non-var carrier.
+    fn vid_of(&self, v: &Value) -> Option<VarId> {
+        match v {
+            Value::Var(var) => var.as_global(),
+            Value::Term(tid) => match self.kb.borrow().get_term(*tid) {
+                CoreTerm::Var(var) => var.as_global(),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+}
+
 impl Substitution for SubstBridge {
     fn apply(&self, t: Term, _kb: &dyn KB) -> Term {
         // Carrier-faithful: a `Value::Node` binding substitutes through
@@ -883,20 +898,38 @@ impl Substitution for SubstBridge {
         rterm(self.kb.borrow_mut().reify_value(t.value(), &self.inner))
     }
 
-    /// PARTIAL through a trait object (WI-540 follow-up): full composition is
-    /// `apply s2 to self's range, THEN extend with s2's bindings for vars absent
-    /// in self` (the interpreter `subst_compose` does this on concrete substs).
-    /// The second half needs to ENUMERATE `s2`'s bindings, which `&dyn
-    /// Substitution` cannot expose (the spec trait has only `apply`/`compose`/
-    /// `lookup`). So this does only the first half — it applies `s2` to each of
-    /// self's binding values and returns those; it does NOT merge in `s2`'s
-    /// standalone bindings. NOT silent: a caller needing full composition must
-    /// pass concrete substitutions, or the spec's `Substitution` needs a
-    /// binding-enumeration op (the follow-up). Currently unused by the bridge.
+    /// Full composition `σ2 ∘ σ1` (WI-544): (1) apply `s2` to each of self's
+    /// binding values (self's range), then (2) extend with `s2`'s standalone
+    /// bindings for variables self does not already bind. Step 2 needs to
+    /// ENUMERATE `s2` by variable IDENTITY — now possible through the trait via
+    /// `bindings()`, which carries each variable as a var `Term` (the VarIds are
+    /// otherwise opaque across the `&dyn Substitution` boundary). Mirrors the
+    /// interpreter `subst_compose` (which has concrete bindings).
+    ///
+    /// Step 1 re-applies `s2` via `apply`/`reify_value`, which chases vars
+    /// carried inside a `Value::Term`/`Value::Node` but passes a *bare*
+    /// `Value::Var` self-binding through unchanged — so a `z ↦ Value::Var(w)`
+    /// binding is NOT resolved through `s2`. This is a pre-existing limitation
+    /// shared verbatim with the interpreter `subst_compose` (both clone non-
+    /// `Term` carriers); resolving it lives in core `reify_value` and is tracked
+    /// separately, not folded in here.
     fn compose(&self, s2: &dyn Substitution, kb: &dyn KB) -> Box<dyn Substitution> {
         let mut result = self.inner.clone();
         for (_var, val) in result.bindings.iter_mut() {
             *val = s2.apply(rterm(val.clone()), kb).into_value();
+        }
+        for (var_term, val_term) in s2.bindings() {
+            match self.vid_of(var_term.value()) {
+                // Only insert when self lacks the variable — self's (already
+                // s2-applied) binding wins on overlap.
+                Some(vid) => {
+                    result.bindings.entry(vid).or_insert_with(|| val_term.into_value());
+                }
+                None => panic!(
+                    "SubstBridge::compose: a `bindings()` entry's variable is not a \
+                     var Term — the Substitution contract is violated"
+                ),
+            }
         }
         Box::new(SubstBridge { inner: result, kb: Rc::clone(&self.kb) })
     }
@@ -917,6 +950,23 @@ impl Substitution for SubstBridge {
             }
         }
         None
+    }
+
+    /// Enumerate the substitution as (variable, value) pairs. The variable
+    /// rides as a `Value::Term(Var)` so its identity is recoverable (via
+    /// `vid_of`); this is what lets `compose` merge by variable across the
+    /// `&dyn Substitution` boundary.
+    fn bindings(&self) -> Vec<(Term, Term)> {
+        let entries: Vec<(VarId, Value)> =
+            self.inner.iter().map(|(vid, val)| (*vid, val.clone())).collect();
+        let mut kb = self.kb.borrow_mut();
+        entries
+            .into_iter()
+            .map(|(vid, val)| {
+                let var_tid = kb.alloc(CoreTerm::Var(Var::Global(vid)));
+                (term(var_tid), rterm(val))
+            })
+            .collect()
     }
 }
 
@@ -1128,6 +1178,47 @@ fact blue(shade: 3)
         match core_term {
             CoreTerm::Const(Literal::BigInt(n)) => assert_eq!(n, big),
             other => panic!("expected Const(BigInt), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn compose_full_union_merges_standalone_bindings() {
+        // σ1 = {x ↦ y}, σ2 = {y ↦ 5}. Full compose σ2∘σ1 = {x ↦ 5, y ↦ 5}:
+        // `x` is the first-half apply (σ2 applied to σ1's range), `y` is the
+        // second-half merge (σ2's standalone binding, absent in σ1). The OLD
+        // partial compose dropped `y` — this pins the WI-544 fix.
+        let bridge = load_source_bridge("sort Foo { entity bar }");
+        // A var-to-var binding is stored as a `Value::Term(Var)` (how real
+        // substitutions represent it — `reify_value`/`apply` substitute vars
+        // inside a `Value::Term`, not a bare `Value::Var`).
+        let (vid_x, vid_y, five, var_y) = {
+            let mut kb = bridge.kb.borrow_mut();
+            let sx = kb.intern("x");
+            let sy = kb.intern("y");
+            let vx = kb.fresh_var(sx);
+            let vy = kb.fresh_var(sy);
+            let five = kb.alloc(CoreTerm::Const(Literal::Int(5)));
+            let var_y = kb.alloc(CoreTerm::Var(Var::Global(vy)));
+            (vx, vy, five, var_y)
+        };
+        let mut s1_inner = anthill_core::kb::subst::Substitution::new();
+        s1_inner.bindings.insert(vid_x, Value::Term(var_y));
+        let mut s2_inner = anthill_core::kb::subst::Substitution::new();
+        s2_inner.bindings.insert(vid_y, Value::Term(five));
+
+        let s1 = SubstBridge::from_core(s1_inner, Rc::clone(&bridge.kb));
+        let s2 = SubstBridge::from_core(s2_inner, Rc::clone(&bridge.kb));
+        let composed = s1.compose(&s2, &bridge);
+
+        // Both variables are bound, both to the literal 5.
+        for name in ["x", "y"] {
+            let bound = composed.lookup(name.to_string())
+                .unwrap_or_else(|| panic!("compose result should bind `{name}`"));
+            match bridge.reify(bound) {
+                TermRepr::ConstRepr { value: LiteralRepr::IntLiteral { value } } =>
+                    assert_eq!(value, 5, "`{name}` should be 5"),
+                other => panic!("`{name}` should reify to IntLiteral(5), got {other:?}"),
+            }
         }
     }
 
