@@ -29,14 +29,14 @@ fn term(id: TermId) -> Term {
 }
 
 /// Map a core [`Literal`] to its host [`LiteralRepr`] (struct-variant form).
-/// `reflect.anthill`'s `LiteralRepr` has no `BigInt` case, so a `BigInt` is
-/// surfaced as its decimal `StringLiteral` (a Foundation limitation — a
-/// first-class `BigIntLiteral` is a follow-up); a `Handle` lowers to its id.
+/// A `BigInt` maps to the first-class `BigIntLiteral` (WI-543) — carrier-
+/// faithful, so it is no longer indistinguishable from a real string. A
+/// `Handle` lowers to its id.
 fn literal_to_repr(lit: Literal) -> LiteralRepr {
     match lit {
         Literal::String(s) => LiteralRepr::StringLiteral { value: s },
         Literal::Int(n) => LiteralRepr::IntLiteral { value: n },
-        Literal::BigInt(n) => LiteralRepr::StringLiteral { value: n.to_string() },
+        Literal::BigInt(n) => LiteralRepr::BigIntLiteral { value: n },
         Literal::Float(f) => LiteralRepr::FloatLiteral { value: f.into() },
         Literal::Bool(b) => LiteralRepr::BoolLiteral { value: b },
         Literal::Handle(_, id) => LiteralRepr::IntLiteral { value: id as i64 },
@@ -156,6 +156,24 @@ impl KbBridge {
                 _ => None,
             })
             .collect()
+    }
+
+    /// The entity functor a reference `Value` names — the host twin of core's
+    /// `eval::value_functor` (which is `pub(crate)` to anthill-core, so it can't
+    /// be reused across the crate boundary). Matches core arm-for-arm: an
+    /// `Entity` carries its functor directly; a `Term` carrier reads the
+    /// hash-consed `Fn`/`Ref` head; anything else (a literal, a var, an
+    /// unresolved `Ident`) names no entity. Keep in lock-step with core.
+    fn value_functor(&self, v: &Value) -> Option<anthill_core::intern::Symbol> {
+        match v {
+            Value::Entity { functor, .. } => Some(*functor),
+            Value::Term(tid) => match self.kb.borrow().get_term(*tid) {
+                CoreTerm::Fn { functor, .. } => Some(*functor),
+                CoreTerm::Ref(sym) => Some(*sym),
+                _ => None,
+            },
+            _ => None,
+        }
     }
 
     /// Extract the functor name from a Fn term.
@@ -518,6 +536,7 @@ impl KB for KbBridge {
             TermRepr::ConstRepr { value } => {
                 let lit = match value {
                     LiteralRepr::IntLiteral { value } => Literal::Int(value),
+                    LiteralRepr::BigIntLiteral { value } => Literal::BigInt(value),
                     LiteralRepr::FloatLiteral { value } => Literal::Float(value.into()),
                     LiteralRepr::StringLiteral { value } => Literal::String(value),
                     LiteralRepr::BoolLiteral { value } => Literal::Bool(value),
@@ -801,8 +820,33 @@ impl KB for KbBridge {
         }))
     }
 
-    fn facts_of(&self, _sort: Type) -> Vec<Term> {
-        panic!("KB.facts_of not yet implemented (WI-540 follow-up)")
+    fn facts_of(&self, sort: Type) -> Vec<Term> {
+        // The entity is passed by reference (`facts_of(kb(), WorkItem)`); the
+        // `Type` carrier wraps that referencing `Value`. Extract its functor
+        // (mirroring core `eval::value_functor`), then enumerate every asserted
+        // fact with that head functor. Carrier-agnostic: `rule_head_value`
+        // returns the head `Value` directly, so a value-fact head (e.g. an
+        // `OperationInfo` carrying a `denoted` effect, WI-348) rides through as
+        // a `Term` rather than being dropped — same as the interpreter
+        // `kb_facts_of`.
+        // A non-entity `sort` (a literal, a var, a Fn-with-args) names no fact
+        // set — a caller type error, not "zero facts". Surface it loudly
+        // (mirroring the interpreter `kb_facts_of`, which raises a type
+        // mismatch, and the bridge's own `reify_view` panic discipline) rather
+        // than returning an empty list a caller would misread as "none
+        // asserted". The trait fixes the return as `Vec<Term>`, so a panic is
+        // the only loud channel.
+        let functor = self.value_functor(sort.value()).unwrap_or_else(|| {
+            panic!(
+                "KB.facts_of: `sort` is not an entity reference (expected a \
+                 Ref / Fn / Entity carrier that names a functor)"
+            )
+        });
+        let kb = self.kb.borrow();
+        kb.rules_by_functor(functor)
+            .into_iter()
+            .map(|rid| rterm(kb.rule_head_value(rid).clone()))
+            .collect()
     }
 
     fn sort_template(&self, sort_name: String) -> LogicalQuery {
@@ -999,6 +1043,92 @@ sort Store {
         };
         assert!(!bridge.nonvar(var_value.clone()), "Value::Var is a variable");
         assert!(!bridge.ground(var_value), "Value::Var is not ground");
+    }
+
+    #[test]
+    fn facts_of_enumerates_by_entity_reference() {
+        // `facts_of` takes the entity by reference (a `Type` carrying a
+        // `Ref(Color.red)` Value) and returns every rule head with that functor.
+        // Parity with the interpreter `kb_facts_of` (`rules_by_functor`): the
+        // result is the user facts PLUS the synthetic entity declaration (whose
+        // field values are unbound logical vars) — so the count is
+        // user-facts + 1.
+        let bridge = load_source_bridge(r#"
+sort Color {
+  entity red(shade: Int64)
+  entity blue(shade: Int64)
+}
+fact red(shade: 1)
+fact red(shade: 2)
+fact blue(shade: 3)
+"#);
+        // Count heads carrying a GROUND `shade` literal — that distinguishes the
+        // two user facts from the synthetic entity decl (whose shade is a var).
+        let ground_count = |facts: &[Term]| -> usize {
+            facts.iter().filter(|t| match bridge.reify((*t).clone()) {
+                TermRepr::FnRepr { args, .. } =>
+                    args.iter().any(|a| matches!(a, TermRepr::ConstRepr { .. })),
+                _ => false,
+            }).count()
+        };
+
+        let red_ref = {
+            let mut kb = bridge.kb.borrow_mut();
+            Value::Term(kb.resolve_qualified_name_term("Color.red"))
+        };
+        let reds = bridge.facts_of(Type::new(red_ref));
+        assert_eq!(reds.len(), 3, "2 user facts + 1 synthetic entity decl, got {}", reds.len());
+        assert_eq!(ground_count(&reds), 2, "two ground `red` user facts");
+
+        let blue_ref = {
+            let mut kb = bridge.kb.borrow_mut();
+            Value::Term(kb.resolve_qualified_name_term("Color.blue"))
+        };
+        let blues = bridge.facts_of(Type::new(blue_ref));
+        assert_eq!(blues.len(), 2, "1 user fact + 1 synthetic entity decl");
+        assert_eq!(ground_count(&blues), 1, "one ground `blue` user fact");
+    }
+
+    #[test]
+    #[should_panic(expected = "not an entity reference")]
+    fn facts_of_non_entity_reference_panics() {
+        // A `Type` carrying a non-entity Value (a literal) names no functor —
+        // a caller type error, surfaced loudly rather than as an empty list.
+        let bridge = load_source_bridge("sort Foo { entity bar }");
+        let lit = {
+            let mut kb = bridge.kb.borrow_mut();
+            Value::Term(kb.alloc(CoreTerm::Const(Literal::Int(7))))
+        };
+        let _ = bridge.facts_of(Type::new(lit));
+    }
+
+    #[test]
+    fn bigint_literal_round_trips_as_bigint() {
+        // A BigInt larger than i64 reifies to `BigIntLiteral` (not a lossy
+        // `StringLiteral`) and reflects back to a `Const(BigInt)` (WI-543).
+        let bridge = load_source_bridge("sort Foo { entity bar }");
+        let big: num_bigint::BigInt =
+            "123456789012345678901234567890".parse().expect("parse bigint");
+        let term = {
+            let mut kb = bridge.kb.borrow_mut();
+            ReflectTerm::new(Value::Term(kb.alloc(CoreTerm::Const(Literal::BigInt(big.clone())))))
+        };
+        match bridge.reify(term) {
+            TermRepr::ConstRepr { value: LiteralRepr::BigIntLiteral { value } } => {
+                assert_eq!(value, big, "BigInt should survive reify intact");
+            }
+            other => panic!("expected ConstRepr(BigIntLiteral), got {other:?}"),
+        }
+        // Reflect the repr back to a term and confirm the core literal.
+        let reflected = bridge.reflect(TermRepr::ConstRepr {
+            value: LiteralRepr::BigIntLiteral { value: big.clone() },
+        });
+        let tid = reflected.into_value().expect_term();
+        let core_term = bridge.kb.borrow().get_term(tid).clone();
+        match core_term {
+            CoreTerm::Const(Literal::BigInt(n)) => assert_eq!(n, big),
+            other => panic!("expected Const(BigInt), got {other:?}"),
+        }
     }
 
     /// Drift-guard (WI-540): the reflect `KB` / `Substitution` interface is

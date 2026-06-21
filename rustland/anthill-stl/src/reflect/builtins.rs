@@ -44,6 +44,7 @@ struct ReflectSyms {
     fn_repr: Symbol,
     ref_repr: Symbol,
     int_lit: Symbol,
+    bigint_lit: Symbol,
     float_lit: Symbol,
     str_lit: Symbol,
     bool_lit: Symbol,
@@ -94,6 +95,7 @@ impl ReflectSyms {
             fn_repr: req(kb, "anthill.reflect.TermRepr.FnRepr")?,
             ref_repr: req(kb, "anthill.reflect.TermRepr.RefRepr")?,
             int_lit: req(kb, "anthill.reflect.LiteralRepr.IntLiteral")?,
+            bigint_lit: req(kb, "anthill.reflect.LiteralRepr.BigIntLiteral")?,
             float_lit: req(kb, "anthill.reflect.LiteralRepr.FloatLiteral")?,
             str_lit: req(kb, "anthill.reflect.LiteralRepr.StringLiteral")?,
             bool_lit: req(kb, "anthill.reflect.LiteralRepr.BoolLiteral")?,
@@ -638,7 +640,7 @@ fn reify_term_to_value(kb: &mut KnowledgeBase, syms: &ReflectSyms, id: TermId) -
     let term = kb.get_term(id).clone();
     match term {
         CoreTerm::Const(Literal::Int(n)) => wrap_literal(syms.int_lit, Value::Int(n)),
-        CoreTerm::Const(Literal::BigInt(n)) => wrap_literal(syms.int_lit, Value::BigInt(n)),
+        CoreTerm::Const(Literal::BigInt(n)) => wrap_literal(syms.bigint_lit, Value::BigInt(n)),
         CoreTerm::Const(Literal::Float(f)) => wrap_literal(syms.float_lit, Value::Float(f.into_inner())),
         CoreTerm::Const(Literal::String(s)) => wrap_literal(syms.str_lit, Value::Str(s)),
         CoreTerm::Const(Literal::Bool(b)) => wrap_literal(syms.bool_lit, Value::Bool(b)),
@@ -746,9 +748,18 @@ fn reflect_value_to_term(
         let lit = if lit_ctor == syms.int_lit {
             match lit_val {
                 Value::Int(n) => Literal::Int(n),
-                Value::BigInt(n) => Literal::BigInt(n),
                 other => return Err(EvalError::TypeMismatch {
                     expected: "Int64", got: other.type_name().to_string(),
+                }),
+            }
+        } else if lit_ctor == syms.bigint_lit {
+            // BigIntLiteral is its own first-class case (WI-543); IntLiteral
+            // stays Int64-only above.
+            match lit_val {
+                Value::BigInt(n) => Literal::BigInt(n),
+                Value::Int(n) => Literal::BigInt(n.into()),
+                other => return Err(EvalError::TypeMismatch {
+                    expected: "BigInt", got: other.type_name().to_string(),
                 }),
             }
         } else if lit_ctor == syms.float_lit {

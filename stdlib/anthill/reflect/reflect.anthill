@@ -332,6 +332,7 @@ namespace anthill.reflect
   -- Structural decomposition of Term — for introspection.
   enum LiteralRepr {
     entity IntLiteral(value: Int64)
+    entity BigIntLiteral(value: BigInt)
     entity FloatLiteral(value: Float)
     entity StringLiteral(value: String)
     entity BoolLiteral(value: Bool)
