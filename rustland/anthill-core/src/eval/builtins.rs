@@ -70,6 +70,14 @@ pub fn register_standard_builtins(interp: &mut Interpreter) -> Result<(), EvalEr
     register_if_present(interp, "anthill.prelude.Float.isInfinite", float_is_infinite)?;
     register_if_present(interp, "anthill.prelude.Float.isFinite", float_is_finite)?;
 
+    // WI-532 / proposal 039: special IEEE values exposed as host-supplied
+    // term-level constants. These are `SymbolKind::Const` (not operations), but
+    // a const's value source is this same builtin map (eval's `force_const`
+    // reads `self.builtins.get(&sym)`), so they register here like any builtin.
+    register_if_present(interp, "anthill.prelude.Float.infinity", float_infinity)?;
+    register_if_present(interp, "anthill.prelude.Float.negativeInfinity", float_negative_infinity)?;
+    register_if_present(interp, "anthill.prelude.Float.nan", float_nan)?;
+
     register_if_present(interp, "anthill.prelude.Map.empty", map_empty)?;
     register_if_present(interp, "anthill.prelude.Map.put", map_put)?;
     register_if_present(interp, "anthill.prelude.Map.get", map_get)?;
@@ -542,6 +550,25 @@ fn float_is_finite(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalEr
         Value::Float(x) => Ok(Value::Bool(x.is_finite())),
         other => Err(type_mismatch("Float", &other, None)),
     }
+}
+
+// ── Float IEEE constants (WI-532, host value source for the term-level consts) ──
+// Value sources for the bodyless `const infinity/negativeInfinity/nan: Float`
+// declared in stdlib float.anthill. `force_const` invokes these with no args.
+
+fn float_infinity(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    let [] = expect_args::<0>("Float.infinity", args)?;
+    Ok(Value::Float(f64::INFINITY))
+}
+
+fn float_negative_infinity(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    let [] = expect_args::<0>("Float.negativeInfinity", args)?;
+    Ok(Value::Float(f64::NEG_INFINITY))
+}
+
+fn float_nan(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    let [] = expect_args::<0>("Float.nan", args)?;
+    Ok(Value::Float(f64::NAN))
 }
 
 /// Int → Float. Exact for |n| < 2^53; rounds to nearest representable

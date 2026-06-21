@@ -474,3 +474,6 @@ mod wi084_const_phase3_test;
 #[path = "include/wi084_const_purity_test.rs"]
 mod wi084_const_purity_test;
 
+#[path = "include/wi532_float_infinity_test.rs"]
+mod wi532_float_infinity_test;
+

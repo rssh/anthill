@@ -49,6 +49,18 @@ sort anthill.prelude.Float
     tau() -> Float                        -- τ = 2π = 6.28318…
   }
 
+  -- Special IEEE 754 values as term-level constants (WI-084 / proposal 039).
+  -- Bodyless / host-supplied: anthill has no surface literal for ±Inf or NaN,
+  -- so each is a `const` whose value is produced by a registered host builtin
+  -- (anthill-core eval/builtins.rs). They give a name to the saturation bounds
+  -- and the non-value — e.g. `Motor.set_position(infinity)` selects velocity
+  -- mode, an unbounded range uses `negativeInfinity`/`infinity` as its ends.
+  -- Detect them with the `isInfinite` / `isFinite` / `isNaN` predicates above
+  -- (`nan` is unequal to everything, itself included, so `Eq` can't spot it).
+  const infinity: Float                   -- +∞
+  const negativeInfinity: Float           -- -∞
+  const nan: Float                        -- IEEE NaN (the canonical quiet NaN)
+
   -- Laws
   rule neg(?a) <=> sub(0.0, ?a)
   rule abs(?a) <=> max(?a, neg(?a))
