@@ -72,6 +72,14 @@ A forward pass `Γ_in → construct → Γ_out`:
   populates `Γ` beyond branch conditions and bindings. The same query bridge
   (below) serves guard discharge, `requires`-checking, and the use of `ensures`
   facts — one mechanism, three callers.
+- **in-body `proof`** of `P` ([025](025-proof-constructs.md)) → once **verified**
+  (its proof context seeded from `Γ_in`, and able to cite proofs up its lexical
+  scope chain — see *Nesting* below), `Γ_out = Γ_in ∪ { P }`: the proved
+  proposition becomes a known fact for the code after it — the **local-lemma**
+  pattern, symmetric to a call's `ensures`. So a `proof` is both a **consumer** of
+  `Γ` (its premises) *and* a **producer** into `Γ` (its conclusion): prove a fact
+  once, then discharge / `requires`-check / cite it downstream. An *unproved* proof
+  adds nothing and stands as an obligation/error — never a speculative fact.
 - **`if cond then T else E`** → **fork**: check `T` with `Γ_in ∪ { cond }` and `E`
   with `Γ_in ∪ { ¬cond }`. This is where `if neq(b, 0)` puts `neq(b, 0)` into the
   then-branch. *(Today both branches share one env — this adds the fork + the
@@ -87,6 +95,25 @@ A forward pass `Γ_in → construct → Γ_out`:
 
 `Γ` is monotone within a straight-line region and forks/meets at control flow —
 ordinary forward dataflow, nothing bespoke.
+
+### Nesting — `Γ` and the proof scope chain
+
+Environments **nest** with lexical structure: each scope's `Γ` extends its
+enclosing scope's, so `Γ` at a point already carries every fact established by the
+ancestors on the path to it — the seed, outer bindings, the branch condition of
+every enclosing `if`/`match`, and every preceding call's `ensures` or proof's
+conclusion.
+
+The **proof scope chain follows the same nesting.** An in-body `proof` may
+**reference other proofs in scope** — earlier sibling proofs in the *same*
+environment, and proofs in any *enclosing* environment, up to the **top-level**
+proofs attached to rules at sort / namespace scope ([025](025-proof-constructs.md)).
+A deep proof can therefore cite an outer lemma (or a top-level theorem) by name,
+exactly as it can use an outer `Γ` fact: it is one lexical visibility, exposed two
+ways — as *facts* (through `Γ`) and as citable *proofs* (lemmas). What a proof
+cannot see is a *sibling* scope it is not nested in — a fact proved only in the
+`then` branch is not in scope in the `else` branch, which is exactly what the
+join's meet already enforces for `Γ`.
 
 ## Querying `Γ` (the resolver bridge)
 
@@ -114,9 +141,13 @@ refutation, not negation-as-failure" for why the polarity must be exactly this.)
    effect; otherwise keep / propagate. This is the "trivial flow."
 3. **In-body proofs ([025](025-proof-constructs.md)), Tier 2.** A `proof` written
    inside a body (or a control-flow branch) takes **`Γ` at that point** as its
-   premises. When the trivial flow (Tier 1) cannot refute a guard, discharge falls
-   back to checking such a proof, which may combine `Γ` with KB rules or an
-   external tool. See 025 §"In-body and control-flow proofs."
+   premises and may **cite other proofs up its lexical scope chain** (sibling →
+   enclosing → top-level; see *Nesting*). When the trivial flow (Tier 1) cannot
+   refute a guard, discharge falls back to checking such a proof, which may combine
+   `Γ`, ancestor proofs, KB rules, or an external tool. Its verified conclusion is
+   in turn **added to `Γ`** (the *in-body `proof`* modification rule), so a proved
+   lemma feeds later discharge / `requires` checks. See 025 §"In-body and
+   control-flow proofs."
 4. **(future)** refinement-type narrowing, `match` exhaustiveness witnesses, and
    reuse of the const-fold evaluator ([039](039-term-level-constants.md)) for the
    ground fragment.

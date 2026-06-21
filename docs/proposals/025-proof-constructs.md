@@ -342,6 +342,25 @@ same `assume`-grown context as a top-level proof; the only difference is that th
 *seed* comes from `Γ` (bindings + branch conditions on the path to this point)
 rather than from scope / inherited / definition rules alone.
 
+**Proof references follow lexical scope.** A guided in-body proof cites lemmas the
+same way a top-level one does (a `:- name, …` body — §"Automatic vs guided
+proofs"), but its visible lemmas are its whole **scope chain**: earlier sibling
+proofs in the same body or branch, proofs in any *enclosing* branch / body, and —
+up the chain — the **top-level** proofs attached to rules at sort / namespace
+scope. This is the proof-side mirror of `Γ`'s nesting
+([050](050-local-interpretation.md) §"Nesting"): an enclosing scope's *facts*
+arrive via `Γ`, its *proofs* via the citable lemma set — one lexical visibility,
+two faces. A proof in the `else` branch sees neither the facts nor the proofs that
+exist only in the `then` branch.
+
+**A verified in-body proof feeds `Γ`.** Once a proof of `P` is checked, `P` is
+**added to the local-interpretation environment** for the code after it
+([050](050-local-interpretation.md), the *in-body `proof`* modification rule) —
+symmetric to a call's `ensures`. So the construct is bidirectional: it *reads* `Γ`
+(and ancestor proofs) as premises and *writes* its conclusion back into `Γ`, where
+later discharge, `requires`-checks, and sibling proofs use it as an ordinary fact.
+An unverified proof contributes nothing and remains an obligation.
+
 This makes the proof construct the **second tier** of effect discharge
 ([048](048-conditional-effects.md)): the typer first tries the automatic flow —
 refute the guard directly from `Γ` + ground evaluation + KB, no proof needed —
