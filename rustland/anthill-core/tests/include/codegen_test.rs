@@ -392,3 +392,95 @@ fn abstract_effect_parameter_to_result() {
     assert!(out.contains("fn is_empty(&self) -> bool"), "no effects should not wrap: {out}");
     assert!(!out.contains("is_empty(&self) -> Result"), "no effects should not wrap: {out}");
 }
+
+// ── WI-533: term-level constants → Rust constants ────────────────
+
+#[test]
+fn freestanding_const_to_module_const() {
+    // A namespace-level const lowers to a module-level `const`; `public`
+    // visibility flows through to `pub` (default config emits non-pub, like
+    // every other item — visibility is honored, not invented).
+    let out = gen(r#"namespace test.consts
+  const PRIVATE_LIMIT: Int64 = 7
+  public const BROADCAST_CHANNEL: Int64 = -1
+end
+"#);
+    assert!(
+        out.contains("const PRIVATE_LIMIT: i64 = 7;"),
+        "expected a module-level const:\n{out}"
+    );
+    assert!(
+        out.contains("pub const BROADCAST_CHANNEL: i64 = -1;"),
+        "`public const` must emit `pub const`:\n{out}"
+    );
+}
+
+#[test]
+fn float_const_keeps_f64_suffix() {
+    // A Float const whose literal reads as an integer still gets `.0` so it
+    // keeps its `f64` type.
+    let out = gen(r#"namespace test.consts
+  public const GAIN: Float = 2.0
+  public const WHOLE: Float = 3
+end
+"#);
+    assert!(out.contains("pub const GAIN: f64 = 2.0;"), "output:\n{out}");
+    assert!(out.contains("pub const WHOLE: f64 = 3.0;"), "f64 literal needs .0:\n{out}");
+}
+
+#[test]
+fn sort_body_const_to_trait_associated_const() {
+    // A const inside a sort-with-operations becomes a trait associated const,
+    // emitted before the methods.
+    let out = gen(r#"sort Emitter {
+  const BROADCAST_CHANNEL: Int64 = -1
+  operation send(self: Emitter, payload: String) -> Bool
+}
+"#);
+    assert!(out.contains("trait Emitter"), "output:\n{out}");
+    assert!(
+        out.contains("const BROADCAST_CHANNEL: i64 = -1;"),
+        "expected a trait associated const:\n{out}"
+    );
+}
+
+#[test]
+fn string_const_to_str_ref() {
+    // `String` is not a valid `const` type in Rust (not const-constructible from
+    // a literal); a String const lowers to `&str`.
+    let out = gen(r#"namespace test.consts
+  public const GREETING: String = "hi"
+end
+"#);
+    assert!(
+        out.contains("pub const GREETING: &str = \"hi\";"),
+        "String const must lower to &str:\n{out}"
+    );
+}
+
+#[test]
+fn const_only_sort_to_struct_and_impl() {
+    // A const-only sort (no entities, no operations) emits a unit struct + an
+    // inherent impl carrying the const — not silently dropped.
+    let out = gen(r#"sort Channels {
+  const BROADCAST: Int64 = -1
+}
+"#);
+    assert!(out.contains("struct Channels;"), "const-only sort → unit struct:\n{out}");
+    assert!(out.contains("impl Channels {"), "...with an inherent impl:\n{out}");
+    assert!(out.contains("const BROADCAST: i64 = -1;"), "...carrying the const:\n{out}");
+}
+
+#[test]
+fn bodyless_host_float_const_maps_to_f64_expr() {
+    // A bodyless host const named like a Float IEEE special (WI-532) maps to its
+    // f64 expression rather than failing codegen — keeps float.anthill emittable
+    // and mirrors the cpp-gen mapping.
+    let out = gen(r#"namespace test.consts
+  public const infinity: Float
+  public const nan: Float
+end
+"#);
+    assert!(out.contains("pub const infinity: f64 = f64::INFINITY;"), "output:\n{out}");
+    assert!(out.contains("pub const nan: f64 = f64::NAN;"), "output:\n{out}");
+}

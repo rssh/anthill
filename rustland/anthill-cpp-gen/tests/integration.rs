@@ -37,6 +37,7 @@ mod runtime_header_test;
 mod traits_struct_test;
 mod unsupported_test;
 mod variant_test;
+mod wi533_const_test;
 
 // Diagnostics — `#[ignore]`-gated dev-time helpers, kept in the
 // same binary so they stay buildable.

@@ -9,7 +9,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::intern::{SymbolTable, Symbol};
-use crate::kb::term::Term;
+use crate::kb::term::{Term, Literal, TermId};
 use crate::parse::ir::*;
 
 // ── Codegen error ───────────────────────────────────────────────
@@ -146,6 +146,7 @@ struct SortInfo<'a> {
     operations: Vec<&'a Operation>,
     rules: Vec<&'a Rule>,
     constraints: Vec<&'a Constraint>,
+    consts: Vec<&'a Const>,
     sub_namespaces: Vec<&'a Namespace>,
 }
 
@@ -158,6 +159,7 @@ impl<'a> SortInfo<'a> {
             operations: Vec::new(),
             rules: Vec::new(),
             constraints: Vec::new(),
+            consts: Vec::new(),
             sub_namespaces: Vec::new(),
         };
 
@@ -196,6 +198,9 @@ impl<'a> SortInfo<'a> {
                 }
                 Item::Constraint(c) => {
                     info.constraints.push(c);
+                }
+                Item::Const(c) => {
+                    info.consts.push(c);
                 }
                 Item::Namespace(n) => {
                     info.sub_namespaces.push(n);
@@ -307,6 +312,78 @@ impl<'a> RustCodegen<'a> {
         if !self.config.derives.is_empty() {
             let derives = self.config.derives.join(", ");
             self.line(&format!("#[derive({derives})]"));
+        }
+    }
+
+    // ── Term-level constants (proposal 039 / WI-084, codegen = WI-533) ──
+
+    /// Lower a const's value term (in the ParsedFile term store) to a Rust
+    /// constant expression. The Rust backend is a skeleton generator with no
+    /// expression lowering, so only LITERAL bodies are supported; a bodyless
+    /// host const or a non-literal body is a loud codegen error (the const is
+    /// dropped and the error surfaces — never a silent skip, per the repo rule).
+    /// Lower a const's value to a Rust constant expression. A bodied const must
+    /// have a LITERAL body (the skeleton generator has no expression lowering);
+    /// a bodyless const is host-supplied, so the known Float IEEE specials
+    /// (WI-532) map to their `f64` expressions (keeping `float.anthill` Rust
+    /// codegen working and matching cpp-gen). Anything else is a loud codegen
+    /// error — dropped and diagnosed, never a silent skip, per the repo rule.
+    fn lower_const_value(&mut self, name: &str, rust_ty: &str, value: Option<TermId>) -> Option<String> {
+        let Some(tid) = value else {
+            if rust_ty == "f64" {
+                if let Some(expr) = host_float_const_rust(name) {
+                    return Some(expr.to_string());
+                }
+            }
+            self.errors.push(CodegenError {
+                message: format!(
+                    "const `{name}`: bodyless host-supplied const has no Rust value \
+                     source (only the Float IEEE specials infinity/negativeInfinity/nan \
+                     are mapped)"
+                ),
+            });
+            return None;
+        };
+        match self.terms.get(tid) {
+            // A handle (FactId/OccurrenceId) has no const-expressible literal form.
+            Term::Const(Literal::Handle(..)) => {
+                self.errors.push(CodegenError {
+                    message: format!(
+                        "const `{name}`: a handle literal is not a valid Rust const value"
+                    ),
+                });
+                None
+            }
+            Term::Const(lit) => Some(lower_literal_rust(lit, rust_ty)),
+            other => {
+                self.errors.push(CodegenError {
+                    message: format!(
+                        "const `{name}`: only literal bodies are supported by Rust \
+                         codegen, got {other:?}"
+                    ),
+                });
+                None
+            }
+        }
+    }
+
+    /// Rust type for a const place. Like `type_to_rust`, but a `String` const
+    /// becomes `&str`: `String` is not a valid `const` type (not const-
+    /// constructible from a string literal), whereas `&'static str` is.
+    fn const_rust_type(&self, ty: &TypeExpr) -> String {
+        let t = self.type_to_rust(ty);
+        if t == "String" { "&str".to_string() } else { t }
+    }
+
+    /// Emit a term-level const as `[pub] const NAME: T = value;`. A trait
+    /// associated const takes no visibility (it is public with the trait);
+    /// free-standing and inherent-impl consts follow the configured visibility.
+    fn emit_const(&mut self, c: &Const, in_trait: bool) {
+        let name = self.resolve(&c.name);
+        let ty = self.const_rust_type(&c.ty);
+        if let Some(val) = self.lower_const_value(&name, &ty, c.value) {
+            let vis = if in_trait { "" } else { self.visibility_prefix(c.visibility) };
+            self.line(&format!("{vis}const {name}: {ty} = {val};"));
         }
     }
 
@@ -476,10 +553,13 @@ impl<'a> RustCodegen<'a> {
                 Item::AbstractSort(_) => {
                     // Skip — only meaningful inside sort bodies
                 }
-                // Const codegen (a `pub const` emit) is a later phase of
-                // proposal 039 / WI-084; not emitted yet.
-                Item::Const(_)
-                | Item::OperationBlock(_) | Item::RequiresDecl(_)
+                // WI-533: a free-standing const → `pub const NAME: T = value;`.
+                Item::Const(c) => {
+                    if !first { self.blank(); }
+                    self.emit_const(c, false);
+                    last_entity = None;
+                }
+                Item::OperationBlock(_) | Item::RequiresDecl(_)
                 | Item::Describe(_)
                 | Item::Proof(_) | Item::ProvidesClause(_) | Item::ProvidesBlock(_) => {}
             }
@@ -638,6 +718,10 @@ impl<'a> RustCodegen<'a> {
                 Item::Constraint(c) => {
                     if !first { self.blank(); }
                     self.emit_constraint(c);
+                }
+                Item::Const(c) => {
+                    if !first { self.blank(); }
+                    self.emit_const(c, false);
                 }
                 _ => {}
             }
@@ -832,8 +916,13 @@ impl<'a> RustCodegen<'a> {
             self.emit_sort_as_enum(sort, &sort_name, &info);
         } else if !info.operations.is_empty() {
             self.emit_sort_as_trait(sort, &sort_name, &info);
+        } else if !info.consts.is_empty() {
+            // WI-533: a const-only sort (no entities, no operations) has no enum
+            // or trait to carry its consts — emit a unit struct + inherent impl
+            // rather than silently dropping them.
+            self.emit_sort_as_const_holder(sort, &sort_name, &info);
         }
-        // Sort with no constructors and no operations — skip
+        // Sort with no constructors, operations, or consts — skip
         // (abstract sort used as trait name by other sorts)
 
         // Emit sub-namespaces (nested namespaces inside sorts)
@@ -841,6 +930,22 @@ impl<'a> RustCodegen<'a> {
             self.blank();
             self.emit_namespace(sub_ns);
         }
+    }
+
+    /// A sort whose only members are term-level consts (WI-533): no entities
+    /// (not an enum) and no operations (not a trait). Emit a unit struct plus
+    /// an inherent impl carrying the associated consts.
+    fn emit_sort_as_const_holder(&mut self, sort: &SortWithBody, sort_name: &str, info: &SortInfo) {
+        let vis = self.visibility_prefix(sort.visibility);
+        self.line(&format!("{vis}struct {sort_name};"));
+        self.blank();
+        self.line(&format!("impl {sort_name} {{"));
+        self.indent();
+        for c in &info.consts {
+            self.emit_const(c, false);
+        }
+        self.dedent();
+        self.line("}");
     }
 
     fn emit_sort_as_enum(&mut self, sort: &SortWithBody, sort_name: &str, info: &SortInfo) {
@@ -878,6 +983,19 @@ impl<'a> RustCodegen<'a> {
 
         self.dedent();
         self.line("}");
+
+        // WI-533: sort-body consts on an enum sort → inherent `impl` associated
+        // consts (an enum has no trait body to hang them on).
+        if !info.consts.is_empty() {
+            self.blank();
+            self.line(&format!("impl{generics} {sort_name}{generics} {{"));
+            self.indent();
+            for c in &info.consts {
+                self.emit_const(c, false);
+            }
+            self.dedent();
+            self.line("}");
+        }
 
         // If there are operations, emit an impl block (skeleton mode only).
         // In compilable mode, impl methods need hand-written implementations.
@@ -934,6 +1052,16 @@ impl<'a> RustCodegen<'a> {
 
         self.line(&format!("{vis}trait {sort_name}{trait_generics}{supertrait_clause} {{"));
         self.indent();
+
+        // WI-533: sort-body consts become trait associated consts, emitted
+        // before the methods (matching source order, where a sentinel const
+        // precedes the operations).
+        for c in &info.consts {
+            self.emit_const(c, true);
+        }
+        if !info.consts.is_empty() && !info.operations.is_empty() {
+            self.blank();
+        }
 
         let mut first_op = true;
         for op in &info.operations {
@@ -1336,6 +1464,43 @@ fn should_collapse_self(info: &SortInfo, symbols: &SymbolTable) -> bool {
 }
 
 // ── Utility functions ────────────────────────────────────────────
+
+/// Rust expression for a bodyless host-supplied Float const (WI-532). Mirrors
+/// cpp-gen's `render_as_float_special`. Matched by short name (rust.rs runs on
+/// the raw ParsedFile, before name resolution), gated by the caller on an `f64`
+/// declared type so a non-Float same-named const can't collide.
+fn host_float_const_rust(name: &str) -> Option<&'static str> {
+    match name {
+        "infinity" => Some("f64::INFINITY"),
+        "negativeInfinity" => Some("f64::NEG_INFINITY"),
+        "nan" => Some("f64::NAN"),
+        _ => None,
+    }
+}
+
+/// Render a literal term as a Rust constant expression of type `rust_ty`
+/// (WI-533). A value that would read as an integer but whose const is `f64`
+/// gets a `.0` suffix so it keeps the float type (anthill admits an integer
+/// literal for a `Float` const; Rust does not coerce). String literals use
+/// Rust's debug escaping.
+fn lower_literal_rust(lit: &Literal, rust_ty: &str) -> String {
+    let float_target = rust_ty == "f64" || rust_ty == "f32";
+    let with_point = |s: String| -> String {
+        if float_target && !(s.contains('.') || s.contains('e') || s.contains('E')) {
+            format!("{s}.0")
+        } else {
+            s
+        }
+    };
+    match lit {
+        Literal::Int(n) => with_point(n.to_string()),
+        Literal::BigInt(n) => with_point(n.to_string()),
+        Literal::Float(f) => with_point(f.into_inner().to_string()),
+        Literal::Bool(b) => b.to_string(),
+        Literal::String(s) => format!("{s:?}"),
+        Literal::Handle(kind, id) => format!("/* handle {kind:?}:{id} */"),
+    }
+}
 
 fn map_primitive_type(name: &str) -> String {
     match name {

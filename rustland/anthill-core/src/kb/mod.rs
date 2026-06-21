@@ -721,6 +721,16 @@ impl KnowledgeBase {
         self.const_bodies.iter().map(|(s, n)| (*s, n))
     }
 
+    /// Proposal 039 / WI-084 — iterate every constant's `(symbol, declared type
+    /// Value)`. Unlike [`Self::const_bodies_iter`], this covers EVERY const
+    /// (every const has a declared type), bodied or bodyless. Codegen (WI-533)
+    /// consumes this to discover the consts in a sort/namespace scope — consts
+    /// emit no scope-member fact, so they are absent from the fact index and
+    /// must be found by scanning. Iteration order is unspecified.
+    pub fn const_types_iter(&self) -> impl Iterator<Item = (Symbol, &crate::eval::value::Value)> + '_ {
+        self.const_types.iter().map(|(s, v)| (*s, v))
+    }
+
     // ── Term allocation ─────────────────────────────────────────
 
     /// Allocate a term (hash-consed, refcounted).

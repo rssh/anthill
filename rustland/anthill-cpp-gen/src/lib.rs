@@ -627,6 +627,82 @@ pub fn emit_entity_struct_by_symbol(
 /// snake-to-camel naming convention which is part of WI-088 / WI-089.
 /// Until then, the user fills bodies manually or hand-writes the
 /// implementation file.
+/// One term-level constant (proposal 039 / WI-084), lowered for C++ emission
+/// as a `constexpr`. WI-533.
+struct ConstSig {
+    name: String,
+    cpp_type: String,
+    cpp_value: String,
+}
+
+/// Discover and lower the term-level constants declared directly in `scope`
+/// (a sort's or a namespace's qualified name). Consts carry no scope-member
+/// fact (the WI-084 deferral), so they are absent from the fact index and
+/// found instead by scanning `const_types_iter` and matching the parent
+/// qualified name — mirroring how `operations_in_sort` filters operations by
+/// `parent_qualified_name`. Sorted by qualified name for deterministic output.
+/// A const whose declared type or value can't be lowered is a loud error, never
+/// a silent drop (repo rule).
+fn consts_in_scope(
+    ctx: &CodegenContext,
+    scope_qualified: &str,
+) -> Result<Vec<ConstSig>, CppCodegenError> {
+    let kb = ctx.kb;
+    let mut syms: Vec<Symbol> = kb
+        .const_types_iter()
+        .filter(|(sym, _)| parent_qualified_name(kb, *sym).as_deref() == Some(scope_qualified))
+        .map(|(sym, _)| sym)
+        .collect();
+    syms.sort_by(|a, b| kb.qualified_name_of(*a).cmp(kb.qualified_name_of(*b)));
+
+    let mut out = Vec::with_capacity(syms.len());
+    for sym in syms {
+        let qn = kb.qualified_name_of(sym).to_string();
+        let name = short_name_of(&qn).to_string();
+
+        // Declared type: `const_type` is a `Value`; a simple sort type (the
+        // common case — `Int64`, `Float`) lowers as a ground `Value::Term`.
+        let cpp_type = match kb.const_type(sym) {
+            Some(anthill_core::eval::value::Value::Term(tid)) => {
+                let t = lower_type(ctx, *tid)?;
+                // A `String` const cannot be `constexpr std::string` — std::string
+                // is not a literal type before C++20. `std::string_view` is literal
+                // and binds a string literal directly, so it works under C++17.
+                if t == "std::string" { "std::string_view".to_string() } else { t }
+            }
+            Some(other) => {
+                return Err(CppCodegenError {
+                    message: format!(
+                        "const '{qn}': declared type is a non-ground value ({}) — \
+                         value-in-type const types are not supported by cpp-gen yet",
+                        other.type_name()
+                    ),
+                });
+            }
+            None => {
+                return Err(CppCodegenError {
+                    message: format!("const '{qn}': no declared type recorded in the KB"),
+                });
+            }
+        };
+
+        // Value: lower the anthill body when present; a bodyless host-supplied
+        // const (WI-532) maps to its target expression (the Float IEEE specials).
+        let cpp_value = match kb.const_body_node(sym) {
+            Some(body) => lower_node(ctx, body)?,
+            None => render_as_float_special(&qn).ok_or_else(|| CppCodegenError {
+                message: format!(
+                    "const '{qn}': bodyless host-supplied const has no C++ value mapping \
+                     (only the Float IEEE specials infinity/negativeInfinity/nan are mapped)"
+                ),
+            })?,
+        };
+
+        out.push(ConstSig { name, cpp_type, cpp_value });
+    }
+    Ok(out)
+}
+
 pub fn emit_traits_struct(
     kb: &KnowledgeBase,
     sort_name: &str,
@@ -660,16 +736,26 @@ pub fn emit_traits_struct_by_symbol(
     let _guard = ctx.push_type_params(type_params);
 
     let ops = operations_in_sort(ctx, sort_sym)?;
-    if ops.is_empty() {
+    let consts = consts_in_scope(ctx, qualified)?;
+    if ops.is_empty() && consts.is_empty() {
         return Err(CppCodegenError {
             message: format!(
-                "sort '{qualified}' has no operations — \
+                "sort '{qualified}' has no operations or constants — \
                  a traits struct would be empty"
             ),
         });
     }
 
     let mut methods_text = String::new();
+    // Term-level constants (WI-533) first: they read as the class's named
+    // sentinels and match source order where the const precedes the operations
+    // (e.g. lf1 `Emitter::BROADCAST_CHANNEL`).
+    for c in &consts {
+        methods_text.push_str(&format!(
+            "    static constexpr {} {} = {};\n",
+            c.cpp_type, c.name, c.cpp_value
+        ));
+    }
     for op in &ops {
         let params_text = op.params.iter()
             .map(|p| format!("{} {}", p.cpp_type, p.name))
@@ -1113,13 +1199,16 @@ pub fn emit_namespace_header_in(
     // restores the previous value on every exit path.
     let _ns_guard = ctx.enter_namespace(namespace);
     let (entities, sums, traits) = classify_namespace(ctx, namespace);
+    // Namespace-level term-level constants (WI-533) declared directly under
+    // this namespace (not inside a sort body — those emit as struct members).
+    let consts = consts_in_scope(ctx, namespace)?;
 
-    if entities.is_empty() && sums.is_empty() && traits.is_empty() {
+    if entities.is_empty() && sums.is_empty() && traits.is_empty() && consts.is_empty() {
         return Err(CppCodegenError {
             message: format!(
-                "no entities, sum sorts, or sort-with-operations to emit directly \
-                 under namespace '{namespace}' (either nothing is declared there, \
-                 or every candidate is carrier-bound by Implementation facts)"
+                "no entities, sum sorts, sort-with-operations, or constants to emit \
+                 directly under namespace '{namespace}' (either nothing is declared \
+                 there, or every candidate is carrier-bound by Implementation facts)"
             ),
         });
     }
@@ -1149,6 +1238,20 @@ pub fn emit_namespace_header_in(
 
     let mut items = String::new();
     let mut needs = Includes::default();
+    // Namespace-level constants first, so any later struct or method body that
+    // references one sees its declaration (a const of a primitive type carries
+    // no forward dependency on a same-namespace struct).
+    for c in &consts {
+        let block = format!(
+            "inline constexpr {} {} = {};\n",
+            c.cpp_type, c.name, c.cpp_value
+        );
+        needs.scan(&block);
+        items.push_str(&block);
+    }
+    if !consts.is_empty() {
+        items.push('\n');
+    }
     for sym in data_order {
         let item = data_items.remove(&sym).expect("topo result must be in data_items");
         let block = match item {
@@ -1379,6 +1482,25 @@ fn classify_namespace(
             traits_qns.insert(parent_qn);
         }
     }
+
+    // WI-533: a sort whose only members are term-level consts has no
+    // OperationInfo, so the loop above misses it and its consts would silently
+    // vanish from the header. Surface const-bearing sorts the same way (one
+    // level deep, not carrier-bound, not already a sum) so a const-only sort
+    // emits as a struct of `static constexpr` members. The `kind == Sort`
+    // filter below drops a const that is directly under the namespace
+    // (`ns.X`, parent `ns`, already handled by the namespace-level scan) or in
+    // a nested namespace (`ns.sub`, not a Sort). A sum sort that also carries a
+    // const is left to its sum emission (consts there are a separate gap).
+    for (const_sym, _) in kb.const_types_iter() {
+        let Some(parent_qn) = parent_qualified_name(kb, const_sym) else { continue };
+        if !parent_qn.starts_with(&prefix) { continue; }
+        if parent_qn[prefix.len()..].contains('.') { continue; }
+        if ctx.carriers.lookup(&parent_qn).is_some() { continue; }
+        if sum_sort_qns.contains(&parent_qn) { continue; }
+        traits_qns.insert(parent_qn);
+    }
+
     let mut traits: Vec<Symbol> = traits_qns.into_iter()
         .filter_map(|qn| kb.try_resolve_symbol(&qn))
         .filter(|s| matches!(kb.kind_of(*s), Some(SymbolKind::Sort)))
@@ -1540,6 +1662,8 @@ const INCLUDE_PROBES: &[(&str, &str)] = &[
     ("std::map",      "#include <map>"),
     ("std::set",      "#include <set>"),
     ("std::variant",  "#include <variant>"),
+    ("std::numeric_limits", "#include <limits>"),
+    ("std::string_view", "#include <string_view>"),
 ];
 
 #[derive(Default)]
@@ -1636,6 +1760,9 @@ fn lower_node(
             if let Some(rendered) = render_as_math_constant(qn) {
                 return Ok(rendered);
             }
+            if let Some(rendered) = render_as_float_special(qn) {
+                return Ok(rendered);
+            }
             Ok(short_name_of(qn).to_string())
         }
         Expr::VarRef { name } => {
@@ -1644,6 +1771,9 @@ fn lower_node(
                 return Ok(rendered);
             }
             if let Some(rendered) = render_as_math_constant(qn) {
+                return Ok(rendered);
+            }
+            if let Some(rendered) = render_as_float_special(qn) {
                 return Ok(rendered);
             }
             let short = short_name_of(qn);
@@ -2189,6 +2319,20 @@ fn render_as_math_constant(fn_qn: &str) -> Option<String> {
         ("Float.pi",  "3.141592653589793"),
         ("Float.e",   "2.718281828459045"),
         ("Float.tau", "6.283185307179586"),
+    ];
+    lookup_prelude_qn(fn_qn, table).map(str::to_string)
+}
+
+/// Lower the bodyless host-supplied Float constants (WI-532): IEEE special
+/// values that have no C++ literal spelling. Emitting `std::numeric_limits`
+/// pulls in `<limits>` via the `"std::numeric_limits"` INCLUDE_PROBES entry
+/// when the surrounding block is scanned. Kept separate from
+/// `render_as_math_constant` (whose payloads are bare literals, no header).
+fn render_as_float_special(fn_qn: &str) -> Option<String> {
+    let table: &[(&str, &str)] = &[
+        ("Float.infinity",         "std::numeric_limits<double>::infinity()"),
+        ("Float.negativeInfinity", "-std::numeric_limits<double>::infinity()"),
+        ("Float.nan",              "std::numeric_limits<double>::quiet_NaN()"),
     ];
     lookup_prelude_qn(fn_qn, table).map(str::to_string)
 }
