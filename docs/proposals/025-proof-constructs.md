@@ -324,6 +324,31 @@ end
 
 The naming convention `<operation>.<clause>` identifies which contract clause is being proved.
 
+### In-body and control-flow proofs
+
+A `proof` may also appear **inside an operation body**, including inside a
+control-flow branch (an `if` arm or a `match` arm) — not only as a top-level
+companion to a `rule`. An in-body proof discharges an obligation that arises *at
+that program point*; the motivating case is a guarded effect's guard (proposal
+[048](048-conditional-effects.md), WI-067) that the typer's automatic flow could
+not refute.
+
+Its `ProofContext` (above) is **seeded with the local-interpretation environment
+`Γ`** (proposal [050](050-local-interpretation.md)) at that point — every fact
+narrowed by the enclosing bindings and branch conditions is already `assume`d. So
+a proof written in the `then` branch of `if neq(b, 0)` starts with `neq(b, 0)` in
+context for free and only has to bridge from there to the obligation. It is the
+same `assume`-grown context as a top-level proof; the only difference is that the
+*seed* comes from `Γ` (bindings + branch conditions on the path to this point)
+rather than from scope / inherited / definition rules alone.
+
+This makes the proof construct the **second tier** of effect discharge
+([048](048-conditional-effects.md)): the typer first tries the automatic flow —
+refute the guard directly from `Γ` + ground evaluation + KB, no proof needed —
+and only when that fails does it look for an in-body `proof` targeting the
+obligation and check it (against the same `Γ`). A proof that fails or is absent
+leaves the effect **conservatively present** — never silently dropped.
+
 ## Internal proof theory
 
 ### Proof = SLD resolution trace

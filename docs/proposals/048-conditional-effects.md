@@ -16,9 +16,12 @@
 ## Depends on
 - 013 (effects as sorts and facts), 045 (effect rows / row polymorphism — delivered as WI-307),
   027.1 (value-dependent effects — `Modify[c]` — the existing value-*parameterized* effect this
-  generalizes), 026 (expression evaluator — abstract interpretation for literal-divisor guards),
-  018 §"Discharge mechanisms" (the existing obligation-discharge taxonomy: abstract interp, KB
-  resolution, explicit rules, context propagation, external proofs).
+  generalizes), 050 (**local interpretation** — the flow-sensitive logical environment `Γ` that the
+  WI-067 discharge refutes guards against; the prerequisite for phase 2), 025 (proof constructs — the
+  Tier-2 in-body proof fallback), 026 (expression evaluator — the runtime sibling of 050, reused for
+  ground-guard abstract interpretation), 018 §"Discharge mechanisms" (the existing obligation-
+  discharge taxonomy: abstract interp, KB resolution, explicit rules, context propagation, external
+  proofs).
 
 ## Relates to
 - WI-066 (integer-division `Error[DivisionByZero]`, delivered — the *unconditional* effect; the
@@ -299,9 +302,31 @@ unaffected; `decompose_effect_row` gains a `guarded` arm that, after discharge (
 
 ## Typer delta (this is WI-067)
 
-At a call site, for each guarded element of the callee's declared row, attempt to refute the guard
-against the arguments' static knowledge (sources above); emit a concrete contribution. Conservative
-default: a guard that cannot be refuted keeps its effect.
+At a call site, for each guarded element `L :- G` of the callee's declared row, build the call
+substitution `σ` (callee params ↦ actual args) and attempt to **constructively refute** `σ(G)`,
+emitting a concrete contribution; a guard that cannot be refuted keeps its effect (the conservative
+default).
+
+Discharge runs in **two tiers**, both reading the **local-interpretation environment `Γ`**
+([050](050-local-interpretation.md)) — the flow-sensitive set of facts that hold at the call site
+(the seed `requires` facts plus every binding and branch condition narrowed on the path to the call,
+e.g. `neq(b, 0)` inside `if neq(b, 0) then …`):
+
+1. **Trivial flow (automatic).** Refute `σ(G)` from `Γ` + ground evaluation of literal arguments +
+   KB resolution, on the SLD resolver under `step_cap` with floundering prevention. Covers the
+   literal-divisor and `if`/`match`-narrowed cases — the common ones — with no proof written.
+   ([050](050-local-interpretation.md) is the prerequisite: today the typer threads no logical facts
+   and never queries the resolver during body checking.)
+2. **Explicit proof (fallback).** When the trivial flow cannot refute the guard, look for an in-body
+   `proof` ([025](025-proof-constructs.md) §"In-body and control-flow proofs") targeting the
+   obligation; its proof context is seeded with the same `Γ`. Handles the hard guards (non-linear
+   arithmetic, KB-derived disequalities, external-tool obligations).
+
+If neither tier refutes `σ(G)`, the element stays present — and when `σ(G)` is over the *enclosing*
+op's own parameters (irrefutable at this call), the guarded atom **propagates upward** with `σ`
+applied, so the enclosing op's inferred row carries `L :- σ(G)` (see *Lattice of guarded rows*). The
+soundness rule for both tiers is §"Discharge is constructive refutation, not negation-as-failure" —
+drop only on a positive proof of `¬G`.
 
 ## Semantics / soundness
 
@@ -351,8 +376,11 @@ just do not read its guard closed-world.
 1. **Grammar + representation** — admit `Effect :- guard` in effect rows; the loader stores the
    guard as the `EffectExpression.guarded` element (the representation is already in
    `anthill.prelude.sort`).
-2. **Typer discharge (WI-067)** — refute guards at call sites; literal (abstract-interp) and
-   flow-fact (`if`/`match`) sources first, then KB resolution.
+2. **Typer discharge (WI-067)** — refute guards at call sites via the two-tier process in
+   §"Typer delta": the trivial flow over the local-interpretation environment `Γ`
+   ([050](050-local-interpretation.md)) — literal (abstract-interp), flow-fact (`if`/`match`), then
+   KB resolution — falling back to an in-body `proof` ([025](025-proof-constructs.md)). `Γ` (and the
+   resolver bridge it needs) is the prerequisite this phase builds on.
 3. **Migrate the partial primitives** — change `Int64.div` / `mod` / `rem` / `divExact` (and
    `Field.div` / `recip`) from unconditional `Error[DivisionByZero]` to
    `{ Error[DivisionByZero] :- eq(b, 0) }`; update the WI-066 tests (a literal-divisor and a
