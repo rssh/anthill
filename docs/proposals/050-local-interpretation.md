@@ -2,16 +2,19 @@
 
 **Status:** Draft (2026-06-21)
 **Depends on:** [018-expressions-and-operation-implementation](018-expressions-and-operation-implementation.md) (expression IR), [022-typing-as-facts](022-typing-as-facts.md) (typing substrate)
-**Related:** [026-expression-evaluator](026-expression-evaluator.md) (the *runtime* sibling — same walk, runtime values), [025-proof-constructs](025-proof-constructs.md) (a consumer — in-body proofs), [048-conditional-effects](048-conditional-effects.md) (a consumer — WI-067 effect discharge), [013-abstract-effects](013-abstract-effects.md) / [045-effect-rows](045-effect-rows.md)
+**Related:** [026-expression-evaluator](026-expression-evaluator.md) (the *runtime* sibling — same walk, runtime values), [025-proof-constructs](025-proof-constructs.md) (a consumer — in-body proofs), [048-conditional-effects](048-conditional-effects.md) (a consumer — WI-067 effect discharge), [013-abstract-effects](013-abstract-effects.md) / [045-effect-sets-and-expressions](045-effect-sets-and-expressions.md)
 **Affects:** `rustland/anthill-core/src/kb/typing.rs` (`TypingEnv`, the `if`/`match` checking)
 
 ## Motivation
 
 Several analyses need the *same* thing: to know, at a given point inside an
 operation body, **which logical facts hold**. Effect discharge ([048](048-conditional-effects.md) /
-WI-067) needs it to refute a guard inside `if neq(b, 0) then div(a, b)`; an
-in-body `proof` ([025](025-proof-constructs.md)) needs it as premises; refinement
-narrowing, `match` exhaustiveness, and constant-folding all want it too.
+WI-067) needs it to refute a guard inside `if neq(b, 0) then div(a, b)`; **operation
+contracts (`requires` / `ensures`; see [025](025-proof-constructs.md) §"Proof for
+operation contracts") need it to check a callee's `requires` and to record its
+`ensures` for the code after a call**; an in-body `proof`
+([025](025-proof-constructs.md)) needs it as premises; refinement narrowing,
+`match` exhaustiveness, and constant-folding all want it too.
 
 Today the typer threads only **type bindings** — `TypingEnv`
 (`typing.rs`) carries `var_bindings: HashMap<Symbol, Value>` and resource
@@ -52,6 +55,23 @@ A forward pass `Γ_in → construct → Γ_out`:
   itself established). `match`-arm pattern variables bind the same way (the typer
   already does this for *types* via `extend_env_from_pattern`; here it also
   contributes the pattern **fact**).
+- **operation call** `y = callee(args)` → the **Hoare rule for a call**, with `σ`
+  mapping the callee's parameters to `args` (and `result` to `y`):
+  - **`requires` is checked** — the callee's precondition `σ(requires)` must follow
+    from `Γ_in`, discharged by the same resolver query (and, failing the trivial
+    flow, the same in-body-`proof` fallback) as a guarded effect. An undischarged
+    precondition is an obligation / error, never a silent pass.
+  - **`ensures` is assumed** — `Γ_out = Γ_in ∪ { σ(ensures) }`: the callee's
+    postcondition (with `result` ↦ `y`) becomes a known fact for the code *after*
+    the call. This is how contract knowledge **flows** — an op `ensures
+    neq(result, 0)` lets a later `div(_, y)` refute its `eq(y, 0)` guard straight
+    from `Γ`, with no branch test written.
+
+  So a call both **consumes** `Γ` (to check `requires`) and **enriches** it (with
+  `ensures`); `ensures` postconditions are, in practice, the main thing that
+  populates `Γ` beyond branch conditions and bindings. The same query bridge
+  (below) serves guard discharge, `requires`-checking, and the use of `ensures`
+  facts — one mechanism, three callers.
 - **`if cond then T else E`** → **fork**: check `T` with `Γ_in ∪ { cond }` and `E`
   with `Γ_in ∪ { ¬cond }`. This is where `if neq(b, 0)` puts `neq(b, 0)` into the
   then-branch. *(Today both branches share one env — this adds the fork + the
@@ -81,17 +101,23 @@ refutation, not negation-as-failure" for why the polarity must be exactly this.)
 
 ## Consumers
 
-1. **Effect discharge ([048](048-conditional-effects.md) / WI-067), Tier 1.** At a
+1. **Operation contracts (`requires` / `ensures`).** Every call checks the callee's
+   `requires` against `Γ` and assumes its `ensures` into `Γ` (the *operation call*
+   modification rule above). The canonical producer/consumer pair: `ensures` facts
+   are the main thing that *populates* `Γ`, and `requires` the main thing that
+   *queries* it — and a discharged `requires` is, structurally, the same resolver
+   query as an effect-guard refutation.
+2. **Effect discharge ([048](048-conditional-effects.md) / WI-067), Tier 1.** At a
    guarded call `callee(args)` with element `L :- G`, build the call substitution
    `σ` (callee params ↦ actual args), then attempt to **constructively refute**
    `σ(G)` from `Γ` at the call site (+ ground evaluation + KB). Refuted ⇒ drop the
    effect; otherwise keep / propagate. This is the "trivial flow."
-2. **In-body proofs ([025](025-proof-constructs.md)), Tier 2.** A `proof` written
+3. **In-body proofs ([025](025-proof-constructs.md)), Tier 2.** A `proof` written
    inside a body (or a control-flow branch) takes **`Γ` at that point** as its
    premises. When the trivial flow (Tier 1) cannot refute a guard, discharge falls
    back to checking such a proof, which may combine `Γ` with KB rules or an
    external tool. See 025 §"In-body and control-flow proofs."
-3. **(future)** refinement-type narrowing, `match` exhaustiveness witnesses, and
+4. **(future)** refinement-type narrowing, `match` exhaustiveness witnesses, and
    reuse of the const-fold evaluator ([039](039-term-level-constants.md)) for the
    ground fragment.
 
