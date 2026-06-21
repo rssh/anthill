@@ -1979,6 +1979,14 @@ fn check_bare_ref(
     if let Some(ty) = env.lookup_var(sym) {
         return Ok(TypeResult::pure_value(ty, env.clone(), Rc::clone(occ)));
     }
+    // Proposal 039 / WI-084: a bare reference to a term-level constant is
+    // value-denoting — it types as the const's DECLARED type, read fold-free off
+    // the symbol (NO body evaluation here; folding is eval/codegen, Phase 3). A
+    // local (handled above) still shadows it; §8.6 resolution already arbitrates
+    // the candidate set, so an ambiguous same-name tie errored before we got here.
+    if let Some(ty) = kb.const_type(sym).cloned() {
+        return Ok(TypeResult::pure_value(ty, env.clone(), Rc::clone(occ)));
+    }
     if kb.is_constructor_symbol(sym) {
         return check_constructor_iter(kb, env, sym, &[], &[], &[], &[], span, None, occ);
     }

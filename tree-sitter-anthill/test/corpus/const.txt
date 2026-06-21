@@ -1,0 +1,90 @@
+==================================
+Const with body (concrete primitive)
+==================================
+
+const BROADCAST_CHANNEL: Int64 = -1
+
+---
+
+(source_file
+  (const_declaration
+    name: (name
+      (identifier))
+    type: (simple_type
+      (name
+        (identifier)))
+    value: (integer_literal)))
+
+==================================
+Const without body (host-supplied)
+==================================
+
+const CHANNEL_BROADCAST: Int64
+
+---
+
+(source_file
+  (const_declaration
+    name: (name
+      (identifier))
+    type: (simple_type
+      (name
+        (identifier)))))
+
+==================================
+Const with visibility and expression body
+==================================
+
+public const TWO_PI: Float = 2.0 * PI
+
+---
+
+(source_file
+  (const_declaration
+    (visibility)
+    name: (name
+      (identifier))
+    type: (simple_type
+      (name
+        (identifier)))
+    value: (infix_term
+      (float_literal)
+      (operator_symbol)
+      (name
+        (identifier)))))
+
+==================================
+Const inside a namespace and a sort body
+==================================
+
+namespace anthill.test
+  const D_MIN: Float = 1.0
+  sort Emitter
+    const BROADCAST: Int64 = -1
+  end
+end
+
+---
+
+(source_file
+  (namespace_declaration
+    name: (name
+      (identifier)
+      (identifier))
+    (const_declaration
+      name: (name
+        (identifier))
+      type: (simple_type
+        (name
+          (identifier)))
+      value: (float_literal))
+    (sort_with_body
+      name: (name
+        (identifier))
+      (const_declaration
+        name: (name
+          (identifier))
+        type: (simple_type
+          (name
+            (identifier)))
+        value: (integer_literal)))))

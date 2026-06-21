@@ -276,6 +276,17 @@ impl Interpreter {
         if let Some(v) = bound {
             return Ok(StepOutcome::Deliver(v));
         }
+        // Proposal 039 / WI-084: a bare reference to a term-level constant
+        // materializes its memoized value, folding the (pure, carrier-independent)
+        // body on FIRST demand and caching it. A const is nullary by construction,
+        // so there is no dispatch — just force + deliver. Sits before the
+        // entity/constructor/operation arms; a `Const` symbol is none of those, so
+        // ordering is moot, but resolving the value here keeps the const path self
+        // contained.
+        if self.kb.kind_of(sym) == Some(crate::intern::SymbolKind::Const) {
+            let v = self.force_const(sym)?;
+            return Ok(StepOutcome::Deliver(v));
+        }
         // A bare reference to a free-standing entity (e.g. `WorkItem` in
         // `facts_of(kb(), WorkItem)`) is the entity as a type value, not a call.
         if self.kb.is_free_standing_entity(sym) {
@@ -323,6 +334,91 @@ impl Interpreter {
             }
         }
         self.dispatch_call(sym, Vec::new(), SmallVec::new())
+    }
+
+    /// Proposal 039 / WI-084 — produce a term-level constant's value, memoized.
+    /// First demand folds the anthill body (or fetches the host value via a
+    /// registered reflect builtin) and caches it; every later demand returns the
+    /// cache. The `Forcing` sentinel makes a dependency cycle (`const A = B + 1;
+    /// const B = A + 1`) a loud `ConstCycle` error rather than an infinite fold.
+    fn force_const(&mut self, sym: Symbol) -> Result<Value, EvalError> {
+        match self.const_cache.get(&sym) {
+            Some(super::ConstCacheEntry::Cached(v)) => return Ok(v.clone()),
+            Some(super::ConstCacheEntry::Forcing) => {
+                return Err(EvalError::ConstCycle {
+                    name: self.kb.qualified_name_of(sym).to_string(),
+                });
+            }
+            None => {}
+        }
+        // Host-supplied value source: a registered nullary reflect builtin. Takes
+        // precedence — a host const is constant by construction, so caching its
+        // first fetch is trivially safe.
+        if let Some(builtin) = self.builtins.get(&sym).cloned() {
+            self.const_cache.insert(sym, super::ConstCacheEntry::Forcing);
+            let v = (builtin)(self, &[])?;
+            self.const_cache.insert(sym, super::ConstCacheEntry::Cached(v.clone()));
+            return Ok(v);
+        }
+        // Anthill-bodied: fold the stored body lazily, under the shared step_cap.
+        // Bodyless with no registered builtin → the value is unavailable in this
+        // build (it still type-checked: the declared type is known).
+        let body = match self.kb.const_body_node(sym) {
+            Some(node) => Rc::clone(node),
+            None => {
+                return Err(EvalError::ConstValueUnavailable {
+                    name: self.kb.qualified_name_of(sym).to_string(),
+                });
+            }
+        };
+        self.const_cache.insert(sym, super::ConstCacheEntry::Forcing);
+        // On a fold error, drop the Forcing entry so the const isn't poisoned —
+        // a later demand re-attempts (and re-reports) rather than masquerading as
+        // an in-progress cycle.
+        match self.eval_node_isolated(sym, &body) {
+            Ok(v) => {
+                self.const_cache.insert(sym, super::ConstCacheEntry::Cached(v.clone()));
+                Ok(v)
+            }
+            Err(e) => {
+                self.const_cache.remove(&sym);
+                Err(e)
+            }
+        }
+    }
+
+    /// Proposal 039 / WI-084 — evaluate a node to a value on a FRESH activation
+    /// stack, leaving the in-flight stack untouched. A const reference is reduced
+    /// mid-evaluation (the parent's frames are live), so a nested `run()` on the
+    /// shared stack would wrongly drain those parents; swapping in a fresh stack
+    /// confines `run()` to just this body. The shared `step_count` / `step_cap`
+    /// still bound the work, so a non-terminating const body surfaces as
+    /// `StepsExhausted`. The depth cap is carried over from the live config.
+    fn eval_node_isolated(
+        &mut self,
+        op: Symbol,
+        node: &Rc<NodeOccurrence>,
+    ) -> Result<Value, EvalError> {
+        let fresh = match self.config.depth_cap {
+            Some(cap) => super::frame::ActivationStack::with_cap(cap),
+            None => super::frame::ActivationStack::with_cap(usize::MAX),
+        };
+        let saved = std::mem::replace(&mut self.stack, fresh);
+        let pushed = self.stack.push(Frame {
+            op,
+            expr: Rc::clone(node),
+            locals: SmallVec::new(),
+            requirements: SmallVec::new(),
+            type_args: SmallVec::new(),
+            awaiting: None,
+        });
+        let result = match pushed {
+            Ok(()) => self.run(),
+            Err(e) => Err(e),
+        };
+        // Restore the caller's stack whether the fold succeeded or errored.
+        self.stack = saved;
+        result
     }
 
     /// WI-420: read the `CallClass::EtaOpRef` dict the typer attached to an eta

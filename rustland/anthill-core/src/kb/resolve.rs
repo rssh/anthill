@@ -3142,6 +3142,7 @@ impl KnowledgeBase {
                     crate::intern::SymbolKind::Sort => "Sort",
                     crate::intern::SymbolKind::Entity => "Entity",
                     crate::intern::SymbolKind::Operation => "Operation",
+                    crate::intern::SymbolKind::Const => "Const",
                     crate::intern::SymbolKind::Namespace => "Namespace",
                     crate::intern::SymbolKind::Fact => "Fact",
                     crate::intern::SymbolKind::Rule => "Rule",

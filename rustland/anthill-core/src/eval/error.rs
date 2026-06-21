@@ -54,6 +54,16 @@ pub enum EvalError {
         backtrace: std::backtrace::Backtrace,
     },
     CyclicReference,
+    /// Proposal 039 / WI-084: a `const`'s value was demanded while it is already
+    /// being forced — a dependency cycle (`const A = B + 1; const B = A + 1`).
+    /// The value cache's forcing sentinel detects this dynamically; `name` is the
+    /// const whose forcing re-entered.
+    ConstCycle { name: String },
+    /// Proposal 039 / WI-084: a host-supplied (bodyless) `const`'s value was
+    /// demanded but no reflect builtin is registered to produce it. The const
+    /// type-checks (its declared type is known) — only the runtime VALUE is
+    /// unavailable in this build (the spec-only-vs-codegen axis).
+    ConstValueUnavailable { name: String },
     Internal(String),
 }
 
@@ -113,6 +123,15 @@ impl std::fmt::Display for EvalError {
                 write!(f, "\nbacktrace:\n{backtrace}")
             }
             EvalError::CyclicReference => write!(f, "cyclic reference detected"),
+            EvalError::ConstCycle { name } => write!(
+                f,
+                "const `{name}` depends on itself (cycle detected while forcing its value)"
+            ),
+            EvalError::ConstValueUnavailable { name } => write!(
+                f,
+                "const `{name}` has no value source in this build: it is host-supplied \
+                 (bodyless) and no reflect builtin is registered for it"
+            ),
             EvalError::Internal(s) => write!(f, "internal evaluator error: {s}"),
         }
     }

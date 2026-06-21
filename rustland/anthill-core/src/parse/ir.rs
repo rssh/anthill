@@ -260,6 +260,7 @@ pub enum Item {
     SortWithBody(SortWithBody),
     Rule(Rule),
     Operation(Operation),
+    Const(Const),
     RequiresDecl(RequiresDecl),
     // Sugar
     Entity(Entity),
@@ -402,6 +403,24 @@ pub struct TypeParam {
 pub struct Param {
     pub name: Symbol,
     pub ty: TypeExpr,
+}
+
+// ── Const (proposal 039 / WI-084) ───────────────────────────────
+
+/// A term-level named constant: `const NAME: T [= EXPR]`. Monomorphic and
+/// carrier-independent by design — no params, type-params, or effects (contrast
+/// `Operation`). The declared type `ty` is MANDATORY (part of the name's
+/// contract; not an inference target); the `value` body is OPTIONAL — absent for
+/// a host-supplied constant whose value comes from a registered reflect fn.
+#[derive(Debug)]
+pub struct Const {
+    pub visibility: Option<Visibility>,
+    pub name: Name,
+    pub ty: TypeExpr,
+    /// The defining expression (`= EXPR`), or `None` for a host-supplied const.
+    pub value: Option<TermId>,
+    pub meta: Option<MetaBlock>,
+    pub span: Span,
 }
 
 // ── Requires declaration ────────────────────────────────────────

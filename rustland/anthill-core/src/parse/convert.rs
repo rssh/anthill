@@ -378,6 +378,7 @@ impl<'a> Converter<'a> {
             "enum_declaration" => self.convert_sort_like(node, SortDeclKind::Enum).map(Item::SortWithBody),
             "rule_declaration" => self.convert_rule(node).map(Item::Rule),
             "operation_declaration" => self.convert_operation(node).map(Item::Operation),
+            "const_declaration" => self.convert_const(node).map(Item::Const),
             "requires_declaration" => self.convert_requires_decl(node).map(Item::RequiresDecl),
             "entity_declaration" => self.convert_entity(node).map(Item::Entity),
             "fact_declaration" => self.convert_fact(node).map(Item::Fact),
@@ -2488,6 +2489,22 @@ impl<'a> Converter<'a> {
             meta,
             span,
         })
+    }
+
+    /// Convert a `const_declaration` CST node (proposal 039 / WI-084). Mirrors
+    /// `convert_operation`'s description / visibility / optional-body handling,
+    /// minus the operation-only machinery (params, type-params, clauses). The
+    /// `type` field is mandatory in the grammar; a missing one means a parse
+    /// error already occurred, so `?` bails (no silent default).
+    fn convert_const(&mut self, node: Node) -> Option<Const> {
+        self.reset_var_scope();
+        let span = self.span(node);
+        let name = self.field(node, "name").map(|n| self.convert_name(n))?;
+        let visibility = self.convert_visibility(node);
+        let ty = self.field(node, "type").map(|t| self.convert_type(t))?;
+        let value = self.field(node, "value").map(|v| self.convert_expr_body(v));
+        let meta = self.convert_meta_block(node);
+        Some(Const { visibility, name, ty, value, meta, span })
     }
 
     fn convert_operation_type_params(&mut self, node: Node) -> Vec<TypeParam> {

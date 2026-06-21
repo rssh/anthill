@@ -476,7 +476,10 @@ impl<'a> RustCodegen<'a> {
                 Item::AbstractSort(_) => {
                     // Skip — only meaningful inside sort bodies
                 }
-                Item::OperationBlock(_) | Item::RequiresDecl(_)
+                // Const codegen (a `pub const` emit) is a later phase of
+                // proposal 039 / WI-084; not emitted yet.
+                Item::Const(_)
+                | Item::OperationBlock(_) | Item::RequiresDecl(_)
                 | Item::Describe(_)
                 | Item::Proof(_) | Item::ProvidesClause(_) | Item::ProvidesBlock(_) => {}
             }

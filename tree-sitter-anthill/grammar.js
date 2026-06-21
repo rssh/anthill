@@ -73,6 +73,7 @@ module.exports = grammar({
       $.enum_declaration,
       $.rule_declaration,
       $.operation_declaration,
+      $.const_declaration,
       $.requires_declaration,
       // Sugar
       $.entity_declaration,
@@ -182,6 +183,7 @@ module.exports = grammar({
       $.enum_declaration,
       $.rule_declaration,
       $.operation_declaration,
+      $.const_declaration,
       $.requires_declaration,
       $.entity_declaration,
       $.fact_declaration,
@@ -209,6 +211,7 @@ module.exports = grammar({
       $.enum_declaration,
       $.rule_declaration,
       $.operation_declaration,
+      $.const_declaration,
       $.requires_declaration,
       $.entity_declaration,
       $.fact_declaration,
@@ -496,6 +499,32 @@ module.exports = grammar({
     // exactly the ones that carry codegen markers). As a clause it composes with
     // effects / requires / ensures and works with no other clause present.
     meta_clause: $ => seq('meta', $.meta_block),
+
+    // =========================================================
+    // Const (proposal 039 — term-level named constants, WI-084)
+    // =========================================================
+
+    // A named, typed value. Carrier-independent and monomorphic BY DESIGN — no
+    // params, no type-params, no effects clause: the declared type is MANDATORY
+    // (`: Type` is part of the name's contract), the body OPTIONAL (`= expr`;
+    // absent for a host-supplied value whose source is a registered reflect fn).
+    // Modeled on `operation_declaration`'s description / visibility / optional-
+    // braced-body shape and slotted into the same `_namespace_content` /
+    // `_sort_content` positions. `const` is a soft keyword (only in this leading
+    // declaration position), per §2.5.
+    const_declaration: $ => seq(
+      repeat(field('description', $.description_block)),
+      optional($.visibility),
+      'const',
+      field('name', $.name),
+      ':',
+      field('type', $._type),
+      optional(seq('=', choice(
+        seq('{', field('value', $._expr_body), '}'),
+        field('value', $._expr_body),
+      ))),
+      optional($.meta_block),
+    ),
 
     requires_declaration: $ => seq(
       'requires',

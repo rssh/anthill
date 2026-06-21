@@ -376,6 +376,21 @@ pub struct KnowledgeBase {
     /// body stays here, reachable relationally via `operation_body`.
     pub(crate) op_bodies: HashMap<Symbol, Rc<NodeOccurrence>>,
 
+    /// Proposal 039 / WI-084 — a term-level constant's DECLARED TYPE, keyed by
+    /// its `SymbolKind::Const` symbol, as a carrier-agnostic `Value`. Read by
+    /// the typer to type a bare const reference (fold-free: only the declared
+    /// type, never the value). A dedicated table — NOT folded into a reflect
+    /// `ConstInfo` fact in this phase; that consolidation can come with the
+    /// resolution/typing phase if reflection needs it.
+    pub(crate) const_types: HashMap<Symbol, crate::eval::value::Value>,
+
+    /// Proposal 039 / WI-084 — a term-level constant's defining-expression body,
+    /// keyed by its `SymbolKind::Const` symbol. A SEPARATE table from `op_bodies`
+    /// on purpose: `op_bodies_iter` is scanned by operation-only passes (e.g.
+    /// `req_insertion`), which must not see const bodies. Bodyless (host-supplied)
+    /// consts have no entry. Folding the body to a value is a later phase.
+    pub(crate) const_bodies: HashMap<Symbol, Rc<NodeOccurrence>>,
+
     /// WI-443 — true once the loader has built any `dot_apply` expression.
     /// The typer's tree-reassembly gate reads it: a DotApply is ALWAYS
     /// rewritten by the typer (to the dispatched call), so its ancestors
@@ -526,6 +541,8 @@ impl KnowledgeBase {
             term_spans: HashMap::new(),
             functor_spans: HashMap::new(),
             op_bodies: HashMap::new(),
+            const_types: HashMap::new(),
+            const_bodies: HashMap::new(),
             has_dot_applies: false,
             rigid_projection_formations: Vec::new(),
             existential_return_ops: std::collections::HashSet::new(),
@@ -655,6 +672,28 @@ impl KnowledgeBase {
     /// Called by the loader during operation conversion.
     pub fn set_op_body_node(&mut self, op_sym: Symbol, node: Rc<NodeOccurrence>) {
         self.op_bodies.insert(op_sym, node);
+    }
+
+    /// Proposal 039 / WI-084 — the declared type of a term-level constant, if
+    /// `const_sym` names one. `None` for any non-const symbol.
+    pub fn const_type(&self, const_sym: Symbol) -> Option<&crate::eval::value::Value> {
+        self.const_types.get(&const_sym)
+    }
+
+    /// Proposal 039 / WI-084 — record a constant's declared type (loader).
+    pub fn set_const_type(&mut self, const_sym: Symbol, ty: crate::eval::value::Value) {
+        self.const_types.insert(const_sym, ty);
+    }
+
+    /// Proposal 039 / WI-084 — the defining-expression body of a term-level
+    /// constant, if one was stored. `None` for a bodyless (host-supplied) const.
+    pub fn const_body_node(&self, const_sym: Symbol) -> Option<&Rc<NodeOccurrence>> {
+        self.const_bodies.get(&const_sym)
+    }
+
+    /// Proposal 039 / WI-084 — record a constant's body node (loader).
+    pub fn set_const_body_node(&mut self, const_sym: Symbol, node: Rc<NodeOccurrence>) {
+        self.const_bodies.insert(const_sym, node);
     }
 
     /// WI-251 — span for a stored term, if the loader recorded one.

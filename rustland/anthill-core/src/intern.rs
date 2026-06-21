@@ -30,6 +30,15 @@ pub enum SymbolKind {
     Sort,
     Entity,
     Operation,
+    /// A term-level named constant (proposal 039 / WI-084) — `const NAME: T [=
+    /// EXPR]`. A nullary, carrier-independent value identity: value-denoting in
+    /// TERM position (the typer's `check_bare_ref` reads its declared type; eval
+    /// materializes its memoized value). NOT in `is_value_place()` — that set is
+    /// for frame-relative value PLACES within a binder's scope (value-in-TYPE
+    /// lowering); a `Const` is a global identity, gated separately at the
+    /// term-position sites. Distinct from `Operation`: a const is value-denoting
+    /// where an operation (until first-class operations land) is not.
+    Const,
     Namespace,
     Fact,
     Rule,

@@ -1555,6 +1555,17 @@ fn scan_items_pass1(
                 record_internal(kb, op_sym, o.visibility);
                 scan_operation_params(kb, parse_sym, o, op_sym, actual_scope, &qualified);
             }
+            Item::Const(c) => {
+                // Proposal 039 / WI-084: define the constant's symbol (pass 1, like
+                // operations). Monomorphic + carrier-independent — no params or
+                // type-params to scan. The declared type + body are recorded in
+                // the load phase (`load_const`).
+                let name = join_segments(parse_sym, &c.name.segments);
+                let (short, actual_scope) = ensure_intermediate_namespaces(kb, &name, scope, prefix);
+                let qualified = make_qualified(prefix, &name);
+                let const_sym = kb.symbols.define(&short, &qualified, SymbolKind::Const, actual_scope.raw());
+                record_internal(kb, const_sym, c.visibility);
+            }
             Item::OperationBlock(ob) => {
                 for op in &ob.entries {
                     let name = join_segments(parse_sym, &op.name.segments);
@@ -8715,6 +8726,7 @@ impl<'a> Loader<'a> {
                 Item::SortWithBody(s) => { self.load_sort_with_body(s, domain); "SortWithBody" }
                 Item::Rule(r) => { self.load_rule(r, domain); "Rule" }
                 Item::Operation(o) => { self.load_operation(o, domain); "Operation" }
+                Item::Const(c) => { self.load_const(c, domain); "Const" }
                 Item::RequiresDecl(r) => { self.load_requires_decl(r, domain); "RequiresDecl" }
                 Item::Entity(e) => { self.load_entity(e, domain); "Entity" }
                 Item::Fact(f) => { self.load_fact(f, domain); "Fact" }
@@ -10006,6 +10018,33 @@ impl<'a> Loader<'a> {
             }
             _ => None,
         }
+    }
+
+    /// Proposal 039 / WI-084 — load a term-level constant. Records the declared
+    /// type (carrier-agnostic `Value`, read fold-free by the typer) and, when
+    /// present, converts and stores the defining-expression body. No folding, no
+    /// value source, no purity gate yet — those are later phases; here a const is
+    /// just a typed symbol with an optionally-stored body. The body resolves
+    /// against the enclosing scope (a const has no params/result, so — unlike
+    /// `load_operation` — it needs no dedicated op scope).
+    fn load_const(&mut self, c: &Const, _domain: TermId) {
+        let const_sym = self.remap_name(&c.name);
+
+        // Own type/body occurrences by the const symbol (mirrors load_operation).
+        let prev_owner = self.current_owner;
+        self.current_owner = Some(const_sym);
+
+        // Declared type — always present (grammar-mandatory); store it for the typer.
+        let declared_type = self.type_expr_to_value(&c.ty);
+        self.kb.set_const_type(const_sym, declared_type);
+
+        // Defining body, if any (bodyless = host-supplied; value source is a later phase).
+        if let Some(value_tid) = c.value {
+            let (_handle, node) = self.convert_expr_term(value_tid);
+            self.kb.set_const_body_node(const_sym, node);
+        }
+
+        self.current_owner = prev_owner;
     }
 
     fn load_operation(&mut self, o: &Operation, domain: TermId) {
@@ -11482,6 +11521,13 @@ impl<'a> Loader<'a> {
                     let sym = self.remap_name(&n.name);
                     self.emit_member_fact(sym, "Namespace", parent);
                 }
+                // Proposal 039 / WI-084: a `const` emits no scope-member fact yet.
+                // Reflection of consts (a `member(Name, "Const", Parent)` fact, or
+                // a `ConstInfo` value fact) is deferred to the resolution/typing
+                // phase that actually consumes it — see the `const_types` note in
+                // kb/mod.rs. Made explicit (not swept into `_`) so the deferral is
+                // visible at the site, per the repo's loud-over-silent rule.
+                Item::Const(_) => {}
                 _ => {}
             }
         }

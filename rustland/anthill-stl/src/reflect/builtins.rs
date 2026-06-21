@@ -919,6 +919,7 @@ fn kind_op(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError>
         Some(SymbolKind::Sort) => "Sort",
         Some(SymbolKind::Entity) => "Entity",
         Some(SymbolKind::Operation) => "Operation",
+        Some(SymbolKind::Const) => "Const",
         Some(SymbolKind::Namespace) => "Namespace",
         Some(SymbolKind::Fact) => "Fact",
         Some(SymbolKind::Rule) => "Rule",

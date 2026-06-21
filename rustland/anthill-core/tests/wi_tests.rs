@@ -459,3 +459,12 @@ mod wi529_boolean_operator_split_test;
 #[path = "include/wi077_long_stream_stress_test.rs"]
 mod wi077_long_stream_stress_test;
 
+#[path = "include/wi084_const_phase1_test.rs"]
+mod wi084_const_phase1_test;
+
+#[path = "include/wi084_const_phase2_test.rs"]
+mod wi084_const_phase2_test;
+
+#[path = "include/wi084_const_phase3_test.rs"]
+mod wi084_const_phase3_test;
+

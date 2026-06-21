@@ -77,6 +77,17 @@ impl EvalConfig {
 pub type BuiltinFn =
     std::sync::Arc<dyn Fn(&mut Interpreter, &[Value]) -> Result<Value, EvalError>>;
 
+/// Proposal 039 / WI-084 — a term-level constant's memoized value state in
+/// `Interpreter::const_cache`. `Forcing` marks a const whose value source is
+/// currently being evaluated; re-entering it is a dependency cycle.
+#[derive(Clone)]
+pub(crate) enum ConstCacheEntry {
+    /// The value is being computed right now — the dynamic cycle sentinel.
+    Forcing,
+    /// The forced value, shared by every later reference.
+    Cached(Value),
+}
+
 /// Cached `Symbol`s for the reflect expression / pattern entities. Populated
 /// at `Interpreter::new` via `kb.try_resolve_symbol`. An entry stays `None`
 /// when the corresponding stdlib entity hasn't been loaded — the evaluator
@@ -268,6 +279,14 @@ pub struct Interpreter {
     /// `OperationInfo` facts are static across a run (only data facts get
     /// persisted/retracted), so memoizing by op `Symbol` is sound.
     pub(crate) op_body_cache: HashMap<Symbol, eval::OpBody>,
+    /// Proposal 039 / WI-084 — memoized term-level-constant values, keyed by the
+    /// const's `SymbolKind::Const` symbol. THE memoization the proposal calls for:
+    /// a const's value source is forced AT MOST ONCE and shared by every
+    /// reference (referentially transparent — the source is pure). The `Forcing`
+    /// sentinel is the dynamic cycle detector: re-demanding a const already being
+    /// forced is `ConstCycle`, not an infinite fold. Distinct from
+    /// `op_body_cache` (which caches body *lookups*, not values).
+    pub(crate) const_cache: HashMap<Symbol, ConstCacheEntry>,
     /// Whether the `ANTHILL_PROFILE` profiler is active. Read once from the
     /// environment at construction (it can't change mid-run) so the per-step
     /// and per-dispatch profiling gates are a plain field test, not an env
@@ -332,6 +351,7 @@ impl Interpreter {
             effect_handlers: EffectRegistry::new(),
             store_registry: HashMap::new(),
             op_body_cache: HashMap::new(),
+            const_cache: HashMap::new(),
             profiling: std::env::var_os("ANTHILL_PROFILE").is_some(),
             config,
             step_count: 0,
