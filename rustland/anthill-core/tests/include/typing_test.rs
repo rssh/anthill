@@ -1671,6 +1671,46 @@ end
          over-reach to namespace-level ops)");
 }
 
+/// WI-537 (proposal 050 item 3): a `match`-arm guard `case p | g -> body` is now
+/// type-checked under the arm's env (it was dropped at parse→IR before, so never
+/// visited). A valid guard over the bound pattern var loads clean.
+#[test]
+fn wi537_match_arm_guard_type_checks() {
+    let src = r#"
+namespace test.wi537.guard_ok
+  import anthill.prelude.{Int64, Bool}
+  import anthill.prelude.Ordered.{gt}
+
+  operation classify(n: Int64) -> Bool =
+    match n
+      case x | gt(x, 0) -> true
+      case other -> false
+end
+"#;
+    assert!(try_load_with_source(src).is_ok(),
+        "a match arm with a valid guard `case x | gt(x, 0) -> …` must type-check (WI-537)");
+}
+
+/// WI-537 negative control: the guard is now genuinely visited, so a guard with a
+/// type error (an undefined reference) FAILS the match — before this change the
+/// guard was silently dropped at parse→IR and such a body loaded clean.
+#[test]
+fn wi537_match_arm_guard_error_fails_to_load() {
+    let src = r#"
+namespace test.wi537.guard_bad
+  import anthill.prelude.{Int64, Bool}
+
+  operation classify(n: Int64) -> Bool =
+    match n
+      case x | no_such_guard_op(x) -> true
+      case other -> false
+end
+"#;
+    assert!(try_load_with_source(src).is_err(),
+        "a match-arm guard referencing an undefined op must now fail to load (WI-537): \
+         the guard is type-checked, not dropped");
+}
+
 /// WI-420: binding a CURRIED op on a requires-sort (its return type is itself a
 /// `Function`) where that `Function` return type is expected is a plain LOUD
 /// type error — `build`'s eta arrow `Int64 -> Function[Int64,Bool]` does not match

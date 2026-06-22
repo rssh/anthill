@@ -4119,6 +4119,10 @@ fn build_type(
                 })
                 .unwrap_or_default();
             let mut branch_envs: Vec<Env> = Vec::with_capacity(branches.len());
+            // WI-537: the arm guard's effects (merged into the match's effects)
+            // and the first guard type-error (short-circuits the match).
+            let mut guard_effects: Vec<Value> = Vec::new();
+            let mut guard_error: Option<TypeError> = None;
             for branch in &branches {
                 // WI-511: coverage AND env-extension both read the Pattern
                 // occurrence directly — no `pattern_to_term` bridge.
@@ -4131,11 +4135,40 @@ fn build_type(
                 );
                 let mut branch_env = (*outer_env).clone();
                 extend_env_from_pattern(kb, &mut branch_env, &branch.pattern, scr_ty.clone());
-                // WI-537: each arm runs under the match-site Γ (carried by
-                // `outer_env`); arm-specific narrowing — the pattern fact and
-                // earlier-arm negations — is the additive WI-067 layer.
-                branch_envs.push(outer_env.with_types(branch_env));
+                // WI-537: type-check the arm guard (until now dropped at
+                // parse→IR, so never visited) under the arm's type env — pattern
+                // vars are in scope — and narrow the arm Γ with the guard
+                // predicate. No `Bool` hint (matching how `if` treats its
+                // condition); the visit catches real errors in the guard. Skip
+                // the visit when the scrutinee didn't type (pattern vars are then
+                // untyped → only cascading noise). DEFERRED: the pattern fact
+                // `fact(p)` and earlier-arm negations into Γ — write-only until a
+                // consumer (WI-067) reads Γ, and they need a scrutinee≡pattern
+                // value form.
+                let arm_flow = match &branch.guard {
+                    Some(g) => {
+                        if scr_ty.is_some() && guard_error.is_none() {
+                            match type_check_node(kb, &branch_env, g, None) {
+                                Ok(r) => {
+                                    guard_effects = merge_effects(kb, &guard_effects, &r.effects);
+                                }
+                                Err(e) => guard_error = Some(e),
+                            }
+                        }
+                        outer_env.flow.assume(kb, Value::Node(Rc::clone(g)))
+                    }
+                    None => outer_env.flow.clone(),
+                };
+                branch_envs.push(Env { types: Rc::new(branch_env), flow: arm_flow });
             }
+            // A guard that doesn't type-check fails the whole match (the
+            // scrutinee result was already popped, so one Err is the match's
+            // single result — no MatchFinal / body visits).
+            if let Some(e) = guard_error {
+                results.push(Err(e));
+                return;
+            }
+            let scr_effects = merge_effects(kb, &scr_effects, &guard_effects);
 
             let branch_count = branches.len();
             // Materialize Visit envs first (clone from branch_envs),

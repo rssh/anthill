@@ -4995,6 +4995,7 @@ enum LoadBuildFrame {
     },
     MatchBranch {
         outer_parse_id: TermId,
+        has_guard: bool,
     },
     IfExpr {
         outer_parse_id: TermId,
@@ -6251,13 +6252,22 @@ impl<'a> Loader<'a> {
                         }
                     }
                     "match_branch" => {
-                        // Pattern names are bound for the branch body.
+                        // Pattern names are bound for the branch body (and guard).
                         let frame = self.build_pattern_scope_frame(pos_args[0]);
+                        // WI-537: a 3rd positional arg is the optional arm guard.
+                        let has_guard = pos_args.len() > 2;
                         work.push(LoadWorkOp::Build(LoadBuildFrame::MatchBranch {
                             outer_parse_id: parse_id,
+                            has_guard,
                         }));
                         if !frame.is_empty() {
                             work.push(LoadWorkOp::PopLocalScope);
+                        }
+                        // The guard (if present) is visited under the pattern
+                        // scope like the body, and pushed before it so it drains
+                        // AFTER the body (results order [pattern, body, guard]).
+                        if has_guard {
+                            work.push(LoadWorkOp::Visit(pos_args[2]));
                         }
                         work.push(LoadWorkOp::Visit(pos_args[1])); // body
                         if !frame.is_empty() {
@@ -6717,12 +6727,21 @@ impl<'a> Loader<'a> {
                     );
                 }
             }
-            LoadBuildFrame::MatchBranch { outer_parse_id } => {
-                let drain_start = results.len() - 2;
+            LoadBuildFrame::MatchBranch { outer_parse_id, has_guard } => {
+                let n = if has_guard { 3 } else { 2 };
+                let drain_start = results.len() - n;
                 let pattern = results[drain_start];
                 let body = results[drain_start + 1];
+                // WI-537: the guard's reshaped KB term (3rd drained result when
+                // present) becomes the named `guard: some(g)` slot the occurrence
+                // walker reads; `none` for a guardless arm.
+                let guard = if has_guard {
+                    let g = results[drain_start + 2];
+                    build_some(self.kb, g)
+                } else {
+                    build_none(self.kb)
+                };
                 results.truncate(drain_start);
-                let guard = build_none(self.kb);
                 let s = &self.expr_syms;
                 let kb_id = self.kb.alloc(Term::Fn {
                     functor: s.match_branch,
@@ -6736,15 +6755,15 @@ impl<'a> Loader<'a> {
                 self.create_occurrence(outer_parse_id, kb_id);
                 results.push(kb_id);
                 if self.occ_suppress == 0 {
-                    // WI-304: the body occurrence is already on
-                    // `expr_occ_results` (pattern was suppressed; guard is
-                    // always none here). Record branch metadata for the
+                    // WI-304 / WI-537: the body occurrence — and the guard
+                    // occurrence when present — are already on `expr_occ_results`
+                    // (pattern was suppressed). Record branch metadata for the
                     // enclosing MatchExpr build to drain.
                     let span = SourceSpan::from_span(
                         self.source_id, self.parsed.terms.span(outer_parse_id));
                     self.expr_match_metas.push(node_occurrence::BranchMeta {
                         pattern,
-                        has_guard: false,
+                        has_guard,
                         span,
                     });
                 }

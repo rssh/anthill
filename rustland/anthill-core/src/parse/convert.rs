@@ -128,6 +128,7 @@ enum BuildFrame<'t> {
     },
     MatchBranch {
         node: Node<'t>,
+        has_guard: bool,
     },
     IfExpr {
         node: Node<'t>,
@@ -1077,8 +1078,18 @@ impl<'a> Converter<'a> {
                 for branch in branches.iter().rev() {
                     let pattern = self.field(*branch, "pattern");
                     let body = self.field(*branch, "body");
+                    // WI-537: the optional arm guard `case p | g -> …` is a `_term`.
+                    let guard = self.field(*branch, "guard");
                     let branch_span = self.span(*branch);
-                    work.push(WorkOp::Build(BuildFrame::MatchBranch { node: *branch }));
+                    work.push(WorkOp::Build(BuildFrame::MatchBranch {
+                        node: *branch,
+                        has_guard: guard.is_some(),
+                    }));
+                    // Push the guard first so it drains AFTER pattern/body
+                    // (results order [pattern, body, guard]).
+                    if let Some(g) = guard {
+                        work.push(WorkOp::Visit(WorkKind::Term, g));
+                    }
                     self.push_child_or_yield(work, body, WorkKind::ExprBody, branch_span);
                     self.push_child_or_yield(work, pattern, WorkKind::Pattern, branch_span);
                 }
@@ -1472,17 +1483,19 @@ impl<'a> Converter<'a> {
                 results.truncate(drain_start);
                 results.push(self.alloc_fn_term("match_expr", pos_args, span));
             }
-            BuildFrame::MatchBranch { node } => {
+            BuildFrame::MatchBranch { node, has_guard } => {
                 let span = self.span(node);
-                let drain_start = results.len() - 2;
-                let pattern = results[drain_start];
-                let body = results[drain_start + 1];
+                let n = if has_guard { 3 } else { 2 };
+                let drain_start = results.len() - n;
+                // WI-537: carry the optional guard as a 3rd positional arg
+                // (load.rs reshapes it to the named `guard: some(g)` slot).
+                let mut args: SmallVec<[TermId; 4]> =
+                    SmallVec::from_slice(&results[drain_start..drain_start + 2]);
+                if has_guard {
+                    args.push(results[drain_start + 2]);
+                }
                 results.truncate(drain_start);
-                results.push(self.alloc_fn_term(
-                    "match_branch",
-                    SmallVec::from_slice(&[pattern, body]),
-                    span,
-                ));
+                results.push(self.alloc_fn_term("match_branch", args, span));
             }
             BuildFrame::IfExpr { node } => {
                 let span = self.span(node);
