@@ -44,9 +44,11 @@ struct ReflectSyms {
     fn_repr: Symbol,
     ref_repr: Symbol,
     int_lit: Symbol,
+    bigint_lit: Symbol,
     float_lit: Symbol,
     str_lit: Symbol,
     bool_lit: Symbol,
+    pair: Symbol,
 
     // Field-name symbols
     f_name: Symbol,
@@ -66,6 +68,8 @@ struct ReflectSyms {
     f_value: Symbol,
     f_args: Symbol,
     f_sort_name: Symbol,
+    f_fst: Symbol,
+    f_snd: Symbol,
 }
 
 impl ReflectSyms {
@@ -94,9 +98,11 @@ impl ReflectSyms {
             fn_repr: req(kb, "anthill.reflect.TermRepr.FnRepr")?,
             ref_repr: req(kb, "anthill.reflect.TermRepr.RefRepr")?,
             int_lit: req(kb, "anthill.reflect.LiteralRepr.IntLiteral")?,
+            bigint_lit: req(kb, "anthill.reflect.LiteralRepr.BigIntLiteral")?,
             float_lit: req(kb, "anthill.reflect.LiteralRepr.FloatLiteral")?,
             str_lit: req(kb, "anthill.reflect.LiteralRepr.StringLiteral")?,
             bool_lit: req(kb, "anthill.reflect.LiteralRepr.BoolLiteral")?,
+            pair: req(kb, "anthill.prelude.Pair.pair")?,
 
             f_name: kb.intern("name"),
             f_kind: kb.intern("kind"),
@@ -115,6 +121,8 @@ impl ReflectSyms {
             f_value: kb.intern("value"),
             f_args: kb.intern("args"),
             f_sort_name: kb.intern("sort_name"),
+            f_fst: kb.intern("fst"),
+            f_snd: kb.intern("snd"),
         })
     }
 }
@@ -180,6 +188,9 @@ pub fn register_reflect_builtins(interp: &mut Interpreter) -> Result<(), EvalErr
 
     register_if_present(interp, "anthill.reflect.Substitution.apply", subst_apply)?;
     register_if_present(interp, "anthill.reflect.Substitution.compose", subst_compose)?;
+    let s = syms.clone();
+    register_if_present(interp, "anthill.reflect.Substitution.bindings",
+        move |i, a| subst_bindings(i, a, &s))?;
 
     register_if_present(interp, "anthill.reflect.not", reflect_not)?;
 
@@ -638,7 +649,7 @@ fn reify_term_to_value(kb: &mut KnowledgeBase, syms: &ReflectSyms, id: TermId) -
     let term = kb.get_term(id).clone();
     match term {
         CoreTerm::Const(Literal::Int(n)) => wrap_literal(syms.int_lit, Value::Int(n)),
-        CoreTerm::Const(Literal::BigInt(n)) => wrap_literal(syms.int_lit, Value::BigInt(n)),
+        CoreTerm::Const(Literal::BigInt(n)) => wrap_literal(syms.bigint_lit, Value::BigInt(n)),
         CoreTerm::Const(Literal::Float(f)) => wrap_literal(syms.float_lit, Value::Float(f.into_inner())),
         CoreTerm::Const(Literal::String(s)) => wrap_literal(syms.str_lit, Value::Str(s)),
         CoreTerm::Const(Literal::Bool(b)) => wrap_literal(syms.bool_lit, Value::Bool(b)),
@@ -746,9 +757,18 @@ fn reflect_value_to_term(
         let lit = if lit_ctor == syms.int_lit {
             match lit_val {
                 Value::Int(n) => Literal::Int(n),
-                Value::BigInt(n) => Literal::BigInt(n),
                 other => return Err(EvalError::TypeMismatch {
                     expected: "Int64", got: other.type_name().to_string(),
+                }),
+            }
+        } else if lit_ctor == syms.bigint_lit {
+            // BigIntLiteral is its own first-class case (WI-543); IntLiteral
+            // stays Int64-only above.
+            match lit_val {
+                Value::BigInt(n) => Literal::BigInt(n),
+                Value::Int(n) => Literal::BigInt(n.into()),
+                other => return Err(EvalError::TypeMismatch {
+                    expected: "BigInt", got: other.type_name().to_string(),
                 }),
             }
         } else if lit_ctor == syms.float_lit {
@@ -1122,6 +1142,9 @@ fn subst_compose(interp: &mut Interpreter, args: &[Value]) -> Result<Value, Eval
             for (var, val) in s1.bindings.iter() {
                 let new_val = match val {
                     Value::Term(tid) => Value::Term(kb.apply_subst(*tid, s2)),
+                    // WI-547: a bare value-level var binding chases through s2
+                    // (reify_value resolves a bound var, recursively).
+                    Value::Var(_) => kb.reify_value(val, s2),
                     other => other.clone(),
                 };
                 result.bindings.insert(*var, new_val);
@@ -1135,6 +1158,35 @@ fn subst_compose(interp: &mut Interpreter, args: &[Value]) -> Result<Value, Eval
 
     let handle = interp.alloc_subst(composed);
     Ok(Value::Substitution(handle))
+}
+
+/// `Substitution.bindings(s: Substitution) -> List[Pair[Term, Term]]`.
+/// Enumerate the substitution as (variable, value) pairs — the variable as a
+/// var `Term` (`Value::Term(Var)`) so a consumer can recover its identity (the
+/// full-walk dual of `lookup`'s single by-name read). Lets the host bridge's
+/// `compose` merge by variable across the `&dyn Substitution` boundary, but is
+/// a first-class reflect op.
+fn subst_bindings(interp: &mut Interpreter, args: &[Value], syms: &ReflectSyms) -> Result<Value, EvalError> {
+    let [subst_val] = expect_args::<1>("Substitution.bindings", args)?;
+    let handle = match subst_val {
+        Value::Substitution(h) => h,
+        other => return Err(EvalError::TypeMismatch {
+            expected: "Substitution", got: other.type_name().to_string(),
+        }),
+    };
+    let arena = interp.subst_arena();
+    let entries: Vec<_> = arena.with_subst(&handle, |s| {
+        s.iter().map(|(vid, val)| (*vid, val.clone())).collect::<Vec<_>>()
+    });
+    let kb = interp.kb_mut();
+    let pairs: Vec<Value> = entries.into_iter().map(|(vid, val)| {
+        let var_tid = kb.alloc(CoreTerm::Var(Var::Global(vid)));
+        make_entity(kb, syms.pair, vec![
+            (syms.f_fst, Value::Term(var_tid)),
+            (syms.f_snd, val),
+        ])
+    }).collect();
+    Ok(build_list_value(syms, pairs))
 }
 
 // ── reflect.not (WI-080) ────────────────────────────────────────
@@ -1703,10 +1755,100 @@ end
     }
 
     #[test]
+    fn substitution_bindings_enumerates_pairs() {
+        use anthill_core::kb::subst::Substitution;
+        let mut interp = load_stdlib_and_source(r#"
+namespace test.subst_bindings
+  sort X
+    entity x
+  end
+end
+"#);
+        // Build subst {?v → Int64(42)}, enumerate it.
+        let v_sym = interp.kb_mut().intern("v");
+        let vid = interp.kb_mut().fresh_var(v_sym);
+        let val_term = interp.kb_mut().alloc(CoreTerm::Const(Literal::Int(42)));
+        let mut s = Substitution::new();
+        s.bindings.insert(vid, Value::Term(val_term));
+        let s_handle = interp.alloc_subst(s);
+
+        let result = interp.call("anthill.reflect.Substitution.bindings",
+            &[Value::Substitution(s_handle)]).expect("bindings");
+        // A cons-list with one Pair(fst: <var term>, snd: Int64(42)).
+        let head = match result {
+            Value::Entity { ref named, .. } => named.iter()
+                .find(|(s, _)| interp.kb().resolve_sym(*s) == "head")
+                .map(|(_, v)| v.clone())
+                .expect("cons.head"),
+            other => panic!("expected cons list, got {other:?}"),
+        };
+        match head {
+            Value::Entity { named, .. } => {
+                let field = |k: &str| named.iter()
+                    .find(|(s, _)| interp.kb().resolve_sym(*s) == k)
+                    .map(|(_, v)| v.clone());
+                match field("snd").expect("pair.snd") {
+                    Value::Term(tid) => assert_eq!(tid, val_term, "snd should be the bound value term"),
+                    other => panic!("snd should be Value::Term, got {other:?}"),
+                }
+                match field("fst").expect("pair.fst") {
+                    Value::Term(tid) => assert!(
+                        matches!(interp.kb().get_term(tid), CoreTerm::Var(_)),
+                        "fst should be a var term carrying the variable's identity"),
+                    other => panic!("fst should be Value::Term(Var), got {other:?}"),
+                }
+            }
+            other => panic!("expected Pair entity, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn subst_compose_chases_bare_value_var() {
+        use anthill_core::kb::subst::Substitution;
+        let mut interp = load_stdlib_and_source(r#"
+namespace test.compose_var
+  sort X
+    entity x
+  end
+end
+"#);
+        // σ1 = {z ↦ Value::Var(w)} (BARE var), σ2 = {w ↦ Int64(7)}. compose must
+        // chase z → w → 7, not leave z ↦ w dangling (WI-547).
+        let sz = interp.kb_mut().intern("z");
+        let vid_z = interp.kb_mut().fresh_var(sz);
+        let sw = interp.kb_mut().intern("w");
+        let vid_w = interp.kb_mut().fresh_var(sw);
+        let seven = interp.kb_mut().alloc(CoreTerm::Const(Literal::Int(7)));
+        let mut s1 = Substitution::new();
+        s1.bindings.insert(vid_z, Value::Var(Var::Global(vid_w)));
+        let mut s2 = Substitution::new();
+        s2.bindings.insert(vid_w, Value::Term(seven));
+        let h1 = interp.alloc_subst(s1);
+        let h2 = interp.alloc_subst(s2);
+
+        let composed = interp.call("anthill.reflect.Substitution.compose",
+            &[Value::Substitution(h1), Value::Substitution(h2), Value::Unit])
+            .expect("compose");
+        let handle = match composed {
+            Value::Substitution(h) => h,
+            other => panic!("expected Value::Substitution, got {other:?}"),
+        };
+        let arena = interp.subst_arena();
+        let z_binding = arena.with_subst(&handle, |s| s.bindings.get(&vid_z).cloned());
+        match z_binding.expect("z should be bound") {
+            Value::Term(t) => assert!(
+                matches!(interp.kb().get_term(t), CoreTerm::Const(Literal::Int(7))),
+                "z should chase to Int64(7)"),
+            Value::Int(n) => assert_eq!(n, 7, "z should chase to 7"),
+            other => panic!("z should chase through w to 7, got {other:?} (bare Var = unfixed bug)"),
+        }
+    }
+
+    #[test]
     fn subst_arena_reclaims_on_drop() {
         // After running a stream-pumping program, all substitution slots
         // should be reclaimed — no leaks from the per-solution alloc.
-        let mut interp = load_stdlib_and_source(r#"
+        let interp = load_stdlib_and_source(r#"
 namespace test.subst_reclaim
   sort Pt
     entity pt

@@ -3,12 +3,73 @@
 pub mod bridge;
 pub mod builtins;
 
-use crate::prelude::{List, Pair, Bool, Stream};
+use anthill_core::eval::Value;
+use anthill_core::intern::Symbol as CoreSymbol;
 
-// ── Opaque types bridging to anthill-core ───────────────────────
+// ── Distinct reflect carriers (WI-540) ──────────────────────────
+//
+// The reflect API exposes its OWN `Term` / `Symbol`; the rust-internal
+// `Value` / `TermId` / `intern::Symbol` never appear in a reflect signature.
+// These opaque newtypes encapsulate the carrier (PRIVATE field) — `KbBridge`
+// converts at the impl boundary. `Value` stays carrier-faithful inside (a
+// `Value::Node` keeps its occurrence identity/span), so a floundered
+// `Solution`'s residual remains occurrence-faithful. `build.rs` carrier-binds
+// the generated `Term` → `ReflectTerm` and `Symbol` → `ReflectSymbol`.
 
-pub type Term = anthill_core::kb::term::TermId;
-pub type FactId = anthill_core::kb::RuleId;
+/// The host realization of the reflect `Term`.
+#[derive(Clone, Debug)]
+pub struct ReflectTerm(Value);
+
+impl ReflectTerm {
+    pub(crate) fn new(v: Value) -> Self {
+        ReflectTerm(v)
+    }
+    pub(crate) fn value(&self) -> &Value {
+        &self.0
+    }
+    pub(crate) fn into_value(self) -> Value {
+        self.0
+    }
+}
+
+/// The host realization of the reflect `Symbol` (a sort/op/field name
+/// reference). Wraps the interned `intern::Symbol`.
+#[derive(Clone, Debug)]
+pub struct ReflectSymbol(CoreSymbol);
+
+impl ReflectSymbol {
+    pub(crate) fn new(s: CoreSymbol) -> Self {
+        ReflectSymbol(s)
+    }
+    pub(crate) fn symbol(&self) -> CoreSymbol {
+        self.0
+    }
+}
+
+/// The host realization of the reflect `NodeOccurrence` sort (WI-545). The
+/// spec types `OperationInfo.requires`/`ensures` as `List[NodeOccurrence]`, but
+/// the loader stores each precondition/postcondition clause as a carrier-
+/// agnostic `Value` — a `Value::Term` goal (or `conjunction(...)`) for the
+/// common case, a `Value::Node` only for a denoted-bearing value fact. So this
+/// carries the clause `Value` directly (carrier-faithful, like `ReflectTerm`),
+/// NOT an `Rc<NodeOccurrence>`: a plain goal term is not a positioned
+/// occurrence, and forcing one would fabricate a span.
+#[derive(Clone, Debug)]
+pub struct ReflectNodeOccurrence(Value);
+
+impl ReflectNodeOccurrence {
+    pub(crate) fn new(v: Value) -> Self {
+        ReflectNodeOccurrence(v)
+    }
+    /// The carried clause `Value`. Read by tests now; a future host occurrence
+    /// op (or the interpreter-parity follow-up) will consume it in lib code.
+    #[allow(dead_code)]
+    pub(crate) fn value(&self) -> &Value {
+        &self.0
+    }
+}
+
+// ── Error (Rust-only infra) ─────────────────────────────────────
 
 #[derive(Clone, Debug)]
 pub struct Error(pub String);
@@ -21,170 +82,34 @@ impl std::fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
-// ── KB trait ────────────────────────────────────────────────────
+// ── Generated reflect interface (WI-540) ────────────────────────
+//
+// The `KB` / `Substitution` traits, `Solution` / `LogicalQuery`, and the
+// introspection data types (`TermRepr` / `SortInfo` / `OperationInfo` /
+// `FieldInfo` / `DescriptionInfo` / `LiteralRepr`) are GENERATED from
+// `reflect.anthill` (the single source of truth) and implemented by
+// `KbBridge` / `SubstBridge` in `bridge.rs` — so the compiler enforces
+// bridge == spec. The occurrence IR and the free reflect ops are
+// interpreter-only (excluded via the build.rs `emit_only` subset).
+include!(concat!(env!("OUT_DIR"), "/reflect.rs"));
 
-pub trait KB {
-    fn reify(&self, t: Term) -> TermRepr;
+// ── SubstBridge (Rust-only infra) ───────────────────────────────
 
-    fn reflect(&self, r: TermRepr) -> Term;
+use std::cell::RefCell;
+use std::rc::Rc;
+use anthill_core::kb::KnowledgeBase;
 
-    fn sorts(&self, namespace: Option<String>) -> Vec<SortInfo>;
-
-    fn operations(&self, sort_name: &str) -> Vec<OperationInfo>;
-
-    fn constructors(&self, sort_name: &str) -> Vec<String>;
-
-    fn fields(&self, name: &str) -> Vec<FieldInfo>;
-
-    fn rules(&self, sort_name: &str) -> Vec<TermRepr>;
-
-    fn descriptions(&self, target: Option<&str>) -> Vec<DescriptionInfo>;
-
-    fn nonvar(&self, x: Term) -> bool;
-
-    fn ground(&self, x: Term) -> bool;
-
-    /// Apply a core substitution to a term. Infrastructure for Substitution::apply.
-    fn apply_core_subst(&self, t: Term, subst: &anthill_core::kb::subst::Substitution) -> Term;
-
-    fn execute(&self, query: LogicalQuery) -> Result<Box<dyn Stream<SubstBridge, Error>>, Error>;
-
-    fn sort_template(&self, sort_name: String) -> LogicalQuery;
-
-    fn instantiation_query(&self, sort_name: String, bindings: &dyn Substitution) -> LogicalQuery;
-}
-
-// ── LiteralRepr ─────────────────────────────────────────────────
-
-#[derive(Clone, Debug)]
-pub enum LiteralRepr {
-    IntLiteral(i64),
-    BigIntLiteral(num_bigint::BigInt),
-    FloatLiteral(f64),
-    StringLiteral(String),
-    BoolLiteral(bool),
-}
-
-// ── TermRepr ────────────────────────────────────────────────────
-
-#[derive(Clone, Debug)]
-pub enum TermRepr {
-    ConstRepr {
-        value: LiteralRepr,
-    },
-    VarRepr {
-        name: String,
-    },
-    FnRepr {
-        name: Term,
-        args: Vec<TermRepr>,
-    },
-    RefRepr {
-        name: Term,
-    },
-    QuotedRepr {
-        language: String,
-        source: String,
-    },
-}
-
-// ── SortInfo ────────────────────────────────────────────────────
-
-#[derive(Clone, Debug)]
-pub struct SortInfo {
-    pub name: Term,
-    pub definition: Term,
-    pub constructors: Vec<Term>,
-    pub operations: Vec<Term>,
-    pub parameters: Vec<Term>,
-    pub requires: Vec<Term>,
-}
-
-// ── OperationInfo ───────────────────────────────────────────────
-
-#[derive(Clone, Debug)]
-pub struct OperationInfo {
-    pub name: Term,
-    pub sort_context: Option<Term>,
-    pub params: Vec<FieldInfo>,
-    pub return_type: Term,
-    pub effects: Vec<Term>,
-}
-
-// ── FieldInfo ───────────────────────────────────────────────────
-
-#[derive(Clone, Debug)]
-pub struct FieldInfo {
-    pub name: String,
-    pub type_name: Term,
-}
-
-// ── DescriptionInfo ─────────────────────────────────────────────
-
-#[derive(Clone, Debug)]
-pub struct DescriptionInfo {
-    pub target: Term,
-    pub content: String,
-    /// 0-based per-target description index (the stored `Description(target,
-    /// text, index)` pos[2]; `reflect.anthill` declares `index: Int64`).
-    pub index: i64,
-}
-
-// ── Substitution trait ──────────────────────────────────────────
-
-pub trait Substitution {
-    fn apply(&self, t: Term, kb: &dyn KB) -> Term;
-    fn compose(&self, s2: &dyn Substitution, kb: &dyn KB) -> Box<dyn Substitution>;
-}
-
-// ── SubstBridge ─────────────────────────────────────────────────
-
+/// Host realization of the reflect `Substitution` (implements the generated
+/// trait in `bridge.rs`). Wraps a core substitution and carries its own
+/// `KnowledgeBase` handle, so `apply`/`compose`/`lookup` need only the
+/// substitution — the trait's `&dyn KB` arg is the spec shape, unused here.
 pub struct SubstBridge {
     pub inner: anthill_core::kb::subst::Substitution,
+    pub(crate) kb: Rc<RefCell<KnowledgeBase>>,
 }
 
 impl SubstBridge {
-    pub fn new() -> Self {
-        Self { inner: anthill_core::kb::subst::Substitution::new() }
+    pub fn from_core(s: anthill_core::kb::subst::Substitution, kb: Rc<RefCell<KnowledgeBase>>) -> Self {
+        Self { inner: s, kb }
     }
-
-    pub fn from_core(s: anthill_core::kb::subst::Substitution) -> Self {
-        Self { inner: s }
-    }
-}
-
-// ── LogicalQuery ────────────────────────────────────────────────
-
-#[derive(Clone, Debug)]
-pub enum LogicalQuery {
-    EmptyQuery,
-    PatternQuery {
-        term: Term,
-    },
-    SortQuery {
-        sort_name: String,
-    },
-    Conjunction {
-        left: Box<LogicalQuery>,
-        right: Box<LogicalQuery>,
-    },
-    Disjunction {
-        left: Box<LogicalQuery>,
-        right: Box<LogicalQuery>,
-    },
-    Negation {
-        query: Box<LogicalQuery>,
-    },
-    Guarded {
-        query: Box<LogicalQuery>,
-        condition: Term,
-    },
-    Projected {
-        query: Box<LogicalQuery>,
-        vars: Vec<String>,
-    },
-    Limited {
-        query: Box<LogicalQuery>,
-        count: i64,
-    },
 }

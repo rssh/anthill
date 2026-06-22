@@ -1167,6 +1167,9 @@ fn run_query(args: &QueryArgs) -> Result<(), i32> {
                             // `print_solutions` can DISPLAY the `residual:` line
                             // (floundered goals) rather than hide them (WI-519).
                             definite_only: false,
+                            // `gamma` (WI-537 Γ overlay) defaults to None; `..Default`
+                            // fills it without naming that crate-private type here.
+                            ..Default::default()
                         };
                         let solutions = kb.resolve(&[qt], &config);
                         print_solutions(&kb, &solutions, qt, args.max_results);

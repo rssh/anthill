@@ -12,8 +12,12 @@ fn main() {
     let config = CodegenConfig {
         flatten_top_namespace: true,
         emit_fn_bodies: true,
+        // WI-535: the opaque `Term` sort binds to the carrier-faithful
+        // `Value` (not a bare `TermId`). A generated host op over a `Term`
+        // (e.g. `Store.persist(fact: Term)`) thus carries an occurrence/entity
+        // without lowering it to a hash-consed id.
         carrier_bindings: HashMap::from([
-            ("Term".into(), "anthill_core::kb::term::TermId".into()),
+            ("Term".into(), "anthill_core::eval::Value".into()),
             ("FactId".into(), "anthill_core::kb::RuleId".into()),
         ]),
         namespace_map: HashMap::from([
@@ -21,6 +25,47 @@ fn main() {
         ]),
         derives: vec!["Clone".into(), "Debug".into()],
         default_pub: true,
+        boxed_trait_objects: false,
+        emit_only: None,
+    };
+
+    // WI-540: the reflect interface (`KB`/`Substitution` traits + data types)
+    // is GENERATED-AND-USED — `reflect/mod.rs` `include!`s it and `KbBridge`
+    // implements it, so the compiler enforces bridge == spec. Two reflect-only
+    // knobs vs the base config:
+    //   * `boxed_trait_objects` — `KB` must be `&dyn KB`-usable and `Solution`
+    //     carries a `Substitution` trait object, so trait-typed positions emit
+    //     `Box<dyn _>` / `&dyn _` (object-safe) instead of `impl _`.
+    //   * the reflect `Term`/`Symbol` are DISTINCT, opaque reflect types (NOT
+    //     the rust-internal `Value`/`Symbol`): the API never names the carrier;
+    //     `KbBridge` converts `Term`/`Symbol` ↔ `Value`/`TermId`/`intern::Symbol`
+    //     at the impl boundary. Bound to the hand-written newtypes in `mod.rs`.
+    let reflect_config = CodegenConfig {
+        carrier_bindings: HashMap::from([
+            ("Term".into(), "ReflectTerm".into()),
+            ("Symbol".into(), "ReflectSymbol".into()),
+            // WI-545: `NodeOccurrence` (declared in reflect.anthill, so the
+            // codegen carrier-alias fires) binds to an opaque `Value` carrier so
+            // `OperationInfo.requires`/`ensures` can hold the loader's stored
+            // clause Values.
+            ("NodeOccurrence".into(), "ReflectNodeOccurrence".into()),
+            ("FactId".into(), "anthill_core::kb::RuleId".into()),
+        ]),
+        boxed_trait_objects: true,
+        // Generate only the KB-bridge subset of reflect.anthill — the `KB` /
+        // `Substitution` traits + `Solution` / `LogicalQuery` + the introspection
+        // data types + the opaque carriers they reference. The occurrence IR
+        // (`Expr` / `Pattern` / …) and the free reflect ops stay interpreter-only.
+        emit_only: Some(vec![
+            "Term".into(), "Symbol".into(), "FactId".into(),
+            "ConstraintId".into(), "NodeOccurrence".into(),
+            "KB".into(), "Substitution".into(),
+            "Solution".into(), "LogicalQuery".into(),
+            "TermRepr".into(), "LiteralRepr".into(),
+            "SortInfo".into(), "OperationInfo".into(),
+            "FieldInfo".into(), "DescriptionInfo".into(),
+        ]),
+        ..config.clone()
     };
 
     // Source → generated output mapping
@@ -49,9 +94,10 @@ fn main() {
     let refs: Vec<_> = parsed_files.iter().collect();
     let global_traits = collect_trait_sorts(&refs);
 
-    // Generate each file
+    // Generate each file (reflect uses the generated-and-used reflect_config).
     for (i, (_, dst)) in files.iter().enumerate() {
-        let code = generate_rust_with_config(&parsed_files[i], &global_traits, &config)
+        let cfg = if *dst == "reflect.rs" { &reflect_config } else { &config };
+        let code = generate_rust_with_config(&parsed_files[i], &global_traits, cfg)
             .unwrap_or_else(|e| panic!("codegen {}: {:?}", dst, e));
         let out_path = out_dir.join(dst);
         std::fs::write(&out_path, &code)

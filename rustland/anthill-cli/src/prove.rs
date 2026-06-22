@@ -932,6 +932,10 @@ fn dispatch_derivation(
         // reports a solution only on a real definite derivation; an undecided
         // body then falls through to `Verdict::Unknown` ("no derivation found").
         definite_only: true,
+        // `gamma` — the WI-537 Γ overlay, a crate-private type a CLI proof never
+        // sets — defaults to None via `..Default::default()` (which also avoids
+        // naming that private type from this crate).
+        ..Default::default()
     };
     // SLD-derivation witness: phase α.3 produces a placeholder
     // tree_hash referencing the rule QN. Phase α.5 introduces
