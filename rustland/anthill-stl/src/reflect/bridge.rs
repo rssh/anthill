@@ -531,8 +531,14 @@ impl Stream<Solution, Error> for SearchStreamAdapter {
 }
 
 impl KB for KbBridge {
+    /// DECISION (WI-546): `kb()` is the spec's *ambient*-KB accessor — a
+    /// zero-arg op the runtime answers with the one interpreter-instance KB.
+    /// The host has no ambient instance: a `KbBridge` is built explicitly from a
+    /// `KnowledgeBase` (`KbBridge::new`), so there is nothing for a static
+    /// `kb()` to return. It stays an explicit panic rather than fabricating an
+    /// empty KB (which would silently answer queries against the wrong store).
     fn kb() -> Box<dyn KB> {
-        panic!("KB.kb() not host-constructible — build a KbBridge from a KnowledgeBase (WI-540 follow-up)")
+        panic!("KB.kb(): no ambient host KB — construct a KbBridge from a KnowledgeBase instead")
     }
 
     fn reify(&self, t: Term) -> TermRepr {
@@ -873,12 +879,35 @@ impl KB for KbBridge {
         LogicalQuery::SortQuery { sort_name }
     }
 
-    fn assert(&mut self, _term: Term, _sort: Type) -> Option<FactId> {
-        panic!("KB.assert not yet implemented (WI-540 follow-up)")
+    /// Assert a fact with integrity checking (WI-546). The fact head must be a
+    /// hash-consed term (a denoted value-fact head is loud via `expect_term`).
+    /// The fact's sort — the key `assert_checked` triggers guards on and indexes
+    /// by — is the head functor's trigger sort (`fact_trigger_sort`, the exact
+    /// computation the loader uses for a constraint, so a registered guard
+    /// fires); the explicit `sort` reference is the fallback when the head names
+    /// no sort. Runtime-asserted facts take that sort as their own domain.
+    /// Returns the new fact's id, or `None` when a registered constraint rejects
+    /// the fact (which is then retracted) — the spec's "violated constraint → none".
+    fn assert(&mut self, term: Term, sort: Type) -> Option<FactId> {
+        let head = term.into_value();
+        let term_tid = head.clone().expect_term();
+        let arg_sort_sym = self.value_functor(sort.value());
+        let mut kb = self.kb.borrow_mut();
+        let sort_tid = kb.fact_trigger_sort(&head).unwrap_or_else(|| {
+            let sym = arg_sort_sym.unwrap_or_else(|| {
+                panic!("KB.assert: cannot determine the fact's sort from its head or the `sort` arg")
+            });
+            kb.make_name_term_from_sym(sym)
+        });
+        kb.assert_checked(term_tid, sort_tid, sort_tid, None)
     }
 
     fn add_guard(&mut self, _guard: LogicalQuery) -> ConstraintId {
-        panic!("KB.add_guard not yet implemented (WI-540 follow-up)")
+        // WI-549: needs a reflect-`LogicalQuery`-enum → structured KB query
+        // Value reifier (negation/conjunction/pattern_query nodes that
+        // `collect_trigger_sorts`/`evaluate_guard` walk) — distinct from
+        // `query_to_goals`, which flattens to resolver goals. Filed separately.
+        panic!("KB.add_guard not yet implemented (WI-549)")
     }
 }
 
@@ -996,6 +1025,37 @@ mod tests {
         load::register_prelude(&mut kb);
         kb.register_standard_builtins();
         load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
+        KbBridge::new(kb)
+    }
+
+    /// Load the full stdlib plus `source` into a KbBridge. Needed when the test
+    /// exercises a path that depends on the reflect stdlib being present — e.g.
+    /// a quantified `constraint`, whose loader lowering + guard trigger-sort
+    /// extraction resolve `anthill.reflect.LogicalQuery.*` symbols.
+    fn load_source_bridge_with_stdlib(source: &str) -> KbBridge {
+        fn collect(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            for e in std::fs::read_dir(dir).expect("read stdlib dir").flatten() {
+                let p = e.path();
+                if p.is_dir() { collect(&p, out); }
+                else if p.extension().and_then(|s| s.to_str()) == Some("anthill") { out.push(p); }
+            }
+        }
+        let stdlib_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../stdlib/anthill");
+        let mut files = Vec::new();
+        collect(&stdlib_dir, &mut files);
+        assert!(!files.is_empty(), "stdlib empty");
+        let mut parsed: Vec<_> = files.iter().map(|f| {
+            let src = std::fs::read_to_string(f).expect("read stdlib");
+            parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", f.display()))
+        }).collect();
+        parsed.push(parse::parse(source).expect("parse user source"));
+        let refs: Vec<_> = parsed.iter().collect();
+        let mut kb = KnowledgeBase::new();
+        load::register_prelude(&mut kb);
+        kb.register_standard_builtins();
+        load::load_all(&mut kb, &refs, &NullResolver)
+            .unwrap_or_else(|errs| { for e in &errs { eprintln!("{e}"); } panic!("load failed"); });
         KbBridge::new(kb)
     }
 
@@ -1260,6 +1320,78 @@ sort Tank {
             Value::Term(_) => {}
             other => panic!("ensures clause should be a Value::Term goal, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn assert_adds_fact_findable_via_facts_of() {
+        // Happy path (WI-546): assert returns a fact id and the fact is then
+        // enumerable via `facts_of`.
+        let mut bridge = load_source_bridge("sort Slot { entity slot(n: Int64) }");
+        let (slot5, slot_sort_type, slot_entity_type) = {
+            let mut kb = bridge.kb.borrow_mut();
+            let slot_sym = kb.try_resolve_symbol("Slot.slot").expect("Slot.slot");
+            let slot_sort_sym = kb.try_resolve_symbol("Slot").expect("Slot");
+            let n_sym = kb.intern("n");
+            let val5 = kb.alloc(CoreTerm::Const(Literal::Int(5)));
+            let s5 = kb.alloc(CoreTerm::Fn {
+                functor: slot_sym, pos_args: Default::default(),
+                named_args: vec![(n_sym, val5)].into(),
+            });
+            let sort_ref = kb.alloc(CoreTerm::Ref(slot_sort_sym));
+            let entity_ref = kb.alloc(CoreTerm::Ref(slot_sym));
+            (s5, Type::new(Value::Term(sort_ref)), Type::new(Value::Term(entity_ref)))
+        };
+        let id = bridge.assert(ReflectTerm::new(Value::Term(slot5)), slot_sort_type);
+        assert!(id.is_some(), "asserting slot(n:5) should succeed");
+        assert!(
+            bridge.facts_of(slot_entity_type).iter()
+                .any(|t| matches!(t.value(), Value::Term(tid) if *tid == slot5)),
+            "facts_of should see the asserted slot(n:5)",
+        );
+    }
+
+    #[test]
+    fn assert_rejected_by_violated_constraint() {
+        // `no_two_cycle` (a quantified guard — the kind the loader enforces)
+        // forbids a 2-cycle through `a`. With only `edge(a→b)` loaded it holds;
+        // asserting `edge(b→a)` completes the cycle, so the assert is rejected
+        // (None) and retracted (WI-546). Mirrors the wi023 quantified-constraint
+        // fixture; needs the full stdlib for the constraint's LogicalQuery
+        // lowering + guard trigger-sort extraction.
+        let mut bridge = load_source_bridge_with_stdlib(r#"
+namespace test.assert_guard
+  sort Node
+    entity a
+    entity b
+  end
+  sort Rel
+    entity edge(from: Node, to: Node)
+  end
+  fact edge(from: a, to: b)
+  constraint no_two_cycle: no ?x: edge(from: a, to: ?x) -: edge(from: ?x, to: a)
+end
+"#);
+        let (edge_ba, rel_type) = {
+            let mut kb = bridge.kb.borrow_mut();
+            let edge_sym = kb.try_resolve_symbol("test.assert_guard.Rel.edge").expect("edge");
+            let rel_sym = kb.try_resolve_symbol("test.assert_guard.Rel").expect("Rel");
+            let a_sym = kb.try_resolve_symbol("test.assert_guard.Node.a").expect("a");
+            let b_sym = kb.try_resolve_symbol("test.assert_guard.Node.b").expect("b");
+            let a_ref = kb.alloc(CoreTerm::Ref(a_sym));
+            let b_ref = kb.alloc(CoreTerm::Ref(b_sym));
+            let from = kb.intern("from");
+            let to = kb.intern("to");
+            // edge(from: b, to: a) — named args canonical (from < to).
+            let edge = kb.alloc(CoreTerm::Fn {
+                functor: edge_sym, pos_args: Default::default(),
+                named_args: vec![(from, b_ref), (to, a_ref)].into(),
+            });
+            let rel_ref = kb.alloc(CoreTerm::Ref(rel_sym));
+            (edge, Type::new(Value::Term(rel_ref)))
+        };
+        let rejected = bridge.assert(ReflectTerm::new(Value::Term(edge_ba)), rel_type);
+        assert!(rejected.is_none(),
+            "asserting edge(b→a) completes a 2-cycle → rejected by `no_two_cycle`");
     }
 
     /// Drift-guard (WI-540): the reflect `KB` / `Substitution` interface is

@@ -1164,6 +1164,17 @@ impl KnowledgeBase {
         }
     }
 
+    /// The sort a fact with this head triggers guards on / is indexed by — its
+    /// head functor's parent sort (for a constructor), else the functor itself
+    /// as a sort. The runtime-assert (`reflect.KB.assert`) counterpart of the
+    /// trigger sort the loader computes for a constraint via
+    /// [`view_to_trigger_sort`](Self::view_to_trigger_sort), so an asserted fact
+    /// and a registered guard agree on the sort key. `None` when the head names
+    /// no sort.
+    pub fn fact_trigger_sort(&mut self, head: &crate::eval::value::Value) -> Option<TermId> {
+        self.view_to_trigger_sort(head)
+    }
+
     /// Number of registered guards.
     pub fn guard_count(&self) -> usize {
         self.guards.len()
