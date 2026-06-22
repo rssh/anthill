@@ -1142,6 +1142,9 @@ fn subst_compose(interp: &mut Interpreter, args: &[Value]) -> Result<Value, Eval
             for (var, val) in s1.bindings.iter() {
                 let new_val = match val {
                     Value::Term(tid) => Value::Term(kb.apply_subst(*tid, s2)),
+                    // WI-547: a bare value-level var binding chases through s2
+                    // (reify_value resolves a bound var, recursively).
+                    Value::Var(_) => kb.reify_value(val, s2),
                     other => other.clone(),
                 };
                 result.bindings.insert(*var, new_val);
@@ -1796,6 +1799,48 @@ end
                 }
             }
             other => panic!("expected Pair entity, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn subst_compose_chases_bare_value_var() {
+        use anthill_core::kb::subst::Substitution;
+        let mut interp = load_stdlib_and_source(r#"
+namespace test.compose_var
+  sort X
+    entity x
+  end
+end
+"#);
+        // σ1 = {z ↦ Value::Var(w)} (BARE var), σ2 = {w ↦ Int64(7)}. compose must
+        // chase z → w → 7, not leave z ↦ w dangling (WI-547).
+        let sz = interp.kb_mut().intern("z");
+        let vid_z = interp.kb_mut().fresh_var(sz);
+        let sw = interp.kb_mut().intern("w");
+        let vid_w = interp.kb_mut().fresh_var(sw);
+        let seven = interp.kb_mut().alloc(CoreTerm::Const(Literal::Int(7)));
+        let mut s1 = Substitution::new();
+        s1.bindings.insert(vid_z, Value::Var(Var::Global(vid_w)));
+        let mut s2 = Substitution::new();
+        s2.bindings.insert(vid_w, Value::Term(seven));
+        let h1 = interp.alloc_subst(s1);
+        let h2 = interp.alloc_subst(s2);
+
+        let composed = interp.call("anthill.reflect.Substitution.compose",
+            &[Value::Substitution(h1), Value::Substitution(h2), Value::Unit])
+            .expect("compose");
+        let handle = match composed {
+            Value::Substitution(h) => h,
+            other => panic!("expected Value::Substitution, got {other:?}"),
+        };
+        let arena = interp.subst_arena();
+        let z_binding = arena.with_subst(&handle, |s| s.bindings.get(&vid_z).cloned());
+        match z_binding.expect("z should be bound") {
+            Value::Term(t) => assert!(
+                matches!(interp.kb().get_term(t), CoreTerm::Const(Literal::Int(7))),
+                "z should chase to Int64(7)"),
+            Value::Int(n) => assert_eq!(n, 7, "z should chase to 7"),
+            other => panic!("z should chase through w to 7, got {other:?} (bare Var = unfixed bug)"),
         }
     }
 

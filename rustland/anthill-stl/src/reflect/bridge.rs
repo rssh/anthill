@@ -947,13 +947,10 @@ impl Substitution for SubstBridge {
     /// otherwise opaque across the `&dyn Substitution` boundary). Mirrors the
     /// interpreter `subst_compose` (which has concrete bindings).
     ///
-    /// Step 1 re-applies `s2` via `apply`/`reify_value`, which chases vars
-    /// carried inside a `Value::Term`/`Value::Node` but passes a *bare*
-    /// `Value::Var` self-binding through unchanged — so a `z ↦ Value::Var(w)`
-    /// binding is NOT resolved through `s2`. This is a pre-existing limitation
-    /// shared verbatim with the interpreter `subst_compose` (both clone non-
-    /// `Term` carriers); resolving it lives in core `reify_value` and is tracked
-    /// separately, not folded in here.
+    /// Step 1 re-applies `s2` via `apply`/`reify_value`, which (WI-547) now
+    /// chases a bound *bare* `Value::Var` self-binding too — so a
+    /// `z ↦ Value::Var(w)` with `s2 = {w ↦ v}` resolves to `z ↦ v`, not a
+    /// dangling `z ↦ w`. Term-/Node-carried vars were always chased.
     fn compose(&self, s2: &dyn Substitution, kb: &dyn KB) -> Box<dyn Substitution> {
         let mut result = self.inner.clone();
         for (_var, val) in result.bindings.iter_mut() {
@@ -1260,9 +1257,9 @@ fact blue(shade: 3)
         // second-half merge (σ2's standalone binding, absent in σ1). The OLD
         // partial compose dropped `y` — this pins the WI-544 fix.
         let bridge = load_source_bridge("sort Foo { entity bar }");
-        // A var-to-var binding is stored as a `Value::Term(Var)` (how real
-        // substitutions represent it — `reify_value`/`apply` substitute vars
-        // inside a `Value::Term`, not a bare `Value::Var`).
+        // A var-to-var binding carried inside a `Value::Term(Var)` (the common
+        // shape real substitutions use). The bare-`Value::Var` shape is covered
+        // by `compose_chases_bare_value_var` (WI-547).
         let (vid_x, vid_y, five, var_y) = {
             let mut kb = bridge.kb.borrow_mut();
             let sx = kb.intern("x");
@@ -1291,6 +1288,39 @@ fact blue(shade: 3)
                     assert_eq!(value, 5, "`{name}` should be 5"),
                 other => panic!("`{name}` should reify to IntLiteral(5), got {other:?}"),
             }
+        }
+    }
+
+    #[test]
+    fn compose_chases_bare_value_var() {
+        // σ1 = {z ↦ Value::Var(w)} (a BARE value-level var, not term-wrapped),
+        // σ2 = {w ↦ 7}. compose must chase z → w → 7, not leave z ↦ w dangling
+        // (WI-547). Before the fix `reify_value` passed a bare `Value::Var`
+        // through, so `z` stayed unresolved.
+        let bridge = load_source_bridge("sort Foo { entity bar }");
+        let (vid_z, vid_w, seven) = {
+            let mut kb = bridge.kb.borrow_mut();
+            let sz = kb.intern("z");
+            let sw = kb.intern("w");
+            let vz = kb.fresh_var(sz);
+            let vw = kb.fresh_var(sw);
+            let seven = kb.alloc(CoreTerm::Const(Literal::Int(7)));
+            (vz, vw, seven)
+        };
+        let mut s1_inner = anthill_core::kb::subst::Substitution::new();
+        s1_inner.bindings.insert(vid_z, Value::Var(Var::Global(vid_w)));
+        let mut s2_inner = anthill_core::kb::subst::Substitution::new();
+        s2_inner.bindings.insert(vid_w, Value::Term(seven));
+
+        let s1 = SubstBridge::from_core(s1_inner, Rc::clone(&bridge.kb));
+        let s2 = SubstBridge::from_core(s2_inner, Rc::clone(&bridge.kb));
+        let composed = s1.compose(&s2, &bridge);
+
+        let z = composed.lookup("z".to_string()).expect("compose should bind `z`");
+        match bridge.reify(z) {
+            TermRepr::ConstRepr { value: LiteralRepr::IntLiteral { value } } =>
+                assert_eq!(value, 7, "`z` should chase through `w` to 7"),
+            other => panic!("`z` should reify to IntLiteral(7), got {other:?}"),
         }
     }
 

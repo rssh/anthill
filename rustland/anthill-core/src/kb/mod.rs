@@ -2399,6 +2399,28 @@ impl KnowledgeBase {
             Value::Node(occ) => {
                 Value::Node(node_occurrence::substitute_occurrence(self, occ, subst))
             }
+            // WI-547: a BOUND bare value-level var resolves to its binding
+            // (recursively, so a `z → w → …` chain collapses even when σ is not
+            // path-compressed) — applying σ means substituting the vars it binds.
+            // An UNBOUND var still passes through (the resolver goal boundaries
+            // rely on a free value-level var staying free), as does a
+            // Rigid/DeBruijn var (not a σ-bound logical var). The term-internal
+            // case is already handled by `reify` above. Uses `resolve_as_value`
+            // (parent-chain aware, like `reify`/`walk_view`), and guards the
+            // degenerate self-binding `vid ↦ vid` — which `compose` can synthesize
+            // (`{z↦w} ∘ {w↦z}`) — against unbounded recursion, mirroring the
+            // self-binding short-circuit in `walk_view`/`reify`/`occurs_in_value`.
+            Value::Var(var) => match var.as_global() {
+                Some(vid) => match subst.resolve_as_value(vid) {
+                    None => v.clone(),
+                    Some(Value::Var(v2)) if v2.as_global() == Some(vid) => v.clone(),
+                    Some(bound) => {
+                        let bound = bound.clone();
+                        self.reify_value(&bound, subst)
+                    }
+                },
+                None => v.clone(),
+            },
             other => other.clone(),
         }
     }
@@ -4063,6 +4085,45 @@ mod tests {
     use super::*;
     use term::Literal;
     use smallvec::SmallVec;
+
+    #[test]
+    fn reify_value_chases_and_guards_var_bindings() {
+        // WI-547: a bound bare `Value::Var` chases through σ (z → w → Int64(7));
+        // a self-binding `s ↦ Value::Var(s)` (which `compose` can synthesize)
+        // returns the var unchanged instead of recursing forever; an unbound var
+        // passes through.
+        use crate::eval::value::Value;
+        use term::Var;
+        let mut kb = KnowledgeBase::new();
+        let (vz, vw, vs, vfree, seven) = {
+            let z = kb.intern("z"); let vz = kb.fresh_var(z);
+            let w = kb.intern("w"); let vw = kb.fresh_var(w);
+            let s = kb.intern("s"); let vs = kb.fresh_var(s);
+            let fr = kb.intern("free"); let vfree = kb.fresh_var(fr);
+            let seven = kb.alloc(Term::Const(Literal::Int(7)));
+            (vz, vw, vs, vfree, seven)
+        };
+        let mut subst = subst::Substitution::new();
+        subst.bindings.insert(vz, Value::Var(Var::Global(vw)));   // z → w
+        subst.bindings.insert(vw, Value::Term(seven));            // w → 7
+        subst.bindings.insert(vs, Value::Var(Var::Global(vs)));   // s → s (cycle)
+
+        // z chases z → w → 7.
+        match kb.reify_value(&Value::Var(Var::Global(vz)), &subst) {
+            Value::Term(t) => assert!(matches!(kb.get_term(t), Term::Const(Literal::Int(7)))),
+            other => panic!("z should chase to Int64(7), got {other:?}"),
+        }
+        // Self-binding terminates and returns the var.
+        match kb.reify_value(&Value::Var(Var::Global(vs)), &subst) {
+            Value::Var(v) => assert_eq!(v.as_global(), Some(vs)),
+            other => panic!("self-binding should pass through as the var, got {other:?}"),
+        }
+        // Unbound var passes through.
+        match kb.reify_value(&Value::Var(Var::Global(vfree)), &subst) {
+            Value::Var(v) => assert_eq!(v.as_global(), Some(vfree)),
+            other => panic!("unbound var should pass through, got {other:?}"),
+        }
+    }
 
     #[test]
     fn assert_and_query_by_sort() {
