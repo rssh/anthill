@@ -20,7 +20,7 @@ mod common;
 
 use anthill_core::eval::value::Value;
 use anthill_core::intern::Symbol;
-use anthill_core::kb::node_occurrence::{NodeOccurrence, Pattern};
+use anthill_core::kb::node_occurrence::{Expr, NodeOccurrence, Pattern};
 use anthill_core::kb::term::{Literal, Term, Var};
 use anthill_core::kb::typing::{match_arm_gamma_facts, prove_from_gamma, refute_guard, FlowEnv};
 use anthill_core::kb::KnowledgeBase;
@@ -234,6 +234,29 @@ fn match_negation_indexes_a_node_scrutinee() {
     assert!(
         prove_from_gamma(&mut kb, &flow, &facts[1][0]),
         "a Node(Ref) scrutinee's neq is indexable and proves from Γ"
+    );
+}
+
+#[test]
+fn match_negation_indexes_a_varref_scrutinee() {
+    // The REAL typer scrutinee for `match b` (b a let / lambda / op-param binder)
+    // is an `Expr::VarRef` — which headed `Opaque` before the occ_head fix, so
+    // `assume` silently DROPPED every match/if Γ fact over a plain variable (the
+    // common case). It now heads as `Ident(name)` → indexable. (This is the test
+    // the `Ref`-scrutinee one above should have been: a `Ref` is always
+    // indexable, so it never exercised the binder path that was actually dead.)
+    let mut kb = common::load_kb_with("namespace wi537.varref\nend\n");
+    let b = kb.intern("b");
+    let scrutinee =
+        Value::Node(NodeOccurrence::new_expr(Expr::VarRef { name: b }, span(), None));
+    let arms = vec![(lit_pat(0), false), (wildcard_pat(), false)];
+    let facts = match_arm_gamma_facts(&mut kb, &scrutinee, &arms, &[]);
+    assert_eq!(facts[1].len(), 1, "wildcard arm ⇒ neq(varref(b), 0)");
+
+    let flow = FlowEnv::empty().assume(&kb, facts[1][0].clone());
+    assert!(
+        prove_from_gamma(&mut kb, &flow, &facts[1][0]),
+        "a VarRef (binder) scrutinee's neq must be indexable and prove from Γ"
     );
 }
 

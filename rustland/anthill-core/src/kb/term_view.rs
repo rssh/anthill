@@ -288,6 +288,16 @@ fn occ_head(occ: &NodeOccurrence, kb: &KnowledgeBase) -> ViewHead {
         Some(Expr::Const(lit)) => ViewHead::Const(lit.clone()),
         Some(Expr::Ref(s)) => ViewHead::Ref(*s),
         Some(Expr::Ident(s)) => ViewHead::Ident(*s),
+        // A local binder reference (`let` / lambda / op-param, WI-318) keys by
+        // its NAME — it is an unresolved name-reference leaf, exactly like a bare
+        // `Ident`. It must NOT fall through to `Opaque` below: that made any term
+        // mentioning a binder non-indexable, so silently dropped by
+        // `view_is_indexable` — which is why a proposal-050 Γ fact over a binder
+        // (`let x = e` ⟹ x ≡ e, or a `some(x)` pattern binder) had no storable
+        // form. (`occ_index_var` keeps it off the var-edge: a `VarRef` carries a
+        // name, not a `Var` identity, so it keys as the `Ident` constant — two
+        // references to the same-named binder match, which is the intent.)
+        Some(Expr::VarRef { name }) => ViewHead::Ident(*name),
         // A var of ANY kind surfaces its `Var` — the discrim tree keys a flex
         // `Global` / bound `DeBruijn` as a wildcard var-edge and a `Rigid`
         // skolem as a `RigidVar` constant (mirrors `TermIdView`/`Value`). The
