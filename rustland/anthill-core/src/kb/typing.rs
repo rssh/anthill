@@ -916,6 +916,152 @@ fn negate_goal(kb: &mut KnowledgeBase, goal: &Value) -> Option<Value> {
         .map(|not_sym| kb.make_goal_value(not_sym, vec![goal.clone()]))
 }
 
+// ── Proposal 050 (WI-537): match-arm Γ narrowing ───────────────
+//
+// The producer side of the proposal-050 `match` modification rule: an arm
+// narrows Γ with its pattern fact and the negations of earlier arms, just as
+// the `if`-fork (above) narrows with the branch condition / its negation.
+// `prove_from_gamma` is the consumer side. Like the `if`-fork these facts are
+// additive — read by WI-067 discharge / WI-538 proofs — so they change no
+// types or effects.
+
+/// A `Var`-pattern name resolved to the constructor it names, or `None` if it
+/// is a plain binding (`case x`). A name matching the scrutinee's constructor
+/// set resolves to that **canonical** (loader-qualified) symbol — a bare pattern
+/// symbol (`case red`, loaded unresolved) would not `Ref`-match a resolved
+/// reference to the same constructor elsewhere, since `views_structurally_equal`
+/// compares `Ref` by raw symbol identity; failing that, a globally-known
+/// constructor symbol is taken as-is. Shared by [`collect_covered_entities`]
+/// (coverage) and [`pattern_to_matched_value`] (the Γ pattern fact) so the two
+/// never drift on what counts as a nullary constructor vs a binding.
+fn pattern_var_ctor_sym(
+    kb: &KnowledgeBase,
+    name: Symbol,
+    scrutinee_ctors: &[Symbol],
+) -> Option<Symbol> {
+    if let Some(&ctor) = scrutinee_ctors.iter().find(|&&c| same_symbol(kb, c, name)) {
+        return Some(ctor);
+    }
+    (kb.is_constructor_symbol(name) || kb.constructor_parent_sort(name).is_some()).then_some(name)
+}
+
+/// The GROUND value a pattern matches — the RHS of the proposal-050 pattern
+/// fact `eq(scrutinee, value(p))` and the earlier-arm negation
+/// `neq(scrutinee, value(p))`. `None` ⇒ the pattern is not a single ground
+/// value, and so contributes neither:
+///   - a bare binding `case x` / wildcard `_` matches anything (no value), and
+///   - a constructor carrying a binder/wildcard sub-pattern (`some(x)`) has only
+///     an *existential* head fact (`∃v. s = some(v)`), which needs a reified
+///     form (050 open Q C) and is deferred. An `eq(s, some(?fresh))` would be
+///     useless here anyway: the Γ match is identity-aware
+///     ([`gamma_candidates_for`]'s `views_structurally_equal`), so a fact with a
+///     fresh existential matches no consumer's query — it would only bloat Γ.
+/// A ground pattern is exactly the one a later arm can soundly negate AND the
+/// one whose `eq` fact a consumer can match against a concrete value.
+///
+///   - literal `0`               → `Const(0)`
+///   - nullary ctor `none`/`red` → `Ref(ctor)` — a `Var`-pattern whose name
+///     resolves to a constructor via [`pattern_var_ctor_sym`] (its canonical
+///     symbol, so the fact `Ref`-matches a resolved reference elsewhere).
+///   - `some(none)`              → `some(none)` (every sub-pattern ground)
+///
+/// Tuple patterns are deferred (`None`) — sound: no fact, no narrowing.
+fn pattern_to_matched_value(
+    kb: &mut KnowledgeBase,
+    pattern: &Rc<NodeOccurrence>,
+    scrutinee_ctors: &[Symbol],
+) -> Option<Value> {
+    match pattern.as_pattern()? {
+        Pattern::Wildcard => None,
+        Pattern::Literal { value } => Some(Value::Term(kb.alloc(Term::Const(value.clone())))),
+        Pattern::Var { name, .. } => {
+            // `case red` (nullary ctor) vs `case x` (binding). Use the CANONICAL
+            // (qualified) ctor symbol from the scrutinee's set — not the bare
+            // `*name` the pattern was loaded with — so the fact `Ref`-matches a
+            // resolved reference to the same constructor elsewhere.
+            pattern_var_ctor_sym(kb, *name, scrutinee_ctors)
+                .map(|ctor| Value::Term(kb.alloc(Term::Ref(ctor))))
+        }
+        Pattern::Constructor { name, pos_args, named_args } => {
+            let name = *name;
+            // Every sub-pattern must itself be ground (`?` short-circuits to
+            // `None` on the first binder/wildcard). Sub-patterns resolve against
+            // no outer ctor set — a bare name in argument position is a binding
+            // unless it is itself a known constructor (`some(none)`).
+            let mut pos: Vec<Value> = Vec::with_capacity(pos_args.len());
+            for sub in pos_args {
+                pos.push(pattern_to_matched_value(kb, sub, &[])?);
+            }
+            let mut named: Vec<(Symbol, Value)> = Vec::with_capacity(named_args.len());
+            for (field, sub) in named_args {
+                named.push((*field, pattern_to_matched_value(kb, sub, &[])?));
+            }
+            // A 0-ary `Constructor` (rare — nullary ctors parse as Var-patterns)
+            // normalizes to the canonical `Ref` form (WI-436: Ref(c) ≡ nullary
+            // Fn{c}) so it matches a nullary ctor written elsewhere.
+            Some(if pos.is_empty() && named.is_empty() {
+                Value::Term(kb.alloc(Term::Ref(name)))
+            } else {
+                Value::Entity { functor: name, pos: Rc::from(pos), named: Rc::from(named) }
+            })
+        }
+        Pattern::Tuple { .. } => None,
+    }
+}
+
+/// Per-arm Γ facts for a `match` — the producer side of the proposal-050
+/// `match` modification rule (WI-537). For arm `i` (`arms[i]`) the returned
+/// facts narrow that arm's Γ:
+///
+///   - `eq(scrutinee, value(pᵢ))` — the pattern fact: in arm `i` the scrutinee
+///     has `pᵢ`'s shape. Present iff `pᵢ` denotes a value (see
+///     [`pattern_to_matched_value`]).
+///   - `neq(scrutinee, value(pⱼ))` for each earlier arm `j < i` whose pattern is
+///     GROUND and UNGUARDED — the scrutinee is known to differ from `pⱼ`'s
+///     value. `case 0 → … ; case _ → div(a, s)` thus carries `neq(s, 0)` into
+///     the wildcard arm (the canonical WI-067 discharge: a guard `eq(s, 0)` is
+///     refuted from Γ). A guarded earlier arm matches only conditionally, a
+///     non-ground one only partially — neither excludes its value from later
+///     arms, so neither contributes a negation. (The "not-any" negation of a
+///     binder pattern, `¬∃x. s = some(x)`, needs a reified form — 050 open Q C —
+///     and is deferred.)
+///
+/// `arms` is `(pattern, has_guard)` in source order. Facts are built with the
+/// same carrier (`make_goal_value` / `eq` / `neq`) the bridge and the `if`-fork
+/// use, so they index and match identically; `assume` later drops any whose
+/// scrutinee or value heads `Opaque` (an `Expr::Apply` scrutinee, say) —
+/// losslessly, since such a fact could never match a goal-shaped query.
+pub fn match_arm_gamma_facts(
+    kb: &mut KnowledgeBase,
+    scrutinee: &Value,
+    arms: &[(Rc<NodeOccurrence>, bool)],
+    scrutinee_ctors: &[Symbol],
+) -> Vec<Vec<Value>> {
+    let eq_sym = kb.eq_functor();
+    let neq_sym = kb.try_resolve_symbol("anthill.prelude.Eq.neq");
+    let mut out: Vec<Vec<Value>> = Vec::with_capacity(arms.len());
+    // Negations accumulated from earlier ground, unguarded arms.
+    let mut earlier_neqs: Vec<Value> = Vec::new();
+    for (pattern, has_guard) in arms {
+        // The ground value this arm matches (a binder / non-ground pattern is
+        // `None` — see `pattern_to_matched_value`).
+        let matched = pattern_to_matched_value(kb, pattern, scrutinee_ctors);
+        let mut facts: Vec<Value> = earlier_neqs.clone();
+        if let Some(pv) = &matched {
+            facts.push(kb.make_goal_value(eq_sym, vec![scrutinee.clone(), pv.clone()]));
+        }
+        out.push(facts);
+        // A ground, unguarded arm excludes its value from every LATER arm: it
+        // matches exactly that value (ground), unconditionally (unguarded).
+        if !has_guard {
+            if let (Some(pv), Some(neq)) = (matched, neq_sym) {
+                earlier_neqs.push(kb.make_goal_value(neq, vec![scrutinee.clone(), pv]));
+            }
+        }
+    }
+    out
+}
+
 // ── TypeResult ─────────────────────────────────────────────────
 
 /// Result of type_check: inferred type + updated env + collected effects.
@@ -4044,6 +4190,18 @@ fn build_type(
             work.push(TypeWorkOp::Build(TypeBuildFrame::LetFinal { occ, value_node, value_effects }));
             // WI-537: the body's types come from the value result (`ext_env`),
             // its Γ from the stashed let-site flow.
+            //
+            // The proposal-050 binding rule (`let x = e` ⟹ Γ ∪ { x ≡ e }) is
+            // DEFERRED: a body reference to a `let`/lambda binder is an
+            // `Expr::VarRef` (unqualified, unresolved) that heads `Opaque`, so
+            // there is no indexable, Γ-storable form of `x` today — `Term::Ref`
+            // is the canonical form for a CONSTRUCTOR reference, not a local
+            // binder, and an `eq(Ref(x), e)` fact would never match a real `x`
+            // reference. It also needs rebind handling (`let x = 0; let x = 1`
+            // must not leave a stale `x ≡ 0` in Γ), the logical analog of the
+            // type-level `clear_receiver_alias` above. Both pin the binder's
+            // logical representation, best decided with the first consumer
+            // (WI-067) — like the match-binder pattern facts.
             push_visit(work, body_occ, Env { types: Rc::new(ext_env), flow: outer_flow }, body_expected, fuel);
         }
         TypeBuildFrame::LetFinal { occ, value_node, value_effects } => {
@@ -4123,7 +4281,17 @@ fn build_type(
             // and the first guard type-error (short-circuits the match).
             let mut guard_effects: Vec<Value> = Vec::new();
             let mut guard_error: Option<TypeError> = None;
-            for branch in &branches {
+            // WI-537 / proposal 050 `match` rule: the per-arm pattern fact +
+            // earlier-arm negations. Computed once over all arms (negations
+            // accumulate across earlier arms); the scrutinee value is the
+            // scrutinee occurrence, exactly as the `if`-fork uses its condition.
+            let scrutinee_value = Value::Node(Rc::clone(&scr_node));
+            let arm_inputs: Vec<(Rc<NodeOccurrence>, bool)> = branches
+                .iter()
+                .map(|b| (Rc::clone(&b.pattern), b.guard.is_some()))
+                .collect();
+            let arm_facts = match_arm_gamma_facts(kb, &scrutinee_value, &arm_inputs, &scrutinee_ctors);
+            for (branch, facts) in branches.iter().zip(arm_facts.into_iter()) {
                 // WI-511: coverage AND env-extension both read the Pattern
                 // occurrence directly — no `pattern_to_term` bridge.
                 collect_covered_entities(
@@ -4135,30 +4303,32 @@ fn build_type(
                 );
                 let mut branch_env = (*outer_env).clone();
                 extend_env_from_pattern(kb, &mut branch_env, &branch.pattern, scr_ty.clone());
-                // WI-537: type-check the arm guard (until now dropped at
-                // parse→IR, so never visited) under the arm's type env — pattern
+                // Arm Γ = the outer Γ + this arm's pattern fact + earlier-arm
+                // negations (+ the guard predicate below). `assume` is a set, so
+                // a fact `view_is_indexable` rejects (an `Opaque`-headed
+                // scrutinee/value) is dropped losslessly.
+                let mut arm_flow = outer_env.flow.clone();
+                for fact in facts {
+                    arm_flow = arm_flow.assume(kb, fact);
+                }
+                // WI-537: type-check the arm guard (it was dropped at parse→IR
+                // before WI-537, so never visited) under the arm's type env — pattern
                 // vars are in scope — and narrow the arm Γ with the guard
                 // predicate. No `Bool` hint (matching how `if` treats its
                 // condition); the visit catches real errors in the guard. Skip
                 // the visit when the scrutinee didn't type (pattern vars are then
-                // untyped → only cascading noise). DEFERRED: the pattern fact
-                // `fact(p)` and earlier-arm negations into Γ — write-only until a
-                // consumer (WI-067) reads Γ, and they need a scrutinee≡pattern
-                // value form.
-                let arm_flow = match &branch.guard {
-                    Some(g) => {
-                        if scr_ty.is_some() && guard_error.is_none() {
-                            match type_check_node(kb, &branch_env, g, None) {
-                                Ok(r) => {
-                                    guard_effects = merge_effects(kb, &guard_effects, &r.effects);
-                                }
-                                Err(e) => guard_error = Some(e),
+                // untyped → only cascading noise).
+                if let Some(g) = &branch.guard {
+                    if scr_ty.is_some() && guard_error.is_none() {
+                        match type_check_node(kb, &branch_env, g, None) {
+                            Ok(r) => {
+                                guard_effects = merge_effects(kb, &guard_effects, &r.effects);
                             }
+                            Err(e) => guard_error = Some(e),
                         }
-                        outer_env.flow.assume(kb, Value::Node(Rc::clone(g)))
                     }
-                    None => outer_env.flow.clone(),
-                };
+                    arm_flow = arm_flow.assume(kb, Value::Node(Rc::clone(g)));
+                }
                 branch_envs.push(Env { types: Rc::new(branch_env), flow: arm_flow });
             }
             // A guard that doesn't type-check fails the whole match (the
@@ -20535,15 +20705,13 @@ fn collect_covered_entities(
         Pattern::Wildcard => { *has_wildcard = true; }
         Pattern::Var { name, .. } => {
             // A var pattern is either a nullary constructor (`case red`) or a
-            // binding (`case x`). Recognize it as a constructor by matching the
-            // scrutinee sort's constructors (modulo short/qualified); a name that
-            // matches none is a catch-all binding.
-            if let Some(&ctor) = scrutinee_ctors.iter().find(|&&c| same_symbol(kb, c, *name)) {
-                covered.push(ctor);
-            } else if kb.is_constructor_symbol(*name) || kb.constructor_parent_sort(*name).is_some() {
-                covered.push(*name);
-            } else {
-                *has_wildcard = true;
+            // binding (`case x`) — resolved by the shared `pattern_var_ctor_sym`
+            // (also used to build the match-arm Γ pattern fact, so the two never
+            // disagree on what is a nullary ctor). A name matching no constructor
+            // is a catch-all binding.
+            match pattern_var_ctor_sym(kb, *name, scrutinee_ctors) {
+                Some(ctor) => covered.push(ctor),
+                None => *has_wildcard = true,
             }
         }
         Pattern::Constructor { name, .. } => { covered.push(*name); }

@@ -20,9 +20,11 @@ mod common;
 
 use anthill_core::eval::value::Value;
 use anthill_core::intern::Symbol;
-use anthill_core::kb::term::{Term, Var};
-use anthill_core::kb::typing::{prove_from_gamma, refute_guard, FlowEnv};
+use anthill_core::kb::node_occurrence::{NodeOccurrence, Pattern};
+use anthill_core::kb::term::{Literal, Term, Var};
+use anthill_core::kb::typing::{match_arm_gamma_facts, prove_from_gamma, refute_guard, FlowEnv};
 use anthill_core::kb::KnowledgeBase;
+use anthill_core::span::{SourceId, SourceSpan};
 use std::rc::Rc;
 
 /// `f(args)` as a transient goal `Value` (an `Entity`, the carrier
@@ -157,5 +159,143 @@ fn refute_guard_keeps_the_effect_when_the_guard_is_symbolic() {
     assert!(
         !refute_guard(&mut kb, &FlowEnv::empty(), &guard),
         "an unrefutable symbolic guard must keep the effect"
+    );
+}
+
+// ── the `match`-arm Γ producer (`match_arm_gamma_facts`) ────────
+//
+// These exercise the producer side of the proposal-050 `match` rule: each arm's
+// pattern fact eq(s, p) plus the negations neq(s, pⱼ) of earlier ground,
+// unguarded arms. The bridge (above) is the consumer; here we check the facts
+// the typer threads into each arm's Γ, and that they round-trip through the
+// bridge (a negation proves, an `eq` guard refutes).
+
+fn span() -> SourceSpan {
+    SourceSpan::new(SourceId::from_raw(0), 0, 0)
+}
+
+fn lit_pat(n: i64) -> Rc<NodeOccurrence> {
+    NodeOccurrence::new_pattern(Pattern::Literal { value: Literal::Int(n) }, span(), None)
+}
+
+fn wildcard_pat() -> Rc<NodeOccurrence> {
+    NodeOccurrence::new_pattern(Pattern::Wildcard, span(), None)
+}
+
+fn var_pat(name: Symbol) -> Rc<NodeOccurrence> {
+    NodeOccurrence::new_pattern(Pattern::Var { name, type_ann: None }, span(), None)
+}
+
+#[test]
+fn match_case_0_carries_neq_into_the_wildcard_arm() {
+    // `match s case 0 -> … case _ -> div(a, s)` — proposal 050's canonical
+    // discharge case. Arm 0 (`case 0`) carries the pattern fact eq(s, 0); the
+    // wildcard arm carries the earlier-arm negation neq(s, 0), which refutes a
+    // later `div`'s eq(s, 0) guard straight from Γ — no branch test written.
+    let mut kb = common::load_kb_with("namespace wi537.match0\nend\n");
+    let s = param(&mut kb, "?s");
+    let arms = vec![(lit_pat(0), false), (wildcard_pat(), false)];
+    let facts = match_arm_gamma_facts(&mut kb, &s, &arms, &[]);
+
+    assert_eq!(facts[0].len(), 1, "case 0 ⇒ one pattern fact eq(s,0)");
+    assert_eq!(facts[1].len(), 1, "the wildcard arm ⇒ neq(s,0) from the earlier case 0");
+
+    // Round-trip the wildcard arm's Γ through the bridge: the negation proves,
+    // and it refutes the div guard eq(s,0).
+    let mut flow = FlowEnv::empty();
+    for f in &facts[1] {
+        flow = flow.assume(&kb, f.clone());
+    }
+    assert!(prove_from_gamma(&mut kb, &flow, &facts[1][0]), "neq(s,0) ∈ Γ ⊢ neq(s,0)");
+    let eq_sym = kb.eq_functor();
+    let guard = goal(eq_sym, vec![s.clone(), Value::Int(0)]);
+    assert!(refute_guard(&mut kb, &flow, &guard), "the wildcard arm refutes the guard eq(s,0)");
+}
+
+#[test]
+fn match_negation_indexes_a_node_scrutinee() {
+    // The real typer passes the scrutinee OCCURRENCE (a `Value::Node`), not a
+    // bare var, into the facts. A simple `Expr::Ref` scrutinee heads as `Ref`
+    // (indexable), so the negation it forms is stored and matched — this pins
+    // that the `Value::Node` carrier the producer actually uses round-trips
+    // (the existing bridge tests use a bare `Var::Global`).
+    let mut kb = common::load_kb_with("namespace wi537.matchnode\nend\n");
+    let b = kb.intern("b");
+    let scrutinee = Value::Node(NodeOccurrence::new_expr(
+        anthill_core::kb::node_occurrence::Expr::Ref(b),
+        span(),
+        None,
+    ));
+    let arms = vec![(lit_pat(0), false), (wildcard_pat(), false)];
+    let facts = match_arm_gamma_facts(&mut kb, &scrutinee, &arms, &[]);
+    assert_eq!(facts[1].len(), 1, "wildcard arm ⇒ neq(node(b), 0)");
+
+    let flow = FlowEnv::empty().assume(&kb, facts[1][0].clone());
+    assert!(
+        prove_from_gamma(&mut kb, &flow, &facts[1][0]),
+        "a Node(Ref) scrutinee's neq is indexable and proves from Γ"
+    );
+}
+
+#[test]
+fn match_guarded_earlier_arm_contributes_no_negation() {
+    // `case 0 | g -> …` matches only when g holds, so a later arm cannot
+    // conclude s ≠ 0 — a guarded earlier arm excludes nothing. The wildcard arm
+    // therefore carries NO negation.
+    let mut kb = common::load_kb_with("namespace wi537.matchguarded\nend\n");
+    let s = param(&mut kb, "?s");
+    let arms = vec![(lit_pat(0), true), (wildcard_pat(), false)];
+    let facts = match_arm_gamma_facts(&mut kb, &s, &arms, &[]);
+    assert!(
+        facts[1].is_empty(),
+        "a guarded earlier arm contributes no negation to a later arm"
+    );
+}
+
+#[test]
+fn match_nullary_ctor_arms_accumulate_negations() {
+    // `case red -> … case green -> … case _ -> …` over an enum. A `Var`-pattern
+    // whose name is in the scrutinee's constructor set is a nullary constructor
+    // (the `collect_covered_entities` disambiguation), so each arm narrows the
+    // next: green's arm knows s ≠ red, and the wildcard arm knows s ∉ {red,green}.
+    let mut kb = common::load_kb_with("namespace wi537.matchenum\nend\n");
+    let red = kb.intern("red");
+    let green = kb.intern("green");
+    let s = param(&mut kb, "?s");
+    let arms = vec![
+        (var_pat(red), false),
+        (var_pat(green), false),
+        (wildcard_pat(), false),
+    ];
+    let facts = match_arm_gamma_facts(&mut kb, &s, &arms, &[red, green]);
+
+    assert_eq!(facts[0].len(), 1, "red arm: eq(s,red)");
+    assert_eq!(facts[1].len(), 2, "green arm: neq(s,red) + eq(s,green)");
+    assert_eq!(facts[2].len(), 2, "wildcard arm: neq(s,red) + neq(s,green)");
+
+    let mut flow = FlowEnv::empty();
+    for f in &facts[2] {
+        flow = flow.assume(&kb, f.clone());
+    }
+    for f in &facts[2] {
+        assert!(prove_from_gamma(&mut kb, &flow, f), "each wildcard-arm negation proves from Γ");
+    }
+}
+
+#[test]
+fn match_binding_arm_contributes_no_fact_or_negation() {
+    // `case x -> …` (a bare binding, not a constructor) matches anything and
+    // denotes no value, so it adds no pattern fact and narrows no later arm.
+    let mut kb = common::load_kb_with("namespace wi537.matchbind\nend\n");
+    let x = kb.intern("x");
+    let s = param(&mut kb, "?s");
+    // `x` is NOT in the (empty) constructor set ⇒ a binding.
+    let arms = vec![(var_pat(x), false), (lit_pat(0), false)];
+    let facts = match_arm_gamma_facts(&mut kb, &s, &arms, &[]);
+    assert!(facts[0].is_empty(), "a binding arm adds no pattern fact");
+    assert_eq!(
+        facts[1].len(),
+        1,
+        "the literal arm carries only its own eq(s,0) — the binding arm negates nothing"
     );
 }
