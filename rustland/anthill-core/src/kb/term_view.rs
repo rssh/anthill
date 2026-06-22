@@ -21,7 +21,7 @@ use crate::intern::Symbol;
 
 use super::node_occurrence::{EffectExprNode, Expr, NodeOccurrence, TypeChild, TypeNode};
 use super::persist_subst::BindValue;
-use super::term::{Literal, Term, TermId, Var, VarId};
+use super::term::{Literal, Term, TermId, Var};
 use super::KnowledgeBase;
 
 /// The outermost shape of a term/value, enough to drive unification
@@ -29,8 +29,15 @@ use super::KnowledgeBase;
 /// [`TermView::pos_arg`] / [`TermView::named_arg`].
 #[derive(Clone, Debug)]
 pub enum ViewHead {
-    /// Logic variable (Global — DeBruijn has been opened).
-    Var(VarId),
+    /// Logic variable of any kind — flex `Global`, `Rigid` skolem, or bound
+    /// `DeBruijn` (mirroring `Term::Var(Var)` / `Value::Var(Var)`). The
+    /// discrimination tree reads the *kind* off this `Var` to decide how it
+    /// indexes/matches: a flex `Global` (and a bound `DeBruijn` rule var) is a
+    /// **wildcard** (a var-edge that matches any subterm); a `Rigid` skolem is a
+    /// **constant** identified by its `VarId` (a `DiscrimKey::RigidVar` concrete
+    /// edge that matches only the same rigid). So a rigid goal var can't
+    /// over-match a concrete fact, and two distinct skolems never conflate.
+    Var(Var),
     /// Literal constant.
     Const(Literal),
     /// Function / constructor application. Used for both `Term::Fn` and
@@ -281,7 +288,12 @@ fn occ_head(occ: &NodeOccurrence, kb: &KnowledgeBase) -> ViewHead {
         Some(Expr::Const(lit)) => ViewHead::Const(lit.clone()),
         Some(Expr::Ref(s)) => ViewHead::Ref(*s),
         Some(Expr::Ident(s)) => ViewHead::Ident(*s),
-        Some(Expr::Var(Var::Global(vid))) => ViewHead::Var(*vid),
+        // A var of ANY kind surfaces its `Var` — the discrim tree keys a flex
+        // `Global` / bound `DeBruijn` as a wildcard var-edge and a `Rigid`
+        // skolem as a `RigidVar` constant (mirrors `TermIdView`/`Value`). The
+        // goal-side anti-wildcard guard for rigids is now the constant-key match,
+        // not an `Opaque` collapse.
+        Some(Expr::Var(v)) => ViewHead::Var(*v),
         // WI-520: a concrete nullary leaf whose term twin is `Term::Bottom`
         // (`ViewHead::Bottom`) — not opaque.
         Some(Expr::Bottom) => ViewHead::Bottom,
@@ -305,12 +317,13 @@ fn occ_head(occ: &NodeOccurrence, kb: &KnowledgeBase) -> ViewHead {
 
 /// The logic variable at an occurrence's head, for discrimination-tree
 /// *indexing* — `Expr::Var` of ANY kind (Global / Rigid / DeBruijn), the
-/// occurrence twin of `TermIdView`'s `Term::Var(v) => Some(*v)` (WI-373). Unlike
-/// [`occ_head`] (goal-side: only `Global` surfaces as `ViewHead::Var`, Rigid /
-/// DeBruijn collapse to `Opaque` so a rigid goal var can't match concrete keys),
-/// the *index* side keys every binder kind as a distinct var-edge, so a stored
-/// value rule head's De Bruijn vars index exactly like a term head's. `None` for
-/// a non-`Var` head — the walk then keys on [`occ_head`].
+/// occurrence twin of `TermIdView`'s `Term::Var(v) => Some(*v)` (WI-373). The
+/// *index* side keys every binder kind as a distinct var-edge, so a stored value
+/// rule head's De Bruijn vars index exactly like a term head's. (Goal-side,
+/// [`occ_head`] now surfaces every var kind as `ViewHead::Var`; a rigid goal var
+/// is kept from matching concrete keys not by an `Opaque` collapse but by the
+/// discrim tree's `RigidVar` constant edge — see `discrim::DiscrimKey`.) `None`
+/// for a non-`Var` head — the walk then keys on [`occ_head`].
 fn occ_index_var(occ: &Rc<NodeOccurrence>) -> Option<Var> {
     match occ.as_expr() {
         Some(Expr::Var(v)) => Some(*v),
@@ -655,19 +668,18 @@ pub trait TermView {
     /// itself matches a tree-var) and at sub-arg var-edge captures.
     fn as_bind_value(&self) -> BindValue;
 
-    /// The logic variable at this view's head, for discrimination-tree
-    /// *indexing* (insert / remove of a stored pattern). Unlike [`head`],
-    /// which collapses Rigid / DeBruijn vars to `Opaque` (goal-side
-    /// semantics: a rigid goal var must not match concrete keys), the index
-    /// side keys a stored-pattern variable of *any* kind as a var-edge.
-    /// Returns the full `Var` so distinct binders (`DeBruijn(0)` vs
-    /// `DeBruijn(1)`) key distinct edges. `None` for non-variable heads — the
-    /// walk then keys on [`head`]. Default reads a `Global` var off [`head`];
-    /// the `TermId` / `Value` carriers override to also surface Rigid /
-    /// DeBruijn (WI-348).
+    /// The logic variable at this view's head, returning the full `Var` of
+    /// *any* kind (Global / Rigid / DeBruijn) — so the discrimination-tree
+    /// insert can route a flex `Global` / bound `DeBruijn` to a wildcard
+    /// var-edge and a `Rigid` skolem to its `RigidVar` constant key, and the
+    /// unifier / structural-equality test can compare two var heads by full
+    /// `Var` identity. `None` for non-variable heads — the walk then keys on
+    /// [`head`]. (`head` now also surfaces every var kind as `ViewHead::Var`, so
+    /// the default suffices; the `TermId` / `Value` carriers keep a direct
+    /// override that reads the carrier without a `head` round-trip.)
     fn index_var(&self, kb: &KnowledgeBase) -> Option<Var> {
         match self.head(kb) {
-            ViewHead::Var(vid) => Some(Var::Global(vid)),
+            ViewHead::Var(var) => Some(var),
             _ => None,
         }
     }
@@ -703,20 +715,11 @@ pub fn views_structurally_equal<A: TermView, B: TermView>(
     b: &B,
 ) -> bool {
     // WI-392: a rigid (Skolem) or DeBruijn var has a comparable identity (its
-    // `Var`), but `head` collapses both to `Opaque` for goal-side anti-wildcard
-    // semantics (a rigid *goal* var must not match concrete discrim keys). For
-    // structural EQUALITY they ARE comparable — two occurrences of the same
-    // rigid effect / type parameter are the same effect/type — so compare them
-    // by full `Var` identity, which the index side already surfaces
-    // (`index_var`). A rigid vs a different-flavoured var or a non-var is unequal
-    // (`Var`'s derived `Eq`; a non-var `index_var` is `None`, so we fall through
-    // to the `head` match and its `_ => false`). `Global` vars are unaffected —
-    // they keep flowing through `head`'s `ViewHead::Var` arm below.
-    if let (Some(va), Some(vb)) = (a.index_var(kb), b.index_var(kb)) {
-        if va.is_rigid() || va.is_debruijn() || vb.is_rigid() || vb.is_debruijn() {
-            return va == vb;
-        }
-    }
+    // `Var`); `head` now surfaces it (no `Opaque` collapse), so the `Var`/`Var`
+    // arm below compares two var heads by full `Var` identity for every kind —
+    // two occurrences of the same rigid effect / type parameter are the same.
+    // A rigid vs a different-flavoured var or a non-var head is unequal (`Var`'s
+    // `Eq`, else the `_ => false` arm). `Global` vars are handled identically.
     match (a.head(kb), b.head(kb)) {
         (ViewHead::Var(va), ViewHead::Var(vb)) => va == vb,
         (ViewHead::Const(la), ViewHead::Const(lb)) => la == lb,
@@ -762,7 +765,7 @@ pub enum StructToken {
     Const(Literal),
     Ref(Symbol),
     Ident(Symbol),
-    Var(VarId),
+    Var(Var),
     Bottom,
     Opaque,
 }
@@ -790,15 +793,23 @@ fn fingerprint_into<V: TermView>(
     out: &mut Vec<StructToken>,
 ) {
     match view.head(kb) {
-        ViewHead::Var(vid) => match subst.resolve_as_value(vid) {
-            None => out.push(StructToken::Var(vid)),
+        // Only a flex `Global` resolves through σ; a `Rigid` skolem / `DeBruijn`
+        // binder is a constant whose identity IS the fingerprint (two distinct
+        // skolems must key distinct goals), so emit its `Var` token directly.
+        ViewHead::Var(var @ (Var::Rigid(_) | Var::DeBruijn(_))) => {
+            out.push(StructToken::Var(var))
+        }
+        ViewHead::Var(var) => match subst.resolve_as_value(var.as_vid()) {
+            None => out.push(StructToken::Var(var)),
             // Self-referential binding (a var bound to itself) — stop, mirroring
             // `walk`/`walk_view`'s guard, so a cyclic σ can't recurse unboundedly.
-            Some(Value::Var(Var::Global(w))) if *w == vid => out.push(StructToken::Var(vid)),
+            Some(Value::Var(Var::Global(w))) if *w == var.as_vid() => {
+                out.push(StructToken::Var(var))
+            }
             Some(Value::Term(t))
-                if matches!(kb.get_term(*t), Term::Var(Var::Global(w)) if *w == vid) =>
+                if matches!(kb.get_term(*t), Term::Var(Var::Global(w)) if *w == var.as_vid()) =>
             {
-                out.push(StructToken::Var(vid))
+                out.push(StructToken::Var(var))
             }
             // Resolve through σ and fingerprint the binding's own view.
             Some(bound) => {
@@ -850,14 +861,12 @@ pub struct TermIdView(pub TermId);
 impl TermView for TermIdView {
     fn head(&self, kb: &KnowledgeBase) -> ViewHead {
         match kb.get_term(self.0) {
-            Term::Var(Var::Global(vid)) => ViewHead::Var(*vid),
-            // Rigid (skolem) is opaque: it matches only stored patterns
-            // that have a wildcard (var_edge) at this position, never
-            // concrete-key patterns. WI-108 — without this, the discrim
-            // would treat a Rigid like a flex var, allowing a goal
-            // `pred(!rigid)` to falsely unify with a fact `pred(leaf)`.
-            Term::Var(Var::Rigid(_)) => ViewHead::Opaque,
-            Term::Var(Var::DeBruijn(_)) => ViewHead::Opaque,
+            // A var of ANY kind surfaces its `Var`; the discrim tree decides
+            // wildcard-vs-constant by the kind (Global/DeBruijn → var-edge,
+            // Rigid → `RigidVar` constant key). WI-108's goal-side anti-wildcard
+            // guard for a rigid is now the constant-key match itself: a rigid
+            // goal var keys `RigidVar(id)`, which can't match a concrete fact.
+            Term::Var(v) => ViewHead::Var(*v),
             Term::Const(lit) => ViewHead::Const(lit.clone()),
             Term::Fn { functor, pos_args, named_args } => {
                 functor_view_head(kb, *functor, pos_args.len(), named_args.len())
@@ -920,8 +929,8 @@ impl TermView for TermId {
     // borrowed temporary `TermIdView` instead of the caller's `&'a self`/`&'a kb`.
     fn head(&self, kb: &KnowledgeBase) -> ViewHead {
         match kb.get_term(*self) {
-            Term::Var(Var::Global(vid)) => ViewHead::Var(*vid),
-            Term::Var(Var::Rigid(_)) | Term::Var(Var::DeBruijn(_)) => ViewHead::Opaque,
+            // A var of ANY kind surfaces its `Var` (see `TermIdView::head`).
+            Term::Var(v) => ViewHead::Var(*v),
             Term::Const(lit) => ViewHead::Const(lit.clone()),
             Term::Fn { functor, pos_args, named_args } => {
                 functor_view_head(kb, *functor, pos_args.len(), named_args.len())
@@ -991,11 +1000,10 @@ impl TermView for Value {
             // WI-342: Type / EffectExpr occurrences expose their functor too.
             Value::Node(occ) => occ_head(occ, kb),
             // WI-109: a value-level logic variable views the same as the
-            // matching `Term::Var` (TermIdView): flex `Global` is a unifiable
-            // var head; `Rigid` / `DeBruijn` are opaque (match stored
-            // wildcard patterns only, never concrete-key patterns).
-            Value::Var(Var::Global(vid)) => ViewHead::Var(*vid),
-            Value::Var(Var::Rigid(_)) | Value::Var(Var::DeBruijn(_)) => ViewHead::Opaque,
+            // matching `Term::Var` (TermIdView) — a var of ANY kind surfaces its
+            // `Var`, and the discrim tree keys flex `Global`/`DeBruijn` as a
+            // wildcard var-edge, `Rigid` as a `RigidVar` constant.
+            Value::Var(v) => ViewHead::Var(*v),
             Value::Closure(_)
             | Value::OpRef { .. }
             | Value::Stream(_)

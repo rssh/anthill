@@ -22,6 +22,7 @@ use super::node_occurrence::{
 use super::term::{Literal, Term, TermId, Var, VarId};
 use super::term_view::{goal_fingerprint, GoalKey, ReflectedExpr, ReflectSyms, TermIdView, TermView, ViewHead, ViewItem};
 use super::persist_subst::BindValue;
+use super::discrim::SubstTree;
 use crate::intern::Symbol;
 use crate::eval::value::Value;
 use super::RuleId;
@@ -218,6 +219,20 @@ pub struct ResolveConfig {
     /// residual-honest consumers that inspect [`Solution::is_definite`] (and the
     /// resolver tests that pin the residual mechanism).
     pub definite_only: bool,
+    /// Proposal 050 (WI-537) — the local-interpretation context Γ: a
+    /// discrimination-tree overlay of facts the typer narrowed at a program
+    /// point, consulted at the candidate step (`step_init`) exactly like the
+    /// frame's `assumed_facts` so the SLD search resolves over **KB ∪ Γ** with
+    /// no duplicated logic. `None` for every ordinary resolution (the typer's
+    /// `prove_from_gamma` bridge is the only seeder). Global to one resolve
+    /// call (every frame sees the same Γ), so it rides the config, not the
+    /// per-frame `assumed_facts` stack. Only the in-crate `prove_from_gamma`
+    /// bridge ever seeds it; external callers leave it `None` via
+    /// `..ResolveConfig::default()`. `pub` (not `pub(crate)`) so `ResolveConfig`
+    /// stays externally constructable; the carrier `SubstTree` is `pub(crate)`,
+    /// hence the `allow` — the field is an internal channel, not public surface.
+    #[allow(private_interfaces)]
+    pub gamma: Option<Rc<SubstTree<Value>>>,
 }
 
 impl Default for ResolveConfig {
@@ -227,6 +242,7 @@ impl Default for ResolveConfig {
             max_solutions: 0,
             simplify: false,
             definite_only: false,
+            gamma: None,
         }
     }
 }
@@ -459,6 +475,39 @@ impl SearchStream {
         }
     }
 
+    /// Proposal 050 (WI-537) — the Γ-overlay candidates for a goal: each
+    /// local-interpretation fact that unifies with the (already σ-reified)
+    /// `goal_value`, as a zero-body [`Candidate::Assumption`]. The
+    /// discrimination-tree query *is* the unifier; each candidate is confirmed
+    /// `!is_contradiction()` exactly as `assumed_facts` / `query_view` are. A Γ
+    /// fact `neq(b, 0)` over a rigid parameter keys `RigidVar(b)` (WI-537's
+    /// `ViewHead` refactor) — it matches the same rigid, never a concrete goal.
+    /// Empty unless the typer's `prove_from_gamma` bridge seeded `config.gamma`.
+    fn gamma_candidates_for(&self, kb: &KnowledgeBase, goal_value: &Value) -> Vec<Candidate> {
+        let Some(gamma) = self.config.gamma.clone() else {
+            return Vec::new();
+        };
+        gamma
+            .query_resolved_value(kb, goal_value, |f| f.clone())
+            .into_iter()
+            // Per-parameter soundness (WI-537): the discrim query unifies a goal
+            // variable as a WILDCARD, so a fact `neq(b, 0)` would also match a
+            // goal `neq(c, 0)` about a DIFFERENT parameter and unsoundly discharge
+            // it. A Γ fact may discharge a goal only when it IS that goal up to
+            // variable IDENTITY — `views_structurally_equal` compares vars by
+            // identity, so `neq(b,0)` discharges `neq(b,0)` (same parameter) but
+            // never `neq(c,0)`. (A KB-rule derivation still discharges: once the
+            // rule head binds, the subgoal is the specific fact.) This is what
+            // lets a parameter stay open-world for eq/neq floundering — the
+            // generic flex-var representation — while keeping Γ membership exact.
+            .filter(|(fact, s)| {
+                !s.is_contradiction()
+                    && crate::kb::term_view::views_structurally_equal(kb, goal_value, fact)
+            })
+            .map(|(_, s)| Candidate::Assumption(s))
+            .collect()
+    }
+
     /// Handle a frame in `Init` state — classify the current goal.
     fn step_init(&mut self, kb: &mut KnowledgeBase) -> Option<StepResult> {
         let frame = self.stack.last().unwrap();
@@ -637,6 +686,32 @@ impl SearchStream {
                     return Some(StepResult::Continue);
                 }
             }
+            // WI-537 (proposal 050): a Γ fact can discharge a builtin guard the
+            // builtin would only DELAY on — `neq(b, 0)` over a symbolic
+            // parameter `b`. Consult the Γ overlay before running the builtin;
+            // if a local fact unifies with the goal, resolve via that assumption
+            // (sound — Γ asserts it holds) and skip the builtin. A ground
+            // builtin (`neq(5, 0)`) finds no Γ match and runs normally; `gamma`
+            // is `None` for every resolution but the typer's bridge, so this is
+            // inert otherwise.
+            if self.config.gamma.is_some() {
+                let frame_subst = self.stack.last().unwrap().subst.clone();
+                let goal_value = kb.reify_value(&goal_val, &frame_subst);
+                let gamma_cands = self.gamma_candidates_for(kb, &goal_value);
+                if !gamma_cands.is_empty() {
+                    let f = self.stack.last_mut().unwrap();
+                    f.state = FrameState::ChoicePoint {
+                        delay_mode,
+                        original_goal: goal_val.clone(),
+                        candidates: gamma_cands,
+                        next: 0,
+                        any_delayed: false,
+                        child_solutions: 0,
+                        seen_goals: HashSet::new(),
+                    };
+                    return Some(StepResult::Continue);
+                }
+            }
             match kb.execute_builtin(tag, &goal_val, &frame.subst) {
                 BuiltinResult::Success => {
                     // Remove goals[0], bump depth, reset delay counter if delayed
@@ -786,13 +861,20 @@ impl SearchStream {
             }
         }
 
-        // Frame-scoped assumed facts (WI-108). Reify the goal through the
-        // current substitution carrier-faithfully (WI-348), then unify each
-        // assumed fact against it via the `TermView` matcher — so a goal
-        // carrying a `Value::Node` matches by its structure instead of being
-        // lowered to a hash-consed term that drops the occurrence.
+        // Local hypotheses, matched against the goal and added as zero-body
+        // `Assumption` candidates — resolved *inside* the normal SLD search, so
+        // they chain through KB rules and obey backtracking / floundering with
+        // no duplicated logic. Two sources:
+        //   • the frame's `assumed_facts` (WI-108) — `forall_impl` antecedents,
+        //     a per-frame `Vec<TermId>` (push/pop with the discharge);
+        //   • the Γ overlay (WI-537 / proposal 050) — the typer's
+        //     local-interpretation context, a discrimination-tree index global
+        //     to this resolve call (`config.gamma`).
+        // Both reify the goal through the current σ carrier-faithfully (WI-348),
+        // so a goal carrying a `Value::Node` matches by structure rather than
+        // being lowered to a hash-consed term that drops the occurrence.
         let assumed = self.stack.last().unwrap().assumed_facts.clone();
-        if !assumed.is_empty() {
+        if !assumed.is_empty() || self.config.gamma.is_some() {
             let frame_subst = self.stack.last().unwrap().subst.clone();
             let goal_value = kb.reify_value(&goal_val, &frame_subst);
             for assumed_fact in assumed {
@@ -802,6 +884,12 @@ impl SearchStream {
                     }
                 }
             }
+            // The Γ overlay (WI-537) joins the candidates for a NON-builtin goal
+            // here, alongside the KB rules — `gamma_candidates_for` matches each
+            // local fact structurally (the discrim tree is the unifier). A
+            // builtin goal is handled earlier (it never reaches here); a Γ fact
+            // discharging it is the pre-`execute_builtin` check above.
+            candidates.extend(self.gamma_candidates_for(kb, &goal_value));
         }
 
         // Transition to ChoicePoint
@@ -1139,6 +1227,9 @@ impl SearchStream {
                 max_solutions: 0,
                 simplify: self.config.simplify,
                 definite_only: false,
+                // WI-537: the inner `P` of `not(P)` must see Γ too, so a Γ fact
+                // proving `P` correctly fails `not(P)` (sound negation under Γ).
+                gamma: self.config.gamma.clone(),
             };
             let mut sub_stream = kb.resolve_lazy_goals(vec![goal_v], &sub_config);
             let mut inner_definite = false;
@@ -1505,6 +1596,9 @@ impl KnowledgeBase {
                 // WI-519: thread the residual-honesty mode into the stream's
                 // config so the step functions skip floundered yields.
                 definite_only: config.definite_only,
+                // WI-537: the Γ overlay rides into the stream so `step_init`'s
+                // candidate step can consult it (an `Rc` clone — a refcount bump).
+                gamma: config.gamma.clone(),
             },
             query_cache: HashMap::new(),
             stats: ResolveStats::default(),
@@ -2713,14 +2807,15 @@ impl KnowledgeBase {
     /// [`views_structurally_equal`] (which only tests).
     fn unify_concrete(&mut self, a: &Value, b: &Value, work: &mut Substitution) -> UnifyOutcome {
         let eq_or = |same: bool| if same { UnifyOutcome::Ok } else { UnifyOutcome::Fail };
-        // Rigid (skolem) / DeBruijn vars head as `Opaque` but carry a comparable
-        // identity — mirror [`views_structurally_equal`] (WI-108): two occurrences
-        // of the SAME such var unify (reflexivity, no binding); a rigid var vs a
-        // different var or a concrete term does NOT (a skolem must never bind, per
-        // `Var::Rigid`'s "unifies only with another Rigid carrying the same id").
-        // Flex `Global` vars were already bound by `unify_values` before reaching
-        // here; without this arm `!k <=> !k` would wrongly hit the `_ => Fail`
-        // catch-all below, diverging from `eq`.
+        // Rigid (skolem) / DeBruijn vars now head as `ViewHead::Var`, but the
+        // concrete-head match below has no `Var` arm — mirror
+        // [`views_structurally_equal`] (WI-108): two occurrences of the SAME such
+        // var unify (reflexivity, no binding); a rigid var vs a different var or a
+        // concrete term does NOT (a skolem must never bind, per `Var::Rigid`'s
+        // "unifies only with another Rigid carrying the same id"). Flex `Global`
+        // vars were already bound by `unify_values` before reaching here; without
+        // this arm `!k <=> !k` would wrongly hit the `_ => Fail` catch-all below,
+        // diverging from `eq`.
         if let (Some(va), Some(vb)) = (a.index_var(self), b.index_var(self)) {
             if va.is_rigid() || va.is_debruijn() || vb.is_rigid() || vb.is_debruijn() {
                 return eq_or(va == vb);
@@ -5902,7 +5997,7 @@ mod tests {
             named_args: SmallVec::new(),
         });
 
-        let config = ResolveConfig { max_depth: 20, max_solutions: 4, simplify: false, definite_only: false };
+        let config = ResolveConfig { max_depth: 20, max_solutions: 4, simplify: false, definite_only: false, ..Default::default() };
         let solutions = kb.resolve(&[query], &config);
 
         assert_eq!(solutions.len(), 4, "should get 4 solutions");
@@ -6238,6 +6333,7 @@ mod tests {
                     max_solutions: 1,
                     simplify: false,
                     definite_only: false,
+                    ..Default::default()
                 };
 
                 let start = std::time::Instant::now();
@@ -6327,6 +6423,7 @@ mod tests {
             max_solutions: 1,
             simplify: false,
             definite_only: false,
+                    ..Default::default()
         };
         let (sols, stats) = kb.resolve_with_stats(&[query], &config);
         assert_eq!(sols.len(), 1);
@@ -6361,6 +6458,7 @@ mod tests {
                     max_solutions: 1,
                     simplify: false,
                     definite_only: false,
+                    ..Default::default()
                 };
 
                 let run = |n: usize| -> ResolveStats {

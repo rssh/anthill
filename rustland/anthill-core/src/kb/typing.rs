@@ -15,6 +15,7 @@ use super::node_occurrence::{
     value_to_term, EffectExprNode, Expr, MatchBranch, NodeKind, NodeOccurrence, Pattern, TypeChild,
     TypeNode,
 };
+use super::discrim::SubstTree;
 use super::persist_subst::BindValue;
 use super::term_view::{views_structurally_equal, TermIdView, TermView, ViewHead, ViewItem};
 use super::{KnowledgeBase, SortKind};
@@ -708,6 +709,211 @@ impl TypingEnv {
     pub fn is_local_resource(&self, name: Symbol) -> bool {
         self.local_resources.iter().any(|r| *r == name)
     }
+}
+
+// ── Proposal 050 (WI-537): FlowEnv — the local logical storage Γ ────
+//
+// Γ, the flow-sensitive logical environment: the facts that hold at a program
+// point. This is LOGICAL storage (proved / refuted by the SLD resolver) — a
+// DIFFERENT thing from `TypingEnv` (a set of types, driven by type deduction),
+// because type deduction is not logical deduction. The two are bundled by
+// `Env` and forked together with control flow, but kept distinct concerns.
+//
+// Backed by a discrimination tree — the same structure the KB indexes facts
+// with — so Γ membership is a structural query in the same vocabulary a `rule`
+// body / 048 guard speaks, and a fact over an op parameter (which skolemizes to
+// `Var::Rigid`) indexes as a `RigidVar` constant (WI-537's `ViewHead` refactor)
+// rather than collapsing to the un-insertable `Opaque`.
+#[derive(Clone)]
+pub struct FlowEnv {
+    /// Γ as a discrimination-tree fact index. Leaf = the fact `Value` itself,
+    /// so a membership match resolves the fact head faithfully (the WI-348
+    /// named-order path via `query_resolved_value`). `Rc`: an unchanged Γ
+    /// clones as a refcount bump on the per-Visit `Env` clone; `assume` is
+    /// copy-on-write — `Rc::make_mut` clones the (shallow) tree only at a fork.
+    facts: Rc<SubstTree<Value>>,
+}
+
+impl FlowEnv {
+    /// Γ₀ — the empty seed at body entry.
+    pub fn empty() -> Self {
+        FlowEnv { facts: Rc::new(SubstTree::new()) }
+    }
+
+    /// No facts yet (distinguishes the Γ₀ seed from a narrowed branch env).
+    pub fn is_empty(&self) -> bool {
+        self.facts.is_empty()
+    }
+
+    /// Extend Γ with one more known fact, returning the narrowed env (the `if`
+    /// fork puts the branch condition / its negation here). Copy-on-write
+    /// path-copy: `Rc::make_mut` clones only the nodes along the inserted path —
+    /// the discrim tree is persistent ([`super::discrim`]) — sharing the rest of
+    /// Γ with the parent.
+    ///
+    /// A fact the discrim tree cannot index — a raw `if`-condition occurrence
+    /// with an elaborated / `Opaque` (or functor-less tuple/unit) head ANYWHERE
+    /// in its structure, not just at the top — is NOT inserted, and that loses
+    /// nothing: it could never unify with a clean goal-shaped membership query
+    /// (the goal heads as a `Functor`), so it could never discharge anything.
+    /// We skip it here ([`view_is_indexable`]) rather than weaken
+    /// `insert_pattern`'s rule-head invariant (it rightly panics on such heads).
+    pub fn assume(&self, kb: &KnowledgeBase, fact: Value) -> FlowEnv {
+        if !super::discrim::view_is_indexable(kb, &fact) {
+            return self.clone();
+        }
+        // Γ is a SET: re-assuming a structurally-identical fact adds nothing, so
+        // skip both the insert and the `Rc::make_mut` path-copy. The `is_empty`
+        // guard skips the membership probe outright for the common shallow-`if`
+        // case (Γ₀ has nothing to match against). This keeps a deep chain of
+        // *identical* branch conditions (`if true then … else (if true …)`)
+        // O(depth): without dedup the repeated fact piles up duplicate leaves at
+        // one terminal node and each path-copy clones that growing `leaves` Vec
+        // → O(depth²). A *distinct* fact per level still grows Γ by one (the
+        // genuine flow-sensitive cost); only exact repeats are elided.
+        if !self.facts.is_empty()
+            && self.facts.query_raw(kb, &fact).iter()
+                .any(|(stored, _)| views_structurally_equal(kb, stored, &fact))
+        {
+            return self.clone();
+        }
+        let mut next = self.clone();
+        Rc::make_mut(&mut next.facts).insert_pattern(kb, &fact, fact.clone());
+        next
+    }
+
+    /// The Γ index, to hand to the resolver as its [`ResolveConfig::gamma`]
+    /// overlay (the bridge below). `Rc` clone — a refcount bump.
+    fn index(&self) -> Rc<SubstTree<Value>> {
+        Rc::clone(&self.facts)
+    }
+}
+
+// ── Proposal 050 (WI-537): Env — the threaded carrier ──────────────
+//
+// The typer threads ONE `Env` bundling the two distinct environments:
+// `TypingEnv` (a set of types — type deduction) and `FlowEnv` (Γ, the local
+// logical storage — logical deduction). They fork together with control flow
+// but stay separate concerns. `Env` is cheap to clone (two `Rc` bumps) so it
+// is threaded by value; `Deref<Target = TypingEnv>` keeps every existing
+// type-deduction access (`env.var_binding(..)`, and `check_apply(kb, &env, ..)`
+// via deref coercion) untouched, while the new logical-storage access is the
+// explicit `env.flow`.
+#[derive(Clone)]
+pub struct Env {
+    pub types: Rc<TypingEnv>,
+    pub flow: FlowEnv,
+}
+
+impl Env {
+    /// Seed at the typer boundary: a borrowed `TypingEnv` + the empty Γ₀.
+    fn new(types: &TypingEnv) -> Self {
+        Env { types: Rc::new(types.clone()), flow: FlowEnv::empty() }
+    }
+
+    /// Re-wrap with an extended type context (entering a let / lambda / match
+    /// arm), carrying the SAME Γ forward (the binding narrows types, not Γ).
+    fn with_types(&self, types: TypingEnv) -> Self {
+        Env { types: Rc::new(types), flow: self.flow.clone() }
+    }
+
+    /// Re-wrap with a narrowed Γ (the `if` fork), sharing the SAME types.
+    fn with_flow(&self, flow: FlowEnv) -> Self {
+        Env { types: Rc::clone(&self.types), flow }
+    }
+}
+
+impl std::ops::Deref for Env {
+    type Target = TypingEnv;
+    fn deref(&self) -> &TypingEnv {
+        &self.types
+    }
+}
+
+// ── Proposal 050 (WI-537): the resolver bridge ─────────────────
+//
+// Discharge a goal against the local logical storage Γ on the *existing* SLD
+// resolver — `goal` is resolved over **KB ∪ Γ** in one search, Γ riding the
+// resolver's `ResolveConfig::gamma` overlay (consulted at the candidate step
+// exactly like a frame's `assumed_facts`). There is no separate Γ-membership
+// matcher: a Γ fact and a KB-rule derivation that *uses* a Γ fact are both
+// found by the same SLD machinery, so none of it is duplicated. This is the
+// load-bearing new mechanism the proposal calls out — the typer does not
+// otherwise call `kb.resolve` during body checking.
+
+/// Try to **prove** `goal` from Γ (`flow`) ∪ KB via one SLD search.
+///
+/// `definite_only` (WI-519) is the floundering guard: a non-ground `not(P)`
+/// residualizes and is *skipped*, so a goal ranging over an unknown runtime
+/// parameter stays UNPROVEN (the open-world reading), never a
+/// negation-as-failure "drop" (048 §"Discharge is constructive refutation, not
+/// NAF"). Returns `true` only on a *definite* (residual-free) solution — the
+/// soundness contract every consumer (WI-067 discharge, WI-539
+/// `requires`-check) relies on. A Γ fact `neq(b, 0)` over a rigid parameter `b`
+/// proves the query `neq(b, 0)` over the same `b` (the overlay keys it
+/// `RigidVar(b)`); a *symbolic* `neq(b, 0)` with empty Γ flounders → unproven.
+pub fn prove_from_gamma(kb: &mut KnowledgeBase, flow: &FlowEnv, goal: &Value) -> bool {
+    let config = super::resolve::ResolveConfig {
+        definite_only: true,
+        max_solutions: 1,
+        gamma: Some(flow.index()),
+        ..super::resolve::ResolveConfig::default()
+    };
+    kb.resolve(std::slice::from_ref(goal), &config)
+        .iter()
+        .any(|s| s.residual.is_empty())
+}
+
+/// Constructively **refute** a guard: prove its negation from Γ (proposal
+/// 050 / 048). A guarded effect is dropped only on a positive proof of
+/// `¬guard`; an unrefutable guard (a symbolic parameter) stays present —
+/// the conservative default.
+pub fn refute_guard(kb: &mut KnowledgeBase, flow: &FlowEnv, guard: &Value) -> bool {
+    match negate_goal(kb, guard) {
+        Some(neg) => prove_from_gamma(kb, flow, &neg),
+        // Cannot form the negation ⇒ cannot refute ⇒ keep the effect (sound).
+        None => false,
+    }
+}
+
+/// Negate a guard for refutation (proposal 050 open question C). `eq ⇄ neq`
+/// by **functor swap**, so a branch's positive `neq(b, 0)` fact discharges an
+/// `eq(b, 0)` guard by resolving the `neq(b, 0)` fact straight out of the Γ
+/// overlay — a `not(eq(..))` wrapper would not match the `neq` fact and could
+/// only ever flounder. Any other predicate
+/// negates by the reflect `not(..)` wrapper (resolved open-world by NAF +
+/// floundering). `None` when reflect's `not` is unavailable (a prelude-less
+/// KB) — the caller then keeps the effect rather than guess.
+fn negate_goal(kb: &mut KnowledgeBase, goal: &Value) -> Option<Value> {
+    let eq_sym = kb.eq_functor();
+    let neq_sym = kb.try_resolve_symbol("anthill.prelude.Eq.neq");
+    if let ViewHead::Functor { functor: Some(f), pos_arity, named_arity } = goal.head(kb) {
+        let swapped = if f == eq_sym {
+            neq_sym
+        } else if Some(f) == neq_sym {
+            Some(eq_sym)
+        } else {
+            None
+        };
+        // The functor swap rebuilds the goal positionally (`make_goal_value` is
+        // positional-only), so it is only faithful when the goal carries no named
+        // args. A named-form `eq(a: .., b: ..)` (legal — the op declares named
+        // params) falls through to the `not(..)` wrapper below, which preserves
+        // the whole goal (it flounders → effect conservatively kept) rather than
+        // silently dropping the named channel into a wrong-arity goal.
+        if let (Some(target), 0) = (swapped, named_arity) {
+            let mut args = Vec::with_capacity(pos_arity);
+            for i in 0..pos_arity {
+                // A positional slot inside the declared arity must be present;
+                // a None here is a malformed goal, not a case to skip silently.
+                let item = goal.pos_arg(kb, i).expect("pos_arg in range during negate_goal");
+                args.push(item.to_value());
+            }
+            return Some(kb.make_goal_value(target, args));
+        }
+    }
+    kb.try_resolve_symbol("anthill.reflect.not")
+        .map(|not_sym| kb.make_goal_value(not_sym, vec![goal.clone()]))
 }
 
 // ── TypeResult ─────────────────────────────────────────────────
@@ -1686,7 +1892,7 @@ enum TypeWorkOp {
     /// available (leaf args, scrutinees, conditions).
     Visit {
         occ: Rc<NodeOccurrence>,
-        env: Rc<TypingEnv>,
+        env: Env,
         expected: Option<Value>,
         /// WI-283: remaining `[simp]` fire-fuel for this node. Inherited
         /// unchanged by child Visits; spent (`fuel - 1`) only when an
@@ -1711,7 +1917,7 @@ enum TypeWorkOp {
 fn push_visit(
     work: &mut Vec<TypeWorkOp>,
     occ: Rc<NodeOccurrence>,
-    env: Rc<TypingEnv>,
+    env: Env,
     expected: Option<Value>,
     fuel: usize,
 ) {
@@ -1724,7 +1930,7 @@ fn push_visit(
 /// args (constrained by op.params / entity_field_types), the
 /// scrutinee of a Match (drives the branch envs but takes no hint
 /// from outside), and the condition of an If (always `Bool`).
-fn push_visit_no_hint(work: &mut Vec<TypeWorkOp>, occ: Rc<NodeOccurrence>, env: Rc<TypingEnv>, fuel: usize) {
+fn push_visit_no_hint(work: &mut Vec<TypeWorkOp>, occ: Rc<NodeOccurrence>, env: Env, fuel: usize) {
     push_visit(work, occ, env, None, fuel);
 }
 
@@ -1744,7 +1950,7 @@ enum TypeBuildFrame {
         fn_sym: Symbol,
         pos_args: Vec<Rc<NodeOccurrence>>,
         named_args: Vec<(Symbol, Rc<NodeOccurrence>)>,
-        env: Rc<TypingEnv>,
+        env: Env,
         expected: Option<Value>,
         /// WI-283: fire-fuel inherited from this node's `Visit`; on a fire
         /// the RHS is re-`Visit`ed with `fuel - 1` (bounds the chain).
@@ -1759,7 +1965,7 @@ enum TypeBuildFrame {
         ctor_sym: Symbol,
         pos_args: Vec<Rc<NodeOccurrence>>,
         named_args: Vec<(Symbol, Rc<NodeOccurrence>)>,
-        env: Rc<TypingEnv>,
+        env: Env,
         span: Option<Span>,
         expected: Option<Value>,
         /// WI-283: fire-fuel — see [`TypeBuildFrame::Apply::fuel`].
@@ -1781,7 +1987,7 @@ enum TypeBuildFrame {
         member: Symbol,
         pos_args: Vec<Rc<NodeOccurrence>>,
         named_args: Vec<(Symbol, Rc<NodeOccurrence>)>,
-        env: Rc<TypingEnv>,
+        env: Env,
         expected: Option<Value>,
         /// WI-283: fire-fuel inherited from this node's `Visit`; spent
         /// (`fuel - 1`) on the re-`Visit` of the synthesized call.
@@ -1803,6 +2009,11 @@ enum TypeBuildFrame {
         body_expected: Option<Value>,
         /// WI-283: fire-fuel to propagate onto the body `Visit`.
         fuel: usize,
+        /// WI-537: the let-site's Γ. The body's type context comes from the
+        /// value result's `env` (a `TypingEnv`, no flow), so the enclosing flow
+        /// is stashed here to rebuild the body's `Env` (a `let` extends types,
+        /// not Γ — the body runs under the same flow as the let site).
+        outer_flow: FlowEnv,
     },
     /// Body finished; merge `value_effects` (captured at
     /// `LetAfterValue` time so we didn't need to keep `value_r`
@@ -1823,7 +2034,7 @@ enum TypeBuildFrame {
     MatchAfterScrutinee {
         occ: Rc<NodeOccurrence>,
         branches: Vec<MatchBranch>,
-        outer_env: Rc<TypingEnv>,
+        outer_env: Env,
         body_expected: Option<Value>,
         /// WI-283: fire-fuel to propagate onto each branch-body `Visit`.
         fuel: usize,
@@ -1840,9 +2051,9 @@ enum TypeBuildFrame {
         /// so they're re-read from `occ` unchanged.
         scr_node: Rc<NodeOccurrence>,
         scr_effects: Vec<Value>,
-        branch_envs: Vec<Rc<TypingEnv>>,
+        branch_envs: Vec<Env>,
         branch_count: usize,
-        outer_env: Rc<TypingEnv>,
+        outer_env: Env,
         /// WI-342: the scrutinee type, carrier-agnostic (`Value`) — read for
         /// the exhaustiveness sort lookup below via [`TermView`].
         scr_ty: Option<Value>,
@@ -1864,7 +2075,7 @@ enum TypeBuildFrame {
     /// to what the body referenced — without it, `build` would re-derive
     /// a *different* fresh var and the arrow would claim `?a -> T` while
     /// the body was typed under a distinct `?b`.
-    LambdaBody { occ: Rc<NodeOccurrence>, param_type: Value, outer_env: Rc<TypingEnv> },
+    LambdaBody { occ: Rc<NodeOccurrence>, param_type: Value, outer_env: Env },
     /// WI-285: all three If sub-expressions finished (drained in
     /// `[condition, then, else]` order); merge their effects and return
     /// the if's `TypeResult`. WI-287: the type is the join of the then /
@@ -1929,8 +2140,25 @@ pub fn type_check_expr_expected(
 /// clone the inner `TypingEnv`. Used at TypeResult-construction sites
 /// where we need an owned `TypingEnv` for `TypeResult.env`.
 #[inline]
-fn unwrap_env(env: Rc<TypingEnv>) -> TypingEnv {
-    Rc::try_unwrap(env).unwrap_or_else(|rc| (*rc).clone())
+fn unwrap_env(env: Env) -> TypingEnv {
+    // The flow is dropped here: a `TypeResult` carries only the type context
+    // (`TypingEnv`). Γ is threaded forward through the frames' `Env`, never out
+    // of a result — see [`Env`].
+    unwrap_types(env.types)
+}
+
+/// Move out of an `Rc<TypingEnv>` without cloning when sole owner, else clone.
+/// Used for the post-order leaf-assembly frames `IfExpr` / `ListLit` / `SetLit`
+/// / `TupleLit`: they build a result type from already-typed children and
+/// neither re-Visit a child nor read `env`, so the `flow` they would otherwise
+/// carry is dead state — they hold the bare `Rc<TypingEnv>`. (With the
+/// persistent Γ tree this is a tidiness boundary, not a perf necessity: N shared
+/// Γ snapshots are O(N) via path-copying, so retaining `flow` would cost only an
+/// `Rc` bump, not a clone. The branch flows the typer actually needs ride the
+/// branch Visits, not the join frame.)
+#[inline]
+fn unwrap_types(types: Rc<TypingEnv>) -> TypingEnv {
+    Rc::unwrap_or_clone(types)
 }
 
 /// Canonical typer entry — walk a `Rc<NodeOccurrence>` and produce a
@@ -1965,7 +2193,7 @@ pub fn type_check_node(
     // as the fuel-bounded `simp_rewrite::run` did) instead of recursing the
     // host stack to overflow. Children inherit the fuel unchanged; only a
     // fire spends it. Matches the WI-285 iterative discipline.
-    push_visit(&mut work, Rc::clone(occ), Rc::new(env.clone()), expected, super::simp_rewrite::SIMP_FUEL);
+    push_visit(&mut work, Rc::clone(occ), Env::new(env), expected, super::simp_rewrite::SIMP_FUEL);
     while let Some(op) = work.pop() {
         match op {
             TypeWorkOp::Visit { occ, env, expected, fuel } => {
@@ -2677,7 +2905,7 @@ fn collect_positional_arg_value_pats(kb: &KnowledgeBase, args_t: TermId) -> Opti
 fn visit_type(
     kb: &mut KnowledgeBase,
     occ: Rc<NodeOccurrence>,
-    env: Rc<TypingEnv>,
+    env: Env,
     expected: Option<Value>,
     // WI-283: the `[simp]` fire-fuel for this node; passed unchanged to
     // child Visits and to the Apply/Constructor/Let/Match build frames so
@@ -2764,6 +2992,10 @@ fn visit_type(
                 body_occ,
                 body_expected: expected,
                 fuel,
+                // WI-537: stash the let-site Γ before `env` moves into the value
+                // visit — the body rebuilds its `Env` from the value's result
+                // types under this same flow.
+                outer_flow: env.flow.clone(),
             }));
             // WI-342 S4a: the let-annotation is a carrier-agnostic `Value` and IS
             // the value's expected type (WI-270) — thread it directly.
@@ -2783,7 +3015,7 @@ fn visit_type(
             work.push(TypeWorkOp::Build(TypeBuildFrame::MatchAfterScrutinee {
                 occ: Rc::clone(&occ),
                 branches: branches_cloned,
-                outer_env: Rc::clone(&env),
+                outer_env: env.clone(),
                 body_expected: expected,
                 fuel,
             }));
@@ -2833,12 +3065,16 @@ fn visit_type(
             let body_expected = expected.as_ref().and_then(|exp| {
                 extract_function_type_parts(kb, exp).map(|(ret, _)| ret)
             });
+            // The lambda body runs under the SAME Γ as the lambda site (the
+            // binder narrows types, not the flow); capture it before `env` moves
+            // into the frame.
+            let body_env = env.with_types(lambda_env);
             work.push(TypeWorkOp::Build(TypeBuildFrame::LambdaBody {
                 occ: Rc::clone(&occ),
                 param_type,
                 outer_env: env,
             }));
-            push_visit(work, body_occ, Rc::new(lambda_env), body_expected, fuel);
+            push_visit(work, body_occ, body_env, body_expected, fuel);
         }
 
         // ── Leaf cases ──────────────────────────────────────────
@@ -2982,15 +3218,15 @@ fn visit_type(
                 fn_sym: functor,
                 pos_args: pos_args.clone(),
                 named_args: named_args.clone(),
-                env: Rc::clone(&env),
+                env: env.clone(),
                 expected,
                 fuel,
             }));
             for ((_, arg), hint) in named_args.iter().zip(named_hints.iter()).rev() {
-                push_visit(work, Rc::clone(arg), Rc::clone(&env), hint.clone(), fuel);
+                push_visit(work, Rc::clone(arg), env.clone(), hint.clone(), fuel);
             }
             for (arg, hint) in pos_args.iter().zip(pos_hints.iter()).rev() {
-                push_visit(work, Rc::clone(arg), Rc::clone(&env), hint.clone(), fuel);
+                push_visit(work, Rc::clone(arg), env.clone(), hint.clone(), fuel);
             }
         }
         Expr::Constructor { name, pos_args, named_args } => {
@@ -3070,16 +3306,16 @@ fn visit_type(
                 ctor_sym: name,
                 pos_args: pos_args.clone(),
                 named_args: named_args.clone(),
-                env: Rc::clone(&env),
+                env: env.clone(),
                 span: occ_span,
                 expected,
                 fuel,
             }));
             for ((_, arg), hint) in named_args.iter().zip(named_hints.iter()).rev() {
-                push_visit(work, Rc::clone(arg), Rc::clone(&env), hint.clone(), fuel);
+                push_visit(work, Rc::clone(arg), env.clone(), hint.clone(), fuel);
             }
             for (arg, hint) in pos_args.iter().zip(pos_hints.iter()).rev() {
-                push_visit(work, Rc::clone(arg), Rc::clone(&env), hint.clone(), fuel);
+                push_visit(work, Rc::clone(arg), env.clone(), hint.clone(), fuel);
             }
         }
 
@@ -3092,12 +3328,25 @@ fn visit_type(
             let condition = Rc::clone(condition);
             let then_branch = Rc::clone(then_branch);
             let else_branch = Rc::clone(else_branch);
+            // WI-537 / proposal 050: fork Γ at the branch — the then-branch
+            // assumes the condition, the else-branch its negation — so a guard
+            // refutable from the flow (`if neq(b, 0) then div(a, b)`) finds the
+            // fact in its env's Γ. The condition rides as a carrier-agnostic
+            // `Value::Node` goal ("start raw", open Q A); it is read only by
+            // the resolver bridge (WI-067 discharge), so narrowing is additive
+            // — the branches' *types/effects* are unchanged from before.
+            let cond_fact = Value::Node(Rc::clone(&condition));
+            let then_env = env.with_flow(env.flow.assume(kb, cond_fact.clone()));
+            let else_env = match negate_goal(kb, &cond_fact) {
+                Some(neg) => env.with_flow(env.flow.assume(kb, neg)),
+                None => env.clone(),
+            };
             // Drain order [cond, then, else]: push reversed. The
             // condition is always `Bool` (no hint); both branches share
-            // the if's `expected` (WI-270).
-            work.push(TypeWorkOp::Build(TypeBuildFrame::IfExpr { occ: Rc::clone(&occ), env: Rc::clone(&env), expected: expected.clone() }));
-            push_visit(work, else_branch, Rc::clone(&env), expected.clone(), fuel);
-            push_visit(work, then_branch, Rc::clone(&env), expected, fuel);
+            // the if's `expected` (WI-270), now under their narrowed Γ.
+            work.push(TypeWorkOp::Build(TypeBuildFrame::IfExpr { occ: Rc::clone(&occ), env: Rc::clone(&env.types), expected: expected.clone() }));
+            push_visit(work, else_branch, else_env, expected.clone(), fuel);
+            push_visit(work, then_branch, then_env, expected, fuel);
             push_visit_no_hint(work, condition, env, fuel);
         }
         Expr::ListLit(elems) => {
@@ -3107,12 +3356,12 @@ fn visit_type(
             let element_hint = expected.as_ref().and_then(|exp| extract_type_param(kb, exp, "T"));
             work.push(TypeWorkOp::Build(TypeBuildFrame::ListLit {
                 occ: Rc::clone(&occ),
-                env: Rc::clone(&env),
+                env: Rc::clone(&env.types),
                 element_hint: element_hint.clone(),
                 count: elems.len(),
             }));
             for e in elems.iter().rev() {
-                push_visit(work, Rc::clone(e), Rc::clone(&env), element_hint.clone(), fuel);
+                push_visit(work, Rc::clone(e), env.clone(), element_hint.clone(), fuel);
             }
         }
         Expr::SetLit(elems) => {
@@ -3120,12 +3369,12 @@ fn visit_type(
             let element_hint = expected.as_ref().and_then(|exp| extract_type_param(kb, exp, "T"));
             work.push(TypeWorkOp::Build(TypeBuildFrame::SetLit {
                 occ: Rc::clone(&occ),
-                env: Rc::clone(&env),
+                env: Rc::clone(&env.types),
                 element_hint: element_hint.clone(),
                 count: elems.len(),
             }));
             for e in elems.iter().rev() {
-                push_visit(work, Rc::clone(e), Rc::clone(&env), element_hint.clone(), fuel);
+                push_visit(work, Rc::clone(e), env.clone(), element_hint.clone(), fuel);
             }
         }
         Expr::TupleLit { positional, named } => {
@@ -3136,15 +3385,15 @@ fn visit_type(
             // positional reversed. Tuple fields take no hint.
             work.push(TypeWorkOp::Build(TypeBuildFrame::TupleLit {
                 occ: Rc::clone(&occ),
-                env: Rc::clone(&env),
+                env: Rc::clone(&env.types),
                 pos_count: positional.len(),
                 named_names,
             }));
             for (_, e) in named.iter().rev() {
-                push_visit_no_hint(work, Rc::clone(e), Rc::clone(&env), fuel);
+                push_visit_no_hint(work, Rc::clone(e), env.clone(), fuel);
             }
             for e in positional.iter().rev() {
-                push_visit_no_hint(work, Rc::clone(e), Rc::clone(&env), fuel);
+                push_visit_no_hint(work, Rc::clone(e), env.clone(), fuel);
             }
         }
 
@@ -3200,7 +3449,7 @@ fn visit_type(
                 member,
                 pos_args: pos_args.clone(),
                 named_args: named_args.clone(),
-                env: Rc::clone(&env),
+                env: env.clone(),
                 expected,
                 fuel,
             }));
@@ -3723,7 +3972,7 @@ fn build_type(
                 receiver_sort: recv_sort,
             }));
         }
-        TypeBuildFrame::LetAfterValue { occ, pattern, annotation, body_occ, body_expected, fuel } => {
+        TypeBuildFrame::LetAfterValue { occ, pattern, annotation, body_occ, body_expected, fuel, outer_flow } => {
             let value_r = results.pop().expect("LetAfterValue: missing value result");
             // Propagate failure up rather than typing the body under a
             // synthesized env — see WI-204 feedback (no fallbacks).
@@ -3793,7 +4042,9 @@ fn build_type(
                 }
             }
             work.push(TypeWorkOp::Build(TypeBuildFrame::LetFinal { occ, value_node, value_effects }));
-            push_visit(work, body_occ, Rc::new(ext_env), body_expected, fuel);
+            // WI-537: the body's types come from the value result (`ext_env`),
+            // its Γ from the stashed let-site flow.
+            push_visit(work, body_occ, Env { types: Rc::new(ext_env), flow: outer_flow }, body_expected, fuel);
         }
         TypeBuildFrame::LetFinal { occ, value_node, value_effects } => {
             let body_r = results.pop().expect("LetFinal: missing body result");
@@ -3867,7 +4118,7 @@ fn build_type(
                     sort_constructor_syms(kb, sort_term)
                 })
                 .unwrap_or_default();
-            let mut branch_envs: Vec<Rc<TypingEnv>> = Vec::with_capacity(branches.len());
+            let mut branch_envs: Vec<Env> = Vec::with_capacity(branches.len());
             for branch in &branches {
                 // WI-511: coverage AND env-extension both read the Pattern
                 // occurrence directly — no `pattern_to_term` bridge.
@@ -3880,14 +4131,17 @@ fn build_type(
                 );
                 let mut branch_env = (*outer_env).clone();
                 extend_env_from_pattern(kb, &mut branch_env, &branch.pattern, scr_ty.clone());
-                branch_envs.push(Rc::new(branch_env));
+                // WI-537: each arm runs under the match-site Γ (carried by
+                // `outer_env`); arm-specific narrowing — the pattern fact and
+                // earlier-arm negations — is the additive WI-067 layer.
+                branch_envs.push(outer_env.with_types(branch_env));
             }
 
             let branch_count = branches.len();
-            // Materialize Visit envs first (Rc::clone from branch_envs),
+            // Materialize Visit envs first (clone from branch_envs),
             // then move branch_envs into the MatchFinal frame.
-            let visit_envs: Vec<Rc<TypingEnv>> =
-                branch_envs.iter().map(Rc::clone).collect();
+            let visit_envs: Vec<Env> =
+                branch_envs.iter().cloned().collect();
             work.push(TypeWorkOp::Build(TypeBuildFrame::MatchFinal {
                 occ,
                 scr_node,
@@ -4072,7 +4326,7 @@ fn build_type(
                     return;
                 }
             };
-            results.push(Ok(TypeResult { ty, env: unwrap_env(env), effects, node }));
+            results.push(Ok(TypeResult { ty, env: unwrap_types(env), effects, node }));
         }
         TypeBuildFrame::ListLit { occ, env, element_hint, count } => {
             let drain_start = results.len() - count;
@@ -4108,7 +4362,7 @@ fn build_type(
             let list_base = kb.make_sort_ref_by_name("anthill.prelude.List");
             let t_sym = kb.intern("T");
             let list_type = parameterized_value(kb, list_base, &[(t_sym, t_val)], span, owner);
-            results.push(Ok(TypeResult { ty: list_type, env: unwrap_env(env), effects, node }));
+            results.push(Ok(TypeResult { ty: list_type, env: unwrap_types(env), effects, node }));
         }
         TypeBuildFrame::SetLit { occ, env, element_hint, count } => {
             let drain_start = results.len() - count;
@@ -4141,7 +4395,7 @@ fn build_type(
             let set_base = kb.make_sort_ref_by_name("anthill.prelude.Set");
             let t_sym = kb.intern("T");
             let set_type = parameterized_value(kb, set_base, &[(t_sym, t_val)], span, owner);
-            results.push(Ok(TypeResult { ty: set_type, env: unwrap_env(env), effects, node }));
+            results.push(Ok(TypeResult { ty: set_type, env: unwrap_types(env), effects, node }));
         }
         TypeBuildFrame::TupleLit { occ, env, pos_count, named_names } => {
             let total = pos_count + named_names.len();
@@ -4176,7 +4430,7 @@ fn build_type(
                 effects = merge_effects(kb, &effects, &r.effects);
             }
             let tuple_type = named_tuple_value(kb, &field_types, span, owner);
-            results.push(Ok(TypeResult { ty: tuple_type, env: unwrap_env(env), effects, node }));
+            results.push(Ok(TypeResult { ty: tuple_type, env: unwrap_types(env), effects, node }));
         }
     }
 }
@@ -14322,7 +14576,10 @@ fn occurs_in_view(kb: &KnowledgeBase, vid: VarId, v: &impl TermView) -> bool {
         return occ_contains_var(kb, vid, &occ);
     }
     match v.head(kb) {
-        ViewHead::Var(x) => x == vid,
+        // Only a flex `Global` can be the var being bound; a `Rigid` / `DeBruijn`
+        // head is a distinct constant/binder and never occurs as `vid` (it would
+        // formerly have read as `Opaque` and fallen through to `false`).
+        ViewHead::Var(x) => x.as_global() == Some(vid),
         ViewHead::Functor { pos_arity, .. } => {
             for i in 0..pos_arity {
                 if let Some(c) = v.pos_arg(kb, i) {

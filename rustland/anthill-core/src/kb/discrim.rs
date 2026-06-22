@@ -19,11 +19,11 @@ use crate::intern::Symbol;
 use super::node_occurrence::NodeOccurrence;
 use super::persist_subst::{ArgPos, BindValue, PersistSubst, SmallSubst, VarPath};
 use super::subst::Substitution;
-use super::term::{Literal, TermId, Var};
+use super::term::{Literal, TermId, Var, VarId};
 use super::term_view::{TermView, ViewHead, ViewItem};
 use super::KnowledgeBase;
 #[cfg(test)]
-use super::term::{Term, VarId};
+use super::term::Term;
 
 // ── DiscrimKey — concrete edge labels ───────────────────────────
 
@@ -36,14 +36,36 @@ pub(crate) enum DiscrimKey {
     Lit(Literal),
     Ident(Symbol),
     Ref(Symbol),
+    /// A `Rigid` (skolem / eigenvariable) var, keyed by its `VarId` *identity*.
+    /// Unlike a wildcard var-edge (which matches any subterm), this concrete
+    /// edge matches only the SAME rigid — a skolem is a constant, not a
+    /// pattern var, so it belongs with the other constant keys (`Lit`/`Ref`/…),
+    /// not in `var_edges`. This is what keeps two distinct skolems apart and
+    /// stops a rigid goal var from over-matching a concrete fact.
+    RigidVar(VarId),
     Bottom,
 }
 
 // ── DiscrimNode — tree node ─────────────────────────────────────
 
+/// Children are `Rc<DiscrimNode>`, making the tree a PERSISTENT (path-copying)
+/// structure: `Clone` is O(1) — a shallow copy of this node's edge maps as
+/// `Rc` bumps, sharing every subtree. Mutation goes through `Rc::make_mut`, so
+/// `insert` clones only the nodes along the touched path and leaves the rest
+/// shared (proposal-050 / WI-537: a `FlowEnv`'s Γ overlay forks at every
+/// control-flow split, and each fork must be O(path), not O(tree) — see
+/// [`SubstTree::insert_walk`]).
+///
+/// One representation serves BOTH consumers: the Γ overlay (snapshots shared,
+/// refcount > 1 → `make_mut` path-copies) and the main KB fact index (uniquely
+/// owned during its mutable build, refcount == 1 → `make_mut` is a no-op
+/// clone-wise, so index build cost is unchanged). `Drop` recurses only into
+/// uniquely-owned children (see below), so a shared subtree is never freed
+/// twice and a deep unique chain never overflows the host stack.
+#[derive(Clone)]
 struct DiscrimNode<L> {
-    concrete: HashMap<DiscrimKey, DiscrimNode<L>>,
-    var_edges: Vec<(Var, DiscrimNode<L>)>,
+    concrete: HashMap<DiscrimKey, Rc<DiscrimNode<L>>>,
+    var_edges: Vec<(Var, Rc<DiscrimNode<L>>)>,
     leaves: Vec<L>,
 }
 
@@ -79,18 +101,45 @@ impl<L> Drop for DiscrimNode<L> {
 }
 
 fn steal_discrim_children<L>(node: &mut DiscrimNode<L>, stack: &mut Vec<DiscrimNode<L>>) {
+    // Children are `Rc`-shared: descend only into one we solely own
+    // (`into_inner` is `Some` iff refcount was 1, consuming it). A child still
+    // shared by another snapshot is left to its other owners — its `Rc` here
+    // just decrements: no recursion, no double free.
     for (_, child) in std::mem::take(&mut node.concrete) {
-        stack.push(child);
+        if let Some(inner) = Rc::into_inner(child) { stack.push(inner); }
     }
     for (_, child) in std::mem::take(&mut node.var_edges) {
-        stack.push(child);
+        if let Some(inner) = Rc::into_inner(child) { stack.push(inner); }
     }
     // `leaves` are owned `L` values (RuleId-shaped in practice) — no
     // recursive Drop concern.
 }
 
+/// Descend into the child under `key` (creating it if absent), forking it for
+/// writing via `Rc::make_mut`. The single home of the persistent-tree write
+/// invariant on the concrete-edge insert path: a node shared with another
+/// snapshot (a Γ overlay's COW fork) is path-copied here, while a uniquely-owned
+/// node (the main index during its build, refcount 1) is edited in place.
+fn make_mut_child<L: Clone>(
+    map: &mut HashMap<DiscrimKey, Rc<DiscrimNode<L>>>,
+    key: DiscrimKey,
+) -> &mut DiscrimNode<L> {
+    Rc::make_mut(map.entry(key).or_insert_with(|| Rc::new(DiscrimNode::new())))
+}
+
+/// As [`make_mut_child`] but for the remove path: fork an *existing* child for
+/// writing, or `None` if absent. Same `make_mut` discipline — only the main
+/// (unshared) index ever removes, so this never actually clones in practice.
+fn get_mut_child<'a, L: Clone>(
+    map: &'a mut HashMap<DiscrimKey, Rc<DiscrimNode<L>>>,
+    key: &DiscrimKey,
+) -> Option<&'a mut DiscrimNode<L>> {
+    map.get_mut(key).map(Rc::make_mut)
+}
+
 // ── SubstTree — top-level structure ─────────────────────────────
 
+#[derive(Clone)]
 pub(crate) struct SubstTree<L> {
     root: DiscrimNode<L>,
 }
@@ -98,6 +147,44 @@ pub(crate) struct SubstTree<L> {
 impl<L> SubstTree<L> {
     pub(crate) fn new() -> Self {
         SubstTree { root: DiscrimNode::new() }
+    }
+
+    /// No stored pattern. The proposal-050 Γ overlay uses this to read whether
+    /// the local context is the empty seed (Γ₀) vs a narrowed branch env.
+    pub(crate) fn is_empty(&self) -> bool {
+        self.root.is_empty()
+    }
+}
+
+/// Whether [`SubstTree::insert_pattern`] can index `view` without tripping its
+/// functor-less / `Opaque` panic — i.e. every head along the whole structure is
+/// a concrete key (`Functor{Some}` / `Const` / `Ident` / `Ref` / `Bottom`) or a
+/// variable (which routes to a var-edge). Mirrors the [`SubstTree::insert_walk`]
+/// recursion, so it is the authoritative pre-check.
+///
+/// The proposal-050 (WI-537) Γ overlay uses this to SKIP a non-indexable fact —
+/// a raw `if`-condition occurrence carrying an elaborated / `Opaque` (or
+/// functor-less tuple/unit) sub-part. Such a fact could never unify with a
+/// clean goal-shaped membership query, so excluding it is lossless; and it
+/// spares the strict rule-head invariant `insert_pattern` rightly enforces
+/// (loud panic) rather than weakening that invariant for the overlay's sake.
+pub(crate) fn view_is_indexable<V: TermView>(kb: &KnowledgeBase, view: &V) -> bool {
+    // A variable of any kind routes to a var-edge — always indexable.
+    if view.index_var(kb).is_some() {
+        return true;
+    }
+    match view.head(kb) {
+        ViewHead::Functor { functor: Some(_), pos_arity, .. } => {
+            (0..pos_arity).all(|i| {
+                view.pos_arg(kb, i).map_or(false, |a| view_is_indexable(kb, &a))
+            }) && view.named_keys(kb).into_iter().all(|s| {
+                view.named_arg(kb, s).map_or(false, |a| view_is_indexable(kb, &a))
+            })
+        }
+        ViewHead::Const(_) | ViewHead::Ident(_) | ViewHead::Ref(_) | ViewHead::Bottom => true,
+        ViewHead::Functor { functor: None, .. } | ViewHead::Opaque => false,
+        // Routed to a var-edge by `index_var` above; unreachable, treated as ok.
+        ViewHead::Var(_) => true,
     }
 }
 
@@ -139,7 +226,10 @@ impl OwnedView {
 
 // ── View-driven insert ──────────────────────────────────────────
 
-impl<L> SubstTree<L> {
+// `L: Clone` because `insert` / `remove` descend through `Rc::make_mut`, which
+// clones a node when it is shared (a Γ snapshot). The main index is uniquely
+// owned, so `make_mut` there never actually clones.
+impl<L: Clone> SubstTree<L> {
     /// Insert a ground term. Ground heads carry no variables, so the pattern
     /// walk indexes them identically — its var-edge arm is simply never
     /// reached. Test-only today; the live ground path is `assert_fact` →
@@ -167,35 +257,34 @@ impl<L> SubstTree<L> {
         kb: &KnowledgeBase,
         view: &V,
     ) -> &'a mut DiscrimNode<L> {
-        // A stored-pattern variable of any kind (Global / Rigid / DeBruijn)
-        // keys a var-edge — see [`TermView::index_var`].
+        // A stored-pattern variable routes by kind (see [`TermView::index_var`]):
+        // a flex `Global` / bound `DeBruijn` is a WILDCARD pattern var → a
+        // var-edge (matches any subterm); a `Rigid` skolem is a CONSTANT → a
+        // `RigidVar` concrete edge (matches only the same rigid).
         if let Some(var) = view.index_var(kb) {
+            if let Var::Rigid(vid) = var {
+                return make_mut_child(&mut node.concrete, DiscrimKey::RigidVar(vid));
+            }
             let pos = node.var_edges.iter().position(|(v, _)| *v == var);
             return if let Some(idx) = pos {
-                &mut node.var_edges[idx].1
+                Rc::make_mut(&mut node.var_edges[idx].1)
             } else {
-                node.var_edges.push((var, DiscrimNode::new()));
+                node.var_edges.push((var, Rc::new(DiscrimNode::new())));
                 let last = node.var_edges.len() - 1;
-                &mut node.var_edges[last].1
+                Rc::make_mut(&mut node.var_edges[last].1)
             };
         }
         match view.head(kb) {
             ViewHead::Functor { functor: Some(functor), pos_arity, named_arity } => {
                 let arity = pos_arity + named_arity;
-                let n = node.concrete.entry(DiscrimKey::Functor(functor))
-                    .or_insert_with(DiscrimNode::new);
-                let n = n.concrete.entry(DiscrimKey::Arity(arity as u16))
-                    .or_insert_with(DiscrimNode::new);
+                let n = make_mut_child(&mut node.concrete, DiscrimKey::Functor(functor));
+                let n = make_mut_child(&mut n.concrete, DiscrimKey::Arity(arity as u16));
                 Self::insert_walk_args(n, kb, view, pos_arity)
             }
-            ViewHead::Const(lit) => node.concrete.entry(DiscrimKey::Lit(lit))
-                .or_insert_with(DiscrimNode::new),
-            ViewHead::Ident(sym) => node.concrete.entry(DiscrimKey::Ident(sym))
-                .or_insert_with(DiscrimNode::new),
-            ViewHead::Ref(sym) => node.concrete.entry(DiscrimKey::Ref(sym))
-                .or_insert_with(DiscrimNode::new),
-            ViewHead::Bottom => node.concrete.entry(DiscrimKey::Bottom)
-                .or_insert_with(DiscrimNode::new),
+            ViewHead::Const(lit) => make_mut_child(&mut node.concrete, DiscrimKey::Lit(lit)),
+            ViewHead::Ident(sym) => make_mut_child(&mut node.concrete, DiscrimKey::Ident(sym)),
+            ViewHead::Ref(sym) => make_mut_child(&mut node.concrete, DiscrimKey::Ref(sym)),
+            ViewHead::Bottom => make_mut_child(&mut node.concrete, DiscrimKey::Bottom),
             // Functor-less aggregates (tuple / unit) and Opaque heads
             // (closures, streams, post-elaboration forms …) carry no concrete
             // discrimination key. A leaf attached at the current node would be
@@ -231,14 +320,12 @@ impl<L> SubstTree<L> {
         let mut cur = node;
         for i in 0..pos_arity {
             let arg = view.pos_arg(kb, i).expect("pos_arg in range during insert");
-            cur = cur.concrete.entry(DiscrimKey::Positional)
-                .or_insert_with(DiscrimNode::new);
+            cur = make_mut_child(&mut cur.concrete, DiscrimKey::Positional);
             cur = Self::insert_walk(cur, kb, &arg);
         }
         for sym in view.named_keys(kb) {
             let arg = view.named_arg(kb, sym).expect("named_arg present during insert");
-            cur = cur.concrete.entry(DiscrimKey::NamedKey(sym))
-                .or_insert_with(DiscrimNode::new);
+            cur = make_mut_child(&mut cur.concrete, DiscrimKey::NamedKey(sym));
             cur = Self::insert_walk(cur, kb, &arg);
         }
         cur
@@ -273,9 +360,9 @@ impl<L> SubstTree<L> {
             ViewHead::Functor { functor: Some(functor), pos_arity, named_arity } => {
                 let arity = pos_arity + named_arity;
                 let fk = DiscrimKey::Functor(functor);
-                let prune_fn = if let Some(fn_child) = node.concrete.get_mut(&fk) {
+                let prune_fn = if let Some(fn_child) = get_mut_child(&mut node.concrete, &fk) {
                     let ak = DiscrimKey::Arity(arity as u16);
-                    let prune_ar = if let Some(ar_child) = fn_child.concrete.get_mut(&ak) {
+                    let prune_ar = if let Some(ar_child) = get_mut_child(&mut fn_child.concrete, &ak) {
                         let arg_seq = Self::owned_arg_seq(kb, view, pos_arity);
                         Self::remove_walk_args(ar_child, kb, &arg_seq, 0, leaf)
                     } else { false };
@@ -332,13 +419,14 @@ impl<L> SubstTree<L> {
     ) -> bool
     where L: PartialEq,
     {
-        if let Some(child) = node.concrete.get_mut(&key) {
+        let prune = if let Some(child) = get_mut_child(&mut node.concrete, &key) {
             if let Some(pos) = child.leaves.iter().position(|l| l == leaf) {
                 child.leaves.swap_remove(pos);
             }
-            if child.is_empty() {
-                node.concrete.remove(&key);
-            }
+            child.is_empty()
+        } else { false };
+        if prune {
+            node.concrete.remove(&key);
         }
         node.is_empty()
     }
@@ -361,7 +449,7 @@ impl<L> SubstTree<L> {
         }
 
         let marker = arg_seq[idx].0.clone();
-        let prune = if let Some(marker_child) = node.concrete.get_mut(&marker) {
+        let prune = if let Some(marker_child) = get_mut_child(&mut node.concrete, &marker) {
             Self::remove_walk_arg_value(marker_child, kb, &arg_seq[idx].1, arg_seq, idx, leaf)
         } else { false };
         if prune { node.concrete.remove(&marker); }
@@ -387,9 +475,9 @@ impl<L> SubstTree<L> {
             ViewHead::Functor { functor: Some(functor), pos_arity, named_arity } => {
                 let arity = pos_arity + named_arity;
                 let fk = DiscrimKey::Functor(functor);
-                let prune_fn = if let Some(fn_child) = node.concrete.get_mut(&fk) {
+                let prune_fn = if let Some(fn_child) = get_mut_child(&mut node.concrete, &fk) {
                     let ak = DiscrimKey::Arity(arity as u16);
-                    let prune_ar = if let Some(ar_child) = fn_child.concrete.get_mut(&ak) {
+                    let prune_ar = if let Some(ar_child) = get_mut_child(&mut fn_child.concrete, &ak) {
                         let mut combined = Self::owned_arg_seq(kb, &view, pos_arity);
                         combined.extend(arg_seq[idx + 1..].iter().cloned());
                         Self::remove_walk_args(ar_child, kb, &combined, 0, leaf)
@@ -436,7 +524,7 @@ impl<L> SubstTree<L> {
     ) -> bool
     where L: PartialEq,
     {
-        let prune = if let Some(child) = node.concrete.get_mut(&key) {
+        let prune = if let Some(child) = get_mut_child(&mut node.concrete, &key) {
             Self::remove_walk_args(child, kb, arg_seq, idx + 1, leaf)
         } else { false };
         if prune { node.concrete.remove(&key); }
@@ -518,9 +606,27 @@ impl<L: Clone> SubstTree<L> {
         results: &mut Vec<(L, SmallSubst)>,
     ) {
         match query.head(kb) {
-            ViewHead::Var(vid) => {
+            // Flex `Global`: a WILDCARD query var — binds this position and
+            // matches every stored structure here.
+            ViewHead::Var(Var::Global(vid)) => {
                 let s = subst.with_binding(vid, BindValue::Path(path));
                 Self::collect_all_leaves(node, s, results);
+            }
+            // `Rigid` skolem: a CONSTANT — matches only the same-id `RigidVar`
+            // edge (plus universal var-edges, which a stored pattern var binds
+            // to it), never a concrete fact or a different skolem.
+            ViewHead::Var(Var::Rigid(vid)) => {
+                Self::query_leaf_key(node, &DiscrimKey::RigidVar(vid), query, subst, results);
+            }
+            // `DeBruijn` never reaches a goal head (binders open to `Global`
+            // before resolution), and `Opaque` (closures, streams, lazies) has no
+            // concrete key — both route to universal var-edges only: such a value
+            // can bind a tree var but matches no concrete fact.
+            ViewHead::Var(Var::DeBruijn(_)) | ViewHead::Opaque => {
+                for (tree_var, child) in &node.var_edges {
+                    let branch = subst.clone().with_binding(tree_var.as_vid(), query.as_bind_value());
+                    Self::collect_all_leaves(child, branch, results);
+                }
             }
             ViewHead::Functor { functor, pos_arity, named_arity } => {
                 let arity = pos_arity + named_arity;
@@ -558,14 +664,6 @@ impl<L: Clone> SubstTree<L> {
             }
             ViewHead::Bottom => {
                 Self::query_leaf_key(node, &DiscrimKey::Bottom, query, subst, results);
-            }
-            ViewHead::Opaque => {
-                // Closures, streams, lazies, DeBruijn — no concrete match.
-                // Still honor var_edges so an opaque value can bind a tree var.
-                for (tree_var, child) in &node.var_edges {
-                    let branch = subst.clone().with_binding(tree_var.as_vid(), query.as_bind_value());
-                    Self::collect_all_leaves(child, branch, results);
-                }
             }
         }
     }
@@ -663,12 +761,35 @@ impl<L: Clone> SubstTree<L> {
         on_done: &dyn Fn(&DiscrimNode<L>, SmallSubst, &mut Vec<(L, SmallSubst)>),
     ) {
         match arg.head(kb) {
-            ViewHead::Var(vid) => {
+            // Flex `Global`: a WILDCARD arg var — binds this position to any
+            // stored subterm and continues.
+            ViewHead::Var(Var::Global(vid)) => {
                 let s = subst.with_binding(vid, BindValue::Path(arg_path));
                 Self::skip_subtree_then_continue(
                     node, kb, outer, pos_idx, pos_total, named_keys, named_idx,
                     prefix, s, results, on_done,
                 );
+            }
+            // `Rigid` skolem: a CONSTANT arg — follows only the same-id
+            // `RigidVar` edge (plus universal var-edges a pattern var binds to
+            // it), never a concrete arg or a different skolem.
+            ViewHead::Var(Var::Rigid(vid)) => {
+                Self::follow_key_then_continue(
+                    node, &DiscrimKey::RigidVar(vid), arg, kb, outer,
+                    pos_idx, pos_total, named_keys, named_idx, prefix,
+                    subst, results, on_done,
+                );
+            }
+            // `DeBruijn` never reaches a goal arg, and `Opaque` has no concrete
+            // key — both route to universal var-edges only.
+            ViewHead::Var(Var::DeBruijn(_)) | ViewHead::Opaque => {
+                for (tree_var, child) in &node.var_edges {
+                    let branch = subst.clone().with_binding(tree_var.as_vid(), arg.as_bind_value());
+                    Self::query_args(
+                        child, kb, outer, pos_idx, pos_total, named_keys, named_idx,
+                        prefix, branch, results, on_done,
+                    );
+                }
             }
             ViewHead::Functor { functor, pos_arity, named_arity } => {
                 let arity = pos_arity + named_arity;
@@ -726,15 +847,6 @@ impl<L: Clone> SubstTree<L> {
                     pos_idx, pos_total, named_keys, named_idx, prefix,
                     subst, results, on_done,
                 );
-            }
-            ViewHead::Opaque => {
-                for (tree_var, child) in &node.var_edges {
-                    let branch = subst.clone().with_binding(tree_var.as_vid(), arg.as_bind_value());
-                    Self::query_args(
-                        child, kb, outer, pos_idx, pos_total, named_keys, named_idx,
-                        prefix, branch, results, on_done,
-                    );
-                }
             }
         }
     }
