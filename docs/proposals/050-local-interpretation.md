@@ -196,6 +196,57 @@ proven `¬guard`, never on failure-to-prove.
 - **D. Persistence across calls.** How far `Γ` reaches — within one body only, or
   does the guard-propagation in [048](048-conditional-effects.md) (a guarded atom
   inferred onto the enclosing op's row) carry a residual obligation outward?
-- **E. Relation to [022](022-typing-as-facts.md) / the self-hosted typing pass.**
-  Could `Γ` *be* facts asserted into the typing-pass KB, so local interpretation is
-  itself expressed as rules, rather than a bespoke Rust dataflow?
+- **E. Relation to [022](022-typing-as-facts.md) / the self-hosted typing pass —
+  types belong in `Γ` (resolved 2026-06-23).** The bridge runs a goal over
+  `KB ∪ Γ`, but a *type-specific* rule — a sort relation, a typeclass instance, an
+  arithmetic/ordering lemma — fires only if the goal variables' **types** are
+  visible to the resolver. They are not, if `Γ` holds only the logical facts
+  (`eq`/`neq`/guards) and the types stay in the separate type-deduction env
+  (`TypingEnv`). So a variable's type enters `Γ` **as a fact** — the
+  [022](022-typing-as-facts.md) typing predicate, `x : Int` — which is exactly the
+  "signature facts (parameter sorts, result typing)" the `Γ₀` seed already names.
+  The *one* SLD resolver then applies type-specific rules with no special typed
+  unification: types are just more facts. (The typer keeps types and logical facts
+  in separate *envs* — `TypingEnv` vs `FlowEnv` — but the resolver sees them
+  unified as *facts*.)
+
+  *Worked example* — `if x ≥ 0 then div(x, x+1) else x`, with `x : Int` and
+  `div(a, b)` carrying `Error[DivisionByZero] :- eq(b, 0)` (the divisor `b = x+1`).
+  The then-branch `Γ` holds `gte(x, 0)` (the `if`-fork narrowing) **and** `x : Int`
+  (the seed). Discharge refutes the guard `eq(x+1, 0)` — i.e. proves
+  `neq(add(x, 1), 0)` — via an Int lemma of the shape
+  `neq(add(?n, 1), 0) :- ?n : Int, gte(?n, 0)`, whose two premises are *both* met
+  from `Γ`; the effect drops. Remove the type fact and the lemma cannot fire:
+  `neq(x+1, 0)` flounders (open-world — a symbolic `x` of unknown sort could make
+  `x+1` zero) and the effect is conservatively kept. This is the step beyond the
+  trivial `if neq(b, 0) then div(a, b)` (where the condition *is* the negated
+  guard — a `Γ`-membership hit): here the condition variable `x` and the guard
+  term `x+1` *differ*, so discharge needs real *inference* (KB rules over `Γ`), and
+  inference over arithmetic needs the sort. The example also leans on two carrier
+  facts: the condition `gte(x, 0)` is indexable into `Γ` only because a binder
+  reference reads as its `var_ref(name)` term twin (not `Opaque`), and a fresh
+  per-binding symbol for `x` keeps the `: Int` and flow facts collision-free under
+  shadowing (the binder-identity follow-up).
+
+  *When the facts are built.* Tier-1 discharge needs no separate pass: at a guarded
+  call the argument types are already in `TypingEnv` (typing is a forward walk —
+  bind before use), so they are snapshotted into `Γ` as typing facts on demand. A
+  separate post-typing *elaborate-then-check* pass — whose precondition is
+  persisting types on a typed IR (the occurrence carries none today) — becomes
+  attractive only for heavy Tier-2 proofs; the types-as-facts substrate is the same
+  either way, the choice is only *when* the consumer runs.
+
+  *Resolution.* Γ's **production** stays the Rust forward dataflow the substrate
+  builds today — `Γ_in = join(predecessors)` is a *fixpoint*, and a forward pass
+  (with the persistent discrim tree's O(depth) fork-sharing) is its efficient
+  evaluator, not a shortcut. Self-hosting that production — local interpretation
+  *itself* as rules, a Datalog-style `holds(fact, point)` analysis
+  ([022](022-typing-as-facts.md)) — is the endgame, but **gated**: the resolver is
+  top-down SLD today, and a recursive `holds(fact, point)` relation needs **tabled
+  / bottom-up fixpoint evaluation** (top-down recomputes subgoals and, bounded only
+  by `step_cap`, would be incomplete). The gate is (1) a tabled evaluator; (2) the
+  reflect IR fully rule-readable (the WI-246 compound-form line); (3) parity
+  against the Rust dataflow as the oracle on the stress cases — the deep-nested-`if`
+  blow-up the persistent tree fixed is the litmus. The fact interface above makes
+  this migration **non-breaking** (no consumer distinguishes a Rust-produced Γ from
+  a rule-derived one), so it is deferred by design, not blocking.
