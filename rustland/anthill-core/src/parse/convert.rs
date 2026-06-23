@@ -140,6 +140,17 @@ enum BuildFrame<'t> {
     LambdaExpr {
         node: Node<'t>,
     },
+    /// In-body / control-flow proof (WI-538). The visited children are
+    /// the continuation `body` and the optional `conclude` goal; the
+    /// `target` / `strategy_name` / `using` clauses are leaf metadata
+    /// carried here and emitted as a `ParseAux::ProofStmt` child.
+    ProofStmt {
+        node: Node<'t>,
+        target: Name,
+        strategy_name: Option<Symbol>,
+        using: Vec<Name>,
+        has_conclude: bool,
+    },
     // ── Pattern frames ──────────────────────────────────────────
     PatternLiteral {
         node: Node<'t>,
@@ -1125,6 +1136,41 @@ impl<'a> Converter<'a> {
                 self.push_child_or_yield(work, body, WorkKind::ExprBody, span);
                 self.push_child_or_yield(work, param, WorkKind::Pattern, span);
             }
+            "proof_statement" => {
+                // WI-538: an in-body / control-flow proof.  The `target`
+                // name, `by <strategy>` name, and `using` cites are leaf
+                // metadata (carried on the build frame → a
+                // `ParseAux::ProofStmt`).  The visited children are the
+                // continuation `body` (an `_expr_body`) and the optional
+                // `conclude <goal>` (`_term`) — lowered as ordinary
+                // occurrences so the goal's names (the local `b` in
+                // `neq(b, 0)`, the `neq` rule) resolve in scope.
+                let target = self.convert_name(
+                    self.field(node, "target").expect("proof_statement: target"));
+                let strategy_name = self
+                    .field(node, "strategy")
+                    .map(|s| self.convert_proof_strategy(s).name);
+                let using = self
+                    .field(node, "using")
+                    .map(|u| self.convert_proof_using_list(u))
+                    .unwrap_or_default();
+                let conclude = self.field(node, "conclude");
+                let body = self.field(node, "body");
+                let span = self.span(node);
+                work.push(WorkOp::Build(BuildFrame::ProofStmt {
+                    node,
+                    target,
+                    strategy_name,
+                    using,
+                    has_conclude: conclude.is_some(),
+                }));
+                // Results order [body, conclude?]: push conclude first
+                // (drains last), body last (drains first).
+                if let Some(c) = conclude {
+                    self.push_child_or_yield(work, Some(c), WorkKind::Term, span);
+                }
+                self.push_child_or_yield(work, body, WorkKind::ExprBody, span);
+            }
             _ => self.visit_term(node, work, results),
         }
     }
@@ -1549,6 +1595,36 @@ impl<'a> Converter<'a> {
                 results.push(self.alloc_fn_term(
                     "lambda_expr",
                     SmallVec::from_slice(&[param, body]),
+                    span,
+                ));
+            }
+            BuildFrame::ProofStmt { node, target, strategy_name, using, has_conclude } => {
+                // WI-538: `proof_stmt(body [, conclude]) { proof_meta }`.
+                // Results order is [body, conclude?]; the target/strategy/
+                // using clauses ride as a `ParseAux::ProofStmt` named
+                // child the loader reads back off this parse term.
+                let span = self.span(node);
+                let n = if has_conclude { 2 } else { 1 };
+                let drain_start = results.len() - n;
+                let body = results[drain_start];
+                let conclude = if has_conclude { Some(results[drain_start + 1]) } else { None };
+                results.truncate(drain_start);
+                let meta = Term::ParseAux(Box::new(ParseAux::ProofStmt(super::ir::ProofStmtIr {
+                    target,
+                    strategy_name,
+                    using,
+                    span,
+                })));
+                let meta_tid = self.terms.alloc(meta, span);
+                let mut pos_args: SmallVec<[TermId; 4]> = SmallVec::new();
+                pos_args.push(body);
+                if let Some(c) = conclude {
+                    pos_args.push(c);
+                }
+                let meta_key = self.intern("proof_meta");
+                let functor = self.intern("proof_stmt");
+                results.push(self.terms.alloc(
+                    Term::Fn { functor, pos_args, named_args: SmallVec::from_slice(&[(meta_key, meta_tid)]) },
                     span,
                 ));
             }

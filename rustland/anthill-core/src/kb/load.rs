@@ -2564,6 +2564,7 @@ fn register_stdlib_scopes(kb: &mut KnowledgeBase, global_raw: u32) {
     kb.symbols.define("if_expr", "anthill.reflect.Expr.if_expr", SymbolKind::Entity, expr_term.raw());
     kb.symbols.define("let_expr", "anthill.reflect.Expr.let_expr", SymbolKind::Entity, expr_term.raw());
     kb.symbols.define("lambda_expr", "anthill.reflect.Expr.lambda_expr", SymbolKind::Entity, expr_term.raw());
+    kb.symbols.define("proof_stmt", "anthill.reflect.Expr.proof_stmt", SymbolKind::Entity, expr_term.raw());
     kb.symbols.define("apply", "anthill.reflect.Expr.apply", SymbolKind::Entity, expr_term.raw());
     kb.symbols.define("ho_apply", "anthill.reflect.Expr.ho_apply", SymbolKind::Entity, expr_term.raw());
     kb.symbols.define("constructor", "anthill.reflect.Expr.constructor", SymbolKind::Entity, expr_term.raw());
@@ -2878,6 +2879,15 @@ fn const_node_is_pure(kb: &KnowledgeBase, occ: &std::rc::Rc<NodeOccurrence>) -> 
                 const_node_is_pure(kb, c)?;
             }
             Ok(())
+        }
+        // WI-538: an in-body proof is a type-level construct (no runtime
+        // effect) — the const's value is the continuation's. Check the
+        // conclude goal and the body.
+        Expr::Proof { conclude, body, .. } => {
+            if let Some(c) = conclude {
+                const_node_is_pure(kb, c)?;
+            }
+            const_node_is_pure(kb, body)
         }
         // Everything else — higher-order / dot dispatch, generic instantiation,
         // and the post-elaboration `*Within` / requirement forms (which a raw,
@@ -5006,6 +5016,14 @@ enum LoadBuildFrame {
     Lambda {
         outer_parse_id: TermId,
     },
+    /// WI-538: an in-body / control-flow proof. `has_conclude` selects
+    /// whether the result stack carries `[body, conclude]` or `[body]`;
+    /// the target / strategy / using clauses are read back off the
+    /// parse term's `ParseAux::ProofStmt`.
+    ProofStmt {
+        outer_parse_id: TermId,
+        has_conclude: bool,
+    },
     PatternConstructor {
         outer_parse_id: TermId,
         name_ref: TermId,
@@ -5211,6 +5229,7 @@ struct ExprBuilderSyms {
     if_expr: Symbol,
     let_expr: Symbol,
     lambda: Symbol,
+    proof_stmt: Symbol,
     constructor_pattern: Symbol,
     tuple_pattern: Symbol,
     constructor: Symbol,
@@ -5227,6 +5246,9 @@ struct ExprBuilderSyms {
     k_else: Symbol,
     k_value: Symbol,
     k_param: Symbol,
+    k_target: Symbol,
+    k_strategy: Symbol,
+    k_conclude: Symbol,
     k_name: Symbol,
     k_receiver: Symbol,
     k_args: Symbol,
@@ -5245,6 +5267,7 @@ impl ExprBuilderSyms {
             if_expr: kb.resolve_symbol("anthill.reflect.Expr.if_expr"),
             let_expr: kb.resolve_symbol("anthill.reflect.Expr.let_expr"),
             lambda: kb.resolve_symbol("anthill.reflect.Expr.lambda_expr"),
+            proof_stmt: kb.resolve_symbol("anthill.reflect.Expr.proof_stmt"),
             constructor_pattern: kb.resolve_symbol("anthill.reflect.Pattern.constructor_pattern"),
             tuple_pattern: kb.resolve_symbol("anthill.reflect.Pattern.tuple_pattern"),
             constructor: kb.resolve_symbol("anthill.reflect.Expr.constructor"),
@@ -5261,6 +5284,9 @@ impl ExprBuilderSyms {
             k_else: kb.intern("else_branch"),
             k_value: kb.intern("value"),
             k_param: kb.intern("param"),
+            k_target: kb.intern("target"),
+            k_strategy: kb.intern("strategy"),
+            k_conclude: kb.intern("conclude"),
             k_name: kb.intern("name"),
             k_receiver: kb.intern("receiver"),
             k_args: kb.intern("args"),
@@ -6368,6 +6394,21 @@ impl<'a> Loader<'a> {
                         work.push(LoadWorkOp::Visit(pos_args[0])); // param
                         work.push(LoadWorkOp::PushOccSuppress);
                     }
+                    "proof_stmt" => {
+                        // WI-538: pos_args are [body, conclude?]. The
+                        // proof binds no value names, so the body sees
+                        // the same scope (no scope frame). Visit body
+                        // last so it drains first ([body, conclude?]).
+                        let has_conclude = pos_args.len() > 1;
+                        work.push(LoadWorkOp::Build(LoadBuildFrame::ProofStmt {
+                            outer_parse_id: parse_id,
+                            has_conclude,
+                        }));
+                        if has_conclude {
+                            work.push(LoadWorkOp::Visit(pos_args[1])); // conclude
+                        }
+                        work.push(LoadWorkOp::Visit(pos_args[0])); // body
+                    }
                     "pattern_var" => {
                         let kb_id = self.load_pattern_var(parse_id, &pos_args);
                         self.create_occurrence(parse_id, kb_id);
@@ -6904,6 +6945,75 @@ impl<'a> Loader<'a> {
                     );
                 }
             }
+            LoadBuildFrame::ProofStmt { outer_parse_id, has_conclude } => {
+                // WI-538: results drain as [body, conclude?].
+                let n = if has_conclude { 2 } else { 1 };
+                let drain_start = results.len() - n;
+                let body = results[drain_start];
+                let conclude = if has_conclude { Some(results[drain_start + 1]) } else { None };
+                results.truncate(drain_start);
+
+                let meta = self
+                    .read_parse_proof_meta(outer_parse_id)
+                    .expect("proof_stmt: missing proof_meta ParseAux");
+
+                // The proof name is a citation handle (conclude form) or
+                // a rule reference (short form): a handle is interned
+                // as-is (names nothing yet); a rule ref is scope-resolved.
+                let target = if has_conclude {
+                    let txt = meta
+                        .target
+                        .segments
+                        .last()
+                        .map(|s| self.parsed.symbols.name(*s).to_owned())
+                        .unwrap_or_else(|| "_proof".to_owned());
+                    self.kb.intern(&txt)
+                } else {
+                    self.remap_name(&meta.target)
+                };
+                let strategy = meta.strategy_name.map(|s| {
+                    let txt = self.parsed.symbols.name(s).to_owned();
+                    self.kb.intern(&txt)
+                });
+                let using: Vec<Symbol> =
+                    meta.using.iter().map(|nm| self.remap_name(nm)).collect();
+
+                // KB term: proof_stmt { target, [strategy,] body, [conclude] }.
+                // `using` rides only on the occurrence (citation metadata,
+                // not a child); a term round-trip drops it.
+                let k_target = self.expr_syms.k_target;
+                let k_strategy = self.expr_syms.k_strategy;
+                let k_body = self.expr_syms.k_body;
+                let k_conclude = self.expr_syms.k_conclude;
+                let proof_functor = self.expr_syms.proof_stmt;
+                let target_term = self.kb.alloc(Term::Ident(target));
+                let mut named: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
+                named.push((k_target, target_term));
+                if let Some(strat) = strategy {
+                    let strat_term = self.kb.alloc(Term::Ident(strat));
+                    named.push((k_strategy, strat_term));
+                }
+                named.push((k_body, body));
+                if let Some(c) = conclude {
+                    named.push((k_conclude, c));
+                }
+                let kb_id = self.kb.alloc(Term::Fn {
+                    functor: proof_functor,
+                    pos_args: SmallVec::new(),
+                    named_args: named,
+                });
+                self.create_occurrence(outer_parse_id, kb_id);
+                results.push(kb_id);
+                if self.occ_suppress == 0 {
+                    let span = SourceSpan::from_span(
+                        self.source_id, self.parsed.terms.span(outer_parse_id));
+                    node_occurrence::build_frame(
+                        self.kb,
+                        node_occurrence::BuildFrame::Proof { span, target, strategy, using, has_conclude },
+                        &mut self.expr_occ_results,
+                    );
+                }
+            }
             LoadBuildFrame::PatternConstructor {
                 outer_parse_id,
                 name_ref,
@@ -7287,6 +7397,18 @@ impl<'a> Loader<'a> {
     fn read_parse_type_annotation(&self, let_parse_id: TermId) -> Option<crate::parse::ir::TypeExpr> {
         self.read_parse_aux(let_parse_id, "type_name", |aux| match aux {
             crate::parse::ir::ParseAux::TypeExpr(ty) => Some(ty.clone()),
+            _ => None,
+        })
+    }
+
+    /// WI-538: read the `ParseAux::ProofStmt` metadata (target /
+    /// strategy / using) off a `proof_stmt` parse term.
+    fn read_parse_proof_meta(
+        &self,
+        proof_parse_id: TermId,
+    ) -> Option<crate::parse::ir::ProofStmtIr> {
+        self.read_parse_aux(proof_parse_id, "proof_meta", |aux| match aux {
+            crate::parse::ir::ParseAux::ProofStmt(m) => Some(m.clone()),
             _ => None,
         })
     }

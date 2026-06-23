@@ -2270,6 +2270,10 @@ enum TypeBuildFrame {
     /// just the then-branch type. Replaces the recursive-helper arm so a
     /// deep else-if chain stays on the heap.
     IfExpr { occ: Rc<NodeOccurrence>, env: Rc<TypingEnv>, expected: Option<Value> },
+    /// WI-538: an in-body proof reassembles to `Expr::Proof` with its
+    /// (possibly `[simp]`-rewritten) `conclude?` + `body` children; its
+    /// type is the continuation's. `env` is the pre-proof type env.
+    ProofStmt { occ: Rc<NodeOccurrence>, env: Rc<TypingEnv>, has_conclude: bool },
     /// WI-285: all list elements finished; drain `count`, infer the
     /// element type (`element_hint` when bound by an outer
     /// `List[T = X]`, else the first element's type), build
@@ -3536,6 +3540,61 @@ fn visit_type(
             push_visit(work, then_branch, then_env, expected, fuel);
             push_visit_no_hint(work, condition, env, fuel);
         }
+        Expr::Proof { target, strategy, conclude, body, .. } => {
+            // WI-538 / proposal 025 §"In-body and control-flow proofs":
+            // discharge the proof's goal from the local Γ and, on
+            // success, `assume` it into Γ for the continuation (the
+            // proposal-050 in-body-`proof` modification rule, symmetric
+            // to a call's `ensures`). The goal is the `conclude`
+            // proposition (carried as a `Value::Node` goal, exactly like
+            // an `if` condition), or — the short form — the `target`
+            // rule as a 0-ary atom.
+            let target = *target;
+            let strategy = *strategy;
+            let conclude = conclude.clone();
+            let body = Rc::clone(body);
+            let goal: Value = match &conclude {
+                Some(c) => Value::Node(Rc::clone(c)),
+                // Short form: the goal is the `target` rule as a 0-ary
+                // atom. Incompleteness (sound, not unsound): an N-ary rule
+                // head is not reconstructed with fresh vars, so the arity
+                // mismatch fails the unifier — short-form discharge
+                // currently fires only for genuinely 0-ary rules.
+                // Reconstructing N-ary heads is a follow-on.
+                None => kb.make_goal_value(target, Vec::new()),
+            };
+            let discharged = match strategy {
+                // Tier-A `by derivation`: prove inline over Γ ∪ KB under
+                // the resolver's floundering guard.
+                Some(strat) if kb.resolve_sym(strat) == "derivation" => {
+                    prove_from_gamma(kb, &env.flow, &goal)
+                }
+                // Tier-B (external) and open obligations contribute
+                // nothing here: an external proof's conclusion may be
+                // assumed only once the Γ-snapshot + prove-pass gate
+                // verifies it (follow-on); until then it stays
+                // conservatively undischarged — never a silent drop.
+                _ => false,
+            };
+            let body_env = if discharged {
+                env.with_flow(env.flow.assume(kb, goal))
+            } else {
+                env.clone()
+            };
+            // Children order [conclude?, body] (matches `for_each_child`
+            // / `reassemble_group`). The proof's type is the
+            // continuation's; the goal is type-checked (no hint, like an
+            // `if` condition) under the pre-proof env for well-formedness.
+            work.push(TypeWorkOp::Build(TypeBuildFrame::ProofStmt {
+                occ: Rc::clone(&occ),
+                env: Rc::clone(&env.types),
+                has_conclude: conclude.is_some(),
+            }));
+            push_visit(work, body, body_env, expected, fuel);
+            if let Some(c) = conclude {
+                push_visit_no_hint(work, c, env, fuel);
+            }
+        }
         Expr::ListLit(elems) => {
             let elems = elems.clone();
             // WI-270: an outer `List[T = X]` makes X each element's
@@ -4583,6 +4642,36 @@ fn build_type(
                     return;
                 }
             };
+            results.push(Ok(TypeResult { ty, env: unwrap_types(env), effects, node }));
+        }
+        TypeBuildFrame::ProofStmt { occ, env, has_conclude } => {
+            // WI-538: children drained in [conclude?, body] order.
+            let n = if has_conclude { 2 } else { 1 };
+            let drain_start = results.len() - n;
+            let group: Vec<Result<TypeResult, TypeError>> = results.drain(drain_start..).collect();
+            if let Err(e) = collect_arg_errors(group.iter()) {
+                results.push(Err(e));
+                return;
+            }
+            // WI-283: reassemble so a `[simp]` rewrite inside the goal or
+            // body propagates up.
+            let node = reassemble_group(&occ, &group);
+            let mut it = group.into_iter().map(|r| r.expect("aggregator"));
+            let (conclude_r, body_r) = if has_conclude {
+                let c = it.next().unwrap();
+                let b = it.next().unwrap();
+                (Some(c), b)
+            } else {
+                (None, it.next().unwrap())
+            };
+            let mut effects = Vec::new();
+            if let Some(cr) = &conclude_r {
+                effects = merge_effects(kb, &effects, &cr.effects);
+            }
+            effects = merge_effects(kb, &effects, &body_r.effects);
+            // The proof is transparent to types: its type is the
+            // continuation's.
+            let ty = body_r.ty.clone();
             results.push(Ok(TypeResult { ty, env: unwrap_types(env), effects, node }));
         }
         TypeBuildFrame::ListLit { occ, env, element_hint, count } => {

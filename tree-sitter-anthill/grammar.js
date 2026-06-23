@@ -1185,6 +1185,7 @@ module.exports = grammar({
       $.if_expr,
       $.let_chain,
       $.lambda_expr,
+      $.proof_statement,
       $._term,
     ),
 
@@ -1228,6 +1229,31 @@ module.exports = grammar({
     lambda_expr: $ => prec.right(seq(
       'lambda', field('param', $._pattern),
       '->', field('body', $._expr_body),
+    )),
+
+    // An in-body / control-flow proof (proposal 025 §"In-body and
+    // control-flow proofs", WI-538). The existing `proof` clauses
+    // (`target` name, optional `using`, optional `by <strategy>`) in
+    // statement position, followed by a continuation `_expr_body` — the
+    // `let x = v <body>` sequencing precedent. NOT a new proof *kind*:
+    // it reuses `proof_using_list` / `proof_strategy` verbatim.
+    //
+    // `target` is always a NAME (parse-time): a rule reference in the
+    // short form (`proof recip_pos by derivation end …`, goal = that
+    // rule's head, seeded from Γ), or a citation handle when `conclude`
+    // is present. The goal-when-there-is-no-rule is the optional
+    // `conclude <_term>` clause — an inline proposition such as
+    // `conclude neq(b, 0)` over a local parameter, which has no rule to
+    // name. `conclude` takes a full `_term`, so an id-only goal
+    // (`conclude p`) is unambiguous: it sits in the `conclude` slot and
+    // is never confused with targeting a rule named `p`.
+    proof_statement: $ => prec.right(seq(
+      'proof', field('target', $.name),
+      optional(seq('using', field('using', $.proof_using_list))),
+      optional(seq('by', field('strategy', $.proof_strategy))),
+      optional(seq('conclude', field('conclude', $._term))),
+      'end',
+      field('body', $._expr_body),
     )),
 
     // =========================================================

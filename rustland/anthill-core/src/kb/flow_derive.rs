@@ -250,6 +250,17 @@ impl<'a> Deriver<'a> {
                 let benv = self.bind(pattern, vo, env);
                 self.analyze(body, &benv, is_tail)
             }
+            Expr::Proof { conclude, body, .. } => {
+                // WI-538: a proof is type-transparent — its `body` is the
+                // continuation and inherits the proof's tail-ness (like
+                // `let`'s body), so feed/return edges in a tail-position
+                // body survive. A `conclude` goal can carry feeds; analyze
+                // it non-tail, as a `match` guard is.
+                if let Some(c) = conclude {
+                    self.analyze(c, env, false);
+                }
+                self.analyze(body, env, is_tail)
+            }
             _ => {
                 // Unrecognised: walk children for nested feeds (no return/value).
                 for_each_child(expr, |c| {
@@ -346,6 +357,9 @@ fn find_accumulators(op_places: &[Symbol], occ: &Rc<NodeOccurrence>, acc: &mut V
             }
         }
         Some(Expr::Let { body, .. }) => find_accumulators(op_places, body, acc),
+        // WI-538: a proof is type-transparent — recurse into the tail
+        // continuation (its `body`).
+        Some(Expr::Proof { body, .. }) => find_accumulators(op_places, body, acc),
         Some(Expr::If { then_branch, else_branch, .. }) => {
             find_accumulators(op_places, then_branch, acc);
             find_accumulators(op_places, else_branch, acc);

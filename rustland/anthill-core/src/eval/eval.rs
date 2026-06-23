@@ -163,6 +163,19 @@ impl Interpreter {
                 self.start_match(scrutinee, branches)
             }
             Expr::Lambda { param, body } => self.reduce_lambda(Rc::clone(param), body.clone()),
+            Expr::Proof { body, .. } => {
+                // WI-538: an in-body proof is a static (type-level)
+                // construct — it discharges an obligation at type-check
+                // time and has no runtime effect. Continue evaluating
+                // the continuation in place (no new frame).
+                let body = body.clone();
+                let top = self
+                    .stack
+                    .top_mut()
+                    .ok_or_else(|| EvalError::Internal("proof: empty stack".into()))?;
+                top.expr = body;
+                Ok(StepOutcome::Continue)
+            }
             Expr::Apply { functor, pos_args, named_args, .. } => {
                 // WI-218: the typer may have classified this apply for
                 // spec-op rewrite. PinNow redirects the call to the

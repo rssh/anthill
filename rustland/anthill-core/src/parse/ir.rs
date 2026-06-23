@@ -255,6 +255,33 @@ pub enum ParseAux {
     TypeExpr(TypeExpr),
     /// A call-site `op[A = Int, B = String](…)` bindings list.
     SortBindings(Vec<SortBinding>),
+    /// In-body / control-flow proof metadata (WI-538) — the
+    /// `target` / `by <strategy>` / `using` clauses of a `proof_stmt`.
+    /// Rides as a child of the `proof_stmt` parse `Term::Fn` beside the
+    /// positional body (+ optional `conclude`) children; the loader
+    /// reads it back off the parse term, resolves the names, and lowers
+    /// it to an `Expr::Proof` occurrence.
+    ProofStmt(ProofStmtIr),
+}
+
+/// Metadata of an in-body / control-flow proof (proposal 025
+/// §"In-body and control-flow proofs", WI-538), carried as
+/// [`ParseAux::ProofStmt`]. Mirrors the relevant subset of
+/// [`ProofDecl`]; the goal (`conclude`) and continuation (`body`) ride
+/// as term children, not here. Only the strategy *name* is kept (the
+/// typer needs it to pick Tier-A `by derivation` vs Tier-B external);
+/// strategy args are deferred.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct ProofStmtIr {
+    /// Proof name: a rule reference (short form, no `conclude`) or a
+    /// citation handle (when `conclude` is present).
+    pub target: Name,
+    /// `by <strategy>` discharge tactic name (`derivation` / `z3` / …).
+    /// `None` ⇒ an open obligation (contributes nothing to Γ).
+    pub strategy_name: Option<Symbol>,
+    /// `using <name-list>` cited lemmas (lexical-scope citation).
+    pub using: Vec<Name>,
+    pub span: Span,
 }
 
 // ── Literal (parse-time, with plain f64) ────────────────────────

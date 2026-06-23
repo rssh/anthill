@@ -204,6 +204,7 @@ fn is_rewritable(expr: Option<&Expr>) -> bool {
                 | Expr::If { .. }
                 | Expr::Let { .. }
                 | Expr::Lambda { .. }
+                | Expr::Proof { .. }
                 | Expr::Match { .. }
                 | Expr::ListLit(_)
                 | Expr::SetLit(_)
@@ -596,6 +597,17 @@ pub(super) fn reassemble(
         Expr::ConstructRequirement { impl_functor, requirements } => Expr::ConstructRequirement {
             impl_functor: *impl_functor,
             requirements: cur.take_vec(requirements),
+        },
+        // WI-538: an in-body proof — consume children in `for_each_child`
+        // order [conclude?, body] so a `[simp]` rewrite (or a WI-408
+        // `some(…)` coercion) inside the goal or continuation propagates
+        // up instead of being silently dropped.
+        Expr::Proof { target, strategy, using, conclude, body } => Expr::Proof {
+            target: *target,
+            strategy: *strategy,
+            using: using.clone(),
+            conclude: conclude.as_ref().map(|c| cur.take(c)),
+            body: cur.take(body),
         },
         // Genuine leaves (`Var`/`Const`/`Ref`/`Ident`/`Bottom`/`VarRef`) — no
         // children to reassemble.

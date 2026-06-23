@@ -201,6 +201,9 @@ fn hash_occurrence(
         Expr::If { .. } => h.update(b"F"),
         Expr::Let { .. } => h.update(b"L"),
         Expr::Lambda { .. } | Expr::LambdaWithin { .. } => h.update(b"Lam"),
+        // WI-538: in-body proof — tag only; the `conclude` goal + body
+        // children are hashed by the `for_each_child` recursion below.
+        Expr::Proof { .. } => h.update(b"Pf"),
         Expr::ListLit(_) => h.update(b"["),
         Expr::SetLit(_) => h.update(b"{"),
         Expr::TupleLit { .. } => h.update(b"("),

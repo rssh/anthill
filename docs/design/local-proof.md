@@ -17,8 +17,11 @@ verified conclusion back into `Γ` for the code after it.
 
 ## Syntax
 
-A local proof is a **statement** that precedes the continuation expression — the
-same "binding, then body" shape `let` already uses:
+A local proof is the **same `proof` construct**, just in **statement** position —
+it precedes a continuation expression, the "binding, then body" shape `let`
+already uses. It is **not a new proof kind**: it reuses the existing `target` /
+`by <strategy>` / `using` clauses verbatim. The one addition is an **optional**
+`conclude <P>` clause.
 
 ```anthill
 operation safe_div(a: Int, b: Int) -> Int =
@@ -31,21 +34,42 @@ operation safe_div(a: Int, b: Int) -> Int =
     0
 ```
 
-- `<name>` (`b_nonzero`) — a local handle so a later sibling proof can cite it
-  (`using b_nonzero`).
-- `by <strategy>` — `derivation` (SLD) | `<tool>` (`z3`, …) | structured steps.
-- `conclude <P>` — the proposition this proof establishes; **`P` is the fact
-  added to `Γ`**. The `conclude` clause (reused from structured proofs,
-  [031](../proposals/031-structured-proofs.md)) supplies, for a local proof, what a companion
-  proof's *rule-name target* supplies for a top-level one — there is no
-  pre-existing rule to name.
-- omitting a body (no `by`) ⇒ an **open** obligation — it contributes nothing to
+**Two forms — `conclude` is optional** (settled with the project owner 2026-06-23):
+
+- **Short form** — `proof <rule> by <strategy> end <body>`, no `conclude`,
+  exactly like a top-level proof. The proposition is the **target rule's head**
+  (resolved up the lexical scope chain, since an op body declares no rules of its
+  own), proved from `Γ`. This is the uncommon in-body case. *(Impl note: the
+  current Tier-A wiring treats the target as a **0-ary atom**, so short-form
+  discharge fires only for genuinely 0-ary rules — an N-ary head fails the
+  unifier soundly; reconstructing N-ary heads with fresh vars is a follow-on.)*
+- **`conclude` form** — `proof <handle> by <strategy> conclude <P> end <body>`.
+  The goal is the **inline proposition `P`**; `<handle>` is then only a citation
+  name. This is the common in-body case — the motivating guard-discharge
+  obligation (`neq(b, 0)` over a *local parameter* `b`) has no top-level rule to
+  name, so the short form cannot express it. `conclude` takes a full term, so an
+  id-only goal (`conclude p`) is unambiguous (it sits in the `conclude` slot,
+  never confused with targeting a rule named `p`); `target` stays a parse-time
+  name, so no "rule-name-or-expression" disambiguation is needed and the
+  top-level `proof` grammar is untouched.
+
+Clause meanings:
+
+- `<target>` — a rule reference (short form) or a citation handle (`conclude`
+  form); always a name.
+- `by <strategy>` — `derivation` (SLD, Tier-A inline) | `<tool>` (`z3`, …,
+  Tier-B). Omitting `by` ⇒ an **open** obligation — it contributes nothing to
   `Γ` (the "Open" state below; distinct from a *pending* external proof, which
   has a strategy and does contribute, provisionally).
+- `conclude <P>` — the inline proposition this proof establishes; **`P` is the
+  fact added to `Γ`** on discharge. Supplies, for a local proof, what a companion
+  proof's *rule-name target* supplies for a top-level one.
 
-Grammar delta: an op body / branch arm becomes `statement* trailing-expr`, where
-a statement is a `proof` (today the body is a single expression; `let x = e
-<body>` is the existing precedent for sequencing).
+Grammar delta: a new `proof_statement` node joins `_expr_body` beside
+`let_chain` / `if_expr`, reusing `proof_using_list` / `proof_strategy` and adding
+the one `conclude` keyword; the top-level `proof_declaration` is unchanged. The op
+body / branch arm thus becomes `statement* trailing-expr` (`let x = e <body>` is
+the existing sequencing precedent).
 
 ## Discharge model — decoupled, two tiers
 
@@ -197,20 +221,34 @@ parse → load   (proof ⇒ ProofRecord fact, result = Pending)
 
 ## Scope (WI-538) and deferrals
 
-**In WI-538:**
-- grammar — `proof` as a body/branch statement (`conclude`-bearing);
-- IR / load — carry `conclude` + the `Γ` snapshot;
+**Delivered (the construct + Tier-A, 2026-06-23):**
+- grammar — `proof_statement` in `_expr_body` (optional `conclude`, trailing
+  continuation), reusing `proof_using_list` / `proof_strategy`; top-level
+  `proof_declaration` untouched;
+- IR / load — `proof_stmt` parse term (`ParseAux::ProofStmt` metadata) →
+  `Expr::Proof { target, strategy, using, conclude, body }` occurrence;
 - typer hook — **Tier-A inline discharge** via `prove_from_gamma` + the `Γ`
-  feedback (verified `conclude` → `Γ`);
-- lexical-scope citation (`using`);
-- Tier-B *recording* — snapshot `Γ` + provisional accept (the construct is
-  recognized; the actual z3 dispatch rides the existing prove pass).
+  feedback (a verified goal → `Γ` for the continuation, the proposal-050
+  in-body-`proof` modification rule). The goal is the `conclude` proposition, or
+  — short form — the `target` rule as a 0-ary atom;
+- `using` cites are carried on the occurrence (the lexical-scope-citation channel
+  is present).
 
-**Deferred:**
+**Deferred (follow-on):**
+- **Tier-B recording** — the `Γ` snapshot onto a `ProofRecord` + provisional
+  accept. Until the prove-pass **gate** lands (below), an external (`by z3`)
+  in-body proof is treated **conservatively** — it contributes nothing to `Γ`
+  (sound: never a silent drop), rather than provisionally assuming its conclusion
+  (which is unsound without the gate). So Tier-B recording is **gated on** the
+  prove-pass generalization, and they ship together.
+- **`using`-as-hypotheses** — the carried cites are not yet spliced into the
+  discharge context (the cited lemmas don't yet seed `prove_from_gamma`).
 - the **WI-067 dispatch glue** (auto-find a local proof for an un-refuted guard,
-  check it against the same `Γ`) — WI-067's own scope note owns it;
+  check it against the same `Γ`) — WI-067's own scope note owns it. This is also
+  the consumer that makes the Tier-A discharge *outcome* observable end-to-end
+  (the typer's `Γ` is otherwise write-only — refute_guard has no caller yet).
 - generalizing `collect_proof_records` + the `anthill check` chaining for in-body
-  proofs — a follow-on once Tier-B is exercised.
+  proofs (the prove-pass gate) — a follow-on once Tier-B is exercised.
 
 ## Open questions
 

@@ -2098,6 +2098,11 @@ fn lower_node(
             let body_s = lower_node(ctx, body)?;
             Ok(format!("[=](auto {pname}) {{ return {body_s}; }}"))
         }
+        Expr::Proof { body, .. } => {
+            // WI-538: an in-body proof is a type-level construct with no
+            // runtime effect — lower to just the continuation.
+            lower_node(ctx, body)
+        }
         Expr::ListLit(elems) => {
             let mut parts = Vec::new();
             for e in elems.iter() {
@@ -2338,6 +2343,12 @@ fn node_references_name(
         }
         Expr::Let { value, body, .. } => {
             node_references_name(kb, value, target)
+                || node_references_name(kb, body, target)
+        }
+        // WI-538: a proof is type-transparent — its continuation `body`
+        // (and the conclude goal) may reference the name.
+        Expr::Proof { conclude, body, .. } => {
+            conclude.as_ref().is_some_and(|c| node_references_name(kb, c, target))
                 || node_references_name(kb, body, target)
         }
         Expr::Match { scrutinee, branches } => {

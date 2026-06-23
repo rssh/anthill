@@ -253,6 +253,10 @@ fn drain_expr_children(expr: &mut Expr, stack: &mut Vec<Rc<NodeOccurrence>>) {
             stack.push(std::mem::replace(param, mk_placeholder()));
             stack.push(std::mem::replace(body, mk_placeholder()));
         }
+        Expr::Proof { conclude, body, .. } => {
+            if let Some(c) = conclude.take() { stack.push(c); }
+            stack.push(std::mem::replace(body, mk_placeholder()));
+        }
         Expr::LambdaWithin { param, body, requirements } => {
             stack.push(std::mem::replace(param, mk_placeholder()));
             stack.push(std::mem::replace(body, mk_placeholder()));
@@ -634,6 +638,30 @@ pub enum Expr {
         param: Rc<NodeOccurrence>,
         body: Rc<NodeOccurrence>,
     },
+    /// In-body / control-flow proof (proposal 025 §"In-body and
+    /// control-flow proofs", WI-538) — `proof <target> [by <strategy>]
+    /// [conclude <P>] end <body>`. The Tier-2 fallback for guarded-effect
+    /// discharge: the typer proves the goal (the `conclude` occurrence if
+    /// present, else the `target` rule's head) from the local Γ
+    /// (`prove_from_gamma`), and on success `assume`s it into Γ for
+    /// `body` — the proof-as-producer modification rule (proposal 050).
+    Proof {
+        /// Proof name: a rule reference (no `conclude`) or a citation
+        /// handle (with `conclude`). Resolved at load (see
+        /// `Expr::Proof` lowering).
+        target: Symbol,
+        /// `by <strategy>` tactic name (`derivation` ⇒ Tier-A inline;
+        /// any other ⇒ Tier-B external). `None` ⇒ open obligation
+        /// (contributes nothing to Γ).
+        strategy: Option<Symbol>,
+        /// `using` cited lemmas (resolved), for lexical-scope citation.
+        using: Vec<Symbol>,
+        /// The inline goal `conclude <P>`; `None` ⇒ goal is the `target`
+        /// rule's head.
+        conclude: Option<Rc<NodeOccurrence>>,
+        /// The continuation expression after the proof.
+        body: Rc<NodeOccurrence>,
+    },
     /// Generic instantiation — `Name { bindings }`.
     Instantiation {
         name: Symbol,
@@ -944,6 +972,12 @@ pub fn for_each_child(expr: &Expr, mut f: impl FnMut(&Rc<NodeOccurrence>)) {
         }
         Expr::Lambda { param, body } => {
             f(param);
+            f(body);
+        }
+        Expr::Proof { conclude, body, .. } => {
+            // WI-538: child order conclude?, body — must match
+            // `drain_expr_children` and `simp_rewrite::reassemble`.
+            if let Some(c) = conclude { f(c); }
             f(body);
         }
         Expr::ListLit(es) | Expr::SetLit(es) => {
@@ -3572,6 +3606,16 @@ pub(crate) enum BuildFrame {
     If { span: SourceSpan },
     Let { span: SourceSpan, pattern: TermId, type_annotation: Option<Value> },
     Lambda { span: SourceSpan, param: TermId },
+    /// In-body / control-flow proof (WI-538). Children on the result
+    /// stack are `[body, conclude?]`; the resolved target / strategy /
+    /// using clauses are carried here.
+    Proof {
+        span: SourceSpan,
+        target: Symbol,
+        strategy: Option<Symbol>,
+        using: Vec<Symbol>,
+        has_conclude: bool,
+    },
     Match { span: SourceSpan, branches: Vec<BranchMeta> },
     Apply {
         span: SourceSpan,
@@ -3697,6 +3741,39 @@ fn visit_fn(
             let body = get_named_arg(kb, named_args, "body");
             work.push(WorkOp::Build(BuildFrame::Lambda { span, param }));
             push_visit_or_bottom(work, body);
+        }
+        "proof_stmt" => {
+            // WI-538: rebuild Expr::Proof from a stored `proof_stmt`
+            // term (the inverse of the loader's BuildFrame::Proof). The
+            // target/strategy/using clauses are leaf metadata; body and
+            // optional conclude are the child occurrences.
+            match named_ref(kb, named_args, "target") {
+                Some(target) => {
+                    let strategy = named_ref(kb, named_args, "strategy");
+                    // WI-538: the `proof_stmt` KB term carries no `using`
+                    // cites — they ride only on the live-load occurrence
+                    // (citation metadata, not a child), so a rebuild from
+                    // the term yields an empty `using`. A follow-on
+                    // encodes them when `using`-as-hypotheses lands.
+                    let using: Vec<Symbol> = Vec::new();
+                    let conclude = get_named_arg(kb, named_args, "conclude");
+                    let body = get_named_arg(kb, named_args, "body");
+                    work.push(WorkOp::Build(BuildFrame::Proof {
+                        span,
+                        target,
+                        strategy,
+                        using,
+                        has_conclude: conclude.is_some(),
+                    }));
+                    if let Some(c) = conclude {
+                        push_visit_or_bottom(work, Some(c));
+                    }
+                    push_visit_or_bottom(work, body);
+                }
+                // Malformed `proof_stmt(name: ?n)` ⇒ reflection data; keep
+                // structural (mirrors the `var_ref` None arm).
+                None => push_unknown_fn(span, functor, pos_args, named_args, work),
+            }
         }
         "match_expr" => {
             let scrutinee = get_named_arg(kb, named_args, "scrutinee");
@@ -3979,6 +4056,17 @@ pub(crate) fn build_frame(
             let expr = Expr::Lambda { param: param_occ, body };
             results.push(NodeOccurrence::new_expr(expr, span, None));
         }
+        BuildFrame::Proof { span, target, strategy, using, has_conclude } => {
+            // WI-538: results stack (top → bottom): conclude?, body.
+            let conclude = if has_conclude {
+                Some(results.pop().expect("proof: missing conclude"))
+            } else {
+                None
+            };
+            let body = results.pop().expect("proof: missing body");
+            let expr = Expr::Proof { target, strategy, using, conclude, body };
+            results.push(NodeOccurrence::new_expr(expr, span, None));
+        }
         BuildFrame::Match { span, mut branches } => {
             // results stack contents (top → bottom):
             //   bN_guard?, bN_body, bN-1_guard?, bN-1_body, ..., b0_guard?, b0_body, scrutinee
@@ -4139,6 +4227,7 @@ pub fn is_reflect_form_functor(kb: &KnowledgeBase, functor: Symbol) -> bool {
         expr_form_key(qn, short),
         "int_lit" | "float_lit" | "bigint_lit" | "string_lit" | "bool_lit"
             | "var_ref" | "if_expr" | "let_expr" | "lambda_expr" | "match_expr"
+            | "proof_stmt"
             | "apply" | "constructor" | "dot_apply" | "apply_within"
             | "requirement_at_sort" | "construct_requirement"
             | "ListLiteral" | "SetLiteral" | "TupleLiteral"

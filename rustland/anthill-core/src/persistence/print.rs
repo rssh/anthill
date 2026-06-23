@@ -349,6 +349,28 @@ impl<'a> TermPrinter<'a, KnowledgeBase> {
                 buf.push_str(") => ");
                 self.write_occurrence(body, buf);
             }
+            Expr::Proof { target, strategy, using, conclude, body } => {
+                // WI-538: proof <target> [using …] [by …] [conclude …] end <body>
+                buf.push_str("proof ");
+                buf.push_str(self.view.sym_name(*target));
+                if !using.is_empty() {
+                    buf.push_str(" using ");
+                    for (i, u) in using.iter().enumerate() {
+                        if i > 0 { buf.push_str(", "); }
+                        buf.push_str(self.view.sym_name(*u));
+                    }
+                }
+                if let Some(strat) = strategy {
+                    buf.push_str(" by ");
+                    buf.push_str(self.view.sym_name(*strat));
+                }
+                if let Some(c) = conclude {
+                    buf.push_str(" conclude ");
+                    self.write_occurrence(c, buf);
+                }
+                buf.push_str(" end ");
+                self.write_occurrence(body, buf);
+            }
             Expr::Match { scrutinee, branches } => {
                 buf.push_str("match ");
                 self.write_occurrence(scrutinee, buf);
@@ -670,6 +692,7 @@ impl<'a, V: TermSource + ?Sized> TermPrinter<'a, V> {
                 match aux.as_ref() {
                     ParseAux::TypeExpr(te) => buf.push_str(&format!("<type-anno {:?}>", te)),
                     ParseAux::SortBindings(b) => buf.push_str(&format!("<type-args {:?}>", b)),
+                    ParseAux::ProofStmt(m) => buf.push_str(&format!("<proof-meta {:?}>", m)),
                 }
             }
         }
