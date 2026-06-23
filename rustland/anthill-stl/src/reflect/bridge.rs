@@ -51,6 +51,16 @@ fn literal_to_repr(lit: Literal) -> LiteralRepr {
     }
 }
 
+/// Build a fieldful `Value::Entity` (no positional args) — the record shape the
+/// reflect `LogicalQuery.*` constructors take. Used by the WI-549 guard reifier.
+#[inline]
+fn lq_entity(
+    functor: anthill_core::intern::Symbol,
+    named: Vec<(anthill_core::intern::Symbol, Value)>,
+) -> Value {
+    Value::Entity { functor, pos: Vec::new().into(), named: named.into() }
+}
+
 // ── KbBridge ────────────────────────────────────────────────────
 
 pub struct KbBridge {
@@ -414,6 +424,154 @@ impl KbBridge {
             }
             _ => Err(Error(format!("unsupported query variant: {:?}", query))),
         }
+    }
+
+    /// Reify a generated reflect [`LogicalQuery`] into a KB guard [`Value`] built
+    /// from the `anthill.reflect.LogicalQuery.*` constructors (WI-549). DISTINCT
+    /// from [`query_to_goals`](Self::query_to_goals), which FLATTENS a query to
+    /// resolver goals (unwrapping `pattern_query`) — wrong for a guard, whose
+    /// structure `collect_trigger_sorts` + `evaluate_guard` must walk intact.
+    ///
+    /// Built as a `Value::Entity` carrier, uniform with the interpreter's eval-side
+    /// reflect builders (`kb_sort_template`) and carrier-faithful: a `PatternQuery`'s
+    /// inner term rides verbatim, preserving a `Value::Node` occurrence a hash-consed
+    /// `Term::Fn` could not hold. The carrier-agnostic guard machinery (WI-513
+    /// `lower_query_with`, `collect_trigger_sorts`) reads it through `TermView`
+    /// exactly as it reads the loader's hash-consed form. Total over every enum
+    /// variant — no lossy fallback.
+    fn reify_logical_query(kb: &mut KnowledgeBase, q: &LogicalQuery) -> Value {
+        match q {
+            LogicalQuery::EmptyQuery => lq_entity(Self::lq_ctor(kb, "empty_query"), vec![]),
+            LogicalQuery::PatternQuery { term } => {
+                let f = Self::lq_ctor(kb, "pattern_query");
+                let k = kb.intern("term");
+                lq_entity(f, vec![(k, term.value().clone())])
+            }
+            LogicalQuery::SortQuery { sort_name } => {
+                let f = Self::lq_ctor(kb, "sort_query");
+                let k = kb.intern("sort_name");
+                lq_entity(f, vec![(k, Value::Str(sort_name.clone()))])
+            }
+            LogicalQuery::Conjunction { left, right } =>
+                Self::reify_binary(kb, "conjunction", left, right),
+            LogicalQuery::Disjunction { left, right } =>
+                Self::reify_binary(kb, "disjunction", left, right),
+            LogicalQuery::Negation { query } => {
+                let f = Self::lq_ctor(kb, "negation");
+                let inner = Self::reify_logical_query(kb, query);
+                let k = kb.intern("query");
+                lq_entity(f, vec![(k, inner)])
+            }
+            LogicalQuery::Guarded { query, condition } => {
+                let f = Self::lq_ctor(kb, "guarded");
+                let inner = Self::reify_logical_query(kb, query);
+                let (qk, ck) = (kb.intern("query"), kb.intern("condition"));
+                lq_entity(f, vec![(qk, inner), (ck, condition.value().clone())])
+            }
+            LogicalQuery::Projected { query, vars } => {
+                let f = Self::lq_ctor(kb, "projected");
+                let inner = Self::reify_logical_query(kb, query);
+                let vars_list = Self::reify_string_list(kb, vars);
+                let (qk, vk) = (kb.intern("query"), kb.intern("vars"));
+                lq_entity(f, vec![(qk, inner), (vk, vars_list)])
+            }
+            LogicalQuery::Limited { query, count } => {
+                let f = Self::lq_ctor(kb, "limited");
+                let inner = Self::reify_logical_query(kb, query);
+                let (qk, ck) = (kb.intern("query"), kb.intern("count"));
+                lq_entity(f, vec![(qk, inner), (ck, Value::Int(*count))])
+            }
+            // Quantifiers all share `{var, condition, body}` and lower to an
+            // enforceable boolean guard (`eval_count_guard`/`eval_forall_guard`).
+            LogicalQuery::ForallQ { var, condition, body } =>
+                Self::reify_quantifier(kb, "forall_q", var, condition, body),
+            LogicalQuery::SomeQ { var, condition, body } =>
+                Self::reify_quantifier(kb, "some_q", var, condition, body),
+            LogicalQuery::OneQ { var, condition, body } =>
+                Self::reify_quantifier(kb, "one_q", var, condition, body),
+            LogicalQuery::LoneQ { var, condition, body } =>
+                Self::reify_quantifier(kb, "lone_q", var, condition, body),
+            LogicalQuery::NoQ { var, condition, body } =>
+                Self::reify_quantifier(kb, "no_q", var, condition, body),
+            // Aggregations reduce a query to a *value*, not a boolean — they are
+            // not constraints, so they cannot be guards. The guard engine cannot
+            // lower them (`lower_query_with` → `NotYetImplemented`), so registering
+            // one would defer to a misleading panic at the next matching assert
+            // (`assert_checked`'s Err arm assumes a load-time `check_all_guards`
+            // rejected it — which never runs on this bridge path). Reject loudly
+            // and EARLY here instead. The loader never reaches this (its
+            // `build_logical_query` returns `None` for `Aggregation`).
+            LogicalQuery::CountQ { .. }
+            | LogicalQuery::SumQ { .. }
+            | LogicalQuery::MinQ { .. }
+            | LogicalQuery::MaxQ { .. } => panic!(
+                "KB.add_guard: an aggregation LogicalQuery (count_q/sum_q/min_q/max_q) \
+                 reduces to a value, not a boolean — it cannot be registered as a guard"),
+        }
+    }
+
+    /// Reify a binary `{left, right}` LogicalQuery (`conjunction` / `disjunction`).
+    fn reify_binary(
+        kb: &mut KnowledgeBase,
+        short: &str,
+        left: &LogicalQuery,
+        right: &LogicalQuery,
+    ) -> Value {
+        let f = Self::lq_ctor(kb, short);
+        let l = Self::reify_logical_query(kb, left);
+        let r = Self::reify_logical_query(kb, right);
+        let (lk, rk) = (kb.intern("left"), kb.intern("right"));
+        lq_entity(f, vec![(lk, l), (rk, r)])
+    }
+
+    /// Reify a quantifier variant (`forall_q`/`some_q`/`one_q`/`lone_q`/`no_q`) —
+    /// all share the `{var, condition, body}` shape (`no ?x: condition -: body`).
+    /// `var` (the binder name) rides as a `Symbol` ref matching the spec field type
+    /// (`var: Symbol`); it is INERT to evaluation (`eval_count_guard`/
+    /// `eval_forall_guard` read only `condition`/`body`) and carries no trigger
+    /// sort. (The loader stores this slot as a `String` literal — an inert
+    /// representational divergence; the `Symbol` ref is the spec-faithful form.)
+    /// `no_q` is the enforced cardinality-zero guard: a 2-cycle
+    /// `no ?x: edge(a,?x) -: edge(?x,a)` rejects the assert that completes the cycle.
+    fn reify_quantifier(
+        kb: &mut KnowledgeBase,
+        short: &str,
+        var: &Symbol,
+        condition: &LogicalQuery,
+        body: &LogicalQuery,
+    ) -> Value {
+        let f = Self::lq_ctor(kb, short);
+        let cond = Self::reify_logical_query(kb, condition);
+        let bod = Self::reify_logical_query(kb, body);
+        let var_ref = kb.alloc(CoreTerm::Ref(var.symbol()));
+        let (vk, ck, bk) = (kb.intern("var"), kb.intern("condition"), kb.intern("body"));
+        lq_entity(f, vec![(vk, Value::Term(var_ref)), (ck, cond), (bk, bod)])
+    }
+
+    /// Resolve an `anthill.reflect.LogicalQuery.<short>` constructor symbol, or
+    /// panic loudly — a guard cannot be registered without the reflect stdlib
+    /// loaded (the symbols `collect_trigger_sorts`/`evaluate_guard` key on).
+    fn lq_ctor(kb: &KnowledgeBase, short: &str) -> anthill_core::intern::Symbol {
+        kb.try_resolve_symbol(&format!("anthill.reflect.LogicalQuery.{short}"))
+            .unwrap_or_else(|| panic!(
+                "KB.add_guard: `anthill.reflect.LogicalQuery.{short}` unavailable — \
+                 is anthill.reflect loaded?"))
+    }
+
+    /// Reify a `Vec<String>` into a prelude `List` cons/nil `Value` of `Value::Str`
+    /// elements (the `projected.vars` field). Panics if the prelude `List` ctors
+    /// are unavailable, mirroring [`lq_ctor`](Self::lq_ctor).
+    fn reify_string_list(kb: &mut KnowledgeBase, items: &[String]) -> Value {
+        let cons = kb.try_resolve_symbol("anthill.prelude.List.cons")
+            .unwrap_or_else(|| panic!("KB.add_guard: `anthill.prelude.List.cons` unavailable"));
+        let nil = kb.try_resolve_symbol("anthill.prelude.List.nil")
+            .unwrap_or_else(|| panic!("KB.add_guard: `anthill.prelude.List.nil` unavailable"));
+        let (head, tail) = (kb.intern("head"), kb.intern("tail"));
+        let mut acc = lq_entity(nil, vec![]);
+        for s in items.iter().rev() {
+            acc = lq_entity(cons, vec![(head, Value::Str(s.clone())), (tail, acc)]);
+        }
+        acc
     }
 }
 
@@ -909,12 +1067,21 @@ impl KB for KbBridge {
         kb.assert_checked(term_tid, sort_tid, sort_tid, None)
     }
 
-    fn add_guard(&mut self, _guard: LogicalQuery) -> ConstraintId {
-        // WI-549: needs a reflect-`LogicalQuery`-enum → structured KB query
-        // Value reifier (negation/conjunction/pattern_query nodes that
-        // `collect_trigger_sorts`/`evaluate_guard` walk) — distinct from
-        // `query_to_goals`, which flattens to resolver goals. Filed separately.
-        panic!("KB.add_guard not yet implemented (WI-549)")
+    fn add_guard(&mut self, guard: LogicalQuery) -> ConstraintId {
+        // WI-549: reify the generated `LogicalQuery` enum into a structured KB
+        // guard Value (built from the `anthill.reflect.LogicalQuery.*` ctors) and
+        // register it — DISTINCT from `query_to_goals`, which flattens to resolver
+        // goals. `add_guard_labeled` extracts the trigger sorts (via
+        // `collect_trigger_sorts`) so the guard fires on the right facts. The
+        // enforceable forms are the quantifiers (`forall_q`/`some_q`/`one_q`/
+        // `lone_q`/`no_q`) and `negation`; a bare pattern_query/conjunction is
+        // registered but vacuously holds (WI-023/WI-513). Aggregation variants are
+        // rejected loudly by `reify_logical_query` (not boolean constraints).
+        // `ConstraintId` is a generated unit struct, so the core id is discarded.
+        let mut kb = self.kb.borrow_mut();
+        let value = Self::reify_logical_query(&mut kb, &guard);
+        kb.add_guard_labeled(value, None);
+        ConstraintId
     }
 }
 
@@ -1429,6 +1596,127 @@ end
         let rejected = bridge.assert(ReflectTerm::new(Value::Term(edge_ba)), rel_type);
         assert!(rejected.is_none(),
             "asserting edge(b→a) completes a 2-cycle → rejected by `no_two_cycle`");
+    }
+
+    /// A domain with `edge(a→b)` loaded, for the WI-549 `add_guard` tests. Returns
+    /// the bridge plus `edge(b→a)` and the `Rel` sort `Type` (the assert args).
+    fn guard_fixture() -> (KbBridge, TermId, Type) {
+        let bridge = load_source_bridge_with_stdlib(r#"
+namespace test.add_guard
+  sort Node
+    entity a
+    entity b
+  end
+  sort Rel
+    entity edge(from: Node, to: Node)
+  end
+  fact edge(from: a, to: b)
+end
+"#);
+        let (edge_ba, rel_type) = {
+            let mut kb = bridge.kb.borrow_mut();
+            let edge_sym = kb.try_resolve_symbol("test.add_guard.Rel.edge").expect("edge");
+            let rel_sym = kb.try_resolve_symbol("test.add_guard.Rel").expect("Rel");
+            let a_sym = kb.try_resolve_symbol("test.add_guard.Node.a").expect("a");
+            let b_sym = kb.try_resolve_symbol("test.add_guard.Node.b").expect("b");
+            let a_ref = kb.alloc(CoreTerm::Ref(a_sym));
+            let b_ref = kb.alloc(CoreTerm::Ref(b_sym));
+            let (from, to) = (kb.intern("from"), kb.intern("to"));
+            let edge_ba = kb.alloc(CoreTerm::Fn {
+                functor: edge_sym, pos_args: Default::default(),
+                named_args: vec![(from, b_ref), (to, a_ref)].into(),
+            });
+            let rel_ref = kb.alloc(CoreTerm::Ref(rel_sym));
+            (edge_ba, Type::new(Value::Term(rel_ref)))
+        };
+        (bridge, edge_ba, rel_type)
+    }
+
+    #[test]
+    fn add_guard_negation_rejects_violating_assert() {
+        // WI-549: a guard registered PROGRAMMATICALLY via the bridge's `add_guard`
+        // (reifying a `LogicalQuery` enum, NOT from a source constraint) is enforced
+        // like a loaded constraint. `negation(pattern_query(edge(b→a)))` = "there is
+        // no edge b→a"; it triggers on the `Rel` sort. With only edge(a→b) present
+        // it holds; asserting edge(b→a) gives the inner pattern a solution, so the
+        // negation fails → the assert is rejected (None) and retracted.
+        let (mut bridge, edge_ba, rel_type) = guard_fixture();
+
+        let guard = LogicalQuery::Negation {
+            query: Box::new(LogicalQuery::PatternQuery {
+                term: ReflectTerm::new(Value::Term(edge_ba)),
+            }),
+        };
+        bridge.add_guard(guard);
+
+        let rejected = bridge.assert(ReflectTerm::new(Value::Term(edge_ba)), rel_type);
+        assert!(rejected.is_none(),
+            "asserting edge(b→a) violates the programmatic `not(edge(b→a))` guard → rejected");
+    }
+
+    #[test]
+    fn add_guard_no_q_rejects_two_cycle() {
+        // WI-549: the quantifier reify path — a `no_q` cardinality guard built via
+        // the bridge mirrors the source `no_two_cycle`: `no ?x: edge(a,?x) -:
+        // edge(?x,a)`. The two pattern terms SHARE the logical var `?x` (one VarId).
+        // With edge(a→b) loaded the count is 0 (no edge(b→a) yet); asserting edge(b→a)
+        // makes ?x=b satisfy both patterns → count 1 ≠ 0 → guard violated → rejected.
+        let (mut bridge, edge_ba, rel_type) = guard_fixture();
+
+        let (cond_pat, body_pat, x_name) = {
+            let mut kb = bridge.kb.borrow_mut();
+            let edge_sym = kb.try_resolve_symbol("test.add_guard.Rel.edge").expect("edge");
+            let a_sym = kb.try_resolve_symbol("test.add_guard.Node.a").expect("a");
+            let a_ref = kb.alloc(CoreTerm::Ref(a_sym));
+            let (from, to) = (kb.intern("from"), kb.intern("to"));
+            // One shared var `?x` across both patterns — same VarId.
+            let x_name = kb.intern("x");
+            let x_vid = kb.fresh_var(x_name);
+            let x_term = kb.alloc(CoreTerm::Var(Var::Global(x_vid)));
+            // condition: edge(from: a, to: ?x)
+            let cond = kb.alloc(CoreTerm::Fn {
+                functor: edge_sym, pos_args: Default::default(),
+                named_args: vec![(from, a_ref), (to, x_term)].into(),
+            });
+            // body: edge(from: ?x, to: a)
+            let body = kb.alloc(CoreTerm::Fn {
+                functor: edge_sym, pos_args: Default::default(),
+                named_args: vec![(from, x_term), (to, a_ref)].into(),
+            });
+            (cond, body, x_name)
+        };
+
+        let guard = LogicalQuery::NoQ {
+            var: ReflectSymbol::new(x_name),
+            condition: Box::new(LogicalQuery::PatternQuery {
+                term: ReflectTerm::new(Value::Term(cond_pat)),
+            }),
+            body: Box::new(LogicalQuery::PatternQuery {
+                term: ReflectTerm::new(Value::Term(body_pat)),
+            }),
+        };
+        bridge.add_guard(guard);
+
+        let rejected = bridge.assert(ReflectTerm::new(Value::Term(edge_ba)), rel_type);
+        assert!(rejected.is_none(),
+            "asserting edge(b→a) completes the 2-cycle → rejected by the programmatic `no_q` guard");
+    }
+
+    #[test]
+    #[should_panic(expected = "reduces to a value, not a boolean")]
+    fn add_guard_rejects_aggregation_early() {
+        // WI-549: an aggregation LogicalQuery (count_q/sum_q/min_q/max_q) is not a
+        // boolean constraint — the guard engine can't lower it, so registering one
+        // would defer to a misleading panic at the next matching assert. `add_guard`
+        // must reject it LOUDLY and EARLY (at registration), not silently accept it.
+        let (mut bridge, _edge_ba, _rel_type) = guard_fixture();
+        let x_name = bridge.kb.borrow_mut().intern("x");
+        let guard = LogicalQuery::CountQ {
+            var: ReflectSymbol::new(x_name),
+            condition: Box::new(LogicalQuery::EmptyQuery),
+            body: Box::new(LogicalQuery::EmptyQuery),
+        };
+        bridge.add_guard(guard); // panics in reify_logical_query before registration
     }
 
     /// Drift-guard (WI-540): the reflect `KB` / `Substitution` interface is
