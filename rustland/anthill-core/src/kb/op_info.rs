@@ -187,8 +187,9 @@ pub fn head_field_value(kb: &KnowledgeBase, head: &Value, key: &str) -> Option<V
 /// `convert_clause_list`; a hash-consed head stores a `TermId` list (each element
 /// wrapped `Value::Term`), a value fact a value list whose elements (possibly
 /// `Value::Node` for a denoted precondition) are returned verbatim. Mirrors
-/// [`effects_of_head`].
-fn clause_list_field(kb: &KnowledgeBase, head: &Value, key: &str) -> Vec<Value> {
+/// [`effects_of_head`]. `pub` so the reflect builtins (`KB.operations`) surface
+/// `requires`/`ensures` carrier-faithfully (WI-548), matching the host bridge.
+pub fn clause_list_field(kb: &KnowledgeBase, head: &Value, key: &str) -> Vec<Value> {
     match head_field(kb, head, key) {
         Some(ViewItem::Term(t)) => list_to_vec(kb, t).into_iter().map(Value::Term).collect(),
         Some(ViewItem::Value(Value::Term(t))) => {
