@@ -694,6 +694,7 @@ impl SearchStream {
             // builtin (`neq(5, 0)`) finds no Γ match and runs normally; `gamma`
             // is `None` for every resolution but the typer's bridge, so this is
             // inert otherwise.
+            let mut force_delay = false;
             if self.config.gamma.is_some() {
                 let frame_subst = self.stack.last().unwrap().subst.clone();
                 let goal_value = kb.reify_value(&goal_val, &frame_subst);
@@ -711,8 +712,23 @@ impl SearchStream {
                     };
                     return Some(StepResult::Continue);
                 }
+                // WI-067 (proposal 050): no Γ fact unified, and the goal ranges over
+                // an OPEN-WORLD parameter (a `var_ref` binder reference) — a scalar
+                // builtin (`neq`/`eq`/…) would WRONGLY decide it, treating the
+                // var_ref reflect-term as a ground constant (`neq(var_ref(b), 0)`
+                // succeeds structurally). Force a DELAY so a symbolic guard
+                // FLOUNDERS instead of being NAF-refuted: drop only on a positive
+                // proof of ¬guard (048 §"constructive refutation"). The branch /
+                // match cases that DO know `neq(b, 0)` discharged above via the Γ
+                // fact; this is the symbolic fall-through.
+                force_delay = kb.value_has_open_world_ref(&goal_value, &frame_subst);
             }
-            match kb.execute_builtin(tag, &goal_val, &frame.subst) {
+            let builtin_result = if force_delay {
+                BuiltinResult::Delay
+            } else {
+                kb.execute_builtin(tag, &goal_val, &frame.subst)
+            };
+            match builtin_result {
                 BuiltinResult::Success => {
                     // Remove goals[0], bump depth, reset delay counter if delayed
                     let new_goals = frame.goals[1..].to_vec();
@@ -1173,8 +1189,17 @@ impl SearchStream {
             }
         };
 
-        // Groundness check: NAF on non-ground goals would be unsound.
-        if !kb.value_is_ground(&inner, &subst) {
+        // Groundness check: NAF on non-ground goals would be unsound. In the
+        // LOCAL-INTERPRETATION query context (proposal 050: the `gamma` overlay is
+        // set — only `prove_from_gamma` sets it), a `var_ref(name)` is ALSO treated
+        // as non-ground: it is an OPEN-WORLD reference to a runtime binder /
+        // parameter whose value is unknown, so `not(eq(b, 0))` over a symbolic
+        // parameter must FLOUNDER (delay) rather than succeed by NAF — the
+        // soundness contract effect discharge (048 §"constructive refutation") and
+        // the in-body proof bridge rely on. Outside a Γ query, `var_ref` is a
+        // closed reflect datum and keeps its ordinary ground reading.
+        let open_world_param = self.config.gamma.is_some() && kb.value_has_open_world_ref(&inner, &subst);
+        if open_world_param || !kb.value_is_ground(&inner, &subst) {
             // Delay — same mechanism as other builtins
             match delay_mode {
                 DelayMode::Normal => {
@@ -1944,6 +1969,62 @@ impl KnowledgeBase {
             Value::Node(occ) => !node_occurrence::occurrence_has_unbound_var(occ),
             Value::Var(_) => false,
             _ => true,
+        }
+    }
+
+    /// WI-067 / proposal 050: does a goal value reference an OPEN-WORLD binder /
+    /// parameter — a value unknown at static time, so a `not(…)` / scalar builtin
+    /// over it must FLOUNDER rather than NAF-succeed (the soundness contract effect
+    /// discharge relies on; see the gates in [`SearchStream::step_naf`] /
+    /// `step_builtin`)? The reference is the canonical `var_ref(name)` reflect-term
+    /// twin (`Functor{anthill.reflect.Expr.var_ref}`) — the ONLY binder-reference
+    /// shape `Γ` is built with ([`binder_ref_value`]) and the one a guard's binder
+    /// is normalized to before discharge (`normalize_param_refs_to_var_ref`). A
+    /// bare `Ref`/`Ident` is deliberately NOT matched: a guard's binders are
+    /// already wrapped, while a *bare* `Ref` here is a closed datum — a sort,
+    /// operation, const, or constructor — that a reflective builtin a proof goal
+    /// chases (`scope`/`is_entity_of`/…) must still be able to DECIDE, not
+    /// flounder. Carrier-agnostic: walks `Term`, `Node` occurrences, AND
+    /// value-carrier `Entity` arguments (a reified goal lands as a
+    /// `Value::Entity` of `Value`s). Only consulted under the `gamma` overlay (the
+    /// local-interpretation context); inert otherwise.
+    pub(crate) fn value_has_open_world_ref(&self, v: &Value, subst: &Substitution) -> bool {
+        // No `var_ref` symbol interned (a prelude-less KB) ⇒ no binder references
+        // can exist ⇒ nothing is open-world.
+        match self.symbols.by_qualified_name.get("anthill.reflect.Expr.var_ref").copied() {
+            Some(var_ref) => self.value_has_open_world_ref_inner(v, var_ref, subst),
+            None => false,
+        }
+    }
+
+    fn value_has_open_world_ref_inner(&self, v: &Value, var_ref: crate::intern::Symbol, subst: &Substitution) -> bool {
+        match v {
+            Value::Term(t) => self.term_has_var_ref(*t, var_ref, subst),
+            Value::Node(occ) => node_occurrence::occurrence_has_var_ref(occ),
+            Value::Entity { pos, named, .. } => {
+                pos.iter().any(|a| self.value_has_open_world_ref_inner(a, var_ref, subst))
+                    || named.iter().any(|(_, a)| self.value_has_open_world_ref_inner(a, var_ref, subst))
+            }
+            _ => false,
+        }
+    }
+
+    /// Recursive `var_ref`-functor search over a hash-consed goal term — a binder
+    /// reference (`var_ref(name: …)`) anywhere in the term. A bare `Ref`/`Ident`
+    /// is closed (see [`value_has_open_world_ref`]).
+    fn term_has_var_ref(&self, term: TermId, var_ref: crate::intern::Symbol, subst: &Substitution) -> bool {
+        let walked = self.walk(term, subst);
+        match self.terms.get(walked) {
+            Term::Fn { functor, pos_args, named_args } => {
+                if *functor == var_ref {
+                    return true;
+                }
+                let pos_args = pos_args.clone();
+                let named_args = named_args.clone();
+                pos_args.iter().any(|&a| self.term_has_var_ref(a, var_ref, subst))
+                    || named_args.iter().any(|&(_, a)| self.term_has_var_ref(a, var_ref, subst))
+            }
+            _ => false,
         }
     }
 

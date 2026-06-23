@@ -3161,6 +3161,23 @@ impl KnowledgeBase {
         list
     }
 
+    /// WI-537 / WI-067: the canonical binder-reference reflect-term twin
+    /// `var_ref(name: Ref(sym))` (head `Functor{anthill.reflect.Expr.var_ref}`).
+    /// The SINGLE producer of this shape — `occurrence_to_term`'s `VarRef` arm
+    /// and the discharge-side `normalize_param_refs_to_var_ref` both call here, so
+    /// the canonical form (which migrated Ident→Opaque→var_ref across WI-537) has
+    /// exactly one home (`binder_ref_value` mints the matching `Value::Node` twin).
+    pub fn make_var_ref_term(&mut self, name: Symbol) -> TermId {
+        let var_ref = self.resolve_symbol("anthill.reflect.Expr.var_ref");
+        let name_ref = self.alloc(Term::Ref(name));
+        let k_name = self.intern("name");
+        self.alloc(Term::Fn {
+            functor: var_ref,
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::from_slice(&[(k_name, name_ref)]),
+        })
+    }
+
     // ── Type term constructors (anthill.prelude.Type entities) ───
 
     /// sort_ref(name: <sym>) — reference to a named sort.

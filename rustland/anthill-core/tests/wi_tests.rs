@@ -250,6 +250,9 @@ mod wi377_effect_row_absent_fold_test;
 #[path = "include/wi478_guarded_effect_test.rs"]
 mod wi478_guarded_effect_test;
 
+#[path = "include/wi067_guard_discharge_test.rs"]
+mod wi067_guard_discharge_test;
+
 #[path = "include/wi366_value_in_type_facts_test.rs"]
 mod wi366_value_in_type_facts_test;
 

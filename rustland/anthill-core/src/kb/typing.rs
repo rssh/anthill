@@ -4003,7 +4003,7 @@ fn build_type(
             }
             let span = Some(node.span.span);
             let r = check_apply_iter(
-                kb, &*env, &node, fn_sym, &pos_args, &named_args,
+                kb, &*env, &env.flow, &node, fn_sym, &pos_args, &named_args,
                 &pos_results, &named_results, span, expected,
             );
             results.push(r);
@@ -4923,6 +4923,11 @@ fn field_access_owning_ctor(
 fn check_apply_iter(
     kb: &mut KnowledgeBase,
     env: &TypingEnv,
+    // WI-067 (proposal 048 §"Typer delta"): the local-interpretation Γ at the
+    // call site, used to constructively refute a guarded effect's guard. Kept
+    // distinct from `env` (a `TypingEnv`, types only) so the discharge reads the
+    // logical fact channel the `if`/`match`/proof narrowing populates (050).
+    flow: &FlowEnv,
     occ: &Rc<NodeOccurrence>,
     fn_sym: Symbol,
     pos_args: &[Rc<NodeOccurrence>],
@@ -5558,6 +5563,29 @@ fn check_apply_iter(
         // rendered as a spurious `undeclared effect: {empty_row}`). A bare label
         // (`Modify[c]`) or an unbound row var (the WI-365 concrete-carrier path,
         // closed below) is not an `EffectsRows` head and passes through unchanged.
+        // WI-067 (proposal 048 §"Typer delta" / 050 consumer 2): does the callee
+        // carry any guarded effect element `L :- G`? Computed once so the >99% of
+        // calls whose callee declares no guarded effect pay nothing — neither the
+        // call substitution σ nor the per-atom refutation runs.
+        // Scan under the REAL `subst` (not an empty one): a guarded atom can sit
+        // behind a row-tail var that arg-unification bound to a guarded row
+        // (WI-375 threaded-row path), and is revealed only through `subst` — the
+        // same `subst` the per-effect discharge below walks with.
+        let op_has_guarded = pre_substituted
+            .iter()
+            .any(|e| !collect_guarded_atoms(kb, &subst, e).is_empty());
+        // The call substitution σ: callee param ↦ the actual argument's goal-term
+        // twin (a literal `5`, a threaded `Ref(b)`). Applied to a guard before
+        // refutation, so `div(a, 5)`'s `eq(b, 0)` becomes the ground `eq(5, 0)`.
+        // (A threaded VARIABLE argument is already re-keyed into the guard by
+        // `substitute_ref_syms` upstream; σ additionally carries the non-variable
+        // arguments the rename cannot. An argument with no clean twin is absent —
+        // its param stays symbolic and the guard flounders, conservatively kept.)
+        let guard_sigma: HashMap<Symbol, TermId> = if op_has_guarded {
+            build_call_guard_sigma(kb, &op.params, pos_args, named_args)
+        } else {
+            HashMap::new()
+        };
         let mut substituted_op_effects: Vec<Value> = Vec::new();
         for e in &pre_substituted {
             // Deep-walk to propagate arg-unification bindings into nested effect
@@ -5581,7 +5609,23 @@ fn check_apply_iter(
             let deep = walk_type_deep_value(kb, &subst, e);
             let walked = walk_value_to_resolved(kb, &subst, deep);
             if matches!(type_head(kb, &walked), TypeHead::EffectsRows) {
-                substituted_op_effects.extend(effect_row_present_values(kb, &walked));
+                // A WRITTEN row wrapper: flatten to its present labels, then — WI-067
+                // — drop the label of any guarded atom inside whose σ(guard) refutes
+                // from Γ. The flatten leaves a guarded atom's label conservatively
+                // present (WI-478); discharge removes only the proven-dropped ones.
+                let mut present = effect_row_present_values(kb, &walked);
+                if op_has_guarded {
+                    drop_refuted_guarded_labels(kb, flow, &subst, &guard_sigma, &walked, &mut present);
+                }
+                substituted_op_effects.extend(present);
+            } else if op_has_guarded && resolved_functor_name(kb, &walked) == Some("guarded") {
+                // A STANDALONE guarded atom (how a partial primitive declares its
+                // single effect: `div … effects { Error[…] :- eq(b, 0) }`). Refute
+                // σ(guard) from Γ; drop the atom on a positive proof of ¬guard, else
+                // keep it conservatively present (unchanged from WI-478).
+                if !guarded_atom_value_refuted(kb, flow, &subst, &guard_sigma, &walked) {
+                    substituted_op_effects.push(walked);
+                }
             } else {
                 substituted_op_effects.push(walked);
             }
@@ -15970,6 +16014,252 @@ fn decompose_effect_row(
     }
 
     Some((present, tails, absent))
+}
+
+// ── WI-067: guarded-effect discharge at a call site ────────────────
+//
+// The companion to `decompose_effect_row`: it collapses a `guarded` atom to a
+// conservative `present` label (dropping the guard); discharge needs the guard
+// back. Rather than widen `decompose_effect_row`'s return (and every one of its
+// ~10 subtype/unify/merge callers, none of which discharge), the discharge path
+// reads the guarded atoms separately here, refutes each, and removes the proven-
+// dropped labels from the call's effect contribution. proposal 048 §"Typer
+// delta"; 050 consumer 2 (effect discharge, Tier 1).
+
+/// Collect the `(label, guard)` of every `guarded` atom in an effect row,
+/// carrier-agnostically — the same `EffectExpression` algebra walk as
+/// [`decompose_effect_row`], but gathering exactly the atoms that decompose
+/// flattens to `present`. `guard` is the `List[reflect.Term]` value (read back
+/// off the cons spine by [`guarded_atom_refuted`]).
+fn collect_guarded_atoms(
+    kb: &mut KnowledgeBase,
+    subst: &Substitution,
+    effects: &impl TermView,
+) -> Vec<(Value, Value)> {
+    let label_key = kb.intern("label");
+    let guard_key = kb.intern("guard");
+    let tail_key = kb.intern("tail");
+    let left_key = kb.intern("left");
+    let right_key = kb.intern("right");
+
+    let walked = walk_view(kb, subst, effects);
+    let expr: Value = if let Some(e) = effects_rows_inner(kb, &walked) {
+        e
+    } else if value_is_bare_effect_expr(kb, &walked) {
+        walked.clone()
+    } else {
+        return Vec::new();
+    };
+
+    let mut out: Vec<(Value, Value)> = Vec::new();
+    let mut stack: Vec<Value> = vec![expr];
+    while let Some(node_raw) = stack.pop() {
+        let node = walk_value_to_resolved(kb, subst, node_raw);
+        // Row tails / non-algebra leaves carry no guarded atom.
+        if row_tail_termid(kb, &node).is_some() {
+            continue;
+        }
+        if let Some(inner) = effects_rows_inner(kb, &node) {
+            stack.push(inner);
+            continue;
+        }
+        match resolved_functor_name(kb, &node) {
+            Some("guarded") => {
+                let label = named_child_value(kb, &node, label_key);
+                let guard = named_child_value(kb, &node, guard_key);
+                if let (Some(l), Some(g)) = (label, guard) {
+                    out.push((l, g));
+                }
+            }
+            Some("open") => {
+                if let Some(t) = named_child_value(kb, &node, tail_key) {
+                    stack.push(t);
+                }
+            }
+            Some("merge") => {
+                if let Some(r) = named_child_value(kb, &node, right_key) {
+                    stack.push(r);
+                }
+                if let Some(l) = named_child_value(kb, &node, left_key) {
+                    stack.push(l);
+                }
+            }
+            // present / absent / empty_row / unknown: no guarded atom to collect
+            // (an unknown shape is `decompose_effect_row`'s concern to reject).
+            _ => {}
+        }
+    }
+    out
+}
+
+/// The call substitution σ applied to a guard term: replace each callee
+/// parameter reference `Ref(s)` / `Ident(s)` with the actual argument term
+/// `map[s]`. Unlike [`substitute_ref_syms`] (a param→param *rename*, used to
+/// re-key effect *labels*), σ maps a param to an arbitrary argument *term* — a
+/// literal `5`, a threaded variable `Ref(b)` — so `div(a, 5)`'s guard `eq(b, 0)`
+/// becomes the ground `eq(5, 0)` the resolver can refute by evaluation.
+fn substitute_ref_terms(
+    kb: &mut KnowledgeBase,
+    term: TermId,
+    map: &HashMap<Symbol, TermId>,
+) -> TermId {
+    match kb.get_term(term).clone() {
+        Term::Ref(s) | Term::Ident(s) => map.get(&s).copied().unwrap_or(term),
+        Term::Fn { .. } => {
+            kb.map_fn_children(term, |kb, child| substitute_ref_terms(kb, child, map))
+        }
+        _ => term,
+    }
+}
+
+/// WI-067: rewrite each non-constructor binder / parameter reference `Ref(s)` /
+/// `Ident(s)` in a guard goal to its canonical `var_ref(name: Ref(s))` reflect-
+/// term twin — the form `Γ` is built with ([`binder_ref_value`] /
+/// `occurrence_to_term`, both via [`KnowledgeBase::make_var_ref_term`]). This
+/// makes a guard query (`neq(b, 0)`) UNIFY with the flow-narrowed `Γ` fact over
+/// the same binder, and marks it as the open-world parameter the resolver
+/// flounders on. A constructor `Ref` (`some` / `nil`) is a closed value and is
+/// left ground; an existing `var_ref(…)` is not re-wrapped.
+fn normalize_param_refs_to_var_ref(kb: &mut KnowledgeBase, term: TermId) -> TermId {
+    let var_ref_sym = kb.resolve_symbol("anthill.reflect.Expr.var_ref");
+    normalize_param_refs_rec(kb, term, var_ref_sym)
+}
+
+fn normalize_param_refs_rec(kb: &mut KnowledgeBase, term: TermId, var_ref_sym: Symbol) -> TermId {
+    match kb.get_term(term).clone() {
+        Term::Ref(s) | Term::Ident(s) if !kb.is_constructor_symbol(s) => kb.make_var_ref_term(s),
+        // Already a `var_ref(…)` — don't re-wrap its `name` child. Matched by the
+        // CANONICAL symbol (not the short name) so a same-short-named functor in
+        // another namespace is not mistaken for the reflect binder form.
+        Term::Fn { functor, .. } if functor == var_ref_sym => term,
+        Term::Fn { .. } => {
+            kb.map_fn_children(term, |kb, child| normalize_param_refs_rec(kb, child, var_ref_sym))
+        }
+        _ => term,
+    }
+}
+
+/// Is a guarded atom's guard `G` REFUTED (so the effect drops)? `G` is a
+/// conjunction `g1 ∧ … ∧ gn` (its `List[reflect.Term]` Horn body), and
+/// `¬(g1 ∧ … ∧ gn)` follows from refuting ANY single conjunct — so the effect
+/// drops as soon as one `gᵢ`, after σ-substitution, is constructively refuted
+/// from Γ ([`refute_guard`], never NAF). The empty guard (`:- true`) has no
+/// conjunct to refute and is irrefutable — kept present (sound).
+fn guarded_atom_refuted(
+    kb: &mut KnowledgeBase,
+    flow: &FlowEnv,
+    sigma: &HashMap<Symbol, TermId>,
+    guard_value: &Value,
+) -> bool {
+    // The guard rides as `List[reflect.Term]`; materialize a hash-consed twin
+    // for a node-carried list (a boundary/index op — WI-348/390), then read the
+    // goal terms off the cons spine. An unexpected carrier keeps the effect.
+    let guard_term = match guard_value {
+        Value::Term(t) => *t,
+        Value::Node(occ) => super::node_occurrence::occurrence_to_term(kb, occ),
+        _ => return false,
+    };
+    let goals = list_to_vec(kb, guard_term);
+    goals.iter().any(|&g| {
+        let g = if sigma.is_empty() {
+            g
+        } else {
+            substitute_ref_terms(kb, g, sigma)
+        };
+        // Normalize a threaded binder/parameter reference `Ref(b)` (the shape the
+        // effect re-key `substitute_ref_syms` left) to its `var_ref(b)` twin — the
+        // canonical binder-reference form `Γ` is built with (`binder_ref_value`),
+        // so the guard's `neq(b, 0)` query unifies with the `if`/`match`-narrowed
+        // `neq(b, 0)` fact AND is recognised as the OPEN-WORLD parameter the
+        // resolver must flounder on (a concrete literal argument, substituted in by
+        // σ above, carries no such ref and refutes by evaluation). WI-067.
+        let g = normalize_param_refs_to_var_ref(kb, g);
+        refute_guard(kb, flow, &Value::Term(g))
+    })
+}
+
+/// Build the call substitution σ: callee parameter ↦ the actual argument's
+/// goal-term twin (`try_occurrence_to_term`). Used by guard discharge to ground
+/// a guard over the actual arguments before refuting it. An argument without a
+/// clean term twin (a computed, opaque expression) is absent from σ — its param
+/// stays symbolic, so its guard flounders and the effect is conservatively kept.
+fn build_call_guard_sigma(
+    kb: &mut KnowledgeBase,
+    params: &[(Symbol, Value)],
+    pos_args: &[Rc<NodeOccurrence>],
+    named_args: &[(Symbol, Rc<NodeOccurrence>)],
+) -> HashMap<Symbol, TermId> {
+    let mut sigma: HashMap<Symbol, TermId> = HashMap::new();
+    for (i, arg_occ) in pos_args.iter().enumerate() {
+        if let Some((param_sym, _)) = params.get(i) {
+            if let Some(t) = super::node_occurrence::try_occurrence_to_term(kb, arg_occ) {
+                sigma.insert(*param_sym, t);
+            }
+        }
+    }
+    for (arg_name, arg_occ) in named_args {
+        if let Some((param_sym, _)) = match_named_arg_param(kb, params, *arg_name) {
+            let param_sym = *param_sym;
+            if let Some(t) = super::node_occurrence::try_occurrence_to_term(kb, arg_occ) {
+                sigma.insert(param_sym, t);
+            }
+        }
+    }
+    sigma
+}
+
+/// Is a STANDALONE guarded atom's guard refuted under σ + Γ? Reads the atom's
+/// `guard` child and refutes its conjunction via [`guarded_atom_refuted`].
+fn guarded_atom_value_refuted(
+    kb: &mut KnowledgeBase,
+    flow: &FlowEnv,
+    subst: &Substitution,
+    sigma: &HashMap<Symbol, TermId>,
+    atom: &Value,
+) -> bool {
+    let guard_key = kb.intern("guard");
+    let walked = walk_value_to_resolved(kb, subst, atom.clone());
+    match named_child_value(kb, &walked, guard_key) {
+        Some(guard) => guarded_atom_refuted(kb, flow, sigma, &guard),
+        None => false,
+    }
+}
+
+/// Drop, from a row's already-flattened `present` labels, the label of every
+/// guarded atom inside that row whose σ(guard) is refuted from Γ. The flatten
+/// ([`effect_row_present_values`]) left a guarded atom's label conservatively
+/// present (WI-478); discharge removes only the proven-dropped ones, matching by
+/// the carrier-aware [`resolved_labels_equal`].
+fn drop_refuted_guarded_labels(
+    kb: &mut KnowledgeBase,
+    flow: &FlowEnv,
+    subst: &Substitution,
+    sigma: &HashMap<Symbol, TermId>,
+    row: &Value,
+    present: &mut Vec<Value>,
+) {
+    let guarded = collect_guarded_atoms(kb, subst, row);
+    let mut dropped: Vec<Value> = Vec::new();
+    for (label, guard) in guarded {
+        if guarded_atom_refuted(kb, flow, sigma, &guard) {
+            dropped.push(label);
+        }
+    }
+    // Remove ONE present entry per refuted guarded atom — NOT every entry with
+    // that label. A row may carry the same label both unconditionally and
+    // guarded (`{ Boom, Boom :- eq(b, 0) }`, or two guards on one label — the
+    // unreduced disjunction the 048 merge keeps); the flatten collapsed each to a
+    // `present(Boom)`, so a blanket `retain` would drop the UNCONDITIONAL twin too
+    // and unsoundly lose a real effect. Removing one occurrence per proven-dropped
+    // guard leaves exactly the still-present labels.
+    for d in &dropped {
+        if let Some(pos) = present
+            .iter()
+            .position(|e| resolved_labels_equal(kb, subst, e, d))
+        {
+            present.remove(pos);
+        }
+    }
 }
 
 /// WI-441: the multi-tail arm shared by [`unify_effect_rows`] and

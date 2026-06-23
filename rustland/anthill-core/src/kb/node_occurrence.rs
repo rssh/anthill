@@ -1869,6 +1869,34 @@ pub fn occurrence_has_unbound_var(root: &Rc<NodeOccurrence>) -> bool {
     false
 }
 
+/// WI-067 / proposal 050: does an occurrence reference a binder / parameter via
+/// an `Expr::VarRef` (the node-carrier twin of the `var_ref(name)` term)? The
+/// open-world-parameter floundering gate (`resolve.rs` `step_naf` / `step_builtin`)
+/// reads a Γ goal/guard carried as a `Value::Node` through this; the `Value::Term`
+/// twin is `KnowledgeBase::value_has_open_world_ref` (its `term_has_var_ref`
+/// helper). The two carriers are symmetric: both match ONLY the canonical binder
+/// form (`Expr::VarRef` / the `var_ref` functor), never a bare `Ref`/`Ident` — a
+/// guard's binders are normalized to that form and `Γ` is built with it
+/// ([`binder_ref_value`]), while a bare `Ref` is a closed datum (sort/op/const).
+/// Pre-order child walk.
+pub fn occurrence_has_var_ref(root: &Rc<NodeOccurrence>) -> bool {
+    let mut stack: Vec<Rc<NodeOccurrence>> = vec![Rc::clone(root)];
+    while let Some(occ) = stack.pop() {
+        match &occ.kind {
+            NodeKind::Expr { expr, .. } => match expr {
+                Expr::VarRef { .. } => return true,
+                _ => for_each_child(expr, |c| stack.push(Rc::clone(c))),
+            },
+            NodeKind::Pattern(pat) => {
+                for_each_pattern_child(pat, |c| stack.push(Rc::clone(c)));
+            }
+            NodeKind::RuleHead { .. } => {}
+            NodeKind::Type(_) | NodeKind::EffectExpr(_) => {}
+        }
+    }
+    false
+}
+
 /// Collect the distinct `Var::Global` ids occurring in an occurrence (deduped
 /// via `seen`), recursing into children. The occurrence twin of the term-side
 /// `collect_vars_rec` — which likewise collects only `Var::Global` (Rigid /
@@ -2293,16 +2321,7 @@ pub fn try_occurrence_to_term(kb: &mut KnowledgeBase, occ: &Rc<NodeOccurrence>) 
         // over a binder round-trips through the term store (and the resolver's
         // `goal_value_to_term`) instead of the former non-goal `None` — which
         // tripped this function's debug_assert and reified the binder to ⊥.
-        Some(Expr::VarRef { name }) => {
-            let var_ref = kb.resolve_symbol("anthill.reflect.Expr.var_ref");
-            let name_ref = kb.alloc(Term::Ref(*name));
-            let k_name = kb.intern("name");
-            kb.alloc(Term::Fn {
-                functor: var_ref,
-                pos_args: smallvec::SmallVec::new(),
-                named_args: smallvec::SmallVec::from_slice(&[(k_name, name_ref)]),
-            })
-        }
+        Some(Expr::VarRef { name }) => kb.make_var_ref_term(*name),
         Some(Expr::Bottom) | None => kb.alloc(Term::Bottom),
         // Child-bearing / non-goal form: no goal-term shape.
         _ => return None,
