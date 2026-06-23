@@ -2252,6 +2252,23 @@ pub fn try_occurrence_to_term(kb: &mut KnowledgeBase, occ: &Rc<NodeOccurrence>) 
                 ]),
             })
         }
+        // WI-537: a `var_ref(name)` lowers to its reflect term twin
+        // `Fn{Expr.var_ref, name: Ref(name)}` — the inverse of `build_expr_leaf`,
+        // byte-identical to its `TermView` view (`occ_head` reads VarRef as
+        // `Functor{var_ref}` with the same `name: Ref` child). So a Γ goal/fact
+        // over a binder round-trips through the term store (and the resolver's
+        // `goal_value_to_term`) instead of the former non-goal `None` — which
+        // tripped this function's debug_assert and reified the binder to ⊥.
+        Some(Expr::VarRef { name }) => {
+            let var_ref = kb.resolve_symbol("anthill.reflect.Expr.var_ref");
+            let name_ref = kb.alloc(Term::Ref(*name));
+            let k_name = kb.intern("name");
+            kb.alloc(Term::Fn {
+                functor: var_ref,
+                pos_args: smallvec::SmallVec::new(),
+                named_args: smallvec::SmallVec::from_slice(&[(k_name, name_ref)]),
+            })
+        }
         Some(Expr::Bottom) | None => kb.alloc(Term::Bottom),
         // Child-bearing / non-goal form: no goal-term shape.
         _ => return None,

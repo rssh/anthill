@@ -261,6 +261,39 @@ fn dot_apply_args_child(
     list
 }
 
+// ── VarRef ↔ `var_ref(name)` term isomorphism (WI-537) ──────────
+//
+// A `let` / lambda / op-param binder reference is an `Expr::VarRef { name }`,
+// whose reflect term twin is `var_ref(name: Ref(name))` (`reflect.anthill`:
+// `entity var_ref(name: Symbol)`; `build_expr_leaf` reads that `Fn{var_ref}`
+// back to `Expr::VarRef`). So — exactly like DotApply ↔ `dot_apply` above — the
+// occurrence reads with head `Functor{var_ref}` and one named child `name`
+// (a synthesized `Ref`), NOT as a bare `Ident` (which would conflate the
+// distinct `var_ref` and `ident` reflect forms) and NOT as `Opaque` (which made
+// a Γ fact over a binder non-indexable, so silently dropped by
+// `view_is_indexable`).
+
+/// The `var_ref` functor symbol, or `None` when reflect isn't loaded. `occ_head`
+/// turns a `None` here into a loud `debug_assert` + `Opaque` — a `VarRef`
+/// occurrence implies reflect IS loaded (the loader / `build_expr_leaf` need
+/// it), so a miss is an inconsistent KB, not a normal degenerate one.
+fn var_ref_functor(kb: &KnowledgeBase) -> Option<Symbol> {
+    kb.try_resolve_symbol("anthill.reflect.Expr.var_ref")
+}
+
+/// The `name` field key of the `var_ref` encoding, panicking if never interned
+/// (mirrors [`dot_apply_key`]): any KB holding a `var_ref` occurrence interned
+/// it building the occurrence's term twin, so a miss is an inconsistent KB — and
+/// a silent drop would desync `named_keys` from `head`'s `named_arity`.
+fn var_ref_name_key(kb: &KnowledgeBase) -> Symbol {
+    kb.lookup_symbol("name").unwrap_or_else(|| {
+        panic!(
+            "var_ref view: field key `name` not interned — KB holds a \
+             var_ref occurrence but never built a var_ref term twin"
+        )
+    })
+}
+
 fn occ_head(occ: &NodeOccurrence, kb: &KnowledgeBase) -> ViewHead {
     // WI-342: a Value-carried Type / EffectExpression occurrence reads through
     // the same `ViewHead::Functor` as its hash-consed `Term::Fn` twin, so a
@@ -288,16 +321,26 @@ fn occ_head(occ: &NodeOccurrence, kb: &KnowledgeBase) -> ViewHead {
         Some(Expr::Const(lit)) => ViewHead::Const(lit.clone()),
         Some(Expr::Ref(s)) => ViewHead::Ref(*s),
         Some(Expr::Ident(s)) => ViewHead::Ident(*s),
-        // A local binder reference (`let` / lambda / op-param, WI-318) keys by
-        // its NAME — it is an unresolved name-reference leaf, exactly like a bare
-        // `Ident`. It must NOT fall through to `Opaque` below: that made any term
-        // mentioning a binder non-indexable, so silently dropped by
-        // `view_is_indexable` — which is why a proposal-050 Γ fact over a binder
-        // (`let x = e` ⟹ x ≡ e, or a `some(x)` pattern binder) had no storable
-        // form. (`occ_index_var` keeps it off the var-edge: a `VarRef` carries a
-        // name, not a `Var` identity, so it keys as the `Ident` constant — two
-        // references to the same-named binder match, which is the intent.)
-        Some(Expr::VarRef { name }) => ViewHead::Ident(*name),
+        // A `let` / lambda / op-param binder reference reads as its reflect term
+        // twin `var_ref(name: Ref(name))` — head `Functor{Expr.var_ref}`, one
+        // named child `name` (see the VarRef ↔ var_ref isomorphism above) — so it
+        // indexes/matches byte-identically to that term and stays DISTINCT from a
+        // bare `ident`. `occ_index_var` keeps it off the var-edge (a `VarRef`
+        // carries a name, not a `Var` identity).
+        Some(Expr::VarRef { .. }) => match var_ref_functor(kb) {
+            Some(f) => ViewHead::Functor { functor: Some(f), pos_arity: 0, named_arity: 1 },
+            // Unreachable (a VarRef occurrence implies reflect is loaded): loud in
+            // debug rather than a silent degrade, `Opaque` in release (its
+            // children then read none, consistent with this head).
+            None => {
+                debug_assert!(
+                    false,
+                    "occ_head: VarRef but anthill.reflect.Expr.var_ref unresolved \
+                     — a VarRef occurrence implies reflect is loaded"
+                );
+                ViewHead::Opaque
+            }
+        },
         // A var of ANY kind surfaces its `Var` — the discrim tree keys a flex
         // `Global` / bound `DeBruijn` as a wildcard var-edge and a `Rigid`
         // skolem as a `RigidVar` constant (mirrors `TermIdView`/`Value`). The
@@ -384,6 +427,16 @@ fn occ_named_child(occ: &NodeOccurrence, kb: &KnowledgeBase, sym: Symbol) -> Opt
         }
         return None;
     }
+    // WI-537: a `var_ref` exposes its single named child `name` — a synthesized
+    // `Ref` to the binder symbol, mirroring its term twin `Fn{var_ref, name:
+    // Ref(name)}`, exactly as DotApply synthesizes its `name` child above.
+    if let Some(Expr::VarRef { name }) = occ.as_expr() {
+        var_ref_functor(kb)?; // reflect not loaded ⇒ head reads Opaque (no children)
+        if sym == var_ref_name_key(kb) {
+            return Some(NodeOccurrence::new_expr(Expr::Ref(*name), occ.span, occ.owner));
+        }
+        return None;
+    }
     let named = match occ.as_expr()? {
         Expr::Apply { named_args, .. }
         | Expr::Constructor { named_args, .. }
@@ -416,6 +469,11 @@ fn occ_named_keys(occ: &NodeOccurrence, kb: &KnowledgeBase) -> Vec<Symbol> {
         Some(Expr::DotApply { .. }) => match dot_apply_functor(kb) {
             Some(_) => dot_apply_keys(kb).to_vec(),
             // Reflect not loaded ⇒ the head reads `Opaque` (no children).
+            None => Vec::new(),
+        },
+        // WI-537: the single `name` key, mirroring the var_ref term twin.
+        Some(Expr::VarRef { .. }) => match var_ref_functor(kb) {
+            Some(_) => vec![var_ref_name_key(kb)],
             None => Vec::new(),
         },
         _ => Vec::new(),

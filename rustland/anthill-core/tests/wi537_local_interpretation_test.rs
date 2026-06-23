@@ -240,9 +240,10 @@ fn match_negation_indexes_a_node_scrutinee() {
 #[test]
 fn match_negation_indexes_a_varref_scrutinee() {
     // The REAL typer scrutinee for `match b` (b a let / lambda / op-param binder)
-    // is an `Expr::VarRef` — which headed `Opaque` before the occ_head fix, so
-    // `assume` silently DROPPED every match/if Γ fact over a plain variable (the
-    // common case). It now heads as `Ident(name)` → indexable. (This is the test
+    // is an `Expr::VarRef` — which headed `Opaque` before the fix, so `assume`
+    // silently DROPPED every match/if Γ fact over a plain variable (the common
+    // case). It now reads as its reflect term twin `var_ref(name: Ref(name))`
+    // (head `Functor{var_ref}`, one `name` child) → indexable. (This is the test
     // the `Ref`-scrutinee one above should have been: a `Ref` is always
     // indexable, so it never exercised the binder path that was actually dead.)
     let mut kb = common::load_kb_with("namespace wi537.varref\nend\n");
