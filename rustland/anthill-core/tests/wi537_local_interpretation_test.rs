@@ -22,7 +22,10 @@ use anthill_core::eval::value::Value;
 use anthill_core::intern::Symbol;
 use anthill_core::kb::node_occurrence::{Expr, NodeOccurrence, Pattern};
 use anthill_core::kb::term::{Literal, Term, Var};
-use anthill_core::kb::typing::{match_arm_gamma_facts, prove_from_gamma, refute_guard, FlowEnv};
+use anthill_core::kb::typing::{
+    binding_gamma_fact, match_arm_gamma_facts, prove_from_gamma, refute_guard, FlowEnv,
+};
+use anthill_core::kb::node_occurrence::NodeKind;
 use anthill_core::kb::KnowledgeBase;
 use anthill_core::span::{SourceId, SourceSpan};
 use std::rc::Rc;
@@ -307,19 +310,145 @@ fn match_nullary_ctor_arms_accumulate_negations() {
 }
 
 #[test]
-fn match_binding_arm_contributes_no_fact_or_negation() {
-    // `case x -> …` (a bare binding, not a constructor) matches anything and
-    // denotes no value, so it adds no pattern fact and narrows no later arm.
+fn match_binding_arm_carries_alias_fact_but_no_negation() {
+    // `case x -> …` (a bare binding, not a constructor) matches anything: it binds
+    // the WHOLE scrutinee, so WI-550 emits the alias `eq(s, x)` (x ≡ s) — sound and
+    // load-bearing: it bridges an earlier arm's narrowing of `s` to a guard over
+    // `x` (`case 0 -> …; case x -> div(a, x)` discharges via neq(s,0) ∧ x≡s). But a
+    // non-ground binding excludes NO value from later arms, so it adds no negation.
     let mut kb = common::load_kb_with("namespace wi537.matchbind\nend\n");
     let x = kb.intern("x");
     let s = param(&mut kb, "?s");
     // `x` is NOT in the (empty) constructor set ⇒ a binding.
     let arms = vec![(var_pat(x), false), (lit_pat(0), false)];
     let facts = match_arm_gamma_facts(&mut kb, &s, &arms, &[]);
-    assert!(facts[0].is_empty(), "a binding arm adds no pattern fact");
+    assert_eq!(facts[0].len(), 1, "a binding arm carries the alias fact eq(s, x)");
+    let flow = FlowEnv::empty().assume(&kb, facts[0][0].clone());
+    assert!(
+        prove_from_gamma(&mut kb, &flow, &facts[0][0]),
+        "the binding arm's alias eq(s, x) is indexable and proves from Γ"
+    );
     assert_eq!(
         facts[1].len(),
         1,
         "the literal arm carries only its own eq(s,0) — the binding arm negates nothing"
     );
+}
+
+#[test]
+fn match_constructor_binder_arm_carries_destructure_fact() {
+    // WI-550: `case some(x) -> …` narrows its arm Γ with the DESTRUCTURE fact
+    // eq(s, some(var_ref(x))) — the binder `x` (now shadowing-correct) included as
+    // its reference twin, so a body guard over `x` can relate it to the scrutinee.
+    // This is the producer the WI-537 era deferred (a binder headed `Opaque`, and a
+    // fresh existential matched nothing); a per-site binder identity makes it live.
+    let mut kb = common::load_kb_with("namespace wi537.matchctor\nend\n");
+    let some = kb.try_resolve_symbol("anthill.prelude.Option.some").expect("Option.some");
+    let none = kb.try_resolve_symbol("anthill.prelude.Option.none").expect("Option.none");
+    let x = kb.intern("x");
+    let s = param(&mut kb, "?s");
+    // `some(x)` is a constructor pattern with one binder sub-pattern; `none` is a
+    // nullary-ctor arm.
+    let some_x = NodeOccurrence::new_pattern(
+        Pattern::Constructor { name: some, pos_args: vec![var_pat(x)], named_args: vec![] },
+        span(),
+        None,
+    );
+    let arms = vec![(some_x, false), (var_pat(none), false)];
+    let facts = match_arm_gamma_facts(&mut kb, &s, &arms, &[some, none]);
+    assert_eq!(facts[0].len(), 1, "the some(x) arm carries one destructure fact eq(s, some(x))");
+    let flow = FlowEnv::empty().assume(&kb, facts[0][0].clone());
+    assert!(
+        prove_from_gamma(&mut kb, &flow, &facts[0][0]),
+        "eq(s, some(var_ref(x))) is indexable (binder reads as var_ref) and proves from Γ"
+    );
+}
+
+// ── WI-550: the `let x = e` binding fact + shadowing-correct identity ────
+
+#[test]
+fn binding_gamma_fact_relates_a_let_binder_to_its_value() {
+    // `let x = 0` ⟹ Γ ∪ { eq(var_ref(x), 0) } (proposal 050 binding rule). The
+    // fact is indexable (the binder reads as its `var_ref` twin) and round-trips
+    // through the bridge — so a later guard over `x` can be discharged from it.
+    let mut kb = common::load_kb_with("namespace wi550.letfact\nend\n");
+    let x = kb.intern("x");
+    let value = Value::Node(NodeOccurrence::new_expr(
+        Expr::Const(Literal::Int(0)),
+        span(),
+        None,
+    ));
+    let fact = binding_gamma_fact(&mut kb, x, value, span(), None);
+    let flow = FlowEnv::empty().assume(&kb, fact.clone());
+    assert!(!flow.is_empty(), "the binding fact is indexable and enters Γ");
+    assert!(
+        prove_from_gamma(&mut kb, &flow, &fact),
+        "eq(var_ref(x), 0) ∈ Γ ⊢ eq(var_ref(x), 0)"
+    );
+}
+
+/// Walk an op-body occurrence, collecting every binder (`Pattern::Var`) symbol
+/// and every reference (`Expr::VarRef`) symbol. `for_each_child` descends into a
+/// `let`/lambda/match pattern occurrence, so both sides are reached.
+fn collect_binder_and_ref_syms(
+    occ: &Rc<NodeOccurrence>,
+    binders: &mut Vec<Symbol>,
+    refs: &mut Vec<Symbol>,
+) {
+    if let Some(Pattern::Var { name, .. }) = occ.as_pattern() {
+        binders.push(*name);
+    }
+    if let NodeKind::Expr { expr, .. } = &occ.kind {
+        if let Expr::VarRef { name } = expr {
+            refs.push(*name);
+        }
+        anthill_core::kb::node_occurrence::for_each_child(expr, |c| {
+            collect_binder_and_ref_syms(c, binders, refs)
+        });
+    }
+}
+
+#[test]
+fn shadowed_let_binders_get_distinct_symbols() {
+    // `let x = 0; let x = 1; x` — the alpha-rename (WI-550) mints a DISTINCT symbol
+    // per binding site, both displaying as "x", and the body reference resolves to
+    // the INNER binder. So their Γ binding facts (`x₁ ≡ 0`, `x₂ ≡ 1`) key off
+    // different symbols and never collide, and `x` reads only `x₂` (no stale
+    // `x₁ ≡ 0` match) — without a Γ-retract on rebind.
+    let kb = common::load_kb_with(
+        r#"
+        namespace wi550.shadow
+          sort Box
+            entity box(value: Int64)
+            operation f(b: Box) -> Int64 =
+              let x = 0
+              let x = 1
+              x
+          end
+        end
+        "#,
+    );
+    let f = kb.try_resolve_symbol("wi550.shadow.Box.f").expect("f symbol");
+    let body = kb.op_body_node(f).expect("op body node for f");
+    let mut binders = Vec::new();
+    let mut refs = Vec::new();
+    collect_binder_and_ref_syms(body, &mut binders, &mut refs);
+
+    let x_binders: Vec<Symbol> =
+        binders.iter().copied().filter(|s| kb.resolve_sym(*s) == "x").collect();
+    assert_eq!(x_binders.len(), 2, "two `let x` binders in the body");
+    assert_ne!(
+        x_binders[0], x_binders[1],
+        "the two same-named `x` binders are alpha-renamed to DISTINCT symbols"
+    );
+
+    let x_refs: Vec<Symbol> =
+        refs.iter().copied().filter(|s| kb.resolve_sym(*s) == "x").collect();
+    assert!(!x_refs.is_empty(), "the body references `x`");
+    for r in &x_refs {
+        assert!(
+            x_binders.contains(r),
+            "every `x` reference resolves to a binder identity, not a stray intern"
+        );
+    }
 }

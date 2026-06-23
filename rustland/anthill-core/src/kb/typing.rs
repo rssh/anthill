@@ -932,7 +932,7 @@ fn negate_goal(kb: &mut KnowledgeBase, goal: &Value) -> Option<Value> {
 /// reference to the same constructor elsewhere, since `views_structurally_equal`
 /// compares `Ref` by raw symbol identity; failing that, a globally-known
 /// constructor symbol is taken as-is. Shared by [`collect_covered_entities`]
-/// (coverage) and [`pattern_to_matched_value`] (the Γ pattern fact) so the two
+/// (coverage) and [`pattern_match_value`] (the Γ pattern fact) so the two
 /// never drift on what counts as a nullary constructor vs a binding.
 fn pattern_var_ctor_sym(
     kb: &KnowledgeBase,
@@ -945,56 +945,67 @@ fn pattern_var_ctor_sym(
     (kb.is_constructor_symbol(name) || kb.constructor_parent_sort(name).is_some()).then_some(name)
 }
 
-/// The GROUND value a pattern matches — the RHS of the proposal-050 pattern
-/// fact `eq(scrutinee, value(p))` and the earlier-arm negation
-/// `neq(scrutinee, value(p))`. `None` ⇒ the pattern is not a single ground
-/// value, and so contributes neither:
-///   - a bare binding `case x` / wildcard `_` matches anything (no value), and
-///   - a constructor carrying a binder/wildcard sub-pattern (`some(x)`) has only
-///     an *existential* head fact (`∃v. s = some(v)`), which needs a reified
-///     form (050 open Q C) and is deferred. An `eq(s, some(?fresh))` would be
-///     useless here anyway: the Γ match is identity-aware
-///     ([`gamma_candidates_for`]'s `views_structurally_equal`), so a fact with a
-///     fresh existential matches no consumer's query — it would only bloat Γ.
-/// A ground pattern is exactly the one a later arm can soundly negate AND the
-/// one whose `eq` fact a consumer can match against a concrete value.
-///
-///   - literal `0`               → `Const(0)`
-///   - nullary ctor `none`/`red` → `Ref(ctor)` — a `Var`-pattern whose name
-///     resolves to a constructor via [`pattern_var_ctor_sym`] (its canonical
-///     symbol, so the fact `Ref`-matches a resolved reference elsewhere).
-///   - `some(none)`              → `some(none)` (every sub-pattern ground)
-///
-/// Tuple patterns are deferred (`None`) — sound: no fact, no narrowing.
-fn pattern_to_matched_value(
+/// A local binder reference as a Γ `Value` — its WI-537 `var_ref(x)` term twin
+/// (head `Functor{var_ref}`, one `name` child), the indexable form every body
+/// reference to the binder also reads as. The single place this shape is built,
+/// shared by the `let x ≡ e` fact ([`binding_gamma_fact`]) and the match arm
+/// destructure fact ([`pattern_match_value`]); if the canonical binder-reference
+/// form ever moves again (it migrated Ident→Opaque→var_ref across WI-537), both
+/// producers move with it.
+fn binder_ref_value(name: Symbol, span: crate::span::SourceSpan, owner: Option<Symbol>) -> Value {
+    Value::Node(NodeOccurrence::new_expr(Expr::VarRef { name }, span, owner))
+}
+
+/// The value a `match` pattern matches, as a Γ-fact RHS. Two callers, one shape:
+///   - `admit_binders = false` → the GROUND value, the RHS of a LATER arm's
+///     negation `neq(scrutinee, value(p))`. `None` for a binder / binder-bearing
+///     constructor — a whole family no single value can soundly negate (only the
+///     existential `¬∃v. s = some(v)` would; 050 open Q C, deferred).
+///   - `admit_binders = true` → the arm's OWN positive `eq(scrutinee, value(p))`,
+///     which additionally reads a binder as its `var_ref(x)` twin (WI-550): a
+///     bare `case x` → the alias `x ≡ s`; `case some(x)` → `some(var_ref(x))`,
+///     the destructure fact relating the binder to the scrutinee.
+/// For a fully-ground pattern the two modes coincide, so a ground arm's `eq` and
+/// its later-arm `neq` speak the same value. In BOTH modes a `Wildcard` (and a
+/// constructor with a wildcard hole, `some(_)`) yields `None` — no referenceable
+/// value. Mappings: literal `0` → `Const(0)`; nullary ctor `none`/`red` →
+/// `Ref(ctor)` (the CANONICAL symbol via [`pattern_var_ctor_sym`], so the fact
+/// `Ref`-matches a resolved reference elsewhere); `some(none)` → `some(none)`.
+/// Tuple patterns are deferred (`None`).
+fn pattern_match_value(
     kb: &mut KnowledgeBase,
     pattern: &Rc<NodeOccurrence>,
     scrutinee_ctors: &[Symbol],
+    admit_binders: bool,
 ) -> Option<Value> {
     match pattern.as_pattern()? {
         Pattern::Wildcard => None,
         Pattern::Literal { value } => Some(Value::Term(kb.alloc(Term::Const(value.clone())))),
         Pattern::Var { name, .. } => {
-            // `case red` (nullary ctor) vs `case x` (binding). Use the CANONICAL
-            // (qualified) ctor symbol from the scrutinee's set — not the bare
-            // `*name` the pattern was loaded with — so the fact `Ref`-matches a
-            // resolved reference to the same constructor elsewhere.
-            pattern_var_ctor_sym(kb, *name, scrutinee_ctors)
-                .map(|ctor| Value::Term(kb.alloc(Term::Ref(ctor))))
+            // `case red` (nullary ctor) → its CANONICAL `Ref` (the scrutinee-set
+            // symbol, not the bare loaded `*name`, so it `Ref`-matches a resolved
+            // reference). A binding `case x` → the binder's `var_ref(x)` twin, but
+            // ONLY in `admit_binders` mode; for a negation it has no ground value.
+            match pattern_var_ctor_sym(kb, *name, scrutinee_ctors) {
+                Some(ctor) => Some(Value::Term(kb.alloc(Term::Ref(ctor)))),
+                None => admit_binders
+                    .then(|| binder_ref_value(*name, pattern.span, pattern.owner)),
+            }
         }
         Pattern::Constructor { name, pos_args, named_args } => {
             let name = *name;
-            // Every sub-pattern must itself be ground (`?` short-circuits to
-            // `None` on the first binder/wildcard). Sub-patterns resolve against
-            // no outer ctor set — a bare name in argument position is a binding
-            // unless it is itself a known constructor (`some(none)`).
+            // Every sub-pattern must yield a value (`?` short-circuits to `None`
+            // on the first one that doesn't — a wildcard hole in either mode, or a
+            // binder hole when `!admit_binders`). Sub-patterns resolve against no
+            // outer ctor set — a bare name in argument position is a binding unless
+            // it is itself a known constructor (`some(none)`).
             let mut pos: Vec<Value> = Vec::with_capacity(pos_args.len());
             for sub in pos_args {
-                pos.push(pattern_to_matched_value(kb, sub, &[])?);
+                pos.push(pattern_match_value(kb, sub, &[], admit_binders)?);
             }
             let mut named: Vec<(Symbol, Value)> = Vec::with_capacity(named_args.len());
             for (field, sub) in named_args {
-                named.push((*field, pattern_to_matched_value(kb, sub, &[])?));
+                named.push((*field, pattern_match_value(kb, sub, &[], admit_binders)?));
             }
             // A 0-ary `Constructor` (rare — nullary ctors parse as Var-patterns)
             // normalizes to the canonical `Ref` form (WI-436: Ref(c) ≡ nullary
@@ -1009,13 +1020,36 @@ fn pattern_to_matched_value(
     }
 }
 
+/// The proposal-050 binding fact `x ≡ value` for `let x = value` (WI-550): the
+/// binder's `var_ref(x)` reference twin (the indexable form WI-537 gave a
+/// binder, now per-site unique) equated to the bound `value`. The caller gates
+/// on a PURE value (`x` denotes the value of an effect-free `e`) and `assume`s
+/// the result into the body's Γ, where it later lets a consumer (WI-067
+/// discharge) relate `x` to its value. `assume` keeps any indexable `value` (a
+/// literal, binder, constructor, or pure call) and drops only a genuinely
+/// `Opaque`-headed one (a lambda / collection literal / control-flow form)
+/// losslessly.
+pub fn binding_gamma_fact(
+    kb: &mut KnowledgeBase,
+    binder: Symbol,
+    value: Value,
+    span: crate::span::SourceSpan,
+    owner: Option<Symbol>,
+) -> Value {
+    let eq_sym = kb.eq_functor();
+    let binder_ref = binder_ref_value(binder, span, owner);
+    kb.make_goal_value(eq_sym, vec![binder_ref, value])
+}
+
 /// Per-arm Γ facts for a `match` — the producer side of the proposal-050
 /// `match` modification rule (WI-537). For arm `i` (`arms[i]`) the returned
 /// facts narrow that arm's Γ:
 ///
 ///   - `eq(scrutinee, value(pᵢ))` — the pattern fact: in arm `i` the scrutinee
-///     has `pᵢ`'s shape. Present iff `pᵢ` denotes a value (see
-///     [`pattern_to_matched_value`]).
+///     has `pᵢ`'s shape. The value includes binders as their `var_ref` twin
+///     (`case some(x)` ⟹ `eq(s, some(var_ref(x)))`, WI-550) — see
+///     [`pattern_match_value`] (`admit_binders = true`). Absent when `pᵢ` denotes
+///     no referenceable value (a wildcard, or a constructor with a wildcard hole).
 ///   - `neq(scrutinee, value(pⱼ))` for each earlier arm `j < i` whose pattern is
 ///     GROUND and UNGUARDED — the scrutinee is known to differ from `pⱼ`'s
 ///     value. `case 0 → … ; case _ → div(a, s)` thus carries `neq(s, 0)` into
@@ -1029,8 +1063,9 @@ fn pattern_to_matched_value(
 /// `arms` is `(pattern, has_guard)` in source order. Facts are built with the
 /// same carrier (`make_goal_value` / `eq` / `neq`) the bridge and the `if`-fork
 /// use, so they index and match identically; `assume` later drops any whose
-/// scrutinee or value heads `Opaque` (an `Expr::Apply` scrutinee, say) —
-/// losslessly, since such a fact could never match a goal-shaped query.
+/// scrutinee or value heads `Opaque` (a control-flow / lambda scrutinee, say —
+/// a plain call or constructor scrutinee indexes fine) — losslessly, since such
+/// a fact could never match a goal-shaped query.
 pub fn match_arm_gamma_facts(
     kb: &mut KnowledgeBase,
     scrutinee: &Value,
@@ -1043,18 +1078,24 @@ pub fn match_arm_gamma_facts(
     // Negations accumulated from earlier ground, unguarded arms.
     let mut earlier_neqs: Vec<Value> = Vec::new();
     for (pattern, has_guard) in arms {
-        // The ground value this arm matches (a binder / non-ground pattern is
-        // `None` — see `pattern_to_matched_value`).
-        let matched = pattern_to_matched_value(kb, pattern, scrutinee_ctors);
+        // POSITIVE fact value: what this arm matches, binders included as their
+        // `var_ref` twin (`case some(x)` ⟹ `some(var_ref(x))`) — WI-550.
+        let positive = pattern_match_value(kb, pattern, scrutinee_ctors, true);
+        // NEGATION value: the GROUND value a LATER arm can soundly exclude (a
+        // binder / non-ground pattern is `None`).
+        let ground = pattern_match_value(kb, pattern, scrutinee_ctors, false);
         let mut facts: Vec<Value> = earlier_neqs.clone();
-        if let Some(pv) = &matched {
+        if let Some(pv) = &positive {
             facts.push(kb.make_goal_value(eq_sym, vec![scrutinee.clone(), pv.clone()]));
         }
         out.push(facts);
         // A ground, unguarded arm excludes its value from every LATER arm: it
-        // matches exactly that value (ground), unconditionally (unguarded).
+        // matches exactly that value (ground), unconditionally (unguarded). A
+        // binder arm (`case some(x)`) would exclude later arms only via the
+        // existential "not-any" negation `¬∃v. s = some(v)` (050 open Q C reified
+        // form, deferred — co-designed with the WI-067 consumer), so it adds none.
         if !has_guard {
-            if let (Some(pv), Some(neq)) = (matched, neq_sym) {
+            if let (Some(pv), Some(neq)) = (ground, neq_sym) {
                 earlier_neqs.push(kb.make_goal_value(neq, vec![scrutinee.clone(), pv]));
             }
         }
@@ -4187,22 +4228,35 @@ fn build_type(
                     None => ext_env.clear_receiver_alias(var_name),
                 }
             }
+            // WI-550 / proposal 050: the binding rule `let x = e ⟹ Γ ∪ { x ≡ e }`,
+            // re-enabled now that a binder reference reads as its indexable
+            // `var_ref(x)` term twin (WI-537) AND each binding site carries a
+            // shadowing-correct fresh identity (WI-550) — so `let x = 0; let x = 1`
+            // add `x₁ ≡ 0`, `x₂ ≡ 1` over DISTINCT symbols, and the inner body
+            // references only `x₂`, never matching the stale `x₁ ≡ 0`: no Γ-retract
+            // (the type-level `clear_receiver_alias` analog) is needed.
+            //
+            // Gated on a PURE value (`value_effects.is_empty()`): `x` denotes the
+            // VALUE of `e`, so `x ≡ e` is a sound logical fact only when `e` is
+            // referentially transparent — an effectful `let x = Cell.get(c)` could
+            // re-read differently than `x`. A non-var (destructuring) pattern
+            // contributes no single-binder equality here. Whichever pure form `e`
+            // takes — a literal, a binder, a constructor, or a (pure) call/dot-call,
+            // all of which `occ_head` indexes — enters Γ soundly; `assume` only
+            // drops a genuinely `Opaque`-headed value (a lambda, a collection
+            // literal, an `if`/`match` expression) losslessly.
+            let body_flow = match extract_pattern_var_name(&pattern) {
+                Some(var_name) if value_effects.is_empty() => {
+                    let value_v = Value::Node(Rc::clone(&value_node));
+                    let fact = binding_gamma_fact(kb, var_name, value_v, occ.span, occ.owner);
+                    outer_flow.assume(kb, fact)
+                }
+                _ => outer_flow,
+            };
             work.push(TypeWorkOp::Build(TypeBuildFrame::LetFinal { occ, value_node, value_effects }));
             // WI-537: the body's types come from the value result (`ext_env`),
-            // its Γ from the stashed let-site flow.
-            //
-            // The proposal-050 binding rule (`let x = e` ⟹ Γ ∪ { x ≡ e }) is
-            // DEFERRED: a body reference to a `let`/lambda binder is an
-            // `Expr::VarRef` (unqualified, unresolved) that heads `Opaque`, so
-            // there is no indexable, Γ-storable form of `x` today — `Term::Ref`
-            // is the canonical form for a CONSTRUCTOR reference, not a local
-            // binder, and an `eq(Ref(x), e)` fact would never match a real `x`
-            // reference. It also needs rebind handling (`let x = 0; let x = 1`
-            // must not leave a stale `x ≡ 0` in Γ), the logical analog of the
-            // type-level `clear_receiver_alias` above. Both pin the binder's
-            // logical representation, best decided with the first consumer
-            // (WI-067) — like the match-binder pattern facts.
-            push_visit(work, body_occ, Env { types: Rc::new(ext_env), flow: outer_flow }, body_expected, fuel);
+            // its Γ from the let-site flow narrowed by the binding fact above.
+            push_visit(work, body_occ, Env { types: Rc::new(ext_env), flow: body_flow }, body_expected, fuel);
         }
         TypeBuildFrame::LetFinal { occ, value_node, value_effects } => {
             let body_r = results.pop().expect("LetFinal: missing body result");

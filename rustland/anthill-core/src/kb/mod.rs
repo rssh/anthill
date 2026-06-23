@@ -759,6 +759,13 @@ impl KnowledgeBase {
         self.symbols.intern(s)
     }
 
+    /// Mint a FRESH, distinct Unresolved symbol displaying as `name` (WI-550) —
+    /// the alpha-rename of a local binder to a per-binding-site identity. See
+    /// [`crate::intern::SymbolTable::intern_unique`].
+    pub fn intern_unique(&mut self, name: &str) -> Symbol {
+        self.symbols.intern_unique(name)
+    }
+
     /// Define a Resolved symbol in the given scope. Wrapper exposing
     /// `SymbolTable::define` for downstream crates that need to
     /// register synthesized symbols (e.g. anthill-cli's

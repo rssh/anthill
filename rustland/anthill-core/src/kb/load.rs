@@ -5133,6 +5133,16 @@ struct Loader<'a> {
     // Pushed by the let/match/lambda visit arms; popped by
     // `LoadWorkOp::PopLocalScope`.
     local_names_stack: Vec<HashMap<String, Symbol>>,
+    // WI-550: per-binding-site alpha-rename map — a `pattern_var` parse-node raw
+    // id → the FRESH unique Symbol minted for that binder (`kb.intern_unique`).
+    // The local-name frame (consulted by body references) and `load_pattern_var`
+    // (the binding occurrence the typer reads as `Pattern::Var`) both resolve a
+    // binder through `binder_sym`, which mints once per site and caches here, so
+    // the two agree on ONE identity per binding while `let x = 0; let x = 1` mint
+    // DISTINCT symbols — making Γ's binder facts (`x ≡ e`, `eq(s, some(x))`)
+    // shadowing-correct (proposal 050). Parse ids are unique per file (the parse
+    // store does not hash-cons), so no two binding sites collide.
+    binder_syms: HashMap<u32, Symbol>,
     // WI-201: bare-spec-member sugar accumulator. `Some` ONLY while loading an
     // operation SIGNATURE (set up at the top of `load_operation`, drained at its
     // end). A bare `Spec.Member` in a signature type position — `Member` a
@@ -5300,10 +5310,29 @@ impl<'a> Loader<'a> {
             expr_match_metas: Vec::new(),
             occ_suppress: 0,
             local_names_stack: Vec::new(),
+            binder_syms: HashMap::new(),
             bare_spec_sugar: None,
             current_sort_carrier_bindings: HashMap::new(),
             signature_place_types: HashMap::new(),
         }
+    }
+
+    /// WI-550: the FRESH unique Symbol for a binding site, minted once per
+    /// `pattern_var` parse node and cached in `binder_syms`. Both the local-name
+    /// frame (`collect_pattern_names_into`, read by body references) and the
+    /// pattern occurrence (`load_pattern_var`, read by the typer as
+    /// `Pattern::Var`) resolve a binder through here, so the two share ONE
+    /// identity per site, while distinct sites (`let x = 0; let x = 1`) get
+    /// distinct symbols — alpha-renaming the binder so Γ's facts over it are
+    /// shadowing-correct. The display name stays `name`, so eval's name-based
+    /// `find_local` and the printer are unchanged.
+    fn binder_sym(&mut self, name: &str, pattern_var_parse_id: TermId) -> Symbol {
+        if let Some(&sym) = self.binder_syms.get(&pattern_var_parse_id.raw()) {
+            return sym;
+        }
+        let sym = self.kb.intern_unique(name);
+        self.binder_syms.insert(pattern_var_parse_id.raw(), sym);
+        sym
     }
 
     /// Look up a name in the let/lambda/match-branch scope stack.
@@ -5352,12 +5381,19 @@ impl<'a> Loader<'a> {
         };
         match functor_name.as_str() {
             "pattern_var" => {
-                if let Some(&first) = pos_args.first() {
-                    if let Term::Ident(sym) = self.parsed.terms.get(first) {
-                        let name = self.parsed.symbols.name(*sym).to_owned();
-                        let kb_sym = self.kb.intern(&name);
-                        frame.insert(name, kb_sym);
+                // WI-550: alpha-rename this binder to a fresh per-site Symbol,
+                // keyed by the `pattern_var` parse node (`parse_id`) so
+                // `load_pattern_var` later resolves the SAME identity. Extract the
+                // owned name first (dropping the `parsed` borrow) before minting.
+                let name = pos_args.first().and_then(|&first| {
+                    match self.parsed.terms.get(first) {
+                        Term::Ident(sym) => Some(self.parsed.symbols.name(*sym).to_owned()),
+                        _ => None,
                     }
+                });
+                if let Some(name) = name {
+                    let kb_sym = self.binder_sym(&name, parse_id);
+                    frame.insert(name, kb_sym);
                 }
             }
             "pattern_tuple" => {
@@ -7441,19 +7477,32 @@ impl<'a> Loader<'a> {
     /// cross-contaminate even when they share a parse `vid`.
     fn load_op_body_var(&mut self, parse_id: TermId, vid: VarId) -> TermId {
         let name = self.parsed.symbols.name(vid.name()).to_owned();
-        if self.lookup_local_name(&name).is_none() {
-            if let ResolveResult::Found(sym) =
-                self.kb.symbols.resolve_in_scope(&name, self.current_scope.raw())
-            {
-                if matches!(
-                    self.kb.symbols.get(sym),
-                    SymbolDef::Resolved { kind: SymbolKind::Param, .. }
-                ) {
-                    let kb_vid = self.kb.fresh_var(sym);
-                    let kb_id = self.kb.alloc(Term::Var(Var::Global(kb_vid)));
-                    self.term_map.insert(parse_id.raw(), kb_id);
-                    return kb_id;
-                }
+        // WI-550: a `?x` naming a let/lambda/match binder REFERS to that binder, so
+        // bind it to the binder's per-site (gensym) Symbol — the same identity its
+        // `var_ref(x)` references and its env type binding carry. The generic
+        // `convert_term` path would instead mint a fresh var re-interning the SOURCE
+        // name (`intern("x")`), which since alpha-renaming no longer equals the
+        // binder's gensym → the typer's by-name var lookup misses and a receiver like
+        // `?x.peek()` reports an unresolved sort. Resolved per occurrence (like the
+        // param case below): the parser shares one parse `vid` across scopes, so a
+        // `vid`-keyed cache would leak a shadowed sibling's identity (WI-487).
+        if let Some(local) = self.lookup_local_name(&name) {
+            let kb_vid = self.kb.fresh_var(local);
+            let kb_id = self.kb.alloc(Term::Var(Var::Global(kb_vid)));
+            self.term_map.insert(parse_id.raw(), kb_id);
+            return kb_id;
+        }
+        if let ResolveResult::Found(sym) =
+            self.kb.symbols.resolve_in_scope(&name, self.current_scope.raw())
+        {
+            if matches!(
+                self.kb.symbols.get(sym),
+                SymbolDef::Resolved { kind: SymbolKind::Param, .. }
+            ) {
+                let kb_vid = self.kb.fresh_var(sym);
+                let kb_id = self.kb.alloc(Term::Var(Var::Global(kb_vid)));
+                self.term_map.insert(parse_id.raw(), kb_id);
+                return kb_id;
             }
         }
         self.convert_term(parse_id)
@@ -7533,7 +7582,13 @@ impl<'a> Loader<'a> {
     fn load_pattern_var(&mut self, parse_id: TermId, pos_args: &SmallVec<[TermId; 4]>) -> TermId {
         let name_term = self.parsed.terms.get(pos_args[0]).clone();
         let name_ref = if let Term::Ident(sym) = name_term {
-            let kb_sym = self.reintern(sym);
+            // WI-550: the binder's identity is the per-site fresh Symbol minted
+            // (keyed by this `pattern_var` node) when its scope frame was built —
+            // NOT `reintern(sym)`, which would dedup `let x; let x` to one symbol
+            // and collide their Γ facts. `binder_sym` get-or-mints, so an
+            // un-framed pattern (none reach here) still gets a unique identity.
+            let name = self.parsed.symbols.name(sym).to_owned();
+            let kb_sym = self.binder_sym(&name, parse_id);
             self.kb.alloc(Term::Ref(kb_sym))
         } else {
             self.convert_term(pos_args[0])

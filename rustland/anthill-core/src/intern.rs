@@ -201,6 +201,25 @@ impl SymbolTable {
         sym
     }
 
+    /// Mint a FRESH, distinct Unresolved symbol carrying `name` as its display
+    /// name — bypassing the `intern_map` dedup, so two calls with the same `name`
+    /// return two *different* symbols. Used to alpha-rename a local binder
+    /// (`let`/lambda/match-arm) to a per-binding-site identity (WI-550): the
+    /// symbol still prints / resolves-by-name as `name` (so eval's name-based
+    /// `find_local` and the printer are unaffected), but `let x = 0; let x = 1`
+    /// now mint distinct symbols, keeping their flow facts (`x ≡ 0`, `x ≡ 1`)
+    /// collision-free under shadowing in Γ (proposal 050). It is intentionally
+    /// NOT inserted into `intern_map` / any scope: a binder is resolved only via
+    /// the loader's local-name frame, never scope-resolution, so leaving the
+    /// dedup map pointing at the original `intern(name)` symbol is correct.
+    pub fn intern_unique(&mut self, name: &str) -> Symbol {
+        let sym = Symbol(self.defs.len() as u32);
+        self.defs.push(SymbolDef::Unresolved {
+            name: name.to_owned(),
+        });
+        sym
+    }
+
     /// Look up an existing symbol by name without allocating one if it
     /// isn't present. Returns `None` when no one has interned the name.
     /// Used by read-only paths (e.g. the loader looking for parse-side
