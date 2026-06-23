@@ -58,6 +58,8 @@ struct ReflectSyms {
     f_operations: Symbol,
     f_parameters: Symbol,
     f_requires: Symbol,
+    f_ensures: Symbol,
+    f_meta: Symbol,
     f_params: Symbol,
     f_return_type: Symbol,
     f_effects: Symbol,
@@ -111,6 +113,8 @@ impl ReflectSyms {
             f_operations: kb.intern("operations"),
             f_parameters: kb.intern("parameters"),
             f_requires: kb.intern("requires"),
+            f_ensures: kb.intern("ensures"),
+            f_meta: kb.intern("meta"),
             f_params: kb.intern("params"),
             f_return_type: kb.intern("return_type"),
             f_effects: kb.intern("effects"),
@@ -474,15 +478,34 @@ fn kb_operations(
             .map(|t| collect_list_terms(kb, syms, t))
             .unwrap_or_default();
         let effects_values = anthill_core::kb::op_info::effects_of_head(kb, &head);
+        // WI-548: surface the contract clauses + meta too, matching the host
+        // bridge `operations()` (WI-545). `clause_list_field` reads each clause
+        // carrier-faithfully (a ground goal/conjunction is a `Value::Term`, a
+        // denoted-bearing precondition a `Value::Node`); the interpreter is
+        // dynamically typed, so the spec's `List[NodeOccurrence]` field just holds
+        // those clause `Value`s directly — no `NodeOccurrence` wrapper. `requires`
+        // carries the loader's synthetic `EffectsRuntime[Effects=E]` clause
+        // (WI-320); `ensures` is user clauses only.
+        let requires_values = anthill_core::kb::op_info::clause_list_field(kb, &head, "requires");
+        let ensures_values = anthill_core::kb::op_info::clause_list_field(kb, &head, "ensures");
+        // `meta` is a single `meta(...)` term; default to a bare `meta` ref when
+        // the fact omits it, mirroring the bridge.
+        let meta_tid = anthill_core::kb::op_info::head_field_term(kb, &head, "meta")
+            .unwrap_or_else(|| kb.alloc(CoreTerm::Ref(syms.f_meta)));
 
         let params_v = build_list_value(syms, params_list.into_iter().map(Value::Term).collect());
         let effects_v = build_list_value(syms, effects_values);
+        let requires_v = build_list_value(syms, requires_values);
+        let ensures_v = build_list_value(syms, ensures_values);
 
         let fields = vec![
             (syms.f_name, Value::Term(name_tid)),
             (syms.f_params, params_v),
             (syms.f_return_type, Value::Term(return_tid)),
             (syms.f_effects, effects_v),
+            (syms.f_requires, requires_v),
+            (syms.f_ensures, ensures_v),
+            (syms.f_meta, Value::Term(meta_tid)),
         ];
         entries.push(make_entity(kb, syms.operation_info, fields));
     }
@@ -1929,6 +1952,106 @@ end
         for expected in ["apple", "banana", "cherry"] {
             assert!(names.iter().any(|n| n == expected),
                 "missing '{expected}' in {names:?}");
+        }
+    }
+
+    /// Walk a value cons/nil list into its element `Value`s (test helper).
+    fn list_values(interp: &Interpreter, mut cur: Value) -> Vec<Value> {
+        let mut out = Vec::new();
+        loop {
+            match cur {
+                Value::Entity { functor, named, .. } => {
+                    let fname = interp.kb().resolve_sym(functor).to_string();
+                    if fname.rsplit('.').next() == Some("nil") { break; }
+                    let head = named.iter().find(|(s, _)|
+                        interp.kb().resolve_sym(*s) == "head").map(|(_, v)| v.clone());
+                    let tail = named.iter().find(|(s, _)|
+                        interp.kb().resolve_sym(*s) == "tail").map(|(_, v)| v.clone());
+                    match (head, tail) {
+                        (Some(h), Some(t)) => { out.push(h); cur = t; }
+                        _ => break,
+                    }
+                }
+                _ => break,
+            }
+        }
+        out
+    }
+
+    /// A named field of a `Value::Entity` by short name (test helper).
+    fn entity_field(interp: &Interpreter, e: &Value, key: &str) -> Option<Value> {
+        match e {
+            Value::Entity { named, .. } => named.iter()
+                .find(|(s, _)| interp.kb().resolve_sym(*s) == key)
+                .map(|(_, v)| v.clone()),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn kb_operations_surfaces_requires_ensures_and_meta() {
+        // WI-548: the interpreter realization of `KB.operations` must match the
+        // host bridge (WI-545) — an op's `requires`/`ensures` contract clauses and
+        // `meta` term are surfaced in the OperationInfo value, not dropped.
+        // `ensures` carries only user clauses (no synthetic EffectsRuntime), so an
+        // empty `ensures` would be an unambiguous regression; `requires` also
+        // carries the loader's `EffectsRuntime[Effects=E]` clause (WI-320).
+        let mut interp = load_stdlib_and_source(r#"
+namespace test.wi548_op_contract
+  import anthill.prelude.Int64
+
+  sort Tank
+    entity tank(fuel: Int64)
+    entity Full(t: Tank)
+    operation fill(t: Tank) -> Tank requires Full(t) ensures Full(t)
+      meta [Refuel, Profile: "cpp20-stl"]
+  end
+end
+"#);
+        let result = interp.call("anthill.reflect.KB.operations",
+            &[Value::Unit, Value::Str("Tank".into())])
+            .expect("operations call");
+
+        // The op's `name` field is `Value::Term(Ref(sym))`; match by short name.
+        let op_short = |interp: &Interpreter, op: &Value| -> Option<String> {
+            match entity_field(interp, op, "name")? {
+                Value::Term(tid) => match interp.kb().get_term(tid) {
+                    CoreTerm::Ref(s) => {
+                        let n = interp.kb().resolve_sym(*s).to_string();
+                        Some(n.rsplit('.').next().unwrap_or(&n).to_string())
+                    }
+                    _ => None,
+                },
+                _ => None,
+            }
+        };
+
+        let ops = list_values(&interp, result);
+        let fill = ops.iter().find(|op| op_short(&interp, op).as_deref() == Some("fill"))
+            .expect("fill OperationInfo entity");
+
+        let requires = list_values(&interp,
+            entity_field(&interp, fill, "requires").expect("requires field present"));
+        let ensures = list_values(&interp,
+            entity_field(&interp, fill, "ensures").expect("ensures field present"));
+        assert!(!ensures.is_empty(), "fill should surface its user `ensures` clause");
+        assert!(!requires.is_empty(),
+            "fill should surface `requires` (incl. synthetic EffectsRuntime)");
+        // Each ground contract clause rides as a goal-term Value (matching bridge).
+        match &ensures[0] {
+            Value::Term(_) => {}
+            other => panic!("ensures clause should be a Value::Term goal, got {other:?}"),
+        }
+
+        // `meta` is surfaced (not omitted) — a non-empty `meta(...)` term here.
+        let meta = entity_field(&interp, fill, "meta").expect("meta field present");
+        match meta {
+            Value::Term(tid) => assert!(
+                matches!(interp.kb().get_term(tid),
+                    CoreTerm::Fn { named_args, .. } if !named_args.is_empty()),
+                "meta should be a non-empty meta(...) term",
+            ),
+            other => panic!("meta field should be a Value::Term, got {other:?}"),
         }
     }
 }
