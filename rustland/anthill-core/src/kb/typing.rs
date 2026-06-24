@@ -140,6 +140,15 @@ pub enum TypeError {
     Multiple {
         errors: Vec<TypeError>,
     },
+    /// WI-539 (proposal 050 "operation call" rule): a callee's VALUE precondition
+    /// (`requires neq(b, 0)`) could not be proved from the local interpretation
+    /// environment Γ at the call site — an undischarged obligation. `op` is the
+    /// callee, `clause` the unproved precondition goal. Reported at the call span.
+    UnsatisfiedPrecondition {
+        span: Option<Span>,
+        op: Symbol,
+        clause: Value,
+    },
     /// Catchall for auxiliary typing-pass checks (effect declarations,
     /// match exhaustiveness, HO pattern fragment, rule var consistency).
     /// Promote to a dedicated variant when a consumer discriminates on it.
@@ -318,6 +327,13 @@ impl TypeError {
                 let parts: Vec<String> = errors.iter().map(|e| e.format(kb)).collect();
                 parts.join("; ")
             }
+            TypeError::UnsatisfiedPrecondition { op, clause, .. } => {
+                format!(
+                    "unsatisfied precondition `{}` for call to `{}`: the `requires` goal could not be proved at the call site (establish it with an enclosing `if`/`match` guard, a prior `ensures`, or a KB fact)",
+                    type_display_name_value(kb, clause),
+                    kb.qualified_name_of(*op),
+                )
+            }
             TypeError::Other { expected, actual, .. } => {
                 format!("expected {}, got {}", expected, actual)
             }
@@ -338,6 +354,7 @@ impl TypeError {
             | TypeError::MissingRequiresForSpecOp { span, .. }
             | TypeError::DotDispatchNoMatch { span, .. }
             | TypeError::ForbiddenInternalField { span, .. }
+            | TypeError::UnsatisfiedPrecondition { span, .. }
             | TypeError::BottomExpr { span } => *span,
             TypeError::Other { span, .. } => *span,
             TypeError::NoParentSort { .. } => None,
@@ -514,6 +531,16 @@ impl TypeError {
                     }
                 }
             }
+            TypeError::UnsatisfiedPrecondition { op, clause, .. } => LoadError::TypeMismatch {
+                entity_name: kb.qualified_name_of(*op).to_string(),
+                field_name: "requires".to_string(),
+                expected_type: format!(
+                    "precondition `{}` provable at the call site",
+                    type_display_name_value(kb, clause)
+                ),
+                actual_type: "unsatisfied precondition".to_string(),
+                span: self.span(kb),
+            },
             TypeError::Other { context, expected, actual, .. } => LoadError::TypeMismatch {
                 entity_name: context.entity_name(kb),
                 field_name: context.field_name(kb),
@@ -4312,6 +4339,19 @@ fn build_type(
                 }
                 _ => outer_flow,
             };
+            // WI-539 (proposal 050 "operation call" rule, `ensures` half): if the
+            // value is a direct call bound to `var_name`, assume the callee's
+            // postconditions into the body's Γ with `result ↦ var_name`. This is
+            // the canonical Γ populator — `let y = op(); …` where `op ensures
+            // neq(result, 0)` puts `neq(y, 0)` in Γ, discharging a later
+            // `div(_, y)` guard with no branch test written. Not gated on the
+            // purity above: a postcondition holds after the call regardless of
+            // effects (the binding fact, in contrast, needs `e` referentially
+            // transparent).
+            let body_flow = match extract_pattern_var_name(&pattern) {
+                Some(var_name) => assume_call_ensures(kb, body_flow, &value_node, var_name),
+                None => body_flow,
+            };
             work.push(TypeWorkOp::Build(TypeBuildFrame::LetFinal { occ, value_node, value_effects }));
             // WI-537: the body's types come from the value result (`ext_env`),
             // its Γ from the let-site flow narrowed by the binding fact above.
@@ -5563,6 +5603,36 @@ fn check_apply_iter(
         // rendered as a spurious `undeclared effect: {empty_row}`). A bare label
         // (`Modify[c]`) or an unbound row var (the WI-365 concrete-carrier path,
         // closed below) is not an `EffectsRows` head and passes through unchanged.
+        // WI-539 (proposal 050 "operation call" modification rule, `requires`
+        // half): check the callee's VALUE preconditions against Γ at the call
+        // site. A `requires` value-goal (`neq(b, 0)`) is an OBLIGATION — it must
+        // be positively PROVED from Γ + ground evaluation + KB via the same
+        // `prove_from_gamma` bridge guard discharge uses, but at the OPPOSITE
+        // polarity: a guard DROPS on a refutation, a precondition must be PROVED,
+        // and an unproved one (incl. one that flounders over a symbolic argument)
+        // is undischarged — a loud error, never a silent pass (048 §"Discharge is
+        // constructive refutation"; the obligation sits on the safe side). Only
+        // VALUE goals are checked here — spec/typeclass requires (`Spec[C=T]`,
+        // `EffectsRuntime[…]`) have a `Sort` head and are dispatched / coverage-
+        // checked elsewhere (WI-343 / WI-325), never proved from Γ.
+        let value_reqs: Vec<Value> = op
+            .requires
+            .iter()
+            .filter(|c| is_value_precondition_clause(kb, c))
+            .cloned()
+            .collect();
+        if !value_reqs.is_empty() {
+            let req_sigma = build_call_guard_sigma(kb, &op.params, pos_args, named_args);
+            for clause in &value_reqs {
+                if !precondition_proved(kb, flow, &req_sigma, clause) {
+                    return Err(TypeError::UnsatisfiedPrecondition {
+                        span,
+                        op: fn_sym,
+                        clause: clause.clone(),
+                    });
+                }
+            }
+        }
         // WI-067 (proposal 048 §"Typer delta" / 050 consumer 2): does the callee
         // carry any guarded effect element `L :- G`? Computed once so the >99% of
         // calls whose callee declares no guarded effect pay nothing — neither the
@@ -7403,6 +7473,12 @@ struct OperationInfoFull {
     /// Operation-level type parameters in declaration order, as
     /// `(name, Var(VarId) term)` pairs.
     type_params: Vec<(Symbol, TermId)>,
+    /// WI-539: precondition (`requires`) clauses, for call-site contract checking
+    /// (proposal 050 "operation call" rule). Carries the auto-inferred
+    /// `EffectsRuntime[…]` and spec `Spec[C=T]` requires too; the call-site check
+    /// filters to the VALUE goals (`is_value_precondition_clause`) — spec/typeclass
+    /// requires are dispatched / coverage-checked elsewhere (WI-343 / WI-325).
+    requires: Vec<Value>,
 }
 
 /// Look up complete OperationInfo for a functor.
@@ -7415,6 +7491,7 @@ fn lookup_operation_info_full(kb: &KnowledgeBase, functor: Symbol) -> Option<Ope
         return_type: rec.return_type,
         effects: rec.effects,
         type_params: rec.type_params,
+        requires: rec.requires,
     })
 }
 
@@ -16275,6 +16352,108 @@ fn drop_refuted_guarded_labels(
             present.remove(pos);
         }
     }
+}
+
+/// WI-539: is a `requires` clause a VALUE precondition (a goal over the op's
+/// parameters, e.g. `not(empty(s))` / `neq(b, 0)`) rather than a spec / typeclass
+/// requirement (`Spec[C=T]`, the auto-inferred `EffectsRuntime[…]`)? Only value
+/// preconditions are proved against Γ at a call site; a spec requirement's head
+/// resolves to a `Sort` and is satisfied by dispatch / coverage (WI-343 / WI-325),
+/// never by `prove_from_gamma`. A clause with no functor head is conservatively
+/// NOT treated as a value precondition (left to the other checks).
+fn is_value_precondition_clause(kb: &KnowledgeBase, clause: &Value) -> bool {
+    match clause.head(kb) {
+        ViewHead::Functor { functor: Some(f), .. } => {
+            kb.kind_of(f) != Some(crate::intern::SymbolKind::Sort)
+        }
+        _ => false,
+    }
+}
+
+/// WI-539: does a callee's value precondition `clause` PROVE from Γ at the call,
+/// after σ (callee params ↦ actual args)? The dual of [`guarded_atom_refuted`]:
+/// where a guard DROPS on a refutation of `¬G`, a precondition must be positively
+/// PROVED — so this calls [`prove_from_gamma`] (not [`refute_guard`]) on σ(clause),
+/// canonicalizing a binder/parameter reference to its `var_ref` twin first (so the
+/// goal unifies with the flow-narrowed Γ fact AND is the open-world parameter the
+/// resolver flounders on — `definite_only` keeps an unestablished precondition
+/// UNPROVED, the obligation default, never NAF-"true"). A literal argument grounds
+/// the goal and proves by evaluation; a symbolic one flounders ⇒ unproved ⇒ error.
+fn precondition_proved(
+    kb: &mut KnowledgeBase,
+    flow: &FlowEnv,
+    sigma: &HashMap<Symbol, TermId>,
+    clause: &Value,
+) -> bool {
+    // Value preconditions are Term (ground goal) or Node (denoted) by construction
+    // (`is_value_precondition_clause` gates to a functor-headed goal). An
+    // unexpected carrier is treated as vacuously satisfied rather than spuriously
+    // failing the call — it cannot arise from a value goal.
+    let g = match clause {
+        Value::Term(t) => *t,
+        Value::Node(occ) => super::node_occurrence::occurrence_to_term(kb, occ),
+        _ => return true,
+    };
+    let g = if sigma.is_empty() { g } else { substitute_ref_terms(kb, g, sigma) };
+    let g = normalize_param_refs_to_var_ref(kb, g);
+    prove_from_gamma(kb, flow, &Value::Term(g))
+}
+
+/// WI-539 (proposal 050 "operation call" modification rule, `ensures` half): if
+/// `value_node` is a direct call `callee(args)` bound to `binder` (a `let`), assume
+/// the callee's postconditions into Γ for the code after the binding — with σ
+/// mapping the callee's parameters ↦ the actual argument terms AND `result` ↦
+/// `var_ref(binder)`. So `let y = op(); …` where `op ensures neq(result, 0)`
+/// contributes `neq(y, 0)`, the fact a later `div(_, y)` guard discharge (or a
+/// `requires`-check) reads straight from Γ — contract knowledge flowing through Γ,
+/// the main populator beyond branch conditions and bindings.
+///
+/// Independent of the binding-fact purity gate (a postcondition holds after the
+/// call regardless of its effects). A clause is canonicalized exactly as a guard
+/// query is (`normalize_param_refs_to_var_ref`) so producer and consumer speak one
+/// form. An argument with no clean term twin leaves its callee parameter as the
+/// inert `var_ref(<callee>.param)` — a unique qualified symbol no caller goal can
+/// match, so the assumed fact is sound (a conservative miss, never a false proof).
+/// Returns Γ unchanged for a non-call value or a callee with no `ensures`.
+fn assume_call_ensures(
+    kb: &mut KnowledgeBase,
+    flow: FlowEnv,
+    value_node: &Rc<NodeOccurrence>,
+    binder: Symbol,
+) -> FlowEnv {
+    let (functor, pos_args, named_args) = match &value_node.kind {
+        NodeKind::Expr { expr: Expr::Apply { functor, pos_args, named_args, .. }, .. } => {
+            (*functor, pos_args.clone(), named_args.clone())
+        }
+        _ => return flow,
+    };
+    let Some(rec) = super::op_info::lookup_operation_info(kb, functor) else {
+        return flow;
+    };
+    if rec.ensures.is_empty() {
+        return flow;
+    }
+    // σ: callee params ↦ actual arg terms, plus `result` ↦ var_ref(binder). The
+    // reserved `result` resolves under the op scope as `<op>.result` (proposal 041).
+    let mut sigma = build_call_guard_sigma(kb, &rec.params, &pos_args, &named_args);
+    let op_qn = kb.qualified_name_of(functor).to_string();
+    if let Some(result_sym) = kb.try_resolve_symbol(&format!("{}.result", op_qn)) {
+        let binder_term = kb.make_var_ref_term(binder);
+        sigma.insert(result_sym, binder_term);
+    }
+    let ensures = rec.ensures.clone();
+    let mut flow = flow;
+    for clause in &ensures {
+        let g = match clause {
+            Value::Term(t) => *t,
+            Value::Node(occ) => super::node_occurrence::occurrence_to_term(kb, occ),
+            _ => continue,
+        };
+        let g = substitute_ref_terms(kb, g, &sigma);
+        let g = normalize_param_refs_to_var_ref(kb, g);
+        flow = flow.assume(kb, Value::Term(g));
+    }
+    flow
 }
 
 /// WI-441: the multi-tail arm shared by [`unify_effect_rows`] and
