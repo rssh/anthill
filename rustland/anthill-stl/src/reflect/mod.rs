@@ -2,6 +2,7 @@
 
 pub mod bridge;
 pub mod builtins;
+pub(crate) mod reader;
 
 use anthill_core::eval::Value;
 use anthill_core::intern::Symbol as CoreSymbol;

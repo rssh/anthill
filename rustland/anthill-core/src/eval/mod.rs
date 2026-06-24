@@ -25,6 +25,7 @@ use crate::kb::KnowledgeBase;
 use crate::persistence::Store;
 
 pub use error::EvalError;
+pub use eval::value_functor;
 pub use frame::{ActivationStack, Frame, FrameTypeArgs};
 pub use value::Value;
 

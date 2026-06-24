@@ -8,6 +8,7 @@ use anthill_core::kb::term_view::{TermView, ViewHead};
 use anthill_core::kb::resolve::{SearchStream, ResolveConfig};
 
 use crate::prelude::{Stream, Modifiable, Type};
+use crate::reflect::reader;
 use crate::reflect::*;
 
 // ── Boundary helpers (WI-540) ───────────────────────────────────
@@ -26,14 +27,6 @@ fn rterm(v: Value) -> Term {
 #[inline]
 fn term(id: TermId) -> Term {
     ReflectTerm::new(Value::Term(id))
-}
-
-/// Lift a contract-clause `TermId` into the reflect `NodeOccurrence` (WI-545).
-/// The loader stores op `requires`/`ensures` clauses as goal terms, so the
-/// carrier is a `Value::Term`.
-#[inline]
-fn nocc(id: TermId) -> NodeOccurrence {
-    ReflectNodeOccurrence::new(Value::Term(id))
 }
 
 /// Map a core [`Literal`] to its host [`LiteralRepr`] (struct-variant form).
@@ -90,7 +83,7 @@ impl KbBridge {
         let sym = match direct {
             Some(s) => s,
             None => {
-                let name = self.term_display_name(tid);
+                let name = reader::term_display_name(&self.kb.borrow(), tid);
                 self.kb.borrow_mut().intern(&name)
             }
         };
@@ -163,54 +156,9 @@ impl KbBridge {
         }
     }
 
-    /// Resolve a name string to a sort-level TermId via make_name_term.
-    fn resolve_sort_name(&self, name: &str) -> TermId {
-        self.kb.borrow_mut().make_name_term(name)
-    }
-
-    /// Get all hash-consed fact head TermIds for a given KB sort name. A
-    /// Node-carrying value-fact head (WI-348/342) is skipped — the
-    /// carrier-faithful path for those is the interpreter `KB.*` builtins.
-    fn facts_by_sort_name(&self, sort_name: &str) -> Vec<(anthill_core::kb::RuleId, TermId)> {
-        let sort_term = self.resolve_sort_name(sort_name);
-        let kb = self.kb.borrow();
-        kb.by_sort(sort_term)
-            .into_iter()
-            .filter_map(|rid| match kb.rule_head_value(rid) {
-                anthill_core::eval::Value::Term(t) => Some((rid, *t)),
-                _ => None,
-            })
-            .collect()
-    }
-
-    /// The entity functor a reference `Value` names — the host twin of core's
-    /// `eval::value_functor` (which is `pub(crate)` to anthill-core, so it can't
-    /// be reused across the crate boundary). Matches core arm-for-arm: an
-    /// `Entity` carries its functor directly; a `Term` carrier reads the
-    /// hash-consed `Fn`/`Ref` head; anything else (a literal, a var, an
-    /// unresolved `Ident`) names no entity. Keep in lock-step with core.
-    fn value_functor(&self, v: &Value) -> Option<anthill_core::intern::Symbol> {
-        match v {
-            Value::Entity { functor, .. } => Some(*functor),
-            Value::Term(tid) => match self.kb.borrow().get_term(*tid) {
-                CoreTerm::Fn { functor, .. } => Some(*functor),
-                CoreTerm::Ref(sym) => Some(*sym),
-                _ => None,
-            },
-            _ => None,
-        }
-    }
-
-    /// Extract the functor name from a Fn term.
-    fn term_functor_name(&self, id: TermId) -> Option<String> {
-        let kb = self.kb.borrow();
-        match kb.get_term(id) {
-            CoreTerm::Fn { functor, .. } => Some(kb.resolve_sym(*functor).to_string()),
-            _ => None,
-        }
-    }
-
-    /// Extract named args from a Fn term as (name_str, TermId) pairs.
+    /// Extract named args from a Fn term as (name_str, TermId) pairs. Kept for
+    /// decoding an operation's `FieldInfo` parameter terms ([`field_info_of`]),
+    /// the one place the bridge still reads a `Fn`'s named args directly.
     fn term_named_args(&self, id: TermId) -> Vec<(String, TermId)> {
         let kb = self.kb.borrow();
         match kb.get_term(id) {
@@ -223,112 +171,40 @@ impl KbBridge {
         }
     }
 
-    /// Extract positional args from a Fn term.
-    fn term_pos_args(&self, id: TermId) -> Vec<TermId> {
-        let kb = self.kb.borrow();
-        match kb.get_term(id) {
-            CoreTerm::Fn { pos_args, .. } => pos_args.iter().copied().collect(),
-            _ => vec![],
-        }
-    }
-
-    /// Get a displayable name for a TermId.
-    fn term_display_name(&self, id: TermId) -> String {
-        let kb = self.kb.borrow();
-        match kb.get_term(id) {
-            CoreTerm::Ref(sym) | CoreTerm::Ident(sym) => kb.resolve_sym(*sym).to_string(),
-            CoreTerm::Fn { functor, .. } => kb.resolve_sym(*functor).to_string(),
-            CoreTerm::Const(Literal::String(s)) => s.clone(),
-            CoreTerm::Const(Literal::Int(n)) => n.to_string(),
-            CoreTerm::Const(Literal::BigInt(n)) => n.to_string(),
-            CoreTerm::Const(Literal::Float(f)) => f.to_string(),
-            CoreTerm::Const(Literal::Bool(b)) => b.to_string(),
-            CoreTerm::Const(Literal::Handle(kind, id)) => format!("<{:?}:{}>", kind, id),
-            CoreTerm::Var(Var::Global(vid)) => format!("?{}", kb.resolve_sym(vid.name())),
-            CoreTerm::Var(Var::DeBruijn(n)) => format!("?_{n}"),
-            CoreTerm::Var(Var::Rigid(vid)) => format!("!{}", kb.resolve_sym(vid.name())),
-            CoreTerm::Bottom => "⊥".into(),
-            CoreTerm::ParseAux(_) => "<parse-aux>".into(),
-        }
-    }
-
-    /// Get the short (last segment) of a qualified name.
-    fn short_name(&self, qualified: &str) -> String {
-        qualified.rsplit('.').next().unwrap_or(qualified).to_string()
-    }
-
-    /// Collect member names of a given kind under a parent domain.
-    fn members_of_kind(&self, parent_name: &str, kind: &str) -> Vec<String> {
-        let mut results = vec![];
-        for (_rid, head) in self.facts_by_sort_name("Member") {
-            let pos = self.term_pos_args(head);
-            if pos.len() == 3 {
-                let member_kind = self.term_display_name(pos[1]);
-                let member_parent = self.term_display_name(pos[2]);
-                if member_kind == kind
-                    && (member_parent == parent_name
-                        || self.short_name(&member_parent) == parent_name)
-                {
-                    results.push(self.term_display_name(pos[0]));
-                }
-            }
-        }
-        results
-    }
-
-    /// Walk a cons-list term and collect all head elements as TermIds.
-    fn collect_list_terms(&self, list_tid: TermId) -> Vec<TermId> {
-        let mut results = vec![];
-        let mut current = list_tid;
-        loop {
-            let kb = self.kb.borrow();
-            match kb.get_term(current) {
-                CoreTerm::Fn { functor, named_args, .. } => {
-                    let name = kb.resolve_sym(*functor);
-                    if name == "nil" {
-                        break;
-                    }
-                    if name == "cons" {
-                        let head = named_args.iter().find(|(s, _)| kb.resolve_sym(*s) == "head");
-                        let tail = named_args.iter().find(|(s, _)| kb.resolve_sym(*s) == "tail");
-                        if let Some(&(_, h)) = head {
-                            results.push(h);
-                        }
-                        match tail {
-                            Some(&(_, t)) => { current = t; }
-                            None => break,
-                        }
-                    } else {
-                        break;
-                    }
-                }
-                _ => break,
-            }
-        }
-        results
-    }
-
-    /// Walk a cons-list and collect head elements (same as collect_list_terms).
-    fn collect_list_refs(&self, list_tid: TermId) -> Vec<TermId> {
-        self.collect_list_terms(list_tid)
+    /// Decode an operation parameter's `FieldInfo` term into the reflect struct.
+    /// `name` defaults to `_` when absent; `type_name` falls back to the FieldInfo
+    /// term itself (mirrors the prior inline `operations` params decode).
+    fn field_info_of(&self, fi_tid: TermId) -> FieldInfo {
+        let fi_named = self.term_named_args(fi_tid);
+        let fi_field = |key: &str| fi_named.iter().find(|(n, _)| n == key).map(|(_, tid)| *tid);
+        let name = match fi_field("name") {
+            Some(t) => self.sym_of(t),
+            None => ReflectSymbol::new(self.kb.borrow_mut().intern("_")),
+        };
+        let type_name = fi_field("type_name").unwrap_or(fi_tid);
+        FieldInfo { name, type_name: term(type_name) }
     }
 
     /// Look up an Entity definition by name, returning its functor symbol and
     /// the list of field name symbols. Falls back to inferring schema from
     /// existing facts with matching functor if no Entity definition exists.
     fn find_entity_schema(&self, sort_name: &str) -> Option<(anthill_core::intern::Symbol, Vec<anthill_core::intern::Symbol>)> {
-        let entity_facts = self.facts_by_sort_name("Entity");
+        let entity_facts = reader::facts_by_sort_name(&mut self.kb.borrow_mut(), "Entity");
         {
             let kb = self.kb.borrow();
+            // Only a ground `Value::Term(Fn)` entity head names a usable schema
+            // here (a value-in-type entity is irrelevant to a `SortQuery` goal).
             for (_rid, head) in &entity_facts {
-                if let CoreTerm::Fn { functor, named_args, .. } = kb.get_term(*head) {
-                    let fname = kb.resolve_sym(*functor);
-                    if fname == sort_name || fname.rsplit('.').next() == Some(sort_name) {
-                        let fields: Vec<anthill_core::intern::Symbol> = named_args
-                            .iter()
-                            .map(|&(sym, _)| sym)
-                            .collect();
-                        return Some((*functor, fields));
+                if let Value::Term(t) = head {
+                    if let CoreTerm::Fn { functor, named_args, .. } = kb.get_term(*t) {
+                        let fname = kb.resolve_sym(*functor);
+                        if fname == sort_name || fname.rsplit('.').next() == Some(sort_name) {
+                            let fields: Vec<anthill_core::intern::Symbol> = named_args
+                                .iter()
+                                .map(|&(sym, _)| sym)
+                                .collect();
+                            return Some((*functor, fields));
+                        }
                     }
                 }
             }
@@ -770,225 +646,94 @@ impl KB for KbBridge {
     }
 
     fn sorts(&self, namespace: Option<String>) -> Vec<SortInfo> {
-        let mut results = vec![];
-
-        for (_rid, head) in self.facts_by_sort_name("Sort") {
-            let functor = self.term_functor_name(head);
-            if functor.as_deref() != Some("SortInfo") {
-                continue;
-            }
-            let named = self.term_named_args(head);
-            let field = |key: &str| named.iter().find(|(n, _)| n == key).map(|(_, tid)| *tid);
-
-            let name_tid = match field("name") {
-                Some(tid) => tid,
-                None => continue,
-            };
-            let definition_tid = match field("definition") {
-                Some(tid) => tid,
-                None => continue,
-            };
-
-            if let Some(ref ns) = namespace {
-                let name_str = self.term_display_name(name_tid);
-                if !name_str.starts_with(ns) {
-                    continue;
-                }
-            }
-
-            let kind = match field("kind") {
-                Some(tid) => self.sym_of(tid),
-                None => ReflectSymbol::new(self.kb.borrow_mut().intern("sort")),
-            };
-            let ctors = field("constructors").map(|t| self.collect_list_refs(t)).unwrap_or_default();
-            let ops = field("operations").map(|t| self.collect_list_refs(t)).unwrap_or_default();
-            let params = field("parameters").map(|t| self.collect_list_refs(t)).unwrap_or_default();
-            let reqs = field("requires").map(|t| self.collect_list_terms(t)).unwrap_or_default();
-
-            results.push(SortInfo {
-                name: self.sym_of(name_tid),
-                kind,
-                definition: term(definition_tid),
-                constructors: ctors.into_iter().map(|t| self.sym_of(t)).collect(),
-                operations: ops.into_iter().map(|t| self.sym_of(t)).collect(),
-                parameters: params.into_iter().map(|t| self.sym_of(t)).collect(),
-                requires: reqs.into_iter().map(term).collect(),
-            });
-        }
-
-        results
-    }
-
-    fn operations(&self, sort_name: String) -> Vec<OperationInfo> {
-        let mut results = vec![];
-
-        for (rid, head) in self.facts_by_sort_name("Operation") {
-            let functor = self.term_functor_name(head);
-            if functor.as_deref() != Some("OperationInfo") {
-                continue;
-            }
-
-            let domain = {
-                let kb = self.kb.borrow();
-                kb.fact_domain(rid)
-            };
-            let domain_name = self.term_display_name(domain);
-            if domain_name != sort_name && self.short_name(&domain_name) != sort_name {
-                continue;
-            }
-
-            let named = self.term_named_args(head);
-            let field = |key: &str| named.iter().find(|(n, _)| n == key).map(|(_, tid)| *tid);
-
-            let name_tid = match field("name") {
-                Some(tid) => tid,
-                None => continue,
-            };
-            let return_type_tid = match field("return_type") {
-                Some(tid) => tid,
-                None => continue,
-            };
-
-            let params = field("params")
-                .map(|t| {
-                    self.collect_list_terms(t)
-                        .into_iter()
-                        .map(|fi_tid| {
-                            let fi_named = self.term_named_args(fi_tid);
-                            let fi_field = |key: &str| fi_named.iter().find(|(n, _)| n == key).map(|(_, tid)| *tid);
-                            let name = match fi_field("name") {
-                                Some(t) => self.sym_of(t),
-                                None => ReflectSymbol::new(self.kb.borrow_mut().intern("_")),
-                            };
-                            let type_name = fi_field("type_name").unwrap_or(fi_tid);
-                            FieldInfo { name, type_name: term(type_name) }
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
-
-            let effects = field("effects")
-                .map(|t| self.collect_list_terms(t).into_iter().map(term).collect())
-                .unwrap_or_default();
-
-            // `requires`/`ensures` are lists of contract-clause goal terms in
-            // the fact (same list encoding as `effects`); wrap each as a
-            // `NodeOccurrence` carrier (WI-545). `requires` includes the loader's
-            // auto-inferred `EffectsRuntime[Effects=E]` clause (WI-320); `ensures`
-            // is user clauses only. A Node-carrying value fact (denoted effect)
-            // is still skipped upstream by `facts_by_sort_name`.
-            let requires = field("requires")
-                .map(|t| self.collect_list_terms(t).into_iter().map(nocc).collect())
-                .unwrap_or_default();
-            let ensures = field("ensures")
-                .map(|t| self.collect_list_terms(t).into_iter().map(nocc).collect())
-                .unwrap_or_default();
-
-            // `meta` is a `Term`; default to a bare `meta` ref when the fact
-            // lacks it.
-            let meta_tid = match field("meta") {
-                Some(t) => t,
-                None => {
-                    let mut kb = self.kb.borrow_mut();
-                    let s = kb.intern("meta");
-                    kb.alloc(CoreTerm::Ref(s))
-                }
-            };
-
-            results.push(OperationInfo {
-                name: self.sym_of(name_tid),
-                params,
-                return_type: term(return_type_tid),
-                effects,
-                requires,
-                ensures,
-                meta: term(meta_tid),
-            });
-        }
-
-        results
-    }
-
-    fn constructors(&self, sort_name: String) -> Vec<String> {
-        self.members_of_kind(&sort_name, "Constructor")
+        let records = reader::read_sort_infos(&mut self.kb.borrow_mut(), namespace.as_deref());
+        records
             .into_iter()
-            .map(|n| self.short_name(&n))
+            .map(|rec| SortInfo {
+                name: self.sym_of(rec.name),
+                kind: match rec.kind {
+                    Some(t) => self.sym_of(t),
+                    None => ReflectSymbol::new(self.kb.borrow_mut().intern("sort")),
+                },
+                definition: term(rec.definition),
+                constructors: rec.constructors.into_iter().map(|t| self.sym_of(t)).collect(),
+                operations: rec.operations.into_iter().map(|t| self.sym_of(t)).collect(),
+                parameters: rec.parameters.into_iter().map(|t| self.sym_of(t)).collect(),
+                requires: rec.requires.into_iter().map(term).collect(),
+            })
             .collect()
     }
 
+    fn operations(&self, sort_name: String) -> Vec<OperationInfo> {
+        let records = reader::read_operations(&mut self.kb.borrow_mut(), &sort_name);
+        // The shared reader yields `effects` / `requires` / `ensures` as carrier-
+        // faithful `Value`s. A `denoted` label / clause rides as a `Value::Node`,
+        // wrapped via `rterm` / `ReflectNodeOccurrence::new` — the struct fields
+        // are `Term` / `NodeOccurrence` carriers (newtypes over `Value`), so the
+        // bridge holds it verbatim rather than skipping the op (the old
+        // `facts_by_sort_name` Term-only drop is gone). `requires` includes the
+        // loader's auto-inferred `EffectsRuntime[Effects=E]` clause (WI-320);
+        // `ensures` is user clauses only.
+        records
+            .into_iter()
+            .map(|rec| OperationInfo {
+                name: self.sym_of(rec.name),
+                params: rec.params.into_iter().map(|fi_tid| self.field_info_of(fi_tid)).collect(),
+                return_type: term(rec.return_type),
+                effects: rec.effects.into_iter().map(rterm).collect(),
+                requires: rec.requires.into_iter().map(ReflectNodeOccurrence::new).collect(),
+                ensures: rec.ensures.into_iter().map(ReflectNodeOccurrence::new).collect(),
+                meta: term(rec.meta),
+            })
+            .collect()
+    }
+
+    fn constructors(&self, sort_name: String) -> Vec<String> {
+        // `let`-bind first to release the `borrow_mut()` RefMut before mapping (see
+        // `fields`); the map here doesn't re-borrow, but keep the pattern uniform.
+        let members = reader::members_of_kind(&mut self.kb.borrow_mut(), &sort_name, "Constructor");
+        members.into_iter().map(|n| reader::short_of(&n).to_string()).collect()
+    }
+
     fn fields(&self, name: String) -> Vec<FieldInfo> {
-        let mut results = vec![];
-
-        for (_rid, head) in self.facts_by_sort_name("Entity") {
-            let functor = match self.term_functor_name(head) {
-                Some(n) => n,
-                None => continue,
-            };
-            if functor != name && self.short_name(&functor) != name {
-                continue;
-            }
-            let named = self.term_named_args(head);
-            for (field_name, field_tid) in named {
-                let name_sym = ReflectSymbol::new(self.kb.borrow_mut().intern(&field_name));
-                results.push(FieldInfo {
-                    name: name_sym,
-                    type_name: term(field_tid),
-                });
-            }
-            break;
+        // The reader returns the matching entity's `(field_sym, field_type)` pairs
+        // carrier-agnostically; a value-in-type field type rides as a `Value::Node`
+        // into `FieldInfo.type_name` (a `Term` carrier over `Value`), surfaced
+        // verbatim via `rterm` rather than dropped. NB: bind the reader result to a
+        // `let` first so the `borrow_mut()` RefMut is released BEFORE the mapping —
+        // a chained `read_*(…).map(…)` would hold the mutable borrow across the
+        // closure and conflict with the bridge methods that re-borrow (`sym_of`).
+        let record = reader::read_entity_fields(&mut self.kb.borrow_mut(), &name);
+        match record {
+            Some(rec) => rec
+                .fields
+                .into_iter()
+                .map(|(field_sym, field_type)| FieldInfo {
+                    name: ReflectSymbol::new(field_sym),
+                    type_name: rterm(field_type),
+                })
+                .collect(),
+            None => vec![],
         }
-
-        results
     }
 
     fn rules(&self, sort_name: String) -> Vec<TermRepr> {
-        let mut results = vec![];
-
-        for (rid, head) in self.facts_by_sort_name("Rule") {
-            let domain = {
-                let kb = self.kb.borrow();
-                kb.fact_domain(rid)
-            };
-            let domain_name = self.term_display_name(domain);
-            if domain_name != sort_name && self.short_name(&domain_name) != sort_name {
-                continue;
-            }
-            results.push(self.reify_view(&head));
-        }
-
-        results
+        let heads = reader::rule_heads_for_sort(&mut self.kb.borrow_mut(), &sort_name);
+        heads.iter().map(|head| self.reify_view(head)).collect()
     }
 
     fn descriptions(&self, target: Option<String>) -> Vec<DescriptionInfo> {
-        let mut results = vec![];
-
-        for (_rid, head) in self.facts_by_sort_name("Description") {
-            let pos = self.term_pos_args(head);
-            if pos.len() < 3 {
-                continue;
-            }
-            let desc_target_tid = pos[0];
-            let desc_content = self.term_display_name(pos[1]);
-            let desc_index = match self.kb.borrow().get_term(pos[2]) {
-                CoreTerm::Const(Literal::Int(n)) => *n,
-                _ => continue,
-            };
-
-            if let Some(ref t) = target {
-                let desc_target_name = self.term_display_name(desc_target_tid);
-                if &desc_target_name != t && &self.short_name(&desc_target_name) != t {
-                    continue;
-                }
-            }
-
-            results.push(DescriptionInfo {
-                target: self.sym_of(desc_target_tid),
-                content: desc_content,
-                index: desc_index,
-            });
-        }
-
-        results
+        // `let`-bind first: `self.sym_of(..)` in the map re-borrows the KB, so the
+        // `borrow_mut()` RefMut must be dropped before mapping (see `fields`).
+        let records = reader::read_descriptions(&mut self.kb.borrow_mut(), target.as_deref());
+        records
+            .into_iter()
+            .map(|rec| DescriptionInfo {
+                target: self.sym_of(rec.target),
+                content: rec.content,
+                index: rec.index,
+            })
+            .collect()
     }
 
     fn execute(
@@ -1005,13 +750,12 @@ impl KB for KbBridge {
 
     fn facts_of(&self, sort: Type) -> Vec<Term> {
         // The entity is passed by reference (`facts_of(kb(), WorkItem)`); the
-        // `Type` carrier wraps that referencing `Value`. Extract its functor
-        // (mirroring core `eval::value_functor`), then enumerate every asserted
-        // fact with that head functor. Carrier-agnostic: `rule_head_value`
-        // returns the head `Value` directly, so a value-fact head (e.g. an
-        // `OperationInfo` carrying a `denoted` effect, WI-348) rides through as
-        // a `Term` rather than being dropped — same as the interpreter
-        // `kb_facts_of`.
+        // `Type` carrier wraps that referencing `Value`. Extract its functor via
+        // the shared `value_functor` (core's single source — same reader the
+        // interpreter `kb_facts_of` uses), then enumerate every asserted fact with
+        // that head functor. Carrier-agnostic: `rule_head_value` returns the head
+        // `Value` directly, so a value-fact head (e.g. an `OperationInfo` carrying
+        // a `denoted` effect, WI-348) rides through rather than being dropped.
         // A non-entity `sort` (a literal, a var, a Fn-with-args) names no fact
         // set — a caller type error, not "zero facts". Surface it loudly
         // (mirroring the interpreter `kb_facts_of`, which raises a type
@@ -1019,7 +763,7 @@ impl KB for KbBridge {
         // than returning an empty list a caller would misread as "none
         // asserted". The trait fixes the return as `Vec<Term>`, so a panic is
         // the only loud channel.
-        let functor = self.value_functor(sort.value()).unwrap_or_else(|| {
+        let functor = anthill_core::eval::value_functor(&self.kb.borrow(), sort.value()).unwrap_or_else(|| {
             panic!(
                 "KB.facts_of: `sort` is not an entity reference (expected a \
                  Ref / Fn / Entity carrier that names a functor)"
@@ -1056,7 +800,7 @@ impl KB for KbBridge {
     fn assert(&mut self, term: Term, sort: Type) -> Option<FactId> {
         let head = term.into_value();
         let term_tid = head.clone().expect_term();
-        let arg_sort_sym = self.value_functor(sort.value());
+        let arg_sort_sym = anthill_core::eval::value_functor(&self.kb.borrow(), sort.value());
         let mut kb = self.kb.borrow_mut();
         let sort_tid = kb.fact_trigger_sort(&head).unwrap_or_else(|| {
             let sym = arg_sort_sym.unwrap_or_else(|| {
@@ -1717,6 +1461,71 @@ end
             body: Box::new(LogicalQuery::EmptyQuery),
         };
         bridge.add_guard(guard); // panics in reify_logical_query before registration
+    }
+
+    #[test]
+    fn introspection_record_ops_map_via_shared_reader() {
+        // WI-551: exercise the bridge `sorts`/`fields`/`constructors`/
+        // `descriptions`/`rules` entry points DIRECTLY. Before the consolidation
+        // only `operations`/`facts_of`/`execute` had bridge tests; these five mapped
+        // their own walks untested (verified only via the analogous interpreter
+        // builtins). Now they map the shared `reader` records — this pins both the
+        // result correctness AND the borrow-safety of the `.map` closures (e.g.
+        // `sorts`' `kind: None => self.kb.borrow_mut().intern("sort")` running while
+        // the per-field `self.sym_of(..)` borrows the same RefCell).
+        let bridge = load_source_bridge(r#"
+namespace test.wi551_bridge
+  sort Color
+    entity red(shade: Int64)
+    entity blue(shade: Int64)
+  end
+  describe Color {< a color sort >}
+end
+"#);
+        let short = |sym: &ReflectSymbol| {
+            let kb = bridge.kb.borrow();
+            let n = kb.resolve_sym(sym.symbol()).to_string();
+            n.rsplit('.').next().unwrap_or(&n).to_string()
+        };
+
+        let ctors = bridge.constructors("Color".into());
+        assert!(
+            ctors.iter().any(|c| c == "red") && ctors.iter().any(|c| c == "blue"),
+            "constructors should list red+blue, got {ctors:?}",
+        );
+
+        let fields = bridge.fields("red".into());
+        assert!(
+            fields.iter().any(|f| short(&f.name) == "shade"),
+            "red should surface a `shade` field, got {:?}",
+            fields.iter().map(|f| short(&f.name)).collect::<Vec<_>>(),
+        );
+
+        let sorts = bridge.sorts(None);
+        assert!(
+            sorts.iter().any(|s| short(&s.name) == "Color"),
+            "sorts(None) should include Color",
+        );
+        // The namespace filter is honored — a non-matching prefix yields nothing
+        // for our sort.
+        assert!(
+            !bridge.sorts(Some("no.such.namespace".into()))
+                .iter()
+                .any(|s| short(&s.name) == "Color"),
+            "a non-matching namespace filter should exclude Color",
+        );
+
+        let descs = bridge.descriptions(None);
+        assert!(
+            descs.iter().any(|d| d.content.contains("a color sort")),
+            "descriptions(None) should include Color's text, got {:?}",
+            descs.iter().map(|d| &d.content).collect::<Vec<_>>(),
+        );
+
+        // `rules` reifies each Rule head via `reify_view` (`let heads` + map, so its
+        // borrow path is the same safe shape as the others); smoke-call it to
+        // exercise that path. Head reification itself is covered by the reify tests.
+        let _ = bridge.rules("Color".into());
     }
 
     /// Drift-guard (WI-540): the reflect `KB` / `Substitution` interface is
