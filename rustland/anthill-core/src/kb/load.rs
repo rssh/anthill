@@ -4638,6 +4638,55 @@ pub(crate) fn find_operation_in_scope(kb: &mut KnowledgeBase, sort_ref_tid: Term
     None
 }
 
+/// WI-552: wrap a binder/parameter occurrence — a `Ref(s)` / `Ident(s)` that
+/// denotes an operation-frame VARIABLE — in its canonical `var_ref(name)` form. A
+/// binder *is* a variable; a bare `Ref` denotes a closed global, so emitting a
+/// binder as `Ref` is the mis-representation that forced the discharge-time
+/// `normalize_param_refs_to_var_ref` patch (WI-067). Doing it here, at the
+/// producer (clause / guarded-effect conversion), the guard / precondition
+/// carries `var_ref` natively — it unifies with the flow-narrowed Γ fact and
+/// floats as the open-world parameter — with no consumer-side normalize.
+///
+/// "Op-frame variable" is: this signature's `places` (its parameters + `result`,
+/// matched by exact symbol) PLUS any callback-parameter/result place
+/// (`<op>.f.a` / `<op>.f.result`, matched by the unambiguous `CallbackParam` /
+/// `CallbackResult` kinds) — a callback's own binders are equally runtime-unknown
+/// and must flounder, so a guard projecting one (`eq(f.result, 0)`) is covered.
+/// An existing `var_ref(…)` is not re-wrapped (no double-wrap); a global
+/// sort/op/const/constructor ref stays a decidable bare `Ref` (this is why we do
+/// NOT use the old `!is_constructor_symbol` net, which over-wrapped globals).
+fn wrap_places_as_var_ref(
+    kb: &mut KnowledgeBase,
+    term: TermId,
+    places: &HashSet<Symbol>,
+    var_ref_sym: Symbol,
+) -> TermId {
+    match kb.get_term(term).clone() {
+        Term::Ref(s) | Term::Ident(s) if places.contains(&s) || is_callback_place(kb, s) => {
+            kb.make_var_ref_term(s)
+        }
+        Term::Fn { functor, .. } if functor == var_ref_sym => term,
+        Term::Fn { .. } => {
+            kb.map_fn_children(term, |kb, child| wrap_places_as_var_ref(kb, child, places, var_ref_sym))
+        }
+        _ => term,
+    }
+}
+
+/// Is `sym` a callback-parameter / callback-result place (`<op>.f.a` /
+/// `<op>.f.result`)? These op-frame binders are registered (by
+/// [`register_callback_places`]) into the op scope but NOT into
+/// `signature_place_types`, yet they are equally runtime-unknown variables —
+/// so a guard / precondition over one must be `var_ref` (flounder), not a bare
+/// `Ref`. The `CallbackParam` / `CallbackResult` kinds are unambiguous (unlike
+/// `Field`, which also tags ordinary record fields), so matching on them is safe.
+fn is_callback_place(kb: &KnowledgeBase, sym: Symbol) -> bool {
+    matches!(
+        kb.kind_of(sym),
+        Some(SymbolKind::CallbackParam | SymbolKind::CallbackResult)
+    )
+}
+
 /// Build a cons-list from a slice of TermIds: `cons(head: a, tail: cons(head: b, tail: nil()))`.
 /// Uses the `anthill.prelude.List` constructors so list operations work.
 fn build_list(kb: &mut KnowledgeBase, items: &[TermId]) -> TermId {
@@ -8833,8 +8882,18 @@ impl<'a> Loader<'a> {
             // COMPLETE EffectExpression atom — the row folders carry it BARE (never
             // wrap it in `present`).
             TypeExpr::EffectGuarded { label, guard } => {
-                let guard_terms: Vec<TermId> =
-                    guard.iter().map(|g| self.convert_term(*g)).collect();
+                // WI-552: canonicalize the guard's param refs to var_ref at the
+                // producer (the guard goals resolve in the current op scope, so a
+                // `Modify[c] :- eq(c, 0)` guard's `c` is a signature place) — the
+                // guard then carries the binder as a variable and the discharge-time
+                // normalize pass is retired.
+                let guard_terms: Vec<TermId> = guard
+                    .iter()
+                    .map(|g| {
+                        let t = self.convert_term(*g);
+                        self.var_ref_signature_places(t)
+                    })
+                    .collect();
                 let label_child = self.type_expr_to_child(label, span, owner);
                 match label_child {
                     node_occurrence::TypeChild::Ground(label_t) => {
@@ -11737,6 +11796,22 @@ impl<'a> Loader<'a> {
 
     /// Convert a list of clauses (each a Vec<TermId>) into a cons-list.
     /// Multi-goal clauses are wrapped in a conjunction term.
+    /// WI-552: canonicalize binder/parameter occurrences in a converted clause
+    /// or guard goal to `var_ref(name)`. The op's signature places (parameters +
+    /// `result`, held in [`Self::signature_place_types`] for the signature being
+    /// loaded) are the only variables a `requires`/`ensures` clause or a
+    /// signature-level guard can reference, so wrapping exactly those symbols is
+    /// both correct and precise — a `const`/global ref stays a decidable bare
+    /// `Ref`. See [`wrap_places_as_var_ref`].
+    fn var_ref_signature_places(&mut self, term: TermId) -> TermId {
+        if self.signature_place_types.is_empty() {
+            return term;
+        }
+        let places: HashSet<Symbol> = self.signature_place_types.keys().copied().collect();
+        let var_ref_sym = self.kb.resolve_symbol("anthill.reflect.Expr.var_ref");
+        wrap_places_as_var_ref(&mut self.kb, term, &places, var_ref_sym)
+    }
+
     fn convert_clause_list(&mut self, clauses: &[Vec<TermId>]) -> TermId {
         self.convert_clause_list_with_extra(clauses, &[])
     }
@@ -11754,7 +11829,16 @@ impl<'a> Loader<'a> {
         let mut clause_terms: Vec<TermId> = clauses
             .iter()
             .map(|clause| {
-                let goal_terms: Vec<TermId> = clause.iter().map(|&tid| self.convert_term(tid)).collect();
+                // WI-552: canonicalize each goal's param/`result` refs to var_ref
+                // at the producer, so the stored clause carries the binder as the
+                // variable it is (the discharge-time normalize pass is retired).
+                let goal_terms: Vec<TermId> = clause
+                    .iter()
+                    .map(|&tid| {
+                        let t = self.convert_term(tid);
+                        self.var_ref_signature_places(t)
+                    })
+                    .collect();
                 if goal_terms.len() == 1 {
                     goal_terms[0]
                 } else {

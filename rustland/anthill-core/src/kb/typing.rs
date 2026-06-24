@@ -16180,39 +16180,58 @@ fn substitute_ref_terms(
     term: TermId,
     map: &HashMap<Symbol, TermId>,
 ) -> TermId {
+    let var_ref_sym = kb.resolve_symbol("anthill.reflect.Expr.var_ref");
+    substitute_ref_terms_rec(kb, term, map, var_ref_sym)
+}
+
+/// WI-552: σ as a proper VARIABLE substitution. A binder/parameter occurrence is
+/// `var_ref(name: Ref(s))`; when `s` is in the σ domain, the WHOLE `var_ref` node
+/// is replaced by the bound argument term — never recursed into (recursing would
+/// rewrite the `name` child and corrupt the wrapper, e.g. `var_ref(name: 0)`). A
+/// `var_ref` over a symbol absent from σ is left intact — the surviving open-world
+/// parameter the resolver flounders on. A bare `Ref` / `Ident` (a global) still
+/// substitutes directly if mapped (e.g. a spec type-param binding), else stays.
+fn substitute_ref_terms_rec(
+    kb: &mut KnowledgeBase,
+    term: TermId,
+    map: &HashMap<Symbol, TermId>,
+    var_ref_sym: Symbol,
+) -> TermId {
     match kb.get_term(term).clone() {
         Term::Ref(s) | Term::Ident(s) => map.get(&s).copied().unwrap_or(term),
+        Term::Fn { functor, named_args, .. } if functor == var_ref_sym => {
+            match var_ref_name_symbol(kb, &named_args) {
+                Some(s) => map.get(&s).copied().unwrap_or(term),
+                // A `var_ref`'s `name` child is always `Ref(sym)` by construction
+                // ([`KnowledgeBase::make_var_ref_term`]). A `None` here means a
+                // malformed binder reached σ — surface it loudly rather than
+                // silently leaving an un-substitutable node (repo principle: loud
+                // error over silent skip). Release keeps the conservative `term`.
+                None => {
+                    debug_assert!(
+                        false,
+                        "substitute_ref_terms: var_ref with a non-symbol `name` child"
+                    );
+                    term
+                }
+            }
+        }
         Term::Fn { .. } => {
-            kb.map_fn_children(term, |kb, child| substitute_ref_terms(kb, child, map))
+            kb.map_fn_children(term, |kb, child| substitute_ref_terms_rec(kb, child, map, var_ref_sym))
         }
         _ => term,
     }
 }
 
-/// WI-067: rewrite each non-constructor binder / parameter reference `Ref(s)` /
-/// `Ident(s)` in a guard goal to its canonical `var_ref(name: Ref(s))` reflect-
-/// term twin — the form `Γ` is built with ([`binder_ref_value`] /
-/// `occurrence_to_term`, both via [`KnowledgeBase::make_var_ref_term`]). This
-/// makes a guard query (`neq(b, 0)`) UNIFY with the flow-narrowed `Γ` fact over
-/// the same binder, and marks it as the open-world parameter the resolver
-/// flounders on. A constructor `Ref` (`some` / `nil`) is a closed value and is
-/// left ground; an existing `var_ref(…)` is not re-wrapped.
-fn normalize_param_refs_to_var_ref(kb: &mut KnowledgeBase, term: TermId) -> TermId {
-    let var_ref_sym = kb.resolve_symbol("anthill.reflect.Expr.var_ref");
-    normalize_param_refs_rec(kb, term, var_ref_sym)
-}
-
-fn normalize_param_refs_rec(kb: &mut KnowledgeBase, term: TermId, var_ref_sym: Symbol) -> TermId {
-    match kb.get_term(term).clone() {
-        Term::Ref(s) | Term::Ident(s) if !kb.is_constructor_symbol(s) => kb.make_var_ref_term(s),
-        // Already a `var_ref(…)` — don't re-wrap its `name` child. Matched by the
-        // CANONICAL symbol (not the short name) so a same-short-named functor in
-        // another namespace is not mistaken for the reflect binder form.
-        Term::Fn { functor, .. } if functor == var_ref_sym => term,
-        Term::Fn { .. } => {
-            kb.map_fn_children(term, |kb, child| normalize_param_refs_rec(kb, child, var_ref_sym))
-        }
-        _ => term,
+/// Read the binder symbol `s` from a `var_ref(name: Ref(s))` term's `name` child.
+/// Returns `None` for a malformed / absent `name` (the caller then leaves the
+/// `var_ref` intact rather than substituting).
+fn var_ref_name_symbol(kb: &KnowledgeBase, named_args: &[(Symbol, TermId)]) -> Option<Symbol> {
+    let name_key = kb.lookup_symbol("name")?;
+    let child = named_args.iter().find(|(k, _)| *k == name_key).map(|(_, v)| *v)?;
+    match kb.get_term(child) {
+        Term::Ref(s) | Term::Ident(s) => Some(*s),
+        _ => None,
     }
 }
 
@@ -16253,19 +16272,17 @@ fn guarded_atom_refuted(
             Value::Node(occ) => super::node_occurrence::occurrence_to_term(kb, occ),
             _ => return false,
         };
+        // σ grounds the guard over the actual arguments: a parameter `var_ref(b)`
+        // whose argument is a concrete literal becomes that literal (refutes by
+        // evaluation); one with no clean arg twin stays `var_ref(b)` — the
+        // open-world parameter the resolver flounders on, so the effect is kept.
+        // The guard already carries `var_ref` for its binders from load (WI-552),
+        // and σ substitutes the variable as a whole — no consumer-side normalize.
         let g = if sigma.is_empty() {
             g
         } else {
             substitute_ref_terms(kb, g, sigma)
         };
-        // Normalize a threaded binder/parameter reference `Ref(b)` (the shape the
-        // effect re-key `substitute_ref_syms` left) to its `var_ref(b)` twin — the
-        // canonical binder-reference form `Γ` is built with (`binder_ref_value`),
-        // so the guard's `neq(b, 0)` query unifies with the `if`/`match`-narrowed
-        // `neq(b, 0)` fact AND is recognised as the OPEN-WORLD parameter the
-        // resolver must flounder on (a concrete literal argument, substituted in by
-        // σ above, carries no such ref and refutes by evaluation). WI-067.
-        let g = normalize_param_refs_to_var_ref(kb, g);
         refute_guard(kb, flow, &Value::Term(g))
     })
 }
@@ -16433,9 +16450,12 @@ fn precondition_proved(
         _ => return false,
     };
     // A multi-goal clause is `conjunction(g1, …)`; ALL conjuncts must prove.
+    // The clause carries `var_ref` for its parameters from load (WI-552); σ
+    // substitutes a parameter variable whose actual argument is concrete, and a
+    // parameter with no clean arg twin stays `var_ref` — floundering under
+    // `definite_only`, so the precondition is unproved (the obligation default).
     for conj in clause_conjuncts(kb, g) {
         let conj = if sigma.is_empty() { conj } else { substitute_ref_terms(kb, conj, sigma) };
-        let conj = normalize_param_refs_to_var_ref(kb, conj);
         if !prove_from_gamma(kb, flow, &Value::Term(conj)) {
             return false;
         }
@@ -16453,14 +16473,15 @@ fn precondition_proved(
 /// the main populator beyond branch conditions and bindings.
 ///
 /// Independent of the binding-fact purity gate (a postcondition holds after the
-/// call regardless of its effects). Each clause is split into conjuncts and
-/// canonicalized exactly as a guard query is (`normalize_param_refs_to_var_ref`) so
-/// producer and consumer speak one form. A conjunct that, after σ, still references
-/// a callee PARAMETER (an argument with no clean term twin) is DROPPED rather than
+/// call regardless of its effects). Each clause is split into conjuncts; its
+/// parameter / `result` occurrences carry `var_ref` from load (WI-552), and σ
+/// substitutes them as variables (`result` ↦ `var_ref(binder)`), so producer and
+/// consumer speak one form. A conjunct that, after σ, still references a callee
+/// PARAMETER (an argument with no clean term twin) is DROPPED rather than
 /// assumed: the `<callee>.param` symbol is shared across calls, so assuming a fact
 /// over it would let a second same-callee call's query spuriously match it
-/// ([`term_references_any`]). Returns Γ unchanged for a non-call value or a callee
-/// with no `ensures`.
+/// ([`term_references_any`], which finds the param inside its `var_ref` wrapper).
+/// Returns Γ unchanged for a non-call value or a callee with no `ensures`.
 fn assume_call_ensures(
     kb: &mut KnowledgeBase,
     flow: FlowEnv,
@@ -16503,7 +16524,6 @@ fn assume_call_ensures(
             if term_references_any(kb, conj, &param_syms) {
                 continue;
             }
-            let conj = normalize_param_refs_to_var_ref(kb, conj);
             flow = flow.assume(kb, Value::Term(conj));
         }
     }

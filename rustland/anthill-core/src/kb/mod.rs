@@ -3161,12 +3161,15 @@ impl KnowledgeBase {
         list
     }
 
-    /// WI-537 / WI-067: the canonical binder-reference reflect-term twin
+    /// WI-537 / WI-067 / WI-552: the canonical binder-reference reflect-term twin
     /// `var_ref(name: Ref(sym))` (head `Functor{anthill.reflect.Expr.var_ref}`).
-    /// The SINGLE producer of this shape — `occurrence_to_term`'s `VarRef` arm
-    /// and the discharge-side `normalize_param_refs_to_var_ref` both call here, so
-    /// the canonical form (which migrated Ident→Opaque→var_ref across WI-537) has
-    /// exactly one home (`binder_ref_value` mints the matching `Value::Node` twin).
+    /// The SINGLE home of this shape — `occurrence_to_term`'s `VarRef` arm and the
+    /// load-time `wrap_places_as_var_ref` (clause / guarded-effect parameter
+    /// occurrences, WI-552) both call here, so the canonical form (which migrated
+    /// Ident→Opaque→var_ref across WI-537) has exactly one constructor
+    /// (`binder_ref_value` mints the matching `Value::Node` twin). WI-552 retired
+    /// the discharge-side normalize pass: a binder is now emitted as `var_ref` at
+    /// the producer, not re-typed from a bare `Ref` at the consumer.
     pub fn make_var_ref_term(&mut self, name: Symbol) -> TermId {
         let var_ref = self.resolve_symbol("anthill.reflect.Expr.var_ref");
         let name_ref = self.alloc(Term::Ref(name));

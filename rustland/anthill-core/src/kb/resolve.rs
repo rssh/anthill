@@ -1978,10 +1978,12 @@ impl KnowledgeBase {
     /// discharge relies on; see the gates in [`SearchStream::step_naf`] /
     /// `step_builtin`)? The reference is the canonical `var_ref(name)` reflect-term
     /// twin (`Functor{anthill.reflect.Expr.var_ref}`) — the ONLY binder-reference
-    /// shape `Γ` is built with ([`binder_ref_value`]) and the one a guard's binder
-    /// is normalized to before discharge (`normalize_param_refs_to_var_ref`). A
-    /// bare `Ref`/`Ident` is deliberately NOT matched: a guard's binders are
-    /// already wrapped, while a *bare* `Ref` here is a closed datum — a sort,
+    /// shape `Γ` is built with ([`binder_ref_value`]) and the one a clause / guard
+    /// binder carries NATIVELY from load (`wrap_places_as_var_ref`, WI-552). The
+    /// recognition is therefore principled — `var_ref` ⇒ open-world, with no
+    /// pre-discharge normalize step to depend on. A bare `Ref`/`Ident` is
+    /// deliberately NOT matched: a binder is already wrapped, while a *bare* `Ref`
+    /// here is a closed datum — a sort,
     /// operation, const, or constructor — that a reflective builtin a proof goal
     /// chases (`scope`/`is_entity_of`/…) must still be able to DECIDE, not
     /// flounder. Carrier-agnostic: walks `Term`, `Node` occurrences, AND
