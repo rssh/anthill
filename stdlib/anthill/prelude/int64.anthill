@@ -19,10 +19,10 @@ sort anthill.prelude.Int64
   operation {
     abs(a: Int64) -> Int64                  -- |a|
     neg(a: Int64) -> Int64                  -- -a
-    mod(a: Int64, b: Int64) -> Int64 effects Error[DivisionByZero]      -- a mod b (always non-negative); partial: b ≠ 0
-    rem(a: Int64, b: Int64) -> Int64 effects Error[DivisionByZero]      -- a rem b (sign follows dividend); partial: b ≠ 0
-    div(a: Int64, b: Int64) -> Int64 effects Error[DivisionByZero]      -- truncated integer division; also `/` infix; partial: b ≠ 0
-    divExact(a: Int64, b: Int64) -> Int64 effects Error[DivisionByZero] -- integer division (truncated); alias of div; partial: b ≠ 0
+    mod(a: Int64, b: Int64) -> Int64 effects { Error[DivisionByZero] :- eq(b, 0) }      -- a mod b (always non-negative); partial: b ≠ 0
+    rem(a: Int64, b: Int64) -> Int64 effects { Error[DivisionByZero] :- eq(b, 0) }      -- a rem b (sign follows dividend); partial: b ≠ 0
+    div(a: Int64, b: Int64) -> Int64 effects { Error[DivisionByZero] :- eq(b, 0) }      -- truncated integer division; also `/` infix; partial: b ≠ 0
+    divExact(a: Int64, b: Int64) -> Int64 effects { Error[DivisionByZero] :- eq(b, 0) } -- integer division (truncated); alias of div; partial: b ≠ 0
     sign(a: Int64) -> Int64                 -- -1, 0, or 1
     to_float(n: Int64) -> Float           -- exact for |n| < 2^53; rounds otherwise
     to_string(n: Int64) -> String         -- decimal representation, no padding
