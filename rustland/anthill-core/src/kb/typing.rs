@@ -16151,16 +16151,31 @@ fn guarded_atom_refuted(
     sigma: &HashMap<Symbol, TermId>,
     guard_value: &Value,
 ) -> bool {
-    // The guard rides as `List[reflect.Term]`; materialize a hash-consed twin
-    // for a node-carried list (a boundary/index op — WI-348/390), then read the
-    // goal terms off the cons spine. An unexpected carrier keeps the effect.
-    let guard_term = match guard_value {
-        Value::Term(t) => *t,
-        Value::Node(occ) => super::node_occurrence::occurrence_to_term(kb, occ),
+    // Read the guard's `List[reflect.Term]` conjunction CARRIER-AGNOSTICALLY: a
+    // GROUND-label atom (`Error[D] :- eq(b,0)`) hash-conses its guard as a
+    // `Value::Term` cons list; a DENOTED-label (Node-carried) atom
+    // (`Modify[c] :- eq(b,0)`) stores it via `build_value_list` as a
+    // `Value::Entity` value-cons spine — but its goal heads are still
+    // `Value::Term`. An unexpected carrier keeps the effect (sound).
+    let goals: Vec<Value> = match guard_value {
+        Value::Term(t) => list_to_vec(kb, *t).into_iter().map(Value::Term).collect(),
+        Value::Node(occ) => {
+            let t = super::node_occurrence::occurrence_to_term(kb, occ);
+            list_to_vec(kb, t).into_iter().map(Value::Term).collect()
+        }
+        Value::Entity { .. } => super::op_info::value_list_to_vec(kb, guard_value),
         _ => return false,
     };
-    let goals = list_to_vec(kb, guard_term);
-    goals.iter().any(|&g| {
+    // `¬(g1 ∧ … ∧ gn)` follows from refuting ANY single conjunct, so the effect
+    // drops as soon as one gᵢ is constructively refuted from Γ (`refute_guard`,
+    // never NAF). The empty guard (`:- true`) has no conjunct — irrefutable, kept.
+    goals.iter().any(|g| {
+        // Each conjunct is a term-world goal; materialize a node-carried one.
+        let g = match g {
+            Value::Term(t) => *t,
+            Value::Node(occ) => super::node_occurrence::occurrence_to_term(kb, occ),
+            _ => return false,
+        };
         let g = if sigma.is_empty() {
             g
         } else {

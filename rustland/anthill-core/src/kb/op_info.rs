@@ -231,8 +231,9 @@ pub fn effects_of_head(kb: &KnowledgeBase, head: &Value) -> Vec<Value> {
 /// element `Value`s. Cells are `Value::Entity`s over the prelude `cons`/`nil`
 /// constructors; each `head` element is returned as-is (a `Value::Node` keeps
 /// its occurrence identity). A ground `Value::Term` tail is decoded as a term
-/// list for robustness against mixed shapes.
-fn value_list_to_vec(kb: &KnowledgeBase, mut v: &Value) -> Vec<Value> {
+/// list for robustness against mixed shapes. `pub(crate)` so the WI-067 guard
+/// discharge can read a denoted-label guarded atom's `build_value_list` guard.
+pub(crate) fn value_list_to_vec(kb: &KnowledgeBase, mut v: &Value) -> Vec<Value> {
     let cons_sym = kb.try_resolve_symbol("anthill.prelude.List.cons");
     let mut out: Vec<Value> = Vec::new();
     loop {

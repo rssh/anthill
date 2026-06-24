@@ -256,3 +256,53 @@ end
         res.err()
     );
 }
+
+#[test]
+fn denoted_modify_label_guard_discharges_and_keeps() {
+    // A guarded effect whose LABEL is denoted (`Modify[c]`, value-parameterized)
+    // rides the occurrence carrier (WI-478 `make_guarded_occ`), storing its guard
+    // as a `Value::Entity` cons list. Discharge must read that carrier too — a
+    // conditional `Modify` ("modifies c only when b = 0") is as first-class as a
+    // conditional `Error`. At `maybe_modify(c, 5)` the guard `eq(5, 0)` refutes, so
+    // `Modify[c]` DROPS and the caller need not declare it.
+    let discharged = r#"
+namespace anthill.test.wi067mod
+  import anthill.prelude.{Unit, Cell, Int64}
+
+  operation maybe_modify(c: Cell, b: Int64) -> Unit
+    effects { Modify[c] :- eq(b, 0) }
+
+  operation caller(c: Cell) -> Unit =
+    maybe_modify(c, 5)
+end
+"#;
+    assert!(
+        load_result(discharged).is_ok(),
+        "a literal-refutable guard on a DENOTED `Modify[c]` label must discharge \
+         (read off its Value::Entity guard list), exactly like a ground label; \
+         got: {:#?}",
+        load_result(discharged).err()
+    );
+
+    // Symbolic `b` keeps `Modify[c]` — same soundness floor as the ground case.
+    let kept = r#"
+namespace anthill.test.wi067mod2
+  import anthill.prelude.{Unit, Cell, Int64}
+
+  operation maybe_modify(c: Cell, b: Int64) -> Unit
+    effects { Modify[c] :- eq(b, 0) }
+
+  operation caller(c: Cell, b: Int64) -> Unit =
+    maybe_modify(c, b)
+end
+"#;
+    let errs = load_result(kept).expect_err(
+        "a symbolic `b` cannot refute the denoted-label guard, so `Modify[c]` is \
+         conservatively present; omitting it must fail",
+    );
+    assert!(
+        errs.iter().any(|e| e.contains("Modify")),
+        "expected the conservatively-present `Modify[c]` to surface as undeclared; \
+         got: {errs:#?}"
+    );
+}
