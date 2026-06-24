@@ -1045,11 +1045,13 @@ impl SearchStream {
 
     /// WI-027: walk `list` under σ and collect its elements when it is a fully
     /// ground spine — a `cons`/`nil` chain (the runtime list shape) or a
-    /// `ListLiteral(e…[, tail])` (the un-desugared surface literal, since a
+    /// `ListLiteral(e…)` (the un-desugared surface literal, since a
     /// bounded-quant collection slot carries no List-typed context to trigger
-    /// the WI-007 `ListLiteral → cons/nil` rewrite). Elements themselves need
-    /// not be ground — only the SPINE. Returns `None` when the spine is not
-    /// ground (an unbound tail, or a non-list term): the caller then DELAYs
+    /// the WI-007 `ListLiteral → cons/nil` rewrite). A `ListLiteral` carries all
+    /// its elements positionally and never a tail (the `[h | t]` surface was
+    /// removed, WI-560). Elements themselves need not be ground — only the
+    /// SPINE. Returns `None` when the spine is not ground (an unbound `cons`
+    /// tail, or a non-list term): the caller then DELAYs
     /// rather than silently deciding the quantifier. Constructors are matched
     /// by SHORT NAME via `resolve_sym` (mirroring `list_to_vec`), since a value
     /// list and the resolver can carry distinct `Symbol`s that share the name
@@ -1097,14 +1099,14 @@ impl SearchStream {
                         _ => return None,
                     }
                 }
-                Term::Fn { functor, pos_args, named_args }
+                Term::Fn { functor, pos_args, .. }
                     if kb.resolve_sym(functor) == "ListLiteral" =>
                 {
+                    // A `ListLiteral` carries all its elements in `pos_args` and
+                    // never a tail — the `[h | t]` head-tail surface was removed
+                    // (WI-560), so the spine ends here.
                     elems.extend(pos_args.iter().copied());
-                    match named(&named_args, "tail") {
-                        Some(t) => cur = kb.walk(t, subst),
-                        None => return Some(elems),
-                    }
+                    return Some(elems);
                 }
                 // Unbound var tail or any non-list term → spine not ground.
                 _ => return None,

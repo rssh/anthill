@@ -574,12 +574,12 @@ private class AnthillParserImpl(
     )
 
   private def collectionLiteral[$: P]: P[TermId] =
+    // Head-tail `[h | t]` removed (WI-560): it was an unused, parse-only
+    // surface; list destructuring uses the explicit `cons(?h, ?t)` constructor.
     P("[" ~/ (
       "]".map(_ => terms.alloc(Term.Fn(intern("ListLiteral"), IArray.empty, IArray.empty))) |
-      (term.rep(1, sep = ",") ~ ("|" ~/ term).? ~ "]").map { case (elems, tail) =>
-        val all = ArrayBuffer.from(elems)
-        tail.foreach(all += _)
-        terms.alloc(Term.Fn(intern("ListLiteral"), IArray.from(all), IArray.empty))
+      (term.rep(1, sep = ",") ~ "]").map { elems =>
+        terms.alloc(Term.Fn(intern("ListLiteral"), IArray.from(elems), IArray.empty))
       }
     ))
 

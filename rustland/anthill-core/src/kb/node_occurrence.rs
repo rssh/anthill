@@ -3939,8 +3939,8 @@ fn visit_fn(
             // — so read them directly. `collect_list_visits` (a cons/nil walker)
             // would silently yield zero, dropping every element (the bug WI-027's
             // un-desugared `forall ?x in [a, b]` collection first exposed). A
-            // `tail:` named arg (`[h | t]` surface) has no `Expr::ListLit` slot
-            // and is dropped, as before.
+            // `ListLiteral` never carries a tail (the `[h | t]` head-tail surface
+            // was removed, WI-560), so `pos_args` is the complete element list.
             let visits: Vec<WorkOp> = pos_args.iter().map(|&e| WorkOp::Visit(e)).collect();
             let count = visits.len();
             work.push(WorkOp::Build(BuildFrame::ListLit { span, count }));

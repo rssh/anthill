@@ -2907,15 +2907,16 @@ fn parse_collection_literal_with_integers() {
 }
 
 #[test]
-fn parse_collection_head_tail() {
+fn head_tail_literal_surface_removed() {
+    // WI-560: the `[h | t]` head-tail surface was removed (it was parse-only,
+    // with no end-to-end semantics). List destructuring uses the explicit
+    // `cons(?h, ?t)` constructor instead. `|` is a plain infix operator, so
+    // `[?h | ?t]` now parses as a SINGLE-element list whose element is the
+    // infix `or(?h, ?t)` — NOT a head-tail `ListLiteral(?h, tail: ?t)`.
     let (terms, symbols, head) = parse_rule_head_ir("[?h | ?t]");
-    assert_eq!(fmt_ir_term(&terms, &symbols, head), "ListLiteral(?h, tail: ?t)");
-}
-
-#[test]
-fn parse_collection_multi_head_tail() {
+    assert_eq!(fmt_ir_term(&terms, &symbols, head), "ListLiteral(or(?h, ?t))");
     let (terms, symbols, head) = parse_rule_head_ir("[?a, ?b | ?t]");
-    assert_eq!(fmt_ir_term(&terms, &symbols, head), "ListLiteral(?a, ?b, tail: ?t)");
+    assert_eq!(fmt_ir_term(&terms, &symbols, head), "ListLiteral(?a, or(?b, ?t))");
 }
 
 // ── Field access tests ───────────────────────────────────────

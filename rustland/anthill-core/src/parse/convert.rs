@@ -115,7 +115,6 @@ enum BuildFrame<'t> {
     CollectionLiteral {
         node: Node<'t>,
         elem_count: usize,
-        has_tail: bool,
     },
     TupleLiteral {
         node: Node<'t>,
@@ -1026,20 +1025,15 @@ impl<'a> Converter<'a> {
     }
 
     fn push_collection_literal<'t>(&mut self, node: Node<'t>, work: &mut Vec<WorkOp<'t>>) {
-        let tail_node = self.field(node, "tail");
         let mut elements: SmallVec<[Node<'t>; 4]> = SmallVec::new();
         let mut cursor = node.walk();
         for child in node.named_children(&mut cursor) {
-            if is_term_kind(child.kind()) && tail_node != Some(child) {
+            if is_term_kind(child.kind()) {
                 elements.push(child);
             }
         }
         let elem_count = elements.len();
-        let has_tail = tail_node.is_some();
-        work.push(WorkOp::Build(BuildFrame::CollectionLiteral { node, elem_count, has_tail }));
-        if let Some(t) = tail_node {
-            work.push(WorkOp::Visit(WorkKind::Term, t));
-        }
+        work.push(WorkOp::Build(BuildFrame::CollectionLiteral { node, elem_count }));
         for child in elements.iter().rev() {
             work.push(WorkOp::Visit(WorkKind::Term, *child));
         }
@@ -1466,31 +1460,13 @@ impl<'a> Converter<'a> {
                 results.truncate(drain_start);
                 results.push(self.alloc_fn_term("SetLiteral", elements, span));
             }
-            BuildFrame::CollectionLiteral { node, elem_count, has_tail } => {
+            BuildFrame::CollectionLiteral { node, elem_count } => {
                 let span = self.span(node);
-                let drain_start = results.len() - (elem_count + usize::from(has_tail));
-                let tail_tid = if has_tail {
-                    Some(results[drain_start + elem_count])
-                } else {
-                    None
-                };
+                let drain_start = results.len() - elem_count;
                 let elements: SmallVec<[TermId; 4]> =
-                    results[drain_start..drain_start + elem_count].iter().copied().collect();
+                    results[drain_start..].iter().copied().collect();
                 results.truncate(drain_start);
-                let functor = self.intern("ListLiteral");
-                let mut named_args: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
-                if let Some(t) = tail_tid {
-                    let tail_key = self.intern("tail");
-                    named_args.push((tail_key, t));
-                }
-                results.push(self.terms.alloc(
-                    Term::Fn {
-                        functor,
-                        pos_args: elements,
-                        named_args,
-                    },
-                    span,
-                ));
+                results.push(self.alloc_fn_term("ListLiteral", elements, span));
             }
             BuildFrame::TupleLiteral { node, slots } => {
                 let span = self.span(node);

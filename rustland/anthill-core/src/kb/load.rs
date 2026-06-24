@@ -4690,22 +4690,16 @@ fn is_callback_place(kb: &KnowledgeBase, sym: Symbol) -> bool {
 /// Build a cons-list from a slice of TermIds: `cons(head: a, tail: cons(head: b, tail: nil()))`.
 /// Uses the `anthill.prelude.List` constructors so list operations work.
 fn build_list(kb: &mut KnowledgeBase, items: &[TermId]) -> TermId {
-    build_list_with_tail(kb, items, None)
-}
-
-/// Build a cons/nil list with an optional tail (for `[a, b | t]` patterns).
-/// If tail is None, terminates with nil.
-fn build_list_with_tail(kb: &mut KnowledgeBase, items: &[TermId], tail: Option<TermId>) -> TermId {
     let nil_sym = kb.resolve_symbol("anthill.prelude.List.nil");
     let cons_sym = kb.resolve_symbol("anthill.prelude.List.cons");
     let head_sym = kb.intern("head");
     let tail_sym = kb.intern("tail");
 
-    let mut list = tail.unwrap_or_else(|| kb.alloc(Term::Fn {
+    let mut list = kb.alloc(Term::Fn {
         functor: nil_sym,
         pos_args: SmallVec::new(),
         named_args: SmallVec::new(),
-    }));
+    });
 
     for &item in items.iter().rev() {
         list = kb.alloc(Term::Fn {
@@ -6034,10 +6028,7 @@ impl<'a> Loader<'a> {
                     let items: Vec<TermId> = pos_args.iter()
                         .map(|&id| self.convert_term_with_expected(id, elem_expected))
                         .collect();
-                    let tail_term = named_args.iter()
-                        .find(|(sym, _)| self.parsed.symbols.name(*sym) == "tail")
-                        .map(|&(_, id)| self.convert_term_with_expected(id, expected));
-                    let kb_id = build_list_with_tail(self.kb, &items, tail_term);
+                    let kb_id = build_list(self.kb, &items);
                     self.term_map.insert(parse_id.raw(), kb_id);
                     if let Some(desc_texts) = self.parsed.terms.descriptions.get(&parse_id) {
                         let desc_texts = desc_texts.clone();
