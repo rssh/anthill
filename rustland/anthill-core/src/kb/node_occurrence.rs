@@ -2331,6 +2331,23 @@ pub fn try_occurrence_to_term(kb: &mut KnowledgeBase, occ: &Rc<NodeOccurrence>) 
             let functor = kb.resolve_symbol("anthill.reflect.ListLiteral");
             occ_build_fn(kb, functor, elems, &[])
         }
+        // WI-559: a set literal `{…}` reifies to its `SetLiteral(…)` term twin
+        // (elements in `pos_args`, like `ListLiteral`) — the inverse of the
+        // `"SetLiteral" => Expr::SetLit` occurrence build. Without this arm a
+        // set literal reaching reify fell to the `_ => None` non-goal arm and
+        // hit `occurrence_to_term`'s debug_assert / silent ⊥.
+        Some(Expr::SetLit(elems)) => {
+            let functor = kb.resolve_symbol("anthill.reflect.SetLiteral");
+            occ_build_fn(kb, functor, elems, &[])
+        }
+        // WI-559: a tuple literal `(…)` reifies to its `TupleLiteral(…)` term
+        // twin — elements ride in `named_args` (positional → `_1`/`_2` labels),
+        // the inverse of the `"TupleLiteral" => Expr::TupleLit` build. Same
+        // motivation as `SetLit` above.
+        Some(Expr::TupleLit { positional, named }) => {
+            let functor = kb.resolve_symbol("anthill.reflect.TupleLiteral");
+            occ_build_fn(kb, functor, positional, named)
+        }
         Some(Expr::Bottom) | None => kb.alloc(Term::Bottom),
         // Child-bearing / non-goal form: no goal-term shape.
         _ => return None,
@@ -3666,7 +3683,11 @@ pub(crate) enum BuildFrame {
     ConstructRequirement { span: SourceSpan, impl_functor: Symbol, requirements_count: usize },
     ListLit { span: SourceSpan, count: usize },
     SetLit { span: SourceSpan, count: usize },
-    TupleLit { span: SourceSpan, count: usize },
+    /// A `TupleLiteral`'s elements ride in `named_args` (positional surface
+    /// `(a, b)` becomes `_1`/`_2` labels; declared names stay) — so the frame
+    /// carries the keys, like `UnknownFn`. `pos_count` covers any positional
+    /// elements (always 0 for the converter's shape, kept for faithfulness).
+    TupleLit { span: SourceSpan, pos_count: usize, named_keys: Vec<Symbol> },
     /// Fallback for unknown `Term::Fn` shapes — treated as a generic
     /// Apply with the functor as-is. `pos_count` and `named_keys`
     /// follow the original `Term::Fn` arg arrangement (not the
@@ -3926,14 +3947,29 @@ fn visit_fn(
             for v in visits.into_iter().rev() { work.push(v); }
         }
         "SetLiteral" => {
-            let (count, visits) = collect_list_visits(kb, Some(t));
+            // WI-559: a `SetLiteral` stores its elements as `pos_args` (the
+            // converter's `SetLiteral` build uses `alloc_fn_term`, positional
+            // only), exactly like `ListLiteral` — so read them directly.
+            // `collect_list_visits` (a cons/nil walker) would silently yield
+            // zero, dropping every element (the same pre-existing data-loss bug
+            // WI-027 fixed for `ListLiteral`).
+            let visits: Vec<WorkOp> = pos_args.iter().map(|&e| WorkOp::Visit(e)).collect();
+            let count = visits.len();
             work.push(WorkOp::Build(BuildFrame::SetLit { span, count }));
             for v in visits.into_iter().rev() { work.push(v); }
         }
         "TupleLiteral" => {
-            let (count, visits) = collect_list_visits(kb, Some(t));
-            work.push(WorkOp::Build(BuildFrame::TupleLit { span, count }));
-            for v in visits.into_iter().rev() { work.push(v); }
+            // WI-559: a `TupleLiteral` stores its elements as `named_args` —
+            // positional surface `(a, b)` becomes `_1`/`_2` labels, declared
+            // names stay (see convert.rs `TupleLiteral` build) — NOT a cons/nil
+            // spine, so `collect_list_visits` would silently drop every element.
+            // Push pos then named exactly as `push_unknown_fn`/`pop_apply_like`
+            // expect (named reversed, then pos reversed).
+            let pos_count = pos_args.len();
+            let named_keys: Vec<Symbol> = named_args.iter().map(|(s, _)| *s).collect();
+            work.push(WorkOp::Build(BuildFrame::TupleLit { span, pos_count, named_keys }));
+            for &(_, v) in named_args.iter().rev() { work.push(WorkOp::Visit(v)); }
+            for &v in pos_args.iter().rev() { work.push(WorkOp::Visit(v)); }
         }
         _ => push_unknown_fn(span, functor, pos_args, named_args, work),
     }
@@ -4187,9 +4223,9 @@ pub(crate) fn build_frame(
             let elems = pop_n(results, count);
             results.push(NodeOccurrence::new_expr(Expr::SetLit(elems), span, None));
         }
-        BuildFrame::TupleLit { span, count } => {
-            let elems = pop_n(results, count);
-            let expr = Expr::TupleLit { positional: elems, named: Vec::new() };
+        BuildFrame::TupleLit { span, pos_count, named_keys } => {
+            let (positional, named) = pop_apply_like(results, pos_count, named_keys);
+            let expr = Expr::TupleLit { positional, named };
             results.push(NodeOccurrence::new_expr(expr, span, None));
         }
         BuildFrame::UnknownFn { span, functor, pos_count, named_keys } => {
@@ -5475,5 +5511,79 @@ mod tests {
             }
             _ => panic!("expected synthesized Expr"),
         }
+    }
+
+    #[test]
+    fn wi559_set_literal_round_trips_through_occurrence() {
+        // WI-559: a `SetLiteral` term stores its elements as `pos_args` (like
+        // `ListLiteral`). The term→occurrence build formerly walked a cons/nil
+        // spine (`collect_list_visits`), which silently yielded zero — every
+        // element dropped. The build now reads `pos_args`, and reify mints the
+        // `SetLiteral` term twin, so a set literal round-trips losslessly.
+        use crate::kb::load::register_prelude;
+        use smallvec::SmallVec;
+        let mut kb = KnowledgeBase::new();
+        register_prelude(&mut kb);
+        let set_sym = kb.resolve_symbol("anthill.reflect.SetLiteral");
+        let a = kb.alloc(Term::Const(Literal::Int(1)));
+        let b = kb.alloc(Term::Const(Literal::Int(2)));
+        let set_tid = kb.alloc(Term::Fn {
+            functor: set_sym,
+            pos_args: SmallVec::from_slice(&[a, b]),
+            named_args: SmallVec::new(),
+        });
+
+        let occ = materialize_from_handle(&kb, set_tid);
+        match occ.as_expr() {
+            Some(Expr::SetLit(elems)) => {
+                assert_eq!(elems.len(), 2, "both set elements must survive the build");
+                assert!(matches!(elems[0].as_expr(), Some(Expr::Const(Literal::Int(1)))));
+                assert!(matches!(elems[1].as_expr(), Some(Expr::Const(Literal::Int(2)))));
+            }
+            other => panic!("expected SetLit, got {other:?}"),
+        }
+
+        let round = occurrence_to_term(&mut kb, &occ);
+        assert_eq!(round, set_tid, "set literal must reify to its original term twin");
+    }
+
+    #[test]
+    fn wi559_tuple_literal_round_trips_through_occurrence() {
+        // WI-559: a `TupleLiteral` term stores its elements as `named_args`
+        // (positional surface `(a, b)` → `_1`/`_2` labels; declared names stay).
+        // The build formerly walked a cons/nil spine and dropped every element;
+        // it now reads `named_args`, and reify mints the `TupleLiteral` twin.
+        use crate::kb::load::register_prelude;
+        use smallvec::SmallVec;
+        let mut kb = KnowledgeBase::new();
+        register_prelude(&mut kb);
+        let tuple_sym = kb.resolve_symbol("anthill.reflect.TupleLiteral");
+        // The converter encodes positional surface `(a, b)` as `_1`/`_2` labels
+        // (convert.rs `intern_positional_label`), so build that exact shape.
+        let k1 = kb.intern("_1");
+        let k2 = kb.intern("_2");
+        let a = kb.alloc(Term::Const(Literal::Int(1)));
+        let b = kb.alloc(Term::Const(Literal::Int(2)));
+        let tuple_tid = kb.alloc(Term::Fn {
+            functor: tuple_sym,
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::from_slice(&[(k1, a), (k2, b)]),
+        });
+
+        let occ = materialize_from_handle(&kb, tuple_tid);
+        match occ.as_expr() {
+            Some(Expr::TupleLit { positional, named }) => {
+                assert!(positional.is_empty(), "tuple elements ride in named_args");
+                assert_eq!(named.len(), 2, "both tuple elements must survive the build");
+                assert_eq!(named[0].0, k1);
+                assert_eq!(named[1].0, k2);
+                assert!(matches!(named[0].1.as_expr(), Some(Expr::Const(Literal::Int(1)))));
+                assert!(matches!(named[1].1.as_expr(), Some(Expr::Const(Literal::Int(2)))));
+            }
+            other => panic!("expected TupleLit, got {other:?}"),
+        }
+
+        let round = occurrence_to_term(&mut kb, &occ);
+        assert_eq!(round, tuple_tid, "tuple literal must reify to its original term twin");
     }
 }
