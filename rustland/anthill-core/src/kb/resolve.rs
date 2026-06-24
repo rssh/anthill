@@ -612,6 +612,7 @@ impl SearchStream {
             ViewHead::Functor { functor: Some(f), .. } => {
                 let n = kb.resolve_sym(f);
                 n == "__pop_assumption" || n == "forall_impl"
+                    || n == "forall_in" || n == "some_in"
             }
             _ => false,
         };
@@ -631,6 +632,11 @@ impl SearchStream {
             // push antecedents as scoped assumptions, prepend consequents.
             if Self::is_forall_impl(kb, goal, &frame.subst) {
                 return self.step_forall_impl(kb, goal, depth, delay_mode);
+            }
+            // 3.6 (WI-027) forall_in / some_in — bounded quantification over a
+            // collection's elements; expand to a conjunction / disjunction.
+            if let Some(is_forall) = Self::bounded_quant_kind(kb, goal, &frame.subst) {
+                return self.step_bounded_quant(kb, goal, is_forall, depth, delay_mode);
             }
         }
 
@@ -1019,6 +1025,231 @@ impl SearchStream {
             state: FrameState::Init { delay_mode: new_delay },
             assumed_facts: new_assumed,
         });
+        Some(StepResult::Continue)
+    }
+
+    /// WI-027: classify a bounded-quantifier body goal. `Some(true)` for
+    /// `forall_in(?x, xs, tuple(body))`, `Some(false)` for `some_in(...)`,
+    /// `None` otherwise. Walks the goal so it works behind a flex binding.
+    fn bounded_quant_kind(kb: &KnowledgeBase, goal: TermId, subst: &Substitution) -> Option<bool> {
+        let walked = kb.walk(goal, subst);
+        match kb.terms.get(walked) {
+            Term::Fn { functor, .. } => match kb.resolve_sym(*functor) {
+                "forall_in" => Some(true),
+                "some_in" => Some(false),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// WI-027: walk `list` under σ and collect its elements when it is a fully
+    /// ground spine — a `cons`/`nil` chain (the runtime list shape) or a
+    /// `ListLiteral(e…[, tail])` (the un-desugared surface literal, since a
+    /// bounded-quant collection slot carries no List-typed context to trigger
+    /// the WI-007 `ListLiteral → cons/nil` rewrite). Elements themselves need
+    /// not be ground — only the SPINE. Returns `None` when the spine is not
+    /// ground (an unbound tail, or a non-list term): the caller then DELAYs
+    /// rather than silently deciding the quantifier. Constructors are matched
+    /// by SHORT NAME via `resolve_sym` (mirroring `list_to_vec`), since a value
+    /// list and the resolver can carry distinct `Symbol`s that share the name
+    /// `cons` / `nil`.
+    fn bounded_list_elements(
+        kb: &KnowledgeBase,
+        list: TermId,
+        subst: &Substitution,
+    ) -> Option<Vec<TermId>> {
+        let mut elems = Vec::new();
+        let mut cur = kb.walk(list, subst);
+        // The standard SLD bind path is not occurs-checked, so σ can carry a
+        // cyclic spine (`?t → cons(_, ?t)`). Bail (→ delay) on a revisited node
+        // rather than loop forever / OOM — loud-not-silent over a hard hang.
+        let mut seen: HashSet<TermId> = HashSet::new();
+        loop {
+            if !seen.insert(cur) {
+                return None;
+            }
+            let named = |args: &[(Symbol, TermId)], key: &str| {
+                args.iter().find(|(s, _)| kb.resolve_sym(*s) == key).map(|&(_, t)| t)
+            };
+            match kb.terms.get(cur).clone() {
+                // `nil` — the nullary list terminator, which can ride as either a
+                // bare `Ref` or an empty `Fn` (entity refs take both shapes).
+                Term::Ref(functor) if kb.resolve_sym(functor) == "nil" => return Some(elems),
+                Term::Fn { functor, pos_args, named_args }
+                    if kb.resolve_sym(functor) == "nil"
+                        && pos_args.is_empty() && named_args.is_empty() =>
+                {
+                    return Some(elems);
+                }
+                Term::Fn { functor, named_args, pos_args } if kb.resolve_sym(functor) == "cons" => {
+                    // `cons(head:, tail:)` — named (canonical); tolerate a positional
+                    // `cons(h, t)` too, like `list_to_vec`.
+                    let head = named(&named_args, "head").or_else(|| pos_args.first().copied());
+                    let tail = named(&named_args, "tail").or_else(|| pos_args.get(1).copied());
+                    match (head, tail) {
+                        (Some(h), Some(t)) => {
+                            elems.push(h);
+                            cur = kb.walk(t, subst);
+                        }
+                        // A malformed `cons` — surface as not-ground (delay) rather
+                        // than silently dropping the element.
+                        _ => return None,
+                    }
+                }
+                Term::Fn { functor, pos_args, named_args }
+                    if kb.resolve_sym(functor) == "ListLiteral" =>
+                {
+                    elems.extend(pos_args.iter().copied());
+                    match named(&named_args, "tail") {
+                        Some(t) => cur = kb.walk(t, subst),
+                        None => return Some(elems),
+                    }
+                }
+                // Unbound var tail or any non-list term → spine not ground.
+                _ => return None,
+            }
+        }
+    }
+
+    /// WI-027: discharge a `forall_in(?x, xs, tuple(body))` / `some_in(…)` body
+    /// goal. The collection `xs` is walked to a ground `cons`/`nil` (or
+    /// `ListLiteral`) spine and each element substituted for the binder `?x` in
+    /// `body` (structurally, via [`subst_globals`](Self::subst_globals) — other
+    /// free vars pass through, preserving σ sharing with the enclosing rule).
+    ///   * `forall`: every element's body must hold → prepend the FLATTENED
+    ///     conjunction of all element bodies (`nil` ⇒ vacuously true ⇒ drop the
+    ///     goal). Deterministic frame replacement, like `step_forall_impl`.
+    ///   * `some`: at least one element's body must hold → a CHOICE POINT with
+    ///     one `Continuation` per element (`nil` ⇒ no witness ⇒ fail).
+    /// A collection whose spine is NOT ground is DELAYed (WI-519 floundering),
+    /// never silently decided.
+    fn step_bounded_quant(
+        &mut self,
+        kb: &mut KnowledgeBase,
+        goal: TermId,
+        is_forall: bool,
+        depth: usize,
+        delay_mode: DelayMode,
+    ) -> Option<StepResult> {
+        let frame = self.stack.last().unwrap();
+        let walked = kb.walk(goal, &frame.subst);
+        let pos_args = match kb.terms.get(walked) {
+            Term::Fn { pos_args, .. } if pos_args.len() == 3 => pos_args.clone(),
+            // Malformed bounded quantifier — treat as failure.
+            _ => {
+                self.stack.pop();
+                return Some(StepResult::Continue);
+            }
+        };
+        let binder = pos_args[0];
+        let collection = pos_args[1];
+        let body_tids = Self::unwrap_tuple_args(kb, pos_args[2]);
+
+        let subst = self.stack.last().unwrap().subst.clone();
+
+        // The binder's Global var id (after rule opening it is a fresh Global,
+        // never bound in σ). `None` if the slot is not an open Global — then no
+        // element substitution applies (a degenerate but defensible case).
+        let binder_vid = match kb.terms.get(kb.walk(binder, &subst)) {
+            Term::Var(Var::Global(vid)) => Some(vid.raw()),
+            _ => None,
+        };
+
+        let elements = Self::bounded_list_elements(kb, collection, &subst);
+        let Some(elements) = elements else {
+            // Spine not ground — delay (loud-not-silent; floundering residual).
+            return self.delay_goal(depth, delay_mode);
+        };
+
+        // body[?x := element_i] for each element, substituting only the binder.
+        let per_element: Vec<Vec<TermId>> = elements
+            .iter()
+            .map(|&e| {
+                let mut map: HashMap<u32, TermId> = HashMap::new();
+                if let Some(vid) = binder_vid {
+                    map.insert(vid, e);
+                }
+                body_tids
+                    .iter()
+                    .map(|&g| Self::subst_globals(kb, g, &map))
+                    .collect()
+            })
+            .collect();
+
+        if is_forall {
+            // Conjunction: flatten all element bodies, prepend, replace frame.
+            let frame = self.stack.last().unwrap();
+            let mut new_goals: Vec<Value> =
+                per_element.into_iter().flatten().map(Value::Term).collect();
+            new_goals.extend(frame.goals[1..].iter().cloned());
+            let new_subst = frame.subst.clone();
+            let new_assumed = frame.assumed_facts.clone();
+            self.stack.pop();
+            self.stack.push(Frame {
+                goals: new_goals,
+                subst: new_subst,
+                depth: depth + 1,
+                state: FrameState::Init { delay_mode: delay_mode.reset() },
+                assumed_facts: new_assumed,
+            });
+            Some(StepResult::Continue)
+        } else {
+            // Disjunction: one Continuation candidate per element; `nil` ⇒ fail.
+            if per_element.is_empty() {
+                self.stack.pop();
+                return Some(StepResult::Continue);
+            }
+            let candidates: Vec<Candidate> =
+                per_element.into_iter().map(Candidate::Continuation).collect();
+            let original_goal = self.stack.last().unwrap().goals[0].clone();
+            let f = self.stack.last_mut().unwrap();
+            f.state = FrameState::ChoicePoint {
+                delay_mode,
+                original_goal,
+                candidates,
+                next: 0,
+                any_delayed: false,
+                child_solutions: 0,
+                seen_goals: HashSet::new(),
+            };
+            Some(StepResult::Continue)
+        }
+    }
+
+    /// Delay the current frame's `goals[0]` — rotate it to the back, entering or
+    /// continuing `Delayed` mode so a not-yet-ground goal gets another chance
+    /// after its variables may bind. If it is the ONLY goal, residualize it
+    /// (WI-519: a floundered residual, skipped under `definite_only`). Mirrors
+    /// the builtin delay/rotate path so bounded quantifiers flounder the same way.
+    fn delay_goal(&mut self, depth: usize, delay_mode: DelayMode) -> Option<StepResult> {
+        let frame = self.stack.last().unwrap();
+        let goal_val = frame.goals[0].clone();
+        let consecutive = match delay_mode {
+            DelayMode::Normal => {
+                if frame.goals.len() == 1 {
+                    let subst = frame.subst.clone();
+                    let residual = vec![goal_val];
+                    self.stack.pop();
+                    if self.config.definite_only {
+                        return Some(StepResult::Continue);
+                    }
+                    self.record_solution_in_ancestors();
+                    return Some(StepResult::YieldSolution(Solution { subst, residual }));
+                }
+                1
+            }
+            DelayMode::Delayed { consecutive_delays } => consecutive_delays + 1,
+        };
+        let mut rotated: Vec<Value> = frame.goals[1..].to_vec();
+        rotated.push(goal_val);
+        let new_depth = depth + 1;
+        let f = self.stack.last_mut().unwrap();
+        f.goals = rotated;
+        f.depth = new_depth;
+        f.state = FrameState::Init {
+            delay_mode: DelayMode::Delayed { consecutive_delays: consecutive },
+        };
         Some(StepResult::Continue)
     }
 

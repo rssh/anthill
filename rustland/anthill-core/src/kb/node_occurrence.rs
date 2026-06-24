@@ -2322,6 +2322,15 @@ pub fn try_occurrence_to_term(kb: &mut KnowledgeBase, occ: &Rc<NodeOccurrence>) 
         // `goal_value_to_term`) instead of the former non-goal `None` — which
         // tripped this function's debug_assert and reified the binder to ⊥.
         Some(Expr::VarRef { name }) => kb.make_var_ref_term(*name),
+        // WI-027: a list literal `[…]` reifies to its `ListLiteral(…)` term twin
+        // — the inverse of the `"ListLiteral" => Expr::ListLit` occurrence build —
+        // so a goal (or a `forall ?x in […]` quantifier) carrying a
+        // non-desugared list literal round-trips through the term store instead
+        // of asserting to ⊥. Pure data, legitimately hash-consable.
+        Some(Expr::ListLit(elems)) => {
+            let functor = kb.resolve_symbol("anthill.reflect.ListLiteral");
+            occ_build_fn(kb, functor, elems, &[])
+        }
         Some(Expr::Bottom) | None => kb.alloc(Term::Bottom),
         // Child-bearing / non-goal form: no goal-term shape.
         _ => return None,
@@ -3904,7 +3913,15 @@ fn visit_fn(
             for v in visits.into_iter().rev() { work.push(v); }
         }
         "ListLiteral" => {
-            let (count, visits) = collect_list_visits(kb, Some(t));
+            // A `ListLiteral` term stores its elements as `pos_args` (see the
+            // converter's `CollectionLiteral` build), NOT as a `cons`/`nil` spine
+            // — so read them directly. `collect_list_visits` (a cons/nil walker)
+            // would silently yield zero, dropping every element (the bug WI-027's
+            // un-desugared `forall ?x in [a, b]` collection first exposed). A
+            // `tail:` named arg (`[h | t]` surface) has no `Expr::ListLit` slot
+            // and is dropped, as before.
+            let visits: Vec<WorkOp> = pos_args.iter().map(|&e| WorkOp::Visit(e)).collect();
+            let count = visits.len();
             work.push(WorkOp::Build(BuildFrame::ListLit { span, count }));
             for v in visits.into_iter().rev() { work.push(v); }
         }

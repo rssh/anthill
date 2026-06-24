@@ -1017,6 +1017,7 @@ module.exports = grammar({
       $.collection_literal,
       $.tuple_literal,
       $.nested_implication,
+      $.bounded_quantification,
       $.paren_expr,
       $.ref_term,
       $.prefix_term,
@@ -1037,6 +1038,26 @@ module.exports = grammar({
       field('antecedents', $.rule_body),
       '-:',
       field('consequent', $.rule_body),
+      ')',
+    ),
+
+    // Bounded quantification over a collection's elements, used as a body goal
+    // (WI-027). `(forall ?x in xs: P(?x))` succeeds iff P holds for EVERY element
+    // of the list `xs` (a finite conjunction); `(some ?x in xs: P(?x))` succeeds
+    // iff P holds for at least ONE element (a finite disjunction). The binder is
+    // instantiated to each concrete element at resolution time — it eliminates a
+    // hand-written recursive list walk. Parenthesised so the comma-separated body
+    // does not bleed into the enclosing rule-body conjunction (like
+    // `nested_implication`). DISTINCT from the unbounded Harrop `forall` above,
+    // which skolemises its binder rather than ranging over a collection.
+    bounded_quantification: $ => seq(
+      '(',
+      field('quantifier', choice('forall', 'some')),
+      field('binder', $.variable),
+      'in',
+      field('collection', $._term),
+      ':',
+      field('body', $.rule_body),
       ')',
     ),
 

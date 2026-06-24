@@ -1,0 +1,87 @@
+=====================================
+forall over a variable list
+=====================================
+
+rule all_pos(?xs) :- (forall ?x in ?xs: positive(?x))
+
+---
+
+(source_file
+  (rule_declaration
+    heads: (rule_heads
+      (fn_term
+        name: (name
+          (identifier))
+        (variable_term
+          (variable))))
+    body: (rule_body
+      (bounded_quantification
+        binder: (variable)
+        collection: (variable_term
+          (variable))
+        body: (rule_body
+          (fn_term
+            name: (name
+              (identifier))
+            (variable_term
+              (variable))))))))
+
+=====================================
+some over a list literal
+=====================================
+
+rule any_zero :- (some ?x in [a, b, c]: zero(?x))
+
+---
+
+(source_file
+  (rule_declaration
+    heads: (rule_heads
+      (name
+        (identifier)))
+    body: (rule_body
+      (bounded_quantification
+        binder: (variable)
+        collection: (collection_literal
+          (name
+            (identifier))
+          (name
+            (identifier))
+          (name
+            (identifier)))
+        body: (rule_body
+          (fn_term
+            name: (name
+              (identifier))
+            (variable_term
+              (variable))))))))
+
+=====================================
+bounded quantifier with multi-goal body
+=====================================
+
+rule ok :- (forall ?x in ?xs: positive(?x), bounded(?x))
+
+---
+
+(source_file
+  (rule_declaration
+    heads: (rule_heads
+      (name
+        (identifier)))
+    body: (rule_body
+      (bounded_quantification
+        binder: (variable)
+        collection: (variable_term
+          (variable))
+        body: (rule_body
+          (fn_term
+            name: (name
+              (identifier))
+            (variable_term
+              (variable)))
+          (fn_term
+            name: (name
+              (identifier))
+            (variable_term
+              (variable))))))))

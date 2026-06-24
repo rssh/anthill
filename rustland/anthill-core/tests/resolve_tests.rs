@@ -17,6 +17,9 @@ mod guard_trigger_test;
 #[path = "include/nested_implication_test.rs"]
 mod nested_implication_test;
 
+#[path = "include/bounded_quant_test.rs"]
+mod bounded_quant_test;
+
 #[path = "include/proof_load_test.rs"]
 mod proof_load_test;
 

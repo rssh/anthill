@@ -714,6 +714,13 @@ impl<'a> Converter<'a> {
                 let tid = self.convert_nested_implication(node);
                 results.push(tid);
             }
+            "bounded_quantification" => {
+                // WI-027: `(forall ?x in xs: P(?x))` / `(some ?x in xs: P(?x))`.
+                // Rule bodies only; recursive like `nested_implication` (per-goal
+                // depth bounded by rule structure).
+                let tid = self.convert_bounded_quantification(node);
+                results.push(tid);
+            }
             "application" => {
                 // Type values are shallow in practice (`Function[A=T, B=U,
                 // E=Es]`); the recursive `convert_instantiation_term`
@@ -1709,6 +1716,63 @@ impl<'a> Converter<'a> {
         self.alloc_fn_term(
             "forall_impl",
             SmallVec::from_slice(&[binders_tuple, antecedents_tuple, consequent_tuple]),
+            span,
+        )
+    }
+
+    /// WI-027: lower `(forall ?x in xs: body)` → `forall_in(?x, xs, tuple(body))`
+    /// and `(some ?x in xs: body)` → `some_in(?x, xs, tuple(body))`. The binder
+    /// `?x` shares its `VarId` with its uses inside `body` (both go through
+    /// `get_or_create_var`), so the resolver can structurally substitute each
+    /// concrete list element for the binder. The collection is any term (a list
+    /// literal, a variable bound earlier in the rule, a call returning a list).
+    fn convert_bounded_quantification(&mut self, node: Node) -> TermId {
+        let span = self.span(node);
+        // The `quantifier` field is an anonymous `forall` / `some` token; read its
+        // source text. Own it as a `String` first so the error arm may borrow
+        // `self` mutably.
+        let q = self.field(node, "quantifier").map(|n| self.text(n).to_string());
+        let functor = match q.as_deref() {
+            Some("forall") => "forall_in",
+            Some("some") => "some_in",
+            other => {
+                self.err(
+                    &format!("unsupported bounded quantifier `{}`", other.unwrap_or("?")),
+                    node,
+                );
+                "forall_in"
+            }
+        };
+        let binder = match self.field(node, "binder") {
+            Some(n) => {
+                // A bare `?` binder mints a fresh anonymous var that does NOT
+                // flow into the body, so the quantifier would bind nothing —
+                // reject it loudly rather than silently iterate with an
+                // unsubstituted body (loud-over-silent).
+                if self.text(n) == "?" {
+                    self.err("bounded quantifier binder must be a named variable (`?name`), not anonymous `?`", n);
+                }
+                self.convert_variable_node(n)
+            }
+            None => {
+                self.err("bounded quantifier is missing its binder variable", node);
+                self.alloc_bottom(span)
+            }
+        };
+        let collection = match self.field(node, "collection") {
+            Some(n) => self.convert_term(n),
+            None => {
+                self.err("bounded quantifier is missing its collection", node);
+                self.alloc_bottom(span)
+            }
+        };
+        let body: SmallVec<[TermId; 4]> = self.field(node, "body")
+            .map(|n| self.convert_rule_body(n).into_iter().collect())
+            .unwrap_or_default();
+        let body_tuple = self.alloc_fn_term("tuple", body, span);
+        self.alloc_fn_term(
+            functor,
+            SmallVec::from_slice(&[binder, collection, body_tuple]),
             span,
         )
     }
@@ -3291,6 +3355,7 @@ fn is_term_kind(kind: &str) -> bool {
             | "variable_term"
             | "fn_term"
             | "nested_implication"
+            | "bounded_quantification"
             | "application"
             | "ref_term"
             | "infix_term"
