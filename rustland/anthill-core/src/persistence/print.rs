@@ -300,6 +300,26 @@ impl<'a> TermPrinter<'a, KnowledgeBase> {
                         return;
                     }
                 }
+                // WI-027: `forall_in(?x, xs, tuple(body))` / `some_in(…)` →
+                // surface `(forall ?x in xs: body)` / `(some ?x in xs: body)`.
+                if (fname == "forall_in" || fname == "some_in")
+                    && pos_args.len() == 3
+                    && named_args.is_empty()
+                {
+                    if let Some(body) = self.occ_unwrap_tuple(&pos_args[2]) {
+                        let kw = if fname == "forall_in" { "forall" } else { "some" };
+                        buf.push('(');
+                        buf.push_str(kw);
+                        buf.push(' ');
+                        self.write_occurrence(&pos_args[0], buf);
+                        buf.push_str(" in ");
+                        self.write_occurrence(&pos_args[1], buf);
+                        buf.push_str(": ");
+                        self.write_occ_inner(body, &[], buf);
+                        buf.push(')');
+                        return;
+                    }
+                }
                 self.write_occ_fn(fname, pos_args, named_args, buf);
             }
             Expr::ApplyWithin { functor, args, named_args, .. } => {
@@ -628,6 +648,25 @@ impl<'a, V: TermSource + ?Sized> TermPrinter<'a, V> {
                         self.write_comma_sep(ants, buf);
                         buf.push_str(" -: ");
                         self.write_comma_sep(cons, buf);
+                        buf.push(')');
+                        return;
+                    }
+                }
+                // WI-027: `forall_in` / `some_in` term → surface bounded quantifier.
+                if (fname == "forall_in" || fname == "some_in")
+                    && pos_args.len() == 3
+                    && named_args.is_empty()
+                {
+                    if let Some(body) = self.unwrap_tuple(pos_args[2]) {
+                        let kw = if fname == "forall_in" { "forall" } else { "some" };
+                        buf.push('(');
+                        buf.push_str(kw);
+                        buf.push(' ');
+                        self.write_term(pos_args[0], buf);
+                        buf.push_str(" in ");
+                        self.write_term(pos_args[1], buf);
+                        buf.push_str(": ");
+                        self.write_comma_sep(body, buf);
                         buf.push(')');
                         return;
                     }

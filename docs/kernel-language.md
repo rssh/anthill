@@ -757,6 +757,17 @@ rule lower_bound: gte(?d, ?d_min)
      DistanceBounds(d_min: ?d_min, d_max: ?_)
 ```
 
+**Bounded quantification over a collection (WI-027).** A rule-body goal may quantify over the elements of a list:
+
+```
+rule all_warm(?c)  :- coffees(?c), (forall ?x in ?c: warm(?x))
+rule has_decaf(?c) :- coffees(?c), (some ?x in ?c: decaf(?x))
+```
+
+`(forall ?x in xs: P(?x))` is a finite **conjunction** — it holds iff `P` holds for every element of the list `xs` (an empty list holds vacuously). `(some ?x in xs: P(?x))` is a finite **disjunction** — it holds iff `P` holds for at least one element (an empty list fails: no witness). The binder `?x` is bound to each concrete element in turn; any other variables in the body are ordinary rule variables, shared with the surrounding clause (so `(forall ?x in xs: edge(?x, ?y))` constrains a single `?y` across all elements). This eliminates the hand-written recursive list-walking rule the same query would otherwise need.
+
+The construct is parenthesised so its comma-separated body does not bleed into the enclosing rule-body conjunction. The collection is any term that evaluates to a ground `cons`/`nil` list (or list literal); a collection that is not yet ground when the goal is reached is carried as an undischarged residual (it is never silently decided). The binder is **not** separately scoped — it shares the enclosing clause's variable space — so it must be a **fresh** name not used elsewhere in the rule (reusing an enclosing variable as the binder captures it rather than shadowing). This is **distinct** from the unbounded hereditary-Harrop `(forall(?x), Q(?x) -: P(?x))` form (used by the auto-generated induction principles), which skolemises its binder rather than ranging over a collection.
+
 **Multi-head (conjunctive sugar).** A rule may carry multiple comma-separated head terms — the conjunctive multi-head form. `H1, H2 :- B` (or its mirror `B -: H1, H2`) desugars at load time into N Horn clauses sharing body B; logically `body ⇒ (H1 ∧ ... ∧ Hn)`. The comma `,` always means logical conjunction in Anthill — both inside the head list and inside the body — a deliberate departure from classical CNF convention (where head-`,` would be disjunction). `;` and `|` are reserved in head position and rejected by the loader (a future proposal may introduce disjunctive heads under those tokens). `⊥` may not be mixed with positive heads.
 
 **Z3 mapping** (rules with positive heads are *citable* via `using`; denial-shape rules with head `⊥` are not):
