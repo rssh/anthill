@@ -218,3 +218,62 @@ end
          undeclared; got: {errs:#?}"
     );
 }
+
+// ── multi-goal (conjunction) clauses ────────────────────────────────────────
+
+#[test]
+fn requires_multi_goal_conjunction_all_proved() {
+    // A `requires` with two comma-separated goals lowers to ONE
+    // `conjunction(neq(b,0), gt(b,0))` clause. `needy2(5)` grounds both conjuncts
+    // (`neq(5,0)`, `gt(5,0)` — proved by evaluation), so the precondition holds and
+    // the call loads clean. Without splitting the conjunction the typer would try
+    // to prove the opaque `conjunction(...)` as one goal (no SLD rule resolves it)
+    // and spuriously reject this valid call.
+    let src = r#"
+namespace anthill.test.wi539conjreq
+  import anthill.prelude.{Int64}
+  operation needy2(b: Int64) -> Int64
+    requires neq(b, 0), gt(b, 0)
+    = b
+  operation caller() -> Int64 = needy2(5)
+end
+"#;
+    let res = load_result(src);
+    assert!(
+        res.is_ok(),
+        "a multi-goal `requires neq(b,0), gt(b,0)` must be checked conjunct-by-conjunct; \
+         `needy2(5)` proves both and must load clean. got: {:#?}",
+        res.err()
+    );
+}
+
+#[test]
+fn ensures_multi_goal_conjunction_conjunct_discharges() {
+    // A multi-goal `ensures neq(result,0), gt(result,0)` lowers to one
+    // `conjunction(...)` clause; assuming it must split into the per-goal facts
+    // `neq(y,0)` and `gt(y,0)`. The `div(100, y)` guard `eq(y,0)` is refuted by the
+    // `neq(y,0)` conjunct, so the body is pure. Without splitting, Γ would hold one
+    // opaque `conjunction(...)` fact the guard query `neq(y,0)` never matches, and
+    // the call would fail to load.
+    let src = r#"
+namespace anthill.test.wi539conjens
+  import anthill.prelude.{Int64}
+  import anthill.prelude.Int64.{div}
+  operation mk2(seed: Int64) -> Int64
+    ensures neq(result, 0), gt(result, 0)
+    = seed
+  operation caller() -> Int64 =
+    let y = mk2(7)
+    let q = div(100, y)
+    q
+end
+"#;
+    let res = load_result(src);
+    assert!(
+        res.is_ok(),
+        "a multi-goal `ensures` must enter Γ as separate conjunct facts so the \
+         `neq(y,0)` conjunct discharges the `div(100, y)` guard; the body is pure. \
+         got: {:#?}",
+        res.err()
+    );
+}

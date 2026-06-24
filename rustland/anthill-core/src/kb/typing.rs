@@ -16370,6 +16370,42 @@ fn is_value_precondition_clause(kb: &KnowledgeBase, clause: &Value) -> bool {
     }
 }
 
+/// WI-539: split a `requires`/`ensures` clause term into its conjuncts. The loader
+/// lowers several comma-separated goals on ONE clause as a single
+/// `conjunction(g1, …, gn)` term (`convert_clause_list`); a single goal is itself.
+/// Mirrors [`push_op_requires_clause`] (which flattens the same shape) and
+/// [`guarded_atom_refuted`]'s per-conjunct walk — without the split a multi-goal
+/// clause would be proved / assumed as one opaque `conjunction(...)` goal that no
+/// SLD rule resolves (a spurious failure for a `requires`, an inert fact for an
+/// `ensures`).
+fn clause_conjuncts(kb: &KnowledgeBase, term: TermId) -> Vec<TermId> {
+    match kb.get_term(term) {
+        Term::Fn { functor, pos_args, .. } if kb.resolve_sym(*functor) == "conjunction" => {
+            pos_args.iter().copied().collect()
+        }
+        _ => vec![term],
+    }
+}
+
+/// WI-539: does `term` reference any of `syms` (the callee's parameter symbols)?
+/// Used to keep an assumed `ensures` fact CALLER-CLOSED: after σ a conjunct still
+/// naming a callee parameter (an argument with no clean term twin, so
+/// `build_call_guard_sigma` omitted it) is DROPPED, not assumed. The parameter
+/// symbol `<callee>.p` is SHARED across every call to that callee, so a fact over
+/// it would let a SECOND same-callee call's guard / `requires` query — which builds
+/// the identical `<callee>.p` term — spuriously match (an unsound proof / effect
+/// drop). Dropping it is a conservative miss, never a false proof.
+fn term_references_any(kb: &KnowledgeBase, term: TermId, syms: &[Symbol]) -> bool {
+    match kb.get_term(term) {
+        Term::Ref(s) | Term::Ident(s) => syms.contains(s),
+        Term::Fn { pos_args, named_args, .. } => {
+            pos_args.iter().any(|c| term_references_any(kb, *c, syms))
+                || named_args.iter().any(|(_, c)| term_references_any(kb, *c, syms))
+        }
+        _ => false,
+    }
+}
+
 /// WI-539: does a callee's value precondition `clause` PROVE from Γ at the call,
 /// after σ (callee params ↦ actual args)? The dual of [`guarded_atom_refuted`]:
 /// where a guard DROPS on a refutation of `¬G`, a precondition must be positively
@@ -16379,6 +16415,7 @@ fn is_value_precondition_clause(kb: &KnowledgeBase, clause: &Value) -> bool {
 /// resolver flounders on — `definite_only` keeps an unestablished precondition
 /// UNPROVED, the obligation default, never NAF-"true"). A literal argument grounds
 /// the goal and proves by evaluation; a symbolic one flounders ⇒ unproved ⇒ error.
+/// A multi-goal clause (`conjunction(…)`) holds iff EVERY conjunct proves.
 fn precondition_proved(
     kb: &mut KnowledgeBase,
     flow: &FlowEnv,
@@ -16386,17 +16423,24 @@ fn precondition_proved(
     clause: &Value,
 ) -> bool {
     // Value preconditions are Term (ground goal) or Node (denoted) by construction
-    // (`is_value_precondition_clause` gates to a functor-headed goal). An
-    // unexpected carrier is treated as vacuously satisfied rather than spuriously
-    // failing the call — it cannot arise from a value goal.
+    // (`is_value_precondition_clause` gates to a functor-headed goal). An obligation
+    // we cannot even read as a goal is UNPROVED (the safe default for an obligation
+    // — loud over silent), mirroring the conservative `false` of the dual
+    // `guarded_atom_refuted`; it cannot arise from a value goal.
     let g = match clause {
         Value::Term(t) => *t,
         Value::Node(occ) => super::node_occurrence::occurrence_to_term(kb, occ),
-        _ => return true,
+        _ => return false,
     };
-    let g = if sigma.is_empty() { g } else { substitute_ref_terms(kb, g, sigma) };
-    let g = normalize_param_refs_to_var_ref(kb, g);
-    prove_from_gamma(kb, flow, &Value::Term(g))
+    // A multi-goal clause is `conjunction(g1, …)`; ALL conjuncts must prove.
+    for conj in clause_conjuncts(kb, g) {
+        let conj = if sigma.is_empty() { conj } else { substitute_ref_terms(kb, conj, sigma) };
+        let conj = normalize_param_refs_to_var_ref(kb, conj);
+        if !prove_from_gamma(kb, flow, &Value::Term(conj)) {
+            return false;
+        }
+    }
+    true
 }
 
 /// WI-539 (proposal 050 "operation call" modification rule, `ensures` half): if
@@ -16409,12 +16453,14 @@ fn precondition_proved(
 /// the main populator beyond branch conditions and bindings.
 ///
 /// Independent of the binding-fact purity gate (a postcondition holds after the
-/// call regardless of its effects). A clause is canonicalized exactly as a guard
-/// query is (`normalize_param_refs_to_var_ref`) so producer and consumer speak one
-/// form. An argument with no clean term twin leaves its callee parameter as the
-/// inert `var_ref(<callee>.param)` — a unique qualified symbol no caller goal can
-/// match, so the assumed fact is sound (a conservative miss, never a false proof).
-/// Returns Γ unchanged for a non-call value or a callee with no `ensures`.
+/// call regardless of its effects). Each clause is split into conjuncts and
+/// canonicalized exactly as a guard query is (`normalize_param_refs_to_var_ref`) so
+/// producer and consumer speak one form. A conjunct that, after σ, still references
+/// a callee PARAMETER (an argument with no clean term twin) is DROPPED rather than
+/// assumed: the `<callee>.param` symbol is shared across calls, so assuming a fact
+/// over it would let a second same-callee call's query spuriously match it
+/// ([`term_references_any`]). Returns Γ unchanged for a non-call value or a callee
+/// with no `ensures`.
 fn assume_call_ensures(
     kb: &mut KnowledgeBase,
     flow: FlowEnv,
@@ -16441,6 +16487,9 @@ fn assume_call_ensures(
         let binder_term = kb.make_var_ref_term(binder);
         sigma.insert(result_sym, binder_term);
     }
+    // The callee parameter symbols — a conjunct still naming one after σ is not
+    // caller-closed and is dropped (sound: never assume over a shared `<op>.param`).
+    let param_syms: Vec<Symbol> = rec.params.iter().map(|(s, _)| *s).collect();
     let ensures = rec.ensures.clone();
     let mut flow = flow;
     for clause in &ensures {
@@ -16449,9 +16498,14 @@ fn assume_call_ensures(
             Value::Node(occ) => super::node_occurrence::occurrence_to_term(kb, occ),
             _ => continue,
         };
-        let g = substitute_ref_terms(kb, g, &sigma);
-        let g = normalize_param_refs_to_var_ref(kb, g);
-        flow = flow.assume(kb, Value::Term(g));
+        for conj in clause_conjuncts(kb, g) {
+            let conj = substitute_ref_terms(kb, conj, &sigma);
+            if term_references_any(kb, conj, &param_syms) {
+                continue;
+            }
+            let conj = normalize_param_refs_to_var_ref(kb, conj);
+            flow = flow.assume(kb, Value::Term(conj));
+        }
     }
     flow
 }
