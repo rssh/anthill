@@ -145,7 +145,7 @@ fact WorkItem(
   description: "Resolver uses key/functional-dep info from guards to skip backtracking. When a goal matches a sort with a key constraint and the key arg is ground, stop after first solution.",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: [],
-  status: Open)
+  status: Stale(reason: "Premature/unmotivated as filed, not obsolete — the underlying idea (key-driven determinism detection, i.e. an implicit cut: when a sort has a uniqueness/functional-dependency constraint and the key arg is ground, at most one solution can exist, so stop backtracking after the first) remains a legitimate future optimization. But it is blocked on machinery that does not exist: there is NO first-class key / unique / functional-dependency declaration in the language or KB metadata (uniqueness can only be expressed as a generic constraint guard, and per WI-023 plain `:- ` constraints are largely inert — only quantified/negation guards are enforced), so there is nothing for the resolver to read to prove determinism. It also has no consumer: no query is shown to over-backtrack, and discrimination-tree indexing (already present) buys most of the lookup speedup; WI-028's marginal value is only the stop-after-first pruning, unquantified. Closing rather than parking to keep the active queue honest. To revive: first file (a) a first-class key/functional-dependency declaration + enforcement, then (b) resolver integration consulting that metadata at goal selection to prune the choice-point stack once the key args are ground.", since: "2026-06-24T16:15:41Z"))
 
 fact WorkItem(
   id: "WI-029",
