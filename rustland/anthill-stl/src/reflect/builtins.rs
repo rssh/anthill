@@ -13,10 +13,10 @@ use anthill_core::eval::builtins::{expect_args, register_if_present, require_sym
 use anthill_core::eval::{EvalError, Interpreter, Value};
 use anthill_core::intern::Symbol;
 use anthill_core::kb::KnowledgeBase;
-use anthill_core::kb::RuleId;
-use anthill_core::kb::term_view::TermView;
 use anthill_core::kb::resolve::ResolveConfig;
 use anthill_core::kb::term::{Literal, Term as CoreTerm, TermId, Var};
+
+use crate::reflect::reader;
 
 /// Symbols the reflect builtins need at runtime. Resolved once at registration
 /// so per-call paths compare `Symbol`s instead of scanning strings.
@@ -201,128 +201,13 @@ pub fn register_reflect_builtins(interp: &mut Interpreter) -> Result<(), EvalErr
     Ok(())
 }
 
-// ── KB introspection helpers (over &mut KnowledgeBase) ──────────
-
-fn facts_by_sort_name(kb: &mut KnowledgeBase, sort_name: &str) -> Vec<(RuleId, Value)> {
-    let sort_term = kb.make_name_term(sort_name);
-    kb.by_sort(sort_term)
-        .into_iter()
-        // WI-366: the head is read carrier-agnostically as a `Value`. The schemas
-        // read this way (`Member`, `Rule`, `Description`) are ground by design, so
-        // every head is `Value::Term` in practice — but the surface is carrier-
-        // agnostic, so a value head (should one ever appear) flows through and is
-        // read via `TermView`, neither skipped nor panicked. (`SortInfo` shares
-        // the `"Sort"` bucket with the value-in-type `SortAlias`, so it is read by
-        // functor instead — see `facts_by_functor` / `kb_sorts`.)
-        .map(|rid| (rid, kb.rule_head_value(rid).clone()))
-        .collect()
-}
-
-/// Facts for a reflect schema queried directly by `functor`, used where the sort
-/// bucket is shared with another functor: `SortInfo` shares sort `"Sort"` with
-/// the value-in-type `SortAlias` (WI-366), so reading the `"Sort"` bucket would
-/// also pick up `SortAlias` heads. Querying the `SortInfo` functor returns only
-/// the wanted facts. Heads are carrier-agnostic [`Value`]s, read via `TermView`.
-fn facts_by_functor(kb: &KnowledgeBase, functor: Symbol) -> Vec<(RuleId, Value)> {
-    kb.rules_by_functor(functor)
-        .into_iter()
-        .filter(|rid| kb.is_fact(*rid))
-        .map(|rid| (rid, kb.rule_head_value(rid).clone()))
-        .collect()
-}
-
-/// Named args of a reflect fact head, read carrier-agnostically via `TermView`
-/// (WI-366). These schemas are ground by design, so each field value is a
-/// hash-consed term; a non-`Term` field (not expected here) has no `TermId` and
-/// is omitted.
-fn term_named_args(kb: &KnowledgeBase, head: &Value) -> Vec<(Symbol, TermId)> {
-    head.named_keys(kb)
-        .into_iter()
-        .filter_map(|k| head.named_arg(kb, k).and_then(|i| i.as_term_id()).map(|t| (k, t)))
-        .collect()
-}
-
-/// Positional args of a reflect fact head — carrier-agnostic peer of
-/// [`term_named_args`]. Ground-schema use only (a non-`Term` positional, not
-/// expected here, is omitted).
-fn term_pos_args(kb: &KnowledgeBase, head: &Value) -> Vec<TermId> {
-    let mut out = Vec::new();
-    let mut i = 0;
-    while let Some(item) = head.pos_arg(kb, i) {
-        if let Some(t) = item.as_term_id() {
-            out.push(t);
-        }
-        i += 1;
-    }
-    out
-}
-
-fn term_display_name(kb: &KnowledgeBase, id: TermId) -> String {
-    match kb.get_term(id) {
-        CoreTerm::Ref(sym) | CoreTerm::Ident(sym) => kb.resolve_sym(*sym).to_string(),
-        CoreTerm::Fn { functor, .. } => kb.resolve_sym(*functor).to_string(),
-        CoreTerm::Const(Literal::String(s)) => s.clone(),
-        CoreTerm::Const(Literal::Int(n)) => n.to_string(),
-        CoreTerm::Const(Literal::BigInt(n)) => n.to_string(),
-        CoreTerm::Const(Literal::Float(f)) => f.to_string(),
-        CoreTerm::Const(Literal::Bool(b)) => b.to_string(),
-        CoreTerm::Const(Literal::Handle(kind, id)) => format!("<{:?}:{}>", kind, id),
-        CoreTerm::Var(Var::Global(vid)) => format!("?{}", kb.resolve_sym(vid.name())),
-        CoreTerm::Var(Var::DeBruijn(n)) => format!("?_{n}"),
-        CoreTerm::Var(Var::Rigid(vid)) => format!("!{}", kb.resolve_sym(vid.name())),
-        CoreTerm::Bottom => "⊥".into(),
-        CoreTerm::ParseAux(_) => "<parse-aux>".into(),
-    }
-}
-
-fn short_of(qualified: &str) -> String {
-    qualified.rsplit('.').next().unwrap_or(qualified).to_string()
-}
-
-/// Walk a `cons(head:_, tail:_)` chain ending in `nil` and collect the head
-/// elements as `TermId`s. Compares field symbols by identity using `syms`.
-fn collect_list_terms(kb: &KnowledgeBase, syms: &ReflectSyms, list_tid: TermId) -> Vec<TermId> {
-    let mut results = vec![];
-    let mut current = list_tid;
-    loop {
-        match kb.get_term(current) {
-            CoreTerm::Fn { functor, named_args, .. } => {
-                if *functor == syms.nil { break; }
-                if *functor == syms.cons {
-                    let head = named_args.iter().find(|(s, _)| *s == syms.head);
-                    let tail = named_args.iter().find(|(s, _)| *s == syms.tail);
-                    if let Some(&(_, h)) = head { results.push(h); }
-                    match tail {
-                        Some(&(_, t)) => { current = t; }
-                        None => break,
-                    }
-                } else {
-                    break;
-                }
-            }
-            _ => break,
-        }
-    }
-    results
-}
-
-fn members_of_kind(kb: &mut KnowledgeBase, parent_name: &str, kind: &str) -> Vec<String> {
-    let mut results = vec![];
-    for (_rid, head) in facts_by_sort_name(kb, "Member") {
-        let pos = term_pos_args(kb, &head);
-        if pos.len() == 3 {
-            let member_kind = term_display_name(kb, pos[1]);
-            let member_parent = term_display_name(kb, pos[2]);
-            if member_kind == kind
-                && (member_parent == parent_name
-                    || short_of(&member_parent) == parent_name)
-            {
-                results.push(term_display_name(kb, pos[0]));
-            }
-        }
-    }
-    results
-}
+// ── KB introspection helpers ────────────────────────────────────
+//
+// The carrier-agnostic KB walks — `facts_by_sort_name`, `term_named_args`,
+// `term_pos_args`, `term_display_name`, `short_of`, `collect_list_terms`,
+// `members_of_kind`, and the per-op record readers — live in the shared
+// `reader` module (WI-551). The builtins below map a `reader` record to a
+// `Value` result; the host bridge maps the SAME record to a typed struct.
 
 // ── Value helpers ──────────────────────────────────────────────
 
@@ -398,44 +283,18 @@ fn kb_sorts(
     let namespace = option_string_arg(ns)?;
     let kb = interp.kb_mut();
 
-    // `SortInfo` shares sort `"Sort"` with the value-in-type `SortAlias` (WI-366),
-    // so query the `SortInfo` functor directly rather than reading the `"Sort"`
-    // bucket and tripping on the value `SortAlias` head. Every fact is a
-    // `SortInfo`, so the former functor filter is gone.
-    let facts = facts_by_functor(kb, syms.sort_info);
     let mut entries: Vec<Value> = Vec::new();
-    for (_rid, head) in facts {
-        let named = term_named_args(kb, &head);
-        let field = |key: Symbol| named.iter().find(|(n, _)| *n == key).map(|(_, tid)| *tid);
-
-        let name_tid = match field(syms.f_name) { Some(t) => t, None => continue };
-        let definition_tid = match field(syms.f_definition) { Some(t) => t, None => continue };
-
-        if let Some(ref ns) = namespace {
-            let name_str = term_display_name(kb, name_tid);
-            if !name_str.starts_with(ns) { continue; }
-        }
-
-        let kind_tid = field(syms.f_kind);
-        let ctors = field(syms.f_constructors).map(|t| collect_list_terms(kb, syms, t)).unwrap_or_default();
-        let ops = field(syms.f_operations).map(|t| collect_list_terms(kb, syms, t)).unwrap_or_default();
-        let params = field(syms.f_parameters).map(|t| collect_list_terms(kb, syms, t)).unwrap_or_default();
-        let reqs = field(syms.f_requires).map(|t| collect_list_terms(kb, syms, t)).unwrap_or_default();
-
-        let ctors_v = build_list_value(syms, ctors.into_iter().map(Value::Term).collect());
-        let ops_v = build_list_value(syms, ops.into_iter().map(Value::Term).collect());
-        let params_v = build_list_value(syms, params.into_iter().map(Value::Term).collect());
-        let reqs_v = build_list_value(syms, reqs.into_iter().map(Value::Term).collect());
-
+    for rec in reader::read_sort_infos(kb, namespace.as_deref()) {
+        let list = |ts: Vec<TermId>| build_list_value(syms, ts.into_iter().map(Value::Term).collect());
         let mut fields = vec![
-            (syms.f_name, Value::Term(name_tid)),
-            (syms.f_definition, Value::Term(definition_tid)),
-            (syms.f_constructors, ctors_v),
-            (syms.f_operations, ops_v),
-            (syms.f_parameters, params_v),
-            (syms.f_requires, reqs_v),
+            (syms.f_name, Value::Term(rec.name)),
+            (syms.f_definition, Value::Term(rec.definition)),
+            (syms.f_constructors, list(rec.constructors)),
+            (syms.f_operations, list(rec.operations)),
+            (syms.f_parameters, list(rec.parameters)),
+            (syms.f_requires, list(rec.requires)),
         ];
-        if let Some(k) = kind_tid {
+        if let Some(k) = rec.kind {
             fields.push((syms.f_kind, Value::Term(k)));
         }
         entries.push(make_entity(kb, syms.sort_info, fields));
@@ -451,61 +310,29 @@ fn kb_operations(
     let [_kb, sort_name] = expect_args::<2>("KB.operations", args)?;
     let sort_name = str_arg(sort_name)?;
     let kb = interp.kb_mut();
-    let op_sort = kb.make_name_term("Operation");
 
+    // The shared reader walks the `OperationInfo` facts through the `op_info`
+    // funnel (WI-348/548): `name` / `return_type` / `params` / `meta` are ground
+    // `TermId`s, while `effects` / `requires` / `ensures` ride as carrier-faithful
+    // `Value`s (a `Modify[c]` label or denoted precondition stays a `Value::Node`).
+    // The interpreter is dynamically typed, so the spec's `List[NodeOccurrence]`
+    // contract fields just hold those clause `Value`s directly. `requires` carries
+    // the loader's synthetic `EffectsRuntime[Effects=E]` clause (WI-320); `ensures`
+    // is user clauses only.
     let mut entries: Vec<Value> = Vec::new();
-    for rid in kb.by_sort(op_sort) {
-        if !kb.is_fact(rid) { continue; }
-        // WI-348: the OperationInfo head may be a *value fact* (Node-carrying)
-        // for an op with a `denoted` effect (`Modify[c]`), so it can't be read as
-        // a term. Read its fields carrier-agnostically via the `op_info` API:
-        // name / return / params are ground `TermId`s either way; effects come
-        // back as carrier-faithful `Value`s (a `Modify[c]` label stays a Node).
-        let head = kb.rule_head_value(rid).clone();
-        let name_tid = match anthill_core::kb::op_info::head_field_term(kb, &head, "name") {
-            Some(t) => t,
-            None => continue,
-        };
-        let domain = kb.fact_domain(rid);
-        let domain_name = term_display_name(kb, domain);
-        if domain_name != sort_name && short_of(&domain_name) != sort_name { continue; }
-
-        let return_tid = match anthill_core::kb::op_info::head_field_term(kb, &head, "return_type") {
-            Some(t) => t,
-            None => continue,
-        };
-        let params_list = anthill_core::kb::op_info::head_field_term(kb, &head, "params")
-            .map(|t| collect_list_terms(kb, syms, t))
-            .unwrap_or_default();
-        let effects_values = anthill_core::kb::op_info::effects_of_head(kb, &head);
-        // WI-548: surface the contract clauses + meta too, matching the host
-        // bridge `operations()` (WI-545). `clause_list_field` reads each clause
-        // carrier-faithfully (a ground goal/conjunction is a `Value::Term`, a
-        // denoted-bearing precondition a `Value::Node`); the interpreter is
-        // dynamically typed, so the spec's `List[NodeOccurrence]` field just holds
-        // those clause `Value`s directly — no `NodeOccurrence` wrapper. `requires`
-        // carries the loader's synthetic `EffectsRuntime[Effects=E]` clause
-        // (WI-320); `ensures` is user clauses only.
-        let requires_values = anthill_core::kb::op_info::clause_list_field(kb, &head, "requires");
-        let ensures_values = anthill_core::kb::op_info::clause_list_field(kb, &head, "ensures");
-        // `meta` is a single `meta(...)` term; default to a bare `meta` ref when
-        // the fact omits it, mirroring the bridge.
-        let meta_tid = anthill_core::kb::op_info::head_field_term(kb, &head, "meta")
-            .unwrap_or_else(|| kb.alloc(CoreTerm::Ref(syms.f_meta)));
-
-        let params_v = build_list_value(syms, params_list.into_iter().map(Value::Term).collect());
-        let effects_v = build_list_value(syms, effects_values);
-        let requires_v = build_list_value(syms, requires_values);
-        let ensures_v = build_list_value(syms, ensures_values);
-
+    for rec in reader::read_operations(kb, &sort_name) {
+        let params_v = build_list_value(syms, rec.params.into_iter().map(Value::Term).collect());
+        let effects_v = build_list_value(syms, rec.effects);
+        let requires_v = build_list_value(syms, rec.requires);
+        let ensures_v = build_list_value(syms, rec.ensures);
         let fields = vec![
-            (syms.f_name, Value::Term(name_tid)),
+            (syms.f_name, Value::Term(rec.name)),
             (syms.f_params, params_v),
-            (syms.f_return_type, Value::Term(return_tid)),
+            (syms.f_return_type, Value::Term(rec.return_type)),
             (syms.f_effects, effects_v),
             (syms.f_requires, requires_v),
             (syms.f_ensures, ensures_v),
-            (syms.f_meta, Value::Term(meta_tid)),
+            (syms.f_meta, Value::Term(rec.meta)),
         ];
         entries.push(make_entity(kb, syms.operation_info, fields));
     }
@@ -520,9 +347,9 @@ fn kb_constructors(
     let [_kb, sort_name] = expect_args::<2>("KB.constructors", args)?;
     let sort_name = str_arg(sort_name)?;
     let kb = interp.kb_mut();
-    let items: Vec<Value> = members_of_kind(kb, &sort_name, "Constructor")
+    let items: Vec<Value> = reader::members_of_kind(kb, &sort_name, "Constructor")
         .into_iter()
-        .map(|n| Value::Str(short_of(&n)))
+        .map(|n| Value::Str(reader::short_of(&n).to_string()))
         .collect();
     Ok(build_list_value(syms, items))
 }
@@ -536,32 +363,12 @@ fn kb_fields(
     let name = str_arg(name)?;
     let kb = interp.kb_mut();
 
-    // WI-342: the Entity schema fact is carrier-agnostic — an entity with a
-    // value-in-type field (`Vector[Int64, 3]`) has a `Value::Entity` head, so
-    // read the head as a `Value` and project functor + named args through the
-    // carrier. A ground entity is a `Value::Term(Fn)` (byte-identical to the
-    // prior `fact_term`/`term_named_args` path); a field type rides into the
-    // FieldInfo as its own `Value` (a denoted field type is a `Value::Node`,
-    // surfaced verbatim, never re-grounded). Iterate `by_sort` directly rather
-    // than `facts_by_sort_name`, which calls the panicking term-only reader.
-    let sort_term = kb.make_name_term("Entity");
+    // The shared reader returns the matching entity's `(field_name, field_type)`
+    // pairs carrier-agnostically (WI-342): a value-in-type field (`Vector[Int64,
+    // 3]`) rides as its own `Value::Node` into the FieldInfo, surfaced verbatim.
     let mut items: Vec<Value> = Vec::new();
-    for rid in kb.by_sort(sort_term) {
-        let head = kb.rule_head_value(rid).clone();
-        let (functor, named): (Symbol, Vec<(Symbol, Value)>) = match &head {
-            Value::Term(t) => match kb.get_term(*t) {
-                CoreTerm::Fn { functor, named_args, .. } => (
-                    *functor,
-                    named_args.iter().map(|&(s, tid)| (s, Value::Term(tid))).collect(),
-                ),
-                _ => continue,
-            },
-            Value::Entity { functor, named, .. } => (*functor, named.to_vec()),
-            _ => continue,
-        };
-        let functor_name = kb.resolve_sym(functor).to_string();
-        if functor_name != name && short_of(&functor_name) != name { continue; }
-        for (field_sym, field_type) in named {
+    if let Some(rec) = reader::read_entity_fields(kb, &name) {
+        for (field_sym, field_type) in rec.fields {
             let name_val = Value::Str(kb.resolve_sym(field_sym).to_string());
             let fields = vec![
                 (syms.f_name, name_val),
@@ -569,7 +376,6 @@ fn kb_fields(
             ];
             items.push(make_entity(kb, syms.field_info, fields));
         }
-        break; // first matching entity wins — entity name is unique per sort
     }
     Ok(build_list_value(syms, items))
 }
@@ -584,11 +390,7 @@ fn kb_rules(
     let kb = interp.kb_mut();
 
     let mut items: Vec<Value> = Vec::new();
-    let facts = facts_by_sort_name(kb, "Rule");
-    for (rid, head) in facts {
-        let domain = kb.fact_domain(rid);
-        let domain_name = term_display_name(kb, domain);
-        if domain_name != sort_name && short_of(&domain_name) != sort_name { continue; }
+    for head in reader::rule_heads_for_sort(kb, &sort_name) {
         // A `Rule` fact head is the rule's predicate term — always hash-consed
         // (rules are not value facts), so the carrier-agnostic head reifies via
         // its `TermId`.
@@ -607,32 +409,14 @@ fn kb_descriptions(
     let target = option_string_arg(target)?;
     let kb = interp.kb_mut();
 
+    // The reader yields `Description(target, content, index)` records; the index
+    // is the STORED 0-based per-target index (WI-438), not a global enumeration.
     let mut items: Vec<Value> = Vec::new();
-    let facts = facts_by_sort_name(kb, "Description");
-    for (_rid, head) in facts {
-        let pos = term_pos_args(kb, &head);
-        // Description(target, text, index) — the index (pos[2]) is the STORED
-        // 0-based per-target index (kb/load.rs emit_desc_fact), NOT a global
-        // enumeration over all Description facts: a target-filtered query must
-        // report each target's own [0, 1, …], not non-contiguous [3, 7, …]
-        // (WI-438).
-        if pos.len() < 3 { continue; }
-        let desc_target_tid = pos[0];
-        let desc_content = term_display_name(kb, pos[1]);
-        let desc_index = match kb.get_term(pos[2]) {
-            CoreTerm::Const(Literal::Int(n)) => *n,
-            _ => continue,
-        };
-
-        if let Some(ref t) = target {
-            let desc_target_name = term_display_name(kb, desc_target_tid);
-            if desc_target_name != *t && short_of(&desc_target_name) != *t { continue; }
-        }
-
+    for rec in reader::read_descriptions(kb, target.as_deref()) {
         let fields = vec![
-            (syms.f_target, Value::Term(desc_target_tid)),
-            (syms.f_content, Value::Str(desc_content)),
-            (syms.f_index, Value::Int(desc_index)),
+            (syms.f_target, Value::Term(rec.target)),
+            (syms.f_content, Value::Str(rec.content)),
+            (syms.f_index, Value::Int(rec.index)),
         ];
         items.push(make_entity(kb, syms.description_info, fields));
     }

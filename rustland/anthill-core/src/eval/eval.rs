@@ -1853,8 +1853,11 @@ fn collect_resolved_type_args(occ: &Rc<NodeOccurrence>) -> FrameTypeArgs {
 
 /// Head functor of a value, when one is recoverable: an entity, a `Fn` term,
 /// or a bare `Ref` (a nullary reference, e.g. a free-standing entity used as a
-/// type value).
-pub(crate) fn value_functor(kb: &KnowledgeBase, value: &Value) -> Option<Symbol> {
+/// type value). `pub` (re-exported as `anthill_core::eval::value_functor`) so
+/// the reflect host bridge (`anthill-stl`) reads an entity reference's functor
+/// through the SAME single source the interpreter uses (WI-551), instead of a
+/// hand-maintained twin.
+pub fn value_functor(kb: &KnowledgeBase, value: &Value) -> Option<Symbol> {
     match value {
         Value::Entity { functor, .. } => Some(*functor),
         Value::Term(tid) => match kb.get_term(*tid) {
