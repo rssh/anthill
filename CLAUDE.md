@@ -97,7 +97,7 @@ invariant comment and `wi321_cross_file_mutual_recursion_test`.
 
 ### Key Concepts
 
-- **Hash-consed terms**: structurally identical terms share one TermId
+- **Hash-consing (selective, not universal)**: persistent, heavily-shared structure (asserted facts, rule heads, sort identities) is interned in `TermStore` so structurally-identical terms share one `TermId` — but interned terms live for the KB's lifetime, so transient terms (query patterns, occurrence-derived twins) are deliberately NOT interned; they ride as `Value::Node`/`Entity` carriers and match structurally. See the Representation note at the top of this file.
 - **Symbol table**: string interning (`Symbol(u32)`), scope-aware two-phase resolution (Unresolved → Resolved)
 - **De Bruijn variables**: rules stored with `DeBruijn(u32)`, opened to fresh globals during resolution
 - **Discrimination tree**: structural term matching index for fast rule/fact lookup
