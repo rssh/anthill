@@ -614,6 +614,21 @@ pub struct TypingEnv {
     /// the iterative typer and this is set once per rule, so clones are a refcount
     /// bump, not a map copy.
     debruijn_types: Rc<HashMap<u32, Value>>,
+    /// WI-557: set ONLY by the rule-body dot-dispatch sweep
+    /// (`dispatch_rule_body_dots`). A rule body is SLD/relational — it has no
+    /// call-site Γ and no imperative Hoare semantics — so the WI-539 value-
+    /// precondition `requires`-check (an op-body call-site obligation proved
+    /// against Γ) does not apply there: it would float over a rule-body variable
+    /// and raise a spurious `UnsatisfiedPrecondition`. `check_apply_iter` skips
+    /// the precondition check when this is set; op-body checking (the flag stays
+    /// `false`) is unchanged. A plain `bool` rides through every `Visit`-push /
+    /// let / lambda / match env clone exactly as `debruijn_types` does — the same
+    /// path the receiver-var dispatch already depends on. NOT inferred from
+    /// `debruijn_types.is_empty()` / `enclosing.is_none()`: a variable-free rule
+    /// body has an empty `debruijn_types`, and a namespace-level op body has
+    /// `enclosing = None`, so neither is a precise discriminator (explicit over
+    /// implicit — see the loud-over-silent principle).
+    rule_body_dispatch: bool,
     pub diagnostics: Vec<String>,
 }
 
@@ -633,8 +648,23 @@ impl TypingEnv {
             enclosing: None,
             op_requires: Rc::new(Vec::new()),
             debruijn_types: Rc::new(HashMap::new()),
+            rule_body_dispatch: false,
             diagnostics: Vec::new(),
         }
+    }
+
+    /// WI-557: mark this env as the rule-body dot-dispatch context (see the
+    /// `rule_body_dispatch` field doc). Called once by `dispatch_rule_body_dots`;
+    /// the flag rides every env clone from there to `check_apply_iter`.
+    pub fn mark_rule_body_dispatch(&mut self) {
+        self.rule_body_dispatch = true;
+    }
+
+    /// WI-557: is this a rule-body dot-dispatch walk? When true, the WI-539
+    /// value-precondition `requires`-check is skipped (a rule body is relational,
+    /// not an imperative call site over Γ).
+    fn in_rule_body(&self) -> bool {
+        self.rule_body_dispatch
     }
 
     /// WI-562: install the enclosing operation's own op-scoped `requires` chain
@@ -5635,21 +5665,32 @@ fn check_apply_iter(
         // VALUE goals are checked here — spec/typeclass requires (`Spec[C=T]`,
         // `EffectsRuntime[…]`) have a `Sort` head and are dispatched / coverage-
         // checked elsewhere (WI-343 / WI-325), never proved from Γ.
-        let value_reqs: Vec<Value> = op
-            .requires
-            .iter()
-            .filter(|c| is_value_precondition_clause(kb, c))
-            .cloned()
-            .collect();
-        if !value_reqs.is_empty() {
-            let req_sigma = build_call_guard_sigma(kb, &op.params, pos_args, named_args);
-            for clause in &value_reqs {
-                if !precondition_proved(kb, flow, &req_sigma, clause) {
-                    return Err(TypeError::UnsatisfiedPrecondition {
-                        span,
-                        op: fn_sym,
-                        clause: clause.clone(),
-                    });
+        //
+        // WI-557: the precondition check is an OP-BODY call-site obligation. A
+        // rule body is SLD/relational — there is no call-site Γ and no imperative
+        // Hoare semantics — so the obligation does not apply there. In a rule-body
+        // dot-dispatch walk the precondition would float over a rule-body variable
+        // (an unconstrained Γ over a symbolic arg) and raise a spurious
+        // `UnsatisfiedPrecondition`, which `dispatch_dots_in_occ`'s `Err(_)` arm
+        // swallows — leaving the dot UNDISPATCHED. Skip the check there; op-body
+        // checking (`in_rule_body()` is false) is unchanged.
+        if !env.in_rule_body() {
+            let value_reqs: Vec<Value> = op
+                .requires
+                .iter()
+                .filter(|c| is_value_precondition_clause(kb, c))
+                .cloned()
+                .collect();
+            if !value_reqs.is_empty() {
+                let req_sigma = build_call_guard_sigma(kb, &op.params, pos_args, named_args);
+                for clause in &value_reqs {
+                    if !precondition_proved(kb, flow, &req_sigma, clause) {
+                        return Err(TypeError::UnsatisfiedPrecondition {
+                            span,
+                            op: fn_sym,
+                            clause: clause.clone(),
+                        });
+                    }
                 }
             }
         }
@@ -21772,6 +21813,13 @@ fn dispatch_rule_body_dots(kb: &mut KnowledgeBase) -> Vec<TypeError> {
         // the typer's normal env handling.
         let mut env = TypingEnv::empty();
         env.set_debruijn_types(Rc::new(var_types));
+        // WI-557: mark this as rule-body context so `check_apply_iter` skips the
+        // WI-539 value-precondition `requires`-check — a rule body is SLD/
+        // relational with no call-site Γ, so the op-body Hoare obligation does
+        // not apply (it would float over a rule-body var and raise a spurious,
+        // currently-swallowed `UnsatisfiedPrecondition` that also leaves the dot
+        // undispatched).
+        env.mark_rule_body_dispatch();
         let mut changed = false;
         let new_body: Vec<Rc<NodeOccurrence>> = body_nodes
             .iter()
