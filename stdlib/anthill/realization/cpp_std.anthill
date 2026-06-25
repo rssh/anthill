@@ -1,41 +1,17 @@
 -- C++-specific realization vocabulary.
 --
 -- Sibling of anthill.realization.rust_std; sentinel for the eventual
--- WI-089 LanguageMapping for cpp17-stl / cpp20-stl. Today this file
--- defines the ReturnTypeConversion entity used by anthill-cpp-gen
--- to wrap an operation's body when the C++ method's actual return
--- type doesn't match the anthill operation's declared return type.
+-- WI-089 LanguageMapping for cpp17-stl / cpp20-stl (effect_map,
+-- type_map, receiver_map, trait_return, NamingConvention).
 --
--- Driver: webots's `getValues()` returns `const double *`, but the
--- anthill operation says `-> Vec3`. The conversion is a hand-written
--- C++ function (e.g. `Vec3Support::from_array`) that bridges the
--- two; ReturnTypeConversion declares which conversion to apply to
--- which operation.
+-- NOTE (WI-088): value-level marshalling between an anthill type and a
+-- foreign host representation is NOT a cpp_std concern. It rides on the
+-- extended anthill.realization.TypeMapping (an entry with a `lift` /
+-- `lower` adapter pair), authored as a top-level fact in the foreign
+-- binding that declares it (e.g. the webots realization maps
+-- anthill.geometry.Vec3 -> "const double *" via from_array / to_array).
+-- This file no longer carries a return-type-conversion entity; the
+-- former per-operation ReturnTypeConversion mechanism was superseded by
+-- the bidirectional, representation-keyed TypeMapping coercion.
 namespace anthill.realization.cpp_std
-  import anthill.prelude.{String}
-
-  -- A C++ function name that wraps an operation's call to its
-  -- carrier method. Codegen emits:
-  --   static <ret> <op_name>(<self_carrier> self, <args>) {
-  --       return <conversion>(self->{cpp_method_name}(args));
-  --   }
-  -- when this fact is asserted for (target, operation).
-  --
-  -- target:     fully qualified anthill sort name owning the op
-  --             (e.g. "anthill.examples.lf1.webots.GPS")
-  -- operation:  short operation name (e.g. "get_values")
-  -- conversion: fully qualified C++ function name to invoke
-  --             (e.g. "::vec3_support::from_array" or
-  --             "anthill::examples::lf1::webots::types::Vec3::from_array")
-  --
-  -- The conversion function must take a single argument of the type
-  -- the C++ method actually returns and return the C++ type that the
-  -- anthill operation's declared return type lowers to. Codegen does
-  -- not generate the conversion — it is hand-authored in a sibling
-  -- C++ header that ships with the generated code.
-  entity ReturnTypeConversion(
-    target:     String,
-    operation:  String,
-    conversion: String
-  )
 end

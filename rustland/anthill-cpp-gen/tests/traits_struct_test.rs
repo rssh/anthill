@@ -386,9 +386,9 @@ fn lf1_gps_traits_struct_emits_correctly() {
         cpp.contains("static double get_speed(webots::GPS * self) {\n        return self->getSpeed();\n    }"),
         "missing get_speed body:\n{cpp}"
     );
-    // Vec3-returning ops: bodies wrap the carrier call in
-    // anthill::examples::lf1::webots::types::Vec3::from_array per
-    // ReturnTypeConversion facts in webots/realization.anthill.
+    // Vec3-returning ops: bodies lift the carrier call via
+    // anthill::examples::lf1::webots::types::Vec3::from_array per the
+    // marshalled TypeMapping facts in webots/realization.anthill (WI-088).
     assert!(
         cpp.contains("static Vec3 get_speed_vector(webots::GPS * self) {\n        return anthill::examples::lf1::webots::types::Vec3::from_array(self->getSpeedVector());\n    }"),
         "missing get_speed_vector body with conversion:\n{cpp}"

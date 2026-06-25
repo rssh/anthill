@@ -116,10 +116,31 @@ namespace anthill.realization
     entity AssociatedType               -- associated type on the containing trait
   end
 
-  -- Maps an anthill prelude type to a host-language type.
+  -- Maps an anthill type to a host-language type.
+  --
+  -- Two roles, distinguished by whether the adapter pair is present:
+  --   * Plain rename (lift = lower = none): the anthill type lowers to
+  --     `host_type` with NO value-level conversion — identity at the
+  --     value level (e.g. Int64 -> "i64"). This is the form nested in
+  --     LanguageMapping.type_map.
+  --   * Marshalled (lift and/or lower present): the host represents the
+  --     anthill type DIFFERENTLY, so values must be converted when they
+  --     cross a foreign-API boundary. `lift` names the foreign->anthill
+  --     adapter (applied to a value READ from the host API, e.g. a
+  --     carrier-method return); `lower` names the anthill->foreign
+  --     adapter (applied to a value PASSED INTO a host-API call). Each
+  --     is a fully-qualified host function name. Asserted as a TOP-LEVEL
+  --     fact, scoped to the foreign binding that declares it (e.g. the
+  --     webots realization maps Vec3 -> "const double *" via from_array
+  --     / to_array). Codegen DERIVES a carrier method's foreign
+  --     signature by mapping the operation's declared anthill types
+  --     through these entries, and bridges with lift/lower at the
+  --     carrier-dispatch boundary. See WI-088.
   entity TypeMapping(
-    anthill_type : String,                          -- e.g. "Int64"
-    host_type    : String                           -- e.g. "i64"
+    anthill_type : String,                          -- e.g. "Int64" or "anthill.geometry.Vec3"
+    host_type    : String,                          -- e.g. "i64" or "const double *"
+    lift         : Option[T = String],              -- foreign->anthill adapter (marshalled only)
+    lower        : Option[T = String]               -- anthill->foreign adapter (marshalled only)
   )
 
   -- Operation implementation: marks an operation that has an expression body.
