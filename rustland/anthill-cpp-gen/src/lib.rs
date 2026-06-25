@@ -184,38 +184,71 @@ impl CarrierTable {
     }
 }
 
-/// Resolved table of (sort qualified name, operation short name) →
-/// C++ conversion function name, built from
-/// `anthill.realization.cpp_std.ReturnTypeConversion` facts.
-///
-/// When an entry exists, body synthesis wraps the carrier-method call
-/// in the conversion: `return Vec3Support::from_array(self->getValues());`
-/// instead of the bare `return self->getValues();`. The conversion
-/// function is hand-authored C++ shipped alongside the generated code.
-pub struct ConversionTable {
-    by_target: HashMap<String, HashMap<String, String>>,
+/// A marshalled type representation: the value-level adapter pair that
+/// bridges an anthill type and a foreign host representation of it.
+struct Marshal {
+    /// foreign->anthill adapter, applied to a value READ from the host
+    /// API (e.g. a carrier-method return: `const double * -> Vec3`).
+    lift: Option<String>,
+    /// anthill->foreign adapter, applied to a value PASSED INTO a
+    /// host-API call (e.g. a carrier-method arg: `Vec3 -> const double *`).
+    lower: Option<String>,
 }
 
-impl ConversionTable {
+/// Resolved table of anthill type → marshalled representation, built
+/// from top-level `fact TypeMapping(anthill_type, host_type, lift,
+/// lower)` facts that carry a `lift` and/or `lower` adapter (WI-088).
+///
+/// Plain renames (no adapter — `Int64 -> "i64"`, nested in
+/// `LanguageMapping.type_map`) are NOT collected: they have no
+/// value-level conversion. Only marshalled entries land here.
+///
+/// Consulted ONLY at the carrier-dispatch boundary (`synthesise_body_for`):
+/// the host method's foreign signature is DERIVED by mapping the
+/// operation's declared anthill types through this table, and the call
+/// and its arguments are bridged with `lift` / `lower`. Declared-signature
+/// lowering (`sort_to_cpp`) never consults this table, so the anthill
+/// type's default carrier (its generated struct) is unaffected — `Vec3`
+/// stays a struct everywhere except where it crosses the foreign API.
+pub struct MarshalTable {
+    by_type: HashMap<String, Marshal>,
+}
+
+impl MarshalTable {
     pub fn from_kb(kb: &KnowledgeBase) -> Self {
-        let mut by_target: HashMap<String, HashMap<String, String>> = HashMap::new();
-        let sym = kb.try_resolve_symbol("anthill.realization.cpp_std.ReturnTypeConversion")
-            .or_else(|| kb.try_resolve_symbol("ReturnTypeConversion"));
-        let Some(sym) = sym else { return Self { by_target } };
+        let mut by_type = HashMap::new();
+        let sym = kb.try_resolve_symbol("anthill.realization.TypeMapping")
+            .or_else(|| kb.try_resolve_symbol("TypeMapping"));
+        let Some(sym) = sym else { return Self { by_type } };
 
         for rid in kb.rules_by_functor(sym) {
             let head = kb.rule_head(rid);
-            let target     = match named_string(kb, head, "target")     { Some(s) => s, None => continue };
-            let operation  = match named_string(kb, head, "operation")  { Some(s) => s, None => continue };
-            let conversion = match named_string(kb, head, "conversion") { Some(s) => s, None => continue };
-            by_target.entry(target).or_default().insert(operation, conversion);
+            let anthill_type = match named_string(kb, head, "anthill_type") {
+                Some(s) => s,
+                None => continue,
+            };
+            let lift  = named_arg(kb, head, "lift").and_then(|t| extract_optional_string(kb, t));
+            let lower = named_arg(kb, head, "lower").and_then(|t| extract_optional_string(kb, t));
+            // A TypeMapping with no adapter is a plain rename, not a
+            // marshalled rep — skip it (it carries no value conversion).
+            if lift.is_none() && lower.is_none() {
+                continue;
+            }
+            by_type.insert(anthill_type, Marshal { lift, lower });
         }
-        Self { by_target }
+        Self { by_type }
     }
 
-    /// `&str` keys avoid per-lookup `String` allocation.
-    pub fn lookup(&self, target: &str, operation: &str) -> Option<&str> {
-        self.by_target.get(target)?.get(operation).map(|s| s.as_str())
+    /// Look up by the anthill type's qualified name first, then its
+    /// short name, so a fact written `anthill_type: "anthill.geometry.Vec3"`
+    /// or just `"Vec3"` both resolve.
+    fn lookup(&self, qualified: &str, short: &str) -> Option<&Marshal> {
+        self.by_type.get(qualified).or_else(|| self.by_type.get(short))
+    }
+
+    /// Whether the table has any entries (used by tests).
+    pub fn is_empty(&self) -> bool {
+        self.by_type.is_empty()
     }
 }
 
@@ -263,14 +296,14 @@ impl OpImplTable {
     }
 }
 
-/// Bundles the KB with a derived `CarrierTable`, `ConversionTable`,
+/// Bundles the KB with a derived `CarrierTable`, `MarshalTable`,
 /// and `OpImplTable` so emit functions don't have to re-scan facts on
 /// every lookup. Construct once per codegen run; pass to every emit
 /// function.
 pub struct CodegenContext<'kb> {
     pub kb: &'kb KnowledgeBase,
     pub carriers: CarrierTable,
-    pub conversions: ConversionTable,
+    pub marshal: MarshalTable,
     pub op_impls: OpImplTable,
     /// Extra `#include` lines that lowering decides it needs at
     /// run-time (e.g. `<tl/expected.hpp>` for Error-effect ops). Merged
@@ -301,7 +334,7 @@ impl<'kb> CodegenContext<'kb> {
         Self {
             kb,
             carriers: CarrierTable::from_kb(kb),
-            conversions: ConversionTable::from_kb(kb),
+            marshal: MarshalTable::from_kb(kb),
             op_impls: OpImplTable::from_kb(kb),
             requested_includes: std::cell::RefCell::new(std::collections::BTreeSet::new()),
             type_params: std::cell::RefCell::new(Vec::new()),
@@ -970,6 +1003,10 @@ struct OperationSig {
 struct ParamInfo {
     name: String,
     cpp_type: String,
+    /// The param's anthill type term, kept so body synthesis can look
+    /// up a marshalled representation (WI-088) and `lower` the argument
+    /// when the host API wants the foreign rep.
+    type_term: TermId,
 }
 
 /// Whether an operation's return type is "body-emittable" — i.e.,
@@ -1061,19 +1098,36 @@ fn snake_to_camel(snake: &str) -> String {
     out
 }
 
+/// Look up the marshalled representation (WI-088) for an anthill type
+/// term, if one is registered. Resolves the term to its sort symbol and
+/// matches the `MarshalTable` by qualified then short name.
+fn marshal_for_type<'a>(ctx: &'a CodegenContext, type_term: TermId) -> Option<&'a Marshal> {
+    let kb = ctx.kb;
+    let sym = extract_sort_ref_sym(kb, &TermIdView(type_term)).or_else(|| {
+        match kb.get_term(type_term) {
+            Term::Ref(s) | Term::Ident(s) => Some(*s),
+            _ => None,
+        }
+    })?;
+    let qualified = kb.qualified_name_of(sym);
+    let short = short_name_of(qualified);
+    ctx.marshal.lookup(qualified, short)
+}
+
 /// Synthesise a method body for an operation. Lookup order:
 ///   1. **OperationImpl** (anthill expression body) — lower the body
 ///      via `lower_expr` and wrap with `return`. Highest precedence:
 ///      an operation with an explicit body MUST use that body.
-///   2. **ReturnTypeConversion** — wrap the carrier-method call in
-///      a fact-asserted adapter (`Vec3::from_array(self->getValues())`).
-///   3. **Carrier dispatch** — `return self->methodName(args);` when
-///      the first param is `self` and the return is body-emittable.
-///   4. **None** — fall back to a declaration-only signature.
+///   2. **Carrier dispatch with marshalling** (WI-088) — `self->method(args)`,
+///      with each argument `lower`ed and the result `lift`ed when its
+///      anthill type has a marshalled representation. The host method's
+///      foreign signature is derived by mapping the operation's anthill
+///      types through the `MarshalTable`; `lift`/`lower` adapters bridge
+///      the boundary (`return Vec3::from_array(self->getValues());`).
+///   3. **None** — fall back to a declaration-only signature.
 fn synthesise_body_for(
     ctx: &CodegenContext,
     op_sym: Symbol,
-    sort_qualified: &str,
     name: &str,
     params: &[ParamInfo],
     return_type: &str,
@@ -1109,23 +1163,60 @@ fn synthesise_body_for(
     }
     let arrow = if self_param.cpp_type.contains('*') { "->" } else { "." };
     let cpp_method = snake_to_camel(name);
+
+    // A non-self argument whose anthill type IS marshalled but declares
+    // no `lower` adapter cannot be bridged into the host call — surface
+    // it loudly (matching the void+lift guard below) rather than emitting
+    // the un-lowered value, which would silently fail to compile (WI-088).
+    // A type with no marshalled entry at all is a normal value and passes
+    // through bare; only the "marshalled, but no anthill->foreign adapter"
+    // case is the unhandleable one.
+    for p in params.iter().skip(1) {
+        if matches!(marshal_for_type(ctx, p.type_term), Some(m) if m.lower.is_none()) {
+            let tail = if return_type == "void" { "" } else { "\n        return {};" };
+            return Some(format!(
+                "// TODO: WI-088: parameter '{}' has a marshalled type with no `lower` adapter — \
+                 add a `lower` to its TypeMapping fact so the anthill value converts to the \
+                 host's foreign representation{tail}",
+                p.name
+            ));
+        }
+    }
+
+    // Marshal each non-self argument (WI-088): if its anthill type has a
+    // `lower` adapter, the host API wants the foreign rep, so wrap the
+    // argument before passing it (`Vec3 -> const double *`). After the
+    // guard above, a `None` here means the type is not marshalled at all,
+    // so the argument passes through bare.
     let non_self_args = params.iter().skip(1)
-        .map(|p| p.name.as_str())
+        .map(|p| match marshal_for_type(ctx, p.type_term).and_then(|m| m.lower.as_deref()) {
+            Some(lower) => format!("{lower}({})", p.name),
+            None => p.name.clone(),
+        })
         .collect::<Vec<_>>()
         .join(", ");
     let call = format!("self{arrow}{cpp_method}({non_self_args})");
 
-    // (2) ReturnTypeConversion takes precedence over plain dispatch —
-    // a fact-asserted adapter wraps the carrier call regardless of
-    // whether the return would otherwise have been body-emittable.
-    if let Some(conv) = ctx.conversions.lookup(sort_qualified, name) {
+    // (2) Return marshalling (WI-088): if the return type has a `lift`
+    // adapter, the host method yields the foreign rep, so wrap the call
+    // to lift it back to the anthill type (`const double * -> Vec3`).
+    // Takes precedence over plain dispatch — the lift applies even when
+    // the return would otherwise have been body-emittable.
+    if let Some(lift) = marshal_for_type(ctx, return_term).and_then(|m| m.lift.as_deref()) {
         if return_type == "void" {
-            return Some(format!("{conv}({call});"));
+            // Nothing to lift from a void return — a `lift` here is a
+            // spec error. Surface it loudly rather than emitting
+            // `lift(call);`, which would discard the lifted value.
+            return Some(format!(
+                "// TODO: WI-088: `lift` adapter '{lift}' declared for the return type of \
+                 void-returning operation '{name}' — a lift converts a returned value; \
+                 drop the lift or give the operation a non-void return\n        {call};"
+            ));
         }
-        return Some(format!("return {conv}({call});"));
+        return Some(format!("return {lift}({call});"));
     }
 
-    // (3) Plain carrier dispatch.
+    // (3) Plain carrier dispatch (no return marshalling).
     if !is_body_emittable(ctx, return_term) {
         return None;
     }
@@ -1208,7 +1299,11 @@ fn operations_in_sort(
                 }
             };
             let cpp_type = lower_type(ctx, p_term)?;
-            params.push(ParamInfo { name: kb.resolve_sym(*p_name_sym).to_string(), cpp_type });
+            params.push(ParamInfo {
+                name: kb.resolve_sym(*p_name_sym).to_string(),
+                cpp_type,
+                type_term: p_term,
+            });
         }
 
         // Pull declared effects so we can wrap the return type for
@@ -1228,7 +1323,7 @@ fn operations_in_sort(
         } else {
             return_type_cpp
         };
-        let body = synthesise_body_for(ctx, op_sym, &qualified, &name, &params, &return_type_cpp, return_term);
+        let body = synthesise_body_for(ctx, op_sym, &name, &params, &return_type_cpp, return_term);
         out.push(OperationSig { name, params, return_type_cpp, body });
     }
 

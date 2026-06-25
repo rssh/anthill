@@ -12,8 +12,7 @@
 namespace anthill.examples.lf1.webots.realization
   import anthill.prelude.{List, Option, String, Int64}
   import anthill.realization.{Implementation, CarrierBinding,
-                              NamespaceMapping}
-  import anthill.realization.cpp_std.{ReturnTypeConversion}
+                              NamespaceMapping, TypeMapping}
 
   -- ================================================================
   -- C++ enum encoding facts
@@ -136,35 +135,35 @@ namespace anthill.examples.lf1.webots.realization
   )
 
   -- ============================================================
-  -- Return-type conversions: webots methods that return
-  -- `const double *` to a fixed-size array, lifted to Vec3 /
-  -- EulerAngles via hand-authored C++ adapters that ship in
-  -- `cpp/vec3_support.hpp` alongside the generated controllers.
+  -- Marshalled type representations (WI-088): webots methods speak
+  -- `const double *` (a pointer to contiguous doubles) where the
+  -- anthill specs use the geometry value types. These TypeMapping
+  -- facts declare the (anthill type <-> foreign rep) adapter pair
+  -- ONCE per type — not per operation. Codegen derives each carrier
+  -- method's foreign signature by mapping its declared anthill types
+  -- through these entries, then bridges with `lift` (foreign->anthill,
+  -- applied to a returned value) and `lower` (anthill->foreign, applied
+  -- to an argument). All current webots methods are getters, so only
+  -- `lift` is exercised today; `lower` is declared so a future setter /
+  -- Supervisor-field write taking a vector lowers automatically. The
+  -- adapters are hand-authored C++ shipping in `cpp/vec3_support.hpp`
+  -- alongside the generated controllers (`to_array` to be authored when
+  -- the first vector-input method is modelled). Replaces the former
+  -- per-operation ReturnTypeConversion facts (GPS.get_values,
+  -- GPS.get_speed_vector, Gyro.get_values, InertialUnit.get_roll_pitch_yaw,
+  -- Receiver.get_emitter_direction — all collapse into these two).
   -- ============================================================
 
-  fact ReturnTypeConversion(
-    target:     "anthill.examples.lf1.webots.GPS",
-    operation:  "get_values",
-    conversion: "anthill::examples::lf1::webots::types::Vec3::from_array"
+  fact TypeMapping(
+    anthill_type: "anthill.geometry.Vec3",
+    host_type:    "const double *",
+    lift:         some("anthill::examples::lf1::webots::types::Vec3::from_array"),
+    lower:        some("anthill::examples::lf1::webots::types::Vec3::to_array")
   )
-  fact ReturnTypeConversion(
-    target:     "anthill.examples.lf1.webots.GPS",
-    operation:  "get_speed_vector",
-    conversion: "anthill::examples::lf1::webots::types::Vec3::from_array"
-  )
-  fact ReturnTypeConversion(
-    target:     "anthill.examples.lf1.webots.Gyro",
-    operation:  "get_values",
-    conversion: "anthill::examples::lf1::webots::types::Vec3::from_array"
-  )
-  fact ReturnTypeConversion(
-    target:     "anthill.examples.lf1.webots.InertialUnit",
-    operation:  "get_roll_pitch_yaw",
-    conversion: "anthill::examples::lf1::webots::types::EulerAngles::from_array"
-  )
-  fact ReturnTypeConversion(
-    target:     "anthill.examples.lf1.webots.Receiver",
-    operation:  "get_emitter_direction",
-    conversion: "anthill::examples::lf1::webots::types::Vec3::from_array"
+  fact TypeMapping(
+    anthill_type: "anthill.geometry.EulerAngles",
+    host_type:    "const double *",
+    lift:         some("anthill::examples::lf1::webots::types::EulerAngles::from_array"),
+    lower:        none
   )
 end
