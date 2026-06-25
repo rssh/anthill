@@ -26,19 +26,16 @@
 --      formulation is bounded-excursion: from any "armed" state
 --      (one where seq has been −1, i.e. sustained improvement was
 --      observed) the controller forces a yaw flip within at most
---      6 ticks. Worked manual discharge of this property via a
---      ranking function R = −upc lives in
---      anthill-smt-gen/tests/lf1_real_spec_test.rs
---      (lf1_transponder_excursion_ranking_function_manual). Once
---      the proof grammar accepts a ranking-function clause, it
---      will surface here as e.g.
---          proof bounded_excursion_transponder
---            by z3(ranking: neg_upc,
---                  decrease_when: bad_step,
+--      6 ticks. This property is discharged in-language by the ranking
+--      meta-tactic (proposal 025.1 §ranking) over the well-founded
+--      measure R = −upc — see `proof post_armed_excursion_bound` below:
+--          proof post_armed_excursion_bound
+--            by z3(tactic: ranking(boundedness: bound_violation_transponder,
+--                                  decrease: decrease_violation_transponder),
 --                  logic: "LIA")
 --          end
---      — i.e. the tactic is an argument to `by z3(...)`, not a
---      separate `by ranking(...)` form.
+--      — i.e. the tactic is an argument to `by z3(...)`. (This replaced a
+--      hand-written smt-gen worked example, removed in 025.1 Phase 8.)
 --
 --   2. The d_min no-collision property still admits a per-step
 --      inductive proof, *provided* `capture_radius` from
@@ -227,9 +224,9 @@ namespace anthill.examples.lf1.safety.transponder
   -- Ranking-function discharge of PostArmedExcursionBound.max_ticks
   -- =================================================================
   --
-  -- Replaces the hand-plugged manual SMT in
-  -- `lf1_real_spec_test.rs::lf1_transponder_excursion_ranking_function_manual`
-  -- with an in-language proof. The well-founded measure is R = −upc;
+  -- In-language ranking-meta-tactic proof (proposal 025.1 Phase 5). This
+  -- replaced the former hand-written smt-gen worked example, removed in
+  -- Phase 8 (WI-103). The well-founded measure is R = −upc;
   -- the post-armed regime keeps upc ∈ [−6, 0]. Two obligations:
   --
   --   bound_violation_transponder    — exists post-armed state with R < 0?

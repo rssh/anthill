@@ -3,7 +3,7 @@
 //! constants. If this round-trips through emit_obligation, the SMT
 //! foundation is solid.
 
-use super::common::load_kb_with;
+use super::common::{load_kb_with, run_z3, z3_available};
 
 use anthill_smt_gen::{emit_obligation, Obligation};
 
@@ -103,24 +103,16 @@ fn comm_delay_max_emits_a_well_formed_smtlib_doc() {
 /// computed tau is much smaller). Skipped when `z3` isn't on $PATH.
 #[test]
 fn comm_delay_max_z3_round_trip_unsat() {
-    if std::process::Command::new("z3").arg("--version").output()
-        .map(|o| !o.status.success()).unwrap_or(true)
-    {
-        eprintln!("z3 not available — skipping discharge round-trip");
-        return;
-    }
+    if !z3_available() { eprintln!("z3 not available — skipping discharge round-trip"); return; }
     let kb = lf1_safety_kb();
     let smt = emit_obligation(&kb, &Obligation {
         rule_qn: "test.smt_gen.lf1.comm_delay_max".to_string(),
         upper_bound: 0.1,
     }).expect("emit");
-    let path = std::env::temp_dir().join("anthill_smt_gen_comm_delay.smt2");
-    std::fs::write(&path, &smt).expect("write");
-    let out = std::process::Command::new("z3").arg(&path).output().expect("z3");
-    let stdout = String::from_utf8_lossy(&out.stdout);
+    let verdict = run_z3("smt_gen_comm_delay", &smt);
     assert!(
-        stdout.trim() == "unsat",
-        "z3 should report `unsat` for comm_delay_max ≤ 0.1 — got {stdout:?}\n{smt}"
+        verdict == "unsat",
+        "z3 should report `unsat` for comm_delay_max ≤ 0.1 — got {verdict:?}\n{smt}"
     );
 }
 

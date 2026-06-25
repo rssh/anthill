@@ -4,7 +4,7 @@
 //! rule with its own body. The smt-gen has to chase that dependency
 //! and inline it into the outer rule's translation.
 
-use super::common::load_kb_with;
+use super::common::{load_kb_with, run_z3, z3_available};
 
 use anthill_smt_gen::{emit_obligation, Obligation};
 
@@ -121,24 +121,16 @@ fn step_distance_bound_inlines_called_rule() {
 
 #[test]
 fn step_distance_bound_z3_says_unsat_at_seven_meters() {
-    if std::process::Command::new("z3").arg("--version").output()
-        .map(|o| !o.status.success()).unwrap_or(true)
-    {
-        eprintln!("z3 not available — skipping");
-        return;
-    }
+    if !z3_available() { eprintln!("z3 not available — skipping"); return; }
     let kb = lf1_with_step_bound_kb();
     let smt = emit_obligation(&kb, &Obligation {
         rule_qn: "test.smt_gen.step.step_distance_bound".to_string(),
         upper_bound: 7.0,
     }).expect("emit");
-    let path = std::env::temp_dir().join("anthill_smt_gen_step_unsat.smt2");
-    std::fs::write(&path, &smt).expect("write");
-    let out = std::process::Command::new("z3").arg(&path).output().expect("z3");
-    let stdout = String::from_utf8_lossy(&out.stdout);
+    let verdict = run_z3("smt_gen_step_unsat", &smt);
     assert!(
-        stdout.trim() == "unsat",
-        "z3 should report `unsat` for delta ≤ 7.0 — got {stdout:?}\n{smt}"
+        verdict == "unsat",
+        "z3 should report `unsat` for delta ≤ 7.0 — got {verdict:?}\n{smt}"
     );
 }
 
@@ -148,23 +140,15 @@ fn step_distance_bound_z3_says_sat_at_six_meters() {
     // the bound `delta ≤ 6.0` is genuinely false, and Z3 should
     // produce `sat` (a counterexample exists). If both bounds gave
     // `unsat`, the obligation translation would be vacuous.
-    if std::process::Command::new("z3").arg("--version").output()
-        .map(|o| !o.status.success()).unwrap_or(true)
-    {
-        eprintln!("z3 not available — skipping");
-        return;
-    }
+    if !z3_available() { eprintln!("z3 not available — skipping"); return; }
     let kb = lf1_with_step_bound_kb();
     let smt = emit_obligation(&kb, &Obligation {
         rule_qn: "test.smt_gen.step.step_distance_bound".to_string(),
         upper_bound: 6.0,
     }).expect("emit");
-    let path = std::env::temp_dir().join("anthill_smt_gen_step_sat.smt2");
-    std::fs::write(&path, &smt).expect("write");
-    let out = std::process::Command::new("z3").arg(&path).output().expect("z3");
-    let stdout = String::from_utf8_lossy(&out.stdout);
+    let verdict = run_z3("smt_gen_step_sat", &smt);
     assert!(
-        stdout.trim() == "sat",
-        "z3 should report `sat` (counterexample) for delta ≤ 6.0 — got {stdout:?}\n{smt}"
+        verdict == "sat",
+        "z3 should report `sat` (counterexample) for delta ≤ 6.0 — got {verdict:?}\n{smt}"
     );
 }
