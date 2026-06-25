@@ -129,18 +129,19 @@ end
     );
 }
 
-/// The `head` spec op (`Stream.head(s) -> Option[T = T]`) over a `List[Int64]`
-/// must likewise yield `Option[Int64]`, so `case some(h) -> h` binds `h : Int64`.
+/// The `headOption` spec op (`Stream.headOption(s) -> Option[T = T]`, WI-567 rename
+/// of the former `head`) over a `List[Int64]` must likewise yield `Option[Int64]`,
+/// so `case some(h) -> h` binds `h : Int64`.
 #[test]
-fn dispatched_stream_head_threads_element_type() {
+fn dispatched_stream_head_option_threads_element_type() {
     let src = r#"
 namespace test.wi357.head
   import anthill.prelude.{List, Int64}
-  import anthill.prelude.Stream.{head}
+  import anthill.prelude.Stream.{headOption}
   import anthill.prelude.Option.{some, none}
 
   operation get_head(xs: List[T = Int64]) -> Int64 =
-    match head(xs)
+    match headOption(xs)
       case some(h) -> h
       case none() -> 0
 end
@@ -148,7 +149,7 @@ end
     let errs = try_load(src);
     assert!(
         errs.is_empty(),
-        "dispatched Stream.head on a List[Int64] must yield Option[Int64] so `some(h)` \
+        "dispatched Stream.headOption on a List[Int64] must yield Option[Int64] so `some(h)` \
          binds h : Int64; got load errors:\n{}",
         errors_text(&errs),
     );

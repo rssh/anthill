@@ -113,6 +113,19 @@ namespace anthill.prelude
     entity division_by_zero
   end
 
+  -- Payload for head-of-empty errors. Carried by `Error[EmptyStream]` on the
+  -- partial `Stream.head` (WI-567) — the ergonomic bare-`T` head, guarded by
+  -- `isEmpty(s)`. A nullary marker — the stream is empty by definition, so there
+  -- is nothing to carry (cf. `DivisionByZero`). This sort is the TYPE-level
+  -- witness the typer threads through callers' rows. NOTE: unlike `DivisionByZero`
+  -- (a native builtin the evaluator raises as `EvalError::DivisionByZero`), `head`
+  -- is rule-defined with NO eval-side raise yet — surfacing head-of-empty as a
+  -- dedicated `EvalError` is a WI-567 follow-on (today an empty `head` has no
+  -- matching rule).
+  sort EmptyStream
+    entity empty_stream
+  end
+
   -- Register as effects
   fact Effect[T = Modify[?]]
   fact Effect[T = Error[?]]

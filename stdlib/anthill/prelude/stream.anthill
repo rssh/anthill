@@ -21,8 +21,24 @@ sort anthill.prelude.Stream
 
   operation splitFirst(s: Stream) -> Option[Pair[A = s.T, B = Stream[T = s.T, E = s.E]]]
     effects s.E
-  operation head(s: Stream) -> Option[s.T]
+  -- WI-567: the TOTAL form — absence is the value `none`. The only sound shape
+  -- for a lazy/abstract stream (emptiness is an effectful observation, not a
+  -- statically-refutable guard). The bare-`T` `head` (guarded `Error[EmptyStream]`)
+  -- is added separately and discharges only where a concrete carrier makes
+  -- `isEmpty` foldable.
+  operation headOption(s: Stream) -> Option[s.T]
     effects s.E
+  -- WI-567: the ERGONOMIC form — returns the element directly. PARTIAL: it incurs
+  -- `Error[EmptyStream]` GUARDED by `isEmpty(s)` (proposal 048), so a call
+  -- discharges to PURE exactly where a concrete carrier makes `isEmpty` statically
+  -- refutable (`head(cons(h,t))` on a `List`, or a call under `if not(isEmpty(s))`);
+  -- on an abstract/lazy stream the guard stays present and the caller must handle
+  -- it. Body-less like `div` (WI-066): the happy path derives from `splitFirst`
+  -- (the law below); the empty case has no rule — it is the declared (TYPE-level)
+  -- `Error[EmptyStream]`. (A value-level `raise` in the body was rejected — it
+  -- needs `Nothing <: s.T`. The eval-side raise of an empty `head` is a WI-567
+  -- follow-on, NOT yet wired: today an empty `head` simply has no matching rule.)
+  operation head(s: Stream) -> s.T effects { s.E, Error[EmptyStream] :- isEmpty(s) }
   operation tail(s: Stream) -> Stream[T = s.T, E = s.E]
     effects s.E
   -- Default definitions over the primitive `splitFirst` (WI-362, enabled by
@@ -108,8 +124,11 @@ sort anthill.prelude.Stream
   operation iterator(s: Stream) -> Stream = s
 
   -- Laws (derived from splitFirst)
-  rule head(?s) = some(fst(?p)) :- splitFirst(?s) = some(?p)
-  rule head(?s) = none :- splitFirst(?s) = none
+  rule headOption(?s) = some(fst(?p)) :- splitFirst(?s) = some(?p)
+  rule headOption(?s) = none :- splitFirst(?s) = none
+  -- WI-567: `head`'s happy path. The empty case has no rule — it is the declared
+  -- (TYPE-level) `Error[EmptyStream]`; the eval-side raise is a follow-on.
+  rule head(?s) = fst(?p) :- splitFirst(?s) = some(?p)
   rule tail(?s) = snd(?p) :- splitFirst(?s) = some(?p)
   rule isEmpty(?s) = true :- splitFirst(?s) = none
   rule isEmpty(?s) = false :- splitFirst(?s) = some(?)

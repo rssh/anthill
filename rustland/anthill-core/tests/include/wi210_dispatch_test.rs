@@ -493,10 +493,11 @@ fn wi350_abstract_stream_receiver_types_via_interface_with_two_impls() {
     // Add a SECOND Stream impl alongside LogicalStream, so a per-call
     // `Stream[T = …]` goal is genuinely ambiguous by binding (both impls'
     // `fact Stream[T]` match). An abstract receiver `s : Stream[T = Term]`
-    // — base sort IS the spec — must still type through `Stream.head`'s
+    // — base sort IS the spec — must still type through `Stream.headOption`'s
     // interface to `Option[T = Term]`, NOT resolve `Ambiguous`: the
     // concrete impl is the runtime value's own concern (WI-350 case b).
-    // Pre-WI-350 this raised `DispatchAmbiguous`.
+    // Pre-WI-350 this raised `DispatchAmbiguous`. (WI-567: the Option-returning
+    // op is now `headOption`; bare-`T` `head` carries a guarded `Error`.)
     let mut kb = load_with(r#"
         namespace wi350.stream2
           import anthill.prelude.{Stream, Option, Pair}
@@ -509,8 +510,8 @@ fn wi350_abstract_stream_receiver_types_via_interface_with_two_impls() {
         end
     "#);
 
-    let head_sym = kb.try_resolve_symbol("anthill.prelude.Stream.head")
-        .expect("Stream.head registered");
+    let head_sym = kb.try_resolve_symbol("anthill.prelude.Stream.headOption")
+        .expect("Stream.headOption registered");
     let stream_sym = kb.try_resolve_symbol("anthill.prelude.Stream")
         .expect("Stream registered");
     let term_sym = kb.try_resolve_symbol("anthill.reflect.Term")
@@ -567,7 +568,7 @@ fn wi350_abstract_stream_receiver_types_via_interface_with_two_impls() {
     env.bind_var(s_sym, anthill_core::eval::Value::Term(stream_concrete));
 
     let result = type_check_expr(&mut kb, &env, apply_term)
-        .expect("head(s) on abstract Stream[T] must type-check (not Ambiguous) with ≥2 impls");
+        .expect("headOption(s) on abstract Stream[T] must type-check (not Ambiguous) with ≥2 impls");
     let ty = result.ty.expect_term();
     let ty_str = TermPrinter::new(&kb).print_term(ty);
     // WI-361: term-backed `Option[T = …]` = `Fn{Option, named}` — the base sort
@@ -577,7 +578,7 @@ fn wi350_abstract_stream_receiver_types_via_interface_with_two_impls() {
         _ => panic!("expected parameterized Option return; got {ty_str}"),
     };
     assert_eq!(kb.qualified_name_of(base), "anthill.prelude.Option",
-        "abstract-receiver head must type via interface to Option; got {ty_str}");
+        "abstract-receiver headOption must type via interface to Option; got {ty_str}");
 }
 
 #[test]

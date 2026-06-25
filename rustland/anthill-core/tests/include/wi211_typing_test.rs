@@ -1,6 +1,6 @@
 //! WI-211 — polymorphic type-arg propagation in `unify_types`.
 //!
-//! When the typer sees `Stream.head(s)` with `s : Stream[T = Term, E = Error]`,
+//! When the typer sees `Stream.headOption(s)` with `s : Stream[T = Term, E = Error]`,
 //! the spec param's type is `sort_ref(Stream)` (bare). `unify_types` must
 //! propagate the per-call bindings (`T = Term`, `E = Error`) into the spec's
 //! sort-level type-param Vars so that the return type `Option[T = T]` walks
@@ -33,11 +33,12 @@ fn load_stdlib_kb() -> KnowledgeBase {
 }
 
 #[test]
-fn stream_head_on_concrete_stream_yields_option_with_concrete_t() {
+fn stream_head_option_on_concrete_stream_yields_option_with_concrete_t() {
     let mut kb = load_stdlib_kb();
 
-    let head_sym = kb.try_resolve_symbol("anthill.prelude.Stream.head")
-        .expect("Stream.head registered");
+    // WI-567: the former `Stream.head` (Option-returning) is now `headOption`.
+    let head_sym = kb.try_resolve_symbol("anthill.prelude.Stream.headOption")
+        .expect("Stream.headOption registered");
     let stream_sym = kb.try_resolve_symbol("anthill.prelude.Stream")
         .expect("Stream registered");
     let term_sym = kb.try_resolve_symbol("anthill.reflect.Term")
@@ -90,7 +91,7 @@ fn stream_head_on_concrete_stream_yields_option_with_concrete_t() {
     env.bind_var(s_sym, anthill_core::eval::Value::Term(stream_concrete));
 
     let result = type_check_expr(&mut kb, &env, apply_term)
-        .expect("Stream.head(s) for s:Stream[T=Term,E=Error] should type-check");
+        .expect("Stream.headOption(s) for s:Stream[T=Term,E=Error] should type-check");
     // .expect on Result yields T directly on Ok, panic-formats Err.
     // WI-342: TypeResult.ty is carrier-agnostic; this return type is ground.
     let ty = result.ty.expect_term();
