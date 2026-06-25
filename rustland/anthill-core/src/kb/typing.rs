@@ -16250,7 +16250,7 @@ fn collect_guarded_atoms(
 /// re-key effect *labels*), σ maps a param to an arbitrary argument *term* — a
 /// literal `5`, a threaded variable `Ref(b)` — so `div(a, 5)`'s guard `eq(b, 0)`
 /// becomes the ground `eq(5, 0)` the resolver can refute by evaluation.
-fn substitute_ref_terms(
+pub(crate) fn substitute_ref_terms(
     kb: &mut KnowledgeBase,
     term: TermId,
     map: &HashMap<Symbol, TermId>,
@@ -16453,7 +16453,7 @@ fn drop_refuted_guarded_labels(
 /// resolves to a `Sort` and is satisfied by dispatch / coverage (WI-343 / WI-325),
 /// never by `prove_from_gamma`. A clause with no functor head is conservatively
 /// NOT treated as a value precondition (left to the other checks).
-fn is_value_precondition_clause(kb: &KnowledgeBase, clause: &Value) -> bool {
+pub(crate) fn is_value_precondition_clause(kb: &KnowledgeBase, clause: &Value) -> bool {
     match clause.head(kb) {
         ViewHead::Functor { functor: Some(f), .. } => {
             kb.kind_of(f) != Some(crate::intern::SymbolKind::Sort)
@@ -16470,7 +16470,7 @@ fn is_value_precondition_clause(kb: &KnowledgeBase, clause: &Value) -> bool {
 /// clause would be proved / assumed as one opaque `conjunction(...)` goal that no
 /// SLD rule resolves (a spurious failure for a `requires`, an inert fact for an
 /// `ensures`).
-fn clause_conjuncts(kb: &KnowledgeBase, term: TermId) -> Vec<TermId> {
+pub(crate) fn clause_conjuncts(kb: &KnowledgeBase, term: TermId) -> Vec<TermId> {
     match kb.get_term(term) {
         Term::Fn { functor, pos_args, .. } if kb.resolve_sym(*functor) == "conjunction" => {
             pos_args.iter().copied().collect()

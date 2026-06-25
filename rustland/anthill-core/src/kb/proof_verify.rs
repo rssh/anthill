@@ -30,14 +30,19 @@
 //! This pass is also the discharge entry point WI-539 Part 2 (`<op>.<clause>`
 //! contract proofs) hands a constructed goal + context to.
 
+use std::collections::HashMap;
+
 use smallvec::SmallVec;
 
 use crate::eval::value::Value;
-use crate::intern::Symbol;
+use crate::intern::{Symbol, SymbolKind};
 use crate::kb::resolve::ResolveConfig;
 use crate::kb::subst::Substitution;
 use crate::kb::term::{Literal, Term, TermId};
-use crate::kb::typing::get_named_arg;
+use crate::kb::typing::{
+    clause_conjuncts, get_named_arg, is_value_precondition_clause, prove_from_gamma,
+    substitute_ref_terms, FlowEnv,
+};
 use crate::kb::{KnowledgeBase, RuleId};
 
 /// Default SLD search bound for an un-parameterised `by derivation` proof.
@@ -357,32 +362,41 @@ pub fn verify_proofs(kb: &mut KnowledgeBase) -> Vec<ProofReport> {
     for (rid, rule_qn, tier) in work {
         let verdict = match tier {
             Tier::Derivation => {
-                // Map the outcome to either the proved tree hash or a failure
-                // reason, then build + write the verdict in ONE place.
-                let proved = match discharge_by_derivation(kb, &rule_qn, DEFAULT_DERIVATION_DEPTH, 1) {
-                    DerivationOutcome::Proved { tree_hash } => Ok(tree_hash),
-                    DerivationOutcome::NoDerivation => Err(format!(
-                        "no derivation found within depth {DEFAULT_DERIVATION_DEPTH}"
-                    )),
-                    DerivationOutcome::RuleNotFound => Err("target rule not in KB".to_string()),
-                    DerivationOutcome::NoRules => Err("target QN indexes no rules".to_string()),
-                };
-                let (write, verdict) = match proved {
-                    Ok(tree_hash) => {
-                        let witness = make_sld_witness(kb, &tree_hash);
-                        (
-                            VerdictWrite::Discharged { witness, solver: "derivation".to_string() },
-                            ProofVerdict::Discharged,
-                        )
-                    }
-                    Err(reason) => (
-                        VerdictWrite::FailedUnknown { reason: reason.clone() },
-                        ProofVerdict::Failed { reason },
-                    ),
-                };
-                let wrote = set_proof_result(kb, rid, write);
-                debug_assert!(wrote, "verify_proofs: write-back failed for `{rule_qn}` ({rid:?})");
-                verdict
+                // WI-539 Part 2: a `proof <op>.<clause> by derivation` is a CONTRACT
+                // proof, not a rule derivation — its QN names an operation + clause,
+                // not a rule. Discharge it against the op's body; any other
+                // derivation target is a plain rule SLD derivation (the QN indexes a
+                // rule). Bind the classification once (no double `contract_target`).
+                if let Some((op_sym, clause)) = contract_target(kb, &rule_qn) {
+                    discharge_contract_proof(kb, rid, &rule_qn, op_sym, clause)
+                } else {
+                    // Map the outcome to either the proved tree hash or a failure
+                    // reason, then build + write the verdict in ONE place.
+                    let proved = match discharge_by_derivation(kb, &rule_qn, DEFAULT_DERIVATION_DEPTH, 1) {
+                        DerivationOutcome::Proved { tree_hash } => Ok(tree_hash),
+                        DerivationOutcome::NoDerivation => Err(format!(
+                            "no derivation found within depth {DEFAULT_DERIVATION_DEPTH}"
+                        )),
+                        DerivationOutcome::RuleNotFound => Err("target rule not in KB".to_string()),
+                        DerivationOutcome::NoRules => Err("target QN indexes no rules".to_string()),
+                    };
+                    let (write, verdict) = match proved {
+                        Ok(tree_hash) => {
+                            let witness = make_sld_witness(kb, &tree_hash);
+                            (
+                                VerdictWrite::Discharged { witness, solver: "derivation".to_string() },
+                                ProofVerdict::Discharged,
+                            )
+                        }
+                        Err(reason) => (
+                            VerdictWrite::FailedUnknown { reason: reason.clone() },
+                            ProofVerdict::Failed { reason },
+                        ),
+                    };
+                    let wrote = set_proof_result(kb, rid, write);
+                    debug_assert!(wrote, "verify_proofs: write-back failed for `{rule_qn}` ({rid:?})");
+                    verdict
+                }
             }
             Tier::External(tool) => ProofVerdict::Deferred {
                 reason: format!("external `by {tool}` — run `anthill prove` (z3 lives downstream of core)"),
@@ -394,6 +408,257 @@ pub fn verify_proofs(kb: &mut KnowledgeBase) -> Vec<ProofReport> {
         report.push(ProofReport { rule_qn, verdict });
     }
     report
+}
+
+// ── WI-539 Part 2: operation-contract proofs ──────────────────────────
+//
+// A `proof <op>.ensures by derivation` (proposal 025 §"Proof for operation
+// contracts") proves that an operation's BODY satisfies its predicate
+// postcondition. The proof side owns the *predicate* `ensures` (a proposition
+// over `result`, e.g. `eq(top(result), x)`); a *type* `ensures` (a Sort-headed
+// return refinement) is a typing concern, not proved here. Only a CONCRETE
+// INLINE body is discharged — an abstract op's `ensures` is a spec axiom that
+// callers USE (WI-539 Part 1), and an external-binding body is a deferred
+// follow-on; both are left Pending/Deferred, never silently Discharged.
+
+/// The contract clause keywords a `<op>.<clause>` proof target may name — the
+/// SINGLE source of truth shared by the loader (which BUILDS the `<op>.<clause>`
+/// QN, [`super::load`]`::contract_proof_target_qn`) and this pass (which SPLITS
+/// it back, [`contract_target`]), so the two cannot drift on which suffixes mark
+/// a contract proof. Each maps to a [`ContractClause`] via [`ContractClause::from_keyword`].
+pub(crate) const CONTRACT_CLAUSE_KEYWORDS: [&str; 2] = ["requires", "ensures"];
+
+/// The contract clause a `<op>.<clause>` proof target names.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ContractClause {
+    Ensures,
+    Requires,
+}
+
+impl ContractClause {
+    /// The clause for one of [`CONTRACT_CLAUSE_KEYWORDS`]; `None` otherwise.
+    fn from_keyword(kw: &str) -> Option<ContractClause> {
+        match kw {
+            "ensures" => Some(ContractClause::Ensures),
+            "requires" => Some(ContractClause::Requires),
+            _ => None,
+        }
+    }
+}
+
+/// The placeholder tree hash for a discharged operation-contract proof — the
+/// contract twin of [`derivation_tree_hash`], distinct so a witness reads as a
+/// contract derivation rather than a plain rule SLD.
+pub fn contract_tree_hash(rule_qn: &str) -> String {
+    format!("contract-derivation:{rule_qn}")
+}
+
+/// If `rule_qn` is a contract-proof target `<op-qn>.ensures` / `<op-qn>.requires`
+/// whose `<op-qn>` resolves to an `Operation`, the `(op symbol, clause)`. The
+/// loader interns such a QN for the `ProofRecord.rule` field
+/// ([`super::load`]`::contract_proof_target_qn`); this is the read-back split.
+/// `None` for a plain rule proof (which the rule-derivation path handles).
+fn contract_target(kb: &KnowledgeBase, rule_qn: &str) -> Option<(Symbol, ContractClause)> {
+    for kw in CONTRACT_CLAUSE_KEYWORDS {
+        let Some(op_qn) = rule_qn.strip_suffix(&format!(".{kw}")) else {
+            continue;
+        };
+        // The suffix names a clause; the target is a contract proof iff the prefix
+        // resolves to an Operation (else it is a plain rule whose name happens to
+        // end in the keyword — leave it to the rule-derivation path).
+        let op_sym = kb.try_resolve_symbol(op_qn)?;
+        let clause = ContractClause::from_keyword(kw)?;
+        return (kb.kind_of(op_sym) == Some(SymbolKind::Operation)).then_some((op_sym, clause));
+    }
+    None
+}
+
+/// Discharge an operation-contract proof and write the verdict back onto its
+/// `ProofRecord` (`rid`). Strategy (the body symbolic execution): map each
+/// parameter to a fresh GROUND skolem constant and `result` to the operation
+/// applied to those skolems, substitute that σ into every predicate `ensures`
+/// conjunct, materialize each as an occurrence goal (so its op-calls FOLD via the
+/// resolver's `reduce_op_value` body reduction — a flex var would instead delay),
+/// seed Γ with the op's predicate `requires` (the preconditions assumed on body
+/// entry), and prove each goal from Γ ∪ KB. A universal contract proved for fresh
+/// opaque skolems holds for all inputs (the eigenvariable reading). ALL conjuncts
+/// must prove for the contract to discharge.
+fn discharge_contract_proof(
+    kb: &mut KnowledgeBase,
+    rid: RuleId,
+    rule_qn: &str,
+    op_sym: Symbol,
+    clause: ContractClause,
+) -> ProofVerdict {
+    // A `requires`-contract proof has nothing to derive: a precondition is
+    // ASSUMED at the call site (WI-539 Part 1, the "use" side), not proved at the
+    // definition. Leave it Pending rather than claim a verdict.
+    if clause == ContractClause::Requires {
+        return ProofVerdict::Deferred {
+            reason: "requires-contract proof: a precondition is assumed at the call site \
+                     (WI-539 Part 1), not proved at the definition"
+                .to_string(),
+        };
+    }
+    let rec = match super::op_info::lookup_operation_info(kb, op_sym) {
+        Some(r) => r,
+        None => {
+            return ProofVerdict::Deferred {
+                reason: "no OperationInfo for the contract target".to_string(),
+            }
+        }
+    };
+    // Prove only in CONCRETE INLINE form (proposal 025). No body ⇒ abstract op
+    // (its `ensures` is a spec axiom callers use) or an external-binding body (a
+    // deferred follow-on) — discharged by a concrete provider, never here.
+    if rec.body_node.is_none() {
+        return ProofVerdict::Deferred {
+            reason: "no concrete inline body to prove against (abstract op or external \
+                     binding — discharged by a concrete provider)"
+                .to_string(),
+        };
+    }
+    // The PREDICATE `ensures` clauses (functor-headed, non-`Sort`) — the proof
+    // side. A type `ensures` (Sort-headed return member) is a typing concern.
+    let pred_ensures: Vec<Value> = rec
+        .ensures
+        .iter()
+        .filter(|c| is_value_precondition_clause(kb, c))
+        .cloned()
+        .collect();
+    if pred_ensures.is_empty() {
+        return ProofVerdict::Deferred {
+            reason: "no predicate `ensures` clause to prove (a type `ensures` is checked \
+                     by typing, not by a proof)"
+                .to_string(),
+        };
+    }
+
+    // σ: each parameter ↦ a fresh ground skolem `Ref` (so the body grounds to
+    // opaque constants the resolver compares definitely, instead of flex vars it
+    // would delay on — the eigenvariable reading of a ∀-quantified contract).
+    let mut sigma: HashMap<Symbol, TermId> = HashMap::new();
+    for (param_sym, _ty) in &rec.params {
+        let sk_sym = kb.intern_unique("contract_skolem");
+        let sk = kb.alloc(Term::Ref(sk_sym));
+        sigma.insert(*param_sym, sk);
+    }
+    // `result` ↦ the body with its parameters skolemized — the symbolic execution
+    // step: `result` IS what the body computes. A pure-value body (`cons(head: x,
+    // tail: s)`) grounds `result` outright; an op-call body leaves only the inner
+    // call to fold while proving (one fewer fold level than `result ↦ op(args)`).
+    let body_occ = rec.body_node.as_ref().expect("body_node present (checked above)");
+    let body_term = super::node_occurrence::occurrence_to_term(kb, body_occ);
+    let body_sub = substitute_ref_terms(kb, body_term, &sigma);
+    let op_qn = kb.qualified_name_of(op_sym).to_string();
+    if let Some(result_sym) = kb.try_resolve_symbol(&format!("{op_qn}.result")) {
+        sigma.insert(result_sym, body_sub);
+    }
+
+    // Seed Γ with the predicate preconditions (assumed on body entry): an
+    // `ensures` that follows from a `requires` reads its premise straight from Γ.
+    let mut flow = FlowEnv::empty();
+    for c in &rec.requires {
+        if !is_value_precondition_clause(kb, c) {
+            continue;
+        }
+        for conj in contract_clause_conjuncts(kb, c) {
+            let conj = substitute_ref_terms(kb, conj, &sigma);
+            if let Some(node) = kb.term_body_to_nodes(&[conj]).into_iter().next() {
+                flow = flow.assume(kb, Value::Node(node));
+            }
+        }
+    }
+
+    // Discharge every predicate `ensures` conjunct from Γ ∪ KB. The goal is
+    // materialized as an occurrence so its op-calls fold to ground values.
+    for c in &pred_ensures {
+        let conjuncts = contract_clause_conjuncts(kb, c);
+        // A predicate `ensures` that passed the filter (functor-headed, non-Sort)
+        // but yields NO goal term is an unsupported value carrier — NOT vacuously
+        // true. Fail closed (loud over silent): never fall through to a Discharged
+        // verdict for a clause we could not even read as a goal.
+        if conjuncts.is_empty() {
+            return write_contract_failed(
+                kb,
+                rid,
+                rule_qn,
+                "an `ensures` clause could not be read as a goal (unsupported value carrier)",
+            );
+        }
+        for conj in conjuncts {
+            let conj = substitute_ref_terms(kb, conj, &sigma);
+            let goal = match kb.term_body_to_nodes(&[conj]).into_iter().next() {
+                Some(n) => Value::Node(n),
+                None => {
+                    return write_contract_failed(
+                        kb,
+                        rid,
+                        rule_qn,
+                        "could not materialize an `ensures` goal occurrence",
+                    )
+                }
+            };
+            if !prove_from_gamma(kb, &flow, &goal) {
+                return write_contract_failed(
+                    kb,
+                    rid,
+                    rule_qn,
+                    "an `ensures` conjunct is not derivable from the body",
+                );
+            }
+        }
+    }
+
+    // All conjuncts proved — discharge with a contract-derivation witness.
+    let witness = make_sld_witness(kb, &contract_tree_hash(rule_qn));
+    let wrote = set_proof_result(
+        kb,
+        rid,
+        VerdictWrite::Discharged { witness, solver: "contract-derivation".to_string() },
+    );
+    debug_assert!(wrote, "discharge_contract_proof: write-back failed for `{rule_qn}` ({rid:?})");
+    ProofVerdict::Discharged
+}
+
+/// The conjuncts of a contract clause `Value` — read the goal term, then split a
+/// `conjunction(..)` into its goals (reusing [`clause_conjuncts`]). Carrier-faithful
+/// (WI-348): a hash-consed `Value::Term` is the term; a denoted `Value::Node` lowers
+/// via `occurrence_to_term`; a value-fact's `Value::Entity` clause (an op with a
+/// denoted effect carries its clauses as value carriers — [`super::op_info::clause_list_field`])
+/// lowers via the total `value_to_term` boundary (WI-390). Every carrier
+/// [`is_value_precondition_clause`] accepts is handled, so an accepted clause never
+/// silently yields zero conjuncts (which would otherwise fall through to a false
+/// Discharge). A genuinely unlowerable value returns no conjuncts; the caller treats
+/// that as a discharge FAILURE, not a vacuous pass.
+fn contract_clause_conjuncts(kb: &mut KnowledgeBase, clause: &Value) -> Vec<TermId> {
+    let g = match clause {
+        Value::Term(t) => *t,
+        Value::Node(occ) => super::node_occurrence::occurrence_to_term(kb, occ),
+        other => match super::node_occurrence::value_to_term(kb, other) {
+            Ok(t) => t,
+            Err(_) => return Vec::new(),
+        },
+    };
+    clause_conjuncts(kb, g)
+}
+
+/// Write a `Failed(Unknown(reason))` verdict onto a contract `ProofRecord` and
+/// return the matching [`ProofVerdict`] — conservative (a non-derivable contract
+/// is Failed, never silently Discharged), in ONE place.
+fn write_contract_failed(
+    kb: &mut KnowledgeBase,
+    rid: RuleId,
+    rule_qn: &str,
+    reason: &str,
+) -> ProofVerdict {
+    let wrote = set_proof_result(
+        kb,
+        rid,
+        VerdictWrite::FailedUnknown { reason: reason.to_string() },
+    );
+    debug_assert!(wrote, "write_contract_failed: write-back failed for `{rule_qn}` ({rid:?})");
+    ProofVerdict::Failed { reason: reason.to_string() }
 }
 
 // ── record readers ───────────────────────────────────────────────────

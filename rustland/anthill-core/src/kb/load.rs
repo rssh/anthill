@@ -11340,8 +11340,45 @@ impl<'a> Loader<'a> {
     /// ProofRecord fact. The target's qualified name and a term
     /// encoding of strategy/body are written so an external driver
     /// (CLI, IDE) can dispatch without reparsing the source.
+    /// WI-539 Part 2: if `target` is a contract-proof target `<op>.<clause>`
+    /// (last segment `requires`/`ensures`, the prefix resolving to an
+    /// `Operation`), the fully-qualified contract QN `<op-qn>.<clause>`. A
+    /// contract clause has no rule symbol of its own, so [`Self::load_proof`]
+    /// interns this QN for the `ProofRecord.rule` field directly; the
+    /// proof-verification pass (`kb::proof_verify`) splits it back to the op +
+    /// clause to discharge it (proposal 025 §"Proof for operation contracts").
+    /// `None` for any other target — those keep the normal `remap_name` path.
+    fn contract_proof_target_qn(&self, target: &Name) -> Option<String> {
+        if target.segments.len() < 2 {
+            return None;
+        }
+        let last = self.parsed.symbols.name(*target.segments.last().unwrap());
+        // The clause-keyword set is owned by the verification pass (the single
+        // source of truth shared with its inverse split, `proof_verify::contract_target`).
+        if !crate::kb::proof_verify::CONTRACT_CLAUSE_KEYWORDS.contains(&last) {
+            return None;
+        }
+        let prefix = &target.segments[..target.segments.len() - 1];
+        let prefix_name = join_segments(&self.parsed.symbols, prefix);
+        let op_sym = resolve_name_in_kb_opt(&self.kb, &prefix_name, self.current_scope.raw())?;
+        if self.kb.kind_of(op_sym) != Some(SymbolKind::Operation) {
+            return None;
+        }
+        Some(format!("{}.{}", self.kb.qualified_name_of(op_sym), last))
+    }
+
     fn load_proof(&mut self, p: &ProofDecl, domain: TermId) {
-        let target_sym = self.remap_name(&p.target);
+        // WI-539 Part 2: a contract-proof target `<op>.<clause>` (proposal 025
+        // §"Proof for operation contracts") has no rule symbol of its own to
+        // resolve — intern its fully-qualified contract QN directly so the
+        // ProofRecord loads (the proof-verification pass re-derives the operation
+        // from the QN and discharges against its body), instead of letting
+        // `remap_name` raise a spurious UnresolvedName. A non-contract target
+        // keeps the unchanged `remap_name` path.
+        let target_sym = match self.contract_proof_target_qn(&p.target) {
+            Some(qn) => self.kb.symbols.intern(&qn),
+            None => self.remap_name(&p.target),
+        };
 
         let strategy_term = match &p.strategy {
             None => {
