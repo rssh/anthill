@@ -36,23 +36,97 @@ pub(crate) fn run_prove(args: &ProveArgs) -> Result<(), i32> {
 
     let mut kb = load_kb_with_stdlib(&args.paths, args.verbose, true)?;
 
-    let records = collect_proof_records(&kb);
-    if records.is_empty() {
+    let report = discharge_loaded_kb(&mut kb, args, false);
+    if report.collected == 0 {
         eprintln!("no proof obligations found in loaded KB");
         return Ok(());
     }
+    if report.total == 0 {
+        if let Some(rule) = &args.rule {
+            eprintln!("error: no proof obligation found for rule `{rule}`");
+            return Err(1);
+        }
+    }
+
+    println!(
+        "\nsummary: {} proved, {} failed, {} skipped, {} total",
+        report.discharged, report.failed, report.skipped(), report.total
+    );
+    if args.stats {
+        println!(
+            "cache:   {} hit, {} miss, {} written, {} bypassed",
+            report.stats.hits, report.stats.misses, report.stats.writes, report.stats.bypassed,
+        );
+    }
+    if report.failed > 0 { Err(1) } else { Ok(()) }
+}
+
+/// Verdict tally of a discharge pass over a loaded KB (WI-564). `collected` is
+/// the number of `ProofRecord`s found (before any `--rule` filter); `total` is
+/// the number actually dispatched. The remaining counts partition the dispatched
+/// verdicts so both `anthill prove` (errors on failure) and the chained
+/// `anthill check` gate (degrade-to-warning, `--require-proofs` escalates) can
+/// read the same outcome.
+pub(crate) struct DischargeReport {
+    pub collected: usize,
+    pub total: usize,
+    pub discharged: usize,
+    /// Disproved (counterexample) + Unknown + EmitError.
+    pub failed: usize,
+    /// Skipped because the obligation is *bare* (no `by` clause). Per proposal
+    /// 025 a bare obligation contributes nothing, so it is NOT counted as
+    /// "unverified" by the `check` gate (it is a TODO, not a relied-upon proof).
+    pub skipped_open: usize,
+    /// Skipped for any other reason (solver unavailable, `by test` not wired,
+    /// unknown strategy) — a *strategied* obligation that could not be confirmed,
+    /// so it DOES count as unverified.
+    pub skipped_other: usize,
+    stats: CacheStats,
+}
+
+impl DischargeReport {
+    /// Total skipped (bare + strategied-but-unconfirmable), for the prove summary.
+    pub(crate) fn skipped(&self) -> usize {
+        self.skipped_open + self.skipped_other
+    }
+
+    /// The `check`-gate signal: obligations expected to verify that did not —
+    /// failed (refuted / unknown / emit-error) plus non-bare skips (solver
+    /// unavailable, etc.). `0` ⟹ every relied-upon proof confirmed ⟹ the build
+    /// is fully verified. (050 §Soundness: a provisional discharge is never
+    /// silently mistaken for a verified one.)
+    pub(crate) fn unverified(&self) -> usize {
+        self.failed + self.skipped_other
+    }
+}
+
+/// Run the proof-discharge pass over an already-loaded `kb` (WI-564): collect
+/// every `ProofRecord`, dispatch each over both tiers (z3 via smt-gen,
+/// `by derivation` via core `discharge_by_derivation`), and flip each record's
+/// in-KB `result` (Pending → Discharged | Failed) through `set_proof_result`.
+/// Honours `args.rule` (single-proof filter) and the cache flags. Per-proof
+/// verdict lines print unless `quiet`. Returns the verdict tally; the caller
+/// decides exit semantics — `prove` errors on failure (local-proof.md §"extra
+/// pass"); `check` chains this and degrades to a loud warning, escalating to an
+/// error only under `--require-proofs` (OQ-B).
+pub(crate) fn discharge_loaded_kb(
+    kb: &mut KnowledgeBase,
+    args: &ProveArgs,
+    quiet: bool,
+) -> DischargeReport {
+    let records = collect_proof_records(kb);
+    let collected = records.len();
 
     let mut total = 0usize;
     let mut discharged = 0usize;
-    let mut skipped = 0usize;
+    let mut skipped_open = 0usize;
+    let mut skipped_other = 0usize;
     let mut failed = 0usize;
     let mut stats = CacheStats::default();
-    // Phase γ.2: rules discharged earlier in this prove invocation.
-    // Cite-resolution checks this set first so within-invocation
-    // chains work even with --no-cache (which skips sidecar writes).
-    // Phase γ.2: rules discharged earlier in this prove invocation,
-    // mapped to the kind of discharge so cite_status can distinguish
-    // a clean Discharged from a Trusted (TrustedAxiom-witnessed) one.
+    // Phase γ.2: rules discharged earlier in this invocation, mapped to the kind
+    // of discharge so cite_status can distinguish a clean Discharged from a
+    // Trusted (TrustedAxiom-witnessed) one. Checked before the cache so
+    // within-invocation chains work even under --no-cache.
     let mut discharged_this_run: std::collections::HashMap<String, DischargeKind> =
         std::collections::HashMap::new();
     // WI-558: in-KB result write-backs (RuleId-exact), collected here and
@@ -67,29 +141,28 @@ pub(crate) fn run_prove(args: &ProveArgs) -> Result<(), i32> {
             }
         }
         total += 1;
-        let outcome = dispatch(&mut kb, rec, args, &mut stats, &mut discharged_this_run);
+        let outcome = dispatch(kb, rec, args, &mut stats, &mut discharged_this_run);
         let witness = outcome.witness.clone();
         // WI-558: stash the in-KB result flip for this verdict, keyed on the
         // source record's RuleId (applied below). Encode the witness term now,
         // while `kb` is free between dispatches.
         if let (Some(rid), Some(vw)) =
-            (rec.rid, verdict_write_for(&mut kb, &outcome.verdict, &witness, rec))
+            (rec.rid, verdict_write_for(kb, &outcome.verdict, &witness, rec))
         {
             write_backs.push((rid, vw));
         }
-        // Per-ProofRecord state hash (phase α.4): canonical hash of
-        // the kb-state slice this discharge consulted. None for
-        // early-exit Skipped / EmitError where no kb state was read.
+        // Per-ProofRecord state hash (phase α.4): canonical hash of the kb-state
+        // slice this discharge consulted. None for early-exit Skipped / EmitError
+        // where no kb state was read.
         let record_state_hash: Option<String> = if outcome.visited_rules.is_empty() {
             None
         } else {
-            Some(state_hash(&kb, &outcome.visited_rules))
+            Some(state_hash(kb, &outcome.visited_rules))
         };
-        // WI-124 — witness persistence: write a sidecar JSON for
-        // every Proved outcome so `anthill check` can replay the
-        // witness across CLI invocations. Discharges that didn't
-        // produce a real witness (Skipped, EmitError) leave any
-        // existing sidecar in place for staleness on the next run.
+        // WI-124 — witness persistence: write a sidecar JSON for every Proved
+        // outcome so `anthill check` can replay the witness across CLI
+        // invocations. Discharges that didn't produce a real witness (Skipped,
+        // EmitError) leave any existing sidecar in place for staleness next run.
         if let (Verdict::Proved, Some(w)) = (&outcome.verdict, &witness) {
             persist_witness(args, &rec.rule, w, record_state_hash.as_deref());
             let kind = match w {
@@ -99,25 +172,35 @@ pub(crate) fn run_prove(args: &ProveArgs) -> Result<(), i32> {
             };
             discharged_this_run.insert(rec.rule.clone(), kind);
         }
-        match outcome.verdict {
+        match &outcome.verdict {
             Verdict::Proved => {
-                println!("✓ {}: proved (z3: unsat)", rec.rule);
+                if !quiet { println!("✓ {}: proved (z3: unsat)", rec.rule); }
                 discharged += 1;
             }
             Verdict::Disproved(model) => {
-                println!("✗ {}: COUNTEREXAMPLE (z3: sat)", rec.rule);
-                if args.verbose {
-                    println!("{}", indent(&model, "  "));
+                if !quiet {
+                    println!("✗ {}: COUNTEREXAMPLE (z3: sat)", rec.rule);
+                    if args.verbose {
+                        println!("{}", indent(model, "  "));
+                    }
                 }
                 failed += 1;
             }
             Verdict::Unknown(reason) => {
-                println!("? {}: unknown ({reason})", rec.rule);
+                if !quiet { println!("? {}: unknown ({reason})", rec.rule); }
                 failed += 1;
             }
             Verdict::Skipped(why) => {
-                println!("- {}: skipped ({why})", rec.rule);
-                skipped += 1;
+                if !quiet { println!("- {}: skipped ({why})", rec.rule); }
+                // A bare obligation (`Strategy::Open`) is a TODO that contributes
+                // nothing (025); any other skip is a strategied proof we could
+                // not confirm (solver missing, `by test`, unknown tool) — which
+                // the check gate must count as unverified.
+                if matches!(rec.strategy, Strategy::Open) {
+                    skipped_open += 1;
+                } else {
+                    skipped_other += 1;
+                }
             }
             Verdict::EmitError(msg) => {
                 eprintln!("error: {}: {msg}", rec.rule);
@@ -130,26 +213,18 @@ pub(crate) fn run_prove(args: &ProveArgs) -> Result<(), i32> {
     // Discharged | Failed) so the loaded KB reflects the prove verdicts for
     // every tier — not just the sidecar.
     for (rid, vw) in write_backs {
-        set_proof_result(&mut kb, rid, vw);
+        set_proof_result(kb, rid, vw);
     }
 
-    if total == 0 {
-        if let Some(rule) = &args.rule {
-            eprintln!("error: no proof obligation found for rule `{rule}`");
-            return Err(1);
-        }
+    DischargeReport {
+        collected,
+        total,
+        discharged,
+        failed,
+        skipped_open,
+        skipped_other,
+        stats,
     }
-
-    println!(
-        "\nsummary: {discharged} proved, {failed} failed, {skipped} skipped, {total} total"
-    );
-    if args.stats {
-        println!(
-            "cache:   {} hit, {} miss, {} written, {} bypassed",
-            stats.hits, stats.misses, stats.writes, stats.bypassed,
-        );
-    }
-    if failed > 0 { Err(1) } else { Ok(()) }
 }
 
 #[derive(Default)]

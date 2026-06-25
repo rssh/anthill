@@ -352,6 +352,14 @@ struct CheckArgs {
     /// Solver binary used for SmtDischarge replay. Default `z3`.
     #[arg(long, default_value = "z3")]
     solver: String,
+
+    /// WI-564: treat any relied-upon proof that is not verified — failed,
+    /// refuted, or unconfirmable because the solver is unavailable / timed out —
+    /// as a hard error rather than a warning. By default `check` chains the
+    /// proof-discharge pass and degrades to a loud warning (so a z3-less dev/CI
+    /// run still completes); this flag makes the gate airtight for CI.
+    #[arg(long = "require-proofs")]
+    require_proofs: bool,
 }
 
 // ── File collection ─────────────────────────────────────────────────
@@ -1303,7 +1311,7 @@ fn collect_queries(
 // ── Check command ───────────────────────────────────────────────────
 
 fn run_check(args: &CheckArgs) -> Result<(), i32> {
-    let kb = load_kb_with_stdlib(&args.paths, false, true)?;
+    let mut kb = load_kb_with_stdlib(&args.paths, false, true)?;
     println!("loaded: {} facts, {} rules", kb.fact_count(), kb.rule_count());
     let opts = check::CheckOpts {
         shallow: args.shallow,
@@ -1311,9 +1319,58 @@ fn run_check(args: &CheckArgs) -> Result<(), i32> {
         report_trust_only: args.report_trust,
         filters: args.filter.clone(),
     };
+    // Existing β.1 pass: replay recorded witnesses (drift / tamper detection).
     let outcomes = check::run_check_with(&args.paths, &kb, &args.solver, None, &opts)?;
     let failed = check::print_summary(&outcomes);
+
+    // WI-564 — chain the discharge pass (local-proof.md OQ-A): `load → type`
+    // already ran (`load_all`), so now `discharge-pending` flips every
+    // `ProofRecord` to Discharged | Failed via the SAME both-tier dispatch
+    // `anthill prove` uses. A green `check` then MEANS "verified", with no
+    // separate prove step. Filters/report-only modes leave proofs alone — they
+    // are inspection queries, not a full verification run.
+    if !args.report_stale && !args.report_trust && args.filter.is_empty() {
+        let prove_args = prove_args_for_check(args);
+        let report = prove::discharge_loaded_kb(&mut kb, &prove_args, false);
+        let unverified = report.unverified();
+        if unverified > 0 {
+            // OQ-B — degrade, don't silently trust: warn by default; the strict
+            // `--require-proofs` flag escalates to an error for airtight CI.
+            eprintln!(
+                "warning: relied on {unverified} unverified proof(s); not fully verified \
+                 (re-run with --require-proofs to make this an error)"
+            );
+            if args.require_proofs {
+                eprintln!(
+                    "error: --require-proofs: {unverified} proof obligation(s) not verified"
+                );
+                return Err(1);
+            }
+        }
+    }
+
     if failed > 0 { Err(1) } else { Ok(()) }
+}
+
+/// WI-564: build the `prove` parameters for the discharge pass chained into
+/// `check` — same source paths and solver, all-proofs (no `--rule` filter), and
+/// the default cache behaviour (reuse the proof cache; the `Γ`-snapshot staleness
+/// key keeps a chained discharge fast). The standalone `anthill prove` flags
+/// (`--show-cache`, `--gc-cache`, `--stats`, `--dry-run`, …) do not apply here.
+fn prove_args_for_check(args: &CheckArgs) -> ProveArgs {
+    ProveArgs {
+        paths: args.paths.clone(),
+        rule: None,
+        solver: args.solver.clone(),
+        dry_run: false,
+        verbose: false,
+        no_cache: false,
+        refresh_cache: false,
+        show_cache: false,
+        cache_dir: None,
+        gc_cache: None,
+        stats: false,
+    }
 }
 
 // ── Display helpers ─────────────────────────────────────────────────
