@@ -7,7 +7,7 @@
 //! envelope. If the body's joint constraints are unsatisfiable,
 //! no counterexample exists and the safety property holds.
 
-use super::common::load_kb_with;
+use super::common::{load_kb_with, run_z3, z3_available};
 use anthill_smt_gen::emit_satisfiability_check;
 
 /// Wide envelope so the inner interval `[d_min+delta, d_max-delta]`
@@ -122,22 +122,14 @@ fn lower_violation_emits_assertions_and_free_vars() {
 
 #[test]
 fn lower_violation_z3_says_unsat() {
-    if std::process::Command::new("z3").arg("--version").output()
-        .map(|o| !o.status.success()).unwrap_or(true)
-    {
-        eprintln!("z3 not available — skipping");
-        return;
-    }
+    if !z3_available() { eprintln!("z3 not available — skipping"); return; }
     let kb = inductive_kb();
     let smt = emit_satisfiability_check(
         &kb, "test.smt_gen.invariant.lower_violation").expect("emit");
-    let path = std::env::temp_dir().join("anthill_smt_gen_lower_unsat.smt2");
-    std::fs::write(&path, &smt).expect("write");
-    let out = std::process::Command::new("z3").arg(&path).output().expect("z3");
-    let stdout = String::from_utf8_lossy(&out.stdout);
+    let verdict = run_z3("smt_gen_lower_unsat", &smt);
     assert_eq!(
-        stdout.trim(), "unsat",
-        "z3 should report `unsat` (no lower-bound violation possible) — got {stdout:?}\n\n{smt}"
+        verdict, "unsat",
+        "z3 should report `unsat` (no lower-bound violation possible) — got {verdict:?}\n\n{smt}"
     );
 }
 
@@ -164,21 +156,13 @@ fn lower_violation_envelope_is_non_empty() {
 
 #[test]
 fn upper_violation_z3_says_unsat() {
-    if std::process::Command::new("z3").arg("--version").output()
-        .map(|o| !o.status.success()).unwrap_or(true)
-    {
-        eprintln!("z3 not available — skipping");
-        return;
-    }
+    if !z3_available() { eprintln!("z3 not available — skipping"); return; }
     let kb = inductive_kb();
     let smt = emit_satisfiability_check(
         &kb, "test.smt_gen.invariant.upper_violation").expect("emit");
-    let path = std::env::temp_dir().join("anthill_smt_gen_upper_unsat.smt2");
-    std::fs::write(&path, &smt).expect("write");
-    let out = std::process::Command::new("z3").arg(&path).output().expect("z3");
-    let stdout = String::from_utf8_lossy(&out.stdout);
+    let verdict = run_z3("smt_gen_upper_unsat", &smt);
     assert_eq!(
-        stdout.trim(), "unsat",
-        "z3 should report `unsat` (no upper-bound violation possible) — got {stdout:?}\n\n{smt}"
+        verdict, "unsat",
+        "z3 should report `unsat` (no upper-bound violation possible) — got {verdict:?}\n\n{smt}"
     );
 }

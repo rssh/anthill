@@ -1761,8 +1761,11 @@ fn qn_of(kb: &KnowledgeBase, term: TermId) -> Option<String> {
     }
 }
 
-/// Run two sub-queries (boundedness, decrease) sequentially. The
-/// in-language analogue of `lf1_transponder_excursion_ranking_function_manual`.
+/// Run two sub-queries (boundedness, decrease) sequentially — the in-language
+/// ranking meta-tactic. Exercised by the lf1 `post_armed_excursion_bound` proof
+/// (`examples/webots-modelling/lf1/safety_transponder.anthill`), which obsoleted
+/// and replaced the former hand-written `lf1_transponder_excursion_*_manual`
+/// smt-gen test (removed in proposal 025.1 Phase 8 / WI-103).
 fn dispatch_ranking(
     kb: &mut KnowledgeBase,
     parent_qn: &str,

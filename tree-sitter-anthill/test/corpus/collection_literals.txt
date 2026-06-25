@@ -52,46 +52,6 @@ rule r: [?a, ?b, ?c]
           (variable))))))
 
 =====================================
-Collection literal with head-tail
-=====================================
-
-rule r: [?h | ?t]
-
----
-
-(source_file
-  (rule_declaration
-    label: (name
-      (identifier))
-    heads: (rule_heads
-      (collection_literal
-        (variable_term
-          (variable))
-        tail: (variable_term
-          (variable))))))
-
-=====================================
-Multi-element with tail
-=====================================
-
-rule r: [?a, ?b | ?t]
-
----
-
-(source_file
-  (rule_declaration
-    label: (name
-      (identifier))
-    heads: (rule_heads
-      (collection_literal
-        (variable_term
-          (variable))
-        (variable_term
-          (variable))
-        tail: (variable_term
-          (variable))))))
-
-=====================================
 Integer elements
 =====================================
 

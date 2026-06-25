@@ -1141,12 +1141,16 @@ module.exports = grammar({
     // takes precedence when ambiguous.
     set_literal: $ => prec(-2, seq('{', commaSep($._term), '}')),
 
-    // Collection literal: [x, y, z] or [x, y | rest].
+    // Collection literal: [x, y, z] (head-tail `[x, y | rest]` removed, WI-560).
     // Bare [...] = collection literal, Name[...] = application (disambiguated by leading Name).
     // prec(-2) like set_literal/tuple_literal to avoid conflicts with block-level constructs.
     collection_literal: $ => prec(-2, choice(
       seq('[', ']'),                                                          // empty
-      seq('[', commaSep1($._term), optional(seq('|', field('tail', $._term))), ']'),
+      seq('[', commaSep1($._term), ']'),                                      // elements
+      // Head-tail `[h | t]` removed (WI-560): it was an unused, parse-only
+      // surface with no end-to-end semantics; list destructuring uses the
+      // explicit `cons(?h, ?t)` constructor. A first-class collection
+      // deconstruction syntax is tracked separately (see WI todo).
     )),
 
     // Tuple literal: (1, 2) or (x: 1, y: 2) or () for unit.

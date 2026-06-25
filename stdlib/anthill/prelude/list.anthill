@@ -13,11 +13,16 @@ enum anthill.prelude.List
   import anthill.prelude.Ordered.{gt}
 
   sort T = ?                                           -- type parameter (abstract)
-  -- WI-325: `member` calls `eq(head, x)` on abstract T, so List itself
-  -- requires `Eq[T]`. Concrete-T operations (`length`, `nth`) keep
-  -- using `add`/`gt`/`sub` at T=Int64 — those resolve via concrete
-  -- `fact Numeric[T=Int64]` records and don't need a separate requires.
-  requires Eq[T]
+  -- WI-562: only `member` compares elements, so the `Eq` requirement is
+  -- OP-SCOPED on `member` (WI-448) over an op-type-param — NOT a sort-level
+  -- `requires Eq[T]`. A blanket sort requires made `List[NonEq]` ill-formed for
+  -- EVERY spec-op dispatch through it (a carrier's sort-`requires` is correctly
+  -- threaded at every dispatch — diamond coherence), so `nth` on a
+  -- `List[Waypoint]` (Waypoint not Eq) in lf1 was rejected even though
+  -- `IndexedSeq.nth` never compares elements. The element-agnostic ops
+  -- (`length`, `nth`, `append`, the `IndexedSeq`/`Stream`/`Iterable`/
+  -- `PersistentCollection` provisions) and the concrete-index `eq(i, 0)` in
+  -- `nth` (`i : Int64`) need no element `Eq`.
   entity nil                                         -- empty list
   entity cons(head: T, tail: List)                   -- cons cell
 
@@ -32,7 +37,14 @@ enum anthill.prelude.List
   -- member: deterministic Bool. The Prolog-style rules below preserve the
   -- backtracking-relation semantics for resolver-mode queries; the operation
   -- body is the executable form the evaluator calls.
-  operation member(x: T, l: List) -> Bool =
+  -- WI-562: `member` is the only List op that compares elements (`eq(head, x)`),
+  -- so it carries the `Eq[T]` requirement OP-SCOPED (WI-448) — not the whole
+  -- `List` sort. The element stays the SORT param `T` (so `member` still
+  -- eta-expands to a function value normally); the op-scoped `requires Eq[T]`
+  -- licenses the body's abstract `eq` (the typer's op-requires coverage), while
+  -- a `List[NonEq]` stays well-formed for the element-agnostic ops (a sort-level
+  -- `requires Eq[T]` wrongly blocked `IndexedSeq.nth` on `List[Waypoint]`).
+  operation member(x: T, l: List) -> Bool requires Eq[T] =
     match l
       case nil() -> false
       case cons(head, tail) -> if eq(head, x) then true else member(x, tail)

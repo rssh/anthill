@@ -358,8 +358,9 @@ namespace anthill.reflect
 
   -- Collection literal syntax: [x, y, z] is represented as ListLiteral(x, y, z)
   -- in the untyped term language. The typing process rewrites this to concrete
-  -- constructors based on the expected type.
-  -- Head|tail form: [x, y | t] → ListLiteral(x, y, tail: t).
+  -- constructors based on the expected type. ListLiteral carries its elements
+  -- positionally and never a tail (the head-tail `[h | t]` surface was removed;
+  -- list destructuring uses the explicit `cons(?h, ?t)` constructor).
   entity ListLiteral
 
   -- ================================================================

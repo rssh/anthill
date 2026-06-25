@@ -594,6 +594,14 @@ pub struct TypingEnv {
     /// spec-op call site under this body; caching once per body avoids
     /// re-walking `SortRequiresInfo` per apply.
     enclosing: Option<EnclosingSort>,
+    /// WI-562: the enclosing OPERATION's own op-scoped `requires` chain (WI-448),
+    /// snapshotted for the body about to be checked. Consulted (before provider
+    /// dispatch) to LICENSE the body's abstract spec-op calls against an
+    /// op-type-param the op `requires` — `List.member requires Eq[E]` covering
+    /// its `eq(head, x)` — the op-scoped dual of the sort-level
+    /// defer-to-requirement. `Rc`: set once per body; the env is cloned on every
+    /// Visit push of the iterative typer.
+    op_requires: Rc<Vec<RequiresEntry>>,
     /// WI-282: the enclosing RULE's De Bruijn variable types, keyed by De Bruijn
     /// index — the rule-body analog of `var_bindings` (which is keyed by the
     /// SYMBOL name a param/let/lambda binds under). A rule body has no lexical
@@ -623,9 +631,21 @@ impl TypingEnv {
             enclosing_sort_param_rigids: Rc::new(Vec::new()),
             local_resources: Vec::new(),
             enclosing: None,
+            op_requires: Rc::new(Vec::new()),
             debruijn_types: Rc::new(HashMap::new()),
             diagnostics: Vec::new(),
         }
+    }
+
+    /// WI-562: install the enclosing operation's own op-scoped `requires` chain
+    /// for the body about to be checked (see the field doc). `Rc` clone is a
+    /// refcount bump.
+    pub fn set_op_requires(&mut self, reqs: Rc<Vec<RequiresEntry>>) {
+        self.op_requires = reqs;
+    }
+
+    fn op_requires(&self) -> &[RequiresEntry] {
+        &self.op_requires
     }
 
     /// WI-282: install the enclosing rule's De Bruijn var → type map (see the
@@ -6207,7 +6227,22 @@ fn check_apply_iter(
                     // against a future spec representation (e.g. denoted
                     // / value-in-type params per WI-302) silently disabling
                     // the WI-325 protection.
-                    if spec_warrants_abstract_check(kb, spec_sort) {
+                    //
+                    // WI-562: op-scoped `requires` coverage (WI-448) — the
+                    // op-scoped dual of the sort-level defer-to-requirement. If
+                    // the enclosing OPERATION's OWN `requires` covers this spec,
+                    // an abstract `NoCandidates` is LICENSED (leave the call as
+                    // the spec op for value-directed eval) instead of demanding a
+                    // sort-level `requires`. This lets `List.member`'s `Eq[T]`
+                    // need live on `member` instead of the whole `List` sort,
+                    // which a sort-level `requires Eq[T]` wrongly imposed on every
+                    // dispatch through `List` (`IndexedSeq.nth` on a `List[NonEq]`
+                    // — diamond coherence makes a sort `requires` thread at EVERY
+                    // dispatch). A concrete `NoCandidates` is already a legitimate
+                    // pass-through below, so this only changes the abstract case.
+                    if op_requires_covers(kb, env.op_requires(), spec_sort) {
+                        // licensed by the enclosing op's own `requires` — no diagnostic.
+                    } else if spec_warrants_abstract_check(kb, spec_sort) {
                         let spec_qn = kb.qualified_name_of(spec_sort).to_string();
                         // WI-387 FIX 3: the receiver carrier's provider fact may
                         // bind a spec param to a GROUND value (`List provides
@@ -6378,6 +6413,28 @@ fn check_apply_iter(
                     }
                 }
                 DispatchOutcome::NoMatch => {
+                    // WI-562: op-scoped `requires` coverage (WI-448). An ABSTRACT
+                    // spec-op call in an operation body — `List.member`'s
+                    // `eq(head, x)` on the abstract element `T` — does not pin a
+                    // concrete impl, and a loosely-matching parameterized provider
+                    // in scope (e.g. a `fact Eq[List[A]]`) drives it to `NoMatch`
+                    // rather than `NoCandidates`. If the enclosing OPERATION's OWN
+                    // `requires` covers this spec, the call is LICENSED (the
+                    // op-scoped dual of the sort-level defer-to-requirement): leave
+                    // it as the spec op for value-directed eval, so `member`'s
+                    // `Eq[T]` need lives on `member` instead of the whole `List`
+                    // sort (a sort-level `requires Eq[T]` wrongly blocked
+                    // `IndexedSeq.nth` on a `List[NonEq]`). Only failed
+                    // (abstract) dispatch reaches here — a concrete call resolves
+                    // `Unique` and keeps its impl effect-grounding (WI-365).
+                    if op_requires_covers(kb, env.op_requires(), spec_sort) {
+                        return Ok(TypeResult {
+                            ty: resolved_ret.clone(),
+                            env: env.clone(),
+                            effects,
+                            node: Rc::clone(occ),
+                        });
+                    }
                     return Err(TypeError::DispatchNoMatch { span, op: fn_sym });
                 }
                 DispatchOutcome::Ambiguous => {
@@ -8842,6 +8899,24 @@ fn pick_most_specific(_kb: &KnowledgeBase, candidates: &[Candidate]) -> Option<u
 /// eval's `expand_dispatching_dict` cross-checks. A flat chain here
 /// would over-count the sub-resolutions (the duplicated-subtree problem)
 /// and break that arity check.
+/// WI-562: does the enclosing operation's OWN op-scoped `requires` chain (WI-448)
+/// cover `spec_sort`? Used only in the FAILED dispatch arms (`NoMatch` /
+/// abstract `NoCandidates`) to LICENSE an abstract spec-op call in the op's body
+/// that the op explicitly declared it `requires` — `List.member requires Eq[T]`
+/// covering its `eq(head, x)` — leaving the call as the spec op for
+/// value-directed eval (the op-scoped dual of the sort-level
+/// defer-to-requirement). Coarse: by spec sort, not bindings. That is sound here
+/// because only a FAILED abstract dispatch reaches these arms — a concrete call
+/// resolves `Unique` (keeping its impl effect-grounding, WI-365) and never gets
+/// here. Binding-precise coverage for a multi-abstract-param op is future work;
+/// the single-param driver (`member`'s sole element `T`) is exact.
+fn op_requires_covers(kb: &KnowledgeBase, op_requires: &[RequiresEntry], spec_sort: Symbol) -> bool {
+    let target = kb.canonical_sort_sym(spec_sort);
+    op_requires
+        .iter()
+        .any(|e| kb.canonical_sort_sym(e.required_sort) == target)
+}
+
 fn candidate_sub_goals_owned(
     kb: &mut KnowledgeBase,
     impl_sort: Symbol,
@@ -21082,6 +21157,12 @@ fn check_operation_bodies(kb: &mut KnowledgeBase, op_syms: &[Symbol], errors: &m
             .rsplit_once('.')
             .and_then(|(parent_qn, _)| kb.try_resolve_symbol(parent_qn));
         env.set_enclosing_sort(kb, parent_sym);
+        // WI-562: snapshot this op's OWN op-scoped `requires` (WI-448) so the
+        // body's abstract spec-op calls against an op-type-param the op
+        // `requires` are licensed — `List.member requires Eq[E]` covers its
+        // `eq(head, x)` without the whole `List` sort having to `requires Eq[T]`
+        // (which wrongly blocked `IndexedSeq.nth` on a `List[NonEq]`).
+        env.set_op_requires(Rc::new(op_requires_entries(kb, op.op_sym)));
         // WI-424: same-sort sibling calls seed their substitution with the
         // enclosing sort's rigids (see the OpInfo field doc; Rc clone).
         env.set_enclosing_sort_param_rigids(Rc::clone(&op.sort_param_rigids));

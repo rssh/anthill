@@ -486,3 +486,6 @@ mod wi084_const_purity_test;
 #[path = "include/wi532_float_infinity_test.rs"]
 mod wi532_float_infinity_test;
 
+#[path = "include/wi562_indexed_seq_nth_dispatch_test.rs"]
+mod wi562_indexed_seq_nth_dispatch_test;
+

@@ -534,9 +534,9 @@ namespace anthill.reflect.typing_pass
                    effects: merge_result_effects(sr, br))
 
       -- Collection literals: read expected_collection_type from env
-      case ListLiteral(elements: elems, tail: t) ->
+      case ListLiteral(elements: elems) ->
         let expected = TypingEnv.expected_collection_type(env)
-        type_check_collection(kb, env, expr, expected, elems, t)
+        type_check_collection(kb, env, expr, expected, elems, none)
 
       case SetLiteral(elements: elems) ->
         let expected = TypingEnv.expected_collection_type(env)
@@ -553,9 +553,12 @@ namespace anthill.reflect.typing_pass
   -- Collection literal typing
   -- ================================================================
 
-  -- Resolve a collection literal [a, b, c] or [a, b | t].
+  -- Resolve a collection literal [a, b, c].
   -- The expected type determines the target collection kind.
   -- Falls back to List if no expected type.
+  -- The `tail` param is reserved for a future type-directed collection
+  -- *deconstruction* syntax (WI-561); the construction-literal surface carries
+  -- no tail (the `[a, b | t]` form was removed, WI-560), so callers pass `none`.
   operation type_check_collection(kb: KB, env: TypingEnv, occ: NodeOccurrence, expected: Option[Type], elements: List[NodeOccurrence], tail: Option[NodeOccurrence]) -> TypeResult
     effects {Modify[kb], Error[TypeError]} =
     -- Extract element type from expected type, or use fresh var

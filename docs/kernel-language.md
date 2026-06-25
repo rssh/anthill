@@ -177,7 +177,6 @@ The kernel has only four primitive types for `Const` values:
 | `5m` | `Duration(5, "m")` |
 | `30s` | `Duration(30, "s")` |
 | `[a, b, c]` | `ListLiteral(a, b, c)` — desugared by typing to concrete constructors via `Collection` |
-| `[h \| t]` | `ListLiteral(h, tail: t)` — head-tail destructuring via `Iteration` |
 | `{a, b, c}` | `SetLiteral(a, b, c)` — desugared by typing to concrete constructors |
 
 ### 4.4 The Prelude Namespaces
@@ -419,17 +418,17 @@ rule swap((?x, ?y)) = (?y, ?x)
 
 ### 4.6 Collection Literals
 
-**Collection literals** use bracket syntax for constructing and destructuring ordered sequences.
+**Collection literals** use bracket syntax for constructing ordered sequences.
 
 ```
 -- Collection literals (in term position)
 CollectionLiteral ::= '[' ']'                                           -- empty
-                    | '[' Term (',' Term)* ('|' Term)? ']'              -- elements, optional tail
+                    | '[' Term (',' Term)* ']'                          -- elements
 ```
 
 **Construction:** `[a, b, c]` is represented as `ListLiteral(a, b, c)` in the untyped term language. The typing process rewrites this to concrete constructors (`Collection.insert`/`Collection.empty`) based on the expected type.
 
-**Head-tail destructuring:** `[h | t]` is represented as `ListLiteral(h, tail: t)`. The typing process rewrites this via `Iteration.split`. Multiple heads are supported: `[a, b | t]` → `ListLiteral(a, b, tail: t)`.
+**Destructuring:** there is **no** head-tail literal sugar. To destructure a list, match the `cons`/`nil` constructors directly (`cons(head: ?h, tail: ?t)` in a rule head, or `case cons(h, t) -> …` in a `match`). A first-class, type-directed collection *deconstruction* syntax (`[h | t]` desugaring to `Iteration.split` for any collection, in pattern position) is a planned extension, not yet in the language — see the collection-deconstruction work item. (An earlier `[h | t]` *literal* surface existed at parse level only, with no end-to-end semantics, and was removed.)
 
 **Disambiguation:** Bare `[` starts a collection literal. `Name[` starts an instantiation term (`Eq[Int64]`) or parameterized type (`List[T = Int64]`). No lookahead needed — the presence of a leading `Name` disambiguates.
 
@@ -444,11 +443,8 @@ rule empty_list: []
 -- Integer list
 rule digits: [1, 2, 3]
 
--- Head-tail pattern matching
-rule first([?h | ?_]) = ?h
-
--- Multi-head with tail
-rule take_two([?a, ?b | ?rest]) = ((?a, ?b), ?rest)
+-- List destructuring via the cons/nil constructors
+rule first(cons(head: ?h, tail: ?_)) = ?h
 ```
 
 ### 4.7 Lambda
@@ -1822,7 +1818,7 @@ AtomTerm    ::= Const(type, value)
               | Fn(name, args: [Term])
               | Ref(Name)
               | Instantiation(Name, SortBinding+)  -- Eq[T = Int64] in term position
-              | CollectionLit                -- [a, b | t] → ListLiteral(a, b, tail: t)
+              | CollectionLit                -- [a, b] → ListLiteral(a, b)
               | SetLit                       -- {a, b} → SetLiteral(a, b)
               | TupleLiteral                 -- (a, b) → TupleLiteral(_1: a, _2: b)
               | PrefixTerm

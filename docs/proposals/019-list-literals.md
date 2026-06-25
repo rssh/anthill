@@ -1,8 +1,18 @@
 # Proposal 019: Collection Literals
 
-**Status:** Proposed
+**Status:** Partially implemented; head-tail `[h | t]` superseded
 **Depends on:** None (complementary to Proposal 020)
 **Affects:** Kernel Language Specification §4 (Terms), Grammar, Parse Converter
+
+> **Update (WI-560):** the construction literals `[]` / `[a, b, c]` (and
+> `{…}` / `(…)`) are implemented as described. The **head-tail `[h | t]` form
+> below was removed** — it was a parse-only surface (`ListLiteral(h, tail: t)`)
+> with no end-to-end semantics and no real usage; list destructuring uses the
+> explicit `cons(?h, ?t)` constructor. A proper first-class, type-directed
+> collection *deconstruction* syntax (`[h | t]` as a pattern desugaring to
+> `Iteration.split` for any collection — the design this proposal sketched) is
+> tracked separately as **WI-561** (PreOpened). The `[h | t]` / `tail:` text
+> in the sections below is retained as design history, not current behavior.
 
 ## Motivation
 
