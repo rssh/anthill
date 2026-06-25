@@ -35,6 +35,7 @@ mod option_test;
 mod parameterized_test;
 mod runtime_header_test;
 mod traits_struct_test;
+mod type_mapping_query_test;
 mod unsupported_test;
 mod variant_test;
 mod wi533_const_test;

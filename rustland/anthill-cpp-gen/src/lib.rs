@@ -15,7 +15,7 @@ use std::collections::HashMap;
 
 use anthill_core::intern::{Symbol, SymbolKind};
 use anthill_core::kb::KnowledgeBase;
-use anthill_core::kb::term::{Literal, Term, TermId};
+use anthill_core::kb::term::{Literal, Term, TermId, Var, VarId};
 use anthill_core::kb::term_view::TermIdView;
 use anthill_core::kb::typing::{extract_sort_ref_sym, extract_type, TypeExtractor};
 use anthill_core::eval::Value;
@@ -1032,7 +1032,7 @@ fn is_body_emittable(ctx: &CodegenContext, type_term: TermId) -> bool {
             return true;
         }
         let short = short_name_of(qualified);
-        return prim_lower(short).is_some();
+        return cpp_base_host_type(kb, short).is_some();
     }
     let Some((base_sym, binding_values)) = unpack_parameterized(kb, type_term) else {
         return false;
@@ -1040,7 +1040,7 @@ fn is_body_emittable(ctx: &CodegenContext, type_term: TermId) -> bool {
     let base_qn = kb.qualified_name_of(base_sym);
     let base_short = short_name_of(base_qn);
     let base_known = ctx.carriers.lookup(base_qn).is_some()
-        || param_lower(base_short).is_some();
+        || cpp_base_host_type(kb, base_short).is_some();
     if !base_known {
         return false;
     }
@@ -1994,7 +1994,8 @@ impl Includes {
 /// `Term::Ident` are also accepted for robustness. Parameterized
 /// types (`List[T = X]`, `Option[T = X]`, ...) appear as `Term::Fn`
 /// with the parameterized sort as functor and the bindings as
-/// named args; they are lowered via `param_lower`.
+/// named args; the template name is resolved via the keyed `TypeMapping`
+/// query (`cpp_base_host_type`).
 // ── Expression lowering ───────────────────────────────────────────
 
 /// Lower an anthill expression term (the proposal-026 reflected
@@ -3120,7 +3121,8 @@ fn lower_type(ctx: &CodegenContext, type_term: TermId) -> Result<String, CppCode
 }
 
 /// Lower a `parameterized(base: sort_ref(...), bindings: [...])` term
-/// to its C++ template form. Base resolves via carrier or `param_lower`;
+/// to its C++ template form. Base resolves via carrier or the keyed
+/// `TypeMapping` query (`cpp_base_host_type`);
 /// each binding's `value` is recursively lowered into the angle-bracket
 /// arg list, in TypeBinding declaration order.
 fn lower_parameterized(
@@ -3138,11 +3140,12 @@ fn lower_parameterized(
     let short = short_name_of(qualified);
     let template_name = ctx.carriers.lookup(qualified)
         .map(str::to_string)
-        .or_else(|| param_lower(short).map(str::to_string))
+        .or_else(|| cpp_base_host_type(kb, short))
         .ok_or_else(|| CppCodegenError {
             message: format!(
-                "no C++ mapping for parameterized sort '{qualified}' — \
-                 add a CarrierBinding or extend `param_lower`"
+                "no C++ mapping for parameterized sort '{qualified}' — add a \
+                 CarrierBinding, or a `fact TypeMapping(lang: some(\"cpp\"), \
+                 anthill_type: \"{short}\", host_type: ...)`"
             ),
         })?;
 
@@ -3187,33 +3190,19 @@ fn lower_parameterized(
     }
 }
 
-/// Hardcoded mapping from anthill parameterized stdlib sort names to
-/// their C++ template equivalents. Will become `TypeMapping`-fact-
-/// driven once cpp_std (WI-089) lands; today this is a stopgap
-/// matching what `prim_lower` does for primitives.
-fn param_lower(short_name: &str) -> Option<&'static str> {
-    Some(match short_name {
-        "List" => "std::vector",
-        "Option" => "std::optional",
-        "Pair" => "std::pair",
-        "Map" => "std::map",
-        "Set" => "std::set",
-        _ => return None,
-    })
-}
-
 /// Map a sort symbol to its C++ type spelling. Lookup order:
 ///   1. `CarrierTable` (from `Implementation` / `CarrierBinding` facts)
-///   2. Hardcoded prelude primitives (`prim_lower`)
+///   2. Keyed `TypeMapping` query (`cpp_base_host_type`, WI-089) — the
+///      fact-driven base renames in `anthill.realization.cpp_std`
 ///   3. Project-local entity → its short name (the struct we emit
 ///      ourselves lives in the same C++ namespace)
 ///   4. Error
 ///
 /// Carrier bindings take precedence — a user-supplied
 /// `CarrierBinding(sort_name: "Int", host_type: "int32_t")` overrides
-/// the default `Int → int64_t` mapping. The primitive table is the
-/// fallback, not a constraint. Will become entirely fact-driven once
-/// cpp_std (WI-089) lands a primitive `LanguageMapping`.
+/// the default `Int → int64_t` mapping. The keyed `TypeMapping` base is
+/// the fallback, not a constraint, and is itself project-extensible
+/// (assert another `fact TypeMapping(lang: some("cpp"), ...)`).
 fn sort_to_cpp(ctx: &CodegenContext, sym: Symbol) -> Result<String, CppCodegenError> {
     let qualified = ctx.kb.qualified_name_of(sym);
     let short = short_name_of(qualified);
@@ -3235,8 +3224,8 @@ fn sort_to_cpp(ctx: &CodegenContext, sym: Symbol) -> Result<String, CppCodegenEr
         }
         return Ok(host.to_string());
     }
-    if let Some(prim) = prim_lower(short) {
-        return Ok(prim.to_string());
+    if let Some(host) = cpp_base_host_type(ctx.kb, short) {
+        return Ok(host);
     }
     // Runtime use of `anthill.reflect.*` (TermRepr, SortInfo, KB, …)
     // and `anthill.persistence.*` (Store, FileStore, SqlStore, …) is
@@ -3290,14 +3279,82 @@ fn unsupported_runtime_profile(qualified: &str) -> Option<&'static str> {
     }
 }
 
-/// Prelude primitive name → C++ type name. None for non-primitives.
-fn prim_lower(short_name: &str) -> Option<&'static str> {
-    Some(match short_name {
-        "Int64" => "int64_t",
-        "Float" => "double",
-        "Bool" => "bool",
-        "String" => "std::string",
-        "Unit" => "void",
-        _ => return None,
-    })
+/// A keyed type-mapping entry resolved from the KB (WI-089). `key = none`
+/// is the language base (the default rename); `some(k)` is a profile or
+/// foreign-binding overlay queried ahead of the base.
+struct TypeMappingHit {
+    host_type: String,
+    key: Option<String>,
+}
+
+/// WI-089: resolve host-type mappings for `anthill_type` under `lang` by an
+/// ORDINARY discrimination-tree query over the keyed `TypeMapping` facts —
+/// not a cached reader (the discrim tree IS the table). Returns every
+/// matching entry across keys; callers pick by key priority.
+///
+/// cpp-gen holds an immutable `&KnowledgeBase`, so it can neither
+/// `kb.resolve` (needs `&mut`) nor hash-cons a pattern term. It instead
+/// builds an allocation-free `Value` pattern — `anthill_type` ground, the
+/// other fields placeholder vars — and matches it via `kb.query_view`.
+/// `lang`/`key` are `Option` fields, so they are read back from each
+/// matched fact head rather than grounded in the pattern (which would mean
+/// matching `some("cpp")` structurally).
+fn query_type_mappings(kb: &KnowledgeBase, lang: &str, anthill_type: &str) -> Vec<TypeMappingHit> {
+    let Some(functor) = kb
+        .try_resolve_symbol("anthill.realization.TypeMapping")
+        .or_else(|| kb.try_resolve_symbol("TypeMapping"))
+    else {
+        return Vec::new();
+    };
+    // The pattern's named args must carry the facts' exact field symbols
+    // (`query_view` matches named args by Symbol). All six are interned once
+    // the TypeMapping facts load; bail if the vocabulary isn't present.
+    const FIELDS: &[&str] = &["anthill_type", "host_type", "lift", "lower", "lang", "key"];
+    let mut named: Vec<(Symbol, Value)> = Vec::with_capacity(FIELDS.len());
+    for (i, fname) in FIELDS.iter().enumerate() {
+        let Some(fsym) = kb.lookup_symbol(fname) else {
+            return Vec::new();
+        };
+        let val = if *fname == "anthill_type" {
+            Value::Str(anthill_type.to_string())
+        } else {
+            // A distinct placeholder var per non-ground slot. Facts are
+            // ground, so a synthetic high VarId cannot collide; the result is
+            // read from the matched fact head, not from these bindings.
+            Value::Var(Var::Global(VarId::new(u32::MAX - i as u32, fsym)))
+        };
+        named.push((fsym, val));
+    }
+    let pattern = Value::Entity {
+        functor,
+        pos: std::rc::Rc::from(Vec::<Value>::new()),
+        named: std::rc::Rc::from(named),
+    };
+
+    let mut hits = Vec::new();
+    for (rid, _) in kb.query_view(&pattern) {
+        let head = kb.rule_head(rid);
+        let fact_lang = named_arg(kb, head, "lang").and_then(|t| extract_optional_string(kb, t));
+        if fact_lang.as_deref() != Some(lang) {
+            continue;
+        }
+        let Some(host_type) = named_string(kb, head, "host_type") else {
+            continue;
+        };
+        let key = named_arg(kb, head, "key").and_then(|t| extract_optional_string(kb, t));
+        hits.push(TypeMappingHit { host_type, key });
+    }
+    hits
+}
+
+/// WI-089: the C++ language-base host type for `anthill_type` (the
+/// `key = none` entry), via the keyed `TypeMapping` query. Replaces the
+/// hardcoded `prim_lower` / `param_lower` tables: primitives lower to a
+/// leaf type (`Int64 -> int64_t`); parameterized stdlib sorts lower to a
+/// bare template name (`List -> std::vector`) the caller wraps with args.
+pub fn cpp_base_host_type(kb: &KnowledgeBase, anthill_type: &str) -> Option<String> {
+    query_type_mappings(kb, "cpp", anthill_type)
+        .into_iter()
+        .find(|h| h.key.is_none())
+        .map(|h| h.host_type)
 }
