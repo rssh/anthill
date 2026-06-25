@@ -499,13 +499,23 @@ namespace anthill.examples.lf1.safety.common
   --                   StepDistanceAxiom (consecutive distances
   --                   differ by at most delta).
   --
-  -- position_distance(?p1, ?p2, ?d)         — UNINTERPRETED
-  --   * No rule body. Stands for Euclidean distance between
-  --     p1.position and p2.position; Z3 sees it as a free function
-  --     symbol. The only property the proof uses is the per-step
-  --     bound, which is captured at the distance-scalar level by
-  --     StepDistanceAxiom — so position_distance never needs to be
-  --     unfolded.
+  -- position_distance(?d, ?p1, ?p2)         — DEFINED (result var first)
+  --   * Rule body above: squared per-axis differences + a
+  --     non-negative square root (`?d * ?d = ?d_sq`). Stands for the
+  --     Euclidean distance between p1.position and p2.position.
+  --   * Z3 status: UNFOLDED by the pointwise refutation proofs
+  --     (safety_min_distance / safety_max_distance and their
+  --     transponder counterparts). Inlining reaches the concrete
+  --     `real_pose_at(0, …)` initial geometry, so `?d` is pinned to
+  --     the actual inter-drone distance and the violation bodies are
+  --     refutable (unsat). Those proofs declare `logic: "QF_NRA"`
+  --     because the square-root clause is nonlinear. The consuming
+  --     variant must `import` position_distance for the functor to
+  --     resolve and inline.
+  --   * NOT referenced by the inductive obligations
+  --     (`lower_violation`, `upper_violation`, …): they reason at the
+  --     distance-scalar level via StepDistanceAxiom, so for them
+  --     position_distance never needs to be unfolded.
   --
   -- step-distance bound                     — POSTULATED axiom (inline)
   --   * Not a free-standing rule (would need variant-specific

@@ -51,7 +51,7 @@ namespace anthill.examples.lf1.safety.transponder
   import anthill.prelude.Numeric.{add, sub, mul}
   import anthill.prelude.Float.{abs}
   import anthill.examples.lf1.safety.common.{
-    DistanceBounds, KinematicAssumptions, reachable_real
+    DistanceBounds, KinematicAssumptions, reachable_real, position_distance
   }
 
 

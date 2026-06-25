@@ -7,6 +7,7 @@ mod common;
 
 mod assumptions_test;
 mod comm_delay_test;
+mod cross_namespace_inline_test;
 mod inductive_test;
 mod lf1_real_spec_test;
 mod lift_implication_test;

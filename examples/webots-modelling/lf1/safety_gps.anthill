@@ -26,7 +26,8 @@ namespace anthill.examples.lf1.safety.gps
   import anthill.prelude.Float.{div, abs}
   import anthill.examples.lf1.leader.{Pose}
   import anthill.examples.lf1.safety.common.{
-    Drone, DistanceBounds, KinematicAssumptions, reachable_real
+    Drone, DistanceBounds, KinematicAssumptions, reachable_real,
+    position_distance
   }
   import anthill.examples.lf1.safety.common.Drone.{Leader, Follower}
 
@@ -273,10 +274,15 @@ namespace anthill.examples.lf1.safety.gps
   --     drift, and the comm-delay staleness that `step_distance_bound`
   --     was derived from. Any inflight violation of `KinematicAssumptions`
   --     breaks this bridge and the proof says nothing.
-  --   * `position_distance` itself is treated as an uninterpreted
-  --     scalar Float here — the proof never reasons about Vec3 maths.
-  --     Triangle inequality + per-drone velocity bound ⇒ per-step
-  --     distance change ≤ delta is the load-bearing axiom.
+  --   * `position_distance` is abstracted here — *this inductive
+  --     proof* never reasons about Vec3 maths and treats the distance
+  --     as an opaque scalar Float. (The pointwise refutation proofs
+  --     `safety_min_distance` / `safety_max_distance` below DO unfold
+  --     its rule body over the concrete initial geometry; abstraction
+  --     is specific to the inductive obligations, which never
+  --     reference position_distance.) Triangle inequality + per-drone
+  --     velocity bound ⇒ per-step distance change ≤ delta is the
+  --     load-bearing axiom.
   --   * The initial state `distance_at_step(0)` lies in the strong
   --     invariant. Capture this in a `fact InitialSeparation(d0_lo, d0_hi)`
   --     when wiring to a real flight; the GPS variant assumes an
