@@ -8,6 +8,7 @@
 pub mod term;
 pub mod subst;
 pub mod load;
+pub mod proof_verify;
 pub mod resolve;
 pub mod occurrence;
 pub mod node_occurrence;

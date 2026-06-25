@@ -4,8 +4,11 @@
 use std::collections::BTreeSet;
 use std::process::Command;
 
+use smallvec::SmallVec;
+
 use anthill_core::intern::Symbol;
-use anthill_core::kb::KnowledgeBase;
+use anthill_core::kb::{KnowledgeBase, RuleId};
+use anthill_core::kb::proof_verify::{set_proof_result, VerdictWrite};
 use anthill_core::kb::term::{Literal, Term, TermId};
 use anthill_core::kb::typing::get_named_arg;
 use anthill_smt_gen::{
@@ -52,6 +55,10 @@ pub(crate) fn run_prove(args: &ProveArgs) -> Result<(), i32> {
     // a clean Discharged from a Trusted (TrustedAxiom-witnessed) one.
     let mut discharged_this_run: std::collections::HashMap<String, DischargeKind> =
         std::collections::HashMap::new();
+    // WI-558: in-KB result write-backs (RuleId-exact), collected here and
+    // applied after the dispatch loop so a retract/re-assert can't perturb
+    // in-loop cite resolution (which reads other ProofRecord facts).
+    let mut write_backs: Vec<(RuleId, VerdictWrite)> = Vec::new();
 
     for rec in &records {
         if let Some(filter) = &args.rule {
@@ -62,6 +69,14 @@ pub(crate) fn run_prove(args: &ProveArgs) -> Result<(), i32> {
         total += 1;
         let outcome = dispatch(&mut kb, rec, args, &mut stats, &mut discharged_this_run);
         let witness = outcome.witness.clone();
+        // WI-558: stash the in-KB result flip for this verdict, keyed on the
+        // source record's RuleId (applied below). Encode the witness term now,
+        // while `kb` is free between dispatches.
+        if let (Some(rid), Some(vw)) =
+            (rec.rid, verdict_write_for(&mut kb, &outcome.verdict, &witness, rec))
+        {
+            write_backs.push((rid, vw));
+        }
         // Per-ProofRecord state hash (phase α.4): canonical hash of
         // the kb-state slice this discharge consulted. None for
         // early-exit Skipped / EmitError where no kb state was read.
@@ -111,6 +126,13 @@ pub(crate) fn run_prove(args: &ProveArgs) -> Result<(), i32> {
         }
     }
 
+    // WI-558: flip each dispatched record's in-KB `result` (Pending →
+    // Discharged | Failed) so the loaded KB reflects the prove verdicts for
+    // every tier — not just the sidecar.
+    for (rid, vw) in write_backs {
+        set_proof_result(&mut kb, rid, vw);
+    }
+
     if total == 0 {
         if let Some(rule) = &args.rule {
             eprintln!("error: no proof obligation found for rule `{rule}`");
@@ -140,6 +162,12 @@ struct CacheStats {
 
 #[derive(Debug)]
 struct ProofRec {
+    /// The `RuleId` of the source `ProofRecord` fact this rec was read from,
+    /// for the WI-558 in-KB result write-back. `None` for synthetic recs built
+    /// during structured-proof dispatch (which are dispatched but never written
+    /// back). Keyed on the exact RuleId — not the `rule` QN — so two
+    /// `proof <same-rule>` decls each get their own verdict.
+    rid: Option<RuleId>,
     rule: String,
     strategy: Strategy,
     /// Cited-lemma rule QNs from the source-level `using` clause.
@@ -229,7 +257,7 @@ fn collect_proof_records(kb: &KnowledgeBase) -> Vec<ProofRec> {
     let mut out = Vec::new();
     for rid in kb.rules_by_functor(functor) {
         let head = kb.rule_head(rid);
-        if let Some(rec) = read_proof_record(kb, &syms, head) {
+        if let Some(rec) = read_proof_record(kb, &syms, rid, head) {
             out.push(rec);
         }
     }
@@ -302,7 +330,12 @@ fn topo_sort_by_using(records: Vec<ProofRec>) -> Vec<ProofRec> {
     out
 }
 
-fn read_proof_record(kb: &KnowledgeBase, syms: &ProofSyms, term_id: TermId) -> Option<ProofRec> {
+fn read_proof_record(
+    kb: &KnowledgeBase,
+    syms: &ProofSyms,
+    rid: RuleId,
+    term_id: TermId,
+) -> Option<ProofRec> {
     let named = match kb.get_term(term_id) {
         Term::Fn { named_args, .. } => named_args,
         _ => return None,
@@ -322,7 +355,7 @@ fn read_proof_record(kb: &KnowledgeBase, syms: &ProofSyms, term_id: TermId) -> O
     let structured = get_named_arg(kb, named, "body")
         .map(|t| is_structured_body(kb, t))
         .unwrap_or(false);
-    Some(ProofRec { rule, strategy, using, structured, abstract_body: false })
+    Some(ProofRec { rid: Some(rid), rule, strategy, using, structured, abstract_body: false })
 }
 
 /// True if `body_tid` is the `ProofBodyStructured` constructor (proposal 031).
@@ -507,6 +540,157 @@ fn dispatch(
         "trust" => dispatch_trust(tool_args),
         other => DispatchOutcome::no_witness(
             Verdict::Skipped(format!("unknown strategy `{other}`"))),
+    }
+}
+
+// ── WI-558: in-KB result write-back ──────────────────────────────────
+//
+// After dispatch, flip each ProofRecord's `result` (Pending → Discharged |
+// Failed) so the loaded KB reflects the prove verdicts for every tier — through
+// the same `set_proof_result` helper the in-process `verify_proofs` pass uses,
+// so the two paths stay in lockstep. The authoritative cross-invocation witness
+// store is still the sidecar (proposal 030 OQ-D); this is the in-process
+// consistency copy.
+//
+// Today the standalone `anthill prove` discards `kb` on return, so this flip is
+// not yet CLI-observable on its own; it becomes load-bearing once the gate is
+// chained into `anthill check` (deferred, local-proof.md OQ-A) and for any
+// caller that drives `run_prove` over a KB it keeps. The flips are collected
+// during the dispatch loop and applied *after* it, so a retract/re-assert never
+// perturbs in-loop cite resolution.
+
+/// Map a dispatch verdict to the core [`VerdictWrite`], encoding the witness
+/// term inline (needs `&mut kb`). `Skipped` / `EmitError` reached no verdict,
+/// so the record stays Pending (returns `None` — no write-back).
+fn verdict_write_for(
+    kb: &mut KnowledgeBase,
+    verdict: &Verdict,
+    witness: &Option<ProofWitness>,
+    rec: &ProofRec,
+) -> Option<VerdictWrite> {
+    match verdict {
+        Verdict::Proved => witness.as_ref().map(|w| VerdictWrite::Discharged {
+            witness: witness_to_term(kb, w),
+            solver: solver_name(rec),
+        }),
+        Verdict::Disproved(model) => Some(VerdictWrite::FailedDisproved {
+            counterexample: model.clone(),
+            solver: solver_name(rec),
+        }),
+        Verdict::Unknown(reason) => Some(VerdictWrite::FailedUnknown { reason: reason.clone() }),
+        Verdict::Skipped(_) | Verdict::EmitError(_) => None,
+    }
+}
+
+fn solver_name(rec: &ProofRec) -> String {
+    match &rec.strategy {
+        Strategy::Tool { name, .. } => name.clone(),
+        Strategy::Open => "open".to_string(),
+    }
+}
+
+fn str_const(kb: &mut KnowledgeBase, s: &str) -> TermId {
+    kb.alloc(Term::Const(Literal::String(s.to_string())))
+}
+
+/// Encode a cli [`ProofWitness`] as a `ProofWitness` reflect term for the in-KB
+/// `ProofRecord` fields. Covers the shapes a prove dispatch produces
+/// (SmtDischarge / SldDerivation / TrustedAxiom / MetaCompose). The loader-only
+/// ScopeAxiom / Specialization shapes are skipped by `read_proof_record`, so
+/// reaching them here is a broken invariant — surfaced loudly (`debug_assert`)
+/// while degrading to a descriptive marker in release rather than corrupting a
+/// kernel-derived certificate into a panic mid-run.
+fn witness_to_term(kb: &mut KnowledgeBase, w: &ProofWitness) -> TermId {
+    match w {
+        ProofWitness::SldDerivation { tree_hash } => {
+            anthill_core::kb::proof_verify::make_sld_witness(kb, tree_hash)
+        }
+        ProofWitness::TrustedAxiom { reason } => trusted_axiom_term(kb, reason),
+        ProofWitness::SmtDischarge { backend, logic, document_hash, verdict, core } => {
+            let sym = kb.resolve_symbol("anthill.realization.witness.ProofWitness.SmtDischarge");
+            let b = str_const(kb, backend);
+            let l = str_const(kb, logic);
+            let dh = str_const(kb, document_hash);
+            let v = smt_verdict_to_term(kb, verdict);
+            let c = option_string_to_term(kb, core.as_deref());
+            let k_b = kb.intern("backend");
+            let k_l = kb.intern("logic");
+            let k_d = kb.intern("document_hash");
+            let k_v = kb.intern("verdict");
+            let k_c = kb.intern("core");
+            kb.make_entity_term(
+                sym,
+                SmallVec::new(),
+                SmallVec::from_slice(&[(k_b, b), (k_l, l), (k_d, dh), (k_v, v), (k_c, c)]),
+            )
+        }
+        ProofWitness::MetaCompose { tactic_name, sub } => {
+            let sym = kb.resolve_symbol("anthill.realization.witness.ProofWitness.MetaCompose");
+            let tn = str_const(kb, tactic_name);
+            let mut sub_terms = Vec::with_capacity(sub.len());
+            for s in sub {
+                sub_terms.push(witness_to_term(kb, s));
+            }
+            let sub_list = kb.build_list(&sub_terms);
+            let k_t = kb.intern("tactic_name");
+            let k_s = kb.intern("sub");
+            kb.make_entity_term(
+                sym,
+                SmallVec::new(),
+                SmallVec::from_slice(&[(k_t, tn), (k_s, sub_list)]),
+            )
+        }
+        ProofWitness::ScopeAxiom { scope_kind, scope_qn, aspect } => {
+            debug_assert!(false, "witness_to_term: kernel ScopeAxiom reached the prove write-back");
+            trusted_axiom_term(kb, &format!("scope-axiom {scope_kind} {scope_qn} {aspect}"))
+        }
+        ProofWitness::Specialization { parametric, .. } => {
+            debug_assert!(false, "witness_to_term: kernel Specialization reached the prove write-back");
+            trusted_axiom_term(kb, &format!("specialization of {parametric}"))
+        }
+    }
+}
+
+fn trusted_axiom_term(kb: &mut KnowledgeBase, reason: &str) -> TermId {
+    let sym = kb.resolve_symbol("anthill.realization.witness.ProofWitness.TrustedAxiom");
+    let r = str_const(kb, reason);
+    let k = kb.intern("reason");
+    kb.make_entity_term(sym, SmallVec::new(), SmallVec::from_slice(&[(k, r)]))
+}
+
+fn smt_verdict_to_term(kb: &mut KnowledgeBase, v: &SmtVerdict) -> TermId {
+    match v {
+        SmtVerdict::Unsat => {
+            let sym = kb.resolve_symbol("anthill.realization.witness.SmtVerdict.Unsat");
+            kb.make_entity_term(sym, SmallVec::new(), SmallVec::new())
+        }
+        SmtVerdict::Sat { model_hash } => {
+            let sym = kb.resolve_symbol("anthill.realization.witness.SmtVerdict.Sat");
+            let m = str_const(kb, model_hash);
+            let k = kb.intern("model_hash");
+            kb.make_entity_term(sym, SmallVec::new(), SmallVec::from_slice(&[(k, m)]))
+        }
+        SmtVerdict::Unknown { reason } => {
+            let sym = kb.resolve_symbol("anthill.realization.witness.SmtVerdict.Unknown");
+            let r = str_const(kb, reason);
+            let k = kb.intern("reason");
+            kb.make_entity_term(sym, SmallVec::new(), SmallVec::from_slice(&[(k, r)]))
+        }
+    }
+}
+
+fn option_string_to_term(kb: &mut KnowledgeBase, s: Option<&str>) -> TermId {
+    match s {
+        None => {
+            let sym = kb.resolve_symbol("anthill.prelude.Option.none");
+            kb.make_entity_term(sym, SmallVec::new(), SmallVec::new())
+        }
+        Some(v) => {
+            let sym = kb.resolve_symbol("anthill.prelude.Option.some");
+            let val = str_const(kb, v);
+            let k = kb.intern("value");
+            kb.make_entity_term(sym, SmallVec::new(), SmallVec::from_slice(&[(k, val)]))
+        }
     }
 }
 
@@ -760,6 +944,9 @@ fn dispatch_structured(
     for step in &steps {
         synthesize_step_rule(kb, &step.qn, &rec.rule, step.body_terms.clone(), step.head_term);
         let step_rec = ProofRec {
+            // Synthetic: a structured step has no source ProofRecord fact, so it
+            // is dispatched but never result-written-back.
+            rid: None,
             rule: step.qn.clone(),
             strategy: clone_strategy(&step.strategy),
             using: step.using.clone(),
@@ -804,6 +991,10 @@ fn dispatch_structured(
         }
     }
     let parent_rec = ProofRec {
+        // Synthetic re-dispatch of the parent rule (its verdict is folded into
+        // the structured MetaCompose witness); the original `rec` carries the
+        // RuleId that gets written back, not this one.
+        rid: None,
         rule: rec.rule.clone(),
         strategy: conclude_strategy,
         using: conclude_using,
@@ -900,9 +1091,9 @@ fn dispatch_derivation(
     rule_qn: &str,
     tool_args: &[NamedArg],
 ) -> DispatchOutcome {
-    use anthill_core::kb::resolve::ResolveConfig;
+    use anthill_core::kb::proof_verify::{discharge_by_derivation, DerivationOutcome};
 
-    let mut max_depth: usize = 200;
+    let mut max_depth: usize = anthill_core::kb::proof_verify::DEFAULT_DERIVATION_DEPTH;
     let mut max_solutions: usize = 1;
     for arg in tool_args {
         match (arg.key.as_str(), &arg.value) {
@@ -912,72 +1103,32 @@ fn dispatch_derivation(
         }
     }
 
-    let rule_sym = match kb.try_resolve_symbol(rule_qn) {
-        Some(s) => s,
-        None => return DispatchOutcome::no_witness(
-            Verdict::EmitError(format!("rule `{rule_qn}` not in KB"))),
-    };
-    let rules = kb.rules_by_functor(rule_sym);
-    if rules.is_empty() {
-        return DispatchOutcome::no_witness(
-            Verdict::EmitError(format!("no rules found for `{rule_qn}`")));
+    // WI-558: the SLD discharge itself now lives in `anthill-core`
+    // (`discharge_by_derivation`), so the cli `prove` driver and the in-process
+    // `verify_proofs` pass never drift on what counts as a derivation. This
+    // wrapper keeps the cli's verdict / witness / visited-rules surface.
+    //
+    // Phase α.3 witness: a placeholder `tree_hash` referencing the rule QN
+    // (α.5 introduces full derivation-tree capture). Phase α.4: visited_rules
+    // is the coarse `{rule_qn}` placeholder until the resolver surfaces its
+    // visited-rule set.
+    let visited: BTreeSet<String> = std::iter::once(rule_qn.to_string()).collect();
+    match discharge_by_derivation(kb, rule_qn, max_depth, max_solutions) {
+        DerivationOutcome::Proved { tree_hash } => DispatchOutcome {
+            verdict: Verdict::Proved,
+            witness: Some(ProofWitness::SldDerivation { tree_hash }),
+            visited_rules: visited,
+        },
+        DerivationOutcome::NoDerivation => DispatchOutcome::no_witness(Verdict::Unknown(
+            format!("no derivation found within depth {max_depth} for `{rule_qn}`"),
+        )),
+        DerivationOutcome::RuleNotFound => DispatchOutcome::no_witness(Verdict::EmitError(
+            format!("rule `{rule_qn}` not in KB"),
+        )),
+        DerivationOutcome::NoRules => DispatchOutcome::no_witness(Verdict::EmitError(
+            format!("no rules found for `{rule_qn}`"),
+        )),
     }
-    let config = ResolveConfig {
-        max_depth,
-        max_solutions: max_solutions.max(1),
-        simplify: true,
-        // WI-519: a proof must be DEFINITE. A floundered residual (an
-        // undischarged goal) is not a derivation, so it must not yield
-        // `Verdict::Proved` — with `definite_only`, the SLD resolution below
-        // reports a solution only on a real definite derivation; an undecided
-        // body then falls through to `Verdict::Unknown` ("no derivation found").
-        definite_only: true,
-        // `gamma` — the WI-537 Γ overlay, a crate-private type a CLI proof never
-        // sets — defaults to None via `..Default::default()` (which also avoids
-        // naming that private type from this crate).
-        ..Default::default()
-    };
-    // SLD-derivation witness: phase α.3 produces a placeholder
-    // tree_hash referencing the rule QN. Phase α.5 introduces
-    // proper derivation-tree capture in the resolver and
-    // content-addressed storage in the prove cache.
-    let derivation_witness = ProofWitness::SldDerivation {
-        tree_hash: format!("sld-derivation:{rule_qn}"),
-    };
-    // Phase α.4: visited_rules for derivation is currently a coarse
-    // placeholder (rule_qn itself). The SLD resolver doesn't yet
-    // surface its visited-rule set; α.5 introduces the derivation-
-    // tree capture which will populate this precisely.
-    let visited: BTreeSet<String> =
-        std::iter::once(rule_qn.to_string()).collect();
-    for rule_id in rules {
-        if kb.is_fact(rule_id) {
-            return DispatchOutcome {
-                verdict: Verdict::Proved,
-                witness: Some(derivation_witness.clone()),
-                visited_rules: visited.clone(),
-            };
-        }
-        // Resolve the rule's body as a goal list. Use the occurrence body
-        // (`Value::Node` goals) directly — the resolver is Value-internal, so
-        // no term lowering is needed (WI-246).
-        let empty_subst = anthill_core::kb::subst::Substitution::new();
-        let (fresh_nodes, _links) = kb.with_fresh_vars(rule_id, &empty_subst);
-        let goals: Vec<anthill_core::eval::value::Value> = fresh_nodes
-            .into_iter()
-            .map(anthill_core::eval::value::Value::Node)
-            .collect();
-        if !kb.resolve_goals(goals, &config).is_empty() {
-            return DispatchOutcome {
-                verdict: Verdict::Proved,
-                witness: Some(derivation_witness),
-                visited_rules: visited,
-            };
-        }
-    }
-    DispatchOutcome::no_witness(Verdict::Unknown(format!(
-        "no derivation found within depth {max_depth} for `{rule_qn}`"
-    )))
 }
 
 fn dispatch_z3(
@@ -2006,4 +2157,144 @@ fn sanitize_filename(s: &str) -> String {
 
 fn indent(s: &str, prefix: &str) -> String {
     s.lines().map(|l| format!("{prefix}{l}")).collect::<Vec<_>>().join("\n")
+}
+
+// ── WI-558: prove write-back unit tests ──────────────────────────────
+//
+// `anthill-cli` is a binary crate (no lib target), so these in-process tests
+// live beside the code they exercise: the new `witness_to_term` encoder (which
+// resolves stdlib QNs — a typo would only otherwise surface under a live z3
+// run) and the external (`by z3`) result write-back (`witness_to_term` +
+// `set_proof_result` keyed on the source RuleId — the cli path the core
+// `verify_proofs` tests don't cover).
+#[cfg(test)]
+mod wi558_tests {
+    use super::*;
+    use crate::witness::{ProofWitness, SmtVerdict};
+
+    /// Load the embedded stdlib plus a single user source written to a temp
+    /// file (`load_kb_with_stdlib` requires ≥1 user path).
+    fn load_with_source(tag: &str, src: &str) -> KnowledgeBase {
+        let dir = std::env::temp_dir()
+            .join(format!("anthill-wi558-{}-{tag}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("src.anthill");
+        std::fs::write(&path, src).unwrap();
+        crate::load_kb_with_stdlib(&[path], false, true)
+            .unwrap_or_else(|c| panic!("load failed with code {c}"))
+    }
+
+    const SRC: &str = r#"
+        namespace t.w558
+          entity Light(state: String)
+          fact Light(state: "bright")
+          rule shines(?b) :- Light(state: ?b)
+          proof shines by z3 end
+        end
+    "#;
+
+    /// Functor short name of the `field` term on the ProofRecord whose `rule`
+    /// QN ends with `suffix`. Reads both `Fn` and the bare `Ref` a nullary
+    /// constructor canonicalises to (WI-511).
+    fn record_field_short(kb: &KnowledgeBase, suffix: &str, field: &str) -> Option<String> {
+        let head = record_head(kb, suffix)?;
+        let named = head_named(kb, head)?;
+        let tid = get_named_arg(kb, &named, field)?;
+        functor_short(kb, tid)
+    }
+
+    /// The `RuleId` of the live ProofRecord fact whose `rule` QN ends with
+    /// `suffix` — the write-back key.
+    fn record_rid(kb: &KnowledgeBase, suffix: &str) -> Option<RuleId> {
+        let sym = kb.try_resolve_symbol("anthill.realization.ProofRecord")?;
+        kb.rules_by_functor(sym).into_iter().find(|&rid| {
+            kb.is_fact(rid)
+                && head_named(kb, kb.rule_head(rid))
+                    .and_then(|named| lookup_string(kb, &named, "rule"))
+                    .is_some_and(|q| q.ends_with(suffix))
+        })
+    }
+
+    fn record_head(kb: &KnowledgeBase, suffix: &str) -> Option<TermId> {
+        let rid = record_rid(kb, suffix)?;
+        Some(kb.rule_head(rid))
+    }
+
+    fn head_named(
+        kb: &KnowledgeBase,
+        head: TermId,
+    ) -> Option<smallvec::SmallVec<[(Symbol, TermId); 2]>> {
+        match kb.get_term(head) {
+            Term::Fn { named_args, .. } => Some(named_args.clone()),
+            _ => None,
+        }
+    }
+
+    fn functor_short(kb: &KnowledgeBase, tid: TermId) -> Option<String> {
+        let f = match kb.get_term(tid) {
+            Term::Fn { functor, .. } | Term::Ref(functor) | Term::Ident(functor) => *functor,
+            _ => return None,
+        };
+        Some(kb.qualified_name_of(f).rsplit('.').next().unwrap_or("").to_string())
+    }
+
+    #[test]
+    fn witness_to_term_encodes_smt_discharge() {
+        let mut kb = load_with_source("enc", SRC);
+        let w = ProofWitness::SmtDischarge {
+            backend: "z3".into(),
+            logic: "QF_LRA".into(),
+            document_hash: "deadbeef".into(),
+            verdict: SmtVerdict::Unsat,
+            core: None,
+        };
+        let t = witness_to_term(&mut kb, &w);
+        assert_eq!(functor_short(&kb, t).as_deref(), Some("SmtDischarge"));
+        // Nested SmtVerdict.Unsat resolves (a wrong QN would have panicked).
+        let named = head_named(&kb, t).expect("SmtDischarge named args");
+        let verdict = get_named_arg(&kb, &named, "verdict").expect("verdict field");
+        assert_eq!(functor_short(&kb, verdict).as_deref(), Some("Unsat"));
+    }
+
+    #[test]
+    fn external_write_back_flips_record_to_discharged() {
+        let mut kb = load_with_source("disc", SRC);
+        assert_eq!(
+            record_field_short(&kb, "shines", "result").as_deref(),
+            Some("Pending"),
+            "the `by z3` proof loads Pending"
+        );
+        let rid = record_rid(&kb, "shines").expect("record rid");
+        let w = ProofWitness::SmtDischarge {
+            backend: "z3".into(),
+            logic: "QF_LRA".into(),
+            document_hash: "deadbeef".into(),
+            verdict: SmtVerdict::Unsat,
+            core: None,
+        };
+        let witness = witness_to_term(&mut kb, &w);
+        set_proof_result(&mut kb, rid, VerdictWrite::Discharged { witness, solver: "z3".into() });
+        assert_eq!(
+            record_field_short(&kb, "shines", "result").as_deref(),
+            Some("Discharged"),
+            "result flips to Discharged"
+        );
+        assert_eq!(
+            record_field_short(&kb, "shines", "witness").as_deref(),
+            Some("SmtDischarge"),
+            "witness flips to the real SmtDischarge certificate"
+        );
+    }
+
+    #[test]
+    fn failed_unknown_write_back_flips_record_to_failed() {
+        let mut kb = load_with_source("fail", SRC);
+        let rid = record_rid(&kb, "shines").expect("record rid");
+        set_proof_result(&mut kb, rid, VerdictWrite::FailedUnknown { reason: "z3 timeout".into() });
+        assert_eq!(
+            record_field_short(&kb, "shines", "result").as_deref(),
+            Some("Failed"),
+            "an unknown verdict flips the record to Failed, never Discharged"
+        );
+    }
 }
