@@ -4022,8 +4022,9 @@ impl KnowledgeBase {
         self.register_builtin("anthill.reflect.feed.provenance", BuiltinTag::Provenance);
         self.register_builtin("anthill.reflect.field_access", BuiltinTag::FieldAccess);
         self.register_builtin("anthill.reflect.Expr.ho_apply", BuiltinTag::HoApply);
-        // Resolver primitives (proposal 033 / 049)
+        // Resolver primitives (proposal 033 / 033.1 / 049)
         self.register_builtin("anthill.kernel.push_choice", BuiltinTag::PushChoice);
+        self.register_builtin("anthill.kernel.cut", BuiltinTag::Cut);
         self.register_builtin("anthill.kernel.unify", BuiltinTag::Unify);
         // Arithmetic and comparison
         self.register_builtin("anthill.prelude.Eq.eq", BuiltinTag::Eq);

@@ -19,6 +19,18 @@ namespace anthill.kernel
   -- `anthill.reflect.unify` face. Never dispatches — structural only.
   operation unify(a: T, b: T) -> Bool
 
+  -- Cut (`!`). Commits to the current rule invocation: discards the other
+  -- clauses of the rule whose body the `!` appears in, and every choice point
+  -- created while resolving the goals before it. Choice points created after
+  -- the `!` are untouched. Surface syntax is the bare `!` goal; the resolver
+  -- opens it to a barrier-tagged `cut(B)` when the rule body is entered (B is
+  -- the enclosing invocation's barrier, parallel to De Bruijn-var opening), so
+  -- the nullary declaration here is the user-facing face. Special-cased in the
+  -- resolver (its effect is on the choice-point stack, not on σ), never
+  -- dispatched. See proposal 033.1 (docs/proposals/033-resolver-primitives-and-disjunction.md
+  -- §Future work) / WI-568.
+  operation cut() -> Bool
+
   -- Derived disjunction. Lifts the WAM "captured continuation" idiom to a
   -- regular rule head so callers don't need direct access to the primitive.
   rule or(?a, ?b) :- push_choice(?a, ?b)

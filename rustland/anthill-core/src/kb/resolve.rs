@@ -110,6 +110,12 @@ pub enum BuiltinTag {
     /// `anthill.kernel.push_choice(?a, ?b)` — binary choice point.
     /// Special-cased in `step_init`; see proposal 033 / WI-075.
     PushChoice,
+    /// `anthill.kernel.cut` — cut control primitive (`!`). Surface form is the
+    /// nullary `cut`; the resolver opens it to a barrier-tagged `cut(B)` when the
+    /// enclosing rule body is entered. Special-cased in `step_init`: its effect
+    /// is on the choice-point stack (it prunes back to the barrier), not on σ —
+    /// like Not / HoApply / PushChoice. Proposal 033.1 / WI-568.
+    Cut,
     // ── Arithmetic and comparison builtins ───────────────────
     /// `anthill.prelude.Eq.eq(?a, ?b)` — structural equality (succeeds/fails).
     Eq,
@@ -328,6 +334,14 @@ enum FrameState {
         next: usize,
         any_delayed: bool,
         child_solutions: usize,
+        /// Cut barrier (proposal 033.1 / WI-568). Set to `Some(B)` when this
+        /// choice point selected a rule whose body contains a `!`: it is the
+        /// frame the cut commits to. `cut(B)` (baked into that body) prunes this
+        /// frame's remaining candidates and every choice point stacked above it.
+        /// Allocated fresh per rule-body open and unique across the search, so
+        /// the cut goal finds exactly its own call frame. `None` for choice
+        /// points that opened no cut-bearing body (the overwhelming majority).
+        cut_barrier: Option<i64>,
         /// Seen ground goals, keyed by carrier-agnostic structural fingerprint
         /// (WI-348): `goal_fingerprint` walks the goal's `TermView` through σ to
         /// a kb-free `GoalKey`, so a `Value::Node`-carrying answer keys by its
@@ -436,6 +450,21 @@ pub struct SearchStream {
     query_cache: HashMap<TermId, Vec<(RuleId, Substitution)>>,
     /// Telemetry (see `ResolveStats`).
     stats: ResolveStats,
+    /// Monotonic cut-barrier allocator (proposal 033.1 / WI-568). Bumped each
+    /// time a rule body containing a `!` is opened, yielding a fresh barrier
+    /// unique within this stream — the cut goal baked into that body carries it,
+    /// and the choice point that opened the body is tagged with it, so the cut
+    /// commits to exactly its own invocation. Local to the stream, so a cut
+    /// inside `not(P)` (a sub-stream — see `step_naf`) prunes only that
+    /// sub-proof's choice points.
+    next_barrier: i64,
+    /// Per-query cache: rule → its cut functor (`Some` = the body has a top-level
+    /// `!`, `None` = cut-free). Whether a rule body contains a cut is a static
+    /// property, so this hoists the per-activation `cut_marker_functor` scan off
+    /// the hot path — the overwhelming majority of rules are cut-free and resolve
+    /// the body open with one `HashMap` probe instead of scanning every goal
+    /// (WI-568). Safe because rules don't change during a single resolve call.
+    cut_cache: HashMap<RuleId, Option<Symbol>>,
 }
 
 impl SearchStream {
@@ -685,12 +714,30 @@ impl SearchStream {
                         any_delayed: false,
                         child_solutions: 0,
                         seen_goals: HashSet::new(),
+                        cut_barrier: None,
                     };
                     return Some(StepResult::Continue);
                 } else {
                     self.stack.pop();
                     return Some(StepResult::Continue);
                 }
+            }
+            // Cut (`!`), proposal 033.1 / WI-568. Bypasses execute_builtin: its
+            // effect is on the choice-point stack, not on σ. The barrier `B` is
+            // baked into the goal (`cut(B)`) when the enclosing rule body was
+            // opened (see `step_choice_point`); `apply_cut` prunes back to the
+            // frame tagged with `B`. Then the cut goal is consumed and resolution
+            // continues with the body's tail — the cut itself always succeeds.
+            if tag == BuiltinTag::Cut {
+                let goal = goal_t.unwrap_or_else(|| reify_goal_value(kb, &goal_val));
+                let barrier = Self::resolve_cut_barrier(kb, goal);
+                self.apply_cut(barrier);
+                let new_delay = delay_mode.reset();
+                let f = self.stack.last_mut().unwrap();
+                f.goals.remove(0);
+                f.depth += 1;
+                f.state = FrameState::Init { delay_mode: new_delay };
+                return Some(StepResult::Continue);
             }
             // WI-537 (proposal 050): a Γ fact can discharge a builtin guard the
             // builtin would only DELAY on — `neq(b, 0)` over a symbolic
@@ -715,6 +762,7 @@ impl SearchStream {
                         any_delayed: false,
                         child_solutions: 0,
                         seen_goals: HashSet::new(),
+                        cut_barrier: None,
                     };
                     return Some(StepResult::Continue);
                 }
@@ -924,6 +972,7 @@ impl SearchStream {
             any_delayed: false,
             child_solutions: 0,
             seen_goals: HashSet::new(),
+            cut_barrier: None,
         };
         Some(StepResult::Continue)
     }
@@ -1214,6 +1263,7 @@ impl SearchStream {
                 any_delayed: false,
                 child_solutions: 0,
                 seen_goals: HashSet::new(),
+                cut_barrier: None,
             };
             Some(StepResult::Continue)
         }
@@ -1310,6 +1360,114 @@ impl SearchStream {
                 Some((goal_a, goal_b))
             }
             _ => None,
+        }
+    }
+
+    /// If `node` is a cut marker (`anthill.kernel.cut`), return its functor
+    /// symbol (proposal 033.1 / WI-568). Detection reuses `get_builtin_view`'s
+    /// resolution so it matches exactly how the cut goal is classified when it
+    /// later fires; the functor is reused to build the baked `cut(B)` term.
+    fn cut_marker_functor(kb: &KnowledgeBase, node: &Rc<NodeOccurrence>) -> Option<Symbol> {
+        let v = Value::Node(node.clone());
+        if kb.get_builtin_view(&v) == Some(BuiltinTag::Cut) {
+            v.head(kb).functor_sym()
+        } else {
+            None
+        }
+    }
+
+    /// Build the barrier-carrying cut goal `cut(IntLit(barrier))` — the opened
+    /// form of the surface `!` (proposal 033.1 / WI-568). Reuses the marker's own
+    /// functor so the baked goal resolves to the same `BuiltinTag::Cut`.
+    fn bake_cut_term(kb: &mut KnowledgeBase, cut_sym: Symbol, barrier: i64) -> TermId {
+        let lit = kb.alloc(Term::Const(crate::kb::term::Literal::Int(barrier)));
+        kb.alloc(Term::Fn {
+            functor: cut_sym,
+            pos_args: SmallVec::from_elem(lit, 1),
+            named_args: SmallVec::new(),
+        })
+    }
+
+    /// Read the barrier `B` baked into a `cut(B)` goal (proposal 033.1 / WI-568).
+    /// The surface `!` is opened to `cut(IntLit(B))` when the enclosing rule body
+    /// is entered (`bake_cut_barrier`). Returns `None` for the unbaked nullary
+    /// `cut` — a `!` written at query top level with no enclosing rule —
+    /// whereupon [`Self::apply_cut`] commits the whole query.
+    fn resolve_cut_barrier(kb: &KnowledgeBase, goal: TermId) -> Option<i64> {
+        match kb.terms.get(goal) {
+            // Unbaked nullary `cut` — a top-level-query `!` with no enclosing rule
+            // body to open it. Intentional: `apply_cut(None)` commits the query.
+            Term::Fn { pos_args, named_args, .. }
+                if pos_args.is_empty() && named_args.is_empty() =>
+            {
+                None
+            }
+            // The baked form `cut(IntLit(B))`.
+            Term::Fn { pos_args, named_args, .. }
+                if pos_args.len() == 1 && named_args.is_empty() =>
+            {
+                match kb.terms.get(pos_args[0]) {
+                    Term::Const(crate::kb::term::Literal::Int(n)) => Some(*n),
+                    // A baked cut always carries an Int barrier; any other arg
+                    // means a broken lowering, not a recoverable case.
+                    _ => {
+                        debug_assert!(false, "cut goal argument is not an Int barrier");
+                        None
+                    }
+                }
+            }
+            // Neither nullary nor `cut(IntLit)`: a malformed cut goal.
+            _ => {
+                debug_assert!(false, "cut goal has an unexpected shape");
+                None
+            }
+        }
+    }
+
+    /// Prune the choice-point stack back to the cut barrier (proposal 033.1 /
+    /// WI-568). The cut commits to the rule invocation whose choice point is
+    /// tagged with `barrier`: that frame's remaining clauses **and** every choice
+    /// point stacked above it (created while resolving the goals before the `!`)
+    /// are neutralized — `next` advanced past all candidates and the delay-
+    /// fallback cleared — so backtracking pops straight through them. The current
+    /// (top) frame, where the cut fired, is left intact to continue with the
+    /// body's tail. `None` (an unbaked top-level cut) commits to the stack floor.
+    ///
+    /// Finding the barrier frame by scan, then neutralizing the contiguous
+    /// suffix above it, is the WAM "reset B to the cut barrier" reset: the stack
+    /// *is* the call-tree spine, so "stacked above the barrier frame" is exactly
+    /// "created during this invocation's body". Disjunction transparency falls
+    /// out — an `or(...)`'s `push_choice` continuations sit above the frame and
+    /// are pruned; a cut inside an inner rule carries that rule's own (higher)
+    /// barrier and so never reaches down past it.
+    fn apply_cut(&mut self, barrier: Option<i64>) {
+        let top = self.stack.len().saturating_sub(1);
+        let floor = match barrier {
+            Some(b) => self.stack.iter().position(|f| {
+                matches!(&f.state, FrameState::ChoicePoint { cut_barrier: Some(cb), .. } if *cb == b)
+            }),
+            None => Some(0),
+        };
+        // The barrier frame is always below the cut frame: the `cut(B)` goal
+        // flows down the spine from the frame (`F0`) that opened its rule body,
+        // and `F0` can't pop while a descendant holding the cut is live. Its
+        // absence is a broken invariant, not a recoverable case — assert loudly
+        // (caught in tests) rather than silently prune nothing.
+        let floor_idx = match floor {
+            Some(idx) => idx,
+            None => {
+                debug_assert!(
+                    false,
+                    "apply_cut: barrier {barrier:?} has no owning ChoicePoint on the stack"
+                );
+                return;
+            }
+        };
+        for frame in self.stack[floor_idx..top].iter_mut() {
+            if let FrameState::ChoicePoint { next, candidates, any_delayed, .. } = &mut frame.state {
+                *next = candidates.len();
+                *any_delayed = false;
+            }
         }
     }
 
@@ -1729,18 +1887,64 @@ impl SearchStream {
                 return Some(StepResult::Continue);
             }
 
+            // Capture what the push still needs from `frame` before the
+            // `self`-mut barrier-tagging below ends its borrow.
+            let parent_depth = frame.depth;
+            let inherited = frame.assumed_facts.clone();
+            let new_delay = delay_mode.reset();
+
+            // Cut baking (proposal 033.1 / WI-568). A body conjunct is a separate
+            // `fresh_nodes` entry, so a top-level `!` is detected here directly.
+            // (A cut nested inside an argument term — e.g. a hand-written
+            // `or((g, !), h)` — is not baked here; the supported surface form is
+            // the conjunct `!` that `once` / if-then-else and priority rules
+            // expand to.) Cut-ness is a static property of the rule, so the scan
+            // runs once per rule and is cached (cut-free rules — the vast
+            // majority — then skip it).
+            let cut_functor = match self.cut_cache.get(&rid) {
+                Some(&cached) => cached,
+                None => {
+                    let detected = fresh_nodes.iter().find_map(|n| Self::cut_marker_functor(kb, n));
+                    self.cut_cache.insert(rid, detected);
+                    detected
+                }
+            };
+
             // WI-246: opened rule-body atoms enter the goal stream as
             // `Value::Node` occurrences (carrying any typer dot-rewrites),
-            // matched/resolved through `TermView` — no lowering to terms.
+            // matched/resolved through `TermView` — no lowering to terms. A cut
+            // marker is the exception: it is baked to a `Value::Term(cut(B))` so
+            // it carries the barrier down the spine wherever the goal flows.
             let mut new_goals: Vec<Value> = Vec::with_capacity(fresh_nodes.len() + remaining.len());
-            new_goals.extend(fresh_nodes.into_iter().map(Value::Node));
+            match cut_functor {
+                Some(cut_sym) => {
+                    // Allocate a fresh barrier, tag the opening choice point (the
+                    // current frame `F0`) with it, then bake it into every cut
+                    // marker. All cuts in one body share `B` — they commit to the
+                    // same invocation.
+                    let barrier = self.next_barrier;
+                    self.next_barrier += 1;
+                    if let FrameState::ChoicePoint { cut_barrier, .. } =
+                        &mut self.stack.last_mut().unwrap().state
+                    {
+                        *cut_barrier = Some(barrier);
+                    }
+                    let baked = Self::bake_cut_term(kb, cut_sym, barrier);
+                    for n in fresh_nodes {
+                        if Self::cut_marker_functor(kb, &n).is_some() {
+                            new_goals.push(Value::Term(baked));
+                        } else {
+                            new_goals.push(Value::Node(n));
+                        }
+                    }
+                }
+                None => new_goals.extend(fresh_nodes.into_iter().map(Value::Node)),
+            }
             new_goals.extend(remaining);
-            let new_delay = delay_mode.reset();
-            let inherited = frame.assumed_facts.clone();
             self.stack.push(Frame {
                 goals: new_goals,
                 subst: merged,
-                depth: frame.depth + 1,
+                depth: parent_depth + 1,
                 state: FrameState::Init { delay_mode: new_delay },
                 assumed_facts: inherited,
             });
@@ -1860,6 +2064,8 @@ impl KnowledgeBase {
             },
             query_cache: HashMap::new(),
             stats: ResolveStats::default(),
+            next_barrier: 0,
+            cut_cache: HashMap::new(),
         }
     }
 
@@ -2105,6 +2311,7 @@ impl KnowledgeBase {
             BuiltinTag::Not => unreachable!("Not is handled in step_init, not execute_builtin"),
             BuiltinTag::HoApply => unreachable!("HoApply is handled in step_init, not execute_builtin"),
             BuiltinTag::PushChoice => unreachable!("PushChoice is handled in step_init, not execute_builtin"),
+            BuiltinTag::Cut => unreachable!("Cut is handled in step_init, not execute_builtin"),
             BuiltinTag::ResolveSortInstParam => { let t = as_term(self, goal); self.builtin_resolve_sort_inst_param(t, answer_subst) }
             BuiltinTag::Scope => self.builtin_scope(goal, answer_subst),
             BuiltinTag::Kind => self.builtin_kind(goal, answer_subst),

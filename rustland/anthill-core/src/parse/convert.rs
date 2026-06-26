@@ -705,6 +705,15 @@ impl<'a> Converter<'a> {
                 let tid = self.convert_let_binding(node);
                 results.push(tid);
             }
+            "cut" => {
+                // proposal 033.1 / WI-568: `!` is the cut control primitive — a
+                // nullary `cut` goal. The resolver bakes the enclosing rule's
+                // barrier into it (as an arg) when the rule body is opened; the
+                // short name resolves to `anthill.kernel.cut` via the implicit
+                // kernel vocabulary, so no import is needed. Rejected in head
+                // position by the loader.
+                results.push(self.alloc_fn_term("cut", SmallVec::new(), span));
+            }
             "nested_implication" => {
                 // Rare in expression contexts (rule bodies only) — stays
                 // recursive since `convert_rule_body` re-enters
@@ -2534,9 +2543,13 @@ impl<'a> Converter<'a> {
             .filter_map(|c| {
                 // proposal 049: heads and body share the `_goal` rule, so a `let_binding`
                 // can appear here syntactically — reject it loudly (a head is a conclusion,
-                // not a binding goal).
+                // not a binding goal). proposal 033.1 / WI-568: a `cut` (`!`) is a body
+                // control primitive, equally meaningless in a head — reject it too.
                 if c.kind() == "let_binding" {
                     self.err("`let` binding is not allowed in a rule head", c);
+                    None
+                } else if c.kind() == "cut" {
+                    self.err("cut `!` is not allowed in a rule head", c);
                     None
                 } else {
                     Some(RuleHead::Term(self.convert_term(c)))
@@ -3352,6 +3365,12 @@ fn is_term_kind(kind: &str) -> bool {
             // Goal-position `let ?v = expr` (proposal 049); lowered to `unify(?v, expr)`
             // by `visit_term`. Rejected in head position by `convert_rule_heads`.
             | "let_binding"
+            // Goal-position cut `!` (proposal 033.1 / WI-568); lowered to a nullary
+            // `cut` goal by `visit_term`. The grammar only admits it in `_goal`
+            // position, so this entry is reached only for rule heads/bodies (the
+            // other `is_term_kind` call sites never receive one). Rejected in head
+            // position by `convert_rule_heads`.
+            | "cut"
     )
 }
 

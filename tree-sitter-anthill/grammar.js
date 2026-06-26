@@ -44,6 +44,11 @@ module.exports = grammar({
     // the factored `_non_name_atom_term` subrule, so the conflict is declared
     // there (it subsumes the former `[$._atom_term, $.fn_term]` declaration).
     [$._non_name_atom_term, $.fn_term],
+    // `!` in goal position is either a standalone `cut` goal or the leading
+    // operator of a `prefix_term` (`! <atom>`, prefix negation) via `_prefix_op`.
+    // They share the `!` token; GLR explores both and keeps whichever
+    // continuation parses (WI-568).
+    [$.cut, $._prefix_op],
     // [ after rule head could be meta_block or start of next rule_entry with collection_literal
     [$.rule_entry],
   ],
@@ -427,12 +432,22 @@ module.exports = grammar({
 
     rule_body: $ => commaSep1($._goal),
 
-    // A goal: a regular `_term`, or the goal-position `let ?v = expr` binding
-    // (proposal 049). Shared by `rule_heads` and `rule_body` so their comma-lists parse
-    // identically (no GLR split between heads and body). A `let_binding` is meaningful
-    // only in a body; the converter lowers a body one to `?v <=> expr` (unify) and
-    // rejects one in head position (loud).
-    _goal: $ => choice($.let_binding, $._term),
+    // A goal: the cut control primitive `!`, the goal-position `let ?v = expr`
+    // binding (proposal 049), or a regular `_term`. Shared by `rule_heads` and
+    // `rule_body` so their comma-lists parse identically (no GLR split between
+    // heads and body). Both `let_binding` and `cut` are meaningful only in a
+    // body; the converter lowers a body `let` to `?v <=> expr` (unify) and a
+    // body `!` to a `cut` goal, and rejects either in head position (loud).
+    _goal: $ => choice($.cut, $.let_binding, $._term),
+
+    // Cut (`!`) — kernel control primitive (proposal 033.1 / WI-568). A standalone
+    // `!` goal that commits to the current rule invocation. Distinct from the
+    // prefix `!`/`not` operator (`prefix_term`), which is `! <atom>`: a `!` with
+    // no following operand is a cut, a `!` applied to an atom is negation. The
+    // two overlap on the leading `!` token, so they are declared as a GLR
+    // conflict (`[$.cut, $.prefix_term]`) and resolved by lookahead — only the
+    // production whose continuation parses survives.
+    cut: $ => '!',
 
     // Goal-position `let ?v = expr` (proposal 049): directed binding sugar, distinct from
     // the expression-position `let_chain` (which carries a continuation body).

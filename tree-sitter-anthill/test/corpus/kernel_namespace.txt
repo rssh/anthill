@@ -1096,3 +1096,80 @@ end
           (simple_type
             (name
               (identifier))))))))
+
+=====================================
+Cut in rule body (WI-568)
+=====================================
+
+rule a(?x) :- b(?x), !, c(?x)
+
+---
+
+(source_file
+  (rule_declaration
+    heads: (rule_heads
+      (fn_term
+        name: (name
+          (identifier))
+        (variable_term
+          (variable))))
+    body: (rule_body
+      (fn_term
+        name: (name
+          (identifier))
+        (variable_term
+          (variable)))
+      (cut)
+      (fn_term
+        name: (name
+          (identifier))
+        (variable_term
+          (variable))))))
+
+=====================================
+Cut as sole body goal (WI-568)
+=====================================
+
+rule d(?x) :- !
+
+---
+
+(source_file
+  (rule_declaration
+    heads: (rule_heads
+      (fn_term
+        name: (name
+          (identifier))
+        (variable_term
+          (variable))))
+    body: (rule_body
+      (cut))))
+
+=====================================
+Prefix not disambiguated from cut (WI-568)
+=====================================
+
+rule e(?x) :- b(?x), !c(?x)
+
+---
+
+(source_file
+  (rule_declaration
+    heads: (rule_heads
+      (fn_term
+        name: (name
+          (identifier))
+        (variable_term
+          (variable))))
+    body: (rule_body
+      (fn_term
+        name: (name
+          (identifier))
+        (variable_term
+          (variable)))
+      (prefix_term
+        (fn_term
+          name: (name
+            (identifier))
+          (variable_term
+            (variable)))))))

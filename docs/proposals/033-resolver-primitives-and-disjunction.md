@@ -208,7 +208,7 @@ Solution {
 
 - **`Branch` effect handler.** Proposal 026 §Effects mentions `Branch(a, b)`; the runtime handler raises `push_choice` at the resolver layer, sharing the substrate. Lands with the broader functional-operation effect work.
 
-- **Cut and the barrier mechanism.** Cut commits to the *current rule invocation* — given `a(?x) :- b(?x), !, c(?x)`, when `!` fires it must discard (i) any other clauses of `a` still queued at the parent `ChoicePoint`, and (ii) every `ChoicePoint` created during the resolution of `b(?x)` (including `push_choice`-introduced Continuations and any nested rule unfoldings). Choice points created *after* `!` (during `c(?x)`) are untouched.
+- **Cut and the barrier mechanism — promoted to [proposal 033.1](033.1-cut-and-the-barrier-mechanism.md) (Implemented, WI-568).** The design sketch below is retained for context; the child proposal is canonical. Cut commits to the *current rule invocation* — given `a(?x) :- b(?x), !, c(?x)`, when `!` fires it must discard (i) any other clauses of `a` still queued at the parent `ChoicePoint`, and (ii) every `ChoicePoint` created during the resolution of `b(?x)` (including `push_choice`-introduced Continuations and any nested rule unfoldings). Choice points created *after* `!` (during `c(?x)`) are untouched.
 
   The substrate this requires:
 
