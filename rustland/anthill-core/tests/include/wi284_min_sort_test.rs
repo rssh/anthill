@@ -11,12 +11,16 @@
 
 use std::rc::Rc;
 
+use anthill_core::eval::value::Value;
 use anthill_core::intern::Symbol;
 use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::load::{self, NullResolver};
 use anthill_core::kb::node_occurrence::{Expr, NodeOccurrence};
-use anthill_core::kb::term::{Literal, Term, Var};
-use anthill_core::kb::typing::{min_sort, sort_functor_of, type_check_node, TypingEnv};
+use anthill_core::kb::subst::Substitution;
+use anthill_core::kb::term::{Literal, Term, Var, VarId};
+use anthill_core::kb::typing::{
+    min_sort, min_sort_of_value, sort_functor_of, type_check_node, TypingEnv,
+};
 use anthill_core::parse;
 use anthill_core::span::{SourceId, SourceSpan};
 
@@ -162,3 +166,84 @@ fn sort_functor_of_returns_none_on_type_var() {
 // but WI-313 resolved with `kb` becoming a zero-arg operation in reflect.anthill
 // — its property "a nullary-entity construction has min_sort = its sort" is
 // covered by `min_sort_of_entity_value_is_its_sort` (Color.red).)
+
+// ── WI-502 Step 3: the value-level `min_sort_of_value` read API ──────────────
+
+/// A scalar `Value`'s sort agrees with the typer's sort for the same literal
+/// occurrence (literal-kind read, M3).
+#[test]
+fn min_sort_of_value_scalar_matches_typer() {
+    let mut kb = load_kb();
+    let n = occ(Expr::Const(Literal::Int(7)));
+    let typer_sort = typed_min_sort(&mut kb, &n).expect("typer Int sort");
+    let subst = Substitution::new();
+    let val_sort =
+        min_sort_of_value(&kb, &subst, &Value::Int(7)).expect("value-level Int sort");
+    assert_eq!(val_sort, typer_sort, "value-level min_sort must match the typer's");
+    assert_sort_named(&kb, val_sort, "Int64");
+}
+
+/// A `Value::Node` reads the occurrence's carrier cache (`inferred_type`).
+#[test]
+fn min_sort_of_value_reads_node_cache() {
+    let mut kb = load_kb();
+    let n = occ(Expr::Const(Literal::Int(3)));
+    let occ_sort = typed_min_sort(&mut kb, &n).expect("occ sort"); // stamps inferred_type
+    let subst = Substitution::new();
+    let val_sort = min_sort_of_value(&kb, &subst, &Value::Node(Rc::clone(&n)))
+        .expect("Value::Node sort from cache");
+    assert_eq!(val_sort, occ_sort);
+}
+
+/// A BOUND var navigates its σ-binding and reads the bound value's sort (M6
+/// "binding is navigation").
+#[test]
+fn min_sort_of_value_derefs_bound_var() {
+    let mut kb = load_kb();
+    let xname = kb.intern("x");
+    let vid = VarId::new(1, xname);
+    let mut subst = Substitution::new();
+    subst.bind_value(&kb, vid, Value::Int(5));
+    let ms = min_sort_of_value(&kb, &subst, &Value::Var(Var::Global(vid)))
+        .expect("bound var derefs to Int sort");
+    assert_sort_named(&kb, ms, "Int64");
+}
+
+/// An UNBOUND-but-constrained var falls back to the constraint store's sort
+/// bound; an unbound, unconstrained var is `None`.
+#[test]
+fn min_sort_of_value_store_fallback_for_unbound_constrained_var() {
+    let mut kb = load_kb();
+    let numeric = kb.make_sort_ref_by_name("Numeric");
+    let xname = kb.intern("x");
+    let vid = VarId::new(2, xname);
+    let mut subst = Substitution::new();
+    subst.add_type_constraint(vid, Value::Term(numeric));
+    let ms = min_sort_of_value(&kb, &subst, &Value::Var(Var::Global(vid)))
+        .expect("store fallback yields the constraint's sort");
+    assert_sort_named(&kb, ms, "Numeric");
+
+    let unconstrained = VarId::new(3, xname);
+    assert!(
+        min_sort_of_value(&kb, &subst, &Value::Var(Var::Global(unconstrained))).is_none(),
+        "an unbound, unconstrained var has no known sort",
+    );
+}
+
+/// WI-502 Step 3 — the SLD bind path is NOT occurs-checked, so σ can carry a
+/// cyclic var spine. `min_sort_of_value` must FLOUNDER (None), not loop / stack
+/// overflow (the cycle guard).
+#[test]
+fn min_sort_of_value_flounders_on_cyclic_sigma() {
+    let mut kb = load_kb();
+    let xname = kb.intern("x");
+    let vid = VarId::new(9, xname);
+    let mut subst = Substitution::new();
+    // ?x := Var(?x) — a self-cycle (the shape path-compression can leave).
+    let self_var = kb.alloc(Term::Var(Var::Global(vid)));
+    subst.bind_value(&kb, vid, Value::Term(self_var));
+    assert!(
+        min_sort_of_value(&kb, &subst, &Value::Var(Var::Global(vid))).is_none(),
+        "a cyclic σ must flounder to None, never loop",
+    );
+}

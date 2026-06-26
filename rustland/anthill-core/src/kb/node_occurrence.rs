@@ -325,6 +325,36 @@ impl NodeOccurrence {
         })
     }
 
+    /// WI-502 Step 3 — rebuild THIS `Expr` occurrence with a new `expr`,
+    /// PRESERVING the typer-stamped `inferred_type` (and the `Synthesized`
+    /// provenance origin). Every occurrence-rebuild path — De Bruijn open/close,
+    /// substitution, simp reassembly — must use this instead of a bare
+    /// `new_expr`/`synthesized_expr`, which hard-reset `inferred_type` to `None`:
+    /// the "original WI-502 bug" that dropped the stamped type the instant a
+    /// body was opened/renamed during resolution, so `min_sort` over the opened
+    /// body read `None`.
+    ///
+    /// The carry is VERBATIM (σ is NOT applied to the type). That is sound for
+    /// the only reader, `min_sort`, which returns the type's SORT HEAD — invariant
+    /// under the type-parameter refinement a child substitution performs
+    /// (`cons(?h,?t): List[?T]` keeps head `List`). A node whose head is itself a
+    /// type-var widens to `None`, never a stale concrete sort — so there is no
+    /// silent drift (the M6 refresh-boundary guarantee holds by head-only reads,
+    /// not by re-deriving the type, which is the deferred compute-once entry).
+    /// On a non-`Expr` self (no `inferred_type` slot) the carry is a no-op.
+    pub fn rebuilt_expr(&self, expr: Expr) -> Rc<Self> {
+        let rebuilt = match &self.kind {
+            NodeKind::Expr { origin: OccurrenceOrigin::Synthesized { from, by }, .. } => {
+                NodeOccurrence::synthesized_expr(expr, Rc::clone(from), *by, self.owner)
+            }
+            _ => NodeOccurrence::new_expr(expr, self.span, self.owner),
+        };
+        if let Some(ty) = self.inferred_type() {
+            rebuilt.set_inferred_type(ty);
+        }
+        rebuilt
+    }
+
     /// Build a synthesized expression occurrence — span inherited from
     /// the originating source occurrence `from`.
     pub fn synthesized_expr(
@@ -1245,7 +1275,8 @@ pub fn open_debruijn_node(
         }
     };
     match rebuilt {
-        Some(e) => NodeOccurrence::new_expr(e, occ.span, occ.owner),
+        // WI-502 Step 3: carry the stamped `inferred_type` through the rebuild.
+        Some(e) => occ.rebuilt_expr(e),
         None => Rc::clone(occ),
     }
 }
@@ -1410,7 +1441,8 @@ pub fn node_to_debruijn(
         }
     };
     match rebuilt {
-        Some(e) => NodeOccurrence::new_expr(e, occ.span, occ.owner),
+        // WI-502 Step 3: carry the stamped `inferred_type` through the rebuild.
+        Some(e) => occ.rebuilt_expr(e),
         None => Rc::clone(occ),
     }
 }
@@ -3263,7 +3295,19 @@ pub fn substitute_occurrence(
             return super::simp_rewrite::reassemble(occ, &subst_children);
         }
     };
-    rebuilt.unwrap_or_else(|| Rc::clone(occ))
+    // WI-502 Step 3: the explicit arms above build the rebuilt node via
+    // `new_expr` (which resets `inferred_type` to `None`); carry `occ`'s stamped
+    // type onto it here, in one place. (The `_` arm already returned via
+    // `reassemble`, which carries the type itself.) Verbatim carry is sound for
+    // `min_sort`'s head-only read — see `NodeOccurrence::rebuilt_expr`.
+    rebuilt
+        .map(|n| {
+            if let Some(ty) = occ.inferred_type() {
+                n.set_inferred_type(ty);
+            }
+            n
+        })
+        .unwrap_or_else(|| Rc::clone(occ))
 }
 
 /// WI-342 E2 — rewrite `Expr::Ref(s)` leaves to `Expr::Ref(map[s])` inside a
@@ -5158,6 +5202,40 @@ mod tests {
             }
             other => panic!("expected Apply, got {other:?}"),
         }
+    }
+
+    /// WI-502 Step 3 — `rebuilt_expr` carries the stamped `inferred_type` onto
+    /// the rebuilt occurrence (the helper every rebuild path now routes through).
+    #[test]
+    fn rebuilt_expr_preserves_inferred_type() {
+        let mut kb = KnowledgeBase::new();
+        let int64 = kb.make_sort_ref_by_name("Int64");
+        let node = NodeOccurrence::new_expr(Expr::Bottom, make_span(), None);
+        node.set_inferred_type(Value::Term(int64));
+        let rebuilt = node.rebuilt_expr(Expr::Const(Literal::Int(1)));
+        assert!(
+            matches!(rebuilt.inferred_type(), Some(Value::Term(t)) if t == int64),
+            "rebuilt occurrence must carry the stamped inferred_type",
+        );
+    }
+
+    /// WI-502 Step 3 — substituting a child must NOT drop the parent atom's
+    /// stamped type (the "original WI-502 bug"). A bound var forces the Apply to
+    /// rebuild; the rebuilt node must retain `inferred_type`.
+    #[test]
+    fn substitute_occurrence_carries_inferred_type() {
+        let mut kb = KnowledgeBase::new();
+        let (atom, v0, _gt, _three) = gt_atom(&mut kb);
+        let bool_ty = kb.make_sort_ref_by_name("Bool");
+        atom.set_inferred_type(Value::Term(bool_ty));
+        let mut subst = Substitution::new();
+        subst.bind_value(&kb, v0, Value::Int(42)); // change a child → forces rebuild
+        let out = substitute_occurrence(&mut kb, &atom, &subst);
+        assert!(!Rc::ptr_eq(&out, &atom), "the atom should have been rebuilt");
+        assert!(
+            matches!(out.inferred_type(), Some(Value::Term(t)) if t == bool_ty),
+            "substitute_occurrence must carry the parent atom's inferred_type",
+        );
     }
 
     #[test]

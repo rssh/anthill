@@ -43,9 +43,7 @@ use crate::eval::value::Value;
 use crate::intern::Symbol;
 
 use super::load::meta_has_flag;
-use super::node_occurrence::{
-    self, Expr, MatchBranch, NodeKind, NodeOccurrence, OccurrenceOrigin,
-};
+use super::node_occurrence::{self, Expr, MatchBranch, NodeOccurrence};
 use super::occurrence::PassId;
 use super::subst::Substitution;
 use super::term::{Term, TermId, VarId};
@@ -616,20 +614,16 @@ pub(super) fn reassemble(
     if !cur.changed {
         return Rc::clone(occ);
     }
-    // Preserve provenance: if this node was itself synthesized by an earlier
-    // firing in this run, keep its `Synthesized { from, by }` when a child is
-    // rewritten under it (rather than reverting to `Source`).
-    match &occ.kind {
-        NodeKind::Expr { origin: OccurrenceOrigin::Synthesized { from, by }, .. } => {
-            NodeOccurrence::synthesized_expr(new_expr, Rc::clone(from), *by, occ.owner)
-        }
-        _ => NodeOccurrence::new_expr(new_expr, occ.span, occ.owner),
-    }
+    // Preserve provenance (`Synthesized { from, by }`) AND the typer-stamped
+    // `inferred_type` (WI-502 Step 3) when a child is rewritten under this node —
+    // `rebuilt_expr` carries both, where a bare `new_expr` would drop the type.
+    occ.rebuilt_expr(new_expr)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::kb::node_occurrence::{NodeKind, OccurrenceOrigin};
     use crate::kb::term::{Literal, Var};
     use crate::span::{SourceId, SourceSpan};
     use smallvec::SmallVec;

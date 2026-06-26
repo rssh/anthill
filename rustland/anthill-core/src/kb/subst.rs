@@ -402,6 +402,29 @@ impl Substitution {
             .push(Constraint::Type(guard));
     }
 
+    /// WI-502 Step 3 — the `Type` constraint payloads recorded on `var`, unioned
+    /// across the parent chain (the kind-#2 read dual of [`Self::lacks_of`]).
+    /// The value-level `min_sort` store-fallback reads these for an
+    /// unbound-but-constrained var. Owned `Vec` since the union spans levels.
+    pub fn type_constraints_of(&self, var: VarId) -> Vec<Value> {
+        let mut out: Vec<Value> = self
+            .constraints
+            .get(&var)
+            .map(|cs| {
+                cs.iter()
+                    .filter_map(|c| match c {
+                        Constraint::Type(v) => Some(v.clone()),
+                        Constraint::Lacks(_) => None,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        if let Some(ref parent) = self.parent {
+            out.extend(parent.type_constraints_of(var));
+        }
+        out
+    }
+
     /// WI-502 Step 2 — union another substitution's TOP-LEVEL constraint store
     /// into this one (M7(b): carry the store through a merge). The resolver's
     /// `SuccessWithBindings` lift and the reflect `compose` ops build a result

@@ -20264,6 +20264,99 @@ pub fn min_sort(kb: &KnowledgeBase, occ: &NodeOccurrence) -> Option<Symbol> {
     sort_functor_of_view(kb, &occ.inferred_type()?)
 }
 
+/// WI-502 Step 3 — the VALUE-level `min_sort`: the least declared sort of a
+/// runtime [`Value`] reached during resolution. The "binding is navigation" (M6)
+/// runtime dual of [`min_sort`] (the compile-time occurrence reader):
+///
+/// 1. A logic VARIABLE follows its σ-binding (`subst`): a bound var DEREFS to the
+///    bound value and recurses (the cache lives on the value, never on the
+///    binding edge); an UNBOUND var falls back to the constraint STORE — the sort
+///    head of a `Constraint::Type` recorded on it (the Step-1 substrate; no
+///    producer until Step 5, so this is the write-mostly path), else `None`.
+/// 2. A `Value::Node` reads its carrier cache (`inferred_type`) via [`min_sort`].
+/// 3. A scalar reads its trivial literal-kind (`Int → Int64`, `Bool → Bool`, …).
+///
+/// A bare constructed `Value::Term`/`Entity`/`Tuple` returns `None`: its head
+/// sort IS structural (the constructor's owning sort) but it has no carrier
+/// cache — the `(type, inner)` pair wrapper is the deliberately-deferred work
+/// (Step-3 §E / Step 5). Crucially this NEVER returns a STALE sort — an
+/// unresolvable type is `None`, the M6 no-silent-drift guarantee.
+///
+/// The binding walk in (1) is a cycle-guarded LOOP, not recursion: the SLD bind
+/// path is NOT occurs-checked, so σ can carry a CYCLIC var spine (`?x → ?x`,
+/// `?x → ?y → ?x`) — the same hazard `kb.walk` / `bounded_list_elements` defend
+/// against. On a revisited var we FLOUNDER (`None`), never loop/stack-overflow
+/// (M6 / WI-067: an under-determined type suspends, it does not decide or crash).
+pub fn min_sort_of_value(
+    kb: &KnowledgeBase,
+    subst: &super::subst::Substitution,
+    value: &Value,
+) -> Option<Symbol> {
+    let mut cur: Value = value.clone();
+    let mut seen: std::collections::HashSet<VarId> = std::collections::HashSet::new();
+    loop {
+        // (1) Variable: navigate the binding (cycle-guarded), or store-fallback.
+        if let Some(Var::Global(vid)) = cur.index_var(kb) {
+            if !seen.insert(vid) {
+                return None; // cyclic spine — flounder, don't loop.
+            }
+            match subst.resolve_as_value(vid) {
+                Some(bound) => {
+                    cur = bound.clone();
+                    continue;
+                }
+                None => return store_sort_bound(kb, subst, vid),
+            }
+        }
+        // (2) Occurrence carrier: read its `inferred_type` cache.
+        if let Value::Node(occ) = &cur {
+            return min_sort(kb, occ);
+        }
+        // (3) Scalar: literal-kind.
+        return scalar_value_sort(kb, &cur);
+    }
+}
+
+/// WI-502 Step 3 — the prelude sort a scalar literal-value inhabits, resolved
+/// read-only via the same short-name path the typer's literal arms use
+/// (`make_sort_ref_by_name` ⇒ `try_resolve_symbol`). `None` for a non-scalar
+/// value, or before the prim sort is registered.
+fn scalar_value_sort(kb: &KnowledgeBase, value: &Value) -> Option<Symbol> {
+    let name = match value {
+        Value::Int(_) => "Int64",
+        Value::BigInt(_) => "BigInt",
+        Value::Float(_) => "Float",
+        Value::Bool(_) => "Bool",
+        Value::Str(_) => "String",
+        _ => return None,
+    };
+    kb.try_resolve_symbol(name)
+}
+
+/// WI-502 Step 3 — store-fallback for an unbound-but-constrained var: the sort
+/// head of a `Constraint::Type` payload recorded on `vid` (via
+/// [`super::subst::Substitution::type_constraints_of`]). Returns the first
+/// payload that widens to a concrete sort head.
+///
+/// Reading the payload's head as the var's `min_sort` is consistent with
+/// `min_sort`'s "least DECLARED sort" = UPPER-BOUND contract: for a var declared
+/// `<: T`, `T` is the tightest sort the typer can declare, and a downstream
+/// guard `subsort(min_sort(?x), U)` over an upper bound is sound-but-incomplete
+/// (it never wrong-FIRES, only possibly-misses — the M6 flounder posture). The
+/// EXACT Type-payload shape and whether a given constraint pins vs. bounds is
+/// Step 5's to own; Step 3 has no producer (`add_type_constraint` has no
+/// non-test caller), so this is exercised only by tests.
+fn store_sort_bound(
+    kb: &KnowledgeBase,
+    subst: &super::subst::Substitution,
+    vid: VarId,
+) -> Option<Symbol> {
+    subst
+        .type_constraints_of(vid)
+        .iter()
+        .find_map(|payload| sort_functor_of_view(kb, payload))
+}
+
 /// WI-283 — the type-directed firing guard for `[simp]` rewriting.
 ///
 /// A `[simp]` rule's guard is its explicit `:- …` *plus* the `requires` of

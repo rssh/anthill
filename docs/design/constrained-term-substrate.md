@@ -180,10 +180,28 @@ repoint. Delivered:
 the store plumbing + the `push_constraint_deduped` dedup. Write-mostly still — no resolver-side
 producer until Step 3, so the wakeup is exercised by tests only.
 
-**Step 3 — Static type on the carrier + read API.** Stop dropping `inferred_type` on
-open/subst (the original WI-502 bug). `min_sort` / type-read = deref-binding-and-read-carrier,
-falling back to the store for unbound-but-constrained vars. Add the compute-once entry (widen
-the typing boundary to the prove/simplify entry) and the loud refresh boundary (M6).
+**Step 3 — Static type on the carrier + read API. *(DELIVERED — core A+B; C+E deferred to Step 5.)***
+Delivered:
+- **(A) Stop dropping `inferred_type` on open/subst** (the original WI-502 bug):
+  `NodeOccurrence::rebuilt_expr` carries the typer-stamped type (and `Synthesized`
+  provenance) through every occurrence rebuild — `simp_rewrite::reassemble`,
+  `open_debruijn_node`/`node_to_debruijn` tails, the `substitute_occurrence` tail. The carry
+  is VERBATIM: sound because `min_sort` reads only the SORT HEAD, which is functor-determined
+  (a rebuild keeps the same functor) and so invariant under the type-parameter refinement a
+  child substitution performs; a var-head reads `None`, never a stale concrete sort (the M6
+  refresh-boundary guarantee, satisfied by head-only reads — no type re-derivation).
+- **(B) `min_sort_of_value(kb, σ, value)`** — the value-level read API (M6 "binding is
+  navigation"): a var follows its σ-binding (cycle-guarded loop, since SLD σ is not
+  occurs-checked) → reads the bound value's carrier cache; a `Value::Node` reads its
+  `inferred_type`; a scalar reads its literal-kind; an unbound-but-constrained var falls back to
+  the Step-1 store (`type_constraints_of`). A bare constructed `Value::Term` reads `None`.
+Deferred to Step 5 (WI-292), the consumer that exercises them: **(C)** the compute-once entry
+(re-typing the untyped `apply_eq_rules` prove/simplify entry — its `TermId` redex carries no
+stamp), and **(E)** the `(type, inner)` pair wrapper for a bare `Value::Term` (a `Value::Typed`
+variant is too invasive — 1844 `Value::` arms / WI-538 silent-wildcard trap — so a narrow
+external pair at the boundary, when Step 5 needs it). Still write-mostly: `min_sort_of_value`
+has no production caller and `add_type_constraint` no producer until Step 5; the loud refresh
+boundary is the head-only read returning `None` rather than re-deriving (M6).
 
 **Step 4 — Shape A monomorphization at the typing boundary.** Rewrite type-directed spec-op
 calls in rule bodies / guarded-effect guards to the resolved instance's qualified functor via
