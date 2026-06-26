@@ -558,6 +558,20 @@ class ParseTest extends munit.FunSuite:
     assertEquals(functorName(pf, tn), "anthill.prelude.TypeExtractor.Arrow")
   }
 
+  test("WI-562: a plain-term op body after an `=`-ending ensures clause is captured, not swallowed") {
+    // `ensures result = mul(2, x)` ends in `=`; the trailing `= mul(2, x)` is the
+    // operation BODY, not a chained equality (equality is non-associative). The
+    // clause keeps the single `result = mul(2, x)` eq goal and the body survives.
+    val (pf, op) = parseDemoOp(
+      "  operation double(x: Int) -> Int\n    ensures result = mul(2, x) = mul(2, x)")
+    assert(op.body.isDefined,
+      "plain-term operation body must not be swallowed into the ensures clause")
+    assertEquals(op.ensures.length, 1, "exactly one ensures clause")
+    assertEquals(op.ensures.head.length, 1, "the clause holds one (binary) eq goal, not a chained one")
+    assertEquals(functorName(pf, op.ensures.head.head), "eq")
+    assertEquals(functorName(pf, op.body.get), "mul")
+  }
+
   test("WI-288/WI-361: named tuple `(a: T, b: Int)` lowers to `TypeExtractor.NamedTuple`") {
     val (pf, op) = parseDemoOp(
       "  operation f() -> Int =\n    let x : (a: T, b: Int) = 1 in x")

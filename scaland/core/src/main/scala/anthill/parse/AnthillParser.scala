@@ -332,15 +332,29 @@ private class AnthillParserImpl(
       buildInfix(first, pairs)
     }
 
-  /** A `_term` for an operation's `requires` / `ensures` clause body. Identical
-    * to `term` except a bare `=` is treated as the operation-body separator
-    * (`= <body>`) rather than an equality goal ONLY when it introduces an
-    * expr-body-only form — see `clauseInfixOp`. So `requires Eq[T] = match l …`
-    * gives the op the `match` body, while `ensures result = x` keeps
-    * `result = x` as the postcondition eq goal — both matching rustland's GLR. */
+  /** A `_term` for an operation's `requires` / `ensures` clause goal. Like
+    * `term`, but `=` (equality) is NON-ASSOCIATIVE: a clause goal carries at
+    * most one. A leading chain of non-`=` infix ops, then an optional single
+    * `= rhs` (guarded by `!exprBodyKeyword` so `= match …` stays the operation
+    * body), then a trailing non-`=` chain. The whole ordered op list still goes
+    * through one `buildInfix`/Pratt pass, so precedence vs `or`/`and`/… is
+    * unchanged — only a SECOND `=` is left unconsumed. That second `=` is the
+    * `= <body>` separator, so e.g. `ensures result = f(x) = g(x)` keeps
+    * `result = f(x)` as the postcondition AND `= g(x)` as the body, rather than
+    * silently swallowing the body into a chained eq (WI-562 follow-up). Mirrors
+    * rustland's non-assoc `=` under GLR: `requires Eq[T] = match l …` gives the
+    * op the `match` body, while `ensures result = x` keeps the eq goal. */
   private def clauseTerm[$: P]: P[TermId] =
-    P(atomWithFieldAccess ~ (clauseInfixOp ~ atomWithFieldAccess).rep).map { case (first, pairs) =>
-      buildInfix(first, pairs)
+    P(
+      atomWithFieldAccess ~ (nonEqInfixOp ~ atomWithFieldAccess).rep ~
+        (eqClauseOp ~ atomWithFieldAccess ~ (nonEqInfixOp ~ atomWithFieldAccess).rep).?
+    ).map { case (first, leading, eqTail) =>
+      val pairs = ArrayBuffer.from(leading)
+      eqTail.foreach { case (eqSym, eqRhs, trailing) =>
+        pairs += ((eqSym, eqRhs))
+        pairs ++= trailing
+      }
+      buildInfix(first, pairs.toSeq)
     }
 
   private def buildInfix(first: TermId, pairs: Seq[(TermSymbol, TermId)]): TermId =
@@ -740,20 +754,21 @@ private class AnthillParserImpl(
       Tokens.opToken.map(intern)
     )
 
-  /** `infixOp` for a `requires` / `ensures` clause term (see `clauseTerm`). A
-    * bare `=` is the equality goal EXCEPT when it introduces the operation body —
-    * i.e. when it is followed by an expr-body-only keyword (`match`/`if`/`let`/
-    * `lambda`/`proof`), which cannot be a `_term` and so can only be the
-    * `= <body>` separator. This mirrors rustland's GLR (the infix `Eq[T] = match`
-    * parse is impossible, so `= match` is the body; `result = x` stays an eq
-    * goal). Every other operator (`<=`, `>=`, `==`, `!=`, `<=>`, …) is a distinct
-    * maximal-munch token and always an infix op. Derived from `infixOp` so the
-    * two operator sets can't drift. */
-  private def clauseInfixOp[$: P]: P[TermSymbol] =
-    P(
-      (Tokens.opToken.filter(_ == "=") ~ !exprBodyKeyword).map(_ => intern("=")) |
-      infixOp.filter(sym => symbols.name(sym) != "=")
-    )
+  /** A non-`=` clause-term infix op: every operator in `infixOp` except `=`.
+    * `=` is handled separately by `eqClauseOp` (at most one per clause goal), so
+    * a second `=` is left for the `= <body>` separator. Derived from `infixOp`
+    * so the two operator sets can't drift. (`<=`/`>=`/`!=`/`<=>`/… are distinct
+    * maximal-munch tokens, never `=`, so they remain ordinary chaining ops.) */
+  private def nonEqInfixOp[$: P]: P[TermSymbol] =
+    P(infixOp.filter(sym => symbols.name(sym) != "="))
+
+  /** The single clause `=` (equality goal), consumed EXCEPT when it introduces
+    * the operation body — i.e. when followed by an expr-body-only keyword
+    * (`match`/`if`/`let`/`lambda`/`proof`), which cannot be a `_term` and so can
+    * only be the `= <body>` separator. Mirrors rustland's GLR (the infix
+    * `Eq[T] = match` parse is impossible, so `= match` is the body). */
+  private def eqClauseOp[$: P]: P[TermSymbol] =
+    P((Tokens.opToken.filter(_ == "=") ~ !exprBodyKeyword).map(_ => intern("=")))
 
   /** The keywords that introduce an expr-body-only form (`_expr_body` minus the
     * `_term` fall-through). A lookahead over these distinguishes a clause `= goal`
