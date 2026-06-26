@@ -15,7 +15,7 @@ use std::rc::Rc;
 
 use smallvec::SmallVec;
 
-use super::subst::Substitution;
+use super::subst::{Constraint, Substitution};
 use super::node_occurrence::{
     self, EffectExprNode, Expr, NodeOccurrence, TypeChild, TypeNode,
 };
@@ -279,6 +279,16 @@ impl Solution {
     /// floundered solution must never be counted as a definite answer.
     pub fn is_definite(&self) -> bool {
         self.residual.is_empty()
+    }
+
+    /// WI-502 Step 1 — the residual constraints `C` this answer carries in its
+    /// substitution store (M2: an answer generalizes to `(σ, C)`). Delegates to
+    /// [`Substitution::residual_constraints`]. Distinct from [`Self::residual`],
+    /// which holds delayed *goals* (NAF/flounder); `C` is the var-keyed
+    /// constraint store (`lacks` kind #1 / type kind #2). Write-mostly — no
+    /// consumer reads it yet (`docs/design/constrained-term-substrate.md`).
+    pub fn residual_constraints(&self) -> Vec<(VarId, Constraint)> {
+        self.subst.residual_constraints()
     }
 }
 

@@ -10,14 +10,42 @@
 ///
 /// See: docs/stage0/rust-term-store-design.md §3.4, docs/proposals/026.1
 
-use std::collections::HashMap;
-
 use imbl::HashMap as ImHashMap;
 
 use super::term::{Term, TermId, TermStore, Var, VarId};
 use super::term_view::views_structurally_equal;
 use super::KnowledgeBase;
 use crate::eval::value::Value;
+
+/// WI-502 Step 1 — a tagged constraint on a logic variable, held in the
+/// per-branch constraint store on [`Substitution`]. Generalizes the WI-328
+/// `lacks` side-table into the constraint substrate of
+/// `docs/design/constrained-term-substrate.md` (M2: *type is one kind of
+/// constraint*). Each variant is a distinct constraint *kind*; the store keys a
+/// `Vec<Constraint>` per variable, so a variable may carry several.
+///
+/// The answer generalizes `σ → (σ, residual C)` (M2): an undischarged
+/// constraint here is a residual `C` in the answer, surfaced by
+/// [`Substitution::residual_constraints`]. Lifetime is branch-scoped — the
+/// store rides the per-frame `subst.clone()` exactly as `bindings`/`lacks`
+/// always have (M7), now O(1) because the store is persistent (`imbl`,
+/// WI-569 / Step 0).
+#[derive(Clone, Debug)]
+pub enum Constraint {
+    /// Kind #1 (WI-328, proposal 045 §5.5 / §7.1) — an effect-row-tail `lacks`
+    /// label: the variable (a row tail `ρ`) may never present this effect-type
+    /// label, stored as a carrier-agnostic effect-type [`Value`] (a ground
+    /// label is a `Value::Term`, a denoted-bearing one a `Value::Node`).
+    Lacks(Value),
+    /// Kind #2 (WI-502) — a residual type-constraint: a reified type-guard
+    /// [`Value`] the variable's eventual binding must satisfy (e.g.
+    /// `subsort(min_sort(?x), Numeric)`, `min_sort(?x) = T`, or a disequality —
+    /// the decidable fragment of M2), carried carrier-agnostically like the
+    /// answer's delayed `residual` goals. **Write-mostly:** no producer wires it
+    /// (Step 3+ widens the typing boundary) and no consumer discharges it
+    /// (Step 5 fires Shape-B guards) yet; Step 1 lands only the substrate.
+    Type(Value),
+}
 
 #[derive(Clone, Debug)]
 pub struct Substitution {
@@ -45,23 +73,28 @@ pub struct Substitution {
     /// writers record nothing (readers must tolerate an empty list with the
     /// flag set).
     pub contradiction_details: Vec<(VarId, Value, Value)>,
-    /// WI-328 (proposal 045 §5.5 / §7.1) — `lacks` constraints on
-    /// (unbound) row-tail variables: each effect-row tail `ρ` may carry a
-    /// set of effect-label types it is forbidden to present (`- e` /
-    /// `absent(e)`). Keyed by the tail's `VarId`, the labels stored as
-    /// effect-type carrier-agnostic [`Value`]s (WI-342 P4-B: a denoted-bearing
-    /// label like `-Modify[c]` is a `Value::Node`, a ground one a
-    /// `Value::Term`). This is a side-table parallel to `bindings`
-    /// (not a `Value` binding) because the constraint is on the *unbound*
-    /// tail, not on a concrete value — once the tail binds, the constraint
-    /// has already been checked against (and propagated through) the
-    /// binding by [`crate::kb::typing`]'s `bind_row_tail`.
+    /// WI-502 Step 1 — the per-branch **tagged constraint store** (see
+    /// `docs/design/constrained-term-substrate.md`). Generalizes the WI-328
+    /// `lacks` side-table: each [`Constraint`] is tagged by kind (`Lacks` #1,
+    /// `Type` #2) and keyed by the (usually unbound) variable it constrains, so
+    /// one variable may carry several constraints of mixed kinds.
     ///
-    /// Living on `Substitution` means it inherits the snapshot/restore
-    /// rollback (`subst.clone()` … `*subst = snapshot`) that WI-338's
-    /// `pair_present_labels` / `cover_present_labels` already exercise, so a
-    /// failed row-unification attempt discards its tentative lacks too.
-    pub lacks: HashMap<VarId, Vec<Value>>,
+    /// Persistent (`imbl`) so `Clone` is O(1) structural sharing — it rides the
+    /// per-step `frame.subst.clone()` for free alongside `bindings` (WI-569 /
+    /// Step 0), the prerequisite that keeps carrying a *growing* constraint
+    /// store from re-introducing an O(depth × store) copy.
+    ///
+    /// Living on `Substitution` gives every constraint the same branch lifetime
+    /// as a binding (M7): the snapshot/restore rollback (`subst.clone()` …
+    /// `*subst = snapshot`) that WI-338's `pair_present_labels` /
+    /// `cover_present_labels` already exercise discards a failed
+    /// row-unification's tentative constraints, and a backtracked frame drops
+    /// its branch-specific ones. The `lacks` accessors ([`Self::add_lacks`] /
+    /// [`Self::lacks_of`]) are now thin views over the `Constraint::Lacks`
+    /// entries of this store; once a tail binds, its `lacks` has already been
+    /// checked against (and propagated through) the binding by
+    /// [`crate::kb::typing`]'s `bind_row_tail`.
+    pub constraints: ImHashMap<VarId, Vec<Constraint>>,
 }
 
 impl Substitution {
@@ -71,7 +104,7 @@ impl Substitution {
             parent: None,
             contradiction: false,
             contradiction_details: Vec::new(),
-            lacks: HashMap::new(),
+            constraints: ImHashMap::new(),
         }
     }
 
@@ -81,7 +114,7 @@ impl Substitution {
             parent: Some(Box::new(parent)),
             contradiction: false,
             contradiction_details: Vec::new(),
-            lacks: HashMap::new(),
+            constraints: ImHashMap::new(),
         }
     }
 
@@ -231,43 +264,103 @@ impl Substitution {
         }
     }
 
-    /// WI-328 — record `lacks` labels on a row-tail variable. The labels
-    /// are effect-type [`Value`]s the tail `var` may never present. Order is
-    /// not significant (a row is a set).
+    /// WI-328 — record `lacks` labels (kind #1) on a row-tail variable, as
+    /// `Constraint::Lacks` entries in the unified store. The labels are
+    /// effect-type [`Value`]s the tail `var` may never present. Order is not
+    /// significant (a row is a set).
     ///
     /// WI-342 P4-B: `Value` has no `PartialEq`, so dedup is best-effort —
     /// ground labels (`Value::Term`, the only label form today) dedup by
-    /// `TermId`, preserving the pre-P4 bound on a tail's lacks set (important:
-    /// `bind_row_tail` propagates the whole parent-chain union onto each fresh
-    /// continuation, so un-deduped ground labels would accumulate superlinearly
-    /// across open-row chains). A `Value::Node` label has no structural `Eq`
-    /// here and is always pushed — harmless (`label_violates_lacks` is
-    /// idempotent), and not yet reachable (no producer mints denoted-bearing
-    /// absents into a tail).
+    /// `TermId` via `scalar_eq`, preserving the pre-P4 bound on a tail's lacks
+    /// set (important: `bind_row_tail` propagates the whole parent-chain union
+    /// onto each fresh continuation, so un-deduped ground labels would
+    /// accumulate superlinearly across open-row chains). A `Value::Node` label
+    /// has no structural `Eq` here and is always pushed — harmless
+    /// (`label_violates_lacks` is idempotent), and not yet reachable (no
+    /// producer mints denoted-bearing absents into a tail). Dedup is against
+    /// THIS level's `Lacks` entries only (matching the pre-WI-502
+    /// `self.lacks.entry(var)` semantics; cross-level union is `lacks_of`'s job).
     pub fn add_lacks<I>(&mut self, var: VarId, labels: I)
     where
         I: IntoIterator<Item = Value>,
     {
-        let existing = self.lacks.entry(var).or_default();
+        // `imbl`'s `entry` copy-on-writes internally (path-copies a shared node
+        // before handing out `&mut`), so we push IN PLACE — no explicit `Vec`
+        // clone — while a prior `subst.clone()` stays isolated (the M7
+        // snapshot/restore invariant; `constraint_store_clone_is_isolated`
+        // guards it). Mirrors the pre-WI-502 `self.lacks.entry(var).or_default()`.
+        let entry = self.constraints.entry(var).or_default();
         for l in labels {
-            // Dedup carrier-agnostically via `Value::scalar_eq` (ground labels
-            // by `TermId`; `Value::Node` has no structural `Eq` → always pushed,
-            // harmless — `label_violates_lacks` is idempotent).
-            if !existing.iter().any(|e| e.scalar_eq(&l)) {
-                existing.push(l);
+            // Dedup carrier-agnostically via `Value::scalar_eq` against existing
+            // `Lacks` entries (ground labels by `TermId`; `Value::Node` has no
+            // structural `Eq` → always pushed, harmless).
+            let dup = entry
+                .iter()
+                .any(|c| matches!(c, Constraint::Lacks(e) if e.scalar_eq(&l)));
+            if !dup {
+                entry.push(Constraint::Lacks(l));
             }
         }
     }
 
-    /// WI-328 — the full `lacks` set on a row-tail variable, unioned across
-    /// the parent chain (a tail's constraints may have been recorded in an
-    /// ancestor substitution before a child was forked). Returns an owned
-    /// `Vec` since the union may span levels; callers iterate it read-only.
-    /// (WI-342 P4-B: no dedup across levels — see [`Self::add_lacks`].)
+    /// WI-328 — the full `lacks` set on a row-tail variable: the `Value` labels
+    /// of this level's `Constraint::Lacks` entries, unioned across the parent
+    /// chain (a tail's constraints may have been recorded in an ancestor before
+    /// a child was forked). Returns an owned `Vec` since the union may span
+    /// levels; callers iterate it read-only. (WI-342 P4-B: no dedup across
+    /// levels — see [`Self::add_lacks`].)
     pub fn lacks_of(&self, var: VarId) -> Vec<Value> {
-        let mut out: Vec<Value> = self.lacks.get(&var).cloned().unwrap_or_default();
+        let mut out: Vec<Value> = self
+            .constraints
+            .get(&var)
+            .map(|cs| {
+                cs.iter()
+                    .filter_map(|c| match c {
+                        Constraint::Lacks(v) => Some(v.clone()),
+                        Constraint::Type(_) => None,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
         if let Some(ref parent) = self.parent {
             out.extend(parent.lacks_of(var));
+        }
+        out
+    }
+
+    /// WI-502 Step 1 — record a residual type-constraint (kind #2) on `var`:
+    /// the reified type-guard [`Value`] `guard` (e.g. `subsort(min_sort(?x),
+    /// Numeric)`) that `var`'s eventual binding must satisfy. The kind-#2
+    /// parallel to [`Self::add_lacks`], writing a `Constraint::Type`.
+    ///
+    /// **Write-mostly** (M2 / Step 1): the substrate carries the constraint;
+    /// no producer mints one (Step 3+ widens the typing boundary) and no
+    /// consumer discharges it (Step 5 fires Shape-B guards) yet. No dedup —
+    /// unlike `lacks` there is no propagation loop to bound the set, and
+    /// committing to a dedup key now would prejudge the future guard shape.
+    pub fn add_type_constraint(&mut self, var: VarId, guard: Value) {
+        // In-place push via `imbl`'s copy-on-write `entry` (see `add_lacks`).
+        self.constraints
+            .entry(var)
+            .or_default()
+            .push(Constraint::Type(guard));
+    }
+
+    /// WI-502 Step 1 — the residual constraints `C` carried by this
+    /// substitution and its parent chain, as `(VarId, Constraint)` pairs. The
+    /// answer generalizes `σ → (σ, residual C)` (M2); this surfaces the `C`.
+    /// Both kinds are returned (a consumer filters by variant — `Lacks` for the
+    /// effect machinery, `Type` for type-directed firing). **No consumer reads
+    /// it yet** (Step 1 is write-mostly); it makes the answer *able* to carry
+    /// `C`. Owned `Vec` since the union spans the parent chain.
+    pub fn residual_constraints(&self) -> Vec<(VarId, Constraint)> {
+        let mut out: Vec<(VarId, Constraint)> = self
+            .constraints
+            .iter()
+            .flat_map(|(v, cs)| cs.iter().map(move |c| (*v, c.clone())))
+            .collect();
+        if let Some(ref parent) = self.parent {
+            out.extend(parent.residual_constraints());
         }
         out
     }
@@ -555,6 +648,74 @@ mod tests {
         s.bind_value(&kb, v, make());
         s.bind_value(&kb, v, make());
         assert!(!s.is_contradiction());
+    }
+
+    // ── WI-502 Step 1: tagged constraint store ──────────────────────
+
+    /// `lacks` (kind #1) and a type-constraint (kind #2) coexist on the same
+    /// variable in the unified store; each read view sees only its own kind.
+    #[test]
+    fn lacks_and_type_share_one_store() {
+        let mut s = Substitution::new();
+        let v = vid(1);
+        s.add_lacks(v, [Value::Int(7)]);
+        s.add_type_constraint(v, Value::Str("subsort(min_sort(x), Numeric)".into()));
+
+        // lacks_of surfaces only the Lacks label, not the Type guard.
+        let lacks = s.lacks_of(v);
+        assert_eq!(lacks.len(), 1);
+        assert!(lacks[0].scalar_eq(&Value::Int(7)));
+
+        // residual_constraints surfaces both kinds.
+        let residual = s.residual_constraints();
+        assert_eq!(residual.len(), 2);
+        assert_eq!(residual.iter().filter(|(_, c)| matches!(c, Constraint::Lacks(_))).count(), 1);
+        assert_eq!(residual.iter().filter(|(_, c)| matches!(c, Constraint::Type(_))).count(), 1);
+    }
+
+    /// `add_lacks` dedups within a level (behavior preserved through the store
+    /// migration); a repeated ground label is recorded once.
+    #[test]
+    fn add_lacks_dedups_within_level() {
+        let mut s = Substitution::new();
+        let v = vid(1);
+        s.add_lacks(v, [Value::Int(5)]);
+        s.add_lacks(v, [Value::Int(5)]); // duplicate
+        s.add_lacks(v, [Value::Int(9)]);
+        let lacks = s.lacks_of(v);
+        assert_eq!(lacks.len(), 2, "duplicate ground label must dedup");
+    }
+
+    /// `lacks_of` unions across the parent chain without dedup across levels
+    /// (behavior preserved); `residual_constraints` likewise spans the chain.
+    #[test]
+    fn lacks_and_residual_union_parent_chain() {
+        let mut parent = Substitution::new();
+        let v = vid(1);
+        parent.add_lacks(v, [Value::Int(1)]);
+        let mut child = Substitution::with_parent(parent);
+        child.add_lacks(v, [Value::Int(1)]); // same label, different level → NOT deduped
+        child.add_type_constraint(v, Value::Int(2));
+
+        // Cross-level union: two Int(1) lacks (one per level).
+        assert_eq!(child.lacks_of(v).len(), 2);
+        // residual spans the chain: 2 lacks + 1 type = 3.
+        assert_eq!(child.residual_constraints().len(), 3);
+    }
+
+    /// The constraint store is persistent: a clone taken before adding a
+    /// constraint does not observe the later write (branch isolation, the
+    /// snapshot/restore rollback M7 relies on).
+    #[test]
+    fn constraint_store_clone_is_isolated() {
+        let mut s = Substitution::new();
+        let v = vid(1);
+        s.add_lacks(v, [Value::Int(1)]);
+        let snapshot = s.clone();
+        s.add_type_constraint(v, Value::Int(2));
+        // The snapshot keeps only the pre-clone lacks; the live subst has both.
+        assert_eq!(snapshot.residual_constraints().len(), 1);
+        assert_eq!(s.residual_constraints().len(), 2);
     }
 
     #[test]
