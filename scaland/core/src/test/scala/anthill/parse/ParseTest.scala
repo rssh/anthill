@@ -572,6 +572,180 @@ class ParseTest extends munit.FunSuite:
     assertEquals(functorName(pf, tn), "anthill.prelude.TypeExtractor.NamedTuple")
   }
 
+  // ── Parser parity with current rust grammar (2026-06-26 resync) ─────
+
+  // WI-084: term-level named constants.
+  test("WI-084: bodyless `const NAME : T` parses + defines a Const item") {
+    val pf = Parser.parse(
+      """sort Demo
+        |  sort Float = ?
+        |  const infinity: Float
+        |end""".stripMargin, "<const>").toOption.getOrElse(fail("parse failed"))
+    val c = pf.items.collect { case Item.SortWithBodyItem(s) => s }.head
+      .items.collectFirst { case Item.ConstItem(c) => c }.getOrElse(fail("no const"))
+    assertEquals(pf.symbols.name(c.name.last), "infinity")
+    assert(c.value.isEmpty, "bodyless const must have no value")
+  }
+
+  test("WI-084: `const NAME : T = expr` captures the body") {
+    val pf = Parser.parse(
+      """sort Demo
+        |  sort Float = ?
+        |  const tau: Float = mul(2.0, pi)
+        |end""".stripMargin, "<const2>").toOption.getOrElse(fail("parse failed"))
+    val c = pf.items.collect { case Item.SortWithBodyItem(s) => s }.head
+      .items.collectFirst { case Item.ConstItem(c) => c }.getOrElse(fail("no const"))
+    assert(c.value.isDefined, "const with `= expr` must carry a value")
+  }
+
+  // WI-478: guarded effect-row elements `E :- guard`.
+  test("WI-478: braced guarded effect `{ Error[X] :- eq(b, 0) }` parses") {
+    assert(parseEffects("{ Error[X] :- eq(b, 0) }"), "braced guarded effect should parse")
+  }
+
+  test("WI-478: single bare guarded effect `Error[X] :- isEmpty(s)` parses") {
+    assert(parseEffects("Error[X] :- isEmpty(s)"), "bare guarded effect should parse")
+  }
+
+  test("WI-478: parenthesized conjunctive guard `( E :- p, q )` parses") {
+    assert(parseEffects("{ ( Error[X] :- p(a), q(b) ) }"), "paren guarded effect should parse")
+  }
+
+  test("WI-478: a guarded effect lowers to a `guarded(label, guards)` term") {
+    val (pf, op) = parseDemoOp("  operation f() -> Int\n    effects { Error :- eq(b, 0) }")
+    val eff = op.effects.head.typeExpr
+    eff match
+      case TypeExpr.EffectGuarded(_, guard) => assertEquals(guard.length, 1)
+      case other => fail(s"expected EffectGuarded, got $other")
+  }
+
+  // WI-522: `<=>` unify operator + goal-position `let`.
+  test("WI-522: `<=>` in a rule head lowers to the `unify` functor") {
+    val pf = Parser.parse("rule neg(?a) <=> sub(0.0, ?a)", "<unify>").toOption
+      .getOrElse(fail("parse failed"))
+    val rule = pf.items.collectFirst { case Item.RuleItem(r) => r }.getOrElse(fail("no rule"))
+    val head = rule.heads.collectFirst { case RuleHead.TermHead(t) => t }.getOrElse(fail("no head"))
+    assertEquals(functorName(pf, head), "unify")
+  }
+
+  test("WI-522: goal-position `let ?v = expr` lowers to a `unify` goal") {
+    val pf = Parser.parse("rule p(?x) :- let ?y = f(?x), q(?y)", "<letgoal>").toOption
+      .getOrElse(fail("parse failed"))
+    val body = pf.items.collectFirst { case Item.RuleItem(r) => r }.flatMap(_.body)
+      .getOrElse(fail("no body"))
+    assertEquals(functorName(pf, body(0)), "unify")
+  }
+
+  // WI-568: the cut control primitive `!`.
+  test("WI-568: a bare `!` rule-body goal lowers to `cut()` (not prefix negation)") {
+    val pf = Parser.parse("rule p(?x) :- q(?x), !, r(?x)", "<cut>").toOption
+      .getOrElse(fail("parse failed"))
+    val body = pf.items.collectFirst { case Item.RuleItem(r) => r }.flatMap(_.body)
+      .getOrElse(fail("no body"))
+    assertEquals(body.length, 3)
+    assertEquals(functorName(pf, body(1)), "cut")
+  }
+
+  test("WI-568: `! atom` stays prefix negation `not(atom)`") {
+    val pf = Parser.parse("rule p(?x) :- ! q(?x)", "<not>").toOption
+      .getOrElse(fail("parse failed"))
+    val body = pf.items.collectFirst { case Item.RuleItem(r) => r }.flatMap(_.body)
+      .getOrElse(fail("no body"))
+    assertEquals(functorName(pf, body(0)), "not")
+  }
+
+  // WI-027: bounded quantification `(forall/some ?x in xs: body)`.
+  test("WI-027: `(forall ?x in xs: P(?x))` lowers to `forall_in`") {
+    val pf = Parser.parse("rule allp(?xs) :- (forall ?x in ?xs: p(?x))", "<forall_in>").toOption
+      .getOrElse(fail("parse failed"))
+    val body = pf.items.collectFirst { case Item.RuleItem(r) => r }.flatMap(_.body)
+      .getOrElse(fail("no body"))
+    assertEquals(functorName(pf, body(0)), "forall_in")
+  }
+
+  test("WI-027: `(some ?x in xs: P(?x))` lowers to `some_in`") {
+    val pf = Parser.parse("rule somep(?xs) :- (some ?x in ?xs: p(?x))", "<some_in>").toOption
+      .getOrElse(fail("parse failed"))
+    val body = pf.items.collectFirst { case Item.RuleItem(r) => r }.flatMap(_.body)
+      .getOrElse(fail("no body"))
+    assertEquals(functorName(pf, body(0)), "some_in")
+  }
+
+  test("WI-027: an ordinary paren expr `(a + b)` still parses (bounded-quant backtracks)") {
+    probeOk("paren-after-boundedq", "rule p(?x) :- eq(?x, (1 + 2))")
+  }
+
+  test("WI-027: a bounded-quant body admits a goal-position `let` (rule_body, not bare term)") {
+    probeOk("boundedq-goal", "rule p(?xs) :- (forall ?x in ?xs: let ?y = f(?x), q(?y))")
+  }
+
+  test("WI-027: an anonymous `?` binder in a bounded quantifier is rejected (loud, not silent)") {
+    Parser.parse("rule p(?xs) :- (forall ? in ?xs: q(?x))", "<anon-binder>") match
+      case Right(_) => fail("expected rejection of anonymous bounded-quant binder")
+      case Left(_)  => ()
+  }
+
+  // WI-517: type-annotated lambda binders.
+  test("WI-517: single typed lambda binder `lambda (x: Int) -> x` parses") {
+    probeOk("typed-lambda", "sort Demo\n  sort Int = ?\n  operation f() -> Int =\n    g(lambda (x: Int) -> x)\nend")
+  }
+
+  test("WI-517: typed tuple binder `lambda (a: A, b: B) -> add(a, b)` parses") {
+    probeOk("typed-lambda-tuple",
+      "sort Demo\n  sort A = ?\n  sort B = ?\n  operation f() -> A =\n    g(lambda (a: A, b: B) -> add(a, b))\nend")
+  }
+
+  // ccb5cf1d: a lambda is admissible as a NAMED-arg value.
+  test("lambda as a named-arg value `f(k: lambda x -> g(x))` parses") {
+    probeOk("named-lambda",
+      "sort Demo\n  sort Int = ?\n  operation f() -> Int =\n    h(k: lambda x -> g(x), j: 2)\nend")
+  }
+
+  // WI-562: a `requires` clause must not swallow the operation body `=`.
+  test("WI-562: `operation … requires Eq[T] = match …` parses the body") {
+    val (pf, op) = parseDemoOp(
+      "  operation member(x: T) -> Int requires Eq[T] =\n    match x\n      case nil() -> 0")
+    assertEquals(op.requires.length, 1)
+    assert(op.body.isDefined, "the `= match …` must parse as the operation body")
+  }
+
+  // The dual: a clause `= goal` with a plain-TERM rhs (not an expr-body keyword)
+  // stays an equality goal, NOT the operation body — matching rust's GLR.
+  test("a clause `ensures result = x` keeps `=` as the eq goal (no spurious body)") {
+    val (pf, op) = parseDemoOp("  operation abs(x: Int) -> Int ensures result = x")
+    assertEquals(op.ensures.length, 1)
+    assertEquals(functorName(pf, op.ensures.head.head), "eq")
+    assert(op.body.isEmpty, "`= x` is the ensures eq goal, not an operation body")
+  }
+
+  // WI-454: per-statement non-rigid type-variable binder sugar.
+  test("WI-454: `sort ?X` desugars to an abstract type-param sort") {
+    val pf = Parser.parse("sort Demo\n  sort ?X\nend", "<sortvar>").toOption
+      .getOrElse(fail("parse failed"))
+    val inner = pf.items.collect { case Item.SortWithBodyItem(s) => s }.head.items
+    val x = inner.collectFirst { case Item.AbstractSortItem(a) if pf.symbols.name(a.name.last) == "X" => a }
+    assert(x.isDefined, s"expected abstract sort `X`, got $inner")
+  }
+
+  test("WI-454: `sort [X]` bracket binder parses") {
+    probeOk("sort-bracket", "sort Demo\n  sort [X]\nend")
+  }
+
+  test("WI-454: structured binder `sort ?F { sort ?T }` marks F as a type param") {
+    val pf = Parser.parse("sort Demo\n  sort ?F { sort ?T }\nend", "<sorthk>").toOption
+      .getOrElse(fail("parse failed"))
+    val f = pf.items.collect { case Item.SortWithBodyItem(s) => s }.head.items
+      .collectFirst { case Item.SortWithBodyItem(s) if pf.symbols.name(s.name.last) == "F" => s }
+      .getOrElse(fail("no F binder"))
+    assert(f.isTypeParam, "structured binder F must be marked isTypeParam")
+  }
+
+  // WI-538: in-body / control-flow proof statement.
+  test("WI-538: in-body `proof T by derivation end <body>` parses") {
+    probeOk("inbody-proof",
+      "sort Demo\n  sort Int = ?\n  operation f() -> Int =\n    proof t by derivation end g(x)\nend")
+  }
+
   /** Walks the entire stdlib tree and asserts every .anthill file parses.
     * Locks in the WI-162/166/167 parser-coverage achievement: as new
     * stdlib modules are added, this test catches a parser regression

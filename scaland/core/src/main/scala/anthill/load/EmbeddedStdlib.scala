@@ -36,6 +36,10 @@ object EmbeddedStdlib:
     "anthill.prelude.eq",
     "anthill.prelude.ordered",
     "anthill.prelude.numeric",
+    // monad.anthill defines `sort Monad[M[T]]` — imported by option (Option is a
+    // Monad instance). Self-contained (no imports); the 2-phase scan tolerates
+    // its position, but it precedes option for readability.
+    "anthill.prelude.monad",
     "anthill.prelude.option",
     "anthill.prelude.pair",
     "anthill.prelude.function",

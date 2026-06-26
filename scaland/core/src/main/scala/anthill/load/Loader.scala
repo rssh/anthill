@@ -133,13 +133,23 @@ object Loader:
         case Item.OperationItem(op) =>
           val shortName = joinSegments(fileSym, op.name.segments)
           val qualName = makeQualified(prefix, shortName)
-          defineOperationOnce(kb, shortName, qualName, scopeTerm)
+          defineSymbolOnce(kb, shortName, qualName, SymbolKind.Operation, scopeTerm)
 
         case Item.OperationBlockItem(block) =>
           for op <- block.entries do
             val shortName = joinSegments(fileSym, op.name.segments)
             val qualName = makeQualified(prefix, shortName)
-            defineOperationOnce(kb, shortName, qualName, scopeTerm)
+            defineSymbolOnce(kb, shortName, qualName, SymbolKind.Operation, scopeTerm)
+
+        case Item.ConstItem(c) =>
+          // Proposal 039 / WI-084: define the constant's symbol (pass 1, like
+          // operations). Monomorphic + carrier-independent — no params or
+          // type-params to scan. scaland records only the symbol; the declared
+          // type + optional body are not loaded (no typer/eval to consume them),
+          // mirroring how operation bodies/effects are left inert here.
+          val shortName = joinSegments(fileSym, c.name.segments)
+          val qualName = makeQualified(prefix, shortName)
+          defineSymbolOnce(kb, shortName, qualName, SymbolKind.Const, scopeTerm)
 
         case Item.RuleItem(rule) =>
           rule.label.foreach { label =>
@@ -158,9 +168,10 @@ object Loader:
 
         case _ => // Other items don't define symbols in pass 1
 
-  /** Define an operation symbol unless its qualified name is already
+  /** Define a symbol of `kind` unless its qualified name is already
     * registered — mirrors rustland's `is_new` reuse gate (load.rs:1110, the
-    * entity arm). A kernel operation such as `anthill.reflect.not` is FIRST
+    * entity arm). Shared by operations and consts. A kernel operation such as
+    * `anthill.reflect.not` is FIRST
     * registered as a builtin by `Prelude.registerStandardBuiltins` (into the
     * prelude's `anthill.reflect` scope); the stdlib then ALSO declares
     * `operation not(...)` in reflect.anthill. Because scaland scans a re-opened
@@ -169,14 +180,15 @@ object Loader:
     * different scope — and a bare rule-body use (`:- not(...)` in typing.anthill)
     * would then collect both via `resolveInScope` and report `AmbiguousSymbol`
     * (WI-212). Reusing the already-registered symbol keeps exactly one. */
-  private def defineOperationOnce(
+  private def defineSymbolOnce(
     kb: KnowledgeBase,
     shortName: String,
     qualName: String,
+    kind: SymbolKind,
     scopeTerm: TermId
   ): Unit =
     if !kb.symbols.byQualifiedName.contains(qualName) then
-      kb.symbols.define(shortName, qualName, SymbolKind.Operation, scopeTerm.raw)
+      kb.symbols.define(shortName, qualName, kind, scopeTerm.raw)
 
   // ── Pass 2: Process requires/imports ─────────────────────────
 
@@ -566,13 +578,16 @@ object Loader:
   private def autoImportPrelude(kb: KnowledgeBase, globalScope: TermId): Unit =
     val preludePrefix = "anthill.prelude."
     // Skip primitive type sorts (their ops collide with kernel builtins)
-    // AND collection-typeclass sorts (their ops collide with each other —
+    // AND typeclass sorts whose generic ops collide with each other —
     // Iteration/Collection/IndexedSeq/Set/Map/LogicalStream all expose
-    // `empty` / `insert` / `Effect`). These should be reached via explicit
-    // `import` clauses, mirroring rustland's explicit-only global aliases.
+    // `empty` / `insert` / `Effect`, and `Monad` exposes the very common
+    // `map` / `flatMap` / `pure`. These should be reached via explicit
+    // `import` clauses (as `option.anthill` imports `Monad`), mirroring
+    // rustland's explicit-only global aliases.
     val skip = Set(
       "Bool", "Int64", "Float", "BigInt", "String",
-      "Iteration", "Collection", "IndexedSeq", "Set", "Map", "LogicalStream")
+      "Iteration", "Collection", "IndexedSeq", "Set", "Map", "LogicalStream",
+      "Monad")
     for (qualName, sym) <- kb.symbols.byQualifiedName do
       if qualName.startsWith(preludePrefix) then
         val afterPrelude = qualName.substring(preludePrefix.length)

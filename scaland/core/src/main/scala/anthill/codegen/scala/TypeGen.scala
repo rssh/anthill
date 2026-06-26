@@ -33,6 +33,10 @@ object TypeGen:
       // Written effect-row (`Stream[E = {Modify[c]}]`) — effects erased in
       // scala_std; placeholder.
       "Any"
+    case TypeExpr.EffectGuarded(_, _) =>
+      // Guarded effect-row element (`Error :- p`) — only meaningful in an
+      // effect position, erased in scala_std like EffectRow; placeholder.
+      "Any"
 
   /** Map prelude type names to their Scala stdlib counterparts.
     * Mirrors the type_map facts in `stdlib/anthill/realization/scala_std.anthill`.

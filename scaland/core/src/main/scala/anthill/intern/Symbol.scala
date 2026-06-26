@@ -13,7 +13,7 @@ object TermSymbol:
 // ── Symbol metadata ─────────────────────────────────────────────
 
 enum SymbolKind:
-  case Sort, Entity, Operation, Namespace, Fact, Rule, Constraint, Param, Field, Goal
+  case Sort, Entity, Operation, Const, Namespace, Fact, Rule, Constraint, Param, Field, Goal
 
 enum SymbolDef:
   case Unresolved(name: String)

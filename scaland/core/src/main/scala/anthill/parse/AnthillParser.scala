@@ -254,12 +254,33 @@ private class AnthillParserImpl(
     * meaningful as an effect, and accepting a leading `(` would let a typo
     * like `effects (Modify self)` consume the `(` as an arrow/tuple type. */
   private def effectType[$: P]: P[TypeExpr] =
-    P(effectPresence | effectAbsence | simpleEffect)
+    P(parenGuardedEffect | effectPresence | effectAbsence | guardedEffect | simpleEffect)
 
   /** `_simple_effect` (WI-327): a bare effect with no composite prefix —
-    * what `+`/`-` attach to. */
+    * what `+`/`-`/`:- guard` attach to. */
   private def simpleEffect[$: P]: P[TypeExpr] =
     P(parameterizedType | variableType | simpleType)
+
+  /** WI-478 (proposal 048): a bare guarded effect-row element `E :- guard`. The
+    * `:- guard` binds the SINGLE preceding effect, per-element — the row `,`
+    * stays the OUTER separator, so the guard is a single `_term`, not a
+    * conjunction (a conjunctive guard uses the parenthesized form). Tried before
+    * `simpleEffect` and backtracks cleanly when no `:-` follows (no cut before
+    * `:-`). Mirrors rustland's `guarded_effect`. */
+  private def guardedEffect[$: P]: P[TypeExpr] =
+    P(simpleEffect ~ ":-" ~/ term).map { case (label, g) =>
+      TypeExpr.EffectGuarded(label, IndexedSeq(g))
+    }
+
+  /** WI-478: the parenthesized guarded form `( E :- g1, g2 )` — the `:-` body is
+    * a full Horn `rule_body` delimited by `)`, so a conjunctive guard is
+    * expressible. The mandatory `:-` preserves the `(`-typo protection (a bare
+    * `( E )` is still not an admissible effect). Mirrors rustland's
+    * `paren_guarded_effect`. */
+  private def parenGuardedEffect[$: P]: P[TypeExpr] =
+    P("(" ~ simpleEffect ~ ":-" ~/ term.rep(1, sep = ",") ~ ")").map { case (label, gs) =>
+      TypeExpr.EffectGuarded(label, gs.toIndexedSeq)
+    }
 
   /** `+E` explicit presence → `present(E)`; `-E` absence/lacks → `absent(E)`
     * (mirrors rustland's `effect_presence`/`effect_absence` lowering). scaland
@@ -308,13 +329,52 @@ private class AnthillParserImpl(
 
   private def term[$: P]: P[TermId] =
     P(atomWithFieldAccess ~ (infixOp ~ atomWithFieldAccess).rep).map { case (first, pairs) =>
-      if pairs.isEmpty then first
-      else
-        val operands = ArrayBuffer(first)
-        val opSymbols = ArrayBuffer.empty[TermSymbol]
-        pairs.foreach { case (op, operand) => opSymbols += op; operands += operand }
-        Pratt.desugar(operands.toIndexedSeq, opSymbols.toIndexedSeq, symbols.name, terms.alloc, symbols.intern)
+      buildInfix(first, pairs)
     }
+
+  /** A `_term` for an operation's `requires` / `ensures` clause body. Identical
+    * to `term` except a bare `=` is treated as the operation-body separator
+    * (`= <body>`) rather than an equality goal ONLY when it introduces an
+    * expr-body-only form — see `clauseInfixOp`. So `requires Eq[T] = match l …`
+    * gives the op the `match` body, while `ensures result = x` keeps
+    * `result = x` as the postcondition eq goal — both matching rustland's GLR. */
+  private def clauseTerm[$: P]: P[TermId] =
+    P(atomWithFieldAccess ~ (clauseInfixOp ~ atomWithFieldAccess).rep).map { case (first, pairs) =>
+      buildInfix(first, pairs)
+    }
+
+  private def buildInfix(first: TermId, pairs: Seq[(TermSymbol, TermId)]): TermId =
+    if pairs.isEmpty then first
+    else
+      val operands = ArrayBuffer(first)
+      val opSymbols = ArrayBuffer.empty[TermSymbol]
+      pairs.foreach { case (op, operand) => opSymbols += op; operands += operand }
+      Pratt.desugar(operands.toIndexedSeq, opSymbols.toIndexedSeq, symbols.name, terms.alloc, symbols.intern)
+
+  /** A rule-body goal: the cut control primitive `!` (WI-568), a goal-position
+    * `let ?v = expr` binding (WI-522), or a regular `_term`. Mirrors rustland's
+    * `_goal` (`choice($.cut, $.let_binding, $._term)`). `letGoal` precedes `term`
+    * (so the `let` keyword is not eaten as an `Ident`); `cutGoal` follows `term`
+    * (so `! atom` stays prefix negation `not(atom)` — only a bare `!`, where
+    * `term` fails for lack of an operand, becomes the cut). */
+  private def goalTerm[$: P]: P[TermId] =
+    P(letGoal | term | cutGoal)
+
+  /** Goal-position `let ?v = expr` (proposal 049) → `unify(?v, expr)`, the same
+    * IR `<=>` builds. Distinct from the expression-position `let_chain` (which
+    * carries a continuation body). The cut after `let` is safe — no goal is the
+    * bare word `let`, and a longer identifier (`lettuce`) never matches the
+    * keyword (maximal-munch lexing). */
+  private def letGoal[$: P]: P[TermId] =
+    P(keyword("let") ~/ variable ~ "=" ~/ term).map { case (v, e) =>
+      terms.alloc(Term.Fn(intern("unify"), IArray(v, e), IArray.empty))
+    }
+
+  /** Cut (`!`) — kernel control primitive (proposal 033.1 / WI-568): a nullary
+    * `cut` goal that commits to the current rule invocation. scaland has no
+    * resolver-side cut semantics; the goal just round-trips as a `cut()` term. */
+  private def cutGoal[$: P]: P[TermId] =
+    P("!").map(_ => terms.alloc(Term.Fn(intern("cut"), IArray.empty, IArray.empty)))
 
   /** A base atom followed by a dotted access/call chain. WI-278: a chain
     * segment over a *value* receiver (`?x`, a call result, a literal, …)
@@ -387,8 +447,35 @@ private class AnthillParserImpl(
       fnOrInstOrIdent |
       collectionLiteral |
       setLiteral |
+      boundedQuantification |
       tupleLiteralOrParenExpr
     )
+
+  /** WI-027: bounded quantification over a collection's elements, a rule-body
+    * goal — `(forall ?x in xs: P(?x))` → `forall_in(?x, xs, tuple(P(?x)))` and
+    * `(some ?x in xs: …)` → `some_in(…)`. Parenthesised, tried before the plain
+    * `(` paren/tuple forms; it backtracks cleanly when the leading token after
+    * `(` is not `forall`/`some` followed by a `?`-binder and `in` (no cut until
+    * after `in`), so the nested-implication `( forall (?h, ?rest), … )` form and
+    * ordinary paren exprs still parse. Mirrors rustland's
+    * `convert_bounded_quantification`. */
+  private def boundedQuantification[$: P]: P[TermId] =
+    P("(" ~ (keyword("forall").map(_ => "forall_in") | keyword("some").map(_ => "some_in"))
+      ~ boundedBinderVar ~ keyword("in") ~/ term ~ ":" ~ goalTerm.rep(1, sep = ",") ~ ")").map {
+      case (functor, binder, collection, body) =>
+        val bodyTuple = terms.alloc(Term.Fn(intern("tuple"), IArray.from(body), IArray.empty))
+        terms.alloc(Term.Fn(intern(functor), IArray(binder, collection, bodyTuple), IArray.empty))
+    }
+
+  /** The binder of a bounded quantifier MUST be a named variable (`?x`), not the
+    * anonymous `?` — an anon binder never flows into the body, so the quantifier
+    * would bind nothing. Rejecting the empty name (which fails the alternative,
+    * leaving the `(`-dispatch to error out) mirrors rustland's loud rejection
+    * (`convert_bounded_quantification`) over silently iterating an unbound body.
+    * Shares the binder's `VarId` with its body uses via `getOrCreateVar`. */
+  private def boundedBinderVar[$: P]: P[TermId] =
+    P(Tokens.variableToken.filter(_.nonEmpty))
+      .map(n => terms.alloc(Term.Var(getOrCreateVar(intern(n)))))
 
   // ── Name suffix ADT ──────────────────────────────────────────
 
@@ -486,7 +573,11 @@ private class AnthillParserImpl(
     // (e.g. `find(specs, lambda s -> match s case ...)`, stdlib cli/parse).
     // `exprBody` falls through to `term`, so ordinary args are unchanged.
     P(
-      (ident ~ ":" ~/ term).map { case (k, v) => Right((k, v)) } |
+      // A lambda is admissible as a named-arg value too (not just positional) —
+      // `f(k: lambda x -> g(x), j: 2)` — mirroring rustland's `named_arg`
+      // `value: choice($._term, $.lambda_expr)`. Its `_expr_body` cannot consume
+      // the argument-separating comma, so the call stays unambiguous.
+      (ident ~ ":" ~/ (lambdaExpr | term)).map { case (k, v) => Right((k, v)) } |
       exprBody.map(Left(_))
     )
 
@@ -534,6 +625,14 @@ private class AnthillParserImpl(
     case TypeExpr.EffectRow(effects) =>
       terms.alloc(Term.Fn(intern("effects_rows"),
         IArray.from(effects.map(typeExprToRef)), IArray.empty))
+    // WI-478: a guarded effect `E :- guard` lowers to an opaque
+    // `guarded(label, guardList)` term — rustland builds an
+    // `EffectExpression.guarded(label, guard: List[reflect.Term])`; scaland has
+    // no effect machinery, so the element rides as a plain functor with the
+    // guard goals as a prelude cons-list (carrier-faithful round-trip only).
+    case TypeExpr.EffectGuarded(label, guard) =>
+      terms.alloc(Term.Fn(intern("guarded"),
+        IArray(typeExprToRef(label), typeListTerm(guard)), IArray.empty))
 
   /** Build `anthill.prelude.TypeExtractor.NamedTuple(fields: List[NamedTupleElement])`
     * from `(name, type)` field pairs. Shared by tuple types and multi-parameter
@@ -641,10 +740,51 @@ private class AnthillParserImpl(
       Tokens.opToken.map(intern)
     )
 
+  /** `infixOp` for a `requires` / `ensures` clause term (see `clauseTerm`). A
+    * bare `=` is the equality goal EXCEPT when it introduces the operation body —
+    * i.e. when it is followed by an expr-body-only keyword (`match`/`if`/`let`/
+    * `lambda`/`proof`), which cannot be a `_term` and so can only be the
+    * `= <body>` separator. This mirrors rustland's GLR (the infix `Eq[T] = match`
+    * parse is impossible, so `= match` is the body; `result = x` stays an eq
+    * goal). Every other operator (`<=`, `>=`, `==`, `!=`, `<=>`, …) is a distinct
+    * maximal-munch token and always an infix op. Derived from `infixOp` so the
+    * two operator sets can't drift. */
+  private def clauseInfixOp[$: P]: P[TermSymbol] =
+    P(
+      (Tokens.opToken.filter(_ == "=") ~ !exprBodyKeyword).map(_ => intern("=")) |
+      infixOp.filter(sym => symbols.name(sym) != "=")
+    )
+
+  /** The keywords that introduce an expr-body-only form (`_expr_body` minus the
+    * `_term` fall-through). A lookahead over these distinguishes a clause `= goal`
+    * from the operation-body `= <body>` separator. */
+  private def exprBodyKeyword[$: P]: P[Unit] =
+    P(keyword("match") | keyword("if") | keyword("let") | keyword("lambda") | keyword("proof"))
+
   // ── Expression bodies ────────────────────────────────────────
 
   private def exprBody[$: P]: P[TermId] =
-    P(matchExpr | ifExpr | letExpr | lambdaExpr | term)
+    P(matchExpr | ifExpr | letExpr | lambdaExpr | proofStatement | term)
+
+  /** WI-538: an in-body / control-flow proof — `proof TARGET [using …] [by …]
+    * [conclude term] end BODY`. The existing proof clauses in statement
+    * position, followed by a continuation `exprBody` (the `let x = v <body>`
+    * sequencing precedent). scaland has no proof discharge, so the `using` / `by`
+    * clauses are parsed-and-dropped and the form lowers to an inert
+    * `proof_stmt(body, target: "<qn>" [, conclude])` term that carries the
+    * continuation; mirrors rustland's `proof_statement` shape (which rides the
+    * proof metadata as a `ParseAux::ProofStmt`). */
+  private def proofStatement[$: P]: P[TermId] =
+    P(keyword("proof") ~/ name ~ (keyword("using") ~/ proofUsingList).? ~
+      (keyword("by") ~/ proofStrategy).? ~ (keyword("conclude") ~/ term).? ~
+      keyword("end") ~ exprBody).map {
+      case (target, _using, _strategy, conclude, body) =>
+        val targetStr = terms.alloc(Term.Const(
+          Literal.StringLit(target.segments.map(symbols.name).mkString("."))))
+        val named = ArrayBuffer((intern("target"), targetStr))
+        conclude.foreach(c => named += ((intern("conclude"), c)))
+        terms.alloc(Term.Fn(intern("proof_stmt"), IArray(body), IArray.from(named)))
+    }
 
   private def matchExpr[$: P]: P[TermId] =
     // Mirrors rustland's tree-sitter grammar: `match scrut repeat1(branch)`,
@@ -688,7 +828,30 @@ private class AnthillParserImpl(
   // ── Patterns ─────────────────────────────────────────────────
 
   private def pattern[$: P]: P[TermId] =
-    P(patternConstructor | patternTuple | patternLiteral | patternWildcard | patternVar)
+    P(patternConstructor | patternTyped | patternTuple | patternLiteral | patternWildcard | patternVar)
+
+  /** WI-517: a type-annotated binder `name: Type`. Lowers to the SAME
+    * `pattern_var` functor as a bare binder but carries the declared type as a
+    * `type` named arg (rustland rides it as a `ParseAux::TypeExpr`; scaland
+    * lowers the type to a term via `typeExprToRef`). Cut-free so a non-typed
+    * tuple element backtracks cleanly. */
+  private def typedBinder[$: P]: P[TermId] =
+    P(ident ~ ":" ~ typeExpr).map { case (nameSym, ty) =>
+      val idTerm = terms.alloc(Term.Ident(nameSym))
+      terms.alloc(Term.Fn(intern("pattern_var"), IArray(idTerm),
+        IArray((intern("type"), typeExprToRef(ty)))))
+    }
+
+  /** WI-517: a parenthesized single typed binder `(x: T)` (e.g.
+    * `lambda (x: Int64) -> x`). NOT a 1-tuple — it lowers to the inner typed
+    * `pattern_var`. */
+  private def patternTyped[$: P]: P[TermId] =
+    P("(" ~ typedBinder ~ ")")
+
+  /** A tuple-pattern element: a typed binder (`a: A`) or a plain pattern (WI-517,
+    * `lambda (acc: A, elem: B) -> …`). */
+  private def patternTupleElem[$: P]: P[TermId] =
+    P(typedBinder | pattern)
 
   private def patternWildcard[$: P]: P[TermId] =
     P("_").map(_ => terms.alloc(Term.Fn(intern("pattern_wildcard"), IArray.empty, IArray.empty)))
@@ -713,7 +876,7 @@ private class AnthillParserImpl(
   private def patternTuple[$: P]: P[TermId] =
     P(
       ("(" ~ ")").map(_ => terms.alloc(Term.Fn(intern("pattern_tuple"), IArray.empty, IArray.empty))) |
-      ("(" ~ pattern ~ "," ~ pattern.rep(1, sep = ",") ~ ")").map { case (first, rest) =>
+      ("(" ~ patternTupleElem ~ "," ~ patternTupleElem.rep(1, sep = ",") ~ ")").map { case (first, rest) =>
         terms.alloc(Term.Fn(intern("pattern_tuple"), IArray.from(first +: rest), IArray.empty))
       }
     )
@@ -815,13 +978,60 @@ private class AnthillParserImpl(
       Item.NamespaceItem(Namespace(n, imports, items, mkSpan(0, 0)))
     }
 
+  /** `sort …` — three shapes, disambiguated by the token after `sort`:
+    *   - a plain `name` → `abstract_sort` (`= type`) or `sort_with_body`;
+    *   - a `?X` marker → `sort_var_binder` (WI-454);
+    *   - a leading `[` → `sort_bracket_binder` (WI-454).
+    * The binder forms (`sort ?X` / `sort [X]`, optionally `{ sort ?T … }`) are
+    * per-statement synonyms of a WI-451 enclosing type-param; they desugar to
+    * the SAME IR (`desugarSortTypeParam`). The branches return a
+    * `vis => Item` so the `visibility.?` parsed before `sort` is applied once;
+    * the binder forms drop both the visibility and any trailing meta block —
+    * a type-param binder carries neither (the desugar has no slot for them), so
+    * `public sort ?X [simp]` parses but silently ignores `public`/`[simp]`. */
   private def sortDecl[$: P]: P[Item] =
-    P(visibility.? ~ keyword("sort") ~/ name ~ (abstractSortRest | sortWithBodyRest)).map {
-      case (vis, n, Left((defn, meta))) =>
-        Item.AbstractSortItem(AbstractSort(vis, n, defn, IndexedSeq.empty, meta, mkSpan(0, 0)))
-      case (vis, n, Right((imports, items, meta))) =>
-        Item.SortWithBodyItem(SortWithBody(vis, n, IndexedSeq.empty, imports, items, meta, mkSpan(0, 0), SortDeclKind.Sort))
+    P(visibility.? ~ keyword("sort") ~/ (sortVarBinderDecl | sortBracketBinderDecl | sortNamedDecl)).map {
+      case (vis, mk) => mk(vis)
     }
+
+  private def sortNamedDecl[$: P]: P[Option[Visibility] => Item] =
+    P(name ~ (abstractSortRest | sortWithBodyRest)).map {
+      case (n, Left((defn, meta))) =>
+        (vis: Option[Visibility]) =>
+          Item.AbstractSortItem(AbstractSort(vis, n, defn, IndexedSeq.empty, meta, mkSpan(0, 0)))
+      case (n, Right((imports, items, meta))) =>
+        (vis: Option[Visibility]) =>
+          Item.SortWithBodyItem(SortWithBody(vis, n, IndexedSeq.empty, imports, items, meta, mkSpan(0, 0), SortDeclKind.Sort))
+    }
+
+  /** WI-454: `sort ?X [ { sort ?T … } ]` — `?X` reuses the logical-var marker as
+    * the binder name. Desugars to the SAME IR the enclosing-list form produces. */
+  private def sortVarBinderDecl[$: P]: P[Option[Visibility] => Item] =
+    P(Tokens.variableToken ~ sortBinderBody.? ~ metaBlock.?).map {
+      case (nm, members, _) =>
+        val item = desugarSortTypeParam(SortTypeParam(intern(nm), members))
+        (_: Option[Visibility]) => item
+    }
+
+  /** WI-454: `sort [X] [ { sort [T] … } ]` — the standalone bracket binder. */
+  private def sortBracketBinderDecl[$: P]: P[Option[Visibility] => Item] =
+    P("[" ~/ ident ~ "]" ~ sortBinderBody.? ~ metaBlock.?).map {
+      case (nameSym, members, _) =>
+        val item = desugarSortTypeParam(SortTypeParam(nameSym, members))
+        (_: Option[Visibility]) => item
+    }
+
+  /** A structured binder's brace body — members are themselves type-variable
+    * binders ONLY (`sort ?T` / `sort [T]`, possibly nested HK), `repeat1` so an
+    * empty `sort [F] {}` is a loud error rather than a degenerate carrier. */
+  private def sortBinderBody[$: P]: P[IndexedSeq[SortTypeParam]] =
+    P("{" ~/ sortBinderMember.rep(1) ~ "}").map(_.toIndexedSeq)
+
+  private def sortBinderMember[$: P]: P[SortTypeParam] =
+    P(keyword("sort") ~/ (
+      (Tokens.variableToken ~ sortBinderBody.?).map { case (nm, ms) => SortTypeParam(intern(nm), ms) } |
+      ("[" ~/ ident ~ "]" ~ sortBinderBody.?).map { case (nm, ms) => SortTypeParam(nm, ms) }
+    ))
 
   /** `effects E = ?` (or `= X`) at sort-item position (WI-320 / proposal
     * 045). Rustland (`effects_sort_item`) desugars this to the pair
@@ -927,7 +1137,7 @@ private class AnthillParserImpl(
     * so probing for it only after the heads parse cleanly stays cheap. */
   private def ruleArrowChoice[$: P]: P[(IndexedSeq[RuleHead], Option[IndexedSeq[TermId]])] =
     P(
-      (ruleHeads ~ (":-" ~/ term.rep(1, sep = ",")).?).flatMap { case (hs, body) =>
+      (ruleHeads ~ (":-" ~/ goalTerm.rep(1, sep = ",")).?).flatMap { case (hs, body) =>
         body match
           case Some(_) =>
             Pass.map(_ => (hs, body.map(_.toIndexedSeq)))
@@ -1017,8 +1227,11 @@ private class AnthillParserImpl(
 
   private def operationClause[$: P]: P[(Int, IndexedSeq[?])] =
     P(
-      (keyword("requires") ~/ term.rep(1, sep = ",")).map(ts => (0, ts.toIndexedSeq)) |
-      (keyword("ensures") ~/ term.rep(1, sep = ",")).map(ts => (1, ts.toIndexedSeq)) |
+      // `clauseTerm` (not `term`): a trailing `= <expr-body>` after the clause
+      // is the operation-body separator, not an equality goal (WI-562:
+      // `requires Eq[T] = match l …`). See `clauseTerm`.
+      (keyword("requires") ~/ clauseTerm.rep(1, sep = ",")).map(ts => (0, ts.toIndexedSeq)) |
+      (keyword("ensures") ~/ clauseTerm.rep(1, sep = ",")).map(ts => (1, ts.toIndexedSeq)) |
       // Mirrors rustland's `_effect_set` shared between operation
       // `effects` and arrow-type `@`: bare single type or braced list
       // (possibly with trailing comma).
@@ -1029,6 +1242,19 @@ private class AnthillParserImpl(
       // (Unblocks the C++ mapping codegen, which reads operation meta.)
       (keyword("meta") ~/ metaBlock).map(mb => (3, mb.entries))
     )
+
+  /** `const NAME : T [= value]` (proposal 039 / WI-084). Monomorphic +
+    * carrier-independent — no params / type-params / clauses. The declared
+    * type is MANDATORY; the body OPTIONAL (absent for host-supplied constants
+    * such as float `infinity` / `nan`). Mirrors rustland's `convert_const`
+    * (modeled on the operation's description / visibility / optional-body
+    * shape). scaland defines only the symbol (load.rs `Item::Const` arm); the
+    * value body is not lowered (scaland has no typer/eval to consume it). */
+  private def constDecl[$: P]: P[Item] =
+    P(visibility.? ~ keyword("const") ~/ name ~ ":" ~ typeExpr ~ ("=" ~/ exprBody).? ~ metaBlock.?).map {
+      case (vis, n, ty, value, meta) =>
+        Item.ConstItem(Const(vis, n, ty, value, meta, mkSpan(0, 0)))
+    }
 
   private def requiresDeclItem[$: P]: P[Item] =
     P(keyword("requires") ~/ typeExpr).map { te =>
@@ -1237,6 +1463,7 @@ private class AnthillParserImpl(
       enumDecl |
       ruleDecl |
       operationDecl |
+      constDecl |
       requiresDeclItem |
       entityDecl |
       factDecl |

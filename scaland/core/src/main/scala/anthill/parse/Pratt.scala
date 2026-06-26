@@ -23,6 +23,11 @@ object Pratt:
     "and" -> InfixEntry(2, Assoc.Left,  "and"),
     "="   -> InfixEntry(3, Assoc.None,  "eq"),
     "!="  -> InfixEntry(3, Assoc.None,  "neq"),
+    // WI-522 / proposal 049: `<=>` = unify (anthill.kernel.unify). It lexes as one
+    // operator token (maximal munch wins `<=>` over `<=`); maps to the `unify`
+    // functor, mirroring rustland's pratt.rs. (scaland has no resolver-side
+    // builtin_unify; the head/body functor just round-trips.)
+    "<=>" -> InfixEntry(3, Assoc.None,  "unify"),
     "<"   -> InfixEntry(4, Assoc.None,  "lt"),
     "<="  -> InfixEntry(4, Assoc.None,  "lte"),
     ">"   -> InfixEntry(4, Assoc.None,  "gt"),

@@ -59,6 +59,14 @@ enum TypeExpr:
     * literal) per rustland's named-`effect_row` decision — `{X}` is a
     * one-effect row, not the type `X`. Mirrors rustland's `TypeExpr::EffectRow`. */
   case EffectRow(effects: IndexedSeq[TypeExpr])
+  /** WI-478 (proposal 048): a guarded effect-row element `E :- guard` — present
+    * iff its guard is not refuted (discharge is rust-only / WI-067; scaland just
+    * parses + lowers it). `label` is the guarded effect (the `_simple_effect`);
+    * `guard` is the guard's Horn body — a conjunction of goal terms (a bare
+    * `E :- p` stores `[p]`, a paren `( E :- p, q )` stores `[p, q]`). Only
+    * meaningful in an effect-clause / effect-row position. Mirrors rustland's
+    * `TypeExpr::EffectGuarded`. */
+  case EffectGuarded(label: TypeExpr, guard: IndexedSeq[TermId])
 
 case class SortBinding(param: Option[Name], bound: TypeExpr)
 
@@ -83,6 +91,7 @@ enum Item:
   case SortWithBodyItem(sort: SortWithBody)
   case RuleItem(rule: Rule)
   case OperationItem(op: Operation)
+  case ConstItem(c: Const)
   case RequiresDeclItem(req: RequiresDecl)
   case EntityItem(entity: Entity)
   case FactItem(fact: Fact)
@@ -192,6 +201,22 @@ case class Param(name: TermSymbol, ty: TypeExpr)
   * variables, distinct from sort-parameter bindings at an instantiation
   * site. `default` carries the optional `= Type` right-hand side. */
 case class TypeParam(name: TermSymbol, default: Option[TypeExpr], span: Span)
+
+// ── Const (proposal 039 / WI-084) ───────────────────────────────
+
+/** A term-level named constant: `const NAME: T [= EXPR]`. Monomorphic and
+  * carrier-independent by design — no params, type-params, or effects. The
+  * declared type `ty` is MANDATORY (part of the name's contract); the `value`
+  * body is OPTIONAL — absent for a host-supplied constant (e.g. float `infinity`
+  * / `nan`). Mirrors rustland's `Const`. */
+case class Const(
+  visibility: Option[Visibility],
+  name: Name,
+  ty: TypeExpr,
+  value: Option[TermId],
+  meta: Option[MetaBlock],
+  span: Span
+)
 
 // ── Requires declaration ────────────────────────────────────────
 
