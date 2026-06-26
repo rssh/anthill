@@ -871,8 +871,16 @@ impl Substitution for SubstBridge {
     /// dangling `z ↦ w`. Term-/Node-carried vars were always chased.
     fn compose(&self, s2: &dyn Substitution, kb: &dyn KB) -> Box<dyn Substitution> {
         let mut result = self.inner.clone();
-        for (_var, val) in result.bindings.iter_mut() {
-            *val = s2.apply(rterm(val.clone()), kb).into_value();
+        // WI-569: `bindings` is an `imbl::HashMap` (no `iter_mut`). Map each
+        // binding value through `s2` into owned pairs, then re-insert — same
+        // keys, new values, so this matches the prior in-place rewrite.
+        let updated: Vec<_> = result
+            .bindings
+            .iter()
+            .map(|(var, val)| (*var, s2.apply(rterm(val.clone()), kb).into_value()))
+            .collect();
+        for (var, val) in updated {
+            result.bindings.insert(var, val);
         }
         for (var_term, val_term) in s2.bindings() {
             match self.vid_of(var_term.value()) {

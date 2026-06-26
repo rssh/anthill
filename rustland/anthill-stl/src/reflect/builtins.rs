@@ -945,7 +945,7 @@ fn subst_compose(interp: &mut Interpreter, args: &[Value]) -> Result<Value, Eval
     let composed = arena.with_subst(&h1, |s1| {
         arena.with_subst(&h2, |s2| {
             let mut result = anthill_core::kb::subst::Substitution::new();
-            result.bindings.reserve(s1.bindings.len() + s2.bindings.len());
+            // (WI-569: `bindings` is an `imbl::HashMap` — persistent, no `reserve`.)
             for (var, val) in s1.bindings.iter() {
                 let new_val = match val {
                     Value::Term(tid) => Value::Term(kb.apply_subst(*tid, s2)),
