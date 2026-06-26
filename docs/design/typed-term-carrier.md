@@ -2,6 +2,13 @@
 
 ## Status: design (started 2026-06-20)
 
+> **Scope superseded (2026-06-26)** by
+> [`constrained-term-substrate.md`](./constrained-term-substrate.md): this note's
+> `(type, term)` sidecar is correct but `TermId`-centric and min_sort-only; the WI-502 spec
+> generalizes it to a carrier-centric *constraint* substrate (type = one kind) with a staged
+> persistent-store → carry → wakeup → label plan. Read that for the current design; this
+> remains the origin of the carrier idea and the hash-consing argument.
+
 **Relates to:** proposal [049](../proposals/049-equality-and-unification.md) (the `min_sort`
 guard for type-specific simp). **Foundation:** WI-502 (terms carry types). **Consumer:**
 WI-292 (resolver-side `min_sort` builtin + guard). WI-502 *is* the foundation WI-292 stands on.

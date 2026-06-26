@@ -12,6 +12,8 @@
 
 use std::collections::HashMap;
 
+use imbl::HashMap as ImHashMap;
+
 use super::term::{Term, TermId, TermStore, Var, VarId};
 use super::term_view::views_structurally_equal;
 use super::KnowledgeBase;
@@ -19,7 +21,15 @@ use crate::eval::value::Value;
 
 #[derive(Clone, Debug)]
 pub struct Substitution {
-    pub bindings: HashMap<VarId, Value>,
+    /// WI-569: persistent (`imbl`) map — `Clone` is O(1) structural sharing,
+    /// so the per-step `frame.subst.clone()` in the resolver no longer deep-copies
+    /// the accumulated bindings (that copy was O(bindings) per step, i.e.
+    /// O(depth × bindings) over a derivation). Same lookup/insert semantics as
+    /// `std`, but the iteration ORDER differs (HAMT vs `RandomState`) and
+    /// `iter_mut` is unavailable — see `bind_compressed`. Resolution does not
+    /// depend on binding order: reads chase var-chains via `KnowledgeBase::walk`
+    /// / `reify`, so a less-flattened chain still resolves identically.
+    pub bindings: ImHashMap<VarId, Value>,
     pub parent: Option<Box<Substitution>>,
     /// Set to true when a variable is bound to two different concrete terms.
     pub contradiction: bool,
@@ -57,7 +67,7 @@ pub struct Substitution {
 impl Substitution {
     pub fn new() -> Self {
         Self {
-            bindings: HashMap::new(),
+            bindings: ImHashMap::new(),
             parent: None,
             contradiction: false,
             contradiction_details: Vec::new(),
@@ -67,7 +77,7 @@ impl Substitution {
 
     pub fn with_parent(parent: Substitution) -> Self {
         Self {
-            bindings: HashMap::new(),
+            bindings: ImHashMap::new(),
             parent: Some(Box::new(parent)),
             contradiction: false,
             contradiction_details: Vec::new(),
@@ -199,14 +209,23 @@ impl Substitution {
         I: IntoIterator<Item = (VarId, TermId)>,
     {
         for (vid, term) in new_bindings {
-            for (_, existing) in self.bindings.iter_mut() {
-                if let Value::Term(existing_tid) = existing {
-                    if let Term::Var(Var::Global(ev)) = terms.get(*existing_tid) {
-                        if *ev == vid {
-                            *existing = Value::Term(term);
-                        }
-                    }
-                }
+            // Path compression. `imbl` is immutable (no `iter_mut`), so collect
+            // the existing `?w → Var(vid)` entries, then functionally re-point
+            // each to `term`. The fold of `insert`s shares structure, keeping
+            // `clone` O(1); the per-new-binding scan is the same O(n) as before.
+            let to_repoint: Vec<VarId> = self
+                .bindings
+                .iter()
+                .filter_map(|(w, existing)| match existing {
+                    Value::Term(existing_tid) => match terms.get(*existing_tid) {
+                        Term::Var(Var::Global(ev)) if *ev == vid => Some(*w),
+                        _ => None,
+                    },
+                    _ => None,
+                })
+                .collect();
+            for w in to_repoint {
+                self.bindings.insert(w, Value::Term(term));
             }
             self.bindings.insert(vid, Value::Term(term));
         }
