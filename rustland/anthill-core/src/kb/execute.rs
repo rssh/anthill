@@ -23,8 +23,61 @@ use crate::eval::value::Value;
 use crate::intern::Symbol;
 
 use super::resolve::{PositionalPlan, ResolveConfig, SearchStream};
-use super::term::{Literal, Term, TermId};
+use super::term::{Literal, Term, TermId, Var, VarId};
 use super::KnowledgeBase;
+
+/// WI-169: a stable, hash-consing-independent structural fingerprint of a
+/// synthesized conjunction-rule body — the `synth_rule_memo` key, one body
+/// rendered to a `Vec<SynthKey>` by [`KnowledgeBase::append_synth_key`].
+///
+/// Built from PERMANENT parts only — interned `Symbol`s (never recycled) and
+/// De Bruijn-style positional var indices — so, unlike a `Vec<TermId>` key (slot
+/// ids a future term GC could recycle into an unrelated term), it can never
+/// dangle and needs no liveness invariant. Unlike a discrimination key (where
+/// pattern vars are wildcard `var_edges`, deliberately over-approximating), it
+/// keys each variable by its first-occurrence position, so it PRESERVES variable
+/// sharing: `p(?v), q(?v)` and `p(?v), q(?w)` produce distinct keys and never
+/// collapse onto one rule.
+///
+/// The encoding is a fully-bracketed pre-order serialization: every `Fn` emits
+/// `Functor` … `EndFn`, with positional children inline and each named child
+/// prefixed by `Named`. The `EndFn` close marker makes each `Fn` (and so its
+/// named-arg section) self-delimiting, which is load-bearing for INJECTIVITY:
+/// without it `f(g(?x), k: ?v)` and `f(g(?x, k: ?v))` would serialize
+/// identically and collide onto one rule. Distinct variants for every leaf
+/// carrier (`Var` position vs `DeBruijnVar` index vs `Rigid`/`RawVar` identity)
+/// keep the token stream injective by construction.
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+pub(crate) enum SynthKey {
+    /// Boundary before each top-level body goal — keeps the goal-list framing
+    /// unambiguous regardless of each goal's head shape.
+    Goal,
+    Functor(Symbol),
+    /// Closes the nearest open `Functor` — makes every `Fn`'s child list (and
+    /// its named-arg section in particular) self-delimiting.
+    EndFn,
+    /// A named-arg field name; the value's tokens follow.
+    Named(Symbol),
+    /// A free `Global`, by first-occurrence position across the body
+    /// (De Bruijn-style) — preserves sharing, erases the query-specific `VarId`.
+    Var(u32),
+    /// A bound `DeBruijn` index — a SEPARATE namespace from `Var` so a stored-rule
+    /// fragment's `DeBruijn(i)` can never alias a free var at position `i`. Does
+    /// not appear in lowered query goals today; kept distinct for totality.
+    DeBruijnVar(u32),
+    /// A `Rigid`/skolem var, keyed by identity (a constant, like `Ref`). Does
+    /// not appear in lowered query goals today; kept distinct for totality.
+    Rigid(u32),
+    /// Should-never-fire fallback: a body `Global` not collected into `free_vars`
+    /// (a broken `collect_vars`/`append_synth_key` walk-parity invariant —
+    /// `debug_assert`ed at the call site). Keyed by raw id so two distinct such
+    /// vars never collapse (no false reuse); it merely forgoes a memo hit.
+    RawVar(u32),
+    Lit(Literal),
+    Ref(Symbol),
+    Ident(Symbol),
+    Bottom,
+}
 
 /// Reason a `Value` could not be lowered into a KB query.
 #[derive(Clone, Debug)]
@@ -286,6 +339,8 @@ impl KnowledgeBase {
     /// across `body`. Returns the head term — a single TermId callers can
     /// pass to `not`, `or`, etc. Proposal 033 / WI-076.
     fn synthesize_conjunction_rule(&mut self, body: Vec<TermId>) -> TermId {
+        // Free Globals across the body, in first-occurrence order — these are
+        // the synth head's parameters and define the De Bruijn frame.
         let mut free_vars: Vec<super::term::VarId> = Vec::new();
         for &g in &body {
             for v in self.collect_vars(g) {
@@ -294,8 +349,40 @@ impl KnowledgeBase {
                 }
             }
         }
-        let id = self.rules.len();
-        let synth_sym = self.symbols.intern(&format!("_synth_{id}"));
+
+        // WI-169: memoize on the body's structural fingerprint so a repeated
+        // multi-goal query reuses one synth rule instead of minting a fresh
+        // `_synth_N` (+ symbol + rule slot + discrim entry) every time. The key
+        // (`Vec<SynthKey>`) is built from PERMANENT parts only — interned symbols
+        // and De Bruijn-style positional var indices — so it is storage-neutral:
+        // it never depends on `TermId` slot identity (which a future term GC could
+        // recycle), so a key can never dangle, AND it preserves variable sharing
+        // (`p(?v),q(?v)` ≠ `p(?v),q(?w)`). Two structurally-identical bodies,
+        // differing only in which fresh Globals a query opened, produce the SAME
+        // key; a hit re-applies the memoized head functor to THIS query's
+        // free-vars. Converts the leak from unbounded-in-#queries to
+        // bounded-by-#distinct-multi-goal-bodies. The synth rule is a permanent
+        // lowering artifact (never retracted — `_synth_N` is a generated symbol no
+        // source can name), so the memo never goes stale and needs no
+        // invalidation; like `fact_dedup` it must be reset alongside `rules` by
+        // any future KB clone/reset.
+        let mut key: Vec<SynthKey> = Vec::new();
+        for &g in &body {
+            key.push(SynthKey::Goal);
+            self.append_synth_key(g, &free_vars, &mut key);
+        }
+        let (synth_sym, fresh) = match self.synth_rule_memo.get(&key) {
+            Some(&sym) => (sym, false),
+            None => {
+                let id = self.rules.len();
+                (self.symbols.intern(&format!("_synth_{id}")), true)
+            }
+        };
+
+        // The head applies the (fresh or memoized) functor to THIS query's
+        // free-vars — built once and used both as the asserted rule head (on a
+        // miss) and as the returned goal. On a hit it is the only allocation;
+        // the rule itself is reused.
         let pos_args: SmallVec<[TermId; 4]> = free_vars.iter()
             .map(|&v| self.terms.alloc(Term::Var(super::term::Var::Global(v))))
             .collect();
@@ -304,11 +391,67 @@ impl KnowledgeBase {
             pos_args,
             named_args: SmallVec::new(),
         });
-        let rule_sort = self.make_name_term("Rule");
-        let domain = self.make_name_term("_global");
-        let body_nodes = self.term_body_to_nodes(&body);
-        self.assert_rule_debruijn_with_nodes(head, body_nodes, rule_sort, domain, None);
+
+        if fresh {
+            let rule_sort = self.make_name_term("Rule");
+            let domain = self.make_name_term("_global");
+            let body_nodes = self.term_body_to_nodes(&body);
+            self.assert_rule_debruijn_with_nodes(head, body_nodes, rule_sort, domain, None);
+            self.synth_rule_memo.insert(key, synth_sym);
+        }
         head
+    }
+
+    /// WI-169: append `term`'s structural fingerprint to `out` (see [`SynthKey`]).
+    /// `free_vars` is the body's free Globals in first-occurrence order; a Global
+    /// is keyed by its position there (De Bruijn-style), which erases the
+    /// query-specific `VarId` while preserving variable sharing. A pre-order walk
+    /// over interned symbols / literals / positions only — no term allocation and
+    /// no `TermId` slot identity, so the resulting key is stable for the KB's
+    /// lifetime.
+    fn append_synth_key(&self, term: TermId, free_vars: &[VarId], out: &mut Vec<SynthKey>) {
+        match self.terms.get(term) {
+            Term::Fn { functor, pos_args, named_args } => {
+                // Positional children inline, each named child prefixed by
+                // `Named`, and a closing `EndFn` — so the node (and its named-arg
+                // section) is self-delimiting and the stream stays injective.
+                out.push(SynthKey::Functor(*functor));
+                for &a in pos_args.iter() {
+                    self.append_synth_key(a, free_vars, out);
+                }
+                for &(name, a) in named_args.iter() {
+                    out.push(SynthKey::Named(name));
+                    self.append_synth_key(a, free_vars, out);
+                }
+                out.push(SynthKey::EndFn);
+            }
+            Term::Const(lit) => out.push(SynthKey::Lit(lit.clone())),
+            Term::Var(Var::Global(vid)) => match free_vars.iter().position(|v| v == vid) {
+                Some(pos) => out.push(SynthKey::Var(pos as u32)),
+                None => {
+                    // Walk-parity invariant: every body Global is collected into
+                    // `free_vars` by `collect_vars` (identical pos-then-named
+                    // pre-order). A miss means that invariant broke — scream in
+                    // debug; in release key by raw id so distinct vars still
+                    // never collapse (correct, just no memo hit).
+                    debug_assert!(
+                        false,
+                        "WI-169: body Global {} missing from free_vars — \
+                         collect_vars/append_synth_key walk parity broken",
+                        vid.raw()
+                    );
+                    out.push(SynthKey::RawVar(vid.raw()));
+                }
+            },
+            Term::Var(Var::DeBruijn(i)) => out.push(SynthKey::DeBruijnVar(*i)),
+            Term::Var(Var::Rigid(vid)) => out.push(SynthKey::Rigid(vid.raw())),
+            Term::Ref(s) => out.push(SynthKey::Ref(*s)),
+            Term::Ident(s) => out.push(SynthKey::Ident(*s)),
+            Term::Bottom => out.push(SynthKey::Bottom),
+            Term::ParseAux(_) => unreachable!(
+                "ParseAux is a parse-only term and never reaches the KB synth path"
+            ),
+        }
     }
 
     /// Reduce a lowered branch to a single goal: single-goal verbatim,
@@ -631,5 +774,61 @@ mod tests {
             let tid = kb.alloc_from_value(&Value::Var(var)).expect("lowers");
             assert_eq!(*kb.get_term(tid), Term::Var(var), "round-trips to the same Var");
         }
+    }
+
+    /// WI-169 injectivity: the structural memo key's named-arg section must be
+    /// self-delimiting. `f(g(?x), k: ?v)` (where `k:?v` is f's named arg) and
+    /// `f(g(?x, k: ?v))` (where `k:?v` is g's) differ ONLY in that nesting; a
+    /// non-self-delimiting encoding serialized both identically and would
+    /// collapse them onto one synth rule → wrong query results. The `EndFn`
+    /// close marker keeps them distinct.
+    #[test]
+    fn synth_key_named_section_is_self_delimiting() {
+        let mut kb = KnowledgeBase::new();
+        let f = kb.intern("f");
+        let g = kb.intern("g");
+        let k = kb.intern("k");
+        let x_sym = kb.intern("x");
+        let v_sym = kb.intern("v");
+        let xid = kb.fresh_var(x_sym);
+        let vid = kb.fresh_var(v_sym);
+        let vx = kb.alloc(Term::Var(Var::Global(xid)));
+        let vv = kb.alloc(Term::Var(Var::Global(vid)));
+
+        let mk = |kb: &mut KnowledgeBase,
+                  functor,
+                  pos: &[TermId],
+                  named: &[(Symbol, TermId)]| {
+            kb.alloc(Term::Fn {
+                functor,
+                pos_args: SmallVec::from_slice(pos),
+                named_args: SmallVec::from_slice(named),
+            })
+        };
+
+        // A: f(g(?x), k: ?v) — k:?v belongs to f.
+        let g_x = mk(&mut kb, g, &[vx], &[]);
+        let a = mk(&mut kb, f, &[g_x], &[(k, vv)]);
+        // B: f(g(?x, k: ?v)) — k:?v belongs to g.
+        let g_xk = mk(&mut kb, g, &[vx], &[(k, vv)]);
+        let b = mk(&mut kb, f, &[g_xk], &[]);
+
+        let free = [xid, vid];
+        let (mut ka, mut kb_) = (Vec::new(), Vec::new());
+        kb.append_synth_key(a, &free, &mut ka);
+        kb.append_synth_key(b, &free, &mut kb_);
+        assert_ne!(ka, kb_, "pos/named nesting must produce distinct keys");
+
+        // Canonicalization: the SAME shape as `a` built with FRESH vars must
+        // produce an IDENTICAL key (rename-invariance — the dedup property).
+        let x2 = kb.fresh_var(x_sym);
+        let v2 = kb.fresh_var(v_sym);
+        let vx2 = kb.alloc(Term::Var(Var::Global(x2)));
+        let vv2 = kb.alloc(Term::Var(Var::Global(v2)));
+        let g_x2 = mk(&mut kb, g, &[vx2], &[]);
+        let a2 = mk(&mut kb, f, &[g_x2], &[(k, vv2)]);
+        let mut ka2 = Vec::new();
+        kb.append_synth_key(a2, &[x2, v2], &mut ka2);
+        assert_eq!(ka, ka2, "same shape with fresh vars must produce an identical key");
     }
 }

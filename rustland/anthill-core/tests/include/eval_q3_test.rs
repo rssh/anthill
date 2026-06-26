@@ -10,7 +10,7 @@
 
 use anthill_core::eval::Value;
 use anthill_core::kb::execute::LowerError;
-use anthill_core::kb::term::{Literal, Term, Var};
+use anthill_core::kb::term::{Literal, Term, TermId, Var, VarId};
 
 use crate::common::load_kb_with;
 
@@ -706,4 +706,187 @@ end
     }
     assert!(probe_seen.contains("p"),
         "negation succeeds (the conjunction has no shared-?v witness), so probe ground binding surfaces; saw {probe_seen:?}");
+}
+
+#[test]
+fn q3_synth_rule_memoized_across_repeated_queries() {
+    // WI-169: re-issuing the SAME multi-goal query must REUSE one synthesized
+    // conjunction-rule, not append a fresh `_synth_N` (+ rule slot + symbol +
+    // discrim entry) per execution. Each iteration opens FRESH query vars (as a
+    // real long-running query consumer would), so the memo has to canonicalize
+    // the body's De Bruijn form to register a hit. The acceptance contract is
+    // ZERO growth after the first execution — not merely sub-linear.
+    let mut kb = load_kb_with(r#"
+namespace test.q3_synth_memo
+  sort Tag
+    entity left_tag(name: String)
+    entity other_tag(name: String)
+    entity right_tag(name: String)
+  end
+  fact left_tag(name: "alpha")
+  fact other_tag(name: "alpha")
+  fact right_tag(name: "beta")
+end
+"#);
+
+    let left_sym = kb.try_resolve_symbol("test.q3_synth_memo.Tag.left_tag").unwrap();
+    let other_sym = kb.try_resolve_symbol("test.q3_synth_memo.Tag.other_tag").unwrap();
+    let right_sym = kb.try_resolve_symbol("test.q3_synth_memo.Tag.right_tag").unwrap();
+    let pattern_query_sym = kb.try_resolve_symbol("anthill.reflect.LogicalQuery.pattern_query").unwrap();
+    let disj_sym = kb.try_resolve_symbol("anthill.reflect.LogicalQuery.disjunction").unwrap();
+    let conj_sym = kb.try_resolve_symbol("anthill.reflect.LogicalQuery.conjunction").unwrap();
+    let term_field = kb.intern("term");
+    let left_field = kb.intern("left");
+    let right_field = kb.intern("right");
+    let name_field = kb.intern("name");
+
+    // Build + execute the same query shape once, opening a FRESH `?v` each time
+    // so the synth body carries different Globals per run. Returns the bound
+    // `name` strings so the caller can confirm results stay stable.
+    let run_once = |kb: &mut anthill_core::kb::KnowledgeBase| -> std::collections::HashSet<String> {
+        let v_sym = kb.intern("v");
+        let vid = kb.fresh_var(v_sym);
+        let var_v = kb.alloc(Term::Var(Var::Global(vid)));
+        let pq = |functor| Value::Entity {
+            functor: pattern_query_sym,
+            pos: Vec::new().into(),
+            named: vec![(term_field, Value::Entity {
+                functor, pos: Vec::new().into(),
+                named: vec![(name_field, Value::Term(var_v))].into(),
+            })].into(),
+        };
+        // disjunction(conjunction(left_tag(?v), other_tag(?v)), right_tag(?v)) —
+        // the left branch is a 2-goal body that lifts via `synthesize_conjunction_rule`.
+        let multi_left = entity_named(conj_sym, vec![
+            (left_field, pq(left_sym)),
+            (right_field, pq(other_sym)),
+        ]);
+        let query = entity_named(disj_sym, vec![
+            (left_field, multi_left),
+            (right_field, pq(right_sym)),
+        ]);
+        let mut stream = kb.execute_logical_query(&query).expect("multi-goal lifts cleanly");
+        let mut seen = std::collections::HashSet::new();
+        while let Some((sol, rest)) = stream.split_first(kb) {
+            if let Some(Value::Term(t)) = sol.subst.resolve_as_value(vid) {
+                if let Term::Const(Literal::String(s)) = kb.get_term(*t) {
+                    seen.insert(s.clone());
+                }
+            }
+            stream = rest;
+        }
+        seen
+    };
+
+    let expected: std::collections::HashSet<String> =
+        ["alpha", "beta"].iter().map(|s| s.to_string()).collect();
+
+    // First execution mints the synth rule.
+    assert_eq!(run_once(&mut kb), expected, "sanity: first run yields alpha+beta");
+    let after_first = kb.rule_count();
+
+    // Re-issue the identical query shape with fresh vars; the synth rule must
+    // be reused, so the rule count stays CONSTANT.
+    for _ in 0..5 {
+        assert_eq!(run_once(&mut kb), expected, "results stable across repeats");
+        assert_eq!(kb.rule_count(), after_first,
+            "WI-169: repeated multi-goal query must reuse one synth rule (zero growth)");
+    }
+}
+
+#[test]
+fn q3_synth_rule_distinguishes_variable_sharing() {
+    // WI-169 (structural key): two multi-goal bodies that differ ONLY in
+    // variable sharing — `conj(left(?v), other(?v))` vs `conj(left(?v),
+    // other(?w))` — MUST synthesize distinct rules. A key that treats vars as
+    // wildcards (as a discrimination key does — pattern vars are var-edges, not
+    // concrete keys) would collapse them onto one rule and resolve the unshared
+    // body with shared-var semantics. The structural key preserves sharing by
+    // numbering each var by first-occurrence position, so this catches a
+    // wildcard-collapse two ways: the rule count, and the differing results.
+    let mut kb = load_kb_with(r#"
+namespace test.q3_synth_share
+  sort Tag
+    entity left_tag(name: String)
+    entity other_tag(name: String)
+    entity right_tag(name: String)
+  end
+  fact left_tag(name: "alpha")
+  fact other_tag(name: "beta")
+  fact right_tag(name: "gamma")
+end
+"#);
+
+    let left_sym = kb.try_resolve_symbol("test.q3_synth_share.Tag.left_tag").unwrap();
+    let other_sym = kb.try_resolve_symbol("test.q3_synth_share.Tag.other_tag").unwrap();
+    let right_sym = kb.try_resolve_symbol("test.q3_synth_share.Tag.right_tag").unwrap();
+    let pattern_query_sym = kb.try_resolve_symbol("anthill.reflect.LogicalQuery.pattern_query").unwrap();
+    let disj_sym = kb.try_resolve_symbol("anthill.reflect.LogicalQuery.disjunction").unwrap();
+    let conj_sym = kb.try_resolve_symbol("anthill.reflect.LogicalQuery.conjunction").unwrap();
+    let term_field = kb.intern("term");
+    let left_field = kb.intern("left");
+    let right_field = kb.intern("right");
+    let name_field = kb.intern("name");
+
+    // disjunction(conjunction(left_tag(?a), other_tag(?b)), right_tag(?a)) —
+    // the conjunction branch lifts via the synthesizer; `?a` (collected) is the
+    // outer variable the right branch also binds. Returns the bound `?a` names.
+    let run = |kb: &mut anthill_core::kb::KnowledgeBase, a: TermId, b: TermId, aid: VarId|
+        -> std::collections::HashSet<String>
+    {
+        let pq = |functor, v| Value::Entity {
+            functor: pattern_query_sym, pos: Vec::new().into(),
+            named: vec![(term_field, Value::Entity {
+                functor, pos: Vec::new().into(),
+                named: vec![(name_field, Value::Term(v))].into(),
+            })].into(),
+        };
+        let conj = entity_named(conj_sym, vec![
+            (left_field, pq(left_sym, a)),
+            (right_field, pq(other_sym, b)),
+        ]);
+        let query = entity_named(disj_sym, vec![
+            (left_field, conj),
+            (right_field, pq(right_sym, a)),
+        ]);
+        let mut stream = kb.execute_logical_query(&query).expect("lowers cleanly");
+        let mut seen = std::collections::HashSet::new();
+        while let Some((sol, rest)) = stream.split_first(kb) {
+            if let Some(Value::Term(t)) = sol.subst.resolve_as_value(aid) {
+                if let Term::Const(Literal::String(s)) = kb.get_term(*t) { seen.insert(s.clone()); }
+            }
+            stream = rest;
+        }
+        seen
+    };
+
+    // Shared: conj(left(?v), other(?v)) — needs one name in BOTH tags; alpha≠beta
+    // so the conjunction branch is empty and only right_tag's gamma surfaces.
+    let v_sym = kb.intern("v");
+    let vid = kb.fresh_var(v_sym);
+    let var_v = kb.alloc(Term::Var(Var::Global(vid)));
+    let shared = run(&mut kb, var_v, var_v, vid);
+    let after_shared = kb.rule_count();
+
+    // Unshared: conj(left(?v2), other(?w)) — independent vars, so the
+    // conjunction matches (left=alpha, other=beta) and ?v2 binds alpha.
+    let v2_sym = kb.intern("v2");
+    let w_sym = kb.intern("w");
+    let v2id = kb.fresh_var(v2_sym);
+    let wid = kb.fresh_var(w_sym);
+    let var_v2 = kb.alloc(Term::Var(Var::Global(v2id)));
+    let var_w = kb.alloc(Term::Var(Var::Global(wid)));
+    let unshared = run(&mut kb, var_v2, var_w, v2id);
+    let after_unshared = kb.rule_count();
+
+    // The bodies differ only in sharing, so they must NOT share a synth rule:
+    // exactly one new rule appears for the unshared body.
+    assert_eq!(after_unshared, after_shared + 1,
+        "different variable-sharing bodies must not collapse onto one synth rule");
+
+    // …and the semantics differ accordingly.
+    assert!(shared.contains("gamma") && !shared.contains("alpha"),
+        "shared ?v: conj unsatisfiable (alpha≠beta), only right branch; saw {shared:?}");
+    assert!(unshared.contains("alpha") && unshared.contains("gamma"),
+        "unshared: conj matches left=alpha; saw {unshared:?}");
 }

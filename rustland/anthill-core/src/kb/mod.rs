@@ -312,6 +312,20 @@ pub struct KnowledgeBase {
     // load; this index brings it to a single hash lookup.
     fact_dedup: HashMap<(TermId, TermId, TermId), RuleId>,
 
+    // WI-169: structural-dedup memo for synthesized conjunction-rules
+    // (`_synth_N(?vars) :- body`, minted by `synthesize_conjunction_rule` when
+    // a multi-goal disjunction/negation branch is lowered for a query). Keyed
+    // on the body's structural fingerprint (`Vec<SynthKey>`: interned symbols +
+    // De Bruijn-style positional var indices, preserving variable sharing), so
+    // a repeated multi-goal query reuses one synth rule instead of appending a
+    // fresh rule slot + symbol + discrim entry per execution — bounding the
+    // synth population by #distinct-bodies, not #queries. The key is
+    // storage-neutral (no `TermId` slot identity), so it can never dangle. A
+    // synth rule is a permanent lowering artifact (never retracted), so this
+    // memo never goes stale and needs no invalidation; like `fact_dedup` it
+    // must be reset alongside `rules` by any future KB clone/reset.
+    synth_rule_memo: HashMap<Vec<execute::SynthKey>, Symbol>,
+
     // Builtin dispatch: functor symbol → builtin tag
     builtins: HashMap<Symbol, BuiltinTag>,
 
@@ -530,6 +544,7 @@ impl KnowledgeBase {
             sort_info: HashMap::new(),
             discrim: SubstTree::new(),
             fact_dedup: HashMap::new(),
+            synth_rule_memo: HashMap::new(),
             builtins: HashMap::new(),
             entity_fields: HashMap::new(),
             constructor_symbols: HashSet::new(),
