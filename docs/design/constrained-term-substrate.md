@@ -156,11 +156,29 @@ Validate with `scripts/test.sh` + `/code-review`.
 `VarId`-keyed store on `Substitution`; `lacks` = kind #1, type-constraint = kind #2.
 Expose residual `C` on the answer. Write-mostly (no new consumer yet), as Γ was after WI-537.
 
-**Step 2 — Carry + wakeup in the generic bind path.** Route *all* binding through one
-choke-point that (a) carries the store through the merge and (b) **wakes** constraints on the
-bound var (check / propagate / merge-on-alias), generalizing `bind_row_tail`. A site that
-binds without going through it must fail **loudly** — silent drop forbidden (dev principle:
-loud error over silent skip). Closes the M7(a)/(b) gaps.
+**Step 2 — Carry + wakeup in the bind path. *(DELIVERED — generic core + loud guard.)*** The
+literal "one in-line choke-point that wakes" framing collided with the architecture, so the
+delivered shape is a **generic core + a loud bypass guard**, leaving the working effect-row
+path specialized. Two findings drove this: (i) `bind_row_tail`'s lacks CHECK validates the
+*labels being merged in* and needs the typer's effect-row decomposition vocabulary — **not
+available in `subst.rs`**, so it cannot be subsumed by a generic in-`Substitution` wakeup;
+(ii) the low-level bind methods sit on the resolver hot path and bind synthetic/alias vars, so
+an in-line wakeup would double-fire with `bind_row_tail` and run on every path-compression
+repoint. Delivered:
+- **Carry-through-merge** (M7(b)): `Substitution::absorb_constraints` unions another subst's
+  top-level store; wired into the resolver's `SuccessWithBindings` lift (the single funnel for
+  every builtin `extra` + `builtin_unify`'s `work`) and the reflect `subst_compose`. (The
+  `&dyn Substitution` `bridge.rs` compose can't reach `s2`'s constraints across the trait
+  boundary — documented limitation, extend the trait when a self-hosted producer needs it.)
+- **Wakeup choke-point**: `Substitution::bind_waking` does **merge-on-alias** (binding
+  `?x := ?y` moves `?x`'s constraints onto `?y`); the per-kind CHECK is staged — `Type` →
+  Step 5, `Lacks` → stays in `bind_row_tail`. Wired into the resolver's value-bind sites.
+- **Loud-on-bypass** (M7(a)): `bind_compressed` (synthetic/resolver-only) asserts the bound
+  var carries no constraints, so a constraint-carrying var that bypasses `bind_waking` fails
+  **loudly** rather than dropping the wakeup (gated on a non-empty store → free on the hot path).
+`bind_row_tail` is unchanged: it is the typer-specialized instance of the same pattern, sharing
+the store plumbing + the `push_constraint_deduped` dedup. Write-mostly still — no resolver-side
+producer until Step 3, so the wakeup is exercised by tests only.
 
 **Step 3 — Static type on the carrier + read API.** Stop dropping `inferred_type` on
 open/subst (the original WI-502 bug). `min_sort` / type-read = deref-binding-and-read-carrier,

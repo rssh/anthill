@@ -13,7 +13,7 @@
 use imbl::HashMap as ImHashMap;
 
 use super::term::{Term, TermId, TermStore, Var, VarId};
-use super::term_view::views_structurally_equal;
+use super::term_view::{views_structurally_equal, TermView};
 use super::KnowledgeBase;
 use crate::eval::value::Value;
 
@@ -95,6 +95,42 @@ pub struct Substitution {
     /// checked against (and propagated through) the binding by
     /// [`crate::kb::typing`]'s `bind_row_tail`.
     pub constraints: ImHashMap<VarId, Vec<Constraint>>,
+}
+
+/// Push `c` onto a per-var constraint list, deduping a `Lacks` against an
+/// existing scalar-equal `Lacks` (the only kind with a dedup story — see
+/// [`Substitution::add_lacks`]). `Type` is never deduped (no dedup key yet; see
+/// [`Substitution::add_type_constraint`]). Shared by every constraint-writing
+/// path (`add_lacks`, `absorb_constraints`, merge-on-alias) so the dedup rule
+/// lives in exactly one place.
+fn push_constraint_deduped(entry: &mut Vec<Constraint>, c: Constraint) {
+    if let Constraint::Lacks(l) = &c {
+        if entry.iter().any(|e| matches!(e, Constraint::Lacks(x) if x.scalar_eq(l))) {
+            return;
+        }
+    }
+    entry.push(c);
+}
+
+/// WI-502 Step 2 — if `val` denotes a logic VARIABLE of kind `Global`, return
+/// its `VarId`. Used by merge-on-alias: binding `?x := ?y` aliases the two, so
+/// `?x`'s constraints must follow onto `?y`.
+///
+/// Delegates to the canonical carrier-agnostic var extractor
+/// (`TermView::index_var`) so EVERY variable carrier is recognized — not only
+/// `Value::Var(Global)` and `Value::Term(Var::Global)` but also a var riding as
+/// `Value::Node(Expr::Var(Global))`, which fact-match `tree_subst` non-`Term`
+/// bindings actually carry; a bespoke `Var`/`Term`-only match would silently
+/// mis-read that as concrete and drop the wakeup (the "loud over silent"
+/// failure mode). A non-variable value (a constructed term, a scalar) and a
+/// Rigid/DeBruijn var both return `None`: a rigid/DeBruijn var is not an alias
+/// target here, its constraints are enforced at its own instantiation site
+/// (the same conservatism as the typer's row machinery).
+fn value_as_global_var(kb: &KnowledgeBase, val: &Value) -> Option<VarId> {
+    match val.index_var(kb) {
+        Some(Var::Global(vid)) => Some(vid),
+        _ => None,
+    }
 }
 
 impl Substitution {
@@ -241,6 +277,14 @@ impl Substitution {
     where
         I: IntoIterator<Item = (VarId, TermId)>,
     {
+        // WI-502 Step 2 — loud-on-bypass. `bind_compressed` is the synthetic
+        // path-compression path (resolver-only: fresh DeBruijn / answer-link
+        // vars getting their first concrete binding). A constraint-carrying var
+        // must NEVER bind here — it has to route through `bind_waking` so its
+        // constraints wake (M7(a)). If one reaches here it is a routing bug;
+        // fail LOUDLY rather than silently drop the wakeup. Gated on a non-empty
+        // store so the universal (empty) case pays only one O(1) check.
+        let guard = !self.constraints.is_empty();
         for (vid, term) in new_bindings {
             // Path compression. `imbl` is immutable (no `iter_mut`), so collect
             // the existing `?w → Var(vid)` entries, then functionally re-point
@@ -258,10 +302,27 @@ impl Substitution {
                 })
                 .collect();
             for w in to_repoint {
+                if guard {
+                    self.assert_no_constraints(w, "bind_compressed path-compression repoint");
+                }
                 self.bindings.insert(w, Value::Term(term));
+            }
+            if guard {
+                self.assert_no_constraints(vid, "bind_compressed direct bind");
             }
             self.bindings.insert(vid, Value::Term(term));
         }
+    }
+
+    /// WI-502 Step 2 — loud-on-bypass guard: panic if `var` carries a constraint
+    /// that the caller is about to silently drop by binding it on a non-waking
+    /// path. Constrained binds must route through [`Self::bind_waking`].
+    fn assert_no_constraints(&self, var: VarId, site: &str) {
+        assert!(
+            !self.constraints.contains_key(&var),
+            "WI-502: {site} bound constraint-carrying var {var:?}; route it \
+             through bind_waking so its constraints wake (loud-on-bypass, M7(a))",
+        );
     }
 
     /// WI-328 — record `lacks` labels (kind #1) on a row-tail variable, as
@@ -294,12 +355,7 @@ impl Substitution {
             // Dedup carrier-agnostically via `Value::scalar_eq` against existing
             // `Lacks` entries (ground labels by `TermId`; `Value::Node` has no
             // structural `Eq` → always pushed, harmless).
-            let dup = entry
-                .iter()
-                .any(|c| matches!(c, Constraint::Lacks(e) if e.scalar_eq(&l)));
-            if !dup {
-                entry.push(Constraint::Lacks(l));
-            }
+            push_constraint_deduped(entry, Constraint::Lacks(l));
         }
     }
 
@@ -344,6 +400,109 @@ impl Substitution {
             .entry(var)
             .or_default()
             .push(Constraint::Type(guard));
+    }
+
+    /// WI-502 Step 2 — union another substitution's TOP-LEVEL constraint store
+    /// into this one (M7(b): carry the store through a merge). The resolver's
+    /// `SuccessWithBindings` lift and the reflect `compose` ops build a result
+    /// from another subst's *bindings* and previously dropped its constraints
+    /// silently; this carries them. **Top-level only**, deliberately: like the
+    /// lift that threads `extra.bindings` and ignores `extra.parent` (the parent
+    /// σ's constraints already live in the destination), the parent chain is not
+    /// descended. Dedup follows [`push_constraint_deduped`] against the
+    /// destination's TOP LEVEL only — sufficient, and unable to re-introduce a
+    /// cross-level duplicate `Lacks`, because every wired destination is a *flat*
+    /// (parent-free) subst: the resolver lift's `frame.subst.clone()` (hot-path
+    /// frame substs are always `parent = None`) and the reflect compose's fresh
+    /// `Substitution::new()`. A parented destination would need `lacks_of`-style
+    /// chain dedup; none is wired.
+    pub fn absorb_constraints(&mut self, other: &Substitution) {
+        for (var, cs) in other.constraints.iter() {
+            let entry = self.constraints.entry(*var).or_default();
+            for c in cs {
+                push_constraint_deduped(entry, c.clone());
+            }
+        }
+    }
+
+    /// WI-502 Step 2 — the constraint-waking bind choke-point. Binds `var := val`
+    /// and **wakes** any constraints carried on `var` (M5: explicit wakeup, no
+    /// attributed-variable cells; M7(a): the gap `bind_compressed` leaves open).
+    /// The resolver-side analog of the typer's `bind_row_tail`: a site that may
+    /// bind a constraint-carrying var routes through HERE so the constraint is
+    /// never silently dropped. Constraint-FREE binds may use the raw
+    /// `bind_value`/`bind_compressed` directly (cheaper) — and `bind_compressed`
+    /// asserts loudly if a constrained var reaches it (loud-on-bypass).
+    ///
+    /// The store is almost always empty (no resolver-side producer until Step 3),
+    /// so the `is_empty` gate makes this exactly `bind_value` on the hot path.
+    pub fn bind_waking(&mut self, kb: &KnowledgeBase, var: VarId, val: Value) {
+        if !self.constraints.contains_key(&var) {
+            // Fast path: this var carries no constraints — exactly `bind_value`,
+            // and no `val` clone. O(1) on the persistent map; this is the
+            // universal case (no resolver-side producer until Step 3), even when
+            // the store holds constraints on *other* vars.
+            self.bind_value(kb, var, val);
+            return;
+        }
+        // (Step 5 inserts the per-kind CHECK *here*, BEFORE the commit, with
+        // reject power: a `Type` guard that `val` violates fails the bind; an
+        // under-determined guard suspends as residual `C`. Step 2 has no check.)
+        self.bind_value(kb, var, val.clone());
+        // Propagate (merge-on-alias) only on a LIVE branch. A contradicting bind
+        // poisons the subst and the branch is discarded, so moving constraints
+        // would be wasted work on a doomed branch — and the move is destructive
+        // (`remove` then re-`insert`), so skipping it leaves the contradicted
+        // store untouched. Closes the "move-before-bind not discarded on
+        // contradiction" gap.
+        if !self.contradiction {
+            self.wake_constraints(kb, var, &val);
+        }
+    }
+
+    /// Wake the constraints carried on `var` against the value it is about to be
+    /// bound to. Step 2 implements the generic, kind-agnostic action —
+    /// **merge-on-alias**: binding `var := ?y` (a variable) MOVES var's
+    /// constraints onto the alias `?y` so they follow the union chain (one hop
+    /// per bind; the next hop wakes when `?y` itself binds).
+    ///
+    /// The per-kind CHECK (does a CONCRETE `val` satisfy the constraint?) is
+    /// staged elsewhere and is a deliberate no-op here:
+    /// - `Type` → Step 5 (`subsort(min_sort(val), T)`, suspend if
+    ///   under-determined — the WI-067 var_ref-non-ground hazard one level up).
+    /// - `Lacks` → the typer's `bind_row_tail`, whose check needs effect-row
+    ///   decomposition vocabulary not available in `subst.rs`.
+    ///
+    /// So a constraint reaching a CONCRETE bind here is carried inert for now
+    /// (Step 5 fills the `Type` check). This is NOT a silent skip of a handled
+    /// case: there is no resolver-side constraint producer yet (Step 3), so the
+    /// concrete-bind path is exercised only by tests until then.
+    fn wake_constraints(&mut self, kb: &KnowledgeBase, var: VarId, val: &Value) {
+        if !self.constraints.contains_key(&var) {
+            return;
+        }
+        match value_as_global_var(kb, val) {
+            // Merge-on-alias: `var := ?y` with `?y` an UNBOUND variable moves
+            // var's constraints onto `?y` so they ride the union chain (the next
+            // hop wakes when `?y` itself binds). Guard on `?y` unbound: moving
+            // onto an already-bound `?y` would be pointless (it never binds
+            // again), so leave them on `var` instead — `residual_constraints`
+            // still surfaces them and Step 5 derefs `var` to its representative
+            // value for the per-kind CHECK.
+            Some(alias) if alias != var && self.resolve_as_value(alias).is_none() => {
+                if let Some(cs) = self.constraints.remove(&var) {
+                    let entry = self.constraints.entry(alias).or_default();
+                    for c in cs {
+                        push_constraint_deduped(entry, c);
+                    }
+                }
+            }
+            // Carry inert: a concrete bind, a self-alias, or a bound alias. The
+            // constraint stays recorded on `var` (NOT dropped) for Step 5's
+            // deref-and-check; the per-kind CHECK is staged (Type → Step 5,
+            // Lacks → the typer's bind_row_tail).
+            _ => {}
+        }
     }
 
     /// WI-502 Step 1 — the residual constraints `C` carried by this
@@ -716,6 +875,136 @@ mod tests {
         // The snapshot keeps only the pre-clone lacks; the live subst has both.
         assert_eq!(snapshot.residual_constraints().len(), 1);
         assert_eq!(s.residual_constraints().len(), 2);
+    }
+
+    // ── WI-502 Step 2: carry + wakeup in the bind path ──────────────
+
+    /// Merge-on-alias via a value-level `Value::Var`: binding `?x := ?y` MOVES
+    /// `?x`'s constraints onto `?y` (they follow the union chain).
+    #[test]
+    fn bind_waking_merges_constraints_on_var_alias() {
+        let kb = KnowledgeBase::new();
+        let mut s = Substitution::new();
+        let (x, y) = (vid(1), vid(2));
+        s.add_type_constraint(x, Value::Int(7));
+        s.bind_waking(&kb, x, Value::Var(Var::Global(y)));
+        assert!(s.constraints.get(&x).is_none(), "x's constraints must move to the alias");
+        let resid = s.residual_constraints();
+        assert_eq!(resid.len(), 1);
+        assert_eq!(resid[0].0, y);
+        assert!(matches!(resid[0].1, Constraint::Type(_)));
+    }
+
+    /// Merge-on-alias via a `Value::Term` carrying a `Var::Global` (the resolver's
+    /// usual variable carrier) — same move semantics.
+    #[test]
+    fn bind_waking_merges_on_term_var_alias() {
+        let mut kb = KnowledgeBase::new();
+        let (x, y) = (vid(1), vid(2));
+        let y_term = kb.alloc(Term::Var(Var::Global(y)));
+        let mut s = Substitution::new();
+        s.add_lacks(x, [Value::Int(5)]);
+        s.bind_waking(&kb, x, Value::Term(y_term));
+        assert!(s.constraints.get(&x).is_none());
+        let resid = s.residual_constraints();
+        assert_eq!(resid.len(), 1);
+        assert_eq!(resid[0].0, y);
+        assert!(matches!(resid[0].1, Constraint::Lacks(_)));
+    }
+
+    /// A CONCRETE bind carries the constraint inert (no alias to move to; the
+    /// per-kind check is staged to Step 5). The constraint stays recorded — it
+    /// is NOT silently dropped.
+    #[test]
+    fn bind_waking_concrete_carries_inert() {
+        let kb = KnowledgeBase::new();
+        let mut s = Substitution::new();
+        let x = vid(1);
+        s.add_type_constraint(x, Value::Int(7));
+        s.bind_waking(&kb, x, Value::Int(99));
+        let resid = s.residual_constraints();
+        assert_eq!(resid.len(), 1, "concrete bind must carry the constraint, not drop it");
+        assert_eq!(resid[0].0, x);
+    }
+
+    /// A contradicting bind (var already bound to a distinct value) must NOT
+    /// move constraints onto the alias: the branch is doomed (discarded) and the
+    /// move is destructive, so `bind_waking` skips the wake when `bind_value`
+    /// flagged a contradiction.
+    #[test]
+    fn bind_waking_does_not_move_on_contradiction() {
+        let kb = KnowledgeBase::new();
+        let mut s = Substitution::new();
+        let (x, y) = (vid(1), vid(2));
+        s.add_type_constraint(x, Value::Int(7));
+        s.bind_value(&kb, x, Value::Int(1)); // x := concrete Int(1)
+        // bind_waking(x := ?y) CONTRADICTS (Int(1) ≠ ?y) → the move must be skipped.
+        s.bind_waking(&kb, x, Value::Var(Var::Global(y)));
+        assert!(s.is_contradiction());
+        assert!(
+            !s.residual_constraints().iter().any(|(v, _)| *v == y),
+            "constraints must not move onto the alias on a contradicting bind",
+        );
+    }
+
+    /// Merge-on-alias only moves onto an UNBOUND alias: binding `?x := ?y` when
+    /// `?y` is already bound leaves `?x`'s constraints on `?x` (surfaced for
+    /// Step 5's deref-and-check) rather than stranding them on a var that never
+    /// binds again.
+    #[test]
+    fn bind_waking_keeps_constraints_when_alias_is_bound() {
+        let kb = KnowledgeBase::new();
+        let mut s = Substitution::new();
+        let (x, y) = (vid(1), vid(2));
+        s.bind_value(&kb, y, Value::Int(3)); // ?y already bound
+        s.add_type_constraint(x, Value::Int(7));
+        s.bind_waking(&kb, x, Value::Var(Var::Global(y)));
+        // Not moved onto the bound ?y; still recorded on ?x.
+        let resid = s.residual_constraints();
+        assert!(resid.iter().any(|(v, _)| *v == x), "constraint stays on x");
+        assert!(!resid.iter().any(|(v, _)| *v == y), "must not strand onto bound y");
+    }
+
+    /// `absorb_constraints` unions another subst's top-level store (the
+    /// carry-through-merge primitive used by the resolver lift / reflect compose).
+    #[test]
+    fn absorb_constraints_unions_stores() {
+        let (x, y) = (vid(1), vid(2));
+        let mut a = Substitution::new();
+        a.add_type_constraint(x, Value::Int(1));
+        let mut b = Substitution::new();
+        b.add_type_constraint(y, Value::Int(2));
+        b.add_lacks(x, [Value::Int(3)]);
+        a.absorb_constraints(&b);
+        let resid = a.residual_constraints();
+        assert_eq!(resid.len(), 3);
+        assert_eq!(resid.iter().filter(|(v, _)| *v == x).count(), 2); // own Type + b's Lacks
+        assert_eq!(resid.iter().filter(|(v, _)| *v == y).count(), 1);
+    }
+
+    /// Loud-on-bypass: binding a CONSTRAINT-CARRYING var via `bind_compressed`
+    /// (the synthetic path that never wakes) panics rather than silently drop it.
+    #[test]
+    #[should_panic(expected = "constraint-carrying var")]
+    fn bind_compressed_panics_on_constrained_var() {
+        let store = TermStore::new();
+        let x = vid(1);
+        let mut s = Substitution::new();
+        s.add_type_constraint(x, Value::Int(7));
+        s.bind_compressed(std::iter::once((x, TermId::from_raw(999))), &store);
+    }
+
+    /// The loud guard is per-var: `bind_compressed` of an UNCONSTRAINED var is
+    /// fine even when the store is non-empty (a different var carries a constraint).
+    #[test]
+    fn bind_compressed_ok_when_other_var_constrained() {
+        let store = TermStore::new();
+        let (x, other) = (vid(1), vid(2));
+        let target = TermId::from_raw(999);
+        let mut s = Substitution::new();
+        s.add_type_constraint(other, Value::Int(7));
+        s.bind_compressed(std::iter::once((x, target)), &store);
+        assert_eq!(s.resolve_as_value(x).map(|v| v.expect_term()), Some(target));
     }
 
     #[test]

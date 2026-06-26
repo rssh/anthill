@@ -809,12 +809,20 @@ impl SearchStream {
                 }
                 BuiltinResult::SuccessWithBindings(extra) => {
                     // Merge extra bindings into the current substitution.
-                    // Iterate Value-typed bindings; use bind_value so we
-                    // don't force everything through Value::Term.
+                    // Iterate Value-typed bindings; use bind_waking so we
+                    // don't force everything through Value::Term AND so any
+                    // constraint carried on a bound var wakes (WI-502 Step 2).
                     let new_goals = frame.goals[1..].to_vec();
                     let mut new_subst = frame.subst.clone();
+                    // WI-502 Step 2 (M7(b)) — carry `extra`'s TOP-LEVEL constraint
+                    // store through the merge. This lift is the single funnel for
+                    // every builtin `extra` plus `builtin_unify`'s `work`, and it
+                    // previously threaded `extra.bindings` ONLY — silently dropping
+                    // any constraint a builtin recorded. (No-op until a resolver-side
+                    // producer exists in Step 3; mirrors ignoring `extra.parent`.)
+                    new_subst.absorb_constraints(&extra);
                     for (var, val) in extra.bindings.iter() {
-                        new_subst.bind_value(kb, *var, val.clone());
+                        new_subst.bind_waking(kb, *var, val.clone());
                     }
                     let new_depth = depth + 1;
                     let new_delay = delay_mode.reset();
@@ -1835,6 +1843,13 @@ impl SearchStream {
             let mut merged = frame.subst.clone();
             // bind_compressed wants (VarId, TermId) pairs; filter to the
             // Value::Term subset — path compression is TermId-only.
+            // WI-502 Step 2/5: this is the `Value::Term` fact-bind path; it goes
+            // through `bind_compressed` (loud-asserts on a constrained var), NOT
+            // `bind_waking`. Harmless today (no resolver-side constraint producer
+            // until Step 3), but when Step 5 makes Type constraints live, a
+            // constrained query var binding to a concrete fact term here will trip
+            // the loud guard — Step 5 must route this path through `bind_waking`
+            // (or add the per-kind check) so it wakes/suspends instead of panics.
             let term_pairs: Vec<(VarId, TermId)> = tree_subst.iter_terms().collect();
             merged.bind_compressed(term_pairs.into_iter(), &kb.terms);
             // Non-Term bindings (`Value::Entity` from external rows, etc.)
@@ -1843,7 +1858,12 @@ impl SearchStream {
             // an external row enters σ as its raw `Value` shape.
             for (vid, val) in tree_subst.iter() {
                 if !matches!(val, Value::Term(_)) {
-                    merged.bind_value(kb, *vid, val.clone());
+                    // WI-502 Step 2 — route through the waking choke-point so a
+                    // constraint on `vid` (in the accumulating σ) wakes rather
+                    // than being silently bound over. (No-op until Step 3's
+                    // producer; `tree_subst` itself is freshly built per match,
+                    // so it carries no constraints — only `merged`/σ might.)
+                    merged.bind_waking(kb, *vid, val.clone());
                 }
             }
             let new_delay = delay_mode.reset();

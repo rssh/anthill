@@ -959,6 +959,12 @@ fn subst_compose(interp: &mut Interpreter, args: &[Value]) -> Result<Value, Eval
             for (var, val) in s2.bindings.iter() {
                 result.bindings.entry(*var).or_insert_with(|| val.clone());
             }
+            // WI-502 Step 2 — carry BOTH operands' constraint stores; the prior
+            // code built `result` from bindings only, silently dropping them
+            // (M7(b) carry-through-merge, the reflect-interpreter analog of the
+            // resolver's SuccessWithBindings lift).
+            result.absorb_constraints(s1);
+            result.absorb_constraints(s2);
             result
         })
     });

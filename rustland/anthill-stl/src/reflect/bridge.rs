@@ -870,6 +870,13 @@ impl Substitution for SubstBridge {
     /// `z ↦ Value::Var(w)` with `s2 = {w ↦ v}` resolves to `z ↦ v`, not a
     /// dangling `z ↦ w`. Term-/Node-carried vars were always chased.
     fn compose(&self, s2: &dyn Substitution, kb: &dyn KB) -> Box<dyn Substitution> {
+        // WI-502 Step 2 — `self`'s constraint store is carried by `.clone()`.
+        // `s2`'s constraints are NOT carried here: `s2: &dyn Substitution` only
+        // exposes `bindings()` across the trait boundary, with no `constraints()`
+        // method. This is a documented limitation, not a silent core drop — the
+        // concrete-Substitution `subst_compose` (interp/builtins.rs) carries
+        // both. Reachable only once a self-hosted resolver mints constraints
+        // (post Step 3); extend the `Substitution` trait with `constraints()` then.
         let mut result = self.inner.clone();
         // WI-569: `bindings` is an `imbl::HashMap` (no `iter_mut`). Map each
         // binding value through `s2` into owned pairs, then re-insert — same
