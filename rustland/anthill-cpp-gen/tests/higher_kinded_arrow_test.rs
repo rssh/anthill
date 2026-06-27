@@ -147,16 +147,21 @@ fn stdlib_monad_lowers_to_member_templates() {
         "pure[A] should be a member template returning M<A>:\n{cpp}"
     );
     // map[A, B, EffP](m: M[A], f: (A) -> B @ {EffP}) -> M[B]: the effect-poly
-    // param `EffP` lowers to a (type-level-unused) `typename EffP` — C++ erases
-    // the effect row — and the callback's `@ {EffP}` is dropped.
+    // param `EffP` appears ONLY in the (erased) effect row, so it lowers to
+    // nothing and is dropped from the template list — `A` and `B` survive.
     assert!(
-        cpp.contains("template<typename A, typename B, typename EffP>\n    static M<B> map(M<A> m, std::function<B(A)> f);"),
-        "map[A, B, EffP] should lower with a member template + std::function:\n{cpp}"
+        cpp.contains("template<typename A, typename B>\n    static M<B> map(M<A> m, std::function<B(A)> f);"),
+        "map should lower to a member template with EffP erased:\n{cpp}"
     );
     // flatMap's Kleisli callback `(A) -> M[B] @ {EffP}` → std::function<M<B>(A)>.
     assert!(
-        cpp.contains("template<typename A, typename B, typename EffP>\n    static M<B> flatMap(M<A> m, std::function<M<B>(A)> f);"),
-        "flatMap should lower the Kleisli arrow to std::function<M<B>(A)>:\n{cpp}"
+        cpp.contains("template<typename A, typename B>\n    static M<B> flatMap(M<A> m, std::function<M<B>(A)> f);"),
+        "flatMap should lower the Kleisli arrow to std::function<M<B>(A)>, EffP erased:\n{cpp}"
+    );
+    // The erased effect-poly param must NOT survive as a dead template param.
+    assert!(
+        !cpp.contains("typename EffP"),
+        "effect-only param EffP should be erased, not emitted as a dead template param:\n{cpp}"
     );
 }
 
