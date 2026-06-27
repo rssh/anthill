@@ -120,56 +120,54 @@ fn non_hk_param_stays_typename() {
     );
 }
 
-/// The canonical proposal-002 CpsMonad spec: a higher-kinded carrier `F[T]`
-/// plus operations with their OWN type params (`map[A, B]`, `flatMap[A, B]`,
-/// `pure[A]`). Shared by the assertion and compile tests below.
-const CPS_MONAD_SRC: &str = r#"
-    namespace test.cps
-      sort CpsMonad[F[T]]
-        operation pure[A](a: A) -> F[T = A]
-        operation map[A, B](fa: F[T = A], f: (A) -> B) -> F[T = B]
-        operation flatMap[A, B](fa: F[T = A], f: (A) -> F[T = B]) -> F[T = B]
-      end
-    end
-"#;
+/// Emit the C++ traits struct for the REAL stdlib `anthill.prelude.Monad`
+/// (`sort Monad[M[T]]` with `pure[A]`, `flatMap[A, B, EffP]`, `map[A, B,
+/// EffP]`). The stdlib is always loaded by the test harness, so a trivial
+/// user source suffices to build the KB.
+fn emit_stdlib_monad() -> String {
+    let kb = load_kb_with_lenient("namespace test.use_monad\nend\n");
+    emit_traits_struct(&kb, "anthill.prelude.Monad").expect("emit anthill.prelude.Monad")
+}
 
 #[test]
-fn cps_monad_per_op_type_params_lower() {
-    // Full monad-spec lowering: the HK carrier → a class template-template
-    // parameter, and each generic op → a member template whose A/B references
-    // resolve inside the arrow / carrier-application types.
-    let kb = load_kb_with_lenient(CPS_MONAD_SRC);
-    let cpp = emit_traits_struct(&kb, "test.cps.CpsMonad").expect("emit CpsMonad");
+fn stdlib_monad_lowers_to_member_templates() {
+    // Full monad-spec lowering against the ACTUAL stdlib interface (not a
+    // bespoke copy): the HK carrier `M[T]` → a class template-template
+    // parameter, and each generic op → a member template whose per-op params
+    // resolve inside the (positionally-applied) `M[A]` and arrow types.
+    let cpp = emit_stdlib_monad();
 
     assert!(
-        cpp.contains("template<template<typename...> class F>"),
-        "HK carrier should be a class template-template parameter:\n{cpp}"
+        cpp.contains("template<template<typename...> class M>"),
+        "HK carrier `M[T]` should be a class template-template parameter:\n{cpp}"
     );
-    // pure[A]: one per-op type param; carrier-applied return.
+    // pure[A](a: A) -> M[A]: one per-op param; positional `M[A]` → `M<A>`.
     assert!(
-        cpp.contains("template<typename A>\n    static F<A> pure(A a);"),
-        "pure[A] should be a member template returning F<A>:\n{cpp}"
+        cpp.contains("template<typename A>\n    static M<A> pure(A a);"),
+        "pure[A] should be a member template returning M<A>:\n{cpp}"
     );
-    // map[A, B]: two per-op params; pure-arrow callback `(A) -> B`.
+    // map[A, B, EffP](m: M[A], f: (A) -> B @ {EffP}) -> M[B]: the effect-poly
+    // param `EffP` lowers to a (type-level-unused) `typename EffP` — C++ erases
+    // the effect row — and the callback's `@ {EffP}` is dropped.
     assert!(
-        cpp.contains("template<typename A, typename B>\n    static F<B> map(F<A> fa, std::function<B(A)> f);"),
-        "map[A, B] should lower with a member template + std::function:\n{cpp}"
+        cpp.contains("template<typename A, typename B, typename EffP>\n    static M<B> map(M<A> m, std::function<B(A)> f);"),
+        "map[A, B, EffP] should lower with a member template + std::function:\n{cpp}"
     );
-    // flatMap[A, B]: Kleisli callback `(A) -> F[T = B]` → std::function<F<B>(A)>.
+    // flatMap's Kleisli callback `(A) -> M[B] @ {EffP}` → std::function<M<B>(A)>.
     assert!(
-        cpp.contains("template<typename A, typename B>\n    static F<B> flatMap(F<A> fa, std::function<F<B>(A)> f);"),
-        "flatMap[A, B] should lower the Kleisli arrow to std::function<F<B>(A)>:\n{cpp}"
+        cpp.contains("template<typename A, typename B, typename EffP>\n    static M<B> flatMap(M<A> m, std::function<M<B>(A)> f);"),
+        "flatMap should lower the Kleisli arrow to std::function<M<B>(A)>:\n{cpp}"
     );
 }
 
 #[test]
-fn cps_monad_compiles() {
-    // The full CpsMonad traits struct must be syntactically valid C++ —
-    // declaration-only (never instantiated), so a syntax-only pass validates
-    // the class template-template parameter, the per-op member templates, the
-    // dependent `F<…>` uses, and the std::function callbacks.
-    let kb = load_kb_with_lenient(CPS_MONAD_SRC);
-    let traits = emit_traits_struct(&kb, "test.cps.CpsMonad").expect("emit CpsMonad");
+fn stdlib_monad_compiles() {
+    // The real `anthill.prelude.Monad` traits struct must be syntactically
+    // valid C++ — declaration-only (never instantiated), so a syntax-only pass
+    // validates the class template-template parameter, the per-op member
+    // templates (including the effect-poly `EffP`), the dependent `M<…>` uses,
+    // and the std::function callbacks.
+    let traits = emit_stdlib_monad();
 
     let cxx = match find_cxx() {
         Some(c) => c,
@@ -180,8 +178,8 @@ fn cps_monad_compiles() {
     };
 
     let header = format!("#pragma once\n#include <functional>\n\n{traits}\n");
-    let dir = scratch_dir("cps_monad_compile");
-    let header_path = dir.join("cps_monad.hpp");
+    let dir = scratch_dir("stdlib_monad_compile");
+    let header_path = dir.join("monad.hpp");
     std::fs::write(&header_path, &header).expect("write header");
     let driver = format!("#include \"{}\"\nint main() {{ return 0; }}\n", header_path.display());
     let driver_path = dir.join("driver.cpp");
