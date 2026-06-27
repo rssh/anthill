@@ -959,9 +959,13 @@ pub fn emit_traits_struct_by_symbol(
     // consults the stack to render `?T` references to the C++
     // template parameter name.
     let (template, type_params) = template_prefix_for_sort(kb, sort_sym);
+    // The sort's chosen C++ param names seed each op's canonicaliser so a
+    // per-operation type param can't collide with a class template param.
+    let sort_param_cpp: std::collections::HashSet<String> =
+        type_params.values().cloned().collect();
     let _guard = ctx.push_type_params(type_params);
 
-    let ops = operations_in_sort(ctx, sort_sym)?;
+    let ops = operations_in_sort(ctx, sort_sym, &sort_param_cpp)?;
     let consts = consts_in_scope(ctx, qualified)?;
     if ops.is_empty() && consts.is_empty() {
         return Err(CppCodegenError {
@@ -998,6 +1002,9 @@ pub fn emit_traits_struct_by_symbol(
                 .replace("{name}", &op.name)
                 .replace("{params}", &params_text),
         };
+        // WI-575+: a generic op (`map[A, B](…)`) prefixes its signature with a
+        // member-template `template<typename A, typename B>` line.
+        methods_text.push_str(&op.template_prefix);
         methods_text.push_str(&rendered);
     }
 
@@ -1015,6 +1022,10 @@ struct OperationSig {
     params: Vec<ParamInfo>,
     return_type_cpp: String,
     body: Option<String>,
+    /// WI-575+: the per-operation member-template prefix (`    template<typename
+    /// A, typename B>\n`) for a generic op like `map[A, B](…)`. Empty for a
+    /// monomorphic op. Rendered immediately before the `static` method line.
+    template_prefix: String,
 }
 
 struct ParamInfo {
@@ -1266,10 +1277,14 @@ fn synthesise_body_for(
 
 /// Walk the KB's `OperationInfo` facts and return all that belong to
 /// `sort_sym`'s scope. Each entry's params and return type are lowered
-/// via the carrier-aware `lower_type`.
+/// via the carrier-aware `lower_type`. `sort_param_cpp` is the enclosing
+/// sort's chosen C++ template-param names — it seeds each generic op's
+/// canonicaliser so a per-operation type param never collides with a class
+/// template param.
 fn operations_in_sort(
     ctx: &CodegenContext,
     sort_sym: Symbol,
+    sort_param_cpp: &std::collections::HashSet<String>,
 ) -> Result<Vec<OperationSig>, CppCodegenError> {
     let kb = ctx.kb;
     let op_info_sym = match kb.try_resolve_symbol("anthill.reflect.OperationInfo") {
@@ -1301,6 +1316,27 @@ fn operations_in_sort(
             .ok_or_else(|| CppCodegenError {
                 message: format!("operation '{name}' missing OperationInfo"),
             })?;
+
+        // WI-575+: a generic operation (`map[A, B](…)`) carries its own type
+        // params — read straight from the OperationInfo record (the dedicated
+        // accessor) as declaration-ordered bare names, not re-derived. When
+        // present, push them as a member-template frame for the duration of
+        // THIS op's signature lowering (popped when `_op_guard` drops at the
+        // loop's end) so references to `A`/`B` in the param / return types
+        // resolve, and emit a `template<typename A, typename B>` prefix on the
+        // method. A monomorphic op pushes nothing.
+        let op_type_params: Vec<String> = rec.type_params.iter()
+            .map(|(sym, _)| kb.resolve_sym(*sym).to_string())
+            .collect();
+        let mut template_prefix = String::new();
+        let mut _op_guard = None;
+        if !op_type_params.is_empty() {
+            let mut op_taken = sort_param_cpp.clone();
+            let (op_decls, op_frame) =
+                template_param_decls(kb, op_sym, &op_type_params, &mut op_taken);
+            template_prefix = format!("    template<{}>\n", op_decls.join(", "));
+            _op_guard = Some(ctx.push_type_params(op_frame));
+        }
 
         // WI-341: the return type is carrier-agnostic; a denoted-bearing
         // (`Value::Node`) return — an op returning a `Modify`-carrying callback —
@@ -1367,7 +1403,7 @@ fn operations_in_sort(
             return_type_cpp
         };
         let body = synthesise_body_for(ctx, op_sym, &name, &params, &return_type_cpp, return_term);
-        out.push(OperationSig { name, params, return_type_cpp, body });
+        out.push(OperationSig { name, params, return_type_cpp, body, template_prefix });
     }
 
     out.sort_by(|a, b| a.name.cmp(&b.name));
@@ -2578,6 +2614,40 @@ fn canonicalise_param_name(source_name: &str, taken: &mut std::collections::Hash
     chosen
 }
 
+/// Build the C++ template-parameter declarations for `params`, the type
+/// parameters owned by `owner_sym` (a sort or — for a per-operation generic —
+/// an operation symbol). Returns the decl fragments (`typename A` for a
+/// first-order param, `template<typename...> class F` for a higher-kinded
+/// carrier) and the source-name → cpp-name mapping to push onto the
+/// type-param stack. `taken` accumulates the chosen C++ identifiers; seed it
+/// with the enclosing sort's param names when building an operation's
+/// member-template prefix so a per-op `T` can't collide with the class `T`.
+fn template_param_decls(
+    kb: &KnowledgeBase,
+    owner_sym: Symbol,
+    params: &[String],
+    taken: &mut std::collections::HashSet<String>,
+) -> (Vec<String>, std::collections::HashMap<String, String>) {
+    let mut mapping = std::collections::HashMap::new();
+    let mut decls = Vec::with_capacity(params.len());
+    for p in params {
+        let cpp = canonicalise_param_name(p, taken);
+        // WI-575 (f): a higher-kinded carrier — a param whose own body declares
+        // type params (`sort Spec[F[T]]`, or `operation op[G[T]](…)`) — becomes
+        // a C++ template-template parameter `template<typename...> class F`, so
+        // a use `F[T = A]` can lower to `F<A>`. A first-order param stays the
+        // plain `typename F`.
+        let decl = if is_higher_kinded_param(kb, owner_sym, p) {
+            format!("template<typename...> class {cpp}")
+        } else {
+            format!("typename {cpp}")
+        };
+        mapping.insert(p.clone(), cpp.clone());
+        decls.push(decl);
+    }
+    (decls, mapping)
+}
+
 /// Build the `(template prefix, name → cpp_param)` pair for a sort.
 /// Empty prefix and empty map when the sort has no type parameters.
 fn template_prefix_for_sort(
@@ -2589,23 +2659,7 @@ fn template_prefix_for_sort(
         return (String::new(), std::collections::HashMap::new());
     }
     let mut taken = std::collections::HashSet::new();
-    let mut mapping = std::collections::HashMap::new();
-    let mut decls = Vec::with_capacity(params.len());
-    for p in &params {
-        let cpp = canonicalise_param_name(p, &mut taken);
-        // WI-575 (f): a higher-kinded carrier — a sort param whose own body
-        // declares type params (`sort Spec[F[T]]`) — becomes a C++
-        // template-template parameter `template<typename...> class F`, so a
-        // use `F[T = A]` can lower to `F<A>`. A first-order param stays the
-        // plain `typename F`.
-        let decl = if is_higher_kinded_param(kb, sort_sym, p) {
-            format!("template<typename...> class {cpp}")
-        } else {
-            format!("typename {cpp}")
-        };
-        mapping.insert(p.clone(), cpp.clone());
-        decls.push(decl);
-    }
+    let (decls, mapping) = template_param_decls(kb, sort_sym, &params, &mut taken);
     let prefix = format!("template<{}>\n", decls.join(", "));
     (prefix, mapping)
 }

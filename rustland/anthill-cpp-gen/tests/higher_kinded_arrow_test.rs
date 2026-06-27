@@ -120,6 +120,90 @@ fn non_hk_param_stays_typename() {
     );
 }
 
+/// The canonical proposal-002 CpsMonad spec: a higher-kinded carrier `F[T]`
+/// plus operations with their OWN type params (`map[A, B]`, `flatMap[A, B]`,
+/// `pure[A]`). Shared by the assertion and compile tests below.
+const CPS_MONAD_SRC: &str = r#"
+    namespace test.cps
+      sort CpsMonad[F[T]]
+        operation pure[A](a: A) -> F[T = A]
+        operation map[A, B](fa: F[T = A], f: (A) -> B) -> F[T = B]
+        operation flatMap[A, B](fa: F[T = A], f: (A) -> F[T = B]) -> F[T = B]
+      end
+    end
+"#;
+
+#[test]
+fn cps_monad_per_op_type_params_lower() {
+    // Full monad-spec lowering: the HK carrier → a class template-template
+    // parameter, and each generic op → a member template whose A/B references
+    // resolve inside the arrow / carrier-application types.
+    let kb = load_kb_with_lenient(CPS_MONAD_SRC);
+    let cpp = emit_traits_struct(&kb, "test.cps.CpsMonad").expect("emit CpsMonad");
+
+    assert!(
+        cpp.contains("template<template<typename...> class F>"),
+        "HK carrier should be a class template-template parameter:\n{cpp}"
+    );
+    // pure[A]: one per-op type param; carrier-applied return.
+    assert!(
+        cpp.contains("template<typename A>\n    static F<A> pure(A a);"),
+        "pure[A] should be a member template returning F<A>:\n{cpp}"
+    );
+    // map[A, B]: two per-op params; pure-arrow callback `(A) -> B`.
+    assert!(
+        cpp.contains("template<typename A, typename B>\n    static F<B> map(F<A> fa, std::function<B(A)> f);"),
+        "map[A, B] should lower with a member template + std::function:\n{cpp}"
+    );
+    // flatMap[A, B]: Kleisli callback `(A) -> F[T = B]` → std::function<F<B>(A)>.
+    assert!(
+        cpp.contains("template<typename A, typename B>\n    static F<B> flatMap(F<A> fa, std::function<F<B>(A)> f);"),
+        "flatMap[A, B] should lower the Kleisli arrow to std::function<F<B>(A)>:\n{cpp}"
+    );
+}
+
+#[test]
+fn cps_monad_compiles() {
+    // The full CpsMonad traits struct must be syntactically valid C++ —
+    // declaration-only (never instantiated), so a syntax-only pass validates
+    // the class template-template parameter, the per-op member templates, the
+    // dependent `F<…>` uses, and the std::function callbacks.
+    let kb = load_kb_with_lenient(CPS_MONAD_SRC);
+    let traits = emit_traits_struct(&kb, "test.cps.CpsMonad").expect("emit CpsMonad");
+
+    let cxx = match find_cxx() {
+        Some(c) => c,
+        None => {
+            eprintln!("no C++ compiler available — skipping compile check");
+            return;
+        }
+    };
+
+    let header = format!("#pragma once\n#include <functional>\n\n{traits}\n");
+    let dir = scratch_dir("cps_monad_compile");
+    let header_path = dir.join("cps_monad.hpp");
+    std::fs::write(&header_path, &header).expect("write header");
+    let driver = format!("#include \"{}\"\nint main() {{ return 0; }}\n", header_path.display());
+    let driver_path = dir.join("driver.cpp");
+    std::fs::write(&driver_path, &driver).expect("write driver");
+
+    let output = Command::new(cxx)
+        .args(["-std=c++17", "-fsyntax-only", "-Wall", "-Wextra"])
+        .arg(&driver_path)
+        .output()
+        .expect("invoke compiler");
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        panic!(
+            "C++ compile failed (compiler: {cxx})\n\
+             ── header.hpp ───────────────────────\n{header}\n\
+             ── stderr ───────────────────────────\n{stderr}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn first_order_param_applied_is_a_loud_error() {
     // Guard: a FIRST-ORDER param `T` used in application position (`T[X = ?]`,
