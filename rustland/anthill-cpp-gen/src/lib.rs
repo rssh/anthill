@@ -2590,20 +2590,37 @@ fn template_prefix_for_sort(
     }
     let mut taken = std::collections::HashSet::new();
     let mut mapping = std::collections::HashMap::new();
-    let mut cpp_names = Vec::with_capacity(params.len());
+    let mut decls = Vec::with_capacity(params.len());
     for p in &params {
         let cpp = canonicalise_param_name(p, &mut taken);
+        // WI-575 (f): a higher-kinded carrier — a sort param whose own body
+        // declares type params (`sort Spec[F[T]]`) — becomes a C++
+        // template-template parameter `template<typename...> class F`, so a
+        // use `F[T = A]` can lower to `F<A>`. A first-order param stays the
+        // plain `typename F`.
+        let decl = if is_higher_kinded_param(kb, sort_sym, p) {
+            format!("template<typename...> class {cpp}")
+        } else {
+            format!("typename {cpp}")
+        };
         mapping.insert(p.clone(), cpp.clone());
-        cpp_names.push(cpp);
+        decls.push(decl);
     }
-    let prefix = format!(
-        "template<{}>\n",
-        cpp_names.iter()
-            .map(|n| format!("typename {n}"))
-            .collect::<Vec<_>>()
-            .join(", ")
-    );
+    let prefix = format!("template<{}>\n", decls.join(", "));
     (prefix, mapping)
+}
+
+/// WI-575 (f): is `param` a higher-kinded type parameter of `sort_sym`? A
+/// marked carrier `F` of `sort Spec[F[T]]` loads as a nested sort
+/// `<Spec>.F` whose own body declares type params (`T`), so the test is
+/// "the nested sort named `param` has at least one type parameter of its
+/// own". Form-agnostic: the marked/unmarked-carrier distinction is a loader
+/// concern (it decides whether `F` gets a backing var), but by the time
+/// codegen runs the kind shows up the same way — as nested type params.
+fn is_higher_kinded_param(kb: &KnowledgeBase, sort_sym: Symbol, param: &str) -> bool {
+    let nested = format!("{}.{}", kb.qualified_name_of(sort_sym), param);
+    kb.try_resolve_symbol(&nested)
+        .is_some_and(|sym| !kb.type_params_of_sort(sym).is_empty())
 }
 
 /// Classify a declared effect term into a short, codegen-relevant
@@ -3168,10 +3185,30 @@ fn lower_type(ctx: &CodegenContext, type_term: TermId) -> Result<String, CppCode
             })
         }
         Term::Fn { functor, .. } => {
+            // WI-575 (proposal 002): structural TYPE functors that are not
+            // parameterized sorts — lower them to their C++ shapes rather than
+            // erroring. Read through the typed, carrier-agnostic `extract_type`
+            // (the same accessor `unpack_parameterized` uses) so both the deep
+            // and term-backed carriers decode uniformly. An arrow type →
+            // `std::function<R(Args...)>` (its effect row is erased — a
+            // spec-side concern with no C++ type witness, per proposal 002
+            // §"Effect Subtyping"); a `named_tuple` → `std::tuple<…>`.
+            match extract_type(kb, &TermIdView(type_term)) {
+                TypeExtractor::Arrow { param, result, .. } => {
+                    return lower_arrow_type(ctx, &param, &result);
+                }
+                TypeExtractor::NamedTuple(fields) => {
+                    ctx.requested_includes.borrow_mut()
+                        .insert("#include <tuple>".to_string());
+                    let elems = lower_tuple_elem_types(ctx, &fields)?;
+                    return Ok(format!("std::tuple<{}>", elems.join(", ")));
+                }
+                _ => {}
+            }
             // Parameterized type — the deep `parameterized(base: sort_ref(S),
             // bindings)` OR the term-backed `Fn{S, named}` form (WI-361).
             // `unpack_parameterized` reads both; a non-parameterized Fn (e.g.
-            // an `arrow`/`named_tuple` structural type) falls through to error.
+            // an unrecognised structural type) falls through to error.
             if unpack_parameterized(kb, type_term).is_some() {
                 return lower_parameterized(ctx, type_term);
             }
@@ -3187,6 +3224,66 @@ fn lower_type(ctx: &CodegenContext, type_term: TermId) -> Result<String, CppCode
             message: format!("cannot lower term to C++ type: {other:?}"),
         }),
     }
+}
+
+/// WI-575 (proposal 002): lower an `arrow(param, result, effects)` Type to a
+/// C++ `std::function<R(Args...)>`. The `param` child is a single type (one
+/// Arg) or a `named_tuple` (its element types become the Args, in declaration
+/// order — so `() -> R` yields zero args). `result` is `R`. The `effects`
+/// child is intentionally dropped: an arrow's effect row has no C++ type
+/// witness (the host realizes effects in the value, not the type).
+fn lower_arrow_type(
+    ctx: &CodegenContext,
+    param: &Value,
+    result: &Value,
+) -> Result<String, CppCodegenError> {
+    let kb = ctx.kb;
+    let r = lower_type_value(ctx, result)?;
+
+    // A multi-param / nullary arrow carries its params as a `named_tuple`; a
+    // unary arrow carries the single param type directly. Decode through the
+    // same typed extractor so both forms (and both carriers) read uniformly.
+    // A `named_tuple` param is taken to BE the parameter list (this is the
+    // WI-575 contract: "the param named_tuple becomes Args..."). Note the
+    // loader builds `(a: A, b: B) -> R` and a single tuple-typed parameter
+    // `((A, B)) -> R` into the identical `named_tuple([A, B])` param, so the
+    // two are indistinguishable here; the multi-arg reading wins (the common
+    // case), at the cost of flattening that rare single-tuple-parameter form.
+    let args: Vec<String> = match param {
+        Value::Term(t) => match extract_type(kb, &TermIdView(*t)) {
+            TypeExtractor::NamedTuple(fields) => lower_tuple_elem_types(ctx, &fields)?,
+            _ => vec![lower_type(ctx, *t)?],
+        },
+        _ => vec![lower_type_value(ctx, param)?],
+    };
+
+    ctx.requested_includes.borrow_mut()
+        .insert("#include <functional>".to_string());
+    Ok(format!("std::function<{r}({})>", args.join(", ")))
+}
+
+/// Lower a type carried as a [`Value`]. A ground type rides as `Value::Term`;
+/// a denoted-bearing (`Value::Node`) type — a callback arrow whose effect
+/// carries a value like `Modify[c]` — has no C++ type witness and is a loud
+/// error here, matching how op param / return lowering rejects the same shape.
+fn lower_type_value(ctx: &CodegenContext, v: &Value) -> Result<String, CppCodegenError> {
+    match v {
+        Value::Term(t) => lower_type(ctx, *t),
+        _ => Err(CppCodegenError {
+            message: "denoted-bearing type carrier is unsupported by C++ codegen".into(),
+        }),
+    }
+}
+
+/// Lower the element field-types of a `named_tuple` to C++, in declaration
+/// order. The element names are dropped — C++ `std::tuple` slots and function
+/// parameters are positional. Shared by the standalone-tuple arm of
+/// `lower_type` and the multi-param arrow's parameter list.
+fn lower_tuple_elem_types(
+    ctx: &CodegenContext,
+    fields: &[(Symbol, Value)],
+) -> Result<Vec<String>, CppCodegenError> {
+    fields.iter().map(|(_, v)| lower_type_value(ctx, v)).collect()
 }
 
 /// Lower a `parameterized(base: sort_ref(...), bindings: [...])` term
@@ -3207,8 +3304,20 @@ fn lower_parameterized(
 
     let qualified = kb.qualified_name_of(base_sym);
     let short = short_name_of(qualified);
-    let template_name = ctx.carriers.lookup(qualified)
-        .map(str::to_string)
+    // WI-575 (f): a parameterized type whose base is a higher-kinded type
+    // parameter (`F[T = A]`, where `F` is the carrier of `sort Spec[F[T]]`)
+    // lowers to the template-template parameter applied — `F<A>`. Checked
+    // first (mirroring `sort_to_cpp`) so an enclosing `?F` shadows any stray
+    // carrier / `TypeMapping` that happens to share the short name. The base
+    // must be GENUINELY higher-kinded (its own body declares type params) —
+    // applying a first-order param (`T[X = Int]`, a kind error) would emit
+    // `T<Int>` against a `typename T` declaration; gating on the param's
+    // arity leaves that ill-kinded case to fall through to the loud
+    // "no C++ mapping" error below rather than silently emitting invalid C++.
+    let base_is_hk_param = !kb.type_params_of_sort(base_sym).is_empty();
+    let template_name = ctx.lookup_type_param(short)
+        .filter(|_| base_is_hk_param)
+        .or_else(|| ctx.carriers.lookup(qualified).map(str::to_string))
         .or_else(|| resolve_type_mapping(ctx, &[short], None).map(|h| h.host_type))
         .ok_or_else(|| CppCodegenError {
             message: format!(
