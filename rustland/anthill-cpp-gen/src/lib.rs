@@ -227,8 +227,8 @@ impl MarshalTable {
                 Some(s) => s,
                 None => continue,
             };
-            let lift  = named_arg(kb, head, "lift").and_then(|t| extract_optional_string(kb, t));
-            let lower = named_arg(kb, head, "lower").and_then(|t| extract_optional_string(kb, t));
+            let lift  = named_optional_string(kb, head, "lift");
+            let lower = named_optional_string(kb, head, "lower");
             // A TypeMapping with no adapter is a plain rename, not a
             // marshalled rep — skip it (it carries no value conversion).
             if lift.is_none() && lower.is_none() {
@@ -464,6 +464,13 @@ fn as_string(kb: &KnowledgeBase, term: TermId) -> Option<String> {
 /// Combination of `named_arg` + `as_string`.
 fn named_string(kb: &KnowledgeBase, head: TermId, name: &str) -> Option<String> {
     named_arg(kb, head, name).and_then(|t| as_string(kb, t))
+}
+
+/// Read a named arg declared `Option[String]`, returning the inner string when
+/// present (`some("x")` -> `Some("x")`, `none` -> `None`). The Option-typed
+/// counterpart of `named_string` (sibling reader for keyed realization facts).
+fn named_optional_string(kb: &KnowledgeBase, head: TermId, name: &str) -> Option<String> {
+    named_arg(kb, head, name).and_then(|t| extract_optional_string(kb, t))
 }
 
 /// Return the qualified name of `sym`'s parent, if any — e.g.
@@ -1162,7 +1169,7 @@ fn synthesise_body_for(
         return None;
     }
     let arrow = if self_param.cpp_type.contains('*') { "->" } else { "." };
-    let cpp_method = snake_to_camel(name);
+    let cpp_method = cpp_method_name(ctx.kb, name);
 
     // A non-self argument whose anthill type IS marshalled but declares
     // no `lower` adapter cannot be bridged into the host call — surface
@@ -1306,17 +1313,23 @@ fn operations_in_sort(
             });
         }
 
-        // Pull declared effects so we can wrap the return type for
-        // Error-bearing ops. Effect labels are carrier-agnostic `Value`s; an
-        // `Error` label is always a ground `Value::Term` (a `denoted` label like
-        // `Modify[c]` is a `Value::Node` and never an `Error`).
-        let has_error_effect = rec.effects.iter().any(|eff| match eff {
-            anthill_core::eval::Value::Term(t) => {
-                effect_kind_short(kb, *t).as_deref() == Some("Error")
-            }
+        // Pull declared effects so we can wrap the return type for effects the
+        // cpp profile realizes as `ResultWrap`. WI-089(b): this decision is now
+        // FACT-DRIVEN — an effect wraps iff cpp's `EffectMapping` maps it to
+        // `ResultWrap` (the keyed query), not a hardcoded "Error" string-match.
+        // The cpp meaning of `ResultWrap` (`tl::expected<R, std::string>` + the
+        // `<tl/expected.hpp>` include) stays here, exactly as a `TypeMapping`
+        // host_type's template wrapping does. Effect labels are carrier-agnostic
+        // `Value`s; a realizable label is a ground `Value::Term` (a `denoted`
+        // label like `Modify[c]` is a `Value::Node`).
+        let wraps_result = rec.effects.iter().any(|eff| match eff {
+            anthill_core::eval::Value::Term(t) => effect_kind_short(kb, *t)
+                .and_then(|name| cpp_effect_receiver(kb, &name))
+                .as_deref()
+                == Some("ResultWrap"),
             _ => false,
         });
-        let return_type_cpp = if has_error_effect {
+        let return_type_cpp = if wraps_result {
             ctx.requested_includes.borrow_mut()
                 .insert("#include <tl/expected.hpp>".to_string());
             format!("tl::expected<{return_type_cpp}, std::string>")
@@ -1392,8 +1405,8 @@ pub fn generated_targets(kb: &KnowledgeBase) -> Vec<GeneratedTarget> {
         let Some(artifact) = named_arg(kb, head, "artifact").and_then(|t| as_string(kb, t)) else { continue };
         let Some(language) = named_arg(kb, head, "language").and_then(|t| as_string(kb, t)) else { continue };
         let Some(kind) = named_arg(kb, head, "kind").and_then(|t| as_string(kb, t)) else { continue };
-        let profile = named_arg(kb, head, "profile").and_then(|t| extract_optional_string(kb, t));
-        let description = named_arg(kb, head, "description").and_then(|t| extract_optional_string(kb, t));
+        let profile = named_optional_string(kb, head, "profile");
+        let description = named_optional_string(kb, head, "description");
         out.push(GeneratedTarget { source, artifact, language, profile, kind, description });
     }
     out.sort_by(|a, b| a.source.cmp(&b.source));
@@ -1514,7 +1527,7 @@ pub fn emit_namespace_header_in(
     traits_band.sort_by(|a, b| ctx.kb.qualified_name_of(*a).cmp(ctx.kb.qualified_name_of(*b)));
 
     let mut items = String::new();
-    let mut needs = Includes::default();
+    let mut needs = Includes::from_kb(ctx.kb);
     // Namespace-scope constants (incl. companions) first, so any later struct
     // or method body that references one sees its declaration (a const of a
     // primitive type carries no forward dependency on a same-namespace struct).
@@ -1923,39 +1936,42 @@ fn constructors_of(ctx: &CodegenContext, sort_sym: Symbol) -> Vec<Symbol> {
     out
 }
 
-/// Set of standard-library headers required by emitted types. Built
-/// up by scanning emitted struct text for primitive type spellings —
-/// good enough for v0; will become fact-driven once cpp_std (WI-089)
-/// makes the type ↔ header mapping data instead of code.
-/// (probe substring, include directive) — single source of truth for
-/// the type-spelling-to-header mapping. Order is the order in which
-/// includes appear in the rendered preamble.
-const INCLUDE_PROBES: &[(&str, &str)] = &[
-    ("int64_t",       "#include <cstdint>"),
-    ("std::string",   "#include <string>"),
-    ("std::vector",   "#include <vector>"),
-    ("std::optional", "#include <optional>"),
-    ("std::pair",     "#include <utility>"),
-    ("std::map",      "#include <map>"),
-    ("std::set",      "#include <set>"),
-    ("std::variant",  "#include <variant>"),
-    ("std::numeric_limits", "#include <limits>"),
-    ("std::string_view", "#include <string_view>"),
-];
-
-#[derive(Default)]
+/// Set of standard-library headers required by emitted types. After rendering a
+/// namespace header's body, cpp-gen scans that text for host type spellings and,
+/// on a hit, pulls in the matching `#include` — the (spelling, header) table is
+/// the cpp `IncludeMapping` facts (WI-089), built once via `query_include_mappings`
+/// instead of a hardcoded array.
+///
+/// Every emitted/referenced header is required self-contained (the
+/// `IncludeMapping` invariant), so include order is never load-bearing: the
+/// probe list is sorted for deterministic output, and the stdlib group renders
+/// before `extras` (the non-stdlib directives — `<tl/expected.hpp>`,
+/// cross-namespace, vendor headers) purely for readability.
 struct Includes {
-    /// Indices into `INCLUDE_PROBES` of needed includes.
+    /// (host type spelling, include directive), sorted by directive for a
+    /// deterministic preamble. The cpp `IncludeMapping` stdlib group.
+    probes: Vec<(String, String)>,
+    /// Indices into `probes` whose spelling was found in emitted text.
     needed: std::collections::BTreeSet<usize>,
-    /// Additional `#include` directives registered at codegen time
-    /// (e.g. `<tl/expected.hpp>` for Error-effect ops). Sorted via
-    /// `BTreeSet` for deterministic output.
+    /// Additional `#include …` directives registered at codegen time (e.g.
+    /// `<tl/expected.hpp>` for Error-effect ops). `BTreeSet` for determinism.
     extras: std::collections::BTreeSet<String>,
 }
 
 impl Includes {
+    /// Build from the cpp `IncludeMapping` facts, sorted by include directive.
+    fn from_kb(kb: &KnowledgeBase) -> Self {
+        let mut probes = query_include_mappings(kb, "cpp");
+        probes.sort_by(|a, b| a.1.cmp(&b.1));
+        Includes {
+            probes,
+            needed: std::collections::BTreeSet::new(),
+            extras: std::collections::BTreeSet::new(),
+        }
+    }
+
     fn scan(&mut self, text: &str) {
-        for (i, (probe, _)) in INCLUDE_PROBES.iter().enumerate() {
+        for (i, (probe, _)) in self.probes.iter().enumerate() {
             if text.contains(probe) {
                 self.needed.insert(i);
             }
@@ -1974,7 +1990,7 @@ impl Includes {
         let mut out = String::new();
         for &i in &self.needed {
             out.push('\n');
-            out.push_str(INCLUDE_PROBES[i].1);
+            out.push_str(&self.probes[i].1);
         }
         for inc in &self.extras {
             out.push('\n');
@@ -2564,9 +2580,19 @@ fn effect_kind_short(kb: &KnowledgeBase, term: TermId) -> Option<String> {
     if let Some((base, _)) = unpack_parameterized(kb, term) {
         return Some(short_of(base));
     }
+    // Bare functor/ref short name — shared with `EffectMapping.receiver` reads.
+    functor_or_ref_short(kb, term)
+}
+
+/// Short name of a term that is a bare constructor reference: `Ref`/`Ident` for
+/// a nullary entity, `Fn` for a payload-bearing one. The common tail of
+/// `effect_kind_short` (after its sort_ref/parameterized unwrap) and the reader
+/// for an `EffectMapping.receiver` (a `ReceiverForm` constructor). `None` for
+/// terms that aren't a constructor reference at all.
+fn functor_or_ref_short(kb: &KnowledgeBase, term: TermId) -> Option<String> {
     match kb.get_term(term) {
-        Term::Ref(s) | Term::Ident(s) => Some(short_of(*s)),
-        Term::Fn { functor, .. } => Some(short_of(*functor)),
+        Term::Ref(s) | Term::Ident(s) => Some(short_name_of(kb.qualified_name_of(*s)).to_string()),
+        Term::Fn { functor, .. } => Some(short_name_of(kb.qualified_name_of(*functor)).to_string()),
         _ => None,
     }
 }
@@ -2625,7 +2651,7 @@ fn render_as_math_constant(fn_qn: &str) -> Option<String> {
 
 /// Lower the bodyless host-supplied Float constants (WI-532): IEEE special
 /// values that have no C++ literal spelling. Emitting `std::numeric_limits`
-/// pulls in `<limits>` via the `"std::numeric_limits"` INCLUDE_PROBES entry
+/// pulls in `<limits>` via the `"std::numeric_limits"` `IncludeMapping` fact
 /// when the surrounding block is scanned. Kept separate from
 /// `render_as_math_constant` (whose payloads are bare literals, no header).
 fn render_as_float_special(fn_qn: &str) -> Option<String> {
@@ -3287,40 +3313,39 @@ struct TypeMappingHit {
     key: Option<String>,
 }
 
-/// WI-089: resolve host-type mappings for `anthill_type` under `lang` by an
-/// ORDINARY discrimination-tree query over the keyed `TypeMapping` facts —
-/// not a cached reader (the discrim tree IS the table). Returns every
-/// matching entry across keys; callers pick by key priority.
-///
-/// cpp-gen holds an immutable `&KnowledgeBase`, so it can neither
-/// `kb.resolve` (needs `&mut`) nor hash-cons a pattern term. It instead
-/// builds an allocation-free `Value` pattern — `anthill_type` ground, the
-/// other fields placeholder vars — and matches it via `kb.query_view`.
-/// `lang`/`key` are `Option` fields, so they are read back from each
-/// matched fact head rather than grounded in the pattern (which would mean
-/// matching `some("cpp")` structurally).
-fn query_type_mappings(kb: &KnowledgeBase, lang: &str, anthill_type: &str) -> Vec<TypeMappingHit> {
-    let Some(functor) = kb
-        .try_resolve_symbol("anthill.realization.TypeMapping")
-        .or_else(|| kb.try_resolve_symbol("TypeMapping"))
-    else {
+/// Shared machinery for the WI-089 keyed realization-fact queries (TypeMapping,
+/// EffectMapping, NamingConvention). Builds an allocation-free `Value::Entity`
+/// pattern that grounds `ground_field` to `ground_value` and leaves every other
+/// field a fresh placeholder var, then returns the head `TermId` of each
+/// matching top-level fact. cpp-gen holds an immutable `&KnowledgeBase`, so it
+/// can neither `kb.resolve` (needs `&mut`) nor hash-cons a pattern term; it
+/// matches structurally via `kb.query_view`, which keys named args by Symbol —
+/// hence the pattern carries the facts' exact field symbols, and the whole
+/// query bails (empty) if the functor or any field name isn't interned yet.
+/// Callers read the non-ground fields back from each head and apply their own
+/// post-filters (e.g. an `Option` `lang`). `functor_names` is tried in order
+/// (qualified first, then bare short name).
+fn query_realization_facts(
+    kb: &KnowledgeBase,
+    functor_names: &[&str],
+    fields: &[&str],
+    ground_field: &str,
+    ground_value: &str,
+) -> Vec<TermId> {
+    let Some(functor) = functor_names.iter().find_map(|n| kb.try_resolve_symbol(n)) else {
         return Vec::new();
     };
-    // The pattern's named args must carry the facts' exact field symbols
-    // (`query_view` matches named args by Symbol). All six are interned once
-    // the TypeMapping facts load; bail if the vocabulary isn't present.
-    const FIELDS: &[&str] = &["anthill_type", "host_type", "lift", "lower", "lang", "key"];
-    let mut named: Vec<(Symbol, Value)> = Vec::with_capacity(FIELDS.len());
-    for (i, fname) in FIELDS.iter().enumerate() {
+    let mut named: Vec<(Symbol, Value)> = Vec::with_capacity(fields.len());
+    for (i, fname) in fields.iter().enumerate() {
         let Some(fsym) = kb.lookup_symbol(fname) else {
             return Vec::new();
         };
-        let val = if *fname == "anthill_type" {
-            Value::Str(anthill_type.to_string())
+        let val = if *fname == ground_field {
+            Value::Str(ground_value.to_string())
         } else {
-            // A distinct placeholder var per non-ground slot. Facts are
-            // ground, so a synthetic high VarId cannot collide; the result is
-            // read from the matched fact head, not from these bindings.
+            // A distinct placeholder var per non-ground slot. Facts are ground,
+            // so a synthetic high VarId cannot collide; results are read from the
+            // matched fact head, not from these bindings.
             Value::Var(Var::Global(VarId::new(u32::MAX - i as u32, fsym)))
         };
         named.push((fsym, val));
@@ -3330,18 +3355,36 @@ fn query_type_mappings(kb: &KnowledgeBase, lang: &str, anthill_type: &str) -> Ve
         pos: std::rc::Rc::from(Vec::<Value>::new()),
         named: std::rc::Rc::from(named),
     };
+    kb.query_view(&pattern)
+        .into_iter()
+        .map(|(rid, _)| kb.rule_head(rid))
+        .collect()
+}
 
+/// WI-089: resolve host-type mappings for `anthill_type` under `lang` over the
+/// keyed `TypeMapping` facts (the discrim tree IS the table). `lang`/`key` are
+/// `Option` fields read back from each matched head — grounding `some("cpp")`
+/// structurally would be awkward — so only `anthill_type` is grounded and
+/// `lang` is post-filtered. Returns every matching entry across keys; callers
+/// pick by key priority.
+fn query_type_mappings(kb: &KnowledgeBase, lang: &str, anthill_type: &str) -> Vec<TypeMappingHit> {
+    const FIELDS: &[&str] = &["anthill_type", "host_type", "lift", "lower", "lang", "key"];
     let mut hits = Vec::new();
-    for (rid, _) in kb.query_view(&pattern) {
-        let head = kb.rule_head(rid);
-        let fact_lang = named_arg(kb, head, "lang").and_then(|t| extract_optional_string(kb, t));
+    for head in query_realization_facts(
+        kb,
+        &["anthill.realization.TypeMapping", "TypeMapping"],
+        FIELDS,
+        "anthill_type",
+        anthill_type,
+    ) {
+        let fact_lang = named_optional_string(kb, head, "lang");
         if fact_lang.as_deref() != Some(lang) {
             continue;
         }
         let Some(host_type) = named_string(kb, head, "host_type") else {
             continue;
         };
-        let key = named_arg(kb, head, "key").and_then(|t| extract_optional_string(kb, t));
+        let key = named_optional_string(kb, head, "key");
         hits.push(TypeMappingHit { host_type, key });
     }
     hits
@@ -3357,4 +3400,122 @@ pub fn cpp_base_host_type(kb: &KnowledgeBase, anthill_type: &str) -> Option<Stri
         .into_iter()
         .find(|h| h.key.is_none())
         .map(|h| h.host_type)
+}
+
+struct EffectMappingHit {
+    /// Short name of the `ReceiverForm` variant (e.g. `"ResultWrap"`, `"MutRef"`).
+    receiver: String,
+    key: Option<String>,
+}
+
+/// WI-089(b): resolve cpp effect realizations over the keyed `EffectMapping`
+/// facts — the effect_map analogue of `query_type_mappings`. Grounds `effect`
+/// and post-filters the `Option` `lang`; `receiver` is read as the short name of
+/// its `ReceiverForm` constructor.
+fn query_effect_mappings(kb: &KnowledgeBase, lang: &str, effect: &str) -> Vec<EffectMappingHit> {
+    const FIELDS: &[&str] = &["effect", "receiver", "lang", "key"];
+    let mut hits = Vec::new();
+    for head in query_realization_facts(
+        kb,
+        &["anthill.realization.EffectMapping", "EffectMapping"],
+        FIELDS,
+        "effect",
+        effect,
+    ) {
+        let fact_lang = named_optional_string(kb, head, "lang");
+        if fact_lang.as_deref() != Some(lang) {
+            continue;
+        }
+        let Some(receiver) = named_arg(kb, head, "receiver").and_then(|t| functor_or_ref_short(kb, t))
+        else {
+            continue;
+        };
+        let key = named_optional_string(kb, head, "key");
+        hits.push(EffectMappingHit { receiver, key });
+    }
+    hits
+}
+
+/// WI-089(b): the cpp language-base `ReceiverForm` short name for `effect`
+/// (the `key = none` entry) — the effect_map analogue of `cpp_base_host_type`.
+/// `None` means the cpp profile declares no realization for the effect (its
+/// effect_map has no entry — i.e. the effect is outside cpp's supported set).
+fn cpp_effect_receiver(kb: &KnowledgeBase, effect: &str) -> Option<String> {
+    query_effect_mappings(kb, "cpp", effect)
+        .into_iter()
+        .find(|h| h.key.is_none())
+        .map(|h| h.receiver)
+}
+
+/// WI-089(c): the cpp `(host_type spelling, include directive)` probe pairs from
+/// the keyed `IncludeMapping` facts — replaces the hardcoded `INCLUDE_PROBES`
+/// array. Grounds the plain-String `lang`; caller sorts for deterministic output.
+fn query_include_mappings(kb: &KnowledgeBase, lang: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for head in query_realization_facts(
+        kb,
+        &["anthill.realization.IncludeMapping", "IncludeMapping"],
+        &["host_type", "include", "lang"],
+        "lang",
+        lang,
+    ) {
+        let (Some(host_type), Some(include)) =
+            (named_string(kb, head, "host_type"), named_string(kb, head, "include"))
+        else {
+            continue;
+        };
+        out.push((host_type, include));
+    }
+    out
+}
+
+/// WI-089(b): the host method spelling for an anthill `source` identifier under
+/// the cpp `NamingConvention` fact — replaces the hardcoded `snake_to_camel`
+/// call at the carrier-dispatch boundary. The only transform implemented is
+/// `snake_case -> camelCase` (cpp's declared convention); any other declared
+/// pair (including same-case) is identity, and an absent fact is identity too —
+/// the convention is the source of truth, not a hardcoded default. Per-operation
+/// acronym irregulars (get_gps -> getGPS) ride a CppName override (WI-087), not
+/// this default.
+fn cpp_method_name(kb: &KnowledgeBase, source: &str) -> String {
+    let facts = query_realization_facts(
+        kb,
+        &["anthill.realization.NamingConvention", "NamingConvention"],
+        &["language", "method_case", "source_case"],
+        "language",
+        "cpp",
+    );
+    // cpp_std supplies exactly one cpp NamingConvention. Zero (misconfigured or
+    // unloaded profile) or >1 (an ambiguous overlay — per-op irregulars ride a
+    // CppName attribute (WI-087), not a second fact) is a profile bug: fail
+    // loudly in dev/test per the repo's "loud error over silent skip", degrade
+    // to identity in release rather than abort codegen.
+    debug_assert!(
+        facts.len() == 1,
+        "expected exactly one cpp NamingConvention fact, found {}",
+        facts.len()
+    );
+    let Some(head) = facts.first().copied() else {
+        return source.to_string();
+    };
+    match (
+        named_string(kb, head, "source_case").as_deref(),
+        named_string(kb, head, "method_case").as_deref(),
+    ) {
+        (Some("snake_case"), Some("camelCase")) => snake_to_camel(source),
+        // Same source/method spelling: a legitimate no-op (e.g. a profile that
+        // keeps snake_case).
+        (Some(s), Some(m)) if s == m => source.to_string(),
+        // A declared-but-unimplemented, partial, or malformed casing is a
+        // realization-profile misconfiguration (not user input): fail loudly in
+        // dev/test per "loud error over silent skip"; identity in release.
+        (s, m) => {
+            debug_assert!(
+                false,
+                "cpp NamingConvention declares unsupported/partial casing {s:?} -> {m:?}; \
+                 only snake_case -> camelCase (and identity) are implemented"
+            );
+            source.to_string()
+        }
+    }
 }

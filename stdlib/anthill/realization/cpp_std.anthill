@@ -21,7 +21,7 @@
 -- pad omitted Option fields): the codegen's query pattern matches by exact
 -- arity, so a base fact must carry all six fields by construction.
 namespace anthill.realization.cpp_std
-  import anthill.realization.TypeMapping
+  import anthill.realization.{TypeMapping, EffectMapping, ReceiverForm, NamingConvention, IncludeMapping}
   import anthill.prelude.Option.{some, none}
 
   -- Primitives → leaf host type.
@@ -38,4 +38,35 @@ namespace anthill.realization.cpp_std
   fact TypeMapping(lang: some("cpp"), key: none, anthill_type: "Pair",   host_type: "std::pair",     lift: none, lower: none)
   fact TypeMapping(lang: some("cpp"), key: none, anthill_type: "Map",    host_type: "std::map",      lift: none, lower: none)
   fact TypeMapping(lang: some("cpp"), key: none, anthill_type: "Set",    host_type: "std::set",      lift: none, lower: none)
+
+  -- Effect realization for the C++ language base (key = none, profile-agnostic).
+  -- The keys here ARE cpp's supported-effect set (WI-571's capability gate reads
+  -- this). Read by codegen via the same keyed query as TypeMapping
+  -- (query_effect_mappings / cpp_effect_receiver); replaces the hardcoded
+  -- Error->tl::expected decision. The cpp meaning of each ReceiverForm
+  -- (ResultWrap -> tl::expected<R, std::string>) stays in codegen, exactly as
+  -- a TypeMapping host_type's template-arg wrapping does. All four fields are
+  -- written explicitly (the query matches by exact arity).
+  fact EffectMapping(effect: "Error",  receiver: ResultWrap, lang: some("cpp"), key: none)
+  fact EffectMapping(effect: "Modify", receiver: MutRef,     lang: some("cpp"), key: none)
+
+  -- Identifier casing: anthill `snake_case` source -> host `camelCase` method,
+  -- so a carrier-dispatch body emits `self->getGps()` for op `get_gps`. Read by
+  -- codegen's cpp_method_name; replaces the hardcoded snake_to_camel call.
+  fact NamingConvention(language: "cpp", method_case: "camelCase", source_case: "snake_case")
+
+  -- Host type spelling -> required header (the stdlib include group). Codegen
+  -- scans emitted text for host_type and pulls in include on a hit; replaces the
+  -- hardcoded INCLUDE_PROBES array. Every header here is self-contained, so
+  -- codegen emits them in a deterministic sorted order (see IncludeMapping).
+  fact IncludeMapping(lang: "cpp", host_type: "int64_t",             include: "#include <cstdint>")
+  fact IncludeMapping(lang: "cpp", host_type: "std::string",         include: "#include <string>")
+  fact IncludeMapping(lang: "cpp", host_type: "std::vector",         include: "#include <vector>")
+  fact IncludeMapping(lang: "cpp", host_type: "std::optional",       include: "#include <optional>")
+  fact IncludeMapping(lang: "cpp", host_type: "std::pair",           include: "#include <utility>")
+  fact IncludeMapping(lang: "cpp", host_type: "std::map",            include: "#include <map>")
+  fact IncludeMapping(lang: "cpp", host_type: "std::set",            include: "#include <set>")
+  fact IncludeMapping(lang: "cpp", host_type: "std::variant",        include: "#include <variant>")
+  fact IncludeMapping(lang: "cpp", host_type: "std::numeric_limits", include: "#include <limits>")
+  fact IncludeMapping(lang: "cpp", host_type: "std::string_view",    include: "#include <string_view>")
 end

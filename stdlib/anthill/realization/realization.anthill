@@ -77,9 +77,25 @@ namespace anthill.realization
   -- How a single effect kind maps to host-language syntax.
   --   effect:    kernel effect name ("Modify", "Error")
   --   receiver:  what the effect means for the self parameter
+  --
+  -- WI-089: the FLAT keyed form (lang/key present) is read by codegen via an
+  -- ordinary KB query over top-level `fact EffectMapping(...)` (the effect_map
+  -- analogue of the keyed TypeMapping query), so cpp can drive effect
+  -- realization from facts rather than hardcoded Rust. The effect_map keys
+  -- (the effects with an entry under a (lang, key)) ARE that profile's
+  -- supported-effect set.
+  --   * lang — host language ("cpp") on the FLAT queried form. OMITTED on a
+  --            legacy NESTED entry (the 2-arg `EffectMapping(effect, receiver)`
+  --            inside rust/scala `LanguageMapping.effect_map`): the loader pads
+  --            the missing field with an unbound var (NOT `none`), and the cpp
+  --            query's `lang == "cpp"` filter rejects it either way.
+  --   * key  — none for the LANGUAGE BASE; some(X) for a profile/binding
+  --            overlay queried ahead of the base (first match wins).
   entity EffectMapping(
     effect    : String,
-    receiver  : ReceiverForm
+    receiver  : ReceiverForm,
+    lang      : Option[T = String],                 -- WI-089: query key — host language ("cpp"). Omitted (loader-padded unbound var) on legacy nested entries.
+    key       : Option[T = String]                  -- WI-089: query key — profile/binding overlay; none = the language base on the flat form.
   )
 
   -- Receiver-form rule independent of effects.
@@ -115,6 +131,37 @@ namespace anthill.realization
     entity BoxDyn                       -- -> Box<dyn Trait>
     entity AssociatedType               -- associated type on the containing trait
   end
+
+  -- WI-089: per-language identifier casing. Anthill source identifiers are
+  -- `source_case`; the host method name a carrier-dispatch body calls is
+  -- `method_case`. Codegen reads this (keyed by `language`) instead of a
+  -- hardcoded transform: cpp declares `snake_case` -> `camelCase`, so a
+  -- generated `self->getGps()` dispatch camelCases the anthill `get_gps`.
+  -- Per-operation irregulars (acronyms: get_gps -> getGPS) ride a CppName
+  -- attribute override (WI-087), not this default.
+  entity NamingConvention(
+    language    : String,                           -- host language ("cpp")
+    method_case : String,                           -- host method spelling ("camelCase")
+    source_case : String                            -- anthill source spelling ("snake_case")
+  )
+
+  -- WI-089: which host header a host type spelling needs. Codegen scans emitted
+  -- text for `host_type` and, on a hit, pulls in `include` — the type-spelling
+  -- -> header table as data instead of a hardcoded Rust array (`int64_t` ->
+  -- <cstdint>, `std::vector` -> <vector>).
+  --
+  -- INVARIANT (required): every header cpp-gen emits or references is
+  -- SELF-CONTAINED / independently includable — generated headers by
+  -- construction (`#pragma once` + their own includes), foreign/vendor headers
+  -- by requirement (standard C++ practice). So include ORDER is never
+  -- load-bearing and codegen emits these in a deterministic sorted order; the
+  -- stdlib-before-extras grouping codegen keeps is for human readability, not
+  -- correctness. A header that needs another included first is out of spec.
+  entity IncludeMapping(
+    host_type : String,                             -- host type spelling probed for ("std::vector")
+    include   : String,                             -- directive emitted on a hit ("#include <vector>")
+    lang      : String                              -- host language ("cpp")
+  )
 
   -- Maps an anthill type to a host-language type. Keyed for query.
   --
