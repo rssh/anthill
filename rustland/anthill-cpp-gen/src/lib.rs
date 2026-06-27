@@ -100,6 +100,12 @@ pub struct CarrierTable {
     /// type so the namespace-header writer can emit a corresponding
     /// `#include` whenever a carrier-bound type is referenced.
     artifacts: HashMap<String, String>,
+    /// WI-089(a): anthill qualified name → foreign-binding overlay key
+    /// (`Implementation.binding`, e.g. "webots"). A carrier-dispatch body
+    /// onto this sort prepends the binding key to the active-key list so the
+    /// binding's marshalling `TypeMapping` overlays win over the language
+    /// base. Absent for a plain host-std realization (`binding: none`).
+    bindings: HashMap<String, String>,
 }
 
 impl CarrierTable {
@@ -109,12 +115,13 @@ impl CarrierTable {
     pub fn from_kb(kb: &KnowledgeBase) -> Self {
         let mut by_qualified = HashMap::new();
         let mut artifacts = HashMap::new();
+        let mut bindings = HashMap::new();
 
         let impl_sym = kb
             .try_resolve_symbol("anthill.realization.Implementation")
             .or_else(|| kb.try_resolve_symbol("Implementation"));
         let Some(impl_sym) = impl_sym else {
-            return Self { by_qualified, artifacts };
+            return Self { by_qualified, artifacts, bindings };
         };
 
         for rid in kb.rules_by_functor(impl_sym) {
@@ -129,6 +136,11 @@ impl CarrierTable {
                 continue;
             }
             let artifact = named_string(kb, head, "artifact");
+            // WI-089(a): the foreign-binding overlay key for this realization
+            // (e.g. "webots"). `binding: none` (or an omitted field, padded to
+            // an unbound var by the loader) reads back as None — a plain host-
+            // std realization contributing no value-level marshalling.
+            let impl_binding = named_optional_string(kb, head, "binding");
 
             let carrier_list = match named_arg(kb, head, "carrier") {
                 Some(t) => t,
@@ -157,12 +169,18 @@ impl CarrierTable {
                         if let Some(a) = artifact.clone().filter(|s| !s.is_empty()) {
                             artifacts.insert(target.clone(), a);
                         }
+                        // WI-089(a): record the realization's binding key
+                        // against the carrier sort, so a dispatch boundary onto
+                        // it knows which marshalling overlay family is active.
+                        if let Some(b) = impl_binding.clone() {
+                            bindings.insert(target.clone(), b);
+                        }
                     }
                 }
             }
         }
 
-        Self { by_qualified, artifacts }
+        Self { by_qualified, artifacts, bindings }
     }
 
     /// Look up a host type by the anthill sort's fully qualified name.
@@ -176,6 +194,14 @@ impl CarrierTable {
     /// carrier-bound type.
     pub fn artifact(&self, qualified: &str) -> Option<&str> {
         self.artifacts.get(qualified).map(|s| s.as_str())
+    }
+
+    /// WI-089(a): the foreign-binding overlay key for this carrier sort, if its
+    /// `Implementation` declared one (`binding: some("webots")`). A carrier-
+    /// dispatch body onto this sort prepends the key to the active-key list so
+    /// the binding's marshalling `TypeMapping` overlays shadow the language base.
+    pub fn binding(&self, qualified: &str) -> Option<&str> {
+        self.bindings.get(qualified).map(|s| s.as_str())
     }
 
     /// Whether the table has any entries (used by tests).
@@ -195,62 +221,13 @@ struct Marshal {
     lower: Option<String>,
 }
 
-/// Resolved table of anthill type → marshalled representation, built
-/// from top-level `fact TypeMapping(anthill_type, host_type, lift,
-/// lower)` facts that carry a `lift` and/or `lower` adapter (WI-088).
-///
-/// Plain renames (no adapter — `Int64 -> "i64"`, nested in
-/// `LanguageMapping.type_map`) are NOT collected: they have no
-/// value-level conversion. Only marshalled entries land here.
-///
-/// Consulted ONLY at the carrier-dispatch boundary (`synthesise_body_for`):
-/// the host method's foreign signature is DERIVED by mapping the
-/// operation's declared anthill types through this table, and the call
-/// and its arguments are bridged with `lift` / `lower`. Declared-signature
-/// lowering (`sort_to_cpp`) never consults this table, so the anthill
-/// type's default carrier (its generated struct) is unaffected — `Vec3`
-/// stays a struct everywhere except where it crosses the foreign API.
-pub struct MarshalTable {
-    by_type: HashMap<String, Marshal>,
-}
-
-impl MarshalTable {
-    pub fn from_kb(kb: &KnowledgeBase) -> Self {
-        let mut by_type = HashMap::new();
-        let sym = kb.try_resolve_symbol("anthill.realization.TypeMapping")
-            .or_else(|| kb.try_resolve_symbol("TypeMapping"));
-        let Some(sym) = sym else { return Self { by_type } };
-
-        for rid in kb.rules_by_functor(sym) {
-            let head = kb.rule_head(rid);
-            let anthill_type = match named_string(kb, head, "anthill_type") {
-                Some(s) => s,
-                None => continue,
-            };
-            let lift  = named_optional_string(kb, head, "lift");
-            let lower = named_optional_string(kb, head, "lower");
-            // A TypeMapping with no adapter is a plain rename, not a
-            // marshalled rep — skip it (it carries no value conversion).
-            if lift.is_none() && lower.is_none() {
-                continue;
-            }
-            by_type.insert(anthill_type, Marshal { lift, lower });
-        }
-        Self { by_type }
-    }
-
-    /// Look up by the anthill type's qualified name first, then its
-    /// short name, so a fact written `anthill_type: "anthill.geometry.Vec3"`
-    /// or just `"Vec3"` both resolve.
-    fn lookup(&self, qualified: &str, short: &str) -> Option<&Marshal> {
-        self.by_type.get(qualified).or_else(|| self.by_type.get(short))
-    }
-
-    /// Whether the table has any entries (used by tests).
-    pub fn is_empty(&self) -> bool {
-        self.by_type.is_empty()
-    }
-}
+// WI-089(a): marshalling is NO LONGER a separate prebuilt reader. The
+// adapter-bearing `TypeMapping` overlays are resolved through the SAME keyed
+// query as the plain renames (`resolve_type_mapping` / `query_type_mappings`),
+// selected by the active-key priority — so there is one TypeMapping reader, one
+// place that implements binding-shadows-profile-shadows-base. The former
+// `MarshalTable` (a second functor scan that ignored the key) is retired; see
+// `marshal_for_type`.
 
 /// Resolved table of operation symbol → body TermId, built from
 /// `anthill.realization.OperationImpl` facts. Operations with
@@ -296,15 +273,19 @@ impl OpImplTable {
     }
 }
 
-/// Bundles the KB with a derived `CarrierTable`, `MarshalTable`,
-/// and `OpImplTable` so emit functions don't have to re-scan facts on
-/// every lookup. Construct once per codegen run; pass to every emit
-/// function.
+/// Bundles the KB with a derived `CarrierTable` and `OpImplTable` so emit
+/// functions don't have to re-scan facts on every lookup. Construct once per
+/// codegen run; pass to every emit function. (Type/effect mappings are not
+/// prebuilt — they ride the keyed-`TypeMapping` query, WI-089.)
 pub struct CodegenContext<'kb> {
     pub kb: &'kb KnowledgeBase,
     pub carriers: CarrierTable,
-    pub marshal: MarshalTable,
     pub op_impls: OpImplTable,
+    /// WI-089(a): the active compilation profile (e.g. "cpp20-stl"), threaded
+    /// from the CLI (a `Generated`/`Implementation` fact's `profile`). Selects
+    /// profile-keyed `TypeMapping` / `EffectMapping` overlays ahead of the
+    /// language base in the active-key list. `None` = language base only.
+    pub profile: Option<String>,
     /// Extra `#include` lines that lowering decides it needs at
     /// run-time (e.g. `<tl/expected.hpp>` for Error-effect ops). Merged
     /// into the rendered include set when emitting a header.
@@ -330,17 +311,46 @@ pub struct CodegenContext<'kb> {
 }
 
 impl<'kb> CodegenContext<'kb> {
+    /// Build a context with no active profile (language base only). Most
+    /// callers; the profile-aware overlays are forward-looking.
     pub fn new(kb: &'kb KnowledgeBase) -> Self {
+        Self::with_profile(kb, None)
+    }
+
+    /// WI-089(a): build a context for a specific compilation profile, so
+    /// profile-keyed `TypeMapping` / `EffectMapping` overlays (e.g. a
+    /// cpp20-stl-only rename) are selected ahead of the language base.
+    pub fn with_profile(kb: &'kb KnowledgeBase, profile: Option<String>) -> Self {
         Self {
             kb,
             carriers: CarrierTable::from_kb(kb),
-            marshal: MarshalTable::from_kb(kb),
             op_impls: OpImplTable::from_kb(kb),
+            profile,
             requested_includes: std::cell::RefCell::new(std::collections::BTreeSet::new()),
             type_params: std::cell::RefCell::new(Vec::new()),
             value_bindings: std::cell::RefCell::new(Vec::new()),
             emitting_namespace: std::cell::RefCell::new(None),
         }
+    }
+
+    /// WI-089(a): the ordered active-key list for a keyed realization-fact
+    /// query, most-specific-first. `binding` is the foreign-binding key in
+    /// scope (`Some` at a carrier-dispatch boundary, `None` in declared-
+    /// signature position); the compilation profile follows; the language base
+    /// (`None`) is always last. `select_keyed` walks this list and the first
+    /// key with a matching fact wins — so a binding overlay shadows a profile
+    /// overlay shadows the base. The base sentinel is always present, so a type
+    /// with only a base entry still resolves.
+    fn active_keys(&self, binding: Option<&str>) -> Vec<Option<String>> {
+        let mut keys = Vec::with_capacity(3);
+        if let Some(b) = binding {
+            keys.push(Some(b.to_string()));
+        }
+        if let Some(p) = &self.profile {
+            keys.push(Some(p.clone()));
+        }
+        keys.push(None);
+        keys
     }
 }
 
@@ -1039,7 +1049,7 @@ fn is_body_emittable(ctx: &CodegenContext, type_term: TermId) -> bool {
             return true;
         }
         let short = short_name_of(qualified);
-        return cpp_base_host_type(kb, short).is_some();
+        return resolve_type_mapping(ctx, &[short], None).is_some();
     }
     let Some((base_sym, binding_values)) = unpack_parameterized(kb, type_term) else {
         return false;
@@ -1047,7 +1057,7 @@ fn is_body_emittable(ctx: &CodegenContext, type_term: TermId) -> bool {
     let base_qn = kb.qualified_name_of(base_sym);
     let base_short = short_name_of(base_qn);
     let base_known = ctx.carriers.lookup(base_qn).is_some()
-        || cpp_base_host_type(kb, base_short).is_some();
+        || resolve_type_mapping(ctx, &[base_short], None).is_some();
     if !base_known {
         return false;
     }
@@ -1105,10 +1115,15 @@ fn snake_to_camel(snake: &str) -> String {
     out
 }
 
-/// Look up the marshalled representation (WI-088) for an anthill type
-/// term, if one is registered. Resolves the term to its sort symbol and
-/// matches the `MarshalTable` by qualified then short name.
-fn marshal_for_type<'a>(ctx: &'a CodegenContext, type_term: TermId) -> Option<&'a Marshal> {
+/// Look up the marshalled representation (WI-088) for an anthill type term at a
+/// carrier-dispatch boundary, if one is registered. Resolves the term to its
+/// sort symbol and runs the keyed `TypeMapping` query (WI-089(a)) under the
+/// active binding key — so the binding's marshalling overlay (`Vec3 -> const
+/// double *`) is selected here, while declared-signature lowering (with no
+/// binding key active) never sees it. A hit that carries no adapter (`lift` and
+/// `lower` both absent) is a plain rename, not a marshalled rep, so it returns
+/// `None`: the value passes through bare.
+fn marshal_for_type(ctx: &CodegenContext, type_term: TermId, binding: Option<&str>) -> Option<Marshal> {
     let kb = ctx.kb;
     let sym = extract_sort_ref_sym(kb, &TermIdView(type_term)).or_else(|| {
         match kb.get_term(type_term) {
@@ -1118,7 +1133,11 @@ fn marshal_for_type<'a>(ctx: &'a CodegenContext, type_term: TermId) -> Option<&'
     })?;
     let qualified = kb.qualified_name_of(sym);
     let short = short_name_of(qualified);
-    ctx.marshal.lookup(qualified, short)
+    let hit = resolve_type_mapping(ctx, &[qualified, short], binding)?;
+    if hit.lift.is_none() && hit.lower.is_none() {
+        return None;
+    }
+    Some(Marshal { lift: hit.lift, lower: hit.lower })
 }
 
 /// Synthesise a method body for an operation. Lookup order:
@@ -1171,6 +1190,16 @@ fn synthesise_body_for(
     let arrow = if self_param.cpp_type.contains('*') { "->" } else { "." };
     let cpp_method = cpp_method_name(ctx.kb, name);
 
+    // WI-089(a): the carrier we dispatch onto is the operation's parent sort;
+    // its `Implementation.binding` (if any) names the marshalling overlay
+    // family active across THIS boundary. Prepended to the active-key list so a
+    // binding-keyed `TypeMapping` (webots `Vec3 -> const double *`) is selected
+    // for the arguments and return below, while declared-signature lowering
+    // (no binding key) leaves `Vec3` its generated struct.
+    let binding = parent_qualified_name(ctx.kb, op_sym)
+        .and_then(|qn| ctx.carriers.binding(&qn).map(str::to_string));
+    let binding = binding.as_deref();
+
     // A non-self argument whose anthill type IS marshalled but declares
     // no `lower` adapter cannot be bridged into the host call — surface
     // it loudly (matching the void+lift guard below) rather than emitting
@@ -1179,7 +1208,7 @@ fn synthesise_body_for(
     // through bare; only the "marshalled, but no anthill->foreign adapter"
     // case is the unhandleable one.
     for p in params.iter().skip(1) {
-        if matches!(marshal_for_type(ctx, p.type_term), Some(m) if m.lower.is_none()) {
+        if matches!(marshal_for_type(ctx, p.type_term, binding), Some(m) if m.lower.is_none()) {
             let tail = if return_type == "void" { "" } else { "\n        return {};" };
             return Some(format!(
                 "// TODO: WI-088: parameter '{}' has a marshalled type with no `lower` adapter — \
@@ -1196,7 +1225,7 @@ fn synthesise_body_for(
     // guard above, a `None` here means the type is not marshalled at all,
     // so the argument passes through bare.
     let non_self_args = params.iter().skip(1)
-        .map(|p| match marshal_for_type(ctx, p.type_term).and_then(|m| m.lower.as_deref()) {
+        .map(|p| match marshal_for_type(ctx, p.type_term, binding).and_then(|m| m.lower) {
             Some(lower) => format!("{lower}({})", p.name),
             None => p.name.clone(),
         })
@@ -1209,7 +1238,7 @@ fn synthesise_body_for(
     // to lift it back to the anthill type (`const double * -> Vec3`).
     // Takes precedence over plain dispatch — the lift applies even when
     // the return would otherwise have been body-emittable.
-    if let Some(lift) = marshal_for_type(ctx, return_term).and_then(|m| m.lift.as_deref()) {
+    if let Some(lift) = marshal_for_type(ctx, return_term, binding).and_then(|m| m.lift) {
         if return_type == "void" {
             // Nothing to lift from a void return — a `lift` here is a
             // spec error. Surface it loudly rather than emitting
@@ -1324,7 +1353,7 @@ fn operations_in_sort(
         // label like `Modify[c]` is a `Value::Node`).
         let wraps_result = rec.effects.iter().any(|eff| match eff {
             anthill_core::eval::Value::Term(t) => effect_kind_short(kb, *t)
-                .and_then(|name| cpp_effect_receiver(kb, &name))
+                .and_then(|name| cpp_effect_receiver(ctx, &name))
                 .as_deref()
                 == Some("ResultWrap"),
             _ => false,
@@ -1461,6 +1490,19 @@ pub fn emit_namespace_header(
     namespace: &str,
 ) -> Result<String, CppCodegenError> {
     let ctx = CodegenContext::new(kb);
+    emit_namespace_header_in(&ctx, namespace)
+}
+
+/// WI-089(a): like `emit_namespace_header`, but for a specific compilation
+/// profile — so profile-keyed `TypeMapping` / `EffectMapping` overlays are
+/// selected ahead of the language base. The CLI passes the profile from the
+/// namespace's `Generated` / `Implementation` fact.
+pub fn emit_namespace_header_with_profile(
+    kb: &KnowledgeBase,
+    namespace: &str,
+    profile: Option<String>,
+) -> Result<String, CppCodegenError> {
+    let ctx = CodegenContext::with_profile(kb, profile);
     emit_namespace_header_in(&ctx, namespace)
 }
 
@@ -3166,7 +3208,7 @@ fn lower_parameterized(
     let short = short_name_of(qualified);
     let template_name = ctx.carriers.lookup(qualified)
         .map(str::to_string)
-        .or_else(|| cpp_base_host_type(kb, short))
+        .or_else(|| resolve_type_mapping(ctx, &[short], None).map(|h| h.host_type))
         .ok_or_else(|| CppCodegenError {
             message: format!(
                 "no C++ mapping for parameterized sort '{qualified}' — add a \
@@ -3250,8 +3292,12 @@ fn sort_to_cpp(ctx: &CodegenContext, sym: Symbol) -> Result<String, CppCodegenEr
         }
         return Ok(host.to_string());
     }
-    if let Some(host) = cpp_base_host_type(ctx.kb, short) {
-        return Ok(host);
+    // WI-089(a): declared-signature position — no binding key is active, so
+    // `[profile?, none]` selects a profile overlay or the language base (never
+    // a binding's marshalling overlay). `cpp_base_host_type` (base-only) is the
+    // profile-agnostic special case of this.
+    if let Some(hit) = resolve_type_mapping(ctx, &[short], None) {
+        return Ok(hit.host_type);
     }
     // Runtime use of `anthill.reflect.*` (TermRepr, SortInfo, KB, …)
     // and `anthill.persistence.*` (Store, FileStore, SqlStore, …) is
@@ -3310,7 +3356,31 @@ fn unsupported_runtime_profile(qualified: &str) -> Option<&'static str> {
 /// foreign-binding overlay queried ahead of the base.
 struct TypeMappingHit {
     host_type: String,
+    /// foreign->anthill adapter (marshalled overlay only; `None` on a plain
+    /// rename). Read back so marshalling rides the SAME query as the renames.
+    lift: Option<String>,
+    /// anthill->foreign adapter (marshalled overlay only; `None` on a plain
+    /// rename).
+    lower: Option<String>,
     key: Option<String>,
+}
+
+/// WI-089(a): first-match-wins selection over an ordered active-key list. For
+/// each key in `active_keys` (most-specific-first), return the first hit whose
+/// key equals it — so a binding/profile overlay shadows the base. Generic over
+/// the hit type via a key projection, shared by the type- and effect-mapping
+/// resolvers. Consumes `hits` (the chosen one is moved out).
+fn select_keyed<T>(
+    mut hits: Vec<T>,
+    key_of: impl Fn(&T) -> &Option<String>,
+    active_keys: &[Option<String>],
+) -> Option<T> {
+    for ak in active_keys {
+        if let Some(pos) = hits.iter().position(|h| key_of(h) == ak) {
+            return Some(hits.swap_remove(pos));
+        }
+    }
+    None
 }
 
 /// Shared machinery for the WI-089 keyed realization-fact queries (TypeMapping,
@@ -3367,6 +3437,18 @@ fn query_realization_facts(
 /// structurally would be awkward — so only `anthill_type` is grounded and
 /// `lang` is post-filtered. Returns every matching entry across keys; callers
 /// pick by key priority.
+///
+/// WI-089(a) NARROWING (vs the retired `MarshalTable`): both the plain renames
+/// and the adapter-bearing marshalling overlays now flow through THIS one query,
+/// which matches the fixed 6-named-field shape (`query_realization_facts` keys by
+/// exact arity) and requires `lang: some("cpp")`. The old `MarshalTable` read
+/// adapter facts via a bare functor scan with neither constraint. So a
+/// marshalling `TypeMapping` authored in the pre-keyed 4-field form (no
+/// `lang`/`key`) is no longer matched — it contributes no marshalling, silently.
+/// The keyed 6-field form is the documented contract (see `cpp_std.anthill` and
+/// the `TypeMapping` entity doc); the principled loud check that residual
+/// required marshalling/effects are within the profile's declared set is
+/// WI-571's capability gate (unreachable today — cpp_std is always embedded).
 fn query_type_mappings(kb: &KnowledgeBase, lang: &str, anthill_type: &str) -> Vec<TypeMappingHit> {
     const FIELDS: &[&str] = &["anthill_type", "host_type", "lift", "lower", "lang", "key"];
     let mut hits = Vec::new();
@@ -3384,10 +3466,41 @@ fn query_type_mappings(kb: &KnowledgeBase, lang: &str, anthill_type: &str) -> Ve
         let Some(host_type) = named_string(kb, head, "host_type") else {
             continue;
         };
+        let lift = named_optional_string(kb, head, "lift");
+        let lower = named_optional_string(kb, head, "lower");
         let key = named_optional_string(kb, head, "key");
-        hits.push(TypeMappingHit { host_type, key });
+        hits.push(TypeMappingHit { host_type, lift, lower, key });
     }
     hits
+}
+
+/// WI-089(a): resolve the single best `TypeMapping` entry for an anthill type
+/// under the active-key priority. `names` are the candidate `anthill_type`
+/// spellings tried in order and merged (a sort's qualified name first, then its
+/// short name, so a fact written either way resolves); `binding` is the
+/// foreign-binding key in scope (`Some` at a carrier-dispatch boundary, `None`
+/// in declared-signature position). Returns the highest-priority overlay
+/// present — the one query that backs BOTH declared-signature host-type
+/// lowering (reads `host_type`) and value-level marshalling (reads `lift` /
+/// `lower`).
+fn resolve_type_mapping(
+    ctx: &CodegenContext,
+    names: &[&str],
+    binding: Option<&str>,
+) -> Option<TypeMappingHit> {
+    let mut hits: Vec<TypeMappingHit> = Vec::new();
+    let mut queried: Vec<&str> = Vec::with_capacity(names.len());
+    for name in names {
+        // Skip a repeated spelling (a sort whose qualified name equals its short
+        // name — builtins like `Float`) so we don't issue the same discrim query
+        // twice and double the hit list.
+        if queried.contains(name) {
+            continue;
+        }
+        queried.push(name);
+        hits.extend(query_type_mappings(ctx.kb, "cpp", name));
+    }
+    select_keyed(hits, |h| &h.key, &ctx.active_keys(binding))
 }
 
 /// WI-089: the C++ language-base host type for `anthill_type` (the
@@ -3396,10 +3509,30 @@ fn query_type_mappings(kb: &KnowledgeBase, lang: &str, anthill_type: &str) -> Ve
 /// leaf type (`Int64 -> int64_t`); parameterized stdlib sorts lower to a
 /// bare template name (`List -> std::vector`) the caller wraps with args.
 pub fn cpp_base_host_type(kb: &KnowledgeBase, anthill_type: &str) -> Option<String> {
-    query_type_mappings(kb, "cpp", anthill_type)
-        .into_iter()
-        .find(|h| h.key.is_none())
+    // The language base is the `key = none` entry — i.e. selection over the
+    // single-element active-key list `[none]`. Routed through the shared
+    // `select_keyed` so there is one implementation of "pick the entry for this
+    // key", not a divergent `.find(key.is_none())` spelling.
+    select_keyed(query_type_mappings(kb, "cpp", anthill_type), |h| &h.key, &[None])
         .map(|h| h.host_type)
+}
+
+/// WI-089(a): resolve the cpp host type for `anthill_type` under the active-key
+/// priority — binding overlay > profile overlay > language base. `profile` is
+/// the compilation profile (e.g. "cpp20-stl"); `binding` is the foreign-binding
+/// key in scope at a carrier-dispatch boundary (`None` in declared-signature
+/// position). This is exactly the selection declared-signature lowering and the
+/// marshalling boundary perform internally, surfaced so callers (and tests) can
+/// ask "what does X map to under profile P at binding B?". `cpp_base_host_type`
+/// is the `profile = None, binding = None` special case.
+pub fn cpp_host_type(
+    kb: &KnowledgeBase,
+    anthill_type: &str,
+    profile: Option<&str>,
+    binding: Option<&str>,
+) -> Option<String> {
+    let ctx = CodegenContext::with_profile(kb, profile.map(str::to_string));
+    resolve_type_mapping(&ctx, &[anthill_type], binding).map(|h| h.host_type)
 }
 
 struct EffectMappingHit {
@@ -3436,15 +3569,16 @@ fn query_effect_mappings(kb: &KnowledgeBase, lang: &str, effect: &str) -> Vec<Ef
     hits
 }
 
-/// WI-089(b): the cpp language-base `ReceiverForm` short name for `effect`
-/// (the `key = none` entry) — the effect_map analogue of `cpp_base_host_type`.
-/// `None` means the cpp profile declares no realization for the effect (its
-/// effect_map has no entry — i.e. the effect is outside cpp's supported set).
-fn cpp_effect_receiver(kb: &KnowledgeBase, effect: &str) -> Option<String> {
-    query_effect_mappings(kb, "cpp", effect)
-        .into_iter()
-        .find(|h| h.key.is_none())
-        .map(|h| h.receiver)
+/// WI-089(b): the cpp `ReceiverForm` short name realizing `effect` under the
+/// active-key priority — the effect_map analogue of declared-signature
+/// host-type resolution. Effects are profile-scoped (not binding-scoped), so
+/// the active keys are `[profile?, none]` (no binding prepended); a profile
+/// overlay shadows the language base. `None` means no active key realizes the
+/// effect — i.e. it is outside the profile's supported-effect set (the gate
+/// WI-571 reads).
+fn cpp_effect_receiver(ctx: &CodegenContext, effect: &str) -> Option<String> {
+    let hits = query_effect_mappings(ctx.kb, "cpp", effect);
+    select_keyed(hits, |h| &h.key, &ctx.active_keys(None)).map(|h| h.receiver)
 }
 
 /// WI-089(c): the cpp `(host_type spelling, include directive)` probe pairs from

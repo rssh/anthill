@@ -51,7 +51,8 @@ namespace anthill.examples.lf1.webots.realization
     description: some("webots::Robot — controller runtime + device factory"),
     carrier:     [CarrierBinding(sort_name: "Robot",
                                  host_type: "webots::Robot")],
-    namespace_map: []
+    namespace_map: [],
+    binding:     some("webots")
   )
 
   -- SimulationRuntime carrier-binds to the same C++ class as Robot —
@@ -65,7 +66,8 @@ namespace anthill.examples.lf1.webots.realization
     description: some("Webots runtime context — same C++ class as Robot"),
     carrier:     [CarrierBinding(sort_name: "SimulationRuntime",
                                  host_type: "webots::Robot")],
-    namespace_map: []
+    namespace_map: [],
+    binding:     some("webots")
   )
 
   fact Implementation(
@@ -76,7 +78,8 @@ namespace anthill.examples.lf1.webots.realization
     description: some("webots::GPS — position sensor"),
     carrier:     [CarrierBinding(sort_name: "GPS",
                                  host_type: "webots::GPS *")],
-    namespace_map: []
+    namespace_map: [],
+    binding:     some("webots")
   )
 
   fact Implementation(
@@ -87,7 +90,8 @@ namespace anthill.examples.lf1.webots.realization
     description: some("webots::Gyro — angular-velocity sensor"),
     carrier:     [CarrierBinding(sort_name: "Gyro",
                                  host_type: "webots::Gyro *")],
-    namespace_map: []
+    namespace_map: [],
+    binding:     some("webots")
   )
 
   fact Implementation(
@@ -98,7 +102,8 @@ namespace anthill.examples.lf1.webots.realization
     description: some("webots::InertialUnit — orientation sensor"),
     carrier:     [CarrierBinding(sort_name: "InertialUnit",
                                  host_type: "webots::InertialUnit *")],
-    namespace_map: []
+    namespace_map: [],
+    binding:     some("webots")
   )
 
   fact Implementation(
@@ -109,7 +114,8 @@ namespace anthill.examples.lf1.webots.realization
     description: some("webots::Motor — propeller / wheel actuator"),
     carrier:     [CarrierBinding(sort_name: "Motor",
                                  host_type: "webots::Motor *")],
-    namespace_map: []
+    namespace_map: [],
+    binding:     some("webots")
   )
 
   fact Implementation(
@@ -120,7 +126,8 @@ namespace anthill.examples.lf1.webots.realization
     description: some("webots::Emitter — outbound radio / serial / IR"),
     carrier:     [CarrierBinding(sort_name: "Emitter",
                                  host_type: "webots::Emitter *")],
-    namespace_map: []
+    namespace_map: [],
+    binding:     some("webots")
   )
 
   fact Implementation(
@@ -131,7 +138,8 @@ namespace anthill.examples.lf1.webots.realization
     description: some("webots::Receiver — inbound radio / serial / IR"),
     carrier:     [CarrierBinding(sort_name: "Receiver",
                                  host_type: "webots::Receiver *")],
-    namespace_map: []
+    namespace_map: [],
+    binding:     some("webots")
   )
 
   -- ============================================================
@@ -154,16 +162,27 @@ namespace anthill.examples.lf1.webots.realization
   -- Receiver.get_emitter_direction — all collapse into these two).
   -- ============================================================
 
+  -- Keyed key = some("webots"): these marshalling overlays are selected only
+  -- at a carrier-dispatch boundary into a webots-bound carrier (an
+  -- Implementation with binding: some("webots")), where codegen prepends the
+  -- "webots" key ahead of the profile and language base. In declared-signature
+  -- position no binding key is active, so Vec3 falls through to its generated
+  -- struct. lang = some("cpp"): read by the same keyed query as the base
+  -- renames (all six fields explicit — the query matches by exact arity).
   fact TypeMapping(
     anthill_type: "anthill.geometry.Vec3",
     host_type:    "const double *",
     lift:         some("anthill::examples::lf1::webots::types::Vec3::from_array"),
-    lower:        some("anthill::examples::lf1::webots::types::Vec3::to_array")
+    lower:        some("anthill::examples::lf1::webots::types::Vec3::to_array"),
+    lang:         some("cpp"),
+    key:          some("webots")
   )
   fact TypeMapping(
     anthill_type: "anthill.geometry.EulerAngles",
     host_type:    "const double *",
     lift:         some("anthill::examples::lf1::webots::types::EulerAngles::from_array"),
-    lower:        none
+    lower:        none,
+    lang:         some("cpp"),
+    key:          some("webots")
   )
 end

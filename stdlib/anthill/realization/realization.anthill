@@ -22,7 +22,8 @@ namespace anthill.realization
     profile     : Option[T = String],               -- e.g. "cpu", "gpu", "memory-optimized"
     description : Option[T = String],               -- free text for humans
     carrier     : List[T = CarrierBinding],         -- maps abstract sorts to host types
-    namespace_map : List[T = NamespaceMapping]      -- maps anthill namespaces to host modules
+    namespace_map : List[T = NamespaceMapping],     -- maps anthill namespaces to host modules
+    binding     : Option[T = String]                -- WI-089(a): foreign-binding overlay key (e.g. "webots") naming the marshalling family this realization belongs to; codegen PREPENDS it to the active-key list at a carrier-dispatch boundary so the binding's keyed TypeMapping overlays (Vec3 -> const double *) win over the language base. none for a plain host-std realization that contributes no value-level marshalling.
   )
 
   -- Declares an anthill spec is the *source* for a generated host

@@ -1,11 +1,16 @@
-//! Tests for marshalled-`TypeMapping`-driven body wrapping (WI-088).
+//! Tests for marshalled-`TypeMapping`-driven body wrapping (WI-088 / WI-089(a)).
 //!
-//! A top-level `fact TypeMapping(anthill_type, host_type, lift, lower)`
-//! that carries an adapter declares that the host represents
+//! A top-level `fact TypeMapping(anthill_type, host_type, lift, lower, lang,
+//! key)` that carries an adapter declares that the host represents
 //! `anthill_type` as `host_type`, with `lift` (foreign->anthill) and/or
-//! `lower` (anthill->foreign) bridging the boundary. At a carrier-dispatch
-//! site body synthesis derives the host method's foreign signature by
-//! mapping the operation's anthill types through these entries and emits:
+//! `lower` (anthill->foreign) bridging the boundary. The overlay is keyed
+//! `key: some("<binding>")` and selected only when dispatching onto a carrier
+//! whose `Implementation` declares the matching `binding` (WI-089(a)): the
+//! binding key is prepended to the active-key list at the boundary, so the
+//! overlay shadows the language base there and stays invisible in declared-
+//! signature position. At a carrier-dispatch site body synthesis derives the
+//! host method's foreign signature by mapping the operation's anthill types
+//! through these entries and emits:
 //!   - `return <lift>(self->method(args));`  when the return is marshalled
 //!   - `self->method(<lower>(arg))`          when an argument is marshalled
 //! The adapters are hand-authored C++ shipped alongside the generated code.
@@ -44,14 +49,17 @@ fn marshalled_lift_wraps_carrier_return() {
             description:   none,
             carrier:       [CarrierBinding(sort_name: "Sensor",
                                            host_type: "::vendor::Sensor *")],
-            namespace_map: []
+            namespace_map: [],
+            binding:       some("vendor")
           )
 
           fact TypeMapping(
             anthill_type: "test.conv.Vec3",
             host_type:    "const double *",
             lift:         some("Vec3::from_array"),
-            lower:        none
+            lower:        none,
+            lang:         some("cpp"),
+            key:          some("vendor")
           )
         end
     "#;
@@ -100,14 +108,17 @@ fn marshalled_lower_wraps_carrier_argument() {
             description:   none,
             carrier:       [CarrierBinding(sort_name: "Actuator",
                                            host_type: "::vendor::Actuator *")],
-            namespace_map: []
+            namespace_map: [],
+            binding:       some("vendor")
           )
 
           fact TypeMapping(
             anthill_type: "test.lower.Vec3",
             host_type:    "const double *",
             lift:         some("Vec3::from_array"),
-            lower:        some("Vec3::to_array")
+            lower:        some("Vec3::to_array"),
+            lang:         some("cpp"),
+            key:          some("vendor")
           )
         end
     "#;
@@ -150,14 +161,17 @@ fn marshalled_argument_without_lower_is_loud() {
             description:   none,
             carrier:       [CarrierBinding(sort_name: "Actuator",
                                            host_type: "::vendor::Actuator *")],
-            namespace_map: []
+            namespace_map: [],
+            binding:       some("vendor")
           )
 
           fact TypeMapping(
             anthill_type: "test.nolower.Vec3",
             host_type:    "const double *",
             lift:         some("Vec3::from_array"),
-            lower:        none
+            lower:        none,
+            lang:         some("cpp"),
+            key:          some("vendor")
           )
         end
     "#;
@@ -238,14 +252,17 @@ fn marshalled_lift_body_compiles() {
             description:   none,
             carrier:       [CarrierBinding(sort_name: "Sensor",
                                            host_type: "::vendor::Sensor *")],
-            namespace_map: []
+            namespace_map: [],
+            binding:       some("vendor")
           )
 
           fact TypeMapping(
             anthill_type: "test.conv_compile.Vec3",
             host_type:    "const double *",
             lift:         some("Vec3::from_array"),
-            lower:        none
+            lower:        none,
+            lang:         some("cpp"),
+            key:          some("vendor")
           )
         end
     "#;
