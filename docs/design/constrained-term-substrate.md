@@ -83,7 +83,7 @@ per-environment; a shared carrier is wrapped). `typed(value, env)` is therefore 
     dispatch `dict`.
   - `Requirement` (the dispatch dictionary) and `OpRef` → also exposed as **first-class reflect**
     objects (`reflect.Dictionary` / `reflect.OpRef`), denoted type a reflective projection
-    (**WI-575**).
+    (**WI-577**).
   - `Map` / `Cell` → **structural over typed contents** (one entry's `K`/`V`, the held value's
     `T`); an empty `Map` → `Map[?K, ?V]` (nullary fallback, like `nil`). Runtime monomorphization
     never reads `K`/`V`/`T` — container ops are monomorphic over the representation.
@@ -271,8 +271,8 @@ full-refinement constraints are a door opened deliberately, not by drift.
   and `Tuple` are free (read structurally). A `Value::Typed` enum variant is rejected as too
   invasive (~1844 `Value::` match arms / the WI-538 silent-wildcard trap) — carriers hold the type
   in place (slot / pair) instead. The runtime handles mostly fold in (the carrier section):
-  `Closure` structural, `OpRef` nominal + reflect (WI-575), `Requirement` reflect (WI-575),
-  `Map`/`Cell` structural over contents, `Substitution` self-typed, `Stream`/`Lazy` →
+  `Closure` structural, `OpRef` nominal + reflect (WI-577), `Requirement` reflect (WI-577),
+  `Map`/`Cell` structural over contents, `Substitution` self-typed, `Stream` →
   `Ref(Stream)` ≡ `Parameterized(Stream, Id)` (σ refined by the env — the carrier section).
 - **`typed(value, env)` boundary op + remove `min_sort`.** Run the typer once where an untyped
   value enters — the typer, and the resolver/simplify entry that today takes a bare `TermId` with
