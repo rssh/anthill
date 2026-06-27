@@ -27,6 +27,7 @@ mod generic_sort_test;
 mod generic_sum_test;
 mod header_compile_test;
 mod indexed_seq_test;
+mod keyed_overlay_test;
 mod lf1_test;
 mod match_binding_test;
 mod math_vocab_test;

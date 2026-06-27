@@ -802,10 +802,38 @@ fn run_codegen_rust(args: &RustCodegenArgs) -> Result<(), i32> {
 
 // ── C++ codegen command ─────────────────────────────────────────────
 
+/// WI-089(a): the compilation profile to emit `namespace` under, read from the
+/// `Generated` facts at or under it (`source == namespace`, or — since a
+/// controller's `source` is its fully-qualified sort name — any `source` under
+/// `namespace.`). One emitted header carries one profile, so the cpp `Generated`
+/// facts in scope are expected to agree; we take their single distinct profile.
+/// `None` when nothing is declared (language base only). If facts genuinely
+/// disagree we take the lexicographically-first profile deterministically rather
+/// than guess by fact order — a multi-profile namespace is a project smell the
+/// per-controller project-layout path handles instead.
+fn profile_for_namespace(kb: &KnowledgeBase, namespace: &str) -> Option<String> {
+    let ns_prefix = format!("{namespace}.");
+    let mut profiles: Vec<String> = anthill_cpp_gen::generated_targets(kb)
+        .into_iter()
+        .filter(|t| t.language == "cpp")
+        .filter(|t| t.source == namespace || t.source.starts_with(&ns_prefix))
+        .filter_map(|t| t.profile)
+        .collect();
+    profiles.sort();
+    profiles.dedup();
+    profiles.into_iter().next()
+}
+
 fn run_codegen_cpp(args: &CppCodegenArgs) -> Result<(), i32> {
     let kb = load_kb_with_stdlib(&args.paths, false, true)?;
 
-    let header = anthill_cpp_gen::emit_namespace_header(&kb, &args.namespace)
+    // WI-089(a): the active compilation profile selects profile-keyed
+    // TypeMapping / EffectMapping overlays. Read it from the namespace's
+    // `Generated` fact (the spec-side declaration of what to emit); None when
+    // nothing is declared, in which case only the language base applies.
+    let profile = profile_for_namespace(&kb, &args.namespace);
+
+    let header = anthill_cpp_gen::emit_namespace_header_with_profile(&kb, &args.namespace, profile.clone())
         .map_err(|e| {
             eprintln!("error: {}", e.message);
             1
@@ -844,7 +872,7 @@ fn run_codegen_cpp(args: &CppCodegenArgs) -> Result<(), i32> {
     // anthill::geometry only emits if the namespace declared anything
     // there; ignore the error when the namespace is empty (carrier-
     // only / unrelated namespace).
-    if let Ok(geometry_header) = anthill_cpp_gen::emit_namespace_header(&kb, "anthill.geometry") {
+    if let Ok(geometry_header) = anthill_cpp_gen::emit_namespace_header_with_profile(&kb, "anthill.geometry", profile) {
         let geometry_path = args.output_dir.join("anthill_geometry.hpp");
         if let Err(e) = fs::write(&geometry_path, &geometry_header) {
             eprintln!("error: write {}: {e}", geometry_path.display());
@@ -892,9 +920,14 @@ fn run_codegen_cpp_project(args: &CppProjectArgs) -> Result<(), i32> {
         return Err(1);
     }
 
-    let header = anthill_cpp_gen::emit_namespace_header(&kb, &args.namespace)
+    // WI-089(a): the profile that selects profile-keyed overlays — the single
+    // distinct profile of the `Generated` facts at/under this namespace. Same
+    // helper as `run_codegen_cpp` so both entry points agree. None on the
+    // traits-class fallback (no Generated facts declared).
+    let profile = profile_for_namespace(&kb, &args.namespace);
+    let header = anthill_cpp_gen::emit_namespace_header_with_profile(&kb, &args.namespace, profile.clone())
         .map_err(|e| { eprintln!("error: {}", e.message); 1 })?;
-    let geometry = anthill_cpp_gen::emit_namespace_header(&kb, "anthill.geometry").ok();
+    let geometry = anthill_cpp_gen::emit_namespace_header_with_profile(&kb, "anthill.geometry", profile).ok();
     let runtime = anthill_cpp_gen::emit_runtime_header();
 
     let cpp_files = match list_cpp_sources(&args.cpp_sources) {
