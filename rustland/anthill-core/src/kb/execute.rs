@@ -83,7 +83,7 @@ pub(crate) enum SynthKey {
 #[derive(Clone, Debug)]
 pub enum LowerError {
     /// A `Value` variant with no `TermId` equivalent reached
-    /// `alloc_from_value` (e.g. `Closure`, `Stream`, `Lazy`, `Unit`).
+    /// `alloc_from_value` (e.g. `Closure`, `Stream`, `Unit`).
     UnsupportedVariant(&'static str),
     /// The `Value` passed to `lower_query` is not a `LogicalQuery` entity
     /// (e.g. a bare literal or an entity whose functor isn't one of the
@@ -246,7 +246,7 @@ impl KnowledgeBase {
     /// no extra refcount). Scalar variants are looked up in the dedup
     /// index. `Value::Entity` recurses into its args and sorts named
     /// fields canonically. `Value::Unit`, `Value::Tuple`, and the
-    /// interpreter-owned handles (`Closure`, `Stream`, `Lazy`) have no
+    /// interpreter-owned handles (`Closure`, `Stream`) have no
     /// term equivalent and error rather than round-trip through a
     /// synthetic representation.
     pub fn alloc_from_value(&mut self, v: &Value) -> Result<TermId, LowerError> {

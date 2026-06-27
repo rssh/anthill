@@ -2513,7 +2513,7 @@ impl KnowledgeBase {
             Value::Int(_) | Value::BigInt(_) | Value::Float(_) | Value::Bool(_)
             | Value::Str(_) | Value::Unit => {}
             // A bare value-level var (WI-109) or a runtime carrier
-            // (Closure/Stream/Lazy/…) is not a shape a stored rule head takes —
+            // (Closure/Stream/…) is not a shape a stored rule head takes —
             // fail loudly rather than silently undercount the rule's arity.
             other => debug_assert!(
                 false,

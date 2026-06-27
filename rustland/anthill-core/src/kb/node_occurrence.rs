@@ -2575,7 +2575,7 @@ fn effect_node_to_term(kb: &mut KnowledgeBase, en: &EffectExprNode) -> TermId {
 /// [`occurrence_to_term`] (so a denoted-bearing type round-trips), an `Entity`
 /// recurses through `value_to_term` (a nested `Node` lowers, not errors), and the
 /// scalar / `Term` / `Var` leaves reuse [`KnowledgeBase::alloc_from_value`].
-/// `Err` for the opaque runtime handles (`Closure`/`Stream`/`Lazy`/`Map`/`Cell`/
+/// `Err` for the opaque runtime handles (`Closure`/`Stream`/`Map`/`Cell`/
 /// `Substitution`/`Requirement`) and the term-less `Unit`/`Tuple` — the honest
 /// residue, never a panic or a lossy term. Unlike `alloc_from_value` (which
 /// rejects *every* `Node`), this is `Node`-aware: it is the one converter to use
