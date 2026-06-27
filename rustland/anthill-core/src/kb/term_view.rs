@@ -1075,7 +1075,6 @@ impl TermView for Value {
             Value::Closure(_)
             | Value::OpRef { .. }
             | Value::Stream(_)
-            | Value::Lazy(_)
             | Value::Substitution(_)
             | Value::Map(_)
             | Value::Cell(_)

@@ -63,9 +63,7 @@ pub enum Value {
     },
 
     // Interpreter-owned handles. Each is an arena-refcounted smart
-    // pointer — Clone bumps the slot's refcount, Drop decrements. The
-    // lazy arena is not yet built; `LazyHandle` stays a plain u32 newtype
-    // until M5 lands it.
+    // pointer — Clone bumps the slot's refcount, Drop decrements.
     Closure(ClosureHandle),
     /// WI-275 — a top-level operation referenced as a first-class function
     /// value (eta-expansion). A bare reference to an operation of arity ≥ 1 in
@@ -87,7 +85,6 @@ pub enum Value {
         dict: Option<RequirementHandle>,
     },
     Stream(StreamHandle),
-    Lazy(LazyHandle),
     /// First-class substitution — reference into an arena owned by the
     /// interpreter. Yielded by stream `splitFirst` and constructed by
     /// `Substitution.compose`; passed to `Substitution.apply`.
@@ -137,9 +134,6 @@ pub enum Value {
     Node(Rc<NodeOccurrence>),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct LazyHandle(pub(crate) u32);
-
 /// A hash-consed `TermId` is the universal `Value::Term` carrier (WI-373). Lets
 /// the carrier-agnostic rule-assertion entries take `head: impl Into<Value>`
 /// while every existing `TermId` caller passes its term unchanged.
@@ -150,7 +144,7 @@ impl From<TermId> for Value {
 }
 
 impl Value {
-    /// Scalar-leaf equality. Tuples / Entities / Closures / Streams / Lazies
+    /// Scalar-leaf equality. Tuples / Entities / Closures / Streams
     /// compare as unequal here. For shape-aware, CARRIER-AGNOSTIC structural
     /// compare on any two `Value`s — including the cross-carrier `Value::Term`
     /// vs `Value::Node`/`Entity` case — use
@@ -220,7 +214,6 @@ impl Value {
             Value::Closure(_) => "Closure",
             Value::OpRef { .. } => "OpRef",
             Value::Stream(_) => "Stream",
-            Value::Lazy(_) => "Lazy",
             Value::Substitution(_) => "Substitution",
             Value::Map(_) => "Map",
             Value::Cell(_) => "Cell",

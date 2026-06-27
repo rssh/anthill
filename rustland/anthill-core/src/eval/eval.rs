@@ -1902,7 +1902,6 @@ pub(crate) fn runtime_carrier_sort(kb: &KnowledgeBase, value: &Value) -> Option<
         // explicitly (no `_` arm) so a new `Value` variant forces a decision.
         Value::Unit
         | Value::Tuple { .. }
-        | Value::Lazy(_)
         | Value::Substitution(_)
         | Value::Requirement(_)
         | Value::Node(_)
