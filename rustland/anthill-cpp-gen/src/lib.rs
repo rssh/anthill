@@ -3438,17 +3438,11 @@ fn query_realization_facts(
 /// `lang` is post-filtered. Returns every matching entry across keys; callers
 /// pick by key priority.
 ///
-/// WI-089(a) NARROWING (vs the retired `MarshalTable`): both the plain renames
-/// and the adapter-bearing marshalling overlays now flow through THIS one query,
-/// which matches the fixed 6-named-field shape (`query_realization_facts` keys by
-/// exact arity) and requires `lang: some("cpp")`. The old `MarshalTable` read
-/// adapter facts via a bare functor scan with neither constraint. So a
-/// marshalling `TypeMapping` authored in the pre-keyed 4-field form (no
-/// `lang`/`key`) is no longer matched — it contributes no marshalling, silently.
-/// The keyed 6-field form is the documented contract (see `cpp_std.anthill` and
-/// the `TypeMapping` entity doc); the principled loud check that residual
-/// required marshalling/effects are within the profile's declared set is
-/// WI-571's capability gate (unreachable today — cpp_std is always embedded).
+/// WI-089(a): both plain renames and adapter-bearing marshalling overlays flow
+/// through THIS one query (the retired `MarshalTable` was a second reader).
+/// Only facts with `lang: some("cpp")` are selected; the active-key priority
+/// then picks among the matches by `key`. A `TypeMapping` for another language,
+/// or one with no `lang`, is simply not a cpp mapping and is not selected.
 fn query_type_mappings(kb: &KnowledgeBase, lang: &str, anthill_type: &str) -> Vec<TypeMappingHit> {
     const FIELDS: &[&str] = &["anthill_type", "host_type", "lift", "lower", "lang", "key"];
     let mut hits = Vec::new();
