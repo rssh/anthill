@@ -1148,8 +1148,9 @@ fn marshal_for_type(ctx: &CodegenContext, type_term: TermId, binding: Option<&st
 ///      with each argument `lower`ed and the result `lift`ed when its
 ///      anthill type has a marshalled representation. The host method's
 ///      foreign signature is derived by mapping the operation's anthill
-///      types through the `MarshalTable`; `lift`/`lower` adapters bridge
-///      the boundary (`return Vec3::from_array(self->getValues());`).
+///      types through the binding-keyed `TypeMapping` query (`marshal_for_type`,
+///      WI-089(a)); `lift`/`lower` adapters bridge the boundary
+///      (`return Vec3::from_array(self->getValues());`).
 ///   3. **None** — fall back to a declaration-only signature.
 fn synthesise_body_for(
     ctx: &CodegenContext,
