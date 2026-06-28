@@ -297,8 +297,12 @@ the typed-value substrate is what lets the resolver honor it. Firing therefore h
 consumes** — a spec op (`eq`) → read the carried type and discharge its bound; pure unification → no
 guard — never a blanket symbol-level `requires`.
 
-For a **non-operation head** (a plain relation with no op twin) the head's `[…]` params, `: T`
-annotations, and `:- …` guards *are* its signature — there is nowhere else for the types to live.
+A **non-operation head** (a bare relation with no executable twin) is typed the **same way** — same
+conventions, same owed-on-consumption, same carried-type firing. Op-head vs non-op-head is **not a
+typing distinction**: an op-head only *adds* an executable twin and an inherited signature to draw arg
+types from. A bare relation simply has no signature to inherit, so its arg types come from the rule
+itself — the head's `[…]` / `: T` annotations, or inference from the clause bodies (consistency-checked
+across clauses) — but the typing *manner* is one.
 
 ### Desugaring — a typed pattern is an untyped pattern + a guard
 
