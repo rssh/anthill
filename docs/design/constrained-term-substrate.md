@@ -418,6 +418,24 @@ close it:
 So a conditional rewrite is the general object; the typed `[simp]` rule is the case whose guard is a
 type-bound, and the carried-type substrate is exactly what lets the resolver evaluate *that* guard.
 
+### Worked examples — dormant rules in today's stdlib
+
+The gap is not hypothetical; two flavors of dormant rule exist now (acceptance cases, recorded on
+WI-292):
+
+- **Implicit sort-`requires` (type-directed — the WI-292 case).** `Set` (`requires Eq[T]`,
+  set.anthill:6) and `Map` (`requires Eq[T = K]`, map.anthill:7) declare the bound at *sort* level, so
+  **every** equational rule in them is implicitly type-guarded and skipped by
+  `equation_is_requires_guarded`: `member` / `insert` / `subset` / `union` on `Set`
+  (set.anthill:17-23) and `get` / `put` / `contains` / `remove` / `size` on `Map` (map.anthill:46-56)
+  — ~14 rules, dormant in the resolver (they fire in the typer). The `requires` is at sort level *by
+  design* (a set needs element-`Eq`), so the fix is to **honor** it via the carried type, not
+  op-scope it as `List` did (WI-562).
+- **Explicit `:- guard` (the `is_equation` empty-body gap), mostly value guards:** `head` / `tail` /
+  `isEmpty` on a stream (stream.anthill:127-134, guarded by `splitFirst` — the file notes `head` is
+  "NOT yet wired"), the `Field` identities (field.anthill:25-27, guarded by `neq`), and `nth`
+  recursion (list.anthill:139, guarded by `gt`).
+
 ### A type guard selects a dictionary (runtime monomorphization)
 
 When a guard's predicate is itself a **spec op** — `{ Error :- eq(b, 0) }`, or `isEmpty(s)` over an
