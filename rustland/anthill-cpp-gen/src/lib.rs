@@ -1317,25 +1317,33 @@ fn operations_in_sort(
                 message: format!("operation '{name}' missing OperationInfo"),
             })?;
 
-        // WI-575+: a generic operation (`map[A, B](…)`) carries its own type
-        // params — read straight from the OperationInfo record (the dedicated
-        // accessor) as declaration-ordered bare names, not re-derived. When
-        // present, push them as a member-template frame for the duration of
-        // THIS op's signature lowering (popped when `_op_guard` drops at the
-        // loop's end) so references to `A`/`B` in the param / return types
-        // resolve, and emit a `template<typename A, typename B>` prefix on the
-        // method. A monomorphic op pushes nothing.
+        // WI-575+: a generic operation (`map[A, B, EffP](…)`) carries its own
+        // type params — read straight from the OperationInfo record (the
+        // dedicated accessor) as declaration-ordered bare names, not re-derived.
+        // Push them as a member-template frame for the duration of THIS op's
+        // signature lowering (popped when `_op_guard` drops at the loop's end)
+        // so references to them in the param / return types resolve. The
+        // `template<…>` prefix is built AFTER lowering (below, via
+        // `member_template_prefix`) so a param that lowers to nothing — an
+        // effect-only `EffP`, since C++ erases the effect row — is dropped
+        // rather than emitted as a dead template parameter. A monomorphic op
+        // pushes nothing.
         let op_type_params: Vec<String> = rec.type_params.iter()
             .map(|(sym, _)| kb.resolve_sym(*sym).to_string())
             .collect();
-        let mut template_prefix = String::new();
+        let mut op_param_decls: Vec<(String, String)> = Vec::new();
         let mut _op_guard = None;
         if !op_type_params.is_empty() {
             let mut op_taken = sort_param_cpp.clone();
-            let (op_decls, op_frame) =
+            let (decls, frame) =
                 template_param_decls(kb, op_sym, &op_type_params, &mut op_taken);
-            template_prefix = format!("    template<{}>\n", op_decls.join(", "));
-            _op_guard = Some(ctx.push_type_params(op_frame));
+            // (cpp_name, decl) pairs in declaration order, captured before the
+            // frame is moved into the type-param stack.
+            op_param_decls = op_type_params.iter()
+                .map(|src| frame[src].clone())
+                .zip(decls)
+                .collect();
+            _op_guard = Some(ctx.push_type_params(frame));
         }
 
         // WI-341: the return type is carrier-agnostic; a denoted-bearing
@@ -1403,6 +1411,8 @@ fn operations_in_sort(
             return_type_cpp
         };
         let body = synthesise_body_for(ctx, op_sym, &name, &params, &return_type_cpp, return_term);
+        let template_prefix =
+            member_template_prefix(&op_param_decls, &params, &return_type_cpp, &body);
         out.push(OperationSig { name, params, return_type_cpp, body, template_prefix });
     }
 
@@ -2662,6 +2672,63 @@ fn template_prefix_for_sort(
     let (decls, mapping) = template_param_decls(kb, sort_sym, &params, &mut taken);
     let prefix = format!("template<{}>\n", decls.join(", "));
     (prefix, mapping)
+}
+
+/// Build an operation's `    template<…>\n` member-template prefix from its
+/// per-op type-param `(cpp_name, decl)` pairs, KEEPING only the params that
+/// actually appear in the lowered signature (the param C++ types, the return
+/// type, and the synthesised body). A param that lowers to nothing — most
+/// commonly an effect-only `EffP`, since C++ erases the effect row — is
+/// dropped rather than emitted as a dead `typename EffP`. Declaration order is
+/// preserved; an empty result (no params, or all erased) yields no prefix.
+///
+/// Usage is decided on whole identifier tokens of the emitted C++, so a name
+/// can never be erased while it is genuinely referenced (no substring
+/// false-negative); a coincidental token match only ever *keeps* a param,
+/// which is harmless.
+fn member_template_prefix(
+    decls: &[(String, String)],
+    params: &[ParamInfo],
+    return_type: &str,
+    body: &Option<String>,
+) -> String {
+    if decls.is_empty() {
+        return String::new();
+    }
+    let mut used = std::collections::HashSet::new();
+    for p in params {
+        collect_cpp_identifiers(&p.cpp_type, &mut used);
+    }
+    collect_cpp_identifiers(return_type, &mut used);
+    if let Some(b) = body {
+        collect_cpp_identifiers(b, &mut used);
+    }
+    let kept: Vec<&str> = decls.iter()
+        .filter(|(cpp, _)| used.contains(cpp.as_str()))
+        .map(|(_, decl)| decl.as_str())
+        .collect();
+    if kept.is_empty() {
+        String::new()
+    } else {
+        format!("    template<{}>\n", kept.join(", "))
+    }
+}
+
+/// Collect the maximal C++ identifier tokens (`[A-Za-z0-9_]+` runs) of `s`
+/// into `out`. Used by `member_template_prefix` to decide which template
+/// params actually appear in an emitted signature.
+fn collect_cpp_identifiers(s: &str, out: &mut std::collections::HashSet<String>) {
+    let mut cur = String::new();
+    for c in s.chars() {
+        if c.is_ascii_alphanumeric() || c == '_' {
+            cur.push(c);
+        } else if !cur.is_empty() {
+            out.insert(std::mem::take(&mut cur));
+        }
+    }
+    if !cur.is_empty() {
+        out.insert(cur);
+    }
 }
 
 /// WI-575 (f): is `param` a higher-kinded type parameter of `sort_sym`? A
