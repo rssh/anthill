@@ -12491,103 +12491,7 @@ fn check_constructor_iter(
         None => return Ok(TypeResult { ty: Value::term(parent_type), env: env.clone(), effects, node: Rc::clone(occ) }),
     };
 
-    let alias_sym = kb.try_resolve_symbol("SortAlias");
-    let mut param_bindings: Vec<(Symbol, TermId)> = Vec::new();
-
-    if let Some(a_sym) = alias_sym {
-        let parent_name = kb.qualified_name_of(parent_sym).to_string();
-        // Collect alias info: (param_short_name, bound_type). `None` = the param's Var
-        // was left UNBOUND by the field + expected unification — WI-384 keeps it
-        // (freshened below) rather than dropping it.
-        let mut alias_info: Vec<(String, Option<TermId>)> = Vec::new();
-        for rid in kb.rules_by_functor(a_sym) {
-            if !kb.is_fact(rid) { continue; }
-            // A value-fact SortAlias (denoted-bearing target, e.g.
-            // `sort T = Foo[Int, 3]`) never has a logic `Var` target, so it is not
-            // a type-param indirection — skip it (and avoid the term-only
-            // `rule_head` panic on a `Value::Node`/`Entity` head).
-            let Some(head) = kb.fact_head_term(rid) else { continue };
-            if let Term::Fn { pos_args, .. } = kb.get_term(head) {
-                if pos_args.len() >= 2 {
-                    let sort_tid = pos_args[0];
-                    let target_tid = pos_args[1];
-                    if let Term::Fn { functor: alias_functor, .. } = kb.get_term(sort_tid) {
-                        let alias_name = kb.qualified_name_of(*alias_functor).to_string();
-                        // The next char after the parent name MUST be `.` — without this
-                        // a sibling sort whose qualified name merely starts with the
-                        // parent's (`Modify` ⊂ `ModifyRuntime`, `Effect` ⊂ `Effects`)
-                        // matches, slicing a GARBAGE param name. Harmless when the param
-                        // is then DROPPED, but WI-384 KEEPS an unbound param as `?_`, so
-                        // an unchecked prefix would inject a spurious `garbage = ?_`
-                        // binding into the built type.
-                        if alias_name.starts_with(&parent_name)
-                            && alias_name.as_bytes().get(parent_name.len()) == Some(&b'.')
-                        {
-                            let param_short = alias_name[parent_name.len() + 1..].to_string();
-                            if let Term::Var(Var::Global(vid)) = kb.get_term(target_tid) {
-                                match subst.resolve_as_value(*vid) {
-                                    Some(Value::Term { id: bound_type, .. }) => {
-                                        alias_info.push((param_short, Some(*bound_type)))
-                                    }
-                                    // WI-516: a param bound to an occurrence (`Value::Node`)
-                                    // — e.g. Delay's `E` bound to the inferred lambda-body
-                                    // arrow's effect-row occurrence. Lower it losslessly to a
-                                    // Term (WI-390 `occurrence_to_term` faithfully carries a
-                                    // denoted value-in-type too — the `3` in `Vector[Int, 3]`),
-                                    // so the reconstructed parameterized type KEEPS the binding
-                                    // rather than dropping it. (This is the carrier-agnostic
-                                    // shape WI-348 Phase C generalizes; the bridge is sound now
-                                    // because the lowering is faithful, not a re-grounding.)
-                                    Some(other) => {
-                                        let other = other.clone();
-                                        match value_to_term(kb, &other) {
-                                            Ok(t) => alias_info.push((param_short, Some(t))),
-                                            Err(e) => {
-                                                // A non-lowerable carrier (opaque / runtime-only
-                                                // Value) in a type slot is a malformation — keep
-                                                // the param present (freshened to `?_` below) so
-                                                // arity is preserved, but surface it loudly in dev.
-                                                debug_assert!(
-                                                    false,
-                                                    "WI-516: param `{param_short}` bound to un-lowerable carrier {}: {e:?}",
-                                                    other.type_name(),
-                                                );
-                                                alias_info.push((param_short, None));
-                                            }
-                                        }
-                                    }
-                                    // WI-384: a param the fields + expected left UNBOUND
-                                    // is present-but-unconstrained — record it (a fresh
-                                    // `?_` is minted below) rather than DROPPING it, which
-                                    // shrank the built type's arity (`pair(h, t)` →
-                                    // `Pair[B=List]`, losing `A`).
-                                    None => alias_info.push((param_short, None)),
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        for (param_short, bound_opt) in alias_info {
-            let param_sym = kb.intern(&param_short);
-            // WI-384: an unbound param becomes a `type_var` WILDCARD so the built type
-            // keeps the sort's full param arity while staying compatible with whatever
-            // the use-site declares — exactly the leniency the old DROP relied on
-            // (width subtyping), but with the param PRESENT so the arity matches. It
-            // must be a `type_var` (not a bare logic `Var`), since only `type_var` is
-            // the inference wildcard the unify/subtype dispatch treats as compatible
-            // with anything; a bare `Var` reads as an incompatible head.
-            let bound_type = match bound_opt {
-                Some(t) => t,
-                None => {
-                    let name = kb.intern("?_");
-                    kb.make_type_var(name)
-                }
-            };
-            param_bindings.push((param_sym, bound_type));
-        }
-    }
+    let param_bindings = reconstruct_sort_params(kb, parent_sym, &subst);
 
     if param_bindings.is_empty() {
         Ok(TypeResult { ty: Value::term(parent_type), env: env.clone(), effects, node: Rc::clone(occ) })
@@ -20355,6 +20259,392 @@ fn store_sort_bound(
         .type_constraints_of(vid)
         .iter()
         .find_map(|payload| sort_functor_of_view(kb, payload))
+}
+
+// ── WI-578 — value-level `typed` (the typed-VALUE producer) ──────────────────
+//
+// `typed(value, env)` (the design's boundary op; `env` = `kb` + `subst` for a
+// runtime value) populates the `Value::ty` field once at the boundary, SUPERSEDING
+// `min_sort_of_value` (which returned `None` on exactly the constructed values that
+// matter). The type COMPUTATION (`value_type_term`) reads the value through
+// `TermView` — ONE carrier-agnostic walk, so a constructor reached as `Value::Entity`
+// or as a hash-consed `Value::Term` types identically — while the PRODUCER (`typed`)
+// is variant-preserving. See `docs/design/constrained-term-substrate.md`.
+
+/// WI-578 — reconstruct a constructor's parent-sort type-param bindings from a
+/// field-unified substitution. Walks the parent sort's `SortAlias` facts to recover
+/// each type-param's short name and the logic `Var` it indirects to, then reads that
+/// var out of `subst`. An unbound param rides as a fresh `?_` type-var (WI-384 — keep
+/// the sort's full param arity, never drop). Extracted VERBATIM from
+/// [`check_constructor_iter`] so the value-level typer reuses this fragile,
+/// prefix-guarded walk from ONE source. The `.`-boundary prefix guard and the WI-516
+/// occurrence-lowering are load-bearing — see the inline notes.
+fn reconstruct_sort_params(
+    kb: &mut KnowledgeBase,
+    parent_sym: Symbol,
+    subst: &Substitution,
+) -> Vec<(Symbol, TermId)> {
+    let alias_sym = kb.try_resolve_symbol("SortAlias");
+    let mut param_bindings: Vec<(Symbol, TermId)> = Vec::new();
+    if let Some(a_sym) = alias_sym {
+        let parent_name = kb.qualified_name_of(parent_sym).to_string();
+        // Collect alias info: (param_short_name, bound_type). `None` = the param's Var
+        // was left UNBOUND by the field unification — WI-384 keeps it (freshened below)
+        // rather than dropping it (which shrank the built type's arity).
+        let mut alias_info: Vec<(String, Option<TermId>)> = Vec::new();
+        for rid in kb.rules_by_functor(a_sym) {
+            if !kb.is_fact(rid) {
+                continue;
+            }
+            // A value-fact SortAlias (denoted-bearing target) never has a logic `Var`
+            // target, so it is not a type-param indirection — skip it.
+            let Some(head) = kb.fact_head_term(rid) else {
+                continue;
+            };
+            if let Term::Fn { pos_args, .. } = kb.get_term(head) {
+                if pos_args.len() >= 2 {
+                    let sort_tid = pos_args[0];
+                    let target_tid = pos_args[1];
+                    if let Term::Fn { functor: alias_functor, .. } = kb.get_term(sort_tid) {
+                        let alias_name = kb.qualified_name_of(*alias_functor).to_string();
+                        // The next char after the parent name MUST be `.` — without this
+                        // a sibling sort whose qualified name merely starts with the
+                        // parent's (`Modify` ⊂ `ModifyRuntime`) matches, slicing a GARBAGE
+                        // param name (then injected as a spurious `garbage = ?_` binding).
+                        if alias_name.starts_with(&parent_name)
+                            && alias_name.as_bytes().get(parent_name.len()) == Some(&b'.')
+                        {
+                            let param_short = alias_name[parent_name.len() + 1..].to_string();
+                            if let Term::Var(Var::Global(vid)) = kb.get_term(target_tid) {
+                                match subst.resolve_as_value(*vid) {
+                                    Some(Value::Term { id: bound_type, .. }) => {
+                                        alias_info.push((param_short, Some(*bound_type)))
+                                    }
+                                    // WI-516: a param bound to an occurrence (`Value::Node`).
+                                    // Lower it losslessly to a Term so the reconstructed type
+                                    // KEEPS the binding rather than dropping it.
+                                    Some(other) => {
+                                        let other = other.clone();
+                                        match value_to_term(kb, &other) {
+                                            Ok(t) => alias_info.push((param_short, Some(t))),
+                                            Err(e) => {
+                                                debug_assert!(
+                                                    false,
+                                                    "WI-516: param `{param_short}` bound to un-lowerable carrier {}: {e:?}",
+                                                    other.type_name(),
+                                                );
+                                                alias_info.push((param_short, None));
+                                            }
+                                        }
+                                    }
+                                    None => alias_info.push((param_short, None)),
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        for (param_short, bound_opt) in alias_info {
+            let param_sym = kb.intern(&param_short);
+            // WI-384: an unbound param becomes a `type_var` WILDCARD (not a bare logic
+            // `Var`) so the built type keeps the sort's full param arity while staying
+            // compatible with whatever the use-site declares.
+            let bound_type = match bound_opt {
+                Some(t) => t,
+                None => {
+                    let name = kb.intern("?_");
+                    kb.make_type_var(name)
+                }
+            };
+            param_bindings.push((param_sym, bound_type));
+        }
+    }
+    param_bindings
+}
+
+/// WI-578 — a fresh `?_` type-variable wildcard: the TOTAL fallback for an
+/// under-determined type (an unbound var with no recorded bound, an opaque carrier).
+/// Sound — a `type_var` reads as compatible-with-anything in the unify/subtype
+/// dispatch, so an imprecise type never wrong-FIRES a guard (the M6 flounder posture).
+fn fresh_type_var(kb: &mut KnowledgeBase) -> Value {
+    let name = kb.intern("?_");
+    Value::term(kb.make_type_var(name))
+}
+
+/// WI-578 — the prelude sort a literal constant inhabits, as a `Ref(S)` type-term.
+fn literal_sort(kb: &mut KnowledgeBase, lit: &Literal) -> Value {
+    let name = match lit {
+        Literal::Int(_) => "Int64",
+        Literal::BigInt(_) => "BigInt",
+        Literal::Float(_) => "Float",
+        Literal::Bool(_) => "Bool",
+        Literal::String(_) => "String",
+        // An opaque handle (OccurrenceId / FactId) has no literal sort.
+        Literal::Handle(..) => return fresh_type_var(kb),
+    };
+    Value::term(kb.make_sort_ref_by_name(name))
+}
+
+/// WI-578 — the result type-term of a constructor application, given its children's
+/// already-computed types. The value-level analog of [`check_constructor_iter`]'s
+/// build core MINUS the error-producing field VALIDATION (`typed` is TOTAL): look up
+/// the constructor's parent sort + declared field types, unify each child type
+/// against its field's declared type into a fresh substitution (pinning the sort's
+/// type-params), then [`reconstruct_sort_params`] + build `Sort[params]` (or the bare
+/// `Ref(Sort)`). An unregistered constructor / free-standing entity yields its own
+/// bare sort ref. Never `None`.
+fn constructor_value_type(
+    kb: &mut KnowledgeBase,
+    ctor_sym: Symbol,
+    pos_child_types: &[Value],
+    named_child_types: &[(Symbol, Value)],
+) -> Value {
+    let parent_sort = kb.constructor_parent_sort(ctor_sym);
+    let parent_type = match parent_sort {
+        Some(parent_tid) => sort_term_to_type(kb, parent_tid),
+        None => kb.make_sort_ref(ctor_sym),
+    };
+    let field_types = match kb.entity_field_types(ctor_sym) {
+        Some(ft) => ft.to_vec(),
+        // Not a registered constructor — the value's type is its own bare sort.
+        None => return Value::term(parent_type),
+    };
+    let mut subst = Substitution::new();
+    // Field-unify (named by field name, then positional by index) — pins the parent
+    // sort's type-params from the children (the check_constructor_iter WI-384 order).
+    for (field_sym, declared_type) in &field_types {
+        if let Some((_, child_ty)) = named_child_types.iter().find(|(s, _)| s == field_sym) {
+            unify_types(kb, &mut subst, child_ty, declared_type);
+        }
+    }
+    for (i, child_ty) in pos_child_types.iter().enumerate() {
+        if let Some((_, declared_type)) = field_types.get(i) {
+            unify_types(kb, &mut subst, child_ty, declared_type);
+        }
+    }
+    if subst.bindings.is_empty() {
+        return Value::term(parent_type);
+    }
+    let parent_sym = match parent_sort {
+        Some(parent_tid) => match kb.get_term(parent_tid) {
+            Term::Fn { functor, .. } => *functor,
+            _ => return Value::term(parent_type),
+        },
+        None => return Value::term(parent_type),
+    };
+    let param_bindings = reconstruct_sort_params(kb, parent_sym, &subst);
+    if param_bindings.is_empty() {
+        Value::term(parent_type)
+    } else {
+        let base = kb.make_sort_ref(parent_sym);
+        Value::term(kb.make_parameterized_type(base, &param_bindings))
+    }
+}
+
+/// WI-578 — the type-term of an anonymous aggregate (a tuple / `Unit`) from its
+/// children's types: `Unit` for the empty case, else a `named_tuple` with positional
+/// components under the `_1.._n` convention (WI-442) plus any named components. The
+/// synthetic span is unused unless a child type is a `Value::Node` (denoted-poisoned),
+/// which a runtime tuple's ground component types are not.
+fn tuple_value_type(
+    kb: &mut KnowledgeBase,
+    pos_types: Vec<Value>,
+    named_types: Vec<(Symbol, Value)>,
+) -> Value {
+    if pos_types.is_empty() && named_types.is_empty() {
+        return Value::term(kb.make_sort_ref_by_name("Unit"));
+    }
+    let mut fields: Vec<(Symbol, Value)> = Vec::with_capacity(pos_types.len() + named_types.len());
+    for (i, cty) in pos_types.into_iter().enumerate() {
+        let name = kb.intern(&format!("_{}", i + 1));
+        fields.push((name, cty));
+    }
+    for (k, cty) in named_types {
+        fields.push((k, cty));
+    }
+    let span = crate::span::SourceSpan::new(crate::span::SourceId::from_raw(0), 0, 0);
+    named_tuple_value(kb, &fields, span, None)
+}
+
+/// WI-578 — the type-term of a value-level logic variable. Navigates its σ-binding
+/// (M6 "binding is navigation"): a bound var derefs to its value and types THAT; an
+/// unbound var reads its declared bound from the constraint store (Step-1), else a
+/// fresh `?_`. The deref is a CYCLE-GUARDED loop — the SLD bind path is not
+/// occurs-checked, so σ can carry a cyclic var spine; on a revisit we flounder (`?_`)
+/// rather than loop (M6 / WI-067: an under-determined type suspends, never crashes).
+fn var_type_term(kb: &mut KnowledgeBase, subst: &Substitution, vid: VarId) -> Value {
+    let mut cur = vid;
+    let mut seen: std::collections::HashSet<VarId> = std::collections::HashSet::new();
+    loop {
+        if !seen.insert(cur) {
+            return fresh_type_var(kb);
+        }
+        let bound = match subst.resolve_as_value(cur) {
+            Some(b) => b.clone(),
+            None => {
+                // Unbound: its declared bound from the constraint store, else `?_`.
+                return subst
+                    .type_constraints_of(cur)
+                    .into_iter()
+                    .next()
+                    .unwrap_or_else(|| fresh_type_var(kb));
+            }
+        };
+        if let Value::Var(Var::Global(next)) = bound {
+            cur = next;
+            continue;
+        }
+        return value_type_term(kb, subst, &bound);
+    }
+}
+
+/// WI-578 — the positional children's type-terms. Each child is materialized to an
+/// owned `Value` ([`ViewItem::to_value`]) so the short `&kb` read-borrow drops before
+/// the `&mut kb` recursion — the carrier-agnostic walk pattern.
+fn child_types_pos(
+    kb: &mut KnowledgeBase,
+    subst: &Substitution,
+    v: &Value,
+    pos_arity: usize,
+) -> Vec<Value> {
+    let mut out = Vec::with_capacity(pos_arity);
+    for i in 0..pos_arity {
+        let child = match v.pos_arg(kb, i) {
+            Some(item) => item.to_value(),
+            None => continue,
+        };
+        out.push(value_type_term(kb, subst, &child));
+    }
+    out
+}
+
+/// WI-578 — the named children's `(key, type-term)`s; see [`child_types_pos`].
+fn child_types_named(kb: &mut KnowledgeBase, subst: &Substitution, v: &Value) -> Vec<(Symbol, Value)> {
+    let keys = v.named_keys(kb);
+    let mut out = Vec::with_capacity(keys.len());
+    for k in keys {
+        let child = match v.named_arg(kb, k) {
+            Some(item) => item.to_value(),
+            None => continue,
+        };
+        out.push((k, value_type_term(kb, subst, &child)));
+    }
+    out
+}
+
+/// WI-578 — the type-term of a runtime [`Value`], computed at the boundary. TOTAL and
+/// CARRIER-AGNOSTIC: it reads the value through [`TermView`] (`head`/`pos_arg`), so a
+/// constructor reached as a `Value::Entity` or as a hash-consed `Value::Term` types
+/// identically (the one read path — WI-342/348). An under-determined part rides as a
+/// `?_` type-var, never `None` — the totality that SUPERSEDES `min_sort_of_value`.
+/// Returns the type as a `Value` type-term (the shape `inferred_type` / the
+/// `Value::ty` field hold: `Ref(S)` / `Fn{S, named}` / denoted).
+pub fn value_type_term(kb: &mut KnowledgeBase, subst: &Substitution, v: &Value) -> Value {
+    // A constructed value already typed by `typed` carries its type — read it.
+    if let Some(t) = v.ty() {
+        return (**t).clone();
+    }
+    // A typed source occurrence carries its type in `inferred_type` (not the `ty`
+    // field); honor it before a structural recompute.
+    if let Value::Node(occ) = v {
+        if let Some(t) = occ.inferred_type() {
+            return t;
+        }
+    }
+    match v.head(kb) {
+        ViewHead::Const(lit) => literal_sort(kb, &lit),
+        ViewHead::Var(Var::Global(vid)) => var_type_term(kb, subst, vid),
+        // A De Bruijn / Rigid var has no runtime σ-binding to read here.
+        ViewHead::Var(_) => fresh_type_var(kb),
+        // A bare 0-ary constructor (`nil` ≡ `Ref(c)`, WI-436): type as its sort.
+        ViewHead::Ref(s) => constructor_value_type(kb, s, &[], &[]),
+        ViewHead::Functor { functor: Some(functor), pos_arity, .. } => {
+            let pos_types = child_types_pos(kb, subst, v, pos_arity);
+            let named_types = child_types_named(kb, subst, v);
+            constructor_value_type(kb, functor, &pos_types, &named_types)
+        }
+        // An anonymous aggregate: `Unit` (0-ary) or a tuple → named_tuple type.
+        ViewHead::Functor { functor: None, pos_arity, .. } => {
+            let pos_types = child_types_pos(kb, subst, v, pos_arity);
+            let named_types = child_types_named(kb, subst, v);
+            tuple_value_type(kb, pos_types, named_types)
+        }
+        // Bare identifier / bottom / opaque handle — no structural type to read.
+        ViewHead::Ident(_) | ViewHead::Bottom | ViewHead::Opaque => fresh_type_var(kb),
+    }
+}
+
+/// WI-578 — the value-level `typed` PRODUCER: return `value` with its `ty` field
+/// populated. Run ONCE at the boundary where an untyped runtime value enters.
+/// VARIANT-PRESERVING — an `Entity` stays an `Entity` (typed children + `ty`), a
+/// `Term` stays a `Term`, a `Tuple` stays a `Tuple`; carriers WITHOUT a `ty` field
+/// (scalars, `Unit`, `Var`, `Node`, runtime handles) pass through unchanged (their
+/// type is implicit / lives elsewhere, read by [`value_type_term`]). For `Entity` /
+/// `Tuple` the carried `ty` is computed from the ALREADY-TYPED children (bottom-up,
+/// O(n)); a `Term`'s structure is not a tree of `Value`s, so its `ty` is the one-shot
+/// [`value_type_term`] read of the whole term.
+pub fn typed(kb: &mut KnowledgeBase, subst: &Substitution, value: &Value) -> Value {
+    match value {
+        Value::Entity { functor, pos, named, .. } => {
+            let functor = *functor;
+            let mut pos_t: Vec<Value> = Vec::with_capacity(pos.len());
+            for c in pos.iter() {
+                pos_t.push(typed(kb, subst, c));
+            }
+            let mut named_t: Vec<(Symbol, Value)> = Vec::with_capacity(named.len());
+            for (s, c) in named.iter() {
+                named_t.push((*s, typed(kb, subst, c)));
+            }
+            let mut pos_types: Vec<Value> = Vec::with_capacity(pos_t.len());
+            for c in &pos_t {
+                pos_types.push(value_type_term(kb, subst, c));
+            }
+            let mut named_types: Vec<(Symbol, Value)> = Vec::with_capacity(named_t.len());
+            for (s, c) in &named_t {
+                named_types.push((*s, value_type_term(kb, subst, c)));
+            }
+            let ty = constructor_value_type(kb, functor, &pos_types, &named_types);
+            Value::Entity {
+                functor,
+                pos: pos_t.into(),
+                named: named_t.into(),
+                ty: Some(Rc::new(ty)),
+            }
+        }
+        Value::Tuple { pos, named, .. } => {
+            let mut pos_t: Vec<Value> = Vec::with_capacity(pos.len());
+            for c in pos.iter() {
+                pos_t.push(typed(kb, subst, c));
+            }
+            let mut named_t: Vec<(Symbol, Value)> = Vec::with_capacity(named.len());
+            for (s, c) in named.iter() {
+                named_t.push((*s, typed(kb, subst, c)));
+            }
+            let mut pos_types: Vec<Value> = Vec::with_capacity(pos_t.len());
+            for c in &pos_t {
+                pos_types.push(value_type_term(kb, subst, c));
+            }
+            let mut named_types: Vec<(Symbol, Value)> = Vec::with_capacity(named_t.len());
+            for (s, c) in &named_t {
+                named_types.push((*s, value_type_term(kb, subst, c)));
+            }
+            let ty = tuple_value_type(kb, pos_types, named_types);
+            Value::Tuple {
+                pos: pos_t.into(),
+                named: named_t.into(),
+                ty: Some(Rc::new(ty)),
+            }
+        }
+        Value::Term { id, .. } => {
+            let ty = value_type_term(kb, subst, value);
+            Value::Term { id: *id, ty: Some(Rc::new(ty)) }
+        }
+        // Scalars / `Unit` / `Var` / `Node` / runtime handles carry no `ty` field —
+        // their type is implicit (literal sort) or lives elsewhere (occurrence
+        // `inferred_type`, the constraint store), surfaced by `value_type_term`.
+        _ => value.clone(),
+    }
 }
 
 /// WI-283 — the type-directed firing guard for `[simp]` rewriting.
