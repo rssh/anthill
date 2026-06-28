@@ -404,8 +404,9 @@ impl Substitution {
 
     /// WI-502 Step 3 — the `Type` constraint payloads recorded on `var`, unioned
     /// across the parent chain (the kind-#2 read dual of [`Self::lacks_of`]).
-    /// The value-level `min_sort` store-fallback reads these for an
-    /// unbound-but-constrained var. Owned `Vec` since the union spans levels.
+    /// The value-level type reader (`var_type_term`, in `typed`) reads these as the
+    /// store-fallback for an unbound-but-constrained var. Owned `Vec` since the
+    /// union spans levels.
     pub fn type_constraints_of(&self, var: VarId) -> Vec<Value> {
         let mut out: Vec<Value> = self
             .constraints

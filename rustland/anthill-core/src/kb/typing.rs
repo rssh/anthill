@@ -20128,8 +20128,8 @@ fn view_child_sym<V: TermView>(kb: &KnowledgeBase, ty: &V, key: &str) -> Option<
 
 /// The "sort head" of an inferred type — the least declared sort it
 /// widens to, as a `Symbol` (WI-284). It reads the typer-reflect Type
-/// shapes (the form the typer stores in `inferred_type`, which is what
-/// `min_sort` feeds it) and unwraps them to the underlying sort symbol:
+/// shapes (the form the typer stores in `inferred_type`) and unwraps them to
+/// the underlying sort symbol:
 ///   - bare `Ref(S)`                    → `S`
 ///   - `Fn{S, named}` (parameterized)   → `S` (params dropped)
 ///   - everything else                  → `None`
@@ -20146,7 +20146,7 @@ pub fn sort_functor_of(kb: &KnowledgeBase, ty: TermId) -> Option<Symbol> {
 /// not re-ground it just to widen to its sort. The sort head is the base of a bare
 /// sort or a (deep / term-backed) parameterized type; the structural variants have
 /// none. WI-320: `effects_rows`/`denoted`/`arrow` have no underlying sort head to
-/// widen to — `None` means `min_sort` is undefined for an occurrence typed as one
+/// widen to — `None` means the sort head is undefined for an occurrence typed as one
 /// of them, the correct conservative answer (no `[simp]` rule targets those
 /// positions yet).
 pub fn sort_functor_of_view<V: TermView>(kb: &KnowledgeBase, ty: &V) -> Option<Symbol> {
@@ -20154,111 +20154,6 @@ pub fn sort_functor_of_view<V: TermView>(kb: &KnowledgeBase, ty: &V) -> Option<S
         TypeHead::SortRef(s) | TypeHead::Parameterized { base: s, .. } => Some(s),
         _ => None,
     }
-}
-
-/// `min_sort` (WI-284): the least declared sort an occurrence inhabits
-/// — the type-directed `[simp]` engine's dispatch key. Reads the
-/// occurrence's typer-kept inferred type (set by the typer's `Stamp`
-/// frame, [`NodeOccurrence::set_inferred_type`]) and widens it via
-/// [`sort_functor_of`]. `None` when the occurrence is untyped /
-/// ill-typed, or its type is still an unresolved variable. A
-/// compile-time reader over an *expression* — never a runtime goal or
-/// a callable `typeof`.
-pub fn min_sort(kb: &KnowledgeBase, occ: &NodeOccurrence) -> Option<Symbol> {
-    sort_functor_of_view(kb, &occ.inferred_type()?)
-}
-
-/// WI-502 Step 3 — the VALUE-level `min_sort`: the least declared sort of a
-/// runtime [`Value`] reached during resolution. The "binding is navigation" (M6)
-/// runtime dual of [`min_sort`] (the compile-time occurrence reader):
-///
-/// 1. A logic VARIABLE follows its σ-binding (`subst`): a bound var DEREFS to the
-///    bound value and recurses (the cache lives on the value, never on the
-///    binding edge); an UNBOUND var falls back to the constraint STORE — the sort
-///    head of a `Constraint::Type` recorded on it (the Step-1 substrate; no
-///    producer until Step 5, so this is the write-mostly path), else `None`.
-/// 2. A `Value::Node` reads its carrier cache (`inferred_type`) via [`min_sort`].
-/// 3. A scalar reads its trivial literal-kind (`Int → Int64`, `Bool → Bool`, …).
-///
-/// A bare constructed `Value::Term`/`Entity`/`Tuple` returns `None`: its head
-/// sort IS structural (the constructor's owning sort) but it has no carrier
-/// cache — the `(type, inner)` pair wrapper is the deliberately-deferred work
-/// (Step-3 §E / Step 5). Crucially this NEVER returns a STALE sort — an
-/// unresolvable type is `None`, the M6 no-silent-drift guarantee.
-///
-/// The binding walk in (1) is a cycle-guarded LOOP, not recursion: the SLD bind
-/// path is NOT occurs-checked, so σ can carry a CYCLIC var spine (`?x → ?x`,
-/// `?x → ?y → ?x`) — the same hazard `kb.walk` / `bounded_list_elements` defend
-/// against. On a revisited var we FLOUNDER (`None`), never loop/stack-overflow
-/// (M6 / WI-067: an under-determined type suspends, it does not decide or crash).
-pub fn min_sort_of_value(
-    kb: &KnowledgeBase,
-    subst: &super::subst::Substitution,
-    value: &Value,
-) -> Option<Symbol> {
-    let mut cur: Value = value.clone();
-    let mut seen: std::collections::HashSet<VarId> = std::collections::HashSet::new();
-    loop {
-        // (1) Variable: navigate the binding (cycle-guarded), or store-fallback.
-        if let Some(Var::Global(vid)) = cur.index_var(kb) {
-            if !seen.insert(vid) {
-                return None; // cyclic spine — flounder, don't loop.
-            }
-            match subst.resolve_as_value(vid) {
-                Some(bound) => {
-                    cur = bound.clone();
-                    continue;
-                }
-                None => return store_sort_bound(kb, subst, vid),
-            }
-        }
-        // (2) Occurrence carrier: read its `inferred_type` cache.
-        if let Value::Node(occ) = &cur {
-            return min_sort(kb, occ);
-        }
-        // (3) Scalar: literal-kind.
-        return scalar_value_sort(kb, &cur);
-    }
-}
-
-/// WI-502 Step 3 — the prelude sort a scalar literal-value inhabits, resolved
-/// read-only via the same short-name path the typer's literal arms use
-/// (`make_sort_ref_by_name` ⇒ `try_resolve_symbol`). `None` for a non-scalar
-/// value, or before the prim sort is registered.
-fn scalar_value_sort(kb: &KnowledgeBase, value: &Value) -> Option<Symbol> {
-    let name = match value {
-        Value::Int(_) => "Int64",
-        Value::BigInt(_) => "BigInt",
-        Value::Float(_) => "Float",
-        Value::Bool(_) => "Bool",
-        Value::Str(_) => "String",
-        _ => return None,
-    };
-    kb.try_resolve_symbol(name)
-}
-
-/// WI-502 Step 3 — store-fallback for an unbound-but-constrained var: the sort
-/// head of a `Constraint::Type` payload recorded on `vid` (via
-/// [`super::subst::Substitution::type_constraints_of`]). Returns the first
-/// payload that widens to a concrete sort head.
-///
-/// Reading the payload's head as the var's `min_sort` is consistent with
-/// `min_sort`'s "least DECLARED sort" = UPPER-BOUND contract: for a var declared
-/// `<: T`, `T` is the tightest sort the typer can declare, and a downstream
-/// guard `subsort(min_sort(?x), U)` over an upper bound is sound-but-incomplete
-/// (it never wrong-FIRES, only possibly-misses — the M6 flounder posture). The
-/// EXACT Type-payload shape and whether a given constraint pins vs. bounds is
-/// Step 5's to own; Step 3 has no producer (`add_type_constraint` has no
-/// non-test caller), so this is exercised only by tests.
-fn store_sort_bound(
-    kb: &KnowledgeBase,
-    subst: &super::subst::Substitution,
-    vid: VarId,
-) -> Option<Symbol> {
-    subst
-        .type_constraints_of(vid)
-        .iter()
-        .find_map(|payload| sort_functor_of_view(kb, payload))
 }
 
 // ── WI-578 — value-level `typed` (the typed-VALUE producer) ──────────────────
@@ -20734,7 +20629,8 @@ fn typed_d(kb: &mut KnowledgeBase, subst: &Substitution, value: &Value, depth: u
 /// **parametric (spec) sort** — its redex functor is a *spec op*, e.g.
 /// `Numeric.add` — that law holds only for carriers that *satisfy* the
 /// sort. So the rule fires only where the **carrier** arguments' least
-/// sorts ([`min_sort`]) provide the spec; otherwise firing would rewrite
+/// sorts (read via [`sort_functor_of_view`] over each occurrence's
+/// `inferred_type`) provide the spec; otherwise firing would rewrite
 /// where the requirement is unmet (unsound — it would erase an ill-typed
 /// call, or apply a law that doesn't hold for that carrier).
 ///
@@ -20783,7 +20679,10 @@ pub fn simp_fire_guard_holds(kb: &KnowledgeBase, redex: &NodeOccurrence) -> bool
         // matcher does not match a positional rule LHS against a named-arg
         // redex either, so such a redex never reaches a fire regardless.
         let Some(arg) = pos_args.get(i) else { return false };
-        match min_sort(kb, arg) {
+        // WI-578: the carrier argument's sort head, read from the typer-pushed
+        // `inferred_type` (was `min_sort`, removed — a source-less reader is replaced by
+        // reading the carried type directly: `sort_functor_of_view(inferred_type)`).
+        match arg.inferred_type().and_then(|t| sort_functor_of_view(kb, &t)) {
             Some(carrier) if sort_provides(kb, carrier, spec_sort) => checked_carrier = true,
             _ => return false,
         }

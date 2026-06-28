@@ -331,12 +331,13 @@ impl NodeOccurrence {
     /// substitution, simp reassembly — must use this instead of a bare
     /// `new_expr`/`synthesized_expr`, which hard-reset `inferred_type` to `None`:
     /// the "original WI-502 bug" that dropped the stamped type the instant a
-    /// body was opened/renamed during resolution, so `min_sort` over the opened
-    /// body read `None`.
+    /// body was opened/renamed during resolution, so the occurrence sort-head read
+    /// over the opened body read `None`.
     ///
-    /// The carry is VERBATIM (σ is NOT applied to the type). That is sound for
-    /// the only reader, `min_sort`, which returns the type's SORT HEAD — invariant
-    /// under the type-parameter refinement a child substitution performs
+    /// The carry is VERBATIM (σ is NOT applied to the type). That is sound for the
+    /// occurrence sort-head read (`sort_functor_of_view` over `inferred_type`, e.g.
+    /// the typer's `[simp]` firing guard), which returns the type's SORT HEAD —
+    /// invariant under the type-parameter refinement a child substitution performs
     /// (`cons(?h,?t): List[?T]` keeps head `List`). A node whose head is itself a
     /// type-var widens to `None`, never a stale concrete sort — so there is no
     /// silent drift (the M6 refresh-boundary guarantee holds by head-only reads,
@@ -505,8 +506,8 @@ impl NodeOccurrence {
     /// refined, e.g. expected-hint-constrained) type wins. WI-342: the
     /// inferred type is carrier-agnostic (`Value`) — a denoted-bearing type
     /// (a lambda arrow carrying `Modify[c]`) is stored as `Value::Node`
-    /// rather than re-grounded; the reader [`min_sort`] widens it via
-    /// [`TermView`].
+    /// rather than re-grounded; the sort-head read (`sort_functor_of_view` over
+    /// this) widens it via [`TermView`].
     pub fn set_inferred_type(&self, ty: Value) {
         if let NodeKind::Expr { inferred_type, .. } = &self.kind {
             *inferred_type.borrow_mut() = Some(ty);
@@ -515,7 +516,8 @@ impl NodeOccurrence {
 
     /// The typer's inferred type for this occurrence, if typed (WI-284).
     /// `None` for rule heads, not-yet-typed occurrences, or ill-typed
-    /// nodes. The basis for `min_sort` (`typing::min_sort`).
+    /// nodes. The basis for the occurrence's sort-head read
+    /// (`sort_functor_of_view` over this).
     pub fn inferred_type(&self) -> Option<Value> {
         match &self.kind {
             NodeKind::Expr { inferred_type, .. } => inferred_type.borrow().clone(),
@@ -556,7 +558,7 @@ pub enum NodeKind {
         /// discarded. Kept here — a third per-node annotation alongside
         /// `classification` / `resolved_type_args` — so the type-directed
         /// `[simp]` engine can read each occurrence's least declared sort
-        /// (`min_sort`, `typing::min_sort`) without recomputing. Written
+        /// (`sort_functor_of_view` over `inferred_type`) without recomputing. Written
         /// by the typer's `Stamp` work-frame once a node's `TypeResult`
         /// is finalized; `None` until typed, or when the node is ill-typed.
         inferred_type: RefCell<Option<Value>>,

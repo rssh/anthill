@@ -16,7 +16,7 @@ use anthill_core::intern::Symbol;
 use anthill_core::kb::load;
 use anthill_core::kb::node_occurrence::{Expr, NodeOccurrence};
 use anthill_core::kb::term::{Literal, Term, Var};
-use anthill_core::kb::typing::{min_sort, type_check_node, TypingEnv};
+use anthill_core::kb::typing::{sort_functor_of_view, type_check_node, TypingEnv};
 use anthill_core::kb::KnowledgeBase;
 use anthill_core::span::{SourceId, SourceSpan};
 use smallvec::SmallVec;
@@ -173,7 +173,8 @@ fn typer_fires_simp_rule_at_apply() {
         Rc::ptr_eq(&r.node, &seven),
         "the RHS reuses the matched `7` child occurrence (identity preserved)",
     );
-    let ms = min_sort(&kb, &r.node).expect("rewritten node carries a declared sort");
+    let ms = r.node.inferred_type().and_then(|t| sort_functor_of_view(&kb, &t))
+        .expect("rewritten node carries a declared sort");
     let ty_name = kb.resolve_sym(ms);
     assert!(ty_name == "Int64" || ty_name.ends_with(".Int64"), "result type Int64, got {ty_name}");
 }

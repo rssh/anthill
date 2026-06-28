@@ -214,3 +214,27 @@ fn value_type_term_bounds_deep_recursion() {
     assert_sort_named(&kb, head, "List");
     assert_type_param_is(&kb, &ty, "Int64");
 }
+
+/// An UNBOUND var carrying a `Type` constraint reads its declared bound's sort from
+/// the constraint store (the store-fallback that superseded `store_sort_bound`); only
+/// a payload with a sort head is returned, and an unconstrained var is `?_`.
+#[test]
+fn value_type_term_unbound_var_reads_store_bound() {
+    let mut kb = load_kb();
+    let numeric = kb.make_sort_ref_by_name("Numeric");
+    let xname = kb.intern("x");
+    let vid = VarId::new(2, xname);
+    let mut subst = Substitution::new();
+    subst.add_type_constraint(vid, Value::term(numeric));
+    let ty = value_type_term(&mut kb, &subst, &Value::Var(Var::Global(vid)));
+    let head = sort_functor_of_view(&kb, &ty).expect("store-bound var has a sort head");
+    assert_sort_named(&kb, head, "Numeric");
+
+    // An unbound, unconstrained var is under-determined → a fresh `?_` (no sort head).
+    let unconstrained = VarId::new(3, xname);
+    let ty2 = value_type_term(&mut kb, &subst, &Value::Var(Var::Global(unconstrained)));
+    assert!(
+        sort_functor_of_view(&kb, &ty2).is_none(),
+        "an unbound, unconstrained var → ?_ (no sort head)",
+    );
+}

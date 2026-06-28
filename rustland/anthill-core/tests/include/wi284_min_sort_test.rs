@@ -1,25 +1,27 @@
-//! WI-284 — typed occurrences + `min_sort`.
+//! WI-284 — typed occurrences + the occurrence's carried-type sort head.
 //!
 //! The typer keeps each occurrence's inferred type (`set_inferred_type`,
 //! written by the `Stamp` work-frame as each node's `TypeResult` is
-//! finalized), and `min_sort` widens that type to the least declared
-//! sort. These tests pin the acceptance examples: `3` -> Int64,
-//! `cons(1, nil())` -> List, an entity value -> its sort, and an
-//! unresolved type var -> None. They also check that *child*
-//! occurrences carry their own type (uniform stamping), and that
-//! `sort_functor_of` unwraps the typer's reflect Type shapes.
+//! finalized); reading that pushed type and widening it to the least declared
+//! sort (`sort_functor_of_view(inferred_type)`, here the `occ_sort` helper)
+//! gives the occurrence's sort head. (WI-578 removed the `min_sort` /
+//! `min_sort_of_value` functions — a source-less value-level reader is replaced
+//! by `typed(value, env)` / `value_type_term`, tested in `wi578_typed_value`;
+//! the occurrence sort-head read survives as this direct carried-type read.)
+//! These tests pin the acceptance examples: `3` -> Int64, `cons(1, nil())` ->
+//! List, an entity value -> its sort, and an unresolved type var -> None. They
+//! also check that *child* occurrences carry their own type (uniform stamping),
+//! and that `sort_functor_of` unwraps the typer's reflect Type shapes.
 
 use std::rc::Rc;
 
-use anthill_core::eval::value::Value;
 use anthill_core::intern::Symbol;
 use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::load::{self, NullResolver};
 use anthill_core::kb::node_occurrence::{Expr, NodeOccurrence};
-use anthill_core::kb::subst::Substitution;
-use anthill_core::kb::term::{Literal, Term, Var, VarId};
+use anthill_core::kb::term::{Literal, Term, Var};
 use anthill_core::kb::typing::{
-    min_sort, min_sort_of_value, sort_functor_of, type_check_node, TypingEnv,
+    sort_functor_of, sort_functor_of_view, type_check_node, TypingEnv,
 };
 use anthill_core::parse;
 use anthill_core::span::{SourceId, SourceSpan};
@@ -54,12 +56,19 @@ fn occ(expr: Expr) -> Rc<NodeOccurrence> {
     NodeOccurrence::new_expr(expr, SourceSpan::new(SourceId::from_raw(0), 0, 0), None)
 }
 
-/// Type the occurrence (asserting success), then return its `min_sort`.
+/// The occurrence's carried-type sort head: read the typer-pushed `inferred_type`
+/// and widen it. WI-578 removed `min_sort` (a source-less reader) in favor of reading
+/// the carried type directly via `sort_functor_of_view` — this is exactly its body.
+fn occ_sort(kb: &KnowledgeBase, occ: &Rc<NodeOccurrence>) -> Option<Symbol> {
+    occ.inferred_type().and_then(|t| sort_functor_of_view(kb, &t))
+}
+
+/// Type the occurrence (asserting success), then return its sort head.
 fn typed_min_sort(kb: &mut KnowledgeBase, occ: &Rc<NodeOccurrence>) -> Option<Symbol> {
     let env = TypingEnv::empty();
     let r = type_check_node(kb, &env, occ, None);
     assert!(r.is_ok(), "expected the occurrence to type-check; got {:?}", r.err());
-    min_sort(kb, occ)
+    occ_sort(kb, occ)
 }
 
 /// A sort symbol resolves to `name` exactly, or to a qualified path
@@ -112,8 +121,8 @@ fn min_sort_of_list_constructor_is_list() {
 
     // Uniform stamping: the child occurrences carry their own type too —
     // the head arg `1` -> Int64, the tail `nil()` -> List.
-    assert_sort_named(&kb, min_sort(&kb, &o1).expect("child `1` typed"), "Int64");
-    assert_sort_named(&kb, min_sort(&kb, &onil2).expect("child `nil()` typed"), "List");
+    assert_sort_named(&kb, occ_sort(&kb, &o1).expect("child `1` typed"), "Int64");
+    assert_sort_named(&kb, occ_sort(&kb, &onil2).expect("child `nil()` typed"), "List");
 }
 
 #[test]
@@ -143,8 +152,8 @@ fn min_sort_of_unresolved_type_var_is_none() {
     assert!(r.is_ok(), "bare var should type to a fresh type var; got {:?}", r.err());
     assert!(ovar.inferred_type().is_some(), "the type var is still kept");
     assert!(
-        min_sort(&kb, &ovar).is_none(),
-        "min_sort of an unresolved type var must be None",
+        occ_sort(&kb, &ovar).is_none(),
+        "the sort head of an unresolved type var must be None",
     );
 }
 
@@ -166,84 +175,3 @@ fn sort_functor_of_returns_none_on_type_var() {
 // but WI-313 resolved with `kb` becoming a zero-arg operation in reflect.anthill
 // — its property "a nullary-entity construction has min_sort = its sort" is
 // covered by `min_sort_of_entity_value_is_its_sort` (Color.red).)
-
-// ── WI-502 Step 3: the value-level `min_sort_of_value` read API ──────────────
-
-/// A scalar `Value`'s sort agrees with the typer's sort for the same literal
-/// occurrence (literal-kind read, M3).
-#[test]
-fn min_sort_of_value_scalar_matches_typer() {
-    let mut kb = load_kb();
-    let n = occ(Expr::Const(Literal::Int(7)));
-    let typer_sort = typed_min_sort(&mut kb, &n).expect("typer Int sort");
-    let subst = Substitution::new();
-    let val_sort =
-        min_sort_of_value(&kb, &subst, &Value::Int(7)).expect("value-level Int sort");
-    assert_eq!(val_sort, typer_sort, "value-level min_sort must match the typer's");
-    assert_sort_named(&kb, val_sort, "Int64");
-}
-
-/// A `Value::Node` reads the occurrence's carrier cache (`inferred_type`).
-#[test]
-fn min_sort_of_value_reads_node_cache() {
-    let mut kb = load_kb();
-    let n = occ(Expr::Const(Literal::Int(3)));
-    let occ_sort = typed_min_sort(&mut kb, &n).expect("occ sort"); // stamps inferred_type
-    let subst = Substitution::new();
-    let val_sort = min_sort_of_value(&kb, &subst, &Value::Node(Rc::clone(&n)))
-        .expect("Value::Node sort from cache");
-    assert_eq!(val_sort, occ_sort);
-}
-
-/// A BOUND var navigates its σ-binding and reads the bound value's sort (M6
-/// "binding is navigation").
-#[test]
-fn min_sort_of_value_derefs_bound_var() {
-    let mut kb = load_kb();
-    let xname = kb.intern("x");
-    let vid = VarId::new(1, xname);
-    let mut subst = Substitution::new();
-    subst.bind_value(&kb, vid, Value::Int(5));
-    let ms = min_sort_of_value(&kb, &subst, &Value::Var(Var::Global(vid)))
-        .expect("bound var derefs to Int sort");
-    assert_sort_named(&kb, ms, "Int64");
-}
-
-/// An UNBOUND-but-constrained var falls back to the constraint store's sort
-/// bound; an unbound, unconstrained var is `None`.
-#[test]
-fn min_sort_of_value_store_fallback_for_unbound_constrained_var() {
-    let mut kb = load_kb();
-    let numeric = kb.make_sort_ref_by_name("Numeric");
-    let xname = kb.intern("x");
-    let vid = VarId::new(2, xname);
-    let mut subst = Substitution::new();
-    subst.add_type_constraint(vid, Value::term(numeric));
-    let ms = min_sort_of_value(&kb, &subst, &Value::Var(Var::Global(vid)))
-        .expect("store fallback yields the constraint's sort");
-    assert_sort_named(&kb, ms, "Numeric");
-
-    let unconstrained = VarId::new(3, xname);
-    assert!(
-        min_sort_of_value(&kb, &subst, &Value::Var(Var::Global(unconstrained))).is_none(),
-        "an unbound, unconstrained var has no known sort",
-    );
-}
-
-/// WI-502 Step 3 — the SLD bind path is NOT occurs-checked, so σ can carry a
-/// cyclic var spine. `min_sort_of_value` must FLOUNDER (None), not loop / stack
-/// overflow (the cycle guard).
-#[test]
-fn min_sort_of_value_flounders_on_cyclic_sigma() {
-    let mut kb = load_kb();
-    let xname = kb.intern("x");
-    let vid = VarId::new(9, xname);
-    let mut subst = Substitution::new();
-    // ?x := Var(?x) — a self-cycle (the shape path-compression can leave).
-    let self_var = kb.alloc(Term::Var(Var::Global(vid)));
-    subst.bind_value(&kb, vid, Value::term(self_var));
-    assert!(
-        min_sort_of_value(&kb, &subst, &Value::Var(Var::Global(vid))).is_none(),
-        "a cyclic σ must flounder to None, never loop",
-    );
-}

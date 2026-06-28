@@ -15,7 +15,7 @@ use std::rc::Rc;
 use anthill_core::kb::load;
 use anthill_core::kb::node_occurrence::{Expr, NodeOccurrence};
 use anthill_core::kb::term::Literal;
-use anthill_core::kb::typing::{min_sort, type_check_node, TypingEnv};
+use anthill_core::kb::typing::{sort_functor_of_view, type_check_node, TypingEnv};
 use anthill_core::kb::KnowledgeBase;
 use anthill_core::span::{SourceId, SourceSpan};
 
@@ -36,7 +36,8 @@ fn occ(expr: Expr) -> Rc<NodeOccurrence> {
 /// A sort symbol resolves to `name` exactly or to a qualified path
 /// ending in `.name`.
 fn sort_is(kb: &KnowledgeBase, occ: &Rc<NodeOccurrence>, name: &str) {
-    let ms = min_sort(kb, occ).expect("occurrence should carry a min_sort");
+    let ms = occ.inferred_type().and_then(|t| sort_functor_of_view(kb, &t))
+        .expect("occurrence should carry a declared sort");
     let full = kb.resolve_sym(ms);
     assert!(
         full == name || full.ends_with(&format!(".{name}")),
