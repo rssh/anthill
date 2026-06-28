@@ -245,36 +245,60 @@ in two surface forms — an **explicit** type bound on a pattern variable, and t
 `[simp]` rule inherits from its enclosing sort's `requires` — and both **desugar to the same thing**:
 a type-relation goal over a variable's *carried* type.
 
-### Surface — `?x: T`, declared once per variable
+### Surface — the same conventions as operations
 
-A rule-pattern variable may carry a type bound `?x: T`, where `T` is an ordinary type-term — a sort
-(`Int`), a spec (`Numeric`), or a parameterized type with its own pattern type-vars (`List[?E]`):
+A typed rule's **type-variables and annotations** use the **operation conventions**, not a
+rule-specific dialect: `[E]` introduces a type-variable (then written `E` — the `?`-dropping
+shortcut), and `: T` annotates a value position, exactly as an operation signature does. `[E]` and an
+inline `?E` are the *same* variable, one with the `?` kept; which mode it resolves in (flex at a
+match, rigid at the load-time well-formedness check) is the ordinary phase distinction, not a
+rule-vs-op one.
+
+A **bound**, though, is a rule *condition*, not a `requires`. `requires` is the precondition/contract
+construct, declared on a *sort* or *operation*; a rule's conditions live in its body. So a bound on a
+rule is a **guard** (its `:- …`), or the inline `?x: T` annotation that desugars to one. The
+correspondence is **op/sort `requires` ≡ rule `:- guard`** — the same notion ("conditions of
+applicability"), each in its construct's natural slot (proposal 043 §4.1: a `[simp]` rule's guard is
+its `:- …` *plus* the enclosing sort's inherited `requires`).
 
 ```anthill
-rule add(?x: Numeric, 0) = ?x                 -- fires only where ?x's carrier provides Numeric
-rule head(cons(?h: ?E, ?t: List[?E])) = ?h    -- ?E links the head and tail-element types
+rule head[E](cons(?h: E, ?t: List[E])) = ?h            -- E links head & tail-element types
+rule add[T](?x: T, 0) = ?x :- Numeric[T]               -- a bound on T is a guard
+rule add(?x: Numeric, 0) = ?x                          -- inline `?x: Numeric` desugars to that guard
 ```
 
-A variable's bound is declared **once**, on its canonical (first) occurrence — never repeated. A
-**non-linear** pattern is the proof this is right (M4): in `p(?x: T, ?x)` the single variable `?x`
-has one type `T`, shared by both occurrences exactly as its binding is — the two `?x`s must bind
-alike *and* type alike. A bound on a later occurrence (`p(?x, ?x: T)`) is the same declaration; a
-*conflicting* re-annotation (`p(?x: A, ?x: B)`, `A ≠ B`) is a load error (loud, not silently merged).
+A type-variable's bound is declared **once**; a non-linear pattern shows why (M4): in `p[T](?x: T, ?x)`
+the single variable `?x` has one type `T`, shared by both occurrences exactly as its binding is — they
+must bind alike *and* type alike. A *conflicting* re-annotation is a load error (loud, not silently
+merged).
 
-For a **non-operation head** (a plain relation, no signature) the head annotations *are* the
-relation's declared signature — there is nowhere else for the argument types to live. For an
-**operation** head the op already declares its parameter types; an inline bound only *refines* one
-(it must be a subtype of the declared type, else a load error).
+### Rules about an operation — the functional twin, bounds owed on use
 
-### Implicit form — a `[simp]` rule's `requires` (no new syntax)
+A rule whose head is an **operation** (`append`, `member` in `list.anthill`) is the **relational /
+equational twin** of that op: the operation is the executable form the evaluator calls; the rules are
+the laws the resolver / rewriter / prover use (`append(nil, ?ys) <=> ?ys`; the Prolog-style
+`member/2`). The rule's variables take their types from the op's signature — but the op's `requires`
+is **not blanket-inherited**. Read `requires` as an implicit parameter (a spec dictionary): it is
+**available** in the shared scope, yet **owed only where the rule actually consumes the spec op**:
 
-A `[simp]` equation scoped to a sort that declares `requires` already carries an implicit guard: the
-law holds only for carriers that *satisfy* the sort (proposal 043 §4.1). `Numeric.add(?x, ?y) = …` is
-implicitly `add(?x: Numeric, ?y: Numeric) = …` over the spec's type-parameter (carrier) positions. So
-it is the *same* mechanism with the bound read from the enclosing sort instead of written inline — no
-surface syntax needed. This is the WI-283 guard, today honored only by the typer
-(`simp_fire_guard_holds`) and **skipped** by the resolver (`equation_is_requires_guarded`) for lack
-of a carried type to read; the substrate is exactly what lets the resolver honor it too.
+- `member`'s rules decide membership by **unification** (`cons(head: ?x, …)`), never calling `eq`, so
+  they **owe no `Eq[T]`** — `member(waypoint, …)` over a non-`Eq` `Waypoint` is answerable
+  relationally. The *operation* `member` calls `eq(head, x)`, so it owes `Eq[T]`. Same symbol; the
+  bound is owed only by the form that consumes it.
+- `append` consumes no spec op in either form, so neither owes a bound; its `<=>` rules fire
+  unconditionally.
+
+This is the WI-562 principle one level down: scope a `requires` obligation to where the spec op is
+*called*, not to the whole symbol (a sort-level `requires Eq[T]` had wrongly blocked `nth` on
+`List[Waypoint]`). So a `[simp]` rule's **implicit** guard is exactly the enclosing sort/op's
+`requires` *as consumed by that rule* — the WI-283 guard the typer honors (`simp_fire_guard_holds`)
+and the resolver today **skips** (`equation_is_requires_guarded`) for lack of a carried type to read;
+the typed-value substrate is what lets the resolver honor it. Firing therefore honors **what the rule
+consumes** — a spec op (`eq`) → read the carried type and discharge its bound; pure unification → no
+guard — never a blanket symbol-level `requires`.
+
+For a **non-operation head** (a plain relation with no op twin) the head's `[…]` params, `: T`
+annotations, and `:- …` guards *are* its signature — there is nowhere else for the types to live.
 
 ### Desugaring — a typed pattern is an untyped pattern + a guard
 
