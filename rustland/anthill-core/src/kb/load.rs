@@ -4730,12 +4730,14 @@ pub(crate) fn build_value_list(kb: &mut KnowledgeBase, items: Vec<crate::eval::v
         functor: nil_sym,
         pos: Rc::from(Vec::<Value>::new()),
         named: Rc::from(Vec::<(Symbol, Value)>::new()),
+        ty: None,
     };
     for item in items.into_iter().rev() {
         list = Value::Entity {
             functor: cons_sym,
             pos: Rc::from(Vec::<Value>::new()),
             named: Rc::from(vec![(head_sym, item), (tail_sym, list)]),
+            ty: None,
         };
     }
     list
@@ -4752,16 +4754,16 @@ fn value_or_ground_list(
     items: Vec<crate::eval::value::Value>,
 ) -> (crate::eval::value::Value, bool) {
     use crate::eval::value::Value;
-    let all_ground = items.iter().all(|v| matches!(v, Value::Term(_)));
+    let all_ground = items.iter().all(|v| matches!(v, Value::Term { .. }));
     let list = if all_ground {
         let terms: Vec<TermId> = items
             .iter()
             .map(|v| match v {
-                Value::Term(t) => *t,
+                Value::Term { id: t, .. } => *t,
                 _ => unreachable!("all_ground"),
             })
             .collect();
-        Value::Term(build_list(kb, &terms))
+        Value::term(build_list(kb, &terms))
     } else {
         build_value_list(kb, items)
     };
@@ -5867,14 +5869,14 @@ impl<'a> Loader<'a> {
                 .iter()
                 .find(|(p, _)| kb.resolve_sym(*p) == "T")
                 .and_then(|(_, v)| match v {
-                    Value::Term(t) => Some(*t),
+                    Value::Term { id: t, .. } => Some(*t),
                     _ => None,
                 });
             return Some(hint);
         }
 
         for (_param, value) in &bindings {
-            if let Value::Term(v) = value {
+            if let Value::Term { id: v, .. } = value {
                 if let Some(inner) = Self::find_list_element_type(kb, *v) {
                     return Some(inner);
                 }
@@ -6056,7 +6058,7 @@ impl<'a> Loader<'a> {
                         // A denoted/occurrence (`Value::Node`) payload type is no
                         // literal-typing hint — narrow to the ground `TermId` only.
                         .and_then(|v| match v {
-                            Value::Term(t) => Some(t),
+                            Value::Term { id: t, .. } => Some(t),
                             _ => None,
                         })
                 } else {
@@ -6072,7 +6074,7 @@ impl<'a> Loader<'a> {
                         let exp = some_payload_hint.or_else(|| {
                             self.kb.entity_field_types(new_functor)
                                 .and_then(|ft| ft.get(i).and_then(|(_, t)| match t {
-                                    Value::Term(t) => Some(*t),
+                                    Value::Term { id: t, .. } => Some(*t),
                                     _ => None,
                                 }))
                         });
@@ -6109,7 +6111,7 @@ impl<'a> Loader<'a> {
                         let exp = some_payload_hint.or_else(|| {
                             self.kb.entity_field_types(new_functor)
                                 .and_then(|ft| ft.iter().find(|(s, _)| *s == new_sym).and_then(|(_, t)| match t {
-                                    Value::Term(t) => Some(*t),
+                                    Value::Term { id: t, .. } => Some(*t),
                                     _ => None,
                                 }))
                         });
@@ -7316,7 +7318,7 @@ impl<'a> Loader<'a> {
             .filter_map(|(name, value)| {
                 // Omit a value-in-type (Node) entry — see fn doc.
                 let value_term = match value {
-                    Value::Term(t) => *t,
+                    Value::Term { id: t, .. } => *t,
                     _ => return None,
                 };
                 let name_opt = match name {
@@ -7932,7 +7934,7 @@ impl<'a> Loader<'a> {
         let span = self.type_expr_span(ty);
         let owner = self.current_owner;
         match self.type_expr_to_child(ty, span, owner) {
-            node_occurrence::TypeChild::Ground(t) => crate::eval::value::Value::Term(t),
+            node_occurrence::TypeChild::Ground(t) => crate::eval::value::Value::term(t),
             node_occurrence::TypeChild::Node(n) => crate::eval::value::Value::Node(n),
         }
     }
@@ -8516,7 +8518,7 @@ impl<'a> Loader<'a> {
             let spec_term = match item {
                 Item::Fact(f) => self.convert_term(f.term),
                 Item::ProvidesClause(pc) => match self.sort_inst_to_value(&pc.spec) {
-                    Value::Term(t) => t,
+                    Value::Term { id: t, .. } => t,
                     // A denoted-bearing spec carries no concrete carrier to narrow to.
                     _ => continue,
                 },
@@ -8897,7 +8899,7 @@ impl<'a> Loader<'a> {
                     node_occurrence::TypeChild::Node(label_o) => {
                         let guard_values: Vec<crate::eval::value::Value> = guard_terms
                             .into_iter()
-                            .map(crate::eval::value::Value::Term)
+                            .map(crate::eval::value::Value::term)
                             .collect();
                         let guard_value = build_value_list(self.kb, guard_values);
                         node_occurrence::TypeChild::Node(self.kb.make_guarded_occ(
@@ -9022,7 +9024,7 @@ impl<'a> Loader<'a> {
         match ty {
             TypeExpr::Simple(name) => {
                 let sort_sym = self.remap_name(name);
-                Value::Term(self.kb.make_sort_ref(sort_sym))
+                Value::term(self.kb.make_sort_ref(sort_sym))
             }
             _ => self.sort_inst_to_value(ty),
         }
@@ -9060,14 +9062,14 @@ impl<'a> Loader<'a> {
                 let sort_sym = self.remap_name(name);
                 let short_name = self.kb.resolve_sym(sort_sym).to_owned();
                 if self.kb.symbols.is_type_param(self.current_scope.raw(), &short_name) {
-                    Value::Term(self.kb.make_sort_ref(sort_sym))
+                    Value::term(self.kb.make_sort_ref(sort_sym))
                 } else {
-                    Value::Term(self.name_to_sort_term(name))
+                    Value::term(self.name_to_sort_term(name))
                 }
             }
             TypeExpr::Parameterized { name, bindings } => {
                 let name_term = self.name_to_sort_term(name);
-                let mut pos: Vec<Value> = vec![Value::Term(name_term)];
+                let mut pos: Vec<Value> = vec![Value::term(name_term)];
                 let mut named: Vec<(Symbol, Value)> = Vec::new();
                 // Positional bindings map to the base sort's declared type
                 // parameters in declaration order — the SAME mapping
@@ -9142,13 +9144,14 @@ impl<'a> Loader<'a> {
         named.sort_by_key(|(s, _)| s.index());
         // A spec is ground iff every binding is ground; any non-`Term` binding
         // poisons the whole spec to a value carrier (no information lost).
-        let any_value = pos.iter().any(|v| !matches!(v, Value::Term(_)))
-            || named.iter().any(|(_, v)| !matches!(v, Value::Term(_)));
+        let any_value = pos.iter().any(|v| !matches!(v, Value::Term { .. }))
+            || named.iter().any(|(_, v)| !matches!(v, Value::Term { .. }));
         if any_value {
             Value::Entity {
                 functor: sort_view_sym,
                 pos: std::rc::Rc::from(pos),
                 named: std::rc::Rc::from(named),
+                ty: None,
             }
         } else {
             let pos_args: SmallVec<[TermId; 4]> = pos
@@ -9159,7 +9162,7 @@ impl<'a> Loader<'a> {
                 .iter()
                 .map(|(s, v)| (*s, v.expect_term()))
                 .collect();
-            Value::Term(self.kb.alloc(Term::Fn {
+            Value::term(self.kb.alloc(Term::Fn {
                 functor: sort_view_sym,
                 pos_args,
                 named_args,
@@ -9277,7 +9280,7 @@ impl<'a> Loader<'a> {
         let sort_sort = self.kb.make_name_term("Sort");
         self.kb.assert_fact_carrier(
             alias_sym,
-            vec![Value::Term(sort_term), target],
+            vec![Value::term(sort_term), target],
             Vec::new(),
             sort_sort,
             domain,
@@ -9311,7 +9314,7 @@ impl<'a> Loader<'a> {
         // keeps the hash-consed `Term::Fn` head, byte-identical to the prior build.
         let target_value = match &s.definition {
             TypeExpr::Variable { term_id, .. } => {
-                crate::eval::value::Value::Term(self.convert_term(*term_id))
+                crate::eval::value::Value::term(self.convert_term(*term_id))
             }
             _ => self.type_expr_to_value(&s.definition),
         };
@@ -9345,7 +9348,7 @@ impl<'a> Loader<'a> {
         let var_sym = self.kb.intern("_");
         let vid = self.kb.fresh_var(var_sym);
         let var_term = self.kb.alloc(Term::Var(Var::Global(vid)));
-        self.assert_sort_alias(sort_term, Value::Term(var_term), domain);
+        self.assert_sort_alias(sort_term, Value::term(var_term), domain);
     }
 
     fn load_sort_with_body(&mut self, s: &SortWithBody, parent_domain: TermId) {
@@ -9455,18 +9458,19 @@ impl<'a> Loader<'a> {
                             crate::eval::value::Value::Node(_) => {
                                 // Denoted-bearing field type → value FieldInfo entity.
                                 let named: Vec<(Symbol, crate::eval::value::Value)> = vec![
-                                    (fi_name_sym, crate::eval::value::Value::Term(name_term)),
+                                    (fi_name_sym, crate::eval::value::Value::term(name_term)),
                                     (fi_type_sym, type_value),
                                 ];
                                 crate::eval::value::Value::Entity {
                                     functor: field_info_sym,
                                     pos: std::rc::Rc::from(Vec::new()),
                                     named: std::rc::Rc::from(named),
+                                    ty: None,
                                 }
                             }
-                            crate::eval::value::Value::Term(type_term) => {
+                            crate::eval::value::Value::Term { id: type_term, .. } => {
                                 // Ground field type → hash-consed FieldInfo term.
-                                crate::eval::value::Value::Term(self.kb.alloc(Term::Fn {
+                                crate::eval::value::Value::term(self.kb.alloc(Term::Fn {
                                     functor: field_info_sym,
                                     pos_args: SmallVec::new(),
                                     named_args: SmallVec::from_slice(&[
@@ -9490,7 +9494,7 @@ impl<'a> Loader<'a> {
                 // (dedup, structural sharing).
                 if fields_all_ground {
                     let fields_list = match fields_field {
-                        crate::eval::value::Value::Term(t) => t,
+                        crate::eval::value::Value::Term { id: t, .. } => t,
                         _ => unreachable!("fields_all_ground ⇒ fields list is Value::Term"),
                     };
                     let entity_info_fact = self.kb.alloc(Term::Fn {
@@ -9502,13 +9506,14 @@ impl<'a> Loader<'a> {
                 } else {
                     use crate::eval::value::Value;
                     let named: Vec<(Symbol, Value)> = vec![
-                        (fi_name_sym, Value::Term(ctor_term)),
+                        (fi_name_sym, Value::term(ctor_term)),
                         (fields_field_sym, fields_field),
                     ];
                     let head = Value::Entity {
                         functor: entity_info_sym,
                         pos: std::rc::Rc::from(Vec::<Value>::new()),
                         named: std::rc::Rc::from(named),
+                        ty: None,
                     };
                     self.kb.assert_fact_value(head, sort_sort, parent_domain, None);
                 }
@@ -9574,7 +9579,7 @@ impl<'a> Loader<'a> {
                     // rather than forcing `SortInfo` (and its 9 term-only readers)
                     // to a value carrier.
                     let req_term = match self.sort_inst_to_value(&r.type_expr) {
-                        crate::eval::value::Value::Term(t) => t,
+                        crate::eval::value::Value::Term { id: t, .. } => t,
                         _ => match &r.type_expr {
                             TypeExpr::Simple(name) | TypeExpr::Parameterized { name, .. } => {
                                 self.name_to_sort_term(name)
@@ -9872,7 +9877,7 @@ impl<'a> Loader<'a> {
         // `KB.fields` reflect builtin; the TermId-only bridge skips a value head
         // (the carrier-faithful path is `KB.*`).
         use crate::eval::value::Value;
-        if field_types.iter().all(|(_, v)| matches!(v, Value::Term(_))) {
+        if field_types.iter().all(|(_, v)| matches!(v, Value::Term { .. })) {
             let named_args: SmallVec<[(Symbol, TermId); 2]> = field_types
                 .iter()
                 .map(|(s, v)| (*s, v.expect_term()))
@@ -9884,6 +9889,7 @@ impl<'a> Loader<'a> {
                 functor,
                 pos: std::rc::Rc::from(Vec::<Value>::new()),
                 named: std::rc::Rc::from(field_types),
+                ty: None,
             };
             self.kb.assert_fact_value(head, entity_sort, domain, None);
         }
@@ -9953,18 +9959,18 @@ impl<'a> Loader<'a> {
             Term::Fn { functor, pos_args, named_args } => {
                 (*functor, pos_args.clone(), named_args.clone())
             }
-            _ => return Value::Term(value),
+            _ => return Value::term(value),
         };
         // Only a parameterized SORT instantiation re-lowers to a `SortView`.
         if !matches!(self.kb.kind_of(functor), Some(SymbolKind::Sort)) {
-            return Value::Term(value);
+            return Value::term(value);
         }
         let params = self.kb.type_params_of_sort(functor);
         // `pos[0]` is the base sort's name term (the SortView's subject), mirroring
         // `sort_inst_to_value`. Recurse into any explicit named values, then map each
         // positional arg onto the base sort's declared param in order.
         let name_term = self.kb.make_name_term_from_sym(functor);
-        let mut pos: Vec<Value> = vec![Value::Term(name_term)];
+        let mut pos: Vec<Value> = vec![Value::term(name_term)];
         let mut named: Vec<(Symbol, Value)> = named_args
             .iter()
             .map(|(s, v)| (*s, self.canonicalize_fact_binding_value(*v)))
@@ -10147,7 +10153,7 @@ impl<'a> Loader<'a> {
             .map(|(s, v)| (*s, self.canonicalize_fact_binding_value(*v)))
             .collect();
         let spec_name_term = self.kb.make_name_term_from_sym(fact_functor);
-        let spec_value = self.assemble_sort_view_value(vec![Value::Term(spec_name_term)], named_values);
+        let spec_value = self.assemble_sort_view_value(vec![Value::term(spec_name_term)], named_values);
 
         // Assert SortProvidesInfo(sort_ref, spec) through the Value carrier — the
         // SAME path `load_provides_clause` uses, so an all-ground spec rides as a
@@ -10161,7 +10167,7 @@ impl<'a> Loader<'a> {
         self.kb.assert_fact_carrier(
             provides_sym,
             Vec::new(),
-            vec![(sort_ref_arg, Value::Term(sort_ref_term)), (spec_arg, spec_value)],
+            vec![(sort_ref_arg, Value::term(sort_ref_term)), (spec_arg, spec_value)],
             provides_sort,
             domain,
             None,
@@ -10426,7 +10432,7 @@ impl<'a> Loader<'a> {
 
         let spec_term = self.convert_term(spec_atom);
         let return_term = self.strip_spec_carrier(spec_term, carrier);
-        crate::eval::value::Value::Term(return_term)
+        crate::eval::value::Value::term(return_term)
     }
 
     /// Drop the existential carrier from a converted spec application — the
@@ -10639,18 +10645,19 @@ impl<'a> Loader<'a> {
                     crate::eval::value::Value::Node(_) => {
                         // Denoted-bearing param type → value FieldInfo entity.
                         let named: Vec<(Symbol, crate::eval::value::Value)> = vec![
-                            (fi_name_sym, crate::eval::value::Value::Term(name_term)),
+                            (fi_name_sym, crate::eval::value::Value::term(name_term)),
                             (fi_type_sym, type_value),
                         ];
                         crate::eval::value::Value::Entity {
                             functor: field_info_sym,
                             pos: std::rc::Rc::from(Vec::new()),
                             named: std::rc::Rc::from(named),
+                            ty: None,
                         }
                     }
-                    crate::eval::value::Value::Term(type_term) => {
+                    crate::eval::value::Value::Term { id: type_term, .. } => {
                         // Ground param type → hash-consed FieldInfo term.
-                        crate::eval::value::Value::Term(self.kb.alloc(Term::Fn {
+                        crate::eval::value::Value::term(self.kb.alloc(Term::Fn {
                             functor: field_info_sym,
                             pos_args: SmallVec::new(),
                             named_args: SmallVec::from_slice(&[
@@ -10787,20 +10794,20 @@ impl<'a> Loader<'a> {
         // WI-341: the head is a value fact when ANY of params / return / effects
         // carries a `Value::Node` (denoted-bearing); else a hash-consed `Term::Fn`.
         let all_ground =
-            params_all_ground && effects_all_ground && matches!(return_value, Value::Term(_));
+            params_all_ground && effects_all_ground && matches!(return_value, Value::Term { .. });
         // Single source of truth for the field set / order. Readers resolve by
         // key (functor + `NamedKey(sym)`), so order is not load-bearing.
         let named: Vec<(Symbol, Value)> = vec![
-            (name_sym, Value::Term(name_ref)),
+            (name_sym, Value::term(name_ref)),
             (params_sym, params_field),
             (return_type_sym, return_value),
             (effects_sym, effects_field),
-            (requires_sym, Value::Term(requires_list)),
-            (ensures_sym, Value::Term(ensures_list)),
-            (type_params_sym, Value::Term(type_params_list)),
+            (requires_sym, Value::term(requires_list)),
+            (ensures_sym, Value::term(ensures_list)),
+            (type_params_sym, Value::term(type_params_list)),
             // WI-087: operation attributes — always a ground `meta(...)` term, so
             // it never forces the value-fact path (does not enter `all_ground`).
-            (meta_sym, Value::Term(meta_term)),
+            (meta_sym, Value::term(meta_term)),
         ];
         if all_ground {
             // Ground head → hash-consed `Term::Fn` (dedup, structural sharing).
@@ -10808,7 +10815,7 @@ impl<'a> Loader<'a> {
             let named_args: SmallVec<[(Symbol, TermId); 2]> = named
                 .iter()
                 .map(|(s, v)| match v {
-                    Value::Term(t) => (*s, *t),
+                    Value::Term { id: t, .. } => (*s, *t),
                     _ => unreachable!("all_ground ⇒ every OperationInfo field is Value::Term"),
                 })
                 .collect();
@@ -10825,6 +10832,7 @@ impl<'a> Loader<'a> {
                 functor: op_info_sym,
                 pos: std::rc::Rc::from(Vec::<Value>::new()),
                 named: std::rc::Rc::from(named),
+                ty: None,
             };
             self.kb.assert_fact_value(head, op_sort, domain, None);
         }
@@ -11157,7 +11165,7 @@ impl<'a> Loader<'a> {
         ty: &TypeExpr,
     ) -> crate::eval::value::Value {
         match node_occurrence::value_to_term(&mut self.kb, &value) {
-            Ok(t) => crate::eval::value::Value::Term(t),
+            Ok(t) => crate::eval::value::Value::term(t),
             Err(_) => {
                 self.diagnose_gated_value_in_type(position, ty);
                 value
@@ -11184,7 +11192,7 @@ impl<'a> Loader<'a> {
         self.kb.assert_fact_carrier(
             requires_sym,
             Vec::new(),
-            vec![(sort_ref_sym, Value::Term(domain)), (spec_sym, spec_value)],
+            vec![(sort_ref_sym, Value::term(domain)), (spec_sym, spec_value)],
             requirement_sort,
             domain,
             None,
@@ -11619,7 +11627,7 @@ impl<'a> Loader<'a> {
         self.kb.assert_fact_carrier(
             provides_sym,
             Vec::new(),
-            vec![(sort_ref_sym, Value::Term(domain)), (spec_sym, spec_value)],
+            vec![(sort_ref_sym, Value::term(domain)), (spec_sym, spec_value)],
             provides_sort,
             domain,
             None,
@@ -11645,7 +11653,7 @@ impl<'a> Loader<'a> {
         // `as_term().expect(...)` would panic on a value spec — reachable from the
         // valid syntax `provides Foo[Int64, 3] language … end`.)
         let spec_term = match self.sort_inst_to_value(&pb.spec) {
-            crate::eval::value::Value::Term(t) => t,
+            crate::eval::value::Value::Term { id: t, .. } => t,
             _ => {
                 self.diagnose_gated_value_in_type("provides", &pb.spec);
                 match &pb.spec {

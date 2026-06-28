@@ -361,7 +361,7 @@ fn entity_field_type_map(kb: &KnowledgeBase, functor: Symbol) -> Vec<(Symbol, Te
         .map(|fts| {
             fts.iter()
                 .filter_map(|(s, v)| match v {
-                    crate::eval::value::Value::Term(t) => Some((*s, *t)),
+                    crate::eval::value::Value::Term { id: t, .. } => Some((*s, *t)),
                     _ => None,
                 })
                 .collect()

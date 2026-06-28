@@ -403,7 +403,7 @@ fn subst_visit(
     match kb.walk_view(term, subst) {
         // Reused matched child — keep its identity (and provenance).
         Value::Node(occ) => results.push(occ),
-        Value::Term(t) => match kb.get_term(t) {
+        Value::Term { id: t, .. } => match kb.get_term(t) {
             Term::Fn { functor, pos_args, named_args } => {
                 let named_keys: Vec<Symbol> = named_args.iter().map(|(s, _)| *s).collect();
                 work.push(SubstOp::BuildApply {

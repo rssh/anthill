@@ -26,7 +26,7 @@ fn rterm(v: Value) -> Term {
 /// Lift a KB-resident hash-consed `TermId` into the reflect `Term`.
 #[inline]
 fn term(id: TermId) -> Term {
-    ReflectTerm::new(Value::Term(id))
+    ReflectTerm::new(Value::term(id))
 }
 
 /// Map a core [`Literal`] to its host [`LiteralRepr`] (struct-variant form).
@@ -51,7 +51,7 @@ fn lq_entity(
     functor: anthill_core::intern::Symbol,
     named: Vec<(anthill_core::intern::Symbol, Value)>,
 ) -> Value {
-    Value::Entity { functor, pos: Vec::new().into(), named: named.into() }
+    Value::Entity { functor, pos: Vec::new().into(), named: named.into(), ty: None }
 }
 
 // ── KbBridge ────────────────────────────────────────────────────
@@ -195,7 +195,7 @@ impl KbBridge {
             // Only a ground `Value::Term(Fn)` entity head names a usable schema
             // here (a value-in-type entity is irrelevant to a `SortQuery` goal).
             for (_rid, head) in &entity_facts {
-                if let Value::Term(t) = head {
+                if let Value::Term { id: t, .. } = head {
                     if let CoreTerm::Fn { functor, named_args, .. } = kb.get_term(*t) {
                         let fname = kb.resolve_sym(*functor);
                         if fname == sort_name || fname.rsplit('.').next() == Some(sort_name) {
@@ -216,7 +216,7 @@ impl KbBridge {
         let rids = kb.rules_by_functor(plain_sym);
         for rid in rids {
             let head = match kb.rule_head_value(rid) {
-                anthill_core::eval::Value::Term(t) => *t,
+                anthill_core::eval::Value::Term { id: t, .. } => *t,
                 _ => continue,
             };
             if let CoreTerm::Fn { functor, named_args, .. } = kb.get_term(head) {
@@ -273,7 +273,7 @@ impl KbBridge {
                             pos_args: Default::default(),
                             named_args: named_args_vec.into(),
                         });
-                        Ok(vec![Value::Term(goal)])
+                        Ok(vec![Value::term(goal)])
                     }
                     None => {
                         let sort_sym = kb.intern(sort_name);
@@ -285,7 +285,7 @@ impl KbBridge {
                             pos_args: vec![var_term].into(),
                             named_args: Default::default(),
                         });
-                        Ok(vec![Value::Term(goal)])
+                        Ok(vec![Value::term(goal)])
                     }
                 }
             }
@@ -421,7 +421,7 @@ impl KbBridge {
         let bod = Self::reify_logical_query(kb, body);
         let var_ref = kb.alloc(CoreTerm::Ref(var.symbol()));
         let (vk, ck, bk) = (kb.intern("var"), kb.intern("condition"), kb.intern("body"));
-        lq_entity(f, vec![(vk, Value::Term(var_ref)), (ck, cond), (bk, bod)])
+        lq_entity(f, vec![(vk, Value::term(var_ref)), (ck, cond), (bk, bod)])
     }
 
     /// Resolve an `anthill.reflect.LogicalQuery.<short>` constructor symbol, or
@@ -629,7 +629,7 @@ impl KB for KbBridge {
     fn nonvar(&self, x: Term) -> bool {
         match x.value() {
             Value::Var(_) => false,
-            Value::Term(t) => !matches!(self.kb.borrow().get_term(*t), CoreTerm::Var(_)),
+            Value::Term { id: t, .. } => !matches!(self.kb.borrow().get_term(*t), CoreTerm::Var(_)),
             _ => true,
         }
     }
@@ -638,7 +638,7 @@ impl KB for KbBridge {
         // Mirrors the core resolver's `value_is_ground`.
         match x.value() {
             Value::Var(_) => false,
-            Value::Term(t) => self.kb.borrow().collect_vars(*t).is_empty(),
+            Value::Term { id: t, .. } => self.kb.borrow().collect_vars(*t).is_empty(),
             Value::Node(occ) =>
                 !anthill_core::kb::node_occurrence::occurrence_has_unbound_var(occ),
             _ => true,
@@ -841,7 +841,7 @@ impl SubstBridge {
     fn vid_of(&self, v: &Value) -> Option<VarId> {
         match v {
             Value::Var(var) => var.as_global(),
-            Value::Term(tid) => match self.kb.borrow().get_term(*tid) {
+            Value::Term { id: tid, .. } => match self.kb.borrow().get_term(*tid) {
                 CoreTerm::Var(var) => var.as_global(),
                 _ => None,
             },
@@ -1039,7 +1039,7 @@ fact cat
             let mut kb = bridge.kb.borrow_mut();
             kb.resolve_qualified_name_term("Animal.dog")
         };
-        let query = LogicalQuery::PatternQuery { term: ReflectTerm::new(Value::Term(goal)) };
+        let query = LogicalQuery::PatternQuery { term: ReflectTerm::new(Value::term(goal)) };
         let stream = bridge.execute(query).expect("execute failed");
         let results = stream.collect_all().expect("collect failed");
         assert!(results.len() >= 1, "pattern query for 'dog' should find at least 1 result, got {}", results.len());
@@ -1076,9 +1076,9 @@ sort Store {
             let s = kb.intern("x");
             let vid = kb.fresh_var(s);
             (
-                ReflectTerm::new(Value::Term(kb.alloc(CoreTerm::Var(Var::Global(vid))))),
-                ReflectTerm::new(Value::Term(kb.alloc(CoreTerm::Var(Var::Rigid(vid))))),
-                ReflectTerm::new(Value::Term(kb.alloc(CoreTerm::Var(Var::DeBruijn(0))))),
+                ReflectTerm::new(Value::term(kb.alloc(CoreTerm::Var(Var::Global(vid))))),
+                ReflectTerm::new(Value::term(kb.alloc(CoreTerm::Var(Var::Rigid(vid))))),
+                ReflectTerm::new(Value::term(kb.alloc(CoreTerm::Var(Var::DeBruijn(0))))),
             )
         };
         for (label, v) in [("global", global), ("rigid", rigid), ("debruijn", debruijn)] {
@@ -1126,7 +1126,7 @@ fact blue(shade: 3)
 
         let red_ref = {
             let mut kb = bridge.kb.borrow_mut();
-            Value::Term(kb.resolve_qualified_name_term("Color.red"))
+            Value::term(kb.resolve_qualified_name_term("Color.red"))
         };
         let reds = bridge.facts_of(Type::new(red_ref));
         assert_eq!(reds.len(), 3, "2 user facts + 1 synthetic entity decl, got {}", reds.len());
@@ -1134,7 +1134,7 @@ fact blue(shade: 3)
 
         let blue_ref = {
             let mut kb = bridge.kb.borrow_mut();
-            Value::Term(kb.resolve_qualified_name_term("Color.blue"))
+            Value::term(kb.resolve_qualified_name_term("Color.blue"))
         };
         let blues = bridge.facts_of(Type::new(blue_ref));
         assert_eq!(blues.len(), 2, "1 user fact + 1 synthetic entity decl");
@@ -1149,7 +1149,7 @@ fact blue(shade: 3)
         let bridge = load_source_bridge("sort Foo { entity bar }");
         let lit = {
             let mut kb = bridge.kb.borrow_mut();
-            Value::Term(kb.alloc(CoreTerm::Const(Literal::Int(7))))
+            Value::term(kb.alloc(CoreTerm::Const(Literal::Int(7))))
         };
         let _ = bridge.facts_of(Type::new(lit));
     }
@@ -1163,7 +1163,7 @@ fact blue(shade: 3)
             "123456789012345678901234567890".parse().expect("parse bigint");
         let term = {
             let mut kb = bridge.kb.borrow_mut();
-            ReflectTerm::new(Value::Term(kb.alloc(CoreTerm::Const(Literal::BigInt(big.clone())))))
+            ReflectTerm::new(Value::term(kb.alloc(CoreTerm::Const(Literal::BigInt(big.clone())))))
         };
         match bridge.reify(term) {
             TermRepr::ConstRepr { value: LiteralRepr::BigIntLiteral { value } } => {
@@ -1204,9 +1204,9 @@ fact blue(shade: 3)
             (vx, vy, five, var_y)
         };
         let mut s1_inner = anthill_core::kb::subst::Substitution::new();
-        s1_inner.bindings.insert(vid_x, Value::Term(var_y));
+        s1_inner.bindings.insert(vid_x, Value::term(var_y));
         let mut s2_inner = anthill_core::kb::subst::Substitution::new();
-        s2_inner.bindings.insert(vid_y, Value::Term(five));
+        s2_inner.bindings.insert(vid_y, Value::term(five));
 
         let s1 = SubstBridge::from_core(s1_inner, Rc::clone(&bridge.kb));
         let s2 = SubstBridge::from_core(s2_inner, Rc::clone(&bridge.kb));
@@ -1243,7 +1243,7 @@ fact blue(shade: 3)
         let mut s1_inner = anthill_core::kb::subst::Substitution::new();
         s1_inner.bindings.insert(vid_z, Value::Var(Var::Global(vid_w)));
         let mut s2_inner = anthill_core::kb::subst::Substitution::new();
-        s2_inner.bindings.insert(vid_w, Value::Term(seven));
+        s2_inner.bindings.insert(vid_w, Value::term(seven));
 
         let s1 = SubstBridge::from_core(s1_inner, Rc::clone(&bridge.kb));
         let s2 = SubstBridge::from_core(s2_inner, Rc::clone(&bridge.kb));
@@ -1280,7 +1280,7 @@ sort Tank {
         assert!(!fill.requires.is_empty(), "fill should surface its `requires` clause");
         // Each clause is carried as a goal-term Value.
         match fill.ensures[0].value() {
-            Value::Term(_) => {}
+            Value::Term { .. } => {}
             other => panic!("ensures clause should be a Value::Term goal, got {other:?}"),
         }
     }
@@ -1302,13 +1302,13 @@ sort Tank {
             });
             let sort_ref = kb.alloc(CoreTerm::Ref(slot_sort_sym));
             let entity_ref = kb.alloc(CoreTerm::Ref(slot_sym));
-            (s5, Type::new(Value::Term(sort_ref)), Type::new(Value::Term(entity_ref)))
+            (s5, Type::new(Value::term(sort_ref)), Type::new(Value::term(entity_ref)))
         };
-        let id = bridge.assert(ReflectTerm::new(Value::Term(slot5)), slot_sort_type);
+        let id = bridge.assert(ReflectTerm::new(Value::term(slot5)), slot_sort_type);
         assert!(id.is_some(), "asserting slot(n:5) should succeed");
         assert!(
             bridge.facts_of(slot_entity_type).iter()
-                .any(|t| matches!(t.value(), Value::Term(tid) if *tid == slot5)),
+                .any(|t| matches!(t.value(), Value::Term { id: tid, .. } if *tid == slot5)),
             "facts_of should see the asserted slot(n:5)",
         );
     }
@@ -1350,9 +1350,9 @@ end
                 named_args: vec![(from, b_ref), (to, a_ref)].into(),
             });
             let rel_ref = kb.alloc(CoreTerm::Ref(rel_sym));
-            (edge, Type::new(Value::Term(rel_ref)))
+            (edge, Type::new(Value::term(rel_ref)))
         };
-        let rejected = bridge.assert(ReflectTerm::new(Value::Term(edge_ba)), rel_type);
+        let rejected = bridge.assert(ReflectTerm::new(Value::term(edge_ba)), rel_type);
         assert!(rejected.is_none(),
             "asserting edge(b→a) completes a 2-cycle → rejected by `no_two_cycle`");
     }
@@ -1386,7 +1386,7 @@ end
                 named_args: vec![(from, b_ref), (to, a_ref)].into(),
             });
             let rel_ref = kb.alloc(CoreTerm::Ref(rel_sym));
-            (edge_ba, Type::new(Value::Term(rel_ref)))
+            (edge_ba, Type::new(Value::term(rel_ref)))
         };
         (bridge, edge_ba, rel_type)
     }
@@ -1403,12 +1403,12 @@ end
 
         let guard = LogicalQuery::Negation {
             query: Box::new(LogicalQuery::PatternQuery {
-                term: ReflectTerm::new(Value::Term(edge_ba)),
+                term: ReflectTerm::new(Value::term(edge_ba)),
             }),
         };
         bridge.add_guard(guard);
 
-        let rejected = bridge.assert(ReflectTerm::new(Value::Term(edge_ba)), rel_type);
+        let rejected = bridge.assert(ReflectTerm::new(Value::term(edge_ba)), rel_type);
         assert!(rejected.is_none(),
             "asserting edge(b→a) violates the programmatic `not(edge(b→a))` guard → rejected");
     }
@@ -1448,15 +1448,15 @@ end
         let guard = LogicalQuery::NoQ {
             var: ReflectSymbol::new(x_name),
             condition: Box::new(LogicalQuery::PatternQuery {
-                term: ReflectTerm::new(Value::Term(cond_pat)),
+                term: ReflectTerm::new(Value::term(cond_pat)),
             }),
             body: Box::new(LogicalQuery::PatternQuery {
-                term: ReflectTerm::new(Value::Term(body_pat)),
+                term: ReflectTerm::new(Value::term(body_pat)),
             }),
         };
         bridge.add_guard(guard);
 
-        let rejected = bridge.assert(ReflectTerm::new(Value::Term(edge_ba)), rel_type);
+        let rejected = bridge.assert(ReflectTerm::new(Value::term(edge_ba)), rel_type);
         assert!(rejected.is_none(),
             "asserting edge(b→a) completes the 2-cycle → rejected by the programmatic `no_q` guard");
     }

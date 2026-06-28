@@ -28,7 +28,7 @@ end
     // facts_of ignores its KB arg — pass a placeholder. The entity is passed
     // by reference (a nullary Fn term for the qualified functor), matching the
     // `facts_of(kb(), WorkItem)` source form.
-    let box_ref = Value::Term(interp.kb_mut().resolve_qualified_name_term("test.find_fact.Item.Box"));
+    let box_ref = Value::term(interp.kb_mut().resolve_qualified_name_term("test.find_fact.Item.Box"));
     let facts = interp.call(
         "anthill.reflect.KB.facts_of",
         &[Value::Unit, box_ref],
@@ -53,7 +53,7 @@ end
                 .map(|(_, v)| v.clone()).expect("some.value");
             // Inner is a Term wrapping a Const(Handle).
             match inner {
-                Value::Term(_) => (),
+                Value::Term { .. } => (),
                 other => panic!("expected Term, got {other:?}"),
             }
         }
@@ -74,7 +74,7 @@ namespace test.replace_arg
 end
 "#;
     let mut interp = interp_for(src);
-    let pair_ref = Value::Term(interp.kb_mut().resolve_qualified_name_term("anthill.prelude.Pair.pair"));
+    let pair_ref = Value::term(interp.kb_mut().resolve_qualified_name_term("anthill.prelude.Pair.pair"));
     let facts = interp.call(
         "anthill.reflect.KB.facts_of",
         &[Value::Unit, pair_ref],
@@ -97,13 +97,13 @@ end
                         .find(|(s, _)| interp.kb().resolve_sym(*s) == "tail")
                         .map(|(_, v)| v.clone());
                     match (h, t) {
-                        (Some(Value::Term(tid)), Some(tail)) => {
+                        (Some(Value::Term { id: tid, .. }), Some(tail)) => {
                             if let Term::Fn { named_args, .. } = interp.kb().get_term(tid) {
                                 let is_user_fact = named_args.iter().any(|(s, t)| {
                                     interp.kb().resolve_sym(*s) == "fst" &&
                                     matches!(interp.kb().get_term(*t), Term::Const(Literal::Int(_)))
                                 });
-                                if is_user_fact { found = Some(Value::Term(tid)); break; }
+                                if is_user_fact { found = Some(Value::term(tid)); break; }
                             }
                             cur = tail;
                         }
@@ -123,7 +123,7 @@ end
     ).expect("replace_named_arg");
 
     let new_term_id = match result {
-        Value::Term(tid) => tid,
+        Value::Term { id: tid, .. } => tid,
         other => panic!("expected Term, got {other:?}"),
     };
 

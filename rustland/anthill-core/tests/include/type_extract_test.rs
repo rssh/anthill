@@ -37,7 +37,7 @@ fn extract_sort_ref_reifies_sortref() {
     let mut interp = Interpreter::new(kb);
     register_standard_builtins(&mut interp).expect("register builtins");
     let r = interp
-        .call("anthill.reflect.extract", &[Value::Term(ty)])
+        .call("anthill.reflect.extract", &[Value::term(ty)])
         .expect("extract should evaluate");
 
     assert_eq!(
@@ -73,7 +73,7 @@ fn extract_parameterized_reifies_parameterized_with_typebinding() {
     let mut interp = Interpreter::new(kb);
     register_standard_builtins(&mut interp).expect("register builtins");
     let r = interp
-        .call("anthill.reflect.extract", &[Value::Term(ty)])
+        .call("anthill.reflect.extract", &[Value::term(ty)])
         .expect("extract should evaluate");
 
     assert_eq!(
@@ -112,7 +112,7 @@ fn extract_term_backed_ref_reifies_sortref() {
     let mut interp = Interpreter::new(kb);
     register_standard_builtins(&mut interp).expect("register builtins");
     let r = interp
-        .call("anthill.reflect.extract", &[Value::Term(ty)])
+        .call("anthill.reflect.extract", &[Value::term(ty)])
         .expect("extract should evaluate");
 
     assert_eq!(
@@ -122,7 +122,7 @@ fn extract_term_backed_ref_reifies_sortref() {
     );
     let name = field(&r, name_key).expect("SortRef.name");
     assert!(
-        matches!(name, Value::Term(t) if matches!(interp.kb().get_term(*t), Term::Ref(s) if *s == int_sym)),
+        matches!(name, Value::Term { id: t, .. } if matches!(interp.kb().get_term(*t), Term::Ref(s) if *s == int_sym)),
         "SortRef.name should be Ref(Int64), got {name:?}"
     );
 }
@@ -158,7 +158,7 @@ fn extract_term_backed_fn_reifies_parameterized() {
     let mut interp = Interpreter::new(kb);
     register_standard_builtins(&mut interp).expect("register builtins");
     let r = interp
-        .call("anthill.reflect.extract", &[Value::Term(ty)])
+        .call("anthill.reflect.extract", &[Value::term(ty)])
         .expect("extract should evaluate");
 
     assert_eq!(
@@ -169,7 +169,7 @@ fn extract_term_backed_fn_reifies_parameterized() {
     // base is `Ref(List)` — the functor lifted to the base-sort field.
     let base = field(&r, base_key).expect("Parameterized.base");
     assert!(
-        matches!(base, Value::Term(t) if matches!(interp.kb().get_term(*t), Term::Ref(s) if *s == list_sym)),
+        matches!(base, Value::Term { id: t, .. } if matches!(interp.kb().get_term(*t), Term::Ref(s) if *s == list_sym)),
         "Parameterized.base should be Ref(List), got {base:?}"
     );
     // bindings is a non-empty cons list whose head is a re-wrapped TypeBinding.
@@ -204,7 +204,7 @@ fn extract_non_type_reifies_error() {
     let mut interp = Interpreter::new(kb);
     register_standard_builtins(&mut interp).expect("register builtins");
     let r = interp
-        .call("anthill.reflect.extract", &[Value::Term(non_type)])
+        .call("anthill.reflect.extract", &[Value::term(non_type)])
         .expect("extract should evaluate (total)");
 
     assert_eq!(

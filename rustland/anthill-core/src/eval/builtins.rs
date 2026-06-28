@@ -166,7 +166,7 @@ fn reflect_field_access(interp: &mut Interpreter, args: &[Value]) -> Result<Valu
             "field_access: field name must be a string, got {}", other.type_name()))),
     };
     match &receiver {
-        Value::Entity { functor, pos, named } => {
+        Value::Entity { functor, pos, named, .. } => {
             // A field supplied by NAME — match by short name.
             for (sym, val) in named.iter() {
                 let full = interp.kb().resolve_sym(*sym);
@@ -517,11 +517,13 @@ fn bigint_to_int(interp: &mut Interpreter, args: &[Value]) -> Result<Value, Eval
             functor: some_sym,
             pos: Vec::new().into(),
             named: vec![(value_key, Value::Int(i))].into(),
+            ty: None,
         },
         Err(_) => Value::Entity {
             functor: none_sym,
             pos: Vec::new().into(),
             named: Vec::new().into(),
+            ty: None,
         },
     })
 }
@@ -709,6 +711,7 @@ fn logical_stream_split_first(
             functor: none_sym,
             pos: Vec::new().into(),
             named: Vec::new().into(),
+            ty: None,
         }),
         Some((value, rest)) => {
             let pair_sym = require_symbol(interp, "anthill.prelude.Pair.pair", "pair")?;
@@ -719,11 +722,13 @@ fn logical_stream_split_first(
                 functor: pair_sym,
                 pos: Vec::new().into(),
                 named: vec![(fst_key, value), (snd_key, Value::Stream(rest))].into(),
+                ty: None,
             };
             Ok(Value::Entity {
                 functor: some_sym,
                 pos: Vec::new().into(),
                 named: vec![(value_key, pair_value)].into(),
+                ty: None,
             })
         }
     }
@@ -742,7 +747,7 @@ fn logical_stream_split_first(
 fn kb_ambient(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     expect_args::<0>("KB.kb", args)?;
     let functor = require_symbol(interp, "anthill.reflect.KB.kb", "kb")?;
-    Ok(Value::Entity { functor, pos: Vec::new().into(), named: Vec::new().into() })
+    Ok(Value::Entity { functor, pos: Vec::new().into(), named: Vec::new().into(), ty: None })
 }
 
 /// `KB.execute(kb: KB, q: LogicalQuery) -> Stream[Solution]` (WI-531; each
@@ -771,7 +776,7 @@ fn term_functor_name(interp: &mut Interpreter, args: &[Value]) -> Result<Value, 
     let value_key = interp.kb.intern("value");
 
     let name: Option<String> = match &arg {
-        Value::Term(tid) => match interp.kb.get_term(*tid) {
+        Value::Term { id: tid, .. } => match interp.kb.get_term(*tid) {
             crate::kb::term::Term::Fn { functor, .. } => {
                 Some(interp.kb.resolve_sym(*functor).to_string())
             }
@@ -789,11 +794,13 @@ fn term_functor_name(interp: &mut Interpreter, args: &[Value]) -> Result<Value, 
             functor: some_sym,
             pos: Vec::new().into(),
             named: vec![(value_key, Value::Str(s))].into(),
+            ty: None,
         },
         None => Value::Entity {
             functor: none_sym,
             pos: Vec::new().into(),
             named: Vec::new().into(),
+            ty: None,
         },
     })
 }
@@ -829,7 +836,7 @@ fn extract_type_builtin(interp: &mut Interpreter, args: &[Value]) -> Result<Valu
     let member_key = interp.kb.intern("member");
 
     // A `Symbol` as the `Ref(s)` term the deep field forms carry.
-    let sym_ref = |interp: &mut Interpreter, s| Value::Term(interp.kb.alloc(Term::Ref(s)));
+    let sym_ref = |interp: &mut Interpreter, s| Value::term(interp.kb.alloc(Term::Ref(s)));
 
     match classified {
         TypeExtractor::SortRef(s) => {
@@ -894,7 +901,7 @@ fn ti_entity(
 ) -> Result<Value, EvalError> {
     let qname = format!("anthill.prelude.TypeExtractor.{}", short);
     let functor = require_symbol(interp, &qname, short)?;
-    Ok(Value::Entity { functor, pos: Vec::new().into(), named: fields.into() })
+    Ok(Value::Entity { functor, pos: Vec::new().into(), named: fields.into(), ty: None })
 }
 
 /// Build a standalone `TypeExtractor` helper record (`anthill.prelude.<short>` —
@@ -906,7 +913,7 @@ fn ti_record(
 ) -> Result<Value, EvalError> {
     let qname = format!("anthill.prelude.{}", short);
     let functor = require_symbol(interp, &qname, short)?;
-    Ok(Value::Entity { functor, pos: Vec::new().into(), named: fields.into() })
+    Ok(Value::Entity { functor, pos: Vec::new().into(), named: fields.into(), ty: None })
 }
 
 /// Build a value list of standalone `key1`/`key2` records (`TypeBinding` /
@@ -924,7 +931,7 @@ fn ti_build_records(
     use crate::kb::term::Term;
     let mut out: Vec<Value> = Vec::with_capacity(items.len());
     for (sym, val) in items {
-        let sym_val = Value::Term(interp.kb.alloc(Term::Ref(sym)));
+        let sym_val = Value::term(interp.kb.alloc(Term::Ref(sym)));
         out.push(ti_record(interp, ctor, vec![(key1, sym_val), (key2, val)])?);
     }
     build_value_list(interp, out)
@@ -936,12 +943,13 @@ fn build_value_list(interp: &mut Interpreter, elems: Vec<Value>) -> Result<Value
     let nil_sym = require_symbol(interp, "anthill.prelude.List.nil", "nil")?;
     let head_key = interp.kb.intern("head");
     let tail_key = interp.kb.intern("tail");
-    let mut list = Value::Entity { functor: nil_sym, pos: Vec::new().into(), named: Vec::new().into() };
+    let mut list = Value::Entity { functor: nil_sym, pos: Vec::new().into(), named: Vec::new().into(), ty: None };
     for elem in elems.into_iter().rev() {
         list = Value::Entity {
             functor: cons_sym,
             pos: Vec::new().into(),
             named: vec![(head_key, elem), (tail_key, list)].into(),
+            ty: None,
         };
     }
     Ok(list)
@@ -955,7 +963,7 @@ fn build_value_list(interp: &mut Interpreter, elems: Vec<Value>) -> Result<Value
 fn term_field(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [term_arg, name_arg] = expect_args::<2>("term_field", args)?;
     let tid = match &term_arg {
-        Value::Term(t) => *t,
+        Value::Term { id: t, .. } => *t,
         other => return Err(type_mismatch("Term", other, None)),
     };
     let name = match &name_arg {
@@ -980,12 +988,14 @@ fn term_field(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalErr
         Some(field_tid) => Value::Entity {
             functor: some_sym,
             pos: Vec::new().into(),
-            named: vec![(value_key, Value::Term(field_tid))].into(),
+            named: vec![(value_key, Value::term(field_tid))].into(),
+            ty: None,
         },
         None => Value::Entity {
             functor: none_sym,
             pos: Vec::new().into(),
             named: Vec::new().into(),
+            ty: None,
         },
     })
 }
@@ -997,7 +1007,7 @@ fn term_field(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalErr
 fn reflect_term_to_string(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [v] = expect_args::<1>("term_to_string", args)?;
     let tid = match &v {
-        Value::Term(tid) => *tid,
+        Value::Term { id: tid, .. } => *tid,
         other => interp
             .kb
             .alloc_from_value(other)
@@ -1017,7 +1027,7 @@ fn reflect_term_to_string(interp: &mut Interpreter, args: &[Value]) -> Result<Va
 fn reflect_term_list_items(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [v] = expect_args::<1>("term_list_items", args)?;
     let tid = match &v {
-        Value::Term(t) => *t,
+        Value::Term { id: t, .. } => *t,
         other => interp
             .kb
             .alloc_from_value(other)
@@ -1028,7 +1038,7 @@ fn reflect_term_list_items(interp: &mut Interpreter, args: &[Value]) -> Result<V
         .unwrap_list_spine(tid)
         .unwrap_or_default()
         .into_iter()
-        .map(Value::Term)
+        .map(Value::term)
         .collect();
     interp
         .build_list_value(items, &[])
@@ -1046,7 +1056,7 @@ fn term_as_string(interp: &mut Interpreter, args: &[Value]) -> Result<Value, Eva
     let value_key = interp.kb.intern("value");
 
     let s: Option<String> = match &arg {
-        Value::Term(tid) => match interp.kb.get_term(*tid) {
+        Value::Term { id: tid, .. } => match interp.kb.get_term(*tid) {
             crate::kb::term::Term::Const(crate::kb::term::Literal::String(s)) => {
                 Some(s.clone())
             }
@@ -1061,11 +1071,13 @@ fn term_as_string(interp: &mut Interpreter, args: &[Value]) -> Result<Value, Eva
             functor: some_sym,
             pos: Vec::new().into(),
             named: vec![(value_key, Value::Str(v))].into(),
+            ty: None,
         },
         None => Value::Entity {
             functor: none_sym,
             pos: Vec::new().into(),
             named: Vec::new().into(),
+            ty: None,
         },
     })
 }
@@ -1087,7 +1099,7 @@ fn term_as_entity(interp: &mut Interpreter, args: &[Value]) -> Result<Value, Eva
     let value_key = interp.kb.intern("value");
 
     let materialized: Option<Value> = match arg {
-        Value::Term(tid) => materialize_entity(interp, tid),
+        Value::Term { id: tid, .. } => materialize_entity(interp, tid),
         Value::Entity { .. } => Some(arg),
         other => return Err(type_mismatch("Term", &other, None)),
     };
@@ -1097,11 +1109,13 @@ fn term_as_entity(interp: &mut Interpreter, args: &[Value]) -> Result<Value, Eva
             functor: some_sym,
             pos: Vec::new().into(),
             named: vec![(value_key, value)].into(),
+            ty: None,
         },
         None => Value::Entity {
             functor: none_sym,
             pos: Vec::new().into(),
             named: Vec::new().into(),
+            ty: None,
         },
     })
 }
@@ -1199,6 +1213,7 @@ fn materialize_entity(interp: &mut Interpreter, tid: crate::kb::term::TermId) ->
                     functor: none_sym,
                     pos: Vec::new().into(),
                     named: Vec::new().into(),
+                    ty: None,
                 }));
             }
             Some(tid) => named.push((*fname, term_to_value(interp, tid))),
@@ -1207,13 +1222,14 @@ fn materialize_entity(interp: &mut Interpreter, tid: crate::kb::term::TermId) ->
                     functor: none_sym,
                     pos: Vec::new().into(),
                     named: Vec::new().into(),
+                    ty: None,
                 }));
             }
             None => return None,
         }
     }
 
-    Some(Value::Entity { functor: canonical, pos: Vec::new().into(), named: named.into() })
+    Some(Value::Entity { functor: canonical, pos: Vec::new().into(), named: named.into(), ty: None })
 }
 
 fn term_to_value(interp: &mut Interpreter, tid: crate::kb::term::TermId) -> Value {
@@ -1243,23 +1259,23 @@ fn term_to_value(interp: &mut Interpreter, tid: crate::kb::term::TermId) -> Valu
         Decision::Literal(Literal::Float(f)) => Value::Float(f.into_inner()),
         Decision::Literal(Literal::Bool(b)) => Value::Bool(b),
         Decision::Literal(Literal::String(s)) => Value::Str(s),
-        Decision::Literal(Literal::Handle(_, _)) => Value::Term(tid),
+        Decision::Literal(Literal::Handle(_, _)) => Value::term(tid),
         Decision::TryFn(functor) => {
             if interp.kb.constructor_parent_sort(functor).is_some() {
-                materialize_entity(interp, tid).unwrap_or(Value::Term(tid))
+                materialize_entity(interp, tid).unwrap_or(Value::term(tid))
             } else {
-                Value::Term(tid)
+                Value::term(tid)
             }
         }
         Decision::TryRef(sym) => {
             if interp.kb.constructor_parent_sort(sym).is_some() {
-                Value::Entity { functor: sym, pos: Vec::new().into(), named: Vec::new().into() }
+                Value::Entity { functor: sym, pos: Vec::new().into(), named: Vec::new().into(), ty: None }
             } else {
-                Value::Term(tid)
+                Value::term(tid)
             }
         }
         Decision::Var(v) => Value::Var(v),
-        Decision::AsIs => Value::Term(tid),
+        Decision::AsIs => Value::term(tid),
     }
 }
 
@@ -1288,7 +1304,7 @@ fn reflect_fresh_var(interp: &mut Interpreter, args: &[Value]) -> Result<Value, 
     let tid = interp.kb.alloc(crate::kb::term::Term::Var(
         crate::kb::term::Var::Global(vid),
     ));
-    Ok(Value::Term(tid))
+    Ok(Value::term(tid))
 }
 
 /// `anthill.reflect.make_fn(name: String, args: List[Term]) -> Term`.
@@ -1325,7 +1341,7 @@ fn reflect_make_fn(interp: &mut Interpreter, args: &[Value]) -> Result<Value, Ev
     let mut cursor = args_arg.clone();
     loop {
         match cursor {
-            Value::Entity { functor, pos, named } => {
+            Value::Entity { functor, pos, named, .. } => {
                 if Some(functor) == nil_sym { break; }
                 if Some(functor) != cons_sym {
                     let n = interp.kb.resolve_sym(functor);
@@ -1356,7 +1372,7 @@ fn reflect_make_fn(interp: &mut Interpreter, args: &[Value]) -> Result<Value, Ev
                     )));
                 };
                 let tid = match head {
-                    Value::Term(t) => t,
+                    Value::Term { id: t, .. } => t,
                     other => return Err(type_mismatch("Term", &other, None)),
                 };
                 pos_vec.push(tid);
@@ -1372,7 +1388,7 @@ fn reflect_make_fn(interp: &mut Interpreter, args: &[Value]) -> Result<Value, Ev
         pos_args,
         named_args: smallvec::SmallVec::new(),
     });
-    Ok(Value::Term(tid))
+    Ok(Value::term(tid))
 }
 
 /// `anthill.reflect.find_fact(t: Term) -> Option[FactId]`.
@@ -1388,7 +1404,7 @@ fn reflect_find_fact(interp: &mut Interpreter, args: &[Value]) -> Result<Value, 
     use crate::kb::term::{HandleKind, Literal, Term};
     let [term_arg] = expect_args::<1>("find_fact", args)?;
     let target = match &term_arg {
-        Value::Term(t) => *t,
+        Value::Term { id: t, .. } => *t,
         other => return Err(type_mismatch("Term", other, None)),
     };
     let some_sym = require_symbol(interp, "anthill.prelude.Option.some", "some")?;
@@ -1406,7 +1422,7 @@ fn reflect_find_fact(interp: &mut Interpreter, args: &[Value]) -> Result<Value, 
             // equal the ground `target` — skip it (avoids the term-only
             // `rule_head` panic on a value head).
             .find(|rid| matches!(interp.kb.rule_head_value(*rid),
-                crate::eval::value::Value::Term(t) if *t == target))
+                crate::eval::value::Value::Term { id: t, .. } if *t == target))
     });
 
     match found {
@@ -1417,13 +1433,15 @@ fn reflect_find_fact(interp: &mut Interpreter, args: &[Value]) -> Result<Value, 
             Ok(Value::Entity {
                 functor: some_sym,
                 pos: Vec::new().into(),
-                named: vec![(value_key, Value::Term(handle))].into(),
+                named: vec![(value_key, Value::term(handle))].into(),
+                ty: None,
             })
         }
         None => Ok(Value::Entity {
             functor: none_sym,
             pos: Vec::new().into(),
             named: Vec::new().into(),
+            ty: None,
         }),
     }
 }
@@ -1442,7 +1460,7 @@ fn reflect_replace_named_arg(interp: &mut Interpreter, args: &[Value]) -> Result
     use crate::kb::term::Term;
     let [term_arg, name_arg, value_arg] = expect_args::<3>("replace_named_arg", args)?;
     let tid = match &term_arg {
-        Value::Term(t) => *t,
+        Value::Term { id: t, .. } => *t,
         other => return Err(type_mismatch("Term", other, None)),
     };
     let name = match &name_arg {
@@ -1464,7 +1482,7 @@ fn reflect_replace_named_arg(interp: &mut Interpreter, args: &[Value]) -> Result
         }
     }
     let new_term = interp.kb.alloc(Term::Fn { functor, pos_args, named_args });
-    Ok(Value::Term(new_term))
+    Ok(Value::term(new_term))
 }
 
 /// `anthill.prelude.Time.now() -> String`.
@@ -1562,11 +1580,13 @@ fn subst_lookup(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalE
             functor: some_sym,
             pos: Vec::new().into(),
             named: vec![(value_key, value)].into(),
+            ty: None,
         }),
         None => Ok(Value::Entity {
             functor: none_sym,
             pos: Vec::new().into(),
             named: Vec::new().into(),
+            ty: None,
         }),
     }
 }
@@ -1585,11 +1605,11 @@ fn reflect_unify(interp: &mut Interpreter, args: &[Value]) -> Result<Value, Eval
     // A reflect `Term` rides as `Value::Term(TermId)`; a non-`Term` carrier is a
     // type error here (loud, not a silent mismatch).
     let a = match &a_val {
-        Value::Term(t) => *t,
+        Value::Term { id: t, .. } => *t,
         _ => return Err(type_mismatch("Term", &a_val, None)),
     };
     let b = match &b_val {
-        Value::Term(t) => *t,
+        Value::Term { id: t, .. } => *t,
         _ => return Err(type_mismatch("Term", &b_val, None)),
     };
     let some_sym = require_symbol(interp, "anthill.prelude.Option.some", "some")?;
@@ -1602,12 +1622,14 @@ fn reflect_unify(interp: &mut Interpreter, args: &[Value]) -> Result<Value, Eval
                 functor: some_sym,
                 pos: Vec::new().into(),
                 named: vec![(value_key, Value::Substitution(handle))].into(),
+                ty: None,
             })
         }
         None => Ok(Value::Entity {
             functor: none_sym,
             pos: Vec::new().into(),
             named: Vec::new().into(),
+            ty: None,
         }),
     }
 }
@@ -1627,10 +1649,10 @@ fn reflect_unify(interp: &mut Interpreter, args: &[Value]) -> Result<Value, Eval
 /// Build an `Option[Term=V]` value with the given functor symbols. Helper for
 /// `get` to avoid repeating the some/none branch.
 fn option_some(some_sym: crate::intern::Symbol, value_key: crate::intern::Symbol, v: Value) -> Value {
-    Value::Entity { functor: some_sym, pos: Vec::new().into(), named: vec![(value_key, v)].into() }
+    Value::Entity { functor: some_sym, pos: Vec::new().into(), named: vec![(value_key, v)].into(), ty: None }
 }
 fn option_none(none_sym: crate::intern::Symbol) -> Value {
-    Value::Entity { functor: none_sym, pos: Vec::new().into(), named: Vec::new().into() }
+    Value::Entity { functor: none_sym, pos: Vec::new().into(), named: Vec::new().into(), ty: None }
 }
 
 fn unsupported_key(v: &Value) -> EvalError {
@@ -1751,6 +1773,7 @@ fn map_entries(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalEr
             functor: pair_sym,
             pos: Vec::new().into(),
             named: vec![(fst_key, k.to_value()), (snd_key, v.clone())].into(),
+            ty: None,
         }).collect()
     });
     interp.build_list_value(elements, &[])
@@ -1829,7 +1852,7 @@ fn persistence_persist(interp: &mut Interpreter, args: &[Value]) -> Result<Value
     let handle = interp.kb.alloc(crate::kb::term::Term::Const(
         crate::kb::term::Literal::Handle(crate::kb::term::HandleKind::Fact, rule_id.raw()),
     ));
-    Ok(Value::Term(handle))
+    Ok(Value::term(handle))
 }
 
 /// `anthill.persistence.Store.retract(store, fact_id) -> Bool`.
@@ -1841,7 +1864,7 @@ fn persistence_retract(interp: &mut Interpreter, args: &[Value]) -> Result<Value
     let key = interp.store_canonical_key(&store_val)?;
 
     let rule_raw = match &id_val {
-        Value::Term(tid) => match interp.kb.get_term(*tid) {
+        Value::Term { id: tid, .. } => match interp.kb.get_term(*tid) {
             crate::kb::term::Term::Const(crate::kb::term::Literal::Handle(
                 crate::kb::term::HandleKind::Fact,
                 raw,
@@ -1952,7 +1975,7 @@ fn persistence_retrieve(interp: &mut Interpreter, args: &[Value]) -> Result<Valu
 
     let mut iter = hits.into_iter();
     let source = StreamSource::Native(Box::new(move || {
-        iter.next().map(Value::Term)
+        iter.next().map(Value::term)
     }));
     let handle = interp.alloc_stream(source);
     Ok(Value::Stream(handle))
@@ -2014,16 +2037,16 @@ mod tests {
 
     #[test]
     fn eq_on_equal_tuples_is_true() {
-        let a = Value::Tuple { pos: vec![Value::Int(1)].into(), named: Vec::new().into() };
-        let b = Value::Tuple { pos: vec![Value::Int(1)].into(), named: Vec::new().into() };
+        let a = Value::Tuple { pos: vec![Value::Int(1)].into(), named: Vec::new().into(), ty: None };
+        let b = Value::Tuple { pos: vec![Value::Int(1)].into(), named: Vec::new().into(), ty: None };
         let r = builtin_eq(&mut dummy(), &[a, b]).unwrap();
         assert_eq!(r.as_bool(), Some(true));
     }
 
     #[test]
     fn eq_on_different_tuples_is_false() {
-        let a = Value::Tuple { pos: vec![Value::Int(1)].into(), named: Vec::new().into() };
-        let b = Value::Tuple { pos: vec![Value::Int(2)].into(), named: Vec::new().into() };
+        let a = Value::Tuple { pos: vec![Value::Int(1)].into(), named: Vec::new().into(), ty: None };
+        let b = Value::Tuple { pos: vec![Value::Int(2)].into(), named: Vec::new().into(), ty: None };
         let r = builtin_eq(&mut dummy(), &[a, b]).unwrap();
         assert_eq!(r.as_bool(), Some(false));
     }
@@ -2034,6 +2057,7 @@ mod tests {
             functor: Symbol::from_raw(7),
             pos: vec![Value::Int(10), Value::Str("x".into())].into(),
             named: vec![(Symbol::from_raw(8), Value::Bool(true))].into(),
+            ty: None,
         };
         let r = builtin_eq(&mut dummy(), &[mk(), mk()]).unwrap();
         assert_eq!(r.as_bool(), Some(true));
@@ -2045,11 +2069,13 @@ mod tests {
             functor: Symbol::from_raw(7),
             pos: vec![Value::Int(1)].into(),
             named: vec![].into(),
+            ty: None,
         };
         let b = Value::Entity {
             functor: Symbol::from_raw(8),
             pos: vec![Value::Int(1)].into(),
             named: vec![].into(),
+            ty: None,
         };
         let r = builtin_eq(&mut dummy(), &[a, b]).unwrap();
         assert_eq!(r.as_bool(), Some(false));

@@ -165,7 +165,7 @@ fn head_field<'a>(kb: &'a KnowledgeBase, head: &'a Value, key: &str) -> Option<V
 pub fn head_field_term(kb: &KnowledgeBase, head: &Value, key: &str) -> Option<TermId> {
     match head_field(kb, head, key)? {
         ViewItem::Term(t) => Some(t),
-        ViewItem::Value(Value::Term(t)) => Some(*t),
+        ViewItem::Value(Value::Term { id: t, .. }) => Some(*t),
         _ => None,
     }
 }
@@ -176,7 +176,7 @@ pub fn head_field_term(kb: &KnowledgeBase, head: &Value, key: &str) -> Option<Te
 /// verbatim (occurrence preserved, never materialized to a term). WI-341 Stage A.
 pub fn head_field_value(kb: &KnowledgeBase, head: &Value, key: &str) -> Option<Value> {
     Some(match head_field(kb, head, key)? {
-        ViewItem::Term(t) => Value::Term(t),
+        ViewItem::Term(t) => Value::term(t),
         ViewItem::Value(v) => v.clone(),
         ViewItem::Node(occ) => Value::Node(occ),
     })
@@ -191,9 +191,9 @@ pub fn head_field_value(kb: &KnowledgeBase, head: &Value, key: &str) -> Option<V
 /// `requires`/`ensures` carrier-faithfully (WI-548), matching the host bridge.
 pub fn clause_list_field(kb: &KnowledgeBase, head: &Value, key: &str) -> Vec<Value> {
     match head_field(kb, head, key) {
-        Some(ViewItem::Term(t)) => list_to_vec(kb, t).into_iter().map(Value::Term).collect(),
-        Some(ViewItem::Value(Value::Term(t))) => {
-            list_to_vec(kb, *t).into_iter().map(Value::Term).collect()
+        Some(ViewItem::Term(t)) => list_to_vec(kb, t).into_iter().map(Value::term).collect(),
+        Some(ViewItem::Value(Value::Term { id: t, .. })) => {
+            list_to_vec(kb, *t).into_iter().map(Value::term).collect()
         }
         Some(ViewItem::Value(v)) => value_list_to_vec(kb, v),
         _ => Vec::new(),
@@ -218,9 +218,9 @@ pub fn head_name_ref(kb: &KnowledgeBase, head: &Value) -> Option<Symbol> {
 /// builtins (`KB.operations`) read effects carrier-faithfully (WI-348).
 pub fn effects_of_head(kb: &KnowledgeBase, head: &Value) -> Vec<Value> {
     match head_field(kb, head, "effects") {
-        Some(ViewItem::Term(t)) => list_to_vec(kb, t).into_iter().map(Value::Term).collect(),
-        Some(ViewItem::Value(Value::Term(t))) => {
-            list_to_vec(kb, *t).into_iter().map(Value::Term).collect()
+        Some(ViewItem::Term(t)) => list_to_vec(kb, t).into_iter().map(Value::term).collect(),
+        Some(ViewItem::Value(Value::Term { id: t, .. })) => {
+            list_to_vec(kb, *t).into_iter().map(Value::term).collect()
         }
         Some(ViewItem::Value(v)) => value_list_to_vec(kb, v),
         _ => Vec::new(),
@@ -249,8 +249,8 @@ pub(crate) fn value_list_to_vec(kb: &KnowledgeBase, mut v: &Value) -> Vec<Value>
                     _ => break,
                 }
             }
-            Value::Term(t) => {
-                out.extend(list_to_vec(kb, *t).into_iter().map(Value::Term));
+            Value::Term { id: t, .. } => {
+                out.extend(list_to_vec(kb, *t).into_iter().map(Value::term));
                 break;
             }
             _ => break, // nil cell, or a shape that is not a cons list
@@ -283,9 +283,9 @@ fn extract_type_params(kb: &KnowledgeBase, tp_tid: Option<TermId>) -> Vec<(Symbo
 /// [`effects_of_head`] (WI-341 Stage A).
 fn extract_params(kb: &KnowledgeBase, params_field: Option<ViewItem>) -> Vec<(Symbol, Value)> {
     let items: Vec<Value> = match params_field {
-        Some(ViewItem::Term(t)) => list_to_vec(kb, t).into_iter().map(Value::Term).collect(),
-        Some(ViewItem::Value(Value::Term(t))) => {
-            list_to_vec(kb, *t).into_iter().map(Value::Term).collect()
+        Some(ViewItem::Term(t)) => list_to_vec(kb, t).into_iter().map(Value::term).collect(),
+        Some(ViewItem::Value(Value::Term { id: t, .. })) => {
+            list_to_vec(kb, *t).into_iter().map(Value::term).collect()
         }
         Some(ViewItem::Value(v)) => value_list_to_vec(kb, v),
         _ => return Vec::new(),

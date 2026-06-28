@@ -146,17 +146,17 @@ fn constructor_sub_values(
     scrutinee: &Value,
 ) -> Option<Vec<Value>> {
     match scrutinee {
-        Value::Entity { functor, pos, named } => {
+        Value::Entity { functor, pos, named, .. } => {
             if !functor_matches(kb, expected, *functor) { return None; }
             let mut all: Vec<Value> = pos.to_vec();
             all.extend(named.iter().map(|(_, v)| v.clone()));
             Some(all)
         }
-        Value::Term(tid) => match kb.get_term(*tid) {
+        Value::Term { id: tid, .. } => match kb.get_term(*tid) {
             Term::Fn { functor, pos_args, named_args } => {
                 if !functor_matches(kb, expected, *functor) { return None; }
-                let mut all: Vec<Value> = pos_args.iter().map(|t| Value::Term(*t)).collect();
-                all.extend(named_args.iter().map(|(_, t)| Value::Term(*t)));
+                let mut all: Vec<Value> = pos_args.iter().map(|t| Value::term(*t)).collect();
+                all.extend(named_args.iter().map(|(_, t)| Value::term(*t)));
                 Some(all)
             }
             // A 0-arg constructor stored as `Term::Ref` (WI-436/WI-511: the

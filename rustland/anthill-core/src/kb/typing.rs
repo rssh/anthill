@@ -1057,14 +1057,14 @@ fn pattern_match_value(
 ) -> Option<Value> {
     match pattern.as_pattern()? {
         Pattern::Wildcard => None,
-        Pattern::Literal { value } => Some(Value::Term(kb.alloc(Term::Const(value.clone())))),
+        Pattern::Literal { value } => Some(Value::term(kb.alloc(Term::Const(value.clone())))),
         Pattern::Var { name, .. } => {
             // `case red` (nullary ctor) → its CANONICAL `Ref` (the scrutinee-set
             // symbol, not the bare loaded `*name`, so it `Ref`-matches a resolved
             // reference). A binding `case x` → the binder's `var_ref(x)` twin, but
             // ONLY in `admit_binders` mode; for a negation it has no ground value.
             match pattern_var_ctor_sym(kb, *name, scrutinee_ctors) {
-                Some(ctor) => Some(Value::Term(kb.alloc(Term::Ref(ctor)))),
+                Some(ctor) => Some(Value::term(kb.alloc(Term::Ref(ctor)))),
                 None => admit_binders
                     .then(|| binder_ref_value(*name, pattern.span, pattern.owner)),
             }
@@ -1088,9 +1088,9 @@ fn pattern_match_value(
             // normalizes to the canonical `Ref` form (WI-436: Ref(c) ≡ nullary
             // Fn{c}) so it matches a nullary ctor written elsewhere.
             Some(if pos.is_empty() && named.is_empty() {
-                Value::Term(kb.alloc(Term::Ref(name)))
+                Value::term(kb.alloc(Term::Ref(name)))
             } else {
-                Value::Entity { functor: name, pos: Rc::from(pos), named: Rc::from(named) }
+                Value::Entity { functor: name, pos: Rc::from(pos), named: Rc::from(named), ty: None }
             })
         }
         Pattern::Tuple { .. } => None,
@@ -1213,7 +1213,7 @@ impl TypeResult {
     /// unchanged. A producer of a `Value`-carried type (the LambdaBody Node
     /// arrow) builds `TypeResult { ty: <Value>, .. }` directly.
     pub fn pure(ty: TermId, env: TypingEnv, node: Rc<NodeOccurrence>) -> Self {
-        Self { ty: Value::Term(ty), env, effects: Vec::new(), node }
+        Self { ty: Value::term(ty), env, effects: Vec::new(), node }
     }
 
     /// Pure result whose type is already carrier-agnostic (`Value`) — e.g. a
@@ -1281,7 +1281,7 @@ fn effect_binding_resource<V: TermView>(kb: &KnowledgeBase, v: &V) -> Option<Sym
 /// it defensively so we don't panic.
 fn value_to_type_child(kb: &mut KnowledgeBase, v: &Value) -> TypeChild {
     match v {
-        Value::Term(t) => TypeChild::Ground(*t),
+        Value::Term { id: t, .. } => TypeChild::Ground(*t),
         Value::Node(occ) => TypeChild::Node(Rc::clone(occ)),
         other => {
             // A scalar/`Var`/`Entity` is a typer bug here (types are `Term`/`Node`);
@@ -1327,7 +1327,7 @@ fn parameterized_value(
         for (s, v) in bindings {
             terms.push((*s, v.expect_term()));
         }
-        Value::Term(kb.make_parameterized_type(base, &terms))
+        Value::term(kb.make_parameterized_type(base, &terms))
     }
 }
 
@@ -1356,7 +1356,7 @@ fn named_tuple_value(
         for (s, v) in fields {
             terms.push((*s, v.expect_term()));
         }
-        Value::Term(kb.make_named_tuple_type(&terms))
+        Value::term(kb.make_named_tuple_type(&terms))
     }
 }
 
@@ -1430,7 +1430,7 @@ fn make_arrow_value(
         // inferred `body_effects` never carry pre-built `present`/`absent` atoms,
         // so no atom-preservation arm is needed, unlike the loader's row lowering.)
         let atom = match label {
-            Value::Term(t) if kb.row_tail_var_of(*t).is_some() => {
+            Value::Term { id: t, .. } if kb.row_tail_var_of(*t).is_some() => {
                 let tail = kb.row_tail_var_of(*t).expect("checked is_some");
                 kb.make_open_occ(TypeChild::Ground(tail), span, owner)
             }
@@ -1512,7 +1512,7 @@ fn substitute_ref_syms_value(
     map: &HashMap<Symbol, Symbol>,
 ) -> Value {
     match e {
-        Value::Term(t) => Value::Term(substitute_ref_syms(kb, *t, map)),
+        Value::Term { id: t, .. } => Value::term(substitute_ref_syms(kb, *t, map)),
         // WI-342 E2: re-key the `Ref` spine of a `Value::Node` label (a callee's
         // `Modify[c]` → the caller's `Modify[s]`) via the occurrence rewriter.
         Value::Node(occ) => {
@@ -1548,7 +1548,7 @@ fn walk_type_deep_value_g(
     ground: bool,
 ) -> Value {
     match e {
-        Value::Term(t) => Value::Term(walk_type_deep_g(kb, subst, *t, ground)),
+        Value::Term { id: t, .. } => Value::term(walk_type_deep_g(kb, subst, *t, ground)),
         // WI-441: a NODE-carried type DOES carry type-param vars — a callback
         // arrow's effect-row tail (`@ {EffP, -Modify[x]}`) is a GROUND child
         // Var inside the occurrence tree. The old "Nodes carry Refs, not
@@ -1689,12 +1689,12 @@ fn walk_type_value(kb: &KnowledgeBase, subst: &Substitution, ty: &Value) -> Valu
     let mut visited: SmallVec<[VarId; 4]> = SmallVec::new();
     loop {
         let t = match &cur {
-            Value::Term(t) => *t,
+            Value::Term { id: t, .. } => *t,
             _ => return cur,
         };
         let vid = match kb.get_term(t) {
             Term::Var(Var::Global(vid)) => *vid,
-            _ => return Value::Term(walk_type(kb, subst, t)),
+            _ => return Value::term(walk_type(kb, subst, t)),
         };
         if visited.contains(&vid) {
             return cur;
@@ -1704,7 +1704,7 @@ fn walk_type_value(kb: &KnowledgeBase, subst: &Substitution, ty: &Value) -> Valu
                 visited.push(vid);
                 cur = bound.clone();
             }
-            None => return Value::Term(walk_type(kb, subst, t)),
+            None => return Value::term(walk_type(kb, subst, t)),
         }
     }
 }
@@ -1733,7 +1733,7 @@ fn walk_pattern_field_type_deep(
     let mut cur = ty.clone();
     let mut visited: SmallVec<[VarId; 4]> = SmallVec::new();
     loop {
-        let Value::Term(t) = &cur else { break };
+        let Value::Term { id: t, .. } = &cur else { break };
         let Term::Var(Var::Global(vid)) = kb.get_term(*t) else { break };
         let vid = *vid;
         if visited.contains(&vid) {
@@ -1760,7 +1760,7 @@ fn walk_pattern_field_type_deep(
 /// occurrence pretty-printing is out of scope).
 fn type_display_name_value(kb: &KnowledgeBase, v: &Value) -> String {
     match v {
-        Value::Term(t) => type_display_name(kb, *t),
+        Value::Term { id: t, .. } => type_display_name(kb, *t),
         // WI-342 E2: render a `Value::Node` label to the SAME string
         // `type_display_name` produces for the equivalent term (see
         // [`type_display_name_occ`]) — the op-boundary check compares declared
@@ -2779,7 +2779,7 @@ fn nested_call_arg_hint(
         NodeKind::Expr { expr: Expr::Apply { .. }, .. }
     );
     let pins_by_equality = resolved_type_is_ground(kb, pt)
-        && !matches!(pt, Value::Term(t) if type_term_mentions_type_var(kb, *t));
+        && !matches!(pt, Value::Term { id: t, .. } if type_term_mentions_type_var(kb, *t));
     if is_call_arg && pins_by_equality {
         Some(pt.clone())
     } else {
@@ -3313,7 +3313,7 @@ fn visit_type(
             // `unwrap_option`-of-the-`type_ann`-field path). The grammar's
             // `pattern_var` doesn't surface one today, so this is normally None.
             let ann_type: Option<Value> = extract_pattern_type_ann(&param).map(|ann_occ| {
-                Value::Term(super::node_occurrence::occurrence_to_term(kb, ann_occ))
+                Value::term(super::node_occurrence::occurrence_to_term(kb, ann_occ))
             });
             let param_type: Value = ann_type
                 .or_else(|| {
@@ -3322,7 +3322,7 @@ fn visit_type(
                 })
                 .unwrap_or_else(|| {
                     let fresh = kb.intern("?param");
-                    Value::Term(kb.make_type_var(fresh))
+                    Value::term(kb.make_type_var(fresh))
                 });
             let mut lambda_env = (*env).clone();
             extend_env_from_pattern(kb, &mut lambda_env, &param, Some(param_type.clone()));
@@ -3750,7 +3750,7 @@ fn visit_type(
             };
             let ty = bound.unwrap_or_else(|| {
                 let fresh = kb.intern("?logical_var");
-                Value::Term(kb.make_type_var(fresh))
+                Value::term(kb.make_type_var(fresh))
             });
             results.push(Ok(TypeResult::pure_value(ty, unwrap_env(env), Rc::clone(&occ))));
         }
@@ -4657,7 +4657,7 @@ fn build_type(
             // slot and the body's view of the param agree.
             let body_ty: Value = body_r.as_ref().ok().map(|r| r.ty.clone()).unwrap_or_else(|| {
                 let fresh = kb.intern("?result");
-                Value::Term(kb.make_type_var(fresh))
+                Value::term(kb.make_type_var(fresh))
             });
             let body_effects = body_r
                 .as_ref()
@@ -4787,7 +4787,7 @@ fn build_type(
             }
             let t_val = element_type.unwrap_or_else(|| {
                 let fresh = kb.intern("?T");
-                Value::Term(kb.make_type_var(fresh))
+                Value::term(kb.make_type_var(fresh))
             });
             // WI-393: the QUALIFIED sort name. A bare `"List"` interns a symbol
             // whose qualified name is `"List"`, which `canonical_sort_sym` (keyed
@@ -4822,7 +4822,7 @@ fn build_type(
             }
             let t_val = element_type.unwrap_or_else(|| {
                 let fresh = kb.intern("?T");
-                Value::Term(kb.make_type_var(fresh))
+                Value::term(kb.make_type_var(fresh))
             });
             // WI-393: QUALIFIED, like the `ListLit` frame and the `SetLiteral`
             // constructor path — a bare `"Set"` never canonicalizes for the
@@ -6337,7 +6337,7 @@ fn check_apply_iter(
                             };
                             let is_abstract = match subst.resolve_as_value(vid) {
                                 None => true,
-                                Some(Value::Term(bound)) => is_type_param_value(kb, *bound),
+                                Some(Value::Term { id: bound, .. }) => is_type_param_value(kb, *bound),
                                 // A non-`Term` carrier (a denoted `Value::Node`
                                 // / value-in-type param, WI-302) can't be
                                 // introspected for type-param-ness here, so —
@@ -6585,7 +6585,7 @@ fn check_apply_iter(
     let _ = pos_args;
     let _ = named_args;
     lookup_operation_return_type(kb, fn_sym)
-        .map(|ty| TypeResult { ty: Value::Term(ty), env: env.clone(), effects, node: Rc::clone(occ) })
+        .map(|ty| TypeResult { ty: Value::term(ty), env: env.clone(), effects, node: Rc::clone(occ) })
         .ok_or(TypeError::UnknownApplyFunctor { span, name: fn_sym })
 }
 
@@ -6936,7 +6936,7 @@ fn resolve_param_value_via_subst(
         _ => return None,
     };
     match subst.resolve_as_value(vid) {
-        Some(Value::Term(val)) => {
+        Some(Value::Term { id: val, .. }) => {
             let val = *val;
             if is_type_param_value(kb, val) {
                 None
@@ -7256,7 +7256,7 @@ fn element_repr_var(
             return Some(vid);
         }
         match disambig.subst.resolve_as_value(vid) {
-            Some(Value::Term(t)) => cur = *t,
+            Some(Value::Term { id: t, .. }) => cur = *t,
             _ => return Some(canonical_global_var(kb, vid, disambig.sort_param_rigids)),
         }
     }
@@ -7990,7 +7990,7 @@ fn entry_matches_subst(
             // means defer — the impl is determined at runtime by the
             // requirement value the caller passed. Match this entry.
             None => continue,
-            Some(Value::Term(v)) => *v,
+            Some(Value::Term { id: v, .. }) => *v,
             // A denoted `Value::Node` param: matching it against the requires
             // entry needs the symmetric `TermId` match below to go
             // carrier-agnostic (WI-348 Phase C). Until then, conservatively
@@ -9225,7 +9225,7 @@ pub fn check_provider_operations(kb: &mut KnowledgeBase) -> Vec<super::load::Loa
     // it rejects guarded equations (`rule head(?s) = … :- …`), real definitions.
     let mut eq_defined: std::collections::HashSet<Symbol> = std::collections::HashSet::new();
     for rid in kb.live_rule_ids() {
-        let Value::Term(head) = *kb.rule_head_value(rid) else { continue };
+        let Value::Term { id: head, .. } = *kb.rule_head_value(rid) else { continue };
         if !super::load::is_equational_head(kb, head) { continue; }
         if let Term::Fn { pos_args, .. } = kb.get_term(head) {
             if let Some(&lhs) = pos_args.first() {
@@ -9853,7 +9853,7 @@ pub fn check_override_refinement(kb: &mut KnowledgeBase) -> Vec<super::load::Loa
                 .map(|se| sigma_subst_effect(kb, se, &p.sigma))
                 .collect();
             let ground = |kb: &KnowledgeBase, e: &Value|
-                matches!(e, Value::Term(t) if !contains_type_param(kb, *t));
+                matches!(e, Value::Term { id: t, .. } if !contains_type_param(kb, *t));
             let confident = impl_info.effects.iter().all(|e| ground(kb, e))
                 && spec_effs.iter().all(|e| ground(kb, e));
             if confident {
@@ -10082,8 +10082,8 @@ fn instance_binding_type_ok(
     sigma: &[(Symbol, TermId)],
     bound_is_subtype: bool,
 ) -> Option<bool> {
-    let Value::Term(spec_t) = spec_ty else { return None };
-    let Value::Term(bound_t) = bound_ty else { return None };
+    let Value::Term { id: spec_t, .. } = spec_ty else { return None };
+    let Value::Term { id: bound_t, .. } = bound_ty else { return None };
     let spec_sub = if sigma.is_empty() {
         *spec_t
     } else {
@@ -10093,8 +10093,8 @@ fn instance_binding_type_ok(
     if contains_type_param(kb, spec_sub) || contains_type_param(kb, *bound_t) {
         return None;
     }
-    let spec_v = Value::Term(spec_sub);
-    let bound_v = Value::Term(*bound_t);
+    let spec_v = Value::term(spec_sub);
+    let bound_v = Value::term(*bound_t);
     let mut subst = Substitution::new();
     Some(if bound_is_subtype {
         types_compatible(kb, &mut subst, &bound_v, &spec_v)
@@ -10133,7 +10133,7 @@ fn is_effects_runtime_clause(kb: &KnowledgeBase, clause: &Value) -> bool {
 /// recognized as covered, never falsely accepted).
 fn substitute_clause(kb: &mut KnowledgeBase, clause: &Value, subst: &[(Symbol, TermId)]) -> Value {
     match clause {
-        Value::Term(t) => Value::Term(substitute_impl_params_alloc(kb, *t, subst)),
+        Value::Term { id: t, .. } => Value::term(substitute_impl_params_alloc(kb, *t, subst)),
         other => other.clone(),
     }
 }
@@ -10146,7 +10146,7 @@ fn substitute_clause(kb: &mut KnowledgeBase, clause: &Value, subst: &[(Symbol, T
 /// any op whose effects stay non-ground.
 fn sigma_subst_effect(kb: &mut KnowledgeBase, eff: &Value, sigma: &[(Symbol, TermId)]) -> Value {
     match eff {
-        Value::Term(t) if !sigma.is_empty() => Value::Term(substitute_impl_params_alloc(kb, *t, sigma)),
+        Value::Term { id: t, .. } if !sigma.is_empty() => Value::term(substitute_impl_params_alloc(kb, *t, sigma)),
         other => other.clone(),
     }
 }
@@ -10337,7 +10337,7 @@ pub fn sort_goal_from_subst(
             _ => continue,
         };
         match subst.resolve_as_value(vid) {
-            Some(Value::Term(val)) => {
+            Some(Value::Term { id: val, .. }) => {
                 let val = *val;
                 let short_intern = kb.try_resolve_symbol(&short).unwrap_or_else(|| {
                     // Spec param's *short* name (e.g. "T") may not be registered
@@ -11105,7 +11105,7 @@ fn parameterized_short_bindings(kb: &KnowledgeBase, ty: &impl TermView) -> Vec<(
             // the `type_value_is_ground` guard in `bind_spec_params_from_carrier`)
             // rather than a silently-wrong bind. Threading such a compound is WI-380
             // follow-up work.
-            Value::Term(t) => Some((short_name_of(kb.resolve_sym(param)).to_string(), t)),
+            Value::Term { id: t, .. } => Some((short_name_of(kb.resolve_sym(param)).to_string(), t)),
             _ => None,
         })
         .collect()
@@ -11163,7 +11163,7 @@ fn provider_spec_view_bindings(
 /// not (yet) bind the effect parameter.
 fn effect_is_unresolved_var(kb: &KnowledgeBase, e: &Value) -> bool {
     match e {
-        Value::Term(t) => matches!(kb.get_term(*t), Term::Var(_)),
+        Value::Term { id: t, .. } => matches!(kb.get_term(*t), Term::Var(_)),
         _ => false,
     }
 }
@@ -11479,7 +11479,7 @@ fn type_value_is_ground(kb: &KnowledgeBase, tid: TermId) -> bool {
 /// (skip) rather than risk an unsound pass or a false reject.
 fn resolved_type_is_ground(kb: &KnowledgeBase, v: &Value) -> bool {
     match v {
-        Value::Term(t) => type_value_is_ground(kb, *t),
+        Value::Term { id: t, .. } => type_value_is_ground(kb, *t),
         // WI-470: an occurrence-primary type (the flipped arrow / row / parameterized
         // form) is ground exactly when its spine carries no free type-var / sort-param
         // / row-tail leaf — the same predicate `type_value_is_ground` applies to the
@@ -11975,7 +11975,7 @@ fn explode_incurred_effect_row(kb: &mut KnowledgeBase, effect: &Value) -> Option
         // Wrap the bare EffectExpression so `decompose_effect_row` sees the
         // canonical `effects_rows(…)` shape.
         match effect {
-            Value::Term(t) => Value::Term(kb.make_effects_rows_type(*t)),
+            Value::Term { id: t, .. } => Value::term(kb.make_effects_rows_type(*t)),
             Value::Node(occ) => Value::Node(kb.make_effects_rows_occ(
                 TypeChild::Node(Rc::clone(occ)),
                 occ.span,
@@ -11988,7 +11988,7 @@ fn explode_incurred_effect_row(kb: &mut KnowledgeBase, effect: &Value) -> Option
     let (present, tails, _absent) = decompose_effect_row(kb, &subst, &row)?;
     let mut atoms = present;
     for t in tails {
-        atoms.push(Value::Term(t));
+        atoms.push(Value::term(t));
     }
     Some(atoms)
 }
@@ -12276,7 +12276,7 @@ fn check_seq_literal_constructor(
     }
     let t_val = element_type.unwrap_or_else(|| {
         let fresh = kb.intern("?T");
-        Value::Term(kb.make_type_var(fresh))
+        Value::term(kb.make_type_var(fresh))
     });
     let base = kb.make_sort_ref_by_name(base_name);
     let t_sym = kb.intern("T");
@@ -12475,7 +12475,7 @@ fn check_constructor_iter(
     }
 
     if subst.bindings.is_empty() {
-        return Ok(TypeResult { ty: Value::Term(parent_type), env: env.clone(), effects, node: Rc::clone(occ) });
+        return Ok(TypeResult { ty: Value::term(parent_type), env: env.clone(), effects, node: Rc::clone(occ) });
     }
 
     // Build parameterized type from the sort's type params + substitution bindings.
@@ -12486,9 +12486,9 @@ fn check_constructor_iter(
     let parent_sym = match parent_sort {
         Some(parent_tid) => match kb.get_term(parent_tid) {
             Term::Fn { functor, .. } => *functor,
-            _ => return Ok(TypeResult { ty: Value::Term(parent_type), env: env.clone(), effects, node: Rc::clone(occ) }),
+            _ => return Ok(TypeResult { ty: Value::term(parent_type), env: env.clone(), effects, node: Rc::clone(occ) }),
         },
-        None => return Ok(TypeResult { ty: Value::Term(parent_type), env: env.clone(), effects, node: Rc::clone(occ) }),
+        None => return Ok(TypeResult { ty: Value::term(parent_type), env: env.clone(), effects, node: Rc::clone(occ) }),
     };
 
     let alias_sym = kb.try_resolve_symbol("SortAlias");
@@ -12526,7 +12526,7 @@ fn check_constructor_iter(
                             let param_short = alias_name[parent_name.len() + 1..].to_string();
                             if let Term::Var(Var::Global(vid)) = kb.get_term(target_tid) {
                                 match subst.resolve_as_value(*vid) {
-                                    Some(Value::Term(bound_type)) => {
+                                    Some(Value::Term { id: bound_type, .. }) => {
                                         alias_info.push((param_short, Some(*bound_type)))
                                     }
                                     // WI-516: a param bound to an occurrence (`Value::Node`)
@@ -12590,11 +12590,11 @@ fn check_constructor_iter(
     }
 
     if param_bindings.is_empty() {
-        Ok(TypeResult { ty: Value::Term(parent_type), env: env.clone(), effects, node: Rc::clone(occ) })
+        Ok(TypeResult { ty: Value::term(parent_type), env: env.clone(), effects, node: Rc::clone(occ) })
     } else {
         let base = kb.make_sort_ref(parent_sym);
         let param_type = kb.make_parameterized_type(base, &param_bindings);
-        Ok(TypeResult { ty: Value::Term(param_type), env: env.clone(), effects, node: Rc::clone(occ) })
+        Ok(TypeResult { ty: Value::term(param_type), env: env.clone(), effects, node: Rc::clone(occ) })
     }
 }
 
@@ -12664,17 +12664,17 @@ fn canonical_effects_row(kb: &mut KnowledgeBase, row: &impl TermView) -> Value {
                 (Term::Fn { functor, .. }, Some(er)) if *functor == er
             );
             if is_canonical {
-                Value::Term(t)
+                Value::term(t)
             } else {
                 let flat = list_to_vec(kb, t);
-                Value::Term(kb.build_canonical_effects_rows(&flat))
+                Value::term(kb.build_canonical_effects_rows(&flat))
             }
         }
         // A `Value::Node` effects row is always the canonical occurrence form.
         BindValue::Value(v) => v,
         // An effects row is never carried as a deferred query path; the empty
         // row is a safe (unreachable) fallback.
-        BindValue::Path(_) => Value::Term(kb.build_canonical_effects_rows(&[])),
+        BindValue::Path(_) => Value::term(kb.build_canonical_effects_rows(&[])),
     }
 }
 
@@ -12689,7 +12689,7 @@ fn effect_row_present_values(kb: &mut KnowledgeBase, row: &impl TermView) -> Vec
         // behavior; its non-wrapper fallback also handles a legacy `List[Type]`
         // Function.E binding pre-WI-331).
         BindValue::Term(t) => {
-            effects_rows_to_flat_list(kb, t).into_iter().map(Value::Term).collect()
+            effects_rows_to_flat_list(kb, t).into_iter().map(Value::term).collect()
         }
         // `Value::Node` carrier: decompose the occurrence row into its present
         // labels (plus an open-row tail), the occurrence never re-grounded
@@ -12699,7 +12699,7 @@ fn effect_row_present_values(kb: &mut KnowledgeBase, row: &impl TermView) -> Vec
             match decompose_effect_row(kb, &subst, row) {
                 Some((mut present, tails, _absent)) => {
                     for tail_tid in tails {
-                        present.push(Value::Term(tail_tid));
+                        present.push(Value::term(tail_tid));
                     }
                     present
                 }
@@ -12748,7 +12748,7 @@ pub(crate) fn effects_rows_to_flat_list(kb: &KnowledgeBase, ty: TermId) -> Vec<T
     // (matched by qualified symbol, so a same-short-named functor elsewhere is not
     // misrouted here). A ground wrapper's inner is always a `Value::Term`.
     let expr = match effects_rows_inner(kb, &TermIdView(ty)) {
-        Some(Value::Term(e)) => e,
+        Some(Value::Term { id: e, .. }) => e,
         // Not a well-formed `effects_rows` wrapper — a legacy unwrapped `List`
         // (OperationInfo.effects, Function[E] with a legacy List binding) or a
         // transient pre-`make_arrow_type` term flows through the flat-list walk,
@@ -13067,7 +13067,7 @@ fn build_projection_from_segs(
     debug_assert!(!segs.is_empty(), "projection receiver path is non-empty");
     if segs.len() == 1 {
         let receiver_term = kb.alloc(Term::Ref(segs[0]));
-        return Value::Term(kb.make_expr_carried(receiver_term, member));
+        return Value::term(kb.make_expr_carried(receiver_term, member));
     }
     let mut receiver = NodeOccurrence::new_expr(Expr::Ref(segs[0]), span, None);
     for &field in &segs[1..] {
@@ -13208,7 +13208,7 @@ fn eliminate_type_projections(
     span: Option<Span>,
 ) -> Result<Value, TypeError> {
     match ty {
-        Value::Term(t) => {
+        Value::Term { id: t, .. } => {
             // WI-475: a TOP-LEVEL single-ref `ExprCarried` (`effects s.E`, or a projection-
             // typed return `-> s.Sort`) may project to a `Value::Node` (e.g. the effect row
             // `{Modify[p]}`) — representable here (the result IS the whole eliminated value),
@@ -13218,7 +13218,7 @@ fn eliminate_type_projections(
             if matches!(type_head(kb, &TermIdView(*t)), TypeHead::ExprCarried) {
                 return eliminate_expr_carried_projection(kb, *t, arg_types, arg_syms, ctx, span);
             }
-            Ok(Value::Term(rewrite_term_projections(kb, *t, arg_types, arg_syms, ctx, span)?))
+            Ok(Value::term(rewrite_term_projections(kb, *t, arg_types, arg_syms, ctx, span)?))
         }
         Value::Node(occ) => {
             // WI-397: a top-level COMPOUND-receiver projection (`a.b.T`) rides a
@@ -13535,7 +13535,7 @@ fn resolve_field_type(
     // interface for a downstream projection (`s.provider : P`, `State requires
     // DataProvider[P]`). A concrete field type carries no declaring sort.
     let decl_sort = match &resolved {
-        Value::Term(t) if is_type_param_value(kb, *t) => Some(sort_sym),
+        Value::Term { id: t, .. } if is_type_param_value(kb, *t) => Some(sort_sym),
         _ => None,
     };
     Ok((resolved, decl_sort))
@@ -13558,7 +13558,7 @@ fn eliminate_expr_carried_projection(
     span: Option<Span>,
 ) -> Result<Value, TypeError> {
     let TypeExtractor::ExprCarried { value, member } = extract_type(kb, &TermIdView(t)) else {
-        return Ok(Value::Term(t));
+        return Ok(Value::term(t));
     };
     // A supported projection's receiver is a single value reference `Ref(s)`
     // (classified as `SortRef`); a compound receiver is rejected at load, so this
@@ -13596,7 +13596,7 @@ fn eliminate_expr_carried_projection(
         // follow-on). Re-forming `ExprCarried{Ref(arg_sym), member}` here is what makes
         // the SAME definitional projection compare EQUAL under the non-decomposing ζ arm
         // (WI-400) instead of two identically-printed-yet-distinct neutrals.
-        ProjResult::Neutral => Ok(Value::Term(match arg_syms.and_then(|m| m.get(&receiver)) {
+        ProjResult::Neutral => Ok(Value::term(match arg_syms.and_then(|m| m.get(&receiver)) {
             Some(&arg_sym) => {
                 let recv_term = kb.alloc(Term::Ref(arg_sym));
                 kb.make_expr_carried(recv_term, member)
@@ -13628,7 +13628,7 @@ fn rewrite_term_projections(
             return Ok(t);
         };
         return match resolve_rigid_projection(kb, sort, &subject, member, ctx, span)? {
-            ProjResult::Grounded(Value::Term(pt)) => Ok(pt),
+            ProjResult::Grounded(Value::Term { id: pt, .. }) => Ok(pt),
             ProjResult::Grounded(_) => Err(projection_type_error(ctx, span,
                 "type projection resolved to a non-term carrier, which is not yet supported")),
             ProjResult::Neutral => Ok(t),
@@ -13642,7 +13642,7 @@ fn rewrite_term_projections(
         // here means the `ExprCarried` is NESTED inside a larger `Term` — a Node result
         // there is the genuine follow-on (loud, never silently dropped).
         return match eliminate_expr_carried_projection(kb, t, arg_types, arg_syms, ctx, span)? {
-            Value::Term(pt) => Ok(pt),
+            Value::Term { id: pt, .. } => Ok(pt),
             _ => Err(projection_type_error(ctx, span,
                 "type projection resolved to a non-term carrier, which is not yet supported")),
         };
@@ -13716,7 +13716,7 @@ fn project_type_member(
     // parametric receiver is left unchanged.
     let resolved_recv: Value = match extract_type(kb, arg_ty) {
         TypeExtractor::SortRef(s) => match resolve_alias_shape(kb, s) {
-            Some(shape) => Value::Term(shape),
+            Some(shape) => Value::term(shape),
             None => arg_ty.clone(),
         },
         _ => arg_ty.clone(),
@@ -13786,7 +13786,7 @@ fn project_type_member(
         // against each bound, the `ExprCarried`-side counterpart of `resolve_rigid_-
         // projection`'s candidate filter (`spec_mentions_key`).
         let carrier_key = match arg_ty {
-            Value::Term(t) => subject_key_of_term(kb, *t),
+            Value::Term { id: t, .. } => subject_key_of_term(kb, *t),
             _ => None,
         };
         if let Some(key) = carrier_key {
@@ -13887,13 +13887,13 @@ fn project_via_provided_spec(
             continue;
         };
         let is_effect_member =
-            matches!(type_head(kb, &Value::Term(carrier_val)), TypeHead::EffectsRows);
+            matches!(type_head(kb, &Value::term(carrier_val)), TypeHead::EffectsRows);
         // Ground the carrier-side type (`List`'s `T`) against the receiver's type-args, so
         // a concrete `List[T = Int64]` grounds `Element` to `Int64`; a bare `List` leaves
         // it an unbound `T` ⟹ neutral.
         let grounded = match build_pattern_subst(kb, recv_ty, recv_sort) {
-            Some(s) => walk_pattern_field_type_deep(kb, &s, &Value::Term(carrier_val)),
-            None => Value::Term(carrier_val),
+            Some(s) => walk_pattern_field_type_deep(kb, &s, &Value::term(carrier_val)),
+            None => Value::term(carrier_val),
         };
         let is_ground = resolved_type_is_ground(kb, &grounded);
         // WI-484 (vs WI-396): an EFFECT-row member projects via `provides` ONLY when the
@@ -13936,7 +13936,7 @@ fn op_requires_entries(kb: &KnowledgeBase, op_sym: Symbol) -> Vec<RequiresEntry>
     };
     let mut out = Vec::new();
     for v in &rec.requires {
-        if let Value::Term(tid) = v {
+        if let Value::Term { id: tid, .. } = v {
             push_op_requires_clause(kb, *tid, &mut out);
         }
     }
@@ -13992,7 +13992,7 @@ fn resolve_rigid_projection(
     span: Option<Span>,
 ) -> Result<ProjResult, TypeError> {
     let member_str = kb.resolve_sym(member).to_owned();
-    let Value::Term(subject_term) = subject else {
+    let Value::Term { id: subject_term, .. } = subject else {
         return Err(projection_type_error(ctx, span,
             "rigid type projection subject is not a sort / type-parameter reference"));
     };
@@ -14004,7 +14004,7 @@ fn resolve_rigid_projection(
     // loader's `sort slot == var slot` discriminator).
     if let SubjectKey::Sym(subject_sym) = key {
         if same_symbol(kb, subject_sym, decl_sort) {
-            let recv = Value::Term(kb.make_sort_ref(subject_sym));
+            let recv = Value::term(kb.make_sort_ref(subject_sym));
             return match project_type_member(kb, &recv, &member_str, None, ctx, span)? {
                 // WI-391: a ground member projects to the canonical `Ref(s)` shape (the
                 // producer no longer emits a nullary `Fn{s}` binding here).
@@ -14100,7 +14100,7 @@ fn resolve_rigid_projection(
                     Ok(ProjResult::Neutral)
                 } else {
                     match normalize_spec_binding_type(kb, v) {
-                        Some(ty) => Ok(ProjResult::Grounded(Value::Term(ty))),
+                        Some(ty) => Ok(ProjResult::Grounded(Value::term(ty))),
                         None => Err(projection_type_error(ctx, span, &format!(
                             "'{}.{member_str}' is bound by its `requires` application to \
                              a structured type; δ through a structured bound binding is \
@@ -14398,10 +14398,10 @@ fn extend_env_from_pattern(
             let ty = scrutinee_type
                 .or_else(|| type_ann
                     .as_ref()
-                    .map(|ann| Value::Term(super::node_occurrence::occurrence_to_term(kb, ann))))
+                    .map(|ann| Value::term(super::node_occurrence::occurrence_to_term(kb, ann))))
                 .unwrap_or_else(|| {
                     let fresh = kb.intern("?pat");
-                    Value::Term(kb.make_type_var(fresh))
+                    Value::term(kb.make_type_var(fresh))
                 });
             env.bind_var(*name, ty);
             // Pattern-bound names are local — effects on them shouldn't escape
@@ -14590,7 +14590,7 @@ fn expr_carried_zeta<A: TermView, B: TermView>(kb: &KnowledgeBase, a: &A, b: &B)
                 // to DIFFERENT symbol registrations of the same param (the inner
                 // self-named `ns.W.P.P` vs the outer `ns.W.P`).
                 let subjects_eq = match (&va, &vb) {
-                    (Value::Term(ta), Value::Term(tb)) => {
+                    (Value::Term { id: ta, .. }, Value::Term { id: tb, .. }) => {
                         match (subject_key_of_term(kb, *ta), subject_key_of_term(kb, *tb)) {
                             (Some(ka), Some(kb2)) => subject_keys_equal(kb, ka, kb2),
                             _ => views_structurally_equal(kb, &va, &vb),
@@ -14625,7 +14625,7 @@ pub fn unify_types<A: TermView, B: TermView>(
     // materializing; structurally-distinct-but-equal Node arrows fall through to
     // the carrier-agnostic structural arms below (correct, just not O(1)).
     match (&a, &b) {
-        (Value::Term(x), Value::Term(y)) if x == y => return true,
+        (Value::Term { id: x, .. }, Value::Term { id: y, .. }) if x == y => return true,
         (Value::Node(x), Value::Node(y)) if Rc::ptr_eq(x, y) => return true,
         _ => {}
     }
@@ -14667,7 +14667,7 @@ pub fn unify_types<A: TermView, B: TermView>(
         // equal ones share a TermId (→ the identity fast-path above), so the
         // `denoted` Ref-compare is only needed when hash-cons identity is lost
         // (a `Value` carrier on at least one side).
-        (Value::Term(x), Value::Term(y)) => unify_term_dispatch(kb, subst, *x, *y),
+        (Value::Term { id: x, .. }, Value::Term { id: y, .. }) => unify_term_dispatch(kb, subst, *x, *y),
         // At least one `Value` carrier (hash-cons identity is lost). Dispatch
         // structurally through the carrier-agnostic [`TermView`] arms (WI-342
         // P4): a `Value`-carried `denoted` / `parameterized` unifies against its
@@ -14900,7 +14900,7 @@ fn decode_cons_cell<V: TermView>(
 /// caller's `kb` borrow before a `&mut kb` recursion.
 fn view_item_value(item: &ViewItem) -> Value {
     match item {
-        ViewItem::Term(t) => Value::Term(*t),
+        ViewItem::Term(t) => Value::term(*t),
         ViewItem::Value(v) => (*v).clone(),
         ViewItem::Node(rc) => Value::Node(Rc::clone(rc)),
     }
@@ -14931,12 +14931,12 @@ fn walk_term_to_resolved(kb: &KnowledgeBase, subst: &Substitution, t: TermId) ->
     let t2 = walk_type(kb, subst, t);
     if let Term::Var(Var::Global(vid)) = kb.get_term(t2) {
         if let Some(v) = subst.resolve_as_value(*vid) {
-            if !matches!(v, Value::Term(_)) {
+            if !matches!(v, Value::Term { .. }) {
                 return walk_value_to_resolved(kb, subst, v.clone());
             }
         }
     }
-    Value::Term(t2)
+    Value::term(t2)
 }
 
 /// Walk a `Value`-carried type through the substitution. `Value::Term` defers to
@@ -14951,7 +14951,7 @@ fn walk_value_to_resolved(kb: &KnowledgeBase, subst: &Substitution, val: Value) 
     let mut visited: SmallVec<[VarId; 4]> = SmallVec::new();
     loop {
         match cur {
-            Value::Term(t) => return walk_term_to_resolved(kb, subst, t),
+            Value::Term { id: t, .. } => return walk_term_to_resolved(kb, subst, t),
             Value::Var(Var::Global(vid)) => {
                 if visited.contains(&vid) {
                     return Value::Var(Var::Global(vid));
@@ -14990,7 +14990,7 @@ fn surface_node_binding_to_term(
         _ => return walked,
     };
     let bound = match subst.resolve_as_value(vid) {
-        Some(v) if !matches!(v, Value::Term(_)) => v.clone(),
+        Some(v) if !matches!(v, Value::Term { .. }) => v.clone(),
         _ => return walked,
     };
     match value_to_term(kb, &bound) {
@@ -15015,7 +15015,7 @@ fn surface_node_binding_to_term(
 /// `Term::Var(Global)` or a `Value::Var(Global)`.
 fn resolved_var(kb: &KnowledgeBase, r: &Value) -> Option<VarId> {
     match r {
-        Value::Term(t) => match kb.get_term(*t) {
+        Value::Term { id: t, .. } => match kb.get_term(*t) {
             Term::Var(Var::Global(vid)) => Some(*vid),
             _ => None,
         },
@@ -15028,7 +15028,7 @@ fn resolved_var(kb: &KnowledgeBase, r: &Value) -> Option<VarId> {
 /// hash-consed `TermId`, `bind_value` for any other `Value` carrier.
 fn bind_resolved(kb: &mut KnowledgeBase, subst: &mut Substitution, vid: VarId, other: Value) -> bool {
     match other {
-        Value::Term(t) => {
+        Value::Term { id: t, .. } => {
             if occurs_in(kb, vid, t) {
                 return false;
             }
@@ -15351,7 +15351,7 @@ fn unify_parameterized_with_sort_ref<P: TermView, S: TermView>(
         // / SortAlias value fact (WI-366); binding them here would perturb it.
         let is_effect_row_node = matches!(value, Value::Node(_))
             && matches!(type_head(kb, value), TypeHead::EffectsRows);
-        if !matches!(value, Value::Term(_)) && !is_effect_row_node {
+        if !matches!(value, Value::Term { .. }) && !is_effect_row_node {
             continue;
         }
         let qualified = format!(
@@ -15365,7 +15365,7 @@ fn unify_parameterized_with_sort_ref<P: TermView, S: TermView>(
         let vid = *vid;
         match value {
             // Ground (term-carried): bind after the occurs-check guards a cycle.
-            Value::Term(t) => {
+            Value::Term { id: t, .. } => {
                 if !occurs_in(kb, vid, *t) {
                     subst.bind(kb, vid, *t);
                 }
@@ -15526,7 +15526,7 @@ fn ground_rigid_projection_if_concrete(
     // inference var the call binds (there is no `SortAlias` bridge for op type-params, so
     // `walk_type(subject)` lands on an unbound sibling var). Bridge by name to the op's own
     // `OperationInfo.type_params`, whose var IS the one arg-inference binds.
-    let Value::Term(subj_t) = subject else { return None };
+    let Value::Term { id: subj_t, .. } = subject else { return None };
     let subj_sym = extract_sort_ref_sym(kb, &TermIdView(subj_t))?;
     let subj_name = kb.resolve_sym(subj_sym).to_owned();
     let rec = super::op_info::lookup_operation_info(kb, sort)?;
@@ -15665,7 +15665,7 @@ fn walk_type(kb: &KnowledgeBase, subst: &Substitution, ty: TermId) -> TermId {
                 return ty; // WI-416: cycle — `ty` is a representative.
             }
             match subst.resolve_as_value(vid) {
-                Some(Value::Term(bound)) => {
+                Some(Value::Term { id: bound, .. }) => {
                     visited.push(vid);
                     ty = *bound;
                     continue;
@@ -15710,7 +15710,7 @@ fn walk_type(kb: &KnowledgeBase, subst: &Substitution, ty: TermId) -> TermId {
             // is a `TermId` this loop can chase; a non-`Term` carrier (a `Value::Node`
             // effect-row/occurrence binding) is not representable here, so the alias
             // var represents it — as before.
-            Some(Value::Term(bound)) => {
+            Some(Value::Term { id: bound, .. }) => {
                 let bound = *bound;
                 visited.push(vid);
                 ty = bound;
@@ -15794,7 +15794,7 @@ fn expand_foreign_sort_application(
     ty: &Value,
     callee_parent_canon: Option<Symbol>,
 ) -> Option<Value> {
-    if !matches!(ty, Value::Term(_)) {
+    if !matches!(ty, Value::Term { .. }) {
         return None;
     }
     let (base, written) = sort_application_parts(kb, ty)?;
@@ -15815,7 +15815,7 @@ fn expand_foreign_sort_application(
         let short = kb.resolve_sym(qsym).to_string();
         match written.iter().find(|(k, _)| kb.resolve_sym(*k) == short) {
             Some((k, v)) => match v {
-                Value::Term(t) => bindings.push((*k, *t)),
+                Value::Term { id: t, .. } => bindings.push((*k, *t)),
                 // A Term carrier's children are Term-carried; guard anyway.
                 _ => return None,
             },
@@ -15835,7 +15835,7 @@ fn expand_foreign_sort_application(
         return None;
     }
     let base_ref = kb.make_sort_ref(base);
-    Some(Value::Term(kb.make_parameterized_type(base_ref, &bindings)))
+    Some(Value::term(kb.make_parameterized_type(base_ref, &bindings)))
 }
 
 /// WI-374 (user-decided 2026-06-12): ENFORCE the §3-bullet-1 parametricity
@@ -15879,7 +15879,7 @@ fn enforce_member_tie(
         }
         if exempt_rigids
             .iter()
-            .any(|(v, r)| v == vid && matches!(prior, Value::Term(t) if t == r))
+            .any(|(v, r)| v == vid && matches!(prior, Value::Term { id: t, .. } if t == r))
         {
             continue;
         }
@@ -16370,10 +16370,10 @@ fn guarded_atom_refuted(
     // `Value::Entity` value-cons spine — but its goal heads are still
     // `Value::Term`. An unexpected carrier keeps the effect (sound).
     let goals: Vec<Value> = match guard_value {
-        Value::Term(t) => list_to_vec(kb, *t).into_iter().map(Value::Term).collect(),
+        Value::Term { id: t, .. } => list_to_vec(kb, *t).into_iter().map(Value::term).collect(),
         Value::Node(occ) => {
             let t = super::node_occurrence::occurrence_to_term(kb, occ);
-            list_to_vec(kb, t).into_iter().map(Value::Term).collect()
+            list_to_vec(kb, t).into_iter().map(Value::term).collect()
         }
         Value::Entity { .. } => super::op_info::value_list_to_vec(kb, guard_value),
         _ => return false,
@@ -16384,7 +16384,7 @@ fn guarded_atom_refuted(
     goals.iter().any(|g| {
         // Each conjunct is a term-world goal; materialize a node-carried one.
         let g = match g {
-            Value::Term(t) => *t,
+            Value::Term { id: t, .. } => *t,
             Value::Node(occ) => super::node_occurrence::occurrence_to_term(kb, occ),
             _ => return false,
         };
@@ -16399,7 +16399,7 @@ fn guarded_atom_refuted(
         } else {
             substitute_ref_terms(kb, g, sigma)
         };
-        refute_guard(kb, flow, &Value::Term(g))
+        refute_guard(kb, flow, &Value::term(g))
     })
 }
 
@@ -16561,7 +16561,7 @@ fn precondition_proved(
     // — loud over silent), mirroring the conservative `false` of the dual
     // `guarded_atom_refuted`; it cannot arise from a value goal.
     let g = match clause {
-        Value::Term(t) => *t,
+        Value::Term { id: t, .. } => *t,
         Value::Node(occ) => super::node_occurrence::occurrence_to_term(kb, occ),
         _ => return false,
     };
@@ -16572,7 +16572,7 @@ fn precondition_proved(
     // `definite_only`, so the precondition is unproved (the obligation default).
     for conj in clause_conjuncts(kb, g) {
         let conj = if sigma.is_empty() { conj } else { substitute_ref_terms(kb, conj, sigma) };
-        if !prove_from_gamma(kb, flow, &Value::Term(conj)) {
+        if !prove_from_gamma(kb, flow, &Value::term(conj)) {
             return false;
         }
     }
@@ -16631,7 +16631,7 @@ fn assume_call_ensures(
     let mut flow = flow;
     for clause in &ensures {
         let g = match clause {
-            Value::Term(t) => *t,
+            Value::Term { id: t, .. } => *t,
             Value::Node(occ) => super::node_occurrence::occurrence_to_term(kb, occ),
             _ => continue,
         };
@@ -16640,7 +16640,7 @@ fn assume_call_ensures(
             if term_references_any(kb, conj, &param_syms) {
                 continue;
             }
-            flow = flow.assume(kb, Value::Term(conj));
+            flow = flow.assume(kb, Value::term(conj));
         }
     }
     flow
@@ -16786,7 +16786,7 @@ fn row_inner_value(
 /// materializes to a hash-consed `Term::Var` (row tails are plain vars).
 fn row_tail_termid(kb: &mut KnowledgeBase, node: &Value) -> Option<TermId> {
     match node {
-        Value::Term(t) => match kb.get_term(*t) {
+        Value::Term { id: t, .. } => match kb.get_term(*t) {
             Term::Var(_) => Some(*t),
             _ => None,
         },
@@ -17020,7 +17020,7 @@ fn bind_row_tail(
     let mut ground_extras: Vec<TermId> = Vec::with_capacity(extra_labels.len());
     for l in extra_labels {
         match l {
-            Value::Term(t) => ground_extras.push(*t),
+            Value::Term { id: t, .. } => ground_extras.push(*t),
             _ => return false,
         }
     }
@@ -17846,7 +17846,7 @@ fn types_compatible_view_structural<A: TermView, B: TermView>(
 ) -> bool {
     let a = walk_view(kb, subst, actual);
     let e = walk_view(kb, subst, expected);
-    if let (Value::Term(x), Value::Term(y)) = (&a, &e) {
+    if let (Value::Term { id: x, .. }, Value::Term { id: y, .. }) = (&a, &e) {
         return types_compatible_term_dispatch(kb, subst, *x, *y);
     }
 
@@ -18341,7 +18341,7 @@ fn widen_to_parent_sort(kb: &mut KnowledgeBase, t: TermId) -> Option<TermId> {
 /// has no parent sort, so two incomparable Node arrows correctly fail to join.
 fn widen_value(kb: &mut KnowledgeBase, v: &Value) -> Option<Value> {
     match v {
-        Value::Term(t) => widen_to_parent_sort(kb, *t).map(Value::Term),
+        Value::Term { id: t, .. } => widen_to_parent_sort(kb, *t).map(Value::term),
         _ => None,
     }
 }
@@ -18535,7 +18535,7 @@ fn meet_types(kb: &mut KnowledgeBase, a: Value, b: Value) -> Value {
         // bottom type — two incomparable nominal types share no lower bound but
         // `nothing`.
         (false, false) => meet_parameterized_same_base(kb, &a, &b)
-            .unwrap_or_else(|| Value::Term(kb.make_nothing_type())),
+            .unwrap_or_else(|| Value::term(kb.make_nothing_type())),
     }
 }
 
@@ -18606,8 +18606,8 @@ fn combine_parameterized_same_base(
     // The conservative whole-type bound when a binding can't be combined.
     let fallback = |kb: &mut KnowledgeBase| -> Value {
         match dir {
-            LatticeDir::Lub => Value::Term(kb.make_sort_ref(a_base)),
-            LatticeDir::Glb => Value::Term(kb.make_nothing_type()),
+            LatticeDir::Lub => Value::term(kb.make_sort_ref(a_base)),
+            LatticeDir::Glb => Value::term(kb.make_nothing_type()),
         }
     };
     // Same base sort ⇒ same params; guard a malformed/partial binding set.
@@ -18641,13 +18641,13 @@ fn combine_parameterized_same_base(
             }
         };
         match combined {
-            Value::Term(t) => result.push((*param, t)),
+            Value::Term { id: t, .. } => result.push((*param, t)),
             // A Node-carried combined binding: stay off the Node path; bail.
             _ => return Some(fallback(kb)),
         }
     }
     let base_ref = kb.make_sort_ref(a_base);
-    Some(Value::Term(kb.make_parameterized_type(base_ref, &result)))
+    Some(Value::term(kb.make_parameterized_type(base_ref, &result)))
 }
 
 /// WI-464: combine one binding's two values per the lattice `dir`. `Lub` is the
@@ -20214,7 +20214,7 @@ fn view_child_value<V: TermView>(kb: &KnowledgeBase, ty: &V, key: &str) -> Optio
 /// A view's named child as the `Symbol` it references (`Ref(s)` / `Ident(s)`).
 fn view_child_sym<V: TermView>(kb: &KnowledgeBase, ty: &V, key: &str) -> Option<Symbol> {
     match view_child_value(kb, ty, key)? {
-        Value::Term(t) => match kb.get_term(t) {
+        Value::Term { id: t, .. } => match kb.get_term(t) {
             Term::Ref(s) | Term::Ident(s) => Some(*s),
             _ => None,
         },
@@ -20881,7 +20881,7 @@ fn declared_type_goal_bindings(
     bindings
         .iter()
         .filter_map(|(p, v)| match v {
-            Value::Term(t) => Some((*p, canonicalize_goal_value(kb, *t))),
+            Value::Term { id: t, .. } => Some((*p, canonicalize_goal_value(kb, *t))),
             _ => None,
         })
         .collect()
@@ -21154,7 +21154,7 @@ fn refine_self_receiver_body_type(
         bindings.push((param_sym, proj));
     }
     let base = kb.make_sort_ref(carrier);
-    Some(Value::Term(kb.make_parameterized_type(base, &bindings)))
+    Some(Value::term(kb.make_parameterized_type(base, &bindings)))
 }
 
 /// Check operation bodies against their declared return types.
@@ -21246,7 +21246,7 @@ fn check_operation_bodies(kb: &mut KnowledgeBase, op_syms: &[Symbol], errors: &m
                     let vid = *vid;
                     // `rigidify` binds each sort param to its fresh `Rigid` term — always
                     // a `Value::Term`; a non-`Term` binding would not be a rigid here.
-                    if let Some(Value::Term(rigid)) = rigidify.resolve_as_value(vid) {
+                    if let Some(Value::Term { id: rigid, .. }) = rigidify.resolve_as_value(vid) {
                         sort_param_rigids.push((vid, *rigid));
                     }
                 }
@@ -21886,7 +21886,7 @@ fn dispatch_rule_body_dots(kb: &mut KnowledgeBase) -> Vec<TypeError> {
         // constraints from; such heads are facts in practice, but guard rather
         // than panic in `rule_head`.
         let head = match kb.rule_head_value(rid).clone() {
-            Value::Term(t) => t,
+            Value::Term { id: t, .. } => t,
             _ => continue,
         };
         // Recompute the rule's De Bruijn var types (head + body constraints) —
@@ -22158,7 +22158,7 @@ fn collect_occurrence_type_constraints(
             // WI-342: a ground `Value::Term` annotation can carry nested op/entity
             // calls to constrain; a `Value::Node` (denoted) annotation is a pure
             // type occurrence with none, so it contributes no constraints.
-            if let Some(Value::Term(t)) = type_annotation {
+            if let Some(Value::Term { id: t, .. }) = type_annotation {
                 collect_term_type_constraints(kb, *t, var_types, subst);
             }
         }
@@ -22359,8 +22359,8 @@ mod wi417_cycle_tests {
         let ta = kb.alloc(Term::Var(Var::Global(a)));
         let tb = kb.alloc(Term::Var(Var::Global(b)));
         let mut subst = Substitution::new();
-        subst.bind_value(kb, a, Value::Term(tb));
-        subst.bind_value(kb, b, Value::Term(ta));
+        subst.bind_value(kb, a, Value::term(tb));
+        subst.bind_value(kb, b, Value::term(ta));
         (subst, ta, a, b)
     }
 
@@ -22378,8 +22378,8 @@ mod wi417_cycle_tests {
     fn walk_type_value_terminates_on_term_var_cycle() {
         let mut kb = KnowledgeBase::new();
         let (subst, ta, a, b) = term_var_cycle(&mut kb);
-        match walk_type_value(&kb, &subst, &Value::Term(ta)) {
-            Value::Term(t) => match kb.get_term(t) {
+        match walk_type_value(&kb, &subst, &Value::term(ta)) {
+            Value::Term { id: t, .. } => match kb.get_term(t) {
                 Term::Var(Var::Global(v)) => assert!(*v == a || *v == b),
                 other => panic!("expected a cycle-representative var, got {other:?}"),
             },
@@ -22392,7 +22392,7 @@ mod wi417_cycle_tests {
         let mut kb = KnowledgeBase::new();
         let (subst, ta, _a, _b) = term_var_cycle(&mut kb);
         // Termination is the property under test (returns instead of crashing).
-        let _ = walk_pattern_field_type_deep(&mut kb, &subst, &Value::Term(ta));
+        let _ = walk_pattern_field_type_deep(&mut kb, &subst, &Value::term(ta));
     }
 
     #[test]
@@ -22487,7 +22487,7 @@ mod wi394_surface_node_binding_tests {
         let Var::Global(vid) = var else { unreachable!() };
         let concrete = kb.alloc(Term::Const(Literal::Int(7)));
         let mut subst = Substitution::new();
-        subst.bind_value(&kb, vid, Value::Term(concrete));
+        subst.bind_value(&kb, vid, Value::term(concrete));
         let out = surface_node_binding_to_term(&mut kb, &subst, var_term);
         assert_eq!(out, var_term, "a Term binding is not surfaced here");
     }
@@ -22798,7 +22798,7 @@ mod p4_tests {
         use crate::eval::value::Value;
         use crate::kb::term::Var;
         let mut kb = kb_with_prelude();
-        let int = Value::Term(kb.make_sort_ref_by_name("anthill.prelude.Int64"));
+        let int = Value::term(kb.make_sort_ref_by_name("anthill.prelude.Int64"));
         let label_t = kb.make_sort_ref_by_name("anthill.prelude.Bool");
         // A bare Global logic var is a row tail (a row-polymorphic open tail).
         let rho = kb.intern("rho");
@@ -22812,7 +22812,7 @@ mod p4_tests {
             &mut kb,
             &int,
             &int,
-            &[Value::Term(label_t), Value::Term(tail_t)],
+            &[Value::term(label_t), Value::term(tail_t)],
             span(),
             None,
         );
@@ -22826,7 +22826,7 @@ mod p4_tests {
         assert!(tails.contains(&tail_t), "row-tail var folds as open(tail); tails={tails:?}");
         assert_eq!(present.len(), 1, "exactly the real label is present (NOT the tail); present={present:?}");
         assert!(
-            present.iter().any(|p| matches!(p, Value::Term(t) if *t == label_t)),
+            present.iter().any(|p| matches!(p, Value::Term { id: t, .. } if *t == label_t)),
             "the present label is Bool; present={present:?}",
         );
     }
@@ -22937,16 +22937,16 @@ mod p4_tests {
         // `Modify` post-flip) vs the bare sort `Modify` (`Ref(Modify)`).
         let node_param = Value::Node(occ_param(&mut kb, modify, p, c));
         let bare_tid = kb.make_sort_ref(modify);
-        let bare = Value::Term(bare_tid);
+        let bare = Value::term(bare_tid);
 
         let node_first = super::more_general_type(&kb, &node_param, &bare);
         let bare_first = super::more_general_type(&kb, &bare, &node_param);
         assert!(
-            matches!(node_first, Value::Term(t) if t == bare_tid),
+            matches!(node_first, Value::Term { id: t, .. } if t == bare_tid),
             "join should pick the more-general bare sort, got {node_first:?}",
         );
         assert!(
-            matches!(bare_first, Value::Term(t) if t == bare_tid),
+            matches!(bare_first, Value::Term { id: t, .. } if t == bare_tid),
             "join must be commutative (bare sort either way), got {bare_first:?}",
         );
     }
@@ -23034,7 +23034,7 @@ mod p4_tests {
         let by: std::collections::HashMap<_, _> =
             super::named_tuple_fields(&kb, &tuple).into_iter().collect();
         assert_eq!(by.len(), 2, "two fields decoded, got {by:?}");
-        assert!(matches!(by.get(&n), Some(Value::Term(_))), "`n: Int64` rides as Value::Term");
+        assert!(matches!(by.get(&n), Some(Value::Term { .. })), "`n: Int64` rides as Value::Term");
         assert!(matches!(by.get(&f), Some(Value::Node(_))), "poisoned `f` rides as Value::Node");
     }
 
@@ -23248,7 +23248,7 @@ end
     /// A bare `sort_ref` Value for the sort named `qn`.
     fn bare(kb: &mut KnowledgeBase, qn: &str) -> Value {
         let s = sym(kb, qn);
-        Value::Term(kb.make_sort_ref(s))
+        Value::term(kb.make_sort_ref(s))
     }
 
     /// A parameterized Value `Base[param = arg, …]`, each arg a bare sort named by qn.
@@ -23263,7 +23263,7 @@ end
                 (p_sym, kb.make_sort_ref(arg_sym))
             })
             .collect();
-        Value::Term(kb.make_parameterized_type(base_ref, &term_binds))
+        Value::term(kb.make_parameterized_type(base_ref, &term_binds))
     }
 
     /// Decompose a parameterized result into (base sort, bindings).

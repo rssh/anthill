@@ -283,7 +283,7 @@ impl Interpreter {
                         .map(|h| Value::Requirement(h.clone()))
                 })
                 .or_else(|| {
-                    find_type_arg(&top.type_args, sym).map(Value::Term)
+                    find_type_arg(&top.type_args, sym).map(Value::term)
                 })
         };
         if let Some(v) = bound {
@@ -304,7 +304,7 @@ impl Interpreter {
         // `facts_of(kb(), WorkItem)`) is the entity as a type value, not a call.
         if self.kb.is_free_standing_entity(sym) {
             let tid = self.kb.alloc(crate::kb::term::Term::Ref(sym));
-            return Ok(StepOutcome::Deliver(Value::Term(tid)));
+            return Ok(StepOutcome::Deliver(Value::term(tid)));
         }
         // WI-365: a bare reference to a NULLARY constructor — an enum variant
         // with no fields, e.g. `none` in `Option`'s `case nil() -> none` (and
@@ -1689,7 +1689,7 @@ impl Interpreter {
         let value = if Some(ctor_sym) == self.reflect.list_literal {
             self.build_list_value(pos, &named)?
         } else if is_tuple_literal {
-            Value::Tuple { pos: pos.into(), named: named.into() }
+            Value::Tuple { pos: pos.into(), named: named.into(), ty: None }
         } else if Some(ctor_sym) == self.reflect.set_literal {
             // SetLiteral has set semantics: dedup by structural equality so
             // nested tuples/entities compare by shape, not identity. Opaque
@@ -1706,9 +1706,9 @@ impl Interpreter {
                     deduped.push(v);
                 }
             }
-            Value::Entity { functor: ctor_sym, pos: deduped.into(), named: named.into() }
+            Value::Entity { functor: ctor_sym, pos: deduped.into(), named: named.into(), ty: None }
         } else {
-            Value::Entity { functor: ctor_sym, pos: pos.into(), named: named.into() }
+            Value::Entity { functor: ctor_sym, pos: pos.into(), named: named.into(), ty: None }
         };
         Ok(StepOutcome::Deliver(value))
     }
@@ -1729,7 +1729,7 @@ impl Interpreter {
         let tail_seed = named.iter()
             .find(|(s, _)| *s == self.fields.tail)
             .map(|(_, v)| v.clone())
-            .unwrap_or(Value::Entity { functor: nil_sym, pos: Vec::new().into(), named: Vec::new().into() });
+            .unwrap_or(Value::Entity { functor: nil_sym, pos: Vec::new().into(), named: Vec::new().into(), ty: None });
 
         let mut acc = tail_seed;
         for elem in elements.into_iter().rev() {
@@ -1737,6 +1737,7 @@ impl Interpreter {
                 functor: cons_sym,
                 pos: Vec::new().into(),
                 named: vec![(self.fields.head, elem), (self.fields.tail, acc)].into(),
+                ty: None,
             };
         }
         Ok(acc)
@@ -1860,7 +1861,7 @@ fn collect_resolved_type_args(occ: &Rc<NodeOccurrence>) -> FrameTypeArgs {
 pub fn value_functor(kb: &KnowledgeBase, value: &Value) -> Option<Symbol> {
     match value {
         Value::Entity { functor, .. } => Some(*functor),
-        Value::Term(tid) => match kb.get_term(*tid) {
+        Value::Term { id: tid, .. } => match kb.get_term(*tid) {
             Term::Fn { functor, .. } => Some(*functor),
             Term::Ref(sym) => Some(*sym),
             _ => None,
@@ -1897,7 +1898,7 @@ pub(crate) fn runtime_carrier_sort(kb: &KnowledgeBase, value: &Value) -> Option<
         Value::Str(_) => Some("anthill.prelude.String"),
         Value::Bool(_) => Some("anthill.prelude.Bool"),
         // Structured values: the carrier is the constructor's parent sort (below).
-        Value::Entity { .. } | Value::Term(_) => None,
+        Value::Entity { .. } | Value::Term { .. } => None,
         // Values that never name a spec receiver — no carrier sort. Listed
         // explicitly (no `_` arm) so a new `Value` variant forces a decision.
         Value::Unit

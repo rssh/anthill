@@ -335,10 +335,10 @@ pub(crate) struct EntityFieldsRecord {
 pub(crate) fn read_entity_fields(kb: &mut KnowledgeBase, name: &str) -> Option<EntityFieldsRecord> {
     for (_rid, head) in facts_by_sort_name(kb, "Entity") {
         let (functor, named): (Symbol, Vec<(Symbol, Value)>) = match &head {
-            Value::Term(t) => match kb.get_term(*t) {
+            Value::Term { id: t, .. } => match kb.get_term(*t) {
                 CoreTerm::Fn { functor, named_args, .. } => (
                     *functor,
-                    named_args.iter().map(|&(s, tid)| (s, Value::Term(tid))).collect(),
+                    named_args.iter().map(|&(s, tid)| (s, Value::term(tid))).collect(),
                 ),
                 _ => continue,
             },

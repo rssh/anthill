@@ -46,7 +46,7 @@ end
 
     let result = interp.call(
         "anthill.reflect.term_as_entity",
-        &[Value::Term(item_tid)],
+        &[Value::term(item_tid)],
     ).expect("call term_as_entity");
 
     let inner = match result {
@@ -63,7 +63,7 @@ end
     // typed scalars.
     let kb = interp.kb();
     match inner {
-        Value::Entity { functor, pos, named } => {
+        Value::Entity { functor, pos, named, .. } => {
             assert_eq!(kb.resolve_sym(functor), "Item",
                 "functor short name should be Item");
             assert!(pos.is_empty(), "Item has no positional args");
@@ -108,7 +108,7 @@ end
 
     let result = interp.call(
         "anthill.reflect.term_as_entity",
-        &[Value::Term(tid)],
+        &[Value::term(tid)],
     ).expect("call term_as_entity");
 
     match result {
@@ -145,7 +145,7 @@ end
 
     let result = interp.call(
         "anthill.reflect.term_as_entity",
-        &[Value::Term(tid)],
+        &[Value::term(tid)],
     ).expect("call term_as_entity");
 
     match result {
@@ -204,7 +204,7 @@ end
 
     let result = interp.call(
         "anthill.reflect.term_as_entity",
-        &[Value::Term(outer_term)],
+        &[Value::term(outer_term)],
     ).expect("call term_as_entity");
 
     // Unwrap some(value: Outer{name, child: Inner{tag}}).

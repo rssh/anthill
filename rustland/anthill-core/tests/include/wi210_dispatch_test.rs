@@ -565,7 +565,7 @@ fn wi350_abstract_stream_receiver_types_via_interface_with_two_impls() {
     });
 
     let mut env = TypingEnv::empty();
-    env.bind_var(s_sym, anthill_core::eval::Value::Term(stream_concrete));
+    env.bind_var(s_sym, anthill_core::eval::Value::term(stream_concrete));
 
     let result = type_check_expr(&mut kb, &env, apply_term)
         .expect("headOption(s) on abstract Stream[T] must type-check (not Ambiguous) with ≥2 impls");
@@ -722,8 +722,8 @@ fn dispatch_commit_s_w_type_checks_via_workitemstore_satisfaction() {
     let mut env = TypingEnv::empty();
     let s_sym = kb.intern("s");
     let w_sym = kb.intern("w");
-    env.bind_var(s_sym, anthill_core::eval::Value::Term(cell_wis));
-    env.bind_var(w_sym, anthill_core::eval::Value::Term(workitem_ty));
+    env.bind_var(s_sym, anthill_core::eval::Value::term(cell_wis));
+    env.bind_var(w_sym, anthill_core::eval::Value::term(workitem_ty));
 
     let result = type_check_expr(&mut kb, &env, apply_term);
     assert!(result.is_ok(),
@@ -790,7 +790,7 @@ fn dispatch_int_add_x_x_type_checks_via_spec_satisfaction() {
 
     let mut env = TypingEnv::empty();
     let x_sym = kb.intern("x");
-    env.bind_var(x_sym, anthill_core::eval::Value::Term(int_type));
+    env.bind_var(x_sym, anthill_core::eval::Value::term(int_type));
 
     let result = type_check_expr(&mut kb, &env, apply_term);
     assert!(result.is_ok(),

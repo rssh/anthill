@@ -119,7 +119,7 @@ impl<'a> TermPrinter<'a, KnowledgeBase> {
     /// `Term` or `Node`, so the fallback is unreachable.
     fn write_type_value(&self, v: &Value, buf: &mut String) {
         match v {
-            Value::Term(t) => self.write_term(*t, buf),
+            Value::Term { id: t, .. } => self.write_term(*t, buf),
             Value::Node(occ) => self.write_occurrence(occ, buf),
             _ => buf.push('?'),
         }

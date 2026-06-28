@@ -38,6 +38,15 @@ pub enum Value {
     Tuple {
         pos: Rc<[Value]>,
         named: Rc<[(Symbol, Value)]>,
+        /// WI-578 — the carried static type of this value, as a `Value`
+        /// type-term (the same representation `NodeOccurrence::inferred_type`
+        /// holds: `Ref(S)` / `Fn{S, named}` / denoted). `None` = not-yet-typed;
+        /// `typed(value, env)` stamps it, after which it is carried (σ-refined)
+        /// through clone / De Bruijn open / substitution and never dropped. `Rc`
+        /// so the type is shared on clone like `pos`/`named`, not deep-copied.
+        /// Rides on the per-instance `Value`, NEVER on the interned `TermId`
+        /// (M3). See `docs/design/constrained-term-substrate.md`.
+        ty: Option<Rc<Value>>,
     },
 
     // Constructed entity (has a functor), transient until persisted. Zero
@@ -60,6 +69,9 @@ pub enum Value {
         functor: Symbol,
         pos: Rc<[Value]>,
         named: Rc<[(Symbol, Value)]>,
+        /// WI-578 — carried static type of this value; see the note on
+        /// `Value::Tuple`'s `ty` field. `None` = not-yet-typed.
+        ty: Option<Rc<Value>>,
     },
 
     // Interpreter-owned handles. Each is an arena-refcounted smart
@@ -113,7 +125,18 @@ pub enum Value {
     Requirement(RequirementHandle),
 
     // KB-sourced or already-committed data (hash-consed).
-    Term(TermId),
+    //
+    // WI-578: a struct variant (not the old `Term(TermId)` tuple) so the
+    // per-instance carried type rides alongside the shared `TermId`. Construct
+    // the common untyped case via [`Value::term`] (also usable as a function
+    // value, e.g. `.map(Value::term)`); match as `Value::Term { id, .. }`.
+    Term {
+        id: TermId,
+        /// WI-578 — carried static type of this value; see the note on
+        /// `Value::Tuple`'s `ty` field. `None` = not-yet-typed. NEVER lives on
+        /// the interned `id` (one `TermId` spans every environment, M3).
+        ty: Option<Rc<Value>>,
+    },
 
     /// WI-109 — a logic variable at the value level (flex `Global`,
     /// `DeBruijn`, or `Rigid`). Makes the `Term` ↔ `Value` round-trip
@@ -139,11 +162,35 @@ pub enum Value {
 /// while every existing `TermId` caller passes its term unchanged.
 impl From<TermId> for Value {
     fn from(t: TermId) -> Self {
-        Value::Term(t)
+        Value::term(t)
     }
 }
 
 impl Value {
+    /// Construct an untyped `Value::Term` (`ty = None`) — the common case;
+    /// `typed(value, env)` fills `ty` later (WI-578). Also the way to use the
+    /// `Term` constructor as a function value (`.map(Value::term)`), which the
+    /// struct variant `Value::Term { .. }` cannot be.
+    pub fn term(id: TermId) -> Value {
+        Value::Term { id, ty: None }
+    }
+
+    /// The raw `ty`-field of a constructed value (`Entity` / `Tuple` / `Term`):
+    /// `None` until `typed(value, env)` stamps it (WI-578). This is NOT a
+    /// universal "type of this value" reader — it returns `None` for every other
+    /// carrier (a scalar's type is its literal sort, a `Value::Node`'s is in its
+    /// occurrence's `inferred_type`, a `Var`'s is in the constraint store). The
+    /// universal reader is `typed(value, env)`, which reads those carriers
+    /// DIRECTLY, not through this. The type is NEVER on the interned `TermId`
+    /// (M3). `pub(crate)` — substrate-internal, not public API.
+    pub(crate) fn ty(&self) -> Option<&Rc<Value>> {
+        match self {
+            Value::Entity { ty, .. } | Value::Tuple { ty, .. } | Value::Term { ty, .. } => {
+                ty.as_ref()
+            }
+            _ => None,
+        }
+    }
     /// Scalar-leaf equality. Tuples / Entities / Closures / Streams
     /// compare as unequal here. For shape-aware, CARRIER-AGNOSTIC structural
     /// compare on any two `Value`s — including the cross-carrier `Value::Term`
@@ -161,7 +208,7 @@ impl Value {
             (Value::Bool(x), Value::Bool(y)) => x == y,
             (Value::Str(x), Value::Str(y)) => x == y,
             (Value::Unit, Value::Unit) => true,
-            (Value::Term(x), Value::Term(y)) => x == y,
+            (Value::Term { id: x, .. }, Value::Term { id: y, .. }) => x == y,
             // WI-109: two value-level logic variables are equal iff they are
             // the same variable (kind + id; `VarId` compares by id only).
             (Value::Var(x), Value::Var(y)) => x == y,
@@ -185,7 +232,7 @@ impl Value {
     /// (`if let Value::Term(t) = …`) or reads carrier-agnostically via `TermView`.
     pub fn expect_term(&self) -> TermId {
         match self {
-            Value::Term(t) => *t,
+            Value::Term { id, .. } => *id,
             other => panic!(
                 "expect_term: expected a hash-consed Value::Term, got Value::{}",
                 other.type_name(),
@@ -218,7 +265,7 @@ impl Value {
             Value::Map(_) => "Map",
             Value::Cell(_) => "Cell",
             Value::Requirement(_) => "Requirement",
-            Value::Term(_) => "Term",
+            Value::Term { .. } => "Term",
             Value::Node(_) => "Node",
             Value::Var(_) => "Var",
         }
@@ -241,6 +288,7 @@ mod tests {
         let t = Value::Tuple {
             pos: vec![Value::Int(1), Value::Int(2)].into(),
             named: Vec::new().into(),
+            ty: None,
         };
         match t {
             Value::Tuple { pos, .. } => assert_eq!(pos.len(), 2),

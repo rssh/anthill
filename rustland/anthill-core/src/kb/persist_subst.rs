@@ -126,7 +126,7 @@ pub(crate) fn extract_value_at_path(kb: &KnowledgeBase, head: &Value, path: &Var
             ArgPos::Named(sym) => cur.named_arg(kb, *sym),
         };
         cur = match item {
-            Some(ViewItem::Term(t)) => Value::Term(t),
+            Some(ViewItem::Term(t)) => Value::term(t),
             Some(ViewItem::Value(v)) => v.clone(),
             Some(ViewItem::Node(occ)) => Value::Node(occ),
             // Mirror extract_at_path: a recorded path must descend a matching

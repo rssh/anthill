@@ -1994,7 +1994,7 @@ end
         // WI-348: skip value-fact heads (an op with a `denoted` effect, e.g.
         // stdlib's Cell.set) — `id` has none, so its head is a hash-consed term.
         let head = match kb.rule_head_value(rid) {
-            anthill_core::eval::Value::Term(t) => *t,
+            anthill_core::eval::Value::Term { id: t, .. } => *t,
             _ => continue,
         };
         if let Term::Fn { named_args, .. } = kb.get_term(head) {
@@ -2629,7 +2629,7 @@ fn row_unify_open_closed_tail_absorbs() {
     let mut subst = Substitution::new();
     assert!(unify_types(&mut kb, &mut subst, &TermIdView(open_row), &TermIdView(closed_row)),
         "open row should unify with closed row of same labels + extras");
-    assert!(matches!(subst.resolve_as_value(rho_vid), Some(anthill_core::eval::Value::Term(_))),
+    assert!(matches!(subst.resolve_as_value(rho_vid), Some(anthill_core::eval::Value::Term { .. })),
         "?rho should be bound after row unification");
 }
 
@@ -2705,9 +2705,9 @@ fn row_unify_open_open_disjoint_extras() {
     let mut subst = Substitution::new();
     assert!(unify_types(&mut kb, &mut subst, &TermIdView(arrow_a), &TermIdView(arrow_b)),
         "open/open with disjoint extras must unify (Rémy fresh-tail case)");
-    assert!(matches!(subst.resolve_as_value(rho_a_vid), Some(anthill_core::eval::Value::Term(_))),
+    assert!(matches!(subst.resolve_as_value(rho_a_vid), Some(anthill_core::eval::Value::Term { .. })),
         "?rho_a should be bound");
-    assert!(matches!(subst.resolve_as_value(rho_b_vid), Some(anthill_core::eval::Value::Term(_))),
+    assert!(matches!(subst.resolve_as_value(rho_b_vid), Some(anthill_core::eval::Value::Term { .. })),
         "?rho_b should be bound");
 }
 
@@ -2764,7 +2764,7 @@ fn row_lacks_unify_non_conflicting_label_ok() {
     let mut subst = Substitution::new();
     assert!(unify_types(&mut kb, &mut subst, &TermIdView(closed_other), &TermIdView(lacks_row)),
         "{{Other}} unifies with {{-Error | ρ}} — Other is not the lacked Error");
-    assert!(matches!(subst.resolve_as_value(rho_vid), Some(anthill_core::eval::Value::Term(_))),
+    assert!(matches!(subst.resolve_as_value(rho_vid), Some(anthill_core::eval::Value::Term { .. })),
         "ρ should be bound (absorbs Other, closing the row)");
 }
 
@@ -3680,7 +3680,7 @@ fn unify_arrow_shared_rho_with_extras() {
     let mut subst = Substitution::new();
     assert!(unify_types(&mut kb, &mut subst, &TermIdView(arrow_a), &TermIdView(arrow_b)),
         "unify of arrows sharing rho with one side carrying extras must succeed");
-    assert!(matches!(subst.resolve_as_value(rho_vid), Some(anthill_core::eval::Value::Term(_))),
+    assert!(matches!(subst.resolve_as_value(rho_vid), Some(anthill_core::eval::Value::Term { .. })),
         "?rho should be bound after unification");
 }
 
@@ -4201,7 +4201,7 @@ fn unify_both_vars_bind() {
     let mut subst = Substitution::new();
     assert!(unify_types(&mut kb, &mut subst, &TermIdView(var1), &TermIdView(var2)), "two vars unify");
     // One should be bound to the other
-    assert!(matches!(subst.resolve_as_value(vid1), Some(anthill_core::eval::Value::Term(_))) || matches!(subst.resolve_as_value(vid2), Some(anthill_core::eval::Value::Term(_))),
+    assert!(matches!(subst.resolve_as_value(vid1), Some(anthill_core::eval::Value::Term { .. })) || matches!(subst.resolve_as_value(vid2), Some(anthill_core::eval::Value::Term { .. })),
         "at least one var should be bound");
 }
 

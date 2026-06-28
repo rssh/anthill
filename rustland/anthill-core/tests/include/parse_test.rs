@@ -105,7 +105,7 @@ fn modify_name_arg_denotes_by_resolution_kind() {
     fn label_denotes(kb: &KnowledgeBase, v: &anthill_core::eval::Value) -> bool {
         match v {
             anthill_core::eval::Value::Node(_) => true,
-            anthill_core::eval::Value::Term(t) => contains_functor(kb, *t, "denoted"),
+            anthill_core::eval::Value::Term { id: t, .. } => contains_functor(kb, *t, "denoted"),
             _ => false,
         }
     }
@@ -460,7 +460,7 @@ end
         .effects;
     assert_eq!(effects2.len(), 1, "expected one effect label (Error)");
     assert!(
-        matches!(effects2[0], anthill_core::eval::Value::Term(_)),
+        matches!(effects2[0], anthill_core::eval::Value::Term { .. }),
         "a ground effect label (Error) must stay a Value::Term, got {:?}",
         effects2[0],
     );
@@ -473,7 +473,7 @@ end
     let op_info_sym = kb.try_resolve_symbol("anthill.reflect.OperationInfo").unwrap();
     let has_value_fact = kb.rules_by_functor(op_info_sym).into_iter().any(|rid| {
         kb.is_fact(rid)
-            && !matches!(kb.rule_head_value(rid), anthill_core::eval::Value::Term(_))
+            && !matches!(kb.rule_head_value(rid), anthill_core::eval::Value::Term { .. })
     });
     assert!(
         has_value_fact,
@@ -3131,7 +3131,7 @@ fn wi355_arrow_param_names_lowered_to_named_tuple() {
         // The single param `f`, a (ground) arrow type — WI-341 Stage A: param
         // types are carrier-agnostic `Value`; a no-effect arrow is a `Value::Term`.
         let arrow = match &rec.params[0].1 {
-            anthill_core::eval::Value::Term(t) => *t,
+            anthill_core::eval::Value::Term { id: t, .. } => *t,
             other => panic!("expected a ground arrow param type, got {other:?}"),
         };
         let mut out = Vec::new();
@@ -4216,7 +4216,7 @@ fn find_op_info(kb: &mut KnowledgeBase, qualified_substr: &str) -> TermId {
         // WI-348: an OperationInfo for an op with a `denoted` effect is a value
         // fact (Node-carrying head); this term-only helper skips those.
         let tid = match kb.rule_head_value(fid) {
-            anthill_core::eval::Value::Term(t) => *t,
+            anthill_core::eval::Value::Term { id: t, .. } => *t,
             _ => continue,
         };
         if let Some(name_tid) = get_named_arg(kb, tid, "name") {

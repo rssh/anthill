@@ -1421,21 +1421,21 @@ fn render_value(
 ) -> String {
     use anthill_core::eval::Value;
     match v {
-        Value::Term(t) => printer.print_term(*t),
+        Value::Term { id: t, .. } => printer.print_term(*t),
         Value::Node(occ) => printer.print_occurrence(occ),
         Value::Int(n) => n.to_string(),
         Value::BigInt(n) => n.to_string(),
         Value::Float(f) => f.to_string(),
         Value::Bool(b) => b.to_string(),
         Value::Str(s) => format!("{s:?}"),
-        Value::Entity { functor, pos, named } => {
+        Value::Entity { functor, pos, named, .. } => {
             let mut parts: Vec<String> = pos.iter().map(|c| render_value(printer, kb, c)).collect();
             parts.extend(named.iter().map(|(s, c)| {
                 format!("{}: {}", kb.resolve_sym(*s), render_value(printer, kb, c))
             }));
             format!("{}({})", kb.resolve_sym(*functor), parts.join(", "))
         }
-        Value::Tuple { pos, named } => {
+        Value::Tuple { pos, named, .. } => {
             let mut parts: Vec<String> = pos.iter().map(|c| render_value(printer, kb, c)).collect();
             parts.extend(named.iter().map(|(s, c)| {
                 format!("{}: {}", kb.resolve_sym(*s), render_value(printer, kb, c))

@@ -57,7 +57,7 @@ pub(crate) enum PositionalPlan {
 /// a value/occurrence goal. The owned form the mutable search frame needs.
 fn bind_value_to_value(bv: BindValue) -> Value {
     match bv {
-        BindValue::Term(t) => Value::Term(t),
+        BindValue::Term(t) => Value::term(t),
         BindValue::Value(v) => v,
         // `Path` is the discrim tree's deferred fact-leaf extraction; a goal's
         // own `as_bind_value` (TermId / Value / occurrence carriers) never
@@ -383,7 +383,7 @@ struct Frame {
 /// for the candidate match itself (which goes through `query_view`).
 fn reify_goal_value(kb: &mut KnowledgeBase, g: &Value) -> TermId {
     match g {
-        Value::Term(t) => *t,
+        Value::Term { id: t, .. } => *t,
         Value::Node(occ) => node_occurrence::occurrence_to_term(kb, occ),
         // Goals are always term- or occurrence-shaped structures.
         other => panic!("reify_goal_value: non-goal Value {}", other.type_name()),
@@ -624,7 +624,7 @@ impl SearchStream {
                 let subst = f.subst.clone();
                 let g0 = f.goals[0].clone();
                 let walked = match g0 {
-                    Value::Term(t) => Value::Term(kb.apply_subst(t, &subst)),
+                    Value::Term { id: t, .. } => Value::term(kb.apply_subst(t, &subst)),
                     Value::Node(occ) => {
                         Value::Node(node_occurrence::substitute_occurrence(kb, &occ, &subst))
                     }
@@ -638,7 +638,7 @@ impl SearchStream {
         // occurrence goal has none and is lowered on demand via `reify_goal_value`
         // below.
         let goal_t = match &goal_val {
-            Value::Term(t) => Some(*t),
+            Value::Term { id: t, .. } => Some(*t),
             _ => None,
         };
         let frame = self.stack.last().unwrap();
@@ -693,7 +693,7 @@ impl SearchStream {
                 let goal = goal_t.unwrap_or_else(|| reify_goal_value(kb, &goal_val));
                 if let Some(applied) = self.resolve_ho_apply(kb, goal, &subst) {
                     let f = self.stack.last_mut().unwrap();
-                    f.goals[0] = Value::Term(applied);
+                    f.goals[0] = Value::term(applied);
                     f.state = FrameState::Init { delay_mode };
                     return Some(StepResult::Continue);
                 } else {
@@ -1073,10 +1073,10 @@ impl SearchStream {
         let frame = self.stack.last().unwrap();
         let n_assumed = skolemized_antecedents.len();
         let mut new_goals: Vec<Value> =
-            skolemized_consequents.into_iter().map(Value::Term).collect();
+            skolemized_consequents.into_iter().map(Value::term).collect();
         if n_assumed > 0 {
             let marker = Self::make_pop_assumption_marker(kb, n_assumed);
-            new_goals.push(Value::Term(marker));
+            new_goals.push(Value::term(marker));
         }
         new_goals.extend(frame.goals[1..].iter().cloned());
         let mut new_assumed = frame.assumed_facts.clone();
@@ -1250,7 +1250,7 @@ impl SearchStream {
             // Conjunction: flatten all element bodies, prepend, replace frame.
             let frame = self.stack.last().unwrap();
             let mut new_goals: Vec<Value> =
-                per_element.into_iter().flatten().map(Value::Term).collect();
+                per_element.into_iter().flatten().map(Value::term).collect();
             new_goals.extend(frame.goals[1..].iter().cloned());
             let new_subst = frame.subst.clone();
             let new_assumed = frame.assumed_facts.clone();
@@ -1795,7 +1795,7 @@ impl SearchStream {
             let frame = self.stack.last().unwrap();
             let tail = &frame.goals[1..];
             let mut new_goals: Vec<Value> = Vec::with_capacity(body.len() + tail.len());
-            new_goals.extend(body.into_iter().map(Value::Term));
+            new_goals.extend(body.into_iter().map(Value::term));
             new_goals.extend(tail.iter().cloned());
             self.stack.push(Frame {
                 goals: new_goals,
@@ -1857,7 +1857,7 @@ impl SearchStream {
             // proposal 026.1 §"Lineage-preserving bindings" guarantee:
             // an external row enters σ as its raw `Value` shape.
             for (vid, val) in tree_subst.iter() {
-                if !matches!(val, Value::Term(_)) {
+                if !matches!(val, Value::Term { .. }) {
                     // WI-502 Step 2 — route through the waking choke-point so a
                     // constraint on `vid` (in the accumulating σ) wakes rather
                     // than being silently bound over. (No-op until Step 3's
@@ -1962,7 +1962,7 @@ impl SearchStream {
                     let baked = Self::bake_cut_term(kb, cut_sym, barrier);
                     for n in fresh_nodes {
                         if Self::cut_marker_functor(kb, &n).is_some() {
-                            new_goals.push(Value::Term(baked));
+                            new_goals.push(Value::term(baked));
                         } else {
                             new_goals.push(Value::Node(n));
                         }
@@ -1996,7 +1996,7 @@ impl SearchStream {
     /// otherwise collapse genuinely distinct rows to one key.
     fn is_duplicate_projection(&mut self, kb: &mut KnowledgeBase, sol: &Solution) -> bool {
         let has_value_binding = sol.subst.iter()
-            .any(|(_, v)| !matches!(v, Value::Term(_) | Value::Node(_)));
+            .any(|(_, v)| !matches!(v, Value::Term { .. } | Value::Node(_)));
         if has_value_binding {
             return false;
         }
@@ -2266,7 +2266,7 @@ impl KnowledgeBase {
             // is unreachable today and not further term-rewritable (Phase C).
             let rhs_value = self.reify(result_var, &tree_subst);
             let rhs = match &rhs_value {
-                Value::Term(t) => *t,
+                Value::Term { id: t, .. } => *t,
                 // A non-term RHS is unreachable today and not further term-rewritable
                 // (Phase C); narrow to the result var so the continuation stays in
                 // the term world.
@@ -2327,7 +2327,7 @@ impl KnowledgeBase {
         // carrier-agnostically, so a `Value::Node` receiver (a denoted entity)
         // is projected without lowering.
         let as_term = |kb: &mut KnowledgeBase, g: &Value| match g {
-            Value::Term(t) => *t,
+            Value::Term { id: t, .. } => *t,
             _ => reify_goal_value(kb, g),
         };
         match tag {
@@ -2376,7 +2376,7 @@ impl KnowledgeBase {
     fn walk_arg(&self, item: Option<ViewItem>, subst: &Substitution) -> Option<Value> {
         Some(match item? {
             ViewItem::Term(t) => self.walk_view(t, subst),
-            ViewItem::Value(Value::Term(t)) => self.walk_view(*t, subst),
+            ViewItem::Value(Value::Term { id: t, .. }) => self.walk_view(*t, subst),
             ViewItem::Value(v) => v.clone(),
             ViewItem::Node(occ) => match occ.as_expr() {
                 Some(Expr::Var(Var::Global(vid))) => {
@@ -2392,7 +2392,7 @@ impl KnowledgeBase {
     /// leaf. The delay test for `nonvar`/`cmp`/`arith`.
     fn value_is_unbound_var(&self, v: &Value) -> bool {
         match v {
-            Value::Term(t) => matches!(self.terms.get(*t), Term::Var(_)),
+            Value::Term { id: t, .. } => matches!(self.terms.get(*t), Term::Var(_)),
             Value::Node(occ) => matches!(occ.as_expr(), Some(Expr::Var(_))),
             // WI-109: a value-level logic variable is, itself, a variable.
             Value::Var(_) => true,
@@ -2435,7 +2435,7 @@ impl KnowledgeBase {
     /// `TermId` just to ask "is it ground".
     fn value_is_ground(&self, v: &Value, subst: &Substitution) -> bool {
         match v {
-            Value::Term(t) => matches!(self.is_ground(*t, subst), GroundCheck::Ground),
+            Value::Term { id: t, .. } => matches!(self.is_ground(*t, subst), GroundCheck::Ground),
             Value::Node(occ) => !node_occurrence::occurrence_has_unbound_var(occ),
             Value::Var(_) => false,
             _ => true,
@@ -2471,7 +2471,7 @@ impl KnowledgeBase {
 
     fn value_has_open_world_ref_inner(&self, v: &Value, var_ref: crate::intern::Symbol, subst: &Substitution) -> bool {
         match v {
-            Value::Term(t) => self.term_has_var_ref(*t, var_ref, subst),
+            Value::Term { id: t, .. } => self.term_has_var_ref(*t, var_ref, subst),
             Value::Node(occ) => node_occurrence::occurrence_has_var_ref(occ),
             Value::Entity { pos, named, .. } => {
                 pos.iter().any(|a| self.value_has_open_world_ref_inner(a, var_ref, subst))
@@ -2577,7 +2577,7 @@ impl KnowledgeBase {
         // (a `Value::Node` denoted/occurrence, a scalar) is `None` here, which each
         // caller turns into its failure path (see the doc above).
         match self.walk_view(arg, subst) {
-            Value::Term(t) => Some(t),
+            Value::Term { id: t, .. } => Some(t),
             _ => None,
         }
     }
@@ -2729,7 +2729,7 @@ impl KnowledgeBase {
         match v {
             // Reuse the single Node→term path; cf. `reify_goal_value` (the
             // bare-`TermId` variant for goal-identity boundaries).
-            Value::Node(_) => Value::Term(reify_goal_value(self, &v)),
+            Value::Node(_) => Value::term(reify_goal_value(self, &v)),
             other => other,
         }
     }
@@ -2852,7 +2852,7 @@ impl KnowledgeBase {
         let mut pat_node = None;
         match goal.pos_arg(self, 1) {
             Some(ViewItem::Term(t)) => pat_term = Some(t),
-            Some(ViewItem::Value(Value::Term(t))) => pat_term = Some(*t),
+            Some(ViewItem::Value(Value::Term { id: t, .. })) => pat_term = Some(*t),
             Some(ViewItem::Node(o)) => pat_node = Some(o),
             Some(ViewItem::Value(_)) | None => return Err(BuiltinResult::Failure),
         }
@@ -2968,7 +2968,7 @@ impl KnowledgeBase {
         // Value (Node / scalar / tuple) is simply not an operation symbol — fail
         // cleanly rather than panic (don't route through `reify_goal_value`).
         let op_sym = match &op_val {
-            Value::Term(t) => match self.terms.get(*t) {
+            Value::Term { id: t, .. } => match self.terms.get(*t) {
                 Term::Ref(s) | Term::Ident(s) => *s,
                 Term::Fn { functor, .. } => *functor,
                 _ => return BuiltinResult::Failure,
@@ -2980,7 +2980,7 @@ impl KnowledgeBase {
         let mut pat_node = None;
         match goal.pos_arg(self, 1) {
             Some(ViewItem::Term(t)) => pat_term = Some(t),
-            Some(ViewItem::Value(Value::Term(t))) => pat_term = Some(*t),
+            Some(ViewItem::Value(Value::Term { id: t, .. })) => pat_term = Some(*t),
             Some(ViewItem::Node(o)) => pat_node = Some(o),
             Some(ViewItem::Value(_)) | None => return BuiltinResult::Failure,
         }
@@ -3302,7 +3302,7 @@ impl KnowledgeBase {
     /// reachable from occurrence-carried inputs) reads as non-unifiable here.
     pub fn unify_terms(&mut self, a: TermId, b: TermId) -> Option<Substitution> {
         let mut work = Substitution::new();
-        match self.unify_values(Value::Term(a), Value::Term(b), &mut work) {
+        match self.unify_values(Value::term(a), Value::term(b), &mut work) {
             UnifyOutcome::Ok if !work.is_contradiction() => Some(work),
             _ => None,
         }
@@ -3543,7 +3543,7 @@ impl KnowledgeBase {
             Value::Int(n) => Some(Num::Int(*n)),
             Value::BigInt(n) => Some(Num::Big(n.clone())),
             Value::Float(f) => Some(Num::Float(ordered_float::OrderedFloat(*f))),
-            Value::Term(t) => match self.terms.get(*t) {
+            Value::Term { id: t, .. } => match self.terms.get(*t) {
                 Term::Const(Literal::Int(n)) => Some(Num::Int(*n)),
                 Term::Const(Literal::BigInt(n)) => Some(Num::Big(n.clone())),
                 Term::Const(Literal::Float(f)) => Some(Num::Float(*f)),
@@ -3558,7 +3558,7 @@ impl KnowledgeBase {
     /// an unbound var to bind.
     fn value_global_var(&self, v: &Value) -> Option<VarId> {
         match v {
-            Value::Term(t) => match self.terms.get(*t) {
+            Value::Term { id: t, .. } => match self.terms.get(*t) {
                 Term::Var(Var::Global(vid)) => Some(*vid),
                 _ => None,
             },
@@ -3596,7 +3596,7 @@ impl KnowledgeBase {
             }
             ResultTarget::Compare(Some(v)) => {
                 let bound = self.normalize_value(v);
-                if matches!(bound, Value::Term(t) if t == value) {
+                if matches!(bound, Value::Term { id: t, .. } if t == value) {
                     BuiltinResult::Success
                 } else {
                     BuiltinResult::Failure
@@ -3689,7 +3689,7 @@ impl KnowledgeBase {
             Some(Num::Int(n)) => self.alloc(Term::Const(Literal::BigInt(num_bigint::BigInt::from(n)))),
             // Already a BigInt — pass the term through, or promote a scalar.
             Some(Num::Big(n)) => match &arg {
-                Value::Term(t) => *t,
+                Value::Term { id: t, .. } => *t,
                 _ => self.alloc(Term::Const(Literal::BigInt(n))),
             },
             _ => return BuiltinResult::Failure,
@@ -3881,7 +3881,7 @@ impl KnowledgeBase {
     /// (WI-482).
     fn carrier_term(&mut self, v: &Value) -> Option<TermId> {
         match v {
-            Value::Term(_) | Value::Node(_) => Some(reify_goal_value(self, v)),
+            Value::Term { .. } | Value::Node(_) => Some(reify_goal_value(self, v)),
             _ => None,
         }
     }
@@ -3975,7 +3975,7 @@ impl KnowledgeBase {
             return v;
         };
         match self.project_field(obj_term, &field_name) {
-            Some(val) => Value::Term(val),
+            Some(val) => Value::term(val),
             None => v,
         }
     }
@@ -4172,7 +4172,7 @@ impl KnowledgeBase {
         loop {
             match subst.resolve_as_value(cur) {
                 None => return true,
-                Some(Value::Term(t)) => match self.terms.get(*t) {
+                Some(Value::Term { id: t, .. }) => match self.terms.get(*t) {
                     Term::Var(Var::Global(w)) => {
                         if *w == cur {
                             return true; // self-referential var binding
@@ -4222,7 +4222,7 @@ impl KnowledgeBase {
         }
         match arg.as_expr() {
             Some(Expr::Var(Var::Global(vid))) => match subst.resolve_as_value(*vid) {
-                Some(Value::Term(t)) => self.collect_unbound_vars(*t, subst, out),
+                Some(Value::Term { id: t, .. }) => self.collect_unbound_vars(*t, subst, out),
                 // Bound to a concrete non-`Term` carrier (a `Value::Node`) —
                 // the var IS bound, so it is not collected as unbound.
                 Some(_) => {}
@@ -4325,9 +4325,9 @@ impl KnowledgeBase {
         out: &mut Vec<VarId>,
     ) {
         match v {
-            Value::Term(t) => self.collect_unbound_vars(*t, subst, out),
+            Value::Term { id: t, .. } => self.collect_unbound_vars(*t, subst, out),
             Value::Node(occ) => self.collect_unbound_vars_node(occ, subst, out),
-            Value::Entity { pos, named, .. } | Value::Tuple { pos, named } => {
+            Value::Entity { pos, named, .. } | Value::Tuple { pos, named, .. } => {
                 for c in pos.iter() {
                     self.collect_type_value_unbound_vars(c, subst, out);
                 }
@@ -7211,7 +7211,7 @@ mod tests {
                 functor: g_sym,
                 pos_args: vec![concrete],
                 named_args: vec![],
-                type_args: vec![(Some(t_sym), Value::Term(caller_term))],
+                type_args: vec![(Some(t_sym), Value::term(caller_term))],
             },
             span,
             None,
@@ -7314,7 +7314,7 @@ mod tests {
                 functor: g_sym,
                 pos_args: vec![y_occ],
                 named_args: vec![],
-                type_args: vec![(Some(t_sym), Value::Term(x_term))],
+                type_args: vec![(Some(t_sym), Value::term(x_term))],
             },
             span,
             None,
@@ -7356,7 +7356,7 @@ mod tests {
                 functor: h_sym,
                 pos_args: vec![],
                 named_args: vec![],
-                type_args: vec![(Some(s_sym), Value::Term(caller_term))],
+                type_args: vec![(Some(s_sym), Value::term(caller_term))],
             },
             span,
             None,

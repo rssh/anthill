@@ -589,7 +589,7 @@ impl<L: Clone> SubstTree<L> {
             .map(|(leaf, subst)| {
                 let head = resolve_head(&leaf);
                 let s = match &head {
-                    Value::Term(t) => subst.resolve_leaf(kb, *t),
+                    Value::Term { id: t, .. } => subst.resolve_leaf(kb, *t),
                     _ => subst.resolve_leaf_view(kb, &head),
                 };
                 (leaf, s)

@@ -42,6 +42,7 @@ impl ExternalStream for WorkItemRowStream {
                 (self.id_field, Value::Str(row.id)),
                 (self.description_field, Value::Str(row.description)),
             ].into(),
+            ty: None,
         })
     }
     fn description(&self) -> &str { "WorkItemRowStream[in-memory]" }

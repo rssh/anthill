@@ -129,7 +129,7 @@ impl ViewItem<'_> {
     pub fn as_term_id(&self) -> Option<TermId> {
         match self {
             ViewItem::Term(t) => Some(*t),
-            ViewItem::Value(Value::Term(t)) => Some(*t),
+            ViewItem::Value(Value::Term { id: t, .. }) => Some(*t),
             _ => None,
         }
     }
@@ -141,7 +141,7 @@ impl ViewItem<'_> {
     /// holding a borrow of the parent across a mutating call.
     pub fn to_value(&self) -> Value {
         match self {
-            ViewItem::Term(t) => Value::Term(*t),
+            ViewItem::Term(t) => Value::term(*t),
             ViewItem::Value(v) => (*v).clone(),
             ViewItem::Node(occ) => Value::Node(Rc::clone(occ)),
         }
@@ -874,7 +874,7 @@ fn fingerprint_into<V: TermView>(
             Some(Value::Var(Var::Global(w))) if *w == var.as_vid() => {
                 out.push(StructToken::Var(var))
             }
-            Some(Value::Term(t))
+            Some(Value::Term { id: t, .. })
                 if matches!(kb.get_term(*t), Term::Var(Var::Global(w)) if *w == var.as_vid()) =>
             {
                 out.push(StructToken::Var(var))
@@ -1045,7 +1045,7 @@ impl TermView for TermId {
 impl TermView for Value {
     fn head(&self, kb: &KnowledgeBase) -> ViewHead {
         match self {
-            Value::Term(tid) => TermIdView(*tid).head(kb),
+            Value::Term { id: tid, .. } => TermIdView(*tid).head(kb),
             Value::Int(n) => ViewHead::Const(Literal::Int(*n)),
             Value::BigInt(n) => ViewHead::Const(Literal::BigInt(n.clone())),
             Value::Float(f) => ViewHead::Const(Literal::Float(ordered_float::OrderedFloat(*f))),
@@ -1056,12 +1056,12 @@ impl TermView for Value {
                 pos_arity: 0,
                 named_arity: 0,
             },
-            Value::Tuple { pos, named } => ViewHead::Functor {
+            Value::Tuple { pos, named, .. } => ViewHead::Functor {
                 functor: None,
                 pos_arity: pos.len(),
                 named_arity: named.len(),
             },
-            Value::Entity { functor, pos, named } => {
+            Value::Entity { functor, pos, named, .. } => {
                 functor_view_head(kb, *functor, pos.len(), named.len())
             }
             // WI-276: a reflect Expr occurrence is structural — expose its Expr.
@@ -1086,7 +1086,7 @@ impl TermView for Value {
         // Can't construct a temporary TermIdView and delegate — the
         // returned ViewItem would outlive it. Inline the TermId path.
         match self {
-            Value::Term(tid) => match kb.get_term(*tid) {
+            Value::Term { id: tid, .. } => match kb.get_term(*tid) {
                 Term::Fn { pos_args, .. } => pos_args.get(i).copied().map(ViewItem::Term),
                 _ => None,
             },
@@ -1099,7 +1099,7 @@ impl TermView for Value {
 
     fn named_arg<'a>(&'a self, kb: &'a KnowledgeBase, sym: Symbol) -> Option<ViewItem<'a>> {
         match self {
-            Value::Term(tid) => match kb.get_term(*tid) {
+            Value::Term { id: tid, .. } => match kb.get_term(*tid) {
                 Term::Fn { named_args, .. } => named_args.iter()
                     .find(|(s, _)| *s == sym)
                     .map(|(_, t)| ViewItem::Term(*t)),
@@ -1121,7 +1121,7 @@ impl TermView for Value {
 
     fn named_keys(&self, kb: &KnowledgeBase) -> Vec<Symbol> {
         match self {
-            Value::Term(tid) => match kb.get_term(*tid) {
+            Value::Term { id: tid, .. } => match kb.get_term(*tid) {
                 Term::Fn { named_args, .. } => named_args.iter().map(|(s, _)| *s).collect(),
                 _ => Vec::new(),
             },
@@ -1134,7 +1134,7 @@ impl TermView for Value {
 
     fn as_bind_value(&self) -> BindValue {
         match self {
-            Value::Term(tid) => BindValue::Term(*tid),
+            Value::Term { id: tid, .. } => BindValue::Term(*tid),
             // Value::Node clones cheaply (Rc), preserving occurrence identity.
             other => BindValue::Value(other.clone()),
         }
@@ -1142,7 +1142,7 @@ impl TermView for Value {
 
     fn index_var(&self, kb: &KnowledgeBase) -> Option<Var> {
         match self {
-            Value::Term(tid) => match kb.get_term(*tid) {
+            Value::Term { id: tid, .. } => match kb.get_term(*tid) {
                 Term::Var(v) => Some(*v),
                 _ => None,
             },
@@ -1425,6 +1425,7 @@ mod wi436_tests {
             functor: red,
             pos: Rc::from(Vec::<Value>::new()),
             named: Rc::from(Vec::<(Symbol, Value)>::new()),
+            ty: None,
         };
         let ctor_occ = Value::Node(NodeOccurrence::new_expr(
             Expr::Constructor { name: red, pos_args: Vec::new(), named_args: Vec::new() },

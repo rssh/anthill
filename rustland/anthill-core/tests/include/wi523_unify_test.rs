@@ -77,7 +77,7 @@ fn int_term(kb: &mut KnowledgeBase, n: i64) -> TermId {
 /// var to that Node (carrier-faithful); compare structurally against a term `n`.
 fn assert_binds_int(kb: &KnowledgeBase, reified: &Value, n: i64, expected_term: TermId) {
     assert!(
-        views_structurally_equal(kb, reified, &Value::Term(expected_term)),
+        views_structurally_equal(kb, reified, &Value::term(expected_term)),
         "expected binding to {n}, got {reified:?}"
     );
 }

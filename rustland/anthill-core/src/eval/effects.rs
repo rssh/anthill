@@ -273,7 +273,7 @@ fn detect_cycle(
         return Err(EvalError::CyclicReference);
     }
     match value {
-        Value::Entity { functor, pos, named } => {
+        Value::Entity { functor, pos, named, .. } => {
             if *functor == target {
                 return Err(EvalError::CyclicReference);
             }
@@ -282,10 +282,10 @@ fn detect_cycle(
             }
             Ok(())
         }
-        Value::Term(tid) => {
+        Value::Term { id: tid, .. } => {
             detect_cycle_term(interp, target, *tid, depth)
         }
-        Value::Tuple { pos, named } => {
+        Value::Tuple { pos, named, .. } => {
             for v in pos.iter().chain(named.iter().map(|(_, v)| v)) {
                 detect_cycle(interp, target, v, depth + 1)?;
             }

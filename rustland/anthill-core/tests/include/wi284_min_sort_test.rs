@@ -218,7 +218,7 @@ fn min_sort_of_value_store_fallback_for_unbound_constrained_var() {
     let xname = kb.intern("x");
     let vid = VarId::new(2, xname);
     let mut subst = Substitution::new();
-    subst.add_type_constraint(vid, Value::Term(numeric));
+    subst.add_type_constraint(vid, Value::term(numeric));
     let ms = min_sort_of_value(&kb, &subst, &Value::Var(Var::Global(vid)))
         .expect("store fallback yields the constraint's sort");
     assert_sort_named(&kb, ms, "Numeric");
@@ -241,7 +241,7 @@ fn min_sort_of_value_flounders_on_cyclic_sigma() {
     let mut subst = Substitution::new();
     // ?x := Var(?x) — a self-cycle (the shape path-compression can leave).
     let self_var = kb.alloc(Term::Var(Var::Global(vid)));
-    subst.bind_value(&kb, vid, Value::Term(self_var));
+    subst.bind_value(&kb, vid, Value::term(self_var));
     assert!(
         min_sort_of_value(&kb, &subst, &Value::Var(Var::Global(vid))).is_none(),
         "a cyclic σ must flounder to None, never loop",

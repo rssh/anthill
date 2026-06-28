@@ -141,7 +141,7 @@ end
         .find(|(s, _)| *s == g_sym)
         .expect("param g present");
     let printed = match g_ty {
-        Value::Term(t) => TermPrinter::new(&kb).print_term(*t),
+        Value::Term { id: t, .. } => TermPrinter::new(&kb).print_term(*t),
         other => panic!("expected a ground arrow type for g, got {other:?}"),
     };
     assert_eq!(

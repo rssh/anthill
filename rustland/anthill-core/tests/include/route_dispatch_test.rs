@@ -45,6 +45,7 @@ impl ExternalStream for WorkItemBackend {
             functor: self.functor,
             pos: Vec::new().into(),
             named: named.into(),
+            ty: None,
         })
     }
     fn description(&self) -> &str { "WorkItemBackend[in-memory]" }

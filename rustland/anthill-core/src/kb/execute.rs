@@ -258,11 +258,11 @@ impl KnowledgeBase {
             ))),
             Value::Bool(b) => Ok(self.terms.alloc(Term::Const(Literal::Bool(*b)))),
             Value::Str(s) => Ok(self.terms.alloc(Term::Const(Literal::String(s.clone())))),
-            Value::Term(tid) => Ok(*tid),
+            Value::Term { id: tid, .. } => Ok(*tid),
             // WI-109: a value-level logic variable lowers back to `Term::Var`,
             // making the round-trip lossless.
             Value::Var(var) => Ok(self.terms.alloc(Term::Var(*var))),
-            Value::Entity { functor, pos, named } => {
+            Value::Entity { functor, pos, named, .. } => {
                 let mut pos_args: SmallVec<[TermId; 4]> = SmallVec::new();
                 for p in pos.iter() {
                     pos_args.push(self.alloc_from_value(p)?);
@@ -477,7 +477,7 @@ impl KnowledgeBase {
                 for g in &goals {
                     tids.push(self.goal_value_to_term(g)?);
                 }
-                Ok(Value::Term(self.synthesize_conjunction_rule(tids)))
+                Ok(Value::term(self.synthesize_conjunction_rule(tids)))
             }
         }
     }
@@ -503,6 +503,7 @@ impl KnowledgeBase {
             functor,
             pos: std::rc::Rc::from(args),
             named: std::rc::Rc::from(Vec::<(Symbol, Value)>::new()),
+            ty: None,
         }
     }
 
@@ -562,7 +563,7 @@ impl KnowledgeBase {
     pub(crate) fn lower_leaf(&mut self, v: &Value) -> Result<Value, LowerError> {
         match v {
             Value::Node(_) => Ok(v.clone()),
-            other => Ok(Value::Term(self.alloc_from_value(other)?)),
+            other => Ok(Value::term(self.alloc_from_value(other)?)),
         }
     }
 
@@ -649,7 +650,7 @@ impl KnowledgeBase {
                 pos_args: SmallVec::from_slice(&[var_term, sort_ref]),
                 named_args: SmallVec::new(),
             });
-            return Ok(vec![Value::Term(goal)]);
+            return Ok(vec![Value::term(goal)]);
         }
 
         if Some(functor) == syms.negation {
@@ -700,7 +701,7 @@ impl KnowledgeBase {
                 pos_args: SmallVec::from_slice(&[l, r]),
                 named_args: SmallVec::new(),
             });
-            return Ok(vec![Value::Term(goal)]);
+            return Ok(vec![Value::term(goal)]);
         }
 
         // Projection / limit are wrappers over the inner stream. Flatten

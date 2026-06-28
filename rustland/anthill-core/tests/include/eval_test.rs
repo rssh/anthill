@@ -1621,14 +1621,16 @@ end
         functor: ancestor_sym,
         pos: Vec::new().into(),
         named: vec![
-            (parent_field, Value::Term(var_p)),
-            (child_field, Value::Term(bob_term)),
+            (parent_field, Value::term(var_p)),
+            (child_field, Value::term(bob_term)),
         ].into(),
+        ty: None,
     };
     let query = Value::Entity {
         functor: pattern_query_sym,
         pos: Vec::new().into(),
         named: vec![(term_field, ancestor_pattern)].into(),
+        ty: None,
     };
 
     // Lower + wrap as a Value::Stream on the Rust side (since we can't
@@ -1690,14 +1692,16 @@ end
         functor: ancestor_sym,
         pos: Vec::new().into(),
         named: vec![
-            (parent_field, Value::Term(var_p)),
-            (child_field, Value::Term(var_c)),
+            (parent_field, Value::term(var_p)),
+            (child_field, Value::term(var_c)),
         ].into(),
+        ty: None,
     };
     let query = Value::Entity {
         functor: pattern_query_sym,
         pos: Vec::new().into(),
         named: vec![(term_field, ancestor_pattern)].into(),
+        ty: None,
     };
 
     let search = interp.kb_mut().execute_logical_query(&query).expect("execute lowered");
@@ -1883,7 +1887,7 @@ end
     // Pass the Console entity as the argument.
     let console_sym = interp.kb().try_resolve_symbol("anthill.prelude.Console.console")
         .expect("Console.console symbol");
-    let console_val = Value::Entity { functor: console_sym, pos: Vec::new().into(), named: Vec::new().into() };
+    let console_val = Value::Entity { functor: console_sym, pos: Vec::new().into(), named: Vec::new().into(), ty: None };
 
     interp.call("test.m5_print.greet", &[console_val]).expect("greet runs");
     assert_eq!(buf.borrow().as_str(), "hello\n");
@@ -1903,7 +1907,7 @@ end
     let (buf, handler) = buffered_console();
     interp.register_effect_handler("anthill.prelude.Console.ConsoleOutput", handler).unwrap();
     let console_sym = interp.kb().try_resolve_symbol("anthill.prelude.Console.console").unwrap();
-    let console_val = Value::Entity { functor: console_sym, pos: Vec::new().into(), named: Vec::new().into() };
+    let console_val = Value::Entity { functor: console_sym, pos: Vec::new().into(), named: Vec::new().into(), ty: None };
     interp.call("test.m5_print2.speak", &[console_val]).expect("speak runs");
     assert_eq!(buf.borrow().as_str(), "hi");
 }
@@ -1926,7 +1930,7 @@ end
     interp.register_effect_handler("anthill.prelude.Console.ConsoleOutput", out_handler).unwrap();
     interp.register_effect_handler("anthill.prelude.Console.ConsoleError", err_handler).unwrap();
     let console_sym = interp.kb().try_resolve_symbol("anthill.prelude.Console.console").unwrap();
-    let console_val = Value::Entity { functor: console_sym, pos: Vec::new().into(), named: Vec::new().into() };
+    let console_val = Value::Entity { functor: console_sym, pos: Vec::new().into(), named: Vec::new().into(), ty: None };
     interp.call("test.m5_eprint.diag", &[console_val]).expect("diag runs");
     assert_eq!(out_buf.borrow().as_str(), "ok\n");
     assert_eq!(err_buf.borrow().as_str(), "oops\n");
@@ -1946,7 +1950,7 @@ end
     let (queue, handler) = scripted_console_input(&["ruslan", "ignored_second_line"]);
     interp.register_effect_handler("anthill.prelude.Console.ConsoleInput", handler).unwrap();
     let console_sym = interp.kb().try_resolve_symbol("anthill.prelude.Console.console").unwrap();
-    let console_val = Value::Entity { functor: console_sym, pos: Vec::new().into(), named: Vec::new().into() };
+    let console_val = Value::Entity { functor: console_sym, pos: Vec::new().into(), named: Vec::new().into(), ty: None };
 
     let got = interp.call("test.m5_read.ask", &[console_val]).expect("ask runs");
     assert_eq!(got.as_str(), Some("ruslan"));
@@ -1972,7 +1976,7 @@ end
     interp.register_effect_handler("anthill.prelude.Console.ConsoleOutput", out_h).unwrap();
     interp.register_effect_handler("anthill.prelude.Console.ConsoleInput", in_h).unwrap();
     let console_sym = interp.kb().try_resolve_symbol("anthill.prelude.Console.console").unwrap();
-    let console_val = Value::Entity { functor: console_sym, pos: Vec::new().into(), named: Vec::new().into() };
+    let console_val = Value::Entity { functor: console_sym, pos: Vec::new().into(), named: Vec::new().into(), ty: None };
     interp.call("test.m5_round.echo", &[console_val]).expect("echo runs");
     assert_eq!(buf.borrow().as_str(), "alice\n");
 }
@@ -1993,7 +1997,7 @@ end
     let mut interp = interp_for(src);
     // Deliberately no register_effect_handler call.
     let console_sym = interp.kb().try_resolve_symbol("anthill.prelude.Console.console").unwrap();
-    let console_val = Value::Entity { functor: console_sym, pos: Vec::new().into(), named: Vec::new().into() };
+    let console_val = Value::Entity { functor: console_sym, pos: Vec::new().into(), named: Vec::new().into(), ty: None };
     let err = interp.call("test.m5_unhandled.speak", &[console_val]).unwrap_err();
     assert!(
         matches!(&err, anthill_core::eval::EvalError::Internal(msg)
@@ -2019,7 +2023,7 @@ end
     let (buf1, h1) = buffered_console();
     interp.register_effect_handler("anthill.prelude.Console.ConsoleOutput", h1).unwrap();
     let console_sym = interp.kb().try_resolve_symbol("anthill.prelude.Console.console").unwrap();
-    let console_val = Value::Entity { functor: console_sym, pos: Vec::new().into(), named: Vec::new().into() };
+    let console_val = Value::Entity { functor: console_sym, pos: Vec::new().into(), named: Vec::new().into(), ty: None };
     interp.call("test.m5_swap.speak", &[console_val.clone(), Value::Str("first".into())]).unwrap();
     assert_eq!(buf1.borrow().as_str(), "first\n");
 
@@ -2149,7 +2153,7 @@ fn m5_modify_rust_side_roundtrip() {
     // Minimal Entity-shaped target: a nullary constructor the anthill
     // side hasn't declared. We intern the symbol directly.
     let target_sym = interp.kb_mut().intern("rs_counter");
-    let target = Value::Entity { functor: target_sym, pos: Vec::new().into(), named: Vec::new().into() };
+    let target = Value::Entity { functor: target_sym, pos: Vec::new().into(), named: Vec::new().into(), ty: None };
 
     let set_sym = interp.kb_mut().intern("set");
     interp.invoke_effect_handler("anthill.prelude.Modify", set_sym, &[target.clone(), Value::Int(100)])
@@ -2170,7 +2174,7 @@ fn m5_modify_handler_taken_is_none() {
     assert!(taken.is_some(), "take returns the previously-registered handler");
 
     let target_sym = interp.kb_mut().intern("x");
-    let target = Value::Entity { functor: target_sym, pos: Vec::new().into(), named: Vec::new().into() };
+    let target = Value::Entity { functor: target_sym, pos: Vec::new().into(), named: Vec::new().into(), ty: None };
     let get_sym = interp.kb_mut().intern("get");
     let err = interp.invoke_effect_handler("anthill.prelude.Modify", get_sym, &[target]).unwrap_err();
     assert!(

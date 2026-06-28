@@ -184,8 +184,8 @@ fn collect_value_ground_terms_into(
 ) {
     use crate::eval::value::Value;
     match v {
-        Value::Term(t) => out.push(*t),
-        Value::Entity { pos, named, .. } | Value::Tuple { pos, named } => {
+        Value::Term { id: t, .. } => out.push(*t),
+        Value::Entity { pos, named, .. } | Value::Tuple { pos, named, .. } => {
             for c in pos.iter() {
                 collect_value_ground_terms_into(kb, c, out);
             }
@@ -938,7 +938,7 @@ impl KnowledgeBase {
         // `Value::Term` head has one; a `Node`/`Entity` head is keyless (a dedup-miss,
         // not unsoundness — WI-348 Phase B). Read before `head` moves into the entry.
         let head_term = match &head {
-            crate::eval::value::Value::Term(t) => Some(*t),
+            crate::eval::value::Value::Term { id: t, .. } => Some(*t),
             _ => None,
         };
         let rule_id = self.push_value_head_entry(head, body_nodes, sort, domain, meta);
@@ -1077,7 +1077,7 @@ impl KnowledgeBase {
         // structure (a `TermId` IS its structure; a `Value`/`Node` clones cheaply)
         // and never yields a `Path` (that variant is for deferred subst leaves).
         let query = match guard.as_bind_value() {
-            BindValue::Term(t) => Value::Term(t),
+            BindValue::Term(t) => Value::term(t),
             BindValue::Value(v) => v,
             BindValue::Path(_) => unreachable!("TermView::as_bind_value never yields a Path"),
         };
@@ -1494,7 +1494,7 @@ impl KnowledgeBase {
         meta: Option<TermId>,
     ) -> RuleId {
         use crate::eval::value::Value;
-        if let Value::Term(t) = head {
+        if let Value::Term { id: t, .. } = head {
             return self.assert_fact(t, sort, domain, meta);
         }
         // A value (Node/Entity) head: store + index via the shared epilogue. No
@@ -1525,7 +1525,7 @@ impl KnowledgeBase {
         // a `Value::Node`-bearing one as a `Value::Entity` value fact. Routing on
         // the assembled carrier keeps the two paths from ever disagreeing.
         match self.fn_value(functor, pos, named) {
-            Value::Term(term) => self.assert_fact(term, sort, domain, meta),
+            Value::Term { id: term, .. } => self.assert_fact(term, sort, domain, meta),
             head => self.assert_fact_value(head, sort, domain, meta),
         }
     }
@@ -1613,7 +1613,7 @@ impl KnowledgeBase {
         // different RuleId at that key.
         if is_fact {
             // Only Term-carrier heads were dedup-indexed (WI-348 Phase B).
-            if let crate::eval::value::Value::Term(head_t) = &head_val {
+            if let crate::eval::value::Value::Term { id: head_t, .. } = &head_val {
                 if let std::collections::hash_map::Entry::Occupied(e) =
                     self.fact_dedup.entry((*head_t, sort, domain))
                 {
@@ -1868,7 +1868,7 @@ impl KnowledgeBase {
     /// `is_equation` bug was exactly such a leak, surfaced by this panic, then fixed.)
     pub fn rule_head(&self, id: RuleId) -> TermId {
         match &self.rules[id.index()].head {
-            crate::eval::value::Value::Term(t) => *t,
+            crate::eval::value::Value::Term { id: t, .. } => *t,
             other => panic!(
                 "rule_head: head is not a Term carrier — a value fact reached a \
                  term-only head reader (WI-348); read via `rule_head_value` / \
@@ -1897,7 +1897,7 @@ impl KnowledgeBase {
     /// on a value head.
     pub fn fact_head_term(&self, id: RuleId) -> Option<TermId> {
         match &self.rules[id.index()].head {
-            crate::eval::value::Value::Term(t) => Some(*t),
+            crate::eval::value::Value::Term { id: t, .. } => Some(*t),
             _ => None,
         }
     }
@@ -2245,7 +2245,7 @@ impl KnowledgeBase {
             // Term-world substitution: a non-`Term` carrier (a `Value::Node`)
             // can't be a `Term` child, so a var bound to one stays the var.
             Term::Var(Var::Global(vid)) => match subst.resolve_as_value(vid) {
-                Some(crate::eval::value::Value::Term(t)) => *t,
+                Some(crate::eval::value::Value::Term { id: t, .. }) => *t,
                 _ => term,
             },
             Term::Var(Var::DeBruijn(_)) => term,
@@ -2273,7 +2273,7 @@ impl KnowledgeBase {
         loop {
             match self.terms.get(current) {
                 Term::Var(Var::Global(vid)) => match subst.resolve_as_value(*vid) {
-                    Some(Value::Term(bound)) => {
+                    Some(Value::Term { id: bound, .. }) => {
                         if *bound == current {
                             return current; // self-referential, stop
                         }
@@ -2306,11 +2306,11 @@ impl KnowledgeBase {
         loop {
             match self.terms.get(current) {
                 Term::Var(Var::Global(vid)) => match subst.resolve_as_value(*vid) {
-                    Some(Value::Term(next)) if *next != current => current = *next,
-                    Some(Value::Term(_)) | None => return Value::Term(current),
+                    Some(Value::Term { id: next, .. }) if *next != current => current = *next,
+                    Some(Value::Term { .. }) | None => return Value::term(current),
                     Some(other) => return other.clone(),
                 },
-                _ => return Value::Term(current),
+                _ => return Value::term(current),
             }
         }
     }
@@ -2341,7 +2341,7 @@ impl KnowledgeBase {
         // Chase the var chain carrier-faithfully — `walk_view` surfaces a
         // non-`Term` binding the `TermId`-only `walk` cannot see.
         match self.walk_view(term, subst) {
-            Value::Term(t) => match self.terms.get(t).clone() {
+            Value::Term { id: t, .. } => match self.terms.get(t).clone() {
                 Term::Fn { functor, pos_args, named_args } => {
                     let pos: Vec<Value> =
                         pos_args.iter().map(|&id| self.reify(id, subst)).collect();
@@ -2352,7 +2352,7 @@ impl KnowledgeBase {
                     self.fn_value(functor, pos, named)
                 }
                 // Leaf (Const/Ref/Ident/…) or an unbound `Var` — already final.
-                _ => Value::Term(t),
+                _ => Value::term(t),
             },
             // A bound non-`Term` carrier (`Value::Node` / `Entity` / scalar /
             // `Var`) — return as-is, identity preserved through the answer.
@@ -2375,8 +2375,8 @@ impl KnowledgeBase {
         named: Vec<(Symbol, crate::eval::value::Value)>,
     ) -> crate::eval::value::Value {
         use crate::eval::value::Value;
-        let all_term = pos.iter().all(|v| matches!(v, Value::Term(_)))
-            && named.iter().all(|(_, v)| matches!(v, Value::Term(_)));
+        let all_term = pos.iter().all(|v| matches!(v, Value::Term { .. }))
+            && named.iter().all(|(_, v)| matches!(v, Value::Term { .. }));
         if all_term {
             let pos_args: SmallVec<[TermId; 4]> =
                 pos.iter().map(|v| v.expect_term()).collect();
@@ -2384,12 +2384,13 @@ impl KnowledgeBase {
                 .iter()
                 .map(|(s, v)| (*s, v.expect_term()))
                 .collect();
-            Value::Term(self.alloc(Term::Fn { functor, pos_args, named_args }))
+            Value::term(self.alloc(Term::Fn { functor, pos_args, named_args }))
         } else {
             Value::Entity {
                 functor,
                 pos: std::rc::Rc::from(pos),
                 named: std::rc::Rc::from(named),
+                ty: None,
             }
         }
     }
@@ -2418,7 +2419,7 @@ impl KnowledgeBase {
     ) -> crate::eval::value::Value {
         use crate::eval::value::Value;
         match v {
-            Value::Term(t) => self.reify(*t, subst),
+            Value::Term { id: t, .. } => self.reify(*t, subst),
             Value::Node(occ) => {
                 Value::Node(node_occurrence::substitute_occurrence(self, occ, subst))
             }
@@ -2495,13 +2496,13 @@ impl KnowledgeBase {
     ) {
         use crate::eval::value::Value;
         match head {
-            Value::Term(t) => self.collect_vars_rec(*t, vars, seen),
+            Value::Term { id: t, .. } => self.collect_vars_rec(*t, vars, seen),
             Value::Node(occ) => {
                 node_occurrence::collect_occurrence_global_vars_ordered(self, occ, vars, seen)
             }
             // A functor head or an anonymous tuple: recurse into the children
             // (any of which can carry vars), pos before named.
-            Value::Entity { pos, named, .. } | Value::Tuple { pos, named } => {
+            Value::Entity { pos, named, .. } | Value::Tuple { pos, named, .. } => {
                 for c in pos.iter() {
                     self.collect_value_head_vars(c, vars, seen);
                 }
@@ -2536,9 +2537,9 @@ impl KnowledgeBase {
     ) -> crate::eval::value::Value {
         use crate::eval::value::Value;
         match head {
-            Value::Term(t) => Value::Term(self.term_to_debruijn(t, vars)),
+            Value::Term { id: t, .. } => Value::term(self.term_to_debruijn(t, vars)),
             Value::Node(occ) => Value::Node(node_occurrence::node_to_debruijn(self, &occ, vars)),
-            Value::Entity { functor, pos, named } => {
+            Value::Entity { functor, pos, named, .. } => {
                 let pos: Vec<Value> = pos
                     .iter()
                     .map(|c| self.close_value_head_debruijn(c.clone(), vars))
@@ -2547,9 +2548,9 @@ impl KnowledgeBase {
                     .iter()
                     .map(|(s, c)| (*s, self.close_value_head_debruijn(c.clone(), vars)))
                     .collect();
-                Value::Entity { functor, pos: std::rc::Rc::from(pos), named: std::rc::Rc::from(named) }
+                Value::Entity { functor, pos: std::rc::Rc::from(pos), named: std::rc::Rc::from(named), ty: None }
             }
-            Value::Tuple { pos, named } => {
+            Value::Tuple { pos, named, .. } => {
                 let pos: Vec<Value> = pos
                     .iter()
                     .map(|c| self.close_value_head_debruijn(c.clone(), vars))
@@ -2558,7 +2559,7 @@ impl KnowledgeBase {
                     .iter()
                     .map(|(s, c)| (*s, self.close_value_head_debruijn(c.clone(), vars)))
                     .collect();
-                Value::Tuple { pos: std::rc::Rc::from(pos), named: std::rc::Rc::from(named) }
+                Value::Tuple { pos: std::rc::Rc::from(pos), named: std::rc::Rc::from(named), ty: None }
             }
             // Scalars have no vars to close.
             h @ (Value::Int(_) | Value::BigInt(_) | Value::Float(_) | Value::Bool(_)
@@ -2891,7 +2892,7 @@ impl KnowledgeBase {
                         let t = node_occurrence::occurrence_to_term(self, &occ);
                         norm.bind(self, vid, t);
                     }
-                    crate::eval::value::Value::Term(t) => norm.bind(self, vid, t),
+                    crate::eval::value::Value::Term { id: t, .. } => norm.bind(self, vid, t),
                     other => norm.bind_value(self, vid, other),
                 }
             }
@@ -2984,7 +2985,7 @@ impl KnowledgeBase {
                 // Term-narrow: a non-`Term` carrier here would need De Bruijn
                 // opening over an occurrence (WI-348 Phase C) — until then a
                 // Node binding falls through to a fresh var, as before.
-                if let Some(crate::eval::value::Value::Term(bound)) =
+                if let Some(crate::eval::value::Value::Term { id: bound, .. }) =
                     tree_subst.resolve_as_value(*vid)
                 {
                     let bound = *bound;
@@ -3013,7 +3014,7 @@ impl KnowledgeBase {
                 match self.terms.get(bound_term) {
                     Term::Var(Var::Global(rule_vid)) => {
                         let rule_vid = *rule_vid;
-                        if let Some(crate::eval::value::Value::Term(renamed)) =
+                        if let Some(crate::eval::value::Value::Term { id: renamed, .. }) =
                             rename.resolve_as_value(rule_vid)
                         {
                             answer_links.bind(self, ts_vid, *renamed);
@@ -3304,16 +3305,17 @@ impl KnowledgeBase {
         let mut elems: Vec<Value> = Vec::with_capacity(fields.len());
         for (field_name, child) in fields {
             let type_value = match child {
-                TypeChild::Ground(t) => Value::Term(t),
+                TypeChild::Ground(t) => Value::term(t),
                 TypeChild::Node(o) => Value::Node(o),
             };
-            let name_ref = Value::Term(self.alloc(Term::Ref(field_name)));
+            let name_ref = Value::term(self.alloc(Term::Ref(field_name)));
             let mut named = vec![(name_key, name_ref), (type_key, type_value)];
             self.sort_named_canonical(element_sym, &mut named);
             elems.push(Value::Entity {
                 functor: element_sym,
                 pos: Rc::from(Vec::new()),
                 named: Rc::from(named),
+                ty: None,
             });
         }
         // The `cons`/`nil` spine reuses the shared `Value`-list builder (its
@@ -4149,12 +4151,12 @@ mod tests {
         };
         let mut subst = subst::Substitution::new();
         subst.bindings.insert(vz, Value::Var(Var::Global(vw)));   // z → w
-        subst.bindings.insert(vw, Value::Term(seven));            // w → 7
+        subst.bindings.insert(vw, Value::term(seven));            // w → 7
         subst.bindings.insert(vs, Value::Var(Var::Global(vs)));   // s → s (cycle)
 
         // z chases z → w → 7.
         match kb.reify_value(&Value::Var(Var::Global(vz)), &subst) {
-            Value::Term(t) => assert!(matches!(kb.get_term(t), Term::Const(Literal::Int(7)))),
+            Value::Term { id: t, .. } => assert!(matches!(kb.get_term(t), Term::Const(Literal::Int(7)))),
             other => panic!("z should chase to Int64(7), got {other:?}"),
         }
         // Self-binding terminates and returns the var.
@@ -4277,6 +4279,7 @@ mod tests {
             functor: f_sym,
             pos: Rc::from(vec![Value::Node(Rc::clone(&denoted_occ))]),
             named: Rc::from(Vec::<(Symbol, Value)>::new()),
+            ty: None,
         };
 
         let rid = kb.assert_fact_value(head, sort, domain, None);
@@ -4344,10 +4347,11 @@ mod tests {
             named: {
                 let n: Vec<(Symbol, Value)> = vec![
                     (alpha, Value::Node(Rc::clone(&denoted_occ))),
-                    (beta, Value::Term(beta_t)),
+                    (beta, Value::term(beta_t)),
                 ];
                 Rc::from(n)
             },
+            ty: None,
         };
 
         let rid = kb.assert_fact_value(head, sort, domain, None);
@@ -4412,6 +4416,7 @@ mod tests {
             functor: f_sym,
             pos: Rc::from(vec![Value::Node(Rc::clone(&denoted_occ))]),
             named: Rc::from(Vec::<(Symbol, Value)>::new()),
+            ty: None,
         };
         kb.assert_fact_value(head, sort, domain, None);
 
@@ -4455,7 +4460,7 @@ mod tests {
             other => panic!("reify(?x) should yield the Node, got {other:?}"),
         }
         match kb.reify(goal, &subst) {
-            Value::Entity { functor, pos, named } => {
+            Value::Entity { functor, pos, named, .. } => {
                 assert_eq!(functor, f_sym, "reify(vf(?x)) keeps the functor");
                 assert!(named.is_empty(), "vf has no named args");
                 match &pos[..] {
@@ -4502,6 +4507,7 @@ mod tests {
                 functor: f_sym,
                 pos: Rc::from(vec![Value::Node(occ)]),
                 named: Rc::from(Vec::<(Symbol, Value)>::new()),
+                ty: None,
             };
             kb.assert_fact_value(head, sort, domain, None);
         }
@@ -4592,6 +4598,7 @@ mod tests {
             functor: vf,
             pos: Rc::from(vec![Value::Node(Rc::clone(&denoted))]),
             named: Rc::from(Vec::<(Symbol, Value)>::new()),
+            ty: None,
         };
 
         // A ground body atom, so this is a rule (non-empty body), not a fact.
@@ -4657,6 +4664,7 @@ mod tests {
             functor: vf,
             pos: Rc::from(vec![Value::Node(g_db)]),
             named: Rc::from(Vec::<(Symbol, Value)>::new()),
+            ty: None,
         };
         let cond_goal = kb.alloc(Term::Fn {
             functor: cond,
@@ -4718,6 +4726,7 @@ mod tests {
             functor: vf,
             pos: Rc::from(vec![Value::Node(g_occ)]),
             named: Rc::from(Vec::<(Symbol, Value)>::new()),
+            ty: None,
         };
         let thing_x = kb.alloc(Term::Fn {
             functor: thing,
@@ -4792,6 +4801,7 @@ mod tests {
             functor: vf,
             pos: Rc::from(vec![Value::Node(g_occ)]),
             named: Rc::from(Vec::<(Symbol, Value)>::new()),
+            ty: None,
         };
         let thing_x = kb.alloc(Term::Fn {
             functor: thing, pos_args: SmallVec::from_elem(xt, 1), named_args: SmallVec::new(),
@@ -4955,6 +4965,7 @@ mod tests {
             functor: f,
             pos: vec![Value::Str("A001".into())].into(),
             named: Vec::new().into(),
+            ty: None,
         };
 
         let subst = kb.match_view(pattern, &value_target)
@@ -4965,7 +4976,7 @@ mod tests {
             other => panic!("expected Value::Str, got {other:?}"),
         }
         // resolve() returns None because the binding isn't a TermId.
-        assert!(!matches!(subst.resolve_as_value(xv), Some(Value::Term(_))));
+        assert!(!matches!(subst.resolve_as_value(xv), Some(Value::Term { .. })));
     }
 
     #[test]
@@ -5000,16 +5011,19 @@ mod tests {
             functor: inner,
             pos: Vec::new().into(),
             named: vec![(a_field, Value::Int(1)), (b_field, Value::Str("hi".into()))].into(),
+            ty: None,
         };
-        let leaf_val = Value::Entity { functor: leaf, pos: Vec::new().into(), named: Vec::new().into() };
+        let leaf_val = Value::Entity { functor: leaf, pos: Vec::new().into(), named: Vec::new().into(), ty: None };
         let nested_tuple = Value::Tuple {
             pos: vec![Value::Int(2), leaf_val.clone()].into(),
             named: Vec::new().into(),
+            ty: None,
         };
         let target = Value::Entity {
             functor: pair,
             pos: vec![inner_val.clone(), nested_tuple.clone()].into(),
             named: Vec::new().into(),
+            ty: None,
         };
 
         let subst = kb.match_view(pattern, &target).expect("match should succeed");
@@ -5039,8 +5053,8 @@ mod tests {
         }
 
         // Both variables bind to non-Term Values → resolve() returns None.
-        assert!(!matches!(subst.resolve_as_value(xv), Some(Value::Term(_))));
-        assert!(!matches!(subst.resolve_as_value(yv), Some(Value::Term(_))));
+        assert!(!matches!(subst.resolve_as_value(xv), Some(Value::Term { .. })));
+        assert!(!matches!(subst.resolve_as_value(yv), Some(Value::Term { .. })));
     }
 
     #[test]
@@ -5102,8 +5116,8 @@ mod tests {
             other => panic!("expected Value::Node for ?b, got {other:?}"),
         }
         // Non-Term bindings → narrowing to a term returns None (lineage preserved).
-        assert!(!matches!(subst.resolve_as_value(av), Some(Value::Term(_))));
-        assert!(!matches!(subst.resolve_as_value(bv), Some(Value::Term(_))));
+        assert!(!matches!(subst.resolve_as_value(av), Some(Value::Term { .. })));
+        assert!(!matches!(subst.resolve_as_value(bv), Some(Value::Term { .. })));
     }
 
     #[test]
@@ -5673,16 +5687,19 @@ mod wi518_occurrence_guard_resolution_tests {
             functor: pattern_query,
             pos: Rc::from(Vec::<Value>::new()),
             named: Rc::from(vec![(term, leaf)]),
+            ty: None,
         };
         let empty = Value::Entity {
             functor: empty_query,
             pos: Rc::from(Vec::<Value>::new()),
             named: Rc::from(Vec::<(Symbol, Value)>::new()),
+            ty: None,
         };
         Value::Entity {
             functor: no_q,
             pos: Rc::from(Vec::<Value>::new()),
             named: Rc::from(vec![(condition, pq), (body, empty)]),
+            ty: None,
         }
     }
 
@@ -5810,7 +5827,7 @@ mod wi518_occurrence_guard_resolution_tests {
             pos_args: SmallVec::new(),
             named_args: SmallVec::new(),
         });
-        let query = no_q_guard(&mut kb, Value::Term(leaf_term));
+        let query = no_q_guard(&mut kb, Value::term(leaf_term));
         kb.add_guard_labeled(query, Some("term_constraint".to_string()));
 
         assert_eq!(
@@ -5859,28 +5876,33 @@ mod wi518_occurrence_guard_resolution_tests {
         let pq_term = Value::Entity {
             functor: pattern_query,
             pos: Rc::from(Vec::<Value>::new()),
-            named: Rc::from(vec![(term, Value::Term(flag_leaf))]),
+            named: Rc::from(vec![(term, Value::term(flag_leaf))]),
+            ty: None,
         };
         // Right: the occurrence self-loop leaf.
         let pq_occ = Value::Entity {
             functor: pattern_query,
             pos: Rc::from(Vec::<Value>::new()),
             named: Rc::from(vec![(term, edge_self_loop_occurrence(&mut kb))]),
+            ty: None,
         };
         let conj = Value::Entity {
             functor: conjunction,
             pos: Rc::from(Vec::<Value>::new()),
             named: Rc::from(vec![(left, pq_term), (right, pq_occ)]),
+            ty: None,
         };
         let empty = Value::Entity {
             functor: empty_query,
             pos: Rc::from(Vec::<Value>::new()),
             named: Rc::from(Vec::<(Symbol, Value)>::new()),
+            ty: None,
         };
         let query = Value::Entity {
             functor: no_q,
             pos: Rc::from(Vec::<Value>::new()),
             named: Rc::from(vec![(condition, conj), (body, empty)]),
+            ty: None,
         };
         kb.add_guard_labeled(query, Some("conj_constraint".to_string()));
 

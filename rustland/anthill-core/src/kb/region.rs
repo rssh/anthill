@@ -149,7 +149,7 @@ fn rekey_resource(kb: &mut KnowledgeBase, effect: TermId, from: Symbol, to: Symb
 /// `Ref` rewrite — deferred to E2 (no Node effect label is minted pre-E2).
 fn rekey_resource_value(kb: &mut KnowledgeBase, effect: &Value, from: Symbol, to: Symbol) -> Value {
     match effect {
-        Value::Term(t) => Value::Term(rekey_resource(kb, *t, from, to)),
+        Value::Term { id: t, .. } => Value::term(rekey_resource(kb, *t, from, to)),
         // WI-342 E2: re-key the `Ref` spine of a `Value::Node` label (a callee's
         // fresh `Modify[c]` → the enclosing op's `Modify[result]`) via the
         // occurrence rewriter — the carrier peer of `rekey_resource`.
@@ -210,7 +210,7 @@ pub(crate) fn op_boundary_effects(
     // value carries no escaping DATA region, so it does not admit one (and such
     // an op never has a `Modify[result]` in its row to mask anyway).
     let admits = match return_type {
-        Value::Term(t) => result_type_admits_region(kb, *t, regions),
+        Value::Term { id: t, .. } => result_type_admits_region(kb, *t, regions),
         _ => false,
     };
     // WI-353: candidate `into` places for a callback-parameter `Modify` — the
@@ -479,7 +479,7 @@ end
         let result_sym = kb.try_resolve_symbol(&format!("{op_qn}.result"));
         let regions = region_sorts(kb);
         let ret = sym(kb, ret_qn);
-        let ret_ty = Value::Term(kb.alloc(Term::Ref(ret)));
+        let ret_ty = Value::term(kb.alloc(Term::Ref(ret)));
         let resource = sym(kb, &format!("{op_qn}.{modify_on}"));
         let row = vec![modify_label(kb, resource)];
         let env = TypingEnv::empty();

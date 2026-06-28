@@ -650,7 +650,7 @@ pub fn emit_entity_struct_by_symbol(
         // WI-342: field types are carrier-agnostic; codegen handles only ground
         // types (a value-in-type / denoted field is not C++-representable and
         // does not occur in codegen'd entities).
-        let Value::Term(type_tid) = type_term else { continue };
+        let Value::Term { id: type_tid, .. } = type_term else { continue };
         let cpp_type = lower_type(ctx, *type_tid)?;
         let field_name = kb.resolve_sym(*field_sym);
         fields_text.push_str(
@@ -724,7 +724,7 @@ fn lower_one_const(ctx: &CodegenContext, sym: Symbol) -> Result<(String, String)
     // Declared type: `const_type` is a `Value`; a simple sort type (the
     // common case — `Int64`, `Float`) lowers as a ground `Value::Term`.
     let cpp_type = match kb.const_type(sym) {
-        Some(anthill_core::eval::value::Value::Term(tid)) => {
+        Some(anthill_core::eval::value::Value::Term { id: tid, .. }) => {
             let t = lower_type(ctx, *tid)?;
             // A `String` const cannot be `constexpr std::string` — std::string
             // is not a literal type before C++20. `std::string_view` is literal
@@ -1097,7 +1097,7 @@ fn unpack_parameterized(kb: &KnowledgeBase, term: TermId) -> Option<(Symbol, Vec
     let values: Option<Vec<(Symbol, TermId)>> = bindings
         .iter()
         .map(|(p, v)| match v {
-            Value::Term(t) => Some((*p, *t)),
+            Value::Term { id: t, .. } => Some((*p, *t)),
             _ => None,
         })
         .collect();
@@ -1350,7 +1350,7 @@ fn operations_in_sort(
         // (`Value::Node`) return — an op returning a `Modify`-carrying callback —
         // is unsupported by C++ codegen (never materialized).
         let return_term = match &rec.return_type {
-            anthill_core::eval::Value::Term(t) => *t,
+            anthill_core::eval::Value::Term { id: t, .. } => *t,
             _ => {
                 return Err(CppCodegenError {
                     message: format!(
@@ -1368,7 +1368,7 @@ fn operations_in_sort(
             // lowers as before; a denoted-bearing (`Value::Node`) callback-arrow
             // param is not supported by C++ codegen (and is never materialized).
             let p_term = match p_type {
-                anthill_core::eval::Value::Term(t) => *t,
+                anthill_core::eval::Value::Term { id: t, .. } => *t,
                 _ => {
                     return Err(CppCodegenError {
                         message: format!(
@@ -1397,7 +1397,7 @@ fn operations_in_sort(
         // `Value`s; a realizable label is a ground `Value::Term` (a `denoted`
         // label like `Modify[c]` is a `Value::Node`).
         let wraps_result = rec.effects.iter().any(|eff| match eff {
-            anthill_core::eval::Value::Term(t) => effect_kind_short(kb, *t)
+            anthill_core::eval::Value::Term { id: t, .. } => effect_kind_short(kb, *t)
                 .and_then(|name| cpp_effect_receiver(ctx, &name))
                 .as_deref()
                 == Some("ResultWrap"),
@@ -1757,7 +1757,7 @@ fn constructor_uses_params(
     let Some(fields) = kb.entity_field_types(entity_sym) else { return false };
     for (_, type_term) in fields {
         // WI-342: ground field types only (denoted fields don't occur in codegen).
-        if let Value::Term(t) = type_term {
+        if let Value::Term { id: t, .. } = type_term {
             if term_references_param(kb, *t, param_names) {
                 return true;
             }
@@ -1971,7 +1971,7 @@ fn collect_entity_deps(
     let Some(fields) = kb.entity_field_types(entity_sym) else { return };
     for (_, type_term) in fields {
         // WI-342: ground field types only (denoted fields don't occur in codegen).
-        if let Value::Term(t) = type_term {
+        if let Value::Term { id: t, .. } = type_term {
             collect_type_term_refs(kb, *t, in_band, out);
         }
     }
@@ -3371,7 +3371,7 @@ fn lower_arrow_type(
     // two are indistinguishable here; the multi-arg reading wins (the common
     // case), at the cost of flattening that rare single-tuple-parameter form.
     let args: Vec<String> = match param {
-        Value::Term(t) => match extract_type(kb, &TermIdView(*t)) {
+        Value::Term { id: t, .. } => match extract_type(kb, &TermIdView(*t)) {
             TypeExtractor::NamedTuple(fields) => lower_tuple_elem_types(ctx, &fields)?,
             _ => vec![lower_type(ctx, *t)?],
         },
@@ -3389,7 +3389,7 @@ fn lower_arrow_type(
 /// error here, matching how op param / return lowering rejects the same shape.
 fn lower_type_value(ctx: &CodegenContext, v: &Value) -> Result<String, CppCodegenError> {
     match v {
-        Value::Term(t) => lower_type(ctx, *t),
+        Value::Term { id: t, .. } => lower_type(ctx, *t),
         _ => Err(CppCodegenError {
             message: "denoted-bearing type carrier is unsupported by C++ codegen".into(),
         }),
@@ -3655,6 +3655,7 @@ fn query_realization_facts(
         functor,
         pos: std::rc::Rc::from(Vec::<Value>::new()),
         named: std::rc::Rc::from(named),
+        ty: None,
     };
     kb.query_view(&pattern)
         .into_iter()

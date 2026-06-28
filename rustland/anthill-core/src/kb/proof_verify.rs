@@ -633,7 +633,7 @@ fn discharge_contract_proof(
 /// that as a discharge FAILURE, not a vacuous pass.
 fn contract_clause_conjuncts(kb: &mut KnowledgeBase, clause: &Value) -> Vec<TermId> {
     let g = match clause {
-        Value::Term(t) => *t,
+        Value::Term { id: t, .. } => *t,
         Value::Node(occ) => super::node_occurrence::occurrence_to_term(kb, occ),
         other => match super::node_occurrence::value_to_term(kb, other) {
             Ok(t) => t,

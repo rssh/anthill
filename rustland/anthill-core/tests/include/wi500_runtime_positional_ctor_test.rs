@@ -51,6 +51,7 @@ fn positional_verified(kb: &KnowledgeBase, at: &str) -> Value {
         functor: kb.resolve_symbol("test.wi500.Status.Verified"),
         pos: Rc::from(vec![Value::Str(at.to_string())]),
         named: Rc::from(Vec::<(_, _)>::new()),
+        ty: None,
     }
 }
 
@@ -131,6 +132,7 @@ fn over_arity_runtime_ctor_is_loud() {
         functor: kb.resolve_symbol("test.wi500.Status.Verified"),
         pos: Rc::from(vec![Value::Str("now".into()), Value::Str("extra".into())]),
         named: Rc::from(Vec::<(_, _)>::new()),
+        ty: None,
     };
     match kb.alloc_from_value(&v) {
         Ok(_) => panic!("Verified(\"now\", \"extra\") (2 args, 1 field) must fail to lower"),

@@ -17,7 +17,7 @@ use crate::common::load_kb_with;
 /// Build a `Value::Entity` wrapping a single named argument. Convenience for
 /// writing LogicalQuery literals on the Rust side of the boundary.
 fn entity_named(functor: anthill_core::intern::Symbol, named: Vec<(anthill_core::intern::Symbol, Value)>) -> Value {
-    Value::Entity { functor, pos: Vec::new().into(), named: named.into() }
+    Value::Entity { functor, pos: Vec::new().into(), named: named.into(), ty: None }
 }
 
 #[test]
@@ -44,6 +44,7 @@ end
         functor: red_sym,
         pos: vec![Value::Int(1), Value::Str("hi".into())].into(),
         named: vec![(int_field, Value::Bool(true))].into(),
+        ty: None,
     };
     let v2 = v1.clone();
 
@@ -68,7 +69,7 @@ fn q3_alloc_from_value_passes_through_term() {
     let n = kb.fresh_var(n_sym);
     let var_tid = kb.alloc(Term::Var(Var::Global(n)));
 
-    let v = Value::Term(var_tid);
+    let v = Value::term(var_tid);
     let got = kb.alloc_from_value(&v).expect("alloc term-variant");
     assert_eq!(got, var_tid);
 }
@@ -80,7 +81,7 @@ fn q3_alloc_from_value_rejects_closures_streams_lazies() {
     // Unit has no KB-term representation either — covers the whole
     // "interpreter-only Value" class in one check.
     for v in [Value::Unit,
-              Value::Tuple { pos: Vec::new().into(), named: Vec::new().into() }] {
+              Value::Tuple { pos: Vec::new().into(), named: Vec::new().into(), ty: None }] {
         let err = kb.alloc_from_value(&v).unwrap_err();
         assert!(matches!(err, LowerError::UnsupportedVariant(_)),
                 "expected UnsupportedVariant for {v:?}, got {err:?}");
@@ -92,7 +93,7 @@ fn q3_lower_empty_query_yields_zero_goals() {
     let mut kb = load_kb_with("namespace test.q3_empty end\n");
     let empty_q_sym = kb.try_resolve_symbol("anthill.reflect.LogicalQuery.empty_query")
         .expect("empty_query in reflect stdlib");
-    let q = Value::Entity { functor: empty_q_sym, pos: Vec::new().into(), named: Vec::new().into() };
+    let q = Value::Entity { functor: empty_q_sym, pos: Vec::new().into(), named: Vec::new().into(), ty: None };
 
     let goals = kb.lower_query(&q).expect("lower empty_query");
     assert_eq!(goals.len(), 0);
@@ -144,7 +145,8 @@ end
     let inner_pattern = Value::Entity {
         functor: entity_info_sym,
         pos: Vec::new().into(),
-        named: vec![(name_field, Value::Term(var_n)), (fields_field, Value::Term(var_f))].into(),
+        named: vec![(name_field, Value::term(var_n)), (fields_field, Value::term(var_f))].into(),
+        ty: None,
     };
 
     let query = entity_named(pattern_query_sym, vec![(term_field, inner_pattern)]);
@@ -178,7 +180,7 @@ end
         // lookup returns Option<&Value>; we expect Value::Term for KB-resident
         // bindings (lineage-preserving — EntityInfo fact heads are TermId).
         match sol.subst.resolve_as_value(vn) {
-            Some(Value::Term(t)) => {
+            Some(Value::Term { id: t, .. }) => {
                 if let Term::Fn { functor, .. } = kb.get_term(*t) {
                     if *functor == red_tid { seen_colors.insert("red"); }
                     if *functor == green_tid { seen_colors.insert("green"); }
@@ -239,12 +241,14 @@ end
     let pat_x = Value::Entity {
         functor: pair_sym,
         pos: Vec::new().into(),
-        named: vec![(x_field, Value::Term(var_v)), (y_field, Value::Term(var_y1))].into(),
+        named: vec![(x_field, Value::term(var_v)), (y_field, Value::term(var_y1))].into(),
+        ty: None,
     };
     let pat_y = Value::Entity {
         functor: pair_sym,
         pos: Vec::new().into(),
-        named: vec![(x_field, Value::Term(var_v)), (y_field, Value::Term(var_y2))].into(),
+        named: vec![(x_field, Value::term(var_v)), (y_field, Value::term(var_y2))].into(),
+        ty: None,
     };
     let left = entity_named(pattern_query_sym, vec![(term_field, pat_x)]);
     let right = entity_named(pattern_query_sym, vec![(term_field, pat_y)]);
@@ -259,7 +263,7 @@ end
     let mut xs = Vec::new();
     while let Some((sol, rest)) = stream.split_first(&mut kb) {
         match sol.subst.resolve_as_value(vid) {
-            Some(Value::Term(t)) => {
+            Some(Value::Term { id: t, .. }) => {
                 if let Term::Const(Literal::Int(n)) = kb.get_term(*t) {
                     xs.push(*n);
                 }
@@ -286,10 +290,10 @@ fn q3_quantifier_lowering_is_not_yet_implemented() {
     let cond_field = kb.intern("condition");
     let body_field = kb.intern("body");
     let empty_q_sym = kb.try_resolve_symbol("anthill.reflect.LogicalQuery.empty_query").unwrap();
-    let empty_q = Value::Entity { functor: empty_q_sym, pos: Vec::new().into(), named: Vec::new().into() };
+    let empty_q = Value::Entity { functor: empty_q_sym, pos: Vec::new().into(), named: Vec::new().into(), ty: None };
 
     let sym_v = kb.intern("v");
-    let any_sym = Value::Term(kb.alloc(Term::Ref(sym_v)));
+    let any_sym = Value::term(kb.alloc(Term::Ref(sym_v)));
     let q = Value::Entity {
         functor: forall_sym,
         pos: Vec::new().into(),
@@ -298,6 +302,7 @@ fn q3_quantifier_lowering_is_not_yet_implemented() {
             (cond_field, empty_q.clone()),
             (body_field, empty_q),
         ].into(),
+        ty: None,
     };
 
     let err = kb.lower_query(&q).unwrap_err();
@@ -340,7 +345,8 @@ end
     let left_pattern = Value::Entity {
         functor: left_tag_sym,
         pos: Vec::new().into(),
-        named: vec![(name_field, Value::Term(var_v))].into(),
+        named: vec![(name_field, Value::term(var_v))].into(),
+        ty: None,
     };
     let left_q = entity_named(pattern_query_sym, vec![(term_field, left_pattern)]);
 
@@ -348,7 +354,8 @@ end
     let right_pattern = Value::Entity {
         functor: right_tag_sym,
         pos: Vec::new().into(),
-        named: vec![(name_field, Value::Term(var_v))].into(),
+        named: vec![(name_field, Value::term(var_v))].into(),
+        ty: None,
     };
     let right_q = entity_named(pattern_query_sym, vec![(term_field, right_pattern)]);
 
@@ -365,7 +372,7 @@ end
     // branches.
     let mut seen = std::collections::HashSet::new();
     while let Some((sol, rest)) = stream.split_first(&mut kb) {
-        if let Some(Value::Term(t)) = sol.subst.resolve_as_value(vid) {
+        if let Some(Value::Term { id: t, .. }) = sol.subst.resolve_as_value(vid) {
             if let Term::Const(Literal::String(s)) = kb.get_term(*t) {
                 seen.insert(s.clone());
             }
@@ -421,11 +428,13 @@ end
 
     let left_q = entity_named(pattern_query_sym, vec![(term_field, Value::Entity {
         functor: left_tag_sym, pos: Vec::new().into(),
-        named: vec![(name_field, Value::Term(var_v))].into(),
+        named: vec![(name_field, Value::term(var_v))].into(),
+        ty: None,
     })]);
     let right_q = entity_named(pattern_query_sym, vec![(term_field, Value::Entity {
         functor: right_tag_sym, pos: Vec::new().into(),
-        named: vec![(name_field, Value::Term(var_v))].into(),
+        named: vec![(name_field, Value::term(var_v))].into(),
+        ty: None,
     })]);
     let disj_q = entity_named(disj_sym, vec![
         (left_field, left_q),
@@ -433,7 +442,8 @@ end
     ]);
     let marker_q = entity_named(pattern_query_sym, vec![(term_field, Value::Entity {
         functor: has_marker_sym, pos: Vec::new().into(),
-        named: vec![(label_field, Value::Term(var_m))].into(),
+        named: vec![(label_field, Value::term(var_m))].into(),
+        ty: None,
     })]);
     let query = entity_named(conj_sym, vec![
         (left_field, disj_q),
@@ -451,7 +461,7 @@ end
     while let Some((sol, rest)) = stream.split_first(&mut kb) {
         let v_val = sol.subst.resolve_as_value(vid);
         let m_val = sol.subst.resolve_as_value(mid);
-        if let (Some(Value::Term(vt)), Some(Value::Term(mt))) = (v_val, m_val) {
+        if let (Some(Value::Term { id: vt, .. }), Some(Value::Term { id: mt, .. })) = (v_val, m_val) {
             if let (Term::Const(Literal::String(vs)),
                     Term::Const(Literal::String(ms)))
                 = (kb.get_term(*vt).clone(), kb.get_term(*mt).clone())
@@ -507,8 +517,10 @@ end
         pos: Vec::new().into(),
         named: vec![(term_field, Value::Entity {
             functor, pos: Vec::new().into(),
-            named: vec![(name_field, Value::Term(var_v))].into(),
+            named: vec![(name_field, Value::term(var_v))].into(),
+            ty: None,
         })].into(),
+        ty: None,
     };
     let q_a = pq(a_sym);
     let q_b = pq(b_sym);
@@ -519,7 +531,7 @@ end
     let mut stream = kb.execute_logical_query(&outer).expect("nested disjunction lowers");
     let mut seen = std::collections::HashSet::new();
     while let Some((sol, rest)) = stream.split_first(&mut kb) {
-        if let Some(Value::Term(t)) = sol.subst.resolve_as_value(vid) {
+        if let Some(Value::Term { id: t, .. }) = sol.subst.resolve_as_value(vid) {
             if let Term::Const(Literal::String(s)) = kb.get_term(*t) {
                 seen.insert(s.clone());
             }
@@ -572,8 +584,10 @@ end
         pos: Vec::new().into(),
         named: vec![(term_field, Value::Entity {
             functor, pos: Vec::new().into(),
-            named: vec![(name_field, Value::Term(var_v))].into(),
+            named: vec![(name_field, Value::term(var_v))].into(),
+            ty: None,
         })].into(),
+        ty: None,
     };
     let multi_left = entity_named(conj_sym, vec![
         (left_field, pq(left_sym)),
@@ -587,7 +601,7 @@ end
     let mut stream = kb.execute_logical_query(&query).expect("multi-goal lifts cleanly");
     let mut seen = std::collections::HashSet::new();
     while let Some((sol, rest)) = stream.split_first(&mut kb) {
-        if let Some(Value::Term(t)) = sol.subst.resolve_as_value(vid) {
+        if let Some(Value::Term { id: t, .. }) = sol.subst.resolve_as_value(vid) {
             if let Term::Const(Literal::String(s)) = kb.get_term(*t) {
                 seen.insert(s.clone());
             }
@@ -619,9 +633,10 @@ fn q3_disjunction_empty_branch_is_not_yet_implemented() {
     let var_n = kb.alloc(Term::Var(Var::Global(vn)));
     let some_pattern = entity_named(pattern_query_sym, vec![(term_field, Value::Entity {
         functor: entity_info_sym, pos: Vec::new().into(),
-        named: vec![(name_field, Value::Term(var_n))].into(),
+        named: vec![(name_field, Value::term(var_n))].into(),
+        ty: None,
     })]);
-    let empty_q = Value::Entity { functor: empty_q_sym, pos: Vec::new().into(), named: Vec::new().into() };
+    let empty_q = Value::Entity { functor: empty_q_sym, pos: Vec::new().into(), named: Vec::new().into(), ty: None };
     let query = entity_named(disj_sym, vec![
         (left_field, empty_q),
         (right_field, some_pattern),
@@ -678,8 +693,10 @@ end
         functor: pattern_query_sym, pos: Vec::new().into(),
         named: vec![(term_field, Value::Entity {
             functor, pos: Vec::new().into(),
-            named: vec![(name_field, Value::Term(var))].into(),
+            named: vec![(name_field, Value::term(var))].into(),
+            ty: None,
         })].into(),
+        ty: None,
     };
     // negation(conjunction(left_tag(?v), right_tag(?v))) — multi-goal inner
     let inner_conj = entity_named(conj_sym, vec![
@@ -697,7 +714,7 @@ end
     let mut stream = kb.execute_logical_query(&outer).expect("multi-goal negation lifts");
     let mut probe_seen = std::collections::HashSet::new();
     while let Some((sol, rest)) = stream.split_first(&mut kb) {
-        if let Some(Value::Term(t)) = sol.subst.resolve_as_value(pid) {
+        if let Some(Value::Term { id: t, .. }) = sol.subst.resolve_as_value(pid) {
             if let Term::Const(Literal::String(s)) = kb.get_term(*t) {
                 probe_seen.insert(s.clone());
             }
@@ -752,8 +769,10 @@ end
             pos: Vec::new().into(),
             named: vec![(term_field, Value::Entity {
                 functor, pos: Vec::new().into(),
-                named: vec![(name_field, Value::Term(var_v))].into(),
+                named: vec![(name_field, Value::term(var_v))].into(),
+                ty: None,
             })].into(),
+            ty: None,
         };
         // disjunction(conjunction(left_tag(?v), other_tag(?v)), right_tag(?v)) —
         // the left branch is a 2-goal body that lifts via `synthesize_conjunction_rule`.
@@ -768,7 +787,7 @@ end
         let mut stream = kb.execute_logical_query(&query).expect("multi-goal lifts cleanly");
         let mut seen = std::collections::HashSet::new();
         while let Some((sol, rest)) = stream.split_first(kb) {
-            if let Some(Value::Term(t)) = sol.subst.resolve_as_value(vid) {
+            if let Some(Value::Term { id: t, .. }) = sol.subst.resolve_as_value(vid) {
                 if let Term::Const(Literal::String(s)) = kb.get_term(*t) {
                     seen.insert(s.clone());
                 }
@@ -838,8 +857,10 @@ end
             functor: pattern_query_sym, pos: Vec::new().into(),
             named: vec![(term_field, Value::Entity {
                 functor, pos: Vec::new().into(),
-                named: vec![(name_field, Value::Term(v))].into(),
+                named: vec![(name_field, Value::term(v))].into(),
+                ty: None,
             })].into(),
+            ty: None,
         };
         let conj = entity_named(conj_sym, vec![
             (left_field, pq(left_sym, a)),
@@ -852,7 +873,7 @@ end
         let mut stream = kb.execute_logical_query(&query).expect("lowers cleanly");
         let mut seen = std::collections::HashSet::new();
         while let Some((sol, rest)) = stream.split_first(kb) {
-            if let Some(Value::Term(t)) = sol.subst.resolve_as_value(aid) {
+            if let Some(Value::Term { id: t, .. }) = sol.subst.resolve_as_value(aid) {
                 if let Term::Const(Literal::String(s)) = kb.get_term(*t) { seen.insert(s.clone()); }
             }
             stream = rest;

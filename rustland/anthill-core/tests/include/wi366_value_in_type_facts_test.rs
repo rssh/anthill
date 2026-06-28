@@ -63,7 +63,7 @@ fn load_kb(extras: &[&str]) -> (KnowledgeBase, Vec<String>) {
 fn value_carries_node(v: &Value) -> bool {
     match v {
         Value::Node(_) => true,
-        Value::Entity { pos, named, .. } | Value::Tuple { pos, named } => {
+        Value::Entity { pos, named, .. } | Value::Tuple { pos, named, .. } => {
             pos.iter().any(value_carries_node)
                 || named.iter().any(|(_, x)| value_carries_node(x))
         }
@@ -111,7 +111,7 @@ fn denoted_term_fact_head(
         .into_iter()
         .filter(|rid| kb.is_fact(*rid))
         .find_map(|rid| match kb.rule_head_value(rid) {
-            Value::Term(t) if term_carries_denoted(kb, *t) => Some(*t),
+            Value::Term { id: t, .. } if term_carries_denoted(kb, *t) => Some(*t),
             _ => None,
         })
 }
@@ -272,7 +272,7 @@ fn provides_e_binding(
     let sym = kb.try_resolve_symbol("anthill.reflect.SortProvidesInfo")?;
     let myl = kb.try_resolve_symbol(&format!("{ns}.MyList"))?;
     for rid in kb.rules_by_functor(sym).into_iter().filter(|r| kb.is_fact(*r)) {
-        let Value::Term(t) = kb.rule_head_value(rid) else { continue };
+        let Value::Term { id: t, .. } = kb.rule_head_value(rid) else { continue };
         let Term::Fn { named_args, .. } = kb.get_term(*t) else { continue };
         let matches_ns = named_args
             .iter()
@@ -536,7 +536,7 @@ end
         .filter(|rid| kb.is_fact(*rid))
         .find(|rid| {
             // pos[0] is the sort term whose functor is Bar.
-            matches!(kb.rule_head_value(*rid), Value::Term(t)
+            matches!(kb.rule_head_value(*rid), Value::Term { id: t, .. }
                 if matches!(kb.get_term(*t),
                     anthill_core::kb::term::Term::Fn { pos_args, .. }
                         if pos_args.first().is_some_and(|p|
@@ -564,7 +564,7 @@ fn carrier_requires_spec(
         .into_iter()
         .filter(|r| kb.is_fact(*r))
         .find_map(|rid| {
-            let Value::Term(t) = kb.rule_head_value(rid) else { return None };
+            let Value::Term { id: t, .. } = kb.rule_head_value(rid) else { return None };
             let Term::Fn { named_args, .. } = kb.get_term(*t) else { return None };
             let sr = named_args.iter().find(|(s, _)| kb.resolve_sym(*s) == "sort_ref")?.1;
             let sr_functor = match kb.get_term(sr) {
@@ -713,6 +713,7 @@ fn value_to_term_errors_on_term_less_residue() {
     let tup = Value::Tuple {
         pos: vec![Value::Int(1)].into(),
         named: Vec::new().into(),
+        ty: None,
     };
     assert!(
         value_to_term(&mut kb, &tup).is_err(),

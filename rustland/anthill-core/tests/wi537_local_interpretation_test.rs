@@ -37,6 +37,7 @@ fn goal(functor: Symbol, args: Vec<Value>) -> Value {
         functor,
         pos: Rc::from(args),
         named: Rc::from(Vec::new()),
+        ty: None,
     }
 }
 
@@ -55,7 +56,7 @@ fn goal(functor: Symbol, args: Vec<Value>) -> Value {
 fn param(kb: &mut KnowledgeBase, name: &str) -> Value {
     let sym = kb.intern(name);
     let vid = kb.fresh_var(sym);
-    Value::Term(kb.alloc(Term::Var(Var::Global(vid))))
+    Value::term(kb.alloc(Term::Var(Var::Global(vid))))
 }
 
 fn neq_sym(kb: &mut KnowledgeBase) -> Symbol {

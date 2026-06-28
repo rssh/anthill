@@ -428,7 +428,7 @@ impl Interpreter {
             }
             Value::Bool(b) => buf.push_str(if *b { "true" } else { "false" }),
             Value::Str(s) => crate::persistence::print::write_anthill_string(s, buf),
-            Value::Entity { functor, pos, named } => {
+            Value::Entity { functor, pos, named, .. } => {
                 buf.push_str(self.kb.resolve_sym(*functor));
                 if pos.is_empty() && named.is_empty() {
                     return Ok(());
@@ -453,7 +453,7 @@ impl Interpreter {
                 }
                 buf.push(')');
             }
-            Value::Term(tid) => {
+            Value::Term { id: tid, .. } => {
                 buf.push_str(&crate::persistence::print::TermPrinter::new(&self.kb).print_term(*tid));
             }
             Value::Unit
@@ -956,6 +956,6 @@ impl Interpreter {
         // positional pattern (`case undecided(subst, residual)`) binds the right
         // field; `subst`/`residual` are NOT in alphabetical order.
         self.kb.sort_named_canonical(functor, &mut named);
-        Ok(Value::Entity { functor, pos: Vec::new().into(), named: named.into() })
+        Ok(Value::Entity { functor, pos: Vec::new().into(), named: named.into(), ty: None })
     }
 }

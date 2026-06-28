@@ -1705,31 +1705,31 @@ fn map_value_type<R: TypeChildRewrite>(
     v: &Value,
 ) -> (Value, bool) {
     match v {
-        Value::Term(t) => {
+        Value::Term { id: t, .. } => {
             let (nt, ch) = r.term(kb, *t);
-            (Value::Term(nt), ch)
+            (Value::term(nt), ch)
         }
         Value::Node(occ) => {
             let nn = r.node(kb, occ);
             let ch = !Rc::ptr_eq(&nn, occ);
             (Value::Node(nn), ch)
         }
-        Value::Entity { functor, pos, named } => {
+        Value::Entity { functor, pos, named, .. } => {
             let (npos, c1) = map_value_seq(r, kb, pos);
             let (nnamed, c2) = map_value_named(r, kb, named);
             // Reuse the original (cheap Rc bump) when no child var changed — the
             // ptr-eq economy the Type/Expr rewriters keep.
             if c1 || c2 {
-                (Value::Entity { functor: *functor, pos: Rc::from(npos), named: Rc::from(nnamed) }, true)
+                (Value::Entity { functor: *functor, pos: Rc::from(npos), named: Rc::from(nnamed), ty: None }, true)
             } else {
                 (v.clone(), false)
             }
         }
-        Value::Tuple { pos, named } => {
+        Value::Tuple { pos, named, .. } => {
             let (npos, c1) = map_value_seq(r, kb, pos);
             let (nnamed, c2) = map_value_named(r, kb, named);
             if c1 || c2 {
-                (Value::Tuple { pos: Rc::from(npos), named: Rc::from(nnamed) }, true)
+                (Value::Tuple { pos: Rc::from(npos), named: Rc::from(nnamed), ty: None }, true)
             } else {
                 (v.clone(), false)
             }
@@ -2077,9 +2077,9 @@ fn collect_value_type(
     seen: &mut std::collections::HashSet<u32>,
 ) {
     match v {
-        Value::Term(t) => kb.collect_vars_rec(*t, vars, seen),
+        Value::Term { id: t, .. } => kb.collect_vars_rec(*t, vars, seen),
         Value::Node(occ) => collect_type_or_expr_node_vars(kb, occ, vars, seen),
-        Value::Entity { pos, named, .. } | Value::Tuple { pos, named } => {
+        Value::Entity { pos, named, .. } | Value::Tuple { pos, named, .. } => {
             for c in pos.iter() {
                 collect_value_type(kb, c, vars, seen);
             }
@@ -2590,7 +2590,7 @@ pub fn value_to_term(
         // Recurse via value_to_term (NOT alloc_from_value) so a nested Node child
         // lowers faithfully instead of erroring. Canonical named-arg order mirrors
         // alloc_from_value (declared field order, else Symbol::index()).
-        Value::Entity { functor, pos, named } => {
+        Value::Entity { functor, pos, named, .. } => {
             let mut pos_args: smallvec::SmallVec<[TermId; 4]> = smallvec::SmallVec::new();
             for p in pos.iter() {
                 pos_args.push(value_to_term(kb, p)?);
@@ -3403,14 +3403,16 @@ fn rewrite_ref_child(
 fn rewrite_ref_value(value: &Value, map: &std::collections::HashMap<Symbol, Symbol>) -> Value {
     match value {
         Value::Node(occ) => Value::Node(substitute_ref_syms_occ(occ, map)),
-        Value::Entity { functor, pos, named } => Value::Entity {
+        Value::Entity { functor, pos, named, .. } => Value::Entity {
             functor: *functor,
             pos: pos.iter().map(|v| rewrite_ref_value(v, map)).collect(),
             named: named.iter().map(|(s, v)| (*s, rewrite_ref_value(v, map))).collect(),
+            ty: None,
         },
-        Value::Tuple { pos, named } => Value::Tuple {
+        Value::Tuple { pos, named, .. } => Value::Tuple {
             pos: pos.iter().map(|v| rewrite_ref_value(v, map)).collect(),
             named: named.iter().map(|(s, v)| (*s, rewrite_ref_value(v, map))).collect(),
+            ty: None,
         },
         other => other.clone(),
     }
@@ -3519,7 +3521,7 @@ fn subst_var_leaf(
     let t = match subst.resolve_as_value(vid) {
         None => return Rc::clone(occ), // unbound: keep the variable leaf
         Some(Value::Node(o)) => return Rc::clone(o), // matched child: splice in place
-        Some(Value::Term(t)) => *t,
+        Some(Value::Term { id: t, .. }) => *t,
         Some(scalar) => match scalar_value_expr(scalar) {
             Some(expr) => return NodeOccurrence::new_expr(expr, occ.span, occ.owner),
             // Structured non-`Term` values (`Value::Entity`/`Tuple` from
@@ -3822,7 +3824,7 @@ fn visit_fn(
             let pattern = get_named_arg(kb, named_args, "pattern").unwrap_or(t);
             // WI-342: this term→occurrence rebuild reads the ground `type_name`
             // TermId off the reflect term — it rides as a ground `Value::Term`.
-            let type_annotation = get_named_arg(kb, named_args, "type_name").map(Value::Term);
+            let type_annotation = get_named_arg(kb, named_args, "type_name").map(Value::term);
             let value = get_named_arg(kb, named_args, "value");
             let body = get_named_arg(kb, named_args, "body");
             work.push(WorkOp::Build(BuildFrame::Let { span, pattern, type_annotation }));
@@ -4095,7 +4097,7 @@ pub(crate) fn collect_type_args(
             // direct occurrence build mints a `Value::Node` for a value-in-type
             // arg once `make_denoted` is retired; this term-round-trip path
             // stays ground (the term handle cannot carry a denoted occurrence).
-            Some((name_opt, Value::Term(value)))
+            Some((name_opt, Value::term(value)))
         })
         .collect()
 }
@@ -4753,7 +4755,7 @@ mod tests {
                 functor: f_sym,
                 pos_args: vec![body_arg],
                 named_args: vec![],
-                type_args: vec![(None, Value::Term(type_arg_tid))],
+                type_args: vec![(None, Value::term(type_arg_tid))],
             },
             span,
             None,
@@ -4772,7 +4774,7 @@ mod tests {
         let Some(Expr::Apply { type_args, .. }) = closed.as_expr() else {
             panic!("expected Apply");
         };
-        let Value::Term(ta) = &type_args[0].1 else { panic!("type-arg must be Value::Term") };
+        let Value::Term { id: ta, .. } = &type_args[0].1 else { panic!("type-arg must be Value::Term") };
         assert!(
             matches!(kb.get_term(*ta), Term::Var(Var::DeBruijn(_))),
             "type_args var must close to DeBruijn (no stray Global), got {:?}",
@@ -4801,7 +4803,7 @@ mod tests {
                 functor: f,
                 pos_args: vec![],
                 named_args: vec![],
-                type_args: vec![(None, Value::Term(ta_db))],
+                type_args: vec![(None, Value::term(ta_db))],
             },
             span,
             None,
@@ -4811,7 +4813,7 @@ mod tests {
         let Some(Expr::Apply { type_args, .. }) = opened.as_expr() else {
             panic!("expected Apply");
         };
-        let Value::Term(ta) = &type_args[0].1 else { panic!("type-arg must be Value::Term") };
+        let Value::Term { id: ta, .. } = &type_args[0].1 else { panic!("type-arg must be Value::Term") };
         let Term::Var(Var::Global(vid)) = kb.get_term(*ta) else {
             panic!("type_args entry should open to Global, got {:?}", kb.get_term(*ta));
         };
@@ -4903,7 +4905,7 @@ mod tests {
         let let_occ = NodeOccurrence::new_expr(
             Expr::Let {
                 pattern,
-                type_annotation: Some(Value::Term(ta_db)),
+                type_annotation: Some(Value::term(ta_db)),
                 value,
                 body,
             },
@@ -4914,7 +4916,7 @@ mod tests {
         let Some(Expr::Let { type_annotation, body, .. }) = opened.as_expr() else {
             panic!("expected Let");
         };
-        let Some(Value::Term(ta)) = type_annotation else {
+        let Some(Value::Term { id: ta, .. }) = type_annotation else {
             panic!("type_annotation should still be Some after open");
         };
         let Term::Var(Var::Global(ta_vid)) = kb.get_term(*ta) else {
@@ -4952,7 +4954,7 @@ mod tests {
         let let_occ = NodeOccurrence::new_expr(
             Expr::Let {
                 pattern,
-                type_annotation: Some(Value::Term(ta_global)),
+                type_annotation: Some(Value::term(ta_global)),
                 value,
                 body,
             },
@@ -4963,7 +4965,7 @@ mod tests {
         let Some(Expr::Let { type_annotation, body, .. }) = closed.as_expr() else {
             panic!("expected Let");
         };
-        let Some(Value::Term(ta)) = type_annotation else {
+        let Some(Value::Term { id: ta, .. }) = type_annotation else {
             panic!("type_annotation should still be Some after close");
         };
         assert!(
@@ -4998,7 +5000,7 @@ mod tests {
                 functor: f,
                 pos_args: vec![],
                 named_args: vec![],
-                type_args: vec![(None, Value::Term(ta_global))],
+                type_args: vec![(None, Value::term(ta_global))],
             },
             span,
             None,
@@ -5011,7 +5013,7 @@ mod tests {
         let Some(Expr::Apply { type_args, .. }) = out.as_expr() else {
             panic!("expected Apply, got {:?}", out.as_expr());
         };
-        let Value::Term(ta) = &type_args[0].1 else { panic!("type-arg must be Value::Term") };
+        let Value::Term { id: ta, .. } = &type_args[0].1 else { panic!("type-arg must be Value::Term") };
         assert_eq!(
             *ta, int_ref,
             "Apply.type_args must be substituted to Ref(Int) under σ; got {:?}",
@@ -5041,7 +5043,7 @@ mod tests {
         let let_occ = NodeOccurrence::new_expr(
             Expr::Let {
                 pattern,
-                type_annotation: Some(Value::Term(ta_global)),
+                type_annotation: Some(Value::term(ta_global)),
                 value,
                 body,
             },
@@ -5056,7 +5058,7 @@ mod tests {
         let Some(Expr::Let { type_annotation, .. }) = out.as_expr() else {
             panic!("expected Let, got {:?}", out.as_expr());
         };
-        let Some(Value::Term(ta)) = type_annotation else {
+        let Some(Value::Term { id: ta, .. }) = type_annotation else {
             panic!("type_annotation should still be Some after subst");
         };
         assert_eq!(
@@ -5084,7 +5086,7 @@ mod tests {
                 args: vec![],
                 named_args: vec![],
                 requirements: vec![],
-                type_args: vec![(None, Value::Term(ta_global))],
+                type_args: vec![(None, Value::term(ta_global))],
             },
             span,
             None,
@@ -5094,7 +5096,7 @@ mod tests {
         let Some(Expr::ApplyWithin { type_args, .. }) = closed.as_expr() else {
             panic!("expected ApplyWithin after close");
         };
-        let Value::Term(ta) = &type_args[0].1 else { panic!("type-arg must be Value::Term") };
+        let Value::Term { id: ta, .. } = &type_args[0].1 else { panic!("type-arg must be Value::Term") };
         assert!(
             matches!(kb.get_term(*ta), Term::Var(Var::DeBruijn(0))),
             "ApplyWithin.type_args Global must close to DeBruijn(0); got {:?}",
@@ -5106,7 +5108,7 @@ mod tests {
         let Some(Expr::ApplyWithin { type_args, .. }) = reopened.as_expr() else {
             panic!("expected ApplyWithin after open");
         };
-        let Value::Term(ta) = &type_args[0].1 else { panic!("type-arg must be Value::Term") };
+        let Value::Term { id: ta, .. } = &type_args[0].1 else { panic!("type-arg must be Value::Term") };
         let Term::Var(Var::Global(vid)) = kb.get_term(*ta) else {
             panic!("type_args entry should open to Global, got {:?}", kb.get_term(*ta));
         };
@@ -5130,7 +5132,7 @@ mod tests {
                 functor: f,
                 pos_args: vec![],
                 named_args: vec![],
-                type_args: vec![(None, Value::Term(ta_tid))],
+                type_args: vec![(None, Value::term(ta_tid))],
             },
             span,
             None,
@@ -5211,10 +5213,10 @@ mod tests {
         let mut kb = KnowledgeBase::new();
         let int64 = kb.make_sort_ref_by_name("Int64");
         let node = NodeOccurrence::new_expr(Expr::Bottom, make_span(), None);
-        node.set_inferred_type(Value::Term(int64));
+        node.set_inferred_type(Value::term(int64));
         let rebuilt = node.rebuilt_expr(Expr::Const(Literal::Int(1)));
         assert!(
-            matches!(rebuilt.inferred_type(), Some(Value::Term(t)) if t == int64),
+            matches!(rebuilt.inferred_type(), Some(Value::Term { id: t, .. }) if t == int64),
             "rebuilt occurrence must carry the stamped inferred_type",
         );
     }
@@ -5227,13 +5229,13 @@ mod tests {
         let mut kb = KnowledgeBase::new();
         let (atom, v0, _gt, _three) = gt_atom(&mut kb);
         let bool_ty = kb.make_sort_ref_by_name("Bool");
-        atom.set_inferred_type(Value::Term(bool_ty));
+        atom.set_inferred_type(Value::term(bool_ty));
         let mut subst = Substitution::new();
         subst.bind_value(&kb, v0, Value::Int(42)); // change a child → forces rebuild
         let out = substitute_occurrence(&mut kb, &atom, &subst);
         assert!(!Rc::ptr_eq(&out, &atom), "the atom should have been rebuilt");
         assert!(
-            matches!(out.inferred_type(), Some(Value::Term(t)) if t == bool_ty),
+            matches!(out.inferred_type(), Some(Value::Term { id: t, .. }) if t == bool_ty),
             "substitute_occurrence must carry the parent atom's inferred_type",
         );
     }
@@ -5276,7 +5278,7 @@ mod tests {
             named_args: SmallVec::new(),
         });
         let mut subst = Substitution::new();
-        subst.bind_value(&kb, v0, Value::Term(compound));
+        subst.bind_value(&kb, v0, Value::term(compound));
         let out = substitute_occurrence(&mut kb, &atom, &subst);
         match out.as_expr() {
             Some(Expr::Apply { pos_args, .. }) => match pos_args[0].as_expr() {
@@ -5512,8 +5514,9 @@ mod tests {
         // fields = entity(cons, pos = [Term(Var v)]) — a one-element field carrier.
         let fields = Value::Entity {
             functor: f,
-            pos: Rc::from(vec![Value::Term(v_t)]),
+            pos: Rc::from(vec![Value::term(v_t)]),
             named: Rc::from(Vec::<(Symbol, Value)>::new()),
+            ty: None,
         };
         let nt = NodeOccurrence::new_type(TypeNode::NamedTuple { fields }, span, None);
 
@@ -5528,7 +5531,7 @@ mod tests {
         match &closed.kind {
             NodeKind::Type(TypeNode::NamedTuple { fields: Value::Entity { pos, .. } }) => {
                 match &pos[0] {
-                    Value::Term(t) => assert!(
+                    Value::Term { id: t, .. } => assert!(
                         matches!(kb.terms.get(*t), Term::Var(Var::DeBruijn(0))),
                         "field-type var closes to DeBruijn(0), got {:?}", kb.terms.get(*t),
                     ),

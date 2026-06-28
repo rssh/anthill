@@ -39,8 +39,8 @@ end
         .expect("fresh_var #1");
     let v2 = interp.call("anthill.reflect.fresh_var", &[Value::Str("x".into())])
         .expect("fresh_var #2");
-    let t1 = match v1 { Value::Term(t) => t, other => panic!("expected Term, got {other:?}") };
-    let t2 = match v2 { Value::Term(t) => t, other => panic!("expected Term, got {other:?}") };
+    let t1 = match v1 { Value::Term { id: t, .. } => t, other => panic!("expected Term, got {other:?}") };
+    let t2 = match v2 { Value::Term { id: t, .. } => t, other => panic!("expected Term, got {other:?}") };
     assert_ne!(t1, t2, "two fresh_var calls should yield distinct Term ids");
 }
 

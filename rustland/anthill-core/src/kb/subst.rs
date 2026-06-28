@@ -184,20 +184,20 @@ impl Substitution {
                 // Both hash-consed terms: structural equality IS `TermId` identity
                 // (the store dedups by structure), so a `u32` compare is exact AND
                 // skips decoding two possibly-deep terms on the conflict path.
-                Value::Term(t) => *t == term,
+                Value::Term { id: t, .. } => *t == term,
                 // WI-486: cross-carrier re-bind — an existing `Value::Node`/`Entity`
                 // structurally equal to `term` (same logical value, different
                 // carrier) is consistent, not a conflict. Decide via the
                 // carrier-aware comparator, NOT the carrier-blind `==` that would
                 // false-flag the cross-carrier-equal case.
-                _ => views_structurally_equal(kb, existing, &Value::Term(term)),
+                _ => views_structurally_equal(kb, existing, &Value::term(term)),
             };
             if consistent {
                 return;
             }
             // Record every DISTINCT conflict per var (an identical repeat records
             // nothing); see the field doc for why first-per-var is not enough.
-            let attempted = Value::Term(term);
+            let attempted = Value::term(term);
             if !self
                 .contradiction_details
                 .iter()
@@ -209,7 +209,7 @@ impl Substitution {
             self.contradiction = true;
             return;
         }
-        self.bindings.insert(var, Value::Term(term));
+        self.bindings.insert(var, Value::term(term));
     }
 
     /// Bind a variable to a runtime `Value`. Used when the source is not
@@ -225,7 +225,7 @@ impl Substitution {
             // `Value::structural_eq` returned `false` on every cross-carrier pair.
             // Two hash-consed terms fast-path to a `TermId` compare (exact, no decode).
             let consistent = match (existing, &val) {
-                (Value::Term(a), Value::Term(b)) => a == b,
+                (Value::Term { id: a, .. }, Value::Term { id: b, .. }) => a == b,
                 _ => views_structurally_equal(kb, existing, &val),
             };
             if !consistent {
@@ -294,7 +294,7 @@ impl Substitution {
                 .bindings
                 .iter()
                 .filter_map(|(w, existing)| match existing {
-                    Value::Term(existing_tid) => match terms.get(*existing_tid) {
+                    Value::Term { id: existing_tid, .. } => match terms.get(*existing_tid) {
                         Term::Var(Var::Global(ev)) if *ev == vid => Some(*w),
                         _ => None,
                     },
@@ -305,12 +305,12 @@ impl Substitution {
                 if guard {
                     self.assert_no_constraints(w, "bind_compressed path-compression repoint");
                 }
-                self.bindings.insert(w, Value::Term(term));
+                self.bindings.insert(w, Value::term(term));
             }
             if guard {
                 self.assert_no_constraints(vid, "bind_compressed direct bind");
             }
-            self.bindings.insert(vid, Value::Term(term));
+            self.bindings.insert(vid, Value::term(term));
         }
     }
 
@@ -558,7 +558,7 @@ impl Substitution {
     /// that wants to stay in the TermId world.
     pub fn iter_terms(&self) -> impl Iterator<Item = (VarId, TermId)> + '_ {
         self.bindings.iter().filter_map(|(v, val)| match val {
-            Value::Term(tid) => Some((*v, *tid)),
+            Value::Term { id: tid, .. } => Some((*v, *tid)),
             _ => None,
         })
     }
@@ -589,7 +589,7 @@ mod tests {
         s.bind_term(&kb, v, t);
         assert_eq!(s.resolve_as_value(v).map(|v| v.expect_term()), Some(t));
         match s.resolve_as_value(v) {
-            Some(Value::Term(tid)) => assert_eq!(*tid, t),
+            Some(Value::Term { id: tid, .. }) => assert_eq!(*tid, t),
             other => panic!("expected Value::Term, got {other:?}"),
         }
     }
@@ -601,7 +601,7 @@ mod tests {
         let v = vid(1);
         s.bind_value(&kb, v, Value::Int(42));
         // resolve (TermId-only path) returns None for non-Term bindings.
-        assert!(!matches!(s.resolve_as_value(v), Some(Value::Term(_))));
+        assert!(!matches!(s.resolve_as_value(v), Some(Value::Term { .. })));
         // lookup surfaces the full Value.
         match s.resolve_as_value(v) {
             Some(Value::Int(42)) => {}
@@ -666,7 +666,7 @@ mod tests {
         parent.bind_term(&kb, vid(1), TermId::from_raw(10));
         let child = Substitution::with_parent(parent);
         assert_eq!(child.resolve_as_value(vid(1)).map(|v| v.expect_term()), Some(TermId::from_raw(10)));
-        matches!(child.resolve_as_value(vid(1)), Some(Value::Term(_)));
+        matches!(child.resolve_as_value(vid(1)), Some(Value::Term { .. }));
     }
 
     #[test]
@@ -695,11 +695,12 @@ mod tests {
             functor,
             pos: vec![Value::Int(10), Value::Str("hi".into())].into(),
             named: vec![(key, Value::Bool(true))].into(),
+            ty: None,
         };
         s.bind_value(&kb, v, entity);
-        assert!(!matches!(s.resolve_as_value(v), Some(Value::Term(_))));
+        assert!(!matches!(s.resolve_as_value(v), Some(Value::Term { .. })));
         match s.resolve_as_value(v) {
-            Some(Value::Entity { functor: f, pos, named }) => {
+            Some(Value::Entity { functor: f, pos, named, .. }) => {
                 assert_eq!(*f, functor);
                 assert!(matches!(&pos[..], [Value::Int(10), Value::Str(_)]));
                 assert_eq!(named.len(), 1);
@@ -718,11 +719,12 @@ mod tests {
         let tuple = Value::Tuple {
             pos: vec![Value::Int(1), Value::Int(2), Value::Int(3)].into(),
             named: vec![].into(),
+            ty: None,
         };
         s.bind_value(&kb, v, tuple);
-        assert!(!matches!(s.resolve_as_value(v), Some(Value::Term(_))));
+        assert!(!matches!(s.resolve_as_value(v), Some(Value::Term { .. })));
         match s.resolve_as_value(v) {
-            Some(Value::Tuple { pos, named }) => {
+            Some(Value::Tuple { pos, named, .. }) => {
                 assert_eq!(pos.len(), 3);
                 assert!(named.is_empty());
             }
@@ -739,6 +741,7 @@ mod tests {
             functor: Symbol::from_raw(7),
             pos: vec![Value::Int(10), Value::Str("hi".into())].into(),
             named: vec![(Symbol::from_raw(8), Value::Bool(true))].into(),
+            ty: None,
         };
         s.bind_value(&kb, v, make_entity());
         s.bind_value(&kb, v, make_entity());
@@ -756,6 +759,7 @@ mod tests {
                 functor: Symbol::from_raw(7),
                 pos: vec![Value::Int(10)].into(),
                 named: vec![].into(),
+                ty: None,
             },
         );
         s.bind_value(&kb,
@@ -764,6 +768,7 @@ mod tests {
                 functor: Symbol::from_raw(7),
                 pos: vec![Value::Int(11)].into(),
                 named: vec![].into(),
+                ty: None,
             },
         );
         assert!(s.is_contradiction());
@@ -784,6 +789,7 @@ mod tests {
             functor: foo,
             pos: vec![Value::Int(1)].into(),
             named: vec![].into(),
+            ty: None,
         };
         // The faithful Term form of `entity` — same structure, `Term` carrier.
         let t = crate::kb::node_occurrence::value_to_term(&mut kb, &entity).unwrap();
@@ -804,9 +810,9 @@ mod tests {
         let v = vid(1);
         let foo = kb.intern("foo");
         let one =
-            Value::Entity { functor: foo, pos: vec![Value::Int(1)].into(), named: vec![].into() };
+            Value::Entity { functor: foo, pos: vec![Value::Int(1)].into(), named: vec![].into(), ty: None };
         let two =
-            Value::Entity { functor: foo, pos: vec![Value::Int(2)].into(), named: vec![].into() };
+            Value::Entity { functor: foo, pos: vec![Value::Int(2)].into(), named: vec![].into(), ty: None };
         let t1 = crate::kb::node_occurrence::value_to_term(&mut kb, &one).unwrap();
         let mut s = Substitution::new();
         s.bind_term(&kb, v, t1);
@@ -824,8 +830,10 @@ mod tests {
             pos: vec![Value::Tuple {
                 pos: vec![Value::Int(1), Value::Str("x".into())].into(),
                 named: vec![].into(),
+                ty: None,
             }].into(),
             named: vec![].into(),
+            ty: None,
         };
         s.bind_value(&kb, v, make());
         s.bind_value(&kb, v, make());
@@ -927,7 +935,7 @@ mod tests {
         let y_term = kb.alloc(Term::Var(Var::Global(y)));
         let mut s = Substitution::new();
         s.add_lacks(x, [Value::Int(5)]);
-        s.bind_waking(&kb, x, Value::Term(y_term));
+        s.bind_waking(&kb, x, Value::term(y_term));
         assert!(s.constraints.get(&x).is_none());
         let resid = s.residual_constraints();
         assert_eq!(resid.len(), 1);
@@ -1039,7 +1047,7 @@ mod tests {
         let target = TermId::from_raw(999);
 
         let mut s = Substitution::new();
-        s.bindings.insert(v2, Value::Term(var_v1));  // v2 → Var(v1)
+        s.bindings.insert(v2, Value::term(var_v1));  // v2 → Var(v1)
         s.bindings.insert(vid(3), Value::Int(77));   // non-Term: untouched
         s.bind_compressed(std::iter::once((v1, target)), &store);
 

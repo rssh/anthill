@@ -43,7 +43,7 @@ impl MapKey {
             Value::Int(n) => Some(MapKey::Int(*n)),
             Value::Bool(b) => Some(MapKey::Bool(*b)),
             Value::Str(s) => Some(MapKey::Str(s.clone())),
-            Value::Term(tid) => Some(MapKey::Term(*tid)),
+            Value::Term { id: tid, .. } => Some(MapKey::Term(*tid)),
             _ => None,
         }
     }
@@ -53,7 +53,7 @@ impl MapKey {
             MapKey::Int(n) => Value::Int(*n),
             MapKey::Bool(b) => Value::Bool(*b),
             MapKey::Str(s) => Value::Str(s.clone()),
-            MapKey::Term(tid) => Value::Term(*tid),
+            MapKey::Term(tid) => Value::term(*tid),
         }
     }
 }
