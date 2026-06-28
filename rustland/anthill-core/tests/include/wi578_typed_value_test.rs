@@ -12,7 +12,7 @@ use anthill_core::intern::Symbol;
 use anthill_core::kb::load::{self, NullResolver};
 use anthill_core::kb::node_occurrence::value_to_term;
 use anthill_core::kb::subst::Substitution;
-use anthill_core::kb::term::Term;
+use anthill_core::kb::term::{Term, Var, VarId};
 use anthill_core::kb::typing::{sort_functor_of_view, typed, value_type_term};
 use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
@@ -176,4 +176,41 @@ fn value_type_term_of_nil_is_list() {
     let ty = value_type_term(&mut kb, &subst, &nil);
     let head = sort_functor_of_view(&kb, &ty).expect("nil has a sort head");
     assert_sort_named(&kb, head, "List");
+}
+
+/// A CYCLIC σ (`?x := cons(1, ?x)` — the SLD bind path is not occurs-checked) must
+/// FLOUNDER to a bounded type, never loop forever / overflow the stack. The element
+/// type is still pinned by each level's head, so the sort head stays `List`.
+#[test]
+fn value_type_term_flounders_on_cyclic_sigma() {
+    let mut kb = load_kb();
+    let xname = kb.intern("x");
+    let vid = VarId::new(1, xname);
+    // ?x := cons(head: 1, tail: ?x) — a structure that contains the var itself.
+    let cyc = cons_value(&mut kb, Value::Int(1), Value::Var(Var::Global(vid)));
+    let mut subst = Substitution::new();
+    subst.bind_value(&kb, vid, cyc);
+    // Must RETURN (the depth cap breaks the structural cycle), not hang/overflow.
+    let ty = value_type_term(&mut kb, &subst, &Value::Var(Var::Global(vid)));
+    let head = sort_functor_of_view(&kb, &ty).expect("cyclic list still has a List head");
+    assert_sort_named(&kb, head, "List");
+}
+
+/// A DEEP value (longer than the recursion cap) types WITHOUT stack overflow; the
+/// element type survives (each `cons` head re-pins it), only the innermost tail's
+/// type truncates to `?_`. Built as a flat hash-consed `Value::Term` so the kept
+/// value has no recursive `Rc`-drop.
+#[test]
+fn value_type_term_bounds_deep_recursion() {
+    let mut kb = load_kb();
+    let subst = Substitution::new();
+    let mut lst = nil_value(&kb);
+    for i in 0..600i64 {
+        lst = cons_value(&mut kb, Value::Int(i), lst);
+    }
+    let tid = value_to_term(&mut kb, &lst).expect("lower deep list to a term");
+    let ty = value_type_term(&mut kb, &subst, &Value::term(tid));
+    let head = sort_functor_of_view(&kb, &ty).expect("deep list has a List head");
+    assert_sort_named(&kb, head, "List");
+    assert_type_param_is(&kb, &ty, "Int64");
 }
