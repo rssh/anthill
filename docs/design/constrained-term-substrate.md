@@ -304,6 +304,12 @@ types from. A bare relation simply has no signature to inherit, so its arg types
 itself — the head's `[…]` / `: T` annotations, or inference from the clause bodies (consistency-checked
 across clauses) — but the typing *manner* is one.
 
+A bare relation also has **no place to put a `requires`**: `requires` is declared on a *sort* or an
+*operation*, and a bare relation has neither. So the `requires`-half of "`op/sort requires ≡ rule :-
+guard`" has no home here — a bare relation's bound is **only** a guard (its `:- …`) or whatever the ops
+it consumes owe (owed-on-consumption). That is consistent, not a gap: bounds are rule *conditions*, so
+where there is no sort/op there is no `requires`, just the guard.
+
 ### Desugaring — a typed pattern is an untyped pattern + a guard
 
 `head(…, ?x: T, …) :- body` *means*:
@@ -354,6 +360,79 @@ carrier's carried type, which the typed-value carrier (WI-578) supplies; replaci
 **WI-292**. The **explicit** `?x: T` binder is *new grammar* (a typed binder in a rule LHS, plus the
 loader installing the `Type` constraint) — a follow-on once the implicit path is proven, tracked
 under the WI-502 "typed rule pattern syntax" item.
+
+## Conditional rewrite rules — the general frame
+
+A typed `[simp]` rule is one instance of a more general object: a **conditional rewrite** — an
+equation applied directionally (LHS→RHS) *only when a guard holds*. Type-directedness is just the
+guard being a type-bound; the same machinery carries an arbitrary guard.
+
+### What they are
+
+A `[simp]` rule is an equation (head `eq(LHS, RHS)`, proposal 043) tagged directionally-rewritable.
+Its **guard** is its explicit `:- …` **plus** the enclosing sort's `requires` (043 §4): an in-sort
+rule is type-directed even with no written guard, and an explicit guard adds value/type conditions.
+The engine evaluates the guard **generally, by resolution** — a type-bound (`Numeric[?x]`), a value
+condition (`neq(?y, 0)`), or any conjunction of goals over the LHS variables.
+
+### Syntax
+
+The equation is the rule **head**; the guard is the ordinary `:- body` (grammar: `rule_definition` is
+`heads ':-' body`, and `=` / `<=>` form an equation head):
+
+```anthill
+rule [simp] add(?x, 0) = ?x :- Numeric[?x]      -- type guard (≡ the inline `add(?x: Numeric, 0)`)
+rule [simp] div(?x, ?y) = ... :- neq(?y, 0)      -- value guard
+```
+
+The implicit guard (the enclosing sort's `requires`) rides on top with no written `:- `; `<=>` and the
+`-:` mirror are the usual variants. A type-bound guard is exactly the desugaring of a typed pattern
+(§"Typed rule patterns") — so the typed-rule surface and a conditional rewrite are two spellings of
+the same rule.
+
+### Indexing — LHS only; the guard is a post-match filter
+
+Firing is three tiers (043 §4.6), and **only the LHS is indexed**:
+1. **Structural narrowing** — the discrimination tree (`discrim.rs query_node`) keys on the LHS
+   functor / structure. This is the index; it is type-blind — it sees the term, not the guard (M1).
+2. **Sort-directed** most-specific matching on the receiver's sort (not in the structural tree).
+3. **Guard** — the explicit `:- …` + the sort's `requires`, evaluated **after** the LHS matches, by
+   resolution → fire / don't-fire / **suspend** (residual `C`, never NAF-decide — WI-067).
+
+The guard never enters the index: a guarded and an unguarded rule with the same LHS index identically,
+and the guard is a post-match condition — the same shape as a typed pattern's match (structural match,
+then the carried-type check).
+
+### The firing gap (and the fix)
+
+Conditional rewrites are *specified* (043) and *parseable* (the grammar), but the resolver does not
+fire the guarded ones yet — 043's own indexing note: *"guarded equations must be indexed for firing
+too; today `is_equation` requires an empty body, so guarded `[simp]` rules aren't indexed."* Two steps
+close it:
+- **Index guarded equations** — drop `is_equation`'s empty-body requirement, so a guarded rule is a
+  firing candidate at all.
+- **Evaluate the guard post-match** — a **value** guard resolves normally; a **type** guard reads the
+  carried type off the redex (the typed-value substrate, WI-578) and discharges `subsort`/`provides`
+  (the WI-292 consumer). Both stay in the decidable fragment and suspend when under-determined.
+
+So a conditional rewrite is the general object; the typed `[simp]` rule is the case whose guard is a
+type-bound, and the carried-type substrate is exactly what lets the resolver evaluate *that* guard.
+
+### A type guard selects a dictionary (runtime monomorphization)
+
+When a guard's predicate is itself a **spec op** — `{ Error :- eq(b, 0) }`, or `isEmpty(s)` over an
+abstract `Collection` — evaluating it is more than a `subsort` check: the spec op has to *run*. The
+carried type is what makes that possible. Once the guard pins the carrier's **concrete** type, that
+type selects the carrier's **`requires` dictionary** (a `provides` fact carries the implementation),
+and the spec op dispatches through it — `eq` / `isEmpty` / … resolve to *that carrier's* code. That is
+**runtime monomorphization**: the concrete type on the value drives the dispatch (§"Two carriers of
+type"). So a spec-op guard over a non-native carrier — un-evaluable in the resolver today — becomes
+evaluable; this is exactly the premise of **WI-573** (guarded-effect / spec-op guard discharge).
+
+Soundness: this holds **only for a concrete carrier** (a ground sort, so a real dictionary exists). An
+**abstract** carrier — the type still a variable (`requires Numeric[?T]`, `?T` unbound) — has no
+instance to dispatch through, so the guard **suspends** (residual `C`, never decided — WI-067).
+Dispatch-under-uncertainty is *labeling*, deferred (§"Limitation ↔ generation").
 
 ## Limitation ↔ generation (CLP/CHR framing)
 
