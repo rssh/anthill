@@ -27,6 +27,7 @@ fn main() {
         default_pub: true,
         boxed_trait_objects: false,
         emit_only: None,
+        suppress_imports: false,
     };
 
     // WI-540: the reflect interface (`KB`/`Substitution` traits + data types)
@@ -68,6 +69,20 @@ fn main() {
         ..config.clone()
     };
 
+    // WI-553: `stream.rs` is GENERATED-AND-USED (like reflect). The `Stream`
+    // trait must be object-safe — the host `KB.execute` returns `Box<dyn
+    // Stream<Solution, Error>>` and `split_first` carries a `Box<dyn Stream>`
+    // tail — so `boxed_trait_objects` boxes self-returns and `Self: Sized`-bounds
+    // the generic fold methods. `suppress_imports` drops the spec's body/rule
+    // imports (value ctors, `Numeric`, `Iterable`/`Modify`), which the
+    // signature-only output never references; the `prelude::stream` shim supplies
+    // the one import the signatures need (`Pair`).
+    let stream_config = CodegenConfig {
+        boxed_trait_objects: true,
+        suppress_imports: true,
+        ..config.clone()
+    };
+
     // Source → generated output mapping
     let files = [
         ("prelude/stream.anthill", "stream.rs"),
@@ -96,7 +111,11 @@ fn main() {
 
     // Generate each file (reflect uses the generated-and-used reflect_config).
     for (i, (_, dst)) in files.iter().enumerate() {
-        let cfg = if *dst == "reflect.rs" { &reflect_config } else { &config };
+        let cfg = match *dst {
+            "reflect.rs" => &reflect_config,
+            "stream.rs" => &stream_config,
+            _ => &config,
+        };
         let code = generate_rust_with_config(&parsed_files[i], &global_traits, cfg)
             .unwrap_or_else(|e| panic!("codegen {}: {:?}", dst, e));
         let out_path = out_dir.join(dst);

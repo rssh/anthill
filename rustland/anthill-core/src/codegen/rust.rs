@@ -66,6 +66,15 @@ pub struct CodegenConfig {
     /// types) without the occurrence IR or the free reflect ops. `None` →
     /// everything is emitted (existing behavior).
     pub emit_only: Option<Vec<String>>,
+    /// Skip emitting `use` statements for the source's `import`s. The codegen is
+    /// signature-only (no expression lowering), so an anthill sort's body/rule
+    /// imports — value constructors (`Option.{some, none}`), arithmetic
+    /// (`Numeric.{sub, add}`), or marker sorts (`Iterable`/`Modify`) — are
+    /// vestigial in the generated interface and may not even resolve to a host
+    /// item (e.g. `crate::prelude::option`). Set this when the including module
+    /// supplies the few imports the signatures actually need (the `Stream`
+    /// shim provides `Pair`). Off by default → imports emitted as before.
+    pub suppress_imports: bool,
 }
 
 impl CodegenConfig {
@@ -90,6 +99,7 @@ impl Default for CodegenConfig {
             default_pub: false,
             boxed_trait_objects: false,
             emit_only: None,
+            suppress_imports: false,
         }
     }
 }
@@ -200,7 +210,13 @@ impl<'a> SortInfo<'a> {
                 }
                 Item::RequiresDecl(r) => {
                     let name = type_expr_name(symbols, &r.type_expr);
-                    info.supertraits.push(name);
+                    // `effects E = ?` desugars to `requires EffectsRuntime[Effects=E]`,
+                    // an effect-runtime anchor with no host trait. Emitting it as a Rust
+                    // supertrait (`trait Stream: EffectsRuntime`) would never resolve, so
+                    // drop it; every other `requires` becomes a real supertrait.
+                    if name != "EffectsRuntime" {
+                        info.supertraits.push(name);
+                    }
                 }
                 Item::Fact(f) => {
                     if let Some(name) = extract_fact_sort_name(symbols, terms, f) {
@@ -354,15 +370,25 @@ impl<'a> RustCodegen<'a> {
     /// `boxed_trait_objects` it becomes `Box<dyn <SortName>>`. A non-trait
     /// enclosing sort (enum impl method) keeps `Self` (delegates to
     /// [`Self::wrap_trait_return`], which leaves non-trait names untouched).
-    fn wrap_trait_return_in_sort(&self, ret: &str, sort_name: &str) -> String {
-        if self.config.boxed_trait_objects
-            && ret == "Self"
-            && self.trait_sorts.contains(sort_name)
-        {
-            format!("Box<dyn {sort_name}>")
-        } else {
-            self.wrap_trait_return(ret)
+    fn wrap_trait_return_in_sort(&self, ret: &str, sort_name: &str, type_params: &[String]) -> String {
+        if self.config.boxed_trait_objects && self.trait_sorts.contains(sort_name) {
+            // The enclosing trait sort renders as `Self` (see `type_to_rust_in_sort`).
+            // A `Self` return — bare OR nested (e.g. `Option<Pair<T, Self>>` from
+            // `splitFirst`) — breaks object-safety, so replace EVERY whole-word
+            // `Self` with the boxed trait-object form, carrying the trait's own
+            // type args (`Box<dyn Stream<T, E>>`) so the reference is well-formed.
+            let args = if type_params.is_empty() {
+                String::new()
+            } else {
+                format!("<{}>", type_params.join(", "))
+            };
+            let boxed = format!("Box<dyn {sort_name}{args}>");
+            let replaced = replace_word(ret, "Self", &boxed);
+            if replaced != ret {
+                return replaced;
+            }
         }
+        self.wrap_trait_return(ret)
     }
 
     /// Parameter-position wrapping (WI-540). A non-receiver parameter of a trait
@@ -614,6 +640,31 @@ impl<'a> RustCodegen<'a> {
             TypeExpr::EffectRow(_) => "()".to_owned(),
             // WI-478: guarded effect — an effect-position construct, not a Rust type.
             TypeExpr::EffectGuarded { .. } => "()".to_owned(),
+        }
+    }
+
+    /// True if `name` appears in a VALUE-type position within `ty` (a simple/
+    /// parameterized name, tuple element, or arrow param/return). Deliberately
+    /// does NOT descend into an arrow's effect row — an effect-only type param
+    /// (`EffP` in `(…) -> … @ {EffP}`) is therefore reported absent, so it gets
+    /// erased rather than emitted as an unconstrained method generic.
+    fn type_mentions(&self, ty: &TypeExpr, name: &str) -> bool {
+        match ty {
+            TypeExpr::Simple(n) => self.resolve(n) == name,
+            TypeExpr::Variable { .. } => false,
+            TypeExpr::Tuple(fields) => fields.iter().any(|(_, t)| self.type_mentions(t, name)),
+            TypeExpr::Parameterized { name: n, bindings } => {
+                self.resolve(n) == name
+                    || bindings.iter().any(|b| self.type_mentions(&b.bound, name))
+            }
+            TypeExpr::Arrow { params, return_type, .. } => {
+                params.iter().any(|(_, p)| self.type_mentions(p, name))
+                    || self.type_mentions(return_type, name)
+            }
+            TypeExpr::Denoted(_)
+            | TypeExpr::EffectAbsent(_)
+            | TypeExpr::EffectRow(_)
+            | TypeExpr::EffectGuarded { .. } => false,
         }
     }
 
@@ -971,6 +1022,9 @@ impl<'a> RustCodegen<'a> {
     }
 
     fn emit_import(&mut self, imp: &Import) {
+        if self.config.suppress_imports {
+            return;
+        }
         let mut segments: Vec<String> = imp.path.segments.iter()
             .map(|s| to_snake_case(&self.resolve_sym(*s)))
             .collect();
@@ -1259,6 +1313,24 @@ impl<'a> RustCodegen<'a> {
         let op_name = to_snake_case(&self.resolve(&op.name));
         let effects = analyze_effects(&op.effects, self.symbols, type_params);
 
+        // Per-op type params (`operation foldLeft[EffP, Acc]`) → method generics,
+        // but ONLY the ones that surface in a value-type position (a param/return
+        // type). An effect-only param (`EffP`, used solely in `@ {EffP}` / `effects`)
+        // has no Rust witness — emitting it as an unconstrained generic would break
+        // call-site inference — so it is erased.
+        let method_type_params: Vec<String> = op.type_params.iter()
+            .map(|tp| self.resolve_sym(tp.name))
+            .filter(|name| {
+                op.params.iter().any(|p| self.type_mentions(&p.ty, name))
+                    || self.type_mentions(&op.return_type, name)
+            })
+            .collect();
+        let method_generics = if method_type_params.is_empty() {
+            String::new()
+        } else {
+            format!("<{}>", method_type_params.join(", "))
+        };
+
         // Determine self-arg
         let (has_self, is_mut) = self.check_self_arg(op, sort_name, type_params, &effects, collapse_self);
 
@@ -1286,20 +1358,23 @@ impl<'a> RustCodegen<'a> {
 
         // Return type
         let raw_ret = self.type_to_rust_in_sort(&op.return_type, sort_name, type_params, collapse_self);
-        let raw_ret = self.wrap_trait_return_in_sort(&raw_ret, sort_name);
+        let raw_ret = self.wrap_trait_return_in_sort(&raw_ret, sort_name, type_params);
         let ret = wrap_return_type(&raw_ret, &effects);
 
-        // Object-safety: a self-less trait method (e.g. a factory like
-        // `kb() -> Box<dyn KB>`) makes the trait non-`dyn`-compatible. Under
-        // `boxed_trait_objects` — where the trait IS used as `&dyn Trait` — bound
-        // it on `Self: Sized` so it is excluded from the vtable and the trait
-        // stays object-safe. Gated by the flag to keep default output unchanged.
-        let where_clause = if !has_self && self.config.boxed_trait_objects {
+        // Object-safety: a self-less method (a factory like `kb() -> Box<dyn KB>`)
+        // OR a generic method (`fold_left<Acc>`) makes the trait non-`dyn`-compatible.
+        // Under `boxed_trait_objects` — where the trait IS used as `&dyn Trait` —
+        // bound such methods on `Self: Sized` so they are excluded from the vtable
+        // and the trait stays object-safe. Gated by the flag to keep default output
+        // unchanged.
+        let where_clause = if self.config.boxed_trait_objects
+            && (!has_self || !method_type_params.is_empty())
+        {
             " where Self: Sized"
         } else {
             ""
         };
-        self.line(&format!("fn {op_name}({params_str}) -> {ret}{where_clause};"));
+        self.line(&format!("fn {op_name}{method_generics}({params_str}) -> {ret}{where_clause};"));
     }
 
     fn emit_method_signature(
@@ -1343,7 +1418,7 @@ impl<'a> RustCodegen<'a> {
         }
 
         let raw_ret = self.type_to_rust_in_sort(&op.return_type, sort_name, type_params, false);
-        let raw_ret = self.wrap_trait_return_in_sort(&raw_ret, sort_name);
+        let raw_ret = self.wrap_trait_return_in_sort(&raw_ret, sort_name, type_params);
         let ret = wrap_return_type(&raw_ret, &effects);
 
         self.line(&format!("{vis}fn {op_name}({params_str}) -> {ret};"));
@@ -1773,6 +1848,27 @@ fn collect_rules(items: &[Item]) -> Vec<&Rule> {
 /// Whether a parameter type should be passed by reference.
 fn should_ref_param(ty: &str) -> bool {
     matches!(ty, "Self")
+}
+
+/// Replace every whole-word occurrence of `word` in `s` with `replacement`.
+/// "Whole-word" = not flanked by an identifier character, so `Self` inside a
+/// larger identifier is left intact. Used to box a `Self` token (bare or nested,
+/// e.g. inside `Option<Pair<T, Self>>`) into the object-safe trait-object form.
+fn replace_word(s: &str, word: &str, replacement: &str) -> String {
+    let is_ident = |c: char| c.is_alphanumeric() || c == '_';
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(pos) = rest.find(word) {
+        let (before, after) = rest.split_at(pos);
+        let after_word = &after[word.len()..];
+        let prev_ok = before.chars().last().map_or(true, |c| !is_ident(c));
+        let next_ok = after_word.chars().next().map_or(true, |c| !is_ident(c));
+        out.push_str(before);
+        out.push_str(if prev_ok && next_ok { replacement } else { word });
+        rest = after_word;
+    }
+    out.push_str(rest);
+    out
 }
 
 fn to_pascal_case(s: &str) -> String {

@@ -477,6 +477,23 @@ impl SearchStreamAdapter {
             Solution::Undecided { subst: subst_bridge, residual }
         }
     }
+
+    /// Drive the stream to exhaustion, folding each `Solution` into `acc` via
+    /// `step`. The single consumption loop behind `count` / `fold_left` (pulling
+    /// through the trait `split_first`, so each tail is the next adapter).
+    fn fold_solutions<Acc>(
+        &self,
+        init: Acc,
+        mut step: impl FnMut(Acc, Solution) -> Acc,
+    ) -> Result<Acc, Error> {
+        let mut acc = init;
+        let mut next = self.split_first()?;
+        while let Some((h, rest)) = next {
+            acc = step(acc, h);
+            next = rest.split_first()?;
+        }
+        Ok(acc)
+    }
 }
 
 impl Stream<Solution, Error> for SearchStreamAdapter {
@@ -500,10 +517,19 @@ impl Stream<Solution, Error> for SearchStreamAdapter {
         }
     }
 
-    fn head(&self) -> Result<Option<Solution>, Error> {
+    fn head_option(&self) -> Result<Option<Solution>, Error> {
         match self.split_first()? {
             Some((h, _)) => Ok(Some(h)),
             None => Ok(None),
+        }
+    }
+
+    fn head(&self) -> Result<Solution, Error> {
+        // WI-567 ergonomic form: the element directly. An empty stream is the
+        // declared `Error[EmptyStream]` — surfaced here as a loud `Err`.
+        match self.split_first()? {
+            Some((h, _)) => Ok(h),
+            None => Err(Error("Stream::head on an empty solution stream".into())),
         }
     }
 
@@ -540,7 +566,7 @@ impl Stream<Solution, Error> for SearchStreamAdapter {
         Ok(results)
     }
 
-    fn collect_all(&self) -> Result<Vec<Solution>, Error> {
+    fn collect(&self) -> Result<Vec<Solution>, Error> {
         let mut results = Vec::new();
         let mut current = self.inner.borrow_mut().take();
         loop {
@@ -568,6 +594,48 @@ impl Stream<Solution, Error> for SearchStreamAdapter {
             Some(s) => Ok(s.is_empty()),
             None => Ok(true),
         }
+    }
+
+    fn count(&self) -> Result<i64, Error> {
+        self.fold_solutions(0i64, |n, _| n + 1)
+    }
+
+    fn fold_left<Acc>(&self, init: Acc, f: fn(Acc, Solution) -> Acc) -> Result<Acc, Error>
+    where
+        Self: Sized,
+    {
+        self.fold_solutions(init, f)
+    }
+
+    fn fold_right<Acc>(&self, init: Acc, f: fn(Solution, Acc) -> Acc) -> Result<Acc, Error>
+    where
+        Self: Sized,
+    {
+        let items = self.collect()?;
+        let mut acc = init;
+        for x in items.into_iter().rev() {
+            acc = f(x, acc);
+        }
+        Ok(acc)
+    }
+
+    fn find(&self, _pred: fn(Solution) -> bool) -> Result<Option<Solution>, Error> {
+        // `find` returns the matching element, but its predicate consumes the
+        // element by value and the reflect `Solution` is not `Clone` (it carries
+        // a `Box<dyn Substitution>`), so a tested element cannot also be returned.
+        // The host bridge has no `find` caller; surface a loud `Err` rather than a
+        // silently wrong answer if one ever appears.
+        Err(Error(
+            "Stream::find is unsupported on the reflect Solution stream (Solution is not Clone)".into(),
+        ))
+    }
+
+    fn iterator(&self) -> Box<dyn Stream<Solution, Error>> {
+        // `iterator(s) = s`: hand this stream's remaining state to the iterator.
+        Box::new(SearchStreamAdapter {
+            inner: RefCell::new(self.inner.borrow_mut().take()),
+            kb: Rc::clone(&self.kb),
+        })
     }
 }
 
@@ -1001,7 +1069,7 @@ sort Store {
 "#);
         let query = LogicalQuery::SortQuery { sort_name: "OperationInfo".into() };
         let stream = bridge.execute(query).expect("execute failed");
-        let results = stream.collect_all().expect("collect failed");
+        let results = stream.collect().expect("collect failed");
         assert!(results.len() >= 3,
             "should find at least 3 OperationInfo facts, got {}", results.len());
         // Each result is a definite Solution.
@@ -1014,7 +1082,7 @@ sort Store {
         let bridge = load_source_bridge("sort Foo { entity bar }");
         let query = LogicalQuery::SortQuery { sort_name: "Nonexistent".into() };
         let stream = bridge.execute(query).expect("execute failed");
-        let results = stream.collect_all().expect("collect failed");
+        let results = stream.collect().expect("collect failed");
         assert_eq!(results.len(), 0, "nonexistent sort query should return 0 results");
     }
 
@@ -1023,7 +1091,7 @@ sort Store {
         let bridge = load_source_bridge("sort Foo { entity bar }");
         let query = LogicalQuery::EmptyQuery;
         let stream = bridge.execute(query).expect("execute failed");
-        let results = stream.collect_all().expect("collect failed");
+        let results = stream.collect().expect("collect failed");
         assert_eq!(results.len(), 1, "empty query should return 1 result (trivial solution)");
         assert!(matches!(results[0], Solution::Definite { .. }));
     }
@@ -1041,7 +1109,7 @@ fact cat
         };
         let query = LogicalQuery::PatternQuery { term: ReflectTerm::new(Value::term(goal)) };
         let stream = bridge.execute(query).expect("execute failed");
-        let results = stream.collect_all().expect("collect failed");
+        let results = stream.collect().expect("collect failed");
         assert!(results.len() >= 1, "pattern query for 'dog' should find at least 1 result, got {}", results.len());
     }
 
@@ -1555,5 +1623,20 @@ end
         fn assert_substitution<T: Substitution>() {}
         assert_kb::<KbBridge>();
         assert_substitution::<SubstBridge>();
+    }
+
+    /// Drift-guard (WI-553): the `Stream` trait is GENERATED from
+    /// `prelude/stream.anthill` (single source of truth) and `include!`d via
+    /// `prelude::stream`. This statically asserts (a) the host
+    /// `SearchStreamAdapter` implements that generated trait, and (b) the trait
+    /// is object-safe — `KB.execute` returns `Box<dyn Stream<Solution, Error>>`,
+    /// so a codegen change that breaks dyn-compatibility, or a spec edit that
+    /// changes the interface, is a compile error here.
+    #[test]
+    fn adapter_implements_generated_stream_interface() {
+        fn assert_stream<T: Stream<Solution, Error>>() {}
+        assert_stream::<SearchStreamAdapter>();
+        // Fails to compile if `Stream` is not object-safe.
+        let _obj_safe: Option<Box<dyn Stream<Solution, Error>>> = None;
     }
 }
