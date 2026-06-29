@@ -54,7 +54,7 @@ end
 /// (`length(collect(m))` → `Int64`). `collect` / `foldLeft` on a `Map`, where
 /// the compound `Element` ESCAPES into the result / callback, await
 /// compound-`Element` threading on a non-Stream provision (the WI-357 mechanism
-/// covers Stream / simple elements only) — tracked as WI-592; until then the
+/// covers Stream / simple elements only) — tracked as WI-593; until then the
 /// typer demands a `requires FiniteCollection[Element = …]` it cannot ground.
 #[test]
 fn finite_collection_size_on_map_eval() {
