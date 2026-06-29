@@ -43,20 +43,29 @@ tree or stranding commits. Two failure modes, both real:
 - **Local behind / diverged.** `main` may have remote commits you lack *and*
   unpushed local commits from a prior session (the loop commits, but a session can
   end before pushing). A plain `git pull --ff-only` then **fails** ("not possible
-  to fast-forward"). Reconcile with a **merge** — the established convention here
-  (`git log --merges` shows repeated `Merge remote-tracking branch 'origin/main'`),
-  not a rebase:
+  to fast-forward"). Reconcile with **either a merge or a rebase** — your choice.
+  A **merge** matches the historical convention here (`git log --merges` shows
+  repeated `Merge remote-tracking branch 'origin/main'`); a **`git rebase
+  origin/main`** gives linear history and replays your local commits one at a time,
+  which is handy when a WI-id collided (below) since it pauses on the offending
+  commit so you can renumber *and* reword it inline:
 
   ```bash
   git fetch origin
   git status --short                 # must be clean; stash/commit anything first
-  git merge origin/main --no-edit    # = the repo's `git pull` convention (merge, not rebase)
-  cargo build -q 2>/dev/null || ( cd rustland && cargo build )   # compile-sanity the merge
+  git merge origin/main --no-edit    # the repo's historical convention …
+  # …or, for linear history:
+  #   git rebase origin/main         # resolve the same conflict, then `git rebase --continue`
+  cargo build -q 2>/dev/null || ( cd rustland && cargo build )   # compile-sanity afterwards
   ```
 
   Code conflicts are rare (tickets touch different files — typer vs eval, etc.);
   the one file that tends to conflict is `anthill-todo/workitems.anthill` (tracking
-  data) — resolve by keeping **both** sides' items.
+  data) — resolve by keeping **both** sides' items. If two sessions allocated the
+  **same WI-id** for different tickets, keep the one with external references (a
+  test file named after it, a `depends_on`) and **renumber yours** to a free id
+  (rename the `WorkItem` *and* its `Tag` lines), then verify the file still loads
+  (`anthill-todo … list`).
 
 - **Local not pushed.** Unpushed commits are how the divergence above accumulates.
   **Push after every delivery** (loop step 4), and at run start confirm sync:
@@ -146,9 +155,9 @@ user how to build/install it — don't guess a path.)
 ## Rules & gotchas
 
 - **One ticket (or one stop) per run.** Keep context small; hand off cleanly.
-- **Sync at both ends** — merge `origin/main` *before* starting (not `--ff-only`,
-  which fails on divergence), and **push after every deliver** so local never
-  strands commits. End each run with `HEAD...origin/main` = `0  0`.
+- **Sync at both ends** — merge *or* rebase `origin/main` *before* starting (not
+  `--ff-only`, which fails on divergence), and **push after every deliver** so local
+  never strands commits. End each run with `HEAD...origin/main` = `0  0`.
 - **Commit before running any review/agent workflow** — its subagents may
   `git stash`/`git checkout` and wipe uncommitted changes.
 - **Loud error over silent skip:** surface unhandled cases rather than dropping them.
