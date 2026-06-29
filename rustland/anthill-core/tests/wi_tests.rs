@@ -513,3 +513,6 @@ mod wi582_typed_rule_pattern_test;
 #[path = "include/wi588_finite_combinators_test.rs"]
 mod wi588_finite_combinators_test;
 
+#[path = "include/wi598_finite_collect_dispatch_test.rs"]
+mod wi598_finite_collect_dispatch_test;
+

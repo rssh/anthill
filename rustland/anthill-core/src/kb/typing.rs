@@ -6256,7 +6256,23 @@ fn check_apply_iter(
             // receiver arm above takes. A DIRECT (`IntBag provides Iterable[C =
             // IntBag]`) or WITNESS (`IntBar provides Bar[T = Int64]`, WI-450)
             // provider has `transitive == false` and still dispatches concretely.
-            if matches!(&carrier_param_info, Some((.., true))) {
+            //
+            // WI-598: the SAME deferral is owed when the carrier sort is ITSELF an
+            // abstract spec — a value whose static type is `FiniteStream` (the
+            // declared return of the finite `map`/`filter`), which provides
+            // FiniteCollection DIRECTLY (so `transitive == false`) yet has no
+            // concrete representation of its own. Resolving it concretely picks the
+            // FiniteStream impl and then recurses into `FiniteStream provides Stream
+            // → Stream requires EffectsRuntime[E]`, unsatisfiable at the abstract
+            // access row `E` → the same spurious `DispatchNoMatch`. The runtime value
+            // is some concrete provider (a `FiniteMappedStream`), so defer to eval's
+            // value-directed dispatch exactly as the abstract self-receiver arm
+            // (`carrier == Abstract`) above does — the carrier-param analogue of it.
+            if matches!(&carrier_param_info, Some((.., true)))
+                || carrier_param_info
+                    .as_ref()
+                    .is_some_and(|(_, c, _, _, _, _)| carrier_is_abstract_spec(kb, *c))
+            {
                 return Ok(TypeResult {
                     ty: resolved_ret.clone(),
                     env: env.clone(),
@@ -8483,6 +8499,28 @@ fn spec_has_any_providers(kb: &KnowledgeBase, spec_sort: Symbol) -> bool {
         }
     }
     false
+}
+
+/// WI-598 — true iff `carrier_sym` is itself an ABSTRACT spec sort: it has no
+/// entity constructors of its own (no concrete representation) AND other sorts
+/// `provides` it (it is an interface, not just an empty concrete sort). A value
+/// whose static type is such a sort — e.g. `FiniteStream`, the declared return of
+/// the finite `map`/`filter` — is really some concrete provider, so a body-less
+/// carrier-param spec op on it must DEFER to eval's value-directed dispatch rather
+/// than resolve the spec sort's OWN `requires` chain (which `FiniteStream provides
+/// Stream → Stream requires EffectsRuntime[E]` leaves unsatisfiable at an abstract
+/// access row). The constructor check keeps a CONCRETE carrier that happens to
+/// provide a spec (a `List`, whose nil/cons make it concrete) on the concrete
+/// dispatch path; the provider check keeps a constructor-less but non-spec sort
+/// (none today) from silently deferring.
+///
+/// `sort_has_constructors` is the canonical data-sort-vs-spec predicate (qualified-
+/// name based, so canonical-insensitive); `carrier_sym` is canonicalized before the
+/// provider check so a non-canonical interning of the same logical sort still
+/// matches its `SortProvidesInfo` facts.
+fn carrier_is_abstract_spec(kb: &KnowledgeBase, carrier_sym: Symbol) -> bool {
+    let canon = kb.canonical_sort_sym(carrier_sym);
+    !kb.sort_has_constructors(canon) && spec_has_any_providers(kb, canon)
 }
 
 /// WI-508: distinct carrier sorts that `provides` `spec_sort` (canonical,
