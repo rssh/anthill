@@ -501,3 +501,6 @@ mod wi562_indexed_seq_nth_dispatch_test;
 #[path = "include/wi585_finite_collection_test.rs"]
 mod wi585_finite_collection_test;
 
+#[path = "include/wi594_finite_map_effect_threading_test.rs"]
+mod wi594_finite_map_effect_threading_test;
+
