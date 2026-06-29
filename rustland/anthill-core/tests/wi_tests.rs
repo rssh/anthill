@@ -510,3 +510,6 @@ mod wi594_finite_map_effect_threading_test;
 #[path = "include/wi582_typed_rule_pattern_test.rs"]
 mod wi582_typed_rule_pattern_test;
 
+#[path = "include/wi588_finite_combinators_test.rs"]
+mod wi588_finite_combinators_test;
+

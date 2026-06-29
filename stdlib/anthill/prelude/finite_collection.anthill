@@ -14,7 +14,9 @@
 -- (WI-589). The lazy finite carrier `FiniteStream` (so a lazy `map`/`filter`
 -- over a finite source stays consumable) is Phase B (WI-588).
 sort anthill.prelude.FiniteCollection
-  import anthill.prelude.{Iterable, List, Int64}
+  import anthill.prelude.{Iterable, List, Int64, Bool, Modify, FiniteStream}
+  import anthill.prelude.FiniteMappedStream.{fmapped}
+  import anthill.prelude.FiniteFilteredStream.{ffiltered}
 
   sort C = ?                          -- carrier (the collection)
   sort Element = ?
@@ -46,4 +48,30 @@ sort anthill.prelude.FiniteCollection
 
   operation foldRight[Acc, EffP](c: C, init: Acc, f: (x: Element, acc: Acc) -> Acc @ {EffP}) -> Acc effects {E, EffP} =
     List.foldRight(collect(c), init, f)
+
+  -- finiteIterator: the finite parallel of `Iterable.iterator`. An `Iterable`'s
+  -- iterator returns a plain `Stream` because an Iterable may be infinite; a
+  -- `FiniteCollection` GUARANTEES termination, so the stream it produces is
+  -- STATICALLY finite — a `FiniteStream`. Body-less and effect-free (like
+  -- `iterator`: the access row E rides on the produced stream, paid on
+  -- consumption). Each carrier supplies a lazy finite cursor (List: identity;
+  -- Map: entries; FiniteStream: identity).
+  operation finiteIterator(c: C) -> FiniteStream[T = Element, E = E]
+
+  -- Finite-preserving `map` / `filter`. UNLIKE `Iterable.map`/`filter` (→ lazy
+  -- `Stream`), these RETURN a `FiniteStream`, so a pipeline over a finite source
+  -- stays consumable: `xs.map(f).size()` keeps type-checking once the eager
+  -- consumers move off `Stream` (Phase C). They live HERE (not on `FiniteStream`)
+  -- so a finite-but-non-stream carrier — a `Map` — gets them too, returning a
+  -- FiniteStream the same way `Iterable.map` returns a Stream. Thin parallel of
+  -- the lazy map: wrap the finite cursor in the finite carrier. `-Modify[x]` lacks
+  -- forbid mutating the element under test (re-walkable lazy view, WI-440);
+  -- decoupled rows (WI-441): result row is the UNION `{E, EffP}`, paid on consume.
+  operation map[Dst, EffP](c: C, f: (x: Element) -> Dst @ {EffP, -Modify[x]})
+    -> FiniteStream[T = Dst, E = {E, EffP}] =
+    fmapped(finiteIterator(c), f)
+
+  operation filter[EffP](c: C, p: (x: Element) -> Bool @ {EffP, -Modify[x]})
+    -> FiniteStream[T = Element, E = {E, EffP}] =
+    ffiltered(finiteIterator(c), p)
 end

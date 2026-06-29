@@ -6,13 +6,17 @@
 //! *headline* WI-278 acceptance the cluster did not, on its own, exercise: a
 //! real combinator chain `xs.map(f).filter(p)` that
 //!
-//!   1. dispatches `map` to `Iterable.map` (List provides Iterable) and
-//!      `filter` to `Stream.filter` (the produced lazy carrier provides
-//!      Stream) — both with NO import of the operation;
+//!   1. dispatches `map`/`filter` with NO import of the operation. POST-WI-588
+//!      (finiteness Phase B): on a `List` these now resolve to
+//!      `FiniteCollection.map`/`filter` (List provides FiniteCollection at
+//!      provision-graph depth 1, beating `Iterable` at depth 2), producing the
+//!      FINITE carriers `FiniteMappedStream` / `FiniteFilteredStream`. (Before
+//!      Phase B they resolved to the lazy `Iterable.map` → `mapped`/`filtered`;
+//!      the lazy carriers are still reached on a genuinely-infinite bare Stream.)
 //!   2. INFERS the method's type parameters (`map`'s `Dst` from the callback,
 //!      the receiver's element type from the receiver) — proposal 043 §6.6;
-//!   3. EVALUATES: the dispatched chain runs through the real lazy
-//!      `mapped` / `filtered` carriers and produces the right elements.
+//!   3. EVALUATES: the dispatched chain runs through the real finite
+//!      `fmapped` / `ffiltered` carriers and produces the right elements.
 //!
 //! Regression context: the chain originally type-failed not in the dot path
 //! but in the effect-row algebra — the lazy combinators' result row
@@ -118,23 +122,29 @@ const EVAL_SRC: &str = r#"
 namespace wi278.eval
   import anthill.prelude.{List, Int64, Stream, Bool}
   import anthill.prelude.List.{nil, cons}
-  import anthill.prelude.Stream.{collect, foldLeft}
+  -- WI-588: `.map`/`.filter` on a List now produce FINITE carriers
+  -- (FiniteMappedStream/FiniteFilteredStream), so the chain is a FiniteStream.
+  -- Consume it via FiniteCollection's `collect`/`foldLeft` (effect = the sort
+  -- param `E`, grounded by the provision) rather than Stream's (effect = the
+  -- projection `s.E`, which does not ground through the 2-hop transitive provision
+  -- FiniteFilteredStream → FiniteStream → Stream).
+  import anthill.prelude.FiniteCollection.{foldLeft}
 
   operation inc(n: Int64) -> Int64 = n + 1
   operation is_big(n: Int64) -> Bool = n > 2
   operation addp(a: Int64, b: Int64) -> Int64 = a + b
-
-  -- encode a 3-element list as a*100 + b*10 + c.
-  operation encode3(xs: List[T = Int64]) -> Int64 =
-    match xs
-      case cons(a, cons(b, cons(c, _))) -> a * 100 + b * 10 + c
-      case _ -> 0
+  -- positional encode via foldLeft: [a,b,c] -> a*100+b*10+c (left-to-right shift),
+  -- so the SAME 345 acceptance is preserved while consuming the chain with the
+  -- finite eager `foldLeft` (whose sort-param effect grounds through the dot
+  -- chain's abstract FiniteStream result; the body-less `collect` primitive does
+  -- not dispatch on an abstract spec value — a narrow follow-up gap).
+  operation shift(acc: Int64, x: Int64) -> Int64 = acc * 10 + x
 
   -- [1,2,3,4] -.map(inc)-> [2,3,4,5] -.filter(>2)-> [3,4,5].
   -- Receiver is a list literal (a value); both methods dispatch by sort,
-  -- no import of map/filter. collect forces the lazy chain → [3,4,5] → 345.
+  -- no import of map/filter. foldLeft forces the finite chain → [3,4,5] → 345.
   operation chain_literal() -> Int64 =
-    encode3(collect([1, 2, 3, 4].map(inc).filter(is_big)))
+    foldLeft([1, 2, 3, 4].map(inc).filter(is_big), 0, shift)
 
   -- Same chain on a param receiver; folded → 3+4+5 = 12.
   operation chain_param_sum(xs: List[T = Int64]) -> Int64 =
@@ -145,13 +155,13 @@ namespace wi278.eval
   -- Receiver is a let-bound local (WI-280 value receiver) → [3,4,5] → 345.
   operation chain_let() -> Int64 =
     let xs = [1, 2, 3, 4]
-    encode3(collect(xs.map(inc).filter(is_big)))
+    foldLeft(xs.map(inc).filter(is_big), 0, shift)
 
   -- Predicate rejects everything: [1,2] -.map(inc)-> [2,3] -.filter(>9)-> [].
-  -- Forces the lazy filter's drop-everything self-recursion to terminate at the
-  -- empty stream, and exercises encode3's `case _ -> 0` arm → 0.
+  -- Forces the finite filter's drop-everything self-recursion to terminate at the
+  -- empty stream → fold of [] → 0.
   operation chain_empty() -> Int64 =
-    encode3(collect([1, 2].map(inc).filter(is_huge)))
+    foldLeft([1, 2].map(inc).filter(is_huge), 0, shift)
 
   operation is_huge(n: Int64) -> Bool = n > 9
 end

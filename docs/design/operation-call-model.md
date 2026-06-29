@@ -548,7 +548,17 @@ The sort-level union ISN'T a separate analysis output — it's just the union of
 
 ### Two different things to distinguish
 
-(1) **Conditional instance derivation**: `fact Eq[T = List[T = ?A]] :- Eq[T = ?A]` — derive `Eq[List[Int64]]` from `Eq[Int64]`. Anthill **already has this** via Horn-clause facts; SLD resolution handles it natively. Same mechanism as Haskell's `instance Eq a => Eq [a]`. Not a future feature — first-class today.
+(1) **Conditional instance derivation**: derive `Eq[List[Int64]]` from `Eq[Int64]` — the same idea as Haskell's `instance Eq a => Eq [a]`. Anthill has this today, but **not** via a rule-bodied `fact Eq[T = List[T = ?A]] :- Eq[T = ?A]`: the grammar, loader, and typer handle only *ground* provider facts (`collect_provides_candidates` skips any rule with a body and looks providers up by functor index — it never runs SLD over a fact body). The realized mechanism is the **witness-sort + `requires`** pattern — a named sort carries the condition on its `requires`, and SLD resolves *that* chain:
+
+```anthill
+sort EqList                 -- "List[A] is Eq WHEN A is Eq"
+  sort A = ?
+  requires Eq[T = A]
+  fact Eq[T = List[T = A]]   -- ground head; the condition rides on `requires`
+end
+```
+
+Resolving `Eq[List[Int64]]` matches `EqList`'s ground `fact Eq[List[A]]` (binding `A = Int64`), then discharges its `requires Eq[Int64]` by SLD — a one-level conditional. See `wi224_sld_resolution_test` (acceptance criterion 2) and proposal `docs/proposals/library/003-finite-collection.md` ("Conditional provisions"). First-class today — just expressed through the witness sort, not the rule-bodied fact surface.
 
 (2) **Constraint inference of sort.requires from bodies**: instead of declaring `Sort.requires` source-explicit and validating, let body walking *generate* the sort's requires. The user lists operations and bodies; the typer infers what requirements the sort needs and prints them as the inferred signature. This is what Haskell GHC does for top-level let bindings (`foo x = show (x + 1)` → inferred `(Show a, Num a) => a -> String`).
 

@@ -112,6 +112,13 @@ enum anthill.prelude.List
   -- lowers through the type-aware path, like the Stream provision above.
   provides FiniteCollection[C = List[T], Element = T, E = {}]
   operation collect(l: List) -> List[T = l.T] = l
+
+  -- List provides FiniteStream (WI-588): a list's tail is a list, so a List IS a
+  -- finite lazy sequence; its `splitFirst` (below) returns a List tail, which
+  -- satisfies FiniteStream's FINITE-tail `splitFirst` by covariant return. The
+  -- finite cursor is the IDENTITY — `finiteIterator(l) = l`, effect-free (no walk).
+  provides FiniteStream[T, {}]
+  operation finiteIterator(l: List) -> FiniteStream[T = l.T, E = {}] = l
   -- WI-495: the explicit `provides Iterable[C = List[T], Element = T, E = {}]`
   -- clause is GONE — List's Iterable-ness is now DERIVED transitively from
   -- `List provides Stream` (above) + `Stream provides Iterable` (stream.anthill).

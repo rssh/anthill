@@ -62,6 +62,10 @@ object EmbeddedStdlib:
     // combinators defines MappedStream/FilteredStream — imported by iterable.
     // (Loader is 2-phase scan-then-resolve, so the forward ref is fine.)
     "anthill.prelude.combinators",
+    // finiteness Phase B (WI-588): FiniteStream + finite map/filter carriers.
+    // Reference FiniteCollection (loaded above) and Stream/combinators.
+    "anthill.prelude.finite_stream",
+    "anthill.prelude.finite_combinators",
     "anthill.prelude.logical_stream",
     // ── meta + reflect
     "anthill.prelude.sort",

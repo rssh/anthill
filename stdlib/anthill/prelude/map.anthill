@@ -1,6 +1,6 @@
 -- Map: abstract key-value association (requires Eq on keys)
 sort anthill.prelude.Map
-  import anthill.prelude.{Option, List, Pair, Bool, Int64, Eq, Iterable, FiniteCollection, Stream}
+  import anthill.prelude.{Option, List, Pair, Bool, Int64, Eq, Iterable, FiniteCollection, FiniteStream, Stream}
 
   sort K = ?
   sort V = ?
@@ -29,6 +29,13 @@ sort anthill.prelude.Map
   -- either way; a concrete Map impl with a runnable `size` body gets the O(1).
   provides FiniteCollection[C = Map, Element = Pair[A = K, B = V], E = {}]
   operation collect(m: Map) -> List[T = Pair[A = K, B = V]] = entries(m)
+
+  -- finiteIterator (WI-588): a Map is finite but NOT a stream, so its finite
+  -- cursor materializes the entries as a List (which provides FiniteStream) — the
+  -- same `entries` materialization Map's plain `iterator` already does, now typed
+  -- as the FINITE stream the finiteness guarantee licenses. This gives Map.map /
+  -- Map.filter (inherited from FiniteCollection) their FiniteStream result.
+  operation finiteIterator(m: Map) -> FiniteStream[T = Pair[A = K, B = V], E = {}] = entries(m)
 
   -- Construction
   operation empty() -> Map

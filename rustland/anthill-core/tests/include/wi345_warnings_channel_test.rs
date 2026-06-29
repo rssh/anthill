@@ -42,13 +42,18 @@ fn load_warning_other_renders_as_advisory() {
 fn clean_stdlib_load_carries_only_phase_a_finite_shadows() {
     // End-to-end: the channel is wired through `load_all` → `LoadResult`.
     // The field threads out of the merged result and carries no SPURIOUS
-    // advisories. The only warnings are the three KNOWN, TRANSITIONAL
-    // requires-shadows from WI-585 finiteness Phase A (proposal library/003):
-    // `FiniteCollection` (which `requires Iterable`) re-homes `size` /
-    // `foldLeft` / `foldRight`, which `Iterable` STILL carries during the
-    // additive phase, so WI-346 correctly flags the shadow. Phase C (WI-589)
-    // removes those ops from `Iterable`, and these warnings vanish — at which
-    // point this assertion should revert to `warnings.is_empty()`.
+    // advisories. The only warnings are the KNOWN requires-shadows from
+    // finiteness (proposal library/003): `FiniteCollection` (which `requires
+    // Iterable`) re-homes ops `Iterable` also carries, so WI-346 flags the shadow.
+    //   * Phase A (WI-585), TRANSITIONAL: `size` / `foldLeft` / `foldRight` —
+    //     Phase C (WI-589) removes these from `Iterable`, so they vanish then.
+    //   * Phase B (WI-588), PERMANENT: `map` / `filter` — `Iterable` KEEPS its
+    //     lazy (maybe-infinite → `Stream`) `map`/`filter`, while `FiniteCollection`
+    //     adds finite (→ `FiniteStream`) ones; both coexist by design (dispatch
+    //     picks the finite one on a finite carrier by provision-graph distance),
+    //     so this shadow does NOT go away in Phase C. (Teaching WI-346 to not warn
+    //     on a covariant-return refinement would silence it — a possible follow-up.)
+    // After Phase C the count drops to the 2 permanent map/filter shadows.
     let result = load_stdlib_result().expect("stdlib should load cleanly");
     let msgs: Vec<String> = result.warnings.iter().map(|w| w.to_string()).collect();
     let is_finite_shadow = |m: &String| {
@@ -57,12 +62,13 @@ fn clean_stdlib_load_carries_only_phase_a_finite_shadows() {
     };
     let unexpected: Vec<&String> = msgs.iter().filter(|m| !is_finite_shadow(m)).collect();
     assert!(unexpected.is_empty(),
-        "the only stdlib warnings should be the Phase-A FiniteCollection/Iterable \
+        "the only stdlib warnings should be the FiniteCollection/Iterable \
          shadows; got unexpected: {unexpected:?}");
-    for op in ["size", "foldLeft", "foldRight"] {
+    for op in ["size", "foldLeft", "foldRight", "map", "filter"] {
         assert!(msgs.iter().any(|m| is_finite_shadow(m) && m.contains(&format!("`{op}`"))),
-            "expected the Phase-A FiniteCollection shadow warning for `{op}`; got: {msgs:?}");
+            "expected the FiniteCollection shadow warning for `{op}`; got: {msgs:?}");
     }
-    assert_eq!(msgs.len(), 3,
-        "exactly the three Phase-A finite shadows (size/foldLeft/foldRight); got: {msgs:?}");
+    assert_eq!(msgs.len(), 5,
+        "exactly the five finite shadows (Phase A size/foldLeft/foldRight + \
+         Phase B map/filter); got: {msgs:?}");
 }
