@@ -962,8 +962,7 @@ pub fn refute_guard(kb: &mut KnowledgeBase, flow: &FlowEnv, guard: &Value) -> bo
 /// floundering). `None` when reflect's `not` is unavailable (a prelude-less
 /// KB) — the caller then keeps the effect rather than guess.
 fn negate_goal(kb: &mut KnowledgeBase, goal: &Value) -> Option<Value> {
-    let eq_sym = kb.eq_functor();
-    let neq_sym = kb.try_resolve_symbol("anthill.prelude.Eq.neq");
+    let (eq_sym, neq_sym) = eq_neq_functors(kb);
     if let ViewHead::Functor { functor: Some(f), pos_arity, named_arity } = goal.head(kb) {
         let swapped = if f == eq_sym {
             neq_sym
@@ -16393,6 +16392,7 @@ fn var_ref_name_symbol(kb: &KnowledgeBase, named_args: &[(Symbol, TermId)]) -> O
 fn guarded_atom_refuted(
     kb: &mut KnowledgeBase,
     flow: &FlowEnv,
+    subst: &Substitution,
     sigma: &HashMap<Symbol, TermId>,
     guard_value: &Value,
 ) -> bool {
@@ -16432,8 +16432,162 @@ fn guarded_atom_refuted(
         } else {
             substitute_ref_terms(kb, g, sigma)
         };
+        // WI-573: an `eq`/`neq` conjunct whose operands sit on a carrier — at the
+        // top level OR at any nested element/field carrier — that defines a CUSTOM
+        // equality override cannot be refuted by the structural `Eq`/`Neq` builtin.
+        // The builtin compares values by structural recursion and never dispatches
+        // a carrier's own `eq`, so its verdict is unsound wherever a custom
+        // equality is reachable. Such a conjunct cannot contribute to refuting the
+        // guard: suspend it (the effect stays conservatively present) until runtime
+        // monomorphization can dispatch the override (the deferred half of WI-573).
+        // A wholly native/structural operand has no override anywhere and is
+        // decided soundly by the builtin, exactly as before.
+        if guard_conjunct_overrides_structural_eq(kb, subst, g) {
+            return false;
+        }
         refute_guard(kb, flow, &Value::term(g))
     })
+}
+
+/// The `(eq, neq)` spec-op functor symbols (`anthill.prelude.Eq.{eq,neq}`); `neq`
+/// is `None` in a prelude-less KB. The single source for the eq/neq family pair,
+/// shared by [`negate_goal`]'s `eq ⇄ neq` swap and the WI-573 override gate so the
+/// two — which must agree on exactly which goals the structural builtin decides —
+/// can never silently diverge on how `neq` is qualified.
+fn eq_neq_functors(kb: &mut KnowledgeBase) -> (Symbol, Option<Symbol>) {
+    (kb.eq_functor(), kb.try_resolve_symbol("anthill.prelude.Eq.neq"))
+}
+
+/// Is `f` the `eq` or `neq` spec op — the equality family the structural
+/// `Eq`/`Neq` builtin decides (and the only family at risk in WI-573, see
+/// [`guard_conjunct_overrides_structural_eq`])?
+fn is_eq_family_functor(kb: &mut KnowledgeBase, f: Symbol) -> bool {
+    let (eq, neq) = eq_neq_functors(kb);
+    f == eq || Some(f) == neq
+}
+
+/// Does `carrier` define its OWN `eq` or `neq` ([`carrier_override_op`])? A custom
+/// `eq` OR `neq` makes BOTH structural verdicts unsound for the carrier (`neq` is
+/// specified `<=> not(eq)`, so a custom `eq` redefines `neq` too, and
+/// [`negate_goal`]'s swap routes an `eq` guard through the `Neq` builtin and vice
+/// versa) — so the whole pair is checked. A native/structural `provides Eq` (no
+/// own `eq` member parented by the carrier) returns `false`; the gate's
+/// no-regression property for native carriers rides on that — `provides Eq`
+/// alone must NOT synthesize a carrier-parented runnable `eq` (regression-guarded
+/// by `wi573_eq_override_discharge_test::native_eq_carrier_still_discharges`).
+fn carrier_overrides_eq_family(kb: &mut KnowledgeBase, carrier: Symbol) -> bool {
+    let (eq_sym, neq_sym) = eq_neq_functors(kb);
+    let eq_short = kb.intern("eq");
+    if carrier_override_op(kb, carrier, eq_sym, eq_short).is_some() {
+        return true;
+    }
+    if let Some(neq) = neq_sym {
+        let neq_short = kb.intern("neq");
+        if carrier_override_op(kb, carrier, neq, neq_short).is_some() {
+            return true;
+        }
+    }
+    false
+}
+
+/// Maximum structural depth [`value_carrier_overrides_eq_family_deep`] descends.
+/// Guard operands are small literals; the cap is a runaway/cyclic guard only.
+const GUARD_OVERRIDE_SCAN_DEPTH_CAP: usize = 256;
+
+/// Does any carrier reachable in `value` — the value's own carrier OR that of any
+/// positional/named child, recursively — define a custom `eq`/`neq`? The
+/// structural `Eq`/`Neq` builtin compares two values by structural recursion
+/// (`views_structurally_equal`: every positional + named child), so a custom
+/// equality on ANY reachable element/field carrier (not just the top-level one)
+/// makes the structural verdict unsound — `eq(some(Green), some(Red))` over
+/// `Option[Color]` recurses into `Color`, whose `eq` it ignores. The traversal
+/// here mirrors `views_structurally_equal` exactly so the override scan covers
+/// precisely the carriers the comparison touches. At the depth cap it reports
+/// `true` (block → keep the effect, sound) rather than risk an unscanned override.
+fn value_carrier_overrides_eq_family_deep(
+    kb: &mut KnowledgeBase,
+    subst: &Substitution,
+    value: &Value,
+    depth: usize,
+) -> bool {
+    if depth >= GUARD_OVERRIDE_SCAN_DEPTH_CAP {
+        return true;
+    }
+    // This node's carrier. An abstract/structural node yields no carrier sort
+    // (`None`) — nothing to override there; the recursion still descends into its
+    // children below.
+    let ty = value_type_term(kb, subst, value);
+    if let Some(carrier) = carrier_sort_of_value(kb, &ty) {
+        if carrier_overrides_eq_family(kb, carrier) {
+            return true;
+        }
+    }
+    // Collect the children the structural comparison recurses into (positional,
+    // then named — as in `views_structurally_equal`). Collect owned values first
+    // so the immutable view borrows end before the recursive `&mut kb` calls.
+    let mut children: Vec<Value> = Vec::new();
+    if let ViewHead::Functor { pos_arity, .. } = value.head(kb) {
+        for i in 0..pos_arity {
+            if let Some(c) = value.pos_arg(kb, i) {
+                children.push(c.to_value());
+            }
+        }
+        let keys: Vec<Symbol> = value.named_keys(kb);
+        for key in keys {
+            if let Some(c) = value.named_arg(kb, key) {
+                children.push(c.to_value());
+            }
+        }
+    }
+    children
+        .iter()
+        .any(|c| value_carrier_overrides_eq_family_deep(kb, subst, c, depth + 1))
+}
+
+/// WI-573 — would refuting this guard conjunct via the structural `Eq`/`Neq`
+/// builtin IGNORE a custom equality override reachable from its operands? Only the
+/// `eq`/`neq` family is at risk: [`negate_goal`] negates an `eq`/`neq` guard by
+/// the **functor swap** (`eq ⇄ neq`), producing a POSITIVE goal the structural
+/// builtin (`resolve.rs` `BuiltinTag::Eq`/`Neq`) DECIDES — and that builtin
+/// compares values by structural recursion, never dispatching a carrier's own
+/// `eq` impl at ANY depth. Every other predicate negates via the `not(..)`
+/// wrapper, resolved by NAF which [`prove_from_gamma`]'s `definite_only`
+/// suppresses, so for guarded-effect discharge it is already kept soundly (the
+/// `isEmpty`/`head` cascade is WI-567, not this).
+///
+/// Both operands are scanned in full ([`value_carrier_overrides_eq_family_deep`]):
+/// they share the `Eq[T]` carrier, so scanning both also covers the case where
+/// one rides as a carrier `value_type_term` cannot pin while the other types
+/// cleanly. Returns `true` (⇒ keep the effect, do not refute) when any reachable
+/// carrier defines its OWN `eq`/`neq`; a wholly native/structural operand returns
+/// `false` (decided soundly by the builtin, exactly as before WI-573).
+///
+/// Actually dispatching the override (runtime monomorphization, so the guard
+/// could still discharge under the carrier's own equality) is the deferred half
+/// (the ticket's option (a)); this is the sound floor (option (b)).
+fn guard_conjunct_overrides_structural_eq(
+    kb: &mut KnowledgeBase,
+    subst: &Substitution,
+    conjunct: TermId,
+) -> bool {
+    let goal = Value::term(conjunct);
+    let (functor, pos_arity) = match goal.head(kb) {
+        ViewHead::Functor { functor: Some(f), pos_arity, .. } => (f, pos_arity),
+        _ => return false,
+    };
+    if !is_eq_family_functor(kb, functor) || pos_arity == 0 {
+        return false;
+    }
+    // Scan BOTH operands' full value structure. The gate matters only where the
+    // structural builtin would otherwise DECIDE (refute), which needs ground
+    // operands — an abstract operand simply yields no override and is no-op here,
+    // while the builtin delays/keeps it anyway.
+    let operands: Vec<Value> = (0..pos_arity)
+        .filter_map(|i| goal.pos_arg(kb, i).map(|a| a.to_value()))
+        .collect();
+    operands
+        .iter()
+        .any(|op| value_carrier_overrides_eq_family_deep(kb, subst, op, 0))
 }
 
 /// Build the call substitution σ: callee parameter ↦ the actual argument's
@@ -16478,7 +16632,7 @@ fn guarded_atom_value_refuted(
     let guard_key = kb.intern("guard");
     let walked = walk_value_to_resolved(kb, subst, atom.clone());
     match named_child_value(kb, &walked, guard_key) {
-        Some(guard) => guarded_atom_refuted(kb, flow, sigma, &guard),
+        Some(guard) => guarded_atom_refuted(kb, flow, subst, sigma, &guard),
         None => false,
     }
 }
@@ -16499,7 +16653,7 @@ fn drop_refuted_guarded_labels(
     let guarded = collect_guarded_atoms(kb, subst, row);
     let mut dropped: Vec<Value> = Vec::new();
     for (label, guard) in guarded {
-        if guarded_atom_refuted(kb, flow, sigma, &guard) {
+        if guarded_atom_refuted(kb, flow, subst, sigma, &guard) {
             dropped.push(label);
         }
     }
