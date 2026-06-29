@@ -2355,6 +2355,26 @@ pub fn try_occurrence_to_term(kb: &mut KnowledgeBase, occ: &Rc<NodeOccurrence>) 
         // over a binder round-trips through the term store (and the resolver's
         // `goal_value_to_term`) instead of the former non-goal `None` — which
         // tripped this function's debug_assert and reified the binder to ⊥.
+        // WI-592: a `var_ref` whose `name` is a CONSTRUCTOR is not a binder
+        // variable — it is a ground datum, so it lowers to a bare `Ref(name)`.
+        // Op-body lowering wraps EVERY bare identifier — params AND nullary
+        // constructors (`risky(Green)`) — as `var_ref` (`load_var_ref`), and the
+        // Γ floundering gate (`value_has_open_world_ref`) treats every `var_ref`
+        // as an open-world variable; so a guarded-effect guard / precondition
+        // over a constructor ARGUMENT (`{ Boom :- eq(c, Red) }` at `risky(Green)`)
+        // would flounder instead of being DECIDED (resolve.rs: a constructor "is
+        // a closed datum … must still be able to DECIDE, not flounder"). Telling
+        // the two apart at this goal-lowering boundary keeps the carried
+        // OCCURRENCE a `var_ref` (so the typer's `param_to_arg_sym` re-key still
+        // sees the binder shape, WI-459/WI-481) while the lowered GOAL TERM is the
+        // decidable `Ref` the resolver needs. A genuine binder stays `var_ref`
+        // (flounder is the sound default for a runtime-unknown). `Const` is
+        // deliberately NOT included: a const NAMES a value, so a structural
+        // `Ref(const)` comparison without folding would be unsound — it stays
+        // `var_ref` (conservatively kept).
+        Some(Expr::VarRef { name }) if kb.is_constructor_symbol(*name) => {
+            kb.alloc(Term::Ref(*name))
+        }
         Some(Expr::VarRef { name }) => kb.make_var_ref_term(*name),
         // WI-027: a list literal `[…]` reifies to its `ListLiteral(…)` term twin
         // — the inverse of the `"ListLiteral" => Expr::ListLit` occurrence build —

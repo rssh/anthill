@@ -1491,12 +1491,34 @@ pub(crate) fn substitute_ref_syms(
     term: TermId,
     map: &HashMap<Symbol, Symbol>,
 ) -> TermId {
+    let var_ref_sym = kb.resolve_symbol("anthill.reflect.Expr.var_ref");
+    substitute_ref_syms_rec(kb, term, map, var_ref_sym)
+}
+
+fn substitute_ref_syms_rec(
+    kb: &mut KnowledgeBase,
+    term: TermId,
+    map: &HashMap<Symbol, Symbol>,
+    var_ref_sym: Symbol,
+) -> TermId {
     match kb.get_term(term).clone() {
         Term::Ref(s) => map
             .get(&s)
             .map_or(term, |&new_sym| kb.alloc(Term::Ref(new_sym))),
+        // WI-592: a `var_ref(name: Ref(b))` is a binder VARIABLE reference, not a
+        // bare param-name occurrence to rename. Leave it intact — recursing would
+        // rewrite the binder's `name` child, corrupting `var_ref(name: c)` into
+        // `var_ref(name: Green)` when `map` carries `c ↦ Green` (a constructor /
+        // value argument, which `param_to_arg_head` records for a re-keyed
+        // effect). The call's VALUE substitution (`build_call_guard_sigma` →
+        // [`substitute_ref_terms`]) is what replaces a bound binder, and it does
+        // so WHOLESALE (WI-552), so a binder→binder rename rides that path; this
+        // pass touches only the bare `Ref` spine of effect LABELS (`Modify[c]` →
+        // `Modify[s]`, WI-209). The same recurse-corruption WI-552 fixed in
+        // `substitute_ref_terms`, here for the param-name rename.
+        Term::Fn { functor, .. } if functor == var_ref_sym => term,
         Term::Fn { .. } => kb.map_fn_children(term, |kb, child| {
-            substitute_ref_syms(kb, child, map)
+            substitute_ref_syms_rec(kb, child, map, var_ref_sym)
         }),
         _ => term,
     }

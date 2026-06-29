@@ -256,6 +256,9 @@ mod wi478_guarded_effect_test;
 #[path = "include/wi067_guard_discharge_test.rs"]
 mod wi067_guard_discharge_test;
 
+#[path = "include/wi592_constructor_arg_discharge_test.rs"]
+mod wi592_constructor_arg_discharge_test;
+
 #[path = "include/wi539_call_site_contracts_test.rs"]
 mod wi539_call_site_contracts_test;
 
