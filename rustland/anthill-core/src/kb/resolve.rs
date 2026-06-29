@@ -908,7 +908,14 @@ impl SearchStream {
                     if let Some(goal) = goal_t {
                         let has_non_eq = rc.iter().any(|(rid, _)| !kb.is_equation(*rid));
                         if !has_non_eq {
-                            let (rewritten, changes) = kb.apply_eq_rules(goal, 100);
+                            // WI-595: thread the frame's σ (its constraint store +
+                            // bindings) so a constraint-typed carrier var in the redex
+                            // is decidable by the type-directed `[simp]` guard, rather
+                            // than reading headless under an empty subst (C1). O(1)
+                            // imbl clone.
+                            let eq_subst = self.stack.last().unwrap().subst.clone();
+                            let (rewritten, changes) =
+                                kb.apply_eq_rules(goal, 100, &eq_subst);
                             if !changes.is_empty() {
                                 rc = kb.query(rewritten);
                             }
@@ -2172,7 +2179,10 @@ impl KnowledgeBase {
     /// at the top level). Uses fuel to prevent non-termination from
     /// divergent rewrite systems.
     pub fn simplify(&mut self, term: TermId) -> TermId {
-        let (result, _) = self.apply_eq_rules(term, 100);
+        // The standalone simplifier has no resolver frame, so no constraint-store
+        // bindings to read — an empty subst (WI-595: the type-directed guard then
+        // reads the redex's own structural type only).
+        let (result, _) = self.apply_eq_rules(term, 100, &Substitution::new());
         result
     }
 
@@ -2180,7 +2190,12 @@ impl KnowledgeBase {
     ///
     /// Strategy: innermost — rewrite subterms first, then try top level.
     /// Returns `(rewritten_term, changes)`.
-    pub fn apply_eq_rules(&mut self, term: TermId, fuel: usize) -> (TermId, Vec<EqChange>) {
+    pub fn apply_eq_rules(
+        &mut self,
+        term: TermId,
+        fuel: usize,
+        subst: &Substitution,
+    ) -> (TermId, Vec<EqChange>) {
         if fuel == 0 {
             return (term, vec![]);
         }
@@ -2193,7 +2208,7 @@ impl KnowledgeBase {
                 let new_pos: SmallVec<[TermId; 4]> = pos_args
                     .iter()
                     .map(|&id| {
-                        let (rewritten, sub_changes) = self.apply_eq_rules(id, fuel - 1);
+                        let (rewritten, sub_changes) = self.apply_eq_rules(id, fuel - 1, subst);
                         changes.extend(sub_changes);
                         rewritten
                     })
@@ -2201,7 +2216,7 @@ impl KnowledgeBase {
                 let new_named: SmallVec<[(crate::intern::Symbol, TermId); 2]> = named_args
                     .iter()
                     .map(|&(sym, id)| {
-                        let (rewritten, sub_changes) = self.apply_eq_rules(id, fuel - 1);
+                        let (rewritten, sub_changes) = self.apply_eq_rules(id, fuel - 1, subst);
                         changes.extend(sub_changes);
                         (sym, rewritten)
                     })
@@ -2272,7 +2287,7 @@ impl KnowledgeBase {
             // provide the container (the carrier check) — a separate
             // element-provides-the-spec mechanism is deferred.
             if self.equation_is_requires_guarded(rid)
-                && !super::typing::simp_requires_guard_holds(self, current, &Substitution::new())
+                && !super::typing::simp_requires_guard_holds(self, current, subst)
             {
                 continue;
             }
@@ -2322,7 +2337,7 @@ impl KnowledgeBase {
             });
 
             // Continue rewriting the result
-            let (final_term, more_changes) = self.apply_eq_rules(rhs, fuel - 1);
+            let (final_term, more_changes) = self.apply_eq_rules(rhs, fuel - 1, subst);
             changes.extend(more_changes);
             return (final_term, changes);
         }
@@ -5341,7 +5356,7 @@ mod tests {
         let meta = simp_meta(&mut kb);
         kb.assert_fact(eq_head, sort, domain, Some(meta));
 
-        let (result, changes) = kb.apply_eq_rules(lhs, 100);
+        let (result, changes) = kb.apply_eq_rules(lhs, 100, &Substitution::new());
         assert_eq!(result, four);
         assert_eq!(changes.len(), 1);
         assert_eq!(changes[0].original, lhs);
@@ -5391,7 +5406,7 @@ mod tests {
             named_args: SmallVec::new(),
         });
 
-        let (result, changes) = kb.apply_eq_rules(pick_57, 100);
+        let (result, changes) = kb.apply_eq_rules(pick_57, 100, &Substitution::new());
         assert_eq!(result, five, "var-RHS rule must instantiate to the matched first arg");
         assert_eq!(changes.len(), 1);
         assert_eq!(changes[0].rewritten.expect_term(), five);

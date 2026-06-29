@@ -285,3 +285,53 @@ fn value_type_term_of_empty_tuple_literal_is_unit() {
     let head = sort_functor_of_view(&kb, &ty).expect("() has a sort head");
     assert_sort_named(&kb, head, "Unit");
 }
+
+/// WI-595 — an UNDER-DETERMINED bound value's type is REFINED by the carrier
+/// var's store bound. `?x := nil` types as `List[?]` (the
+/// `value_type_term_of_nil_is_list` baseline); the declared `List[Int64]` store
+/// constraint meets in to recover the element type, so reading `?x` yields
+/// `List[Int64]`. The sort head stays `List` (the refine never changes the head).
+#[test]
+fn value_type_term_refines_underdetermined_bound_var_with_constraint() {
+    let mut kb = load_kb();
+    let xname = kb.intern("x");
+    let vid = VarId::new(1, xname);
+    let mut subst = Substitution::new();
+    // ?x := nil — under-determined element (`List[?]`).
+    let nil = nil_value(&kb);
+    subst.bind_value(&kb, vid, nil);
+    // Declared bound ?x : List[Int64], obtained by typing `cons(1, nil)`.
+    let list_int64 = {
+        let inner_nil = nil_value(&kb);
+        let c = cons_value(&mut kb, Value::Int(1), inner_nil);
+        value_type_term(&mut kb, &subst, &c)
+    };
+    subst.add_type_constraint(vid, list_int64);
+    let ty = value_type_term(&mut kb, &subst, &Value::Var(Var::Global(vid)));
+    let head = sort_functor_of_view(&kb, &ty).expect("refined type still has a List head");
+    assert_sort_named(&kb, head, "List");
+    // The discriminating assertion: without the refine the element is a `?_`.
+    assert_type_param_is(&kb, &ty, "Int64");
+}
+
+/// WI-595 soundness — an INCOMPATIBLE store bound must NOT degrade the bound
+/// value's own concrete type. `?x := 5` is `Int64`; a (bogus) `List[Int64]` bound
+/// meets to `nothing`, so it is IGNORED and the value's `Int64` stands. The read
+/// never collapses to bottom (which would silently suspend every later firing).
+#[test]
+fn value_type_term_ignores_incompatible_constraint() {
+    let mut kb = load_kb();
+    let xname = kb.intern("x");
+    let vid = VarId::new(1, xname);
+    let mut subst = Substitution::new();
+    subst.bind_value(&kb, vid, Value::Int(5));
+    let list_int64 = {
+        let inner_nil = nil_value(&kb);
+        let c = cons_value(&mut kb, Value::Int(1), inner_nil);
+        value_type_term(&mut kb, &subst, &c)
+    };
+    subst.add_type_constraint(vid, list_int64);
+    let ty = value_type_term(&mut kb, &subst, &Value::Var(Var::Global(vid)));
+    let head = sort_functor_of_view(&kb, &ty).expect("an Int64 value keeps its own sort head");
+    assert_sort_named(&kb, head, "Int64");
+}

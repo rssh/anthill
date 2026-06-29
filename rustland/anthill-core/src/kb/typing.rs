@@ -20718,10 +20718,15 @@ const TYPE_DEPTH_CAP: usize = 512;
 fn var_type_term(kb: &mut KnowledgeBase, subst: &Substitution, vid: VarId, depth: usize) -> Value {
     let mut cur = vid;
     let mut seen: std::collections::HashSet<VarId> = std::collections::HashSet::new();
+    // The resolved chain in visit order — `seen` cycle-guards; `chain` gives the
+    // WI-595 refinement below a DETERMINISTIC constraint order (a `HashSet`
+    // iteration order would make a multi-constraint refine vary run-to-run).
+    let mut chain: Vec<VarId> = Vec::new();
     loop {
         if !seen.insert(cur) {
             return fresh_type_var(kb);
         }
+        chain.push(cur);
         let bound = match subst.resolve_as_value(cur) {
             Some(b) => b.clone(),
             None => {
@@ -20750,7 +20755,37 @@ fn var_type_term(kb: &mut KnowledgeBase, subst: &Substitution, vid: VarId, depth
             cur = next;
             continue;
         }
-        return value_type_term_d(kb, subst, &bound, depth);
+        // The bound value's OWN type is authoritative (M3: binding reads the
+        // value's carrier). WI-595: SHARPEN an under-determined value type with the
+        // carrier var's declared store bound — `?x: List[Int64]` bound to `nil`
+        // reads `List[?]` from the value, and meeting the `List[Int64]` bound
+        // recovers the element type. The refine is PINNED to the value's own sort
+        // head: a meet is applied ONLY when it keeps `value_ty`'s head (sharpening
+        // type-params), NEVER when it would CHANGE the head. A subsort bound
+        // (`List` → `NonEmptyList`) must not move the head — `meet_types` returns the
+        // subsort there, and firing on that head would run a law valid only for the
+        // subsort against a value the head says it is not (the binding's conformance
+        // is the bind-time check's job, not the type read's). A headless value stays
+        // headless (suspend is sound — never fabricate a head from an unverified
+        // bound). The head check also drops an incomparable bound (it meets to
+        // `nothing`, a different head). Chain in visit order for determinism.
+        // (never NAF-decide; WI-067).
+        let mut value_ty = value_type_term_d(kb, subst, &bound, depth);
+        let value_head = sort_functor_of_view(kb, &value_ty);
+        if value_head.is_some() {
+            for &v in &chain {
+                for c in subst.type_constraints_of(v) {
+                    if sort_functor_of_view(kb, &c).is_none() {
+                        continue;
+                    }
+                    let refined = meet_types(kb, value_ty.clone(), c);
+                    if sort_functor_of_view(kb, &refined) == value_head {
+                        value_ty = refined;
+                    }
+                }
+            }
+        }
+        return value_ty;
     }
 }
 

@@ -278,7 +278,8 @@ fn resolver_does_not_fire_non_simp_requires_guarded_law() {
     // so the type guard would pass — but it is NOT [simp]-tagged, so it is a
     // non-directional law that must not fire. `apply_eq_rules` must report NO
     // changes (firing commutativity would ping-pong to the 100-fuel cap).
-    let (result, changes) = kb.apply_eq_rules(term, 100);
+    let (result, changes) =
+        kb.apply_eq_rules(term, 100, &anthill_core::kb::subst::Substitution::new());
     assert!(
         changes.is_empty(),
         "non-[simp] requires-guarded flip_comm must NOT fire (firing it would loop); \
