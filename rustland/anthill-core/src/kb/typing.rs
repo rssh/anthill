@@ -2996,20 +2996,70 @@ fn find_spec_op_for_provided_sort(
     // direct specs stay at the front, so a directly-provided member still wins
     // over a transitively-inherited one (more-specific-first). `same_symbol`
     // dedup guards a cyclic `provides` chain.
+    // Track BFS depth alongside each spec: the directly-provided specs are depth 0,
+    // each transitive hop +1. Distance is the PRIMARY ordering (direct-before-
+    // transitive); depth lets us identify a genuine equal-distance TIE.
+    let mut depths: Vec<usize> = vec![0; spec_syms.len()];
     let mut i = 0;
     while i < spec_syms.len() {
         let s = spec_syms[i];
+        let d = depths[i];
         for next in directly_provided_specs(kb, s) {
             if !spec_syms.iter().any(|&x| same_symbol(kb, x, next)) {
                 spec_syms.push(next);
+                depths.push(d + 1);
             }
         }
         i += 1;
     }
-    for spec_sym in spec_syms {
+    // Collect EVERY provided spec that defines `short`, with its distance.
+    let mut definers: Vec<(Symbol, Symbol, usize)> = Vec::new(); // (spec, op, depth)
+    for (idx, &spec_sym) in spec_syms.iter().enumerate() {
         let spec_term = kb.alloc(Term::Ref(spec_sym));
         if let Some(op) = super::load::find_operation_in_scope(kb, spec_term, short) {
-            return Some(op);
+            definers.push((spec_sym, op, depths[idx]));
+        }
+    }
+    let min_depth = definers.iter().map(|(_, _, d)| *d).min()?;
+    let nearest: Vec<(Symbol, Symbol)> = definers
+        .into_iter()
+        .filter(|(_, _, d)| *d == min_depth)
+        .map(|(s, o, _)| (s, o))
+        .collect();
+    if nearest.len() == 1 {
+        return Some(nearest[0].1);
+    }
+    // Equal-distance TIE: prefer the requires-REFINEMENT. A spec that
+    // (transitively) `requires` every other tied spec is the more specific one,
+    // so its operation wins — e.g. `FiniteCollection requires Iterable`, so
+    // `FiniteCollection.map`/`filter` beat the lazy `Iterable` ones on a `Map`
+    // (which provides BOTH directly, unlike a `List` where Iterable is farther).
+    // A genuine ambiguity (no single tied spec requires all the others) keeps the
+    // prior first-match behavior. See kernel-language.md §8.7.
+    let tied: Vec<Symbol> = nearest.iter().map(|(s, _)| *s).collect();
+    if let Some(winner) = most_refined_spec(kb, &tied) {
+        if let Some((_, op)) = nearest.iter().find(|(s, _)| same_symbol(kb, *s, winner)) {
+            return Some(*op);
+        }
+    }
+    Some(nearest[0].1)
+}
+
+/// Among `specs` — all at equal provision-graph distance from a carrier and all
+/// defining the same operation short-name — return the one that is the
+/// requires-REFINEMENT of all the others: the spec whose (transitive)
+/// `requires` chain contains every other listed spec. That spec is the most
+/// specific (`FiniteCollection requires Iterable` ⇒ FiniteCollection refines
+/// Iterable), so its operation wins the otherwise order-dependent tie. Returns
+/// `None` on a genuine ambiguity (no single spec requires all the others).
+fn most_refined_spec(kb: &mut KnowledgeBase, specs: &[Symbol]) -> Option<Symbol> {
+    for &cand in specs {
+        let chain = requires_chain(kb, cand);
+        if specs.iter().all(|&other| {
+            same_symbol(kb, other, cand)
+                || chain.iter().any(|e| same_symbol(kb, e.required_sort, other))
+        }) {
+            return Some(cand);
         }
     }
     None

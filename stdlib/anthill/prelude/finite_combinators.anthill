@@ -1,0 +1,83 @@
+-- Finiteness-preserving lazy combinators (proposal library/003): the finite
+-- twins of `combinators.anthill`'s MappedStream / FilteredStream.
+--
+-- `Iterable.map` / `filter` return a lazy `Stream` (MappedStream / FilteredStream)
+-- — correct for a maybe-infinite source, but the result type ERASES the source's
+-- finiteness, so `xs.map(f).size()` over a finite `xs` stops type-checking once
+-- the eager consumers move to FiniteCollection (Phase C). The fix is to keep
+-- finiteness IN THE TYPE: `FiniteCollection.map` / `filter` return a FiniteStream,
+-- realized by these carriers whose `source` field is itself a `FiniteStream`, so
+-- they UNCONDITIONALLY provide `FiniteStream` (the finiteness is captured
+-- structurally in the field type — no conditional instance).
+--
+-- These DUPLICATE the MappedStream / FilteredStream `splitFirst` logic; the
+-- duplication is honest — the finite carrier's field type IS the proof. The
+-- conditional-instance consolidation is Phase D (WI-590).
+sort anthill.prelude.FiniteMappedStream
+  import anthill.prelude.{FiniteStream, Function, Option, Pair, Modify}
+  import anthill.prelude.Option.{some, none}
+  import anthill.prelude.Pair.{pair}
+
+  sort Src = ?
+  sort T = ?
+  -- WI-441 decoupled rows (cf. MappedStream): source row + transform row; the
+  -- provided FiniteStream's row is their UNION (both paid on consumption).
+  effects ES = ?
+  effects EF = ?
+
+  -- The field is a FiniteStream (not a bare Stream) — THIS preserves finiteness
+  -- structurally. Plain `{EF}` row on the arrow: the `-Modify[x]` lacks live on
+  -- the public sig (FiniteCollection.map), enforced at the call site.
+  entity fmapped(source: FiniteStream[T = Src, E = ES], fn: (Src) -> T @ {EF})
+
+  provides FiniteStream[T = T, E = {ES, EF}]
+
+  -- Stream/FiniteStream primitive: peel the source's head, apply the transform,
+  -- re-wrap the source's tail so the result stays lazy AND finite. The recursive
+  -- `fmapped(rest, fn)` wraps a BARE FiniteStream receiver (`rest`) into the
+  -- `source` field — the WI-594 case (source element AND effect row both thread
+  -- off the bare receiver). The inner `splitFirst(src)` is the BARE spec op
+  -- (WI-411): `src` is the abstract source `FiniteStream`, so it value-dispatches
+  -- on `src`'s real carrier rather than self-dispatching here.
+  operation splitFirst(m: FiniteMappedStream)
+    -> Option[Pair[A = T, B = FiniteMappedStream]] effects {ES, EF} =
+    match m
+      case fmapped(src, fn) ->
+        match splitFirst(src)
+          case none() -> none
+          case some(pair(h, rest)) -> some(pair(fn(h), fmapped(rest, fn)))
+end
+
+-- The finite sibling of FilteredStream. A kept element is returned VERBATIM, so
+-- the source element type threads through the destructured Pair (WI-356/357); a
+-- dropped element is skipped by SELF-RECURSING on the reconstructed carrier,
+-- whose incurred effect threads too (WI-413).
+sort anthill.prelude.FiniteFilteredStream
+  import anthill.prelude.{FiniteStream, Function, Option, Pair, Bool, Modify}
+  import anthill.prelude.Option.{some, none}
+  import anthill.prelude.Pair.{pair}
+
+  sort T = ?
+  effects ES = ?
+  effects EF = ?
+
+  entity ffiltered(source: FiniteStream[T = T, E = ES], pred: (T) -> Bool @ {EF})
+
+  provides FiniteStream[T = T, E = {ES, EF}]
+
+  -- The source peel `splitFirst(src)` value-dispatches on `src`'s real carrier
+  -- (WI-411). The RECURSIVE `splitFirst(ffiltered(rest, pred))` keeps the concrete
+  -- enclosing carrier as receiver, so the typer keeps it a STATIC self-dispatch
+  -- back here — which drops the next element and threads the carrier effect
+  -- (WI-413). The `ffiltered(rest, pred)` rebuild wraps a bare FiniteStream `rest`
+  -- (WI-594, cf. fmapped).
+  operation splitFirst[Elem, EffS, EffP](f: FiniteFilteredStream[T = Elem, ES = EffS, EF = EffP])
+    -> Option[Pair[A = Elem, B = FiniteFilteredStream[T = Elem, ES = EffS, EF = EffP]]] effects {EffS, EffP} =
+    match f
+      case ffiltered(src, pred) ->
+        match splitFirst(src)
+          case none() -> none
+          case some(pair(h, rest)) ->
+            if pred(h) then some(pair(h, ffiltered(rest, pred)))
+            else splitFirst(ffiltered(rest, pred))
+end

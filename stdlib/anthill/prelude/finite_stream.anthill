@@ -1,0 +1,51 @@
+-- FiniteStream: a Stream that ALSO guarantees termination — a lazy sequence
+-- that can be fully consumed (proposal docs/proposals/library/003-finite-collection.md).
+--
+-- `Stream` is the lazy, MAYBE-infinite sequence; `FiniteStream` refines it with
+-- the finiteness guarantee, so a lazy pipeline over a finite source stays
+-- consumable. `Stream` is to `Iterable` what `FiniteStream` is to
+-- `FiniteCollection`:
+--
+--   walk, maybe-infinite   : Stream          provides Iterable
+--   consume, finite        : FiniteStream    provides Stream + FiniteCollection
+--
+-- The load-bearing invariant (what makes the drain a WELL-FOUNDED recursion):
+-- a finite stream's TAIL is itself a FiniteStream. `Stream.collect` recurses on
+-- a tail typed `Stream`; if `collect` lived only on `FiniteStream` that recursion
+-- would be ill-typed (`rest` would be a bare `Stream`). `FiniteStream.splitFirst`
+-- returns a `FiniteStream` tail, so the recursion type-checks.
+--
+-- `FiniteStream provides Stream` by WEAKENING its `splitFirst` (a finite tail is
+-- still a Stream tail) — a COVARIANT-RETURN provision (kernel dep 1, WI-344 /
+-- §8.7 / WI-347 override refinement; the MappedStream-provides-Stream precedent).
+sort anthill.prelude.FiniteStream
+  import anthill.prelude.{Stream, FiniteCollection, Option, Pair, List, Int64}
+  import anthill.prelude.Option.{some, none}
+  import anthill.prelude.Pair.{pair}
+  import anthill.prelude.List.{nil, cons}
+
+  sort T = ?              -- element type
+  effects E = ?           -- effect row required to observe (WI-320 row var)
+
+  provides Stream[T, E]                                            -- IS a Stream (lazy core)
+  provides FiniteCollection[C = FiniteStream, Element = T, E = E]  -- CAN be consumed
+
+  -- The finiteness primitive: like Stream.splitFirst, but the tail is FINITE.
+  -- Body-less; each FiniteStream carrier provides it. Weakens to Stream.splitFirst
+  -- by covariant return (FiniteStream tail ⊑ Stream tail).
+  operation splitFirst(s: FiniteStream)
+    -> Option[Pair[A = s.T, B = FiniteStream[T = s.T, E = s.E]]] effects s.E
+
+  -- collect (the FiniteCollection primitive) is now a WELL-FOUNDED recursion —
+  -- `rest` is itself a FiniteStream, so `collect(rest)` type-checks. This is the
+  -- whole point of the sort.
+  operation collect(s: FiniteStream) -> List[T = s.T] effects s.E =
+    match splitFirst(s)
+      case none() -> nil
+      case some(pair(h, rest)) -> cons(head: h, tail: collect(rest))
+
+  -- finiteIterator (the FiniteCollection cursor) on a FiniteStream is the
+  -- IDENTITY — a FiniteStream is already its own finite cursor (cf. Stream's
+  -- `iterator(s) = s`, lifted to the finite layer).
+  operation finiteIterator(s: FiniteStream) -> FiniteStream[T = s.T, E = s.E] = s
+end

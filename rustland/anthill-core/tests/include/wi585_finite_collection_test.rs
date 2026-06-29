@@ -90,12 +90,15 @@ namespace test.wi585.bag
   import anthill.prelude.FiniteCollection.{size, foldLeft, foldRight, collect}
 
   sort FiniteBag
-    import anthill.prelude.{List, Int64, Stream, Iterable, FiniteCollection}
+    import anthill.prelude.{List, Int64, Stream, FiniteStream, Iterable, FiniteCollection}
     entity fbag(items: List[T = Int64])
     provides Iterable[C = FiniteBag, Element = Int64, E = {}]
     operation iterator(b: FiniteBag) -> Stream[T = Int64, E = {}] = b.items
     provides FiniteCollection[C = FiniteBag, Element = Int64, E = {}]
     operation collect(b: FiniteBag) -> List[T = Int64] = b.items
+    -- WI-588: the finite cursor (finite dual of `iterator` above), materializing
+    -- the backing list as a FiniteStream (a List provides FiniteStream).
+    operation finiteIterator(b: FiniteBag) -> FiniteStream[T = Int64, E = {}] = b.items
   end
 
   operation addp(a: Int64, b: Int64) -> Int64 = a + b
