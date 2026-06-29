@@ -1,6 +1,6 @@
 -- Map: abstract key-value association (requires Eq on keys)
 sort anthill.prelude.Map
-  import anthill.prelude.{Option, List, Pair, Bool, Int64, Eq, Iterable, Stream}
+  import anthill.prelude.{Option, List, Pair, Bool, Int64, Eq, Iterable, FiniteCollection, Stream}
 
   sort K = ?
   sort V = ?
@@ -17,6 +17,18 @@ sort anthill.prelude.Map
   -- library/002: "Iterable PRODUCES an iterator, Iteration/Stream IS one").
   provides Iterable[C = Map, Element = Pair[A = K, B = V], E = {}]
   operation iterator(m: Map) -> Stream[T = Pair[A = K, B = V], E = {}] = entries(m)
+
+  -- Map provides FiniteCollection (WI-585): a Map is finite, so it can be fully
+  -- consumed. `collect` materializes the entries as a List (which is the
+  -- finiteness primitive's List form); `size`/`foldLeft`/`foldRight` come from
+  -- the FiniteCollection defaults. NOTE: `FiniteCollection.size(m)` runs the
+  -- default O(N) walk `List.length(collect(m))`, NOT Map's own O(1) `size`
+  -- (below) — same as `Iterable.size`, because Map's `size` is body-less
+  -- (law-backed) and the WI-444 carrier override only fires for a RUNNABLE-bodied
+  -- own op (see the `size` note below; closing that gap is WI-444). Same answer
+  -- either way; a concrete Map impl with a runnable `size` body gets the O(1).
+  provides FiniteCollection[C = Map, Element = Pair[A = K, B = V], E = {}]
+  operation collect(m: Map) -> List[T = Pair[A = K, B = V]] = entries(m)
 
   -- Construction
   operation empty() -> Map
