@@ -20991,12 +20991,17 @@ pub fn simp_fire_guard_holds(kb: &KnowledgeBase, redex: &NodeOccurrence) -> bool
         Some(Expr::Constructor { name, pos_args, .. }) => (*name, pos_args),
         _ => return true,
     };
+    // A non-spec-op functor is a concrete monomorphic identity whose functor
+    // already pins the sort, so a structural match is sound → fire (guard-free).
+    let Some(spec_sort) = lookup_spec_op_dispatch(kb, functor) else {
+        return true;
+    };
     // WI-578: each carrier argument's sort head is read from the typer-pushed
     // `inferred_type` (was `min_sort`, removed) on its occurrence. A carrier
     // supplied by name (no positional slot) reads as `None` → don't fire — the
     // `[simp]` matcher does not match a positional rule LHS against a named-arg
     // redex either, so such a redex never reaches a fire regardless.
-    simp_guard_holds_core(kb, functor, |i| {
+    simp_guard_holds_core(kb, functor, spec_sort, |i| {
         pos_args
             .get(i)
             .and_then(|a| a.inferred_type())
@@ -21017,10 +21022,13 @@ pub fn simp_fire_guard_holds(kb: &KnowledgeBase, redex: &NodeOccurrence) -> bool
 /// reader says the carrier provides); the divergence is a completeness gap, not
 /// unsoundness.
 ///
-/// Returns `true` (fire) when `functor` is **not** a (body-less) spec op — a
-/// concrete monomorphic identity whose functor already pins the sort, so a
-/// structural match is sound — or it is a spec op with ≥1 carrier argument and
-/// every carrier's sort head provides the spec. Returns `false` (don't fire)
+/// `spec_sort` is `functor`'s already-resolved dispatch sort
+/// ([`lookup_spec_op_dispatch`]); each caller resolves it once and applies its
+/// OWN non-spec-op default (the typer fires a non-spec-op monomorphic identity,
+/// the resolver leaves its requires-guarded rule skipped), so this core handles
+/// only the spec-op case and never re-dispatches. Returns `true` (fire) when the
+/// spec op has ≥1 carrier argument and every carrier's sort head provides the
+/// spec. Returns `false` (don't fire)
 /// when the signature is unavailable, a carrier argument's sort head is unknown
 /// (`arg_carrier_sort` returns `None`: a missing positional slot, an unresolved
 /// type, or a headless type — under-determined, never NAF-decided; WI-067), or
@@ -21030,13 +21038,13 @@ pub fn simp_fire_guard_holds(kb: &KnowledgeBase, redex: &NodeOccurrence) -> bool
 fn simp_guard_holds_core(
     kb: &KnowledgeBase,
     functor: Symbol,
+    spec_sort: Symbol,
     arg_carrier_sort: impl Fn(usize) -> Option<Symbol>,
 ) -> bool {
-    // Concrete (non-spec) functor: guard-free monomorphic identity.
-    let Some(spec_sort) = lookup_spec_op_dispatch(kb, functor) else {
-        return true;
-    };
-    // Without the signature we can't tell which arguments carry the spec,
+    // The caller has already resolved `functor`'s spec sort (one
+    // `lookup_spec_op_dispatch` per firing decision, shared with its own
+    // non-spec-op default) and passes it in — a non-spec-op functor never
+    // reaches here. Without the signature we can't tell which arguments carry the spec,
     // so we can't verify the law applies — don't fire.
     let Some(rec) = super::op_info::lookup_operation_info(kb, functor) else {
         return false;
@@ -21100,12 +21108,14 @@ pub(crate) fn simp_requires_guard_holds(
         _ => return false,
     };
     // Only a (body-less) spec-op redex is decidable here: its carrier arguments'
-    // types select the dispatch. Gate FIRST so a non-spec-op (a defaulted op, or
-    // an op in a non-parametric sort) requires-guarded rule stays skipped rather
-    // than firing on the core's `true` non-spec-op default.
-    if lookup_spec_op_dispatch(kb, functor).is_none() {
+    // types select the dispatch. Resolve the spec sort FIRST so a non-spec-op (a
+    // defaulted op, or an op in a non-parametric sort) requires-guarded rule stays
+    // skipped — the resolver's conservative default — rather than firing; the
+    // resolved `spec_sort` is then threaded into the shared core (one dispatch,
+    // not two).
+    let Some(spec_sort) = lookup_spec_op_dispatch(kb, functor) else {
         return false;
-    }
+    };
     // Each argument's carrier sort head from `value_type_term`. Needs `&mut kb`
     // (it may intern sort refs), so it runs BEFORE the immutable-`kb` core call.
     let arg_sorts: Vec<Option<Symbol>> = pos_args
@@ -21115,7 +21125,7 @@ pub(crate) fn simp_requires_guard_holds(
             sort_functor_of_view(kb, &ty)
         })
         .collect();
-    simp_guard_holds_core(kb, functor, |i| arg_sorts.get(i).copied().flatten())
+    simp_guard_holds_core(kb, functor, spec_sort, |i| arg_sorts.get(i).copied().flatten())
 }
 
 /// WI-582 — the resolver-side firing guard for EXPLICIT typed rule patterns
