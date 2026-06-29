@@ -498,3 +498,6 @@ mod wi532_float_infinity_test;
 #[path = "include/wi562_indexed_seq_nth_dispatch_test.rs"]
 mod wi562_indexed_seq_nth_dispatch_test;
 
+#[path = "include/wi585_finite_collection_test.rs"]
+mod wi585_finite_collection_test;
+

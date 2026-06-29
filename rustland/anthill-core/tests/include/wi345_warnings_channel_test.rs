@@ -39,13 +39,30 @@ fn load_warning_other_renders_as_advisory() {
 }
 
 #[test]
-fn clean_stdlib_load_carries_empty_warnings() {
+fn clean_stdlib_load_carries_only_phase_a_finite_shadows() {
     // End-to-end: the channel is wired through `load_all` → `LoadResult`.
-    // A clean stdlib load returns a result whose `warnings` vec exists and is
-    // empty — no spurious advisories, and the field threads out of the merged
-    // result. (Stays valid through WI-346: the stdlib has no requires-shadow.)
+    // The field threads out of the merged result and carries no SPURIOUS
+    // advisories. The only warnings are the three KNOWN, TRANSITIONAL
+    // requires-shadows from WI-585 finiteness Phase A (proposal library/003):
+    // `FiniteCollection` (which `requires Iterable`) re-homes `size` /
+    // `foldLeft` / `foldRight`, which `Iterable` STILL carries during the
+    // additive phase, so WI-346 correctly flags the shadow. Phase C (WI-589)
+    // removes those ops from `Iterable`, and these warnings vanish — at which
+    // point this assertion should revert to `warnings.is_empty()`.
     let result = load_stdlib_result().expect("stdlib should load cleanly");
-    assert!(result.warnings.is_empty(),
-        "clean stdlib load should carry no warnings; got: {:?}",
-        result.warnings.iter().map(|w| w.to_string()).collect::<Vec<_>>());
+    let msgs: Vec<String> = result.warnings.iter().map(|w| w.to_string()).collect();
+    let is_finite_shadow = |m: &String| {
+        m.contains("in `anthill.prelude.FiniteCollection`")
+            && m.contains("shadows the inherited `anthill.prelude.Iterable.")
+    };
+    let unexpected: Vec<&String> = msgs.iter().filter(|m| !is_finite_shadow(m)).collect();
+    assert!(unexpected.is_empty(),
+        "the only stdlib warnings should be the Phase-A FiniteCollection/Iterable \
+         shadows; got unexpected: {unexpected:?}");
+    for op in ["size", "foldLeft", "foldRight"] {
+        assert!(msgs.iter().any(|m| is_finite_shadow(m) && m.contains(&format!("`{op}`"))),
+            "expected the Phase-A FiniteCollection shadow warning for `{op}`; got: {msgs:?}");
+    }
+    assert_eq!(msgs.len(), 3,
+        "exactly the three Phase-A finite shadows (size/foldLeft/foldRight); got: {msgs:?}");
 }

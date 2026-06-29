@@ -2,6 +2,7 @@
 enum anthill.prelude.List
   import anthill.prelude.PersistentCollection
   import anthill.prelude.Iterable
+  import anthill.prelude.FiniteCollection
   import anthill.prelude.Iteration
   import anthill.prelude.Stream
   import anthill.prelude.IndexedSeq
@@ -59,6 +60,24 @@ enum anthill.prelude.List
   rule append(nil, ?ys) <=> ?ys
   rule append(cons(head: ?x, tail: ?xs), ?ys) <=> cons(head: ?x, tail: append(?xs, ?ys))
 
+  -- foldLeft / foldRight (WI-585): List's OWN concrete eager folds. These back
+  -- the FiniteCollection default bodies (`List.foldLeft(collect(c), …)`), and are
+  -- the carriers that survive Phase C when the Stream/Iterable folds are removed.
+  -- Decoupled callback row `EffP` (WI-441), paid by the caller; the element is the
+  -- bare param projection `xs.T` (WI-376). Element-agnostic, so no `Eq` needed
+  -- (cf. the WI-562 note). Recurses via `splitFirst` (NOT a direct `cons`
+  -- destructure) so the tail threads its element type — a bare `cons` tail is
+  -- untyped `List` and would lose `xs.T` on the recursive call, leaving the
+  -- callback row `EffP` unconstrained (the same reason `nth` uses `splitFirst`).
+  operation foldLeft[Acc, EffP](xs: List, init: Acc, f: (acc: Acc, x: xs.T) -> Acc @ {EffP}) -> Acc effects EffP =
+    match splitFirst(xs)
+      case none() -> init
+      case some(pair(h, t)) -> foldLeft(t, f(init, h), f)
+  operation foldRight[Acc, EffP](xs: List, init: Acc, f: (x: xs.T, acc: Acc) -> Acc @ {EffP}) -> Acc effects EffP =
+    match splitFirst(xs)
+      case none() -> init
+      case some(pair(h, t)) -> f(h, foldRight(t, init, f))
+
   -- List satisfies PersistentCollection (pure). Effect left unbound by
   -- design: under proposal 045's row model a closed effect is not a type
   -- argument — it is grounded to {} at the consumption boundary by the
@@ -84,6 +103,15 @@ enum anthill.prelude.List
   -- unresolved). `iterator` then writes both the threaded element (`T = l.T`) and
   -- the pure effect (`E = {}`), so `Stream[T = l.T, E = {}]` is fully in the type.
   provides Stream[T, {}]
+
+  -- List provides FiniteCollection (WI-585): a List is finite, so it can be
+  -- fully consumed. `collect` (the finiteness primitive) is the IDENTITY — a List
+  -- already IS the materialized form — and `size`/`foldLeft`/`foldRight` come
+  -- from the FiniteCollection defaults (which delegate to List's own `length` /
+  -- `foldLeft` / `foldRight`). `provides` (not `fact`) so the pure row `E = {}`
+  -- lowers through the type-aware path, like the Stream provision above.
+  provides FiniteCollection[C = List[T], Element = T, E = {}]
+  operation collect(l: List) -> List[T = l.T] = l
   -- WI-495: the explicit `provides Iterable[C = List[T], Element = T, E = {}]`
   -- clause is GONE — List's Iterable-ness is now DERIVED transitively from
   -- `List provides Stream` (above) + `Stream provides Iterable` (stream.anthill).

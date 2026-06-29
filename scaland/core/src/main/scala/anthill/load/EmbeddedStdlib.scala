@@ -53,6 +53,7 @@ object EmbeddedStdlib:
     "anthill.prelude.iteration",
     "anthill.prelude.collection",
     "anthill.prelude.iterable",
+    "anthill.prelude.finite_collection",
     "anthill.prelude.indexed_seq",
     "anthill.prelude.list",
     "anthill.prelude.set",

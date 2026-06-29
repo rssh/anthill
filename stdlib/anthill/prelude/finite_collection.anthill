@@ -1,0 +1,49 @@
+-- FiniteCollection: a collection that GUARANTEES finiteness — it can be fully
+-- consumed (materialized / counted / folded) without diverging.
+--
+-- This is the *consume* capability, the dual of Iterable's *walk* capability
+-- (proposal docs/proposals/library/003-finite-collection.md). The eager
+-- consumers (`collect`, `size`, `foldLeft`, `foldRight`) WALK TO THE END of the
+-- carrier, so they are unsound on a maybe-infinite `Stream`/`Iterable` (a
+-- `Stream` provides `Iterable`, so an `Iterable` may be infinite). They live
+-- here, on the sort that promises termination, instead.
+--
+-- Phase A (WI-585) is ADDITIVE: this sort is added and `List`/`Map` provide it,
+-- but the old homes (`Stream.count`/`foldLeft`/`foldRight`/`collect`,
+-- `Iterable.size`/`foldLeft`/`foldRight`) are NOT removed yet — that is Phase C
+-- (WI-589). The lazy finite carrier `FiniteStream` (so a lazy `map`/`filter`
+-- over a finite source stays consumable) is Phase B (WI-588).
+sort anthill.prelude.FiniteCollection
+  import anthill.prelude.{Iterable, List, Int64}
+
+  sort C = ?                          -- carrier (the collection)
+  sort Element = ?
+  effects E = ?                       -- access effect (rides on the materialized walk)
+
+  requires Iterable[C = C, Element = Element, E = E]   -- a finite collection can still be walked
+
+  -- collect: the finiteness PRIMITIVE — materialize the whole collection into a
+  -- List. Body-less; each carrier provides it. You can only honor this if
+  -- iteration terminates, so providing `collect` IS the finiteness guarantee.
+  operation collect(c: C) -> List[T = Element] effects E
+
+  -- size / folds derive from `collect` once, via List's concrete operations over
+  -- the materialized list. `size` is `Stream.count` renamed: on a guaranteed-
+  -- finite carrier the property name is sound (the very reason Stream's comment
+  -- gave for NOT calling it `size` no longer applies). A counted carrier (Map)
+  -- supplies its own O(1) `size`, which overrides this default walk (WI-444).
+  operation size(c: C) -> Int64 effects E = List.length(collect(c))
+
+  -- foldLeft / foldRight: eager terminal consumers. DECOUPLED rows (WI-441, like
+  -- find): the callback's row `EffP` is its own, paid alongside the access row E
+  -- (`effects {E, EffP}`). No `-Modify[x]` lacks on the callback: a fold is the
+  -- run-once terminal consumer (not captured in a re-walkable lazy view), so an
+  -- in-place sweep is legitimate. The callbacks delegate to List's concrete
+  -- folds over the materialized list (forward-compatible with Phase C, which
+  -- removes the Stream/Iterable folds these used to lean on).
+  operation foldLeft[Acc, EffP](c: C, init: Acc, f: (acc: Acc, x: Element) -> Acc @ {EffP}) -> Acc effects {E, EffP} =
+    List.foldLeft(collect(c), init, f)
+
+  operation foldRight[Acc, EffP](c: C, init: Acc, f: (x: Element, acc: Acc) -> Acc @ {EffP}) -> Acc effects {E, EffP} =
+    List.foldRight(collect(c), init, f)
+end
