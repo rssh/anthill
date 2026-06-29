@@ -20709,6 +20709,47 @@ pub fn simp_fire_guard_holds(kb: &KnowledgeBase, redex: &NodeOccurrence) -> bool
         Some(Expr::Constructor { name, pos_args, .. }) => (*name, pos_args),
         _ => return true,
     };
+    // WI-578: each carrier argument's sort head is read from the typer-pushed
+    // `inferred_type` (was `min_sort`, removed) on its occurrence. A carrier
+    // supplied by name (no positional slot) reads as `None` → don't fire — the
+    // `[simp]` matcher does not match a positional rule LHS against a named-arg
+    // redex either, so such a redex never reaches a fire regardless.
+    simp_guard_holds_core(kb, functor, |i| {
+        pos_args
+            .get(i)
+            .and_then(|a| a.inferred_type())
+            .and_then(|t| sort_functor_of_view(kb, &t))
+    })
+}
+
+/// WI-283 / WI-292 — the shared spec-op firing decision for `[simp]` rewriting,
+/// parameterized over how each positional argument's carrier sort head is read.
+/// Both the typer ([`simp_fire_guard_holds`]) and the resolver
+/// ([`simp_requires_guard_holds`]) share this core for the *which-argument-
+/// carries-the-spec* decision, so they cannot disagree on that. They DO feed it
+/// different sort readers — the typer the per-occurrence `inferred_type`, the
+/// resolver a structural [`value_type_term`] under an empty subst — so for a
+/// given carrier they can still differ on *whether* it provides the spec (e.g. a
+/// constraint-typed unbound var the typer resolves but the resolver reads as
+/// headless). Each individual firing stays sound (it fires only when its own
+/// reader says the carrier provides); the divergence is a completeness gap, not
+/// unsoundness.
+///
+/// Returns `true` (fire) when `functor` is **not** a (body-less) spec op — a
+/// concrete monomorphic identity whose functor already pins the sort, so a
+/// structural match is sound — or it is a spec op with ≥1 carrier argument and
+/// every carrier's sort head provides the spec. Returns `false` (don't fire)
+/// when the signature is unavailable, a carrier argument's sort head is unknown
+/// (`arg_carrier_sort` returns `None`: a missing positional slot, an unresolved
+/// type, or a headless type — under-determined, never NAF-decided; WI-067), or
+/// it does not provide the spec. The carrier arguments are the parameters
+/// declared with the spec sort's own type-parameter (`add(a: T, b: T)` → both
+/// `a` and `b`; `scale(v: T, k: Int)` → just `v`).
+fn simp_guard_holds_core(
+    kb: &KnowledgeBase,
+    functor: Symbol,
+    arg_carrier_sort: impl Fn(usize) -> Option<Symbol>,
+) -> bool {
     // Concrete (non-spec) functor: guard-free monomorphic identity.
     let Some(spec_sort) = lookup_spec_op_dispatch(kb, functor) else {
         return true;
@@ -20728,20 +20769,71 @@ pub fn simp_fire_guard_holds(kb: &KnowledgeBase, redex: &NodeOccurrence) -> bool
         if !is_carrier {
             continue;
         }
-        // Carrier read from its positional slot. A carrier supplied by name
-        // (no positional slot) is conservatively not fired — the `[simp]`
-        // matcher does not match a positional rule LHS against a named-arg
-        // redex either, so such a redex never reaches a fire regardless.
-        let Some(arg) = pos_args.get(i) else { return false };
-        // WI-578: the carrier argument's sort head, read from the typer-pushed
-        // `inferred_type` (was `min_sort`, removed — a source-less reader is replaced by
-        // reading the carried type directly: `sort_functor_of_view(inferred_type)`).
-        match arg.inferred_type().and_then(|t| sort_functor_of_view(kb, &t)) {
+        // The carrier argument's sort head, read by the caller's reader.
+        match arg_carrier_sort(i) {
             Some(carrier) if sort_provides(kb, carrier, spec_sort) => checked_carrier = true,
             _ => return false,
         }
     }
     checked_carrier
+}
+
+/// WI-292 — the RESOLVER-side type-satisfaction check for a requires-guarded
+/// `[simp]` redex: the counterpart of [`simp_fire_guard_holds`] that reads each
+/// argument's carrier sort from [`value_type_term`] rather than the typer's
+/// per-occurrence `inferred_type`, sharing the carrier decision
+/// ([`simp_guard_holds_core`]).
+///
+/// This is only the *type* half of the resolver's firing decision; the caller
+/// ([`super::resolve::KnowledgeBase::apply_eq_rules`]) gates it behind the
+/// `[simp]`/`[unfold]` tag (`equation_is_directional_rewrite` — a non-directional
+/// law like `add_comm` must never fire) and `equation_is_requires_guarded`.
+/// Returns `true` only for a body-less SPEC-OP redex whose carrier arguments
+/// provide the spec; a non-`Fn` redex or a non-spec-op (a concrete / defaulted
+/// op) returns `false`. A container-sort rule (`Set.member`) is left skipped two
+/// ways: it is not `[simp]`-tagged AND its carrier is an *element* whose type does
+/// not provide the container (so even when it reaches the carrier check it fails).
+///
+/// `value_type_term` is the TOTAL type reader: it returns a constructed value's
+/// carried `ty` (WI-578) when present, but a redex term arrives as a ty-less
+/// `Value::term`, so here it is a structural recompute (PHASE-3 stamps `ty` at the
+/// entry to make it O(1); the on-demand read is correct without it). It consults
+/// `subst` only for variable heads, and this is called with an EMPTY subst (the
+/// term reaching `apply_eq_rules` is already reified against the frame), so an
+/// unbound, constraint-store-typed carrier var reads as headless → `None` → don't
+/// fire. That is SOUND (an empty subst can never fabricate a providing sort, so it
+/// never wrong-fires) but conservatively incomplete — the resolver suspends a
+/// firing the typer would make; threading the frame subst is a deferred
+/// completeness refinement (never NAF-decide; WI-067).
+pub(crate) fn simp_requires_guard_holds(
+    kb: &mut KnowledgeBase,
+    redex: TermId,
+    subst: &Substitution,
+) -> bool {
+    let (functor, pos_args) = match kb.get_term(redex) {
+        Term::Fn { functor, pos_args, .. } => (*functor, pos_args.clone()),
+        // A non-`Fn` redex (a bare const / var / nullary ref) is not a
+        // spec-op application the type dispatch can decide — keep a
+        // requires-guarded rule with such an LHS skipped (don't fire).
+        _ => return false,
+    };
+    // Only a (body-less) spec-op redex is decidable here: its carrier arguments'
+    // types select the dispatch. Gate FIRST so a non-spec-op (a defaulted op, or
+    // an op in a non-parametric sort) requires-guarded rule stays skipped rather
+    // than firing on the core's `true` non-spec-op default.
+    if lookup_spec_op_dispatch(kb, functor).is_none() {
+        return false;
+    }
+    // Each argument's carrier sort head from `value_type_term`. Needs `&mut kb`
+    // (it may intern sort refs), so it runs BEFORE the immutable-`kb` core call.
+    let arg_sorts: Vec<Option<Symbol>> = pos_args
+        .iter()
+        .map(|&tid| {
+            let ty = value_type_term(kb, subst, &Value::term(tid));
+            sort_functor_of_view(kb, &ty)
+        })
+        .collect();
+    simp_guard_holds_core(kb, functor, |i| arg_sorts.get(i).copied().flatten())
 }
 
 /// named_tuple(fields: [...]) <: named_tuple(fields: [...])

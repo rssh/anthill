@@ -222,7 +222,9 @@ fn unify_headed_equation_fires_in_apply_eq_rules() {
     // `unify` too: a `unify`-headed empty-body equation rewrites L→R, so
     // `unify(1, 2)` makes `simplify(1)` rewrite to `2`. (A ground equation
     // isolates selection-under-`unify`; the resolver path does not open a rule's
-    // De Bruijn vars — a pre-existing trait shared with `=`.)
+    // De Bruijn vars — a pre-existing trait shared with `=`.) The equation is
+    // tagged `[simp]`: WI-292 fires only directional `[simp]`/`[unfold]` rewrites
+    // (a bare `<=>` law is not a rewrite).
     let mut kb = KnowledgeBase::new();
     let sort = kb.make_name_term("Thing");
     let domain = kb.make_name_term("test");
@@ -234,7 +236,15 @@ fn unify_headed_equation_fires_in_apply_eq_rules() {
         pos_args: SmallVec::from_slice(&[one, two]),
         named_args: SmallVec::new(),
     });
-    kb.assert_fact(head, sort, domain, None);
+    let simp_sym = kb.intern("simp");
+    let meta_sym = kb.intern("meta");
+    let tru = kb.alloc(Term::Const(Literal::Bool(true)));
+    let meta = kb.alloc(Term::Fn {
+        functor: meta_sym,
+        pos_args: SmallVec::new(),
+        named_args: SmallVec::from_slice(&[(simp_sym, tru)]),
+    });
+    kb.assert_fact(head, sort, domain, Some(meta));
     let simplified = kb.simplify(one);
     assert_eq!(
         kb.get_term(simplified),

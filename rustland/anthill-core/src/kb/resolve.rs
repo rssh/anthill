@@ -2245,17 +2245,35 @@ impl KnowledgeBase {
             if !self.is_equation(rid) {
                 continue;
             }
-            // WI-283: a rule scoped to a sort that declares `requires`
-            // carries an implicit type-directed guard (the sort's
-            // `requires`, proposal 043 §4.1). Honoring it needs the
-            // receiver's `min_sort`, which only the typer has — the
-            // resolver holds type-erased terms. So the resolver fires only
-            // *type-independent* identities and leaves requires-guarded
-            // rules to the typer (`simp_rewrite`); firing one here would
-            // rewrite where the requirement may be unmet (unsound). When a
-            // reflect bridge later exposes `min_sort` over resolved
-            // expressions, the guard can move here too.
-            if self.equation_is_requires_guarded(rid) {
+            // WI-292: fire only a DIRECTIONAL `[simp]`/`[unfold]` rewrite, the
+            // same gate the typer's `simp_rewrite` applies (it fires a rule only
+            // when `is_equation && meta_has_flag(rid, "simp")`). A plain `=`/`<=>`
+            // equation is a logical LAW (a cite-required fact, load.rs WI-139),
+            // NOT a rewrite — firing it directionally can loop (commutativity,
+            // `add_comm: add(?a,?b)=add(?b,?a)`) or expand (a recursive
+            // definition) until fuel exhausts. Load `unindex_functor`s an untagged
+            // equational head from `rules_by_functor`, but the discrimination tree
+            // `query` uses RETAINS it (so it can still serve as a resolution fact),
+            // so the rewriter must re-check the tag here. Without this gate the
+            // resolver and the typer disagree about what is a rewrite.
+            if !self.equation_is_directional_rewrite(rid) {
+                continue;
+            }
+            // WI-283 / WI-292: a rule scoped to a sort that declares `requires`
+            // carries an implicit type-directed guard (the sort's `requires`,
+            // proposal 043 §4.1). The resolver HONORS it by reading the redex's
+            // type (the WI-578 typed-value substrate): `simp_requires_guard_holds`
+            // fires a spec-op-dispatched rule (`Magma.op2`) exactly where the
+            // carrier arguments' types provide the spec, and SUSPENDS — skips,
+            // leaving the redex intact — when they don't or the type is
+            // under-determined (never NAF-deciding an undecided guard; WI-067). A
+            // container-sort rule (`Set.member`) is left skipped two ways: it is
+            // not `[simp]`-tagged (gate above) and its element carrier does not
+            // provide the container (the carrier check) — a separate
+            // element-provides-the-spec mechanism is deferred.
+            if self.equation_is_requires_guarded(rid)
+                && !super::typing::simp_requires_guard_holds(self, current, &Substitution::new())
+            {
                 continue;
             }
 
@@ -2298,6 +2316,20 @@ impl KnowledgeBase {
         }
 
         (current, changes)
+    }
+
+    /// WI-292: whether `rid` is a DIRECTIONAL `[simp]`/`[unfold]` rewrite — the
+    /// firing gate the typer's `simp_rewrite` already applies via
+    /// [`super::load::meta_has_flag`]. An equational head that carries neither tag
+    /// is a logical LAW, not a rewrite, and is `unindex_functor`'d at load
+    /// (load.rs WI-139); the discrim tree [`apply_eq_rules`] queries still returns
+    /// it, so the rewriter re-checks the tag here so it doesn't fire a
+    /// non-reducing law (commutativity / a recursive definition) into a
+    /// fuel-bounded loop.
+    fn equation_is_directional_rewrite(&self, rid: RuleId) -> bool {
+        let meta = self.rule_meta(rid);
+        super::load::meta_has_flag(self, meta, "simp")
+            || super::load::meta_has_flag(self, meta, "unfold")
     }
 
     /// WI-283: whether `rid`'s enclosing sort (its `rule_domain`) declares
@@ -4496,6 +4528,22 @@ mod tests {
     use crate::kb::term::{Literal, Term};
     use smallvec::SmallVec;
 
+    /// Build a `meta(simp: true)` term — the `[simp]` tag a loaded directional
+    /// rewrite carries. `apply_eq_rules` fires only `[simp]`/`[unfold]`-tagged
+    /// equations (WI-292, mirroring the typer's `simp_rewrite`), so a test that
+    /// asserts an equation directly (bypassing the loader) must tag it to have it
+    /// fire — exactly as `simp_rewrite.rs`'s `build_add_zero` does.
+    fn simp_meta(kb: &mut KnowledgeBase) -> TermId {
+        let simp_sym = kb.intern("simp");
+        let meta_sym = kb.intern("meta");
+        let tru = kb.alloc(Term::Const(Literal::Bool(true)));
+        kb.alloc(Term::Fn {
+            functor: meta_sym,
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::from_slice(&[(simp_sym, tru)]),
+        })
+    }
+
     // ── match_term tests (via discrim tree) ─────────────────────
 
     #[test]
@@ -5072,7 +5120,8 @@ mod tests {
             pos_args: SmallVec::from_slice(&[lhs, four]),
             named_args: SmallVec::new(),
         });
-        kb.assert_fact(eq_head, sort, domain, None);
+        let meta = simp_meta(&mut kb);
+        kb.assert_fact(eq_head, sort, domain, Some(meta));
 
         // Simplify double(2) → should get 4
         let result = kb.simplify(lhs);
@@ -5107,7 +5156,8 @@ mod tests {
             pos_args: SmallVec::from_slice(&[double_neg, var_x]),
             named_args: SmallVec::new(),
         });
-        kb.assert_fact(eq_head, sort, domain, None);
+        let meta = simp_meta(&mut kb);
+        kb.assert_fact(eq_head, sort, domain, Some(meta));
 
         // Simplify negate(negate(5)) → should get 5
         let five = kb.alloc(Term::Const(Literal::Int(5)));
@@ -5154,7 +5204,8 @@ mod tests {
             pos_args: SmallVec::from_slice(&[lhs, rhs]),
             named_args: SmallVec::new(),
         });
-        kb.assert_fact(eq_head, sort, domain, None);
+        let meta = simp_meta(&mut kb);
+        kb.assert_fact(eq_head, sort, domain, Some(meta));
 
         // Simplify f(double(3)) → f(twice(3))
         let f_sym = kb.intern("f");
@@ -5230,7 +5281,8 @@ mod tests {
             pos_args: SmallVec::from_slice(&[f_x, g_x]),
             named_args: SmallVec::new(),
         });
-        kb.assert_fact(eq_head, sort, domain, None);
+        let meta = simp_meta(&mut kb);
+        kb.assert_fact(eq_head, sort, domain, Some(meta));
 
         // Fact: g(42)
         let val = kb.alloc(Term::Const(Literal::Int(42)));
@@ -5274,7 +5326,8 @@ mod tests {
             pos_args: SmallVec::from_slice(&[lhs, four]),
             named_args: SmallVec::new(),
         });
-        kb.assert_fact(eq_head, sort, domain, None);
+        let meta = simp_meta(&mut kb);
+        kb.assert_fact(eq_head, sort, domain, Some(meta));
 
         let (result, changes) = kb.apply_eq_rules(lhs, 100);
         assert_eq!(result, four);
@@ -5312,8 +5365,10 @@ mod tests {
             named_args: SmallVec::new(),
         });
         // DeBruijn-close (arity 2) — the loader's form. assert_fact would store
-        // arity-0 Global vars, which reify resolves directly (no bug).
-        kb.assert_rule_debruijn_with_nodes(eq_head, vec![], sort, domain, None);
+        // arity-0 Global vars, which reify resolves directly (no bug). Tag `[simp]`
+        // (WI-292): `apply_eq_rules` fires only directional rewrites.
+        let meta = simp_meta(&mut kb);
+        kb.assert_rule_debruijn_with_nodes(eq_head, vec![], sort, domain, Some(meta));
 
         // simplify(pick(5, 7)) → 5  (returned Var(DeBruijn(0)) before WI-584).
         let five = kb.alloc(Term::Const(Literal::Int(5)));

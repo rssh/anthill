@@ -169,17 +169,19 @@ fn guard_tests_the_carrier_arg_not_arg0_negative() {
     }
 }
 
-// ── resolver side: requires-guarded rules are skipped ────────────────
+// ── resolver side: requires-guarded rules fire via the carried type ───
 //
-// The resolver's equational fallback (`simplify`/`apply_eq_rules`) holds
-// type-erased terms — no `min_sort` to check a sort's `requires`. So it
-// must fire only type-independent identities and skip requires-guarded
-// (type-directed) rules, leaving those to the typer. Without the gate, the
-// resolver would rewrite `op2(5, 7) → 5` regardless of whether the carrier
-// satisfies `Magma` (unsound). With it, the term is left untouched.
+// WI-292: the resolver's equational fallback (`simplify`/`apply_eq_rules`)
+// now reads the redex's CARRIED type (the WI-578 typed-value substrate,
+// `value_type_term`) to honor a sort's `requires`. A requires-guarded
+// spec-op rule fires exactly where the carrier arguments' carried types
+// provide the spec, and is skipped (the redex left intact) where they don't
+// — never NAF-deciding an undecided guard (WI-067). `op2(5, 7)` over `Int64`
+// (which provides Magma via `fact Magma[T = Int64]`) rewrites to its first
+// argument; `op2(true, false)` over `Bool` (no such fact) is left untouched.
 
 #[test]
-fn resolver_skips_requires_guarded_equation() {
+fn resolver_fires_requires_guarded_equation_when_carrier_provides_spec() {
     let mut kb = crate::common::load_kb_with(SRC);
     let op2 = kb
         .try_resolve_symbol("test.wi283guard.Magma.op2")
@@ -191,11 +193,97 @@ fn resolver_skips_requires_guarded_equation() {
         pos_args: SmallVec::from_slice(&[five, seven]),
         named_args: SmallVec::new(),
     });
+    // op2(5, 7) → 5: Int64 provides Magma, so the carried-type guard holds and
+    // op2_id fires. Compare by VALUE — the instantiated RHS (WI-584) carries the
+    // matched `5`, which need not be the same TermId the test allocated.
+    let result = kb.simplify(term);
+    assert_eq!(
+        kb.get_term(result),
+        &Term::Const(Literal::Int(5)),
+        "the resolver must fire the requires-guarded op2_id over Int64 (which \
+         provides Magma): op2(5, 7) → 5; got {:?}",
+        kb.get_term(result),
+    );
+}
+
+#[test]
+fn resolver_does_not_fire_requires_guarded_equation_when_carrier_lacks_spec() {
+    let mut kb = crate::common::load_kb_with(SRC);
+    let op2 = kb
+        .try_resolve_symbol("test.wi283guard.Magma.op2")
+        .expect("op2 symbol");
+    let t = kb.alloc(Term::Const(Literal::Bool(true)));
+    let f = kb.alloc(Term::Const(Literal::Bool(false)));
+    let term = kb.alloc(Term::Fn {
+        functor: op2,
+        pos_args: SmallVec::from_slice(&[t, f]),
+        named_args: SmallVec::new(),
+    });
+    // op2(true, false): Bool does NOT provide Magma (no `fact Magma[T = Bool]`),
+    // so the carried-type guard fails and op2_id does NOT fire — the term is left
+    // intact. Firing here would erase a call whose `requires Eq[T]` is unmet.
     assert_eq!(
         kb.simplify(term),
         term,
-        "the resolver must NOT fire the requires-guarded op2_id (Magma requires \
-         Eq[T]): with no min_sort it can't check the guard, so op2(5, 7) is left \
-         intact — the typer fires it where the carrier provides Magma",
+        "the resolver must NOT fire the requires-guarded op2_id over Bool \
+         (which does not provide Magma): op2(true, false) is left intact",
     );
+}
+
+// ── resolver side: a NON-[simp] requires-guarded law must NOT fire ────
+//
+// WI-292 termination guard. `apply_eq_rules` fires via the discrimination tree,
+// which RETAINS equational rules that load `unindex_functor`s for lacking a
+// `[simp]`/`[unfold]` tag (the tag is cleared only from `rules_by_functor`). A
+// plain LAW in a requires-bearing spec sort — here commutativity
+// `flip(?a, ?b) = flip(?b, ?a)` — is a candidate AND its carrier (Int64) provides
+// the spec, so the type guard alone would fire it; firing a non-reducing law
+// directionally ping-pongs to fuel exhaustion. The directional-rewrite gate
+// (`equation_is_directional_rewrite`) is what leaves it intact — the same gate
+// the typer's `simp_rewrite` applies, now mirrored in the resolver.
+const SRC_NONSIMP: &str = r#"
+namespace test.wi292nonsimp
+  import anthill.prelude.{Int64, Eq}
+  import test.wi292nonsimp.Flippy.{flip}
+
+  sort Flippy
+    sort T = ?
+    requires Eq[T]
+    operation {
+      flip(a: T, b: T) -> T
+    }
+    rule {
+      flip_comm: flip(?a, ?b) = flip(?b, ?a)
+    }
+  end
+
+  fact Flippy[T = Int64]
+end
+"#;
+
+#[test]
+fn resolver_does_not_fire_non_simp_requires_guarded_law() {
+    let mut kb = crate::common::load_kb_with(SRC_NONSIMP);
+    let flip = kb
+        .try_resolve_symbol("test.wi292nonsimp.Flippy.flip")
+        .expect("flip symbol");
+    let five = kb.alloc(Term::Const(Literal::Int(5)));
+    let seven = kb.alloc(Term::Const(Literal::Int(7)));
+    let term = kb.alloc(Term::Fn {
+        functor: flip,
+        pos_args: SmallVec::from_slice(&[five, seven]),
+        named_args: SmallVec::new(),
+    });
+    // flip_comm is requires-guarded (Flippy requires Eq) and Int64 provides Flippy,
+    // so the type guard would pass — but it is NOT [simp]-tagged, so it is a
+    // non-directional law that must not fire. `apply_eq_rules` must report NO
+    // changes (firing commutativity would ping-pong to the 100-fuel cap).
+    let (result, changes) = kb.apply_eq_rules(term, 100);
+    assert!(
+        changes.is_empty(),
+        "non-[simp] requires-guarded flip_comm must NOT fire (firing it would loop); \
+         got {} change(s)",
+        changes.len(),
+    );
+    assert_eq!(result, term, "the term must be left intact");
 }
