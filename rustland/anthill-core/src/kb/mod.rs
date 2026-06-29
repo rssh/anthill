@@ -994,6 +994,42 @@ impl KnowledgeBase {
         // (which indexes it as `Ref(c)`).
         let head_functor = term_view::TermView::head(&head, self).functor_sym();
 
+        // WI-581 guardrail. Both rule-firing indexes fed below key on this raw
+        // head functor symbol with NO by-QN canonicalization: `rules_by_functor`
+        // (the enumeration index, fed below) and the discrimination tree
+        // (the SLD *resolution* index, queried via `query_view`). The query goal
+        // flows from the same producers as the head, so the two sides match only
+        // because they carry the *same* symbol. A WI-502 typed-rule / typed-value
+        // producer that rekeys or synthesizes a head under a *same-FQN copy* — a
+        // scan-time twin interned under a different `u32` for the same qualified
+        // name — would index under a divergent symbol and SILENTLY no-match (no
+        // fallback). `canonical_sym` bridges exactly those same-FQN copies, so
+        // this fires the moment a producer drifts off the canonical symbol.
+        //
+        // It deliberately does NOT fire on a legitimately *undeclared* predicate
+        // (`fact file_extension(...)`, datalog-style ad-hoc test facts, the
+        // generated `_synth_N` memo rules): those are bare short-name interns
+        // with no `by_qualified_name` entry, so `canonical_sym` returns the
+        // identity and they pass. They are sound without being canonical — head
+        // and goal bare-intern the same string to the same symbol (`intern_map`
+        // dedup), so they agree. Per the CAVEAT on `canonical_sym`, a bare intern
+        // is NOT bridged by-QN, so a *bare-head / FQN-goal* asymmetry cannot be
+        // distinguished from a benign ad-hoc head at this choke point and is not
+        // caught here — the realistic same-FQN-copy drift is.
+        if let Some(f) = head_functor {
+            debug_assert_eq!(
+                self.canonical_sym(f),
+                f,
+                "WI-581: head functor {:?} ({:?}) is a non-canonical same-FQN \
+                 copy of resolved symbol {:?}; resolve it to the canonical symbol \
+                 at the producer before the head is stored (a divergent functor \
+                 silently no-matches in both rule-firing indexes)",
+                f,
+                self.qualified_name_of(f),
+                self.canonical_sym(f),
+            );
+        }
+
         self.rules.push(RuleEntry {
             head: head.clone(),
             body_nodes,
@@ -1808,19 +1844,26 @@ impl KnowledgeBase {
         result
     }
 
-    /// All active rules/facts with a given top-level functor symbol.
-    /// Remove `id` from the `rules_by_functor` head index without
-    /// retracting the rule. The rule still exists in the KB —
-    /// reachable by `try_resolve_symbol` (for cite-resolution),
-    /// `by_sort`, `by_domain`, and direct `RuleId` access — but
-    /// SLD's `rules_by_functor`-driven goal resolution will not consult
-    /// it.
+    /// Remove `id` from the `rules_by_functor` index without retracting the
+    /// rule. WI-581 doc-fix: `rules_by_functor` is the *enumeration* index (what
+    /// [`Self::rules_by_functor`] returns), NOT the SLD goal-resolution index —
+    /// that is the *discrimination tree* (queried via `query_view`). The rule is
+    /// left in the discrim tree and the KB, reachable by `try_resolve_symbol`
+    /// (cite-resolution), `by_sort`, `by_domain`, [`Self::live_rule_ids`], and
+    /// direct `RuleId` access; SLD candidate selection is unaffected (it already
+    /// drops equational heads via its `is_equation` filter in `resolve.rs`,
+    /// indexed or not).
     ///
-    /// Used for opt-in equational rules per WI-139: equational
-    /// laws (head is an `=` application) without a `[simp]` /
-    /// `[unfold]` attribute are cite-required only and must not
-    /// drive automatic SLD rewriting (which would loop on rules
-    /// like `add_comm: add(a, b) = add(b, a)`).
+    /// What the unindex actually changes is the `rules_by_functor()` enumeration
+    /// — notably `simp_rewrite`'s `[simp]`/`[unfold]` gather
+    /// (`has_simp_equations` and the eq-rule walk read `rules_by_functor(eq)`):
+    /// after unindexing the cite-only equations, that bucket holds *only* the
+    /// indexed `[simp]`/`[unfold]` equations.
+    ///
+    /// Used for opt-in equational rules per WI-139: equational laws (head is an
+    /// `=` / `<=>` application) without a `[simp]` / `[unfold]` attribute are
+    /// cite-required only and must not drive automatic `[simp]` rewriting (which
+    /// would loop on rules like `add_comm: add(a, b) = add(b, a)`).
     pub fn unindex_functor(&mut self, id: RuleId) {
         let head = self.rule_head(id);
         if let Term::Fn { functor, .. } = *self.terms.get(head) {
@@ -1830,6 +1873,9 @@ impl KnowledgeBase {
         }
     }
 
+    /// All active (non-retracted) rule/fact ids with a given top-level functor
+    /// symbol — the *enumeration* index (cf. [`Self::unindex_functor`]). SLD goal
+    /// resolution does not consult this; it matches via the discrimination tree.
     pub fn rules_by_functor(&self, sym: Symbol) -> Vec<RuleId> {
         self.rules_by_functor
             .get(&sym)
@@ -2005,18 +2051,34 @@ impl KnowledgeBase {
         self.sort_ops.by_impl.entry(key).or_default().insert(op_short, target);
     }
 
-    /// Canonicalize a sort symbol to the single resolved `Symbol` for
-    /// its qualified name. The same logical sort can be interned under
-    /// several `Symbol`s (e.g. an unresolved scan-time copy and the
-    /// resolved load-time copy); `by_qualified_name` maps the QN to one
-    /// canonical resolved symbol. Used as the `sort_ops` outer key so a
-    /// table populated under one copy is found via another at dispatch.
-    /// WI-350: also used by the carrier-aware dispatch filter and the
-    /// interpreter's value-directed dispatch, which compare sort identities
-    /// that may be interned under different copies.
-    pub(crate) fn canonical_sort_sym(&self, sym: Symbol) -> Symbol {
+    /// Canonicalize any symbol to the single resolved `Symbol` for its
+    /// qualified name. The same logical entity (sort, operation, rule head
+    /// functor, …) can be interned under several `Symbol`s — e.g. an
+    /// unresolved scan-time copy and the resolved load-time copy;
+    /// `by_qualified_name` maps the QN to one canonical resolved symbol.
+    ///
+    /// CAVEAT: this bridges only *same-FQN* copies. A symbol whose
+    /// `qualified_name_of` is a *short* name or a *mis-qualified* string has
+    /// no `by_qualified_name` entry under that key, so this falls through to
+    /// the identity (`unwrap_or(sym)`) and does NOT bridge it to the
+    /// canonical copy. Such a divergence must therefore be fixed at the
+    /// *producer* (resolve the functor before it is stored/queried), never
+    /// papered over by a `canonical_sym` call at the consumer — see WI-581
+    /// and the `push_value_head_entry` guardrail.
+    pub(crate) fn canonical_sym(&self, sym: Symbol) -> Symbol {
         let qn = self.qualified_name_of(sym);
         self.symbols.by_qualified_name.get(qn).copied().unwrap_or(sym)
+    }
+
+    /// Sort-specific alias of [`Self::canonical_sym`]. Used as the `sort_ops`
+    /// outer key so a table populated under one copy is found via another at
+    /// dispatch. WI-350: also used by the carrier-aware dispatch filter and
+    /// the interpreter's value-directed dispatch, which compare sort
+    /// identities that may be interned under different copies. WI-581
+    /// generalized the body to [`Self::canonical_sym`], since the same
+    /// by-QN canonicalization now also serves rule head functors.
+    pub(crate) fn canonical_sort_sym(&self, sym: Symbol) -> Symbol {
+        self.canonical_sym(sym)
     }
 
     /// Get sort kind info.
