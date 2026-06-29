@@ -1137,7 +1137,24 @@ module.exports = grammar({
     _fn_arg: $ => choice(
       $._term,
       $.named_arg,
+      $.typed_var_arg,
       $.lambda_expr,
+    ),
+
+    // WI-582: a type-annotated variable argument, e.g. `add(?x: Numeric, 0)`
+    // in a rule LHS (`add(?x: T, 0)` with `T` introduced by a head `[T]`). The
+    // annotation is a typed-rule-pattern bound: the loader STRIPS it from the
+    // head and installs it as a `Type` constraint on the variable, so the head
+    // term stays structurally `add(?x, 0)` and the discrimination tree indexes
+    // it identically to the untyped form (carrier-neutral — the bound rides off
+    // the structural key). Distinct from `named_arg` (`id: value`), whose name
+    // is a plain `identifier`, never a `?var`; and `:` is not an operator
+    // (`operator_symbol` excludes it), so a `?x` followed by `:` is
+    // unambiguously a typed arg, never a continuing infix term.
+    typed_var_arg: $ => seq(
+      field('var', $.variable_term),
+      ':',
+      field('type', $._type),
     ),
 
     named_arg: $ => seq(

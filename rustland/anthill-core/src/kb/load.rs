@@ -5149,6 +5149,24 @@ struct Loader<'a> {
     // an op body the primitives stay the default. (`and` is value-only — handled by the
     // general fallback — and `neg`→`Numeric.neg` is not position-directed.)
     in_op_body_value: bool,
+    // WI-582: active while converting a rule HEAD, so `convert_term`'s
+    // `typed_var` strip records the per-variable type bound (`?x: T`) into
+    // `rule_head_type_bounds` instead of treating the marker as a generic term.
+    // A `typed_var` reaching `convert_term` with this false is a misuse (a type
+    // annotation on a variable outside a rule pattern) and is reported loudly.
+    in_rule_head: bool,
+    // WI-582: per-head accumulator of (head variable, declared-type bound) pairs
+    // collected while converting a typed rule head; drained by `load_rule` after
+    // each head, mapped to DeBruijn indices, and installed on the RuleEntry as
+    // per-variable `Type` bounds (the typed-rule-pattern firing guard).
+    rule_head_type_bounds: Vec<(VarId, TermId)>,
+    // WI-582: the `[T]` type-variable-introducer form's desugar table. A rule
+    // `keep[T](?x: T, ?y) = ?x :- Spec[T]` is the verbose spelling of the inline
+    // `keep(?x: Spec, ?y) = ?x`. Before converting the head, `load_rule` maps each
+    // head-introduced type-var (`[T]`) to the bound its body guard `Spec[T]`
+    // gives it; the `typed_var` strip then resolves `?x: T` to that bound. Keyed
+    // by the introducer's short name; empty for the inline form and untyped rules.
+    rule_tvar_bounds: HashMap<String, TermId>,
     // Description index counter per target (keyed by TermId raw)
     desc_index: HashMap<u32, i64>,
     // ── Occurrence tracking ─────────────────────────────────────
@@ -5375,6 +5393,9 @@ impl<'a> Loader<'a> {
             fact_rule_ids: Vec::new(),
             source_id,
             current_owner: None,
+            in_rule_head: false,
+            rule_head_type_bounds: Vec::new(),
+            rule_tvar_bounds: HashMap::new(),
             expr_syms,
             expr_work: Vec::with_capacity(64),
             expr_results: Vec::with_capacity(64),
@@ -5948,6 +5969,106 @@ impl<'a> Loader<'a> {
                 unreachable!("Var::Rigid in stored parse term")
             }
             Term::Fn { functor, pos_args, named_args } => {
+                // WI-582: a `typed_var(?x, type: T)` marker — the converter's
+                // lowering of a `?x: T` rule-pattern arg. STRIP it: convert the
+                // inner variable so the head term stays structurally the bare
+                // `?x` (the discrimination tree indexes a typed head identically
+                // to the untyped one — carrier-neutral, M1), resolve the declared
+                // type to a bound term, and RECORD (var, bound) so `load_rule`
+                // installs it as a per-variable `Type` constraint keyed by the
+                // variable's DeBruijn index. A `typed_var` outside a rule head is
+                // a misuse (annotation on a non-pattern variable) — report loudly
+                // rather than silently dropping the bound.
+                if self.parsed.symbols.name(functor) == "typed_var"
+                    && pos_args.len() == 1
+                    && named_args.iter().any(|(s, _)| self.parsed.symbols.name(*s) == "type")
+                {
+                    let var_kb = self.convert_term(pos_args[0]);
+                    let ty_expr_opt = self.read_parse_aux(parse_id, "type", |aux| match aux {
+                        crate::parse::ir::ParseAux::TypeExpr(ty) => Some(ty.clone()),
+                        _ => None,
+                    });
+                    let bound = match ty_expr_opt {
+                        // WI-582 `[T]`-form: `?x: T` where `T` is a head-introduced
+                        // type-var. Its effective bound is the one its `:- Spec[T]`
+                        // guard gave it (recorded in `rule_tvar_bounds` by
+                        // `load_rule`), not `T` itself — `T` has no nominal sort and
+                        // would never fire. The guard goal is dropped (folded here).
+                        Some(crate::parse::ir::TypeExpr::Simple(ref n))
+                            if n.segments.len() == 1
+                                && self
+                                    .rule_tvar_bounds
+                                    .contains_key(self.parsed.symbols.name(n.segments[0])) =>
+                        {
+                            let nm = self.parsed.symbols.name(n.segments[0]);
+                            *self.rule_tvar_bounds.get(nm).unwrap()
+                        }
+                        Some(ty_expr) => {
+                            let value = self.type_expr_to_value(&ty_expr);
+                            match node_occurrence::value_to_term(&mut self.kb, &value) {
+                                Ok(t) => t,
+                                Err(e) => {
+                                    // Loud over silent (consistent with the `None`
+                                    // arm below): a non-term-representable bound is
+                                    // a load error, not a silent `Bottom` that makes
+                                    // the rule never fire.
+                                    self.errors.push(LoadError::Other {
+                                        message: format!(
+                                            "WI-582: typed rule pattern bound is not \
+                                             term-representable: {e:?}"
+                                        ),
+                                    });
+                                    self.kb.alloc(Term::Bottom)
+                                }
+                            }
+                        }
+                        None => {
+                            self.errors.push(LoadError::Other {
+                                message: "WI-582: typed rule pattern `?x: T` is missing its type"
+                                    .to_string(),
+                            });
+                            self.kb.alloc(Term::Bottom)
+                        }
+                    };
+                    // VarId is Copy — read it out so the immutable `kb` borrow is
+                    // released before the mutable push.
+                    let vid_opt = match self.kb.get_term(var_kb) {
+                        Term::Var(Var::Global(vid)) => Some(*vid),
+                        _ => None,
+                    };
+                    if !self.in_rule_head {
+                        self.errors.push(LoadError::Other {
+                            message: "WI-582: a variable type annotation (`?x: T`) is only \
+                                      meaningful in a rule head pattern"
+                                .to_string(),
+                        });
+                    } else if let Some(vid) = vid_opt {
+                        // WI-582: a variable's type bound is declared ONCE. A
+                        // conflicting re-annotation (`?x: A` … `?x: B`) is a loud
+                        // load error (ticket acceptance); an identical re-annotation
+                        // is idempotent (bounds are hash-consed → same TermId).
+                        match self.rule_head_type_bounds.iter().find(|(v, _)| *v == vid) {
+                            Some((_, prev)) if *prev != bound => {
+                                self.errors.push(LoadError::Other {
+                                    message: "WI-582: a rule variable has conflicting type \
+                                              annotations; a variable's type bound must be \
+                                              declared once"
+                                        .to_string(),
+                                });
+                            }
+                            Some(_) => {} // identical re-annotation: idempotent
+                            None => self.rule_head_type_bounds.push((vid, bound)),
+                        }
+                    } else {
+                        self.errors.push(LoadError::Other {
+                            message: "WI-582: a typed rule pattern annotation must be on a \
+                                      variable (`?x: T`)"
+                                .to_string(),
+                        });
+                    }
+                    self.term_map.insert(parse_id.raw(), var_kb);
+                    return var_kb;
+                }
                 // WI-278: re-encode a *converter-emitted* parse
                 // `dot_apply(receiver, Ident(name), ...positional)` + named
                 // call-args into the canonical reflect form
@@ -10196,8 +10317,123 @@ impl<'a> Loader<'a> {
         }
     }
 
+    /// WI-582 — collect the type-variable INTRODUCER names declared on a rule
+    /// head (`[T]` after the head functor, e.g. `keep[T](…)`). The `[T]` rides as a
+    /// call `type_args` side-channel (convert.rs). Read ONLY the head functor's
+    /// type-args — the LHS of an equational head `keep[T](…) = rhs` — NOT
+    /// recursively, so a concrete type-arg in the RHS or a nested call
+    /// (`= wrap[Box](…)`) is not mistaken for an introducer (which would trip the
+    /// "unbounded type-var" check). Only a bare, unbound name (`[T]`, `param =
+    /// None`) is an introducer; a concrete binding (`[A = Int64]`) is a type
+    /// application. Read-only; runs before head conversion so the `typed_var` strip
+    /// and the body-guard scan know which annotations name an introduced type-var.
+    fn collect_rule_tvar_names(&self, head_parse_id: TermId, out: &mut std::collections::HashSet<String>) {
+        let target = match self.parsed.terms.get(head_parse_id) {
+            Term::Fn { pos_args, .. } if pos_args.len() == 2 => pos_args[0],
+            _ => head_parse_id,
+        };
+        if let Some(bindings) = self.read_parse_call_type_args(target) {
+            for b in &bindings {
+                if b.param.is_none() {
+                    if let crate::parse::ir::TypeExpr::Simple(n) = &b.bound {
+                        if n.segments.len() == 1 {
+                            out.insert(self.parsed.symbols.name(n.segments[0]).to_owned());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// WI-582 — recognize a body guard `Spec[X]` where `X` is a head-introduced
+    /// type-var, returning `(X-short-name, Spec-parse-functor)`. This is the
+    /// `[T]`-form's bound source: `:- Spec[T]` gives `T`'s bound. The shape is the
+    /// one `convert.rs`'s `convert_instantiation_term` builds for a parameterized
+    /// term in goal position: `Fn{functor: Spec, pos_args: [Ref(X)], named: []}`.
+    fn try_body_tvar_guard(
+        &self,
+        gtid: TermId,
+        introducers: &std::collections::HashSet<String>,
+    ) -> Option<(String, Symbol)> {
+        if let Term::Fn { functor, pos_args, named_args } = self.parsed.terms.get(gtid) {
+            if named_args.is_empty() && pos_args.len() == 1 {
+                if let Term::Ref(x_sym) = self.parsed.terms.get(pos_args[0]) {
+                    let x_name = self.parsed.symbols.name(*x_sym).to_owned();
+                    if introducers.contains(&x_name) {
+                        return Some((x_name, *functor));
+                    }
+                }
+            }
+        }
+        None
+    }
+
     fn load_rule(&mut self, r: &Rule, domain: TermId) {
         let rule_sort = self.kb.make_name_term("Rule");
+
+        // WI-582: desugar the `[T]` type-variable-introducer form into the inline
+        // form. Collect the head's introduced type-vars (`[T]`) and map each to
+        // the bound its body guard `Spec[T]` gives it; the `typed_var` strip then
+        // resolves `?x: T` to that bound, and the folded guard goals are dropped
+        // from the body. The inline `?x: Spec` form needs none of this — the
+        // introducer set is empty and `rule_tvar_bounds` stays empty.
+        self.rule_tvar_bounds.clear();
+        let mut folded_guard_ids: std::collections::HashSet<u32> = std::collections::HashSet::new();
+        {
+            let mut introducers: std::collections::HashSet<String> =
+                std::collections::HashSet::new();
+            for h in &r.heads {
+                if let RuleHead::Term(tid) = h {
+                    self.collect_rule_tvar_names(*tid, &mut introducers);
+                }
+            }
+            if !introducers.is_empty() {
+                if let Some(body) = r.body.as_ref() {
+                    for &gtid in body {
+                        if let Some((tvar, spec_sym)) =
+                            self.try_body_tvar_guard(gtid, &introducers)
+                        {
+                            if self.rule_tvar_bounds.contains_key(&tvar) {
+                                // A type-variable's bound must be declared once; a
+                                // second `Spec[T]` guard would be silently lost
+                                // (overwrite + drop). Reject loudly. Still fold it
+                                // out of the body to avoid a confusing secondary
+                                // "unresolved name T" error.
+                                self.errors.push(LoadError::Other {
+                                    message: format!(
+                                        "WI-582: rule type-variable `{tvar}` is bounded by more \
+                                         than one guard; declare its bound once (a compound bound \
+                                         spanning several guards is not yet supported)"
+                                    ),
+                                });
+                                folded_guard_ids.insert(gtid.raw());
+                                continue;
+                            }
+                            let kb_sym = self.remap_symbol(spec_sym);
+                            let bound = self.kb.make_sort_ref(kb_sym);
+                            self.rule_tvar_bounds.insert(tvar, bound);
+                            folded_guard_ids.insert(gtid.raw());
+                        }
+                    }
+                }
+                // An introduced type-var with no bounding guard would yield a
+                // non-nominal bound that never fires — flag it loudly rather than
+                // silently load a rule that can never apply.
+                let unbounded: Vec<String> = introducers
+                    .iter()
+                    .filter(|tv| !self.rule_tvar_bounds.contains_key(*tv))
+                    .cloned()
+                    .collect();
+                for tv in unbounded {
+                    self.errors.push(LoadError::Other {
+                        message: format!(
+                            "WI-582: rule type-variable `{tv}` has no bounding guard \
+                             (expected a `:- Spec[{tv}]` clause to bound it)"
+                        ),
+                    });
+                }
+            }
+        }
 
         let prev_owner = self.current_owner;
         if let Some(ref label) = r.label {
@@ -10206,10 +10442,22 @@ impl<'a> Loader<'a> {
 
         // Single pass: build positive heads, detect any `⊥` head.
         let mut positive_heads: Vec<TermId> = Vec::with_capacity(r.heads.len());
+        // WI-582: per positive-head typed-pattern bounds (`?x: T`), parallel to
+        // `positive_heads`. `convert_term`'s `typed_var` strip records them into
+        // `self.rule_head_type_bounds` while `in_rule_head` is set; drained here
+        // and installed on each head's RuleEntry below.
+        let mut head_type_bounds: Vec<Vec<(VarId, TermId)>> = Vec::with_capacity(r.heads.len());
         let mut has_bottom = false;
         for h in &r.heads {
             match h {
-                RuleHead::Term(tid) => positive_heads.push(self.convert_term(*tid)),
+                RuleHead::Term(tid) => {
+                    self.rule_head_type_bounds.clear();
+                    self.in_rule_head = true;
+                    let head = self.convert_term(*tid);
+                    self.in_rule_head = false;
+                    head_type_bounds.push(std::mem::take(&mut self.rule_head_type_bounds));
+                    positive_heads.push(head);
+                }
                 RuleHead::Bottom => has_bottom = true,
             }
         }
@@ -10233,6 +10481,11 @@ impl<'a> Loader<'a> {
         let mut body_nodes: Vec<Rc<NodeOccurrence>> = Vec::new();
         if let Some(terms) = r.body.as_ref() {
             for &tid in terms {
+                // WI-582: a folded `Spec[T]` guard — its content became the
+                // bound on the `?x: T` variable, so it is not a body goal.
+                if folded_guard_ids.contains(&tid.raw()) {
+                    continue;
+                }
                 body_nodes.push(self.build_body_atom_occurrence(tid));
             }
         }
@@ -10274,11 +10527,38 @@ impl<'a> Loader<'a> {
             }
         };
 
-        for kb_head in kb_heads {
+        for (head_idx, kb_head) in kb_heads.into_iter().enumerate() {
             let rid = self.kb.assert_rule_debruijn_with_nodes(
                 kb_head, body_nodes.clone(), rule_sort, domain, meta);
             if let Some(label) = label_sym {
                 self.kb.set_rule_label(rid, label);
+            }
+            // WI-582: install this head's typed-pattern bounds (if any) on the
+            // RuleEntry, mapping each head variable to its DeBruijn index. A
+            // denial (`⊥`) head has no positive-head bounds (index out of range
+            // → `get` is None), so this is a no-op there. The bound is ENFORCED
+            // only by the resolver's `apply_eq_rules` (a `[simp]`/`[unfold]`
+            // directional rewrite over an equational head); on any other rule the
+            // guard would be silently ignored, so reject it loudly rather than
+            // load a rule whose `?x: T` does nothing (loud-over-silent).
+            if let Some(bounds) = head_type_bounds.get(head_idx) {
+                if !bounds.is_empty() {
+                    let enforced = is_equational_head(self.kb, kb_head)
+                        && (meta_has_flag(self.kb, meta, "simp")
+                            || meta_has_flag(self.kb, meta, "unfold"));
+                    if enforced {
+                        self.kb.install_rule_type_bounds(rid, bounds);
+                    } else {
+                        self.errors.push(LoadError::Other {
+                            message: "WI-582: typed rule patterns (`?x: T`) are supported only on \
+                                      `[simp]`/`[unfold]` equational rewrite rules, where the \
+                                      resolver enforces the bound; a non-rewrite rule would \
+                                      silently ignore it. Tag the rule `[simp]`/`[unfold]` or \
+                                      drop the annotation."
+                                .to_string(),
+                        });
+                    }
+                }
             }
             // WI-139: equational rules are cite-required by default.
             if is_equational_head(self.kb, kb_head)

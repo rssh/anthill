@@ -1,0 +1,64 @@
+==================================
+WI-582 inline typed rule pattern (?x: Spec)
+==================================
+
+rule add(?x: Numeric, 0) = ?x
+
+---
+
+(source_file
+  (rule_declaration
+    heads: (rule_heads
+      (infix_term
+        (fn_term
+          name: (name
+            (identifier))
+          (typed_var_arg
+            var: (variable_term
+              (variable))
+            type: (simple_type
+              (name
+                (identifier))))
+          (integer_literal))
+        (operator_symbol)
+        (variable_term
+          (variable))))))
+
+==================================
+WI-582 type-variable head + bound guard (add[T](?x: T) :- Numeric[T])
+==================================
+
+rule add[T](?x: T, 0) = ?x :- Numeric[T]
+
+---
+
+(source_file
+  (rule_declaration
+    heads: (rule_heads
+      (infix_term
+        (fn_term
+          name: (application
+            name: (name
+              (identifier))
+            (sort_binding
+              type: (simple_type
+                (name
+                  (identifier)))))
+          (typed_var_arg
+            var: (variable_term
+              (variable))
+            type: (simple_type
+              (name
+                (identifier))))
+          (integer_literal))
+        (operator_symbol)
+        (variable_term
+          (variable))))
+    body: (rule_body
+      (application
+        name: (name
+          (identifier))
+        (sort_binding
+          type: (simple_type
+            (name
+              (identifier))))))))

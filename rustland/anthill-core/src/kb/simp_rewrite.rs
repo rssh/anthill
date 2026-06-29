@@ -282,6 +282,16 @@ pub(super) fn try_fire(
         if !kb.is_equation(rid) || !meta_has_flag(kb, kb.rule_meta(rid), "simp") {
             continue;
         }
+        // WI-582: a rule carrying EXPLICIT typed-pattern bounds (`?x: T`) is fired
+        // only by the resolver's `apply_eq_rules` (which enforces the bounds via
+        // `typed_pattern_bounds_hold`). The typer's match here keys its subst by
+        // open_equation's fresh globals, not the synthetic-DeBruijn entries that
+        // check reads, so it cannot enforce the per-variable bound — SKIP typed
+        // rules rather than fire them unguarded (sound but conservative: the typer
+        // simply does not simplify with typed rules; never wrong-fires; WI-067).
+        if !kb.rule_type_bounds(rid).is_empty() {
+            continue;
+        }
         // Cheap pre-filter on the stored (DeBruijn) head, before opening.
         if stored_lhs_functor(kb, rid) != Some(node_functor) {
             continue;

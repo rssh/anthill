@@ -172,6 +172,15 @@ struct RuleEntry {
     /// is `gte`, label is `simple_lemma`). `None` for unlabeled rules
     /// (they remain reachable through `rules_by_functor` on the head).
     label: Option<Symbol>,
+    /// WI-582 — typed rule-pattern bounds: `(debruijn_index, bound_type)` pairs
+    /// from explicit `?x: T` head annotations. Each entry says "the variable at
+    /// this DeBruijn index must, when the rule fires, bind to a value whose
+    /// carried type conforms to `bound_type`" (subsort for a sort bound, provides
+    /// for a spec bound). Empty for untyped rules — the discrimination tree keys
+    /// only on the (structurally identical) head, so the bound rides HERE, off
+    /// the structural index (carrier-neutral, M1). Read at fire by
+    /// `apply_eq_rules`'s post-match conforms check.
+    type_bounds: Vec<(u32, TermId)>,
 }
 
 /// Collect the ground `TermId` leaves reachable in a value (WI-348 Phase B), for
@@ -1041,6 +1050,7 @@ impl KnowledgeBase {
             globals: Vec::new(),
             shared_arity: 0,
             label: None,
+            type_bounds: Vec::new(),
         });
 
         self.by_sort.entry(sort).or_default().push(rule_id);
@@ -2688,6 +2698,42 @@ impl KnowledgeBase {
     /// rule variables with the parent's frame.
     pub fn rule_globals(&self, id: RuleId) -> &[VarId] {
         &self.rules[id.index()].globals
+    }
+
+    /// WI-582 — install typed rule-pattern bounds on an already-asserted rule.
+    /// Each `(var, bound)` names a HEAD variable (a pre-DeBruijn Global VarId,
+    /// as collected by the loader from a `?x: T` annotation) and the type its
+    /// eventual binding must conform to. The variable is mapped to its DeBruijn
+    /// index via `globals` (set by `finalize_rule_debruijn_nodes`), so the stored
+    /// bound is keyed by index — stable across rule firing, where the index
+    /// opens to a fresh VarId. A variable absent from `globals` is a loader bug
+    /// (a typed annotation on a non-head variable); flag it loudly rather than
+    /// silently dropping the bound.
+    pub fn install_rule_type_bounds(&mut self, id: RuleId, var_bounds: &[(VarId, TermId)]) {
+        let globals = self.rules[id.index()].globals.clone();
+        let mut bounds: Vec<(u32, TermId)> = Vec::with_capacity(var_bounds.len());
+        for &(vid, bound) in var_bounds {
+            match globals.iter().position(|&g| g == vid) {
+                // The DeBruijn index is `len - 1 - position` (innermost-is-0), the
+                // SAME reversal `term_to_debruijn` / `node_to_debruijn` apply when
+                // closing the head. Storing the raw position would key the firing
+                // check (`typed_pattern_bounds_hold`, which decodes the synthetic
+                // `VarId(u32::MAX - n)` LHS-match entries) to the WRONG variable for
+                // any rule with >= 2 vars.
+                Some(idx) => bounds.push(((globals.len() - 1 - idx) as u32, bound)),
+                None => debug_assert!(
+                    false,
+                    "WI-582: typed-pattern variable {vid:?} is not a head variable of rule {id:?}"
+                ),
+            }
+        }
+        self.rules[id.index()].type_bounds = bounds;
+    }
+
+    /// WI-582 — the typed rule-pattern bounds for `id`: `(debruijn_index,
+    /// bound_type)` pairs the firing check reads. Empty for untyped rules.
+    pub fn rule_type_bounds(&self, id: RuleId) -> &[(u32, TermId)] {
+        &self.rules[id.index()].type_bounds
     }
 
     /// Resolve a qualified rule name to the first matching `RuleId`.

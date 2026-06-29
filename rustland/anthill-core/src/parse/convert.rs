@@ -697,6 +697,44 @@ impl<'a> Converter<'a> {
                 }
                 results.push(tid);
             }
+            "typed_var_arg" => {
+                // WI-582: `?x: T` in a rule LHS. Lower to a `typed_var` marker
+                // carrying the variable plus its declared type. The loader
+                // (`convert_term` in load.rs) STRIPS the marker, installs the
+                // type as a `Type` constraint on the variable, and keeps the
+                // head structurally the bare `?x` — so the discrimination tree
+                // indexes a typed head identically to the untyped one
+                // (carrier-neutral; the bound rides off the structural key).
+                // Mirrors the `typed_binder` (`pattern_var`) lowering, but the
+                // binder is a `?var`, not a plain identifier.
+                let var_node = self.field(node, "var").unwrap_or(node);
+                let inner = self.child_by_kind(var_node, "variable").unwrap_or(var_node);
+                let var_tid = self.convert_variable_node(inner);
+                let type_tid = match self.field(node, "type") {
+                    Some(t) => {
+                        let te = self.convert_type(t);
+                        self.terms.alloc(
+                            Term::ParseAux(Box::new(ParseAux::TypeExpr(te))),
+                            self.span(t),
+                        )
+                    }
+                    None => {
+                        self.err("typed_var_arg: missing type annotation".to_string(), node);
+                        self.alloc_bottom(span)
+                    }
+                };
+                let functor = self.intern("typed_var");
+                let type_key = self.intern("type");
+                let tid = self.terms.alloc(
+                    Term::Fn {
+                        functor,
+                        pos_args: SmallVec::from_elem(var_tid, 1),
+                        named_args: SmallVec::from_slice(&[(type_key, type_tid)]),
+                    },
+                    span,
+                );
+                results.push(tid);
+            }
             "fn_term" => self.push_fn_term(node, work),
             "let_binding" => {
                 // proposal 049: `let ?v = e` is sugar for `?v <=> e`; lower to the same
@@ -3342,6 +3380,10 @@ fn is_term_kind(kind: &str) -> bool {
             | "boolean_literal"
             | "variable"
             | "variable_term"
+            // WI-582: `?x: T` typed rule-pattern arg — a positional call arg
+            // whose `visit_term` arm builds the `typed_var` marker the loader
+            // strips into a per-variable `Type` constraint.
+            | "typed_var_arg"
             | "fn_term"
             | "nested_implication"
             | "bounded_quantification"

@@ -357,9 +357,35 @@ bind site rather than after a full head match, and it is the substrate already b
 The **implicit** `[simp]`/`requires` path needs **no** new syntax — only a resolver that reads the
 carrier's carried type, which the typed-value carrier (WI-578) supplies; replacing
 `equation_is_requires_guarded`'s blanket skip with the wakeup check above is the resolver consumer
-**WI-292**. The **explicit** `?x: T` binder is *new grammar* (a typed binder in a rule LHS, plus the
-loader installing the `Type` constraint) — a follow-on once the implicit path is proven, tracked
-under the WI-502 "typed rule pattern syntax" item.
+**WI-292** (DELIVERED).
+
+The **explicit** `?x: T` binder is **WI-582 (DELIVERED)** — *new grammar* (`typed_var_arg` in
+`grammar.js`, lowering through the `typed_var` marker that `convert.rs` emits) plus the loader
+**stripping** it from the head and installing the bound as a per-variable `Type` bound on the
+`RuleEntry` (`install_rule_type_bounds`, keyed by DeBruijn index). The head stays structurally bare,
+so the discrimination tree indexes a typed head identically to an untyped one (carrier-neutral, M1);
+the bound rides off the structural key. Firing is the post-match conforms check
+`typed_pattern_bounds_hold` at the `apply_eq_rules` site (the same path WI-292 uses): it reads each
+matched value's carried type and checks `subsort`/`provides`, suspending (leaving the redex) when the
+carrier does not conform or the type is under-determined (never NAF-deciding; WI-067). Both surface
+spellings load and fire:
+- the inline bound `add(?x: Numeric, 0) = ?x`; and
+- the type-variable introducer `add[T](?x: T, 0) = ?x :- Numeric[T]`, which the loader **desugars**
+  to the inline form — the head `[T]` introduces `T`, the guard `:- Numeric[T]` bounds it, and `?x: T`
+  folds to `?x: Numeric` (the folded guard is dropped). An introduced `[T]` with no bounding guard, a
+  re-bounded `[T]` (two `Spec[T]` guards), and a conflicting re-annotation (`?x: A … ?x: B`) are all
+  **loud load errors**.
+
+*Enforcement scope (deliberate):* the bound is enforced **only** where it can be — the resolver's
+`apply_eq_rules`, firing a `[simp]`/`[unfold]` **equational** rewrite. A typed annotation on any other
+rule (relational, or an untagged equation) is a **loud load error** rather than a silently-ignored
+bound. The **typer** also rewrites with `[simp]` rules (`simp_rewrite::try_fire`) but its match keys
+its substitution by fresh globals, not the synthetic-DeBruijn entries the firing check reads — so it
+cannot (yet) enforce the per-variable bound and therefore **skips** typed rules entirely (sound but
+conservative: it does not simplify with them; never wrong-fires). Wiring the typer-side check (and
+making the printer re-emit `?x: T` so a persisted typed rule round-trips, which it does not today) are
+follow-ons. *Limitation:* one `Spec[T]` guard per type-var; a compound bound spanning several
+variables is the body-guard fallback, not yet wired.
 
 ## Conditional rewrite rules — the general frame
 
@@ -500,9 +526,10 @@ full-refinement constraints are a door opened deliberately, not by drift.
   value enters — the typer, and the resolver/simplify entry that today takes a bare `TermId` with
   no type (the deferred WI-572 (C)). Retire `min_sort` / `min_sort_of_value`; callers read the
   carried type.
-- **Resolver machinery for typed rule patterns.** The surface syntax (`?x: T` in a rule LHS,
-  desugaring to a `subsort` guard over the carried type) and the matcher reading the carried type,
-  so a requires-guarded rule the resolver skips today becomes *matchable*.
+- **Resolver machinery for typed rule patterns (WI-582, DELIVERED).** The surface syntax (`?x: T` in
+  a rule LHS, plus the `[T]` introducer form, desugaring to a `subsort`/`provides` guard over the
+  carried type) and the firing-time conforms check reading the carried type, so a typed rule the
+  resolver skips today becomes *matchable*. See *§Typed rule patterns — Status*.
 
 **Consumers (dependent tickets, not WI-502 itself):** WI-292 (type-directed `[simp]` firing),
 WI-573 (guarded-effect guard discharge over spec-op guards), runtime monomorphization (dispatch on

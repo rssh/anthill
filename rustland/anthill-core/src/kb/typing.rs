@@ -20836,6 +20836,68 @@ pub(crate) fn simp_requires_guard_holds(
     simp_guard_holds_core(kb, functor, |i| arg_sorts.get(i).copied().flatten())
 }
 
+/// WI-582 — the resolver-side firing guard for EXPLICIT typed rule patterns
+/// (`?x: T`). The per-variable dual of [`simp_requires_guard_holds`]: for each
+/// `(debruijn_index, bound)` recorded on `rid` (load.rs `install_rule_type_bounds`),
+/// find the value the discrim match bound to that DeBruijn slot — the synthetic
+/// `VarId(u32::MAX - n)` entry `apply_eq_rules`'s match records — read its CARRIED
+/// type ([`value_type_term`], WI-578), and check it conforms to `bound` (exact
+/// sort, `provides` for a spec bound, or subsort via [`types_compatible`]).
+///
+/// Returns true iff EVERY bound is satisfied. A bound whose matched value is
+/// absent, or whose carried type is UNDER-DETERMINED (no nominal sort head — an
+/// unbound / headless carrier), is NOT satisfied — the conservative,
+/// never-NAF-decide choice (WI-067): leaving the redex unrewritten decides
+/// nothing negatively, so an undecided guard simply SUSPENDS the rewrite (the
+/// typer, with `inferred_type`, may still fire it). Empty bounds (an untyped
+/// rule) trivially hold — the common path, one cheap slice check.
+pub(crate) fn typed_pattern_bounds_hold(
+    kb: &mut KnowledgeBase,
+    rid: crate::kb::RuleId,
+    tree_subst: &Substitution,
+) -> bool {
+    let bounds = kb.rule_type_bounds(rid).to_vec();
+    if bounds.is_empty() {
+        return true;
+    }
+    // arity = DeBruijn-var count (== globals.len()); decodes the synthetic
+    // `VarId(u32::MAX - n)` LHS-match entries the discrim match records.
+    let arity = kb.rule_globals(rid).len() as u32;
+    for (db_index, bound_tid) in bounds {
+        // The value the LHS match bound to this DeBruijn slot.
+        let matched = tree_subst.iter_terms().find_map(|(vid, t)| {
+            (Var::synthetic_debruijn_index(vid, arity) == Some(db_index as usize)).then_some(t)
+        });
+        let Some(matched) = matched else {
+            return false; // no LHS match for the bound variable → cannot decide
+        };
+        // The matched value's carried type → nominal sort head. An empty subst is
+        // sound here (the matched value is a reified redex subterm): it can never
+        // fabricate a providing sort, only conservatively read `None`.
+        let ty = value_type_term(kb, &Substitution::new(), &Value::term(matched));
+        // Under-determined carried type (no nominal sort head — an unbound /
+        // headless carrier) ⇒ suspend, never decide (WI-067). This guard is
+        // load-bearing: `types_compatible` would otherwise UNIFY a bare type-var
+        // carrier against the bound and wrong-fire.
+        if sort_functor_of_view(kb, &ty).is_none() {
+            return false;
+        }
+        // A non-nominal bound (an unresolved `[T]` type-variable no guard folded
+        // into a concrete sort/spec) cannot be discharged → don't fire.
+        if sort_functor_of_view(kb, &Value::term(bound_tid)).is_none() {
+            return false;
+        }
+        // Conforms: the canonical type-compatibility check — `types_compatible`
+        // already centralizes exact-sort, spec `provides`, and entity→sort subsort
+        // (and, unlike a base-symbol shortcut, COMPARES TYPE PARAMETERS, so
+        // `List[String]` does NOT conform to a `List[Int64]` bound).
+        if !types_compatible(kb, &mut Substitution::new(), &ty, &TermIdView(bound_tid)) {
+            return false; // refuted → don't fire
+        }
+    }
+    true
+}
+
 /// named_tuple(fields: [...]) <: named_tuple(fields: [...])
 /// Width subtyping: actual may have more fields than expected.
 /// Depth subtyping: each expected field's type must be a supertype of actual's.

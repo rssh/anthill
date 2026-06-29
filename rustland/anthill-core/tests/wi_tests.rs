@@ -504,3 +504,6 @@ mod wi585_finite_collection_test;
 #[path = "include/wi594_finite_map_effect_threading_test.rs"]
 mod wi594_finite_map_effect_threading_test;
 
+#[path = "include/wi582_typed_rule_pattern_test.rs"]
+mod wi582_typed_rule_pattern_test;
+

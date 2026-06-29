@@ -2277,6 +2277,18 @@ impl KnowledgeBase {
                 continue;
             }
 
+            // WI-582: an EXPLICIT typed rule pattern (`?x: T`) carries
+            // per-variable bounds installed at load. Fire only when each matched
+            // value's CARRIED type (WI-578) conforms to its bound — the
+            // post-match conforms check (the typed-pattern firing path: a
+            // structural match, then a carried-type check; the discrim tree
+            // stayed type-blind, M1). Under-determined / refuted → leave the
+            // redex unrewritten here (suspend, never NAF-decide; the typer may
+            // still fire it). Untyped rules carry no bounds → trivially holds.
+            if !super::typing::typed_pattern_bounds_hold(self, rid, &tree_subst) {
+                continue;
+            }
+
             // Read the result variable's binding back carrier-faithfully
             // (WI-348): an all-term RHS rebuilds its hash-consed term; a
             // `Value::Node` RHS keeps its identity in the recorded change. The
