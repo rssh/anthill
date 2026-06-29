@@ -193,6 +193,49 @@ end
     );
 }
 
+// ── WI-602: a DEFINITE rule-body precondition violation must be rejected ───────
+
+/// WI-602 (FILED, currently failing — hence `#[ignore]`): WI-557 skips the
+/// WI-539 call-site precondition check for ALL rule-body context to avoid a
+/// spurious `UnsatisfiedPrecondition` over a SYMBOLIC rule-body var (which
+/// legitimately FLOATS — see `rule_body_value_precondition_dot_dispatches`, the
+/// symbolic case that must stay clean). But the gate is UNCONDITIONAL, so it also
+/// swallows a DEFINITE violation: `?b.guarded(0)` with a literal `0` makes
+/// `neq(0, 0)` ground-FALSE (refuted, not floating), yet the rule body loads clean
+/// while the SAME call in an op body raises `unsatisfied precondition`
+/// (`op_body_value_precondition_dot_call_still_errors`). That is a real soundness
+/// hole — at simp-firing time the violating term is even injected unchecked, since
+/// eval does not re-check value-preconditions.
+///
+/// This test asserts the CORRECT behavior (the definite violation IS rejected), so
+/// it FAILS today and PASSES once the rule-body gate becomes refutation-aware
+/// (raise on a ground-REFUTED precondition, skip only a float — the WI-067/WI-292
+/// polarity). Un-ignore it when WI-602 lands.
+#[test]
+#[ignore = "WI-602: rule-body gate unconditionally skips DEFINITE precondition violations; \
+            un-ignore once the gate is refutation-aware"]
+fn rule_body_definite_precondition_violation_is_rejected() {
+    // DEFINITE violation: the precondition arg is the LITERAL `0`, so `neq(0, 0)`
+    // is ground-false — a refutation, NOT a symbolic float.
+    let rule_src = format!(
+        r#"
+namespace anthill.test.wi600
+{PRELUDE}
+  rule uses(?b, ?r)
+    :- holder(b: ?b, k: ?), eq(?r, ?b.guarded(0))
+end
+"#
+    );
+    let (_kb, errs) = load_capturing_errors(&rule_src);
+    let text = errors_text(&errs);
+    assert!(
+        text.to_lowercase().contains("precondition"),
+        "WI-602: a DEFINITE rule-body precondition violation `guarded(_, 0)` \
+         (`neq(0,0)` ground-false) must be rejected, exactly as the op-body form is; \
+         WI-557's unconditional rule-body skip is too broad. errors were:\n{text}"
+    );
+}
+
 #[test]
 fn op_body_value_precondition_qualified_call_still_errors() {
     // The non-dot analog: the SAME `Box` member called by its QUALIFIED name
