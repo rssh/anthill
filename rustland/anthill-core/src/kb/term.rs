@@ -142,6 +142,22 @@ impl Var {
             Var::DeBruijn(n) => VarId::new(u32::MAX - n, Symbol::from_raw(0)),
         }
     }
+
+    /// Inverse of [`Var::as_vid`]'s De Bruijn encoding: if `vid` falls in the
+    /// reserved synthetic range (`u32::MAX - n` for `n` in `0..arity`, as a
+    /// discrim match records a matched De Bruijn position), return the De Bruijn
+    /// index `n`; otherwise `None` (a real `Global`/`Rigid` VarId). The single
+    /// decode of the `u32::MAX - n` scheme — both instantiation sites
+    /// ([`KnowledgeBase::with_fresh_vars`] body-rename and `apply_eq_rules`'s
+    /// `instantiate_eq_rhs` RHS-rename) call it so they cannot silently desync
+    /// from the encoder above. `arity == 0` (no synthetic vars) yields `None`.
+    pub fn synthetic_debruijn_index(vid: VarId, arity: u32) -> Option<usize> {
+        if arity > 0 && vid.raw() > u32::MAX - arity - 1 {
+            Some((u32::MAX - vid.raw()) as usize)
+        } else {
+            None
+        }
+    }
 }
 
 impl PartialEq for Var {

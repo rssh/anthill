@@ -2265,7 +2265,7 @@ impl KnowledgeBase {
             // term-world rewrite continuation narrows to a term — a non-term RHS
             // is unreachable today and not further term-rewritable (Phase C).
             let rhs_value = self.reify(result_var, &tree_subst);
-            let rhs = match &rhs_value {
+            let rhs_template = match &rhs_value {
                 Value::Term { id: t, .. } => *t,
                 // A non-term RHS is unreachable today and not further term-rewritable
                 // (Phase C); narrow to the result var so the continuation stays in
@@ -2273,10 +2273,22 @@ impl KnowledgeBase {
                 _ => result_var,
             };
 
+            // WI-584: instantiate the RHS template. For a DeBruijn rule
+            // (`arity > 0`) the discrim match binds `result_var` to the rule's
+            // RHS whose variables are still its DeBruijn indices — the matched
+            // LHS values live in `tree_subst` as the synthetic
+            // `VarId(u32::MAX - n)` entries. Reifying `result_var` alone returns
+            // that unopened RHS (`pick(?a,?b)=?a` over `pick(5,7)` →
+            // `DeBruijn(0)`, not `5`), so var-RHS rules silently failed to
+            // rewrite. `instantiate_eq_rhs` opens the template and substitutes
+            // the synthetic LHS-match values; a ground RHS is returned unchanged.
+            let rhs = self.instantiate_eq_rhs(rid, rhs_template, &tree_subst);
+            let rewritten = self.reify(rhs, &tree_subst);
+
             changes.push(EqChange {
                 rule_id: rid,
                 original: current,
-                rewritten: rhs_value,
+                rewritten,
             });
 
             // Continue rewriting the result
@@ -2306,6 +2318,44 @@ impl KnowledgeBase {
             Some(s) => !super::typing::requires_chain(self, s).is_empty(),
             None => false,
         }
+    }
+
+    /// WI-584: instantiate a matched equation's RHS template against the
+    /// discrim-match substitution. For a DeBruijn rule (`arity > 0`) the match
+    /// records the LHS-match VALUES as synthetic `VarId(u32::MAX - n)` entries
+    /// in `tree_subst` (one per DeBruijn `n`), while the bound RHS still carries
+    /// the rule's DeBruijn indices. Open those indices to fresh globals
+    /// (`term_from_debruijn`) and substitute the synthetic values — the same
+    /// instantiation [`KnowledgeBase::with_fresh_vars`] performs for a rule body
+    /// — so a var-RHS rule (`pick(?a,?b)=?a`) fires to the matched value (`5`)
+    /// rather than the raw `DeBruijn(n)`. A ground RHS (`arity == 0`, or no
+    /// DeBruijn vars) is returned unchanged; an RHS-only DeBruijn var with no
+    /// LHS match keeps its fresh global (a sound existential).
+    fn instantiate_eq_rhs(
+        &mut self,
+        rid: RuleId,
+        rhs_template: TermId,
+        tree_subst: &Substitution,
+    ) -> TermId {
+        let arity = self.rules[rid.index()].arity;
+        if arity == 0 {
+            return rhs_template;
+        }
+        let name_sym = self.intern("_");
+        let fresh_vars: Vec<VarId> = (0..arity).map(|_| self.fresh_var(name_sym)).collect();
+        let opened = self.term_from_debruijn(rhs_template, &fresh_vars);
+        // Bind each synthetic LHS-match value (`VarId(u32::MAX - n)`) onto its
+        // fresh global, mirroring `with_fresh_vars`'s `body_rename`. The
+        // `u32::MAX - n` decode is shared via `Var::synthetic_debruijn_index`.
+        let mut rename = Substitution::new();
+        for (ts_vid, bound_term) in tree_subst.iter_terms() {
+            if let Some(db_index) = Var::synthetic_debruijn_index(ts_vid, arity) {
+                if let Some(&fresh_vid) = fresh_vars.get(db_index) {
+                    rename.bind(self, fresh_vid, bound_term);
+                }
+            }
+        }
+        self.apply_subst(opened, &rename)
     }
 
     // ── Builtin execution ──────────────────────────────────────
@@ -5231,6 +5281,53 @@ mod tests {
         assert_eq!(changes.len(), 1);
         assert_eq!(changes[0].original, lhs);
         assert_eq!(changes[0].rewritten.expect_term(), four);
+    }
+
+    #[test]
+    fn apply_eq_rules_instantiates_var_rhs() {
+        // WI-584: a DeBruijn var-RHS equation (the loaded `[simp]` form, unlike
+        // the arity-0 `assert_fact` Global-var form which never hit the bug)
+        // must fire to its SUBSTITUTED RHS, not the raw `DeBruijn(n)` template.
+        let mut kb = KnowledgeBase::new();
+        let sort = kb.make_name_term("Pick"); // requires-free → resolver fires it
+        let domain = kb.make_name_term("test");
+        let eq_sym = kb.intern("eq"); // matches `eq_functor()`'s bare fallback
+        let pick_sym = kb.intern("pick");
+
+        // Equation: eq(pick(?a, ?b), ?a) — projects the first argument.
+        let a_sym = kb.intern("a");
+        let b_sym = kb.intern("b");
+        let va = kb.fresh_var(a_sym);
+        let vb = kb.fresh_var(b_sym);
+        let var_a = kb.alloc(Term::Var(Var::Global(va)));
+        let var_b = kb.alloc(Term::Var(Var::Global(vb)));
+        let pick_ab = kb.alloc(Term::Fn {
+            functor: pick_sym,
+            pos_args: SmallVec::from_slice(&[var_a, var_b]),
+            named_args: SmallVec::new(),
+        });
+        let eq_head = kb.alloc(Term::Fn {
+            functor: eq_sym,
+            pos_args: SmallVec::from_slice(&[pick_ab, var_a]),
+            named_args: SmallVec::new(),
+        });
+        // DeBruijn-close (arity 2) — the loader's form. assert_fact would store
+        // arity-0 Global vars, which reify resolves directly (no bug).
+        kb.assert_rule_debruijn_with_nodes(eq_head, vec![], sort, domain, None);
+
+        // simplify(pick(5, 7)) → 5  (returned Var(DeBruijn(0)) before WI-584).
+        let five = kb.alloc(Term::Const(Literal::Int(5)));
+        let seven = kb.alloc(Term::Const(Literal::Int(7)));
+        let pick_57 = kb.alloc(Term::Fn {
+            functor: pick_sym,
+            pos_args: SmallVec::from_slice(&[five, seven]),
+            named_args: SmallVec::new(),
+        });
+
+        let (result, changes) = kb.apply_eq_rules(pick_57, 100);
+        assert_eq!(result, five, "var-RHS rule must instantiate to the matched first arg");
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].rewritten.expect_term(), five);
     }
 
     // ── Builtin dispatch + delay tests ─────────────────────────

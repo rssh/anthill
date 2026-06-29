@@ -2989,9 +2989,9 @@ impl KnowledgeBase {
             // for DeBruijn rename + caller-var linkage. Non-Term bindings
             // from external streams flow through a different path.
             for (ts_vid, bound_term) in tree_subst.iter_terms() {
-                let is_synthetic = ts_vid.raw() > u32::MAX - arity - 1;
-                if is_synthetic {
-                    let db_index = (u32::MAX - ts_vid.raw()) as usize;
+                // Shared `u32::MAX - n` decode (`Var::synthetic_debruijn_index`),
+                // also used by `apply_eq_rules`'s `instantiate_eq_rhs`.
+                if let Some(db_index) = Var::synthetic_debruijn_index(ts_vid, arity) {
                     if let Some(&fresh_vid) = fresh_vars.get(db_index) {
                         body_rename.bind(self, fresh_vid, bound_term);
                     }
