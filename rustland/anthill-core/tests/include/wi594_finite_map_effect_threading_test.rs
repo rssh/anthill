@@ -32,7 +32,6 @@
 /// stays unbound), so the row is ungrounded and the return is rejected — the same
 /// gap that forces WI-588's `finiteIterator` indirection. WI-594 fixes it.
 #[test]
-#[ignore = "WI-594: effect row not threaded through a bare spec receiver into a carrier field"]
 fn bare_receiver_map_threads_source_effect() {
     let src = r#"
 namespace test.wi594
