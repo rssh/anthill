@@ -175,6 +175,17 @@ impl Value {
         Value::Term { id, ty: None }
     }
 
+    /// Construct a `Value::Term` carrying its computed static type (WI-578) — the
+    /// typed counterpart of [`Value::term`]. Use it at a `typed` / producer site so a
+    /// typed `Term` is built through a NAMED constructor: the bare `Value::term` /
+    /// `.into()` path then stays visibly the UNTYPED one (a `ty: None` reads as a
+    /// deliberate choice, not a forgotten field) once typed values flow. `ty` is the
+    /// value's type-term (`Ref(S)` / `Fn{S, named}`); it rides on this per-instance
+    /// `Value`, NEVER on the interned `id` (one `TermId` spans every environment, M3).
+    pub fn typed_term(id: TermId, ty: Value) -> Value {
+        Value::Term { id, ty: Some(Rc::new(ty)) }
+    }
+
     /// The raw `ty`-field of a constructed value (`Entity` / `Tuple` / `Term`):
     /// `None` until `typed(value, env)` stamps it (WI-578). This is NOT a
     /// universal "type of this value" reader — it returns `None` for every other

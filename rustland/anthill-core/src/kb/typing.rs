@@ -12474,32 +12474,11 @@ fn check_constructor_iter(
         unify_types(kb, &mut subst, &TermIdView(parent_type), &exp);
     }
 
-    if subst.bindings.is_empty() {
-        return Ok(TypeResult { ty: Value::term(parent_type), env: env.clone(), effects, node: Rc::clone(occ) });
-    }
-
-    // Build parameterized type from the sort's type params + substitution bindings.
-    // Look up SortAlias facts for the parent sort's scope to find param names → Var mappings.
-    // For free-standing entities there is no parent sort to walk; the entity's
-    // own symbol is the type — no type params to discover, so return the
-    // simple sort_ref directly.
-    let parent_sym = match parent_sort {
-        Some(parent_tid) => match kb.get_term(parent_tid) {
-            Term::Fn { functor, .. } => *functor,
-            _ => return Ok(TypeResult { ty: Value::term(parent_type), env: env.clone(), effects, node: Rc::clone(occ) }),
-        },
-        None => return Ok(TypeResult { ty: Value::term(parent_type), env: env.clone(), effects, node: Rc::clone(occ) }),
-    };
-
-    let param_bindings = reconstruct_sort_params(kb, parent_sym, &subst);
-
-    if param_bindings.is_empty() {
-        Ok(TypeResult { ty: Value::term(parent_type), env: env.clone(), effects, node: Rc::clone(occ) })
-    } else {
-        let base = kb.make_sort_ref(parent_sym);
-        let param_type = kb.make_parameterized_type(base, &param_bindings);
-        Ok(TypeResult { ty: Value::term(param_type), env: env.clone(), effects, node: Rc::clone(occ) })
-    }
+    // WI-578 — build the parameterized result type via the shared finish tail, so this
+    // occurrence-typer and the value-typer ([`constructor_value_type`]) produce the SAME
+    // type from one source (no drift). The field-unified `subst` pinned the params above.
+    let ty = finish_constructor_type(kb, parent_sort, parent_type, &subst);
+    Ok(TypeResult { ty, env: env.clone(), effects, node: Rc::clone(occ) })
 }
 
 /// Decompose a callable type into `(param, result, effects-row)` — carrier-
@@ -20258,6 +20237,43 @@ fn reconstruct_sort_params(
     param_bindings
 }
 
+/// WI-578 — the shared build-finish tail of constructor typing. Given the field-
+/// unified `subst` (its bindings pinned the parent sort's type-params), produce the
+/// constructor's result type-term: the bare `Ref(Sort)` when no param survives (an
+/// empty `subst`, a free-standing entity with no parent sort, or a non-`Fn` parent),
+/// else `Sort[params]` via [`reconstruct_sort_params`] +
+/// [`KnowledgeBase::make_parameterized_type`]. [`check_constructor_iter`] (wrapping the
+/// result in a `TypeResult`) and [`constructor_value_type`] BOTH call this so the
+/// occurrence-typer and the value-typer build the SAME type from ONE source — a
+/// second, drifting notion of type is exactly what the typed-value substrate must
+/// avoid (`docs/design/constrained-term-substrate.md`).
+fn finish_constructor_type(
+    kb: &mut KnowledgeBase,
+    parent_sort: Option<TermId>,
+    parent_type: TermId,
+    subst: &Substitution,
+) -> Value {
+    if subst.bindings.is_empty() {
+        return Value::term(parent_type);
+    }
+    // A free-standing entity has no parent sort to walk; its own symbol is the type —
+    // no type params to discover, so the simple `parent_type` sort_ref stands.
+    let parent_sym = match parent_sort {
+        Some(parent_tid) => match kb.get_term(parent_tid) {
+            Term::Fn { functor, .. } => *functor,
+            _ => return Value::term(parent_type),
+        },
+        None => return Value::term(parent_type),
+    };
+    let param_bindings = reconstruct_sort_params(kb, parent_sym, subst);
+    if param_bindings.is_empty() {
+        Value::term(parent_type)
+    } else {
+        let base = kb.make_sort_ref(parent_sym);
+        Value::term(kb.make_parameterized_type(base, &param_bindings))
+    }
+}
+
 /// WI-578 — a fresh `?_` type-variable wildcard: the TOTAL fallback for an
 /// under-determined type (an unbound var with no recorded bound, an opaque carrier).
 /// Sound — a `type_var` reads as compatible-with-anything in the unify/subtype
@@ -20295,6 +20311,24 @@ fn constructor_value_type(
     pos_child_types: &[Value],
     named_child_types: &[(Symbol, Value)],
 ) -> Value {
+    // WI-578 — mirror check_constructor_iter's seq/tuple-literal special-casing (the
+    // typer-side check_tuple_literal_constructor / check_seq_literal_constructor): an
+    // un-desugared `(...)` / `[...]` / `{...}` is loaded as a TupleLiteral / ListLiteral
+    // / SetLiteral entity whose DECLARED type has no element field, so the field-driven
+    // path below mistypes it as `Ref(TupleLiteral)` / `Ref(ListLiteral)` instead of
+    // `Unit` / a named tuple / `List[T]` / `Set[T]`. Route to the aggregate / sequence
+    // type so the value-typer and the occurrence-typer agree (no drift — the whole
+    // point of the typed-value substrate).
+    if kb.qualified_name_of(ctor_sym) == "anthill.reflect.TupleLiteral" {
+        return tuple_value_type(kb, pos_child_types.to_vec(), named_child_types.to_vec());
+    }
+    if kb.qualified_name_of(ctor_sym) == "anthill.reflect.ListLiteral" {
+        return seq_literal_value_type(kb, "anthill.prelude.List", pos_child_types);
+    }
+    if kb.qualified_name_of(ctor_sym) == "anthill.reflect.SetLiteral" {
+        return seq_literal_value_type(kb, "anthill.prelude.Set", pos_child_types);
+    }
+
     let parent_sort = kb.constructor_parent_sort(ctor_sym);
     let parent_type = match parent_sort {
         Some(parent_tid) => sort_term_to_type(kb, parent_tid),
@@ -20318,23 +20352,7 @@ fn constructor_value_type(
             unify_types(kb, &mut subst, child_ty, declared_type);
         }
     }
-    if subst.bindings.is_empty() {
-        return Value::term(parent_type);
-    }
-    let parent_sym = match parent_sort {
-        Some(parent_tid) => match kb.get_term(parent_tid) {
-            Term::Fn { functor, .. } => *functor,
-            _ => return Value::term(parent_type),
-        },
-        None => return Value::term(parent_type),
-    };
-    let param_bindings = reconstruct_sort_params(kb, parent_sym, &subst);
-    if param_bindings.is_empty() {
-        Value::term(parent_type)
-    } else {
-        let base = kb.make_sort_ref(parent_sym);
-        Value::term(kb.make_parameterized_type(base, &param_bindings))
-    }
+    finish_constructor_type(kb, parent_sort, parent_type, &subst)
 }
 
 /// WI-578 — the type-term of an anonymous aggregate (a tuple / `Unit`) from its
@@ -20360,6 +20378,20 @@ fn tuple_value_type(
     }
     let span = crate::span::SourceSpan::new(crate::span::SourceId::from_raw(0), 0, 0);
     named_tuple_value(kb, &fields, span, None)
+}
+
+/// WI-578 — the value-level analog of [`check_seq_literal_constructor`]: type an
+/// un-desugared `[...]` / `{...}` (a `ListLiteral` / `SetLiteral` entity, which has no
+/// element field) as `base[T = elem]`. The element type is the first child's type — the
+/// value path has no checking-direction `expected`, so it reads the elements only — else
+/// a fresh `?_` for an empty literal. [`parameterized_value`] carries a `Value::Node`
+/// element type (a denoted-poisoned element) losslessly.
+fn seq_literal_value_type(kb: &mut KnowledgeBase, base_name: &str, pos_child_types: &[Value]) -> Value {
+    let t_val = pos_child_types.first().cloned().unwrap_or_else(|| fresh_type_var(kb));
+    let base = kb.make_sort_ref_by_name(base_name);
+    let t_sym = kb.intern("T");
+    let span = crate::span::SourceSpan::new(crate::span::SourceId::from_raw(0), 0, 0);
+    parameterized_value(kb, base, &[(t_sym, t_val)], span, None)
 }
 
 /// WI-578 — the type-term of a value-level logic variable. Navigates its σ-binding
@@ -20597,7 +20629,7 @@ fn typed_d(kb: &mut KnowledgeBase, subst: &Substitution, value: &Value, depth: u
         }
         Value::Term { id, .. } => {
             let ty = value_type_term_d(kb, subst, value, depth);
-            Value::Term { id: *id, ty: Some(Rc::new(ty)) }
+            Value::typed_term(*id, ty)
         }
         // Carriers WITHOUT a `ty` field: their type is implicit (a scalar's literal
         // sort) or lives elsewhere (a `Node`'s `inferred_type`, a `Var`'s constraint

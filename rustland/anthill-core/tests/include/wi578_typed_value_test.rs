@@ -238,3 +238,50 @@ fn value_type_term_unbound_var_reads_store_bound() {
         "an unbound, unconstrained var → ?_ (no sort head)",
     );
 }
+
+/// A reflect-`*Literal` entity carrying its elements positionally (no declared field).
+fn literal_value(kb: &KnowledgeBase, qn: &str, elems: Vec<Value>) -> Value {
+    Value::Entity { functor: sym(kb, qn), pos: elems.into(), named: vec![].into(), ty: None }
+}
+
+/// WI-578 (phase-2b review item A) — an un-desugared `[...]` reaches the value-typer as
+/// a `ListLiteral` entity whose DECLARED type has no element field. The fixed
+/// `constructor_value_type` mirrors `check_seq_literal_constructor`, typing it as
+/// `List[Int64]` — NOT the bare `Ref(ListLiteral)` the field-driven path produced.
+#[test]
+fn value_type_term_of_list_literal_is_list_of_int() {
+    let mut kb = load_kb();
+    let subst = Substitution::new();
+    let lit = literal_value(&kb, "anthill.reflect.ListLiteral", vec![Value::Int(1), Value::Int(2), Value::Int(3)]);
+    let ty = value_type_term(&mut kb, &subst, &lit);
+    let head = sort_functor_of_view(&kb, &ty).expect("list literal has a sort head");
+    assert_sort_named(&kb, head, "List");
+    assert_type_param_is(&kb, &ty, "Int64");
+}
+
+/// WI-578 (review item A) — an un-desugared `{...}` (`SetLiteral`) types as `Set[Int64]`,
+/// not `Ref(SetLiteral)`.
+#[test]
+fn value_type_term_of_set_literal_is_set_of_int() {
+    let mut kb = load_kb();
+    let subst = Substitution::new();
+    let lit = literal_value(&kb, "anthill.reflect.SetLiteral", vec![Value::Int(1), Value::Int(2)]);
+    let ty = value_type_term(&mut kb, &subst, &lit);
+    let head = sort_functor_of_view(&kb, &ty).expect("set literal has a sort head");
+    assert_sort_named(&kb, head, "Set");
+    assert_type_param_is(&kb, &ty, "Int64");
+}
+
+/// WI-578 (review item A) — the empty `TupleLiteral` (the `()` unit literal) types as
+/// `Unit`, NOT `Ref(TupleLiteral)`: `constructor_value_type` routes it to the aggregate
+/// path (`tuple_value_type`) exactly as the occurrence-typer's
+/// `check_tuple_literal_constructor` does.
+#[test]
+fn value_type_term_of_empty_tuple_literal_is_unit() {
+    let mut kb = load_kb();
+    let subst = Substitution::new();
+    let lit = literal_value(&kb, "anthill.reflect.TupleLiteral", vec![]);
+    let ty = value_type_term(&mut kb, &subst, &lit);
+    let head = sort_functor_of_view(&kb, &ty).expect("() has a sort head");
+    assert_sort_named(&kb, head, "Unit");
+}
