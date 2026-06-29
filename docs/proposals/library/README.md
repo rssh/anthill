@@ -17,6 +17,7 @@ Library proposals are distinct from **kernel-language proposals** (in the parent
 |---|---|---|
 | [`001-map.md`](001-map.md) | Draft 2026-05-28 | Split `Map` into three sorts: `MapReadable` (typeclass for read-only ops), `PersistentMap` (functional update), `MutableMap` (in-place mutation per 027.1). Effect-polymorphic iteration via `Stream[T, E]`. |
 | [`002-iteration-collection.md`](002-iteration-collection.md) | Draft 2026-05-29 | The same split for sequences: `Iteration` (consume) + new shared `Iterable` (produce, `iterator -> Stream`) as the read layer; `PersistentCollection` (rename of `Collection`) and new `MutableCollection` both `requires Iterable`. Map is the keyed instance. |
+| [`003-finite-collection.md`](003-finite-collection.md) | Draft 2026-06-29 | Finiteness as a type. Eager consumers (`count`→`size`, `collect`, `foldLeft`, `foldRight`) diverge on infinite streams; move them off `Stream`/`Iterable` onto new `FiniteCollection` (consume capability), with new `FiniteStream` (a `Stream` whose tail is finite) so a lazy `map`/`filter` over a finite source stays consumable. |
 
 ## Candidate / planned proposals
 
