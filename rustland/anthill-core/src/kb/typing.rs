@@ -12306,6 +12306,124 @@ fn check_seq_literal_constructor(
     Ok(TypeResult { ty: seq_type, env: env.clone(), effects, node: Rc::clone(occ) })
 }
 
+/// WI-594: is `member` (a short type-parameter name of `sort`) an EFFECT-ROW
+/// parameter (`effects E = ?`) rather than an ordinary sort parameter (`sort T =
+/// ?`)? The loader desugars `effects E = ?` to a `requires EffectsRuntime[Effects
+/// = E]` kind-anchor (WI-320), a DIRECT requires of the declaring sort; a sort
+/// parameter carries none. So `member` is an effect row iff `sort`'s OWN
+/// (direct) requires has an `EffectsRuntime` entry whose `Effects` binding names
+/// `member`. Used to decide whether a bare receiver's self-projection threads the
+/// member as a bare projection (`s.T`) or as the single-label effect row `{s.E}`
+/// (see [`bare_spec_arg_self_projection`]).
+///
+/// The chain is the DIRECT one, not the transitive `requires_chain`: a TRANSITIVELY
+/// required spec's own `effects A` anchor would otherwise leak into `sort`'s chain
+/// and — combined with the short-name match — misclassify `sort`'s own `sort A`
+/// parameter as an effect row whenever the short names collide. Within a single
+/// sort's direct params the short names are unique, so the short-name compare is
+/// exact here (and more robust than symbol identity, which can differ across the
+/// param's registrations).
+fn sort_param_is_effect_row(kb: &mut KnowledgeBase, sort: Symbol, member: &str) -> bool {
+    let Some(effects_runtime) = kb.try_resolve_symbol("anthill.prelude.EffectsRuntime") else {
+        return false;
+    };
+    for entry in direct_requires_chain(kb, sort) {
+        if !same_symbol(kb, entry.required_sort, effects_runtime) {
+            continue;
+        }
+        if let Some(v) = spec_binding_value(kb, entry.spec, "Effects") {
+            if let Some(head) = spec_binding_head_sym(kb, v) {
+                if short_name_of(kb.resolve_sym(head)) == member {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+/// WI-594: the SELF-PROJECTION of a bare spec-typed receiver argument flowing
+/// into a constructor field whose declared type applies the SAME spec.
+///
+/// A bare receiver `s: Stream` (no type-args written) carries its element and its
+/// effect row as the projections `s.T` / `s.E` — both equally. But its argument
+/// type, read from the env, is the bare sort ref `Stream`, which carries NEITHER.
+/// Unifying that bare ref against a parameterized field type `source: Stream[Src,
+/// ES]` therefore binds NOTHING — the field's own params stay free. The element
+/// only ever appeared to thread because a SIBLING field's declared type wrote the
+/// projection (`mapped`'s transform `fn: (Src) -> T`, fed `f: (x: s.T) -> Dst`,
+/// pins `Src = s.T`); the effect row, written nowhere a value flows through, was
+/// left an unresolved `??_` (and then the provided `Stream[E = {ES, EF}]` could
+/// not match the declared `Stream[E = {s.E, EffP}]` return).
+///
+/// When the argument IS such a bare receiver and the field type applies the same
+/// base, rebuild the argument's type as the receiver's self-projection `B[p =
+/// s.p, …]` — keyed by the FIELD's own binding symbols so the ordinary
+/// [`unify_parameterized_view`] arm threads every param (element AND effect)
+/// symmetrically, and with each member interned from the binding's short name so
+/// the formed `s.E` is the SAME `ExprCarried` the signature wrote. Returns `None`
+/// (caller keeps the bare type, behaviour unchanged) unless the field is
+/// parameterized over the argument's bare sort and the argument occurrence is a
+/// simple value reference (so a clean `Ref(s)` projection head exists).
+fn bare_spec_arg_self_projection(
+    kb: &mut KnowledgeBase,
+    declared_field_type: &Value,
+    arg: &TypeResult,
+) -> Option<Value> {
+    // The field must APPLY a spec (`Stream[Src, ES]`); a bare-sort field has no
+    // params to thread, and a structural field (arrow / row) is not a receiver slot.
+    let TypeExtractor::Parameterized { base: field_base, bindings } =
+        extract_type(kb, declared_field_type)
+    else {
+        return None;
+    };
+    // The argument must be a BARE sort ref to that same base — an already-applied
+    // argument (`s: Stream[S, EffS]`) threads through the ordinary arm unchanged.
+    if extract_sort_ref_sym(kb, &arg.ty) != Some(field_base) {
+        return None;
+    }
+    if bindings.is_empty() {
+        return None;
+    }
+    // Recover the receiver head from a simple value reference; a compound or
+    // non-reference argument has no single projectable receiver.
+    let recv = match &arg.node.kind {
+        NodeKind::Expr { expr, .. } => match expr {
+            Expr::VarRef { name } => *name,
+            Expr::Ref(name) | Expr::Ident(name) => *name,
+            _ => return None,
+        },
+        _ => return None,
+    };
+    let (span, owner) = (arg.node.span, arg.node.owner);
+    let base_ref = kb.make_sort_ref(field_base);
+    let mut proj_bindings: Vec<(Symbol, Value)> = Vec::with_capacity(bindings.len());
+    for (field_key, _) in &bindings {
+        // Member interned from the binding's SHORT name (`Stream.E` ⟹ `E`) so the
+        // formed `s.E` matches the source-written projection (loaded via the same
+        // short intern in `try_expr_carried_projection`).
+        let member_short = short_name_of(kb.resolve_sym(*field_key)).to_owned();
+        let member_sym = kb.intern(&member_short);
+        let recv_term = kb.alloc(Term::Ref(recv));
+        let proj = kb.make_expr_carried(recv_term, member_sym);
+        // An EFFECT-ROW param (`Stream`'s `effects E`) binds a single-label ROW
+        // `{s.E}`, not the bare projection. The field's effect param is a row TAIL,
+        // and a projection in a row is an ATOM (`present`) — the source-written
+        // `{s.E, EffP}` return wraps it exactly so. Binding the row keeps the
+        // provision's `{ES, EF}` structurally a present-atom + tail, matching the
+        // declared return. A SORT param threads the bare projection (`Src = s.T`).
+        let proj_val = if sort_param_is_effect_row(kb, field_base, &member_short) {
+            Value::term(kb.build_canonical_effects_rows(&[proj]))
+        } else {
+            Value::term(proj)
+        };
+        // Key by the FIELD's binding symbol so `unify_parameterized_view`'s
+        // by-symbol param match threads it.
+        proj_bindings.push((*field_key, proj_val));
+    }
+    Some(parameterized_value(kb, base_ref, &proj_bindings, span, owner))
+}
+
 /// Non-recursive Constructor checker — peer of `check_apply_iter`.
 /// Reads per-arg `TypeResult`s from `pos_results` / `named_results`
 /// (pre-computed by the iterative typer) instead of calling
@@ -12398,7 +12516,11 @@ fn check_constructor_iter(
     for (field_sym, declared_type) in &field_types {
         if let Some((idx, _)) = named_args.iter().enumerate().find(|(_, (s, _))| s == field_sym) {
             if let Ok(ref r) = named_results[idx] {
-                unify_types(kb, &mut subst, &r.ty, declared_type);
+                // WI-594: a bare spec receiver into a parameterized field threads
+                // its element AND effect through its self-projection; else the raw type.
+                let arg_ty = bare_spec_arg_self_projection(kb, declared_type, r)
+                    .unwrap_or_else(|| r.ty.clone());
+                unify_types(kb, &mut subst, &arg_ty, declared_type);
                 effects = merge_effects(kb, &effects, &r.effects);
             }
         }
@@ -12407,7 +12529,9 @@ fn check_constructor_iter(
     for (i, r_opt) in pos_results.iter().enumerate() {
         if let Some((_, declared_type)) = field_types.get(i) {
             if let Ok(r) = r_opt {
-                unify_types(kb, &mut subst, &r.ty, declared_type);
+                let arg_ty = bare_spec_arg_self_projection(kb, declared_type, r)
+                    .unwrap_or_else(|| r.ty.clone());
+                unify_types(kb, &mut subst, &arg_ty, declared_type);
                 effects = merge_effects(kb, &effects, &r.effects);
             }
         }
@@ -12425,6 +12549,10 @@ fn check_constructor_iter(
     // BEFORE the expected-seed and bail before the type is built for a constructor
     // we've proven ill-formed. WI-408: a bare `T` in an `Option[T]` field is
     // accepted by RECORDING a some-coercion, materialized below.
+    // WI-594: this loop uses the ORIGINAL bare `r.ty`, NOT the self-projection the
+    // inference loops above may have substituted — by design. The projection
+    // rebuild feeds INFERENCE only; validation is groundness-gated and a bare-spec
+    // receiver (`Stream`) is not ground, so it is skipped here regardless.
     let mut field_type_errors: Vec<TypeError> = Vec::new();
     let mut some_wraps: Vec<(usize, Value)> = Vec::new();
     for (field_sym, declared_type) in &field_types {
