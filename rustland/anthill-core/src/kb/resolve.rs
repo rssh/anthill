@@ -2256,6 +2256,16 @@ impl KnowledgeBase {
             candidates.extend(self.query(unify_pattern));
         }
 
+        // WI-595 (part 1) — the requires-guard decision (`simp_requires_guard_holds`)
+        // reads ONLY the redex (`current`) and the frame `subst`, both invariant
+        // across this candidate loop, so it is computed at most ONCE (lazily, on the
+        // first requires-guarded candidate) and reused. It was previously recomputed
+        // per requires-guarded candidate — a structural `value_type_term` over every
+        // positional argument each time. `rid` does not enter the decision (only the
+        // cheap per-rule `equation_is_requires_guarded` tag does), so the cached
+        // boolean is shared by every requires-guarded candidate without change.
+        let mut redex_guard_holds: Option<bool> = None;
+
         for (rid, tree_subst) in candidates {
             if !self.is_equation(rid) {
                 continue;
@@ -2286,10 +2296,13 @@ impl KnowledgeBase {
             // not `[simp]`-tagged (gate above) and its element carrier does not
             // provide the container (the carrier check) — a separate
             // element-provides-the-spec mechanism is deferred.
-            if self.equation_is_requires_guarded(rid)
-                && !super::typing::simp_requires_guard_holds(self, current, subst)
-            {
-                continue;
+            if self.equation_is_requires_guarded(rid) {
+                let holds = *redex_guard_holds.get_or_insert_with(|| {
+                    super::typing::simp_requires_guard_holds(self, current, subst)
+                });
+                if !holds {
+                    continue;
+                }
             }
 
             // WI-582: an EXPLICIT typed rule pattern (`?x: T`) carries
