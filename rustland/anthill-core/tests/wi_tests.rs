@@ -516,3 +516,6 @@ mod wi588_finite_combinators_test;
 #[path = "include/wi598_finite_collect_dispatch_test.rs"]
 mod wi598_finite_collect_dispatch_test;
 
+#[path = "include/wi590_witness_param_carrier_test.rs"]
+mod wi590_witness_param_carrier_test;
+

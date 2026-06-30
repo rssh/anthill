@@ -9073,9 +9073,23 @@ fn candidate_sub_goals_owned(
     impl_subst: &[(Symbol, TermId)],
 ) -> Vec<SortGoal> {
     let chain = direct_requires_chain(kb, impl_sort);
+    let effects_runtime = kb.try_resolve_symbol("anthill.prelude.EffectsRuntime");
     let mut out: Vec<SortGoal> = Vec::with_capacity(chain.len());
     for entry in &chain {
         let required_sort = entry.required_sort;
+        // Skip the synthetic `requires EffectsRuntime[E]` that every effect-row
+        // param (`effects ES = ?`) contributes: `EffectsRuntime` is the effect-
+        // runtime marker, never a resolvable dispatch provider, so emitting it as
+        // a sub-goal makes `resolve_inner` fail with a spurious `no impl provides
+        // EffectsRuntime`. This bites a WITNESS provider whose carrier is
+        // parameterized over effect rows (`fact FiniteCollection[C =
+        // MappedStream[…, ES = ES, EF = EF]]`): its requires-chain carries those
+        // markers, which would otherwise block dispatch even though the real
+        // conditional requirement (`Finite[C = S]`) resolves. Mirrors the
+        // identical skip in `check_provider_requires`.
+        if Some(required_sort) == effects_runtime {
+            continue;
+        }
         let Some((_, entry_bindings)) = unwrap_spec_view(kb, entry.spec) else {
             continue;
         };
@@ -9258,8 +9272,17 @@ pub fn check_provider_requires(kb: &mut KnowledgeBase) -> Vec<super::load::LoadE
             } else {
                 let mut cands: SmallVec<[Symbol; 4]> = SmallVec::from_elem(p.carrier, 1);
                 for (_, v) in &p.sigma {
-                    if let Some(s) = sort_sym_of_term(kb, *v) {
-                        cands.push(s);
+                    // Unwrap a parameterized carrier binding to its BASE sort. A
+                    // WITNESS provision keyed on a parameterized carrier
+                    // (`C = MappedStream[Source = S, …]`) stores the binding value
+                    // as a `SortView` wrapper, so the bare `sort_sym_of_term` yields
+                    // the wrapper functor (`SortView`) and the base carrier sort —
+                    // the thing that actually provides the required interface
+                    // (transitively, through its own `provides`) — is lost.
+                    // `unwrap_spec_view` reads the base sort out of every form (bare
+                    // `Ref`, term-backed `Fn{S, named}`, and the `SortView` wrapper).
+                    if let Some((base, _)) = unwrap_spec_view(kb, *v) {
+                        cands.push(base);
                     }
                 }
                 cands.iter().any(|&c| sort_provides(kb, c, required))
