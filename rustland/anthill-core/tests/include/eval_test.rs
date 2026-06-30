@@ -825,8 +825,12 @@ namespace test.wi064
   import anthill.prelude.{List, Int64, Stream, Bool, Option}
   import anthill.prelude.List.{nil, cons}
   import anthill.prelude.Option.{some, none}
-  import anthill.prelude.Stream.{collect, foldLeft, foldRight, find}
-  import anthill.prelude.MappedStream.{map}
+  -- Phase C (WI-589): the eager consumers moved to FiniteCollection; `find`
+  -- stays on Stream. The lazy `MappedStream.map` (→ Stream) is no longer
+  -- consumable via `collect`/`fold`, so the finite `FiniteCollection.map`
+  -- (→ FiniteStream, consumable) replaces it for a finite source.
+  import anthill.prelude.FiniteCollection.{collect, foldLeft, foldRight, map}
+  import anthill.prelude.Stream.{find}
 
   operation addp(a: Int64, b: Int64) -> Int64 = a + b
   operation subt(a: Int64, b: Int64) -> Int64 = a - b
@@ -844,10 +848,10 @@ namespace test.wi064
   -- tuple order): foldLeft ((0-1)-2)-3 = -6; foldRight 1-(2-(3-0)) = 2.
   operation foldl_sub() -> Int64 = foldLeft([1, 2, 3], 0, subt)
   operation foldr_sub() -> Int64 = foldRight([1, 2, 3], 0, subt)
-  -- map (+1) over [1,2,3] ⇒ [2,3,4]: collect ⇒ 234; folded ⇒ 9; empty ⇒ 0.
-  operation mapped_inc() -> Int64 = encode3(collect(map[Dst = Int64, EffS = {}, EffP = {}]([1, 2, 3], inc)))
-  operation mapped_sum() -> Int64 = foldLeft(map[Dst = Int64, EffS = {}, EffP = {}]([1, 2, 3], inc), 0, addp)
-  operation mapped_empty() -> Int64 = foldLeft(map[Dst = Int64, EffS = {}, EffP = {}]([], inc), 0, addp)
+  -- finite map (+1) over [1,2,3] ⇒ [2,3,4]: collect ⇒ 234; folded ⇒ 9; empty ⇒ 0.
+  operation mapped_inc() -> Int64 = encode3(collect(map[Dst = Int64, EffP = {}]([1, 2, 3], inc)))
+  operation mapped_sum() -> Int64 = foldLeft(map[Dst = Int64, EffP = {}]([1, 2, 3], inc), 0, addp)
+  operation mapped_empty() -> Int64 = foldLeft(map[Dst = Int64, EffP = {}]([], inc), 0, addp)
   -- find: first match mid-list, first match at head, and no match (none).
   operation found() -> Int64 = unwrap(find([1, 2, 3, 4], is_big))
   operation found_first() -> Int64 = unwrap(find([3, 1, 2], is_big))
@@ -913,19 +917,26 @@ end
 
 #[test]
 fn wi413_lazy_filter_skips_via_self_recursion() {
-    // WI-413 / WI-410: the lazy `FilteredStream` carrier runs end-to-end. Its
-    // `splitFirst` SELF-RECURSES on a reconstructed `filtered(rest, pred)` to
-    // SKIP a dropped element — the shape that leaked an undeclared `??_` effect
-    // before WI-413. `filter` returns a Stream, so it composes with the eager
-    // consumers (`collect` / `foldLeft`). The predicate is a named op
-    // (eta-lifted to a function value, WI-275); `filter` takes explicit
-    // `[S, EffS, EffP]` like its sibling `map[Dst, EffS, EffP]`.
+    // WI-413 / WI-410: the lazy finite `FiniteFilteredStream` carrier runs
+    // end-to-end. Its `splitFirst` SELF-RECURSES on a reconstructed
+    // `ffiltered(rest, pred)` to SKIP a dropped element — the shape that leaked an
+    // undeclared `??_` effect before WI-413. Post-WI-589 the eager consumers
+    // (`collect` / `foldLeft`) live on `FiniteCollection`, so the finite
+    // `FiniteCollection.filter` (→ FiniteStream, consumable) replaces the lazy
+    // `FilteredStream.filter` (→ bare Stream); the skip-via-self-recursion shape is
+    // identical. The predicate is a named op (eta-lifted, WI-275); the finite
+    // `filter[EffP]` infers the source/element from the carrier.
     let src = r#"
 namespace test.wi413filter
   import anthill.prelude.{List, Int64, Stream, Bool, Option}
   import anthill.prelude.List.{nil, cons}
-  import anthill.prelude.Stream.{collect, foldLeft}
-  import anthill.prelude.FilteredStream.{filter}
+  -- Phase C (WI-589): the eager consumers moved to FiniteCollection. The finite
+  -- `FiniteCollection.filter` (→ FiniteFilteredStream, consumable) replaces the
+  -- lazy `FilteredStream.filter` (→ bare Stream, no longer collect/fold-able).
+  -- FiniteFilteredStream's `splitFirst` SELF-RECURSES on `ffiltered(rest, pred)`
+  -- to skip a dropped element exactly like FilteredStream did, so this still
+  -- pins the skip-via-self-recursion shape (now on the finite carrier).
+  import anthill.prelude.FiniteCollection.{collect, foldLeft, filter}
 
   operation addp(a: Int64, b: Int64) -> Int64 = a + b
   operation is_big(n: Int64) -> Bool = n > 2
@@ -938,14 +949,14 @@ namespace test.wi413filter
 
   -- filter (n > 2) over [1,2,3,4] ⇒ [3,4]: the leading 1 and 2 are SKIPPED by
   -- the self-recursion. collect ⇒ 34; sum ⇒ 7.
-  operation kept_collect() -> Int64 = encode2(collect(filter[S = Int64, EffS = {}, EffP = {}]([1, 2, 3, 4], is_big)))
-  operation kept_sum() -> Int64 = foldLeft(filter[S = Int64, EffS = {}, EffP = {}]([1, 2, 3, 4], is_big), 0, addp)
+  operation kept_collect() -> Int64 = encode2(collect(filter[EffP = {}]([1, 2, 3, 4], is_big)))
+  operation kept_sum() -> Int64 = foldLeft(filter[EffP = {}]([1, 2, 3, 4], is_big), 0, addp)
   -- A leading run of drops then a single keep: [1,2,3] ⇒ [3] ⇒ 3.
-  operation kept_last() -> Int64 = foldLeft(filter[S = Int64, EffS = {}, EffP = {}]([1, 2, 3], is_big), 0, addp)
+  operation kept_last() -> Int64 = foldLeft(filter[EffP = {}]([1, 2, 3], is_big), 0, addp)
   -- All dropped ⇒ empty ⇒ 0 (every element skipped via self-recursion to none).
-  operation kept_none() -> Int64 = foldLeft(filter[S = Int64, EffS = {}, EffP = {}]([1, 2], is_big), 0, addp)
+  operation kept_none() -> Int64 = foldLeft(filter[EffP = {}]([1, 2], is_big), 0, addp)
   -- All kept ⇒ no skips: [3,4,5] ⇒ 12.
-  operation kept_all() -> Int64 = foldLeft(filter[S = Int64, EffS = {}, EffP = {}]([3, 4, 5], is_big), 0, addp)
+  operation kept_all() -> Int64 = foldLeft(filter[EffP = {}]([3, 4, 5], is_big), 0, addp)
 end
 "#;
     let mut interp = crate::common::interp_for(src);
@@ -2347,7 +2358,7 @@ fn wi362_collect_over_list_when_typer_grounds_effect_and_element() {
 namespace test.wi362_collect
   import anthill.prelude.{List, Int64}
   import anthill.prelude.List.{length}
-  import anthill.prelude.Stream.{collect}
+  import anthill.prelude.FiniteCollection.{collect}
 
   operation collect_len() -> Int64 = length(collect([1, 2, 3]))
 end

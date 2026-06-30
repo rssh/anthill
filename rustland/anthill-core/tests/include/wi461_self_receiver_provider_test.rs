@@ -109,10 +109,13 @@ end
 fn bare_iterator_evals_through_collect() {
     let src = r#"
 namespace test.wi461.eval
-  import anthill.prelude.{List, Stream, Int64}
+  import anthill.prelude.{List, FiniteStream, Int64}
   import anthill.prelude.List.{cons, nil}
-  import anthill.prelude.Stream.{collect}
-  operation iter2(l: List) -> Stream[T = l.T, E = {}] = l
+  import anthill.prelude.FiniteCollection.{collect}
+  -- WI-589: a finite identity body returns a FiniteStream (List provides
+  -- FiniteStream) so the result is consumable via FiniteCollection.collect; the
+  -- bare self-receiver projection threading (`FiniteStream[T = l.T]`) is the same.
+  operation iter2(l: List) -> FiniteStream[T = l.T, E = {}] = l
   operation gather() -> Int64 =
     match collect(iter2([1, 2, 3]))
       case cons(a, cons(b, cons(c, _))) -> a * 100 + b * 10 + c

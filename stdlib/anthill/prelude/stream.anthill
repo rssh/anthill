@@ -9,7 +9,7 @@ sort anthill.prelude.Stream
   import anthill.prelude.Pair.{pair, fst, snd}
   import anthill.prelude.List.{nil, cons}
   import anthill.prelude.Ordered.{gt}
-  import anthill.prelude.Numeric.{sub, add}
+  import anthill.prelude.Numeric.{sub}
   import anthill.prelude.Iterable
   import anthill.prelude.Modify
 
@@ -43,7 +43,9 @@ sort anthill.prelude.Stream
     effects s.E
   -- Default definitions over the primitive `splitFirst` (WI-362, enabled by
   -- WI-365 abstract spec-op self-typing). A carrier supplies only `splitFirst`;
-  -- these derive `takeN` / `collect` once for every `fact Stream[X]` provider.
+  -- these derive `takeN` once for every `fact Stream[X]` provider. (The eager
+  -- drains `collect`/`foldLeft`/`foldRight`/`count` moved off `Stream` — see the
+  -- note below `takeN`.)
   -- WI-447: the canonical SHORT bare-member form — the self-receiver is the bare
   -- sort `s: Stream` (the sec.3-bullet-1 tie enforced by WI-374), and every
   -- element/effect relationship is WRITTEN as a WI-376 projection off it
@@ -58,35 +60,12 @@ sort anthill.prelude.Stream
         case none() -> nil
         case some(pair(h, rest)) -> cons(head: h, tail: takeN(rest, sub(n, 1)))
     else nil
-  operation collect(s: Stream) -> List[T = s.T] effects s.E =
-    match splitFirst(s)
-      case none() -> nil
-      case some(pair(h, rest)) -> cons(head: h, tail: collect(rest))
-  -- Eager combinators (WI-064): consume the stream via `splitFirst`, like
-  -- `collect`. `Acc` is each fold's own accumulator type param (bound from
-  -- `init`). Decoupled rows (WI-441, like find): the callback carries its
-  -- OWN row `EffP`, paid eagerly alongside the observation row
-  -- (`effects {Eff, EffP}`). DELIBERATELY no `-Modify[x]` lacks on the fold
-  -- callbacks: a fold is the run-once terminal consumer — unlike map/filter
-  -- the callback is not captured in a re-walkable lazy view, so element
-  -- mutation cannot make a view inconsistent; an in-place sweep (e.g.
-  -- sum-and-reset over List[Cell]) is a legitimate fold. (A Modify-bearing
-  -- callback is still row-inference-gated today: its denoted-bearing eta
-  -- arrow leaves EffP unconstrained — a loud error, not a rejection by
-  -- design.) The callback param is the TWO-param named-binder arrow
-  -- `(acc: Acc, x: s.T) -> Acc`, applied `f(init, h)`: WI-442 aligns the
-  -- named binders against a multi-param op's eta arrow `(_1, _2)` by position,
-  -- so the callback's row `EffP` binds from the argument with no explicit
-  -- `[EffP = …]` at the call site. `map` / `filter` (which PRODUCE a stream)
-  -- are the lazy carriers in combinators.anthill, not here.
-  operation foldLeft[EffP, Acc](s: Stream, init: Acc, f: (acc: Acc, x: s.T) -> Acc @ {EffP}) -> Acc effects {s.E, EffP} =
-    match splitFirst(s)
-      case none() -> init
-      case some(pair(h, rest)) -> foldLeft(rest, f(init, h), f)
-  operation foldRight[EffP, Acc](s: Stream, init: Acc, f: (x: s.T, acc: Acc) -> Acc @ {EffP}) -> Acc effects {s.E, EffP} =
-    match splitFirst(s)
-      case none() -> init
-      case some(pair(h, rest)) -> f(h, foldRight(rest, init, f))
+  -- The eager drains `collect` / `foldLeft` / `foldRight` / `count` moved off
+  -- `Stream` to `FiniteCollection` (proposal library/003, Phase C / WI-589):
+  -- each WALKS TO THE END of the carrier and so DIVERGES on an infinite stream,
+  -- an unsound home on a lazy, maybe-infinite `Stream`. A finite carrier
+  -- (`List`, `FiniteStream`, `Map`) provides `FiniteCollection` and gets them
+  -- there; a `FiniteStream` derives `collect` from its own finite `splitFirst`.
   -- find (WI-441 decoupled rows): the pred carries its OWN row `EffP` —
   -- open, minus Modify on the element under test — instead of being tied to
   -- the stream's observation row `Eff`; find's effect is the MERGE of both
@@ -103,15 +82,6 @@ sort anthill.prelude.Stream
     match splitFirst(s)
       case none() -> true
       case some(_) -> false
-  -- count: consume the whole stream and count its elements — a consumption
-  -- VERB like collect/takeN/find, deliberately not named `size` (a property
-  -- name would mislead: this walks everything and diverges on an infinite
-  -- stream). The property-flavored `size` lives on Iterable, where the
-  -- carrier is a re-walkable collection.
-  operation count(s: Stream) -> Int64 effects s.E =
-    match splitFirst(s)
-      case none() -> 0
-      case some(pair(_, rest)) -> add(1, count(rest))
 
   -- Stream trivially provides Iterable (proposal library/002, "Relationship to
   -- Stream"): a Stream IS its own iterator, so `iterator(s) = s`. This gives

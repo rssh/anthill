@@ -159,12 +159,17 @@ const SIBLING_SRC: &str = r#"
 namespace test.wi426.sib
   import anthill.prelude.{List, Int64, Bool, Stream, Iterable, Option}
   import anthill.prelude.List.{nil, cons}
-  import anthill.prelude.Iterable.{size, find}
+  import anthill.prelude.Iterable.{find}
+  import anthill.prelude.FiniteCollection.{size}
   sort IntBag
-    import anthill.prelude.{List, Int64, Stream, Iterable}
+    import anthill.prelude.{List, Int64, Stream, Iterable, FiniteCollection, FiniteStream}
     entity ibag(items: List[T = Int64])
     provides Iterable[C = IntBag, Element = Int64, E = {}]
     operation iterator(b: IntBag) -> Stream[T = Int64, E = {}] = b.items
+    -- WI-589: finite, so it also provides FiniteCollection (size moved there).
+    provides FiniteCollection[C = IntBag, Element = Int64, E = {}]
+    operation collect(b: IntBag) -> List[T = Int64] = b.items
+    operation finiteIterator(b: IntBag) -> FiniteStream[T = Int64, E = {}] = b.items
   end
   operation big(n: Int64) -> Bool = n > 1
   operation mk() -> IntBag =
@@ -177,7 +182,7 @@ namespace test.wi426.sib
 end
 "#;
 
-/// A carrier-param SPEC op (`Iterable.size`) AND a higher-order spec op
+/// A carrier-param SPEC op (`FiniteCollection.size`) AND a higher-order spec op
 /// (`Iterable.find`, callback also by name) called with the carrier passed BY
 /// NAME type-check and evaluate. Before WI-426 the dispatch helpers
 /// (`carrier_param_receiver` / `dispatched_impl_effects` / the HOF hint path)

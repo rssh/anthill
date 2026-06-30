@@ -18,8 +18,9 @@ use crate::common::{interp_for, register_modify_handler};
 
 /// Helper ops wrapping the calls so the Rust side can thread a single handle.
 /// `popOr`/`peekOr` collapse the `Option[T]` result to an `Int64` (with a
-/// sentinel for empty) so the assertions stay simple; `depth` walks via
-/// `iterator` (Iterable.size), exercising the read bridge.
+/// sentinel for empty) so the assertions stay simple; `depth` is
+/// `FiniteCollection.size` (post-WI-589: MutableStack provides FiniteCollection,
+/// `size` materializes the current contents via `collect`/`Cell.get`).
 ///
 /// The MutableCollection interface is exercised through its ABSTRACT spec ops:
 /// `new()` (WI-508 — carrier pinned by the `MutableStack[T = Int64]` return
@@ -31,7 +32,7 @@ namespace test.wi364.stack
   import anthill.prelude.{Int64, Bool, Unit, MutableStack}
   import anthill.prelude.Option.{none, some}
   import anthill.prelude.MutableCollection.{new, insert, clear}
-  import anthill.prelude.Iterable.{size}
+  import anthill.prelude.FiniteCollection.{size}
 
   operation fresh() -> MutableStack[T = Int64] effects Modify[result] = new()
   operation pushN(s: MutableStack[T = Int64], x: Int64) -> Unit effects Modify[s] = MutableStack.push(s, x)

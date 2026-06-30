@@ -25,7 +25,7 @@ fn expect_int(v: Value) -> i64 {
 const SRC: &str = r#"
 namespace wi493.chain
   import anthill.prelude.{List, Int64, Stream, Bool}
-  import anthill.prelude.Stream.foldLeft
+  import anthill.prelude.FiniteCollection.foldLeft
 
   operation inc(n: Int64) -> Int64 = n + 1
   operation is_big(n: Int64) -> Bool = n > 2

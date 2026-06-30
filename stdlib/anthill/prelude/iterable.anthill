@@ -47,26 +47,14 @@ sort anthill.prelude.Iterable
   operation isEmpty(c: C) -> Bool effects E =
     Stream.isEmpty(iterator(c))
 
-  -- size: element count — like isEmpty a read observation derivable from
-  -- the iterator alone (here the full walk via the consuming Stream.count,
-  -- still paying just the access row E). A counted carrier SHOULD be able
-  -- to provide its own O(1) override (cf. Map.size), but today a default
-  -- body shadows the carrier member — WI-444.
-  operation size(c: C) -> Int64 effects E =
-    Stream.count(iterator(c))
-
-  -- foldLeft / foldRight: eager terminal consumers, decoupled rows like
-  -- find (`effects {E, EffP}`, both paid NOW). DELIBERATELY no `-Modify[x]`
-  -- on the fold callback: it runs once per element and is not captured in a
-  -- re-walkable lazy view (the map/filter hazard), so element mutation is
-  -- allowed — an in-place sweep (sum-and-reset over a List[Cell]) is a
-  -- legitimate fold. Callback param = the TWO-param named-binder arrow
-  -- (see Stream.foldLeft; WI-442 binds EffP via positional eta-arrow alignment).
-  operation foldLeft[Acc, EffP](c: C, init: Acc, f: (acc: Acc, x: Element) -> Acc @ {EffP}) -> Acc effects {E, EffP} =
-    Stream.foldLeft(iterator(c), init, f)
-
-  operation foldRight[Acc, EffP](c: C, init: Acc, f: (x: Element, acc: Acc) -> Acc @ {EffP}) -> Acc effects {E, EffP} =
-    Stream.foldRight(iterator(c), init, f)
+  -- size / foldLeft / foldRight moved OFF `Iterable` to `FiniteCollection`
+  -- (proposal library/003, Phase C / WI-589): each walks the iterator TO ITS
+  -- END (`Stream.count` / `Stream.foldLeft` / `Stream.foldRight`), which
+  -- DIVERGES on an infinite stream — and a `Stream` provides `Iterable`, so an
+  -- `Iterable` may be infinite. They now live on `FiniteCollection`, the sort
+  -- that promises termination; a finite carrier (`List`, `Map`) provides it and
+  -- gets `size` (`Stream.count` renamed, sound on a finite carrier) and the
+  -- folds there. `find` / `isEmpty` stay: neither reaches the end.
 
   -- map PRODUCES a stream, so it returns the lazy `mapped` carrier over the
   -- iterator (admissible as a Stream — MappedStream provides Stream).

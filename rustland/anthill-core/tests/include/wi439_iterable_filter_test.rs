@@ -21,8 +21,7 @@ fn iterable_filter_on_list_typechecks_pure() {
     let src = r#"
 namespace test.wi439.filter_list
   import anthill.prelude.{List, Int64, Bool}
-  import anthill.prelude.Iterable.{filter}
-  import anthill.prelude.Stream.{collect}
+  import anthill.prelude.FiniteCollection.{filter, collect}
   operation is_big(n: Int64) -> Bool = n > 2
   operation keep_big(xs: List[T = Int64]) -> List[T = Int64] = collect(filter(xs, is_big))
 end
@@ -41,8 +40,7 @@ fn iterable_filter_on_list_wrong_element_rejected() {
     let src = r#"
 namespace test.wi439.filter_wrong
   import anthill.prelude.{List, Int64, String, Bool}
-  import anthill.prelude.Iterable.{filter}
-  import anthill.prelude.Stream.{collect}
+  import anthill.prelude.FiniteCollection.{filter, collect}
   operation is_big(n: Int64) -> Bool = n > 2
   operation keep_big(xs: List[T = Int64]) -> List[T = String] = collect(filter(xs, is_big))
 end
@@ -68,8 +66,7 @@ fn iterable_filter_eval_on_list_and_stream_parity() {
 namespace test.wi439.eval
   import anthill.prelude.{List, Int64, Bool}
   import anthill.prelude.List.{cons}
-  import anthill.prelude.Iterable.{filter}
-  import anthill.prelude.Stream.{collect}
+  import anthill.prelude.FiniteCollection.{filter, collect}
 
   operation is_big(n: Int64) -> Bool = n > 2
 
@@ -85,13 +82,15 @@ end
 namespace test.wi439.parity
   import anthill.prelude.{List, Int64, Bool}
   import anthill.prelude.FilteredStream.{filter}
-  import anthill.prelude.Stream.{collect}
+  import anthill.prelude.Stream.{takeN}
   import test.wi439.eval.{is_big, encode2}
 
-  -- Stream-level engine on the same input (List provides Stream); the
-  -- Iterable member must agree. The direct Stream-level call needs the
-  -- explicit bindings; the Iterable member gets E from the provision.
-  operation kept_stream() -> Int64 = encode2(collect(filter[S = Int64, EffS = {}, EffP = {}]([1, 2, 3, 4], is_big)))
+  -- Stream-level engine on the same input (List provides Stream); the finite
+  -- member must agree. The LAZY FilteredStream is no longer collect-able (Phase
+  -- C / WI-589), so drain it with the still-Stream-level `takeN` (bound ≥ the
+  -- list length yields every kept element) — the keep/drop self-recursion engine
+  -- runs the same way. The direct Stream-level call needs the explicit bindings.
+  operation kept_stream() -> Int64 = encode2(takeN(filter[S = Int64, EffS = {}, EffP = {}]([1, 2, 3, 4], is_big), 1000))
 end
 "#;
     let mut interp = crate::common::interp_for(src);
@@ -112,14 +111,21 @@ fn iterable_filter_on_non_stream_carrier() {
 namespace test.wi439.boxcoll
   import anthill.prelude.{List, Int64, Bool, Stream, Iterable}
   import anthill.prelude.List.{cons}
-  import anthill.prelude.Iterable.{filter}
-  import anthill.prelude.Stream.{collect}
+  import anthill.prelude.FiniteCollection.{filter, collect}
 
   sort BoxColl
-    import anthill.prelude.{List, Int64, Stream, Iterable}
+    import anthill.prelude.{List, Int64, Stream, Iterable, FiniteCollection, FiniteStream}
     entity boxed(items: List[T = Int64])
     provides Iterable[C = BoxColl, Element = Int64, E = {}]
     operation iterator(b: BoxColl) -> Stream[Int64, {}] =
+      match b
+        case boxed(items) -> items
+    -- WI-589: finite, so also provides FiniteCollection (filter/collect moved there).
+    provides FiniteCollection[C = BoxColl, Element = Int64, E = {}]
+    operation collect(b: BoxColl) -> List[T = Int64] =
+      match b
+        case boxed(items) -> items
+    operation finiteIterator(b: BoxColl) -> FiniteStream[T = Int64, E = {}] =
       match b
         case boxed(items) -> items
   end
@@ -131,13 +137,9 @@ namespace test.wi439.boxcoll
       case cons(a, cons(b, _)) -> a * 10 + b
       case _ -> 0
 
-  -- Explicit collect bindings: inference does NOT ground collect's Elem from
-  -- a member result whose Element comes from a CONCRETE provision binding
-  -- (`Element = Int64`) — the generic List provision (`Element = T`) grounds
-  -- fine (see iterable_filter_eval_…). Likely the WI-391 Ref-vs-nullary-Fn
-  -- lowering divergence for ground provides bindings; recorded as WI-439
-  -- feedback, root-cause with WI-391.
-  operation kept() -> Int64 = encode2(collect[Elem = Int64, Eff = {}](filter(boxed([1, 2, 3, 4]), is_big)))
+  -- `filter` over the non-Stream BoxColl resolves FiniteCollection.filter
+  -- (FiniteFilteredStream), then FiniteCollection.collect materializes it.
+  operation kept() -> Int64 = encode2(collect(filter(boxed([1, 2, 3, 4]), is_big)))
 end
 "#;
     let mut interp = crate::common::interp_for(src);

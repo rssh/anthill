@@ -478,22 +478,6 @@ impl SearchStreamAdapter {
         }
     }
 
-    /// Drive the stream to exhaustion, folding each `Solution` into `acc` via
-    /// `step`. The single consumption loop behind `count` / `fold_left` (pulling
-    /// through the trait `split_first`, so each tail is the next adapter).
-    fn fold_solutions<Acc>(
-        &self,
-        init: Acc,
-        mut step: impl FnMut(Acc, Solution) -> Acc,
-    ) -> Result<Acc, Error> {
-        let mut acc = init;
-        let mut next = self.split_first()?;
-        while let Some((h, rest)) = next {
-            acc = step(acc, h);
-            next = rest.split_first()?;
-        }
-        Ok(acc)
-    }
 }
 
 impl Stream<Solution, Error> for SearchStreamAdapter {
@@ -566,57 +550,12 @@ impl Stream<Solution, Error> for SearchStreamAdapter {
         Ok(results)
     }
 
-    fn collect(&self) -> Result<Vec<Solution>, Error> {
-        let mut results = Vec::new();
-        let mut current = self.inner.borrow_mut().take();
-        loop {
-            let next = match current.take() {
-                Some(s) => {
-                    let mut kb = self.kb.borrow_mut();
-                    s.split_first(&mut kb)
-                }
-                None => break,
-            };
-            match next {
-                Some((sol, rest)) => {
-                    results.push(self.make_solution(sol));
-                    current = Some(rest);
-                }
-                None => break,
-            }
-        }
-        Ok(results)
-    }
-
     fn is_empty(&self) -> Result<bool, Error> {
         let inner = self.inner.borrow();
         match inner.as_ref() {
             Some(s) => Ok(s.is_empty()),
             None => Ok(true),
         }
-    }
-
-    fn count(&self) -> Result<i64, Error> {
-        self.fold_solutions(0i64, |n, _| n + 1)
-    }
-
-    fn fold_left<Acc>(&self, init: Acc, f: fn(Acc, Solution) -> Acc) -> Result<Acc, Error>
-    where
-        Self: Sized,
-    {
-        self.fold_solutions(init, f)
-    }
-
-    fn fold_right<Acc>(&self, init: Acc, f: fn(Solution, Acc) -> Acc) -> Result<Acc, Error>
-    where
-        Self: Sized,
-    {
-        let items = self.collect()?;
-        let mut acc = init;
-        for x in items.into_iter().rev() {
-            acc = f(x, acc);
-        }
-        Ok(acc)
     }
 
     fn find(&self, _pred: fn(Solution) -> bool) -> Result<Option<Solution>, Error> {
@@ -1057,6 +996,20 @@ mod tests {
         KbBridge::new(kb)
     }
 
+    /// Drain a `Box<dyn Stream<Solution, Error>>` to a `Vec` by pulling
+    /// `split_first` to exhaustion. The host `Stream` trait no longer carries an
+    /// eager `collect` (proposal library/003, Phase C / WI-589 moved the eager
+    /// drains to `FiniteCollection`), so a bounded test drain is spelled out here.
+    fn drain(stream: Box<dyn Stream<Solution, Error>>) -> Vec<Solution> {
+        let mut out = Vec::new();
+        let mut next = stream.split_first().expect("split_first failed");
+        while let Some((h, rest)) = next {
+            out.push(h);
+            next = rest.split_first().expect("split_first failed");
+        }
+        out
+    }
+
     #[test]
     fn execute_sort_query_finds_operations() {
         let bridge = load_source_bridge(r#"
@@ -1069,7 +1022,7 @@ sort Store {
 "#);
         let query = LogicalQuery::SortQuery { sort_name: "OperationInfo".into() };
         let stream = bridge.execute(query).expect("execute failed");
-        let results = stream.collect().expect("collect failed");
+        let results = drain(stream);
         assert!(results.len() >= 3,
             "should find at least 3 OperationInfo facts, got {}", results.len());
         // Each result is a definite Solution.
@@ -1082,7 +1035,7 @@ sort Store {
         let bridge = load_source_bridge("sort Foo { entity bar }");
         let query = LogicalQuery::SortQuery { sort_name: "Nonexistent".into() };
         let stream = bridge.execute(query).expect("execute failed");
-        let results = stream.collect().expect("collect failed");
+        let results = drain(stream);
         assert_eq!(results.len(), 0, "nonexistent sort query should return 0 results");
     }
 
@@ -1091,7 +1044,7 @@ sort Store {
         let bridge = load_source_bridge("sort Foo { entity bar }");
         let query = LogicalQuery::EmptyQuery;
         let stream = bridge.execute(query).expect("execute failed");
-        let results = stream.collect().expect("collect failed");
+        let results = drain(stream);
         assert_eq!(results.len(), 1, "empty query should return 1 result (trivial solution)");
         assert!(matches!(results[0], Solution::Definite { .. }));
     }
@@ -1109,7 +1062,7 @@ fact cat
         };
         let query = LogicalQuery::PatternQuery { term: ReflectTerm::new(Value::term(goal)) };
         let stream = bridge.execute(query).expect("execute failed");
-        let results = stream.collect().expect("collect failed");
+        let results = drain(stream);
         assert!(results.len() >= 1, "pattern query for 'dog' should find at least 1 result, got {}", results.len());
     }
 

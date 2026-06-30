@@ -124,11 +124,11 @@ namespace anthill.todo.store
     -- pre-filter on a string `id` to keep only real rows.
     --
     -- Read-only impl bodies route through `facts_of(kb(), WorkItem)`
-    -- rather than `retrieve(backend, …)`: Stream.collect / Stream.head
-    -- have no operational bodies in the stdlib yet (only splitFirst is
-    -- wired through LogicalStream's Rust builtin), so a retrieve-based
+    -- rather than `retrieve(backend, …)`: the eager drains
+    -- (FiniteCollection.collect / Stream.head) are not yet wired to the
+    -- LogicalStream Rust builtin (only splitFirst is), so a retrieve-based
     -- impl can't materialize the result. WI-189 follow-up swaps in a
-    -- retrieve path once Stream.collect has a body.
+    -- retrieve path once that drain is wired through the host stream.
     operation terms_to_workitems(ts: List[T = Term]) -> List[T = WorkItem] =
       match ts
         case nil() -> nil()

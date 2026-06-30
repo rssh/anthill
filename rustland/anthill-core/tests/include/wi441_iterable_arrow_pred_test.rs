@@ -169,8 +169,7 @@ fn lazy_filter_effectful_pred_threads_on_consumption() {
     let declared = r#"
 namespace wi441.lazy
   import anthill.prelude.{Effect, List, Bool, Int64}
-  import anthill.prelude.Iterable.{filter}
-  import anthill.prelude.Stream.{collect}
+  import anthill.prelude.FiniteCollection.{filter, collect}
   sort Beep end
   fact Effect[T = Beep]
   operation noisy(n: Int64) -> Bool effects Beep = true
@@ -188,8 +187,7 @@ end
     let undeclared = r#"
 namespace wi441.lazy2
   import anthill.prelude.{Effect, List, Bool, Int64}
-  import anthill.prelude.Iterable.{filter}
-  import anthill.prelude.Stream.{collect}
+  import anthill.prelude.FiniteCollection.{filter, collect}
   sort Beep end
   fact Effect[T = Beep]
   operation noisy(n: Int64) -> Bool effects Beep = true

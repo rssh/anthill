@@ -50,7 +50,7 @@ namespace test.wi374.bare_ann
 
   operation driver() -> Int64 =
     let s : Stream = anthill.prelude.Iterable.iterator(cons(head: 1, tail: nil))
-    anthill.prelude.Stream.count(s)
+    anthill.prelude.List.length(anthill.prelude.Stream.takeN(s, 1))
 end
 "#;
     let errs = load_errors(&[src]);
@@ -68,7 +68,7 @@ namespace test.wi374.partial_ann
 
   operation driver() -> Int64 =
     let s : Stream[T = Int64] = anthill.prelude.Iterable.iterator(cons(head: 1, tail: nil))
-    anthill.prelude.Stream.count(s)
+    anthill.prelude.List.length(anthill.prelude.Stream.takeN(s, 1))
 end
 "#;
     let errs = load_errors(&[src]);
@@ -85,7 +85,7 @@ namespace test.wi374.wrong_ann
 
   operation driver() -> Int64 =
     let s : Stream[T = String] = anthill.prelude.Iterable.iterator(cons(head: 1, tail: nil))
-    anthill.prelude.Stream.count(s)
+    anthill.prelude.List.length(anthill.prelude.Stream.takeN(s, 1))
 end
 "#;
     let errs = load_errors(&[src]);
@@ -289,7 +289,7 @@ namespace test.wi374.wildcard_ann
 
   operation driver() -> Int64 =
     let s : Stream[T = ?] = anthill.prelude.Iterable.iterator(cons(head: 1, tail: nil))
-    anthill.prelude.Stream.count(s)
+    anthill.prelude.List.length(anthill.prelude.Stream.takeN(s, 1))
 end
 "#;
     let errs = load_errors(&[src]);
@@ -450,7 +450,7 @@ namespace test.wi374.bare_value
 
   operation driver() -> Int64 =
     let s : Stream = produce(mkSrc)
-    anthill.prelude.Stream.count(s)
+    anthill.prelude.List.length(anthill.prelude.Stream.takeN(s, 1))
 end
 "#;
     let errs = load_errors(&[src]);

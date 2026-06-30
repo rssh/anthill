@@ -18,7 +18,7 @@
 -- pattern-match idiom — `match s case mutableStack(r) -> Cell.set(r, …)`,
 -- binding the inner cell as a WI-219 local — is no longer needed here.)
 sort anthill.prelude.MutableStack
-  import anthill.prelude.{Bool, Unit, Option, Cell, List, Stream, Modifiable}
+  import anthill.prelude.{Bool, Unit, Option, Cell, List, Stream, Modifiable, FiniteCollection, FiniteStream}
   import anthill.prelude.List.{nil, cons}
   import anthill.prelude.Option.{none, some}
 
@@ -70,6 +70,17 @@ sort anthill.prelude.MutableStack
   operation iterator(s: MutableStack) -> Stream[T, {}]
   =
     Cell.get(s.rep)
+
+  -- A MutableStack is FINITE — its backing list is finite — so it provides
+  -- FiniteCollection (proposal library/003): `size` / `foldLeft` / `foldRight`
+  -- moved there off Iterable (Phase C / WI-589). `collect` materializes the
+  -- current contents (the snapshot list IS the materialized form); the finite
+  -- cursor hands back the same snapshot typed as a FiniteStream (List provides
+  -- FiniteStream, so it is admissible). The access row is pure `{}` like the
+  -- plain `iterator` (the snapshot is captured at call time).
+  provides FiniteCollection[C = MutableStack[T], Element = T, E = {}]
+  operation collect(s: MutableStack) -> List[T = s.T] = Cell.get(s.rep)
+  operation finiteIterator(s: MutableStack) -> FiniteStream[T = s.T, E = {}] = Cell.get(s.rep)
 
   -- MutableCollection.insert: the collection view of `push`. Returns the
   -- membership witness ("was new") — vacuously `true` for a stack/bag

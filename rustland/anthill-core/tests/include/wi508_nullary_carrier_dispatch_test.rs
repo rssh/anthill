@@ -22,7 +22,7 @@ const SRC_STDLIB: &str = r#"
 namespace test.wi508
   import anthill.prelude.{Int64, MutableStack, MutableCollection}
   import anthill.prelude.MutableCollection.{new}
-  import anthill.prelude.Iterable.{size}
+  import anthill.prelude.FiniteCollection.{size}
 
   operation depth(s: MutableStack[T = Int64]) -> Int64 = size(s)
   -- abstract MutableCollection.new(); carrier pinned only by the return type
@@ -141,7 +141,7 @@ fn wi508_two_providers_unannotated_is_loud() {
 const SRC_CONCRETE: &str = r#"
 namespace test.wi508g
   import anthill.prelude.{Int64, Bool, MutableStack}
-  import anthill.prelude.Iterable.{size}
+  import anthill.prelude.FiniteCollection.{size}
 
   -- element T inferred Int64 from the push
   operation useNew() -> Int64 effects Modify[result] =

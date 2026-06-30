@@ -27,7 +27,8 @@ const EVAL_SRC: &str = r#"
 namespace wi495.nonstream
   import anthill.prelude.{List, Int64, Bool, Pair, Stream, Iterable, Option}
   import anthill.prelude.List.{nil, cons}
-  import anthill.prelude.Iterable.{size, isEmpty, find}
+  import anthill.prelude.Iterable.{isEmpty, find}
+  import anthill.prelude.FiniteCollection.{size}
 
   -- A concrete non-Stream Iterable: a bag of Int64s backed by a List, but NOT
   -- itself a Stream (no `splitFirst`). Provides Iterable directly, with a
@@ -36,10 +37,17 @@ namespace wi495.nonstream
   -- threading — the point here is the Iterable≠Stream split, not parametric
   -- field projection.
   sort IntBag
-    import anthill.prelude.{List, Int64, Stream, Iterable}
+    import anthill.prelude.{List, Int64, Stream, Iterable, FiniteCollection, FiniteStream}
     entity ibag(items: List[T = Int64])
     provides Iterable[C = IntBag, Element = Int64, E = {}]
     operation iterator(b: IntBag) -> Stream[T = Int64, E = {}] = b.items
+    -- WI-589: a Bag is FINITE, so it also provides FiniteCollection (the eager
+    -- `size` moved there off Iterable). `collect` materializes the backing list
+    -- (already the materialized form); the finite cursor hands it back typed as a
+    -- FiniteStream (List provides FiniteStream, so it is admissible). Mirrors Map.
+    provides FiniteCollection[C = IntBag, Element = Int64, E = {}]
+    operation collect(b: IntBag) -> List[T = Int64] = b.items
+    operation finiteIterator(b: IntBag) -> FiniteStream[T = Int64, E = {}] = b.items
   end
 
   operation big(n: Int64) -> Bool = n > 1
@@ -49,7 +57,7 @@ namespace wi495.nonstream
 
   operation mk_empty() -> IntBag = ibag(items: nil)
 
-  -- Iterable.size on a non-Stream carrier (walks the produced stream).
+  -- FiniteCollection.size on a non-Stream finite carrier (materializes + counts).
   operation bag_size(b: IntBag) -> Int64 = size(b)
 
   -- Iterable.isEmpty on a non-Stream carrier.
@@ -121,13 +129,14 @@ fn load_errs(extra: &str) -> Vec<LoadError> {
 
 #[test]
 fn map_iterable_members_typecheck() {
-    // `Map` provides Iterable but NOT Stream (it has no splitFirst). An
-    // `Iterable.size` over a `Map` must type-check — dispatched on the Map's
-    // direct Iterable provision, grounding the access effect to pure `{}`.
+    // `Map` provides Iterable AND FiniteCollection but NOT Stream (it has no
+    // splitFirst). A `FiniteCollection.size` over a `Map` must type-check —
+    // dispatched on the Map's direct FiniteCollection provision, grounding the
+    // access effect to pure `{}`.
     let src = r#"
 namespace wi495.map_iter
   import anthill.prelude.{Map, Int64}
-  import anthill.prelude.Iterable.{size}
+  import anthill.prelude.FiniteCollection.{size}
 
   operation entry_count(m: Map[K = Int64, V = Int64]) -> Int64 = size(m)
 end
@@ -135,7 +144,7 @@ end
     let errs = load_errs(src);
     assert!(
         errs.is_empty(),
-        "Iterable.size on a Map (non-Stream Iterable) must type-check; got: {}",
+        "FiniteCollection.size on a Map (non-Stream finite Iterable) must type-check; got: {}",
         errs.iter().map(|e| e.to_string()).collect::<Vec<_>>().join("\n"),
     );
 }

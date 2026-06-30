@@ -36,7 +36,7 @@ namespace anthill.todo
   import anthill.prelude.Int64.{to_string}
   import anthill.prelude.String.{concat}
   import anthill.prelude.List.{cons, nil}
-  import anthill.prelude.Iterable.{size}
+  import anthill.prelude.FiniteCollection.{size}
   import anthill.reflect.{Term, Substitution, Solution, term_functor_name,
                           term_field, term_as_string,
                           fresh_var, make_fn, term_to_string,

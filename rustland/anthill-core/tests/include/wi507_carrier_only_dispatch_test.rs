@@ -28,7 +28,7 @@ const SRC: &str = r#"
 namespace test.wi507
   import anthill.prelude.{Int64, Bool, Unit, MutableStack, MutableCollection}
   import anthill.prelude.MutableCollection.{insert, clear}
-  import anthill.prelude.Iterable.{size}
+  import anthill.prelude.FiniteCollection.{size}
 
   operation fresh() -> MutableStack[T = Int64] effects Modify[result] = MutableStack.new()
   operation pushN(s: MutableStack[T = Int64], x: Int64) -> Unit effects Modify[s] = MutableStack.push(s, x)

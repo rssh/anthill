@@ -10,10 +10,10 @@
 --   consume, finite        : FiniteStream    provides Stream + FiniteCollection
 --
 -- The load-bearing invariant (what makes the drain a WELL-FOUNDED recursion):
--- a finite stream's TAIL is itself a FiniteStream. `Stream.collect` recurses on
--- a tail typed `Stream`; if `collect` lived only on `FiniteStream` that recursion
--- would be ill-typed (`rest` would be a bare `Stream`). `FiniteStream.splitFirst`
--- returns a `FiniteStream` tail, so the recursion type-checks.
+-- a finite stream's TAIL is itself a FiniteStream. `collect` recurses on its
+-- tail; the tail must therefore be FINITE for the recursion to be well-typed —
+-- a bare `Stream` tail would not be consumable. `FiniteStream.splitFirst`
+-- returns a `FiniteStream` tail, so `FiniteStream.collect` (below) type-checks.
 --
 -- `FiniteStream provides Stream` by WEAKENING its `splitFirst` (a finite tail is
 -- still a Stream tail) — a COVARIANT-RETURN provision (kernel dep 1, WI-344 /

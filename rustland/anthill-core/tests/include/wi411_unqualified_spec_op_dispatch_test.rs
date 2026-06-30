@@ -29,14 +29,18 @@ fn expect_int(v: anthill_core::eval::Value) -> i64 {
 // `[Elem, Eff]` params bound from the receiver `Rewrap[T = Elem, E = Eff]`).
 const REWRAP: &str = r#"
 sort test.wi411.Rewrap
-  import anthill.prelude.{Stream, Option, Pair, List, Int64, EffectsRuntime}
+  import anthill.prelude.{FiniteStream, Option, Pair, List, Int64, EffectsRuntime}
   import anthill.prelude.Option.{some, none}
   import anthill.prelude.Pair.{pair}
 
   sort T = ?
   effects E = ?
-  entity rewrapped(source: Stream[T = T, E = E])
-  provides Stream[T = T, E = E]
+  -- WI-589: the source is a FiniteStream (not a bare Stream) so the rewrapped
+  -- carrier provides FiniteStream and is consumable via the eager FiniteCollection
+  -- drains (collect / foldLeft) — the WI-411 unqualified-dispatch point is
+  -- unchanged (the source peel still value-dispatches on `src`'s real carrier).
+  entity rewrapped(source: FiniteStream[T = T, E = E])
+  provides FiniteStream[T = T, E = E]
 
   -- WI-411: UNQUALIFIED self-named spec-op call on the ABSTRACT source `src`.
   operation splitFirst[Elem, Eff](r: Rewrap[T = Elem, E = Eff]) -> Option[T = Pair[A = Elem, B = Rewrap[T = Elem, E = Eff]]] effects Eff =
@@ -46,7 +50,7 @@ sort test.wi411.Rewrap
           case none() -> none
           case some(pair(h, rest)) -> some(pair(h, rewrapped(rest)))
 
-  operation rewrap[Elem, Eff](s: Stream[T = Elem, E = Eff]) -> Stream[T = Elem, E = Eff] = rewrapped(s)
+  operation rewrap[Elem, Eff](s: FiniteStream[T = Elem, E = Eff]) -> FiniteStream[T = Elem, E = Eff] = rewrapped(s)
 end
 "#;
 
@@ -56,7 +60,7 @@ fn unqualified_source_peel_value_dispatches_on_list() {
 namespace test.wi411.use
   import anthill.prelude.{List, Int64, Stream}
   import anthill.prelude.List.{nil, cons}
-  import anthill.prelude.Stream.{collect, foldLeft}
+  import anthill.prelude.FiniteCollection.{collect, foldLeft}
   import test.wi411.Rewrap.{rewrap}
 
   operation addp(a: Int64, b: Int64) -> Int64 = a + b

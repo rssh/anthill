@@ -41,16 +41,19 @@ fn load_errs(extra: &str) -> Vec<LoadError> {
 const SRC: &str = r#"
 namespace wi496.transitive
   import anthill.prelude.{List, Int64, Stream}
-  import anthill.prelude.List.{nil, cons}
+  import anthill.prelude.List.{nil, cons, length}
   import anthill.prelude.Iterable.{iterator}
-  import anthill.prelude.Stream.{count}
+  import anthill.prelude.Stream.{takeN}
 
   operation mk() -> List[T = Int64] =
     cons(head: 1, tail: cons(head: 2, tail: cons(head: 3, tail: nil)))
 
   -- explicit iterator(xs) on a List — resolves transitively to Stream.iterator
-  -- (List provides Stream provides Iterable), then count the produced stream.
-  operation walk(xs: List[T = Int64]) -> Int64 = count(iterator(xs))
+  -- (List provides Stream provides Iterable). The produced value is a bare
+  -- Stream (maybe-infinite), so the unsound `Stream.count` is gone (Phase C /
+  -- WI-589); a BOUNDED drain `takeN(_, 1000)` then `length` counts a small finite
+  -- list soundly (the bound ≥ its length yields every element).
+  operation walk(xs: List[T = Int64]) -> Int64 = length(takeN(iterator(xs), 1000))
 end
 "#;
 

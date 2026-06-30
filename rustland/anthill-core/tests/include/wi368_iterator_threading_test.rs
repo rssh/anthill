@@ -45,9 +45,8 @@ fn collect_iterator_list_is_pure() {
 namespace test.wi368.pure
   import anthill.prelude.{List, Int64}
   import anthill.prelude.List.{length}
-  import anthill.prelude.Iterable.{iterator}
-  import anthill.prelude.Stream.{collect}
-  operation walk(xs: List[T = Int64]) -> Int64 = length(collect(iterator(xs)))
+  import anthill.prelude.FiniteCollection.{finiteIterator, collect}
+  operation walk(xs: List[T = Int64]) -> Int64 = length(collect(finiteIterator(xs)))
 end
 "#;
     let errs = load_errors(&[src]);
@@ -65,9 +64,8 @@ fn collect_iterator_threads_element_int() {
     let ok = r#"
 namespace test.wi368.elem_ok
   import anthill.prelude.{List, Int64}
-  import anthill.prelude.Iterable.{iterator}
-  import anthill.prelude.Stream.{collect}
-  operation gather(xs: List[T = Int64]) -> List[T = Int64] = collect(iterator(xs))
+  import anthill.prelude.FiniteCollection.{finiteIterator, collect}
+  operation gather(xs: List[T = Int64]) -> List[T = Int64] = collect(finiteIterator(xs))
 end
 "#;
     let errs = load_errors(&[ok]);
@@ -79,9 +77,8 @@ end
     let wrong = r#"
 namespace test.wi368.elem_wrong
   import anthill.prelude.{List, Int64, String}
-  import anthill.prelude.Iterable.{iterator}
-  import anthill.prelude.Stream.{collect}
-  operation gather(xs: List[T = Int64]) -> List[T = String] = collect(iterator(xs))
+  import anthill.prelude.FiniteCollection.{finiteIterator, collect}
+  operation gather(xs: List[T = Int64]) -> List[T = String] = collect(finiteIterator(xs))
 end
 "#;
     let errs = load_errors(&[wrong]);

@@ -103,8 +103,7 @@ fn iterable_map_on_list_typechecks_pure() {
     let src = r#"
 namespace test.wi424.map_list
   import anthill.prelude.{List, Int64}
-  import anthill.prelude.Iterable.{map}
-  import anthill.prelude.Stream.{collect}
+  import anthill.prelude.FiniteCollection.{map, collect}
   operation inc(n: Int64) -> Int64 = n + 1
   operation bump(xs: List[T = Int64]) -> List[T = Int64] = collect(map[Dst = Int64](xs, inc))
 end
@@ -124,7 +123,8 @@ fn iterable_is_empty_and_size_on_list() {
     let src = r#"
 namespace test.wi424.isempty_list
   import anthill.prelude.{List, Int64, Bool}
-  import anthill.prelude.Iterable.{isEmpty, size}
+  import anthill.prelude.Iterable.{isEmpty}
+  import anthill.prelude.FiniteCollection.{size}
 
   operation check(xs: List[T = Int64]) -> Bool = isEmpty(xs)
   operation on_empty() -> Int64 = if check([]) then 1 else 0
@@ -150,7 +150,7 @@ fn iterable_folds_eval_on_list() {
     let src = r#"
 namespace test.wi424.folds
   import anthill.prelude.{List, Int64}
-  import anthill.prelude.Iterable.{foldLeft, foldRight}
+  import anthill.prelude.FiniteCollection.{foldLeft, foldRight}
 
   operation addp(a: Int64, b: Int64) -> Int64 = a + b
   operation subt(a: Int64, b: Int64) -> Int64 = a - b
@@ -178,7 +178,7 @@ fn iterable_fold_effectful_callback_decoupled_row() {
     let declared = r#"
 namespace test.wi424.foldeff
   import anthill.prelude.{Effect, List, Int64}
-  import anthill.prelude.Iterable.{foldLeft}
+  import anthill.prelude.FiniteCollection.{foldLeft}
   sort Beep end
   fact Effect[T = Beep]
   operation noisy_add(a: Int64, b: Int64) -> Int64 effects Beep = a + b
@@ -195,7 +195,7 @@ end
     let undeclared = r#"
 namespace test.wi424.foldeff2
   import anthill.prelude.{Effect, List, Int64}
-  import anthill.prelude.Iterable.{foldLeft}
+  import anthill.prelude.FiniteCollection.{foldLeft}
   sort Beep end
   fact Effect[T = Beep]
   operation noisy_add(a: Int64, b: Int64) -> Int64 effects Beep = a + b
@@ -230,7 +230,7 @@ fn iterable_fold_mutating_callback_not_lacks_rejected_but_row_gated() {
     let src = r#"
 namespace test.wi424.foldmut
   import anthill.prelude.{List, Int64, Cell, Modify}
-  import anthill.prelude.Iterable.{foldLeft}
+  import anthill.prelude.FiniteCollection.{foldLeft}
 
   operation take_and_zero(acc: Int64, c: Cell[V = Int64]) -> Int64 effects Modify[c] =
     let v = Cell.get(c)
@@ -263,15 +263,25 @@ end
 fn iterable_members_on_non_stream_carrier() {
     let src = r#"
 namespace test.wi424.boxcoll
-  import anthill.prelude.{List, Int64, Option, Bool, Stream, Iterable}
+  import anthill.prelude.{List, Int64, Option, Bool, Stream, Iterable, FiniteCollection, FiniteStream}
   import anthill.prelude.Option.{some, none}
-  import anthill.prelude.Iterable.{find, isEmpty, foldLeft, size}
+  import anthill.prelude.Iterable.{find, isEmpty}
+  import anthill.prelude.FiniteCollection.{foldLeft, size}
 
   sort BoxColl
-    import anthill.prelude.{List, Int64, Stream, Iterable}
+    import anthill.prelude.{List, Int64, Stream, Iterable, FiniteCollection, FiniteStream}
     entity boxed(items: List[T = Int64])
     provides Iterable[C = BoxColl, Element = Int64, E = {}]
     operation iterator(b: BoxColl) -> Stream[Int64, {}] =
+      match b
+        case boxed(items) -> items
+    -- WI-589: finite, so it also provides FiniteCollection (foldLeft/size moved
+    -- there off Iterable). collect materializes; finiteIterator is the finite cursor.
+    provides FiniteCollection[C = BoxColl, Element = Int64, E = {}]
+    operation collect(b: BoxColl) -> List[T = Int64] =
+      match b
+        case boxed(items) -> items
+    operation finiteIterator(b: BoxColl) -> FiniteStream[T = Int64, E = {}] =
       match b
         case boxed(items) -> items
   end
@@ -315,14 +325,23 @@ end
 fn iterable_size_carrier_override() {
     let src = r#"
 namespace test.wi424.sizedbox
-  import anthill.prelude.{List, Int64, Stream, Iterable}
-  import anthill.prelude.Iterable.{size}
+  import anthill.prelude.{List, Int64, Stream, Iterable, FiniteCollection, FiniteStream}
+  import anthill.prelude.FiniteCollection.{size}
 
   sort Counted
-    import anthill.prelude.{List, Int64, Stream, Iterable}
+    import anthill.prelude.{List, Int64, Stream, Iterable, FiniteCollection, FiniteStream}
     entity counted(items: List[T = Int64], n: Int64)
     provides Iterable[C = Counted, Element = Int64, E = {}]
     operation iterator(b: Counted) -> Stream[Int64, {}] =
+      match b
+        case counted(items, _) -> items
+    -- WI-589: finite carrier; its OWN runnable `size` (the stored count) OVERRIDES
+    -- the FiniteCollection.size default walk (WI-444), now that size lives there.
+    provides FiniteCollection[C = Counted, Element = Int64, E = {}]
+    operation collect(b: Counted) -> List[T = Int64] =
+      match b
+        case counted(items, _) -> items
+    operation finiteIterator(b: Counted) -> FiniteStream[T = Int64, E = {}] =
       match b
         case counted(items, _) -> items
     operation size(b: Counted) -> Int64 =
@@ -332,10 +351,17 @@ namespace test.wi424.sizedbox
 
   -- No own `size` — must keep the spec default (the walk).
   sort Plain
-    import anthill.prelude.{List, Int64, Stream, Iterable}
+    import anthill.prelude.{List, Int64, Stream, Iterable, FiniteCollection, FiniteStream}
     entity plain(items: List[T = Int64])
     provides Iterable[C = Plain, Element = Int64, E = {}]
     operation iterator(b: Plain) -> Stream[Int64, {}] =
+      match b
+        case plain(items) -> items
+    provides FiniteCollection[C = Plain, Element = Int64, E = {}]
+    operation collect(b: Plain) -> List[T = Int64] =
+      match b
+        case plain(items) -> items
+    operation finiteIterator(b: Plain) -> FiniteStream[T = Int64, E = {}] =
       match b
         case plain(items) -> items
   end
@@ -409,8 +435,8 @@ namespace test.wi424.eval
   import anthill.prelude.{List, Int64, Option, Bool}
   import anthill.prelude.Option.{some, none}
   import anthill.prelude.List.{cons}
-  import anthill.prelude.Iterable.{find, map}
-  import anthill.prelude.Stream.{collect}
+  import anthill.prelude.Iterable.{find}
+  import anthill.prelude.FiniteCollection.{map, collect}
 
   operation is_big(n: Int64) -> Bool = n > 2
   operation inc(n: Int64) -> Int64 = n + 1

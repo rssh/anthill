@@ -42,8 +42,12 @@ namespace anthill.persistence
     -- 1M rows without forcing them all into memory at once. Concrete
     -- backends surface rows via `StreamSource::External` (proposal 026.1
     -- Q4 + 007 §11) so each row enters σ as `Value::Entity` without
-    -- `TermStore` allocation. Callers that genuinely want a fully
-    -- materialized list call `anthill.prelude.Stream.collect`.
+    -- `TermStore` allocation. A caller that genuinely wants a fully
+    -- materialized list must drain this bare (maybe-infinite) `Stream`
+    -- with a BOUNDED `takeN(retrieve(...), n)` — the unbounded eager
+    -- `collect` moved to `FiniteCollection` (proposal library/003, Phase C /
+    -- WI-589) and does NOT apply to a plain query `Stream`, which carries no
+    -- finiteness guarantee.
     operation retrieve(store: QueryableStore, pattern: Term) -> Stream[Term, Error]
       effects Error
   }

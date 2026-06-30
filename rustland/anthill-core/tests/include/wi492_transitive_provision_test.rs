@@ -28,9 +28,10 @@ fn expect_int(v: Value) -> i64 {
 const SRC: &str = r#"
 namespace wi492.transitive
   import anthill.prelude.{List, Int64, Stream, Bool, Iterable}
-  import anthill.prelude.List.{nil, cons}
+  import anthill.prelude.List.{nil, cons, length}
   import anthill.prelude.Option.{some, none}
-  import anthill.prelude.Stream.{collect, foldLeft}
+  import anthill.prelude.FiniteCollection.{foldLeft}
+  import anthill.prelude.Stream.{takeN}
 
   operation inc(n: Int64) -> Int64 = n + 1
   operation is_big(n: Int64) -> Bool = n > 2
@@ -40,11 +41,14 @@ namespace wi492.transitive
   -- LAZY-carrier coverage (post-WI-588 the dot-dispatch chains above go FINITE,
   -- so the lazy MappedStream's transitive provision would otherwise be untested):
   -- a QUALIFIED `Iterable.map` forces the lazy `mapped` carrier (it returns a bare
-  -- Stream), then a QUALIFIED `Iterable.size` resolves on that MappedStream value
-  -- TRANSITIVELY (MappedStream → Stream → Iterable, the original WI-492 path).
-  -- [1,2,3,4] -Iterable.map(+1)-> [2,3,4,5], Iterable.size -> 4.
-  operation lazy_map_then_size(xs: List[T = Int64]) -> Int64 =
-    Iterable.size(Iterable.map(xs, inc))
+  -- Stream), then a QUALIFIED `Iterable.iterator` resolves on that MappedStream
+  -- value TRANSITIVELY (MappedStream → Stream → Iterable, the original WI-492 path —
+  -- `iterator` is the very op WI-492 was written for). The produced bare Stream is
+  -- maybe-infinite, so it is counted SOUNDLY by a BOUNDED `takeN` then `length` —
+  -- the unsound eager `Iterable.size` consumer the test used here was removed in
+  -- Phase C / WI-589. [1,2,3,4] -Iterable.map(+1)-> [2,3,4,5], counted -> 4.
+  operation lazy_map_iterator_count(xs: List[T = Int64]) -> Int64 =
+    length(takeN(Iterable.iterator(Iterable.map(xs, inc)), 1000))
 
   -- filter THEN map: `.filter` → FiniteCollection.filter (FiniteFilteredStream),
   -- then `.map` over that finite value resolves FiniteCollection.map transitively
@@ -121,14 +125,17 @@ fn iterable_is_empty_on_filtered_stream_resolves_transitively() {
 
 /// The LAZY carrier's transitive provision (the original WI-492 path), preserved
 /// after WI-588 routed the dot chains to the finite carriers: a qualified
-/// `Iterable.map` yields a lazy `MappedStream`, and a qualified `Iterable.size`
-/// on it resolves through MappedStream → Stream → Iterable.
+/// `Iterable.map` yields a lazy `MappedStream`, and a qualified `Iterable.iterator`
+/// on it resolves through MappedStream → Stream → Iterable — the canonical WI-492
+/// op. The produced bare Stream is counted soundly by a bounded `takeN` + `length`
+/// (the original eager `Iterable.size` consumer was removed in Phase C / WI-589 as
+/// unsound on a maybe-infinite stream).
 #[test]
-fn iterable_size_on_lazy_mapped_stream_resolves_transitively() {
+fn iterable_iterator_on_lazy_mapped_stream_resolves_transitively() {
     let mut interp = crate::common::interp_for(SRC);
     let xs = interp.call("wi492.transitive.mk_list", &[]).expect("build list");
     let got = interp
-        .call("wi492.transitive.lazy_map_then_size", &[xs])
-        .unwrap_or_else(|e| panic!("call lazy_map_then_size: {e:?}"));
-    assert_eq!(expect_int(got), 4);
+        .call("wi492.transitive.lazy_map_iterator_count", &[xs])
+        .unwrap_or_else(|e| panic!("call lazy_map_iterator_count: {e:?}"));
+    assert_eq!(expect_int(got), 4, "a mapped 4-element list counts to 4");
 }
