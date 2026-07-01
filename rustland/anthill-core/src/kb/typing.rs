@@ -11475,6 +11475,11 @@ fn dispatched_impl_effects(
 /// The short name of a type-parameter reference as a provider fact stores
 /// it in a spec view — tolerant of every shape a bare param name takes
 /// (`sort_ref(name: S)` / `Ref` / `Ident` / a nullary `Fn` / `Var`).
+///
+/// WI-599: a `Var::Rigid` counts too — an op's own type params are Skolemized
+/// while its body is checked, so a bare carrier argument `c : C` arrives as a
+/// rigid var carrying the param's name; matching it to the provider/param `Ref`
+/// short name bridges the two representations.
 fn typaram_ref_short_name(kb: &KnowledgeBase, tid: TermId) -> Option<String> {
     if let Some(s) = extract_sort_ref_sym(kb, &TermIdView(tid)) {
         return Some(short_name_of(kb.resolve_sym(s)).to_string());
@@ -11487,7 +11492,9 @@ fn typaram_ref_short_name(kb: &KnowledgeBase, tid: TermId) -> Option<String> {
         {
             Some(short_name_of(kb.resolve_sym(*functor)).to_string())
         }
-        Term::Var(Var::Global(v)) => Some(short_name_of(kb.resolve_sym(v.name())).to_string()),
+        Term::Var(Var::Global(v)) | Term::Var(Var::Rigid(v)) => {
+            Some(short_name_of(kb.resolve_sym(v.name())).to_string())
+        }
         _ => None,
     }
 }
@@ -12630,6 +12637,142 @@ fn bare_spec_arg_self_projection(
     Some(parameterized_value(kb, base_ref, &proj_bindings, span, owner))
 }
 
+/// True iff `t` is already an `effects_rows(EffectExpression)` Type — so an
+/// effect-row provision value read pre-wrapped from a provider source is not
+/// double-wrapped by [`carrier_arg_provision_projection`].
+fn is_effects_rows_term(kb: &KnowledgeBase, t: TermId) -> bool {
+    matches!(type_head(kb, &TermIdView(t)), TypeHead::EffectsRows)
+}
+
+/// WI-599 — the per-param values a bare carrier argument supplies for the spec
+/// `field_base`, keyed by `field_base`'s param SHORT names. The binding source
+/// behind [`carrier_arg_provision_projection`].
+///
+/// The supported case is the spec-METHOD one: an op `op(c: C, …)` ON the spec,
+/// where the argument's carrier `arg_carrier` IS the enclosing spec's carrier
+/// param and the enclosing spec IS `field_base` (`FiniteCollection.map`'s
+/// `c : C`). The provision is the spec's own self-type — each param maps to
+/// itself (`C↦C, Element↦Element, E↦E`), so the constructed sort threads the
+/// spec's abstract params onto the field's. The spec's params are RIGIDIFIED
+/// while the body is checked (`op.sort_param_rigids`), so each param's value is
+/// its rigid form — not the pre-rigidify Global var `sort_type_params_as_pairs`
+/// returns — or it would not unify with the sibling field's argument (which
+/// references the body's rigid vars).
+///
+/// (A free op licensing `c` through an ambient `requires FiniteCollection[C = C2,
+/// …]` is NOT handled: the `requires` entry references the op's own type params as
+/// `Ref`s that do not resolve to the body's rigid vars — a separate free-op
+/// type-param alias-resolution gap. Only the spec-method face — the shape the
+/// stdlib thin `FiniteCollection.map`/`filter` use — is threaded here.)
+fn carrier_provision_short_bindings(
+    kb: &mut KnowledgeBase,
+    env: &TypingEnv,
+    arg_carrier: &str,
+    field_base: Symbol,
+) -> Option<Vec<(String, Value)>> {
+    let spec = env.enclosing_sort()?;
+    if kb.canonical_sort_sym(spec) != kb.canonical_sort_sym(field_base) {
+        return None;
+    }
+    let params = sort_type_params_as_pairs(kb, spec);
+    let (carrier_param, _) = params.first()?;
+    if short_name_of(kb.resolve_sym(*carrier_param)) != arg_carrier {
+        return None;
+    }
+    let rigids = env.enclosing_sort_param_rigids().to_vec();
+    Some(
+        params
+            .iter()
+            .map(|(p, t)| {
+                let val = match kb.get_term(*t) {
+                    Term::Var(Var::Global(vid)) => rigids
+                        .iter()
+                        .find(|(v, _)| v == vid)
+                        .map(|(_, r)| *r)
+                        .unwrap_or(*t),
+                    _ => *t,
+                };
+                (short_name_of(kb.resolve_sym(*p)).to_owned(), Value::term(val))
+            })
+            .collect(),
+    )
+}
+
+/// WI-599 — a CARRIER-PARAM-spec constructor field fed a carrier VALUE that
+/// PROVIDES that spec. The THIN finite-combinator case: `FiniteCollection.map(c,
+/// f) = fmapped(c, f)`, where `fmapped`'s `source` field is typed
+/// `FiniteCollection[C = SrcC, Element = Src, E = ES]` and the argument `c` has
+/// the carrier-param type `C` — NOT the spec `FiniteCollection` itself.
+///
+/// [`bare_spec_arg_self_projection`] (WI-594) threads a bare spec receiver whose
+/// argument type IS the field's spec base (`s : Stream` into `Stream[…]`) via the
+/// receiver's self-projection `s.T` / `s.E`. Here the argument's type is a
+/// DIFFERENT sort (the carrier param) that merely PROVIDES the spec, so that check
+/// fails and the field's params (`SrcC`, `Src`, `ES`) leak as `??_` — the source
+/// carrier and its access effect never thread (only the element pins, through the
+/// sibling `fn`'s `(x: Src)`).
+///
+/// When the argument is a bare carrier value whose sort provides the field's spec,
+/// rebuild the argument's type as that spec applied to the carrier's own provision
+/// (`carrier_provision_short_bindings`) — keyed by the FIELD's binding symbols so
+/// the ordinary [`unify_parameterized_view`] arm threads every param (carrier `C`,
+/// element AND effect) into the constructed sort's params. An EFFECT-row param's
+/// value is wrapped as a single-label row (`{…}`, mirroring WI-594); a sort param
+/// stays bare. Returns `None` (caller keeps the raw arg type) unless the field
+/// applies a spec, the argument is a bare carrier of a DIFFERENT sort, and a
+/// provision is found.
+fn carrier_arg_provision_projection(
+    kb: &mut KnowledgeBase,
+    env: &TypingEnv,
+    declared_field_type: &Value,
+    arg: &TypeResult,
+) -> Option<Value> {
+    // The field must APPLY a spec (`FiniteCollection[C = …, …]`).
+    let TypeExtractor::Parameterized { base: field_base, bindings } =
+        extract_type(kb, declared_field_type)
+    else {
+        return None;
+    };
+    if bindings.is_empty() {
+        return None;
+    }
+    // The argument must be a BARE carrier — a type-param value (`c : C`, possibly
+    // rigidified) or a bare sort ref — naming a sort OTHER than the field's spec
+    // base. (An already-applied `s : Stream[…]` threads through the ordinary arm;
+    // a bare `field_base` receiver is WI-594's self-projection job.)
+    let Value::Term { id: arg_id, .. } = &arg.ty else { return None };
+    let arg_carrier = typaram_ref_short_name(kb, *arg_id)?;
+    if arg_carrier == short_name_of(kb.qualified_name_of(field_base)) {
+        return None;
+    }
+
+    let provision = carrier_provision_short_bindings(kb, env, &arg_carrier, field_base)?;
+
+    let (span, owner) = (arg.node.span, arg.node.owner);
+    let base_ref = kb.make_sort_ref(field_base);
+    let mut proj_bindings: Vec<(Symbol, Value)> = Vec::with_capacity(bindings.len());
+    for (field_key, _) in &bindings {
+        let member_short = short_name_of(kb.resolve_sym(*field_key)).to_owned();
+        let val = provision.iter().find(|(s, _)| *s == member_short).map(|(_, v)| v.clone())?;
+        // An EFFECT-ROW param threads as a single-label row (`{c.E}`), matching the
+        // source-written provision; a SORT param threads the bare value. A value
+        // that is already a row is kept as-is (the requires/provider source may
+        // store it pre-wrapped).
+        let proj_val = if sort_param_is_effect_row(kb, field_base, &member_short) {
+            match &val {
+                Value::Term { id, .. } if !is_effects_rows_term(kb, *id) => {
+                    Value::term(kb.build_canonical_effects_rows(&[*id]))
+                }
+                _ => val,
+            }
+        } else {
+            val
+        };
+        proj_bindings.push((*field_key, proj_val));
+    }
+    Some(parameterized_value(kb, base_ref, &proj_bindings, span, owner))
+}
+
 /// Non-recursive Constructor checker — peer of `check_apply_iter`.
 /// Reads per-arg `TypeResult`s from `pos_results` / `named_results`
 /// (pre-computed by the iterative typer) instead of calling
@@ -12723,8 +12866,11 @@ fn check_constructor_iter(
         if let Some((idx, _)) = named_args.iter().enumerate().find(|(_, (s, _))| s == field_sym) {
             if let Ok(ref r) = named_results[idx] {
                 // WI-594: a bare spec receiver into a parameterized field threads
-                // its element AND effect through its self-projection; else the raw type.
+                // its element AND effect through its self-projection. WI-599: a
+                // bare CARRIER value whose sort merely PROVIDES the field's spec
+                // threads through the carrier's provision. Else the raw type.
                 let arg_ty = bare_spec_arg_self_projection(kb, declared_type, r)
+                    .or_else(|| carrier_arg_provision_projection(kb, env, declared_type, r))
                     .unwrap_or_else(|| r.ty.clone());
                 unify_types(kb, &mut subst, &arg_ty, declared_type);
                 effects = merge_effects(kb, &effects, &r.effects);
@@ -12736,6 +12882,7 @@ fn check_constructor_iter(
         if let Some((_, declared_type)) = field_types.get(i) {
             if let Ok(r) = r_opt {
                 let arg_ty = bare_spec_arg_self_projection(kb, declared_type, r)
+                    .or_else(|| carrier_arg_provision_projection(kb, env, declared_type, r))
                     .unwrap_or_else(|| r.ty.clone());
                 unify_types(kb, &mut subst, &arg_ty, declared_type);
                 effects = merge_effects(kb, &effects, &r.effects);
