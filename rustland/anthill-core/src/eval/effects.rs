@@ -500,6 +500,41 @@ impl Interpreter {
         }
     }
 
+    /// Raise a division-by-zero as an anthill `Error[DivisionByZero]` effect
+    /// (WI-467). Builds the `division_by_zero(op:)` payload — `op` names the
+    /// operation that divided by zero (`"Int64.div"` etc.), matching the
+    /// `DivisionByZero` sort in `effects.anthill` — and routes it through
+    /// [`Self::raise_error`], so an installed `Error` handler catches it and
+    /// an unhandled one surfaces `EvalError::Raised` carrying the payload.
+    /// Before WI-467 this was a bespoke `EvalError::DivisionByZero` the
+    /// declared `effects Error[DivisionByZero]` (WI-066) could never catch.
+    ///
+    /// Resolving the payload constructor is LOUD, not fallback-interned: a
+    /// fabricated same-name symbol would read as `division_by_zero(...)` yet
+    /// not be the sort's real constructor, so a handler couldn't destructure
+    /// it — a silent degradation the repo's "prefer a loud error" rule
+    /// forbids. If the effects prelude isn't loaded (so no program could
+    /// declare or handle `Error[DivisionByZero]` anyway), `require_symbol`
+    /// surfaces an `Internal` "not in scope".
+    pub fn raise_division_by_zero(&mut self, op: &str) -> EvalError {
+        let functor = match crate::eval::builtins::require_symbol(
+            self,
+            "anthill.prelude.DivisionByZero.division_by_zero",
+            "division_by_zero",
+        ) {
+            Ok(s) => s,
+            Err(e) => return e,
+        };
+        let op_field = self.kb_mut().intern("op");
+        let payload = Value::Entity {
+            functor,
+            pos: Rc::from([]),
+            named: Rc::from([(op_field, Value::Str(op.to_string()))]),
+            ty: None,
+        };
+        self.raise_error(payload)
+    }
+
     /// Register the standard effect handlers. Includes real-stdio
     /// Console handlers (call explicitly for programs that need terminal
     /// access; tests usually skip this and inject buffered handlers) and

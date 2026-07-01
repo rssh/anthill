@@ -1289,10 +1289,74 @@ end
 "#;
     let mut interp = interp_for(src);
     let err = interp.call("test.m3_div0.main", &[]).unwrap_err();
+    // WI-467: an unhandled div-by-zero now surfaces as `Raised` carrying the
+    // `division_by_zero(op:)` payload (was bespoke EvalError::DivisionByZero),
+    // routed through the Error handler so an installed handler can catch it.
+    match err {
+        anthill_core::eval::EvalError::Raised { payload } => {
+            let op = match &payload {
+                Value::Entity { named, .. } => named.iter().find_map(|(_, v)| v.as_str()),
+                _ => None,
+            };
+            assert_eq!(op, Some("Int64.div"), "payload names the failing op; got {payload:?}");
+        }
+        other => panic!("expected Raised, got {other:?}"),
+    }
+}
+
+#[test]
+fn wi467_division_by_zero_routes_through_error_handler() {
+    // WI-467: the whole point — a div-by-zero is routed through the installed
+    // `Error` handler (`interp.raise_error`), so a handler actually observes
+    // it. The old bespoke `EvalError::DivisionByZero` bypassed every handler,
+    // making the declared `effects Error[DivisionByZero]` (WI-066) type-only.
+    use anthill_core::eval::effects::HandlerAction;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    let src = r#"
+namespace test.wi467_catch
+  import anthill.prelude.Int64.{div}
+  import anthill.prelude.{Error, DivisionByZero}
+  operation main() -> Int64 effects Error[DivisionByZero] = 10 / 0
+end
+"#;
+    let mut interp = interp_for(src);
+    let seen: Rc<RefCell<Option<Value>>> = Rc::new(RefCell::new(None));
+    let seen_h = seen.clone();
+    interp
+        .register_effect_handler(
+            "anthill.prelude.Error",
+            Box::new(move |_i, _op, args| {
+                *seen_h.borrow_mut() = args.first().cloned();
+                Ok(HandlerAction::Throw(args.first().cloned().unwrap_or(Value::Unit)))
+            }),
+        )
+        .expect("register Error handler");
+
+    let err = interp.call("test.wi467_catch.main", &[]).unwrap_err();
     assert!(
-        matches!(err, anthill_core::eval::EvalError::DivisionByZero { .. }),
-        "expected DivisionByZero, got {err:?}",
+        matches!(err, anthill_core::eval::EvalError::Raised { .. }),
+        "raise is non-resumable, so a Throwing handler still aborts as Raised; got {err:?}",
     );
+    let payload = seen
+        .borrow()
+        .clone()
+        .expect("the Error handler was consulted for the div-by-zero");
+    match &payload {
+        Value::Entity { functor, named, .. } => {
+            // The functor is the REAL sort constructor (stdlib is loaded), so a
+            // user handler could destructure `division_by_zero(op: ?)` by its
+            // proper qualified symbol — not an interned same-name fallback.
+            assert_eq!(
+                interp.kb().qualified_name_of(*functor),
+                "anthill.prelude.DivisionByZero.division_by_zero",
+                "payload functor is the real sort constructor",
+            );
+            let op = named.iter().find_map(|(_, v)| v.as_str());
+            assert_eq!(op, Some("Int64.div"), "handler saw division_by_zero(op:); got {payload:?}");
+        }
+        other => panic!("expected a division_by_zero entity payload, got {other:?}"),
+    }
 }
 
 #[test]

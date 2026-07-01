@@ -639,11 +639,12 @@ fn run_anthill_bundle(argv: &[String]) -> i32 {
     // The main-result → exit-code mapping (Int clamp, non-Int, top-level
     // `Raised` Error effect per WI-195, other evaluator errors) is shared with
     // anthill-cli's `run`.
-    let code = runner::exit_code_from_main(interp.call_with_requirements(
+    let result = interp.call_with_requirements(
         "anthill.todo.Main.main",
         &[args_value, store_value, wis_cell_value, agent_value],
         chain_dicts,
-    ));
+    );
+    let code = runner::exit_code_from_main(interp.kb(), result);
 
     // The bundle has just printed the spec-driven command list; surface the
     // build stamp as the `--help` footer (WI-160).

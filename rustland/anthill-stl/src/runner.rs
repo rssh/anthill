@@ -11,6 +11,7 @@
 //! stay in each binary.)
 
 use anthill_core::eval::{builtins, EvalError, Interpreter, Value};
+use anthill_core::kb::KnowledgeBase;
 
 /// Compilation failure — parse, load, or typecheck error, or no entry found.
 pub const EXIT_COMPILE: i32 = 2;
@@ -64,9 +65,10 @@ pub fn build_args_value(interp: &mut Interpreter, args: &[String]) -> Result<Val
 ///   - a non-Int return → `error: main returned non-Int64 value` + `EXIT_RUNTIME`.
 ///   - `Raised` — a top-level `Error` effect that propagated out of `main`
 ///     (WI-195) — → `error: <payload>` + `EXIT_RUNTIME`. (`Raised`'s own
-///     `Display` drops the payload, so it is rendered here.)
+///     `Display` drops the payload, so it is rendered here via [`render_payload`],
+///     which needs `kb` to resolve functor/field symbols to names.)
 ///   - any other evaluator error → `error: <e>` + `EXIT_RUNTIME`.
-pub fn exit_code_from_main(result: Result<Value, EvalError>) -> i32 {
+pub fn exit_code_from_main(kb: &KnowledgeBase, result: Result<Value, EvalError>) -> i32 {
     match result {
         Ok(Value::Int(n)) => {
             if (0..=255).contains(&n) {
@@ -81,18 +83,89 @@ pub fn exit_code_from_main(result: Result<Value, EvalError>) -> i32 {
             EXIT_RUNTIME
         }
         Err(EvalError::Raised { payload }) => {
-            let msg = match &payload {
-                Value::Str(s) => s.clone(),
-                // v1: builtins raise String payloads; a user-raised entity falls
-                // back to a debug rendering until a Value printer lands.
-                other => format!("{other:?}"),
-            };
-            eprintln!("error: {msg}");
+            eprintln!("error: {}", render_payload(kb, &payload, 0));
             EXIT_RUNTIME
         }
         Err(e) => {
             eprintln!("error: {e}");
             EXIT_RUNTIME
         }
+    }
+}
+
+/// Render a raised `Error` payload as a human-readable line. Store-I/O builtins
+/// raise `Str` payloads (printed verbatim); WI-467 made div-by-zero raise the
+/// structured `division_by_zero(op: "Int64.div")` entity, and user code can
+/// `Error.raise` any `Value`. Renders an entity as `functor(pos…, field: val…)`
+/// using `kb` to resolve the interned functor/field symbols to their short
+/// names — so an unhandled `10 / 0` prints
+/// `error: division_by_zero(op: "Int64.div")` rather than a `Symbol`-index
+/// debug dump. `depth` bounds recursion against pathological nesting.
+fn render_payload(kb: &KnowledgeBase, v: &Value, depth: usize) -> String {
+    const MAX_DEPTH: usize = 6;
+    match v {
+        // A bare top-level Str (store-I/O raises these) prints verbatim, as it
+        // did before; a Str nested in an entity field is quoted so the field
+        // reads as a string literal (`op: "Int64.div"`).
+        Value::Str(s) if depth == 0 => s.clone(),
+        Value::Str(s) => format!("{s:?}"),
+        Value::Int(n) => n.to_string(),
+        Value::BigInt(n) => n.to_string(),
+        Value::Float(x) => x.to_string(),
+        Value::Bool(b) => b.to_string(),
+        Value::Unit => "()".to_string(),
+        Value::Entity { functor, pos, named, .. } => {
+            let name = kb.resolve_sym(*functor);
+            if (pos.is_empty() && named.is_empty()) || depth >= MAX_DEPTH {
+                return name.to_string();
+            }
+            let mut parts: Vec<String> =
+                pos.iter().map(|p| render_payload(kb, p, depth + 1)).collect();
+            for (fname, fv) in named.iter() {
+                parts.push(format!("{}: {}", kb.resolve_sym(*fname), render_payload(kb, fv, depth + 1)));
+            }
+            format!("{}({})", name, parts.join(", "))
+        }
+        // Handles / streams / substitutions have no readable surface form; name
+        // the carrier kind rather than leaking a debug dump.
+        other => other.type_name().to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::rc::Rc;
+
+    /// WI-467: the `division_by_zero(op:)` entity payload an unhandled
+    /// `10 / 0` carries renders as a readable line — `resolve_sym` turns the
+    /// interned functor/field symbols into names — not the `Symbol`-index
+    /// debug dump the old `format!("{payload:?}")` fallback produced.
+    #[test]
+    fn render_payload_renders_division_by_zero_entity_readably() {
+        let mut kb = KnowledgeBase::new();
+        let functor = kb.intern("division_by_zero");
+        let op_field = kb.intern("op");
+        let payload = Value::Entity {
+            functor,
+            pos: Rc::from([]),
+            named: Rc::from([(op_field, Value::Str("Int64.div".to_string()))]),
+            ty: None,
+        };
+        assert_eq!(
+            render_payload(&kb, &payload, 0),
+            r#"division_by_zero(op: "Int64.div")"#,
+        );
+    }
+
+    /// A bare top-level `Str` payload (store-I/O builtins raise these) still
+    /// prints verbatim — unquoted — as before WI-467's renderer landed.
+    #[test]
+    fn render_payload_prints_bare_string_verbatim() {
+        let kb = KnowledgeBase::new();
+        assert_eq!(
+            render_payload(&kb, &Value::Str("persist failed: disk full".to_string()), 0),
+            "persist failed: disk full",
+        );
     }
 }

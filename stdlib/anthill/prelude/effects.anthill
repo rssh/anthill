@@ -105,12 +105,15 @@ namespace anthill.prelude
 
   -- Payload for division-by-zero errors. Carried by `Error[DivisionByZero]` on
   -- the partial integer operations (`Int64.div` / `mod` / `rem` / `divExact`)
-  -- and `Field.div` / `Field.recip` (WI-066). A nullary marker — the divisor is
-  -- zero by definition, so there is nothing to carry. Like `MatchFailed`, the
-  -- evaluator surfaces the failure as a dedicated `EvalError` (`DivisionByZero`);
-  -- this sort is the type-level witness the typer threads through callers' rows.
+  -- and `Field.div` / `Field.recip` (WI-066). Carries `op` — the name of the
+  -- operation that divided by zero (e.g. `"Int64.div"`) — so a handler that
+  -- catches `Error[DivisionByZero]` can report which op failed. WI-467 routes
+  -- the runtime raise through the Error handler (`interp.raise_error`), so an
+  -- installed `Error[...]` handler actually catches it; unhandled, it surfaces
+  -- as `EvalError::Raised` carrying this payload.
   sort DivisionByZero
-    entity division_by_zero
+    import anthill.prelude.{String}
+    entity division_by_zero(op: String)
   end
 
   -- Payload for head-of-empty errors. Carried by `Error[EmptyStream]` on the

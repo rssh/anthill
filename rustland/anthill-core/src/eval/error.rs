@@ -16,7 +16,6 @@ pub enum EvalError {
     OperationBodyMissing { name: String, backtrace: std::backtrace::Backtrace },
     TypeMismatch { expected: &'static str, got: String },
     ArityMismatch { op: &'static str, expected: usize, got: usize },
-    DivisionByZero { op: &'static str },
     Overflow { op: &'static str },
     DepthExceeded { cap: usize },
     /// The `step_cap` work budget was exhausted: a non-terminating computation
@@ -79,7 +78,6 @@ impl std::fmt::Display for EvalError {
             ),
             EvalError::TypeMismatch { expected, got } => write!(f, "type mismatch: expected {expected}, got {got}"),
             EvalError::ArityMismatch { op, expected, got } => write!(f, "{op}: expected {expected} args, got {got}"),
-            EvalError::DivisionByZero { op } => write!(f, "{op}: division by zero"),
             EvalError::Overflow { op } => write!(f, "{op}: integer overflow"),
             EvalError::DepthExceeded { cap } => write!(f, "activation stack depth exceeded cap of {cap}"),
             EvalError::StepsExhausted { cap, chain } => {

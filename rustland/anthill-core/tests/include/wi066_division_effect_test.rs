@@ -18,10 +18,11 @@
 //! unchanged, as an assert-time guard) — deriving discharge from `neq`/`not(eq)`
 //! would route it through NAF, the polarity hazard 048 warns against.
 //!
-//! The runtime still surfaces a divide-by-zero as `EvalError::DivisionByZero`
-//! (the static guard changes only the inferred row, never runtime behavior — see
-//! `eval_test::m3_int_division_by_zero`). These tests pin the STATIC threading
-//! and its discharge.
+//! At runtime a divide-by-zero is routed through the `Error` handler as a
+//! `division_by_zero(op:)` payload (WI-467; unhandled, it surfaces as
+//! `EvalError::Raised` — see `eval_test::m3_int_division_by_zero`). The static
+//! guard changes only the inferred row, never runtime behavior. These tests pin
+//! the STATIC threading and its discharge.
 
 use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::load::{self, NullResolver};

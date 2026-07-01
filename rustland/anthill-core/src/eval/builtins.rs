@@ -317,19 +317,19 @@ fn int_abs(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     }
 }
 
-fn int_mod(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+fn int_mod(i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [a, b] = expect_args::<2>("Int64.mod", args)?;
     match (&a, &b) {
-        (Value::Int(_), Value::Int(0)) => Err(EvalError::DivisionByZero { op: "Int64.mod" }),
+        (Value::Int(_), Value::Int(0)) => Err(i.raise_division_by_zero("Int64.mod")),
         (Value::Int(x), Value::Int(y)) => Ok(Value::Int(x.rem_euclid(*y))),
         _ => Err(type_mismatch("Int64", &a, Some(&b))),
     }
 }
 
-fn int_rem(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+fn int_rem(i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [a, b] = expect_args::<2>("Int64.rem", args)?;
     match (&a, &b) {
-        (Value::Int(_), Value::Int(0)) => Err(EvalError::DivisionByZero { op: "Int64.rem" }),
+        (Value::Int(_), Value::Int(0)) => Err(i.raise_division_by_zero("Int64.rem")),
         (Value::Int(x), Value::Int(y)) => Ok(Value::Int(x % y)),
         _ => Err(type_mismatch("Int64", &a, Some(&b))),
     }
@@ -339,10 +339,10 @@ fn int_rem(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
 /// primary name that `/` desugars to) and the historical `Int64.divExact`
 /// alias (kept via stdlib rule `divExact(a, b) = div(a, b)` for
 /// compatibility). Semantics are identical — the name change is cosmetic.
-fn int_div(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+fn int_div(i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [a, b] = expect_args::<2>("Int64.div", args)?;
     match (&a, &b) {
-        (Value::Int(_), Value::Int(0)) => Err(EvalError::DivisionByZero { op: "Int64.div" }),
+        (Value::Int(_), Value::Int(0)) => Err(i.raise_division_by_zero("Int64.div")),
         (Value::Int(x), Value::Int(y)) => x.checked_div(*y)
             .map(Value::Int)
             .ok_or(EvalError::Overflow { op: "Int64.div" }),
@@ -2020,9 +2020,20 @@ mod tests {
     }
 
     #[test]
-    fn int_mod_by_zero_is_division_error() {
+    fn int_mod_by_zero_errors_rather_than_returning_a_value() {
+        // WI-467: int_mod must DETECT a zero divisor and route it as an error
+        // (via `raise_division_by_zero`), never return a bogus remainder. On
+        // this bare KB the effects prelude isn't loaded, so building the
+        // `division_by_zero` payload fails LOUDLY (`require_symbol` -> Internal
+        // "not in scope") rather than fabricating a same-name symbol. The full
+        // routed payload (`division_by_zero(op:)` through the Error handler) is
+        // covered on a stdlib-loaded KB by
+        // `eval_test::{m3_int_division_by_zero, wi467_division_by_zero_routes_through_error_handler}`.
         let err = int_mod(&mut dummy(), &[Value::Int(5), Value::Int(0)]).unwrap_err();
-        assert!(matches!(err, EvalError::DivisionByZero { .. }));
+        assert!(
+            matches!(&err, EvalError::Internal(m) if m.contains("division_by_zero")),
+            "bare KB: expected a loud Internal naming the unresolved payload sort, got {err:?}",
+        );
     }
 
     #[test]

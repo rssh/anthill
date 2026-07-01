@@ -238,7 +238,8 @@ fn run_inner(args: &RunArgs) -> Result<i32, i32> {
     let args_value = runner::build_args_value(&mut interp, &args.args)
         .map_err(|e| { eprintln!("error: {e}"); runner::EXIT_RUNTIME })?;
 
-    Ok(runner::exit_code_from_main(interp.call(&main_qname, &[args_value])))
+    let result = interp.call(&main_qname, &[args_value]);
+    Ok(runner::exit_code_from_main(interp.kb(), result))
 }
 
 fn select_entry(
