@@ -11,11 +11,13 @@
 //! `read_*` returns a neutral record of `TermId`s / carrier-agnostic `Value`s,
 //! and each realization maps those records to its own output type.
 //!
-//! Term reification (`reify` / `reflect`) and the per-parameter `FieldInfo`
-//! decode are NOT yet shared — they still have a realization in each file (the
-//! interpreter builds `Value` trees, the bridge the generated `TermRepr` enum,
-//! and the two pick different in-band name carriers: a `Ref` term vs a `Symbol`).
-//! Folding those onto a shared walk is the residual of part (a), filed separately.
+//! Term reification (`reify` / `reflect`) is now shared too (WI-555): the one
+//! [`reify_walk`] / [`reflect_walk`] each way walks the `Const`/`Var`/`Ref`/`Fn`
+//! structure, and a realization supplies a [`ReifyBuilder`] / [`ReflectReader`]
+//! that maps the neutral leaves to its carrier — reconciling the different
+//! in-band name carrier (a `Ref` term vs a `Symbol`) at that single boundary.
+//! The per-parameter `FieldInfo` decode is the one remaining per-realization
+//! reader.
 //!
 //! Carrier-faithful, both ways. A value-fact head (an `OperationInfo` with a
 //! `denoted` effect `Modify[c]`, an entity with a value-in-type field) is a
@@ -35,7 +37,7 @@ use anthill_core::eval::Value;
 use anthill_core::intern::Symbol;
 use anthill_core::kb::op_info;
 use anthill_core::kb::term::{Literal, Term as CoreTerm, TermId, Var};
-use anthill_core::kb::term_view::TermView;
+use anthill_core::kb::term_view::{TermView, ViewHead};
 use anthill_core::kb::{KnowledgeBase, RuleId};
 
 // ── Leaf helpers ────────────────────────────────────────────────
@@ -366,5 +368,157 @@ pub(crate) fn rule_heads_for_sort(kb: &mut KnowledgeBase, sort_name: &str) -> Ve
         out.push(head);
     }
     out
+}
+
+// ── Shared term reify / reflect walk (WI-555) ───────────────────
+//
+// The forward `reify` (a KB term → a flat term-repr) and inverse `reflect`
+// (a term-repr → a KB term) each had a realization per caller: the interpreter
+// builds `Value::Entity` `TermRepr` trees ([`super::builtins`]), the host bridge
+// the generated `TermRepr` enum ([`super::bridge`]). Both are the SAME recursion
+// over the `Const`/`Var`/`Ref`/`Fn`/`Bottom` structure — differing only in the
+// output carrier and in the in-band NAME carrier (a `Ref` term vs a `Symbol`).
+// [`reify_walk`] / [`reflect_walk`] are the one walk each way; a realization
+// supplies a [`ReifyBuilder`] / [`ReflectReader`] that maps the neutral leaves
+// to its carrier, reconciling the name representation at that single boundary.
+
+/// The display name of a var of any kind, in the spelling both reify
+/// realizations use: a bare name for a flex `Global`, `!name` for a `Rigid`
+/// skolem, `_n` for a bound `DeBruijn`.
+pub(crate) fn var_repr_name(kb: &KnowledgeBase, var: Var) -> String {
+    match var {
+        Var::Global(vid) => kb.resolve_sym(vid.name()).to_string(),
+        Var::Rigid(vid) => format!("!{}", kb.resolve_sym(vid.name())),
+        Var::DeBruijn(n) => format!("_{n}"),
+    }
+}
+
+/// Maps the neutral leaves of a term-structure walk to a realization's output
+/// carrier. [`reify_walk`] calls exactly one method per node; each realization
+/// decides the carrier (a `Value::Entity` tree vs the generated `TermRepr`
+/// enum) and how a `Ref`/`Fn` name rides (a `Ref` term vs a `Symbol`). `kb` is
+/// threaded so a realization can allocate an in-band name term.
+pub(crate) trait ReifyBuilder {
+    type Repr;
+    fn on_literal(&mut self, kb: &mut KnowledgeBase, lit: Literal) -> Self::Repr;
+    fn on_var(&mut self, kb: &mut KnowledgeBase, name: String) -> Self::Repr;
+    fn on_ref(&mut self, kb: &mut KnowledgeBase, name: Symbol) -> Self::Repr;
+    fn on_fn(&mut self, kb: &mut KnowledgeBase, functor: Symbol, args: Vec<Self::Repr>)
+        -> Self::Repr;
+}
+
+/// Walk any [`TermView`] carrier and reify it via `builder`. The single reifier
+/// behind both `KB::reify` and `KB::rules` for every realization: it reads
+/// structure through `TermView`, so a hash-consed `TermId`, a `Value::Node`
+/// occurrence, or a `Value::Entity` all produce the same shape. A `⊥` reifies as
+/// a `Ref` named `"⊥"` (both realizations' prior behavior); a functor-less
+/// aggregate or opaque value in a term slot panics loudly.
+pub(crate) fn reify_walk<V: TermView, B: ReifyBuilder>(
+    kb: &mut KnowledgeBase,
+    view: &V,
+    builder: &mut B,
+) -> B::Repr {
+    // A var of any kind → a `VarRepr`. `index_var` surfaces Global / Rigid /
+    // DeBruijn uniformly, including a var-headed `Value::Node` occurrence (whose
+    // `head` reads `Opaque`); the `ViewHead::Var` arm below covers the carriers
+    // whose `head` does surface the var. Either path yields the same name.
+    if let Some(var) = view.index_var(kb) {
+        return builder.on_var(kb, var_repr_name(kb, var));
+    }
+    // `head` returns an owned `ViewHead` (no borrow retained), so each arm is
+    // free to take `&mut kb` for `kb.intern` / the builder callback / the
+    // recursion. In the `Fn` arm the children are materialized to owned
+    // `Value`s BEFORE recursing, so no `ViewItem` borrow spans a mutation.
+    match view.head(kb) {
+        ViewHead::Var(var) => builder.on_var(kb, var_repr_name(kb, var)),
+        ViewHead::Const(lit) => builder.on_literal(kb, lit),
+        ViewHead::Ref(sym) | ViewHead::Ident(sym) => builder.on_ref(kb, sym),
+        // Both realizations reify `⊥` as a `Ref` named `"⊥"`.
+        ViewHead::Bottom => {
+            let bottom = kb.intern("⊥");
+            builder.on_ref(kb, bottom)
+        }
+        ViewHead::Functor { functor: Some(functor), pos_arity, named_arity } => {
+            let named_keys = view.named_keys(kb);
+            let mut children = Vec::with_capacity(pos_arity + named_arity);
+            for i in 0..pos_arity {
+                let child = view.pos_arg(kb, i).unwrap_or_else(|| {
+                    panic!("reify_walk: positional arg {i} missing below arity {pos_arity}")
+                });
+                children.push(child.to_value());
+            }
+            // A key from `named_keys` MUST resolve via `named_arg` (same backing
+            // store); a `None` is a carrier bug, surfaced loudly (mirrors the
+            // positional arm) rather than silently dropping the argument.
+            for key in named_keys {
+                let child = view.named_arg(kb, key).unwrap_or_else(|| {
+                    panic!("reify_walk: named arg from named_keys missing in named_arg lookup")
+                });
+                children.push(child.to_value());
+            }
+            let mut args = Vec::with_capacity(children.len());
+            for child in &children {
+                args.push(reify_walk(kb, child, builder));
+            }
+            builder.on_fn(kb, functor, args)
+        }
+        ViewHead::Functor { functor: None, .. } | ViewHead::Opaque => panic!(
+            "reify_walk: non-term carrier in a Term slot (functor-less aggregate \
+             or opaque value)",
+        ),
+    }
+}
+
+/// The neutral shape a reified term-repr decodes to — the inverse of the
+/// [`ReifyBuilder`] leaves. `Fn` children are again `R`, so [`reflect_walk`]
+/// recurses carrier-agnostically. A `⊥` and a `QuotedRepr` have no dedicated
+/// shape: the former decodes to a `Ref`, the latter to a `Const` string (both
+/// resolved inside a realization's [`ReflectReader::classify`]).
+pub(crate) enum ReflectShape<R> {
+    Const(Literal),
+    Var(String),
+    Ref(Symbol),
+    Fn(Symbol, Vec<R>),
+}
+
+/// Classifies one node of a term-repr into a [`ReflectShape`]. The realization
+/// reconciles its in-band name carrier here (the interpreter reads a `Ref` term,
+/// the bridge a `Symbol`), so [`reflect_walk`] sees only neutral leaves. The
+/// associated `Error` lets the dynamically-typed interpreter reader signal a
+/// malformed repr while the closed-enum bridge reader stays `Infallible`.
+pub(crate) trait ReflectReader: Sized {
+    type Error;
+    fn classify(self, kb: &KnowledgeBase) -> Result<ReflectShape<Self>, Self::Error>;
+}
+
+/// Rebuild a hash-consed KB term from a term-repr, classified via `R`. The one
+/// inverse behind both `KB::reflect` realizations; the allocation of each core
+/// term (`Const` / `Var` / `Ref` / `Fn`) lives here, so a realization only
+/// decodes leaves. A `VarRepr` mints a fresh `Global` (mirrors both prior
+/// realizations).
+pub(crate) fn reflect_walk<R: ReflectReader>(
+    kb: &mut KnowledgeBase,
+    repr: R,
+) -> Result<TermId, R::Error> {
+    match repr.classify(kb)? {
+        ReflectShape::Const(lit) => Ok(kb.alloc(CoreTerm::Const(lit))),
+        ReflectShape::Var(name) => {
+            let sym = kb.intern(&name);
+            let vid = kb.fresh_var(sym);
+            Ok(kb.alloc(CoreTerm::Var(Var::Global(vid))))
+        }
+        ReflectShape::Ref(sym) => Ok(kb.alloc(CoreTerm::Ref(sym))),
+        ReflectShape::Fn(functor, children) => {
+            let mut ids = Vec::with_capacity(children.len());
+            for child in children {
+                ids.push(reflect_walk(kb, child)?);
+            }
+            Ok(kb.alloc(CoreTerm::Fn {
+                functor,
+                pos_args: ids.into(),
+                named_args: Default::default(),
+            }))
+        }
+    }
 }
 

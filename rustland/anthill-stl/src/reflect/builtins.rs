@@ -440,10 +440,37 @@ fn kb_reify(
     Ok(reify_term_to_value(interp.kb_mut(), syms, tid))
 }
 
-/// Build a `TermRepr` `Value` from a hash-consed `TermId`. Mirrors
-/// `bridge.rs::KbBridge::reify_term` but emits `Value::Entity` results.
+/// Build a `TermRepr` `Value` from a hash-consed `TermId` — the interpreter
+/// realization of the shared [`reader::reify_walk`], via [`ValueReprBuilder`].
+/// Parity with `bridge.rs`'s generated-`TermRepr` reifier is now structural:
+/// both drive the one `reader::reify_walk`.
 fn reify_term_to_value(kb: &mut KnowledgeBase, syms: &ReflectSyms, id: TermId) -> Value {
-    let wrap_literal = |ctor: Symbol, inner: Value| -> Value {
+    reader::reify_walk(kb, &id, &mut ValueReprBuilder { syms })
+}
+
+/// Interpreter realization of [`reader::ReifyBuilder`]: emits a `TermRepr`
+/// `Value::Entity` tree. A `Ref`/`Fn` name rides as a `Ref` TERM (`Value::term`),
+/// which [`ValueRepr`]'s inverse reads back.
+struct ValueReprBuilder<'s> {
+    syms: &'s ReflectSyms,
+}
+
+impl reader::ReifyBuilder for ValueReprBuilder<'_> {
+    type Repr = Value;
+
+    fn on_literal(&mut self, _kb: &mut KnowledgeBase, lit: Literal) -> Value {
+        let syms = self.syms;
+        // A `LiteralRepr` rides inside the `ConstRepr`'s `value` field; a runtime
+        // handle lowers to its raw id as an `IntLiteral` (parity with the
+        // bridge's `literal_to_repr`).
+        let (ctor, inner) = match lit {
+            Literal::Int(n) => (syms.int_lit, Value::Int(n)),
+            Literal::BigInt(n) => (syms.bigint_lit, Value::BigInt(n)),
+            Literal::Float(f) => (syms.float_lit, Value::Float(f.into_inner())),
+            Literal::String(s) => (syms.str_lit, Value::Str(s)),
+            Literal::Bool(b) => (syms.bool_lit, Value::Bool(b)),
+            Literal::Handle(_, raw) => (syms.int_lit, Value::Int(raw as i64)),
+        };
         Value::Entity {
             functor: syms.const_repr,
             pos: Vec::new().into(),
@@ -455,76 +482,39 @@ fn reify_term_to_value(kb: &mut KnowledgeBase, syms: &ReflectSyms, id: TermId) -
             })].into(),
             ty: None,
         }
-    };
+    }
 
-    let term = kb.get_term(id).clone();
-    match term {
-        CoreTerm::Const(Literal::Int(n)) => wrap_literal(syms.int_lit, Value::Int(n)),
-        CoreTerm::Const(Literal::BigInt(n)) => wrap_literal(syms.bigint_lit, Value::BigInt(n)),
-        CoreTerm::Const(Literal::Float(f)) => wrap_literal(syms.float_lit, Value::Float(f.into_inner())),
-        CoreTerm::Const(Literal::String(s)) => wrap_literal(syms.str_lit, Value::Str(s)),
-        CoreTerm::Const(Literal::Bool(b)) => wrap_literal(syms.bool_lit, Value::Bool(b)),
-        CoreTerm::Const(Literal::Handle(_, raw)) => wrap_literal(syms.int_lit, Value::Int(raw as i64)),
-        CoreTerm::Var(Var::Global(vid)) => {
-            let name = kb.resolve_sym(vid.name()).to_string();
-            Value::Entity {
-                functor: syms.var_repr,
-                pos: Vec::new().into(),
-                named: vec![(syms.f_name, Value::Str(name))].into(),
-                ty: None,
-            }
-        }
-        CoreTerm::Var(Var::DeBruijn(n)) => Value::Entity {
-            functor: syms.var_repr,
+    fn on_var(&mut self, _kb: &mut KnowledgeBase, name: String) -> Value {
+        Value::Entity {
+            functor: self.syms.var_repr,
             pos: Vec::new().into(),
-            named: vec![(syms.f_name, Value::Str(format!("_{n}")))].into(),
+            named: vec![(self.syms.f_name, Value::Str(name))].into(),
             ty: None,
-        },
-        CoreTerm::Var(Var::Rigid(vid)) => Value::Entity {
-            functor: syms.var_repr,
+        }
+    }
+
+    fn on_ref(&mut self, kb: &mut KnowledgeBase, name: Symbol) -> Value {
+        let name_term = kb.alloc(CoreTerm::Ref(name));
+        Value::Entity {
+            functor: self.syms.ref_repr,
             pos: Vec::new().into(),
-            named: vec![(syms.f_name, Value::Str(format!("!{}", kb.resolve_sym(vid.name()))))].into(),
+            named: vec![(self.syms.f_name, Value::term(name_term))].into(),
             ty: None,
-        },
-        CoreTerm::Ref(sym) | CoreTerm::Ident(sym) => {
-            let name_term = kb.alloc(CoreTerm::Ref(sym));
-            Value::Entity {
-                functor: syms.ref_repr,
-                pos: Vec::new().into(),
-                named: vec![(syms.f_name, Value::term(name_term))].into(),
-                ty: None,
-            }
         }
-        CoreTerm::Fn { functor, pos_args, named_args } => {
-            let name_term = kb.alloc(CoreTerm::Ref(functor));
-            let pos: Vec<TermId> = pos_args.iter().copied().collect();
-            let named: Vec<TermId> = named_args.iter().map(|&(_, id)| id).collect();
-            let mut children: Vec<Value> = Vec::with_capacity(pos.len() + named.len());
-            for child_id in pos.into_iter().chain(named) {
-                children.push(reify_term_to_value(kb, syms, child_id));
-            }
-            let args_list = build_list_value(syms, children);
-            Value::Entity {
-                functor: syms.fn_repr,
-                pos: Vec::new().into(),
-                named: vec![(syms.f_name, Value::term(name_term)), (syms.f_args, args_list)].into(),
-                ty: None,
-            }
+    }
+
+    fn on_fn(&mut self, kb: &mut KnowledgeBase, functor: Symbol, args: Vec<Value>) -> Value {
+        let name_term = kb.alloc(CoreTerm::Ref(functor));
+        let args_list = build_list_value(self.syms, args);
+        Value::Entity {
+            functor: self.syms.fn_repr,
+            pos: Vec::new().into(),
+            named: vec![
+                (self.syms.f_name, Value::term(name_term)),
+                (self.syms.f_args, args_list),
+            ].into(),
+            ty: None,
         }
-        CoreTerm::Bottom => {
-            let bottom_sym = kb.intern("⊥");
-            let name_term = kb.alloc(CoreTerm::Ref(bottom_sym));
-            Value::Entity {
-                functor: syms.ref_repr,
-                pos: Vec::new().into(),
-                named: vec![(syms.f_name, Value::term(name_term))].into(),
-                ty: None,
-            }
-        }
-        CoreTerm::ParseAux(_) => unreachable!(
-            "parse-only Term::ParseAux variant reached reify_term_to_value \
-             (should never reach the KB reflection layer)",
-        ),
     }
 }
 
@@ -537,154 +527,167 @@ fn kb_reflect(
     syms: &ReflectSyms,
 ) -> Result<Value, EvalError> {
     let [_kb, repr] = expect_args::<2>("KB.reflect", args)?;
-    let tid = reflect_value_to_term(interp.kb_mut(), syms, repr)?;
+    let tid = reader::reflect_walk(interp.kb_mut(), ValueRepr { value: repr, syms })?;
     Ok(Value::term(tid))
 }
 
-fn reflect_value_to_term(
-    kb: &mut KnowledgeBase,
+/// Interpreter realization of [`reader::ReflectReader`]: decodes a `TermRepr`
+/// `Value::Entity` tree. A `Ref`/`Fn` name is read back off its in-band `Ref`
+/// TERM carrier — the inverse of [`ValueReprBuilder`].
+struct ValueRepr<'s> {
+    value: Value,
+    syms: &'s ReflectSyms,
+}
+
+impl reader::ReflectReader for ValueRepr<'_> {
+    type Error = EvalError;
+
+    fn classify(self, kb: &KnowledgeBase) -> Result<reader::ReflectShape<Self>, EvalError> {
+        let syms = self.syms;
+        let (functor, named) = match self.value {
+            Value::Entity { functor, named, .. } => (functor, named),
+            other => return Err(EvalError::TypeMismatch {
+                expected: "TermRepr", got: other.type_name().to_string(),
+            }),
+        };
+        let lookup = |key: Symbol| -> Option<Value> {
+            named.iter().find(|(s, _)| *s == key).map(|(_, v)| v.clone())
+        };
+
+        if functor == syms.const_repr {
+            let inner = lookup(syms.f_value)
+                .ok_or_else(|| EvalError::Internal("ConstRepr: missing `value`".into()))?;
+            Ok(reader::ReflectShape::Const(decode_literal_repr(kb, syms, inner)?))
+        } else if functor == syms.var_repr {
+            let name = lookup(syms.f_name)
+                .ok_or_else(|| EvalError::Internal("VarRepr: missing `name`".into()))?;
+            Ok(reader::ReflectShape::Var(str_arg(name)?))
+        } else if functor == syms.ref_repr {
+            let name = lookup(syms.f_name)
+                .ok_or_else(|| EvalError::Internal("RefRepr: missing `name`".into()))?;
+            Ok(reader::ReflectShape::Ref(ref_repr_symbol(kb, name)?))
+        } else if functor == syms.fn_repr {
+            let name = lookup(syms.f_name)
+                .ok_or_else(|| EvalError::Internal("FnRepr: missing `name`".into()))?;
+            let functor_sym = ref_repr_symbol(kb, name)?;
+            let args_list = lookup(syms.f_args)
+                .ok_or_else(|| EvalError::Internal("FnRepr: missing `args`".into()))?;
+            let children = collect_repr_list(kb, syms, args_list)?
+                .into_iter()
+                .map(|v| ValueRepr { value: v, syms })
+                .collect();
+            Ok(reader::ReflectShape::Fn(functor_sym, children))
+        } else {
+            Err(EvalError::Internal(format!(
+                "unknown TermRepr ctor: {}", kb.resolve_sym(functor))))
+        }
+    }
+}
+
+/// Decode a `LiteralRepr` `Value::Entity` (the inner of a `ConstRepr`) to a core
+/// `Literal`. `BigIntLiteral` is its own first-class case (WI-543); `IntLiteral`
+/// stays `Int64`-only.
+fn decode_literal_repr(
+    kb: &KnowledgeBase,
     syms: &ReflectSyms,
-    repr: Value,
-) -> Result<TermId, EvalError> {
-    let (functor, named) = match repr {
-        Value::Entity { functor, named, .. } => (functor, named),
+    inner: Value,
+) -> Result<Literal, EvalError> {
+    let (lit_ctor, lit_val) = match inner {
+        Value::Entity { functor, named, .. } => {
+            let v = named.iter().find(|(s, _)| *s == syms.f_value)
+                .map(|(_, v)| v.clone())
+                .ok_or_else(|| EvalError::Internal("LiteralRepr: missing `value`".into()))?;
+            (functor, v)
+        }
         other => return Err(EvalError::TypeMismatch {
-            expected: "TermRepr", got: other.type_name().to_string(),
+            expected: "LiteralRepr", got: other.type_name().to_string(),
         }),
     };
-    let lookup = |key: Symbol| -> Option<Value> {
-        named.iter().find(|(s, _)| *s == key).map(|(_, v)| v.clone())
-    };
-
-    if functor == syms.const_repr {
-        // ConstRepr { value: <LiteralRepr> } → Const(Literal)
-        let inner = lookup(syms.f_value)
-            .ok_or_else(|| EvalError::Internal("ConstRepr: missing `value`".into()))?;
-        let (lit_ctor, lit_val) = match inner {
-            Value::Entity { functor, named, .. } => {
-                let v = named.iter().find(|(s, _)| *s == syms.f_value)
-                    .map(|(_, v)| v.clone())
-                    .ok_or_else(|| EvalError::Internal("LiteralRepr: missing `value`".into()))?;
-                (functor, v)
-            }
-            other => return Err(EvalError::TypeMismatch {
-                expected: "LiteralRepr", got: other.type_name().to_string(),
-            }),
-        };
-        let lit = if lit_ctor == syms.int_lit {
-            match lit_val {
-                Value::Int(n) => Literal::Int(n),
-                other => return Err(EvalError::TypeMismatch {
-                    expected: "Int64", got: other.type_name().to_string(),
-                }),
-            }
-        } else if lit_ctor == syms.bigint_lit {
-            // BigIntLiteral is its own first-class case (WI-543); IntLiteral
-            // stays Int64-only above.
-            match lit_val {
-                Value::BigInt(n) => Literal::BigInt(n),
-                Value::Int(n) => Literal::BigInt(n.into()),
-                other => return Err(EvalError::TypeMismatch {
-                    expected: "BigInt", got: other.type_name().to_string(),
-                }),
-            }
-        } else if lit_ctor == syms.float_lit {
-            match lit_val {
-                Value::Float(f) => Literal::Float(f.into()),
-                other => return Err(EvalError::TypeMismatch {
-                    expected: "Float", got: other.type_name().to_string(),
-                }),
-            }
-        } else if lit_ctor == syms.str_lit {
-            match lit_val {
-                Value::Str(s) => Literal::String(s),
-                other => return Err(EvalError::TypeMismatch {
-                    expected: "String", got: other.type_name().to_string(),
-                }),
-            }
-        } else if lit_ctor == syms.bool_lit {
-            match lit_val {
-                Value::Bool(b) => Literal::Bool(b),
-                other => return Err(EvalError::TypeMismatch {
-                    expected: "Bool", got: other.type_name().to_string(),
-                }),
-            }
-        } else {
-            return Err(EvalError::Internal(format!(
-                "unknown LiteralRepr ctor: {}", kb.resolve_sym(lit_ctor))));
-        };
-        Ok(kb.alloc(CoreTerm::Const(lit)))
-    } else if functor == syms.var_repr {
-        let name = lookup(syms.f_name)
-            .ok_or_else(|| EvalError::Internal("VarRepr: missing `name`".into()))?;
-        let name_str = str_arg(name)?;
-        let sym = kb.intern(&name_str);
-        let vid = kb.fresh_var(sym);
-        Ok(kb.alloc(CoreTerm::Var(Var::Global(vid))))
-    } else if functor == syms.ref_repr {
-        let name = lookup(syms.f_name)
-            .ok_or_else(|| EvalError::Internal("RefRepr: missing `name`".into()))?;
-        let tid = match name {
-            Value::Term { id: t, .. } => t,
-            other => return Err(EvalError::TypeMismatch {
-                expected: "Term (name symbol)", got: other.type_name().to_string(),
-            }),
-        };
-        let sym = match kb.get_term(tid) {
-            CoreTerm::Ref(s) | CoreTerm::Ident(s) => *s,
-            _ => return Err(EvalError::Internal(
-                "RefRepr.name must resolve to Ref/Ident".into())),
-        };
-        Ok(kb.alloc(CoreTerm::Ref(sym)))
-    } else if functor == syms.fn_repr {
-        let name = lookup(syms.f_name)
-            .ok_or_else(|| EvalError::Internal("FnRepr: missing `name`".into()))?;
-        let name_tid = match name {
-            Value::Term { id: t, .. } => t,
-            other => return Err(EvalError::TypeMismatch {
-                expected: "Term (functor symbol)", got: other.type_name().to_string(),
-            }),
-        };
-        let functor_sym = match kb.get_term(name_tid) {
-            CoreTerm::Ref(s) | CoreTerm::Ident(s) => *s,
-            _ => return Err(EvalError::Internal(
-                "FnRepr.name must resolve to Ref/Ident".into())),
-        };
-        let args_list = lookup(syms.f_args)
-            .ok_or_else(|| EvalError::Internal("FnRepr: missing `args`".into()))?;
-        let mut child_ids: Vec<TermId> = Vec::new();
-        let mut cur = args_list;
-        loop {
-            match cur {
-                Value::Entity { functor: f, named, .. } => {
-                    if f == syms.nil { break; }
-                    if f != syms.cons {
-                        return Err(EvalError::Internal(format!(
-                            "FnRepr.args: expected cons-list, got {}", kb.resolve_sym(f))));
-                    }
-                    let head = named.iter().find(|(s, _)| *s == syms.head)
-                        .map(|(_, v)| v.clone())
-                        .ok_or_else(|| EvalError::Internal("cons: missing head".into()))?;
-                    let tail = named.into_iter().find(|(s, _)| *s == syms.tail)
-                        .map(|(_, v)| v)
-                        .ok_or_else(|| EvalError::Internal("cons: missing tail".into()))?;
-                    child_ids.push(reflect_value_to_term(kb, syms, head)?);
-                    cur = tail.clone();
-                }
-                other => return Err(EvalError::TypeMismatch {
-                    expected: "cons-list", got: other.type_name().to_string(),
-                }),
-            }
+    if lit_ctor == syms.int_lit {
+        match lit_val {
+            Value::Int(n) => Ok(Literal::Int(n)),
+            other => Err(EvalError::TypeMismatch {
+                expected: "Int64", got: other.type_name().to_string() }),
         }
-        Ok(kb.alloc(CoreTerm::Fn {
-            functor: functor_sym,
-            pos_args: child_ids.into(),
-            named_args: Default::default(),
-        }))
+    } else if lit_ctor == syms.bigint_lit {
+        match lit_val {
+            Value::BigInt(n) => Ok(Literal::BigInt(n)),
+            Value::Int(n) => Ok(Literal::BigInt(n.into())),
+            other => Err(EvalError::TypeMismatch {
+                expected: "BigInt", got: other.type_name().to_string() }),
+        }
+    } else if lit_ctor == syms.float_lit {
+        match lit_val {
+            Value::Float(f) => Ok(Literal::Float(f.into())),
+            other => Err(EvalError::TypeMismatch {
+                expected: "Float", got: other.type_name().to_string() }),
+        }
+    } else if lit_ctor == syms.str_lit {
+        match lit_val {
+            Value::Str(s) => Ok(Literal::String(s)),
+            other => Err(EvalError::TypeMismatch {
+                expected: "String", got: other.type_name().to_string() }),
+        }
+    } else if lit_ctor == syms.bool_lit {
+        match lit_val {
+            Value::Bool(b) => Ok(Literal::Bool(b)),
+            other => Err(EvalError::TypeMismatch {
+                expected: "Bool", got: other.type_name().to_string() }),
+        }
     } else {
         Err(EvalError::Internal(format!(
-            "unknown TermRepr ctor: {}", kb.resolve_sym(functor))))
+            "unknown LiteralRepr ctor: {}", kb.resolve_sym(lit_ctor))))
     }
+}
+
+/// Read a `Ref`/`Fn` name off its in-band `Ref` TERM carrier — the inverse of
+/// how [`ValueReprBuilder`] emits a name (`Value::term(Ref(sym))`).
+fn ref_repr_symbol(kb: &KnowledgeBase, name: Value) -> Result<Symbol, EvalError> {
+    let tid = match name {
+        Value::Term { id: t, .. } => t,
+        other => return Err(EvalError::TypeMismatch {
+            expected: "Term (name symbol)", got: other.type_name().to_string(),
+        }),
+    };
+    match kb.get_term(tid) {
+        CoreTerm::Ref(s) | CoreTerm::Ident(s) => Ok(*s),
+        _ => Err(EvalError::Internal("TermRepr name must resolve to Ref/Ident".into())),
+    }
+}
+
+/// Collect the head `Value`s of a `FnRepr.args` prelude cons-list (a `List` of
+/// `TermRepr`); each head is decoded lazily by [`reader::reflect_walk`]'s
+/// recursion over the returned [`ValueRepr`]s.
+fn collect_repr_list(
+    kb: &KnowledgeBase,
+    syms: &ReflectSyms,
+    args_list: Value,
+) -> Result<Vec<Value>, EvalError> {
+    let mut out = Vec::new();
+    let mut cur = args_list;
+    loop {
+        match cur {
+            Value::Entity { functor: f, named, .. } => {
+                if f == syms.nil { break; }
+                if f != syms.cons {
+                    return Err(EvalError::Internal(format!(
+                        "FnRepr.args: expected cons-list, got {}", kb.resolve_sym(f))));
+                }
+                let head = named.iter().find(|(s, _)| *s == syms.head)
+                    .map(|(_, v)| v.clone())
+                    .ok_or_else(|| EvalError::Internal("cons: missing head".into()))?;
+                let tail = named.iter().find(|(s, _)| *s == syms.tail)
+                    .map(|(_, v)| v.clone())
+                    .ok_or_else(|| EvalError::Internal("cons: missing tail".into()))?;
+                out.push(head);
+                cur = tail;
+            }
+            other => return Err(EvalError::TypeMismatch {
+                expected: "cons-list", got: other.type_name().to_string(),
+            }),
+        }
+    }
+    Ok(out)
 }
 
 // ── Symbol ops (namespace-level) ─────────────────────────────────

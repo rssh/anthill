@@ -4,7 +4,7 @@ use std::rc::Rc;
 use anthill_core::eval::Value;
 use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::term::{Term as CoreTerm, TermId, Literal, Var, VarId};
-use anthill_core::kb::term_view::{TermView, ViewHead};
+use anthill_core::kb::term_view::TermView;
 use anthill_core::kb::resolve::{SearchStream, ResolveConfig};
 
 use crate::prelude::{Stream, Modifiable, Type};
@@ -41,6 +41,71 @@ fn literal_to_repr(lit: Literal) -> LiteralRepr {
         Literal::Float(f) => LiteralRepr::FloatLiteral { value: f.into() },
         Literal::Bool(b) => LiteralRepr::BoolLiteral { value: b },
         Literal::Handle(_, id) => LiteralRepr::IntLiteral { value: id as i64 },
+    }
+}
+
+/// Inverse of [`literal_to_repr`]: a host [`LiteralRepr`] → core [`Literal`].
+/// Total (the enum is closed); a `Float` widens back through `OrderedFloat`.
+fn repr_to_literal(r: LiteralRepr) -> Literal {
+    match r {
+        LiteralRepr::IntLiteral { value } => Literal::Int(value),
+        LiteralRepr::BigIntLiteral { value } => Literal::BigInt(value),
+        LiteralRepr::FloatLiteral { value } => Literal::Float(value.into()),
+        LiteralRepr::StringLiteral { value } => Literal::String(value),
+        LiteralRepr::BoolLiteral { value } => Literal::Bool(value),
+    }
+}
+
+/// Host realization of [`reader::ReifyBuilder`]: emits the generated [`TermRepr`]
+/// enum. A `Ref`/`Fn` name rides as a `Symbol` (the spec types it so). Stateless
+/// — all carrier state is in the emitted `TermRepr`.
+struct TermReprBuilder;
+
+impl reader::ReifyBuilder for TermReprBuilder {
+    type Repr = TermRepr;
+
+    fn on_literal(&mut self, _kb: &mut KnowledgeBase, lit: Literal) -> TermRepr {
+        TermRepr::ConstRepr { value: literal_to_repr(lit) }
+    }
+
+    fn on_var(&mut self, _kb: &mut KnowledgeBase, name: String) -> TermRepr {
+        TermRepr::VarRepr { name }
+    }
+
+    fn on_ref(&mut self, _kb: &mut KnowledgeBase, name: anthill_core::intern::Symbol) -> TermRepr {
+        TermRepr::RefRepr { name: ReflectSymbol::new(name) }
+    }
+
+    fn on_fn(
+        &mut self,
+        _kb: &mut KnowledgeBase,
+        functor: anthill_core::intern::Symbol,
+        args: Vec<TermRepr>,
+    ) -> TermRepr {
+        TermRepr::FnRepr { name: ReflectSymbol::new(functor), args }
+    }
+}
+
+/// Host realization of [`reader::ReflectReader`]: classifies the generated
+/// [`TermRepr`] enum. Infallible — the enum is closed and every variant maps to
+/// a [`reader::ReflectShape`] (a `QuotedRepr` decodes to a `Const` string, the
+/// bridge peer of the interpreter reader). Names ride as `Symbol`.
+impl reader::ReflectReader for TermRepr {
+    type Error = std::convert::Infallible;
+
+    fn classify(
+        self,
+        _kb: &KnowledgeBase,
+    ) -> Result<reader::ReflectShape<Self>, std::convert::Infallible> {
+        Ok(match self {
+            TermRepr::ConstRepr { value } => reader::ReflectShape::Const(repr_to_literal(value)),
+            TermRepr::VarRepr { name } => reader::ReflectShape::Var(name),
+            TermRepr::RefRepr { name } => reader::ReflectShape::Ref(name.symbol()),
+            TermRepr::FnRepr { name, args } => reader::ReflectShape::Fn(name.symbol(), args),
+            TermRepr::QuotedRepr { source, .. } => {
+                reader::ReflectShape::Const(Literal::String(source))
+            }
+        })
     }
 }
 
@@ -93,67 +158,13 @@ impl KbBridge {
     /// Reify any [`TermView`] carrier — a hash-consed `TermId` / `Value::Term`,
     /// a `Value::Node` occurrence, a `Value::Entity`, or a value-level `Var` —
     /// to a flat [`TermRepr`]. The single reifier behind both `KB::reify` and
-    /// `KB::rules`; reads structure through `TermView`, so every carrier
-    /// produces the same shape. Functor/ref names ride as `Symbol` (the spec
-    /// types them so); a functor-less aggregate or opaque value in a term slot
-    /// panics loudly.
+    /// `KB::rules`, via the shared [`reader::reify_walk`] parameterized by
+    /// [`TermReprBuilder`] (the interpreter drives the same walk with its own
+    /// `Value`-tree builder). Functor/ref names ride as `Symbol` (the spec types
+    /// them so); a functor-less aggregate or opaque value in a term slot panics
+    /// loudly.
     fn reify_view<V: TermView>(&self, view: &V) -> TermRepr {
-        let kb = self.kb.borrow();
-        // A var of any kind reifies to a `VarRepr` (string name). `index_var`
-        // surfaces Global / Rigid / DeBruijn (the latter two read as `Opaque`).
-        if let Some(var) = view.index_var(&kb) {
-            let name = match var {
-                Var::Global(vid) => kb.resolve_sym(vid.name()).to_string(),
-                Var::Rigid(vid) => format!("!{}", kb.resolve_sym(vid.name())),
-                Var::DeBruijn(n) => format!("_{n}"),
-            };
-            return TermRepr::VarRepr { name };
-        }
-        match view.head(&kb) {
-            // WI-537: `ViewHead::Var` now carries a `Var` (was a `VarId`), so
-            // surface the name per kind, mirroring the `index_var` arm above.
-            ViewHead::Var(var) => {
-                let name = match var {
-                    Var::Global(vid) => kb.resolve_sym(vid.name()).to_string(),
-                    Var::Rigid(vid) => format!("!{}", kb.resolve_sym(vid.name())),
-                    Var::DeBruijn(n) => format!("_{n}"),
-                };
-                TermRepr::VarRepr { name }
-            }
-            ViewHead::Const(lit) => TermRepr::ConstRepr { value: literal_to_repr(lit) },
-            ViewHead::Ref(sym) | ViewHead::Ident(sym) => {
-                TermRepr::RefRepr { name: ReflectSymbol::new(sym) }
-            }
-            ViewHead::Bottom => {
-                drop(kb);
-                let bottom_sym = self.kb.borrow_mut().intern("⊥");
-                TermRepr::RefRepr { name: ReflectSymbol::new(bottom_sym) }
-            }
-            ViewHead::Functor { functor: Some(functor), pos_arity, named_arity } => {
-                // Materialize each child into an owned `Value` (releasing the
-                // `kb` borrow a `ViewItem` holds), then recurse. Positional
-                // first, then named in canonical (`named_keys`) order.
-                let named_keys = view.named_keys(&kb);
-                let mut child_values: Vec<Value> = Vec::with_capacity(pos_arity + named_arity);
-                for i in 0..pos_arity {
-                    let child = view.pos_arg(&kb, i).unwrap_or_else(|| {
-                        panic!("reify_view: positional arg {i} missing below arity {pos_arity}")
-                    });
-                    child_values.push(child.to_value());
-                }
-                for key in named_keys {
-                    if let Some(child) = view.named_arg(&kb, key) {
-                        child_values.push(child.to_value());
-                    }
-                }
-                let args = child_values.iter().map(|c| self.reify_view(c)).collect();
-                TermRepr::FnRepr { name: ReflectSymbol::new(functor), args }
-            }
-            ViewHead::Functor { functor: None, .. } | ViewHead::Opaque => panic!(
-                "KbBridge::reify_view: non-term carrier in a Term slot (functor-less \
-                 aggregate or opaque value)",
-            ),
-        }
+        reader::reify_walk(&mut self.kb.borrow_mut(), view, &mut TermReprBuilder)
     }
 
     /// Extract named args from a Fn term as (name_str, TermId) pairs. Kept for
@@ -594,42 +605,11 @@ impl KB for KbBridge {
     }
 
     fn reflect(&self, r: TermRepr) -> Term {
-        match r {
-            TermRepr::ConstRepr { value } => {
-                let lit = match value {
-                    LiteralRepr::IntLiteral { value } => Literal::Int(value),
-                    LiteralRepr::BigIntLiteral { value } => Literal::BigInt(value),
-                    LiteralRepr::FloatLiteral { value } => Literal::Float(value.into()),
-                    LiteralRepr::StringLiteral { value } => Literal::String(value),
-                    LiteralRepr::BoolLiteral { value } => Literal::Bool(value),
-                };
-                term(self.kb.borrow_mut().alloc(CoreTerm::Const(lit)))
-            }
-            TermRepr::VarRepr { name } => {
-                let mut kb = self.kb.borrow_mut();
-                let sym = kb.intern(&name);
-                let vid = kb.fresh_var(sym);
-                term(kb.alloc(CoreTerm::Var(Var::Global(vid))))
-            }
-            TermRepr::FnRepr { name, args } => {
-                let functor = name.symbol();
-                // `reflect` rebuilds a flat hash-consed term, so each child is a
-                // `Value::Term`; a stray non-term child fails loud via `expect_term`.
-                let child_ids: Vec<TermId> = args.into_iter()
-                    .map(|a| self.reflect(a).into_value().expect_term())
-                    .collect();
-                term(self.kb.borrow_mut().alloc(CoreTerm::Fn {
-                    functor,
-                    pos_args: child_ids.into(),
-                    named_args: Default::default(),
-                }))
-            }
-            TermRepr::RefRepr { name } => {
-                term(self.kb.borrow_mut().alloc(CoreTerm::Ref(name.symbol())))
-            }
-            TermRepr::QuotedRepr { source, .. } => {
-                term(self.kb.borrow_mut().alloc(CoreTerm::Const(Literal::String(source))))
-            }
+        // The shared inverse walk, via `TermRepr`'s `ReflectReader` classify. It
+        // is `Infallible` (closed enum), so the `Err` arm is uninhabited.
+        match reader::reflect_walk(&mut self.kb.borrow_mut(), r) {
+            Ok(tid) => term(tid),
+            Err(never) => match never {},
         }
     }
 
