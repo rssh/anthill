@@ -5943,6 +5943,7 @@ fn check_apply_iter(
                     {
                         let derived = dispatched_impl_effects(
                             kb, impl_op, &op.params, &subst, pos_args, named_args,
+                            pos_results, named_results,
                         );
                         effects = merge_effects(kb, &effects, &derived);
                         let impl_sort = impl_parent_of_op(kb, impl_op);
@@ -6069,6 +6070,7 @@ fn check_apply_iter(
                     if impl_op != fn_sym {
                         let derived = dispatched_impl_effects(
                             kb, impl_op, &op.params, &subst, pos_args, named_args,
+                            pos_results, named_results,
                         );
                         effects = merge_effects(kb, &effects, &derived);
                     }
@@ -6470,6 +6472,7 @@ fn check_apply_iter(
                     if impl_op_sym != fn_sym {
                         let derived = dispatched_impl_effects(
                             kb, impl_op_sym, &op.params, &subst, pos_args, named_args,
+                            pos_results, named_results,
                         );
                         // The spec op's polymorphic effect row is GROUNDED by
                         // this concrete dispatch. Drop the still-unresolved row
@@ -11432,7 +11435,11 @@ fn effect_is_unresolved_var(kb: &KnowledgeBase, e: &Value) -> bool {
 /// argument vars) so `Modify[b]` re-keys to the caller's actual argument — the
 /// same rewrite the spec op's own effects get at the call site
 /// (`substitute_ref_syms_value`, WI-342 E2 re-keys a `Value::Node` label's
-/// `Ref` spine). It is then walked through the per-call subst and filtered to
+/// `Ref` spine). WI-604: a projection-BEARING impl effect (`Stream.isEmpty
+/// effects s.E`) is instead δ-reduced against the receiver argument's concrete
+/// type via `eliminate_type_projections` — a blanket re-key cannot reduce
+/// `s.E` off a `Stream[E = {}]` to `{}`, so the pre-WI-604 path leaked it as a
+/// spurious `undeclared effect: s.E`. It is then walked through the per-call subst and filtered to
 /// CONCRETE effects: an impl whose own effect row is itself an unbound var is
 /// effectively pure here, so it contributes nothing — keeping the
 /// `List`-as-`Stream` pure path unchanged. Returns `[]` for a pure override
@@ -11451,6 +11458,8 @@ fn dispatched_impl_effects(
     subst: &Substitution,
     pos_args: &[Rc<NodeOccurrence>],
     named_args: &[(Symbol, Rc<NodeOccurrence>)],
+    pos_results: &[Result<TypeResult, TypeError>],
+    named_results: &[Result<TypeResult, TypeError>],
 ) -> Vec<Value> {
     let Some(impl_op) = lookup_operation_info_full(kb, impl_op_sym) else {
         return Vec::new();
@@ -11459,16 +11468,26 @@ fn dispatched_impl_effects(
         return Vec::new();
     }
     let mut param_to_arg: HashMap<Symbol, Symbol> = HashMap::new();
+    // WI-604: the IMPL op's parameter TYPES, keyed by impl-param symbol, so a
+    // projection-bearing impl effect (`Stream.isEmpty effects s.E`) is δ-reduced
+    // against the receiver argument's concrete type in the loop below.
+    let mut param_to_arg_type: HashMap<Symbol, Value> = HashMap::new();
     for (i, (impl_param_sym, _)) in impl_op.params.iter().enumerate() {
         // Positional arg at this index, else the named arg carrying the spec
         // op's param[i] name (the caller names spec-op params, not impl params).
         let mut arg_sym = pos_args.get(i).and_then(extract_var_ref_sym_node);
-        if arg_sym.is_none() {
+        let mut arg_ty = pos_results.get(i).and_then(|r| r.as_ref().ok()).map(|r| r.ty.clone());
+        if arg_sym.is_none() || arg_ty.is_none() {
             if let Some((spec_name, _)) = spec_params.get(i) {
-                for (n, occ) in named_args.iter() {
+                for (j, (n, occ)) in named_args.iter().enumerate() {
                     // WI-426: a named label binds to its param by name, not symbol identity.
                     if same_symbol(kb, *n, *spec_name) {
-                        arg_sym = extract_var_ref_sym_node(occ);
+                        if arg_sym.is_none() {
+                            arg_sym = extract_var_ref_sym_node(occ);
+                        }
+                        if arg_ty.is_none() {
+                            arg_ty = named_results.get(j).and_then(|r| r.as_ref().ok()).map(|r| r.ty.clone());
+                        }
                         break;
                     }
                 }
@@ -11477,10 +11496,41 @@ fn dispatched_impl_effects(
         if let Some(s) = arg_sym {
             param_to_arg.insert(*impl_param_sym, s);
         }
+        if let Some(t) = arg_ty {
+            param_to_arg_type.insert(*impl_param_sym, t);
+        }
     }
+    let arg_syms = (!param_to_arg.is_empty()).then_some(&param_to_arg);
+    let ctx = TypeErrorContext::OperationReturn { op_name: impl_op_sym };
     let mut out: Vec<Value> = Vec::new();
     for e in &impl_op.effects {
-        let sub = if param_to_arg.is_empty() {
+        // WI-604: an override's effect can carry a self-receiver PROJECTION
+        // (`Stream.isEmpty effects s.E`) that a blanket ref-substitution leaves
+        // un-reduced — the exact gap the op's-own-effect loop avoids via
+        // `eliminate_type_projections` (the `op_has_projection` path). Ground it
+        // here too: project the effect member off the receiver argument's
+        // concrete type (`s.E` off `Stream[E = {}]` → `{}`), so a defaulted spec
+        // op dispatched to a carrier's `s.E`-effect override (`Iterable.isEmpty`
+        // → `Stream.isEmpty` on a pure Stream value) is PURE, not a spurious
+        // `undeclared effect: s.E`. Use the reduction ONLY when it GROUNDS to a
+        // concrete row; on an ABSTRACT receiver (a `Stream` param whose `E` is
+        // unwritten or a bare row variable) elimination instead leaves an unbound
+        // row var, a projection identical to the fallback, or errors — none of
+        // which a caller can match against a written `E = {}`, so fall back to the
+        // blanket re-key (`s.E` → the caller's receiver projection), the pre-WI-604
+        // behavior, correct there (the caller declares/threads the abstract row).
+        // A projection-free effect (`Modify[b]`) skips elimination and takes the
+        // plain re-key, unchanged.
+        let sub = if value_contains_projection(kb, e) {
+            // The `!effect_is_unresolved_var` guard is load-bearing: when `E` is a
+            // bare row var the reduction returns that raw var, which a later
+            // `walk_type_deep_value` + concrete-filter would SILENTLY DROP — the
+            // guard routes it to the fallback re-key instead so the row survives.
+            match eliminate_type_projections(kb, e, &param_to_arg_type, arg_syms, &ctx, None) {
+                Ok(reduced) if !effect_is_unresolved_var(kb, &reduced) => reduced,
+                _ => substitute_ref_syms_value(kb, e, &param_to_arg),
+            }
+        } else if param_to_arg.is_empty() {
             e.clone()
         } else {
             substitute_ref_syms_value(kb, e, &param_to_arg)
