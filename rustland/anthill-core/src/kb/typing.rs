@@ -10508,8 +10508,10 @@ pub fn sort_goal_from_subst(
 ///
 /// - No self-receiver parameter ⇒ [`ReceiverCarrier::NotApplicable`]: the
 ///   carrier is a type-parameter binding, already pinned by the subst.
-/// - Receiver's base sort is the spec sort (`s : Stream[T]`) or its type
-///   is unresolved ⇒ [`ReceiverCarrier::Abstract`]: no concrete impl.
+/// - Receiver's base sort is the spec sort (`s : Stream[T]`), or is ITSELF an
+///   abstract-interface spec (WI-601 — a `FiniteStream`-typed value against a
+///   bare `Stream` op: no own constructors, but provided), or its type is
+///   unresolved ⇒ [`ReceiverCarrier::Abstract`]: no concrete impl is pinnable.
 /// - Receiver's base sort is a concrete carrier (`s : List[Int]` → `List`)
 ///   ⇒ [`ReceiverCarrier::Concrete`].
 fn receiver_carrier(
@@ -10541,14 +10543,33 @@ fn receiver_carrier(
         });
     let spec_canon = kb.canonical_sort_sym(spec_sort);
     match arg_ty.and_then(|v| carrier_sort_of_value(kb, v)) {
-        // A concrete carrier distinct from the spec sort itself. Store the
-        // canonical sort symbol so the candidate filter (which canonicalizes
-        // `impl_sort`) compares like-for-like.
-        Some(base) if kb.canonical_sort_sym(base) != spec_canon => {
+        // A concrete carrier distinct from the spec sort itself, AND not itself
+        // an abstract-interface spec. Store the canonical sort symbol so the
+        // candidate filter (which canonicalizes `impl_sort`) compares
+        // like-for-like.
+        //
+        // WI-601: a receiver whose static carrier is ANOTHER abstract spec — a
+        // `FiniteStream`-typed value against a bare `Stream` op (`FiniteStream`
+        // provides `Stream` yet has no representation of its own) — is NOT a
+        // pinnable concrete impl. Resolving it concretely picks `FiniteStream`'s
+        // `provides Stream → Stream requires EffectsRuntime[E]`, unsatisfiable at
+        // the abstract access row `E` → a spurious `DispatchNoMatch` /
+        // `MissingRequiresForSpecOp`. The runtime value is some concrete provider
+        // (a `FiniteMappedStream`), so classify it `Abstract` and defer to eval's
+        // value-directed dispatch, exactly the deferral the carrier-param path
+        // already takes via `carrier_is_abstract_spec` (WI-598) — funnelling both
+        // dispatch shapes through the one notion. Concrete carriers (`List`/`Map`
+        // — they HAVE constructors, so `carrier_is_abstract_spec` is false) stay
+        // `Concrete` and dispatch as before.
+        Some(base)
+            if kb.canonical_sort_sym(base) != spec_canon
+                && !carrier_is_abstract_spec(kb, base) =>
+        {
             ReceiverCarrier::Concrete(kb.canonical_sort_sym(base))
         }
-        // Base == spec sort (abstract spec value) or unresolved type: no
-        // concrete impl is pinnable.
+        // Base == spec sort (abstract spec value), an abstract-interface carrier
+        // distinct from the op's spec (WI-601), or unresolved type: no concrete
+        // impl is pinnable.
         _ => ReceiverCarrier::Abstract,
     }
 }

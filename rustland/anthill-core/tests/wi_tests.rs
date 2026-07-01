@@ -522,6 +522,9 @@ mod wi598_finite_collect_dispatch_test;
 #[path = "include/wi599_carrier_arg_provision_test.rs"]
 mod wi599_carrier_arg_provision_test;
 
+#[path = "include/wi601_abstract_spec_self_receiver_test.rs"]
+mod wi601_abstract_spec_self_receiver_test;
+
 #[path = "include/wi590_witness_param_carrier_test.rs"]
 mod wi590_witness_param_carrier_test;
 
