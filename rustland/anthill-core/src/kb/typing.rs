@@ -5933,7 +5933,19 @@ fn check_apply_iter(
                         ReceiverCarrier::Concrete(c) => Some(c),
                         _ => None,
                     },
-                    None => carrier_param_info.as_ref().map(|(_, c, _, _, _, _)| *c),
+                    // WI-608: an ABSTRACT-SPEC carrier (a `FiniteCollection`-typed
+                    // receiver) has no concrete member to statically pin — its runtime
+                    // value is some concrete provider that eval's value-directed dispatch
+                    // resolves, so defer (as the gate below does via
+                    // `carrier_is_abstract_spec`). Otherwise a qualified `Iterable.map(src)`
+                    // on a `FiniteCollection` would mis-pin to FiniteCollection's OWN `map`
+                    // (a different op). A CONCRETE carrier — direct OR transitive — keeps
+                    // its static override pin (WI-444/496 typeclass-default semantics): a
+                    // real member wins, and a concrete carrier without one resolves `None`
+                    // from `carrier_override_op` and defers at the gate below anyway.
+                    None => carrier_param_info.as_ref().and_then(|(_, c, _, _, _, _)| {
+                        (!carrier_is_abstract_spec(kb, *c)).then_some(*c)
+                    }),
                 };
                 if let Some(carrier_sym) = carrier {
                     let op_qn = kb.qualified_name_of(fn_sym).to_string();
@@ -10855,6 +10867,41 @@ fn transitive_provision_view(
     None
 }
 
+/// WI-608 — the carrier-param provision view for a receiver whose carrier is
+/// ITSELF an abstract spec that `requires` `spec_sort` (rather than *providing*
+/// it). `iterator(src)` over a field `src : FiniteCollection[C = SrcC, Element =
+/// Src, E = ES]` dispatches `Iterable.iterator` (spec_sort = Iterable), but
+/// `FiniteCollection` has no `provides Iterable` fact — it declares `requires
+/// Iterable[C = C, Element = Element, E = E]` — so [`transitive_provision_view`]
+/// (a `provides`-only walk) finds nothing and the produced `Stream[Element, E]`
+/// leaks `??_` for both params.
+///
+/// The `requires` clause is stored as a `SortView` mapping each Iterable param to
+/// the `FiniteCollection` param it is bound to — the SAME view shape
+/// [`provider_spec_view_bindings`] returns for a `provides` fact, so the caller's
+/// [`bind_spec_params_from_carrier_param`] threads each spec param off the
+/// receiver's own written type-args (`Element ↦ Element ↦ Src`, `E ↦ E ↦ ES`;
+/// the carrier param `C` is skipped there — it binds by argument unification).
+/// DIRECT requires only: the current gap is a field typed with a spec its own
+/// combinator directly requires; a transitively-required spec would need the
+/// composed chain (cf. [`transitive_provision_view`]) and has no stdlib call site.
+fn abstract_spec_required_view(
+    kb: &KnowledgeBase,
+    spec_sort: Symbol,
+    carrier_sym: Symbol,
+) -> Option<SmallVec<[(Symbol, TermId); 2]>> {
+    for entry in direct_requires(kb, carrier_sym) {
+        if kb.canonical_sort_sym(entry.required_sort) != kb.canonical_sort_sym(spec_sort) {
+            continue;
+        }
+        let (_base, bindings) = unwrap_spec_view(kb, entry.spec)?;
+        if !bindings.is_empty() {
+            return Some(bindings);
+        }
+    }
+    None
+}
+
 /// WI-424 — eval-side CARRIER-PARAM receiver: among the params typed as one of
 /// `spec_sort`'s own type-param vars (`Iterable.iterator(c: C)`), the first
 /// whose RUNTIME value's carrier sort (`carrier_of(i)`) provides the spec WITH
@@ -11145,8 +11192,22 @@ fn carrier_param_receiver(
         // view COMPOSED through transitive provision (a `List` carrier whose
         // Iterable-ness rides through `Stream`), so `Element`/`E` still ground.
         let mut visited: SmallVec<[Symbol; 8]> = SmallVec::new();
-        let Some((view, transitive)) =
-            transitive_provision_view(kb, spec_sort, pvid, carrier_sym, &mut visited)
+        let Some((view, transitive)) = transitive_provision_view(kb, spec_sort, pvid, carrier_sym, &mut visited)
+            // WI-608: the receiver's carrier is ITSELF an abstract spec — a field
+            // typed `FiniteCollection[C = SrcC, …]` fed to `Iterable.iterator(c: C)`
+            // (spec_sort = Iterable). `FiniteCollection` *requires* Iterable rather
+            // than *providing* it, so the `provides`-only scan above finds nothing
+            // and the produced `Stream`'s `Element`/`E` would leak `??_`. Build the
+            // view from that `requires` relationship instead (same view shape), and
+            // mark it `transitive` so the call defers to eval's value-directed
+            // dispatch — the carrier-param twin of the WI-598/601 self-receiver
+            // abstract-spec deferral (both keyed on `carrier_is_abstract_spec`).
+            .or_else(|| {
+                if !carrier_is_abstract_spec(kb, carrier_sym) {
+                    return None;
+                }
+                abstract_spec_required_view(kb, spec_sort, carrier_sym).map(|v| (v, true))
+            })
         else {
             continue;
         };
