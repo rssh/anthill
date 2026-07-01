@@ -32,7 +32,7 @@ use smallvec::SmallVec;
 const SRC: &str = r#"
 namespace test.wi596
   import anthill.prelude.{Int64, Bool, Eq}
-  import test.wi596.Bag.{peek, holds}
+  import test.wi596.Bag.{peek, holds, member, insert}
 
   sort Bag
     sort T = ?
@@ -40,16 +40,20 @@ namespace test.wi596
     operation {
       peek(s: Bag) -> Bool
       holds(x: T, s: Bag) -> Bool
+      insert(s: Bag, x: T) -> Bag
+      member(x: T, s: Bag) -> Bool
     }
     rule {
       peek_id:  peek(?s) <=> true [simp]
       holds_id: holds(?x, ?s) <=> true [simp]
+      member_insert: member(?x, insert(?s, ?x)) <=> true [simp]
     }
   end
 
   sort IntBag
     entity ibag
     provides Bag[T = Int64]
+    operation insert(s: IntBag, x: Int64) -> IntBag = s
   end
 
   sort Plain
@@ -168,20 +172,93 @@ fn container_law_fires_in_typer_over_provider_body() {
     }
 }
 
-// FIRING BOUNDARY (not tested here — documents why): the stdlib Set/Map laws are
-// NESTED — `member(?x, insert(?s, ?x))`, `union(?s, empty())`, `get(put(?m,?k,?v),?k)`
-// — so the redex's carrier argument is a spec-op subterm (`insert`/`put`/`empty`)
-// whose DECLARED return is the ABSTRACT sort. On a freestanding redex that subterm's
-// `value_type_term` reads abstract (`sort_provides(Set, Set)` is not reflexive), so
-// the guard SUSPENDS — sound, never NAF-decides. These laws therefore fire only when
-// the carrier's CONCRETE provider type flows in from context (a typer occurrence type,
-// or a frame variable bound to a concrete carrier), and there is a genuine catch-22
-// for the nested form: keeping the spec functor (so the law's inner pattern matches)
-// vs. overriding the op to refine its return (which changes the functor). Closing
-// that — carrier-aware refinement of a spec op's SELF return without changing its
-// functor — is typer machinery separate from this guard, so it is not exercised here;
-// the flat `peek(carrier)` / `holds(elem, carrier)` tests above verify the guard
-// mechanism itself (carrier-keyed, element-ignored) over a real provider.
+// ── WI-611: a NESTED container law fires over a concrete provider ──────
+
+#[test]
+fn nested_container_law_fires_over_provider() {
+    // The stdlib Set/Map reducing laws are NESTED — `member(?x, insert(?s, ?x))`,
+    // `get(put(?m,?k,?v),?k)` — so the redex's carrier argument is a self-returning
+    // spec-op subterm (`insert`/`put`) whose DECLARED return is the ABSTRACT sort.
+    // Before WI-611 that subterm's `value_type_term` read a non-provider head
+    // (`sort_provides(Set, Set)` is not reflexive), so the guard SUSPENDED and the
+    // law stayed dormant — the catch-22 documented on WI-596: keep the spec functor
+    // (so the inner `insert` pattern matches) and the subterm types abstract; or
+    // override the op to refine its return and the `Set.insert`-keyed law can no
+    // longer match. WI-611 refines a self-returning spec op's result to the
+    // receiver's CONCRETE carrier WITHOUT changing the functor: `insert(ibag, 5)`
+    // types as `IntBag` (a `Bag` provider), so `member`'s carrier argument provides
+    // `Bag`, the requires-guard holds, and `member_insert` fires. The redex keeps the
+    // SPEC functor `Bag.insert` (so the law's inner pattern still matches); the
+    // `IntBag.insert` override exists only to BACK the constructor op at load (WI-363
+    // completeness). The LAW op `member` is NOT overridden, so the law fires on the
+    // spec functor — the catch-22's "keep the functor" horn, now typed correctly.
+    let mut kb = crate::common::load_kb_with(SRC);
+    let member = sym(&kb, "test.wi596.Bag.member");
+    let insert = sym(&kb, "test.wi596.Bag.insert");
+    let ibag = nullary(&mut kb, "test.wi596.IntBag.ibag");
+    let five = kb.alloc(Term::Const(anthill_core::kb::term::Literal::Int(5)));
+    // insert(ibag(), 5) : IntBag (a Bag provider) after WI-611 refinement.
+    let ins = kb.alloc(Term::Fn {
+        functor: insert,
+        pos_args: SmallVec::from_slice(&[ibag, five]),
+        named_args: SmallVec::new(),
+    });
+    // member(5, insert(ibag(), 5)): the carrier argument `insert(…)` provides Bag,
+    // so member_insert fires and the redex rewrites away from a `member` apply.
+    let term = kb.alloc(Term::Fn {
+        functor: member,
+        pos_args: SmallVec::from_slice(&[five, ins]),
+        named_args: SmallVec::new(),
+    });
+    let result = kb.simplify(term);
+    assert_ne!(
+        result, term,
+        "member_insert must fire over a nested self-returning insert on a Bag \
+         provider (IntBag): member(5, insert(ibag, 5)) rewrites",
+    );
+    assert!(
+        !matches!(kb.get_term(result), Term::Fn { functor, .. } if *functor == member),
+        "member(5, insert(ibag, 5)) must rewrite away the member apply, got {:?}",
+        kb.get_term(result),
+    );
+}
+
+#[test]
+fn nested_container_law_does_not_fire_when_carrier_lacks_spec() {
+    // The nested dual of `container_law_does_not_fire_when_carrier_lacks_spec`: the
+    // inner carrier `Plain` does NOT provide Bag, so `insert(plain, 5)` does not
+    // refine to a provider and member's requires-guard suspends — the redex is left
+    // intact (suspend, never NAF-decide). This pins that WI-611 refines ONLY over a
+    // genuine provider, never fabricating one.
+    let mut kb = crate::common::load_kb_with(SRC);
+    let member = sym(&kb, "test.wi596.Bag.member");
+    let insert = sym(&kb, "test.wi596.Bag.insert");
+    let plain = nullary(&mut kb, "test.wi596.Plain.plain");
+    let five = kb.alloc(Term::Const(anthill_core::kb::term::Literal::Int(5)));
+    let ins = kb.alloc(Term::Fn {
+        functor: insert,
+        pos_args: SmallVec::from_slice(&[plain, five]),
+        named_args: SmallVec::new(),
+    });
+    let term = kb.alloc(Term::Fn {
+        functor: member,
+        pos_args: SmallVec::from_slice(&[five, ins]),
+        named_args: SmallVec::new(),
+    });
+    assert_eq!(
+        kb.simplify(term),
+        term,
+        "member_insert must NOT fire when the inner carrier lacks Bag (Plain): \
+         member(5, insert(plain, 5)) is left intact",
+    );
+}
+
+// RESIDUAL (union / empty): `union(?s, empty()) <=> ?s` is still bounded — its `empty()`
+// argument is a NULLARY self-returning spec op with no receiver to refine from, so its
+// concrete carrier must flow from the sibling argument or the expected type (sort-self
+// grounding, cf WI-608), which the freestanding structural `value_type_term` does not
+// propagate. WI-611 closes the self-RECEIVER nested form (`member`/`insert`, `get`/`put`);
+// the nullary-producer form is tracked separately.
 
 // ── stdlib: the reducing Set/Map laws are now [simp]-tagged ────────────
 

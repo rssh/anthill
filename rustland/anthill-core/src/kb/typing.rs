@@ -20955,6 +20955,58 @@ fn literal_sort(kb: &mut KnowledgeBase, lit: &Literal) -> Value {
     Value::term(kb.make_sort_ref_by_name(name))
 }
 
+/// WI-611 — the result type of a SELF-RETURNING spec op applied over a CONCRETE
+/// receiver carrier. A container spec op whose declared return IS its enclosing
+/// (self) sort — `insert(s: Set, x: T) -> Set`, `put(m: Map, …) -> Map`,
+/// `union(a: Set, b: Set) -> Set` — produces a carrier of the SAME concrete sort
+/// as its self-receiver argument: `insert(intBag, x)` is an `IntBag`, not the
+/// abstract `Set`. [`constructor_value_type`] would otherwise read the operation
+/// head as a bare `Ref(insert)` (an op has no entity fields), so a nested `[simp]`
+/// guard on the enclosing law — `member(?x, insert(?s, ?x)) <=> true`, whose
+/// carrier argument is this `insert(…)` subterm — sees a non-provider head and
+/// SUSPENDS (`sort_provides(Set, Set)` is not reflexive; the WI-596 nested gap).
+/// Refining the subterm to the receiver's concrete carrier lets
+/// `sort_provides(IntBag, Set)` hold and the nested law fire, WITHOUT changing the
+/// `insert` functor (so the law's inner pattern still matches — the catch-22 the
+/// override route could not escape). cf WI-350 (carrier-aware dispatch), WI-461
+/// (bare self-receiver identity body).
+///
+/// `None` (keep the structural default) unless ALL hold: `op_sym` is a body-less
+/// spec op (the dispatch notion the guard uses — [`lookup_spec_op_dispatch`]); its
+/// declared return's sort head IS the spec sort itself (self-returning —
+/// `member -> Bool` is NOT, so an outer `member` subterm keeps typing as `Bool`);
+/// it has a self-receiver parameter ([`self_receiver_param_index`]); and that
+/// argument's already-computed type is a CONCRETE provider of the spec (distinct
+/// from the abstract spec sort, which keeps the declared self return — there is no
+/// sharper carrier to name). The refined type is the receiver argument's OWN type:
+/// the result carrier IS the receiver carrier.
+fn self_return_spec_op_result_type(
+    kb: &KnowledgeBase,
+    op_sym: Symbol,
+    pos_child_types: &[Value],
+) -> Option<Value> {
+    let spec_sort = lookup_spec_op_dispatch(kb, op_sym)?;
+    let rec = super::op_info::lookup_operation_info(kb, op_sym)?;
+    // Self-returning: the declared return's sort head is the enclosing spec sort.
+    let ret_head = sort_functor_of_view(kb, &rec.return_type)?;
+    if kb.canonical_sort_sym(ret_head) != kb.canonical_sort_sym(spec_sort) {
+        return None;
+    }
+    // The self-receiver argument carries the result's carrier.
+    let idx = self_receiver_param_index(kb, &rec.params, spec_sort)?;
+    let recv_ty = pos_child_types.get(idx)?;
+    let carrier = carrier_sort_of_value(kb, recv_ty)?;
+    // Refine only for a CONCRETE provider — an abstract receiver (`carrier` is the
+    // spec sort itself) keeps the declared self return, and a non-provider is never
+    // refined to a sort it does not satisfy (never fabricate a providing head).
+    if kb.canonical_sort_sym(carrier) == kb.canonical_sort_sym(spec_sort)
+        || !sort_provides(kb, carrier, spec_sort)
+    {
+        return None;
+    }
+    Some(recv_ty.clone())
+}
+
 /// WI-578 — the result type-term of a constructor application, given its children's
 /// already-computed types. The value-level analog of [`check_constructor_iter`]'s
 /// build core MINUS the error-producing field VALIDATION (`typed` is TOTAL): look up
@@ -20994,8 +21046,18 @@ fn constructor_value_type(
     };
     let field_types = match kb.entity_field_types(ctor_sym) {
         Some(ft) => ft.to_vec(),
-        // Not a registered constructor — the value's type is its own bare sort.
-        None => return Value::term(parent_type),
+        // Not a registered constructor. WI-611: it may be a self-returning spec op
+        // (`insert`/`put`/`union`), which types as its concrete receiver carrier so
+        // a nested `[simp]` law's carrier argument reads a provider and can fire.
+        // Gated here (the non-constructor branch) so the common constructor path
+        // never pays the operation-info scan. Otherwise the value's type is its own
+        // bare sort.
+        None => {
+            if let Some(refined) = self_return_spec_op_result_type(kb, ctor_sym, pos_child_types) {
+                return refined;
+            }
+            return Value::term(parent_type);
+        }
     };
     let mut subst = Substitution::new();
     // Field-unify (named by field name, then positional by index) — pins the parent
