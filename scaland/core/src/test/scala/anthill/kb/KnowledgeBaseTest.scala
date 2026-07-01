@@ -201,6 +201,62 @@ class KnowledgeBaseTest extends munit.FunSuite:
       case other => fail(s"expected Fn, got $other")
   }
 
+  test("isEquation recognizes both `eq` and `unify` heads (WI-528)") {
+    val kb = KnowledgeBase()
+    val sort = kb.makeNameTerm("Rule")
+    val domain = kb.makeNameTerm("d")
+    val xSym = kb.intern("x")
+    val vx = kb.freshVar(xSym)
+    val varX = kb.alloc(Term.Var(vx))
+    val fSym = kb.intern("f"); val gSym = kb.intern("g")
+    val fx = kb.alloc(Term.Fn(fSym, IArray(varX), IArray.empty))
+    val gx = kb.alloc(Term.Fn(gSym, IArray(varX), IArray.empty))
+
+    // Legacy `=`-spelled equation: head functor "eq", 2 args, empty body.
+    val eqSym = kb.intern("eq")
+    val eqHead = kb.alloc(Term.Fn(eqSym, IArray(fx, gx), IArray.empty))
+    val eqRid = kb.assertRule(eqHead, IndexedSeq.empty, sort, domain)
+    assert(kb.isEquation(eqRid), "an `eq`-headed empty-body rule is an equation")
+
+    // Migrated `<=>`-spelled equation (proposal 049): head functor "unify".
+    val unifySym = kb.intern("unify")
+    val uHead = kb.alloc(Term.Fn(unifySym, IArray(fx, gx), IArray.empty))
+    val uRid = kb.assertRule(uHead, IndexedSeq.empty, sort, domain)
+    assert(kb.isEquation(uRid), "a `unify`-headed empty-body rule is an equation")
+
+    // A `unify` head with a non-empty body is NOT an equation.
+    val guard = kb.alloc(Term.Fn(gSym, IArray(varX), IArray.empty))
+    val uBodyRid = kb.assertRule(uHead, IndexedSeq(guard), sort, domain)
+    assert(!kb.isEquation(uBodyRid), "a `unify`-headed rule with a body is not an equation")
+
+    // A `unify` head with the wrong positional arity is NOT an equation.
+    val uUnary = kb.alloc(Term.Fn(unifySym, IArray(fx), IArray.empty))
+    val uUnaryRid = kb.assertRule(uUnary, IndexedSeq.empty, sort, domain)
+    assert(!kb.isEquation(uUnaryRid), "a unary `unify` head is not an equation")
+
+    // An unrelated binary functor is NOT an equation.
+    val hSym = kb.intern("h")
+    val hHead = kb.alloc(Term.Fn(hSym, IArray(fx, gx), IArray.empty))
+    val hRid = kb.assertRule(hHead, IndexedSeq.empty, sort, domain)
+    assert(!kb.isEquation(hRid), "a non-eq/unify functor is not an equation")
+
+    // A functor that RESOLVES to a qualified symbol — short name "unify",
+    // qualified name "anthill.kernel.unify", as a real stdlib load produces —
+    // is still recognized: isEquation reads the SHORT name, not symbol identity
+    // and not the qualified name. This is the exact case the name-based check
+    // guards (its raw id differs from bare `intern("unify")`, so the old
+    // identity check would have wrongly returned false). (WI-528)
+    val scopeRaw = kb.makeNameTerm("_global").raw
+    val resolvedUnify = kb.symbols.define(
+      "unify", "anthill.kernel.unify", anthill.intern.SymbolKind.Operation, scopeRaw)
+    assertNotEquals(anthill.intern.TermSymbol.raw(resolvedUnify),
+      anthill.intern.TermSymbol.raw(unifySym),
+      "the resolved symbol must differ from the bare interned one")
+    val rHead = kb.alloc(Term.Fn(resolvedUnify, IArray(fx, gx), IArray.empty))
+    val rRid = kb.assertRule(rHead, IndexedSeq.empty, sort, domain)
+    assert(kb.isEquation(rRid), "a resolved `anthill.kernel.unify` head is still an equation")
+  }
+
   test("fact count and rule count") {
     val kb = KnowledgeBase()
     val sort = kb.makeNameTerm("S")

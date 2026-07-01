@@ -29,9 +29,6 @@ class KnowledgeBase:
   private var nextVar: Int = 0
   private val sortBaseSubst_ = HashMap.empty[Int, IndexedSeq[(TermSymbol, TermId)]]
 
-  // Pre-interned "eq" symbol for isEquation check (lazy — interned on first use)
-  private lazy val eqSym: TermSymbol = symbols.intern("eq")
-
   // ── Term allocation ─────────────────────────────────────────
 
   def alloc(term: Term): TermId = terms.alloc(term)
@@ -340,12 +337,22 @@ class KnowledgeBase:
 
   // ── Rule classification ─────────────────────────────────────
 
+  /** Check if a rule is an equation: head functor is "eq" or "unify" (the
+    * `<=>` head, proposal 049) with 2 positional args and an empty body. The
+    * classification is *type-independent* — purely the head shape — so a
+    * migrated `<=>` equation (WI-526) is recognized identically to a legacy
+    * `=` one. Recognized by SHORT NAME rather than symbol identity: a loaded
+    * functor resolves to the *Resolved* `anthill.prelude.Eq.eq` /
+    * `anthill.kernel.unify` symbol, whose short name is "eq"/"unify" — not the
+    * bare interned symbol. Mirrors rustland's `KnowledgeBase::is_equation`
+    * (WI-528). */
   def isEquation(id: RuleId): Boolean =
     val entry = rules(id.index)
     if entry.body.nonEmpty || entry.retracted then return false
     terms.get(entry.head) match
       case fn: Term.Fn =>
-        TermSymbol.raw(fn.functor) == TermSymbol.raw(eqSym) && fn.posArgs.length == 2
+        val name = symbols.name(fn.functor)
+        (name == "eq" || name == "unify") && fn.posArgs.length == 2
       case _ => false
 
   // ── Name-level substitution ──────────────────────────────────

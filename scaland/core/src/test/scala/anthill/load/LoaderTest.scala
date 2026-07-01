@@ -289,6 +289,27 @@ class LoaderTest extends munit.FunSuite:
     assert(!kb.isConstructorSymbol(colorSym), "Color should not be a constructor symbol")
   }
 
+  // WI-528 (proposal 049): a `<=>`-spelled equation parses (Pratt maps `<=>` to
+  // the `unify` functor), loads without error, and the loaded rule is recognized
+  // as an equation — so `SearchStream` excludes it from ordinary SLD candidates
+  // exactly like a legacy `=`/`eq` equation. This is the whole pipeline the
+  // stdlib migration (WI-526) rides on.
+  test("WI-528: a `<=>`-spelled equation loads and is recognized as an equation") {
+    val kb = KnowledgeBase()
+    Prelude.register(kb)
+    val parsed = Parser.parse("rule f(?x) <=> g(?x)", "<wi528>")
+      .toOption.getOrElse(fail("parse failed"))
+    val errors = Loader.loadAll(kb, IndexedSeq(parsed))
+    assert(errors.isEmpty, s"Load errors: $errors")
+
+    // `<=>` desugars the whole rule to head `unify(f(?x), g(?x))`, empty body.
+    // With no kernel.anthill loaded, the `unify` functor interns bare, so
+    // byFunctor(intern("unify")) finds it.
+    val unifyRules = kb.byFunctor(kb.intern("unify"))
+    assertEquals(unifyRules.length, 1, "one unify-headed rule loaded")
+    assert(kb.isEquation(unifyRules(0)), "the loaded `<=>` rule is an equation")
+  }
+
   // WI-451/WI-452 (§5.4): the enclosing-list HK sort type-param form loads, and
   // both the higher-kinded carrier `F` and the simple param `A` register as type
   // parameters of the enclosing sort (the marker the resolver/codegen read; scaland
