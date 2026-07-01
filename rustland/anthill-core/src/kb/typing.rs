@@ -11206,6 +11206,17 @@ fn carrier_param_receiver(
                 if !carrier_is_abstract_spec(kb, carrier_sym) {
                     return None;
                 }
+                // WI-609: REFLEXIVE — the receiver's carrier IS the op's own spec
+                // (`collect(c: C)` on `c : FiniteCollection`, spec_sort == carrier_sym).
+                // A spec doesn't provide itself, so there is no view to build; the spec's
+                // params are read DIRECTLY off the receiver's type-args in
+                // `bind_spec_params_from_carrier_param`'s reflexive branch. Return an
+                // EMPTY view (marked transitive → defer to eval) to engage that path and
+                // the abstract-spec deferral gate.
+                if kb.canonical_sort_sym(carrier_sym) == kb.canonical_sort_sym(spec_sort) {
+                    return Some((SmallVec::new(), true));
+                }
+                // WI-608: REQUIRES — the carrier `requires` the op's spec.
                 abstract_spec_required_view(kb, spec_sort, carrier_sym).map(|v| (v, true))
             })
         else {
@@ -11238,6 +11249,29 @@ fn bind_spec_params_from_carrier_param(
     view_bindings: SmallVec<[(Symbol, TermId); 2]>,
 ) -> bool {
     let recv_bindings = parameterized_vid_bindings(kb, recv_ty, carrier_sym);
+    // WI-609: REFLEXIVE — the receiver's carrier IS the op's own spec (`collect(c: C)`
+    // on `c : FiniteCollection`, spec_sort == carrier_sym == FiniteCollection). A spec
+    // doesn't provide itself, so `carrier_param_receiver` hands an EMPTY view here; the
+    // receiver's own written type-args ARE the spec's params (same canonical VarIds,
+    // since `parameterized_vid_bindings` is keyed by `carrier_sym == spec_sort`), so bind
+    // each DIRECTLY — there is no provider view to indirect through. `collect(src)` on
+    // `src : FiniteCollection[E = ES]` grounds `FiniteCollection.E ↦ ES`, threading the
+    // declared `effects E` to the receiver's own `ES`. The carrier param `C` is skipped
+    // (bound by ordinary argument unification against the receiver), matching the loop
+    // below.
+    if kb.canonical_sort_sym(carrier_sym) == kb.canonical_sort_sym(spec_sort) {
+        let mut any = false;
+        for (vid, value) in &recv_bindings {
+            if *vid == carrier_pvid {
+                continue;
+            }
+            if subst.resolve_as_value(*vid).is_none() && !occurs_in(kb, *vid, *value) {
+                subst.bind_term(kb, *vid, *value);
+                any = true;
+            }
+        }
+        return any;
+    }
     let mut any = false;
     for (spec_param_sym, carrier_value) in view_bindings {
         let spec_vid = type_param_vid_in_sort(kb, spec_sort, spec_param_sym);
