@@ -14,6 +14,7 @@ use std::io::{self, BufRead, Write};
 use std::rc::Rc;
 
 use crate::intern::Symbol;
+use crate::kb::node_occurrence::NodeOccurrence;
 
 use super::{EvalError, Interpreter, Value};
 
@@ -500,39 +501,81 @@ impl Interpreter {
         }
     }
 
-    /// Raise a division-by-zero as an anthill `Error[DivisionByZero]` effect
-    /// (WI-467). Builds the `division_by_zero(op:)` payload — `op` names the
-    /// operation that divided by zero (`"Int64.div"` etc.), matching the
-    /// `DivisionByZero` sort in `effects.anthill` — and routes it through
-    /// [`Self::raise_error`], so an installed `Error` handler catches it and
-    /// an unhandled one surfaces `EvalError::Raised` carrying the payload.
-    /// Before WI-467 this was a bespoke `EvalError::DivisionByZero` the
-    /// declared `effects Error[DivisionByZero]` (WI-066) could never catch.
+    /// Build an `Error`-effect payload entity `ctor(field: value, …)` and route
+    /// it through [`Self::raise_error`] (WI-467 / WI-610) — the shared core of
+    /// [`Self::raise_division_by_zero`] and [`Self::raise_match_failed`].
     ///
     /// Resolving the payload constructor is LOUD, not fallback-interned: a
-    /// fabricated same-name symbol would read as `division_by_zero(...)` yet
-    /// not be the sort's real constructor, so a handler couldn't destructure
-    /// it — a silent degradation the repo's "prefer a loud error" rule
-    /// forbids. If the effects prelude isn't loaded (so no program could
-    /// declare or handle `Error[DivisionByZero]` anyway), `require_symbol`
-    /// surfaces an `Internal` "not in scope".
-    pub fn raise_division_by_zero(&mut self, op: &str) -> EvalError {
-        let functor = match crate::eval::builtins::require_symbol(
-            self,
-            "anthill.prelude.DivisionByZero.division_by_zero",
-            "division_by_zero",
-        ) {
+    /// fabricated same-name symbol would read as `ctor(...)` yet not be the
+    /// sort's real constructor, so a handler couldn't destructure it — a silent
+    /// degradation the repo's "prefer a loud error" rule forbids. If the
+    /// effects prelude isn't loaded (so no program could declare or handle the
+    /// effect anyway), `require_symbol` surfaces an `Internal` "not in scope".
+    ///
+    /// Field names are plainly interned (matching the loader) and the named
+    /// args canonicalized to the sort's declared field order via
+    /// `sort_named_canonical`, so the payload hash-conses / discrim-matches
+    /// identically to one the constructor syntax would build.
+    fn raise_error_payload(
+        &mut self,
+        ctor_qname: &str,
+        ctor_short: &str,
+        named: Vec<(&str, Value)>,
+    ) -> EvalError {
+        let functor = match crate::eval::builtins::require_symbol(self, ctor_qname, ctor_short) {
             Ok(s) => s,
             Err(e) => return e,
         };
-        let op_field = self.kb_mut().intern("op");
+        let mut named_syms: Vec<(Symbol, Value)> = Vec::with_capacity(named.len());
+        for (name, v) in named {
+            let sym = self.kb_mut().intern(name);
+            named_syms.push((sym, v));
+        }
+        self.kb.sort_named_canonical(functor, &mut named_syms);
         let payload = Value::Entity {
             functor,
             pos: Rc::from([]),
-            named: Rc::from([(op_field, Value::Str(op.to_string()))]),
+            named: named_syms.into(),
             ty: None,
         };
         self.raise_error(payload)
+    }
+
+    /// Raise a division-by-zero as an anthill `Error[DivisionByZero]` effect
+    /// (WI-467): payload `division_by_zero(op: "Int64.div")` names the failing
+    /// op. Routed so an installed `Error` handler catches it; unhandled it is
+    /// `EvalError::Raised`. Was a bespoke `EvalError::DivisionByZero` the
+    /// declared `effects Error[DivisionByZero]` (WI-066) could never catch.
+    pub fn raise_division_by_zero(&mut self, op: &str) -> EvalError {
+        self.raise_error_payload(
+            "anthill.prelude.DivisionByZero.division_by_zero",
+            "division_by_zero",
+            vec![("op", Value::Str(op.to_string()))],
+        )
+    }
+
+    /// Raise a pattern-match failure as an anthill `Error[MatchFailed]` effect
+    /// (WI-610): payload `match_failed(occurrence, scrutinee)`, where
+    /// `occurrence` is the failure-site `NodeOccurrence` (the closure/let
+    /// pattern, or the match scrutinee) and `scrutinee` is the runtime value
+    /// that failed to match, carried verbatim — a `Value` is a faithful reflect
+    /// `Term`, so no reification is needed. Routed so an installed `Error`
+    /// handler catches it; unhandled it is `EvalError::Raised`. Was a bespoke
+    /// `EvalError::MatchFailed` the declared `effects Error[MatchFailed]` could
+    /// never catch.
+    pub fn raise_match_failed(
+        &mut self,
+        occurrence: Rc<NodeOccurrence>,
+        scrutinee: Value,
+    ) -> EvalError {
+        self.raise_error_payload(
+            "anthill.prelude.MatchFailed.match_failed",
+            "match_failed",
+            vec![
+                ("occurrence", Value::Node(occurrence)),
+                ("scrutinee", scrutinee),
+            ],
+        )
     }
 
     /// Register the standard effect handlers. Includes real-stdio

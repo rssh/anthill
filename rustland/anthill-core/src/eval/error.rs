@@ -27,7 +27,6 @@ pub enum EvalError {
     /// quickly. Empty when no `step_cap` was set (the ring is only maintained
     /// when a cap could fire).
     StepsExhausted { cap: u64, chain: Vec<String> },
-    MatchFailed { scrutinee: String },
     UnhandledEffect { effect: Symbol, payload: Option<TermId> },
     /// An anthill-level `Error` effect was raised (proposal 027 §Error).
     /// Produced at the effect-dispatch site from a handler's
@@ -104,7 +103,6 @@ impl std::fmt::Display for EvalError {
                 }
                 Ok(())
             }
-            EvalError::MatchFailed { scrutinee } => write!(f, "pattern match failed on {scrutinee}"),
             EvalError::UnhandledEffect { .. } => write!(f, "unhandled effect"),
             EvalError::Raised { .. } => write!(f, "raised error"),
             EvalError::UnsupportedHandlerAction { action, effect, op, detail, backtrace } => {

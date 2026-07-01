@@ -793,7 +793,10 @@ impl Interpreter {
             })
             .collect();
         self.suspend_and_push(
-            AwaitState::MatchDispatch { branches: branches_cloned },
+            AwaitState::MatchDispatch {
+                branches: branches_cloned,
+                scrutinee_occ: scrutinee.clone(),
+            },
             scrutinee.clone(),
         )
     }
@@ -1475,9 +1478,13 @@ impl Interpreter {
                 c.type_args.iter().cloned().collect();
             (c.param_pattern.clone(), c.body.clone(), reqs, ta)
         });
-        let bindings = match_pattern(self, &param_pattern, &arg).ok_or_else(|| {
-            EvalError::MatchFailed { scrutinee: scrutinee_diag(&self.kb, &arg) }
-        })?;
+        let bindings = match match_pattern(self, &param_pattern, &arg) {
+            Some(b) => b,
+            // WI-610: route the match failure through the Error handler so an
+            // installed `Error[MatchFailed]` handler catches it; occurrence is
+            // the closure's parameter pattern, scrutinee the argument value.
+            None => return Err(self.raise_match_failed(param_pattern.clone(), arg.clone())),
+        };
         let mut locals: SmallVec<[(Symbol, Value); 4]> = self.closures.clone_env(&handle);
         for (sym, v) in bindings {
             locals.push((sym, v));
@@ -1530,9 +1537,12 @@ impl Interpreter {
                 AwaitState::LetBind { pattern, body } => {
                     // Hoist the pattern-match result out of the borrow so we
                     // don't hold a `&self` while we mutate `top.locals`.
-                    let bindings = match_pattern(self, &pattern, &v).ok_or_else(|| {
-                        EvalError::MatchFailed { scrutinee: scrutinee_diag(&self.kb, &v) }
-                    })?;
+                    // WI-610: a `let` pattern that doesn't match routes through
+                    // the Error handler (occurrence = the let pattern).
+                    let bindings = match match_pattern(self, &pattern, &v) {
+                        Some(b) => b,
+                        None => return Err(self.raise_match_failed(pattern.clone(), v.clone())),
+                    };
                     let top = self.stack.top_mut().unwrap();
                     for (sym, val) in bindings {
                         top.locals.push((sym, val));
@@ -1540,7 +1550,7 @@ impl Interpreter {
                     top.expr = body;
                     return Ok(StepOutcome::Continue);
                 }
-                AwaitState::MatchDispatch { branches } => {
+                AwaitState::MatchDispatch { branches, scrutinee_occ } => {
                     let scrutinee_functor = value_functor(&self.kb, &v);
                     let mut picked: Option<(Rc<NodeOccurrence>, super::pattern::Bindings)> = None;
                     for branch in &branches {
@@ -1566,9 +1576,12 @@ impl Interpreter {
                             break;
                         }
                     }
-                    let (body, bindings) = picked.ok_or_else(|| {
-                        EvalError::MatchFailed { scrutinee: scrutinee_diag(&self.kb, &v) }
-                    })?;
+                    // WI-610: no arm matched — route through the Error handler
+                    // with the scrutinee occurrence and the failing value.
+                    let (body, bindings) = match picked {
+                        Some(x) => x,
+                        None => return Err(self.raise_match_failed(scrutinee_occ, v.clone())),
+                    };
                     let top = self.stack.top_mut().unwrap();
                     for (sym, val) in bindings {
                         top.locals.push((sym, val));
@@ -1917,18 +1930,6 @@ pub(crate) fn runtime_carrier_sort(kb: &KnowledgeBase, value: &Value) -> Option<
     match kb.get_term(parent_tid) {
         Term::Fn { functor, .. } | Term::Ref(functor) | Term::Ident(functor) => Some(*functor),
         _ => None,
-    }
-}
-
-/// Diagnostic label for a value used in a failed pattern match. Augments
-/// the bare `type_name()` (e.g. "Entity") with the functor name when one
-/// is recoverable, so the error reads `pattern match failed on
-/// Entity(WorkItem)` instead of just `Entity`. Critical for debugging
-/// bundle code where every materialized record shows up as "Entity".
-fn scrutinee_diag(kb: &KnowledgeBase, value: &Value) -> String {
-    match value_functor(kb, value) {
-        Some(sym) => format!("{}({})", value.type_name(), kb.resolve_sym(sym)),
-        None => value.type_name().to_string(),
     }
 }
 

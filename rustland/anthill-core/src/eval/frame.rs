@@ -44,8 +44,13 @@ pub enum AwaitState {
         body: Rc<NodeOccurrence>,
     },
     /// `match_expr` scrutinee is being evaluated; on delivery try each
-    /// branch against the value until one matches.
-    MatchDispatch { branches: Vec<MatchBranch> },
+    /// branch against the value until one matches. `scrutinee_occ` is the
+    /// scrutinee expression's occurrence, kept so an exhausted match can raise
+    /// `Error[MatchFailed]` with a source-anchored payload (WI-610).
+    MatchDispatch {
+        branches: Vec<MatchBranch>,
+        scrutinee_occ: Rc<NodeOccurrence>,
+    },
     /// An apply node is collecting arg values one at a time. `remaining`
     /// holds the argument occurrences still to evaluate (in order).
     /// `type_args` carries the typer-resolved operation type

@@ -259,7 +259,10 @@ end
 
 #[test]
 fn m2_match_failed_raises_error() {
-    // No wildcard, no matching literal → MatchFailed.
+    // No wildcard, no matching literal → routed through Error[MatchFailed]
+    // (WI-610). Unhandled, it surfaces as Raised carrying a
+    // match_failed(occurrence, scrutinee) payload whose scrutinee is the value
+    // that didn't match (3), not the old bespoke EvalError::MatchFailed.
     let src = r#"
 namespace test.m2_match_fail
   operation choose(n: Int64) -> Int64 =
@@ -272,10 +275,88 @@ end
     let kb = load_kb_with(src);
     let mut interp = Interpreter::new(kb);
     let err = interp.call("test.m2_match_fail.main", &[]).unwrap_err();
+    match err {
+        EvalError::Raised { payload } => match &payload {
+            Value::Entity { functor, named, .. } => {
+                assert_eq!(
+                    interp.kb().qualified_name_of(*functor),
+                    "anthill.prelude.MatchFailed.match_failed",
+                    "payload functor is the real sort constructor",
+                );
+                let scrutinee = named
+                    .iter()
+                    .find(|(s, _)| interp.kb().resolve_sym(*s) == "scrutinee")
+                    .map(|(_, v)| v);
+                assert_eq!(
+                    scrutinee.and_then(|v| v.as_int()),
+                    Some(3),
+                    "scrutinee payload is the failing value; got {payload:?}",
+                );
+            }
+            other => panic!("expected a match_failed entity payload, got {other:?}"),
+        },
+        other => panic!("expected Raised, got {other:?}"),
+    }
+}
+
+#[test]
+fn wi610_match_failure_routes_through_error_handler() {
+    // WI-610: a match failure is routed through the installed Error handler
+    // (interp.raise_error), so a handler actually observes it — the old
+    // bespoke EvalError::MatchFailed bypassed every handler.
+    use anthill_core::eval::effects::HandlerAction;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    let src = r#"
+namespace test.wi610_catch
+  operation choose(n: Int64) -> Int64 =
+    match n
+      case 1 -> 10
+  operation main() -> Int64 = choose(7)
+end
+"#;
+    let mut interp = interp_for(src);
+    let seen: Rc<RefCell<Option<Value>>> = Rc::new(RefCell::new(None));
+    let seen_h = seen.clone();
+    interp
+        .register_effect_handler(
+            "anthill.prelude.Error",
+            Box::new(move |_i, _op, args| {
+                *seen_h.borrow_mut() = args.first().cloned();
+                Ok(HandlerAction::Throw(args.first().cloned().unwrap_or(Value::Unit)))
+            }),
+        )
+        .expect("register Error handler");
+
+    let err = interp.call("test.wi610_catch.main", &[]).unwrap_err();
     assert!(
-        matches!(err, EvalError::MatchFailed { .. }),
-        "expected MatchFailed, got {err:?}",
+        matches!(err, EvalError::Raised { .. }),
+        "raise is non-resumable, so a Throwing handler still aborts as Raised; got {err:?}",
     );
+    let payload = seen
+        .borrow()
+        .clone()
+        .expect("the Error handler was consulted for the match failure");
+    match &payload {
+        Value::Entity { functor, named, .. } => {
+            assert_eq!(
+                interp.kb().qualified_name_of(*functor),
+                "anthill.prelude.MatchFailed.match_failed",
+            );
+            // occurrence field rides as a Value::Node (the reflect NodeOccurrence
+            // carrier); scrutinee is the failing value (7).
+            let has_occurrence = named.iter().any(|(s, v)| {
+                interp.kb().resolve_sym(*s) == "occurrence" && matches!(v, Value::Node(_))
+            });
+            assert!(has_occurrence, "occurrence rides as Value::Node; got {payload:?}");
+            let scrutinee = named
+                .iter()
+                .find(|(s, _)| interp.kb().resolve_sym(*s) == "scrutinee")
+                .and_then(|(_, v)| v.as_int());
+            assert_eq!(scrutinee, Some(7), "handler saw the failing scrutinee; got {payload:?}");
+        }
+        other => panic!("expected a match_failed entity payload, got {other:?}"),
+    }
 }
 
 #[test]
