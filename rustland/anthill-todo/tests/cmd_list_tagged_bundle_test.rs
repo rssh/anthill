@@ -119,3 +119,43 @@ fn empty_tag_reports_no_items() {
     let stdout = run_bundle(&proj, &["list", "--tag", "absent"]);
     assert_eq!(stdout, "No work items tagged 'absent'.\n");
 }
+
+/// WI-597: a deps-met PreOpened row must NOT grab `<- next`. It sorts first
+/// (smaller id, Kahn smallest-id tie-break) and has no unmet deps, so the old
+/// negative `not is_satisfied` test wrongly marked it. The marker must skip the
+/// parked PreOpened row and land on the genuinely-claimable Open row.
+const NEXT_SKIPS_PREOPENED_FIXTURE: &str = r#"
+fact WorkItem(
+  id: "WI-100",
+  description: "deferred backlog item",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: [],
+  status: PreOpened)
+
+fact WorkItem(
+  id: "WI-101",
+  description: "live actionable item",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: [],
+  status: Open)
+
+fact Tag(workitem: "WI-100", name: "seq")
+fact Tag(workitem: "WI-101", name: "seq")
+"#;
+
+#[test]
+fn next_marker_skips_deps_met_preopened_row() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let proj = setup_project(&tmp, NEXT_SKIPS_PREOPENED_FIXTURE);
+
+    let stdout = run_bundle(&proj, &["list", "--tag", "seq"]);
+    let expected = "tag 'seq' (2 item(s), sequence order):\n\
+                    \x20 WI-100 [PreOpened] deferred backlog item\n\
+                    \x20 WI-101 [Open] live actionable item  <- next\n\
+                    2 item(s)\n";
+    assert_eq!(stdout, expected);
+
+    // Byte-for-byte parity: the native path must agree with the bundle.
+    let native = run_native(&proj, &["list", "--tag", "seq"]);
+    assert_eq!(stdout, native, "bundle vs native diverged");
+}

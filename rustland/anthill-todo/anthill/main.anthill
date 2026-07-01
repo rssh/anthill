@@ -899,6 +899,19 @@ namespace anthill.todo
       else if eq(status, "Verified") then true
       else false
 
+    -- Positive claimability gate for the tag view's `<- next` marker.
+    -- Mirrors the KB `claimable` rule (anthill-todo/rules.anthill), which is
+    -- strictly `status == Open` + deps satisfied. The deps-satisfied half is
+    -- checked separately at the call site (unmet == nil); this is the status
+    -- half. Only Open qualifies: PreOpened (backlog), Draft, and the terminal
+    -- off-ramps (Rejected/ProposalRejected/Stale) are NOT satisfied either, so
+    -- the old negative `not is_satisfied` test let a parked PreOpened row grab
+    -- `<- next` ahead of a live Open one (WI-597). Claimed is deliberately
+    -- excluded: an in-progress item is "current", not "next" — the build loop
+    -- resumes Claimed items separately, and `anthill-todo next` lists only Open.
+    operation is_claimable_next(status: String) -> Bool =
+      eq(status, "Open")
+
     operation any_unmet(deps: List[String], row_map: Map[String, Row]) -> Bool =
       match deps
         case nil() -> false
@@ -1534,7 +1547,7 @@ namespace anthill.todo
                     let unmet = unmet_deps(deps, row_map)
                     let is_next =
                       if next_marked then false
-                      else if is_satisfied(status) then false
+                      else if not(is_claimable_next(status)) then false
                       else match unmet
                         case nil() -> true
                         case cons(_, _) -> false

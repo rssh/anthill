@@ -64,7 +64,7 @@ anthill-todo -d "$PWD" init                              # Initialize anthill-to
 
 A *named list* (tag) plus `list --tag` gives a machine-readable, dependency-ordered
 sequence: `list --tag typing` shows the tag's items topologically (a dependency
-appears before its dependents) with status, marking the first undelivered item whose
+appears before its dependents) with status, marking the first Open item whose
 dependencies are all satisfied with `<- next`. `insert "desc" --before WI-CUR --tag typing`
 creates a new item, tags it, and makes WI-CUR depend on it — the "insert a blocking
 prerequisite" step, in one command.
