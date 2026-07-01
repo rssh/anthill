@@ -9147,6 +9147,57 @@ impl<'a> Loader<'a> {
                 let sort_sym = self.remap_name(name);
                 Value::term(self.kb.make_sort_ref(sort_sym))
             }
+            // WI-600: a NESTED parameterized binding VALUE (`Element = Pair[A = K, B
+            // = V]`) is lowered to the PLAIN parameterized term `Fn{Pair, named}` —
+            // NOT a `reflect.SortView` wrapper. Only the OUTER spec view is a
+            // `SortView` (assembled by the top-level `sort_inst_to_value` /
+            // `maybe_emit_fact_provides_info`); a nested type argument is an ordinary
+            // type, so carrier grounding (`substitute_carrier_params`) grounds and
+            // compares it against a user-written `Pair[…]` (also a plain `Fn`)
+            // directly, with no SortView→Fn rebuild. The leaves stay canonical `Ref`s
+            // (the dispatch matcher's `impl_param_ref` wildcard contract, WI-387).
+            // A denoted-bearing child (a value-in-type) can't ride a hash-consed
+            // `Fn`, so that exotic case keeps the faithful `SortView` `Value::Entity`
+            // carrier via `assemble_sort_view_value` — matching this fn's twin,
+            // `canonicalize_fact_binding_value`, so the fact / provides emissions
+            // stay byte-identical (WI-449).
+            TypeExpr::Parameterized { name, bindings } => {
+                let base_sym = self.remap_name(name);
+                let declared_params = self.kb.type_params_of_sort(base_sym);
+                // Explicit named bindings first, then positionals mapped onto the
+                // declared params in order — matching `canonicalize_fact_binding_value`
+                // (its input `Fn` lists named_args before pos_args), so the fact and
+                // provides emissions stay byte-identical (WI-449). A double-bind or an
+                // overflow positional diverts to `pos`, which `assemble_binding_value`
+                // preserves (via the `SortView` carrier) rather than dropping — the
+                // loud-over-silent rule.
+                let mut named: Vec<(Symbol, Value)> = Vec::new();
+                let mut positionals: Vec<Value> = Vec::new();
+                for b in bindings {
+                    let bound = self.sort_binding_to_value(&b.bound);
+                    match &b.param {
+                        Some(p) => named.push((self.reintern(p.last()), bound)),
+                        None => positionals.push(bound),
+                    }
+                }
+                let mut pos: Vec<Value> = Vec::new();
+                let mut positional_index: usize = 0;
+                for bound in positionals {
+                    match declared_params.get(positional_index) {
+                        Some(pn) => {
+                            positional_index += 1;
+                            let sym = self.kb.intern(pn);
+                            if named.iter().any(|(s, _)| *s == sym) {
+                                pos.push(bound);
+                            } else {
+                                named.push((sym, bound));
+                            }
+                        }
+                        None => pos.push(bound),
+                    }
+                }
+                self.assemble_binding_value(base_sym, named, pos)
+            }
             _ => self.sort_inst_to_value(ty),
         }
     }
@@ -10087,15 +10138,16 @@ impl<'a> Loader<'a> {
             return Value::term(value);
         }
         let params = self.kb.type_params_of_sort(functor);
-        // `pos[0]` is the base sort's name term (the SortView's subject), mirroring
-        // `sort_inst_to_value`. Recurse into any explicit named values, then map each
-        // positional arg onto the base sort's declared param in order.
-        let name_term = self.kb.make_name_term_from_sym(functor);
-        let mut pos: Vec<Value> = vec![Value::term(name_term)];
+        // Recurse into any explicit named values, then map each positional arg onto
+        // the base sort's declared param in order.
         let mut named: Vec<(Symbol, Value)> = named_args
             .iter()
             .map(|(s, v)| (*s, self.canonicalize_fact_binding_value(*v)))
             .collect();
+        // A stray positional (double-bind, or more positionals than declared params)
+        // is a malformed instantiation kept in `pos` — invisible to the SortView
+        // Value::Entity branch's readers but preserved rather than dropped.
+        let mut pos: Vec<Value> = Vec::new();
         let mut positional_index: usize = 0;
         for pos_val in pos_args.iter() {
             let cv = self.canonicalize_fact_binding_value(*pos_val);
@@ -10103,20 +10155,59 @@ impl<'a> Loader<'a> {
                 Some(param_name) => {
                     positional_index += 1;
                     let param_sym = self.kb.intern(param_name);
-                    // A name given both positionally and explicitly is a malformed
-                    // double-bind; keep the positional rather than silently drop it.
                     if named.iter().any(|(s, _)| *s == param_sym) {
                         pos.push(cv);
                     } else {
                         named.push((param_sym, cv));
                     }
                 }
-                // More positional args than declared params — a malformed
-                // instantiation; keep the arg positional rather than drop it.
                 None => pos.push(cv),
             }
         }
-        self.assemble_sort_view_value(pos, named)
+        // WI-600: a nested parameterized sort application is the PLAIN `Fn{base,
+        // named}`, NOT a `reflect.SortView` wrapper — the fact-path twin of
+        // `sort_binding_to_value`, byte-identical so a `fact Spec[…]` and a
+        // `provides Spec[…]` emit the same spec (WI-449). Only the OUTER spec view
+        // (assembled by `maybe_emit_fact_provides_info` / `sort_inst_to_value` via
+        // `assemble_sort_view_value`) is a `SortView`. A denoted-bearing child or a
+        // stray positional (which a hash-consed `Fn` can't hold) falls back to the
+        // faithful `SortView` `Value::Entity` carrier.
+        self.assemble_binding_value(functor, named, pos)
+    }
+
+    /// WI-600 — assemble a NESTED parameterized binding VALUE (`Element = Pair[A =
+    /// K, B = V]`), choosing the faithful representation: the PLAIN parameterized
+    /// term `Fn{base, named}` when every binding is ground and no stray positional
+    /// remains, else the `reflect.SortView` `Value::Entity` carrier (a denoted child
+    /// — value-in-type — a stray/overflow positional, or a double-bind can't ride a
+    /// hash-consed `Fn`; a `SortView` Entity carries them faithfully rather than
+    /// silently dropping, per the repo's loud-over-silent rule). The single decision
+    /// point shared by [`sort_binding_to_value`] (the `provides` path) and
+    /// [`canonicalize_fact_binding_value`] (the `fact` path), so the two emit
+    /// BYTE-IDENTICAL specs for every input (WI-449) — the plain `Fn` only replaces
+    /// the former nested `SortView` for the clean, well-formed case, exactly where
+    /// carrier grounding compares it against a user-written `Pair[…]` (also a plain
+    /// `Fn`) with no SortView→Fn rebuild. `pos` holds only the stray positionals
+    /// (overflow / double-bind); the base name term is prepended for the SortView
+    /// subject slot, mirroring the outer spec view.
+    fn assemble_binding_value(
+        &mut self,
+        base_sym: Symbol,
+        named: Vec<(Symbol, crate::eval::value::Value)>,
+        pos: Vec<crate::eval::value::Value>,
+    ) -> crate::eval::value::Value {
+        use crate::eval::value::Value;
+        if pos.is_empty() && named.iter().all(|(_, v)| matches!(v, Value::Term { .. })) {
+            let base_ref = self.kb.make_sort_ref(base_sym);
+            let ground: Vec<(Symbol, TermId)> =
+                named.iter().map(|(s, v)| (*s, v.expect_term())).collect();
+            Value::term(self.kb.make_parameterized_type(base_ref, &ground))
+        } else {
+            let name_term = self.kb.make_name_term_from_sym(base_sym);
+            let mut all_pos = vec![Value::term(name_term)];
+            all_pos.extend(pos);
+            self.assemble_sort_view_value(all_pos, named)
+        }
     }
 
     /// If `fact_term` is `Spec[bindings]` claiming spec satisfaction,
