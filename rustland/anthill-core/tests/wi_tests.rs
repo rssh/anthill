@@ -212,6 +212,9 @@ mod wi283_typer_firing_test;
 #[path = "include/wi283_type_directed_guard_test.rs"]
 mod wi283_type_directed_guard_test;
 
+#[path = "include/wi596_container_guard_test.rs"]
+mod wi596_container_guard_test;
+
 #[path = "include/match_branch_join_test.rs"]
 mod match_branch_join_test;
 

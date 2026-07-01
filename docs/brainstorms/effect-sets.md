@@ -30,7 +30,7 @@ All the pieces exist; none are wired together.
 | piece | what it is | gap |
 |---|---|---|
 | `Set` (`prelude/set.anthill`, 24 lines) | **typeclass**: `empty`/`insert`/`member`/`subset`/`union`/`intersection`/`difference` + **equational laws** (idempotent & commutative `insert`; `union`/`subset` identities) | orphan; only *base-case* laws (no recursive `member`/`subset`/`union` over `insert`) |
-| `EffectSet` (`prelude/effect-set.anthill`) | `Set` specialized to `T = Effect[?]` (`sort E = ?; requires Set[S=E, T=Effect[?]]`) | orphan; abstract (no concrete value); not wired |
+| `EffectSet` (`prelude/effect-set.anthill`) | `Set` specialized to `T = Effect[?]` (a carrier `E` that `provides Set[T=Effect[?]]`; `Set` is now self-representing — no separate `S` carrier param — per WI-596) | orphan; abstract (no concrete value); not wired |
 | `Function.E` (`prelude/function.anthill`) | the effect-set **parameter** of `Function[A,B,E]`; `apply(f,x) -> B effects E`; `PureFunction = Function[…,E={}]` | `E` declared `sort E = ?` (mis-kinded as a sort/type); "encoding of empty effect sets" left open |
 | `arrow.effects` (reflect `Type`, `prelude/sort.anthill`) | the effect-set on a function type | `effects: List[Type]`, not an `EffectSet` |
 | `effects` clause / `@` (grammar.js:355, 1017) | surface syntax; `_effect_type = simple_type \| parameterized_type \| variable_term` | so **`?E` already parses** in effect position, but unkinded |

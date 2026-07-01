@@ -61,16 +61,28 @@ sort anthill.prelude.Map
   -- runnable `size` body gets the O(1) override. Closing the body-less gap is WI-444.
   operation size(m: Map) -> Int64
 
-  -- Laws (algebraic specification)
-  rule get(empty, ?) <=> none
-  rule get(put(?m, ?k, ?v), ?k) <=> some(?v)
+  -- Laws (algebraic specification). The genuinely-reducing (terminating,
+  -- body-less) laws are tagged [simp] so the type-directed rewriter fires them
+  -- once the redex's carrier is known to provide Map (WI-596; the sort-level
+  -- `requires Eq[T = K]` rides on that provides fact). The `get(put(m,k2,v),k)`
+  -- law is left UNTAGGED: it carries an explicit `:- neq(k, k2)` guard, so it is
+  -- a conditional rewrite (a non-empty body) the resolver's `is_equation` gate
+  -- does not yet index — that "explicit :- guard" firing path is a separate
+  -- sibling concern, not WI-596.
+  -- NOTE: a bare-identifier RHS immediately before `[simp]` (`<=> none [simp]`)
+  -- parses as an instantiation `none[simp]`, not as a rule meta-block; writing
+  -- the nullary constructor as `none()` / `empty()` makes `[simp]` attach as the
+  -- meta-block. (Literal/variable/application RHSs — `true`, `?s`, `some(?v)` —
+  -- have no such ambiguity.)
+  rule get(empty, ?) <=> none() [simp]
+  rule get(put(?m, ?k, ?v), ?k) <=> some(?v) [simp]
   rule get(put(?m, ?k2, ?v), ?k) = get(?m, ?k)
     :- neq(?k, ?k2)
 
-  rule contains(?m, ?k) <=> neq(get(?m, ?k), none)
+  rule contains(?m, ?k) <=> neq(get(?m, ?k), none) [simp]
 
-  rule remove(empty, ?) <=> empty
-  rule get(remove(?m, ?k), ?k) <=> none
+  rule remove(empty, ?) <=> empty() [simp]
+  rule get(remove(?m, ?k), ?k) <=> none() [simp]
 
-  rule size(empty) <=> 0
+  rule size(empty) <=> 0 [simp]
 end

@@ -21421,9 +21421,13 @@ pub fn simp_fire_guard_holds(kb: &KnowledgeBase, redex: &NodeOccurrence) -> bool
 /// when the signature is unavailable, a carrier argument's sort head is unknown
 /// (`arg_carrier_sort` returns `None`: a missing positional slot, an unresolved
 /// type, or a headless type — under-determined, never NAF-decided; WI-067), or
-/// it does not provide the spec. The carrier arguments are the parameters
+/// it does not provide the spec. The carrier arguments depend on the sort's
+/// shape (WI-596): for a carrier-parameter typeclass they are the parameters
 /// declared with the spec sort's own type-parameter (`add(a: T, b: T)` → both
-/// `a` and `b`; `scale(v: T, k: Int)` → just `v`).
+/// `a` and `b`; `scale(v: T, k: Int)` → just `v`); for a self-representing
+/// container (some parameter is typed with the sort itself) they are the
+/// sort-typed parameters (`member(x: T, s: Set)` → just `s`), and the content
+/// type-parameter arguments (`x: T`) carry no obligation.
 fn simp_guard_holds_core(
     kb: &KnowledgeBase,
     functor: Symbol,
@@ -21439,12 +21443,42 @@ fn simp_guard_holds_core(
         return false;
     };
     let type_params = kb.type_params_of_sort(spec_sort);
+
+    // WI-596 — two shapes of spec sort name their carrier differently, and the
+    // "which argument carries the spec" decision must follow the shape:
+    //
+    //   * A pure carrier-parameter typeclass (`Magma`, `Eq`, `Numeric`) names its
+    //     carrier BY a type-parameter — `op2(a: T, b: T)` — so its instances ARE
+    //     the type-param values (`fact Magma[T = Int64]` ⇒ `Int64` provides
+    //     `Magma`). The carrier arguments are the type-param-typed ones.
+    //   * A self-representing container (`Set`, `Map`, `List`, `Stream`) names its
+    //     carrier by the SORT ITSELF — `insert(s: Set, x: T)`, `get(m: Map, …)` —
+    //     and its type-parameters (`T`, `K`/`V`) are CONTENT (element / key /
+    //     value), constrained by the sort's `requires` (`Eq[T]`), NOT required to
+    //     provide the sort. The carrier arguments are the sort-typed ones; the
+    //     content arguments carry no separate obligation, because a carrier that
+    //     `provides Set[T = …]` has already discharged the sort's `requires` on
+    //     its element at that provider fact (WI-343).
+    //
+    // Detect the self-representing shape: some parameter is typed with the spec
+    // sort itself. This is what makes `Set.member`'s element `x: T` NOT a carrier
+    // — checking `sort_provides(element, Set)` would wrongly leave every container
+    // law dormant (the WI-596 gap), and it is why phase-1's carrier-parameter
+    // sorts (no self-typed parameter) keep the type-param carrier rule unchanged.
+    let self_representing = rec
+        .params
+        .iter()
+        .any(|(_n, pty)| carrier_sort_of_value(kb, pty).is_some_and(|s| same_symbol(kb, s, spec_sort)));
+
     let mut checked_carrier = false;
     for (i, (_param_name, param_type)) in rec.params.iter().enumerate() {
-        // Is this parameter declared with the spec sort's type-parameter?
-        // WI-341 Stage A: carrier-agnostic read of the (now `Value`) param type.
-        let is_carrier = carrier_sort_of_value(kb, param_type)
-            .is_some_and(|s| type_params.iter().any(|tp| tp.as_str() == kb.resolve_sym(s)));
+        // Which parameters carry the spec depends on the shape (above). WI-341
+        // Stage A: carrier-agnostic read of the (now `Value`) param type.
+        let is_carrier = match carrier_sort_of_value(kb, param_type) {
+            Some(s) if self_representing => same_symbol(kb, s, spec_sort),
+            Some(s) => type_params.iter().any(|tp| tp.as_str() == kb.resolve_sym(s)),
+            None => false,
+        };
         if !is_carrier {
             continue;
         }

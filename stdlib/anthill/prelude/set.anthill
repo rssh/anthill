@@ -1,24 +1,30 @@
--- Set: typeclass for set-like types.
--- S is the set type, T is the element type.
+-- Set: typeclass for set-like types. Self-representing (WI-596): the carrier is
+-- `Set` itself — like Map / List / Stream, ops take `s: Set` — and `T` is the
+-- element type. (Earlier Set carried a separate `sort S = ?` carrier parameter;
+-- that made it the lone container spelled as a carrier-parameter typeclass. It is
+-- now uniform with its sibling Map.)
 sort anthill.prelude.Set
-  sort S = ?         -- the set type
   sort T = ?         -- element type
   requires Eq[T]
 
-  operation empty() -> S
-  operation insert(s: S, x: T) -> S
-  operation member(x: T, s: S) -> Bool
-  operation subset(s1: S, s2: S) -> Bool
-  operation union(s1: S, s2: S) -> S
-  operation intersection(s1: S, s2: S) -> S
-  operation difference(s1: S, s2: S) -> S
+  operation empty() -> Set
+  operation insert(s: Set, x: T) -> Set
+  operation member(x: T, s: Set) -> Bool
+  operation subset(s1: Set, s2: Set) -> Bool
+  operation union(s1: Set, s2: Set) -> Set
+  operation intersection(s1: Set, s2: Set) -> Set
+  operation difference(s1: Set, s2: Set) -> Set
 
-  -- Laws
-  rule member(?x, insert(?s, ?x)) <=> true
-  rule insert(insert(?s, ?x), ?x) <=> insert(?s, ?x)              -- idempotent
-  rule insert(insert(?s, ?x), ?y) <=> insert(insert(?s, ?y), ?x)  -- commutative
-  rule member(?, empty()) <=> false
-  rule subset(empty(), ?) <=> true
-  rule union(empty(), ?s) <=> ?s
-  rule union(?s, empty()) <=> ?s
+  -- Laws. The genuinely-reducing (terminating, LHS→RHS shrinking) laws are tagged
+  -- [simp] so the type-directed rewriter fires them once the redex's carrier is
+  -- known to provide Set (WI-596; the sort-level `requires Eq[T]` is honored via
+  -- that provides fact, not op-scoped as List did). Commutativity is deliberately
+  -- NOT [simp] — a directional rewrite of it would loop.
+  rule member(?x, insert(?s, ?x)) <=> true [simp]
+  rule insert(insert(?s, ?x), ?x) <=> insert(?s, ?x) [simp]        -- idempotent
+  rule insert(insert(?s, ?x), ?y) <=> insert(insert(?s, ?y), ?x)   -- commutative (NOT [simp]: would loop)
+  rule member(?, empty()) <=> false [simp]
+  rule subset(empty(), ?) <=> true [simp]
+  rule union(empty(), ?s) <=> ?s [simp]
+  rule union(?s, empty()) <=> ?s [simp]
 end
