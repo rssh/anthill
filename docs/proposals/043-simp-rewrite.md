@@ -24,11 +24,11 @@ The `[simp]` attribute (WI-139) marks an equational rule as directionally rewrit
 - **WI-139 (delivered)** — `[simp]`/`[unfold]`/`[hint]` attributes (`anthill-core/tests/include/equational_attr_test.rs`).
 - **Proposal 025.1** (Z3 tactic DSL) — deferred the Z3-side translation of simp rules and their scope semantics; this proposal addresses a *different* deferred firing site (the typer), not the Z3 one.
 - `docs/design/occurrence-as-value-type.md` — `NodeOccurrence` / `Value::Node` substrate. `docs/design/interpreter-ir.md` — downstream consumer (equation-defined operations).
-- `docs/kernel-language.md §9` — `rule head :- body` is derivation, `rule lhs = rhs` is equation (Maude analogy).
+- `docs/kernel-language.md §9` — `rule head :- body` is derivation, `rule lhs <=> rhs` is equation (Maude analogy). The equational head connective is `<=>` (unification), not `=` (the semantic-equality *test*) — proposal 049.
 
 ## Goal
 
-Make a `[simp]`-tagged equation `lhs = rhs` fire **as a rewrite during type-checking**, not only during proof/runtime resolution. The same rule then has two roles — runtime simplification (existing) and compile-time elaboration (new) — and must behave identically in both (§4.7). The feature stands on its own (§5); on top of it, three surface features fall out as library rules: method dispatch (§6), compile-time folding (§7), and symbolic rewriting (§8). No new kernel concept: the kernel does **not** grow a "macro" — `[simp]` rules are ordinary equational rules with a second firing phase.
+Make a `[simp]`-tagged equation `lhs <=> rhs` fire **as a rewrite during type-checking**, not only during proof/runtime resolution. The same rule then has two roles — runtime simplification (existing) and compile-time elaboration (new) — and must behave identically in both (§4.7). The feature stands on its own (§5); on top of it, three surface features fall out as library rules: method dispatch (§6), compile-time folding (§7), and symbolic rewriting (§8). No new kernel concept: the kernel does **not** grow a "macro" — `[simp]` rules are ordinary equational rules with a second firing phase.
 
 ---
 
@@ -36,8 +36,9 @@ Make a `[simp]`-tagged equation `lhs = rhs` fire **as a rewrite during type-chec
 
 ### 4.1 A `[simp]` rule rewrites *expressions* — i.e. it is compile-time
 
-A `[simp]` rule is an equation (head `eq(LHS, RHS)`) tagged **directionally
-rewritable** (LHS→RHS). Its guard is its explicit `:- …` **plus the `requires`
+A `[simp]` rule is an equation (head `LHS <=> RHS`, i.e. `unify(LHS, RHS)` —
+proposal 049 relabelled the empty-body equational head from `eq` to the
+unification connective `<=>`) tagged **directionally rewritable** (LHS→RHS). Its guard is its explicit `:- …` **plus the `requires`
 of its enclosing sort** — a rule defined inside a sort inherits that sort's
 `requires` implicitly, so an in-sort rule is *not* body-less. An explicit guard
 may be **any** resolvable condition — type-level (`min_sort` / `is_entity` /
@@ -210,11 +211,11 @@ tooling can read both directions (forward to rewrite, inverse to enumerate).
 
 ```
 -- algebraic identities and a domain law, tagged for compile-time rewriting
-rule add_zero:        add(?x, 0) = ?x                       [simp]
-rule mul_one:         mul(?x, 1) = ?x                       [simp]
-rule mul_zero:        mul(?x, 0) = 0                        [simp]
-rule double_neg:      neg(neg(?x)) = ?x                     [simp]
-rule double_transpose: transpose(transpose(?m)) = ?m       [simp]   -- a user/domain law
+rule add_zero:        add(?x, 0) <=> ?x                      [simp]
+rule mul_one:         mul(?x, 1) <=> ?x                      [simp]
+rule mul_zero:        mul(?x, 0) <=> 0                       [simp]
+rule double_neg:      neg(neg(?x)) <=> ?x                    [simp]
+rule double_transpose: transpose(transpose(?m)) <=> ?m      [simp]   -- a user/domain law
 
 operation residual(v: Vector, k: Int64) -> Vector
   add(mul(v, k), mul(v, 0))      -- typer rewrites at compile time → mul(v, k)
@@ -347,7 +348,7 @@ Adds compile-time partial evaluation on the same engine:
 
 - **`constant_fold(?const, ?source)`** — the single occurrence→value bridge: at compile time binds `?const` to `?source`'s literal value if it folds, else **STUCK** (→ residualize); at runtime, identity. The only occurrence-aware value builtin; every other value op stays occurrence-unaware.
 - **STUCK** (non-constant operand) ≠ DELAY (unbound logical var): the rule doesn't fire, the call is left for runtime.
-- Value rules, e.g. `min_le: min(?x,?y)=?x :- constant_fold(?xc,?x), constant_fold(?yc,?y), compare(?xc,?yc) <= 0 [simp]`. `min(3,5) → 3` folds as an *expression* (§4.1); `min(?age,?thr)` residualizes and is rewritten by the *same* rules whenever it is later processed as an expression during resolution — one rule set, one rewriter, no separate phase (§4.7).
+- Value rules, e.g. `min_le: min(?x,?y) = ?x :- constant_fold(?xc,?x), constant_fold(?yc,?y), compare(?xc,?yc) <= 0 [simp]`. (A **guarded** equational head keeps `=`, not `<=>`: the `=`→`<=>` migration is scoped to empty-body `is_equation` heads, and a `:- guard` body excludes this rule — proposal 049 / the indexing note in §4.2.) `min(3,5) → 3` folds as an *expression* (§4.1); `min(?age,?thr)` residualizes and is rewritten by the *same* rules whenever it is later processed as an expression during resolution — one rule set, one rewriter, no separate phase (§4.7).
 
 ## 8. Client C — symbolic AD (`diff`)  *(sketch)*
 

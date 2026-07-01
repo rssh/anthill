@@ -20,21 +20,21 @@ sort anthill.prelude.Ordered
   }
 
   rule {
-    gt(?a, ?b)  = gt(compare(?a, ?b), 0)
-    lt(?a, ?b)  = lt(compare(?a, ?b), 0)
-    gte(?a, ?b) = gte(compare(?a, ?b), 0)
-    lte(?a, ?b) = lte(compare(?a, ?b), 0)
-    max(?a, ?b) = ite(gte(?a, ?b), ?a, ?b)
-    min(?a, ?b) = ite(lte(?a, ?b), ?a, ?b)
+    gt(?a, ?b)  <=> gt(compare(?a, ?b), 0)
+    lt(?a, ?b)  <=> lt(compare(?a, ?b), 0)
+    gte(?a, ?b) <=> gte(compare(?a, ?b), 0)
+    lte(?a, ?b) <=> lte(compare(?a, ?b), 0)
+    max(?a, ?b) <=> ite(gte(?a, ?b), ?a, ?b)
+    min(?a, ?b) <=> ite(lte(?a, ?b), ?a, ?b)
   }
 
   -- Laws
   rule {
     -- antisymmetry
-    compare_antisym: compare(?a, ?b) = neg(compare(?b, ?a))
+    compare_antisym: compare(?a, ?b) <=> neg(compare(?b, ?a))
     -- reflexivity
-    compare_refl: compare(?a, ?a) = 0
+    compare_refl: compare(?a, ?a) <=> 0
     -- consistency with eq
-    compare_eq: eq(?a, ?b) = eq(compare(?a, ?b), 0)
+    compare_eq: eq(?a, ?b) <=> eq(compare(?a, ?b), 0)
   }
 end

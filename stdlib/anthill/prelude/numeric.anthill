@@ -13,10 +13,10 @@ sort anthill.prelude.Numeric
   }
 
   rule {
-    add_comm:  add(?a, ?b) = add(?b, ?a)
-    add_assoc: add(add(?a, ?b), ?c) = add(?a, add(?b, ?c))
-    add_identity: add(?a, zero-val) = ?a
+    add_comm:  add(?a, ?b) <=> add(?b, ?a)
+    add_assoc: add(add(?a, ?b), ?c) <=> add(?a, add(?b, ?c))
+    add_identity: add(?a, zero-val) <=> ?a
     -- prefix `-`: default impl; a carrier (e.g. Int64) may override it.
-    neg_def:   neg(?a) = sub(zero-val, ?a)
+    neg_def:   neg(?a) <=> sub(zero-val, ?a)
   }
 end

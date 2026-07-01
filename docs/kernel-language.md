@@ -203,8 +203,8 @@ sort anthill.prelude.List
   entity cons(head: T, tail: List)                   -- cons cell
 
   operation length(l: List) -> Int64
-  rule length(nil) = 0
-  rule length(cons(?x, ?xs)) = add(1, length(?xs))
+  rule length(nil) <=> 0
+  rule length(cons(?x, ?xs)) <=> add(1, length(?xs))
 end
 
 -- Option: a parametric sort
@@ -239,7 +239,7 @@ sort anthill.prelude.Eq
     eq(a: T, b: T) -> Bool          -- =
     neq(a: T, b: T) -> Bool         -- !=
   }
-  rule neq(?a, ?b) = not(eq(?a, ?b))
+  rule neq(?a, ?b) <=> not(eq(?a, ?b))              -- equational rule head: `<=>` (unify), not `=` (test)
 end
 
 -- Ordered: total ordering (requires Eq)
@@ -255,10 +255,10 @@ sort anthill.prelude.Ordered
   }
 
   rule {
-    lt(?a, ?b)  = gt(?b, ?a)
-    lte(?a, ?b) = gte(?b, ?a)
-    gte(?a, ?b) = not(lt(?a, ?b))
-    antisymmetric: ⊥ :- gt(?a, ?b), gt(?b, ?a)    -- can't have both
+    lt(?a, ?b)  <=> gt(?b, ?a)                    -- oriented rewrites: `<=>`
+    lte(?a, ?b) <=> gte(?b, ?a)
+    gte(?a, ?b) <=> not(lt(?a, ?b))
+    antisymmetric: ⊥ :- gt(?a, ?b), gt(?b, ?a)    -- constraint (a body test): stays `=`/`:-`
   }
 end
 
@@ -278,9 +278,9 @@ sort anthill.prelude.Numeric
   }
 
   rule {
-    add_comm:  add(?a, ?b) = add(?b, ?a)
-    add_assoc: add(add(?a, ?b), ?c) = add(?a, add(?b, ?c))
-    add_identity: add(?a, zero-val) = ?a
+    add_comm:  add(?a, ?b) <=> add(?b, ?a)                     -- laws are equational heads: `<=>`
+    add_assoc: add(add(?a, ?b), ?c) <=> add(?a, add(?b, ?c))   -- symmetric; citable both ways via `using`
+    add_identity: add(?a, zero-val) <=> ?a
   }
 end
 ```
@@ -410,7 +410,7 @@ operation divmod(a: Int64, b: Int64) -> (Int64, Int64)
 operation divmod(a: Int64, b: Int64) -> (quotient: Int64, remainder: Int64)
 
 -- Tuple in rules
-rule swap((?x, ?y)) = (?y, ?x)
+rule swap((?x, ?y)) <=> (?y, ?x)
 
 -- Unit
 ()
@@ -444,7 +444,7 @@ rule empty_list: []
 rule digits: [1, 2, 3]
 
 -- List destructuring via the cons/nil constructors
-rule first(cons(head: ?h, tail: ?_)) = ?h
+rule first(cons(head: ?h, tail: ?_)) <=> ?h
 ```
 
 ### 4.7 Lambda
@@ -672,8 +672,8 @@ sort List {
 A sort with entity constructors is **closed** — exactly the listed constructors exist. Pattern matching in rules works via unification on constructor terms:
 
 ```
-rule length(nil) = 0
-rule length(cons(?x, ?xs)) = add(1, length(?xs))
+rule length(nil) <=> 0
+rule length(cons(?x, ?xs)) <=> add(1, length(?xs))
 ```
 
 **Requires declaration** — a standalone `requires` in a sort or namespace body declares a sort-level constraint: the enclosing scope depends on another algebraic spec. This is distinct from operation-level `requires` clauses (preconditions on individual operations).
@@ -752,6 +752,8 @@ rule lower_bound: gte(?d, ?d_min)
   :- reachable_real(?l, ?f), position_distance(?d, ?l, ?f),
      DistanceBounds(d_min: ?d_min, d_max: ?_)
 ```
+
+**Equational rules (`<=>`).** A bodyless rule whose single head is a `<=>` (unification) term — `rule LHS <=> RHS` — is an **equational rule**: an oriented rewrite / definitional equation the engine derives L→R. This is how the prelude defines derived operations (`rule neq(?a, ?b) <=> not(eq(?a, ?b))`, `rule length(nil) <=> 0`) and how a carrier defines an operation by cases (`rule eq(red, red) <=> true`). The head connective is `<=>`, **not** `=`: `=` (`Eq.eq`) is a semantic equality *test* that never binds, whereas an equational rule head *unifies* the redex with the rule's LHS and derives the RHS (binding the LHS variables) — see §8.3. The equation is **logically symmetric** and citable both ways via `using`; a `[simp]` / `[unfold]` attribute (proposal 043) picks the auto-normalizer's firing direction (only one orientation of e.g. `add(?x, 0) <=> ?x` terminates). Guards, contracts (`ensures eq(…)`), and constraints stay `=`/`:-` — they *test*, never bind.
 
 **Bounded quantification over a collection (WI-027).** A rule-body goal may quantify over the elements of a list:
 
@@ -1145,11 +1147,11 @@ operation {
      requires neq(b, zero-val)
 
 rule {
-  add_comm:  add(?a, ?b) = add(?b, ?a)
-  add_assoc: add(add(?a, ?b), ?c) = add(?a, add(?b, ?c))
+  add_comm:  add(?a, ?b) <=> add(?b, ?a)
+  add_assoc: add(add(?a, ?b), ?c) <=> add(?a, add(?b, ?c))
 }
-→  rule add_comm:  add(?a, ?b) = add(?b, ?a)
-   rule add_assoc: add(add(?a, ?b), ?c) = add(?a, add(?b, ?c))
+→  rule add_comm:  add(?a, ?b) <=> add(?b, ?a)
+   rule add_assoc: add(add(?a, ?b), ?c) <=> add(?a, add(?b, ?c))
 ```
 
 Block and individual forms can be mixed freely — use blocks for groups of simple declarations, individual form when you want visual separation:
@@ -1176,7 +1178,7 @@ The `requires` and `ensures` clauses in operations are scoped constraints — th
 
 Operators are sugar for `Fn` terms. The tree-sitter grammar parses them as flat chains; a Pratt resolver in the converter applies precedence and associativity to produce nested `Fn` calls. Adding a new symbolic operator requires only a dictionary entry — no grammar change.
 
-**Operator tokens.** Any sequence of the characters `+`, `-`, `*`, `/`, `%`, `^`, `|`, `&`, `=`, `<`, `>`, `~` is a valid operator symbol. The character `!` is excluded from operator symbols and reserved as a prefix-only token; `!=` is an explicit two-character infix token.
+**Operator tokens.** Any sequence of the characters `+`, `-`, `*`, `/`, `%`, `^`, `|`, `&`, `=`, `<`, `>`, `~` is a valid operator symbol. The character `!` is excluded from operator symbols and reserved as a prefix-only token; `!=` is an explicit two-character infix token. The unification operator `<=>` is a single token lexed **greedy-longest before `<=`** (proposal 049): `a <= b` is `lte`, `a <=> b` is `unify`.
 
 **Infix operators** appear between terms:
 
@@ -1186,8 +1188,9 @@ Operators are sugar for `Fn` terms. The tree-sitter grammar parses them as flat 
 | `or` | 1 | Left | `or` | `Bool` (word form) |
 | `&` | 2 | Left | `and` | `Bool` |
 | `and` | 2 | Left | `and` | `Bool` (word form) |
-| `=` | 3 | None | `eq` | `Eq` |
+| `=` | 3 | None | `eq` | `Eq` (semantic equality **test**) |
 | `!=` | 3 | None | `neq` | `Eq` |
+| `<=>` | 3 | None | `unify` | `anthill.kernel` (structural **unification**) |
 | `<` | 4 | None | `lt` | `Ordered` |
 | `<=` | 4 | None | `lte` | `Ordered` |
 | `>` | 4 | None | `gt` | `Ordered` |
@@ -1221,7 +1224,7 @@ Higher priority binds tighter: `a + b * c` desugars to `add(a, mul(b, c))`. Left
 
 Prefix binds tighter than all infix operators: `!?a + ?b` desugars to `add(not(?a), ?b)`.
 
-**Boolean operators are position-directed** (WI-529). `not`, `or`, and `and` each name a dispatched **value** operation on `Bool` (`Bool.not` / `Bool.or` / `Bool.and`) inside an **operation body** (evaluated), but a **goal** form in a **rule body** (resolved): `not(goal)` is negation-as-failure (`anthill.reflect.not`), `or(g1, g2)` is disjunction (`anthill.kernel.or`), and goal conjunction is the comma (there is no `kernel.and`). Resolution is by syntactic position, not by a distinct glyph or operand type. Negation of a numeric value is written `neg(x)` → `Numeric.neg` (a defaulted spec op, `neg(?a) = sub(zero-val, ?a)`); negative literals (`-1`, `-0.45`) are lexed directly. A prefix `-` *operator* on non-literal expressions is not provided (it would collide with negative-literal lexing — WI-529).
+**Boolean operators are position-directed** (WI-529). `not`, `or`, and `and` each name a dispatched **value** operation on `Bool` (`Bool.not` / `Bool.or` / `Bool.and`) inside an **operation body** (evaluated), but a **goal** form in a **rule body** (resolved): `not(goal)` is negation-as-failure (`anthill.reflect.not`), `or(g1, g2)` is disjunction (`anthill.kernel.or`), and goal conjunction is the comma (there is no `kernel.and`). Resolution is by syntactic position, not by a distinct glyph or operand type. Negation of a numeric value is written `neg(x)` → `Numeric.neg` (a defaulted spec op, `neg(?a) <=> sub(zero-val, ?a)`); negative literals (`-1`, `-0.45`) are lexed directly. A prefix `-` *operator* on non-literal expressions is not provided (it would collide with negative-literal lexing — WI-529).
 
 **Desugaring examples:**
 
@@ -1429,7 +1432,16 @@ The kernel's reasoning engine supports:
 
 **Backward chaining (top-down):** Given a query `?- goal`, the engine searches for rules whose head unifies with the goal, then recursively proves the body terms.
 
-**Unification:** Standard first-order unification. `Var` terms unify with any term of the same type. `Fn` terms unify if their names match and all arguments unify pairwise.
+**Unification:** Standard first-order unification. `Var` terms unify with any term of the same type. `Fn` terms unify if their names match and all arguments unify pairwise. Its user-facing surface operator is `<=>` (see below).
+
+**Equality test (`=`) vs. unification (`<=>`)** (proposal 049). Two equality-shaped notions live in two different layers, and the language gives each its own operator:
+
+- **`=` — the semantic equality *test*** (`Eq.eq`, a dispatched operation returning `Bool`). It reduces both operands and compares them; it **never binds** a logical variable. `eq(7, ?p.x)` succeeds once `?p.x` reduces, but `eq(?v, ?p.x)` does **not** bind `?v` (a flex `=` that is never discharged is carried as an undischarged residual, not counted as a solution — WI-519). Use `=` for body-goal tests, operation contracts (`ensures eq(balance(result), …)`), and constraints — a postcondition must *test*, never bind.
+- **`<=>` — structural *unification*** (`anthill.kernel.unify`, a resolver primitive). It binds via a substitution effect on the resolver frame: `?v <=> ?p.x` binds `?v` to the projected value; `some(?x) <=> some(3)` binds `?x ↦ 3`. It is **occurs-checked** (`?v <=> f(?v)` is a loud failure, never a cyclic term), **symmetric** (either side may be the variable side), and **structural-only — it never dispatches**. It is the connective of equational rule heads (§5.3) and the substrate of `let`.
+
+**`let ?v = expr`** is directed sugar for **`?v <=> expr`** — one primitive, two surfaces: `<=>` for symmetric equations, `let` for introducing a named binding in a goal sequence. (`:=` is *not* this — it is reserved for the mutable-cell `Cell.set`, `c := v`, which overwrites state rather than binding a logical variable once.)
+
+**Negation.** Because `=` never binds, `not(eq(…))` is always safe. A `<=>` under `not` needs a **static allowedness** check: any variable occurring in a `<=>` under negation must be bound by an earlier positive goal, or the loader raises a load-time error (WI-525).
 
 **Partial entity patterns:** When an entity term appears with fewer named arguments than the entity declares, the missing fields are automatically generalized to fresh anonymous variables. This means `account(owner: "Alice")` is equivalent to `account(id: ?, owner: "Alice", balance: ?)`, and `account()` is equivalent to `account(id: ?, owner: ?, balance: ?)`. The expansion applies whenever the functor is a registered entity — including the zero-argument case, where parentheses signal pattern-matching intent (bare `account` without parens remains a reference to the entity/sort). This convention avoids requiring the user to explicitly list unneeded fields with `?`. (Its type-level counterpart — fresh variables for the unbound *parameters* of a parametric sort used as a type — is **expansion during unification**, §8.1.)
 
@@ -1552,10 +1564,10 @@ For built-in types, the operations are primitive (provided by the runtime). For 
 
 ```
 fact Eq[T = Color]
-rule eq(red, red) = true
-rule eq(green, green) = true
-rule eq(blue, blue) = true
-rule eq(?_, ?_) = false
+rule eq(red, red) <=> true
+rule eq(green, green) <=> true
+rule eq(blue, blue) <=> true
+rule eq(?_, ?_) <=> false
 ```
 
 Since facts are scoped to namespaces, different namespaces can provide different instantiations of the same spec for the same type (e.g. different orderings). A consumer chooses which instantiation to use via `import`.
@@ -1606,9 +1618,9 @@ The KB is not purely in-memory. Facts can be backed by **persistent stores** —
 **Routing** maps fact sorts to stores via ordinary rules:
 
 ```
-rule route(WorkItem(?))  = FileStore(".anthill", stage0)
-rule route(AuditEntry(?)) = SqlStore("postgresql://...", "anthill", Postgresql)
-rule route(?)             = FileStore(".anthill", stage0)   -- default
+rule route(WorkItem(?))  <=> FileStore(".anthill", stage0)
+rule route(AuditEntry(?)) <=> SqlStore("postgresql://...", "anthill", Postgresql)
+rule route(?)             <=> FileStore(".anthill", stage0)   -- default
 ```
 
 **Bootstrap.** Store configuration is itself expressed as KB facts, creating a chicken-and-egg problem. The solution: `project.anthill` at a well-known filesystem path is always loaded first (the bootstrap store). It declares other stores and routing rules. Those stores are then pulled or registered as oracles.
@@ -1725,9 +1737,9 @@ sort linear_algebra
   }
 
   rule {
-    add_comm: add(?a, ?b) = add(?b, ?a)
-    add_assoc: add(add(?a, ?b), ?c) = add(?a, add(?b, ?c))
-    scale_distrib: scale(?s, add(?a, ?b)) = add(scale(?s, ?a), scale(?s, ?b))
+    add_comm: add(?a, ?b) <=> add(?b, ?a)
+    add_assoc: add(add(?a, ?b), ?c) <=> add(?a, add(?b, ?c))
+    scale_distrib: scale(?s, add(?a, ?b)) <=> add(scale(?s, ?a), scale(?s, ?b))
   }
 end
 ```
