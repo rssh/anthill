@@ -141,13 +141,13 @@ the requirement dictionary is the instance/method **witness**.
 
 Making `Value::Requirement` / `Value::OpRef` first-class reflect objects buys:
 
-1. **Uniform typing.** Each gets the same two-type split `reflect.Type` already
-   has: a **reflect type** (it *is* a `Dictionary` / an `OpRef`) plus a
-   **denoted type** (the spec instance it witnesses, e.g. `Eq[Int]`; or, for an
-   `OpRef`, the op arrow) projected off its content. The WI-502 typed-value
-   review then resolves `OpRef`/`Requirement` uniformly — `typed` reads the
-   reflect object; the denoted type is a reflective read — instead of ad-hoc
-   per-handle decisions.
+1. **Uniform typing.** Each carries the same two-type split `reflect.Type` already
+   has: a **reflect type** (it *is* a `Dictionary` / an `OpRef`) plus a **denoted
+   type** — carried as a TYPE PARAMETER (`Dictionary[S]`, `OpRef[A]`): the spec
+   instance it witnesses (`Eq[Int]`), or for an `OpRef` the op arrow. Tracked
+   statically by the typer (§2.5), so the WI-502 typed-value review resolves
+   `OpRef`/`Requirement` uniformly by reading the *type* — not by cracking open the
+   opaque value — instead of ad-hoc per-handle decisions.
 
 2. **Introspectable dispatch.** *Which* impl did this dispatch to, *what*
    sub-requirements does it carry — enabling first-class dictionary-passing,
@@ -172,9 +172,16 @@ exercised in the codebase:
 an `enum` with entities):
 
 ```anthill
-sort Dictionary
+-- Parameterized by S — the spec instance this dict witnesses (e.g.
+-- `Dictionary[Eq[Int]]`, `Dictionary[Stream[Int]]`). S IS the "denoted type" of the
+-- two-type split (2.5): it rides as an ordinary type parameter, tracked STATICALLY
+-- by the typer — never read off the opaque value. The runtime slot still stores only
+-- `(functor, sub-handles)`; the spec lives in the type. Bare `Dictionary` (S unknown)
+-- is the existential form (2.5). A pure VIEW: inspect / navigate / resolve — no
+-- term-construction ops (those are the Term layer, 2.6).
+sort Dictionary[S]
   -- the resolved impl identity (arena slot's `functor`)
-  operation impl(d: Dictionary) -> Symbol
+  operation impl(d: Dictionary[S]) -> Symbol
 
   -- RESOLVE a spec operation against this dict's impl sort, as a callable
   -- handle: the impl op symbol plus this dict as its dispatch environment.
@@ -183,26 +190,21 @@ sort Dictionary
   -- `dispatch_via_sort_ops_table(specOp, dict)` (eval.rs:589):
   -- `sort_ops_lookup(impl(d), op_short(specOp))` with the instance-fact fallback,
   -- wrapped as `OpRef { op: target, dict: Some(d) }`.
-  operation resolveOp(d: Dictionary, specOp: Symbol) -> OpRef
+  operation resolveOp(d: Dictionary[S], specOp: Symbol) -> OpRef
   -- BULK view: all the dict's operations as a LAZY iterable of callable OpRefs
   -- (a view over the SortOpsTable slice; materializes only if collected). The
   -- enumeration face to resolveOp's keyed-lookup face.
-  operation ops(d: Dictionary) -> FiniteStream[T = OpRef]
+  operation ops(d: Dictionary[S]) -> FiniteStream[T = OpRef]
 
   -- number of sub-requirement dicts
-  operation arity(d: Dictionary) -> Int
-  -- project the i-th sub-requirement — returns another Dictionary, no copy
-  operation sub(d: Dictionary, i: Int) -> Dictionary
-  -- two-type split: the spec instance this dict witnesses, e.g. Numeric[Int]
-  operation denotedType(d: Dictionary) -> Type
-  -- GENERATE a Term that REFERENCES this dictionary value (identity-preserving) —
-  -- for binding to a var (`let a = genRef(d)`) or embedding in generated code (the
-  -- requirements slot of `OpRef.genApply`). NOT a rebuild: unlike the top-level
-  -- `reify` (which reconstructs the whole `construct_requirement` recipe as a new,
-  -- structurally-equal value), `genRef` points at THIS handle, so the referenced
-  -- dict keeps its identity and sub-dict sharing. Identity-keyed → belongs in
-  -- execution-bound terms, never as a structural leaf in a discrim-indexed occ.
-  operation genRef(d: Dictionary) -> Term
+  operation arity(d: Dictionary[S]) -> Int
+  -- project the i-th sub-requirement — no copy. Its denoted type S_i is the i-th
+  -- `requires` of S's impl, so the return is a VALUE-DEPENDENT type (proposal
+  -- 011/027): `Dictionary[S_i]`, S_i determined by the value `i`.
+  operation sub(d: Dictionary[S], i: Int) -> Dictionary[S_i]
+  -- NB no `denotedType` op: the denoted type IS the parameter S, which the typer
+  -- already has statically. Reifying S to a runtime `Type` VALUE is Type-reflection
+  -- — a meta-layer op (2.6), not a view accessor.
 end
 ```
 
@@ -240,7 +242,7 @@ therefore the *reflective / first-class* way to obtain a callable resolved op
 (and it also serves the payoff-#2 inspection uses: "which impl did this resolve
 to," proofs about dispatch). The WI-300 weave simply doesn't *need* it — it emits
 the static `apply_within` form directly — but the two doors open onto the same
-call. `impl` / `sub` / `denotedType` describe the dictionary; `resolveOp` yields
+call. `impl` / `sub` / `arity` describe the dictionary; `resolveOp` yields
 a callable/inspectable resolution.
 
 **Bulk view: `ops(d) -> FiniteStream[OpRef]`, a lazy iterable — not a `List`, not
@@ -309,8 +311,8 @@ Making it matchable would need either a **new language feature** (user-defined
 extractors) or a **core-matcher special-case** that fabricates a `dict` view over
 the opaque `Value::Requirement` (teaching `TermView` to project it as
 `ViewHead::Constructor` instead of `ViewHead::Opaque`). Neither is justified: the
-accessor ops (`impl` / `sub` / `arity` / `resolveOp` / `ops` / `denotedType`)
-already expose everything the value holds; a pattern-match face would add syntax,
+accessor ops (`impl` / `sub` / `arity` / `resolveOp` / `ops`) plus the denoted-type
+parameter already expose everything the value holds; a pattern-match face would add syntax,
 not capability. (If anthill ever gains extractors, a structural-match face could
 be revisited — noted, not planned.)
 
@@ -321,37 +323,30 @@ be revisited — noted, not planned.)
 symbol plus — **only when the op is requires-carrying** — the dictionary that
 supplies its requirements at apply (`none()` for a requires-free op). The `op` is
 already resolved; the `dict` provides the op's *own* requirements, it does not
-resolve `op`. `resolveOp` (§2.2) returns one. It is exposed as a `sort OpRef`
-with the same accessor-operation face as `Dictionary`:
+resolve `op`. `resolveOp` (§2.2) returns one. It is exposed as a `sort OpRef[A]`
+(the view; `A` = the denoted arrow) with the same accessor face as `Dictionary[S]`:
 
 ```anthill
--- A resolved operation reference: an op symbol + the dispatching dict it runs
--- under. Value form `Value::OpRef { op, dict }` (eval/value.rs:89). An OpRef IS
--- a callable function value (runtime carrier = anthill.prelude.Function,
--- eval.rs:1907); applying it dispatches `op` under `dict` (eval.rs:1215).
-sort OpRef
+-- A resolved operation reference, parameterized by A — the op's callable ARROW
+-- (its DENOTED type, e.g. `(Int, Int) -> Bool`). Same two-type-split shape as
+-- `Dictionary[S]`: reflect type `OpRef`, denoted type the parameter A, tracked
+-- statically. Value form `Value::OpRef { op, dict }` (eval/value.rs:89). An OpRef
+-- IS a callable function value (runtime carrier = anthill.prelude.Function,
+-- eval.rs:1907); applying it dispatches `op` under `dict` (eval.rs:1215). A pure
+-- VIEW — building a CALL from it (the old `genApply`) is term construction, so it
+-- lives in the Term layer (2.6) as the general `mkApply`, not a method here.
+sort OpRef[A]
   -- the resolved operation's identity; its Symbol has a fully-qualified name
-  operation op(r: OpRef) -> Symbol
+  operation op(r: OpRef[A]) -> Symbol
   -- the captured dispatching dictionary — none() only for a requires-free op
   -- (enclosing sort has no `requires`) or a namespace-level op. A
   -- requires-carrying eta captures a dict at mint — INCLUDING a same-sort eta,
   -- which captures its sort's `__req_self` because the OpRef escapes to a
   -- foreign apply frame that would otherwise leave `__req_*` unbound (WI-420).
-  operation dict(r: OpRef) -> Option[T = Dictionary]
-  -- two-type split: the op's ARROW (its callable signature) is the DENOTED
-  -- type; the reflect type is OpRef itself
-  operation denotedType(r: OpRef) -> Type
-  -- GENERATE the call occurrence: build (do NOT run) the Term that applies `op`
-  -- under this OpRef's dict to `args` —
-  -- `apply_within(fn = op, requirements = [genRef(dict)], args)`, the same shape the
-  -- op-body weave emits but with the dict embedded by REFERENCE (`genRef`, not a
-  -- rebuilt recipe); plain `apply(op, args)` when `dict` is `none()`. The constructive
-  -- corner: for splicing / elaboration / codegen / staged execution. Pure term
-  -- construction (`List[Term] -> Term`), so it always type-checks as such; the
-  -- BUILT call's well-typedness is checked later, on elaboration, against
-  -- `denotedType(r)`'s arrow. Runtime invocation is not primitive — it is
-  -- `execute(genApply(r, args))` (reflect.execute, WI-531).
-  operation genApply(r: OpRef, args: List[T = Term]) -> Term
+  operation dict(r: OpRef[A]) -> Option[T = Dictionary]
+  -- NB no `denotedType` op: the denoted arrow IS the parameter A (static). A
+  -- *reflectively* resolved OpRef has A unknown (existential `OpRef`), and reifying
+  -- A to a runtime `Type` value is Type-reflection — a meta-layer op (2.6).
 end
 ```
 
@@ -369,75 +364,76 @@ resolved op runnable.
 together and `resolveOp` closes the loop: `Dictionary` → (`resolveOp`) → `OpRef`
 → (`dict`) → `Dictionary`.
 
-**Generate vs. execute — `genApply`.** Applying an `OpRef` *runs* it; `genApply`
-*builds the call and hands it back*. `genApply(r, args)` produces the
-`apply_within(fn = op(r), requirements = [genRef(dict(r))], args)` occurrence — an
-`apply_within` of the same shape the op-body weave emits, except its requirements
-slot **references** the OpRef's already-resolved dict via `genRef` (identity-
-preserving) rather than rebuilding a fresh `construct_requirement`/`var_ref` recipe,
-so the OpRef's actual dictionary — with its sub-dict sharing — rides into the call.
-It is a first-class `Term`, for a metaprogram or a user-level weave to splice,
-elaborate, transform, or run later. This is the
-**constructive** corner of the reflect triad, and the substance of payoff-#2's
-"first-class dictionary-passing" (§2.1): *resolve* and *inspect* were already
-covered (`resolveOp`; `op` / `dict` / `denotedType`); `genApply` is the corner
-that *uses* a resolved dict to emit a dispatched call. It is deliberately
-term-generation, **not** a dynamically-typed runtime `invoke`, for three reasons:
-
-1. **It mirrors the machinery.** Dispatch is *elaborated into* `apply_within`, so
-   the reflect primitive that mirrors dispatch is a term-builder, not an executor.
-2. **It dodges the dynamic-arrow problem.** `genApply` is pure `List[Term] -> Term`
-   construction, so it type-checks unconditionally; the built call's arrow is
-   checked later, on elaboration, against `denotedType(r)`. (A *reflectively*
-   resolved `OpRef` — from `resolveOp(d, runtimeSymbol)` — has a dynamic arrow the
-   typer cannot check for a direct `r(args)`; a term-builder needs no such check.)
-3. **It is the more primitive of the two.** Runtime invocation is
-   `execute(genApply(r, args))` (`reflect.execute`, WI-531) — never the reverse; a
-   bare `invoke` yields no term to inspect or transform. So `genApply` subsumes the
-   runtime-`invoke` idea floated earlier, which stays unbuilt (and unneeded)
-   until a concrete reflective-invocation consumer appears.
-
-A `Dictionary.genApply(d, specOp, args)` would be sugar for
-`genApply(resolveOp(d, specOp), args)`, so the primitive stays on `OpRef`.
-
-**Value→term: `genRef` vs. `reify` vs. `construct`.** A dictionary crosses from the
-value layer into a term in three distinct ways, and keeping them separate is what
-preserves keying:
-
-- **`genRef(d)`** — a *reference* to THIS dict (identity-preserving). What
-  `genApply` embeds, and what a var binds to: `let a = genRef(d)`. The referenced
-  handle keeps its identity and sub-dict sharing. Identity-keyed, so it belongs
-  only in *execution-bound* terms — never as a structural leaf in a discrim-indexed
-  occurrence.
-- **`reify(d)`** — the general, top-level *rebuild* to the full
-  `construct_requirement(impl, [subs])` recipe (all sub-deps concrete, since a live
-  dict has no abstract forwards). Structural and `DiscrimKey`-able — use it when the
-  generated term must be *keyed / dedup'd*, accepting that the result is a new,
-  structurally-equal value rather than the same handle.
-- **`construct(impl, [subs])`** — *build* a fresh dict from parts (the reflect face
-  of `construct_requirement`), when assembling a witness rather than
-  referencing/rebuilding an existing one.
-
-Binding a dict to a var is then ordinary — `let a = genRef(d)` (or
-`= findDictionary[Spec[T]]`, `= resolveOp(…).dict`) — and `a` threads as a
-requirement through the *unified* `var_ref` lookup (which reads value params and
-requirement slots alike): `apply_within(fn, requirements = [var_ref(a)], …)`. The
-synthesized `__req_*` names are just the weave's special case of exactly this; a
-user-named `a` works identically. So `Value::Requirement` never has to appear as an
-opaque leaf inside a keyed term: it is *referenced* (`genRef`/`var_ref`) or *rebuilt*
-(`reify`), and only the reference/recipe — never the raw handle — rides in the
-occurrence.
+**Everything *constructive* lives in the Term layer (§2.6), not here.** Building a
+call from an `OpRef`, or turning a dictionary into a term (by reference or by
+rebuild), is *term construction*, not a view operation — so it is not a method on
+`Dictionary`/`OpRef`. §2.6 covers the Term / meta layer (`quote`/`ref`, `mkApply`,
+`reify`, `execute`, Type-reflection), which subsumes the earlier `genRef`/`genApply`
+as general, value-agnostic primitives.
 
 ### 2.5 The two-type split, precisely
 
-Either face carries it:
+The split is carried by the **type parameter**, not an operation:
 
-- **reflect type** of `d` — `Dictionary` (it *is* the handle).
-- **denoted type** of `d` — a projection: `denotedType(d)` on the op face, or a
-  reflective read on the view face — yielding the spec instance it witnesses
-  (`Eq[Int]`, `Numeric[Int]`). A pure read over `slot.functor` + sub-handles,
-  matching the arena doc: *"a structural reflect view is a pure VIEW … not new
-  storage."*
+- **reflect type** — `Dictionary` / `OpRef` (the value *is* the handle).
+- **denoted type** — the **parameter**: `S` in `Dictionary[S]` (the spec instance,
+  `Eq[Int]` / `Stream[Int]`), `A` in `OpRef[A]` (the op's arrow). It rides as an
+  ordinary type parameter, tracked STATICALLY by the typer — which is what lets a
+  dict reference or a var-bound dict type-check as a requirement, with no read of the
+  opaque value.
+
+The denoted type is **not** stored on the runtime slot and is **not** "a pure read
+over `slot.functor`" (an earlier framing this doc corrected): the slot carries only
+`(functor, sub-handles)`, and `functor` is a *carrier* that provides many specs
+(`List` provides 12), so the witnessed spec is *not* recoverable from the value. It
+need not be — the spec lives in the **type** (`S`), which the typer already has.
+
+Two consequences:
+- **Bare `Dictionary` (S unknown) is the existential form** — a dict whose spec is
+  not statically known (a heterogeneous collection, a fully dynamic source).
+- **Reifying the denoted type to a runtime `Type` value** — the old `denotedType(d)`
+  op — is Type-reflection, a meta-layer op (§2.6), gated on a consumer. Only *it*
+  would need `S` threaded to runtime (the type-args channel, WI-272/383) or, for the
+  existential case, stored on the slot. The static split needs neither. (This is what
+  dissolves the "store the spec on the slot" cost the review flagged.)
+
+### 2.6 The Term / meta layer (separate from the views)
+
+Term *construction* — producing occurrences — is a different concern from the
+`Dictionary`/`OpRef` **views**, and lives in the reflect **Term layer** (alongside
+the existing `reify` / `execute`, WI-531/535). It is **value-agnostic**: the ops
+earlier drafts hung on `Dictionary`/`OpRef` generalize here.
+
+- **`quote(v) -> Term`** (was `Dictionary.genRef`) — lift ANY value into an
+  identity-preserving *reference* Term. For a dict, `quote(d)` references THIS handle
+  (keeps identity + sub-dict sharing); it works the same for a `Cell`/`Map`.
+- **`mkApply(fn, reqs, args) -> Term`** (was `OpRef.genApply`) — build an
+  `apply_within(fn, requirements = reqs, args)` occurrence. `genApply(r, args)` is
+  just `mkApply(quote(op(r)), [quote(dict(r))], args)`.
+- **`reify(v) -> Term`** — the general *rebuild* to a structural recipe: for a dict,
+  `construct_requirement(impl, [subs])` (sub-deps concrete). Structural /
+  `DiscrimKey`-able — use it when the term must be keyed, accepting a new,
+  structurally-equal value rather than the same handle. (`quote` = reference,
+  identity; `reify` = rebuild, structure.)
+- **`construct(impl, [subs]) -> Dictionary[…]`** — build a fresh dict *value* from
+  parts (the reflect face of `construct_requirement`).
+- **Type-reflection** — reify a denoted-type parameter (`S`/`A`) to a runtime `Type`
+  value (the old `denotedType(d)`); the G1-affected, runtime-only op.
+- **`execute(t: Term) -> …`** — run a Term. Runtime invocation of an OpRef is
+  `execute(mkApply(…))`, never a primitive `invoke`.
+
+Binding a dict to a var is ordinary — `let a = quote(d)` (or
+`= findDictionary[Spec[T]]`, `= resolveOp(…).dict`) — and `a` threads as a
+requirement through the *unified* `var_ref` lookup: `apply_within(fn, requirements =
+[var_ref(a)], …)`. The synthesized `__req_*` names are just the weave's special case;
+a user-named `a` works identically. Because construction always goes through `quote`
+(reference) or `reify` (recipe), a raw `Value::Requirement` handle **never** rides as
+an opaque leaf inside a keyed occurrence.
+
+**Layering & phasing.** This layer is a *separate concern* from WI-577's views —
+value-agnostic, and gated on a metaprogramming consumer (like the deferred `invoke`).
+It is **not** part of WI-577's ship-now scope; it is its own follow-on WI, next to
+`reify`/`execute`. WI-577 proper = the pure views `Dictionary[S]` / `OpRef[A]`.
 
 ---
 
@@ -622,22 +618,29 @@ dispatches.
 
 ## 4. Phasing (ordering: WI-577 → WI-300)
 
-1. **Accessor ops (WI-577)** — `sort Dictionary` + native builtins over the arena,
-   plus the `Value::Requirement → anthill.reflect.Dictionary` carrier-type
-   mapping. The builtins match the handle in Rust and read the arena directly, so
-   `Value::Requirement` can **stay `ViewHead::Opaque`** — no de-opaquing needed
-   (that was only for the dropped structural-match face, §2.3). Unblocks WI-300.
-2. **OpRef (WI-577)** — the sibling sort, reusing the `Dictionary` view.
-3. **Rule-body requirement goals (WI-300)** — the `findDictionary[T]` resolver
+1. **Dictionary view (WI-577)** — `sort Dictionary[S]` (`impl` / `sub` / `arity` /
+   `resolveOp` / `ops`; `S` = the denoted spec instance, a type parameter) + native
+   builtins over the arena, plus the `Value::Requirement → anthill.reflect.Dictionary`
+   carrier-type mapping. The builtins match the handle in Rust and read the arena
+   directly, so `Value::Requirement` can **stay `ViewHead::Opaque`** — no de-opaquing
+   (that was only for the dropped structural-match face, §2.3). **This is the ready
+   unit** (the review's read/inspect core). Unblocks WI-300.
+2. **OpRef view (WI-577)** — the sibling `sort OpRef[A]` (`op` / `dict`; `A` = the
+   denoted arrow), reusing the `Dictionary` view.
+3. **Term / meta layer (separate follow-on WI, NOT WI-577)** — `quote`/`ref`,
+   `mkApply`, `construct`, Type-reflection, next to the existing `reify`/`execute`
+   (§2.6). Value-agnostic and **gated on a metaprogramming consumer** (like the
+   deferred `invoke`); the views (1–2) do not depend on it. This is where the
+   earlier `genRef`/`genApply` live, generalized.
+4. **Rule-body requirement goals (WI-300)** — the `findDictionary[T]` resolver
    primitive (provides-resolution + `construct_requirement` + suspend); the Γ
    requirement slot; the `convert_rule_body` desugaring of `requires(X)` →
    `findDictionary` into Γ; body spec-ops dispatch by reading Γ; and the SLD→eval
    bridge populating `frame.requirements` from Γ. Suspend-if-abstract is by
-   construction (§3.5). Decide the two micro-points in §3.4 (Γ keying; whole-rule
-   vs positional).
-4. **Bridge (WI-577, optional)** — codegen-emitted host bridge for the two
-   reflect sorts, if/when a host consumer needs them (cf. the generated KB
-   bridge, WI-540).
+   construction (§3.5). **Open before start:** decide §3.4's whole-rule-vs-positional
+   `requires`, and confirm the Γ-slot substrate (WI-537 / WI-328) is in place.
+5. **Bridge (WI-577, optional)** — codegen-emitted host bridge for the two view
+   sorts, if/when a host consumer needs them (cf. the generated KB bridge, WI-540).
 
 ## 5. Soundness & non-goals
 
