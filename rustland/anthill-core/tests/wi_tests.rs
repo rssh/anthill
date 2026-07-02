@@ -540,6 +540,9 @@ mod wi609_collect_effect_over_finite_collection_test;
 #[path = "include/wi612_abstract_stream_consumer_effect_test.rs"]
 mod wi612_abstract_stream_consumer_effect_test;
 
+#[path = "include/wi614_requires_dot_dispatch_test.rs"]
+mod wi614_requires_dot_dispatch_test;
+
 #[path = "include/wi590_witness_param_carrier_test.rs"]
 mod wi590_witness_param_carrier_test;
 

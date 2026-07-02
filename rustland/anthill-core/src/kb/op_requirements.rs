@@ -176,7 +176,7 @@ pub fn check_sort_requirements_coverage(
 /// Operation symbols declared on a sort. Walks `SortInfo` facts looking
 /// for the sort's `operations` list. The list entries are `Term::Ref`
 /// pointing at each op's qualified symbol.
-fn operations_of_sort(kb: &KnowledgeBase, sort_sym: Symbol) -> Vec<Symbol> {
+pub(crate) fn operations_of_sort(kb: &KnowledgeBase, sort_sym: Symbol) -> Vec<Symbol> {
     let sort_info_sym = match kb.try_resolve_symbol("anthill.reflect.SortInfo") {
         Some(s) => s,
         None => return Vec::new(),

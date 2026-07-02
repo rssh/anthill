@@ -3065,6 +3065,113 @@ fn most_refined_spec(kb: &mut KnowledgeBase, specs: &[Symbol]) -> Option<Symbol>
     None
 }
 
+/// WI-614 — dot-dispatch member resolution over the receiver spec's REQUIRES graph: the
+/// requires-side analogue of [`find_spec_op_for_provided_sort`] (which walks PROVIDES). A
+/// value whose static type is an abstract spec (`FiniteCollection[…]`) can invoke a member of
+/// a spec it REQUIRES — `FiniteCollection requires Iterable[C=C, Element=Element, E=E]`, so
+/// `.find` / `.isEmpty` / `.iterator` (Iterable-only members) are sound on it: a
+/// `FiniteCollection` IS walkable. Dot-dispatch tries the receiver's OWN members (the base
+/// `find_operation_in_scope`) and its PROVIDED specs (the first `.or_else`) first; this is the
+/// caller's SECOND `.or_else`, gated on `carrier_is_abstract_spec(recv_sort)` so only a
+/// spec-typed receiver reaches it (a concrete carrier resolves members via provides). This
+/// performs only RESOLUTION — once it returns `Iterable.find`, the synthesized
+/// `Iterable.find(receiver, …)` re-types through the carrier-param requires-view path (WI-608)
+/// that grounds Iterable's `C`/`Element`/`E` from the `FiniteCollection` receiver.
+///
+/// CARRIER-PRESERVATION (soundness): only a *carrier-preserving* requires lends its members —
+/// one that binds the required spec's carrier to the RECEIVER's own carrier, so a receiver
+/// value IS a value of the required spec's carrier (`FiniteCollection requires Iterable[C=C]`).
+/// A *constraint-style* requires over an ELEMENT/scalar (`Set requires Eq[T]`, `VectorSpace
+/// requires Ring[F]`) binds the required spec's carrier to a NON-carrier param, so `Eq.eq(a:
+/// element)` must NOT be borrowable on the whole collection — [`requires_edge_is_carrier_preserving`]
+/// filters those out (without this, `s.eq(x)` on an abstract `Set` receiver would mis-resolve
+/// to `Eq.eq`). Walks the ROOT-SCOPED transitive `requires_chain` (bindings composed into
+/// `recv_sort`'s vocabulary, so the carrier check is correct at any depth); pre-order keeps
+/// direct requires first (nearest), and a genuine multi-spec tie prefers the requires-
+/// REFINEMENT via [`most_refined_spec`], as the provides resolver does.
+fn find_spec_op_for_required_sort(
+    kb: &mut KnowledgeBase,
+    recv_sort: Symbol,
+    short: &str,
+) -> Option<Symbol> {
+    // Root-scoped transitive requires chain: each entry's `spec` bindings are composed into
+    // `recv_sort`'s vocabulary (WI-230), so `requires_edge_is_carrier_preserving` compares the
+    // required spec's bound carrier against `recv_sort`'s own carrier correctly at every depth.
+    let chain = requires_chain(kb, recv_sort);
+    // Collect every CARRIER-PRESERVING required spec that defines `short`, pre-order
+    // (direct-before-transitive); dedup by spec so a spec re-reached transitively is kept once
+    // (its nearest, pre-order-first occurrence).
+    let mut definers: Vec<(Symbol, Symbol)> = Vec::new(); // (spec, op)
+    for entry in &chain {
+        if !requires_edge_is_carrier_preserving(kb, recv_sort, entry) {
+            continue;
+        }
+        let spec_sym = entry.required_sort;
+        if definers.iter().any(|(s, _)| same_symbol(kb, *s, spec_sym)) {
+            continue;
+        }
+        let spec_term = kb.alloc(Term::Ref(spec_sym));
+        if let Some(op) = super::load::find_operation_in_scope(kb, spec_term, short) {
+            definers.push((spec_sym, op));
+        }
+    }
+    if definers.len() <= 1 {
+        return definers.first().map(|(_, op)| *op);
+    }
+    // Multi-spec TIE: prefer the requires-REFINEMENT (mirrors the provides resolver).
+    let tied: Vec<Symbol> = definers.iter().map(|(s, _)| *s).collect();
+    if let Some(winner) = most_refined_spec(kb, &tied) {
+        if let Some((_, op)) = definers.iter().find(|(s, _)| same_symbol(kb, *s, winner)) {
+            return Some(*op);
+        }
+    }
+    definers.first().map(|(_, op)| *op)
+}
+
+/// WI-614 — is `recv_sort requires <entry>` CARRIER-PRESERVING: does it bind the required
+/// spec's carrier to `recv_sort`'s OWN carrier, so a `recv_sort` value can serve as the
+/// required spec's self-receiver? Carrier-preserving requires (refinements) lend their members
+/// (`FiniteCollection requires Iterable[C = C]` — Iterable's carrier `C` ↦ FiniteCollection's
+/// carrier `C`); constraint-style requires over an element/scalar do NOT (`Set requires Eq[T]`
+/// binds `Eq`'s carrier to Set's ELEMENT, so `Eq.eq`/`neq` compare elements, not Sets).
+///
+/// A SELF-REPRESENTING receiver (`Set`/`Map`, whose members take `s: Set` — the carrier is the
+/// spec itself, with the type-params as elements) has no carrier PARAM for a required spec to
+/// bind to, so every requires it carries is constraint-style ⟹ rejected. A CARRIER-PARAM
+/// receiver (`FiniteCollection`, members take `c: C`) preserves the carrier iff the required
+/// spec's carrier binds to its carrier param (its first type-param — the
+/// [`provision_carrier_sort`] convention, shared with the provides resolver).
+fn requires_edge_is_carrier_preserving(
+    kb: &KnowledgeBase,
+    recv_sort: Symbol,
+    entry: &RequiresEntry,
+) -> bool {
+    if spec_is_self_representing(kb, recv_sort) {
+        return false;
+    }
+    let Some((s_carrier, _)) = sort_type_params_as_pairs(kb, recv_sort).first().copied() else {
+        return false;
+    };
+    provision_carrier_sort(kb, entry.required_sort, entry.spec)
+        .is_some_and(|bound| same_symbol(kb, bound, s_carrier))
+}
+
+/// WI-614 — is `sort_sym` SELF-REPRESENTING: does any declared operation take the sort ITSELF
+/// as a self-receiver parameter (`Set.insert(s: Set, …)`, `Stream.head(s: Stream)`)? A
+/// self-representing spec's carrier is the spec, not a type-param; a carrier-parameter spec
+/// (`FiniteCollection.collect(c: C)`) takes its carrier param instead and answers `false`.
+/// ([`self_receiver_param_index`] matches a param typed as the sort itself — exactly the
+/// self-representing shape — so any hit means self-representing.)
+fn spec_is_self_representing(kb: &KnowledgeBase, sort_sym: Symbol) -> bool {
+    super::op_requirements::operations_of_sort(kb, sort_sym)
+        .iter()
+        .any(|&op| {
+            lookup_operation_info_full(kb, op)
+                .and_then(|info| self_receiver_param_index(kb, &info.params, sort_sym))
+                .is_some()
+        })
+}
+
 /// WI-411 — redirect an UNQUALIFIED self-named spec-op call inside a provider's OWN
 /// impl to the spec op, so it value-dispatches on the receiver's carrier instead of
 /// statically self-dispatching to the enclosing impl.
@@ -4248,6 +4355,17 @@ fn build_type(
                     // re-typing it rides the normal spec-op dispatch +
                     // `req_insertion`, which threads the requirement.
                     .or_else(|| find_spec_op_for_provided_sort(kb, s, &short))
+                    // WI-614: a spec-typed receiver (`FiniteCollection[…]`) can invoke a
+                    // member of a spec it REQUIRES — `FiniteCollection requires Iterable`
+                    // ⟹ `.find`/`.isEmpty`/`.iterator`, since a `FiniteCollection` IS
+                    // walkable. Gated on an abstract-spec receiver so a concrete carrier
+                    // keeps resolving via its OWN + PROVIDED members alone (its Iterable
+                    // members already reach it through the provides graph).
+                    .or_else(|| {
+                        carrier_is_abstract_spec(kb, s)
+                            .then(|| find_spec_op_for_required_sort(kb, s, &short))
+                            .flatten()
+                    })
             });
             if let Some(op_sym) = op_sym {
                 let mut synth_pos: Vec<Rc<NodeOccurrence>> = Vec::with_capacity(1 + pos_nodes.len());

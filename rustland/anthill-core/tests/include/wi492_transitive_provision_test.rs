@@ -18,12 +18,12 @@
 //!
 //! WI-599 (thin design): the combinators now provide `FiniteCollection` + `Iterable`
 //! directly (not `FiniteStream`), and `.map`/`.filter` return `FiniteCollection`.
-//! Iterable-ONLY members (`find`/`isEmpty`) are hidden on that result — dot-dispatch
-//! does not traverse `requires Iterable` (a filed follow-up typer WI) — so the
-//! find/isEmpty cases below `collect` to a `List` first, then resolve `Iterable.find`/
-//! `.isEmpty` on the List TRANSITIVELY (List → Stream → Iterable, the original WI-492
-//! path). The lazy `mapped`/`filtered` carriers are still reached on a genuinely-
-//! infinite bare `Stream`, where `FiniteCollection` does not apply.
+//! Iterable-ONLY members (`find`/`isEmpty`) resolve on that result via WI-614:
+//! dot-dispatch traverses `FiniteCollection requires Iterable`, so `xs.map(f).find(p)`
+//! / `xs.filter(p).isEmpty()` type-check and evaluate directly (no `collect`-to-`List`
+//! materialization first — that was the pre-WI-614 workaround). The lazy
+//! `mapped`/`filtered` carriers are still reached on a genuinely-infinite bare
+//! `Stream`, where `FiniteCollection` does not apply.
 
 use anthill_core::eval::Value;
 
@@ -70,21 +70,22 @@ namespace wi492.transitive
   operation map_then_size(xs: List[T = Int64]) -> Int64 =
     xs.map(inc).size()
 
-  -- map THEN find: the WI-599 thin `.map` returns a `FiniteCollection` (consume
-  -- view) that hides Iterable's `find` (dot-dispatch does not traverse `requires
-  -- Iterable` — a follow-up typer WI). So `collect` materializes to a `List` first,
-  -- then `.find` resolves `Iterable.find` on the List TRANSITIVELY (List → Stream →
-  -- Iterable, the original WI-492 path). [1,2,3,4] -map(+1)-> [2,3,4,5], first > 2 is 3.
+  -- map THEN find (WI-614): the WI-599 thin `.map` returns a `FiniteCollection`
+  -- (consume view). `find` is Iterable-ONLY, and `FiniteCollection requires
+  -- Iterable`, so dot-dispatch resolves `.find` DIRECTLY on the FiniteCollection
+  -- map-result by traversing the requires graph (no `collect`-to-`List` first —
+  -- that workaround was WI-614's motivation). [1,2,3,4] -map(+1)-> [2,3,4,5], first > 2 is 3.
   operation map_then_find(xs: List[T = Int64]) -> Int64 =
-    match collect(xs.map(inc)).find(is_big)
+    match xs.map(inc).find(is_big)
       case some(v) -> v
       case none() -> 0 - 1
 
-  -- filter THEN isEmpty: same shape — the thin `.filter` returns a `FiniteCollection`
-  -- (hiding Iterable's `isEmpty`), so `collect` to a `List` first, then `.isEmpty`
-  -- resolves `Iterable.isEmpty` on the List transitively. [1,2,3,4] -filter(>9)-> [] empty.
+  -- filter THEN isEmpty (WI-614): same requires-traversal — the thin `.filter`
+  -- returns a `FiniteCollection`, and `isEmpty` is Iterable-only, reached via
+  -- `FiniteCollection requires Iterable` without a `collect`-first materialization.
+  -- [1,2,3,4] -filter(>9)-> [] empty.
   operation filter_then_is_empty(xs: List[T = Int64]) -> Bool =
-    collect(xs.filter(is_huge)).isEmpty()
+    xs.filter(is_huge).isEmpty()
 
   operation mk_list() -> List[T = Int64] = [1, 2, 3, 4]
 end
