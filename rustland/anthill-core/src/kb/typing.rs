@@ -615,7 +615,7 @@ pub struct TypingEnv {
     /// bump, not a map copy.
     debruijn_types: Rc<HashMap<u32, Value>>,
     /// WI-557: set ONLY by the rule-body dot-dispatch sweep
-    /// (`dispatch_rule_body_dots`). A rule body is SLD/relational — it has no
+    /// (`type_rule_bodies`). A rule body is SLD/relational — it has no
     /// call-site Γ and no imperative Hoare semantics — so the WI-539 value-
     /// precondition `requires`-check (an op-body call-site obligation proved
     /// against Γ) does not apply there: it would float over a rule-body variable
@@ -654,7 +654,7 @@ impl TypingEnv {
     }
 
     /// WI-557: mark this env as the rule-body dot-dispatch context (see the
-    /// `rule_body_dispatch` field doc). Called once by `dispatch_rule_body_dots`;
+    /// `rule_body_dispatch` field doc). Called once by `type_rule_bodies`;
     /// the flag rides every env clone from there to `check_apply_iter`.
     pub fn mark_rule_body_dispatch(&mut self) {
         self.rule_body_dispatch = true;
@@ -22418,6 +22418,12 @@ pub fn type_check_sorts_typed(kb: &mut KnowledgeBase, sort_terms: &[TermId]) -> 
     // Ops reached via a sort's `SortInfo` — so the gated free-op sweep
     // doesn't re-check them (collected only when the sweep is enabled).
     let mut sort_owned_ops: std::collections::HashSet<Symbol> = std::collections::HashSet::new();
+    // WI-603: the sort-scoped non-fact rules whose contradiction the single
+    // `type_rule_bodies` pass should report — the exact set the removed
+    // `check_rule_typing` walked (`by_domain` over each SortInfo sort). A free
+    // namespace-level rule's contradiction stays unreported, as before.
+    let mut rule_typing_reportable: std::collections::HashSet<crate::kb::RuleId> =
+        std::collections::HashSet::new();
 
     if let Some(sort_info_sym) = kb.try_resolve_symbol("anthill.reflect.SortInfo") {
         for &sort_term in sort_terms {
@@ -22438,7 +22444,15 @@ pub fn type_check_sorts_typed(kb: &mut KnowledgeBase, sort_terms: &[TermId]) -> 
                 sort_owned_ops.extend(op_syms.iter().copied());
             }
             check_pattern_fragment(kb, sort_term, &mut errors);
-            check_rule_typing(kb, sort_term, &mut errors);
+            // WI-603: contradiction is now reported by the single `type_rule_bodies`
+            // pass below (one `collect_rule_var_types` per rule). Record which
+            // non-fact rules `check_rule_typing` would have walked so that pass
+            // preserves the exact reporting scope.
+            for rid in kb.by_domain(sort_term) {
+                if !kb.is_fact(rid) {
+                    rule_typing_reportable.insert(rid);
+                }
+            }
         }
     }
 
@@ -22462,13 +22476,13 @@ pub fn type_check_sorts_typed(kb: &mut KnowledgeBase, sort_terms: &[TermId]) -> 
     // sort/body split above, so a body-less FREE spec is covered too.
     errors.extend(check_operation_signatures(kb));
 
-    // WI-282: rewrite every rule body's `Expr::DotApply` to its dispatched form
-    // (method `Apply` / `field_access`) so the resolver opens the dispatched
-    // body, not a structural `dot_apply` goal that would match nothing. Runs
-    // over ALL rules (the sort-scoped `check_rule_typing` above misses free
-    // namespace-level rules). After signature checks, so operation/entity
-    // metadata the dispatch reads is settled.
-    errors.extend(dispatch_rule_body_dots(kb));
+    // WI-282 + WI-603: type every rule body in one pass — collect each rule's var
+    // types once, report a (sort-scoped) contradiction, dispatch its `Expr::DotApply`
+    // to method/field form, and stamp the collected type onto every `Var` leaf.
+    // Runs over ALL rules (free namespace-level rules too, which the sort loop
+    // above misses) and after signature checks, so the operation/entity metadata
+    // the collection + dispatch read is settled.
+    errors.extend(type_rule_bodies(kb, &rule_typing_reportable));
 
     // WI-300: rewrite every rule body's `find_dictionary(X)` guard (the converter's
     // desugaring of a rule-body `requires(X)`) into the resolver-ready
@@ -23770,109 +23784,153 @@ fn term_contains_functor(kb: &KnowledgeBase, term: TermId, target_functor: Symbo
 
 // ── Rule type checking ─────────────────────────────────────────
 
-/// Check that rule variables have consistent types across head and body.
-/// For each rule in the given sort's domain:
-/// 1. Collect type constraints from head (operation params, entity fields)
-/// 2. Collect type constraints from body goals
-/// 3. Unify all constraints for each variable — must be consistent
-fn check_rule_typing(kb: &mut KnowledgeBase, sort_term: TermId, errors: &mut Vec<TypeError>) {
-    for rid in kb.by_domain(sort_term) {
-        if kb.is_fact(rid) { continue; } // facts have no body — nothing to check
-
-        let head = kb.rule_head(rid);
-        let body_nodes: Vec<Rc<NodeOccurrence>> = kb.rule_body_nodes(rid).to_vec();
-        let (_var_types, contradiction) = collect_rule_var_types(kb, head, &body_nodes);
-
-        // Check for contradictions in the substitution
-        if contradiction {
-            let head_sym = match kb.get_term(head) {
-                Term::Fn { functor, .. } => *functor,
-                _ => continue,
-            };
-            let span = kb.term_span(head).map(|s| s.span);
-            errors.push(TypeError::Other {
-                span,
-                context: TypeErrorContext::Rule { name: head_sym, field: RuleField::Whole },
-                expected: "consistent variable types".to_string(),
-                actual: "contradictory variable types".to_string(),
-            });
-        }
+/// WI-603: stamp each rule-body variable occurrence with the type
+/// `collect_rule_var_types` derived for its var — sourced from op-param /
+/// entity-field signatures and unified across the rule's occurrences of that var.
+/// The occurrence write-back that completes the untyped→typed transform for a
+/// plain `f(?x, ?y)` atom: the dot-only pass never visited it, so its arg vars
+/// carried no `inferred_type`. A `Var` leaf whose vid has a collected type is
+/// stamped (the same `u32` key space `collect_occurrence_type_constraints` reads);
+/// every other occurrence recurses to its children (Pattern children included,
+/// symmetric with the collector). `set_inferred_type` no-ops on non-`Expr`
+/// occurrences, so a rule head / pattern node is unaffected.
+fn stamp_rule_body_var_types(occ: &Rc<NodeOccurrence>, var_types: &HashMap<u32, Value>) {
+    if let Some(pat) = occ.as_pattern() {
+        for_each_pattern_child(pat, |c| stamp_rule_body_var_types(c, var_types));
+        return;
     }
+    let Some(expr) = occ.as_expr() else { return };
+    let vid = match expr {
+        Expr::Var(Var::Global(vid)) => Some(vid.raw()),
+        Expr::Var(Var::DeBruijn(idx)) => Some(*idx),
+        _ => None,
+    };
+    if let Some(vid) = vid {
+        if let Some(ty) = var_types.get(&vid) {
+            occ.set_inferred_type(ty.clone());
+        }
+        return;
+    }
+    for_each_child(expr, |c| stamp_rule_body_var_types(c, var_types));
 }
 
-/// WI-282: dispatch every rule body's `Expr::DotApply` to its method / field
-/// form *before* the body reaches SLD — the rule-body peer of the op-body dot
-/// dispatch (WI-279). "dot means the same in all expression positions":
-/// `?pose.position.x` reads identically in a rule body and an operation body.
+/// WI-282 + WI-603: type every rule body in a single pass. For each live non-fact
+/// rule, collect its De Bruijn var types ONCE (head + body constraints, sourced
+/// from op-param / entity-field signatures) and then:
 ///
-/// Runs over ALL live non-fact rules — sort-scoped AND free namespace-level —
-/// unlike [`check_rule_typing`], which `by_domain`-iterates only sorts carrying
-/// `SortInfo` (a free rule's domain is its namespace, which has none). A
-/// dot-free body pays only a cheap structural scan; a body with a dot has its
-/// constrained var types recomputed (the receiver's concrete sort) and each dot
-/// dispatched via the typer's own walk.
-fn dispatch_rule_body_dots(kb: &mut KnowledgeBase) -> Vec<TypeError> {
+///   * **Contradiction** (WI-603, subsuming `check_rule_typing`): a var whose
+///     constraints don't unify is reported as a rule type error — but ONLY for the
+///     sort-scoped rules `check_rule_typing` walked (`reportable`, built by the
+///     driver's `by_domain` sweep over each `SortInfo` sort). A free
+///     namespace-level rule's contradiction stays unreported, exactly as before.
+///     A contradictory rule's receiver sorts are unreliable, so it is neither
+///     dispatched nor stamped.
+///   * **Dot dispatch** (WI-282): rewrite every `Expr::DotApply` to its method
+///     `Apply` / `field_access` form *before* the body reaches SLD (the rule-body
+///     peer of the op-body dot dispatch, WI-279), the receiver's concrete sort read
+///     from the collected var types. Only a body that contains a dot pays the walk.
+///   * **Stamp** (WI-603): persist the collected type onto every body `Var` leaf's
+///     occurrence, so downstream consumers read `inferred_type` off the occurrence
+///     instead of re-walking signatures.
+///
+/// Runs over ALL live non-fact rules — sort-scoped AND free namespace-level (a
+/// free rule's domain is its namespace, which has no `SortInfo`, so the driver's
+/// sort loop misses it). This subsumes the second `collect_rule_var_types`
+/// recompute: `check_rule_typing` no longer collects (it contributed only the
+/// contradiction, now emitted here) and the dot pass no longer collects separately.
+fn type_rule_bodies(
+    kb: &mut KnowledgeBase,
+    reportable: &std::collections::HashSet<crate::kb::RuleId>,
+) -> Vec<TypeError> {
     let mut errors: Vec<TypeError> = Vec::new();
     for rid in kb.live_rule_ids() {
         if kb.is_fact(rid) {
             continue; // facts have no body
         }
-        // Cheap structural gate on the BORROWED body slice: skip the
-        // overwhelming majority of dot-free bodies before cloning the body Vec or
-        // paying for var-type collection / env build. (The KB-global
-        // `has_dot_applies` flag is NOT a valid gate — it is set only by the
-        // EXPR-occurrence load path [op bodies]; a rule body loads its dot via
-        // term→occurrence materialization, which does not set it.)
-        if !kb.rule_body_nodes(rid).iter().any(occ_contains_dot_apply) {
-            continue;
-        }
-        let body_nodes: Vec<Rc<NodeOccurrence>> = kb.rule_body_nodes(rid).to_vec();
         // A value-carrier (denoted) head has no hash-consed term to read
         // constraints from; such heads are facts in practice, but guard rather
-        // than panic in `rule_head`.
+        // than panic.
         let head = match kb.rule_head_value(rid).clone() {
             Value::Term { id: t, .. } => t,
             _ => continue,
         };
-        // Recompute the rule's De Bruijn var types (head + body constraints) —
-        // the same collection `check_rule_typing` does. On a contradiction the
-        // receiver sort would be unreliable, so skip dispatch (the contradiction
-        // itself is reported by `check_rule_typing` for sort-scoped rules).
+        let body_nodes: Vec<Rc<NodeOccurrence>> = kb.rule_body_nodes(rid).to_vec();
+        // The one collection per rule: head + body var types + whether they unify.
+        // Shared by the contradiction report, the dot env, and the stamp.
         let (var_types, contradiction) = collect_rule_var_types(kb, head, &body_nodes);
         if contradiction {
+            // On a contradiction the receiver sorts are unreliable — skip dispatch
+            // and stamping. Report only for the sort-scoped rules `check_rule_typing`
+            // walked; a free rule's contradiction stays unreported, as before.
+            if reportable.contains(&rid) {
+                if let Term::Fn { functor: head_sym, .. } = kb.get_term(head) {
+                    let head_sym = *head_sym;
+                    let span = kb.term_span(head).map(|s| s.span);
+                    errors.push(TypeError::Other {
+                        span,
+                        context: TypeErrorContext::Rule { name: head_sym, field: RuleField::Whole },
+                        expected: "consistent variable types".to_string(),
+                        actual: "contradictory variable types".to_string(),
+                    });
+                }
+            }
             continue;
         }
+        let var_types = Rc::new(var_types);
 
-        // Install the var types so a receiver `?x` (an `Expr::Var(DeBruijn)`)
-        // resolves to its concrete sort, exactly as an operation's param env
-        // resolves an op-body receiver. The env is otherwise empty — a rule body
-        // carries no enclosing sort / lexical params; any let/lambda/match inside
-        // a dot subtree introduces its own (named `Global`) bindings, threaded by
-        // the typer's normal env handling.
-        let mut env = TypingEnv::empty();
-        env.set_debruijn_types(Rc::new(var_types));
-        // WI-557: mark this as rule-body context so `check_apply_iter` skips the
-        // WI-539 value-precondition `requires`-check — a rule body is SLD/
-        // relational with no call-site Γ, so the op-body Hoare obligation does
-        // not apply (it would float over a rule-body var and raise a spurious,
-        // currently-swallowed `UnsatisfiedPrecondition` that also leaves the dot
-        // undispatched).
-        env.mark_rule_body_dispatch();
-        let mut changed = false;
-        let new_body: Vec<Rc<NodeOccurrence>> = body_nodes
-            .iter()
-            .map(|n| {
-                let rewritten = dispatch_dots_in_occ(kb, &env, n, &mut errors);
-                if !Rc::ptr_eq(&rewritten, n) {
-                    changed = true;
-                }
-                rewritten
-            })
-            .collect();
-        // `reassemble`'s ptr-eq short-circuit means an unchanged body re-clones
-        // the same `Rc`s; only write back when a dot actually fired.
-        if changed {
-            kb.set_rule_body_nodes(rid, new_body);
+        // WI-282: dispatch dots — only a body that contains one pays the walk.
+        // (The KB-global `has_dot_applies` flag is NOT a valid gate — it is set only
+        // by the EXPR-occurrence load path [op bodies]; a rule body loads its dot via
+        // term→occurrence materialization, which does not set it.)
+        //
+        // WI-603: stamping (`stamp_rule_body_var_types`) is interior-mutable on the
+        // shared `Rc<NodeOccurrence>`, so writing the in-hand `Rc`s persists onto the
+        // KB's stored body — no re-fetch needed. Stamp the FINAL occurrences: the
+        // (possibly rewritten) `new_body` on the dot path, the untouched `body_nodes`
+        // otherwise.
+        if body_nodes.iter().any(occ_contains_dot_apply) {
+            // Install the var types so a receiver `?x` (an `Expr::Var(DeBruijn)`)
+            // resolves to its concrete sort, exactly as an operation's param env
+            // resolves an op-body receiver. The env is otherwise empty — a rule body
+            // carries no enclosing sort / lexical params; any let/lambda/match inside
+            // a dot subtree introduces its own (named `Global`) bindings, threaded by
+            // the typer's normal env handling.
+            let mut env = TypingEnv::empty();
+            env.set_debruijn_types(var_types.clone());
+            // WI-557: mark this as rule-body context so `check_apply_iter` skips the
+            // WI-539 value-precondition `requires`-check — a rule body is SLD/
+            // relational with no call-site Γ, so the op-body Hoare obligation does
+            // not apply (it would float over a rule-body var and raise a spurious,
+            // currently-swallowed `UnsatisfiedPrecondition` that also leaves the dot
+            // undispatched).
+            env.mark_rule_body_dispatch();
+            let mut changed = false;
+            let new_body: Vec<Rc<NodeOccurrence>> = body_nodes
+                .iter()
+                .map(|n| {
+                    let rewritten = dispatch_dots_in_occ(kb, &env, n, &mut errors);
+                    if !Rc::ptr_eq(&rewritten, n) {
+                        changed = true;
+                    }
+                    rewritten
+                })
+                .collect();
+            // Stamp the rewritten occurrences (`new_body` IS the stored body when a
+            // dot fired; otherwise its entries are ptr-eq to `body_nodes`, so this
+            // stamps the same occurrences either way), then write back if changed.
+            for node in &new_body {
+                stamp_rule_body_var_types(node, &var_types);
+            }
+            // `reassemble`'s ptr-eq short-circuit means an unchanged body re-clones
+            // the same `Rc`s; only write back when a dot actually fired.
+            if changed {
+                kb.set_rule_body_nodes(rid, new_body);
+            }
+        } else {
+            // No dot: `body_nodes` already holds the stored `Rc`s — stamp directly.
+            for node in &body_nodes {
+                stamp_rule_body_var_types(node, &var_types);
+            }
         }
     }
     errors
@@ -24187,9 +24245,10 @@ fn occ_contains_dot_apply(occ: &Rc<NodeOccurrence>) -> bool {
 /// `var id → type` map plus whether the constraints are contradictory. Head and
 /// body are closed against the same De Bruijn vars, so their idx keys align.
 ///
-/// Shared by [`check_rule_typing`] (which reports the contradiction) and
-/// [`dispatch_rule_body_dots`] (which skips a contradictory rule's dispatch —
-/// the receiver sort would be unreliable). `var_types` is carried
+/// The single collection per rule for [`type_rule_bodies`], which reports the
+/// contradiction (sort-scoped), skips a contradictory rule's dispatch (the
+/// receiver sort would be unreliable), and stamps the map onto the body's `Var`
+/// leaves (WI-603). `var_types` is carried
 /// carrier-agnostically as `Value` (WI-342 P3): today every entry is a
 /// `Value::Term` from `OperationInfo` / entity-field metadata; it holds a
 /// `Value::Node` type unchanged once those producers migrate in P4. WI-307: the
