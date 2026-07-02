@@ -5238,7 +5238,7 @@ fn check_apply_iter(
         let carrier_param_info = if self_recv_spec.is_some() {
             None
         } else {
-            carrier_param_receiver(kb, &op, fn_sym, named_args, pos_results, named_results)
+            carrier_param_receiver(kb, &op, fn_sym, pos_args, named_args, pos_results, named_results)
         };
         let carrier_bound = match self_recv_spec {
             Some(spec_sort) => match receiver_carrier(
@@ -5255,9 +5255,9 @@ fn check_apply_iter(
             // the written `E` row) from the concrete carrier's provision, with
             // the same bind-before-expected-seeding rationale as the arm above.
             None => match &carrier_param_info {
-                Some((spec_sort, carrier_sym, recv_ty, view, carrier_pvid, _transitive)) => {
+                Some((spec_sort, carrier_sym, recv_ty, view, carrier_pvid, _transitive, recv_arg_sym)) => {
                     bind_spec_params_from_carrier_param(
-                        kb, &mut subst, *spec_sort, *carrier_sym, *carrier_pvid, recv_ty, view.clone(),
+                        kb, &mut subst, *spec_sort, *carrier_sym, *carrier_pvid, recv_ty, view.clone(), *recv_arg_sym,
                     )
                 }
                 None => false,
@@ -5646,7 +5646,7 @@ fn check_apply_iter(
         // Modify model names). The REF-shaped binding (`V ↦ Cell.V`) is already threaded
         // by `bind_spec_params_from_carrier_param` above; this closes only the
         // GROUND-valued case it skips.
-        if let Some((spec_sort, _carrier_sym, _recv_ty, view, _carrier_pvid, _transitive)) = &carrier_param_info {
+        if let Some((spec_sort, _carrier_sym, _recv_ty, view, _carrier_pvid, _transitive, _recv_arg_sym)) = &carrier_param_info {
             bind_ground_value_params_from_provider(kb, &mut subst, *spec_sort, view);
         }
 
@@ -5943,7 +5943,7 @@ fn check_apply_iter(
                     // its static override pin (WI-444/496 typeclass-default semantics): a
                     // real member wins, and a concrete carrier without one resolves `None`
                     // from `carrier_override_op` and defers at the gate below anyway.
-                    None => carrier_param_info.as_ref().and_then(|(_, c, _, _, _, _)| {
+                    None => carrier_param_info.as_ref().and_then(|(_, c, _, _, _, _, _)| {
                         (!carrier_is_abstract_spec(kb, *c)).then_some(*c)
                     }),
                 };
@@ -6289,10 +6289,10 @@ fn check_apply_iter(
             // is some concrete provider (a `FiniteMappedStream`), so defer to eval's
             // value-directed dispatch exactly as the abstract self-receiver arm
             // (`carrier == Abstract`) above does — the carrier-param analogue of it.
-            if matches!(&carrier_param_info, Some((.., true)))
+            if matches!(&carrier_param_info, Some((.., true, _)))
                 || carrier_param_info
                     .as_ref()
-                    .is_some_and(|(_, c, _, _, _, _)| carrier_is_abstract_spec(kb, *c))
+                    .is_some_and(|(_, c, _, _, _, _, _)| carrier_is_abstract_spec(kb, *c))
             {
                 return Ok(TypeResult {
                     ty: resolved_ret.clone(),
@@ -11343,20 +11343,22 @@ fn bind_spec_params_from_carrier(
 /// carrier itself ([`provision_binds_param_to_carrier`] — distinguishing the
 /// carrier param from an element-like param). First match wins. Returns
 /// `(spec sort, carrier sort, receiver's inferred type, the provision's view
-/// bindings, carrier-param vid, transitive?)` — the view rides along so the binder
-/// does not re-scan the provider facts; the carrier-param vid (WI-593) lets the
-/// binder skip the carrier param `C` (bound by argument unification, not the
-/// provision); and `transitive?` (WI-496) is `true` iff the carrier provides the
-/// spec only through a provides-chain (the impl lives on an intermediate spec
-/// sort), the bit the dispatch gate reads to defer to eval.
+/// bindings, carrier-param vid, transitive?, receiver-arg var-sym)` — the view
+/// rides along so the binder does not re-scan the provider facts; the carrier-param
+/// vid (WI-593) lets the binder skip the carrier param `C` (bound by argument
+/// unification, not the provision); `transitive?` (WI-496) is `true` iff the carrier
+/// provides the spec only through a provides-chain (the impl lives on an intermediate
+/// spec sort), the bit the dispatch gate reads to defer to eval; and the receiver-arg
+/// var-sym (WI-612) is the projection subject for threading an abstract carrier param.
 fn carrier_param_receiver(
     kb: &KnowledgeBase,
     op: &OperationInfoFull,
     fn_sym: Symbol,
+    pos_args: &[Rc<NodeOccurrence>],
     named_args: &[(Symbol, Rc<NodeOccurrence>)],
     pos_results: &[Result<TypeResult, TypeError>],
     named_results: &[Result<TypeResult, TypeError>],
-) -> Option<(Symbol, Symbol, Value, SmallVec<[(Symbol, TermId); 2]>, VarId, bool)> {
+) -> Option<(Symbol, Symbol, Value, SmallVec<[(Symbol, TermId); 2]>, VarId, bool, Option<Symbol>)> {
     let spec_sort = impl_parent_of_op(kb, fn_sym)?;
     let spec_params = sort_type_params_as_pairs(kb, spec_sort);
     if spec_params.is_empty() {
@@ -11424,7 +11426,22 @@ fn carrier_param_receiver(
         else {
             continue;
         };
-        return Some((spec_sort, carrier_sym, recv_ty, view, pvid, transitive));
+        // WI-612: the receiver argument's value-reference symbol (`Iterable.isEmpty(s)`
+        // ⇒ `s`), when it is a simple `var_ref` — the subject a path-dependent projection
+        // is keyed off. `bind_spec_params_from_carrier_param` uses it to thread an ABSTRACT
+        // (unwritten) carrier param as the receiver's own projection `s.<member>` instead
+        // of leaking `?_`. `None` for a non-var receiver (a compound expression) → that
+        // param stays unbound and surfaces the usual loud `undeclared`/`unconstrained`.
+        let recv_arg_sym = pos_args
+            .get(i)
+            .and_then(extract_var_ref_sym_node)
+            .or_else(|| {
+                named_args
+                    .iter()
+                    .find(|(n, _)| same_symbol(kb, *n, *pname))
+                    .and_then(|(_, occ)| extract_var_ref_sym_node(occ))
+            });
+        return Some((spec_sort, carrier_sym, recv_ty, view, pvid, transitive, recv_arg_sym));
     }
     None
 }
@@ -11449,6 +11466,7 @@ fn bind_spec_params_from_carrier_param(
     carrier_pvid: VarId,
     recv_ty: &Value,
     view_bindings: SmallVec<[(Symbol, TermId); 2]>,
+    recv_arg_sym: Option<Symbol>,
 ) -> bool {
     let recv_bindings = parameterized_vid_bindings(kb, recv_ty, carrier_sym);
     // WI-609: REFLEXIVE — the receiver's carrier IS the op's own spec (`collect(c: C)`
@@ -11495,9 +11513,48 @@ fn bind_spec_params_from_carrier_param(
         // receiver arg, and is skipped — it must NOT fall to the ground-verbatim arm
         // (WI-383 reserves ground value-params to the late pass).
         let concrete: Option<TermId> = if typaram_occurrence_sym(kb, carrier_value).is_some() {
-            // A bare carrier-param ref (`Element ↦ T`): read the receiver's type-arg.
-            typaram_ref_vid(kb, carrier_value, carrier_sym)
-                .and_then(|vid| recv_bindings.iter().find(|e| e.0 == vid).map(|e| e.1))
+            // A ref SHAPE (`Element ↦ T`, `E ↦ Stream.E`, or a concrete leaf `Int64`).
+            match typaram_ref_vid(kb, carrier_value, carrier_sym) {
+                // A genuine carrier param (`Stream.T` / `Stream.E`): read the receiver's
+                // written type-arg.
+                Some(vid) => recv_bindings.iter().find(|e| e.0 == vid).map(|e| e.1)
+                    // WI-612: the receiver left this carrier param ABSTRACT (unwritten —
+                    // `s : Stream[T = Int64]` writes no `E`), so there is no type-arg to
+                    // read and the param would leak `?_`. For an EFFECT-ROW param (the only
+                    // one with no other binder — `sort_param_is_effect_row`) whose receiver
+                    // is a stable value reference, that param's value IS the receiver's own
+                    // projection `s.<member>` (path-dependent: `s`'s abstract `Stream.E`,
+                    // viewed from outside, is definitionally `s.E`). Bind it to that
+                    // projection — built exactly as the WI-459 call-site re-key does
+                    // (`ExprCarried{Ref(arg), member}`) — so an abstract access row
+                    // `Iterable.E` threads as `s.E` and matches a declared `effects s.E`.
+                    // A non-var receiver (`recv_arg_sym` None) or a non-effect param stays
+                    // unbound and surfaces the usual loud `undeclared`/`unconstrained`.
+                    .or_else(|| {
+                        let arg_sym = recv_arg_sym?;
+                        let param_sym = typaram_occurrence_sym(kb, carrier_value)?;
+                        let member_name = short_name_of(kb.resolve_sym(param_sym)).to_owned();
+                        // Positively verify the row is UNWRITTEN on the receiver, not merely
+                        // absent from the Term-only `recv_bindings`: a WRITTEN Node-carried
+                        // row (`Stream[E = {Modify[x]}]`) is dropped by
+                        // `parameterized_vid_bindings` (its `_ => None` arm), so reading only
+                        // `recv_bindings` would synthesize a spurious `s.E` over an
+                        // already-written row. `extract_type_param` is Node-inclusive, so a
+                        // written row (any carrier) skips the projection — the row is read /
+                        // grounded by the ordinary path instead.
+                        if extract_type_param(kb, recv_ty, &member_name).is_some()
+                            || !sort_param_is_effect_row(kb, carrier_sym, &member_name)
+                        {
+                            return None;
+                        }
+                        let member = kb.intern(&member_name);
+                        let recv_term = kb.alloc(Term::Ref(arg_sym));
+                        Some(kb.make_expr_carried(recv_term, member))
+                    }),
+                // A ref-shaped CONCRETE leaf (`Int64`) that is not one of the carrier's
+                // params: skip here — WI-383 reserves ground value-params to the late pass.
+                None => None,
+            }
         } else if type_value_is_ground(kb, carrier_value) {
             // A ground provider value (the written `{}` row): bind verbatim.
             Some(carrier_value)

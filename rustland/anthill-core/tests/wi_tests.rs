@@ -537,6 +537,9 @@ mod wi608_iterator_over_finite_collection_test;
 #[path = "include/wi609_collect_effect_over_finite_collection_test.rs"]
 mod wi609_collect_effect_over_finite_collection_test;
 
+#[path = "include/wi612_abstract_stream_consumer_effect_test.rs"]
+mod wi612_abstract_stream_consumer_effect_test;
+
 #[path = "include/wi590_witness_param_carrier_test.rs"]
 mod wi590_witness_param_carrier_test;
 
