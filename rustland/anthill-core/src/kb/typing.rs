@@ -6192,9 +6192,16 @@ fn check_apply_iter(
             // trigger covered them; under the direct-chain ABI the nested
             // case needs this tree walk.
             if !enclosing_requires.is_empty() {
-                if let Some(path) = enclosing_sort
-                    .and_then(|encl| find_requires_location(kb, &subst, spec_sort, encl))
-                {
+                // WI-613: the σ context lets `find_requires_location` disambiguate
+                // two same-spec `requires` over distinct element params by element
+                // identity, instead of blind first-match.
+                let sigma_ctx = SigmaCtx {
+                    subst: &subst,
+                    sort_param_rigids: env.enclosing_sort_param_rigids(),
+                };
+                if let Some(path) = enclosing_sort.and_then(|encl| {
+                    find_requires_location(kb, &subst, spec_sort, encl, Some(&sigma_ctx))
+                }) {
                     // `path` is non-empty on `Some`. Head = direct frame
                     // slot; tail = projection path into its bundled value.
                     let slot = path[0];
@@ -6590,9 +6597,13 @@ fn check_apply_iter(
                     // only when `resolve_at_goal` deferred via a path the
                     // tree walk's matcher missed. It can only resolve a
                     // DIRECT slot, hence an empty `proj_path`.
-                    if let Some(slot) =
-                        find_requires_slot(kb, &subst, spec_sort, enclosing_requires)
-                    {
+                    let sigma_ctx = SigmaCtx {
+                        subst: &subst,
+                        sort_param_rigids: env.enclosing_sort_param_rigids(),
+                    };
+                    if let Some(slot) = find_requires_slot(
+                        kb, &subst, spec_sort, enclosing_requires, Some(&sigma_ctx),
+                    ) {
                         // WI-232: capture the matched entry so
                         // req_insertion::run can read it directly,
                         // without re-indexing the chain at emit time.
@@ -6887,7 +6898,7 @@ fn build_dispatching_dict_from_chain(
     require_complete: bool,
     // WI-419: call-site context for Strategy 1 same-spec disambiguation; `None`
     // on the req-insertion diagnostic path (`build_dispatching_dict_direct`).
-    disambig: Option<&SameSpecDisambig>,
+    disambig: Option<&SigmaCtx>,
 ) -> Option<TermId> {
     // Hoist Strategy 2's per-slot direct-requires walk out of the dep loop:
     // it depends only on `caller_requires`, not on the current dep, so the
@@ -6984,7 +6995,7 @@ fn build_concrete_dispatch_dict(
     // WI-419: pass the call-site context so Strategy 1 can disambiguate a caller
     // that declares two+ `requires` of the same spec over distinct element
     // params (forward the dict for the element this call actually uses).
-    let disambig = SameSpecDisambig { subst, sort_param_rigids };
+    let disambig = SigmaCtx { subst, sort_param_rigids };
     build_dispatching_dict_from_chain(
         kb, callee_spec_sort, &concrete_chain, caller_sort, caller_requires, &syms, true,
         Some(&disambig),
@@ -7094,7 +7105,7 @@ pub fn build_dep_projection(
     // concrete-dispatch path). Used ONLY to disambiguate Strategy 1 when two+
     // same-spec caller requires cover the dep; `None` (the req-insertion
     // diagnostic path) keeps the original first-match behavior.
-    disambig: Option<&SameSpecDisambig>,
+    disambig: Option<&SigmaCtx>,
 ) -> Option<TermId> {
     // WI-424: the `EffectsRuntime` kind-anchor (synthesized from `effects
     // E = ?`) is satisfied STRUCTURALLY by the effect-row machinery — there is
@@ -7152,7 +7163,22 @@ pub fn build_dep_projection(
     // second level is not found here and falls through to Strategy 3's
     // SLD construction.
     for (i, sub_chain) in caller_sub_chains.iter().enumerate() {
-        if let Some(k) = sub_chain.iter().position(|s| entries_cover(kb, s, dep)) {
+        // WI-613: same σ-class tie-break as Strategy 1 — a single caller slot's
+        // DIRECT sub-requires can itself hold two entries of the same spec over
+        // distinct element params, so a blind first-match would project the wrong
+        // nested requirement.
+        let covering: SmallVec<[usize; 2]> = sub_chain
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| entries_cover(kb, s, dep))
+            .map(|(k, _)| k)
+            .collect();
+        let chosen = match covering.as_slice() {
+            [] => None,
+            [only] => Some(*only),
+            many => disambiguate_covering_by_sigma(kb, disambig, sub_chain, dep, many),
+        };
+        if let Some(k) = chosen {
             let name = req_name_for_chain_index(kb, caller_sort?, i)?;
             let inner = build_req_var_ref(kb, syms, name);
             return Some(build_req_at_sort(kb, syms, inner, k));
@@ -7225,44 +7251,122 @@ fn entries_cover(kb: &mut KnowledgeBase, caller: &RequiresEntry, dep: &RequiresE
     true
 }
 
-/// WI-419: call-site context for Strategy 1 same-spec disambiguation — the
-/// per-call substitution plus the enclosing sort's param→rigid map. A callee
-/// element is unified at the call against a RIGIDIFIED caller param (WI-392/424:
-/// `Wrap.W := Var(Rigid(B))`), while the caller's `requires` entries are written
-/// over the canonical param symbol (`Tag[B]`, ↦ `Var::Global`). The rigids map
-/// bridges the two var spaces so the dep and the right caller entry compare
-/// equal. `sort_param_rigids` is `(canonical-global-var, rigid-term)` per
-/// enclosing param, exactly as `TypingEnv::enclosing_sort_param_rigids` holds.
-pub struct SameSpecDisambig<'a> {
+/// The σ (substitution) context for type-param **identity** questions — the
+/// per-call substitution plus the enclosing sort's param→rigid map. This is the
+/// shared σ primitive's context: given it, [`sigma_class`] maps any type element
+/// to its canonical representative variable, so two elements can be tested for
+/// "same type parameter, really?" ([`sigma_same`]) rather than the coarse "both
+/// are *some* type param" wildcard.
+///
+/// Why the rigids map is needed: an element is unified at a call against a
+/// RIGIDIFIED enclosing param (WI-392/424: `Wrap.W := Var(Rigid(B))`), while a
+/// `requires` entry is written over the canonical param symbol (`Tag[B]`, ↦
+/// `Var::Global`). The two live in different var spaces; `sort_param_rigids`
+/// (`(canonical-global-var, rigid-term)` per enclosing param, exactly as
+/// `TypingEnv::enclosing_sort_param_rigids` holds) bridges them so the same
+/// parameter lands on one id from either side.
+///
+/// Used by both requirement-attribution paths: same-spec forwarding
+/// (`build_dep_projection` → [`entry_sigma_matches`], WI-419) and direct-body
+/// dispatch (`find_requires_slot` / `find_requires_location` →
+/// [`entry_sigma_matches_subst`], WI-613).
+pub struct SigmaCtx<'a> {
     subst: &'a Substitution,
     sort_param_rigids: &'a [(VarId, TermId)],
 }
 
+/// The σ-class of a type element under `ctx`: the canonical representative
+/// unification variable it resolves to, bridging the rigid↔global split. Two
+/// elements denote the SAME type parameter iff their σ-classes are equal
+/// ([`sigma_same`]). `None` when the element is concrete or not a recognizable
+/// type parameter — a concrete carrier has no σ-class and is compared by
+/// `dispatch_values_match` instead.
+///
+/// Walk to a canonical representative: at each step map the current term to a
+/// logical var (a `Global`/`Rigid` directly, or a sort-parameter
+/// `Ref`/`Ident`/nullary-`Fn` via its sort alias — mirroring
+/// [`resolve_param_value_via_subst`]), then chase what `subst` binds that var to.
+/// The chase follows BOTH var→var and var→sort-param-`Ref` bindings. A
+/// `Var::Rigid` is terminal (a per-body skolem — never re-bound). An unbound
+/// `Global` is the representative, first canonicalized through the enclosing-sort
+/// param→rigid map so a written `Var::Global(B)` and a call-site `Var(Rigid(B))`
+/// land on the same id. Bounded against a pathological cycle.
+fn sigma_class(kb: &KnowledgeBase, ctx: &SigmaCtx, value: TermId) -> Option<VarId> {
+    let mut cur = value;
+    for _ in 0..128 {
+        let (vid, is_rigid) = elem_var_step(kb, cur)?;
+        if is_rigid {
+            return Some(vid);
+        }
+        match ctx.subst.resolve_as_value(vid) {
+            Some(Value::Term { id: t, .. }) => cur = *t,
+            _ => return Some(canonical_global_var(kb, vid, ctx.sort_param_rigids)),
+        }
+    }
+    None
+}
+
+/// Do two type elements share a σ-class under `ctx` — i.e. resolve to the SAME
+/// canonical unification variable (the same type parameter, bridging
+/// rigid↔global)? A concrete or unrecognized element (no σ-class) is never "the
+/// same param" as anything; use `dispatch_values_match` for those.
+fn sigma_same(kb: &KnowledgeBase, ctx: &SigmaCtx, a: TermId, b: TermId) -> bool {
+    match (sigma_class(kb, ctx, a), sigma_class(kb, ctx, b)) {
+        (Some(x), Some(y)) => x == y,
+        _ => false,
+    }
+}
+
+/// WI-613 — the σ-precise verdict for ONE `(a, b)` element pair: the tie-break
+/// policy shared by [`entry_sigma_matches`] (entry-vs-entry, the forwarding path)
+/// and [`entry_sigma_matches_subst`] (entry-vs-subst, the direct-dispatch path)
+/// so the two attribution paths cannot disagree on what "same element" means. Two
+/// type-params must share a σ-class ([`sigma_same`]); a mixed concrete/wildcard
+/// pair does NOT pin the element (a wildcard covers loosely but is not precise);
+/// two concretes use the same symmetric `dispatch_values_match` as the coarse
+/// cover. Symmetric in `a`/`b`, so callers may pass either order.
+fn sigma_pair_precise(kb: &mut KnowledgeBase, ctx: &SigmaCtx, a: TermId, b: TermId) -> bool {
+    match (is_type_param_value(kb, a), is_type_param_value(kb, b)) {
+        (true, true) => sigma_same(kb, ctx, a, b),
+        (true, false) | (false, true) => false,
+        (false, false) => {
+            dispatch_values_match(kb, a, b) || dispatch_values_match(kb, b, a)
+        }
+    }
+}
+
+/// WI-613 — the σ-precise selection policy shared by all three same-spec
+/// attribution matchers (flat chain, requires tree, cross-sort sub-chain), so
+/// they resolve ambiguity identically. From `candidates` (all coarse-covering one
+/// deferred call), return the FIRST that satisfies `is_precise` — every precise
+/// candidate shares the call's element σ-class, so they denote the same
+/// requirement and the first is a deterministic, correct choice — else the first
+/// candidate (no precise match / no σ context: genuinely ambiguous, so no worse
+/// than the pre-WI-613 first-match). `is_precise` is `FnMut` because the σ check
+/// borrows `kb` mutably.
+fn pick_precise<T: Copy>(candidates: &[T], mut is_precise: impl FnMut(T) -> bool) -> Option<T> {
+    candidates
+        .iter()
+        .copied()
+        .find(|&c| is_precise(c))
+        .or_else(|| candidates.first().copied())
+}
+
 /// WI-419: among the `covering` caller-requirement indices that all
 /// `entries_cover` the same `dep` (which only happens when the caller declares
-/// two+ `requires` of the same spec over distinct element params), pick the
-/// unique one whose element σ-class matches the dep's under the call-site
-/// context. Falls back to the first covering index — the pre-WI-419 behavior —
-/// when there is no call context, or when zero or more than one entry matches
-/// by σ-class (genuinely ambiguous, so no worse than before).
+/// two+ `requires` of the same spec over distinct element params), pick the one
+/// whose element σ-class matches the dep's under the call-site context — via the
+/// shared [`pick_precise`] policy (first σ-precise, else first covering). No call
+/// context keeps the first covering index (the pre-WI-419 behavior).
 fn disambiguate_covering_by_sigma(
     kb: &mut KnowledgeBase,
-    disambig: Option<&SameSpecDisambig>,
+    disambig: Option<&SigmaCtx>,
     caller_requires: &[RequiresEntry],
     dep: &RequiresEntry,
     covering: &[usize],
 ) -> Option<usize> {
-    let first = covering.first().copied();
-    let Some(disambig) = disambig else { return first };
-    let precise: SmallVec<[usize; 2]> = covering
-        .iter()
-        .copied()
-        .filter(|&i| entry_sigma_matches(kb, disambig, &caller_requires[i], dep))
-        .collect();
-    match precise.as_slice() {
-        [one] => Some(*one),
-        _ => first,
-    }
+    let Some(ctx) = disambig else { return covering.first().copied() };
+    pick_precise(covering, |i| entry_sigma_matches(kb, ctx, &caller_requires[i], dep))
 }
 
 /// WI-419: σ-class-precise variant of [`entries_cover`], used ONLY to
@@ -7276,7 +7380,7 @@ fn disambiguate_covering_by_sigma(
 /// `dispatch_values_match` as `entries_cover`.
 fn entry_sigma_matches(
     kb: &mut KnowledgeBase,
-    disambig: &SameSpecDisambig,
+    ctx: &SigmaCtx,
     caller: &RequiresEntry,
     dep: &RequiresEntry,
 ) -> bool {
@@ -7304,68 +7408,14 @@ fn entry_sigma_matches(
         else {
             return false;
         };
-        let caller_tp = is_type_param_value(kb, caller_val);
-        let dep_tp = is_type_param_value(kb, *dep_val);
-        match (caller_tp, dep_tp) {
-            (true, true) => {
-                // σ-class identity: both elements must resolve to the same var.
-                match (
-                    element_repr_var(kb, disambig, caller_val),
-                    element_repr_var(kb, disambig, *dep_val),
-                ) {
-                    (Some(a), Some(b)) if a == b => continue,
-                    _ => return false,
-                }
-            }
-            // One concrete, one wildcard: `entries_cover` accepts this loosely,
-            // but a wildcard does not PIN a concrete element, so it is not the
-            // precise slot for tie-breaking.
-            (true, false) | (false, true) => return false,
-            (false, false) => {
-                if !dispatch_values_match(kb, caller_val, *dep_val)
-                    && !dispatch_values_match(kb, *dep_val, caller_val)
-                {
-                    return false;
-                }
-            }
+        if !sigma_pair_precise(kb, ctx, caller_val, *dep_val) {
+            return false;
         }
     }
     true
 }
 
-/// WI-419: the representative unification variable of a type-param element
-/// binding VALUE under the call context. Walk to a canonical representative: at
-/// each step map the current term to a logical var (a `Global`/`Rigid`
-/// directly, or a sort-parameter `Ref`/`Ident`/nullary-`Fn` via its sort alias —
-/// mirroring [`resolve_param_value_via_subst`]), then chase what `subst` binds
-/// that var to. The chase follows BOTH var→var and var→sort-param-`Ref`
-/// bindings. A `Var::Rigid` is terminal (a per-body skolem — never re-bound).
-/// An unbound `Global` is the representative, but is first canonicalized through
-/// the enclosing-sort param→rigid map: the dep element resolves (via the call
-/// `subst`) to the rigidified caller param `Var(Rigid(B))`, while the caller
-/// `requires` entry resolves to the canonical `Var::Global(B)`, so mapping the
-/// global to its rigid lands both on the same id. `None` when the value is not a
-/// recognizable type-param. Bounded against a pathological cycle.
-fn element_repr_var(
-    kb: &KnowledgeBase,
-    disambig: &SameSpecDisambig,
-    value: TermId,
-) -> Option<VarId> {
-    let mut cur = value;
-    for _ in 0..128 {
-        let (vid, is_rigid) = elem_var_step(kb, cur)?;
-        if is_rigid {
-            return Some(vid);
-        }
-        match disambig.subst.resolve_as_value(vid) {
-            Some(Value::Term { id: t, .. }) => cur = *t,
-            _ => return Some(canonical_global_var(kb, vid, disambig.sort_param_rigids)),
-        }
-    }
-    None
-}
-
-/// WI-419: map an element term to a logical var, returning `(var, is_rigid)`.
+/// Map an element term to a logical var, returning `(var, is_rigid)`.
 /// `is_rigid` marks a terminal skolem (`Var::Rigid`); a `Global` (direct or via
 /// a sort-param alias) is chaseable. `None` for a concrete / unrecognized term.
 fn elem_var_step(kb: &KnowledgeBase, tid: TermId) -> Option<(VarId, bool)> {
@@ -8001,45 +8051,92 @@ pub enum DispatchOutcome {
 }
 
 /// WI-221/WI-222 — defer-to-requirement detection (open-bound trigger).
-/// Returns the **slot index** (position in `chain`) of the first matching
-/// requires entry, or `None` if the spec sort isn't reached via this
-/// chain. WI-222 needs the slot to populate `requirement_at_current(slot
-/// = N)` in the rewritten `apply_within`. The chain is cached on
-/// `TypingEnv` (see `set_enclosing_sort`) to avoid re-walking
-/// `SortRequiresInfo` per apply check.
+/// Returns the **slot index** (position in `chain`) of the matching requires
+/// entry, or `None` if the spec sort isn't reached via this chain. WI-222 needs
+/// the slot to populate `requirement_at_current(slot = N)` in the rewritten
+/// `apply_within`. The chain is cached on `TypingEnv` (see `set_enclosing_sort`)
+/// to avoid re-walking `SortRequiresInfo` per apply check.
+///
+/// WI-613: when MORE THAN ONE entry wildcard-covers the call — a sort with two
+/// `requires` of the SAME spec over distinct element params (`requires Eq[A],
+/// Eq[B]`) — a blind first-match attributes the call to the wrong slot and reads
+/// the wrong `__req_*` dictionary at runtime. `disambig` (the σ context) breaks
+/// the tie by element identity: the unique covering entry whose element shares a
+/// σ-class with the per-call value. A `None` `disambig` keeps first-match — the
+/// `.is_some()` defer-trigger caller (`dispatch_spec_op_cached`) only needs
+/// whether ANY entry covers, not which.
 pub fn find_requires_slot(
     kb: &mut KnowledgeBase,
     subst: &Substitution,
     spec_sort: Symbol,
     chain: &[RequiresEntry],
+    disambig: Option<&SigmaCtx>,
 ) -> Option<usize> {
     let spec_qn = kb.qualified_name_of(spec_sort).to_string();
-    chain
+    let covering: SmallVec<[usize; 2]> = chain
         .iter()
-        .position(|entry| entry_matches_subst(kb, subst, spec_sort, &spec_qn, entry))
+        .enumerate()
+        .filter(|(_, entry)| entry_matches_subst(kb, subst, spec_sort, &spec_qn, entry))
+        .map(|(i, _)| i)
+        .collect();
+    match covering.as_slice() {
+        [] => None,
+        [only] => Some(*only),
+        many => disambiguate_slot_by_sigma(kb, disambig, spec_sort, &spec_qn, chain, many),
+    }
 }
 
-/// WI-221/WI-222 — true iff `entry` is a `requires` for `spec_sort`
-/// whose bindings are consistent with the per-call substitution `subst`
-/// (the defer-to-requirement match). Extracted from `find_requires_slot`
-/// (WI-239) so the same predicate drives both the flat-chain slot search
-/// and the tree walk in `find_requires_location`. `spec_qn` is
-/// `qualified_name_of(spec_sort)`, hoisted by callers that test many
-/// entries.
-fn entry_matches_subst(
+/// WI-613: among `covering` chain indices that all wildcard-cover the same
+/// deferred call (only possible when the sort declares two+ `requires` of the
+/// same spec over distinct element params), pick the one whose element σ-class
+/// matches the per-call value's — via the shared [`pick_precise`] policy (first
+/// σ-precise, else first covering). No σ context keeps the first covering index
+/// (the pre-WI-613 behavior). Mirrors [`disambiguate_covering_by_sigma`] on the
+/// forwarding path.
+fn disambiguate_slot_by_sigma(
+    kb: &mut KnowledgeBase,
+    disambig: Option<&SigmaCtx>,
+    spec_sort: Symbol,
+    spec_qn: &str,
+    chain: &[RequiresEntry],
+    covering: &[usize],
+) -> Option<usize> {
+    let Some(ctx) = disambig else { return covering.first().copied() };
+    pick_precise(covering, |i| entry_sigma_matches_subst(kb, ctx, spec_sort, spec_qn, &chain[i]))
+}
+
+/// WI-613 — resolve `entry`'s type-param bindings against the per-call `subst`,
+/// yielding one `(per_call_value, entry_value)` pair per CONSTRAINING binding
+/// (a spec param that resolved through `subst` to a concrete `Value::Term`).
+/// Non-constraining bindings are dropped, exactly as the pre-WI-613
+/// `entry_matches_subst` per-binding `continue` did:
+///   * an unbound spec param — the OPEN-T defer trigger (impl picked at runtime
+///     from the caller's requirement value);
+///   * a denoted-`Node` carrier (WI-348 Phase C; flagged loudly in debug);
+///   * a non-type-param binding (an auto-bound op like `eq`/`neq`), or an
+///     unresolvable alias.
+///
+/// `None` iff `entry` is not a `requires` for `spec_sort`, or its spec term is
+/// malformed (the structural reject — a coarse non-match). `Some(empty)` is a
+/// VACUOUS match: a plain bindingless `requires` (e.g. `requires Paintable`), or
+/// a spec whose every binding is non-constraining.
+///
+/// The post-`resolve_requires_bindings` SortView carries bindings for both
+/// type-params (`T`) and auto-bound operations (`eq`, `neq`); only the type-param
+/// bindings constrain the substitution, detected via SortAlias resolution (only a
+/// spec param produces a `Term::Var` alias target). Shared by
+/// [`entry_matches_subst`] (wildcard cover) and [`entry_sigma_matches_subst`]
+/// (σ-class tie-break) so the two agree on which bindings constrain the call.
+fn entry_type_param_bindings(
     kb: &mut KnowledgeBase,
     subst: &Substitution,
     spec_sort: Symbol,
     spec_qn: &str,
     entry: &RequiresEntry,
-) -> bool {
+) -> Option<SmallVec<[(TermId, TermId); 2]>> {
     if entry.required_sort != spec_sort {
-        return false;
+        return None;
     }
-    // Extract bindings from the entry's SortView term. Plain
-    // bindingless requires (e.g. `requires Paintable`) match
-    // unconditionally — any per-call subst for this spec is reached
-    // via the requires.
     let bindings: SmallVec<[(Symbol, TermId); 2]> = match kb.get_term(entry.spec) {
         Term::Fn { functor, named_args, pos_args } => {
             let f_qn = kb.qualified_name_of(*functor);
@@ -8049,59 +8146,29 @@ fn entry_matches_subst(
                 // Plain sort term, e.g. `requires Paintable`.
                 SmallVec::new()
             } else {
-                return false;
+                return None;
             }
         }
         Term::Ref(_) | Term::Ident(_) => SmallVec::new(),
-        _ => return false,
+        _ => return None,
     };
-
-    if bindings.is_empty() {
-        return true;
-    }
-
-    // The post-`resolve_requires_bindings` SortView for a `requires`
-    // entry carries bindings for both type-params (e.g. `T`) and
-    // auto-bound operations (e.g. `eq`, `neq`). Only the type-param
-    // bindings constrain the per-call substitution — op bindings are
-    // resolved against the enclosing sort's operations and don't
-    // participate in defer-to-requirement matching. We detect a
-    // type-param slot via SortAlias resolution: only spec params
-    // produce a `Term::Var` alias target. If no type-param bindings
-    // surface (spec has no params, or all bindings are ops), the
-    // entry matches vacuously.
+    let mut out: SmallVec<[(TermId, TermId); 2]> = SmallVec::new();
     for (binding_short_sym, entry_value) in &bindings {
         let binding_short = kb.resolve_sym(*binding_short_sym);
         let param_qn = format!("{spec_qn}.{binding_short}");
-        let param_qn_sym = match kb.try_resolve_symbol(&param_qn) {
-            Some(s) => s,
-            None => continue,
-        };
-        let alias_target = match resolve_sort_alias(kb, param_qn_sym) {
-            Some(t) => t,
-            None => continue,
-        };
+        let Some(param_qn_sym) = kb.try_resolve_symbol(&param_qn) else { continue };
+        let Some(alias_target) = resolve_sort_alias(kb, param_qn_sym) else { continue };
         let vid = match kb.get_term(alias_target) {
             Term::Var(Var::Global(v)) => *v,
             _ => continue,
         };
         let per_call_value = match subst.resolve_as_value(vid) {
-            // Unbound spec param: this is the OPEN-T defer trigger.
-            // The call's binding was not constrained to a concrete
-            // carrier (often because the typer unified two free Vars
-            // and bound the *other* direction). Per
-            // `docs/design/operation-call-model.md` §"Defer-to-
-            // requirement detection", an open type-var in the goal
-            // means defer — the impl is determined at runtime by the
-            // requirement value the caller passed. Match this entry.
+            // Unbound spec param — the OPEN-T defer trigger; no constraint.
             None => continue,
             Some(Value::Term { id: v, .. }) => *v,
-            // A denoted `Value::Node` param: matching it against the requires
-            // entry needs the symmetric `TermId` match below to go
-            // carrier-agnostic (WI-348 Phase C). Until then, conservatively
-            // defer (sound — the impl is resolved at runtime), but flag loudly
-            // in debug so the gap surfaces the moment a denoted carrier reaches
-            // here.
+            // A denoted `Value::Node` param: carrier-agnostic entry match is
+            // WI-348 Phase C. Conservatively drop (sound — resolved at runtime),
+            // but flag loudly in debug so the gap surfaces.
             Some(other) => {
                 debug_assert!(
                     false,
@@ -8111,27 +8178,80 @@ fn entry_matches_subst(
                 continue;
             }
         };
-        // WI-414: a CONCRETE per-call value (e.g. `Eq.T := Int` from
-        // `eq(i: Int, 0)`) must NOT defer to an OPEN-T requirement entry
-        // (`requires Eq[T]`, the enclosing sort's abstract element) — such a call
-        // is not "the enclosing T", so it dispatches concretely to the available
-        // `fact Eq[Int]`. Without this the wildcard match below treated `Int` vs
-        // the open `T` as a match, deferring a concretely-dispatchable call to a
-        // `__req` slot that an external caller never binds (a compile-clean call
-        // that then aborts at runtime). An ABSTRACT per-call value (the enclosing
-        // T itself) still defers below — its impl IS the requirement; and a
-        // concrete call to a CONCRETE requirement (`requires Eq[T=Int]`) still
-        // defers via the dispatch match (entry not a wildcard).
-        if !is_type_param_value(kb, per_call_value) && is_type_param_value(kb, *entry_value) {
+        out.push((per_call_value, *entry_value));
+    }
+    Some(out)
+}
+
+/// WI-221/WI-222 — true iff `entry` is a `requires` for `spec_sort` whose
+/// bindings are consistent with the per-call substitution `subst` (the
+/// wildcard-tolerant defer-to-requirement cover). Drives both the flat-chain slot
+/// search (`find_requires_slot`) and the tree walk in `find_requires_location`.
+/// `spec_qn` is `qualified_name_of(spec_sort)`, hoisted by callers that test many
+/// entries.
+///
+/// Wildcard-tolerant by design: either side may be a type-param (the entry uses
+/// the enclosing open `T`, or the call is on an abstract param). WI-613 layers a
+/// σ-class tie-break ([`entry_sigma_matches_subst`]) ON TOP for when two entries
+/// both cover — this predicate stays the coarse candidate filter.
+fn entry_matches_subst(
+    kb: &mut KnowledgeBase,
+    subst: &Substitution,
+    spec_sort: Symbol,
+    spec_qn: &str,
+    entry: &RequiresEntry,
+) -> bool {
+    let Some(pairs) = entry_type_param_bindings(kb, subst, spec_sort, spec_qn, entry) else {
+        return false;
+    };
+    for (per_call_value, entry_value) in &pairs {
+        // WI-414: a CONCRETE per-call value (e.g. `Eq.T := Int` from `eq(i: Int,
+        // 0)`) must NOT defer to an OPEN-T requirement entry (`requires Eq[T]`,
+        // the enclosing sort's abstract element) — such a call dispatches
+        // concretely to the available `fact Eq[Int]`. Without this the wildcard
+        // match below treated `Int` vs the open `T` as a match, deferring a
+        // concretely-dispatchable call to a `__req` slot an external caller never
+        // binds. An ABSTRACT per-call value (the enclosing T) still defers — its
+        // impl IS the requirement; a concrete call to a CONCRETE requirement
+        // (`requires Eq[T=Int]`) still defers via the dispatch match (not a
+        // wildcard).
+        if !is_type_param_value(kb, *per_call_value) && is_type_param_value(kb, *entry_value) {
             return false;
         }
-        // Either side may be a wildcard (a type-param value): the
-        // requires entry might use the enclosing sort's open T
-        // (`requires Eq[T]`) or a concrete carrier (`requires Eq[T=Int]`).
-        // Symmetric match — try both directions.
-        if !dispatch_values_match(kb, per_call_value, *entry_value)
-            && !dispatch_values_match(kb, *entry_value, per_call_value)
+        // Either side may be a wildcard — symmetric match, try both directions.
+        if !dispatch_values_match(kb, *per_call_value, *entry_value)
+            && !dispatch_values_match(kb, *entry_value, *per_call_value)
         {
+            return false;
+        }
+    }
+    true
+}
+
+/// WI-613 — σ-class-precise variant of [`entry_matches_subst`], used ONLY to
+/// tie-break among same-spec entries that all wildcard-cover a body spec-op call.
+/// For every CONSTRAINING binding the entry's element and the per-call value must
+/// share a σ-class under `ctx` (the same parameter, bridging rigid↔global). A
+/// mixed concrete/wildcard pair does not PIN the element and is not precise;
+/// concrete/concrete uses the same `dispatch_values_match` as the coarse cover. A
+/// vacuous entry (no constraining binding) is not a precise disambiguator.
+/// Mirrors [`entry_sigma_matches`] (the entry-vs-entry forwarding analog) but
+/// reads the per-call element from the substitution rather than a second entry.
+fn entry_sigma_matches_subst(
+    kb: &mut KnowledgeBase,
+    ctx: &SigmaCtx,
+    spec_sort: Symbol,
+    spec_qn: &str,
+    entry: &RequiresEntry,
+) -> bool {
+    let Some(pairs) = entry_type_param_bindings(kb, ctx.subst, spec_sort, spec_qn, entry) else {
+        return false;
+    };
+    if pairs.is_empty() {
+        return false;
+    }
+    for (per_call_value, entry_value) in &pairs {
+        if !sigma_pair_precise(kb, ctx, *per_call_value, *entry_value) {
             return false;
         }
     }
@@ -8153,45 +8273,78 @@ fn entry_matches_subst(
 /// Under the tree-native ABI a transitive entry is no longer a frame
 /// slot, so the typer's classification consults this to recover the
 /// `(slot, proj_path)` encoding for `CallClass::DeferToRequirement`.
+///
+/// WI-613: when MORE THAN ONE node covers the call — a sort with two `requires`
+/// of the SAME spec over distinct element params — first-match (pre-order) reads
+/// the wrong requirement. `disambig` (the σ context) prefers a σ-precise covering
+/// node — one whose element shares a σ-class with the per-call value — via the
+/// shared [`pick_precise`] policy (first σ-precise, else first pre-order match). A
+/// `None` `disambig`, or no σ-precise node, keeps the first pre-order match.
 pub fn find_requires_location(
     kb: &mut KnowledgeBase,
     subst: &Substitution,
     spec_sort: Symbol,
     sort_sym: Symbol,
+    disambig: Option<&SigmaCtx>,
 ) -> Option<SmallVec<[usize; 2]>> {
     let spec_qn = kb.qualified_name_of(spec_sort).to_string();
     let tree = requires_tree(kb, sort_sym);
     let mut path: SmallVec<[usize; 2]> = SmallVec::new();
-    if find_in_requires_nodes(kb, subst, spec_sort, &spec_qn, &tree, &mut path) {
-        Some(path)
-    } else {
-        None
+    let mut matches: Vec<(SmallVec<[usize; 2]>, bool)> = Vec::new();
+    collect_requires_matches(
+        kb, subst, disambig, spec_sort, &spec_qn, &tree, &mut path, &mut matches,
+    );
+    match matches.as_slice() {
+        [] => None,
+        [(only, _)] => Some(only.clone()),
+        _ => {
+            // Same [`pick_precise`] policy as the flat-chain / sub-chain matchers,
+            // over the node indices with their precomputed σ-precise flag: the
+            // first σ-precise node, else the first pre-order match (identical to
+            // the pre-WI-613 first-match when there is no σ context — no node is
+            // then precise).
+            let idxs: SmallVec<[usize; 2]> = (0..matches.len()).collect();
+            let chosen = pick_precise(&idxs, |i| matches[i].1).unwrap_or(0);
+            Some(matches[chosen].0.clone())
+        }
     }
 }
 
-/// WI-239 — pre-order DFS helper for [`find_requires_location`]. Pushes
-/// each node's index onto `path` before testing; on a match leaves
-/// `path` holding the full path to the matched node. `nodes` comes from
-/// the substitution-composed `requires_tree`, so it does not alias `kb`.
-fn find_in_requires_nodes(
+/// WI-239 / WI-613 — pre-order DFS collector for [`find_requires_location`].
+/// Pushes each node's index onto `path`, and for every node whose entry
+/// `entry_matches_subst` (the coarse cover) records `(path, is_σ_precise)`.
+/// Preserves the original DFS short-circuit: a matching entry does NOT descend
+/// into its own `sub_requires` (the entry IS the target; its sub-requires are the
+/// required spec's OWN transitive requires — a different spec). `is_σ_precise` is
+/// computed only when a σ context is present ([`entry_sigma_matches_subst`]);
+/// with none it is `false`, so the caller falls back to the first pre-order
+/// match. `nodes` comes from the substitution-composed `requires_tree`, so it
+/// does not alias `kb`.
+fn collect_requires_matches(
     kb: &mut KnowledgeBase,
     subst: &Substitution,
+    disambig: Option<&SigmaCtx>,
     spec_sort: Symbol,
     spec_qn: &str,
     nodes: &[RequiresNode],
     path: &mut SmallVec<[usize; 2]>,
-) -> bool {
+    out: &mut Vec<(SmallVec<[usize; 2]>, bool)>,
+) {
     for (i, node) in nodes.iter().enumerate() {
         path.push(i);
         if entry_matches_subst(kb, subst, spec_sort, spec_qn, &node.entry) {
-            return true;
-        }
-        if find_in_requires_nodes(kb, subst, spec_sort, spec_qn, &node.sub_requires, path) {
-            return true;
+            let precise = match disambig {
+                Some(ctx) => entry_sigma_matches_subst(kb, ctx, spec_sort, spec_qn, &node.entry),
+                None => false,
+            };
+            out.push((path.clone(), precise));
+        } else {
+            collect_requires_matches(
+                kb, subst, disambig, spec_sort, spec_qn, &node.sub_requires, path, out,
+            );
         }
         path.pop();
     }
-    false
 }
 
 // ── WI-224 — SLD-based instance synthesis ──────────────────────
@@ -11752,7 +11905,7 @@ pub fn dispatch_spec_op_cached(
     // needs the direct chain. The compat API (`find_unique_impl_op`,
     // exercised by the WI-221 tests with synthetic chains) relies on it.
     if !enclosing_requires.is_empty()
-        && find_requires_slot(kb, subst, spec_sort, enclosing_requires).is_some()
+        && find_requires_slot(kb, subst, spec_sort, enclosing_requires, None).is_some()
     {
         return (DispatchOutcome::Deferred, None);
     }
