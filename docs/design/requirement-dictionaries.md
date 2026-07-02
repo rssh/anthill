@@ -9,7 +9,9 @@ Design — **origin** 2026-07-01 (this session). Covers two coupled tickets:
   WI-502 typed-value carrier review.
 - **WI-300** — "Requirement goals in rule bodies" (the consumer: `requires(X)`
   as a rule-body goal). Surfaced during the WI-246 Phase 3c review. **Depends on
-  WI-577** and on **WI-292** (*delivered*).
+  WI-577**, on **WI-292** (*delivered*), and on **WI-613** (*delivered* — the
+  same-spec/different-param **attribution** fix WI-300's requirement weave reuses;
+  §3.4).
 
 They are one document because they are one topic: a rule-body `requires(X)`
 dispatches through, and reasons about, the requirement **dictionary**, so it
@@ -19,8 +21,11 @@ accessors. WI-577 is the substrate; WI-300 is the consumer; the ordering is
 
 **Builds on:** the runtime dictionary machinery
 ([`operation-call-model.md`](./operation-call-model.md) §"Runtime: frame,
-requirement value, closure") and the op-body requirement weave
-(`anthill-core/src/kb/req_insertion.rs`). **Adjacent:**
+requirement value, closure"), the op-body requirement weave
+(`anthill-core/src/kb/req_insertion.rs`), and the defer-to-requirement
+**attribution** matchers that map each body spec-op call to its `requires` slot
+(`find_requires_slot` / `find_requires_location`, σ-class-disambiguated per
+WI-613, §3.4). **Adjacent:**
 [`constrained-term-substrate.md`](./constrained-term-substrate.md) (typed
 values; runtime monomorphization dispatches on a value's carried type — the same
 "make dispatch introspectable" goal; and WI-292, the resolve-or-suspend engine
@@ -464,16 +469,34 @@ One decision is settled, one remains:
 
 - **[Resolved] Slot keying = the op-body names model, reused wholesale.**
   Elaboration synthesizes a name per requirement (`synth_req_names`,
-  `typing.rs:20211`) and wires each covered body op to it by **type-param matching**
-  (static) — reusing `frame.requirements`'s `SmallVec<[(Symbol,
+  `typing.rs:20467`) and wires each covered body op to its slot by **type-param
+  matching** (static) — reusing `frame.requirements`'s `SmallVec<[(Symbol,
   RequirementHandle)]>` (`frame.rs:119`), the bridge, and a shared
   `RequirementArena`. **Not** a runtime type-hash key: in the resolver a type
   carries a substitution and may be non-ground, so it is not a stable key; the type
-  enters only as `findDictionary`'s groundness-gated input (§3.3). This already
-  handles **same-spec / different-param** (`requires Eq[A], requires Eq[B]`): when
-  two entries share the base `__req_eq`, `synth_req_names` disambiguates by the full
-  spec `TermId` (`entry.spec.raw()`, `typing.rs:20228`) — `Eq[A]`/`Eq[B]` are
-  distinct terms → distinct names, at elaboration and at runtime. No collision.
+  enters only as `findDictionary`'s groundness-gated input (§3.3). (This is the same
+  conclusion the WI-613 analysis reached independently — the matching identity is
+  *substitution-relative* and *elaboration-time*, not a ground-type hash.)
+
+  **Same-spec / different-param** (`requires Eq[A], requires Eq[B]`) needs BOTH
+  halves right, and they are distinct axes — an earlier draft of this bullet
+  treated *naming* alone as sufficient, but WI-613 showed *attribution* is where the
+  work is:
+  - **Naming — no collision.** When two entries share the base `__req_eq`,
+    `synth_req_names` disambiguates by the full spec `TermId` (`entry.spec.raw()`,
+    `typing.rs:20485`) — `Eq[A]`/`Eq[B]` are distinct terms → distinct names, at
+    elaboration and at runtime.
+  - **Attribution — the harder half.** Wiring a body call `eq(y:B)` to the *right*
+    slot is not naming: it matches the call's per-call type against the `requires`
+    entries. A naive wildcard match mis-attributes — both `Eq[A]` and `Eq[B]`
+    wildcard-cover *any* call, so first-match reads the `Eq[A]` slot's name for a
+    call over `B`, and the correctly-distinct name is never selected. **WI-613**
+    (*delivered*) fixes this: attribution routes through **σ-class** disambiguation
+    (`SigmaCtx` / `sigma_class` / `pick_precise`, in `find_requires_slot` /
+    `find_requires_location`), matching by element identity — bridging the enclosing
+    param's per-body skolem to its canonical var so `A` and `B` are told apart.
+    WI-300's rule-body weave reuses this attribution wholesale, so it **depends on
+    WI-613** (§Status).
 - **[Open] Whole-rule vs. positional `requires`.** As an `∃`-goal it reads
   positionally (ops *after* it see the slot); "bring X into scope for the rule"
   wants it whole-body. Either hoist `requires X` to a rule-level populator, or
