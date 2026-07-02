@@ -1,12 +1,14 @@
-# Requirement dictionaries — first-class reflection & rule-body requirement goals
+# Requirement dictionaries — first-class runtime values, reflective expression construction & rule-body requirement goals
 
 ## Status
 
 Design — **origin** 2026-07-01 (this session). Covers two coupled tickets:
 
-- **WI-577** — "First-class Dictionaries + OpRefs in reflect" (the substrate:
-  lift the runtime dispatch value into a reflect object). Surfaced during the
-  WI-502 typed-value carrier review.
+- **WI-577** — "First-class Dictionaries + OpRefs" (the substrate: give the
+  runtime dispatch value a first-class anthill face). **These are RUNTIME sorts**
+  (`Dictionary[S]` / `OpRef[A]`, like `Cell`/`Map`) — *not* reflect objects; reflect
+  enters only for the separate expression-construction layer (§2.6). Surfaced during
+  the WI-502 typed-value carrier review.
 - **WI-300** — "Requirement goals in rule bodies" (the consumer: `requires(X)`
   as a rule-body goal). Surfaced during the WI-246 Phase 3c review. **Depends on
   WI-577**, on **WI-292** (*delivered*), and on **WI-613** (*delivered* — the
@@ -15,7 +17,7 @@ Design — **origin** 2026-07-01 (this session). Covers two coupled tickets:
 
 They are one document because they are one topic: a rule-body `requires(X)`
 dispatches through, and reasons about, the requirement **dictionary**, so it
-needs that dictionary exposed as a first-class reflect value with typed
+needs that dictionary exposed as a first-class (runtime) value with typed
 accessors. WI-577 is the substrate; WI-300 is the consumer; the ordering is
 **WI-577 → WI-300**.
 
@@ -135,11 +137,17 @@ the requirement dictionary is the instance/method **witness**.
 
 ---
 
-## 2. First-class dictionaries in reflect (WI-577)
+## 2. First-class dictionaries: the runtime `Dictionary[S]` / `OpRef[A]` values (WI-577)
+
+`Dictionary[S]` and `OpRef[A]` are **runtime** sorts — the anthill face of the
+runtime dispatch values `Value::Requirement` / `Value::OpRef`, like `Cell`/`Map`
+(they live in the runtime layer, not `reflect.anthill`). You *use* them: resolve,
+project, dispatch, pass. Reflect enters only in §2.6, the separate
+expression-*construction* layer that builds code over them.
 
 ### 2.1 Why
 
-Making `Value::Requirement` / `Value::OpRef` first-class reflect objects buys:
+Making `Value::Requirement` / `Value::OpRef` first-class runtime values buys:
 
 1. **Uniform typing.** Each carries the same two-type split `reflect.Type` already
    has: a **reflect type** (it *is* a `Dictionary` / an `OpRef`) plus a **denoted
@@ -397,43 +405,96 @@ Two consequences:
   existential case, stored on the slot. The static split needs neither. (This is what
   dissolves the "store the spec on the slot" cost the review flagged.)
 
-### 2.6 The Term / meta layer (separate from the views)
+### 2.6 The Term layer — constructing expressions (anthill, over the `Expr` enum)
 
 Term *construction* — producing occurrences — is a different concern from the
-`Dictionary`/`OpRef` **views**, and lives in the reflect **Term layer** (alongside
-the existing `reify` / `execute`, WI-531/535). It is **value-agnostic**: the ops
-earlier drafts hung on `Dictionary`/`OpRef` generalize here.
+`Dictionary`/`OpRef` **views**, and it lives at the **anthill layer**: reflect
+operations that build reflect **`Expr` data** and materialize it. The `Expr` enum in
+`reflect.anthill` already defines *every* occurrence form as an entity —
+`apply_within`, `construct_requirement`, `var_ref`, `requirement_at_sort`, `apply`,
+`if_expr`, `let_expr`, … — so constructing an expression is *constructing those
+entities in anthill*. Nothing dict-specific is native.
 
-- **`quote(v) -> Term`** (was `Dictionary.genRef`) — lift ANY value into an
-  identity-preserving *reference* Term. For a dict, `quote(d)` references THIS handle
-  (keeps identity + sub-dict sharing); it works the same for a `Cell`/`Map`.
-- **`mkApply(fn, reqs, args) -> Term`** (was `OpRef.genApply`) — build an
-  `apply_within(fn, requirements = reqs, args)` occurrence. `genApply(r, args)` is
-  just `mkApply(quote(op(r)), [quote(dict(r))], args)`.
-- **`reify(v) -> Term`** — the general *rebuild* to a structural recipe: for a dict,
-  `construct_requirement(impl, [subs])` (sub-deps concrete). Structural /
-  `DiscrimKey`-able — use it when the term must be keyed, accepting a new,
-  structurally-equal value rather than the same handle. (`quote` = reference,
-  identity; `reify` = rebuild, structure.)
-- **`construct(impl, [subs]) -> Dictionary[…]`** — build a fresh dict *value* from
-  parts (the reflect face of `construct_requirement`).
-- **Type-reflection** — reify a denoted-type parameter (`S`/`A`) to a runtime `Type`
-  value (the old `denotedType(d)`); the G1-affected, runtime-only op.
-- **`execute(t: Term) -> …`** — run a Term. Runtime invocation of an OpRef is
-  `execute(mkApply(…))`, never a primitive `invoke`.
+**One native primitive — the occurrence dual of `reflect`.** reflect already has the
+term-build direction; the only thing missing is its occurrence twin:
 
-Binding a dict to a var is ordinary — `let a = quote(d)` (or
-`= findDictionary[Spec[T]]`, `= resolveOp(…).dict`) — and `a` threads as a
-requirement through the *unified* `var_ref` lookup: `apply_within(fn, requirements =
-[var_ref(a)], …)`. The synthesized `__req_*` names are just the weave's special case;
-a user-named `a` works identically. Because construction always goes through `quote`
-(reference) or `reify` (recipe), a raw `Value::Requirement` handle **never** rides as
-an opaque leaf inside a keyed occurrence.
+```
+reflect(kb, r: TermRepr)                     -> Term            -- EXISTS: build a logical term
+reflect_expr(kb, e: Expr, pos: SourceSpan)   -> NodeOccurrence  -- ADD: build a live occurrence
+```
 
-**Layering & phasing.** This layer is a *separate concern* from WI-577's views —
-value-agnostic, and gated on a metaprogramming consumer (like the deferred `invoke`).
-It is **not** part of WI-577's ship-now scope; it is its own follow-on WI, next to
-`reify`/`execute`. WI-577 proper = the pure views `Dictionary[S]` / `OpRef[A]`.
+`reflect_expr` materializes an `Expr` (whose children are already `NodeOccurrence`s)
+into a live, typed occurrence at span `pos`. It must be native — a raw occurrence
+must be typed/classified before it can run — but it is the *whole* native surface;
+everything above it is anthill. (`NodeOccurrence` is the general occurrence node,
+`kind: NodeKind` = `Expr` | `RuleHead` | `Pattern` | `Type` | `EffectExpr`;
+`reflect_expr` builds the **`Expr`-kind** occurrence — analogous builders would
+materialize the other kinds.)
+
+**The constructors are anthill operations over the `Expr` entities** — anthill bodies
+composing `reflect_expr` + the enum:
+
+```anthill
+-- reference a dict (identity-preserving) — a LEAF, so pos is explicit
+operation genRef(d: Dictionary[S], pos: SourceSpan) -> NodeOccurrence =
+  reflect_expr(quote(d), pos)                    -- quote(d): the value-reference leaf
+
+-- a dispatched call over an OpRef — compound; threads pos to children
+operation genApply(r: OpRef[A], args: List[T = ApplyArg], pos: SourceSpan) -> NodeOccurrence =
+  reflect_expr(apply_within(op(r), args, requirements: [genRef(dict(r), pos)]), pos)
+
+-- a dict recipe from parts (the structural rebuild)
+operation genConstruct(impl: Symbol, subs: List[T = NodeOccurrence], pos: SourceSpan) -> NodeOccurrence =
+  reflect_expr(construct_requirement(impl, subs), pos)
+
+-- build the occurrence that resolves/constructs a dict for spec type `t`
+-- (t: TypeTerm — the spec instance Eq[Int]/Stream[Int] as a term). Executing the
+-- built occurrence runs the WI-300 resolver (provides-resolution + construct +
+-- suspend). Build-side here; eval-side is WI-300 — two stages of one `Expr` form.
+operation findDictionary(t: TypeTerm, pos: SourceSpan) -> NodeOccurrence =
+  reflect_expr(find_dictionary(t), pos)
+```
+
+`TypeTerm` = the spec instance as a term (a `Term` in type position; reflect's
+`sort_as_term(s: Type) -> Term` produces one). It is the queryable form the WI-300
+resolver matches against `provides` facts.
+
+Every body is anthill — the dictionary logic is `apply_within(op(r), …, [genRef(dict(r))])`,
+not a builtin. `mkApply`/`mkVar`/`mkLit` are the same shape over the general `Expr`
+forms, **value-agnostic** (`quote` builds a `Cell`/`Map` reference identically).
+
+**Positions.** Every occurrence carries a `SourceSpan` (`occurrence_span`), so every
+constructor takes `pos`. A **leaf** (`genRef`, `mkVar`, `mkLit`) has no child to
+derive from → explicit `pos`; a **compound** (`genApply`, `genConstruct`) derives its
+span from its children or takes an explicit one. `pos` is where a diagnostic on the
+generated node points, and its provenance — the source it was generated *for* (a
+rewrite's original site, a macro's trigger). NB `SourceSpan` today has only a real
+byte-range variant; genuinely synthetic code either reuses the trigger's span or
+motivates a `generated(from: SourceSpan)` variant (a small follow-on).
+
+**Reference vs. rebuild (the value→term boundary).** `genRef`/`quote` = a *reference*
+to THIS dict handle (identity, sub-dict sharing) — for execution-bound terms. `reify`
+(the general value→term rebuild) produces the structural `construct_requirement`
+recipe — `DiscrimKey`-able, for terms that must be keyed, at the cost of a new
+structurally-equal value. Because construction always goes through a reference
+(`genRef`/`var_ref`) or a recipe (`genConstruct`/`reify`), a raw `Value::Requirement`
+handle **never** rides as an opaque leaf inside a keyed occurrence. Binding a dict to
+a var is then ordinary — `let a = genRef(d, pos)` (or `= findDictionary[Spec]`,
+`= resolveOp(…).dict`) — and `a` threads as a requirement through the *unified*
+`var_ref` lookup; the `__req_*` names are just the weave's special case of a
+user-named `a`.
+
+**What's genuinely new.** `genRef`/`genApply`/`genConstruct`/`mkApply` reuse
+**existing** `Expr` entities → they need only `reflect_expr`. `findDictionary` adds
+the one new `Expr` form `find_dictionary(spec: TypeTerm)` + its resolver — scoped to WI-300.
+Type-reflection (reify a denoted parameter `S`/`A` to a runtime `Type` value, the old
+`denotedType`) and `execute(t)` (runtime OpRef invocation is `execute(genApply(…))`,
+never a primitive `invoke`) round out the layer.
+
+**Layering & phasing.** A *separate concern* from WI-577's views — anthill operations
+over the `Expr` enum, value-agnostic, gated on a metaprogramming consumer. **Not**
+part of WI-577's ship-now scope; its own follow-on WI, next to `reflect`/`reify`/
+`execute`. WI-577 proper = the pure views `Dictionary[S]` / `OpRef[A]`.
 
 ---
 
@@ -618,20 +679,24 @@ dispatches.
 
 ## 4. Phasing (ordering: WI-577 → WI-300)
 
-1. **Dictionary view (WI-577)** — `sort Dictionary[S]` (`impl` / `sub` / `arity` /
-   `resolveOp` / `ops`; `S` = the denoted spec instance, a type parameter) + native
-   builtins over the arena, plus the `Value::Requirement → anthill.reflect.Dictionary`
+1. **Dictionary — runtime sort (WI-577)** — `sort Dictionary[S]` (`impl` / `sub` /
+   `arity` / `resolveOp` / `ops`; `S` = the denoted spec instance, a type parameter) +
+   native builtins over the arena, plus the `Value::Requirement →` runtime-`Dictionary`
    carrier-type mapping. The builtins match the handle in Rust and read the arena
    directly, so `Value::Requirement` can **stay `ViewHead::Opaque`** — no de-opaquing
-   (that was only for the dropped structural-match face, §2.3). **This is the ready
-   unit** (the review's read/inspect core). Unblocks WI-300.
-2. **OpRef view (WI-577)** — the sibling `sort OpRef[A]` (`op` / `dict`; `A` = the
-   denoted arrow), reusing the `Dictionary` view.
-3. **Term / meta layer (separate follow-on WI, NOT WI-577)** — `quote`/`ref`,
-   `mkApply`, `construct`, Type-reflection, next to the existing `reify`/`execute`
-   (§2.6). Value-agnostic and **gated on a metaprogramming consumer** (like the
-   deferred `invoke`); the views (1–2) do not depend on it. This is where the
-   earlier `genRef`/`genApply` live, generalized.
+   (that was only for the dropped structural-match face, §2.3). A runtime sort (like
+   `Cell`/`Map`), not reflect. **This is the ready unit** (the review's read/inspect
+   core). Unblocks WI-300.
+2. **OpRef — runtime sort (WI-577)** — the sibling `sort OpRef[A]` (`op` / `dict`;
+   `A` = the denoted arrow), reusing the `Dictionary` view.
+3. **Reflect Term layer (separate follow-on WI, NOT WI-577)** — the one native
+   primitive `reflect_expr(kb, e: Expr, pos: SourceSpan) -> NodeOccurrence` (the
+   occurrence dual of the existing `reflect(TermRepr) -> Term`), plus the anthill
+   constructors over the `Expr` enum — `genRef` / `genApply` / `genConstruct` /
+   `findDictionary(TypeTerm, pos)` / `mkApply`, all taking `pos` — and Type-reflection,
+   next to `reify`/`execute` (§2.6). Value-agnostic, **gated on a metaprogramming
+   consumer** (like the deferred `invoke`); the runtime sorts (1–2) do not depend on
+   it. Only `find_dictionary` (the `Expr` form + WI-300 resolver) is genuinely new.
 4. **Rule-body requirement goals (WI-300)** — the `findDictionary[T]` resolver
    primitive (provides-resolution + `construct_requirement` + suspend); the Γ
    requirement slot; the `convert_rule_body` desugaring of `requires(X)` →
@@ -646,10 +711,12 @@ dispatches.
 
 - **Immutable.** Resolved dictionaries never mutate (no `Cell`-style identity
   hazard), so views cannot observe tearing.
-- **No new storage.** The reflect sorts are views over the existing arena.
+- **No new storage.** The runtime `Dictionary`/`OpRef` sorts are views over the existing arena.
 - **Never NAF-decide** an under-determined requirement (§3.5).
 
 ## 6. Acceptance
 
-Design (this doc) + (WI-577) the two reflect sorts + builtins + optional bridge +
-(WI-300) rule-body requirement goals; `cargo-test` green.
+Design (this doc) + (WI-577) the two runtime sorts (`Dictionary[S]` / `OpRef[A]`) +
+builtins + carrier mapping + optional bridge; (reflect Term layer, follow-on)
+`reflect_expr` + the constructors; (WI-300) rule-body requirement goals;
+`cargo-test` green.
