@@ -195,6 +195,14 @@ sort Dictionary
   operation sub(d: Dictionary, i: Int) -> Dictionary
   -- two-type split: the spec instance this dict witnesses, e.g. Numeric[Int]
   operation denotedType(d: Dictionary) -> Type
+  -- GENERATE a Term that REFERENCES this dictionary value (identity-preserving) —
+  -- for binding to a var (`let a = genRef(d)`) or embedding in generated code (the
+  -- requirements slot of `OpRef.genApply`). NOT a rebuild: unlike the top-level
+  -- `reify` (which reconstructs the whole `construct_requirement` recipe as a new,
+  -- structurally-equal value), `genRef` points at THIS handle, so the referenced
+  -- dict keeps its identity and sub-dict sharing. Identity-keyed → belongs in
+  -- execution-bound terms, never as a structural leaf in a discrim-indexed occ.
+  operation genRef(d: Dictionary) -> Term
 end
 ```
 
@@ -334,9 +342,10 @@ sort OpRef
   -- type; the reflect type is OpRef itself
   operation denotedType(r: OpRef) -> Type
   -- GENERATE the call occurrence: build (do NOT run) the Term that applies `op`
-  -- under this OpRef's dict to `args` — the same
-  -- `apply_within(fn = op, requirements = [dict], args)` IR the op-body weave
-  -- emits (plain `apply(op, args)` when `dict` is `none()`). The constructive
+  -- under this OpRef's dict to `args` —
+  -- `apply_within(fn = op, requirements = [genRef(dict)], args)`, the same shape the
+  -- op-body weave emits but with the dict embedded by REFERENCE (`genRef`, not a
+  -- rebuilt recipe); plain `apply(op, args)` when `dict` is `none()`. The constructive
   -- corner: for splicing / elaboration / codegen / staged execution. Pure term
   -- construction (`List[Term] -> Term`), so it always type-checks as such; the
   -- BUILT call's well-typedness is checked later, on elaboration, against
@@ -362,9 +371,13 @@ together and `resolveOp` closes the loop: `Dictionary` → (`resolveOp`) → `Op
 
 **Generate vs. execute — `genApply`.** Applying an `OpRef` *runs* it; `genApply`
 *builds the call and hands it back*. `genApply(r, args)` produces the
-`apply_within(fn = op(r), requirements = [dict(r)], args)` occurrence — the very IR
-the op-body weave emits — as a first-class `Term`, for a metaprogram or a
-user-level weave to splice, elaborate, transform, or run later. This is the
+`apply_within(fn = op(r), requirements = [genRef(dict(r))], args)` occurrence — an
+`apply_within` of the same shape the op-body weave emits, except its requirements
+slot **references** the OpRef's already-resolved dict via `genRef` (identity-
+preserving) rather than rebuilding a fresh `construct_requirement`/`var_ref` recipe,
+so the OpRef's actual dictionary — with its sub-dict sharing — rides into the call.
+It is a first-class `Term`, for a metaprogram or a user-level weave to splice,
+elaborate, transform, or run later. This is the
 **constructive** corner of the reflect triad, and the substance of payoff-#2's
 "first-class dictionary-passing" (§2.1): *resolve* and *inspect* were already
 covered (`resolveOp`; `op` / `dict` / `denotedType`); `genApply` is the corner
@@ -386,6 +399,34 @@ term-generation, **not** a dynamically-typed runtime `invoke`, for three reasons
 
 A `Dictionary.genApply(d, specOp, args)` would be sugar for
 `genApply(resolveOp(d, specOp), args)`, so the primitive stays on `OpRef`.
+
+**Value→term: `genRef` vs. `reify` vs. `construct`.** A dictionary crosses from the
+value layer into a term in three distinct ways, and keeping them separate is what
+preserves keying:
+
+- **`genRef(d)`** — a *reference* to THIS dict (identity-preserving). What
+  `genApply` embeds, and what a var binds to: `let a = genRef(d)`. The referenced
+  handle keeps its identity and sub-dict sharing. Identity-keyed, so it belongs
+  only in *execution-bound* terms — never as a structural leaf in a discrim-indexed
+  occurrence.
+- **`reify(d)`** — the general, top-level *rebuild* to the full
+  `construct_requirement(impl, [subs])` recipe (all sub-deps concrete, since a live
+  dict has no abstract forwards). Structural and `DiscrimKey`-able — use it when the
+  generated term must be *keyed / dedup'd*, accepting that the result is a new,
+  structurally-equal value rather than the same handle.
+- **`construct(impl, [subs])`** — *build* a fresh dict from parts (the reflect face
+  of `construct_requirement`), when assembling a witness rather than
+  referencing/rebuilding an existing one.
+
+Binding a dict to a var is then ordinary — `let a = genRef(d)` (or
+`= findDictionary[Spec[T]]`, `= resolveOp(…).dict`) — and `a` threads as a
+requirement through the *unified* `var_ref` lookup (which reads value params and
+requirement slots alike): `apply_within(fn, requirements = [var_ref(a)], …)`. The
+synthesized `__req_*` names are just the weave's special case of exactly this; a
+user-named `a` works identically. So `Value::Requirement` never has to appear as an
+opaque leaf inside a keyed term: it is *referenced* (`genRef`/`var_ref`) or *rebuilt*
+(`reify`), and only the reference/recipe — never the raw handle — rides in the
+occurrence.
 
 ### 2.5 The two-type split, precisely
 
