@@ -5,8 +5,9 @@
 //! Per `docs/design/operation-call-model.md` §"Runtime: frame, requirement
 //! value, closure", each slot stores `{ functor: <impl_sort>, requirements:
 //! [<sub-handles>] }` — the impl identity plus the deps it was constructed
-//! with. Bodies dispatch through requirement values via
-//! `requirement_at_current(i, op_short)`; sub-deps are reached through
+//! with. A body reads its requirement dictionary by name (`var_ref` of an
+//! inserted `__req_*` param, the names model — WI-237 retired the positional
+//! `requirement_at_current` read); sub-deps are reached through
 //! `requirement_at_sort(chain, k)` projections into the arena.
 //!
 //! Mirrors `CellArena` / `MapArena` / `SubstArena`: Clone bumps the slot's

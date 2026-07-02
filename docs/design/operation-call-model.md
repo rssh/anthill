@@ -1,23 +1,23 @@
 # The operation-call model
 
-## Status: Design decided — the **names model** (main body) is the agreed target; the implementation still runs the **positional model** (see §"Legacy: the positional model" and §"Implementation roadmap"). Migration pending.
+## Status: Design decided AND implemented — the **names model** (main body) is the agreed target and, since WI-237, what the code runs. The **positional model** is retired: `requirement_at_current` is no longer emitted (body reads go through `var_ref` / `Expr::VarRef`). §"Legacy: the positional model" and §"Implementation roadmap" are kept as historical record.
 
 ## Tracks: WI-204 (port cmd_X), WI-218 (static-dispatch rewrite), WI-210 (spec/impl call-site dispatch), WI-222–WI-233 (elaboration / dictionary model)
 
 ## Brainstorm: see `operation-call-model-brainstorm.md` for the exploration. This doc is the resulting design only.
 
-## Two models: target vs. current implementation
+## Two models: the implemented names model vs. the retired positional model
 
 This doc describes **two models** for body-side requirement access, and the relationship between them:
 
 - The **names model** — the main body below. Requirements are extra params with elaborator-synthesized names, accessed via ordinary `var_ref`, exactly like value-level params. **This is the agreed design target.**
-- The **positional model** — §"Legacy: the positional model" near the end. Requirements are read positionally via `requirement_at_current(slot)` from a separate `frame.requirements` slot vector. **This is what WI-218–WI-236 actually implemented, and what runs today.**
+- The **positional model** — §"Legacy: the positional model" near the end. Requirements are read positionally via `requirement_at_current(slot)` from a separate `frame.requirements` slot vector. **This is what WI-218–WI-236 originally implemented; WI-237 then migrated body reads to the names model, so the positional model is now retired — `requirement_at_current` is no longer emitted.**
 
 The names model is the decision, reaffirmed after weighing both from first principles. The deciding factor is closure composition: a positional slot index is meaningless inside a lambda body — which runs in a different frame — whereas a requirement *name* is captured by the closure like any other free variable. Names compose with lexical scoping; positional slots do not.
 
 Requirement *values themselves* (the dictionaries) are a distinct runtime kind in **both** models — their internal sub-instances are positional and nameless — so `requirement_at_sort(dict, k)` and `construct_requirement(impl, [subs])` survive as primitives either way.
 
-**The implementation has not yet migrated.** The main body describes the target; §"Legacy: the positional model" and §"Implementation roadmap" describe the current state and the path.
+**The implementation has migrated (WI-237).** The main body describes what the code now runs; §"Legacy: the positional model" and §"Implementation roadmap" are retained as historical record of the positional model and the migration path.
 
 ## Decision in one paragraph
 
