@@ -58,16 +58,18 @@ fn expect_int(v: Value) -> i64 {
 
 #[test]
 fn headline_map_filter_chain_type_checks() {
-    // `xs.map(f).filter(p)`: `map` → Iterable.map (List provides Iterable),
-    // `filter` → Stream.filter (the produced `mapped` carrier provides Stream).
-    // Neither op is imported. The lazy result row `{E, EffP}` with both empty
-    // must normalize to `{}` to match the declared `Stream[Int64, {}]`.
+    // `xs.map(f).filter(p)`: on a `List`, `.map`/`.filter` dispatch to the FINITE
+    // ops (WI-588 coherence: List provides FiniteCollection at depth 1, beating
+    // Iterable), and the WI-599 thin design returns a `FiniteCollection`. So the
+    // chain is consumed by `.size()` (a FiniteCollection consumer) — this pins that
+    // the whole chain type-checked and stays finite. Inline lambdas in dot-arg
+    // position resolve their params (distinct from the WI-605 op-body-arg gap).
     let src = r#"
 namespace wi278.chain
-  import anthill.prelude.{List, Int64, Bool, Stream}
+  import anthill.prelude.{List, Int64, Bool}
 
-  operation run(xs: List[T = Int64]) -> Stream[Int64, {}] =
-    xs.map(lambda x -> x + 1).filter(lambda x -> x > 0)
+  operation run(xs: List[T = Int64]) -> Int64 =
+    xs.map(lambda x -> x + 1).filter(lambda x -> x > 0).size()
 end
 "#;
     let errs = load_errs(src);
@@ -76,16 +78,18 @@ end
 
 #[test]
 fn map_infers_dst_from_callback() {
-    // `map`'s `Dst` is inferred from the callback's result type, not the
-    // receiver's element type: a `(Int64) -> Bool` callback makes the produced
-    // stream `Stream[Bool, _]`, so the declared `Stream[Bool, {}]` return only
-    // type-checks if `Dst` was inferred as `Bool` (the §6.6 inference).
+    // `map`'s `Dst` is inferred from the callback's result type, not the receiver's
+    // element type: a `(Int64) -> Bool` callback makes the mapped element `Bool`.
+    // WI-599: `.map` on a List returns a `FiniteCollection[Element = Bool]`;
+    // `collect` materializes it as a `List[T = Bool]`, so the declared
+    // `List[T = Bool]` return only type-checks if `Dst` was inferred as `Bool`.
     let src = r#"
 namespace wi278.infer
-  import anthill.prelude.{List, Int64, Bool, Stream}
+  import anthill.prelude.{List, Int64, Bool}
+  import anthill.prelude.FiniteCollection.{collect}
 
-  operation run(xs: List[T = Int64]) -> Stream[Bool, {}] =
-    xs.map(lambda x -> x > 0)
+  operation run(xs: List[T = Int64]) -> List[T = Bool] =
+    collect(xs.map(lambda x -> x > 0))
 end
 "#;
     let errs = load_errs(src);

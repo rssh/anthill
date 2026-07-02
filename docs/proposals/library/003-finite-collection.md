@@ -159,6 +159,17 @@ infinite stream") no longer applies.
 
 ### Finite-preserving `map` / `filter`
 
+> **Shipped realization (WI-599, thin design).** The sketch below is the original
+> design record; the delivered stdlib (`stdlib/anthill/prelude/finite_combinators.anthill`)
+> is the leaner **thin** variant. `FiniteCollection.map(c, f) = fmapped(c, f)` wraps
+> the **bare carrier** directly — the combinator's `source` field is a
+> `FiniteCollection`, not a `FiniteStream` — and `map` / `filter` **return a
+> `FiniteCollection`** (carrier = the combinator). Each combinator `provides
+> FiniteCollection` (eager `collect = mapElems`/`filterElems(collect(source), …)`) +
+> `Iterable` (lazy `iterator = mapped`/`filtered(iterator(source), …)`); there is no
+> `splitFirst` on the finite combinators and no `provides FiniteStream`. Iterable-only
+> members (`find` / `isEmpty`) on the `FiniteCollection` result are tracked by WI-614.
+
 To make `xs.map(f).size()` type-check, the finite `map` must *return* a finite
 type:
 

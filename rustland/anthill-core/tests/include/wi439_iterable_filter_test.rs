@@ -125,9 +125,6 @@ namespace test.wi439.boxcoll
     operation collect(b: BoxColl) -> List[T = Int64] =
       match b
         case boxed(items) -> items
-    operation finiteIterator(b: BoxColl) -> FiniteStream[T = Int64, E = {}] =
-      match b
-        case boxed(items) -> items
   end
 
   operation is_big(n: Int64) -> Bool = n > 2

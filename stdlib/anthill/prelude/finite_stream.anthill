@@ -44,8 +44,9 @@ sort anthill.prelude.FiniteStream
       case none() -> nil
       case some(pair(h, rest)) -> cons(head: h, tail: collect(rest))
 
-  -- finiteIterator (the FiniteCollection cursor) on a FiniteStream is the
-  -- IDENTITY — a FiniteStream is already its own finite cursor (cf. Stream's
-  -- `iterator(s) = s`, lifted to the finite layer).
-  operation finiteIterator(s: FiniteStream) -> FiniteStream[T = s.T, E = s.E] = s
+  -- WI-599: the `finiteIterator` FiniteCollection cursor is GONE (a FiniteStream
+  -- was its own identity cursor). The thin finite combinators wrap the bare carrier
+  -- directly, so `FiniteCollection.map`/`filter` on a FiniteStream are
+  -- `fmapped(s, f)` / `ffiltered(s, p)` — a FiniteStream already provides
+  -- FiniteCollection, the combinator source-field type.
 end

@@ -276,12 +276,9 @@ namespace test.wi424.boxcoll
       match b
         case boxed(items) -> items
     -- WI-589: finite, so it also provides FiniteCollection (foldLeft/size moved
-    -- there off Iterable). collect materializes; finiteIterator is the finite cursor.
+    -- there off Iterable). collect materializes the backing list.
     provides FiniteCollection[C = BoxColl, Element = Int64, E = {}]
     operation collect(b: BoxColl) -> List[T = Int64] =
-      match b
-        case boxed(items) -> items
-    operation finiteIterator(b: BoxColl) -> FiniteStream[T = Int64, E = {}] =
       match b
         case boxed(items) -> items
   end
@@ -341,9 +338,6 @@ namespace test.wi424.sizedbox
     operation collect(b: Counted) -> List[T = Int64] =
       match b
         case counted(items, _) -> items
-    operation finiteIterator(b: Counted) -> FiniteStream[T = Int64, E = {}] =
-      match b
-        case counted(items, _) -> items
     operation size(b: Counted) -> Int64 =
       match b
         case counted(_, n) -> n
@@ -359,9 +353,6 @@ namespace test.wi424.sizedbox
         case plain(items) -> items
     provides FiniteCollection[C = Plain, Element = Int64, E = {}]
     operation collect(b: Plain) -> List[T = Int64] =
-      match b
-        case plain(items) -> items
-    operation finiteIterator(b: Plain) -> FiniteStream[T = Int64, E = {}] =
       match b
         case plain(items) -> items
   end

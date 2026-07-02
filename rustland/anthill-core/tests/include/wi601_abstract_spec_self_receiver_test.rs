@@ -40,22 +40,21 @@ fn run_int(interp: &mut Interpreter, op: &str) -> i64 {
 ///   names. Loading them here IS the assertion.
 /// - `g_split`: the QUALIFIED `Stream.splitFirst` (`spec_sort = Stream`, forced
 ///   over the `FiniteStream` override) — the SAME deferral, but `splitFirst` has
-///   a concrete body on the runtime carrier (`FiniteMappedStream.splitFirst`), so
-///   it also EVALS: `ev_head` passes a concrete `FiniteStream` (`map([..], inc)`
-///   builds a `FiniteMappedStream`) and value-directed dispatch peels the first
-///   mapped element `inc(1) = 2`. This is the "defers to eval value-directed
-///   dispatch" half of the acceptance.
+///   a concrete body on the runtime carrier, so it also EVALS: `ev_head` passes a
+///   concrete `FiniteStream` (a plain `List`, which provides FiniteStream) and
+///   value-directed dispatch peels the first element `1`. This is the "defers to
+///   eval value-directed dispatch" half of the acceptance. (Pre-WI-599 the witness
+///   was `map([..], inc)`, which then built a FiniteStream-providing carrier; the
+///   thin `FiniteCollection.map` now returns a `FiniteCollection`, so a bare List
+///   is the FiniteStream witness.)
 #[test]
 fn bare_stream_op_on_abstract_finite_stream_defers_and_evals() {
     let src = r#"
 namespace test.wi601
   import anthill.prelude.{FiniteStream, Stream, Option, Pair, List, Int64}
-  import anthill.prelude.FiniteCollection.{map}
   import anthill.prelude.Stream.{headOption, tail}
   import anthill.prelude.Option.{some, none}
   import anthill.prelude.Pair.{pair}
-
-  operation inc(n: Int64) -> Int64 = n + 1
 
   -- GENERIC consumers over an abstract FiniteStream — the fix's load-time core.
   -- `headOption` / `tail` are body-less bare-Stream ops NOT overridden by
@@ -74,10 +73,10 @@ namespace test.wi601
     -> Option[Pair[A = T, B = Stream[T = T, E = fs.E]]] effects fs.E =
     Stream.splitFirst(fs)
 
-  -- eval caller: pass a CONCRETE FiniteStream (map builds a FiniteMappedStream);
-  -- value-directed dispatch resolves splitFirst on it; first elem = inc(1) = 2.
+  -- eval caller: pass a CONCRETE FiniteStream (a plain List provides FiniteStream);
+  -- value-directed dispatch resolves splitFirst on it; first elem = 1.
   operation ev_head() -> Int64 =
-    match g_split(map([1, 2, 3, 4], inc))
+    match g_split([1, 2, 3, 4])
       case some(pair(h, rest)) -> h
       case none() -> 0
 end
@@ -86,6 +85,6 @@ end
     // three generic consumers (headOption, tail, Stream.splitFirst) typechecked.
     let mut interp = crate::common::interp_for(src);
     // The deferral routes to eval's value-directed dispatch: splitFirst peels
-    // the first mapped element inc(1) = 2.
-    assert_eq!(run_int(&mut interp, "test.wi601.ev_head"), 2);
+    // the first List element = 1.
+    assert_eq!(run_int(&mut interp, "test.wi601.ev_head"), 1);
 }

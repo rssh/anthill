@@ -998,25 +998,24 @@ end
 
 #[test]
 fn wi413_lazy_filter_skips_via_self_recursion() {
-    // WI-413 / WI-410: the lazy finite `FiniteFilteredStream` carrier runs
-    // end-to-end. Its `splitFirst` SELF-RECURSES on a reconstructed
-    // `ffiltered(rest, pred)` to SKIP a dropped element — the shape that leaked an
-    // undeclared `??_` effect before WI-413. Post-WI-589 the eager consumers
-    // (`collect` / `foldLeft`) live on `FiniteCollection`, so the finite
-    // `FiniteCollection.filter` (→ FiniteStream, consumable) replaces the lazy
-    // `FilteredStream.filter` (→ bare Stream); the skip-via-self-recursion shape is
-    // identical. The predicate is a named op (eta-lifted, WI-275); the finite
-    // `filter[EffP]` infers the source/element from the carrier.
+    // WI-413 / WI-410 / WI-599: the finite `FiniteCollection.filter` drops elements
+    // end-to-end. WI-599 (thin design) makes `filter` return a `FiniteFilteredStream`
+    // that provides `FiniteCollection` — its `collect` EAGERLY materializes the source
+    // then filters the List (`filterElems(collect(source), pred)`), so a dropped
+    // element is simply absent from the collected List (the eager successor to the old
+    // lazy `splitFirst` skip-via-self-recursion). `foldLeft` is the FiniteCollection
+    // default over that `collect`. The predicate is a named op (eta-lifted, WI-275);
+    // the finite `filter[EffP]` infers the source/element from the carrier.
     let src = r#"
 namespace test.wi413filter
   import anthill.prelude.{List, Int64, Stream, Bool, Option}
   import anthill.prelude.List.{nil, cons}
-  -- Phase C (WI-589): the eager consumers moved to FiniteCollection. The finite
-  -- `FiniteCollection.filter` (→ FiniteFilteredStream, consumable) replaces the
-  -- lazy `FilteredStream.filter` (→ bare Stream, no longer collect/fold-able).
-  -- FiniteFilteredStream's `splitFirst` SELF-RECURSES on `ffiltered(rest, pred)`
-  -- to skip a dropped element exactly like FilteredStream did, so this still
-  -- pins the skip-via-self-recursion shape (now on the finite carrier).
+  -- Phase C (WI-589) + WI-599: the eager consumers live on FiniteCollection. The
+  -- finite `FiniteCollection.filter` (→ FiniteFilteredStream, provides
+  -- FiniteCollection) replaces the lazy `FilteredStream.filter` (→ bare Stream, no
+  -- longer collect/fold-able). Its `collect` EAGERLY filters the materialized source
+  -- (`filterElems(collect(source), pred)`), so dropped elements are absent from the
+  -- collected List — pinning the same drop behaviour on the finite carrier.
   import anthill.prelude.FiniteCollection.{collect, foldLeft, filter}
 
   operation addp(a: Int64, b: Int64) -> Int64 = a + b

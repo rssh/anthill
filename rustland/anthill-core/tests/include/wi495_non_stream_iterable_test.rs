@@ -43,11 +43,9 @@ namespace wi495.nonstream
     operation iterator(b: IntBag) -> Stream[T = Int64, E = {}] = b.items
     -- WI-589: a Bag is FINITE, so it also provides FiniteCollection (the eager
     -- `size` moved there off Iterable). `collect` materializes the backing list
-    -- (already the materialized form); the finite cursor hands it back typed as a
-    -- FiniteStream (List provides FiniteStream, so it is admissible). Mirrors Map.
+    -- (already the materialized form). Mirrors Map.
     provides FiniteCollection[C = IntBag, Element = Int64, E = {}]
     operation collect(b: IntBag) -> List[T = Int64] = b.items
-    operation finiteIterator(b: IntBag) -> FiniteStream[T = Int64, E = {}] = b.items
   end
 
   operation big(n: Int64) -> Bool = n > 1

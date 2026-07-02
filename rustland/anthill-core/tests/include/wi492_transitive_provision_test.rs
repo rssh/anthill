@@ -12,12 +12,18 @@
 //! provision chain.
 //!
 //!   * `.filter(p).map(f)` — `.map` on a `FiniteFilteredStream` value resolves
-//!     `FiniteCollection.map` through `FiniteStream` (transitive).
+//!     `FiniteCollection.map` (the carrier provides FiniteCollection directly).
 //!   * `.map(f).size()`    — `.size` on a `FiniteMappedStream` value resolves
-//!     `FiniteCollection.size` through `FiniteStream` (List → FiniteStream → size).
+//!     `FiniteCollection.size` (the carrier's FiniteCollection provision).
 //!
-//! (The lazy `mapped`/`filtered` carriers are still reached on a genuinely-
-//! infinite bare `Stream`, where `FiniteCollection` does not apply.)
+//! WI-599 (thin design): the combinators now provide `FiniteCollection` + `Iterable`
+//! directly (not `FiniteStream`), and `.map`/`.filter` return `FiniteCollection`.
+//! Iterable-ONLY members (`find`/`isEmpty`) are hidden on that result — dot-dispatch
+//! does not traverse `requires Iterable` (a filed follow-up typer WI) — so the
+//! find/isEmpty cases below `collect` to a `List` first, then resolve `Iterable.find`/
+//! `.isEmpty` on the List TRANSITIVELY (List → Stream → Iterable, the original WI-492
+//! path). The lazy `mapped`/`filtered` carriers are still reached on a genuinely-
+//! infinite bare `Stream`, where `FiniteCollection` does not apply.
 
 use anthill_core::eval::Value;
 
@@ -30,7 +36,7 @@ namespace wi492.transitive
   import anthill.prelude.{List, Int64, Stream, Bool, Iterable}
   import anthill.prelude.List.{nil, cons, length}
   import anthill.prelude.Option.{some, none}
-  import anthill.prelude.FiniteCollection.{foldLeft}
+  import anthill.prelude.FiniteCollection.{collect, foldLeft}
   import anthill.prelude.Stream.{takeN}
 
   operation inc(n: Int64) -> Int64 = n + 1
@@ -64,20 +70,21 @@ namespace wi492.transitive
   operation map_then_size(xs: List[T = Int64]) -> Int64 =
     xs.map(inc).size()
 
-  -- map THEN find: `.find` over the finite mapped value resolves `Iterable.find`
-  -- (find stays on Iterable/Stream — it short-circuits, no finiteness needed),
-  -- reached transitively through the carrier's Stream provision. [1,2,3,4]
-  -- -map(+1)-> [2,3,4,5], first > 2 is 3.
+  -- map THEN find: the WI-599 thin `.map` returns a `FiniteCollection` (consume
+  -- view) that hides Iterable's `find` (dot-dispatch does not traverse `requires
+  -- Iterable` — a follow-up typer WI). So `collect` materializes to a `List` first,
+  -- then `.find` resolves `Iterable.find` on the List TRANSITIVELY (List → Stream →
+  -- Iterable, the original WI-492 path). [1,2,3,4] -map(+1)-> [2,3,4,5], first > 2 is 3.
   operation map_then_find(xs: List[T = Int64]) -> Int64 =
-    match xs.map(inc).find(is_big)
+    match collect(xs.map(inc)).find(is_big)
       case some(v) -> v
       case none() -> 0 - 1
 
-  -- filter THEN isEmpty: `.isEmpty` over the finite filtered value resolves
-  -- `Iterable.isEmpty` (stays on Iterable — one step, no finiteness needed),
-  -- reached transitively. [1,2,3,4] -filter(>9)-> [] is empty.
+  -- filter THEN isEmpty: same shape — the thin `.filter` returns a `FiniteCollection`
+  -- (hiding Iterable's `isEmpty`), so `collect` to a `List` first, then `.isEmpty`
+  -- resolves `Iterable.isEmpty` on the List transitively. [1,2,3,4] -filter(>9)-> [] empty.
   operation filter_then_is_empty(xs: List[T = Int64]) -> Bool =
-    xs.filter(is_huge).isEmpty()
+    collect(xs.filter(is_huge)).isEmpty()
 
   operation mk_list() -> List[T = Int64] = [1, 2, 3, 4]
 end

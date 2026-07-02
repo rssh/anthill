@@ -80,29 +80,30 @@ end
 /// a `List`, where `Iterable` is farther (via `Stream`). The resolver's
 /// requires-refinement tie-break (`FiniteCollection requires Iterable`, so it is
 /// the more specific spec) picks the finite ops over the lazy `Iterable` ones.
-/// Pinned STRUCTURALLY: a declared `FiniteStream` return only type-checks if the
-/// dot result is finite — a lazy `Iterable` result (a bare `Stream`) would not.
+/// Pinned STRUCTURALLY (WI-599 thin design): the dot result is consumed by
+/// `.size()`, a FiniteCollection consumer — that only type-checks if `.filter`/
+/// `.map` resolved to the finite ops (their `FiniteCollection` result provides it);
+/// a lazy `Iterable` result (a bare `Stream`) does NOT provide FiniteCollection.
 #[test]
 fn map_dot_dispatch_map_filter_are_finite() {
     let src = r#"
 namespace test.wi588.mapdot
-  import anthill.prelude.{Map, Int64, Bool, Pair, FiniteStream}
+  import anthill.prelude.{Map, Int64, Bool, Pair}
 
   operation keep(e: Pair[A = Int64, B = Int64]) -> Bool = true
   operation to_zero(e: Pair[A = Int64, B = Int64]) -> Int64 = 0
 
-  -- dot-dispatch: the results must be FiniteStreams (finite), not lazy Streams.
-  operation dot_filter(m: Map[K = Int64, V = Int64])
-    -> FiniteStream[T = Pair[A = Int64, B = Int64], E = {}] = m.filter(keep)
-  operation dot_map(m: Map[K = Int64, V = Int64])
-    -> FiniteStream[T = Int64, E = {}] = m.map(to_zero)
+  -- dot-dispatch: the results must be finite (FiniteCollection), consumable by
+  -- `.size()`; a lazy Iterable Stream result would not type-check under `.size()`.
+  operation dot_filter(m: Map[K = Int64, V = Int64]) -> Int64 = m.filter(keep).size()
+  operation dot_map(m: Map[K = Int64, V = Int64]) -> Int64 = m.map(to_zero).size()
 end
 "#;
     let errs = crate::common::try_load_kb_with(src).err().unwrap_or_default();
     assert!(errs.is_empty(),
         "Map.map/.filter via dot-dispatch must resolve to the finite FiniteCollection \
-         ops (-> FiniteStream) via the requires-refinement tie-break, not the lazy \
-         Iterable ops (-> Stream):\n{}", errs.join("\n"));
+         ops (consumable by .size()) via the requires-refinement tie-break, not the \
+         lazy Iterable ops (-> Stream):\n{}", errs.join("\n"));
 }
 
 /// `Map.filter`/`.map` via dot-dispatch EVALUATE finitely and the result is itself

@@ -169,7 +169,6 @@ namespace test.wi426.sib
     -- WI-589: finite, so it also provides FiniteCollection (size moved there).
     provides FiniteCollection[C = IntBag, Element = Int64, E = {}]
     operation collect(b: IntBag) -> List[T = Int64] = b.items
-    operation finiteIterator(b: IntBag) -> FiniteStream[T = Int64, E = {}] = b.items
   end
   operation big(n: Int64) -> Bool = n > 1
   operation mk() -> IntBag =

@@ -78,6 +78,53 @@ enum anthill.prelude.List
       case none() -> init
       case some(pair(h, t)) -> f(h, foldRight(t, init, f))
 
+  -- reverse: standard in-order reversal via a tail accumulator. Element-agnostic
+  -- (no `Eq`), pure. Needed to give the eager `mapElems` forward (source) order.
+  operation reverse(xs: List) -> List[T = xs.T] =
+    let seed: List[T = xs.T] = nil
+    reverseOnto(xs, seed)
+  -- `internal` (WI-369): a tail-accumulator worker for `reverse` — not public API.
+  internal operation reverseOnto(xs: List, acc: List[T = xs.T]) -> List[T = xs.T] =
+    match splitFirst(xs)
+      case none() -> acc
+      case some(pair(h, t)) -> reverseOnto(t, cons(head: h, tail: acc))
+
+  -- mapElems / filterElems (WI-599): List's OWN concrete EAGER map / filter,
+  -- returning a `List` (unlike the lazy `Iterable.map`/`filter`, which return a
+  -- `Stream`). They back the THIN finite combinators' `collect` — once a
+  -- combinator's source is materialized (`collect(source) : List`), the transform
+  -- (`FiniteMappedStream.collect = mapElems(collect(source), fn)`) or predicate
+  -- (`FiniteFilteredStream.collect = filterElems(collect(source), pred)`) is
+  -- applied EAGERLY to produce the mapped / filtered List. Decoupled callback row
+  -- `EffP` (WI-441), paid by the caller. Recurse via `splitFirst` (NOT a direct
+  -- `cons` destructure) so the tail threads its element type — a bare `cons` tail
+  -- is untyped `List` and would lose `xs.T` (cf. `foldLeft` / `foldRight` / `nth`).
+  --
+  -- mapElems builds through a tail accumulator (`mapElemsOnto`) then `reverse`s to
+  -- restore source order. The accumulator is REQUIRED, not just for tail-recursion:
+  -- a plain `mapElems(t, f)` recursion leaves the callback's effect param `EffP`
+  -- unconstrained — the sole callback arg cannot pin BOTH the polymorphic result
+  -- `Dst` and the effect `EffP` at once (unlike `find`, whose `Bool` return leaves
+  -- only `EffP`, or `foldRight`, whose `Acc` is pinned by `init`). The `acc :
+  -- List[T = Dst]` value arg pins `Dst`, so `EffP` infers from the named `f` — the
+  -- shape proven by `foldLeft`/`foldRight` (typed accumulator + named callback).
+  -- `filterElems` keeps its element type (`Bool` callback), so it is `find`-shaped
+  -- and needs no accumulator.
+  operation mapElems[Dst, EffP](xs: List, f: (x: xs.T) -> Dst @ {EffP}) -> List[T = Dst] effects EffP =
+    let seed: List[T = Dst] = nil
+    reverse(mapElemsOnto(xs, f, seed))
+  -- `internal` (WI-369): the tail-accumulator worker for `mapElems`. It builds the
+  -- mapped list REVERSED (prepends onto `acc`); `mapElems` re-reverses. Not public.
+  internal operation mapElemsOnto[Dst, EffP](xs: List, f: (x: xs.T) -> Dst @ {EffP}, acc: List[T = Dst]) -> List[T = Dst] effects EffP =
+    match splitFirst(xs)
+      case none() -> acc
+      case some(pair(h, t)) -> mapElemsOnto(t, f, cons(head: f(h), tail: acc))
+  operation filterElems[EffP](xs: List, p: (x: xs.T) -> Bool @ {EffP}) -> List[T = xs.T] effects EffP =
+    match splitFirst(xs)
+      case none() -> nil
+      case some(pair(h, t)) ->
+        if p(h) then cons(head: h, tail: filterElems(t, p)) else filterElems(t, p)
+
   -- List satisfies PersistentCollection (pure). Effect left unbound by
   -- design: under proposal 045's row model a closed effect is not a type
   -- argument — it is grounded to {} at the consumption boundary by the
@@ -115,10 +162,11 @@ enum anthill.prelude.List
 
   -- List provides FiniteStream (WI-588): a list's tail is a list, so a List IS a
   -- finite lazy sequence; its `splitFirst` (below) returns a List tail, which
-  -- satisfies FiniteStream's FINITE-tail `splitFirst` by covariant return. The
-  -- finite cursor is the IDENTITY — `finiteIterator(l) = l`, effect-free (no walk).
+  -- satisfies FiniteStream's FINITE-tail `splitFirst` by covariant return.
+  -- (WI-599: the `finiteIterator` finite cursor is GONE — the thin finite
+  -- combinators wrap the bare carrier directly, so no `finiteIterator` indirection
+  -- is needed; a List already provides FiniteCollection, the source-field type.)
   provides FiniteStream[T, {}]
-  operation finiteIterator(l: List) -> FiniteStream[T = l.T, E = {}] = l
   -- WI-495: the explicit `provides Iterable[C = List[T], Element = T, E = {}]`
   -- clause is GONE — List's Iterable-ness is now DERIVED transitively from
   -- `List provides Stream` (above) + `Stream provides Iterable` (stream.anthill).
