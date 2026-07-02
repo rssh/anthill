@@ -8809,11 +8809,20 @@ fn spec_warrants_abstract_check(kb: &KnowledgeBase, spec_sort: Symbol) -> bool {
 /// spec base matches `spec_sort`, regardless of whether the bindings
 /// match any particular per-call goal. Used as one leg of
 /// `spec_warrants_abstract_check`.
+///
+/// WI-617 — both sides are compared under `canonical_sort_sym`, matching the
+/// sibling `impl_sorts_providing_spec`. A sort interns under multiple `Symbol`
+/// ids (bare vs qualified); a provider fact's spec base may intern under a
+/// non-canonical symbol relative to the queried `spec_sort`. A raw `==` would
+/// then read false, `carrier_is_abstract_spec` would return false, and the
+/// abstract-spec-carrier dispatch gates (WI-598/601/608/609/614) would spuriously
+/// skip — regressing a legitimately-abstract spec value to a loud dispatch error.
 fn spec_has_any_providers(kb: &KnowledgeBase, spec_sort: Symbol) -> bool {
     let provides_sym = match kb.try_resolve_symbol("anthill.reflect.SortProvidesInfo") {
         Some(s) => s,
         None => return false,
     };
+    let spec_canon = kb.canonical_sort_sym(spec_sort);
     for rid in kb.rules_by_functor(provides_sym) {
         if !kb.is_fact(rid) { continue; }
         // A value-fact SortProvidesInfo (denoted-bearing spec) is skipped here;
@@ -8825,7 +8834,7 @@ fn spec_has_any_providers(kb: &KnowledgeBase, spec_sort: Symbol) -> bool {
             None => continue,
         };
         if let Some((view_base_sym, _)) = unwrap_spec_view(kb, spec_view_tid) {
-            if view_base_sym == spec_sort {
+            if kb.canonical_sort_sym(view_base_sym) == spec_canon {
                 return true;
             }
         }
@@ -25566,5 +25575,112 @@ end
         let (base, binds) = as_param(&kb, &m3);
         assert_eq!(base, option, "meet base sort is Option");
         assert!(is_nothing(&kb, binding(&kb, &binds, "T")), "covariant T meets cat/dog to nothing");
+    }
+}
+
+#[cfg(test)]
+mod wi617_canonical_provider_match_tests {
+    //! WI-617 — `spec_has_any_providers` must compare a provider fact's spec base
+    //! against the queried spec symbol under `canonical_sort_sym`, matching its
+    //! sibling `impl_sorts_providing_spec`. A sort interns under multiple `Symbol`
+    //! ids (a scan-time unresolved copy vs the resolved load-time copy). When a
+    //! `SortProvidesInfo` fact's spec base interns under the NON-canonical copy, a
+    //! raw `==` reads false, `carrier_is_abstract_spec` returns false, and the
+    //! abstract-spec-carrier dispatch gates (WI-598/601/608/609/614) spuriously
+    //! skip — regressing a legitimately-abstract spec value (a `FiniteCollection`
+    //! `map`/`filter` result) to a loud "no such member (dot dispatch)" error.
+    //!
+    //! The load pipeline canonicalizes at the producer (WI-581), so this divergent
+    //! interning is not reproducible through a source-level load — the test injects
+    //! it directly, which is the level at which the gap is observable.
+    use super::{carrier_is_abstract_spec, spec_has_any_providers};
+    use crate::intern::SymbolKind;
+    use crate::kb::term::Term;
+    use crate::kb::KnowledgeBase;
+    use smallvec::SmallVec;
+
+    #[test]
+    fn provider_fact_spec_base_under_noncanonical_symbol_still_counts() {
+        let mut kb = KnowledgeBase::new();
+
+        // The reflection functor `spec_has_any_providers` resolves by QN. Defined
+        // (not merely interned) so `try_resolve_symbol` finds it AND so the fact's
+        // head functor is canonical (satisfying the WI-581 assert on assert_fact).
+        let provides_sym = kb.define_symbol(
+            "SortProvidesInfo",
+            "anthill.reflect.SortProvidesInfo",
+            SymbolKind::Entity,
+            0,
+        );
+
+        // S_alt: an unresolved scan-time interning of the spec's QN. Interned
+        // BEFORE the `define` below so the resolved copy becomes the canonical
+        // `by_qualified_name` entry and S_alt is the non-canonical twin.
+        let s_alt = kb.intern("test.finite.FiniteCollection");
+        // S_canon: the resolved copy — registered in `by_qualified_name`, hence
+        // the canonical symbol for the QN. No entity children ⇒ a spec sort.
+        let s_canon = kb.define_symbol(
+            "FiniteCollection",
+            "test.finite.FiniteCollection",
+            SymbolKind::Sort,
+            0,
+        );
+
+        // Precondition that makes the test discriminate raw `==` from canonical:
+        // the two internings are distinct symbols yet canonicalize equal.
+        assert_ne!(s_alt, s_canon, "the two internings must be distinct symbols");
+        assert_eq!(
+            kb.canonical_sort_sym(s_alt),
+            s_canon,
+            "S_alt must canonicalize to S_canon",
+        );
+
+        // A provider fact `SortProvidesInfo(spec: Ref(S_alt))` — the spec base
+        // carries the NON-canonical symbol, while the head functor stays canonical.
+        let spec_key = kb.intern("spec");
+        let spec_ref = kb.alloc(Term::Ref(s_alt));
+        let head = kb.alloc(Term::Fn {
+            functor: provides_sym,
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::from_slice(&[(spec_key, spec_ref)]),
+        });
+        let sort = kb.make_name_term("anthill.reflect.SortProvidesInfo");
+        let domain = kb.make_name_term("test");
+        kb.assert_fact(head, sort, domain, None);
+
+        // Query with the canonical symbol. Pre-fix `view_base_sym == spec_sort`
+        // (S_alt == S_canon) is false; the canonical comparison is true.
+        assert!(
+            spec_has_any_providers(&kb, s_canon),
+            "a provider fact whose spec base interns non-canonically must still \
+             count as a provider (WI-617)",
+        );
+        // Query side is canonicalized symmetrically: querying with the
+        // non-canonical twin also matches (both sides pass through
+        // `canonical_sort_sym`).
+        assert!(
+            spec_has_any_providers(&kb, s_alt),
+            "querying with the non-canonical twin must also match (query-side \
+             canonicalization, WI-617)",
+        );
+        // The load-bearing consumer: the abstract-spec-carrier dispatch gate.
+        assert!(
+            carrier_is_abstract_spec(&kb, s_canon),
+            "carrier_is_abstract_spec must see the non-canonical provider (WI-617)",
+        );
+
+        // Negative control: an unrelated sort with NO provider fact must read
+        // false — pinning that the predicate is not vacuously true (a future
+        // refactor that always returned true would be caught here).
+        let unrelated = kb.define_symbol(
+            "Unrelated",
+            "test.finite.Unrelated",
+            SymbolKind::Sort,
+            0,
+        );
+        assert!(
+            !spec_has_any_providers(&kb, unrelated),
+            "a sort with no provider fact must not count as having providers",
+        );
     }
 }
