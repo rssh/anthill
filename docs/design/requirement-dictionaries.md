@@ -333,6 +333,16 @@ sort OpRef
   -- two-type split: the op's ARROW (its callable signature) is the DENOTED
   -- type; the reflect type is OpRef itself
   operation denotedType(r: OpRef) -> Type
+  -- GENERATE the call occurrence: build (do NOT run) the Term that applies `op`
+  -- under this OpRef's dict to `args` — the same
+  -- `apply_within(fn = op, requirements = [dict], args)` IR the op-body weave
+  -- emits (plain `apply(op, args)` when `dict` is `none()`). The constructive
+  -- corner: for splicing / elaboration / codegen / staged execution. Pure term
+  -- construction (`List[Term] -> Term`), so it always type-checks as such; the
+  -- BUILT call's well-typedness is checked later, on elaboration, against
+  -- `denotedType(r)`'s arrow. Runtime invocation is not primitive — it is
+  -- `execute(genApply(r, args))` (reflect.execute, WI-531).
+  operation genApply(r: OpRef, args: List[T = Term]) -> Term
 end
 ```
 
@@ -349,6 +359,33 @@ resolved op runnable.
 `dict(r)` reuses the `Dictionary` view (§2.2), so `Dictionary` and `OpRef` land
 together and `resolveOp` closes the loop: `Dictionary` → (`resolveOp`) → `OpRef`
 → (`dict`) → `Dictionary`.
+
+**Generate vs. execute — `genApply`.** Applying an `OpRef` *runs* it; `genApply`
+*builds the call and hands it back*. `genApply(r, args)` produces the
+`apply_within(fn = op(r), requirements = [dict(r)], args)` occurrence — the very IR
+the op-body weave emits — as a first-class `Term`, for a metaprogram or a
+user-level weave to splice, elaborate, transform, or run later. This is the
+**constructive** corner of the reflect triad, and the substance of payoff-#2's
+"first-class dictionary-passing" (§2.1): *resolve* and *inspect* were already
+covered (`resolveOp`; `op` / `dict` / `denotedType`); `genApply` is the corner
+that *uses* a resolved dict to emit a dispatched call. It is deliberately
+term-generation, **not** a dynamically-typed runtime `invoke`, for three reasons:
+
+1. **It mirrors the machinery.** Dispatch is *elaborated into* `apply_within`, so
+   the reflect primitive that mirrors dispatch is a term-builder, not an executor.
+2. **It dodges the dynamic-arrow problem.** `genApply` is pure `List[Term] -> Term`
+   construction, so it type-checks unconditionally; the built call's arrow is
+   checked later, on elaboration, against `denotedType(r)`. (A *reflectively*
+   resolved `OpRef` — from `resolveOp(d, runtimeSymbol)` — has a dynamic arrow the
+   typer cannot check for a direct `r(args)`; a term-builder needs no such check.)
+3. **It is the more primitive of the two.** Runtime invocation is
+   `execute(genApply(r, args))` (`reflect.execute`, WI-531) — never the reverse; a
+   bare `invoke` yields no term to inspect or transform. So `genApply` subsumes the
+   runtime-`invoke` idea floated earlier, which stays unbuilt (and unneeded)
+   until a concrete reflective-invocation consumer appears.
+
+A `Dictionary.genApply(d, specOp, args)` would be sugar for
+`genApply(resolveOp(d, specOp), args)`, so the primitive stays on `OpRef`.
 
 ### 2.5 The two-type split, precisely
 
