@@ -92,8 +92,10 @@ pub enum Value {
         /// MINT in the eta-site frame (so an abstract requirement reads the
         /// enclosing `__req_*` and a concrete one builds from its `fact`), then
         /// installed into the callee frame at apply instead of forwarding the
-        /// caller's. `None` for a requires-free op, or a same-sort eta that
-        /// inherits the caller frame's requirements at apply.
+        /// caller's. `None` only for a requires-free op (enclosing sort has no
+        /// `requires`) or a namespace-level op; a requires-carrying eta captures
+        /// a dict, INCLUDING a same-sort eta (its sort's `__req_self`) — an eta'd
+        /// `OpRef` escapes to a foreign apply frame, so it cannot inherit.
         dict: Option<RequirementHandle>,
     },
     Stream(StreamHandle),
@@ -115,9 +117,11 @@ pub enum Value {
     Cell(CellHandle),
     /// First-class requirement value — arena-refcounted handle into the
     /// per-interpreter RequirementArena. Materializes a resolved spec
-    /// impl: the slot stores `(functor, sub-requirements)` so bodies
-    /// can dispatch through it via `requirement_at_current(i, op_short)`
-    /// and project sub-deps via `requirement_at_sort(chain, k)`.
+    /// impl: the slot stores `(functor, sub-requirements)`. A body reads
+    /// the dictionary by name (`var_ref` of an inserted `__req_*` param,
+    /// the names model — WI-237 retired the positional
+    /// `requirement_at_current` read) and projects sub-deps via
+    /// `requirement_at_sort(chain, k)`.
     /// Constructed by the IR's `construct_requirement(impl, [...])`
     /// form; carried in `frame.requirements` and `closure.requirements`
     /// channels. See `docs/design/operation-call-model.md` §"Runtime:

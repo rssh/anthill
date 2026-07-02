@@ -7958,15 +7958,18 @@ pub enum CallClass {
         enclosing_sort: Option<Symbol>,
     },
     /// WI-420: a bare operation reference eta-lifted to a `Value::OpRef` whose
-    /// op needs a requirement dictionary. `dict` is the dispatching dict
-    /// (`construct_requirement(callee_parent, [...])` for a concrete dep, or a
-    /// caller-frame `var_ref` projection for an abstract one — built by
-    /// `build_concrete_dispatch_dict` at the eta site from the expected arrow's
-    /// pinning). Eval evaluates it IN THE ETA-SITE FRAME at mint and stores the
-    /// resulting requirement on the `OpRef`, then installs it into the callee
-    /// frame at apply. Set only when the op has a satisfiable, non-inherited
-    /// requirement; a requires-free or same-sort eta carries no classification
-    /// and forwards the caller's requirements.
+    /// op needs a requirement dictionary. `dict` is the dispatching-dict
+    /// expression, built at the eta site: a caller-frame `var_ref(__req_self)`
+    /// for a SAME-SORT eta (the op's own sort dict), or — for a cross-sort eta —
+    /// `construct_requirement(callee_parent, [...])` for a concrete dep / a
+    /// caller-frame `var_ref` projection for an abstract one (via
+    /// `build_concrete_dispatch_dict` from the expected arrow's pinning). Eval
+    /// evaluates it IN THE ETA-SITE FRAME at mint and stores the resulting
+    /// requirement on the `OpRef`, then installs it into the callee frame at
+    /// apply. Set whenever the eta'd op is requires-carrying — INCLUDING a
+    /// same-sort eta, which cannot inherit because an eta'd `OpRef` escapes to a
+    /// foreign apply frame; only a requires-free or namespace-level op carries no
+    /// classification and forwards the caller's requirements.
     EtaOpRef {
         dict: TermId,
     },
