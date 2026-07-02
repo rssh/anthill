@@ -8,6 +8,9 @@ mod forall_impl_resolve_test;
 #[path = "include/push_choice_test.rs"]
 mod push_choice_test;
 
+#[path = "include/wi615_struct_eq_test.rs"]
+mod wi615_struct_eq_test;
+
 #[path = "include/cut_test.rs"]
 mod cut_test;
 

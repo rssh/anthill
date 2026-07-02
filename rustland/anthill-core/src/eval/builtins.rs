@@ -39,6 +39,12 @@ pub fn register_standard_builtins(interp: &mut Interpreter) -> Result<(), EvalEr
 
     register_if_present(interp, "anthill.prelude.Eq.eq", builtin_eq)?;
     register_if_present(interp, "anthill.prelude.Eq.neq", builtin_neq)?;
+    // WI-615 / proposal 051: `===` (structural identity) is a Bool-returning TEST
+    // like `eq` — usable in operation bodies (evaluated), not just rule-body goals.
+    // So it registers on the eval side too (reusing the structural `builtin_eq`),
+    // mirroring `Eq.eq` above; the resolver-side tag is in `mod.rs`. (Contrast
+    // `anthill.kernel.unify`, a binding primitive with no eval face.)
+    register_if_present(interp, "anthill.kernel.struct_eq", builtin_eq)?;
 
     register_if_present(interp, "anthill.prelude.Ordered.compare", ordered_compare)?;
     register_if_present(interp, "anthill.prelude.Ordered.gt", ordered_gt)?;

@@ -28,6 +28,11 @@ object Pratt:
     // functor, mirroring rustland's pratt.rs. (scaland has no resolver-side
     // builtin_unify; the head/body functor just round-trips.)
     "<=>" -> InfixEntry(3, Assoc.None,  "unify"),
+    // WI-615 / proposal 051: `===` = structural identity test (anthill.kernel.struct_eq).
+    // Lexes as one operator token (maximal munch wins `===` over `==`/`=`); maps to the
+    // `struct_eq` functor, mirroring rustland's pratt.rs. (scaland has no resolver-side
+    // builtin; the head/body functor just round-trips.)
+    "===" -> InfixEntry(3, Assoc.None,  "struct_eq"),
     "<"   -> InfixEntry(4, Assoc.None,  "lt"),
     "<="  -> InfixEntry(4, Assoc.None,  "lte"),
     ">"   -> InfixEntry(4, Assoc.None,  "gt"),

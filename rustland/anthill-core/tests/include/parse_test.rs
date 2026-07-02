@@ -2696,6 +2696,14 @@ fn parse_unify_operator_desugars_to_unify() {
 }
 
 #[test]
+fn parse_struct_eq_operator_desugars_to_struct_eq() {
+    // WI-615 / proposal 051: `a === b` desugars to struct_eq(a, b) (greedy-lexed over `==`/`=`).
+    let (terms, symbols, goals) = parse_rule_body_goals_ir("?x === f(?y)");
+    assert_eq!(goals.len(), 1);
+    assert_eq!(fmt_ir_term(&terms, &symbols, goals[0]), "struct_eq(?x, f(?y))");
+}
+
+#[test]
 fn parse_let_binding_desugars_to_unify() {
     // Goal-position `let ?v = e` is sugar for `?v <=> e` — the same unify(?v, e) IR;
     // a following goal is unaffected.

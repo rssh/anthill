@@ -650,6 +650,15 @@ class ParseTest extends munit.FunSuite:
     assertEquals(functorName(pf, body(0)), "unify")
   }
 
+  // WI-615 / proposal 051: `===` structural identity test lowers to `struct_eq`.
+  test("WI-615: `===` in a rule body lowers to the `struct_eq` functor") {
+    val pf = Parser.parse("rule same(?x, ?y) :- ?x === ?y", "<structeq>").toOption
+      .getOrElse(fail("parse failed"))
+    val body = pf.items.collectFirst { case Item.RuleItem(r) => r }.flatMap(_.body)
+      .getOrElse(fail("no body"))
+    assertEquals(functorName(pf, body(0)), "struct_eq")
+  }
+
   // WI-568: the cut control primitive `!`.
   test("WI-568: a bare `!` rule-body goal lowers to `cut()` (not prefix negation)") {
     val pf = Parser.parse("rule p(?x) :- q(?x), !, r(?x)", "<cut>").toOption

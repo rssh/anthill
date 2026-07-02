@@ -979,6 +979,7 @@ const PRELUDE_QUALIFIED: &[&str] = &[
     "anthill.kernel.or",           // logic operator `or` / `|`
     "anthill.kernel.push_choice",  // kernel disjunction primitive (`or` lifts it)
     "anthill.kernel.unify",        // structural-unification primitive (`<=>` / `let` lift it)
+    "anthill.kernel.struct_eq",    // structural identity test (`===`); proposal 051 / WI-615
     "anthill.kernel.cut",          // cut control primitive (`!`); proposal 033.1 / WI-568
     // Reflection result sorts — a reflection VOCABULARY queried bare (by short
     // name) from reflection infrastructure (the `anthill-stl` reflect bridge's

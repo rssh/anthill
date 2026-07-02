@@ -19,6 +19,18 @@ namespace anthill.kernel
   -- `anthill.reflect.unify` face. Never dispatches — structural only.
   operation unify(a: T, b: T) -> Bool
 
+  -- Structural identity test (proposal 051 / WI-615). The `===` operator: a
+  -- total, carrier-agnostic, dispatch-free comparison of two values by raw
+  -- structure (opaque carriers compare by handle identity). Resolver-implemented
+  -- via the same `builtin_eq` structural comparator `=`/`eq` shortcut to today —
+  -- but under its OWN symbol, so when `=`/`eq` become genuinely dispatched
+  -- semantic equality (`Eq.eq`, Phase 2 / WI-616) `===` stays structural. Needs
+  -- no `Eq` instance. Never dispatches. Unlike `Eq.eq` (whose `T` is the `Eq`
+  -- spec's own param, bound per-call by spec-op dispatch), `struct_eq` is not a
+  -- spec op, so it carries an OPERATION-LEVEL type parameter `[T]` (proposal 042)
+  -- the typer binds per call — letting `a === b` type-check in an operation body.
+  operation struct_eq[T](a: T, b: T) -> Bool
+
   -- Cut (`!`). Commits to the current rule invocation: discards the other
   -- clauses of the rule whose body the `!` appears in, and every choice point
   -- created while resolving the goals before it. Choice points created after

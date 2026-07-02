@@ -4169,6 +4169,10 @@ impl KnowledgeBase {
         self.register_builtin("anthill.kernel.unify", BuiltinTag::Unify);
         // Arithmetic and comparison
         self.register_builtin("anthill.prelude.Eq.eq", BuiltinTag::Eq);
+        // WI-615 / proposal 051: `===` (structural identity) reuses the structural
+        // `builtin_eq` under its OWN symbol, so the Phase-2 flip of `=`/`eq` to
+        // dispatched semantic equality (WI-616) leaves `===` structural.
+        self.register_builtin("anthill.kernel.struct_eq", BuiltinTag::Eq);
         self.register_builtin("anthill.prelude.Eq.neq", BuiltinTag::Neq);
         self.register_builtin("anthill.prelude.Ordered.gt", BuiltinTag::Gt);
         self.register_builtin("anthill.prelude.Ordered.lt", BuiltinTag::Lt);

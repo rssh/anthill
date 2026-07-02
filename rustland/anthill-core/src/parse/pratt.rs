@@ -53,6 +53,12 @@ fn infix_entry(op: &str) -> Option<&'static InfixEntry> {
         // `operator_symbol` token (the regex matches the longest run, so `<=>` wins over
         // `<=`); here it maps to the `unify` functor. The resolver `builtin_unify` is WI-523.
         ("<=>",InfixEntry { priority: 3, assoc: Assoc::None,  functor: "unify", continuation: None }),
+        // WI-615 / proposal 051: `===` = structural identity test (anthill.kernel.struct_eq).
+        // Like `<=>`, it lexes as one `operator_symbol` token — the longest-run regex makes
+        // `===` win over `==`/`=` — so no grammar change is needed. Maps to the `struct_eq`
+        // functor; the resolver reuses `builtin_eq` (structural, never dispatches). Distinct
+        // from `=`/`eq` (`anthill.prelude.Eq.eq`), which is semantic (Phase 2 / WI-616).
+        ("===",InfixEntry { priority: 3, assoc: Assoc::None,  functor: "struct_eq", continuation: None }),
         ("<",  InfixEntry { priority: 4, assoc: Assoc::None,  functor: "lt",  continuation: None }),
         ("<=", InfixEntry { priority: 4, assoc: Assoc::None,  functor: "lte", continuation: None }),
         (">",  InfixEntry { priority: 4, assoc: Assoc::None,  functor: "gt",  continuation: None }),
@@ -360,6 +366,10 @@ mod tests {
         // WI-522 / proposal 049: `<=>` desugars to the `unify` functor (greedy over `<=`).
         let (terms, symbols, result) = run(&["a", "<=>", "b"]);
         assert_eq!(fmt_term(&terms, &symbols, result), "unify(a, b)");
+
+        // WI-615 / proposal 051: `===` desugars to the `struct_eq` functor (greedy over `==`/`=`).
+        let (terms, symbols, result) = run(&["a", "===", "b"]);
+        assert_eq!(fmt_term(&terms, &symbols, result), "struct_eq(a, b)");
     }
 
     #[test]
