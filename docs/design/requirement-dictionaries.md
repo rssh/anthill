@@ -6,9 +6,10 @@ Design — **origin** 2026-07-01 (this session). Covers two coupled tickets:
 
 - **WI-577** — "First-class Dictionaries + OpRefs" (the substrate: give the
   runtime dispatch value a first-class anthill face). **These are RUNTIME sorts**
-  (`Dictionary[S]` / `OpRef[A]`, like `Cell`/`Map`) — *not* reflect objects; reflect
-  enters only for the separate expression-construction layer (§2.6). Surfaced during
-  the WI-502 typed-value carrier review.
+  (`Dictionary[S]` / `OpRef[A]`) in **`anthill.realization.runtime`** — the runtime
+  dual of `realization`'s `Obligation`/`Implementation` — *not* reflect objects;
+  reflect enters only for the separate expression-construction layer (§2.6). Surfaced
+  during the WI-502 typed-value carrier review.
 - **WI-300** — "Requirement goals in rule bodies" (the consumer: `requires(X)`
   as a rule-body goal). Surfaced during the WI-246 Phase 3c review. **Depends on
   WI-577**, on **WI-292** (*delivered*), and on **WI-613** (*delivered* — the
@@ -139,9 +140,15 @@ the requirement dictionary is the instance/method **witness**.
 
 ## 2. First-class dictionaries: the runtime `Dictionary[S]` / `OpRef[A]` values (WI-577)
 
-`Dictionary[S]` and `OpRef[A]` are **runtime** sorts — the anthill face of the
-runtime dispatch values `Value::Requirement` / `Value::OpRef`, like `Cell`/`Map`
-(they live in the runtime layer, not `reflect.anthill`). You *use* them: resolve,
+`Dictionary[S]` and `OpRef[A]` are **runtime** sorts, in **`anthill.realization.runtime`**
+— the anthill face of the runtime dispatch values `Value::Requirement` /
+`Value::OpRef`. They belong there because a dictionary is the **runtime dual of an
+`Obligation`**: the value that discharges a `requires` by carrying its resolved
+`Implementation` — and `Obligation`/`Implementation` already live in
+`anthill.realization`. The `.runtime` sub-namespace separates these runtime *values*
+from realization's static *declarations*; the host sub-namespaces
+(`realization.rust_std`, …) then describe how a `realization.runtime.Dictionary`
+renders per host (a Rust `&dyn Trait`, a Scala `using`). You *use* them: resolve,
 project, dispatch, pass. Reflect enters only in §2.6, the separate
 expression-*construction* layer that builds code over them.
 
@@ -679,9 +686,10 @@ dispatches.
 
 ## 4. Phasing (ordering: WI-577 → WI-300)
 
-1. **Dictionary — runtime sort (WI-577)** — `sort Dictionary[S]` (`impl` / `sub` /
-   `arity` / `resolveOp` / `ops`; `S` = the denoted spec instance, a type parameter) +
-   native builtins over the arena, plus the `Value::Requirement →` runtime-`Dictionary`
+1. **Dictionary — runtime sort (WI-577)** — `sort Dictionary[S]` in
+   `anthill.realization.runtime` (`impl` / `sub` / `arity` / `resolveOp` / `ops`;
+   `S` = the denoted spec instance, a type parameter) + native builtins over the
+   arena, plus the `Value::Requirement → anthill.realization.runtime.Dictionary`
    carrier-type mapping. The builtins match the handle in Rust and read the arena
    directly, so `Value::Requirement` can **stay `ViewHead::Opaque`** — no de-opaquing
    (that was only for the dropped structural-match face, §2.3). A runtime sort (like
