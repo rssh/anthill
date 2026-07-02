@@ -549,3 +549,6 @@ mod wi614_requires_dot_dispatch_test;
 #[path = "include/wi590_witness_param_carrier_test.rs"]
 mod wi590_witness_param_carrier_test;
 
+#[path = "include/wi605_bare_arrow_lambda_test.rs"]
+mod wi605_bare_arrow_lambda_test;
+

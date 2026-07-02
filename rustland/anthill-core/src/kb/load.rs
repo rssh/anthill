@@ -235,6 +235,18 @@ pub enum LoadError {
     Other {
         message: String,
     },
+    /// WI-605: a bare `pattern -> body` in an expression position (an operation /
+    /// const body). The infix `->` there builds an arrow-TYPE term, not a
+    /// function value — so its left-hand binder names would load as unresolved
+    /// value refs and cascade into misleading `UnresolvedName` typing errors.
+    /// A lambda requires the `lambda` keyword (kernel-language.md §Lambda,
+    /// proposal 018 — deliberate: the keyword keeps call-argument commas
+    /// unambiguous). Load-blocking with the actionable hint instead of the
+    /// cascade. Fires only on the exact pratt-minted shape with no callable of
+    /// that name in scope — see `Loader::bare_arrow_lambda_suspect`.
+    ArrowTermInExprPosition {
+        span: Span,
+    },
     /// WI-023: an `aggregation` constraint (`count/sum/min/max(…) op bound`). The
     /// parser and loader carry it faithfully, but the guard engine cannot yet
     /// evaluate aggregation — so the loader reports it loudly (load-blocking)
@@ -411,6 +423,10 @@ impl LoadError {
             LoadError::Other { message } => {
                 format!("load error: {}", message)
             }
+            LoadError::ArrowTermInExprPosition { span } => {
+                let (line, col) = Span::line_col(source, span.start);
+                format!("{}:{}: {}", line, col, ARROW_EXPR_HINT)
+            }
             LoadError::AggregationConstraintUnsupported { label, span } => {
                 let (line, col) = Span::line_col(source, span.start);
                 format!("{}:{}: aggregation constraint{} is not yet enforced (the guard engine cannot evaluate count/sum/min/max)",
@@ -530,6 +546,10 @@ impl LoadError {
             // violations — block ("know errors early").
             | LoadError::UnsafeNegatedUnify { .. }
             | LoadError::BindingInContract { .. }
+            // WI-605: a bare `pattern -> body` where a lambda was meant — the
+            // body's binder names resolve to nothing, so the operation cannot
+            // mean what was written.
+            | LoadError::ArrowTermInExprPosition { .. }
             // WI-023: an unenforceable aggregation constraint and a violated
             // integrity constraint are both unsound to run with.
             | LoadError::AggregationConstraintUnsupported { .. }
@@ -538,6 +558,12 @@ impl LoadError {
             | LoadError::UnsupportedConstraintForm { .. })
     }
 }
+
+/// WI-605: the one hint text for `ArrowTermInExprPosition`, shared by both
+/// renderings (`format_with_source` and `Display`) so the wording cannot drift.
+const ARROW_EXPR_HINT: &str =
+    "`->` in expression position builds an arrow-type term, not a function \
+     value — a lambda needs the `lambda` keyword (e.g. `lambda (x, y) -> body`)";
 
 /// Render a constraint label as ` 'label'` for diagnostics, or `""` if unlabeled.
 pub(crate) fn label_suffix(label: &Option<String>) -> String {
@@ -680,6 +706,9 @@ impl std::fmt::Display for LoadError {
             }
             LoadError::Other { message } => {
                 write!(f, "load error: {}", message)
+            }
+            LoadError::ArrowTermInExprPosition { span } => {
+                write!(f, "{} at {}..{}", ARROW_EXPR_HINT, span.start, span.end)
             }
             LoadError::AggregationConstraintUnsupported { label, span } => {
                 write!(f, "aggregation constraint{} is not yet enforced at {}..{}", label_suffix(label), span.start, span.end)
@@ -5151,6 +5180,13 @@ struct Loader<'a> {
     // an op body the primitives stay the default. (`and` is value-only — handled by the
     // general fallback — and `neg`→`Numeric.neg` is not position-directed.)
     in_op_body_value: bool,
+    // WI-605: set by the bare-arrow diagnostic arm when it substitutes a
+    // `Term::Bottom` recovery leaf into the body being converted. Cleared at
+    // `convert_expr_term` entry; read by `load_operation` / `load_const` to
+    // SKIP storing the poisoned body node — the typer's loud `Expr::Bottom`
+    // post-elaboration invariant would otherwise stack a second,
+    // internal-jargon error on top of the targeted `ArrowTermInExprPosition`.
+    expr_body_bottom_recovery: bool,
     // WI-582: active while converting a rule HEAD, so `convert_term`'s
     // `typed_var` strip records the per-variable type bound (`?x: T`) into
     // `rule_head_type_bounds` instead of treating the marker as a generic term.
@@ -5391,6 +5427,7 @@ impl<'a> Loader<'a> {
             in_effect_absence: false,
             in_type_position: false,
             in_op_body_value: false,
+            expr_body_bottom_recovery: false,
             defined_sorts: Vec::new(),
             fact_rule_ids: Vec::new(),
             source_id,
@@ -5439,6 +5476,56 @@ impl<'a> Loader<'a> {
             }
         }
         None
+    }
+
+    /// WI-605 gate: true iff an `arrow`/`arrow_effect`-named Fn in op/const-body
+    /// expression position can only be the pratt-desugared infix `->` (a bare
+    /// `pattern -> body` where a lambda was meant), so the targeted
+    /// `ArrowTermInExprPosition` diagnostic should fire. Three conditions:
+    ///
+    /// 1. **Shape**: exactly what the pratt desugar mints — 2 positional args
+    ///    for `arrow`, 3 for `arrow_effect`, no named args. Any other shape
+    ///    (`arrow(1, 2, 3)`, `arrow(param: p, result: r)`) was WRITTEN as a
+    ///    call and keeps the normal path with its accurate unresolved-functor
+    ///    diagnostic — the lambda hint would be wrong advice there.
+    /// 2. **No value binder so named**: a value place named `arrow` — a
+    ///    let/lambda/match binder (in `local_names_stack`) or an op
+    ///    param/result/callback place (`SymbolKind::is_value_place`, which
+    ///    resolve in scope, NOT via the local stack) — may be function-typed
+    ///    and legitimately applied (`arrow(a, b)`, the foldLeft `f(init, h)`
+    ///    pattern). The loader can't cheaply see its type, so any value
+    ///    binder suppresses (conservative — a non-function value named
+    ///    `arrow` reverts to the old cascade rather than risking a false
+    ///    load-blocking lambda hint on legitimate code).
+    /// 3. **No callable in scope**: a resolved `Operation` / `Entity`
+    ///    (constructor) / `Const` named `arrow` is a genuine call target.
+    ///    An `Ambiguous` hit also suppresses — the normal path then reports
+    ///    the accurate `AmbiguousSymbol` error. Any OTHER hit (a sort or
+    ///    namespace named `arrow`) does NOT suppress: it cannot head a call,
+    ///    so the term can still only be the mis-parsed `->`.
+    fn bare_arrow_lambda_suspect(
+        &self,
+        name: &str,
+        pos_count: usize,
+        named_count: usize,
+    ) -> bool {
+        let shape_matches = named_count == 0
+            && ((name == "arrow" && pos_count == 2)
+                || (name == "arrow_effect" && pos_count == 3));
+        if !shape_matches || self.lookup_local_name(name).is_some() {
+            return false;
+        }
+        match self.kb.symbols.resolve_in_scope(name, self.current_scope.raw()) {
+            ResolveResult::NotFound => true,
+            ResolveResult::Ambiguous(_) => false,
+            ResolveResult::Found(sym) => match self.kb.symbols.get(sym) {
+                SymbolDef::Resolved { kind, .. } => !matches!(
+                    kind,
+                    SymbolKind::Operation | SymbolKind::Entity | SymbolKind::Const
+                ) && !kind.is_value_place(),
+                SymbolDef::Unresolved { .. } => true,
+            },
+        }
     }
 
     /// Build a let/lambda/match-branch local-name scope frame from the
@@ -6416,6 +6503,8 @@ impl<'a> Loader<'a> {
         // assert instead of silently mis-routing the outer frame's boolean operators.
         debug_assert!(!self.in_op_body_value, "convert_expr_term: reentered with in_op_body_value set");
         self.in_op_body_value = true;
+        self.expr_body_bottom_recovery = false; // WI-605: per-body flag
+
         work.push(LoadWorkOp::Visit(parse_id));
         while let Some(op) = work.pop() {
             match op {
@@ -6559,6 +6648,33 @@ impl<'a> Loader<'a> {
                         work.push(LoadWorkOp::PopOccSuppress);
                         work.push(LoadWorkOp::Visit(pos_args[0])); // param
                         work.push(LoadWorkOp::PushOccSuppress);
+                    }
+                    // WI-605: a bare `(x, acc) -> body` where a lambda was
+                    // meant — see `LoadError::ArrowTermInExprPosition` for the
+                    // rationale and `bare_arrow_lambda_suspect` for the gate.
+                    // Recover with a Bottom leaf so the walk keeps its
+                    // one-result shape; the arrow's children are NOT visited
+                    // (visiting them is what produced the old misleading
+                    // per-binder cascade). No `create_occurrence`: Bottom is
+                    // hash-consed to one shared TermId, and the side-table's
+                    // first-write-wins `or_insert` would pin THIS site's span
+                    // onto every later Bottom lookup. The flag makes the
+                    // op/const loader skip storing the poisoned body so the
+                    // typer never sees the Bottom (its loud `BottomExpr`
+                    // post-elaboration invariant would otherwise add a second,
+                    // internal-jargon error at the same site).
+                    "arrow" | "arrow_effect"
+                        if self.bare_arrow_lambda_suspect(
+                            &name, pos_args.len(), named_args.len(),
+                        ) =>
+                    {
+                        self.errors.push(LoadError::ArrowTermInExprPosition {
+                            span: self.parsed.terms.span(parse_id),
+                        });
+                        self.expr_body_bottom_recovery = true;
+                        let kb_id = self.kb.alloc(Term::Bottom);
+                        results.push(kb_id);
+                        self.push_leaf_occ(kb_id);
                     }
                     "proof_stmt" => {
                         // WI-538: pos_args are [body, conclude?]. The
@@ -10881,7 +10997,11 @@ impl<'a> Loader<'a> {
         // Defining body, if any (bodyless = host-supplied; value source is a later phase).
         if let Some(value_tid) = c.value {
             let (_handle, node) = self.convert_expr_term(value_tid);
-            self.kb.set_const_body_node(const_sym, node);
+            // WI-605: a body poisoned by a bare-arrow recovery Bottom is not
+            // stored — the load is already failing with the targeted error.
+            if !self.expr_body_bottom_recovery {
+                self.kb.set_const_body_node(const_sym, node);
+            }
         }
 
         self.current_owner = prev_owner;
@@ -11111,11 +11231,24 @@ impl<'a> Loader<'a> {
         let has_body = match o.body {
             Some(body_tid) => {
                 let (_handle, node) = self.convert_expr_term(body_tid);
-                self.kb.set_op_body_node(functor, node);
+                // WI-605: a body poisoned by a bare-arrow recovery Bottom is
+                // not stored — the load is already failing with the targeted
+                // error, and the typer would loudly reject the Bottom leaf as
+                // a post-elaboration form (a second, misleading error).
+                // `has_body` stays true: the source does have a body.
+                if !self.expr_body_bottom_recovery {
+                    self.kb.set_op_body_node(functor, node);
+                }
                 true
             }
             None => false,
         };
+        // WI-605: capture before any later convert_expr_term call could reset it;
+        // gates the OperationImpl fact and the eq-rewrite equation below, which
+        // would otherwise re-lower the poisoned body via convert_term (a path the
+        // bare-arrow arm does not cover) into a live SLD rewrite rule carrying
+        // the mis-parsed arrow term.
+        let body_poisoned = self.expr_body_bottom_recovery;
 
         // WI-087: operation attributes. Lower the operation's `meta_block`
         // (`[Marker, Key: value, ...]`) into a `meta(key: value, ...)` term —
@@ -11212,8 +11345,9 @@ impl<'a> Loader<'a> {
 
         // Emit OperationImpl fact for operations with expression bodies. WI-305:
         // the body field is dropped — the occurrence lives in op_body_node and is
-        // reached via anthill.reflect.operation_body.
-        if has_body {
+        // reached via anthill.reflect.operation_body. WI-605: a poisoned body was
+        // NOT stored, so don't claim an impl exists for it.
+        if has_body && !body_poisoned {
             if let Some(op_impl_sym) = self.kb.try_resolve_symbol("anthill.realization.OperationImpl") {
                 let impl_sort = self.kb.make_name_term("OperationImpl");
                 let operation_key = self.kb.intern("operation");
@@ -11239,8 +11373,15 @@ impl<'a> Loader<'a> {
             }
         }
 
-        if let Some(body_parse_id) = o.body {
-            self.emit_operation_equation(o, functor, body_parse_id, domain);
+        // WI-605: skip the equation for a poisoned body — emit_operation_equation
+        // re-lowers the body via `convert_term` (which the bare-arrow arm does not
+        // cover), and the resulting `eq(op(...), <garbage arrow term>)` would be a
+        // live SLD rewrite rule consulted by the still-running post-load passes
+        // (constraint guards, provider-operation coverage).
+        if !body_poisoned {
+            if let Some(body_parse_id) = o.body {
+                self.emit_operation_equation(o, functor, body_parse_id, domain);
+            }
         }
     }
 
