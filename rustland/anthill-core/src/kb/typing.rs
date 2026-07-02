@@ -7454,8 +7454,15 @@ fn canonical_global_var(
     g
 }
 
-/// WI-419: the `Global` var a sort-parameter symbol aliases to, or `None` when
-/// it does not alias to one.
+/// The canonical `Var::Global` a sort-parameter symbol aliases to (via its
+/// `SortAlias`), or `None` when it does not alias to one. This is the one shared
+/// "type-param symbol → canonical VarId" primitive underlying both worlds that
+/// reason about type-param identity: the σ-class machinery ([`sigma_class`] via
+/// [`elem_var_step`], for requirement attribution) and carrier grounding
+/// ([`declared_type_param_vid`], [`type_param_vid_in_sort`], WI-424/600). They
+/// diverge in their layers — σ-class adds the substitution chase + rigid bridge,
+/// carrier grounding stays structural and carrier-agnostic — but the alias
+/// resolution is identical, so it lives here once.
 fn type_param_global_var(kb: &KnowledgeBase, sym: Symbol) -> Option<VarId> {
     match kb.get_term(resolve_sort_alias(kb, sym)?) {
         Term::Var(Var::Global(v)) => Some(*v),
@@ -10779,6 +10786,13 @@ fn carrier_sort_of_value(kb: &KnowledgeBase, v: &Value) -> Option<Symbol> {
 /// either the alias var directly (`Term::Var(Global)`) or a `Ref`/`Ident` to a
 /// sort type-param resolved through its `SortAlias` — the form a signature
 /// stores (`c: C` is `Ref(S.C)`, exactly as `effects E` is `Ref(S.E)`).
+///
+/// The carrier-grounding dual of [`sigma_class`]: both name a type-param's
+/// canonical VarId, but this stays structural (no substitution chase, no rigid
+/// bridge — its callers compare against static `Var::Global` spec-params) and is
+/// carrier-agnostic over `&Value` (a `Value::Node` param type, WI-477), where
+/// σ-class chases a `TermId` under σ. The shared alias resolution is
+/// [`type_param_global_var`].
 fn declared_type_param_vid(kb: &KnowledgeBase, pty: &Value) -> Option<VarId> {
     if let Some(v) = resolved_var(kb, pty) {
         return Some(v);
@@ -10787,12 +10801,8 @@ fn declared_type_param_vid(kb: &KnowledgeBase, pty: &Value) -> Option<VarId> {
     // ⇒ `Ref(S.C)`) reads as `ViewHead::Ref`/`Ident` whether the param type rides
     // as a `TermId` or a `Value::Node`; a structural carrier (arrow/row) has no
     // such head → `None`, as before.
-    let sym = match pty.head(kb) {
-        ViewHead::Ref(s) | ViewHead::Ident(s) => s,
-        _ => return None,
-    };
-    match kb.get_term(resolve_sort_alias(kb, sym)?) {
-        Term::Var(Var::Global(v)) => Some(*v),
+    match pty.head(kb) {
+        ViewHead::Ref(s) | ViewHead::Ident(s) => type_param_global_var(kb, s),
         _ => None,
     }
 }
@@ -15089,11 +15099,9 @@ fn type_param_vid_in_sort(
         kb.resolve_sym(param_sym),
     );
     let qualified_sym = kb.try_resolve_symbol(&qualified)?;
-    let alias_target = resolve_sort_alias(kb, qualified_sym)?;
-    match kb.get_term(alias_target) {
-        Term::Var(Var::Global(v)) => Some(*v),
-        _ => None,
-    }
+    // Same alias resolution as the σ-class side — anchored to `parent_sort` by
+    // qualifying the short param name first.
+    type_param_global_var(kb, qualified_sym)
 }
 
 /// WI-511 (WI-348): reads the `Pattern` occurrence DIRECTLY (no `pattern_to_term`
