@@ -11,6 +11,9 @@ mod push_choice_test;
 #[path = "include/wi615_struct_eq_test.rs"]
 mod wi615_struct_eq_test;
 
+#[path = "include/wi300_rule_body_requires_test.rs"]
+mod wi300_rule_body_requires_test;
+
 #[path = "include/cut_test.rs"]
 mod cut_test;
 

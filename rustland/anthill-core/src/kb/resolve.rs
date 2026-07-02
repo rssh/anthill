@@ -157,6 +157,14 @@ pub enum BuiltinTag {
     SubOccurrences,
     /// anthill.reflect.operation_body(op) -> Option[NodeOccurrence]
     OperationBody,
+    /// WI-300 — `anthill.kernel.find_dictionary(spec_ref, grounding_var…)`: the
+    /// rule-body requirement guard, the desugared form of a rule-body `requires(X)`
+    /// (converter) after the typer sweep records which rule var grounds each of
+    /// spec `X`'s type-parameters. Succeeds iff every grounding var's carried type
+    /// makes `X` resolve (a `provides` provider exists) at the current binding;
+    /// fails if a ground carrier has no provider; SUSPENDS as residual (Delay) when
+    /// a carrier type is under-determined (never NAF-decide; WI-519 / WI-067).
+    FindDictionary,
 }
 
 /// Result of executing a builtin.
@@ -2487,6 +2495,7 @@ impl KnowledgeBase {
             BuiltinTag::OccurrenceOwner => self.builtin_occurrence_owner(goal, answer_subst),
             BuiltinTag::SubOccurrences => self.builtin_sub_occurrences(goal, answer_subst),
             BuiltinTag::OperationBody => self.builtin_operation_body(goal, answer_subst),
+            BuiltinTag::FindDictionary => self.builtin_find_dictionary(goal, answer_subst),
         }
     }
 
@@ -3412,6 +3421,70 @@ impl KnowledgeBase {
             UnifyOutcome::Ok if work.is_contradiction() => BuiltinResult::Failure,
             UnifyOutcome::Ok if work.bindings.is_empty() => BuiltinResult::Success,
             UnifyOutcome::Ok => BuiltinResult::SuccessWithBindings(work),
+        }
+    }
+
+    /// WI-300 — the rule-body requirement guard. The converter desugars a
+    /// rule-body `requires(X)` to `find_dictionary(X)`; the typer sweep
+    /// ([`super::typing::record_find_dictionary_grounding`]) then rewrites it into
+    /// `find_dictionary(spec_base, op_functor, op_arg…)` — `spec_base` is spec X's
+    /// nominal sort, `op_functor` a body call to one of X's operations, and
+    /// `op_arg…` that call's carrier arguments (the witness redex whose types
+    /// decide the instance). At the current binding this reads each argument's
+    /// carried type and shares the WI-596 `provides` decision with the `[simp]`
+    /// guard: `Success` iff every carrier provides X, `Failure` if a ground carrier
+    /// has no provider, `Delay` (suspend-as-residual, never NAF-decide; WI-519 /
+    /// WI-067) when a carrier type is under-determined. A goal with fewer than two
+    /// positional args — an un-rewritten `find_dictionary(X)`, which the typer sweep
+    /// turns into either the ≥2-arg form or a hard load error, so it is unreachable
+    /// from a clean load; only a direct hand-written call reaches it — declines to
+    /// fire (returns `Failure`) rather than wrongly succeeding.
+    fn builtin_find_dictionary<V: TermView>(
+        &mut self,
+        goal: &V,
+        subst: &Substitution,
+    ) -> BuiltinResult {
+        let pos_arity = match goal.head(self) {
+            ViewHead::Functor { pos_arity, .. } => pos_arity,
+            _ => return BuiltinResult::Failure,
+        };
+        if pos_arity < 2 {
+            return BuiltinResult::Failure;
+        }
+        // A nominal-symbol argument (spec base / op functor) rides as a `Ref`, an
+        // as-yet-unresolved `Ident`, or a nullary `Fn` (`make_name_term` shape).
+        fn head_symbol(kb: &KnowledgeBase, v: &Value) -> Option<Symbol> {
+            match v.head(kb) {
+                ViewHead::Ref(s) | ViewHead::Ident(s) => Some(s),
+                ViewHead::Functor { functor: Some(s), .. } => Some(s),
+                _ => None,
+            }
+        }
+        let spec_sort = match self
+            .walk_arg(goal.pos_arg(self, 0), subst)
+            .and_then(|v| head_symbol(self, &v))
+        {
+            Some(s) => s,
+            None => return BuiltinResult::Failure,
+        };
+        let op_functor = match self
+            .walk_arg(goal.pos_arg(self, 1), subst)
+            .and_then(|v| head_symbol(self, &v))
+        {
+            Some(s) => s,
+            None => return BuiltinResult::Failure,
+        };
+        let mut arg_vals: Vec<Value> = Vec::with_capacity(pos_arity - 2);
+        for i in 2..pos_arity {
+            match self.walk_arg(goal.pos_arg(self, i), subst) {
+                Some(v) => arg_vals.push(v),
+                None => return BuiltinResult::Failure,
+            }
+        }
+        match super::typing::find_dictionary_guard(self, subst, spec_sort, op_functor, &arg_vals) {
+            super::typing::FindDictOutcome::Fire => BuiltinResult::Success,
+            super::typing::FindDictOutcome::DontFire => BuiltinResult::Failure,
+            super::typing::FindDictOutcome::Suspend => BuiltinResult::Delay,
         }
     }
 

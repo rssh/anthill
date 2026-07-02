@@ -22023,12 +22023,18 @@ pub fn simp_fire_guard_holds(kb: &KnowledgeBase, redex: &NodeOccurrence) -> bool
     // supplied by name (no positional slot) reads as `None` → don't fire — the
     // `[simp]` matcher does not match a positional rule LHS against a named-arg
     // redex either, so such a redex never reaches a fire regardless.
-    simp_guard_holds_core(kb, functor, spec_sort, |i| {
-        pos_args
-            .get(i)
-            .and_then(|a| a.inferred_type())
-            .and_then(|t| sort_functor_of_view(kb, &t))
-    })
+    // The `[simp]` firing decision is two-valued (fire / don't) — a
+    // non-`Fire` outcome (`DontFire` or an under-determined `Suspend`) is "don't
+    // fire this rewrite"; WI-300's guard consumes the third state directly.
+    matches!(
+        simp_guard_holds_core(kb, functor, spec_sort, |i| {
+            pos_args
+                .get(i)
+                .and_then(|a| a.inferred_type())
+                .and_then(|t| sort_functor_of_view(kb, &t))
+        }),
+        FindDictOutcome::Fire
+    )
 }
 
 /// WI-283 / WI-292 — the shared spec-op firing decision for `[simp]` rewriting,
@@ -22061,24 +22067,76 @@ pub fn simp_fire_guard_holds(kb: &KnowledgeBase, redex: &NodeOccurrence) -> bool
 /// container (some parameter is typed with the sort itself) they are the
 /// sort-typed parameters (`member(x: T, s: Set)` → just `s`), and the content
 /// type-parameter arguments (`x: T`) carry no obligation.
+/// WI-596 — is `spec_sort` a *self-representing* container over `params` (some
+/// parameter is typed with the spec sort itself, e.g. `member(x: T, s: Set)`)?
+/// Such a sort names its carrier by the SORT, not by a type-parameter, so the
+/// carrier arguments are the sort-typed ones and its type-parameters are content.
+/// Shared by [`simp_guard_holds_core`] and [`op_has_spec_carrier_param`] so they
+/// classify carriers identically.
+fn spec_self_represented_by(kb: &KnowledgeBase, params: &[(Symbol, Value)], spec_sort: Symbol) -> bool {
+    params
+        .iter()
+        .any(|(_n, pty)| carrier_sort_of_value(kb, pty).is_some_and(|s| same_symbol(kb, s, spec_sort)))
+}
+
+/// WI-596 — does parameter type `param_type` CARRY spec `spec_sort` (so that its
+/// argument's runtime type decides the instance)? For a carrier-parameter
+/// typeclass (`Eq.eq(a: T, b: T)`) the carriers are the type-param-typed
+/// parameters; for a self-representing container (`Set.member(x: T, s: Set)`) they
+/// are the sort-typed parameters (and the content `x: T` carries no obligation).
+/// The per-parameter half of [`simp_guard_holds_core`]'s carrier decision,
+/// factored out so the WI-300 witness selector applies the SAME rule.
+fn param_is_spec_carrier(
+    kb: &KnowledgeBase,
+    spec_sort: Symbol,
+    type_params: &[String],
+    self_representing: bool,
+    param_type: &Value,
+) -> bool {
+    match carrier_sort_of_value(kb, param_type) {
+        Some(s) if self_representing => same_symbol(kb, s, spec_sort),
+        Some(s) => type_params.iter().any(|tp| tp.as_str() == kb.resolve_sym(s)),
+        None => false,
+    }
+}
+
+/// WI-300 — does `functor` (a spec op of `spec_sort`) have at least one carrier
+/// parameter, i.e. can a call to it ground the spec's instance from its arguments?
+/// A nullary or all-content op (`Monoid.unit() -> T`, `Numeric.fromInt(n: Int)`)
+/// has none: its arguments never determine the carrier, so it cannot serve as a
+/// WI-300 requirement witness (the witness scan must skip it, else the guard
+/// permanently `DontFire`s — [`simp_guard_holds_core`] leaves `checked_carrier`
+/// false with no carrier argument). Uses the SAME carrier rule as the guard.
+fn op_has_spec_carrier_param(kb: &KnowledgeBase, functor: Symbol, spec_sort: Symbol) -> bool {
+    let Some(rec) = super::op_info::lookup_operation_info(kb, functor) else {
+        return false;
+    };
+    let type_params = kb.type_params_of_sort(spec_sort);
+    let self_representing = spec_self_represented_by(kb, &rec.params, spec_sort);
+    rec.params
+        .iter()
+        .any(|(_n, pty)| param_is_spec_carrier(kb, spec_sort, &type_params, self_representing, pty))
+}
+
 fn simp_guard_holds_core(
     kb: &KnowledgeBase,
     functor: Symbol,
     spec_sort: Symbol,
     arg_carrier_sort: impl Fn(usize) -> Option<Symbol>,
-) -> bool {
+) -> FindDictOutcome {
     // The caller has already resolved `functor`'s spec sort (one
     // `lookup_spec_op_dispatch` per firing decision, shared with its own
     // non-spec-op default) and passes it in — a non-spec-op functor never
     // reaches here. Without the signature we can't tell which arguments carry the spec,
     // so we can't verify the law applies — don't fire.
     let Some(rec) = super::op_info::lookup_operation_info(kb, functor) else {
-        return false;
+        return FindDictOutcome::DontFire;
     };
     let type_params = kb.type_params_of_sort(spec_sort);
 
     // WI-596 — two shapes of spec sort name their carrier differently, and the
-    // "which argument carries the spec" decision must follow the shape:
+    // "which argument carries the spec" decision must follow the shape (see
+    // [`param_is_spec_carrier`] / [`spec_self_represented_by`]):
     //
     //   * A pure carrier-parameter typeclass (`Magma`, `Eq`, `Numeric`) names its
     //     carrier BY a type-parameter — `op2(a: T, b: T)` — so its instances ARE
@@ -22087,41 +22145,33 @@ fn simp_guard_holds_core(
     //   * A self-representing container (`Set`, `Map`, `List`, `Stream`) names its
     //     carrier by the SORT ITSELF — `insert(s: Set, x: T)`, `get(m: Map, …)` —
     //     and its type-parameters (`T`, `K`/`V`) are CONTENT (element / key /
-    //     value), constrained by the sort's `requires` (`Eq[T]`), NOT required to
-    //     provide the sort. The carrier arguments are the sort-typed ones; the
-    //     content arguments carry no separate obligation, because a carrier that
-    //     `provides Set[T = …]` has already discharged the sort's `requires` on
-    //     its element at that provider fact (WI-343).
-    //
-    // Detect the self-representing shape: some parameter is typed with the spec
-    // sort itself. This is what makes `Set.member`'s element `x: T` NOT a carrier
-    // — checking `sort_provides(element, Set)` would wrongly leave every container
-    // law dormant (the WI-596 gap), and it is why phase-1's carrier-parameter
-    // sorts (no self-typed parameter) keep the type-param carrier rule unchanged.
-    let self_representing = rec
-        .params
-        .iter()
-        .any(|(_n, pty)| carrier_sort_of_value(kb, pty).is_some_and(|s| same_symbol(kb, s, spec_sort)));
+    //     value), NOT required to provide the sort. Only the sort-typed arguments
+    //     carry an obligation.
+    let self_representing = spec_self_represented_by(kb, &rec.params, spec_sort);
 
     let mut checked_carrier = false;
     for (i, (_param_name, param_type)) in rec.params.iter().enumerate() {
-        // Which parameters carry the spec depends on the shape (above). WI-341
-        // Stage A: carrier-agnostic read of the (now `Value`) param type.
-        let is_carrier = match carrier_sort_of_value(kb, param_type) {
-            Some(s) if self_representing => same_symbol(kb, s, spec_sort),
-            Some(s) => type_params.iter().any(|tp| tp.as_str() == kb.resolve_sym(s)),
-            None => false,
-        };
-        if !is_carrier {
+        // Only CARRIER arguments decide the instance; a content argument's
+        // under-determination is irrelevant, so it is never read here (this is
+        // what keeps the guard from over-suspending on an unbound content arg).
+        if !param_is_spec_carrier(kb, spec_sort, &type_params, self_representing, param_type) {
             continue;
         }
-        // The carrier argument's sort head, read by the caller's reader.
+        // The carrier argument's sort head, read by the caller's reader. Split the
+        // three outcomes (never NAF-decide an under-determined carrier; WI-067):
         match arg_carrier_sort(i) {
             Some(carrier) if sort_provides(kb, carrier, spec_sort) => checked_carrier = true,
-            _ => return false,
+            // Ground carrier that does not provide the spec → don't fire.
+            Some(_) => return FindDictOutcome::DontFire,
+            // Headless / missing carrier (under-determined) → suspend, don't decide.
+            None => return FindDictOutcome::Suspend,
         }
     }
-    checked_carrier
+    if checked_carrier {
+        FindDictOutcome::Fire
+    } else {
+        FindDictOutcome::DontFire
+    }
 }
 
 /// WI-292 — the RESOLVER-side type-satisfaction check for a requires-guarded
@@ -22181,7 +22231,60 @@ pub(crate) fn simp_requires_guard_holds(
             sort_functor_of_view(kb, &ty)
         })
         .collect();
-    simp_guard_holds_core(kb, functor, spec_sort, |i| arg_sorts.get(i).copied().flatten())
+    matches!(
+        simp_guard_holds_core(kb, functor, spec_sort, |i| arg_sorts.get(i).copied().flatten()),
+        FindDictOutcome::Fire
+    )
+}
+
+/// WI-300 — the three-way outcome of a rule-body `requires(X)` guard (the
+/// desugared `find_dictionary` goal). Three-way *by construction* (never
+/// NAF-decide, WI-519 / WI-067): the guard RESOLVES the requirement — it does not
+/// decide it false when the binding is under-determined.
+pub(crate) enum FindDictOutcome {
+    /// Every carrier is ground and provides the spec → the rule fires.
+    Fire,
+    /// A ground carrier has no provider → the rule does not fire (sound: a
+    /// well-typed use would carry the instance).
+    DontFire,
+    /// A carrier type is under-determined → suspend as residual; retry once the
+    /// binding is determined.
+    Suspend,
+}
+
+/// WI-300 — evaluate a rule-body requirement guard at the current binding. The
+/// typer sweep ([`record_find_dictionary_grounding`]) rewrote the surface
+/// `requires(X)` into `find_dictionary(X_base, op_functor, op_arg…)`, choosing a
+/// body call to one of X's operations as the WITNESS whose carrier arguments
+/// decide the instance — exactly the redex a `[simp]` rule fires on
+/// ([`simp_requires_guard_holds`]). Here we read each witness argument's carried
+/// type ([`value_type_term`], WI-578) → nominal sort head, then share the WI-596
+/// carrier decision with the `[simp]` resolver guard ([`simp_guard_holds_core`]):
+/// a carrier-parameter typeclass (`Eq`) checks the type-param arguments, a
+/// self-representing container (`Set`) checks the sort-typed arguments. An
+/// under-determined CARRIER (no nominal sort head — unbound / headless) SUSPENDS,
+/// never decides the guard false. An under-determined NON-carrier (content)
+/// argument does not suspend: like `simp_requires_guard_holds`, each argument's
+/// sort head rides as an `Option` and only the carrier indices are consulted, so
+/// an unbound element beside a ground carrier still decides `Fire`.
+pub(crate) fn find_dictionary_guard(
+    kb: &mut KnowledgeBase,
+    subst: &Substitution,
+    spec_sort: Symbol,
+    op_functor: Symbol,
+    arg_vals: &[Value],
+) -> FindDictOutcome {
+    // Each witness argument's carrier sort head from `value_type_term` — the same
+    // total type reader `simp_requires_guard_holds` uses; needs `&mut kb` (may
+    // intern sort refs), so it runs before the immutable-`kb` core call. A headless
+    // argument rides as `None`; `simp_guard_holds_core` decides Fire/DontFire/
+    // Suspend from only the CARRIER indices (a headless carrier ⇒ Suspend).
+    let mut arg_sorts: Vec<Option<Symbol>> = Vec::with_capacity(arg_vals.len());
+    for v in arg_vals {
+        let ty = value_type_term(kb, subst, v);
+        arg_sorts.push(sort_functor_of_view(kb, &ty));
+    }
+    simp_guard_holds_core(kb, op_functor, spec_sort, |i| arg_sorts.get(i).copied().flatten())
 }
 
 /// WI-582 — the resolver-side firing guard for EXPLICIT typed rule patterns
@@ -22357,6 +22460,14 @@ pub fn type_check_sorts_typed(kb: &mut KnowledgeBase, sort_terms: &[TermId]) -> 
     // namespace-level rules). After signature checks, so operation/entity
     // metadata the dispatch reads is settled.
     errors.extend(dispatch_rule_body_dots(kb));
+
+    // WI-300: rewrite every rule body's `find_dictionary(X)` guard (the converter's
+    // desugaring of a rule-body `requires(X)`) into the resolver-ready
+    // `find_dictionary(spec_base, op_functor, op_arg…)` form, recording which body
+    // op-call witnesses ground spec X. Runs AFTER dot-dispatch so a `?x.eq(?y)`
+    // witness is already an `Apply`, and after signature checks so the spec-op
+    // metadata the grounding reads is settled.
+    errors.extend(record_find_dictionary_grounding(kb));
 
     errors
 }
@@ -23756,6 +23867,242 @@ fn dispatch_rule_body_dots(kb: &mut KnowledgeBase) -> Vec<TypeError> {
         }
     }
     errors
+}
+
+/// WI-300 — rewrite each rule body's `find_dictionary(X)` guard (the converter's
+/// desugaring of a rule-body `requires(X)`) into the resolver-ready
+/// `find_dictionary(spec_base, op_functor, op_arg…)` form.
+///
+/// A rule has no caller to thread a dictionary, so the guard resolves its own
+/// requirement from the runtime binding. `requires(X)` is grounded by the rule's
+/// own body: a call to one of X's operations (`eq(?x, ?y)` for `requires(Eq[T])`)
+/// is the WITNESS whose carrier arguments' runtime types decide the instance — the
+/// same redex a `[simp]` rule fires on. This sweep finds that witness and records
+/// `(spec_base, op_functor, witness_args)` positionally in the goal, so the
+/// resolver's [`find_dictionary_guard`] reads the args' carried types and checks
+/// `provides` (sharing the WI-596 carrier decision) at fire time.
+///
+/// A `requires(X)` with NO body call to one of X's operations cannot be grounded —
+/// reported as a hard error (loud, not a silent skip): the guard would never be
+/// decidable. The chosen witness op must have a carrier parameter
+/// ([`op_has_spec_carrier_param`]); a nullary / all-content op (`Monoid.unit()`)
+/// is skipped.
+///
+/// Guard-tier scope (each a deliberate boundary, not a silent gap):
+///   * Only TOP-LEVEL rule-body goals are swept. A `requires` nested inside a
+///     `not` / implication / bounded quantifier is not rewritten here and, as
+///     before this feature, fails as an ordinary goal (never a false positive).
+///   * At most one `requires` per spec base per rule (the type-args are stripped,
+///     so two on one spec can't be attributed — rejected loudly above).
+///   * The requirement is CHECKED, not yet threaded as a dictionary the body ops
+///     dispatch through (Tier B, deferred).
+fn record_find_dictionary_grounding(kb: &mut KnowledgeBase) -> Vec<TypeError> {
+    let mut errors: Vec<TypeError> = Vec::new();
+    let Some(fd_sym) = kb.try_resolve_symbol("anthill.kernel.find_dictionary") else {
+        return errors; // builtin not registered — nothing to rewrite
+    };
+    // An un-rewritten guard is a `find_dictionary` with exactly one positional arg
+    // (the spec instance); the rewritten form has ≥ 2 (spec_base + op + args), so
+    // this gate is idempotent.
+    let is_unrewritten = |n: &Rc<NodeOccurrence>| {
+        matches!(n.as_expr(),
+            Some(Expr::Apply { functor, pos_args, .. })
+                if *functor == fd_sym && pos_args.len() == 1)
+    };
+    for rid in kb.live_rule_ids() {
+        if kb.is_fact(rid) {
+            continue;
+        }
+        if !kb.rule_body_nodes(rid).iter().any(&is_unrewritten) {
+            continue;
+        }
+        let body_nodes: Vec<Rc<NodeOccurrence>> = kb.rule_body_nodes(rid).to_vec();
+        let rule_sym = match kb.rule_head_value(rid).clone() {
+            Value::Term { id, .. } => head_functor_sym(kb, id),
+            _ => None,
+        };
+        // The guard tier strips the spec's type-args at convert time, so it cannot
+        // attribute WHICH type-parameter each `requires` names. Two `requires` on
+        // the SAME spec base in one rule would therefore both select the same
+        // witness and check the same carrier — silently discharging the second
+        // against the wrong type. Reject that loudly rather than fire unsoundly;
+        // sound same-spec / different-param attribution is Tier B (WI-613).
+        let mut seen_bases: Vec<Symbol> = Vec::new();
+        let mut has_duplicate_spec = false;
+        for node in &body_nodes {
+            if !is_unrewritten(node) {
+                continue;
+            }
+            let Some(Expr::Apply { pos_args, .. }) = node.as_expr() else {
+                continue;
+            };
+            let Some(base) = occ_head_symbol(&pos_args[0]) else {
+                continue;
+            };
+            let canon = kb.canonical_sort_sym(base);
+            if seen_bases.contains(&canon) {
+                errors.push(TypeError::Other {
+                    span: Some(node.span.span),
+                    context: TypeErrorContext::Rule {
+                        name: rule_sym.unwrap_or(fd_sym),
+                        field: RuleField::Body,
+                    },
+                    expected: format!("at most one `requires` on spec `{}` per rule", kb.resolve_sym(base)),
+                    actual: "multiple `requires` on the same spec base — type-parameter attribution is not yet supported (guard tier; Tier B)".into(),
+                });
+                has_duplicate_spec = true;
+                break;
+            }
+            seen_bases.push(canon);
+        }
+        if has_duplicate_spec {
+            continue; // leave the rule un-rewritten; the load fails on the error above
+        }
+        let mut new_body: Vec<Rc<NodeOccurrence>> = Vec::with_capacity(body_nodes.len());
+        let mut changed = false;
+        for node in &body_nodes {
+            if !is_unrewritten(node) {
+                new_body.push(node.clone());
+                continue;
+            }
+            match rewrite_find_dictionary_goal(kb, node, &body_nodes, fd_sym, rule_sym) {
+                Ok(new_goal) => {
+                    new_body.push(new_goal);
+                    changed = true;
+                }
+                Err(e) => {
+                    errors.push(e);
+                    new_body.push(node.clone());
+                }
+            }
+        }
+        if changed {
+            kb.set_rule_body_nodes(rid, new_body);
+        }
+    }
+    errors
+}
+
+/// Rewrite one `find_dictionary(X)` goal (see [`record_find_dictionary_grounding`]).
+fn rewrite_find_dictionary_goal(
+    kb: &KnowledgeBase,
+    goal: &Rc<NodeOccurrence>,
+    body_nodes: &[Rc<NodeOccurrence>],
+    fd_sym: Symbol,
+    rule_sym: Option<Symbol>,
+) -> Result<Rc<NodeOccurrence>, TypeError> {
+    let span = goal.span;
+    let owner = goal.owner;
+    let err = |expected: String, actual: String| TypeError::Other {
+        span: Some(span.span),
+        context: TypeErrorContext::Rule {
+            name: rule_sym.unwrap_or(fd_sym),
+            field: RuleField::Body,
+        },
+        expected,
+        actual,
+    };
+
+    // The single argument X is the spec instance (`Eq[T]`); read its base sort.
+    let spec_arg = match goal.as_expr() {
+        Some(Expr::Apply { pos_args, .. }) if pos_args.len() == 1 => &pos_args[0],
+        _ => return Err(err("find_dictionary(SpecInstance)".into(), "malformed guard goal".into())),
+    };
+    let Some(spec_base) = occ_head_symbol(spec_arg) else {
+        return Err(err(
+            "a spec instance as the `requires` argument".into(),
+            "an argument with no nominal spec head".into(),
+        ));
+    };
+    let spec_canon = kb.canonical_sort_sym(spec_base);
+
+    // Find a WITNESS: a body call to one of spec X's operations. Its carrier
+    // arguments (in the op's parameter order) decide the instance at fire time.
+    for cand in body_nodes {
+        let Some(Expr::Apply { functor, pos_args, named_args, .. }) = cand.as_expr() else {
+            continue;
+        };
+        if *functor == fd_sym {
+            continue; // don't treat a find_dictionary goal as its own witness
+        }
+        // The op must be a (body-less) spec op OF THIS spec, AND actually carry the
+        // spec in a parameter — a nullary / all-content op (`Monoid.unit()`) never
+        // grounds the instance from its arguments, so it is not a usable witness
+        // (choosing it would make the guard permanently `DontFire`).
+        let parent = match lookup_spec_op_dispatch(kb, *functor) {
+            Some(parent) if kb.canonical_sort_sym(parent) == spec_canon => parent,
+            _ => continue,
+        };
+        if !op_has_spec_carrier_param(kb, *functor, parent) {
+            continue;
+        }
+        // Align the call's arguments to the op's parameter order — the carrier
+        // decision (`simp_guard_holds_core`) indexes arguments by parameter
+        // position, so a partial call (some parameter unprovided) is unusable.
+        let Some(rec) = super::op_info::lookup_operation_info(kb, *functor) else {
+            continue;
+        };
+        let Some(args_in_order) = align_call_args_to_params(kb, &rec.params, pos_args, named_args)
+        else {
+            continue;
+        };
+        let mut new_pos: Vec<Rc<NodeOccurrence>> = Vec::with_capacity(2 + args_in_order.len());
+        new_pos.push(NodeOccurrence::new_expr(Expr::Ref(spec_base), span, owner));
+        new_pos.push(NodeOccurrence::new_expr(Expr::Ref(*functor), span, owner));
+        new_pos.extend(args_in_order);
+        return Ok(NodeOccurrence::new_expr(
+            Expr::Apply {
+                functor: fd_sym,
+                pos_args: new_pos,
+                named_args: Vec::new(),
+                type_args: Vec::new(),
+            },
+            span,
+            owner,
+        ));
+    }
+
+    Err(err(
+        format!(
+            "a body call to one of `{}`'s operations to ground the requirement",
+            kb.resolve_sym(spec_base)
+        ),
+        "no such call in the rule body".into(),
+    ))
+}
+
+/// The nominal head symbol of an occurrence in spec-instance / reference position
+/// (`Eq[T]` → `Eq`, `Ref(Eq)` → `Eq`).
+fn occ_head_symbol(occ: &NodeOccurrence) -> Option<Symbol> {
+    match occ.as_expr()? {
+        Expr::Apply { functor, .. } => Some(*functor),
+        Expr::Constructor { name, .. } | Expr::Instantiation { name, .. } => Some(*name),
+        Expr::Ref(s) | Expr::Ident(s) => Some(*s),
+        _ => None,
+    }
+}
+
+/// Reorder a spec-op call's arguments into the operation's declared parameter
+/// order, so the resolver reads them at the same indices `simp_guard_holds_core`
+/// consults. `None` if any parameter is unprovided (a partial call — not a usable
+/// witness). Positional args map by index; a named arg maps by parameter name.
+fn align_call_args_to_params(
+    kb: &KnowledgeBase,
+    params: &[(Symbol, Value)],
+    pos_args: &[Rc<NodeOccurrence>],
+    named_args: &[(Symbol, Rc<NodeOccurrence>)],
+) -> Option<Vec<Rc<NodeOccurrence>>> {
+    let mut out: Vec<Rc<NodeOccurrence>> = Vec::with_capacity(params.len());
+    for (i, (pname, _pty)) in params.iter().enumerate() {
+        if let Some(a) = pos_args.get(i) {
+            out.push(a.clone());
+        } else if let Some((_, a)) = named_args.iter().find(|(n, _)| same_symbol(kb, *n, *pname)) {
+            out.push(a.clone());
+        } else {
+            return None;
+        }
+    }
+    Some(out)
 }
 
 /// WI-282: recursively rewrite `Expr::DotApply` nodes to their dispatched form,

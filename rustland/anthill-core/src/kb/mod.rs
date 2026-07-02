@@ -4167,6 +4167,12 @@ impl KnowledgeBase {
         self.register_builtin("anthill.kernel.push_choice", BuiltinTag::PushChoice);
         self.register_builtin("anthill.kernel.cut", BuiltinTag::Cut);
         self.register_builtin("anthill.kernel.unify", BuiltinTag::Unify);
+        // WI-300 — rule-body requirement guard. A rule-body `requires(X)` desugars
+        // (converter) to `find_dictionary(X)`; the typer sweep rewrites the argument
+        // to carry spec X's base symbol plus the rule vars that ground its
+        // type-parameters. Guard tier: checks `provides` at the current binding,
+        // suspends-as-residual on an under-determined carrier.
+        self.register_builtin("anthill.kernel.find_dictionary", BuiltinTag::FindDictionary);
         // Arithmetic and comparison
         self.register_builtin("anthill.prelude.Eq.eq", BuiltinTag::Eq);
         // WI-615 / proposal 051: `===` (structural identity) reuses the structural

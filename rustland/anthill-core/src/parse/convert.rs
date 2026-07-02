@@ -2138,10 +2138,68 @@ impl<'a> Converter<'a> {
         let mut cursor = node.walk();
         for child in node.named_children(&mut cursor) {
             if is_term_kind(child.kind()) {
-                terms.push(self.convert_term(child));
+                let tid = self.convert_term(child);
+                terms.push(self.rewrite_requires_goal(tid));
             }
         }
         terms
+    }
+
+    /// WI-300: a rule-body goal `requires(X)` is not an ordinary predicate — it is
+    /// a requirement guard (spec X must resolve at the current binding). Rewrite it
+    /// to the distinguished `find_dictionary(X)` form so the resolver's
+    /// `BuiltinTag::FindDictionary` recognizes it; the typer sweep later rewrites it
+    /// into `find_dictionary(spec_base, op_functor, witness_args…)`. `requires` is a soft
+    /// keyword (grammar), so a rule-body `requires(X)` reaches here as an ordinary
+    /// `Term::Fn` whose functor is the bare interned name `"requires"` — matched by
+    /// name, exactly as the loader's `unify`/`eq` special-cases match by name.
+    fn rewrite_requires_goal(&mut self, tid: TermId) -> TermId {
+        let (spec_arg, span) = match self.terms.get(tid) {
+            Term::Fn { functor, pos_args, named_args }
+                if self.symbols.name(*functor) == "requires"
+                    && pos_args.len() == 1
+                    && named_args.is_empty() =>
+            {
+                (pos_args[0], self.terms.span(tid))
+            }
+            _ => return tid,
+        };
+        // Guard tier: only the spec's BASE matters — the body's own call to one of
+        // the spec's operations grounds its type-parameters (the typer sweep). So
+        // drop any `[…]` type-argument decoration on the spec instance: it keeps
+        // `requires(Eq[T])` equivalent to `requires(Eq)` here, and, crucially, keeps
+        // the bare type-parameter name `T` out of scope resolution (it has no
+        // binding in a free rule). Threading `[T = ?x]` bindings is a Tier-B nicety.
+        let base = self.strip_spec_type_args(spec_arg);
+        let mut args: SmallVec<[TermId; 4]> = SmallVec::new();
+        args.push(base);
+        self.alloc_fn_term("find_dictionary", args, span)
+    }
+
+    /// The spec instance with any `[…]` type-argument bindings removed. A
+    /// parameterized spec instance (`Eq[T]`) converts to a `Fn` carrying its
+    /// type-parameters as arguments (`Eq[T]` → `Fn(Eq, [Ref(T)])`, `Eq[T = X]` →
+    /// a `type_args` named-arg); return a bare nullary `Fn` on the same base
+    /// functor so no type-parameter name reaches scope resolution. A bare `Eq`
+    /// (already argument-free — `Ref`/`Ident`) is returned unchanged.
+    fn strip_spec_type_args(&mut self, tid: TermId) -> TermId {
+        match self.terms.get(tid) {
+            Term::Fn { functor, pos_args, named_args }
+                if !pos_args.is_empty() || !named_args.is_empty() =>
+            {
+                let functor = *functor;
+                let span = self.terms.span(tid);
+                self.terms.alloc(
+                    Term::Fn {
+                        functor,
+                        pos_args: SmallVec::new(),
+                        named_args: SmallVec::new(),
+                    },
+                    span,
+                )
+            }
+            _ => tid,
+        }
     }
 
     // ── Namespace ───────────────────────────────────────────────
