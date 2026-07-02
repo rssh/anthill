@@ -578,52 +578,19 @@ impl Interpreter {
         }
     }
 
-    /// Spec-op dispatch via the dispatching dictionary's sort. Reads
-    /// the load-time `sort_ops_table[dict.sort][op_short]` (WI-240) — a
-    /// direct table lookup, not a qualified-name string concatenation.
-    /// The entry is `S.<op>` when the impl overrides with a runnable
-    /// body, or the spec op itself for a spec rewrite-rule / builtin
-    /// default. Falls back to `fn_sym` when no entry exists — Pin-now /
-    /// Direct callers pass an already-concrete `fn_sym`, and the dict's
-    /// sort carries no table row for it.
+    /// Spec-op dispatch via the dispatching dictionary's sort. Reads the
+    /// load-time `sort_ops_table[dict.sort][op_short]` (WI-240) — a real
+    /// override (`S.<op>`), a retroactive instance-fact binding, or `fn_sym`
+    /// itself (a spec rewrite-rule / builtin default, or a Pin-now / Direct
+    /// caller's already-concrete `fn_sym` the dict carries no row for). The
+    /// resolution lives in [`crate::kb::typing::resolve_op_target`], shared with
+    /// the reflect `Dictionary.resolveOp` / `ops` faces so they cannot drift.
     fn dispatch_via_sort_ops_table(
         &self,
         fn_sym: Symbol,
         dispatching_dict: &super::value::RequirementHandle,
     ) -> Symbol {
-        let fn_qn = self.kb.qualified_name_of(fn_sym);
-        let Some((_, op_short)) = fn_qn.rsplit_once('.') else {
-            return fn_sym;
-        };
-        let impl_sym = dispatching_dict.functor();
-        let Some(op_short_sym) = self.kb.lookup_symbol(op_short) else {
-            return fn_sym;
-        };
-        // The carrier's own table entry: a real override (`S.<op>` with a body),
-        // or the spec op itself — which is EITHER a genuine spec rewrite-rule /
-        // builtin default (runnable) OR, for a RETROACTIVE INSTANCE FACT, the
-        // inherited body-less placeholder with no impl. Filter that placeholder
-        // out so it doesn't mask the instance fact below; a genuine default still
-        // rides the `fn_sym` fall-through (its rewrite rule / builtin runs).
-        let own = self
-            .kb
-            .sort_ops_lookup(impl_sym, op_short_sym)
-            .filter(|&op| op != fn_sym);
-        // WI-431 increment 4 (A2): a retroactive instance fact binds the op in
-        // the provision (`fact HasZero[T = Tag, zero = tagZero]`) instead of on
-        // the carrier. The dict's functor IS the carrier (built by
-        // `build_dep_projection` Strategy 3 against the instance fact's
-        // `SortProvidesInfo`), so read the op-valued binding when the carrier owns
-        // no real override — the SAME fallback the value-directed path (increment
-        // 2) uses, now on the dict-threaded path. This is the ONLY route for a
-        // spec op whose carrier appears only in the result (`zero() -> T`): with
-        // no carrier-typed argument, value-directed dispatch cannot re-derive the
-        // impl, so a miss here dies `UnknownOperation`.
-        own.or_else(|| {
-            let spec = crate::kb::typing::lookup_spec_op_dispatch(&self.kb, fn_sym)?;
-            crate::kb::typing::instance_fact_op_binding(&self.kb, impl_sym, spec, op_short)
-        })
-        .unwrap_or(fn_sym)
+        crate::kb::typing::resolve_op_target(&self.kb, dispatching_dict.functor(), fn_sym)
     }
 
     /// WI-350 — value-directed dispatch for a body-less spec op the typer
@@ -1356,14 +1323,22 @@ impl Interpreter {
         op: Symbol,
         arg_values: Vec<Value>,
     ) -> Result<Vec<Value>, EvalError> {
-        // An `OpRef` is only minted (in `reduce_var`) for an operation that has
-        // a body, so its arity is always knowable here; a body-less op is a bug,
-        // surfaced loudly rather than passed through with an assumed arity.
+        // Eta-expansion (`reduce_var`) mints an `OpRef` for a body-having op, so
+        // its arity comes from the body. WI-577's reflect `Dictionary.resolveOp`
+        // / `ops` additionally mint an OpRef for a native-builtin-backed op (no
+        // anthill body, e.g. `Eq.eq`), which must stay callable — so fall back to
+        // the arity declared in the op's SIGNATURE (`OperationInfo.params`) when
+        // there is no body. The apply path's builtin-dispatch step (step 2) then
+        // runs the builtin. `UnknownOperation` only when the op has no signature
+        // at all — genuinely unknown, surfaced loudly rather than mis-applied.
         let arity = match self.cached_operation_body(op) {
             Some((_, params)) => params.len(),
-            None => return Err(EvalError::UnknownOperation {
-                name: self.kb.resolve_sym(op).to_string(),
-            }),
+            None => match crate::kb::op_info::lookup_operation_info(&self.kb, op) {
+                Some(info) => info.params.len(),
+                None => return Err(EvalError::UnknownOperation {
+                    name: self.kb.resolve_sym(op).to_string(),
+                }),
+            },
         };
         if arg_values.len() == arity {
             return Ok(arg_values);
@@ -1896,14 +1871,25 @@ pub fn value_functor(kb: &KnowledgeBase, value: &Value) -> Option<Symbol> {
 /// fall through to `None` and dispatch as `UnknownOperation` — the exact
 /// WI-385-widening regression class WI-435 closes (the WI-009 `Value::Stream →
 /// LogicalStream` patch generalized to every handle). A value that never names a
-/// spec receiver (unit, tuple, lazy thunk, substitution, requirement dict, raw
-/// node, logic var) maps to `None`.
+/// spec receiver (unit, tuple, lazy thunk, substitution, raw node, logic var)
+/// maps to `None`.
 pub(crate) fn runtime_carrier_sort(kb: &KnowledgeBase, value: &Value) -> Option<Symbol> {
     // Handle / scalar values: a FIXED prelude carrier sort per variant.
     let qualified: Option<&str> = match value {
         Value::Stream(_) => Some("anthill.prelude.LogicalStream"),
         Value::Map(_) => Some("anthill.prelude.Map"),
         Value::Cell(_) => Some("anthill.prelude.Cell"),
+        // WI-577 — a runtime requirement dictionary names the `Dictionary` view
+        // sort (the anthill face of `Value::Requirement`). `OpRef` stays
+        // `Function` below so an eta'd op-ref remains callable. This is the
+        // value→carrier map for uniform typing; it is NOT a live dynamic-dispatch
+        // path — `Dictionary` provides no spec, so the typer never binds a
+        // `Value::Requirement` into a spec-op receiver slot, and the
+        // `spec_call_runtime_carrier` route (whose `resolve_spec_op_target_by_value`
+        // matches by short name) is unreachable for it. If `Dictionary` ever
+        // provides a spec, that route would need `carrier_override_op`'s
+        // runnable-body gate to avoid a short-name collision (`sub` ↔ `Numeric.sub`).
+        Value::Requirement(_) => Some("anthill.realization.runtime.Dictionary"),
         Value::Closure(_) | Value::OpRef { .. } => Some("anthill.prelude.Function"),
         Value::Int(_) => Some("anthill.prelude.Int64"),
         Value::BigInt(_) => Some("anthill.prelude.BigInt"),
@@ -1917,7 +1903,6 @@ pub(crate) fn runtime_carrier_sort(kb: &KnowledgeBase, value: &Value) -> Option<
         Value::Unit
         | Value::Tuple { .. }
         | Value::Substitution(_)
-        | Value::Requirement(_)
         | Value::Node(_)
         | Value::Var(_) => return None,
     };

@@ -2054,6 +2054,22 @@ impl KnowledgeBase {
         self.sort_ops.by_impl.get(&key)?.get(&op_short).copied()
     }
 
+    /// WI-577 — every target op sort `impl_sort` provides in its `sort_ops`
+    /// table (the stored `S.<op>` override or inherited spec-op entry). The bulk
+    /// face of [`Self::sort_ops_lookup`] (one key), backing `Dictionary.ops`'s
+    /// enumeration — which resolves each target through
+    /// [`typing::resolve_op_target`], so the raw (possibly placeholder) entry is
+    /// what this returns. Empty vec when the impl carries no row; order is
+    /// unspecified (a `HashMap` walk) — the enumeration is a set, not a sequence.
+    pub fn sort_ops_for_impl(&self, impl_sort: Symbol) -> Vec<Symbol> {
+        let key = self.canonical_sort_sym(impl_sort);
+        self.sort_ops
+            .by_impl
+            .get(&key)
+            .map(|m| m.values().copied().collect())
+            .unwrap_or_default()
+    }
+
     /// WI-240 — record a `(impl_sort, op_short) → target` entry. Called
     /// only by `load::build_sort_ops_table`.
     pub(crate) fn insert_sort_op(&mut self, impl_sort: Symbol, op_short: Symbol, target: Symbol) {

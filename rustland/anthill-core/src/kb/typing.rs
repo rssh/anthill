@@ -7887,6 +7887,42 @@ pub fn lookup_spec_op_dispatch(kb: &KnowledgeBase, op_sym: Symbol) -> Option<Sym
     Some(parent_sym)
 }
 
+/// Resolve `spec_op` against a dispatching impl sort to its concrete target op —
+/// the load-time `sort_ops_table[impl_sym][op_short]` (WI-240): the impl's own
+/// `S.<op>` override when it has one (filtering the body-less spec-op
+/// placeholder), else the RETROACTIVE-INSTANCE-FACT binding
+/// (`fact HasZero[T = Tag, zero = tagZero]`, WI-431), else `spec_op` itself (a
+/// genuine spec rewrite-rule / builtin default, or a Pin-now / already-concrete
+/// op the dict carries no row for).
+///
+/// The single source for dict-threaded op resolution: the interpreter's
+/// [`Interpreter::dispatch_via_sort_ops_table`] and the reflect
+/// `Dictionary.resolveOp` / `Dictionary.ops` faces all call this so the three
+/// cannot drift. `spec_op` is expected to be a RESOLVED (canonical) symbol —
+/// the interpreter's `fn_sym` is, and the reflect callers pass symbols minted by
+/// `impl`/`op`/`lookup_symbol`, all resolved.
+pub fn resolve_op_target(kb: &KnowledgeBase, impl_sym: Symbol, spec_op: Symbol) -> Symbol {
+    let fn_qn = kb.qualified_name_of(spec_op);
+    let Some((_, op_short)) = fn_qn.rsplit_once('.') else {
+        return spec_op;
+    };
+    let Some(op_short_sym) = kb.lookup_symbol(op_short) else {
+        return spec_op;
+    };
+    // The carrier's own table entry: a real override (`S.<op>` with a body), or
+    // the spec op itself — which is EITHER a genuine spec rewrite-rule / builtin
+    // default (runnable) OR, for a RETROACTIVE INSTANCE FACT, the inherited
+    // body-less placeholder with no impl. Filter that placeholder so it doesn't
+    // mask the instance-fact binding below; a genuine default still rides the
+    // `spec_op` fall-through (its rewrite rule / builtin runs).
+    let own = kb.sort_ops_lookup(impl_sym, op_short_sym).filter(|&op| op != spec_op);
+    own.or_else(|| {
+        let spec = lookup_spec_op_dispatch(kb, spec_op)?;
+        instance_fact_op_binding(kb, impl_sym, spec, op_short)
+    })
+    .unwrap_or(spec_op)
+}
+
 /// WI-444 — the carrier sort's OWN member backing a (possibly defaulted) spec
 /// op, when it genuinely OVERRIDES the spec rather than merely inheriting it.
 /// `carrier`'s `sort_ops` entry for the op's short name, filtered to a runnable

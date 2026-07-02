@@ -133,6 +133,17 @@ pub fn register_standard_builtins(interp: &mut Interpreter) -> Result<(), EvalEr
     register_if_present(interp, "anthill.prelude.Cell.get", cell_get)?;
     register_if_present(interp, "anthill.prelude.Cell.set", cell_set)?;
 
+    // WI-577 — first-class runtime dispatch values: the anthill face of
+    // `Value::Requirement` (a resolved spec-impl dictionary) and `Value::OpRef`
+    // (a resolved operation reference). Native views over the RequirementArena.
+    register_if_present(interp, "anthill.realization.runtime.Dictionary.impl", dict_impl)?;
+    register_if_present(interp, "anthill.realization.runtime.Dictionary.arity", dict_arity)?;
+    register_if_present(interp, "anthill.realization.runtime.Dictionary.sub", dict_sub)?;
+    register_if_present(interp, "anthill.realization.runtime.Dictionary.resolveOp", dict_resolve_op)?;
+    register_if_present(interp, "anthill.realization.runtime.Dictionary.ops", dict_ops)?;
+    register_if_present(interp, "anthill.realization.runtime.OpRef.op", opref_op)?;
+    register_if_present(interp, "anthill.realization.runtime.OpRef.dict", opref_dict)?;
+
     Ok(())
 }
 
@@ -1588,6 +1599,154 @@ fn subst_lookup(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalE
             named: Vec::new().into(),
             ty: None,
         }),
+    }
+}
+
+/// Build a `Symbol` runtime value for `s` — the reflect representation of an
+/// anthill `Symbol` (a nullary `Ref` term). The construction counterpart of
+/// reading one back via `Value::Term { id } → Term::Ref(s) | Term::Ident(s)`.
+fn symbol_value(kb: &mut crate::kb::KnowledgeBase, s: crate::intern::Symbol) -> Value {
+    Value::term(kb.alloc(crate::kb::term::Term::Ref(s)))
+}
+
+// ── WI-577 — runtime dictionary / op-ref views ──────────────────────────────
+//
+// The anthill face of the runtime dispatch values `Value::Requirement` (a
+// resolved spec-impl dictionary — `(functor, [sub-dicts])`) and `Value::OpRef`
+// (a resolved op symbol + captured dispatch dict). Native VIEWS over the live
+// `RequirementArena` handle — the `Substitution`/`Map`/`Cell` model: the value
+// stays opaque and these read the arena in place, never a structural copy.
+// Design: `docs/design/requirement-dictionaries.md` §2.
+
+/// `Dictionary.impl(d) -> Symbol` — the resolved impl identity (the arena
+/// slot's `functor`), surfaced as a `Symbol` value (a `Ref` term).
+fn dict_impl(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    let [d] = expect_args::<1>("Dictionary.impl", args)?;
+    match d {
+        Value::Requirement(h) => Ok(symbol_value(&mut interp.kb, h.functor())),
+        other => Err(type_mismatch("Dictionary", &other, None)),
+    }
+}
+
+/// `Dictionary.arity(d) -> Int64` — number of sub-requirement dicts.
+fn dict_arity(_interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    let [d] = expect_args::<1>("Dictionary.arity", args)?;
+    match d {
+        Value::Requirement(h) => Ok(Value::Int(h.arity() as i64)),
+        other => Err(type_mismatch("Dictionary", &other, None)),
+    }
+}
+
+/// `Dictionary.sub(d, i) -> Dictionary` — project the i-th sub-requirement.
+/// No structural copy: `project` bumps the child handle's refcount and wraps
+/// the SAME arena slot. A loud out-of-range error (rather than the arena's
+/// panic) for an index the anthill caller supplies out of bounds.
+fn dict_sub(_interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    let [d, idx] = expect_args::<2>("Dictionary.sub", args)?;
+    let i = match &idx {
+        Value::Int(n) => *n,
+        other => return Err(type_mismatch("Int64", other, None)),
+    };
+    match d {
+        Value::Requirement(h) => {
+            let n = h.arity();
+            if i < 0 || (i as usize) >= n {
+                return Err(EvalError::Internal(format!(
+                    "Dictionary.sub: index {i} out of range (dict has {n} sub-requirements)"
+                )));
+            }
+            Ok(Value::Requirement(h.project(i as usize)))
+        }
+        other => Err(type_mismatch("Dictionary", &other, None)),
+    }
+}
+
+/// `Dictionary.resolveOp(d, specOp: Symbol) -> OpRef` — resolve a spec op
+/// against this dict's impl sort into a callable handle. The reflect face of the
+/// interpreter's dict-threaded dispatch: [`resolve_op_target`] on
+/// `(impl(d), specOp)`, wrapped as `OpRef { op, dict: Some(d) }` — capturing the
+/// dispatch dict so the op stays runnable under THIS dict. `specOp` is the SPEC
+/// OP symbol — the same key the interpreter dispatches on — and is expected to
+/// be a resolved symbol (as minted by `impl` / `op` / reflect `lookup_symbol`).
+///
+/// The result both INSPECTS (`op` = which op it resolved to, `dict` = its
+/// dispatch env — payoff #2) and RUNS: applying the OpRef dispatches `op` under
+/// its captured dict (`spread_eta_args` reads a body-less op's arity from its
+/// signature, so a native-builtin-backed resolved op like `Eq.eq` is callable).
+fn dict_resolve_op(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    use crate::kb::term::Term;
+    use crate::kb::typing::resolve_op_target;
+    let [d, spec_op] = expect_args::<2>("Dictionary.resolveOp", args)?;
+    let h = match d {
+        Value::Requirement(h) => h,
+        other => return Err(type_mismatch("Dictionary", &other, None)),
+    };
+    let spec_op_sym = match &spec_op {
+        Value::Term { id, .. } => match interp.kb.get_term(*id) {
+            Term::Ref(s) | Term::Ident(s) => *s,
+            _ => return Err(type_mismatch("Symbol", &spec_op, None)),
+        },
+        other => return Err(type_mismatch("Symbol", other, None)),
+    };
+    let target = resolve_op_target(&interp.kb, h.functor(), spec_op_sym);
+    Ok(Value::OpRef { op: target, dict: Some(h) })
+}
+
+/// `Dictionary.ops(d) -> FiniteStream[OpRef]` — all this dict's operations as
+/// resolved OpRef handles (the bulk face of `resolveOp`). Each `sort_ops` entry
+/// is put through the SAME [`resolve_op_target`] as `resolveOp` — so the two
+/// faces agree (an inherited instance-fact placeholder resolves to its bound
+/// impl op, not the placeholder) — then wrapped as `OpRef { op, dict: Some(d) }`.
+///
+/// Returned as an EAGER `List` value: `List provides FiniteStream`, so it
+/// satisfies the declared `FiniteStream[OpRef]` return, whereas a bare
+/// `Value::Stream` carries as `LogicalStream` (provides only `Stream`). A
+/// genuinely lazy carrier is a follow-on; the (already-resolved, finite) set is
+/// materialized up front today. Each element is a callable OpRef, same as a
+/// `resolveOp` result.
+fn dict_ops(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    use crate::kb::typing::resolve_op_target;
+    let [d] = expect_args::<1>("Dictionary.ops", args)?;
+    let h = match d {
+        Value::Requirement(h) => h,
+        other => return Err(type_mismatch("Dictionary", &other, None)),
+    };
+    let impl_sym = h.functor();
+    let elems: Vec<Value> = interp
+        .kb
+        .sort_ops_for_impl(impl_sym)
+        .into_iter()
+        .map(|target| {
+            let resolved = resolve_op_target(&interp.kb, impl_sym, target);
+            Value::OpRef { op: resolved, dict: Some(h.clone()) }
+        })
+        .collect();
+    build_value_list(interp, elems)
+}
+
+/// `OpRef.op(r) -> Symbol` — the resolved operation's identity (a fully-
+/// qualified op symbol), surfaced as a `Symbol` value.
+fn opref_op(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    let [r] = expect_args::<1>("OpRef.op", args)?;
+    match r {
+        Value::OpRef { op, .. } => Ok(symbol_value(&mut interp.kb, op)),
+        other => Err(type_mismatch("OpRef", &other, None)),
+    }
+}
+
+/// `OpRef.dict(r) -> Option[Dictionary]` — the captured dispatching dict;
+/// none() for a requires-free / namespace-level op.
+fn opref_dict(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    let [r] = expect_args::<1>("OpRef.dict", args)?;
+    let some_sym = require_symbol(interp, "anthill.prelude.Option.some", "some")?;
+    let none_sym = require_symbol(interp, "anthill.prelude.Option.none", "none")?;
+    let value_key = interp.kb.intern("value");
+    match r {
+        Value::OpRef { dict, .. } => Ok(match dict {
+            Some(h) => option_some(some_sym, value_key, Value::Requirement(h)),
+            None => option_none(none_sym),
+        }),
+        other => Err(type_mismatch("OpRef", &other, None)),
     }
 }
 

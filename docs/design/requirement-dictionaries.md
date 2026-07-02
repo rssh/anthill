@@ -696,7 +696,14 @@ dispatches.
    `Cell`/`Map`), not reflect. **This is the ready unit** (the review's read/inspect
    core). Unblocks WI-300.
 2. **OpRef — runtime sort (WI-577)** — the sibling `sort OpRef[A]` (`op` / `dict`;
-   `A` = the denoted arrow), reusing the `Dictionary` view.
+   `A` = the denoted arrow), reusing the `Dictionary` view. A `resolveOp` / `ops`
+   result is directly **callable** (§2.2): WI-577 taught the eta apply path
+   (`spread_eta_args`) to read a body-less op's arity from its signature
+   (`OperationInfo.params`), so an OpRef whose resolved impl is a *native builtin*
+   (`Eq.eq`, the primitives) dispatches the builtin instead of erroring. This is
+   the direct-application half; the Term-layer `execute(genApply(…))` / `invoke`
+   (§2.6) — building *and* running a call from reflect `Expr` data — stays the
+   deferred follow-on.
 3. **Reflect Term layer (separate follow-on WI, NOT WI-577)** — the one native
    primitive `reflect_expr(kb, e: Expr, pos: SourceSpan) -> NodeOccurrence` (the
    occurrence dual of the existing `reflect(TermRepr) -> Term`), plus the anthill

@@ -77,6 +77,7 @@ pub static SOURCES: &[(&str, &str)] = &[
     ("anthill/reflect/feed", include_str!("../../../stdlib/anthill/reflect/feed.anthill")),
     // ── realization ──
     ("anthill/realization/realization", include_str!("../../../stdlib/anthill/realization/realization.anthill")),
+    ("anthill/realization/runtime", include_str!("../../../stdlib/anthill/realization/runtime.anthill")),
     ("anthill/realization/platform", include_str!("../../../stdlib/anthill/realization/platform.anthill")),
     ("anthill/realization/rust_std", include_str!("../../../stdlib/anthill/realization/rust_std.anthill")),
     ("anthill/realization/cpp_std", include_str!("../../../stdlib/anthill/realization/cpp_std.anthill")),

@@ -1,0 +1,87 @@
+-- Runtime dispatch values: the first-class anthill face of the runtime
+-- requirement dictionary (`Value::Requirement`) and resolved operation
+-- reference (`Value::OpRef`).
+--
+-- These are the RUNTIME dual of realization's `Obligation`/`Implementation`:
+-- a `Dictionary` is the value that discharges a `requires` by carrying its
+-- resolved `Implementation` at run time. `anthill.realization` holds the static
+-- declarations; `.runtime` holds these runtime values. Per host sub-namespaces
+-- (realization.rust_std, …) describe how a Dictionary renders (a Rust `&dyn
+-- Trait`, a Scala `using`).
+--
+-- A pure structural VIEW, not new storage: each operation is a native Rust
+-- builtin reading the live `RequirementArena` handle in place — exactly the
+-- `Substitution`/`Map`/`Cell` model. `Value::Requirement` stays opaque; the
+-- builtins match the handle in Rust and read the arena directly. No
+-- pattern-match face (anthill has no user-defined extractors) — the accessor
+-- ops expose everything the value holds.
+--
+-- Term CONSTRUCTION over these values (genRef / genApply / findDictionary,
+-- design §2.6) is a SEPARATE follow-on layer, not part of this sort.
+--
+-- Design: docs/design/requirement-dictionaries.md §2 (runtime sorts) / §2.5
+-- (two-type split). WI-577.
+namespace anthill.realization.runtime
+  import anthill.reflect.Symbol
+  import anthill.prelude.{Option, Int64, FiniteStream}
+
+  -- The runtime requirement dictionary: a resolved spec impl, materialized as
+  -- `(functor, [sub-requirement dicts])`.
+  --
+  -- Parameterized by S — the spec instance this dict witnesses (e.g.
+  -- `Dictionary[Eq[Int64]]`). S is the DENOTED type of the two-type split: it
+  -- rides as an ordinary type parameter, tracked STATICALLY by the typer, never
+  -- read off the opaque value (the runtime slot stores only `(functor,
+  -- sub-handles)`, and the functor is a multi-spec carrier, so the witnessed
+  -- spec is not recoverable from the value — it lives in the type). Bare
+  -- `Dictionary` (S unknown) is the existential form.
+  sort Dictionary
+    sort S = ?
+
+    -- The resolved impl identity (the arena slot's `functor`).
+    operation impl(d: Dictionary) -> Symbol
+
+    -- Number of sub-requirement dicts.
+    operation arity(d: Dictionary) -> Int64
+
+    -- Project the i-th sub-requirement — no copy (a refcount bump on the child
+    -- handle). Its denoted type is the i-th `requires` of S's impl; that
+    -- value-dependent refinement is deferred, so the view returns bare
+    -- `Dictionary` (existential) for now.
+    operation sub(d: Dictionary, i: Int64) -> Dictionary
+
+    -- RESOLVE a spec operation against this dict's impl sort, as a callable
+    -- handle: the impl op plus this dict as its dispatch environment. Keyed by
+    -- the SPEC OP SYMBOL (e.g. `Eq.eq`) — the same key the interpreter
+    -- dispatches on. The reflect face of `dispatch_via_sort_ops_table`.
+    operation resolveOp(d: Dictionary, specOp: Symbol) -> OpRef
+
+    -- BULK view: all this dict's operations as a finite iterable of callable
+    -- OpRefs (over the impl's SortOpsTable slice) — the enumeration face to
+    -- resolveOp's keyed-lookup face. Each is resolved the same way resolveOp
+    -- resolves one. (The runtime backs this with an eager List today; a lazy
+    -- carrier is a follow-on.)
+    operation ops(d: Dictionary) -> FiniteStream[T = OpRef]
+  end
+
+  -- A resolved operation reference: a fully-qualified op symbol plus — only
+  -- when the op is requires-carrying — the dictionary that supplies its
+  -- requirements at apply.
+  --
+  -- Parameterized by A — the op's callable ARROW (its denoted type, e.g.
+  -- `(Int64, Int64) -> Bool`), same static two-type split as `Dictionary`. An
+  -- OpRef IS a callable function value (its runtime carrier is Function);
+  -- applying it dispatches `op` under `dict`.
+  sort OpRef
+    sort A = ?
+
+    -- The resolved operation's identity — a Symbol with a fully-qualified name.
+    -- Enough for "which impl did this resolve to"; to CALL it you need the whole
+    -- OpRef (the dict threads the op's own sub-requirements).
+    operation op(r: OpRef) -> Symbol
+
+    -- The captured dispatching dictionary — none() only for a requires-free op
+    -- (enclosing sort has no `requires`) or a namespace-level op.
+    operation dict(r: OpRef) -> Option[T = Dictionary]
+  end
+end
