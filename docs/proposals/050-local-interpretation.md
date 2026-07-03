@@ -66,6 +66,18 @@ A forward pass `Γ_in → construct → Γ_out`:
     the call. This is how contract knowledge **flows** — an op `ensures
     neq(result, 0)` lets a later `div(_, y)` refute its `eq(y, 0)` guard straight
     from `Γ`, with no branch test written.
+  - **the effect row kills** *(amendment 2026-07-03)* — before `ensures` is
+    assumed, facts invalidated by the callee's effects leave: the full rule is
+    `Γ_out = (Γ_in \ kill(E_callee, Γ_in)) ∪ { σ(ensures) }`, kill *first*. The
+    per-effect transfer (`Modify[c]` kills every `c`-dependent fact; a read marks
+    result-derived facts `depends_on c`; a parametric row `?E` kills *all*
+    resource-dependent facts — never default-to-pure; value-only facts always
+    survive, by immutability) is specified in
+    [`abstract-interpreter-and-rules.md`](../design/abstract-interpreter-and-rules.md)
+    §6. Strong update composes from the two channels — `Cell.set(c, v)`:
+    `Modify[c]` kills the stale `c.get ≡ old`, its `ensures c.get ≡ v`
+    re-establishes the new state. Without the kill, `let v = c.get; bump(c)`
+    leaves `v ≡ c.get` in `Γ` — stale knowledge feeding a wrong fold downstream.
 
   So a call both **consumes** `Γ` (to check `requires`) and **enriches** it (with
   `ensures`); `ensures` postconditions are, in practice, the main thing that
