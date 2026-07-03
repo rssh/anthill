@@ -41,7 +41,7 @@ use crate::kb::subst::Substitution;
 use crate::kb::term::{Literal, Term, TermId};
 use crate::kb::typing::{
     clause_conjuncts, get_named_arg, is_value_precondition_clause, prove_from_gamma,
-    substitute_ref_terms, FlowEnv,
+    substitute_ref_terms_term, FlowEnv,
 };
 use crate::kb::{KnowledgeBase, RuleId};
 
@@ -549,7 +549,7 @@ fn discharge_contract_proof(
     // call to fold while proving (one fewer fold level than `result ↦ op(args)`).
     let body_occ = rec.body_node.as_ref().expect("body_node present (checked above)");
     let body_term = super::node_occurrence::occurrence_to_term(kb, body_occ);
-    let body_sub = substitute_ref_terms(kb, body_term, &sigma);
+    let body_sub = substitute_ref_terms_term(kb, body_term, &sigma);
     let op_qn = kb.qualified_name_of(op_sym).to_string();
     if let Some(result_sym) = kb.try_resolve_symbol(&format!("{op_qn}.result")) {
         sigma.insert(result_sym, body_sub);
@@ -563,7 +563,7 @@ fn discharge_contract_proof(
             continue;
         }
         for conj in contract_clause_conjuncts(kb, c) {
-            let conj = substitute_ref_terms(kb, conj, &sigma);
+            let conj = substitute_ref_terms_term(kb, conj, &sigma);
             if let Some(node) = kb.term_body_to_nodes(&[conj]).into_iter().next() {
                 flow = flow.assume(kb, Value::Node(node));
             }
@@ -587,7 +587,7 @@ fn discharge_contract_proof(
             );
         }
         for conj in conjuncts {
-            let conj = substitute_ref_terms(kb, conj, &sigma);
+            let conj = substitute_ref_terms_term(kb, conj, &sigma);
             let goal = match kb.term_body_to_nodes(&[conj]).into_iter().next() {
                 Some(n) => Value::Node(n),
                 None => {
@@ -621,26 +621,37 @@ fn discharge_contract_proof(
     ProofVerdict::Discharged
 }
 
-/// The conjuncts of a contract clause `Value` — read the goal term, then split a
-/// `conjunction(..)` into its goals (reusing [`clause_conjuncts`]). Carrier-faithful
-/// (WI-348): a hash-consed `Value::Term` is the term; a denoted `Value::Node` lowers
-/// via `occurrence_to_term`; a value-fact's `Value::Entity` clause (an op with a
-/// denoted effect carries its clauses as value carriers — [`super::op_info::clause_list_field`])
-/// lowers via the total `value_to_term` boundary (WI-390). Every carrier
-/// [`is_value_precondition_clause`] accepts is handled, so an accepted clause never
-/// silently yields zero conjuncts (which would otherwise fall through to a false
-/// Discharge). A genuinely unlowerable value returns no conjuncts; the caller treats
-/// that as a discharge FAILURE, not a vacuous pass.
+/// The conjuncts of a contract clause `Value`, as terms — split the
+/// `conjunction(..)` carrier-neutrally (reusing the View-layer [`clause_conjuncts`],
+/// WI-621), then lower each conjunct to a term for the term-based contract proof.
+/// Carrier-faithful (WI-348): a hash-consed `Value::Term` conjunct is its term; a
+/// denoted `Value::Node` lowers via `occurrence_to_term`; a value-fact's
+/// `Value::Entity` conjunct (an op with a denoted effect carries its clauses as value
+/// carriers — [`super::op_info::clause_list_field`]) lowers via the total
+/// `value_to_term` boundary (WI-390). Every carrier [`is_value_precondition_clause`]
+/// accepts is handled, so an accepted clause never silently yields zero conjuncts
+/// (which would otherwise fall through to a false Discharge). A genuinely unlowerable
+/// conjunct returns NO conjuncts (all-or-nothing); the caller treats that as a
+/// discharge FAILURE, not a vacuous pass.
 fn contract_clause_conjuncts(kb: &mut KnowledgeBase, clause: &Value) -> Vec<TermId> {
-    let g = match clause {
-        Value::Term { id: t, .. } => *t,
-        Value::Node(occ) => super::node_occurrence::occurrence_to_term(kb, occ),
-        other => match super::node_occurrence::value_to_term(kb, other) {
-            Ok(t) => t,
-            Err(_) => return Vec::new(),
-        },
-    };
-    clause_conjuncts(kb, g)
+    // Split carrier-neutrally FIRST (WI-621 `clause_conjuncts` over the View layer),
+    // then lower each conjunct to a term for the term-based contract proof
+    // (skolemized symbolic execution). All-or-nothing: a conjunct that cannot be
+    // lowered fails the WHOLE clause (empty result), so the caller treats a short
+    // count as a discharge FAILURE, never a vacuous pass.
+    let mut out = Vec::new();
+    for conj in clause_conjuncts(kb, clause) {
+        let t = match &conj {
+            Value::Term { id: t, .. } => *t,
+            Value::Node(occ) => super::node_occurrence::occurrence_to_term(kb, occ),
+            other => match super::node_occurrence::value_to_term(kb, other) {
+                Ok(t) => t,
+                Err(_) => return Vec::new(),
+            },
+        };
+        out.push(t);
+    }
+    out
 }
 
 /// Write a `Failed(Unknown(reason))` verdict onto a contract `ProofRecord` and

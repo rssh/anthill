@@ -17398,19 +17398,172 @@ fn collect_guarded_atoms(
     out
 }
 
-/// The call substitution σ applied to a guard term: replace each callee
-/// parameter reference `Ref(s)` / `Ident(s)` with the actual argument term
-/// `map[s]`. Unlike [`substitute_ref_syms`] (a param→param *rename*, used to
-/// re-key effect *labels*), σ maps a param to an arbitrary argument *term* — a
-/// literal `5`, a threaded variable `Ref(b)` — so `div(a, 5)`'s guard `eq(b, 0)`
-/// becomes the ground `eq(5, 0)` the resolver can refute by evaluation.
+/// The call substitution σ applied to a value precondition / guard / postcondition
+/// GOAL, CARRIER-NEUTRALLY (WI-621): replace each callee parameter reference
+/// `var_ref(s)` / bare `Ref(s)` / `Ident(s)` with the actual argument term `map[s]`
+/// — a literal `5`, a threaded `Ref(b)` — so `div(a, 5)`'s guard `eq(b, 0)` becomes
+/// the ground `eq(5, 0)` the resolver can refute by evaluation. Unlike
+/// [`substitute_ref_syms`] (a param→param *rename* of effect labels), σ maps a param
+/// to an arbitrary argument *term*, and the WHOLE `var_ref` node is replaced (WI-552
+/// variable substitution), never recursed into.
+///
+/// A hash-consed `Value::Term` goal — the common case — substitutes in the term
+/// world (hash-consed result, [`substitute_ref_terms_term`]): byte-identical to the
+/// pre-WI-621 term path. A DENOTED `Value::Node` / value-carried `Value::Entity`
+/// goal is walked through the View layer (the same traversal the discrimination tree
+/// and [`views_structurally_equal`] run on) and rebuilt as a `Value::Entity`, with
+/// the σ argument spliced as the `Value::term(map[s])` σ already holds. So a denoted
+/// goal never reifies to a `TermId` (WI-348) and no term↔occurrence conversion is
+/// introduced — a transient goal is legitimately a non-hash-consed carrier (the
+/// Representation note: it indexes / matches identically). The resolver end
+/// ([`prove_from_gamma`] / [`refute_guard`] / [`FlowEnv::assume`]) already takes
+/// `&Value`, so the result feeds it directly.
 pub(crate) fn substitute_ref_terms(
+    kb: &mut KnowledgeBase,
+    goal: &Value,
+    map: &HashMap<Symbol, TermId>,
+) -> Value {
+    if map.is_empty() {
+        return goal.clone();
+    }
+    let var_ref_sym = kb.resolve_symbol("anthill.reflect.Expr.var_ref");
+    substitute_ref_terms_value_rec(kb, goal, map, var_ref_sym)
+}
+
+/// σ over a hash-consed goal TERM — the term-world core of [`substitute_ref_terms`],
+/// kept as a direct `TermId → TermId` entry for the term-based contract proof pass
+/// ([`super::proof_verify`], which skolemizes and symbolically executes a body in
+/// term-land) and reused by the `Value::Term` fast path of the carrier-neutral entry.
+pub(crate) fn substitute_ref_terms_term(
     kb: &mut KnowledgeBase,
     term: TermId,
     map: &HashMap<Symbol, TermId>,
 ) -> TermId {
     let var_ref_sym = kb.resolve_symbol("anthill.reflect.Expr.var_ref");
     substitute_ref_terms_rec(kb, term, map, var_ref_sym)
+}
+
+/// The carrier-neutral σ walk backing [`substitute_ref_terms`]. A `Value::Term`
+/// subtree grounds in the term world (hash-consed); a `Value::Node` / `Value::Entity`
+/// node is read through the View layer and rebuilt as a `Value::Entity` with each
+/// child substituted — no reification of the goal, no term↔occurrence conversion.
+fn substitute_ref_terms_value_rec(
+    kb: &mut KnowledgeBase,
+    v: &Value,
+    map: &HashMap<Symbol, TermId>,
+    var_ref_sym: Symbol,
+) -> Value {
+    // A hash-consed term subtree grounds in term-land (hash-consed result),
+    // byte-identical to the pre-WI-621 term path — the common goal carrier.
+    if let Value::Term { id, .. } = v {
+        return Value::term(substitute_ref_terms_rec(kb, *id, map, var_ref_sym));
+    }
+    match v.head(kb) {
+        // A binder / parameter `var_ref(name: Ref(s))`: replace the WHOLE node when
+        // `s ∈ σ` (WI-552 variable substitution — never recurse into the `name`
+        // child, which would corrupt the wrapper). An unmapped `var_ref` stays
+        // intact: the open-world parameter the resolver flounders on.
+        ViewHead::Functor { functor: Some(f), .. } if f == var_ref_sym => {
+            match view_var_ref_name(kb, v) {
+                Some(s) => map.get(&s).map(|&t| Value::term(t)).unwrap_or_else(|| v.clone()),
+                // A `var_ref`'s `name` child is always `Ref(sym)` by construction
+                // (`occ_head` exposes `Expr::Ref`); a `None` here means a malformed
+                // binder reached σ — surface it loudly, mirroring the term-side
+                // `substitute_ref_terms_rec` (repo principle: loud over silent).
+                // Release keeps the conservative `v`.
+                None => {
+                    debug_assert!(
+                        false,
+                        "substitute_ref_terms: var_ref with a non-symbol `name` child"
+                    );
+                    v.clone()
+                }
+            }
+        }
+        // A bare global / parameter reference: substitute if mapped, else keep.
+        ViewHead::Ref(s) | ViewHead::Ident(s) => {
+            map.get(&s).map(|&t| Value::term(t)).unwrap_or_else(|| v.clone())
+        }
+        // A functor application on a non-Term carrier (a denoted `Value::Node` goal,
+        // or a value-carried `Value::Entity`): rebuild carrier-neutrally as a
+        // `Value::Entity`, substituting each child read through the View layer, so a
+        // Node or Entity goal decomposes identically to its term twin. Named args are
+        // re-canonicalized (`sort_named_canonical`) — the invariant the order-
+        // sensitive discrimination tree matches against, which a non-entity-functor
+        // Node goal's source-order named children would otherwise violate.
+        ViewHead::Functor { functor: Some(f), pos_arity, .. } => {
+            let pos = subst_view_pos(kb, v, pos_arity, map, var_ref_sym);
+            let mut named = subst_view_named(kb, v, map, var_ref_sym);
+            kb.sort_named_canonical(f, &mut named);
+            Value::Entity {
+                functor: f,
+                pos: std::rc::Rc::from(pos),
+                named: std::rc::Rc::from(named),
+                ty: None,
+            }
+        }
+        // A functor-LESS aggregate with children — a native `Value::Tuple`: rebuild a
+        // `Value::Tuple`, substituting each child, so a σ-parameter nested in a tuple
+        // operand grounds exactly as the term-side walk recurses through a tuple
+        // `Term::Fn`. A childless `Functor{None}` (`Value::Unit` / empty tuple) has no
+        // parameter to ground and rides the verbatim `_` arm below.
+        ViewHead::Functor { functor: None, pos_arity, named_arity } if pos_arity + named_arity > 0 => {
+            let pos = subst_view_pos(kb, v, pos_arity, map, var_ref_sym);
+            let named = subst_view_named(kb, v, map, var_ref_sym);
+            Value::Tuple {
+                pos: std::rc::Rc::from(pos),
+                named: std::rc::Rc::from(named),
+                ty: None,
+            }
+        }
+        // A childless aggregate (Unit / empty tuple), literal, var, bottom, or opaque
+        // head carries no σ-substitutable reference — keep it verbatim.
+        _ => v.clone(),
+    }
+}
+
+/// Substitute σ into each POSITIONAL child of a View, in one pass: `.to_value()`
+/// materializes each child owned, ending the immutable View borrow of `v` / `kb`
+/// before the `&mut kb` recursion (the borrow shape [`child_types_pos`] uses).
+fn subst_view_pos(
+    kb: &mut KnowledgeBase,
+    v: &Value,
+    pos_arity: usize,
+    map: &HashMap<Symbol, TermId>,
+    var_ref_sym: Symbol,
+) -> Vec<Value> {
+    let mut pos = Vec::with_capacity(pos_arity);
+    for i in 0..pos_arity {
+        let child = v.pos_arg(kb, i).expect("pos_arg within arity").to_value();
+        pos.push(substitute_ref_terms_value_rec(kb, &child, map, var_ref_sym));
+    }
+    pos
+}
+
+/// Substitute σ into each NAMED child of a View, in one pass (keys in the View's
+/// `named_keys` order; the `Value::Entity` caller re-canonicalizes before storing,
+/// the `Value::Tuple` caller keeps positional-as-named order).
+fn subst_view_named(
+    kb: &mut KnowledgeBase,
+    v: &Value,
+    map: &HashMap<Symbol, TermId>,
+    var_ref_sym: Symbol,
+) -> Vec<(Symbol, Value)> {
+    let keys = v.named_keys(kb);
+    let mut named = Vec::with_capacity(keys.len());
+    for k in keys {
+        let child = v.named_arg(kb, k).expect("named key present").to_value();
+        named.push((k, substitute_ref_terms_value_rec(kb, &child, map, var_ref_sym)));
+    }
+    named
+}
+
+/// Read the binder symbol `s` from a `var_ref(name: Ref(s))` occurrence / term
+/// through the View layer — the carrier-neutral peer of [`var_ref_name_symbol`]: the
+/// `name` child heads as `Ref(s)`, whose [`ViewHead::functor_sym`] is `s`.
+fn view_var_ref_name(kb: &KnowledgeBase, v: &Value) -> Option<Symbol> {
+    let name_key = kb.lookup_symbol("name")?;
+    v.named_arg(kb, name_key)?.head(kb).functor_sym()
 }
 
 /// WI-552: σ as a proper VARIABLE substitution. A binder/parameter occurrence is
@@ -17464,24 +17617,6 @@ fn var_ref_name_symbol(kb: &KnowledgeBase, named_args: &[(Symbol, TermId)]) -> O
     }
 }
 
-/// A value precondition / guard / postcondition `clause` read as a goal term: a
-/// `Value::Term` is its own goal, a `Value::Node` (denoted) materializes via
-/// `occurrence_to_term`. Any other carrier is not a readable goal (`None`) — an
-/// obligation `is_value_precondition_clause` already gated to a functor-headed goal,
-/// so `None` cannot arise from a value goal in practice. The single place the
-/// "which clauses are readable as goals" contract lives, shared by
-/// [`precondition_proved`] / [`precondition_refuted`] / [`guarded_atom_refuted`] /
-/// [`assume_call_ensures`], each of which applies its own conservative bail on
-/// `None` (`return false` for a proof/refutation obligation — loud over silent — or
-/// `continue` to skip an inert `ensures` clause) so they can never drift on it.
-fn value_goal_term(kb: &mut KnowledgeBase, clause: &Value) -> Option<TermId> {
-    match clause {
-        Value::Term { id: t, .. } => Some(*t),
-        Value::Node(occ) => Some(super::node_occurrence::occurrence_to_term(kb, occ)),
-        _ => None,
-    }
-}
-
 /// Is a SINGLE conjunct (a guard / precondition goal) constructively REFUTED under
 /// σ + Γ? The per-conjunct core shared by the guarded-effect drop
 /// ([`guarded_atom_refuted`], where a refutation DROPS the effect) and the
@@ -17501,9 +17636,9 @@ fn conjunct_refuted(
     flow: &FlowEnv,
     subst: &Substitution,
     sigma: &HashMap<Symbol, TermId>,
-    conj: TermId,
+    conj: &Value,
 ) -> bool {
-    let conj = if sigma.is_empty() { conj } else { substitute_ref_terms(kb, conj, sigma) };
+    let conj = substitute_ref_terms(kb, conj, sigma);
     // WI-573: an `eq`/`neq` conjunct whose operands sit on a carrier — at the top
     // level OR at any nested element/field carrier — that defines a CUSTOM equality
     // cannot be refuted by the structural `Eq`/`Neq` builtin (it compares by
@@ -17512,10 +17647,10 @@ fn conjunct_refuted(
     // effect stays present / the precondition stays undetermined) until runtime
     // monomorphization can dispatch the override. A wholly native/structural operand
     // is decided soundly by the builtin, exactly as before.
-    if guard_conjunct_overrides_structural_eq(kb, subst, conj) {
+    if guard_conjunct_overrides_structural_eq(kb, subst, &conj) {
         return false;
     }
-    refute_guard(kb, flow, &Value::term(conj))
+    refute_guard(kb, flow, &conj)
 }
 
 /// Is a guarded atom's guard `G` REFUTED (so the effect drops)? `G` is a
@@ -17549,12 +17684,9 @@ fn guarded_atom_refuted(
     // `¬(g1 ∧ … ∧ gn)` follows from refuting ANY single conjunct, so the effect
     // drops as soon as one gᵢ is constructively refuted from Γ (`conjunct_refuted`,
     // never NAF). The empty guard (`:- true`) has no conjunct — irrefutable, kept.
-    goals.iter().any(|g| {
-        // Each conjunct is a term-world goal; materialize a node-carried one, then
-        // ground + refute it via the shared per-conjunct core.
-        let Some(g) = value_goal_term(kb, g) else { return false };
-        conjunct_refuted(kb, flow, subst, sigma, g)
-    })
+    // Each list element is a single conjunct goal `Value`; ground + refute it via
+    // the shared per-conjunct core carrier-neutrally (WI-621 — no reification).
+    goals.iter().any(|g| conjunct_refuted(kb, flow, subst, sigma, g))
 }
 
 /// The `(eq, neq)` spec-op functor symbols (`anthill.prelude.Eq.{eq,neq}`); `neq`
@@ -17676,9 +17808,8 @@ fn value_carrier_overrides_eq_family_deep(
 fn guard_conjunct_overrides_structural_eq(
     kb: &mut KnowledgeBase,
     subst: &Substitution,
-    conjunct: TermId,
+    goal: &Value,
 ) -> bool {
-    let goal = Value::term(conjunct);
     let (functor, pos_arity) = match goal.head(kb) {
         ViewHead::Functor { functor: Some(f), pos_arity, .. } => (f, pos_arity),
         _ => return false,
@@ -17806,29 +17937,48 @@ pub(crate) fn is_value_precondition_clause(kb: &KnowledgeBase, clause: &Value) -
 /// clause would be proved / assumed as one opaque `conjunction(...)` goal that no
 /// SLD rule resolves (a spurious failure for a `requires`, an inert fact for an
 /// `ensures`).
-pub(crate) fn clause_conjuncts(kb: &KnowledgeBase, term: TermId) -> Vec<TermId> {
-    match kb.get_term(term) {
-        Term::Fn { functor, pos_args, .. } if kb.resolve_sym(*functor) == "conjunction" => {
-            pos_args.iter().copied().collect()
+pub(crate) fn clause_conjuncts(kb: &KnowledgeBase, clause: &Value) -> Vec<Value> {
+    // Carrier-neutral (WI-621): read the head through the View layer, so a `Term`,
+    // `Node`, or `Entity` `conjunction(g1, …, gn)` decomposes identically into its
+    // goal `Value`s (each carrier-faithful — a `Node` conjunct stays an occurrence).
+    if let ViewHead::Functor { functor: Some(f), pos_arity, .. } = clause.head(kb) {
+        if kb.resolve_sym(f) == "conjunction" {
+            // Every slot `i < pos_arity` is present by the View's own arity report;
+            // `.expect` (never `filter_map`) so a hole surfaces loudly rather than
+            // silently dropping a conjunct — a dropped `requires`/guard conjunct would
+            // weaken the obligation with no diagnostic (repo: loud over silent).
+            return (0..pos_arity)
+                .map(|i| clause.pos_arg(kb, i).expect("pos_arg within arity").to_value())
+                .collect();
         }
-        _ => vec![term],
     }
+    vec![clause.clone()]
 }
 
-/// WI-539: does `term` reference any of `syms` (the callee's parameter symbols)?
-/// Used to keep an assumed `ensures` fact CALLER-CLOSED: after σ a conjunct still
-/// naming a callee parameter (an argument with no clean term twin, so
-/// `build_call_guard_sigma` omitted it) is DROPPED, not assumed. The parameter
-/// symbol `<callee>.p` is SHARED across every call to that callee, so a fact over
-/// it would let a SECOND same-callee call's guard / `requires` query — which builds
-/// the identical `<callee>.p` term — spuriously match (an unsound proof / effect
+/// WI-539: does a goal `view` reference any of `syms` (the callee's parameter
+/// symbols)? Used to keep an assumed `ensures` fact CALLER-CLOSED: after σ a conjunct
+/// still naming a callee parameter (an argument with no clean term twin, so
+/// `build_call_guard_sigma` omitted it) is DROPPED, not assumed. The parameter symbol
+/// `<callee>.p` is SHARED across every call to that callee, so a fact over it would
+/// let a SECOND same-callee call's guard / `requires` query — which builds the
+/// identical `<callee>.p` reference — spuriously match (an unsound proof / effect
 /// drop). Dropping it is a conservative miss, never a false proof.
-fn term_references_any(kb: &KnowledgeBase, term: TermId, syms: &[Symbol]) -> bool {
-    match kb.get_term(term) {
-        Term::Ref(s) | Term::Ident(s) => syms.contains(s),
-        Term::Fn { pos_args, named_args, .. } => {
-            pos_args.iter().any(|c| term_references_any(kb, *c, syms))
-                || named_args.iter().any(|(_, c)| term_references_any(kb, *c, syms))
+///
+/// Carrier-neutral (WI-621): reads through the View layer, so it finds a parameter
+/// spelled as a bare `Ref` / `Ident`, or nested inside its `var_ref(name: Ref(p))`
+/// wrapper (the named `name` child heads as `Ref(p)`), across a `Term`, `Node`, or
+/// `Entity` conjunct alike. A functor SYMBOL is not a reference (a param can't be a
+/// functor), matching the term-world predicate it replaces.
+fn view_references_any<V: TermView>(kb: &KnowledgeBase, view: &V, syms: &[Symbol]) -> bool {
+    match view.head(kb) {
+        ViewHead::Ref(s) | ViewHead::Ident(s) => syms.contains(&s),
+        ViewHead::Functor { pos_arity, .. } => {
+            (0..pos_arity)
+                .any(|i| view.pos_arg(kb, i).is_some_and(|c| view_references_any(kb, &c, syms)))
+                || view
+                    .named_keys(kb)
+                    .iter()
+                    .any(|&k| view.named_arg(kb, k).is_some_and(|c| view_references_any(kb, &c, syms)))
         }
         _ => false,
     }
@@ -17850,20 +18000,17 @@ fn precondition_proved(
     sigma: &HashMap<Symbol, TermId>,
     clause: &Value,
 ) -> bool {
-    // Value preconditions are Term (ground goal) or Node (denoted) by construction
-    // (`is_value_precondition_clause` gates to a functor-headed goal). An obligation
-    // we cannot even read as a goal is UNPROVED (the safe default for an obligation
-    // — loud over silent), mirroring the conservative `false` of the dual
-    // `guarded_atom_refuted`; it cannot arise from a value goal.
-    let Some(g) = value_goal_term(kb, clause) else { return false };
-    // A multi-goal clause is `conjunction(g1, …)`; ALL conjuncts must prove.
-    // The clause carries `var_ref` for its parameters from load (WI-552); σ
-    // substitutes a parameter variable whose actual argument is concrete, and a
-    // parameter with no clean arg twin stays `var_ref` — floundering under
-    // `definite_only`, so the precondition is unproved (the obligation default).
-    for conj in clause_conjuncts(kb, g) {
-        let conj = if sigma.is_empty() { conj } else { substitute_ref_terms(kb, conj, sigma) };
-        if !prove_from_gamma(kb, flow, &Value::term(conj)) {
+    // A multi-goal clause is `conjunction(g1, …)`; ALL conjuncts must prove
+    // (split carrier-neutrally, WI-621). The clause carries `var_ref` for its
+    // parameters from load (WI-552); σ substitutes a parameter variable whose actual
+    // argument is concrete, and a parameter with no clean arg twin stays `var_ref` —
+    // floundering under `definite_only`, so the precondition is unproved (the
+    // obligation default). `is_value_precondition_clause` already gated `clause` to a
+    // functor-headed goal, so an unreadable carrier simply fails to prove (the same
+    // conservative UNPROVED default as the dual `guarded_atom_refuted`'s `false`).
+    for conj in clause_conjuncts(kb, clause) {
+        let conj = substitute_ref_terms(kb, &conj, sigma);
+        if !prove_from_gamma(kb, flow, &conj) {
             return false;
         }
     }
@@ -17892,9 +18039,8 @@ fn precondition_refuted(
     sigma: &HashMap<Symbol, TermId>,
     clause: &Value,
 ) -> bool {
-    let Some(g) = value_goal_term(kb, clause) else { return false };
-    clause_conjuncts(kb, g)
-        .into_iter()
+    clause_conjuncts(kb, clause)
+        .iter()
         .any(|conj| conjunct_refuted(kb, flow, subst, sigma, conj))
 }
 
@@ -17915,7 +18061,7 @@ fn precondition_refuted(
 /// PARAMETER (an argument with no clean term twin) is DROPPED rather than
 /// assumed: the `<callee>.param` symbol is shared across calls, so assuming a fact
 /// over it would let a second same-callee call's query spuriously match it
-/// ([`term_references_any`], which finds the param inside its `var_ref` wrapper).
+/// ([`view_references_any`], which finds the param inside its `var_ref` wrapper).
 /// Returns Γ unchanged for a non-call value or a callee with no `ensures`.
 fn assume_call_ensures(
     kb: &mut KnowledgeBase,
@@ -17949,13 +18095,12 @@ fn assume_call_ensures(
     let ensures = rec.ensures.clone();
     let mut flow = flow;
     for clause in &ensures {
-        let Some(g) = value_goal_term(kb, clause) else { continue };
-        for conj in clause_conjuncts(kb, g) {
-            let conj = substitute_ref_terms(kb, conj, &sigma);
-            if term_references_any(kb, conj, &param_syms) {
+        for conj in clause_conjuncts(kb, clause) {
+            let conj = substitute_ref_terms(kb, &conj, &sigma);
+            if view_references_any(kb, &conj, &param_syms) {
                 continue;
             }
-            flow = flow.assume(kb, Value::term(conj));
+            flow = flow.assume(kb, conj);
         }
     }
     flow
@@ -25946,5 +26091,240 @@ mod wi617_canonical_provider_match_tests {
             !spec_has_any_providers(&kb, unrelated),
             "a sort with no provider fact must not count as having providers",
         );
+    }
+}
+
+#[cfg(test)]
+mod wi621_carrier_neutral_goal_subst {
+    //! WI-621 — the σ substitution ([`substitute_ref_terms`]) and the conjunction
+    //! split ([`clause_conjuncts`]) over a value precondition / guard / postcondition
+    //! goal are CARRIER-NEUTRAL: a DENOTED `Value::Node` goal grounds its `var_ref`
+    //! parameters and decomposes its `conjunction` through the View layer, never
+    //! reifying to a `TermId` (the retired `value_goal_term`) and never converting
+    //! term↔occurrence. The common `Value::Term` goal rides the term fast path
+    //! unchanged (covered by wi067 / wi539 / wi557); these tests exercise precisely
+    //! the `Value::Node` carrier that fast path skips.
+    use super::{clause_conjuncts, substitute_ref_terms};
+    use crate::eval::value::Value;
+    use crate::intern::{Symbol, SymbolKind};
+    use crate::kb::load::register_prelude;
+    use crate::kb::node_occurrence::{Expr, NodeOccurrence};
+    use crate::kb::term::{Literal, Term};
+    use crate::kb::term_view::{TermView, ViewHead};
+    use crate::kb::KnowledgeBase;
+    use crate::span::{SourceId, SourceSpan};
+    use std::collections::HashMap;
+    use std::rc::Rc;
+
+    fn span() -> SourceSpan {
+        SourceSpan::new(SourceId::from_raw(0), 0, 1)
+    }
+
+    fn e(x: Expr) -> Rc<NodeOccurrence> {
+        NodeOccurrence::new_expr(x, span(), None)
+    }
+
+    /// A `register_prelude` KB with the two reflect functors these tests build by
+    /// hand (`var_ref`, `conjunction`) registered — `register_prelude` covers
+    /// `eq` / literals but not the reflect `Expr` constructors a full stdlib load
+    /// would. `name` is interned so a `var_ref`'s `name` child reads.
+    fn kb() -> KnowledgeBase {
+        let mut kb = KnowledgeBase::new();
+        register_prelude(&mut kb);
+        let global = kb.make_name_term("_global").raw();
+        kb.symbols.define_qualified_only(
+            "var_ref",
+            "anthill.reflect.Expr.var_ref",
+            SymbolKind::Entity,
+            global,
+        );
+        kb.symbols
+            .define_qualified_only("conjunction", "conjunction", SymbolKind::Entity, global);
+        kb.intern("name");
+        kb
+    }
+
+    /// σ grounds a `var_ref` parameter inside a DENOTED `Value::Node` goal:
+    /// `eq(var_ref(b), 0)` with σ = {b ↦ 5} becomes `eq(5, 0)` — read + rebuilt
+    /// through the View layer as a carrier-neutral `Value::Entity` (NOT a reified
+    /// opaque `Value::Term` of the whole goal), with the parameter grounded.
+    #[test]
+    fn node_goal_var_ref_grounds_carrier_neutrally() {
+        let mut kb = kb();
+        let b = kb.intern("b");
+        let eq = kb.eq_functor();
+        let goal = Value::Node(e(Expr::Apply {
+            functor: eq,
+            pos_args: vec![e(Expr::VarRef { name: b }), e(Expr::Const(Literal::Int(0)))],
+            named_args: vec![],
+            type_args: vec![],
+        }));
+
+        let mut sigma: HashMap<Symbol, _> = HashMap::new();
+        sigma.insert(b, kb.alloc(Term::Const(Literal::Int(5))));
+        let grounded = substitute_ref_terms(&mut kb, &goal, &sigma);
+
+        // A transient goal is legitimately a non-hash-consed `Value::Entity` — never
+        // reified whole to an opaque `Value::Term`.
+        assert!(matches!(grounded, Value::Entity { .. }), "expected Entity, got {grounded:?}");
+        // Structurally `eq(5, 0)`.
+        match grounded.head(&kb) {
+            ViewHead::Functor { functor: Some(f), pos_arity, .. } => {
+                assert_eq!(f, eq);
+                assert_eq!(pos_arity, 2);
+            }
+            other => panic!("expected Functor{{eq}}, got {other:?}"),
+        }
+        match grounded.pos_arg(&kb, 0).expect("operand 0").head(&kb) {
+            ViewHead::Const(Literal::Int(5)) => {}
+            other => panic!("var_ref(b) must ground to 5, got {other:?}"),
+        }
+        match grounded.pos_arg(&kb, 1).expect("operand 1").head(&kb) {
+            ViewHead::Const(Literal::Int(0)) => {}
+            other => panic!("second operand must stay 0, got {other:?}"),
+        }
+    }
+
+    /// An UNMAPPED `var_ref` (a parameter with no σ binding — a symbolic argument)
+    /// survives substitution intact: the open-world variable the resolver flounders
+    /// on, so nothing is spuriously grounded.
+    #[test]
+    fn node_goal_unmapped_var_ref_survives() {
+        let mut kb = kb();
+        let b = kb.intern("b");
+        let var_ref_sym = kb.resolve_symbol("anthill.reflect.Expr.var_ref");
+        let eq = kb.eq_functor();
+        let goal = Value::Node(e(Expr::Apply {
+            functor: eq,
+            pos_args: vec![e(Expr::VarRef { name: b }), e(Expr::Const(Literal::Int(0)))],
+            named_args: vec![],
+            type_args: vec![],
+        }));
+        // σ binds a DIFFERENT symbol, so `b` stays symbolic.
+        let mut sigma: HashMap<Symbol, _> = HashMap::new();
+        sigma.insert(kb.intern("other"), kb.alloc(Term::Const(Literal::Int(9))));
+        let out = substitute_ref_terms(&mut kb, &goal, &sigma);
+        match out.pos_arg(&kb, 0).expect("operand 0").head(&kb) {
+            ViewHead::Functor { functor: Some(f), .. } => {
+                assert_eq!(f, var_ref_sym, "an unmapped var_ref must survive, not ground")
+            }
+            other => panic!("expected surviving var_ref, got {other:?}"),
+        }
+    }
+
+    /// `clause_conjuncts` decomposes `conjunction(g1, g2)` carrier-neutrally when it
+    /// is a DENOTED `Value::Node`, yielding the two goal conjuncts carrier-faithful
+    /// (each still a `Value::Node`) — never reifying the wrapper.
+    #[test]
+    fn node_conjunction_splits_carrier_faithfully() {
+        let mut kb = kb();
+        let conjunction = kb.resolve_symbol("conjunction");
+        let eq = kb.eq_functor();
+        let goal = |n: i64| {
+            e(Expr::Apply {
+                functor: eq,
+                pos_args: vec![e(Expr::Const(Literal::Int(n))), e(Expr::Const(Literal::Int(0)))],
+                named_args: vec![],
+                type_args: vec![],
+            })
+        };
+        let conj = Value::Node(e(Expr::Apply {
+            functor: conjunction,
+            pos_args: vec![goal(1), goal(2)],
+            named_args: vec![],
+            type_args: vec![],
+        }));
+
+        let parts = clause_conjuncts(&kb, &conj);
+        assert_eq!(parts.len(), 2, "conjunction(g1, g2) must split into 2 conjuncts");
+        assert!(
+            parts.iter().all(|p| matches!(p, Value::Node(_))),
+            "conjuncts stay carrier-faithful (Node), not reified",
+        );
+
+        // A non-conjunction goal is its own single conjunct.
+        assert_eq!(clause_conjuncts(&kb, &Value::Node(goal(7))).len(), 1);
+    }
+
+    /// The rebuilt `Value::Entity` re-canonicalizes named args: a DENOTED `Value::Node`
+    /// goal whose named children are in NON-canonical source order (which a
+    /// non-entity-functor occurrence keeps) is rebuilt with `sort_named_canonical`
+    /// order — the invariant the order-sensitive discrim tree matches against. Without
+    /// the sort the goal would descend a different trie path than a canonically-keyed
+    /// KB fact and spuriously miss.
+    #[test]
+    fn node_goal_named_args_rebuilt_canonically() {
+        let mut kb = kb();
+        // Intern `a` before `z` so `a` has the lower Symbol index (the canonical
+        // fallback order for a non-entity functor). `pred` is a plain (non-entity)
+        // functor, so its occurrence keeps source order.
+        let a = kb.intern("a");
+        let z = kb.intern("z");
+        let b = kb.intern("b");
+        let pred = kb.intern("pred");
+        // Build the goal with named args in NON-canonical order: `z` before `a`.
+        let goal = Value::Node(e(Expr::Apply {
+            functor: pred,
+            pos_args: vec![],
+            named_args: vec![
+                (z, e(Expr::VarRef { name: b })),
+                (a, e(Expr::Const(Literal::Int(0)))),
+            ],
+            type_args: vec![],
+        }));
+        assert_eq!(goal.named_keys(&kb), vec![z, a], "source order is non-canonical (z, a)");
+
+        let mut sigma: HashMap<Symbol, _> = HashMap::new();
+        sigma.insert(b, kb.alloc(Term::Const(Literal::Int(5))));
+        let grounded = substitute_ref_terms(&mut kb, &goal, &sigma);
+
+        // The rebuild must match sort_named_canonical order for `pred`.
+        let mut expected = vec![(z, ()), (a, ())];
+        kb.sort_named_canonical(pred, &mut expected);
+        let expected_keys: Vec<Symbol> = expected.iter().map(|(k, _)| *k).collect();
+        assert_ne!(expected_keys, vec![z, a], "canonical order must differ from source");
+        assert_eq!(
+            grounded.named_keys(&kb),
+            expected_keys,
+            "rebuilt Entity named args must be canonically ordered",
+        );
+    }
+
+    /// A σ-parameter nested inside a native `Value::Tuple` operand of a goal is
+    /// grounded — the functor-less-aggregate arm recurses into the tuple (parity with
+    /// the term-side walk descending a tuple `Term::Fn`), not the verbatim `_` clone.
+    #[test]
+    fn tuple_operand_var_ref_grounds() {
+        let mut kb = kb();
+        let b = kb.intern("b");
+        let pred = kb.intern("pred");
+        let var_ref_b = kb.make_var_ref_term(b);
+        let zero = kb.alloc(Term::Const(Literal::Int(0)));
+        // Goal `pred((var_ref(b), 0))` with a native tuple operand.
+        let tuple = Value::Tuple {
+            pos: Rc::from(vec![Value::term(var_ref_b), Value::term(zero)]),
+            named: Rc::from(Vec::<(Symbol, Value)>::new()),
+            ty: None,
+        };
+        let goal = Value::Entity {
+            functor: pred,
+            pos: Rc::from(vec![tuple]),
+            named: Rc::from(Vec::<(Symbol, Value)>::new()),
+            ty: None,
+        };
+
+        let mut sigma: HashMap<Symbol, _> = HashMap::new();
+        sigma.insert(b, kb.alloc(Term::Const(Literal::Int(5))));
+        let grounded = substitute_ref_terms(&mut kb, &goal, &sigma);
+
+        let tuple_out = grounded.pos_arg(&kb, 0).expect("tuple operand");
+        assert!(
+            matches!(tuple_out.head(&kb), ViewHead::Functor { functor: None, .. }),
+            "operand stays a functor-less tuple",
+        );
+        match tuple_out.pos_arg(&kb, 0).expect("tuple elem 0").head(&kb) {
+            ViewHead::Const(Literal::Int(5)) => {}
+            other => panic!("var_ref(b) inside the tuple must ground to 5, got {other:?}"),
+        }
     }
 }
