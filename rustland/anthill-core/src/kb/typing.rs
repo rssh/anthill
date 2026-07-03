@@ -6007,31 +6007,40 @@ fn check_apply_iter(
         // `EffectsRuntime[…]`) have a `Sort` head and are dispatched / coverage-
         // checked elsewhere (WI-343 / WI-325), never proved from Γ.
         //
-        // WI-557: the precondition check is an OP-BODY call-site obligation. A
-        // rule body is SLD/relational — there is no call-site Γ and no imperative
-        // Hoare semantics — so the obligation does not apply there. In a rule-body
-        // dot-dispatch walk the precondition would float over a rule-body variable
-        // (an unconstrained Γ over a symbolic arg) and raise a spurious
-        // `UnsatisfiedPrecondition`, which `dispatch_dots_in_occ`'s `Err(_)` arm
-        // swallows — leaving the dot UNDISPATCHED. Skip the check there; op-body
-        // checking (`in_rule_body()` is false) is unchanged.
-        if !env.in_rule_body() {
-            let value_reqs: Vec<Value> = op
-                .requires
-                .iter()
-                .filter(|c| is_value_precondition_clause(kb, c))
-                .cloned()
-                .collect();
-            if !value_reqs.is_empty() {
-                let req_sigma = build_call_guard_sigma(kb, &op.params, pos_args, named_args);
-                for clause in &value_reqs {
-                    if !precondition_proved(kb, flow, &req_sigma, clause) {
-                        return Err(TypeError::UnsatisfiedPrecondition {
-                            span,
-                            op: fn_sym,
-                            clause: clause.clone(),
-                        });
-                    }
+        // WI-557 / WI-602: the precondition check is primarily an OP-BODY call-site
+        // obligation. A rule body is SLD/relational — no call-site Γ and no
+        // imperative Hoare semantics — so a precondition over a SYMBOLIC rule-body
+        // variable legitimately FLOATS (an unconstrained Γ over a symbolic arg) and
+        // must NOT raise: pre-WI-557 it raised a spurious `UnsatisfiedPrecondition`
+        // that `dispatch_dots_in_occ`'s `Err(_)` arm swallowed, leaving the dot
+        // UNDISPATCHED. But a GROUND-REFUTED precondition in a rule body
+        // (`guarded(_, 0)` ⇒ `neq(0, 0)` false) is a DEFINITE violation, not a
+        // float, and IS raised exactly as an op body would — the rule-body gate is
+        // refutation-aware (WI-602), not the unconditional skip WI-557 first shipped
+        // (the WI-067/WI-292 polarity: act on a DECIDED obligation, never on an
+        // UNDETERMINED one). Op-body checking (`in_rule_body()` false) raises on ANY
+        // unproved precondition, unchanged.
+        let value_reqs: Vec<Value> = op
+            .requires
+            .iter()
+            .filter(|c| is_value_precondition_clause(kb, c))
+            .cloned()
+            .collect();
+        if !value_reqs.is_empty() {
+            let req_sigma = build_call_guard_sigma(kb, &op.params, pos_args, named_args);
+            let in_rule_body = env.in_rule_body();
+            for clause in &value_reqs {
+                if precondition_proved(kb, flow, &req_sigma, clause) {
+                    continue;
+                }
+                // Unproved. In an op body that alone is the WI-539 violation. In a
+                // rule body only a ground REFUTATION is (a float is skipped — WI-602).
+                if !in_rule_body || precondition_refuted(kb, flow, &subst, &req_sigma, clause) {
+                    return Err(TypeError::UnsatisfiedPrecondition {
+                        span,
+                        op: fn_sym,
+                        clause: clause.clone(),
+                    });
                 }
             }
         }
@@ -17455,12 +17464,66 @@ fn var_ref_name_symbol(kb: &KnowledgeBase, named_args: &[(Symbol, TermId)]) -> O
     }
 }
 
+/// A value precondition / guard / postcondition `clause` read as a goal term: a
+/// `Value::Term` is its own goal, a `Value::Node` (denoted) materializes via
+/// `occurrence_to_term`. Any other carrier is not a readable goal (`None`) — an
+/// obligation `is_value_precondition_clause` already gated to a functor-headed goal,
+/// so `None` cannot arise from a value goal in practice. The single place the
+/// "which clauses are readable as goals" contract lives, shared by
+/// [`precondition_proved`] / [`precondition_refuted`] / [`guarded_atom_refuted`] /
+/// [`assume_call_ensures`], each of which applies its own conservative bail on
+/// `None` (`return false` for a proof/refutation obligation — loud over silent — or
+/// `continue` to skip an inert `ensures` clause) so they can never drift on it.
+fn value_goal_term(kb: &mut KnowledgeBase, clause: &Value) -> Option<TermId> {
+    match clause {
+        Value::Term { id: t, .. } => Some(*t),
+        Value::Node(occ) => Some(super::node_occurrence::occurrence_to_term(kb, occ)),
+        _ => None,
+    }
+}
+
+/// Is a SINGLE conjunct (a guard / precondition goal) constructively REFUTED under
+/// σ + Γ? The per-conjunct core shared by the guarded-effect drop
+/// ([`guarded_atom_refuted`], where a refutation DROPS the effect) and the
+/// value-precondition violation check ([`precondition_refuted`], where it RAISES) —
+/// one computation, opposite actions — so the two can never diverge on σ-grounding
+/// or the WI-573 override floor.
+///
+/// σ grounds the goal over the actual arguments: a parameter `var_ref(b)` whose
+/// argument is a concrete literal becomes that literal (refutes by evaluation); one
+/// with no clean arg twin stays `var_ref(b)` — the open-world parameter the
+/// resolver flounders on, so nothing is refuted. The goal already carries `var_ref`
+/// for its binders from load (WI-552); σ substitutes the whole variable. Returns
+/// `true` only on a DECIDED refutation — a symbolic float or a WI-573-suspended
+/// override yields `false`.
+fn conjunct_refuted(
+    kb: &mut KnowledgeBase,
+    flow: &FlowEnv,
+    subst: &Substitution,
+    sigma: &HashMap<Symbol, TermId>,
+    conj: TermId,
+) -> bool {
+    let conj = if sigma.is_empty() { conj } else { substitute_ref_terms(kb, conj, sigma) };
+    // WI-573: an `eq`/`neq` conjunct whose operands sit on a carrier — at the top
+    // level OR at any nested element/field carrier — that defines a CUSTOM equality
+    // cannot be refuted by the structural `Eq`/`Neq` builtin (it compares by
+    // structural recursion and never dispatches the override), so its verdict is
+    // unsound. Such a conjunct contributes NO refutation: suspend it (the guarded
+    // effect stays present / the precondition stays undetermined) until runtime
+    // monomorphization can dispatch the override. A wholly native/structural operand
+    // is decided soundly by the builtin, exactly as before.
+    if guard_conjunct_overrides_structural_eq(kb, subst, conj) {
+        return false;
+    }
+    refute_guard(kb, flow, &Value::term(conj))
+}
+
 /// Is a guarded atom's guard `G` REFUTED (so the effect drops)? `G` is a
 /// conjunction `g1 ∧ … ∧ gn` (its `List[reflect.Term]` Horn body), and
 /// `¬(g1 ∧ … ∧ gn)` follows from refuting ANY single conjunct — so the effect
 /// drops as soon as one `gᵢ`, after σ-substitution, is constructively refuted
-/// from Γ ([`refute_guard`], never NAF). The empty guard (`:- true`) has no
-/// conjunct to refute and is irrefutable — kept present (sound).
+/// from Γ ([`conjunct_refuted`] → [`refute_guard`], never NAF). The empty guard
+/// (`:- true`) has no conjunct to refute and is irrefutable — kept present (sound).
 fn guarded_atom_refuted(
     kb: &mut KnowledgeBase,
     flow: &FlowEnv,
@@ -17484,40 +17547,13 @@ fn guarded_atom_refuted(
         _ => return false,
     };
     // `¬(g1 ∧ … ∧ gn)` follows from refuting ANY single conjunct, so the effect
-    // drops as soon as one gᵢ is constructively refuted from Γ (`refute_guard`,
+    // drops as soon as one gᵢ is constructively refuted from Γ (`conjunct_refuted`,
     // never NAF). The empty guard (`:- true`) has no conjunct — irrefutable, kept.
     goals.iter().any(|g| {
-        // Each conjunct is a term-world goal; materialize a node-carried one.
-        let g = match g {
-            Value::Term { id: t, .. } => *t,
-            Value::Node(occ) => super::node_occurrence::occurrence_to_term(kb, occ),
-            _ => return false,
-        };
-        // σ grounds the guard over the actual arguments: a parameter `var_ref(b)`
-        // whose argument is a concrete literal becomes that literal (refutes by
-        // evaluation); one with no clean arg twin stays `var_ref(b)` — the
-        // open-world parameter the resolver flounders on, so the effect is kept.
-        // The guard already carries `var_ref` for its binders from load (WI-552),
-        // and σ substitutes the variable as a whole — no consumer-side normalize.
-        let g = if sigma.is_empty() {
-            g
-        } else {
-            substitute_ref_terms(kb, g, sigma)
-        };
-        // WI-573: an `eq`/`neq` conjunct whose operands sit on a carrier — at the
-        // top level OR at any nested element/field carrier — that defines a CUSTOM
-        // equality override cannot be refuted by the structural `Eq`/`Neq` builtin.
-        // The builtin compares values by structural recursion and never dispatches
-        // a carrier's own `eq`, so its verdict is unsound wherever a custom
-        // equality is reachable. Such a conjunct cannot contribute to refuting the
-        // guard: suspend it (the effect stays conservatively present) until runtime
-        // monomorphization can dispatch the override (the deferred half of WI-573).
-        // A wholly native/structural operand has no override anywhere and is
-        // decided soundly by the builtin, exactly as before.
-        if guard_conjunct_overrides_structural_eq(kb, subst, g) {
-            return false;
-        }
-        refute_guard(kb, flow, &Value::term(g))
+        // Each conjunct is a term-world goal; materialize a node-carried one, then
+        // ground + refute it via the shared per-conjunct core.
+        let Some(g) = value_goal_term(kb, g) else { return false };
+        conjunct_refuted(kb, flow, subst, sigma, g)
     })
 }
 
@@ -17819,11 +17855,7 @@ fn precondition_proved(
     // we cannot even read as a goal is UNPROVED (the safe default for an obligation
     // — loud over silent), mirroring the conservative `false` of the dual
     // `guarded_atom_refuted`; it cannot arise from a value goal.
-    let g = match clause {
-        Value::Term { id: t, .. } => *t,
-        Value::Node(occ) => super::node_occurrence::occurrence_to_term(kb, occ),
-        _ => return false,
-    };
+    let Some(g) = value_goal_term(kb, clause) else { return false };
     // A multi-goal clause is `conjunction(g1, …)`; ALL conjuncts must prove.
     // The clause carries `var_ref` for its parameters from load (WI-552); σ
     // substitutes a parameter variable whose actual argument is concrete, and a
@@ -17836,6 +17868,34 @@ fn precondition_proved(
         }
     }
     true
+}
+
+/// WI-602 — is this value precondition DEFINITELY VIOLATED (ground-refuted) under
+/// σ + Γ? The refutation dual of [`precondition_proved`]: a precondition
+/// `g1 ∧ … ∧ gn` is VIOLATED iff `¬(g1 ∧ … ∧ gn)`, which follows from
+/// constructively refuting ANY single conjunct ([`conjunct_refuted`] — the same
+/// core the guarded-effect drop uses). This is the polarity opposite of
+/// `precondition_proved` on TWO counts: it refutes rather than proves, and it holds
+/// on ANY refuted conjunct (`.any`) rather than requiring EVERY conjunct proved.
+///
+/// An all-FLOATING precondition (every conjunct symbolic — the legitimate rule-body
+/// case, `rule_body_value_precondition_dot_dispatches`) returns `false`
+/// (UNDETERMINED, not violated), so the WI-557 rule-body skip stays intact for it;
+/// a literal `guarded(_, 0)` (`neq(0,0)` ground-false) returns `true`. Only a
+/// DECIDED violation raises — never an undetermined one (the WI-067/WI-292
+/// polarity). A clause unreadable as a goal returns `false` (undetermined; matches
+/// `precondition_proved`'s conservative unreadable default).
+fn precondition_refuted(
+    kb: &mut KnowledgeBase,
+    flow: &FlowEnv,
+    subst: &Substitution,
+    sigma: &HashMap<Symbol, TermId>,
+    clause: &Value,
+) -> bool {
+    let Some(g) = value_goal_term(kb, clause) else { return false };
+    clause_conjuncts(kb, g)
+        .into_iter()
+        .any(|conj| conjunct_refuted(kb, flow, subst, sigma, conj))
 }
 
 /// WI-539 (proposal 050 "operation call" modification rule, `ensures` half): if
@@ -17889,11 +17949,7 @@ fn assume_call_ensures(
     let ensures = rec.ensures.clone();
     let mut flow = flow;
     for clause in &ensures {
-        let g = match clause {
-            Value::Term { id: t, .. } => *t,
-            Value::Node(occ) => super::node_occurrence::occurrence_to_term(kb, occ),
-            _ => continue,
-        };
+        let Some(g) = value_goal_term(kb, clause) else { continue };
         for conj in clause_conjuncts(kb, g) {
             let conj = substitute_ref_terms(kb, conj, &sigma);
             if term_references_any(kb, conj, &param_syms) {
@@ -24035,12 +24091,14 @@ fn type_rule_bodies(
             // the typer's normal env handling.
             let mut env = TypingEnv::empty();
             env.set_debruijn_types(var_types.clone());
-            // WI-557: mark this as rule-body context so `check_apply_iter` skips the
-            // WI-539 value-precondition `requires`-check — a rule body is SLD/
-            // relational with no call-site Γ, so the op-body Hoare obligation does
-            // not apply (it would float over a rule-body var and raise a spurious,
-            // currently-swallowed `UnsatisfiedPrecondition` that also leaves the dot
-            // undispatched).
+            // WI-557 / WI-602: mark this as rule-body context so `check_apply_iter`
+            // treats the WI-539 value-precondition `requires`-check as refutation-
+            // aware — a rule body is SLD/relational with no call-site Γ, so a
+            // precondition over a SYMBOLIC rule-body var legitimately FLOATS and is
+            // skipped (it would otherwise raise a spurious, swallowed
+            // `UnsatisfiedPrecondition` that also leaves the dot undispatched); a
+            // GROUND-REFUTED one is still a definite violation and surfaces (the
+            // `UnsatisfiedPrecondition` arm of `dispatch_dots_in_occ`).
             env.mark_rule_body_dispatch();
             let mut changed = false;
             let new_body: Vec<Rc<NodeOccurrence>> = body_nodes
@@ -24330,21 +24388,30 @@ fn dispatch_dots_in_occ(
             // `field_access`), re-typed and redex-free — the same form an op
             // body's dot rewrites to.
             Ok(result) => result.node,
-            // A genuine member-not-found on a KNOWN receiver sort (`?p: Point`,
-            // `?p.bogus`) is a loud error at the dot span. An UNRESOLVED receiver
-            // (`receiver_sort: None`) is left untouched — it is not a value
-            // dispatch we can decide: either a polymorphic body var with no
-            // constraining goal, or (load-bearing) the reflect `Expr.dot_apply`
-            // CONSTRUCTOR carried as data in a rule body (an `Expr` induction
-            // principle, a reflection rule), which `materialize_from_handle`
-            // collapses to `Expr::DotApply` via the WI-425 isomorphism. Erroring
-            // there would reject every program defining such a sort; leaving it is
-            // the pre-WI-282 status quo (the dot flows to SLD structurally).
-            Err(e @ TypeError::DotDispatchNoMatch { receiver_sort: Some(_), .. }) => {
+            // The ONE deliberately-tolerated failure: an UNRESOLVED receiver
+            // (`receiver_sort: None`) is not a value dispatch we can decide —
+            // either a polymorphic body var with no constraining goal, or
+            // (load-bearing) the reflect `Expr.dot_apply` CONSTRUCTOR carried as
+            // data in a rule body (an `Expr` induction principle / reflection
+            // rule), which `materialize_from_handle` collapses to `Expr::DotApply`
+            // via the WI-425 isomorphism. Erroring there would reject every program
+            // defining such a sort; leave it untouched (the pre-WI-282 status quo —
+            // the dot flows to SLD structurally). This is the sole case where a
+            // `DotApply` legitimately survives type-check.
+            Err(TypeError::DotDispatchNoMatch { receiver_sort: None, .. }) => Rc::clone(occ),
+            // Every OTHER failure is a REAL error — surface it, never a silent skip
+            // (project principle: loud over silent; the `Err(_) => Rc::clone(occ)`
+            // catch-all this replaced masked genuine errors — a member-not-found on
+            // a KNOWN receiver [`?p.bogus`], a WI-602 DEFINITE value-precondition
+            // violation [`?b.guarded(0)`], any type / arity / effect mismatch inside
+            // the dispatched form). A rule-body FLOAT is NOT one of these: the
+            // WI-557/602 gate skips it, so `check_apply_iter` returns `Ok` and the
+            // dot dispatches clean (`rule_body_value_precondition_dot_dispatches`).
+            // The dot is left in place so downstream still sees an un-rewritten node.
+            Err(e) => {
                 errors.push(e);
                 Rc::clone(occ)
             }
-            Err(_) => Rc::clone(occ),
         },
         Some(expr) => {
             // Collect child clones first so the immutable borrow on `occ` ends

@@ -207,13 +207,11 @@ end
 /// hole — at simp-firing time the violating term is even injected unchecked, since
 /// eval does not re-check value-preconditions.
 ///
-/// This test asserts the CORRECT behavior (the definite violation IS rejected), so
-/// it FAILS today and PASSES once the rule-body gate becomes refutation-aware
+/// This test asserts the CORRECT behavior (the definite violation IS rejected). It
+/// FAILED before WI-602 and PASSES now that the rule-body gate is refutation-aware
 /// (raise on a ground-REFUTED precondition, skip only a float — the WI-067/WI-292
-/// polarity). Un-ignore it when WI-602 lands.
+/// polarity): `check_apply_iter` runs `precondition_refuted` in rule-body context.
 #[test]
-#[ignore = "WI-602: rule-body gate unconditionally skips DEFINITE precondition violations; \
-            un-ignore once the gate is refutation-aware"]
 fn rule_body_definite_precondition_violation_is_rejected() {
     // DEFINITE violation: the precondition arg is the LITERAL `0`, so `neq(0, 0)`
     // is ground-false — a refutation, NOT a symbolic float.
