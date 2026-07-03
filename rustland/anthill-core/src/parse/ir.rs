@@ -7,7 +7,7 @@
 /// no hash-consing). During loading into the KB, terms are re-allocated
 /// into the hash-consed store.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use smallvec::SmallVec;
 
@@ -32,6 +32,19 @@ pub struct SimpleTermStore {
     entries: Vec<ParseTermEntry>,
     /// Inline description blocks attached to variables: TermId → description texts.
     pub descriptions: HashMap<TermId, Vec<String>>,
+    /// WI-618: `Term::Fn` nodes MINTED by the parse pipeline rather than
+    /// written as calls — the pratt operator desugar (`a + b` → `add/2`,
+    /// `a -> b` → `arrow/2`, `a -> b @ e` → `arrow_effect/3`, …; sole
+    /// sanctioned alloc path: `pratt::mint_op_node`) and the converter's
+    /// accessor builds (`a.b` → `field_access/2`, `a.m(…)` → `dot_apply`).
+    /// Provenance is the exact discriminator consumers need — e.g. the
+    /// loader's bare-arrow lambda-typo diagnostics tell the infix `->` from a
+    /// user-written `arrow(a, b)` call by this set, not by name/scope
+    /// heuristics. Keyed by `TermId`, so it relies on parse terms never being
+    /// copied/re-allocated after mint — true today (the converter only wraps
+    /// existing child ids; the loader never allocates into a parse store); a
+    /// future rewrite pass that reconstructs subtrees must carry marks over.
+    minted: HashSet<TermId>,
 }
 
 impl SimpleTermStore {
@@ -59,6 +72,19 @@ impl SimpleTermStore {
 
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
+    }
+
+    /// WI-618: record that `id` was minted by the parse pipeline (a pratt
+    /// operator node or a converter accessor node), not written as a call.
+    pub fn mark_minted(&mut self, id: TermId) {
+        self.minted.insert(id);
+    }
+
+    /// WI-618: was this `Term::Fn` minted by the parse pipeline (an
+    /// infix/prefix operator or an accessor form), as opposed to written
+    /// as a call?
+    pub fn is_minted(&self, id: TermId) -> bool {
+        self.minted.contains(&id)
     }
 
     /// Iterate every allocated `(TermId, &Term)` in allocation order.

@@ -6,7 +6,7 @@
 
 use smallvec::SmallVec;
 
-use crate::intern::SymbolTable;
+use crate::intern::{Symbol, SymbolTable};
 use crate::kb::term::{Term, TermId};
 use crate::span::Span;
 use super::ir::SimpleTermStore;
@@ -41,6 +41,19 @@ pub(crate) struct PrefixEntry {
 
 // ── Dictionary ──────────────────────────────────────────────────
 
+/// The functor the infix `->` desugars to (a binary arrow-type term).
+pub const ARROW_FUNCTOR: &str = "arrow";
+/// The functor the ternary `-> … @ …` desugars to (an effectful arrow type).
+pub const ARROW_EFFECT_FUNCTOR: &str = "arrow_effect";
+
+/// Is `name` one of the arrow-family functors the pratt desugar mints for
+/// `->`/`@`? The loader's bare-arrow diagnostics (WI-605/WI-618) key on this
+/// together with `SimpleTermStore::is_minted` — one source of truth with the
+/// TABLE below, so a new arrow spelling cannot drift out of the diagnostics.
+pub fn is_arrow_functor(name: &str) -> bool {
+    name == ARROW_FUNCTOR || name == ARROW_EFFECT_FUNCTOR
+}
+
 fn infix_entry(op: &str) -> Option<&'static InfixEntry> {
     static TABLE: &[(&str, InfixEntry)] = &[
         ("|",  InfixEntry { priority: 1, assoc: Assoc::Left,  functor: "or",  continuation: None }),
@@ -74,8 +87,8 @@ fn infix_entry(op: &str) -> Option<&'static InfixEntry> {
         ("->", InfixEntry {
             priority: 8,
             assoc: Assoc::Right,
-            functor: "arrow",
-            continuation: Some(ContinuationEntry { token: "@", functor: "arrow_effect" }),
+            functor: ARROW_FUNCTOR,
+            continuation: Some(ContinuationEntry { token: "@", functor: ARROW_EFFECT_FUNCTOR }),
         }),
     ];
     TABLE.iter().find(|(k, _)| *k == op).map(|(_, v)| v)
@@ -128,6 +141,25 @@ fn op_span(terms: &SimpleTermStore, first: TermId, last: TermId) -> Span {
     Span::merge(terms.span(first), terms.span(last))
 }
 
+/// Allocate a synthesized operator node, recording its pratt provenance
+/// (WI-618) so consumers can tell the minted infix/prefix term from a
+/// user-written call to a functor of the same name. Also used by the
+/// converter's standalone-prefix build (`BuildFrame::Prefix`), which mints
+/// the same operator shapes outside an infix chain.
+pub(crate) fn mint_op_node(
+    terms: &mut SimpleTermStore,
+    functor: Symbol,
+    pos_args: SmallVec<[TermId; 4]>,
+    span: Span,
+) -> TermId {
+    let tid = terms.alloc(
+        Term::Fn { functor, pos_args, named_args: SmallVec::new() },
+        span,
+    );
+    terms.mark_minted(tid);
+    tid
+}
+
 fn desugar(
     elements: &[InfixElement<'_>],
     mut pos: usize,
@@ -149,14 +181,7 @@ fn desugar(
             pos = new_pos;
             let functor = symbols.intern(entry.functor);
             let span = op_span(terms, right, right);
-            terms.alloc(
-                Term::Fn {
-                    functor,
-                    pos_args: SmallVec::from_elem(right, 1),
-                    named_args: SmallVec::new(),
-                },
-                span,
-            )
+            mint_op_node(terms, functor, SmallVec::from_elem(right, 1), span)
         }
         InfixElement::Operand(tid) => {
             pos += 1;
@@ -207,25 +232,15 @@ fn desugar(
                 pos = new_pos;
                 let functor = symbols.intern(cont.functor);
                 let span = op_span(terms, left, right);
-                left = terms.alloc(
-                    Term::Fn {
-                        functor,
-                        pos_args: SmallVec::from_slice(&[left, middle, right]),
-                        named_args: SmallVec::new(),
-                    },
-                    span,
+                left = mint_op_node(
+                    terms, functor, SmallVec::from_slice(&[left, middle, right]), span,
                 );
             } else {
                 // No continuation — binary infix
                 let functor = symbols.intern(entry.functor);
                 let span = op_span(terms, left, middle);
-                left = terms.alloc(
-                    Term::Fn {
-                        functor,
-                        pos_args: SmallVec::from_slice(&[left, middle]),
-                        named_args: SmallVec::new(),
-                    },
-                    span,
+                left = mint_op_node(
+                    terms, functor, SmallVec::from_slice(&[left, middle]), span,
                 );
             }
         } else {
@@ -239,13 +254,8 @@ fn desugar(
 
             let functor = symbols.intern(entry.functor);
             let span = op_span(terms, left, right);
-            left = terms.alloc(
-                Term::Fn {
-                    functor,
-                    pos_args: SmallVec::from_slice(&[left, right]),
-                    named_args: SmallVec::new(),
-                },
-                span,
+            left = mint_op_node(
+                terms, functor, SmallVec::from_slice(&[left, right]), span,
             );
         }
     }

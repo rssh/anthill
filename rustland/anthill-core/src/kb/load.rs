@@ -17,6 +17,7 @@ use smallvec::SmallVec;
 
 use crate::intern::{Symbol, SymbolDef, SymbolKind, ScopeInclusion, ResolveResult};
 use crate::parse::ir::*;
+use crate::parse::pratt;
 use crate::span::{Span, SourceId, SourceSpan};
 use super::{KnowledgeBase, SortKind};
 use super::term::{Term, TermId, Var, VarId, Literal};
@@ -242,9 +243,28 @@ pub enum LoadError {
     /// A lambda requires the `lambda` keyword (kernel-language.md §Lambda,
     /// proposal 018 — deliberate: the keyword keeps call-argument commas
     /// unambiguous). Load-blocking with the actionable hint instead of the
-    /// cascade. Fires only on the exact pratt-minted shape with no callable of
-    /// that name in scope — see `Loader::bare_arrow_lambda_suspect`.
+    /// cascade. Gated on pratt PROVENANCE (WI-618,
+    /// `SimpleTermStore::is_minted`): only a desugared infix `->` fires;
+    /// a user-written `arrow(a, b)` call keeps the normal path.
     ArrowTermInExprPosition {
+        span: Span,
+    },
+    /// WI-618: a pratt-minted `pattern -> body` (the keyword-less lambda typo)
+    /// in a rule (head or body) / fact / constraint / contract term position.
+    /// Unlike an op/const body, an arrow-TYPE term is legitimate here (types
+    /// are terms — e.g. a mapping fact carrying `Int -> Int`), so provenance
+    /// alone cannot condemn the term; the discriminator is an unresolvable
+    /// binder-looking (lowercase or `_`-led) LEAF name — one that can only
+    /// have been meant as a lambda parameter (a real arrow type's leaves —
+    /// sorts, type params, places — resolve, and its logical variables are
+    /// `?`-vars, not bare names). Load-blocking: the clause would otherwise
+    /// ride as inert data with unresolved leaves and silently never mean what
+    /// was written. See `Loader::check_bare_arrow_typo` (also for the
+    /// accepted false negatives: uppercase leaves, binder names that collide
+    /// with in-scope names).
+    BareArrowInLogicPosition {
+        position: &'static str,
+        unresolved: String,
         span: Span,
     },
     /// WI-023: an `aggregation` constraint (`count/sum/min/max(…) op bound`). The
@@ -425,7 +445,11 @@ impl LoadError {
             }
             LoadError::ArrowTermInExprPosition { span } => {
                 let (line, col) = Span::line_col(source, span.start);
-                format!("{}:{}: {}", line, col, ARROW_EXPR_HINT)
+                format!("{}:{}: {}", line, col, arrow_expr_hint())
+            }
+            LoadError::BareArrowInLogicPosition { position, unresolved, span } => {
+                let (line, col) = Span::line_col(source, span.start);
+                format!("{}:{}: {}", line, col, bare_arrow_logic_msg(position, unresolved))
             }
             LoadError::AggregationConstraintUnsupported { label, span } => {
                 let (line, col) = Span::line_col(source, span.start);
@@ -550,6 +574,9 @@ impl LoadError {
             // body's binder names resolve to nothing, so the operation cannot
             // mean what was written.
             | LoadError::ArrowTermInExprPosition { .. }
+            // WI-618: the same typo in a rule-body / constraint / contract
+            // position — the clause cannot mean what was written.
+            | LoadError::BareArrowInLogicPosition { .. }
             // WI-023: an unenforceable aggregation constraint and a violated
             // integrity constraint are both unsound to run with.
             | LoadError::AggregationConstraintUnsupported { .. }
@@ -559,11 +586,46 @@ impl LoadError {
     }
 }
 
+/// WI-605/WI-618: the one actionable tail shared by both bare-arrow
+/// diagnostics, so their advice cannot drift apart.
+const LAMBDA_KEYWORD_HINT: &str =
+    "a lambda needs the `lambda` keyword (e.g. `lambda (x, y) -> body`)";
+
 /// WI-605: the one hint text for `ArrowTermInExprPosition`, shared by both
 /// renderings (`format_with_source` and `Display`) so the wording cannot drift.
-const ARROW_EXPR_HINT: &str =
-    "`->` in expression position builds an arrow-type term, not a function \
-     value — a lambda needs the `lambda` keyword (e.g. `lambda (x, y) -> body`)";
+fn arrow_expr_hint() -> String {
+    format!(
+        "`->` in expression position builds an arrow-type term, not a function \
+         value — {LAMBDA_KEYWORD_HINT}"
+    )
+}
+
+/// WI-618: the one message body for `BareArrowInLogicPosition`, shared by both
+/// renderings (`format_with_source` and `Display`) so the wording cannot drift.
+/// "does not resolve" covers both `NotFound` and `Ambiguous` — either way the
+/// name fails to resolve to a single referent.
+fn bare_arrow_logic_msg(position: &str, unresolved: &str) -> String {
+    format!(
+        "in {position}: `->` builds an arrow-type term, but `{unresolved}` \
+         does not resolve in scope — if a function value was meant, \
+         {LAMBDA_KEYWORD_HINT}"
+    )
+}
+
+/// WI-618: binder-introducing parse forms the bare-arrow walks must scope —
+/// the pattern child's names bind in the later children, mirroring the scope
+/// pushes of the op-body load walk (`visit_load`). Returns
+/// `(pattern_idx, first_scoped_idx)`: `lambda_expr(pat, body)` and
+/// `match_branch(pat, body, guard?)` scope everything after the pattern;
+/// `let_expr(pat, value, body)` scopes only the body — the value sees the
+/// OUTER scope.
+fn binder_form_layout(name: &str) -> Option<(usize, usize)> {
+    match name {
+        "lambda_expr" | "match_branch" => Some((0, 1)),
+        "let_expr" => Some((0, 2)),
+        _ => None,
+    }
+}
 
 /// Render a constraint label as ` 'label'` for diagnostics, or `""` if unlabeled.
 pub(crate) fn label_suffix(label: &Option<String>) -> String {
@@ -708,7 +770,11 @@ impl std::fmt::Display for LoadError {
                 write!(f, "load error: {}", message)
             }
             LoadError::ArrowTermInExprPosition { span } => {
-                write!(f, "{} at {}..{}", ARROW_EXPR_HINT, span.start, span.end)
+                write!(f, "{} at {}..{}", arrow_expr_hint(), span.start, span.end)
+            }
+            LoadError::BareArrowInLogicPosition { position, unresolved, span } => {
+                write!(f, "{} at {}..{}",
+                    bare_arrow_logic_msg(position, unresolved), span.start, span.end)
             }
             LoadError::AggregationConstraintUnsupported { label, span } => {
                 write!(f, "aggregation constraint{} is not yet enforced at {}..{}", label_suffix(label), span.start, span.end)
@@ -5478,53 +5544,210 @@ impl<'a> Loader<'a> {
         None
     }
 
-    /// WI-605 gate: true iff an `arrow`/`arrow_effect`-named Fn in op/const-body
-    /// expression position can only be the pratt-desugared infix `->` (a bare
-    /// `pattern -> body` where a lambda was meant), so the targeted
-    /// `ArrowTermInExprPosition` diagnostic should fire. Three conditions:
+    /// WI-618: walk a rule / fact / constraint / contract PARSE term and flag
+    /// any minted arrow (`arrow`/`arrow_effect`, i.e. an infix `->`) whose
+    /// subtree contains a binder-looking leaf name resolving to nothing —
+    /// the keyword-less `pattern -> body` lambda typo. Unlike the op/const
+    /// body case (`ArrowTermInExprPosition`, where a bare arrow is always an
+    /// error), arrow-as-TYPE is legitimate in these term positions (types are
+    /// terms), so provenance alone cannot condemn the term; the unresolvable
+    /// binder-looking leaf is what distinguishes the typo from a real arrow
+    /// type, whose leaves — sorts, type params, param/`result` places —
+    /// resolve, and whose logical variables are `?`-vars, not bare names.
     ///
-    /// 1. **Shape**: exactly what the pratt desugar mints — 2 positional args
-    ///    for `arrow`, 3 for `arrow_effect`, no named args. Any other shape
-    ///    (`arrow(1, 2, 3)`, `arrow(param: p, result: r)`) was WRITTEN as a
-    ///    call and keeps the normal path with its accurate unresolved-functor
-    ///    diagnostic — the lambda hint would be wrong advice there.
-    /// 2. **No value binder so named**: a value place named `arrow` — a
-    ///    let/lambda/match binder (in `local_names_stack`) or an op
-    ///    param/result/callback place (`SymbolKind::is_value_place`, which
-    ///    resolve in scope, NOT via the local stack) — may be function-typed
-    ///    and legitimately applied (`arrow(a, b)`, the foldLeft `f(init, h)`
-    ///    pattern). The loader can't cheaply see its type, so any value
-    ///    binder suppresses (conservative — a non-function value named
-    ///    `arrow` reverts to the old cascade rather than risking a false
-    ///    load-blocking lambda hint on legitimate code).
-    /// 3. **No callable in scope**: a resolved `Operation` / `Entity`
-    ///    (constructor) / `Const` named `arrow` is a genuine call target.
-    ///    An `Ambiguous` hit also suppresses — the normal path then reports
-    ///    the accurate `AmbiguousSymbol` error. Any OTHER hit (a sort or
-    ///    namespace named `arrow`) does NOT suppress: it cannot head a call,
-    ///    so the term can still only be the mis-parsed `->`.
-    fn bare_arrow_lambda_suspect(
-        &self,
-        name: &str,
-        pos_count: usize,
-        named_count: usize,
-    ) -> bool {
-        let shape_matches = named_count == 0
-            && ((name == "arrow" && pos_count == 2)
-                || (name == "arrow_effect" && pos_count == 3));
-        if !shape_matches || self.lookup_local_name(name).is_some() {
-            return false;
+    /// `bound` carries names that are legitimately in scope but invisible to
+    /// `resolve_in_scope`: WI-582 rule type-vars (`[t]` introducers live in
+    /// `rule_tvar_bounds`, never the symbol table) seeded by the caller, plus
+    /// binders of `lambda`/`let`/`match` forms met during the walk (their
+    /// local frames only exist in the later load walk, not in this pre-pass).
+    ///
+    /// A minted arrow is checked ONCE and not recursed into: a nested arrow's
+    /// leaves are a subset of the outer's, so the outer verdict covers it.
+    /// A WRITTEN call named `arrow` is not an arrow term — its args are
+    /// walked normally (they may contain minted arrows of their own).
+    fn check_bare_arrow_typo(
+        &mut self,
+        parse_id: TermId,
+        position: &'static str,
+        bound: &HashSet<String>,
+    ) {
+        let functor = match self.parsed.terms.get(parse_id) {
+            Term::Fn { functor, .. } => *functor,
+            _ => return,
+        };
+        let (is_arrow, binder_layout) = {
+            let name = self.parsed.symbols.name(functor);
+            (pratt::is_arrow_functor(name), binder_form_layout(name))
+        };
+        if is_arrow && self.parsed.terms.is_minted(parse_id) {
+            if let Some(unresolved) = self.first_unresolvable_arrow_leaf(parse_id, bound) {
+                self.errors.push(LoadError::BareArrowInLogicPosition {
+                    position,
+                    unresolved,
+                    span: self.parsed.terms.span(parse_id),
+                });
+            }
+            return;
         }
-        match self.kb.symbols.resolve_in_scope(name, self.current_scope.raw()) {
-            ResolveResult::NotFound => true,
-            ResolveResult::Ambiguous(_) => false,
-            ResolveResult::Found(sym) => match self.kb.symbols.get(sym) {
-                SymbolDef::Resolved { kind, .. } => !matches!(
-                    kind,
-                    SymbolKind::Operation | SymbolKind::Entity | SymbolKind::Const
-                ) && !kind.is_value_place(),
-                SymbolDef::Unresolved { .. } => true,
-            },
+        let (pos_args, named_args) = match self.parsed.terms.get(parse_id) {
+            Term::Fn { pos_args, named_args, .. } => (pos_args.clone(), named_args.clone()),
+            _ => unreachable!("checked to be Term::Fn above"),
+        };
+        // Provenance + arity gate: a user-written call merely NAMED like a
+        // binder form (not converter-minted, or lacking the binder arity)
+        // gets the generic recursion, not the scoped walk — its args are
+        // ordinary references, and slot-skipping them could hide a typo
+        // arrow sitting in the "pattern" position.
+        let minted_binder = binder_layout
+            .filter(|_| self.parsed.terms.is_minted(parse_id))
+            .and_then(|(pat_idx, scoped_from)| {
+                pos_args.get(pat_idx).map(|&pat| (pat_idx, scoped_from, pat))
+            });
+        if let Some((pat_idx, scoped_from, pat)) = minted_binder {
+            let mut inner = bound.clone();
+            self.pattern_binder_names(pat, &mut inner);
+            for (i, &child) in pos_args.iter().enumerate() {
+                if i == pat_idx {
+                    continue; // the pattern binds, it doesn't reference
+                }
+                let scope = if i >= scoped_from { &inner } else { bound };
+                self.check_bare_arrow_typo(child, position, scope);
+            }
+            for &(_, child) in &named_args {
+                self.check_bare_arrow_typo(child, position, &inner);
+            }
+            return;
+        }
+        for &child in &pos_args {
+            self.check_bare_arrow_typo(child, position, bound);
+        }
+        for &(_, child) in &named_args {
+            self.check_bare_arrow_typo(child, position, bound);
+        }
+    }
+
+    /// WI-618 leaf test: the first binder-looking `Ident` leaf under a minted
+    /// arrow that fails to resolve in the current scope — `NotFound` or
+    /// `Ambiguous` (an ambiguous data leaf gets no diagnostic elsewhere:
+    /// rule-body idents ride as inert data, so silence here would keep the
+    /// typo silent). "Binder-looking" = lowercase or `_`-led, the language's
+    /// value-binder convention; an UPPERCASE unresolved leaf is deliberately
+    /// not a witness — it reads as a sort/type name (e.g. a rule type-var by
+    /// convention), and the lambda hint would be wrong advice for what is
+    /// then a missing-import/typo'd-sort problem (a pre-existing, broader
+    /// silence not specific to arrows). Known false negative, accepted: a
+    /// typo whose every binder happens to collide with an in-scope name
+    /// (`(nil, cons) -> …`, an op param named like the binder) has no
+    /// unresolvable witness and still loads silently — catching it needs
+    /// type-level reasoning, not scope lookups.
+    ///
+    /// Binder forms met under the arrow scope their pattern names via
+    /// `bound` (see `check_bare_arrow_typo`). The name `Ident`s at
+    /// `pos_args[1]` of converter-minted `field_access`/`dot_apply` nodes
+    /// are skipped: a field or method name resolves via its receiver, not in
+    /// scope, so it can never witness the typo (the receiver side is still
+    /// walked; a user-written call that merely NAMES a functor
+    /// `field_access` is not minted and is walked in full).
+    fn first_unresolvable_arrow_leaf(
+        &self,
+        parse_id: TermId,
+        bound: &HashSet<String>,
+    ) -> Option<String> {
+        match self.parsed.terms.get(parse_id) {
+            Term::Ident(sym) => {
+                let name = self.parsed.symbols.name(*sym);
+                let binder_lead = name
+                    .chars()
+                    .next()
+                    .is_some_and(|c| c.is_lowercase() || c == '_');
+                if binder_lead
+                    && !bound.contains(name)
+                    && !matches!(
+                        self.kb.symbols.resolve_in_scope(name, self.current_scope.raw()),
+                        ResolveResult::Found(_)
+                    )
+                {
+                    return Some(name.to_owned());
+                }
+                None
+            }
+            Term::Fn { functor, pos_args, named_args } => {
+                let name = self.parsed.symbols.name(*functor);
+                // Provenance + arity gate, as in `check_bare_arrow_typo`.
+                let minted_binder = binder_form_layout(name)
+                    .filter(|_| self.parsed.terms.is_minted(parse_id))
+                    .and_then(|(pat_idx, scoped_from)| {
+                        pos_args.get(pat_idx).map(|&pat| (pat_idx, scoped_from, pat))
+                    });
+                if let Some((pat_idx, scoped_from, pat)) = minted_binder {
+                    let mut inner = bound.clone();
+                    self.pattern_binder_names(pat, &mut inner);
+                    for (i, &child) in pos_args.iter().enumerate() {
+                        if i == pat_idx {
+                            continue; // the pattern binds, it doesn't reference
+                        }
+                        let scope = if i >= scoped_from { &inner } else { bound };
+                        if let Some(w) = self.first_unresolvable_arrow_leaf(child, scope) {
+                            return Some(w);
+                        }
+                    }
+                    for &(_, child) in named_args {
+                        if let Some(w) = self.first_unresolvable_arrow_leaf(child, &inner) {
+                            return Some(w);
+                        }
+                    }
+                    return None;
+                }
+                let skip_name_slot = matches!(name, "field_access" | "dot_apply")
+                    && self.parsed.terms.is_minted(parse_id);
+                for (i, &child) in pos_args.iter().enumerate() {
+                    if skip_name_slot && i == 1 {
+                        continue;
+                    }
+                    if let Some(w) = self.first_unresolvable_arrow_leaf(child, bound) {
+                        return Some(w);
+                    }
+                }
+                for &(_, child) in named_args {
+                    if let Some(w) = self.first_unresolvable_arrow_leaf(child, bound) {
+                        return Some(w);
+                    }
+                }
+                None
+            }
+            _ => None,
+        }
+    }
+
+    /// WI-618: read-only mirror of `collect_pattern_names_into` — the bound
+    /// variable NAMES of a `pattern_var`/`pattern_tuple`/`pattern_constructor`
+    /// parse pattern, without minting binder symbols (this pre-pass must not
+    /// disturb the per-site alpha-renaming the load walk performs).
+    fn pattern_binder_names(&self, parse_id: TermId, out: &mut HashSet<String>) {
+        let Term::Fn { functor, pos_args, named_args } = self.parsed.terms.get(parse_id)
+        else { return };
+        match self.parsed.symbols.name(*functor) {
+            "pattern_var" => {
+                if let Some(&first) = pos_args.first() {
+                    if let Term::Ident(sym) = self.parsed.terms.get(first) {
+                        out.insert(self.parsed.symbols.name(*sym).to_owned());
+                    }
+                }
+            }
+            "pattern_tuple" => {
+                for &sub in pos_args {
+                    self.pattern_binder_names(sub, out);
+                }
+            }
+            "pattern_constructor" => {
+                for &sub in pos_args.iter().skip(1) {
+                    self.pattern_binder_names(sub, out);
+                }
+                for &(_, sub) in named_args {
+                    self.pattern_binder_names(sub, out);
+                }
+            }
+            _ => {}
         }
     }
 
@@ -6651,7 +6874,10 @@ impl<'a> Loader<'a> {
                     }
                     // WI-605: a bare `(x, acc) -> body` where a lambda was
                     // meant — see `LoadError::ArrowTermInExprPosition` for the
-                    // rationale and `bare_arrow_lambda_suspect` for the gate.
+                    // rationale. The gate is pratt PROVENANCE (WI-618): a
+                    // minted term IS the infix `->`, exactly; a user-written
+                    // `arrow(a, b)` call is never minted and keeps the normal
+                    // Apply path with its own accurate diagnostics.
                     // Recover with a Bottom leaf so the walk keeps its
                     // one-result shape; the arrow's children are NOT visited
                     // (visiting them is what produced the old misleading
@@ -6663,10 +6889,8 @@ impl<'a> Loader<'a> {
                     // typer never sees the Bottom (its loud `BottomExpr`
                     // post-elaboration invariant would otherwise add a second,
                     // internal-jargon error at the same site).
-                    "arrow" | "arrow_effect"
-                        if self.bare_arrow_lambda_suspect(
-                            &name, pos_args.len(), named_args.len(),
-                        ) =>
+                    n if pratt::is_arrow_functor(n)
+                        && self.parsed.terms.is_minted(parse_id) =>
                     {
                         self.errors.push(LoadError::ArrowTermInExprPosition {
                             span: self.parsed.terms.span(parse_id),
@@ -10195,6 +10419,10 @@ impl<'a> Loader<'a> {
             self.current_owner = Some(self.remap_symbol(*functor));
         }
 
+        // WI-618: facts are rules with empty bodies — a keyword-less lambda
+        // typo in a fact argument would otherwise assert inert arrow data.
+        self.check_bare_arrow_typo(f.term, "a fact", &HashSet::new());
+
         let term = self.convert_term(f.term);
         // Record the fact's top-level term span on the side-tables so
         // typing.rs error formatting can resolve it back to a span.
@@ -10588,9 +10816,9 @@ impl<'a> Loader<'a> {
         // introducer set is empty and `rule_tvar_bounds` stays empty.
         self.rule_tvar_bounds.clear();
         let mut folded_guard_ids: std::collections::HashSet<u32> = std::collections::HashSet::new();
+        let mut introducers: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
         {
-            let mut introducers: std::collections::HashSet<String> =
-                std::collections::HashSet::new();
             for h in &r.heads {
                 if let RuleHead::Term(tid) = h {
                     self.collect_rule_tvar_names(*tid, &mut introducers);
@@ -10649,6 +10877,14 @@ impl<'a> Loader<'a> {
             self.current_owner = Some(self.remap_name(label));
         }
 
+        // WI-618: rule type-vars (`[t]` introducers) live in rule_tvar_bounds,
+        // never the symbol table — exempt them from the bare-arrow leaf test
+        // so `?y <=> (t -> t)` over a rule tvar loads. ALL introducers are
+        // exempt, not just bounded ones: an unbounded `[t]` already gets the
+        // accurate WI-582 "no bounding guard" diagnostic above, and a second,
+        // wrong-advice lambda hint on the same name would only mislead.
+        let arrow_bound: HashSet<String> = introducers;
+
         // Single pass: build positive heads, detect any `⊥` head.
         let mut positive_heads: Vec<TermId> = Vec::with_capacity(r.heads.len());
         // WI-582: per positive-head typed-pattern bounds (`?x: T`), parallel to
@@ -10660,6 +10896,9 @@ impl<'a> Loader<'a> {
         for h in &r.heads {
             match h {
                 RuleHead::Term(tid) => {
+                    // WI-618: a keyword-less lambda typo in a head argument
+                    // would otherwise ride as an inert, never-matching pattern.
+                    self.check_bare_arrow_typo(*tid, "a rule head", &arrow_bound);
                     self.rule_head_type_bounds.clear();
                     self.in_rule_head = true;
                     let head = self.convert_term(*tid);
@@ -10695,6 +10934,9 @@ impl<'a> Loader<'a> {
                 if folded_guard_ids.contains(&tid.raw()) {
                     continue;
                 }
+                // WI-618: a keyword-less `pattern -> body` lambda typo in a
+                // body goal would otherwise ride as inert arrow-term data.
+                self.check_bare_arrow_typo(tid, "a rule body", &arrow_bound);
                 body_nodes.push(self.build_body_atom_occurrence(tid));
             }
         }
@@ -11212,14 +11454,18 @@ impl<'a> Loader<'a> {
         // clause is rejected. Only the user-written clauses are checked; the
         // synthesized auto-requires / bare-spec extras are spec applications,
         // never unify.
+        let no_tvars = HashSet::new();
         for clause in &o.requires {
             for &tid in clause {
                 self.reject_binding_unify_in_contract(tid, "requires");
+                // WI-618: a keyword-less lambda typo in a contract clause.
+                self.check_bare_arrow_typo(tid, "a `requires` clause", &no_tvars);
             }
         }
         for clause in &o.ensures {
             for &tid in clause {
                 self.reject_binding_unify_in_contract(tid, "ensures");
+                self.check_bare_arrow_typo(tid, "an `ensures` clause", &no_tvars);
             }
         }
 
@@ -11463,8 +11709,11 @@ impl<'a> Loader<'a> {
         // anywhere in it, across all constraint forms.
         let mut constraint_goals: Vec<TermId> = Vec::new();
         collect_constraint_body_goal_tids(&c.body, &mut constraint_goals);
+        let no_tvars = HashSet::new();
         for tid in constraint_goals {
             self.reject_binding_unify_in_contract(tid, "constraint");
+            // WI-618: a keyword-less lambda typo in a constraint goal.
+            self.check_bare_arrow_typo(tid, "a constraint", &no_tvars);
         }
 
         match &c.body {

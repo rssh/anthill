@@ -9,15 +9,14 @@
 //! The fix is a targeted load-blocking diagnostic
 //! (`LoadError::ArrowTermInExprPosition`) at the arrow term itself — exactly
 //! ONE error, no follow-on cascade (the poisoned body is not stored, so the
-//! typer never sees the recovery Bottom). The gate
-//! (`Loader::bare_arrow_lambda_suspect`) fires only on the exact pratt-minted
-//! shape with no local / callable / ambiguous resolution of the name, so a
-//! genuine call to something the user named `arrow` keeps its meaning and its
-//! own accurate diagnostics.
+//! typer never sees the recovery Bottom). The gate is pratt PROVENANCE
+//! (WI-618, `SimpleTermStore::is_minted`): only a desugared infix `->`
+//! fires, so a genuine call to something the user named `arrow` keeps its
+//! meaning and its own accurate diagnostics.
 
-/// The marker phrase of the targeted diagnostic (a stable slice of
-/// `load::ARROW_EXPR_HINT`).
-const HINT: &str = "needs the `lambda` keyword";
+/// The marker phrase of the targeted diagnostic (shared with wi618 — both
+/// diagnostics end in `load::LAMBDA_KEYWORD_HINT`).
+use crate::common::LAMBDA_HINT as HINT;
 
 fn load_errors(src: &str) -> Vec<String> {
     crate::common::try_load_kb_with(src).err().unwrap_or_default()
@@ -108,9 +107,8 @@ end
 }
 
 /// A function-typed op PARAM named `arrow`, legitimately applied — the
-/// foldLeft `f(init, h)` pattern. Params resolve in scope as value places
-/// (they are NOT let/lambda locals), and the gate must treat them as
-/// potential call targets, not fire the hint on working code.
+/// foldLeft `f(init, h)` pattern. `arrow(x, y)` is WRITTEN as a call (not
+/// pratt-minted), so the provenance gate never fires on working code.
 #[test]
 fn function_typed_param_named_arrow_still_applies() {
     let errs = load_errors(
@@ -129,8 +127,8 @@ end
     );
 }
 
-/// The gate is resolution-aware: an operation the user actually NAMED `arrow`
-/// is a genuine call and keeps the normal Apply path.
+/// An operation the user actually NAMED `arrow` is a genuine (written, not
+/// minted) call and keeps the normal Apply path.
 #[test]
 fn user_defined_arrow_operation_still_callable() {
     let errs = load_errors(
@@ -149,10 +147,9 @@ end
     );
 }
 
-/// The gate is KIND-aware: a non-callable symbol named `arrow` (here a sort)
-/// cannot head a call, so the bare-arrow lambda typo still gets the targeted
-/// hint — an unrelated name collision must not silently restore the old
-/// cascade.
+/// A symbol named `arrow` in scope (here a sort) changes nothing: the typo
+/// term is pratt-minted, so it still gets the targeted hint — an unrelated
+/// name collision must not silently restore the old cascade.
 #[test]
 fn non_callable_arrow_symbol_does_not_disable_hint() {
     let errs = load_errors(
@@ -175,11 +172,9 @@ end
     assert!(errs[0].contains(HINT), "expected the lambda-keyword hint; got: {errs:?}");
 }
 
-/// The gate is SHAPE-aware: only the exact pratt-minted shape (2 positional
-/// args for `arrow`, no named args) can be the mis-parsed `->`. An explicit
-/// wrong-arity call to an undefined `arrow` was WRITTEN as a call — it keeps
-/// the normal path's accurate unresolved-functor diagnostics, not wrong
-/// advice about a `->` the user never typed.
+/// An explicit call to an undefined `arrow` was WRITTEN as a call (not
+/// pratt-minted) — it keeps the normal path's accurate unresolved-functor
+/// diagnostics, not wrong advice about a `->` the user never typed.
 #[test]
 fn explicit_wrong_arity_arrow_call_keeps_normal_diagnostics() {
     let errs = load_errors(
@@ -201,10 +196,10 @@ end
     );
 }
 
-/// The gate treats an AMBIGUOUS resolution as a genuine call: two wildcard
-/// imports both exporting an `arrow` operation make `arrow(1, 2)` ambiguous,
-/// and the user must get the accurate ambiguity diagnostic — not the lambda
-/// hint (there is no `->` anywhere in the call).
+/// An AMBIGUOUS genuine call: two wildcard imports both exporting an `arrow`
+/// operation make the written call `arrow(1, 2)` ambiguous, and the user must
+/// get the accurate ambiguity diagnostic — not the lambda hint (there is no
+/// `->` anywhere in the call).
 #[test]
 fn ambiguous_arrow_call_reports_ambiguity_not_lambda_hint() {
     let liba = r#"

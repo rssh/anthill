@@ -2,6 +2,13 @@
 
 use std::path::PathBuf;
 
+/// WI-605/WI-618: the marker phrase of both bare-arrow lambda-typo
+/// diagnostics — a stable slice of `load::LAMBDA_KEYWORD_HINT`, the tail the
+/// two messages share. One const so the wi605/wi618 suites pin the same
+/// invariant.
+#[allow(dead_code)]
+pub const LAMBDA_HINT: &str = "needs the `lambda` keyword";
+
 use anthill_core::eval::{self, Interpreter};
 use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::load::{self, NullResolver};

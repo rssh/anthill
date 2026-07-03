@@ -821,6 +821,10 @@ impl<'a> Converter<'a> {
                             pos_args: SmallVec::from_slice(&[acc, field_tid]),
                             named_args: SmallVec::new(),
                         }, span);
+                        // WI-618: accessor provenance, as for
+                        // BuildFrame::FieldAccess — the segments of a dotted
+                        // name are not scope-resolvable leaves.
+                        self.terms.mark_minted(acc);
                     }
                 }
                 results.push(acc);
@@ -1442,7 +1446,7 @@ impl<'a> Converter<'a> {
                 results.push(tid);
             }
             BuildFrame::Prefix { node, op_text } => {
-                use super::pratt::prefix_entry;
+                use super::pratt::{mint_op_node, prefix_entry};
                 let span = self.span(node);
                 let operand = results.pop().expect("prefix: missing operand on result stack");
                 let functor_name = match prefix_entry(&op_text) {
@@ -1453,12 +1457,10 @@ impl<'a> Converter<'a> {
                     }
                 };
                 let functor = self.intern(functor_name);
-                results.push(self.terms.alloc(
-                    Term::Fn {
-                        functor,
-                        pos_args: SmallVec::from_elem(operand, 1),
-                        named_args: SmallVec::new(),
-                    },
+                results.push(mint_op_node(
+                    &mut self.terms,
+                    functor,
+                    SmallVec::from_elem(operand, 1),
                     span,
                 ));
             }
@@ -1467,14 +1469,19 @@ impl<'a> Converter<'a> {
                 let object = results.pop().expect("field_access: missing object");
                 let field_tid = self.terms.alloc(Term::Ident(field_sym), field_span);
                 let functor = self.intern("field_access");
-                results.push(self.terms.alloc(
+                let tid = self.terms.alloc(
                     Term::Fn {
                         functor,
                         pos_args: SmallVec::from_slice(&[object, field_tid]),
                         named_args: SmallVec::new(),
                     },
                     span,
-                ));
+                );
+                // WI-618: accessor provenance — consumers (the bare-arrow leaf
+                // walk) must tell this converter-minted node from a user call
+                // to a functor that happens to be named `field_access`.
+                self.terms.mark_minted(tid);
+                results.push(tid);
             }
             BuildFrame::DotApply { node, name_sym, name_span, slots } => {
                 // Result layout (drain_start..): receiver, then one entry per
@@ -1497,7 +1504,10 @@ impl<'a> Converter<'a> {
                 }
                 results.truncate(drain_start);
                 let functor = self.intern("dot_apply");
-                results.push(self.terms.alloc(Term::Fn { functor, pos_args, named_args }, span));
+                let tid = self.terms.alloc(Term::Fn { functor, pos_args, named_args }, span);
+                // WI-618: accessor provenance, as for FieldAccess above.
+                self.terms.mark_minted(tid);
+                results.push(tid);
             }
             BuildFrame::SetLiteral { node, count } => {
                 let span = self.span(node);
@@ -1571,7 +1581,12 @@ impl<'a> Converter<'a> {
                     args.push(results[drain_start + 2]);
                 }
                 results.truncate(drain_start);
-                results.push(self.alloc_fn_term("match_branch", args, span));
+                let tid = self.alloc_fn_term("match_branch", args, span);
+                // WI-618: binder-form provenance — consumers scoping this
+                // form's pattern binders must tell it from a user call that
+                // happens to be named `match_branch`.
+                self.terms.mark_minted(tid);
+                results.push(tid);
             }
             BuildFrame::IfExpr { node } => {
                 let span = self.span(node);
@@ -1614,6 +1629,8 @@ impl<'a> Converter<'a> {
                     },
                     span,
                 );
+                // WI-618: binder-form provenance, as for MatchBranch.
+                self.terms.mark_minted(let_id);
                 results.push(let_id);
             }
             BuildFrame::LambdaExpr { node } => {
@@ -1622,11 +1639,14 @@ impl<'a> Converter<'a> {
                 let param = results[drain_start];
                 let body = results[drain_start + 1];
                 results.truncate(drain_start);
-                results.push(self.alloc_fn_term(
+                let tid = self.alloc_fn_term(
                     "lambda_expr",
                     SmallVec::from_slice(&[param, body]),
                     span,
-                ));
+                );
+                // WI-618: binder-form provenance, as for MatchBranch.
+                self.terms.mark_minted(tid);
+                results.push(tid);
             }
             BuildFrame::ProofStmt { node, target, strategy_name, using, has_conclude } => {
                 // WI-538: `proof_stmt(body [, conclude]) { proof_meta }`.
