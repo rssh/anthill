@@ -457,6 +457,38 @@ end
               (identifier))))))))
 
 =====================================
+WI-620 Lambda with a parenthesized single binder
+=====================================
+
+operation make_adder(x: Int) -> Fun = lambda (y) -> add(x, y)
+
+---
+
+(source_file
+  (operation_declaration
+    name: (name
+      (identifier))
+    (param
+      name: (identifier)
+      type: (simple_type
+        (name
+          (identifier))))
+    return_type: (simple_type
+      (name
+        (identifier)))
+    body: (lambda_expr
+      param: (pattern_paren
+        pattern: (pattern_var
+          (identifier)))
+      body: (fn_term
+        name: (name
+          (identifier))
+        (name
+          (identifier))
+        (name
+          (identifier))))))
+
+=====================================
 Lambda as a named call argument
 =====================================
 

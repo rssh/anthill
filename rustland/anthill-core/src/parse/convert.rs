@@ -1260,6 +1260,20 @@ impl<'a> Converter<'a> {
                     }
                 }
             }
+            // WI-620: `(p)` is pure grouping — `lambda (x) -> body` binds the
+            // same single pattern as the bare spelling. Unwrap to the inner
+            // pattern; a single parenthesized element is NOT a 1-tuple. Pushed
+            // as a work op (not direct recursion) so nesting depth can't grow
+            // the host stack.
+            "pattern_paren" => {
+                match self.field(node, "pattern") {
+                    Some(p) => work.push(WorkOp::Visit(WorkKind::Pattern, p)),
+                    None => {
+                        self.err("pattern_paren: missing inner pattern".to_string(), node);
+                        results.push(self.alloc_bottom(span));
+                    }
+                }
+            }
             // WI-517: a type-annotated lambda binder (`(x: T)` or a tuple
             // element `(a: A, b: B)`). Lowers to the SAME `pattern_var`
             // functor as a bare binder — so name-collection and the pattern
@@ -3516,6 +3530,7 @@ fn is_pattern_kind(kind: &str) -> bool {
             | "pattern_var"
             | "typed_binder"
             | "pattern_typed"
+            | "pattern_paren"
             | "pattern_literal"
             | "pattern_constructor"
             | "pattern_tuple"

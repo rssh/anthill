@@ -558,3 +558,6 @@ mod wi606_unqualified_dispatch_return_threading_test;
 #[path = "include/wi618_bare_arrow_logic_test.rs"]
 mod wi618_bare_arrow_logic_test;
 
+#[path = "include/wi620_paren_lambda_param_test.rs"]
+mod wi620_paren_lambda_param_test;
+

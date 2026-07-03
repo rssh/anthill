@@ -468,6 +468,7 @@ A lambda binder may carry an **optional `: Type` annotation**, written in parens
 ```
 lambda x -> x                              -- identity (type inferred at use site)
 lambda x -> add(x, 1)                      -- single parameter
+lambda (x) -> add(x, 1)                    -- same: parens are grouping, not a 1-tuple
 lambda (a, b) -> add(a, b)                 -- tuple destructuring (two parameters)
 lambda () -> compute()                     -- nullary thunk: type () -> R
 
@@ -484,7 +485,7 @@ operation make_adder(x: Int64) -> (Int64) -> Int64 = lambda y -> add(x, y)
 map(xs, lambda x -> add(x, 1))
 ```
 
-The parameter pattern is a bare variable (`x`), a single parenthesized typed binder (`(x: T)`), a tuple destructuring (`(a, b)` or `(a: A, b: B)`, two or more binders), or the empty tuple (`()`) for a nullary thunk; the nullary form has arrow type `() -> R`.
+The parameter pattern is a bare variable (`x`), a single parenthesized typed binder (`(x: T)`), a tuple destructuring (`(a, b)` or `(a: A, b: B)`, two or more binders), or the empty tuple (`()`) for a nullary thunk; the nullary form has arrow type `() -> R`. Parentheses around a single pattern are pure grouping — in **any** pattern position (lambda parameter, `match` case, `let`): `lambda (x) -> …` binds the same single variable as `lambda x -> …`, and `case (p) -> …` matches the same as `case p -> …`. A single parenthesized element is **not** a 1-tuple (WI-620).
 
 ## 5. Kernel Constructs
 

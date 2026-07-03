@@ -1324,7 +1324,14 @@ module.exports = grammar({
       $.pattern_wildcard,
       $.pattern_var,
       $.pattern_typed,
+      $.pattern_paren,
     ),
+
+    // Parenthesized pattern: pure grouping, `(p)` = `p` — a single
+    // parenthesized element is NOT a 1-tuple (`lambda (x) -> body`
+    // binds one variable). The converter unwraps to the inner
+    // pattern. See WI-620.
+    pattern_paren: $ => seq('(', field('pattern', $._pattern), ')'),
 
     // A single parenthesized type-annotated binder, e.g.
     // `lambda (x: Int64) -> x`. The parens are required (a bare `x: T`
