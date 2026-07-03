@@ -28,7 +28,13 @@ pub type FrameTypeArgs = SmallVec<[(Symbol, TermId); 2]>;
 /// State a frame is in while waiting for a child frame to produce a value.
 /// When the child delivers, the matching variant says how to consume the
 /// value and what the frame should do next.
-#[derive(Debug)]
+///
+/// WI-078 (proposal 027, Phase A step a): `Clone` so a frame — and the whole
+/// `ActivationStack` — can be snapshotted for continuation capture. Every field
+/// is already cloneable: `Value` (`value.rs`), `RequirementHandle`
+/// (`requirement_arena.rs`), `MatchBranch` (`node_occurrence.rs`), and the
+/// `Rc<NodeOccurrence>` / `Symbol` / `TermId` leaves.
+#[derive(Debug, Clone)]
 pub enum AwaitState {
     /// `if_expr` cond is being evaluated; on delivery pick a branch and
     /// reduce it in this frame.
@@ -101,6 +107,13 @@ pub enum AwaitState {
 }
 
 /// A single activation.
+///
+/// WI-078 (Phase A step a): `Clone` — a cloned frame shares its immutable
+/// `Rc<NodeOccurrence>` sub-trees and deep-copies its mutable `locals` /
+/// `buffered` value vectors, which is exactly the snapshot semantics
+/// `snapshot_eval_state` needs (the snapshot must not alias the live frame's
+/// evolving bindings).
+#[derive(Clone)]
 pub struct Frame {
     /// Operation the frame is running inside (for error reporting).
     pub op: Symbol,
@@ -156,6 +169,11 @@ impl Frame {
     }
 }
 
+/// WI-078 (Phase A step a): `Clone` — the whole activation stack is the
+/// continuation. `snapshot_eval_state` (Phase A step c) clones it to capture
+/// "the rest of the computation" for later `resume_with`; multi-shot `Choice`
+/// re-enters a cloned snapshot per alternative.
+#[derive(Clone)]
 pub struct ActivationStack {
     frames: Vec<Frame>,
     depth_cap: usize,
@@ -203,14 +221,18 @@ impl Default for ActivationStack {
 mod tests {
     use super::*;
     use crate::intern::Symbol;
-    use crate::kb::node_occurrence::{Expr, NodeOccurrence};
+    use crate::kb::node_occurrence::{Expr, MatchBranch, NodeOccurrence};
     use crate::span::{SourceId, SourceSpan};
 
-    fn dummy_frame() -> Frame {
+    fn dummy_occ() -> Rc<NodeOccurrence> {
         let span = SourceSpan::new(SourceId::from_raw(0), 0, 0);
+        NodeOccurrence::new_expr(Expr::Bottom, span, None)
+    }
+
+    fn dummy_frame() -> Frame {
         Frame {
             op: Symbol::from_raw(0),
-            expr: NodeOccurrence::new_expr(Expr::Bottom, span, None),
+            expr: dummy_occ(),
             locals: SmallVec::new(),
             requirements: SmallVec::new(),
             type_args: SmallVec::new(),
@@ -235,5 +257,43 @@ mod tests {
         s.push(dummy_frame()).unwrap();
         let err = s.push(dummy_frame()).unwrap_err();
         assert!(matches!(err, super::super::error::EvalError::DepthExceeded { cap: 2 }));
+    }
+
+    /// WI-078 (Phase A step a): the activation stack is `Clone` — the operation
+    /// `snapshot_eval_state` (step c) will use to capture a continuation. The
+    /// clone must (1) preserve the full frame structure, including the
+    /// `MatchDispatch` `AwaitState` whose `MatchBranch` `Clone` was the
+    /// derive-chain blocker, and (2) be independent of subsequent mutation of
+    /// the live stack (a snapshot must not track later pushes/pops).
+    #[test]
+    fn clone_snapshots_stack_independently() {
+        let span = SourceSpan::new(SourceId::from_raw(0), 0, 0);
+        // A frame suspended on a match dispatch (exercises MatchBranch clone).
+        let mut waiting = dummy_frame();
+        waiting.awaiting = Some(AwaitState::MatchDispatch {
+            branches: vec![MatchBranch {
+                pattern: dummy_occ(),
+                guard: None,
+                body: dummy_occ(),
+                span,
+            }],
+            scrutinee_occ: dummy_occ(),
+        });
+        let mut s = ActivationStack::new();
+        s.push(waiting).unwrap();
+        s.push(dummy_frame()).unwrap();
+
+        let snap = s.clone(); // continuation capture
+
+        // Later live-stack mutation does not touch the snapshot.
+        s.pop();
+        assert_eq!(s.depth(), 1);
+        assert_eq!(snap.depth(), 2, "a snapshot must not track the live stack's frames");
+
+        // The MatchDispatch AwaitState round-tripped through the clone.
+        match &snap.frames[0].awaiting {
+            Some(AwaitState::MatchDispatch { branches, .. }) => assert_eq!(branches.len(), 1),
+            other => panic!("expected a cloned MatchDispatch frame, got {other:?}"),
+        }
     }
 }

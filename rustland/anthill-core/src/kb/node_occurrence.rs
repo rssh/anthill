@@ -786,7 +786,11 @@ pub enum Expr {
     Bottom,
 }
 
-#[derive(Debug)]
+// WI-078 (proposal 027, Phase A step a): `Clone` so a `MatchDispatch`
+// `AwaitState` — and the `Frame`/`ActivationStack` above it — can be snapshotted
+// for continuation capture (`snapshot_eval_state`). All fields are already
+// cloneable (`Rc`/`Option<Rc>`/`SourceSpan`).
+#[derive(Debug, Clone)]
 pub struct MatchBranch {
     /// WI-318: pattern is now a Pattern-kind occurrence (or
     /// `Expr::Var`-kind for reflection meta-vars). Walked structurally
