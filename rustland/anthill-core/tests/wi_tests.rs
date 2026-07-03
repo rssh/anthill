@@ -561,3 +561,6 @@ mod wi618_bare_arrow_logic_test;
 #[path = "include/wi620_paren_lambda_param_test.rs"]
 mod wi620_paren_lambda_param_test;
 
+#[path = "include/wi619_two_ary_head_introducer_test.rs"]
+mod wi619_two_ary_head_introducer_test;
+

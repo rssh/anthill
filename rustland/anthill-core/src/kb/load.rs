@@ -10765,8 +10765,21 @@ impl<'a> Loader<'a> {
     /// application. Read-only; runs before head conversion so the `typed_var` strip
     /// and the body-guard scan know which annotations name an introduced type-var.
     fn collect_rule_tvar_names(&self, head_parse_id: TermId, out: &mut std::collections::HashSet<String>) {
+        // For an equational head `keep[T](…) = rhs` the introducer rides on the
+        // LHS operand (`pos_args[0]`), so read the type-args there rather than off
+        // the whole `eq(lhs, rhs)` node. WI-619: recognize the equational head by
+        // its connective FUNCTOR (`eq`/`unify`/`struct_eq`, the pratt desugar of
+        // `=`/`<=>`/`===`), NOT by `pos_args.len() == 2` — a plain 2-ary predicate
+        // head (`same_ty[t](?x, ?y)`) also has two positional args, and reading
+        // type-args off `pos_args[0]` (the first ARGUMENT `?x`, which has none)
+        // there would silently drop the head's `[t]` introducer (1-ary and 3-ary
+        // heads read off the head node and worked; exactly 2-ary misfired).
         let target = match self.parsed.terms.get(head_parse_id) {
-            Term::Fn { pos_args, .. } if pos_args.len() == 2 => pos_args[0],
+            Term::Fn { functor, pos_args, .. }
+                if pos_args.len() == 2 && self.is_parse_equation_functor(*functor) =>
+            {
+                pos_args[0]
+            }
             _ => head_parse_id,
         };
         if let Some(bindings) = self.read_parse_call_type_args(target) {
@@ -10780,6 +10793,17 @@ impl<'a> Loader<'a> {
                 }
             }
         }
+    }
+
+    /// WI-619 — is this PARSE-side functor an equation connective (`eq` / `unify`
+    /// / `struct_eq`, the pratt desugar of `=` / `<=>` / `===`)? Used to recognize
+    /// an equational rule head `lhs = rhs` at the parse layer — where the head's
+    /// `[T]` introducer rides on the LHS operand, not the `eq(lhs, rhs)` node.
+    /// Delegates to [`pratt::is_equation_functor`] (single source of truth with the
+    /// infix table that mints these functors), mirroring the KB-side
+    /// [`is_equational_head`] which classifies the resolved qualified name instead.
+    fn is_parse_equation_functor(&self, functor: Symbol) -> bool {
+        pratt::is_equation_functor(self.parsed.symbols.name(functor))
     }
 
     /// WI-582 — recognize a body guard `Spec[X]` where `X` is a head-introduced

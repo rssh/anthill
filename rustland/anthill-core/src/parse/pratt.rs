@@ -46,6 +46,13 @@ pub const ARROW_FUNCTOR: &str = "arrow";
 /// The functor the ternary `-> … @ …` desugars to (an effectful arrow type).
 pub const ARROW_EFFECT_FUNCTOR: &str = "arrow_effect";
 
+/// The equation-connective functors the infix desugar mints for `=`/`<=>`/`===`
+/// (proposal 049/051). An equational rule head `lhs = rhs` carries one of these
+/// as its head functor, with the LHS at `pos_args[0]` — see [`is_equation_functor`].
+pub const EQ_FUNCTOR: &str = "eq";
+pub const UNIFY_FUNCTOR: &str = "unify";
+pub const STRUCT_EQ_FUNCTOR: &str = "struct_eq";
+
 /// Is `name` one of the arrow-family functors the pratt desugar mints for
 /// `->`/`@`? The loader's bare-arrow diagnostics (WI-605/WI-618) key on this
 /// together with `SimpleTermStore::is_minted` — one source of truth with the
@@ -54,24 +61,34 @@ pub fn is_arrow_functor(name: &str) -> bool {
     name == ARROW_FUNCTOR || name == ARROW_EFFECT_FUNCTOR
 }
 
+/// Is `name` one of the equation-connective functors the infix desugar mints
+/// for `=`/`<=>`/`===`? Kept as one source of truth with the TABLE below (via the
+/// shared constants), so a new equation spelling cannot drift out of the loader's
+/// equational-head recognition (WI-619: the `[T]` introducer on an equational head
+/// rides on the LHS operand, not the whole `eq(lhs, rhs)` node). Parse-layer peer
+/// of the KB-side `is_equational_head`.
+pub fn is_equation_functor(name: &str) -> bool {
+    name == EQ_FUNCTOR || name == UNIFY_FUNCTOR || name == STRUCT_EQ_FUNCTOR
+}
+
 fn infix_entry(op: &str) -> Option<&'static InfixEntry> {
     static TABLE: &[(&str, InfixEntry)] = &[
         ("|",  InfixEntry { priority: 1, assoc: Assoc::Left,  functor: "or",  continuation: None }),
         ("or", InfixEntry { priority: 1, assoc: Assoc::Left,  functor: "or",  continuation: None }),
         ("&",  InfixEntry { priority: 2, assoc: Assoc::Left,  functor: "and", continuation: None }),
         ("and",InfixEntry { priority: 2, assoc: Assoc::Left,  functor: "and", continuation: None }),
-        ("=",  InfixEntry { priority: 3, assoc: Assoc::None,  functor: "eq",  continuation: None }),
+        ("=",  InfixEntry { priority: 3, assoc: Assoc::None,  functor: EQ_FUNCTOR,  continuation: None }),
         ("!=", InfixEntry { priority: 3, assoc: Assoc::None,  functor: "neq", continuation: None }),
         // WI-522 / proposal 049: `<=>` = unify (anthill.kernel.unify). It lexes as one
         // `operator_symbol` token (the regex matches the longest run, so `<=>` wins over
         // `<=`); here it maps to the `unify` functor. The resolver `builtin_unify` is WI-523.
-        ("<=>",InfixEntry { priority: 3, assoc: Assoc::None,  functor: "unify", continuation: None }),
+        ("<=>",InfixEntry { priority: 3, assoc: Assoc::None,  functor: UNIFY_FUNCTOR, continuation: None }),
         // WI-615 / proposal 051: `===` = structural identity test (anthill.kernel.struct_eq).
         // Like `<=>`, it lexes as one `operator_symbol` token — the longest-run regex makes
         // `===` win over `==`/`=` — so no grammar change is needed. Maps to the `struct_eq`
         // functor; the resolver reuses `builtin_eq` (structural, never dispatches). Distinct
         // from `=`/`eq` (`anthill.prelude.Eq.eq`), which is semantic (Phase 2 / WI-616).
-        ("===",InfixEntry { priority: 3, assoc: Assoc::None,  functor: "struct_eq", continuation: None }),
+        ("===",InfixEntry { priority: 3, assoc: Assoc::None,  functor: STRUCT_EQ_FUNCTOR, continuation: None }),
         ("<",  InfixEntry { priority: 4, assoc: Assoc::None,  functor: "lt",  continuation: None }),
         ("<=", InfixEntry { priority: 4, assoc: Assoc::None,  functor: "lte", continuation: None }),
         (">",  InfixEntry { priority: 4, assoc: Assoc::None,  functor: "gt",  continuation: None }),
