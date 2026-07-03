@@ -267,6 +267,18 @@ pub enum SortKind {
 pub(crate) struct SortOpsTable {
     /// impl sort symbol → (op short-name symbol → target op symbol).
     by_impl: HashMap<Symbol, HashMap<Symbol, Symbol>>,
+    /// WI-616 — semantic-equality dispatch index: value-head functor →
+    /// the carrier's OWN `eq` override op. Built by
+    /// `load::build_sort_ops_table` for every sort whose `sort_ops` row
+    /// carries a genuine own `eq` member (`typing::carrier_own_op` filters:
+    /// not the `Eq.eq` spec op, parented by the sort itself): keys are the
+    /// sort's entity constructors and its SELF-RETURNING ops (the shapes its
+    /// values are made of — `Set.insert`/`Set.empty`; a non-self-returning
+    /// op like `Map.get` returns a DIFFERENT sort's value and must not key
+    /// dispatch here). Read per `eq`/`neq` goal on the structurally-unequal
+    /// path (`resolve.rs` `sem_eq_dispatch_target`) — one hash probe, no
+    /// string hashing, no KB scans.
+    eq_dispatch: HashMap<Symbol, Symbol>,
 }
 
 // ── KnowledgeBase ───────────────────────────────────────────────
@@ -2075,6 +2087,27 @@ impl KnowledgeBase {
     pub(crate) fn insert_sort_op(&mut self, impl_sort: Symbol, op_short: Symbol, target: Symbol) {
         let key = self.canonical_sort_sym(impl_sort);
         self.sort_ops.by_impl.entry(key).or_default().insert(op_short, target);
+    }
+
+    /// WI-616 — record a `value-head functor → carrier's own eq` dispatch
+    /// entry. Called only by `load::build_sort_ops_table`.
+    pub(crate) fn insert_eq_dispatch(&mut self, functor: Symbol, target: Symbol) {
+        self.sort_ops.eq_dispatch.insert(functor, target);
+    }
+
+    /// WI-616 — the carrier `eq` override a value headed by `functor`
+    /// dispatches semantic equality through, if any. O(1); `None` = the value's
+    /// carrier has no own `eq` (structural equality is its instance).
+    pub(crate) fn eq_dispatch_target(&self, functor: Symbol) -> Option<Symbol> {
+        self.sort_ops.eq_dispatch.get(&functor).copied()
+    }
+
+    /// WI-616 — whether ANY carrier in the KB overrides `eq` (the dispatch
+    /// index is non-empty). The resolver's semantic-eq fast path: when no
+    /// override exists at all, structurally-distinct operands need no
+    /// reachable-override scan.
+    pub(crate) fn has_eq_dispatch_entries(&self) -> bool {
+        !self.sort_ops.eq_dispatch.is_empty()
     }
 
     /// Canonicalize any symbol to the single resolved `Symbol` for its
@@ -4173,13 +4206,14 @@ impl KnowledgeBase {
         // type-parameters. Guard tier: checks `provides` at the current binding,
         // suspends-as-residual on an under-determined carrier.
         self.register_builtin("anthill.kernel.find_dictionary", BuiltinTag::FindDictionary);
-        // Arithmetic and comparison
-        self.register_builtin("anthill.prelude.Eq.eq", BuiltinTag::Eq);
-        // WI-615 / proposal 051: `===` (structural identity) reuses the structural
-        // `builtin_eq` under its OWN symbol, so the Phase-2 flip of `=`/`eq` to
-        // dispatched semantic equality (WI-616) leaves `===` structural.
+        // Arithmetic and comparison. WI-616 (proposal 051 Phase 2): `=`/`eq`
+        // and `neq` are the SEMANTIC `Eq` ops — structural until a carrier
+        // declares its own `eq` override (`Set.eq`/`Map.eq`), which then
+        // dispatches at SLD. `===` (struct_eq, WI-615) keeps the structural
+        // `builtin_eq`: total, carrier-agnostic, never dispatches.
+        self.register_builtin("anthill.prelude.Eq.eq", BuiltinTag::SemEq);
         self.register_builtin("anthill.kernel.struct_eq", BuiltinTag::Eq);
-        self.register_builtin("anthill.prelude.Eq.neq", BuiltinTag::Neq);
+        self.register_builtin("anthill.prelude.Eq.neq", BuiltinTag::SemNeq);
         self.register_builtin("anthill.prelude.Ordered.gt", BuiltinTag::Gt);
         self.register_builtin("anthill.prelude.Ordered.lt", BuiltinTag::Lt);
         self.register_builtin("anthill.prelude.Ordered.gte", BuiltinTag::Gte);

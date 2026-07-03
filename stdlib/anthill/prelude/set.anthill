@@ -4,16 +4,46 @@
 -- that made it the lone container spelled as a carrier-parameter typeclass. It is
 -- now uniform with its sibling Map.)
 sort anthill.prelude.Set
+  import anthill.prelude.Eq
+
   sort T = ?         -- element type
   requires Eq[T]
 
+  -- WI-616 (proposal 051 Phase 2): Set is the first NON-STRUCTURAL Eq carrier —
+  -- set equality is MEMBERSHIP (extensional) equality, not term structure
+  -- (`insert` is commutative + idempotent, so `{1,2}` and `{2,1}` are one set in
+  -- two spellings). `provides Eq[T = Set]` declares the instance; the own `eq`
+  -- below is the WI-350/WI-444 short-name override the resolver's semantic
+  -- `=`/`eq` dispatches to. Structural comparison of two sets is still `===`.
+  provides Eq[T = Set]
+
   operation empty() -> Set
   operation insert(s: Set, x: T) -> Set
+  operation eq(a: Set, b: Set) -> Bool
   operation member(x: T, s: Set) -> Bool
   operation subset(s1: Set, s2: Set) -> Bool
   operation union(s1: Set, s2: Set) -> Set
   operation intersection(s1: Set, s2: Set) -> Set
   operation difference(s1: Set, s2: Set) -> Set
+
+  -- WI-616: relational (`:-`) rules make `eq`/`subset`/`member` COMPUTABLE by
+  -- ordinary SLD over the symbolic `insert`/`empty` algebra (the List.member
+  -- precedent) — this is what the dispatched `eq` resolves against. Element
+  -- comparison goes through the SEMANTIC spec op `Eq.eq` (not structural
+  -- unification), so equality dispatches all the way down (`Set[Set[Int]]`
+  -- compares inner sets by membership too). The `[simp]` laws below remain the
+  -- typer/rewriter face of the same algebra.
+  -- DOMAIN + COST: the instance decides values in `insert`/`empty` normal form;
+  -- an unreduced op-term (`union(s1, s2)` — no relational rules) has no proof,
+  -- so a compare against one reads not-equal exactly as the structural test
+  -- did (reduce via the laws first for a semantic answer). The derivation is
+  -- O(n·m) element compares per subset direction — fine for the rule-body
+  -- tests it serves; a hashed host-bodied `eq` is the WI-625 bridge's job.
+  rule eq(?a, ?b) :- subset(?a, ?b), subset(?b, ?a)
+  rule subset(empty(), ?)
+  rule subset(insert(?s, ?x), ?s2) :- member(?x, ?s2), subset(?s, ?s2)
+  rule member(?x, insert(?, ?y)) :- Eq.eq(?x, ?y)
+  rule member(?x, insert(?s, ?)) :- member(?x, ?s)
 
   -- Laws. The genuinely-reducing (terminating, LHS→RHS shrinking) laws are tagged
   -- [simp] so the type-directed rewriter fires them once the redex's carrier is

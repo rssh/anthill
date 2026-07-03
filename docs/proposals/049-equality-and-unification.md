@@ -302,6 +302,12 @@ the continuum, and the WI-370 custom node is what produces a richer E.)
 This sentence states exactly when the two diverge and which to reach for, and defers the
 `===` (structural-test) cell until a semantic-equality carrier appears.
 
+> **Superseded by [051](051-structural-vs-semantic-equality.md)** (WI-615/WI-616): the
+> first semantic-equality carrier arrived (`Set` — insert-commutativity makes set equality
+> membership-based), so `===` is un-parked (`anthill.kernel.struct_eq`) and `=`/`eq` now
+> genuinely dispatch through the carrier's own `eq` override (`Set.eq`/`Map.eq`); the
+> "someday" clause above is discharged. `<=>`'s half of the Invariant is unchanged.
+
 ## Lexing
 
 `<=>` is a single token, lexed **greedy-longest before `<=`** (lte). `a <= b` is lte;

@@ -4156,6 +4156,52 @@ pub fn build_sort_ops_table(kb: &mut KnowledgeBase) {
             }
         }
     }
+
+    // ── Pass 3 (WI-616): the semantic-equality dispatch index. ─────
+    // For every sort whose sort_ops row carries a GENUINE own `eq` member
+    // (`carrier_own_op`: not the `Eq.eq` spec op, parented by the sort itself —
+    // never a pass-2-inherited foreign same-short-name default), key that
+    // target under the shapes the sort's VALUES are headed by: its entity
+    // constructors and its SELF-RETURNING ops (`Set.insert`/`Set.empty`;
+    // `Map.get` returns an Option, not a Map, and must not key Map dispatch).
+    // The resolver's `eq`/`neq` builtin probes this per structurally-unequal
+    // goal — precomputing here keeps that path to one hash lookup.
+    let Some(eq_spec) = kb.try_resolve_symbol("anthill.prelude.Eq.eq") else { return };
+    let eq_short = kb.intern("eq");
+    let mut entries: Vec<(Symbol, Symbol)> = Vec::new();
+    for &sort_sym in sort_ops.keys() {
+        let Some(target) = super::typing::carrier_own_op(kb, sort_sym, eq_spec, eq_short) else {
+            continue;
+        };
+        for ctor in kb.constructors_of_sort(sort_sym) {
+            entries.push((ctor, target));
+        }
+        let sort_canon = kb.canonical_sort_sym(sort_sym);
+        for &op_sym in sort_ops.get(&sort_sym).into_iter().flatten() {
+            // No OperationInfo ⇒ not a classifiable value shape (e.g. the
+            // auto-bound short-name ops a `provides` block registers) — such a
+            // symbol never heads a constructed value, so skipping it cannot
+            // hide a dispatchable shape.
+            let Some(rec) = super::op_info::lookup_operation_info(kb, op_sym) else { continue };
+            let self_returning = super::typing::sort_functor_of_view(kb, &rec.return_type)
+                .map(|h| kb.canonical_sort_sym(h) == sort_canon)
+                .unwrap_or(false);
+            if self_returning {
+                entries.push((op_sym, target));
+            }
+        }
+    }
+    // Key each entry under BOTH the raw symbol and its canonical copy: the
+    // probe side (`eq_dispatch_target`) reads a goal-head functor raw (O(1),
+    // no per-probe canonicalization), and one qualified name can be interned
+    // under several Symbols.
+    for (functor, target) in entries {
+        let canon = kb.canonical_sym(functor);
+        kb.insert_eq_dispatch(functor, target);
+        if canon != functor {
+            kb.insert_eq_dispatch(canon, target);
+        }
+    }
 }
 
 /// Intern the short name of an operation symbol (`Spec.lt` → `lt`) —

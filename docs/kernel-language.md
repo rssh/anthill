@@ -1181,7 +1181,7 @@ The `requires` and `ensures` clauses in operations are scoped constraints — th
 
 Operators are sugar for `Fn` terms. The tree-sitter grammar parses them as flat chains; a Pratt resolver in the converter applies precedence and associativity to produce nested `Fn` calls. Adding a new symbolic operator requires only a dictionary entry — no grammar change.
 
-**Operator tokens.** Any sequence of the characters `+`, `-`, `*`, `/`, `%`, `^`, `|`, `&`, `=`, `<`, `>`, `~` is a valid operator symbol. The character `!` is excluded from operator symbols and reserved as a prefix-only token; `!=` is an explicit two-character infix token. The unification operator `<=>` is a single token lexed **greedy-longest before `<=`** (proposal 049): `a <= b` is `lte`, `a <=> b` is `unify`.
+**Operator tokens.** Any sequence of the characters `+`, `-`, `*`, `/`, `%`, `^`, `|`, `&`, `=`, `<`, `>`, `~` is a valid operator symbol. The character `!` is excluded from operator symbols and reserved as a prefix-only token; `!=` is an explicit two-character infix token. The unification operator `<=>` is a single token lexed **greedy-longest before `<=`** (proposal 049): `a <= b` is `lte`, `a <=> b` is `unify`. Likewise `===` (structural identity, proposal 051) is a single token lexed greedy-longest before `=`: `a = b` is the semantic `eq`, `a === b` is `struct_eq`.
 
 **Infix operators** appear between terms:
 
@@ -1191,8 +1191,9 @@ Operators are sugar for `Fn` terms. The tree-sitter grammar parses them as flat 
 | `or` | 1 | Left | `or` | `Bool` (word form) |
 | `&` | 2 | Left | `and` | `Bool` |
 | `and` | 2 | Left | `and` | `Bool` (word form) |
-| `=` | 3 | None | `eq` | `Eq` (semantic equality **test**) |
+| `=` | 3 | None | `eq` | `Eq` (semantic equality **test**, dispatched) |
 | `!=` | 3 | None | `neq` | `Eq` |
+| `===` | 3 | None | `struct_eq` | `anthill.kernel` (structural identity **test**) |
 | `<=>` | 3 | None | `unify` | `anthill.kernel` (structural **unification**) |
 | `<` | 4 | None | `lt` | `Ordered` |
 | `<=` | 4 | None | `lte` | `Ordered` |
@@ -1437,10 +1438,23 @@ The kernel's reasoning engine supports:
 
 **Unification:** Standard first-order unification. `Var` terms unify with any term of the same type. `Fn` terms unify if their names match and all arguments unify pairwise. Its user-facing surface operator is `<=>` (see below).
 
-**Equality test (`=`) vs. unification (`<=>`)** (proposal 049). Two equality-shaped notions live in two different layers, and the language gives each its own operator:
+**Equality: test vs. bind, structural vs. semantic** (proposals 049 + 051). Equality-shaped notions differ on two axes — *test* (compare, never bind) vs. *bind* (unify), and *structural* (raw term structure) vs. *semantic* (the carrier's `Eq` instance) — and the language gives each cell its own operator:
 
-- **`=` — the semantic equality *test*** (`Eq.eq`, a dispatched operation returning `Bool`). It reduces both operands and compares them; it **never binds** a logical variable. `eq(7, ?p.x)` succeeds once `?p.x` reduces, but `eq(?v, ?p.x)` does **not** bind `?v` (a flex `=` that is never discharged is carried as an undischarged residual, not counted as a solution — WI-519). Use `=` for body-goal tests, operation contracts (`ensures eq(balance(result), …)`), and constraints — a postcondition must *test*, never bind.
+|                | test (no binding)  | bind (unify) |
+|----------------|--------------------|--------------|
+| **structural** | `===` (`struct_eq`) | `<=>` (`unify`) |
+| **semantic**   | `=` / `eq`         | E-unification *(future engine)* |
+
+- **`=` — the semantic equality *test*** (`Eq.eq`, a dispatched operation returning `Bool`). It reduces both operands and compares them **through the carrier's `Eq` instance** (WI-616): structurally identical operands are equal by reflexivity, and structurally distinct operands dispatch to the carrier sort's own `eq` override when it declares one — `Set` and `Map` are the first non-structural instances (`eq({1,2}, {2,1})` holds: membership equality, resolved against the carrier's rules by ordinary SLD). A carrier with no override keeps the structural compare — structural equality *is* its instance (`Int` stays a machine compare). `=` **never binds** a logical variable: `eq(7, ?p.x)` succeeds once `?p.x` reduces, but `eq(?v, ?p.x)` does **not** bind `?v` (a flex `=` that is never discharged is carried as an undischarged residual, not counted as a solution — WI-519). Use `=` for body-goal tests, operation contracts (`ensures eq(balance(result), …)`), and constraints — a postcondition must *test*, never bind. `neq` (`!=`) pairs with it: `neq(a,b) <=> not(eq(a,b))`, the negation of the *dispatched* equality.
+- **`===` — the structural identity *test*** (`anthill.kernel.struct_eq`, a resolver builtin; WI-615). Total, carrier-agnostic, **never dispatches**, and needs **no `Eq` instance**: it answers "are these two values literally the same structure" for every value (opaque handles compare by identity). Two membership-equal sets in different spellings are `=` but not `===`. Use it for term/symbol/reflected-structure identity — comparisons that must not suddenly depend on a carrier's custom equality.
 - **`<=>` — structural *unification*** (`anthill.kernel.unify`, a resolver primitive). It binds via a substitution effect on the resolver frame: `?v <=> ?p.x` binds `?v` to the projected value; `some(?x) <=> some(3)` binds `?x ↦ 3`. It is **occurs-checked** (`?v <=> f(?v)` is a loud failure, never a cyclic term), **symmetric** (either side may be the variable side), and **structural-only — it never dispatches**. It is the connective of equational rule heads (§5.3) and the substrate of `let`.
+
+**Declaring a non-structural `Eq` instance.** A carrier declares the instance with `provides Eq[T = <Carrier>]` and supplies its own operation short-named `eq` (the same short-name override convention as every spec-op dispatch), backed by relational rules — see `Set.eq` / `Map.eq` in the prelude. Dispatch reads the operand's head at resolution and proves the carrier's `eq` in a closed sub-proof, three-way honest:
+
+- Only **fully ground** operand pairs dispatch — `=` never binds, so a compare containing an unbound variable *suspends* (undecided) rather than proving-by-binding or deciding structurally.
+- An overriding carrier **buried** inside non-overriding structure (`some({1,2})` vs `some({2,1})`) also suspends: a structural verdict would ignore the inner instance.
+- The sub-proof is bounded; a compare too large for the budget degrades to *undecided*, never to a wrong verdict.
+- Caveats: write relational base cases with a **body** or on a helper op — a bodyless 2-ary rule whose head is short-named `eq` is currently classified as an equational law and never fires at resolution (WI-627). Supply `eq` only: `neq`/`!=` is always derived as the negation of the dispatched `eq`, so an own `neq` member is never consulted. And the instance dispatches at **SLD resolution** — an *evaluated* operation body reaches it through the typeclass dispatch machinery, while the interpreter's raw `eq` fallback is still the structural compare pending the SLD→eval bridge (WI-625).
 
 **`let ?v = expr`** is directed sugar for **`?v <=> expr`** — one primitive, two surfaces: `<=>` for symmetric equations, `let` for introducing a named binding in a goal sequence. (`:=` is *not* this — it is reserved for the mutable-cell `Cell.set`, `c := v`, which overwrites state rather than binding a logical variable once.)
 

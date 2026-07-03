@@ -8188,18 +8188,17 @@ pub fn resolve_op_target(kb: &KnowledgeBase, impl_sym: Symbol, spec_op: Symbol) 
     .unwrap_or(spec_op)
 }
 
-/// WI-444 — the carrier sort's OWN member backing a (possibly defaulted) spec
-/// op, when it genuinely OVERRIDES the spec rather than merely inheriting it.
-/// `carrier`'s `sort_ops` entry for the op's short name, filtered to a runnable
-/// impl that is DECLARED IN the carrier sort itself (`impl_parent_of_op == carrier`).
+/// WI-616 — the carrier sort's OWN member for a spec op's short name,
+/// REGARDLESS of how it is backed (a runnable body, or SLD rules only — the
+/// `Set.eq`/`Map.eq` membership instances are bodyless rule-backed ops). The
+/// body-agnostic core [`carrier_override_op`] layers its runnable-body gate on.
 /// The two non-`carrier` cases the parent check rejects are NOT overrides:
 ///   * the spec op itself — a carrier that only INHERITS the default;
 ///   * a DIFFERENT spec's same-short-name default the carrier also inherits
 ///     (`Stream.find` when resolving `Iterable.find` on a `List` that provides
 ///     both `Stream` and `Iterable`) — `sort_ops_lookup` returns one arbitrarily,
 ///     and it is not the carrier's own member.
-/// Returns the override op symbol, or `None` (run the spec's default body).
-pub(crate) fn carrier_override_op(
+pub(crate) fn carrier_own_op(
     kb: &KnowledgeBase,
     carrier: Symbol,
     spec_op: Symbol,
@@ -8207,10 +8206,25 @@ pub(crate) fn carrier_override_op(
 ) -> Option<Symbol> {
     let carrier_canon = kb.canonical_sort_sym(carrier);
     kb.sort_ops_lookup(carrier, op_short_sym)
-        .filter(|&o| o != spec_op && op_has_runnable_body(kb, o))
+        .filter(|&o| o != spec_op)
         .filter(|&o| {
             impl_parent_of_op(kb, o).map(|p| kb.canonical_sort_sym(p)) == Some(carrier_canon)
         })
+}
+
+/// WI-444 — the carrier sort's OWN member backing a (possibly defaulted) spec
+/// op, when it genuinely OVERRIDES the spec rather than merely inheriting it —
+/// [`carrier_own_op`] narrowed to a RUNNABLE impl (the eval-side gate: a
+/// bodyless rule-backed member is not invocable by the interpreter).
+/// Returns the override op symbol, or `None` (run the spec's default body).
+pub(crate) fn carrier_override_op(
+    kb: &KnowledgeBase,
+    carrier: Symbol,
+    spec_op: Symbol,
+    op_short_sym: Symbol,
+) -> Option<Symbol> {
+    carrier_own_op(kb, carrier, spec_op, op_short_sym)
+        .filter(|&o| op_has_runnable_body(kb, o))
 }
 
 /// WI-231 — per-call-site classification produced by the typer for
@@ -17706,24 +17720,28 @@ fn is_eq_family_functor(kb: &mut KnowledgeBase, f: Symbol) -> bool {
     f == eq || Some(f) == neq
 }
 
-/// Does `carrier` define its OWN `eq` or `neq` ([`carrier_override_op`])? A custom
+/// Does `carrier` define its OWN `eq` or `neq` ([`carrier_own_op`])? A custom
 /// `eq` OR `neq` makes BOTH structural verdicts unsound for the carrier (`neq` is
 /// specified `<=> not(eq)`, so a custom `eq` redefines `neq` too, and
-/// [`negate_goal`]'s swap routes an `eq` guard through the `Neq` builtin and vice
-/// versa) — so the whole pair is checked. A native/structural `provides Eq` (no
+/// [`negate_goal`]'s swap routes an `eq` guard through the structural builtin and
+/// vice versa) — so the whole pair is checked. WI-616: the check is the
+/// BODY-AGNOSTIC [`carrier_own_op`], not the runnable-gated
+/// [`carrier_override_op`] — a bodyless rules-backed override (`Set.eq`/`Map.eq`)
+/// makes the structural verdict just as unsound as a bodied one, and the SLD
+/// resolver genuinely dispatches it. A native/structural `provides Eq` (no
 /// own `eq` member parented by the carrier) returns `false`; the gate's
 /// no-regression property for native carriers rides on that — `provides Eq`
-/// alone must NOT synthesize a carrier-parented runnable `eq` (regression-guarded
+/// alone must NOT synthesize a carrier-parented `eq` member (regression-guarded
 /// by `wi573_eq_override_discharge_test::native_eq_carrier_still_discharges`).
 fn carrier_overrides_eq_family(kb: &mut KnowledgeBase, carrier: Symbol) -> bool {
     let (eq_sym, neq_sym) = eq_neq_functors(kb);
     let eq_short = kb.intern("eq");
-    if carrier_override_op(kb, carrier, eq_sym, eq_short).is_some() {
+    if carrier_own_op(kb, carrier, eq_sym, eq_short).is_some() {
         return true;
     }
     if let Some(neq) = neq_sym {
         let neq_short = kb.intern("neq");
-        if carrier_override_op(kb, carrier, neq, neq_short).is_some() {
+        if carrier_own_op(kb, carrier, neq, neq_short).is_some() {
             return true;
         }
     }

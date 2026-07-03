@@ -88,6 +88,9 @@ namespace anthill.cli.parse
   -- WI-495 derived transitively via `List provides Stream` + `Stream provides
   -- Iterable`; the member delegates to the `Stream.find` engine), so the same
   -- import serves any future non-Stream carrier.
+  -- Name matching below is `===` (structural identity): a CLI name lookup is an
+  -- exact-match test and must never route through a custom Eq instance
+  -- (WI-616 intent audit).
   -- The predicate is an INLINE lambda closing over the runtime target
   -- (`name`/`acc`); the element type is pinned by the concrete receiver's
   -- Iterable provision, so the lambda parameter and its `Bool` result
@@ -98,17 +101,17 @@ namespace anthill.cli.parse
   operation find_spec(specs: List[OperationSpec], name: String) -> Option[OperationSpec] =
     find(specs, lambda s ->
       match s
-        case OperationSpec(sname, _, _, _) -> eq(sname, name))
+        case OperationSpec(sname, _, _, _) -> sname === name)
 
   operation find_param(params: List[ParamSpec], name: String) -> Option[ParamSpec] =
     find(params, lambda p ->
       match p
-        case ParamSpec(pname, _, _, _) -> eq(pname, name))
+        case ParamSpec(pname, _, _, _) -> pname === name)
 
   operation has_binding(acc: List[Binding], name: String) -> Bool =
     match find(acc, lambda b ->
         match b
-          case Binding(bname, _) -> eq(bname, name))
+          case Binding(bname, _) -> bname === name)
       case some(_) -> true
       case none() -> false
 

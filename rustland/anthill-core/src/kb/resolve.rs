@@ -117,10 +117,20 @@ pub enum BuiltinTag {
     /// like Not / HoApply / PushChoice. Proposal 033.1 / WI-568.
     Cut,
     // ── Arithmetic and comparison builtins ───────────────────
-    /// `anthill.prelude.Eq.eq(?a, ?b)` — structural equality (succeeds/fails).
+    /// `anthill.kernel.struct_eq(?a, ?b)` (`===`) — structural equality
+    /// (succeeds/fails). Total, carrier-agnostic, never dispatches (WI-615 /
+    /// proposal 051). Until WI-616 this tag also backed `Eq.eq`; structural
+    /// inequality is `not(a === b)`.
     Eq,
-    /// `anthill.prelude.Eq.neq(?a, ?b)` — structural inequality (succeeds/fails).
-    Neq,
+    /// `anthill.prelude.Eq.eq(?a, ?b)` — SEMANTIC equality (WI-616 / proposal
+    /// 051 Phase 2): the `Eq.eq` spec op, dispatched through the carrier's
+    /// `Eq` instance. See [`KnowledgeBase::sem_eq_core`] for the full
+    /// reflexivity / dispatch / buried-override / structural cascade.
+    SemEq,
+    /// `anthill.prelude.Eq.neq(?a, ?b)` — semantic inequality
+    /// (`neq(a,b) <=> not(eq(a,b))`): [`KnowledgeBase::sem_eq_core`] with the
+    /// verdict inverted.
+    SemNeq,
     /// `anthill.kernel.unify(?a, ?b)` — structural unification (proposal 049).
     /// The bind-counterpart of `Eq`: same structural walk, but a flex var head
     /// **binds** to the other side (an occurs-checked frame effect →
@@ -177,6 +187,12 @@ enum BuiltinResult {
     Delay,
     /// Builtin definitively failed (e.g. lookup_symbol for non-existent name).
     Failure,
+}
+
+/// WI-616 — map an "equal?" answer to the requested verdict: `positive` is
+/// `true` for `eq` (equal ⇒ Success) and `false` for `neq` (equal ⇒ Failure).
+fn sem_verdict(equal: bool, positive: bool) -> BuiltinResult {
+    if equal == positive { BuiltinResult::Success } else { BuiltinResult::Failure }
 }
 
 /// A resolution candidate — either a regular KB rule/fact or a
@@ -483,6 +499,13 @@ pub struct SearchStream {
     /// the body open with one `HashMap` probe instead of scanning every goal
     /// (WI-568). Safe because rules don't change during a single resolve call.
     cut_cache: HashMap<RuleId, Option<Symbol>>,
+    /// WI-616 — set when any branch was abandoned at the `max_depth` limit:
+    /// the search is INCOMPLETE, so "no solutions" does not mean "refuted".
+    /// Read by the semantic-`eq` sub-resolution to answer *undecided* instead
+    /// of a definite verdict when its proof search was truncated. (The depth
+    /// pop itself stays silent for ordinary resolution — surfacing it more
+    /// loudly, e.g. to NAF, is a filed follow-up.)
+    truncated: bool,
 }
 
 impl SearchStream {
@@ -564,8 +587,10 @@ impl SearchStream {
             _ => unreachable!(),
         };
 
-        // 1. Depth limit exceeded → pop
+        // 1. Depth limit exceeded → pop (recorded: the search is now incomplete,
+        // so exhaustion no longer proves refutation — WI-616 `truncated`).
         if depth > self.config.max_depth {
+            self.truncated = true;
             self.stack.pop();
             return Some(StepResult::Continue);
         }
@@ -2111,6 +2136,7 @@ impl KnowledgeBase {
             stats: ResolveStats::default(),
             next_barrier: 0,
             cut_cache: HashMap::new(),
+            truncated: false,
         }
     }
 
@@ -2478,7 +2504,8 @@ impl KnowledgeBase {
             BuiltinTag::Provenance => self.builtin_provenance(goal, answer_subst),
             BuiltinTag::FieldAccess => self.builtin_field_access(goal, answer_subst),
             BuiltinTag::Eq => self.builtin_eq(goal, answer_subst),
-            BuiltinTag::Neq => self.builtin_neq(goal, answer_subst),
+            BuiltinTag::SemEq => self.builtin_sem_eq(goal, answer_subst),
+            BuiltinTag::SemNeq => self.builtin_sem_neq(goal, answer_subst),
             BuiltinTag::Unify => self.builtin_unify(goal, answer_subst),
             BuiltinTag::Gt => self.builtin_cmp(goal, answer_subst, |ord| ord == std::cmp::Ordering::Greater),
             BuiltinTag::Lt => self.builtin_cmp(goal, answer_subst, |ord| ord == std::cmp::Ordering::Less),
@@ -3328,14 +3355,277 @@ impl KnowledgeBase {
         }
     }
 
-    /// `neq(?a, ?b)` — structural inequality after walking.
-    fn builtin_neq<V: TermView>(&mut self, goal: &V, subst: &Substitution) -> BuiltinResult {
+    /// WI-616 (proposal 051 Phase 2) — `eq(?a, ?b)`, the SEMANTIC `Eq.eq` spec
+    /// op. See [`Self::sem_eq_core`].
+    fn builtin_sem_eq<V: TermView>(&mut self, goal: &V, subst: &Substitution) -> BuiltinResult {
+        self.sem_eq_core(goal, subst, true)
+    }
+
+    /// WI-616 — `neq(?a, ?b)`, semantic inequality (`neq(a,b) <=> not(eq(a,b))`,
+    /// the `Eq` law): [`Self::sem_eq_core`] with the verdict inverted.
+    fn builtin_sem_neq<V: TermView>(&mut self, goal: &V, subst: &Substitution) -> BuiltinResult {
+        self.sem_eq_core(goal, subst, false)
+    }
+
+    /// WI-616 (proposal 051 Phase 2) — the shared core of semantic `eq`/`neq`
+    /// (`positive` = which verdict "equal" maps to). Outcomes, in order:
+    ///
+    /// 1. **Reflexivity** — structurally identical operands are equal under any
+    ///    lawful `Eq` instance: verdict with no lookups (the hot path, and
+    ///    exactly the pre-WI-616 answer).
+    /// 2. **Dispatch** — an operand whose head functor keys the load-time
+    ///    eq-dispatch index ([`KnowledgeBase::eq_dispatch_target`]: the carrier
+    ///    sort declares its OWN `eq` override — `Set.eq`/`Map.eq`, the
+    ///    WI-350/WI-444 short-name convention): prove `<carrier>.eq(a, b)` by a
+    ///    bounded SUB-RESOLUTION ([`Self::sem_eq_dispatch`]). Only GROUND
+    ///    operand pairs dispatch — `=` is a TEST and must never bind
+    ///    (kernel-language.md §8.3), and a sub-proof over non-ground operands
+    ///    would enumerate bindings; a non-ground operand suspends (Delay) until
+    ///    other goals ground it, else residualizes. The abstract-argument tier
+    ///    (requirement dictionaries, WI-300 Tier B) stays gated on the
+    ///    SLD→eval bridge (WI-625).
+    /// 3. **Buried override** — no override at either head, but an overriding
+    ///    carrier is REACHABLE inside an operand (`some({1,2})` vs
+    ///    `some({2,1})`): the structural verdict would be unsound (the WI-573
+    ///    reasoning — structural recursion ignores the inner carrier's `eq`),
+    ///    so suspend as undecided rather than decide either way.
+    /// 4. **Structural** — purely structural operands get the structural
+    ///    verdict: structural equality IS their instance (`Int` stays an i64
+    ///    compare).
+    fn sem_eq_core<V: TermView>(
+        &mut self,
+        goal: &V,
+        subst: &Substitution,
+        positive: bool,
+    ) -> BuiltinResult {
         match self.eq_operands(goal, subst) {
             EqOperands::Delay => BuiltinResult::Delay,
-            EqOperands::Ready(a, b) => {
-                if self.values_equal(&a, &b) { BuiltinResult::Failure } else { BuiltinResult::Success }
-            }
             EqOperands::Absent => BuiltinResult::Failure,
+            EqOperands::Ready(a, b) => {
+                if self.values_equal(&a, &b) {
+                    return sem_verdict(true, positive);
+                }
+                // No carrier overrides eq at all (the common KB): straight to
+                // the structural verdict — no per-operand probes or scans.
+                if !self.has_eq_dispatch_entries() {
+                    return sem_verdict(false, positive);
+                }
+                let target = self
+                    .sem_eq_dispatch_target(&a)
+                    .or_else(|| self.sem_eq_dispatch_target(&b));
+                if let Some(target) = target {
+                    if !self.value_deep_ground(&a, subst) || !self.value_deep_ground(&b, subst) {
+                        return BuiltinResult::Delay;
+                    }
+                    return self.sem_eq_dispatch(target, a, b, subst, positive);
+                }
+                if self.value_reaches_eq_override(&a, subst, 0)
+                    || self.value_reaches_eq_override(&b, subst, 0)
+                {
+                    return BuiltinResult::Delay;
+                }
+                sem_verdict(false, positive)
+            }
+        }
+    }
+
+    /// WI-616 — the eq-dispatch index probe for one operand: its head functor's
+    /// entry (an entity constructor or self-returning op of an eq-overriding
+    /// carrier sort — see `load::build_sort_ops_table` pass 3). One O(1) hash
+    /// lookup; scalars and headless values read `None` (structural).
+    fn sem_eq_dispatch_target(&self, v: &Value) -> Option<Symbol> {
+        let functor = match v.head(self) {
+            ViewHead::Ref(s) | ViewHead::Functor { functor: Some(s), .. } => s,
+            _ => return None,
+        };
+        self.eq_dispatch_target(functor)
+    }
+
+    /// WI-616 — prove the dispatched carrier equality `target(a, b)` by a
+    /// bounded SUB-RESOLUTION (a fresh [`SearchStream`], fresh depth budget —
+    /// rules-backed instances need no SLD→eval bridge; ordinary SLD is the
+    /// evaluator). The sub-proof is a closed TEST: its bindings never reach the
+    /// caller's frame (`=` never binds), and the first DEFINITE proof settles
+    /// the verdict (no solution multiplicity leaks — `eq` stays
+    /// semi-deterministic). Three-way, never wrong-by-truncation:
+    /// * a definite proof            → equal;
+    /// * exhausted, complete search  → not equal;
+    /// * only residual (floundered) solutions, or the search was TRUNCATED at
+    ///   the depth cap → Delay (undecided — never decide from an incomplete
+    ///   search; the silent NAF analog of this is a filed follow-up).
+    fn sem_eq_dispatch(
+        &mut self,
+        target: Symbol,
+        a: Value,
+        b: Value,
+        subst: &Substitution,
+        positive: bool,
+    ) -> BuiltinResult {
+        // Generous but bounded: the relational instances consume one depth unit
+        // per goal along a branch (Set: O(n²) for n elements), so the outer
+        // default of 100 would truncate at ~10 elements. Truncation degrades to
+        // UNDECIDED, never a wrong verdict.
+        const SEM_EQ_SUB_DEPTH: usize = 100_000;
+        // Close the operands under the caller's σ: groundness was checked
+        // AGAINST σ, but the sub-resolution starts from an empty substitution —
+        // a σ-bound variable inside an entity-carried operand would enter the
+        // sub-proof locally flex (flounder at best). The sub-proof runs
+        // KB-only (no Γ overlay — a Γ-relevant operand is symbolic and already
+        // delayed before the builtin ran; see the WI-537/WI-067 pre-checks).
+        let a = self.reify_value(&a, subst);
+        let b = self.reify_value(&b, subst);
+        let goal = self.make_goal_value(target, vec![a, b]);
+        let config = ResolveConfig { max_depth: SEM_EQ_SUB_DEPTH, ..ResolveConfig::default() };
+        let mut stream = self.resolve_lazy_goals(vec![goal], &config);
+        let mut saw_residual = false;
+        loop {
+            if stream.is_empty() {
+                break;
+            }
+            match stream.step(self) {
+                Some(StepResult::YieldSolution(sol)) => {
+                    if sol.residual.is_empty() {
+                        return sem_verdict(true, positive);
+                    }
+                    saw_residual = true;
+                }
+                Some(StepResult::Continue) => {}
+                None => break,
+            }
+        }
+        if saw_residual || stream.truncated {
+            return BuiltinResult::Delay;
+        }
+        sem_verdict(false, positive)
+    }
+
+    /// WI-616 — deep groundness of a σ-walked operand `Value`: no unbound
+    /// variable anywhere inside. The dispatch gate — a term-carried operand
+    /// reuses the recursive [`Self::is_ground`]; entity/tuple carriers recurse;
+    /// an occurrence carrier (which `eq_operands` normalizes away) is
+    /// conservatively non-ground; scalars and runtime handles are ground.
+    fn value_deep_ground(&self, v: &Value, subst: &Substitution) -> bool {
+        match v {
+            Value::Term { id, .. } => self.term_deep_ground(*id, subst),
+            Value::Var(var) => match var {
+                Var::Global(vid) => match subst.resolve_as_value(*vid) {
+                    Some(bound) => {
+                        let bound = bound.clone();
+                        self.value_deep_ground(&bound, subst)
+                    }
+                    None => false,
+                },
+                // Rigid / DeBruijn — an unbound logic variable either way.
+                _ => false,
+            },
+            Value::Entity { pos, named, .. } | Value::Tuple { pos, named, .. } => {
+                pos.iter().all(|c| self.value_deep_ground(c, subst))
+                    && named.iter().all(|(_, c)| self.value_deep_ground(c, subst))
+            }
+            Value::Node(_) => false,
+            _ => true,
+        }
+    }
+
+    /// Term half of [`Self::value_deep_ground`] — like [`Self::is_ground`], but
+    /// CHASES a variable bound to a VALUE carrier (`walk` stops at such a var;
+    /// `is_ground` would read it as `HasVar` and permanently suspend a compare
+    /// that σ fully determines).
+    fn term_deep_ground(&self, term: TermId, subst: &Substitution) -> bool {
+        let walked = self.walk(term, subst);
+        match self.terms.get(walked) {
+            Term::Var(Var::Global(vid)) => match subst.resolve_as_value(*vid) {
+                Some(bound) => {
+                    let bound = bound.clone();
+                    self.value_deep_ground(&bound, subst)
+                }
+                None => false,
+            },
+            Term::Var(_) => false,
+            Term::Fn { pos_args, named_args, .. } => {
+                let pos_args = pos_args.clone();
+                let named_args = named_args.clone();
+                pos_args.iter().all(|&a| self.term_deep_ground(a, subst))
+                    && named_args.iter().all(|&(_, a)| self.term_deep_ground(a, subst))
+            }
+            _ => true,
+        }
+    }
+
+    /// WI-616 — does `v` STRUCTURALLY CONTAIN (at any depth) a value headed by
+    /// an eq-dispatch-index functor? Outcome 3's scan: an overriding carrier
+    /// buried under non-overriding structure makes the structural verdict
+    /// unsound, so the compare suspends instead of deciding. Present structure
+    /// only — an unbound variable is not (yet) an overriding value, matching
+    /// the structural test's instantiation-time semantics. Conservative `true`
+    /// at the depth cap and for occurrence carriers (suspend, never mis-decide).
+    fn value_reaches_eq_override(&self, v: &Value, subst: &Substitution, depth: usize) -> bool {
+        const REACH_DEPTH_CAP: usize = 256;
+        if depth >= REACH_DEPTH_CAP {
+            return true;
+        }
+        match v {
+            Value::Term { id, .. } => self.term_reaches_eq_override(*id, subst, depth),
+            Value::Var(var) => match var {
+                Var::Global(vid) => match subst.resolve_as_value(*vid) {
+                    Some(bound) => {
+                        let bound = bound.clone();
+                        self.value_reaches_eq_override(&bound, subst, depth + 1)
+                    }
+                    None => false,
+                },
+                _ => false,
+            },
+            Value::Entity { functor, pos, named, .. } => {
+                self.eq_dispatch_target(*functor).is_some()
+                    || pos.iter().any(|c| self.value_reaches_eq_override(c, subst, depth + 1))
+                    || named
+                        .iter()
+                        .any(|(_, c)| self.value_reaches_eq_override(c, subst, depth + 1))
+            }
+            Value::Tuple { pos, named, .. } => {
+                pos.iter().any(|c| self.value_reaches_eq_override(c, subst, depth + 1))
+                    || named
+                        .iter()
+                        .any(|(_, c)| self.value_reaches_eq_override(c, subst, depth + 1))
+            }
+            Value::Node(_) => true,
+            _ => false,
+        }
+    }
+
+    /// Term half of [`Self::value_reaches_eq_override`].
+    fn term_reaches_eq_override(&self, term: TermId, subst: &Substitution, depth: usize) -> bool {
+        const REACH_DEPTH_CAP: usize = 256;
+        if depth >= REACH_DEPTH_CAP {
+            return true;
+        }
+        let walked = self.walk(term, subst);
+        match self.terms.get(walked) {
+            Term::Ref(s) => self.eq_dispatch_target(*s).is_some(),
+            // `walk` stops at a var bound to a VALUE carrier — chase it, or an
+            // overriding value hidden behind a value binding escapes the scan.
+            Term::Var(Var::Global(vid)) => match subst.resolve_as_value(*vid) {
+                Some(bound) => {
+                    let bound = bound.clone();
+                    self.value_reaches_eq_override(&bound, subst, depth + 1)
+                }
+                None => false,
+            },
+            Term::Fn { functor, pos_args, named_args } => {
+                if self.eq_dispatch_target(*functor).is_some() {
+                    return true;
+                }
+                let pos_args = pos_args.clone();
+                let named_args = named_args.clone();
+                pos_args
+                    .iter()
+                    .any(|&a| self.term_reaches_eq_override(a, subst, depth + 1))
+                    || named_args
+                        .iter()
+                        .any(|&(_, a)| self.term_reaches_eq_override(a, subst, depth + 1))
+            }
+            _ => false,
         }
     }
 
