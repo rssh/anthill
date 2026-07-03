@@ -552,3 +552,6 @@ mod wi590_witness_param_carrier_test;
 #[path = "include/wi605_bare_arrow_lambda_test.rs"]
 mod wi605_bare_arrow_lambda_test;
 
+#[path = "include/wi606_unqualified_dispatch_return_threading_test.rs"]
+mod wi606_unqualified_dispatch_return_threading_test;
+

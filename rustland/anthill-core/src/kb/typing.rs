@@ -5069,6 +5069,133 @@ fn classify(_kb: &mut KnowledgeBase, occ: &Rc<NodeOccurrence>, class: CallClass)
     occ.set_classification(class);
 }
 
+/// Tag a concrete-dispatch call site: `ConcreteApplyWithin` when the impl's own
+/// sort declares `requires` (its dict must thread at eval), else a plain `PinNow`.
+/// The shared tail of every concrete spec-op dispatch arm — the carrier-override
+/// (WI-444), HK instance-fact (WI-453), unqualified-concrete-carrier (WI-606), and
+/// `Unique` arms — which differ only in the impl symbol and whether a `resolved_-
+/// tree` was resolved (`None` except on the `Unique` arm). `dispatch_dict` is
+/// always `None` here (the pin-now path threads the requirement via `resolved_-
+/// tree`; the compile-built dict is the Direct-call dual, WI-415).
+fn classify_pin_or_apply_within(
+    kb: &mut KnowledgeBase,
+    occ: &Rc<NodeOccurrence>,
+    fn_sym: Symbol,
+    impl_op: Symbol,
+    enclosing_sort: Option<Symbol>,
+    resolved_tree: Option<ResolvedRequiresNode>,
+) {
+    let impl_sort = impl_parent_of_op(kb, impl_op);
+    let needs_reqs = impl_sort.map(|s| !requires_chain(kb, s).is_empty()).unwrap_or(false);
+    let class = if needs_reqs {
+        CallClass::ConcreteApplyWithin {
+            fn_target_sym: impl_op,
+            callee_spec_sort: impl_sort.unwrap(),
+            spec_op_sym: fn_sym,
+            enclosing_sort,
+            resolved_tree,
+            dispatch_dict: None,
+        }
+    } else {
+        CallClass::PinNow { spec_op_sym: fn_sym, impl_op_sym: impl_op }
+    };
+    classify(kb, occ, class);
+}
+
+/// WI-606: the carrier's GENUINE self-receiver override of the body-less spec op
+/// `fn_sym` (short name `op_short_sym`), or `None`. `carrier_override_op` already
+/// filters to a runnable carrier member of that short name; this additionally
+/// requires that member to declare a self-receiver parameter typed by the carrier
+/// — so a member sharing only the short name (`C.foo(x, y)` vs the spec op
+/// `S.foo(s: S)`) is rejected rather than `PinNow`'d and applied at a mismatched
+/// arity. Shared by both WI-606 sites (the return-threading fallback and the
+/// `NoCandidates` classification) so they cannot disagree about what counts as the
+/// override.
+fn concrete_self_receiver_override(
+    kb: &mut KnowledgeBase,
+    carrier_sym: Symbol,
+    fn_sym: Symbol,
+    op_short_sym: Symbol,
+) -> Option<Symbol> {
+    let impl_op = carrier_override_op(kb, carrier_sym, fn_sym, op_short_sym)?;
+    let info = lookup_operation_info_full(kb, impl_op)?;
+    self_receiver_param_index(kb, &info.params, carrier_sym)?;
+    Some(impl_op)
+}
+
+/// WI-606: the return type a self-receiver spec op's call should thread when the
+/// spec op's OWN (projection-laden) return does not eliminate against the receiver.
+///
+/// A body-less self-receiver spec op types its return at the abstract SPEC carrier
+/// with path-dependent projections — `Stream.splitFirst(s: Stream) -> Option[Pair[A
+/// = s.T, B = Stream[T = s.T, E = s.E]]]`. Against a receiver whose carrier is a
+/// concrete provider that realizes the spec's members only INDIRECTLY (`Mapped
+/// provides Stream[E = {ES, EF}]` — no direct `.E` on `Mapped`), `s.E` fails to
+/// eliminate; because elimination is all-or-nothing that poisons the whole return,
+/// leaving the destructured tail a bare `Var` → a downstream dispatch on it
+/// (`cons(h, collect(rest))`) cannot ground (`expected List[T = ?T], got List[T =
+/// ?_]`). The call value-dispatches to that provider's override at eval, whose
+/// return is projection-FREE (`Mapped.splitFirst -> Option[Pair[A = T, B =
+/// Mapped[…]]]`) — thread THAT, exactly what a qualified static `Mapped.split-
+/// First(m)` computes (the ticket's "ground + thread the return from that impl's
+/// signature like the qualified path").
+///
+/// Returns BOTH the impl's threaded return AND its threaded effects — the spec op's
+/// OWN projected effects (`effects s.E`) likewise fail to eliminate against the
+/// indirect-provision carrier, so the impl's effects (which the runtime target
+/// actually incurs) replace them rather than being silently dropped; this keeps the
+/// call's effect row sound on EVERY downstream dispatch arm (incl. the WI-239 defer
+/// / NoMatch-covers early returns, which do not re-derive `dispatched_impl_effects`).
+///
+/// `None` — leaving the spec op's own (loudly-failing) elimination to stand — unless
+/// the call is a self-receiver spec op (`self_recv_spec`) on a GENUINE concrete
+/// provider (not an abstract spec, whose runtime value is some other provider
+/// resolved dynamically; not the spec sort itself, an abstract self-receiver) that
+/// declares a runnable self-receiver override. The impl's params are bound by
+/// unifying the receiver against the impl's self-receiver param in a THROWAWAY
+/// subst (the tie a Path-1 call to the impl makes): a bare self-param (`m: Mapped`)
+/// binds the carrier's canonical sort params via `unify_parameterized_with_sort_-
+/// ref`; a parameterized one (`f: FilteredStream[T = Elem, …]`) binds the op's own
+/// `[Elem, …]` params.
+fn concrete_override_threaded(
+    kb: &mut KnowledgeBase,
+    op: &OperationInfoFull,
+    fn_sym: Symbol,
+    self_recv_spec: Option<Symbol>,
+    pos_results: &[Result<TypeResult, TypeError>],
+) -> Option<(Value, Vec<Value>)> {
+    // Self-receiver spec ops only (`splitFirst(s: Stream)`): the carrier-param
+    // shape (`collect(c: C)`) does not write a receiver-projected return.
+    let spec_sort = self_recv_spec?;
+    let idx = self_receiver_param_index(kb, &op.params, spec_sort)?;
+    let recv_ty = pos_results.get(idx)?.as_ref().ok()?.ty.clone();
+    let carrier_sym = sort_functor_of_view(kb, &recv_ty)?;
+    if carrier_is_abstract_spec(kb, carrier_sym)
+        || kb.canonical_sort_sym(carrier_sym) == kb.canonical_sort_sym(spec_sort)
+    {
+        return None;
+    }
+    let op_qn = kb.qualified_name_of(fn_sym).to_string();
+    let op_short_sym = kb.intern(short_name_of(&op_qn));
+    let impl_op = concrete_self_receiver_override(kb, carrier_sym, fn_sym, op_short_sym)?;
+    // Thread the impl's OWN return + effects through the receiver. The receiver is
+    // the ground truth for the impl's element/effect params; a failed unify (shape
+    // mismatch) leaves them free, and the deep resolve then returns a
+    // no-more-specific type.
+    let impl_info = lookup_operation_info_full(kb, impl_op)?;
+    let impl_idx = self_receiver_param_index(kb, &impl_info.params, carrier_sym)?;
+    let self_param_ty = impl_info.params[impl_idx].1.clone();
+    let mut subst = Substitution::new();
+    unify_types(kb, &mut subst, &recv_ty, &self_param_ty);
+    let ret = resolve_type_deep_value(kb, &subst, &impl_info.return_type);
+    let effs = impl_info
+        .effects
+        .iter()
+        .map(|e| resolve_type_deep_value(kb, &subst, e))
+        .collect();
+    Some((ret, effs))
+}
+
 // ── Expression form checkers ───────────────────────────────────
 
 /// WI-426: resolve a named-argument label to the callee parameter it names.
@@ -5716,14 +5843,39 @@ fn check_apply_iter(
             // formed off a formal param is RE-KEYED to the caller's actual receiver (see
             // `rewrite_term_projections`).
             let arg_syms = (!param_to_arg_sym.is_empty()).then_some(&param_to_arg_sym);
-            let rt = eliminate_type_projections(
-                kb, &op.return_type, &param_to_arg_type, arg_syms, &ret_ctx, span)?;
-            let mut effs: Vec<Value> = Vec::with_capacity(op.effects.len());
-            for e in &op.effects {
-                effs.push(eliminate_type_projections(
-                    kb, e, &param_to_arg_type, arg_syms, &ret_ctx, span)?);
+            // WI-606: a body-less self-receiver spec op whose RETURN (and observation
+            // effect row) is WRITTEN with path-dependent projections on the receiver
+            // (`Stream.splitFirst -> …[B = Stream[T = s.T, E = s.E]]`, `effects {s.E}`)
+            // does NOT eliminate those projections against a CONCRETE provider receiver
+            // that realizes the spec's members only INDIRECTLY (`Mapped provides Stream[E
+            // = {ES, EF}]` — no direct `.E` member on `Mapped`). The call value-dispatches
+            // to that provider's own override, whose return + effects are projection-FREE
+            // (`Mapped.splitFirst -> …[B = Mapped[…]] effects {ES, EF}`); thread THOSE —
+            // exactly what a qualified static `Mapped.splitFirst(m)` computes — so a
+            // destructured tail carries the concrete carrier (`rest : Mapped[…]`, not the
+            // erased `Stream[…]`) and a downstream dispatch on it (`collect(rest)`) grounds.
+            // Return AND effects fall back together (self-contained: the effect row stays
+            // sound even on a dispatch arm that does not re-derive `dispatched_impl_-
+            // effects`). A clean elimination (abstract self-receiver, or a provider with a
+            // direct member) is unchanged; a genuine projection failure with no concrete
+            // override stays the loud error.
+            match eliminate_type_projections(
+                kb, &op.return_type, &param_to_arg_type, arg_syms, &ret_ctx, span,
+            ) {
+                Ok(rt) => {
+                    let mut effs: Vec<Value> = Vec::with_capacity(op.effects.len());
+                    for e in &op.effects {
+                        effs.push(eliminate_type_projections(
+                            kb, e, &param_to_arg_type, arg_syms, &ret_ctx, span,
+                        )?);
+                    }
+                    (rt, effs)
+                }
+                Err(e) => match concrete_override_threaded(kb, &op, fn_sym, self_recv_spec, pos_results) {
+                    Some(rt_effs) => rt_effs,
+                    None => return Err(e),
+                },
             }
-            (rt, effs)
         } else {
             (op.return_type.clone(), op.effects.clone())
         };
@@ -6076,23 +6228,9 @@ fn check_apply_iter(
                             pos_results, named_results,
                         );
                         effects = merge_effects(kb, &effects, &derived);
-                        let impl_sort = impl_parent_of_op(kb, impl_op);
-                        let needs_reqs = impl_sort
-                            .map(|s| !requires_chain(kb, s).is_empty())
-                            .unwrap_or(false);
-                        let class = if needs_reqs {
-                            CallClass::ConcreteApplyWithin {
-                                fn_target_sym: impl_op,
-                                callee_spec_sort: impl_sort.unwrap(),
-                                spec_op_sym: fn_sym,
-                                enclosing_sort: env.enclosing_sort(),
-                                resolved_tree: None,
-                                dispatch_dict: None,
-                            }
-                        } else {
-                            CallClass::PinNow { spec_op_sym: fn_sym, impl_op_sym: impl_op }
-                        };
-                        classify(kb, occ, class);
+                        classify_pin_or_apply_within(
+                            kb, occ, fn_sym, impl_op, env.enclosing_sort(), None,
+                        );
                         return Ok(TypeResult {
                             ty: resolved_ret,
                             env: env.clone(),
@@ -6208,22 +6346,7 @@ fn check_apply_iter(
                     // `requires` (so its dict threads) — the Unique-arm discipline. Only
                     // a runnable impl is rewritten (a body-less one stays the spec op).
                     if op_has_runnable_body(kb, impl_op) {
-                        let impl_sort = impl_parent_of_op(kb, impl_op);
-                        let needs_reqs =
-                            impl_sort.map(|s| !requires_chain(kb, s).is_empty()).unwrap_or(false);
-                        let class = if needs_reqs {
-                            CallClass::ConcreteApplyWithin {
-                                fn_target_sym: impl_op,
-                                callee_spec_sort: impl_sort.unwrap(),
-                                spec_op_sym: fn_sym,
-                                enclosing_sort,
-                                resolved_tree: None,
-                                dispatch_dict: None,
-                            }
-                        } else {
-                            CallClass::PinNow { spec_op_sym: fn_sym, impl_op_sym: impl_op }
-                        };
-                        classify(kb, occ, class);
+                        classify_pin_or_apply_within(kb, occ, fn_sym, impl_op, enclosing_sort, None);
                     }
                 }
                 return Ok(TypeResult {
@@ -6448,6 +6571,38 @@ fn check_apply_iter(
             };
             match outcome {
                 DispatchOutcome::NoCandidates => {
+                    // WI-606: a CONCRETE receiver carrier that statically declares a
+                    // runnable override of this self-receiver spec op, yet the dispatch
+                    // found no candidate — because the spec op's provision `requires`
+                    // (`Stream requires EffectsRuntime[E]`) does not discharge against the
+                    // carrier's ABSTRACT effect row (`Mapped provides Stream[E = {ES,
+                    // EF}]`, ES/EF the enclosing witness's own rows). The override IS the
+                    // runtime target (a qualified `Mapped.splitFirst(m)` static call pins
+                    // it), so `PinNow` to it and defer the effect-row discharge to eval —
+                    // instead of demanding a spurious `requires Stream` on the enclosing
+                    // sort. `resolved_ret` was already threaded from the impl's own return
+                    // (the projection-elimination fallback above). `concrete_self_receiver_-
+                    // override` gates on a genuine self-receiver override (not a coincidental
+                    // same-named member), so a carrier WITHOUT one resolves `None` and falls
+                    // through to the WI-325 pass-through / abstract-coverage demand unchanged;
+                    // a carrier whose dispatch resolved `Unique` never reaches here.
+                    if let Some(impl_op) = carrier_sym
+                        .filter(|_| self_recv_spec.is_some())
+                        .and_then(|c| concrete_self_receiver_override(kb, c, fn_sym, op_short_sym))
+                    {
+                        let derived = dispatched_impl_effects(
+                            kb, impl_op, &op.params, &subst, pos_args, named_args,
+                            pos_results, named_results,
+                        );
+                        effects = merge_effects(kb, &effects, &derived);
+                        classify_pin_or_apply_within(kb, occ, fn_sym, impl_op, enclosing_sort, None);
+                        return Ok(TypeResult {
+                            ty: resolved_ret.clone(),
+                            env: env.clone(),
+                            effects,
+                            node: Rc::clone(occ),
+                        });
+                    }
                     // WI-325: distinguish concrete-binding NoCandidates
                     // (legitimate pass-through — host builtin / spec-derived
                     // rule may resolve at runtime) from abstract-binding
@@ -6655,29 +6810,12 @@ fn check_apply_iter(
                     if impl_op_sym != fn_sym
                         && op_has_runnable_body(kb, impl_op_sym)
                     {
-                        let impl_sort = impl_parent_of_op(kb, impl_op_sym);
-                        let needs_reqs = impl_sort
-                            .map(|s| !requires_chain(kb, s).is_empty())
-                            .unwrap_or(false);
-                        let class = if needs_reqs {
-                            CallClass::ConcreteApplyWithin {
-                                fn_target_sym: impl_op_sym,
-                                callee_spec_sort: impl_sort.unwrap(),
-                                spec_op_sym: fn_sym,
-                                enclosing_sort,
-                                resolved_tree: resolved_tree.clone(),
-                                // Pin-now path: the resolved_tree (when threaded
-                                // by eval) carries the requirement; WI-415's
-                                // compile-built dict is the Direct-call dual.
-                                dispatch_dict: None,
-                            }
-                        } else {
-                            CallClass::PinNow {
-                                spec_op_sym: fn_sym,
-                                impl_op_sym,
-                            }
-                        };
-                        classify(kb, occ, class);
+                        // Pin-now path: the `resolved_tree` (when threaded by eval)
+                        // carries the requirement; WI-415's compile-built dict is the
+                        // Direct-call dual, so `dispatch_dict` stays `None` here.
+                        classify_pin_or_apply_within(
+                            kb, occ, fn_sym, impl_op_sym, enclosing_sort, resolved_tree.clone(),
+                        );
                     }
                 }
                 DispatchOutcome::NoMatch => {
