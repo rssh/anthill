@@ -561,9 +561,9 @@ end
     );
 
     // The source-loaded data fact `Rec(zzfield:"z", aafield:"a")`, canonicalized
-    // to declared field order by the loader. (`rules_by_functor` also returns the
-    // entity SCHEMA fact `Rec(zzfield: String, aafield: String)`; the data fact
-    // is the one carrying the string value.)
+    // to declared field order by the loader. (Located by its "z" payload; since
+    // WI-515 `rules_by_functor` returns only data facts — the entity SCHEMA fact
+    // that used to ride along is no longer asserted.)
     let printer = TermPrinter::new(&kb);
     let before = kb.rules_by_functor(rec_sym);
     let source_rid = *before

@@ -323,37 +323,22 @@ pub(crate) fn read_descriptions(
     out
 }
 
-/// The entity matching `name` (full or short functor name), read carrier-
-/// agnostically: the `(field_name, field_type)` pairs, where a field type rides
-/// as its own `Value` (a `denoted` field type is a `Value::Node`, surfaced
-/// verbatim by both realizations). Entity names are unique per sort, so at most
-/// one entity matches (first wins).
-pub(crate) struct EntityFieldsRecord {
-    pub fields: Vec<(Symbol, Value)>,
-}
-
-/// Find the `Entity` fact for `name` and decode its fields. `None` if no entity
-/// matches.
-pub(crate) fn read_entity_fields(kb: &mut KnowledgeBase, name: &str) -> Option<EntityFieldsRecord> {
-    for (_rid, head) in facts_by_sort_name(kb, "Entity") {
-        let (functor, named): (Symbol, Vec<(Symbol, Value)>) = match &head {
-            Value::Term { id: t, .. } => match kb.get_term(*t) {
-                CoreTerm::Fn { functor, named_args, .. } => (
-                    *functor,
-                    named_args.iter().map(|&(s, tid)| (s, Value::term(tid))).collect(),
-                ),
-                _ => continue,
-            },
-            Value::Entity { functor, named, .. } => (*functor, named.to_vec()),
-            _ => continue,
-        };
-        let functor_name = kb.resolve_sym(functor).to_string();
-        if functor_name != name && short_of(&functor_name) != name {
-            continue;
-        }
-        return Some(EntityFieldsRecord { fields: named });
-    }
-    None
+/// The `(field_name, field_type)` pairs of the entity declaration matching
+/// `name` (full or short constructor name), read carrier-agnostically — a
+/// `denoted` field type rides as its own `Value::Node`, surfaced verbatim by
+/// both realizations. `None` if no registered entity matches. Backed by the
+/// KB's `entity_field_types` registry via [`KnowledgeBase::resolve_entity_functor`]
+/// (WI-515: the same-functor "schema fact" under sort `Entity` is gone — a
+/// fact carrying TYPE terms in data slots polluted every var-quantified query
+/// over the constructor); an ambiguous short name resolves to the minimal
+/// qualified name, deterministically.
+pub(crate) fn read_entity_fields(kb: &KnowledgeBase, name: &str) -> Option<Vec<(Symbol, Value)>> {
+    let functor = kb.resolve_entity_functor(name)?;
+    let fields = kb
+        .entity_field_types(functor)
+        .expect("resolve_entity_functor returns a registered functor")
+        .to_vec();
+    Some(fields)
 }
 
 /// The head `Value`s of every `Rule` fact whose domain is `sort_name` (full or

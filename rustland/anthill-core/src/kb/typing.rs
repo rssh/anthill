@@ -23250,18 +23250,13 @@ fn check_entity_facts(kb: &mut KnowledgeBase, ctor_syms: &[Symbol], errors: &mut
         for rid in kb.rules_by_functor(ctor_sym) {
             if !kb.is_fact(rid) { continue; }
 
-            // Skip entity definitions and metadata
-            let fact_sort = kb.rule_sort(rid);
-            let fact_sort_name = match kb.get_term(fact_sort) {
-                Term::Fn { functor: f, .. } => kb.resolve_sym(*f),
-                Term::Ref(s) => kb.resolve_sym(*s),
-                _ => "",
-            };
-            if ["Entity", "EntityInfo", "SortInfo", "OperationInfo", "FieldInfo", "SortRequiresInfo"]
-                .contains(&fact_sort_name)
-            {
-                continue;
-            }
+            // WI-515: no skip-list needed. It existed to exempt the loader's
+            // same-functor `Entity` schema fact (field TYPES in the data
+            // slots), which is no longer asserted; the other names it listed
+            // (EntityInfo/SortInfo/…) never appear as fact SORTS — loader
+            // metadata facts are asserted under "Sort"/"Operation" with their
+            // own reflect functors, so they never reach a user constructor's
+            // rules_by_functor bucket anyway.
 
             let head = kb.rule_head(rid);
             let named_args = match kb.get_term(head) {

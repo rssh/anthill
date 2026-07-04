@@ -764,8 +764,14 @@ end
     let ns_sort = kb.make_name_term("Namespace");
     assert!(!kb.by_sort(ns_sort).is_empty(), "should have Namespace fact");
 
-    let entity_sort = kb.make_name_term("Entity");
-    assert!(!kb.by_sort(entity_sort).is_empty(), "should have Entity fact");
+    // WI-515: entity declarations no longer assert a same-functor schema fact
+    // under sort `Entity` (it polluted var-quantified queries); the
+    // declaration-side record is the entity field-types registry.
+    let dollars_sym = kb.try_resolve_symbol("banking.Money.dollars").expect("dollars symbol");
+    assert!(
+        kb.entity_field_types(dollars_sym).is_some(),
+        "should have entity field types registered"
+    );
 
     let op_sort = kb.make_name_term("Operation");
     assert!(!kb.by_sort(op_sort).is_empty(), "should have Operation fact");

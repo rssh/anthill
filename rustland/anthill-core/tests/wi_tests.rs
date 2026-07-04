@@ -564,3 +564,6 @@ mod wi620_paren_lambda_param_test;
 #[path = "include/wi619_two_ary_head_introducer_test.rs"]
 mod wi619_two_ary_head_introducer_test;
 
+#[path = "include/wi515_entity_schema_fact_test.rs"]
+mod wi515_entity_schema_fact_test;
+

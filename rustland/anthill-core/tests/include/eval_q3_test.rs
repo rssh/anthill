@@ -365,11 +365,10 @@ end
     ]);
 
     let mut stream = kb.execute_logical_query(&query).expect("disjunction lowers");
-    // Dedup on ?v value — each entity declaration auto-stamps a schema
-    // fact in addition to the user-asserted fact, so the discrim tree
-    // matches the pattern more than once per branch. The semantic
-    // contract checked here is: distinct ?v values come from both
-    // branches.
+    // Dedup on ?v value — order-insensitive robustness (WI-515 removed the
+    // schema-fact auto-stamping that used to multiply matches per branch).
+    // The semantic contract checked here is: distinct ?v values come from
+    // both branches.
     let mut seen = std::collections::HashSet::new();
     while let Some((sol, rest)) = stream.split_first(&mut kb) {
         if let Some(Value::Term { id: t, .. }) = sol.subst.resolve_as_value(vid) {
@@ -450,12 +449,11 @@ end
         (right_field, marker_q),
     ]);
 
-    // Schema-fact auto-stamping (one per entity declaration) inflates the
-    // raw solution count beyond the user-asserted facts. The contract
-    // checked here is the semantic one: solutions where both ?v and ?m
-    // resolve to user-fact strings must include both ("alpha", "M") and
-    // ("beta", "M") — i.e. the disjunction's two branches each
-    // composed with the marker fact in the tail.
+    // The contract checked here is the semantic one: solutions where both
+    // ?v and ?m resolve to user-fact strings must include both ("alpha",
+    // "M") and ("beta", "M") — i.e. the disjunction's two branches each
+    // composed with the marker fact in the tail. (WI-515: the schema-fact
+    // auto-stamping that used to inflate the raw count is gone.)
     let mut stream = kb.execute_logical_query(&query).expect("disj+conj lowers");
     let mut seen: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
     while let Some((sol, rest)) = stream.split_first(&mut kb) {

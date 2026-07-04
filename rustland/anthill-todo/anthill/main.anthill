@@ -2607,8 +2607,7 @@ namespace anthill.todo
 
     -- Pull a String binding off a substitution by var name; return
     -- `fallback` when missing or when the bound term isn't a String
-    -- literal (e.g. a synthetic entity declaration's logical-var
-    -- field).
+    -- literal.
     operation extract_string_field(subst: Substitution,
                                    var_name: String,
                                    fallback: String) -> String =

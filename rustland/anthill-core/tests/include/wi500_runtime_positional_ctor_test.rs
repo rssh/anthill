@@ -28,9 +28,9 @@ fn config() -> ResolveConfig {
 }
 
 /// Resolve the CANONICAL named query `Verified(at: <at>)` and count solutions.
-/// A concrete-literal pattern matches only a stored `Verified(at: "now")` fact —
-/// NOT the loader's entity-schema fact `Verified(at: String)` (whose `at` is the
-/// `String` type ref) — so this is a clean 0→1 signal for the runtime fact.
+/// A concrete-literal pattern matches only a stored `Verified(at: "now")` fact,
+/// so this is a clean 0→1 signal for the runtime fact. (WI-515: the loader's
+/// entity-schema fact the literal also used to exclude is no longer asserted.)
 fn resolve_verified_at(kb: &mut KnowledgeBase, at: &str) -> usize {
     let f = kb.resolve_symbol("test.wi500.Status.Verified");
     let at_sym = kb.intern("at");

@@ -1109,12 +1109,11 @@ impl<'kb> Emitter<'kb> {
     fn collect_facts_for_referenced_entities(&mut self) {
         for entity_qn in self.referenced_entities.clone() {
             let Some(sym) = self.kb.try_resolve_symbol(&entity_qn) else { continue };
-            // `rules_by_functor(sym)` returns BOTH the entity declaration
-            // (named_args have abstract field types) and any
-            // `fact ...` instances (named_args have concrete
-            // values). Walk every rule and accept the first one
-            // whose named_args resolve to numeric literals — that's
-            // a ground fact. Multi-fact disambiguation is a v1
+            // Walk every `rules_by_functor(sym)` rule and accept the
+            // first one whose named_args resolve to numeric literals —
+            // that's a ground fact. (WI-515: only data facts remain;
+            // the entity-declaration row with abstract field types is
+            // no longer asserted.) Multi-fact disambiguation is a v1
             // concern; for v0 we expect at most one fact per entity.
             for rid in self.kb.rules_by_functor(sym) {
                 let head = self.kb.rule_head(rid);

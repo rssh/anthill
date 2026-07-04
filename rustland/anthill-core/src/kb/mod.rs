@@ -4125,6 +4125,30 @@ impl KnowledgeBase {
         self.entity_field_types.keys()
     }
 
+    /// Resolve a full or short entity name to its registered constructor
+    /// functor (a key of [`Self::entity_field_types`]). An exact qualified-name
+    /// match wins outright (O(1)); otherwise the short name is scanned over the
+    /// registry, ties broken to the minimal qualified name — deterministic
+    /// where the ambiguity is real (two sorts declaring a same-named
+    /// constructor, e.g. stdlib's `guarded` in `anthill.prelude` and in
+    /// `anthill.reflect.LogicalQuery`). WI-515: the
+    /// reflect readers resolve entity names through this instead of scanning
+    /// the retired same-functor `Entity` schema facts. (The persistence
+    /// loader's `resolve_entity_functor` in `term_ser.rs` is the scope-aware
+    /// sibling for serialized short names.)
+    pub fn resolve_entity_functor(&self, name: &str) -> Option<Symbol> {
+        if let Some(sym) = self.try_resolve_symbol(name) {
+            if self.entity_field_types.contains_key(&sym) {
+                return Some(sym);
+            }
+        }
+        self.entity_field_types
+            .keys()
+            .copied()
+            .filter(|&f| self.resolve_sym(f) == name)
+            .min_by_key(|&f| self.qualified_name_of(f))
+    }
+
     /// Check if a functor symbol is a constructor (entity with a parent sort).
     /// O(1) lookup via pre-built index populated by register_entity_of.
     pub fn is_constructor_symbol(&self, functor: Symbol) -> bool {

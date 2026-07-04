@@ -997,25 +997,17 @@ entity Foo(x: ?)
     kb.register_standard_builtins();
     load_source(&mut kb, source);
 
+    // WI-515: the declaration-side record is the entity field-types registry
+    // (the same-functor schema fact this test used to decode is gone).
     let foo_sym = kb.resolve_symbol("Foo");
     let x_sym = kb.intern("x");
-    let facts = kb.rules_by_functor(foo_sym);
-    // There should be an Entity fact for Foo
-    assert!(!facts.is_empty(), "Foo entity should exist in KB");
-
-    // The entity fact's field 'x' should be a Var term
-    let entity_fact = facts[0];
-    let entity_term = kb.fact_term(entity_fact);
-    match kb.get_term(entity_term) {
-        Term::Fn { named_args, .. } => {
-            let x_arg = named_args.iter().find(|(s, _)| *s == x_sym);
-            assert!(x_arg.is_some(), "entity should have field 'x'");
-            let (_, x_tid) = x_arg.unwrap();
-            assert!(matches!(kb.get_term(*x_tid), Term::Var(_)),
-                "field typed ? should load as Term::Var, got {:?}", kb.get_term(*x_tid));
-        }
-        other => panic!("expected Fn term for entity, got {:?}", other),
-    }
+    let field_types = kb.entity_field_types(foo_sym)
+        .expect("Foo entity should be registered in KB");
+    let x_arg = field_types.iter().find(|(s, _)| *s == x_sym);
+    assert!(x_arg.is_some(), "entity should have field 'x'");
+    let x_tid = x_arg.unwrap().1.expect_term();
+    assert!(matches!(kb.get_term(x_tid), Term::Var(_)),
+        "field typed ? should load as Term::Var, got {:?}", kb.get_term(x_tid));
 }
 
 #[test]
@@ -1030,20 +1022,16 @@ entity Box(contents: ?)
     kb.register_standard_builtins();
     load_source(&mut kb, source);
 
-    // Get the Box entity fact
+    // Get Box's declared field types (WI-515: the registry, not a schema fact)
     let box_sym = kb.resolve_symbol("Box");
     let contents_sym = kb.intern("contents");
-    let facts = kb.rules_by_functor(box_sym);
-    assert!(!facts.is_empty(), "Box should exist in KB");
-
-    let entity_term = kb.fact_term(facts[0]);
-    let contents_tid = match kb.get_term(entity_term) {
-        Term::Fn { named_args, .. } => {
-            named_args.iter().find(|(s, _)| *s == contents_sym)
-                .expect("should have 'contents' field").1
-        }
-        other => panic!("expected Fn, got {:?}", other),
-    };
+    let contents_tid = kb.entity_field_types(box_sym)
+        .expect("Box should be registered in KB")
+        .iter()
+        .find(|(s, _)| *s == contents_sym)
+        .expect("should have 'contents' field")
+        .1
+        .expect_term();
 
     // The contents field should be a Var — meaning it can hold any type
     assert!(matches!(kb.get_term(contents_tid), Term::Var(_)),

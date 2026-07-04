@@ -200,24 +200,19 @@ impl KbBridge {
     /// the list of field name symbols. Falls back to inferring schema from
     /// existing facts with matching functor if no Entity definition exists.
     fn find_entity_schema(&self, sort_name: &str) -> Option<(anthill_core::intern::Symbol, Vec<anthill_core::intern::Symbol>)> {
-        let entity_facts = reader::facts_by_sort_name(&mut self.kb.borrow_mut(), "Entity");
         {
+            // The declared schema: the loader's `entity_field_types` registry
+            // (WI-515 — the same-functor `Entity` schema fact this used to scan
+            // is gone; type-terms-in-data-slots polluted var-quantified queries).
             let kb = self.kb.borrow();
-            // Only a ground `Value::Term(Fn)` entity head names a usable schema
-            // here (a value-in-type entity is irrelevant to a `SortQuery` goal).
-            for (_rid, head) in &entity_facts {
-                if let Value::Term { id: t, .. } = head {
-                    if let CoreTerm::Fn { functor, named_args, .. } = kb.get_term(*t) {
-                        let fname = kb.resolve_sym(*functor);
-                        if fname == sort_name || fname.rsplit('.').next() == Some(sort_name) {
-                            let fields: Vec<anthill_core::intern::Symbol> = named_args
-                                .iter()
-                                .map(|&(sym, _)| sym)
-                                .collect();
-                            return Some((*functor, fields));
-                        }
-                    }
-                }
+            if let Some(functor) = kb.resolve_entity_functor(sort_name) {
+                let fields: Vec<anthill_core::intern::Symbol> = kb
+                    .entity_field_types(functor)
+                    .expect("resolve_entity_functor returns a registered functor")
+                    .iter()
+                    .map(|&(sym, _)| sym)
+                    .collect();
+                return Some((functor, fields));
             }
         }
 
@@ -687,13 +682,12 @@ impl KB for KbBridge {
         // carrier-agnostically; a value-in-type field type rides as a `Value::Node`
         // into `FieldInfo.type_name` (a `Term` carrier over `Value`), surfaced
         // verbatim via `rterm` rather than dropped. NB: bind the reader result to a
-        // `let` first so the `borrow_mut()` RefMut is released BEFORE the mapping —
-        // a chained `read_*(…).map(…)` would hold the mutable borrow across the
-        // closure and conflict with the bridge methods that re-borrow (`sym_of`).
-        let record = reader::read_entity_fields(&mut self.kb.borrow_mut(), &name);
-        match record {
-            Some(rec) => rec
-                .fields
+        // `let` first so the `borrow()` Ref is released BEFORE the mapping — a
+        // chained `read_*(…).map(…)` would hold the borrow across the closure and
+        // conflict with bridge methods that re-borrow mutably.
+        let fields = reader::read_entity_fields(&self.kb.borrow(), &name);
+        match fields {
+            Some(fields) => fields
                 .into_iter()
                 .map(|(field_sym, field_type)| FieldInfo {
                     name: ReflectSymbol::new(field_sym),
@@ -1103,9 +1097,8 @@ sort Store {
         // `facts_of` takes the entity by reference (a `Type` carrying a
         // `Ref(Color.red)` Value) and returns every rule head with that functor.
         // Parity with the interpreter `kb_facts_of` (`rules_by_functor`): the
-        // result is the user facts PLUS the synthetic entity declaration (whose
-        // field values are unbound logical vars) — so the count is
-        // user-facts + 1.
+        // result is exactly the user DATA facts — WI-515 removed the synthetic
+        // entity-declaration fact that used to ride along as an extra row.
         let bridge = load_source_bridge(r#"
 sort Color {
   entity red(shade: Int64)
@@ -1115,8 +1108,7 @@ fact red(shade: 1)
 fact red(shade: 2)
 fact blue(shade: 3)
 "#);
-        // Count heads carrying a GROUND `shade` literal — that distinguishes the
-        // two user facts from the synthetic entity decl (whose shade is a var).
+        // Every returned head carries a GROUND `shade` literal (a data row).
         let ground_count = |facts: &[Term]| -> usize {
             facts.iter().filter(|t| match bridge.reify((*t).clone()) {
                 TermRepr::FnRepr { args, .. } =>
@@ -1130,7 +1122,7 @@ fact blue(shade: 3)
             Value::term(kb.resolve_qualified_name_term("Color.red"))
         };
         let reds = bridge.facts_of(Type::new(red_ref));
-        assert_eq!(reds.len(), 3, "2 user facts + 1 synthetic entity decl, got {}", reds.len());
+        assert_eq!(reds.len(), 2, "the 2 user facts and nothing else, got {}", reds.len());
         assert_eq!(ground_count(&reds), 2, "two ground `red` user facts");
 
         let blue_ref = {
@@ -1138,7 +1130,7 @@ fact blue(shade: 3)
             Value::term(kb.resolve_qualified_name_term("Color.blue"))
         };
         let blues = bridge.facts_of(Type::new(blue_ref));
-        assert_eq!(blues.len(), 2, "1 user fact + 1 synthetic entity decl");
+        assert_eq!(blues.len(), 1, "the 1 user fact and nothing else");
         assert_eq!(ground_count(&blues), 1, "one ground `blue` user fact");
     }
 

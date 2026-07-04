@@ -8,11 +8,11 @@
 //! real `KnowledgeBase` (the `kb()` value is an ignored sentinel).
 //!
 //! Deterministic by construction: the goal pins `role` to the literal
-//! `"admin"`. The loader also asserts a synthetic entity-declaration fact
-//! `Person(name: sort_ref(String), role: sort_ref(String))` (type terms in the
-//! slots), but a concrete `Const("admin")` does not unify with `sort_ref(String)`,
-//! so the declaration — and the `role: "user"` row — are excluded; only the
-//! `alice`/`admin` fact matches.
+//! `"admin"`, so only the `alice` fact matches (the `role: "user"` row is
+//! excluded). WI-515: the loader no longer asserts the synthetic same-functor
+//! entity-declaration fact (`Person(name: <String type>, role: <String type>)`)
+//! that a var-quantified query used to spuriously match — a concrete
+//! discriminator is no longer load-bearing against phantom rows.
 
 use anthill_core::eval::Value;
 use crate::common::interp_for;

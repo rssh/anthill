@@ -119,9 +119,9 @@ namespace anthill.todo.store
           concat("WI-", pad3(c))
 
     -- Materialize each in-KB WorkItem Term into a typed entity.
-    -- The synthetic entity-declaration fact materializes too (its
-    -- field slots hold type expressions, not literal values), so
-    -- pre-filter on a string `id` to keep only real rows.
+    -- Pre-filter on a string `id`: a malformed row without one is
+    -- skipped. (WI-515: the synthetic entity-declaration fact this
+    -- filter also used to exclude is no longer asserted.)
     --
     -- Read-only impl bodies route through `facts_of(kb(), WorkItem)`
     -- rather than `retrieve(backend, …)`: the eager drains
@@ -139,9 +139,9 @@ namespace anthill.todo.store
               case none() -> terms_to_workitems(rest)
           else terms_to_workitems(rest)
 
-    -- True when `t` carries a string-literal `id` field. Distinguishes
-    -- real fact rows from the synthetic entity-declaration emitted by
-    -- the loader (whose `id` slot holds a type-expression value).
+    -- True when `t` carries a string-literal `id` field — the shape of
+    -- a real WorkItem row. (WI-515: the loader's synthetic
+    -- entity-declaration fact this used to reject is gone.)
     operation has_string_id(t: Term) -> Bool =
       match term_field(t, "id")
         case none() -> false
@@ -300,9 +300,8 @@ namespace anthill.todo.store
       ()
 
     -- True when `t` is a Tag fact term carrying workitem == id AND
-    -- name == name (both string-literal fields). The synthetic
-    -- entity-declaration fact filters out naturally: its field slots
-    -- hold type expressions, so term_as_string yields none.
+    -- name == name (both string-literal fields); non-string slots
+    -- yield none from term_as_string and fail the match.
     operation tag_term_matches(t: Term, id: String, name: String) -> Bool =
       match term_field(t, "workitem")
         case none() -> false
@@ -338,8 +337,7 @@ namespace anthill.todo.store
             case some(_) -> true
 
     -- The workitem id of a Tag fact whose name matches; none() for a
-    -- non-matching or malformed term (incl. the synthetic entity-decl
-    -- fact, whose field slots aren't string literals).
+    -- non-matching or malformed term (non-string field slots).
     operation tagged_id_of(t: Term, name: String) -> Option[T = String] =
       match term_field(t, "name")
         case none() -> none()

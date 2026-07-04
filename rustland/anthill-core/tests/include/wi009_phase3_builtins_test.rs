@@ -79,10 +79,10 @@ end
         "anthill.reflect.KB.facts_of",
         &[Value::Unit, pair_ref],
     ).expect("facts_of");
-    // facts_of returns both the user fact AND the synthetic entity
-    // declaration (whose field values are unbound logical vars). Walk
-    // the cons-list and pick the first head whose `fst` field is the
-    // ground Int64 literal — that's the user fact.
+    // Walk the cons-list and pick the head whose `fst` field is the
+    // ground Int64 literal — the user fact. (WI-515: facts_of now returns
+    // only data facts; the synthetic entity declaration that used to ride
+    // along is no longer asserted, so the filter is just shape-checking.)
     use anthill_core::kb::term::{Literal, Term};
     let head = {
         let mut cur = facts.clone();

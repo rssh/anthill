@@ -9752,7 +9752,7 @@ impl<'a> Loader<'a> {
                 Item::Operation(o) => { self.load_operation(o, domain); "Operation" }
                 Item::Const(c) => { self.load_const(c, domain); "Const" }
                 Item::RequiresDecl(r) => { self.load_requires_decl(r, domain); "RequiresDecl" }
-                Item::Entity(e) => { self.load_entity(e, domain); "Entity" }
+                Item::Entity(e) => { self.load_entity(e); "Entity" }
                 Item::Fact(f) => { self.load_fact(f, domain); "Fact" }
                 Item::Constraint(c) => { self.load_constraint(c, domain); "Constraint" }
                 Item::OperationBlock(ob) => {
@@ -10404,16 +10404,14 @@ impl<'a> Loader<'a> {
         self.kb.assert_fact(fact_term, sort_sort, parent_domain, None);
     }
 
-    fn load_entity(&mut self, e: &Entity, domain: TermId) {
-        let entity_sort = self.kb.make_name_term("Entity");
+    fn load_entity(&mut self, e: &Entity) {
         let functor = self.remap_name(&e.name);
 
         // WI-342: lower each field type ONCE, carrier-agnostically — a value-in-
         // type field (`Vector[Int64, 3]` / `Modify[c]`-shaped / dependent) is carried
         // as `Value::Node`, a ground field type as `Value::Term`. Lowering once
         // avoids double-firing per-field side effects like `emit_desc_fact` (a
-        // described type-var field type). The Entity schema fact below is built
-        // carrier-agnostically (a value fact when any field is `Node`).
+        // described type-var field type).
         let field_types: Vec<(Symbol, crate::eval::value::Value)> = e.fields
             .iter()
             .map(|f| (self.reintern(f.name), self.type_expr_to_value(&f.ty)))
@@ -10425,34 +10423,19 @@ impl<'a> Loader<'a> {
         // (`register_entity_field_names_scan`), so the positional→named desugar
         // and partial-expansion are load-order-independent; only the type-aware
         // lowering stays here.
-        self.kb.register_entity_field_types(functor, field_types.clone());
-
-        // WI-342: build the Entity schema fact carrier-agnostically. A
-        // value-in-type field (`Vector[Int64, 3]`) lowers to a `Value::Node`,
-        // which a hash-consed `Term` cannot hold → the head becomes a value
-        // fact (mirrors the WI-348 OperationInfo split and the S4c EntityInfo
-        // fact). All-ground field types keep the hash-consed `Term::Fn` head
-        // (dedup, structural sharing) — the universal case today, byte-identical
-        // to the prior build. The fact is read carrier-agnostically by the
-        // `KB.fields` reflect builtin; the TermId-only bridge skips a value head
-        // (the carrier-faithful path is `KB.*`).
-        use crate::eval::value::Value;
-        if field_types.iter().all(|(_, v)| matches!(v, Value::Term { .. })) {
-            let named_args: SmallVec<[(Symbol, TermId); 2]> = field_types
-                .iter()
-                .map(|(s, v)| (*s, v.expect_term()))
-                .collect();
-            let entity_term = self.kb.alloc(Term::Fn { functor, pos_args: SmallVec::new(), named_args });
-            self.kb.assert_fact(entity_term, entity_sort, domain, None);
-        } else {
-            let head = Value::Entity {
-                functor,
-                pos: std::rc::Rc::from(Vec::<Value>::new()),
-                named: std::rc::Rc::from(field_types),
-                ty: None,
-            };
-            self.kb.assert_fact_value(head, entity_sort, domain, None);
-        }
+        //
+        // WI-515: this registry (plus, for sort-body entities, the `EntityInfo`
+        // fact emitted by `load_sort_with_body`) is the ONLY declaration-side
+        // representation. The loader used to also assert a same-functor
+        // "schema fact" (`edge(from: <Node type>, to: <Node type>)` under sort
+        // `Entity`), but a fact whose DATA slots carry TYPE terms unifies with
+        // any fully-var query over the constructor — e.g. the self-referential
+        // constraint `no ?p -: edge(from: ?p, to: ?p)` matched it (`?p = Node`
+        // in both slots) and was spuriously violated on self-loop-free data,
+        // and every `KB.execute` pattern query saw a phantom row. The reflect
+        // readers resolve entity names via `KB::resolve_entity_functor` and
+        // read this registry instead.
+        self.kb.register_entity_field_types(functor, field_types);
     }
 
     fn load_fact(&mut self, f: &Fact, domain: TermId) {

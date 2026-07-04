@@ -1865,14 +1865,11 @@ end
 
     let count = interp.call("test.m4_multi.drain", &[stream_val])
         .expect("drain runs");
-    // A fully-unbound query matches both user facts plus the synthetic
-    // per-entity "declaration fact" the loader asserts from
-    // `entity ancestor(parent: Person, child: Person)` (load.rs:2950,
-    // asserted with sort=Entity, functor=ancestor). We count structural
-    // matches regardless of sort, hence 3 rather than 2. The single-
-    // match test pins `child: bob` and avoids this by excluding the
-    // declaration fact.
-    assert_eq!(count.as_int(), Some(3), "drain count for fully-unbound query");
+    // Exactly the two user facts. WI-515: the loader used to also assert a
+    // synthetic per-entity "declaration fact" (`ancestor(parent: <Person
+    // type>, child: <Person type>)` under sort Entity) that a fully-unbound
+    // query structurally matched, inflating this count to 3.
+    assert_eq!(count.as_int(), Some(2), "drain count for fully-unbound query");
 }
 
 #[test]

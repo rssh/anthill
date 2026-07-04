@@ -107,22 +107,16 @@ namespace test.wi182_query
 end
 "#;
     let mut interp = interp_for(src);
-    // Two solutions can match the pattern_query: the user-asserted fact
-    // and the synthetic entity declaration the loader emits for
-    // `entity Item(...)`. Their order in the resolver stream depends on
-    // discrim tree hash iteration, which isn't deterministic across
-    // processes — so we assert *one* of the recognised outcomes: the
-    // user fact's "alice" string, or the entity declaration's
-    // logical-variable field which `term_as_string` reports as
-    // "no-string". Either result confirms the fresh_var → pattern_query
-    // → execute → splitFirst → lookup chain is intact.
+    // Exactly one solution matches the pattern_query: the user-asserted
+    // fact, binding "alice". (WI-515: the loader's synthetic entity
+    // declaration used to ride along as a nondeterministically-ordered
+    // second match, forcing this test to also accept "no-string".)
     let r = interp.call("test.wi182_query.first_parent_name", &[])
         .expect("call first_parent_name");
     match r {
-        Value::Str(s) => assert!(
-            s == "alice" || s == "no-string",
-            "expected to land on the user-fact match (\"alice\") or the \
-             synthetic entity-declaration match (\"no-string\"); got {s:?}",
+        Value::Str(s) => assert_eq!(
+            s, "alice",
+            "the user-fact match must bind the parent name",
         ),
         other => panic!("expected Str, got {other:?}"),
     }

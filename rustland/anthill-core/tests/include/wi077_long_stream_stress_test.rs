@@ -18,12 +18,10 @@
 //! concatenating two N-solution streams must surface all 2N and reclaim
 //! every arena slot.
 //!
-//! Determinism: each `item` fact carries a literal `group` discriminator.
-//! A query that pins `group` to a concrete `Value::Int` excludes the
-//! synthetic per-entity declaration fact (whose arg slots hold
-//! `sort_ref(Int64)` type terms, which a literal int does not unify with —
-//! see kb_query_test.rs), so the match count is exactly the number of facts
-//! in that group.
+//! Determinism: each `item` fact carries a literal `group` discriminator,
+//! so a query that pins `group` to a concrete `Value::Int` matches exactly
+//! the number of facts in that group. (WI-515: the synthetic per-entity
+//! declaration fact this pin also used to exclude is no longer asserted.)
 
 use anthill_core::eval::stream::StreamSource;
 use anthill_core::eval::{Interpreter, Value};
@@ -122,8 +120,7 @@ fn wi077_resolver_long_stream_surfaces_all_n_solutions() {
         count += 1;
     }
 
-    // (a) all N solutions surface — exactly N (the literal `group: 0` pin
-    // excludes the synthetic declaration fact).
+    // (a) all N solutions surface — exactly N.
     assert_eq!(count, N, "all N resolver solutions surface");
 
     // (c) no per-solution leak: every yielded substitution was freed as its

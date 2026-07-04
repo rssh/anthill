@@ -369,8 +369,8 @@ fn kb_fields(
     // pairs carrier-agnostically (WI-342): a value-in-type field (`Vector[Int64,
     // 3]`) rides as its own `Value::Node` into the FieldInfo, surfaced verbatim.
     let mut items: Vec<Value> = Vec::new();
-    if let Some(rec) = reader::read_entity_fields(kb, &name) {
-        for (field_sym, field_type) in rec.fields {
+    if let Some(fields) = reader::read_entity_fields(kb, &name) {
+        for (field_sym, field_type) in fields {
             let name_val = Value::Str(kb.resolve_sym(field_sym).to_string());
             let fields = vec![
                 (syms.f_name, name_val),

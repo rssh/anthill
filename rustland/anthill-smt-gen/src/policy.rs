@@ -72,10 +72,10 @@ fn lookup_explicit_policy(
             Term::Fn { named_args, .. } => named_args,
             _ => continue,
         };
-        // Skip the synthetic schema-declaration fact (whose
-        // `predicate` / `backend` fields are sort references, not
-        // string literals) and any other malformed records — only
-        // user-asserted policy facts are matched.
+        // Skip malformed records (non-string `predicate` / `backend`
+        // fields) — only user-asserted policy facts are matched.
+        // (WI-515: the synthetic schema-declaration fact this filter
+        // also used to exclude is no longer asserted.)
         let pred = match read_string_field(kb, named, "predicate") {
             Some(s) => s, None => continue,
         };
