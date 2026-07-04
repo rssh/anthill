@@ -368,8 +368,9 @@ fn kb_fields(
     // The shared reader returns the matching entity's `(field_name, field_type)`
     // pairs carrier-agnostically (WI-342): a value-in-type field (`Vector[Int64,
     // 3]`) rides as its own `Value::Node` into the FieldInfo, surfaced verbatim.
+    // An ambiguous short name is a LOUD EvalError naming the candidates (WI-631).
     let mut items: Vec<Value> = Vec::new();
-    if let Some(fields) = reader::read_entity_fields(kb, &name) {
+    if let Some((_functor, fields)) = reader::read_entity_fields(kb, &name).map_err(EvalError::Internal)? {
         for (field_sym, field_type) in fields {
             let name_val = Value::Str(kb.resolve_sym(field_sym).to_string());
             let fields = vec![
@@ -1436,6 +1437,31 @@ end
             .expect("reflect.not");
         assert!(matches!(result, Value::Bool(true)),
             "unsatisfiable goal → not should be true, got {result:?}");
+    }
+
+    #[test]
+    fn kb_fields_ambiguous_short_name_errors() {
+        // WI-631: the interpreter KB.fields surface maps an ambiguous short
+        // entity name onto a loud EvalError naming the candidates.
+        let mut interp = load_stdlib_and_source(r#"
+namespace test.wi631_interp
+  sort Alpha { entity dup(x: Int64) }
+  sort Beta { entity dup(y: String) }
+end
+"#);
+        let result = interp.call(
+            "anthill.reflect.KB.fields",
+            &[Value::Unit, Value::Str("dup".into())],
+        );
+        match result {
+            Err(EvalError::Internal(msg)) => assert!(
+                msg.contains("ambiguous entity name 'dup'")
+                    && msg.contains("test.wi631_interp.Alpha.dup")
+                    && msg.contains("test.wi631_interp.Beta.dup"),
+                "diagnostic names the candidates: {msg}"
+            ),
+            other => panic!("expected Err(Internal(ambiguous...)), got {other:?}"),
+        }
     }
 
     #[test]

@@ -199,20 +199,20 @@ impl KbBridge {
     /// Look up an Entity definition by name, returning its functor symbol and
     /// the list of field name symbols. Falls back to inferring schema from
     /// existing facts with matching functor if no Entity definition exists.
-    fn find_entity_schema(&self, sort_name: &str) -> Option<(anthill_core::intern::Symbol, Vec<anthill_core::intern::Symbol>)> {
+    /// An AMBIGUOUS short name (several sorts declare the constructor) is
+    /// `Err` — loud, never an arbitrary pick (WI-631); `Ok(None)` means "no
+    /// declared entity" and sends the caller to its positional fallback goal.
+    fn find_entity_schema(&self, sort_name: &str) -> Result<Option<(anthill_core::intern::Symbol, Vec<anthill_core::intern::Symbol>)>, Error> {
         {
-            // The declared schema: the loader's `entity_field_types` registry
-            // (WI-515 — the same-functor `Entity` schema fact this used to scan
-            // is gone; type-terms-in-data-slots polluted var-quantified queries).
-            let kb = self.kb.borrow();
-            if let Some(functor) = kb.resolve_entity_functor(sort_name) {
-                let fields: Vec<anthill_core::intern::Symbol> = kb
-                    .entity_field_types(functor)
-                    .expect("resolve_entity_functor returns a registered functor")
-                    .iter()
-                    .map(|&(sym, _)| sym)
-                    .collect();
-                return Some((functor, fields));
+            // The declared schema, via the shared reader (WI-515 — the
+            // same-functor `Entity` schema fact this used to scan is gone;
+            // WI-631 — an ambiguous short name is a loud Err, never a pick).
+            let declared = reader::read_entity_fields(&self.kb.borrow(), sort_name)
+                .map_err(Error)?;
+            if let Some((functor, fields)) = declared {
+                let names: Vec<anthill_core::intern::Symbol> =
+                    fields.iter().map(|&(sym, _)| sym).collect();
+                return Ok(Some((functor, names)));
             }
         }
 
@@ -230,11 +230,11 @@ impl KbBridge {
                     .iter()
                     .map(|&(s, _)| s)
                     .collect();
-                return Some((*functor, fields));
+                return Ok(Some((*functor, fields)));
             }
         }
 
-        None
+        Ok(None)
     }
 
     /// Convert a `LogicalQuery` to goal [`Value`]s and a `ResolveConfig`.
@@ -259,7 +259,7 @@ impl KbBridge {
             LogicalQuery::EmptyQuery => Ok(vec![]),
             LogicalQuery::PatternQuery { term } => Ok(vec![term.value().clone()]),
             LogicalQuery::SortQuery { sort_name } => {
-                let entity_info = self.find_entity_schema(sort_name);
+                let entity_info = self.find_entity_schema(sort_name)?;
 
                 let mut kb = self.kb.borrow_mut();
                 match entity_info {
@@ -684,10 +684,14 @@ impl KB for KbBridge {
         // verbatim via `rterm` rather than dropped. NB: bind the reader result to a
         // `let` first so the `borrow()` Ref is released BEFORE the mapping — a
         // chained `read_*(…).map(…)` would hold the borrow across the closure and
-        // conflict with bridge methods that re-borrow mutably.
+        // conflict with bridge methods that re-borrow mutably. An AMBIGUOUS short
+        // name panics with the candidate list (WI-631) — this Vec-returning surface
+        // has no error channel, and a caller type error is loud here by precedent
+        // (see `facts_of`).
         let fields = reader::read_entity_fields(&self.kb.borrow(), &name);
+        let fields = fields.unwrap_or_else(|msg| panic!("{msg}"));
         match fields {
-            Some(fields) => fields
+            Some((_functor, fields)) => fields
                 .into_iter()
                 .map(|(field_sym, field_type)| FieldInfo {
                     name: ReflectSymbol::new(field_sym),
@@ -1145,6 +1149,56 @@ fact blue(shade: 3)
             Value::term(kb.alloc(CoreTerm::Const(Literal::Int(7))))
         };
         let _ = bridge.facts_of(Type::new(lit));
+    }
+
+    #[test]
+    #[should_panic(expected = "ambiguous entity name 'dup'")]
+    fn fields_ambiguous_short_name_panics() {
+        // WI-631: a short name declared by two sorts must fail loudly with
+        // the candidate list, never silently answer one sort's schema.
+        let bridge = load_source_bridge(r#"
+namespace test.wi631_bridge
+  sort Alpha { entity dup(x: Int64) }
+  sort Beta { entity dup(y: String) }
+end
+"#);
+        let _ = bridge.fields("dup".into());
+    }
+
+    #[test]
+    fn fields_qualified_name_resolves_despite_ambiguity() {
+        // The exact qualified name bypasses the short-name scan (WI-631).
+        let bridge = load_source_bridge(r#"
+namespace test.wi631_bridge
+  sort Alpha { entity dup(x: Int64) }
+  sort Beta { entity dup(y: String) }
+end
+"#);
+        let fields = bridge.fields("test.wi631_bridge.Beta.dup".into());
+        assert_eq!(fields.len(), 1, "Beta.dup has one field");
+        let kb = bridge.kb.borrow();
+        assert_eq!(kb.resolve_sym(fields[0].name.symbol()), "y");
+    }
+
+    #[test]
+    fn sort_query_ambiguous_short_name_errors() {
+        // WI-631: the SortQuery lowering surfaces ambiguity as Err through
+        // `execute`'s Result channel, naming the candidates.
+        let bridge = load_source_bridge(r#"
+namespace test.wi631_bridge
+  sort Alpha { entity dup(x: Int64) }
+  sort Beta { entity dup(y: String) }
+end
+"#);
+        match bridge.execute(LogicalQuery::SortQuery { sort_name: "dup".into() }) {
+            Err(Error(msg)) => assert!(
+                msg.contains("ambiguous entity name 'dup'")
+                    && msg.contains("test.wi631_bridge.Alpha.dup")
+                    && msg.contains("test.wi631_bridge.Beta.dup"),
+                "diagnostic names the candidates: {msg}"
+            ),
+            Ok(_) => panic!("an ambiguous SortQuery name must be a loud Err"),
+        }
     }
 
     #[test]

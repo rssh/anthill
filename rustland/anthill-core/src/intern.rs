@@ -128,7 +128,7 @@ pub struct ScopeInclusion {
 
 // ── Resolution result ───────────────────────────────────────────
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ResolveResult {
     Found(Symbol),
     Ambiguous(Vec<Symbol>),

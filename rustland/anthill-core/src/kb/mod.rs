@@ -246,6 +246,7 @@ pub enum SortKind {
     Enum,
 }
 
+
 // ── Sort operations table ───────────────────────────────────────
 
 /// WI-240 — per-impl-sort operations table. For each impl sort `S`
@@ -4128,25 +4129,56 @@ impl KnowledgeBase {
     /// Resolve a full or short entity name to its registered constructor
     /// functor (a key of [`Self::entity_field_types`]). An exact qualified-name
     /// match wins outright (O(1)); otherwise the short name is scanned over the
-    /// registry, ties broken to the minimal qualified name — deterministic
-    /// where the ambiguity is real (two sorts declaring a same-named
-    /// constructor, e.g. stdlib's `guarded` in `anthill.prelude` and in
-    /// `anthill.reflect.LogicalQuery`). WI-515: the
-    /// reflect readers resolve entity names through this instead of scanning
-    /// the retired same-functor `Entity` schema facts. (The persistence
-    /// loader's `resolve_entity_functor` in `term_ser.rs` is the scope-aware
-    /// sibling for serialized short names.)
-    pub fn resolve_entity_functor(&self, name: &str) -> Option<Symbol> {
+    /// registry and resolves ONLY when unique — an ambiguous short name (two
+    /// sorts declaring a same-named constructor, e.g. stdlib's `guarded` in
+    /// `anthill.prelude` and in `anthill.reflect.LogicalQuery`) comes back
+    /// [`ResolveResult::Ambiguous`] with the candidates in qualified-name
+    /// order, so callers fail loudly ([`Self::ambiguous_entity_message`])
+    /// instead of silently getting an arbitrary sort's schema (WI-631;
+    /// loud-over-silent). WI-515: the reflect readers resolve entity names
+    /// through this instead of scanning the retired same-functor `Entity`
+    /// schema facts. (The persistence loader's `resolve_entity_functor` in
+    /// `term_ser.rs` is the scope-aware sibling for serialized short names.)
+    ///
+    /// NB exact-match-wins: in a NAMESPACE-LESS file a top-level entity's
+    /// qualified name IS its short name, so it wins tier 1 outright and is
+    /// never reported ambiguous against a same-named sort-body constructor —
+    /// accepted (an exact qualified match is what the caller asked for).
+    pub fn resolve_entity_functor(&self, name: &str) -> crate::intern::ResolveResult {
+        use crate::intern::ResolveResult;
         if let Some(sym) = self.try_resolve_symbol(name) {
             if self.entity_field_types.contains_key(&sym) {
-                return Some(sym);
+                return ResolveResult::Found(sym);
             }
         }
-        self.entity_field_types
+        let mut matches: Vec<Symbol> = self
+            .entity_field_types
             .keys()
             .copied()
             .filter(|&f| self.resolve_sym(f) == name)
-            .min_by_key(|&f| self.qualified_name_of(f))
+            .collect();
+        match matches.len() {
+            0 => ResolveResult::NotFound,
+            1 => ResolveResult::Found(matches[0]),
+            _ => {
+                // Qualified-name order: a stable candidate list for diagnostics.
+                matches.sort_by(|&a, &b| self.qualified_name_of(a).cmp(self.qualified_name_of(b)));
+                ResolveResult::Ambiguous(matches)
+            }
+        }
+    }
+
+    /// The diagnostic for an ambiguous [`Self::resolve_entity_functor`]
+    /// outcome: names every candidate (the codebase's "candidates" ambiguity
+    /// vocabulary, cf. `LoadError::AmbiguousSymbol`) as the exact strings to
+    /// retry with — only a FULLY qualified name resolves (a partial
+    /// qualification like `Alpha.dup` is NotFound), so say so.
+    pub fn ambiguous_entity_message(&self, name: &str, candidates: &[Symbol]) -> String {
+        let list: Vec<&str> = candidates.iter().map(|&s| self.qualified_name_of(s)).collect();
+        format!(
+            "ambiguous entity name '{name}': candidates {}; use a fully qualified name",
+            list.join(", ")
+        )
     }
 
     /// Check if a functor symbol is a constructor (entity with a parent sort).
