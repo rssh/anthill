@@ -3084,6 +3084,16 @@ impl KnowledgeBase {
             // Walk only Value::Term bindings — this code path uses TermIds
             // for DeBruijn rename + caller-var linkage. Non-Term bindings
             // from external streams flow through a different path.
+            //
+            // Two passes (WI-624): `body_rename` must be COMPLETE before any
+            // query-var link is opened. A nonlinear head (`unbox(box(v: ?v), ?v)`)
+            // binds the rule var concretely through one occurrence (a synthetic
+            // entry) while a query var links to the SAME rule var through
+            // another; the link must resolve through `body_rename`, else it
+            // dangles on a fresh var the rename-substituted body never binds
+            // and the answer leaks an unbound fresh var. (The arity-0 legacy
+            // path below always threaded links through its `rename` — this
+            // restores that parity for the De Bruijn path.)
             for (ts_vid, bound_term) in tree_subst.iter_terms() {
                 // Shared `u32::MAX - n` decode (`Var::synthetic_debruijn_index`),
                 // also used by `apply_eq_rules`'s `instantiate_eq_rhs`.
@@ -3091,10 +3101,39 @@ impl KnowledgeBase {
                     if let Some(&fresh_vid) = fresh_vars.get(db_index) {
                         body_rename.bind(self, fresh_vid, bound_term);
                     }
-                } else {
-                    let opened = self.term_from_debruijn(bound_term, &fresh_vars);
-                    answer_links.bind(self, ts_vid, opened);
                 }
+            }
+            for (ts_vid, bound_term) in tree_subst.iter_terms() {
+                if Var::synthetic_debruijn_index(ts_vid, arity).is_some() {
+                    continue;
+                }
+                let opened = self.term_from_debruijn(bound_term, &fresh_vars);
+                let linked = if body_rename.is_empty() {
+                    opened
+                } else {
+                    let linked = self.apply_subst(opened, &body_rename);
+                    // Occurs check: the rename can route the query var's own
+                    // term back into its link (`p(box(v: g(?q)), ?q)` links
+                    // ?q → g(?q)); the SLD bind path is not occurs-checked and
+                    // a cyclic σ overflows reify/fingerprint. Correct
+                    // semantics is occurs-FAILURE — flag the whole match as
+                    // contradictory (the resolver drops the candidate, same as
+                    // a tree_subst contradiction). Resolving through the links
+                    // built so far also catches mutual cycles
+                    // (?a → f(?b), ?b → g(?a)). Pure opened links can't cycle
+                    // (a rule head has no query vars), so the check rides the
+                    // rename branch only.
+                    if self.occurs_in_value(
+                        ts_vid,
+                        &crate::eval::value::Value::term(linked),
+                        &answer_links,
+                    ) {
+                        answer_links.contradiction = true;
+                        break;
+                    }
+                    linked
+                };
+                answer_links.bind(self, ts_vid, linked);
             }
 
             // Occurrence body: De Bruijn-open with the same fresh vars, then

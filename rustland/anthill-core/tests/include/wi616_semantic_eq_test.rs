@@ -78,6 +78,15 @@ fn solutions(kb: &mut KnowledgeBase, pred: &str, a: TermId, b: TermId) -> usize 
     kb.resolve(&[goal], &ResolveConfig::default()).len()
 }
 
+/// Carrier-agnostic "reified to this int" check — a binding can come back as
+/// `Value::Int`, a hash-consed `Value::Term(Const)`, or a `Value::Node`
+/// occurrence (`Expr::Const` via the `<=>` path); `TermView::head` reads all
+/// three.
+fn reifies_to_int(kb: &KnowledgeBase, v: &anthill_core::eval::Value, n: i64) -> bool {
+    use anthill_core::kb::term_view::{TermView, ViewHead};
+    matches!(v.head(kb), ViewHead::Const(Literal::Int(m)) if m == n)
+}
+
 fn int_set(kb: &mut KnowledgeBase, elems: &[i64]) -> TermId {
     let elems: Vec<TermId> = elems.iter().map(|&n| int_term(kb, n)).collect();
     set_of(kb, &elems)
@@ -296,19 +305,20 @@ fn eq_with_unbound_var_still_residualizes() {
     );
 }
 
-// ── nonlinear-head output-var repro (WI-624; documents why Map.binds keeps a
-// LINEAR head in map.anthill) ──────────────────────────────────────────────
+// ── nonlinear-head output var (WI-624 regression; NB Map.binds still keeps a
+// LINEAR head — for the WI-633 doubly-concrete reason below, no longer for
+// this leak) ────────────────────────────────────────────────────────────────
 
 #[test]
-#[ignore = "WI-624: nonlinear rule-head output var leaks unopened DeBruijn(0) into the answer"]
 fn nonlinear_head_output_var_repro() {
     // `rule unbox0(box(v: ?v), ?v)` / `rule unbox1(box(v: ?v), ?v) :- eq(1,1)`:
     // the head is NONLINEAR — ?v occurs inside the compound first arg AND as
     // the whole second arg. Querying with a flex second arg must bind it to
-    // the boxed value; today it reifies to the rule's own `Var(DeBruijn(0))`.
-    // (The bodied variant is the shape Map.binds originally had; its output
-    // came back UNBOUND, floundering downstream goals — hence the linear-head
-    // + `<=>` form now used in map.anthill.)
+    // the boxed value. Before WI-624 the bodyless variant answered the rule's
+    // own `Var(DeBruijn(0))` (the fact fast-path bound `tree_subst` raw) and
+    // the bodied variant left the output UNBOUND (`with_fresh_vars` never
+    // threaded the head-match value from `body_rename` into the answer link),
+    // floundering downstream goals — the shape Map.binds originally had.
     let mut kb = load_kb();
     for pred in ["unbox0", "unbox1"] {
         let v42 = int_term(&mut kb, 42);
@@ -326,15 +336,177 @@ fn nonlinear_head_output_var_repro() {
         let sols = kb.resolve(&[goal], &ResolveConfig::default());
         assert_eq!(sols.len(), 1, "{pred}(box(42), ?out) must have one solution");
         let bound = kb.reify(out, &sols[0].subst);
-        let is_42 = match &bound {
-            anthill_core::eval::Value::Int(n) => *n == 42,
-            anthill_core::eval::Value::Term { id, .. } => {
-                matches!(kb.get_term(*id), Term::Const(Literal::Int(42)))
-            }
-            _ => false,
-        };
-        assert!(is_42, "{pred}: ?out must bind to 42 through the nonlinear head, got {bound:?}");
+        assert!(
+            reifies_to_int(&kb, &bound, 42),
+            "{pred}: ?out must bind to 42 through the nonlinear head, got {bound:?}"
+        );
     }
+}
+
+#[test]
+fn nonlinear_head_cyclic_link_occurs_fails() {
+    // `p(box(v: box(v: ?q)), ?q)` against head `p(box(v: ?v), ?v)` requires
+    // ?q = box(v: ?q) — an occurs violation, so the match must FAIL (0
+    // solutions). The WI-624 link threading routes the query var's own term
+    // back into its answer link; without the occurs check in
+    // `with_fresh_vars` pass 2 the cyclic σ overflowed the stack in
+    // reify/fingerprint (observed: `fatal runtime error: stack overflow`).
+    let mut kb = load_kb();
+    for pred in ["unbox0", "unbox1"] {
+        let v_field = kb.intern("v");
+        let box_sym = kb.try_resolve_symbol("test.wi616.Box.box").unwrap();
+        let q_name = kb.intern("q");
+        let q_vid = kb.fresh_var(q_name);
+        let q = kb.alloc(Term::Var(anthill_core::kb::term::Var::Global(q_vid)));
+        let inner = kb.alloc(Term::Fn {
+            functor: box_sym,
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::from_slice(&[(v_field, q)]),
+        });
+        let outer = kb.alloc(Term::Fn {
+            functor: box_sym,
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::from_slice(&[(v_field, inner)]),
+        });
+        let goal = fn_term(&mut kb, &format!("test.wi616.{pred}"), &[outer, q]);
+        let sols = kb.resolve(&[goal], &ResolveConfig::default());
+        assert_eq!(
+            sols.len(),
+            0,
+            "{pred}(box(box(?q)), ?q) must occurs-fail with zero solutions"
+        );
+    }
+}
+
+// Residual nonlinear-head gaps (WI-633) — the discrim match imposes
+// STRUCTURAL identity, not unification, on a repeated head var, and the
+// inverse orientation (query var inside the compound occurrence, concrete at
+// the bare one) still leaks an unbound output. Both shapes are why Map.binds
+// keeps its linear head + `<=>`.
+
+#[test]
+#[ignore = "WI-633: doubly-concrete nonlinear-head match needs unification, not structural identity"]
+fn nonlinear_head_doubly_concrete_unifies() {
+    // unbox0(box(v: some(?x)), some(42)): true semantics unifies the two ?v
+    // occurrences, binding ?x = 42. Today the discrim match double-binds the
+    // rule var structurally (some(?x) vs some(42) differ) and drops the
+    // candidate: silent 0 solutions.
+    let mut kb = load_kb();
+    let some_sym = kb.try_resolve_symbol("anthill.prelude.Option.some").unwrap();
+    let x_name = kb.intern("x");
+    let x_vid = kb.fresh_var(x_name);
+    let x = kb.alloc(Term::Var(anthill_core::kb::term::Var::Global(x_vid)));
+    let some_x = kb.alloc(Term::Fn {
+        functor: some_sym,
+        pos_args: SmallVec::from_elem(x, 1),
+        named_args: SmallVec::new(),
+    });
+    let v42 = int_term(&mut kb, 42);
+    let some_42 = kb.alloc(Term::Fn {
+        functor: some_sym,
+        pos_args: SmallVec::from_elem(v42, 1),
+        named_args: SmallVec::new(),
+    });
+    let v_field = kb.intern("v");
+    let box_sym = kb.try_resolve_symbol("test.wi616.Box.box").unwrap();
+    let boxed = kb.alloc(Term::Fn {
+        functor: box_sym,
+        pos_args: SmallVec::new(),
+        named_args: SmallVec::from_slice(&[(v_field, some_x)]),
+    });
+    let goal = fn_term(&mut kb, "test.wi616.unbox0", &[boxed, some_42]);
+    let sols = kb.resolve(&[goal], &ResolveConfig::default());
+    assert_eq!(sols.len(), 1, "unbox0(box(some(?x)), some(42)) must unify");
+    let bound = kb.reify(x, &sols[0].subst);
+    assert!(
+        reifies_to_int(&kb, &bound, 42),
+        "?x must unify to 42 through the repeated head var, got {bound:?}"
+    );
+}
+
+#[test]
+#[ignore = "WI-633: inverse-orientation nonlinear head leaves the buried query var unbound"]
+fn nonlinear_head_inverse_orientation_binds() {
+    // unbox0(box(v: ?out), 42): the query var sits INSIDE the compound
+    // occurrence and the concrete value at the bare one — must bind
+    // ?out = 42. Today it answers definitely with ?out silently unbound.
+    let mut kb = load_kb();
+    let v_field = kb.intern("v");
+    let box_sym = kb.try_resolve_symbol("test.wi616.Box.box").unwrap();
+    let out_name = kb.intern("out");
+    let out_vid = kb.fresh_var(out_name);
+    let out = kb.alloc(Term::Var(anthill_core::kb::term::Var::Global(out_vid)));
+    let boxed = kb.alloc(Term::Fn {
+        functor: box_sym,
+        pos_args: SmallVec::new(),
+        named_args: SmallVec::from_slice(&[(v_field, out)]),
+    });
+    let v42 = int_term(&mut kb, 42);
+    let goal = fn_term(&mut kb, "test.wi616.unbox0", &[boxed, v42]);
+    let sols = kb.resolve(&[goal], &ResolveConfig::default());
+    assert_eq!(sols.len(), 1, "unbox0(box(?out), 42) must have one solution");
+    let bound = kb.reify(out, &sols[0].subst);
+    assert!(
+        reifies_to_int(&kb, &bound, 42),
+        "?out must bind to 42 through the inverse orientation, got {bound:?}"
+    );
+}
+
+#[test]
+fn map_binds_unifies_non_ground_stored_value() {
+    // Locks the LINEAR head + `?v <=> ?v2` form of Map.binds rule 1: a
+    // non-ground stored value must UNIFY with the queried value —
+    // binds(put(empty, 1, some(?x)), 1, some(42)) binds ?x = 42, and
+    // binds(put(empty, 1, ?y), 1, 42) binds ?y = 42. The nonlinear spelling
+    // (`binds(put(?, ?k2, ?v), ?k, ?v)`) false-fails the first (structural
+    // contradiction drop) and leaves ?y unbound in the second (WI-633); the
+    // WI-624 review caught exactly this when the head was briefly made
+    // nonlinear.
+    let mut kb = load_kb();
+    let some_sym = kb.try_resolve_symbol("anthill.prelude.Option.some").unwrap();
+    let x_name = kb.intern("x");
+    let x_vid = kb.fresh_var(x_name);
+    let x = kb.alloc(Term::Var(anthill_core::kb::term::Var::Global(x_vid)));
+    let some_x = kb.alloc(Term::Fn {
+        functor: some_sym,
+        pos_args: SmallVec::from_elem(x, 1),
+        named_args: SmallVec::new(),
+    });
+    let k1 = int_term(&mut kb, 1);
+    let m = map_of(&mut kb, &[(k1, some_x)]);
+    let v42 = int_term(&mut kb, 42);
+    let some_42 = kb.alloc(Term::Fn {
+        functor: some_sym,
+        pos_args: SmallVec::from_elem(v42, 1),
+        named_args: SmallVec::new(),
+    });
+    let k1b = int_term(&mut kb, 1);
+    let goal = fn_term(&mut kb, "anthill.prelude.Map.binds", &[m, k1b, some_42]);
+    let sols = kb.resolve(&[goal], &ResolveConfig::default());
+    let definite: Vec<_> = sols.iter().filter(|s| s.residual.is_empty()).collect();
+    assert_eq!(definite.len(), 1, "binds must unify the stored some(?x) with some(42)");
+    let bound = kb.reify(x, &definite[0].subst);
+    assert!(
+        reifies_to_int(&kb, &bound, 42),
+        "?x must unify to 42 through binds' body `<=>`, got {bound:?}"
+    );
+
+    let y_name = kb.intern("y");
+    let y_vid = kb.fresh_var(y_name);
+    let y = kb.alloc(Term::Var(anthill_core::kb::term::Var::Global(y_vid)));
+    let k2 = int_term(&mut kb, 1);
+    let m2 = map_of(&mut kb, &[(k2, y)]);
+    let k2b = int_term(&mut kb, 1);
+    let v42b = int_term(&mut kb, 42);
+    let goal2 = fn_term(&mut kb, "anthill.prelude.Map.binds", &[m2, k2b, v42b]);
+    let sols2 = kb.resolve(&[goal2], &ResolveConfig::default());
+    let definite2: Vec<_> = sols2.iter().filter(|s| s.residual.is_empty()).collect();
+    assert_eq!(definite2.len(), 1, "binds must accept the stored bare var ?y");
+    let bound2 = kb.reify(y, &definite2[0].subst);
+    assert!(
+        reifies_to_int(&kb, &bound2, 42),
+        "?y must bind to 42 through binds' body `<=>`, got {bound2:?}"
+    );
 }
 
 // ── soundness guards from the WI-616 code review ───────────────────────────

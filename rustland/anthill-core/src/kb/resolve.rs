@@ -1866,8 +1866,19 @@ impl SearchStream {
             return Some(StepResult::Continue);
         }
 
-        // A fact (empty body) or a non-rule candidate (external row / no rid).
-        let is_fact = opt_rid.map_or(true, |rid| kb.is_fact(rid));
+        // An arity-0 fact (empty body, no De Bruijn vars) or a non-rule
+        // candidate (external row / no rid). A bodyless rule with head vars
+        // (arity > 0) must NOT take the fact fast-path: its `tree_subst`
+        // carries raw `Var(DeBruijn)` head subterms and synthetic
+        // `u32::MAX - n` entries, which the raw bind below would leak into σ
+        // unopened (WI-624 — the nonlinear head `unbox(box(v: ?v), ?v)`
+        // answered `Var(DeBruijn(0))`). It routes through `with_fresh_vars`
+        // like any rule; its body is just empty. NB arity == 0 does NOT mean
+        // ground: a bodyless LEGACY head with `Var::Global` vars (e.g. the
+        // loader's omitted-field fresh-var fills) still raw-binds its
+        // persistent VarIds here, unfreshened — that remnant of the bug class
+        // is WI-635.
+        let is_fact = opt_rid.map_or(true, |rid| kb.is_fact(rid) && kb.rule_arity(rid) == 0);
 
         let frame = self.stack.last().unwrap();
 
@@ -1890,6 +1901,8 @@ impl SearchStream {
             // constrained query var binding to a concrete fact term here will trip
             // the loud guard — Step 5 must route this path through `bind_waking`
             // (or add the per-kind check) so it wakes/suspends instead of panics.
+            // Same applies to the rule branch's `answer_links` bind_compressed
+            // below (post-WI-624 that branch also serves bodyless rules).
             let term_pairs: Vec<(VarId, TermId)> = tree_subst.iter_terms().collect();
             merged.bind_compressed(term_pairs.into_iter(), &kb.terms);
             // Non-Term bindings (`Value::Entity` from external rows, etc.)
@@ -1922,6 +1935,13 @@ impl SearchStream {
             // goals; it also drives the caller-var delay pre-check below
             // (WI-246 — the term body is no longer built or consulted here).
             let (fresh_nodes, answer_links) = kb.with_fresh_vars(rid, &tree_subst);
+            // WI-624: `with_fresh_vars` flags an occurs violation (a query
+            // var whose head-match link would contain itself) as a
+            // contradiction — a FALSE match, exactly like a contradictory
+            // `tree_subst` above. Drop the candidate.
+            if answer_links.is_contradiction() {
+                return Some(StepResult::Continue);
+            }
             // [WI-030] No eager apply_subst_each here. The body itself is
             // already concretised through `body_rename` inside
             // `with_fresh_vars`, and caller-side bindings flow into
@@ -1929,13 +1949,20 @@ impl SearchStream {
             // goals are walked lazily in `step_init`.
             let remaining = frame.goals[1..].to_vec();
 
-            let caller_fresh_vars: Vec<VarId> = answer_links
-                .iter_terms()
-                .filter_map(|(_, tid)| match kb.terms.get(tid) {
-                    Term::Var(Var::Global(vid)) => Some(*vid),
-                    _ => None,
-                })
-                .collect();
+            // Sole consumer is the delay pre-check over the body — statically
+            // moot for the empty body of a rerouted bodyless rule (WI-624),
+            // so skip the collection walk there.
+            let caller_fresh_vars: Vec<VarId> = if fresh_nodes.is_empty() {
+                Vec::new()
+            } else {
+                answer_links
+                    .iter_terms()
+                    .filter_map(|(_, tid)| match kb.terms.get(tid) {
+                        Term::Var(Var::Global(vid)) => Some(*vid),
+                        _ => None,
+                    })
+                    .collect()
+            };
 
             let mut merged = frame.subst.clone();
             // Path compression over the Value::Term subset of the link
@@ -1971,12 +1998,19 @@ impl SearchStream {
             // expand to.) Cut-ness is a static property of the rule, so the scan
             // runs once per rule and is cached (cut-free rules — the vast
             // majority — then skip it).
-            let cut_functor = match self.cut_cache.get(&rid) {
-                Some(&cached) => cached,
-                None => {
-                    let detected = fresh_nodes.iter().find_map(|n| Self::cut_marker_functor(kb, n));
-                    self.cut_cache.insert(rid, detected);
-                    detected
+            // An empty body (rerouted bodyless rule, WI-624) can't carry a cut
+            // marker — skip the cache probe entirely.
+            let cut_functor = if fresh_nodes.is_empty() {
+                None
+            } else {
+                match self.cut_cache.get(&rid) {
+                    Some(&cached) => cached,
+                    None => {
+                        let detected =
+                            fresh_nodes.iter().find_map(|n| Self::cut_marker_functor(kb, n));
+                        self.cut_cache.insert(rid, detected);
+                        detected
+                    }
                 }
             };
 
@@ -3938,7 +3972,10 @@ impl KnowledgeBase {
     /// Occurs-check: does flex `vid` appear anywhere in `value` after resolving
     /// through `work`? Walks every carrier structurally via [`TermView`].
     /// Rejects `?v <=> f(?v)` (proposal 049 step 3) before a cyclic term forms.
-    fn occurs_in_value(&self, vid: VarId, value: &Value, work: &Substitution) -> bool {
+    /// `pub(crate)` for `with_fresh_vars` (WI-624): a nonlinear head match can
+    /// thread a query var's own term back into its answer link; the link is
+    /// occurs-checked against the links built so far before it enters σ.
+    pub(crate) fn occurs_in_value(&self, vid: VarId, value: &Value, work: &Substitution) -> bool {
         // A var head: identity hit, or chase its binding (so `?w ↦ f(?v)` is
         // caught through `?v <=> ?w`).
         if let Some(w) = self.unify_flex_var(value) {

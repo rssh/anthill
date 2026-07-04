@@ -23,9 +23,13 @@ sort anthill.prelude.Map
   operation map_eq(a: Map, b: Map) -> Bool
   operation binds(m: Map, key: K, value: V) -> Bool
   operation strip_is(m: Map, key: K, rest: Map) -> Bool
-  -- NB `binds` rule 1 keeps a LINEAR head and binds its output via `<=>`: the
-  -- nonlinear spelling `binds(put(?, ?k2, ?v), ?k, ?v)` silently leaks an
-  -- unopened DeBruijn var as the output (WI-624).
+  -- NB `binds` rule 1 keeps a LINEAR head and binds its output via `<=>`: a
+  -- nonlinear head (`binds(put(?, ?k2, ?v), ?k, ?v)`) imposes STRUCTURAL
+  -- identity — not unification — when both ?v occurrences match concrete
+  -- terms (the discrim match double-binds the rule var and a structural
+  -- mismatch drops the candidate), so binds(put(m, k, some(?x)), k, some(42))
+  -- would silently false-fail instead of binding ?x = 42 (WI-633; the
+  -- original DeBruijn answer-leak reason is fixed, WI-624).
   rule binds(put(?, ?k2, ?v2), ?k, ?v) :- Eq.eq(?k, ?k2), ?v <=> ?v2
   rule binds(put(?m, ?k2, ?), ?k, ?v) :- Eq.neq(?k, ?k2), binds(?m, ?k, ?v)
   rule strip_is(empty(), ?, empty())
