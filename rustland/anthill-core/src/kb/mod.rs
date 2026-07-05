@@ -5182,6 +5182,65 @@ mod tests {
     }
 
     #[test]
+    fn match_term_nonlinear_is_matching_not_unification() {
+        // WI-633 boundary: a nonlinear pattern var `?x` in `f(?x, ?x)` MATCHES
+        // only structurally-IDENTICAL target subterms. Against `f(some(?a),
+        // some(?b))` with DISTINCT target vars, matching must FAIL — `match_term`
+        // (and its `match_view` core, which drives the typer's simp_rewrite and
+        // hypothesis discharge) is one-directional: it must NOT unify the two
+        // target subterms by binding `?a := ?b`. The SLD resolution path unifies
+        // instead (`resolve_leaf` `unify_rebind = true`); this locks that
+        // `match_view` stays on `unify_rebind = false`. A regression here would
+        // silently mis-fire nonlinear `[simp]` rules (Map.get / Set.member) on
+        // distinct-key redexes, dropping the equality constraint.
+        let mut kb = KnowledgeBase::new();
+        let x_sym = kb.intern("x");
+        let vid = kb.fresh_var(x_sym);
+        let var_term = kb.alloc(Term::Var(Var::Global(vid)));
+        let f_sym = kb.intern("f");
+        let some_sym = kb.intern("some");
+        let pattern = kb.alloc(Term::Fn {
+            functor: f_sym,
+            pos_args: SmallVec::from_slice(&[var_term, var_term]),
+            named_args: SmallVec::new(),
+        });
+
+        let mk_some = |kb: &mut KnowledgeBase, name: &str| {
+            let a_sym = kb.intern(name);
+            let av = kb.fresh_var(a_sym);
+            let avt = kb.alloc(Term::Var(Var::Global(av)));
+            kb.alloc(Term::Fn {
+                functor: some_sym,
+                pos_args: SmallVec::from_elem(avt, 1),
+                named_args: SmallVec::new(),
+            })
+        };
+        let some_a = mk_some(&mut kb, "a");
+        let some_b = mk_some(&mut kb, "b");
+        // Target: f(some(?a), some(?b)), ?a ≠ ?b — distinct but UNIFIABLE.
+        let target_distinct = kb.alloc(Term::Fn {
+            functor: f_sym,
+            pos_args: SmallVec::from_slice(&[some_a, some_b]),
+            named_args: SmallVec::new(),
+        });
+        assert!(
+            kb.match_term(pattern, target_distinct).is_none(),
+            "nonlinear pattern must MATCH (structural identity), not UNIFY distinct target vars"
+        );
+
+        // Same structure at both positions (some(?a), some(?a)) → matches.
+        let target_same = kb.alloc(Term::Fn {
+            functor: f_sym,
+            pos_args: SmallVec::from_slice(&[some_a, some_a]),
+            named_args: SmallVec::new(),
+        });
+        assert!(
+            kb.match_term(pattern, target_same).is_some(),
+            "identical target subterms at the repeated position must match"
+        );
+    }
+
+    #[test]
     fn match_term_fn_structure() {
         let mut kb = KnowledgeBase::new();
         let f = kb.intern("f");

@@ -550,6 +550,11 @@ impl<L: Clone> SubstTree<L> {
         results
     }
 
+    /// The one-directional MATCHING query (`match_view` / `match_term`): a
+    /// nonlinear pattern var matches only structurally-IDENTICAL target
+    /// subterms, so the leaf resolves with `unify_rebind = false` (WI-633). The
+    /// resolver's own head-selection uses [`query_resolved_value`] with
+    /// unification instead.
     pub(crate) fn query_resolved<V: TermView, F>(
         &self,
         kb: &KnowledgeBase,
@@ -562,7 +567,7 @@ impl<L: Clone> SubstTree<L> {
         self.query_raw(kb, query).into_iter()
             .map(|(leaf, subst)| {
                 let fact_term = resolve_term(&leaf);
-                let s = subst.resolve_leaf(kb, fact_term);
+                let s = subst.resolve_leaf(kb, fact_term, false);
                 (leaf, s)
             })
             .collect()
@@ -570,12 +575,17 @@ impl<L: Clone> SubstTree<L> {
 
     /// Carrier-faithful peer of [`query_resolved`] (WI-348 Phase B). The fact
     /// head is resolved as a `Value`: a `Value::Term` head takes the fast term
-    /// path ([`PersistSubst::resolve_leaf`], unchanged); any other carrier (a
-    /// value fact with a `Value::Node` subterm) resolves deferred paths against
-    /// the head's own `TermView` ([`PersistSubst::resolve_leaf_view`]), so
-    /// named-arg positions read the same carrier the tree indexed (the
-    /// term-store path would read a sorted-by-name skeleton — the named-order
-    /// finding).
+    /// path ([`PersistSubst::resolve_leaf`]); any other carrier (a value fact
+    /// with a `Value::Node` subterm) resolves deferred paths against the head's
+    /// own `TermView` ([`PersistSubst::resolve_leaf_view`]), so named-arg
+    /// positions read the same carrier the tree indexed (the term-store path
+    /// would read a sorted-by-name skeleton — the named-order finding).
+    ///
+    /// This is the RESOLUTION path (SLD head selection via `query_view`, and the
+    /// Γ overlay's `query_resolved_value` + `views_structurally_equal` filter),
+    /// so a nonlinear pattern var UNIFIES its matched subterms (`unify_rebind =
+    /// true`, WI-633) — the binding becomes part of the answer. `match_view`'s
+    /// one-directional matching uses [`query_resolved`] instead.
     pub(crate) fn query_resolved_value<V: TermView, F>(
         &self,
         kb: &KnowledgeBase,
@@ -589,8 +599,8 @@ impl<L: Clone> SubstTree<L> {
             .map(|(leaf, subst)| {
                 let head = resolve_head(&leaf);
                 let s = match &head {
-                    Value::Term { id: t, .. } => subst.resolve_leaf(kb, *t),
-                    _ => subst.resolve_leaf_view(kb, &head),
+                    Value::Term { id: t, .. } => subst.resolve_leaf(kb, *t, true),
+                    _ => subst.resolve_leaf_view(kb, &head, true),
                 };
                 (leaf, s)
             })

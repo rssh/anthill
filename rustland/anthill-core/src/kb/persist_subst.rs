@@ -151,13 +151,22 @@ pub(crate) fn extract_value_at_path(kb: &KnowledgeBase, head: &Value, path: &Var
 pub(crate) trait PersistSubst: Clone {
     fn new() -> Self;
     fn with_binding(self, var: VarId, value: BindValue) -> Self;
-    fn resolve_leaf(self, kb: &KnowledgeBase, fact_term: TermId) -> Substitution;
+
+    /// Materialize the deferred leaf bindings into a real [`Substitution`].
+    /// `unify_rebind` (WI-633) selects how a var bound TWICE (a nonlinear
+    /// pattern position) reconciles: `true` — the RESOLUTION path — UNIFIES the
+    /// two values (SLD head selection is unification); `false` — the MATCHING
+    /// path — demands structural identity (a nonlinear pattern var matches only
+    /// identical target subterms; unifying would force the target's vars equal
+    /// and silently drop the constraint). See [`Substitution::bind_leaf`].
+    fn resolve_leaf(self, kb: &KnowledgeBase, fact_term: TermId, unify_rebind: bool) -> Substitution;
 
     /// Carrier-faithful peer of [`resolve_leaf`] (WI-348 Phase B): resolve
     /// deferred paths against a `Value` fact head instead of a hash-consed
     /// `TermId`, so a value fact's bindings keep `Value::Node` identity and read
-    /// the carrier the discrimination tree actually indexed.
-    fn resolve_leaf_view(self, kb: &KnowledgeBase, fact_head: &Value) -> Substitution;
+    /// the carrier the discrimination tree actually indexed. `unify_rebind` as
+    /// in [`resolve_leaf`].
+    fn resolve_leaf_view(self, kb: &KnowledgeBase, fact_head: &Value, unify_rebind: bool) -> Substitution;
 }
 
 // ── SmallSubst — SmallVec-based (clone = memcpy) ────────────────
@@ -177,29 +186,35 @@ impl PersistSubst for SmallSubst {
         self
     }
 
-    fn resolve_leaf(self, kb: &KnowledgeBase, fact_term: TermId) -> Substitution {
+    // Each entry folds through `bind_leaf` (WI-633): on the RESOLUTION path
+    // (`unify_rebind`) a var bound twice — a repeated rule-head var, or a
+    // repeated query var (WI-512) — UNIFIES its two values; on the MATCHING
+    // path it demands structural identity. Either way a genuine mismatch lands
+    // as `is_contradiction()`.
+    fn resolve_leaf(self, kb: &KnowledgeBase, fact_term: TermId, unify_rebind: bool) -> Substitution {
         let mut s = Substitution::new();
         for (vid, val) in self.bindings {
             match val {
-                BindValue::Term(tid) => s.bind_term(kb, vid, tid),
+                BindValue::Term(tid) => s.bind_leaf(kb, vid, Value::term(tid), unify_rebind),
                 BindValue::Path(path) => {
-                    s.bind_term(kb, vid, extract_at_path(&kb.terms, fact_term, &path))
+                    let extracted = extract_at_path(&kb.terms, fact_term, &path);
+                    s.bind_leaf(kb, vid, Value::term(extracted), unify_rebind)
                 }
-                BindValue::Value(v) => s.bind_value(kb, vid, v),
+                BindValue::Value(v) => s.bind_leaf(kb, vid, v, unify_rebind),
             }
         }
         s
     }
 
-    fn resolve_leaf_view(self, kb: &KnowledgeBase, fact_head: &Value) -> Substitution {
+    fn resolve_leaf_view(self, kb: &KnowledgeBase, fact_head: &Value, unify_rebind: bool) -> Substitution {
         let mut s = Substitution::new();
         for (vid, val) in self.bindings {
             match val {
-                BindValue::Term(tid) => s.bind_term(kb, vid, tid),
+                BindValue::Term(tid) => s.bind_leaf(kb, vid, Value::term(tid), unify_rebind),
                 BindValue::Path(path) => {
-                    s.bind_value(kb, vid, extract_value_at_path(kb, fact_head, &path))
+                    s.bind_leaf(kb, vid, extract_value_at_path(kb, fact_head, &path), unify_rebind)
                 }
-                BindValue::Value(v) => s.bind_value(kb, vid, v),
+                BindValue::Value(v) => s.bind_leaf(kb, vid, v, unify_rebind),
             }
         }
         s
@@ -234,32 +249,35 @@ impl PersistSubst for SharedSubst {
         }
     }
 
-    fn resolve_leaf(self, kb: &KnowledgeBase, fact_term: TermId) -> Substitution {
+    // Re-binds dispatch through `bind_leaf`, mirroring `SmallSubst` (WI-633) —
+    // keep the two leaf materializations in lockstep.
+    fn resolve_leaf(self, kb: &KnowledgeBase, fact_term: TermId, unify_rebind: bool) -> Substitution {
         let mut s = Substitution::new();
         let mut cur = &self.head;
         while let Some(cell) = cur {
             match &cell.value {
-                BindValue::Term(tid) => s.bind_term(kb, cell.var, *tid),
+                BindValue::Term(tid) => s.bind_leaf(kb, cell.var, Value::term(*tid), unify_rebind),
                 BindValue::Path(path) => {
-                    s.bind_term(kb, cell.var, extract_at_path(&kb.terms, fact_term, path))
+                    let extracted = extract_at_path(&kb.terms, fact_term, path);
+                    s.bind_leaf(kb, cell.var, Value::term(extracted), unify_rebind)
                 }
-                BindValue::Value(v) => s.bind_value(kb, cell.var, v.clone()),
+                BindValue::Value(v) => s.bind_leaf(kb, cell.var, v.clone(), unify_rebind),
             }
             cur = &cell.tail;
         }
         s
     }
 
-    fn resolve_leaf_view(self, kb: &KnowledgeBase, fact_head: &Value) -> Substitution {
+    fn resolve_leaf_view(self, kb: &KnowledgeBase, fact_head: &Value, unify_rebind: bool) -> Substitution {
         let mut s = Substitution::new();
         let mut cur = &self.head;
         while let Some(cell) = cur {
             match &cell.value {
-                BindValue::Term(tid) => s.bind_term(kb, cell.var, *tid),
+                BindValue::Term(tid) => s.bind_leaf(kb, cell.var, Value::term(*tid), unify_rebind),
                 BindValue::Path(path) => {
-                    s.bind_value(kb, cell.var, extract_value_at_path(kb, fact_head, path))
+                    s.bind_leaf(kb, cell.var, extract_value_at_path(kb, fact_head, path), unify_rebind)
                 }
-                BindValue::Value(v) => s.bind_value(kb, cell.var, v.clone()),
+                BindValue::Value(v) => s.bind_leaf(kb, cell.var, v.clone(), unify_rebind),
             }
             cur = &cell.tail;
         }
@@ -306,7 +324,7 @@ mod tests {
 
         let s = SmallSubst::new()
             .with_binding(vid, BindValue::Term(tid));
-        let sub = s.resolve_leaf(&env.kb, TermId::from_raw(0));
+        let sub = s.resolve_leaf(&env.kb, TermId::from_raw(0), true);
         assert_eq!(sub.resolve_as_value(vid).map(|v| v.expect_term()), Some(tid));
     }
 
@@ -324,7 +342,7 @@ mod tests {
 
         let s = SmallSubst::new()
             .with_binding(vid, BindValue::Path(VarPath::root().appended(ArgPos::Positional(0))));
-        let sub = s.resolve_leaf(&env.kb, fact_term);
+        let sub = s.resolve_leaf(&env.kb, fact_term, true);
         assert_eq!(sub.resolve_as_value(vid).map(|v| v.expect_term()), Some(val));
     }
 
@@ -340,11 +358,11 @@ mod tests {
         let s2 = s1.clone()
             .with_binding(vid2, BindValue::Term(tid));
 
-        let sub1 = s1.resolve_leaf(&env.kb, TermId::from_raw(0));
+        let sub1 = s1.resolve_leaf(&env.kb, TermId::from_raw(0), true);
         assert_eq!(sub1.resolve_as_value(vid1).map(|v| v.expect_term()), Some(tid));
         assert!(sub1.resolve_as_value(vid2).is_none());
 
-        let sub2 = s2.resolve_leaf(&env.kb, TermId::from_raw(0));
+        let sub2 = s2.resolve_leaf(&env.kb, TermId::from_raw(0), true);
         assert_eq!(sub2.resolve_as_value(vid1).map(|v| v.expect_term()), Some(tid));
         assert_eq!(sub2.resolve_as_value(vid2).map(|v| v.expect_term()), Some(tid));
     }
@@ -357,7 +375,7 @@ mod tests {
 
         let s = SharedSubst::new()
             .with_binding(vid, BindValue::Term(tid));
-        let sub = s.resolve_leaf(&env.kb, TermId::from_raw(0));
+        let sub = s.resolve_leaf(&env.kb, TermId::from_raw(0), true);
         assert_eq!(sub.resolve_as_value(vid).map(|v| v.expect_term()), Some(tid));
     }
 
@@ -373,10 +391,10 @@ mod tests {
         let s2 = s1.clone()
             .with_binding(vid2, BindValue::Term(tid));
 
-        let sub1 = s1.resolve_leaf(&env.kb, TermId::from_raw(0));
+        let sub1 = s1.resolve_leaf(&env.kb, TermId::from_raw(0), true);
         assert!(sub1.resolve_as_value(vid2).is_none());
 
-        let sub2 = s2.resolve_leaf(&env.kb, TermId::from_raw(0));
+        let sub2 = s2.resolve_leaf(&env.kb, TermId::from_raw(0), true);
         assert_eq!(sub2.resolve_as_value(vid1).map(|v| v.expect_term()), Some(tid));
         assert_eq!(sub2.resolve_as_value(vid2).map(|v| v.expect_term()), Some(tid));
     }

@@ -305,9 +305,9 @@ fn eq_with_unbound_var_still_residualizes() {
     );
 }
 
-// ── nonlinear-head output var (WI-624 regression; NB Map.binds still keeps a
-// LINEAR head — for the WI-633 doubly-concrete reason below, no longer for
-// this leak) ────────────────────────────────────────────────────────────────
+// ── nonlinear-head output var (WI-624 regression; Map.binds keeps its LINEAR
+// head + `<=>` as an explicit spelling, no longer as a workaround — WI-633
+// made the nonlinear form equivalent) ────────────────────────────────────────
 
 #[test]
 fn nonlinear_head_output_var_repro() {
@@ -378,18 +378,18 @@ fn nonlinear_head_cyclic_link_occurs_fails() {
     }
 }
 
-// Residual nonlinear-head gaps (WI-633) — the discrim match imposes
-// STRUCTURAL identity, not unification, on a repeated head var, and the
-// inverse orientation (query var inside the compound occurrence, concrete at
-// the bare one) still leaks an unbound output. Both shapes are why Map.binds
-// keeps its linear head + `<=>`.
+// Nonlinear-head match completeness (WI-633, fixed) — a repeated head var's
+// two matched query subterms UNIFY at the discrim leaf
+// (`bind_value_unifying` → `unify_match_values`), no longer demanding
+// structural identity; the inverse orientation (query var inside the compound
+// occurrence, concrete at the bare one) threads through WI-624's
+// link-through-rename. Both locked here.
 
 #[test]
-#[ignore = "WI-633: doubly-concrete nonlinear-head match needs unification, not structural identity"]
 fn nonlinear_head_doubly_concrete_unifies() {
-    // unbox0(box(v: some(?x)), some(42)): true semantics unifies the two ?v
-    // occurrences, binding ?x = 42. Today the discrim match double-binds the
-    // rule var structurally (some(?x) vs some(42) differ) and drops the
+    // unbox0(box(v: some(?x)), some(42)): the two ?v occurrences unify,
+    // binding ?x = 42. Before WI-633 the discrim match double-bound the
+    // rule var structurally (some(?x) vs some(42) differ) and dropped the
     // candidate: silent 0 solutions.
     let mut kb = load_kb();
     let some_sym = kb.try_resolve_symbol("anthill.prelude.Option.some").unwrap();
@@ -425,11 +425,11 @@ fn nonlinear_head_doubly_concrete_unifies() {
 }
 
 #[test]
-#[ignore = "WI-633: inverse-orientation nonlinear head leaves the buried query var unbound"]
 fn nonlinear_head_inverse_orientation_binds() {
     // unbox0(box(v: ?out), 42): the query var sits INSIDE the compound
     // occurrence and the concrete value at the bare one — must bind
-    // ?out = 42. Today it answers definitely with ?out silently unbound.
+    // ?out = 42 (the WI-624 review observed it answering definitely with
+    // ?out silently unbound; the final link-through-rename fix covers it).
     let mut kb = load_kb();
     let v_field = kb.intern("v");
     let box_sym = kb.try_resolve_symbol("test.wi616.Box.box").unwrap();
@@ -454,14 +454,14 @@ fn nonlinear_head_inverse_orientation_binds() {
 
 #[test]
 fn map_binds_unifies_non_ground_stored_value() {
-    // Locks the LINEAR head + `?v <=> ?v2` form of Map.binds rule 1: a
-    // non-ground stored value must UNIFY with the queried value —
+    // Locks the behavior of Map.binds rule 1 (spelled linear + `?v <=> ?v2`):
+    // a non-ground stored value must UNIFY with the queried value —
     // binds(put(empty, 1, some(?x)), 1, some(42)) binds ?x = 42, and
     // binds(put(empty, 1, ?y), 1, 42) binds ?y = 42. The nonlinear spelling
-    // (`binds(put(?, ?k2, ?v), ?k, ?v)`) false-fails the first (structural
-    // contradiction drop) and leaves ?y unbound in the second (WI-633); the
-    // WI-624 review caught exactly this when the head was briefly made
-    // nonlinear.
+    // (`binds(put(?, ?k2, ?v), ?k, ?v)`) used to false-fail the first
+    // (structural contradiction drop) and leave ?y unbound in the second —
+    // the WI-624 review caught exactly this when the head was briefly made
+    // nonlinear; WI-633's leaf unification made the two spellings equivalent.
     let mut kb = load_kb();
     let some_sym = kb.try_resolve_symbol("anthill.prelude.Option.some").unwrap();
     let x_name = kb.intern("x");

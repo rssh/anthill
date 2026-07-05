@@ -252,6 +252,70 @@ impl Substitution {
         self.bind_term(kb, var, term);
     }
 
+    /// WI-633 — the discrimination-tree leaf bind for the RESOLUTION path
+    /// (`resolve_leaf` with `unify_rebind = true`): like [`Self::bind_value`],
+    /// but a re-bind of an already-bound var attempts structural,
+    /// occurs-checked UNIFICATION of the existing and incoming values
+    /// ([`KnowledgeBase::unify_match_values`]) instead of requiring structural
+    /// identity. SLD rule-head selection IS unification: a repeated rule-head
+    /// var (or a repeated query var, WI-512) makes its two matched subterms
+    /// EQUAL-UP-TO-UNIFICATION — `p(box(v: ?v), ?v)` queried
+    /// `p(box(v: some(?x)), some(42))` must bind `?x = 42`, not drop the
+    /// candidate. Unifier-produced bindings land in THIS substitution as
+    /// ordinary entries (query vars flow into `with_fresh_vars` answer links /
+    /// the fact fast-path bind like any other match binding). A genuine
+    /// mismatch records `contradiction` + details exactly as `bind_value`
+    /// does; ground-vs-ground re-binds degrade to the same structural check as
+    /// before (unification without vars IS structural equality).
+    ///
+    /// NB one-directional MATCHING (`match_view` / `match_term`, driving the
+    /// typer's `simp_rewrite` and hypothesis discharge) must NOT use this — a
+    /// nonlinear pattern var there matches only structurally-IDENTICAL target
+    /// subterms; unifying would force the target's vars equal and silently drop
+    /// the constraint (a wrong rewrite). Those callers keep [`Self::bind_value`]
+    /// via [`Self::bind_leaf`]`(…, unify_rebind = false)`.
+    pub fn bind_value_unifying(&mut self, kb: &KnowledgeBase, var: VarId, val: Value) {
+        let Some(existing) = self.bindings.get(&var) else {
+            self.bindings.insert(var, val);
+            return;
+        };
+        // Hash-consed fast path (`bind_term` parity): structural equality IS
+        // `TermId` identity, so skip the structural walk entirely.
+        if let (Value::Term { id: a, .. }, Value::Term { id: b, .. }) = (existing, &val) {
+            if a == b {
+                return;
+            }
+        }
+        let existing = existing.clone();
+        if kb.unify_match_values(&existing, &val, self) {
+            return;
+        }
+        // Every distinct conflict per var — see `bind_term`.
+        if !self
+            .contradiction_details
+            .iter()
+            .any(|(v, _, a)| *v == var && views_structurally_equal(kb, a, &val))
+        {
+            self.contradiction_details.push((var, existing, val));
+        }
+        self.contradiction = true;
+    }
+
+    /// Dispatch a discrimination-tree leaf bind by mode (WI-633). `unify_rebind`
+    /// = true is the RESOLUTION path ([`Self::bind_value_unifying`], repeated
+    /// vars unify); false is the one-directional MATCHING path
+    /// ([`Self::bind_value`], repeated pattern vars demand structural identity).
+    /// The single seam so `resolve_leaf` / `resolve_leaf_view` pick the semantics
+    /// their caller (`query_resolved_value` for SLD vs `query_resolved` for
+    /// `match_view`) needs without duplicating the fold.
+    pub fn bind_leaf(&mut self, kb: &KnowledgeBase, var: VarId, val: Value, unify_rebind: bool) {
+        if unify_rebind {
+            self.bind_value_unifying(kb, var, val);
+        } else {
+            self.bind_value(kb, var, val);
+        }
+    }
+
     /// Whether this substitution contains a contradiction
     /// (a variable bound to two different concrete terms).
     pub fn is_contradiction(&self) -> bool {

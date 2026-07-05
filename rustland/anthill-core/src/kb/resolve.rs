@@ -1859,9 +1859,10 @@ impl SearchStream {
         // e.g. `edge(from: ?n, to: ?n)`) binds that var to two different fact
         // subterms during the discrim match — the tree indexes each var position
         // independently (it is a linear index), so it cannot enforce the repeat.
-        // `resolve_leaf` records the conflict as `is_contradiction()` (the same
-        // machinery the simp matcher honors); a contradictory candidate is a FALSE
-        // match, so drop it rather than count it as a solution.
+        // `resolve_leaf` UNIFIES the two values (WI-633; ground-vs-ground this
+        // is the old structural-identity check) and records a genuine mismatch
+        // as `is_contradiction()`; a contradictory candidate is a FALSE match,
+        // so drop it rather than count it as a solution.
         if tree_subst.is_contradiction() {
             return Some(StepResult::Continue);
         }
@@ -2350,6 +2351,40 @@ impl KnowledgeBase {
             // so the rewriter must re-check the tag here. Without this gate the
             // resolver and the typer disagree about what is a rewrite.
             if !self.equation_is_directional_rewrite(rid) {
+                continue;
+            }
+            // WI-633 / WI-634 (loud gate): a term REWRITE can only express the
+            // LHS-match entries — the synthetic `u32::MAX - n` entries of a
+            // DeBruijn rule (they feed `instantiate_eq_rhs`'s rename), or the
+            // head's own Global vars for a legacy arity-0 `assert_fact`
+            // equation (`reify` chases those transitively into the RHS) —
+            // plus `r_vid`, the rewriter's own RHS hole. Any OTHER entry is a
+            // substitution effect on a caller/query var — a redex var linked
+            // to LHS structure (the Path entry whose severing is WI-634(a)),
+            // or a WI-633 unify-produced binding from a nonlinear LHS over a
+            // half-ground redex (`sub(?a, ?a) = zero` over `sub(f(?x), f(42))`
+            // binds `?x = 42`) — which firing would silently drop, rewriting
+            // as if the constraint held. Skip the candidate; the redex stays
+            // intact for resolution to handle. THREADING such links into the
+            // rewrite (the completeness half) is WI-634.
+            let rule_arity = self.rules[rid.index()].arity;
+            let has_inexpressible_link = if rule_arity > 0 {
+                tree_subst.iter().any(|(vid, _)| {
+                    *vid != r_vid && Var::synthetic_debruijn_index(*vid, rule_arity).is_none()
+                })
+            } else {
+                // Legacy Global-var head. A value-headed rule has no term
+                // head to collect vars from (and no head vars to exempt) —
+                // every non-`r_vid` entry gates, conservatively.
+                let head_vars = match &self.rules[rid.index()].head {
+                    Value::Term { id: h, .. } => self.collect_vars(*h),
+                    _ => Vec::new(),
+                };
+                tree_subst
+                    .iter()
+                    .any(|(vid, _)| *vid != r_vid && !head_vars.contains(vid))
+            };
+            if has_inexpressible_link {
                 continue;
             }
             // WI-283 / WI-292: a rule scoped to a sort that declares `requires`
@@ -3945,6 +3980,105 @@ impl KnowledgeBase {
         match v {
             Value::Var(Var::Global(vid)) => Some(*vid),
             _ => self.value_global_var(v),
+        }
+    }
+
+    /// WI-633 — the STRUCTURAL unifier behind the discrimination-tree match
+    /// ([`Substitution::bind_value_unifying`], the `resolve_leaf` re-bind
+    /// path). Rule-head matching is unification: a repeated head var imposes
+    /// equality-up-to-unification on the query subterms it matched, not
+    /// structural identity — `p(box(v: ?v), ?v)` queried
+    /// `p(box(v: some(?x)), some(42))` binds `?x = 42`, where the
+    /// structural-identity re-bind check false-dropped the candidate as a
+    /// contradiction (silent 0 solutions).
+    ///
+    /// The `&self` sibling of [`Self::unify_values`]: the same flex-`Global`
+    /// bind (occurs-checked, chased through `work`) and functor recursion,
+    /// but NO operand reduction and NO delay — the tree match is structural
+    /// (an unreduced op-call is concrete structure here, exactly as the tree
+    /// indexed it; today's structural-identity check treats it the same way),
+    /// and evaluation cannot run under the `&KnowledgeBase` the tree walk
+    /// holds. `Rigid` and `DeBruijn` heads stay reflexive-only
+    /// ([`Self::unify_concrete`] parity): a DeBruijn met here is either a
+    /// rule-head var whose caller linkage `with_fresh_vars` threads (WI-624)
+    /// or a binder-bound var inside a lambda where a bind would be
+    /// capture-unsound — so the query-nonlinear-vs-head-var corner
+    /// (`p(?x, ?x)` against head `p(?u, 42)`) still drops, as before.
+    ///
+    /// Returns `false` on mismatch or occurs violation; `work` may then hold
+    /// partial bindings (the caller flags the whole substitution contradictory
+    /// and every consumer drops it — the same discipline as `unify_values`).
+    pub(crate) fn unify_match_values(&self, a: &Value, b: &Value, work: &mut Substitution) -> bool {
+        let a = self.chase_value(a.clone(), work);
+        let b = self.chase_value(b.clone(), work);
+        // Flex `Global` on either side: occurs-checked bind-and-stop.
+        let (fa, fb) = (self.unify_flex_var(&a), self.unify_flex_var(&b));
+        if let (Some(x), Some(y)) = (fa, fb) {
+            if x == y {
+                return true; // ?v against ?v — nothing to bind
+            }
+        }
+        if let Some(vid) = fa {
+            if self.occurs_in_value(vid, &b, work) {
+                return false;
+            }
+            work.bind_value(self, vid, b);
+            return true;
+        }
+        if let Some(vid) = fb {
+            if self.occurs_in_value(vid, &a, work) {
+                return false;
+            }
+            work.bind_value(self, vid, a);
+            return true;
+        }
+        // Rigid / DeBruijn heads: reflexive-only, mirroring `unify_concrete`.
+        if let (Some(va), Some(vb)) = (a.index_var(self), b.index_var(self)) {
+            if va.is_rigid() || va.is_debruijn() || vb.is_rigid() || vb.is_debruijn() {
+                return va == vb;
+            }
+        }
+        match (a.head(self), b.head(self)) {
+            (ViewHead::Const(la), ViewHead::Const(lb)) => la == lb,
+            (ViewHead::Ref(sa), ViewHead::Ref(sb)) => sa == sb,
+            (ViewHead::Ident(sa), ViewHead::Ident(sb)) => sa == sb,
+            (ViewHead::Bottom, ViewHead::Bottom) => true,
+            (
+                ViewHead::Functor { functor: ffa, pos_arity: pa, named_arity: na },
+                ViewHead::Functor { functor: ffb, pos_arity: pb, named_arity: nb },
+            ) => {
+                if ffa != ffb || pa != pb || na != nb {
+                    return false;
+                }
+                for i in 0..pa {
+                    match (a.pos_arg(self, i), b.pos_arg(self, i)) {
+                        (Some(ca), Some(cb)) => {
+                            let (ca, cb) = (ca.to_value(), cb.to_value());
+                            if !self.unify_match_values(&ca, &cb, work) {
+                                return false;
+                            }
+                        }
+                        _ => return false,
+                    }
+                }
+                // Equal `named_arity` + every `a` key found-and-unified in `b`
+                // ⇒ identical key sets (named args are duplicate-free,
+                // canonical order), mirroring `unify_concrete`.
+                for key in a.named_keys(self) {
+                    match (a.named_arg(self, key), b.named_arg(self, key)) {
+                        (Some(ca), Some(cb)) => {
+                            let (ca, cb) = (ca.to_value(), cb.to_value());
+                            if !self.unify_match_values(&ca, &cb, work) {
+                                return false;
+                            }
+                        }
+                        _ => return false,
+                    }
+                }
+                true
+            }
+            // Opaque heads and any head-kind mismatch have no shared structure.
+            _ => false,
         }
     }
 
@@ -5823,6 +5957,123 @@ mod tests {
         assert_eq!(result, five, "var-RHS rule must instantiate to the matched first arg");
         assert_eq!(changes.len(), 1);
         assert_eq!(changes[0].rewritten.expect_term(), five);
+    }
+
+    #[test]
+    fn apply_eq_rules_skips_inexpressible_query_var_links() {
+        // WI-633 / WI-634 loud gate: a term rewrite can only express the
+        // synthetic LHS-match entries. A NONLINEAR `[simp]` LHS over a
+        // half-ground redex UNIFIES the repeated var's two matches (WI-633's
+        // leaf unification) — a substitution effect (`?x = 42`) the rewrite
+        // cannot carry — so the candidate must NOT fire (it would rewrite to
+        // `0`, silently dropping the constraint). The doubly-ground redex
+        // (synthetic entries only) fires as before.
+        let mut kb = KnowledgeBase::new();
+        let sort = kb.make_name_term("Sub"); // requires-free → resolver fires it
+        let domain = kb.make_name_term("test");
+        let eq_sym = kb.intern("eq");
+        let sub_sym = kb.intern("sub");
+        let f_sym = kb.intern("f");
+
+        // Equation: [simp] eq(sub(?a, ?a), 0) — nonlinear LHS.
+        let a_sym = kb.intern("a");
+        let va = kb.fresh_var(a_sym);
+        let var_a = kb.alloc(Term::Var(Var::Global(va)));
+        let sub_aa = kb.alloc(Term::Fn {
+            functor: sub_sym,
+            pos_args: SmallVec::from_slice(&[var_a, var_a]),
+            named_args: SmallVec::new(),
+        });
+        let zero = kb.alloc(Term::Const(Literal::Int(0)));
+        let eq_head = kb.alloc(Term::Fn {
+            functor: eq_sym,
+            pos_args: SmallVec::from_slice(&[sub_aa, zero]),
+            named_args: SmallVec::new(),
+        });
+        let meta = simp_meta(&mut kb);
+        kb.assert_rule_debruijn_with_nodes(eq_head, vec![], sort, domain, Some(meta));
+
+        // Half-ground redex: sub(f(?x), f(42)) — the match links ?x = 42 → skip.
+        let x_sym = kb.intern("x");
+        let vx = kb.fresh_var(x_sym);
+        let var_x = kb.alloc(Term::Var(Var::Global(vx)));
+        let f_x = kb.alloc(Term::Fn {
+            functor: f_sym,
+            pos_args: SmallVec::from_elem(var_x, 1),
+            named_args: SmallVec::new(),
+        });
+        let forty_two = kb.alloc(Term::Const(Literal::Int(42)));
+        let f_42 = kb.alloc(Term::Fn {
+            functor: f_sym,
+            pos_args: SmallVec::from_elem(forty_two, 1),
+            named_args: SmallVec::new(),
+        });
+        let redex = kb.alloc(Term::Fn {
+            functor: sub_sym,
+            pos_args: SmallVec::from_slice(&[f_x, f_42]),
+            named_args: SmallVec::new(),
+        });
+        let (result, changes) = kb.apply_eq_rules(redex, 100, &Substitution::new());
+        assert_eq!(result, redex, "half-ground nonlinear match must not rewrite (would drop ?x = 42)");
+        assert!(changes.is_empty());
+
+        // Doubly-ground redex: sub(f(42), f(42)) → 0.
+        let redex_ground = kb.alloc(Term::Fn {
+            functor: sub_sym,
+            pos_args: SmallVec::from_slice(&[f_42, f_42]),
+            named_args: SmallVec::new(),
+        });
+        let (result, changes) = kb.apply_eq_rules(redex_ground, 100, &Substitution::new());
+        assert_eq!(result, zero, "ground nonlinear match still fires");
+        assert_eq!(changes.len(), 1);
+    }
+
+    #[test]
+    fn apply_eq_rules_skips_severing_var_redex() {
+        // WI-634(a) loud gate: `[simp] eq(pick(?a, ?b), ?a)` over redex
+        // pick(?q, 7) records a `?q → LHS var` Path link that
+        // `instantiate_eq_rhs` cannot thread — firing left the opened RHS
+        // fresh global DISCONNECTED, severing ?q from whatever solves the
+        // rewritten goal. Must skip; threading the link (the completeness
+        // half) is WI-634.
+        let mut kb = KnowledgeBase::new();
+        let sort = kb.make_name_term("Pick");
+        let domain = kb.make_name_term("test");
+        let eq_sym = kb.intern("eq");
+        let pick_sym = kb.intern("pick");
+
+        let a_sym = kb.intern("a");
+        let b_sym = kb.intern("b");
+        let va = kb.fresh_var(a_sym);
+        let vb = kb.fresh_var(b_sym);
+        let var_a = kb.alloc(Term::Var(Var::Global(va)));
+        let var_b = kb.alloc(Term::Var(Var::Global(vb)));
+        let pick_ab = kb.alloc(Term::Fn {
+            functor: pick_sym,
+            pos_args: SmallVec::from_slice(&[var_a, var_b]),
+            named_args: SmallVec::new(),
+        });
+        let eq_head = kb.alloc(Term::Fn {
+            functor: eq_sym,
+            pos_args: SmallVec::from_slice(&[pick_ab, var_a]),
+            named_args: SmallVec::new(),
+        });
+        let meta = simp_meta(&mut kb);
+        kb.assert_rule_debruijn_with_nodes(eq_head, vec![], sort, domain, Some(meta));
+
+        let q_sym = kb.intern("q");
+        let vq = kb.fresh_var(q_sym);
+        let var_q = kb.alloc(Term::Var(Var::Global(vq)));
+        let seven = kb.alloc(Term::Const(Literal::Int(7)));
+        let pick_q7 = kb.alloc(Term::Fn {
+            functor: pick_sym,
+            pos_args: SmallVec::from_slice(&[var_q, seven]),
+            named_args: SmallVec::new(),
+        });
+
+        let (result, changes) = kb.apply_eq_rules(pick_q7, 100, &Substitution::new());
+        assert_eq!(result, pick_q7, "a redex-var-to-LHS-structure link must not fire (severs ?q)");
+        assert!(changes.is_empty());
     }
 
     // ── Builtin dispatch + delay tests ─────────────────────────
