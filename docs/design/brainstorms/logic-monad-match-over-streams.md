@@ -15,7 +15,12 @@
 > runtime eval↔SLD switch). The boundary between them is **nesting**: flat stream consumption is
 > Layer 1; a search body that re-enters search needs Layer 2.
 >
-> **Status.** Brainstorm (2026-07-04). Nothing committed. Reference model:
+> **Status.** Brainstorm (2026-07-04). **Graduated (2026-07-05) into two proposals along the two-layer
+> seam (§6):** Layer 1 → [052 — rules as stream-valued operations](../../proposals/052-rules-as-stream-valued-operations.md)
+> (the `reify` face: a relation as `LogicalStream[NamedTuple]`, no effect); Layer 2 →
+> [027.2 — branch from streams](../../proposals/027.2-branch-from-streams.md) (the `reflect` face:
+> `reflect(stream)` into `Branch`, solvers as handlers, the eval↔SLD switch). This doc remains the
+> extended design rationale behind both. Reference model:
 > `/home/rssh/packages/io.github.dotty-cps-async/` (`logic` = `CpsLogicMonad`, `rl-monad` =
 > `CpsScoredLogicMonad`). Companion to proposals [026](../../proposals/026-expression-evaluator.md) /
 > [026.1](../../proposals/026.1-value-integrated-kb-queries.md) (`KB.execute`, `LogicalStream`),

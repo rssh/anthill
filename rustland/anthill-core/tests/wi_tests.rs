@@ -2,6 +2,9 @@
 
 mod common;
 
+#[path = "include/tuple_order_test.rs"]
+mod tuple_order_test;
+
 #[path = "include/wi009_phase3_builtins_test.rs"]
 mod wi009_phase3_builtins_test;
 
