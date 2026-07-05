@@ -242,6 +242,9 @@ mod wi320_bridge_fact_test;
 #[path = "include/wi325_missing_requires_test.rs"]
 mod wi325_missing_requires_test;
 
+#[path = "include/wi642_rule_body_requires_test.rs"]
+mod wi642_rule_body_requires_test;
+
 #[path = "include/wi351_callback_place_test.rs"]
 mod wi351_callback_place_test;
 

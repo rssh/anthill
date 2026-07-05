@@ -22891,6 +22891,15 @@ pub fn type_check_sorts_typed(kb: &mut KnowledgeBase, sort_terms: &[TermId]) -> 
     // metadata the grounding reads is settled.
     errors.extend(record_find_dictionary_grounding(kb));
 
+    // WI-642: the STATIC face of WI-300. `record_find_dictionary_grounding` above
+    // handles a rule that DECLARES its requirement (`requires(X)` → find_dictionary);
+    // this flags a rule-body spec-op call whose requirement is neither declared nor
+    // satisfiable by a provision — statically missing, so the WI-300 guard would only
+    // `DontFire` at resolution (a silent clause failure). Runs after the dictionary
+    // rewrite so a declared `requires` is visible, and after `type_rule_bodies` so the
+    // per-arg `inferred_type` the carrier decision reads is stamped.
+    errors.extend(check_rule_body_requirements(kb));
+
     errors
 }
 
@@ -24444,6 +24453,248 @@ fn record_find_dictionary_grounding(kb: &mut KnowledgeBase) -> Vec<TypeError> {
         }
     }
     errors
+}
+
+/// WI-642 — the STATIC face of the WI-300 rule-body dictionary. Walk every rule
+/// clause body for spec-op calls (`eq(?x, ?y)` from `Eq[T]`, a user spec's op, …)
+/// and flag any whose requirement is *statically missing*: a concrete carrier
+/// argument whose sort provides no instance of the spec AND no in-body
+/// `requires(Spec[…])` covers it. Such a call can never dispatch — at resolution
+/// the WI-300 `find_dictionary` guard `DontFire`s and the clause silently fails
+/// (proposal 052 §"Requirements in a clause body"). Making it a load error is the
+/// repo's "loud error over a silent skip".
+///
+/// The WI-292 distinction is load-bearing, and this shares [`simp_guard_holds_core`]
+/// with the resolver's [`find_dictionary_guard`] so the two cannot disagree on which
+/// argument carries the spec or on the outcome:
+///   * **`Fire`** — the carrier provides the spec → satisfiable, no error.
+///   * **`Suspend`** — the carrier is under-determined (an abstract type-param: a
+///     polymorphic rule that legitimately propagates its requirement to whoever
+///     queries it under a concrete type) → NOT an error; it suspends as a residual
+///     at fire time, never NAF-decided (WI-067). This is why an ABSTRACT rule-body
+///     carrier is treated OPPOSITELY to an abstract OP-body carrier (WI-325): an op
+///     has a caller who must thread the dictionary, a rule resolves its own from
+///     the concrete query values at fire time.
+///   * **`DontFire`** — a ground concrete carrier that provides no instance → the
+///     statically-missing case → `MissingRequiresForSpecOp`.
+///
+/// Read-only: the arg carrier sorts come from the `inferred_type` the preceding
+/// `type_rule_bodies` stamped onto each body `Var` (WI-603), exactly as the typer's
+/// `[simp]` guard [`simp_fire_guard_holds`] reads them.
+///
+/// CONSERVATIVE BOUNDARY (deliberate — the "static face of WI-300"): satisfiability
+/// is decided by [`sort_provides`] (via [`simp_guard_holds_core`]), the SAME oracle
+/// the runtime `find_dictionary` guard uses. It sees direct, transitive, and
+/// instance-fact (WI-431) provisions, but NOT a WI-450 witness-sort provision (`sort
+/// W provides Spec[T = Carrier]`, impl owned by `W`) nor a denoted/value-fact
+/// provision — the runtime requires-guard shares those blind spots. A rule relying
+/// on such a provision without an in-body `requires` is (rarely) flagged; the escape
+/// is to declare the requirement or add a direct/instance provision. Only ever a
+/// false POSITIVE risk on those two advanced shapes — never a spurious accept.
+fn check_rule_body_requirements(kb: &KnowledgeBase) -> Vec<TypeError> {
+    let mut errors: Vec<TypeError> = Vec::new();
+    // Absent when the builtin is unregistered (a minimal KB); then no rule can
+    // carry a declared `requires`, so `declared` simply stays empty.
+    let fd_sym = kb.try_resolve_symbol("anthill.kernel.find_dictionary");
+    for rid in kb.live_rule_ids() {
+        if kb.is_fact(rid) {
+            continue; // facts have no body
+        }
+        // Read-only pass — no `set_rule_body_nodes`, so hold the stored slice
+        // directly (both walkers take `&Rc<NodeOccurrence>`) rather than cloning.
+        let body_nodes = kb.rule_body_nodes(rid);
+        // The spec bases the rule declares an explicit in-body `requires(Spec[…])`
+        // for (desugared to `find_dictionary`, in the un-rewritten 1-arg OR the
+        // WI-300-rewritten ≥2-arg form). A declared requirement is the rule's OWN
+        // dictionary mechanism (WI-300) — respect it and never flag its ops, even at
+        // a concrete carrier that cannot satisfy it (the guard decides that at fire
+        // time; the user has explicitly acknowledged the obligation). A Horn rule
+        // does NOT inherit its enclosing sort's `requires` chain (that gates
+        // `[simp]`/`[unfold]` equations, not clause bodies), so the in-body goal is
+        // the only declaration site.
+        let mut declared: SmallVec<[Symbol; 2]> = SmallVec::new();
+        if let Some(fd) = fd_sym {
+            for node in body_nodes {
+                collect_find_dictionary_bases(kb, node, fd, &mut declared);
+            }
+        }
+        for node in body_nodes {
+            check_occ_spec_op_requirements(kb, node, fd_sym, &declared, &mut errors);
+        }
+    }
+    errors
+}
+
+/// Push the canonical spec base of every in-body `find_dictionary` goal reachable
+/// under `occ` into `out` (see [`check_rule_body_requirements`]). The spec base is
+/// the goal's first positional arg — `Ref(Eq)` (rewritten) or `Eq[T]`
+/// (un-rewritten) both reduce to `Eq` via [`occ_head_symbol`]. Iterative walk so a
+/// deeply-nested body cannot overflow the host stack.
+fn collect_find_dictionary_bases(
+    kb: &KnowledgeBase,
+    occ: &Rc<NodeOccurrence>,
+    fd_sym: Symbol,
+    out: &mut SmallVec<[Symbol; 2]>,
+) {
+    let mut stack: Vec<Rc<NodeOccurrence>> = vec![Rc::clone(occ)];
+    while let Some(o) = stack.pop() {
+        let Some(expr) = o.as_expr() else { continue };
+        if let Expr::Apply { functor, pos_args, .. } = expr {
+            if *functor == fd_sym {
+                if let Some(base) = pos_args.first().and_then(|a| occ_head_symbol(a)) {
+                    let canon = kb.canonical_sort_sym(base);
+                    if !out.contains(&canon) {
+                        out.push(canon);
+                    }
+                }
+            }
+        }
+        for_each_child(expr, |c| stack.push(Rc::clone(c)));
+    }
+}
+
+/// Walk `occ` for spec-op Apply calls and push a `MissingRequiresForSpecOp` for
+/// each whose requirement is statically missing (see
+/// [`check_rule_body_requirements`]). Iterative (explicit stack) so a deeply-nested
+/// body cannot overflow the host stack.
+fn check_occ_spec_op_requirements(
+    kb: &KnowledgeBase,
+    occ: &Rc<NodeOccurrence>,
+    fd_sym: Option<Symbol>,
+    declared: &[Symbol],
+    errors: &mut Vec<TypeError>,
+) {
+    let mut stack: Vec<Rc<NodeOccurrence>> = vec![Rc::clone(occ)];
+    while let Some(o) = stack.pop() {
+        let Some(expr) = o.as_expr() else { continue };
+        // A spec-op call carries a functor + args in any of the three functor-bearing
+        // forms `occ_head_symbol` / the sibling `simp_fire_guard_holds` recognize
+        // (Apply, plus a Constructor/Instantiation that materialized a spec-op head).
+        // `find_dictionary` is itself a builtin goal (its args carry the witness
+        // `Ref(op)` and carrier vars, not a call) — never a spec op, so skip it.
+        let call = match expr {
+            Expr::Apply { functor, pos_args, named_args, .. } => Some((*functor, pos_args, named_args)),
+            Expr::Constructor { name, pos_args, named_args, .. }
+            | Expr::Instantiation { name, pos_args, named_args, .. } => {
+                Some((*name, pos_args, named_args))
+            }
+            _ => None,
+        };
+        if let Some((functor, pos_args, named_args)) = call {
+            if Some(functor) != fd_sym {
+                if let Some(spec_sort) = lookup_spec_op_dispatch(kb, functor) {
+                    check_one_spec_op_requirement(
+                        kb, &o, functor, pos_args, named_args, spec_sort, declared, errors,
+                    );
+                }
+            }
+        }
+        for_each_child(expr, |c| stack.push(Rc::clone(c)));
+    }
+}
+
+/// Decide one rule-body spec-op call (see [`check_rule_body_requirements`]),
+/// pushing `MissingRequiresForSpecOp` iff its requirement is statically missing.
+fn check_one_spec_op_requirement(
+    kb: &KnowledgeBase,
+    occ: &Rc<NodeOccurrence>,
+    functor: Symbol,
+    pos_args: &[Rc<NodeOccurrence>],
+    named_args: &[(Symbol, Rc<NodeOccurrence>)],
+    spec_sort: Symbol,
+    declared: &[Symbol],
+    errors: &mut Vec<TypeError>,
+) {
+    // A spec op registered as a resolver BUILTIN never fails for a *missing spec
+    // instance*, so it is not this pass's concern — skip it. Two disjoint reasons,
+    // both `is_builtin`:
+    //   * `Eq.eq`/`Eq.neq` (SemEq) — structural equality IS the default `Eq`
+    //     instance (kernel-language.md §equality / proposal 051 / WI-616: "a carrier
+    //     with no override keeps the structural compare — structural equality *is*
+    //     its instance"), so EVERY carrier already satisfies `Eq`; a carrier wanting
+    //     non-structural equality *overrides* it (`Set.eq`/`Map.eq`), and the
+    //     explicitly structural test is `===`/`struct_eq`. Never a missing requirement.
+    //   * `Ordered.gt`/`lt`/`gte`/`lte`, `Numeric.add`/`sub`/`mul` — numeric-constant
+    //     builtins (`builtin_cmp` / arithmetic) that NEVER consult an `Ordered`/
+    //     `Numeric` instance, so a `requires Ordered[…]` could not even fix them; a
+    //     non-numeric carrier is a plain resolution failure, not a missing dictionary.
+    //     (Why stdlib `needs_rebuild`'s `gt` on two `Timestamp`s must not be flagged.)
+    if kb.is_builtin(functor) {
+        return;
+    }
+    // Only a spec op with a CARRIER parameter grounds its instance from its
+    // arguments; a nullary / all-content op (`Monoid.unit()`) never can, so its
+    // requirement is not decidable from a body call — the same op the WI-300
+    // witness scan skips ([`op_has_spec_carrier_param`]).
+    if !op_has_spec_carrier_param(kb, functor, spec_sort) {
+        return;
+    }
+    // Host built-ins (stdlib specs with zero providers by design — `Map`, `List`,
+    // `Stream`) resolve their ops directly at runtime; only a spec that warrants
+    // the abstract check (≥1 provider, or a user-defined spec) can be statically
+    // missing. The SAME gate the WI-325 op-body diagnostic uses.
+    if !spec_warrants_abstract_check(kb, spec_sort) {
+        return;
+    }
+    // The rule explicitly declares this requirement in its body — its own WI-300
+    // dictionary. Respect it (never flag; the fire-time guard handles satisfaction).
+    if declared.contains(&kb.canonical_sort_sym(spec_sort)) {
+        return;
+    }
+    // Fold the call's positional + named arguments into the op's declared PARAMETER
+    // order, so the carrier reader indexes them the way `simp_guard_holds_core`
+    // iterates parameters — the same alignment the resolver's `find_dictionary_guard`
+    // sees (its witness args were positionalized by `align_call_args_to_params` at
+    // rewrite time), so the static and runtime carrier decisions cannot disagree. A
+    // partial call (some parameter unprovided) aligns to `None`; every arg then reads
+    // headless → `Suspend` (declined, never a spurious error). Without this, a carrier
+    // supplied BY NAME (or a positional arg displaced by an earlier named one) would
+    // be read at the wrong index — missing a real requirement, or flagging the wrong
+    // argument's sort.
+    let aligned = super::op_info::lookup_operation_info(kb, functor)
+        .and_then(|rec| align_call_args_to_params(kb, &rec.params, pos_args, named_args));
+    // Read each carrier parameter's argument sort head from the `inferred_type`
+    // `type_rule_bodies` stamped (WI-603), like [`simp_fire_guard_holds`], and treat
+    // two carrier shapes as headless (`None` → `Suspend`), never as a concrete sort
+    // failing `sort_provides` (`Some(_)` → a spurious `DontFire`):
+    //   * an ABSTRACT type-param (`?x : Eq.T`) — a legitimately-polymorphic rule
+    //     that propagates its requirement (WI-292; `is_sort_param_symbol`);
+    //   * an ABSTRACT SPEC sort (`s : Stream`, the spec's own interface with no
+    //     concrete representation) — the runtime value is some concrete provider, so
+    //     the real impl is resolved by eval's value-directed dispatch, not by the
+    //     spec sort's own (unsatisfiable) provider set. This is the rule-body peer of
+    //     the finiteness-cluster deferrals (WI-598/601/608/609) `check_apply_iter`
+    //     takes before its `NoCandidates` arm; `sort_provides` sees a sort as NOT
+    //     providing ITSELF, so without this a self-receiver call (`splitFirst(s)` on
+    //     a `Stream`) reads as a spurious `DontFire` ([`carrier_is_abstract_spec`]).
+    let outcome = simp_guard_holds_core(kb, functor, spec_sort, |i| {
+        aligned
+            .as_ref()
+            .and_then(|args| args.get(i))
+            .and_then(|a| a.inferred_type())
+            .and_then(|t| sort_functor_of_view(kb, &t))
+            .filter(|s| !is_sort_param_symbol(kb, *s) && !carrier_is_abstract_spec(kb, *s))
+    });
+    // `Fire` (satisfiable) and `Suspend` (under-determined) are never errors —
+    // only a ground carrier that provides no instance is statically missing.
+    if !matches!(outcome, FindDictOutcome::DontFire) {
+        return;
+    }
+    // Statically missing → `MissingRequiresForSpecOp` (WI-325), the same diagnostic
+    // the op-body pass raises; the spec's type-param short names drive the
+    // `requires {Spec}[{T = …}]` suggestion.
+    let spec_qn = kb.qualified_name_of(spec_sort).to_string();
+    let abstract_params: SmallVec<[Symbol; 2]> = kb
+        .type_params_of_sort(spec_sort)
+        .iter()
+        .filter_map(|short| kb.try_resolve_symbol(&format!("{spec_qn}.{short}")))
+        .collect();
+    errors.push(TypeError::MissingRequiresForSpecOp {
+        span: Some(occ.span.span),
+        spec_op_sym: functor,
+        spec_sort_sym: spec_sort,
+        abstract_params,
+    });
 }
 
 /// Rewrite one `find_dictionary(X)` goal (see [`record_find_dictionary_grounding`]).
