@@ -318,16 +318,14 @@ impl Solution {
 
 // ── EqChange ────────────────────────────────────────────────────
 
-/// Record of an equational rewrite step. `original` is the term-world input
-/// (`apply_eq_rules` rewrites a `TermId`, so it is always a term); `rewritten`
-/// is the RHS read back through `σ` carrier-faithfully as a [`Value`] (WI-348)
-/// — an equation whose RHS binds a var to a `Value::Node` keeps it in the
-/// record, instead of dropping to a bare var. (Such an RHS is unreachable until
-/// value rule heads land, Phase C; faithful now.)
+/// Record of an equational rewrite step, carrier-faithful (WI-348): `original`
+/// is the redex as it arrived — a `Value::Term` or a `Value::Node` occurrence,
+/// whichever carrier `apply_eq_rules` was walking — and `rewritten` is the RHS
+/// built in that same carrier. (Consumed only by tests today; `#[allow(dead_code)]`.)
 #[allow(dead_code)]
 pub struct EqChange {
     pub rule_id: RuleId,
-    pub original: TermId,
+    pub original: Value,
     pub rewritten: Value,
 }
 
@@ -936,35 +934,36 @@ impl SearchStream {
             Some(cached) => cached,
             None => {
                 let mut rc = kb.query_view(&goal_val);
-                // [simp] resolution-phase rewrite — term goals only.
+                // [simp] resolution-phase rewrite — carrier-neutral, so a
+                // `Value::Node` occurrence goal (the typer phase and `anthill
+                // prove` feed these) simplifies too, not only a hash-consed term
+                // goal. Fires only when the goal has no non-equation candidate
+                // (it doesn't already resolve).
                 if self.config.simplify {
-                    if let Some(goal) = goal_t {
-                        let has_non_eq = rc.iter().any(|(rid, _)| !kb.is_equation(*rid));
-                        if !has_non_eq {
-                            // WI-595: thread the frame's σ (its constraint store +
-                            // bindings) so a constraint-typed carrier var in the redex
-                            // is decidable by the type-directed `[simp]` guard, rather
-                            // than reading headless under an empty subst (C1). O(1)
-                            // imbl clone.
-                            let eq_subst = self.stack.last().unwrap().subst.clone();
-                            let (rewritten, changes) =
-                                kb.apply_eq_rules(goal, 100, &eq_subst);
-                            // WI-634: when the WHOLE goal is a var-projecting simp
-                            // redex (`pick(?q, 7)` under `[simp] eq(pick(?a,?b),?a)`),
-                            // the rewrite is a bare caller var `?q`. Re-querying a
-                            // bare var wildcard-matches EVERY head (discrim routes a
-                            // `Global` query head to all leaves) — spurious solutions
-                            // against every fact. A bare-var goal is not resolvable,
-                            // so leave the candidate set untouched (the goal fails)
-                            // rather than matching everything. The intended use — a
-                            // redex nested in a compound goal (`found(pick(?q,7))` →
-                            // `found(?q)`) — keeps the goal a compound and re-queries
-                            // normally.
-                            if !changes.is_empty()
-                                && !matches!(kb.get_term(rewritten), Term::Var(_))
-                            {
-                                rc = kb.query(rewritten);
-                            }
+                    let has_non_eq = rc.iter().any(|(rid, _)| !kb.is_equation(*rid));
+                    if !has_non_eq {
+                        // WI-595: thread the frame's σ (its constraint store +
+                        // bindings) so a constraint-typed carrier var in the redex
+                        // is decidable by the type-directed `[simp]` guard, rather
+                        // than reading headless under an empty subst (C1). O(1)
+                        // imbl clone.
+                        let eq_subst = self.stack.last().unwrap().subst.clone();
+                        let (rewritten, changes) =
+                            kb.apply_eq_rules(&goal_val, 100, &eq_subst);
+                        // WI-634: when the WHOLE goal is a var-projecting simp
+                        // redex (`pick(?q, 7)` under `[simp] eq(pick(?a,?b),?a)`),
+                        // the rewrite is a bare caller var `?q`. Re-querying a bare
+                        // var wildcard-matches EVERY head (a `Global` query head
+                        // routes to all leaves) — spurious solutions against every
+                        // fact. A bare-var goal is not resolvable, so leave the
+                        // candidate set untouched (the goal fails) rather than
+                        // matching everything. The intended use — a redex nested in
+                        // a compound goal (`found(pick(?q,7))` → `found(?q)`) —
+                        // keeps the goal a compound and re-queries normally.
+                        if !changes.is_empty()
+                            && !matches!(rewritten.head(kb), ViewHead::Var(_))
+                        {
+                            rc = kb.query_view(&rewritten);
                         }
                     }
                 }
@@ -2264,279 +2263,232 @@ impl KnowledgeBase {
         // The standalone simplifier has no resolver frame, so no constraint-store
         // bindings to read — an empty subst (WI-595: the type-directed guard then
         // reads the redex's own structural type only).
-        let (result, _) = self.apply_eq_rules(term, 100, &Substitution::new());
-        result
+        let (result, _) = self.apply_eq_rules(&Value::term(term), 100, &Substitution::new());
+        result.expect_term()
     }
 
-    /// Apply equational rules to rewrite a term.
-    ///
-    /// Strategy: innermost — rewrite subterms first, then try top level.
-    /// Returns `(rewritten_term, changes)`.
-    pub fn apply_eq_rules(
+    /// Try firing a directional `[simp]`/`[unfold]` equation at `redex` (a term
+    /// OR a `Value::Node` occurrence) via the one-directional `match_view`
+    /// matcher — the convergence of the resolver and typer rewriters (see the
+    /// simp-rewriter-convergence note). `match_view` binds the rule's opened head
+    /// vars directly to the redex's subterms, and a redex/query var is INERT (one-
+    /// way match), so a projected redex var rides into the RHS with no threading
+    /// (`pick(?q, 7) → ?q`) and a nonlinear LHS over a half-ground redex
+    /// (`sub(?a,?a)` over `sub(f(?x),f(42))`) simply FAILS TO MATCH. The RHS is
+    /// built in the redex's carrier. This retired the `query(eq(current,?r))` +
+    /// WI-624/633/634 apparatus (synthetic-DeBruijn `tree_subst`, query-link
+    /// classification, `instantiate_eq_rhs`, linearity gate — all deleted).
+    /// Returns `(rule, rewritten)`.
+    fn fire_simp_equation(
         &mut self,
-        term: TermId,
-        fuel: usize,
+        redex: &Value,
         subst: &Substitution,
-    ) -> (TermId, Vec<EqChange>) {
-        if fuel == 0 {
-            return (term, vec![]);
-        }
-
-        let mut changes = Vec::new();
-
-        // 1. Innermost: try rewriting subterms first
-        let current = match self.terms.get(term).clone() {
-            Term::Fn { functor, pos_args, named_args } => {
-                let new_pos: SmallVec<[TermId; 4]> = pos_args
-                    .iter()
-                    .map(|&id| {
-                        let (rewritten, sub_changes) = self.apply_eq_rules(id, fuel - 1, subst);
-                        changes.extend(sub_changes);
-                        rewritten
-                    })
-                    .collect();
-                let new_named: SmallVec<[(crate::intern::Symbol, TermId); 2]> = named_args
-                    .iter()
-                    .map(|&(sym, id)| {
-                        let (rewritten, sub_changes) = self.apply_eq_rules(id, fuel - 1, subst);
-                        changes.extend(sub_changes);
-                        (sym, rewritten)
-                    })
-                    .collect();
-                self.alloc(Term::Fn { functor, pos_args: new_pos, named_args: new_named })
-            }
-            _ => term,
-        };
-
-        // 2. Try rewriting at top level using eq(current, ?result) pattern
-        let r_sym = self.intern("_r");
-        let r_vid = self.fresh_var(r_sym);
-        let result_var = self.alloc(Term::Var(Var::Global(r_vid)));
-
-        // The canonical equational functors — the symbols loaded equations
-        // carry (`anthill.prelude.Eq.eq` for `=`, `anthill.kernel.unify` for the
-        // `<=>` head, proposal 049), not a freshly-interned bare name. Querying
-        // under each lets the resolver's equational fallback find loaded `[simp]`
-        // rules of either spelling — discrim selection stays indexed (the
-        // functor pins the trie root), matching the typer firing site
-        // (`simp_rewrite`) — "one rewriter, two phases" (WI-283). Both queries
-        // run while WI-526's `=`→`<=>` relabel is in flight; the inactive one
-        // returns nothing.
+    ) -> Option<(RuleId, Value)> {
+        // The redex's head functor, if it has one — read carrier-neutrally via
+        // `head` (not `get_term`). A functor-less redex (a bare `Const`/`Ref`/
+        // `Ident`, e.g. `1` under `[simp] unify(1, 2)`) still fires — the functor
+        // pre-filter below is skipped and `match_view` decides.
+        let current_functor = redex.head(self).functor_sym();
+        // WI-595: the requires-guard decision reads ONLY the redex + `subst` (not
+        // `rid`), so it is the SAME for every requires-guarded candidate — compute
+        // it at most ONCE, lazily (reifying the redex to a term term-side, WI-578,
+        // only when a requires-guarded candidate is actually reached).
+        let mut redex_guard: Option<bool> = None;
+        // Equational heads are indexed under `eq` (`=`) and `unify` (`<=>`);
+        // WI-139 keeps only `[simp]`/`[unfold]`-tagged equations there. Mirrors
+        // the typer's `simp_rewrite::try_fire` selection.
         let eq_sym = self.eq_functor();
         let unify_sym = self.unify_functor();
-        let mk_pattern = |kb: &mut Self, functor: Symbol| {
-            kb.alloc(Term::Fn {
-                functor,
-                pos_args: SmallVec::from_slice(&[current, result_var]),
-                named_args: SmallVec::new(),
-            })
-        };
-        let eq_pattern = mk_pattern(self, eq_sym);
-        let mut candidates = self.query(eq_pattern);
+        let mut rids = self.rules_by_functor(eq_sym);
         if unify_sym != eq_sym {
-            let unify_pattern = mk_pattern(self, unify_sym);
-            candidates.extend(self.query(unify_pattern));
+            rids.extend(self.rules_by_functor(unify_sym));
         }
-
-        // WI-595 (part 1) — the requires-guard decision (`simp_requires_guard_holds`)
-        // reads ONLY the redex (`current`) and the frame `subst`, both invariant
-        // across this candidate loop, so it is computed at most ONCE (lazily, on the
-        // first requires-guarded candidate) and reused. It was previously recomputed
-        // per requires-guarded candidate — a structural `value_type_term` over every
-        // positional argument each time. `rid` does not enter the decision (only the
-        // cheap per-rule `equation_is_requires_guarded` tag does), so the cached
-        // boolean is shared by every requires-guarded candidate without change.
-        let mut redex_guard_holds: Option<bool> = None;
-
-        for (rid, tree_subst) in candidates {
-            if !self.is_equation(rid) {
+        for rid in rids {
+            if !self.is_equation(rid) || !self.equation_is_directional_rewrite(rid) {
                 continue;
             }
-            // WI-292: fire only a DIRECTIONAL `[simp]`/`[unfold]` rewrite, the
-            // same gate the typer's `simp_rewrite` applies (it fires a rule only
-            // when `is_equation && meta_has_flag(rid, "simp")`). A plain `=`/`<=>`
-            // equation is a logical LAW (a cite-required fact, load.rs WI-139),
-            // NOT a rewrite — firing it directionally can loop (commutativity,
-            // `add_comm: add(?a,?b)=add(?b,?a)`) or expand (a recursive
-            // definition) until fuel exhausts. Load `unindex_functor`s an untagged
-            // equational head from `rules_by_functor`, but the discrimination tree
-            // `query` uses RETAINS it (so it can still serve as a resolution fact),
-            // so the rewriter must re-check the tag here. Without this gate the
-            // resolver and the typer disagree about what is a rewrite.
-            if !self.equation_is_directional_rewrite(rid) {
+            // A value-headed equation (a `Value::Node`/`Entity` head, WI-348) has
+            // no term LHS the term-rewrite path can open — skip it (the retired
+            // legacy branch did too) BEFORE the term-only head reads below
+            // (`stored_lhs_functor` / `rule_head`), which panic on a non-`Term` head.
+            if !matches!(&self.rules[rid.index()].head, Value::Term { .. }) {
                 continue;
             }
-            // WI-633 / WI-634: classify every `tree_subst` entry that is NEITHER
-            // a synthetic `u32::MAX - n` LHS-match value (threaded into the RHS by
-            // `instantiate_eq_rhs`) NOR `r_vid` (the rewriter's own RHS hole):
-            //
-            //   • value is a bare `Var::DeBruijn(n)` — a redex QUERY VAR that
-            //     matched LHS var position `n` (the discrim `Path` link,
-            //     `resolve_leaf` → `DeBruijn(n)`, WI-634(a)). A term rewrite CAN
-            //     express this: bind the opened DB-`n` fresh var to the query var
-            //     so the rewrite keeps the caller's var. Threaded below.
-            //   • anything else — a substitution effect the rewrite cannot carry:
-            //     a WI-633 unify binding from a nonlinear LHS over a half-ground
-            //     redex (`sub(?a, ?a) = zero` over `sub(f(?x), f(42))` binds
-            //     `?x = 42`), or a var linked to LHS STRUCTURE (value is a
-            //     compound). Firing would silently drop the constraint, so skip
-            //     the candidate — loud over silent; resolution handles the redex.
-            //
-            // Threading a query link is sound ONLY when the LHS is LINEAR in the
-            // matched positions: a DB index covered by both a synthetic value and
-            // a query link, or by two query links, is a nonlinear constraint
-            // (`?q = <the other match>`) — inexpressible, so it gates too.
-            let rule_arity = self.rules[rid.index()].arity;
-            let mut query_links: Vec<(usize, VarId)> = Vec::new();
-            let mut inexpressible = false;
-            if rule_arity > 0 {
-                // Fast path: a rewrite over a fully-matched redex carries only the
-                // synthetic (`u32::MAX - n`) LHS-match values plus `r_vid`. Only
-                // when SOME other entry exists (a redex query var, or a WI-633
-                // unify binding) is the fuller classification needed — this keeps
-                // the common ground rewrite allocation-free (an `.any()` pass).
-                let has_other = tree_subst.iter().any(|(vid, _)| {
-                    *vid != r_vid && Var::synthetic_debruijn_index(*vid, rule_arity).is_none()
-                });
-                if has_other {
-                    // A DB index is "taken" once — by a synthetic LHS-match value
-                    // or a query link. A second claim on it (synthetic + link, or
-                    // two links) is a nonlinear constraint (`?q = <the other
-                    // match>`) the rewrite cannot carry, so `covered.insert` false
-                    // → inexpressible. Seed with the synthetic indices so a query
-                    // link over a synthetic-covered index gates.
-                    let mut covered: HashSet<usize> = tree_subst
-                        .iter()
-                        .filter_map(|(vid, _)| Var::synthetic_debruijn_index(*vid, rule_arity))
-                        .collect();
-                    for (vid, val) in tree_subst.iter() {
-                        if *vid == r_vid
-                            || Var::synthetic_debruijn_index(*vid, rule_arity).is_some()
-                        {
-                            continue;
-                        }
-                        // A redex query var that matched LHS position `n` reifies
-                        // to `Var::DeBruijn(n)`; any other value (a WI-633 unify
-                        // binding, a var linked to LHS structure, a non-`Term`
-                        // carrier) is inexpressible.
-                        let db_index = if let Value::Term { id, .. } = val {
-                            match self.get_term(*id) {
-                                Term::Var(Var::DeBruijn(n)) => Some(*n as usize),
-                                _ => None,
-                            }
-                        } else {
-                            None
-                        };
-                        match db_index {
-                            Some(n) if covered.insert(n) => query_links.push((n, *vid)),
-                            _ => inexpressible = true,
-                        }
-                    }
-                }
-            } else {
-                // Legacy Global-var head. A value-headed rule has no term
-                // head to collect vars from (and no head vars to exempt) —
-                // every non-`r_vid` entry gates, conservatively. No DeBruijn
-                // rename exists here, so query links are not threadable.
-                let head_vars = match &self.rules[rid.index()].head {
-                    Value::Term { id: h, .. } => self.collect_vars(*h),
-                    _ => Vec::new(),
-                };
-                inexpressible = tree_subst
-                    .iter()
-                    .any(|(vid, _)| *vid != r_vid && !head_vars.contains(vid));
-            }
-            if inexpressible {
+            // Pre-filter on the stored LHS functor: the redex's head functor must
+            // equal the LHS's. Both `None` = both functor-less (a `Const`-LHS eq
+            // like `unify(1,2)` over a `Const` redex — kept); any mismatch (incl. a
+            // functor redex vs a functor-less LHS, or a functor-less redex vs a
+            // functor LHS) skips without the allocate-heavy open + `match_view`.
+            if current_functor != super::simp_rewrite::stored_lhs_functor(self, rid) {
                 continue;
             }
-            // WI-283 / WI-292: a rule scoped to a sort that declares `requires`
-            // carries an implicit type-directed guard (the sort's `requires`,
-            // proposal 043 §4.1). The resolver HONORS it by reading the redex's
-            // type (the WI-578 typed-value substrate): `simp_requires_guard_holds`
-            // fires a spec-op-dispatched rule (`Magma.op2`) exactly where the
-            // carrier arguments' types provide the spec, and SUSPENDS — skips,
-            // leaving the redex intact — when they don't or the type is
-            // under-determined (never NAF-deciding an undecided guard; WI-067). A
-            // container-sort rule (`Set.member`) is left skipped two ways: it is
-            // not `[simp]`-tagged (gate above) and its element carrier does not
-            // provide the container (the carrier check) — a separate
-            // element-provides-the-spec mechanism is deferred.
+            // Type-directed requires-guard (WI-283): a requires-bearing sort's
+            // rule fires only where the redex's carrier args provide the spec.
             if self.equation_is_requires_guarded(rid) {
-                let holds = *redex_guard_holds.get_or_insert_with(|| {
-                    super::typing::simp_requires_guard_holds(self, current, subst)
+                let holds = *redex_guard.get_or_insert_with(|| {
+                    let rt = reify_goal_value(self, redex);
+                    super::typing::simp_requires_guard_holds(self, rt, subst)
                 });
                 if !holds {
                     continue;
                 }
             }
-
-            // WI-582: an EXPLICIT typed rule pattern (`?x: T`) carries
-            // per-variable bounds installed at load. Fire only when each matched
-            // value's CARRIED type (WI-578) conforms to its bound — the
-            // post-match conforms check (the typed-pattern firing path: a
-            // structural match, then a carried-type check; the discrim tree
-            // stayed type-blind, M1). Under-determined / refuted → leave the
-            // redex unrewritten here (suspend, never NAF-decide; the typer may
-            // still fire it). Untyped rules carry no bounds → trivially holds.
-            if !super::typing::typed_pattern_bounds_hold(self, rid, &tree_subst) {
+            // Open the equation's DeBruijn head to fresh globals (as
+            // `simp_rewrite::open_equation` / `with_fresh_vars` do); keep the
+            // fresh set so a rule-var binding is told apart from a constrained
+            // redex var below.
+            let arity = self.rule_arity(rid);
+            let head = self.rule_head(rid);
+            let (opened, fresh) = if arity > 0 {
+                let name = self.intern("_");
+                let fresh: Vec<VarId> = (0..arity).map(|_| self.fresh_var(name)).collect();
+                let opened = self.term_from_debruijn(head, &fresh);
+                (opened, fresh)
+            } else {
+                (head, Vec::new())
+            };
+            let (lhs, rhs) = match self.get_term(opened) {
+                Term::Fn { pos_args, .. } if pos_args.len() == 2 => (pos_args[0], pos_args[1]),
+                _ => continue,
+            };
+            // `match_view` runs in one-directional MATCH mode: it binds only the
+            // rule's head vars (the opened `fresh` globals for a DeBruijn rule, or
+            // the head's own `Global` vars for a legacy arity-0 head) to the
+            // redex's subterms; a redex/query var is INERT and never bound. So a
+            // projected redex var rides straight into the RHS (`pick(?q,7) → ?q`,
+            // WI-634, threading-free), and a nonlinear LHS over a half-ground
+            // redex (`sub(?a,?a)` over `sub(f(?x),f(42))`) simply FAILS TO MATCH
+            // (the repeated head var can't match two distinct subterms) rather
+            // than binding a redex var — so the old "inexpressible"/linearity gate
+            // is unnecessary here.
+            let Some(msubst) = self.match_view_oneway(lhs, redex) else {
+                continue;
+            };
+            if msubst.is_contradiction() {
                 continue;
             }
-
-            // Read the result variable's binding back carrier-faithfully
-            // (WI-348): an all-term RHS rebuilds its hash-consed term; a
-            // `Value::Node` RHS keeps its identity in the recorded change. The
-            // term-world rewrite continuation narrows to a term — a non-term RHS
-            // is unreachable today and not further term-rewritable (Phase C).
-            let rhs_value = self.reify(result_var, &tree_subst);
-            let rhs_template = match &rhs_value {
-                Value::Term { id: t, .. } => *t,
-                // A non-term RHS is unreachable today and not further term-rewritable
-                // (Phase C); narrow to the result var so the continuation stays in
-                // the term world.
-                _ => result_var,
-            };
-
-            // WI-584: instantiate the RHS template. For a DeBruijn rule
-            // (`arity > 0`) the discrim match binds `result_var` to the rule's
-            // RHS whose variables are still its DeBruijn indices — the matched
-            // LHS values live in `tree_subst` as the synthetic
-            // `VarId(u32::MAX - n)` entries. Reifying `result_var` alone returns
-            // that unopened RHS (`pick(?a,?b)=?a` over `pick(5,7)` →
-            // `DeBruijn(0)`, not `5`), so var-RHS rules silently failed to
-            // rewrite. `instantiate_eq_rhs` opens the template and substitutes
-            // the synthetic LHS-match values; a ground RHS is returned unchanged.
-            // WI-634: it ALSO binds each query link's opened DB-`n` fresh var to
-            // the caller's query var (`pick(?q, 7) = ?q`), so the rewrite keeps
-            // `?q` bound through resolution instead of severing it.
-            let rhs = self.instantiate_eq_rhs(rid, rhs_template, &tree_subst, &query_links);
-            // Reify the change record through `tree_subst`, but with the query
-            // links removed (WI-634): those entries are `?q → DeBruijn(n)`, and
-            // reifying `?q` through them would chase it back to the unopened
-            // DeBruijn — the very leak the threading avoids. `rhs` already carries
-            // `?q` directly, so dropping the entries leaves it intact.
-            let rewritten = if query_links.is_empty() {
-                self.reify(rhs, &tree_subst)
-            } else {
-                let mut clean = tree_subst.clone();
-                for &(_, qvar) in &query_links {
-                    clean.bindings.remove(&qvar);
+            // WI-582 typed-pattern bounds, keyed by the opened globals.
+            if !super::typing::typed_pattern_bounds_hold(self, rid, &msubst, &fresh) {
+                continue;
+            }
+            // Build the RHS in the redex's carrier: a `Value::Node` redex keeps
+            // occurrence identity (`substitute_to_occurrence`, the typer's RHS
+            // builder); a term redex rebuilds its hash-consed term.
+            let rewritten = match redex {
+                Value::Node(occ) => {
+                    let pass = super::simp_rewrite::simp_pass(self);
+                    Value::Node(super::simp_rewrite::substitute_to_occurrence(
+                        self, rhs, &msubst, occ, pass,
+                    ))
                 }
-                self.reify(rhs, &clean)
+                _ => Value::term(self.apply_subst(rhs, &msubst)),
             };
+            return Some((rid, rewritten));
+        }
+        None
+    }
 
-            changes.push(EqChange {
-                rule_id: rid,
-                original: current,
-                rewritten,
-            });
+    /// Apply equational `[simp]`/`[unfold]` rules to rewrite a redex, carrier-
+    /// neutrally: the redex arrives as a `Value` (a hash-consed term or a
+    /// `Value::Node` occurrence) and the rewrite is rebuilt in the SAME carrier,
+    /// so a resolution goal keeps its occurrence identity. Strategy: innermost —
+    /// rewrite subterms first (each carrier stays closed under rewrite), then try
+    /// firing at the top level via [`Self::fire_simp_equation`]. Returns
+    /// `(rewritten, changes)`.
+    pub fn apply_eq_rules(
+        &mut self,
+        redex: &Value,
+        fuel: usize,
+        subst: &Substitution,
+    ) -> (Value, Vec<EqChange>) {
+        if fuel == 0 {
+            return (redex.clone(), vec![]);
+        }
 
-            // Continue rewriting the result
-            let (final_term, more_changes) = self.apply_eq_rules(rhs, fuel - 1, subst);
+        let mut changes = Vec::new();
+
+        // 1. Innermost: rewrite subterms first, rebuilding in the redex's carrier.
+        let current: Value = match redex {
+            Value::Term { id, .. } => match self.get_term(*id).clone() {
+                Term::Fn { functor, pos_args, named_args } => {
+                    let new_pos: SmallVec<[TermId; 4]> = pos_args
+                        .iter()
+                        .map(|&id| {
+                            let (r, sc) = self.apply_eq_rules(&Value::term(id), fuel - 1, subst);
+                            changes.extend(sc);
+                            r.expect_term()
+                        })
+                        .collect();
+                    let new_named: SmallVec<[(crate::intern::Symbol, TermId); 2]> = named_args
+                        .iter()
+                        .map(|&(sym, id)| {
+                            let (r, sc) = self.apply_eq_rules(&Value::term(id), fuel - 1, subst);
+                            changes.extend(sc);
+                            (sym, r.expect_term())
+                        })
+                        .collect();
+                    Value::term(self.alloc(Term::Fn { functor, pos_args: new_pos, named_args: new_named }))
+                }
+                _ => redex.clone(),
+            },
+            Value::Node(occ) => {
+                let occ = Rc::clone(occ);
+                self.apply_eq_rules_occurrence(&occ, fuel, subst, &mut changes)
+            }
+            _ => redex.clone(),
+        };
+
+        // 2. Try firing a directional [simp]/[unfold] equation at the top level
+        // via the one-directional `match_view` matcher (see `fire_simp_equation`
+        // + the simp-rewriter-convergence note). `match_view` binds the rule's
+        // head vars directly to the redex children, so a projected redex var
+        // rides into the RHS with no threading, and the sole skip is a nonlinear
+        // LHS that fails to match.
+        if let Some((rid, rewritten)) = self.fire_simp_equation(&current, subst) {
+            changes.push(EqChange { rule_id: rid, original: current, rewritten: rewritten.clone() });
+            // Continue rewriting the result to fixpoint (fuel-bounded).
+            let (final_v, more_changes) = self.apply_eq_rules(&rewritten, fuel - 1, subst);
             changes.extend(more_changes);
-            return (final_term, changes);
+            return (final_v, changes);
         }
 
         (current, changes)
+    }
+
+    /// Innermost rewrite of a `Value::Node` (occurrence) redex: rewrite the
+    /// occurrence's children first, then reassemble in place. The occurrence
+    /// carrier is closed under rewrite — `fire_simp_equation` returns a
+    /// `Value::Node` for a Node redex and an unchanged child stays a Node — so
+    /// every child result is a `Value::Node`. Only functor-headed forms
+    /// (`Apply`/`Constructor`/…, the resolver's goal shapes) are descended; a
+    /// leaf occurrence (var / literal) passes through unchanged.
+    fn apply_eq_rules_occurrence(
+        &mut self,
+        occ: &Rc<NodeOccurrence>,
+        fuel: usize,
+        subst: &Substitution,
+        changes: &mut Vec<EqChange>,
+    ) -> Value {
+        if !matches!(occ.head(self), ViewHead::Functor { .. }) {
+            return Value::Node(Rc::clone(occ));
+        }
+        let mut children: Vec<Rc<NodeOccurrence>> = Vec::new();
+        if let Some(expr) = occ.as_expr() {
+            node_occurrence::for_each_child(expr, |c| children.push(Rc::clone(c)));
+        }
+        let mut new_children: Vec<Rc<NodeOccurrence>> = Vec::with_capacity(children.len());
+        for child in &children {
+            let (r, sc) = self.apply_eq_rules(&Value::Node(Rc::clone(child)), fuel - 1, subst);
+            changes.extend(sc);
+            match r {
+                Value::Node(n) => new_children.push(n),
+                other => unreachable!(
+                    "occurrence carrier not closed under rewrite: got {}",
+                    other.type_name()
+                ),
+            }
+        }
+        Value::Node(super::simp_rewrite::reassemble(occ, &new_children))
     }
 
     /// WI-292: whether `rid` is a DIRECTIONAL `[simp]`/`[unfold]` rewrite — the
@@ -2571,62 +2523,6 @@ impl KnowledgeBase {
             Some(s) => !super::typing::requires_chain(self, s).is_empty(),
             None => false,
         }
-    }
-
-    /// WI-584: instantiate a matched equation's RHS template against the
-    /// discrim-match substitution. For a DeBruijn rule (`arity > 0`) the match
-    /// records the LHS-match VALUES as synthetic `VarId(u32::MAX - n)` entries
-    /// in `tree_subst` (one per DeBruijn `n`), while the bound RHS still carries
-    /// the rule's DeBruijn indices. Open those indices to fresh globals
-    /// (`term_from_debruijn`) and substitute the synthetic values — the same
-    /// instantiation [`KnowledgeBase::with_fresh_vars`] performs for a rule body
-    /// — so a var-RHS rule (`pick(?a,?b)=?a`) fires to the matched value (`5`)
-    /// rather than the raw `DeBruijn(n)`. A ground RHS (`arity == 0`, or no
-    /// DeBruijn vars) is returned unchanged; an RHS-only DeBruijn var with no
-    /// LHS match keeps its fresh global (a sound existential).
-    ///
-    /// WI-634: `query_links` carries the redex QUERY VARS that matched an LHS var
-    /// position — `(db_index, query_var)` pairs the caller
-    /// ([`Self::apply_eq_rules`]) classified from the discrim `Path` links. A
-    /// linear such position (`pick(?q, 7) = ?q`) has no synthetic value, so the
-    /// opened DB-`n` fresh var would otherwise stay a disconnected existential,
-    /// SEVERING `?q`. Binding that fresh var to the query var instead threads the
-    /// caller's var into the rewrite. (Nonlinear/inexpressible links never reach
-    /// here — the caller gates them, so every entry maps a distinct fresh var.)
-    fn instantiate_eq_rhs(
-        &mut self,
-        rid: RuleId,
-        rhs_template: TermId,
-        tree_subst: &Substitution,
-        query_links: &[(usize, VarId)],
-    ) -> TermId {
-        let arity = self.rules[rid.index()].arity;
-        if arity == 0 {
-            return rhs_template;
-        }
-        let name_sym = self.intern("_");
-        let fresh_vars: Vec<VarId> = (0..arity).map(|_| self.fresh_var(name_sym)).collect();
-        let opened = self.term_from_debruijn(rhs_template, &fresh_vars);
-        // Bind each synthetic LHS-match value (`VarId(u32::MAX - n)`) onto its
-        // fresh global, mirroring `with_fresh_vars`'s `body_rename`. The
-        // `u32::MAX - n` decode is shared via `Var::synthetic_debruijn_index`.
-        let mut rename = Substitution::new();
-        for (ts_vid, bound_term) in tree_subst.iter_terms() {
-            if let Some(db_index) = Var::synthetic_debruijn_index(ts_vid, arity) {
-                if let Some(&fresh_vid) = fresh_vars.get(db_index) {
-                    rename.bind(self, fresh_vid, bound_term);
-                }
-            }
-        }
-        // WI-634: thread the query links — a query var occupying DB-`n` binds the
-        // opened fresh var to itself, so the RHS reaches the caller's var.
-        for &(db_index, query_var) in query_links {
-            if let Some(&fresh_vid) = fresh_vars.get(db_index) {
-                let qvar_term = self.alloc(Term::Var(Var::Global(query_var)));
-                rename.bind(self, fresh_vid, qvar_term);
-            }
-        }
-        self.apply_subst(opened, &rename)
     }
 
     // ── Builtin execution ──────────────────────────────────────
@@ -6160,10 +6056,10 @@ mod tests {
         let meta = simp_meta(&mut kb);
         kb.assert_fact(eq_head, sort, domain, Some(meta));
 
-        let (result, changes) = kb.apply_eq_rules(lhs, 100, &Substitution::new());
-        assert_eq!(result, four);
+        let (result, changes) = kb.apply_eq_rules(&Value::term(lhs), 100, &Substitution::new());
+        assert_eq!(result.expect_term(), four);
         assert_eq!(changes.len(), 1);
-        assert_eq!(changes[0].original, lhs);
+        assert_eq!(changes[0].original.expect_term(), lhs);
         assert_eq!(changes[0].rewritten.expect_term(), four);
     }
 
@@ -6210,8 +6106,8 @@ mod tests {
             named_args: SmallVec::new(),
         });
 
-        let (result, changes) = kb.apply_eq_rules(pick_57, 100, &Substitution::new());
-        assert_eq!(result, five, "var-RHS rule must instantiate to the matched first arg");
+        let (result, changes) = kb.apply_eq_rules(&Value::term(pick_57), 100, &Substitution::new());
+        assert_eq!(result.expect_term(), five, "var-RHS rule must instantiate to the matched first arg");
         assert_eq!(changes.len(), 1);
         assert_eq!(changes[0].rewritten.expect_term(), five);
     }
@@ -6270,8 +6166,8 @@ mod tests {
             pos_args: SmallVec::from_slice(&[f_x, f_42]),
             named_args: SmallVec::new(),
         });
-        let (result, changes) = kb.apply_eq_rules(redex, 100, &Substitution::new());
-        assert_eq!(result, redex, "half-ground nonlinear match must not rewrite (would drop ?x = 42)");
+        let (result, changes) = kb.apply_eq_rules(&Value::term(redex), 100, &Substitution::new());
+        assert_eq!(result.expect_term(), redex, "half-ground nonlinear match must not rewrite (would drop ?x = 42)");
         assert!(changes.is_empty());
 
         // Doubly-ground redex: sub(f(42), f(42)) → 0.
@@ -6280,8 +6176,8 @@ mod tests {
             pos_args: SmallVec::from_slice(&[f_42, f_42]),
             named_args: SmallVec::new(),
         });
-        let (result, changes) = kb.apply_eq_rules(redex_ground, 100, &Substitution::new());
-        assert_eq!(result, zero, "ground nonlinear match still fires");
+        let (result, changes) = kb.apply_eq_rules(&Value::term(redex_ground), 100, &Substitution::new());
+        assert_eq!(result.expect_term(), zero, "ground nonlinear match still fires");
         assert_eq!(changes.len(), 1);
     }
 
@@ -6328,8 +6224,8 @@ mod tests {
             named_args: SmallVec::new(),
         });
 
-        let (result, changes) = kb.apply_eq_rules(pick_q7, 100, &Substitution::new());
-        assert_eq!(result, var_q, "a linear query-var link threads to the caller's ?q");
+        let (result, changes) = kb.apply_eq_rules(&Value::term(pick_q7), 100, &Substitution::new());
+        assert_eq!(result.expect_term(), var_q, "a linear query-var link threads to the caller's ?q");
         assert_eq!(changes.len(), 1);
         assert_eq!(changes[0].rewritten.expect_term(), var_q, "record keeps ?q, no DeBruijn leak");
 
@@ -6346,8 +6242,8 @@ mod tests {
             pos_args: SmallVec::from_elem(var_q, 1),
             named_args: SmallVec::new(),
         });
-        let (result, changes) = kb.apply_eq_rules(g_pick, 100, &Substitution::new());
-        assert_eq!(result, g_q, "innermost rewrite of a subterm preserves ?q in the parent");
+        let (result, changes) = kb.apply_eq_rules(&Value::term(g_pick), 100, &Substitution::new());
+        assert_eq!(result.expect_term(), g_q, "innermost rewrite of a subterm preserves ?q in the parent");
         assert_eq!(changes.len(), 1);
     }
 
@@ -6398,8 +6294,8 @@ mod tests {
             pos_args: SmallVec::from_slice(&[var_q, f_42]),
             named_args: SmallVec::new(),
         });
-        let (result, changes) = kb.apply_eq_rules(redex, 100, &Substitution::new());
-        assert_eq!(result, redex, "nonlinear query-var match must not rewrite (drops ?q = f(42))");
+        let (result, changes) = kb.apply_eq_rules(&Value::term(redex), 100, &Substitution::new());
+        assert_eq!(result.expect_term(), redex, "nonlinear query-var match must not rewrite (drops ?q = f(42))");
         assert!(changes.is_empty());
     }
 

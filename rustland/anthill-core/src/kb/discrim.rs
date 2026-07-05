@@ -545,16 +545,35 @@ impl<L: Clone> SubstTree<L> {
         kb: &KnowledgeBase,
         query: &V,
     ) -> Vec<(L, SmallSubst)> {
+        self.query_raw_mode(kb, query, false)
+    }
+
+    /// Like [`query_raw`], but `match_mode` selects one-directional MATCHING:
+    /// a flex-`Global` var in the *query* (target) is treated as an inert
+    /// subterm — it matches only a stored PATTERN var (a var-edge), never a
+    /// concrete stored structure, and is NOT itself bound. Resolution
+    /// (`match_mode = false`) keeps the wildcard semantics (a query var binds to
+    /// any stored structure). Only `query_resolved` (the matcher behind
+    /// `match_view`) passes `true`; every resolution path passes `false`. The
+    /// distinction is inert for a concrete/rigid target (no flex-`Global` head),
+    /// so it changes nothing for existing `match_view` callers.
+    pub(crate) fn query_raw_mode<V: TermView>(
+        &self,
+        kb: &KnowledgeBase,
+        query: &V,
+        match_mode: bool,
+    ) -> Vec<(L, SmallSubst)> {
         let mut results = Vec::new();
-        Self::query_node(&self.root, kb, query, VarPath::root(), SmallSubst::new(), &mut results);
+        Self::query_node(&self.root, kb, query, VarPath::root(), SmallSubst::new(), match_mode, &mut results);
         results
     }
 
-    /// The one-directional MATCHING query (`match_view` / `match_term`): a
-    /// nonlinear pattern var matches only structurally-IDENTICAL target
-    /// subterms, so the leaf resolves with `unify_rebind = false` (WI-633). The
-    /// resolver's own head-selection uses [`query_resolved_value`] with
-    /// unification instead.
+    /// [`query_resolved_mode`] with `match_mode = false` — the resolution
+    /// (wildcard) leaf-resolve with `unify_rebind = false` (WI-633). Used by
+    /// `match_view` (whose target may be a live goal whose flex-`Global` query
+    /// vars SHOULD bind — assumed-fact discharge, reflect matching). The
+    /// simp-rewriter's one-directional matcher uses `query_resolved_mode(.., true)`
+    /// via `match_view_oneway`; SLD head-selection uses [`query_resolved_value`].
     pub(crate) fn query_resolved<V: TermView, F>(
         &self,
         kb: &KnowledgeBase,
@@ -564,7 +583,25 @@ impl<L: Clone> SubstTree<L> {
     where
         F: Fn(&L) -> TermId,
     {
-        self.query_raw(kb, query).into_iter()
+        self.query_resolved_mode(kb, query, false, resolve_term)
+    }
+
+    /// [`query_resolved`] with an explicit `match_mode`. `match_view` passes
+    /// `true` (one-directional matching: a flex-`Global` target var is inert —
+    /// matches only a stored pattern var, never a concrete fact, and is not
+    /// bound). Everything else keeps the wildcard query-var semantics via
+    /// [`query_resolved`] (`false`).
+    pub(crate) fn query_resolved_mode<V: TermView, F>(
+        &self,
+        kb: &KnowledgeBase,
+        query: &V,
+        match_mode: bool,
+        resolve_term: F,
+    ) -> Vec<(L, Substitution)>
+    where
+        F: Fn(&L) -> TermId,
+    {
+        self.query_raw_mode(kb, query, match_mode).into_iter()
             .map(|(leaf, subst)| {
                 let fact_term = resolve_term(&leaf);
                 let s = subst.resolve_leaf(kb, fact_term, false);
@@ -613,12 +650,17 @@ impl<L: Clone> SubstTree<L> {
         query: &V,
         path: VarPath,
         subst: SmallSubst,
+        match_mode: bool,
         results: &mut Vec<(L, SmallSubst)>,
     ) {
         match query.head(kb) {
-            // Flex `Global`: a WILDCARD query var — binds this position and
-            // matches every stored structure here.
-            ViewHead::Var(Var::Global(vid)) => {
+            // Flex `Global`: in RESOLUTION a WILDCARD query var — binds this
+            // position and matches every stored structure here. In MATCH mode
+            // (`match_view`) a target var is INERT — it matches only a stored
+            // PATTERN var (a var-edge, one-way `pattern-var ↦ target-var`), never
+            // concrete stored structure, and is not itself bound (exactly the
+            // `DeBruijn`/`Opaque` branch below).
+            ViewHead::Var(Var::Global(vid)) if !match_mode => {
                 let s = subst.with_binding(vid, BindValue::Path(path));
                 Self::collect_all_leaves(node, s, results);
             }
@@ -628,11 +670,13 @@ impl<L: Clone> SubstTree<L> {
             ViewHead::Var(Var::Rigid(vid)) => {
                 Self::query_leaf_key(node, &DiscrimKey::RigidVar(vid), query, subst, results);
             }
-            // `DeBruijn` never reaches a goal head (binders open to `Global`
-            // before resolution), and `Opaque` (closures, streams, lazies) has no
-            // concrete key — both route to universal var-edges only: such a value
-            // can bind a tree var but matches no concrete fact.
-            ViewHead::Var(Var::DeBruijn(_)) | ViewHead::Opaque => {
+            // MATCH mode's flex `Global` (the `!match_mode` arm above did not
+            // fire) joins `DeBruijn`/`Opaque`: an INERT target var — bind a
+            // stored pattern var to it, match no concrete fact, never self-bind.
+            // `DeBruijn` never reaches a resolution goal head (binders open to
+            // `Global`), and `Opaque` (closures, streams, lazies) has no concrete
+            // key — all three route to universal var-edges only.
+            ViewHead::Var(Var::Global(_) | Var::DeBruijn(_)) | ViewHead::Opaque => {
                 for (tree_var, child) in &node.var_edges {
                     let branch = subst.clone().with_binding(tree_var.as_vid(), query.as_bind_value());
                     Self::collect_all_leaves(child, branch, results);
@@ -653,7 +697,7 @@ impl<L: Clone> SubstTree<L> {
                             // the top level; the args' own paths extend it.
                             Self::query_args(
                                 n2, kb, query, 0, pos_arity, &named_keys, 0,
-                                &path, subst.clone(), results, &collect_leaves,
+                                &path, subst.clone(), match_mode, results, &collect_leaves,
                             );
                         }
                     }
@@ -713,6 +757,7 @@ impl<L: Clone> SubstTree<L> {
         named_idx: usize,
         prefix: &VarPath,
         subst: SmallSubst,
+        match_mode: bool,
         results: &mut Vec<(L, SmallSubst)>,
         on_done: &dyn Fn(&DiscrimNode<L>, SmallSubst, &mut Vec<(L, SmallSubst)>),
     ) {
@@ -728,7 +773,7 @@ impl<L: Clone> SubstTree<L> {
                     Self::query_arg_value(
                         mc, kb, arg, arg_path, prefix, query,
                         pos_idx + 1, pos_total, named_keys, named_idx,
-                        subst, results, on_done,
+                        subst, match_mode, results, on_done,
                     );
                 }
             }
@@ -740,7 +785,7 @@ impl<L: Clone> SubstTree<L> {
                     Self::query_arg_value(
                         mc, kb, arg, arg_path, prefix, query,
                         pos_idx, pos_total, named_keys, named_idx + 1,
-                        subst, results, on_done,
+                        subst, match_mode, results, on_done,
                     );
                 }
             }
@@ -767,17 +812,19 @@ impl<L: Clone> SubstTree<L> {
         named_keys: &[Symbol],
         named_idx: usize,
         subst: SmallSubst,
+        match_mode: bool,
         results: &mut Vec<(L, SmallSubst)>,
         on_done: &dyn Fn(&DiscrimNode<L>, SmallSubst, &mut Vec<(L, SmallSubst)>),
     ) {
         match arg.head(kb) {
-            // Flex `Global`: a WILDCARD arg var — binds this position to any
-            // stored subterm and continues.
-            ViewHead::Var(Var::Global(vid)) => {
+            // Flex `Global`: in RESOLUTION a WILDCARD arg var — binds this
+            // position to any stored subterm and continues. In MATCH mode it is
+            // INERT (folded into the `DeBruijn`/`Opaque` branch below).
+            ViewHead::Var(Var::Global(vid)) if !match_mode => {
                 let s = subst.with_binding(vid, BindValue::Path(arg_path));
                 Self::skip_subtree_then_continue(
                     node, kb, outer, pos_idx, pos_total, named_keys, named_idx,
-                    prefix, s, results, on_done,
+                    prefix, s, match_mode, results, on_done,
                 );
             }
             // `Rigid` skolem: a CONSTANT arg — follows only the same-id
@@ -787,17 +834,19 @@ impl<L: Clone> SubstTree<L> {
                 Self::follow_key_then_continue(
                     node, &DiscrimKey::RigidVar(vid), arg, kb, outer,
                     pos_idx, pos_total, named_keys, named_idx, prefix,
-                    subst, results, on_done,
+                    subst, match_mode, results, on_done,
                 );
             }
-            // `DeBruijn` never reaches a goal arg, and `Opaque` has no concrete
-            // key — both route to universal var-edges only.
-            ViewHead::Var(Var::DeBruijn(_)) | ViewHead::Opaque => {
+            // MATCH mode's flex `Global` joins `DeBruijn`/`Opaque`: an INERT arg
+            // var — binds a stored pattern var to it, matches no concrete arg,
+            // never self-binds. `DeBruijn` never reaches a resolution goal arg;
+            // `Opaque` has no concrete key.
+            ViewHead::Var(Var::Global(_) | Var::DeBruijn(_)) | ViewHead::Opaque => {
                 for (tree_var, child) in &node.var_edges {
                     let branch = subst.clone().with_binding(tree_var.as_vid(), arg.as_bind_value());
                     Self::query_args(
                         child, kb, outer, pos_idx, pos_total, named_keys, named_idx,
-                        prefix, branch, results, on_done,
+                        prefix, branch, match_mode, results, on_done,
                     );
                 }
             }
@@ -810,14 +859,14 @@ impl<L: Clone> SubstTree<L> {
                             let nested_cont = |node: &DiscrimNode<L>, subst: SmallSubst, results: &mut Vec<(L, SmallSubst)>| {
                                 Self::query_args(
                                     node, kb, outer, pos_idx, pos_total, named_keys, named_idx,
-                                    prefix, subst, results, on_done,
+                                    prefix, subst, match_mode, results, on_done,
                                 );
                             };
                             // Descend with `arg_path` as the nested container's
                             // prefix — nested vars extend it, not restart at root.
                             Self::query_args(
                                 n2, kb, &arg, 0, pos_arity, &inner_named_keys, 0,
-                                &arg_path, subst.clone(), results, &nested_cont,
+                                &arg_path, subst.clone(), match_mode, results, &nested_cont,
                             );
                         }
                     }
@@ -826,7 +875,7 @@ impl<L: Clone> SubstTree<L> {
                     let branch = subst.clone().with_binding(tree_var.as_vid(), arg.as_bind_value());
                     Self::query_args(
                         child, kb, outer, pos_idx, pos_total, named_keys, named_idx,
-                        prefix, branch, results, on_done,
+                        prefix, branch, match_mode, results, on_done,
                     );
                 }
             }
@@ -834,28 +883,28 @@ impl<L: Clone> SubstTree<L> {
                 Self::follow_key_then_continue(
                     node, &DiscrimKey::Lit(lit), arg, kb, outer,
                     pos_idx, pos_total, named_keys, named_idx, prefix,
-                    subst, results, on_done,
+                    subst, match_mode, results, on_done,
                 );
             }
             ViewHead::Ident(sym) => {
                 Self::follow_key_then_continue(
                     node, &DiscrimKey::Ident(sym), arg, kb, outer,
                     pos_idx, pos_total, named_keys, named_idx, prefix,
-                    subst, results, on_done,
+                    subst, match_mode, results, on_done,
                 );
             }
             ViewHead::Ref(sym) => {
                 Self::follow_key_then_continue(
                     node, &DiscrimKey::Ref(sym), arg, kb, outer,
                     pos_idx, pos_total, named_keys, named_idx, prefix,
-                    subst, results, on_done,
+                    subst, match_mode, results, on_done,
                 );
             }
             ViewHead::Bottom => {
                 Self::follow_key_then_continue(
                     node, &DiscrimKey::Bottom, arg, kb, outer,
                     pos_idx, pos_total, named_keys, named_idx, prefix,
-                    subst, results, on_done,
+                    subst, match_mode, results, on_done,
                 );
             }
         }
@@ -875,20 +924,21 @@ impl<L: Clone> SubstTree<L> {
         named_idx: usize,
         prefix: &VarPath,
         subst: SmallSubst,
+        match_mode: bool,
         results: &mut Vec<(L, SmallSubst)>,
         on_done: &dyn Fn(&DiscrimNode<L>, SmallSubst, &mut Vec<(L, SmallSubst)>),
     ) {
         if let Some(child) = node.concrete.get(key) {
             Self::query_args(
                 child, kb, outer, pos_idx, pos_total, named_keys, named_idx,
-                prefix, subst.clone(), results, on_done,
+                prefix, subst.clone(), match_mode, results, on_done,
             );
         }
         for (tree_var, child) in &node.var_edges {
             let branch = subst.clone().with_binding(tree_var.as_vid(), arg.as_bind_value());
             Self::query_args(
                 child, kb, outer, pos_idx, pos_total, named_keys, named_idx,
-                prefix, branch, results, on_done,
+                prefix, branch, match_mode, results, on_done,
             );
         }
     }
@@ -905,23 +955,24 @@ impl<L: Clone> SubstTree<L> {
         named_idx: usize,
         prefix: &VarPath,
         subst: SmallSubst,
+        match_mode: bool,
         results: &mut Vec<(L, SmallSubst)>,
         on_done: &dyn Fn(&DiscrimNode<L>, SmallSubst, &mut Vec<(L, SmallSubst)>),
     ) {
         Self::query_args(
             node, kb, outer, pos_idx, pos_total, named_keys, named_idx,
-            prefix, subst.clone(), results, on_done,
+            prefix, subst.clone(), match_mode, results, on_done,
         );
         for (_, child) in &node.concrete {
             Self::skip_subtree_then_continue(
                 child, kb, outer, pos_idx, pos_total, named_keys, named_idx,
-                prefix, subst.clone(), results, on_done,
+                prefix, subst.clone(), match_mode, results, on_done,
             );
         }
         for (_, child) in &node.var_edges {
             Self::skip_subtree_then_continue(
                 child, kb, outer, pos_idx, pos_total, named_keys, named_idx,
-                prefix, subst.clone(), results, on_done,
+                prefix, subst.clone(), match_mode, results, on_done,
             );
         }
     }

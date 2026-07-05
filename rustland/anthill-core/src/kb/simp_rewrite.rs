@@ -283,11 +283,9 @@ pub(super) fn try_fire(
             continue;
         }
         // WI-582: a rule carrying EXPLICIT typed-pattern bounds (`?x: T`) is fired
-        // only by the resolver's `apply_eq_rules` (which enforces the bounds via
-        // `typed_pattern_bounds_hold`). The typer's match here keys its subst by
-        // open_equation's fresh globals, not the synthetic-DeBruijn entries that
-        // check reads, so it cannot enforce the per-variable bound — SKIP typed
-        // rules rather than fire them unguarded (sound but conservative: the typer
+        // only by the resolver's `apply_eq_rules`, which enforces the bounds via
+        // `typed_pattern_bounds_hold`. The typer conservatively SKIPS such rules
+        // here rather than firing them unguarded — sound but conservative (it
         // simply does not simplify with typed rules; never wrong-fires; WI-067).
         if !kb.rule_type_bounds(rid).is_empty() {
             continue;

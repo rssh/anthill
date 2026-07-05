@@ -279,12 +279,12 @@ fn resolver_does_not_fire_non_simp_requires_guarded_law() {
     // non-directional law that must not fire. `apply_eq_rules` must report NO
     // changes (firing commutativity would ping-pong to the 100-fuel cap).
     let (result, changes) =
-        kb.apply_eq_rules(term, 100, &anthill_core::kb::subst::Substitution::new());
+        kb.apply_eq_rules(&anthill_core::eval::Value::term(term), 100, &anthill_core::kb::subst::Substitution::new());
     assert!(
         changes.is_empty(),
         "non-[simp] requires-guarded flip_comm must NOT fire (firing it would loop); \
          got {} change(s)",
         changes.len(),
     );
-    assert_eq!(result, term, "the term must be left intact");
+    assert_eq!(result.expect_term(), term, "the term must be left intact");
 }

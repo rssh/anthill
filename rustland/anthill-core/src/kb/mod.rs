@@ -2240,6 +2240,30 @@ impl KnowledgeBase {
             .find(|s| !s.is_contradiction())
     }
 
+    /// One-directional match of a rule-LHS `pattern` against a `target` that may
+    /// itself carry flex-`Global` (query) vars — the simp-rewriter's matcher. A
+    /// flex-`Global` var on the TARGET side is INERT (matches only a stored
+    /// pattern var, never a concrete subterm, and is not self-bound), so the
+    /// pattern's vars bind to the target's subterms one-way and a projected
+    /// target var rides through unbound (`match(pick(F0,F1), pick(?q,7))` →
+    /// `F0↦?q`). This is what `match_view` did WRONG for a var-carrying target
+    /// (it ran the resolution wildcard path, which self-binds the target var and
+    /// scrambles the match); `match_view` keeps the wildcard behavior for the
+    /// assumed-fact / reflect resolution callers, and only the rewriter
+    /// (`fire_simp_equation` / the typer) uses this one-directional entry.
+    pub fn match_view_oneway<V: term_view::TermView>(
+        &self,
+        pattern: TermId,
+        target: &V,
+    ) -> Option<subst::Substitution> {
+        let mut tree = SubstTree::<()>::new();
+        tree.insert_pattern(self, &term_view::TermIdView(pattern), ());
+        let results = tree.query_resolved_mode(self, target, true, |_| pattern);
+        results.into_iter()
+            .map(|(_, s)| s)
+            .find(|s| !s.is_contradiction())
+    }
+
     /// Find all active rules/facts whose head matches the given pattern.
     ///
     /// Uses the discrimination tree for multi-level structural dispatch.
@@ -2767,9 +2791,9 @@ impl KnowledgeBase {
                 // The DeBruijn index is `len - 1 - position` (innermost-is-0), the
                 // SAME reversal `term_to_debruijn` / `node_to_debruijn` apply when
                 // closing the head. Storing the raw position would key the firing
-                // check (`typed_pattern_bounds_hold`, which decodes the synthetic
-                // `VarId(u32::MAX - n)` LHS-match entries) to the WRONG variable for
-                // any rule with >= 2 vars.
+                // check (`typed_pattern_bounds_hold`, which indexes the opened
+                // globals `fresh[db_index]`) to the WRONG variable for any rule
+                // with >= 2 vars.
                 Some(idx) => bounds.push(((globals.len() - 1 - idx) as u32, bound)),
                 None => debug_assert!(
                     false,
@@ -5299,6 +5323,51 @@ mod tests {
         }
         // resolve() returns None because the binding isn't a TermId.
         assert!(!matches!(subst.resolve_as_value(xv), Some(Value::Term { .. })));
+    }
+
+    #[test]
+    fn match_view_binds_target_var_but_oneway_does_not() {
+        // Regression guard (simp-rewriter convergence). `match_view` is the
+        // WILDCARD matcher: a flex-`Global` var on the TARGET side binds to the
+        // pattern's concrete subterm. This is load-bearing for assumed-fact
+        // (WI-108 / Γ) discharge — `match_view(ground_fact, &goal)` must bind the
+        // goal's query var, e.g. discharge subgoal `even(?y)` by hypothesis
+        // `even(2)` binding `?y = 2`. `match_view_oneway` (the simp rewriter's
+        // matcher) instead treats the target var as INERT and does NOT match.
+        // Flipping `match_view` itself to one-way silently broke hypothesis
+        // discharge (a var goal no longer discharged by a ground fact).
+        let mut kb = KnowledgeBase::new();
+        let f = kb.intern("even");
+        let two = kb.alloc(Term::Const(crate::kb::term::Literal::Int(2)));
+        let pattern = kb.alloc(Term::Fn {
+            functor: f,
+            pos_args: SmallVec::from_elem(two, 1),
+            named_args: SmallVec::new(),
+        });
+        let y_sym = kb.intern("y");
+        let yv = kb.fresh_var(y_sym);
+        let var_y = kb.alloc(Term::Var(Var::Global(yv)));
+        let target = kb.alloc(Term::Fn {
+            functor: f,
+            pos_args: SmallVec::from_elem(var_y, 1),
+            named_args: SmallVec::new(),
+        });
+
+        // Wildcard `match_view`: the target's `?y` binds to the pattern's `2`.
+        let subst = kb
+            .match_view(pattern, &term_view::TermIdView(target))
+            .expect("wildcard match_view binds the target var");
+        assert_eq!(
+            kb.reify(var_y, &subst).expect_term(),
+            two,
+            "match_view must bind the target's ?y to the ground pattern's 2",
+        );
+
+        // One-directional `match_view_oneway`: the target var is inert → no match.
+        assert!(
+            kb.match_view_oneway(pattern, &term_view::TermIdView(target)).is_none(),
+            "match_view_oneway must NOT bind a target var (the hypothesis-discharge break)",
+        );
     }
 
     #[test]
