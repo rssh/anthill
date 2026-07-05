@@ -28,7 +28,7 @@
 //! firing — proposal 043 §4.1 / a follow-up.
 //!
 //! Recursion depth (WI-278): the walk is iterative. [`rewrite`] descends the
-//! occurrence tree on an explicit `Visit`/`Build` work-stack, and
+//! tree on an explicit `Visit`/`Build` work-stack, and
 //! [`substitute_to_occurrence`] builds the RHS on a second work-stack — both
 //! mirroring the sibling `NodeOccurrence::Drop`, `materialize_from_handle`,
 //! and the typing pass, which were made iterative to survive deeply-nested
@@ -36,8 +36,20 @@
 //! shipping `[simp]`/dot rules that fire on real (possibly deeply-nested)
 //! operation bodies: the engine can no longer overflow the host stack on
 //! source nesting depth.
+//!
+//! One driver, both carriers (WI-641 Phase 2 + WI-643): [`rewrite`] is
+//! carrier-neutral — it descends a [`Value`] that is EITHER a `Value::Node`
+//! occurrence (the typer phase; and the resolver's `anthill prove` Node goals)
+//! OR a hash-consed term (the resolver's `apply_eq_rules`). The two carriers
+//! share the one iterative loop; they differ only in [`children_of`] (descent)
+//! and [`reassemble_value`] (reassembly), and in the firing STRATEGY behind the
+//! [`SimpFirer`] trait. This retired the resolver's separate recursive term
+//! walk, so a deeply-nested term redex no longer overflows the host stack nor
+//! stops at a fuel-as-depth cutoff.
 
 use std::rc::Rc;
+
+use smallvec::SmallVec;
 
 use crate::eval::value::Value;
 use crate::intern::Symbol;
@@ -57,11 +69,20 @@ pub(super) const SIMP_FUEL: usize = 100;
 
 const PASS_NAME: &str = "anthill.kb.passes.simp_rewrite";
 
-/// Whether any indexed `[simp]` equation exists — the gate both firing
+/// Whether any indexed `[simp]` equation exists — the gate the typer's firing
 /// sites use to skip all firing work in the common no-rule case.
 /// `rules_by_functor(eq)` holds only indexed (`[simp]`/`[unfold]`) equations
 /// post-WI-139, so an empty index (e.g. a stdlib-only load) returns fast.
 /// Read once per typer walk (WI-283) and once per [`run`].
+///
+/// NB (WI-643): this is `eq`-only and `[simp]`-only, matching the typer's
+/// `try_fire` (which fires `[simp]`, and — because the current stdlib has no
+/// `eq`-headed simp law — under-reports for a `<=>`-only KB, a pre-existing
+/// narrowness carried by `simp_enabled || has_dot_applies` in `typing.rs`). The
+/// resolver's `apply_eq_rules` deliberately does NOT gate on this: it fires
+/// `[simp]` OR `[unfold]` over `eq` AND `unify`, so a shared gate would be wrong
+/// on both axes. Broadening this into a correct, carrier-shared gate is the
+/// WI-643 efficiency follow-up.
 pub(super) fn has_simp_equations(kb: &mut KnowledgeBase) -> bool {
     let eq_sym = kb.eq_functor();
     kb.rules_by_functor(eq_sym)
@@ -76,22 +97,23 @@ pub(super) fn simp_pass(kb: &mut KnowledgeBase) -> PassId {
     kb.register_pass(PASS_NAME)
 }
 
-/// The firing strategy for the shared iterative occurrence driver [`rewrite`]
-/// (WI-641 Phase 2). Both simp phases descend the SAME `Visit`/`Build`
-/// work-stack; they differ ONLY in what "fire a `[simp]` equation at this node"
-/// means — the typer fires type-directed via [`try_fire`] ([`TyperFirer`]), the
-/// resolver fires carrier-neutrally via `fire_simp_equation` (recording
-/// `EqChange`s; `ResolverSimpFirer` in `resolve.rs`). Factored as a trait — not a
-/// closure — so the firer can hold its own `&mut` state (the resolver's changes
-/// vec) without a borrow conflict against the `&mut KnowledgeBase` the driver
-/// threads. This replaces the resolver's former recursive
-/// `apply_eq_rules_occurrence` walk, so a deeply-nested Node prove-goal rewrites
-/// on the heap instead of overflowing the host stack.
+/// The firing strategy for the shared iterative driver [`rewrite`] (WI-641
+/// Phase 2, generalized to both carriers in WI-643). Both simp phases descend
+/// the SAME `Visit`/`Build` work-stack over the carrier-neutral [`Value`]; they
+/// differ ONLY in what "fire a `[simp]` equation at this node" means — the typer
+/// fires type-directed via [`try_fire`] ([`TyperFirer`]), the resolver fires
+/// carrier-neutrally via `fire_simp_equation` (recording `EqChange`s;
+/// `ResolverSimpFirer` in `resolve.rs`). Factored as a trait — not a closure —
+/// so the firer can hold its own `&mut` state (the resolver's changes vec)
+/// without a borrow conflict against the `&mut KnowledgeBase` the driver threads.
+/// This replaced the resolver's former recursive `apply_eq_rules_occurrence`
+/// walk (WI-641) AND its recursive TERM walk (WI-643), so a deeply-nested redex
+/// — Node OR term — rewrites on the heap instead of overflowing the host stack.
 pub(super) trait SimpFirer {
-    /// Try to fire a `[simp]` equation at `occ`; return the rewritten
-    /// occurrence, or `None` when nothing fires.
-    fn fire(&mut self, kb: &mut KnowledgeBase, occ: &Rc<NodeOccurrence>)
-        -> Option<Rc<NodeOccurrence>>;
+    /// Try to fire a `[simp]` equation at `redex` (a term or `Value::Node`
+    /// occurrence); return the rewritten carrier-neutral `Value`, or `None`
+    /// when nothing fires.
+    fn fire(&mut self, kb: &mut KnowledgeBase, redex: &Value) -> Option<Value>;
 }
 
 /// The typer's firing strategy: type-directed [`try_fire`], carrying the
@@ -101,12 +123,18 @@ pub(super) struct TyperFirer {
 }
 
 impl SimpFirer for TyperFirer {
-    fn fire(
-        &mut self,
-        kb: &mut KnowledgeBase,
-        occ: &Rc<NodeOccurrence>,
-    ) -> Option<Rc<NodeOccurrence>> {
-        try_fire(kb, occ, self.pass)
+    fn fire(&mut self, kb: &mut KnowledgeBase, redex: &Value) -> Option<Value> {
+        // The typer only ever walks operation bodies, which are occurrence
+        // trees — every node the driver hands it is a `Value::Node` (the
+        // occurrence carrier is closed under descent + rewrite). A non-Node
+        // here is a carrier-routing bug, not a recoverable case.
+        match redex {
+            Value::Node(occ) => try_fire(kb, occ, self.pass).map(Value::Node),
+            other => unreachable!(
+                "typer simp carrier is always an occurrence, got {}",
+                other.type_name()
+            ),
+        }
     }
 }
 
@@ -128,7 +156,16 @@ pub fn run(kb: &mut KnowledgeBase) {
     let bodies: Vec<(Symbol, Rc<NodeOccurrence>)> =
         kb.op_bodies_iter().map(|(s, n)| (s, Rc::clone(n))).collect();
     for (op_sym, body) in bodies {
-        let rewritten = rewrite(kb, &body, &mut firer, SIMP_FUEL);
+        // The driver is carrier-neutral (WI-643): wrap the occurrence body as a
+        // `Value::Node` and unwrap the result. The occurrence carrier is closed
+        // under rewrite, so a Node in always yields a Node out.
+        let rewritten = match rewrite(kb, &Value::Node(Rc::clone(&body)), &mut firer, SIMP_FUEL) {
+            Value::Node(n) => n,
+            other => unreachable!(
+                "typer simp run: an occurrence body must rewrite to a Node, got {}",
+                other.type_name()
+            ),
+        };
         if !Rc::ptr_eq(&rewritten, &body) {
             kb.set_op_body_node(op_sym, rewritten);
         }
@@ -140,35 +177,45 @@ pub fn run(kb: &mut KnowledgeBase) {
 /// (fuel-bounded). Leftmost-innermost, matching the typer's walk order and
 /// `apply_eq_rules`.
 ///
-/// Iterative (WI-278): an explicit `Visit`/`Build` work-stack flattens the
-/// occurrence-tree descent onto the heap — mirroring
-/// [`node_occurrence::materialize_from_handle`] and
-/// [`node_occurrence::visit_classifications`], which were made iterative to
+/// Carrier-neutral (WI-643): the driver descends the SAME work-stack over a
+/// carrier-neutral [`Value`] — a hash-consed term OR a `Value::Node` occurrence
+/// — so BOTH simp carriers share ONE iterative loop. The only carrier-specific
+/// pieces are [`children_of`] (child iteration + the descend test) and
+/// [`reassemble_value`] (reassembly); firing is already carrier-neutral through
+/// the [`SimpFirer`] (`fire_simp_equation` / `try_fire`). This replaced the
+/// resolver's separate recursive TERM walk (`apply_eq_rules` steps 1–2), so a
+/// deeply-nested TERM redex no longer stops at the fuel-as-depth cutoff nor risks
+/// host-stack overflow — both carriers now spend `fuel` only on the fire→refire
+/// chain.
+///
+/// Iterative (WI-278): an explicit `Visit`/`Build` work-stack flattens the tree
+/// descent onto the heap — mirroring [`node_occurrence::materialize_from_handle`]
+/// and [`node_occurrence::visit_classifications`], which were made iterative to
 /// survive deeply-nested bodies (the 624-line `typing_pass_spec.anthill`).
 /// `Visit` schedules a `Build` for every node (fuel permitting) and, for a
-/// compound [`is_rewritable`] form, a `Visit` per child (reversed, so children
-/// pop in source order); a fuel-exhausted node passes straight through. `Build`
-/// pops the rewritten children, reassembles the node (preserving identity +
-/// provenance when nothing changed), then fires a `[simp]` equation at it via
-/// the [`SimpFirer`] — INCLUDING at a leaf (`child_count == 0`), so a
-/// functor-less leaf redex still gets a fire attempt (WI-641). A firing re-enters
-/// the loop via `Visit { fuel - 1 }` so the fixpoint is driven on the stack
-/// rather than the host call stack. `fuel` bounds a single fire→refire chain (it
-/// descends to children unchanged), exactly as the former recursion did.
+/// compound form with children, a `Visit` per child (reversed, so children pop in
+/// source order); a fuel-exhausted node passes straight through. `Build` pops the
+/// rewritten children, reassembles the node (preserving identity + provenance
+/// when nothing changed), then fires a `[simp]` equation at it via the
+/// [`SimpFirer`] — INCLUDING at a leaf (`child_count == 0`), so a functor-less
+/// leaf redex still gets a fire attempt (WI-641). A firing re-enters the loop via
+/// `Visit { fuel - 1 }` so the fixpoint is driven on the stack rather than the
+/// host call stack. `fuel` bounds a single fire→refire chain (it descends to
+/// children unchanged), exactly as the former recursion did.
 pub(super) fn rewrite<F: SimpFirer>(
     kb: &mut KnowledgeBase,
-    root: &Rc<NodeOccurrence>,
+    root: &Value,
     firer: &mut F,
     fuel: usize,
-) -> Rc<NodeOccurrence> {
-    let mut work: Vec<RewriteOp> = vec![RewriteOp::Visit { occ: Rc::clone(root), fuel }];
-    let mut results: Vec<Rc<NodeOccurrence>> = Vec::new();
+) -> Value {
+    let mut work: Vec<RewriteOp> = vec![RewriteOp::Visit { node: root.clone(), fuel }];
+    let mut results: Vec<Value> = Vec::new();
 
     while let Some(op) = work.pop() {
         match op {
-            RewriteOp::Visit { occ, fuel } => visit_node(occ, fuel, &mut work, &mut results),
-            RewriteOp::Build { occ, fuel, child_count } => {
-                build_node(kb, occ, fuel, child_count, firer, &mut work, &mut results)
+            RewriteOp::Visit { node, fuel } => visit_node(kb, node, fuel, &mut work, &mut results),
+            RewriteOp::Build { node, fuel, child_count } => {
+                build_node(kb, node, fuel, child_count, firer, &mut work, &mut results)
             }
         }
     }
@@ -179,58 +226,51 @@ pub(super) fn rewrite<F: SimpFirer>(
         "rewrite: expected exactly one result on the stack, got {}",
         results.len(),
     );
-    results.pop().expect("root produced no NodeOccurrence")
+    results.pop().expect("root produced no Value")
 }
 
 /// Work-stack item for the iterative [`rewrite`]. `fuel` rides on the op so
 /// the fire→refire chain is bounded per-chain (descending to children
 /// unchanged), as in the former recursion.
 enum RewriteOp {
-    Visit { occ: Rc<NodeOccurrence>, fuel: usize },
+    Visit { node: Value, fuel: usize },
     /// `child_count` is the number of child `Visit`s scheduled alongside this
     /// frame — captured at `visit_node` time so `build_node` knows how many
     /// results to claim without re-walking the node.
-    Build { occ: Rc<NodeOccurrence>, fuel: usize, child_count: usize },
+    Build { node: Value, fuel: usize, child_count: usize },
 }
 
 /// Examine a node: schedule a `Build` (which ATTEMPTS a fire at this node) and,
-/// for a [`is_rewritable`] compound form, a `Visit` per child so the descent is
-/// bottom-up. Children are pushed in reverse source order so they pop — and thus
-/// complete — in source order, each leaving exactly one entry on `results`.
+/// for a compound form with children ([`children_of`]), a `Visit` per child so
+/// the descent is bottom-up. Children are pushed in reverse source order so they
+/// pop — and thus complete — in source order, each leaving exactly one entry on
+/// `results`.
 ///
 /// FIRING and DESCENT are gated separately (WI-641 Phase 2): a fire is attempted
 /// at EVERY node — including a leaf redex, which the resolver's
 /// `fire_simp_equation` still supports (a functor-less `Const`/`Ident`-LHS
 /// rewrite like `[simp] unify(1, 2)`; the typer's `try_fire` cheaply declines a
-/// non-`Apply`/`Constructor` node, so leaf-firing is a no-op there). This keeps
-/// the Node carrier's firing decisions identical to the former recursive
-/// `apply_eq_rules_occurrence` + shared top-fire, which fired at every subterm
-/// regardless of head shape. DESCENT, by contrast, is gated by
-/// [`is_rewritable`]: only a compound post-parse form has children to rewrite —
-/// a leaf leaves `child_count == 0`, so `build_node` reassembles it unchanged
-/// and then fires.
+/// non-`Apply`/`Constructor` node, so leaf-firing is a no-op there). DESCENT, by
+/// contrast, is gated per carrier by [`children_of`]: a compound occurrence form
+/// ([`is_rewritable`]) or a `Term::Fn` yields children; a leaf yields none, so
+/// `build_node` reassembles it unchanged and then fires.
 fn visit_node(
-    occ: Rc<NodeOccurrence>,
+    kb: &KnowledgeBase,
+    node: Value,
     fuel: usize,
     work: &mut Vec<RewriteOp>,
-    results: &mut Vec<Rc<NodeOccurrence>>,
+    results: &mut Vec<Value>,
 ) {
     // Fuel exhausted: stop the chain here (no descent, no firing), exactly as
     // the recursive `rewrite`'s `fuel == 0` early return did.
     if fuel == 0 {
-        results.push(occ);
+        results.push(node);
         return;
     }
-    // Descend only compound forms; a leaf has no children (empty `children`).
-    let mut children: Vec<Rc<NodeOccurrence>> = Vec::new();
-    if is_rewritable(occ.as_expr()) {
-        if let Some(expr) = occ.as_expr() {
-            node_occurrence::for_each_child(expr, |c| children.push(Rc::clone(c)));
-        }
-    }
-    work.push(RewriteOp::Build { occ, fuel, child_count: children.len() });
+    let children = children_of(kb, &node);
+    work.push(RewriteOp::Build { node, fuel, child_count: children.len() });
     for child in children.into_iter().rev() {
-        work.push(RewriteOp::Visit { occ: child, fuel });
+        work.push(RewriteOp::Visit { node: child, fuel });
     }
 }
 
@@ -267,22 +307,106 @@ fn is_rewritable(expr: Option<&Expr>) -> bool {
 /// work-stack; otherwise the reassembled node is pushed to `results`.
 fn build_node<F: SimpFirer>(
     kb: &mut KnowledgeBase,
-    occ: Rc<NodeOccurrence>,
+    node: Value,
     fuel: usize,
     child_count: usize,
     firer: &mut F,
     work: &mut Vec<RewriteOp>,
-    results: &mut Vec<Rc<NodeOccurrence>>,
+    results: &mut Vec<Value>,
 ) {
     // The last `child_count` results are this node's children, pushed in
     // source order by `visit_node`.
     let start = results.len() - child_count;
-    let new_children: Vec<Rc<NodeOccurrence>> = results.split_off(start);
-    let reassembled = reassemble(&occ, &new_children);
+    let new_children: Vec<Value> = results.split_off(start);
+    let reassembled = reassemble_value(kb, &node, &new_children);
     match firer.fire(kb, &reassembled) {
         // Re-normalize the firing result to fixpoint on the stack (fuel - 1).
-        Some(fired) => work.push(RewriteOp::Visit { occ: fired, fuel: fuel - 1 }),
+        Some(fired) => work.push(RewriteOp::Visit { node: fired, fuel: fuel - 1 }),
         None => results.push(reassembled),
+    }
+}
+
+/// The rewritable children of a carrier-neutral node, in source order — the
+/// per-carrier DESCENT rule (WI-643). A `Value::Node` occurrence descends only
+/// a compound [`is_rewritable`] form (via `for_each_child`, wrapping each child
+/// back as `Value::Node`); a `Value::Term` descends any `Term::Fn` (its
+/// positional then named args, wrapped as `Value::term`). A leaf (a Node leaf, a
+/// non-`Fn` term, or a bare scalar) yields no children — `build_node` then
+/// reassembles it unchanged and fires at it. Each carrier is closed under
+/// descent, so a Node's children are Nodes and a term's children are terms.
+fn children_of(kb: &KnowledgeBase, node: &Value) -> Vec<Value> {
+    match node {
+        Value::Node(occ) => {
+            let mut children: Vec<Value> = Vec::new();
+            if is_rewritable(occ.as_expr()) {
+                if let Some(expr) = occ.as_expr() {
+                    node_occurrence::for_each_child(expr, |c| children.push(Value::Node(Rc::clone(c))));
+                }
+            }
+            children
+        }
+        Value::Term { id, .. } => match kb.get_term(*id) {
+            Term::Fn { pos_args, named_args, .. } => {
+                let mut children = Vec::with_capacity(pos_args.len() + named_args.len());
+                children.extend(pos_args.iter().map(|&c| Value::term(c)));
+                children.extend(named_args.iter().map(|&(_, c)| Value::term(c)));
+                children
+            }
+            _ => Vec::new(),
+        },
+        // Any other carrier — a genuine scalar (Int/Bool/…) or a COMPOUND
+        // `Value::Entity`/`Value::Tuple` (which does carry sub-`Value`s) — is a
+        // fire-only leaf: the driver descends ONLY the two structural simp
+        // carriers (a `Term::Fn` and a functor-headed occurrence), so a redex
+        // nested inside an Entity/Tuple is not reached. This is not a silent drop
+        // but a deliberate scope match: the retired recursive term walk likewise
+        // descended only `Term::Fn`, and no `[simp]` rule matches inside an
+        // entity/tuple carrier today. `build_node` still attempts a fire at the
+        // leaf (a functor-less `[simp] unify(1, 2)` rewrites a `Const` redex);
+        // descending Entity/Tuple would be a new behavior, out of WI-643's scope.
+        _ => Vec::new(),
+    }
+}
+
+/// Rebuild a carrier-neutral node from its already-rewritten children (in
+/// [`children_of`] order), preserving identity when nothing changed (WI-643).
+/// Dispatches on the carrier: a `Value::Node` occurrence delegates to
+/// [`reassemble`] (which returns the same `Rc` — span, owner, provenance, and
+/// `inferred_type` intact — when no child moved); a `Value::Term` rebuilds its
+/// `Term::Fn` (hash-consing dedups an unchanged rebuild back to the same
+/// `TermId`). A leaf carries no children and passes through unchanged.
+fn reassemble_value(kb: &mut KnowledgeBase, node: &Value, new_children: &[Value]) -> Value {
+    match node {
+        Value::Node(occ) => {
+            // Descent kept every occurrence child a `Value::Node` (the carrier is
+            // closed), so unwrap each back to its `Rc<NodeOccurrence>`.
+            let occs: Vec<Rc<NodeOccurrence>> = new_children
+                .iter()
+                .map(|c| match c {
+                    Value::Node(n) => Rc::clone(n),
+                    other => unreachable!(
+                        "occurrence child must be a Node, got {}",
+                        other.type_name()
+                    ),
+                })
+                .collect();
+            Value::Node(reassemble(occ, &occs))
+        }
+        Value::Term { id, .. } => match kb.get_term(*id).clone() {
+            Term::Fn { functor, pos_args, named_args } => {
+                let np = pos_args.len();
+                let new_pos: SmallVec<[TermId; 4]> =
+                    new_children[..np].iter().map(|c| c.expect_term()).collect();
+                let new_named: SmallVec<[(Symbol, TermId); 2]> = named_args
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &(sym, _))| (sym, new_children[np + i].expect_term()))
+                    .collect();
+                Value::term(kb.alloc(Term::Fn { functor, pos_args: new_pos, named_args: new_named }))
+            }
+            _ => node.clone(),
+        },
+        _ => node.clone(),
     }
 }
 

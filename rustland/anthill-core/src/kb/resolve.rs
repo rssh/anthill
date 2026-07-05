@@ -2141,40 +2141,27 @@ fn collect_param_var_bindings(
 // ── SLD Resolution ──────────────────────────────────────────────
 
 /// The resolver's firing strategy for the shared iterative simp driver
-/// ([`super::simp_rewrite::rewrite`], WI-641 Phase 2): fire carrier-neutrally via
-/// [`KnowledgeBase::fire_simp_equation`] under the frame subst, recording each
-/// firing as an `EqChange`. Replaces the former recursive
-/// `apply_eq_rules_occurrence` host-stack walk — the driver descends the
-/// occurrence tree iteratively, so a deeply-nested Node prove-goal can't overflow.
+/// ([`super::simp_rewrite::rewrite`], WI-641 Phase 2 / WI-643): fire carrier-
+/// neutrally via [`KnowledgeBase::fire_simp_equation`] under the frame subst,
+/// recording each firing as an `EqChange`. Replaces the former recursive
+/// `apply_eq_rules_occurrence` walk (WI-641) AND the recursive TERM walk
+/// (WI-643) — the driver descends BOTH carriers iteratively, so a deeply-nested
+/// redex (Node or term) can't overflow. `fire_simp_equation` already fires
+/// carrier-neutrally over a `&Value`, so this firer is identical for both.
 struct ResolverSimpFirer<'a> {
     subst: &'a Substitution,
     changes: &'a mut Vec<EqChange>,
 }
 
 impl super::simp_rewrite::SimpFirer for ResolverSimpFirer<'_> {
-    fn fire(
-        &mut self,
-        kb: &mut KnowledgeBase,
-        occ: &Rc<NodeOccurrence>,
-    ) -> Option<Rc<NodeOccurrence>> {
-        let redex = Value::Node(Rc::clone(occ));
-        let (rid, rewritten) = kb.fire_simp_equation(&redex, self.subst)?;
+    fn fire(&mut self, kb: &mut KnowledgeBase, redex: &Value) -> Option<Value> {
+        let (rid, rewritten) = kb.fire_simp_equation(redex, self.subst)?;
         self.changes.push(EqChange {
             rule_id: rid,
-            original: redex,
+            original: redex.clone(),
             rewritten: rewritten.clone(),
         });
-        match rewritten {
-            // `fire_simp_equation` rebuilds the RHS in the redex's carrier, so a
-            // Node redex always yields a Node — the occurrence carrier is closed
-            // under rewrite. A non-Node here is a carrier-closure bug, not a
-            // recoverable case (loud over silent skip).
-            Value::Node(n) => Some(n),
-            other => unreachable!(
-                "fire_simp_equation on a Node redex must return a Node, got {}",
-                other.type_name()
-            ),
-        }
+        Some(rewritten)
     }
 }
 
@@ -2424,21 +2411,22 @@ impl KnowledgeBase {
     /// firing at the top level via [`Self::fire_simp_equation`]. Returns
     /// `(rewritten, changes)`.
     ///
-    /// WI-641 Phase 2: a `Value::Node` occurrence redex is rewritten by the ONE
-    /// shared iterative driver ([`super::simp_rewrite::rewrite`]) the typer uses —
-    /// bottom-up descent + top-fire + fixpoint all on a heap work-stack, gated by
-    /// the same `is_rewritable` descend whitelist and firing at every node — so a
-    /// deeply-nested Node prove-goal rewrites without overflowing the host stack
-    /// (the former recursive `apply_eq_rules_occurrence`).
+    /// WI-643: BOTH carriers now route through the ONE shared iterative driver
+    /// ([`super::simp_rewrite::rewrite`]) — a `Value::Node` occurrence and a
+    /// hash-consed term drive the SAME work-stack (bottom-up descent + top-fire +
+    /// fixpoint on the heap), firing carrier-neutrally via `ResolverSimpFirer`.
+    /// This retired the resolver's separate recursive TERM walk (former steps
+    /// 1–2), so a deeply-nested TERM redex no longer overflows the host stack nor
+    /// stops at a fuel-as-depth cutoff. Both carriers now spend `fuel` ONLY on the
+    /// fire→refire chain (descent carries `fuel` unchanged), so they reach the
+    /// same firing DECISIONS at the same depth — the former term/Node fuel
+    /// divergence (depth-bounded vs chain-bounded) is gone.
     ///
-    /// The two carriers bound `fuel` differently, and necessarily so: the term
-    /// walk below is HOST-RECURSIVE, so it must spend `fuel` on DESCENT DEPTH
-    /// (`fuel - 1` per child level) to keep from overflowing — a term nested
-    /// deeper than `fuel` stops rewriting there (hash-consed goal terms are
-    /// shallow, so this is not hit in practice). The iterative Node driver has no
-    /// host-stack budget to protect, so it descends the whole tree and spends
-    /// `fuel` only on the fire→refire chain. Same firing DECISIONS on both
-    /// carriers (fire at every node); only the depth cutoff differs.
+    /// No `has_simp_equations` short-circuit here (deliberately): the resolver
+    /// fires `[simp]` OR `[unfold]` (`equation_is_directional_rewrite`), whereas
+    /// `has_simp_equations` counts only `[simp]` — gating on it would silently
+    /// skip an unfold-only KB's rewrites. A correct, O(1) load-time gate is the
+    /// WI-643 efficiency follow-up (a KB-cached bit), not a per-call bucket scan.
     pub fn apply_eq_rules(
         &mut self,
         redex: &Value,
@@ -2448,62 +2436,10 @@ impl KnowledgeBase {
         if fuel == 0 {
             return (redex.clone(), vec![]);
         }
-
         let mut changes = Vec::new();
-
-        // A `Value::Node` occurrence redex routes through the shared iterative
-        // driver, which already performs the innermost descent, the top-level
-        // fire, AND the fixpoint — so it returns the fully-normalized occurrence
-        // directly (firing carrier-neutrally via `ResolverSimpFirer`).
-        if let Value::Node(occ) = redex {
-            let occ = Rc::clone(occ);
-            let mut firer = ResolverSimpFirer { subst, changes: &mut changes };
-            let rewritten = super::simp_rewrite::rewrite(self, &occ, &mut firer, fuel);
-            return (Value::Node(rewritten), changes);
-        }
-
-        // 1. Innermost: rewrite subterms first, rebuilding in the term carrier.
-        let current: Value = match redex {
-            Value::Term { id, .. } => match self.get_term(*id).clone() {
-                Term::Fn { functor, pos_args, named_args } => {
-                    let new_pos: SmallVec<[TermId; 4]> = pos_args
-                        .iter()
-                        .map(|&id| {
-                            let (r, sc) = self.apply_eq_rules(&Value::term(id), fuel - 1, subst);
-                            changes.extend(sc);
-                            r.expect_term()
-                        })
-                        .collect();
-                    let new_named: SmallVec<[(crate::intern::Symbol, TermId); 2]> = named_args
-                        .iter()
-                        .map(|&(sym, id)| {
-                            let (r, sc) = self.apply_eq_rules(&Value::term(id), fuel - 1, subst);
-                            changes.extend(sc);
-                            (sym, r.expect_term())
-                        })
-                        .collect();
-                    Value::term(self.alloc(Term::Fn { functor, pos_args: new_pos, named_args: new_named }))
-                }
-                _ => redex.clone(),
-            },
-            _ => redex.clone(),
-        };
-
-        // 2. Try firing a directional [simp]/[unfold] equation at the top level
-        // via the one-directional `match_view` matcher (see `fire_simp_equation`
-        // + the simp-rewriter-convergence note). `match_view` binds the rule's
-        // head vars directly to the redex children, so a projected redex var
-        // rides into the RHS with no threading, and the sole skip is a nonlinear
-        // LHS that fails to match.
-        if let Some((rid, rewritten)) = self.fire_simp_equation(&current, subst) {
-            changes.push(EqChange { rule_id: rid, original: current, rewritten: rewritten.clone() });
-            // Continue rewriting the result to fixpoint (fuel-bounded).
-            let (final_v, more_changes) = self.apply_eq_rules(&rewritten, fuel - 1, subst);
-            changes.extend(more_changes);
-            return (final_v, changes);
-        }
-
-        (current, changes)
+        let mut firer = ResolverSimpFirer { subst, changes: &mut changes };
+        let rewritten = super::simp_rewrite::rewrite(self, redex, &mut firer, fuel);
+        (rewritten, changes)
     }
 
     /// WI-292: whether `rid` is a DIRECTIONAL `[simp]`/`[unfold]` rewrite — the
@@ -6312,6 +6248,133 @@ mod tests {
         let (result, changes) = kb.apply_eq_rules(&Value::term(redex), 100, &Substitution::new());
         assert_eq!(result.expect_term(), redex, "nonlinear query-var match must not rewrite (drops ?q = f(42))");
         assert!(changes.is_empty());
+    }
+
+    #[test]
+    fn apply_eq_rules_deep_term_redex_does_not_overflow() {
+        // WI-643 acceptance: a deeply-nested *term* redex now drives the SAME
+        // shared iterative driver as the Node carrier, so it (a) can't overflow
+        // the host stack and (b) reaches the innermost redex regardless of depth.
+        // The former recursive term walk spent `fuel` on DESCENT DEPTH (`fuel - 1`
+        // per level), so an innermost redex nested deeper than `fuel` (100) was
+        // never reached — this test nests it far deeper and confirms it fires.
+        let mut kb = KnowledgeBase::new();
+        let sort = kb.make_name_term("Add"); // requires-free → the resolver fires it
+        let domain = kb.make_name_term("test");
+        let eq_sym = kb.intern("eq");
+        let add = kb.intern("add");
+        let wrap = kb.intern("wrap");
+
+        // [simp] eq(add(?x, 0), ?x)
+        let x_sym = kb.intern("x");
+        let vx = kb.fresh_var(x_sym);
+        let var_x = kb.alloc(Term::Var(Var::Global(vx)));
+        let zero_t = kb.alloc(Term::Const(Literal::Int(0)));
+        let add_x0 = kb.alloc(Term::Fn {
+            functor: add,
+            pos_args: SmallVec::from_slice(&[var_x, zero_t]),
+            named_args: SmallVec::new(),
+        });
+        let eq_head = kb.alloc(Term::Fn {
+            functor: eq_sym,
+            pos_args: SmallVec::from_slice(&[add_x0, var_x]),
+            named_args: SmallVec::new(),
+        });
+        let meta = simp_meta(&mut kb);
+        kb.assert_rule_debruijn_with_nodes(eq_head, vec![], sort, domain, Some(meta));
+
+        // Redex term: wrap(wrap(…wrap(add(7, 0))…)) at a depth the recursive walk
+        // could not reach (fuel-as-depth stopped it at 100).
+        const DEPTH: usize = 200_000;
+        let seven = kb.alloc(Term::Const(Literal::Int(7)));
+        let zero = kb.alloc(Term::Const(Literal::Int(0)));
+        let mut node = kb.alloc(Term::Fn {
+            functor: add,
+            pos_args: SmallVec::from_slice(&[seven, zero]),
+            named_args: SmallVec::new(),
+        });
+        for _ in 0..DEPTH {
+            node = kb.alloc(Term::Fn {
+                functor: wrap,
+                pos_args: SmallVec::from_elem(node, 1),
+                named_args: SmallVec::new(),
+            });
+        }
+
+        let (result, changes) = kb.apply_eq_rules(&Value::term(node), 100, &Substitution::new());
+        assert_eq!(changes.len(), 1, "exactly the innermost add(7, 0) should fire");
+
+        // Walk down the wrap chain and confirm the innermost add(7, 0) → 7.
+        let mut cur = result.expect_term();
+        for _ in 0..DEPTH {
+            cur = match kb.get_term(cur) {
+                Term::Fn { functor, pos_args, .. } if *functor == wrap => pos_args[0],
+                other => panic!("expected wrap(...), got {other:?}"),
+            };
+        }
+        assert_eq!(cur, seven, "innermost add(7, 0) should have rewritten to 7");
+    }
+
+    #[test]
+    fn apply_eq_rules_fires_unfold_only_kb() {
+        // WI-643 regression: `apply_eq_rules` fires `[simp]` OR `[unfold]`
+        // (`equation_is_directional_rewrite`), so it must NOT gate on a
+        // simp-ONLY predicate. A KB with an `[unfold]`-tagged equation and ZERO
+        // `[simp]` equations must still rewrite — an earlier `has_simp_equations`
+        // short-circuit (simp-only) silently skipped every unfold rewrite here.
+        let mut kb = KnowledgeBase::new();
+        let sort = kb.make_name_term("Def"); // requires-free → the resolver fires it
+        let domain = kb.make_name_term("test");
+        let eq_sym = kb.intern("eq");
+        let unfold_me = kb.intern("unfold_me");
+        let done = kb.intern("done");
+
+        // [unfold] eq(unfold_me(?x), done(?x)) — NO [simp] rule anywhere.
+        let x_sym = kb.intern("x");
+        let vx = kb.fresh_var(x_sym);
+        let var_x = kb.alloc(Term::Var(Var::Global(vx)));
+        let lhs = kb.alloc(Term::Fn {
+            functor: unfold_me,
+            pos_args: SmallVec::from_elem(var_x, 1),
+            named_args: SmallVec::new(),
+        });
+        let rhs = kb.alloc(Term::Fn {
+            functor: done,
+            pos_args: SmallVec::from_elem(var_x, 1),
+            named_args: SmallVec::new(),
+        });
+        let eq_head = kb.alloc(Term::Fn {
+            functor: eq_sym,
+            pos_args: SmallVec::from_slice(&[lhs, rhs]),
+            named_args: SmallVec::new(),
+        });
+        let unfold_sym = kb.intern("unfold");
+        let meta_sym = kb.intern("meta");
+        let tru = kb.alloc(Term::Const(Literal::Bool(true)));
+        let meta = kb.alloc(Term::Fn {
+            functor: meta_sym,
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::from_slice(&[(unfold_sym, tru)]),
+        });
+        kb.assert_rule_debruijn_with_nodes(eq_head, vec![], sort, domain, Some(meta));
+
+        // simplify(unfold_me(7)) → done(7)
+        let seven = kb.alloc(Term::Const(Literal::Int(7)));
+        let redex = kb.alloc(Term::Fn {
+            functor: unfold_me,
+            pos_args: SmallVec::from_elem(seven, 1),
+            named_args: SmallVec::new(),
+        });
+        let expected = kb.alloc(Term::Fn {
+            functor: done,
+            pos_args: SmallVec::from_elem(seven, 1),
+            named_args: SmallVec::new(),
+        });
+        assert_eq!(
+            kb.simplify(redex),
+            expected,
+            "an [unfold]-only KB (no [simp] rules) must still rewrite unfold_me(7) → done(7)"
+        );
     }
 
     #[test]
