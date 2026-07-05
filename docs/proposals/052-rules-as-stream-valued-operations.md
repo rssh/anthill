@@ -1,7 +1,7 @@
 # Proposal 052: Relations as first-class values (`Relation[T]`)
 
 **Status:** Draft (2026-07-05; rev. 2026-07-05 — WI-638 landed; projection = distribute-dot (`select` retired); effect-row + naming resolved)
-**Depends on:** [026.1-value-integrated-kb-queries](026.1-value-integrated-kb-queries.md) (the `execute(kb, LogicalQuery) -> Stream[Solution]` engine — **landed**, `kb/execute.rs` — + the `LogicalQuery` ADT this is the typed face of), [010-query-system](010-query-system.md) (`LogicalQuery` constructors), [004-tuple-sorts](004-tuple-sorts.md) (named tuples — the schema `T`), [022-typing-as-facts](022-typing-as-facts.md) / WI-603 (rule-atom variable typing), **WI-638** (named-tuple field access `row.x` — **delivered**, the single-field `.` surface), **WI-639** (the distribute-dot `x.(f1, f2)` — **filed**, the multi-field projection surface `select` retires into)
+**Depends on:** [026.1-value-integrated-kb-queries](026.1-value-integrated-kb-queries.md) (the `execute(kb, LogicalQuery) -> Stream[Solution]` engine — **landed**, `kb/execute.rs` — + the `LogicalQuery` ADT this is the typed face of), [010-query-system](010-query-system.md) (`LogicalQuery` constructors), [004-tuple-sorts](004-tuple-sorts.md) (named tuples — the schema `T`), [022-typing-as-facts](022-typing-as-facts.md) / WI-603 (rule-atom variable typing), **WI-638** (named-tuple field access `row.x` — **delivered**, the single-field `.` surface), **WI-639** (the distribute-dot `x.(f1, f2)` — **filed**, the multi-field projection surface `select` retires into), **WI-300** (rule-body requirement goals — **delivered**, how a clause body's `requires`-carrying ops get their dictionary)
 **Related:** [027.2-branch-from-streams](027.2-branch-from-streams.md) (the *effectful* dual — reflecting these streams into the `Branch` effect), [047-effects-as-monads-via-reflection](047-effects-as-monads-via-reflection.md) (`Branch ↦ Stream`), `stdlib/anthill/prelude/logical_stream.anthill` (`LogicalStream`), the provides-dispatch cluster (WI-424 find/map on Iterable, WI-599 finite map/filter, WI-608/609/614 requires/provides views) — the machinery the `provides` edge reuses, kernel spec §4.6 (named tuples) / §6.7 (dot projection — three modes)
 **Affects:** typer (`Relation[T]` schema typing + the `provides LogicalStream[T, E]` edge + free-var subtraction + 1-field collapse + access-effect row), loader (rule reference → `Relation[T]` in both citation positions, incl. the new `field_access(Sort, ruleName)` → `Relation[T]` arm; application binds parameters; algebra ops → `LogicalQuery` constructors), stdlib (`Relation` sort + `provides LogicalStream[T, E]`)
 **Design origin:** `docs/design/brainstorms/logic-monad-match-over-streams.md` (Layer 1)
@@ -266,6 +266,43 @@ member of a value's sort. A value yields a relation only via an **operation or f
 `Relation[T]`** (e.g. `node.neighbours() : Relation[Node]`), consumed like any relation — never by
 dot-naming a rule off `x`.
 
+### Requirements in a clause body — the rule-body dictionary (WI-300), and checking a missing one
+
+A relation's clauses are rules, and a clause body may call an operation carrying a `requires` clause (a
+spec / typeclass constraint). 052 must say how the requirement dictionary reaches that call — because it
+is **not** the operation-call mechanism:
+
+- **An operation gets its dictionary from its *caller*** — inserted requirement params filled at the
+  `apply_within(…, requirements=[…])` call site, read via `var_ref` (the op-call model,
+  `docs/design/operation-call-model.md`).
+- **A rule has no caller.** SLD fires a relation against a *query* that supplies concrete values, so a
+  clause resolves its *own* dictionary through the **delivered rule-body requirement model** (WI-300,
+  `requirement-dictionaries.md §3`): a body `requires(X)` desugars (in the converter) to the builtin
+  **`find_dictionary(X)`** goal, which the typer sweep rewrites to `find_dictionary(spec_base,
+  op_functor, op_arg…)`, and the resolver discharges by **provides-resolution at the current
+  substitution** — the dictionary binds into the resolver's Γ (the SLD analog of eval's
+  `frame.requirements`) and the body's spec-ops dispatch through it. If the binding is
+  **under-determined**, the goal **suspends as a residual** (WI-292 resolve-or-suspend / WI-067) — it is
+  *never* NAF-decided false.
+
+So 052 adds no requirement mechanism: a relation carrying `requires X` threads it exactly as any rule
+body does, and **052 depends on WI-300** the way it depends on 026.1 for `execute`. A clause needing
+`Eq[T]` either declares `requires Eq[T]` on the relation (propagating the obligation to whoever queries
+it under a concrete `T`) or relies on an in-scope provision resolved at fire time.
+
+**Checking a missing requirement (statically) — a real gap to close.** The requirement machinery
+already reports a genuinely unsatisfiable requirement as a **loud type error** — `MissingRequiresForSpecOp`
+(WI-325), the no-provision no-instance error, and "missing `requires X[T]` on enclosing sort" (WI-420).
+**But that diagnostic pass (`req_insertion`) walks operation bodies (`kb.op_bodies`), *not* rule
+`body_nodes`** — so today a *relation clause's* missing requirement is caught only at **resolution** (the
+`find_dictionary` goal fails), not at **load**. To make it a load error — the repo's "loud error over a
+silent skip" — 052's static face must **extend the `MissingRequiresForSpecOp` check to relation clause
+bodies**: walk each clause's spec-op calls and flag any requirement that is neither declared `requires`
+on the relation nor satisfiable by a provision. The one distinction the check must keep (WI-292): a
+**statically-missing** requirement (no provision can satisfy it, undeclared) is an *error*; an
+**under-determined** one (the type is not ground at the current binding) *suspends* — report the former,
+never the latter.
+
 ### NotFound — the existing Stream contract, not new vocabulary
 
 The empty solution set is just an empty stream; "not found" reuses the Stream API's partial/total split
@@ -348,9 +385,11 @@ result the ordered/named tuple), useful to any tuple consumer, not only relation
 
 Core rests on **landed** pieces — the 026.1 `execute`/`lower_query` engine (`kb/execute.rs`, with
 `conjunction`/`disjunction`/`negation`/`guarded` wired), WI-603 var types, the provides cluster — with
-no interpreter change. The three genuinely-new pieces are all typer/loader-level: schema synthesis +
-effect-row threading, the bare-qualified rule-value resolution arm, and the distribute-dot projection
-(`x.(…)` + the relation lift to `projected`).
+no interpreter change. The genuinely-new pieces are all typer/loader-level: schema synthesis +
+effect-row threading, the bare-qualified rule-value resolution arm, the distribute-dot projection
+(`x.(…)` + the relation lift to `projected`), and — for clauses that call `requires`-carrying spec-ops —
+extending the `MissingRequiresForSpecOp` static check from op-bodies to relation clause bodies (else a
+missing requirement surfaces at query time, not load; the runtime path itself is WI-300, delivered).
 
 ## Open questions
 
