@@ -245,6 +245,9 @@ mod wi325_missing_requires_test;
 #[path = "include/wi642_rule_body_requires_test.rs"]
 mod wi642_rule_body_requires_test;
 
+#[path = "include/wi645_float_nan_ieee_test.rs"]
+mod wi645_float_nan_ieee_test;
+
 #[path = "include/wi351_callback_place_test.rs"]
 mod wi351_callback_place_test;
 
