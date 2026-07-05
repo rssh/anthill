@@ -76,6 +76,40 @@ pub(super) fn simp_pass(kb: &mut KnowledgeBase) -> PassId {
     kb.register_pass(PASS_NAME)
 }
 
+/// The firing strategy for the shared iterative occurrence driver [`rewrite`]
+/// (WI-641 Phase 2). Both simp phases descend the SAME `Visit`/`Build`
+/// work-stack; they differ ONLY in what "fire a `[simp]` equation at this node"
+/// means — the typer fires type-directed via [`try_fire`] ([`TyperFirer`]), the
+/// resolver fires carrier-neutrally via `fire_simp_equation` (recording
+/// `EqChange`s; `ResolverSimpFirer` in `resolve.rs`). Factored as a trait — not a
+/// closure — so the firer can hold its own `&mut` state (the resolver's changes
+/// vec) without a borrow conflict against the `&mut KnowledgeBase` the driver
+/// threads. This replaces the resolver's former recursive
+/// `apply_eq_rules_occurrence` walk, so a deeply-nested Node prove-goal rewrites
+/// on the heap instead of overflowing the host stack.
+pub(super) trait SimpFirer {
+    /// Try to fire a `[simp]` equation at `occ`; return the rewritten
+    /// occurrence, or `None` when nothing fires.
+    fn fire(&mut self, kb: &mut KnowledgeBase, occ: &Rc<NodeOccurrence>)
+        -> Option<Rc<NodeOccurrence>>;
+}
+
+/// The typer's firing strategy: type-directed [`try_fire`], carrying the
+/// `[simp]`-synthesis `PassId` the RHS builder stamps onto new nodes.
+pub(super) struct TyperFirer {
+    pub(super) pass: PassId,
+}
+
+impl SimpFirer for TyperFirer {
+    fn fire(
+        &mut self,
+        kb: &mut KnowledgeBase,
+        occ: &Rc<NodeOccurrence>,
+    ) -> Option<Rc<NodeOccurrence>> {
+        try_fire(kb, occ, self.pass)
+    }
+}
+
 /// Entry point: rewrite every operation body by firing `[simp]` equations,
 /// writing each rewritten (redex-free) tree back into `kb.op_bodies`.
 ///
@@ -88,12 +122,13 @@ pub fn run(kb: &mut KnowledgeBase) {
         return;
     }
     let pass = kb.register_pass(PASS_NAME);
+    let mut firer = TyperFirer { pass };
     // Snapshot (op_sym, body) so we don't hold a borrow on `op_bodies` while
     // rewriting (which mutates `kb` — fresh vars, interning).
     let bodies: Vec<(Symbol, Rc<NodeOccurrence>)> =
         kb.op_bodies_iter().map(|(s, n)| (s, Rc::clone(n))).collect();
     for (op_sym, body) in bodies {
-        let rewritten = rewrite(kb, &body, pass, SIMP_FUEL);
+        let rewritten = rewrite(kb, &body, &mut firer, SIMP_FUEL);
         if !Rc::ptr_eq(&rewritten, &body) {
             kb.set_op_body_node(op_sym, rewritten);
         }
@@ -110,19 +145,20 @@ pub fn run(kb: &mut KnowledgeBase) {
 /// [`node_occurrence::materialize_from_handle`] and
 /// [`node_occurrence::visit_classifications`], which were made iterative to
 /// survive deeply-nested bodies (the 624-line `typing_pass_spec.anthill`).
-/// `Visit` examines a node and either passes it through (leaf / fuel
-/// exhausted / non-rewritable form) or pushes a `Build` frame followed by a
-/// `Visit` per child (reversed, so children pop in source order). `Build`
+/// `Visit` schedules a `Build` for every node (fuel permitting) and, for a
+/// compound [`is_rewritable`] form, a `Visit` per child (reversed, so children
+/// pop in source order); a fuel-exhausted node passes straight through. `Build`
 /// pops the rewritten children, reassembles the node (preserving identity +
-/// provenance when nothing changed), then fires a `[simp]` equation at it;
-/// a firing re-enters the loop via `Visit { fuel - 1 }` so the fixpoint is
-/// driven on the stack rather than the host call stack. `fuel` bounds a
-/// single fire→refire chain (it descends to children unchanged), exactly as
-/// the former recursion did.
-fn rewrite(
+/// provenance when nothing changed), then fires a `[simp]` equation at it via
+/// the [`SimpFirer`] — INCLUDING at a leaf (`child_count == 0`), so a
+/// functor-less leaf redex still gets a fire attempt (WI-641). A firing re-enters
+/// the loop via `Visit { fuel - 1 }` so the fixpoint is driven on the stack
+/// rather than the host call stack. `fuel` bounds a single fire→refire chain (it
+/// descends to children unchanged), exactly as the former recursion did.
+pub(super) fn rewrite<F: SimpFirer>(
     kb: &mut KnowledgeBase,
     root: &Rc<NodeOccurrence>,
-    pass: PassId,
+    firer: &mut F,
     fuel: usize,
 ) -> Rc<NodeOccurrence> {
     let mut work: Vec<RewriteOp> = vec![RewriteOp::Visit { occ: Rc::clone(root), fuel }];
@@ -132,7 +168,7 @@ fn rewrite(
         match op {
             RewriteOp::Visit { occ, fuel } => visit_node(occ, fuel, &mut work, &mut results),
             RewriteOp::Build { occ, fuel, child_count } => {
-                build_node(kb, occ, fuel, child_count, pass, &mut work, &mut results)
+                build_node(kb, occ, fuel, child_count, firer, &mut work, &mut results)
             }
         }
     }
@@ -157,27 +193,40 @@ enum RewriteOp {
     Build { occ: Rc<NodeOccurrence>, fuel: usize, child_count: usize },
 }
 
-/// Examine a node: pass it through unchanged when there is nothing to do
-/// (fuel exhausted, a leaf, or a non-rewritable post-elaboration form), else
-/// schedule a `Build` and a `Visit` per child. Children are pushed in
-/// reverse source order so they pop — and thus complete — in source order,
-/// each leaving exactly one entry on `results`.
+/// Examine a node: schedule a `Build` (which ATTEMPTS a fire at this node) and,
+/// for a [`is_rewritable`] compound form, a `Visit` per child so the descent is
+/// bottom-up. Children are pushed in reverse source order so they pop — and thus
+/// complete — in source order, each leaving exactly one entry on `results`.
+///
+/// FIRING and DESCENT are gated separately (WI-641 Phase 2): a fire is attempted
+/// at EVERY node — including a leaf redex, which the resolver's
+/// `fire_simp_equation` still supports (a functor-less `Const`/`Ident`-LHS
+/// rewrite like `[simp] unify(1, 2)`; the typer's `try_fire` cheaply declines a
+/// non-`Apply`/`Constructor` node, so leaf-firing is a no-op there). This keeps
+/// the Node carrier's firing decisions identical to the former recursive
+/// `apply_eq_rules_occurrence` + shared top-fire, which fired at every subterm
+/// regardless of head shape. DESCENT, by contrast, is gated by
+/// [`is_rewritable`]: only a compound post-parse form has children to rewrite —
+/// a leaf leaves `child_count == 0`, so `build_node` reassembles it unchanged
+/// and then fires.
 fn visit_node(
     occ: Rc<NodeOccurrence>,
     fuel: usize,
     work: &mut Vec<RewriteOp>,
     results: &mut Vec<Rc<NodeOccurrence>>,
 ) {
-    // Fuel exhausted: stop the chain here (no children rewritten, no firing),
-    // exactly as the recursive `rewrite`'s `fuel == 0` early return did.
-    if fuel == 0 || !is_rewritable(occ.as_expr()) {
+    // Fuel exhausted: stop the chain here (no descent, no firing), exactly as
+    // the recursive `rewrite`'s `fuel == 0` early return did.
+    if fuel == 0 {
         results.push(occ);
         return;
     }
-    // Collect children in source order, then push their Visits reversed.
+    // Descend only compound forms; a leaf has no children (empty `children`).
     let mut children: Vec<Rc<NodeOccurrence>> = Vec::new();
-    if let Some(expr) = occ.as_expr() {
-        node_occurrence::for_each_child(expr, |c| children.push(Rc::clone(c)));
+    if is_rewritable(occ.as_expr()) {
+        if let Some(expr) = occ.as_expr() {
+            node_occurrence::for_each_child(expr, |c| children.push(Rc::clone(c)));
+        }
     }
     work.push(RewriteOp::Build { occ, fuel, child_count: children.len() });
     for child in children.into_iter().rev() {
@@ -185,11 +234,12 @@ fn visit_node(
     }
 }
 
-/// Whether [`rewrite`] descends into / fires at this expression form. Mirrors
-/// the variants `map_children` rebuilds (`Apply`/`Constructor`/… have
-/// children) together with the firing forms (`Apply`/`Constructor`): leaves
-/// and post-elaboration `*Within` / requirement projections — which don't
-/// occur before `type_check_sorts` — pass through unchanged.
+/// Whether [`rewrite`] DESCENDS into this expression form (a fire is attempted at
+/// every node regardless — see [`visit_node`]). Mirrors the variants
+/// `map_children` rebuilds (`Apply`/`Constructor`/… have children): leaves and
+/// post-elaboration `*Within` / requirement projections — which don't occur
+/// before `type_check_sorts` — have no children, so they are not descended
+/// (`build_node` still fires at them).
 fn is_rewritable(expr: Option<&Expr>) -> bool {
     matches!(
         expr,
@@ -212,15 +262,15 @@ fn is_rewritable(expr: Option<&Expr>) -> bool {
 }
 
 /// Reassemble a node from its rewritten children (popped off `results`), then
-/// fire a `[simp]` equation at it. A firing re-enters the loop via
-/// `Visit { fuel - 1 }` so the fixpoint runs on the work-stack; otherwise the
-/// reassembled node is pushed to `results`.
-fn build_node(
+/// fire a `[simp]` equation at it via the caller's [`SimpFirer`]. A firing
+/// re-enters the loop via `Visit { fuel - 1 }` so the fixpoint runs on the
+/// work-stack; otherwise the reassembled node is pushed to `results`.
+fn build_node<F: SimpFirer>(
     kb: &mut KnowledgeBase,
     occ: Rc<NodeOccurrence>,
     fuel: usize,
     child_count: usize,
-    pass: PassId,
+    firer: &mut F,
     work: &mut Vec<RewriteOp>,
     results: &mut Vec<Rc<NodeOccurrence>>,
 ) {
@@ -229,7 +279,7 @@ fn build_node(
     let start = results.len() - child_count;
     let new_children: Vec<Rc<NodeOccurrence>> = results.split_off(start);
     let reassembled = reassemble(&occ, &new_children);
-    match try_fire(kb, &reassembled, pass) {
+    match firer.fire(kb, &reassembled) {
         // Re-normalize the firing result to fixpoint on the stack (fuel - 1).
         Some(fired) => work.push(RewriteOp::Visit { occ: fired, fuel: fuel - 1 }),
         None => results.push(reassembled),
@@ -294,8 +344,10 @@ pub(super) fn try_fire(
         if stored_lhs_functor(kb, rid) != Some(node_functor) {
             continue;
         }
-        let (lhs, rhs) = match open_equation(kb, rid) {
-            Some(pair) => pair,
+        // The typer skips typed-bound rules above, so it ignores the opened
+        // `fresh` globals (they key only the resolver's typed-pattern bounds).
+        let (lhs, rhs, _fresh) = match open_equation(kb, rid) {
+            Some(opened) => opened,
             None => continue,
         };
         // `occ` is itself a `TermView` (WI-277), so we match the rule LHS
@@ -327,22 +379,29 @@ pub(super) fn stored_lhs_functor(kb: &KnowledgeBase, rid: RuleId) -> Option<Symb
 }
 
 /// Open an equation's DeBruijn vars to fresh globals and return its
-/// `(lhs, rhs)` as matchable/buildable terms. Uses the KB's
-/// `term_from_debruijn` (the same opener `with_fresh_vars` uses) — not a
-/// reimplementation of the resolver's rule-opening. `pub(super)`: the
-/// typer's dot-rule firing (WI-279 INC2) opens a matched `[simp]` dot rule.
-pub(super) fn open_equation(kb: &mut KnowledgeBase, rid: RuleId) -> Option<(TermId, TermId)> {
+/// `(lhs, rhs, fresh)` — the matchable/buildable LHS/RHS terms plus the fresh
+/// globals the DeBruijn slots opened to (empty for a legacy arity-0 Global
+/// head). Uses the KB's `term_from_debruijn` (the same opener `with_fresh_vars`
+/// uses) — not a reimplementation of the resolver's rule-opening. The `fresh`
+/// set lets the resolver's `fire_simp_equation` (WI-641 Phase 2) key typed-
+/// pattern bounds by the opened globals and share this ONE opener rather than
+/// re-inlining it. `pub(super)`: the typer's dot-rule firing (WI-279 INC2) opens
+/// a matched `[simp]` dot rule (and ignores `fresh` — it skips typed rules).
+pub(super) fn open_equation(
+    kb: &mut KnowledgeBase,
+    rid: RuleId,
+) -> Option<(TermId, TermId, Vec<VarId>)> {
     let arity = kb.rule_arity(rid);
     let head = kb.rule_head(rid);
-    let opened = if arity > 0 {
+    let (opened, fresh) = if arity > 0 {
         let name = kb.intern("_");
         let fresh: Vec<VarId> = (0..arity).map(|_| kb.fresh_var(name)).collect();
-        kb.term_from_debruijn(head, &fresh)
+        (kb.term_from_debruijn(head, &fresh), fresh)
     } else {
-        head
+        (head, Vec::new())
     };
     match kb.get_term(opened) {
-        Term::Fn { pos_args, .. } if pos_args.len() == 2 => Some((pos_args[0], pos_args[1])),
+        Term::Fn { pos_args, .. } if pos_args.len() == 2 => Some((pos_args[0], pos_args[1], fresh)),
         _ => None,
     }
 }

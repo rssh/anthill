@@ -2928,7 +2928,7 @@ fn try_fire_dot_rule(
         if !same_symbol(kb, recv_sort, encl) && !sort_provides(kb, recv_sort, encl) {
             continue;
         }
-        let Some((lhs, rhs)) = super::simp_rewrite::open_equation(kb, rid) else { continue };
+        let Some((lhs, rhs, _fresh)) = super::simp_rewrite::open_equation(kb, rid) else { continue };
         if let Some(subst) = match_dot_rule_lhs(kb, lhs, member, receiver, pos_args, named_args) {
             let pass = super::simp_rewrite::simp_pass(kb);
             return Some(super::simp_rewrite::substitute_to_occurrence(kb, rhs, &subst, from, pass));
@@ -22592,12 +22592,20 @@ fn simp_guard_holds_core(
 
 /// WI-292 — the RESOLVER-side type-satisfaction check for a requires-guarded
 /// `[simp]` redex: the counterpart of [`simp_fire_guard_holds`] that reads each
-/// argument's carrier sort from [`value_type_term`] rather than the typer's
-/// per-occurrence `inferred_type`, sharing the carrier decision
+/// argument's carrier sort from [`value_type_term`], sharing the carrier decision
 /// ([`simp_guard_holds_core`]).
 ///
+/// WI-641 Phase 2 — CARRIER-NEUTRAL: the redex arrives as a `&Value`, so its
+/// positional carrier arguments are read in their own carrier. A `Value::Node`
+/// child carries its type in `inferred_type` (WI-578) — which `value_type_term`
+/// honors — so the resolver reads the SAME per-occurrence type the typer's
+/// [`simp_fire_guard_holds`] does, and the two phases can no longer disagree on a
+/// requires-guarded Node redex (the former version reified the whole redex to a
+/// term, discarding those carried types and interning a transient). A term child
+/// stays a structural recompute (unchanged).
+///
 /// This is only the *type* half of the resolver's firing decision; the caller
-/// ([`super::resolve::KnowledgeBase::apply_eq_rules`]) gates it behind the
+/// ([`super::resolve::KnowledgeBase::fire_simp_equation`]) gates it behind the
 /// `[simp]`/`[unfold]` tag (`equation_is_directional_rewrite` — a non-directional
 /// law like `add_comm` must never fire) and `equation_is_requires_guarded`.
 /// Returns `true` only for a body-less SPEC-OP redex whose carrier arguments
@@ -22606,27 +22614,21 @@ fn simp_guard_holds_core(
 /// ways: it is not `[simp]`-tagged AND its carrier is an *element* whose type does
 /// not provide the container (so even when it reaches the carrier check it fails).
 ///
-/// `value_type_term` is the TOTAL type reader: it returns a constructed value's
-/// carried `ty` (WI-578) when present, but a redex term arrives as a ty-less
-/// `Value::term`, so here it is a structural recompute (PHASE-3 stamps `ty` at the
-/// entry to make it O(1); the on-demand read is correct without it). It consults
-/// `subst` only for variable heads, and this is called with an EMPTY subst (the
-/// term reaching `apply_eq_rules` is already reified against the frame), so an
-/// unbound, constraint-store-typed carrier var reads as headless → `None` → don't
-/// fire. That is SOUND (an empty subst can never fabricate a providing sort, so it
-/// never wrong-fires) but conservatively incomplete — the resolver suspends a
-/// firing the typer would make; threading the frame subst is a deferred
-/// completeness refinement (never NAF-decide; WI-067).
+/// `value_type_term` consults `subst` only for variable heads; the resolver
+/// passes the frame σ (WI-595), so a constraint-typed carrier var is decidable
+/// where the store determines it and reads headless (`None` → don't fire)
+/// otherwise. Sound (a σ never fabricates a providing sort), conservatively
+/// incomplete on a still-unbound carrier (never NAF-decide; WI-067).
 pub(crate) fn simp_requires_guard_holds(
     kb: &mut KnowledgeBase,
-    redex: TermId,
+    redex: &Value,
     subst: &Substitution,
 ) -> bool {
-    let (functor, pos_args) = match kb.get_term(redex) {
-        Term::Fn { functor, pos_args, .. } => (*functor, pos_args.clone()),
-        // A non-`Fn` redex (a bare const / var / nullary ref) is not a
-        // spec-op application the type dispatch can decide — keep a
-        // requires-guarded rule with such an LHS skipped (don't fire).
+    let (functor, pos_arity) = match redex.head(kb) {
+        ViewHead::Functor { functor: Some(f), pos_arity, .. } => (f, pos_arity),
+        // A non-`Fn` redex (a bare const / var / nullary ref / anonymous
+        // aggregate) is not a spec-op application the type dispatch can decide —
+        // keep a requires-guarded rule with such an LHS skipped (don't fire).
         _ => return false,
     };
     // Only a (body-less) spec-op redex is decidable here: its carrier arguments'
@@ -22638,15 +22640,27 @@ pub(crate) fn simp_requires_guard_holds(
     let Some(spec_sort) = lookup_spec_op_dispatch(kb, functor) else {
         return false;
     };
-    // Each argument's carrier sort head from `value_type_term`. Needs `&mut kb`
-    // (it may intern sort refs), so it runs BEFORE the immutable-`kb` core call.
-    let arg_sorts: Vec<Option<Symbol>> = pos_args
-        .iter()
-        .map(|&tid| {
-            let ty = value_type_term(kb, subst, &Value::term(tid));
-            sort_functor_of_view(kb, &ty)
-        })
-        .collect();
+    // Each positional argument's carrier sort head, read CARRIER-NEUTRALLY: pull
+    // the child as a `Value` (Node child → occurrence, term child → `Value::term`)
+    // and type it via `value_type_term`. Collected first because `value_type_term`
+    // needs `&mut kb` (it may intern sort refs), so it runs BEFORE the
+    // immutable-`kb` core call. Only positional carriers are considered — as in
+    // the typer's `simp_fire_guard_holds` (a named-arg carrier never matches a
+    // positional rule LHS anyway).
+    let mut arg_sorts: Vec<Option<Symbol>> = Vec::with_capacity(pos_arity);
+    for i in 0..pos_arity {
+        // Own the child out (`to_value`) before the mutable `value_type_term`
+        // borrow so the immutable `pos_arg` view is dropped first.
+        let child: Option<Value> = redex.pos_arg(kb, i).map(|it| it.to_value());
+        let sort = match child {
+            Some(c) => {
+                let ty = value_type_term(kb, subst, &c);
+                sort_functor_of_view(kb, &ty)
+            }
+            None => None,
+        };
+        arg_sorts.push(sort);
+    }
     matches!(
         simp_guard_holds_core(kb, functor, spec_sort, |i| arg_sorts.get(i).copied().flatten()),
         FindDictOutcome::Fire

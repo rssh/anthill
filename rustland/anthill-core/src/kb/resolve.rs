@@ -2140,6 +2140,44 @@ fn collect_param_var_bindings(
 
 // ── SLD Resolution ──────────────────────────────────────────────
 
+/// The resolver's firing strategy for the shared iterative simp driver
+/// ([`super::simp_rewrite::rewrite`], WI-641 Phase 2): fire carrier-neutrally via
+/// [`KnowledgeBase::fire_simp_equation`] under the frame subst, recording each
+/// firing as an `EqChange`. Replaces the former recursive
+/// `apply_eq_rules_occurrence` host-stack walk — the driver descends the
+/// occurrence tree iteratively, so a deeply-nested Node prove-goal can't overflow.
+struct ResolverSimpFirer<'a> {
+    subst: &'a Substitution,
+    changes: &'a mut Vec<EqChange>,
+}
+
+impl super::simp_rewrite::SimpFirer for ResolverSimpFirer<'_> {
+    fn fire(
+        &mut self,
+        kb: &mut KnowledgeBase,
+        occ: &Rc<NodeOccurrence>,
+    ) -> Option<Rc<NodeOccurrence>> {
+        let redex = Value::Node(Rc::clone(occ));
+        let (rid, rewritten) = kb.fire_simp_equation(&redex, self.subst)?;
+        self.changes.push(EqChange {
+            rule_id: rid,
+            original: redex,
+            rewritten: rewritten.clone(),
+        });
+        match rewritten {
+            // `fire_simp_equation` rebuilds the RHS in the redex's carrier, so a
+            // Node redex always yields a Node — the occurrence carrier is closed
+            // under rewrite. A non-Node here is a carrier-closure bug, not a
+            // recoverable case (loud over silent skip).
+            Value::Node(n) => Some(n),
+            other => unreachable!(
+                "fire_simp_equation on a Node redex must return a Node, got {}",
+                other.type_name()
+            ),
+        }
+    }
+}
+
 impl KnowledgeBase {
     /// Create a lazy search stream for the given goals. Representation-neutral
     /// (WI-349): a goal is anything that implements [`TermView`] — the same
@@ -2291,8 +2329,9 @@ impl KnowledgeBase {
         let current_functor = redex.head(self).functor_sym();
         // WI-595: the requires-guard decision reads ONLY the redex + `subst` (not
         // `rid`), so it is the SAME for every requires-guarded candidate — compute
-        // it at most ONCE, lazily (reifying the redex to a term term-side, WI-578,
-        // only when a requires-guarded candidate is actually reached).
+        // it at most ONCE, lazily (WI-641: carrier-neutrally, so a `Value::Node`
+        // redex's WI-578 carried types are read rather than reified away), only
+        // when a requires-guarded candidate is actually reached.
         let mut redex_guard: Option<bool> = None;
         // Equational heads are indexed under `eq` (`=`) and `unify` (`<=>`);
         // WI-139 keeps only `[simp]`/`[unfold]`-tagged equations there. Mirrors
@@ -2326,30 +2365,19 @@ impl KnowledgeBase {
             // rule fires only where the redex's carrier args provide the spec.
             if self.equation_is_requires_guarded(rid) {
                 let holds = *redex_guard.get_or_insert_with(|| {
-                    let rt = reify_goal_value(self, redex);
-                    super::typing::simp_requires_guard_holds(self, rt, subst)
+                    super::typing::simp_requires_guard_holds(self, redex, subst)
                 });
                 if !holds {
                     continue;
                 }
             }
-            // Open the equation's DeBruijn head to fresh globals (as
-            // `simp_rewrite::open_equation` / `with_fresh_vars` do); keep the
-            // fresh set so a rule-var binding is told apart from a constrained
-            // redex var below.
-            let arity = self.rule_arity(rid);
-            let head = self.rule_head(rid);
-            let (opened, fresh) = if arity > 0 {
-                let name = self.intern("_");
-                let fresh: Vec<VarId> = (0..arity).map(|_| self.fresh_var(name)).collect();
-                let opened = self.term_from_debruijn(head, &fresh);
-                (opened, fresh)
-            } else {
-                (head, Vec::new())
-            };
-            let (lhs, rhs) = match self.get_term(opened) {
-                Term::Fn { pos_args, .. } if pos_args.len() == 2 => (pos_args[0], pos_args[1]),
-                _ => continue,
+            // Open the equation's DeBruijn head to fresh globals through the ONE
+            // shared opener (`simp_rewrite::open_equation`, WI-641 Phase 2); it
+            // returns the fresh set so a rule-var binding is told apart from a
+            // constrained redex var below (typed-pattern bounds are keyed by it).
+            let (lhs, rhs, fresh) = match super::simp_rewrite::open_equation(self, rid) {
+                Some(opened) => opened,
+                None => continue,
             };
             // `match_view` runs in one-directional MATCH mode: it binds only the
             // rule's head vars (the opened `fresh` globals for a DeBruijn rule, or
@@ -2395,6 +2423,22 @@ impl KnowledgeBase {
     /// rewrite subterms first (each carrier stays closed under rewrite), then try
     /// firing at the top level via [`Self::fire_simp_equation`]. Returns
     /// `(rewritten, changes)`.
+    ///
+    /// WI-641 Phase 2: a `Value::Node` occurrence redex is rewritten by the ONE
+    /// shared iterative driver ([`super::simp_rewrite::rewrite`]) the typer uses —
+    /// bottom-up descent + top-fire + fixpoint all on a heap work-stack, gated by
+    /// the same `is_rewritable` descend whitelist and firing at every node — so a
+    /// deeply-nested Node prove-goal rewrites without overflowing the host stack
+    /// (the former recursive `apply_eq_rules_occurrence`).
+    ///
+    /// The two carriers bound `fuel` differently, and necessarily so: the term
+    /// walk below is HOST-RECURSIVE, so it must spend `fuel` on DESCENT DEPTH
+    /// (`fuel - 1` per child level) to keep from overflowing — a term nested
+    /// deeper than `fuel` stops rewriting there (hash-consed goal terms are
+    /// shallow, so this is not hit in practice). The iterative Node driver has no
+    /// host-stack budget to protect, so it descends the whole tree and spends
+    /// `fuel` only on the fire→refire chain. Same firing DECISIONS on both
+    /// carriers (fire at every node); only the depth cutoff differs.
     pub fn apply_eq_rules(
         &mut self,
         redex: &Value,
@@ -2407,7 +2451,18 @@ impl KnowledgeBase {
 
         let mut changes = Vec::new();
 
-        // 1. Innermost: rewrite subterms first, rebuilding in the redex's carrier.
+        // A `Value::Node` occurrence redex routes through the shared iterative
+        // driver, which already performs the innermost descent, the top-level
+        // fire, AND the fixpoint — so it returns the fully-normalized occurrence
+        // directly (firing carrier-neutrally via `ResolverSimpFirer`).
+        if let Value::Node(occ) = redex {
+            let occ = Rc::clone(occ);
+            let mut firer = ResolverSimpFirer { subst, changes: &mut changes };
+            let rewritten = super::simp_rewrite::rewrite(self, &occ, &mut firer, fuel);
+            return (Value::Node(rewritten), changes);
+        }
+
+        // 1. Innermost: rewrite subterms first, rebuilding in the term carrier.
         let current: Value = match redex {
             Value::Term { id, .. } => match self.get_term(*id).clone() {
                 Term::Fn { functor, pos_args, named_args } => {
@@ -2431,10 +2486,6 @@ impl KnowledgeBase {
                 }
                 _ => redex.clone(),
             },
-            Value::Node(occ) => {
-                let occ = Rc::clone(occ);
-                self.apply_eq_rules_occurrence(&occ, fuel, subst, &mut changes)
-            }
             _ => redex.clone(),
         };
 
@@ -2453,42 +2504,6 @@ impl KnowledgeBase {
         }
 
         (current, changes)
-    }
-
-    /// Innermost rewrite of a `Value::Node` (occurrence) redex: rewrite the
-    /// occurrence's children first, then reassemble in place. The occurrence
-    /// carrier is closed under rewrite — `fire_simp_equation` returns a
-    /// `Value::Node` for a Node redex and an unchanged child stays a Node — so
-    /// every child result is a `Value::Node`. Only functor-headed forms
-    /// (`Apply`/`Constructor`/…, the resolver's goal shapes) are descended; a
-    /// leaf occurrence (var / literal) passes through unchanged.
-    fn apply_eq_rules_occurrence(
-        &mut self,
-        occ: &Rc<NodeOccurrence>,
-        fuel: usize,
-        subst: &Substitution,
-        changes: &mut Vec<EqChange>,
-    ) -> Value {
-        if !matches!(occ.head(self), ViewHead::Functor { .. }) {
-            return Value::Node(Rc::clone(occ));
-        }
-        let mut children: Vec<Rc<NodeOccurrence>> = Vec::new();
-        if let Some(expr) = occ.as_expr() {
-            node_occurrence::for_each_child(expr, |c| children.push(Rc::clone(c)));
-        }
-        let mut new_children: Vec<Rc<NodeOccurrence>> = Vec::with_capacity(children.len());
-        for child in &children {
-            let (r, sc) = self.apply_eq_rules(&Value::Node(Rc::clone(child)), fuel - 1, subst);
-            changes.extend(sc);
-            match r {
-                Value::Node(n) => new_children.push(n),
-                other => unreachable!(
-                    "occurrence carrier not closed under rewrite: got {}",
-                    other.type_name()
-                ),
-            }
-        }
-        Value::Node(super::simp_rewrite::reassemble(occ, &new_children))
     }
 
     /// WI-292: whether `rid` is a DIRECTIONAL `[simp]`/`[unfold]` rewrite — the
@@ -6297,6 +6312,141 @@ mod tests {
         let (result, changes) = kb.apply_eq_rules(&Value::term(redex), 100, &Substitution::new());
         assert_eq!(result.expect_term(), redex, "nonlinear query-var match must not rewrite (drops ?q = f(42))");
         assert!(changes.is_empty());
+    }
+
+    #[test]
+    fn apply_eq_rules_deep_node_goal_does_not_overflow() {
+        // WI-641 Phase 2 acceptance: a deeply-nested `Value::Node` occurrence
+        // redex rewrites through the SHARED iterative driver
+        // (`simp_rewrite::rewrite`) instead of the former recursive
+        // `apply_eq_rules_occurrence`, so a Node prove-goal nested far deeper than
+        // the host-stack budget simplifies without crashing — and the innermost
+        // redex still fires. Mirrors the typer's
+        // `deeply_nested_body_does_not_overflow_host_stack`, on the resolver path.
+        let mut kb = KnowledgeBase::new();
+        let sort = kb.make_name_term("Add"); // requires-free → the resolver fires it
+        let domain = kb.make_name_term("test");
+        let eq_sym = kb.intern("eq");
+        let add = kb.intern("add");
+        let wrap = kb.intern("wrap");
+
+        // [simp] eq(add(?x, 0), ?x)
+        let x_sym = kb.intern("x");
+        let vx = kb.fresh_var(x_sym);
+        let var_x = kb.alloc(Term::Var(Var::Global(vx)));
+        let zero_t = kb.alloc(Term::Const(Literal::Int(0)));
+        let add_x0 = kb.alloc(Term::Fn {
+            functor: add,
+            pos_args: SmallVec::from_slice(&[var_x, zero_t]),
+            named_args: SmallVec::new(),
+        });
+        let eq_head = kb.alloc(Term::Fn {
+            functor: eq_sym,
+            pos_args: SmallVec::from_slice(&[add_x0, var_x]),
+            named_args: SmallVec::new(),
+        });
+        let meta = simp_meta(&mut kb);
+        kb.assert_rule_debruijn_with_nodes(eq_head, vec![], sort, domain, Some(meta));
+
+        // Goal occurrence: wrap(wrap(…wrap(add(7, 0))…)) at a depth the recursive
+        // walk could not survive.
+        const DEPTH: usize = 200_000;
+        let span = crate::span::SourceSpan::new(crate::span::SourceId::from_raw(0), 0, 0);
+        let seven = NodeOccurrence::new_expr(Expr::Const(Literal::Int(7)), span, None);
+        let zero_occ = NodeOccurrence::new_expr(Expr::Const(Literal::Int(0)), span, None);
+        let mut node = NodeOccurrence::new_expr(
+            Expr::Apply {
+                functor: add,
+                pos_args: vec![std::rc::Rc::clone(&seven), zero_occ],
+                named_args: vec![],
+                type_args: vec![],
+            },
+            span,
+            None,
+        );
+        for _ in 0..DEPTH {
+            node = NodeOccurrence::new_expr(
+                Expr::Apply { functor: wrap, pos_args: vec![node], named_args: vec![], type_args: vec![] },
+                span,
+                None,
+            );
+        }
+
+        let (result, changes) = kb.apply_eq_rules(&Value::Node(node), 100, &Substitution::new());
+        assert_eq!(changes.len(), 1, "exactly the innermost add(7, 0) should fire");
+
+        // Walk down the wrap chain and confirm the innermost add(7, 0) → 7.
+        let mut cur = match result {
+            Value::Node(n) => n,
+            other => panic!("expected a Node result, got {}", other.type_name()),
+        };
+        for _ in 0..DEPTH {
+            cur = match cur.as_expr() {
+                Some(Expr::Apply { functor, pos_args, .. }) if *functor == wrap => {
+                    std::rc::Rc::clone(&pos_args[0])
+                }
+                other => panic!("expected wrap(...), got {other:?}"),
+            };
+        }
+        assert!(
+            matches!(cur.as_expr(), Some(Expr::Const(Literal::Int(7)))),
+            "innermost add(7, 0) should have rewritten to 7, got {:?}",
+            cur.as_expr()
+        );
+        assert!(std::rc::Rc::ptr_eq(&cur, &seven), "innermost redex should reuse the matched `7`");
+    }
+
+    #[test]
+    fn apply_eq_rules_fires_bare_leaf_node_redex() {
+        // WI-641 Phase 2 regression: the Node path routes through the shared
+        // iterative driver, whose `visit_node` gates DESCENT on `is_rewritable`
+        // but attempts a FIRE at every node — so a functor-less leaf redex (a
+        // `Const`/`Ident`-LHS rewrite, which `fire_simp_equation` supports) still
+        // fires, exactly as the former recursive walk's shared top-fire did.
+        // Without the fire/descend split a `Const` leaf child would be skipped,
+        // diverging from the term carrier (which still fires it).
+        let mut kb = KnowledgeBase::new();
+        let sort = kb.make_name_term("Lit"); // requires-free → resolver fires it
+        let domain = kb.make_name_term("test");
+        let eq_sym = kb.intern("eq");
+        let wrap = kb.intern("wrap");
+
+        // [simp] eq(1, 2) — a bare-Const LHS (stored_lhs_functor == None).
+        let one = kb.alloc(Term::Const(Literal::Int(1)));
+        let two = kb.alloc(Term::Const(Literal::Int(2)));
+        let eq_head = kb.alloc(Term::Fn {
+            functor: eq_sym,
+            pos_args: SmallVec::from_slice(&[one, two]),
+            named_args: SmallVec::new(),
+        });
+        let meta = simp_meta(&mut kb);
+        kb.assert_fact(eq_head, sort, domain, Some(meta));
+
+        // Node goal: wrap(1) — the redex `1` is a Const LEAF child of wrap.
+        let span = crate::span::SourceSpan::new(crate::span::SourceId::from_raw(0), 0, 0);
+        let one_occ = NodeOccurrence::new_expr(Expr::Const(Literal::Int(1)), span, None);
+        let goal = NodeOccurrence::new_expr(
+            Expr::Apply { functor: wrap, pos_args: vec![one_occ], named_args: vec![], type_args: vec![] },
+            span,
+            None,
+        );
+
+        let (result, changes) = kb.apply_eq_rules(&Value::Node(goal), 100, &Substitution::new());
+        assert_eq!(changes.len(), 1, "the bare-Const leaf `1` should fire to `2`");
+        match result {
+            Value::Node(n) => match n.as_expr() {
+                Some(Expr::Apply { functor, pos_args, .. }) => {
+                    assert_eq!(*functor, wrap);
+                    assert!(
+                        matches!(pos_args[0].as_expr(), Some(Expr::Const(Literal::Int(2)))),
+                        "leaf child `1` should have rewritten to `2`, got {:?}",
+                        pos_args[0].as_expr()
+                    );
+                }
+                other => panic!("expected wrap(2), got {other:?}"),
+            },
+            other => panic!("expected a Node result, got {}", other.type_name()),
+        }
     }
 
     // ── Builtin dispatch + delay tests ─────────────────────────
