@@ -70,24 +70,31 @@ pub(super) const SIMP_FUEL: usize = 100;
 const PASS_NAME: &str = "anthill.kb.passes.simp_rewrite";
 
 /// Whether any indexed `[simp]` equation exists — the gate the typer's firing
-/// sites use to skip all firing work in the common no-rule case.
-/// `rules_by_functor(eq)` holds only indexed (`[simp]`/`[unfold]`) equations
-/// post-WI-139, so an empty index (e.g. a stdlib-only load) returns fast.
-/// Read once per typer walk (WI-283) and once per [`run`].
+/// sites (`typing::type_check_node`'s `simp_enabled`, and [`run`]) use to skip
+/// all firing work in the common no-rule case. Read once per typer walk (WI-283)
+/// and once per [`run`]. Not cached (the typer runs at load, not the SLD hot
+/// path — the resolver's O(1) `has_directional_rewrite` gate is the cached one).
 ///
-/// NB (WI-643): this is `eq`-only and `[simp]`-only, matching the typer's
-/// `try_fire` (which fires `[simp]`, and — because the current stdlib has no
-/// `eq`-headed simp law — under-reports for a `<=>`-only KB, a pre-existing
-/// narrowness carried by `simp_enabled || has_dot_applies` in `typing.rs`). The
-/// resolver's `apply_eq_rules` deliberately does NOT gate on this: it fires
-/// `[simp]` OR `[unfold]` over `eq` AND `unify`, so a shared gate would be wrong
-/// on both axes. Broadening this into a correct, carrier-shared gate is the
-/// WI-643 efficiency follow-up.
+/// WI-646: selects over BOTH the `eq` (`=`) AND `unify` (`<=>`) functor buckets
+/// via the shared [`KnowledgeBase::simp_equation_rids`] — fixing the former
+/// `eq`-only narrowness that left the typer UNDER-firing for a KB whose `[simp]`
+/// laws are all `<=>`-headed (the stdlib case: 14/14) and which has no
+/// dot-applies. The `[simp]`-only per-rule filter is kept deliberately: it
+/// matches the typer's `try_fire`, which fires `[simp]` (never `[unfold]`), so
+/// gating on `[simp]` OR `[unfold]` would enable a wasted (always-declining) walk
+/// on an unfold-only KB. (The resolver's `has_directional_rewrite` gate, by
+/// contrast, IS `[simp]` OR `[unfold]` — it fronts a firer that fires both.)
 pub(super) fn has_simp_equations(kb: &mut KnowledgeBase) -> bool {
-    let eq_sym = kb.eq_functor();
-    kb.rules_by_functor(eq_sym)
-        .into_iter()
-        .any(|rid| kb.is_equation(rid) && meta_has_flag(kb, kb.rule_meta(rid), "simp"))
+    kb.simp_equation_rids().into_iter().any(|rid| is_simp_equation(kb, rid))
+}
+
+/// WI-646: the typer's per-rule fire predicate — `rid` is a `[simp]`-tagged
+/// EQUATION. Shared by `try_fire` AND the `has_simp_equations` gate so the two
+/// can't drift (the typer's peer of the resolver's `is_directional_equation`).
+/// `[simp]`-only, not `[simp]`/`[unfold]`: the typer fires only `[simp]` (never
+/// `[unfold]`), so gating on both would enable an always-declining walk.
+fn is_simp_equation(kb: &KnowledgeBase, rid: RuleId) -> bool {
+    kb.is_equation(rid) && meta_has_flag(kb, kb.rule_meta(rid), "simp")
 }
 
 /// The `PassId` tagging `[simp]`-synthesized occurrences. Idempotent
@@ -112,8 +119,11 @@ pub(super) fn simp_pass(kb: &mut KnowledgeBase) -> PassId {
 pub(super) trait SimpFirer {
     /// Try to fire a `[simp]` equation at `redex` (a term or `Value::Node`
     /// occurrence); return the rewritten carrier-neutral `Value`, or `None`
-    /// when nothing fires.
-    fn fire(&mut self, kb: &mut KnowledgeBase, redex: &Value) -> Option<Value>;
+    /// when nothing fires. `rids` are the candidate equation ids
+    /// ([`KnowledgeBase::simp_equation_rids`]) gathered ONCE per [`rewrite`] walk
+    /// and threaded in (WI-646) — so a per-node fire no longer re-scans the
+    /// `eq`+`unify` functor buckets (2 `Vec` allocs) at every node.
+    fn fire(&mut self, kb: &mut KnowledgeBase, redex: &Value, rids: &[RuleId]) -> Option<Value>;
 }
 
 /// The typer's firing strategy: type-directed [`try_fire`], carrying the
@@ -123,13 +133,13 @@ pub(super) struct TyperFirer {
 }
 
 impl SimpFirer for TyperFirer {
-    fn fire(&mut self, kb: &mut KnowledgeBase, redex: &Value) -> Option<Value> {
+    fn fire(&mut self, kb: &mut KnowledgeBase, redex: &Value, rids: &[RuleId]) -> Option<Value> {
         // The typer only ever walks operation bodies, which are occurrence
         // trees — every node the driver hands it is a `Value::Node` (the
         // occurrence carrier is closed under descent + rewrite). A non-Node
         // here is a carrier-routing bug, not a recoverable case.
         match redex {
-            Value::Node(occ) => try_fire(kb, occ, self.pass).map(Value::Node),
+            Value::Node(occ) => try_fire(kb, occ, self.pass, rids).map(Value::Node),
             other => unreachable!(
                 "typer simp carrier is always an occurrence, got {}",
                 other.type_name()
@@ -208,6 +218,12 @@ pub(super) fn rewrite<F: SimpFirer>(
     firer: &mut F,
     fuel: usize,
 ) -> Value {
+    // WI-646: gather the eq+unify candidate ids ONCE per walk (rules don't
+    // change mid-rewrite — firing synthesizes nodes, never asserts) and thread
+    // them into every per-node fire, replacing `try_fire`/`fire_simp_equation`'s
+    // former per-node `rules_by_functor` re-scan (amplified by WI-641/643
+    // per-node firing).
+    let rids = kb.simp_equation_rids();
     let mut work: Vec<RewriteOp> = vec![RewriteOp::Visit { node: root.clone(), fuel }];
     let mut results: Vec<Value> = Vec::new();
 
@@ -215,7 +231,7 @@ pub(super) fn rewrite<F: SimpFirer>(
         match op {
             RewriteOp::Visit { node, fuel } => visit_node(kb, node, fuel, &mut work, &mut results),
             RewriteOp::Build { node, fuel, child_count } => {
-                build_node(kb, node, fuel, child_count, firer, &mut work, &mut results)
+                build_node(kb, node, fuel, child_count, firer, &rids, &mut work, &mut results)
             }
         }
     }
@@ -311,6 +327,7 @@ fn build_node<F: SimpFirer>(
     fuel: usize,
     child_count: usize,
     firer: &mut F,
+    rids: &[RuleId],
     work: &mut Vec<RewriteOp>,
     results: &mut Vec<Value>,
 ) {
@@ -319,7 +336,7 @@ fn build_node<F: SimpFirer>(
     let start = results.len() - child_count;
     let new_children: Vec<Value> = results.split_off(start);
     let reassembled = reassemble_value(kb, &node, &new_children);
-    match firer.fire(kb, &reassembled) {
+    match firer.fire(kb, &reassembled, rids) {
         // Re-normalize the firing result to fixpoint on the stack (fuel - 1).
         Some(fired) => work.push(RewriteOp::Visit { node: fired, fuel: fuel - 1 }),
         None => results.push(reassembled),
@@ -395,6 +412,26 @@ fn reassemble_value(kb: &mut KnowledgeBase, node: &Value, new_children: &[Value]
         Value::Term { id, .. } => match kb.get_term(*id).clone() {
             Term::Fn { functor, pos_args, named_args } => {
                 let np = pos_args.len();
+                // Unchanged-check (WI-646): if every rewritten child is the SAME
+                // `TermId` as the original, return the node unchanged — skipping
+                // `kb.alloc(Term::Fn)` + the two `SmallVec` builds. The Node arm's
+                // `ChildCursor.changed`/`Rc::ptr_eq` analog for the term carrier.
+                // Hash-consing would dedup an unchanged rebuild back to `id`
+                // anyway, but this avoids the alloc + rebuild — now hit at EVERY
+                // node since WI-643 removed the fuel-as-depth cutoff (the term
+                // carrier rewrites bottom-up). Compare BEFORE building, and reuse
+                // `node.clone()` so a WI-578 carried `ty` survives.
+                let changed = new_children[..np]
+                    .iter()
+                    .zip(pos_args.iter())
+                    .any(|(c, &orig)| c.expect_term() != orig)
+                    || named_args
+                        .iter()
+                        .enumerate()
+                        .any(|(i, &(_, orig))| new_children[np + i].expect_term() != orig);
+                if !changed {
+                    return node.clone();
+                }
                 let new_pos: SmallVec<[TermId; 4]> =
                     new_children[..np].iter().map(|c| c.expect_term()).collect();
                 let new_named: SmallVec<[(Symbol, TermId); 2]> = named_args
@@ -425,6 +462,7 @@ pub(super) fn try_fire(
     kb: &mut KnowledgeBase,
     occ: &Rc<NodeOccurrence>,
     pass: PassId,
+    rids: &[RuleId],
 ) -> Option<Rc<NodeOccurrence>> {
     let node_functor = match occ.as_expr()? {
         Expr::Apply { functor, .. } => *functor,
@@ -438,22 +476,15 @@ pub(super) fn try_fire(
     if !super::typing::simp_fire_guard_holds(kb, occ) {
         return None;
     }
-    let eq_sym = kb.eq_functor();
-    let unify_sym = kb.unify_functor();
-    // Equational rule heads are indexed under their head functor — `eq` for a
-    // legacy `=` equation, `unify` for the `<=>` head (proposal 049); WI-139
-    // keeps only `[simp]`/`[unfold]`-tagged equations in the index. Scan both
-    // so an `<=>`-spelled `[simp]` rule fires identically to an `=` one. (The
-    // sequential `rules_by_functor` scan is the established mechanism; moving
-    // selection onto most-specific-first `query()` is proposal 043 §4.6,
-    // deferred — type-independent recognition needs only that both functors are
-    // covered.)
-    let mut rids = kb.rules_by_functor(eq_sym);
-    if unify_sym != eq_sym {
-        rids.extend(kb.rules_by_functor(unify_sym));
-    }
-    for rid in rids {
-        if !kb.is_equation(rid) || !meta_has_flag(kb, kb.rule_meta(rid), "simp") {
+    // WI-646: `rids` are the eq+unify candidates gathered ONCE by the caller
+    // (`KnowledgeBase::simp_equation_rids` — `eq` for a legacy `=` equation,
+    // `unify` for the `<=>` head, proposal 049; WI-139 keeps only
+    // `[simp]`/`[unfold]`-tagged equations there). Scanning both functors makes
+    // an `<=>`-spelled `[simp]` rule fire identically to an `=` one. (Moving
+    // selection onto most-specific-first `query()` is proposal 043 §4.6, deferred
+    // — type-independent recognition needs only that both functors are covered.)
+    for &rid in rids {
+        if !is_simp_equation(kb, rid) {
             continue;
         }
         // WI-582: a rule carrying EXPLICIT typed-pattern bounds (`?x: T`) is fired
@@ -873,6 +904,50 @@ mod tests {
 
     fn span() -> SourceSpan {
         SourceSpan::new(SourceId::from_raw(0), 0, 10)
+    }
+
+    #[test]
+    fn has_simp_equations_counts_unify_headed_simp_rule() {
+        // WI-646: `has_simp_equations` selects over BOTH `eq` and `unify` buckets
+        // (via `simp_equation_rids`). A `[simp]` law spelled `<=>` (the `unify`
+        // head — the stdlib's form, 14/14) must be counted, so the typer's
+        // `simp_enabled` fires it even in a KB with no `eq`-headed simp law and no
+        // dot-applies. The former `eq`-only spelling returned `false` here — the
+        // under-firing this fixes.
+        let mut kb = KnowledgeBase::new();
+        let unify = kb.unify_functor(); // bare `unify` in a prelude-less KB
+        let add = kb.intern("add");
+        let x_sym = kb.intern("x");
+        let vx = kb.fresh_var(x_sym);
+        let var_x = kb.alloc(Term::Var(Var::Global(vx)));
+        let zero = kb.alloc(Term::Const(Literal::Int(0)));
+        let lhs = kb.alloc(Term::Fn {
+            functor: add,
+            pos_args: SmallVec::from_slice(&[var_x, zero]),
+            named_args: SmallVec::new(),
+        });
+        // `<=>`-headed equation: unify(add(?x, 0), ?x).
+        let unify_head = kb.alloc(Term::Fn {
+            functor: unify,
+            pos_args: SmallVec::from_slice(&[lhs, var_x]),
+            named_args: SmallVec::new(),
+        });
+        let simp_sym = kb.intern("simp");
+        let meta_sym = kb.intern("meta");
+        let tru = kb.alloc(Term::Const(Literal::Bool(true)));
+        let meta = kb.alloc(Term::Fn {
+            functor: meta_sym,
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::from_slice(&[(simp_sym, tru)]),
+        });
+        let sort = kb.make_name_term("Eq");
+        let domain = kb.make_name_term("test");
+        kb.assert_rule_debruijn_with_nodes(unify_head, vec![], sort, domain, Some(meta));
+
+        assert!(
+            has_simp_equations(&mut kb),
+            "a <=>-headed [simp] rule must be counted (eq+unify selection)"
+        );
     }
 
     #[test]

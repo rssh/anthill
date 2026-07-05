@@ -18,7 +18,7 @@ use super::node_occurrence::{
 use super::discrim::SubstTree;
 use super::persist_subst::BindValue;
 use super::term_view::{views_structurally_equal, TermIdView, TermView, ViewHead, ViewItem};
-use super::{KnowledgeBase, SortKind};
+use super::{KnowledgeBase, RuleId, SortKind};
 use crate::eval::value::Value;
 use crate::intern::Symbol;
 use crate::span::Span;
@@ -2474,6 +2474,12 @@ pub fn type_check_node(
     // — `reassemble`'s ptr-eq short-circuit keeps the no-rewrite case
     // allocation-free.
     let simp_enabled = super::simp_rewrite::has_simp_equations(kb) || kb.has_dot_applies;
+    // WI-646: gather the eq+unify simp candidate ids ONCE per walk (only when
+    // firing is enabled) and thread them into every per-node `fire_simp`, so the
+    // Apply/Constructor build frames no longer re-scan the functor buckets at each
+    // node. Empty when `simp_enabled` is false — `fire_simp` is then never called.
+    let simp_rids: Vec<RuleId> =
+        if simp_enabled { kb.simp_equation_rids() } else { Vec::new() };
     // WI-283: `[simp]` fire-fuel rides on each `Visit` (not the host stack).
     // When an Apply/Constructor fires, the synthesized RHS is re-`Visit`ed
     // with `fuel - 1` on this same work-stack — so a non-terminating /
@@ -2488,7 +2494,9 @@ pub fn type_check_node(
             TypeWorkOp::Visit { occ, env, expected, fuel } => {
                 visit_type(kb, occ, env, expected, fuel, &mut work, &mut results)
             }
-            TypeWorkOp::Build(frame) => build_type(kb, frame, simp_enabled, &mut work, &mut results),
+            TypeWorkOp::Build(frame) => {
+                build_type(kb, frame, simp_enabled, &simp_rids, &mut work, &mut results)
+            }
         }
     }
     debug_assert_eq!(results.len(), 1, "iterative typer: expected exactly one result");
@@ -4039,9 +4047,13 @@ fn reassemble_match(
 /// `simp_rewrite`'s matcher + RHS builder, including its type-directed
 /// guard ([`simp_fire_guard_holds`]) — `node`'s children are already typed
 /// (bottom-up), so their `min_sort` is available for the guard here.
-fn fire_simp(kb: &mut KnowledgeBase, node: &Rc<NodeOccurrence>) -> Option<Rc<NodeOccurrence>> {
+fn fire_simp(
+    kb: &mut KnowledgeBase,
+    node: &Rc<NodeOccurrence>,
+    rids: &[RuleId],
+) -> Option<Rc<NodeOccurrence>> {
     let pass = super::simp_rewrite::simp_pass(kb);
-    super::simp_rewrite::try_fire(kb, node, pass)
+    super::simp_rewrite::try_fire(kb, node, pass, rids)
 }
 
 /// WI-374 (kernel-language §8.1 expansion, let-annotation site): rewrite a bare
@@ -4157,6 +4169,7 @@ fn build_type(
     kb: &mut KnowledgeBase,
     frame: TypeBuildFrame,
     simp_enabled: bool,
+    simp_rids: &[RuleId],
     work: &mut Vec<TypeWorkOp>,
     results: &mut Vec<Result<TypeResult, TypeError>>,
 ) {
@@ -4205,7 +4218,7 @@ fn build_type(
                 // so the chain is bounded — a non-terminating rule bottoms
                 // out at fuel 0 leaving a partial redex, not a stack overflow.
                 if simp_enabled && fuel > 0 {
-                    if let Some(rhs) = fire_simp(kb, &node) {
+                    if let Some(rhs) = fire_simp(kb, &node, simp_rids) {
                         push_visit(work, rhs, env, expected, fuel - 1);
                         return;
                     }
@@ -4282,7 +4295,7 @@ fn build_type(
                     pos_results.iter().chain(named_results.iter()).collect();
                 let node = reassemble_children(&occ, &child_refs);
                 if simp_enabled && fuel > 0 {
-                    if let Some(rhs) = fire_simp(kb, &node) {
+                    if let Some(rhs) = fire_simp(kb, &node, simp_rids) {
                         push_visit(work, rhs, env, expected, fuel - 1);
                         return;
                     }

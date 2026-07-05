@@ -2154,8 +2154,8 @@ struct ResolverSimpFirer<'a> {
 }
 
 impl super::simp_rewrite::SimpFirer for ResolverSimpFirer<'_> {
-    fn fire(&mut self, kb: &mut KnowledgeBase, redex: &Value) -> Option<Value> {
-        let (rid, rewritten) = kb.fire_simp_equation(redex, self.subst)?;
+    fn fire(&mut self, kb: &mut KnowledgeBase, redex: &Value, rids: &[RuleId]) -> Option<Value> {
+        let (rid, rewritten) = kb.fire_simp_equation(redex, self.subst, rids)?;
         self.changes.push(EqChange {
             rule_id: rid,
             original: redex.clone(),
@@ -2308,6 +2308,7 @@ impl KnowledgeBase {
         &mut self,
         redex: &Value,
         subst: &Substitution,
+        rids: &[RuleId],
     ) -> Option<(RuleId, Value)> {
         // The redex's head functor, if it has one — read carrier-neutrally via
         // `head` (not `get_term`). A functor-less redex (a bare `Const`/`Ref`/
@@ -2320,17 +2321,13 @@ impl KnowledgeBase {
         // redex's WI-578 carried types are read rather than reified away), only
         // when a requires-guarded candidate is actually reached.
         let mut redex_guard: Option<bool> = None;
-        // Equational heads are indexed under `eq` (`=`) and `unify` (`<=>`);
-        // WI-139 keeps only `[simp]`/`[unfold]`-tagged equations there. Mirrors
-        // the typer's `simp_rewrite::try_fire` selection.
-        let eq_sym = self.eq_functor();
-        let unify_sym = self.unify_functor();
-        let mut rids = self.rules_by_functor(eq_sym);
-        if unify_sym != eq_sym {
-            rids.extend(self.rules_by_functor(unify_sym));
-        }
-        for rid in rids {
-            if !self.is_equation(rid) || !self.equation_is_directional_rewrite(rid) {
+        // WI-646: `rids` are the eq+unify candidates gathered ONCE per
+        // `simp_rewrite::rewrite` walk by `ResolverSimpFirer` (from
+        // `KnowledgeBase::simp_equation_rids`) — `eq` for a legacy `=` equation,
+        // `unify` for the `<=>` head; WI-139 keeps only `[simp]`/`[unfold]`-tagged
+        // equations there. Mirrors the typer's `simp_rewrite::try_fire` selection.
+        for &rid in rids {
+            if !self.is_directional_equation(rid) {
                 continue;
             }
             // A value-headed equation (a `Value::Node`/`Entity` head, WI-348) has
@@ -2422,18 +2419,22 @@ impl KnowledgeBase {
     /// same firing DECISIONS at the same depth — the former term/Node fuel
     /// divergence (depth-bounded vs chain-bounded) is gone.
     ///
-    /// No `has_simp_equations` short-circuit here (deliberately): the resolver
-    /// fires `[simp]` OR `[unfold]` (`equation_is_directional_rewrite`), whereas
-    /// `has_simp_equations` counts only `[simp]` — gating on it would silently
-    /// skip an unfold-only KB's rewrites. A correct, O(1) load-time gate is the
-    /// WI-643 efficiency follow-up (a KB-cached bit), not a per-call bucket scan.
+    /// O(1) gate (WI-646): short-circuit a KB with NO directional
+    /// (`[simp]`/`[unfold]`) equation via [`Self::has_directional_rewrite`] — a
+    /// KB-cached bit, NOT a per-call bucket scan. This is the CORRECT gate the
+    /// WI-643 note deferred: it mirrors `equation_is_directional_rewrite`
+    /// (`[simp]` OR `[unfold]`) over BOTH `eq` AND `unify`, so — unlike the
+    /// `[simp]`-only/`eq`-only `has_simp_equations` that WI-643 refused to ship as
+    /// a gate — it never skips an unfold-only or `<=>`-only KB's rewrites. When it
+    /// returns `false` nothing could fire anyway, so returning the redex unchanged
+    /// is exactly what the driver would produce, at a bool-read's cost.
     pub fn apply_eq_rules(
         &mut self,
         redex: &Value,
         fuel: usize,
         subst: &Substitution,
     ) -> (Value, Vec<EqChange>) {
-        if fuel == 0 {
+        if fuel == 0 || !self.has_directional_rewrite() {
             return (redex.clone(), vec![]);
         }
         let mut changes = Vec::new();
@@ -2454,6 +2455,41 @@ impl KnowledgeBase {
         let meta = self.rule_meta(rid);
         super::load::meta_has_flag(self, meta, "simp")
             || super::load::meta_has_flag(self, meta, "unfold")
+    }
+
+    /// WI-646: the resolver's per-rule fire predicate — `rid` is a directional
+    /// (`[simp]`/`[unfold]`) EQUATION. Shared by the `has_directional_rewrite`
+    /// gate AND the `fire_simp_equation` loop so the two can't drift apart: a gate
+    /// that under-counts relative to the fire site would silently skip a KB that
+    /// would fire (the WI-643 regression class). The additional fire-time filters
+    /// (`Value::Term` head, functor match, guards) only NARROW this, so the gate
+    /// stays a sound necessary condition.
+    fn is_directional_equation(&self, rid: RuleId) -> bool {
+        self.is_equation(rid) && self.equation_is_directional_rewrite(rid)
+    }
+
+    /// WI-646: whether the KB holds ANY directional (`[simp]`/`[unfold]`) equation
+    /// under `eq` or `unify` — the O(1) gate [`Self::apply_eq_rules`] short-
+    /// circuits on. Reads a KB-cached bit ([`KnowledgeBase::simp_gate_cache`]),
+    /// computing it once on a miss by mirroring the per-rule fire filter
+    /// (`is_equation` + [`Self::equation_is_directional_rewrite`]) over the shared
+    /// [`Self::simp_equation_rids`] selection — the SAME two predicates
+    /// `fire_simp_equation` applies, so the gate is exact (a `true` may still not
+    /// fire at a given redex — functor/guard mismatch — but a `false` guarantees
+    /// nothing fires anywhere). The cache is dropped whenever those buckets change
+    /// (`push_value_head_entry` / `retract` / `unindex_functor`), so it can't go
+    /// stale; during a query no rule mutates, so this is O(1) amortized on the hot
+    /// path.
+    fn has_directional_rewrite(&mut self) -> bool {
+        if let Some(cached) = self.simp_gate_cache {
+            return cached;
+        }
+        let computed = self
+            .simp_equation_rids()
+            .into_iter()
+            .any(|rid| self.is_directional_equation(rid));
+        self.simp_gate_cache = Some(computed);
+        computed
     }
 
     /// WI-283: whether `rid`'s enclosing sort (its `rule_domain`) declares
@@ -6374,6 +6410,64 @@ mod tests {
             kb.simplify(redex),
             expected,
             "an [unfold]-only KB (no [simp] rules) must still rewrite unfold_me(7) → done(7)"
+        );
+    }
+
+    #[test]
+    fn apply_eq_rules_gate_invalidates_when_rule_added() {
+        // WI-646: the O(1) `has_directional_rewrite` gate is a KB-cached bit. A
+        // gate computed `false` (no directional rule) MUST be invalidated when a
+        // `[simp]` rule is later asserted, or `apply_eq_rules` would keep
+        // short-circuiting and never rewrite. Exercises the compute-false →
+        // invalidate-on-assert → recompute-true sequence.
+        let mut kb = KnowledgeBase::new();
+        let add = kb.intern("add");
+        let seven = kb.alloc(Term::Const(Literal::Int(7)));
+        let zero = kb.alloc(Term::Const(Literal::Int(0)));
+        let redex = kb.alloc(Term::Fn {
+            functor: add,
+            pos_args: SmallVec::from_slice(&[seven, zero]),
+            named_args: SmallVec::new(),
+        });
+
+        // No directional rule yet: the gate computes (and caches) `false`, so
+        // `simplify` returns the redex unchanged.
+        assert_eq!(kb.simplify(redex), redex, "empty KB: add(7, 0) is left as-is");
+
+        // Assert `[simp] eq(add(?x, 0), ?x)` — this must invalidate the cached
+        // gate (via `push_value_head_entry`).
+        let sort = kb.make_name_term("Add"); // requires-free → the resolver fires it
+        let domain = kb.make_name_term("test");
+        let eq_sym = kb.intern("eq");
+        let x_sym = kb.intern("x");
+        let vx = kb.fresh_var(x_sym);
+        let var_x = kb.alloc(Term::Var(Var::Global(vx)));
+        let lhs = kb.alloc(Term::Fn {
+            functor: add,
+            pos_args: SmallVec::from_slice(&[var_x, zero]),
+            named_args: SmallVec::new(),
+        });
+        let eq_head = kb.alloc(Term::Fn {
+            functor: eq_sym,
+            pos_args: SmallVec::from_slice(&[lhs, var_x]),
+            named_args: SmallVec::new(),
+        });
+        let simp_sym = kb.intern("simp");
+        let meta_sym = kb.intern("meta");
+        let tru = kb.alloc(Term::Const(Literal::Bool(true)));
+        let meta = kb.alloc(Term::Fn {
+            functor: meta_sym,
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::from_slice(&[(simp_sym, tru)]),
+        });
+        kb.assert_rule_debruijn_with_nodes(eq_head, vec![], sort, domain, Some(meta));
+
+        // Gate recomputes `true` on the next call: add(7, 0) → 7.
+        assert_eq!(
+            kb.simplify(redex),
+            seven,
+            "after asserting [simp] add(?x,0)=?x, the invalidated gate recomputes \
+             true and add(7, 0) rewrites to 7"
         );
     }
 

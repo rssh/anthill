@@ -435,6 +435,20 @@ pub struct KnowledgeBase {
     /// thus eval) even when no `[simp]` equation is loaded.
     pub(crate) has_dot_applies: bool,
 
+    /// WI-646 — cached O(1) answer to "does this KB hold ANY directional
+    /// (`[simp]`/`[unfold]`) equation under the `eq` or `unify` functor?" — the
+    /// gate [`Self::has_directional_rewrite`] reads so the resolver's
+    /// `apply_eq_rules` short-circuits a no-rewrite KB on the SLD hot path
+    /// WITHOUT the per-call `rules_by_functor` bucket scan (2 `Vec` allocs). It
+    /// mirrors `equation_is_directional_rewrite` over BOTH functors, so it is the
+    /// CORRECT gate — unlike the `[simp]`-only/`eq`-only `has_simp_equations`,
+    /// whose narrowness made WI-643's naive gate skip unfold-only / `<=>`-only
+    /// KBs. `None` = not yet computed / invalidated; recomputed lazily on the next
+    /// gate read. Set to `None` wherever the `eq`/`unify` functor buckets (or a
+    /// member's retracted/meta state) change: `push_value_head_entry`, `retract`,
+    /// `unindex_functor`.
+    simp_gate_cache: Option<bool>,
+
     /// WI-429: every `RigidTypeProjection` the loader FORMS, with its source
     /// span — the work-list for the end-of-load formation sweep
     /// (`typing::validate_rigid_projection_formations`). A projection stored
@@ -582,6 +596,7 @@ impl KnowledgeBase {
             const_types: HashMap::new(),
             const_bodies: HashMap::new(),
             has_dot_applies: false,
+            simp_gate_cache: None,
             rigid_projection_formations: Vec::new(),
             existential_return_ops: std::collections::HashSet::new(),
             entity_field_types: HashMap::new(),
@@ -1071,6 +1086,10 @@ impl KnowledgeBase {
         if let Some(f) = head_functor {
             self.rules_by_functor.entry(f).or_default().push(rule_id);
         }
+        // WI-646: any functor-index change can flip the cached simp gate; drop it
+        // so the next `apply_eq_rules` recomputes. Unconditional (not eq/unify-
+        // keyed) — a field write is far cheaper than resolving the two functors.
+        self.simp_gate_cache = None;
 
         // Discrimination tree index (insert_pattern handles vars in head). The
         // view-driven walk needs `&self` (Node-carrying value heads read the
@@ -1660,6 +1679,9 @@ impl KnowledgeBase {
                 v.retain(|&rid| rid != id);
             }
         }
+        // WI-646: retracting a rule can flip the cached simp gate (or leave a
+        // stale `Some` that `rules_by_functor`'s `retracted` filter would hide).
+        self.simp_gate_cache = None;
         if let Some(label_sym) = label {
             if let Some(v) = self.rules_by_label.get_mut(&label_sym) {
                 v.retain(|&rid| rid != id);
@@ -1894,6 +1916,10 @@ impl KnowledgeBase {
                 v.retain(|&rid| rid != id);
             }
         }
+        // WI-646: WI-139 pulls non-directional equations out of the `eq`/`unify`
+        // buckets here at load — which is precisely what the simp gate counts, so
+        // drop the cache to recompute on the next read.
+        self.simp_gate_cache = None;
     }
 
     /// All active (non-retracted) rule/fact ids with a given top-level functor
@@ -2980,6 +3006,25 @@ impl KnowledgeBase {
     pub fn unify_functor(&mut self) -> Symbol {
         self.try_resolve_symbol("anthill.kernel.unify")
             .unwrap_or_else(|| self.intern("unify"))
+    }
+
+    /// WI-646 — the candidate equational rule ids for `[simp]`/`[unfold]` firing:
+    /// the `eq` (`=`) bucket plus the `unify` (`<=>`) bucket (deduped when the two
+    /// functors coincide, e.g. a prelude-less unit KB). ONE helper for the eq+unify
+    /// SELECTION that `has_simp_equations`, `try_fire`, `fire_simp_equation` (and
+    /// the [`Self::has_directional_rewrite`] gate) all previously spelled inline —
+    /// so the gate can never again drift from the fire sites (that drift, an
+    /// `eq`-only gate against `eq`+`unify` fire sites, is exactly what caused the
+    /// WI-643 regression). Callers still apply their own per-rule filter
+    /// (`is_equation` + `[simp]` / directional) on the returned ids.
+    pub(crate) fn simp_equation_rids(&mut self) -> Vec<RuleId> {
+        let eq_sym = self.eq_functor();
+        let unify_sym = self.unify_functor();
+        let mut rids = self.rules_by_functor(eq_sym);
+        if unify_sym != eq_sym {
+            rids.extend(self.rules_by_functor(unify_sym));
+        }
+        rids
     }
 
     /// Check if a rule is an equation: head functor is "eq" or "unify" (the
