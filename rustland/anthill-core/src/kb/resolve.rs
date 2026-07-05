@@ -949,7 +949,20 @@ impl SearchStream {
                             let eq_subst = self.stack.last().unwrap().subst.clone();
                             let (rewritten, changes) =
                                 kb.apply_eq_rules(goal, 100, &eq_subst);
-                            if !changes.is_empty() {
+                            // WI-634: when the WHOLE goal is a var-projecting simp
+                            // redex (`pick(?q, 7)` under `[simp] eq(pick(?a,?b),?a)`),
+                            // the rewrite is a bare caller var `?q`. Re-querying a
+                            // bare var wildcard-matches EVERY head (discrim routes a
+                            // `Global` query head to all leaves) — spurious solutions
+                            // against every fact. A bare-var goal is not resolvable,
+                            // so leave the candidate set untouched (the goal fails)
+                            // rather than matching everything. The intended use — a
+                            // redex nested in a compound goal (`found(pick(?q,7))` →
+                            // `found(?q)`) — keeps the goal a compound and re-queries
+                            // normally.
+                            if !changes.is_empty()
+                                && !matches!(kb.get_term(rewritten), Term::Var(_))
+                            {
                                 rc = kb.query(rewritten);
                             }
                         }
@@ -2353,38 +2366,87 @@ impl KnowledgeBase {
             if !self.equation_is_directional_rewrite(rid) {
                 continue;
             }
-            // WI-633 / WI-634 (loud gate): a term REWRITE can only express the
-            // LHS-match entries — the synthetic `u32::MAX - n` entries of a
-            // DeBruijn rule (they feed `instantiate_eq_rhs`'s rename), or the
-            // head's own Global vars for a legacy arity-0 `assert_fact`
-            // equation (`reify` chases those transitively into the RHS) —
-            // plus `r_vid`, the rewriter's own RHS hole. Any OTHER entry is a
-            // substitution effect on a caller/query var — a redex var linked
-            // to LHS structure (the Path entry whose severing is WI-634(a)),
-            // or a WI-633 unify-produced binding from a nonlinear LHS over a
-            // half-ground redex (`sub(?a, ?a) = zero` over `sub(f(?x), f(42))`
-            // binds `?x = 42`) — which firing would silently drop, rewriting
-            // as if the constraint held. Skip the candidate; the redex stays
-            // intact for resolution to handle. THREADING such links into the
-            // rewrite (the completeness half) is WI-634.
+            // WI-633 / WI-634: classify every `tree_subst` entry that is NEITHER
+            // a synthetic `u32::MAX - n` LHS-match value (threaded into the RHS by
+            // `instantiate_eq_rhs`) NOR `r_vid` (the rewriter's own RHS hole):
+            //
+            //   • value is a bare `Var::DeBruijn(n)` — a redex QUERY VAR that
+            //     matched LHS var position `n` (the discrim `Path` link,
+            //     `resolve_leaf` → `DeBruijn(n)`, WI-634(a)). A term rewrite CAN
+            //     express this: bind the opened DB-`n` fresh var to the query var
+            //     so the rewrite keeps the caller's var. Threaded below.
+            //   • anything else — a substitution effect the rewrite cannot carry:
+            //     a WI-633 unify binding from a nonlinear LHS over a half-ground
+            //     redex (`sub(?a, ?a) = zero` over `sub(f(?x), f(42))` binds
+            //     `?x = 42`), or a var linked to LHS STRUCTURE (value is a
+            //     compound). Firing would silently drop the constraint, so skip
+            //     the candidate — loud over silent; resolution handles the redex.
+            //
+            // Threading a query link is sound ONLY when the LHS is LINEAR in the
+            // matched positions: a DB index covered by both a synthetic value and
+            // a query link, or by two query links, is a nonlinear constraint
+            // (`?q = <the other match>`) — inexpressible, so it gates too.
             let rule_arity = self.rules[rid.index()].arity;
-            let has_inexpressible_link = if rule_arity > 0 {
-                tree_subst.iter().any(|(vid, _)| {
+            let mut query_links: Vec<(usize, VarId)> = Vec::new();
+            let mut inexpressible = false;
+            if rule_arity > 0 {
+                // Fast path: a rewrite over a fully-matched redex carries only the
+                // synthetic (`u32::MAX - n`) LHS-match values plus `r_vid`. Only
+                // when SOME other entry exists (a redex query var, or a WI-633
+                // unify binding) is the fuller classification needed — this keeps
+                // the common ground rewrite allocation-free (an `.any()` pass).
+                let has_other = tree_subst.iter().any(|(vid, _)| {
                     *vid != r_vid && Var::synthetic_debruijn_index(*vid, rule_arity).is_none()
-                })
+                });
+                if has_other {
+                    // A DB index is "taken" once — by a synthetic LHS-match value
+                    // or a query link. A second claim on it (synthetic + link, or
+                    // two links) is a nonlinear constraint (`?q = <the other
+                    // match>`) the rewrite cannot carry, so `covered.insert` false
+                    // → inexpressible. Seed with the synthetic indices so a query
+                    // link over a synthetic-covered index gates.
+                    let mut covered: HashSet<usize> = tree_subst
+                        .iter()
+                        .filter_map(|(vid, _)| Var::synthetic_debruijn_index(*vid, rule_arity))
+                        .collect();
+                    for (vid, val) in tree_subst.iter() {
+                        if *vid == r_vid
+                            || Var::synthetic_debruijn_index(*vid, rule_arity).is_some()
+                        {
+                            continue;
+                        }
+                        // A redex query var that matched LHS position `n` reifies
+                        // to `Var::DeBruijn(n)`; any other value (a WI-633 unify
+                        // binding, a var linked to LHS structure, a non-`Term`
+                        // carrier) is inexpressible.
+                        let db_index = if let Value::Term { id, .. } = val {
+                            match self.get_term(*id) {
+                                Term::Var(Var::DeBruijn(n)) => Some(*n as usize),
+                                _ => None,
+                            }
+                        } else {
+                            None
+                        };
+                        match db_index {
+                            Some(n) if covered.insert(n) => query_links.push((n, *vid)),
+                            _ => inexpressible = true,
+                        }
+                    }
+                }
             } else {
                 // Legacy Global-var head. A value-headed rule has no term
                 // head to collect vars from (and no head vars to exempt) —
-                // every non-`r_vid` entry gates, conservatively.
+                // every non-`r_vid` entry gates, conservatively. No DeBruijn
+                // rename exists here, so query links are not threadable.
                 let head_vars = match &self.rules[rid.index()].head {
                     Value::Term { id: h, .. } => self.collect_vars(*h),
                     _ => Vec::new(),
                 };
-                tree_subst
+                inexpressible = tree_subst
                     .iter()
-                    .any(|(vid, _)| *vid != r_vid && !head_vars.contains(vid))
-            };
-            if has_inexpressible_link {
+                    .any(|(vid, _)| *vid != r_vid && !head_vars.contains(vid));
+            }
+            if inexpressible {
                 continue;
             }
             // WI-283 / WI-292: a rule scoped to a sort that declares `requires`
@@ -2443,8 +2505,24 @@ impl KnowledgeBase {
             // `DeBruijn(0)`, not `5`), so var-RHS rules silently failed to
             // rewrite. `instantiate_eq_rhs` opens the template and substitutes
             // the synthetic LHS-match values; a ground RHS is returned unchanged.
-            let rhs = self.instantiate_eq_rhs(rid, rhs_template, &tree_subst);
-            let rewritten = self.reify(rhs, &tree_subst);
+            // WI-634: it ALSO binds each query link's opened DB-`n` fresh var to
+            // the caller's query var (`pick(?q, 7) = ?q`), so the rewrite keeps
+            // `?q` bound through resolution instead of severing it.
+            let rhs = self.instantiate_eq_rhs(rid, rhs_template, &tree_subst, &query_links);
+            // Reify the change record through `tree_subst`, but with the query
+            // links removed (WI-634): those entries are `?q → DeBruijn(n)`, and
+            // reifying `?q` through them would chase it back to the unopened
+            // DeBruijn — the very leak the threading avoids. `rhs` already carries
+            // `?q` directly, so dropping the entries leaves it intact.
+            let rewritten = if query_links.is_empty() {
+                self.reify(rhs, &tree_subst)
+            } else {
+                let mut clean = tree_subst.clone();
+                for &(_, qvar) in &query_links {
+                    clean.bindings.remove(&qvar);
+                }
+                self.reify(rhs, &clean)
+            };
 
             changes.push(EqChange {
                 rule_id: rid,
@@ -2506,11 +2584,21 @@ impl KnowledgeBase {
     /// rather than the raw `DeBruijn(n)`. A ground RHS (`arity == 0`, or no
     /// DeBruijn vars) is returned unchanged; an RHS-only DeBruijn var with no
     /// LHS match keeps its fresh global (a sound existential).
+    ///
+    /// WI-634: `query_links` carries the redex QUERY VARS that matched an LHS var
+    /// position — `(db_index, query_var)` pairs the caller
+    /// ([`Self::apply_eq_rules`]) classified from the discrim `Path` links. A
+    /// linear such position (`pick(?q, 7) = ?q`) has no synthetic value, so the
+    /// opened DB-`n` fresh var would otherwise stay a disconnected existential,
+    /// SEVERING `?q`. Binding that fresh var to the query var instead threads the
+    /// caller's var into the rewrite. (Nonlinear/inexpressible links never reach
+    /// here — the caller gates them, so every entry maps a distinct fresh var.)
     fn instantiate_eq_rhs(
         &mut self,
         rid: RuleId,
         rhs_template: TermId,
         tree_subst: &Substitution,
+        query_links: &[(usize, VarId)],
     ) -> TermId {
         let arity = self.rules[rid.index()].arity;
         if arity == 0 {
@@ -2528,6 +2616,14 @@ impl KnowledgeBase {
                 if let Some(&fresh_vid) = fresh_vars.get(db_index) {
                     rename.bind(self, fresh_vid, bound_term);
                 }
+            }
+        }
+        // WI-634: thread the query links — a query var occupying DB-`n` binds the
+        // opened fresh var to itself, so the RHS reaches the caller's var.
+        for &(db_index, query_var) in query_links {
+            if let Some(&fresh_vid) = fresh_vars.get(db_index) {
+                let qvar_term = self.alloc(Term::Var(Var::Global(query_var)));
+                rename.bind(self, fresh_vid, qvar_term);
             }
         }
         self.apply_subst(opened, &rename)
@@ -5880,6 +5976,140 @@ mod tests {
     }
 
     #[test]
+    fn resolve_simplification_threads_caller_var() {
+        // WI-634 end-to-end: a query var inside a redex must survive the [simp]
+        // rewrite and bind through resolution. `[simp] eq(pick(?a, ?b), ?a)` over
+        // goal `found(pick(?q, 99))` rewrites the subterm to `found(?q)`, which
+        // the fact `found(7)` resolves — binding ?q = 7. Before WI-634's
+        // threading the redex was SKIPPED (severing ?q), so the goal never
+        // matched the fact → 0 solutions.
+        let mut kb = KnowledgeBase::new();
+        let sort = kb.make_name_term("Pick"); // requires-free → resolver fires
+        let domain = kb.make_name_term("test");
+        let eq_sym = kb.intern("eq");
+        let pick_sym = kb.intern("pick");
+        let found_sym = kb.intern("found");
+
+        // [simp] eq(pick(?a, ?b), ?a) — DeBruijn-closed (arity 2), the loaded
+        // form; arity-0 Global-var heads never hit the var-RHS bug.
+        let a_sym = kb.intern("a");
+        let b_sym = kb.intern("b");
+        let va = kb.fresh_var(a_sym);
+        let vb = kb.fresh_var(b_sym);
+        let var_a = kb.alloc(Term::Var(Var::Global(va)));
+        let var_b = kb.alloc(Term::Var(Var::Global(vb)));
+        let pick_ab = kb.alloc(Term::Fn {
+            functor: pick_sym,
+            pos_args: SmallVec::from_slice(&[var_a, var_b]),
+            named_args: SmallVec::new(),
+        });
+        let eq_head = kb.alloc(Term::Fn {
+            functor: eq_sym,
+            pos_args: SmallVec::from_slice(&[pick_ab, var_a]),
+            named_args: SmallVec::new(),
+        });
+        let meta = simp_meta(&mut kb);
+        kb.assert_rule_debruijn_with_nodes(eq_head, vec![], sort, domain, Some(meta));
+
+        // Fact: found(7)
+        let seven = kb.alloc(Term::Const(Literal::Int(7)));
+        let found_7 = kb.alloc(Term::Fn {
+            functor: found_sym,
+            pos_args: SmallVec::from_elem(seven, 1),
+            named_args: SmallVec::new(),
+        });
+        kb.assert_fact(found_7, sort, domain, None);
+
+        // Query: found(pick(?q, 99)) — simplify rewrites pick(?q, 99) → ?q.
+        let q_sym = kb.intern("q");
+        let vq = kb.fresh_var(q_sym);
+        let var_q = kb.alloc(Term::Var(Var::Global(vq)));
+        let ninety_nine = kb.alloc(Term::Const(Literal::Int(99)));
+        let pick_q99 = kb.alloc(Term::Fn {
+            functor: pick_sym,
+            pos_args: SmallVec::from_slice(&[var_q, ninety_nine]),
+            named_args: SmallVec::new(),
+        });
+        let goal = kb.alloc(Term::Fn {
+            functor: found_sym,
+            pos_args: SmallVec::from_elem(pick_q99, 1),
+            named_args: SmallVec::new(),
+        });
+
+        let config = ResolveConfig { simplify: true, ..Default::default() };
+        let results = kb.resolve(&[goal], &config);
+        assert_eq!(results.len(), 1, "rewritten found(?q) matches found(7)");
+        assert_eq!(
+            kb.reify(var_q, &results[0].subst).expect_term(),
+            seven,
+            "the caller's ?q binds to 7 through the rewrite (not severed)",
+        );
+    }
+
+    #[test]
+    fn resolve_whole_goal_var_redex_does_not_wildcard() {
+        // WI-634 guard: when the WHOLE goal is a var-projecting simp redex
+        // (`pick(?q, 99)` under `[simp] eq(pick(?a,?b), ?a)`), the rewrite is a
+        // bare caller var `?q`. `step_init` must NOT re-query that bare var —
+        // discrim routes a `Global` query head to EVERY leaf, so re-querying
+        // would wildcard-match every fact and manufacture spurious solutions. A
+        // bare-var goal is not resolvable → 0 solutions.
+        let mut kb = KnowledgeBase::new();
+        let sort = kb.make_name_term("Pick");
+        let domain = kb.make_name_term("test");
+        let eq_sym = kb.intern("eq");
+        let pick_sym = kb.intern("pick");
+
+        let a_sym = kb.intern("a");
+        let b_sym = kb.intern("b");
+        let va = kb.fresh_var(a_sym);
+        let vb = kb.fresh_var(b_sym);
+        let var_a = kb.alloc(Term::Var(Var::Global(va)));
+        let var_b = kb.alloc(Term::Var(Var::Global(vb)));
+        let pick_ab = kb.alloc(Term::Fn {
+            functor: pick_sym,
+            pos_args: SmallVec::from_slice(&[var_a, var_b]),
+            named_args: SmallVec::new(),
+        });
+        let eq_head = kb.alloc(Term::Fn {
+            functor: eq_sym,
+            pos_args: SmallVec::from_slice(&[pick_ab, var_a]),
+            named_args: SmallVec::new(),
+        });
+        let meta = simp_meta(&mut kb);
+        kb.assert_rule_debruijn_with_nodes(eq_head, vec![], sort, domain, Some(meta));
+
+        // An unrelated fact the bare-var wildcard would spuriously match.
+        let one = kb.alloc(Term::Const(Literal::Int(1)));
+        let other_sym = kb.intern("other");
+        let other_1 = kb.alloc(Term::Fn {
+            functor: other_sym,
+            pos_args: SmallVec::from_elem(one, 1),
+            named_args: SmallVec::new(),
+        });
+        kb.assert_fact(other_1, sort, domain, None);
+
+        // Whole-goal redex: pick(?q, 99) → ?q (bare var).
+        let q_sym = kb.intern("q");
+        let vq = kb.fresh_var(q_sym);
+        let var_q = kb.alloc(Term::Var(Var::Global(vq)));
+        let ninety_nine = kb.alloc(Term::Const(Literal::Int(99)));
+        let goal = kb.alloc(Term::Fn {
+            functor: pick_sym,
+            pos_args: SmallVec::from_slice(&[var_q, ninety_nine]),
+            named_args: SmallVec::new(),
+        });
+
+        let config = ResolveConfig { simplify: true, ..Default::default() };
+        let results = kb.resolve(&[goal], &config);
+        assert_eq!(
+            results.len(),
+            0,
+            "a whole-goal bare-var rewrite must not wildcard-match unrelated facts",
+        );
+    }
+
+    #[test]
     fn apply_eq_rules_returns_changes() {
         let mut kb = KnowledgeBase::new();
         let sort = kb.make_name_term("Eq");
@@ -6029,13 +6259,13 @@ mod tests {
     }
 
     #[test]
-    fn apply_eq_rules_skips_severing_var_redex() {
-        // WI-634(a) loud gate: `[simp] eq(pick(?a, ?b), ?a)` over redex
-        // pick(?q, 7) records a `?q → LHS var` Path link that
-        // `instantiate_eq_rhs` cannot thread — firing left the opened RHS
-        // fresh global DISCONNECTED, severing ?q from whatever solves the
-        // rewritten goal. Must skip; threading the link (the completeness
-        // half) is WI-634.
+    fn apply_eq_rules_threads_severing_var_redex() {
+        // WI-634(a) completeness: `[simp] eq(pick(?a, ?b), ?a)` over redex
+        // pick(?q, 7) records a `?q → LHS var` Path link at a LINEAR position.
+        // `instantiate_eq_rhs` threads it — the opened RHS binds to the caller's
+        // `?q` instead of a disconnected fresh global — so the rewrite fires to
+        // `?q`, keeping it bound through resolution (was skipped before WI-634's
+        // threading landed; the earlier gate proved severing, not correctness).
         let mut kb = KnowledgeBase::new();
         let sort = kb.make_name_term("Pick");
         let domain = kb.make_name_term("test");
@@ -6072,7 +6302,77 @@ mod tests {
         });
 
         let (result, changes) = kb.apply_eq_rules(pick_q7, 100, &Substitution::new());
-        assert_eq!(result, pick_q7, "a redex-var-to-LHS-structure link must not fire (severs ?q)");
+        assert_eq!(result, var_q, "a linear query-var link threads to the caller's ?q");
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].rewritten.expect_term(), var_q, "record keeps ?q, no DeBruijn leak");
+
+        // Subterm case: g(pick(?q, 7)) rewrites innermost to g(?q), so the
+        // parent keeps ?q — resolution binds it through the rewrite.
+        let g_sym = kb.intern("g");
+        let g_pick = kb.alloc(Term::Fn {
+            functor: g_sym,
+            pos_args: SmallVec::from_elem(pick_q7, 1),
+            named_args: SmallVec::new(),
+        });
+        let g_q = kb.alloc(Term::Fn {
+            functor: g_sym,
+            pos_args: SmallVec::from_elem(var_q, 1),
+            named_args: SmallVec::new(),
+        });
+        let (result, changes) = kb.apply_eq_rules(g_pick, 100, &Substitution::new());
+        assert_eq!(result, g_q, "innermost rewrite of a subterm preserves ?q in the parent");
+        assert_eq!(changes.len(), 1);
+    }
+
+    #[test]
+    fn apply_eq_rules_skips_nonlinear_query_var_redex() {
+        // WI-634 linearity guard: a NONLINEAR LHS whose repeated var meets a
+        // query var (`[simp] eq(sub(?a, ?a), 0)` over sub(?q, f(42))) records a
+        // query link at DB-0 AND a synthetic value at DB-0 — the constraint
+        // `?q = f(42)` a rewrite cannot carry. Must skip, not silently thread
+        // one and drop the other.
+        let mut kb = KnowledgeBase::new();
+        let sort = kb.make_name_term("Sub");
+        let domain = kb.make_name_term("test");
+        let eq_sym = kb.intern("eq");
+        let sub_sym = kb.intern("sub");
+        let f_sym = kb.intern("f");
+
+        let a_sym = kb.intern("a");
+        let va = kb.fresh_var(a_sym);
+        let var_a = kb.alloc(Term::Var(Var::Global(va)));
+        let sub_aa = kb.alloc(Term::Fn {
+            functor: sub_sym,
+            pos_args: SmallVec::from_slice(&[var_a, var_a]),
+            named_args: SmallVec::new(),
+        });
+        let zero = kb.alloc(Term::Const(Literal::Int(0)));
+        let eq_head = kb.alloc(Term::Fn {
+            functor: eq_sym,
+            pos_args: SmallVec::from_slice(&[sub_aa, zero]),
+            named_args: SmallVec::new(),
+        });
+        let meta = simp_meta(&mut kb);
+        kb.assert_rule_debruijn_with_nodes(eq_head, vec![], sort, domain, Some(meta));
+
+        // sub(?q, f(42)) — DB-0 is covered by both ?q (query link) and f(42)
+        // (synthetic). Nonlinear constraint → skip.
+        let q_sym = kb.intern("q");
+        let vq = kb.fresh_var(q_sym);
+        let var_q = kb.alloc(Term::Var(Var::Global(vq)));
+        let forty_two = kb.alloc(Term::Const(Literal::Int(42)));
+        let f_42 = kb.alloc(Term::Fn {
+            functor: f_sym,
+            pos_args: SmallVec::from_elem(forty_two, 1),
+            named_args: SmallVec::new(),
+        });
+        let redex = kb.alloc(Term::Fn {
+            functor: sub_sym,
+            pos_args: SmallVec::from_slice(&[var_q, f_42]),
+            named_args: SmallVec::new(),
+        });
+        let (result, changes) = kb.apply_eq_rules(redex, 100, &Substitution::new());
+        assert_eq!(result, redex, "nonlinear query-var match must not rewrite (drops ?q = f(42))");
         assert!(changes.is_empty());
     }
 
