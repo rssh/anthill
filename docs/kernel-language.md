@@ -1255,11 +1255,13 @@ f(?a.b, ?c)      →  f(field_access(?a, b), ?c)
 
 **Precedence.** `.` has the highest precedence (10), above all other operators including prefix `!` (9). Left-associative: `a.b.c` desugars to `field_access(field_access(a, b), c)`.
 
-**Two dispatch modes** (runtime):
+**Three dispatch modes** (runtime):
 
 1. **Entity field access:** if the object is a `Fn` term whose functor is a registered entity constructor, extract the named field from the entity's arguments. E.g., `env(fs: ?fs).fs` extracts `?fs`.
 
 2. **Sort component access:** if the object is a `Fn` term whose functor is a sort symbol, look up the field identifier in the sort's scope. E.g., `Monoid().Carrier` resolves to the `Carrier` sub-sort.
+
+3. **Named-tuple component access** (WI-638): if the object types as a **named tuple** (its functor is `named_tuple`, so the receiver sort is `None` and modes 1–2 never reach it), resolve the identifier against the tuple's `(name, type)` components — by short name (`t.x`) or by positional `_N` (`t._1`, 1-based, since positional tuples desugar to `_N` names). Access is name-keyed on both the type and the runtime `Value::Tuple`, hence **order-independent**. E.g., `(x: 10, y: 20).x` evaluates to `10`; `t.x` on a param typed `(x: Int64, y: Int64)` type-checks and evaluates.
 
 **Disambiguation from qualified names.** At parse time, `a.b` in term position is parsed as `field_access(a, b)` — a variable or identifier followed by `.identifier`. Qualified names (`Namespace.Sort`) continue to be parsed as `name` nodes within `fn_term` and `instantiation_term`, which require `(...)` or `{...}` to follow the name. There is no ambiguity: `A.B(x)` parses as `fn_term(name: A.B, args: [x])`, while `A.B` alone in term position parses as `field_access(A, B)`.
 
@@ -1268,6 +1270,7 @@ f(?a.b, ?c)      →  f(field_access(?a, b), ?c)
 - Single-constructor sorts: field lookup is unambiguous
 - Multi-constructor sorts: field `f` must appear in all constructors with the same sort
 - Abstract sorts (`sort T = ?`): field access is ill-formed (no fields)
+- Named tuples (mode 3): `t.f` requires `f` to be a component name of `t`'s named-tuple type, or a positional `_N` within its arity
 
 ## 7. Metadata
 
