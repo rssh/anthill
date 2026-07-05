@@ -1669,11 +1669,11 @@ impl Interpreter {
         pos: Vec<Value>,
         mut named: Vec<(Symbol, Value)>,
     ) -> Result<StepOutcome, EvalError> {
-        // Shared with the Term-side builders (WI-299): `KnowledgeBase::sort_named_canonical`
+        // Shared with the Term-side builders (WI-299): `KnowledgeBase::canonicalize_record_named_args`
         // is generic over the arg value type, so Value- and Term-carried entities
         // canonicalize to the SAME declared-field order (else they'd hash-cons /
         // discrim-match as distinct shapes).
-        self.kb.sort_named_canonical(ctor_sym, &mut named);
+        self.kb.canonicalize_record_named_args(ctor_sym, &mut named);
         let value = if Some(ctor_sym) == self.reflect.list_literal {
             self.build_list_value(pos, &named)?
         } else if is_tuple_literal {

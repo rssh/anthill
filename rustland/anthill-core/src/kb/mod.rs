@@ -3329,7 +3329,7 @@ impl KnowledgeBase {
     }
 
     /// Allocate an entity `Term::Fn`, canonicalizing its named args to the
-    /// functor's declared field order via [`Self::sort_named_canonical`]. This
+    /// functor's declared field order via [`Self::canonicalize_record_named_args`]. This
     /// is the single funnel for Rust-side entity-term construction (WI-299):
     /// the discrimination matcher (`discrim.rs`) descends named keys
     /// *positionally* and the loader canonicalizes loaded patterns/facts to
@@ -3340,7 +3340,7 @@ impl KnowledgeBase {
     /// declared order and would break under any change to interning order, with
     /// no error. `pos_args` pass through unchanged (positional order is already
     /// significant). When the functor has no registered field list,
-    /// `sort_named_canonical` falls back to interning order — preserving the
+    /// `canonicalize_record_named_args` falls back to interning order — preserving the
     /// prior behavior for anonymous shapes.
     pub fn make_entity_term(
         &mut self,
@@ -3348,7 +3348,7 @@ impl KnowledgeBase {
         pos_args: SmallVec<[TermId; 4]>,
         mut named_args: SmallVec<[(Symbol, TermId); 2]>,
     ) -> TermId {
-        self.sort_named_canonical(functor, &mut named_args);
+        self.canonicalize_record_named_args(functor, &mut named_args);
         self.alloc(Term::Fn { functor, pos_args, named_args })
     }
 
@@ -3487,7 +3487,7 @@ impl KnowledgeBase {
     /// hash-consed term, but in the `Value` world so a poisoned (`Value::Node`) field
     /// type rides as-is and a ground one stays `Value::Term` (no lift). `cons` cells
     /// and `NamedTupleElement` records are `Value::Entity`s ordered by
-    /// [`Self::sort_named_canonical`], matching the term form's discrim/eq key so the
+    /// [`Self::canonicalize_record_named_args`], matching the term form's discrim/eq key so the
     /// two carriers compare cross-carrier.
     fn build_named_tuple_fields_value(
         &mut self,
@@ -3507,7 +3507,7 @@ impl KnowledgeBase {
             };
             let name_ref = Value::term(self.alloc(Term::Ref(field_name)));
             let mut named = vec![(name_key, name_ref), (type_key, type_value)];
-            self.sort_named_canonical(element_sym, &mut named);
+            self.canonicalize_record_named_args(element_sym, &mut named);
             elems.push(Value::Entity {
                 functor: element_sym,
                 pos: Rc::from(Vec::new()),
@@ -3516,7 +3516,7 @@ impl KnowledgeBase {
             });
         }
         // The `cons`/`nil` spine reuses the shared `Value`-list builder (its
-        // `[head, tail]` order is canonical, matching `sort_named_canonical`).
+        // `[head, tail]` order is canonical, matching `canonicalize_record_named_args`).
         crate::kb::load::build_value_list(self, elems)
     }
 

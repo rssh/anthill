@@ -9693,7 +9693,7 @@ impl<'a> Loader<'a> {
         // byte-identity holds regardless of source order.
         //
         // WI-498: this index sort is DELIBERATE and does NOT route through the
-        // `make_entity_term` / `sort_named_canonical` funnel (unlike the
+        // `make_entity_term` / `canonicalize_record_named_args` funnel (unlike the
         // persistence term builders). The named keys here are the viewed spec's
         // TYPE-PARAM bindings (`T`, `E` of `Spec[T = …, E = …]`), not declared
         // fields of the `SortView` entity (whose `entity_field_names` are a fixed
@@ -11909,7 +11909,7 @@ impl<'a> Loader<'a> {
                 // Canonical named-arg order (matches every other term builder /
                 // the discrim index), so the reflect `Constraint(guard(…))` fact
                 // hash-conses and unifies with a sorted-order LogicalQuery term.
-                self.kb.sort_named_canonical(ctor, &mut named_args);
+                self.kb.canonicalize_record_named_args(ctor, &mut named_args);
                 Some(self.kb.alloc(Term::Fn { functor: ctor, pos_args: SmallVec::new(), named_args }))
             }
             ConstraintBody::Patterns(terms) => self.build_patterns_lq(terms),
@@ -11946,7 +11946,7 @@ impl<'a> Loader<'a> {
                 Some(rest) => {
                     let mut named_args: SmallVec<[(Symbol, TermId); 2]> =
                         SmallVec::from_slice(&[(left_sym, pq), (right_sym, rest)]);
-                    self.kb.sort_named_canonical(conj_ctor, &mut named_args);
+                    self.kb.canonicalize_record_named_args(conj_ctor, &mut named_args);
                     self.kb.alloc(Term::Fn {
                         functor: conj_ctor,
                         pos_args: SmallVec::new(),

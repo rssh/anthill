@@ -3323,7 +3323,7 @@ impl KnowledgeBase {
                 let some_sym = self.resolve_symbol("anthill.prelude.Option.some");
                 let value_sym = self.intern("value");
                 let mut named = vec![(value_sym, node.clone())];
-                self.sort_named_canonical(some_sym, &mut named);
+                self.canonicalize_record_named_args(some_sym, &mut named);
                 NodeOccurrence::new_expr(
                     Expr::Constructor { name: some_sym, pos_args: Vec::new(), named_args: named },
                     node.span,
@@ -3365,16 +3365,33 @@ impl KnowledgeBase {
         Some(self.make_entity_term(functor, SmallVec::new(), named))
     }
 
-    /// Sort named args into the functor's canonical (declared field) order —
-    /// the order the loader canonicalizes patterns to (`load.rs` via
-    /// `entity_field_names`). The discrim tree matches named args positionally
-    /// (`discrim.rs`: it descends `NamedKey(query_keys[i])` against the tree's
-    /// i-th pattern key), so a built term must use the same order as the loaded
-    /// pattern or it silently fails to match. Falls back to interning order
-    /// when the functor has no registered field list. Generic over the value
+    /// Reorder a RECORD's named args into a canonical order so the payload
+    /// hash-conses / discrim-matches regardless of source order. The discrim
+    /// tree matches named args positionally (`discrim.rs`: it descends
+    /// `NamedKey(query_keys[i])` against the tree's i-th pattern key), so a built
+    /// term must use the same order as the loaded pattern or it silently fails to
+    /// match. A registered field schema orders by DECLARED field order; a
+    /// schema-less functor falls back to interning order. Generic over the value
     /// type so it serves both `Term::Fn` (`TermId`) and occurrence
     /// (`Rc<NodeOccurrence>`) builders.
-    pub(crate) fn sort_named_canonical<T>(&self, functor: Symbol, named: &mut [(Symbol, T)]) {
+    ///
+    /// This is NOT universal — it is deliberately a no-op for an ORDERED PRODUCT
+    /// ([`Self::is_ordered_product_functor`], a named tuple). A tuple's component
+    /// order is SEMANTIC (source order IS its identity); reordering it would
+    /// collapse `(x: 1, y: 2)` and `(y: 2, x: 1)` into one value — the
+    /// record-collapse `tuple_order_test` guards. The old name
+    /// (`sort_named_canonical`) implied it applied to every named-arg structure;
+    /// the ordered-product exemption below makes the "records only" contract
+    /// explicit rather than resting on a tuple's empty schema + a stable sort.
+    pub(crate) fn canonicalize_record_named_args<T>(
+        &self,
+        functor: Symbol,
+        named: &mut [(Symbol, T)],
+    ) {
+        // Ordered product (named tuple): source order IS canonical — leave it.
+        if self.is_ordered_product_functor(functor) {
+            return;
+        }
         match self.entity_field_names(functor) {
             Some(fields) => {
                 let order: HashMap<Symbol, usize> =
@@ -3383,6 +3400,16 @@ impl KnowledgeBase {
             }
             None => named.sort_by_key(|(s, _)| s.index()),
         }
+    }
+
+    /// Is `functor` an ORDERED PRODUCT — a named tuple
+    /// (`anthill.reflect.TupleLiteral`)? Its labelled components carry SEMANTIC
+    /// source order (the order IS the value's identity), so it is exempt from
+    /// [`Self::canonicalize_record_named_args`]. Records, entities, and the
+    /// reflect meta-constructors are NOT ordered products: their named args carry
+    /// no source-order meaning and must be canonicalized for discrim matching.
+    pub(crate) fn is_ordered_product_functor(&self, functor: Symbol) -> bool {
+        self.qualified_name_of(functor) == "anthill.reflect.TupleLiteral"
     }
 
     /// WI-500: plan the positional→named desugar for a constructor — the loader's

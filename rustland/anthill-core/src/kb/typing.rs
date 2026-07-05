@@ -4477,6 +4477,56 @@ fn build_type(
                 }
             }
 
+            // WI-638: THIRD dot-dispatch mode — a zero-arg member naming a
+            // COMPONENT of a NAMED-TUPLE receiver (`(x: A, y: B).x`, or the
+            // positional `t._1`). A named tuple's functor is `named_tuple`, not a
+            // sort, so `recv_sort` is `None` and neither the method fallback nor
+            // the entity/sort field access above (both keyed on `recv_sort`)
+            // reach it. Resolve `member` against the tuple type's
+            // (component-name, type) list directly and reuse the SAME
+            // `field_access` desugaring the entity path uses — its eval twin reads
+            // the component off the runtime `Value::Tuple` (named by short name,
+            // positional `_N` by index).
+            if pos_nodes.is_empty() && named_nodes.is_empty() {
+                if let TypeExtractor::NamedTuple(fields) = extract_type(kb, &recv.ty) {
+                    let member_short = short_name_of(kb.resolve_sym(member)).to_string();
+                    let comp_ty = fields.iter().find_map(|(f, t)| {
+                        (short_name_of(kb.resolve_sym(*f)) == member_short).then(|| t.clone())
+                    });
+                    if let (Some(comp_ty), Some(fa_sym)) =
+                        (comp_ty, kb.try_resolve_symbol("anthill.reflect.field_access"))
+                    {
+                        let field_name_node = NodeOccurrence::new_expr(
+                            Expr::Const(Literal::String(member_short)),
+                            occ.span,
+                            occ.owner,
+                        );
+                        let pass = super::simp_rewrite::simp_pass(kb);
+                        let synth = NodeOccurrence::synthesized_expr(
+                            Expr::Apply {
+                                functor: fa_sym,
+                                pos_args: vec![receiver_node, field_name_node],
+                                named_args: Vec::new(),
+                                type_args: Vec::new(),
+                            },
+                            Rc::clone(&occ),
+                            pass,
+                            occ.owner,
+                        );
+                        // No field-specific signature to re-type against, so stamp
+                        // the component's type directly (as INC 1b does).
+                        synth.set_inferred_type(comp_ty.clone());
+                        results.push(Ok(TypeResult {
+                            ty: comp_ty,
+                            env: recv.env,
+                            effects: recv.effects.clone(),
+                            node: synth,
+                        }));
+                        return;
+                    }
+                }
+            }
+
             // No method and no field matched → clear diagnostic at the dot span.
             results.push(Err(TypeError::DotDispatchNoMatch {
                 span: dot_span,
@@ -17502,13 +17552,13 @@ fn substitute_ref_terms_value_rec(
         // or a value-carried `Value::Entity`): rebuild carrier-neutrally as a
         // `Value::Entity`, substituting each child read through the View layer, so a
         // Node or Entity goal decomposes identically to its term twin. Named args are
-        // re-canonicalized (`sort_named_canonical`) — the invariant the order-
+        // re-canonicalized (`canonicalize_record_named_args`) — the invariant the order-
         // sensitive discrimination tree matches against, which a non-entity-functor
         // Node goal's source-order named children would otherwise violate.
         ViewHead::Functor { functor: Some(f), pos_arity, .. } => {
             let pos = subst_view_pos(kb, v, pos_arity, map, var_ref_sym);
             let mut named = subst_view_named(kb, v, map, var_ref_sym);
-            kb.sort_named_canonical(f, &mut named);
+            kb.canonicalize_record_named_args(f, &mut named);
             Value::Entity {
                 functor: f,
                 pos: std::rc::Rc::from(pos),
@@ -26261,7 +26311,7 @@ mod wi621_carrier_neutral_goal_subst {
 
     /// The rebuilt `Value::Entity` re-canonicalizes named args: a DENOTED `Value::Node`
     /// goal whose named children are in NON-canonical source order (which a
-    /// non-entity-functor occurrence keeps) is rebuilt with `sort_named_canonical`
+    /// non-entity-functor occurrence keeps) is rebuilt with `canonicalize_record_named_args`
     /// order — the invariant the order-sensitive discrim tree matches against. Without
     /// the sort the goal would descend a different trie path than a canonically-keyed
     /// KB fact and spuriously miss.
@@ -26291,9 +26341,9 @@ mod wi621_carrier_neutral_goal_subst {
         sigma.insert(b, kb.alloc(Term::Const(Literal::Int(5))));
         let grounded = substitute_ref_terms(&mut kb, &goal, &sigma);
 
-        // The rebuild must match sort_named_canonical order for `pred`.
+        // The rebuild must match canonicalize_record_named_args order for `pred`.
         let mut expected = vec![(z, ()), (a, ())];
-        kb.sort_named_canonical(pred, &mut expected);
+        kb.canonicalize_record_named_args(pred, &mut expected);
         let expected_keys: Vec<Symbol> = expected.iter().map(|(k, _)| *k).collect();
         assert_ne!(expected_keys, vec![z, a], "canonical order must differ from source");
         assert_eq!(

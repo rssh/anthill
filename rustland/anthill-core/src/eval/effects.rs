@@ -514,7 +514,7 @@ impl Interpreter {
     ///
     /// Field names are plainly interned (matching the loader) and the named
     /// args canonicalized to the sort's declared field order via
-    /// `sort_named_canonical`, so the payload hash-conses / discrim-matches
+    /// `canonicalize_record_named_args`, so the payload hash-conses / discrim-matches
     /// identically to one the constructor syntax would build.
     fn raise_error_payload(
         &mut self,
@@ -531,7 +531,7 @@ impl Interpreter {
             let sym = self.kb_mut().intern(name);
             named_syms.push((sym, v));
         }
-        self.kb.sort_named_canonical(functor, &mut named_syms);
+        self.kb.canonicalize_record_named_args(functor, &mut named_syms);
         let payload = Value::Entity {
             functor,
             pos: Rc::from([]),

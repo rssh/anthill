@@ -228,6 +228,28 @@ fn reflect_field_access(interp: &mut Interpreter, args: &[Value]) -> Result<Valu
             Err(EvalError::Internal(format!(
                 "field_access: entity has no field '{}'", field_name)))
         }
+        // WI-638: a NAMED-TUPLE component projection (`(x: A, y: B).x`, or the
+        // positional `t._1`). The typer resolved the component against the tuple
+        // TYPE and rewrote `t.x` into this call; read the component off the
+        // runtime `Value::Tuple`. A named component lives in `named` (by short
+        // name); a positional tuple stores its components in `pos`, so a `_N`
+        // member (1-based) maps to `pos[N-1]`.
+        Value::Tuple { pos, named, .. } => {
+            for (sym, val) in named.iter() {
+                let full = interp.kb().resolve_sym(*sym);
+                let short = full.rsplit('.').next().unwrap_or(full);
+                if short == field_name.as_str() {
+                    return Ok(val.clone());
+                }
+            }
+            if let Some(idx) = field_name.strip_prefix('_').and_then(|d| d.parse::<usize>().ok()) {
+                if let Some(val) = idx.checked_sub(1).and_then(|i| pos.get(i)) {
+                    return Ok(val.clone());
+                }
+            }
+            Err(EvalError::Internal(format!(
+                "field_access: tuple has no component '{}'", field_name)))
+        }
         other => Err(EvalError::Internal(format!(
             "field_access: receiver is not an entity (got {})", other.type_name()))),
     }

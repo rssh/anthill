@@ -2434,9 +2434,9 @@ pub fn build_occurrence_cons_list(
     for item in items.into_iter().rev() {
         // Canonical (declared `cons(head, tail)`) field order — the
         // order-sensitive discrim matcher requires it to align with the loaded
-        // pattern (not interning order). See `KnowledgeBase::sort_named_canonical`.
+        // pattern (not interning order). See `KnowledgeBase::canonicalize_record_named_args`.
         let mut named = vec![(head_sym, item), (tail_sym, list)];
-        kb.sort_named_canonical(cons_sym, &mut named);
+        kb.canonicalize_record_named_args(cons_sym, &mut named);
         list = NodeOccurrence::new_expr(
             Expr::Constructor { name: cons_sym, pos_args: Vec::new(), named_args: named },
             span,
@@ -2651,10 +2651,10 @@ pub fn value_to_term(
                     });
                 }
             }
-            // Canonical named-arg order via the shared `sort_named_canonical` (the
+            // Canonical named-arg order via the shared `canonicalize_record_named_args` (the
             // single source of truth the discrim tree matches against) — declared
             // field order, else `Symbol::index()`.
-            kb.sort_named_canonical(*functor, &mut named_args);
+            kb.canonicalize_record_named_args(*functor, &mut named_args);
             Ok(kb.alloc(Term::Fn { functor: *functor, pos_args, named_args }))
         }
         // Scalars / Term / Var convert; opaque + Unit + Tuple error — identical to

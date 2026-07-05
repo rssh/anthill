@@ -1,13 +1,17 @@
 //! Named tuples are ordered products — the VALUE representation must preserve
 //! source field order (sorting fields would collapse a tuple into a record).
 //!
-//! `finish_constructor` canonicalizes a constructor's named args via
-//! `sort_named_canonical`. For a `TupleLiteral` (registered with an EMPTY field
-//! schema, `Some([])`) every field maps to `usize::MAX`, and Rust's STABLE
-//! `sort_by_key` leaves them in source order. This guards that invariant under
-//! adverse symbol-interning order — if `TupleLiteral` ever gained a schema, or
-//! the canonicalizer fell to its `None => sort_by_key(index)` branch, a tuple's
-//! fields would silently reorder and this test would fail.
+//! `finish_constructor` runs a constructor's named args through
+//! `canonicalize_record_named_args`, which EXEMPTS ordered products: a
+//! `TupleLiteral` is caught by `is_ordered_product_functor` and returned
+//! untouched, so source order is preserved by an explicit contract. Today the
+//! same order also survives the record path (a `TupleLiteral`'s EMPTY field
+//! schema, `Some([])`, sends every field to `usize::MAX` under a STABLE
+//! `sort_by_key`), so this test asserts the OUTCOME — source order — under
+//! adverse symbol-interning order. The explicit exemption is what keeps that
+//! outcome robust: were `TupleLiteral` to gain a non-empty schema (→ reorder by
+//! declared order) or the fallback sort to become unstable, a tuple reaching the
+//! record path would silently reorder; the exemption forecloses both.
 
 use anthill_core::eval::{Interpreter, Value};
 use crate::common::load_kb_with;

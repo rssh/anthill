@@ -955,7 +955,7 @@ impl Interpreter {
         // Canonical (declared) field order — mirrors `finish_constructor` — so a
         // positional pattern (`case undecided(subst, residual)`) binds the right
         // field; `subst`/`residual` are NOT in alphabetical order.
-        self.kb.sort_named_canonical(functor, &mut named);
+        self.kb.canonicalize_record_named_args(functor, &mut named);
         Ok(Value::Entity { functor, pos: Vec::new().into(), named: named.into(), ty: None })
     }
 }

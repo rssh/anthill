@@ -82,7 +82,7 @@ fn match_constructor_pattern(
     // Pattern-match uniformity: present positional-then-named for both
     // lineage forms so the positional sub-pattern loop is agnostic. The
     // scrutinee's sub-values are in declaration order (positional fields then
-    // `sort_named_canonical`-ordered named fields), so a named sub-pattern
+    // `canonicalize_record_named_args`-ordered named fields), so a named sub-pattern
     // maps to its field's declaration index.
     // Arity-strict: the total of positional + named sub-patterns must equal
     // the value's field count, with no field covered twice — previously `<`
