@@ -15,6 +15,13 @@
 //! switch to raw-`f64` IEEE compare. `struct_eq_on_nan_stays_structural` guards the
 //! first half; `eq_ordered_on_nan_follow_ieee` (ignored until the fix) specifies the
 //! second.
+//!
+//! This pins WI-645 *direction A* (the interim: treat `Eq` as `PartialEq`-like, drop
+//! the resolver's hardcoded reflexivity for a partial Float carrier, so `eq`/`Ordered`
+//! read IEEE). The principled *direction B* (split `PartialEq ⊂ Eq`; Float provides
+//! only `PartialEq`; a reflexive `Eq` marker Float lacks) would instead make
+//! `eq(nan,nan)` a *missing-instance* rather than `false` — revisit this assertion if
+//! B is chosen. See WI-645.
 
 fn interp(src: &str) -> anthill_core::eval::Interpreter {
     crate::common::interp_for(src)
