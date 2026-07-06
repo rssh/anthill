@@ -614,14 +614,26 @@ pub struct TypingEnv {
     /// the iterative typer and this is set once per rule, so clones are a refcount
     /// bump, not a map copy.
     debruijn_types: Rc<HashMap<u32, Value>>,
-    /// WI-557: set ONLY by the rule-body dot-dispatch sweep
+    /// WI-557 / WI-622: set ONLY by the rule-body dot-dispatch sweep
     /// (`type_rule_bodies`). A rule body is SLD/relational — it has no
-    /// call-site Γ and no imperative Hoare semantics — so the WI-539 value-
-    /// precondition `requires`-check (an op-body call-site obligation proved
-    /// against Γ) does not apply there: it would float over a rule-body variable
-    /// and raise a spurious `UnsatisfiedPrecondition`. `check_apply_iter` skips
-    /// the precondition check when this is set; op-body checking (the flag stays
-    /// `false`) is unchanged. A plain `bool` rides through every `Visit`-push /
+    /// call-site Γ and no imperative Hoare semantics — so an OP-BODY call-site
+    /// obligation over a symbolic rule-body variable legitimately FLOATS and must
+    /// not fire as a hard load error. `check_apply_iter` consults this to scope
+    /// two such obligations (op-body checking, the flag `false`, is unchanged):
+    ///   * WI-539 value-precondition `requires`-check — skipped for a FLOAT but
+    ///     still raised on a ground-REFUTED precondition (WI-602: definite raises,
+    ///     float defers — the WI-067/WI-292 polarity);
+    ///   * WI-270 `UnconstrainedTypeParam` — skipped entirely, because the dot is
+    ///     typed with `expected: None` so a return-only param has no call-site pin,
+    ///     yet SLD resolution unifies it against the goal context. There is no
+    ///     DEFINITE sub-case (unlike the precondition): "unconstrained" means "no
+    ///     binding at all", exactly the float condition; a genuine type CONFLICT
+    ///     surfaces as a contradiction / `TypeMismatch`, not here.
+    /// The sibling spec-op `DispatchNoMatch` needs NO gate: dot dispatch resolves
+    /// a spec op only on a CONCRETE (or abstract-spec) receiver, never an abstract
+    /// type-param, so every rule-body dot that reaches that raise has a concrete
+    /// carrier — a DEFINITE failure that must stay loud (WI-622 finding).
+    /// A plain `bool` rides through every `Visit`-push /
     /// let / lambda / match env clone exactly as `debruijn_types` does — the same
     /// path the receiver-var dispatch already depends on. NOT inferred from
     /// `debruijn_types.is_empty()` / `enclosing.is_none()`: a variable-free rule
@@ -6193,7 +6205,20 @@ fn check_apply_iter(
         // named diagnostic so the user can fix it by writing
         // `op[T = …](…)`. Replaces the WI-269 Phase D silent-drop
         // marker.
-        check_unconstrained_type_params(kb, &subst, &op, fn_sym, span)?;
+        //
+        // WI-622: this is an OP-BODY call-site obligation (it lets the caller
+        // recover the concrete return shape via a `let`-annotation / return
+        // position). A rule body is relational and `dispatch_dots_in_occ` types
+        // the dot with `expected: None`, so a return-only type-param has no
+        // call-site pin here — but it is NOT a violation: SLD resolution unifies
+        // the param against the goal context, or it stays a harmless phantom on a
+        // value-less return-only param. Unlike the WI-602 precondition case there
+        // is no DEFINITE sub-case to still raise on (see the `rule_body_dispatch`
+        // field doc), so skip the whole check in rule-body context — mirroring how
+        // WI-557/602 scoped the sibling value-precondition obligation.
+        if !env.in_rule_body() {
+            check_unconstrained_type_params(kb, &subst, &op, fn_sym, span)?;
+        }
 
         // Write resolved op type-arg values back to the apply
         // occurrence so the eval can install them on the callee's
