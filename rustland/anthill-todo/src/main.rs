@@ -43,6 +43,7 @@ If the project has no `anthill-todo/` directory yet, run `init` first.
 
 ```bash
 anthill-todo -d "$PWD" list                              # List all work items
+anthill-todo -d "$PWD" list --unblocked                  # Only items whose dependencies are all satisfied
 anthill-todo -d "$PWD" list --tag typing                 # Tag's items in dependency (sequence) order
 anthill-todo -d "$PWD" add "description" [--depends WI-NNN] [--tag NAME]  # Add a new work item
 anthill-todo -d "$PWD" insert "description" --before WI-NNN [--tag NAME]  # Insert a prerequisite before WI-NNN

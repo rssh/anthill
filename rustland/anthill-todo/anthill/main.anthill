@@ -328,7 +328,13 @@ namespace anthill.todo
               kind: flag(),
               required: false,
               description: "Show a named list in dependency (sequence) order"),
-            nil()))),
+            cons(
+              ParamSpec(
+                name: "unblocked",
+                kind: bool_flag(),
+                required: false,
+                description: "Show only unblocked items (all dependencies satisfied)"),
+              nil())))),
       parent: none())
 
   -- Per-WorkItem row precomputed for `cmd_list`. Walking a term's named
@@ -1309,6 +1315,23 @@ namespace anthill.todo
               if any_unmet(deps, row_map) then cons(r, partition_blocked(rest, row_map))
               else partition_blocked(rest, row_map)
 
+    -- Keep only ids whose deps are all satisfied (the id-level analogue of
+    -- partition_ready, for the `--unblocked` tag view). An id with no row is
+    -- not an actionable item and is dropped.
+    operation filter_unblocked_ids(ids: List[String],
+                                   row_map: Map[String, Row]) -> List[String] =
+      match ids
+        case nil() -> nil()
+        case cons(id, rest) ->
+          match get(row_map, id)
+            case none() -> filter_unblocked_ids(rest, row_map)
+            case some(r) ->
+              match r
+                case Row(_, _, _, deps, _, _) ->
+                  if any_unmet(deps, row_map)
+                    then filter_unblocked_ids(rest, row_map)
+                    else cons(id, filter_unblocked_ids(rest, row_map))
+
     -- ── Print ─────────────────────────────────────────────────────
 
     operation deps_suffix(deps: List[String]) -> String =
@@ -1408,11 +1431,15 @@ namespace anthill.todo
     operation cmd_list(args: List[Binding], s: Cell[State]) -> Int64
       effects {ConsoleOutput, Error}
     =
+      let only_unblocked = match get_arg(args, "unblocked")
+        case some(_) -> true
+        case none() -> false
       match get_arg(args, "tag")
-        case some(t) -> cmd_list_tagged(s, t, get_arg(args, "status"))
-        case none() -> cmd_list_plain(args, s)
+        case some(t) -> cmd_list_tagged(s, t, get_arg(args, "status"), only_unblocked)
+        case none() -> cmd_list_plain(args, s, only_unblocked)
 
-    operation cmd_list_plain(args: List[Binding], s: Cell[State]) -> Int64
+    operation cmd_list_plain(args: List[Binding], s: Cell[State],
+                             only_unblocked: Bool) -> Int64
       effects {ConsoleOutput, Error}
     =
       let status_filter = get_arg(args, "status")
@@ -1424,7 +1451,13 @@ namespace anthill.todo
       let fb_set = feedback_set()
       let annotated = annotate_rows(raw_rows, fb_set)
       let row_map = build_row_map(annotated)
-      let filtered = filter_rows(annotated, status_filter, show_all)
+      -- `--unblocked` drops rows with any unmet dependency. The row_map
+      -- spans ALL rows (pre-filter), so a dep hidden by the status filter
+      -- still counts toward blocked-ness. partition_ready keeps input order;
+      -- print_groups re-orders chrono+topo per status group afterwards.
+      let kept = filter_rows(annotated, status_filter, show_all)
+      let filtered = if only_unblocked then partition_ready(kept, row_map)
+                     else kept
       if eq(count_rows(filtered), 0) then
         let _ = println(console(), "No work items found.")
         0
@@ -1448,7 +1481,8 @@ namespace anthill.todo
     -- a missing id prints `[missing]` (a data error stays visible), and
     -- the status filter is applied per row AFTER ordering.
     operation cmd_list_tagged(s: Cell[State], tag_name: String,
-                              status_filter: Option[String]) -> Int64
+                              status_filter: Option[String],
+                              only_unblocked: Bool) -> Int64
       effects {ConsoleOutput, Error}
     =
       let ids = sort_strings_unique(WorkItemStore.items_with_tag(s, tag_name))
@@ -1459,7 +1493,16 @@ namespace anthill.todo
           0
         case cons(_, _) ->
           let row_map = build_row_map(rows_of_w(WorkItemStore.all(s)))
-          let ordered = topo_order_tagged(row_map, ids)
+          let sequenced = topo_order_tagged(row_map, ids)
+          -- `--unblocked` narrows the sequence to items whose deps are all
+          -- satisfied. A tagged id with no row (a dangling [missing] ref) is
+          -- not an actionable item, so it is dropped here; plain `list --tag`
+          -- still surfaces it. The header counts this narrowed list; the footer
+          -- counts rows actually printed, which a `--status` filter can shrink
+          -- further (that header/footer gap predates --unblocked).
+          let ordered = if only_unblocked
+            then filter_unblocked_ids(sequenced, row_map)
+            else sequenced
           let _ = println(console(),
             concat("tag '", concat(tag_name,
               concat("' (", concat(to_string(count_strings(ordered)),
