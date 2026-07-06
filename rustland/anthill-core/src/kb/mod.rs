@@ -449,6 +449,20 @@ pub struct KnowledgeBase {
     /// `unindex_functor`.
     simp_gate_cache: Option<bool>,
 
+    /// WI-627: the resolved `anthill.prelude.Eq.eq` / `anthill.kernel.unify`
+    /// connective symbols, cached at [`Self::register_standard_builtins`] time
+    /// (re-synced in [`Self::resolve_builtins`]) so
+    /// [`Self::is_equality_connective_functor`] — on the resolver's per-candidate
+    /// `is_equation` hot path — is an O(1) field read, not two long-string
+    /// `by_qualified_name` lookups per call. `None` in a prelude/kernel-less unit
+    /// KB (never registers builtins); that KB's only equation shape is a bare
+    /// `intern("eq")`/`intern("unify")` head, matched by short name in the
+    /// fallback. The two symbols are load-stable (the `by_qualified_name` entry is
+    /// reused, never re-minted — verified for the full stdlib load), so the cache
+    /// never goes stale.
+    eq_connective_sym: Option<Symbol>,
+    unify_connective_sym: Option<Symbol>,
+
     /// WI-429: every `RigidTypeProjection` the loader FORMS, with its source
     /// span — the work-list for the end-of-load formation sweep
     /// (`typing::validate_rigid_projection_formations`). A projection stored
@@ -597,6 +611,8 @@ impl KnowledgeBase {
             const_bodies: HashMap::new(),
             has_dot_applies: false,
             simp_gate_cache: None,
+            eq_connective_sym: None,
+            unify_connective_sym: None,
             rigid_projection_formations: Vec::new(),
             existential_return_ops: std::collections::HashSet::new(),
             entity_field_types: HashMap::new(),
@@ -3048,6 +3064,50 @@ impl KnowledgeBase {
             .unwrap_or_else(|| self.intern("unify"))
     }
 
+    /// WI-627: is `functor` the KB's canonical equality / unification connective
+    /// head — the `anthill.prelude.Eq.eq` (`=`) or `anthill.kernel.unify` (`<=>`)
+    /// symbol every genuine equation carries? Compares RESOLVED SYMBOL IDENTITY,
+    /// not the short name: a carrier's OWN `eq` operation (`Set.eq` / `Map.eq` —
+    /// the WI-350/WI-444 short-name override the semantic `=`/`eq` dispatch
+    /// resolves against) is a DIFFERENT symbol that merely *shares* the short
+    /// name, so it is a normal relational op — NOT an equational law to be
+    /// unindexed by WI-139 nor dropped from SLD candidates by [`Self::is_equation`].
+    /// This is the single source of truth `is_equation` (here) and
+    /// [`load::is_equational_head`](crate::kb::load::is_equational_head) both
+    /// classify through, so the two can never diverge.
+    ///
+    /// Reads the cached [`Self::eq_connective_sym`] / [`Self::unify_connective_sym`]
+    /// (O(1), no interning — the `&self`-only peer of the `&mut`
+    /// [`Self::eq_functor`] / [`Self::unify_functor`], which mint a bare fallback).
+    /// Each connective is tested INDEPENDENTLY: exact symbol match when its
+    /// canonical symbol is cached, else short-name match (a prelude/kernel-less
+    /// unit KB whose bare `intern("eq")`/`intern("unify")` head is the only
+    /// equation shape). Per-connective so the classification never hinges on both
+    /// symbols being defined together — a KB with only one of them still
+    /// classifies the other by short name.
+    pub(crate) fn is_equality_connective_functor(&self, functor: Symbol) -> bool {
+        // The `qn`/short-name work runs ONLY on the fallback arm (canonical not
+        // cached); the common prelude-loaded case is two `Symbol` comparisons.
+        let matches = |canonical: Option<Symbol>, short: &str| match canonical {
+            Some(sym) => functor == sym,
+            None => {
+                let qn = self.qualified_name_of(functor);
+                qn.rsplit('.').next().unwrap_or(qn) == short
+            }
+        };
+        matches(self.eq_connective_sym, "eq") || matches(self.unify_connective_sym, "unify")
+    }
+
+    /// WI-627: (re)resolve and cache the equality-connective symbols read by
+    /// [`Self::is_equality_connective_functor`]. Called at the end of
+    /// [`Self::register_standard_builtins`] (where `register_builtin` first defines
+    /// both) and [`Self::resolve_builtins`] (the builtin-symbol remap hook), so the
+    /// cache reflects the final canonical symbols regardless of load order.
+    fn cache_connective_syms(&mut self) {
+        self.eq_connective_sym = self.try_resolve_symbol("anthill.prelude.Eq.eq");
+        self.unify_connective_sym = self.try_resolve_symbol("anthill.kernel.unify");
+    }
+
     /// WI-646 — the candidate equational rule ids for `[simp]`/`[unfold]` firing:
     /// the `eq` (`=`) bucket plus the `unify` (`<=>`) bucket (deduped when the two
     /// functors coincide, e.g. a prelude-less unit KB). ONE helper for the eq+unify
@@ -3067,10 +3127,14 @@ impl KnowledgeBase {
         rids
     }
 
-    /// Check if a rule is an equation: head functor is "eq" or "unify" (the
-    /// `<=>` head, proposal 049) with 2 positional args and an empty body. The
-    /// classification is **type-independent** — purely the head shape — so it
-    /// recognizes a migrated `<=>` equation identically to a legacy `=` one.
+    /// Check if a rule is an equation: head functor is the canonical `eq` (`=`)
+    /// or `unify` (`<=>`, proposal 049) connective with 2 positional args and an
+    /// empty body. The classification is **type-independent** — purely the head
+    /// shape — so it recognizes a migrated `<=>` equation identically to a legacy
+    /// `=` one. WI-627: the connective test is by RESOLVED SYMBOL
+    /// ([`Self::is_equality_connective_functor`]), so a carrier's own bodyless
+    /// `eq(empty(), empty())` base case (`Map.eq`, a different symbol sharing the
+    /// short name) is NOT mistaken for a law and dropped from SLD candidates.
     pub fn is_equation(&self, id: RuleId) -> bool {
         let entry = &self.rules[id.index()];
         if !entry.body_nodes.is_empty() || entry.retracted {
@@ -3087,8 +3151,7 @@ impl KnowledgeBase {
         // never `eq`-headed — falls through to `false` as it always should.
         match term_view::TermView::head(&entry.head, self) {
             term_view::ViewHead::Functor { functor: Some(functor), pos_arity, .. } => {
-                let name = self.symbols.name(functor);
-                (name == "eq" || name == "unify") && pos_arity == 2
+                self.is_equality_connective_functor(functor) && pos_arity == 2
             }
             _ => false,
         }
@@ -4435,6 +4498,8 @@ impl KnowledgeBase {
         self.register_builtin("anthill.reflect.occurrence_owner", BuiltinTag::OccurrenceOwner);
         self.register_builtin("anthill.reflect.sub_occurrences", BuiltinTag::SubOccurrences);
         self.register_builtin("anthill.reflect.operation_body", BuiltinTag::OperationBody);
+        // WI-627: cache the equality-connective symbols now that they're defined.
+        self.cache_connective_syms();
     }
 
     /// Re-resolve builtins after scan_definitions().
@@ -4451,6 +4516,9 @@ impl KnowledgeBase {
                 .copied().unwrap_or(old_sym);
             self.builtins.insert(sym, tag);
         }
+        // WI-627: a builtin's canonical symbol may have been remapped above;
+        // re-sync the equality-connective cache to the final symbols.
+        self.cache_connective_syms();
     }
 
     /// True iff `sym` is a registered resolver builtin (`anthill.prelude.Eq.eq`,
