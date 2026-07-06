@@ -73,7 +73,7 @@ fn dump_eq_lt_rewrites() {
     // ── Ordered.lt resolution probe ─────────────────────────────────
     let names = [
         "anthill.prelude.Ordered",
-        "anthill.prelude.Ordered.lt",
+        "anthill.prelude.PartialOrd.lt",
         "anthill.prelude.Ordered.compare",
         "anthill.prelude.Int64",
         "anthill.prelude.Int64.lt",

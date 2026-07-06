@@ -1,5 +1,20 @@
--- Eq: equality
-sort anthill.prelude.Eq
+-- PartialEq / Eq — partial vs. lawful equality (library proposal 004, WI-644).
+--
+-- PartialEq holds the `eq`/`neq` OPERATIONS: any two-valued comparison, with NO
+-- reflexivity law. This is all a body goal `eq(?x, ?y)` needs, and it is what
+-- IEEE `Float` provides (`nan eq nan = false`, `-0.0 eq +0.0 = true`).
+--
+-- Eq `requires PartialEq` and adds ONLY the reflexivity law `eq_refl` — a lawful-
+-- equivalence marker + obligation, no new operation (`Eq.eq` is the inherited
+-- `PartialEq.eq`). `Set`/`Map` keys, dedup, and sort require this lawful Eq.
+-- `Float` does NOT provide Eq: it cannot discharge `eq(?a,?a) <=> true` at NaN.
+--
+-- NB the per-instance discharge/refutation of `eq_refl` at load time (so a
+-- `provides Eq[Float]` self-rejects) is WI-650; use-site `requires Eq[K]`
+-- enforcement (so `Map[K = Float]` is a load error) is WI-649. Until those land
+-- `eq_refl` is a dormant obligation — it documents the contract but is not yet
+-- checked, and does not fire as a rewrite (the semantic `eq` is builtin-backed).
+sort anthill.prelude.PartialEq
   import anthill.reflect.{not}
 
   sort T = ?
@@ -8,4 +23,15 @@ sort anthill.prelude.Eq
     neq(a: T, b: T) -> Bool
   }
   rule neq(?a, ?b) <=> not(eq(?a, ?b))
+end
+
+-- Eq: lawful (reflexive) equality. The `eq`/`neq` operations are inherited from
+-- PartialEq via the requires-chain (WI-614); Eq adds only the law.
+sort anthill.prelude.Eq
+  sort T = ?
+  requires PartialEq[T]
+
+  -- Reflexivity — the law a partial carrier (IEEE Float) cannot satisfy. See the
+  -- file header: dormant until WI-650 discharges/refutes it per instance.
+  rule eq_refl: eq(?a, ?a) <=> true
 end

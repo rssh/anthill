@@ -293,7 +293,7 @@ fn eq_with_unbound_var_still_residualizes() {
     let x_vid = kb.fresh_var(x_name);
     let x = kb.alloc(Term::Var(anthill_core::kb::term::Var::Global(x_vid)));
     let one = int_term(&mut kb, 1);
-    let goal = fn_term(&mut kb, "anthill.prelude.Eq.eq", &[x, one]);
+    let goal = fn_term(&mut kb, "anthill.prelude.PartialEq.eq", &[x, one]);
     let sols = kb.resolve(&[goal], &ResolveConfig::default());
     assert!(
         !sols.is_empty(),

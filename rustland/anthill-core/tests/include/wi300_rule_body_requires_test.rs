@@ -1,6 +1,6 @@
 //! WI-300 — rule-body `requires(X)` requirement guards (guard tier).
 //!
-//! A rule-body `requires(Eq[T])` desugars (converter) to `find_dictionary(Eq[T])`,
+//! A rule-body `requires(PartialEq[T])` desugars (converter) to `find_dictionary(Eq[T])`,
 //! which the typer sweep rewrites to `find_dictionary(Eq, Eq.eq, ?x, ?y)` using the
 //! body's `eq(?x, ?y)` call as the witness whose carrier types decide the instance.
 //! At resolution the guard checks `provides Eq` at the current binding:
@@ -80,11 +80,12 @@ const SRC: &str = r#"
       sort Noeq
         entity ne(v: Int64)
       end
+      fact PartialEq[T = Witheq]
       fact Eq[T = Witheq]
 
       -- Fires only when the argument type provides Eq; the inner `eq` is the
       -- structural builtin, so the guard alone decides fire / don't-fire.
-      rule related(?x, ?y) :- requires(Eq[T]), eq(?x, ?y)
+      rule related(?x, ?y) :- requires(PartialEq[T]), eq(?x, ?y)
     end
 "#;
 
@@ -183,7 +184,7 @@ fn guard_suspends_on_under_determined_carrier() {
 
 #[test]
 fn ungroundable_requires_is_a_loud_error() {
-    // `requires(Eq[T])` with NO body call to any of Eq's operations cannot be
+    // `requires(PartialEq[T])` with NO body call to any of Eq's operations cannot be
     // grounded — the guard would never be decidable. That is reported as a hard
     // error (loud, not a silent skip), not left to fail quietly at resolution.
     let src = r#"
@@ -192,7 +193,7 @@ fn ungroundable_requires_is_a_loud_error() {
           sort Thing
             entity thing(v: Int64)
           end
-          rule solo(?x) :- requires(Eq[T])
+          rule solo(?x) :- requires(PartialEq[T])
         end
     "#;
     let errs = try_load_with(src)
@@ -216,8 +217,9 @@ fn two_requires_on_same_spec_is_a_loud_error() {
           sort Thing
             entity thing(v: Int64)
           end
+          fact PartialEq[T = Thing]
           fact Eq[T = Thing]
-          rule twin(?a, ?b, ?c) :- requires(Eq[A]), requires(Eq[B]), eq(?a, ?b), eq(?b, ?c)
+          rule twin(?a, ?b, ?c) :- requires(PartialEq[A]), requires(PartialEq[B]), eq(?a, ?b), eq(?b, ?c)
         end
     "#;
     let errs = try_load_with(src)

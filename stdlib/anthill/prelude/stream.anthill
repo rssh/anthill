@@ -8,7 +8,7 @@ sort anthill.prelude.Stream
   import anthill.prelude.Option.{some, none}
   import anthill.prelude.Pair.{pair, fst, snd}
   import anthill.prelude.List.{nil, cons}
-  import anthill.prelude.Ordered.{gt}
+  import anthill.prelude.PartialOrd.{gt}
   import anthill.prelude.Numeric.{sub}
   import anthill.prelude.Iterable
   import anthill.prelude.Modify

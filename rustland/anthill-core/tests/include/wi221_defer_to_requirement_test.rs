@@ -91,7 +91,7 @@ fn subst_with_param(
 
 #[test]
 fn dispatch_defers_when_call_reaches_spec_via_requires() {
-    // Sort `Wi221Box` declares `requires Eq[T = Int64]`. A spec-op call
+    // Sort `Wi221Box` declares `requires PartialEq[T = Int64]`. A spec-op call
     // (Eq.eq at T=Int64) reached from inside Wi221Box's body must be
     // classified as Deferred even though stdlib has `fact Eq[T = Int64]`
     // (Int64 as the impl) — the impl chosen at runtime depends on which
@@ -102,20 +102,20 @@ fn dispatch_defers_when_call_reaches_spec_via_requires() {
     // dispatch should go through frame.requirements at runtime.
     let mut kb = load_with(r#"
         namespace test.wi221.open_bound
-          import anthill.prelude.{Eq, Int64}
+          import anthill.prelude.{PartialEq, Int64}
           sort Wi221Box
-            requires Eq[T = Int64]
+            requires PartialEq[T = Int64]
           end
         end
     "#);
 
-    let eq_op = kb.try_resolve_symbol("anthill.prelude.Eq.eq")
+    let eq_op = kb.try_resolve_symbol("anthill.prelude.PartialEq.eq")
         .expect("Eq.eq registered by stdlib");
     let spec_sort = lookup_spec_op_dispatch(&kb, eq_op)
         .expect("Eq.eq is a spec op");
     let subst = subst_with_param(
         &mut kb,
-        "anthill.prelude.Eq",
+        "anthill.prelude.PartialEq",
         "T",
         "anthill.prelude.Int64",
     );
@@ -136,7 +136,7 @@ fn dispatch_defers_when_call_reaches_spec_via_requires() {
     let deferred = find_unique_impl_op(&mut kb, &subst, spec_sort, op_short, &chain);
     assert_eq!(deferred, DispatchOutcome::Deferred,
         "WI-221: expected Deferred when call reaches Eq.eq via Wi221Box's \
-         `requires Eq[T = Int64]` clause; got {deferred:?}");
+         `requires PartialEq[T = Int64]` clause; got {deferred:?}");
 }
 
 #[test]
@@ -153,13 +153,13 @@ fn dispatch_pins_when_enclosing_sort_does_not_require_spec() {
         end
     "#);
 
-    let eq_op = kb.try_resolve_symbol("anthill.prelude.Eq.eq")
+    let eq_op = kb.try_resolve_symbol("anthill.prelude.PartialEq.eq")
         .expect("Eq.eq registered by stdlib");
     let spec_sort = lookup_spec_op_dispatch(&kb, eq_op)
         .expect("Eq.eq is a spec op");
     let subst = subst_with_param(
         &mut kb,
-        "anthill.prelude.Eq",
+        "anthill.prelude.PartialEq",
         "T",
         "anthill.prelude.Int64",
     );
@@ -171,34 +171,34 @@ fn dispatch_pins_when_enclosing_sort_does_not_require_spec() {
 
     let outcome = find_unique_impl_op(&mut kb, &subst, spec_sort, op_short, &chain);
     assert!(matches!(outcome, DispatchOutcome::Unique(_)),
-        "WI-221: enclosing sort without `requires Eq[T=Int64]` must not \
+        "WI-221: enclosing sort without `requires PartialEq[T=Int64]` must not \
          defer — Pin-now still applies. Got {outcome:?}");
 }
 
 #[test]
 fn dispatch_defers_when_requires_uses_open_param() {
     // Variant: the enclosing sort's `requires` clause uses its own
-    // open type-param (`requires Eq[T]` where T is the sort's parameter).
+    // open type-param (`requires PartialEq[T]` where T is the sort's parameter).
     // A per-call subst that ground-binds that param to Int64 should still
     // be deferred — the impl chosen at runtime depends on whichever
     // Eq requirement the caller passes for the chosen T.
     let mut kb = load_with(r#"
         namespace test.wi221.open_t
-          import anthill.prelude.Eq
+          import anthill.prelude.PartialEq
           sort Wi221Generic
             sort T = ?
-            requires Eq[T]
+            requires PartialEq[T]
           end
         end
     "#);
 
-    let eq_op = kb.try_resolve_symbol("anthill.prelude.Eq.eq")
+    let eq_op = kb.try_resolve_symbol("anthill.prelude.PartialEq.eq")
         .expect("Eq.eq registered by stdlib");
     let spec_sort = lookup_spec_op_dispatch(&kb, eq_op)
         .expect("Eq.eq is a spec op");
     let subst = subst_with_param(
         &mut kb,
-        "anthill.prelude.Eq",
+        "anthill.prelude.PartialEq",
         "T",
         "anthill.prelude.Int64",
     );
@@ -210,7 +210,7 @@ fn dispatch_defers_when_requires_uses_open_param() {
 
     let outcome = find_unique_impl_op(&mut kb, &subst, spec_sort, op_short, &chain);
     assert_eq!(outcome, DispatchOutcome::Deferred,
-        "WI-221: `requires Eq[T]` (with T as the sort's open param) must \
+        "WI-221: `requires PartialEq[T]` (with T as the sort's open param) must \
          defer for any per-call ground binding — the impl varies per \
          requirement. Got {outcome:?}");
 }

@@ -5,7 +5,7 @@ namespace anthill.cli.parse
   import anthill.prelude.{List, Option, String, Bool, Function}
   import anthill.prelude.Option.{some, none}
   import anthill.prelude.List.{nil, cons}
-  import anthill.prelude.Eq.{eq}
+  import anthill.prelude.PartialEq.{eq}
   import anthill.prelude.Bool.{and, not}
   import anthill.prelude.Iterable.{find}
   import anthill.prelude.String.{startsWith, substring, length}

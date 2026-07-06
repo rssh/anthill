@@ -5,7 +5,11 @@ namespace anthill.prelude
   provides Int64 language rust
     artifact "rustland/anthill-stl/src/prelude/int.rs"
     carrier { Int64: "i64" }
+    -- WI-644 / proposal 004: Int64 is lawful — it provides the partial bases
+    -- (PartialEq/PartialOrd) AND the total markers (Eq/Ordered).
+    fact PartialEq[T = Int64]
     fact Eq[T = Int64]
+    fact PartialOrd[T = Int64]
     fact Ordered[T = Int64]
     fact Numeric[T = Int64]
   end

@@ -36,20 +36,22 @@ fn deferred_call_rewrites_to_apply_within_with_spec_op_fn() {
     // requirement-param `__req_eq` by name (no positional slot).
     let src = r#"
 namespace test.wi222.defer_rewrite
-  import anthill.prelude.Eq.{eq}
-  import anthill.prelude.{Eq, Bool}
+  import anthill.prelude.PartialEq.{eq}
+  import anthill.prelude.{PartialEq, Bool}
   sort Wi222Box
     sort T = ?
-    requires Eq[T]
+    requires PartialEq[T]
     operation use_eq(a: T, b: T) -> Bool = eq(a, b)
   end
 end
 "#;
     let mut interp = interp_for(src);
-    let expected_name = interp.kb_mut().intern("__req_eq");
+    // WI-644: the fixture now `requires PartialEq[T]` (the base holding `eq`), so the
+    // synthesized requirement-param name is `__req_partialeq`.
+    let expected_name = interp.kb_mut().intern("__req_partialeq");
     let kb = interp.kb();
 
-    let eq_sym = kb.try_resolve_symbol("anthill.prelude.Eq.eq")
+    let eq_sym = kb.try_resolve_symbol("anthill.prelude.PartialEq.eq")
         .expect("Eq.eq registered");
 
     // Pick a defer rewrite for Eq.eq from this test's Wi222Box body.
@@ -519,7 +521,7 @@ end
         .try_resolve_symbol("test.wi239.nested.Wi239Nested.use_eq")
         .expect("use_eq registered");
     let eq_sym = kb
-        .try_resolve_symbol("anthill.prelude.Eq.eq")
+        .try_resolve_symbol("anthill.prelude.PartialEq.eq")
         .expect("Eq.eq registered");
 
     let body = kb.op_body_node(use_eq_sym).expect("use_eq has a body");
@@ -551,8 +553,9 @@ end
     );
     assert_eq!(
         proj_path.as_slice(),
-        &[0usize],
-        "Eq is nested inside Ordered (its 0th direct require) — non-empty \
-         projection path [0] marks the nested deferral",
+        &[0usize, 0usize],
+        "WI-644: `eq`'s spec is now `PartialEq`, nested one level deeper — \
+         Ordered → Eq (slot 0) → PartialEq (slot 0), so the projection path is \
+         [0, 0]. The extra hop is the added PartialEq base level.",
     );
 }

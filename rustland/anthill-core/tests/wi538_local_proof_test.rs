@@ -46,7 +46,7 @@ fn param(kb: &mut KnowledgeBase, name: &str) -> Value {
 }
 
 fn neq_sym(kb: &mut KnowledgeBase) -> Symbol {
-    kb.try_resolve_symbol("anthill.prelude.Eq.neq").expect("neq")
+    kb.try_resolve_symbol("anthill.prelude.PartialEq.neq").expect("neq")
 }
 
 #[test]

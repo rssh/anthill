@@ -1,24 +1,46 @@
--- Ordered: total ordering (requires Eq)
+-- PartialOrd / Ordered — partial vs. total ordering (library proposal 004, WI-644).
+--
+-- PartialOrd holds the `gt`/`lt`/`gte`/`lte` comparison surface, with NO totality
+-- law: a `NaN` operand answers `false` (IEEE unordered). `Float` provides this.
+-- (Proposal 004 gives PartialOrd a `partialCompare -> Option[Int64]` primitive with
+-- gt/lt derived; the core keeps gt/lt/gte/lte as builtin-backed primitives — the
+-- Option-compare refinement is a follow-up.)
+--
+-- Ordered (the proposal's `Ord`) is the TOTAL order: `compare -> Int64` plus the
+-- reflexivity/antisymmetry laws. It `requires Eq` (lawful equality) and PartialOrd.
+-- `Float`'s order is partial (NaN unordered), so `Float` does NOT provide Ordered;
+-- `TotalFloat` does. Sort / dedup / sorted-key consumers require Ordered.
+sort anthill.prelude.PartialOrd
+  sort T = ?
+  requires PartialEq[T]
+
+  operation {
+    gt(a: T, b: T) -> Bool          -- >
+    gte(a: T, b: T) -> Bool         -- >=
+    lt(a: T, b: T) -> Bool          -- <
+    lte(a: T, b: T) -> Bool         -- <=
+  }
+end
+
 sort anthill.prelude.Ordered
   import anthill.prelude.Bool.{ite}
   import anthill.prelude.Int64.{neg}
 
   sort T = ?
   requires Eq[T]
+  requires PartialOrd[T]
 
   -- Primary operation: compare returns -1, 0, or 1
   operation compare(a: T, b: T) -> Int64
 
   -- Derived operations
   operation {
-    gt(a: T, b: T) -> Bool          -- >
-    gte(a: T, b: T) -> Bool         -- >=
-    lt(a: T, b: T) -> Bool          -- <
-    lte(a: T, b: T) -> Bool         -- <=
     max(a: T, b: T) -> T
     min(a: T, b: T) -> T
   }
 
+  -- gt/lt/gte/lte are inherited from PartialOrd; for a total order they relate to
+  -- `compare` by these laws.
   rule {
     gt(?a, ?b)  <=> gt(compare(?a, ?b), 0)
     lt(?a, ?b)  <=> lt(compare(?a, ?b), 0)

@@ -66,7 +66,7 @@ end
         .expect("typer must classify Wi231Defer.use_eq's eq() call as DeferToRequirement");
 
     // Sanity check the captured fields.
-    let eq_sym = kb.try_resolve_symbol("anthill.prelude.Eq.eq").expect("Eq.eq");
+    let eq_sym = kb.try_resolve_symbol("anthill.prelude.PartialEq.eq").expect("Eq.eq");
     let eq_sort = kb.try_resolve_symbol("anthill.prelude.Eq").expect("Eq sort");
     let outer = kb
         .try_resolve_symbol("test.wi231.classifications.Wi231Defer")
@@ -104,7 +104,7 @@ end
 "#;
     let kb = load_kb_with(src);
 
-    let eq_sym = kb.try_resolve_symbol("anthill.prelude.Eq.eq").expect("Eq.eq");
+    let eq_sym = kb.try_resolve_symbol("anthill.prelude.PartialEq.eq").expect("Eq.eq");
 
     // Walk dispatch_origin to find the rewrite that originated from Eq.eq.
     let rewritten = kb
@@ -165,7 +165,7 @@ end
     let refs: Vec<_> = parsed.iter().collect();
     load::load_all(&mut kb, &refs, &NullResolver).expect("load");
 
-    let eq_sym = kb.try_resolve_symbol("anthill.prelude.Eq.eq").expect("Eq.eq");
+    let eq_sym = kb.try_resolve_symbol("anthill.prelude.PartialEq.eq").expect("Eq.eq");
     let eq_eq_count = kb.dispatch_origin_iter().filter(|(_, s)| *s == eq_sym).count();
 
     // After the standard pipeline, the Eq.eq rewrite must exist —
@@ -265,8 +265,8 @@ end
 
     // Both call sites end up rewritten — the chain-memoized pass walks
     // both Defer rows and emits both rewrites in one run.
-    let eq_sym = kb.try_resolve_symbol("anthill.prelude.Eq.eq").expect("Eq.eq");
-    let neq_sym = kb.try_resolve_symbol("anthill.prelude.Eq.neq").expect("Eq.neq");
+    let eq_sym = kb.try_resolve_symbol("anthill.prelude.PartialEq.eq").expect("Eq.eq");
+    let neq_sym = kb.try_resolve_symbol("anthill.prelude.PartialEq.neq").expect("Eq.neq");
     let eq_rewrites = kb
         .dispatch_origin_iter()
         .filter(|(_, s)| *s == eq_sym)

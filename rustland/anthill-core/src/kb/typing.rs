@@ -1149,7 +1149,7 @@ pub fn match_arm_gamma_facts(
     scrutinee_ctors: &[Symbol],
 ) -> Vec<Vec<Value>> {
     let eq_sym = kb.eq_functor();
-    let neq_sym = kb.try_resolve_symbol("anthill.prelude.Eq.neq");
+    let neq_sym = kb.try_resolve_symbol("anthill.prelude.PartialEq.neq");
     let mut out: Vec<Vec<Value>> = Vec::with_capacity(arms.len());
     // Negations accumulated from earlier ground, unguarded arms.
     let mut earlier_neqs: Vec<Value> = Vec::new();
@@ -9625,11 +9625,31 @@ fn pick_most_specific(_kb: &KnowledgeBase, candidates: &[Candidate]) -> Option<u
 /// resolves `Unique` (keeping its impl effect-grounding, WI-365) and never gets
 /// here. Binding-precise coverage for a multi-abstract-param op is future work;
 /// the single-param driver (`member`'s sole element `T`) is exact.
-fn op_requires_covers(kb: &KnowledgeBase, op_requires: &[RequiresEntry], spec_sort: Symbol) -> bool {
+fn op_requires_covers(kb: &mut KnowledgeBase, op_requires: &[RequiresEntry], spec_sort: Symbol) -> bool {
     let target = kb.canonical_sort_sym(spec_sort);
-    op_requires
-        .iter()
-        .any(|e| kb.canonical_sort_sym(e.required_sort) == target)
+    // WI-644 / proposal 004: TRANSITIVE coverage. `requires Eq[T]` must cover a
+    // `PartialEq.eq` call because `Eq requires PartialEq` — the partial ops moved onto
+    // the `PartialEq`/`PartialOrd` bases, so a comparison-only op that declares
+    // `requires Eq`/`requires Ordered` (`List.member`) reaches its `eq`/`gt` through the
+    // chain, exactly as the proposal intends. Walk each declared requirement's own
+    // requires-chain (BFS over the `SortRequiresInfo` edges). An op with NO covering
+    // requirement (`spec_sort` absent from every closure) still fails — the WI-325
+    // diagnostic is preserved.
+    let mut stack: Vec<Symbol> = op_requires.iter().map(|e| e.required_sort).collect();
+    let mut seen: HashSet<Symbol> = HashSet::new();
+    while let Some(s) = stack.pop() {
+        let cs = kb.canonical_sort_sym(s);
+        if cs == target {
+            return true;
+        }
+        if !seen.insert(cs) {
+            continue;
+        }
+        for entry in direct_requires_chain(kb, cs) {
+            stack.push(entry.required_sort);
+        }
+    }
+    false
 }
 
 fn candidate_sub_goals_owned(
@@ -9832,8 +9852,39 @@ pub fn check_provider_requires(kb: &mut KnowledgeBase) -> Vec<super::load::LoadE
             // (`dispatch_values_match`) — fall back to v0's base-level
             // existence check (some sort named in the provision provides R).
             let concrete = goal.bindings.iter().all(|(_, v)| !contains_type_param(kb, *v));
+            // WI-644: SELF-CARRIER provision — every required binding is the CARRIER
+            // itself (`Set provides Eq[T = Set]` ⇒ required `PartialEq[T = Set]`). The
+            // strict `spec_resolves_at_bindings` can't discharge the carrier's OWN
+            // abstract element-`requires` (`Set requires Eq[element T]`) when it picks
+            // the carrier as the provider, yet a DIRECT self-provision of the required
+            // spec AT THE SAME (self) binding is sufficient — the element-conditionality
+            // is already inherited from the outer provision being checked. Binding-
+            // PRECISE: we require an actual `provides required[param = carrier]` fact
+            // (a provision whose head is the carrier AND whose every binding value is
+            // the carrier), NOT `sort_provides` at *any* binding — the latter would
+            // admit a mis-bound self-provision (`C provides R[T=Other]` satisfying a
+            // `R[T=C]` requirement), reopening the WI-343 binding-precise hole.
+            fn head_is(kb: &KnowledgeBase, v: TermId, carrier_canon: Symbol) -> bool {
+                match kb.get_term(v) {
+                    Term::Fn { functor, .. } | Term::Ref(functor) => {
+                        kb.canonical_sort_sym(*functor) == carrier_canon
+                    }
+                    _ => false,
+                }
+            }
+            let carrier_canon = kb.canonical_sort_sym(p.carrier);
+            let required_canon = kb.canonical_sort_sym(required);
+            let self_provides_required = !goal.bindings.is_empty()
+                && goal.bindings.iter().all(|(_, v)| head_is(kb, *v, carrier_canon))
+                && provisions.iter().any(|q| {
+                    q.carrier == p.carrier
+                        && kb.canonical_sort_sym(q.spec) == required_canon
+                        && !q.sigma.is_empty()
+                        && q.sigma.iter().all(|(_, qv)| head_is(kb, *qv, carrier_canon))
+                });
             let satisfied = if concrete {
-                spec_resolves_at_bindings(kb, required, goal.bindings)
+                spec_resolves_at_bindings(kb, required, goal.bindings.clone())
+                    || self_provides_required
             } else {
                 let mut cands: SmallVec<[Symbol; 4]> = SmallVec::from_elem(p.carrier, 1);
                 for (_, v) in &p.sigma {
@@ -17766,13 +17817,14 @@ fn guarded_atom_refuted(
     goals.iter().any(|g| conjunct_refuted(kb, flow, subst, sigma, g))
 }
 
-/// The `(eq, neq)` spec-op functor symbols (`anthill.prelude.Eq.{eq,neq}`); `neq`
-/// is `None` in a prelude-less KB. The single source for the eq/neq family pair,
-/// shared by [`negate_goal`]'s `eq ⇄ neq` swap and the WI-573 override gate so the
-/// two — which must agree on exactly which goals the structural builtin decides —
-/// can never silently diverge on how `neq` is qualified.
+/// The `(eq, neq)` spec-op functor symbols (`anthill.prelude.PartialEq.{eq,neq}` —
+/// WI-644 moved them off `Eq` onto its base); `neq` is `None` in a prelude-less KB.
+/// The single source for the eq/neq family pair, shared by [`negate_goal`]'s
+/// `eq ⇄ neq` swap and the WI-573 override gate so the two — which must agree on
+/// exactly which goals the structural builtin decides — can never silently diverge
+/// on how `neq` is qualified.
 fn eq_neq_functors(kb: &mut KnowledgeBase) -> (Symbol, Option<Symbol>) {
-    (kb.eq_functor(), kb.try_resolve_symbol("anthill.prelude.Eq.neq"))
+    (kb.eq_functor(), kb.try_resolve_symbol("anthill.prelude.PartialEq.neq"))
 }
 
 /// Is `f` the `eq` or `neq` spec op — the equality family the structural

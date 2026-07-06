@@ -291,7 +291,7 @@ end
         let kb = load_with_src(src);
         let op_sym = kb.try_resolve_symbol("test.wi222.spec_call.caller")
             .expect("caller registered");
-        let eq_sort = kb.try_resolve_symbol("anthill.prelude.Eq")
+        let eq_sort = kb.try_resolve_symbol("anthill.prelude.PartialEq")
             .expect("Eq registered");
         let reqs = op_requirements(&kb, op_sym);
         assert!(reqs.iter().any(|r| r.spec_sort == eq_sort),
@@ -363,7 +363,7 @@ end
         let kb = load_with_src(src);
         let sort_sym = kb.try_resolve_symbol("test.wi222.coverage_missing.CoverageMissing")
             .expect("CoverageMissing registered");
-        let eq_sort = kb.try_resolve_symbol("anthill.prelude.Eq").unwrap();
+        let eq_sort = kb.try_resolve_symbol("anthill.prelude.PartialEq").unwrap();
         let uncovered = check_sort_requirements_coverage(&kb, sort_sym);
         assert!(uncovered.iter().any(|u| u.requirement.spec_sort == eq_sort),
             "sort calling eq() without `requires Eq[T]` must be flagged; got {uncovered:?}");
@@ -385,7 +385,7 @@ end
         let kb = load_with_src(src);
         let foo_sym = kb.try_resolve_symbol("test.wi222.dedupe.foo")
             .expect("foo registered");
-        let eq_sort = kb.try_resolve_symbol("anthill.prelude.Eq")
+        let eq_sort = kb.try_resolve_symbol("anthill.prelude.PartialEq")
             .expect("Eq registered");
         let reqs = op_requirements(&kb, foo_sym);
         let eq_count = reqs.iter().filter(|r| r.spec_sort == eq_sort).count();

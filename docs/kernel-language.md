@@ -242,10 +242,14 @@ sort anthill.prelude.Eq
   rule neq(?a, ?b) <=> not(eq(?a, ?b))              -- equational rule head: `<=>` (unify), not `=` (test)
 end
 
--- Ordered: total ordering (requires Eq)
+-- Ordered: total ordering. Per proposal library/004 (WI-644) the gt/lt/gte/lte
+-- comparison surface lives on the base `PartialOrd` (IEEE-partial for Float);
+-- `Ordered` is the TOTAL tier — `compare` + laws — and `requires Eq, PartialOrd`.
+-- (This illustrative snippet keeps the comparators inline for brevity.)
 sort anthill.prelude.Ordered
   sort T = ?
   requires Eq[T]
+  requires PartialOrd[T]
 
   operation {
     gt(a: T, b: T) -> Bool          -- >
@@ -262,10 +266,11 @@ sort anthill.prelude.Ordered
   }
 end
 
--- Numeric: basic arithmetic (requires Ordered)
+-- Numeric: basic arithmetic (requires PartialOrd — IEEE Float is Numeric but only
+-- partially ordered, so the requirement is the partial comparison surface)
 sort anthill.prelude.Numeric
   sort T = ?
-  requires Ordered[T]
+  requires PartialOrd[T]
 
   operation {
     add(a: T, b: T) -> T           -- +
@@ -1191,14 +1196,14 @@ Operators are sugar for `Fn` terms. The tree-sitter grammar parses them as flat 
 | `or` | 1 | Left | `or` | `Bool` (word form) |
 | `&` | 2 | Left | `and` | `Bool` |
 | `and` | 2 | Left | `and` | `Bool` (word form) |
-| `=` | 3 | None | `eq` | `Eq` (semantic equality **test**, dispatched) |
-| `!=` | 3 | None | `neq` | `Eq` |
+| `=` | 3 | None | `eq` | `PartialEq` (semantic equality **test**, dispatched) |
+| `!=` | 3 | None | `neq` | `PartialEq` |
 | `===` | 3 | None | `struct_eq` | `anthill.kernel` (structural identity **test**) |
 | `<=>` | 3 | None | `unify` | `anthill.kernel` (structural **unification**) |
-| `<` | 4 | None | `lt` | `Ordered` |
-| `<=` | 4 | None | `lte` | `Ordered` |
-| `>` | 4 | None | `gt` | `Ordered` |
-| `>=` | 4 | None | `gte` | `Ordered` |
+| `<` | 4 | None | `lt` | `PartialOrd` |
+| `<=` | 4 | None | `lte` | `PartialOrd` |
+| `>` | 4 | None | `gt` | `PartialOrd` |
+| `>=` | 4 | None | `gte` | `PartialOrd` |
 | `+` | 5 | Left | `add` | `Numeric` |
 | `-` | 5 | Left | `sub` | `Numeric` |
 | `*` | 6 | Left | `mul` | `Numeric` |
@@ -1448,7 +1453,7 @@ The kernel's reasoning engine supports:
 | **structural** | `===` (`struct_eq`) | `<=>` (`unify`) |
 | **semantic**   | `=` / `eq`         | E-unification *(future engine)* |
 
-- **`=` — the semantic equality *test*** (`Eq.eq`, a dispatched operation returning `Bool`). It reduces both operands and compares them **through the carrier's `Eq` instance** (WI-616): structurally identical operands are equal by reflexivity, and structurally distinct operands dispatch to the carrier sort's own `eq` override when it declares one — `Set` and `Map` are the first non-structural instances (`eq({1,2}, {2,1})` holds: membership equality, resolved against the carrier's rules by ordinary SLD). A carrier with no override keeps the structural compare — structural equality *is* its instance (`Int` stays a machine compare). `=` **never binds** a logical variable: `eq(7, ?p.x)` succeeds once `?p.x` reduces, but `eq(?v, ?p.x)` does **not** bind `?v` (a flex `=` that is never discharged is carried as an undischarged residual, not counted as a solution — WI-519). Use `=` for body-goal tests, operation contracts (`ensures eq(balance(result), …)`), and constraints — a postcondition must *test*, never bind. `neq` (`!=`) pairs with it: `neq(a,b) <=> not(eq(a,b))`, the negation of the *dispatched* equality.
+- **`=` — the semantic equality *test*** (`PartialEq.eq`, a dispatched operation returning `Bool`). It reduces both operands and compares them **through the carrier's `PartialEq` instance** (WI-616): structurally identical operands are equal by reflexivity, and structurally distinct operands dispatch to the carrier sort's own `eq` override when it declares one — `Set` and `Map` are the first non-structural instances (`eq({1,2}, {2,1})` holds: membership equality, resolved against the carrier's rules by ordinary SLD). A carrier with no override keeps the structural compare — structural equality *is* its instance (`Int` stays a machine compare). **Partial vs. total (proposal library/004, WI-644):** `eq`/`neq` live on the base **`PartialEq`** spec — a plain `Bool` test with *no* reflexivity law. **`Eq`** `requires PartialEq` and adds the checked law `eq_refl: eq(?a,?a) <=> true`; requiring `Eq[T]` (what `Set`/`Map` keys, dedup and sort demand) means "a *lawful*, reflexive equality." IEEE **`Float` provides only `PartialEq`** — `eq(nan, nan)` is *false* (IEEE), and `Float` cannot discharge `eq_refl`; the wrapper `TotalFloat` provides the lawful `Eq`/`Ordered`. So the interpreter, resolver, and C++ codegen all agree on `Float` (IEEE), while `nan === nan` (`struct_eq`) stays structurally true. `=` **never binds** a logical variable: `eq(7, ?p.x)` succeeds once `?p.x` reduces, but `eq(?v, ?p.x)` does **not** bind `?v` (a flex `=` that is never discharged is carried as an undischarged residual, not counted as a solution — WI-519). Use `=` for body-goal tests, operation contracts (`ensures eq(balance(result), …)`), and constraints — a postcondition must *test*, never bind. `neq` (`!=`) pairs with it: `neq(a,b) <=> not(eq(a,b))`, the negation of the *dispatched* equality. (Ordering mirrors this: `gt`/`lt`/`gte`/`lte` are the base **`PartialOrd`** surface — IEEE-partial for `Float`, a `NaN` operand answers `false` — and the total `compare`/laws live on **`Ordered`**, which `requires Eq, PartialOrd`.)
 - **`===` — the structural identity *test*** (`anthill.kernel.struct_eq`, a resolver builtin; WI-615). Total, carrier-agnostic, **never dispatches**, and needs **no `Eq` instance**: it answers "are these two values literally the same structure" for every value (opaque handles compare by identity). Two membership-equal sets in different spellings are `=` but not `===`. Use it for term/symbol/reflected-structure identity — comparisons that must not suddenly depend on a carrier's custom equality.
 - **`<=>` — structural *unification*** (`anthill.kernel.unify`, a resolver primitive). It binds via a substitution effect on the resolver frame: `?v <=> ?p.x` binds `?v` to the projected value; `some(?x) <=> some(3)` binds `?x ↦ 3`. It is **occurs-checked** (`?v <=> f(?v)` is a loud failure, never a cyclic term), **symmetric** (either side may be the variable side), and **structural-only — it never dispatches**. It is the connective of equational rule heads (§5.3) and the substrate of `let`.
 

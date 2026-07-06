@@ -292,7 +292,7 @@ end
 #[test]
 fn instance_fact_eq_powers_list_member() {
     let src = r#"namespace test.wi431.member
-  import anthill.prelude.{List, Int64, Bool, Eq}
+  import anthill.prelude.{List, Int64, Bool, Eq, PartialEq}
   import anthill.prelude.List.{member}
 
   sort Color
@@ -303,6 +303,7 @@ fn instance_fact_eq_powers_list_member() {
       case color(a) ->
         match y
           case color(b) -> eq(a, b)
+  fact PartialEq[T = Color, eq = colorEq]
   fact Eq[T = Color, eq = colorEq]
 
   operation hasMatch() -> Int64 =

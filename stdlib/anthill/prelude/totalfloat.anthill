@@ -1,0 +1,26 @@
+-- TotalFloat — a newtype wrapper giving Float a TOTAL, lawful EQUALITY, for the
+-- genuine "floats as Map/Set keys / deduped" case (library proposal 004, WI-644).
+-- Raw `Float` provides only the PARTIAL specs (PartialEq / PartialOrd, IEEE — where
+-- `nan eq nan = false`), so `Map[K = Float]` is not a lawful key; `Map[K = TotalFloat]`
+-- is (Map/Set keys require `Eq`, not `Ordered`).
+--
+-- TotalFloat's equality is STRUCTURAL (the default for an entity carrier): all NaNs
+-- are equal and it is reflexive, so TotalFloat is lawfully `Eq` — verified:
+-- `eq(TotalFloat(nan), TotalFloat(nan)) = true`, unlike raw `Float`.
+--
+-- NOT `Ordered` (yet): `Ordered.compare`/`gt`/`max` are host BUILTINS dispatched
+-- directly on the operand values, so a carrier `<=>` delegation rule
+-- (`compare(TotalFloat(raw:?a), …) <=> compare(?a, ?b)`) never fires — a bodied rule
+-- cannot override a builtin op on the eval path. A functional total ORDER for floats
+-- needs host support (a carrier-bound `OrderedFloat<f64>` struct, or the compare
+-- builtin unwrapping TotalFloat) — proposal 004 open-question 1; tracked as a
+-- follow-up. Until then TotalFloat is a lawful `Eq` key only, NOT sortable.
+sort anthill.prelude.TotalFloat
+  import anthill.prelude.{Eq, PartialEq, Float}
+
+  entity TotalFloat(raw: Float)
+
+  -- Structural equality on the entity is reflexive/total → lawful Eq (+ its base).
+  provides PartialEq[T = TotalFloat]
+  provides Eq[T = TotalFloat]
+end

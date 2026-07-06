@@ -3,6 +3,8 @@ namespace anthill.prelude
   provides Bool language rust
     artifact "rustland/anthill-stl/src/prelude/bool.rs"
     carrier { Bool: "bool" }
+    -- WI-644 / proposal 004: Bool is lawful — PartialEq base + Eq marker.
+    fact PartialEq[T = Bool]
     fact Eq[T = Bool]
   end
 end

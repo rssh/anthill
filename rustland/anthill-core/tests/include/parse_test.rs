@@ -2358,7 +2358,7 @@ fn nested_items_have_qualified_names() {
 #[test]
 fn nested_items_in_dotted_sort_have_qualified_names() {
     // Items inside a dotted sort: `sort anthill.prelude.Eq { operation eq ... }`
-    // → qualified_name = "anthill.prelude.Eq.eq"
+    // → qualified_name = "anthill.prelude.PartialEq.eq"
     let source = r#"sort anthill.prelude.Eq {
   sort T = ?
   operation eq(a: T, b: T) -> Bool
@@ -2373,7 +2373,7 @@ fn nested_items_in_dotted_sort_have_qualified_names() {
         "sort should have qualified name 'anthill.prelude.Eq'");
     assert!(kb.has_qualified_name("anthill.prelude.Eq.T"),
         "type param should have qualified name 'anthill.prelude.Eq.T'");
-    assert!(kb.has_qualified_name("anthill.prelude.Eq.eq"),
+    assert!(kb.has_qualified_name("anthill.prelude.PartialEq.eq"),
         "operation should have qualified name 'anthill.prelude.Eq.eq'");
 }
 

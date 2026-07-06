@@ -4,7 +4,7 @@
 -- that made it the lone container spelled as a carrier-parameter typeclass. It is
 -- now uniform with its sibling Map.)
 sort anthill.prelude.Set
-  import anthill.prelude.Eq
+  import anthill.prelude.{Eq, PartialEq}
 
   sort T = ?         -- element type
   requires Eq[T]
@@ -15,6 +15,10 @@ sort anthill.prelude.Set
   -- two spellings). `provides Eq[T = Set]` declares the instance; the own `eq`
   -- below is the WI-350/WI-444 short-name override the resolver's semantic
   -- `=`/`eq` dispatches to. Structural comparison of two sets is still `===`.
+  -- WI-644 / proposal 004: Set's extensional equality is lawful (reflexive), so
+  -- Set provides the total marker Eq AND its PartialEq base (Eq requires it). The
+  -- own `eq` below is the single impl both resolve to.
+  provides PartialEq[T = Set]
   provides Eq[T = Set]
 
   operation empty() -> Set
@@ -29,7 +33,7 @@ sort anthill.prelude.Set
   -- WI-616: relational (`:-`) rules make `eq`/`subset`/`member` COMPUTABLE by
   -- ordinary SLD over the symbolic `insert`/`empty` algebra (the List.member
   -- precedent) — this is what the dispatched `eq` resolves against. Element
-  -- comparison goes through the SEMANTIC spec op `Eq.eq` (not structural
+  -- comparison goes through the SEMANTIC spec op `PartialEq.eq` (not structural
   -- unification), so equality dispatches all the way down (`Set[Set[Int]]`
   -- compares inner sets by membership too). The `[simp]` laws below remain the
   -- typer/rewriter face of the same algebra.
@@ -42,7 +46,7 @@ sort anthill.prelude.Set
   rule eq(?a, ?b) :- subset(?a, ?b), subset(?b, ?a)
   rule subset(empty(), ?)
   rule subset(insert(?s, ?x), ?s2) :- member(?x, ?s2), subset(?s, ?s2)
-  rule member(?x, insert(?, ?y)) :- Eq.eq(?x, ?y)
+  rule member(?x, insert(?, ?y)) :- PartialEq.eq(?x, ?y)
   rule member(?x, insert(?s, ?)) :- member(?x, ?s)
 
   -- Laws. The genuinely-reducing (terminating, LHS→RHS shrinking) laws are tagged

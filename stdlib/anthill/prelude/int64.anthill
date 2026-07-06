@@ -5,7 +5,8 @@
 sort anthill.prelude.Int64
   import anthill.prelude.{Eq, Ordered, Numeric}
   import anthill.prelude.Bool.{ite}
-  import anthill.prelude.Ordered.{max, gte, lt, gt}
+  import anthill.prelude.Ordered.{max}
+  import anthill.prelude.PartialOrd.{gte, lt, gt}
   import anthill.prelude.Numeric.{add, sub}
 
   -- Bounds: Int64 is finite (platform-dependent, e.g. i64)

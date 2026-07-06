@@ -37,20 +37,25 @@ pub fn register_standard_builtins(interp: &mut Interpreter) -> Result<(), EvalEr
 
     register_if_present(interp, "anthill.prelude.Float.div", float_div)?;
 
-    register_if_present(interp, "anthill.prelude.Eq.eq", builtin_eq)?;
-    register_if_present(interp, "anthill.prelude.Eq.neq", builtin_neq)?;
+    // WI-644 / proposal 004: eq/neq live on the PartialEq base (Eq is the lawful
+    // marker). The semantic `eq`/`neq` are IEEE for Float operands (below),
+    // structural otherwise.
+    register_if_present(interp, "anthill.prelude.PartialEq.eq", builtin_eq)?;
+    register_if_present(interp, "anthill.prelude.PartialEq.neq", builtin_neq)?;
     // WI-615 / proposal 051: `===` (structural identity) is a Bool-returning TEST
     // like `eq` — usable in operation bodies (evaluated), not just rule-body goals.
-    // So it registers on the eval side too (reusing the structural `builtin_eq`),
-    // mirroring `Eq.eq` above; the resolver-side tag is in `mod.rs`. (Contrast
-    // `anthill.kernel.unify`, a binding primitive with no eval face.)
-    register_if_present(interp, "anthill.kernel.struct_eq", builtin_eq)?;
+    // WI-644: it uses the PURELY STRUCTURAL `builtin_struct_eq`, NOT the semantic
+    // `builtin_eq` (which is IEEE for a Float pair) — `nan === nan` must stay true.
+    register_if_present(interp, "anthill.kernel.struct_eq", builtin_struct_eq)?;
 
+    // WI-644 / proposal 004: gt/lt/gte/lte are the PartialOrd comparison surface
+    // (IEEE for Float — a NaN operand answers false); compare/max/min stay on the
+    // total Ordered.
     register_if_present(interp, "anthill.prelude.Ordered.compare", ordered_compare)?;
-    register_if_present(interp, "anthill.prelude.Ordered.gt", ordered_gt)?;
-    register_if_present(interp, "anthill.prelude.Ordered.gte", ordered_gte)?;
-    register_if_present(interp, "anthill.prelude.Ordered.lt", ordered_lt)?;
-    register_if_present(interp, "anthill.prelude.Ordered.lte", ordered_lte)?;
+    register_if_present(interp, "anthill.prelude.PartialOrd.gt", ordered_gt)?;
+    register_if_present(interp, "anthill.prelude.PartialOrd.gte", ordered_gte)?;
+    register_if_present(interp, "anthill.prelude.PartialOrd.lt", ordered_lt)?;
+    register_if_present(interp, "anthill.prelude.PartialOrd.lte", ordered_lte)?;
     register_if_present(interp, "anthill.prelude.Ordered.max", ordered_max)?;
     register_if_present(interp, "anthill.prelude.Ordered.min", ordered_min)?;
 
@@ -410,15 +415,60 @@ fn int_sign(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
 
 // ── Eq / Ordered ───────────────────────────────────────────────
 
+/// WI-644 / proposal 004: the SEMANTIC `PartialEq.eq` on a `Float` operand pair is
+/// IEEE `==` — `nan eq nan` is *false*, `-0.0 eq +0.0` is *true* — matching the C++
+/// codegen and the stdlib contract (float.anthill). This is what distinguishes the
+/// PARTIAL `Float` carrier from the total, structural `Eq` carriers: for any
+/// non-Float operand we fall back to the structural compare (`OrderedFloat`-backed),
+/// so `Set`/`Map`/entity semantic eq (WI-616 override dispatch) is unchanged and
+/// `nan === nan` (`struct_eq`) stays true. Returns `None` unless BOTH operands are
+/// raw `Float` scalars.
+fn float_ieee_eq(i: &Interpreter, a: &Value, b: &Value) -> Option<bool> {
+    match (float_val(i, a), float_val(i, b)) {
+        (Some(x), Some(y)) => Some(x == y),
+        _ => None,
+    }
+}
+
+/// The raw `f64` of a Float `Value` — an unboxed `Value::Float` OR a `Literal::Float`
+/// inside a `Value::Term` (a reflected / stored-structure operand). Mirrors the
+/// resolver's `value_f64` so eval and resolver agree on which operands are floats —
+/// otherwise a Term-wrapped float would slip past the IEEE path and read `nan == nan`
+/// structurally (via `OrderedFloat`), or make ordering raise a spurious type error.
+fn float_val(i: &Interpreter, v: &Value) -> Option<f64> {
+    match v {
+        Value::Float(f) => Some(*f),
+        Value::Term { id, .. } => match i.kb().get_term(*id) {
+            crate::kb::term::Term::Const(crate::kb::term::Literal::Float(f)) => Some(f.into_inner()),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// `anthill.kernel.struct_eq` (`===`) — the TOTAL, carrier-agnostic STRUCTURAL
+/// identity test (proposal 051). Stays on `OrderedFloat` (`nan === nan` is true),
+/// unlike the semantic `PartialEq.eq` below: reflection / dedup / hash-consing need
+/// structural identity. WI-486: a `Value::Term` operand and its structurally-equal
+/// `Value::Node`/`Entity` twin compare equal.
+fn builtin_struct_eq(i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    let [a, b] = expect_args::<2>("struct_eq", args)?;
+    Ok(Value::Bool(crate::kb::term_view::views_structurally_equal(i.kb(), &a, &b)))
+}
+
 fn builtin_eq(i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
-    let [a, b] = expect_args::<2>("Eq.eq", args)?;
-    // WI-486: carrier-agnostic structural compare — a `Value::Term` operand and
-    // its structurally-equal `Value::Node`/`Entity` twin must compare equal.
+    let [a, b] = expect_args::<2>("PartialEq.eq", args)?;
+    if let Some(v) = float_ieee_eq(i, &a, &b) {
+        return Ok(Value::Bool(v));
+    }
     Ok(Value::Bool(crate::kb::term_view::views_structurally_equal(i.kb(), &a, &b)))
 }
 
 fn builtin_neq(i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
-    let [a, b] = expect_args::<2>("Eq.neq", args)?;
+    let [a, b] = expect_args::<2>("PartialEq.neq", args)?;
+    if let Some(v) = float_ieee_eq(i, &a, &b) {
+        return Ok(Value::Bool(!v));
+    }
     Ok(Value::Bool(!crate::kb::term_view::views_structurally_equal(i.kb(), &a, &b)))
 }
 
@@ -447,23 +497,49 @@ fn ordered_compare(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalEr
     }))
 }
 
-fn ordered_gt(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
-    let [a, b] = expect_args::<2>("Ordered.gt", args)?;
+/// WI-644 / proposal 004: the PartialOrd comparison surface (`gt`/`lt`/`gte`/`lte`)
+/// on a `Float` operand pair is IEEE — a `NaN` operand is UNORDERED, so every
+/// comparison answers `false` (`x > y` etc. are already `false` when either is NaN).
+/// This matches the C++ codegen (`>`/`<`) and is the ordering dual of the IEEE `eq`
+/// fix. `compare`/`max`/`min` (the total `Ordered` ops) keep `total_cmp` — they are
+/// only sound on a total carrier (`TotalFloat`, not raw `Float`). Returns `None`
+/// unless BOTH operands are raw `Float` scalars.
+fn float_pair(i: &Interpreter, a: &Value, b: &Value) -> Option<(f64, f64)> {
+    match (float_val(i, a), float_val(i, b)) {
+        (Some(x), Some(y)) => Some((x, y)),
+        _ => None,
+    }
+}
+
+fn ordered_gt(i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    let [a, b] = expect_args::<2>("PartialOrd.gt", args)?;
+    if let Some((x, y)) = float_pair(i, &a, &b) {
+        return Ok(Value::Bool(x > y));
+    }
     Ok(Value::Bool(matches!(value_compare(&a, &b)?, std::cmp::Ordering::Greater)))
 }
 
-fn ordered_gte(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
-    let [a, b] = expect_args::<2>("Ordered.gte", args)?;
+fn ordered_gte(i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    let [a, b] = expect_args::<2>("PartialOrd.gte", args)?;
+    if let Some((x, y)) = float_pair(i, &a, &b) {
+        return Ok(Value::Bool(x >= y));
+    }
     Ok(Value::Bool(!matches!(value_compare(&a, &b)?, std::cmp::Ordering::Less)))
 }
 
-fn ordered_lt(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
-    let [a, b] = expect_args::<2>("Ordered.lt", args)?;
+fn ordered_lt(i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    let [a, b] = expect_args::<2>("PartialOrd.lt", args)?;
+    if let Some((x, y)) = float_pair(i, &a, &b) {
+        return Ok(Value::Bool(x < y));
+    }
     Ok(Value::Bool(matches!(value_compare(&a, &b)?, std::cmp::Ordering::Less)))
 }
 
-fn ordered_lte(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
-    let [a, b] = expect_args::<2>("Ordered.lte", args)?;
+fn ordered_lte(i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    let [a, b] = expect_args::<2>("PartialOrd.lte", args)?;
+    if let Some((x, y)) = float_pair(i, &a, &b) {
+        return Ok(Value::Bool(x <= y));
+    }
     Ok(Value::Bool(!matches!(value_compare(&a, &b)?, std::cmp::Ordering::Greater)))
 }
 

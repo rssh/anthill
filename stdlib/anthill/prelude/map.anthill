@@ -1,6 +1,6 @@
 -- Map: abstract key-value association (requires Eq on keys)
 sort anthill.prelude.Map
-  import anthill.prelude.{Option, List, Pair, Bool, Int64, Eq, Iterable, FiniteCollection, Stream}
+  import anthill.prelude.{Option, List, Pair, Bool, Int64, Eq, PartialEq, Iterable, FiniteCollection, Stream}
 
   sort K = ?
   sort V = ?
@@ -13,12 +13,16 @@ sort anthill.prelude.Map
   -- declares the instance; the own `eq` below is the WI-350/WI-444 short-name
   -- override the resolver's semantic `=`/`eq` dispatches to. Structural
   -- comparison of two maps is still `===`.
+  -- WI-644 / proposal 004: Map's extensional equality is lawful, so Map provides
+  -- the total marker Eq AND its PartialEq base (Eq requires it); the own `eq`
+  -- below is the single impl both resolve to.
+  provides PartialEq[T = Map]
   provides Eq[T = Map]
   operation eq(a: Map, b: Map) -> Bool
   -- Relational helpers (SLD-computable, the Set precedent). `binds` reads the
   -- LATEST (unshadowed, outermost-put) binding of a key; `strip_is` relates a
   -- map to itself with ALL bindings of a key removed. Key and value compares go
-  -- through the SEMANTIC `Eq.eq`/`Eq.neq`, so they dispatch for carrier-eq keys
+  -- through the SEMANTIC `PartialEq.eq`/`PartialEq.neq`, so they dispatch for carrier-eq keys
   -- and values (a Map[Set, Int] compares its Set keys by membership).
   operation map_eq(a: Map, b: Map) -> Bool
   operation binds(m: Map, key: K, value: V) -> Bool
@@ -31,11 +35,11 @@ sort anthill.prelude.Map
   -- `map_binds_unifies_non_ground_stored_value`. (Contrast the `get`/`remove`
   -- `[simp]` rules below: those are nonlinear-in-?k on purpose and fire under
   -- one-directional MATCHING — an exact-key reduction, no unification.)
-  rule binds(put(?, ?k2, ?v2), ?k, ?v) :- Eq.eq(?k, ?k2), ?v <=> ?v2
-  rule binds(put(?m, ?k2, ?), ?k, ?v) :- Eq.neq(?k, ?k2), binds(?m, ?k, ?v)
+  rule binds(put(?, ?k2, ?v2), ?k, ?v) :- PartialEq.eq(?k, ?k2), ?v <=> ?v2
+  rule binds(put(?m, ?k2, ?), ?k, ?v) :- PartialEq.neq(?k, ?k2), binds(?m, ?k, ?v)
   rule strip_is(empty(), ?, empty())
-  rule strip_is(put(?m, ?k2, ?), ?k, ?r) :- Eq.eq(?k, ?k2), strip_is(?m, ?k, ?r)
-  rule strip_is(put(?m, ?k2, ?v), ?k, put(?r, ?k2, ?v)) :- Eq.neq(?k, ?k2), strip_is(?m, ?k, ?r)
+  rule strip_is(put(?m, ?k2, ?), ?k, ?r) :- PartialEq.eq(?k, ?k2), strip_is(?m, ?k, ?r)
+  rule strip_is(put(?m, ?k2, ?v), ?k, put(?r, ?k2, ?v)) :- PartialEq.neq(?k, ?k2), strip_is(?m, ?k, ?r)
   -- map_eq: peel the outer binding, require the same latest binding on the
   -- other side, strip the key from BOTH (so shadowed re-puts of it are
   -- ignored), and recurse on the strictly smaller rests. COST: O(n²)
@@ -51,7 +55,7 @@ sort anthill.prelude.Map
   rule eq(?a, ?b) :- map_eq(?a, ?b)
   rule map_eq(empty(), empty())
   rule map_eq(put(?m, ?k, ?v), ?m2)
-    :- binds(?m2, ?k, ?v2), Eq.eq(?v, ?v2),
+    :- binds(?m2, ?k, ?v2), PartialEq.eq(?v, ?v2),
        strip_is(?m, ?k, ?ms), strip_is(?m2, ?k, ?m2s), map_eq(?ms, ?m2s)
 
   -- WI-495: a Map is a GENUINE non-Stream Iterable — it can be walked (produces

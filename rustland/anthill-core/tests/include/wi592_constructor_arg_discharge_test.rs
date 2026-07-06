@@ -49,7 +49,7 @@ fn is_undeclared_boom(errs: &[String]) -> bool {
 /// `Color` is a 2-constructor sort with STRUCTURAL `Eq` (only `provides Eq`, no
 /// `eq` override). `risky(c)` raises `Boom` only when `c = Red`.
 const COLOR_PRELUDE: &str = r#"
-  import anthill.prelude.{Int64, Bool, Eq}
+  import anthill.prelude.{Int64, Bool, Eq, PartialEq}
 
   sort Boom
     entity Bang
@@ -58,6 +58,7 @@ const COLOR_PRELUDE: &str = r#"
   sort Color
     entity Red
     entity Green
+    provides PartialEq[T = Color]
     provides Eq[T = Color]
   end
 
@@ -150,7 +151,7 @@ end
 /// same-arg test that was inert (it passed whether the fix was present or not,
 /// because both `Ref(Green)=Ref(Green)` and a floundering `var_ref` keep `Boom`).
 const ALT_GUARD_PRELUDE: &str = r#"
-  import anthill.prelude.{Int64, Bool, Eq}
+  import anthill.prelude.{Int64, Bool, Eq, PartialEq}
 
   sort Boom
     entity Bang
@@ -159,6 +160,7 @@ const ALT_GUARD_PRELUDE: &str = r#"
   sort Color
     entity Red
     entity Green
+    provides PartialEq[T = Color]
     provides Eq[T = Color]
   end
 

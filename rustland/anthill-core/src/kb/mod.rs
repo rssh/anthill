@@ -2993,7 +2993,10 @@ impl KnowledgeBase {
     /// the prelude is loaded, so a bare `intern("eq")` finds none of the
     /// loaded `[simp]` equations (WI-283).
     pub fn eq_functor(&mut self) -> Symbol {
-        self.try_resolve_symbol("anthill.prelude.Eq.eq")
+        // WI-644 / proposal 004: the `eq`/`neq` ops moved from `Eq` to its base
+        // `PartialEq` (Eq is now the lawful marker requiring PartialEq). Equation
+        // heads and `[simp]` lookups key on this symbol.
+        self.try_resolve_symbol("anthill.prelude.PartialEq.eq")
             .unwrap_or_else(|| self.intern("eq"))
     }
 
@@ -4375,13 +4378,15 @@ impl KnowledgeBase {
         // declares its own `eq` override (`Set.eq`/`Map.eq`), which then
         // dispatches at SLD. `===` (struct_eq, WI-615) keeps the structural
         // `builtin_eq`: total, carrier-agnostic, never dispatches.
-        self.register_builtin("anthill.prelude.Eq.eq", BuiltinTag::SemEq);
+        // WI-644 / proposal 004: eq/neq live on PartialEq, gt/lt/gte/lte on
+        // PartialOrd (the partial bases); Eq/Ordered are the lawful/total markers.
+        self.register_builtin("anthill.prelude.PartialEq.eq", BuiltinTag::SemEq);
         self.register_builtin("anthill.kernel.struct_eq", BuiltinTag::Eq);
-        self.register_builtin("anthill.prelude.Eq.neq", BuiltinTag::SemNeq);
-        self.register_builtin("anthill.prelude.Ordered.gt", BuiltinTag::Gt);
-        self.register_builtin("anthill.prelude.Ordered.lt", BuiltinTag::Lt);
-        self.register_builtin("anthill.prelude.Ordered.gte", BuiltinTag::Gte);
-        self.register_builtin("anthill.prelude.Ordered.lte", BuiltinTag::Lte);
+        self.register_builtin("anthill.prelude.PartialEq.neq", BuiltinTag::SemNeq);
+        self.register_builtin("anthill.prelude.PartialOrd.gt", BuiltinTag::Gt);
+        self.register_builtin("anthill.prelude.PartialOrd.lt", BuiltinTag::Lt);
+        self.register_builtin("anthill.prelude.PartialOrd.gte", BuiltinTag::Gte);
+        self.register_builtin("anthill.prelude.PartialOrd.lte", BuiltinTag::Lte);
         self.register_builtin("anthill.prelude.Numeric.add", BuiltinTag::Add);
         self.register_builtin("anthill.prelude.Numeric.sub", BuiltinTag::Sub);
         self.register_builtin("anthill.prelude.Numeric.mul", BuiltinTag::Mul);

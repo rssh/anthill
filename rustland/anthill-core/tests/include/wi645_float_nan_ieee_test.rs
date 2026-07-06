@@ -16,12 +16,12 @@
 //! first half; `eq_ordered_on_nan_follow_ieee` (ignored until the fix) specifies the
 //! second.
 //!
-//! This pins WI-645 *direction A* (the interim: treat `Eq` as `PartialEq`-like, drop
-//! the resolver's hardcoded reflexivity for a partial Float carrier, so `eq`/`Ordered`
-//! read IEEE). The principled *direction B* (split `PartialEq ⊂ Eq`; Float provides
-//! only `PartialEq`; a reflexive `Eq` marker Float lacks) would instead make
-//! `eq(nan,nan)` a *missing-instance* rather than `false` — revisit this assertion if
-//! B is chosen. See WI-645.
+//! WI-644 / proposal 004 landed *direction B*: `PartialEq ⊂ Eq` (and `PartialOrd ⊂
+//! Ordered`) split; `Float` provides only the PARTIAL bases (`PartialEq`/`PartialOrd`),
+//! and its semantic `eq`/`neq`/`gt`/`lt`/… are IEEE (this test). The reflexivity
+//! shortcut in `sem_eq_core` and the structural `builtin_eq` are gated to skip a raw
+//! Float operand pair (eval `float_ieee_eq`, resolver `value_f64`). `struct_eq`
+//! (`===`) stays on `OrderedFloat` — the first test below.
 
 fn interp(src: &str) -> anthill_core::eval::Interpreter {
     crate::common::interp_for(src)
@@ -36,10 +36,15 @@ fn call_bool(i: &mut anthill_core::eval::Interpreter, op: &str) -> bool {
 
 const SRC: &str = r#"
 namespace test.wi645
-  import anthill.prelude.{Bool, Float}
+  import anthill.prelude.{Bool, Float, TotalFloat}
+  import anthill.prelude.TotalFloat.{TotalFloat}
   import anthill.prelude.Float.{nan}
-  import anthill.prelude.Eq.{eq, neq}
-  import anthill.prelude.Ordered.{gt, lt, gte, lte}
+  import anthill.prelude.PartialEq.{eq, neq}
+  import anthill.prelude.PartialOrd.{gt, lt, gte, lte}
+
+  -- WI-644: TotalFloat is the LAWFUL (reflexive) wrapper — its structural entity
+  -- equality equates all NaNs, so `eq` is reflexive, UNLIKE raw partial Float.
+  operation tf_eq_nan() -> Bool = eq(TotalFloat(raw: nan), TotalFloat(raw: nan))
 
   operation eq_nan() -> Bool  = eq(nan, nan)
   operation neq_nan() -> Bool = neq(nan, nan)
@@ -63,10 +68,10 @@ fn struct_eq_on_nan_stays_structural() {
     );
 }
 
-/// The IEEE target for the SEMANTIC ops. FAILS today (interpreter uses
-/// `OrderedFloat`); un-ignore when WI-645 lands.
+/// The IEEE target for the SEMANTIC ops — delivered by WI-644 / proposal 004
+/// (direction B: PartialEq/PartialOrd split; Float provides only the partial bases,
+/// whose eq/ordering builtins are IEEE).
 #[test]
-#[ignore = "WI-645: interpreter Float eq/neq/ordered use OrderedFloat, not IEEE — fix pending"]
 fn eq_ordered_on_nan_follow_ieee() {
     let mut i = interp(SRC);
     // IEEE 754: a NaN operand makes == false, != true, and every ordering
@@ -78,4 +83,19 @@ fn eq_ordered_on_nan_follow_ieee() {
     assert!(!call_bool(&mut i, "test.wi645.lt_nan"), "lt(nan, 1.0) must be false (IEEE unordered)");
     assert!(!call_bool(&mut i, "test.wi645.gte_nan"), "gte(nan, 1.0) must be false (IEEE unordered)");
     assert!(!call_bool(&mut i, "test.wi645.lte_nan"), "lte(nan, 1.0) must be false (IEEE unordered)");
+}
+
+/// WI-644 / proposal 004: `TotalFloat` is the LAWFUL wrapper — its equality is
+/// structural (entity) equality, which equates all NaNs and IS reflexive. So
+/// `eq(TotalFloat(nan), TotalFloat(nan))` is TRUE, the opposite of raw partial
+/// `Float`'s IEEE `false` above. This is what makes `TotalFloat` a lawful `Eq` key
+/// (`Map[K = TotalFloat]`) while raw `Float` is not.
+#[test]
+fn totalfloat_eq_is_lawful_reflexive_on_nan() {
+    let mut i = interp(SRC);
+    assert!(
+        call_bool(&mut i, "test.wi645.tf_eq_nan"),
+        "eq(TotalFloat(nan), TotalFloat(nan)) must be true — TotalFloat's structural \
+         equality is reflexive/total, unlike raw Float's IEEE eq",
+    );
 }

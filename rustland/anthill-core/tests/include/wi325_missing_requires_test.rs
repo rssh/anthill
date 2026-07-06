@@ -68,11 +68,14 @@ end
     );
     let formatted = fmt_errs(&errs);
     assert!(
-        formatted.contains("requires Eq"),
-        "expected diagnostic to suggest `requires Eq[…]`; got:\n{formatted}",
+        // WI-644: the op calls `eq`, whose spec is now the `PartialEq` base — the
+        // diagnostic suggests `requires PartialEq` (a `requires Eq` would also cover it
+        // transitively). The check still fires: an uncovered spec-op call is rejected.
+        formatted.contains("requires PartialEq"),
+        "expected diagnostic to suggest `requires PartialEq[…]`; got:\n{formatted}",
     );
     assert!(
-        formatted.contains("anthill.prelude.Eq.eq"),
+        formatted.contains("anthill.prelude.PartialEq.eq"),
         "expected diagnostic to name the spec op; got:\n{formatted}",
     );
 }
@@ -233,7 +236,7 @@ end
 #[test]
 fn missing_requires_format_names_spec_and_param() {
     let mut kb = KnowledgeBase::new();
-    let op_sym = kb.intern("anthill.prelude.Eq.eq");
+    let op_sym = kb.intern("anthill.prelude.PartialEq.eq");
     let spec_sym = kb.intern("anthill.prelude.Eq");
     let t_sym = kb.intern("T");
     let mut abstract_params = smallvec::SmallVec::<[anthill_core::intern::Symbol; 2]>::new();
@@ -246,7 +249,7 @@ fn missing_requires_format_names_spec_and_param() {
     };
     let formatted = err.format(&kb);
     assert!(
-        formatted.contains("anthill.prelude.Eq.eq"),
+        formatted.contains("anthill.prelude.PartialEq.eq"),
         "should name the spec op QN; got: {formatted}",
     );
     assert!(

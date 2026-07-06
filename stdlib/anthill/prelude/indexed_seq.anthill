@@ -6,7 +6,7 @@
 sort anthill.prelude.IndexedSeq
   import anthill.prelude.{Int64, Option}
   import anthill.prelude.Option.{none}
-  import anthill.prelude.Ordered.{lt, gte}
+  import anthill.prelude.PartialOrd.{lt, gte}
 
   sort C = ?
   sort T = ?

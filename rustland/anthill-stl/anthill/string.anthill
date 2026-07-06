@@ -3,7 +3,10 @@ namespace anthill.prelude
   provides String language rust
     artifact "rustland/anthill-stl/src/prelude/string.rs"
     carrier { String: "String" }
+    -- WI-644 / proposal 004: String is lawful — partial bases + total markers.
+    fact PartialEq[T = String]
     fact Eq[T = String]
+    fact PartialOrd[T = String]
     fact Ordered[T = String]
   end
 end

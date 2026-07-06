@@ -3477,6 +3477,16 @@ impl KnowledgeBase {
             EqOperands::Delay => BuiltinResult::Delay,
             EqOperands::Absent => BuiltinResult::Failure,
             EqOperands::Ready(a, b) => {
+                // WI-644 / proposal 004: a Float operand pair is the PARTIAL-eq carrier
+                // — compare by IEEE `==` (nan != nan, -0.0 == +0.0), NOT the structural
+                // reflexivity shortcut below (which reads nan == nan through
+                // `OrderedFloat`). Only fires when BOTH operands are Float scalars, so
+                // `Set`/`Map`/entity semantic eq and `nan === nan` (`struct_eq`) are
+                // untouched; mirrors eval's `float_ieee_eq` so resolver, interpreter,
+                // and C++ codegen agree (the WI-645 acceptance).
+                if let (Some(x), Some(y)) = (self.value_f64(&a), self.value_f64(&b)) {
+                    return sem_verdict(x == y, positive);
+                }
                 if self.values_equal(&a, &b) {
                     return sem_verdict(true, positive);
                 }
@@ -4190,7 +4200,18 @@ impl KnowledgeBase {
         let ord = match (self.value_num(&a), self.value_num(&b)) {
             (Some(Num::Int(x)), Some(Num::Int(y))) => x.cmp(&y),
             (Some(Num::Big(x)), Some(Num::Big(y))) => x.cmp(&y),
-            (Some(Num::Float(x)), Some(Num::Float(y))) => x.cmp(&y),
+            (Some(Num::Float(x)), Some(Num::Float(y))) => {
+                // WI-644 / proposal 004: the resolver's `PartialOrd.gt`/`lt`/`gte`/`lte`
+                // are IEEE — a NaN operand is UNORDERED, so the comparison is FALSE
+                // (`partial_cmp` = `None`), NOT `OrderedFloat`'s total_cmp where NaN
+                // ranks largest. This keeps rule-body comparisons agreeing with eval's
+                // `ordered_*` (float_pair) and the C++ codegen (the WI-645 acceptance:
+                // resolver == interpreter == codegen on Float).
+                match x.into_inner().partial_cmp(&y.into_inner()) {
+                    Some(o) => o,
+                    None => return BuiltinResult::Failure,
+                }
+            }
             // unbound handled above; cross-type / non-numeric → fail
             _ => return BuiltinResult::Failure,
         };
@@ -4209,6 +4230,22 @@ impl KnowledgeBase {
                 Term::Const(Literal::Int(n)) => Some(Num::Int(*n)),
                 Term::Const(Literal::BigInt(n)) => Some(Num::Big(n.clone())),
                 Term::Const(Literal::Float(f)) => Some(Num::Float(*f)),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// WI-644 / proposal 004: the RAW `f64` of a σ-walked Float `Value` (unboxed or a
+    /// `Literal::Float` inside a `Value::Term`) — `None` for non-Float. Unlike
+    /// `value_num`'s `OrderedFloat` (which equates NaNs, for hash-consing), this keeps
+    /// IEEE semantics (`NaN != NaN`, `-0.0 == +0.0`) so the SEMANTIC `PartialEq.eq` on
+    /// the partial Float carrier agrees with eval's `float_ieee_eq` and the C++ codegen.
+    fn value_f64(&self, v: &Value) -> Option<f64> {
+        match v {
+            Value::Float(f) => Some(*f),
+            Value::Term { id: t, .. } => match self.terms.get(*t) {
+                Term::Const(Literal::Float(f)) => Some(f.into_inner()),
                 _ => None,
             },
             _ => None,
@@ -7484,7 +7521,7 @@ mod tests {
     #[test]
     fn builtin_eq_succeeds_on_equal_ints() {
         let mut kb = kb_with_builtins();
-        let eq_sym = kb.resolve_symbol("anthill.prelude.Eq.eq");
+        let eq_sym = kb.resolve_symbol("anthill.prelude.PartialEq.eq");
         let a = kb.alloc(Term::Const(Literal::Int(42)));
         let b = kb.alloc(Term::Const(Literal::Int(42)));
         let goal = kb.alloc(Term::Fn {
@@ -7499,7 +7536,7 @@ mod tests {
     #[test]
     fn builtin_eq_fails_on_different_ints() {
         let mut kb = kb_with_builtins();
-        let eq_sym = kb.resolve_symbol("anthill.prelude.Eq.eq");
+        let eq_sym = kb.resolve_symbol("anthill.prelude.PartialEq.eq");
         let a = kb.alloc(Term::Const(Literal::Int(1)));
         let b = kb.alloc(Term::Const(Literal::Int(2)));
         let goal = kb.alloc(Term::Fn {
@@ -7514,7 +7551,7 @@ mod tests {
     #[test]
     fn builtin_neq_succeeds_on_different() {
         let mut kb = kb_with_builtins();
-        let neq_sym = kb.resolve_symbol("anthill.prelude.Eq.neq");
+        let neq_sym = kb.resolve_symbol("anthill.prelude.PartialEq.neq");
         let a = kb.alloc(Term::Const(Literal::String("hello".into())));
         let b = kb.alloc(Term::Const(Literal::String("world".into())));
         let goal = kb.alloc(Term::Fn {
@@ -7529,7 +7566,7 @@ mod tests {
     #[test]
     fn builtin_gt_on_ints() {
         let mut kb = kb_with_builtins();
-        let gt_sym = kb.resolve_symbol("anthill.prelude.Ordered.gt");
+        let gt_sym = kb.resolve_symbol("anthill.prelude.PartialOrd.gt");
         let five = kb.alloc(Term::Const(Literal::Int(5)));
         let three = kb.alloc(Term::Const(Literal::Int(3)));
 
@@ -7577,7 +7614,7 @@ mod tests {
     #[test]
     fn builtin_comparison_delays_on_unbound() {
         let mut kb = kb_with_builtins();
-        let gt_sym = kb.resolve_symbol("anthill.prelude.Ordered.gt");
+        let gt_sym = kb.resolve_symbol("anthill.prelude.PartialOrd.gt");
         let x_sym = kb.intern("x");
         let vx = kb.fresh_var(x_sym);
         let var_x = kb.alloc(Term::Var(Var::Global(vx)));

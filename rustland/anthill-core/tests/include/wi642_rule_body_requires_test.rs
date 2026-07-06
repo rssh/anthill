@@ -235,8 +235,8 @@ end
         "the WI-325 op-body MissingRequiresForSpecOp diagnostic must still fire; got clean load",
     );
     assert!(
-        fmt_errs(&errs).contains("requires Eq"),
-        "op-body diagnostic should still suggest `requires Eq[…]`; got:\n{}",
+        fmt_errs(&errs).contains("requires PartialEq"),
+        "op-body diagnostic should still suggest `requires PartialEq[…]` (WI-644: `eq`'s spec is the PartialEq base); got:\n{}",
         fmt_errs(&errs),
     );
 }

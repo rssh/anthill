@@ -697,11 +697,11 @@ end
 fn wi420_eta_same_sort_captures_self_dict() {
     let src = r#"
 namespace test.wi420ss
-  import anthill.prelude.{Int64, Bool, Function, Eq}
-  import anthill.prelude.Eq.{eq}
+  import anthill.prelude.{Int64, Bool, Function, PartialEq}
+  import anthill.prelude.PartialEq.{eq}
   sort S
     sort T = ?
-    requires Eq[T]
+    requires PartialEq[T]
     operation are_eq(a: T, b: T) -> Bool = eq(a, b)
     operation use_pred(f: Function[A = (T, T), B = Bool], x: T, y: T) -> Bool = f((x, y))
     operation check(x: T, y: T) -> Bool = use_pred(are_eq, x, y)

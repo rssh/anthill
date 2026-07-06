@@ -2895,12 +2895,18 @@ fn render_as_operator(fn_qn: &str, args: &[String]) -> Option<String> {
         ("anthill.prelude.Int64.div",     "/"),
         ("anthill.prelude.Float.div",   "/"),
         ("anthill.prelude.Int64.mod",     "%"),
-        ("anthill.prelude.Ordered.gt",  ">"),
-        ("anthill.prelude.Ordered.lt",  "<"),
-        ("anthill.prelude.Ordered.gte", ">="),
-        ("anthill.prelude.Ordered.lte", "<="),
-        ("anthill.prelude.Eq.eq",       "=="),
-        ("anthill.prelude.Eq.neq",      "!="),
+        // WI-644 / proposal 004: the partial comparison ops live on PartialEq /
+        // PartialOrd. Mapping them to C++ `==`/`>`/… (IEEE) is now CORRECT — these
+        // are the partial specs, so the compiler and the interpreter's IEEE-for-Float
+        // builtins agree (the WI-645 acceptance). The total Eq/Ordered/TotalFloat
+        // would emit a total comparator instead (a `= default` operator== / <=> on the
+        // generated struct) — a follow-up, tracked with the entity operator== gap.
+        ("anthill.prelude.PartialOrd.gt",  ">"),
+        ("anthill.prelude.PartialOrd.lt",  "<"),
+        ("anthill.prelude.PartialOrd.gte", ">="),
+        ("anthill.prelude.PartialOrd.lte", "<="),
+        ("anthill.prelude.PartialEq.eq",   "=="),
+        ("anthill.prelude.PartialEq.neq",  "!="),
         ("anthill.prelude.Bool.and",    "&&"),
         ("anthill.prelude.Bool.or",     "||"),
     ];

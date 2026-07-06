@@ -60,20 +60,22 @@ fn flat_path_emits_var_ref_named_requirement() {
     // requirement-param name for the caller's chain slot 0 (Eq).
     let src = r#"
 namespace test.wi227.flat
-  import anthill.prelude.Eq.{eq}
-  import anthill.prelude.{Eq, Bool}
+  import anthill.prelude.PartialEq.{eq}
+  import anthill.prelude.{PartialEq, Bool}
   sort Wi227Flat
     sort T = ?
-    requires Eq[T]
+    requires PartialEq[T]
     operation use_eq(a: T, b: T) -> Bool = eq(a, b)
   end
 end
 "#;
     let mut interp = interp_for(src);
-    let expected_name = interp.kb_mut().intern("__req_eq");
+    // WI-644: `eq`'s spec is the `PartialEq` base, so the requirement (and its
+    // synthesized param name) is `PartialEq` / `__req_partialeq`.
+    let expected_name = interp.kb_mut().intern("__req_partialeq");
     let kb = interp.kb();
 
-    let eq_sym = kb.try_resolve_symbol("anthill.prelude.Eq.eq").expect("Eq.eq");
+    let eq_sym = kb.try_resolve_symbol("anthill.prelude.PartialEq.eq").expect("Eq.eq");
     let var_ref_sym = kb
         .try_resolve_symbol("anthill.reflect.Expr.var_ref")
         .expect("var_ref");

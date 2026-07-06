@@ -5553,7 +5553,11 @@ fn wi031_stdlib_load_then_typecheck_then_verify_typing_facts() {
     // requires — they appear at depth 0 of the chain.
     let pairs = [
         ("anthill.prelude.Ordered",                  "anthill.prelude.Eq"),
-        ("anthill.prelude.Numeric",                  "anthill.prelude.Ordered"),
+        ("anthill.prelude.Ordered",                  "anthill.prelude.PartialOrd"),
+        ("anthill.prelude.Eq",                       "anthill.prelude.PartialEq"),
+        // WI-644: Numeric requires the PARTIAL order (IEEE Float is Numeric but not
+        // totally Ordered).
+        ("anthill.prelude.Numeric",                  "anthill.prelude.PartialOrd"),
         ("anthill.logic.Constructive.Constructive",  "anthill.logic.Minimal.Minimal"),
         ("anthill.logic.Classical.Classical",        "anthill.logic.Constructive.Constructive"),
     ];

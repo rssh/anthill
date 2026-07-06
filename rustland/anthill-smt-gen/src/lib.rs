@@ -1391,21 +1391,23 @@ fn map_unary_op(qn: &str) -> Option<&'static str> {
 /// assertions (not embedded in arithmetic expressions, since
 /// SMT-LIB segregates Bool from Real cleanly).
 fn map_inequality_op(qn: &str) -> Option<&'static str> {
+    // WI-644 / proposal 004: gt/lt/gte/lte moved from `Ordered` onto the `PartialOrd`
+    // base (Ordered kept as `Ordered.*` aliases for any legacy QN).
     match qn {
-        "anthill.prelude.Ordered.lte" | "Ordered.lte" | "lte" => Some("<="),
-        "anthill.prelude.Ordered.lt"  | "Ordered.lt"  | "lt"  => Some("<"),
-        "anthill.prelude.Ordered.gte" | "Ordered.gte" | "gte" => Some(">="),
-        "anthill.prelude.Ordered.gt"  | "Ordered.gt"  | "gt"  => Some(">"),
+        "anthill.prelude.PartialOrd.lte" | "PartialOrd.lte" | "anthill.prelude.Ordered.lte" | "Ordered.lte" | "lte" => Some("<="),
+        "anthill.prelude.PartialOrd.lt"  | "PartialOrd.lt"  | "anthill.prelude.Ordered.lt"  | "Ordered.lt"  | "lt"  => Some("<"),
+        "anthill.prelude.PartialOrd.gte" | "PartialOrd.gte" | "anthill.prelude.Ordered.gte" | "Ordered.gte" | "gte" => Some(">="),
+        "anthill.prelude.PartialOrd.gt"  | "PartialOrd.gt"  | "anthill.prelude.Ordered.gt"  | "Ordered.gt"  | "gt"  => Some(">"),
         _ => None,
     }
 }
 
 /// True if `sym` names the equation predicate. Loader desugars `=`
-/// to `anthill.prelude.Eq.eq` in goal position; `Term::Fn` may also
-/// carry the unqualified short form during construction.
+/// to `anthill.prelude.PartialEq.eq` (WI-644: the `eq` op lives on the PartialEq
+/// base) in goal position; `Term::Fn` may also carry the unqualified short form.
 fn is_eq_functor(kb: &KnowledgeBase, sym: anthill_core::intern::Symbol) -> bool {
     let qn = kb.qualified_name_of(sym);
-    if qn == "=" || qn == "anthill.prelude.Eq.eq" { return true; }
+    if qn == "=" || qn == "anthill.prelude.PartialEq.eq" || qn == "anthill.prelude.Eq.eq" { return true; }
     let short = kb.resolve_sym(sym);
     short == "=" || short == "eq"
 }

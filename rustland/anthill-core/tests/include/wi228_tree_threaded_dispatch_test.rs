@@ -47,10 +47,11 @@ fn pin_now_threads_conditional_tree_into_nested_construct_requirement() {
     // verified at the source where it lives.
     let src = r#"
 namespace test.wi228.pin_now_tree
-  import anthill.prelude.{Eq, List, Int64, Bool}
+  import anthill.prelude.{Eq, PartialEq, List, Int64, Bool}
   sort EqList
     sort A = ?
     requires Eq[T = A]
+    fact PartialEq[T = List[T = A]]
     fact Eq[T = List[T = A]]
     operation eq(x: List[T = A], y: List[T = A]) -> Bool = true
   end

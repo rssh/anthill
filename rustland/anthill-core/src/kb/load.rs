@@ -1052,12 +1052,15 @@ const PRELUDE_QUALIFIED: &[&str] = &[
     "anthill.prelude.List.nil",
     "anthill.prelude.Option.some",
     "anthill.prelude.Option.none",
-    "anthill.prelude.Eq.eq",
-    "anthill.prelude.Eq.neq",
-    "anthill.prelude.Ordered.gt",
-    "anthill.prelude.Ordered.lt",
-    "anthill.prelude.Ordered.gte",
-    "anthill.prelude.Ordered.lte",
+    // WI-644 / proposal 004: the partial comparison ops live on the PartialEq /
+    // PartialOrd bases (Eq / Ordered are the lawful/total markers above them). A
+    // bare `eq`/`gt`/… resolves to the base op via this fallback.
+    "anthill.prelude.PartialEq.eq",
+    "anthill.prelude.PartialEq.neq",
+    "anthill.prelude.PartialOrd.gt",
+    "anthill.prelude.PartialOrd.lt",
+    "anthill.prelude.PartialOrd.gte",
+    "anthill.prelude.PartialOrd.lte",
     "anthill.prelude.Numeric.add",
     "anthill.prelude.Numeric.sub",
     "anthill.prelude.Numeric.mul",
@@ -2545,7 +2548,27 @@ fn register_stdlib_scopes(kb: &mut KnowledgeBase, global_raw: u32) {
     kb.symbols.define("some", "anthill.prelude.Option.some", SymbolKind::Entity, option_term.raw());
     kb.symbols.define("none", "anthill.prelude.Option.none", SymbolKind::Entity, option_term.raw());
 
-    // anthill.prelude.Eq sort (operations: eq, neq)
+    // WI-644 / proposal 004: PartialEq / PartialOrd are the partial bases that
+    // hold the eq/neq and gt/lt/gte/lte OPERATIONS; Eq / Ordered are the lawful /
+    // total markers above them (Eq requires PartialEq; Ordered requires Eq,
+    // PartialOrd). The bootstrap pre-defines the ops on their base sorts so the
+    // builtin-tag registration (register_standard_builtins) and the bare-name
+    // fallback resolve to the same symbols the stdlib .anthill files reuse.
+
+    // anthill.prelude.PartialEq sort (operations: eq, neq)
+    let partial_eq_sort_sym = kb.symbols.define("PartialEq", "anthill.prelude.PartialEq", SymbolKind::Sort, prelude_term.raw());
+    let partial_eq_sort_term = kb.alloc(Term::Fn {
+        functor: partial_eq_sort_sym, pos_args: SmallVec::new(), named_args: SmallVec::new(),
+    });
+    kb.symbols.add_parent(partial_eq_sort_term.raw(), ScopeInclusion {
+        parent_scope_raw: prelude_term.raw(),
+        instantiation_term_raw: prelude_term.raw(),
+        is_enclosing: true,
+    });
+    kb.symbols.define("eq", "anthill.prelude.PartialEq.eq", SymbolKind::Operation, partial_eq_sort_term.raw());
+    kb.symbols.define("neq", "anthill.prelude.PartialEq.neq", SymbolKind::Operation, partial_eq_sort_term.raw());
+
+    // anthill.prelude.Eq — lawful marker (requires PartialEq; no own operations)
     let eq_sort_sym = kb.symbols.define("Eq", "anthill.prelude.Eq", SymbolKind::Sort, prelude_term.raw());
     let eq_sort_term = kb.alloc(Term::Fn {
         functor: eq_sort_sym, pos_args: SmallVec::new(), named_args: SmallVec::new(),
@@ -2555,10 +2578,24 @@ fn register_stdlib_scopes(kb: &mut KnowledgeBase, global_raw: u32) {
         instantiation_term_raw: prelude_term.raw(),
         is_enclosing: true,
     });
-    kb.symbols.define("eq", "anthill.prelude.Eq.eq", SymbolKind::Operation, eq_sort_term.raw());
-    kb.symbols.define("neq", "anthill.prelude.Eq.neq", SymbolKind::Operation, eq_sort_term.raw());
 
-    // anthill.prelude.Ordered sort (operations: compare, gt, lt, gte, lte, max, min)
+    // anthill.prelude.PartialOrd sort (operations: gt, lt, gte, lte)
+    let partial_ord_sort_sym = kb.symbols.define("PartialOrd", "anthill.prelude.PartialOrd", SymbolKind::Sort, prelude_term.raw());
+    let partial_ord_sort_term = kb.alloc(Term::Fn {
+        functor: partial_ord_sort_sym, pos_args: SmallVec::new(), named_args: SmallVec::new(),
+    });
+    kb.symbols.add_parent(partial_ord_sort_term.raw(), ScopeInclusion {
+        parent_scope_raw: prelude_term.raw(),
+        instantiation_term_raw: prelude_term.raw(),
+        is_enclosing: true,
+    });
+    kb.symbols.define("gt", "anthill.prelude.PartialOrd.gt", SymbolKind::Operation, partial_ord_sort_term.raw());
+    kb.symbols.define("lt", "anthill.prelude.PartialOrd.lt", SymbolKind::Operation, partial_ord_sort_term.raw());
+    kb.symbols.define("gte", "anthill.prelude.PartialOrd.gte", SymbolKind::Operation, partial_ord_sort_term.raw());
+    kb.symbols.define("lte", "anthill.prelude.PartialOrd.lte", SymbolKind::Operation, partial_ord_sort_term.raw());
+
+    // anthill.prelude.Ordered sort (total; operations: compare, max, min; the
+    // gt/lt/gte/lte comparison surface is inherited from PartialOrd)
     let ord_sort_sym = kb.symbols.define("Ordered", "anthill.prelude.Ordered", SymbolKind::Sort, prelude_term.raw());
     let ord_sort_term = kb.alloc(Term::Fn {
         functor: ord_sort_sym, pos_args: SmallVec::new(), named_args: SmallVec::new(),
@@ -2569,10 +2606,6 @@ fn register_stdlib_scopes(kb: &mut KnowledgeBase, global_raw: u32) {
         is_enclosing: true,
     });
     kb.symbols.define("compare", "anthill.prelude.Ordered.compare", SymbolKind::Operation, ord_sort_term.raw());
-    kb.symbols.define("gt", "anthill.prelude.Ordered.gt", SymbolKind::Operation, ord_sort_term.raw());
-    kb.symbols.define("lt", "anthill.prelude.Ordered.lt", SymbolKind::Operation, ord_sort_term.raw());
-    kb.symbols.define("gte", "anthill.prelude.Ordered.gte", SymbolKind::Operation, ord_sort_term.raw());
-    kb.symbols.define("lte", "anthill.prelude.Ordered.lte", SymbolKind::Operation, ord_sort_term.raw());
 
     // anthill.prelude.Numeric sort (operations: add, sub, mul)
     let num_sort_sym = kb.symbols.define("Numeric", "anthill.prelude.Numeric", SymbolKind::Sort, prelude_term.raw());
@@ -4159,14 +4192,15 @@ pub fn build_sort_ops_table(kb: &mut KnowledgeBase) {
 
     // ── Pass 3 (WI-616): the semantic-equality dispatch index. ─────
     // For every sort whose sort_ops row carries a GENUINE own `eq` member
-    // (`carrier_own_op`: not the `Eq.eq` spec op, parented by the sort itself —
-    // never a pass-2-inherited foreign same-short-name default), key that
+    // (`carrier_own_op`: not the `PartialEq.eq` spec op, parented by the sort
+    // itself — never a pass-2-inherited foreign same-short-name default), key that
     // target under the shapes the sort's VALUES are headed by: its entity
     // constructors and its SELF-RETURNING ops (`Set.insert`/`Set.empty`;
     // `Map.get` returns an Option, not a Map, and must not key Map dispatch).
     // The resolver's `eq`/`neq` builtin probes this per structurally-unequal
     // goal — precomputing here keeps that path to one hash lookup.
-    let Some(eq_spec) = kb.try_resolve_symbol("anthill.prelude.Eq.eq") else { return };
+    // WI-644: the semantic eq op moved from `Eq` to its base `PartialEq`.
+    let Some(eq_spec) = kb.try_resolve_symbol("anthill.prelude.PartialEq.eq") else { return };
     let eq_short = kb.intern("eq");
     let mut entries: Vec<(Symbol, Symbol)> = Vec::new();
     for &sort_sym in sort_ops.keys() {
@@ -11715,15 +11749,18 @@ impl<'a> Loader<'a> {
             named_args: SmallVec::new(),
         });
 
-        let eq_sym = self.kb.try_resolve_symbol("anthill.prelude.Eq.eq")
-            .unwrap_or_else(|| self.kb.intern("eq"));
+        // WI-644: head this operation-definition equation with the CANONICAL equation
+        // functor (`eq_functor` = `anthill.prelude.PartialEq.eq` since the ops moved off
+        // `Eq`), so SLD / `[simp]` (`rules_by_functor(eq_functor())`) find it — a bare
+        // `intern("eq")` would head a symbol nothing looks up (WI-283).
+        let eq_sym = self.kb.eq_functor();
         let head = self.kb.alloc(Term::Fn {
             functor: eq_sym,
             pos_args: SmallVec::from_slice(&[call, body_with_vars]),
             named_args: SmallVec::new(),
         });
 
-        let eq_sort = self.kb.make_name_term("anthill.prelude.Eq");
+        let eq_sort = self.kb.make_name_term("anthill.prelude.PartialEq");
         self.kb.assert_rule_debruijn_with_nodes(head, vec![], eq_sort, domain, None);
     }
 

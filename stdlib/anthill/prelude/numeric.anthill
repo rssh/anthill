@@ -1,8 +1,11 @@
--- Numeric: basic arithmetic (requires Ordered)
+-- Numeric: basic arithmetic (requires PartialOrd)
 sort anthill.prelude.Numeric
 
   sort T = ?
-  requires Ordered[T]
+  -- WI-644 / proposal 004: Numeric requires only the PARTIAL order — IEEE Float is
+  -- Numeric but not totally Ordered (NaN is unordered). Numeric itself uses no
+  -- ordering op; the requirement is the comparison surface consumers rely on.
+  requires PartialOrd[T]
 
   operation {
     add(a: T, b: T) -> T           -- +

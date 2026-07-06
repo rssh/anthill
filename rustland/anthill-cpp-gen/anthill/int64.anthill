@@ -4,7 +4,10 @@
 namespace anthill.prelude
   provides Int64 language cpp
     carrier { Int64: "int64_t" }
+    -- WI-644 / proposal 004: Int64 is lawful — partial bases + total markers.
+    fact PartialEq[T = Int64]
     fact Eq[T = Int64]
+    fact PartialOrd[T = Int64]
     fact Ordered[T = Int64]
     fact Numeric[T = Int64]
   end

@@ -36,6 +36,7 @@ pub static SOURCES: &[(&str, &str)] = &[
     ("anthill/prelude/string", include_str!("../../../stdlib/anthill/prelude/string.anthill")),
     ("anthill/prelude/eq", include_str!("../../../stdlib/anthill/prelude/eq.anthill")),
     ("anthill/prelude/ordered", include_str!("../../../stdlib/anthill/prelude/ordered.anthill")),
+    ("anthill/prelude/totalfloat", include_str!("../../../stdlib/anthill/prelude/totalfloat.anthill")),
     ("anthill/prelude/numeric", include_str!("../../../stdlib/anthill/prelude/numeric.anthill")),
     ("anthill/prelude/monad", include_str!("../../../stdlib/anthill/prelude/monad.anthill")),
     ("anthill/prelude/delay", include_str!("../../../stdlib/anthill/prelude/delay.anthill")),

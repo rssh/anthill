@@ -5,8 +5,13 @@ namespace anthill.prelude
   provides Float language rust
     artifact "rustland/anthill-stl/src/prelude/float.rs"
     carrier { Float: "f64" }
-    fact Eq[T = Float]
-    fact Ordered[T = Float]
+    -- WI-644 / proposal 004: IEEE Float provides only the PARTIAL specs — its `==`
+    -- is not reflexive (nan) and not a congruence (-0.0/+0.0), so it is NOT a
+    -- lawful Eq/Ordered. `TotalFloat` (prelude) provides the total instances for
+    -- when floats are needed as Map keys / sorted. (A raw `Float` key becoming a
+    -- load error is WI-649; auto-refuting a `provides Eq[Float]` is WI-650.)
+    fact PartialEq[T = Float]
+    fact PartialOrd[T = Float]
     fact Numeric[T = Float]
     fact Ring[Float]
   end

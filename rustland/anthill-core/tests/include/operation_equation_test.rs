@@ -37,7 +37,7 @@ fn operation_body_emits_equation_rule() {
         end
     "#;
     let kb = load_with(src);
-    let eq_sym = kb.try_resolve_symbol("anthill.prelude.Eq.eq")
+    let eq_sym = kb.try_resolve_symbol("anthill.prelude.PartialEq.eq")
         .or_else(|| kb.try_resolve_symbol("eq"))
         .expect("eq symbol");
     let rules = kb.rules_by_functor(eq_sym);
@@ -60,7 +60,7 @@ fn equation_rule_has_correct_shape() {
         end
     "#;
     let kb = load_with(src);
-    let eq_sym = kb.try_resolve_symbol("anthill.prelude.Eq.eq")
+    let eq_sym = kb.try_resolve_symbol("anthill.prelude.PartialEq.eq")
         .or_else(|| kb.try_resolve_symbol("eq"))
         .expect("eq symbol");
     let rule_id = kb.rules_by_functor(eq_sym).into_iter()
@@ -102,7 +102,7 @@ fn no_body_no_equation_rule() {
         end
     "#;
     let kb = load_with(src);
-    let eq_sym = kb.try_resolve_symbol("anthill.prelude.Eq.eq")
+    let eq_sym = kb.try_resolve_symbol("anthill.prelude.PartialEq.eq")
         .or_else(|| kb.try_resolve_symbol("eq"))
         .expect("eq symbol");
     let rules = kb.rules_by_functor(eq_sym);

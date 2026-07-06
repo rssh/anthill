@@ -139,7 +139,7 @@ fn abstract_spec_op_without_covering_requires_still_rejected() {
          still be rejected (WI-325); got a clean load"
     );
     assert!(
-        text.contains("requires Eq"),
-        "the diagnostic should point at the missing Eq requirement; got:\n{text}"
+        text.contains("requires PartialEq"),
+        "the diagnostic should point at the missing PartialEq requirement (WI-644: `eq`'s spec is the PartialEq base); got:\n{text}"
     );
 }

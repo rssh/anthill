@@ -114,7 +114,7 @@ fn resolve_op_real_impl_yields_callable_opref() {
     let int64 = resolve(&interp, "anthill.prelude.Int64");
 
     // Int64 provides Eq — resolve `Eq.eq` against a Dictionary{Int64}.
-    let eq_eq = sym_val(&mut interp, "anthill.prelude.Eq.eq");
+    let eq_eq = sym_val(&mut interp, "anthill.prelude.PartialEq.eq");
     let dict = Value::Requirement(interp.alloc_requirement(int64, SmallVec::new()));
     let opref = interp.call(&format!("{DICT}.resolveOp"), &[dict, eq_eq]).unwrap();
 
@@ -217,7 +217,7 @@ fn opref_backed_by_builtin_is_callable() {
 #[test]
 fn opref_dict_none_for_dictless_ref() {
     let mut interp = interp();
-    let eq_eq = resolve(&interp, "anthill.prelude.Eq.eq");
+    let eq_eq = resolve(&interp, "anthill.prelude.PartialEq.eq");
     // A bare op-ref with no captured dict (a requires-free / namespace-level op).
     let opref = Value::OpRef { op: eq_eq, dict: None };
     let d = interp.call(&format!("{OPREF}.dict"), &[opref]).unwrap();

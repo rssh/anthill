@@ -56,7 +56,7 @@ fn is_undeclared_boom(errs: &[String]) -> bool {
 /// equality `eq(Green, Red)` is TRUE, so the guard `eq(c, Red)` HOLDS and `Boom`
 /// must be kept. The structural builtin would (wrongly) refute it.
 const CUSTOM_EQ_TRUE_PRELUDE: &str = r#"
-  import anthill.prelude.{Int64, Bool, Eq}
+  import anthill.prelude.{Int64, Bool, Eq, PartialEq}
 
   sort Boom
     entity Bang
@@ -65,6 +65,7 @@ const CUSTOM_EQ_TRUE_PRELUDE: &str = r#"
   sort Color
     entity Red
     entity Green
+    provides PartialEq[T = Color]
     provides Eq[T = Color]
     operation eq(a: Color, b: Color) -> Bool = true
   end
@@ -76,7 +77,7 @@ const CUSTOM_EQ_TRUE_PRELUDE: &str = r#"
 /// `Color` with NO override (`provides Eq` only) — the structural builtin IS this
 /// carrier's equality, so the WI-592 discharge applies unchanged.
 const STRUCTURAL_EQ_PRELUDE: &str = r#"
-  import anthill.prelude.{Int64, Bool, Eq}
+  import anthill.prelude.{Int64, Bool, Eq, PartialEq}
 
   sort Boom
     entity Bang
@@ -85,6 +86,7 @@ const STRUCTURAL_EQ_PRELUDE: &str = r#"
   sort Color
     entity Red
     entity Green
+    provides PartialEq[T = Color]
     provides Eq[T = Color]
   end
 
@@ -182,7 +184,7 @@ fn custom_eq_override_suspends_rather_than_dispatches() {
     // half (option (a)) has landed and this test should move to assert the drop.
     let src = r#"
 namespace anthill.test.wi573suspend
-  import anthill.prelude.{Int64, Bool, Eq}
+  import anthill.prelude.{Int64, Bool, Eq, PartialEq}
 
   sort Boom
     entity Bang
@@ -191,6 +193,7 @@ namespace anthill.test.wi573suspend
   sort Color
     entity Red
     entity Green
+    provides PartialEq[T = Color]
     provides Eq[T = Color]
     operation eq(a: Color, b: Color) -> Bool = false
   end
@@ -231,7 +234,7 @@ fn nested_element_override_keeps_effect() {
     // misses this — the scan must reach the element.
     let src = r#"
 namespace anthill.test.wi573nestedelem
-  import anthill.prelude.{Int64, Bool, Eq, Option}
+  import anthill.prelude.{Int64, Bool, Eq, PartialEq, Option}
   import anthill.prelude.Option.{some, none}
 
   sort Boom
@@ -241,6 +244,7 @@ namespace anthill.test.wi573nestedelem
   sort Color
     entity Red
     entity Green
+    provides PartialEq[T = Color]
     provides Eq[T = Color]
     operation eq(a: Color, b: Color) -> Bool = true
   end
@@ -271,7 +275,7 @@ fn nested_field_override_keeps_effect() {
     // (`named_keys`/`named_arg`), distinct from the positional element case.
     let src = r#"
 namespace anthill.test.wi573nestedfield
-  import anthill.prelude.{Int64, Bool, Eq}
+  import anthill.prelude.{Int64, Bool, Eq, PartialEq}
 
   sort Boom
     entity Bang
@@ -280,12 +284,14 @@ namespace anthill.test.wi573nestedfield
   sort Color
     entity Red
     entity Green
+    provides PartialEq[T = Color]
     provides Eq[T = Color]
     operation eq(a: Color, b: Color) -> Bool = true
   end
 
   sort Wrap
     entity W(c: Color)
+    provides PartialEq[T = Wrap]
     provides Eq[T = Wrap]
   end
 
@@ -317,7 +323,7 @@ fn nested_native_element_still_discharges() {
     // "kept").
     let src = r#"
 namespace anthill.test.wi573nestednative
-  import anthill.prelude.{Int64, Bool, Eq, Option}
+  import anthill.prelude.{Int64, Bool, Eq, PartialEq, Option}
   import anthill.prelude.Option.{some, none}
 
   sort Boom
@@ -327,6 +333,7 @@ namespace anthill.test.wi573nestednative
   sort Color
     entity Red
     entity Green
+    provides PartialEq[T = Color]
     provides Eq[T = Color]
   end
 

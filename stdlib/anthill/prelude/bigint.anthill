@@ -6,7 +6,7 @@
 -- — see proposal 038.
 sort anthill.prelude.BigInt
   import anthill.prelude.{Eq, Ordered, Numeric}
-  import anthill.prelude.Ordered.{gt}
+  import anthill.prelude.PartialOrd.{gt}
   import anthill.prelude.Numeric.{sub}
 
   -- Conversion operations

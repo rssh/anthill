@@ -3,7 +3,7 @@
 -- binding files (e.g. rustland/anthill-stl/anthill/string.anthill) — see proposal 038.
 sort anthill.prelude.String
   import anthill.prelude.{Eq, Ordered}
-  import anthill.prelude.Ordered.{gt}
+  import anthill.prelude.PartialOrd.{gt}
   import anthill.prelude.Numeric.{sub}
 
   operation {

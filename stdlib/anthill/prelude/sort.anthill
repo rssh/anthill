@@ -31,6 +31,7 @@ namespace anthill.prelude
   -- provides-carrier is derived from the `T = Type` binding value (→ Type);
   -- short names resolve as `anthill.prelude` siblings (a qualified
   -- `anthill.prelude.Type` is not accepted in binding-value position).
+  fact PartialEq[T = Type]      -- WI-644: Eq requires the PartialEq base
   fact Eq[T = Type]
   fact Lattice[T = Type]
 end
@@ -102,6 +103,7 @@ enum anthill.prelude.EffectExpression
   -- label is a row-unification failure, not a propagating value (045 §7.2).
   entity merge(left: EffectExpression, right: EffectExpression)
 
+  fact PartialEq[T = EffectExpression]   -- WI-644: Eq requires the PartialEq base
   fact Eq[T = EffectExpression]
 end
 
