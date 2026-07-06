@@ -576,11 +576,23 @@ impl Interpreter {
         args: &[Value],
         requirements: smallvec::SmallVec<[(Symbol, value::RequirementHandle); 2]>,
     ) -> Result<Value, EvalError> {
-        let (body_term, params) = self.cached_operation_body(sym)
-            .ok_or_else(|| EvalError::OperationBodyMissing {
-                name: self.kb.qualified_name_of(sym).to_string(),
-                backtrace: std::backtrace::Backtrace::force_capture(),
-            })?;
+        let (body_term, params) = match self.cached_operation_body(sym) {
+            Some(b) => b,
+            // WI-625 (eval→SLD bridge): a host-invoked body-less carrier `eq` op
+            // (e.g. `Set.eq`/`Map.eq` resolved from a dictionary — gap 4) has no
+            // body to run, but the SLD resolver can prove it. The host-entry twin
+            // of the in-body dispatch bridge; anything else stays a loud
+            // `OperationBodyMissing`.
+            None => match self.eq_bridge_target(sym, args) {
+                Some(pred) => return self.prove_rule_predicate_value(pred, args),
+                None => {
+                    return Err(EvalError::OperationBodyMissing {
+                        name: self.kb.qualified_name_of(sym).to_string(),
+                        backtrace: std::backtrace::Backtrace::force_capture(),
+                    });
+                }
+            },
+        };
         if args.len() != params.len() {
             return Err(EvalError::ArityMismatch {
                 op: "operation call",

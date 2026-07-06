@@ -458,18 +458,82 @@ fn builtin_struct_eq(i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalE
 
 fn builtin_eq(i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [a, b] = expect_args::<2>("PartialEq.eq", args)?;
-    if let Some(v) = float_ieee_eq(i, &a, &b) {
-        return Ok(Value::Bool(v));
-    }
-    Ok(Value::Bool(crate::kb::term_view::views_structurally_equal(i.kb(), &a, &b)))
+    Ok(Value::Bool(semantic_equal(i, &a, &b)?))
 }
 
 fn builtin_neq(i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [a, b] = expect_args::<2>("PartialEq.neq", args)?;
-    if let Some(v) = float_ieee_eq(i, &a, &b) {
-        return Ok(Value::Bool(!v));
+    Ok(Value::Bool(!semantic_equal(i, &a, &b)?))
+}
+
+/// WI-625 (proposal 051 Phase 2, the eval→SLD dual) — eval's SEMANTIC equality,
+/// the interpreter mirror of the resolver's `sem_eq_core` (`kb/resolve.rs`).
+/// Returns the EQUAL verdict (`neq` negates it). The order matches the resolver
+/// exactly so eval, SLD, and the C++ codegen agree on every operand:
+///
+/// 1. **Float IEEE pair** — the PARTIAL-eq carrier (`nan != nan`,
+///    `-0.0 == +0.0`), decided BEFORE the structural reflexivity shortcut
+///    (which would read `nan == nan` through `OrderedFloat`).
+/// 2. **Reflexivity** — structurally identical operands are equal under any
+///    lawful `Eq`; the pre-WI-616 answer, and the hot path.
+/// 3. **No override anywhere** — a KB with no eq-dispatch entries takes the
+///    structural verdict directly (one flag read; the pre-WI-616 behaviour).
+/// 4. **Head-carrier override** — an operand headed by an eq-overriding carrier
+///    (`Set`/`Map`, the WI-350/WI-444 short-name convention) with BOTH operands
+///    ground: prove `<carrier>.eq(a, b)` by the bounded closed sub-resolution
+///    ([`KnowledgeBase::prove_rule_predicate`]) — the SAME evaluator the resolver
+///    dispatches through. A non-ground operand is NOT proved (`=` is a test and
+///    must not bind — the resolver Delays here; eval falls through to the
+///    structural verdict). Truncation of a genuinely huge ground compare
+///    surfaces loudly rather than guessing.
+/// 5. **Structural** — everything else, including a carrier override BURIED under
+///    non-carrier structure (`some({1,2})` vs `some({2,1})`): eval answers
+///    structurally, exactly as it did before WI-625. This can be
+///    membership-wrong (the resolver merely SUSPENDS such a compare); a complete
+///    recursive semantic descent that dispatches at each buried carrier is a
+///    WI-625 follow-up. `===` is the explicit structural test.
+fn semantic_equal(i: &mut Interpreter, a: &Value, b: &Value) -> Result<bool, EvalError> {
+    // 1. Float IEEE pair.
+    if let Some(v) = float_ieee_eq(i, a, b) {
+        return Ok(v);
     }
-    Ok(Value::Bool(!crate::kb::term_view::views_structurally_equal(i.kb(), &a, &b)))
+    // 2. Reflexivity.
+    if crate::kb::term_view::views_structurally_equal(i.kb(), a, b) {
+        return Ok(true);
+    }
+    // 3. No carrier overrides eq at all (the common KB): structural verdict.
+    if !i.kb().has_eq_dispatch_entries() {
+        return Ok(false);
+    }
+    // 4. Head-carrier override over GROUND operands ⇒ prove `<carrier>.eq(a, b)`.
+    let target = {
+        let kb = i.kb();
+        kb.sem_eq_dispatch_target(a).or_else(|| kb.sem_eq_dispatch_target(b))
+    };
+    if let Some(target) = target {
+        let ground = {
+            let kb = i.kb();
+            let empty = crate::kb::subst::Substitution::new();
+            kb.value_deep_ground(a, &empty) && kb.value_deep_ground(b, &empty)
+        };
+        if ground {
+            return match i.kb_mut().prove_rule_predicate(target, vec![a.clone(), b.clone()]) {
+                crate::kb::resolve::PredicateProof::Proved => Ok(true),
+                crate::kb::resolve::PredicateProof::Refuted => Ok(false),
+                // Only reachable when a huge ground compare truncates the sub-proof
+                // budget (the resolver maps the same case to Delay): surface it
+                // loudly rather than guess a structural answer.
+                crate::kb::resolve::PredicateProof::Undecided => Err(EvalError::Internal(format!(
+                    "semantic eq over `{}` could not be decided (proof truncated)",
+                    i.kb().resolve_sym(target)
+                ))),
+            };
+        }
+        // Non-ground operand: `=` never binds — fall through to the structural
+        // verdict (the resolver Delays; eval keeps its pre-WI-625 answer).
+    }
+    // 5. Structural verdict (see the buried-override note above).
+    Ok(false)
 }
 
 /// Total order on primitive scalars. Floats use `total_cmp` so NaN has a

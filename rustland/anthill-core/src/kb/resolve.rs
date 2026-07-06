@@ -195,6 +195,21 @@ fn sem_verdict(equal: bool, positive: bool) -> BuiltinResult {
     if equal == positive { BuiltinResult::Success } else { BuiltinResult::Failure }
 }
 
+/// WI-625 — the three-way outcome of proving a rule-backed predicate goal by a
+/// bounded closed sub-resolution ([`KnowledgeBase::prove_rule_predicate`]).
+/// Shared by the resolver's semantic-`eq` dispatch (`sem_eq_dispatch`) and the
+/// eval→SLD bridge (`eval/builtins.rs`, `eval/eval.rs`), so both read a
+/// carrier's own `eq`/`neq`/`subset`/… the identical way.
+pub(crate) enum PredicateProof {
+    /// A definite proof was found (semi-deterministic: the first one settles it).
+    Proved,
+    /// The search ran to exhaustion, complete, with no proof.
+    Refuted,
+    /// The search was TRUNCATED at the depth cap, or produced only residual
+    /// (floundered) solutions — never decide from an incomplete search.
+    Undecided,
+}
+
 /// A resolution candidate — either a regular KB rule/fact or a
 /// scoped assumption. WI-251: the legacy `Occurrence(OccurrenceId, …)`
 /// variant was removed when the legacy occurrence side-table went; reflection
@@ -3518,7 +3533,7 @@ impl KnowledgeBase {
     /// entry (an entity constructor or self-returning op of an eq-overriding
     /// carrier sort — see `load::build_sort_ops_table` pass 3). One O(1) hash
     /// lookup; scalars and headless values read `None` (structural).
-    fn sem_eq_dispatch_target(&self, v: &Value) -> Option<Symbol> {
+    pub(crate) fn sem_eq_dispatch_target(&self, v: &Value) -> Option<Symbol> {
         let functor = match v.head(self) {
             ViewHead::Ref(s) | ViewHead::Functor { functor: Some(s), .. } => s,
             _ => return None,
@@ -3546,11 +3561,6 @@ impl KnowledgeBase {
         subst: &Substitution,
         positive: bool,
     ) -> BuiltinResult {
-        // Generous but bounded: the relational instances consume one depth unit
-        // per goal along a branch (Set: O(n²) for n elements), so the outer
-        // default of 100 would truncate at ~10 elements. Truncation degrades to
-        // UNDECIDED, never a wrong verdict.
-        const SEM_EQ_SUB_DEPTH: usize = 100_000;
         // Close the operands under the caller's σ: groundness was checked
         // AGAINST σ, but the sub-resolution starts from an empty substitution —
         // a σ-bound variable inside an entity-carried operand would enter the
@@ -3559,7 +3569,31 @@ impl KnowledgeBase {
         // delayed before the builtin ran; see the WI-537/WI-067 pre-checks).
         let a = self.reify_value(&a, subst);
         let b = self.reify_value(&b, subst);
-        let goal = self.make_goal_value(target, vec![a, b]);
+        match self.prove_rule_predicate(target, vec![a, b]) {
+            PredicateProof::Proved => sem_verdict(true, positive),
+            PredicateProof::Refuted => sem_verdict(false, positive),
+            // Never decide from an incomplete search (truncation / flounder):
+            // suspend as undecided rather than answer either way.
+            PredicateProof::Undecided => BuiltinResult::Delay,
+        }
+    }
+
+    /// WI-616/WI-625 — prove a rule-backed predicate goal `pred(args)` (a
+    /// carrier's own `eq`/`neq`/`subset`/`member`, …) by a CLOSED, BOUNDED
+    /// sub-resolution: a fresh [`SearchStream`] on its own generous depth budget.
+    /// Rules-backed instances need no SLD→eval bridge — ordinary SLD is the
+    /// evaluator. Operands must be CLOSED (ground): the resolver reifies under σ
+    /// before calling ([`Self::sem_eq_dispatch`]); the eval→SLD bridge (WI-625)
+    /// passes already-ground interpreter values. The sub-proof is a closed TEST —
+    /// its bindings never reach the caller's frame — and three-way, never
+    /// wrong-by-truncation (see [`PredicateProof`]).
+    pub(crate) fn prove_rule_predicate(&mut self, pred: Symbol, args: Vec<Value>) -> PredicateProof {
+        // Generous but bounded: the relational instances consume one depth unit
+        // per goal along a branch (Set: O(n²) for n elements), so the outer
+        // default of 100 would truncate at ~10 elements. Truncation degrades to
+        // UNDECIDED, never a wrong verdict.
+        const SEM_EQ_SUB_DEPTH: usize = 100_000;
+        let goal = self.make_goal_value(pred, args);
         let config = ResolveConfig { max_depth: SEM_EQ_SUB_DEPTH, ..ResolveConfig::default() };
         let mut stream = self.resolve_lazy_goals(vec![goal], &config);
         let mut saw_residual = false;
@@ -3570,7 +3604,7 @@ impl KnowledgeBase {
             match stream.step(self) {
                 Some(StepResult::YieldSolution(sol)) => {
                     if sol.residual.is_empty() {
-                        return sem_verdict(true, positive);
+                        return PredicateProof::Proved;
                     }
                     saw_residual = true;
                 }
@@ -3579,9 +3613,10 @@ impl KnowledgeBase {
             }
         }
         if saw_residual || stream.truncated {
-            return BuiltinResult::Delay;
+            PredicateProof::Undecided
+        } else {
+            PredicateProof::Refuted
         }
-        sem_verdict(false, positive)
     }
 
     /// WI-616 — deep groundness of a σ-walked operand `Value`: no unbound
@@ -3589,7 +3624,7 @@ impl KnowledgeBase {
     /// reuses the recursive [`Self::is_ground`]; entity/tuple carriers recurse;
     /// an occurrence carrier (which `eq_operands` normalizes away) is
     /// conservatively non-ground; scalars and runtime handles are ground.
-    fn value_deep_ground(&self, v: &Value, subst: &Substitution) -> bool {
+    pub(crate) fn value_deep_ground(&self, v: &Value, subst: &Substitution) -> bool {
         match v {
             Value::Term { id, .. } => self.term_deep_ground(*id, subst),
             Value::Var(var) => match var {

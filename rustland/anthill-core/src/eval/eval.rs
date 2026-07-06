@@ -1309,6 +1309,17 @@ impl Interpreter {
             }
         }
 
+        // WI-625 (the eval→SLD bridge): a body-less carrier `eq` op invoked
+        // directly (a typer PinNow-pinned `Set.eq`/`Map.eq`, WI-210/WI-350 gap 6;
+        // or a dictionary-resolved `Set.eq`, gap 4) has no host body for the
+        // interpreter to run — but the SLD resolver CAN prove it. Prove the goal
+        // in a closed bounded sub-resolution and deliver the Bool verdict, the
+        // exact evaluator the resolver's semantic `eq` dispatches through, so
+        // eval and SLD agree.
+        if let Some(pred) = self.eq_bridge_target(target, &arg_values) {
+            return self.prove_rule_predicate_value(pred, &arg_values).map(StepOutcome::Deliver);
+        }
+
         Err(EvalError::UnknownOperation { name: target_name })
     }
 
@@ -1371,6 +1382,69 @@ impl Interpreter {
         let entry: OpBody = (node, params.into());
         self.op_body_cache.insert(target, entry.clone());
         Some(entry)
+    }
+
+    /// WI-625 — is `op` a body-less operation, backed by relational rule clauses,
+    /// declared to return `Bool` (i.e. a PREDICATE the SLD resolver can prove)?
+    /// The eval→SLD bridge (`dispatch_call_with_requirements_inner`) runs such an
+    /// op via [`KnowledgeBase::prove_rule_predicate`]. Excludes host-bodied ops
+    /// (the interpreter runs those) and functional rule-backed ops (a non-`Bool`
+    /// equational law such as `Stream.head`), which carry no predicate goal to
+    /// prove and stay a loud `UnknownOperation`.
+    /// WI-625 — the eval→SLD bridge's Site-B gate: if `target` is a body-less
+    /// carrier `eq` op invoked DIRECTLY over two GROUND operands that dispatch
+    /// their semantic equality to `target`, return the eq-dispatch INDEX symbol
+    /// (`dispatched`) as the resolvable predicate. This is the `Set.eq`/`Map.eq`
+    /// shape a typer PinNow leaves when it pins a concrete-receiver `eq(...)`
+    /// (WI-210/WI-350, gap 6), and the op a dictionary `resolveOp` yields for an
+    /// `Eq[Set]` witness (gap 4). The interpreter has no equational-rewrite
+    /// engine; the resolver evaluates the rule clauses.
+    ///
+    /// Returns the INDEX symbol, not the caller's `target`: the resolver keys its
+    /// rule clauses off the index value (as `semantic_equal` does), and a caller
+    /// may hold a non-canonical interning of the op whose goal would match no
+    /// clause. Ground-gated because `=` is a test that must not bind (a sub-proof
+    /// over a non-ground operand could enumerate bindings — the resolver Delays
+    /// there). A body-less op that is NOT these operands' carrier eq, or a
+    /// non-ground pair, is not bridged — a loud `UnknownOperation` /
+    /// `OperationBodyMissing`.
+    pub(crate) fn eq_bridge_target(&self, target: Symbol, args: &[Value]) -> Option<Symbol> {
+        if args.len() != 2 || self.kb.op_body_node(target).is_some() {
+            return None;
+        }
+        let dispatched = self
+            .kb
+            .sem_eq_dispatch_target(&args[0])
+            .or_else(|| self.kb.sem_eq_dispatch_target(&args[1]))?;
+        if self.kb.canonical_sym(dispatched) != self.kb.canonical_sym(target) {
+            return None;
+        }
+        let empty = crate::kb::subst::Substitution::new();
+        if !self.kb.value_deep_ground(&args[0], &empty) || !self.kb.value_deep_ground(&args[1], &empty) {
+            return None;
+        }
+        Some(dispatched)
+    }
+
+    /// WI-625 — prove a rule-backed Bool predicate `pred(args)` via the eval→SLD
+    /// bridge ([`KnowledgeBase::prove_rule_predicate`]) and deliver its Bool
+    /// verdict. Callers gate on [`Self::eq_bridge_target`] first. An UNDECIDED
+    /// proof (truncation / flounder — not reachable for the ground operands eval
+    /// always has) surfaces loudly rather than guessing.
+    pub(crate) fn prove_rule_predicate_value(
+        &mut self,
+        pred: Symbol,
+        args: &[Value],
+    ) -> Result<Value, EvalError> {
+        match self.kb.prove_rule_predicate(pred, args.to_vec()) {
+            crate::kb::resolve::PredicateProof::Proved => Ok(Value::Bool(true)),
+            crate::kb::resolve::PredicateProof::Refuted => Ok(Value::Bool(false)),
+            crate::kb::resolve::PredicateProof::Undecided => Err(EvalError::Internal(format!(
+                "rule-backed predicate `{}` could not be decided at eval \
+                 (proof truncated or floundered)",
+                self.kb.resolve_sym(pred)
+            ))),
+        }
     }
 
     fn enter_operation(
