@@ -2617,8 +2617,48 @@ impl KnowledgeBase {
                 },
                 None => v.clone(),
             },
+            // WI-629: a COMPOUND value carrier — a `Value::Entity` (the `not`/`or`
+            // wrapper `make_goal_value` synthesizes) or a `Value::Tuple` (only ever
+            // a nested child value) — must reify its CHILDREN: applying σ means
+            // substituting the vars bound anywhere inside. Without these arms it fell
+            // to `other.clone()` and passed through unchanged, so a `not(Entity{…})`
+            // NAF inner reified with unbound vars still inside; the sub-resolution
+            // (which starts from an EMPTY σ — [`SearchStream::step_naf`] line
+            // ~1709) then floundered even after a sibling goal had bound them,
+            // making the deep-groundness gate (which reads σ) and the reification
+            // disagree.
+            Value::Entity { functor, pos, named, ty } => {
+                let (pos, named) = self.reify_value_children(pos, named, subst);
+                Value::Entity { functor: *functor, pos, named, ty: ty.clone() }
+            }
+            Value::Tuple { pos, named, ty } => {
+                let (pos, named) = self.reify_value_children(pos, named, subst);
+                Value::Tuple { pos, named, ty: ty.clone() }
+            }
             other => other.clone(),
         }
+    }
+
+    /// WI-629: reify (fully σ-apply) the positional + named children of a compound
+    /// value carrier (`Value::Entity`/`Tuple`). The child slices borrow from the
+    /// caller's `&Value`, not from `self`, so the `&mut self` [`Self::reify_value`]
+    /// recursion iterates them directly; named args keep their symbol keys.
+    fn reify_value_children(
+        &mut self,
+        pos: &Rc<[crate::eval::value::Value]>,
+        named: &Rc<[(Symbol, crate::eval::value::Value)]>,
+        subst: &subst::Substitution,
+    ) -> (Rc<[crate::eval::value::Value]>, Rc<[(Symbol, crate::eval::value::Value)]>) {
+        use crate::eval::value::Value;
+        let mut new_pos: Vec<Value> = Vec::with_capacity(pos.len());
+        for c in pos.iter() {
+            new_pos.push(self.reify_value(c, subst));
+        }
+        let mut new_named: Vec<(Symbol, Value)> = Vec::with_capacity(named.len());
+        for (s, c) in named.iter() {
+            new_named.push((*s, self.reify_value(c, subst)));
+        }
+        (Rc::from(new_pos), Rc::from(new_named))
     }
 
     // ── De Bruijn conversion ────────────────────────────────────

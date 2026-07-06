@@ -1629,6 +1629,25 @@ impl SearchStream {
         Some(result)
     }
 
+    /// Rotate the current frame's `goals[0]` (a delayed / undecided NAF goal)
+    /// behind the rest of the goal list, re-entering `Init` in `Delayed` mode with
+    /// the given consecutive-delay count. The single rotate primitive shared by
+    /// `step_naf`'s groundness-gate Delay branch (non-ground inner) and its
+    /// ground/inner-floundered branch (WI-629). Callers own the counter policy —
+    /// `Normal → 1`, `Delayed{n} → n + 1` — so the `consecutive_delays >=
+    /// goals.len()` residual gate in [`step_init`] advances and the rotation
+    /// terminates; a hard-coded `1` would pin it and spin (WI-629 regression).
+    fn rotate_naf_goal_behind_tail(&mut self, goal: &Value, depth: usize, new_consecutive: usize) {
+        let f = self.stack.last_mut().unwrap();
+        let mut rotated: Vec<Value> = f.goals[1..].to_vec();
+        rotated.push(goal.clone());
+        f.goals = rotated;
+        f.depth = depth + 1;
+        f.state = FrameState::Init {
+            delay_mode: DelayMode::Delayed { consecutive_delays: new_consecutive },
+        };
+    }
+
     fn step_naf(
         &mut self,
         kb: &mut KnowledgeBase,
@@ -1675,28 +1694,13 @@ impl SearchStream {
                         self.record_solution_in_ancestors();
                         return Some(StepResult::YieldSolution(Solution { subst, residual }));
                     } else {
-                        let f = self.stack.last_mut().unwrap();
-                        let mut rotated: Vec<Value> = f.goals[1..].to_vec();
-                        rotated.push(goal.clone());
-                        f.goals = rotated;
-                        f.depth = depth + 1;
-                        f.state = FrameState::Init {
-                            delay_mode: DelayMode::Delayed { consecutive_delays: 1 },
-                        };
+                        // First delay of this goal — start the rotation counter at 1.
+                        self.rotate_naf_goal_behind_tail(goal, depth, 1);
                         return Some(StepResult::Continue);
                     }
                 }
                 DelayMode::Delayed { consecutive_delays } => {
-                    let f = self.stack.last_mut().unwrap();
-                    let mut rotated: Vec<Value> = f.goals[1..].to_vec();
-                    rotated.push(goal.clone());
-                    f.goals = rotated;
-                    f.depth = depth + 1;
-                    f.state = FrameState::Init {
-                        delay_mode: DelayMode::Delayed {
-                            consecutive_delays: consecutive_delays + 1,
-                        },
-                    };
+                    self.rotate_naf_goal_behind_tail(goal, depth, consecutive_delays + 1);
                     return Some(StepResult::Continue);
                 }
             }
@@ -1741,13 +1745,50 @@ impl SearchStream {
                 // undecidedness as a residual `not(P)` — or skip it in
                 // definite-only mode (a floundered goal is not a definite
                 // solution). WI-519.
-                self.stack.pop();
+                //
+                // WI-629: but the frame may still hold TAIL goals. Yielding a bare
+                // `residual:[not(P)]` here DROPS `goals[1..]` — the conjunction
+                // reads satisfied-modulo-residual while a conjunct was never
+                // attempted. Mirror the groundness-gate Delay branch above: when a
+                // tail exists, ROTATE the undecided `not(P)` behind it so the
+                // resolvable conjuncts still run (the eventual residual then
+                // honestly carries every undischarged goal via the delay-exhaustion
+                // yield in `step_init`, and the rotation terminates because a
+                // still-floundering `not(P)` re-enters here as the sole goal, or
+                // `consecutive_delays` reaches `goals.len()`).
                 if self.config.definite_only {
+                    // A floundered `not(P)` can never be discharged DEFINITELY, and
+                    // `P` is GROUND here (the `else`/ground branch) so re-resolving
+                    // after the tail binds nothing stays floundered — the whole
+                    // conjunction is non-definite regardless of the tail. Skip the
+                    // frame outright (no rotation, no residual yield). WI-519.
+                    self.stack.pop();
                     return Some(StepResult::Continue);
                 }
-                let residual = vec![goal.clone()];
-                self.record_solution_in_ancestors();
-                return Some(StepResult::YieldSolution(Solution { subst, residual }));
+                if goals_len == 1 {
+                    // `not(P)` is the sole goal — the residual `[not(P)]` is the
+                    // honest whole-query answer.
+                    self.stack.pop();
+                    let residual = vec![goal.clone()];
+                    self.record_solution_in_ancestors();
+                    return Some(StepResult::YieldSolution(Solution { subst, residual }));
+                } else {
+                    // Rotate the undecided `not(P)` behind the tail — but THREAD the
+                    // incoming `delay_mode` into the counter (like the groundness-gate
+                    // Delayed branch above), NOT a hard `1`. A ground-floundering
+                    // `not()` routes ONLY through here, never the generic incrementing
+                    // delay path, so a hard `1` would pin the counter and a conjunction
+                    // of ≥2 ground-floundering `not()`s would rotate forever without
+                    // ever reaching the `consecutive_delays >= goals.len()` residual
+                    // gate in `step_init` (it would burn to the depth limit and return
+                    // NO solution — the exact verdict dishonesty WI-629 fixes).
+                    let new_consecutive = match delay_mode {
+                        DelayMode::Normal => 1,
+                        DelayMode::Delayed { consecutive_delays } => consecutive_delays + 1,
+                    };
+                    self.rotate_naf_goal_behind_tail(goal, depth, new_consecutive);
+                    return Some(StepResult::Continue);
+                }
             } else {
                 // P has no solution at all → P is false → not(P) SUCCEEDS.
                 let new_delay = delay_mode.reset();
@@ -2643,6 +2684,20 @@ impl KnowledgeBase {
         match v {
             Value::Term { id: t, .. } => matches!(self.is_ground(*t, subst), GroundCheck::Ground),
             Value::Node(occ) => !node_occurrence::occurrence_has_unbound_var(occ),
+            // WI-629: a COMPOUND value carrier — a `Value::Entity` (the `not`/`or`
+            // wrapper `make_goal_value` synthesizes; a `not(not(P))` inner lands
+            // here) or a `Value::Tuple` (only ever a nested child value) — is ground
+            // iff every child is. Without this arm it fell to `_ => true`, so the NAF
+            // groundness gate ([`SearchStream::step_naf`]) read a `not(Entity{…})`
+            // with unbound vars inside as GROUND and ran NAF where it should
+            // delay-and-rotate. Mirrors the Entity recursion in
+            // [`Self::value_has_open_world_ref_inner`] / [`Self::value_deep_ground`]
+            // (recursing via `value_is_ground` keeps the precise `Term`/`Node`/`Var`
+            // leaf readings this shares with the `ground(?x)` builtin).
+            Value::Entity { pos, named, .. } | Value::Tuple { pos, named, .. } => {
+                pos.iter().all(|c| self.value_is_ground(c, subst))
+                    && named.iter().all(|(_, c)| self.value_is_ground(c, subst))
+            }
             Value::Var(_) => false,
             _ => true,
         }
@@ -2679,7 +2734,13 @@ impl KnowledgeBase {
         match v {
             Value::Term { id: t, .. } => self.term_has_var_ref(*t, var_ref, subst),
             Value::Node(occ) => node_occurrence::occurrence_has_var_ref(occ),
-            Value::Entity { pos, named, .. } => {
+            // WI-629: recurse BOTH compound carriers. A `var_ref` buried in a
+            // `Value::Tuple` child of a `not(…)` goal (a tuple nested inside the
+            // `make_goal_value` Entity wrapper) would otherwise be missed here → the
+            // NAF gate reads the inner as closed and can NAF-succeed where it must
+            // FLOUNDER over the symbolic binder (unsound negation under Γ). Same
+            // recursion as `value_is_ground` / `value_deep_ground`.
+            Value::Entity { pos, named, .. } | Value::Tuple { pos, named, .. } => {
                 pos.iter().any(|a| self.value_has_open_world_ref_inner(a, var_ref, subst))
                     || named.iter().any(|(_, a)| self.value_has_open_world_ref_inner(a, var_ref, subst))
             }
@@ -7730,6 +7791,251 @@ mod tests {
         // ?x should be bound to a
         let bound = solutions[0].subst.resolve_as_value(vx).map(|v| v.expect_term());
         assert!(bound.is_some(), "?x should be bound");
+    }
+
+    // ── WI-629: NAF verdict honesty over carrier-neutral (Value-carried) goals ──
+
+    #[test]
+    fn wi629_value_entity_inner_delays_and_rotates() {
+        // WI-629 gap (1)+(2): `[not(not(p(?x))), f(?x)]` with facts p(a), f(a).
+        // The inner `not(p(?x))` is a `Value::Entity` (the `make_goal_value` shape
+        // `lower_query` synthesizes for a `not` wrapper). Pre-fix `value_is_ground`
+        // had no `Value::Entity` arm → read the non-ground inner as GROUND, so the
+        // outer NAF neither delayed nor rotated: it sub-resolved `not(p(?x))` NOW
+        // (floundered on the unbound `?x`) and yielded `residual:[not(not(p(?x)))]`,
+        // SILENTLY DROPPING the tail `f(?x)` — a floundered, `?x`-unbound answer.
+        // With deep groundness + carry-or-rotate: the outer delays-and-rotates,
+        // `f(?x)` binds `?x = a`, then `not(not(p(a)))` decides DEFINITELY (p(a)
+        // holds ⇒ not(p(a)) fails ⇒ not(not(p(a))) succeeds).
+        let mut kb = kb_with_builtins();
+        let not_sym = kb.resolve_symbol("anthill.reflect.not");
+        let p_sym = kb.intern("p");
+        let f_sym = kb.intern("f");
+        let a = kb.alloc(Term::Const(Literal::String("a".into())));
+        let sort = kb.make_name_term("Fact");
+        let domain = kb.make_name_term("test");
+
+        // Facts p(a), f(a).
+        let p_a = kb.alloc(Term::Fn {
+            functor: p_sym,
+            pos_args: SmallVec::from_elem(a, 1),
+            named_args: SmallVec::new(),
+        });
+        kb.assert_fact(p_a, sort, domain, None);
+        let f_a = kb.alloc(Term::Fn {
+            functor: f_sym,
+            pos_args: SmallVec::from_elem(a, 1),
+            named_args: SmallVec::new(),
+        });
+        kb.assert_fact(f_a, sort, domain, None);
+
+        let x_sym = kb.intern("x");
+        let vx = kb.fresh_var(x_sym);
+        let var_x = kb.alloc(Term::Var(Var::Global(vx)));
+        let p_x = kb.alloc(Term::Fn {
+            functor: p_sym,
+            pos_args: SmallVec::from_elem(var_x, 1),
+            named_args: SmallVec::new(),
+        });
+        // Nested `not` wrappers as carrier-neutral `Value::Entity` goals.
+        let inner_not = kb.make_goal_value(not_sym, vec![Value::term(p_x)]);
+        let outer_not = kb.make_goal_value(not_sym, vec![inner_not]);
+        let f_x = kb.alloc(Term::Fn {
+            functor: f_sym,
+            pos_args: SmallVec::from_elem(var_x, 1),
+            named_args: SmallVec::new(),
+        });
+
+        let solutions =
+            kb.resolve_goals(vec![outer_not, Value::term(f_x)], &ResolveConfig::default());
+        assert_eq!(solutions.len(), 1, "exactly one solution");
+        assert!(
+            solutions[0].residual.is_empty(),
+            "DEFINITE (empty residual): the outer NAF must delay-and-rotate so \
+             f(?x) binds ?x=a and not(not(p(a))) decides — not flounder with the \
+             tail dropped. residual was: {:?}",
+            solutions[0].residual
+        );
+        let bound = kb.reify(var_x, &solutions[0].subst).expect_term();
+        assert_eq!(bound, a, "?x must be bound to a (f(?x) was attempted, not dropped)");
+    }
+
+    #[test]
+    fn wi629_floundered_inner_does_not_drop_tail() {
+        // WI-629 gap (2), isolated: a GROUND inner whose sub-resolution FLOUNDERS,
+        // with a tail goal that must still be attempted. `r()` is ground and
+        // flounders (its body `nonvar(?w)` delays forever on the body-local `?w`),
+        // so `not(r())` reaches step_naf's ground/inner-floundered arm. The tail
+        // `s(a)` FAILS (only `s(b)` is a fact). Pre-fix the floundered arm popped
+        // and yielded `residual:[not(r())]`, silently dropping `s(a)` → 1 spurious
+        // (floundered) answer. Carry-or-rotate makes it rotate the undecided
+        // not(r()) behind the tail, so `s(a)` is attempted, fails, and the whole
+        // conjunction correctly has NO solution.
+        let mut kb = kb_with_builtins();
+        let not_sym = kb.resolve_symbol("anthill.reflect.not");
+        let nonvar_sym = kb.resolve_symbol("anthill.reflect.nonvar");
+        let r_sym = kb.intern("r");
+        let s_sym = kb.intern("s");
+        let sort = kb.make_name_term("Fact");
+        let domain = kb.make_name_term("test");
+
+        // Rule r() :- nonvar(?w).  (?w is body-local ⇒ r() is ground but flounders)
+        let r_head = kb.alloc(Term::Fn {
+            functor: r_sym,
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::new(),
+        });
+        let w_sym = kb.intern("w");
+        let vw = kb.fresh_var(w_sym);
+        let var_w = kb.alloc(Term::Var(Var::Global(vw)));
+        let r_body = kb.alloc(Term::Fn {
+            functor: nonvar_sym,
+            pos_args: SmallVec::from_elem(var_w, 1),
+            named_args: SmallVec::new(),
+        });
+        let body_nodes = kb.term_body_to_nodes(&[r_body]);
+        kb.assert_rule_debruijn_with_nodes(r_head, body_nodes, sort, domain, None);
+
+        // Fact s(b); the tail goal s(a) has no match ⇒ fails.
+        let b = kb.alloc(Term::Const(Literal::String("b".into())));
+        let a = kb.alloc(Term::Const(Literal::String("a".into())));
+        let s_b = kb.alloc(Term::Fn {
+            functor: s_sym,
+            pos_args: SmallVec::from_elem(b, 1),
+            named_args: SmallVec::new(),
+        });
+        kb.assert_fact(s_b, sort, domain, None);
+
+        let r_call = kb.alloc(Term::Fn {
+            functor: r_sym,
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::new(),
+        });
+        let not_r = kb.make_goal_value(not_sym, vec![Value::term(r_call)]);
+        let s_a = kb.alloc(Term::Fn {
+            functor: s_sym,
+            pos_args: SmallVec::from_elem(a, 1),
+            named_args: SmallVec::new(),
+        });
+
+        let solutions =
+            kb.resolve_goals(vec![not_r, Value::term(s_a)], &ResolveConfig::default());
+        assert_eq!(
+            solutions.len(),
+            0,
+            "no solution: the floundered not(r()) must NOT drop the failing tail \
+             s(a); got solutions with residuals: {:?}",
+            solutions.iter().map(|s| &s.residual).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn wi629_value_entity_ground_inner_still_decides() {
+        // WI-629 guard: the deep-groundness fix must NOT over-delay a GROUND
+        // `Value::Entity` inner. `not(not(p(a)))` — inner `not(p(a))` is a
+        // `Value::Entity` whose only child is the ground `p(a)`. It must still be
+        // read as ground and DECIDE: p(a) holds ⇒ not(p(a)) fails ⇒ not(not(p(a)))
+        // succeeds, a single definite solution.
+        let mut kb = kb_with_builtins();
+        let not_sym = kb.resolve_symbol("anthill.reflect.not");
+        let p_sym = kb.intern("p");
+        let a = kb.alloc(Term::Const(Literal::String("a".into())));
+        let sort = kb.make_name_term("Fact");
+        let domain = kb.make_name_term("test");
+
+        let p_a_fact = kb.alloc(Term::Fn {
+            functor: p_sym,
+            pos_args: SmallVec::from_elem(a, 1),
+            named_args: SmallVec::new(),
+        });
+        kb.assert_fact(p_a_fact, sort, domain, None);
+
+        let p_a = kb.alloc(Term::Fn {
+            functor: p_sym,
+            pos_args: SmallVec::from_elem(a, 1),
+            named_args: SmallVec::new(),
+        });
+        let inner_not = kb.make_goal_value(not_sym, vec![Value::term(p_a)]);
+        let outer_not = kb.make_goal_value(not_sym, vec![inner_not]);
+
+        let solutions = kb.resolve_goals(vec![outer_not], &ResolveConfig::default());
+        assert_eq!(solutions.len(), 1, "not(not(p(a))) succeeds (one solution)");
+        assert!(
+            solutions[0].residual.is_empty(),
+            "a ground Value::Entity inner must DECIDE, not flounder; residual: {:?}",
+            solutions[0].residual
+        );
+    }
+
+    #[test]
+    fn wi629_two_ground_floundering_nots_residualize_not_spin() {
+        // WI-629 rotation TERMINATION: `[not(r()), not(u())]` where BOTH r() and
+        // u() are ground yet flounder (bodies `nonvar(?w)` delay forever on a
+        // body-local var). Each `not()` reaches the ground/inner-floundered arm and
+        // rotates behind the other. The rotation counter MUST thread the incoming
+        // delay_mode (1, then 2) so the `consecutive_delays >= goals.len()` gate in
+        // step_init fires after both have rotated once — yielding ONE honest
+        // floundered residual `[not(r()), not(u())]`. A hard-coded `consecutive_delays:
+        // 1` pins the counter, so neither `>= 2`: the pair rotates until the depth
+        // limit and returns ZERO solutions (verdict-dishonest — an UNDECIDED
+        // conjunction read as refuted).
+        let mut kb = kb_with_builtins();
+        let not_sym = kb.resolve_symbol("anthill.reflect.not");
+        let nonvar_sym = kb.resolve_symbol("anthill.reflect.nonvar");
+        let sort = kb.make_name_term("Fact");
+        let domain = kb.make_name_term("test");
+
+        // Two ground-but-floundering nullary rules `r() :- nonvar(?w)`, `u() :- nonvar(?w2)`.
+        let mut make_floundering_rule = |kb: &mut KnowledgeBase, name: &str, var: &str| -> Symbol {
+            let sym = kb.intern(name);
+            let head = kb.alloc(Term::Fn {
+                functor: sym,
+                pos_args: SmallVec::new(),
+                named_args: SmallVec::new(),
+            });
+            let vsym = kb.intern(var);
+            let vv = kb.fresh_var(vsym);
+            let var_t = kb.alloc(Term::Var(Var::Global(vv)));
+            let body = kb.alloc(Term::Fn {
+                functor: nonvar_sym,
+                pos_args: SmallVec::from_elem(var_t, 1),
+                named_args: SmallVec::new(),
+            });
+            let body_nodes = kb.term_body_to_nodes(&[body]);
+            kb.assert_rule_debruijn_with_nodes(head, body_nodes, sort, domain, None);
+            sym
+        };
+        let r_sym = make_floundering_rule(&mut kb, "r", "w");
+        let u_sym = make_floundering_rule(&mut kb, "u", "w2");
+
+        let r_call = kb.alloc(Term::Fn {
+            functor: r_sym,
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::new(),
+        });
+        let u_call = kb.alloc(Term::Fn {
+            functor: u_sym,
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::new(),
+        });
+        let not_r = kb.make_goal_value(not_sym, vec![Value::term(r_call)]);
+        let not_u = kb.make_goal_value(not_sym, vec![Value::term(u_call)]);
+
+        let solutions =
+            kb.resolve_goals(vec![not_r, not_u], &ResolveConfig::default());
+        assert_eq!(
+            solutions.len(),
+            1,
+            "two ground-floundering not()s must residualize (one floundered \
+             solution), not spin to the depth limit and vanish"
+        );
+        assert_eq!(
+            solutions[0].residual.len(),
+            2,
+            "the honest residual carries BOTH undischarged not() goals, not one; \
+             residual: {:?}",
+            solutions[0].residual
+        );
     }
 
     #[test]
