@@ -1,9 +1,12 @@
-# Proposal 053: Partial vs. total equality and ordering — `PartialEq` / `Eq` / `PartialOrd` / `Ord`
+# Library proposal 004: Partial vs. total equality and ordering — `PartialEq` / `Eq` / `PartialOrd` / `Ord`
 
-**Status:** Draft. Continues [051](051-structural-vs-semantic-equality.md) (the `===` / semantic-`=` split): 051 separated *structural* from *semantic* equality; 053 separates *partial* from *total (lawful)* equality — because the single `Eq` spec conflates two obligations, and IEEE `Float` is the first carrier that satisfies one but not the other. The load-bearing surprise is that **no new language machinery is required**: the spec hierarchy (`requires Spec[T]`), laws-as-labelled-`<=>`-rules, and instance-law *conformance checking* all already exist (see §"Everything already exists"); 053 is a stdlib restructuring + one targeted resolver soundness fix + a codegen alignment.
+**Status:** Draft. A **library proposal** — it restructures the stdlib equality/ordering typeclasses (`stdlib/anthill/prelude/{eq,ordered,float,set,map}.anthill`) and adds no language feature (the spec hierarchy, laws, and conformance checking it uses all already exist — §"Everything already exists"). The one kernel-touching piece — the resolver reflexivity-shortcut soundness fix (§"The soundness fix") — is an *implementation consequence* of the restructuring (not a new feature), tracked in the driver WI, exactly as [`library/003`](003-finite-collection.md)'s typer work was; per the library-proposal convention it is called out but not spun into a kernel proposal.
 
-**Depends on:** [051-structural-vs-semantic-equality](051-structural-vs-semantic-equality.md), [049-equality-and-unification](049-equality-and-unification.md)
-**Related:** WI-616 (semantic-`eq` dispatch, delivered), WI-644 (Eq-instance semantics — **superseded** by this), WI-645 (interpreter Float `eq`/`ordered` violate IEEE — the concrete soundness bug this closes, direction B), WI-300 (rule-body requirement goals), [043-simp-rewrite](043-simp-rewrite.md)
+Continues [051](../051-structural-vs-semantic-equality.md) (the `===` / semantic-`=` split): 051 separated *structural* from *semantic* equality; this proposal separates *partial* from *total (lawful)* equality — because the single `Eq` spec conflates two obligations, and IEEE `Float` is the first carrier that satisfies one but not the other.
+
+**Depends on:** [051-structural-vs-semantic-equality](../051-structural-vs-semantic-equality.md), [049-equality-and-unification](../049-equality-and-unification.md)
+**Driver / implementation:** WI-644 (this proposal is that ticket's resolution — it evolved from "drop the universal `Eq` default" to this split).
+**Related:** WI-616 (semantic-`eq` dispatch, delivered), WI-645 (interpreter Float `eq`/`ordered` violate IEEE — the concrete soundness bug this closes, its direction B), WI-648 (deferred modular/scoped instances — the `SortedSet`-custom-`Ord` sibling), WI-300 (rule-body requirement goals), [043-simp-rewrite](../043-simp-rewrite.md)
 **Affects:** `stdlib/anthill/prelude/{eq,ordered,set,map,float,…}.anthill`, `rustland/anthill-core/src/kb/{resolve,load}.rs`, `rustland/anthill-cpp-gen/src/lib.rs`, `docs/kernel-language.md`, `scaland/.../{parse,resolve}`
 
 ## Motivation
@@ -22,13 +25,13 @@ Two further pressures:
 
 ## Everything already exists
 
-053 needs no new kernel feature — it composes three delivered mechanisms:
+this proposal needs no new kernel feature — it composes three delivered mechanisms:
 
 - **Spec hierarchy** — a spec `requires` another: `Ordered requires Eq[T]`, `Field requires Numeric[T]`, `Collection requires Iterable[…]`. This is how `Eq requires PartialEq` and `Ord requires Eq, PartialOrd` are expressed.
 - **Laws as labelled `<=>` rules** — `Ordered.compare_refl`, `compare_antisym`, `compare_eq`. `eq_refl: eq(?a,?a) <=> true` is written the same way.
 - **Instance-law conformance checking** — `kb/load.rs` (§"requires-law ProofRecords Discharged" / Specialization witnesses, ~3866-3972, 12425): a `provides Spec[T = X]` must **discharge every one of the spec's required laws** as a proof. So a law is not aspirational — an instance that cannot prove it fails to load.
 
-The last point is what makes 053 *principled rather than a patch*: adding `eq_refl` to `Eq` makes `provides Eq[T = Float]` **fail to load** on its own — `Float` cannot discharge `eq(?a,?a) <=> true` for `NaN`. No blocklist, no special case; the conformance checker does the rejection.
+The last point is what makes this proposal *principled rather than a patch*: adding `eq_refl` to `Eq` makes `provides Eq[T = Float]` **fail to load** on its own — `Float` cannot discharge `eq(?a,?a) <=> true` for `NaN`. No blocklist, no special case; the conformance checker does the rejection.
 
 ## Design
 
@@ -61,7 +64,7 @@ The split is the standard host-language answer, and Anthill's *three* equality n
 
 Two consequences worth stating:
 
-- **The checked-law decision is Lean's model, not Rust's.** Rust's `Eq` is a *nominal* marker (you simply don't `impl Eq for f64`); Lean's `LawfulBEq` is a *proof obligation* an instance must discharge, which `Float` cannot — the stronger, more principled form. 053's conformance-checker discharging `eq_refl` is exactly that. Lean withholds `LawfulBEq Float` for **both** reflexivity *and* congruence failures (the `-0.0` case above).
+- **The checked-law decision is Lean's model, not Rust's.** Rust's `Eq` is a *nominal* marker (you simply don't `impl Eq for f64`); Lean's `LawfulBEq` is a *proof obligation* an instance must discharge, which `Float` cannot — the stronger, more principled form. this proposal's conformance-checker discharging `eq_refl` is exactly that. Lean withholds `LawfulBEq Float` for **both** reflexivity *and* congruence failures (the `-0.0` case above).
 - **But Anthill's `Eq` is Rust-shaped, not the full Lean `LawfulBEq`.** Lean's `LawfulBEq` ties `==` to the type's *logical* `=` (for `Finset`, set equality — so `LawfulBEq Finset` holds). Anthill's `===` is *structural* (`{1,2} !== {2,1}`), **not** per-type logical equality, so `Eq` must be defined by **equivalence laws** (reflexive / symmetric / transitive) — *not* "`eq` coincides with `===`". Otherwise `Set`/`Map`, whose semantic `eq` legitimately differs from structural `===`, would wrongly fail to be lawful. Reflexivity (this proposal's law) is the equivalence reading; that is the correct one here.
 
 ### What `Float` provides — and what it does not
@@ -106,7 +109,7 @@ Crucially, the **structural layer is untouched**: `===`/`struct_eq`, `views_stru
 
 ### Codegen alignment (C++)
 
-`anthill-cpp-gen` maps `Eq.eq -> ==`, `Ordered.gt -> >` (lib.rs:2889-2906). Under 053:
+`anthill-cpp-gen` maps `Eq.eq -> ==`, `Ordered.gt -> >` (lib.rs:2889-2906). Under this proposal:
 
 - **`PartialEq.eq` / `PartialOrd.*` → C++ `==` / `<` (IEEE)** — the *current* mapping, now *correct*, because these are the partial specs.
 - **`Eq` / `Ord` / `TotalFloat` → a total comparator** — a defaulted `operator==` / `operator<=>` on the generated struct (C++20 `= default`), or, for `TotalFloat`, a bit/`OrderedFloat`-style total compare. (This also closes the *separate* pre-existing gap that entity structs are emitted fields-only with no `operator==` — see WI-645 discussion.)
@@ -125,9 +128,9 @@ So interpreter and compiler agree on every Float comparison, which is the WI-645
 
 ### Selecting among the three notions (canonical instances)
 
-The split gives three distinct symbols/obligations — `===` (structural), `PartialEq.eq` (partial), and the `Eq` requirement (lawful) — and a module selects which by what it `import`s and what it `requires`; no context silently gets IEEE where it wanted lawful, or vice-versa. Each is a **single, globally-coherent** instance per `(spec, carrier)` (Anthill enforces this today — `load.rs` rejects an "ambiguous witness", two providers for one `(spec, carrier)`). That is all 053 needs for the `Float` problem.
+The split gives three distinct symbols/obligations — `===` (structural), `PartialEq.eq` (partial), and the `Eq` requirement (lawful) — and a module selects which by what it `import`s and what it `requires`; no context silently gets IEEE where it wanted lawful, or vice-versa. Each is a **single, globally-coherent** instance per `(spec, carrier)` (Anthill enforces this today — `load.rs` rejects an "ambiguous witness", two providers for one `(spec, carrier)`). That is all this proposal needs for the `Float` problem.
 
-**Out of scope — modular typeclasses.** Supplying a *non-canonical, per-use* instance — the standing example being a `SortedSet` / `Map` ordered by a *chosen* comparator rather than the carrier's default `Ord` (Scala's `SortedSet(...)(Ordering)`, Haskell's newtype-per-order) — requires relaxing global coherence to a **scoped/named instance** mechanism. That is a separate, larger feature and is **tracked as its own issue (linked with `SortedSet`)**, not resolved here. 053 is deliberately built on canonical instances so it neither needs nor forecloses it: a later modular-typeclass mechanism supplies an alternate `Ord`/`Eq` witness at a use site without changing this hierarchy.
+**Out of scope — modular typeclasses.** Supplying a *non-canonical, per-use* instance — the standing example being a `SortedSet` / `Map` ordered by a *chosen* comparator rather than the carrier's default `Ord` (Scala's `SortedSet(...)(Ordering)`, Haskell's newtype-per-order) — requires relaxing global coherence to a **scoped/named instance** mechanism. That is a separate, larger feature and is **tracked as its own issue (linked with `SortedSet`)**, not resolved here. this proposal is deliberately built on canonical instances so it neither needs nor forecloses it: a later modular-typeclass mechanism supplies an alternate `Ord`/`Eq` witness at a use site without changing this hierarchy.
 
 ## Migration — an intent audit, not a rename
 
@@ -149,17 +152,17 @@ The mechanical part is large but shallow, and mirrors 051's `===` migration:
 
 ## Relationship to neighbouring work
 
-- **051** delivered structural-vs-semantic; 053 is its total-vs-partial continuation and *supersedes WI-644* (whose "drop the universal structural default" framing is answered here by "structural is the default *only for the reflexive `Eq` layer*, and `Float` opts down to `PartialEq`").
-- **WI-645** is closed by build-step 2 (direction B); the interim direction A (make Float `eq` IEEE without the spec split) is unnecessary if 053 lands, since the spec split is what *justifies* the IEEE answer.
+- **051** delivered structural-vs-semantic; this proposal is its total-vs-partial continuation and is the **resolution of WI-644** (whose "drop the universal structural default" framing evolved into this split — structural is the default *only for the reflexive `Eq` layer*, and `Float` opts down to `PartialEq`; WI-644 is the implementation driver).
+- **WI-645** is closed by build-step 2 (direction B); the interim direction A (make Float `eq` IEEE without the spec split) is unnecessary if this proposal lands, since the spec split is what *justifies* the IEEE answer.
 - **WI-616** semantic-`eq` dispatch is reused unchanged — the carrier-override path (`Set.eq`/`Map.eq`) now lives under `PartialEq` and its consumers under `Eq`.
 - **WI-642**'s `is_builtin` exclusion can then be revisited: once `PartialEq.eq`/`PartialOrd.*` are the honest partial ops (still builtin-backed, still no *missing*-instance failure mode), the exclusion stays correct — the static check gains teeth only for *lawful* `requires Eq`/`Ord` sites, which is exactly right.
 
 ## Non-goals
 
-- **Modular typeclasses** — per-use *named/scoped* instances (the `SortedSet`-with-a-chosen-`Ord` case). Its own issue, linked with `SortedSet`; 053 stays on canonical instances and neither needs nor forecloses it (see §"Selecting among the three notions").
+- **Modular typeclasses** — per-use *named/scoped* instances (the `SortedSet`-with-a-chosen-`Ord` case). Its own issue, linked with `SortedSet`; this proposal stays on canonical instances and neither needs nor forecloses it (see §"Selecting among the three notions").
 - **`TotalFloat`'s `-0.0` convention** — that IEEE `==` is non-congruent on `-0.0`/`+0.0` is *in* scope (a stated reason `Float` is not lawful, §Motivation); what remains out of scope is only which convention `TotalFloat` picks for `-0.0` (IEEE-merge vs `OrderedFloat`-distinct) — an implementation choice, documented when it lands.
 - Symmetry / transitivity **laws** beyond reflexivity — additive later; reflexivity is the one the `Float` split turns on.
-- The **SLD→eval bridge** (WI-625) — 053's fix is in the raw interpreter/resolver builtins and does not need it.
+- The **SLD→eval bridge** (WI-625) — this proposal's fix is in the raw interpreter/resolver builtins and does not need it.
 
 ## Open questions
 
