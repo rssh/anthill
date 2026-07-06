@@ -25,8 +25,26 @@ use super::persist_subst::BindValue;
 use super::discrim::SubstTree;
 use crate::intern::Symbol;
 use crate::eval::value::Value;
+use crate::eval::{EvalConfig, EvalError, Interpreter};
 use super::RuleId;
 use super::KnowledgeBase;
+
+/// WI-625 gap 1: max eval↔SLD bridge crossings before
+/// [`KnowledgeBase::bridge_op_to_eval`] residualizes instead of recursing
+/// further. Each crossing (bridge → eval → `prove_rule_predicate` → resolve →
+/// bridge) nests ordinary Rust frames, so an unbounded non-decreasing mutual
+/// recursion would overflow the native stack; this bounds it to a delay.
+/// Legitimate cross-bridge nesting is shallow (a bridged compare whose element
+/// compare bridges again), so this is generous headroom.
+const BRIDGE_REENTRY_CAP: usize = 32;
+
+thread_local! {
+    /// Current eval↔SLD bridge nesting depth on this thread (resolution and its
+    /// bridged evals run single-threaded). A thread-local — NOT a KB field — so
+    /// it survives `bridge_op_to_eval`'s `mem::take` of the KB and is shared by
+    /// every re-entrant bridge on the thread regardless of which KB instance runs.
+    static BRIDGE_REENTRY_DEPTH: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
 
 /// WI-500: how a constructor's POSITIONAL args map onto its declared field
 /// NAMES — the loader's "rank-among-not-named" rule, factored out so the runtime
@@ -3679,6 +3697,15 @@ impl KnowledgeBase {
     /// only — an unbound variable is not (yet) an overriding value, matching
     /// the structural test's instantiation-time semantics. Conservative `true`
     /// at the depth cap and for occurrence carriers (suspend, never mis-decide).
+    /// WI-625 gap 1: eval-side entry to [`Self::value_reaches_eq_override`] (a
+    /// fresh, empty σ — a bridged interpreter's operand `Value`s are already
+    /// reified, carrying no resolution bindings). Lets the interpreter's
+    /// `semantic_equal` suspend on a buried override exactly where the resolver
+    /// delays, so the bridge never imports a membership-wrong structural verdict.
+    pub(crate) fn value_has_buried_eq_override(&self, v: &Value) -> bool {
+        self.value_reaches_eq_override(v, &Substitution::new(), 0)
+    }
+
     fn value_reaches_eq_override(&self, v: &Value, subst: &Substitution, depth: usize) -> bool {
         const REACH_DEPTH_CAP: usize = 256;
         if depth >= REACH_DEPTH_CAP {
@@ -4762,14 +4789,16 @@ impl KnowledgeBase {
         if params.is_empty() {
             return v; // nullary / unscanned op — nothing to fold
         }
-        // σ-walk each POSITIONAL call arg to a Value (mirrors the receiver walk in
-        // `reduce_dot_value`). The WI-279/WI-282 method dispatch puts the receiver
-        // + positional args here; a NAMED-arg method call (`?b.m(k: 1)`) leaves a
-        // param without a positional arg → the fold leaves the call un-ground
-        // (residualizes), safe per the WI-483 leave-uninterpreted rule.
+        // σ-walk each call arg to a Value, keyed by param place. WI-279/WI-282
+        // method dispatch puts the receiver + positional args positionally, but
+        // the loader canonicalizes a plain op-call's args to NAMED form by field
+        // name (`code(?c)` → `code(c: ?c)`) — so read positional `i` first, then
+        // fall back to the named arg `p`. A param with neither leaves the call
+        // un-ground (residualizes), safe per the WI-483 leave-uninterpreted rule.
         let mut param_args: HashMap<Symbol, Value> = HashMap::new();
         for (i, &p) in params.iter().enumerate() {
-            match self.walk_arg(occ.pos_arg(self, i), subst) {
+            let item = occ.pos_arg(self, i).or_else(|| occ.named_arg(self, p));
+            match self.walk_arg(item, subst) {
                 Some(a) => { param_args.insert(p, a); }
                 None => return v,
             }
@@ -4787,8 +4816,141 @@ impl KnowledgeBase {
         let reduced = self.reduce_dot_value(Value::Node(folded), subst);
         let reduced = self.reduce_op_value(reduced, subst, depth + 1);
         match reduced {
-            Value::Node(_) => v,
+            // A COMPLEX body (`match`/`if`/`let`/recursion) the structural fold
+            // can't collapse. WI-625 gap 1 — the SLD→eval dual of the eval→SLD eq
+            // bridge: run the op through a live, bounded interpreter instead of
+            // residualizing. Ground-gated (`=`/`cmp` are tests — never bind); a
+            // suspended or errored eval falls back to the ORIGINAL call `v`, so a
+            // callee's body complexity never forces an unsound verdict — the
+            // operand stays un-reduced and the `eq`/`cmp` goal delays.
+            // Bridge only at the TOP operand reduction (`depth == 0`):
+            // `call_op_bridged` evaluates the WHOLE body including nested op-calls,
+            // so a depth-0 bridge already covers every nesting level. Attempting
+            // it inside the fold-recursion would rebuild the interpreter at each
+            // depth and, on a failing inner bridge, re-bridge the same operand
+            // once per level. A complex body nested inside another op therefore
+            // rides its enclosing op's single top-level bridge.
+            Value::Node(_) if depth == 0 => self
+                .bridge_op_to_eval(op, &params, &param_args, subst)
+                .unwrap_or(v),
             other => other,
+        }
+    }
+
+    /// WI-625 gap 1 (SLD→eval op-body dispatch bridge): run a CONCRETE op whose
+    /// body the structural fold left un-reduced (`match`/`if`/`let`/recursion)
+    /// through a live [`Interpreter`], returning its value so the resolver can
+    /// continue as if the op-call were a scalar. The resolver→eval dual of the
+    /// eval→SLD [`Self::prove_rule_predicate`] bridge (WI-625 gaps 4/5/6).
+    ///
+    /// Ownership: the interpreter OWNS a `KnowledgeBase`, so the resolver LENDS
+    /// its own KB (`mem::take` — KB is `Default`), runs, and reclaims it via
+    /// [`Interpreter::into_kb`]. `run()` is trampolined (heap stack), so eval
+    /// depth costs no Rust stack. The eval↔SLD ping-pong (a bridged body whose
+    /// `eq` dispatches back through [`Self::prove_rule_predicate`], which may
+    /// re-enter this bridge) DOES nest ordinary Rust frames per crossing, so a
+    /// thread-local `BRIDGE_REENTRY_DEPTH` caps it at [`BRIDGE_REENTRY_CAP`]
+    /// crossings — a non-decreasing mutual recursion degrades to a residualize
+    /// (delay) instead of a native stack overflow.
+    ///
+    /// Soundness gates:
+    /// - **ground** — each arg is reified under σ (the interpreter has no σ) and
+    ///   must be deeply ground; `=`/`cmp` are tests that must not bind, so a
+    ///   non-ground operand returns `None` (the resolver delays), never runs.
+    ///   (A ground COMPOUND that still carries a nested `Value::Node` child reads
+    ///   as non-ground here and conservatively residualizes — safe, never a
+    ///   mis-decision; only a top-level `Node` is collapsed by `normalize_value`.)
+    /// - **no requirement dicts** — invoked via [`Interpreter::call_op_bridged`],
+    ///   NOT the placeholder-seeding entry: a body that dispatches through a
+    ///   `requires` slot errors → residualize, so only requirement-FREE ops
+    ///   decide and a placeholder can never misdispatch to a wrong value (gap 3).
+    /// - **pure** — effects are contained by construction: the scratch
+    ///   interpreter's effect registry is EMPTY (an effect → unhandled → error →
+    ///   residualize) and its arenas (`Cell`/`Map`/…) are fresh and DROPPED with
+    ///   it, so a bridged body cannot mutate resolver-visible state; the only
+    ///   shared store is the KB's monotonic term interner. So re-running the
+    ///   bridge on a resolver backtrack is idempotent.
+    /// - **suspend** — the scratch interpreter runs in `bridge_mode`, so a
+    ///   semantic comparison that reaches an undecided point (truncation, or a
+    ///   buried override) raises [`EvalError::Suspended`] → residualize, so an
+    ///   undecided body delays rather than injecting a wrong definite answer.
+    ///
+    /// Returns `Some(value)` only when the interpreter DECIDED a concrete value.
+    /// Note the reflect builtins (`anthill.reflect.*`) live in the downstream
+    /// `anthill-stl` crate and are NOT registered here, so a body dispatching to
+    /// one hits `UnknownOperation` → residualize (a benign capability gap).
+    fn bridge_op_to_eval(
+        &mut self,
+        op: Symbol,
+        params: &[Symbol],
+        param_args: &HashMap<Symbol, Value>,
+        subst: &Substitution,
+    ) -> Option<Value> {
+        // Cap the eval↔SLD re-entry so a non-terminating mutual recursion across
+        // the bridge degrades to a delay, not a native stack overflow. The
+        // counter is a thread-local (resolution + its bridged evals run on one
+        // thread), so it survives the `mem::take` of `self`.
+        if BRIDGE_REENTRY_DEPTH.with(|d| d.get()) >= BRIDGE_REENTRY_CAP {
+            return None;
+        }
+        // Reify + ground-gate each arg under σ, in declaration order. `reify_value`
+        // applies σ; `normalize_value` collapses a ground occurrence CARRIER
+        // (`Value::Node(Ref(green))`) to a `Value::Term` — otherwise the deep-ground
+        // check reads every `Value::Node` as non-ground and the gate would reject a
+        // perfectly ground argument.
+        let mut args: Vec<Value> = Vec::with_capacity(params.len());
+        for p in params {
+            let a = self.reify_value(param_args.get(p)?, subst);
+            let a = self.normalize_value(a);
+            if !self.value_deep_ground(&a, subst) {
+                return None;
+            }
+            args.push(a);
+        }
+        // Lend the KB to a bridge-mode interpreter, run the op, reclaim the KB.
+        // The scratch interpreter needs the standard eval builtins registered
+        // (its body evaluates `eq`/arithmetic/`field_access`/…); a registration
+        // failure means we cannot bridge, so residualize. (Re-registering per
+        // call is the simple-correct choice — the interpreter owns the lent KB,
+        // so it can't persist across calls; a hot bridge path can cache later.)
+        BRIDGE_REENTRY_DEPTH.with(|d| d.set(d.get() + 1));
+        let kb = std::mem::take(self);
+        let config = EvalConfig { bridge_mode: true, ..EvalConfig::default() };
+        let mut interp = Interpreter::with_config(kb, config);
+        let outcome = match crate::eval::builtins::register_standard_builtins(&mut interp) {
+            Ok(()) => {
+                // Materialize each term-carried operand into the interpreter's
+                // native form (`Value::Term(box(…))` → `Value::Entity`), else a
+                // body that reads a field errors with "receiver is not an entity".
+                let native: Vec<Value> =
+                    args.into_iter().map(|a| interp.materialize_value(a)).collect();
+                interp.call_op_bridged(op, &native)
+            }
+            Err(e) => Err(e),
+        };
+        *self = interp.into_kb();
+        BRIDGE_REENTRY_DEPTH.with(|d| d.set(d.get() - 1));
+        match outcome {
+            Ok(value) => Some(value),
+            // The bridge-mode suspend signal (an undecided semantic compare):
+            // delay, exactly like the resolver's own SUSPEND. By design.
+            Err(EvalError::Suspended { .. }) => None,
+            // Any other eval error residualizes per WI-483 substitution-
+            // transparency: a callee's runtime-domain error (`Overflow`,
+            // `Raised`), an unhandled effect (resolution must not perform
+            // effects), or a body needing a real requirement dict (gap 3) must
+            // not break the enclosing rule. The one class worth surfacing is an
+            // evaluator-INVARIANT `Internal` bug — assert it loudly in debug/test
+            // builds (the loud-over-silent rule) while still residualizing in
+            // release rather than aborting resolution.
+            Err(e) => {
+                debug_assert!(
+                    !matches!(e, EvalError::Internal(_)),
+                    "bridge_op_to_eval: internal evaluator error bridging `{}`: {e}",
+                    self.qualified_name_of(op),
+                );
+                None
+            }
         }
     }
 

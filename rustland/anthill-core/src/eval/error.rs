@@ -62,6 +62,20 @@ pub enum EvalError {
     /// type-checks (its declared type is known) — only the runtime VALUE is
     /// unavailable in this build (the spec-only-vs-codegen axis).
     ConstValueUnavailable { name: String },
+    /// WI-625 gap 1 (SLD→eval bridge): a semantic comparison inside a bridged
+    /// op-body evaluation reached a genuinely UNDECIDED point — a truncated
+    /// sub-proof, or an eq-overriding carrier buried under non-overriding
+    /// structure (`some({1,2})` vs `some({2,1})`) where the structural verdict
+    /// would be membership-wrong. This is a resolver-bridge CONTROL SIGNAL, not
+    /// a domain error: it is produced ONLY when `EvalConfig::bridge_mode` is set
+    /// (the interpreter was lent to the resolver, which CAN residualize), and it
+    /// unwinds via the ordinary `?` propagation — the evaluator is thereby
+    /// "interruptible" with no bespoke control flow — up to the resolver's
+    /// `bridge_op_to_eval`, which turns it into a delay (the resolver's own
+    /// SUSPEND). Distinct from the WI-075 effect-handler `Suspend` action
+    /// (`UnsupportedHandlerAction`). Top-level eval never sets `bridge_mode`, so
+    /// it never produces this and its structural fallback is unchanged.
+    Suspended { detail: String },
     Internal(String),
 }
 
@@ -128,6 +142,9 @@ impl std::fmt::Display for EvalError {
                 "const `{name}` has no value source in this build: it is host-supplied \
                  (bodyless) and no reflect builtin is registered for it"
             ),
+            EvalError::Suspended { detail } => {
+                write!(f, "semantic comparison suspended (undecided): {detail}")
+            }
             EvalError::Internal(s) => write!(f, "internal evaluator error: {s}"),
         }
     }

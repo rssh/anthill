@@ -521,18 +521,41 @@ fn semantic_equal(i: &mut Interpreter, a: &Value, b: &Value) -> Result<bool, Eva
                 crate::kb::resolve::PredicateProof::Proved => Ok(true),
                 crate::kb::resolve::PredicateProof::Refuted => Ok(false),
                 // Only reachable when a huge ground compare truncates the sub-proof
-                // budget (the resolver maps the same case to Delay): surface it
-                // loudly rather than guess a structural answer.
-                crate::kb::resolve::PredicateProof::Undecided => Err(EvalError::Internal(format!(
-                    "semantic eq over `{}` could not be decided (proof truncated)",
-                    i.kb().resolve_sym(target)
-                ))),
+                // budget (the resolver maps the same case to Delay). Under the
+                // resolver→eval bridge (WI-625 gap 1) SUSPEND so the resolver
+                // delays; top-level eval has nowhere to suspend to, so it stays a
+                // loud error rather than guessing a structural answer.
+                crate::kb::resolve::PredicateProof::Undecided => {
+                    let detail = format!(
+                        "semantic eq over `{}` could not be decided (proof truncated)",
+                        i.kb().resolve_sym(target)
+                    );
+                    Err(if i.bridge_mode() {
+                        EvalError::Suspended { detail }
+                    } else {
+                        EvalError::Internal(detail)
+                    })
+                }
             };
         }
         // Non-ground operand: `=` never binds — fall through to the structural
         // verdict (the resolver Delays; eval keeps its pre-WI-625 answer).
     }
-    // 5. Structural verdict (see the buried-override note above).
+    // 5. Structural verdict — but a carrier override BURIED under non-overriding
+    // structure (`some({1,2})` vs `some({2,1})`) makes it membership-wrong. Under
+    // the resolver→eval bridge (WI-625 gap 1) importing that verdict into
+    // resolution would be unsound, so SUSPEND — exactly where the resolver's own
+    // `builtin_sem_eq` delays (`value_reaches_eq_override`). Top-level eval keeps
+    // its documented structural answer.
+    if i.bridge_mode()
+        && (i.kb().value_has_buried_eq_override(a) || i.kb().value_has_buried_eq_override(b))
+    {
+        return Err(EvalError::Suspended {
+            detail: "structural eq over an eq-overriding carrier buried under \
+                     non-overriding structure"
+                .to_string(),
+        });
+    }
     Ok(false)
 }
 
@@ -1411,7 +1434,7 @@ fn materialize_entity(interp: &mut Interpreter, tid: crate::kb::term::TermId) ->
     Some(Value::Entity { functor: canonical, pos: Vec::new().into(), named: named.into(), ty: None })
 }
 
-fn term_to_value(interp: &mut Interpreter, tid: crate::kb::term::TermId) -> Value {
+pub(crate) fn term_to_value(interp: &mut Interpreter, tid: crate::kb::term::TermId) -> Value {
     use crate::intern::Symbol;
     use crate::kb::term::{Literal, Term as CoreTerm};
     // Avoid cloning the whole `Term` when we'll return `Value::Term(tid)`

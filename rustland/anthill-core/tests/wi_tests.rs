@@ -251,6 +251,9 @@ mod wi645_float_nan_ieee_test;
 #[path = "include/wi625_eval_semantic_eq_test.rs"]
 mod wi625_eval_semantic_eq_test;
 
+#[path = "include/wi625_sld_eval_bridge_test.rs"]
+mod wi625_sld_eval_bridge_test;
+
 #[path = "include/wi351_callback_place_test.rs"]
 mod wi351_callback_place_test;
 

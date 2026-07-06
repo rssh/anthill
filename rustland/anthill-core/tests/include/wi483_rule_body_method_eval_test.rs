@@ -119,17 +119,20 @@ fn rule_body_method_call_folds_and_evaluates() {
 // ── Transparency: a COMPLEX op-call is left un-ground, NOT a loud error ──
 
 #[test]
-fn rule_body_complex_method_call_is_left_unground_not_loud() {
+fn rule_body_complex_method_call_runs_via_bridge_not_loud() {
     // `bump(b: Box) -> Int64 = ?b.value + 1` has arithmetic in its body — the
-    // fold's field-access reducer does not collapse it, so it is COMPLEX. Per the
-    // transparency rule it must NOT be a loud load error, and an `eq`/`neq` over it
-    // must stay UNDECIDED (delay) rather than draw a wrong definite answer.
+    // fold's field-access reducer cannot collapse it, so it is COMPLEX. Two
+    // guarantees hold:
+    //   * substitution transparency — a complex callee is NEVER a loud load error;
+    //   * WI-625 gap 1 (the SLD→eval bridge) — a GROUND complex op-call now RUNS at
+    //     resolution: `bridge_op_to_eval` evaluates `bump(box(5)) = 6`, so an
+    //     `eq`/`neq` over it DECIDES instead of residualizing.
     //
-    //   `bump(box(value:5))` is actually 6, but we cannot fold it. A `neq` operand
-    //   treated as a concrete (unfoldable) node would `structural_eq`-mismatch and
-    //   `neq` would SPURIOUSLY SUCCEED — claiming `6 ≠ bump` when in truth `6 = bump`.
-    //   Treating the residual op-call as un-ground makes `neq` DELAY → the rule does
-    //   not spuriously hold (0 solutions). That is the substitution-transparency bar.
+    //   Pre-bridge this residualized — sound but INCOMPLETE: unable to fold `bump`, a
+    //   `neq` that treated it as an opaque node would SPURIOUSLY SUCCEED, claiming
+    //   `6 ≠ bump` when in truth `6 = bump`; delaying avoided that wrong answer. The
+    //   bridge computes the value, so the result is now sound AND complete: `neq(6,6)`
+    //   is FALSE (0 solutions, no spurious success) and `eq(6,6)` a definite TRUE.
     let src = r#"
         namespace wi483.complex
           sort Box
@@ -153,28 +156,30 @@ fn rule_body_complex_method_call_is_left_unground_not_loud() {
         "a complex op-call must NOT be a loud load error (substitution transparency); got:\n{}",
         errors_text(&errs)
     );
-    // `neq(6, bump(box(value:5)))` must not yield a DEFINITE answer (bump IS 6,
-    // but we cannot fold it). The un-ground op-call makes neq DELAY → it
-    // RESIDUALIZES: a solution that carries the pending constraint, never a
-    // definite (empty-residual) success. A definite solution here would be the
-    // transparency bug — claiming `6 ≠ bump` we cannot actually prove.
+    // `neq(6, bump(box(value:5)))`: the bridge computes `bump = 6`, so `neq(6, 6)`
+    // is FALSE and the rule does not hold — 0 solutions, and (crucially) NO spurious
+    // definite success claiming `6 ≠ bump`.
     let b5 = make_box(&mut kb, "wi483.complex.Box.box", 5);
     let six = kb.alloc(Term::Const(Literal::Int(6)));
     let sols = resolve_ground_solutions(&mut kb, "wi483.complex.ne_bumped", &[b5, six]);
-    let definite = sols.iter().filter(|s| s.residual.is_empty()).count();
     assert_eq!(
-        definite, 0,
-        "a complex op-call must never yield a DEFINITE neq answer (it must residualize); \
-         got {} definite of {} solutions", definite, sols.len()
+        sols.len(), 0,
+        "neq(6, bump(box(5))=6) is FALSE → the rule must not hold; got {} solutions", sols.len()
     );
 
-    // `eq` over the same complex op-call also only residualizes — no definite
-    // (empty-residual) decision, and no panic.
+    // `eq(6, bump(box(value:5)))`: the bridge computes `bump = 6`, so `eq(6, 6)` is
+    // TRUE — a DEFINITE solution (the bridge decides where the fold delayed).
     let b5b = make_box(&mut kb, "wi483.complex.Box.box", 5);
     let six2 = kb.alloc(Term::Const(Literal::Int(6)));
     let eq_sols = resolve_ground_solutions(&mut kb, "wi483.complex.eq_bumped", &[b5b, six2]);
     assert_eq!(
-        eq_sols.iter().filter(|s| s.residual.is_empty()).count(), 0,
-        "a complex op-call must never yield a DEFINITE eq answer (it must residualize)"
+        eq_sols.iter().filter(|s| s.residual.is_empty()).count(), 1,
+        "eq(6, bump(box(5))=6) is TRUE → the bridge decides it (1 definite solution)"
     );
+
+    // A miss also decides: eq(7, bump(box(5))=6) is FALSE → 0 solutions.
+    let b5c = make_box(&mut kb, "wi483.complex.Box.box", 5);
+    let seven = kb.alloc(Term::Const(Literal::Int(7)));
+    let eq_miss = resolve_ground_solutions(&mut kb, "wi483.complex.eq_bumped", &[b5c, seven]);
+    assert_eq!(eq_miss.len(), 0, "eq(7, bump(box(5))=6) is FALSE → the rule must not hold");
 }

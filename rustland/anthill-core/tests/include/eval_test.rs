@@ -165,6 +165,7 @@ end
         anthill_core::eval::EvalConfig {
             depth_cap: None,
             step_cap: Some(1_000),
+            ..Default::default()
         },
     );
     let err = interp.call("test.m1_loop.main", &[]).unwrap_err();

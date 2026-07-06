@@ -56,6 +56,14 @@ use stream::StreamArenaRef;
 pub struct EvalConfig {
     pub depth_cap: Option<usize>,
     pub step_cap: Option<u64>,
+    /// WI-625 gap 1 (SLD→eval bridge): this interpreter was lent to the resolver
+    /// to run a host-bodied op at resolution. Because the resolver above CAN
+    /// residualize (delay), a semantic comparison that reaches a genuinely
+    /// undecided point must SUSPEND (`EvalError::Suspended`) rather than force a
+    /// possibly-membership-wrong structural verdict — the resolver then delays.
+    /// Off for every top-level eval (which has nowhere to suspend *to*, so its
+    /// structural fallback is the documented behaviour).
+    pub bridge_mode: bool,
 }
 
 impl Default for EvalConfig {
@@ -63,13 +71,14 @@ impl Default for EvalConfig {
         Self {
             depth_cap: Some(1_000_000),
             step_cap: None,
+            bridge_mode: false,
         }
     }
 }
 
 impl EvalConfig {
     pub fn unbounded() -> Self {
-        Self { depth_cap: None, step_cap: None }
+        Self { depth_cap: None, step_cap: None, bridge_mode: false }
     }
 }
 
@@ -498,11 +507,62 @@ impl Interpreter {
         let sym = self.kb.try_resolve_symbol(qualified_name).ok_or_else(|| {
             EvalError::UnknownOperation { name: qualified_name.to_string() }
         })?;
+        self.call_op_sym(sym, args)
+    }
+
+    /// Symbol-keyed body of [`Self::call`]: dispatch to a registered builtin,
+    /// else seed the entry op's `requires` chain with self-referential
+    /// placeholders and invoke it. Private — host callers use `call` (by name);
+    /// the resolver bridge uses [`Self::call_op_bridged`] (which does NOT seed
+    /// placeholders — see there for why).
+    fn call_op_sym(&mut self, sym: Symbol, args: &[Value]) -> Result<Value, EvalError> {
         if let Some(builtin) = self.builtins.get(&sym).cloned() {
             return (builtin)(self, args);
         }
         let requirements = self.seed_entry_requirements(sym);
         self.invoke_op_with_requirements(sym, args, requirements)
+    }
+
+    /// WI-625 gap 1: the resolver→eval bridge entry
+    /// ([`crate::kb::KnowledgeBase::bridge_op_to_eval`]). Like [`Self::call`] but
+    /// invoked BY SYMBOL (the resolver holds it already) and with **no seeded
+    /// requirement dictionaries**. The empty dicts are load-bearing for
+    /// SOUNDNESS: [`Self::seed_entry_requirements`] would install self-referential
+    /// PLACEHOLDERS, and a body that dispatches a `requires` op through a
+    /// placeholder can misdispatch to a wrong-but-non-erroring impl and return a
+    /// plausible WRONG value — which the resolver would then import as a definite
+    /// `eq`/`cmp` answer (an unsoundness the pre-bridge delay never had). With no
+    /// dicts, any `requires` dispatch instead hits an unbound-requirement error,
+    /// so the bridge residualizes (delays) — only requirement-FREE op bodies
+    /// decide. Supplying REAL dicts (so requires-carrying ops bridge too) is
+    /// WI-300 Tier B / gap 3.
+    pub(crate) fn call_op_bridged(&mut self, sym: Symbol, args: &[Value]) -> Result<Value, EvalError> {
+        if let Some(builtin) = self.builtins.get(&sym).cloned() {
+            return (builtin)(self, args);
+        }
+        self.invoke_op_with_requirements(sym, args, smallvec::SmallVec::new())
+    }
+
+    /// WI-625 gap 1: is this interpreter running as the resolver's op-body
+    /// bridge? When set, semantic comparisons that reach an undecided point
+    /// suspend ([`EvalError::Suspended`]) instead of forcing a structural
+    /// verdict. See [`EvalConfig::bridge_mode`].
+    pub(crate) fn bridge_mode(&self) -> bool {
+        self.config.bridge_mode
+    }
+
+    /// WI-625 gap 1: materialize a term-carried value into the interpreter's
+    /// NATIVE form — a `Value::Term(Ref/Fn ctor)` becomes a `Value::Entity`
+    /// (recursively), literals become scalars. The resolver hands the bridge its
+    /// operands as term carriers (`Value::Term`), but eval builtins like
+    /// `field_access` require a real `Value::Entity`; without this a bridged body
+    /// that reads a field errors with "receiver is not an entity (got Term)".
+    /// A non-term value (already native) passes through.
+    pub(crate) fn materialize_value(&mut self, v: Value) -> Value {
+        match v {
+            Value::Term { id, .. } => builtins::term_to_value(self, id),
+            other => other,
+        }
     }
 
     /// Variant of [`Self::call`] that lets the host supply real
