@@ -742,9 +742,11 @@ fn typed_op_body_eq_over_set_evaluates_via_bridge() {
 // "reject-only-distinct-enclosing-params" guard both regresses and mis-composes
 // (the requires-chain re-scoping is symbol-interning-fragile). Sound coverage needs
 // op-requires bindings that preserve the carrier link (or an op-param σ context) —
-// the same carrier-alignment the prior session deferred. See WI-625 feedback.
+// the same carrier-alignment the prior session deferred. Tracked as prerequisite
+// WI-653 (op-requires carrier-link representation); WI-625 depends on it — un-ignore
+// this once WI-653 lands. See WI-625 / WI-653 feedback.
 #[test]
-#[ignore = "WI-625: carrier-aware transitive op-requires coverage — blocked on op-requires carrier-link representation"]
+#[ignore = "blocked on WI-653 (op-requires carrier-link representation); un-ignore when it lands"]
 fn transitive_op_requires_over_wrong_param_is_unsoundly_licensed() {
     const SRC: &str = r#"
         namespace test.wi625.blind
