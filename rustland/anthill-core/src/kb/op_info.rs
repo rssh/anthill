@@ -74,6 +74,38 @@ pub struct OpInfoRecord {
     pub meta: Option<TermId>,
 }
 
+/// WI-656 — the body-INDEPENDENT half of an operation's `OperationInfo`: every
+/// field of [`OpInfoRecord`] except the body node. Cached per operation in
+/// [`crate::kb::KnowledgeBase`]'s `op_records` so `lookup_operation_info` is an
+/// O(1) map hit instead of an O(N_ops) linear scan of the `OperationInfo` facts
+/// (which, per operation-reference during inference, was quadratic). Load-stable:
+/// the typer rewrites bodies, never signatures, so a cached copy never goes stale
+/// within a load.
+#[derive(Debug, Clone)]
+pub struct OpSignature {
+    pub params: Vec<(Symbol, Value)>,
+    pub return_type: Value,
+    pub effects: Vec<Value>,
+    pub type_params: Vec<(Symbol, TermId)>,
+    pub requires: Vec<Value>,
+    pub ensures: Vec<Value>,
+    pub meta: Option<TermId>,
+}
+
+/// WI-656 — the unified per-operation record: an operation's cached
+/// [`OpSignature`] and its (mutable) body node, keyed by op symbol in
+/// [`crate::kb::KnowledgeBase`]'s `op_records`. Replaces the former standalone
+/// `op_bodies` map — the body now lives here beside the signature, so the typer's
+/// signature lookup and body access are one O(1) hit. `signature` is `None` until
+/// [`build_op_signatures`] populates it; `body` is `None` for a body-less spec op
+/// and is written in place by `set_op_body_node` (the `[simp]`-rewrite write-back),
+/// so it is never a stale snapshot.
+#[derive(Debug, Clone, Default)]
+pub struct OperationRecord {
+    pub signature: Option<OpSignature>,
+    pub body: Option<Rc<NodeOccurrence>>,
+}
+
 /// WI-398: every operation's `(symbol, params)` in ONE pass over the `OperationInfo`
 /// facts. The signature-wellformedness check (a cyclic cross-parameter projection)
 /// must cover EVERY operation — body-less free specs included — which the body-type-
@@ -106,41 +138,121 @@ pub fn all_operation_params(kb: &KnowledgeBase) -> Vec<(Symbol, Vec<(Symbol, Val
 /// walk; the effects field decodes to `Vec<Value>` (term list → `Value::Term`s,
 /// value list → its elements verbatim, preserving `Value::Node` identity).
 pub fn lookup_operation_info(kb: &KnowledgeBase, op_sym: Symbol) -> Option<OpInfoRecord> {
+    // WI-656 fast path: the operation's signature is cached in its record (built
+    // once by `build_op_signatures`), so this is an O(1) map hit rather than an
+    // O(N_ops) scan of every `OperationInfo` fact. The body is read from the same
+    // record — mutated in place by `set_op_body_node`, so never a stale snapshot.
+    if let Some(rec) = kb.op_record(op_sym) {
+        if let Some(sig) = &rec.signature {
+            return Some(op_info_from_signature(op_sym, sig, rec.body.clone()));
+        }
+    }
+    // Fallback: the linear scan. Taken by any lookup that runs BEFORE
+    // `build_op_signatures` — the const-purity gate and eq-dispatch-table build
+    // during load, when the index is still empty — or on a KB that never
+    // type-checks. Post-typecheck callers (the typer, then eval / reflect /
+    // codegen) hit the fast path above. Ground truth — behaviour-identical to the
+    // pre-WI-656 code, only slower — so the index is a pure accelerator, never a
+    // correctness change.
     let op_info_sym = kb.try_resolve_symbol("anthill.reflect.OperationInfo")?;
     for rid in kb.rules_by_functor(op_info_sym) {
-        if !kb.is_fact(rid) { continue; }
+        if !kb.is_fact(rid) {
+            continue;
+        }
         let head = kb.rule_head_value(rid);
-
-        let name_match = head_field_term(kb, head, "name")
-            .and_then(|v| match kb.get_term(v) {
-                Term::Ref(s) => Some(*s),
-                _ => None,
-            });
-        if name_match != Some(op_sym) { continue; }
-
-        let return_type = head_field_value(kb, head, "return_type")?;
-        let effects = effects_of_head(kb, head);
-        let params = extract_params(kb, head_field(kb, head, "params"));
-        let type_params = extract_type_params(kb, head_field_term(kb, head, "type_params"));
-        let body_node = kb.op_body_node(op_sym).cloned();
-        let requires = clause_list_field(kb, head, "requires");
-        let ensures = clause_list_field(kb, head, "ensures");
-        // WI-087: the `meta(...)` term. An empty `meta()` (the no-attributes
-        // case) carries no named args, so report it as `None`.
-        let meta = head_field_term(kb, head, "meta").filter(|t| meta_term_nonempty(kb, *t));
-        return Some(OpInfoRecord {
-            op_sym,
-            params,
-            return_type,
-            effects,
-            type_params,
-            body_node,
-            requires,
-            ensures,
-            meta,
-        });
+        if head_name_ref(kb, head) != Some(op_sym) {
+            continue;
+        }
+        let sig = extract_signature_from_head(kb, head)?;
+        return Some(op_info_from_signature(op_sym, &sig, kb.op_body_node(op_sym).cloned()));
     }
     None
+}
+
+/// WI-656 — decode the body-independent [`OpSignature`] from an `OperationInfo`
+/// fact head. The SINGLE field-decode, shared by [`lookup_operation_info`]'s
+/// fallback and [`build_op_signatures`], so a cached signature and a scanned one
+/// can never disagree. `None` when the head lacks a `return_type` (malformed —
+/// the pre-WI-656 code likewise bailed the whole lookup on a missing `return_type`).
+fn extract_signature_from_head(kb: &KnowledgeBase, head: &Value) -> Option<OpSignature> {
+    let return_type = head_field_value(kb, head, "return_type")?;
+    let effects = effects_of_head(kb, head);
+    let params = extract_params(kb, head_field(kb, head, "params"));
+    let type_params = extract_type_params(kb, head_field_term(kb, head, "type_params"));
+    let requires = clause_list_field(kb, head, "requires");
+    let ensures = clause_list_field(kb, head, "ensures");
+    // WI-087: an empty `meta()` (the no-attributes case) reports as `None`.
+    let meta = head_field_term(kb, head, "meta").filter(|t| meta_term_nonempty(kb, *t));
+    Some(OpSignature { params, return_type, effects, type_params, requires, ensures, meta })
+}
+
+/// WI-656 — assemble the public [`OpInfoRecord`] from a cached [`OpSignature`]
+/// plus the operation's (freshly read) body node, so a `[simp]`-rewritten body is
+/// always seen. The signature fields are cloned out of the cache.
+fn op_info_from_signature(
+    op_sym: Symbol,
+    sig: &OpSignature,
+    body_node: Option<Rc<NodeOccurrence>>,
+) -> OpInfoRecord {
+    OpInfoRecord {
+        op_sym,
+        params: sig.params.clone(),
+        return_type: sig.return_type.clone(),
+        effects: sig.effects.clone(),
+        type_params: sig.type_params.clone(),
+        body_node,
+        requires: sig.requires.clone(),
+        ensures: sig.ensures.clone(),
+        meta: sig.meta,
+    }
+}
+
+/// WI-656 — populate every operation's cached [`OpSignature`] in `kb.op_records`
+/// in ONE pass over the `OperationInfo` facts, collapsing what was an O(N_ops)
+/// scan per `lookup_operation_info` call — quadratic across the typer's per-node
+/// lookups — into O(N_ops) once. Cheap; run at the start of type-checking, by when
+/// every `OperationInfo` fact is asserted. The body node in each record is untouched.
+///
+/// Mirrors the fallback scan EXACTLY, so the fast path stays a pure accelerator:
+/// only the FIRST `OperationInfo` fact per name is consulted (`seen`), well-formed
+/// or not. When that first fact is malformed — no `return_type`, so
+/// [`extract_signature_from_head`] is `None` — NOTHING is cached; the fast path
+/// then misses and the fallback re-derives the same `None` from that first fact.
+/// Caching a *later* well-formed fact instead would flip the op from unresolved to
+/// resolved, diverging from the scan (a `/code-review`-flagged latent case — no
+/// loader emits a `return_type`-less head today). A re-run OVERWRITES each op's
+/// signature from its current first fact, so a re-typecheck after a signature change
+/// refreshes (a retracted op's entry would persist, but nothing mutates
+/// `OperationInfo` post-load).
+pub fn build_op_signatures(kb: &mut KnowledgeBase) {
+    let Some(op_info_sym) = kb.try_resolve_symbol("anthill.reflect.OperationInfo") else {
+        return;
+    };
+    // Collect under the immutable borrow, then insert — the head decode reads
+    // `&kb` while the record insert needs `&mut kb`. `seen` keeps only the FIRST
+    // fact per op, so a later duplicate the scan would never reach is ignored.
+    let mut seen: std::collections::HashSet<Symbol> = std::collections::HashSet::new();
+    let mut sigs: Vec<(Symbol, OpSignature)> = Vec::new();
+    for rid in kb.rules_by_functor(op_info_sym) {
+        if !kb.is_fact(rid) {
+            continue;
+        }
+        let head = kb.rule_head_value(rid);
+        let Some(op_sym) = head_name_ref(kb, head) else {
+            continue;
+        };
+        if !seen.insert(op_sym) {
+            continue;
+        }
+        // A malformed first fact caches nothing (signature stays `None`) — the
+        // fallback then reproduces the same `None`, so the paths agree.
+        if let Some(sig) = extract_signature_from_head(kb, head) {
+            sigs.push((op_sym, sig));
+        }
+    }
+    for (op_sym, sig) in sigs {
+        kb.op_records.entry(op_sym).or_default().signature = Some(sig);
+    }
 }
 
 /// WI-087: a `meta(...)` term carries attributes iff it has at least one named

@@ -23298,6 +23298,11 @@ const TYPECHECK_FREE_OPS: bool = true;
 
 pub fn type_check_sorts_typed(kb: &mut KnowledgeBase, sort_terms: &[TermId]) -> Vec<TypeError> {
     let mut errors: Vec<TypeError> = Vec::new();
+    // WI-656 — build the O(1) operation-signature index once, up front: the per-op
+    // and per-node passes below make `lookup_operation_info` the typer's hottest
+    // call, and without this index each call linearly scans every `OperationInfo`
+    // fact (quadratic overall). Every `OperationInfo` fact is asserted by now.
+    super::op_info::build_op_signatures(kb);
     // Ops reached via a sort's `SortInfo` — so the gated free-op sweep
     // doesn't re-check them (collected only when the sweep is enabled).
     let mut sort_owned_ops: std::collections::HashSet<Symbol> = std::collections::HashSet::new();

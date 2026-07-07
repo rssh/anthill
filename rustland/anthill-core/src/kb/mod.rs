@@ -411,7 +411,14 @@ pub struct KnowledgeBase {
     /// discrim node** (delegate the body subterm to on-demand `TermView` unify
     /// instead of trie descent): tracked as **WI-370**. Until that lands, the
     /// body stays here, reachable relationally via `operation_body`.
-    pub(crate) op_bodies: HashMap<Symbol, Rc<NodeOccurrence>>,
+    ///
+    /// WI-656 — the body now rides in a unified per-operation `OperationRecord`
+    /// alongside the operation's cached `OpSignature`, so the typer's signature
+    /// lookup (`op_info::lookup_operation_info`) is an O(1) map hit instead of an
+    /// O(N_ops) scan of the `OperationInfo` facts. The three body accessors
+    /// (`op_body_node` / `set_op_body_node` / `op_bodies_iter`) are unchanged in
+    /// signature; they just read/write `record.body`.
+    pub(crate) op_records: HashMap<Symbol, op_info::OperationRecord>,
 
     /// Proposal 039 / WI-084 — a term-level constant's DECLARED TYPE, keyed by
     /// its `SymbolKind::Const` symbol, as a carrier-agnostic `Value`. Read by
@@ -606,7 +613,7 @@ impl KnowledgeBase {
             guards_by_sort: HashMap::new(),
             term_spans: HashMap::new(),
             functor_spans: HashMap::new(),
-            op_bodies: HashMap::new(),
+            op_records: HashMap::new(),
             const_types: HashMap::new(),
             const_bodies: HashMap::new(),
             has_dot_applies: false,
@@ -734,13 +741,22 @@ impl KnowledgeBase {
     /// WI-242 — get the value-typed body node for an operation, if the
     /// loader produced one. None for body-less ops (spec declarations).
     pub fn op_body_node(&self, op_sym: Symbol) -> Option<&Rc<NodeOccurrence>> {
-        self.op_bodies.get(&op_sym)
+        self.op_records.get(&op_sym).and_then(|r| r.body.as_ref())
     }
 
     /// WI-242 — record the value-typed body node for an operation.
-    /// Called by the loader during operation conversion.
+    /// Called by the loader during operation conversion, and by the typer's
+    /// `[simp]`-rewrite write-back. WI-656: writes `record.body` in place, so the
+    /// cached signature beside it is undisturbed.
     pub fn set_op_body_node(&mut self, op_sym: Symbol, node: Rc<NodeOccurrence>) {
-        self.op_bodies.insert(op_sym, node);
+        self.op_records.entry(op_sym).or_default().body = Some(node);
+    }
+
+    /// WI-656 — the unified per-operation record (cached signature + body node),
+    /// if this operation has one. Backs `op_info::lookup_operation_info`'s O(1)
+    /// fast path.
+    pub(crate) fn op_record(&self, op_sym: Symbol) -> Option<&op_info::OperationRecord> {
+        self.op_records.get(&op_sym)
     }
 
     /// Proposal 039 / WI-084 — the declared type of a term-level constant, if
@@ -779,7 +795,11 @@ impl KnowledgeBase {
     /// Passes (e.g. `req_insertion::run`) that need to scan all bodies
     /// consume this; the iteration order is unspecified.
     pub fn op_bodies_iter(&self) -> impl Iterator<Item = (Symbol, &Rc<NodeOccurrence>)> + '_ {
-        self.op_bodies.iter().map(|(s, n)| (*s, n))
+        // WI-656 — records with no body (body-less spec ops) are skipped, so this
+        // yields exactly the former `op_bodies` entries.
+        self.op_records
+            .iter()
+            .filter_map(|(s, r)| r.body.as_ref().map(|b| (*s, b)))
     }
 
     /// Proposal 039 / WI-084 — iterate every anthill-bodied constant's
