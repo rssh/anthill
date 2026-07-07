@@ -24785,6 +24785,18 @@ fn transitive_witness_grounds_soundly(
 ) -> bool {
     let spec_qn = kb.qualified_name_of(spec_canon).to_string();
     let spec_tparams = kb.type_params_of_sort(spec_canon);
+    // The name-based soundness argument models only the fire-time guard's
+    // carrier-parameter-typeclass branch (`param_is_spec_carrier` matching the spec's
+    // type-param NAME against a param's type name). For a SELF-REPRESENTING spec (an
+    // op parameter typed with the spec SORT itself, e.g. `insert(s: Set, …)`) the
+    // guard instead reads the sort-typed parameter — which this name check does not
+    // constrain — so the gate's reasoning does not apply. Decline. (No self-representing
+    // spec is `require`d anywhere today; this is defense-in-depth against a future one.)
+    if let Some(rec) = super::op_info::lookup_operation_info(kb, functor) {
+        if spec_self_represented_by(kb, &rec.params, spec_canon) {
+            return false;
+        }
+    }
     // The head symbol of a type-argument term (`Ref(T)` / `Ident(T)` / `T[…]`).
     let arg_head_name = |kb: &KnowledgeBase, tid: TermId| -> Option<String> {
         match kb.get_term(tid) {
@@ -24797,28 +24809,17 @@ fn transitive_witness_grounds_soundly(
         if kb.canonical_sort_sym(entry.required_sort) != spec_canon {
             continue;
         }
-        // The requirement's type-arguments — the spec is stored as `Eq[T]` either
-        // positionally (`Fn{functor: Eq, pos_args: [Ref(T)]}`) or, when a `SortView`
-        // wrapper carries named bindings, as `Eq[T = Ref(T)]`. Collect every
-        // type-parameter argument's bound value in both shapes.
+        // The requirement's type-arguments. `op_requires_entries` stores each clause
+        // as `Fn{functor: <spec>, pos_args, named_args}` (or a bare `Ref(<spec>)` with
+        // no args), NEVER a `SortView` wrapper — so `entry.spec`'s functor IS
+        // `spec_canon` and its arguments bind the spec directly: positionals in
+        // type-param order, named args by param name.
         let mut bound_type_args: Vec<TermId> = Vec::new();
-        if let Term::Fn { functor: f, pos_args, named_args } = kb.get_term(entry.spec) {
-            // SortView(base, T = …) → the type-param named bindings.
-            if let Some((_base, bindings)) = unwrap_spec_view(kb, entry.spec) {
-                for (key, val) in &bindings {
-                    if is_type_param_binding(kb, *key, &spec_qn) {
-                        bound_type_args.push(*val);
-                    }
-                }
-            }
-            // Bare `Fn{functor: Eq, pos_args:[…], named_args:[…]}` — positional args
-            // bind the spec's type-params in order; named args by param name.
-            if bound_type_args.is_empty() && kb.canonical_sort_sym(*f) == spec_canon {
-                bound_type_args.extend(pos_args.iter().copied());
-                for (key, val) in named_args.iter() {
-                    if is_type_param_binding(kb, *key, &spec_qn) {
-                        bound_type_args.push(*val);
-                    }
+        if let Term::Fn { pos_args, named_args, .. } = kb.get_term(entry.spec) {
+            bound_type_args.extend(pos_args.iter().copied());
+            for (key, val) in named_args.iter() {
+                if is_type_param_binding(kb, *key, &spec_qn) {
+                    bound_type_args.push(*val);
                 }
             }
         }
