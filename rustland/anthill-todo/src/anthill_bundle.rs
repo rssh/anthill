@@ -4,6 +4,10 @@ use anthill_core::parse;
 use anthill_core::parse::ir::ParsedFile;
 
 const BUNDLE_SOURCES: &[(&str, &str)] = &[
+    // Version-stamp entities (TemplateInfo/StoreFormat) load first — they
+    // define the `anthill.stage0` symbols the prescan resolves and that a
+    // project's scaffolded stamps refer to (WI-434).
+    ("anthill-todo/version", include_str!("../anthill/version.anthill")),
     ("anthill-todo/store", include_str!("../anthill/store.anthill")),
     ("anthill-todo/main", include_str!("../anthill/main.anthill")),
 ];

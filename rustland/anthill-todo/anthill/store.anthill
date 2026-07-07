@@ -10,7 +10,7 @@
 -- pattern-matchable `WorkItem` entities instead of opaque `Term`s.
 
 namespace anthill.todo.store
-  import anthill.stage0.{WorkItem, WorkStatus, Feedback, Tag}
+  import anthill.stage0.{WorkItem, WorkStatus, Feedback, Tag, StoreFormat}
   import anthill.persistence.filesystem.{IndexedFileStore}
   import anthill.persistence.{persist, retract, flush}
   import anthill.prelude.{Cell, Option, List, Int64, String, Unit, Bool}
@@ -59,6 +59,13 @@ namespace anthill.todo.store
     operation tag_item(s: Cell[V = State], id: String, name: String) -> Unit
       effects {Modify[s], Error}
     operation untag_item(s: Cell[V = State], id: String, name: String) -> Unit
+      effects {Modify[s], Error}
+    -- Stamp the store's data-format version (WI-434): persist a
+    -- `fact StoreFormat(version)` through the same backend. `migrate` calls
+    -- this to bring a pre-versioning project up to the current format; the
+    -- stamp lives in the store's own file, so this stays a bundle concern
+    -- rather than host text-writing.
+    operation stamp_format(s: Cell[V = State], version: Int64) -> Unit
       effects {Modify[s], Error}
 
     -- Read-only ops: typed WorkItem returns (WI-204 phase B1). They may raise
@@ -404,6 +411,11 @@ namespace anthill.todo.store
       effects {Modify[s], Error}
     =
       persist_through(s, as_term(Tag(workitem: id, name: name)))
+
+    operation stamp_format(s: Cell[V = WIS], version: Int64) -> Unit
+      effects {Modify[s], Error}
+    =
+      persist_through(s, as_term(StoreFormat(version: version)))
 
     -- Retract the Tag fact matching (id, name), then flush. The cmd
     -- layer guards existence via has_tag, so a missing fact is a silent

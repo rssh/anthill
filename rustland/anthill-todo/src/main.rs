@@ -208,6 +208,19 @@ fn is_bundle_logic_file(pf: &ParsedFile) -> bool {
 
 // ── Term helpers ────────────────────────────────────────────────
 
+// The data-format version `init` stamps a new project's workitems.anthill with
+// (`fact StoreFormat(version: N)`). MUST match the bundle's `current_store_format`
+// (main.anthill), which the anthill-side version check compares stamps against;
+// the `fresh init produces a clean project` test guards against divergence.
+const CURRENT_STORE_FORMAT_VERSION: u32 = 1;
+
+// Scaffolded entity/rule templates `init` copies into a new project. The
+// entities they define still live per-project (WI-505 would bundle them); the
+// data-format stamp, by contrast, is bundle-owned and asserted from anthill via
+// the store (WorkItemStore.stamp_format / `migrate`), never text-written here.
+const DOMAIN_TEMPLATE: &str = include_str!("../../../examples/github-todo/domain.anthill");
+const RULES_TEMPLATE: &str = include_str!("../../../examples/github-todo/rules.anthill");
+
 fn extract_named_arg(kb: &KnowledgeBase, term: TermId, field: &str) -> Option<TermId> {
     match kb.get_term(term) {
         Term::Fn { named_args, .. } => {
@@ -282,18 +295,17 @@ fn run_init(project_name: Option<&str>) {
 
     fs::create_dir_all(&dir).expect("cannot create anthill-todo/");
 
-    let domain = include_str!("../../../examples/github-todo/domain.anthill");
-    fs::write(dir.join("domain.anthill"), domain).expect("write domain.anthill");
+    fs::write(dir.join("domain.anthill"), DOMAIN_TEMPLATE).expect("write domain.anthill");
 
-    let rules = include_str!("../../../examples/github-todo/rules.anthill");
-    fs::write(dir.join("rules.anthill"), rules).expect("write rules.anthill");
+    fs::write(dir.join("rules.anthill"), RULES_TEMPLATE).expect("write rules.anthill");
 
     let project = format!(
         "-- Project configuration\n\nfact Project(\n  name: \"{name}\",\n  language: \"rust\",\n  build: \"cargo\",\n  tools: [\"cargo-test\"])\n"
     );
     fs::write(dir.join("project.anthill"), project).expect("write project.anthill");
 
-    fs::write(dir.join("workitems.anthill"), "-- Work items\n\n").expect("write workitems.anthill");
+    let workitems = format!("-- Work items\n\nfact StoreFormat(version: {CURRENT_STORE_FORMAT_VERSION})\n\n");
+    fs::write(dir.join("workitems.anthill"), workitems).expect("write workitems.anthill");
 
     println!("created anthill-todo/ with:");
     println!("  domain.anthill    — entity type definitions");
@@ -301,6 +313,10 @@ fn run_init(project_name: Option<&str>) {
     println!("  project.anthill   — project configuration");
     println!("  workitems.anthill — work items (empty)");
 }
+
+// `migrate` is served by the anthill bundle (main.anthill `cmd_migrate`): it
+// stamps workitems.anthill with a `StoreFormat` fact THROUGH the store, so the
+// version-format logic stays in the bundle rather than host text-writing (WI-434).
 
 // ── Entry point ─────────────────────────────────────────────────
 
@@ -488,6 +504,10 @@ fn run_anthill_bundle(argv: &[String]) -> i32 {
             Vec::new()
         }
     };
+
+    // The data-format version check runs inside the bundle's `main` (WI-434):
+    // it is a query over the loaded StoreFormat facts, so it lives in anthill
+    // rather than a host prescan.
 
     let mut interp = Interpreter::new(kb);
     if let Err(code) = runner::register_runtime(&mut interp) {

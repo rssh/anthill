@@ -27,9 +27,12 @@ fn load_stdlib_kb() -> KnowledgeBase {
 
 fn load_stdlib_and_project_kb() -> KnowledgeBase {
     let mut kb = load_stdlib_kb();
-    // Load anthill-todo's domain.anthill to get stage0 / WorkItem / WorkStatus
+    // Load anthill-todo's domain.anthill to get stage0 / WorkItem / WorkStatus,
+    // plus version.anthill for the bundle's `StoreFormat` entity that store.anthill
+    // now imports (WI-434) — without it store.anthill's import is unresolved.
     let project_files = vec![
         crate::common::workspace_root().join("anthill-todo/domain.anthill"),
+        crate::common::workspace_root().join("rustland/anthill-todo/anthill/version.anthill"),
     ];
     let parsed: Vec<_> = project_files.iter()
         .map(|p| parse::parse(&std::fs::read_to_string(p).unwrap()).unwrap())

@@ -104,6 +104,7 @@ pub fn register_standard_builtins(interp: &mut Interpreter) -> Result<(), EvalEr
     register_if_present(interp, "anthill.reflect.extract", extract_type_builtin)?;
     register_if_present(interp, "anthill.reflect.term_field", term_field)?;
     register_if_present(interp, "anthill.reflect.term_as_string", term_as_string)?;
+    register_if_present(interp, "anthill.reflect.term_as_int", term_as_int)?;
     register_if_present(interp, "anthill.reflect.term_to_string", reflect_term_to_string)?;
     register_if_present(interp, "anthill.reflect.term_list_items", reflect_term_list_items)?;
     register_if_present(interp, "anthill.reflect.term_as_entity", term_as_entity)?;
@@ -1110,6 +1111,42 @@ fn term_as_string(interp: &mut Interpreter, args: &[Value]) -> Result<Value, Eva
             functor: some_sym,
             pos: Vec::new().into(),
             named: vec![(value_key, Value::Str(v))].into(),
+            ty: None,
+        },
+        None => Value::Entity {
+            functor: none_sym,
+            pos: Vec::new().into(),
+            named: Vec::new().into(),
+            ty: None,
+        },
+    })
+}
+
+/// `anthill.reflect.term_as_int(t: Term) -> Option[Int64]`.
+/// Returns `some(i)` when the term is exactly `Const(IntLiteral(_))` (or an
+/// `Int` value carrier); otherwise `none()`. The int-literal partner to
+/// `term_as_string`, with the identical carrier handling — used to read a
+/// numeric field (e.g. a `StoreFormat` version) after `term_field`.
+fn term_as_int(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    let [arg] = expect_args::<1>("term_as_int", args)?;
+    let some_sym = require_symbol(interp, "anthill.prelude.Option.some", "some")?;
+    let none_sym = require_symbol(interp, "anthill.prelude.Option.none", "none")?;
+    let value_key = interp.kb.intern("value");
+
+    let i: Option<i64> = match &arg {
+        Value::Term { id: tid, .. } => match interp.kb.get_term(*tid) {
+            crate::kb::term::Term::Const(crate::kb::term::Literal::Int(i)) => Some(*i),
+            _ => None,
+        },
+        Value::Int(i) => Some(*i),
+        _ => None,
+    };
+
+    Ok(match i {
+        Some(v) => Value::Entity {
+            functor: some_sym,
+            pos: Vec::new().into(),
+            named: vec![(value_key, Value::Int(v))].into(),
             ty: None,
         },
         None => Value::Entity {
