@@ -10,7 +10,7 @@
 -- `Float` does NOT provide Eq: it cannot discharge `eq(?a,?a) <=> true` at NaN.
 --
 -- NB the per-instance discharge/refutation of `eq_refl` at load time (so a
--- `provides Eq[Float]` self-rejects) is WI-650; use-site `requires Eq[K]`
+-- `provides Eq[Float]` self-rejects) is WI-658; use-site `requires Eq[K]`
 -- enforcement (so `Map[K = Float]` is a load error) is WI-649. Until those land
 -- `eq_refl` is a dormant obligation — it documents the contract but is not yet
 -- checked, and does not fire as a rewrite (the semantic `eq` is builtin-backed).
@@ -32,6 +32,6 @@ sort anthill.prelude.Eq
   requires PartialEq[T]
 
   -- Reflexivity — the law a partial carrier (IEEE Float) cannot satisfy. See the
-  -- file header: dormant until WI-650 discharges/refutes it per instance.
+  -- file header: dormant until WI-658 discharges/refutes it per instance.
   rule eq_refl: eq(?a, ?a) <=> true
 end
