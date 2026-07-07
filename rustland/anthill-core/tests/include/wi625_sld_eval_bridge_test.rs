@@ -724,32 +724,28 @@ fn typed_op_body_eq_over_set_evaluates_via_bridge() {
     assert_eq!(neq, Some(false), "distinct-member sets must be UNEQUAL through the typed op");
 }
 
-// ── OPEN: carrier-blind transitive `requires` coverage (unsound ACCEPT) ───────
+// ── WI-653: carrier-aware transitive `requires` coverage ──────────────────────
 //
 // `op_requires_covers` (typing.rs) licenses an abstract spec-op call in an op body
-// when the op's declared `requires` TRANSITIVELY reaches the call's spec — but it
-// compares only spec SYMBOLS, not the CARRIER. So a `requires Foo[A, B]` whose
-// `Foo requires Bar[B]` wrongly licenses a `Bar`-op called over the OTHER param
-// `A`: the threaded `Foo` dict bundles a `Bar[B]` sub-dict, never a `Bar[A]`, so
-// the body's `bar(x: A)` has no dictionary at runtime, yet this LOADS clean.
-//
-// #[ignore] — the sound fix (carrier-aligned transitive coverage) is blocked on a
-// representation gap, verified this session: op-level `requires` bindings are stored
-// SPEC-PARAM-RELATIVE (`requires PartialEq[T]` is stored `PartialEq[T = PartialEq.T]`,
-// NOT re-scoped to the op's element), so σ-class param-identity cannot bridge the
-// reached requirement's carrier to the call's carrier. A σ-precise check regresses
-// EVERY legit single-param coverage (`requires Eq[T]` covering `eq`); a
-// "reject-only-distinct-enclosing-params" guard both regresses and mis-composes
-// (the requires-chain re-scoping is symbol-interning-fragile). Sound coverage needs
-// op-requires bindings that preserve the carrier link (or an op-param σ context) —
-// the same carrier-alignment the prior session deferred. Tracked as prerequisite
-// WI-653 (op-requires carrier-link representation); WI-625 depends on it — un-ignore
-// this once WI-653 lands. See WI-625 / WI-653 feedback.
+// when the op's declared `requires` reaches the call's spec. WI-653 made it
+// CARRIER-aware: the licensing `requires` must supply the spec OVER THE CALL'S
+// CARRIER, not merely by spec symbol. The carrier link is present in the stored
+// op-`requires` (held positionally, `requires Eq[T]` ⟹ `Eq[pos: Ref(List.T)]`); the
+// coverage BFS threads it — seeding each top-level requirement's `{spec param ↦ op
+// carrier}` map and re-scoping each reached spec-param-relative `SortView` binding
+// through it (`Foo requires Bar[T = Foo.B]` composed with `{Foo.B ↦ Host.B}` ⟹
+// `Bar[Host.B]`), then σ-aligning the reached carrier with the call's. The prior
+// carrier-BLIND attempt failed because it σ-compared the UN-composed spec-relative
+// carrier (`Eq.T`); composing first is the fix.
+
+// NEGATIVE — a `Bar`-op over the WRONG param must NOT be licensed. `bad` calls
+// `bar(x)` over `A`, but its `requires Foo[A, B]` only supplies `Bar[B]` (via
+// `Foo requires Bar[T = B]`), so the requirement is genuinely missing over `A` and
+// the load MUST be rejected. (Was the `#[ignore]`'d unsound-ACCEPT repro pre-WI-653.)
 #[test]
-#[ignore = "blocked on WI-653 (op-requires carrier-link representation); un-ignore when it lands"]
-fn transitive_op_requires_over_wrong_param_is_unsoundly_licensed() {
+fn transitive_op_requires_over_wrong_param_is_rejected() {
     const SRC: &str = r#"
-        namespace test.wi625.blind
+        namespace test.wi653.blind
           import anthill.prelude.{Bool}
           sort Bar
             sort T = ?
@@ -767,12 +763,95 @@ fn transitive_op_requires_over_wrong_param_is_unsoundly_licensed() {
           end
         end
     "#;
-    // DESIRED (currently failing → ignored): `bad` calls `bar` over `A`, but its
-    // `requires Foo[A, B]` only supplies `Bar[B]`, so the requirement is genuinely
-    // missing and the load MUST be rejected. Today it loads (carrier-blind accept).
     assert!(
         common::try_load_kb_with(SRC).is_err(),
         "a `Bar`-op over param A must NOT be licensed by `requires Foo[A, B]` whose \
          `Foo requires Bar[B]` only supplies `Bar[B]` — carrier-aware coverage",
+    );
+}
+
+// POSITIVE — the SAME shape, but the `bar` call is over the RIGHT param `B`, which
+// `requires Foo[A, B]` (⟹ `Bar[B]`) genuinely supplies. Must LOAD (a carrier-aware
+// coverage that rejected this too would be uselessly strict).
+#[test]
+fn transitive_op_requires_over_right_param_loads() {
+    const SRC: &str = r#"
+        namespace test.wi653.rightparam
+          import anthill.prelude.{Bool}
+          sort Bar
+            sort T = ?
+            operation bar(x: T) -> Bool
+          end
+          sort Foo
+            sort A = ?
+            sort B = ?
+            requires Bar[T = B]
+          end
+          sort Host
+            sort A = ?
+            sort B = ?
+            operation good(x: A, y: B) -> Bool requires Foo[A = A, B = B] = Bar.bar(y)
+          end
+        end
+    "#;
+    assert!(
+        common::try_load_kb_with(SRC).is_ok(),
+        "a `Bar`-op over param B IS supplied by `requires Foo[A, B]` (`Foo requires \
+         Bar[B]`) — carrier-aware coverage must license it",
+    );
+}
+
+// POSITIVE (direct, single-param) — `requires Bar[T]` directly covers `bar(x: T)`
+// over the op's own carrier. Guards the non-transitive seed-map + direct match (the
+// `requires Eq[T]` covering `eq` shape whose carrier-blind σ-precise predecessor
+// regressed the whole stdlib).
+#[test]
+fn direct_op_requires_single_param_loads() {
+    const SRC: &str = r#"
+        namespace test.wi653.direct
+          import anthill.prelude.{Bool}
+          sort Bar
+            sort T = ?
+            operation bar(x: T) -> Bool
+          end
+          sort Wrap
+            sort T = ?
+            operation w(x: T) -> Bool requires Bar[T = T] = Bar.bar(x)
+          end
+        end
+    "#;
+    assert!(
+        common::try_load_kb_with(SRC).is_ok(),
+        "`requires Bar[T]` must directly cover a `bar` call over the op's own carrier T",
+    );
+}
+
+// POSITIVE (transitive, single-param) — the member/`Eq→PartialEq` shape with USER
+// specs: `Use requires Super[E]`, `Super requires Sub[Super.T]`, and `u` calls
+// `Sub.sop(x)` over `E`. The reached `Sub` carrier composes to `E` = the call's
+// carrier, so it must LOAD.
+#[test]
+fn transitive_op_requires_single_param_loads() {
+    const SRC: &str = r#"
+        namespace test.wi653.trans
+          import anthill.prelude.{Bool}
+          sort Sub
+            sort T = ?
+            operation sop(x: T) -> Bool
+          end
+          sort Super
+            sort T = ?
+            requires Sub[T = T]
+          end
+          sort Use
+            sort E = ?
+            operation u(x: E) -> Bool requires Super[T = E] = Sub.sop(x)
+          end
+        end
+    "#;
+    assert!(
+        common::try_load_kb_with(SRC).is_ok(),
+        "`requires Super[E]` transitively supplies `Sub[E]` (via `Super requires \
+         Sub[Super.T]`), covering a `sop` call over E",
     );
 }

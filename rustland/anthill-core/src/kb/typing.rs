@@ -6734,7 +6734,9 @@ fn check_apply_iter(
                     // — diamond coherence makes a sort `requires` thread at EVERY
                     // dispatch). A concrete `NoCandidates` is already a legitimate
                     // pass-through below, so this only changes the abstract case.
-                    if op_requires_covers(kb, env.op_requires(), spec_sort) {
+                    // WI-653: carrier-aware coverage — the licensing `requires` must
+                    // supply `spec_sort` OVER THE CALL'S CARRIER, not merely by symbol.
+                    if op_requires_covers_call(kb, env, &subst, spec_sort) {
                         // licensed by the enclosing op's own `requires` — no diagnostic.
                     } else if spec_warrants_abstract_check(kb, spec_sort) {
                         let spec_qn = kb.qualified_name_of(spec_sort).to_string();
@@ -6905,7 +6907,8 @@ fn check_apply_iter(
                     // `IndexedSeq.nth` on a `List[NonEq]`). Only failed
                     // (abstract) dispatch reaches here — a concrete call resolves
                     // `Unique` and keeps its impl effect-grounding (WI-365).
-                    if op_requires_covers(kb, env.op_requires(), spec_sort) {
+                    // WI-653: carrier-aware coverage (see the NoCandidates arm above).
+                    if op_requires_covers_call(kb, env, &subst, spec_sort) {
                         return Ok(TypeResult {
                             ty: resolved_ret.clone(),
                             env: env.clone(),
@@ -9776,42 +9779,235 @@ fn pick_most_specific(_kb: &KnowledgeBase, candidates: &[Candidate]) -> Option<u
 /// eval's `expand_dispatching_dict` cross-checks. A flat chain here
 /// would over-count the sub-resolutions (the duplicated-subtree problem)
 /// and break that arity check.
-/// WI-562: does the enclosing operation's OWN op-scoped `requires` chain (WI-448)
-/// cover `spec_sort`? Used only in the FAILED dispatch arms (`NoMatch` /
-/// abstract `NoCandidates`) to LICENSE an abstract spec-op call in the op's body
-/// that the op explicitly declared it `requires` — `List.member requires Eq[T]`
-/// covering its `eq(head, x)` — leaving the call as the spec op for
-/// value-directed eval (the op-scoped dual of the sort-level
-/// defer-to-requirement). Coarse: by spec sort, not bindings. That is sound here
-/// because only a FAILED abstract dispatch reaches these arms — a concrete call
-/// resolves `Unique` (keeping its impl effect-grounding, WI-365) and never gets
-/// here. Binding-precise coverage for a multi-abstract-param op is future work;
-/// the single-param driver (`member`'s sole element `T`) is exact.
-fn op_requires_covers(kb: &mut KnowledgeBase, op_requires: &[RequiresEntry], spec_sort: Symbol) -> bool {
-    let target = kb.canonical_sort_sym(spec_sort);
-    // WI-644 / proposal 004: TRANSITIVE coverage. `requires Eq[T]` must cover a
-    // `PartialEq.eq` call because `Eq requires PartialEq` — the partial ops moved onto
-    // the `PartialEq`/`PartialOrd` bases, so a comparison-only op that declares
-    // `requires Eq`/`requires Ordered` (`List.member`) reaches its `eq`/`gt` through the
-    // chain, exactly as the proposal intends. Walk each declared requirement's own
-    // requires-chain (BFS over the `SortRequiresInfo` edges). An op with NO covering
-    // requirement (`spec_sort` absent from every closure) still fails — the WI-325
-    // diagnostic is preserved.
-    let mut stack: Vec<Symbol> = op_requires.iter().map(|e| e.required_sort).collect();
-    let mut seen: HashSet<Symbol> = HashSet::new();
-    while let Some(s) = stack.pop() {
-        let cs = kb.canonical_sort_sym(s);
-        if cs == target {
-            return true;
+/// WI-653 — decode ONE op-level `requires` entry into `{canonical spec type-param ↦
+/// carrier}`, the carrier expressed in the OPERATION's own scope (a `Ref` to the
+/// enclosing sort / op type-param, e.g. `Ref(List.T)`). The carrier link IS present in
+/// the stored op-`requires` — it is just held in a shape the named-only decoders
+/// (`unwrap_spec_view`, `entry_type_param_bindings`, `spec_mentions_key`) silently drop:
+///   * POSITIONAL `Fn{spec, [c0, c1, …]}` — the common `requires Eq[T]` form; paired
+///     against the spec's declared type-params in SOURCE order (`type_params_of_sort`).
+///   * NAMED `Fn{spec, [(short, c)]}` — an explicit `Spec[C = T]`, the WI-201 bare-spec
+///     sugar, or a WI-320 auto-require; keyed by the short param name.
+/// Op-`requires` is always this bare `Fn{spec, …}` — never a `SortView` wrapper (that
+/// is the SORT-level requires shape; see `push_op_requires_clause`, which takes the
+/// spec application verbatim). Every key is routed through [`type_param_sym_of_binding`]
+/// / `try_resolve_symbol` so the map key is the CANONICAL spec-param symbol the
+/// reached-requirement `Ref`s use — the interning bridge without which
+/// `substitute_impl_params_alloc`'s `Symbol`-equality composition is a silent no-op (the
+/// wall the prior carrier-aware attempt hit). Non-type-param keys (`eq`, `neq`, …) are
+/// dropped.
+fn op_requires_entry_carrier_map(
+    kb: &KnowledgeBase,
+    entry: &RequiresEntry,
+) -> SmallVec<[(Symbol, TermId); 2]> {
+    let spec_qn = kb.qualified_name_of(entry.required_sort).to_string();
+    let mut out: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
+    let Term::Fn { pos_args, named_args, .. } = kb.get_term(entry.spec).clone() else {
+        return out; // a bare `Ref`/`Ident` spec carries no bindings
+    };
+    // Positional carriers pair with the spec's declared type-params (source order).
+    let params = kb.type_params_of_sort(entry.required_sort);
+    for (short, v) in params.iter().zip(pos_args.iter()) {
+        if let Some(param) = kb.try_resolve_symbol(&format!("{spec_qn}.{short}")) {
+            out.push((param, *v));
         }
-        if !seen.insert(cs) {
+    }
+    // Named carriers (sugar / explicit `Spec[C = T]`) — keyed by short param name,
+    // resolved to the canonical spec-param symbol.
+    for (k, v) in &named_args {
+        if let Some(param) = type_param_sym_of_binding(kb, *k, &spec_qn) {
+            out.push((param, *v));
+        }
+    }
+    out
+}
+
+/// WI-653 — compose `parent_map` ({parent spec's type-param ↦ carrier in op scope})
+/// through ONE reached sort-level requirement, yielding {reached spec's type-param ↦
+/// carrier in op scope}. The reached `SortView` binding is spec-param-relative
+/// (`Foo requires Bar[T = Foo.B]`); substituting the parent map re-scopes it to the
+/// op's carrier (`Bar[T = Host.B]`). This carrier-threading step is exactly what the
+/// carrier-blind BFS skipped.
+fn compose_reached_carrier_map(
+    kb: &mut KnowledgeBase,
+    parent_map: &[(Symbol, TermId)],
+    reached: &RequiresEntry,
+) -> SmallVec<[(Symbol, TermId); 2]> {
+    let mut out: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
+    // A reached SORT-level requirement's `spec` is always a decodable spec application
+    // (a `SortView`, or a bare `Fn`/`Ref` → empty bindings). A shape `unwrap_spec_view`
+    // cannot decode is an unexpected `SortRequiresInfo` form — surface it loudly rather
+    // than silently returning an empty (carrier-less) map that would false-reject a
+    // legitimate coverage.
+    let Some((base, bindings)) = unwrap_spec_view(kb, reached.spec) else {
+        debug_assert!(
+            false,
+            "WI-653: reached requirement spec {} did not decode as a spec view",
+            crate::persistence::print::TermPrinter::new(kb).print_term(reached.spec),
+        );
+        return out;
+    };
+    let base_qn = kb.qualified_name_of(base).to_string();
+    for (k, v) in &bindings {
+        let Some(reached_param) = type_param_sym_of_binding(kb, *k, &base_qn) else { continue };
+        let composed = substitute_impl_params_alloc(kb, *v, parent_map);
+        out.push((reached_param, composed));
+    }
+    out
+}
+
+/// WI-653 — the deferred spec-op call's carrier per `spec_sort` type-param, resolved
+/// through the per-call `subst`: `{canonical spec type-param ↦ carrier}`. A param the
+/// call left unbound (`None` — an equivalence-class root) is omitted — a wildcard for
+/// coverage. An EMPTY result means the call pinned no carrier (the fully-open case),
+/// which [`op_requires_covers`] treats as the pre-WI-653 carrier-blind license.
+///
+/// INVARIANT this fix rests on: `empty call_carriers ⟺ the call pinned no real carrier`.
+/// It holds because only a FAILED abstract dispatch reaches the arms that call this —
+/// there the spec op's params are FRESH vars unified AGAINST the arg types, so a real
+/// carrier resolves to a `Value::Term` (the arg's `List.T` / `Host.A`) while a genuinely
+/// unpinned param resolves to `None`. This is deliberately less eager than the
+/// abstract-param DIAGNOSTIC loop in `check_apply` (which treats a `None`-resolved param
+/// as still-abstract for a WI-325 flag): omitting it is sound here because the `blind`
+/// fallback defers to value-directed eval, not a wrong-carrier license. A future denoted
+/// / value-in-type param representation (WI-302 / WI-348 Phase C) is where this invariant
+/// would need re-checking — hence the loud `debug_assert` on the non-`Term` carrier below
+/// (mirroring `entry_type_param_bindings`).
+fn call_carriers_from_subst(
+    kb: &KnowledgeBase,
+    subst: &Substitution,
+    spec_sort: Symbol,
+) -> SmallVec<[(Symbol, TermId); 2]> {
+    let spec_qn = kb.qualified_name_of(spec_sort).to_string();
+    let mut out: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
+    for short in kb.type_params_of_sort(spec_sort) {
+        let Some(param) = kb.try_resolve_symbol(&format!("{spec_qn}.{short}")) else { continue };
+        let Some(alias_target) = resolve_sort_alias(kb, param) else { continue };
+        let Term::Var(Var::Global(vid)) = kb.get_term(alias_target) else { continue };
+        match subst.resolve_as_value(*vid) {
+            // Unbound spec param — the call did not pin this carrier; a wildcard.
+            None => {}
+            Some(Value::Term { id, .. }) => out.push((param, *id)),
+            // A denoted `Value::Node` carrier: carrier-agnostic alignment is WI-348
+            // Phase C. Omitting it lets coverage fall to the `blind` license (deferred
+            // to value-directed eval, the module's FAILED-dispatch stance); flag loudly
+            // in debug so the gap surfaces, mirroring `entry_type_param_bindings`.
+            Some(other) => debug_assert!(
+                false,
+                "WI-348/WI-653: denoted {} call carrier — carrier-agnostic alignment is Phase C",
+                other.type_name(),
+            ),
+        }
+    }
+    out
+}
+
+/// WI-653 — does the reached target-spec carrier map σ-align with the deferred call's
+/// carriers? Every target type-param the call PINNED that the reached map also bound
+/// must share a σ-class ([`sigma_pair_precise`] — type-param↔type-param by σ, concrete↔
+/// concrete structurally); at least one such param must overlap (an empty overlap does
+/// not confirm coverage). A `requires Foo[A, B]` reaching `Bar[T = Foo.B]` binds
+/// `Bar.T ↦ …B`, so a `Bar`-op called over `A` (`Bar.T ↦ …A`) fails the σ-check and is
+/// correctly NOT licensed.
+fn reached_carrier_matches_call(
+    kb: &mut KnowledgeBase,
+    ctx: &SigmaCtx,
+    reached_map: &[(Symbol, TermId)],
+    call_carriers: &[(Symbol, TermId)],
+) -> bool {
+    let mut aligned = false;
+    for (cp, cc) in call_carriers {
+        let Some(rc) = reached_map.iter().find(|(rp, _)| *rp == *cp).map(|(_, v)| *v) else {
+            continue;
+        };
+        if !sigma_pair_precise(kb, ctx, rc, *cc) {
+            return false;
+        }
+        aligned = true;
+    }
+    aligned
+}
+
+/// WI-562/WI-653: does the enclosing operation's OWN op-scoped `requires` chain
+/// (WI-448) cover `spec_sort` OVER THE CALL'S CARRIER? Used only in the FAILED dispatch
+/// arms (`NoMatch` / abstract `NoCandidates`) to LICENSE an abstract spec-op call in
+/// the op's body that the op explicitly declared it `requires` — `List.member requires
+/// Eq[T]` covering its `eq(head, x)` — leaving the call as the spec op for
+/// value-directed eval (the op-scoped dual of the sort-level defer-to-requirement).
+/// Only a FAILED abstract dispatch reaches these arms — a concrete call resolves
+/// `Unique` (keeping its impl effect-grounding, WI-365) and never gets here.
+///
+/// WI-644 / proposal 004: TRANSITIVE coverage. `requires Eq[T]` covers a `PartialEq.eq`
+/// call because `Eq requires PartialEq` — the partial ops moved onto the `PartialEq`/
+/// `PartialOrd` bases, so a comparison-only op that declares `requires Eq`/`requires
+/// Ordered` (`List.member`) reaches its `eq`/`gt` through the chain.
+///
+/// WI-653: CARRIER-AWARE. The prior version compared only spec SYMBOLS, so a `requires
+/// Foo[A, B]` whose `Foo requires Bar[B]` wrongly licensed a `Bar`-op over the SIBLING
+/// `A` (the threaded `Foo` dict bundles a `Bar[B]` sub-dict, never `Bar[A]`). The
+/// carrier link is present in the stored op-`requires` but held positionally; this BFS
+/// threads it — [`op_requires_entry_carrier_map`] seeds each top-level requirement's
+/// `{spec param ↦ op carrier}` map and [`compose_reached_carrier_map`] re-scopes each
+/// reached spec-param-relative `SortView` binding through it, so at `target` the reached
+/// carrier is expressed in the op's scope and [`reached_carrier_matches_call`] σ-aligns
+/// it with the call's carrier. `call_carriers` empty (a fully-open call that pinned no
+/// carrier) falls back to carrier-blind symbol reachability — the pre-WI-653 license,
+/// which value-directed eval resolves.
+fn op_requires_covers(
+    kb: &mut KnowledgeBase,
+    ctx: &SigmaCtx,
+    op_requires: &[RequiresEntry],
+    spec_sort: Symbol,
+    call_carriers: &[(Symbol, TermId)],
+) -> bool {
+    let target = kb.canonical_sort_sym(spec_sort);
+    let blind = call_carriers.is_empty();
+    // BFS over the requires graph. State: (current spec, {current spec's canonical
+    // type-param ↦ carrier in the op's own scope}). Dedup on the FULL state, not the
+    // spec alone: a carrier-divergent diamond (a shared intermediate spec re-reached
+    // under a different carrier) must be re-explored, else a legit coverage reachable
+    // only via the second carrier would be missed (a false reject). Full-state dedup
+    // stays terminating — well-formed `requires` graphs are acyclic and carriers only
+    // re-scope toward the op's own (finite) params, so the distinct states are finite.
+    type State = (Symbol, SmallVec<[(Symbol, TermId); 2]>);
+    let mut stack: Vec<State> = op_requires
+        .iter()
+        .map(|e| (kb.canonical_sort_sym(e.required_sort), op_requires_entry_carrier_map(kb, e)))
+        .collect();
+    let mut visited: Vec<State> = Vec::new();
+    while let Some(state) = stack.pop() {
+        if visited.contains(&state) {
             continue;
         }
-        for entry in direct_requires_chain(kb, cs) {
-            stack.push(entry.required_sort);
+        visited.push(state.clone());
+        let (cs, map) = &state;
+        if *cs == target && (blind || reached_carrier_matches_call(kb, ctx, map, call_carriers)) {
+            return true;
+        }
+        for reached in direct_requires_chain(kb, *cs) {
+            let composed = compose_reached_carrier_map(kb, map, &reached);
+            stack.push((kb.canonical_sort_sym(reached.required_sort), composed));
         }
     }
     false
+}
+
+/// WI-653 — [`op_requires_covers`] at a body-call site: assemble the σ context and the
+/// deferred call's carriers from the per-call `subst`, then run carrier-aware coverage.
+/// Factors the identical wiring the `NoMatch` / `NoCandidates` arms of `check_apply_iter`
+/// share.
+fn op_requires_covers_call(
+    kb: &mut KnowledgeBase,
+    env: &TypingEnv,
+    subst: &Substitution,
+    spec_sort: Symbol,
+) -> bool {
+    let ctx = SigmaCtx {
+        subst,
+        sort_param_rigids: env.enclosing_sort_param_rigids(),
+    };
+    let call_carriers = call_carriers_from_subst(kb, subst, spec_sort);
+    op_requires_covers(kb, &ctx, env.op_requires(), spec_sort, &call_carriers)
 }
 
 fn candidate_sub_goals_owned(
@@ -24873,10 +25069,19 @@ fn check_one_spec_op_requirement(
     // carrier-blind transitive suppression would hide a genuine missing instance when
     // the op is applied to a different carrier than the declared requirement ranges
     // over (`requires(Ordered[A])` does not cover a `PartialEq` op applied to some
-    // unrelated `B`). Sound transitive coverage needs the carrier-alignment the witness
-    // scans do (`requirement_ranges_over_owner_tparams`) — deferred. Direction A's own
-    // witnesses (`eq`/`gt`) are builtins, returned above at the `is_builtin` gate, so
-    // they never reach here regardless.
+    // unrelated `B`). This exact-match is SOUND (it never wrongly suppresses) but
+    // INCOMPLETE (it over-diagnoses a transitively-covered non-builtin op). Direction
+    // A's own witnesses (`eq`/`gt`) are builtins, returned above at the `is_builtin`
+    // gate, so they never reach here regardless — hence no current driver.
+    //
+    // WI-653 DELIVERED the reusable carrier-alignment mechanism this needs
+    // ([`op_requires_covers`] / [`compose_reached_carrier_map`] /
+    // [`reached_carrier_matches_call`] — thread the declared requirement's carrier
+    // through the requires chain and σ-align it with the call's). Wiring it here (a
+    // carrier-aware transitive suppression: collect `declared` WITH carriers in
+    // `collect_find_dictionary_bases`, read the call carrier as this fn already does
+    // below) is a clean follow-up gated on an actual driver — deferred to keep the
+    // exact-match's soundness until one exists.
     if declared.contains(&kb.canonical_sort_sym(spec_sort)) {
         return;
     }
