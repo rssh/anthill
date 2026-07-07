@@ -22975,6 +22975,14 @@ fn typed_d(kb: &mut KnowledgeBase, subst: &Substitution, value: &Value, depth: u
 /// signature is unavailable, a carrier argument is missing, its type is
 /// unresolved (a free type var — satisfaction undecidable), or it does not
 /// provide the spec.
+///
+/// MUST STAY SIDE-EFFECT-FREE and rid-independent (a pure function of `kb` +
+/// `redex`). WI-655 relies on this: `simp_rewrite::try_fire` now ELIDES this
+/// guard entirely for a node whose functor matches no `[simp]` rule (it can't
+/// fire), and memoizes one passing verdict across the sibling rules under a
+/// matched functor. A diagnostic push / telemetry / cache-mutation added here
+/// would make firing observably depend on whether a functor happened to match —
+/// a silent divergence, since both paths still return the same `bool`.
 pub fn simp_fire_guard_holds(kb: &KnowledgeBase, redex: &NodeOccurrence) -> bool {
     let (functor, pos_args) = match redex.as_expr() {
         Some(Expr::Apply { functor, pos_args, .. }) => (*functor, pos_args),

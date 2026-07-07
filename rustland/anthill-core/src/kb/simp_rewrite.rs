@@ -469,13 +469,14 @@ pub(super) fn try_fire(
         Expr::Constructor { name, .. } => *name,
         _ => return None,
     };
-    // Type-directed guard: a spec/sort rule's law holds only for carriers
-    // that satisfy its sort. Keyed on the redex functor (shared by every
-    // candidate rule under it), so it's checked once, before the match
-    // loop. Guard-free for concrete functors.
-    if !super::typing::simp_fire_guard_holds(kb, occ) {
-        return None;
-    }
+    // WI-655: the type-directed guard (`simp_fire_guard_holds`) is deferred to the
+    // FIRST rid whose LHS functor matches this node (checked once, below, before any
+    // `match_view`). A node whose functor matches no `[simp]` rule can never fire — the
+    // `stored_lhs_functor` filter rejects every candidate — so it now skips the guard
+    // entirely: the guard was ~78% of per-node simp cost (and fires 0 rewrites over the
+    // whole stdlib), pure waste on a non-matching node. Sound: the guard verdict is
+    // irrelevant when nothing matches the functor, and it is side-effect-free.
+    let mut guard_ok = false;
     // WI-646: `rids` are the eq+unify candidates gathered ONCE by the caller
     // (`KnowledgeBase::simp_equation_rids` — `eq` for a legacy `=` equation,
     // `unify` for the `<=>` head, proposal 049; WI-139 keeps only
@@ -498,6 +499,17 @@ pub(super) fn try_fire(
         // Cheap pre-filter on the stored (DeBruijn) head, before opening.
         if stored_lhs_functor(kb, rid) != Some(node_functor) {
             continue;
+        }
+        // WI-655: FIRST functor match — evaluate the type-directed guard once here.
+        // A spec/sort rule's law holds only for carriers satisfying its sort; the
+        // guard is keyed on the node functor, so it is shared by every candidate rule
+        // under it (guard-free `true` for a concrete functor). `guard_ok` memoizes it
+        // across sibling rids under the same functor.
+        if !guard_ok {
+            if !super::typing::simp_fire_guard_holds(kb, occ) {
+                return None;
+            }
+            guard_ok = true;
         }
         // The typer skips typed-bound rules above, so it ignores the opened
         // `fresh` globals (they key only the resolver's typed-pattern bounds).
