@@ -3079,6 +3079,16 @@ fn load_phase_inner(
     files: &[&ParsedFile],
     resolver: &dyn SourceResolver,
 ) -> Result<(LoadResult, Vec<LoadResult>), Vec<LoadError>> {
+    // WI-659 — reset the SortAlias index at the START of every load phase. It is
+    // rebuilt at this phase's type-check (`build_sort_alias_index`); clearing it
+    // first means load-time `resolve_sort_alias` calls in this phase fall back to
+    // the scan — seeing THIS phase's freshly-asserted aliases — instead of reading a
+    // stale index left by a prior phase. Load-bearing for `load_incremental`:
+    // `resolve_sort_alias`'s fast path has no fallback-on-miss, so a phase-2 alias
+    // absent from the phase-1 index would otherwise silently resolve to `None`/the
+    // wrong var. A no-op on the first (or only) load — the field starts `None`.
+    kb.sort_alias_index = None;
+
     // WI-233: per-sub-phase timing, gated by ANTHILL_LOAD_TIMING=1.
     // Surfaces which step of the load pipeline dominates wall time
     // (scan / load / resolve / witnesses / typecheck / req_insertion).

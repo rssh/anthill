@@ -420,6 +420,13 @@ pub struct KnowledgeBase {
     /// signature; they just read/write `record.body`.
     pub(crate) op_records: HashMap<Symbol, op_info::OperationRecord>,
 
+    /// WI-659 — the SortAlias resolution index (source sort → alias target), built
+    /// once at type-check start by `typing::build_sort_alias_index`. `None` until
+    /// built; while `None`, `resolve_sort_alias` falls back to its (slower) scan.
+    /// Made `resolve_sort_alias` — the #1 `type_check_sorts` hotspot after WI-656 —
+    /// an O(1) lookup instead of a double linear scan of every SortAlias fact.
+    pub(crate) sort_alias_index: Option<crate::kb::typing::SortAliasIndex>,
+
     /// Proposal 039 / WI-084 — a term-level constant's DECLARED TYPE, keyed by
     /// its `SymbolKind::Const` symbol, as a carrier-agnostic `Value`. Read by
     /// the typer to type a bare const reference (fold-free: only the declared
@@ -614,6 +621,7 @@ impl KnowledgeBase {
             term_spans: HashMap::new(),
             functor_spans: HashMap::new(),
             op_records: HashMap::new(),
+            sort_alias_index: None,
             const_types: HashMap::new(),
             const_bodies: HashMap::new(),
             has_dot_applies: false,

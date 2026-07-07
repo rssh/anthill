@@ -17405,6 +17405,22 @@ pub(crate) fn is_sort_param_symbol(kb: &KnowledgeBase, sym: Symbol) -> bool {
 /// alias appeared first in rules_by_functor order, causing proposal-038 / WI-210
 /// dispatch to resolve the wrong logical Var.
 pub(crate) fn resolve_sort_alias(kb: &KnowledgeBase, sym: Symbol) -> Option<TermId> {
+    // WI-659 fast path: the SortAlias index (built once at type-check start by
+    // `build_sort_alias_index`) answers both scan passes in O(1) — by source Symbol
+    // first (the exact-identity precedence the doc above requires), then by source
+    // name. A built index is COMPLETE, so a miss is a genuine "not a SortAlias" and
+    // returns `None` with NO fallback re-scan: unlike a rare `op_info` miss,
+    // `resolve_sort_alias` is called on MANY non-alias syms, so a fallback-on-miss
+    // would re-introduce the very scan this removes.
+    if let Some(index) = &kb.sort_alias_index {
+        return index
+            .by_sym
+            .get(&sym)
+            .copied()
+            .or_else(|| index.by_name.get(kb.resolve_sym(sym)).copied());
+    }
+    // Fallback: the two-pass scan, for calls BEFORE the index is built (load-time
+    // value-typing / alias resolution). Behaviour-identical to pre-WI-659.
     let alias_sym = kb.try_resolve_symbol("SortAlias")?;
     let sort_name = kb.resolve_sym(sym);
     let find = |matches: fn(&KnowledgeBase, Symbol, Symbol, &str) -> bool| {
@@ -17428,6 +17444,58 @@ pub(crate) fn resolve_sort_alias(kb: &KnowledgeBase, sym: Symbol) -> Option<Term
     };
     find(|_, f, s, _| f == s)
         .or_else(|| find(|kb, f, _, n| kb.resolve_sym(f) == n))
+}
+
+/// WI-659 — the SortAlias resolution index built once by [`build_sort_alias_index`]
+/// so [`resolve_sort_alias`] is O(1) instead of a DOUBLE linear scan (by symbol,
+/// then by name) of every SortAlias fact per call — the #1 `type_check_sorts`
+/// hotspot after WI-656. Mirrors the scan's two passes and their precedence.
+#[derive(Debug, Default)]
+pub(crate) struct SortAliasIndex {
+    /// Pass 1 — source functor Symbol → alias target. Exact-identity match, which
+    /// WINS: parameter short names (`T`) recur across sorts, so exact-match-first is
+    /// load-bearing (the precedence note on [`resolve_sort_alias`]).
+    by_sym: HashMap<Symbol, TermId>,
+    /// Pass 2 — source functor NAME → alias target. The short-name fallback for a
+    /// caller that passes a short-name symbol against a qualified pos-arg; consulted
+    /// only when `by_sym` misses, mirroring the scan's `.or_else`.
+    by_name: HashMap<String, TermId>,
+}
+
+/// WI-659 — build the SortAlias index in ONE pass. Mirrors [`resolve_sort_alias`]'s
+/// scan EXACTLY: each source is filed under BOTH its Symbol (pass 1) and its name
+/// (pass 2), insert-if-absent so the FIRST fact per key wins (matching the scan's
+/// first-match in `rules_by_functor` order). Value-fact SortAliases (no ground term
+/// head) are skipped, as the scan skips them. Run at type-check start, when every
+/// SortAlias fact is asserted; SortAlias is load-stable (the typer rewrites bodies,
+/// never aliases), so the built index never goes stale within a load.
+pub(crate) fn build_sort_alias_index(kb: &mut KnowledgeBase) {
+    let Some(alias_sym) = kb.try_resolve_symbol("SortAlias") else {
+        return;
+    };
+    let mut by_sym: HashMap<Symbol, TermId> = HashMap::new();
+    let mut by_name: HashMap<String, TermId> = HashMap::new();
+    for rid in kb.rules_by_functor(alias_sym) {
+        if !kb.is_fact(rid) {
+            continue;
+        }
+        let Some(head) = kb.fact_head_term(rid) else {
+            continue;
+        };
+        let (src, target) = match kb.get_term(head) {
+            Term::Fn { pos_args, .. } if pos_args.len() >= 2 => (pos_args[0], pos_args[1]),
+            _ => continue,
+        };
+        let functor = match kb.get_term(src) {
+            Term::Fn { functor, .. } => *functor,
+            _ => continue,
+        };
+        by_sym.entry(functor).or_insert(target);
+        by_name
+            .entry(kb.resolve_sym(functor).to_string())
+            .or_insert(target);
+    }
+    kb.sort_alias_index = Some(SortAliasIndex { by_sym, by_name });
 }
 
 /// WI-374 (§8.1, site-scoped): expand a FOREIGN bare/partial parametric sort
@@ -23303,6 +23371,10 @@ pub fn type_check_sorts_typed(kb: &mut KnowledgeBase, sort_terms: &[TermId]) -> 
     // call, and without this index each call linearly scans every `OperationInfo`
     // fact (quadratic overall). Every `OperationInfo` fact is asserted by now.
     super::op_info::build_op_signatures(kb);
+    // WI-659 — likewise index the SortAlias facts once: `resolve_sort_alias` is
+    // called on many sort-references per node and was the #1 hotspot post-WI-656
+    // (a double linear scan of every SortAlias fact per call).
+    build_sort_alias_index(kb);
     // Ops reached via a sort's `SortInfo` — so the gated free-op sweep
     // doesn't re-check them (collected only when the sweep is enabled).
     let mut sort_owned_ops: std::collections::HashSet<Symbol> = std::collections::HashSet::new();
