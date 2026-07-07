@@ -24762,6 +24762,81 @@ fn check_one_spec_op_requirement(
     });
 }
 
+/// A TRANSITIVE witness — a body call to an op that itself declares `requires
+/// spec_canon[…]` — grounds a rule's `requires(spec_canon[T])` SOUNDLY only when
+/// the fire-time guard's carrier selection lands on the argument the witness op's
+/// OWN requirement ranges over. The guard ([`simp_guard_holds_core`]) picks
+/// carriers by matching `spec_canon`'s type-param NAME against each parameter's
+/// type name ([`param_is_spec_carrier`]), so this holds iff the op's `requires
+/// spec_canon[P]` binds the spec over a type-param `P` whose name IS one of
+/// `spec_canon`'s type-param names. Reject otherwise (→ the loud "no witness"
+/// error) rather than discharge the requirement against the WRONG argument:
+/// `foo[T, U](a: T, b: U) requires Eq[U]` must NOT ground a rule's
+/// `requires(Eq[T])` via the name-coincident `a: T`.
+///
+/// Restricted to a DIRECT op-requires (`entry.required_sort == spec_canon`); a
+/// witness that reaches the spec only through its OWN requires-chain is
+/// conservatively declined here (binding composition across the chain is not yet
+/// tracked — a sound extension, not a correctness gap).
+fn transitive_witness_grounds_soundly(
+    kb: &KnowledgeBase,
+    functor: Symbol,
+    spec_canon: Symbol,
+) -> bool {
+    let spec_qn = kb.qualified_name_of(spec_canon).to_string();
+    let spec_tparams = kb.type_params_of_sort(spec_canon);
+    // The head symbol of a type-argument term (`Ref(T)` / `Ident(T)` / `T[…]`).
+    let arg_head_name = |kb: &KnowledgeBase, tid: TermId| -> Option<String> {
+        match kb.get_term(tid) {
+            Term::Ref(s) | Term::Ident(s) => Some(kb.resolve_sym(*s).to_string()),
+            Term::Fn { functor, .. } => Some(kb.resolve_sym(*functor).to_string()),
+            _ => None,
+        }
+    };
+    for entry in op_requires_entries(kb, functor) {
+        if kb.canonical_sort_sym(entry.required_sort) != spec_canon {
+            continue;
+        }
+        // The requirement's type-arguments — the spec is stored as `Eq[T]` either
+        // positionally (`Fn{functor: Eq, pos_args: [Ref(T)]}`) or, when a `SortView`
+        // wrapper carries named bindings, as `Eq[T = Ref(T)]`. Collect every
+        // type-parameter argument's bound value in both shapes.
+        let mut bound_type_args: Vec<TermId> = Vec::new();
+        if let Term::Fn { functor: f, pos_args, named_args } = kb.get_term(entry.spec) {
+            // SortView(base, T = …) → the type-param named bindings.
+            if let Some((_base, bindings)) = unwrap_spec_view(kb, entry.spec) {
+                for (key, val) in &bindings {
+                    if is_type_param_binding(kb, *key, &spec_qn) {
+                        bound_type_args.push(*val);
+                    }
+                }
+            }
+            // Bare `Fn{functor: Eq, pos_args:[…], named_args:[…]}` — positional args
+            // bind the spec's type-params in order; named args by param name.
+            if bound_type_args.is_empty() && kb.canonical_sort_sym(*f) == spec_canon {
+                bound_type_args.extend(pos_args.iter().copied());
+                for (key, val) in named_args.iter() {
+                    if is_type_param_binding(kb, *key, &spec_qn) {
+                        bound_type_args.push(*val);
+                    }
+                }
+            }
+        }
+        // Sound only when EVERY bound type-arg is a type-param whose name is one of
+        // `spec_canon`'s own — that is exactly what the fire-time guard matches on, so
+        // the argument it reads is the one this requirement ranges over. An empty
+        // arg list (bare `Eq`) carries no carrier the guard can key on → decline.
+        if !bound_type_args.is_empty()
+            && bound_type_args.iter().all(|&tid| {
+                arg_head_name(kb, tid).is_some_and(|n| spec_tparams.iter().any(|tp| tp.as_str() == n))
+            })
+        {
+            return true;
+        }
+    }
+    false
+}
+
 /// Rewrite one `find_dictionary(X)` goal (see [`record_find_dictionary_grounding`]).
 fn rewrite_find_dictionary_goal(
     kb: &KnowledgeBase,
@@ -24795,8 +24870,37 @@ fn rewrite_find_dictionary_goal(
     };
     let spec_canon = kb.canonical_sort_sym(spec_base);
 
-    // Find a WITNESS: a body call to one of spec X's operations. Its carrier
-    // arguments (in the op's parameter order) decide the instance at fire time.
+    // Emit the rewritten guard `find_dictionary(spec_base, witness_op, arg…)` for a
+    // chosen witness `functor` (`None` if the call is partial — some parameter
+    // unprovided — so its arguments can't be positionalized the way the fire-time
+    // carrier decision [`simp_guard_holds_core`] indexes them). Shared by both the
+    // direct and the transitive witness scans below.
+    let make_witness = |kb: &KnowledgeBase,
+                        functor: Symbol,
+                        pos_args: &[Rc<NodeOccurrence>],
+                        named_args: &[(Symbol, Rc<NodeOccurrence>)]|
+     -> Option<Rc<NodeOccurrence>> {
+        let rec = super::op_info::lookup_operation_info(kb, functor)?;
+        let args_in_order = align_call_args_to_params(kb, &rec.params, pos_args, named_args)?;
+        let mut new_pos: Vec<Rc<NodeOccurrence>> = Vec::with_capacity(2 + args_in_order.len());
+        new_pos.push(NodeOccurrence::new_expr(Expr::Ref(spec_base), span, owner));
+        new_pos.push(NodeOccurrence::new_expr(Expr::Ref(functor), span, owner));
+        new_pos.extend(args_in_order);
+        Some(NodeOccurrence::new_expr(
+            Expr::Apply {
+                functor: fd_sym,
+                pos_args: new_pos,
+                named_args: Vec::new(),
+                type_args: Vec::new(),
+            },
+            span,
+            owner,
+        ))
+    };
+
+    // Find a DIRECT WITNESS: a body call to one of spec X's OWN operations. Its
+    // carrier arguments (in the op's parameter order) decide the instance at fire
+    // time.
     for cand in body_nodes {
         let Some(Expr::Apply { functor, pos_args, named_args, .. }) = cand.as_expr() else {
             continue;
@@ -24808,42 +24912,69 @@ fn rewrite_find_dictionary_goal(
         // spec in a parameter — a nullary / all-content op (`Monoid.unit()`) never
         // grounds the instance from its arguments, so it is not a usable witness
         // (choosing it would make the guard permanently `DontFire`).
-        let parent = match lookup_spec_op_dispatch(kb, *functor) {
-            Some(parent) if kb.canonical_sort_sym(parent) == spec_canon => parent,
+        match lookup_spec_op_dispatch(kb, *functor) {
+            Some(parent) if kb.canonical_sort_sym(parent) == spec_canon => {}
             _ => continue,
-        };
-        if !op_has_spec_carrier_param(kb, *functor, parent) {
+        }
+        if !op_has_spec_carrier_param(kb, *functor, spec_canon) {
             continue;
         }
-        // Align the call's arguments to the op's parameter order — the carrier
-        // decision (`simp_guard_holds_core`) indexes arguments by parameter
-        // position, so a partial call (some parameter unprovided) is unusable.
-        let Some(rec) = super::op_info::lookup_operation_info(kb, *functor) else {
+        if let Some(new_goal) = make_witness(kb, *functor, pos_args, named_args) {
+            return Ok(new_goal);
+        }
+    }
+
+    // Find a TRANSITIVE WITNESS (WI-625 gap 3 / WI-300 Tier B): no direct spec-op of
+    // X appears in the body, but a body call to an operation that itself DECLARES
+    // `requires X` grounds our requirement through the SAME carrier argument. This is
+    // "rules use operations' `requires`": e.g. a rule's `requires(Eq[T])` is witnessed
+    // by a call to `List.member` (`member(x: T, l: List) requires Eq[T]`) — member's
+    // own element `Eq` obligation, discharged at the concrete element type of the
+    // `member(?x, ?xs)` call, IS the rule's.
+    //
+    // Scanned only AFTER the direct scan finds nothing, so a body with a genuine
+    // direct spec-op witness is unaffected. Two gates keep it sound:
+    //   * `transitive_witness_grounds_soundly` — the op's `requires X[P]` must bind X
+    //     over a type-param whose name matches X's own, so the fire-time guard reads
+    //     the argument the op's requirement actually ranges over (not a name-coincident
+    //     sibling parameter);
+    //   * `op_has_spec_carrier_param` — the op must expose a carrier parameter the
+    //     guard recognizes for X, else the emitted guard would be permanently
+    //     `DontFire` (a silently-dead rule).
+    // A witness failing either is skipped, and we fall through to the loud "no
+    // witness" error — honest that the requirement is ungroundable rather than
+    // fabricating a dead or unsound guard.
+    //
+    // Walk the WHOLE body (not only the top-level conjuncts): the witness call is
+    // typically NESTED, e.g. `member(?x, ?xs)` inside the conjunct
+    // `eq(member(?x, ?xs), true)`. Children are pushed before the node is examined,
+    // so a nested `member` is reached even when its enclosing `eq` is not itself a
+    // witness.
+    let mut stack: Vec<Rc<NodeOccurrence>> = body_nodes.iter().cloned().collect();
+    while let Some(cand) = stack.pop() {
+        let Some(expr) = cand.as_expr() else { continue };
+        for_each_child(expr, |c| stack.push(Rc::clone(c)));
+        let Expr::Apply { functor, pos_args, named_args, .. } = expr else {
             continue;
         };
-        let Some(args_in_order) = align_call_args_to_params(kb, &rec.params, pos_args, named_args)
-        else {
+        if *functor == fd_sym {
             continue;
-        };
-        let mut new_pos: Vec<Rc<NodeOccurrence>> = Vec::with_capacity(2 + args_in_order.len());
-        new_pos.push(NodeOccurrence::new_expr(Expr::Ref(spec_base), span, owner));
-        new_pos.push(NodeOccurrence::new_expr(Expr::Ref(*functor), span, owner));
-        new_pos.extend(args_in_order);
-        return Ok(NodeOccurrence::new_expr(
-            Expr::Apply {
-                functor: fd_sym,
-                pos_args: new_pos,
-                named_args: Vec::new(),
-                type_args: Vec::new(),
-            },
-            span,
-            owner,
-        ));
+        }
+        if !transitive_witness_grounds_soundly(kb, *functor, spec_canon) {
+            continue;
+        }
+        if !op_has_spec_carrier_param(kb, *functor, spec_canon) {
+            continue;
+        }
+        if let Some(new_goal) = make_witness(kb, *functor, pos_args, named_args) {
+            return Ok(new_goal);
+        }
     }
 
     Err(err(
         format!(
-            "a body call to one of `{}`'s operations to ground the requirement",
+            "a body call to one of `{}`'s operations (or to an operation that \
+             `requires` it) to ground the requirement",
             kb.resolve_sym(spec_base)
         ),
         "no such call in the rule body".into(),

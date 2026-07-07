@@ -24,9 +24,11 @@ use crate::common;
 use smallvec::SmallVec;
 
 // A host-bodied op with ZERO spec dispatch in its body: a pure `match` over an
-// enum returning Int literals. (A `requires`-carrying op like `List.member`
-// needs its element `Eq` dictionary threaded — WI-300 Tier B / gap 3 — which
-// the bridge's placeholder requirements don't supply, so it would residualize.)
+// enum returning Int literals. (A `requires`-carrying op whose body dispatches to
+// a NON-builtin required spec op would residualize — the bridge's placeholder
+// requirements don't supply that dictionary, WI-300 Tier B / gap 3. `List.member`
+// is NOT such a case: its `eq(head, x)` is builtin-backed at eval, so it runs
+// through the bridge fine — see `transitive_requires_contains_decides_via_member`.)
 const MATCH_SRC: &str = r#"
     namespace gap1.matchop
       import anthill.prelude.{Int64}
@@ -218,6 +220,111 @@ fn bridge_interp() -> Interpreter {
     i
 }
 
+// ── WI-300 Tier B — transitive-requires rule (the integration goal) ──────────
+//
+// A rule whose `requires(Eq[T])` is grounded NOT by a direct Eq-op call but by a
+// body call to `List.member` (which itself declares `requires Eq[T]`). The typer
+// accepts `member` as a TRANSITIVE witness and rewrites the guard to check the
+// element type at the concrete `member(?x, ?xs)` call; at resolution the operand
+// runs through the gap-1 bridge (`member`'s abstract `eq(head, x)` is builtin-
+// backed at eval, so its own `Eq` obligation needs no threaded dict here).
+const CONTAINS_SRC: &str = r#"
+    namespace gap3.membertest
+      import anthill.prelude.{Int64, List, Bool, Eq}
+      import anthill.prelude.List.{member}
+      import anthill.prelude.PartialEq.{eq}
+      -- A carrier that declares NO Eq instance: the fire-time guard must block
+      -- has_elem over it, proving the transitive requirement is real, not vacuous.
+      sort NoEq
+        entity nt(v: Int64)
+      end
+      rule has_elem(?xs, ?x) :- requires(Eq[T]), eq(member(?x, ?xs), true)
+    end
+"#;
+
+/// Build a `List` from a slice of already-built element terms (generalizes
+/// `list_term`, which is Int64-only).
+fn list_of(kb: &mut KnowledgeBase, elems: &[TermId]) -> TermId {
+    let nil = kb.try_resolve_symbol("anthill.prelude.List.nil").expect("List.nil");
+    let cons = kb.try_resolve_symbol("anthill.prelude.List.cons").expect("List.cons");
+    let head = kb.intern("head");
+    let tail = kb.intern("tail");
+    let mut list = kb.alloc(Term::Fn { functor: nil, pos_args: SmallVec::new(), named_args: SmallVec::new() });
+    for &e in elems.iter().rev() {
+        list = kb.alloc(Term::Fn {
+            functor: cons,
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::from_slice(&[(head, e), (tail, list)]),
+        });
+    }
+    list
+}
+
+/// A `gap3.membertest.NoEq.nt(v: n)` entity term (a carrier with no `Eq`).
+fn nt_entity(kb: &mut KnowledgeBase, n: i64) -> TermId {
+    let f = kb.try_resolve_symbol("gap3.membertest.NoEq.nt").expect("NoEq.nt");
+    let v = kb.intern("v");
+    let nv = int_term(kb, n);
+    kb.alloc(Term::Fn {
+        functor: f,
+        pos_args: SmallVec::new(),
+        named_args: SmallVec::from_slice(&[(v, nv)]),
+    })
+}
+
+#[test]
+fn transitive_requires_rule_types_via_member() {
+    // The whole point: this rule did NOT type before Layer A — the grounding scan
+    // witnessed `requires(Eq[T])` only on a DIRECT Eq-op call, and neither `member`
+    // (a List op) nor the `eq(_, true)` (a PartialEq op over Bool) is one.
+    assert!(
+        common::try_load_kb_with(CONTAINS_SRC).is_ok(),
+        "a rule whose requires(Eq[T]) is witnessed by a member() call must load",
+    );
+}
+
+#[test]
+fn transitive_requires_contains_decides_via_member() {
+    let mut kb = common::load_kb_with(CONTAINS_SRC);
+    // contains([1,2,3], 2): guard fires (Int64 provides Eq), member(2,[1,2,3]) runs
+    // to `true` via the bridge, eq(true, true) succeeds ⇒ one definite solution.
+    let xs = list_term(&mut kb, &[1, 2, 3]);
+    let two = int_term(&mut kb, 2);
+    let g = goal(&mut kb, "gap3.membertest.has_elem", &[xs, two]);
+    let sols = kb.resolve(&[g], &ResolveConfig::default());
+    assert_eq!(sols.len(), 1, "contains([1,2,3], 2) must decide TRUE via the transitive witness");
+    assert!(sols[0].residual.is_empty(), "the member() operand ran at resolution — a definite solution");
+
+    // contains([1,2,3], 5): member(5,[1,2,3]) = false, eq(false, true) fails ⇒ none.
+    let xs2 = list_term(&mut kb, &[1, 2, 3]);
+    let five = int_term(&mut kb, 5);
+    let g2 = goal(&mut kb, "gap3.membertest.has_elem", &[xs2, five]);
+    assert_eq!(
+        kb.resolve(&[g2], &ResolveConfig::default()).len(),
+        0,
+        "5 is not a member of [1,2,3]",
+    );
+}
+
+#[test]
+fn transitive_requires_guard_blocks_non_eq_element() {
+    // The requirement is enforced, not vacuous: `NoEq` declares no `Eq` instance, so
+    // the guard `DontFire`s at a `NoEq` element even though `nt(1)` IS structurally in
+    // the list — the transitive witness checks the ELEMENT type, exactly as a direct
+    // `requires(Eq[T])` would. Without the guard (plain member) this would succeed.
+    let mut kb = common::load_kb_with(CONTAINS_SRC);
+    let e1 = nt_entity(&mut kb, 1);
+    let e2 = nt_entity(&mut kb, 2);
+    let list = list_of(&mut kb, &[e1, e2]);
+    let x = nt_entity(&mut kb, 1);
+    let g = goal(&mut kb, "gap3.membertest.has_elem", &[list, x]);
+    assert_eq!(
+        kb.resolve(&[g], &ResolveConfig::default()).len(),
+        0,
+        "NoEq provides no Eq: the guard must block has_elem despite nt(1) being present",
+    );
+}
+
 #[test]
 fn bridge_mode_suspends_on_buried_override() {
     // {1,2} and {2,1} are one Set by membership but structurally distinct; buried
@@ -242,5 +349,38 @@ fn bridge_mode_suspends_on_buried_override() {
     assert!(
         matches!(r, Err(EvalError::Suspended { .. })),
         "under the resolver bridge a buried override must SUSPEND, got {r:?}",
+    );
+}
+
+#[test]
+fn transitive_requires_rejects_wrong_type_param_witness() {
+    // Soundness gate: `pick(t: T, u: U) requires Eq[U]` must NOT witness a rule's
+    // `requires(Eq[T])`. Its `Eq` obligation ranges over `U` (the `u` argument), but
+    // the fire-time guard keys on `Eq`'s type-param NAME ("T"), so it would read the
+    // name-coincident `t: T` — discharging the requirement against the WRONG argument.
+    // The witness is declined and the rule is a loud load error instead of grounding
+    // unsoundly. (Without the gate, `op_requires_covers` would accept `pick` because
+    // `Eq` is merely present in its requires-chain.)
+    let src = r#"
+        namespace gap3.unsound
+          import anthill.prelude.{Int64, Bool, Eq}
+          import anthill.prelude.PartialEq.{eq}
+          sort Two
+            sort T = ?
+            sort U = ?
+            entity mk(t: T, u: U)
+            operation pick(t: T, u: U) -> Bool requires Eq[U] = eq(u, u)
+          end
+          import gap3.unsound.Two.{pick}
+          rule uses(?t, ?u) :- requires(Eq[T]), eq(pick(?t, ?u), true)
+        end
+    "#;
+    let errs = match common::try_load_kb_with(src) {
+        Ok(_) => panic!("a witness requiring Eq over a DIFFERENT type-param must not ground"),
+        Err(errs) => errs,
+    };
+    assert!(
+        errs.iter().any(|e| e.contains("ground the requirement")),
+        "expected the ungroundable-requires error, got: {errs:?}",
     );
 }
