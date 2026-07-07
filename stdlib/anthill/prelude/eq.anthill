@@ -9,11 +9,13 @@
 -- `PartialEq.eq`). `Set`/`Map` keys, dedup, and sort require this lawful Eq.
 -- `Float` does NOT provide Eq: it cannot discharge `eq(?a,?a) <=> true` at NaN.
 --
--- NB the per-instance discharge/refutation of `eq_refl` at load time (so a
--- `provides Eq[Float]` self-rejects) is WI-658; use-site `requires Eq[K]`
--- enforcement (so `Map[K = Float]` is a load error) is WI-649. Until those land
--- `eq_refl` is a dormant obligation — it documents the contract but is not yet
--- checked, and does not fire as a rewrite (the semantic `eq` is builtin-backed).
+-- NB `eq_refl` is a DORMANT, documentation-only obligation: it is not discharged
+-- or refuted per instance, and does not fire as a rewrite (the semantic `eq` is
+-- builtin-backed). WI-658 (delivered) makes a `provides Eq[Float]` a load error
+-- NOT by refuting `eq_refl` at NaN, but via the `NonEq` route below — Float
+-- provides `NonEq` (witnessed non-reflexivity) and `Eq` ⊥ `NonEq` is checked at
+-- load (`check_eq_noneq_exclusive`). Use-site `requires Eq[K]` enforcement (so
+-- `Map[K = Float]` is a load error) is WI-649, still open.
 sort anthill.prelude.PartialEq
   import anthill.reflect.{not}
 
@@ -31,7 +33,31 @@ sort anthill.prelude.Eq
   sort T = ?
   requires PartialEq[T]
 
-  -- Reflexivity — the law a partial carrier (IEEE Float) cannot satisfy. See the
-  -- file header: dormant until WI-658 discharges/refutes it per instance.
+  -- Reflexivity — the law a partial carrier (IEEE Float) cannot satisfy. Dormant /
+  -- documentation-only (see the file header): NOT discharged per instance. A
+  -- `provides Eq[Float]` is blocked instead by the `NonEq` exclusion (WI-658).
   rule eq_refl: eq(?a, ?a) <=> true
+end
+
+-- NonEq: a carrier declares its equality is NOT reflexive by exhibiting a
+-- WITNESS — `nonEqRefl()` returns some value `w` with `eq(w, w) = false`. This
+-- is the constructive form of `∃x. eq(x, x) = false` (Anthill has no `∃` in rule
+-- bodies, so the existential is Skolemized to a nullary witness operation). It
+-- is what a partial carrier like IEEE `Float` provides INSTEAD of the lawful
+-- `Eq`: Float cannot be reflexive (`eq(nan, nan) = false`), and says so by
+-- exhibiting `nan`.
+--
+-- `Eq` and `NonEq` are MUTUALLY EXCLUSIVE: a carrier's `eq` cannot be both
+-- reflexive and non-reflexive. A load-time check (WI-658) rejects any carrier
+-- that provides BOTH. A carrier that provides NEITHER is unconstrained — the
+-- check does nothing without a declaration. Composite carriers (entities /
+-- named tuples with a NonEq field) should derive NonEq congruently — that is a
+-- follow-up (the composite Eq/NonEq derivation ticket).
+sort anthill.prelude.NonEq
+  sort T = ?
+  requires PartialEq[T]
+
+  -- A witness value not equal to itself. For a genuine partial carrier
+  -- `eq(nonEqRefl(), nonEqRefl()) = false` (Float: `nonEqRefl() = nan`).
+  operation nonEqRefl() -> T
 end

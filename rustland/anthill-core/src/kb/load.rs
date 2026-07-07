@@ -164,6 +164,16 @@ pub enum LoadError {
         spec: String,
         op: String,
     },
+    /// WI-658: a carrier provides BOTH `Eq` (lawful, reflexive equality) and
+    /// `NonEq` (a WITNESSED non-reflexive equality — `nonEqRefl()` exhibits a
+    /// value unequal to itself). They are mutually exclusive: a carrier's `eq`
+    /// cannot be both reflexive and non-reflexive. A partial carrier (IEEE
+    /// `Float`) provides `PartialEq` + `NonEq`; a lawful carrier provides
+    /// `PartialEq` + `Eq`. Load-blocking: the two provisions contradict. Note
+    /// the check is opt-in — a carrier that provides neither is unconstrained.
+    IncompatibleEqNonEq {
+        carrier: String,
+    },
     /// WI-431 (rule 2 — COHERENCE): two or more DISTINCT instance facts (op-valued
     /// provisions, `fact Combiner[T = Tag, combine = combineA]` /
     /// `… combine = combineB]`) cover the same `(spec, carrier)`. Each supplies a
@@ -420,6 +430,10 @@ impl LoadError {
                 format!("'{}' provides '{}' but does not back operation '{}.{}': there is no default on '{}' (an `operation {}(…) = …` body or a derivation rule) and '{}' supplies no own '{}' (add a body/rule on '{}' or an `operation {}(…)` on '{}')",
                     carrier, spec, spec, op, spec, op, carrier, op, spec, op, carrier)
             }
+            LoadError::IncompatibleEqNonEq { carrier } => {
+                format!("'{}' provides both 'Eq' and 'NonEq', which are mutually exclusive: a carrier's `eq` cannot be both lawful (reflexive) and non-reflexive. A partial carrier (e.g. IEEE Float) provides PartialEq + NonEq; a lawful carrier provides PartialEq + Eq — drop whichever is wrong.",
+                    carrier)
+            }
             LoadError::AmbiguousInstanceFact { carrier, spec, count } => {
                 format!("ambiguous instance: {} distinct instance facts provide '{}' for carrier '{}' — each binds the spec's operations differently, and there is no way to select between them (scoped/named instance selection is not yet supported); keep exactly one `fact {}[…]` per (spec, carrier)",
                     count, spec, carrier, spec)
@@ -539,6 +553,8 @@ impl LoadError {
             | LoadError::UnresolvedImport { .. }
             | LoadError::UnsatisfiedProviderRequires { .. }
             | LoadError::UnbackedProviderOperation { .. }
+            // WI-658: a carrier providing both Eq and NonEq is contradictory.
+            | LoadError::IncompatibleEqNonEq { .. }
             // WI-431 rule 2: ambiguous instance facts give dispatch no sound
             // choice — block rather than silently pick the first. WI-450: the
             // witness flavor (two provider sorts) is equally unsound.
@@ -748,6 +764,10 @@ impl std::fmt::Display for LoadError {
             LoadError::UnbackedProviderOperation { carrier, spec, op } => {
                 write!(f, "'{}' provides '{}' but backs no operation '{}.{}' (no default on '{}', no own '{}' on '{}')",
                     carrier, spec, spec, op, spec, op, carrier)
+            }
+            LoadError::IncompatibleEqNonEq { carrier } => {
+                write!(f, "'{}' provides both 'Eq' and 'NonEq', which are mutually exclusive (a partial carrier provides PartialEq + NonEq; a lawful one PartialEq + Eq)",
+                    carrier)
             }
             LoadError::AmbiguousInstanceFact { carrier, spec, count } => {
                 write!(f, "ambiguous instance: {} distinct instance facts provide '{}' for carrier '{}' (keep exactly one)",
@@ -3206,6 +3226,11 @@ fn load_phase_inner(
     // nothing at runtime). Load-blocking.
     all_errors.extend(super::typing::check_provider_operations(kb));
     mark!("check_provider_operations");
+    // WI-658: Eq ⊥ NonEq — a carrier that provides both the lawful (reflexive)
+    // Eq and the witnessed non-reflexive NonEq is contradictory. Opt-in: does
+    // nothing for a carrier that declares neither. Load-blocking.
+    all_errors.extend(super::typing::check_eq_noneq_exclusive(kb));
+    mark!("check_eq_noneq_exclusive");
     // WI-347: operation-override refinement — a carrier's own op overriding a
     // spec op must refine it (effects no wider; pre/post next). Load-blocking
     // (unsound override), so it lands in `all_errors`.

@@ -10334,6 +10334,70 @@ pub fn check_provider_requires(kb: &mut KnowledgeBase) -> Vec<super::load::LoadE
     errors
 }
 
+/// WI-658: `Eq` ⊥ `NonEq` — a carrier must not provide BOTH the lawful
+/// (reflexive) `Eq` and the witnessed non-reflexive `NonEq`. Walk the
+/// `SortProvidesInfo` facts, group by canonical carrier, and flag any carrier
+/// seen providing both. OPT-IN by construction: a carrier providing neither, or
+/// only one, is untouched — the check does nothing without a `NonEq` (or `Eq`)
+/// declaration to contradict. The error list is sorted by carrier name so the
+/// diagnostic order is deterministic.
+///
+/// LIMITATION (base-keyed) — grouping is by the carrier's BASE sort symbol, so a
+/// PARAMETRIC carrier that legitimately provides `Eq` at one instantiation and
+/// `NonEq` at another (`Box[T = Int]` lawful, `Box[T = Float]` partial) would be
+/// FALSELY flagged. Not reachable today: only the non-parametric leaf `Float`
+/// provides `NonEq`, and every stdlib provision binds the spec param to the bare
+/// carrier (base == binding). When composite carriers derive per-instantiation
+/// Eq/NonEq (the composite Eq/NonEq derivation follow-up) this MUST become
+/// binding-aware — key on the spec's carrier-binding value, not just the base.
+pub fn check_eq_noneq_exclusive(kb: &mut KnowledgeBase) -> Vec<super::load::LoadError> {
+    use super::load::LoadError;
+    let Some(provides_sym) = kb.try_resolve_symbol("anthill.reflect.SortProvidesInfo") else {
+        return Vec::new();
+    };
+    let (Some(eq_sym), Some(noneq_sym)) = (
+        kb.try_resolve_symbol("anthill.prelude.Eq"),
+        kb.try_resolve_symbol("anthill.prelude.NonEq"),
+    ) else {
+        // No NonEq spec loaded ⇒ nothing can conflict.
+        return Vec::new();
+    };
+    let eq_canon = kb.canonical_sort_sym(eq_sym);
+    let noneq_canon = kb.canonical_sort_sym(noneq_sym);
+
+    // canonical carrier symbol → (provides Eq, provides NonEq)
+    let mut seen: std::collections::HashMap<Symbol, (bool, bool)> = std::collections::HashMap::new();
+    for rid in kb.rules_by_functor(provides_sym) {
+        if !kb.is_fact(rid) {
+            continue;
+        }
+        let Some(named) = kb.fact_head_named_args(rid) else { continue };
+        let Some(sr) = get_named_arg(kb, &named, "sort_ref") else { continue };
+        let Some(carrier) = super::load::sort_ref_functor(kb, sr) else { continue };
+        let Some(spec_view) = get_named_arg(kb, &named, "spec") else { continue };
+        let Some((spec_base, _)) = unwrap_spec_view(kb, spec_view) else { continue };
+        let spec_canon = kb.canonical_sort_sym(spec_base);
+        let entry = seen.entry(kb.canonical_sort_sym(carrier)).or_insert((false, false));
+        if spec_canon == eq_canon {
+            entry.0 = true;
+        } else if spec_canon == noneq_canon {
+            entry.1 = true;
+        }
+    }
+
+    let mut conflicts: Vec<String> = seen
+        .into_iter()
+        .filter(|(_, (has_eq, has_noneq))| *has_eq && *has_noneq)
+        .map(|(carrier, _)| kb.qualified_name_of(carrier).to_string())
+        .collect();
+    conflicts.sort();
+    conflicts.dedup();
+    conflicts
+        .into_iter()
+        .map(|carrier| LoadError::IncompatibleEqNonEq { carrier })
+        .collect()
+}
+
 /// WI-363: provider-side **operation** coverage — the op-level twin of
 /// [`check_provider_requires`]. For each `fact Spec[X]` (a `SortProvidesInfo`
 /// fact), every operation `Spec` declares must be *backed* for `X`: either a
