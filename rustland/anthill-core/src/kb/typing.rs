@@ -24807,6 +24807,13 @@ struct EqFamilySyms {
 /// its carrier args. Per use-site: the stdlib never compares maps, so it stays
 /// clean; only user code comparing an unbacked-override carrier errors.
 ///
+/// Both `eq` AND `neq` over two Maps are flagged: `neq(?a, ?b)`'s var operands are
+/// stamped `Map` by the same WI-603 var-leaf inference `eq` uses, so a `neq(map, map)`
+/// goal or op body errors identically (WI-651 — an earlier worry that `neq`
+/// under-determines its operand to the abstract param `Map.K` was investigated and
+/// found false; that `Map.K` was Map's OWN key comparison `neq(?k, ?k2)`, where the
+/// operands genuinely ARE keys of type `K`).
+///
 /// BEST-EFFORT, deliberately: it fires on the common shape — an `eq`/`neq` GOAL or
 /// op-body call whose operand the typer stamps CONCRETELY as the carrier (a var
 /// leaf typed via a `Map` param, or a param compared directly). Known escape routes
@@ -24815,7 +24822,7 @@ struct EqFamilySyms {
 /// by [`operand_unbacked_eq_carrier`]); a DOT-form `a.eq(b)` dispatches to the
 /// carrier's own `Map.eq`, whose functor is not `Eq.eq`; a CONSTRAINT body lives in
 /// `kb.guards`, not `live_rule_ids`; a POLYMORPHIC operand typed by an abstract `T`
-/// never concretizes to `Map` (the `neq` sibling of this is WI-651).
+/// never concretizes to `Map` (this last one is `eq`/`neq`-symmetric).
 fn check_eq_override_backing(kb: &mut KnowledgeBase) -> Vec<TypeError> {
     let mut errors: Vec<TypeError> = Vec::new();
     // The semantic eq/neq spec symbols (`SemEq`/`SemNeq`). Absent on a
@@ -24831,12 +24838,12 @@ fn check_eq_override_backing(kb: &mut KnowledgeBase) -> Vec<TypeError> {
         eq_short: kb.intern("eq"),
         neq_spec,
     };
-    // `Eq.neq` is matched alongside `Eq.eq` so a carrier with an unbacked own
-    // `neq` override is flagged identically. In practice a `neq(map, map)` goal
-    // still escapes: the typer under-determines its operand's inferred sort to
-    // the abstract param `Map.K` (neq threads Map's `requires Eq[T = K]`), so the
-    // operand never concretizes to `Map` — that residual `neq` misdecide is
-    // WI-651, a typer inference limitation, not this check's concern.
+    // `Eq.neq` is matched alongside `Eq.eq` so a `neq(map, map)` goal or op body is
+    // flagged identically — its var operands are stamped `Map` by the same WI-603
+    // inference `eq` uses, and it misdecides through the SAME empty `Map.eq`
+    // override (`sem_eq_dispatch` negates the verdict). WI-651 confirmed neq does
+    // not escape (the `Map.K` an earlier note worried about was Map's own KEY
+    // comparison `neq(?k, ?k2)`, correctly typed `K` and correctly not flagged).
     let is_eq_call = |f: Symbol| f == syms.eq_spec || Some(f) == syms.neq_spec;
     // Memo per carrier sort — the same sort recurs across many call sites, and
     // the backing probe allocates a `rules_by_functor` Vec.

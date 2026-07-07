@@ -26,9 +26,12 @@ sort anthill.prelude.Map
   -- loudly instead: `check_eq_override_backing` (typing.rs, WI-650) rejects a
   -- rule/op body comparing two Maps with `=`/`eq` at LOAD with `Eq[Map] declared
   -- but unimplemented`. The stdlib never compares maps, so it stays clean; only
-  -- user code does. (The sibling `neq(map, map)` misdecide is the same hazard but
-  -- escapes the load check — the typer under-determines a `neq` operand to the
-  -- abstract param `K`; tracked as WI-651.) Structural comparison is still `===`.
+  -- user code does. The sibling `neq(map, map)` misdecide is the SAME hazard and
+  -- is caught the same way — `check_eq_override_backing` matches `Eq.neq` too, and
+  -- both operands of a `neq` over two Maps are stamped `Map` by the same WI-603
+  -- inference `eq` uses (WI-651 confirmed neq does NOT escape; its own key
+  -- comparison `neq(?k, ?k2)` below is correctly typed `K`, not `Map`, and not
+  -- flagged). Structural comparison is still `===`.
   provides Eq[T = Map]
   operation eq(a: Map, b: Map) -> Bool
 

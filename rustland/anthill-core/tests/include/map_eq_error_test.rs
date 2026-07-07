@@ -8,21 +8,24 @@
 //! at LOAD instead — `check_eq_override_backing` / `TypeError::EqOverrideUnbacked`.
 //!
 //! Each error case gives the comparison two operands the typer stamps as `Map`:
-//! the VAR operands of a rule-body `eq` GOAL, typed via the enclosing
+//! the VAR operands of a rule-body `eq`/`neq` GOAL, typed via the enclosing
 //! operation's `Map` parameters (the WI-603 var-leaf stamping the check reads,
-//! shared with `check_one_spec_op_requirement`), plus an op BODY `= eq(a, b)`.
-//! The controls must STILL load clean: structural `===` on maps (never
-//! dispatches to the override) and `eq` on `Set`, whose override IS backed by a
-//! general `eq(?a, ?b) :- subset(…)` clause. The `wi616_semantic_eq` sibling
+//! shared with `check_one_spec_op_requirement`), plus an op BODY `= eq(a, b)` /
+//! `= neq(a, b)`. The controls must STILL load clean: structural `===` on maps
+//! (never dispatches to the override) and `eq` on `Set`, whose override IS backed
+//! by a general `eq(?a, ?b) :- subset(…)` clause. The `wi616_semantic_eq` sibling
 //! covers runtime dispatch; this file is load-time only.
 //!
-//! NOTE on `neq`: the check matches `Eq.neq` too (a carrier with an unbacked own
-//! `neq` override is flagged identically), but a `neq(map, map)` rule-body goal
-//! is NOT exercised here — the typer under-determines a `neq` operand to the
-//! abstract param `Map.K` (its dictionary threads Map's `requires Eq[T = K]`),
-//! so it never concretizes to `Map`. That residual `neq(map, map)`
-//! silent-misdecide hazard is a pre-existing inference limitation tracked
-//! separately (see WI-651), distinct from the WI-650 mechanism this file pins.
+//! WI-651 — `neq(map, map)` is flagged identically to `eq(map, map)`. The check
+//! matches `Eq.neq` alongside `Eq.eq` (there is no distinct `neq` override — a
+//! `neq` dispatches through the carrier's own `eq` override too, so an unbacked
+//! `eq` is exactly what makes `neq(map, map)` misdecide). Both operands of a
+//! `neq(?a, ?b)` goal over two `Map[…]` params are stamped `Map` by the same
+//! WI-603 var-leaf inference `eq` uses (WI-651 investigated an earlier worry that
+//! `neq` under-determines its operand to the abstract param `Map.K` and found it
+//! false — that `Map.K` was Map's OWN key comparison `neq(?k, ?k2)` in the
+//! `get(put(…))` rewrite law, where the operands genuinely ARE keys of type `K`,
+//! correctly typed and correctly not flagged). The `map_neq_*` cases below pin it.
 
 /// Assert the load errors include the `Eq[Map] declared but unimplemented`
 /// diagnostic. Matches the two stable substrings — the carrier name and the
@@ -54,6 +57,39 @@ fn map_eq_in_rule_body_goal_is_a_load_error() {
           import anthill.prelude.{Bool, Int64, Map, Eq}
           operation same(a: Map[K = Int64, V = Int64], b: Map[K = Int64, V = Int64]) -> Bool
           rule same(?a, ?b) :- eq(?a, ?b)
+        end
+    "#;
+    let errs = crate::common::try_load_kb_with(src).err().unwrap_or_default();
+    assert_map_eq_unbacked(&errs);
+}
+
+#[test]
+fn map_neq_in_rule_body_goal_is_a_load_error() {
+    // WI-651 — the `neq` sibling of `map_eq_in_rule_body_goal_is_a_load_error`.
+    // Both var operands of `neq(?a, ?b)` are typed `Map[Int64, Int64]` by the
+    // operation `differ`'s parameters (the same WI-603 var-leaf stamping `eq`
+    // uses), so the check flags them — `neq(map, map)` misdecides through the
+    // SAME empty `Map.eq` override, negated.
+    let src = r#"
+        namespace mapneq.rulebody
+          import anthill.prelude.{Bool, Int64, Map, Eq}
+          operation differ(a: Map[K = Int64, V = Int64], b: Map[K = Int64, V = Int64]) -> Bool
+          rule differ(?a, ?b) :- neq(?a, ?b)
+        end
+    "#;
+    let errs = crate::common::try_load_kb_with(src).err().unwrap_or_default();
+    assert_map_eq_unbacked(&errs);
+}
+
+#[test]
+fn map_neq_in_op_body_is_a_load_error() {
+    // WI-651 — the `neq` sibling of `map_eq_in_op_body_is_a_load_error`: an
+    // operation FUNCTIONAL body comparing its two `Map` params with `neq`.
+    let src = r#"
+        namespace mapneq.opbody
+          import anthill.prelude.{Bool, Int64, Map, Eq}
+          operation differ(a: Map[K = Int64, V = Int64], b: Map[K = Int64, V = Int64]) -> Bool
+            = neq(a, b)
         end
     "#;
     let errs = crate::common::try_load_kb_with(src).err().unwrap_or_default();
