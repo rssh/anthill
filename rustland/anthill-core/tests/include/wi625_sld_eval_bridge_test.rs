@@ -723,3 +723,54 @@ fn typed_op_body_eq_over_set_evaluates_via_bridge() {
         .as_bool();
     assert_eq!(neq, Some(false), "distinct-member sets must be UNEQUAL through the typed op");
 }
+
+// ── OPEN: carrier-blind transitive `requires` coverage (unsound ACCEPT) ───────
+//
+// `op_requires_covers` (typing.rs) licenses an abstract spec-op call in an op body
+// when the op's declared `requires` TRANSITIVELY reaches the call's spec — but it
+// compares only spec SYMBOLS, not the CARRIER. So a `requires Foo[A, B]` whose
+// `Foo requires Bar[B]` wrongly licenses a `Bar`-op called over the OTHER param
+// `A`: the threaded `Foo` dict bundles a `Bar[B]` sub-dict, never a `Bar[A]`, so
+// the body's `bar(x: A)` has no dictionary at runtime, yet this LOADS clean.
+//
+// #[ignore] — the sound fix (carrier-aligned transitive coverage) is blocked on a
+// representation gap, verified this session: op-level `requires` bindings are stored
+// SPEC-PARAM-RELATIVE (`requires PartialEq[T]` is stored `PartialEq[T = PartialEq.T]`,
+// NOT re-scoped to the op's element), so σ-class param-identity cannot bridge the
+// reached requirement's carrier to the call's carrier. A σ-precise check regresses
+// EVERY legit single-param coverage (`requires Eq[T]` covering `eq`); a
+// "reject-only-distinct-enclosing-params" guard both regresses and mis-composes
+// (the requires-chain re-scoping is symbol-interning-fragile). Sound coverage needs
+// op-requires bindings that preserve the carrier link (or an op-param σ context) —
+// the same carrier-alignment the prior session deferred. See WI-625 feedback.
+#[test]
+#[ignore = "WI-625: carrier-aware transitive op-requires coverage — blocked on op-requires carrier-link representation"]
+fn transitive_op_requires_over_wrong_param_is_unsoundly_licensed() {
+    const SRC: &str = r#"
+        namespace test.wi625.blind
+          import anthill.prelude.{Bool}
+          sort Bar
+            sort T = ?
+            operation bar(x: T) -> Bool
+          end
+          sort Foo
+            sort A = ?
+            sort B = ?
+            requires Bar[T = B]
+          end
+          sort Host
+            sort A = ?
+            sort B = ?
+            operation bad(x: A, y: B) -> Bool requires Foo[A = A, B = B] = Bar.bar(x)
+          end
+        end
+    "#;
+    // DESIRED (currently failing → ignored): `bad` calls `bar` over `A`, but its
+    // `requires Foo[A, B]` only supplies `Bar[B]`, so the requirement is genuinely
+    // missing and the load MUST be rejected. Today it loads (carrier-blind accept).
+    assert!(
+        common::try_load_kb_with(SRC).is_err(),
+        "a `Bar`-op over param A must NOT be licensed by `requires Foo[A, B]` whose \
+         `Foo requires Bar[B]` only supplies `Bar[B]` — carrier-aware coverage",
+    );
+}
