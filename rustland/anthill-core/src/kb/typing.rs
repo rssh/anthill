@@ -24802,6 +24802,18 @@ fn check_one_spec_op_requirement(
     }
     // The rule explicitly declares this requirement in its body — its own WI-300
     // dictionary. Respect it (never flag; the fire-time guard handles satisfaction).
+    //
+    // Exact-symbol match, NOT transitive coverage: a declared `requires(Eq[T])` does
+    // NOT suppress a call to a non-builtin op whose spec merely lies in `Eq`'s
+    // requires-chain, because `declared` carries only spec SYMBOLS (no type-args) — it
+    // cannot tell that the declared `Eq[T]` and the op's carrier are the SAME type. A
+    // carrier-blind transitive suppression would hide a genuine missing instance when
+    // the op is applied to a different carrier than the declared requirement ranges
+    // over (`requires(Ordered[A])` does not cover a `PartialEq` op applied to some
+    // unrelated `B`). Sound transitive coverage needs the carrier-alignment the witness
+    // scans do (`requirement_ranges_over_owner_tparams`) — deferred. Direction A's own
+    // witnesses (`eq`/`gt`) are builtins, returned above at the `is_builtin` gate, so
+    // they never reach here regardless.
     if declared.contains(&kb.canonical_sort_sym(spec_sort)) {
         return;
     }
@@ -24861,17 +24873,80 @@ fn check_one_spec_op_requirement(
     });
 }
 
+/// Is `tid` a `SortView` wrapper term? Same discriminant [`unwrap_spec_view`] uses
+/// (`anthill.reflect.SortView` or any `.SortView` re-export), factored out so the
+/// witness-gate helper and the unwrapper cannot disagree on what counts as a view.
+fn term_is_sort_view(kb: &KnowledgeBase, tid: TermId) -> bool {
+    matches!(kb.get_term(tid), Term::Fn { functor, .. }
+        if { let q = kb.qualified_name_of(*functor); q == "anthill.reflect.SortView" || q.ends_with(".SortView") })
+}
+
+/// The head symbol NAME of a type-argument term (`Ref(T)` / `Ident(T)` / `T[…]` → `"T"`).
+/// Borrows from `kb` — no allocation.
+fn spec_arg_head_name(kb: &KnowledgeBase, tid: TermId) -> Option<&str> {
+    match kb.get_term(tid) {
+        Term::Ref(s) | Term::Ident(s) => Some(kb.resolve_sym(*s)),
+        Term::Fn { functor, .. } => Some(kb.resolve_sym(*functor)),
+        _ => None,
+    }
+}
+
+/// Shared soundness core of the WI-300 witness gates: does the spec-requirement term
+/// `spec_tid` (a `requires <S>[…]` clause binding spec `<S>`, qualified name `s_qn`)
+/// bind `<S>` over type-arguments that are ALL type-parameters whose NAME is one of
+/// `owner_tparams`? The fire-time guard ([`simp_guard_holds_core`]) picks carriers by
+/// matching a spec's type-param NAME against each parameter's type name
+/// ([`param_is_spec_carrier`]), so this predicate certifies the guard reads the
+/// argument the requirement ranges over rather than a name-coincident sibling.
+///
+/// Two clause shapes reach here, and the type-arguments live in different places:
+///   * a BARE application `Fn{functor: <S>, pos_args, named_args}` (from
+///     [`op_requires_entries`]) — positionals bind in type-param order, named args by
+///     param name (filtered by `s_qn`);
+///   * a `SortView` wrapper (from [`direct_requires`]) whose `pos_args[0]` is the
+///     inner `<S>[…]` and whose `named_args` carry the bindings (type-params AND the
+///     auto-bound spec ops `eq`/`neq`) — read via [`unwrap_spec_view`], keeping only
+///     the type-param bindings (`is_type_param_binding` filters the op ones out).
+/// A bare `Ref(<S>)` (no args) carries no keyable carrier → not sound.
+fn requirement_ranges_over_owner_tparams(
+    kb: &KnowledgeBase,
+    spec_tid: TermId,
+    s_qn: &str,
+    owner_tparams: &[String],
+) -> bool {
+    let mut bound_type_args: Vec<TermId> = Vec::new();
+    if term_is_sort_view(kb, spec_tid) {
+        // Only the named type-param bindings (`unwrap_spec_view` drops the `pos_args[0]`
+        // inner-spec carrier and hands back the bindings as named pairs).
+        if let Some((_, bindings)) = unwrap_spec_view(kb, spec_tid) {
+            for (key, val) in bindings.iter() {
+                if is_type_param_binding(kb, *key, s_qn) {
+                    bound_type_args.push(*val);
+                }
+            }
+        }
+    } else if let Term::Fn { pos_args, named_args, .. } = kb.get_term(spec_tid) {
+        bound_type_args.extend(pos_args.iter().copied());
+        for (key, val) in named_args.iter() {
+            if is_type_param_binding(kb, *key, s_qn) {
+                bound_type_args.push(*val);
+            }
+        }
+    }
+    !bound_type_args.is_empty()
+        && bound_type_args.iter().all(|&tid| {
+            spec_arg_head_name(kb, tid).is_some_and(|n| owner_tparams.iter().any(|tp| tp.as_str() == n))
+        })
+}
+
 /// A TRANSITIVE witness — a body call to an op that itself declares `requires
 /// spec_canon[…]` — grounds a rule's `requires(spec_canon[T])` SOUNDLY only when
 /// the fire-time guard's carrier selection lands on the argument the witness op's
-/// OWN requirement ranges over. The guard ([`simp_guard_holds_core`]) picks
-/// carriers by matching `spec_canon`'s type-param NAME against each parameter's
-/// type name ([`param_is_spec_carrier`]), so this holds iff the op's `requires
-/// spec_canon[P]` binds the spec over a type-param `P` whose name IS one of
-/// `spec_canon`'s type-param names. Reject otherwise (→ the loud "no witness"
-/// error) rather than discharge the requirement against the WRONG argument:
-/// `foo[T, U](a: T, b: U) requires Eq[U]` must NOT ground a rule's
-/// `requires(Eq[T])` via the name-coincident `a: T`.
+/// OWN requirement ranges over: the op's `requires spec_canon[P]` must bind the spec
+/// over a type-param `P` whose name IS one of `spec_canon`'s type-param names. Reject
+/// otherwise (→ the loud "no witness" error) rather than discharge the requirement
+/// against the WRONG argument: `foo[T, U](a: T, b: U) requires Eq[U]` must NOT ground
+/// a rule's `requires(Eq[T])` via the name-coincident `a: T`.
 ///
 /// Restricted to a DIRECT op-requires (`entry.required_sort == spec_canon`); a
 /// witness that reaches the spec only through its OWN requires-chain is
@@ -24882,7 +24957,7 @@ fn transitive_witness_grounds_soundly(
     functor: Symbol,
     spec_canon: Symbol,
 ) -> bool {
-    let spec_qn = kb.qualified_name_of(spec_canon).to_string();
+    let spec_qn = kb.qualified_name_of(spec_canon);
     let spec_tparams = kb.type_params_of_sort(spec_canon);
     // The name-based soundness argument models only the fire-time guard's
     // carrier-parameter-typeclass branch (`param_is_spec_carrier` matching the spec's
@@ -24896,41 +24971,70 @@ fn transitive_witness_grounds_soundly(
             return false;
         }
     }
-    // The head symbol of a type-argument term (`Ref(T)` / `Ident(T)` / `T[…]`).
-    let arg_head_name = |kb: &KnowledgeBase, tid: TermId| -> Option<String> {
-        match kb.get_term(tid) {
-            Term::Ref(s) | Term::Ident(s) => Some(kb.resolve_sym(*s).to_string()),
-            Term::Fn { functor, .. } => Some(kb.resolve_sym(*functor).to_string()),
-            _ => None,
-        }
-    };
+    // `op_requires_entries` stores each clause as `Fn{functor: <spec>, …}`, so
+    // `entry.spec`'s functor IS `spec_canon` — its binding is keyed by `spec_qn`.
     for entry in op_requires_entries(kb, functor) {
         if kb.canonical_sort_sym(entry.required_sort) != spec_canon {
             continue;
         }
-        // The requirement's type-arguments. `op_requires_entries` stores each clause
-        // as `Fn{functor: <spec>, pos_args, named_args}` (or a bare `Ref(<spec>)` with
-        // no args), NEVER a `SortView` wrapper — so `entry.spec`'s functor IS
-        // `spec_canon` and its arguments bind the spec directly: positionals in
-        // type-param order, named args by param name.
-        let mut bound_type_args: Vec<TermId> = Vec::new();
-        if let Term::Fn { pos_args, named_args, .. } = kb.get_term(entry.spec) {
-            bound_type_args.extend(pos_args.iter().copied());
-            for (key, val) in named_args.iter() {
-                if is_type_param_binding(kb, *key, &spec_qn) {
-                    bound_type_args.push(*val);
-                }
-            }
+        if requirement_ranges_over_owner_tparams(kb, entry.spec, spec_qn, &spec_tparams) {
+            return true;
         }
-        // Sound only when EVERY bound type-arg is a type-param whose name is one of
-        // `spec_canon`'s own — that is exactly what the fire-time guard matches on, so
-        // the argument it reads is the one this requirement ranges over. An empty
-        // arg list (bare `Eq`) carries no carrier the guard can key on → decline.
-        if !bound_type_args.is_empty()
-            && bound_type_args.iter().all(|&tid| {
-                arg_head_name(kb, tid).is_some_and(|n| spec_tparams.iter().any(|tp| tp.as_str() == n))
-            })
-        {
+    }
+    false
+}
+
+/// An INHERITED-SPEC-OP witness (WI-625 Direction A) — a body call to an operation
+/// that belongs to a spec `S′` which `spec_canon` (`X`) directly REQUIRES — grounds a
+/// rule's `requires(X[T])`. Post WI-644 `Eq` owns no operations (its `eq`/`neq` are
+/// inherited from the `PartialEq` it requires, WI-614), so a rule `requires(Eq[T])`
+/// whose only comparison is `eq(?x, ?y)` has NO direct or transitive witness: `eq` is
+/// `PartialEq.eq`, and `Eq requires PartialEq`, so the call is evidence the carrier
+/// needs an `Eq` dictionary (which subsumes the `PartialEq` the call itself uses).
+/// Likewise `requires(Ordered[T])` witnessed by `gt` (`PartialOrd.gt`, and `Ordered
+/// requires PartialOrd`).
+///
+/// Sound only when the guard reads the argument `X`'s requirement ranges over. `X`'s
+/// direct `requires S′[P]` must bind `S′` over a type-param `P` whose name is one of
+/// `X`'s own — exactly [`transitive_witness_grounds_soundly`]'s condition, applied to
+/// the SPEC's requires-chain rather than the OP's (`op_has_spec_carrier_param` in the
+/// scan then confirms the op exposes an `X`-keyed carrier parameter). Restricted to a
+/// DIRECT `requires` of `X` (`Eq requires PartialEq`, `Ordered requires PartialOrd`
+/// are both direct); an inherited requirement reached only through `X`'s chain
+/// (`Ordered requires Eq requires PartialEq`, witnessed by `eq`) is conservatively
+/// declined — sound incompleteness, not a gap.
+fn inherited_spec_op_witness_grounds_soundly(
+    kb: &KnowledgeBase,
+    functor: Symbol,
+    spec_canon: Symbol,
+) -> bool {
+    // The op's OWN spec `S′`. A non-spec-op (no dispatch parent) is never a witness.
+    let Some(parent) = lookup_spec_op_dispatch(kb, functor) else {
+        return false;
+    };
+    let parent_canon = kb.canonical_sort_sym(parent);
+    // `S′ == X` is the DIRECT scan's job — this gate is only for the inherited case.
+    if parent_canon == spec_canon {
+        return false;
+    }
+    // Same self-representing carve-out as the transitive gate: the name-based argument
+    // only models the carrier-parameter-typeclass guard branch.
+    if let Some(rec) = super::op_info::lookup_operation_info(kb, functor) {
+        if spec_self_represented_by(kb, &rec.params, spec_canon) {
+            return false;
+        }
+    }
+    // `X` must DIRECTLY require `S′` over one of `X`'s own type-params. The requirement
+    // clause `X requires S′[…]` is keyed by `S′`'s params, but its type-arguments must
+    // be `X`'s type-params (so the guard, keyed on `X`'s type-param name, reads the arg
+    // the requirement ranges over).
+    let parent_qn = kb.qualified_name_of(parent_canon);
+    let spec_tparams = kb.type_params_of_sort(spec_canon);
+    for entry in direct_requires(kb, spec_canon) {
+        if kb.canonical_sort_sym(entry.required_sort) != parent_canon {
+            continue;
+        }
+        if requirement_ranges_over_owner_tparams(kb, entry.spec, parent_qn, &spec_tparams) {
             return true;
         }
     }
@@ -24998,6 +25102,38 @@ fn rewrite_find_dictionary_goal(
         ))
     };
 
+    // Whole-body DFS for the first `Apply` whose functor passes `gate` AND exposes an
+    // X-keyed carrier parameter (`op_has_spec_carrier_param`), rewritten to a
+    // `find_dictionary` witness goal via `make_witness`. Shared by the transitive and
+    // inherited scans below — they are identical but for `gate`. Children are pushed
+    // BEFORE the node is examined, so a NESTED witness is reached: `member(?x, ?xs)`
+    // inside the conjunct `eq(member(?x, ?xs), true)`. A functor failing either gate is
+    // skipped; both scans returning `None` falls through to the loud "no witness" error
+    // (honest that the requirement is ungroundable, never a dead/unsound guard).
+    let scan_body_dfs = |gate: fn(&KnowledgeBase, Symbol, Symbol) -> bool| -> Option<Rc<NodeOccurrence>> {
+        let mut stack: Vec<Rc<NodeOccurrence>> = body_nodes.iter().cloned().collect();
+        while let Some(cand) = stack.pop() {
+            let Some(expr) = cand.as_expr() else { continue };
+            for_each_child(expr, |c| stack.push(Rc::clone(c)));
+            let Expr::Apply { functor, pos_args, named_args, .. } = expr else {
+                continue;
+            };
+            if *functor == fd_sym {
+                continue;
+            }
+            if !gate(kb, *functor, spec_canon) {
+                continue;
+            }
+            if !op_has_spec_carrier_param(kb, *functor, spec_canon) {
+                continue;
+            }
+            if let Some(new_goal) = make_witness(kb, *functor, pos_args, named_args) {
+                return Some(new_goal);
+            }
+        }
+        None
+    };
+
     // Find a DIRECT WITNESS: a body call to one of spec X's OWN operations. Its
     // carrier arguments (in the op's parameter order) decide the instance at fire
     // time.
@@ -25041,40 +25177,39 @@ fn rewrite_find_dictionary_goal(
     //   * `op_has_spec_carrier_param` — the op must expose a carrier parameter the
     //     guard recognizes for X, else the emitted guard would be permanently
     //     `DontFire` (a silently-dead rule).
-    // A witness failing either is skipped, and we fall through to the loud "no
-    // witness" error — honest that the requirement is ungroundable rather than
-    // fabricating a dead or unsound guard.
+    if let Some(new_goal) = scan_body_dfs(transitive_witness_grounds_soundly) {
+        return Ok(new_goal);
+    }
+
+    // Find an INHERITED-SPEC-OP WITNESS (WI-625 Direction A): no direct or transitive
+    // witness appears, but a body call to an op of a spec `X` REQUIRES grounds the
+    // requirement through the same carrier. `requires(Eq[T])` witnessed by `eq(?x, ?y)`
+    // — post WI-644 `eq` is `PartialEq.eq` and `Eq requires PartialEq`, so `Eq` owns no
+    // op of its own to serve as a direct witness. `requires(Ordered[T])` via `gt`.
     //
-    // Walk the WHOLE body (not only the top-level conjuncts): the witness call is
-    // typically NESTED, e.g. `member(?x, ?xs)` inside the conjunct
-    // `eq(member(?x, ?xs), true)`. Children are pushed before the node is examined,
-    // so a nested `member` is reached even when its enclosing `eq` is not itself a
-    // witness.
-    let mut stack: Vec<Rc<NodeOccurrence>> = body_nodes.iter().cloned().collect();
-    while let Some(cand) = stack.pop() {
-        let Some(expr) = cand.as_expr() else { continue };
-        for_each_child(expr, |c| stack.push(Rc::clone(c)));
-        let Expr::Apply { functor, pos_args, named_args, .. } = expr else {
-            continue;
-        };
-        if *functor == fd_sym {
-            continue;
-        }
-        if !transitive_witness_grounds_soundly(kb, *functor, spec_canon) {
-            continue;
-        }
-        if !op_has_spec_carrier_param(kb, *functor, spec_canon) {
-            continue;
-        }
-        if let Some(new_goal) = make_witness(kb, *functor, pos_args, named_args) {
-            return Ok(new_goal);
-        }
+    // Ordered LAST, on purpose: for `has_elem` the body has BOTH `member` (a transitive
+    // witness that grounds the ELEMENT type) AND `eq(member(…), true)` (an inherited
+    // witness over Bool). The transitive scan runs first, so `member` wins — grounding
+    // `requires(Eq[T])` at the element, not at the Bool the `eq` compares. Were this
+    // scan first it would pick the Bool `eq` and check the wrong carrier.
+    //
+    // Like the DIRECT scan, an inherited witness grounds the requirement at the
+    // COMPARISON's operand type — `eq(?x, ?y)` at `?x`'s type, `eq(f(?a), true)` at the
+    // `Bool` result. This is exactly the behavior the direct scan had pre-WI-644, when
+    // `eq` was `Eq`'s OWN op: an under-constrained `requires(Eq[T])` whose only
+    // comparison is over `Bool` unifies `T` with `Bool` (a trivially-satisfiable, inert
+    // guard) rather than erroring — consistent with the direct scan, not a silent
+    // mis-decision. A rule that means to constrain a container ELEMENT should compare
+    // elements (or use an op like `List.member` that DECLARES `requires Eq[T]`, caught
+    // by the transitive scan first).
+    if let Some(new_goal) = scan_body_dfs(inherited_spec_op_witness_grounds_soundly) {
+        return Ok(new_goal);
     }
 
     Err(err(
         format!(
             "a body call to one of `{}`'s operations (or to an operation that \
-             `requires` it) to ground the requirement",
+             `requires` it, directly or by spec inheritance) to ground the requirement",
             kb.resolve_sym(spec_base)
         ),
         "no such call in the rule body".into(),

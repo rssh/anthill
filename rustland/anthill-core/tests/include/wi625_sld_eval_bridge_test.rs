@@ -21,6 +21,7 @@ use anthill_core::kb::resolve::ResolveConfig;
 use anthill_core::kb::term::{Literal, Term, TermId, Var};
 use anthill_core::kb::KnowledgeBase;
 use crate::common;
+use ordered_float::OrderedFloat;
 use smallvec::SmallVec;
 
 // A host-bodied op with ZERO spec dispatch in its body: a pure `match` over an
@@ -354,29 +355,42 @@ fn bridge_mode_suspends_on_buried_override() {
 
 #[test]
 fn transitive_requires_rejects_wrong_type_param_witness() {
-    // Soundness gate: `pick(t: T, u: U) requires Eq[U]` must NOT witness a rule's
-    // `requires(Eq[T])`. Its `Eq` obligation ranges over `U` (the `u` argument), but
-    // the fire-time guard keys on `Eq`'s type-param NAME ("T"), so it would read the
-    // name-coincident `t: T` — discharging the requirement against the WRONG argument.
-    // The witness is declined and the rule is a loud load error instead of grounding
-    // unsoundly. (Without the gate, `op_requires_covers` would accept `pick` because
-    // `Eq` is merely present in its requires-chain.)
+    // Soundness gate: `pick(t: T, u: U) requires Widget[U]` must NOT witness a rule's
+    // `requires(Widget[T])`. Its `Widget` obligation ranges over `U` (the `u`
+    // argument), but the fire-time guard keys on `Widget`'s type-param NAME ("T"), so it
+    // would read the name-coincident `t: T` — discharging the requirement against the
+    // WRONG argument. The transitive witness is declined and the rule is a loud load
+    // error. (Without the gate, `op_requires_covers` would accept `pick` because
+    // `Widget` is merely present in its requires-chain.)
+    //
+    // `Widget` is a USER spec, not `Eq`, ON PURPOSE: the witness candidate `pick` is
+    // wrapped in `eq(…, true)` to form a body goal, and post-WI-625-Direction-A that
+    // `eq` (a `PartialEq` op) is itself an INHERITED witness for any spec that requires
+    // `PartialEq`. Were the requirement `Eq[T]`, the outer `eq` would legitimately
+    // ground it at `Bool` (a sound fallback) and the rule would load — masking the
+    // transitive gate under test. `Widget` requires no `PartialEq`, so the `eq` wrapper
+    // is NOT a fallback and `pick` is the sole candidate the gate must reject.
     let src = r#"
         namespace gap3.unsound
-          import anthill.prelude.{Int64, Bool, Eq}
+          import anthill.prelude.{Int64, Bool}
           import anthill.prelude.PartialEq.{eq}
+          sort Widget
+            sort T = ?
+            operation widen(x: T) -> Bool
+          end
           sort Two
             sort T = ?
             sort U = ?
             entity mk(t: T, u: U)
-            operation pick(t: T, u: U) -> Bool requires Eq[U] = eq(u, u)
+            operation pick(t: T, u: U) -> Bool requires Widget[U] = widen(u)
           end
+          import gap3.unsound.Widget.{widen}
           import gap3.unsound.Two.{pick}
-          rule uses(?t, ?u) :- requires(Eq[T]), eq(pick(?t, ?u), true)
+          rule uses(?t, ?u) :- requires(Widget[T]), eq(pick(?t, ?u), true)
         end
     "#;
     let errs = match common::try_load_kb_with(src) {
-        Ok(_) => panic!("a witness requiring Eq over a DIFFERENT type-param must not ground"),
+        Ok(_) => panic!("a witness requiring Widget over a DIFFERENT type-param must not ground"),
         Err(errs) => errs,
     };
     assert!(
@@ -487,5 +501,119 @@ fn layerb_unresolvable_provider_residualizes() {
         definite_count(&mut kb, g),
         0,
         "Other provides no Combiner: the bridge must residualize, never mis-decide",
+    );
+}
+
+// ── WI-625 Direction A — the INHERITED-spec-op witness ───────────────────────
+//
+// Post WI-644 `Eq` owns no operations: its `eq`/`neq` are inherited from the
+// `PartialEq` it requires (WI-614). So a rule `requires(Eq[T])` whose only comparison
+// is `eq(?x, ?y)` has NEITHER a direct `Eq`-op witness (none exist) NOR a transitive
+// one (`eq` doesn't declare `requires Eq`). Direction A accepts `eq` — a `PartialEq.eq`
+// call — as an INHERITED witness because `Eq requires PartialEq`, grounding the rule's
+// `Eq` requirement at the concrete argument type. The guard then enforces the DECLARED
+// (stronger) `Eq`, not the `PartialEq` the call itself uses.
+const INHERITED_EQ_SRC: &str = r#"
+    namespace dirA.eqtest
+      import anthill.prelude.{Int64, Float, Bool, Eq}
+      import anthill.prelude.PartialEq.{eq}
+      rule same(?x, ?y) :- requires(Eq[T]), eq(?x, ?y)
+    end
+"#;
+
+/// A raw `Float` leaf — `Float` provides `PartialEq`/`PartialOrd` (IEEE) but NOT the
+/// lawful `Eq`/`Ordered` (WI-644), so it is the carrier that distinguishes "grounds the
+/// inherited-from spec" from "grounds only what the body call needs".
+fn float_term(kb: &mut KnowledgeBase, f: f64) -> TermId {
+    kb.alloc(Term::Const(Literal::Float(OrderedFloat(f))))
+}
+
+#[test]
+fn inherited_requires_eq_types_via_eq() {
+    // The whole point: this rule did NOT type before Direction A. `eq` is
+    // `PartialEq.eq`, and `Eq` (which owns no ops) merely `requires PartialEq`, so
+    // neither the direct nor the transitive witness scan finds a ground for
+    // `requires(Eq[T])`.
+    assert!(
+        common::try_load_kb_with(INHERITED_EQ_SRC).is_ok(),
+        "a rule whose requires(Eq[T]) is witnessed by an eq() call \
+         (PartialEq's op, inherited by Eq) must load",
+    );
+}
+
+#[test]
+fn inherited_requires_eq_decides_at_int64() {
+    let mut kb = common::load_kb_with(INHERITED_EQ_SRC);
+    // same(1, 1): guard fires (Int64 provides Eq), eq(1, 1) = true ⇒ one solution.
+    let (a, b) = (int_term(&mut kb, 1), int_term(&mut kb, 1));
+    let g = goal(&mut kb, "dirA.eqtest.same", &[a, b]);
+    assert_eq!(
+        kb.resolve(&[g], &ResolveConfig::default()).len(),
+        1,
+        "same(1, 1) must decide TRUE via the inherited eq witness",
+    );
+
+    // same(1, 2): eq(1, 2) = false ⇒ no solution.
+    let (a, b) = (int_term(&mut kb, 1), int_term(&mut kb, 2));
+    let g2 = goal(&mut kb, "dirA.eqtest.same", &[a, b]);
+    assert_eq!(
+        kb.resolve(&[g2], &ResolveConfig::default()).len(),
+        0,
+        "same(1, 2) must be false",
+    );
+}
+
+#[test]
+fn inherited_requires_eq_blocks_non_eq_float() {
+    // The requirement enforced is the DECLARED `Eq`, not the `PartialEq` the body `eq`
+    // call itself uses. `Float` provides `PartialEq` (IEEE) but NOT `Eq` (no
+    // reflexivity at NaN), so the guard `DontFire`s at a `Float` argument even though
+    // `eq(1.0, 1.0)` would be true — proving Direction A grounds the stronger
+    // inherited-from spec, not merely the op's own.
+    let mut kb = common::load_kb_with(INHERITED_EQ_SRC);
+    let (a, b) = (float_term(&mut kb, 1.0), float_term(&mut kb, 1.0));
+    let g = goal(&mut kb, "dirA.eqtest.same", &[a, b]);
+    assert_eq!(
+        kb.resolve(&[g], &ResolveConfig::default()).len(),
+        0,
+        "Float provides PartialEq but not Eq: the guard must block `same` over Floats",
+    );
+}
+
+// `requires(Ordered[T])` witnessed by `gt` — `gt` is `PartialOrd.gt`, and `Ordered
+// requires PartialOrd`, so the inherited witness grounds the total-order requirement
+// exactly as the eq case grounds Eq.
+const INHERITED_ORD_SRC: &str = r#"
+    namespace dirA.ordtest
+      import anthill.prelude.{Int64, Bool, Ordered}
+      import anthill.prelude.PartialOrd.{gt}
+      rule bigger(?a, ?b) :- requires(Ordered[T]), gt(?a, ?b)
+    end
+"#;
+
+#[test]
+fn inherited_requires_ordered_types_and_decides_via_gt() {
+    assert!(
+        common::try_load_kb_with(INHERITED_ORD_SRC).is_ok(),
+        "a rule whose requires(Ordered[T]) is witnessed by a gt() call \
+         (PartialOrd's op, inherited by Ordered) must load",
+    );
+    let mut kb = common::load_kb_with(INHERITED_ORD_SRC);
+    // bigger(3, 1): guard fires (Int64 provides Ordered), gt(3, 1) = true ⇒ one solution.
+    let (a, b) = (int_term(&mut kb, 3), int_term(&mut kb, 1));
+    let g = goal(&mut kb, "dirA.ordtest.bigger", &[a, b]);
+    assert_eq!(
+        kb.resolve(&[g], &ResolveConfig::default()).len(),
+        1,
+        "bigger(3, 1) must decide TRUE via the inherited gt witness",
+    );
+
+    // bigger(1, 3): gt(1, 3) = false ⇒ no solution.
+    let (a, b) = (int_term(&mut kb, 1), int_term(&mut kb, 3));
+    let g2 = goal(&mut kb, "dirA.ordtest.bigger", &[a, b]);
+    assert_eq!(
+        kb.resolve(&[g2], &ResolveConfig::default()).len(),
+        0,
+        "bigger(1, 3) must be false",
     );
 }
