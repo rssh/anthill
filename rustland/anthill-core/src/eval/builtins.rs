@@ -1900,7 +1900,7 @@ fn dict_sub(_interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalErro
 /// The result both INSPECTS (`op` = which op it resolved to, `dict` = its
 /// dispatch env — payoff #2) and RUNS: applying the OpRef dispatches `op` under
 /// its captured dict (`spread_eta_args` reads a body-less op's arity from its
-/// signature, so a native-builtin-backed resolved op like `Eq.eq` is callable).
+/// signature, so a native-builtin-backed resolved op like `PartialEq.eq` is callable).
 fn dict_resolve_op(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     use crate::kb::term::Term;
     use crate::kb::typing::resolve_op_target;

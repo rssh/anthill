@@ -137,15 +137,15 @@ pub enum BuiltinTag {
     // ── Arithmetic and comparison builtins ───────────────────
     /// `anthill.kernel.struct_eq(?a, ?b)` (`===`) — structural equality
     /// (succeeds/fails). Total, carrier-agnostic, never dispatches (WI-615 /
-    /// proposal 051). Until WI-616 this tag also backed `Eq.eq`; structural
+    /// proposal 051). Until WI-616 this tag also backed `PartialEq.eq`; structural
     /// inequality is `not(a === b)`.
     Eq,
-    /// `anthill.prelude.Eq.eq(?a, ?b)` — SEMANTIC equality (WI-616 / proposal
-    /// 051 Phase 2): the `Eq.eq` spec op, dispatched through the carrier's
+    /// `anthill.prelude.PartialEq.eq(?a, ?b)` — SEMANTIC equality (WI-616 / proposal
+    /// 051 Phase 2): the `PartialEq.eq` spec op, dispatched through the carrier's
     /// `Eq` instance. See [`KnowledgeBase::sem_eq_core`] for the full
     /// reflexivity / dispatch / buried-override / structural cascade.
     SemEq,
-    /// `anthill.prelude.Eq.neq(?a, ?b)` — semantic inequality
+    /// `anthill.prelude.PartialEq.neq(?a, ?b)` — semantic inequality
     /// (`neq(a,b) <=> not(eq(a,b))`): [`KnowledgeBase::sem_eq_core`] with the
     /// verdict inverted.
     SemNeq,
@@ -3524,7 +3524,7 @@ impl KnowledgeBase {
         }
     }
 
-    /// WI-616 (proposal 051 Phase 2) — `eq(?a, ?b)`, the SEMANTIC `Eq.eq` spec
+    /// WI-616 (proposal 051 Phase 2) — `eq(?a, ?b)`, the SEMANTIC `PartialEq.eq` spec
     /// op. See [`Self::sem_eq_core`].
     fn builtin_sem_eq<V: TermView>(&mut self, goal: &V, subst: &Substitution) -> BuiltinResult {
         self.sem_eq_core(goal, subst, true)

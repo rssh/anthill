@@ -87,7 +87,7 @@ fn infix_entry(op: &str) -> Option<&'static InfixEntry> {
         // Like `<=>`, it lexes as one `operator_symbol` token — the longest-run regex makes
         // `===` win over `==`/`=` — so no grammar change is needed. Maps to the `struct_eq`
         // functor; the resolver reuses `builtin_eq` (structural, never dispatches). Distinct
-        // from `=`/`eq` (`anthill.prelude.Eq.eq`), which is semantic (Phase 2 / WI-616).
+        // from `=`/`eq` (`anthill.prelude.PartialEq.eq`), which is semantic (Phase 2 / WI-616).
         ("===",InfixEntry { priority: 3, assoc: Assoc::None,  functor: STRUCT_EQ_FUNCTOR, continuation: None }),
         ("<",  InfixEntry { priority: 4, assoc: Assoc::None,  functor: "lt",  continuation: None }),
         ("<=", InfixEntry { priority: 4, assoc: Assoc::None,  functor: "lte", continuation: None }),

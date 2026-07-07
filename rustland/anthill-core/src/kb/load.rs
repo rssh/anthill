@@ -1427,7 +1427,7 @@ fn scan_rule(
 ///   * unlabeled single-head rule: the head functor IS the rule's identity.
 ///
 /// B2: when the head functor already resolves — an operation inherited via
-/// `requires` (e.g. `Ordered`'s `eq` law resolving to `Eq.eq`), or a locally
+/// `requires` (e.g. `Ordered`'s `eq` law resolving to `PartialEq.eq`), or a locally
 /// declared operation — the rule binds to that ORIGIN symbol instead of
 /// minting a shadowing sort-local `Goal`. Only a genuinely-new head predicate
 /// (NotFound) gets a fresh Goal. Runs in pass 3 so the `requires` parent chain
@@ -1450,7 +1450,7 @@ fn scan_rule_goal(
         ) {
             // WI-530: don't shadow an equation-connective head. `eq` / `unify`
             // are the `=` / `<=>` desugar (proposal 049) and live in the implicit
-            // prelude, so they resolve to the canonical `anthill.prelude.Eq.eq` /
+            // prelude, so they resolve to the canonical `anthill.prelude.PartialEq.eq` /
             // `anthill.kernel.unify` at load time (`remap_name_str` consults
             // `implicit_qualified`). Minting a `<ns>.eq` / `<ns>.unify` Goal here
             // would instead index a (migrated) equation under that local shadow,
@@ -4567,7 +4567,7 @@ fn collect_existing_proof_record_qns(kb: &KnowledgeBase, record_sym: Symbol) -> 
 pub fn is_equational_head(kb: &KnowledgeBase, head: TermId) -> bool {
     if let Term::Fn { functor, .. } = kb.get_term(head) {
         // WI-627: classify by RESOLVED SYMBOL, not short name. A genuine `=`/`<=>`
-        // equation head carries the canonical `anthill.prelude.Eq.eq` /
+        // equation head carries the canonical `anthill.prelude.PartialEq.eq` /
         // `anthill.kernel.unify` symbol; a carrier's own `eq` op (`Set.eq`,
         // `Map.eq`) is a DIFFERENT symbol that merely shares the short name and
         // must stay a normal, indexed relational rule — not be unindexed as a

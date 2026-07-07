@@ -21,7 +21,7 @@
 //! parametric sort (its functor is a *spec op*, e.g. `Numeric.add`) fires
 //! only where its carrier arguments' `min_sort` provides that sort; a
 //! concrete functor (`add(?x, 0) = ?x` at top level) is guard-free. Loaded
-//! equations are headed by the canonical `anthill.prelude.Eq.eq`
+//! equations are headed by the canonical `anthill.prelude.PartialEq.eq`
 //! ([`KnowledgeBase::eq_functor`]), the symbol the firing index keys on.
 //! Explicit value-level guards (`:- compare(?x, ?y) <= 0`) give the rule a
 //! non-empty body, so it is not `is_equation` and not yet indexed for

@@ -1337,7 +1337,7 @@ impl Interpreter {
         // Eta-expansion (`reduce_var`) mints an `OpRef` for a body-having op, so
         // its arity comes from the body. WI-577's reflect `Dictionary.resolveOp`
         // / `ops` additionally mint an OpRef for a native-builtin-backed op (no
-        // anthill body, e.g. `Eq.eq`), which must stay callable — so fall back to
+        // anthill body, e.g. `PartialEq.eq`), which must stay callable — so fall back to
         // the arity declared in the op's SIGNATURE (`OperationInfo.params`) when
         // there is no body. The apply path's builtin-dispatch step (step 2) then
         // runs the builtin. `UnknownOperation` only when the op has no signature

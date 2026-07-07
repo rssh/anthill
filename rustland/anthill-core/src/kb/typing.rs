@@ -99,7 +99,7 @@ pub enum TypeError {
     /// spec sort. Without a covering `requires`, the runtime has no impl
     /// to dispatch to — so we name this at body-load time rather than at
     /// the first call site that hits a fresh carrier. `spec_op_sym` is the
-    /// spec op (e.g. `anthill.prelude.Eq.eq`), `spec_sort_sym` is the spec
+    /// spec op (e.g. `anthill.prelude.PartialEq.eq`), `spec_sort_sym` is the spec
     /// sort (e.g. `anthill.prelude.Eq`), and `abstract_params` lists the
     /// spec's short type-param names the call left abstract — used to
     /// suggest the exact `requires {spec}[{T = …}]` clause to add.
@@ -109,12 +109,12 @@ pub enum TypeError {
         spec_sort_sym: Symbol,
         abstract_params: SmallVec<[Symbol; 2]>,
     },
-    /// WI-650: an `Eq.eq`/`Eq.neq` (`=`/`neq`) call whose operand's sort declares
+    /// WI-650: an `PartialEq.eq`/`PartialEq.neq` (`=`/`neq`) call whose operand's sort declares
     /// its OWN `eq` override with NO backing — no runnable body and no non-fact
     /// rules (e.g. `Map` once the relational eq/binds/strip_is apparatus was
     /// dropped: its `Eq` provision is real at the spec-op/builtin layer, but the
     /// override op is a bodyless placeholder the WI-625 host bridge will fill).
-    /// Such a compare type-checks (`Eq.eq` is a total builtin — no missing
+    /// Such a compare type-checks (`PartialEq.eq` is a total builtin — no missing
     /// requirement) yet would SILENTLY misdecide at resolution: `sem_eq_dispatch`
     /// targets the empty override, exhausts the sub-search, and returns
     /// "not equal". `BuiltinResult` has no error channel (Success/Delay/Failure),
@@ -3138,10 +3138,10 @@ fn most_refined_spec(kb: &mut KnowledgeBase, specs: &[Symbol]) -> Option<Symbol>
 /// one that binds the required spec's carrier to the RECEIVER's own carrier, so a receiver
 /// value IS a value of the required spec's carrier (`FiniteCollection requires Iterable[C=C]`).
 /// A *constraint-style* requires over an ELEMENT/scalar (`Set requires Eq[T]`, `VectorSpace
-/// requires Ring[F]`) binds the required spec's carrier to a NON-carrier param, so `Eq.eq(a:
+/// requires Ring[F]`) binds the required spec's carrier to a NON-carrier param, so `PartialEq.eq(a:
 /// element)` must NOT be borrowable on the whole collection — [`requires_edge_is_carrier_preserving`]
 /// filters those out (without this, `s.eq(x)` on an abstract `Set` receiver would mis-resolve
-/// to `Eq.eq`). Walks the ROOT-SCOPED transitive `requires_chain` (bindings composed into
+/// to `PartialEq.eq`). Walks the ROOT-SCOPED transitive `requires_chain` (bindings composed into
 /// `recv_sort`'s vocabulary, so the carrier check is correct at any depth); pre-order keeps
 /// direct requires first (nearest), and a genuine multi-spec tie prefers the requires-
 /// REFINEMENT via [`most_refined_spec`], as the provides resolver does.
@@ -3189,7 +3189,7 @@ fn find_spec_op_for_required_sort(
 /// required spec's self-receiver? Carrier-preserving requires (refinements) lend their members
 /// (`FiniteCollection requires Iterable[C = C]` — Iterable's carrier `C` ↦ FiniteCollection's
 /// carrier `C`); constraint-style requires over an element/scalar do NOT (`Set requires Eq[T]`
-/// binds `Eq`'s carrier to Set's ELEMENT, so `Eq.eq`/`neq` compare elements, not Sets).
+/// binds `Eq`'s carrier to Set's ELEMENT, so `PartialEq.eq`/`neq` compare elements, not Sets).
 ///
 /// A SELF-REPRESENTING receiver (`Set`/`Map`, whose members take `s: Set` — the carrier is the
 /// spec itself, with the type-params as elements) has no carrier PARAM for a required spec to
@@ -8938,7 +8938,7 @@ pub struct SortGoal {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ReceiverCarrier {
     /// No self-receiver parameter — the op's carrier arguments are typed
-    /// with the spec's own type-parameter (`Eq.eq(a: T, b: T)`,
+    /// with the spec's own type-parameter (`PartialEq.eq(a: T, b: T)`,
     /// `Iterable.iterator(c: C)`). The carrier is a binding, so the
     /// per-call substitution already pins it; dispatch proceeds by
     /// binding (the pre-WI-350 behaviour, including legitimate `Ambiguous`
@@ -10361,7 +10361,7 @@ pub fn check_provider_requires(kb: &mut KnowledgeBase) -> Vec<super::load::LoadE
 ///     functor — covers `anthill.geometry.vec_add` & friends, whose head functor
 ///     is the *namespace*-level `vec_add`, distinct from the spec op
 ///     `VectorSpace.vec_add` (so it's found by resolving `{X-namespace}.op`).
-///   - **builtin**: an op mapped to a resolver builtin (`Eq.eq`, `Numeric.add`).
+///   - **builtin**: an op mapped to a resolver builtin (`PartialEq.eq`, `Numeric.add`).
 pub fn check_provider_operations(kb: &mut KnowledgeBase) -> Vec<super::load::LoadError> {
     use super::load::LoadError;
     let Some(provides_sym) = kb.try_resolve_symbol("anthill.reflect.SortProvidesInfo") else {
@@ -11538,7 +11538,7 @@ pub fn sort_goal_from_subst(
 /// WI-350 — classify a spec op's receiver at a call site to drive
 /// carrier-aware dispatch. Finds the op's *self-receiver* parameter — the
 /// first one declared with the spec sort itself (`head(s: Stream)`; vs
-/// `Eq.eq(a: T, b: T)`, whose params are typed with the spec's type-
+/// `PartialEq.eq(a: T, b: T)`, whose params are typed with the spec's type-
 /// parameter `T`) — and reads that argument's inferred base sort.
 ///
 /// - No self-receiver parameter ⇒ [`ReceiverCarrier::NotApplicable`]: the
@@ -11611,7 +11611,7 @@ fn receiver_carrier(
 
 /// WI-350 — index of a spec op's *self-receiver* parameter: the first one
 /// declared with the spec sort itself (`head(s: Stream)`), as opposed to a
-/// type-parameter-carrier parameter (`Eq.eq(a: T, b: T)`, whose type is the
+/// type-parameter-carrier parameter (`PartialEq.eq(a: T, b: T)`, whose type is the
 /// spec's own type-parameter). `None` when the op has no self-receiver
 /// parameter. Shared by the typer's [`receiver_carrier`] and the
 /// interpreter's value-directed dispatch so the two never disagree about
@@ -22981,7 +22981,7 @@ fn spec_self_represented_by(kb: &KnowledgeBase, params: &[(Symbol, Value)], spec
 
 /// WI-596 — does parameter type `param_type` CARRY spec `spec_sort` (so that its
 /// argument's runtime type decides the instance)? For a carrier-parameter
-/// typeclass (`Eq.eq(a: T, b: T)`) the carriers are the type-param-typed
+/// typeclass (`PartialEq.eq(a: T, b: T)`) the carriers are the type-param-typed
 /// parameters; for a self-representing container (`Set.member(x: T, s: Set)`) they
 /// are the sort-typed parameters (and the content `x: T` carries no obligation).
 /// The per-parameter half of [`simp_guard_holds_core`]'s carrier decision,
@@ -25099,7 +25099,7 @@ fn check_one_spec_op_requirement(
     // A spec op registered as a resolver BUILTIN never fails for a *missing spec
     // instance*, so it is not this pass's concern — skip it. Two disjoint reasons,
     // both `is_builtin`:
-    //   * `Eq.eq`/`Eq.neq` (SemEq) — structural equality IS the default `Eq`
+    //   * `PartialEq.eq`/`PartialEq.neq` (SemEq) — structural equality IS the default `Eq`
     //     instance (kernel-language.md §equality / proposal 051 / WI-616: "a carrier
     //     with no override keeps the structural compare — structural equality *is*
     //     its instance"), so EVERY carrier already satisfies `Eq`; a carrier wanting
@@ -25380,7 +25380,7 @@ fn inherited_spec_op_witness_grounds_soundly(
 /// The spec + short symbols for the `eq`/`neq` family, resolved once per
 /// [`check_eq_override_backing`] run. `eq_short` is the sort-ops key
 /// (`kb.intern("eq")`, as [`carrier_own_op`]'s callers use); the `*_spec`s are
-/// the canonical `Eq.eq`/`Eq.neq` builtins the call functor is matched against.
+/// the canonical `PartialEq.eq`/`PartialEq.neq` builtins the call functor is matched against.
 /// Only the EQ override's backing is probed — a `neq` call dispatches through the
 /// carrier's `eq` override too (`sem_eq_dispatch` resolves `eq_dispatch_target`
 /// for both, negating the verdict), so there is no distinct `neq` override to key.
@@ -25390,10 +25390,10 @@ struct EqFamilySyms {
     neq_spec: Option<Symbol>,
 }
 
-/// WI-650 — flag a semantic `Eq.eq`/`Eq.neq` (`=`/`neq`) call whose operand's
+/// WI-650 — flag a semantic `PartialEq.eq`/`PartialEq.neq` (`=`/`neq`) call whose operand's
 /// inferred sort declares its OWN `eq` override with NO backing (a bodyless
 /// placeholder — `Map` once its relational eq/binds/strip_is apparatus was dropped
-/// in favor of the WI-625 host bridge). Such a call type-checks (`Eq.eq` is a total
+/// in favor of the WI-625 host bridge). Such a call type-checks (`PartialEq.eq` is a total
 /// builtin, so [`check_one_spec_op_requirement`] — this pass's `is_builtin`-skipped
 /// sibling — never flags a missing requirement) yet would SILENTLY misdecide at
 /// resolution: `sem_eq_dispatch` targets the empty override, exhausts, and returns
@@ -25419,7 +25419,7 @@ struct EqFamilySyms {
 /// (all silent-misdecide, none reachable by the current stdlib/examples/tests) are
 /// tracked as WI-652: a COMPOUND operand carries no stamped `inferred_type` (skipped
 /// by [`operand_unbacked_eq_carrier`]); a DOT-form `a.eq(b)` dispatches to the
-/// carrier's own `Map.eq`, whose functor is not `Eq.eq`; a CONSTRAINT body lives in
+/// carrier's own `Map.eq`, whose functor is not `PartialEq.eq`; a CONSTRAINT body lives in
 /// `kb.guards`, not `live_rule_ids`; a POLYMORPHIC operand typed by an abstract `T`
 /// never concretizes to `Map` (this last one is `eq`/`neq`-symmetric).
 fn check_eq_override_backing(kb: &mut KnowledgeBase) -> Vec<TypeError> {
@@ -25441,7 +25441,7 @@ fn check_eq_override_backing(kb: &mut KnowledgeBase) -> Vec<TypeError> {
         eq_short: kb.intern("eq"),
         neq_spec,
     };
-    // `Eq.neq` is matched alongside `Eq.eq` so a `neq(map, map)` goal or op body is
+    // `PartialEq.neq` is matched alongside `PartialEq.eq` so a `neq(map, map)` goal or op body is
     // flagged identically — its var operands are stamped `Map` by the same WI-603
     // inference `eq` uses, and it misdecides through the SAME empty `Map.eq`
     // override (`sem_eq_dispatch` negates the verdict). WI-651 confirmed neq does
@@ -25469,7 +25469,7 @@ fn check_eq_override_backing(kb: &mut KnowledgeBase) -> Vec<TypeError> {
     errors
 }
 
-/// Walk `occ` for `Eq.eq`/`Eq.neq` calls and push an `EqOverrideUnbacked` per
+/// Walk `occ` for `PartialEq.eq`/`PartialEq.neq` calls and push an `EqOverrideUnbacked` per
 /// call whose operand sort has an unbacked own `eq` override (see
 /// [`check_eq_override_backing`]). Iterative (explicit stack) so a deeply-nested
 /// body cannot overflow the host stack. At most one error per call site (a
@@ -25542,7 +25542,7 @@ fn operand_unbacked_eq_carrier(
 /// override to consult.
 ///
 /// Deliberately does NOT consult the spec-op builtin path (`is_builtin`, as
-/// [`op_backed`] does): `Eq.eq` IS a resolver builtin, and admitting that backing
+/// [`op_backed`] does): `PartialEq.eq` IS a resolver builtin, and admitting that backing
 /// would mask exactly the empty override this check exists to catch. The carrier's
 /// own op symbol (`Map.eq`) is itself never a builtin.
 ///
@@ -25552,7 +25552,7 @@ fn operand_unbacked_eq_carrier(
 /// A compound-headed rule does NOT count, because `rules_by_functor(Map.eq)` is
 /// polluted by Map's untagged `get(put(?m,?k2,?v),?k) = get(?m,?k) :- neq(?k,?k2)`
 /// rewrite law: that law's `=` connective resolves to the in-scope `Map.eq` (WI-627's
-/// short-name trap in reverse — `Map.eq` shadows `Eq.eq` inside the Map sort), so it
+/// short-name trap in reverse — `Map.eq` shadows `PartialEq.eq` inside the Map sort), so it
 /// lands under `Map.eq` with a `get`-shaped head. It fires only for `get`-shaped
 /// operands, never for two normal-form (`put`/`empty`) maps, so it provides no
 /// general map equality — Map.eq stays genuinely unbacked.

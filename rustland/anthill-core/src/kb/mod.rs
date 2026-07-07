@@ -272,7 +272,7 @@ pub(crate) struct SortOpsTable {
     /// the carrier's OWN `eq` override op. Built by
     /// `load::build_sort_ops_table` for every sort whose `sort_ops` row
     /// carries a genuine own `eq` member (`typing::carrier_own_op` filters:
-    /// not the `Eq.eq` spec op, parented by the sort itself): keys are the
+    /// not the `PartialEq.eq` spec op, parented by the sort itself): keys are the
     /// sort's entity constructors and its SELF-RETURNING ops (the shapes its
     /// values are made of — `Set.insert`/`Set.empty`; a non-self-returning
     /// op like `Map.get` returns a DIFFERENT sort's value and must not key
@@ -449,7 +449,7 @@ pub struct KnowledgeBase {
     /// `unindex_functor`.
     simp_gate_cache: Option<bool>,
 
-    /// WI-627: the resolved `anthill.prelude.Eq.eq` / `anthill.kernel.unify`
+    /// WI-627: the resolved `anthill.prelude.PartialEq.eq` / `anthill.kernel.unify`
     /// connective symbols, cached at [`Self::register_standard_builtins`] time
     /// (re-synced in [`Self::resolve_builtins`]) so
     /// [`Self::is_equality_connective_functor`] — on the resolver's per-candidate
@@ -3039,7 +3039,7 @@ impl KnowledgeBase {
     // ── Rule classification ─────────────────────────────────────
 
     /// The canonical equality functor — the head symbol every loaded
-    /// equation (`lhs = rhs`) carries. Resolves to `anthill.prelude.Eq.eq`
+    /// equation (`lhs = rhs`) carries. Resolves to `anthill.prelude.PartialEq.eq`
     /// when the prelude is loaded (the symbol the loader builds equation
     /// heads with — `load.rs`), falling back to a bare `eq` only for
     /// prelude-less KBs (e.g. `simp_rewrite`'s bare-`new()` unit tests).
@@ -3068,7 +3068,7 @@ impl KnowledgeBase {
     }
 
     /// WI-627: is `functor` the KB's canonical equality / unification connective
-    /// head — the `anthill.prelude.Eq.eq` (`=`) or `anthill.kernel.unify` (`<=>`)
+    /// head — the `anthill.prelude.PartialEq.eq` (`=`) or `anthill.kernel.unify` (`<=>`)
     /// symbol every genuine equation carries? Compares RESOLVED SYMBOL IDENTITY,
     /// not the short name: a carrier's OWN `eq` operation (`Set.eq` / `Map.eq` —
     /// the WI-350/WI-444 short-name override the semantic `=`/`eq` dispatch
@@ -4533,7 +4533,7 @@ impl KnowledgeBase {
         self.cache_connective_syms();
     }
 
-    /// True iff `sym` is a registered resolver builtin (`anthill.prelude.Eq.eq`,
+    /// True iff `sym` is a registered resolver builtin (`anthill.prelude.PartialEq.eq`,
     /// `Numeric.add`, …). WI-363: a spec op that maps to a builtin is backed by
     /// the host primitive, not an anthill body/rule — so the op-provision check
     /// must treat it as satisfied.
