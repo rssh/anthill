@@ -2052,10 +2052,22 @@ impl SearchStream {
             };
 
             let mut merged = frame.subst.clone();
-            // Path compression over the Value::Term subset of the link
-            // bindings. Non-Term variants don't participate in caller-var
-            // linkage, so filtering them out matches the pre-refactor
-            // behavior exactly.
+            // Path compression over the answer links. `answer_links` is Term-only
+            // *by construction* — with_fresh_vars writes every entry via `.bind`
+            // (→ `Value::Term`), never `bind_value`/`bind_waking` — so `iter_terms`
+            // captures all of it. (Contrast the fact fast-path above, whose
+            // external-row `tree_subst` carries raw non-Term values and so needs a
+            // `bind_waking` loop. WI-636's completeness fix — reify a non-Term
+            // head-match carrier into the links, or drop the whole candidate when
+            // un-reifiable — lives at the source in `with_fresh_vars`, not here.)
+            // Assert the construction invariant so a future edit that writes a
+            // non-Term into this row (which `iter_terms` would then silently drop)
+            // trips loudly in test/dev.
+            debug_assert!(
+                answer_links.iter().all(|(_, v)| matches!(v, Value::Term { .. })),
+                "answer_links must be Term-only by construction; a non-Term entry \
+                 would be silently dropped by iter_terms (WI-636)",
+            );
             let link_pairs: Vec<(VarId, TermId)> = answer_links.iter_terms().collect();
             merged.bind_compressed(link_pairs.into_iter(), &kb.terms);
 
@@ -6466,11 +6478,12 @@ mod tests {
     #[test]
     fn apply_eq_rules_threads_severing_var_redex() {
         // WI-634(a) completeness: `[simp] eq(pick(?a, ?b), ?a)` over redex
-        // pick(?q, 7) records a `?q → LHS var` Path link at a LINEAR position.
-        // `instantiate_eq_rhs` threads it — the opened RHS binds to the caller's
-        // `?q` instead of a disconnected fresh global — so the rewrite fires to
-        // `?q`, keeping it bound through resolution (was skipped before WI-634's
-        // threading landed; the earlier gate proved severing, not correctness).
+        // pick(?q, 7) projects the redex var `?q` into the RHS. `fire_simp_equation`
+        // provides this via `match_view` — a one-way match leaves `?q` inert, so it
+        // rides into the opened RHS bound to the caller's `?q` instead of a
+        // disconnected fresh global — so the rewrite fires to `?q`, keeping it
+        // bound through resolution (was skipped before the threading landed; the
+        // earlier gate proved severing, not correctness).
         let mut kb = KnowledgeBase::new();
         let sort = kb.make_name_term("Pick");
         let domain = kb.make_name_term("test");

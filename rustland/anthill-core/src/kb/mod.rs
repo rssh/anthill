@@ -3209,31 +3209,63 @@ impl KnowledgeBase {
         // longer opened/renamed here — it is on no resolution path.
         let body_nodes = self.rules[id.index()].body_nodes.clone();
 
-        // WI-246: matching a `Value::Node` goal binds head/rule vars to
-        // `Value::Node` subparts of the goal. The De Bruijn / rename / answer-
-        // link logic below reads `tree_subst` term-only (`iter_terms` /
-        // narrowing to `Value::Term`), which would silently DROP those bindings —
-        // losing the head-match constraint and letting the rule body run
-        // unconstrained (exponential over-exploration). Reify each
-        // `Value::Node` binding to a hash-consed term first. Fast-path: term
-        // goals produce no `Value::Node` binding, so pass `tree_subst` through
-        // untouched (no rebuild, and preserves any parent chain).
+        // WI-246 / WI-636: matching a value goal binds head/rule vars to
+        // non-`Term` subparts of the goal. Every De Bruijn / rename / answer-link
+        // walk below reads `tree_subst` term-only (`iter_terms` in the arity > 0
+        // passes; `resolve_as_value` narrowed to `Value::Term` in the arity-0
+        // legacy path), so a non-`Term` entry left as a `Value` is SILENTLY
+        // dropped — losing the head-match constraint and letting the body run
+        // unconstrained (a wrong under-bound answer, or exponential
+        // over-exploration). Concretely (WI-636): a synthetic `u32::MAX - n` entry
+        // bound to a non-`Term` value never enters `body_rename`, and a non-`Term`
+        // query-var link never reaches `answer_links`.
+        //
+        // So route EVERY non-`Term` carrier through the total `value_to_term`
+        // boundary here, at this single choke point (it precedes the arity split,
+        // so it hardens both paths):
+        //  - Reify the structural subset to a hash-consed term — `Node` losslessly
+        //    via `occurrence_to_term`, an `Entity` (recursing through its
+        //    children), and the scalar / `Var` leaves — so the walks below see it.
+        //    A `Value::Entity{ctor, [scalar…]}` operand (the common eq-bridge
+        //    case) now fires the rule correctly instead of being dropped.
+        //  - A carrier with NO faithful term form — an opaque runtime handle
+        //    (`Closure`/`Stream`/`Map`/`Cell`/`Substitution`/`Requirement`), a
+        //    term-less `Unit`/`Tuple`, or an `Entity` carrying one — cannot enter
+        //    the TermId `body_rename` machinery, so the rule candidate simply can't
+        //    fire over this match: DROP it (mark `contradiction`, exactly like the
+        //    occurs-check drop below and the resolver's `tree_subst`-contradiction
+        //    drop). This IS reachable on real input — the WI-625 eval→SLD
+        //    `eq`/`neq` bridge feeds raw ground operands (`Value::Entity{ctor,
+        //    [Value::Tuple…]}`) into a rule-backed `eq`'s head match — so a
+        //    process-aborting panic here would crash on legitimate user code.
+        //    Dropping the candidate makes `eq` fall back to its structural verdict
+        //    (what it already does when no override can decide), not a silent
+        //    unbound-var wrong answer. Reifying the operand at the producer (the
+        //    eq-bridge) is the deeper fix — recorded against WI-625.
+        // Fast-path: an all-`Term` `tree_subst` (every stdlib case today) passes
+        // through untouched (no rebuild, preserves any parent chain).
         let normalized;
         let tree_subst = if tree_subst
             .iter()
-            .any(|(_, v)| matches!(v, crate::eval::value::Value::Node(_)))
+            .any(|(_, v)| !matches!(v, crate::eval::value::Value::Term { .. }))
         {
             let entries: Vec<(VarId, crate::eval::value::Value)> =
                 tree_subst.iter().map(|(v, val)| (*v, val.clone())).collect();
             let mut norm = subst::Substitution::new();
             for (vid, val) in entries {
                 match val {
-                    crate::eval::value::Value::Node(occ) => {
-                        let t = node_occurrence::occurrence_to_term(self, &occ);
-                        norm.bind(self, vid, t);
-                    }
                     crate::eval::value::Value::Term { id: t, .. } => norm.bind(self, vid, t),
-                    other => norm.bind_value(self, vid, other),
+                    other => match node_occurrence::value_to_term(self, &other) {
+                        Ok(t) => norm.bind(self, vid, t),
+                        // Un-reifiable carrier (Tuple / opaque handle / Unit, or an
+                        // Entity carrying one): can't ride the TermId body_rename,
+                        // so this candidate can't match — drop it gracefully.
+                        Err(_e) => {
+                            let mut contradicted = subst::Substitution::new();
+                            contradicted.contradiction = true;
+                            return (Vec::new(), contradicted);
+                        }
+                    },
                 }
             }
             normalized = norm;
@@ -3277,8 +3309,10 @@ impl KnowledgeBase {
             // path below always threaded links through its `rename` — this
             // restores that parity for the De Bruijn path.)
             for (ts_vid, bound_term) in tree_subst.iter_terms() {
-                // Shared `u32::MAX - n` decode (`Var::synthetic_debruijn_index`),
-                // also used by `apply_eq_rules`'s `instantiate_eq_rhs`.
+                // `u32::MAX - n` decode (`Var::synthetic_debruijn_index`); this
+                // is now its sole caller (the former `apply_eq_rules` /
+                // `instantiate_eq_rhs` site is gone — `fire_simp_equation` binds
+                // head vars via `match_view` instead).
                 if let Some(db_index) = Var::synthetic_debruijn_index(ts_vid, arity) {
                     if let Some(&fresh_vid) = fresh_vars.get(db_index) {
                         body_rename.bind(self, fresh_vid, bound_term);
@@ -3361,9 +3395,12 @@ impl KnowledgeBase {
 
             let mut rename = subst::Substitution::new();
             for vid in &all_vars {
-                // Term-narrow: a non-`Term` carrier here would need De Bruijn
-                // opening over an occurrence (WI-348 Phase C) — until then a
-                // Node binding falls through to a fresh var, as before.
+                // Term-narrow is safe here: the top-of-function normalization
+                // (WI-636) already reified every non-`Term` binding to a term (or
+                // dropped the whole candidate on an un-reifiable carrier), so
+                // `resolve_as_value` sees a `Value::Term` for any bound rule var —
+                // a `Node`/scalar/`Entity` no longer falls through to a fresh var
+                // and drops its head-match constraint.
                 if let Some(crate::eval::value::Value::Term { id: bound, .. }) =
                     tree_subst.resolve_as_value(*vid)
                 {
@@ -5295,6 +5332,224 @@ mod tests {
             functor: vf, pos_args: SmallVec::from_elem(g_missing, 1), named_args: SmallVec::new(),
         });
         assert_eq!(kb.resolve(&[q_no], &config).len(), 0, "vf(g(\"missing\")) should fail");
+    }
+
+    #[test]
+    fn with_fresh_vars_reifies_synthetic_non_term_binding() {
+        // WI-636: a synthetic `u32::MAX - n` head-match entry bound to a NON-Term
+        // Value (a scalar) must reach `body_rename` and substitute into the body.
+        // The old `iter_terms` walk narrowed to `Value::Term` and SILENTLY dropped
+        // it, leaving the body running on an unbound fresh var (the head-match
+        // constraint lost). Build rule `p(?x) :- q(?x)`, hand-feed "DeBruijn 0
+        // matched scalar 5" as a `Value::Int` synthetic entry, and assert the
+        // opened body is `q(5)` — not `q(?fresh)`.
+        use crate::eval::value::Value;
+        use term::Var;
+
+        let mut kb = KnowledgeBase::new();
+        let p = kb.intern("p");
+        let q = kb.intern("q");
+        let sort = kb.make_name_term("T");
+        let domain = kb.make_name_term("d");
+
+        // Rule p(?x) :- q(?x), arity 1 (closed to De Bruijn on assert).
+        let xv = kb.fresh_var(p);
+        let xt = kb.alloc(Term::Var(Var::Global(xv)));
+        let head = kb.alloc(Term::Fn {
+            functor: p, pos_args: SmallVec::from_elem(xt, 1), named_args: SmallVec::new(),
+        });
+        let body_q = kb.alloc(Term::Fn {
+            functor: q, pos_args: SmallVec::from_elem(xt, 1), named_args: SmallVec::new(),
+        });
+        let body_nodes = kb.term_body_to_nodes(&[body_q]);
+        let rid = kb.assert_rule_debruijn_with_nodes(head, body_nodes, sort, domain, None);
+        assert_eq!(kb.rule_arity(rid), 1, "?x is the rule's one head var");
+
+        // tree_subst: synthetic entry (DeBruijn 0 → scalar 5) as a NON-Term Value.
+        let mut tree_subst = subst::Substitution::new();
+        tree_subst.bind_value(&kb, Var::DeBruijn(0).as_vid(), Value::Int(5));
+
+        let (fresh_nodes, _links) = kb.with_fresh_vars(rid, &tree_subst);
+        assert_eq!(fresh_nodes.len(), 1, "one body atom q(?x)");
+
+        // Body must be q(5): the scalar reached body_rename and substituted in.
+        let body_term = node_occurrence::occurrence_to_term(&mut kb, &fresh_nodes[0]);
+        let five = kb.alloc(Term::Const(Literal::Int(5)));
+        let expected = kb.alloc(Term::Fn {
+            functor: q, pos_args: SmallVec::from_elem(five, 1), named_args: SmallVec::new(),
+        });
+        assert_eq!(
+            body_term, expected,
+            "synthetic scalar head-match must substitute into the body (q(5)), \
+             not be dropped as an unbound fresh var",
+        );
+    }
+
+    #[test]
+    fn with_fresh_vars_reifies_synthetic_entity_with_scalar_children() {
+        // WI-636: an `Entity` operand with reifiable (scalar) children — the
+        // common shape the WI-625 eq/neq bridge feeds into a rule-backed `eq`
+        // head match — reifies faithfully and fires the rule, instead of being
+        // dropped by the old `iter_terms` narrowing. Head `p(?x)`, body `q(?x)`,
+        // synthetic entry (DeBruijn 0 → `mk(1, 2)` as a `Value::Entity`); assert
+        // the opened body is `q(mk(1, 2))` and the candidate is NOT dropped.
+        use crate::eval::value::Value;
+        use std::rc::Rc;
+        use term::Var;
+
+        let mut kb = KnowledgeBase::new();
+        let p = kb.intern("p");
+        let q = kb.intern("q");
+        let mk = kb.intern("mk");
+        let sort = kb.make_name_term("T");
+        let domain = kb.make_name_term("d");
+
+        let xv = kb.fresh_var(p);
+        let xt = kb.alloc(Term::Var(Var::Global(xv)));
+        let head = kb.alloc(Term::Fn {
+            functor: p, pos_args: SmallVec::from_elem(xt, 1), named_args: SmallVec::new(),
+        });
+        let body_q = kb.alloc(Term::Fn {
+            functor: q, pos_args: SmallVec::from_elem(xt, 1), named_args: SmallVec::new(),
+        });
+        let body_nodes = kb.term_body_to_nodes(&[body_q]);
+        let rid = kb.assert_rule_debruijn_with_nodes(head, body_nodes, sort, domain, None);
+
+        let entity = Value::Entity {
+            functor: mk,
+            pos: Rc::from(vec![Value::Int(1), Value::Int(2)]),
+            named: Rc::from(Vec::<(crate::intern::Symbol, Value)>::new()),
+            ty: None,
+        };
+        let mut tree_subst = subst::Substitution::new();
+        tree_subst.bind_value(&kb, Var::DeBruijn(0).as_vid(), entity);
+
+        let (fresh_nodes, links) = kb.with_fresh_vars(rid, &tree_subst);
+        assert!(!links.is_contradiction(), "a reifiable Entity must NOT drop the candidate");
+        assert_eq!(fresh_nodes.len(), 1);
+
+        let body_term = node_occurrence::occurrence_to_term(&mut kb, &fresh_nodes[0]);
+        let one = kb.alloc(Term::Const(Literal::Int(1)));
+        let two = kb.alloc(Term::Const(Literal::Int(2)));
+        let mk_12 = kb.alloc(Term::Fn {
+            functor: mk, pos_args: SmallVec::from_slice(&[one, two]), named_args: SmallVec::new(),
+        });
+        let expected = kb.alloc(Term::Fn {
+            functor: q, pos_args: SmallVec::from_elem(mk_12, 1), named_args: SmallVec::new(),
+        });
+        assert_eq!(body_term, expected, "Entity with scalar children must reify into the body");
+    }
+
+    #[test]
+    fn with_fresh_vars_drops_candidate_on_unreifiable_carrier() {
+        // WI-636: a carrier with no faithful term form reaching a head match must
+        // NOT panic (that would abort the process on legitimate user input — the
+        // WI-625 eq/neq bridge routes a `Value::Entity{ctor, [Value::Tuple…]}`
+        // operand here) and must NOT be silently dropped into an unbound-var wrong
+        // answer. Instead the candidate is dropped (`contradiction`), so eq falls
+        // back to its structural verdict. Feed `mk(tuple(1, 2))` — an Entity
+        // carrying a term-less `Value::Tuple`, the exact reachable shape — and
+        // assert the returned links are a contradiction (candidate dropped).
+        use crate::eval::value::Value;
+        use std::rc::Rc;
+        use term::Var;
+
+        let mut kb = KnowledgeBase::new();
+        let p = kb.intern("p");
+        let q = kb.intern("q");
+        let mk = kb.intern("mk");
+        let sort = kb.make_name_term("T");
+        let domain = kb.make_name_term("d");
+
+        let xv = kb.fresh_var(p);
+        let xt = kb.alloc(Term::Var(Var::Global(xv)));
+        let head = kb.alloc(Term::Fn {
+            functor: p, pos_args: SmallVec::from_elem(xt, 1), named_args: SmallVec::new(),
+        });
+        let body_q = kb.alloc(Term::Fn {
+            functor: q, pos_args: SmallVec::from_elem(xt, 1), named_args: SmallVec::new(),
+        });
+        let body_nodes = kb.term_body_to_nodes(&[body_q]);
+        let rid = kb.assert_rule_debruijn_with_nodes(head, body_nodes, sort, domain, None);
+
+        // A term-less Tuple nested in an Entity — value_to_term recurses into the
+        // Tuple child and errors, so the whole candidate is dropped.
+        let tuple = Value::Tuple {
+            pos: Rc::from(vec![Value::Int(1), Value::Int(2)]),
+            named: Rc::from(Vec::<(crate::intern::Symbol, Value)>::new()),
+            ty: None,
+        };
+        let entity = Value::Entity {
+            functor: mk,
+            pos: Rc::from(vec![tuple]),
+            named: Rc::from(Vec::<(crate::intern::Symbol, Value)>::new()),
+            ty: None,
+        };
+        let mut tree_subst = subst::Substitution::new();
+        tree_subst.bind_value(&kb, Var::DeBruijn(0).as_vid(), entity);
+
+        let (fresh_nodes, links) = kb.with_fresh_vars(rid, &tree_subst);
+        assert!(
+            links.is_contradiction(),
+            "an un-reifiable carrier must drop the candidate (contradiction), not panic/leak",
+        );
+        assert!(fresh_nodes.is_empty(), "dropped candidate yields no body nodes");
+    }
+
+    #[test]
+    fn prove_rule_predicate_no_panic_on_entity_tuple_operand() {
+        // WI-636 end-to-end: this replicates the reachable path the WI-625 eq/neq
+        // bridge drives — `prove_rule_predicate` builds an Entity goal from raw
+        // ground operands and resolves it through `with_fresh_vars`. An operand
+        // that is a `Value::Entity` carrying a term-less `Value::Tuple` used to
+        // panic (aborting the process); it must now resolve without crashing, the
+        // rule candidate dropping so the predicate is simply unproved (`Refuted`).
+        use crate::eval::value::Value;
+        use crate::kb::resolve::PredicateProof;
+        use std::rc::Rc;
+        use term::Var;
+
+        let mut kb = KnowledgeBase::new();
+        let pr = kb.intern("pr");
+        let marker = kb.intern("marker");
+        let mk = kb.intern("mk");
+        let sort = kb.make_name_term("T");
+        let domain = kb.make_name_term("d");
+
+        // Fact `marker` + rule `pr(?a, ?b) :- marker` (arity 2 → De Bruijn path).
+        let marker_t = kb.alloc(Term::Fn {
+            functor: marker, pos_args: SmallVec::new(), named_args: SmallVec::new(),
+        });
+        kb.assert_fact(marker_t, sort, domain, None);
+        let av = kb.fresh_var(pr);
+        let at = kb.alloc(Term::Var(Var::Global(av)));
+        let bv = kb.fresh_var(pr);
+        let bt = kb.alloc(Term::Var(Var::Global(bv)));
+        let head = kb.alloc(Term::Fn {
+            functor: pr, pos_args: SmallVec::from_slice(&[at, bt]), named_args: SmallVec::new(),
+        });
+        let body_nodes = kb.term_body_to_nodes(&[marker_t]);
+        kb.assert_rule_debruijn_with_nodes(head, body_nodes, sort, domain, None);
+
+        // Operand `mk(tuple(1, 2))`: an Entity carrying a term-less Tuple.
+        let tuple = Value::Tuple {
+            pos: Rc::from(vec![Value::Int(1), Value::Int(2)]),
+            named: Rc::from(Vec::<(crate::intern::Symbol, Value)>::new()),
+            ty: None,
+        };
+        let entity = Value::Entity {
+            functor: mk,
+            pos: Rc::from(vec![tuple]),
+            named: Rc::from(Vec::<(crate::intern::Symbol, Value)>::new()),
+            ty: None,
+        };
+
+        // No panic; the candidate drops, so the predicate is unproved.
+        let proof = kb.prove_rule_predicate(pr, vec![entity, Value::Int(0)]);
+        assert!(
+            matches!(proof, PredicateProof::Refuted),
+            "un-reifiable operand → dropped candidate → Refuted (no crash)",
+        );
     }
 
     #[test]

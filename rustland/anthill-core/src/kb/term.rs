@@ -147,10 +147,13 @@ impl Var {
     /// reserved synthetic range (`u32::MAX - n` for `n` in `0..arity`, as a
     /// discrim match records a matched De Bruijn position), return the De Bruijn
     /// index `n`; otherwise `None` (a real `Global`/`Rigid` VarId). The single
-    /// decode of the `u32::MAX - n` scheme — both instantiation sites
-    /// ([`KnowledgeBase::with_fresh_vars`] body-rename and `apply_eq_rules`'s
-    /// `instantiate_eq_rhs` RHS-rename) call it so they cannot silently desync
-    /// from the encoder above. `arity == 0` (no synthetic vars) yields `None`.
+    /// decode of the `u32::MAX - n` scheme — its one caller
+    /// ([`KnowledgeBase::with_fresh_vars`] body-rename) pairs with the encoder
+    /// above so they cannot silently desync. (The former second site, the
+    /// deleted `apply_eq_rules` / `instantiate_eq_rhs` RHS-rename, is now
+    /// `fire_simp_equation`, which binds head vars directly via `match_view` and
+    /// no longer uses this synthetic-DeBruijn scheme.) `arity == 0` (no synthetic
+    /// vars) yields `None`.
     pub fn synthetic_debruijn_index(vid: VarId, arity: u32) -> Option<usize> {
         if arity > 0 && vid.raw() > u32::MAX - arity - 1 {
             Some((u32::MAX - vid.raw()) as usize)
