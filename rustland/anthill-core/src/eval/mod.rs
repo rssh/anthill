@@ -523,24 +523,92 @@ impl Interpreter {
         self.invoke_op_with_requirements(sym, args, requirements)
     }
 
-    /// WI-625 gap 1: the resolver→eval bridge entry
+    /// WI-625 gap 1 + Layer B: the resolver→eval bridge entry
     /// ([`crate::kb::KnowledgeBase::bridge_op_to_eval`]). Like [`Self::call`] but
-    /// invoked BY SYMBOL (the resolver holds it already) and with **no seeded
-    /// requirement dictionaries**. The empty dicts are load-bearing for
-    /// SOUNDNESS: [`Self::seed_entry_requirements`] would install self-referential
-    /// PLACEHOLDERS, and a body that dispatches a `requires` op through a
-    /// placeholder can misdispatch to a wrong-but-non-erroring impl and return a
-    /// plausible WRONG value — which the resolver would then import as a definite
-    /// `eq`/`cmp` answer (an unsoundness the pre-bridge delay never had). With no
-    /// dicts, any `requires` dispatch instead hits an unbound-requirement error,
-    /// so the bridge residualizes (delays) — only requirement-FREE op bodies
-    /// decide. Supplying REAL dicts (so requires-carrying ops bridge too) is
-    /// WI-300 Tier B / gap 3.
+    /// invoked BY SYMBOL (the resolver holds it already).
+    ///
+    /// The requirement dictionaries are RESOLVED at the concrete argument types
+    /// ([`crate::kb::typing::resolve_bridge_requirements`], WI-300 Tier B / gap 3),
+    /// NOT seeded with [`Self::seed_entry_requirements`]'s self-referential
+    /// placeholders — a placeholder can misdispatch a `requires` op to a
+    /// wrong-but-non-erroring impl and return a plausibly-WRONG value, which the
+    /// resolver would import as a definite `eq`/`cmp` answer (an unsoundness the
+    /// pre-bridge delay never had). Instead:
+    ///   * a requirement-FREE op runs with empty dicts (the gap-1 behavior);
+    ///   * a requires-carrying op gets REAL provider dicts, so its body's spec-op
+    ///     dispatch reaches the right impl and DECIDES (the gap-3 win);
+    ///   * a requirement that cannot be resolved uniquely at these arg types
+    ///     ([`BridgeRequirements::Unresolvable`]) SUSPENDS → the bridge residualizes,
+    ///     never running with a wrong or missing dict.
     pub(crate) fn call_op_bridged(&mut self, sym: Symbol, args: &[Value]) -> Result<Value, EvalError> {
         if let Some(builtin) = self.builtins.get(&sym).cloned() {
             return (builtin)(self, args);
         }
-        self.invoke_op_with_requirements(sym, args, smallvec::SmallVec::new())
+        use crate::kb::typing::BridgeRequirements;
+        let requirements = match crate::kb::typing::resolve_bridge_requirements(&mut self.kb, sym, args) {
+            BridgeRequirements::NoneNeeded => smallvec::SmallVec::new(),
+            BridgeRequirements::Unresolvable => {
+                return Err(EvalError::Suspended {
+                    detail: format!(
+                        "bridge: cannot resolve a required dictionary for `{}` at these argument types",
+                        self.kb.qualified_name_of(sym),
+                    ),
+                });
+            }
+            BridgeRequirements::Resolved(parent, trees) => {
+                let mut out: smallvec::SmallVec<[(Symbol, value::RequirementHandle); 2]> =
+                    smallvec::SmallVec::with_capacity(trees.len() + 1);
+                // Slot 0 = Self placeholder (the op's own parent sort), then one
+                // real provider handle per `requires` slot — the same layout
+                // `call_with_requirements` assembles for a host caller.
+                out.push((self.fields.req_self, self.requirements.alloc(parent, smallvec::SmallVec::new())));
+                for (name, tree) in &trees {
+                    match self.port_resolved_tree(tree) {
+                        Some(handle) => out.push((*name, handle)),
+                        None => {
+                            return Err(EvalError::Suspended {
+                                detail: format!(
+                                    "bridge: requirement for `{}` resolved to a caller-scope slot with no caller frame",
+                                    self.kb.qualified_name_of(sym),
+                                ),
+                            });
+                        }
+                    }
+                }
+                out
+            }
+        };
+        self.invoke_op_with_requirements(sym, args, requirements)
+    }
+
+    /// WI-625 Layer B: port a resolved requirement tree
+    /// ([`crate::kb::typing::ResolvedRequiresNode`]) to a runtime
+    /// [`value::RequirementHandle`] — the runtime dual of the typer's
+    /// `emit_tree_as_projection`. A `Leaf` allocates a handle over its impl carrier
+    /// with no sub-requirements; a `Conditional` recurses each sub-resolution into a
+    /// nested handle first (so `handle.arity()` matches the impl's own `requires`
+    /// chain, satisfying the eval dispatcher's cross-check). `FromScope` cannot arise
+    /// here (the bridge resolves with an empty scope) — returns `None` (residualize)
+    /// if it somehow does.
+    fn port_resolved_tree(
+        &self,
+        tree: &crate::kb::typing::ResolvedRequiresNode,
+    ) -> Option<value::RequirementHandle> {
+        use crate::kb::typing::ResolvedRequiresNode;
+        match tree {
+            ResolvedRequiresNode::Leaf { impl_sort, .. } => {
+                Some(self.requirements.alloc(*impl_sort, smallvec::SmallVec::new()))
+            }
+            ResolvedRequiresNode::Conditional { impl_sort, sub_resolutions, .. } => {
+                let mut subs: smallvec::SmallVec<[value::RequirementHandle; 1]> =
+                    smallvec::SmallVec::with_capacity(sub_resolutions.len());
+                for sub in sub_resolutions {
+                    subs.push(self.port_resolved_tree(sub)?);
+                }
+                Some(self.requirements.alloc(*impl_sort, subs))
+            }
+            ResolvedRequiresNode::FromScope { .. } => None,
+        }
     }
 
     /// WI-625 gap 1: is this interpreter running as the resolver's op-body

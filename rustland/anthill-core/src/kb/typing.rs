@@ -7883,6 +7883,105 @@ fn build_construct_requirement(
     })
 }
 
+/// WI-625 Layer B (WI-300 Tier B) — the requirement dictionaries a GROUND-arg
+/// bridged op needs, resolved at the CONCRETE types of its arguments. The resolver
+/// bridges a concrete op as an `eq`/`cmp` operand; if the op's parent sort declares
+/// `requires Spec[T]` and its body dispatches a (non-builtin) `Spec` op, that
+/// dispatch reads the frame's `__req_<spec>` dictionary — which the bridge's empty
+/// floor (WI-625 gap 1) does not supply, so the op residualizes. This resolves the
+/// real provider so the bridge can thread it.
+pub(crate) enum BridgeRequirements {
+    /// The op's parent sort has no `requires` chain — run with empty dicts (the
+    /// gap-1 behavior; a requirement-free body decides).
+    NoneNeeded,
+    /// Resolved: the parent sort + one tree per slot of its `requires` chain, in
+    /// `synth_req_names` order, for the eval bridge to port into `RequirementHandle`s.
+    Resolved(Symbol, Vec<(Symbol, ResolvedRequiresNode)>),
+    /// A required dictionary is unresolvable at these arg types (no / ambiguous /
+    /// cyclic provider, or an under-determined carrier) — the bridge must
+    /// residualize rather than run with a wrong or missing dict.
+    Unresolvable,
+}
+
+/// Resolve the requirement dictionaries for a bridged op call over GROUND args (see
+/// [`BridgeRequirements`]). Types each argument, unifies it with the op's declared
+/// parameter type to pin the parent sort's type-parameters, substitutes those into
+/// the parent's `requires` chain, and SLD-resolves each concrete requirement to a
+/// provider tree — the runtime dual of the typer's compile-time
+/// [`build_concrete_dispatch_dict`]. Sound by construction: [`resolve`] is the same
+/// instance-synthesis the typer uses, and anything it can't decide uniquely maps to
+/// `Unresolvable` (→ the bridge delays).
+///
+/// Targets effect-free spec-op providers (`eq`/`cmp`/comparison-style `Combiner`s).
+/// A resolved provider whose OWN requires-chain carries a synthetic `EffectsRuntime`
+/// marker would build a handle whose arity is short of `synth_req_names(impl)` (the
+/// marker is skipped by `candidate_sub_goals_owned` but not `synth_req_names`), which
+/// the eval dispatcher's cross-check rejects — surfaced loudly by
+/// [`super::KnowledgeBase::bridge_op_to_eval`]'s `debug_assert(!Internal)` rather than
+/// silently mis-decided. Unreachable for the providers the bridge targets.
+pub(crate) fn resolve_bridge_requirements(
+    kb: &mut KnowledgeBase,
+    op: Symbol,
+    args: &[Value],
+) -> BridgeRequirements {
+    let Some(parent) = impl_parent_of_op(kb, op) else {
+        return BridgeRequirements::NoneNeeded;
+    };
+    let chain = direct_requires_chain(kb, parent);
+    if chain.is_empty() {
+        return BridgeRequirements::NoneNeeded;
+    }
+    // Pin the parent sort's type-parameters from the concrete argument types: unify
+    // each ground arg's inferred type with the op's declared parameter type. A
+    // parameter typed with the parent sort (`b: Box`) binds `Box`'s params from the
+    // arg's type-args (`Box[T = Tag]` ⇒ `Box.T := Tag`); a parameter typed with a
+    // sort-param directly (`x: T`) binds it from the arg's own type.
+    let Some(rec) = super::op_info::lookup_operation_info(kb, op) else {
+        return BridgeRequirements::Unresolvable;
+    };
+    let params = rec.params;
+    let mut subst = Substitution::new();
+    let empty = Substitution::new();
+    for (i, (_pname, ptype)) in params.iter().enumerate() {
+        let Some(arg) = args.get(i) else { continue };
+        let arg_ty = value_type_term(kb, &empty, arg);
+        unify_types(kb, &mut subst, &arg_ty, ptype);
+    }
+    // One resolved tree per requires slot, keyed by the frame requirement-param name.
+    let names = synth_req_names(kb, parent);
+    let mut trees: Vec<(Symbol, ResolvedRequiresNode)> = Vec::with_capacity(chain.len());
+    for (entry, name) in chain.iter().zip(names.iter()) {
+        let concrete_spec = substitute_spec_via_subst(kb, entry.spec, &subst);
+        let concrete = RequiresEntry { required_sort: entry.required_sort, spec: concrete_spec };
+        let Some(goal) = goal_from_requires_entry(kb, &concrete) else {
+            return BridgeRequirements::Unresolvable;
+        };
+        // SOUNDNESS: only resolve a FULLY-PINNED goal — every one of the spec's
+        // type-parameters bound to a fully-GROUND type. An argument that fails to
+        // determine a type-param (an empty-collection element, a return-only param)
+        // leaves it abstract, and `match_candidate_against_goal` treats an abstract
+        // binding as a WILDCARD that matches ANY provider — which would build a WRONG
+        // dictionary and let the bridged op mis-decide. Residualize instead.
+        let spec_tparams = kb.type_params_of_sort(goal.spec_sort);
+        let all_pinned = spec_tparams.iter().all(|tp| {
+            goal.bindings
+                .iter()
+                .any(|(k, v)| kb.resolve_sym(*k) == tp && type_value_is_ground(kb, *v))
+        });
+        if !all_pinned {
+            return BridgeRequirements::Unresolvable;
+        }
+        // Empty scope: the bridge has no caller frame, so a slot can only resolve by
+        // CONSTRUCTION (`Leaf`/`Conditional`), never `FromScope`.
+        let scope = ResolutionScope { available_requires: &[] };
+        match resolve(kb, &goal, &scope) {
+            ResolutionResult::Resolved(tree) => trees.push((*name, tree)),
+            _ => return BridgeRequirements::Unresolvable,
+        }
+    }
+    BridgeRequirements::Resolved(parent, trees)
+}
+
 /// Extract a `SortGoal` from a `RequiresEntry`'s SortView, keeping only
 /// type-parameter bindings (op bindings don't constrain dispatch).
 fn goal_from_requires_entry(kb: &KnowledgeBase, entry: &RequiresEntry) -> Option<SortGoal> {

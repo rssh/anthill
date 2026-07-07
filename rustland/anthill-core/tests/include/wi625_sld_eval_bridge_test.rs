@@ -384,3 +384,108 @@ fn transitive_requires_rejects_wrong_type_param_witness() {
         "expected the ungroundable-requires error, got: {errs:?}",
     );
 }
+
+// ── WI-625 Layer B — bridged op dispatching a USER spec op via a real dict ────
+//
+// `Box.combineBox` has a host body that dispatches the user-defined `Combiner.combine`
+// on its abstract element (`Box requires Combiner[T]`). At the bridge the resolver
+// builds the REAL `Combiner` provider dictionary at the concrete element type and
+// threads it into the op's frame, so the dispatch reaches `TagCombiner.combine` and
+// DECIDES — where the gap-1 empty-dict floor would residualize. `Other` provides no
+// `Combiner`, so a box over it is the unresolvable case (must residualize, not
+// mis-decide).
+const COMBINER_SRC: &str = r#"
+    namespace gap3b.combiner
+      import anthill.prelude.{Int64, Bool}
+      import anthill.prelude.PartialEq.{eq}
+      sort Combiner
+        sort T = ?
+        operation combine(x: T, y: T) -> T
+      end
+      sort Tag
+        entity tag(n: Int64)
+      end
+      sort Other
+        entity other(k: Int64)
+      end
+      sort TagCombiner
+        provides Combiner[T = Tag]
+        operation combine(x: Tag, y: Tag) -> Tag = tag(n: 99)
+      end
+      sort Box
+        sort T = ?
+        requires Combiner[T]
+        entity box(content: T)
+        operation combineBox(b: Box) -> T =
+          match b
+            case box(c) -> combine(c, c)
+      end
+      import gap3b.combiner.Box.{combineBox}
+      rule combines_to(?b, ?r) :- eq(combineBox(?b), ?r)
+    end
+"#;
+
+/// A `gap3b.combiner.Tag.tag(n: v)` entity term.
+fn tag_entity(kb: &mut KnowledgeBase, v: i64) -> TermId {
+    let f = kb.try_resolve_symbol("gap3b.combiner.Tag.tag").expect("Tag.tag");
+    let n = kb.intern("n");
+    let nv = int_term(kb, v);
+    kb.alloc(Term::Fn { functor: f, pos_args: SmallVec::new(), named_args: SmallVec::from_slice(&[(n, nv)]) })
+}
+
+/// A `gap3b.combiner.Box.box(content: <content>)` entity term.
+fn box_of(kb: &mut KnowledgeBase, content: TermId) -> TermId {
+    let f = kb.try_resolve_symbol("gap3b.combiner.Box.box").expect("Box.box");
+    let c = kb.intern("content");
+    kb.alloc(Term::Fn { functor: f, pos_args: SmallVec::new(), named_args: SmallVec::from_slice(&[(c, content)]) })
+}
+
+fn definite_count(kb: &mut KnowledgeBase, g: TermId) -> usize {
+    kb.resolve(&[g], &ResolveConfig::default())
+        .iter()
+        .filter(|s| s.residual.is_empty())
+        .count()
+}
+
+#[test]
+fn layerb_bridged_op_dispatches_user_spec_via_threaded_dict() {
+    let mut kb = common::load_kb_with(COMBINER_SRC);
+    // combineBox(box(tag(5))) = combine(tag(5), tag(5)) = tag(99) via the threaded
+    // TagCombiner dict; eq(tag(99), tag(99)) succeeds ⇒ one definite solution.
+    let tag5 = tag_entity(&mut kb, 5);
+    let b = box_of(&mut kb, tag5);
+    let tag99 = tag_entity(&mut kb, 99);
+    let g = goal(&mut kb, "gap3b.combiner.combines_to", &[b, tag99]);
+    assert_eq!(
+        definite_count(&mut kb, g),
+        1,
+        "combineBox must DECIDE via the real Combiner dict built at the bridge",
+    );
+
+    // eq(tag(99), tag(5)) fails ⇒ no solution (the op still ran; the compare is false).
+    let tag5b = tag_entity(&mut kb, 5);
+    let b2 = box_of(&mut kb, tag5b);
+    let tag5r = tag_entity(&mut kb, 5);
+    let g2 = goal(&mut kb, "gap3b.combiner.combines_to", &[b2, tag5r]);
+    assert_eq!(definite_count(&mut kb, g2), 0, "combineBox = tag(99) ≠ tag(5)");
+}
+
+#[test]
+fn layerb_unresolvable_provider_residualizes() {
+    // box(other(1)): the element `Other` provides no `Combiner`, so the bridge cannot
+    // resolve the dictionary — it SUSPENDS and the operand residualizes. The soundness
+    // property: NO definite solution (never run combineBox with a wrong/missing dict).
+    let mut kb = common::load_kb_with(COMBINER_SRC);
+    let otherf = kb.try_resolve_symbol("gap3b.combiner.Other.other").expect("Other.other");
+    let k = kb.intern("k");
+    let one = int_term(&mut kb, 1);
+    let other1 = kb.alloc(Term::Fn { functor: otherf, pos_args: SmallVec::new(), named_args: SmallVec::from_slice(&[(k, one)]) });
+    let b = box_of(&mut kb, other1);
+    let r = int_term(&mut kb, 0);
+    let g = goal(&mut kb, "gap3b.combiner.combines_to", &[b, r]);
+    assert_eq!(
+        definite_count(&mut kb, g),
+        0,
+        "Other provides no Combiner: the bridge must residualize, never mis-decide",
+    );
+}
