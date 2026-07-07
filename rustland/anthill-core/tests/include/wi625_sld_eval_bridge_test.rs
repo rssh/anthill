@@ -617,3 +617,109 @@ fn inherited_requires_ordered_types_and_decides_via_gt() {
         "bigger(1, 3) must be false",
     );
 }
+
+// ── Typed op-body eq LOAD path (WI-300 Tier B, the load-time dual of Layer B) ──
+//
+// A typed `eq(a: Set[T = Int64], b: Set[T = Int64])` in an op body used to FAIL to
+// LOAD: `PartialEq.eq` dispatches over the `Set` carrier, whose provider
+// `provides PartialEq[T = Set]` is CONDITIONAL on Set's own `requires Eq[T]`. The
+// dispatch matched the `Set` provider but never captured the concrete element
+// binding (`Set.T = Int64`) into its impl-subst — the self-representing carrier
+// writes `Set` bare, matched shallowly — so the requires-chain resolved at the
+// abstract `Set.T` and dispatch spuriously failed (`no impl matches`), identically
+// for EVERY element type. `match_candidate_against_goal` now threads a bare
+// impl-sort ref's per-call instance args into the impl-subst, so Set's requirement
+// resolves at the concrete element: `Eq[Int64]` resolves (Int64 provides lawful
+// Eq) → loads; `Eq[Float]` does NOT (IEEE Float provides only PartialEq) → still
+// rejected. This closes the typed-path REACHABILITY caveat on gaps 4/5/6: a typed
+// `eq` over a set now loads AND, at eval, dispatches through the carrier's Set.eq
+// via the delivered semantic-eq bridge.
+
+const TYPED_SET_EQ_SRC: &str = r#"
+    namespace test.wi625.typedeq
+      import anthill.prelude.{Set, Int64, Bool}
+      operation setsEqual(a: Set[T = Int64], b: Set[T = Int64]) -> Bool = eq(a, b)
+    end
+"#;
+
+#[test]
+fn typed_op_body_eq_over_set_int_loads() {
+    // Int64 provides lawful Eq, so Set's conditional `requires Eq[T = Int64]`
+    // discharges and the `PartialEq.eq` dispatch over the `Set` carrier resolves.
+    assert!(
+        common::try_load_kb_with(TYPED_SET_EQ_SRC).is_ok(),
+        "a typed `eq(a: Set[Int64], b: Set[Int64])` op body must LOAD — the \
+         dispatch discharges Set's conditional `requires Eq[T]` at the concrete \
+         element (WI-300 Tier B load side)",
+    );
+}
+
+#[test]
+fn typed_op_body_eq_over_set_float_rejected() {
+    // IEEE Float provides PartialEq but NOT lawful Eq, so Set's `requires Eq[T =
+    // Float]` cannot discharge — the transitive dependency is genuinely missing
+    // and the dispatch must STILL reject (the negative polarity of the same fix).
+    const SRC: &str = r#"
+        namespace test.wi625.typedeqf
+          import anthill.prelude.{Set, Float, Bool}
+          operation setsEqual(a: Set[T = Float], b: Set[T = Float]) -> Bool = eq(a, b)
+        end
+    "#;
+    let errs = common::try_load_kb_with(SRC)
+        .err()
+        .expect("eq over Set[Float] must be a LOAD error — Float has no lawful Eq");
+    assert!(
+        errs.iter().any(|e| e.contains("PartialEq.eq") && e.contains("dispatch")),
+        "the rejection must be the PartialEq.eq dispatch failure, got: {errs:?}",
+    );
+}
+
+#[test]
+fn typed_op_body_eq_over_map_and_nested_set_loads() {
+    // The sibling self-representing carrier `Map` (two params K/V; `requires
+    // Eq[K]`), and a NESTED `Set[Set[Int64]]` whose element requirement recurses
+    // (`Eq[Set[Int64]]` → `Eq[Int64]`) — both must discharge and load.
+    const MAP_SRC: &str = r#"
+        namespace test.wi625.typedeqmap
+          import anthill.prelude.{Map, Int64, Bool}
+          operation mapsEqual(a: Map[K = Int64, V = Int64], b: Map[K = Int64, V = Int64]) -> Bool = eq(a, b)
+        end
+    "#;
+    const NEST_SRC: &str = r#"
+        namespace test.wi625.typedeqnest
+          import anthill.prelude.{Set, Int64, Bool}
+          operation nestEqual(a: Set[T = Set[T = Int64]], b: Set[T = Set[T = Int64]]) -> Bool = eq(a, b)
+        end
+    "#;
+    assert!(common::try_load_kb_with(MAP_SRC).is_ok(), "typed eq over Map[Int64, Int64] must load");
+    assert!(common::try_load_kb_with(NEST_SRC).is_ok(), "typed eq over nested Set[Set[Int64]] must load");
+}
+
+#[test]
+fn typed_op_body_eq_over_set_evaluates_via_bridge() {
+    // END-TO-END: the LOAD fix makes gaps 4/5/6 reachable via the TYPED path. The
+    // op body's `eq(a, b)` dispatches to the carrier's rule-backed `Set.eq`, which
+    // the interpreter runs through the delivered eval→SLD semantic-eq bridge — so
+    // membership-equal sets compare EQUAL even though their `insert` spellings
+    // differ, and distinct-member sets compare UNEQUAL.
+    let kb = common::load_kb_with(TYPED_SET_EQ_SRC);
+    let mut i = Interpreter::new(kb);
+    anthill_core::eval::builtins::register_standard_builtins(&mut i)
+        .expect("register standard eval builtins");
+
+    let a = Value::term(set_term(i.kb_mut(), &[1, 2]));
+    let b = Value::term(set_term(i.kb_mut(), &[2, 1]));
+    let eq = i
+        .call("test.wi625.typedeq.setsEqual", &[a, b])
+        .expect("setsEqual({1,2},{2,1})")
+        .as_bool();
+    assert_eq!(eq, Some(true), "membership-equal sets must be EQUAL through the typed op");
+
+    let c = Value::term(set_term(i.kb_mut(), &[1, 2]));
+    let d = Value::term(set_term(i.kb_mut(), &[1, 3]));
+    let neq = i
+        .call("test.wi625.typedeq.setsEqual", &[c, d])
+        .expect("setsEqual({1,2},{1,3})")
+        .as_bool();
+    assert_eq!(neq, Some(false), "distinct-member sets must be UNEQUAL through the typed op");
+}

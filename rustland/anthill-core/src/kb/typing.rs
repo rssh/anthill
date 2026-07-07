@@ -9410,6 +9410,8 @@ fn collect_provides_candidates(
             };
             if !match_candidate_against_goal(
                 kb,
+                impl_sort,
+                true, // top-level spec-view binding — arm (2.5) may self-capture here
                 *candidate_value,
                 per_call_value,
                 &impl_param_set,
@@ -9504,6 +9506,8 @@ fn impl_param_symbols(kb: &KnowledgeBase, impl_sort: Symbol) -> SmallVec<[Symbol
 /// values so `List[T = A]` properly binds `A` to the per-call's `T`.
 fn match_candidate_against_goal(
     kb: &mut KnowledgeBase,
+    impl_sort: Symbol,
+    top_level: bool,
     candidate_value: TermId,
     per_call_value: TermId,
     impl_params: &[Symbol],
@@ -9564,6 +9568,8 @@ fn match_candidate_against_goal(
             };
             if !match_candidate_against_goal(
                 kb,
+                impl_sort,
+                false, // nested sub-binding — arm (2.5) applies only at top level
                 *c_val,
                 p_val,
                 impl_params,
@@ -9574,6 +9580,63 @@ fn match_candidate_against_goal(
             }
         }
         return true;
+    }
+    // (2.5) Candidate is a BARE ref to the impl sort ITSELF, matched against a
+    // concrete parametric instance of it — the self-representing carrier's
+    // `provides Spec[T = Self]` shape (`Set`/`Map`: `provides PartialEq[T = Set]`
+    // writes `Set` with no element binding). Step (3)'s shallow `dispatch_values_
+    // match` would accept `Set` vs `Set[T = Int64]` but bind NOTHING, so the impl's
+    // own conditional requires-chain (`Set requires Eq[T]`) then resolves at the
+    // abstract `Set.T` instead of `Int64` and dispatch spuriously fails — the
+    // typed op-body `eq(a: Set[Int64], b)` LOAD path (WI-625 / WI-300 Tier B load
+    // side). Thread the instance's type-args into `impl_subst` keyed by the impl
+    // sort's OWN type-params so the requires-chain resolves at the concrete element
+    // (`Eq[Int64]` resolves; `Eq[Float]` — Float has no lawful Eq — correctly does
+    // not). SOUND because the capture is gated on the candidate ref being the impl
+    // sort AND on `top_level`: the self-provides binding is the COMPARED-TYPE
+    // itself (a direct spec-view binding), never a nested sub-binding, so its
+    // per-call params are exactly the params the requires-chain substitutes. The
+    // `top_level` gate blocks a bare `Ref(impl_sort)` reached through step (2)'s
+    // recursion — a provider whose compared-type is a DIFFERENT parameterized sort
+    // that merely embeds `impl_sort` (`Set provides Eq[T = Pair[A = Set, …]]`) —
+    // from capturing a NESTED instance's element into the outer impl's params
+    // (code-review). A provider whose compared-type is a different parameterized
+    // sort at top level (`EqList provides Eq[T = List[A]]`) is parametric, handled
+    // by step (2), and never reaches here.
+    if top_level
+        && extract_sort_ref_sym(kb, &TermIdView(candidate_value))
+            .is_some_and(|s| kb.canonical_sort_sym(s) == kb.canonical_sort_sym(impl_sort))
+    {
+        if let Some((p_base, p_bindings)) = parametric_value_parts(kb, per_call_value) {
+            if kb.canonical_sort_sym(p_base) == kb.canonical_sort_sym(impl_sort) {
+                let mut aligned = false;
+                for (p_key, p_val) in &p_bindings {
+                    let p_short = short_name_of(kb.resolve_sym(*p_key));
+                    let Some(ip) = impl_params
+                        .iter()
+                        .find(|ip| short_name_of(kb.resolve_sym(**ip)) == p_short)
+                    else {
+                        continue;
+                    };
+                    aligned = true;
+                    if let Some((_, prev)) = impl_subst.iter().find(|(k, _)| k == ip) {
+                        if !values_structurally_equal(kb, *prev, *p_val) {
+                            return false;
+                        }
+                    } else {
+                        impl_subst.push((*ip, *p_val));
+                    }
+                }
+                // Only claim the (scored) match when we actually aligned an element
+                // to an impl param; a zero-alignment instance (param-name drift)
+                // falls through to step (3)'s shallow match — the pre-fix behavior —
+                // rather than masking an abstract sub-goal as a full match (review).
+                if aligned {
+                    *specificity = specificity.saturating_add(1);
+                    return true;
+                }
+            }
+        }
     }
     // (3) Concrete sort ref/identifier — use the existing shallow check.
     if dispatch_values_match(kb, per_call_value, candidate_value) {
