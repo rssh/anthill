@@ -295,6 +295,9 @@ mod wi539_call_site_contracts_test;
 #[path = "include/wi557_rule_body_precondition_scope_test.rs"]
 mod wi557_rule_body_precondition_scope_test;
 
+#[path = "include/wi622_rule_body_dot_obligations_test.rs"]
+mod wi622_rule_body_dot_obligations_test;
+
 #[path = "include/wi366_value_in_type_facts_test.rs"]
 mod wi366_value_in_type_facts_test;
 

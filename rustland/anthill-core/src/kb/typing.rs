@@ -109,6 +109,20 @@ pub enum TypeError {
         spec_sort_sym: Symbol,
         abstract_params: SmallVec<[Symbol; 2]>,
     },
+    /// WI-650: an `Eq.eq`/`Eq.neq` (`=`/`neq`) call whose operand's sort declares
+    /// its OWN `eq` override with NO backing — no runnable body and no non-fact
+    /// rules (e.g. `Map` once the relational eq/binds/strip_is apparatus was
+    /// dropped: its `Eq` provision is real at the spec-op/builtin layer, but the
+    /// override op is a bodyless placeholder the WI-625 host bridge will fill).
+    /// Such a compare type-checks (`Eq.eq` is a total builtin — no missing
+    /// requirement) yet would SILENTLY misdecide at resolution: `sem_eq_dispatch`
+    /// targets the empty override, exhausts the sub-search, and returns
+    /// "not equal". `BuiltinResult` has no error channel (Success/Delay/Failure),
+    /// so this is the loud TYPE-TIME face. `carrier_sort` is the operand's sort.
+    EqOverrideUnbacked {
+        span: Option<Span>,
+        carrier_sort: Symbol,
+    },
     /// Bottom or other post-elaboration expression seen by the surface
     /// typer — emitted only by `req_insertion`, never user-written.
     BottomExpr {
@@ -301,6 +315,14 @@ impl TypeError {
                     params_list.join(", "),
                 )
             }
+            TypeError::EqOverrideUnbacked { carrier_sort, .. } => {
+                let carrier_qn = kb.qualified_name_of(*carrier_sort);
+                format!(
+                    "Eq[{}] declared but unimplemented (pending WI-625 host bridge): comparing two `{}` values via `=`/`eq`/`neq` would silently misdecide — the carrier declares an `eq` override with no rules or runnable body",
+                    carrier_qn,
+                    short_name_of(carrier_qn),
+                )
+            }
             TypeError::BottomExpr { .. } => {
                 "bottom or post-elaboration expression in surface IR".to_string()
             }
@@ -352,6 +374,7 @@ impl TypeError {
             | TypeError::NoSuchTypeParam { span, .. }
             | TypeError::UnconstrainedTypeParam { span, .. }
             | TypeError::MissingRequiresForSpecOp { span, .. }
+            | TypeError::EqOverrideUnbacked { span, .. }
             | TypeError::DotDispatchNoMatch { span, .. }
             | TypeError::ForbiddenInternalField { span, .. }
             | TypeError::UnsatisfiedPrecondition { span, .. }
@@ -487,6 +510,19 @@ impl TypeError {
                     span: self.span(kb),
                 }
             }
+            TypeError::EqOverrideUnbacked { carrier_sort, .. } => {
+                let carrier_qn = kb.qualified_name_of(*carrier_sort).to_string();
+                LoadError::TypeMismatch {
+                    entity_name: carrier_qn.clone(),
+                    field_name: "eq".to_string(),
+                    expected_type: format!(
+                        "an implemented `Eq[{}]` instance (rules or a runnable `eq` body, or the WI-625 host bridge)",
+                        carrier_qn,
+                    ),
+                    actual_type: "`Eq` override declared but unimplemented — comparing two of these would silently misdecide".to_string(),
+                    span: self.span(kb),
+                }
+            }
             TypeError::BottomExpr { .. } => LoadError::TypeMismatch {
                 entity_name: "<bottom>".to_string(),
                 field_name: "expr".to_string(),
@@ -614,14 +650,26 @@ pub struct TypingEnv {
     /// the iterative typer and this is set once per rule, so clones are a refcount
     /// bump, not a map copy.
     debruijn_types: Rc<HashMap<u32, Value>>,
-    /// WI-557: set ONLY by the rule-body dot-dispatch sweep
+    /// WI-557 / WI-622: set ONLY by the rule-body dot-dispatch sweep
     /// (`type_rule_bodies`). A rule body is SLD/relational — it has no
-    /// call-site Γ and no imperative Hoare semantics — so the WI-539 value-
-    /// precondition `requires`-check (an op-body call-site obligation proved
-    /// against Γ) does not apply there: it would float over a rule-body variable
-    /// and raise a spurious `UnsatisfiedPrecondition`. `check_apply_iter` skips
-    /// the precondition check when this is set; op-body checking (the flag stays
-    /// `false`) is unchanged. A plain `bool` rides through every `Visit`-push /
+    /// call-site Γ and no imperative Hoare semantics — so an OP-BODY call-site
+    /// obligation over a symbolic rule-body variable legitimately FLOATS and must
+    /// not fire as a hard load error. `check_apply_iter` consults this to scope
+    /// two such obligations (op-body checking, the flag `false`, is unchanged):
+    ///   * WI-539 value-precondition `requires`-check — skipped for a FLOAT but
+    ///     still raised on a ground-REFUTED precondition (WI-602: definite raises,
+    ///     float defers — the WI-067/WI-292 polarity);
+    ///   * WI-270 `UnconstrainedTypeParam` — skipped entirely, because the dot is
+    ///     typed with `expected: None` so a return-only param has no call-site pin,
+    ///     yet SLD resolution unifies it against the goal context. There is no
+    ///     DEFINITE sub-case (unlike the precondition): "unconstrained" means "no
+    ///     binding at all", exactly the float condition; a genuine type CONFLICT
+    ///     surfaces as a contradiction / `TypeMismatch`, not here.
+    /// The sibling spec-op `DispatchNoMatch` needs NO gate: dot dispatch resolves
+    /// a spec op only on a CONCRETE (or abstract-spec) receiver, never an abstract
+    /// type-param, so every rule-body dot that reaches that raise has a concrete
+    /// carrier — a DEFINITE failure that must stay loud (WI-622 finding).
+    /// A plain `bool` rides through every `Visit`-push /
     /// let / lambda / match env clone exactly as `debruijn_types` does — the same
     /// path the receiver-var dispatch already depends on. NOT inferred from
     /// `debruijn_types.is_empty()` / `enclosing.is_none()`: a variable-free rule
@@ -6193,7 +6241,20 @@ fn check_apply_iter(
         // named diagnostic so the user can fix it by writing
         // `op[T = …](…)`. Replaces the WI-269 Phase D silent-drop
         // marker.
-        check_unconstrained_type_params(kb, &subst, &op, fn_sym, span)?;
+        //
+        // WI-622: this is an OP-BODY call-site obligation (it lets the caller
+        // recover the concrete return shape via a `let`-annotation / return
+        // position). A rule body is relational and `dispatch_dots_in_occ` types
+        // the dot with `expected: None`, so a return-only type-param has no
+        // call-site pin here — but it is NOT a violation: SLD resolution unifies
+        // the param against the goal context, or it stays a harmless phantom on a
+        // value-less return-only param. Unlike the WI-602 precondition case there
+        // is no DEFINITE sub-case to still raise on (see the `rule_body_dispatch`
+        // field doc), so skip the whole check in rule-body context — mirroring how
+        // WI-557/602 scoped the sibling value-precondition obligation.
+        if !env.in_rule_body() {
+            check_unconstrained_type_params(kb, &subst, &op, fn_sym, span)?;
+        }
 
         // Write resolved op type-arg values back to the apply
         // occurrence so the eval can install them on the callee's
@@ -23323,6 +23384,13 @@ pub fn type_check_sorts_typed(kb: &mut KnowledgeBase, sort_terms: &[TermId]) -> 
     // per-arg `inferred_type` the carrier decision reads is stamped.
     errors.extend(check_rule_body_requirements(kb));
 
+    // WI-650: flag a semantic `=`/`eq`/`neq` call whose operand's sort declares
+    // its OWN `eq` override with no backing (a bodyless placeholder — `Map` after
+    // its relational eq apparatus was dropped). Runs after `type_rule_bodies` (the
+    // rule-body operand `inferred_type` it reads) and `check_operation_bodies` (the
+    // op-body Stamp frame), so every operand carries its inferred sort.
+    errors.extend(check_eq_override_backing(kb));
+
     errors
 }
 
@@ -25307,6 +25375,223 @@ fn inherited_spec_op_witness_grounds_soundly(
         }
     }
     false
+}
+
+/// The spec + short symbols for the `eq`/`neq` family, resolved once per
+/// [`check_eq_override_backing`] run. `eq_short` is the sort-ops key
+/// (`kb.intern("eq")`, as [`carrier_own_op`]'s callers use); the `*_spec`s are
+/// the canonical `Eq.eq`/`Eq.neq` builtins the call functor is matched against.
+/// Only the EQ override's backing is probed — a `neq` call dispatches through the
+/// carrier's `eq` override too (`sem_eq_dispatch` resolves `eq_dispatch_target`
+/// for both, negating the verdict), so there is no distinct `neq` override to key.
+struct EqFamilySyms {
+    eq_spec: Symbol,
+    eq_short: Symbol,
+    neq_spec: Option<Symbol>,
+}
+
+/// WI-650 — flag a semantic `Eq.eq`/`Eq.neq` (`=`/`neq`) call whose operand's
+/// inferred sort declares its OWN `eq` override with NO backing (a bodyless
+/// placeholder — `Map` once its relational eq/binds/strip_is apparatus was dropped
+/// in favor of the WI-625 host bridge). Such a call type-checks (`Eq.eq` is a total
+/// builtin, so [`check_one_spec_op_requirement`] — this pass's `is_builtin`-skipped
+/// sibling — never flags a missing requirement) yet would SILENTLY misdecide at
+/// resolution: `sem_eq_dispatch` targets the empty override, exhausts, and returns
+/// "not equal". `BuiltinResult` has no error channel, so this is the loud TYPE-TIME
+/// face (`EqOverrideUnbacked`).
+///
+/// Walks BOTH rule bodies (operand types stamped by [`type_rule_bodies`], WI-603)
+/// and operation bodies (stamped by the `push_visit` Stamp frame), reading each
+/// operand's `inferred_type` head exactly as `check_one_spec_op_requirement` reads
+/// its carrier args. Per use-site: the stdlib never compares maps, so it stays
+/// clean; only user code comparing an unbacked-override carrier errors.
+///
+/// Both `eq` AND `neq` over two Maps are flagged: `neq(?a, ?b)`'s var operands are
+/// stamped `Map` by the same WI-603 var-leaf inference `eq` uses, so a `neq(map, map)`
+/// goal or op body errors identically (WI-651 — an earlier worry that `neq`
+/// under-determines its operand to the abstract param `Map.K` was investigated and
+/// found false; that `Map.K` was Map's OWN key comparison `neq(?k, ?k2)`, where the
+/// operands genuinely ARE keys of type `K`).
+///
+/// BEST-EFFORT, deliberately: it fires on the common shape — an `eq`/`neq` GOAL or
+/// op-body call whose operand the typer stamps CONCRETELY as the carrier (a var
+/// leaf typed via a `Map` param, or a param compared directly). Known escape routes
+/// (all silent-misdecide, none reachable by the current stdlib/examples/tests) are
+/// tracked as WI-652: a COMPOUND operand carries no stamped `inferred_type` (skipped
+/// by [`operand_unbacked_eq_carrier`]); a DOT-form `a.eq(b)` dispatches to the
+/// carrier's own `Map.eq`, whose functor is not `Eq.eq`; a CONSTRAINT body lives in
+/// `kb.guards`, not `live_rule_ids`; a POLYMORPHIC operand typed by an abstract `T`
+/// never concretizes to `Map` (this last one is `eq`/`neq`-symmetric).
+fn check_eq_override_backing(kb: &mut KnowledgeBase) -> Vec<TypeError> {
+    let mut errors: Vec<TypeError> = Vec::new();
+    // The semantic eq/neq spec symbols. WI-644 split: the `eq`/`neq` ops live on
+    // `PartialEq` (Eq is the lawful marker that requires it), so a body `eq`/`neq`
+    // call carries `PartialEq.eq`/`PartialEq.neq` (== `kb.eq_functor()`), NOT the
+    // pre-split `Eq.eq`/`Eq.neq` — keying on `Eq.eq` here would resolve to `None`
+    // and silently disable the guard. Absent on a prelude-less minimal KB — then no
+    // call can be one of them, so bail. The short name keys `sort_ops` (mirroring
+    // `carrier_own_op`'s `kb.intern` callers); intern up front so the loops below
+    // stay `&self`-read-only.
+    let Some(eq_spec) = kb.try_resolve_symbol("anthill.prelude.PartialEq.eq") else {
+        return errors;
+    };
+    let neq_spec = kb.try_resolve_symbol("anthill.prelude.PartialEq.neq");
+    let syms = EqFamilySyms {
+        eq_spec,
+        eq_short: kb.intern("eq"),
+        neq_spec,
+    };
+    // `Eq.neq` is matched alongside `Eq.eq` so a `neq(map, map)` goal or op body is
+    // flagged identically — its var operands are stamped `Map` by the same WI-603
+    // inference `eq` uses, and it misdecides through the SAME empty `Map.eq`
+    // override (`sem_eq_dispatch` negates the verdict). WI-651 confirmed neq does
+    // not escape (the `Map.K` an earlier note worried about was Map's own KEY
+    // comparison `neq(?k, ?k2)`, correctly typed `K` and correctly not flagged).
+    let is_eq_call = |f: Symbol| f == syms.eq_spec || Some(f) == syms.neq_spec;
+    // Memo per carrier sort — the same sort recurs across many call sites, and
+    // the backing probe allocates a `rules_by_functor` Vec.
+    let mut memo: std::collections::HashMap<Symbol, bool> = std::collections::HashMap::new();
+
+    // Rule bodies (non-fact rules only; facts have no body to compare in).
+    for rid in kb.live_rule_ids() {
+        if kb.is_fact(rid) {
+            continue;
+        }
+        for node in kb.rule_body_nodes(rid) {
+            check_occ_eq_override_backing(kb, node, &is_eq_call, &syms, &mut memo, &mut errors);
+        }
+    }
+    // Operation bodies — free namespace-level ops and sort ops alike (every op
+    // with a body is type-checked and its occurrences stamped).
+    for (_, body) in kb.op_bodies_iter() {
+        check_occ_eq_override_backing(kb, body, &is_eq_call, &syms, &mut memo, &mut errors);
+    }
+    errors
+}
+
+/// Walk `occ` for `Eq.eq`/`Eq.neq` calls and push an `EqOverrideUnbacked` per
+/// call whose operand sort has an unbacked own `eq` override (see
+/// [`check_eq_override_backing`]). Iterative (explicit stack) so a deeply-nested
+/// body cannot overflow the host stack. At most one error per call site (a
+/// map–map compare would trigger on both operands).
+fn check_occ_eq_override_backing(
+    kb: &KnowledgeBase,
+    occ: &Rc<NodeOccurrence>,
+    is_eq_call: &impl Fn(Symbol) -> bool,
+    syms: &EqFamilySyms,
+    memo: &mut std::collections::HashMap<Symbol, bool>,
+    errors: &mut Vec<TypeError>,
+) {
+    let mut stack: Vec<Rc<NodeOccurrence>> = vec![Rc::clone(occ)];
+    while let Some(o) = stack.pop() {
+        let Some(expr) = o.as_expr() else { continue };
+        // A functor-bearing form, in any of the three shapes `occ_head_symbol`
+        // recognizes (Apply, plus a Constructor/Instantiation that materialized a
+        // spec-op head).
+        let call = match expr {
+            Expr::Apply { functor, pos_args, named_args, .. } => Some((*functor, pos_args, named_args)),
+            Expr::Constructor { name, pos_args, named_args, .. }
+            | Expr::Instantiation { name, pos_args, named_args, .. } => {
+                Some((*name, pos_args, named_args))
+            }
+            _ => None,
+        };
+        if let Some((functor, pos_args, named_args)) = call {
+            if is_eq_call(functor) {
+                for operand in pos_args.iter().chain(named_args.iter().map(|(_, a)| a)) {
+                    if let Some(carrier) = operand_unbacked_eq_carrier(kb, operand, syms, memo) {
+                        errors.push(TypeError::EqOverrideUnbacked {
+                            span: Some(o.span.span),
+                            carrier_sort: carrier,
+                        });
+                        break; // one diagnostic per call site
+                    }
+                }
+            }
+        }
+        for_each_child(expr, |c| stack.push(Rc::clone(c)));
+    }
+}
+
+/// The operand's inferred sort IF it declares an unbacked own `eq` override
+/// ([`carrier_has_unbacked_eq_override`]), else `None`. A compound operand whose
+/// occurrence carries no stamped `inferred_type` reads `None` (skipped) — the same
+/// var-leaf reliance `check_one_spec_op_requirement` has, and a known best-effort
+/// gap tracked as WI-652 (a compound map operand escapes the load check).
+fn operand_unbacked_eq_carrier(
+    kb: &KnowledgeBase,
+    operand: &Rc<NodeOccurrence>,
+    syms: &EqFamilySyms,
+    memo: &mut std::collections::HashMap<Symbol, bool>,
+) -> Option<Symbol> {
+    let ty = operand.inferred_type()?;
+    let carrier = sort_functor_of_view(kb, &ty)?;
+    let unbacked = *memo
+        .entry(carrier)
+        .or_insert_with(|| carrier_has_unbacked_eq_override(kb, carrier, syms));
+    unbacked.then_some(carrier)
+}
+
+/// WI-650 — does `carrier` declare its OWN `eq` override (per [`carrier_own_op`])
+/// that is UNBACKED — no runnable body AND no GENERAL SLD clause defining it?
+///
+/// Only the EQ override is probed, for both `eq` and `neq` call sites: `neq`
+/// dispatches through the SAME carrier `eq` override (`sem_eq_dispatch` resolves
+/// `eq_dispatch_target` and negates the verdict), so an unbacked `eq` is exactly
+/// what makes a `neq(map, map)` misdecide too — there is no distinct carrier `neq`
+/// override to consult.
+///
+/// Deliberately does NOT consult the spec-op builtin path (`is_builtin`, as
+/// [`op_backed`] does): `Eq.eq` IS a resolver builtin, and admitting that backing
+/// would mask exactly the empty override this check exists to catch. The carrier's
+/// own op symbol (`Map.eq`) is itself never a builtin.
+///
+/// "Backed by rules" is NARROWER than "`rules_by_functor(own)` is non-empty" — see
+/// [`rule_is_general_eq_clause`]: a rule counts only if it is a CATCH-ALL clause
+/// (head positional args all variables), like `Set.eq`'s `eq(?a,?b) :- subset(…)`.
+/// A compound-headed rule does NOT count, because `rules_by_functor(Map.eq)` is
+/// polluted by Map's untagged `get(put(?m,?k2,?v),?k) = get(?m,?k) :- neq(?k,?k2)`
+/// rewrite law: that law's `=` connective resolves to the in-scope `Map.eq` (WI-627's
+/// short-name trap in reverse — `Map.eq` shadows `Eq.eq` inside the Map sort), so it
+/// lands under `Map.eq` with a `get`-shaped head. It fires only for `get`-shaped
+/// operands, never for two normal-form (`put`/`empty`) maps, so it provides no
+/// general map equality — Map.eq stays genuinely unbacked.
+fn carrier_has_unbacked_eq_override(
+    kb: &KnowledgeBase,
+    carrier: Symbol,
+    syms: &EqFamilySyms,
+) -> bool {
+    let Some(own) = carrier_own_op(kb, carrier, syms.eq_spec, syms.eq_short) else {
+        return false;
+    };
+    let backed = op_has_runnable_body(kb, own)
+        || kb
+            .rules_by_functor(own)
+            .iter()
+            .any(|&r| !kb.is_fact(r) && rule_is_general_eq_clause(kb, r, own));
+    !backed
+}
+
+/// WI-650 — is rule `r` a GENERAL clause defining `own`'s equality — head
+/// `own(a, b, …)` whose positional args are ALL variables, so it matches any
+/// operands (`Set.eq`'s `eq(?a, ?b) :- subset(…)`)? A compound-headed rule
+/// (`Map.eq(get(…), get(…))`, the mis-attributed `=` rewrite law — see
+/// [`carrier_has_unbacked_eq_override`]) is NOT general: it only fires for
+/// operands of that shape, so it does not back the carrier's equality. Named
+/// head args (none on the eq family) are ignored — a `?a`/`?b` positional eq
+/// never carries them. An empty positional list does NOT count as general — the
+/// `all` predicate is vacuously true over it, but a 0-ary `own` head is not an
+/// equality clause; the eq family is always binary.
+fn rule_is_general_eq_clause(kb: &KnowledgeBase, r: crate::kb::RuleId, own: Symbol) -> bool {
+    let Value::Term { id, .. } = kb.rule_head_value(r) else {
+        return false;
+    };
+    let Term::Fn { functor, pos_args, .. } = kb.get_term(*id) else {
+        return false;
+    };
+    *functor == own
+        && !pos_args.is_empty()
+        && pos_args.iter().all(|&a| matches!(kb.get_term(a), Term::Var(_)))
 }
 
 /// Rewrite one `find_dictionary(X)` goal (see [`record_find_dictionary_grounding`]).

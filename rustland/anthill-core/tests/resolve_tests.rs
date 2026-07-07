@@ -14,6 +14,12 @@ mod wi615_struct_eq_test;
 #[path = "include/wi616_semantic_eq_test.rs"]
 mod wi616_semantic_eq_test;
 
+#[path = "include/wi627_carrier_eq_classification_test.rs"]
+mod wi627_carrier_eq_classification_test;
+
+#[path = "include/map_eq_error_test.rs"]
+mod map_eq_error_test;
+
 #[path = "include/wi300_rule_body_requires_test.rs"]
 mod wi300_rule_body_requires_test;
 

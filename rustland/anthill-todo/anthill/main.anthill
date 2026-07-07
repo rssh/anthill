@@ -14,7 +14,7 @@ namespace anthill.todo
   import anthill.prelude.Meta.{Meta}
   import anthill.prelude.Time.{now, Clock}
   import anthill.stage0.{Feedback, WorkItem, ToolPasses, AcceptanceCriterion,
-                         WorkStatus}
+                         WorkStatus, StoreFormat}
   import anthill.stage0.WorkStatus.{Open, PreOpened, Draft}
   import anthill.prelude.{List, Stream, Map, Unit}
   import anthill.prelude.Map.{empty, put, get, contains}
@@ -38,7 +38,7 @@ namespace anthill.todo
   import anthill.prelude.List.{cons, nil}
   import anthill.prelude.FiniteCollection.{size}
   import anthill.reflect.{Term, Substitution, Solution, term_functor_name,
-                          term_field, term_as_string,
+                          term_field, term_as_string, term_as_int,
                           fresh_var, make_fn, term_to_string,
                           term_list_items}
   import anthill.reflect.Solution.{definite, undecided}
@@ -50,7 +50,7 @@ namespace anthill.todo
   import anthill.todo.store.WorkItemStore.{lookup, by_status_of, all,
                                            next_id, commit, replace, forget,
                                            commit_feedback, has_tag,
-                                           tag_item, untag_item,
+                                           tag_item, untag_item, stamp_format,
                                            items_with_tag, tags_of,
                                            raw_term_of}
 
@@ -80,6 +80,7 @@ namespace anthill.todo
     , spec_tag_change("tag",          "Add a work item to a named list")
     , spec_tag_change("untag",        "Remove a work item from a named list")
     , spec_named("graph",             "Show dependency graph")
+    , spec_named("migrate",           "Stamp a pre-versioning project with the current data format")
     , spec_named("skill",             "Print Claude Code skill definition")
     , spec_named("version",           "Print version (semver + git SHA + build date)")
     ]
@@ -328,7 +329,13 @@ namespace anthill.todo
               kind: flag(),
               required: false,
               description: "Show a named list in dependency (sequence) order"),
-            nil()))),
+            cons(
+              ParamSpec(
+                name: "unblocked",
+                kind: bool_flag(),
+                required: false,
+                description: "Show only unblocked items (all dependencies satisfied)"),
+              nil())))),
       parent: none())
 
   -- Per-WorkItem row precomputed for `cmd_list`. Walking a term's named
@@ -396,6 +403,12 @@ namespace anthill.todo
           let _ = eprintln(console(), "anthill-todo: argument error")
           2
         case parse_ok(ParsedArgs(name, args)) ->
+          -- WI-434: warn (to stderr) if the project's data-format stamp is
+          -- missing or stale, before running the command. A query over the
+          -- loaded StoreFormat facts — no host prescan. Skipped for `migrate`,
+          -- the command that RESOLVES that state and owns its own messaging:
+          -- nagging "run migrate" while running migrate would contradict itself.
+          let _ = if eq(name, "migrate") then 0 else version_check()
           dispatch(name, args, store, agent, wis_cell)
 
     -- Each subcommand reads its own positional/flag args; the
@@ -437,6 +450,7 @@ namespace anthill.todo
       else if eq(name, "tag") then cmd_tag(args, s)
       else if eq(name, "untag") then cmd_untag(args, s)
       else if eq(name, "insert") then cmd_insert(args, s)
+      else if eq(name, "migrate") then cmd_migrate(s)
       else not_yet(name)
 
     -- `tag <id> <name>` — attach a named-list tag to a work item.
@@ -1309,6 +1323,23 @@ namespace anthill.todo
               if any_unmet(deps, row_map) then cons(r, partition_blocked(rest, row_map))
               else partition_blocked(rest, row_map)
 
+    -- Keep only ids whose deps are all satisfied (the id-level analogue of
+    -- partition_ready, for the `--unblocked` tag view). An id with no row is
+    -- not an actionable item and is dropped.
+    operation filter_unblocked_ids(ids: List[String],
+                                   row_map: Map[String, Row]) -> List[String] =
+      match ids
+        case nil() -> nil()
+        case cons(id, rest) ->
+          match get(row_map, id)
+            case none() -> filter_unblocked_ids(rest, row_map)
+            case some(r) ->
+              match r
+                case Row(_, _, _, deps, _, _) ->
+                  if any_unmet(deps, row_map)
+                    then filter_unblocked_ids(rest, row_map)
+                    else cons(id, filter_unblocked_ids(rest, row_map))
+
     -- ── Print ─────────────────────────────────────────────────────
 
     operation deps_suffix(deps: List[String]) -> String =
@@ -1408,11 +1439,15 @@ namespace anthill.todo
     operation cmd_list(args: List[Binding], s: Cell[State]) -> Int64
       effects {ConsoleOutput, Error}
     =
+      let only_unblocked = match get_arg(args, "unblocked")
+        case some(_) -> true
+        case none() -> false
       match get_arg(args, "tag")
-        case some(t) -> cmd_list_tagged(s, t, get_arg(args, "status"))
-        case none() -> cmd_list_plain(args, s)
+        case some(t) -> cmd_list_tagged(s, t, get_arg(args, "status"), only_unblocked)
+        case none() -> cmd_list_plain(args, s, only_unblocked)
 
-    operation cmd_list_plain(args: List[Binding], s: Cell[State]) -> Int64
+    operation cmd_list_plain(args: List[Binding], s: Cell[State],
+                             only_unblocked: Bool) -> Int64
       effects {ConsoleOutput, Error}
     =
       let status_filter = get_arg(args, "status")
@@ -1424,7 +1459,13 @@ namespace anthill.todo
       let fb_set = feedback_set()
       let annotated = annotate_rows(raw_rows, fb_set)
       let row_map = build_row_map(annotated)
-      let filtered = filter_rows(annotated, status_filter, show_all)
+      -- `--unblocked` drops rows with any unmet dependency. The row_map
+      -- spans ALL rows (pre-filter), so a dep hidden by the status filter
+      -- still counts toward blocked-ness. partition_ready keeps input order;
+      -- print_groups re-orders chrono+topo per status group afterwards.
+      let kept = filter_rows(annotated, status_filter, show_all)
+      let filtered = if only_unblocked then partition_ready(kept, row_map)
+                     else kept
       if eq(count_rows(filtered), 0) then
         let _ = println(console(), "No work items found.")
         0
@@ -1448,7 +1489,8 @@ namespace anthill.todo
     -- a missing id prints `[missing]` (a data error stays visible), and
     -- the status filter is applied per row AFTER ordering.
     operation cmd_list_tagged(s: Cell[State], tag_name: String,
-                              status_filter: Option[String]) -> Int64
+                              status_filter: Option[String],
+                              only_unblocked: Bool) -> Int64
       effects {ConsoleOutput, Error}
     =
       let ids = sort_strings_unique(WorkItemStore.items_with_tag(s, tag_name))
@@ -1459,7 +1501,16 @@ namespace anthill.todo
           0
         case cons(_, _) ->
           let row_map = build_row_map(rows_of_w(WorkItemStore.all(s)))
-          let ordered = topo_order_tagged(row_map, ids)
+          let sequenced = topo_order_tagged(row_map, ids)
+          -- `--unblocked` narrows the sequence to items whose deps are all
+          -- satisfied. A tagged id with no row (a dangling [missing] ref) is
+          -- not an actionable item, so it is dropped here; plain `list --tag`
+          -- still surfaces it. The header counts this narrowed list; the footer
+          -- counts rows actually printed, which a `--status` filter can shrink
+          -- further (that header/footer gap predates --unblocked).
+          let ordered = if only_unblocked
+            then filter_unblocked_ids(sequenced, row_map)
+            else sequenced
           let _ = println(console(),
             concat("tag '", concat(tag_name,
               concat("' (", concat(to_string(count_strings(ordered)),
@@ -2699,5 +2750,105 @@ namespace anthill.todo
         let _ = println(console(), "No claimable items (all blocked or none open).")
         0
       else 0
+
+    -- ── WI-434: data-format version stamp ───────────────────────────
+    -- The data-format version this binary understands. Bumping it (and the
+    -- host's CURRENT_STORE_FORMAT_VERSION, which `init` stamps new projects
+    -- with) makes `version_check` warn on any project still carrying an older
+    -- stamp until `migrate` re-stamps it. Keep the two in sync — the
+    -- `fresh init produces a clean project` test guards against divergence.
+    operation current_store_format() -> Int64 = 1
+
+    -- Read a StoreFormat term's `version` as an Int64. `facts_of` yields only
+    -- ASSERTED `fact StoreFormat(...)` facts (never the entity declaration), so
+    -- in practice `version` is always a literal here; none() is the defensive
+    -- total-function path for a malformed non-int version rather than a case a
+    -- well-formed stamp reaches.
+    operation stamp_version(t: Term) -> Option[Int64] =
+      match term_field(t, "version")
+        case none() -> none()
+        case some(vt) -> term_as_int(vt)
+
+    -- Warn (to stderr) about the project's data-format stamp before running a
+    -- command. A query over the loaded StoreFormat facts — no host prescan.
+    -- No asserted stamp at all → pre-versioning project; a stamp whose version
+    -- differs from this binary → stale. Both point at `migrate`.
+    operation version_check() -> Int64
+      effects ConsoleError
+    =
+      check_store_versions(facts_of(kb(), StoreFormat), false)
+
+    -- `saw` records whether any StoreFormat stamp was seen, so an EMPTY fact
+    -- list (a project with no `fact StoreFormat` at all — the entity is bundled
+    -- but unasserted) is reported as pre-versioning rather than silently passing.
+    operation check_store_versions(ts: List[Term], saw: Bool) -> Int64
+      effects ConsoleError
+    =
+      match ts
+        case nil() ->
+          if saw then 0
+          else
+            let _ = eprintln(console(),
+              "warning: this appears to be a pre-versioning project. Run 'anthill-todo migrate' to upgrade.")
+            0
+        case cons(t, rest) ->
+          match stamp_version(t)
+            case none() -> check_store_versions(rest, saw)
+            case some(v) ->
+              let _ = warn_if_stale(v)
+              check_store_versions(rest, true)
+
+    operation warn_if_stale(v: Int64) -> Int64
+      effects ConsoleError
+    =
+      if eq(v, current_store_format()) then 0
+      else
+        let _ = eprintln(console(),
+          concat("warning: store format has version ",
+            concat(to_string(v),
+              concat(", but CLI expects version ",
+                concat(to_string(current_store_format()),
+                  ". Run 'anthill-todo migrate' to update.")))))
+        0
+
+    -- `migrate`: bring a pre-versioning project up to the current data format
+    -- by stamping workitems.anthill with a StoreFormat fact — asserted THROUGH
+    -- the store, so the write lands in the store's own file. Idempotent: a
+    -- project already carrying the current stamp is left untouched. A stamp at
+    -- a DIFFERENT version is not silently re-stamped (that would mislabel the
+    -- data's format): an explicit per-version data migrator is future work, so
+    -- report it rather than pretend it is handled.
+    operation cmd_migrate(s: Cell[State]) -> Int64
+      effects {ConsoleOutput, ConsoleError, Modify[s], Error}
+    =
+      match first_stamp_version(facts_of(kb(), StoreFormat))
+        case none() ->
+          let _ = stamp_format(s, current_store_format())
+          let _ = println(console(),
+            concat("migrated workitems.anthill (store format version ",
+              concat(to_string(current_store_format()), ")")))
+          0
+        case some(v) ->
+          if eq(v, current_store_format()) then
+            let _ = println(console(), "migrate: project already up to date")
+            0
+          else
+            let _ = eprintln(console(),
+              concat("migrate: store format version ",
+                concat(to_string(v),
+                  concat(" cannot be migrated to version ",
+                    concat(to_string(current_store_format()),
+                      " automatically (no data migrator for this bump yet)")))))
+            1
+
+    -- The version of the first ASSERTED StoreFormat stamp (none() if only the
+    -- entity declaration is present, i.e. a pre-versioning project).
+    operation first_stamp_version(ts: List[Term]) -> Option[Int64] =
+      match ts
+        case nil() -> none()
+        case cons(t, rest) ->
+          match stamp_version(t)
+            case some(v) -> some(v)
+            case none() -> first_stamp_version(rest)
   end
 end

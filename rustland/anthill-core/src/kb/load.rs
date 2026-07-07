@@ -4566,16 +4566,16 @@ fn collect_existing_proof_record_qns(kb: &KnowledgeBase, record_sym: Symbol) -> 
 /// rewriting (which would loop on `add_comm`-style laws).
 pub fn is_equational_head(kb: &KnowledgeBase, head: TermId) -> bool {
     if let Term::Fn { functor, .. } = kb.get_term(head) {
-        let qn = kb.qualified_name_of(*functor);
-        let short = qn.rsplit('.').next().unwrap_or(qn);
-        // The kernel's equality / unification predicates. Aliases that resolve
-        // to the same builtin are normalised at scan-time, so this suffix-match
-        // is sufficient. WI-526 (proposal 049): a `<=>`-spelled equation carries
-        // the `unify` head, and must stay cite-required-by-default exactly like
-        // its `=`/`eq` predecessor — otherwise the `=`→`<=>` relabel would
-        // silently flip plain equations from cite-required laws to indexed,
-        // auto-applied rewrites.
-        return short == "=" || short == "eq" || short == "unify";
+        // WI-627: classify by RESOLVED SYMBOL, not short name. A genuine `=`/`<=>`
+        // equation head carries the canonical `anthill.prelude.Eq.eq` /
+        // `anthill.kernel.unify` symbol; a carrier's own `eq` op (`Set.eq`,
+        // `Map.eq`) is a DIFFERENT symbol that merely shares the short name and
+        // must stay a normal, indexed relational rule — not be unindexed as a
+        // WI-139 cite-required law. WI-526 (proposal 049): a `<=>`-spelled
+        // equation carries `unify` and stays cite-required-by-default exactly like
+        // its `=`/`eq` predecessor. (The old `short == "="` disjunct was dead: the
+        // pratt desugar mints the functor *string* `"eq"`, never the char `"="`.)
+        return kb.is_equality_connective_functor(*functor);
     }
     false
 }

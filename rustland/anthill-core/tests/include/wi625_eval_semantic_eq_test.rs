@@ -126,17 +126,12 @@ fn eval_eq_nested_set_dispatches_elementwise() {
     assert!(call2(&mut i, EQ, a, b), "eq({{{{1,2}},{{3}}}},{{{{3}},{{2,1}}}}) must hold elementwise");
 }
 
-#[test]
-fn eval_eq_map_honors_membership_and_shadowing() {
-    let mut i = interp();
-    let a = map_val(&mut i, &[(1, 10), (2, 20)]);
-    let b = map_val(&mut i, &[(2, 20), (1, 10)]);
-    assert!(call2(&mut i, EQ, a, b), "eq({{1→10,2→20}},{{2→20,1→10}}) must hold");
-    // put-shadowing: the later put wins.
-    let shadowed = map_val(&mut i, &[(1, 10), (1, 20)]);
-    let latest = map_val(&mut i, &[(1, 20)]);
-    assert!(call2(&mut i, EQ, shadowed, latest), "shadowed put must equal the latest binding");
-}
+// WI-650 reconciliation: `eval_eq_map_honors_membership_and_shadowing` (map eq via
+// the relational `map_eq`/`binds`/`strip_is` apparatus) was DELETED — WI-650 dropped
+// that apparatus, deferring Map equality to the WI-625 host bridge. A typed `eq(map,
+// map)` is now a LOAD error (`check_eq_override_backing`), locked in by
+// `map_eq_error_test`; the eval-side membership/shadowing behavior returns with the
+// host bridge. (Set eq — subset-backed — is unaffected; see the nested-Set tests.)
 
 // ── ground structural uses keep their pre-WI-625 answers ─────────────────
 

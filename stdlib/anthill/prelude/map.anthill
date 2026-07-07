@@ -6,57 +6,37 @@ sort anthill.prelude.Map
   sort V = ?
   requires Eq[T = K]
 
-  -- WI-616 (proposal 051 Phase 2): Map is a NON-STRUCTURAL Eq carrier — map
-  -- equality is same-domain + `Eq`-equal values at every key, over the symbolic
-  -- `put`/`empty` algebra where put-ORDER of distinct keys doesn't matter and a
-  -- later `put` of the same key SHADOWS the earlier one. `provides Eq[T = Map]`
-  -- declares the instance; the own `eq` below is the WI-350/WI-444 short-name
-  -- override the resolver's semantic `=`/`eq` dispatches to. Structural
-  -- comparison of two maps is still `===`.
-  -- WI-644 / proposal 004: Map's extensional equality is lawful, so Map provides
-  -- the total marker Eq AND its PartialEq base (Eq requires it); the own `eq`
-  -- below is the single impl both resolve to.
+  -- WI-616 / WI-650 / WI-644: Map is a NON-STRUCTURAL Eq carrier — map equality is
+  -- same-domain + `Eq`-equal values at every key over the symbolic `put`/`empty`
+  -- algebra (put-ORDER of distinct keys is irrelevant; a later `put` of the same key
+  -- SHADOWS the earlier one) — a semantics no cheap terminating set of relational SLD
+  -- rules computes. The earlier version carried an O(n²) `map_eq`/`binds`/`strip_is`
+  -- apparatus (the Set precedent); WI-650 dropped it in favor of the WI-625 host bridge
+  -- (a hashed, host-bodied `eq`), the right home for it.
+  --
+  -- WI-644 / proposal 004: Map's extensional equality is lawful, so Map provides the
+  -- total marker `Eq` AND its `PartialEq` base (`Eq requires PartialEq`); both resolve
+  -- to the single own `eq` below.
+  --
+  -- The provisions DECLARE the instance and LOAD: the spec op `PartialEq.eq` is a
+  -- resolver builtin, so the provider-operations check (WI-343) counts the provision
+  -- backed. The bodyless `operation eq(a: Map, b: Map)` below is the WI-350/WI-444
+  -- short-name override slot the bridge will fill. Until then that override has NO
+  -- backing (no rules, no runnable body), so a `=`/`eq` over two `Map`s would SILENTLY
+  -- misdecide at resolution (`sem_eq_dispatch` sub-resolves the empty override,
+  -- exhausts, and returns "not equal"). `BuiltinResult` has no error channel, so the
+  -- typer names it loudly instead: `check_eq_override_backing` (typing.rs, WI-650)
+  -- rejects a rule/op body comparing two Maps with `=`/`eq` at LOAD with `Eq[Map]
+  -- declared but unimplemented`. The stdlib never compares maps, so it stays clean;
+  -- only user code does. The sibling `neq(map, map)` misdecide is the SAME hazard and
+  -- is caught the same way — `check_eq_override_backing` matches `PartialEq.neq` too
+  -- (post-WI-644 the `eq`/`neq` ops live on `PartialEq`), and both operands of a `neq`
+  -- over two Maps are stamped `Map` by the same WI-603 inference `eq` uses (WI-651
+  -- confirmed neq does NOT escape; its own key comparison `neq(?k, ?k2)` below is
+  -- correctly typed `K`, not `Map`, and not flagged). Structural comparison is `===`.
   provides PartialEq[T = Map]
   provides Eq[T = Map]
   operation eq(a: Map, b: Map) -> Bool
-  -- Relational helpers (SLD-computable, the Set precedent). `binds` reads the
-  -- LATEST (unshadowed, outermost-put) binding of a key; `strip_is` relates a
-  -- map to itself with ALL bindings of a key removed. Key and value compares go
-  -- through the SEMANTIC `PartialEq.eq`/`PartialEq.neq`, so they dispatch for carrier-eq keys
-  -- and values (a Map[Set, Int] compares its Set keys by membership).
-  operation map_eq(a: Map, b: Map) -> Bool
-  operation binds(m: Map, key: K, value: V) -> Bool
-  operation strip_is(m: Map, key: K, rest: Map) -> Bool
-  -- NB `binds` rule 1 spells its head LINEAR and binds the output via `<=>`.
-  -- Since WI-633 (discrim-leaf unification of repeated head vars on the SLD
-  -- RESOLUTION path; the WI-624 answer-leak fix before it) the nonlinear head
-  -- (`binds(put(?, ?k2, ?v), ?k, ?v)`) is EQUIVALENT for this relational rule —
-  -- the linear form stays as the explicit spelling, locked by
-  -- `map_binds_unifies_non_ground_stored_value`. (Contrast the `get`/`remove`
-  -- `[simp]` rules below: those are nonlinear-in-?k on purpose and fire under
-  -- one-directional MATCHING — an exact-key reduction, no unification.)
-  rule binds(put(?, ?k2, ?v2), ?k, ?v) :- PartialEq.eq(?k, ?k2), ?v <=> ?v2
-  rule binds(put(?m, ?k2, ?), ?k, ?v) :- PartialEq.neq(?k, ?k2), binds(?m, ?k, ?v)
-  rule strip_is(empty(), ?, empty())
-  rule strip_is(put(?m, ?k2, ?), ?k, ?r) :- PartialEq.eq(?k, ?k2), strip_is(?m, ?k, ?r)
-  rule strip_is(put(?m, ?k2, ?v), ?k, put(?r, ?k2, ?v)) :- PartialEq.neq(?k, ?k2), strip_is(?m, ?k, ?r)
-  -- map_eq: peel the outer binding, require the same latest binding on the
-  -- other side, strip the key from BOTH (so shadowed re-puts of it are
-  -- ignored), and recurse on the strictly smaller rests. COST: O(n²)
-  -- put-spine visits per compare (binds + two strips per level) — fine for
-  -- the symbolic maps rule bodies build; a hashed host-bodied `eq` is the
-  -- WI-625 bridge's job. Like Set, the instance decides `put`/`empty` normal
-  -- forms (an unreduced `remove(...)` term has no relational rules). The base case lives on
-  -- `map_eq`, NOT on `eq`: a bodyless 2-ary rule whose head is short-named `eq`
-  -- is classified as an equational LAW (`is_equation` / WI-139 cite-required)
-  -- and silently excluded from SLD candidates — `rule eq(empty(), empty())`
-  -- would never fire. The `eq(?a,?b)` delegator below is bodied, which the
-  -- classifier admits.
-  rule eq(?a, ?b) :- map_eq(?a, ?b)
-  rule map_eq(empty(), empty())
-  rule map_eq(put(?m, ?k, ?v), ?m2)
-    :- binds(?m2, ?k, ?v2), PartialEq.eq(?v, ?v2),
-       strip_is(?m, ?k, ?ms), strip_is(?m2, ?k, ?m2s), map_eq(?ms, ?m2s)
 
   -- WI-495: a Map is a GENUINE non-Stream Iterable — it can be walked (produces
   -- a Stream of its entries) but is NOT itself a Stream (it has no `splitFirst`

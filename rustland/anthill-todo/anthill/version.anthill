@@ -1,0 +1,23 @@
+-- Data-format version stamp for the anthill.stage0 project store (WI-434).
+--
+-- A `StoreFormat` fact records the version of the workitems data format a
+-- project's workitems.anthill was written at. The ENTITY is defined HERE, in
+-- the version-locked binary bundle rather than a per-project domain, so the
+-- stamp resolves regardless of how old the project's own domain.anthill is.
+-- That is load-bearing: store.anthill and main.anthill `import` this entity,
+-- so if it were defined only in the project's domain.anthill, a pre-versioning
+-- project — whose OLD domain predates the entity — would fail the whole bundle
+-- load with an unresolved import, on exactly the projects the version check is
+-- meant to warn. Bundling the entity keeps the import resolving everywhere.
+--
+-- The stamp is asserted from anthill through the store (WorkItemStore.stamp_format
+-- / `migrate`), never written as text by the host — the store already owns
+-- workitems.anthill, so version-format logic stays in the bundle.
+
+namespace anthill.stage0
+
+  entity StoreFormat(
+    version : Int64
+  )
+
+end

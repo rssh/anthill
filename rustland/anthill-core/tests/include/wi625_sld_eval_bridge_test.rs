@@ -675,10 +675,13 @@ fn typed_op_body_eq_over_set_float_rejected() {
 }
 
 #[test]
-fn typed_op_body_eq_over_map_and_nested_set_loads() {
-    // The sibling self-representing carrier `Map` (two params K/V; `requires
-    // Eq[K]`), and a NESTED `Set[Set[Int64]]` whose element requirement recurses
-    // (`Eq[Set[Int64]]` → `Eq[Int64]`) — both must discharge and load.
+fn typed_op_body_eq_over_map_rejected_nested_set_loads() {
+    // WI-650 reconciliation: `Map`'s relational eq apparatus was dropped (Map equality
+    // deferred to the WI-625 host bridge), so a typed `eq(mapA, mapB)` in an op body is
+    // now REJECTED by `check_eq_override_backing` — Map's own `eq` override is unbacked
+    // (the same guard `map_eq_error_test` locks in). The NESTED `Set[Set[Int64]]` case,
+    // whose element requirement recurses (`Eq[Set[Int64]]` → `Eq[Int64]`), still
+    // discharges and loads — Set keeps its subset-backed `eq`.
     const MAP_SRC: &str = r#"
         namespace test.wi625.typedeqmap
           import anthill.prelude.{Map, Int64, Bool}
@@ -691,7 +694,10 @@ fn typed_op_body_eq_over_map_and_nested_set_loads() {
           operation nestEqual(a: Set[T = Set[T = Int64]], b: Set[T = Set[T = Int64]]) -> Bool = eq(a, b)
         end
     "#;
-    assert!(common::try_load_kb_with(MAP_SRC).is_ok(), "typed eq over Map[Int64, Int64] must load");
+    assert!(
+        common::try_load_kb_with(MAP_SRC).is_err(),
+        "typed eq over Map is now rejected — relational eq dropped (WI-650), Map.eq unbacked",
+    );
     assert!(common::try_load_kb_with(NEST_SRC).is_ok(), "typed eq over nested Set[Set[Int64]] must load");
 }
 
