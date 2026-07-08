@@ -106,3 +106,23 @@ fn assert_of_constant_functor_is_loud_error() {
     let err = persist(&mut interp, &store, fact).expect_err("assert of constant must be refused");
     assert!(format!("{err:?}").contains("constant"), "wrong error: {err:?}");
 }
+
+#[test]
+fn reflection_index_functors_are_constant() {
+    // WI-665 / proposal 053: the loader-emitted structural reflection facts are
+    // `constant` (frozen after load) via rules in reflect.anthill, so a runtime
+    // `Store.persist` of one is a loud error — the guarantee a build-once index
+    // over them relies on (`op_records` over OperationInfo today; the planned
+    // `provides_index` over SortProvidesInfo, WI-660). Proves the stdlib rules
+    // fire for these specific functors, not just a project-declared one
+    // (`assert_of_constant_functor_is_loud_error`).
+    let dir = tempfile::tempdir().unwrap();
+    let mut interp = interp_for("namespace test.reflectmono\n  entity Widget\nend\n");
+    let store = setup_store(&mut interp, dir.path());
+    for qname in ["anthill.reflect.OperationInfo", "anthill.reflect.SortProvidesInfo"] {
+        let fact = declared_fact(&mut interp, qname);
+        let err = persist(&mut interp, &store, fact)
+            .expect_err(&format!("assert of constant reflection functor {qname} must be refused"));
+        assert!(format!("{err:?}").contains("constant"), "wrong error for {qname}: {err:?}");
+    }
+}

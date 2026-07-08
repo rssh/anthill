@@ -7250,6 +7250,77 @@ mod tests {
     }
 
     #[test]
+    fn simp_gate_survives_unrelated_functor_mutation() {
+        // WI-665: the simp gate depends ONLY on the `eq`/`unify` buckets, so a
+        // mutation to any other functor must leave the cached bit intact —
+        // functor-specific invalidation, superseding WI-646's drop-on-any-write.
+        // Behaviourally a needless drop is invisible (it just recomputes the same
+        // value), so this asserts on the cache field directly.
+        let mut kb = KnowledgeBase::new();
+        let add = kb.intern("add");
+        let seven = kb.alloc(Term::Const(Literal::Int(7)));
+        let zero = kb.alloc(Term::Const(Literal::Int(0)));
+        let redex = kb.alloc(Term::Fn {
+            functor: add,
+            pos_args: SmallVec::from_slice(&[seven, zero]),
+            named_args: SmallVec::new(),
+        });
+
+        // First simplify computes and caches the gate (`Some(false)` — no rule).
+        assert_eq!(kb.simplify(redex), redex);
+        assert!(
+            kb.simp_gate_cache.is_some(),
+            "the gate is cached after the first simplify"
+        );
+
+        // Assert an UNRELATED functor's fact — this must NOT invalidate the gate.
+        let foo = kb.intern("foo");
+        let foo_head = kb.alloc(Term::Fn {
+            functor: foo,
+            pos_args: SmallVec::from_slice(&[seven]),
+            named_args: SmallVec::new(),
+        });
+        let foo_sort = kb.make_name_term("Foo");
+        let domain = kb.make_name_term("test");
+        kb.assert_fact(foo_head, foo_sort, domain, None);
+        assert!(
+            kb.simp_gate_cache.is_some(),
+            "asserting an unrelated functor must NOT invalidate the simp gate \
+             (WI-665 functor-specific invalidation)"
+        );
+
+        // Asserting an `eq` [simp] rule DOES touch the gate's bucket → invalidated.
+        let eq_sym = kb.intern("eq");
+        let x_sym = kb.intern("x");
+        let vx = kb.fresh_var(x_sym);
+        let var_x = kb.alloc(Term::Var(Var::Global(vx)));
+        let lhs = kb.alloc(Term::Fn {
+            functor: add,
+            pos_args: SmallVec::from_slice(&[var_x, zero]),
+            named_args: SmallVec::new(),
+        });
+        let eq_head = kb.alloc(Term::Fn {
+            functor: eq_sym,
+            pos_args: SmallVec::from_slice(&[lhs, var_x]),
+            named_args: SmallVec::new(),
+        });
+        let simp_sym = kb.intern("simp");
+        let meta_sym = kb.intern("meta");
+        let tru = kb.alloc(Term::Const(Literal::Bool(true)));
+        let meta = kb.alloc(Term::Fn {
+            functor: meta_sym,
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::from_slice(&[(simp_sym, tru)]),
+        });
+        let sort = kb.make_name_term("Add");
+        kb.assert_rule_debruijn_with_nodes(eq_head, vec![], sort, domain, Some(meta));
+        assert!(
+            kb.simp_gate_cache.is_none(),
+            "asserting an `eq` [simp] rule DOES invalidate the gate"
+        );
+    }
+
+    #[test]
     fn apply_eq_rules_deep_node_goal_does_not_overflow() {
         // WI-641 Phase 2 acceptance: a deeply-nested `Value::Node` occurrence
         // redex rewrites through the SHARED iterative driver

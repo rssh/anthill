@@ -64,6 +64,19 @@ namespace anthill.reflect
   -- branch. Re-add a catch-all here only once firing is most-specific-first.
   operation fact_monotonicity(functor: Symbol) -> Monotonicity
 
+  -- WI-665 / proposal 053: the loader-emitted structural reflection facts are
+  -- `constant` — the loader (and eq_derive) establish them at load, after which
+  -- they are frozen. The guard is eval-only, so this leaves loading untouched; it
+  -- forbids a *runtime* `Store.persist`/`retract` of them, loudly. That is the
+  -- guarantee a fallback-less build-once index over them needs: built once after
+  -- load, it can never be desynced by a later runtime write, with no invalidation
+  -- code. The planned `provides_index` (over SortProvidesInfo, WI-660) is the
+  -- motivating case; `op_records` (over OperationInfo, WI-656) already tolerates a
+  -- runtime add via its scan fallback, so here `constant` is belt-and-suspenders.
+  -- Specific functors (not a catch-all), so they mask no project override.
+  rule fact_monotonicity(OperationInfo) = constant() [simp]
+  rule fact_monotonicity(SortProvidesInfo) = constant() [simp]
+
   -- ================================================================
   -- Source positions and occurrences (Proposal 022)
   -- ================================================================

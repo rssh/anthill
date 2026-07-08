@@ -1195,11 +1195,12 @@ impl KnowledgeBase {
         self.by_domain.entry(domain).or_default().push(rule_id);
         if let Some(f) = head_functor {
             self.rules_by_functor.entry(f).or_default().push(rule_id);
+            // WI-665: recompute the simp gate lazily only when this head is an
+            // `eq`/`unify` equation (superseding WI-646's drop-on-any-assert). A
+            // head with no functor cannot be one, so skipping the drop there is
+            // sound too. See `invalidate_simp_gate_if_connective`.
+            self.invalidate_simp_gate_if_connective(f);
         }
-        // WI-646: any functor-index change can flip the cached simp gate; drop it
-        // so the next `apply_eq_rules` recomputes. Unconditional (not eq/unify-
-        // keyed) — a field write is far cheaper than resolving the two functors.
-        self.simp_gate_cache = None;
 
         // Discrimination tree index (insert_pattern handles vars in head). The
         // view-driven walk needs `&self` (Node-carrying value heads read the
@@ -1850,10 +1851,12 @@ impl KnowledgeBase {
             if let Some(v) = self.rules_by_functor.get_mut(&f) {
                 v.retain(|&rid| rid != id);
             }
+            // WI-665: a retract flips the simp gate only when the head is an
+            // `eq`/`unify` equation — it drops that rule from the bucket
+            // `has_directional_rewrite` counts. See
+            // `invalidate_simp_gate_if_connective`.
+            self.invalidate_simp_gate_if_connective(f);
         }
-        // WI-646: retracting a rule can flip the cached simp gate (or leave a
-        // stale `Some` that `rules_by_functor`'s `retracted` filter would hide).
-        self.simp_gate_cache = None;
         if let Some(label_sym) = label {
             if let Some(v) = self.rules_by_label.get_mut(&label_sym) {
                 v.retain(|&rid| rid != id);
@@ -2087,11 +2090,14 @@ impl KnowledgeBase {
             if let Some(v) = self.rules_by_functor.get_mut(&functor) {
                 v.retain(|&rid| rid != id);
             }
+            // WI-665: defensive. `unindex_functor` is only ever called (WI-139) on
+            // NON-directional equations, which the gate does NOT count, so this
+            // never actually changes the gate today — but routing it through the
+            // helper keeps the three mutation sites uniform and stays correct if a
+            // directional head is ever unindexed. See
+            // `invalidate_simp_gate_if_connective`.
+            self.invalidate_simp_gate_if_connective(functor);
         }
-        // WI-646: WI-139 pulls non-directional equations out of the `eq`/`unify`
-        // buckets here at load — which is precisely what the simp gate counts, so
-        // drop the cache to recompute on the next read.
-        self.simp_gate_cache = None;
     }
 
     /// All active (non-retracted) rule/fact ids with a given top-level functor
@@ -3255,6 +3261,23 @@ impl KnowledgeBase {
             }
         };
         matches(self.eq_connective_sym, "eq") || matches(self.unify_connective_sym, "unify")
+    }
+
+    /// WI-665: drop the cached simp gate ([`Self::simp_gate_cache`]) only when a
+    /// mutation touched the `eq`/`unify` buckets — the ONLY functors
+    /// [`super::resolve`]'s `has_directional_rewrite` counts (it scans
+    /// `simp_equation_rids`, i.e. those two buckets). A mutation to any other
+    /// functor cannot change the gate's value, so leaving the cache intact is
+    /// sound and avoids the recompute WI-646 forced on every fact write. The
+    /// gate-dependency predicate is exactly [`Self::is_equality_connective_functor`]
+    /// — the same one `has_directional_rewrite` classifies through — so the
+    /// invalidation can never under-match the computation (the WI-643 stale-gate
+    /// class). O(1): the connective syms are cached, so this is two `Symbol`
+    /// compares on the common prelude-loaded path.
+    fn invalidate_simp_gate_if_connective(&mut self, functor: Symbol) {
+        if self.is_equality_connective_functor(functor) {
+            self.simp_gate_cache = None;
+        }
     }
 
     /// WI-627: (re)resolve and cache the equality-connective symbols read by
