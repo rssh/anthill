@@ -861,3 +861,121 @@ fn transitive_op_requires_single_param_loads() {
          Sub[Super.T]`), covering a `sop` call over E",
     );
 }
+
+// ── WI-625 gap 2 — retroactive instance-fact dispatch at SLD ──────────────────
+//
+// `fact PartialEq[T = Tagged, eq = taggedEq]` (a WI-431 instance fact) gives
+// `Tagged` a NON-STRUCTURAL eq: `taggedEq` compares only `key`, ignoring `note`,
+// so `tagged(1,9)` and `tagged(1,8)` are EQUAL semantically but structurally
+// distinct. Pre-gap-2 the resolver's `eq`/`neq` builtin (`sem_eq_core`) keyed
+// dispatch only on a carrier's OWN `eq` member (`build_sort_ops_table` pass 3 /
+// `carrier_own_op`), so an instance-fact carrier fell through to the STRUCTURAL
+// verdict — diverging from the same program's `List.member` (which honors the
+// instance fact via the threaded dict). Gap 2 keys the instance-fact carrier's
+// constructors to its bound op and dispatches through it (bodied ⇒ eval bridge).
+const INSTFACT_SRC: &str = r#"
+    namespace gap2.instfact
+      import anthill.prelude.{Int64, Bool, Eq, PartialEq}
+      sort Tagged
+        entity tagged(key: Int64, note: Int64)
+      end
+      -- eq by `key` only (ignores `note`) — a non-structural, still-lawful Eq.
+      operation taggedEq(x: Tagged, y: Tagged) -> Bool =
+        match x
+          case tagged(k1, n1) ->
+            match y
+              case tagged(k2, n2) -> eq(k1, k2)
+      fact PartialEq[T = Tagged, eq = taggedEq]
+      fact Eq[T = Tagged, eq = taggedEq]
+    end
+"#;
+
+/// A `gap2.instfact.Tagged.tagged(key: k, note: n)` entity term.
+fn tagged_entity(kb: &mut KnowledgeBase, k: i64, n: i64) -> TermId {
+    let f = kb.try_resolve_symbol("gap2.instfact.Tagged.tagged").expect("Tagged.tagged");
+    let key = kb.intern("key");
+    let note = kb.intern("note");
+    let kt = int_term(kb, k);
+    let nt = int_term(kb, n);
+    kb.alloc(Term::Fn {
+        functor: f,
+        pos_args: SmallVec::new(),
+        named_args: SmallVec::from_slice(&[(key, kt), (note, nt)]),
+    })
+}
+
+#[test]
+fn instance_fact_eq_dispatches_at_resolution() {
+    let mut kb = common::load_kb_with(INSTFACT_SRC);
+    // tagged(1,9) vs tagged(1,8): structurally UNEQUAL (`note` differs), but the
+    // instance-fact `taggedEq` compares only `key` ⇒ EQUAL. Pre-gap-2 the SLD eq
+    // builtin answered structurally (0 solutions); now it dispatches to taggedEq.
+    let a = tagged_entity(&mut kb, 1, 9);
+    let b = tagged_entity(&mut kb, 1, 8);
+    let g = goal(&mut kb, EQ, &[a, b]);
+    let sols = kb.resolve(&[g], &ResolveConfig::default());
+    assert_eq!(
+        sols.len(),
+        1,
+        "eq(tagged(1,9), tagged(1,8)) must dispatch to the instance-fact taggedEq ⇒ equal by key",
+    );
+    assert!(sols[0].residual.is_empty(), "the instance-fact op ran at resolution — a definite solution");
+
+    // tagged(1,9) vs tagged(2,9): keys differ ⇒ taggedEq false ⇒ NO solution
+    // (so the op genuinely RAN — it is not a blanket "always equal").
+    let a2 = tagged_entity(&mut kb, 1, 9);
+    let b2 = tagged_entity(&mut kb, 2, 9);
+    let g2 = goal(&mut kb, EQ, &[a2, b2]);
+    assert_eq!(
+        kb.resolve(&[g2], &ResolveConfig::default()).len(),
+        0,
+        "eq(tagged(1,9), tagged(2,9)): keys differ ⇒ taggedEq false",
+    );
+}
+
+#[test]
+fn instance_fact_buried_override_delays_not_structural() {
+    // `some(tagged(1,9))` vs `some(tagged(1,8))`: the head (Option.some) does not
+    // override eq, but an instance-fact carrier is BURIED inside. Adding the
+    // carrier to the eq-dispatch index makes `value_reaches_eq_override` see it
+    // (it probes the same index), so the resolver DELAYS rather than answering the
+    // membership-wrong structural verdict (false) — exactly like a buried `Set`.
+    // Full recursive semantic descent into the buried carrier is a WI-625 follow-up.
+    let mut kb = common::load_kb_with(INSTFACT_SRC);
+    let some = kb.try_resolve_symbol("anthill.prelude.Option.some").expect("Option.some");
+    let inner_a = tagged_entity(&mut kb, 1, 9);
+    let inner_b = tagged_entity(&mut kb, 1, 8);
+    let sa = kb.alloc(Term::Fn { functor: some, pos_args: SmallVec::from_slice(&[inner_a]), named_args: SmallVec::new() });
+    let sb = kb.alloc(Term::Fn { functor: some, pos_args: SmallVec::from_slice(&[inner_b]), named_args: SmallVec::new() });
+    let g = goal(&mut kb, EQ, &[sa, sb]);
+    let sols = kb.resolve(&[g], &ResolveConfig::default());
+    assert!(
+        sols.iter().all(|s| !s.residual.is_empty()),
+        "a buried instance-fact override must DELAY (residualize), never yield a \
+         definite structural verdict — got {} solution(s), some definite",
+        sols.len(),
+    );
+}
+
+#[test]
+fn instance_fact_neq_dispatches_at_resolution() {
+    let mut kb = common::load_kb_with(INSTFACT_SRC);
+    // neq is the De Morgan dual: keys equal ⇒ NOT neq ⇒ no solution.
+    let a = tagged_entity(&mut kb, 1, 9);
+    let b = tagged_entity(&mut kb, 1, 8);
+    let g = goal(&mut kb, "anthill.prelude.PartialEq.neq", &[a, b]);
+    assert_eq!(
+        kb.resolve(&[g], &ResolveConfig::default()).len(),
+        0,
+        "neq(tagged(1,9), tagged(1,8)): keys equal ⇒ taggedEq true ⇒ neq false",
+    );
+    // keys differ ⇒ neq holds.
+    let a2 = tagged_entity(&mut kb, 1, 9);
+    let b2 = tagged_entity(&mut kb, 2, 9);
+    let g2 = goal(&mut kb, "anthill.prelude.PartialEq.neq", &[a2, b2]);
+    assert_eq!(
+        kb.resolve(&[g2], &ResolveConfig::default()).len(),
+        1,
+        "neq(tagged(1,9), tagged(2,9)): keys differ ⇒ neq true",
+    );
+}

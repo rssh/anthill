@@ -4235,11 +4235,21 @@ pub fn build_sort_ops_table(kb: &mut KnowledgeBase) {
     // The resolver's `eq`/`neq` builtin probes this per structurally-unequal
     // goal — precomputing here keeps that path to one hash lookup.
     // WI-644: the semantic eq op moved from `Eq` to its base `PartialEq`.
+    // WI-625 gap 2: a carrier with NO own `eq` but a RETROACTIVE instance fact
+    // (`fact PartialEq[T = X, eq = myEq]`) keys to the bound op `myEq` instead —
+    // so the resolver/eval `eq` dispatches through it rather than answering
+    // structurally (`myEq` is typically bodied ⇒ dispatched via the eval bridge).
     let Some(eq_spec) = kb.try_resolve_symbol("anthill.prelude.PartialEq.eq") else { return };
     let eq_short = kb.intern("eq");
+    let partialeq_sort = kb.try_resolve_symbol("anthill.prelude.PartialEq");
+    let eq_sort = kb.try_resolve_symbol("anthill.prelude.Eq");
     let mut entries: Vec<(Symbol, Symbol)> = Vec::new();
     for &sort_sym in sort_ops.keys() {
-        let Some(target) = super::typing::carrier_own_op(kb, sort_sym, eq_spec, eq_short) else {
+        // Carrier's own `eq` wins (a genuine override); else a retroactive
+        // instance fact's bound `eq` op. `None` ⇒ no eq override for this sort.
+        let target = super::typing::carrier_own_op(kb, sort_sym, eq_spec, eq_short)
+            .or_else(|| instance_fact_eq_target(kb, sort_sym, partialeq_sort, eq_sort));
+        let Some(target) = target else {
             continue;
         };
         for ctor in kb.constructors_of_sort(sort_sym) {
@@ -4271,6 +4281,27 @@ pub fn build_sort_ops_table(kb: &mut KnowledgeBase) {
             kb.insert_eq_dispatch(canon, target);
         }
     }
+}
+
+/// WI-625 gap 2 — the operation a RETROACTIVE instance fact binds to `eq` for
+/// `carrier` (`fact PartialEq[T = carrier, eq = myEq]` ⇒ `myEq`), or `None`. The
+/// eq-dispatch fallback when `carrier` owns no `eq` member of its own: an instance
+/// fact supplies `eq` OFF-carrier (as a free-standing op), so the index must key
+/// the carrier's values to the bound op — otherwise the resolver/eval `eq`
+/// answers structurally, diverging from `List.member` (which honors the fact via
+/// the threaded dict). Checks the `PartialEq` fact (where `eq` canonically lives
+/// post-WI-644), then the `Eq` fact (a user who wrote only `fact Eq[…, eq = …]`).
+fn instance_fact_eq_target(
+    kb: &KnowledgeBase,
+    carrier: Symbol,
+    partialeq_sort: Option<Symbol>,
+    eq_sort: Option<Symbol>,
+) -> Option<Symbol> {
+    partialeq_sort
+        .and_then(|s| super::typing::instance_fact_op_binding(kb, carrier, s, "eq"))
+        .or_else(|| {
+            eq_sort.and_then(|s| super::typing::instance_fact_op_binding(kb, carrier, s, "eq"))
+        })
 }
 
 /// Intern the short name of an operation symbol (`Spec.lt` → `lt`) —

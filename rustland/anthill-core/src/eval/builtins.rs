@@ -518,6 +518,40 @@ fn semantic_equal(i: &mut Interpreter, a: &Value, b: &Value) -> Result<bool, Eva
             kb.value_deep_ground(a, &empty) && kb.value_deep_ground(b, &empty)
         };
         if ground {
+            // WI-625 gap 2: a BODIED instance-fact eq op (`fact PartialEq[T = X,
+            // eq = myEq]` with `myEq` a match/if/recursive function) is a
+            // Bool-valued function, NOT a rule-backed predicate — SLD finds no
+            // clause. Decide it through the SAME `bridge_eq_op_to_eval` the resolver
+            // uses (so eval and SLD agree). CRUCIAL: it runs an ISOLATED scratch
+            // interpreter, NOT `call_op_bridged` — this builtin can execute
+            // mid-trampoline (e.g. `List.member`'s inner `eq(head, x)`), where a
+            // nested `run()` would corrupt the live activation stack. A body-less
+            // rule-backed carrier op (`Set.eq`) still proves via the sub-resolution.
+            if crate::kb::typing::op_has_runnable_body(i.kb(), target) {
+                return match i.kb_mut().bridge_eq_op_to_eval(target, a.clone(), b.clone()) {
+                    Ok(Some(v)) => Ok(v),
+                    // UNDECIDED (re-entry cap / a bridge-mode suspend inside the
+                    // op): in bridge mode SUSPEND so the resolver residualizes; at
+                    // top level surface loudly. An APPLICABLE override that could
+                    // not be decided must NOT masquerade as a structural `false`
+                    // (that would report equal values unequal — Finding 1). This
+                    // mirrors the rule-backed branch below.
+                    Ok(None) => {
+                        let detail = format!(
+                            "instance-fact eq over `{}` could not be decided",
+                            i.kb().resolve_sym(target),
+                        );
+                        Err(if i.bridge_mode() {
+                            EvalError::Suspended { detail }
+                        } else {
+                            EvalError::Internal(detail)
+                        })
+                    }
+                    // The bodied op itself failed (raise/overflow/non-Bool): PROPAGATE
+                    // — never a silent structural `false` swallowing the error.
+                    Err(e) => Err(e),
+                };
+            }
             return match i.kb_mut().prove_rule_predicate(target, vec![a.clone(), b.clone()]) {
                 crate::kb::resolve::PredicateProof::Proved => Ok(true),
                 crate::kb::resolve::PredicateProof::Refuted => Ok(false),

@@ -13753,7 +13753,7 @@ fn operation_has_no_body(kb: &KnowledgeBase, op_sym: Symbol) -> bool {
 /// `body = none` (a spec-level declaration / derived op) is NOT a valid
 /// static-dispatch rewrite target — the runtime resolves those via a
 /// registered builtin or the spec's own derived rule. WI-237.
-fn op_has_runnable_body(kb: &KnowledgeBase, op_sym: Symbol) -> bool {
+pub(crate) fn op_has_runnable_body(kb: &KnowledgeBase, op_sym: Symbol) -> bool {
     match super::op_info::lookup_operation_info(kb, op_sym) {
         Some(rec) => rec.body_node.is_some(),
         None => false,

@@ -204,3 +204,102 @@ fn nest(i: &mut Interpreter, elems: &[TermId]) -> TermId {
     }
     s
 }
+
+// ── WI-625 gap 2 — retroactive instance-fact dispatch at eval ─────────────────
+//
+// The eval mirror of `instance_fact_eq_dispatches_at_resolution` (bridge test).
+// `taggedEq` (bound by `fact PartialEq[T = Tagged, eq = taggedEq]`) compares only
+// `key`, so `tagged(1,9)` and `tagged(1,8)` are semantically EQUAL but structurally
+// distinct. Feeding the two entity VALUES straight to the `PartialEq.eq` builtin
+// exercises `semantic_equal`'s step 4 for an instance-fact carrier — pre-gap-2 it
+// answered structurally (the index keyed only a carrier's OWN eq); now the index
+// carries the instance-fact carrier and dispatch runs the bodied `taggedEq`.
+const TAGGED_SRC: &str = r#"namespace gap2.instfact.eval
+  import anthill.prelude.{Int64, Bool, Eq, PartialEq}
+  sort Tagged
+    entity tagged(key: Int64, note: Int64)
+  end
+  operation taggedEq(x: Tagged, y: Tagged) -> Bool =
+    match x
+      case tagged(k1, n1) ->
+        match y
+          case tagged(k2, n2) -> eq(k1, k2)
+  fact PartialEq[T = Tagged, eq = taggedEq]
+  fact Eq[T = Tagged, eq = taggedEq]
+end
+"#;
+
+/// `gap2.instfact.eval.Tagged.tagged(key: k, note: n)` as a Value.
+fn tagged_val(i: &mut Interpreter, k: i64, n: i64) -> Value {
+    let sym = i
+        .kb()
+        .try_resolve_symbol("gap2.instfact.eval.Tagged.tagged")
+        .expect("Tagged.tagged");
+    let key = i.kb_mut().intern("key");
+    let note = i.kb_mut().intern("note");
+    let kt = int_term(i, k);
+    let nt = int_term(i, n);
+    Value::term(i.kb_mut().alloc(Term::Fn {
+        functor: sym,
+        pos_args: SmallVec::new(),
+        named_args: SmallVec::from_slice(&[(key, kt), (note, nt)]),
+    }))
+}
+
+#[test]
+fn eval_instance_fact_eq_dispatches() {
+    let mut i = crate::common::interp_for(TAGGED_SRC);
+    // keys equal, notes differ ⇒ taggedEq true (dispatch, NOT structural).
+    let (a, b) = (tagged_val(&mut i, 1, 9), tagged_val(&mut i, 1, 8));
+    assert!(call2(&mut i, EQ, a, b), "eq(tagged(1,9), tagged(1,8)) must dispatch to taggedEq ⇒ equal by key");
+    // keys differ ⇒ taggedEq false (the op genuinely ran).
+    let (c, d) = (tagged_val(&mut i, 1, 9), tagged_val(&mut i, 2, 9));
+    assert!(!call2(&mut i, EQ, c, d), "eq(tagged(1,9), tagged(2,9)): keys differ ⇒ not equal");
+}
+
+#[test]
+fn eval_instance_fact_neq_dispatches() {
+    let mut i = crate::common::interp_for(TAGGED_SRC);
+    let (a, b) = (tagged_val(&mut i, 1, 9), tagged_val(&mut i, 1, 8));
+    assert!(!call2(&mut i, NEQ, a, b), "neq(tagged(1,9), tagged(1,8)): keys equal ⇒ neq false");
+    let (c, d) = (tagged_val(&mut i, 1, 9), tagged_val(&mut i, 2, 9));
+    assert!(call2(&mut i, NEQ, c, d), "neq(tagged(1,9), tagged(2,9)): keys differ ⇒ neq true");
+}
+
+/// Finding 1 (correctness review): an APPLICABLE instance-fact override that
+/// cannot be DECIDED must never masquerade as a structural `false` (which would
+/// report equal values unequal, or swallow a callee error). A circular `eq`
+/// (`loopEq = eq`) exhausts the bridge re-entry cap ⇒ UNDECIDED; top-level eval
+/// must surface it LOUDLY, not return `Ok(false)`.
+#[test]
+fn eval_undecidable_instance_fact_eq_is_loud_not_false() {
+    let src = r#"namespace gap2.loopeq
+  import anthill.prelude.{Int64, Bool, Eq, PartialEq}
+  sort Loop
+    entity lp(v: Int64)
+  end
+  operation loopEq(x: Loop, y: Loop) -> Bool = eq(x, y)
+  fact PartialEq[T = Loop, eq = loopEq]
+  fact Eq[T = Loop, eq = loopEq]
+end
+"#;
+    let mut i = crate::common::interp_for(src);
+    // lp(1) vs lp(2): structurally UNEQUAL ⇒ dispatch (not the reflexivity shortcut).
+    let mk = |i: &mut Interpreter, n: i64| -> Value {
+        let sym = i.kb().try_resolve_symbol("gap2.loopeq.Loop.lp").expect("Loop.lp");
+        let v = i.kb_mut().intern("v");
+        let nt = int_term(i, n);
+        Value::term(i.kb_mut().alloc(Term::Fn {
+            functor: sym,
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::from_slice(&[(v, nt)]),
+        }))
+    };
+    let (a, b) = (mk(&mut i, 1), mk(&mut i, 2));
+    let r = i.call(EQ, &[a, b]);
+    assert!(
+        r.is_err(),
+        "an undecidable instance-fact eq (re-entry cap exhausted) must be a loud \
+         error, never a silent structural `false`; got {r:?}",
+    );
+}
