@@ -58,6 +58,8 @@ A `queryable` store can translate KB query patterns into native queries (SQL, gl
 
 This distinction determines how the backward chaining engine (kernel spec §8.3) interacts with the store — see §5 below.
 
+> **Correction (proposal 007.1).** The `caps` / `StoreCaps` operation above was never implemented; the stdlib realizes the queryable/bulk distinction as the `QueryableStore` / `BulkStore` subsorts of `Store` (each `fact Store`), and capability is read as subsort membership rather than a `caps(store)` return value. There is also deliberately **no** *write*-capability classifier — write policy is per-predicate, provided by the owning store (proposal 053), not a store-level tier. See 007.1.
+
 ### 3. Routing: 1-to-1 Mapping from Fact Sort to Store
 
 Each fact sort is owned by exactly one store. No fact lives in two places. Routing is an operation — the kernel dispatches facts to the right store:
