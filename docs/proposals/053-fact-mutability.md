@@ -1,6 +1,6 @@
 # 053: Per-Functor Fact Monotonicity
 
-## Status: Draft — Phases A+B (WI-666) and the external-store side (WI-667) implemented, on main
+## Status: Implemented — Phases A+B (WI-666) + the external-store side (WI-667), on main. The one deferred piece, cache coherence, is explicitly out of scope (§"Out of scope" → WI-665).
 
 ## Tracks: WI-666 (reflect substrate + runtime guard, DELIVERED), WI-667 (external-store side — `retract` is a `NonMonotonicStore`-trait op; `Store.monotonicity` is the policy query; the owning store's materialized policy is the `fact_monotonicity` fallback — DELIVERED), WI-665 (the Rust KB cache follow-on — a separate implementation matter, §"Out of scope")
 
