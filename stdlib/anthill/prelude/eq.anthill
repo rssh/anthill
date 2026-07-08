@@ -14,8 +14,9 @@
 -- builtin-backed). WI-658 (delivered) makes a `provides Eq[Float]` a load error
 -- NOT by refuting `eq_refl` at NaN, but via the `NonEq` route below — Float
 -- provides `NonEq` (witnessed non-reflexivity) and `Eq` ⊥ `NonEq` is checked at
--- load (`check_eq_noneq_exclusive`). Use-site `requires Eq[K]` enforcement (so
--- `Map[K = Float]` is a load error) is WI-649, still open.
+-- load (`check_eq_noneq_exclusive`). Use-site `requires Eq[K]` enforcement — so a
+-- `Map[K = Float]` field type is a load error (WI-644) — is `check_use_site_requires_eq`:
+-- a parametric sort `requires Eq[param]` bound to a `NonEq` carrier is rejected.
 sort anthill.prelude.PartialEq
   import anthill.reflect.{not}
 

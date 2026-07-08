@@ -174,6 +174,18 @@ pub enum LoadError {
     IncompatibleEqNonEq {
         carrier: String,
     },
+    /// WI-644: a parametric sort with a `requires Eq[param]` clause is
+    /// instantiated (in an entity field type) with `param` bound to a carrier
+    /// that provides `NonEq` — a non-reflexive equality (IEEE `Float`). Such a
+    /// carrier is not a lawful `Eq` key, so the instantiation is a load error
+    /// (`Map[K = Float]`), not a silent wrong answer. Use a lawful key type
+    /// (`TotalFloat` for floats). Load-blocking.
+    NonEqKeyRequiresLawfulEq {
+        /// The parametric sort being instantiated (`anthill.prelude.Map`).
+        container: String,
+        /// The carrier bound where lawful `Eq` is required (`anthill.prelude.Float`).
+        carrier: String,
+    },
     /// WI-431 (rule 2 — COHERENCE): two or more DISTINCT instance facts (op-valued
     /// provisions, `fact Combiner[T = Tag, combine = combineA]` /
     /// `… combine = combineB]`) cover the same `(spec, carrier)`. Each supplies a
@@ -434,6 +446,10 @@ impl LoadError {
                 format!("'{}' provides both 'Eq' and 'NonEq', which are mutually exclusive: a carrier's `eq` cannot be both lawful (reflexive) and non-reflexive. A partial carrier (e.g. IEEE Float) provides PartialEq + NonEq; a lawful carrier provides PartialEq + Eq — drop whichever is wrong.",
                     carrier)
             }
+            LoadError::NonEqKeyRequiresLawfulEq { container, carrier } => {
+                format!("'{}' requires a lawful `Eq` key, but '{}' provides `NonEq` (its equality is not reflexive — e.g. IEEE `nan != nan`), so it cannot be a lawful key. Use a lawful key type (`TotalFloat` for floats) instead of '{}'.",
+                    container, carrier, carrier)
+            }
             LoadError::AmbiguousInstanceFact { carrier, spec, count } => {
                 format!("ambiguous instance: {} distinct instance facts provide '{}' for carrier '{}' — each binds the spec's operations differently, and there is no way to select between them (scoped/named instance selection is not yet supported); keep exactly one `fact {}[…]` per (spec, carrier)",
                     count, spec, carrier, spec)
@@ -555,6 +571,8 @@ impl LoadError {
             | LoadError::UnbackedProviderOperation { .. }
             // WI-658: a carrier providing both Eq and NonEq is contradictory.
             | LoadError::IncompatibleEqNonEq { .. }
+            // WI-644: a NonEq carrier can't be a lawful `Eq` key (`Map[K=Float]`).
+            | LoadError::NonEqKeyRequiresLawfulEq { .. }
             // WI-431 rule 2: ambiguous instance facts give dispatch no sound
             // choice — block rather than silently pick the first. WI-450: the
             // witness flavor (two provider sorts) is equally unsound.
@@ -768,6 +786,10 @@ impl std::fmt::Display for LoadError {
             LoadError::IncompatibleEqNonEq { carrier } => {
                 write!(f, "'{}' provides both 'Eq' and 'NonEq', which are mutually exclusive (a partial carrier provides PartialEq + NonEq; a lawful one PartialEq + Eq)",
                     carrier)
+            }
+            LoadError::NonEqKeyRequiresLawfulEq { container, carrier } => {
+                write!(f, "'{}' requires a lawful `Eq` key, but '{}' provides `NonEq` (non-reflexive equality) — not a lawful key; use `TotalFloat` for floats",
+                    container, carrier)
             }
             LoadError::AmbiguousInstanceFact { carrier, spec, count } => {
                 write!(f, "ambiguous instance: {} distinct instance facts provide '{}' for carrier '{}' (keep exactly one)",
@@ -3242,6 +3264,12 @@ fn load_phase_inner(
     // nothing for a carrier that declares neither. Load-blocking.
     all_errors.extend(super::typing::check_eq_noneq_exclusive(kb));
     mark!("check_eq_noneq_exclusive");
+    // WI-644: use-site `requires Eq` — an entity field type `Map[K = Float]` (a
+    // parametric sort `requires Eq[K]` bound to a `NonEq` carrier) is a load error,
+    // not a silent wrong answer. After eq_derive so a Float-composite's derived
+    // NonEq is visible.
+    all_errors.extend(super::typing::check_use_site_requires_eq(kb));
+    mark!("check_use_site_requires_eq");
     // WI-347: operation-override refinement — a carrier's own op overriding a
     // spec op must refine it (effects no wider; pre/post next). Load-blocking
     // (unsound override), so it lands in `all_errors`.
