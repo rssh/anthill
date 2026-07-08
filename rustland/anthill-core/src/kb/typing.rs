@@ -10342,14 +10342,19 @@ pub fn check_provider_requires(kb: &mut KnowledgeBase) -> Vec<super::load::LoadE
 /// declaration to contradict. The error list is sorted by carrier name so the
 /// diagnostic order is deterministic.
 ///
-/// LIMITATION (base-keyed) — grouping is by the carrier's BASE sort symbol, so a
-/// PARAMETRIC carrier that legitimately provides `Eq` at one instantiation and
-/// `NonEq` at another (`Box[T = Int]` lawful, `Box[T = Float]` partial) would be
-/// FALSELY flagged. Not reachable today: only the non-parametric leaf `Float`
-/// provides `NonEq`, and every stdlib provision binds the spec param to the bare
-/// carrier (base == binding). When composite carriers derive per-instantiation
-/// Eq/NonEq (the composite Eq/NonEq derivation follow-up) this MUST become
-/// binding-aware — key on the spec's carrier-binding value, not just the base.
+/// WI-658 / WI-664 — grouping is by the carrier's canonical BASE sort symbol,
+/// which for the CONCRETE carriers in play (`Float`; the WI-664 composites `Point`
+/// / … derived from `SortProvidesInfo` facts whose `sort_ref` is a nullary carrier
+/// name) IS the full carrier — so a user `provides Eq[Point]` and the derived
+/// `NonEq[Point]` group together and the conflict fires. LIMITATION (unreachable
+/// today): a PARAMETRIC carrier providing `Eq` at one instantiation and `NonEq` at
+/// another (`Box[T = Int]` lawful, `Box[T = Float]` partial) would be falsely
+/// grouped — but WI-664 derives NO per-instantiation facts (a parametric composite
+/// with an abstract element classifies non-partial; see `eq_derive`), and no
+/// provider spells a parameterized carrier in `sort_ref` (the instantiation lives
+/// in the `spec` SortView binding). When the parametric-container follow-up derives
+/// per-instantiation `Eq`/`NonEq`, this MUST become binding-aware — key on the
+/// SPEC's carrier-binding value (from `unwrap_spec_view`), NOT `sort_ref`.
 pub fn check_eq_noneq_exclusive(kb: &mut KnowledgeBase) -> Vec<super::load::LoadError> {
     use super::load::LoadError;
     let Some(provides_sym) = kb.try_resolve_symbol("anthill.reflect.SortProvidesInfo") else {

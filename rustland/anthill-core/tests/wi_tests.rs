@@ -251,6 +251,9 @@ mod wi645_float_nan_ieee_test;
 #[path = "include/wi658_eq_noneq_exclusive_test.rs"]
 mod wi658_eq_noneq_exclusive_test;
 
+#[path = "include/wi664_composite_eq_test.rs"]
+mod wi664_composite_eq_test;
+
 #[path = "include/wi625_eval_semantic_eq_test.rs"]
 mod wi625_eval_semantic_eq_test;
 

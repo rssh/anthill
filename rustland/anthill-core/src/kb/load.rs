@@ -3226,6 +3226,17 @@ fn load_phase_inner(
     // nothing at runtime). Load-blocking.
     all_errors.extend(super::typing::check_provider_operations(kb));
     mark!("check_provider_operations");
+    // WI-664: derive composite Eq/NonEq classification. Builds the field-wise-eq
+    // carrier set (`field_wise_noneq_carriers`, read by the resolver and
+    // interpreter to compare a Float-containing composite FIELD-WISE) and asserts
+    // the derived `NonEq`+`PartialEq` provision facts for each such composite.
+    // Placed AFTER the provider-coverage checks — a derived `NonEq`'s `nonEqRefl`
+    // witness is a propagated classification, not a hand-declared op held to
+    // backing — and BEFORE `check_eq_noneq_exclusive`, so a user `provides
+    // Eq[Point]` over a Float-containing `Point` conflicts with the derived
+    // `NonEq[Point]` and is rejected (the WI-658 route, "composes automatically").
+    super::eq_derive::run(kb);
+    mark!("eq_derive::run");
     // WI-658: Eq ⊥ NonEq — a carrier that provides both the lawful (reflexive)
     // Eq and the witnessed non-reflexive NonEq is contradictory. Opt-in: does
     // nothing for a carrier that declares neither. Load-blocking.

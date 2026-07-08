@@ -498,6 +498,20 @@ fn semantic_equal(i: &mut Interpreter, a: &Value, b: &Value) -> Result<bool, Eva
     if let Some(v) = float_ieee_eq(i, a, b) {
         return Ok(v);
     }
+    // WI-664: a composite reaching an UNSHIELDED partial (Float) carrier compares
+    // FIELD-WISE, not by the structural reflexivity shortcut below (which would
+    // launder a nested NaN): `eq(Point(nan,_), Point(nan,_)) = eq(nan,nan) ∧ … =
+    // false`, matching the field-wise C++ `operator==`. A lawful-Eq boundary
+    // (`TotalFloat`/`Set`/`Map`, own `eq`) is NOT a partial carrier, so its
+    // structural / dispatch equality is untouched (`eq(TotalFloat(nan), …)` stays
+    // true). Comes BEFORE the reflexivity shortcut.
+    if i.kb().value_reaches_partial_carrier(a) || i.kb().value_reaches_partial_carrier(b) {
+        if let Some(v) = composite_field_wise_eq(i, a, b)? {
+            return Ok(v);
+        }
+        // Not both same-shape composites (e.g. a bare Float vs an entity — a type
+        // mismatch the structural verdict answers `false`): fall through.
+    }
     // 2. Reflexivity.
     if crate::kb::term_view::views_structurally_equal(i.kb(), a, b) {
         return Ok(true);
@@ -592,6 +606,33 @@ fn semantic_equal(i: &mut Interpreter, a: &Value, b: &Value) -> Result<bool, Eva
         });
     }
     Ok(false)
+}
+
+/// WI-664 — field-wise SEMANTIC equality for two composites whose carrier is a
+/// derived `NonEq` (field-wise) carrier. Decomposes both to identical shape and
+/// ANDs `semantic_equal` over the matching fields, so a nested `Float` follows
+/// IEEE (`eq(Point(nan,_), Point(nan,_)) → eq(nan,nan) ∧ … = false`) exactly as
+/// the field-wise C++ `operator==`. Returns `Some(false)` on any shape mismatch
+/// (different functor / arity / keys), and `None` when the operands are not both
+/// functor-headed composites (the caller keeps the structural verdict).
+fn composite_field_wise_eq(
+    i: &mut Interpreter,
+    a: &Value,
+    b: &Value,
+) -> Result<Option<bool>, EvalError> {
+    use crate::kb::eq_derive::FieldPairs;
+    // Shared shape-decomposition (releases the kb borrow before the recursion).
+    let pairs = match i.kb().same_shape_child_pairs(a, b) {
+        FieldPairs::NotComposite => return Ok(None),   // caller keeps the structural verdict
+        FieldPairs::Mismatch => return Ok(Some(false)), // shape mismatch ⇒ not equal
+        FieldPairs::Pairs(pairs) => pairs,
+    };
+    for (ca, cb) in &pairs {
+        if !semantic_equal(i, ca, cb)? {
+            return Ok(Some(false));
+        }
+    }
+    Ok(Some(true))
 }
 
 /// Total order on primitive scalars. Floats use `total_cmp` so NaN has a

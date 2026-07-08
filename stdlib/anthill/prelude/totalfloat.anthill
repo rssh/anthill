@@ -4,9 +4,18 @@
 -- `nan eq nan = false`), so `Map[K = Float]` is not a lawful key; `Map[K = TotalFloat]`
 -- is (Map/Set keys require `Eq`, not `Ordered`).
 --
--- TotalFloat's equality is STRUCTURAL (the default for an entity carrier): all NaNs
--- are equal and it is reflexive, so TotalFloat is lawfully `Eq` — verified:
--- `eq(TotalFloat(nan), TotalFloat(nan)) = true`, unlike raw `Float`.
+-- TotalFloat's equality is STRUCTURAL (`===` on the entity): all NaNs are equal and
+-- it is reflexive, so TotalFloat is lawfully `Eq` — verified: `eq(TotalFloat(nan),
+-- TotalFloat(nan)) = true`, unlike raw `Float`.
+--
+-- WI-664: TotalFloat declares its OWN `eq` (structural, below). This is what makes
+-- it a lawful-Eq BOUNDARY: the composite Eq/NonEq derivation reclassifies a plain
+-- entity with a `Float` field as `NonEq` (its congruent equality is field-wise, so
+-- non-reflexive at NaN — `eq(Point(nan,_), Point(nan,_)) = false`). A carrier that
+-- declares its own `eq` is exempt from that derivation — its equality is whatever
+-- the carrier says, here the total structural one — so TotalFloat stays `Eq` while
+-- `Point` becomes `NonEq`. Without the own `eq`, TotalFloat's Float field would make
+-- it `NonEq` and `provides Eq[TotalFloat]` a load error.
 --
 -- NOT `Ordered` (yet): `Ordered.compare`/`gt`/`max` are host BUILTINS dispatched
 -- directly on the operand values, so a carrier `<=>` delegation rule
@@ -23,4 +32,11 @@ sort anthill.prelude.TotalFloat
   -- Structural equality on the entity is reflexive/total → lawful Eq (+ its base).
   provides PartialEq[T = TotalFloat]
   provides Eq[T = TotalFloat]
+
+  -- The own `eq` (WI-664 boundary marker, above): total STRUCTURAL equality. `===`
+  -- equates all NaNs and is reflexive, so this is the lawful `Eq` TotalFloat exists
+  -- to provide. Backed by a general relational rule (the Set.eq precedent), so it is
+  -- a real override the semantic `=`/`eq` dispatches to, not just a marker.
+  operation eq(a: TotalFloat, b: TotalFloat) -> Bool
+  rule eq(?a, ?b) :- ?a === ?b
 end

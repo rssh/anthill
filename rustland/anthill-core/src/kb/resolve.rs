@@ -3624,42 +3624,109 @@ impl KnowledgeBase {
         match self.eq_operands(goal, subst) {
             EqOperands::Delay => BuiltinResult::Delay,
             EqOperands::Absent => BuiltinResult::Failure,
-            EqOperands::Ready(a, b) => {
-                // WI-644 / proposal 004: a Float operand pair is the PARTIAL-eq carrier
-                // — compare by IEEE `==` (nan != nan, -0.0 == +0.0), NOT the structural
-                // reflexivity shortcut below (which reads nan == nan through
-                // `OrderedFloat`). Only fires when BOTH operands are Float scalars, so
-                // `Set`/`Map`/entity semantic eq and `nan === nan` (`struct_eq`) are
-                // untouched; mirrors eval's `float_ieee_eq` so resolver, interpreter,
-                // and C++ codegen agree (the WI-645 acceptance).
-                if let (Some(x), Some(y)) = (self.value_f64(&a), self.value_f64(&b)) {
-                    return sem_verdict(x == y, positive);
+            EqOperands::Ready(a, b) => self.sem_eq_values(a, b, subst, positive),
+        }
+    }
+
+    /// WI-616/WI-625/WI-664 — the VALUE-level core of semantic `eq`/`neq`, shared
+    /// by [`Self::sem_eq_core`] (the SLD goal, after [`Self::eq_operands`] walks the
+    /// operands) and the WI-664 field-wise recursion (each field pair). `positive`
+    /// requests the EQUAL verdict (`eq`) or its negation (`neq`). Outcome order is
+    /// [`Self::sem_eq_core`]'s doc, with the WI-664 field-wise step inserted between
+    /// the Float-pair (1) and reflexivity (2) outcomes.
+    fn sem_eq_values(
+        &mut self,
+        a: Value,
+        b: Value,
+        subst: &Substitution,
+        positive: bool,
+    ) -> BuiltinResult {
+        // (1) Float operand pair — IEEE `==` (nan != nan, -0.0 == +0.0), NOT the
+        // structural reflexivity shortcut below (which reads nan == nan through
+        // `OrderedFloat`). Mirrors eval's `float_ieee_eq` so resolver, interpreter,
+        // and C++ codegen agree (the WI-645 acceptance).
+        if let (Some(x), Some(y)) = (self.value_f64(&a), self.value_f64(&b)) {
+            return sem_verdict(x == y, positive);
+        }
+        // WI-664: a composite reaching an UNSHIELDED partial (Float) carrier
+        // compares FIELD-WISE, not by the structural reflexivity shortcut below
+        // (which would launder a nested NaN). Mirrors eval's `semantic_equal`; a
+        // lawful-Eq boundary (`TotalFloat`/`Set`/`Map`, own eq) is not a partial
+        // carrier and is untouched.
+        if self.value_reaches_partial_carrier(&a) || self.value_reaches_partial_carrier(&b) {
+            if let Some(result) = self.composite_field_wise_sem_eq(&a, &b, subst, positive) {
+                return result;
+            }
+            // Not both same-shape composites: fall through to the structural verdict.
+        }
+        // (2) Reflexivity — structurally-identical operands (sound here: no
+        // unshielded partial carrier reaches this point).
+        if self.values_equal(&a, &b) {
+            return sem_verdict(true, positive);
+        }
+        // (3) No carrier overrides eq at all (the common KB): straight to
+        // the structural verdict — no per-operand probes or scans.
+        if !self.has_eq_dispatch_entries() {
+            return sem_verdict(false, positive);
+        }
+        // (4) Head-carrier override over GROUND operands ⇒ dispatch.
+        let target = self
+            .sem_eq_dispatch_target(&a)
+            .or_else(|| self.sem_eq_dispatch_target(&b));
+        if let Some(target) = target {
+            if !self.value_deep_ground(&a, subst) || !self.value_deep_ground(&b, subst) {
+                return BuiltinResult::Delay;
+            }
+            return self.sem_eq_dispatch(target, a, b, subst, positive);
+        }
+        // (5) Buried override → suspend rather than mis-decide structurally.
+        if self.value_reaches_eq_override(&a, subst, 0)
+            || self.value_reaches_eq_override(&b, subst, 0)
+        {
+            return BuiltinResult::Delay;
+        }
+        // (6) Structural verdict.
+        sem_verdict(false, positive)
+    }
+
+    /// WI-664 — field-wise SEMANTIC equality for two composites whose carrier is a
+    /// derived `NonEq` (field-wise) carrier: decompose to identical shape and AND
+    /// [`Self::sem_eq_values`] over the matching fields, so a nested `Float` follows
+    /// IEEE. `Some(sem_verdict(false, …))` on a shape mismatch; `None` when the
+    /// operands are not both functor-headed composites (caller keeps the structural
+    /// verdict). Requires GROUND operands — a var field can't be IEEE-compared, so
+    /// a non-ground operand suspends (Delay), consistent with the dispatch path.
+    fn composite_field_wise_sem_eq(
+        &mut self,
+        a: &Value,
+        b: &Value,
+        subst: &Substitution,
+        positive: bool,
+    ) -> Option<BuiltinResult> {
+        // Shared shape-decomposition (mirrors eval's `composite_field_wise_eq`).
+        let pairs = match self.same_shape_child_pairs(a, b) {
+            super::eq_derive::FieldPairs::NotComposite => return None, // keep structural verdict
+            super::eq_derive::FieldPairs::Mismatch => return Some(sem_verdict(false, positive)),
+            super::eq_derive::FieldPairs::Pairs(pairs) => {
+                // A var field can't be IEEE-compared: suspend like the dispatch path.
+                if !self.value_deep_ground(a, subst) || !self.value_deep_ground(b, subst) {
+                    return Some(BuiltinResult::Delay);
                 }
-                if self.values_equal(&a, &b) {
-                    return sem_verdict(true, positive);
-                }
-                // No carrier overrides eq at all (the common KB): straight to
-                // the structural verdict — no per-operand probes or scans.
-                if !self.has_eq_dispatch_entries() {
-                    return sem_verdict(false, positive);
-                }
-                let target = self
-                    .sem_eq_dispatch_target(&a)
-                    .or_else(|| self.sem_eq_dispatch_target(&b));
-                if let Some(target) = target {
-                    if !self.value_deep_ground(&a, subst) || !self.value_deep_ground(&b, subst) {
-                        return BuiltinResult::Delay;
-                    }
-                    return self.sem_eq_dispatch(target, a, b, subst, positive);
-                }
-                if self.value_reaches_eq_override(&a, subst, 0)
-                    || self.value_reaches_eq_override(&b, subst, 0)
-                {
-                    return BuiltinResult::Delay;
-                }
-                sem_verdict(false, positive)
+                pairs
+            }
+        };
+        // Recurse per field; the composite is EQUAL iff every field is. `positive =
+        // true` per field, so a `Failure` means "this field is unequal".
+        for (ca, cb) in pairs {
+            match self.sem_eq_values(ca, cb, subst, true) {
+                BuiltinResult::Success => {}
+                BuiltinResult::Failure => return Some(sem_verdict(false, positive)),
+                BuiltinResult::Delay => return Some(BuiltinResult::Delay),
+                // `eq` never binds; a surprise binding can't be trusted as a verdict.
+                BuiltinResult::SuccessWithBindings(_) => return Some(BuiltinResult::Delay),
             }
         }
+        Some(sem_verdict(true, positive))
     }
 
     /// WI-616 — the eq-dispatch index probe for one operand: its head functor's
