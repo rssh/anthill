@@ -530,12 +530,31 @@ pub struct SearchStream {
     /// the body open with one `HashMap` probe instead of scanning every goal
     /// (WI-568). Safe because rules don't change during a single resolve call.
     cut_cache: HashMap<RuleId, Option<Symbol>>,
-    /// WI-616 — set when any branch was abandoned at the `max_depth` limit:
-    /// the search is INCOMPLETE, so "no solutions" does not mean "refuted".
-    /// Read by the semantic-`eq` sub-resolution to answer *undecided* instead
-    /// of a definite verdict when its proof search was truncated. (The depth
-    /// pop itself stays silent for ordinary resolution — surfacing it more
-    /// loudly, e.g. to NAF, is a filed follow-up.)
+    /// WI-616/WI-628 — set when any branch was abandoned at the `max_depth`
+    /// limit: the search is INCOMPLETE, so "no solutions" does not mean
+    /// "refuted". Read (via [`SearchStream::drain_verdict`]) by the two
+    /// closed-sub-proof consumers — the semantic-`eq` sub-resolution
+    /// ([`KnowledgeBase::prove_rule_predicate`]) and ground NAF
+    /// ([`SearchStream::step_naf`]) — to answer *undecided* instead of a definite
+    /// verdict when the proof search was truncated. (The depth pop itself stays
+    /// silent for ordinary resolution; surfacing truncation to the EAGER
+    /// `resolve` consumers — the constraint / quantifier guards, which read
+    /// `is_empty()` as refutation — is the filed WI-628 follow-up.)
+    truncated: bool,
+}
+
+/// WI-628 — the three-way verdict of draining a CLOSED sub-resolution (see
+/// [`SearchStream::drain_verdict`]). `truncated` rides ALONGSIDE the verdict so a
+/// consumer cannot read an empty result as a refutation without first seeing that
+/// the search was cut short at the depth limit — the discipline WI-628 restores
+/// after ground NAF read a truncated empty search as "refuted".
+struct DrainVerdict {
+    /// A DEFINITE (residual-free) solution was found — the sub-goal holds.
+    definite: bool,
+    /// At least one FLOUNDERED (residual) solution was seen — undischarged goals.
+    residual: bool,
+    /// A branch was abandoned at the depth limit — an empty result is then
+    /// UNDECIDED, never a refutation.
     truncated: bool,
 }
 
@@ -553,6 +572,36 @@ impl SearchStream {
                 None => return None,
             }
         }
+    }
+
+    /// WI-628 — drive this stream with a manual `step` loop (NOT `split_first`,
+    /// which consumes the stream on exhaustion) so `truncated` stays readable
+    /// AFTER the search runs dry, then classify three ways. Consuming: the caller
+    /// keeps only the [`DrainVerdict`]. Stops early on the first DEFINITE solution
+    /// (a found proof wins regardless of later truncation). The shared drain of
+    /// the two closed-sub-proof consumers ([`Self::step_naf`] ground NAF and
+    /// [`KnowledgeBase::prove_rule_predicate`] semantic `eq`) — returning
+    /// `truncated` beside the verdict so neither can forget to consult it.
+    fn drain_verdict(mut self, kb: &mut KnowledgeBase) -> DrainVerdict {
+        let mut definite = false;
+        let mut residual = false;
+        loop {
+            if self.is_empty() {
+                break;
+            }
+            match self.step(kb) {
+                Some(StepResult::YieldSolution(sol)) => {
+                    if sol.is_definite() {
+                        definite = true;
+                        break;
+                    }
+                    residual = true;
+                }
+                Some(StepResult::Continue) => {}
+                None => break,
+            }
+        }
+        DrainVerdict { definite, residual, truncated: self.truncated }
     }
 
     /// Check if the stream is obviously exhausted (empty stack).
@@ -1749,11 +1798,11 @@ impl SearchStream {
                 }
             }
         } else {
-            // Ground: classify the inner goal P three ways (WI-519). Pull the
-            // inner stream until a DEFINITE (empty-residual) solution appears (P
-            // holds → stop early) or it is exhausted, tracking whether any
-            // FLOUNDERED (residual) solution was seen. `definite_only` is OFF for
-            // this sub-search so residuals stay observable for the flounder check.
+            // Ground: classify the inner goal P — DEFINITE (P holds → not(P)
+            // fails), FLOUNDERED or TRUNCATED (undecided → not(P) undecided), or
+            // COMPLETE-empty (P false → not(P) succeeds). `definite_only` is OFF
+            // for this sub-search so residuals stay observable for the flounder
+            // check (WI-519 three-way + WI-628 truncation).
             let goal_v = kb.reify_value(&inner, &subst);
             let remaining_depth = self.config.max_depth.saturating_sub(depth);
             let sub_config = ResolveConfig {
@@ -1765,27 +1814,25 @@ impl SearchStream {
                 // proving `P` correctly fails `not(P)` (sound negation under Γ).
                 gamma: self.config.gamma.clone(),
             };
-            let mut sub_stream = kb.resolve_lazy_goals(vec![goal_v], &sub_config);
-            let mut inner_definite = false;
-            let mut inner_floundered = false;
-            while let Some((sol, rest)) = sub_stream.split_first(kb) {
-                if sol.is_definite() {
-                    inner_definite = true;
-                    break;
-                }
-                inner_floundered = true;
-                sub_stream = rest;
-            }
+            // WI-628: drain the inner search to a three-way verdict that carries
+            // `truncated`. A sub-search abandoned at `remaining_depth` proves
+            // nothing, so its empty result is UNDECIDED, not a refutation of `P`;
+            // folding `truncated` into the floundered branch below is what keeps
+            // `not(P)` from silently succeeding on an incomplete search.
+            let sub_stream = kb.resolve_lazy_goals(vec![goal_v], &sub_config);
+            let v = sub_stream.drain_verdict(kb);
 
-            if inner_definite {
+            if v.definite {
                 // P has a definite solution → P holds → not(P) FAILS — backtrack.
                 self.stack.pop();
                 return Some(StepResult::Continue);
-            } else if inner_floundered {
-                // P only FLOUNDERED (a residual, no definite solution) → P is
-                // undecided, so `not(P)` is undecided too: it must NOT silently
-                // succeed (the old `is_some()` instead treated the residual as
-                // "P holds" and made `not` wrongly FAIL). Propagate the
+            } else if v.residual || v.truncated {
+                // P FLOUNDERED (a residual, no definite solution) OR its search
+                // TRUNCATED at the depth limit (WI-628) → P is undecided, so
+                // `not(P)` is undecided too: it must NOT silently succeed (the old
+                // `is_some()` treated a residual as "P holds" and made `not`
+                // wrongly FAIL; reading a TRUNCATED empty search as refutation
+                // makes `not` wrongly SUCCEED — the WI-628 hole). Propagate the
                 // undecidedness as a residual `not(P)` — or skip it in
                 // definite-only mode (a floundered goal is not a definite
                 // solution). WI-519.
@@ -1801,11 +1848,13 @@ impl SearchStream {
                 // still-floundering `not(P)` re-enters here as the sole goal, or
                 // `consecutive_delays` reaches `goals.len()`).
                 if self.config.definite_only {
-                    // A floundered `not(P)` can never be discharged DEFINITELY, and
-                    // `P` is GROUND here (the `else`/ground branch) so re-resolving
-                    // after the tail binds nothing stays floundered — the whole
-                    // conjunction is non-definite regardless of the tail. Skip the
-                    // frame outright (no rotation, no residual yield). WI-519.
+                    // A floundered/truncated `not(P)` can never be discharged
+                    // DEFINITELY, and `P` is GROUND here (the `else`/ground branch)
+                    // so re-resolving after the tail binds nothing stays undecided
+                    // (a truncated search only loses budget as depth grows) — the
+                    // whole conjunction is non-definite regardless of the tail.
+                    // Skip the frame outright (no rotation, no residual yield).
+                    // WI-519 / WI-628.
                     self.stack.pop();
                     return Some(StepResult::Continue);
                 }
@@ -1834,7 +1883,8 @@ impl SearchStream {
                     return Some(StepResult::Continue);
                 }
             } else {
-                // P has no solution at all → P is false → not(P) SUCCEEDS.
+                // P has no solution and the search was COMPLETE (not truncated,
+                // not floundered) → P is genuinely false → not(P) SUCCEEDS.
                 let new_delay = delay_mode.reset();
                 let f = self.stack.last_mut().unwrap();
                 let new_goals = f.goals[1..].to_vec();
@@ -3812,24 +3862,13 @@ impl KnowledgeBase {
         const SEM_EQ_SUB_DEPTH: usize = 100_000;
         let goal = self.make_goal_value(pred, args);
         let config = ResolveConfig { max_depth: SEM_EQ_SUB_DEPTH, ..ResolveConfig::default() };
-        let mut stream = self.resolve_lazy_goals(vec![goal], &config);
-        let mut saw_residual = false;
-        loop {
-            if stream.is_empty() {
-                break;
-            }
-            match stream.step(self) {
-                Some(StepResult::YieldSolution(sol)) => {
-                    if sol.residual.is_empty() {
-                        return PredicateProof::Proved;
-                    }
-                    saw_residual = true;
-                }
-                Some(StepResult::Continue) => {}
-                None => break,
-            }
-        }
-        if saw_residual || stream.truncated {
+        let stream = self.resolve_lazy_goals(vec![goal], &config);
+        // WI-628: shared drain — `truncated` rides with the verdict so a depth-cut
+        // search degrades to UNDECIDED, never a wrong Refuted.
+        let v = stream.drain_verdict(self);
+        if v.definite {
+            PredicateProof::Proved
+        } else if v.residual || v.truncated {
             PredicateProof::Undecided
         } else {
             PredicateProof::Refuted
@@ -6167,6 +6206,102 @@ mod tests {
     }
 
     #[test]
+    fn wi628_naf_over_truncated_search_is_undecided_not_success() {
+        // WI-628: `not(P)` must NOT read a DEPTH-TRUNCATED inner search as a
+        // refutation of `P`. `loop(x) :- loop(x)` has no finite derivation, so a
+        // bounded search for `loop(1)` TRUNCATES (it never refutes). The old
+        // ground NAF branch treated the empty-but-truncated inner stream as "P has
+        // no solution → P is false", so `not(loop(1))` wrongly SUCCEEDED with an
+        // empty residual — a definite verdict from an incomplete search. The fix
+        // consults the sub-stream's `truncated` flag (WI-616 substrate) and folds
+        // truncation into the floundered/undecided branch.
+        let mut kb = kb_with_builtins();
+        let not_sym = kb.resolve_symbol("anthill.reflect.not");
+        let sort = kb.make_name_term("Rule");
+        let domain = kb.make_name_term("test");
+        let loop_sym = kb.intern("loop");
+
+        // loop(?x) :- loop(?x)  — non-terminating recursion (truncates, never
+        // refutes).
+        let x_sym = kb.intern("x");
+        let vx = kb.fresh_var(x_sym);
+        let var_x = kb.alloc(Term::Var(Var::Global(vx)));
+        let head = kb.alloc(Term::Fn {
+            functor: loop_sym,
+            pos_args: SmallVec::from_elem(var_x, 1),
+            named_args: SmallVec::new(),
+        });
+        let body = kb.alloc(Term::Fn {
+            functor: loop_sym,
+            pos_args: SmallVec::from_elem(var_x, 1),
+            named_args: SmallVec::new(),
+        });
+        kb.assert_rule(head, vec![body], sort, domain, None);
+
+        // not(loop(1)) under a small depth budget so loop(1) TRUNCATES.
+        let one = kb.alloc(Term::Const(Literal::Int(1)));
+        let loop_1 = kb.alloc(Term::Fn {
+            functor: loop_sym,
+            pos_args: SmallVec::from_elem(one, 1),
+            named_args: SmallVec::new(),
+        });
+        let not_loop_1 = kb.alloc(Term::Fn {
+            functor: not_sym,
+            pos_args: SmallVec::from_elem(loop_1, 1),
+            named_args: SmallVec::new(),
+        });
+
+        let config = ResolveConfig { max_depth: 8, ..Default::default() };
+        let results = kb.resolve(&[not_loop_1], &config);
+        // A truncated inner search is UNDECIDED: `not(loop(1))` must NOT yield a
+        // DEFINITE (empty-residual) solution. Pre-fix it did (the bug); post-fix
+        // any solution is a residual `[not(loop(1))]` carrying the undecidedness.
+        assert!(
+            !results.iter().any(|s| s.residual.is_empty()),
+            "not(loop(1)) must not DECIDE from a truncated search — no \
+             empty-residual (definite) solution allowed; got {} solution(s), {} definite",
+            results.len(),
+            results.iter().filter(|s| s.residual.is_empty()).count()
+        );
+        // Positive side: the honest undecided answer IS emitted — exactly one
+        // solution carrying the single undischarged `not(loop(1))` as residual —
+        // not the verdict dropped entirely (0 solutions), which the negative
+        // assertion above would pass vacuously.
+        assert_eq!(results.len(), 1, "expected exactly one (residual) solution for not(loop(1))");
+        assert_eq!(
+            results[0].residual.len(),
+            1,
+            "the undecided answer must carry the single undischarged not(loop(1)) as residual"
+        );
+
+        // Contrast (no over-flouncing): `not(g(1))` where `g` has NO rules/facts —
+        // the inner search for g(1) COMPLETES empty (not truncated), so `not(g(1))`
+        // must STILL succeed DEFINITELY. Guards the fix against breaking honest NAF.
+        let g_sym = kb.intern("g");
+        let g_1 = kb.alloc(Term::Fn {
+            functor: g_sym,
+            pos_args: SmallVec::from_elem(one, 1),
+            named_args: SmallVec::new(),
+        });
+        let not_g_1 = kb.alloc(Term::Fn {
+            functor: not_sym,
+            pos_args: SmallVec::from_elem(g_1, 1),
+            named_args: SmallVec::new(),
+        });
+        let results2 = kb.resolve(&[not_g_1], &config);
+        assert_eq!(
+            results2.len(),
+            1,
+            "not(g(1)) should succeed — g(1) is genuinely unprovable in a COMPLETE search"
+        );
+        assert!(
+            results2[0].residual.is_empty(),
+            "not(g(1)) must be DEFINITE (complete empty search), not floundered; got {:?}",
+            results2[0].residual
+        );
+    }
+
+    #[test]
     fn resolve_no_solution() {
         let mut kb = KnowledgeBase::new();
         let sort = kb.make_name_term("Fact");
@@ -8497,9 +8632,14 @@ mod tests {
 
     #[test]
     fn not_respects_depth_limit() {
-        // Recursive rule inside not() should terminate via depth limit.
-        // r(x) :- r(x)  (infinite loop)
-        // Query: not(r(a)) — sub-resolution should hit depth limit and find no solutions
+        // Recursive rule inside not() must TERMINATE via the depth limit — and,
+        // per WI-628, the resulting empty search is UNDECIDED, not a refutation.
+        // r(x) :- r(x)  (non-terminating). Query: not(r(a)). The sub-resolution
+        // for r(a) hits the depth limit (TRUNCATES) and finds no solution; a
+        // truncated search proves nothing, so `not(r(a))` must NOT succeed
+        // definitely — it residualizes as undecided. (Before WI-628 this test
+        // asserted a DEFINITE success, i.e. the very decide-from-incomplete-search
+        // bug: it read the truncated empty stream as "r(a) is refuted".)
         let mut kb = kb_with_builtins();
         let not_sym = kb.resolve_symbol("anthill.reflect.not");
         let r_sym = kb.intern("r");
@@ -8538,9 +8678,24 @@ mod tests {
 
         let config = ResolveConfig { max_depth: 20, ..ResolveConfig::default() };
         let solutions = kb.resolve(&[goal], &config);
-        // The recursive rule never produces a solution (depth limit), so not() succeeds
-        assert_eq!(solutions.len(), 1, "not(r(a)) should succeed since r(a) has no solutions");
-        assert!(solutions[0].residual.is_empty(), "no residual expected");
+        // Terminates (no hang) AND stays honest: no DEFINITE (empty-residual)
+        // solution — the truncated inner search leaves `not(r(a))` undecided
+        // (WI-628). The honest answer is exactly one residual `[not(r(a))]`, not
+        // the verdict dropped (0 solutions), which the negative check alone would
+        // pass vacuously.
+        assert!(
+            !solutions.iter().any(|s| s.residual.is_empty()),
+            "not(r(a)) must not decide from a truncated search — no definite \
+             solution allowed; got {} solution(s), {} definite",
+            solutions.len(),
+            solutions.iter().filter(|s| s.residual.is_empty()).count()
+        );
+        assert_eq!(solutions.len(), 1, "expected exactly one (residual) solution for not(r(a))");
+        assert_eq!(
+            solutions[0].residual.len(),
+            1,
+            "the undecided answer must carry the single undischarged not(r(a)) as residual"
+        );
     }
 
     #[test]
