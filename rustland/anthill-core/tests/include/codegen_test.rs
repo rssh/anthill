@@ -248,15 +248,24 @@ fn full_persistence_store_hierarchy() {
 
     assert!(out.contains("mod persistence"), "should have mod persistence: {out}");
 
-    // Three-trait hierarchy
+    // Capability-trait hierarchy (proposal 007 §2 / 053): retract is a
+    // NonMonotonicStore-trait op, not on base Store.
     assert!(out.contains("trait Store"), "should have trait Store: {out}");
+    assert!(out.contains("trait NonMonotonicStore: Store"), "should have NonMonotonicStore: Store: {out}");
     assert!(out.contains("trait QueryableStore: Store"), "should have QueryableStore: Store: {out}");
     assert!(out.contains("trait BulkStore: Store"), "should have BulkStore: Store: {out}");
 
-    // Store should have persist, retract, flush
-    assert!(out.contains("fn persist("), "should have persist: {out}");
-    assert!(out.contains("fn retract("), "should have retract: {out}");
-    assert!(out.contains("fn flush("), "should have flush: {out}");
+    // Base Store has persist, flush, and the monotonicity policy query — but
+    // NOT retract (moved to NonMonotonicStore). Slice off the NonMonotonicStore
+    // trait so we can assert retract is absent from Store itself.
+    let store_trait = out.split("trait NonMonotonicStore").next().unwrap();
+    assert!(store_trait.contains("fn persist("), "Store should have persist: {out}");
+    assert!(store_trait.contains("fn flush("), "Store should have flush: {out}");
+    assert!(store_trait.contains("fn monotonicity("), "Store should have monotonicity: {out}");
+    assert!(!store_trait.contains("fn retract("), "retract must NOT be on base Store: {out}");
+
+    // NonMonotonicStore carries retract.
+    assert!(out.contains("fn retract("), "NonMonotonicStore should have retract: {out}");
 
     // QueryableStore should have retrieve
     assert!(out.contains("fn retrieve("), "should have retrieve: {out}");

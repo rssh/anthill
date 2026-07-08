@@ -2,11 +2,12 @@
 namespace anthill.persistence.filesystem
   import anthill.reflect.{Term}
   import anthill.prelude.Meta.{Meta}
-  import anthill.persistence.{BulkStore, QueryableStore}
+  import anthill.persistence.{BulkStore, QueryableStore, NonMonotonicStore}
   import anthill.prelude.{Modifiable}
 
   entity FileStore(root: String, convention: FileConvention)
   fact BulkStore
+  fact NonMonotonicStore[FileStore]           -- filesystem can retract (053 / 007 §2)
   fact Modifiable[T = FileStore]
 
   -- IndexedFileStore: FileStore plus a per-rule source map (for
@@ -15,6 +16,7 @@ namespace anthill.persistence.filesystem
   entity IndexedFileStore(root: String, convention: FileConvention)
   fact BulkStore[IndexedFileStore]
   fact QueryableStore[IndexedFileStore]
+  fact NonMonotonicStore[IndexedFileStore]    -- span-based retract in place
   fact Modifiable[T = IndexedFileStore]
 
   -- ================================================================

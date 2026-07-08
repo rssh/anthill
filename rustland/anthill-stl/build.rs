@@ -65,6 +65,9 @@ fn main() {
             "TermRepr".into(), "LiteralRepr".into(),
             "SortInfo".into(), "OperationInfo".into(),
             "FieldInfo".into(), "DescriptionInfo".into(),
+            // proposal 053: the write-policy enum the persistence `Store`
+            // algebra's `monotonicity` op returns (store.anthill imports it).
+            "Monotonicity".into(),
         ]),
         ..config.clone()
     };

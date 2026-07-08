@@ -11,6 +11,9 @@ mod persistence_builtins_test;
 #[path = "include/wi666_monotonicity_test.rs"]
 mod wi666_monotonicity_test;
 
+#[path = "include/wi667_store_monotonicity_test.rs"]
+mod wi667_store_monotonicity_test;
+
 #[path = "include/map_builtins_test.rs"]
 mod map_builtins_test;
 

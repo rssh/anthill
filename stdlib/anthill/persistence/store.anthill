@@ -1,11 +1,21 @@
--- Persistence: abstract storage algebra
+-- Persistence: abstract storage algebra (proposal 007 §2 — trait/policy model)
 --
--- Three-sort hierarchy:
---   Store              — base: persist, retract, flush (all backends)
+-- Capability comes in two kinds, two mechanisms:
+--   * PROVISION — a trait carrying an operation. `retract` / `retrieve` / `pull`
+--     are not on every store, so having one = providing its trait. An
+--     append-only backend simply does not provide `NonMonotonicStore` and has
+--     no `retract` at all.
+--   * POLICY — a per-predicate value over universal ops. `persist` is on every
+--     Store, but whether it (and `retract`) is permitted for a functor is that
+--     functor's `monotonicity` (proposal 053), answered by `monotonicity`.
+--
+-- The sorts:
+--   Store              — base: persist, flush, monotonicity (all backends)
+--   NonMonotonicStore  — adds retract (mutation capability; e.g. filesystem, SQL)
 --   QueryableStore     — adds retrieve (pattern-based query; e.g. SQL)
 --   BulkStore          — adds pull (load all into memory; e.g. filesystem)
 namespace anthill.persistence
-  import anthill.reflect.{Term, FactId}
+  import anthill.reflect.{Term, FactId, Symbol, Monotonicity}
   import anthill.prelude.{List, Stream}
   import anthill.prelude.Meta.{Meta}
 
@@ -14,21 +24,45 @@ namespace anthill.persistence
   -- ================================================================
 
   sort Store {
-    -- Persist a fact to its backing store
+    -- Persist a fact to its backing store. Permitted iff the fact's functor
+    -- is not `constant` (proposal 053).
     operation persist(store: Store, fact: Term, meta: Meta) -> FactId
-      effects {Modify[store], Error}
-
-    -- Remove a fact from its backing store
-    operation retract(store: Store, id: FactId) -> Bool
       effects {Modify[store], Error}
 
     -- Flush KB delta (new/changed/retracted facts) back to store
     operation flush(store: Store, delta: List[T = Term]) -> Bool
       effects {Modify[store], Error}
+
+    -- Write POLICY (proposal 053) of a functor this store owns: which write
+    -- operations are permitted for it — constant (none), monotone (persist
+    -- only), non_monotone (persist + retract). A QUERY: the system reads it to
+    -- plan (persist iff != constant, retract iff non_monotone), NEVER by
+    -- attempting a write and catching the failure.
+    operation monotonicity(store: Store, functor: Symbol) -> Monotonicity
   }
 
   -- Given a fact, which store owns it?
   operation route(fact: Term) -> Store
+
+  -- ================================================================
+  -- NonMonotonicStore: mutation capability (proposal 053 / 007 §2)
+  -- ================================================================
+
+  -- Mutation is a capability: only a NonMonotonicStore carries `retract`. A
+  -- store that does not provide this trait cannot be asked to retract at all,
+  -- so its `monotonicity` answers can only be `monotone` or `constant` —
+  -- `non_monotone` implies this trait (the consistency is structural, not a
+  -- separate capability bound).
+  sort NonMonotonicStore {
+    fact Store                                -- NonMonotonicStore is-a Store
+
+    -- Remove a fact from its backing store. Permitted iff the functor is
+    -- `non_monotone` (proposal 053). A backend that cannot honor a declared
+    -- non_monotone retract fails loudly at the write via the Error effect,
+    -- not a static load check.
+    operation retract(store: NonMonotonicStore, id: FactId) -> Bool
+      effects {Modify[store], Error}
+  }
 
   -- ================================================================
   -- QueryableStore: pattern-based retrieval

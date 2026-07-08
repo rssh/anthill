@@ -22,6 +22,7 @@ pub enum PersistenceError {
     Io(String),
     Parse(Vec<ParseError>),
     NotQueryable,
+    NotMutable,
 }
 
 impl std::fmt::Display for PersistenceError {
@@ -38,6 +39,37 @@ impl std::fmt::Display for PersistenceError {
             PersistenceError::NotQueryable => write!(
                 f, "persistence: store does not implement pattern-based retrieve"
             ),
+            PersistenceError::NotMutable => write!(
+                f, "persistence: store is append-only (does not provide NonMonotonicStore) — cannot retract"
+            ),
+        }
+    }
+}
+
+/// The three per-functor write policies (proposal 053), mirroring the anthill
+/// `enum Monotonicity` in `anthill.reflect`. Lives here (not in `eval`) because
+/// write policy is a storage property (007 §2): a `Store` reports it via
+/// [`Store::owned_monotonicity`], and the eval-side guard reads the same enum.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Monotonicity {
+    /// neither asserted nor retracted at runtime (frozen)
+    Constant,
+    /// asserted, never retracted (append-only) — the DEFAULT
+    Monotone,
+    /// asserted and retracted (retract / update)
+    NonMonotone,
+}
+
+impl Monotonicity {
+    /// The qualified name of this policy's `anthill.reflect.Monotonicity`
+    /// variant — the single source of the enum↔anthill-name correspondence,
+    /// used both to decode a reduced `fact_monotonicity` head and to encode a
+    /// `Store.monotonicity` answer.
+    pub fn reflect_variant_qname(self) -> &'static str {
+        match self {
+            Monotonicity::Constant => "anthill.reflect.Monotonicity.constant",
+            Monotonicity::Monotone => "anthill.reflect.Monotonicity.monotone",
+            Monotonicity::NonMonotone => "anthill.reflect.Monotonicity.non_monotone",
         }
     }
 }
@@ -85,10 +117,38 @@ pub trait Store {
     /// called *before* `kb.retract(id)` — afterwards the rule's TermIds
     /// may be invalid.
     /// Returns true if the rule was alive at call time.
-    fn retract(&mut self, kb: &KnowledgeBase, id: RuleId) -> Result<bool, PersistenceError>;
+    ///
+    /// `retract` is the mutation capability (proposal 053 / 007 §2): at the
+    /// anthill level it lives on `NonMonotonicStore`, so only a backend that
+    /// declares `fact NonMonotonicStore[X]` is ever asked to retract. This
+    /// default is the Rust-side gate — an append-only backend that does not
+    /// override it fails loudly (surfaced through the `Error` effect at the
+    /// write, never a silent no-op), mirroring how `retrieve` defaults to
+    /// `NotQueryable`.
+    fn retract(&mut self, _kb: &KnowledgeBase, _id: RuleId) -> Result<bool, PersistenceError> {
+        Err(PersistenceError::NotMutable)
+    }
 
     /// Flush all buffered writes to storage.
     fn flush(&mut self, kb: &KnowledgeBase) -> Result<(), PersistenceError>;
+
+    /// The store's intrinsic per-functor write policy (proposal 053 / 007 §2),
+    /// as `(qualified functor name, policy)` pairs. This is how a store
+    /// *provides* monotonicity — the store is the single authority (007 §2).
+    ///
+    /// Materialized into the reflect `fact_monotonicity` facade at
+    /// registration (`Interpreter::register_store`): for a functor with no
+    /// in-memory reflect rule, the guard falls back to the owning store's
+    /// answer here rather than the in-memory `monotone` default.
+    ///
+    /// The filesystem backends return `[]`: their per-functor policy is the
+    /// project's own reflect rules (`rule fact_monotonicity(WorkItem) =
+    /// non_monotone()`), not intrinsic to the file store. A policy-bearing
+    /// backend (a SQL store reading its schema, a read-only materialized view)
+    /// overrides this with schema-derived values.
+    fn owned_monotonicity(&self) -> Vec<(String, Monotonicity)> {
+        Vec::new()
+    }
 
     /// Pattern-based retrieval. The contract — declared formally on the
     /// anthill side via `fact QueryableStore[X]` — is that a store

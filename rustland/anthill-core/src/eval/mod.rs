@@ -293,6 +293,15 @@ pub struct Interpreter {
     /// The shim populates this before invoking `main` (see
     /// `Self::register_store`); persistence builtins look entries up.
     pub(crate) store_registry: HashMap<String, Box<dyn Store>>,
+    /// Per-functor write policy provided by registered stores (proposal 053 /
+    /// 007 §2), keyed by the functor's QUALIFIED NAME. Materialized at
+    /// `register_store` from each store's `Store::owned_monotonicity`. The
+    /// `fact_monotonicity` guard consults this as the fallback when no
+    /// in-memory reflect rule fired — so a functor owned by an external store
+    /// resolves to that store's policy, not the in-memory `monotone` default.
+    /// String-keyed (not `Symbol`) so a store can name a functor whose symbol
+    /// is interned later; the guard resolves against `qualified_name_of`.
+    pub(crate) store_monotonicity: HashMap<String, crate::persistence::Monotonicity>,
     /// Memoized operation-body lookups. `lookup_operation_body` linear-scans
     /// every `OperationInfo` fact to find the one matching the op symbol, so
     /// without this cache every operation call is O(num_operations) — which
@@ -371,6 +380,7 @@ impl Interpreter {
             requirements: RequirementArenaRef::new(),
             effect_handlers: EffectRegistry::new(),
             store_registry: HashMap::new(),
+            store_monotonicity: HashMap::new(),
             op_body_cache: HashMap::new(),
             const_cache: HashMap::new(),
             profiling: std::env::var_os("ANTHILL_PROFILE").is_some(),
@@ -412,7 +422,14 @@ impl Interpreter {
     /// instance. Replaces any prior registration under the same key.
     /// Use [`Self::store_canonical_key`] to compute the key from the
     /// store's value representation.
+    ///
+    /// Materializes the store's per-functor write policy (proposal 053 /
+    /// 007 §2) into `store_monotonicity` so the `fact_monotonicity` guard can
+    /// resolve an externally-owned functor to its owning store's answer.
     pub fn register_store(&mut self, key: String, store: Box<dyn Store>) {
+        for (functor_name, mono) in store.owned_monotonicity() {
+            self.store_monotonicity.insert(functor_name, mono);
+        }
         self.store_registry.insert(key, store);
     }
 

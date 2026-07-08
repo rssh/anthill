@@ -229,7 +229,7 @@ namespace anthill.reflect
   operation make_fn(name: String, args: List[Term]) -> Term
 
   -- Look up the asserted fact whose head term equals `t`, returning the
-  -- backing FactId so callers can hand it to `Store.retract`. Mutating
+  -- backing FactId so callers can hand it to `NonMonotonicStore.retract`. Mutating
   -- commands (claim / deliver / verify / update / delete) walk
   -- `facts_of` to find a target term, then call `find_fact` to get its
   -- FactId before retracting + asserting the replacement.

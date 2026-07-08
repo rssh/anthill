@@ -144,8 +144,9 @@ fn retract_via_builtin_removes_fact_from_disk() {
     assert!(after_persist.contains("fact Foo"));
     assert!(after_persist.contains("fact Bar"));
 
-    // Retract Bar.
-    let retracted = interp.call("anthill.persistence.Store.retract", &[store_val.clone(), bar_id]).unwrap();
+    // Retract Bar. `retract` is a NonMonotonicStore-trait op (proposal 053 /
+    // 007 §2); FileStore declares `fact NonMonotonicStore[FileStore]`.
+    let retracted = interp.call("anthill.persistence.NonMonotonicStore.retract", &[store_val.clone(), bar_id]).unwrap();
     assert!(matches!(retracted, Value::Bool(true)));
     interp.call("anthill.persistence.Store.flush", &[store_val, Value::Unit]).unwrap();
 

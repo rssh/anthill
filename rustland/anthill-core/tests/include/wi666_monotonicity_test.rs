@@ -1,6 +1,6 @@
 //! WI-666 / proposal 053 — per-functor fact monotonicity runtime guard.
 //!
-//! The runtime write boundary (`Store.persist` / `Store.retract`) consults
+//! The runtime write boundary (`Store.persist` / `NonMonotonicStore.retract`) consults
 //! `anthill.reflect.fact_monotonicity(functor)` — the same reflect predicate
 //! the language exposes — and refuses the non-monotone step loudly:
 //!   * retract of a functor that is not `non_monotone` → Error;
@@ -49,7 +49,8 @@ fn persist(interp: &mut Interpreter, store: &Value, fact: Value) -> Result<Value
 }
 
 fn retract(interp: &mut Interpreter, store: &Value, id: Value) -> Result<Value, anthill_core::eval::EvalError> {
-    interp.call("anthill.persistence.Store.retract", &[store.clone(), id])
+    // `retract` moved to the NonMonotonicStore trait (proposal 053 / 007 §2).
+    interp.call("anthill.persistence.NonMonotonicStore.retract", &[store.clone(), id])
 }
 
 #[test]

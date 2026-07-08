@@ -1,8 +1,8 @@
 # 053: Per-Functor Fact Monotonicity
 
-## Status: Draft — Phases A+B implemented (WI-666, on main); external-store side = WI-667
+## Status: Draft — Phases A+B (WI-666) and the external-store side (WI-667) implemented, on main
 
-## Tracks: WI-666 (reflect substrate + runtime guard, DELIVERED), WI-667 (external-store side — the owning store provides monotonicity via its API), WI-665 (the Rust KB cache follow-on — a separate implementation matter, §"Out of scope")
+## Tracks: WI-666 (reflect substrate + runtime guard, DELIVERED), WI-667 (external-store side — `retract` is a `NonMonotonicStore`-trait op; `Store.monotonicity` is the policy query; the owning store's materialized policy is the `fact_monotonicity` fallback — DELIVERED), WI-665 (the Rust KB cache follow-on — a separate implementation matter, §"Out of scope")
 
 ## Relates to: 007 (persistence — the store owns a functor and answers its monotonicity via `Store.monotonicity`; §2 defines the trait/policy capability model), 036 (domain store — the owning store provides its functors' monotonicity via its API), 037 (Modify framework — retraction is that effect on the KB), 038 (builtin sorts). Kernel spec §7 (Metadata), §8.3 (Rule Evaluation), reflect operations.
 
