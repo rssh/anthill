@@ -30,35 +30,87 @@ The Stage 0 design ([stage0-metasystem-design.md §9.7](../stage0/stage0-metasys
 
 Persistence is defined as an abstract algebra in the `anthill.persistence` namespace — sorts, operations, and laws expressed in the kernel language. Concrete backends (filesystem, PostgreSQL, SQLite) are implementations that provide carrier bindings.
 
-### 2. Store: The Abstract Backend
+### 2. Store and its capability traits
 
-```
+Every backend is a `Store`: it can append facts, flush, and report the write
+policy of the functors it owns. Anything beyond that — retracting, native query,
+bulk load — is a **capability**, and a capability is a **trait** (a sort that
+carries the operation), not a marker value. A backend gains a capability by
+*providing* its trait (`fact <Trait>[Backend]`); a backend that does not provide
+a trait does not have its operation at all.
+
+```anthill
 namespace anthill.persistence
-  export Store, StoreCaps, Binding, route, retrieve, persist, retract, pull, flush
+  import anthill.reflect.{Term, FactId, Symbol, Monotonicity}
+  import anthill.prelude.{List, Stream}
+  import anthill.prelude.Meta.{Meta}
+  export Store, NonMonotonicStore, QueryableStore, BulkStore,
+         route, persist, retract, retrieve, pull, flush, monotonicity
 
-  -- ================================================================
-  -- Store: abstract storage backend
-  -- ================================================================
-
-  sort Store                                  -- abstract: filesystem, postgres, sqlite, ...
-
-  -- What the store can do natively
-  sort StoreCaps {
-    entity queryable                          -- supports pattern-based retrieval;
-                                              --   backward chaining delegates to store
-    entity bulk                               -- must load all facts into memory;
-                                              --   backward chaining works in-KB
+  -- Base: append a fact, flush, and report a functor's write policy. Nothing
+  -- here mutates or reads back — those are the traits below.
+  sort Store {
+    operation persist(store: Store, fact: Term, meta: Meta) -> FactId
+      effects {Modify[store], Error}
+    operation flush(store: Store, delta: List[T = Term]) -> Bool
+      effects {Modify[store], Error}
+    -- Write POLICY (proposal 053) of a functor this store owns: which write
+    -- operations are permitted for it — constant (none), monotone (persist
+    -- only), non_monotone (persist + retract). A QUERY: the system reads it to
+    -- plan, never by attempting a write and catching the failure.
+    operation monotonicity(store: Store, functor: Symbol) -> Monotonicity
   }
 
-  operation caps(store: Store) -> StoreCaps
+  -- Mutation is a capability: only a NonMonotonicStore carries `retract`.
+  sort NonMonotonicStore {
+    fact Store
+    operation retract(store: NonMonotonicStore, id: FactId) -> Bool
+      effects {Modify[store], Error}
+  }
+
+  -- Native pattern retrieval (backward chaining delegates to the backend).
+  sort QueryableStore {
+    fact Store
+    operation retrieve(store: QueryableStore, pattern: Term) -> Stream[Term, Error]
+      effects Error
+  }
+
+  -- Load all facts into the KB (backward chaining then works in memory).
+  sort BulkStore {
+    fact Store
+    operation pull(store: BulkStore) -> List[T = Term]
+      effects Error
+  }
 end
 ```
 
-A `queryable` store can translate KB query patterns into native queries (SQL, glob patterns, API calls). A `bulk` store loads all its facts into the KB at startup; retrieval is handled by the in-memory reasoning engine.
+**Two kinds of capability, two mechanisms.**
 
-This distinction determines how the backward chaining engine (kernel spec §8.3) interacts with the store — see §5 below.
+- **Provision — a trait.** `retract`, `retrieve`, `pull` are not on every store,
+  so "can mutate / query / bulk-load" is *having the operation* = providing the
+  trait (`fact NonMonotonicStore[SqlStore]`, `fact QueryableStore[SqlStore]`,
+  `fact BulkStore[FileStore]`). An append-only backend simply does not provide
+  `NonMonotonicStore`, and so cannot be asked to `retract` at all.
+- **Policy — a predicate.** `persist` is on *every* `Store`, but whether it (and
+  `retract`) is *permitted* for a given functor is that functor's
+  **monotonicity** (053), answered by `monotonicity(store, functor)`. It governs
+  universal operations per predicate and adds no operation, so it is a
+  value/predicate, not a trait.
 
-> **Correction (proposal 007.1).** The `caps` / `StoreCaps` operation above was never implemented; the stdlib realizes the queryable/bulk distinction as the `QueryableStore` / `BulkStore` subsorts of `Store` (each `fact Store`), and capability is read as subsort membership rather than a `caps(store)` return value. There is also deliberately **no** *write*-capability classifier — write policy is per-predicate, provided by the owning store (proposal 053), not a store-level tier. See 007.1.
+Provision and policy stay consistent by construction: a store that does not
+provide `NonMonotonicStore` has no `retract`, so `monotonicity` for its functors
+can only be `monotone` or `constant` — `non_monotone` *implies* the trait. (The
+earlier `caps` / `StoreCaps` value tried to make provision a marker, which is why
+it never fit the operation-bearing capabilities and was never built. It is
+dropped.)
+
+`monotonicity` answers "can I add / remove predicate `P` here?" *without* a write
+attempt: `persist` is available for `P` ⟺ `monotonicity(P) ≠ constant`, and
+`retract` ⟺ `monotonicity(P) = non_monotone`. The runtime guard (053) that
+refuses a disallowed write is only the backstop for code that skips the query.
+
+The `retrieve` / `pull` distinction determines how the backward chaining engine
+(kernel spec §8.3) interacts with the store — see §5 below.
 
 ### 3. Routing: 1-to-1 Mapping from Fact Sort to Store
 
@@ -89,41 +141,23 @@ Because routing rules are facts in the KB, they are queryable (`query by_sort Ru
 
 ### 4. Core Operations
 
-```
-namespace anthill.persistence
+The operations are declared on the sorts of §2 — `persist` / `flush` /
+`monotonicity` on `Store`, `retract` on `NonMonotonicStore`, `retrieve` on
+`QueryableStore`, `pull` on `BulkStore`. Their semantics:
 
-  -- ================================================================
-  -- Core operations on any store
-  -- ================================================================
-
-  -- Persist a fact to its backing store
-  operation persist(store: Store, fact: Term, meta: Meta) -> FactId
-    effects (Modifies store)
-
-  -- Retrieve facts matching a pattern
-  -- For queryable stores: translates pattern to native query
-  -- For bulk stores: no-op (facts already in KB from pull)
-  operation retrieve(store: Store, pattern: Term) -> List[Term]
-    effects (Reads store)
-
-  -- Remove a fact from its backing store
-  operation retract(store: Store, id: FactId) -> Bool
-    effects (Modifies store)
-
-  -- ================================================================
-  -- Bulk loading and flushing
-  -- ================================================================
-
-  -- Pull all facts from a bulk store into the KB
-  operation pull(store: Store) -> List[Term]
-    effects (Reads store)
-
-  -- Flush KB delta (new/changed/retracted facts) back to store
-  operation flush(store: Store, delta: List[Term])
-    effects (Modifies store)
-
-end
-```
+- **`persist(store, fact, meta) -> FactId`** — append a fact to its backing
+  store. Permitted iff `monotonicity(fact's functor) ≠ constant`.
+- **`retract(store, id) -> Bool`** (`NonMonotonicStore`) — remove a fact.
+  Permitted iff `monotonicity(functor) = non_monotone`. Absent entirely on a
+  store that does not provide `NonMonotonicStore`.
+- **`retrieve(store, pattern) -> Stream[Term, Error]`** (`QueryableStore`) —
+  translate the pattern to a native query and stream the matches.
+- **`pull(store) -> List[Term]`** (`BulkStore`) — load all of the store's facts
+  into the KB (retrieval then runs in memory).
+- **`flush(store, delta) -> Bool`** — write buffered changes back to the store.
+- **`monotonicity(store, functor) -> Monotonicity`** — the write-policy query
+  (§2; proposal 053), read *before* a write rather than discovered by attempting
+  one.
 
 ### 5. Backward Chaining Integration
 
@@ -153,8 +187,9 @@ namespace anthill.persistence.filesystem
 
   entity FileStore(root: String, convention: FileConvention)
 
-  -- FileStore is always bulk: load all files, work in memory
-  rule caps(FileStore(?)) = bulk
+  -- FileStore is bulk (load all files, work in memory) and mutable
+  fact BulkStore[FileStore]
+  fact NonMonotonicStore[FileStore]
 
   -- ================================================================
   -- File conventions: how facts map to files
@@ -195,7 +230,7 @@ The SQL backend stores facts as table rows. It is `queryable` — backward chain
 
 ```
 namespace anthill.persistence.sql
-  import anthill.persistence.{Store, StoreCaps}
+  import anthill.persistence.{Store, QueryableStore, NonMonotonicStore}
 
   sort SqlDialect {
     entity Postgresql
@@ -206,8 +241,9 @@ namespace anthill.persistence.sql
 
   entity SqlStore(connection: String, schema: String, dialect: SqlDialect)
 
-  -- All SQL stores are queryable: backward chaining delegates to SQL
-  rule caps(SqlStore(?_)) = queryable
+  -- All SQL stores are queryable (chaining delegates to SQL) and mutable
+  fact QueryableStore[SqlStore]
+  fact NonMonotonicStore[SqlStore]
 
   -- ================================================================
   -- Query bindings: how to translate patterns to SQL
