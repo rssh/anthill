@@ -112,7 +112,12 @@ fn retract_via_builtin_removes_fact_from_disk() {
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path().to_path_buf();
 
-    let src = "namespace test.retract\n  -- placeholder\nend\n";
+    // `Bar` is declared non_monotone so the proposal-053 guard permits its
+    // retract; `Foo` stays the default (monotone) and is only persisted.
+    let src = "namespace test.retract\n  \
+        import anthill.reflect.{fact_monotonicity, non_monotone}\n  \
+        entity Bar\n  \
+        rule fact_monotonicity(Bar) = non_monotone() [simp]\nend\n";
     let mut interp = interp_for(src);
 
     let store_val = filestore_value(&mut interp, root.to_str().unwrap());
@@ -123,7 +128,8 @@ fn retract_via_builtin_removes_fact_from_disk() {
     );
 
     let foo_sym = interp.kb_mut().intern("Foo");
-    let bar_sym = interp.kb_mut().intern("Bar");
+    let bar_sym = interp.kb_mut().try_resolve_symbol("test.retract.Bar")
+        .expect("declared Bar resolves");
     let foo_val = Value::Entity { functor: foo_sym, pos: vec![].into(), named: vec![].into(), ty: None };
     let bar_val = Value::Entity { functor: bar_sym, pos: vec![].into(), named: vec![].into(), ty: None };
 

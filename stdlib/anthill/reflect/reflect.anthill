@@ -35,6 +35,36 @@ namespace anthill.reflect
   sort Symbol = ?
 
   -- ================================================================
+  -- Per-functor fact monotonicity (proposal 053)
+  -- ================================================================
+
+  -- The write policy of a functor's fact-set. The store that owns a functor
+  -- (007 routing) gives its value; the runtime guard consults it before an
+  -- assert / retract.
+  --   constant      neither asserted nor retracted at runtime (frozen)
+  --   monotone      asserted, never retracted (append-only) — the DEFAULT
+  --   non_monotone  asserted and retracted (retract / update)
+  enum Monotonicity {
+    entity constant
+    entity monotone
+    entity non_monotone
+  }
+
+  -- The monotonicity of `functor`'s facts, keyed by the functor's Symbol.
+  -- A project marks its retractable functors by rule, e.g.
+  --   rule fact_monotonicity(WorkItem) = non_monotone() [simp]
+  -- (the `[simp]` tag is required — an untagged equational rule loads inert;
+  -- the nullary RHS needs parens so `[simp]` is not misparsed into it).
+  --
+  -- There is deliberately NO catch-all `fact_monotonicity(?) = monotone()`
+  -- default rule: under the current load-order simp firing (most-specific-
+  -- first is deferred — proposal 043 §4.6) a catch-all in this shared file
+  -- always precedes — and so masks — every project override. The `monotone`
+  -- default is instead supplied by the runtime guard's "no rule fired"
+  -- branch. Re-add a catch-all here only once firing is most-specific-first.
+  operation fact_monotonicity(functor: Symbol) -> Monotonicity
+
+  -- ================================================================
   -- Source positions and occurrences (Proposal 022)
   -- ================================================================
 

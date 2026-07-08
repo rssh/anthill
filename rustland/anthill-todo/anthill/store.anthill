@@ -23,7 +23,16 @@ namespace anthill.todo.store
   import anthill.prelude.List.{nil, cons}
   import anthill.reflect.{Term, term_as_entity, term_field, term_as_string,
                           term_functor_name, find_fact, as_term}
+  import anthill.reflect.{fact_monotonicity, non_monotone}
   import anthill.reflect.KB.{kb, facts_of}
+
+  -- ─── 0. Fact monotonicity (proposal 053) ───────────────────────
+  -- This store owns WorkItem and Tag and RETRACTS them at runtime
+  -- (forget / replace / untag_item), so both are non_monotone. Feedback
+  -- and StoreFormat are only ever persisted → they keep the `monotone`
+  -- default (append-only). The retract guard consults these rules.
+  rule fact_monotonicity(WorkItem) = non_monotone() [simp]
+  rule fact_monotonicity(Tag) = non_monotone() [simp]
 
   -- ─── 1. Spec ────────────────────────────────────────────────────
   -- Operations declared once, parameterized by State. Each impl

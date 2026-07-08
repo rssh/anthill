@@ -2243,6 +2243,91 @@ effect_dispatcher!(modify_get, "anthill.prelude.ModifyRuntime.get", "get", "anth
 effect_dispatcher!(modify_set, "anthill.prelude.ModifyRuntime.set", "set", "anthill.prelude.Modify");
 effect_dispatcher!(error_raise, "anthill.prelude.Error.raise", "raise", "anthill.prelude.Error");
 
+// ── Fact monotonicity guard (proposal 053) ─────────────────────
+//
+// The runtime write paths consult `anthill.reflect.fact_monotonicity(functor)`
+// — the SAME reflect predicate the language exposes (single source of truth) —
+// before a persist / retract, and refuse the non-monotone step LOUDLY:
+//   * retract of a functor that is not `non_monotone` (the SOLE guard — retract
+//     is what desyncs re-derived structure and falsifies caches over it);
+//   * persist (assert) of a `constant` functor.
+// These builtins are the runtime fact-write boundary; they never run during a
+// load phase, so the guard cannot trip the loader legitimately establishing
+// facts. Factored as a helper so any future in-memory mutation path adopts it.
+
+/// The three fact-monotonicity policies (proposal 053), mirroring the anthill
+/// `enum Monotonicity` in `anthill.reflect`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Monotonicity {
+    Constant,
+    Monotone,
+    NonMonotone,
+}
+
+/// Reduce `anthill.reflect.fact_monotonicity(functor)` via the simp rewriter
+/// and read back the policy, comparing the reduced head by interned SYMBOL
+/// identity — not a name string. A user entity sharing a short name (e.g. some
+/// `my.pkg.constant`) must not be mistaken for the reflect variant; the repo's
+/// representation note requires identity over names.
+///
+/// The `monotone` DEFAULT is returned for exactly ONE case: the reduced head is
+/// still `fact_monotonicity` itself, i.e. no rule fired. reflect.anthill
+/// deliberately carries no catch-all rule (under load-order simp firing it would
+/// mask every override — most-specific-first is deferred, 043 §4.6), so an
+/// unreduced result IS the append-only default. Every OTHER outcome — a missing
+/// reflect symbol, a reduction to an unexpected head, or a non-functor carrier —
+/// is a LOUD error (repo principle: loud over silent skip), never a silent
+/// default that would quietly void the guard.
+fn fact_monotonicity_of(
+    kb: &mut crate::kb::KnowledgeBase,
+    functor: crate::intern::Symbol,
+) -> Result<Monotonicity, EvalError> {
+    use crate::kb::term::Term;
+    // The reflect substrate is loaded whenever the persistence builtins run
+    // (persistence imports anthill.reflect), so a missing symbol is a broken /
+    // stale setup, not a benign default — surface it.
+    let resolve = |kb: &crate::kb::KnowledgeBase, name: &str| -> Result<crate::intern::Symbol, EvalError> {
+        kb.try_resolve_symbol(name).ok_or_else(|| EvalError::Internal(format!(
+            "fact_monotonicity guard: `{name}` unresolved — the anthill.reflect \
+             substrate (proposal 053) must be loaded"
+        )))
+    };
+    let fm_sym = resolve(kb, "anthill.reflect.fact_monotonicity")?;
+    let mono_sym = resolve(kb, "anthill.reflect.Monotonicity.monotone")?;
+    let non_mono_sym = resolve(kb, "anthill.reflect.Monotonicity.non_monotone")?;
+    let const_sym = resolve(kb, "anthill.reflect.Monotonicity.constant")?;
+
+    let functor_ref = kb.alloc(Term::Ref(functor));
+    let call = kb.alloc(Term::Fn {
+        functor: fm_sym,
+        pos_args: smallvec::SmallVec::from_slice(&[functor_ref]),
+        named_args: smallvec::SmallVec::new(),
+    });
+    let (result, _changes) =
+        kb.apply_eq_rules(&Value::term(call), 100, &crate::kb::subst::Substitution::new());
+
+    let head = crate::kb::term_view::TermView::head(&result, kb).functor_sym();
+    match head {
+        Some(s) if s == non_mono_sym => Ok(Monotonicity::NonMonotone),
+        Some(s) if s == const_sym => Ok(Monotonicity::Constant),
+        Some(s) if s == mono_sym => Ok(Monotonicity::Monotone),
+        // Unreduced: head is still the operation itself → no rule matched → the
+        // append-only default. This is the ONLY path that yields `monotone`
+        // without a rule having said so.
+        Some(s) if s == fm_sym => Ok(Monotonicity::Monotone),
+        Some(s) => Err(EvalError::Internal(format!(
+            "fact_monotonicity({}) reduced to unexpected head `{}` — expected a \
+             Monotonicity variant (proposal 053)",
+            kb.qualified_name_of(functor),
+            kb.qualified_name_of(s),
+        ))),
+        None => Err(EvalError::Internal(format!(
+            "fact_monotonicity({}) reduced to a non-functor carrier (proposal 053)",
+            kb.qualified_name_of(functor),
+        ))),
+    }
+}
+
 // ── Persistence builtins (proposal 007 §4) ─────────────────────
 
 /// `anthill.persistence.Store.persist(store, fact, meta) -> FactId`.
@@ -2253,6 +2338,25 @@ fn persistence_persist(interp: &mut Interpreter, args: &[Value]) -> Result<Value
 
     let fact_term = interp.kb.alloc_from_value(&fact_val)
         .map_err(|e| EvalError::Internal(format!("persist: lower fact: {e:?}")))?;
+
+    // Proposal 053: refuse asserting a `constant` functor (loud). A monotone
+    // (default) or non_monotone functor asserts freely. A fact head must have a
+    // functor to key the guard — its absence is a malformed fact, surfaced loud
+    // rather than silently asserted past the guard.
+    let Some(functor) =
+        crate::kb::term_view::TermView::head(&Value::term(fact_term), &interp.kb).functor_sym()
+    else {
+        return Err(EvalError::Internal(
+            "persist: fact head has no functor — cannot apply the monotonicity guard \
+             (proposal 053)".into(),
+        ));
+    };
+    if fact_monotonicity_of(&mut interp.kb, functor)? == Monotonicity::Constant {
+        let name = interp.kb.qualified_name_of(functor).to_string();
+        return Err(interp.raise_error(Value::Str(format!(
+            "persist refused: functor `{name}` is constant — no assert (proposal 053)"
+        ))));
+    }
 
     let sort = interp.kb.make_name_term("Fact");
     let domain = interp.kb.make_name_term("anthill.todo");
@@ -2304,6 +2408,27 @@ fn persistence_retract(interp: &mut Interpreter, args: &[Value]) -> Result<Value
 
     if !interp.kb.is_rule_alive(rule_id) {
         return Ok(Value::Bool(false));
+    }
+
+    // Proposal 053: retract is the SOLE guard — refuse (loud) unless the functor
+    // is `non_monotone`. Retracting a monotone/constant functor's facts at
+    // runtime desyncs re-derived structure and falsifies caches. A missing head
+    // functor is a malformed rule, surfaced loud rather than silently retracted
+    // past the guard.
+    let Some(functor) =
+        crate::kb::term_view::TermView::head(interp.kb.rule_head_value(rule_id), &interp.kb)
+            .functor_sym()
+    else {
+        return Err(EvalError::Internal(
+            "retract: rule head has no functor — cannot apply the monotonicity guard \
+             (proposal 053)".into(),
+        ));
+    };
+    if fact_monotonicity_of(&mut interp.kb, functor)? != Monotonicity::NonMonotone {
+        let name = interp.kb.qualified_name_of(functor).to_string();
+        return Err(interp.raise_error(Value::Str(format!(
+            "retract refused: functor `{name}` is not non_monotone (proposal 053)"
+        ))));
     }
 
     {

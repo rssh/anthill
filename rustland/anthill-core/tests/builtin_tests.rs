@@ -8,6 +8,9 @@ mod persistence_test;
 #[path = "include/persistence_builtins_test.rs"]
 mod persistence_builtins_test;
 
+#[path = "include/wi666_monotonicity_test.rs"]
+mod wi666_monotonicity_test;
+
 #[path = "include/map_builtins_test.rs"]
 mod map_builtins_test;
 
