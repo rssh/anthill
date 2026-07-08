@@ -314,6 +314,17 @@ pub enum LoadError {
         label: Option<String>,
         detail: String,
     },
+    /// WI-628: a registered integrity constraint whose proof search TRUNCATED at
+    /// the resolver depth limit — it can be neither confirmed nor refuted within
+    /// budget, so it is neither cleanly `Violated` nor safely `Holds`.
+    /// Load-BLOCKING: admitting the KB while a constraint's verdict was decided
+    /// from an incomplete search is the unsoundness WI-628 closes. Distinct from
+    /// `ConstraintLoweringFailed` (a malformed constraint FORM — here the form is
+    /// fine, the SEARCH was cut short). Carries the source label and a reason.
+    ConstraintUndecidable {
+        label: Option<String>,
+        detail: String,
+    },
     /// WI-023: a constraint uses a form the guard engine cannot yet enforce
     /// CORRECTLY — e.g. a `forall` with a multi-atom / nested `-:` body (whose
     /// negation needs `¬(Q1 ∧ Q2)`, which the per-goal negation can't express).
@@ -495,6 +506,12 @@ impl LoadError {
                     label_suffix(label), detail,
                 )
             }
+            LoadError::ConstraintUndecidable { label, detail } => {
+                format!(
+                    "integrity constraint{} is undecidable within the resolver depth budget: {}",
+                    label_suffix(label), detail,
+                )
+            }
             LoadError::UnsupportedConstraintForm { label, detail, span } => {
                 let (line, col) = Span::line_col(source, span.start);
                 format!("{}:{}: constraint{} uses an unsupported form: {}", line, col, label_suffix(label), detail)
@@ -616,6 +633,9 @@ impl LoadError {
             | LoadError::AggregationConstraintUnsupported { .. }
             | LoadError::ConstraintViolated { .. }
             | LoadError::ConstraintLoweringFailed { .. }
+            // WI-628: a constraint decided from a truncated (incomplete) search
+            // is unsound to run with — block rather than pass silently.
+            | LoadError::ConstraintUndecidable { .. }
             | LoadError::UnsupportedConstraintForm { .. })
     }
 }
@@ -826,6 +846,9 @@ impl std::fmt::Display for LoadError {
             }
             LoadError::ConstraintLoweringFailed { label, detail } => {
                 write!(f, "integrity constraint{} uses a LogicalQuery form the resolver cannot lower: {}", label_suffix(label), detail)
+            }
+            LoadError::ConstraintUndecidable { label, detail } => {
+                write!(f, "integrity constraint{} is undecidable within the resolver depth budget: {}", label_suffix(label), detail)
             }
             LoadError::UnsupportedConstraintForm { label, detail, span } => {
                 write!(f, "constraint{} uses an unsupported form ({}) at {}..{}", label_suffix(label), detail, span.start, span.end)
@@ -3306,6 +3329,12 @@ fn load_phase_inner(
             }
             super::GuardCheck::Unsupported(label, detail) => {
                 all_errors.push(LoadError::ConstraintLoweringFailed { label, detail });
+            }
+            // WI-628: a constraint whose proof search truncated at the depth
+            // limit is undecided — surface loudly (load-blocking), never a
+            // silent pass.
+            super::GuardCheck::Undecidable(label, detail) => {
+                all_errors.push(LoadError::ConstraintUndecidable { label, detail });
             }
         }
     }

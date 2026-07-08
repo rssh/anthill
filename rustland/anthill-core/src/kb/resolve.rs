@@ -502,6 +502,15 @@ pub struct ResolveStats {
     /// time in `step_init`. Should scale linearly with body size — i.e.
     /// roughly one walk per goal consumed (WI-030).
     pub lazy_walk_calls: u64,
+    /// WI-628 — the search abandoned at least one branch at the `max_depth`
+    /// limit, so it is INCOMPLETE: an empty / short result is UNDECIDED, not a
+    /// refutation. Not a cost counter like the others — a completeness signal
+    /// that rides with the telemetry so the EAGER `resolve` consumers (the
+    /// constraint / quantifier guards, which read `is_empty()` / a count as a
+    /// verdict) can read it off the drained stream ([`SearchStream::drain_all`])
+    /// instead of silently deciding from a truncated search. Mirrors the
+    /// stream-level [`SearchStream::truncated`] flag, snapshotted at drain time.
+    pub truncated: bool,
 }
 
 /// Lazy search stream that yields one solution at a time via
@@ -604,14 +613,43 @@ impl SearchStream {
         DrainVerdict { definite, residual, truncated: self.truncated }
     }
 
+    /// WI-628 — collect ALL solutions (up to `max_solutions`, 0 = unlimited)
+    /// with a manual `step` loop, then return them and the final stats WITH
+    /// `truncated` folded onto the stats. The eager front doors
+    /// ([`KnowledgeBase::resolve_goals_with_truncation`] and
+    /// [`KnowledgeBase::resolve_with_stats`]) route through this instead of a
+    /// `split_first` loop because `split_first` consumes the stream on
+    /// exhaustion and DROPS the stream-level `truncated` flag — so a constraint
+    /// / quantifier guard reading `is_empty()` would decide a refutation from an
+    /// incomplete search (the WI-628 hole, the eager-consumer analog of the
+    /// ground-NAF one). Draining by hand keeps the stream alive so
+    /// `self.truncated` is still readable after the search runs dry — this is
+    /// the ONE place the live flag becomes an observable result.
+    fn drain_all(mut self, kb: &mut KnowledgeBase, max_solutions: usize) -> (Vec<Solution>, ResolveStats) {
+        let mut solutions = Vec::new();
+        loop {
+            if self.is_empty() {
+                break;
+            }
+            match self.step(kb) {
+                Some(StepResult::YieldSolution(sol)) => {
+                    solutions.push(sol);
+                    if max_solutions > 0 && solutions.len() >= max_solutions {
+                        break;
+                    }
+                }
+                Some(StepResult::Continue) => {}
+                None => break,
+            }
+        }
+        let mut stats = self.stats.clone();
+        stats.truncated = self.truncated;
+        (solutions, stats)
+    }
+
     /// Check if the stream is obviously exhausted (empty stack).
     pub fn is_empty(&self) -> bool {
         self.stack.is_empty()
-    }
-
-    /// Read-only access to telemetry (see `ResolveStats`).
-    pub fn stats(&self) -> &ResolveStats {
-        &self.stats
     }
 
     /// Execute one step of the search. Returns `None` when the stack is
@@ -1837,6 +1875,17 @@ impl SearchStream {
                 // definite-only mode (a floundered goal is not a definite
                 // solution). WI-519.
                 //
+                // WI-628(b): if the inner search TRUNCATED, taint the OUTER stream
+                // so the eager consumers see it. This is load-bearing under
+                // `definite_only`: the frame below is skipped WITHOUT yielding a
+                // residual, so the sub-stream's local `truncated` (dropped with
+                // `v`) would otherwise vanish — a nested `not(Q)` truncation would
+                // be invisible and a forall/negation/count guard would read the
+                // outer `is_empty()` as a refutation. `drain_all` snapshots this
+                // onto the returned stats. (Fold only `truncated`, not `residual`:
+                // a flounder is surfaced as its own residual `not(P)`, below.)
+                self.truncated |= v.truncated;
+                //
                 // WI-629: but the frame may still hold TAIL goals. Yielding a bare
                 // `residual:[not(P)]` here DROPS `goals[1..]` — the conjunction
                 // reads satisfied-modulo-residual while a conjunct was never
@@ -2410,20 +2459,26 @@ impl KnowledgeBase {
     /// `_value`) to avoid colliding with the subst-layer `resolve_as_value` (a
     /// variable→binding lookup, an unrelated operation).
     pub fn resolve_goals(&mut self, goals: Vec<Value>, config: &ResolveConfig) -> Vec<Solution> {
-        let mut stream = self.resolve_lazy_goals(goals, config);
-        let mut solutions = Vec::new();
-        loop {
-            match stream.split_first(self) {
-                Some((sol, rest)) => {
-                    solutions.push(sol);
-                    if config.max_solutions > 0 && solutions.len() >= config.max_solutions {
-                        return solutions;
-                    }
-                    stream = rest;
-                }
-                None => return solutions,
-            }
-        }
+        self.resolve_goals_with_truncation(goals, config).0
+    }
+
+    /// WI-628 — like [`Self::resolve_goals`] but also reports whether the search
+    /// TRUNCATED at the depth limit. An empty (or, for a count, short) result
+    /// from a truncated search is UNDECIDED, never a refutation, so the eager
+    /// constraint / quantifier guards (`eval_negation_guard` / `eval_forall_guard`
+    /// / `eval_count_guard`) consult this before reading `is_empty()` / a count as
+    /// a verdict — raising a loud "undecidable within depth budget" rather than
+    /// silently deciding from an incomplete search. Drains via
+    /// [`SearchStream::drain_all`], which keeps the stream alive past exhaustion
+    /// so the flag survives (the plain `split_first` loop dropped it).
+    pub fn resolve_goals_with_truncation(
+        &mut self,
+        goals: Vec<Value>,
+        config: &ResolveConfig,
+    ) -> (Vec<Solution>, bool) {
+        let stream = self.resolve_lazy_goals(goals, config);
+        let (solutions, stats) = stream.drain_all(self, config.max_solutions);
+        (solutions, stats.truncated)
     }
 
     /// Like `resolve`, but also returns telemetry from the underlying
@@ -2434,24 +2489,12 @@ impl KnowledgeBase {
         goals: &[V],
         config: &ResolveConfig,
     ) -> (Vec<Solution>, ResolveStats) {
-        let mut stream = self.resolve_lazy(goals, config);
-        let mut solutions = Vec::new();
-        let mut stats = ResolveStats::default();
-        loop {
-            match stream.split_first(self) {
-                Some((sol, rest)) => {
-                    solutions.push(sol);
-                    stats = rest.stats().clone();
-                    if config.max_solutions > 0
-                        && solutions.len() >= config.max_solutions
-                    {
-                        return (solutions, stats);
-                    }
-                    stream = rest;
-                }
-                None => return (solutions, stats),
-            }
-        }
+        // WI-628: drain via `drain_all` (not a `split_first` loop) so the final
+        // stats reflect the WHOLE search — including the empty / post-last-solution
+        // path the old loop never sampled (it refreshed `stats` only on a yielded
+        // solution) — and so `stats.truncated` is populated.
+        let stream = self.resolve_lazy(goals, config);
+        stream.drain_all(self, config.max_solutions)
     }
 
 
@@ -6298,6 +6341,88 @@ mod tests {
             results2[0].residual.is_empty(),
             "not(g(1)) must be DEFINITE (complete empty search), not floundered; got {:?}",
             results2[0].residual
+        );
+    }
+
+    #[test]
+    fn wi628_naf_truncation_propagates_to_outer_stream_under_definite_only() {
+        // WI-628(b) piece (a): a nested `not(P)` whose inner search TRUNCATES must
+        // taint the OUTER stream's `truncated` flag, so an eager consumer sees it.
+        // This is the exact mechanism the `forall` guard relies on — it synthesizes
+        // `not(body)` goals and resolves them under `definite_only: true`, where the
+        // truncated `not(P)` frame is SKIPPED WITHOUT yielding a residual. Before
+        // piece (a), the sub-stream's local `truncated` was dropped with the drained
+        // verdict and the outer `resolve_goals_with_truncation` reported
+        // `truncated == false` — so the guard read the empty result as a definite
+        // refutation. Now `self.truncated |= v.truncated` folds it up and
+        // `drain_all` surfaces it.
+        let mut kb = kb_with_builtins();
+        let not_sym = kb.resolve_symbol("anthill.reflect.not");
+        let sort = kb.make_name_term("Rule");
+        let domain = kb.make_name_term("test");
+        let loop_sym = kb.intern("loop");
+
+        // loop(?x) :- loop(?x) — non-terminating (truncates, never refutes).
+        let x_sym = kb.intern("x");
+        let vx = kb.fresh_var(x_sym);
+        let var_x = kb.alloc(Term::Var(Var::Global(vx)));
+        let head = kb.alloc(Term::Fn {
+            functor: loop_sym,
+            pos_args: SmallVec::from_elem(var_x, 1),
+            named_args: SmallVec::new(),
+        });
+        let body = kb.alloc(Term::Fn {
+            functor: loop_sym,
+            pos_args: SmallVec::from_elem(var_x, 1),
+            named_args: SmallVec::new(),
+        });
+        kb.assert_rule(head, vec![body], sort, domain, None);
+
+        let one = kb.alloc(Term::Const(Literal::Int(1)));
+        let mk_not = |kb: &mut KnowledgeBase, inner_functor: Symbol| {
+            let inner = kb.alloc(Term::Fn {
+                functor: inner_functor,
+                pos_args: SmallVec::from_elem(one, 1),
+                named_args: SmallVec::new(),
+            });
+            kb.alloc(Term::Fn {
+                functor: not_sym,
+                pos_args: SmallVec::from_elem(inner, 1),
+                named_args: SmallVec::new(),
+            })
+        };
+        let not_loop_1 = mk_not(&mut kb, loop_sym);
+
+        // definite_only: true is the guard/quantifier discharge mode — the frame is
+        // skipped WITHOUT a residual, so ONLY the surfaced `truncated` flag carries
+        // the undecidedness.
+        let config = ResolveConfig { max_depth: 8, definite_only: true, ..Default::default() };
+        let (sols, truncated) = kb.resolve_goals_with_truncation(vec![Value::term(not_loop_1)], &config);
+        assert!(
+            truncated,
+            "a truncated inner not(loop(1)) must set the OUTER stream's truncated flag \
+             under definite_only (piece a) — else the guard decides from an incomplete search"
+        );
+        assert!(
+            sols.is_empty(),
+            "not(loop(1)) yields no DEFINITE solution under definite_only; the undecidedness \
+             rides the truncated flag, not a residual solution"
+        );
+
+        // Contrast (no false-positive truncation): not(g(1)) where g is undefined —
+        // the inner search COMPLETES empty, so not(g(1)) succeeds definitely and the
+        // outer flag stays clear.
+        let g_sym = kb.intern("g");
+        let not_g_1 = mk_not(&mut kb, g_sym);
+        let (sols2, truncated2) = kb.resolve_goals_with_truncation(vec![Value::term(not_g_1)], &config);
+        assert!(
+            !truncated2,
+            "not(g(1)) completes (g undefined) — the outer truncated flag must stay clear"
+        );
+        assert_eq!(
+            sols2.len(),
+            1,
+            "not(g(1)) succeeds definitely over a COMPLETE empty search"
         );
     }
 

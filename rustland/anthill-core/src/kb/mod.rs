@@ -127,6 +127,57 @@ pub enum GuardCheck {
     /// loader routes this to a load-BLOCKING error rather than silently loading
     /// with the invariant unenforced.
     Unsupported(Option<String>, String),
+    /// WI-628 — the constraint's proof search TRUNCATED at the resolver depth
+    /// limit, so it can be neither confirmed nor refuted within budget. Distinct
+    /// from `Unsupported` (a malformed form): the form is fine, the SEARCH was
+    /// incomplete. The loader routes this to a load-BLOCKING error rather than
+    /// silently passing — deciding a constraint from a truncated search is the
+    /// unsoundness WI-628 closes. Carries the source label (if any) and a reason.
+    Undecidable(Option<String>, String),
+}
+
+/// WI-628 — the three-way verdict of evaluating an integrity guard, distinct
+/// from a [`execute::LowerError`] (a malformed-constraint failure, the guard's
+/// `Err` channel). `Undecidable` is the arm the deferred WI-628 half adds: the
+/// guard's proof search TRUNCATED at the depth limit, so an empty / short result
+/// cannot be read as `Holds` or `Violated` without deciding from an incomplete
+/// search. Carries a static reason for the loud diagnostic.
+enum GuardStatus {
+    /// The constraint is satisfied (search ran to completion).
+    Holds,
+    /// The constraint is violated (search ran to completion).
+    Violated,
+    /// The search truncated at the depth limit; the verdict is undecided.
+    Undecidable(&'static str),
+}
+
+impl GuardStatus {
+    /// Map a DECIDED boolean verdict — one read off a search that ran to
+    /// completion — to `Holds`/`Violated`. Centralizes the holds→variant
+    /// polarity so the per-guard call sites don't each risk inverting it.
+    fn from_holds(holds: bool) -> Self {
+        if holds {
+            GuardStatus::Holds
+        } else {
+            GuardStatus::Violated
+        }
+    }
+
+    /// WI-628 — map a guard whose verdict is "holds iff the search came back
+    /// EMPTY" (negation, forall) to a three-way verdict. If the search TRUNCATED
+    /// and is empty, the emptiness may be an artifact of the depth cut, so the
+    /// verdict is `Undecidable(reason)` rather than a definite refutation. This is
+    /// the check that MUST accompany every `is_empty()`-as-verdict read;
+    /// centralizing it here (like the `drain_verdict` extraction on the resolver
+    /// side) is what keeps a future emptiness-reading guard from forgetting it —
+    /// the exact bug class WI-628 closes.
+    fn from_emptiness(is_empty: bool, truncated: bool, reason: &'static str) -> Self {
+        if truncated && is_empty {
+            GuardStatus::Undecidable(reason)
+        } else {
+            GuardStatus::from_holds(is_empty)
+        }
+    }
 }
 
 // ── Rule entry ──────────────────────────────────────────────────
@@ -1375,8 +1426,28 @@ impl KnowledgeBase {
             // (`Value::Node`) leaves now resolve through `resolve_goals` like term
             // leaves, so there is no longer a gated outcome to defer here.
             match self.evaluate_guard(&query) {
-                Ok(true) => {}
-                Ok(false) => {
+                Ok(GuardStatus::Holds) => {}
+                Ok(GuardStatus::Violated) => {
+                    self.retract(rule_id);
+                    return None;
+                }
+                // WI-628: the guard's search truncated at the depth limit — we
+                // cannot CONFIRM this fact preserves the invariant. An integrity
+                // guard must never admit a fact it cannot verify, so REJECT
+                // (retract) rather than decide from an incomplete search. The
+                // load-time path surfaces this loudly as `ConstraintUndecidable`;
+                // this per-assert path returns `Option<RuleId>` with no error
+                // channel, so it rejects AND emits a loud diagnostic — dropping
+                // `reason` silently would make an undecidable rejection read
+                // identically to a real `Violated` (the loud-over-silent rule).
+                Ok(GuardStatus::Undecidable(reason)) => {
+                    let label = self.guards[idx].label.clone();
+                    eprintln!(
+                        "anthill: integrity constraint{} undecidable within the resolver \
+                         depth budget ({}) — fact rejected (an integrity guard must not \
+                         admit a fact it cannot verify)",
+                        load::label_suffix(&label), reason,
+                    );
                     self.retract(rule_id);
                     return None;
                 }
@@ -1416,8 +1487,13 @@ impl KnowledgeBase {
             // `LowerError` rather than silently treating it as vacuously true.
             // WI-518: occurrence (`Value::Node`) leaves resolve like term leaves.
             match self.evaluate_guard(&query) {
-                Ok(true) => out.push(GuardCheck::Holds),
-                Ok(false) => out.push(GuardCheck::Violated(label)),
+                Ok(GuardStatus::Holds) => out.push(GuardCheck::Holds),
+                Ok(GuardStatus::Violated) => out.push(GuardCheck::Violated(label)),
+                // WI-628: a truncated-search verdict is neither Holds nor
+                // Violated — route it to a load-BLOCKING error, not a silent pass.
+                Ok(GuardStatus::Undecidable(reason)) => {
+                    out.push(GuardCheck::Undecidable(label, reason.to_string()))
+                }
                 Err(e) => out.push(GuardCheck::Unsupported(label, e.to_string())),
             }
         }
@@ -1436,12 +1512,12 @@ impl KnowledgeBase {
     /// instead of vacuously holding). Carrier-agnostic — occurrence (`Value::Node`)
     /// and term leaves both resolve through `resolve_goals` (WI-518). Quantifier
     /// dispatch compares interned [`LogicalQuerySymbols`] (no per-node `String`).
-    fn evaluate_guard(&mut self, guard: &crate::eval::value::Value) -> Result<bool, execute::LowerError> {
+    fn evaluate_guard(&mut self, guard: &crate::eval::value::Value) -> Result<GuardStatus, execute::LowerError> {
         let syms = execute::LogicalQuerySymbols::resolve(self);
         let Some(functor) = term_view::TermView::head(guard, self).functor_sym() else {
             // A bare leaf as a whole guard is not a quantified constraint we
             // enforce — it vacuously holds.
-            return Ok(true);
+            return Ok(GuardStatus::Holds);
         };
         let f = Some(functor);
         if f == syms.lone_q {
@@ -1461,9 +1537,9 @@ impl KnowledgeBase {
             // from a NON-quantified constraint, or an unsupported kind — is not
             // ENFORCED (vacuously holds), but we still LOWER it so an unsupported
             // form surfaces as `Err(LowerError)` rather than silently passing
-            // (WI-513). `.map(|_| true)` discards the goals: we validate the form,
+            // (WI-513). `.map(|_| Holds)` discards the goals: we validate the form,
             // we don't run the constraint.
-            self.lower_query_with(guard, &syms).map(|_| true)
+            self.lower_query_with(guard, &syms).map(|_| GuardStatus::Holds)
         }
     }
 
@@ -1474,7 +1550,7 @@ impl KnowledgeBase {
         syms: &execute::LogicalQuerySymbols,
         min: usize,
         max: usize,
-    ) -> Result<bool, execute::LowerError> {
+    ) -> Result<GuardStatus, execute::LowerError> {
         let condition = self.guard_child(guard, syms.condition);
         let body = self.guard_child(guard, syms.body);
 
@@ -1489,7 +1565,7 @@ impl KnowledgeBase {
 
         if goals.is_empty() {
             // No goals means trivially satisfied; count depends on context
-            return Ok(min == 0);
+            return Ok(GuardStatus::from_holds(min == 0));
         }
 
         let config = resolve::ResolveConfig {
@@ -1503,9 +1579,25 @@ impl KnowledgeBase {
             definite_only: true,
             ..resolve::ResolveConfig::default()
         };
-        let solutions = self.resolve_goals(goals, &config);
+        let (solutions, truncated) = self.resolve_goals_with_truncation(goals, &config);
         let count = solutions.len();
-        Ok(count >= min && count <= max)
+        // WI-628: a TRUNCATED search UNDERCOUNTS — branches abandoned at the
+        // depth limit could hold more solutions — so the true count lies in
+        // `[count, ∞)`. The verdict `min ≤ n ≤ max` is trustworthy only when
+        // truncation cannot flip it across that whole interval (n only grows):
+        //   - known VIOLATED iff `count > max` (already over; stays over)
+        //   - known HOLDS    iff `count ≥ min` AND `max` is unbounded (stays in)
+        // Otherwise the depth cut leaves the count UNDECIDED — e.g. a `no_q`
+        // (max = 0) that found nothing might have missed a witness, and a
+        // `one_q` (max = 1) that found exactly one might have missed a second.
+        let known_violated = count > max;
+        let known_holds = count >= min && max == usize::MAX;
+        if truncated && !known_violated && !known_holds {
+            return Ok(GuardStatus::Undecidable(
+                "counting-quantifier constraint undecidable within depth budget",
+            ));
+        }
+        Ok(GuardStatus::from_holds(count >= min && count <= max))
     }
 
     /// Evaluate forall_q(var, condition, body): condition AND body must hold
@@ -1514,7 +1606,7 @@ impl KnowledgeBase {
         &mut self,
         guard: &crate::eval::value::Value,
         syms: &execute::LogicalQuerySymbols,
-    ) -> Result<bool, execute::LowerError> {
+    ) -> Result<GuardStatus, execute::LowerError> {
         let condition = self.guard_child(guard, syms.condition);
         let body = self.guard_child(guard, syms.body);
 
@@ -1546,7 +1638,7 @@ impl KnowledgeBase {
         }
 
         if goals.is_empty() {
-            return Ok(true);
+            return Ok(GuardStatus::Holds);
         }
 
         // If any DEFINITE solution exists, the forall is violated. WI-519: a
@@ -1557,8 +1649,19 @@ impl KnowledgeBase {
             definite_only: true,
             ..resolve::ResolveConfig::default()
         };
-        let solutions = self.resolve_goals(goals, &config);
-        Ok(solutions.is_empty())
+        let (solutions, truncated) = self.resolve_goals_with_truncation(goals, &config);
+        // WI-628: a DEFINITE witness (non-empty) violates the forall regardless of
+        // truncation; an EMPTY result from a truncated search is UNDECIDED — the
+        // violating `(P ∧ not Q)` witness may lie in a branch cut at the depth
+        // limit — so it must NOT read as "holds". (step_naf flipped exactly this
+        // case from wrongly-VIOLATED to silently-HOLDS via the synthesized
+        // `not(Q)`, whose inner truncation now taints this outer search through
+        // WI-628(b); `from_emptiness` catches it.)
+        Ok(GuardStatus::from_emptiness(
+            solutions.is_empty(),
+            truncated,
+            "forall constraint undecidable within depth budget",
+        ))
     }
 
     /// Evaluate negation(query): the inner query must have no solutions.
@@ -1566,13 +1669,14 @@ impl KnowledgeBase {
         &mut self,
         guard: &crate::eval::value::Value,
         syms: &execute::LogicalQuerySymbols,
-    ) -> Result<bool, execute::LowerError> {
+    ) -> Result<GuardStatus, execute::LowerError> {
         let inner = self.guard_child(guard, syms.query);
 
         if let Some(inner) = &inner {
             let goals = self.lower_query_with(inner, syms)?;
             if goals.is_empty() {
-                return Ok(false); // negation of empty_query (always true) = false
+                // negation of empty_query (always true) = false
+                return Ok(GuardStatus::Violated);
             }
             let config = resolve::ResolveConfig {
                 max_solutions: 1,
@@ -1581,10 +1685,19 @@ impl KnowledgeBase {
                 definite_only: true,
                 ..resolve::ResolveConfig::default()
             };
-            let solutions = self.resolve_goals(goals, &config);
-            Ok(solutions.is_empty()) // negation holds if no solutions
+            let (solutions, truncated) = self.resolve_goals_with_truncation(goals, &config);
+            // WI-628: negation holds iff the inner query has no DEFINITE solution;
+            // but an empty result from a TRUNCATED search is UNDECIDED (the
+            // refuting solution may sit past the depth cut), so it must NOT read as
+            // "negation holds". `from_emptiness` owns that truncated-and-empty
+            // check so it cannot be forgotten.
+            Ok(GuardStatus::from_emptiness(
+                solutions.is_empty(),
+                truncated,
+                "negation constraint undecidable within depth budget",
+            ))
         } else {
-            Ok(true)
+            Ok(GuardStatus::Holds)
         }
     }
 
@@ -6765,5 +6878,171 @@ mod wi518_occurrence_guard_resolution_tests {
             vec![GuardCheck::Violated(Some("conj_constraint".to_string()))],
             "a conjunction mixing a term leaf and an occurrence leaf must resolve and be violated",
         );
+    }
+}
+
+/// WI-628 (deferred half): the EAGER constraint / quantifier guards must not read
+/// an `is_empty()` / short count from a DEPTH-TRUNCATED search as a verdict. A
+/// `loop(?x) :- loop(?x)` recursion never terminates, so any guard resolving
+/// `loop(a)` TRUNCATES at the default depth budget — the empty result is UNDECIDED,
+/// and `check_all_guards` must report `GuardCheck::Undecidable` (which the loader
+/// routes to a load-BLOCKING `ConstraintUndecidable`), NOT a silent `Holds`.
+/// Contrast fixtures over a COMPLETE empty search confirm the flag does not
+/// over-trigger. The `forall` `not(body)` truncation path (piece a) is covered at
+/// the resolve layer by
+/// `wi628_naf_truncation_propagates_to_outer_stream_under_definite_only`.
+#[cfg(test)]
+mod wi628_guard_truncation_tests {
+    use super::*;
+    use crate::eval::value::Value;
+    use crate::intern::Symbol;
+    use smallvec::SmallVec;
+    use std::rc::Rc;
+
+    /// Register a `LogicalQuery` ctor under its qualified name (mirrors the loader
+    /// / the wi518 `lq_ctor`, so `LogicalQuerySymbols::resolve` finds it).
+    fn lq_ctor(kb: &mut KnowledgeBase, short: &str) -> Symbol {
+        let qn = format!("anthill.reflect.LogicalQuery.{short}");
+        kb.symbols.define(short, &qn, SymbolKind::Operation, 0)
+    }
+
+    /// Assert `loop(?x) :- loop(?x)` — a non-terminating recursion that TRUNCATES at
+    /// the depth budget for any ground `loop(_)` query (it never refutes).
+    fn assert_loop_rule(kb: &mut KnowledgeBase, sort: TermId, domain: TermId) {
+        let loop_sym = kb.intern("loop");
+        let x = kb.intern("x");
+        let vx = kb.fresh_var(x);
+        let var_x = kb.alloc(Term::Var(Var::Global(vx)));
+        let head = kb.alloc(Term::Fn {
+            functor: loop_sym,
+            pos_args: SmallVec::from_elem(var_x, 1),
+            named_args: SmallVec::new(),
+        });
+        let body = kb.alloc(Term::Fn {
+            functor: loop_sym,
+            pos_args: SmallVec::from_elem(var_x, 1),
+            named_args: SmallVec::new(),
+        });
+        kb.assert_rule(head, vec![body], sort, domain, None);
+    }
+
+    /// A `Value::Term` leaf `functor(atom)` where `atom` is a nullary name term.
+    fn unary_leaf(kb: &mut KnowledgeBase, functor: &str, atom: &str) -> Value {
+        let f = kb.intern(functor);
+        let a = kb.make_name_term(atom);
+        let t = kb.alloc(Term::Fn {
+            functor: f,
+            pos_args: SmallVec::from_elem(a, 1),
+            named_args: SmallVec::new(),
+        });
+        Value::term(t)
+    }
+
+    fn pattern_query(kb: &mut KnowledgeBase, leaf: Value) -> Value {
+        let pq = lq_ctor(kb, "pattern_query");
+        let term = kb.intern("term");
+        Value::Entity {
+            functor: pq,
+            pos: Rc::from(Vec::<Value>::new()),
+            named: Rc::from(vec![(term, leaf)]),
+            ty: None,
+        }
+    }
+
+    fn entity(kb: &mut KnowledgeBase, short: &str, named: Vec<(Symbol, Value)>) -> Value {
+        let f = lq_ctor(kb, short);
+        Value::Entity {
+            functor: f,
+            pos: Rc::from(Vec::<Value>::new()),
+            named: Rc::from(named),
+            ty: None,
+        }
+    }
+
+    /// `negation(query: pattern_query(term: leaf))`.
+    fn negation_guard(kb: &mut KnowledgeBase, leaf: Value) -> Value {
+        let query = kb.intern("query");
+        let pq = pattern_query(kb, leaf);
+        entity(kb, "negation", vec![(query, pq)])
+    }
+
+    /// `no_q(condition: pattern_query(term: leaf), body: empty_query)`.
+    fn no_q_guard(kb: &mut KnowledgeBase, leaf: Value) -> Value {
+        let condition = kb.intern("condition");
+        let body = kb.intern("body");
+        let pq = pattern_query(kb, leaf);
+        let empty = entity(kb, "empty_query", Vec::new());
+        entity(kb, "no_q", vec![(condition, pq), (body, empty)])
+    }
+
+    /// `forall_q(condition: pattern_query(term: leaf))` — no body, so no synthesized
+    /// `not(...)`; the CONDITION goals drive the (truncating) search.
+    fn forall_condition_guard(kb: &mut KnowledgeBase, leaf: Value) -> Value {
+        let condition = kb.intern("condition");
+        let pq = pattern_query(kb, leaf);
+        entity(kb, "forall_q", vec![(condition, pq)])
+    }
+
+    /// Assert `check_all_guards` yielded exactly one `Undecidable(label, reason)`.
+    fn expect_undecidable(checks: &[GuardCheck], label: &str) {
+        match checks {
+            [GuardCheck::Undecidable(Some(l), detail)] => {
+                assert_eq!(l.as_str(), label, "undecidable finding carries the source label");
+                assert!(
+                    detail.contains("undecidable"),
+                    "reason should name the undecidability: {detail}"
+                );
+            }
+            other => panic!("expected [Undecidable(Some({label:?}), _)], got {other:?}"),
+        }
+    }
+
+    fn loop_kb() -> (KnowledgeBase, TermId, TermId) {
+        let mut kb = KnowledgeBase::new();
+        let sort = kb.make_name_term("Rule");
+        let domain = kb.make_name_term("test");
+        assert_loop_rule(&mut kb, sort, domain);
+        (kb, sort, domain)
+    }
+
+    #[test]
+    fn negation_guard_over_truncated_search_is_undecidable() {
+        let (mut kb, _sort, _domain) = loop_kb();
+        let leaf = unary_leaf(&mut kb, "loop", "a");
+        let guard = negation_guard(&mut kb, leaf);
+        kb.add_guard_labeled(guard, Some("no_loop".to_string()));
+        expect_undecidable(&kb.check_all_guards(), "no_loop");
+    }
+
+    #[test]
+    fn negation_guard_over_complete_empty_search_holds() {
+        // Contrast: `g(a)` is undefined, so its search COMPLETES empty — the
+        // negation holds DEFINITELY and must NOT be flagged undecidable, even
+        // though the KB also contains the truncating `loop` rule (no over-trigger).
+        let (mut kb, _sort, _domain) = loop_kb();
+        let leaf = unary_leaf(&mut kb, "g", "a");
+        let guard = negation_guard(&mut kb, leaf);
+        kb.add_guard_labeled(guard, Some("no_g".to_string()));
+        assert_eq!(kb.check_all_guards(), vec![GuardCheck::Holds]);
+    }
+
+    #[test]
+    fn no_q_count_guard_over_truncated_search_is_undecidable() {
+        // `no_q` (min=0, max=0) that found nothing might have missed a witness in a
+        // branch cut at the depth limit — undecidable, not a silent hold.
+        let (mut kb, _sort, _domain) = loop_kb();
+        let leaf = unary_leaf(&mut kb, "loop", "a");
+        let guard = no_q_guard(&mut kb, leaf);
+        kb.add_guard_labeled(guard, Some("no_loop_count".to_string()));
+        expect_undecidable(&kb.check_all_guards(), "no_loop_count");
+    }
+
+    #[test]
+    fn forall_guard_over_truncated_condition_is_undecidable() {
+        let (mut kb, _sort, _domain) = loop_kb();
+        let leaf = unary_leaf(&mut kb, "loop", "a");
+        let guard = forall_condition_guard(&mut kb, leaf);
+        kb.add_guard_labeled(guard, Some("forall_loop".to_string()));
+        expect_undecidable(&kb.check_all_guards(), "forall_loop");
     }
 }
