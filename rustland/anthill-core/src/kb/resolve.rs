@@ -885,6 +885,17 @@ impl SearchStream {
                     // any constraint a builtin recorded. (No-op until a resolver-side
                     // producer exists in Step 3; mirrors ignoring `extra.parent`.)
                     new_subst.absorb_constraints(&extra);
+                    // WI-649 NB: this non-`Term` `bind_waking` is NOT
+                    // occurs-checked (unlike the external-row bind at the fact
+                    // fast-path). It is safe today only by ABSENCE OF A PRODUCER:
+                    // every builtin that writes a non-`Term` `extra` binding is
+                    // either occurs-checked already (`builtin_unify` →
+                    // `unify_bind`) or has no live anthill caller
+                    // (`occurrence_term` / `sub_occurrences`, which could bind a
+                    // pattern var to a non-`Term` occurrence). If a reflect op that
+                    // quotes an open term over a shared var ever gains a caller,
+                    // this becomes the same cyclic-σ route WI-649 closed at the
+                    // fact fast-path — mirror the `occurs_in_value` guard here then.
                     for (var, val) in extra.bindings.iter() {
                         new_subst.bind_waking(kb, *var, val.clone());
                     }
@@ -1998,6 +2009,37 @@ impl SearchStream {
             // an external row enters σ as its raw `Value` shape.
             for (vid, val) in tree_subst.iter() {
                 if !matches!(val, Value::Term { .. }) {
+                    // WI-649: occurs-check this external-row / value-fact carrier
+                    // before it enters σ. The hot term fast-path
+                    // (`bind_compressed` above) stays unchecked; this rare
+                    // non-`Term` bind is the one route by which a cyclic entity
+                    // sigma (`?v ↦ Entity{…?v…}` — a routed-store row that
+                    // references the goal's own query var) could form and later
+                    // overflow `reify_value`'s now-deep (WI-629) child recursion.
+                    //
+                    // Mirror `unify_bind` (the reference occurs-check) exactly:
+                    // chase `val`'s head through `merged` first, THEN distinguish
+                    // two var-headed outcomes the raw `occurs_in_value` conflates.
+                    // If the chased head IS `vid`, the bind is a vacuous variable
+                    // equivalence — `?v = ?v`, or `?v ↦ ?w` when σ already aliases
+                    // `?w → …→ ?v` — already encoded in σ, NOT a structural cycle;
+                    // binding the raw carrier would only add a degenerate alias
+                    // loop that reify_value's var-chase would spin on, so skip it
+                    // (like `unify_bind`'s `?v <=> ?v → Ok`) and keep the
+                    // candidate. Otherwise a positive `occurs_in_value` (which
+                    // chases `merged`, so it also catches mutual cycles across
+                    // bindings) means `vid` occurs inside `val`'s STRUCTURE: a real
+                    // occurs-failure (no finite term satisfies `?v = f(?v)`). Drop
+                    // the candidate as contradictory — the WI-624 answer_link move
+                    // (a false match, not a solution). σ stays acyclic inductively,
+                    // so neither `chase_value` nor `occurs_in_value` diverges.
+                    let head = kb.chase_value(val.clone(), &merged);
+                    if kb.unify_flex_var(&head) == Some(*vid) {
+                        continue;
+                    }
+                    if kb.occurs_in_value(*vid, &head, &merged) {
+                        return Some(StepResult::Continue);
+                    }
                     // WI-502 Step 2 — route through the waking choke-point so a
                     // constraint on `vid` (in the accumulating σ) wakes rather
                     // than being silently bound over. (No-op until Step 3's
