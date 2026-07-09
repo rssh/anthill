@@ -202,9 +202,16 @@ sort anthill.prelude.List
   entity nil                                         -- empty list
   entity cons(head: T, tail: List)                   -- cons cell
 
-  operation length(l: List) -> Int64
-  rule length(nil) <=> 0
-  rule length(cons(?x, ?xs)) <=> add(1, length(?xs))
+  operation length(l: List) -> Int64 =
+    match l
+      case nil() -> 0
+      case cons(_, xs) -> add(1, length(xs))
+  -- WI-580: the operation BODY is the single source of truth. Its equational
+  -- (`<=>`) and relational (Prolog-style) views are DERIVED from the body on
+  -- demand — a ground call folds via the eval bridge; a non-ground occurrence
+  -- (a relational `length(?l) <=> ?n` or a bare `member(?x, ?l)` goal) is served
+  -- by the SLD one-step body-unfold, NOT by hand-written duplicate rules. See
+  -- docs/design/abstract-interpreter-and-rules.md §3.3.
 end
 
 -- Option: a parametric sort
@@ -684,6 +691,8 @@ rule length(nil) <=> 0
 rule length(cons(?x, ?xs)) <=> add(1, length(?xs))
 ```
 
+These illustrate the `<=>` equational-rule *mechanism*. In the current prelude such per-constructor equations for an operation with a body (`length`, `append`, `member`) are **not** hand-written: WI-580 makes the operation body the single source of truth and derives its equational and relational views from it on demand (the SLD one-step body-unfold; see docs/design/abstract-interpreter-and-rules.md §3.3). Hand-written `<=>` rules survive for genuine standalone equations (`neq(?a, ?b) <=> not(eq(?a, ?b))`, carrier `eq` overrides).
+
 **Requires declaration** — a standalone `requires` in a sort or namespace body declares a sort-level constraint: the enclosing scope depends on another algebraic spec. This is distinct from operation-level `requires` clauses (preconditions on individual operations).
 
 ```
@@ -761,7 +770,7 @@ rule lower_bound: gte(?d, ?d_min)
      DistanceBounds(d_min: ?d_min, d_max: ?_)
 ```
 
-**Equational rules (`<=>`).** A bodyless rule whose single head is a `<=>` (unification) term — `rule LHS <=> RHS` — is an **equational rule**: an oriented rewrite / definitional equation the engine derives L→R. This is how the prelude defines derived operations (`rule neq(?a, ?b) <=> not(eq(?a, ?b))`, `rule length(nil) <=> 0`) and how a carrier defines an operation by cases (`rule eq(red, red) <=> true`). The head connective is `<=>`, **not** `=`: `=` (`Eq.eq`) is a semantic equality *test* that never binds, whereas an equational rule head *unifies* the redex with the rule's LHS and derives the RHS (binding the LHS variables) — see §8.3. The equation is **logically symmetric** and citable both ways via `using`; a `[simp]` / `[unfold]` attribute (proposal 043) picks the auto-normalizer's firing direction (only one orientation of e.g. `add(?x, 0) <=> ?x` terminates). Guards, contracts (`ensures eq(…)`), and constraints stay `=`/`:-` — they *test*, never bind.
+**Equational rules (`<=>`).** A bodyless rule whose single head is a `<=>` (unification) term — `rule LHS <=> RHS` — is an **equational rule**: an oriented rewrite / definitional equation the engine derives L→R. This is how the prelude defines a standalone derived operation (`rule neq(?a, ?b) <=> not(eq(?a, ?b))`) and how a carrier defines an operation by cases (`rule eq(red, red) <=> true`). (An operation that has a *body* — `length`, `append`, `member` — is **not** given hand-written `<=>` twins: WI-580 derives its equational and relational views from the body on demand; see docs/design/abstract-interpreter-and-rules.md §3.3.) The head connective is `<=>`, **not** `=`: `=` (`Eq.eq`) is a semantic equality *test* that never binds, whereas an equational rule head *unifies* the redex with the rule's LHS and derives the RHS (binding the LHS variables) — see §8.3. The equation is **logically symmetric** and citable both ways via `using`; a `[simp]` / `[unfold]` attribute (proposal 043) picks the auto-normalizer's firing direction (only one orientation of e.g. `add(?x, 0) <=> ?x` terminates). Guards, contracts (`ensures eq(…)`), and constraints stay `=`/`:-` — they *test*, never bind.
 
 **Bounded quantification over a collection (WI-027).** A rule-body goal may quantify over the elements of a list:
 

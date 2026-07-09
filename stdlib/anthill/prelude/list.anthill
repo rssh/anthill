@@ -36,9 +36,16 @@ enum anthill.prelude.List
   -- eval bridge, and a non-ground occurrence is served by the SLD one-step
   -- body-unfold (docs/design/abstract-interpreter-and-rules.md §3.3).
 
-  -- member: deterministic Bool. The Prolog-style rules below preserve the
-  -- backtracking-relation semantics for resolver-mode queries; the operation
-  -- body is the executable form the evaluator calls.
+  -- member: deterministic Bool. The operation body is the single source of
+  -- truth; its RELATIONAL view (a bare `member(x, l)` goal) is derived from the
+  -- body on demand — the resolver routes it to `eq(member(x, l), true)`, so a
+  -- ground call decides via the eval bridge and an unground one suspends to a
+  -- WI-519 residual (docs/design/abstract-interpreter-and-rules.md §3.3/§5).
+  -- WI-580: the two Prolog-style `:-` twins were RETIRED — they branched on
+  -- `cons(head: ?x, …)` (structural UNIFICATION), diverging unsoundly from the
+  -- body's `eq(head, x)` (the declared `Eq`) for a type whose `eq` is not
+  -- structural equality (`eq(a, b)` true but `a ≠ b`). The body-derived form
+  -- uses the declared `Eq` by construction — the headline soundness fix.
   -- WI-562: `member` is the only List op that compares elements (`eq(head, x)`),
   -- so it carries the `Eq[T]` requirement OP-SCOPED (WI-448) — not the whole
   -- `List` sort. The element stays the SORT param `T` (so `member` still
@@ -50,8 +57,6 @@ enum anthill.prelude.List
     match l
       case nil() -> false
       case cons(head, tail) -> if eq(head, x) then true else member(x, tail)
-  rule member(?x, cons(head: ?x, tail: ?_))
-  rule member(?x, cons(head: ?_, tail: ?rest)) :- member(?x, ?rest)
 
   -- append: concatenation. ?result is the concatenation of ?xs and ?ys.
   operation append(xs: List, ys: List) -> List =

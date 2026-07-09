@@ -439,3 +439,133 @@ fn wi580_op_call_other_operand_declines() {
         sols.len(),
     );
 }
+
+// WI-580 member soundness: a custom `Eq` that compares field `k` and IGNORES
+// field `tag`. So `ae(k:1, tag:9)` and `ae(k:1, tag:8)` are `eq` (same key) but
+// structurally DIFFERENT — the exact shape where the retired `:-` unification
+// twins diverged from the body's declared `eq`.
+const MEMBER_EQ_SRC: &str = r#"
+    namespace test.wi580mem
+      import anthill.prelude.{Int64, Bool, Eq, PartialEq, List}
+      import anthill.prelude.List.{member, cons, nil}
+      sort AE
+        entity ae(k: Int64, tag: Int64)
+        operation aeq(a: AE, b: AE) -> Bool = eq(a.k, b.k)
+        provides PartialEq[T = AE, eq = aeq]
+        provides Eq[T = AE]
+      end
+      -- eq-equal (same key) but STRUCTURALLY DIFFERENT (tag 9 vs 8): the old `:-`
+      -- twins answered FALSE (structural unify fails); the body's `eq` says TRUE.
+      rule eq_but_diff() :- member(ae(k: 1, tag: 9), cons(head: ae(k: 1, tag: 8), tail: nil))
+      -- different key ⇒ not eq ⇒ not a member.
+      rule not_eq() :- member(ae(k: 2, tag: 0), cons(head: ae(k: 1, tag: 8), tail: nil))
+      -- structurally identical ⇒ a member either way.
+      rule identical() :- member(ae(k: 1, tag: 8), cons(head: ae(k: 1, tag: 8), tail: nil))
+    end
+"#;
+
+fn zero_arg_solutions(kb: &mut KnowledgeBase, pred: &str) -> usize {
+    let sym = kb.try_resolve_symbol(pred).unwrap_or_else(|| panic!("no symbol {pred}"));
+    let goal = kb.alloc(Term::Fn { functor: sym, pos_args: SmallVec::new(), named_args: SmallVec::new() });
+    kb.resolve(&[goal], &ResolveConfig::default())
+        .iter()
+        .filter(|s| s.is_definite())
+        .count()
+}
+
+#[test]
+fn wi580_member_uses_declared_eq_not_unification() {
+    // WI-580 headline fix: a bare `member(x, l)` goal is the operation's
+    // relational view, DERIVED from the body (routed to `eq(member(x, l), true)`,
+    // decided by the eval bridge using the declared `Eq`), NOT the retired `:-`
+    // unification twins. For a custom `Eq` that is not structural equality, the
+    // twins gave WRONG answers; the body-derived form is sound.
+    let mut kb = load_with(MEMBER_EQ_SRC);
+
+    // The headline case: eq-equal (same key) but structurally different. The
+    // retired `:-` twins answered 0 (structural unify `ae(k:1,tag:9)` vs
+    // `ae(k:1,tag:8)` fails); the declared `eq(a.k, b.k)` says equal ⇒ member.
+    assert_eq!(
+        zero_arg_solutions(&mut kb, "test.wi580mem.eq_but_diff"),
+        1,
+        "member must use the declared `eq` (same key ⇒ member) even though the \
+         elements are structurally different — the eq-vs-unification soundness fix",
+    );
+    // Different key ⇒ not eq ⇒ not a member (sound the other way).
+    assert_eq!(
+        zero_arg_solutions(&mut kb, "test.wi580mem.not_eq"),
+        0,
+        "different key ⇒ not eq ⇒ member must be false",
+    );
+    // Structurally identical ⇒ a member either way (no regression).
+    assert_eq!(
+        zero_arg_solutions(&mut kb, "test.wi580mem.identical"),
+        1,
+        "a structurally identical element is still a member",
+    );
+}
+
+#[test]
+fn wi580_member_over_rule_defined_eq_decides() {
+    // Completeness guard: an element type whose `eq` is defined by `<=>` rules
+    // (a carrier `eq` override, NOT an eval-bridge-runnable body) is still decided
+    // by `member` — the body's `eq(head, x)` dispatches to the carrier's `<=>`
+    // rules, which the eval bridge fires by ordinary SLD (kernel-language.md
+    // §"= — the semantic equality test"). Confirms the retirement of the `:-`
+    // structural twins does NOT strand membership over a rule-defined `eq` as an
+    // undecided residual: every ground query below decides DEFINITELY.
+    let src = r#"
+        namespace test.wi580ce
+          import anthill.prelude.{Bool, List, Eq, PartialEq}
+          import anthill.prelude.List.{member, cons, nil}
+          sort Color
+            entity red
+            entity blue
+            operation ceq(a: Color, b: Color) -> Bool
+            rule ceq(red, red) <=> true
+            rule ceq(blue, blue) <=> true
+            rule ceq(red, blue) <=> false
+            rule ceq(blue, red) <=> false
+            provides PartialEq[T = Color, eq = ceq]
+            provides Eq[T = Color]
+          end
+          rule red_in_red() :- member(red, cons(head: red, tail: nil))
+          rule red_in_blue() :- member(red, cons(head: blue, tail: nil))
+          rule blue_in_rb() :- member(blue, cons(head: red, tail: cons(head: blue, tail: nil)))
+        end
+    "#;
+    let mut kb = load_with(src);
+    assert_eq!(zero_arg_solutions(&mut kb, "test.wi580ce.red_in_red"), 1, "red is a member of [red]");
+    assert_eq!(zero_arg_solutions(&mut kb, "test.wi580ce.red_in_blue"), 0, "red is NOT a member of [blue]");
+    assert_eq!(zero_arg_solutions(&mut kb, "test.wi580ce.blue_in_rb"), 1, "blue is a member of [red, blue]");
+}
+
+#[test]
+fn wi580_member_relational_unground_residualizes_not_wrong() {
+    // The dual of the soundness fix (design §5): with the `:-` twins retired, a
+    // bare `member(x, ?l)` over an UNGROUND list can no longer be enumerated by
+    // structural unification (which was unsound anyway). It routes to
+    // `eq(member(x, ?l), true)`, whose eval bridge is ground-gated — so it
+    // suspends to a WI-519 residual rather than inventing a definite answer.
+    // "Sound checker, not generator."
+    let src = r#"
+        namespace test.wi580memr
+          import anthill.prelude.{Int64, Bool, List}
+          import anthill.prelude.List.{member, cons, nil}
+          rule contains5(?l) :- member(5, ?l)
+        end
+    "#;
+    let mut kb = load_with(src);
+    let sym = kb.try_resolve_symbol("test.wi580memr.contains5").unwrap();
+    let s = kb.intern("_l");
+    let lvid = kb.fresh_var(s);
+    let lt = kb.alloc(Term::Var(anthill_core::kb::term::Var::Global(lvid)));
+    let goal = kb.alloc(Term::Fn { functor: sym, pos_args: SmallVec::from_slice(&[lt]), named_args: SmallVec::new() });
+    let sols = kb.resolve(&[goal], &ResolveConfig::default());
+    assert!(
+        sols.iter().all(|s| !s.is_definite()),
+        "an unground relational `member(5, ?l)` must residualize (undecided), not \
+         fabricate a definite list; got {} solution(s), some definite",
+        sols.len(),
+    );
+}

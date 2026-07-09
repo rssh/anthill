@@ -1071,6 +1071,34 @@ impl SearchStream {
             }
         }
 
+        // WI-580 (design §3.3/§5): a bare goal whose functor is a rule-LESS bodied
+        // Bool operation is that operation's RELATIONAL VIEW — derived from the
+        // body, not a hand-written `:-` twin whose unification diverges from the
+        // body's declared `eq`. Route it to `eq(f(args), true)` so it resolves
+        // through the body: a ground call decides via the eval bridge
+        // (`reduce_op_value`) using the declared `Eq`, an unground one suspends to
+        // a WI-519 residual (the "sound checker, not generator" of §5). Reached
+        // only for a non-builtin goal (the builtin block above returns first);
+        // fires only once a functor's unification twins are retired, and never for
+        // a rule-backed relation (`Set.member`) — see `bare_bodied_bool_relation`.
+        if let ViewHead::Functor { functor: Some(f), .. } = goal_val.head(kb) {
+            if kb.bare_bodied_bool_relation(f) {
+                let eq_sym = kb.eq_functor();
+                let eq_goal = kb.make_goal_value(eq_sym, vec![goal_val.clone(), Value::Bool(true)]);
+                let fr = self.stack.last_mut().unwrap();
+                // Rewrite goal[0] in place, same goal count — `delay_mode` is
+                // threaded through unchanged (like the `push_choice` / Γ / HoApply
+                // goal-transform special-cases, NOT reset like a builtin discharge):
+                // the rewrite is one step, so the goal still gets processed before
+                // the delay-mode residualization check (`consecutive_delays >=
+                // goals.len()`) can bite — a ground `member` reaches its `eq` and
+                // decides; an unground one residualizes either way.
+                fr.goals[0] = eq_goal;
+                fr.state = FrameState::Init { delay_mode };
+                return Some(StepResult::Continue);
+            }
+        }
+
         // 5. (WI-251) Expression-typed query path: the legacy
         // the legacy occurrence by-functor index lookup is gone. Reflection queries
         // that materialized expression occurrences now read from
@@ -5413,6 +5441,52 @@ impl KnowledgeBase {
             }
             _ => false,
         }
+    }
+
+    /// WI-580 (design §3.3/§5): is `f` a functor whose *bare* goal is the
+    /// RELATIONAL VIEW of a bodied operation — a Bool-returning operation with a
+    /// runnable body and NO hand-written rules? Such a goal (`member(?x, ?l)`) is
+    /// the operation's relation, and WI-580 derives it from the body rather than
+    /// from a hand-written `:-` twin whose UNIFICATION diverges from the body's
+    /// declared `eq` (the member soundness gap). [`SearchStream::step_init`] routes
+    /// a matching goal to `eq(f(args), true)`, so a ground call decides via the
+    /// eval bridge ([`Self::reduce_op_value`]) using the declared `Eq`, and an
+    /// unground one suspends to a WI-519 residual (the "sound checker, not
+    /// generator" of §5).
+    ///
+    /// Rule-LESS is load-bearing: precedence (design §3.3) keeps hand-written
+    /// rules winning while both a body and rules coexist, so a rule-backed
+    /// relation (`Set.member`) is untouched and this fires ONLY once a functor's
+    /// unification twins are retired. Cheap-gated for the per-goal hot path — a
+    /// builtin or a body-less predicate (the common case) bails before the
+    /// `rules_by_functor` allocation, which is reached only for a bodied Bool op.
+    pub(crate) fn bare_bodied_bool_relation(&self, f: Symbol) -> bool {
+        if self.builtins.get(&f).is_some() || self.op_body_node(f).is_none() {
+            return false;
+        }
+        // Read the cached signature by ref (no record clone).
+        let Some(sig) = self.op_record(f).and_then(|r| r.signature.as_ref()) else {
+            return false;
+        };
+        // Effect-free: an effectful body is not a logical relation — effects don't
+        // belong in a relation, and the eval bridge (empty effect registry) would
+        // suspend on one anyway — so an effectful Bool op (`Stream.isEmpty`) is NOT
+        // granted a relational view. `requires` is deliberately NOT excluded here
+        // (unlike the unfold's `folded_call_match` gate): `member`'s `requires
+        // Eq[T]` is discharged at the body's own `eq(head, x)` call by
+        // value-directed dispatch, which the bridge honours (the unfold would drop
+        // the dict; the bridge does not).
+        if !sig.effects.is_empty() {
+            return false;
+        }
+        // Bool-returning? Compared by short name — robust to how `Bool` is
+        // qualified; a hypothetical user `Bool` merely routes a meaningless bare
+        // goal to `= true` (harmless), never a wrong answer.
+        let returns_bool = super::typing::sort_functor_of_view(self, &sig.return_type)
+            .is_some_and(|s| self.resolve_sym(s).rsplit('.').next() == Some("Bool"));
+        // Rule-less last: the `rules_by_functor` Vec alloc is paid only for a
+        // pure bodied Bool op, which is rare.
+        returns_bool && self.rules_by_functor(f).is_empty()
     }
 
     /// WI-580 (design §3.3): abstract-interpretation fallback for a suspended

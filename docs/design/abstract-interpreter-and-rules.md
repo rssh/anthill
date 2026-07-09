@@ -7,7 +7,7 @@ single source of truth — derive rule views, retire hand-written duplicates"), 
 scope item 1**: derived rules are *not* materialized as semantic KB objects; the body is unfolded
 on demand by a single specializer.
 
-**Implementation status (2026-07-09).** §3.3's SLD one-step unfold is **partly delivered** as
+**Implementation status (2026-07-09).** §3.3's SLD one-step unfold is **delivered** as
 abstract-interpretation-on-suspend: when a `SemEq` goal has an operand that is an unground bodied
 op-call whose body `match`es on a flex scrutinee — the shape the direct call (`reduce_op_value` /
 the eval bridge) *suspends* on — the resolver case-splits the body into one choice-point per arm
@@ -17,8 +17,29 @@ covers **structural** ops (relational `append(?a, ys) = zs` solves; `code(?c) = 
 a non-ground occurrence unfolds). Soundness gates in place: only DISJOINT constructor arms
 case-split (a catch-all needs earlier-arm negation guards — undecidable on an unground scrutinee →
 declined to a WI-519 residual, not over-generated); effectful / `requires`-carrying bodies are
-declined (not yet threaded); an op-call OTHER operand is declined. **Not yet done:** `member`'s
-`if`-flattening (nested choice, §5) and its owed `requires Eq[T]` — so `member`'s `:-` twins stay;
+declined (not yet threaded); an op-call OTHER operand is declined.
+
+**`member` — the eq-vs-unification soundness fix, DELIVERED (2026-07-09).** `member`'s `:-`
+unification twins are **retired**: they branched on `cons(head: ?x, …)` (structural unify),
+diverging unsoundly from the body's declared `eq(head, x)` for a type whose `eq` is not structural
+equality. The relational view is now derived from the body — the resolver routes a *bare* rule-less
+bodied **Bool** goal (`member(?x, ?l)`) to `eq(member(?x, ?l), true)`
+(`KnowledgeBase::bare_bodied_bool_relation` + the `step_init` routing), so a ground call decides
+via the eval bridge *using the declared `Eq`* and an unground one suspends to a WI-519 residual (§5,
+the "sound checker, not generator"). The route is gated **effect-free** (an effectful body is not a
+logical relation — `Stream.isEmpty` is excluded) but NOT requires-free (unlike the unfold's
+`folded_call_match` gate): `member`'s `requires Eq[T]` is discharged at the body's own `eq(head, x)`
+call by value-directed dispatch, which the bridge honours. A carrier whose `eq` is defined by
+`<=>` *rules* (rather than a runnable body) is still decided — the bridge fires those rules by
+ordinary SLD — so retiring the structural twins strands nothing decidable. This is the §5 semantics **without** the nested-choice
+`if`-flattening / an owed `requires Eq[T]` on the unfold: those are needed only to *case-split* a
+relational `member` over an **unground list**, which is inherently non-terminating (infinitely many
+lists contain `?x`; the `= true` operand — unlike `append`'s finite `zs` — does not bound the
+recursion). The bridge-plus-residual realizes §5's "evaluate or suspend `eq` per branch" and
+*terminates*; the `if`-flattening unfold path stays deferred until a bodied Bool op has a
+**terminating** relational consumer (design §10 Q4: add a mechanism only when a consumer serves it).
+The requires-gate in `folded_call_match` therefore still declines `member` for the unfold — correct,
+since the bridge (not the unfold) serves it. **Deferred:**
 the typer inlining site (§3.2) — abandoned as type-unsound (it rewrote a call before the signature
 check); the prover site (§3.4). **Related:** proposal [043](../proposals/043-simp-rewrite.md)
 (`[simp]` rewriting), proposal 049 (`<=>`), WI-283 (typer-hosted firing — the natural host for the
