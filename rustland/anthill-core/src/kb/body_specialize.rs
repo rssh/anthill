@@ -96,7 +96,7 @@ pub(crate) fn folded_call_match(
     let body = info.body_node.clone()?;
     let env = bind_params(kb, &info.params, pos_args, named_args)?;
     let pass = super::simp_rewrite::simp_pass(kb);
-    let (residual, _) = reduce(kb, &body, &env, pass)?;
+    let residual = reduce(kb, &body, &env, pass)?;
     // Case-split only a residual that is a `match` on a flex-var scrutinee — the
     // suspend shape. A `Var(Global)` here is an unbound resolver goal var (the
     // call arg the body branches on); any other scrutinee shape either reduced
@@ -162,21 +162,20 @@ fn bind_params(
 }
 
 /// One-step abstract interpretation of a body occurrence under `env`. Returns
-/// the (parameter-substituted, statically-reduced) residual and whether any
-/// `match`/`if` actually reduced (`progress`). Returns `None` to decline the
-/// whole inline when the body contains a construct this increment does not
-/// specialize — a *loud* decline: we never emit a residual that might still
-/// carry an unsubstituted body-local variable or change meaning.
+/// the (parameter-substituted, statically-reduced) residual. Returns `None` to
+/// decline the whole inline when the body contains a construct this increment
+/// does not specialize — a *loud* decline: we never emit a residual that might
+/// still carry an unsubstituted body-local variable or change meaning.
 fn reduce(
     kb: &KnowledgeBase,
     occ: &Rc<NodeOccurrence>,
     env: &Env,
     pass: PassId,
-) -> Option<(Rc<NodeOccurrence>, bool)> {
+) -> Option<Rc<NodeOccurrence>> {
     let Some(expr) = occ.as_expr() else {
         // A non-Expr child (a Pattern/Type/EffectExpr occurrence reached only via
         // the generic arms below) carries no body variable to substitute.
-        return Some((Rc::clone(occ), false));
+        return Some(Rc::clone(occ));
     };
     match expr {
         // ── binder references: splice the bound occurrence in place ──
@@ -184,36 +183,34 @@ fn reduce(
         Expr::Ref(s) | Expr::Ident(s) => Some(subst_leaf(env, *s, occ)),
         Expr::VarRef { name } => Some(subst_leaf(env, *name, occ)),
         // Non-Global vars never name a body parameter (bodies carry Global, WI-487).
-        Expr::Var(_) | Expr::Const(_) | Expr::Bottom => Some((Rc::clone(occ), false)),
+        Expr::Var(_) | Expr::Const(_) | Expr::Bottom => Some(Rc::clone(occ)),
 
         // ── match: reduce when the scrutinee's shape is statically known ──
         Expr::Match { scrutinee, branches } => reduce_match(kb, occ, scrutinee, branches, env, pass),
 
         // ── if: reduce when the condition folds to a boolean literal ──
         Expr::If { condition, then_branch, else_branch } => {
-            let (cond, pc) = reduce(kb, condition, env, pass)?;
+            let cond = reduce(kb, condition, env, pass)?;
             if let Some(b) = static_bool(&cond) {
                 let chosen = if b { then_branch } else { else_branch };
-                let (r, _) = reduce(kb, chosen, env, pass)?;
-                return Some((r, true));
+                return reduce(kb, chosen, env, pass);
             }
-            let (then_r, pt) = reduce(kb, then_branch, env, pass)?;
-            let (else_r, pe) = reduce(kb, else_branch, env, pass)?;
-            let node = rebuild(
+            let then_r = reduce(kb, then_branch, env, pass)?;
+            let else_r = reduce(kb, else_branch, env, pass)?;
+            Some(rebuild(
                 occ,
                 Expr::If { condition: cond, then_branch: then_r, else_branch: else_r },
                 pass,
-            );
-            Some((node, pc || pt || pe))
+            ))
         }
 
         // ── residual-call boundary: substitute into args, do NOT unfold ──
         // The recursive/nested call stays a call; the WI-283 re-`Visit` loop
         // re-specializes it when it is reassembled at this same hook.
         Expr::Apply { functor, pos_args, named_args, type_args } => {
-            let (pos, p1) = reduce_vec(kb, pos_args, env, pass)?;
-            let (named, p2) = reduce_named(kb, named_args, env, pass)?;
-            let node = rebuild(
+            let pos = reduce_vec(kb, pos_args, env, pass)?;
+            let named = reduce_named(kb, named_args, env, pass)?;
+            Some(rebuild(
                 occ,
                 Expr::Apply {
                     functor: *functor,
@@ -222,18 +219,16 @@ fn reduce(
                     type_args: type_args.clone(),
                 },
                 pass,
-            );
-            Some((node, p1 || p2))
+            ))
         }
         Expr::Constructor { name, pos_args, named_args } => {
-            let (pos, p1) = reduce_vec(kb, pos_args, env, pass)?;
-            let (named, p2) = reduce_named(kb, named_args, env, pass)?;
-            let node = rebuild(
+            let pos = reduce_vec(kb, pos_args, env, pass)?;
+            let named = reduce_named(kb, named_args, env, pass)?;
+            Some(rebuild(
                 occ,
                 Expr::Constructor { name: *name, pos_args: pos, named_args: named },
                 pass,
-            );
-            Some((node, p1 || p2))
+            ))
         }
 
         // Any other form (let / lambda / higher-order / post-elaboration) is not
@@ -244,12 +239,11 @@ fn reduce(
 }
 
 /// Substitute a binder-reference leaf: return the bound occurrence when `name`
-/// is in scope, else the leaf unchanged. Substitution is not "progress" (only a
-/// `match`/`if` reduction is).
-fn subst_leaf(env: &Env, name: Symbol, occ: &Rc<NodeOccurrence>) -> (Rc<NodeOccurrence>, bool) {
+/// is in scope, else the leaf unchanged.
+fn subst_leaf(env: &Env, name: Symbol, occ: &Rc<NodeOccurrence>) -> Rc<NodeOccurrence> {
     match env_lookup(env, name) {
-        Some(bound) => (Rc::clone(bound), false),
-        None => (Rc::clone(occ), false),
+        Some(bound) => Rc::clone(bound),
+        None => Rc::clone(occ),
     }
 }
 
@@ -260,15 +254,14 @@ fn reduce_match(
     branches: &[MatchBranch],
     env: &Env,
     pass: PassId,
-) -> Option<(Rc<NodeOccurrence>, bool)> {
-    let (scr, _sp) = reduce(kb, scrutinee, env, pass)?;
+) -> Option<Rc<NodeOccurrence>> {
+    let scr = reduce(kb, scrutinee, env, pass)?;
     // Select the surviving arm when the scrutinee's shape is statically known.
     match select_arm(kb, &scr, branches) {
         ArmSel::Matched { body, bindings } => {
             let mut env2 = env.clone();
             env2.extend(bindings);
-            let (r, _) = reduce(kb, &body, &env2, pass)?;
-            Some((r, true))
+            reduce(kb, &body, &env2, pass)
         }
         // Scrutinee shape unknown (or a sub-pattern we can't decide): keep the
         // match as a residual, substituting params into the scrutinee and each
@@ -277,17 +270,11 @@ fn reduce_match(
         // never collide with a parameter in `env` (shadowed defensively).
         ArmSel::Undecidable => {
             let mut new_branches = Vec::with_capacity(branches.len());
-            let mut progress = false;
             for b in branches {
                 let arm_env = shadow(env, &b.pattern);
-                let (body, pb) = reduce(kb, &b.body, &arm_env, pass)?;
-                progress |= pb;
+                let body = reduce(kb, &b.body, &arm_env, pass)?;
                 let guard = match &b.guard {
-                    Some(g) => {
-                        let (rg, pg) = reduce(kb, g, &arm_env, pass)?;
-                        progress |= pg;
-                        Some(rg)
-                    }
+                    Some(g) => Some(reduce(kb, g, &arm_env, pass)?),
                     None => None,
                 };
                 new_branches.push(MatchBranch {
@@ -297,8 +284,7 @@ fn reduce_match(
                     span: b.span,
                 });
             }
-            let node = rebuild(occ, Expr::Match { scrutinee: scr, branches: new_branches }, pass);
-            Some((node, progress))
+            Some(rebuild(occ, Expr::Match { scrutinee: scr, branches: new_branches }, pass))
         }
     }
 }
@@ -586,15 +572,12 @@ fn reduce_vec(
     xs: &[Rc<NodeOccurrence>],
     env: &Env,
     pass: PassId,
-) -> Option<(Vec<Rc<NodeOccurrence>>, bool)> {
+) -> Option<Vec<Rc<NodeOccurrence>>> {
     let mut out = Vec::with_capacity(xs.len());
-    let mut progress = false;
     for x in xs {
-        let (r, p) = reduce(kb, x, env, pass)?;
-        out.push(r);
-        progress |= p;
+        out.push(reduce(kb, x, env, pass)?);
     }
-    Some((out, progress))
+    Some(out)
 }
 
 fn reduce_named(
@@ -602,15 +585,12 @@ fn reduce_named(
     xs: &[(Symbol, Rc<NodeOccurrence>)],
     env: &Env,
     pass: PassId,
-) -> Option<(Vec<(Symbol, Rc<NodeOccurrence>)>, bool)> {
+) -> Option<Vec<(Symbol, Rc<NodeOccurrence>)>> {
     let mut out = Vec::with_capacity(xs.len());
-    let mut progress = false;
     for (s, x) in xs {
-        let (r, p) = reduce(kb, x, env, pass)?;
-        out.push((*s, r));
-        progress |= p;
+        out.push((*s, reduce(kb, x, env, pass)?));
     }
-    Some((out, progress))
+    Some(out)
 }
 
 fn rebuild(from: &Rc<NodeOccurrence>, expr: Expr, pass: PassId) -> Rc<NodeOccurrence> {
