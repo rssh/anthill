@@ -3153,6 +3153,15 @@ fn load_phase_inner(
     // absent from the phase-1 index would otherwise silently resolve to `None`/the
     // wrong var. A no-op on the first (or only) load — the field starts `None`.
     kb.sort_alias_index = None;
+    // WI-660 — same reset for the SortProvidesInfo (provider) index, same reason:
+    // it is rebuilt at this phase's type-check (`build_provides_index`), and the
+    // dispatch/coherence consumers use it with no fallback-on-miss (a `Some` index
+    // is trusted whole), so a stale index left by a prior phase would silently hide
+    // this phase's freshly-asserted `provides` facts. Clearing it first makes those
+    // load-time lookups scan the live relation until the rebuild. NB this is the
+    // ONLY invalidation the index needs: `SortProvidesInfo` is `constant` (053/WI-665),
+    // so it never mutates at RUNTIME — no per-fact-mutation drop (see `provides_index`).
+    kb.provides_index = None;
 
     // WI-233: per-sub-phase timing, gated by ANTHILL_LOAD_TIMING=1.
     // Surfaces which step of the load pipeline dominates wall time
@@ -3280,7 +3289,25 @@ fn load_phase_inner(
     // backing — and BEFORE `check_eq_noneq_exclusive`, so a user `provides
     // Eq[Point]` over a Float-containing `Point` conflicts with the derived
     // `NonEq[Point]` and is rejected (the WI-658 route, "composes automatically").
+    // WI-660 — `eq_derive::run` both READS the provider relation (`sort_provides`, to
+    // skip an already-provided derivation) AND ASSERTS new `SortProvidesInfo` facts
+    // (derived `NonEq`/`PartialEq` for Float-containing composites) in the SAME loop.
+    // Drop the index to `None` FIRST so those reads hit the live scan and see the facts
+    // eq_derive is asserting as it goes (the pre-WI-660 behaviour). A `Some` index —
+    // built at `type_check_sorts` start, before any of this — would be stale mid-loop
+    // and miss a just-derived edge (e.g. re-deriving a duplicate `NonEq` for two
+    // alias-distinct symbols of one composite sort).
+    kb.provides_index = None;
     super::eq_derive::run(kb);
+    // Rebuild now the relation is frozen again: eq_derive is the LAST load pass to
+    // assert `SortProvidesInfo`, so the post-eq_derive checks below
+    // (`check_eq_noneq_exclusive`, `check_use_site_requires_eq`) and the persisted
+    // runtime index (`sort_provides` from the resolver's simp guard) all read a COMPLETE
+    // index — else a Float-composite key like `Map[K = Pt]` would silently miss its
+    // derived `NonEq` and load clean. `constant` (WI-665) forbids only EVAL-time
+    // mutation; this LOAD-time derivation is legitimate, hence the explicit
+    // null-then-rebuild here rather than the eval guard.
+    super::typing::build_provides_index(kb);
     mark!("eq_derive::run");
     // WI-658: Eq ⊥ NonEq — a carrier that provides both the lawful (reflexive)
     // Eq and the witnessed non-reflexive NonEq is contradictory. Opt-in: does

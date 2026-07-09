@@ -479,6 +479,32 @@ pub struct KnowledgeBase {
     /// an O(1) lookup instead of a double linear scan of every SortAlias fact.
     pub(crate) sort_alias_index: Option<crate::kb::typing::SortAliasIndex>,
 
+    /// WI-660 — the SortProvidesInfo (provider/coherence) index: providers keyed
+    /// BOTH by canonical spec-base symbol AND by carrier short-name, built once at
+    /// type-check start by `typing::build_provides_index`. Replaces the per-call
+    /// linear scans of every provides fact at the dispatch/coherence sites (the SAME
+    /// `rules_by_functor` antipattern as `op_records`/`sort_alias_index`). A
+    /// MANY-TO-MANY relation (carrier × spec), so TWO maps, keyed differently to
+    /// match each consumer's comparison: `canonical_sort_sym` for the spec-base
+    /// direction (exact), `same_symbol` for the carrier direction (hence a
+    /// short-name bucket + a `same_symbol` re-filter; see `ProvidesIndex`).
+    ///
+    /// SOUND BUILD-ONCE — NO per-mutation invalidation. `SortProvidesInfo` is marked
+    /// `constant` (`fact_monotonicity`, reflect.anthill; proposal 053 / WI-665), so
+    /// the WI-666 eval guard makes a runtime `Store.persist`/`retract` of it a LOUD
+    /// error — the relation cannot change after load, so the index read AT RUNTIME
+    /// (`sort_provides` from the resolver's simp guard, `provider_spec_view_bindings`
+    /// from eval dispatch) can never go stale (this is what closed the WI-607 ABA
+    /// hole that once blocked this WI). During LOAD it tracks the mutating relation
+    /// explicitly — it is `Some` only while the relation is FROZEN and `None` (consumers
+    /// scan live) across every load-time mutation window: reset to `None` at
+    /// `load_phase_inner` start (like `sort_alias_index`) and again just before
+    /// `eq_derive::run` (which reads the relation WHILE asserting derived composite
+    /// `NonEq`/`PartialEq`), and (re)built by `build_provides_index` at `type_check_sorts`
+    /// start (the hot consumer) and again right after `eq_derive::run`. `None` until
+    /// first built; while `None`, every consumer falls back to the live scan.
+    pub(crate) provides_index: Option<crate::kb::typing::ProvidesIndex>,
+
     /// Proposal 039 / WI-084 — a term-level constant's DECLARED TYPE, keyed by
     /// its `SymbolKind::Const` symbol, as a carrier-agnostic `Value`. Read by
     /// the typer to type a bare const reference (fold-free: only the declared
@@ -687,6 +713,7 @@ impl KnowledgeBase {
             functor_spans: HashMap::new(),
             op_records: HashMap::new(),
             sort_alias_index: None,
+            provides_index: None,
             const_types: HashMap::new(),
             const_bodies: HashMap::new(),
             has_dot_applies: false,
