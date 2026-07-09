@@ -310,6 +310,58 @@ class LoaderTest extends munit.FunSuite:
     assert(kb.isEquation(unifyRules(0)), "the loaded `<=>` rule is an equation")
   }
 
+  // WI-582: a typed rule pattern `?x: T` parses to a `typed_var(?x, type: T)`
+  // marker; the loader STRIPS it back to the bare `?x` (scaland has no typer, so
+  // the bound is dropped, not enforced), keeping the head matchable as `p(?x)`.
+  test("WI-582: a typed rule pattern loads with a BARE head (marker stripped)") {
+    val kb = KnowledgeBase()
+    Prelude.register(kb)
+    val parsed = Parser.parse(
+      """rule q(42)
+        |rule p(?x: Numeric) :- q(?x)""".stripMargin, "<wi582load>")
+      .toOption.getOrElse(fail("parse failed"))
+    val errors = Loader.loadAll(kb, IndexedSeq(parsed))
+    assert(errors.isEmpty, s"Load errors: $errors")
+
+    // The head `p(?x: Numeric)` strips to the bare `p(?x)`: the ground query
+    // `p(42)` resolves through the body `q(42)`. Were the marker NOT stripped,
+    // the head arg would be `typed_var(?x, …)` (a Fn) and `p(42)` would not unify.
+    val pSym = kb.intern("p")
+    val fortyTwo = kb.alloc(Term.Const(Literal.IntLit(42)))
+    val query = kb.alloc(Term.Fn(pSym, IArray(fortyTwo), IArray.empty))
+    val solutions = SearchStream.resolve(kb, query).allSolutions(kb)
+    assertEquals(solutions.length, 1, "the bare typed head resolves the ground query")
+  }
+
+  // WI-582 (review): the strip is gated on the EXACT marker shape (functor
+  // `typed_var` + one pos arg + a `type` named arg). A user functor merely NAMED
+  // `typed_var` must NOT be stripped — matching by name alone would crash on a
+  // 0-arg call and silently drop args from a 2-arg call (mirrors rustland's guard).
+  test("WI-582: a non-marker functor named `typed_var(a, b)` loads intact (not stripped)") {
+    val kb = KnowledgeBase()
+    Prelude.register(kb)
+    val parsed = Parser.parse("rule typed_var(1, 2)", "<wi582guard2>")
+      .toOption.getOrElse(fail("parse failed"))
+    val errors = Loader.loadAll(kb, IndexedSeq(parsed))
+    assert(errors.isEmpty, s"Load errors: $errors")
+    // Stripped-by-name would rewrite the head to the literal `1` (no `typed_var`
+    // rule); the tightened guard leaves it as the 2-ary functor.
+    assertEquals(kb.byFunctor(kb.intern("typed_var")).length, 1,
+      "the non-marker `typed_var` rule loads as itself")
+  }
+
+  test("WI-582: a bare `typed_var()` (0 args) does not crash the loader") {
+    val kb = KnowledgeBase()
+    Prelude.register(kb)
+    val parsed = Parser.parse("rule typed_var()", "<wi582guard0>")
+      .toOption.getOrElse(fail("parse failed"))
+    // Matching by name alone would do `posArgs(0)` → IndexOutOfBounds; the guard
+    // requires exactly one pos arg, so this loads as an ordinary 0-ary functor.
+    val errors = Loader.loadAll(kb, IndexedSeq(parsed))
+    assert(errors.isEmpty, s"Load errors: $errors")
+    assertEquals(kb.byFunctor(kb.intern("typed_var")).length, 1)
+  }
+
   // WI-451/WI-452 (§5.4): the enclosing-list HK sort type-param form loads, and
   // both the higher-kinded carrier `F` and the simple param `A` register as type
   // parameters of the enclosing sort (the marker the resolver/codegen read; scaland

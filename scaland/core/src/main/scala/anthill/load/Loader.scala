@@ -507,6 +507,18 @@ object Loader:
 
   // ── Term reallocation ─────────────────────────────────────────
 
+  /** WI-582: whether `fn` is the parser-emitted typed-pattern marker
+    * `typed_var(?x, type: T)` — matched by functor name AND its exact shape
+    * (exactly one positional arg plus a `type` named arg). Mirrors rustland's
+    * three-condition guard (`load.rs`): matching by name ALONE would crash on a
+    * user functor `typed_var()` (`posArgs(0)` out of bounds) and silently strip
+    * `typed_var(a, b)` to `a`. A non-marker `typed_var` falls through to normal
+    * loading. */
+  private def isTypedVarMarker(fn: Term.Fn, fileSym: SymbolTable): Boolean =
+    fileSym.name(fn.functor) == "typed_var" &&
+      fn.posArgs.length == 1 &&
+      fn.namedArgs.exists { case (k, _) => fileSym.name(k) == "type" }
+
   /** Re-allocate a parse-time term into the KB's hash-consed store.
     * Uses varMap to share VarIds within a rule scope (same parse-time VarId → same KB VarId).
     */
@@ -529,6 +541,16 @@ object Loader:
           kb.freshVar(kbSym)
         })
         kb.alloc(Term.Var(kbVid))
+      case fn: Term.Fn if isTypedVarMarker(fn, fileSym) =>
+        // WI-582: strip the typed-pattern marker `typed_var(?x, type: T)` back to
+        // the bare `?x`. The parser wraps a `?x: T` rule-LHS arg as this marker;
+        // rustland installs T as a per-DeBruijn `Type` bound and keeps the head
+        // structurally bare so the discrimination tree indexes it identically to
+        // an untyped head. scaland has no typer to enforce the bound, so we DROP
+        // the type and keep only the bare variable — sound-conservative (the head
+        // still matches the untyped form). Mirrors rustland's strip minus the
+        // bound install.
+        reallocTerm(kb, fileTerms, fileSym, fn.posArgs(0), scopeTerm, errors, varMap)
       case fn: Term.Fn =>
         val name = fileSym.name(fn.functor)
         val kbFunctor = resolveName(kb, name, scopeTerm, errors)
@@ -663,6 +685,12 @@ object Loader:
           case "pattern_literal" => loadPatternLiteral(kb, fileTerms, fileSym, fn.posArgs, scopeTerm, errors, varMap)
           case "pattern_constructor" => loadPatternConstructor(kb, fileTerms, fileSym, fn.posArgs, scopeTerm, errors, varMap)
           case "pattern_tuple" => loadPatternTuple(kb, fileTerms, fileSym, fn.posArgs, scopeTerm, errors, varMap)
+          // WI-582: strip a `typed_var(?x, type: T)` marker back to the bare `?x`
+          // here too (a typed arg in an expression body), matching `reallocTerm`.
+          // Guarded on the exact marker shape (name + 1 pos + `type` named) — a
+          // non-marker `typed_var` falls through to `loadApplyOrConstructor`.
+          case "typed_var" if isTypedVarMarker(fn, fileSym) =>
+            exprRec((kb, fileTerms, fileSym, scopeTerm, errors, varMap), fn.posArgs(0))
           case _ => loadApplyOrConstructor(kb, fileTerms, fileSym, fn.functor, fn.posArgs, fn.namedArgs, scopeTerm, errors, varMap)
       case Term.Const(_) => loadLiteralExpr(kb, fileTerms, fileSym, parseId, scopeTerm, errors, varMap)
       case Term.Ident(_) => loadVarRef(kb, fileTerms, fileSym, parseId, scopeTerm, errors, varMap)

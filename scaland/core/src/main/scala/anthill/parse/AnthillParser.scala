@@ -400,22 +400,68 @@ private class AnthillParserImpl(
   private def atomWithFieldAccess[$: P]: P[TermId] =
     P(atomBase ~ dotSegment.rep).map { case (base, segs) =>
       segs.foldLeft(base) { (obj, seg) =>
-        val (field, callArgs) = seg
-        // A name receiver carrying call args (`Foo.bar(args)`) is consumed by
-        // `name`/`nameSuffix` and never reaches here, so a name receiver always
-        // has `callArgs == None`; route any value receiver — incl. the
-        // call/instantiation `Fn` shapes — through `dot_apply` so args are never
-        // dropped.
-        if isValueReceiver(obj) || callArgs.isDefined then buildDotApply(obj, field, callArgs)
-        else
-          val fieldRef = terms.alloc(Term.Ref(field))
-          terms.alloc(Term.Fn(fieldAccessSym, IArray(obj, fieldRef), IArray.empty))
+        seg match
+          case DotSeg.Field(field, callArgs) =>
+            buildFieldAccess(obj, field, isValueReceiver(obj), callArgs)
+          case DotSeg.Projection(members, span) =>
+            buildDistributiveProjection(obj, members, span)
       }
     }
 
-  /** One `.name` access, optionally a call `.name(args)` (WI-278). */
-  private def dotSegment[$: P]: P[(TermSymbol, Option[IndexedSeq[Either[TermId, (TermSymbol, TermId)]]])] =
-    P("." ~ ident ~ fnArgsList.?)
+  /** Build the accessor a single `obj.member` produces: a value receiver (or any
+    * call `.member(args)`) routes through `dot_apply` so args are never dropped;
+    * a name receiver keeps the `field_access` builtin. Shared by the plain
+    * dot-chain fold (WI-278) and the WI-639 distributive projection, so `x.(m)`
+    * builds byte-identically to `x.m`. `valueRecv` is passed in (not recomputed)
+    * so the projection can decide the receiver kind once for all its members.
+    * A name receiver carrying call args never reaches here — `name`/`nameSuffix`
+    * consumes `Foo.bar(args)` — so a name receiver always has `callArgs == None`. */
+  private def buildFieldAccess(
+    obj: TermId, member: TermSymbol, valueRecv: Boolean,
+    callArgs: Option[IndexedSeq[Either[TermId, (TermSymbol, TermId)]]]
+  ): TermId =
+    if valueRecv || callArgs.isDefined then buildDotApply(obj, member, callArgs)
+    else
+      val fieldRef = terms.alloc(Term.Ref(member))
+      terms.alloc(Term.Fn(fieldAccessSym, IArray(obj, fieldRef), IArray.empty))
+
+  /** One dotted access after an atom: a field/method `.name` / `.name(args)`
+    * (WI-278) or a distributive projection `.(m1, …, mn)` (WI-639). */
+  private enum DotSeg:
+    case Field(name: TermSymbol, callArgs: Option[IndexedSeq[Either[TermId, (TermSymbol, TermId)]]])
+    /** `(label, member)` pairs — a bare member auto-labels (`label == member`). */
+    case Projection(members: IndexedSeq[(TermSymbol, TermSymbol)], span: Span)
+
+  private def dotSegment[$: P]: P[DotSeg] =
+    // The projection opener `.(` diverges from a `.name` field access on the
+    // token after `.` (`(` vs an identifier), so it is tried first and
+    // backtracks cleanly to the field form. Mirrors rustland's fused `.(` token.
+    P(distributiveProjectionSeg | fieldSeg)
+
+  /** A field access `.name`, optionally a call `.name(args)` (WI-278). */
+  private def fieldSeg[$: P]: P[DotSeg] =
+    P("." ~ ident ~ fnArgsList.?).map { case (name, args) => DotSeg.Field(name, args) }
+
+  /** WI-639: a distributive projection segment `.(m1, …, mn)`. The `.(` opener
+    * is unambiguous (no other construct follows `x.` with a `(`), so it cuts
+    * after `(` — a malformed member list (`x.()`, `x.(1)`, `x.(a + b)`) is a
+    * loud parse error rather than silently backtracking to leave the tail
+    * unconsumed. The `.` alone stays cut-free (the alternation must fall back to
+    * `fieldSeg` when the token after `.` is an identifier, not `(`). */
+  private def distributiveProjectionSeg[$: P]: P[DotSeg] =
+    P(Index ~ "." ~ "(" ~/ projectionMember.rep(1, sep = ",") ~ ",".? ~ ")" ~ Index).map {
+      case (s, members, e) => DotSeg.Projection(members.toIndexedSeq, mkSpan(s, e))
+    }
+
+  /** One member of a distributive projection: a bare member `f` auto-labels
+    * (`label == member == f`), or `a: f` renames (label `a`, member `f`).
+    * Members are plain identifiers — expression/call members are deferred
+    * (proposal 052 OQ3), mirroring rustland's `projection_member`. */
+  private def projectionMember[$: P]: P[(TermSymbol, TermSymbol)] =
+    P(ident ~ (":" ~ ident).?).map {
+      case (label, Some(member)) => (label, member)
+      case (member, None)        => (member, member)
+    }
 
   private lazy val fieldAccessSym = intern("field_access")
   private lazy val dotApplySym = intern("dot_apply")
@@ -451,6 +497,51 @@ private class AnthillParserImpl(
       case Right((k, v)) => namedArgs += ((k, v))
     })
     terms.alloc(Term.Fn(dotApplySym, IArray.from(posArgs), IArray.from(namedArgs)))
+
+  /** WI-639: build `x.(m1, …, mn)` — distribute the receiver `x` over the
+    * member list. Each member desugars to the SAME accessor a single `x.m`
+    * builds (`dot_apply(x, Ident(m))` for a value receiver, `field_access(x,
+    * Ref(m))` for a name receiver, chosen once by `isValueReceiver`), then each
+    * is keyed by its result label into a named `TupleLiteral`. A single member
+    * 1-collapses to the scalar accessor (`x.(f)` ≡ `x.f`, whether bare or
+    * renamed), so the tuple key only matters for a multi-column result. Mirrors
+    * rustland's `push_distributive_projection` build + `is_value_receiver`. */
+  private def buildDistributiveProjection(
+    obj: TermId, members: IndexedSeq[(TermSymbol, TermSymbol)], span: Span
+  ): TermId =
+    // Validate result keys BEFORE building a multi-column tuple (a single member
+    // 1-collapses to a scalar — no tuple, nothing to key). Each check turns an
+    // otherwise-silent wrong result into a loud parse error (WI-639 review).
+    if members.length > 1 then validateProjectionLabels(members, span)
+    val valueRecv = isValueReceiver(obj)
+    val accessors = members.map { case (label, member) =>
+      (label, buildFieldAccess(obj, member, valueRecv, None))
+    }
+    if accessors.length == 1 then accessors.head._2
+    else terms.alloc(Term.Fn(intern("TupleLiteral"), IArray.empty, IArray.from(accessors)))
+
+  /** Reject the two ill-formed key shapes a multi-member projection could emit
+    * into its result tuple, each a silent-corruption footgun (WI-639 review):
+    *   - a `_`-prefixed label collides with the positional-tuple convention
+    *     (`_1`/`_2` are re-slotted positionally, discarding the label);
+    *   - a DUPLICATE label builds a duplicate-key named tuple whose later
+    *     columns are silently dropped (first-match-wins downstream).
+    * Mirrors rustland's `validate_projection_labels`. */
+  private def validateProjectionLabels(
+    members: IndexedSeq[(TermSymbol, TermSymbol)], span: Span
+  ): Unit =
+    val seen = scala.collection.mutable.HashSet.empty[TermSymbol]
+    for (label, _) <- members do
+      val nm = symbols.name(label)
+      if nm.startsWith("_") then
+        errors += ParseError(
+          s"distributive projection key `$nm` is `_`-prefixed, colliding with the " +
+          s"positional-tuple convention; projection is named-only — write a positional " +
+          s"tuple `(x.f1, x.f2)` explicitly, or rename (`x.(name: $nm)`)", span)
+      if !seen.add(label) then
+        errors += ParseError(
+          s"duplicate distributive projection key `$nm`; each projected member must " +
+          s"yield a distinct result key (rename a collision, e.g. `x.(a: $nm, b: …)`)", span)
 
   private def atomBase[$: P]: P[TermId] =
     P(
@@ -592,8 +683,34 @@ private class AnthillParserImpl(
       // `value: choice($._term, $.lambda_expr)`. Its `_expr_body` cannot consume
       // the argument-separating comma, so the call stays unambiguous.
       (ident ~ ":" ~/ (lambdaExpr | term)).map { case (k, v) => Right((k, v)) } |
+      typedVarArg.map(Left(_)) |
       exprBody.map(Left(_))
     )
+
+  /** WI-582: a type-annotated variable argument `?x: T` in a rule LHS (e.g.
+    * `rule [simp] add(?x: Numeric, 0) = ?x`). Lowers to a `typed_var(?x, type: T)`
+    * marker; the loader (`reallocTerm`) STRIPS it back to the bare `?x`, keeping
+    * the head structurally identical to the untyped form so the discrimination
+    * tree indexes it the same (carrier-neutral — the bound rides off the
+    * structural key). scaland has no typer, so the type bound is DROPPED, not
+    * enforced (rustland installs it as a per-DeBruijn `Type` bound and checks it
+    * at simp-firing). Mirrors `typedBinder`'s `pattern_var` type-carrying shape,
+    * but the binder is a `?var`, not a plain identifier.
+    *
+    * A bare `?var` (`variableToken`, never an application), and `:` is not an
+    * infix operator here, so `?x` followed by `:` is unambiguously a typed arg.
+    * Placed after the `ident:` named-arg alt (whose key is a plain identifier,
+    * never a `?var`) and before `exprBody` (which would parse `?x` and stop,
+    * leaving `: T` dangling). The cut is AFTER `:`, so a plain `?x` argument
+    * (no colon) fails this alt cleanly and falls through to `exprBody`. */
+  private def typedVarArg[$: P]: P[TermId] =
+    P(Tokens.variableToken ~ ":" ~/ typeExpr).map { case (varName, ty) =>
+      val varTid =
+        if varName.isEmpty then terms.alloc(Term.Var(freshAnonymousVar()))
+        else terms.alloc(Term.Var(getOrCreateVar(intern(varName))))
+      terms.alloc(Term.Fn(intern("typed_var"), IArray(varTid),
+        IArray((intern("type"), typeExprToRef(ty)))))
+    }
 
   private def instArgsList[$: P]: P[IndexedSeq[SortBinding]] =
     P("[" ~ sortBinding.rep(1, sep = ",") ~ "]").map(_.toIndexedSeq)
@@ -968,7 +1085,19 @@ private class AnthillParserImpl(
   // ── Patterns ─────────────────────────────────────────────────
 
   private def pattern[$: P]: P[TermId] =
-    P(patternConstructor | patternTyped | patternTuple | patternLiteral | patternWildcard | patternVar)
+    P(patternConstructor | patternTyped | patternTuple | patternParen | patternLiteral | patternWildcard | patternVar)
+
+  /** WI-620: a parenthesized pattern is pure grouping — `(p)` ≡ `p`. A single
+    * parenthesized element is NOT a 1-tuple, so `lambda (x) -> body` binds one
+    * variable (the WI-517 tuple/typed forms already parsed `()` / `(a, b)` /
+    * `(x: T)`; only the single unannotated `(x)` was a syntax error). Unwraps
+    * to the inner pattern, so grouping is transparent in EVERY pattern position
+    * (lambda param, match case, let). Tried AFTER `patternTyped` (`(x: T)`) and
+    * `patternTuple` (`()` / `(a, b, …)`) so those specific paren forms win —
+    * only a single non-typed element reaches here. Mirrors rustland's
+    * `pattern_paren` (converter unwraps via the `pattern` field). */
+  private def patternParen[$: P]: P[TermId] =
+    P("(" ~ pattern ~ ")")
 
   /** WI-517: a type-annotated binder `name: Type`. Lowers to the SAME
     * `pattern_var` functor as a bare binder but carries the declared type as a

@@ -1003,3 +1003,137 @@ class ParseTest extends munit.FunSuite:
       case Term.Fn(f, _, _) => assertEquals(pf.symbols.name(f), "field_access")
       case other => fail(s"expected field_access Fn, got $other")
   }
+
+  // ── Parser parity with current rust grammar (post-2026-06-26 features) ──
+
+  /** Whether `tid`'s term tree contains a `Fn` with functor short/full name
+    * `target` anywhere (used to locate a marker inside a rule head). */
+  private def findFunctor(pf: ParsedFile, tid: TermId, target: String): Boolean =
+    pf.terms.get(tid) match
+      case fn: Term.Fn =>
+        pf.symbols.name(fn.functor) == target ||
+          fn.posArgs.exists(findFunctor(pf, _, target)) ||
+          fn.namedArgs.exists { case (_, v) => findFunctor(pf, v, target) }
+      case _ => false
+
+  // WI-620: `pattern_paren` — a parenthesized single binder is grouping, not a 1-tuple.
+  test("WI-620: `lambda (x) -> x` groups a single binder (unwraps to a bare pattern_var)") {
+    val (pf, op) = parseDemoOp("  operation f() -> Int =\n    lambda (x) -> x")
+    val body = op.body.getOrElse(fail("no lambda body"))
+    pf.terms.get(body) match
+      case fn: Term.Fn =>
+        assertEquals(pf.symbols.name(fn.functor), "lambda_expr")
+        // The `(x)` param unwraps to a bare `pattern_var`, NOT a `pattern_tuple`.
+        assertEquals(functorName(pf, fn.posArgs(0)), "pattern_var")
+      case other => fail(s"expected lambda_expr, got $other")
+  }
+
+  test("WI-620: parenthesized grouping is transparent in a match case `case (x) -> …`") {
+    probeOk("wi620-match",
+      """sort Demo
+        |  sort Int = ?
+        |  operation f(y: Int) -> Int =
+        |    match y case (x) -> x
+        |end""".stripMargin)
+  }
+
+  test("WI-620: grouping in a `let (x) = …` binder + nested `((y))` both parse") {
+    probeOk("wi620-let",
+      """sort Demo
+        |  sort Int = ?
+        |  operation f(z: Int) -> Int =
+        |    let (x) = z in
+        |    lambda ((y)) -> x
+        |end""".stripMargin)
+  }
+
+  // WI-582: typed rule patterns `?x: T` in a rule LHS.
+  test("WI-582: `add(?x: Numeric, 0)` LHS carries a `typed_var` marker") {
+    val pf = Parser.parse("rule add(?x: Numeric, 0) = ?x", "<wi582>")
+      .toOption.getOrElse(fail("parse failed"))
+    val rule = pf.items.collectFirst { case Item.RuleItem(r) => r }.getOrElse(fail("no rule"))
+    val head = rule.heads.collectFirst { case RuleHead.TermHead(t) => t }.getOrElse(fail("no head"))
+    assert(findFunctor(pf, head, "typed_var"),
+      "the typed LHS arg `?x: Numeric` must lower to a `typed_var` marker")
+  }
+
+  test("WI-582: the `[T]` introducer head `add[T](?x: T, 0) :- Numeric[T]` parses") {
+    probeOk("wi582-introducer", "rule add[T](?x: T, 0) = ?x :- Numeric[T]")
+  }
+
+  // WI-639: distributive dot projection `x.(m1, …, mn)`.
+  private def assertProjectionRejected(src: String, needle: String): Unit =
+    Parser.parse(src, "<wi639-reject>") match
+      case Left(es) =>
+        assert(es.exists(_.message.contains(needle)),
+          s"expected a `$needle` error, got: ${es.map(_.message).mkString("; ")}")
+      case Right(_) => fail(s"expected parse to fail: $src")
+
+  test("WI-639: `?x.(a, b)` desugars to a named `TupleLiteral` keyed by the members") {
+    val (pf, t) = factTerm("fact ?x.(a, b)")
+    t match
+      case fn: Term.Fn =>
+        assertEquals(pf.symbols.name(fn.functor), "TupleLiteral")
+        assertEquals(fn.namedArgs.map((k, _) => pf.symbols.name(k)).toSet, Set("a", "b"))
+        // Each column is the SAME accessor `?x.a` builds (value receiver ⇒ dot_apply).
+        for (_, v) <- fn.namedArgs do assertEquals(functorName(pf, v), "dot_apply")
+      case other => fail(s"expected TupleLiteral, got $other")
+  }
+
+  test("WI-639: rename `?x.(a: f1, b: f2)` keys by the LABELS, accesses the MEMBERS") {
+    val (pf, t) = factTerm("fact ?x.(a: f1, b: f2)")
+    t match
+      case fn: Term.Fn =>
+        assertEquals(fn.namedArgs.map((k, _) => pf.symbols.name(k)).toSet, Set("a", "b"))
+        val aAccess = fn.namedArgs.collectFirst { case (k, v) if pf.symbols.name(k) == "a" => v }.get
+        // dot_apply(?x, Ident(f1)) — the accessed member is `f1`, not the label `a`.
+        pf.terms.get(aAccess) match
+          case acc: Term.Fn =>
+            pf.terms.get(acc.posArgs(1)) match
+              case Term.Ident(m) => assertEquals(pf.symbols.name(m), "f1")
+              case other => fail(s"expected member Ident(f1), got $other")
+          case other => fail(s"expected accessor Fn, got $other")
+      case other => fail(s"expected TupleLiteral, got $other")
+  }
+
+  test("WI-639: a single member `?x.(f)` 1-collapses to the scalar accessor `?x.f`") {
+    val (pf, t) = factTerm("fact ?x.(f)")
+    t match
+      case fn: Term.Fn => assertEquals(pf.symbols.name(fn.functor), "dot_apply")
+      case other => fail(s"expected dot_apply (1-collapse), got $other")
+  }
+
+  test("WI-639: a name receiver `Rec.(x, y)` uses field_access accessors") {
+    val (pf, t) = factTerm("fact Rec.(x, y)")
+    t match
+      case fn: Term.Fn =>
+        assertEquals(pf.symbols.name(fn.functor), "TupleLiteral")
+        for (_, v) <- fn.namedArgs do assertEquals(functorName(pf, v), "field_access")
+      case other => fail(s"expected TupleLiteral, got $other")
+  }
+
+  test("WI-639: chaining `?x.(a, b).a` reads a column off the projection tuple") {
+    // The projection is a value (a TupleLiteral), so `.a` on it is a value dot.
+    val (pf, t) = factTerm("fact ?x.(a, b).a")
+    t match
+      case fn: Term.Fn => assertEquals(pf.symbols.name(fn.functor), "dot_apply")
+      case other => fail(s"expected outer dot_apply, got $other")
+  }
+
+  test("WI-639: a duplicate projection key is a loud parse error (not silent drop)") {
+    assertProjectionRejected("fact ?x.(a, a)", "duplicate")
+    assertProjectionRejected("fact ?x.(k: a, k: b)", "duplicate")
+  }
+
+  test("WI-639: a `_`-prefixed projection key is a loud parse error") {
+    assertProjectionRejected("fact ?x.(_1, _2)", "prefixed")
+  }
+
+  test("WI-639: a malformed member list after `.(` is a loud parse error (cut)") {
+    // The `.(` opener cuts, so `x.()` (no member) / `x.(1)` (non-identifier
+    // member) fail loudly rather than silently backtracking and leaving `.(…)`
+    // unconsumed. (A fastparse failure, not one of our `ParseError`s — assert on Left.)
+    for src <- Seq("fact ?x.()", "fact ?x.(1)") do
+      assert(Parser.parse(src, "<wi639-malformed>").isLeft,
+        s"malformed projection must not parse: $src")
+  }
