@@ -1842,6 +1842,133 @@ impl KnowledgeBase {
         }
     }
 
+    // ── WI-630: loud invariant guard for loader-emitted *metadata* facts ──────
+    //
+    // `resolve()` candidate lookup is sort-blind — the discrimination tree keys
+    // on structure, not on the fact's sort (CLAUDE.md Representation note) — so a
+    // loader metadata fact whose head functor is a *user* entity/rule functor
+    // silently unifies with every var-quantified query or constraint over that
+    // functor. That was the WI-515 bug: the loader asserted `edge(from: <type>,
+    // to: <type>)` (the entity's *own* functor) as an entity "schema fact", and
+    // the self-referential constraint `no ?p -: edge(from: ?p, to: ?p)` matched
+    // it (`?p = Node` in both slots), spuriously violated on self-loop-free data.
+    // WI-515 removed that one fact; this seam enforces the invariant for the
+    // *class* so a future emission cannot silently re-create the pollution.
+    //
+    // Every loader declaration-record emission (EntityInfo, SortInfo, member,
+    // Description, OperationInfo, OperationImpl, Implementation, ProofRecord,
+    // Sort{Provides,Requires}Info, SortAlias) routes through these three seams.
+    // The check is a **debug-only tripwire** (`cfg(debug_assertions)`): it fires
+    // in dev/test builds if a head functor is not a recognized system-metadata
+    // functor, and is compiled out entirely in release. This matches the ticket's
+    // "load-time debug check" — the guard protects against a *loader-code*
+    // mistake, never user input (user `fact` heads bypass this seam entirely), so
+    // it is a development-time invariant, not a runtime validation. In release the
+    // seams are thin pass-throughs to the plain `assert_fact*` methods.
+    //
+    // NOT routed here (correctly): user `fact` heads (`load_fact`), the
+    // sort/namespace *existence* facts (head is the sort/namespace's own identity
+    // — not a data predicate the user constrains), and the `eq(op(…), body)`
+    // operation-definition equations (a *rule*, shielded from structural
+    // var-queries by `BuiltinTag::SemEq` dispatch — WI-627).
+
+    /// Functor symbol at the head of a term (`Fn` / `Ref` / `Ident`), or `None`
+    /// for a non-functor head (`Var`, `Const`, …). One place for the extraction
+    /// the metadata seams and [`Self::emit_entity_info`](crate::kb::load) share.
+    pub(crate) fn head_functor(&self, tid: TermId) -> Option<Symbol> {
+        match self.get_term(tid) {
+            Term::Fn { functor, .. } => Some(*functor),
+            Term::Ref(s) | Term::Ident(s) => Some(*s),
+            _ => None,
+        }
+    }
+
+    /// True iff `qualified_name` names a reserved system-metadata functor — one
+    /// the loader is permitted to head a metadata fact with. The reflect and
+    /// realization declaration records live under `anthill.reflect.` /
+    /// `anthill.realization.`; the kernel meta functors (`SortAlias`, `meta`,
+    /// `Description`) are registered qualified-only in [`load::register_prelude`]
+    /// with these bare qualified names.
+    #[cfg(debug_assertions)]
+    fn is_reserved_metadata_functor_name(qualified_name: &str) -> bool {
+        qualified_name.starts_with("anthill.reflect.")
+            || qualified_name.starts_with("anthill.realization.")
+            || matches!(qualified_name, "SortAlias" | "meta" | "Description")
+    }
+
+    /// WI-630 debug tripwire: panic if `functor` is not a reserved metadata
+    /// functor (or is a non-functor head). Compiled out in release — see the
+    /// module-level note above.
+    #[cfg(debug_assertions)]
+    fn check_metadata_head(&self, functor: Option<Symbol>) {
+        let ok = functor
+            .map(|f| Self::is_reserved_metadata_functor_name(self.qualified_name_of(f)))
+            .unwrap_or(false);
+        if !ok {
+            let shown = functor
+                .map(|f| self.qualified_name_of(f))
+                .unwrap_or("<non-functor head>");
+            panic!(
+                "WI-630 invariant violated: loader-emitted metadata fact heads \
+                 non-reflect functor `{shown}`. A metadata fact under a user data/rule \
+                 functor pollutes every var-quantified query over it (resolve() is \
+                 sort-blind — see the WI-515 `edge` schema-fact bug). Head metadata \
+                 facts with a reserved `anthill.reflect.*` / `anthill.realization.*` \
+                 functor, not a user functor."
+            );
+        }
+    }
+
+    /// [`Self::assert_fact`] for a loader metadata fact (WI-630) — see the
+    /// module-level note. Debug-only head-functor tripwire, then delegate.
+    pub fn assert_metadata_fact(
+        &mut self,
+        term: TermId,
+        sort: TermId,
+        domain: TermId,
+        meta: Option<TermId>,
+    ) -> RuleId {
+        #[cfg(debug_assertions)]
+        self.check_metadata_head(self.head_functor(term));
+        self.assert_fact(term, sort, domain, meta)
+    }
+
+    /// [`Self::assert_fact_value`] for a loader metadata fact (WI-630).
+    pub fn assert_metadata_fact_value(
+        &mut self,
+        head: crate::eval::value::Value,
+        sort: TermId,
+        domain: TermId,
+        meta: Option<TermId>,
+    ) -> RuleId {
+        #[cfg(debug_assertions)]
+        {
+            use crate::eval::value::Value;
+            let functor = match &head {
+                Value::Entity { functor, .. } => Some(*functor),
+                Value::Term { id, .. } => self.head_functor(*id),
+                _ => None,
+            };
+            self.check_metadata_head(functor);
+        }
+        self.assert_fact_value(head, sort, domain, meta)
+    }
+
+    /// [`Self::assert_fact_carrier`] for a loader metadata fact (WI-630).
+    pub fn assert_metadata_fact_carrier(
+        &mut self,
+        functor: Symbol,
+        pos: Vec<crate::eval::value::Value>,
+        named: Vec<(Symbol, crate::eval::value::Value)>,
+        sort: TermId,
+        domain: TermId,
+        meta: Option<TermId>,
+    ) -> RuleId {
+        #[cfg(debug_assertions)]
+        self.check_metadata_head(Some(functor));
+        self.assert_fact_carrier(functor, pos, named, sort, domain, meta)
+    }
+
     /// Incref the ground `TermId` leaves reachable in a value head (WI-348
     /// Phase B), keeping them alive for the rule's lifetime — including those
     /// carried *inside* a `Value::Node` occurrence (e.g. a `denoted` Type's

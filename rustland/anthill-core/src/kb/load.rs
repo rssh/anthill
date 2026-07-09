@@ -3875,7 +3875,7 @@ fn register_requires_axiom_witnesses(kb: &mut KnowledgeBase) {
     let record_sort_term = kb.make_name_term("anthill.realization.ProofRecord");
     let global_term = kb.make_name_term("_global");
     for rec in new_records {
-        kb.assert_fact(rec, record_sort_term, global_term, None);
+        kb.assert_metadata_fact(rec, record_sort_term, global_term, None);
     }
 }
 
@@ -4020,7 +4020,7 @@ fn register_induction_axiom_witnesses(kb: &mut KnowledgeBase) {
     let record_sort_term = kb.make_name_term("anthill.realization.ProofRecord");
     let global_term = kb.make_name_term("_global");
     for rec in new_records {
-        kb.assert_fact(rec, record_sort_term, global_term, None);
+        kb.assert_metadata_fact(rec, record_sort_term, global_term, None);
     }
 }
 
@@ -4228,7 +4228,7 @@ fn register_specialization_witnesses(kb: &mut KnowledgeBase) {
     let record_sort_term = kb.make_name_term("anthill.realization.ProofRecord");
     let global_term = kb.make_name_term("_global");
     for rec in new_records {
-        kb.assert_fact(rec, record_sort_term, global_term, None);
+        kb.assert_metadata_fact(rec, record_sort_term, global_term, None);
     }
 }
 
@@ -5632,6 +5632,19 @@ enum FieldStep {
 /// `Loader::new`; all named-arg keys + functor symbols for the kb
 /// canonical Expr / Pattern shape live here so the iterative loader
 /// never re-hashes the same string.
+/// WI-630: reflect symbols + the `Sort` meta-sort term for `EntityInfo`
+/// emission, resolved once by [`Loader::entity_info_syms`] and threaded into
+/// [`Loader::emit_entity_info`] so a sort's entity loop does not re-resolve them
+/// per entity.
+struct EntityInfoSyms {
+    field_info: Symbol,
+    entity_info: Symbol,
+    name: Symbol,
+    type_name: Symbol,
+    fields: Symbol,
+    sort_sort: TermId,
+}
+
 struct ExprBuilderSyms {
     match_expr: Symbol,
     match_branch: Symbol,
@@ -9947,7 +9960,7 @@ impl<'a> Loader<'a> {
                 Item::Operation(o) => { self.load_operation(o, domain); "Operation" }
                 Item::Const(c) => { self.load_const(c, domain); "Const" }
                 Item::RequiresDecl(r) => { self.load_requires_decl(r, domain); "RequiresDecl" }
-                Item::Entity(e) => { self.load_entity(e); "Entity" }
+                Item::Entity(e) => { self.load_entity(e, domain); "Entity" }
                 Item::Fact(f) => { self.load_fact(f, domain); "Fact" }
                 Item::Constraint(c) => { self.load_constraint(c, domain); "Constraint" }
                 Item::OperationBlock(ob) => {
@@ -10033,7 +10046,7 @@ impl<'a> Loader<'a> {
         use crate::eval::value::Value;
         let alias_sym = self.kb.resolve_symbol("SortAlias");
         let sort_sort = self.kb.make_name_term("Sort");
-        self.kb.assert_fact_carrier(
+        self.kb.assert_metadata_fact_carrier(
             alias_sym,
             vec![Value::term(sort_term), target],
             Vec::new(),
@@ -10127,14 +10140,6 @@ impl<'a> Loader<'a> {
         let prev_scope = self.current_scope;
         self.current_scope = sort_term;
 
-        // Pre-resolve symbols used for EntityInfo/FieldInfo (hoisted from loop)
-        let field_info_sym = self.kb.resolve_symbol("anthill.reflect.FieldInfo");
-        let entity_info_sym = self.kb.resolve_symbol("anthill.reflect.EntityInfo");
-        let fi_name_sym = self.kb.intern("name");
-        let fi_type_sym = self.kb.intern("type_name");
-        let fields_field_sym = self.kb.intern("fields");
-        self.kb.register_entity_fields(entity_info_sym, vec![fi_name_sym, fields_field_sym]);
-
         // Pre-load nested type-param SortAliases so they are in place before the
         // entity FieldInfo build calls `type_expr_to_value` on field types that
         // reference them. Without this, `entity foo(x: T)` runs before `sort T = ?`
@@ -10164,114 +10169,21 @@ impl<'a> Loader<'a> {
             }
         }
 
-        // Register direct entity children (entity → parent sort)
+        // Register direct entity children (entity → parent sort) and emit each
+        // one's `EntityInfo`/`FieldInfo` metadata fact. The sort-parent link is
+        // `register_entity_of`; the fact itself is built by the shared
+        // [`Self::emit_entity_info`] (WI-630 also emits it for namespace-level
+        // entities, from `load_entity`). Field types are lowered once here (the
+        // fact side; `load_entity` lowers again for the field-type registry — the
+        // pre-existing sort-body double-lower, out of scope for WI-630).
+        let ei_syms = self.entity_info_syms();
         for item in &s.items {
             if let Item::Entity(e) = item {
                 let ctor_term = self.name_to_sort_term(&e.name);
                 self.kb.register_entity_of(ctor_term, sort_term);
-
-                // Build FieldInfo list for entity fields
-                let ctor_functor = match self.kb.get_term(ctor_term) {
-                    Term::Fn { functor, .. } => *functor,
-                    // WI-511: a registered nullary constructor identity is the
-                    // canonical `Ref(c)`.
-                    Term::Ref(s) => *s,
-                    _ => self.kb.intern("_unknown"),
-                };
-                let ctor_qualified = match self.kb.symbols.get(ctor_functor) {
-                    SymbolDef::Resolved { qualified_name, .. } => qualified_name.clone(),
-                    SymbolDef::Unresolved { name } => name.clone(),
-                };
-                // WI-342 S4c: entity field types are carrier-agnostic, mirroring
-                // the WI-348 op-param value-`FieldInfo`. A denoted-bearing field
-                // type (a value-in-type like `Vector[Int64, 3]`) lowers to a
-                // `Value::Node` → a *value* `FieldInfo` entity carrying the
-                // occurrence; a ground field type stays a hash-consed `FieldInfo`
-                // term. When any field is `Node` the fields list (and the
-                // `EntityInfo` head) become a value fact, so the occurrence is
-                // CARRIED rather than re-grounded. No field type in the current
-                // corpus is denoted-bearing (a value-in-type field — a `Simple`
-                // naming a value symbol, or a literal denoted once `make_denoted`
-                // is retired), so `type_expr_to_value` yields `Value::Term` for
-                // every field and this stays byte-identical to the prior
-                // `type_expr_to_term` build. The value-fact branch is the readiness
-                // for that flip (and the more faithful result for the value-in-type
-                // field the prior code re-grounded via `make_denoted`).
-                let field_values: Vec<crate::eval::value::Value> = e.fields
-                    .iter()
-                    .map(|f| {
-                        let field_name_str = self.parsed.symbols.name(f.name).to_owned();
-                        let field_qualified = format!("{}.{}", ctor_qualified, field_name_str);
-                        let field_sym = if let Some(&existing) = self.kb.symbols.by_qualified_name.get(&field_qualified) {
-                            existing
-                        } else {
-                            self.kb.symbols.define(&field_name_str, &field_qualified, SymbolKind::Field, ctor_term.raw())
-                        };
-                        let name_term = self.kb.alloc(Term::Ref(field_sym));
-                        let type_value = self.type_expr_to_value(&f.ty);
-                        match type_value {
-                            crate::eval::value::Value::Node(_) => {
-                                // Denoted-bearing field type → value FieldInfo entity.
-                                let named: Vec<(Symbol, crate::eval::value::Value)> = vec![
-                                    (fi_name_sym, crate::eval::value::Value::term(name_term)),
-                                    (fi_type_sym, type_value),
-                                ];
-                                crate::eval::value::Value::Entity {
-                                    functor: field_info_sym,
-                                    pos: std::rc::Rc::from(Vec::new()),
-                                    named: std::rc::Rc::from(named),
-                                    ty: None,
-                                }
-                            }
-                            crate::eval::value::Value::Term { id: type_term, .. } => {
-                                // Ground field type → hash-consed FieldInfo term.
-                                crate::eval::value::Value::term(self.kb.alloc(Term::Fn {
-                                    functor: field_info_sym,
-                                    pos_args: SmallVec::new(),
-                                    named_args: SmallVec::from_slice(&[
-                                        (fi_name_sym, name_term),
-                                        (fi_type_sym, type_term),
-                                    ]),
-                                }))
-                            }
-                            // `type_expr_to_value` yields only `Value::Term` /
-                            // `Value::Node` (TypeChild has two variants).
-                            other => unreachable!("a field type is Term or Node, got {other:?}"),
-                        }
-                    })
-                    .collect();
-                let (fields_field, fields_all_ground) = value_or_ground_list(self.kb, field_values);
-
-                // Assert EntityInfo fact (name stores sort term for entity_of
-                // compatibility). A denoted-bearing field forces a `Value::Node`
-                // somewhere in the head, which a hash-consed `Term` cannot hold →
-                // value fact; an all-ground head stays a hash-consed `Term::Fn`
-                // (dedup, structural sharing).
-                if fields_all_ground {
-                    let fields_list = match fields_field {
-                        crate::eval::value::Value::Term { id: t, .. } => t,
-                        _ => unreachable!("fields_all_ground ⇒ fields list is Value::Term"),
-                    };
-                    let entity_info_fact = self.kb.alloc(Term::Fn {
-                        functor: entity_info_sym,
-                        pos_args: SmallVec::new(),
-                        named_args: SmallVec::from_slice(&[(fi_name_sym, ctor_term), (fields_field_sym, fields_list)]),
-                    });
-                    self.kb.assert_fact(entity_info_fact, sort_sort, parent_domain, None);
-                } else {
-                    use crate::eval::value::Value;
-                    let named: Vec<(Symbol, Value)> = vec![
-                        (fi_name_sym, Value::term(ctor_term)),
-                        (fields_field_sym, fields_field),
-                    ];
-                    let head = Value::Entity {
-                        functor: entity_info_sym,
-                        pos: std::rc::Rc::from(Vec::<Value>::new()),
-                        named: std::rc::Rc::from(named),
-                        ty: None,
-                    };
-                    self.kb.assert_fact_value(head, sort_sort, parent_domain, None);
-                }
+                let lowered: Vec<crate::eval::value::Value> =
+                    e.fields.iter().map(|f| self.type_expr_to_value(&f.ty)).collect();
+                self.emit_entity_info(e, ctor_term, &lowered, &ei_syms, parent_domain);
             }
         }
 
@@ -10596,20 +10508,170 @@ impl<'a> Loader<'a> {
             pos_args: SmallVec::new(),
             named_args: si_args,
         });
-        self.kb.assert_fact(fact_term, sort_sort, parent_domain, None);
+        self.kb.assert_metadata_fact(fact_term, sort_sort, parent_domain, None);
     }
 
-    fn load_entity(&mut self, e: &Entity) {
+    /// Build and assert the `EntityInfo` metadata fact (with a per-field
+    /// `FieldInfo` list) for entity `e` whose constructor identity is
+    /// `ctor_term`, under the reflect `Sort` meta-sort in `domain`.
+    ///
+    /// `lowered` is the field types already lowered by the caller (once) via
+    /// `type_expr_to_value`, in `e.fields` order — the caller ALSO needs them
+    /// (for `register_entity_field_types`), and re-lowering here would double-fire
+    /// the non-idempotent `emit_desc_fact` (a duplicate `Description` fact per
+    /// described field). `syms` is the reflect symbol bundle resolved once by the
+    /// caller (avoids per-entity re-resolution across a sort's entity loop).
+    ///
+    /// Shared by two callers (WI-630): the sort-body path
+    /// (`load_sort_with_body`, whose loop first links the entity to its parent
+    /// sort via `register_entity_of`) and the namespace-level path
+    /// (`load_entity`). A namespace-level entity has NO parent sort, so it gets no
+    /// `register_entity_of` — and the `entity_of` typing rule is guarded with a
+    /// trailing `is_entity_of(?x, ?sort)` (the KB-index builtin, sort-body only;
+    /// typing.anthill) so its namespace scope is not bound as a bogus parent.
+    ///
+    /// WI-342 S4c: entity field types are carrier-agnostic, mirroring the WI-348
+    /// op-param value-`FieldInfo`. A denoted-bearing field type (a value-in-type
+    /// like `Vector[Int64, 3]`) is a `Value::Node` → a *value* `FieldInfo` entity
+    /// carrying the occurrence; a ground field type stays a hash-consed
+    /// `FieldInfo` term. When any field is `Node` the fields list (and the
+    /// `EntityInfo` head) become a value fact, so the occurrence is CARRIED rather
+    /// than re-grounded. No field type in the current corpus is denoted-bearing,
+    /// so `lowered` is `Value::Term` for every field and this stays byte-identical
+    /// to the prior build; the value-fact branch is the readiness for that flip.
+    fn emit_entity_info(
+        &mut self,
+        e: &Entity,
+        ctor_term: TermId,
+        lowered: &[crate::eval::value::Value],
+        syms: &EntityInfoSyms,
+        domain: TermId,
+    ) {
+        use crate::eval::value::Value;
+        // WI-511: a registered nullary constructor identity is the canonical
+        // `Ref(c)`; a not-yet-registered one is `Fn{c}`. Loud on any other head
+        // (a metadata fact must top a real constructor functor).
+        let ctor_functor = match self.kb.head_functor(ctor_term) {
+            Some(f) => f,
+            None => unreachable!(
+                "entity ctor_term must be Fn/Ref, got {:?}",
+                self.kb.get_term(ctor_term)
+            ),
+        };
+        let ctor_qualified = self.kb.qualified_name_of(ctor_functor).to_owned();
+        debug_assert_eq!(
+            e.fields.len(), lowered.len(),
+            "emit_entity_info: lowered field types must match e.fields"
+        );
+        let field_values: Vec<Value> = e.fields
+            .iter()
+            .zip(lowered)
+            .map(|(f, type_value)| {
+                let field_name_str = self.parsed.symbols.name(f.name).to_owned();
+                let field_qualified = format!("{}.{}", ctor_qualified, field_name_str);
+                let field_sym = if let Some(&existing) = self.kb.symbols.by_qualified_name.get(&field_qualified) {
+                    existing
+                } else {
+                    self.kb.symbols.define(&field_name_str, &field_qualified, SymbolKind::Field, ctor_term.raw())
+                };
+                let name_term = self.kb.alloc(Term::Ref(field_sym));
+                match type_value {
+                    Value::Node(_) => {
+                        // Denoted-bearing field type → value FieldInfo entity.
+                        let named: Vec<(Symbol, Value)> = vec![
+                            (syms.name, Value::term(name_term)),
+                            (syms.type_name, type_value.clone()),
+                        ];
+                        Value::Entity {
+                            functor: syms.field_info,
+                            pos: std::rc::Rc::from(Vec::new()),
+                            named: std::rc::Rc::from(named),
+                            ty: None,
+                        }
+                    }
+                    Value::Term { id: type_term, .. } => {
+                        // Ground field type → hash-consed FieldInfo term.
+                        Value::term(self.kb.alloc(Term::Fn {
+                            functor: syms.field_info,
+                            pos_args: SmallVec::new(),
+                            named_args: SmallVec::from_slice(&[
+                                (syms.name, name_term),
+                                (syms.type_name, *type_term),
+                            ]),
+                        }))
+                    }
+                    // `type_expr_to_value` yields only `Value::Term` /
+                    // `Value::Node` (TypeChild has two variants).
+                    other => unreachable!("a field type is Term or Node, got {other:?}"),
+                }
+            })
+            .collect();
+        let (fields_field, fields_all_ground) = value_or_ground_list(self.kb, field_values);
+
+        // Assert EntityInfo fact (name stores sort term for entity_of
+        // compatibility). A denoted-bearing field forces a `Value::Node`
+        // somewhere in the head, which a hash-consed `Term` cannot hold →
+        // value fact; an all-ground head stays a hash-consed `Term::Fn`
+        // (dedup, structural sharing).
+        if fields_all_ground {
+            let fields_list = match fields_field {
+                Value::Term { id: t, .. } => t,
+                _ => unreachable!("fields_all_ground ⇒ fields list is Value::Term"),
+            };
+            let entity_info_fact = self.kb.alloc(Term::Fn {
+                functor: syms.entity_info,
+                pos_args: SmallVec::new(),
+                named_args: SmallVec::from_slice(&[(syms.name, ctor_term), (syms.fields, fields_list)]),
+            });
+            self.kb.assert_metadata_fact(entity_info_fact, syms.sort_sort, domain, None);
+        } else {
+            let named: Vec<(Symbol, Value)> = vec![
+                (syms.name, Value::term(ctor_term)),
+                (syms.fields, fields_field),
+            ];
+            let head = Value::Entity {
+                functor: syms.entity_info,
+                pos: std::rc::Rc::from(Vec::<Value>::new()),
+                named: std::rc::Rc::from(named),
+                ty: None,
+            };
+            self.kb.assert_metadata_fact_value(head, syms.sort_sort, domain, None);
+        }
+    }
+
+    /// Resolve the reflect symbols used by [`Self::emit_entity_info`] once, and
+    /// register the `EntityInfo` field schema. A caller holds this across a
+    /// sort's entity loop (or one namespace-level entity) so the resolution and
+    /// the constant `register_entity_fields` are not repeated per entity.
+    fn entity_info_syms(&mut self) -> EntityInfoSyms {
+        let field_info = self.kb.resolve_symbol("anthill.reflect.FieldInfo");
+        let entity_info = self.kb.resolve_symbol("anthill.reflect.EntityInfo");
+        let name = self.kb.intern("name");
+        let type_name = self.kb.intern("type_name");
+        let fields = self.kb.intern("fields");
+        self.kb.register_entity_fields(entity_info, vec![name, fields]);
+        let sort_sort = self.kb.make_name_term("Sort");
+        EntityInfoSyms { field_info, entity_info, name, type_name, fields, sort_sort }
+    }
+
+    fn load_entity(&mut self, e: &Entity, domain: TermId) {
         let functor = self.remap_name(&e.name);
 
         // WI-342: lower each field type ONCE, carrier-agnostically — a value-in-
         // type field (`Vector[Int64, 3]` / `Modify[c]`-shaped / dependent) is carried
         // as `Value::Node`, a ground field type as `Value::Term`. Lowering once
         // avoids double-firing per-field side effects like `emit_desc_fact` (a
-        // described type-var field type).
+        // described type-var field type) — so `lowered` is reused below for BOTH
+        // the field-type registry and (WI-630) the namespace-level `EntityInfo`
+        // emission, rather than re-lowering in `emit_entity_info`.
+        let lowered: Vec<crate::eval::value::Value> = e.fields
+            .iter()
+            .map(|f| self.type_expr_to_value(&f.ty))
+            .collect();
         let field_types: Vec<(Symbol, crate::eval::value::Value)> = e.fields
             .iter()
-            .map(|f| (self.reintern(f.name), self.type_expr_to_value(&f.ty)))
+            .zip(&lowered)
+            .map(|(f, v)| (self.reintern(f.name), v.clone()))
             .collect();
 
         // Register entity field TYPES (the carrier-agnostic literal-typing
@@ -10619,18 +10681,36 @@ impl<'a> Loader<'a> {
         // and partial-expansion are load-order-independent; only the type-aware
         // lowering stays here.
         //
-        // WI-515: this registry (plus, for sort-body entities, the `EntityInfo`
-        // fact emitted by `load_sort_with_body`) is the ONLY declaration-side
-        // representation. The loader used to also assert a same-functor
-        // "schema fact" (`edge(from: <Node type>, to: <Node type>)` under sort
-        // `Entity`), but a fact whose DATA slots carry TYPE terms unifies with
-        // any fully-var query over the constructor — e.g. the self-referential
-        // constraint `no ?p -: edge(from: ?p, to: ?p)` matched it (`?p = Node`
-        // in both slots) and was spuriously violated on self-loop-free data,
-        // and every `KB.execute` pattern query saw a phantom row. The reflect
-        // readers resolve entity names via `KB::resolve_entity_functor` and
-        // read this registry instead.
+        // WI-515: this registry (plus the `EntityInfo` fact) is the ONLY
+        // declaration-side representation. The loader used to also assert a
+        // same-functor "schema fact" (`edge(from: <Node type>, to: <Node type>)`
+        // under sort `Entity`), but a fact whose DATA slots carry TYPE terms
+        // unifies with any fully-var query over the constructor — e.g. the
+        // self-referential constraint `no ?p -: edge(from: ?p, to: ?p)` matched
+        // it (`?p = Node` in both slots) and was spuriously violated on
+        // self-loop-free data, and every `KB.execute` pattern query saw a
+        // phantom row. The reflect readers resolve entity names via
+        // `KB::resolve_entity_functor` and read this registry instead.
         self.kb.register_entity_field_types(functor, field_types);
+
+        // WI-630 (everything-is-facts gap): a sort-body entity's `EntityInfo`
+        // fact is emitted by `load_sort_with_body`'s loop (which also links it to
+        // its parent sort). A namespace-level entity — one whose enclosing scope
+        // is a namespace or the global scope, NOT a sort body — was previously
+        // recorded ONLY in the Rust-side `entity_field_types` registry, invisible
+        // to anthill-level reflect queries. Emit its `EntityInfo` here (reusing
+        // `lowered`) so `EntityInfo(name: <entity>)` and `KB.fields` see it too.
+        // The `is_sort_scope` guard avoids a double emission for sort-body
+        // entities (which reach `load_entity` too, but under a sort scope). A
+        // namespace-level entity has no parent sort, so the `entity_of` typing
+        // rule is guarded with a trailing `is_entity_of(?x, ?sort)` (the KB-index
+        // builtin) to not bind the namespace scope as a bogus parent
+        // (typing.anthill).
+        if !is_sort_scope(&self.kb, self.current_scope) {
+            let ei_syms = self.entity_info_syms();
+            let ctor_term = self.name_to_sort_term(&e.name);
+            self.emit_entity_info(e, ctor_term, &lowered, &ei_syms, domain);
+        }
     }
 
     fn load_fact(&mut self, f: &Fact, domain: TermId) {
@@ -11824,7 +11904,7 @@ impl<'a> Loader<'a> {
                 pos_args: SmallVec::new(),
                 named_args,
             });
-            self.kb.assert_fact(op_info, op_sort, domain, None);
+            self.kb.assert_metadata_fact(op_info, op_sort, domain, None);
         } else {
             // A `denoted`-bearing effect forces a `Value::Node` somewhere in the
             // head, which a hash-consed `Term` cannot hold → value fact.
@@ -11834,7 +11914,7 @@ impl<'a> Loader<'a> {
                 named: std::rc::Rc::from(named),
                 ty: None,
             };
-            self.kb.assert_fact_value(head, op_sort, domain, None);
+            self.kb.assert_metadata_fact_value(head, op_sort, domain, None);
         }
 
         // Emit OperationImpl fact for operations with expression bodies. WI-305:
@@ -11863,7 +11943,7 @@ impl<'a> Loader<'a> {
                         (params_key, params_list_impl),
                     ]),
                 });
-                self.kb.assert_fact(op_impl, impl_sort, domain, None);
+                self.kb.assert_metadata_fact(op_impl, impl_sort, domain, None);
             }
         }
 
@@ -12203,7 +12283,7 @@ impl<'a> Loader<'a> {
         // opaque residue stays a `Value::Node` fact + the gated diagnostic.
         use crate::eval::value::Value;
         let spec_value = self.lower_value_or_gate(spec_value, "requires", &r.type_expr);
-        self.kb.assert_fact_carrier(
+        self.kb.assert_metadata_fact_carrier(
             requires_sym,
             Vec::new(),
             vec![(sort_ref_sym, Value::term(domain)), (spec_sym, spec_value)],
@@ -12611,7 +12691,7 @@ impl<'a> Loader<'a> {
             ]),
         });
         let record_sort = self.kb.make_name_term("anthill.realization.ProofRecord");
-        self.kb.assert_fact(record_term, record_sort, domain, None);
+        self.kb.assert_metadata_fact(record_term, record_sort, domain, None);
     }
 
     /// `provides Spec[...]` inside a sort body. Emits a
@@ -12638,7 +12718,7 @@ impl<'a> Loader<'a> {
         // `check_provider_requires`.
         use crate::eval::value::Value;
         let spec_value = self.lower_value_or_gate(spec_value, "provides", &pc.spec);
-        self.kb.assert_fact_carrier(
+        self.kb.assert_metadata_fact_carrier(
             provides_sym,
             Vec::new(),
             vec![(sort_ref_sym, Value::term(domain)), (spec_sym, spec_value)],
@@ -12813,7 +12893,7 @@ impl<'a> Loader<'a> {
             ]),
         });
         let impl_sort = self.kb.make_name_term("anthill.realization.Implementation");
-        self.kb.assert_fact(impl_term, impl_sort, spec_term, None);
+        self.kb.assert_metadata_fact(impl_term, impl_sort, spec_term, None);
     }
 
     /// Convert a parsed host_type term (typically a `Term::Const(String)`
@@ -12842,7 +12922,7 @@ impl<'a> Loader<'a> {
             pos_args: SmallVec::from_slice(&[target, text_term, index_term]),
             named_args: SmallVec::new(),
         });
-        self.kb.assert_fact(desc_fact, desc_sort, domain, None);
+        self.kb.assert_metadata_fact(desc_fact, desc_sort, domain, None);
     }
 
     /// Convert a list of clauses (each a Vec<TermId>) into a cons-list.
@@ -13019,7 +13099,7 @@ impl<'a> Loader<'a> {
             pos_args: SmallVec::from_slice(&[name_term, kind_term, parent]),
             named_args: SmallVec::new(),
         });
-        self.kb.assert_fact(member_term, member_sort, parent, None);
+        self.kb.assert_metadata_fact(member_term, member_sort, parent, None);
     }
 
     fn emit_member_facts_for_items(&mut self, items: &[Item], parent: TermId) {

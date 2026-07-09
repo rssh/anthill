@@ -25,6 +25,10 @@ namespace anthill.reflect.typing
   -- ================================================================
   -- EntityInfo carries entity metadata; the parent sort is the entity's scope.
   -- EntityInfo(name) facts are emitted by the loader for each entity.
+  --
+  -- `is_entity_of(?A, ?B)` is shadowed by the `IsEntityOf` builtin (a KB-index
+  -- lookup over the `register_entity_of` parent registry, which only records
+  -- SORT-BODY entities); this anthill rule is the fallback shape.
 
   rule is_entity_of(?A, ?B) :- EntityInfo(name: ?A), scope(?A, ?B)
 
@@ -32,7 +36,16 @@ namespace anthill.reflect.typing
   -- otherwise queries EntityInfo facts and uses scope to find the parent sort.
   -- Use this when the entity is known and you need the parent;
   -- use is_entity_of when both sides are ground (pure check).
-  rule entity_of(?x, ?sort) :- nonvar(?x), EntityInfo(name: ?x), scope(?x, ?sort)
+  --
+  -- WI-630: EntityInfo is now emitted for NAMESPACE-LEVEL entities too, whose
+  -- `scope` is the enclosing NAMESPACE, not a sort — so `scope(?x, ?sort)` alone
+  -- would bind the namespace as a bogus parent. The trailing `is_entity_of(?x,
+  -- ?sort)` guard (the KB-index builtin) rejects that: only a sort-body entity is
+  -- registered with a parent sort, so a namespace-level (or standalone) entity
+  -- yields 0 solutions. Both args are bound here (?x by `nonvar`, ?sort by
+  -- `scope`), so the builtin decides rather than delays.
+  rule entity_of(?x, ?sort)
+    :- nonvar(?x), EntityInfo(name: ?x), scope(?x, ?sort), is_entity_of(?x, ?sort)
 
   -- ================================================================
   -- refines: spec refinement via Requires chain

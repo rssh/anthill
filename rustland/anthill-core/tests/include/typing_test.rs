@@ -637,9 +637,12 @@ sort Color {
 }
 
 #[test]
-fn entity_info_standalone_entity_has_no_entity_info() {
-    // Standalone entity `entity Foo(...)` is loaded as an Entity fact only.
-    // It does NOT produce EntityInfo facts (only sort-with-body entities do).
+fn entity_info_standalone_entity_has_entity_info() {
+    // WI-630 (everything-is-facts gap): a standalone `entity Foo(...)` (not
+    // inside a sort body) now DOES produce an `EntityInfo` fact — previously it
+    // was recorded only in the Rust-side `entity_field_types` registry, invisible
+    // to anthill-level reflect queries. `entity_of` stays 0 for it (no sort
+    // parent) via the `is_entity_of` builtin guard; see the entity_of tests.
     let source = r#"
 entity Account(id: Int64, balance: Int64)
 "#;
@@ -648,10 +651,10 @@ entity Account(id: Int64, balance: Int64)
     kb.register_standard_builtins();
     load_source(&mut kb, source);
 
-    // No EntityInfo facts for standalone entities
+    // Exactly one EntityInfo fact — for the standalone Account.
     let entity_info_sym = kb.resolve_symbol("anthill.reflect.EntityInfo");
     let facts = kb.rules_by_functor(entity_info_sym);
-    assert_eq!(facts.len(), 0, "standalone entity should not produce EntityInfo facts");
+    assert_eq!(facts.len(), 1, "standalone entity should now produce one EntityInfo fact");
 }
 
 #[test]
@@ -969,7 +972,10 @@ sort Color {
 
 #[test]
 fn entity_of_standalone_entity_has_no_parent() {
-    // Standalone entity (not inside a sort body) has no EntityOf fact.
+    // Standalone entity (not inside a sort body) is not registered with a parent
+    // sort (`register_entity_of` is sort-body only), so `entity_of` yields 0 —
+    // even though WI-630 now emits an `EntityInfo` fact for it. A top-level
+    // entity's `scope` is `_global`, on which the `scope` builtin already fails.
     let source = r#"
 entity Account(id: Int64, balance: Int64)
 "#;
@@ -982,6 +988,78 @@ entity Account(id: Int64, balance: Int64)
     let goal = make_goal(&mut kb, "anthill.reflect.typing.entity_of", &[account_term, var_sort]);
     let results = kb.resolve(&[goal], &default_config());
     assert_eq!(results.len(), 0, "entity_of(Account, ?sort) should fail — standalone entity has no parent");
+}
+
+#[test]
+fn wi630_namespace_level_entity_has_entity_info_but_no_parent() {
+    // WI-630 scope item 2: a NAMESPACE-LEVEL entity (inside a namespace body, not
+    // a sort body) gets an EntityInfo fact so it is visible to reflect queries —
+    // but `entity_of` must NOT bind the enclosing NAMESPACE as a bogus parent
+    // sort. The entity's `scope` is the namespace `bank`; the `is_entity_of`
+    // builtin guard (a `register_entity_of` KB-index lookup, sort-body only)
+    // rejects it, so `entity_of(bank.Account, ?p)` yields 0.
+    let source = r#"
+namespace bank
+  entity Account(id: Int64, balance: Int64)
+end
+"#;
+    let mut kb = load_stdlib_kb();
+    load_source(&mut kb, source);
+
+    let account = kb.resolve_qualified_name_term("bank.Account");
+
+    // Visible to reflect: an EntityInfo fact whose `name` arg is bank.Account is
+    // present (bank.Account's fields are all ground → a Term::Fn head).
+    let ei_sym = kb.resolve_symbol("anthill.reflect.EntityInfo");
+    let name_sym = kb.intern("name");
+    let account_functor = match kb.get_term(account) {
+        Term::Fn { functor, .. } => *functor,
+        Term::Ref(s) => *s,
+        _ => panic!("bank.Account should resolve to a functor term"),
+    };
+    let has_account_info = kb.rules_by_functor(ei_sym).iter().any(|&rid| {
+        if !kb.is_fact(rid) { return false; }
+        let head = kb.rule_head(rid);
+        let Term::Fn { named_args, .. } = kb.get_term(head) else { return false; };
+        named_args.iter().any(|(k, v)| *k == name_sym && matches!(
+            kb.get_term(*v), Term::Ref(s) | Term::Fn { functor: s, .. } if *s == account_functor))
+    });
+    assert!(has_account_info, "namespace-level entity should have an EntityInfo fact (reflect visibility)");
+
+    // But it has no parent SORT — the namespace must not be bound as parent.
+    let var_p = make_var(&mut kb, "p");
+    let goal = make_goal(&mut kb, "anthill.reflect.typing.entity_of", &[account, var_p]);
+    let results = kb.resolve(&[goal], &default_config());
+    assert_eq!(results.len(), 0,
+        "entity_of(bank.Account, ?p) should fail — namespace is not a parent sort");
+}
+
+#[test]
+#[should_panic(expected = "WI-630 invariant violated")]
+fn wi630_metadata_fact_headed_by_user_functor_is_rejected() {
+    // WI-630 scope item 1: the loader must never head a metadata fact with a
+    // USER entity/rule functor. resolve()'s candidate lookup is sort-blind, so
+    // such a fact would pollute every var-quantified query over that functor —
+    // the WI-515 `edge(from: <type>, to: <type>)` schema-fact bug. The
+    // `assert_metadata_fact` seam enforces the invariant loudly.
+    let mut kb = KnowledgeBase::new();
+    load::register_prelude(&mut kb);
+    kb.register_standard_builtins();
+    load_source(&mut kb, "entity edge(from: Int64, to: Int64)\n");
+
+    // Build a metadata fact whose HEAD is the user functor `edge` (the WI-515
+    // shape) and try to assert it through the metadata seam — must panic.
+    let edge_sym = kb.resolve_symbol("edge");
+    let from_sym = kb.intern("from");
+    let int_ty = kb.make_name_term("Int64");
+    let bad_head = kb.alloc(Term::Fn {
+        functor: edge_sym,
+        pos_args: SmallVec::new(),
+        named_args: SmallVec::from_slice(&[(from_sym, int_ty)]),
+    });
+    let entity_sort = kb.make_name_term("Entity");
+    let global = kb.make_name_term("_global");
+    kb.assert_metadata_fact(bad_head, entity_sort, global, None);
 }
 
 // ── Universal type variable tests ────────────────────────────────
