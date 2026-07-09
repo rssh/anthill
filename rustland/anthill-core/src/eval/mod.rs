@@ -570,6 +570,8 @@ impl Interpreter {
                         "bridge: cannot resolve a required dictionary for `{}` at these argument types",
                         self.kb.qualified_name_of(sym),
                     ),
+                    // A missing dictionary is a flounder, not a truncated search.
+                    truncated: false,
                 });
             }
             BridgeRequirements::Resolved(parent, trees) => {
@@ -588,6 +590,8 @@ impl Interpreter {
                                     "bridge: requirement for `{}` resolved to a caller-scope slot with no caller frame",
                                     self.kb.qualified_name_of(sym),
                                 ),
+                                // A missing caller frame is a flounder, not truncation.
+                                truncated: false,
                             });
                         }
                     }

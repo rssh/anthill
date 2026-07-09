@@ -546,20 +546,23 @@ fn semantic_equal(i: &mut Interpreter, a: &Value, b: &Value) -> Result<bool, Eva
             // rule-backed carrier op (`Set.eq`) still proves via the sub-resolution.
             if crate::kb::typing::op_has_runnable_body(i.kb(), target) {
                 return match i.kb_mut().bridge_eq_op_to_eval(target, a.clone(), b.clone()) {
-                    Ok(Some(v)) => Ok(v),
+                    Ok(crate::kb::resolve::BridgeEqOutcome::Decided(v)) => Ok(v),
                     // UNDECIDED (re-entry cap / a bridge-mode suspend inside the
                     // op): in bridge mode SUSPEND so the resolver residualizes; at
                     // top level surface loudly. An APPLICABLE override that could
                     // not be decided must NOT masquerade as a structural `false`
                     // (that would report equal values unequal — Finding 1). This
-                    // mirrors the rule-backed branch below.
-                    Ok(None) => {
+                    // mirrors the rule-backed branch below. WI-628: THREAD the
+                    // `truncated` bit onto the Suspend so a nested truncation
+                    // reaching `bridge_eq_op_to_eval` one level up is propagated to
+                    // the outer stream, not read as a mere flounder.
+                    Ok(crate::kb::resolve::BridgeEqOutcome::Undecided { truncated }) => {
                         let detail = format!(
                             "instance-fact eq over `{}` could not be decided",
                             i.kb().resolve_sym(target),
                         );
                         Err(if i.bridge_mode() {
-                            EvalError::Suspended { detail }
+                            EvalError::Suspended { detail, truncated }
                         } else {
                             EvalError::Internal(detail)
                         })
@@ -573,17 +576,20 @@ fn semantic_equal(i: &mut Interpreter, a: &Value, b: &Value) -> Result<bool, Eva
                 crate::kb::resolve::PredicateProof::Proved => Ok(true),
                 crate::kb::resolve::PredicateProof::Refuted => Ok(false),
                 // Only reachable when a huge ground compare truncates the sub-proof
-                // budget (the resolver maps the same case to Delay). Under the
-                // resolver→eval bridge (WI-625 gap 1) SUSPEND so the resolver
-                // delays; top-level eval has nowhere to suspend to, so it stays a
-                // loud error rather than guessing a structural answer.
-                crate::kb::resolve::PredicateProof::Undecided => {
+                // budget, or a floundered sub-proof (the resolver maps the same
+                // cases to a truncated / plain `Delay`). Under the resolver→eval
+                // bridge (WI-625 gap 1) SUSPEND so the resolver delays; top-level
+                // eval has nowhere to suspend to, so it stays a loud error rather
+                // than guessing a structural answer. WI-628: THREAD `truncated` onto
+                // the Suspend so a genuine depth-truncation propagates through the
+                // bridge to the outer stream (a nested `List.member`-style inner eq).
+                crate::kb::resolve::PredicateProof::Undecided { truncated } => {
                     let detail = format!(
                         "semantic eq over `{}` could not be decided (proof truncated)",
                         i.kb().resolve_sym(target)
                     );
                     Err(if i.bridge_mode() {
-                        EvalError::Suspended { detail }
+                        EvalError::Suspended { detail, truncated }
                     } else {
                         EvalError::Internal(detail)
                     })
@@ -606,6 +612,8 @@ fn semantic_equal(i: &mut Interpreter, a: &Value, b: &Value) -> Result<bool, Eva
             detail: "structural eq over an eq-overriding carrier buried under \
                      non-overriding structure"
                 .to_string(),
+            // A buried override is a flounder (a symbolic operand), not truncation.
+            truncated: false,
         });
     }
     Ok(false)

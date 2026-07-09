@@ -1439,7 +1439,7 @@ impl Interpreter {
         match self.kb.prove_rule_predicate(pred, args.to_vec()) {
             crate::kb::resolve::PredicateProof::Proved => Ok(Value::Bool(true)),
             crate::kb::resolve::PredicateProof::Refuted => Ok(Value::Bool(false)),
-            crate::kb::resolve::PredicateProof::Undecided => Err(EvalError::Internal(format!(
+            crate::kb::resolve::PredicateProof::Undecided { .. } => Err(EvalError::Internal(format!(
                 "rule-backed predicate `{}` could not be decided at eval \
                  (proof truncated or floundered)",
                 self.kb.resolve_sym(pred)

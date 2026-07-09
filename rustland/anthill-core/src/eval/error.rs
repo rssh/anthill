@@ -75,7 +75,16 @@ pub enum EvalError {
     /// SUSPEND). Distinct from the WI-075 effect-handler `Suspend` action
     /// (`UnsupportedHandlerAction`). Top-level eval never sets `bridge_mode`, so
     /// it never produces this and its structural fallback is unchanged.
-    Suspended { detail: String },
+    ///
+    /// WI-628 — `truncated` distinguishes WHY the comparison could not decide, so
+    /// the resolver can propagate genuine incompleteness: `true` when the suspend
+    /// carries a depth-TRUNCATED sub-search (a nested carrier-`eq` whose closed
+    /// sub-proof hit `sem_eq_sub_depth`), `false` for an ordinary flounder (an
+    /// unbound operand / a buried override / an unresolvable dictionary). Without
+    /// this bit a nested truncation would reach `bridge_eq_op_to_eval` as an
+    /// indistinguishable flounder and the outer stream's `truncated` flag would
+    /// stay clear — the exact WI-628 hole, one bridge level up.
+    Suspended { detail: String, truncated: bool },
     Internal(String),
 }
 
@@ -142,7 +151,7 @@ impl std::fmt::Display for EvalError {
                 "const `{name}` has no value source in this build: it is host-supplied \
                  (bodyless) and no reflect builtin is registered for it"
             ),
-            EvalError::Suspended { detail } => {
+            EvalError::Suspended { detail, .. } => {
                 write!(f, "semantic comparison suspended (undecided): {detail}")
             }
             EvalError::Internal(s) => write!(f, "internal evaluator error: {s}"),

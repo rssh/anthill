@@ -201,10 +201,29 @@ enum BuiltinResult {
     Success,
     /// Builtin succeeded and produced new variable bindings to merge.
     SuccessWithBindings(Substitution),
-    /// Builtin cannot evaluate yet (argument still unbound); delay this goal.
-    Delay,
+    /// Builtin cannot evaluate yet; delay this goal. WI-628 — `truncated` marks a
+    /// delay whose undecidedness came from a depth-TRUNCATED sub-search (a carrier
+    /// `eq`/`neq` closed sub-proof that hit `sem_eq_sub_depth`, or the eval
+    /// bridge's re-entry cap), as opposed to an ordinary flex-var flounder
+    /// (`truncated: false`, the common case — see [`BuiltinResult::delay`]). The
+    /// step loop folds a truncated delay onto the outer [`SearchStream::truncated`]
+    /// flag so an eager NAF/guard consumer (which reads an empty result as
+    /// refutation) sees the incomplete search instead of silently deciding. A
+    /// FIELD, not a separate variant: every `match` arm must bind it and every
+    /// producer must choose it, so no consumer can forget the truncated case —
+    /// the exact "forgot the check" bug class WI-628 fights.
+    Delay { truncated: bool },
     /// Builtin definitively failed (e.g. lookup_symbol for non-existent name).
     Failure,
+}
+
+impl BuiltinResult {
+    /// An ordinary flex-var flounder-delay (operand still unbound) — NOT from a
+    /// truncated search. The common `Delay` producer; the ONLY truncated producer
+    /// is the carrier-`eq` path ([`KnowledgeBase::sem_eq_dispatch`]).
+    const fn delay() -> Self {
+        BuiltinResult::Delay { truncated: false }
+    }
 }
 
 /// WI-616 — map an "equal?" answer to the requested verdict: `positive` is
@@ -218,14 +237,35 @@ fn sem_verdict(equal: bool, positive: bool) -> BuiltinResult {
 /// Shared by the resolver's semantic-`eq` dispatch (`sem_eq_dispatch`) and the
 /// eval→SLD bridge (`eval/builtins.rs`, `eval/eval.rs`), so both read a
 /// carrier's own `eq`/`neq`/`subset`/… the identical way.
+#[derive(Debug)]
 pub(crate) enum PredicateProof {
     /// A definite proof was found (semi-deterministic: the first one settles it).
     Proved,
     /// The search ran to exhaustion, complete, with no proof.
     Refuted,
-    /// The search was TRUNCATED at the depth cap, or produced only residual
-    /// (floundered) solutions — never decide from an incomplete search.
-    Undecided,
+    /// No definite proof, and the search was incomplete — never decide from it.
+    /// WI-628: `truncated` distinguishes the two incompleteness sources, because
+    /// the resolver-side consumer ([`KnowledgeBase::sem_eq_dispatch`]) must
+    /// PROPAGATE genuine truncation to the outer stream but NOT a mere flounder:
+    /// * `truncated: true`  — a branch was abandoned at the depth cap
+    ///   (`SEM_EQ_SUB_DEPTH`); the outer NAF/guard consumer must see it.
+    /// * `truncated: false` — only residual (floundered) solutions over an
+    ///   otherwise COMPLETE search (WI-519 "no definite solution"): undecided, but
+    ///   there is no truncation to surface.
+    Undecided { truncated: bool },
+}
+
+/// WI-628 — the outcome of the SLD→eval `eq`/`neq` bridge
+/// ([`KnowledgeBase::bridge_eq_op_to_eval`]) for a BODIED instance-fact eq op: a
+/// decided `Bool`, or UNDECIDED with whether the undecidedness came from a
+/// RESOURCE CUT (the bridge re-entry cap — the eval analog of a depth-truncated
+/// search, which an eager NAF/guard consumer must see) versus a clean bridge-mode
+/// SUSPEND (a floundered nested compare — WI-519 undecided but complete).
+pub(crate) enum BridgeEqOutcome {
+    /// The op ran to a definite `Bool` verdict.
+    Decided(bool),
+    /// The op could not be decided; `truncated` mirrors [`PredicateProof`]'s.
+    Undecided { truncated: bool },
 }
 
 /// A resolution candidate — either a regular KB rule/fact or a
@@ -961,7 +1001,7 @@ impl SearchStream {
                 }
             }
             let builtin_result = if force_delay {
-                BuiltinResult::Delay
+                BuiltinResult::delay()
             } else {
                 kb.execute_builtin(tag, &goal_val, &frame.subst)
             };
@@ -1022,7 +1062,12 @@ impl SearchStream {
                     self.stack.pop();
                     return Some(StepResult::Continue);
                 }
-                BuiltinResult::Delay => {
+                BuiltinResult::Delay { truncated } => {
+                    // WI-628: a carrier `eq`/`neq` whose closed sub-proof TRUNCATED
+                    // folds its truncation onto THIS (outer) stream before the frame
+                    // handling, so an eager NAF/guard consumer draining this stream
+                    // sees the incomplete search rather than reading empty-as-refute.
+                    self.truncated |= truncated;
                     match delay_mode {
                         DelayMode::Normal => {
                             if frame.goals.len() == 1 {
@@ -2888,7 +2933,7 @@ impl KnowledgeBase {
     fn builtin_nonvar<V: TermView>(&self, goal: &V, subst: &Substitution) -> BuiltinResult {
         match self.walk_arg(goal.pos_arg(self, 0), subst) {
             None => BuiltinResult::Failure,
-            Some(v) if self.value_is_unbound_var(&v) => BuiltinResult::Delay,
+            Some(v) if self.value_is_unbound_var(&v) => BuiltinResult::delay(),
             Some(_) => BuiltinResult::Success,
         }
     }
@@ -2898,7 +2943,7 @@ impl KnowledgeBase {
         match self.walk_arg(goal.pos_arg(self, 0), subst) {
             None => BuiltinResult::Failure,
             Some(v) if self.value_is_ground(&v, subst) => BuiltinResult::Success,
-            Some(_) => BuiltinResult::Delay,
+            Some(_) => BuiltinResult::delay(),
         }
     }
 
@@ -3109,7 +3154,7 @@ impl KnowledgeBase {
                     }
                 }
             }
-            Term::Var(_) => BuiltinResult::Delay,
+            Term::Var(_) => BuiltinResult::delay(),
             _ => BuiltinResult::Failure,
         }
     }
@@ -3146,7 +3191,7 @@ impl KnowledgeBase {
                     }
                 }
             }
-            Term::Var(_) => BuiltinResult::Delay,
+            Term::Var(_) => BuiltinResult::delay(),
             _ => BuiltinResult::Failure,
         }
     }
@@ -3188,7 +3233,7 @@ impl KnowledgeBase {
                     None => BuiltinResult::Failure,
                 }
             }
-            Term::Var(_) => BuiltinResult::Delay,
+            Term::Var(_) => BuiltinResult::delay(),
             _ => BuiltinResult::Failure,
         }
     }
@@ -3204,7 +3249,7 @@ impl KnowledgeBase {
             _ => return BuiltinResult::Failure,
         };
         if self.value_is_unbound_var(&sub) || self.value_is_unbound_var(&sup) {
-            return BuiltinResult::Delay;
+            return BuiltinResult::delay();
         }
         // The subtype check is a KB lookup over hash-consed terms; reify each
         // operand (a literal goal arg reads as `Value::Node`, a σ-bound one as
@@ -3240,7 +3285,7 @@ impl KnowledgeBase {
             None => return BuiltinResult::Failure,
         };
         if self.value_is_unbound_var(&inst) {
-            return BuiltinResult::Delay;
+            return BuiltinResult::delay();
         }
         let target = self.resolve_result_target(goal.pos_arg(self, 1), subst);
         let walked_inst = reify_goal_value(self, &inst);
@@ -3292,7 +3337,7 @@ impl KnowledgeBase {
             None => return BuiltinResult::Failure,
         };
         if self.value_is_unbound_var(&place_val) {
-            return BuiltinResult::Delay;
+            return BuiltinResult::delay();
         }
         let target = self.resolve_result_target(goal.pos_arg(self, 1), subst);
         let walked = reify_goal_value(self, &place_val);
@@ -3338,7 +3383,7 @@ impl KnowledgeBase {
         // arg0 — the subject occurrence.
         let occ = match self.walk_arg(goal.pos_arg(self, 0), subst) {
             None => return Err(BuiltinResult::Failure),
-            Some(v) if self.value_is_unbound_var(&v) => return Err(BuiltinResult::Delay),
+            Some(v) if self.value_is_unbound_var(&v) => return Err(BuiltinResult::delay()),
             Some(Value::Node(rc)) => rc,
             // Not an occurrence — nothing to reflect.
             Some(_) => return Err(BuiltinResult::Failure),
@@ -3458,7 +3503,7 @@ impl KnowledgeBase {
     fn builtin_operation_body<V: TermView>(&mut self, goal: &V, subst: &Substitution) -> BuiltinResult {
         let op_val = match self.walk_arg(goal.pos_arg(self, 0), subst) {
             None => return BuiltinResult::Failure,
-            Some(v) if self.value_is_unbound_var(&v) => return BuiltinResult::Delay,
+            Some(v) if self.value_is_unbound_var(&v) => return BuiltinResult::delay(),
             Some(v) => v,
         };
         // arg0 must be a term-shaped Symbol (Ref/Ident/Fn-functor). A non-term
@@ -3651,10 +3696,10 @@ impl KnowledgeBase {
 
         // Delay if either arg is unbound
         if matches!(self.terms.get(walked_inst), Term::Var(_)) {
-            return BuiltinResult::Delay;
+            return BuiltinResult::delay();
         }
         if matches!(self.terms.get(walked_param), Term::Var(_)) {
-            return BuiltinResult::Delay;
+            return BuiltinResult::delay();
         }
 
         // Extract the param symbol from the param arg (must be Ref)
@@ -3713,7 +3758,7 @@ impl KnowledgeBase {
     /// identity (hash-consing ensures `Rigid(a) == Rigid(a)`).
     fn builtin_eq<V: TermView>(&mut self, goal: &V, subst: &Substitution) -> BuiltinResult {
         match self.eq_operands(goal, subst) {
-            EqOperands::Delay => BuiltinResult::Delay,
+            EqOperands::Delay => BuiltinResult::delay(),
             EqOperands::Ready(a, b) => {
                 if self.values_equal(&a, &b) { BuiltinResult::Success } else { BuiltinResult::Failure }
             }
@@ -3765,7 +3810,7 @@ impl KnowledgeBase {
         positive: bool,
     ) -> BuiltinResult {
         match self.eq_operands(goal, subst) {
-            EqOperands::Delay => BuiltinResult::Delay,
+            EqOperands::Delay => BuiltinResult::delay(),
             EqOperands::Absent => BuiltinResult::Failure,
             EqOperands::Ready(a, b) => self.sem_eq_values(a, b, subst, positive),
         }
@@ -3818,7 +3863,7 @@ impl KnowledgeBase {
             .or_else(|| self.sem_eq_dispatch_target(&b));
         if let Some(target) = target {
             if !self.value_deep_ground(&a, subst) || !self.value_deep_ground(&b, subst) {
-                return BuiltinResult::Delay;
+                return BuiltinResult::delay();
             }
             return self.sem_eq_dispatch(target, a, b, subst, positive);
         }
@@ -3826,7 +3871,7 @@ impl KnowledgeBase {
         if self.value_reaches_eq_override(&a, subst, 0)
             || self.value_reaches_eq_override(&b, subst, 0)
         {
-            return BuiltinResult::Delay;
+            return BuiltinResult::delay();
         }
         // (6) Structural verdict.
         sem_verdict(false, positive)
@@ -3853,21 +3898,38 @@ impl KnowledgeBase {
             super::eq_derive::FieldPairs::Pairs(pairs) => {
                 // A var field can't be IEEE-compared: suspend like the dispatch path.
                 if !self.value_deep_ground(a, subst) || !self.value_deep_ground(b, subst) {
-                    return Some(BuiltinResult::Delay);
+                    return Some(BuiltinResult::delay());
                 }
                 pairs
             }
         };
         // Recurse per field; the composite is EQUAL iff every field is. `positive =
-        // true` per field, so a `Failure` means "this field is unequal".
+        // true` per field, so a `Failure` means "this field is unequal" — a DEFINITE
+        // unequal verdict that short-circuits regardless of other fields (sound: one
+        // unequal field makes the composite unequal). An UNDECIDED field must NOT
+        // short-circuit: WI-628 — a LATER field may TRUNCATE, and returning on the
+        // first flounder would DROP that truncation, making soundness depend on
+        // field order (a truncated field would read as a mere flounder → the outer
+        // guard decides from an incomplete search). So scan ALL fields, accumulating
+        // the strongest undecidedness: a truncation ANYWHERE ⇒ the composite is
+        // truncated. `eq` never binds, so evaluating a later field after an earlier
+        // flounder has no side effect.
+        let mut saw_delay = false;
+        let mut saw_truncated = false;
         for (ca, cb) in pairs {
             match self.sem_eq_values(ca, cb, subst, true) {
                 BuiltinResult::Success => {}
                 BuiltinResult::Failure => return Some(sem_verdict(false, positive)),
-                BuiltinResult::Delay => return Some(BuiltinResult::Delay),
+                BuiltinResult::Delay { truncated } => {
+                    saw_delay = true;
+                    saw_truncated |= truncated;
+                }
                 // `eq` never binds; a surprise binding can't be trusted as a verdict.
-                BuiltinResult::SuccessWithBindings(_) => return Some(BuiltinResult::Delay),
+                BuiltinResult::SuccessWithBindings(_) => saw_delay = true,
             }
+        }
+        if saw_delay {
+            return Some(BuiltinResult::Delay { truncated: saw_truncated });
         }
         Some(sem_verdict(true, positive))
     }
@@ -3891,11 +3953,14 @@ impl KnowledgeBase {
     /// caller's frame (`=` never binds), and the first DEFINITE proof settles
     /// the verdict (no solution multiplicity leaks — `eq` stays
     /// semi-deterministic). Three-way, never wrong-by-truncation:
-    /// * a definite proof            → equal;
+    /// * a definite proof            → equal (`Success`/`Failure` per `positive`);
     /// * exhausted, complete search  → not equal;
-    /// * only residual (floundered) solutions, or the search was TRUNCATED at
-    ///   the depth cap → Delay (undecided — never decide from an incomplete
-    ///   search; the silent NAF analog of this is a filed follow-up).
+    /// * undecided → `Delay { truncated }` (never decide from an incomplete
+    ///   search). WI-628: the truncated bit is CARRIED, not collapsed — a TRUNCATED
+    ///   sub-proof (depth cap / bridge re-entry cap) yields `truncated: true`, which
+    ///   the step loop folds onto the outer stream so an eager NAF/guard consumer
+    ///   sees the incomplete search; only-residual (floundered) but COMPLETE
+    ///   solutions yield `truncated: false`.
     fn sem_eq_dispatch(
         &mut self,
         target: Symbol,
@@ -3922,19 +3987,27 @@ impl KnowledgeBase {
         // is a body-less `operation eq(...) -> Bool` backed by separate rules.
         if super::typing::op_has_runnable_body(self, target) {
             return match self.bridge_eq_op_to_eval(target, a, b) {
-                Ok(Some(v)) => sem_verdict(v, positive),
-                // Undecided (cap/suspend) OR the op errored: residualize. A test
-                // (`=`/`≠`) must not decide from an incomplete or failed run —
-                // WI-483 substitution-transparency (a callee runtime error delays).
-                Ok(None) | Err(_) => BuiltinResult::Delay,
+                Ok(BridgeEqOutcome::Decided(v)) => sem_verdict(v, positive),
+                // WI-628: carry the incompleteness bit straight through — a re-entry
+                // cap OR a nested truncation surfaced via the eval bridge is
+                // `truncated: true`, propagated so an eager NAF/guard consumer does
+                // not decide from an incomplete run; a clean bridge-mode suspend is
+                // `truncated: false` (a complete flounder).
+                Ok(BridgeEqOutcome::Undecided { truncated }) => BuiltinResult::Delay { truncated },
+                // The op's own runtime error also residualizes (WI-483
+                // substitution-transparency) — a plain, non-truncated delay.
+                Err(_) => BuiltinResult::delay(),
             };
         }
         match self.prove_rule_predicate(target, vec![a, b]) {
             PredicateProof::Proved => sem_verdict(true, positive),
             PredicateProof::Refuted => sem_verdict(false, positive),
-            // Never decide from an incomplete search (truncation / flounder):
-            // suspend as undecided rather than answer either way.
-            PredicateProof::Undecided => BuiltinResult::Delay,
+            // Never decide from an incomplete search: suspend as undecided, carrying
+            // the truncated bit. WI-628 — a TRUNCATED sub-proof taints the outer
+            // stream (the step loop folds `Delay { truncated: true }` onto it), so a
+            // guard reading empty-as-refute sees it; a flounder over a complete
+            // search stays a non-truncated delay.
+            PredicateProof::Undecided { truncated } => BuiltinResult::Delay { truncated },
         }
     }
 
@@ -3951,18 +4024,28 @@ impl KnowledgeBase {
         // Generous but bounded: the relational instances consume one depth unit
         // per goal along a branch (Set: O(n²) for n elements), so the outer
         // default of 100 would truncate at ~10 elements. Truncation degrades to
-        // UNDECIDED, never a wrong verdict.
-        const SEM_EQ_SUB_DEPTH: usize = 100_000;
+        // UNDECIDED, never a wrong verdict. WI-628: production uses the fixed
+        // `DEFAULT_SEM_EQ_SUB_DEPTH`; a `cfg(test)` field lowers it so a unit test
+        // can force truncation cheaply (no production mutable knob).
+        #[cfg(not(test))]
+        let max_depth = Self::DEFAULT_SEM_EQ_SUB_DEPTH;
+        #[cfg(test)]
+        let max_depth = self.sem_eq_sub_depth;
         let goal = self.make_goal_value(pred, args);
-        let config = ResolveConfig { max_depth: SEM_EQ_SUB_DEPTH, ..ResolveConfig::default() };
+        let config = ResolveConfig { max_depth, ..ResolveConfig::default() };
         let stream = self.resolve_lazy_goals(vec![goal], &config);
         // WI-628: shared drain — `truncated` rides with the verdict so a depth-cut
-        // search degrades to UNDECIDED, never a wrong Refuted.
+        // search degrades to UNDECIDED, never a wrong Refuted. Truncation is kept
+        // DISTINCT from a mere flounder (checked FIRST — a search that both
+        // floundered and truncated is still incomplete): only genuine truncation
+        // must propagate to the outer stream (see `PredicateProof::Undecided`).
         let v = stream.drain_verdict(self);
         if v.definite {
             PredicateProof::Proved
-        } else if v.residual || v.truncated {
-            PredicateProof::Undecided
+        } else if v.truncated {
+            PredicateProof::Undecided { truncated: true }
+        } else if v.residual {
+            PredicateProof::Undecided { truncated: false }
         } else {
             PredicateProof::Refuted
         }
@@ -4181,7 +4264,7 @@ impl KnowledgeBase {
         // lifts `extra.bindings`, never the parent).
         let mut work = Substitution::with_parent(subst.clone());
         match self.unify_values(a, b, &mut work) {
-            UnifyOutcome::Delay => BuiltinResult::Delay,
+            UnifyOutcome::Delay => BuiltinResult::delay(),
             UnifyOutcome::Fail => BuiltinResult::Failure,
             // A binding to two structurally-distinct values surfaces as a
             // `work` contradiction (the chase prevents it on the linear-var
@@ -4252,7 +4335,7 @@ impl KnowledgeBase {
         match super::typing::find_dictionary_guard(self, subst, spec_sort, op_functor, &arg_vals) {
             super::typing::FindDictOutcome::Fire => BuiltinResult::Success,
             super::typing::FindDictOutcome::DontFire => BuiltinResult::Failure,
-            super::typing::FindDictOutcome::Suspend => BuiltinResult::Delay,
+            super::typing::FindDictOutcome::Suspend => BuiltinResult::delay(),
         }
     }
 
@@ -4584,7 +4667,7 @@ impl KnowledgeBase {
         if self.value_is_unbound_var(&a) || self.value_is_unbound_var(&b)
             || self.is_unreduced_op_call(&a) || self.is_unreduced_op_call(&b)
         {
-            return BuiltinResult::Delay;
+            return BuiltinResult::delay();
         }
         // Reify literal occurrence args (a numeric literal in the goal reads
         // as `Value::Node`) so `value_num` can extract from `Value::Term`.
@@ -4735,7 +4818,7 @@ impl KnowledgeBase {
         if self.value_is_unbound_var(&a) || self.value_is_unbound_var(&b)
             || self.is_unreduced_op_call(&a) || self.is_unreduced_op_call(&b)
         {
-            return BuiltinResult::Delay;
+            return BuiltinResult::delay();
         }
         let target = (pos_arity >= 3).then(|| self.resolve_result_target(goal.pos_arg(self, 2), subst));
 
@@ -4774,7 +4857,7 @@ impl KnowledgeBase {
             None => return BuiltinResult::Failure,
         };
         if self.value_is_unbound_var(&arg) {
-            return BuiltinResult::Delay;
+            return BuiltinResult::delay();
         }
         let target = self.resolve_result_target(goal.pos_arg(self, 1), subst);
         let value = match self.value_num(&arg) {
@@ -4796,7 +4879,7 @@ impl KnowledgeBase {
             None => return BuiltinResult::Failure,
         };
         if self.value_is_unbound_var(&arg) {
-            return BuiltinResult::Delay;
+            return BuiltinResult::delay();
         }
         let target = self.resolve_result_target(goal.pos_arg(self, 1), subst);
         let result = match self.value_num(&arg) {
@@ -4827,7 +4910,7 @@ impl KnowledgeBase {
             None => return BuiltinResult::Failure,
         };
         if self.value_is_unbound_var(&sym_val) {
-            return BuiltinResult::Delay;
+            return BuiltinResult::delay();
         }
         let target = self.resolve_result_target(goal.pos_arg(self, 1), subst);
         let walked_sym = reify_goal_value(self, &sym_val);
@@ -4866,7 +4949,7 @@ impl KnowledgeBase {
             None => return BuiltinResult::Failure,
         };
         if self.value_is_unbound_var(&sym_val) {
-            return BuiltinResult::Delay;
+            return BuiltinResult::delay();
         }
         let target = self.resolve_result_target(goal.pos_arg(self, 1), subst);
         let walked_sym = reify_goal_value(self, &sym_val);
@@ -4932,7 +5015,7 @@ impl KnowledgeBase {
             None => return BuiltinResult::Failure,
         };
         if self.value_is_unbound_var(&obj) || self.value_is_unbound_var(&field) {
-            return BuiltinResult::Delay;
+            return BuiltinResult::delay();
         }
         let target = (pos_arity >= 3).then(|| self.resolve_result_target(goal.pos_arg(self, 2), subst));
 
@@ -5309,12 +5392,15 @@ impl KnowledgeBase {
     /// verdict. Operands must already be reified + deeply ground (the caller
     /// [`Self::sem_eq_dispatch`] gates before dispatching). Three-way, so an
     /// APPLICABLE override that cannot be decided never masquerades as a structural
-    /// answer (the Finding-1 soundness point):
-    ///   * `Ok(Some(v))` — the op ran and returned `v`;
-    ///   * `Ok(None)`     — UNDECIDED: the re-entry cap was hit, or a bridge-mode
-    ///                      suspend fired inside the op (an undecided nested
-    ///                      compare). The resolver Delays; eval suspends/errors —
-    ///                      it must NOT read this as "unequal";
+    /// answer (the Finding-1 soundness point). Returns [`BridgeEqOutcome`]:
+    ///   * `Ok(Decided(v))`             — the op ran and returned `v`;
+    ///   * `Ok(Undecided { truncated })` — UNDECIDED: the re-entry cap was hit
+    ///                      (`truncated: true`, the eval analog of a depth-cut), or
+    ///                      a bridge-mode suspend fired inside the op — itself either
+    ///                      a clean nested-compare flounder (`false`) or a NESTED
+    ///                      carrier-eq truncation surfaced through eval (`true`,
+    ///                      WI-628). The resolver Delays, carrying the bit; eval
+    ///                      suspends/errors — it must NOT read this as "unequal";
     ///   * `Err(e)`       — the bodied op itself FAILED (raise/overflow, a non-Bool
     ///                      return, a missing dict). The resolver residualizes
     ///                      (WI-483); eval propagates — never a silent `false`.
@@ -5329,20 +5415,28 @@ impl KnowledgeBase {
         target: Symbol,
         a: Value,
         b: Value,
-    ) -> Result<Option<bool>, EvalError> {
-        // `None` from the bridge core = the re-entry cap was hit ⇒ undecided.
+    ) -> Result<BridgeEqOutcome, EvalError> {
+        // `None` from the bridge core = the re-entry cap was hit ⇒ undecided. WI-628:
+        // the cap is a RESOURCE CUT (the eval analog of a depth-truncated search),
+        // so mark it `truncated` — an eager NAF/guard consumer must see it, unlike a
+        // clean bridge-mode suspend below.
         let Some(outcome) = self.run_in_bridge_interp(|interp| {
             let na = interp.materialize_value(a);
             let nb = interp.materialize_value(b);
             interp.call_op_bridged(target, &[na, nb])
         }) else {
-            return Ok(None);
+            return Ok(BridgeEqOutcome::Undecided { truncated: true });
         };
         match outcome {
-            Ok(Value::Bool(v)) => Ok(Some(v)),
+            Ok(Value::Bool(v)) => Ok(BridgeEqOutcome::Decided(v)),
             // A bridge-mode suspend (an undecided nested compare) is "cannot decide
-            // yet", NOT a failure — undecided.
-            Err(EvalError::Suspended { .. }) => Ok(None),
+            // yet", NOT a failure — undecided. WI-628: it carries its OWN `truncated`
+            // bit — a clean flounder is `false`, but a NESTED carrier-eq truncation
+            // (surfaced as a Suspend by `eval::builtins::semantic_equal`) is `true`
+            // and must propagate, so read it through rather than assuming complete.
+            Err(EvalError::Suspended { truncated, .. }) => {
+                Ok(BridgeEqOutcome::Undecided { truncated })
+            }
             // A non-Bool return breaks the invariant that an eq op is declared
             // `-> Bool` (a load-time type error otherwise) — loud in debug, an
             // honest `Internal` in release (NOT a silent structural verdict).
@@ -6819,6 +6913,262 @@ mod tests {
             sols2.len(),
             1,
             "not(g(1)) succeeds definitely over a COMPLETE empty search"
+        );
+    }
+
+    #[test]
+    fn wi628_carrier_eq_truncation_taints_outer_stream() {
+        // WI-628 REMAINING half: a guard goal routing through a carrier `eq` whose
+        // CLOSED sub-proof TRUNCATES must taint the OUTER stream's `truncated` flag —
+        // the SAME hole the NAF/guard fix closed, but for the semantic-`eq` path
+        // (`prove_rule_predicate` → `sem_eq_dispatch`). Before this increment,
+        // `sem_eq_dispatch` collapsed truncation into a plain `Delay`, whose
+        // definite-only handler skips the frame WITHOUT setting `self.truncated`; a
+        // guard draining the stream then read the empty result as a definite verdict.
+        // Now the truncation rides a `DelayTruncated` and the step loop folds it up.
+        let mut kb = kb_with_builtins();
+        // Force truncation cheaply: a tiny sub-proof budget (vs the 100_000 default)
+        // so the self-looping `myeq` truncates in a handful of steps, not 100k.
+        kb.sem_eq_sub_depth = 32;
+        let eq_sym = kb.resolve_symbol("anthill.prelude.PartialEq.eq");
+        let sort = kb.make_name_term("Carrier");
+        let domain = kb.make_name_term("test");
+
+        // A rule-backed carrier `eq` that self-loops: `myeq(?a, ?b) :- myeq(?a, ?b)`
+        // — a non-terminating sub-proof that TRUNCATES at SEM_EQ_SUB_DEPTH, never
+        // refutes. `box` is its dispatch head (a `box(_)` operand routes eq→myeq).
+        let myeq = kb.intern("myeq");
+        let box_sym = kb.intern("box");
+        let a_sym = kb.intern("a");
+        let b_sym = kb.intern("b");
+        let va = kb.fresh_var(a_sym);
+        let vb = kb.fresh_var(b_sym);
+        let var_a = kb.alloc(Term::Var(Var::Global(va)));
+        let var_b = kb.alloc(Term::Var(Var::Global(vb)));
+        let myeq_head = kb.alloc(Term::Fn {
+            functor: myeq,
+            pos_args: SmallVec::from_slice(&[var_a, var_b]),
+            named_args: SmallVec::new(),
+        });
+        let myeq_body = kb.alloc(Term::Fn {
+            functor: myeq,
+            pos_args: SmallVec::from_slice(&[var_a, var_b]),
+            named_args: SmallVec::new(),
+        });
+        kb.assert_rule(myeq_head, vec![myeq_body], sort, domain, None);
+        kb.insert_eq_dispatch(box_sym, myeq);
+
+        // `eq(box(1), box(2))` — two DISTINCT ground `box` operands (no reflexivity
+        // shortcut), so dispatch fires `myeq(box(1), box(2))`, which truncates.
+        let mk_box = |kb: &mut KnowledgeBase, n: i64| {
+            let lit = kb.alloc(Term::Const(Literal::Int(n)));
+            kb.alloc(Term::Fn {
+                functor: box_sym,
+                pos_args: SmallVec::from_elem(lit, 1),
+                named_args: SmallVec::new(),
+            })
+        };
+        let box1 = mk_box(&mut kb, 1);
+        let box2 = mk_box(&mut kb, 2);
+        let eq_goal = kb.alloc(Term::Fn {
+            functor: eq_sym,
+            pos_args: SmallVec::from_slice(&[box1, box2]),
+            named_args: SmallVec::new(),
+        });
+
+        // definite_only is the guard/quantifier discharge mode — the frame is skipped
+        // WITHOUT a residual, so ONLY the surfaced `truncated` flag carries the
+        // undecidedness. This is the exact path `eval_negation_guard` &co. drive.
+        let config = ResolveConfig { definite_only: true, ..Default::default() };
+        let (sols, truncated) =
+            kb.resolve_goals_with_truncation(vec![Value::term(eq_goal)], &config);
+        assert!(
+            truncated,
+            "a truncated carrier-eq sub-proof must set the OUTER stream's truncated flag \
+             under definite_only — else a guard decides from an incomplete search"
+        );
+        assert!(
+            sols.is_empty(),
+            "eq(box(1), box(2)) yields no DEFINITE solution under definite_only; the \
+             undecidedness rides the truncated flag, not a residual solution"
+        );
+
+        // Contrast (no false-positive truncation): `box0` has NO `myeq0` rule, so its
+        // carrier-eq sub-proof COMPLETES empty → decided UNEQUAL (a definite Failure),
+        // and the outer truncated flag must stay clear.
+        let myeq0 = kb.intern("myeq0");
+        let box0_sym = kb.intern("box0");
+        kb.insert_eq_dispatch(box0_sym, myeq0);
+        let mk_box0 = |kb: &mut KnowledgeBase, n: i64| {
+            let lit = kb.alloc(Term::Const(Literal::Int(n)));
+            kb.alloc(Term::Fn {
+                functor: box0_sym,
+                pos_args: SmallVec::from_elem(lit, 1),
+                named_args: SmallVec::new(),
+            })
+        };
+        let b0a = mk_box0(&mut kb, 1);
+        let b0b = mk_box0(&mut kb, 2);
+        let eq_goal0 = kb.alloc(Term::Fn {
+            functor: eq_sym,
+            pos_args: SmallVec::from_slice(&[b0a, b0b]),
+            named_args: SmallVec::new(),
+        });
+        let (sols0, truncated0) =
+            kb.resolve_goals_with_truncation(vec![Value::term(eq_goal0)], &config);
+        assert!(
+            !truncated0,
+            "a COMPLETE (unprovable) carrier-eq must leave the outer truncated flag clear"
+        );
+        assert!(
+            sols0.is_empty(),
+            "eq over unequal decided operands definitely fails — no solution"
+        );
+
+        // Default (NON-definite_only) delay mode: the truncating eq RESIDUALIZES —
+        // it yields one solution carrying `eq(box(1),box(2))` as residual AND still
+        // taints truncated (the fold runs before the delay_mode branch, so the flag
+        // is set on the residualize path too, not only under definite_only).
+        let default_cfg = ResolveConfig::default();
+        let (sols_d, truncated_d) =
+            kb.resolve_goals_with_truncation(vec![Value::term(eq_goal)], &default_cfg);
+        assert!(
+            truncated_d,
+            "truncation must taint the outer flag in default delay mode too, not only definite_only"
+        );
+        assert_eq!(sols_d.len(), 1, "the truncating eq residualizes to exactly one solution");
+        assert!(
+            !sols_d[0].residual.is_empty(),
+            "the residualized solution carries the undischarged eq goal, not a definite verdict"
+        );
+    }
+
+    #[test]
+    fn wi628_prove_rule_predicate_distinguishes_truncated_from_refuted() {
+        // WI-628: the three-way `prove_rule_predicate` verdict must carry `truncated`
+        // DISTINCTLY, so `sem_eq_dispatch` propagates a genuine depth-cut but not a
+        // mere refutation. A self-looping `pr(?a, ?b) :- pr(?a, ?b)` TRUNCATES →
+        // `Undecided { truncated: true }`; a predicate with no clause REFUTES over a
+        // complete search → `Refuted` (flag would be false, never surfaced).
+        let mut kb = KnowledgeBase::new();
+        kb.sem_eq_sub_depth = 32; // truncate cheaply, not at the 100_000 default
+        let sort = kb.make_name_term("T");
+        let domain = kb.make_name_term("test");
+        let pr = kb.intern("pr");
+        let a_sym = kb.intern("a");
+        let b_sym = kb.intern("b");
+        let va = kb.fresh_var(a_sym);
+        let vb = kb.fresh_var(b_sym);
+        let at = kb.alloc(Term::Var(Var::Global(va)));
+        let bt = kb.alloc(Term::Var(Var::Global(vb)));
+        let head = kb.alloc(Term::Fn {
+            functor: pr,
+            pos_args: SmallVec::from_slice(&[at, bt]),
+            named_args: SmallVec::new(),
+        });
+        let body = kb.alloc(Term::Fn {
+            functor: pr,
+            pos_args: SmallVec::from_slice(&[at, bt]),
+            named_args: SmallVec::new(),
+        });
+        kb.assert_rule(head, vec![body], sort, domain, None);
+
+        let truncating = kb.prove_rule_predicate(pr, vec![Value::Int(1), Value::Int(2)]);
+        assert!(
+            matches!(truncating, PredicateProof::Undecided { truncated: true }),
+            "a self-looping predicate truncates its sub-proof → Undecided{{truncated:true}}, got {truncating:?}",
+        );
+
+        // A predicate with NO clause: the search COMPLETES empty → definite refutation
+        // (no truncation to propagate).
+        let none = kb.intern("no_such_pred");
+        let refuted = kb.prove_rule_predicate(none, vec![Value::Int(1), Value::Int(2)]);
+        assert!(
+            matches!(refuted, PredicateProof::Refuted),
+            "a clause-less predicate refutes over a complete search, got {refuted:?}",
+        );
+    }
+
+    #[test]
+    fn wi628_floundered_carrier_eq_does_not_taint_outer_stream() {
+        // WI-628 crux: distinguishing genuine TRUNCATION (propagate) from a
+        // FLOUNDERED-but-COMPLETE sub-proof (WI-519 undecided, do NOT propagate).
+        // A carrier `eq` whose rule body delays on an unbound inner goal FLOUNDERS
+        // over a COMPLETE search (no depth cut), so `prove_rule_predicate` returns
+        // Undecided{truncated:false} → plain `Delay` → the outer truncated flag must
+        // stay CLEAR. If the truncated:false branch wrongly propagated, a guard would
+        // suspend spuriously (the over-blocking direction); the Refuted contrast in
+        // `wi628_carrier_eq_truncation_taints_outer_stream` can't catch this because
+        // a Refuted eq maps to Failure, never a Delay.
+        let mut kb = kb_with_builtins();
+        let eq_sym = kb.resolve_symbol("anthill.prelude.PartialEq.eq");
+        let sort = kb.make_name_term("Carrier");
+        let domain = kb.make_name_term("test");
+
+        // `myeq_f(?a, ?b) :- eq(?x, ?y)` — the body compares two FRESH unbound vars
+        // (not bound by the head), so the inner `eq` DELAYS → the clause floundes to
+        // a residual over a complete (non-truncated) search.
+        let myeq_f = kb.intern("myeq_f");
+        let box_f = kb.intern("box_f");
+        let a_sym = kb.intern("a");
+        let b_sym = kb.intern("b");
+        let x_sym = kb.intern("x");
+        let y_sym = kb.intern("y");
+        let va = kb.fresh_var(a_sym);
+        let vb = kb.fresh_var(b_sym);
+        let vx = kb.fresh_var(x_sym);
+        let vy = kb.fresh_var(y_sym);
+        let var_a = kb.alloc(Term::Var(Var::Global(va)));
+        let var_b = kb.alloc(Term::Var(Var::Global(vb)));
+        let var_x = kb.alloc(Term::Var(Var::Global(vx)));
+        let var_y = kb.alloc(Term::Var(Var::Global(vy)));
+        let head = kb.alloc(Term::Fn {
+            functor: myeq_f,
+            pos_args: SmallVec::from_slice(&[var_a, var_b]),
+            named_args: SmallVec::new(),
+        });
+        let body_eq = kb.alloc(Term::Fn {
+            functor: eq_sym,
+            pos_args: SmallVec::from_slice(&[var_x, var_y]),
+            named_args: SmallVec::new(),
+        });
+        kb.assert_rule(head, vec![body_eq], sort, domain, None);
+        kb.insert_eq_dispatch(box_f, myeq_f);
+
+        let mk_box = |kb: &mut KnowledgeBase, n: i64| {
+            let lit = kb.alloc(Term::Const(Literal::Int(n)));
+            kb.alloc(Term::Fn {
+                functor: box_f,
+                pos_args: SmallVec::from_elem(lit, 1),
+                named_args: SmallVec::new(),
+            })
+        };
+        let box1 = mk_box(&mut kb, 1);
+        let box2 = mk_box(&mut kb, 2);
+
+        // Direct: the closed sub-proof is UNDECIDED-but-COMPLETE — truncated:false.
+        let proof = kb.prove_rule_predicate(myeq_f, vec![Value::term(box1), Value::term(box2)]);
+        assert!(
+            matches!(proof, PredicateProof::Undecided { truncated: false }),
+            "a floundered-but-complete carrier-eq is Undecided{{truncated:false}}, got {proof:?}",
+        );
+
+        // End-to-end: the outer stream's truncated flag must stay CLEAR (the eq still
+        // residualizes as an undecided delay, but that is a flounder, not truncation).
+        let eq_goal = kb.alloc(Term::Fn {
+            functor: eq_sym,
+            pos_args: SmallVec::from_slice(&[box1, box2]),
+            named_args: SmallVec::new(),
+        });
+        let (sols, truncated) =
+            kb.resolve_goals_with_truncation(vec![Value::term(eq_goal)], &ResolveConfig::default());
+        assert!(
+            !truncated,
+            "a FLOUNDERED (complete) carrier-eq must NOT taint the outer truncated flag"
+        );
+        assert!(
+            sols.iter().all(|s| !s.residual.is_empty()),
+            "the floundered eq residualizes (undecided), it does not decide"
         );
     }
 

@@ -362,6 +362,16 @@ pub struct KnowledgeBase {
     /// route a queued `TermId` back to this store.
     pub(crate) id: KbId,
 
+    /// WI-628 — TEST-ONLY override of the CLOSED carrier-`eq`/`neq` sub-proof depth
+    /// budget ([`Self::prove_rule_predicate`], default [`Self::DEFAULT_SEM_EQ_SUB_DEPTH`]).
+    /// Production always uses the const (a fixed, generous budget — 100_000, so a
+    /// legitimate compare truncates only for very large operands, degrading to
+    /// UNDECIDED, never a wrong verdict); this `cfg(test)` field lets a unit test
+    /// force truncation in a handful of steps instead of a 100k-step loop, WITHOUT
+    /// widening production KB's mutable surface with a soundness-critical knob.
+    #[cfg(test)]
+    pub(crate) sem_eq_sub_depth: usize,
+
     // Rules (facts are rules with empty body)
     rules: Vec<RuleEntry>,
 
@@ -701,11 +711,17 @@ pub struct KnowledgeBase {
 }
 
 impl KnowledgeBase {
+    /// WI-628 — the carrier-`eq` sub-proof depth budget used in production
+    /// ([`Self::prove_rule_predicate`]); a `cfg(test)` field overrides it in tests.
+    pub(crate) const DEFAULT_SEM_EQ_SUB_DEPTH: usize = 100_000;
+
     pub fn new() -> Self {
         Self {
             terms: TermStore::new(),
             symbols: SymbolTable::new(),
             id: KbId::next(),
+            #[cfg(test)]
+            sem_eq_sub_depth: Self::DEFAULT_SEM_EQ_SUB_DEPTH,
             rules: Vec::new(),
             by_sort: HashMap::new(),
             rules_by_functor: HashMap::new(),
