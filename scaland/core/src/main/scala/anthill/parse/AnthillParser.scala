@@ -1429,10 +1429,29 @@ private class AnthillParserImpl(
     )
 
   private def operationDecl[$: P]: P[Item] =
-    P(keyword("operation") ~/ (
+    // Visibility precedes the `operation` keyword — `internal operation foo`
+    // (WI-369), mirroring rustland's `operation_declaration` (`visibility?
+    // 'operation' …`) and the other decls (`sort`/`const`/`enum`), which all
+    // take `visibility.? ~ keyword(...)`. Thread the leading visibility onto a
+    // single operation (a braced block takes none). `singleOperation` still
+    // tolerates a post-`operation` visibility as a no-op fallback, so `orElse`
+    // keeps whichever is present.
+    P(Index ~ visibility.? ~ keyword("operation") ~/ (
       bracedOperationBlock |
       singleOperation
-    ))
+    )).map {
+      case (_, vis, Item.OperationItem(op)) =>
+        Item.OperationItem(op.copy(visibility = op.visibility.orElse(vis)))
+      case (idx, vis, other) =>
+        // A leading visibility on a braced `operation { … }` block has no meaning
+        // (rustland has no such form — visibility is per-entry). Reject it loudly
+        // rather than silently dropping it (CLAUDE.md: loud error over silent skip).
+        if vis.isDefined then
+          errors += ParseError(
+            "a visibility modifier cannot precede a braced `operation { … }` block; " +
+            "put the visibility on each entry", mkSpan(idx, idx))
+        other
+    }
 
   private def bracedOperationBlock[$: P]: P[Item] =
     P("{" ~/ operationEntry.rep ~ "}").map { entries =>

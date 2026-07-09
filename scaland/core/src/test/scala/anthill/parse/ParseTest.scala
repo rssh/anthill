@@ -1137,3 +1137,16 @@ class ParseTest extends munit.FunSuite:
       assert(Parser.parse(src, "<wi639-malformed>").isLeft,
         s"malformed projection must not parse: $src")
   }
+
+  // Visibility precedes the `operation` keyword (`internal operation foo`,
+  // WI-369) — previously scaland only accepted a visibility AFTER `operation`,
+  // so `internal operation reverseOnto` in stdlib list.anthill failed to parse.
+  test("stdlib fix: `internal operation …` (visibility before the keyword) parses + records it") {
+    val (_, op) = parseDemoOp("  internal operation worker(x: Int) -> Int")
+    assertEquals(op.visibility, Some(Visibility.Internal))
+  }
+
+  test("stdlib fix: a plain `operation …` (no visibility) still has none") {
+    val (_, op) = parseDemoOp("  operation worker(x: Int) -> Int")
+    assertEquals(op.visibility, None)
+  }
