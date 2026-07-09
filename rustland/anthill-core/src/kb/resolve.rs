@@ -2167,19 +2167,26 @@ impl SearchStream {
             return Some(StepResult::Continue);
         }
 
-        // An arity-0 fact (empty body, no De Bruijn vars) or a non-rule
-        // candidate (external row / no rid). A bodyless rule with head vars
-        // (arity > 0) must NOT take the fact fast-path: its `tree_subst`
-        // carries raw `Var(DeBruijn)` head subterms and synthetic
-        // `u32::MAX - n` entries, which the raw bind below would leak into σ
-        // unopened (WI-624 — the nonlinear head `unbox(box(v: ?v), ?v)`
-        // answered `Var(DeBruijn(0))`). It routes through `with_fresh_vars`
-        // like any rule; its body is just empty. NB arity == 0 does NOT mean
-        // ground: a bodyless LEGACY head with `Var::Global` vars (e.g. the
-        // loader's omitted-field fresh-var fills) still raw-binds its
-        // persistent VarIds here, unfreshened — that remnant of the bug class
-        // is WI-635.
-        let is_fact = opt_rid.map_or(true, |rid| kb.is_fact(rid) && kb.rule_arity(rid) == 0);
+        // A GROUND arity-0 fact (empty body, no De Bruijn vars, no Global head
+        // vars) or a non-rule candidate (external row / no rid). Two kinds of
+        // bodyless-but-non-ground head must NOT take the fact fast-path, because
+        // the raw bind below would leak an unfreshened head var into σ:
+        //  - arity > 0: its `tree_subst` carries raw `Var(DeBruijn)` head subterms
+        //    and synthetic `u32::MAX - n` entries (WI-624 — the nonlinear head
+        //    `unbox(box(v: ?v), ?v)` answered `Var(DeBruijn(0))`).
+        //  - arity == 0 with a non-ground head carrying live `Var::Global`s (the
+        //    loader's omitted-field fresh fills, or a value fact whose children
+        //    carry Globals): raw-binding leaks the fact's PERSISTENT VarId, so two
+        //    goals matching the same fact alias one vid and constraining them
+        //    differently spuriously fails (WI-635).
+        // Both route through `with_fresh_vars` like any rule (the arity-0 legacy
+        // path freshens Global head vars, carrier-neutrally); a fact's body is
+        // just empty. `rule_head_has_vars` reads the head's `Var::Global`s cached
+        // at assert, so this stays an O(1) gate — no per-match head walk (the
+        // workitem fact set is large).
+        let is_fact = opt_rid.map_or(true, |rid| {
+            kb.is_fact(rid) && kb.rule_arity(rid) == 0 && !kb.rule_head_has_vars(rid)
+        });
 
         let frame = self.stack.last().unwrap();
 

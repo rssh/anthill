@@ -17,6 +17,9 @@ mod wi615_struct_eq_test;
 #[path = "include/wi616_semantic_eq_test.rs"]
 mod wi616_semantic_eq_test;
 
+#[path = "include/wi635_fact_var_freshen_test.rs"]
+mod wi635_fact_var_freshen_test;
+
 #[path = "include/wi627_carrier_eq_classification_test.rs"]
 mod wi627_carrier_eq_classification_test;
 

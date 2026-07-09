@@ -234,6 +234,25 @@ struct RuleEntry {
     /// the structural index (carrier-neutral, M1). Read at fire by
     /// `apply_eq_rules`'s post-match conforms check.
     type_bounds: Vec<(u32, TermId)>,
+    /// WI-635: the stored head's `Var::Global`s, in first-occurrence order —
+    /// empty when the head is ground. Collected carrier-agnostically at assert
+    /// (`push_value_head_entry` → `collect_head_global_vars`) and read two ways,
+    /// so the resolver never walks a (potentially large) head per match:
+    ///  - `rule_head_has_vars` (`!is_empty`) is the O(1) fact fast-path gate.
+    ///  - `with_fresh_vars`' arity-0 legacy path seeds its rename set from this
+    ///    cached list instead of re-walking the head every match — and reads no
+    ///    term-only `rule_head`, so it is carrier-neutral (a `Value::Node` /
+    ///    `Value::Entity` head no longer panics there).
+    ///
+    /// Meaningful only for the arity-0 fact case the gate consults: a De Bruijn
+    /// rule is closed to `Var::DeBruijn` before storage (so this is empty) and is
+    /// gated out by `arity > 0` regardless. A non-ground arity-0 fact — the
+    /// loader's omitted-field `Term` fills, or a value fact whose children carry
+    /// Globals (e.g. an `OperationInfo` whose `type_params` cons-list holds them)
+    /// — has a non-empty list and routes through `with_fresh_vars`, freshening
+    /// its head vars per match instead of raw-binding their persistent VarIds
+    /// into aliasing goals (the arity-0 remnant of the WI-624 leak).
+    head_vars: Vec<VarId>,
 }
 
 /// Collect the ground `TermId` leaves reachable in a value (WI-348 Phase B), for
@@ -1188,6 +1207,16 @@ impl KnowledgeBase {
     ) -> RuleId {
         let rule_id = RuleId(self.rules.len() as u32);
 
+        // WI-635: collect the stored head's `Var::Global`s ONCE here (assert is
+        // cold; the resolver reads the cached list, never re-walking the head). A
+        // De Bruijn caller passes an already-closed head (no Globals → empty); a
+        // ground fact has no head vars (→ empty); a non-ground arity-0 fact (the
+        // loader's omitted-field fills, or a value fact carrying Globals) gets a
+        // non-empty list, routing it off the raw-bind fast-path.
+        let mut head_vars = Vec::new();
+        let mut head_seen = std::collections::HashSet::new();
+        self.collect_head_global_vars(&head, &mut head_vars, &mut head_seen);
+
         self.incref_value_ground(&head);
         self.terms.incref(sort);
         self.terms.incref(domain);
@@ -1250,6 +1279,7 @@ impl KnowledgeBase {
             shared_arity: 0,
             label: None,
             type_bounds: Vec::new(),
+            head_vars,
         });
 
         self.by_sort.entry(sort).or_default().push(rule_id);
@@ -2396,6 +2426,17 @@ impl KnowledgeBase {
         self.rules[id.index()].body_nodes.is_empty()
     }
 
+    /// WI-635: whether the stored head carries any `Var::Global` (is non-ground),
+    /// read off the cached `head_vars` list set at assert — so the resolver's
+    /// fact fast-path gate never walks a (potentially large) head per match. A
+    /// var-headed arity-0 fact reads `true` and must NOT take the raw-bind
+    /// fast-path — it freshens its head vars per match through `with_fresh_vars`
+    /// like any bodyless rule, so two goals matching it bind independently rather
+    /// than aliasing the fact's persistent VarIds.
+    pub fn rule_head_has_vars(&self, id: RuleId) -> bool {
+        !self.rules[id.index()].head_vars.is_empty()
+    }
+
     /// WI-246: the rule body atoms as `NodeOccurrence`s (empty for facts) — the
     /// sole body representation. The form the resolver opens as goals and the
     /// typer / `simp_rewrite` walk.
@@ -3064,6 +3105,52 @@ impl KnowledgeBase {
             node_occurrence::collect_occurrence_global_vars_ordered(self, n, &mut vars, &mut seen);
         }
         self.finalize_rule_debruijn_nodes(head, body_nodes, vars, 0, sort, domain, meta)
+    }
+
+    /// WI-635: collect a stored fact/rule head's `Var::Global`s carrier-agnostically
+    /// for the `RuleEntry.head_vars` cache — first-occurrence order, deduped via
+    /// `seen`. Read by the resolver's fact fast-path gate (`rule_head_has_vars`)
+    /// and by `with_fresh_vars`' arity-0 legacy path (which seeds its rename set
+    /// from the cache, so the head is never walked per match).
+    ///
+    /// A `Value::Term` walks via `collect_vars_rec` (the WI-635 population: user
+    /// facts whose omitted entity fields the loader fills with fresh Globals). A
+    /// `Value::Entity`/`Tuple` head (a value-fact carrier) recurses its children,
+    /// so a value fact's Term child — e.g. an `OperationInfo`'s `type_params`
+    /// cons-list of Globals — is covered. A `Value::Node` (denoted value-in-type)
+    /// is LENIENTLY skipped: its type/effect occurrence cannot be walked without
+    /// the type-field kb-threading migration that
+    /// `collect_occurrence_global_vars_ordered` still asserts on. That is sound
+    /// here — unlike `collect_value_head_vars`, which MUST count every var so the
+    /// De Bruijn arity is exact (hence its assert), this cache only drives
+    /// freshening/gating, so a missed occurrence var degrades to the pre-WI-635
+    /// fast-path behavior for that one var, never a wrong arity. Denoted places
+    /// are concrete sort refs in practice (no Globals to miss); widen this to walk
+    /// the occurrence once that migration lands.
+    fn collect_head_global_vars(
+        &self,
+        head: &crate::eval::value::Value,
+        vars: &mut Vec<VarId>,
+        seen: &mut std::collections::HashSet<u32>,
+    ) {
+        use crate::eval::value::Value;
+        match head {
+            Value::Term { id: t, .. } => self.collect_vars_rec(*t, vars, seen),
+            Value::Entity { pos, named, .. } | Value::Tuple { pos, named, .. } => {
+                for c in pos.iter() {
+                    self.collect_head_global_vars(c, vars, seen);
+                }
+                for (_, c) in named.iter() {
+                    self.collect_head_global_vars(c, vars, seen);
+                }
+            }
+            // Denoted value-in-type: leniently skipped (see the doc comment).
+            // Deliberate, not a fall-through.
+            Value::Node(_) => {}
+            // Scalar leaves (Int/Str/Bool/Unit/…) and any runtime carrier carry no
+            // Global head var.
+            _ => {}
+        }
     }
 
     /// Collect a rule head's Global `VarId`s in first-occurrence order,
@@ -3751,17 +3838,19 @@ impl KnowledgeBase {
             (final_nodes, answer_links)
         } else {
             // Legacy path: Global vars (ground facts or rules not yet converted).
-            // WI-246: collect rule vars from the head (a hash-consed term) + the
-            // OCCURRENCE body. Legacy bodies use Global vars, parallel to
-            // `body_nodes`, so no term body is read here. `rule_head` is the LOUD
-            // guard for a value head reaching this arity-0 path (a ground value
-            // fact has no head vars; an arity-0 value rule with head vars is
-            // gap 1 / WI-342-P3 territory) — the arity > 0 path above no longer
-            // reads it, so value rule heads with vars resolve there unguarded.
-            let head = self.rule_head(id);
-            let mut all_vars = Vec::new();
-            let mut seen = std::collections::HashSet::new();
-            self.collect_vars_rec(head, &mut all_vars, &mut seen);
+            // WI-635: the head's Global vars were collected carrier-agnostically
+            // at assert (`head_vars`), so here we neither re-walk the head per
+            // match (the workitem fact set is large) nor read the term-only
+            // `rule_head`. Dropping that read makes this path carrier-neutral: a
+            // value (`Node`/`Entity`) head no longer panics reaching here, and its
+            // Globals (e.g. an `OperationInfo`'s `type_params` cons-list) freshen
+            // like any other — closing the value-fact half of the same alias
+            // hazard. Seed the rename set from the cache, then add the occurrence
+            // body's own Globals (empty for a fact; legacy bodies use Global vars,
+            // parallel to `body_nodes`).
+            let mut all_vars = self.rules[id.index()].head_vars.clone();
+            let mut seen: std::collections::HashSet<u32> =
+                all_vars.iter().map(|v| v.raw()).collect();
             for n in &body_nodes {
                 node_occurrence::collect_occurrence_global_vars(n, &mut all_vars, &mut seen);
             }

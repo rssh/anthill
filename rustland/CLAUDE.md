@@ -60,7 +60,7 @@ Rules in the KB use `Var::DeBruijn(u32)`. The resolver opens them via `with_fres
 2. `term_from_debruijn` replaces DeBruijn → Global in head+body
 3. `body_rename` substitutes concrete values from the head match directly into body terms
 4. Only query-var linkages go into `answer_links` (not synthetic fresh→concrete bindings, to avoid O(n²) `bind_compressed`); each link is resolved through `body_rename` first so a nonlinear head's concrete match reaches the answer, occurs-checked — a cyclic link flags the match contradictory and the candidate is dropped (WI-624)
-5. A bodyless rule with arity > 0 also opens through `with_fresh_vars` — only arity-0 candidates take the resolver's raw-bind fact fast-path (WI-624; legacy Global-var arity-0 heads still raw-bind, WI-635)
+5. A bodyless rule with arity > 0 also opens through `with_fresh_vars` — only *ground* arity-0 candidates take the resolver's raw-bind fact fast-path (WI-624). A legacy Global-var arity-0 head (the loader's omitted-field fresh fills) is non-ground despite arity 0, so it too opens through `with_fresh_vars`' arity-0 legacy path — freshening its head var per match — gated by the cached `RuleEntry.head_has_vars` flag so the routing stays an O(1) read, not a per-match head walk (WI-635)
 
 ## Test Patterns
 
