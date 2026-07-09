@@ -379,6 +379,75 @@ fn wi580_relational_append_solves_first_arg() {
 }
 
 #[test]
+fn wi668_term_carried_opcall_eq_case_splits() {
+    // WI-668 regression guard. A DIRECT term-level SemEq query (not wrapped in a
+    // rule) carries its op-call operand as `Value::Term` — `walk_view` yields a
+    // `Value::term` for any `Term::Fn`, and `resolve(&[term])` enters goals as
+    // `Value::Term`. The WI-580 unfold must still recognize such an operand and
+    // case-split; `op_call_as_occ` keeps a `Value::Term` arm precisely for this
+    // carrier (rule-body atoms arrive as `Value::Node` and hit the other arm, so
+    // `wi580_relational_append_solves_first_arg`, which wraps the eq in a rule,
+    // does NOT exercise this path). Same equation, queried as a bare `eq(...)`.
+    let src = r#"
+        namespace test.wi668
+          import anthill.prelude.List.{append, cons, nil}
+        end
+    "#;
+    let mut kb = load_with(src);
+
+    let conss = kb.try_resolve_symbol("anthill.prelude.List.cons").unwrap();
+    let nils = kb.try_resolve_symbol("anthill.prelude.List.nil").unwrap();
+    let appends = kb.try_resolve_symbol("anthill.prelude.List.append").unwrap();
+    let fields = kb.entity_field_names(conss).expect("cons fields").to_vec();
+    let (heads, tails) = (fields[0], fields[1]);
+
+    let mk_cons = |kb: &mut KnowledgeBase, h: TermId, t: TermId| -> TermId {
+        let mut na = SmallVec::<[(anthill_core::intern::Symbol, TermId); 2]>::new();
+        na.push((heads, h));
+        na.push((tails, t));
+        na.sort_by_key(|(s, _)| s.index());
+        kb.alloc(Term::Fn { functor: conss, pos_args: SmallVec::new(), named_args: na })
+    };
+
+    let nilt = kb.alloc(Term::Ref(nils));
+    let three = kb.alloc(Term::Const(anthill_core::kb::term::Literal::Int(3)));
+    let one = kb.alloc(Term::Const(anthill_core::kb::term::Literal::Int(1)));
+    let three_nil = mk_cons(&mut kb, three, nilt); // [3]
+    let one_three = mk_cons(&mut kb, one, three_nil); // [1,3]
+
+    let s = kb.intern("_a");
+    let a_vid = kb.fresh_var(s);
+    let a_term = kb.alloc(Term::Var(anthill_core::kb::term::Var::Global(a_vid)));
+    let append_call = kb.alloc(Term::Fn {
+        functor: appends,
+        pos_args: SmallVec::from_slice(&[a_term, three_nil]),
+        named_args: SmallVec::new(),
+    });
+    let eq_sym = kb.eq_functor();
+    let goal = kb.alloc(Term::Fn {
+        functor: eq_sym,
+        pos_args: SmallVec::from_slice(&[append_call, one_three]),
+        named_args: SmallVec::new(),
+    });
+
+    let sols = kb.resolve(&[goal], &ResolveConfig::default());
+    let definite: Vec<_> = sols.iter().filter(|s| s.is_definite()).collect();
+    assert_eq!(
+        definite.len(),
+        1,
+        "direct term-level eq(append(?a,[3]),[1,3]) should solve ?a; got {} total",
+        sols.len()
+    );
+
+    let expected = mk_cons(&mut kb, one, nilt); // [1]
+    let got = match kb.reify(a_term, &definite[0].subst) {
+        anthill_core::eval::Value::Term { id, .. } => id,
+        other => panic!("?a should reify to a ground term; got {other:?}"),
+    };
+    assert_eq!(got, expected, "?a should be [1] via the Value::Term op_call_as_occ arm");
+}
+
+#[test]
 fn wi580_catchall_arm_declines_no_overgeneration() {
     // WI-580 §3.3 soundness: a body with a catch-all (`_`) arm is NOT disjoint —
     // case-splitting it would need "earlier arms didn't match" negation guards

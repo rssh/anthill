@@ -287,7 +287,14 @@ enum Candidate {
     /// Introduced by proposal 033 / WI-075 to back `push_choice(?a, ?b)`:
     /// the two branches of a binary choice are emitted as two
     /// `Continuation` candidates that share the frame's tail.
-    Continuation(Vec<TermId>),
+    ///
+    /// The goals are carrier-neutral `Value`s (WI-668), not transit-interned
+    /// `TermId`s: producers that start from terms (push_choice, branch-from-
+    /// streams) wrap with `Value::term`, while the WI-580 body-unfold emits its
+    /// op-call goals as `Value::Node` occurrences so the re-triggered operand is
+    /// recognized without a `term_body_to_nodes` round-trip at re-entry
+    /// (proposal 033 §"TermId / Value asymmetry").
+    Continuation(Vec<Value>),
     /// Row from a registered external-source backend (proposal 007 §11 +
     /// 026.1 Q4 Stage B). The substitution unifies the goal pattern with
     /// the row's `Value::Entity`, with bindings entering σ as the row's
@@ -903,8 +910,8 @@ impl SearchStream {
                     Self::resolve_push_choice_args(kb, goal, &subst)
                 {
                     let candidates = vec![
-                        Candidate::Continuation(vec![goal_a]),
-                        Candidate::Continuation(vec![goal_b]),
+                        Candidate::Continuation(vec![Value::term(goal_a)]),
+                        Candidate::Continuation(vec![Value::term(goal_b)]),
                     ];
                     let f = self.stack.last_mut().unwrap();
                     f.state = FrameState::ChoicePoint {
@@ -1547,8 +1554,10 @@ impl SearchStream {
                 self.stack.pop();
                 return Some(StepResult::Continue);
             }
-            let candidates: Vec<Candidate> =
-                per_element.into_iter().map(Candidate::Continuation).collect();
+            let candidates: Vec<Candidate> = per_element
+                .into_iter()
+                .map(|body| Candidate::Continuation(body.into_iter().map(Value::term).collect()))
+                .collect();
             let original_goal = self.stack.last().unwrap().goals[0].clone();
             let f = self.stack.last_mut().unwrap();
             f.state = FrameState::ChoicePoint {
@@ -2126,7 +2135,7 @@ impl SearchStream {
             let frame = self.stack.last().unwrap();
             let tail = &frame.goals[1..];
             let mut new_goals: Vec<Value> = Vec::with_capacity(body.len() + tail.len());
-            new_goals.extend(body.into_iter().map(Value::term));
+            new_goals.extend(body);
             new_goals.extend(tail.iter().cloned());
             self.stack.push(Frame {
                 goals: new_goals,
@@ -5489,13 +5498,17 @@ impl KnowledgeBase {
     }
 
     /// The occurrence of a bodied (non-builtin) op-call operand, from EITHER
-    /// carrier: a `Value::Node` occurrence directly, or a `Value::Term(Fn{op,…})`
-    /// materialized to an occurrence via [`Self::term_body_to_nodes`]. The WI-580
-    /// unfold recursion feeds Term-carried goals (a `Continuation` carries
-    /// `TermId`s wrapped `Value::term`), so a hoisted op-call re-enters as a
-    /// `Value::Term`; this bridges it back so the case-split recognizes it.
+    /// carrier. A `Value::Node` occurrence — a rule-body atom (WI-246) or the
+    /// WI-580 unfold's own hoisted goals (WI-668) — is returned directly. A
+    /// `Value::Term(Fn{op,…})` is materialized to an occurrence: that is the
+    /// carrier a *term-lowered* goal presents (a direct `resolve(&[term])`
+    /// equation query, or an `or`/`push_choice` branch body), since `walk_view`
+    /// yields a `Value::term` for any `Term::Fn`. The Term arm is load-bearing
+    /// for carrier-neutrality — WI-668 routed the WI-580 *recursion* onto the
+    /// Node arm, but a Term-carried op-call operand still reaches here and must
+    /// case-split (regression guard: `wi668_term_carried_opcall_eq_case_splits`).
     /// `None` when `v` is not such an op-call.
-    fn op_call_as_occ(&mut self, v: &Value) -> Option<Rc<NodeOccurrence>> {
+    fn op_call_as_occ(&self, v: &Value) -> Option<Rc<NodeOccurrence>> {
         match v {
             Value::Node(o) if self.is_unreduced_op_call(v) => Some(Rc::clone(o)),
             Value::Node(_) => None,
@@ -5505,7 +5518,7 @@ impl KnowledgeBase {
                     _ => return None,
                 };
                 if self.builtins.get(&functor).is_none() && self.op_body_node(functor).is_some() {
-                    self.term_body_to_nodes(&[*id]).into_iter().next()
+                    Some(super::node_occurrence::materialize_from_handle(self, *id))
                 } else {
                     None
                 }
@@ -5672,8 +5685,16 @@ impl KnowledgeBase {
             // hoist vars against the finite OTHER, bounding the recursion) → the
             // hoisted op-call `SemEq` goals (which re-trigger this fallback on
             // their now-smaller arguments).
-            let mut goals = vec![unify_g, result_g];
-            goals.extend(hoists);
+            // WI-668: materialize each hoisted op-call goal to a `Value::Node`
+            // occurrence, so its re-triggered operand is recognized directly by
+            // `op_call_as_occ`'s Node arm — the recursion stays on the Node
+            // carrier and never round-trips through the Term arm at re-entry. The
+            // two `unify` goals don't re-trigger the unfold, so they ride as
+            // `Value::term`.
+            let mut goals = vec![Value::term(unify_g), Value::term(result_g)];
+            for h in hoists {
+                goals.push(Value::Node(super::node_occurrence::materialize_from_handle(self, h)));
+            }
             cands.push(Candidate::Continuation(goals));
         }
         Some(cands)
