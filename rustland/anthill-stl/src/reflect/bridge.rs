@@ -196,6 +196,21 @@ impl KbBridge {
         FieldInfo { name, type_name: term(type_name) }
     }
 
+    /// The already-resolved functor symbol of a by-reference `Type` argument
+    /// (WI-632). A `sort`/`entity` reflect op takes the sort BY REFERENCE — the
+    /// `Type` carrier wraps a `Value` resolved to its qualified functor at the
+    /// caller's write site — so extraction is a pure `value_functor` read (the
+    /// `facts_of` precedent). Panics loudly on a non-reference: these
+    /// `Vec`-returning surfaces have no error channel. `op` names the caller for
+    /// the diagnostic.
+    fn ref_functor(&self, sort: &Type, op: &str) -> anthill_core::intern::Symbol {
+        anthill_core::eval::value_functor(&self.kb.borrow(), sort.value())
+            .unwrap_or_else(|| panic!(
+                "KB.{op}: argument is not an entity/sort reference (expected a \
+                 Ref / Fn / Entity carrier that names a functor)"
+            ))
+    }
+
     /// Given an already-resolved entity functor, return its field-name symbols.
     /// Prefers the declared entity schema (the `entity_field_types` registry,
     /// WI-515); falls back to inferring the field set from an existing fact with
@@ -637,8 +652,9 @@ impl KB for KbBridge {
             .collect()
     }
 
-    fn operations(&self, sort_name: String) -> Vec<OperationInfo> {
-        let records = reader::read_operations(&mut self.kb.borrow_mut(), &sort_name);
+    fn operations(&self, sort: Type) -> Vec<OperationInfo> {
+        let sort_sym = self.ref_functor(&sort, "operations");
+        let records = reader::read_operations(&mut self.kb.borrow_mut(), sort_sym);
         // The shared reader yields `effects` / `requires` / `ensures` as carrier-
         // faithful `Value`s. A `denoted` label / clause rides as a `Value::Node`,
         // wrapped via `rterm` / `ReflectNodeOccurrence::new` — the struct fields
@@ -661,27 +677,22 @@ impl KB for KbBridge {
             .collect()
     }
 
-    fn constructors(&self, sort_name: String) -> Vec<String> {
+    fn constructors(&self, sort: Type) -> Vec<String> {
+        let sort_sym = self.ref_functor(&sort, "constructors");
         // `let`-bind first to release the `borrow_mut()` RefMut before mapping (see
         // `fields`); the map here doesn't re-borrow, but keep the pattern uniform.
-        let members = reader::members_of_kind(&mut self.kb.borrow_mut(), &sort_name, "Constructor");
+        let members = reader::members_of_kind(&mut self.kb.borrow_mut(), sort_sym, "Constructor");
         members.into_iter().map(|n| reader::short_of(&n).to_string()).collect()
     }
 
     fn fields(&self, entity: Type) -> Vec<FieldInfo> {
         // WI-632: the entity is passed BY REFERENCE (`fields(kb(), WorkItem)`); the
-        // `Type` carrier wraps that referencing `Value`. Extract its functor via
-        // the shared `value_functor` (the `facts_of` precedent) — no name-string
-        // resolution, so no short-name ambiguity. A non-entity reference names no
-        // schema — a caller type error, panicked loudly (this Vec-returning surface
-        // has no error channel; mirrors `facts_of`). The declared `(field_sym,
-        // field_type)` pairs ride carrier-agnostically: a value-in-type field type
-        // is a `Value::Node`, surfaced verbatim via `rterm` rather than dropped.
-        let functor = anthill_core::eval::value_functor(&self.kb.borrow(), entity.value())
-            .unwrap_or_else(|| panic!(
-                "KB.fields: `entity` is not an entity reference (expected a \
-                 Ref / Fn / Entity carrier that names a functor)"
-            ));
+        // `Type` carrier wraps that referencing `Value`, whose functor is resolved
+        // at the caller's write site (no name-string resolution, so no short-name
+        // ambiguity). The declared `(field_sym, field_type)` pairs ride carrier-
+        // agnostically: a value-in-type field type is a `Value::Node`, surfaced
+        // verbatim via `rterm` rather than dropped.
+        let functor = self.ref_functor(&entity, "fields");
         let kb = self.kb.borrow();
         match kb.entity_field_types(functor) {
             Some(fields) => fields
@@ -695,8 +706,9 @@ impl KB for KbBridge {
         }
     }
 
-    fn rules(&self, sort_name: String) -> Vec<TermRepr> {
-        let heads = reader::rule_heads_for_sort(&mut self.kb.borrow_mut(), &sort_name);
+    fn rules(&self, sort: Type) -> Vec<TermRepr> {
+        let sort_sym = self.ref_functor(&sort, "rules");
+        let heads = reader::rule_heads_for_sort(&mut self.kb.borrow_mut(), sort_sym);
         heads.iter().map(|head| self.reify_view(head)).collect()
     }
 
@@ -1183,7 +1195,7 @@ end
     }
 
     #[test]
-    #[should_panic(expected = "not an entity reference")]
+    #[should_panic(expected = "not an entity/sort reference")]
     fn fields_non_entity_reference_panics() {
         // WI-632: a `Type` carrying a non-entity Value (a literal) names no
         // functor — a caller type error, surfaced loudly (mirrors `facts_of`).
@@ -1331,7 +1343,7 @@ sort Tank {
   operation fill(t: Tank) -> Tank requires Full(t) ensures Full(t)
 }
 "#);
-        let ops = bridge.operations("Tank".into());
+        let ops = bridge.operations(type_ref(&bridge, "Tank"));
         let short_name = |o: &OperationInfo| {
             let kb = bridge.kb.borrow();
             let n = kb.resolve_sym(o.name.symbol()).to_string();
@@ -1565,7 +1577,7 @@ end
             n.rsplit('.').next().unwrap_or(&n).to_string()
         };
 
-        let ctors = bridge.constructors("Color".into());
+        let ctors = bridge.constructors(type_ref(&bridge, "test.wi551_bridge.Color"));
         assert!(
             ctors.iter().any(|c| c == "red") && ctors.iter().any(|c| c == "blue"),
             "constructors should list red+blue, got {ctors:?}",
@@ -1602,7 +1614,7 @@ end
         // `rules` reifies each Rule head via `reify_view` (`let heads` + map, so its
         // borrow path is the same safe shape as the others); smoke-call it to
         // exercise that path. Head reification itself is covered by the reify tests.
-        let _ = bridge.rules("Color".into());
+        let _ = bridge.rules(type_ref(&bridge, "test.wi551_bridge.Color"));
     }
 
     /// Drift-guard (WI-540): the reflect `KB` / `Substitution` interface is

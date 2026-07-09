@@ -309,13 +309,13 @@ namespace anthill.reflect
 
     -- Query operations (KB introspection)
     operation sorts(kb: KB, namespace: Option[T = String]) -> List[T = SortInfo]
-    operation operations(kb: KB, sort_name: String) -> List[T = OperationInfo]
-    operation constructors(kb: KB, sort_name: String) -> List[T = String]
-    -- The entity is passed by reference (e.g. `fields(kb(), WorkItem)`),
-    -- resolved to its qualified functor via the caller's import — no
-    -- name-string resolution (the `facts_of` precedent; WI-632).
+    -- The sort/entity is passed by reference (e.g. `operations(kb(), WorkItem)`),
+    -- resolved to its qualified functor via the caller's import — no name-string
+    -- resolution (the `facts_of` precedent; WI-632).
+    operation operations(kb: KB, sort: Type) -> List[T = OperationInfo]
+    operation constructors(kb: KB, sort: Type) -> List[T = String]
     operation fields(kb: KB, entity: Type) -> List[T = FieldInfo]
-    operation rules(kb: KB, sort_name: String) -> List[T = TermRepr]
+    operation rules(kb: KB, sort: Type) -> List[T = TermRepr]
     operation descriptions(kb: KB, target: Option[T = String]) -> List[T = DescriptionInfo]
 
     -- Meta-level primitives (inspect variable state)

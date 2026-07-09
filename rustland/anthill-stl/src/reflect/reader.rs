@@ -67,6 +67,20 @@ pub(crate) fn term_display_name(kb: &KnowledgeBase, id: TermId) -> String {
     }
 }
 
+/// The head functor / ident / ref symbol of a `TermId` — the by-reference peer
+/// of [`term_display_name`] (it covers the same `Ref`/`Ident`/`Fn` name-bearing
+/// arms, so a domain that `term_display_name` matched by string this matches by
+/// symbol). Used to match a fact's domain or a `Member`'s parent against an
+/// already-resolved sort symbol (WI-632). `None` for a literal, variable, or `⊥`
+/// (they name no functor). The anthill-stl analog of core's `pub(crate)`
+/// `KnowledgeBase::head_functor`, unreachable from this crate.
+pub(crate) fn term_head_sym(kb: &KnowledgeBase, id: TermId) -> Option<Symbol> {
+    match kb.get_term(id) {
+        CoreTerm::Ref(s) | CoreTerm::Ident(s) | CoreTerm::Fn { functor: s, .. } => Some(*s),
+        _ => None,
+    }
+}
+
 /// Walk a prelude `cons(head:_, tail:_)` chain ending in `nil` and collect the
 /// head elements as `TermId`s. Cells are matched by their short functor name
 /// (`cons`/`nil`) and `head`/`tail` field names — the only such constructors in
@@ -136,17 +150,15 @@ pub(crate) fn facts_by_sort_name(kb: &mut KnowledgeBase, sort_name: &str) -> Vec
 }
 
 /// Collect the names of every `Member` of a given `kind` (`Constructor`,
-/// `Operation`, …) under `parent_name`. Matches the parent by full OR short name.
-pub(crate) fn members_of_kind(kb: &mut KnowledgeBase, parent_name: &str, kind: &str) -> Vec<String> {
+/// `Operation`, …) whose parent is the resolved sort `parent_sym` (WI-632:
+/// matched by functor symbol, not by display-name string).
+pub(crate) fn members_of_kind(kb: &mut KnowledgeBase, parent_sym: Symbol, kind: &str) -> Vec<String> {
     let mut results = vec![];
     for (_rid, head) in facts_by_sort_name(kb, "Member") {
         let pos = term_pos_args(kb, &head);
         if pos.len() == 3 {
             let member_kind = term_display_name(kb, pos[1]);
-            let member_parent = term_display_name(kb, pos[2]);
-            if member_kind == kind
-                && (member_parent == parent_name || short_of(&member_parent) == parent_name)
-            {
+            if member_kind == kind && term_head_sym(kb, pos[2]) == Some(parent_sym) {
                 results.push(term_display_name(kb, pos[0]));
             }
         }
@@ -238,8 +250,9 @@ pub(crate) struct OperationRecord {
     pub meta: TermId,
 }
 
-/// Read the `OperationInfo` facts whose domain is `sort_name` (full or short).
-pub(crate) fn read_operations(kb: &mut KnowledgeBase, sort_name: &str) -> Vec<OperationRecord> {
+/// Read the `OperationInfo` facts whose domain is the resolved sort `sort_sym`
+/// (WI-632: matched by functor symbol, not by display-name string).
+pub(crate) fn read_operations(kb: &mut KnowledgeBase, sort_sym: Symbol) -> Vec<OperationRecord> {
     let op_sort = kb.make_name_term("Operation");
     let meta_default_sym = kb.intern("meta");
     let mut out = Vec::new();
@@ -252,8 +265,8 @@ pub(crate) fn read_operations(kb: &mut KnowledgeBase, sort_name: &str) -> Vec<Op
             Some(t) => t,
             None => continue,
         };
-        let domain_name = term_display_name(kb, kb.fact_domain(rid));
-        if domain_name != sort_name && short_of(&domain_name) != sort_name {
+        let domain = kb.fact_domain(rid);
+        if term_head_sym(kb, domain) != Some(sort_sym) {
             continue;
         }
         let return_type = match op_info::head_field_term(kb, &head, "return_type") {
@@ -323,13 +336,14 @@ pub(crate) fn read_descriptions(
     out
 }
 
-/// The head `Value`s of every `Rule` fact whose domain is `sort_name` (full or
-/// short). Each realization reifies these to its own term-repr form.
-pub(crate) fn rule_heads_for_sort(kb: &mut KnowledgeBase, sort_name: &str) -> Vec<Value> {
+/// The head `Value`s of every `Rule` fact whose domain is the resolved sort
+/// `sort_sym` (WI-632: matched by functor symbol, not by display-name string).
+/// Each realization reifies these to its own term-repr form.
+pub(crate) fn rule_heads_for_sort(kb: &mut KnowledgeBase, sort_sym: Symbol) -> Vec<Value> {
     let mut out = Vec::new();
     for (rid, head) in facts_by_sort_name(kb, "Rule") {
-        let domain_name = term_display_name(kb, kb.fact_domain(rid));
-        if domain_name != sort_name && short_of(&domain_name) != sort_name {
+        let domain = kb.fact_domain(rid);
+        if term_head_sym(kb, domain) != Some(sort_sym) {
             continue;
         }
         out.push(head);

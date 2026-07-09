@@ -218,6 +218,19 @@ fn str_arg(v: Value) -> Result<String, EvalError> {
     }
 }
 
+/// The already-resolved functor symbol of a by-reference sort/entity argument
+/// (WI-632). A `sort`/`entity` reflect op takes the sort BY REFERENCE — a
+/// `Value::Term(Ref)` / `Value::Entity` resolved to its qualified functor at the
+/// caller's write site — so extraction is a pure `value_functor` read (the
+/// `facts_of` precedent), loud on a non-reference. The interpreter twin of the
+/// bridge's `value_functor(&kb, type.value())`.
+fn sort_ref_functor(interp: &Interpreter, sort: &Value) -> Result<Symbol, EvalError> {
+    anthill_core::eval::value_functor(interp.kb(), sort).ok_or_else(|| EvalError::TypeMismatch {
+        expected: "Type (entity/sort reference)",
+        got: sort.type_name().to_string(),
+    })
+}
+
 /// Unwrap `Option.some(value: s)` / `Option.none` → `Option<String>`.
 fn option_string_arg(v: Value) -> Result<Option<String>, EvalError> {
     match v {
@@ -272,12 +285,7 @@ fn kb_sort_template(
     // its qualified functor at the caller's write site. Validate it names a
     // functor (loud on a non-reference, mirroring `kb_facts_of`), then store
     // the reference verbatim as the `sort_query.sort` payload.
-    if anthill_core::eval::value_functor(interp.kb(), &sort).is_none() {
-        return Err(EvalError::TypeMismatch {
-            expected: "Type (sort reference)",
-            got: sort.type_name().to_string(),
-        });
-    }
+    sort_ref_functor(interp, &sort)?;
     Ok(Value::Entity {
         functor: syms.sort_query,
         pos: Vec::new().into(),
@@ -319,8 +327,8 @@ fn kb_operations(
     args: &[Value],
     syms: &ReflectSyms,
 ) -> Result<Value, EvalError> {
-    let [_kb, sort_name] = expect_args::<2>("KB.operations", args)?;
-    let sort_name = str_arg(sort_name)?;
+    let [_kb, sort] = expect_args::<2>("KB.operations", args)?;
+    let sort_sym = sort_ref_functor(interp, &sort)?;
     let kb = interp.kb_mut();
 
     // The shared reader walks the `OperationInfo` facts through the `op_info`
@@ -332,7 +340,7 @@ fn kb_operations(
     // the loader's synthetic `EffectsRuntime[Effects=E]` clause (WI-320); `ensures`
     // is user clauses only.
     let mut entries: Vec<Value> = Vec::new();
-    for rec in reader::read_operations(kb, &sort_name) {
+    for rec in reader::read_operations(kb, sort_sym) {
         let params_v = build_list_value(syms, rec.params.into_iter().map(Value::term).collect());
         let effects_v = build_list_value(syms, rec.effects);
         let requires_v = build_list_value(syms, rec.requires);
@@ -356,10 +364,10 @@ fn kb_constructors(
     args: &[Value],
     syms: &ReflectSyms,
 ) -> Result<Value, EvalError> {
-    let [_kb, sort_name] = expect_args::<2>("KB.constructors", args)?;
-    let sort_name = str_arg(sort_name)?;
+    let [_kb, sort] = expect_args::<2>("KB.constructors", args)?;
+    let sort_sym = sort_ref_functor(interp, &sort)?;
     let kb = interp.kb_mut();
-    let items: Vec<Value> = reader::members_of_kind(kb, &sort_name, "Constructor")
+    let items: Vec<Value> = reader::members_of_kind(kb, sort_sym, "Constructor")
         .into_iter()
         .map(|n| Value::Str(reader::short_of(&n).to_string()))
         .collect();
@@ -378,11 +386,7 @@ fn kb_fields(
     // `value_functor` (the `facts_of` precedent); a non-reference is a caller
     // type error, surfaced loudly. No name-string resolution, so the WI-631
     // short-name ambiguity cannot arise here.
-    let functor = anthill_core::eval::value_functor(interp.kb(), &entity)
-        .ok_or_else(|| EvalError::TypeMismatch {
-            expected: "Type (entity reference)",
-            got: entity.type_name().to_string(),
-        })?;
+    let functor = sort_ref_functor(interp, &entity)?;
     let kb = interp.kb_mut();
 
     // The entity's declared `(field_name, field_type)` pairs, read
@@ -410,12 +414,12 @@ fn kb_rules(
     args: &[Value],
     syms: &ReflectSyms,
 ) -> Result<Value, EvalError> {
-    let [_kb, sort_name] = expect_args::<2>("KB.rules", args)?;
-    let sort_name = str_arg(sort_name)?;
+    let [_kb, sort] = expect_args::<2>("KB.rules", args)?;
+    let sort_sym = sort_ref_functor(interp, &sort)?;
     let kb = interp.kb_mut();
 
     let mut items: Vec<Value> = Vec::new();
-    for head in reader::rule_heads_for_sort(kb, &sort_name) {
+    for head in reader::rule_heads_for_sort(kb, sort_sym) {
         // A `Rule` fact head is the rule's predicate term — always hash-consed
         // (rules are not value facts), so the carrier-agnostic head reifies via
         // its `TermId`.
@@ -1817,8 +1821,12 @@ namespace test.reflect_ctors
   end
 end
 "#);
+        let fruit = {
+            let kb = interp.kb_mut();
+            Value::term(kb.resolve_qualified_name_term("test.reflect_ctors.Fruit"))
+        };
         let result = interp.call("anthill.reflect.KB.constructors",
-            &[Value::Unit, Value::Str("Fruit".into())])
+            &[Value::Unit, fruit])
             .expect("constructors call");
         let mut names: Vec<String> = Vec::new();
         let mut cur = result;
@@ -1896,8 +1904,12 @@ namespace test.wi548_op_contract
   end
 end
 "#);
+        let tank = {
+            let kb = interp.kb_mut();
+            Value::term(kb.resolve_qualified_name_term("test.wi548_op_contract.Tank"))
+        };
         let result = interp.call("anthill.reflect.KB.operations",
-            &[Value::Unit, Value::Str("Tank".into())])
+            &[Value::Unit, tank])
             .expect("operations call");
 
         // The op's `name` field is `Value::Term(Ref(sym))`; match by short name.
