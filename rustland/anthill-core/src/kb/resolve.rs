@@ -5586,11 +5586,13 @@ impl KnowledgeBase {
         if !sig.effects.is_empty() {
             return false;
         }
-        // Bool-returning? Compared by short name — robust to how `Bool` is
-        // qualified; a hypothetical user `Bool` merely routes a meaningless bare
-        // goal to `= true` (harmless), never a wrong answer.
+        // Bool-returning? `sort_sym_is_bool` compares by short name — robust to
+        // how `Bool` is qualified; a hypothetical user `Bool` merely routes a
+        // meaningless bare goal to `= true` (harmless), never a wrong answer.
+        // Shared with the typer's `check_rule_body_goal_ops` so the goal-routing
+        // gate and its static check cannot drift.
         let returns_bool = super::typing::sort_functor_of_view(self, &sig.return_type)
-            .is_some_and(|s| self.resolve_sym(s).rsplit('.').next() == Some("Bool"));
+            .is_some_and(|s| self.sort_sym_is_bool(s));
         // Rule-less last: the `rules_by_functor` Vec alloc is paid only for a
         // pure bodied Bool op, which is rare.
         returns_bool && self.rules_by_functor(f).is_empty()

@@ -4888,6 +4888,18 @@ impl KnowledgeBase {
         self.builtins.contains_key(&sym)
     }
 
+    /// Is `s` the prelude `Bool` sort, compared by SHORT name (robust to how
+    /// `Bool` is qualified / re-exported)? The single definition of "this sort
+    /// is `Bool`" shared by the resolver's goal-routing gate
+    /// ([`Self::bare_bodied_bool_relation`]) and the typer's static goal check
+    /// (`check_rule_body_goal_ops`), so the two cannot drift on how `Bool` is
+    /// recognized. A hypothetical user sort also named `Bool` is treated
+    /// identically by both — harmless: it merely lets a bare goal route to
+    /// `= true` rather than being flagged, never a wrong answer.
+    pub(crate) fn sort_sym_is_bool(&self, s: Symbol) -> bool {
+        self.resolve_sym(s).rsplit('.').next() == Some("Bool")
+    }
+
     /// Check if a goal term's functor is a registered builtin.
     /// Returns `Some(tag)` if so, `None` otherwise.
     pub fn get_builtin(&self, goal: TermId) -> Option<BuiltinTag> {

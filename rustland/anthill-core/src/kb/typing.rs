@@ -109,6 +109,24 @@ pub enum TypeError {
         spec_sort_sym: Symbol,
         abstract_params: SmallVec<[Symbol; 2]>,
     },
+    /// WI-583: a NON-Bool-returning operation used bare as a rule-body goal
+    /// (goal position) — e.g. `:- length(?l)` where `length: List -> Int`. A
+    /// Bool-returning op in goal position IS meaningful: it is the operation's
+    /// relational view, gated to `eq(op(args), true)` by WI-580's
+    /// [`KnowledgeBase::bare_bodied_bool_relation`] (true ⇒ success, false ⇒
+    /// fail, unground ⇒ suspend). A NON-Bool op has no such reading — today it
+    /// falls through to a SILENT failed relation lookup (the goal never
+    /// resolves, no diagnostic), which the repo principle "prefer a loud error
+    /// over a silent skip" rejects. This is the static, load-time face of that
+    /// resolve-time routing. `return_sort` is the op's declared (non-Bool)
+    /// return sort head, for the diagnostic.
+    NonBoolOpInGoalPosition {
+        span: Option<Span>,
+        op_sym: Symbol,
+        /// The op's declared return sort head — always a concrete non-`Bool`
+        /// sort (a non-concrete return is not flagged; see `check_goal_atom_op`).
+        return_sort: Symbol,
+    },
     /// WI-650: an `PartialEq.eq`/`PartialEq.neq` (`=`/`neq`) call whose operand's sort declares
     /// its OWN `eq` override with NO backing — no runnable body and no non-fact
     /// rules (e.g. `Map` once the relational eq/binds/strip_is apparatus was
@@ -315,6 +333,15 @@ impl TypeError {
                     params_list.join(", "),
                 )
             }
+            TypeError::NonBoolOpInGoalPosition { op_sym, return_sort, .. } => {
+                let op_qn = kb.qualified_name_of(*op_sym);
+                format!(
+                    "operation `{}` returns `{}`, not `Bool` — it cannot be used as a rule-body condition (goal position). Only a Bool-returning operation is gated there as `eq({}(…), true)`; a non-Bool operation has no relational reading",
+                    op_qn,
+                    kb.qualified_name_of(*return_sort),
+                    short_name_of(op_qn),
+                )
+            }
             TypeError::EqOverrideUnbacked { carrier_sort, .. } => {
                 let carrier_qn = kb.qualified_name_of(*carrier_sort);
                 format!(
@@ -374,6 +401,7 @@ impl TypeError {
             | TypeError::NoSuchTypeParam { span, .. }
             | TypeError::UnconstrainedTypeParam { span, .. }
             | TypeError::MissingRequiresForSpecOp { span, .. }
+            | TypeError::NonBoolOpInGoalPosition { span, .. }
             | TypeError::EqOverrideUnbacked { span, .. }
             | TypeError::DotDispatchNoMatch { span, .. }
             | TypeError::ForbiddenInternalField { span, .. }
@@ -507,6 +535,21 @@ impl TypeError {
                     field_name: "requires".to_string(),
                     expected_type: format!("`requires {}[…]` covering abstract type parameter", spec_short),
                     actual_type: suggestion,
+                    span: self.span(kb),
+                }
+            }
+            TypeError::NonBoolOpInGoalPosition { op_sym, return_sort, .. } => {
+                let op_qn = kb.qualified_name_of(*op_sym).to_string();
+                let ret = kb.qualified_name_of(*return_sort).to_string();
+                LoadError::TypeMismatch {
+                    entity_name: op_qn,
+                    field_name: "goal".to_string(),
+                    expected_type:
+                        "a Bool-returning operation (gated as `eq(op(…), true)`) or a relation"
+                            .to_string(),
+                    actual_type: format!(
+                        "operation returning `{ret}` in rule-body goal position — no relational reading"
+                    ),
                     span: self.span(kb),
                 }
             }
@@ -23980,6 +24023,15 @@ pub fn type_check_sorts_typed(kb: &mut KnowledgeBase, sort_terms: &[TermId]) -> 
     // per-arg `inferred_type` the carrier decision reads is stamped.
     errors.extend(check_rule_body_requirements(kb));
 
+    // WI-583: the STATIC face of WI-580's rule-body Bool-op routing. A
+    // Bool-returning op used bare in a goal (`:- valid(?x)`) is gated to
+    // `eq(valid(?x), true)` at resolve time (`bare_bodied_bool_relation`); a
+    // NON-Bool op in goal position has no relational reading and would otherwise
+    // fall through to a silent failed relation lookup — flag it loudly here. Same
+    // rule-body-walk phase as `check_rule_body_requirements`, after
+    // `build_op_signatures` so every op's return type is available.
+    errors.extend(check_rule_body_goal_ops(kb));
+
     // WI-650: flag a semantic `=`/`eq`/`neq` call whose operand's sort declares
     // its OWN `eq` override with no backing (a bodyless placeholder — `Map` after
     // its relational eq apparatus was dropped). Runs after `type_rule_bodies` (the
@@ -25641,6 +25693,135 @@ fn check_rule_body_requirements(kb: &KnowledgeBase) -> Vec<TypeError> {
         }
     }
     errors
+}
+
+/// WI-583: flag a rule-less operation with a CONCRETE non-`Bool` return used
+/// bare as a rule-body goal (goal position), at the operation's declared arity.
+/// Such a call has no relational reading — a `Bool`-returning op is the
+/// operation's relational view, gated to `eq(op(args), true)` by WI-580's
+/// [`KnowledgeBase::bare_bodied_bool_relation`] at resolve time (true ⇒ success,
+/// false ⇒ fail, unground ⇒ suspend), but a concrete non-`Bool` op falls through
+/// to a silent failed relation lookup, which the repo principle "prefer a loud
+/// error over a silent skip" rejects. This is the static, load-time face of that
+/// routing — the sibling of [`check_rule_body_requirements`] (WI-642), run in the
+/// same phase so `build_op_signatures` has settled every op's return type.
+///
+/// DELIBERATELY NOT flagged (each is either correct or pre-existing, never a
+/// regression): a `Bool`-returning op whose body is absent (an abstract spec op,
+/// which dispatches through its `requires` dictionary — WI-573) or effectful
+/// (which `bare_bodied_bool_relation` already declines to route on purity
+/// grounds); a NON-concrete return (a bare type parameter that may instantiate
+/// to `Bool`); the functional-relation form `f(args, result)` (arity + 1); and a
+/// rule-backed functor (a genuine relation). See `check_goal_atom_op`.
+fn check_rule_body_goal_ops(kb: &KnowledgeBase) -> Vec<TypeError> {
+    let mut errors: Vec<TypeError> = Vec::new();
+    // The goal-connective allowlist: resolver primitives whose ARGUMENTS are
+    // themselves goal positions (unlike `eq`/`neq`, whose operands are VALUE
+    // positions and may legitimately hold a non-Bool op-call). Absent in a
+    // minimal KB → no recursion, harmless. `and` is not here: rule-body
+    // conjunction is the comma (separate atoms), not a functor (WI-529 §C.1).
+    let connectives = [
+        kb.try_resolve_symbol("anthill.reflect.not"),
+        kb.try_resolve_symbol("anthill.kernel.or"),
+        kb.try_resolve_symbol("anthill.kernel.push_choice"),
+    ];
+    for rid in kb.live_rule_ids() {
+        if kb.is_fact(rid) {
+            continue; // facts have no body
+        }
+        for atom in kb.rule_body_nodes(rid) {
+            check_goal_atom_op(kb, atom, &connectives, &mut errors);
+        }
+    }
+    errors
+}
+
+/// Classify one goal-position occurrence for [`check_rule_body_goal_ops`]:
+/// recurse THROUGH a goal connective into its (goal) arguments, else flag a
+/// rule-less non-Bool operation head. Iterative (explicit worklist) so a
+/// deeply-nested connective body cannot overflow the host stack — mirrors
+/// [`check_occ_spec_op_requirements`].
+fn check_goal_atom_op(
+    kb: &KnowledgeBase,
+    atom: &Rc<NodeOccurrence>,
+    connectives: &[Option<Symbol>; 3],
+    errors: &mut Vec<TypeError>,
+) {
+    let mut stack: Vec<Rc<NodeOccurrence>> = vec![Rc::clone(atom)];
+    while let Some(o) = stack.pop() {
+        let Some(expr) = o.as_expr() else {
+            continue; // a var / literal goal head — not an operation call
+        };
+        let (f, provided) = match expr {
+            Expr::Apply { functor, pos_args, named_args, .. } => {
+                (*functor, pos_args.len() + named_args.len())
+            }
+            Expr::Constructor { name, pos_args, named_args, .. }
+            | Expr::Instantiation { name, pos_args, named_args, .. } => {
+                (*name, pos_args.len() + named_args.len())
+            }
+            Expr::Ref(s) | Expr::Ident(s) => (*s, 0), // a nullary reference
+            _ => continue,
+        };
+        // A goal connective (`not` / `or` / `push_choice`): its arguments are
+        // goal positions too — recurse into each. The connective itself is a
+        // resolver primitive (no op signature), never classified here.
+        if connectives.contains(&Some(f)) {
+            for_each_child(expr, |c| stack.push(Rc::clone(c)));
+            continue;
+        }
+        // A resolver builtin (`eq`/`neq`/`gt`/`find_dictionary`/…) has its own
+        // goal semantics — skip. We deliberately do NOT recurse into its value
+        // operands: a non-Bool op-call inside `eq(length(?l), 3)` is a value, not
+        // a goal.
+        if kb.is_builtin(f) {
+            continue;
+        }
+        // Is it an operation with a built signature? (cheap map lookup) A
+        // non-operation (unresolved name / relation-only functor) is not this
+        // pass's concern — an unresolved name is diagnosed elsewhere.
+        let Some(sig) = kb.op_record(f).and_then(|r| r.signature.as_ref()) else {
+            continue;
+        };
+        // Only the BARE / DIRECT goal form — the op used at its DECLARED arity —
+        // is gated as a condition (`f(args)` ≡ `eq(f(args), true)` for a Bool op).
+        // The FUNCTIONAL-RELATION form `f(args, result)` (arity + 1, the extra arg
+        // is the result column — e.g. stdlib `needs_rebuild`'s
+        // `status(?fs, ?p, FileStatus(…))` ≡ `eq(status(?fs, ?p), result)`) is a
+        // pre-existing relational pattern WI-583 does not touch, and an
+        // arity-mismatched call is a different (elsewhere-reported) error — skip
+        // any call whose arity ≠ the op's parameter count.
+        if provided != sig.params.len() {
+            continue;
+        }
+        // Classify the return sort HEAD. Only a CONCRETE non-Bool sort is a
+        // category error. A non-concrete return (a bare type parameter or
+        // projection — `sort_functor_of_view` = `None`) cannot be proven non-Bool
+        // (it may instantiate to `Bool` at a call site), so it is left alone, not
+        // flagged — avoiding a false positive on a generic op like
+        // `run[T](t: Thunk[T]) -> T`. A `Bool` return (by short name, exactly as
+        // `bare_bodied_bool_relation` compares) is gated to `eq(op(args), true)`
+        // by the resolver, so it is not an error either.
+        let Some(return_sort) = sort_functor_of_view(kb, &sig.return_type) else {
+            continue;
+        };
+        if kb.sort_sym_is_bool(return_sort) {
+            continue;
+        }
+        // A non-Bool op that is ALSO rule-backed reads as the RELATION (the
+        // rule-less gate of design §3.3 / `bare_bodied_bool_relation`): its rules
+        // are its relational definition, so it resolves relationally, not an
+        // error. The `rules_by_functor` Vec alloc is paid only here — for a
+        // non-builtin, signature-bearing, right-arity, concrete-non-Bool functor.
+        if !kb.rules_by_functor(f).is_empty() {
+            continue;
+        }
+        errors.push(TypeError::NonBoolOpInGoalPosition {
+            span: Some(o.span.span),
+            op_sym: f,
+            return_sort,
+        });
+    }
 }
 
 /// Push the canonical spec base of every in-body `find_dictionary` goal reachable

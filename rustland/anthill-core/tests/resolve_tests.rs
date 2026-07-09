@@ -8,6 +8,9 @@ mod forall_impl_resolve_test;
 #[path = "include/push_choice_test.rs"]
 mod push_choice_test;
 
+#[path = "include/wi583_bool_op_goal_test.rs"]
+mod wi583_bool_op_goal_test;
+
 #[path = "include/wi615_struct_eq_test.rs"]
 mod wi615_struct_eq_test;
 

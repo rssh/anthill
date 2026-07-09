@@ -693,6 +693,8 @@ rule length(cons(?x, ?xs)) <=> add(1, length(?xs))
 
 These illustrate the `<=>` equational-rule *mechanism*. In the current prelude such per-constructor equations for an operation with a body (`length`, `append`, `member`) are **not** hand-written: WI-580 makes the operation body the single source of truth and derives its equational and relational views from it on demand (the SLD one-step body-unfold; see docs/design/abstract-interpreter-and-rules.md §3.3). Hand-written `<=>` rules survive for genuine standalone equations (`neq(?a, ?b) <=> not(eq(?a, ?b))`, carrier `eq` overrides).
 
+A **`Bool`-returning operation may be used directly as a rule-body goal** (WI-583): `:- valid(?x)` (with `valid: T -> Bool`) resolves as its relational view `eq(valid(?x), true)` — the operation reduces, `true` ⇒ the goal succeeds, `false` ⇒ it fails, an under-determined argument ⇒ it suspends as a residual (never NAF-decided). This is *position-directed*, like the boolean operators (§6.6): the gating applies only in **goal** position and at the operation's declared arity; the functional-relation form `f(args, result)` (one extra argument, the result column — e.g. `status(?fs, ?p, FileStatus(…))` ≡ `eq(status(?fs, ?p), result)`) is unaffected, and a `Bool` operation in **value** position is just a value. A **non-`Bool`** operation in goal position has no such reading, so it is a **load error**, not a silently-failed relation lookup.
+
 **Requires declaration** — a standalone `requires` in a sort or namespace body declares a sort-level constraint: the enclosing scope depends on another algebraic spec. This is distinct from operation-level `requires` clauses (preconditions on individual operations).
 
 ```
