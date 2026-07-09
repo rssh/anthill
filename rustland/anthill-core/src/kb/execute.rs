@@ -92,9 +92,12 @@ pub enum LowerError {
     /// A `LogicalQuery` constructor was recognized but its payload is
     /// missing a required named argument.
     MissingField { entity: &'static str, field: &'static str },
-    /// `sort_query(sort_name)` was called with a `String` that doesn't
-    /// resolve to any defined sort symbol.
-    UnknownSort(String),
+    /// A `sort_query`'s `sort` field is present but does not name a sort by
+    /// reference (WI-632): a literal, a variable, or an aggregate carrier that
+    /// `value_functor` can't resolve to a functor symbol. The query shape is
+    /// valid — only this field is malformed — so this is distinct from
+    /// `NotALogicalQuery`.
+    NotASortReference { got: String },
     /// A constructor in `LogicalQuery` hasn't been wired through to the
     /// resolver yet. Kept separate from `UnsupportedVariant` so call sites
     /// can distinguish "design hole" from "garbage input".
@@ -121,8 +124,8 @@ impl std::fmt::Display for LowerError {
                 write!(f, "expected a LogicalQuery entity, got {}", got),
             LowerError::MissingField { entity, field } =>
                 write!(f, "LogicalQuery::{} missing field `{}`", entity, field),
-            LowerError::UnknownSort(name) =>
-                write!(f, "sort_query: unknown sort `{}`", name),
+            LowerError::NotASortReference { got } =>
+                write!(f, "sort_query `sort` field is not a sort reference: {}", got),
             LowerError::NotYetImplemented(what) =>
                 write!(f, "LogicalQuery lowering not yet implemented: {}", what),
             LowerError::OverArityConstructor { functor, given, unfilled, declared } =>
@@ -173,7 +176,7 @@ pub(crate) struct LogicalQuerySymbols {
 
     // Field keys used by LogicalQuery payloads.
     pub term: Symbol,
-    pub sort_name: Symbol,
+    pub sort: Symbol,
     pub left: Symbol,
     pub right: Symbol,
     pub query: Symbol,
@@ -215,7 +218,7 @@ impl LogicalQuerySymbols {
             max_q: r(kb, "anthill.reflect.LogicalQuery.max_q"),
 
             term: kb.intern("term"),
-            sort_name: kb.intern("sort_name"),
+            sort: kb.intern("sort"),
             left: kb.intern("left"),
             right: kb.intern("right"),
             query: kb.intern("query"),
@@ -526,9 +529,10 @@ impl KnowledgeBase {
     /// - `conjunction(l, r)` → `lower(l) ++ lower(r)` — shared variables
     ///   form a natural join because goals all live in the same
     ///   substitution frame.
-    /// - `sort_query(name)` → a synthetic `is_entity_of(?fresh, name)`
-    ///   goal; fresh variable names are lexically scoped to this call
-    ///   (no leak into the caller's query-level variables).
+    /// - `sort_query(sort)` → a synthetic `is_entity_of(?fresh, sort)`
+    ///   goal, where `sort` is a by-reference `Term::Ref` (WI-632); fresh
+    ///   variable names are lexically scoped to this call (no leak into the
+    ///   caller's query-level variables).
     /// - `negation(q)` → `[not(g)]` where `g` is the inner's single goal,
     ///   or `[not(_synth_N(?vars))]` for multi-goal bodies — the synthesized
     ///   rule is `_synth_N(?vars) :- inner_goals` (proposal 033 §M4 / WI-076).
@@ -627,17 +631,19 @@ impl KnowledgeBase {
         }
 
         if Some(functor) == syms.sort_query {
-            let name_v = self.lq_field(q, syms.sort_name).ok_or(LowerError::MissingField {
-                entity: "sort_query", field: "sort_name",
+            // WI-632: `sort_query` carries the sort BY REFERENCE (a `Term::Ref`),
+            // resolved at the caller's write site with real scope — not a
+            // runtime-resolved name string. Extract its already-qualified functor
+            // symbol via `value_functor` (the `facts_of` precedent); a `sort`
+            // field that names no functor (a literal, a var, an aggregate) is a
+            // caller bug, surfaced loudly.
+            let sort_v = self.lq_field(q, syms.sort).ok_or(LowerError::MissingField {
+                entity: "sort_query", field: "sort",
             })?;
-            let name = match name_v {
-                Value::Str(s) => s.clone(),
-                other => return Err(LowerError::NotALogicalQuery {
-                    got: format!("sort_query sort_name = {}", other.type_name()),
-                }),
-            };
-            let sort_sym = self.try_resolve_symbol(&name)
-                .ok_or_else(|| LowerError::UnknownSort(name.clone()))?;
+            let sort_sym = crate::eval::eval::value_functor(self, &sort_v)
+                .ok_or_else(|| LowerError::NotASortReference {
+                    got: sort_v.type_name().to_string(),
+                })?;
             let is_entity_of = syms.is_entity_of.ok_or(LowerError::NotYetImplemented(
                 "sort_query without loaded anthill.reflect.typing.is_entity_of",
             ))?;

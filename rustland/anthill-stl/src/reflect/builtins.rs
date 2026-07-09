@@ -69,7 +69,7 @@ struct ReflectSyms {
     f_index: Symbol,
     f_value: Symbol,
     f_args: Symbol,
-    f_sort_name: Symbol,
+    f_sort: Symbol,
     f_fst: Symbol,
     f_snd: Symbol,
 }
@@ -124,7 +124,7 @@ impl ReflectSyms {
             f_index: kb.intern("index"),
             f_value: kb.intern("value"),
             f_args: kb.intern("args"),
-            f_sort_name: kb.intern("sort_name"),
+            f_sort: kb.intern("sort"),
             f_fst: kb.intern("fst"),
             f_snd: kb.intern("snd"),
         })
@@ -262,16 +262,26 @@ fn make_entity(kb: &KnowledgeBase, functor: Symbol, mut named: Vec<(Symbol, Valu
 // ── Builtin handlers ───────────────────────────────────────────
 
 fn kb_sort_template(
-    _interp: &mut Interpreter,
+    interp: &mut Interpreter,
     args: &[Value],
     syms: &ReflectSyms,
 ) -> Result<Value, EvalError> {
-    let [_kb, name] = expect_args::<2>("KB.sort_template", args)?;
-    let name_str = str_arg(name)?;
+    let [_kb, sort] = expect_args::<2>("KB.sort_template", args)?;
+    // WI-632: the sort is passed BY REFERENCE (e.g. `sort_template(kb(),
+    // WorkItem)`) — a `Value::Term(Ref)` / `Value::Entity` already resolved to
+    // its qualified functor at the caller's write site. Validate it names a
+    // functor (loud on a non-reference, mirroring `kb_facts_of`), then store
+    // the reference verbatim as the `sort_query.sort` payload.
+    if anthill_core::eval::value_functor(interp.kb(), &sort).is_none() {
+        return Err(EvalError::TypeMismatch {
+            expected: "Type (sort reference)",
+            got: sort.type_name().to_string(),
+        });
+    }
     Ok(Value::Entity {
         functor: syms.sort_query,
         pos: Vec::new().into(),
-        named: vec![(syms.f_sort_name, Value::Str(name_str))].into(),
+        named: vec![(syms.f_sort, sort)].into(),
         ty: None,
     })
 }
@@ -1109,18 +1119,30 @@ namespace test.reflect_sort_tmpl
   end
 end
 "#);
+        // WI-632: the sort is passed BY REFERENCE (a `Ref` term), the way the
+        // loader lowers a written `sort_template(kb(), Color)` call.
+        let color_ref = {
+            let kb = interp.kb_mut();
+            Value::term(kb.resolve_qualified_name_term("test.reflect_sort_tmpl.Color"))
+        };
         let result = interp.call("anthill.reflect.KB.sort_template",
-            &[Value::Unit, Value::Str("Color".into())])
+            &[Value::Unit, color_ref])
             .expect("sort_template call");
         match result {
             Value::Entity { functor, named, .. } => {
                 let name = interp.kb().resolve_sym(functor).to_string();
                 assert_eq!(name, "sort_query");
                 assert_eq!(named.len(), 1);
-                match &named[0].1 {
-                    Value::Str(s) => assert_eq!(s, "Color"),
-                    other => panic!("expected Str, got {other:?}"),
-                }
+                // The `sort` payload rides as the by-reference term verbatim,
+                // its functor the SAME symbol the qualified name resolves to.
+                let field_name = interp.kb().resolve_sym(named[0].0).to_string();
+                assert_eq!(field_name, "sort");
+                let sort_sym = anthill_core::eval::value_functor(interp.kb(), &named[0].1)
+                    .expect("sort payload names a functor");
+                let expected = interp.kb()
+                    .try_resolve_symbol("test.reflect_sort_tmpl.Color")
+                    .expect("Color resolvable by qualified name");
+                assert_eq!(sort_sym, expected, "sort payload references the real Color sort");
             }
             other => panic!("expected Entity, got {other:?}"),
         }

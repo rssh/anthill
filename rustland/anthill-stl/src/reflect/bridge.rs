@@ -196,45 +196,29 @@ impl KbBridge {
         FieldInfo { name, type_name: term(type_name) }
     }
 
-    /// Look up an Entity definition by name, returning its functor symbol and
-    /// the list of field name symbols. Falls back to inferring schema from
-    /// existing facts with matching functor if no Entity definition exists.
-    /// An AMBIGUOUS short name (several sorts declare the constructor) is
-    /// `Err` — loud, never an arbitrary pick (WI-631); `Ok(None)` means "no
-    /// declared entity" and sends the caller to its positional fallback goal.
-    fn find_entity_schema(&self, sort_name: &str) -> Result<Option<(anthill_core::intern::Symbol, Vec<anthill_core::intern::Symbol>)>, Error> {
-        {
-            // The declared schema, via the shared reader (WI-515 — the
-            // same-functor `Entity` schema fact this used to scan is gone;
-            // WI-631 — an ambiguous short name is a loud Err, never a pick).
-            let declared = reader::read_entity_fields(&self.kb.borrow(), sort_name)
-                .map_err(Error)?;
-            if let Some((functor, fields)) = declared {
-                let names: Vec<anthill_core::intern::Symbol> =
-                    fields.iter().map(|&(sym, _)| sym).collect();
-                return Ok(Some((functor, names)));
-            }
+    /// Given an already-resolved entity functor, return its field-name symbols.
+    /// Prefers the declared entity schema (the `entity_field_types` registry,
+    /// WI-515); falls back to inferring the field set from an existing fact with
+    /// that functor. `None` means "no declared entity and no matching fact" —
+    /// the caller then emits its positional fallback goal. WI-632: the functor
+    /// arrives resolved by reference (the caller's `value_functor` extraction),
+    /// so there is no name-string resolution and no short-name ambiguity here —
+    /// the WI-631 loud-ambiguity stopgap is subsumed at the write site.
+    fn find_entity_schema(&self, functor: anthill_core::intern::Symbol) -> Option<Vec<anthill_core::intern::Symbol>> {
+        let kb = self.kb.borrow();
+        if let Some(fields) = kb.entity_field_types(functor) {
+            return Some(fields.iter().map(|&(sym, _)| sym).collect());
         }
-
-        let mut kb = self.kb.borrow_mut();
-        let plain_sym = kb.resolve_name_in_global(sort_name)
-            .unwrap_or_else(|| kb.intern(sort_name));
-        let rids = kb.rules_by_functor(plain_sym);
-        for rid in rids {
+        for rid in kb.rules_by_functor(functor) {
             let head = match kb.rule_head_value(rid) {
                 anthill_core::eval::Value::Term { id: t, .. } => *t,
                 _ => continue,
             };
-            if let CoreTerm::Fn { functor, named_args, .. } = kb.get_term(head) {
-                let fields: Vec<anthill_core::intern::Symbol> = named_args
-                    .iter()
-                    .map(|&(s, _)| s)
-                    .collect();
-                return Ok(Some((*functor, fields)));
+            if let CoreTerm::Fn { named_args, .. } = kb.get_term(head) {
+                return Some(named_args.iter().map(|&(s, _)| s).collect());
             }
         }
-
-        Ok(None)
+        None
     }
 
     /// Convert a `LogicalQuery` to goal [`Value`]s and a `ResolveConfig`.
@@ -258,12 +242,20 @@ impl KbBridge {
         match query {
             LogicalQuery::EmptyQuery => Ok(vec![]),
             LogicalQuery::PatternQuery { term } => Ok(vec![term.value().clone()]),
-            LogicalQuery::SortQuery { sort_name } => {
-                let entity_info = self.find_entity_schema(sort_name)?;
+            LogicalQuery::SortQuery { sort } => {
+                // WI-632: `sort` is a by-reference `Term` (a `Ref` resolved at the
+                // caller's write site); extract its already-qualified functor via
+                // the shared `value_functor` — no name-string resolution.
+                let functor = anthill_core::eval::value_functor(&self.kb.borrow(), sort.value())
+                    .ok_or_else(|| Error(
+                        "KB.sort_query: `sort` is not a sort reference (expected a \
+                         Ref / Fn / Entity carrier that names a functor)".to_string()
+                    ))?;
+                let field_syms = self.find_entity_schema(functor);
 
                 let mut kb = self.kb.borrow_mut();
-                match entity_info {
-                    Some((functor, field_syms)) => {
+                match field_syms {
+                    Some(field_syms) => {
                         let named_args_vec: Vec<(anthill_core::intern::Symbol, TermId)> = field_syms
                             .iter()
                             .map(|&field_sym| {
@@ -282,12 +274,11 @@ impl KbBridge {
                         Ok(vec![Value::term(goal)])
                     }
                     None => {
-                        let sort_sym = kb.intern(sort_name);
                         let query_var_sym = kb.intern("?_query");
                         let vid = kb.fresh_var(query_var_sym);
                         let var_term = kb.alloc(CoreTerm::Var(Var::Global(vid)));
                         let goal = kb.alloc(CoreTerm::Fn {
-                            functor: sort_sym,
+                            functor,
                             pos_args: vec![var_term].into(),
                             named_args: Default::default(),
                         });
@@ -329,10 +320,10 @@ impl KbBridge {
                 let k = kb.intern("term");
                 lq_entity(f, vec![(k, term.value().clone())])
             }
-            LogicalQuery::SortQuery { sort_name } => {
+            LogicalQuery::SortQuery { sort } => {
                 let f = Self::lq_ctor(kb, "sort_query");
-                let k = kb.intern("sort_name");
-                lq_entity(f, vec![(k, Value::Str(sort_name.clone()))])
+                let k = kb.intern("sort");
+                lq_entity(f, vec![(k, sort.value().clone())])
             }
             LogicalQuery::Conjunction { left, right } =>
                 Self::reify_binary(kb, "conjunction", left, right),
@@ -761,16 +752,19 @@ impl KB for KbBridge {
             .collect()
     }
 
-    fn sort_template(&self, sort_name: String) -> LogicalQuery {
-        LogicalQuery::SortQuery { sort_name }
+    fn sort_template(&self, sort: Type) -> LogicalQuery {
+        // WI-632: the sort arrives by reference (a `Type` carrying a `Ref`),
+        // stored verbatim as the `sort_query.sort` payload — resolution already
+        // happened at the caller's write site.
+        LogicalQuery::SortQuery { sort: rterm(sort.value().clone()) }
     }
 
     fn instantiation_query(
         &self,
-        sort_name: String,
+        sort: Type,
         _bindings: &dyn Substitution,
     ) -> LogicalQuery {
-        LogicalQuery::SortQuery { sort_name }
+        LogicalQuery::SortQuery { sort: rterm(sort.value().clone()) }
     }
 
     /// Assert a fact with integrity checking (WI-546). The fact head must be a
@@ -988,6 +982,14 @@ mod tests {
         out
     }
 
+    /// A `sort_query` payload: the sort BY REFERENCE (a `Term` naming `qname`),
+    /// the way the loader lowers a written sort reference (WI-632). A qualified
+    /// `qname` resolves to the real symbol; an unknown one interns fresh.
+    fn sort_ref(bridge: &KbBridge, qname: &str) -> ReflectTerm {
+        let mut kb = bridge.kb.borrow_mut();
+        ReflectTerm::new(Value::term(kb.resolve_qualified_name_term(qname)))
+    }
+
     #[test]
     fn execute_sort_query_finds_operations() {
         let bridge = load_source_bridge(r#"
@@ -998,7 +1000,7 @@ sort Store {
   operation flush(s: Store) -> Int64
 }
 "#);
-        let query = LogicalQuery::SortQuery { sort_name: "OperationInfo".into() };
+        let query = LogicalQuery::SortQuery { sort: sort_ref(&bridge, "anthill.reflect.OperationInfo") };
         let stream = bridge.execute(query).expect("execute failed");
         let results = drain(stream);
         assert!(results.len() >= 3,
@@ -1011,7 +1013,7 @@ sort Store {
     #[test]
     fn execute_sort_query_nonexistent_is_empty() {
         let bridge = load_source_bridge("sort Foo { entity bar }");
-        let query = LogicalQuery::SortQuery { sort_name: "Nonexistent".into() };
+        let query = LogicalQuery::SortQuery { sort: sort_ref(&bridge, "Nonexistent") };
         let stream = bridge.execute(query).expect("execute failed");
         let results = drain(stream);
         assert_eq!(results.len(), 0, "nonexistent sort query should return 0 results");
@@ -1055,7 +1057,7 @@ sort Store {
 }
 "#);
         let query = LogicalQuery::Limited {
-            query: Box::new(LogicalQuery::SortQuery { sort_name: "OperationInfo".into() }),
+            query: Box::new(LogicalQuery::SortQuery { sort: sort_ref(&bridge, "anthill.reflect.OperationInfo") }),
             count: 2,
         };
         let stream = bridge.execute(query).expect("execute failed");
@@ -1181,24 +1183,24 @@ end
     }
 
     #[test]
-    fn sort_query_ambiguous_short_name_errors() {
-        // WI-631: the SortQuery lowering surfaces ambiguity as Err through
-        // `execute`'s Result channel, naming the candidates.
+    fn sort_query_by_reference_disambiguates() {
+        // WI-632: a short name that WI-631 had to reject as ambiguous is now a
+        // non-issue — `sort_query` carries the sort BY REFERENCE, resolved at the
+        // write site, so `Beta.dup` and `Alpha.dup` are simply two distinct
+        // references. Each lowers to its own sort's goal with no runtime scan.
         let bridge = load_source_bridge(r#"
-namespace test.wi631_bridge
+namespace test.wi632_bridge
   sort Alpha { entity dup(x: Int64) }
   sort Beta { entity dup(y: String) }
 end
+fact test.wi632_bridge.Beta.dup(y: "hi")
 "#);
-        match bridge.execute(LogicalQuery::SortQuery { sort_name: "dup".into() }) {
-            Err(Error(msg)) => assert!(
-                msg.contains("ambiguous entity name 'dup'")
-                    && msg.contains("test.wi631_bridge.Alpha.dup")
-                    && msg.contains("test.wi631_bridge.Beta.dup"),
-                "diagnostic names the candidates: {msg}"
-            ),
-            Ok(_) => panic!("an ambiguous SortQuery name must be a loud Err"),
-        }
+        let query = LogicalQuery::SortQuery {
+            sort: sort_ref(&bridge, "test.wi632_bridge.Beta.dup"),
+        };
+        let stream = bridge.execute(query).expect("a resolved reference never errors");
+        let results = drain(stream);
+        assert_eq!(results.len(), 1, "one Beta.dup fact, unambiguously");
     }
 
     #[test]

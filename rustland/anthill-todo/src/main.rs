@@ -448,7 +448,7 @@ fn run_anthill_bundle(argv: &[String]) -> i32 {
     // Bulk-pull the project's anthill-todo/ files: domain.anthill defines
     // WorkItem etc., rules.anthill provides workflow rules, workitems.anthill
     // carries the user-asserted facts. Without this the bundle's KB only
-    // sees stdlib + the bundle itself, and `sort_query("WorkItem")` fails.
+    // sees stdlib + the bundle itself, and `sort_query(WorkItem)` fails.
     let project_dir = match find_project_dir(explicit_dir.as_deref()) {
         Ok(d) => d,
         Err(e) => {

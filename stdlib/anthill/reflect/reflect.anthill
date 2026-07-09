@@ -347,11 +347,14 @@ namespace anthill.reflect
     -- to inspect them.
     operation facts_of(kb: KB, sort: Type) -> List[T = Term]
 
-    -- Extract a sort's fact template as a query
-    operation sort_template(kb: KB, sort_name: String) -> LogicalQuery
+    -- Extract a sort's fact template as a query. The sort is passed by
+    -- reference (e.g. `sort_template(kb(), WorkItem)`), resolved to its
+    -- qualified symbol via the caller's import — no name-string resolution
+    -- (the `facts_of` precedent; WI-632).
+    operation sort_template(kb: KB, sort: Type) -> LogicalQuery
 
     -- Instantiate a sort template with bindings → concrete query
-    operation instantiation_query(kb: KB, sort_name: String, bindings: Substitution)
+    operation instantiation_query(kb: KB, sort: Type, bindings: Substitution)
       -> LogicalQuery
 
     -- Mutation: assert a fact and check registered constraints.
@@ -677,7 +680,7 @@ namespace anthill.reflect
   enum LogicalQuery {
     entity empty_query                                             -- no constraints (always true)
     entity pattern_query(term: Term)                               -- single pattern
-    entity sort_query(sort_name: String)                           -- all facts of a sort
+    entity sort_query(sort: Term)                                  -- all facts of a sort (by reference)
     entity conjunction(left: LogicalQuery, right: LogicalQuery)    -- AND (shared vars = join)
     entity disjunction(left: LogicalQuery, right: LogicalQuery)    -- OR
     entity negation(query: LogicalQuery)                           -- NOT (negation-as-failure)

@@ -1387,18 +1387,16 @@ impl KnowledgeBase {
         }
 
         if Some(functor) == syms.sort_query {
-            let name = TermView::named_arg(view, self, syms.sort_name)
+            // WI-632: `sort_query` carries the sort BY REFERENCE (a `Term::Ref`),
+            // so the trigger sort is its already-qualified functor symbol — no
+            // runtime name-string resolution.
+            let sym = TermView::named_arg(view, self, syms.sort)
                 .map(|c| c.to_value())
-                .and_then(|v| match TermView::head(&v, self) {
-                    ViewHead::Const(term::Literal::String(s)) => Some(s),
-                    _ => None,
-                });
-            if let Some(name) = name {
-                if let Some(sym) = self.try_resolve_symbol(&name) {
-                    let sort_term = self.make_name_term_from_sym(sym);
-                    if !out.contains(&sort_term) {
-                        out.push(sort_term);
-                    }
+                .and_then(|v| crate::eval::eval::value_functor(self, &v));
+            if let Some(sym) = sym {
+                let sort_term = self.make_name_term_from_sym(sym);
+                if !out.contains(&sort_term) {
+                    out.push(sort_term);
                 }
             }
             return;
