@@ -371,23 +371,35 @@ fn kb_fields(
     args: &[Value],
     syms: &ReflectSyms,
 ) -> Result<Value, EvalError> {
-    let [_kb, name] = expect_args::<2>("KB.fields", args)?;
-    let name = str_arg(name)?;
+    let [_kb, entity] = expect_args::<2>("KB.fields", args)?;
+    // WI-632: the entity is passed BY REFERENCE (e.g. `fields(kb(), WorkItem)`) —
+    // a `Value::Term(Ref)` / `Value::Entity` already resolved to its qualified
+    // functor at the caller's write site. Extract that functor via the shared
+    // `value_functor` (the `facts_of` precedent); a non-reference is a caller
+    // type error, surfaced loudly. No name-string resolution, so the WI-631
+    // short-name ambiguity cannot arise here.
+    let functor = anthill_core::eval::value_functor(interp.kb(), &entity)
+        .ok_or_else(|| EvalError::TypeMismatch {
+            expected: "Type (entity reference)",
+            got: entity.type_name().to_string(),
+        })?;
     let kb = interp.kb_mut();
 
-    // The shared reader returns the matching entity's `(field_name, field_type)`
-    // pairs carrier-agnostically (WI-342): a value-in-type field (`Vector[Int64,
-    // 3]`) rides as its own `Value::Node` into the FieldInfo, surfaced verbatim.
-    // An ambiguous short name is a LOUD EvalError naming the candidates (WI-631).
+    // The entity's declared `(field_name, field_type)` pairs, read
+    // carrier-agnostically (WI-342): a value-in-type field (`Vector[Int64, 3]`)
+    // rides as its own `Value::Node` into the FieldInfo, surfaced verbatim.
+    // Cloned to release the registry borrow before building the entities.
+    let declared: Option<Vec<(Symbol, Value)>> =
+        kb.entity_field_types(functor).map(|f| f.to_vec());
     let mut items: Vec<Value> = Vec::new();
-    if let Some((_functor, fields)) = reader::read_entity_fields(kb, &name).map_err(EvalError::Internal)? {
+    if let Some(fields) = declared {
         for (field_sym, field_type) in fields {
             let name_val = Value::Str(kb.resolve_sym(field_sym).to_string());
-            let fields = vec![
+            let entry = vec![
                 (syms.f_name, name_val),
                 (syms.f_type_name, field_type),
             ];
-            items.push(make_entity(kb, syms.field_info, fields));
+            items.push(make_entity(kb, syms.field_info, entry));
         }
     }
     Ok(build_list_value(syms, items))
@@ -1462,28 +1474,48 @@ end
     }
 
     #[test]
-    fn kb_fields_ambiguous_short_name_errors() {
-        // WI-631: the interpreter KB.fields surface maps an ambiguous short
-        // entity name onto a loud EvalError naming the candidates.
+    fn kb_fields_by_reference_disambiguates() {
+        // WI-632: `KB.fields` takes the entity BY REFERENCE, so a short name two
+        // sorts share (WI-631's ambiguity hazard) is a non-issue — `Beta.dup` and
+        // `Alpha.dup` are distinct references, each answering its own schema.
         let mut interp = load_stdlib_and_source(r#"
-namespace test.wi631_interp
+namespace test.wi632_interp
   sort Alpha { entity dup(x: Int64) }
   sort Beta { entity dup(y: String) }
 end
 "#);
-        let result = interp.call(
-            "anthill.reflect.KB.fields",
-            &[Value::Unit, Value::Str("dup".into())],
-        );
-        match result {
-            Err(EvalError::Internal(msg)) => assert!(
-                msg.contains("ambiguous entity name 'dup'")
-                    && msg.contains("test.wi631_interp.Alpha.dup")
-                    && msg.contains("test.wi631_interp.Beta.dup"),
-                "diagnostic names the candidates: {msg}"
-            ),
-            other => panic!("expected Err(Internal(ambiguous...)), got {other:?}"),
-        }
+        // The one FieldInfo's `name` for the entity named `qname`. The result is
+        // `cons(head: FieldInfo(name: <field>, ...), tail: nil)`.
+        let field_name = |interp: &mut Interpreter, qname: &str| -> String {
+            let entity = {
+                let kb = interp.kb_mut();
+                Value::term(kb.resolve_qualified_name_term(qname))
+            };
+            let result = interp
+                .call("anthill.reflect.KB.fields", &[Value::Unit, entity])
+                .expect("fields by reference never errors");
+            let field_named = |v: &Value, key: &str| -> Option<Value> {
+                match v {
+                    Value::Entity { named, .. } => named
+                        .iter()
+                        .find(|(s, _)| interp.kb().resolve_sym(*s) == key)
+                        .map(|(_, v)| v.clone()),
+                    _ => None,
+                }
+            };
+            let head = field_named(&result, "head").expect("non-empty field list");
+            assert!(
+                matches!(field_named(&result, "tail"), Some(Value::Entity { functor, .. })
+                    if interp.kb().resolve_sym(functor) == "nil"),
+                "dup has exactly one field",
+            );
+            match field_named(&head, "name") {
+                Some(Value::Str(s)) => s,
+                other => panic!("FieldInfo.name should be Str, got {other:?}"),
+            }
+        };
+        assert_eq!(field_name(&mut interp, "test.wi632_interp.Beta.dup"), "y");
+        assert_eq!(field_name(&mut interp, "test.wi632_interp.Alpha.dup"), "x");
     }
 
     #[test]

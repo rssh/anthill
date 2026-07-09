@@ -600,6 +600,3 @@ mod wi619_two_ary_head_introducer_test;
 #[path = "include/wi515_entity_schema_fact_test.rs"]
 mod wi515_entity_schema_fact_test;
 
-#[path = "include/wi631_ambiguous_entity_name_test.rs"]
-mod wi631_ambiguous_entity_name_test;
-

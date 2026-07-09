@@ -668,25 +668,27 @@ impl KB for KbBridge {
         members.into_iter().map(|n| reader::short_of(&n).to_string()).collect()
     }
 
-    fn fields(&self, name: String) -> Vec<FieldInfo> {
-        // The reader returns the matching entity's `(field_sym, field_type)` pairs
-        // carrier-agnostically; a value-in-type field type rides as a `Value::Node`
-        // into `FieldInfo.type_name` (a `Term` carrier over `Value`), surfaced
-        // verbatim via `rterm` rather than dropped. NB: bind the reader result to a
-        // `let` first so the `borrow()` Ref is released BEFORE the mapping — a
-        // chained `read_*(…).map(…)` would hold the borrow across the closure and
-        // conflict with bridge methods that re-borrow mutably. An AMBIGUOUS short
-        // name panics with the candidate list (WI-631) — this Vec-returning surface
-        // has no error channel, and a caller type error is loud here by precedent
-        // (see `facts_of`).
-        let fields = reader::read_entity_fields(&self.kb.borrow(), &name);
-        let fields = fields.unwrap_or_else(|msg| panic!("{msg}"));
-        match fields {
-            Some((_functor, fields)) => fields
-                .into_iter()
+    fn fields(&self, entity: Type) -> Vec<FieldInfo> {
+        // WI-632: the entity is passed BY REFERENCE (`fields(kb(), WorkItem)`); the
+        // `Type` carrier wraps that referencing `Value`. Extract its functor via
+        // the shared `value_functor` (the `facts_of` precedent) — no name-string
+        // resolution, so no short-name ambiguity. A non-entity reference names no
+        // schema — a caller type error, panicked loudly (this Vec-returning surface
+        // has no error channel; mirrors `facts_of`). The declared `(field_sym,
+        // field_type)` pairs ride carrier-agnostically: a value-in-type field type
+        // is a `Value::Node`, surfaced verbatim via `rterm` rather than dropped.
+        let functor = anthill_core::eval::value_functor(&self.kb.borrow(), entity.value())
+            .unwrap_or_else(|| panic!(
+                "KB.fields: `entity` is not an entity reference (expected a \
+                 Ref / Fn / Entity carrier that names a functor)"
+            ));
+        let kb = self.kb.borrow();
+        match kb.entity_field_types(functor) {
+            Some(fields) => fields
+                .iter()
                 .map(|(field_sym, field_type)| FieldInfo {
-                    name: ReflectSymbol::new(field_sym),
-                    type_name: rterm(field_type),
+                    name: ReflectSymbol::new(*field_sym),
+                    type_name: rterm(field_type.clone()),
                 })
                 .collect(),
             None => vec![],
@@ -990,6 +992,13 @@ mod tests {
         ReflectTerm::new(Value::term(kb.resolve_qualified_name_term(qname)))
     }
 
+    /// The `Type` carrier for an entity/sort passed BY REFERENCE (WI-632), the
+    /// way the loader lowers a written `fields(kb(), Foo)` argument.
+    fn type_ref(bridge: &KbBridge, qname: &str) -> Type {
+        let mut kb = bridge.kb.borrow_mut();
+        Type::new(Value::term(kb.resolve_qualified_name_term(qname)))
+    }
+
     #[test]
     fn execute_sort_query_finds_operations() {
         let bridge = load_source_bridge(r#"
@@ -1154,32 +1163,36 @@ fact blue(shade: 3)
     }
 
     #[test]
-    #[should_panic(expected = "ambiguous entity name 'dup'")]
-    fn fields_ambiguous_short_name_panics() {
-        // WI-631: a short name declared by two sorts must fail loudly with
-        // the candidate list, never silently answer one sort's schema.
+    fn fields_by_reference_disambiguates() {
+        // WI-632: a short name WI-631 had to reject as ambiguous is now a
+        // non-issue — `fields` takes the entity BY REFERENCE, so `Beta.dup` and
+        // `Alpha.dup` are two distinct references, each answering its own schema.
         let bridge = load_source_bridge(r#"
-namespace test.wi631_bridge
+namespace test.wi632_bridge
   sort Alpha { entity dup(x: Int64) }
   sort Beta { entity dup(y: String) }
 end
 "#);
-        let _ = bridge.fields("dup".into());
+        let beta = bridge.fields(type_ref(&bridge, "test.wi632_bridge.Beta.dup"));
+        assert_eq!(beta.len(), 1, "Beta.dup has one field");
+        let alpha = bridge.fields(type_ref(&bridge, "test.wi632_bridge.Alpha.dup"));
+        assert_eq!(alpha.len(), 1, "Alpha.dup has one field");
+        let kb = bridge.kb.borrow();
+        assert_eq!(kb.resolve_sym(beta[0].name.symbol()), "y");
+        assert_eq!(kb.resolve_sym(alpha[0].name.symbol()), "x");
     }
 
     #[test]
-    fn fields_qualified_name_resolves_despite_ambiguity() {
-        // The exact qualified name bypasses the short-name scan (WI-631).
-        let bridge = load_source_bridge(r#"
-namespace test.wi631_bridge
-  sort Alpha { entity dup(x: Int64) }
-  sort Beta { entity dup(y: String) }
-end
-"#);
-        let fields = bridge.fields("test.wi631_bridge.Beta.dup".into());
-        assert_eq!(fields.len(), 1, "Beta.dup has one field");
-        let kb = bridge.kb.borrow();
-        assert_eq!(kb.resolve_sym(fields[0].name.symbol()), "y");
+    #[should_panic(expected = "not an entity reference")]
+    fn fields_non_entity_reference_panics() {
+        // WI-632: a `Type` carrying a non-entity Value (a literal) names no
+        // functor — a caller type error, surfaced loudly (mirrors `facts_of`).
+        let bridge = load_source_bridge("sort Foo { entity bar }");
+        let lit = {
+            let mut kb = bridge.kb.borrow_mut();
+            Value::term(kb.alloc(CoreTerm::Const(Literal::Int(7))))
+        };
+        let _ = bridge.fields(Type::new(lit));
     }
 
     #[test]
@@ -1558,7 +1571,7 @@ end
             "constructors should list red+blue, got {ctors:?}",
         );
 
-        let fields = bridge.fields("red".into());
+        let fields = bridge.fields(type_ref(&bridge, "test.wi551_bridge.Color.red"));
         assert!(
             fields.iter().any(|f| short(&f.name) == "shade"),
             "red should surface a `shade` field, got {:?}",

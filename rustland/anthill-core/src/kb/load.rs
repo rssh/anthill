@@ -10689,8 +10689,8 @@ impl<'a> Loader<'a> {
         // self-referential constraint `no ?p -: edge(from: ?p, to: ?p)` matched
         // it (`?p = Node` in both slots) and was spuriously violated on
         // self-loop-free data, and every `KB.execute` pattern query saw a
-        // phantom row. The reflect readers resolve entity names via
-        // `KB::resolve_entity_functor` and read this registry instead.
+        // phantom row. The reflect readers (`KB.fields`, `sort_query`) resolve
+        // the entity BY REFERENCE (WI-632) and read this registry by functor.
         self.kb.register_entity_field_types(functor, field_types);
 
         // WI-630 (everything-is-facts gap): a sort-body entity's `EntityInfo`

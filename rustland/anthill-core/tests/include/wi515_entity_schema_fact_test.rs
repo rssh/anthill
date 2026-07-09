@@ -10,8 +10,8 @@
 //! on self-loop-free data, and every var-quantified `resolve` / `KB.execute`
 //! pattern query saw a phantom declaration row. The declaration-side record
 //! lives in the `entity_field_types` registry + the `EntityInfo` facts; the
-//! reflect readers now consume the registry (`read_entity_fields`,
-//! `find_entity_schema`), so the same-functor fact is gone.
+//! reflect readers now consume the registry by functor (`KB.fields` /
+//! `find_entity_schema`, WI-632 by-reference), so the same-functor fact is gone.
 
 use anthill_core::kb::resolve::ResolveConfig;
 use anthill_core::kb::term::{Term, Var};

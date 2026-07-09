@@ -323,39 +323,6 @@ pub(crate) fn read_descriptions(
     out
 }
 
-/// The entity declaration matching `name` (full or short constructor name):
-/// the resolved functor and its `(field_name, field_type)` pairs, read
-/// carrier-agnostically — a `denoted` field type rides as its own
-/// `Value::Node`, surfaced verbatim by both realizations. `Ok(None)` if no
-/// registered entity matches. Backed by the KB's `entity_field_types`
-/// registry via [`KnowledgeBase::resolve_entity_functor`] (WI-515: the
-/// same-functor "schema fact" under sort `Entity` is gone — a fact carrying
-/// TYPE terms in data slots polluted every var-quantified query over the
-/// constructor). An AMBIGUOUS short name (several sorts declare the
-/// constructor) is `Err(diagnostic)` — loud, never an arbitrary pick
-/// (WI-631); each realization maps it onto its own error channel. The ONE
-/// place the resolution policy lives — `find_entity_schema` and both
-/// `fields` realizations consume this.
-pub(crate) fn read_entity_fields(
-    kb: &KnowledgeBase,
-    name: &str,
-) -> Result<Option<(Symbol, Vec<(Symbol, Value)>)>, String> {
-    use anthill_core::intern::ResolveResult;
-    match kb.resolve_entity_functor(name) {
-        ResolveResult::Found(functor) => {
-            let fields = kb
-                .entity_field_types(functor)
-                .expect("resolve_entity_functor returns a registered functor")
-                .to_vec();
-            Ok(Some((functor, fields)))
-        }
-        ResolveResult::NotFound => Ok(None),
-        ResolveResult::Ambiguous(candidates) => {
-            Err(kb.ambiguous_entity_message(name, &candidates))
-        }
-    }
-}
-
 /// The head `Value`s of every `Rule` fact whose domain is `sort_name` (full or
 /// short). Each realization reifies these to its own term-repr form.
 pub(crate) fn rule_heads_for_sort(kb: &mut KnowledgeBase, sort_name: &str) -> Vec<Value> {

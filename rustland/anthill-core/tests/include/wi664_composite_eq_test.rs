@@ -172,9 +172,12 @@ fn resolver_field_wise_eq_agrees() {
     let mut kb = crate::common::load_kb_with(SRC);
     let cfg = ResolveConfig::default();
     let eq_sym = kb.try_resolve_symbol("anthill.prelude.PartialEq.eq").expect("PartialEq.eq");
-    let ctor = match kb.resolve_entity_functor("point") {
-        anthill_core::intern::ResolveResult::Found(s) => s,
-        other => panic!("point constructor: {other:?}"),
+    // The `point` constructor's functor — scanned by short name over the
+    // entity registry (WI-632 retired `resolve_entity_functor`; this test just
+    // needs the unique `point` ctor of its own fixture).
+    let ctor = {
+        let funcs: Vec<_> = kb.entity_field_type_functors().copied().collect();
+        funcs.into_iter().find(|&f| kb.resolve_sym(f) == "point").expect("point constructor")
     };
     let fields = kb.entity_field_names(ctor).expect("point fields").to_vec();
     let (x, y) = (fields[0], fields[1]);
