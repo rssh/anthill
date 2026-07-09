@@ -316,7 +316,7 @@ private[smtgen] final class Emitter(val kb: KnowledgeBase):
         case Right(rhsSmt) =>
           lhsTerm match
             case Term.Var(vid) =>
-              bindings(syntheticVarName(vid.id)) = rhsSmt
+              bindings(syntheticVarName(vid.varId.id)) = rhsSmt
               return Right(())
             case _ =>
               translateExpr(fn.posArgs(0), bindings) match
@@ -349,7 +349,7 @@ private[smtgen] final class Emitter(val kb: KnowledgeBase):
           case Term.Var(vid) =>
             val fieldName = kb.resolveSym(fieldSym)
             val constName = SmtGen.sanitizeSmtId(fieldName)
-            bindings(syntheticVarName(vid.id)) = constName
+            bindings(syntheticVarName(vid.varId.id)) = constName
             if !fieldConsts.contains(constName) then fieldConsts(constName) = 0.0
           case _ => () // wildcards / literals
         i += 1
@@ -366,7 +366,7 @@ private[smtgen] final class Emitter(val kb: KnowledgeBase):
       val hasBody = candidates.exists(rid => kb.ruleBody(rid).nonEmpty)
       if hasBody then
         val bindIdx = kb.getTerm(fn.posArgs(0)) match
-          case Term.Var(vid) => vid.id
+          case Term.Var(vid) => vid.varId.id
           case other => return Left(SmtGenError(
             s"v0: rule call's pos arg must be a Var, got $other"))
         translateCalledRule(qn) match
@@ -392,7 +392,7 @@ private[smtgen] final class Emitter(val kb: KnowledgeBase):
     val head = kb.ruleHead(rid)
     val resultIdx = kb.getTerm(head) match
       case f: Term.Fn if f.posArgs.length == 1 => kb.getTerm(f.posArgs(0)) match
-        case Term.Var(vid) => vid.id
+        case Term.Var(vid) => vid.varId.id
         case _ => return Left(SmtGenError(
           s"v0: called rule '$calleeQn' head must be ?Var"))
       case _ => return Left(SmtGenError(
@@ -421,7 +421,7 @@ private[smtgen] final class Emitter(val kb: KnowledgeBase):
       case Term.Const(Literal.IntLit(i))     => Right(SmtGen.formatReal(i.toDouble))
       case Term.Const(Literal.BigIntLit(bi)) => Right(SmtGen.formatReal(bi.toDouble))
       case Term.Var(vid) =>
-        val synth = syntheticVarName(vid.id)
+        val synth = syntheticVarName(vid.varId.id)
         Right(bindings.getOrElse(synth, synth))
       case Term.Ref(s)   => Right(SmtGen.sanitizeSmtId(kb.resolveSym(s)))
       case Term.Ident(s) => Right(SmtGen.sanitizeSmtId(kb.resolveSym(s)))
@@ -466,7 +466,7 @@ private[smtgen] final class Emitter(val kb: KnowledgeBase):
         then HeadShape.Predicate
         else if f.posArgs.length == 1 then
           kb.getTerm(f.posArgs(0)) match
-            case Term.Var(vid) => HeadShape.FunctionLike(vid.id)
+            case Term.Var(vid) => HeadShape.FunctionLike(vid.varId.id)
             case other => HeadShape.Unsupported(
               s"v0: function-like rule head's pos_arg must be Var, got $other")
         else if f.posArgs.isEmpty then

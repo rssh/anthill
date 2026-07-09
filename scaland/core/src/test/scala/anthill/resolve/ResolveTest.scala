@@ -1,7 +1,7 @@
 package anthill.resolve
 
 import anthill.kb.KnowledgeBase
-import anthill.term.{Term, TermId, VarId, Literal}
+import anthill.term.{Term, TermId, Var, VarId, Literal}
 import anthill.subst.Substitution
 import scala.collection.mutable.ArrayBuffer
 
@@ -19,7 +19,7 @@ class ResolveTest extends munit.FunSuite:
     // Query: f(?x)
     val xSym = kb.intern("x")
     val vid = kb.freshVar(xSym)
-    val varX = kb.alloc(Term.Var(vid))
+    val varX = kb.alloc(Term.Var(Var.Global(vid)))
     val pattern = kb.alloc(Term.Fn(fSym, IArray(varX), IArray.empty))
 
     val stream = SearchStream.resolve(kb, pattern)
@@ -43,7 +43,7 @@ class ResolveTest extends munit.FunSuite:
 
     val xSym = kb.intern("x")
     val vid = kb.freshVar(xSym)
-    val varX = kb.alloc(Term.Var(vid))
+    val varX = kb.alloc(Term.Var(Var.Global(vid)))
     val pattern = kb.alloc(Term.Fn(fSym, IArray(varX), IArray.empty))
 
     val solutions = SearchStream.resolve(kb, pattern).allSolutions(kb)
@@ -73,7 +73,7 @@ class ResolveTest extends munit.FunSuite:
     // Rule: grandparent(?x, ?z) :- parent(?x, ?y), parent(?y, ?z)
     val xSym = kb.intern("x"); val ySym = kb.intern("y"); val zSym = kb.intern("z")
     val vx = kb.freshVar(xSym); val vy = kb.freshVar(ySym); val vz = kb.freshVar(zSym)
-    val varX = kb.alloc(Term.Var(vx)); val varY = kb.alloc(Term.Var(vy)); val varZ = kb.alloc(Term.Var(vz))
+    val varX = kb.alloc(Term.Var(Var.Global(vx))); val varY = kb.alloc(Term.Var(Var.Global(vy))); val varZ = kb.alloc(Term.Var(Var.Global(vz)))
 
     val head = kb.alloc(Term.Fn(grandparentSym, IArray(varX, varZ), IArray.empty))
     val b1 = kb.alloc(Term.Fn(parentSym, IArray(varX, varY), IArray.empty))
@@ -83,7 +83,7 @@ class ResolveTest extends munit.FunSuite:
     // Query: grandparent(?a, ?b)
     val aSym = kb.intern("a"); val bSym = kb.intern("b")
     val va = kb.freshVar(aSym); val vb = kb.freshVar(bSym)
-    val varA = kb.alloc(Term.Var(va)); val varB = kb.alloc(Term.Var(vb))
+    val varA = kb.alloc(Term.Var(Var.Global(va))); val varB = kb.alloc(Term.Var(Var.Global(vb)))
     val query = kb.alloc(Term.Fn(grandparentSym, IArray(varA, varB), IArray.empty))
 
     val solutions = SearchStream.resolve(kb, query).allSolutions(kb)
@@ -110,7 +110,7 @@ class ResolveTest extends munit.FunSuite:
     val gSym = kb.intern("g")
     val xSym = kb.intern("x")
     val vid = kb.freshVar(xSym)
-    val varX = kb.alloc(Term.Var(vid))
+    val varX = kb.alloc(Term.Var(Var.Global(vid)))
     val pattern = kb.alloc(Term.Fn(gSym, IArray(varX), IArray.empty))
 
     val solutions = SearchStream.resolve(kb, pattern).allSolutions(kb)
@@ -124,7 +124,7 @@ class ResolveTest extends munit.FunSuite:
     val fSym = kb.intern("f")
     val xSym = kb.intern("x")
     val vx = kb.freshVar(xSym)
-    val varX = kb.alloc(Term.Var(vx))
+    val varX = kb.alloc(Term.Var(Var.Global(vx)))
 
     // Rule: f(?x) :- f(?x)  (infinite loop)
     val head = kb.alloc(Term.Fn(fSym, IArray(varX), IArray.empty))
@@ -133,7 +133,7 @@ class ResolveTest extends munit.FunSuite:
 
     val aSym = kb.intern("a")
     val va = kb.freshVar(aSym)
-    val varA = kb.alloc(Term.Var(va))
+    val varA = kb.alloc(Term.Var(Var.Global(va)))
     val query = kb.alloc(Term.Fn(fSym, IArray(varA), IArray.empty))
 
     val config = ResolveConfig(maxDepth = 10)
@@ -154,7 +154,7 @@ class ResolveTest extends munit.FunSuite:
 
     val xSym = kb.intern("x")
     val vid = kb.freshVar(xSym)
-    val varX = kb.alloc(Term.Var(vid))
+    val varX = kb.alloc(Term.Var(Var.Global(vid)))
     val pattern = kb.alloc(Term.Fn(fSym, IArray(varX), IArray.empty))
 
     val stream = SearchStream.resolve(kb, pattern)
@@ -185,7 +185,7 @@ class ResolveTest extends munit.FunSuite:
     // (simplified — doesn't check a=red, b=blue)
     val aSym = kb.intern("a"); val bSym = kb.intern("b")
     val va = kb.freshVar(aSym); val vb = kb.freshVar(bSym)
-    val varA = kb.alloc(Term.Var(va)); val varB = kb.alloc(Term.Var(vb))
+    val varA = kb.alloc(Term.Var(Var.Global(va))); val varB = kb.alloc(Term.Var(Var.Global(vb)))
 
     val mixHead = kb.alloc(Term.Fn(mixSym, IArray(varA, varB, purple), IArray.empty))
     val body1 = kb.alloc(Term.Fn(colorSym, IArray(varA), IArray.empty))
@@ -195,7 +195,7 @@ class ResolveTest extends munit.FunSuite:
     // Query: mix(?x, ?y, "purple")
     val xSym = kb.intern("x"); val ySym = kb.intern("y")
     val vx = kb.freshVar(xSym); val vy = kb.freshVar(ySym)
-    val varX = kb.alloc(Term.Var(vx)); val varY = kb.alloc(Term.Var(vy))
+    val varX = kb.alloc(Term.Var(Var.Global(vx))); val varY = kb.alloc(Term.Var(Var.Global(vy)))
     val query = kb.alloc(Term.Fn(mixSym, IArray(varX, varY, purple), IArray.empty))
 
     val solutions = SearchStream.resolve(kb, query).allSolutions(kb)
@@ -229,7 +229,7 @@ class ResolveTest extends munit.FunSuite:
     // rule: nat(succ(?n)) :- nat(?n)
     val nSym = kb.intern("n")
     val vn = kb.freshVar(nSym)
-    val varN = kb.alloc(Term.Var(vn))
+    val varN = kb.alloc(Term.Var(Var.Global(vn)))
     val succN = kb.alloc(Term.Fn(succSym, IArray(varN), IArray.empty))
     val natSuccN = kb.alloc(Term.Fn(natSym, IArray(succN), IArray.empty))
     val bodyNatN = kb.alloc(Term.Fn(natSym, IArray(varN), IArray.empty))
@@ -238,7 +238,7 @@ class ResolveTest extends munit.FunSuite:
     // query: nat(?x)
     val xSym = kb.intern("x")
     val vx = kb.freshVar(xSym)
-    val varX = kb.alloc(Term.Var(vx))
+    val varX = kb.alloc(Term.Var(Var.Global(vx)))
     val query = kb.alloc(Term.Fn(natSym, IArray(varX), IArray.empty))
 
     val config = ResolveConfig(maxDepth = 5)
@@ -287,7 +287,7 @@ class ResolveTest extends munit.FunSuite:
     val varTerms = (0 until n).map { i =>
       val sym = kb.intern(s"x$i")
       val vid = kb.freshVar(sym)
-      kb.alloc(Term.Var(vid))
+      kb.alloc(Term.Var(Var.Global(vid)))
     }
 
     val head = kb.alloc(Term.Fn(bigSym, IArray.from(varTerms), IArray.empty))
@@ -338,4 +338,34 @@ class ResolveTest extends munit.FunSuite:
     val ratio = sLarge.goalSelections.toDouble / math.max(1L, sSmall.goalSelections).toDouble
     assert(ratio < 6.0,
       f"growth ratio $ratio%.1f× between n=$small and n=$large indicates super-linear scaling (quadratic ≈ 16×)")
+  }
+
+  test("nonlinear head with cyclic query link occurs-fails (WI-637/WI-624)") {
+    // A nonlinear-head fact `p(box(v: ?v), ?v)` queried `p(box(v: g(?q)), ?q)`
+    // links ?q → g(?q) through the shared head var — an occurs violation.
+    // `withFreshVars` flags the answer-link substitution contradictory; the
+    // resolver MUST drop the candidate (0 solutions), not leak a spurious
+    // success with ?q unbound.
+    val kb = KnowledgeBase()
+    val factSort = kb.makeNameTerm("Fact")
+    val domain = kb.makeNameTerm("test")
+    val pSym = kb.intern("p")
+    val boxSym = kb.intern("box")
+    val vField = kb.intern("v")
+    val gSym = kb.intern("g")
+
+    // Fact: p(box(v: ?v), ?v) — nonlinear head (arity>0 → opened via withFreshVars).
+    val vv = kb.alloc(Term.Var(Var.Global(kb.freshVar(kb.intern("v")))))
+    val boxV = kb.alloc(Term.Fn(boxSym, IArray.empty, IArray((vField, vv))))
+    val head = kb.alloc(Term.Fn(pSym, IArray(boxV, vv), IArray.empty))
+    kb.assertFact(head, factSort, domain)
+
+    // Query: p(box(v: g(?q)), ?q).
+    val q = kb.alloc(Term.Var(Var.Global(kb.freshVar(kb.intern("q")))))
+    val gq = kb.alloc(Term.Fn(gSym, IArray(q), IArray.empty))
+    val boxGq = kb.alloc(Term.Fn(boxSym, IArray.empty, IArray((vField, gq))))
+    val goal = kb.alloc(Term.Fn(pSym, IArray(boxGq, q), IArray.empty))
+
+    val solutions = SearchStream.resolve(kb, goal).allSolutions(kb)
+    assertEquals(solutions.length, 0, "cyclic head-match link must occurs-fail (no spurious solution)")
   }

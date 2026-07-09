@@ -1,7 +1,7 @@
 package anthill.kb
 
 import anthill.intern.{TermSymbol, SymbolTable, SymbolKind, SymbolDef}
-import anthill.term.{Term, TermId, TermStore, VarId, Literal}
+import anthill.term.{Term, TermId, TermStore, Var, VarId, Literal}
 import anthill.subst.Substitution
 import anthill.discrim.SubstTree
 
@@ -55,18 +55,27 @@ class KnowledgeBase:
     head: TermId, body: IndexedSeq[TermId],
     sort: TermId, domain: TermId, meta: Option[TermId] = None
   ): RuleId =
+    // WI-637: close the rule's Global head/body vars to DeBruijn (positional,
+    // first-occurrence order over head then body), so a stored head var is
+    // reflexive-only at match time and opened to a fresh Global by
+    // `withFreshVars`. Mirrors rustland `assert_rule_debruijn_with_nodes`.
+    val order = collectRuleVars(head, body)
+    val arity = order.length
+    val dbHead = termToDebruijn(head, order)
+    val dbBody = if arity == 0 then body else body.map(termToDebruijn(_, order))
+
     val ruleId = RuleId.fromIndex(rules.length)
-    rules += RuleEntry(head, body, sort, domain, meta)
+    rules += RuleEntry(dbHead, dbBody, sort, domain, meta, arity)
 
     bySort_.getOrElseUpdate(TermId.raw(sort), ArrayBuffer.empty) += ruleId
     byDomain_.getOrElseUpdate(TermId.raw(domain), ArrayBuffer.empty) += ruleId
 
-    terms.get(head) match
+    terms.get(dbHead) match
       case fn: Term.Fn =>
         byFunctor_.getOrElseUpdate(TermSymbol.raw(fn.functor), ArrayBuffer.empty) += ruleId
       case _ =>
 
-    discrim.insertPattern(terms, head, ruleId)
+    discrim.insertPattern(terms, dbHead, ruleId)
     ruleId
 
   def assertFact(
@@ -179,11 +188,17 @@ class KnowledgeBase:
   def matchTerm(pattern: TermId, target: TermId): Option[Substitution] =
     val tree = SubstTree[Unit]()
     tree.insertPattern(terms, target, ())
-    val results = tree.queryResolved(terms, pattern, _ => target)
+    // One-directional matching: a repeated pattern var matches only
+    // structurally-IDENTICAL target subterms (WI-637 `unifyRebind = false`).
+    val results = tree.queryResolved(terms, pattern, _ => target, unifyRebind = false)
     results.find((_, s) => !s.isContradiction).map(_._2)
 
   def query(pattern: TermId): ArrayBuffer[(RuleId, Substitution)] =
-    val candidates = discrim.queryResolved(terms, pattern, rid => rules(rid.index).head)
+    // SLD head selection IS unification: a repeated head var (or repeated query
+    // var, WI-512) unifies its two matched subterms (WI-637 `unifyRebind =
+    // true`), so `unbox0(box(v: ?v), ?v)` queried `unbox0(box(v: some(?x)),
+    // some(42))` binds `?x = 42` instead of false-failing as a contradiction.
+    val candidates = discrim.queryResolved(terms, pattern, rid => rules(rid.index).head, unifyRebind = true)
     val results = ArrayBuffer.empty[(RuleId, Substitution)]
     for (rid, subst) <- candidates do
       if !rules(rid.index).retracted && !subst.isContradiction then
@@ -208,7 +223,8 @@ class KnowledgeBase:
 
   private def collectVarsRec(term: TermId, vars: ArrayBuffer[VarId], seen: HashSet[Int]): Unit =
     terms.get(term) match
-      case Term.Var(vid) =>
+      case Term.Var(v) =>
+        val vid = v.varId
         if seen.add(vid.id) then vars += vid
       case fn: Term.Fn =>
         fn.posArgs.foreach(id => collectVarsRec(id, vars, seen))
@@ -243,7 +259,7 @@ class KnowledgeBase:
 
   def applySubst(term: TermId, subst: Substitution): TermId =
     terms.get(term) match
-      case Term.Var(vid) => subst.resolve(vid).getOrElse(term)
+      case Term.Var(v) => subst.resolve(v.varId).getOrElse(term)
       case _: Term.Fn => mapFnChildren(term, id => applySubst(id, subst))
       case _ => term
 
@@ -252,8 +268,8 @@ class KnowledgeBase:
     var continue = true
     while continue do
       terms.get(current) match
-        case Term.Var(vid) =>
-          subst.resolve(vid) match
+        case Term.Var(v) =>
+          subst.resolve(v.varId) match
             case Some(bound) =>
               if TermId.raw(bound) == TermId.raw(current) then continue = false
               else current = bound
@@ -268,45 +284,97 @@ class KnowledgeBase:
       case _: Term.Fn => mapFnChildren(walked, id => reify(id, subst))
       case _ => walked
 
+  /** Number of DeBruijn vars a rule closes over head+body (WI-637); 0 for a
+    * fully-ground rule/fact. */
+  def ruleArity(id: RuleId): Int = rules(id.index).arity
+
+  /** Close `Var.Global` vars in `term` to `Var.DeBruijn`, indexed against
+    * `order` (distinct Globals in first-occurrence order): the last var in
+    * `order` gets index 0 (innermost binder), mirroring rustland
+    * `term_to_debruijn`. Vars not in `order`, or already DeBruijn/Rigid, are
+    * left untouched. */
+  private def termToDebruijn(term: TermId, order: collection.Seq[VarId]): TermId =
+    terms.get(term) match
+      case Term.Var(Var.Global(vid)) =>
+        val pos = order.indexWhere(_ == vid)
+        if pos >= 0 then alloc(Term.Var(Var.DeBruijn(order.length - 1 - pos))) else term
+      case Term.Var(_) => term
+      case _: Term.Fn => mapFnChildren(term, id => termToDebruijn(id, order))
+      case _ => term
+
+  /** Open a DeBruijn term: replace `DeBruijn(i)` with `Global(freshVars(i))`
+    * (rustland `term_from_debruijn`). An out-of-range index or a Global/Rigid
+    * var is left untouched. */
+  def termFromDebruijn(term: TermId, freshVars: IndexedSeq[VarId]): TermId =
+    terms.get(term) match
+      case Term.Var(Var.DeBruijn(idx)) =>
+        if idx < freshVars.length then alloc(Term.Var(Var.Global(freshVars(idx)))) else term
+      case Term.Var(_) => term
+      case _: Term.Fn => mapFnChildren(term, id => termFromDebruijn(id, freshVars))
+      case _ => term
+
+  /** Does `vid` occur (chased through `subst`) in the term rooted at `term`?
+    * Guards `withFreshVars` against binding a cyclic query-var link (WI-624). */
+  private def occursInTerm(vid: VarId, term: TermId, subst: Substitution): Boolean =
+    terms.get(walk(term, subst)) match
+      case Term.Var(v) => v.varId.id == vid.id
+      case fn: Term.Fn =>
+        fn.posArgs.exists(occursInTerm(vid, _, subst)) ||
+          fn.namedArgs.exists((_, t) => occursInTerm(vid, t, subst))
+      case _ => false
+
   def standardizeApart(id: RuleId): (TermId, IndexedSeq[TermId]) =
-    val head = rules(id.index).head
-    val body = rules(id.index).body
-    val allVars = collectRuleVars(head, body)
+    val entry = rules(id.index)
+    if entry.arity == 0 then (entry.head, entry.body)
+    else
+      val underscore = intern("_")
+      val freshVars = IndexedSeq.tabulate(entry.arity)(_ => freshVar(underscore))
+      val newHead = termFromDebruijn(entry.head, freshVars)
+      val newBody = entry.body.map(termFromDebruijn(_, freshVars))
+      (newHead, newBody)
 
-    val rename = Substitution()
-    for vid <- allVars do
-      val fresh = freshVar(vid.name)
-      rename.bind(vid, alloc(Term.Var(fresh)))
-
-    val newHead = applySubst(head, rename)
-    val newBody = body.map(b => applySubst(b, rename))
-    (newHead, newBody)
-
+  /** Open a rule for a discrim head-match (WI-637), mirroring rustland
+    * `with_fresh_vars`. Allocate `arity` fresh Globals for the head/body
+    * DeBruijn vars; then in two passes over `treeSubst`:
+    *   1. a SYNTHETIC-DeBruijn entry (a matched head-var position, keyed by
+    *      `Var.varId`'s reserved range) → `bodyRename` (its fresh Global ← the
+    *      concrete query value it matched);
+    *   2. a query-var entry → `answerLinks`, DeBruijn-opened then routed through
+    *      `bodyRename` so a nonlinear head's concrete match reaches the caller
+    *      var — occurs-checked so a cyclic link (`p(box(v: g(?q)), ?q)`) flags
+    *      the whole match contradictory (the resolver drops the candidate)
+    *      rather than looping `reify`.
+    * `arity == 0` (a fully-ground rule) degenerates: no fresh vars, empty
+    * `bodyRename`, every entry a direct query-var link. */
   def withFreshVars(id: RuleId, treeSubst: Substitution): (IndexedSeq[TermId], Substitution) =
-    val head = rules(id.index).head
-    val body = rules(id.index).body
-    val allVars = collectRuleVars(head, body)
+    val entry = rules(id.index)
+    val arity = entry.arity
+    val body = entry.body
 
-    val rename = Substitution()
-    for vid <- allVars do
-      treeSubst.resolve(vid) match
-        case Some(bound) if !terms.get(bound).isInstanceOf[Term.Var] =>
-          rename.bind(vid, bound)
+    val underscore = intern("_")
+    val freshVars = IndexedSeq.tabulate(arity)(_ => freshVar(underscore))
+
+    val bodyRename = Substitution()
+    for (tsVid, boundTerm) <- treeSubst.bindings do
+      Var.syntheticDebruijnIndex(tsVid, arity) match
+        case Some(dbIndex) if dbIndex < freshVars.length =>
+          bodyRename.bind(freshVars(dbIndex), boundTerm)
         case _ =>
-          rename.bind(vid, alloc(Term.Var(freshVar(vid.name))))
-
-    val freshBody = body.map(b => applySubst(b, rename))
 
     val answerLinks = Substitution()
     for (tsVid, boundTerm) <- treeSubst.bindings do
-      if !allVars.contains(tsVid) then
-        terms.get(boundTerm) match
-          case Term.Var(ruleVid) =>
-            rename.resolve(ruleVid).foreach(renamed => answerLinks.bind(tsVid, renamed))
-          case _ =>
-            val renamedTerm = applySubst(boundTerm, rename)
-            answerLinks.bind(tsVid, renamedTerm)
+      if Var.syntheticDebruijnIndex(tsVid, arity).isEmpty then
+        val opened = termFromDebruijn(boundTerm, freshVars)
+        if bodyRename.isEmpty then
+          answerLinks.bind(tsVid, opened)
+        else
+          val linked = applySubst(opened, bodyRename)
+          // Don't bind a cyclic link (it would loop later occurs-walks / reify);
+          // the contradiction flag already dooms this candidate.
+          if occursInTerm(tsVid, linked, answerLinks) then answerLinks.markContradiction()
+          else answerLinks.bind(tsVid, linked)
 
+    val freshBody = body.map(b => applySubst(termFromDebruijn(b, freshVars), bodyRename))
     (freshBody, answerLinks)
 
   def applySubstEach(goals: IndexedSeq[TermId], subst: Substitution): IndexedSeq[TermId] =

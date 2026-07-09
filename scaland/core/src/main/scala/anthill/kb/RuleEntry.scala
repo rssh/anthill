@@ -25,5 +25,9 @@ private[kb] class RuleEntry(
   val sort: TermId,
   val domain: TermId,
   val meta: Option[TermId],
+  // Number of distinct DeBruijn vars closed over head+body (WI-637). 0 for a
+  // truly ground fact — those take the resolver's raw-bind fast path; arity>0
+  // rules (incl. bodyless facts with vars) open through `withFreshVars`.
+  val arity: Int = 0,
   var retracted: Boolean = false
 )

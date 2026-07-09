@@ -31,6 +31,50 @@ final case class VarId(id: Int, name: TermSymbol):
     case v: VarId => v.id == this.id
     case _        => false
 
+// ── Var — variable kind (mirrors rustland `kb::term::Var`) ──────
+
+/** A logic variable's kind. Ported from rustland so the two implementations
+  * share the concept (WI-637):
+  *   - `Global`  — flex ("λProlog" sense): freely unifiable, used during
+  *     resolution after a rule's binders are opened, and for query/goal vars.
+  *   - `DeBruijn` — the canonical form of a STORED rule's head/body vars
+  *     (positional, index 0 = innermost binder). Reflexive-only at match time
+  *     (a rule-head var imposes equality on the subterms it matched only by
+  *     being opened to a fresh `Global`, not by unifying its two occurrences'
+  *     targets); opened to a fresh `Global` by `withFreshVars`.
+  *   - `Rigid`   — a skolem witness (eigenvariable) — unifies only with the
+  *     same-`VarId` `Rigid`. Scaland has no proof-discharge/typer to mint these
+  *     yet, so it is ADT scaffolding for parity; the reflexive-only unifier
+  *     already handles it. */
+enum Var:
+  case Global(id: VarId)
+  case DeBruijn(index: Int)
+  case Rigid(id: VarId)
+
+  def isGlobal: Boolean = this match { case Var.Global(_) => true; case _ => false }
+  def isDeBruijn: Boolean = this match { case Var.DeBruijn(_) => true; case _ => false }
+  def isRigid: Boolean = this match { case Var.Rigid(_) => true; case _ => false }
+
+  /** VarId for use as a substitution / discrim key. Global / Rigid return their
+    * own id; DeBruijn(n) returns a SYNTHETIC id `Int.MaxValue - n` in a reserved
+    * range that fresh vars (counting up from 0) never reach — so a stored
+    * DeBruijn head var and a query Global var share one keyspace, exactly as
+    * rustland's `Var::as_vid`. */
+  def varId: VarId = this match
+    case Var.Global(id) => id
+    case Var.Rigid(id)  => id
+    case Var.DeBruijn(n) => VarId(Int.MaxValue - n, TermSymbol.fromRaw(0))
+
+object Var:
+  /** Inverse of [[Var.varId]]'s DeBruijn encoding: if `vid` falls in the
+    * reserved synthetic range (`Int.MaxValue - n` for `n` in `0 until arity`),
+    * return the DeBruijn index `n`; otherwise `None` (a real Global/Rigid id).
+    * The decode `withFreshVars` uses to route a matched head-var position into
+    * `body_rename`. `arity == 0` yields `None`. */
+  def syntheticDebruijnIndex(vid: VarId, arity: Int): Option[Int] =
+    if arity > 0 && vid.id > Int.MaxValue - arity - 1 then Some(Int.MaxValue - vid.id)
+    else None
+
 // ── Literal ─────────────────────────────────────────────────────
 
 /** Wrapper for Double that handles NaN equality correctly for hash-consing. */
@@ -81,7 +125,9 @@ sealed trait Term:
 
 object Term:
   case class Const(lit: Literal) extends Term
-  case class Var(id: VarId) extends Term
+  // Param type fully-qualified: inside `object Term`, a bare `Var` would bind to
+  // this nested case class, not the top-level `anthill.term.Var` enum.
+  case class Var(v: anthill.term.Var) extends Term
   case object Bottom extends Term
   case class Ref(sym: TermSymbol) extends Term
   case class Ident(sym: TermSymbol) extends Term
