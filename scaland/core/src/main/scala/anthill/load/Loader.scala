@@ -2,7 +2,7 @@ package anthill.load
 
 import anthill.kb.{KnowledgeBase, SortKind}
 import anthill.intern.{TermSymbol, SymbolTable, SymbolKind, SymbolDef, ScopeInclusion, ResolveResult}
-import anthill.term.{Term, TermId, VarId, Literal}
+import anthill.term.{Term, TermId, Var, VarId, Literal}
 import anthill.parse.*
 import anthill.span.Span
 
@@ -533,14 +533,22 @@ object Loader:
   ): TermId =
     fileTerms.get(termId) match
       case Term.Const(lit) => kb.alloc(Term.Const(lit))
-      case Term.Var(vid) =>
-        // Map parse-time VarId to a fresh KB VarId (preserves sharing within scope)
+      case Term.Var(v) =>
+        // Map parse-time VarId to a fresh KB VarId (preserves sharing within
+        // scope). Parse terms carry only `Global` vars; `assertRule`/`assertFact`
+        // later close them to DeBruijn (WI-637). A DeBruijn/Rigid here is a bug
+        // upstream — fail loudly rather than mis-map it.
+        val vid = v match
+          case Var.Global(g) => g
+          case other =>
+            throw new IllegalStateException(
+              s"reallocTerm: parse term carries a non-Global var ($other); the parser emits only Global")
         val kbVid = varMap.getOrElseUpdate(vid.id, {
           val name = fileSym.name(vid.name)
           val kbSym = kb.intern(name)
           kb.freshVar(kbSym)
         })
-        kb.alloc(Term.Var(kbVid))
+        kb.alloc(Term.Var(Var.Global(kbVid)))
       case fn: Term.Fn if isTypedVarMarker(fn, fileSym) =>
         // WI-582: strip the typed-pattern marker `typed_var(?x, type: T)` back to
         // the bare `?x`. The parser wraps a `?x: T` rule-LHS arg as this marker;

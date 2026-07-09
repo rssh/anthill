@@ -1,7 +1,7 @@
 package anthill.load
 
 import anthill.kb.{KnowledgeBase, SortKind}
-import anthill.term.{Term, TermId, VarId, Literal}
+import anthill.term.{Term, TermId, Var, VarId, Literal}
 import anthill.intern.TermSymbol
 import anthill.parse.*
 import anthill.span.Span
@@ -31,7 +31,7 @@ class LoaderTest extends munit.FunSuite:
     val grandparentSym = symbols.intern("grandparent")
     val xSym = symbols.intern("x"); val ySym = symbols.intern("y"); val zSym = symbols.intern("z")
     val vx = VarId(0, xSym); val vy = VarId(1, ySym); val vz = VarId(2, zSym)
-    val varX = terms.alloc(Term.Var(vx)); val varY = terms.alloc(Term.Var(vy)); val varZ = terms.alloc(Term.Var(vz))
+    val varX = terms.alloc(Term.Var(Var.Global(vx))); val varY = terms.alloc(Term.Var(Var.Global(vy))); val varZ = terms.alloc(Term.Var(Var.Global(vz)))
 
     val ruleHead = terms.alloc(Term.Fn(grandparentSym, IArray(varX, varZ), IArray.empty))
     val ruleBody1 = terms.alloc(Term.Fn(parentSym, IArray(varX, varY), IArray.empty))
@@ -101,7 +101,7 @@ class LoaderTest extends munit.FunSuite:
     val gpSym = kb.intern("grandparent")
     val aSym = kb.intern("a"); val bSym = kb.intern("b")
     val va = kb.freshVar(aSym); val vb = kb.freshVar(bSym)
-    val varA = kb.alloc(Term.Var(va)); val varB = kb.alloc(Term.Var(vb))
+    val varA = kb.alloc(Term.Var(Var.Global(va))); val varB = kb.alloc(Term.Var(Var.Global(vb)))
     val query = kb.alloc(Term.Fn(gpSym, IArray(varA, varB), IArray.empty))
 
     val solutions = SearchStream.resolve(kb, query).allSolutions(kb)

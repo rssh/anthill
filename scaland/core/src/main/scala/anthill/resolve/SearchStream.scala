@@ -219,8 +219,12 @@ class SearchStream private (
     cp.next += 1
 
     val body = kb.ruleBody(rid)
-    if body.isEmpty then
-      // Ground fact match — merge tree_subst with path compression
+    if body.isEmpty && kb.ruleArity(rid) == 0 then
+      // Ground fact match — merge tree_subst with path compression.
+      // A bodyless rule WITH vars (arity > 0) is NOT ground: its head-match
+      // tree_subst carries synthetic-DeBruijn entries that must be opened, so
+      // it falls to the `withFreshVars` branch below (WI-637), not this raw
+      // bind fast path.
       val newSubst = frame.subst.snapshot()
       newSubst.bindCompressed(treeSubst.bindings, kb.terms)
       if newSubst.isContradiction then
@@ -235,8 +239,15 @@ class SearchStream private (
 
       stack += Frame(newGoals, newSubst, frame.depth + 1, FrameState.Init(newDelay))
     else
-      // Rule with body — instantiate with fresh vars
+      // Rule with body (or a bodyless arity>0 rule) — open its DeBruijn vars.
       val (freshBody, answerLinks) = kb.withFreshVars(rid, treeSubst)
+
+      // WI-637/WI-624: `withFreshVars` flags `answerLinks` contradictory when a
+      // query-var link is cyclic (occurs-fail). `bindCompressed` copies only the
+      // bindings, not the flag, so honor it HERE before merging — else the
+      // occurs-fail candidate leaks a spurious solution with the var unbound.
+      if answerLinks.isContradiction then
+        return Some(StepResult.Continue)
 
       val newSubst = frame.subst.snapshot()
       newSubst.bindCompressed(answerLinks.bindings, kb.terms)

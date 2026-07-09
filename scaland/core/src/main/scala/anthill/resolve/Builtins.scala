@@ -68,9 +68,9 @@ object Builtins:
   /** Bind a result term to the result arg (second positional), handling Var or check-equality. */
   private def bindResult(kb: KnowledgeBase, resultArg: TermId, resultTerm: TermId, subst: Substitution): BuiltinResult =
     kb.getTerm(resultArg) match
-      case Term.Var(vid) =>
+      case Term.Var(v) =>
         val extra = Substitution()
-        extra.bind(vid, resultTerm)
+        extra.bind(v.varId, resultTerm)
         BuiltinResult.SuccessWithBindings(extra)
       case _ =>
         if TermId.raw(kb.walk(resultArg, subst)) == TermId.raw(resultTerm) then

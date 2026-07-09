@@ -1,6 +1,6 @@
 package anthill.kb
 
-import anthill.term.{Term, TermId, Literal}
+import anthill.term.{Term, TermId, Var, Literal}
 import anthill.subst.Substitution
 
 class KnowledgeBaseTest extends munit.FunSuite:
@@ -60,7 +60,7 @@ class KnowledgeBaseTest extends munit.FunSuite:
     val kb = KnowledgeBase()
     val xSym = kb.intern("x")
     val vid = kb.freshVar(xSym)
-    val varTerm = kb.alloc(Term.Var(vid))
+    val varTerm = kb.alloc(Term.Var(Var.Global(vid)))
     val target = kb.alloc(Term.Const(Literal.IntLit(42)))
     val s = kb.matchTerm(varTerm, target).get
     assertEquals(s.resolve(vid).map(TermId.raw), Some(TermId.raw(target)))
@@ -70,7 +70,7 @@ class KnowledgeBaseTest extends munit.FunSuite:
     val kb = KnowledgeBase()
     val xSym = kb.intern("x")
     val vid = kb.freshVar(xSym)
-    val varTerm = kb.alloc(Term.Var(vid))
+    val varTerm = kb.alloc(Term.Var(Var.Global(vid)))
     val fSym = kb.intern("f")
     val v1 = kb.alloc(Term.Const(Literal.IntLit(1)))
     val v2 = kb.alloc(Term.Const(Literal.IntLit(2)))
@@ -83,6 +83,113 @@ class KnowledgeBaseTest extends munit.FunSuite:
     // Target: f(1, 2) — should fail (inconsistent)
     val targetBad = kb.alloc(Term.Fn(fSym, IArray(v1, v2), IArray.empty))
     assert(kb.matchTerm(pattern, targetBad).isEmpty)
+  }
+
+  test("nonlinear head doubly concrete unifies (WI-637)") {
+    // Mirror of rustland WI-633 `nonlinear_head_doubly_concrete_unifies`.
+    // SLD head selection IS unification: the repeated head var `?v` in the
+    // fact `unbox0(box(v: ?v), ?v)` binds its two matched query subterms —
+    // `some(?x)` and `some(42)` — by UNIFICATION, so `?x = 42`. Before WI-637
+    // the discrim leaf double-bound `?v` structurally (some(?x) vs some(42)
+    // differ) and dropped the candidate: silent 0 solutions.
+    val kb = KnowledgeBase()
+    val factSort = kb.makeNameTerm("Fact")
+    val domain = kb.makeNameTerm("test")
+    val unbox = kb.intern("unbox0")
+    val boxSym = kb.intern("box")
+    val vField = kb.intern("v")
+    val someSym = kb.intern("some")
+
+    // Fact: unbox0(box(v: ?v), ?v) — repeated head var.
+    val vv = kb.freshVar(kb.intern("vv"))
+    val varV = kb.alloc(Term.Var(Var.Global(vv)))
+    val boxV = kb.alloc(Term.Fn(boxSym, IArray.empty, IArray((vField, varV))))
+    val head = kb.alloc(Term.Fn(unbox, IArray(boxV, varV), IArray.empty))
+    kb.assertFact(head, factSort, domain)
+
+    // Query: unbox0(box(v: some(?x)), some(42)).
+    val xv = kb.freshVar(kb.intern("x"))
+    val varX = kb.alloc(Term.Var(Var.Global(xv)))
+    val someX = kb.alloc(Term.Fn(someSym, IArray(varX), IArray.empty))
+    val boxSomeX = kb.alloc(Term.Fn(boxSym, IArray.empty, IArray((vField, someX))))
+    val fortyTwo = kb.alloc(Term.Const(Literal.IntLit(42)))
+    val some42 = kb.alloc(Term.Fn(someSym, IArray(fortyTwo), IArray.empty))
+    val goal = kb.alloc(Term.Fn(unbox, IArray(boxSomeX, some42), IArray.empty))
+
+    val results = kb.query(goal)
+    assertEquals(results.length, 1, "repeated head var must unify the two occurrences")
+    val (_, s) = results(0)
+    assertEquals(
+      TermId.raw(kb.reify(varX, s)), TermId.raw(fortyTwo),
+      "?x must unify to 42 through the repeated head var"
+    )
+  }
+
+  test("match_term nonlinear is matching not unification (WI-637)") {
+    // Mirror of rustland WI-633 `match_term_nonlinear_is_matching_not_unification`.
+    // The boundary the SLD unify path must NOT cross: a nonlinear pattern var
+    // `?x` in `f(?x, ?x)` MATCHES only structurally-IDENTICAL target subterms.
+    // Against `f(some(?a), some(?b))` with DISTINCT target vars, matchTerm must
+    // FAIL — it is one-directional (`unifyRebind = false`); it must NOT unify
+    // the two target subterms by binding `?a := ?b`.
+    val kb = KnowledgeBase()
+    val fSym = kb.intern("f")
+    val someSym = kb.intern("some")
+    val vid = kb.freshVar(kb.intern("x"))
+    val varX = kb.alloc(Term.Var(Var.Global(vid)))
+    val pattern = kb.alloc(Term.Fn(fSym, IArray(varX, varX), IArray.empty))
+
+    val someA = kb.alloc(Term.Fn(someSym, IArray(kb.alloc(Term.Var(Var.Global(kb.freshVar(kb.intern("a")))))), IArray.empty))
+    val someB = kb.alloc(Term.Fn(someSym, IArray(kb.alloc(Term.Var(Var.Global(kb.freshVar(kb.intern("b")))))), IArray.empty))
+
+    // Target f(some(?a), some(?b)), ?a ≠ ?b — distinct but UNIFIABLE.
+    val targetDistinct = kb.alloc(Term.Fn(fSym, IArray(someA, someB), IArray.empty))
+    assert(
+      kb.matchTerm(pattern, targetDistinct).isEmpty,
+      "nonlinear pattern must MATCH (structural identity), not UNIFY distinct target vars"
+    )
+
+    // Same structure at both positions (some(?a), some(?a)) → matches.
+    val targetSame = kb.alloc(Term.Fn(fSym, IArray(someA, someA), IArray.empty))
+    assert(
+      kb.matchTerm(pattern, targetSame).isDefined,
+      "identical target subterms at the repeated position must match"
+    )
+  }
+
+  test("nonlinear query var over distinct rule-head vars is a contradiction (WI-637 soundness)") {
+    // The boundary the DeBruijn/reflexive-only rule guards: a repeated QUERY var
+    // `pair(?n, ?n)` against a RULE whose head has DISTINCT vars
+    // `pair(?x, ?y) :- dummy(?x)` must NOT unify `?x := ?y` — those are DeBruijn
+    // (reflexive-only), so the candidate is a contradiction (0 solutions), not
+    // an unsound extra answer where the body's `?x`/`?y` run decoupled. The SAME
+    // head var at both positions (`pair(?x, ?x)`) is consistent → 1 candidate.
+    def kbRule(sameVar: Boolean): (KnowledgeBase, TermId) =
+      val kb = KnowledgeBase()
+      val ruleSort = kb.makeNameTerm("Rule")
+      val domain = kb.makeNameTerm("test")
+      val pairSym = kb.intern("pair")
+      val dummySym = kb.intern("dummy")
+      val vx = kb.alloc(Term.Var(Var.Global(kb.freshVar(kb.intern("x")))))
+      val vy = if sameVar then vx else kb.alloc(Term.Var(Var.Global(kb.freshVar(kb.intern("y")))))
+      val head = kb.alloc(Term.Fn(pairSym, IArray(vx, vy), IArray.empty))
+      val body = kb.alloc(Term.Fn(dummySym, IArray(vx), IArray.empty))
+      kb.assertRule(head, IndexedSeq(body), ruleSort, domain)
+      val vn = kb.alloc(Term.Var(Var.Global(kb.freshVar(kb.intern("n")))))
+      val goal = kb.alloc(Term.Fn(pairSym, IArray(vn, vn), IArray.empty))
+      (kb, goal)
+
+    val (kbDistinct, goalD) = kbRule(sameVar = false)
+    assert(
+      kbDistinct.query(goalD).isEmpty,
+      "distinct rule-head vars (DeBruijn, reflexive-only) can't unify a repeated query var"
+    )
+
+    val (kbSame, goalS) = kbRule(sameVar = true)
+    assertEquals(
+      kbSame.query(goalS).length, 1,
+      "same rule-head var at both positions is consistent with a repeated query var"
+    )
   }
 
   test("query by pattern") {
@@ -102,7 +209,7 @@ class KnowledgeBaseTest extends munit.FunSuite:
     // Query: parent(?x, "bob")
     val xSym = kb.intern("x")
     val vid = kb.freshVar(xSym)
-    val varX = kb.alloc(Term.Var(vid))
+    val varX = kb.alloc(Term.Var(Var.Global(vid)))
     val pattern = kb.alloc(Term.Fn(parentSym, IArray(varX, bob), IArray.empty))
 
     val results = kb.query(pattern)
@@ -120,7 +227,7 @@ class KnowledgeBaseTest extends munit.FunSuite:
 
     val xSym = kb.intern("x"); val ySym = kb.intern("y"); val zSym = kb.intern("z")
     val vx = kb.freshVar(xSym); val vy = kb.freshVar(ySym); val vz = kb.freshVar(zSym)
-    val varX = kb.alloc(Term.Var(vx)); val varY = kb.alloc(Term.Var(vy)); val varZ = kb.alloc(Term.Var(vz))
+    val varX = kb.alloc(Term.Var(Var.Global(vx))); val varY = kb.alloc(Term.Var(Var.Global(vy))); val varZ = kb.alloc(Term.Var(Var.Global(vz)))
 
     val head = kb.alloc(Term.Fn(grandparentSym, IArray(varX, varZ), IArray.empty))
     val b1 = kb.alloc(Term.Fn(parentSym, IArray(varX, varY), IArray.empty))
@@ -137,7 +244,7 @@ class KnowledgeBaseTest extends munit.FunSuite:
     val fSym = kb.intern("f")
     val xSym = kb.intern("x")
     val vid = kb.freshVar(xSym)
-    val varX = kb.alloc(Term.Var(vid))
+    val varX = kb.alloc(Term.Var(Var.Global(vid)))
     val v = kb.alloc(Term.Const(Literal.IntLit(42)))
     val term = kb.alloc(Term.Fn(fSym, IArray(varX), IArray.empty))
 
@@ -156,7 +263,7 @@ class KnowledgeBaseTest extends munit.FunSuite:
     val fSym = kb.intern("f"); val gSym = kb.intern("g")
     val xSym = kb.intern("x")
     val vx = kb.freshVar(xSym)
-    val varX = kb.alloc(Term.Var(vx))
+    val varX = kb.alloc(Term.Var(Var.Global(vx)))
 
     val head = kb.alloc(Term.Fn(fSym, IArray(varX), IArray.empty))
     val bodyLit = kb.alloc(Term.Fn(gSym, IArray(varX), IArray.empty))
@@ -179,7 +286,7 @@ class KnowledgeBaseTest extends munit.FunSuite:
     val fSym = kb.intern("f")
     val xSym = kb.intern("x"); val ySym = kb.intern("y")
     val vx = kb.freshVar(xSym); val vy = kb.freshVar(ySym)
-    val varX = kb.alloc(Term.Var(vx)); val varY = kb.alloc(Term.Var(vy))
+    val varX = kb.alloc(Term.Var(Var.Global(vx))); val varY = kb.alloc(Term.Var(Var.Global(vy)))
     val term = kb.alloc(Term.Fn(fSym, IArray(varX, varY, varX), IArray.empty))
     val vars = kb.collectVars(term)
     assertEquals(vars.length, 2)
@@ -207,7 +314,7 @@ class KnowledgeBaseTest extends munit.FunSuite:
     val domain = kb.makeNameTerm("d")
     val xSym = kb.intern("x")
     val vx = kb.freshVar(xSym)
-    val varX = kb.alloc(Term.Var(vx))
+    val varX = kb.alloc(Term.Var(Var.Global(vx)))
     val fSym = kb.intern("f"); val gSym = kb.intern("g")
     val fx = kb.alloc(Term.Fn(fSym, IArray(varX), IArray.empty))
     val gx = kb.alloc(Term.Fn(gSym, IArray(varX), IArray.empty))
@@ -268,7 +375,7 @@ class KnowledgeBaseTest extends munit.FunSuite:
 
     val xSym = kb.intern("x")
     val vx = kb.freshVar(xSym)
-    val varX = kb.alloc(Term.Var(vx))
+    val varX = kb.alloc(Term.Var(Var.Global(vx)))
     val head = kb.alloc(Term.Fn(fSym, IArray(varX), IArray.empty))
     val bodyLit = kb.alloc(Term.Fn(gSym, IArray(varX), IArray.empty))
     kb.assertRule(head, IndexedSeq(bodyLit), sort, domain)

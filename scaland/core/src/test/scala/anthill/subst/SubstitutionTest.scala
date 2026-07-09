@@ -1,6 +1,6 @@
 package anthill.subst
 
-import anthill.term.{Term, TermId, TermStore, VarId, Literal}
+import anthill.term.{Term, TermId, TermStore, Var, VarId, Literal}
 import anthill.intern.TermSymbol
 
 class SubstitutionTest extends munit.FunSuite:
@@ -72,7 +72,7 @@ class SubstitutionTest extends munit.FunSuite:
     val store = TermStore()
     val v1 = VarId(1, sym(0))
     val v2 = VarId(2, sym(1))
-    val vTerm = store.alloc(Term.Var(v1))
+    val vTerm = store.alloc(Term.Var(Var.Global(v1)))
     val concrete = store.alloc(Term.Const(Literal.IntLit(99)))
     val s = Substitution()
     // v2 -> Var(v1)

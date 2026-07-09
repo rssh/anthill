@@ -80,7 +80,10 @@ class SubstTree[L]:
 
   private def insertPatternWalk(node: DiscrimNode[L], terms: TermStore, termId: TermId): DiscrimNode[L] =
     terms.get(termId) match
-      case Term.Var(vid) =>
+      case Term.Var(v) =>
+        // Key the var edge on the var's VarId (synthetic for a DeBruijn head
+        // var, real for a Global) so a repeated var reuses one edge (WI-637).
+        val vid = v.varId
         val pos = node.varEdges.indexWhere(_._1 == vid)
         if pos >= 0 then node.varEdges(pos)._2
         else
@@ -235,12 +238,16 @@ class SubstTree[L]:
     queryNode(root, terms, queryTerm, VarPath.Root, SmallSubst(), results)
     results
 
-  def queryResolved(terms: TermStore, queryTerm: TermId, resolveTerm: L => TermId): ArrayBuffer[(L, Substitution)] =
+  /** `unifyRebind` (WI-637): the SLD head-selection caller (`query`) passes
+    * `true` so a repeated pattern var UNIFIES its matched subterms; the
+    * one-directional matching caller (`matchTerm`) passes `false` so it demands
+    * structural identity. See [[Substitution.bindLeaf]]. */
+  def queryResolved(terms: TermStore, queryTerm: TermId, resolveTerm: L => TermId, unifyRebind: Boolean): ArrayBuffer[(L, Substitution)] =
     val raw = queryRaw(terms, queryTerm)
     val results = ArrayBuffer.empty[(L, Substitution)]
     for (leaf, subst) <- raw do
       val factTerm = resolveTerm(leaf)
-      results += ((leaf, subst.resolveLeaf(terms, factTerm)))
+      results += ((leaf, subst.resolveLeaf(terms, factTerm, unifyRebind)))
     results
 
   private def queryNode(
@@ -248,8 +255,8 @@ class SubstTree[L]:
     path: VarPath, subst: SmallSubst, results: ArrayBuffer[(L, SmallSubst)]
   ): Unit =
     terms.get(queryTerm) match
-      case Term.Var(vid) =>
-        val s = subst.withBinding(vid, BindValue.Path(path))
+      case Term.Var(v) =>
+        val s = subst.withBinding(v.varId, BindValue.Path(path))
         collectAllLeaves(node, s, results)
 
       case fn: Term.Fn =>
@@ -323,9 +330,9 @@ class SubstTree[L]:
     onDone: OnDone
   ): Unit =
     terms.get(argTermId) match
-      case Term.Var(vid) =>
+      case Term.Var(v) =>
         val s = argPath match
-          case Some(path) => subst.withBinding(vid, BindValue.Path(path))
+          case Some(path) => subst.withBinding(v.varId, BindValue.Path(path))
           case None => subst
         skipSubtreeThenContinue(node, terms, remPos, remNamed, posIdx, namedIdx, bindPaths, s, results, onDone)
 

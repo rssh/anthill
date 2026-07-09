@@ -1,7 +1,7 @@
 package anthill.parse
 
 import anthill.intern.{TermSymbol, SymbolTable}
-import anthill.term.{Term, TermId, VarId, Literal, OrderedDouble}
+import anthill.term.{Term, TermId, Var, VarId, Literal, OrderedDouble}
 import anthill.span.Span
 import fastparse.*
 import scala.collection.mutable.{ArrayBuffer, HashMap}
@@ -82,7 +82,7 @@ private class AnthillParserImpl(
     * desugar so the `?`-var IR cannot drift (the loader's `sort T = ?`
     * type-param arm matches on exactly this `TypeExpr.Variable` shape). */
   private def freshAnonTypeVar(): TypeExpr.Variable =
-    TypeExpr.Variable(terms.alloc(Term.Var(freshAnonymousVar())), IndexedSeq.empty)
+    TypeExpr.Variable(terms.alloc(Term.Var(Var.Global(freshAnonymousVar()))), IndexedSeq.empty)
 
   // ── Helpers ──────────────────────────────────────────────────
 
@@ -161,8 +161,8 @@ private class AnthillParserImpl(
   private def variable[$: P]: P[TermId] =
     P(Tokens.variableToken ~ fnArgsList.?).map { case (varName, args) =>
       val varTid =
-        if varName.isEmpty then terms.alloc(Term.Var(freshAnonymousVar()))
-        else terms.alloc(Term.Var(getOrCreateVar(intern(varName))))
+        if varName.isEmpty then terms.alloc(Term.Var(Var.Global(freshAnonymousVar())))
+        else terms.alloc(Term.Var(Var.Global(getOrCreateVar(intern(varName)))))
       args match
         case None => varTid
         case Some(rawArgs) =>
@@ -222,7 +222,7 @@ private class AnthillParserImpl(
   private def variableType[$: P]: P[TypeExpr] =
     P(Tokens.variableToken).map { varName =>
       if varName.isEmpty then freshAnonTypeVar()
-      else TypeExpr.Variable(terms.alloc(Term.Var(getOrCreateVar(intern(varName)))), IndexedSeq.empty)
+      else TypeExpr.Variable(terms.alloc(Term.Var(Var.Global(getOrCreateVar(intern(varName))))), IndexedSeq.empty)
     }
 
   private def arrowType[$: P]: P[TypeExpr] =
@@ -580,7 +580,7 @@ private class AnthillParserImpl(
     * Shares the binder's `VarId` with its body uses via `getOrCreateVar`. */
   private def boundedBinderVar[$: P]: P[TermId] =
     P(Tokens.variableToken.filter(_.nonEmpty))
-      .map(n => terms.alloc(Term.Var(getOrCreateVar(intern(n)))))
+      .map(n => terms.alloc(Term.Var(Var.Global(getOrCreateVar(intern(n))))))
 
   // ── Name suffix ADT ──────────────────────────────────────────
 
@@ -706,8 +706,8 @@ private class AnthillParserImpl(
   private def typedVarArg[$: P]: P[TermId] =
     P(Tokens.variableToken ~ ":" ~/ typeExpr).map { case (varName, ty) =>
       val varTid =
-        if varName.isEmpty then terms.alloc(Term.Var(freshAnonymousVar()))
-        else terms.alloc(Term.Var(getOrCreateVar(intern(varName))))
+        if varName.isEmpty then terms.alloc(Term.Var(Var.Global(freshAnonymousVar())))
+        else terms.alloc(Term.Var(Var.Global(getOrCreateVar(intern(varName)))))
       terms.alloc(Term.Fn(intern("typed_var"), IArray(varTid),
         IArray((intern("type"), typeExprToRef(ty)))))
     }
@@ -902,7 +902,7 @@ private class AnthillParserImpl(
     terms.get(tid) match
       case Term.Ref(sym)   => shortName(sym)
       case Term.Ident(sym) => shortName(sym)
-      case Term.Var(v)     => "?" + shortName(v.name)
+      case Term.Var(v)     => "?" + shortName(v.varId.name)
       case fn: Term.Fn =>
         val args = fn.posArgs.map(canonicalAtomKey) ++
           fn.namedArgs.map((k, v) => s"${shortName(k)} = ${canonicalAtomKey(v)}")

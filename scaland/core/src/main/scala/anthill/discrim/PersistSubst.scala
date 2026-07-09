@@ -43,13 +43,18 @@ class SmallSubst private (private val bindings: List[(VarId, BindValue)]):
   def withBinding(v: VarId, value: BindValue): SmallSubst =
     new SmallSubst((v, value) :: bindings)
 
-  def resolveLeaf(terms: TermStore, factTerm: TermId): Substitution =
+  /** Materialize the deferred leaf bindings into a real [[Substitution]].
+    * `unifyRebind` (WI-637) selects how a var bound TWICE (a nonlinear pattern
+    * position) reconciles: `true` — the RESOLUTION path (SLD head selection) —
+    * UNIFIES the two values; `false` — the MATCHING path — demands structural
+    * identity. See [[Substitution.bindLeaf]]. */
+  def resolveLeaf(terms: TermStore, factTerm: TermId, unifyRebind: Boolean): Substitution =
     val s = Substitution()
     for (vid, bv) <- bindings do
       val tid = bv match
         case BindValue.TermVal(id) => id
         case BindValue.Path(path) => extractAtPath(terms, factTerm, path)
-      s.bind(vid, tid)
+      s.bindLeaf(terms, vid, tid, unifyRebind)
     s
 
   /** No-op — immutable, structural sharing means clone is free. */
