@@ -53,18 +53,31 @@ class BootstrapTest extends munit.FunSuite:
     assert(src.contains("def snd"), s"expected `def snd` in:\n$src")
   }
 
-  test("WI-170: Bootstrap.generate on eq.anthill emits Eq trait with abstract ops") {
+  test("WI-170/WI-644: eq.anthill emits PartialEq with the abstract ops; Eq extends it (no new ops)") {
     val pf = parseStdlib("anthill/prelude/eq.anthill")
     val files = Bootstrap.generate(pf)
+    // WI-644: the `eq`/`neq` OPERATIONS live in `PartialEq`; `Eq` just
+    // `requires PartialEq[T]` (→ `extends PartialEq[T]`) and adds only the
+    // reflexivity law — no new operation. So the abstract ops are emitted on
+    // `PartialEq`, and `Eq` inherits them.
+    val partialEq = files.find(_.relPath.endsWith("/PartialEq.scala"))
+      .getOrElse(fail(s"expected PartialEq.scala in: ${files.map(_.relPath)}"))
+    val peSrc = partialEq.contents
+    assert(peSrc.contains("package anthill.prelude"))
+    assert(peSrc.contains("trait PartialEq[T]"), s"expected `trait PartialEq[T]` in:\n$peSrc")
+    assert(peSrc.contains("def eq(a: T, b: T): Boolean"),
+      s"expected `def eq(a: T, b: T): Boolean` in:\n$peSrc")
+    assert(peSrc.contains("def neq(a: T, b: T): Boolean"),
+      s"expected `def neq(a: T, b: T): Boolean` in:\n$peSrc")
+
     val eqFile = files.find(_.relPath.endsWith("/Eq.scala"))
       .getOrElse(fail(s"expected Eq.scala in: ${files.map(_.relPath)}"))
-    val src = eqFile.contents
-    assert(src.contains("package anthill.prelude"))
-    assert(src.contains("trait Eq[T]"), s"expected `trait Eq[T]` in:\n$src")
-    assert(src.contains("def eq(a: T, b: T): Boolean"),
-      s"expected `def eq(a: T, b: T): Boolean` in:\n$src")
-    assert(src.contains("def neq(a: T, b: T): Boolean"),
-      s"expected `def neq(a: T, b: T): Boolean` in:\n$src")
+    val eqSrc = eqFile.contents
+    assert(eqSrc.contains("trait Eq[T] extends PartialEq[T]"),
+      s"expected `trait Eq[T] extends PartialEq[T]` in:\n$eqSrc")
+    // Eq inherits eq/neq from PartialEq — it must NOT redeclare them.
+    assert(!eqSrc.contains("def eq("),
+      s"Eq should inherit `eq` from PartialEq, not redeclare it:\n$eqSrc")
   }
 
   test("WI-170: snake_case operation names convert to camelCase") {

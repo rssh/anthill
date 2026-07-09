@@ -679,8 +679,8 @@ class ParserIntegrationTest extends munit.FunSuite:
       case Item.OperationItem(_)      => 1
     }
     assertEquals(opCount, 28, "Float should expose 28 operations")
-    assertEquals(countItems(ns.items) { case Item.RuleItem(_) => }, 4,
-      "Float should declare 4 algebraic rules")
+    assertEquals(countItems(ns.items) { case Item.RuleItem(_) => }, 5,
+      "Float should declare 5 algebraic rules (neg, abs, recip, tau, nonEqRefl)")
     assertEquals(countItems(ns.items) { case Item.ConstraintItem(_) => }, 6,
       "Float should declare 6 constraints")
 
@@ -916,12 +916,14 @@ class ParserIntegrationTest extends munit.FunSuite:
       s"expected Unsat, got ${functorQn(kb, verdictFn.functor)}")
   }
 
-  // ── WI-163: bare `eq(?x, ?y)` resolves to Eq.eq with no ambiguity ─────
+  // ── WI-163: bare `eq(?x, ?y)` resolves to PartialEq.eq with no ambiguity ─
 
-  test("WI-163: bare `eq(?x, ?y)` in a rule resolves to anthill.prelude.Eq.eq") {
+  test("WI-163: bare `eq(?x, ?y)` in a rule resolves to anthill.prelude.PartialEq.eq") {
     // Pre-fix this would have produced AmbiguousSymbol(eq, [anthill.prelude.eq,
-    // anthill.prelude.Eq.eq]). Post-fix the structural-op shim is gone and
-    // `eq` resolves uniquely through the loaded eq.anthill typeclass.
+    // …]). Post-fix the structural-op shim is gone and `eq` resolves uniquely
+    // through the loaded eq.anthill typeclass. WI-644 moved the `eq`/`neq`
+    // OPERATIONS into `PartialEq` (Eq now just `requires PartialEq[T]` + the
+    // reflexivity law), so the unique resolution is `PartialEq.eq`.
     val src =
       """sort Demo
         |  rule same(?x, ?y) :- eq(?x, ?y)
@@ -938,7 +940,7 @@ class ParserIntegrationTest extends munit.FunSuite:
     assert(unrelated.isEmpty, s"unexpected load errors: $unrelated")
 
     // Find the same/2 rule and walk into its body to confirm `eq` resolved
-    // to anthill.prelude.Eq.eq (not the would-be-ambiguous anthill.prelude.eq).
+    // to anthill.prelude.PartialEq.eq (not the would-be-ambiguous anthill.prelude.eq).
     // `same` is the rule's head functor — interned, not a registered Symbol.
     val sameSym = kb.intern("same")
     val rules = kb.byFunctor(sameSym)
@@ -947,8 +949,8 @@ class ParserIntegrationTest extends munit.FunSuite:
     assertEquals(body.length, 1)
     kb.getTerm(body.head) match
       case fn: Term.Fn =>
-        assertEquals(functorQn(kb, fn.functor), "anthill.prelude.Eq.eq",
-          "bare eq(?x, ?y) should resolve uniquely to Eq.eq")
+        assertEquals(functorQn(kb, fn.functor), "anthill.prelude.PartialEq.eq",
+          "bare eq(?x, ?y) should resolve uniquely to PartialEq.eq (WI-644)")
       case other => fail(s"expected Fn for body atom, got $other")
   }
 
