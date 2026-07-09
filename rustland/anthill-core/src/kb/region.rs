@@ -176,11 +176,21 @@ fn push_effect_dedup(kb: &KnowledgeBase, out: &mut Vec<Value>, effect: Value) {
     }
 }
 
+/// WI-657(11): resolve an operation's reserved `<op>.result` symbol (the re-key
+/// target for a `Modify[result]` that escapes via the return value). Split out so
+/// [`op_boundary_effects`] can resolve it LAZILY — only when the result-region or
+/// callback-param arm actually fires — instead of the caller resolving it eagerly
+/// for every typed op (the common effect-free op never needs it).
+fn resolve_op_result_sym(kb: &KnowledgeBase, op_sym: Symbol) -> Option<Symbol> {
+    kb.try_resolve_symbol(&format!("{}.result", kb.qualified_name_of(op_sym)))
+}
+
 /// Operation-boundary effect masking (WI-314 + WI-353). Given the body's
-/// derived effect row, the op's return type, and its reserved `result` symbol,
-/// return the externally-visible row: locals dropped, escaping fresh regions
-/// kept (re-keyed to `result`), non-escaping fresh regions dropped, parameters
-/// left external. See the module header.
+/// derived effect row and the op's return type (the op's reserved `<op>.result`
+/// re-key target is resolved lazily inside — WI-657(11)), return the
+/// externally-visible row: locals dropped, escaping fresh regions kept (re-keyed to
+/// `result`), non-escaping fresh regions dropped, parameters left external. See the
+/// module header.
 ///
 /// WI-353 — the `Modify` slice of `effect_derive` (proposal 046). A `Modify` on
 /// a **callback parameter** place (`<op>.f.a`, kind `CallbackParam`) is not a
@@ -198,10 +208,16 @@ pub(crate) fn op_boundary_effects(
     env: &TypingEnv,
     return_type: &Value,
     op_sym: Symbol,
-    op_result_sym: Option<Symbol>,
     regions: &HashSet<Symbol>,
     effects: &[Value],
 ) -> Vec<Value> {
+    // WI-657(11): the op's `<op>.result` symbol, resolved LAZILY (see
+    // [`resolve_op_result_sym`]). Only the result-region masking arm and the (rare)
+    // callback-param arm read it, so the common effect-free op skips the
+    // `format!("{op}.result")` + `try_resolve` the caller previously ran for EVERY
+    // typed op. `Option<Option<_>>`: outer `None` = not yet resolved, inner = the
+    // resolution result (itself possibly `None`).
+    let mut op_result_sym_memo: Option<Option<Symbol>> = None;
     // 1. Existing local-resource drop (let/match-bound names).
     let after_local = external_effects(kb, env, effects);
     // 2. Result-region masking, keyed on whether the result can carry one.
@@ -224,7 +240,9 @@ pub(crate) fn op_boundary_effects(
                 if admits {
                     // Escapes via the result — re-key to the op's own
                     // `result` and keep (the op honestly allocates).
-                    let kept = match op_result_sym {
+                    let result_place =
+                        *op_result_sym_memo.get_or_insert_with(|| resolve_op_result_sym(kb, op_sym));
+                    let kept = match result_place {
                         Some(target) => rekey_resource_value(kb, &effect, sym, target),
                         None => effect,
                     };
@@ -238,6 +256,11 @@ pub(crate) fn op_boundary_effects(
                 // per candidate `into` place that `keep_modify` holds for. `kind`
                 // is not consulted — v1 re-keys every edge as `direct` (re-key to
                 // the whole source), a sound coarsening (046 §"Role of kind").
+                // WI-657(11): resolve `<op>.result` once for this (rare) arm via
+                // the shared memo; the `into_candidates` closure captures the plain
+                // `Copy` value, and the gate below reuses it.
+                let op_result =
+                    *op_result_sym_memo.get_or_insert_with(|| resolve_op_result_sym(kb, op_sym));
                 let candidates = into_candidates.get_or_insert_with(|| {
                     // DATA places only: the op's non-callback params + its
                     // `result`. A callback param is a function value, never a
@@ -250,7 +273,7 @@ pub(crate) fn op_boundary_effects(
                         .copied()
                         .filter(|&p| kb.symbols.arg_places(p).is_empty())
                         .collect();
-                    if let Some(r) = op_result_sym {
+                    if let Some(r) = op_result {
                         v.push(r);
                     }
                     v
@@ -268,7 +291,7 @@ pub(crate) fn op_boundary_effects(
                     // result by dataflow but a result type that cannot hold it is
                     // masked. Re-keying to an input place keeps unconditionally
                     // (the input is externally visible).
-                    if op_result_sym == Some(into) && !admits {
+                    if op_result == Some(into) && !admits {
                         continue;
                     }
                     let kept = rekey_resource_value(kb, &effect, sym, into);
@@ -476,14 +499,14 @@ end
     /// the resource-symbol set of the masked row.
     fn boundary(kb: &mut KnowledgeBase, op_qn: &str, ret_qn: &str, modify_on: &str) -> HashSet<Symbol> {
         let op_sym = sym(kb, op_qn);
-        let result_sym = kb.try_resolve_symbol(&format!("{op_qn}.result"));
         let regions = region_sorts(kb);
         let ret = sym(kb, ret_qn);
         let ret_ty = Value::term(kb.alloc(Term::Ref(ret)));
         let resource = sym(kb, &format!("{op_qn}.{modify_on}"));
         let row = vec![modify_label(kb, resource)];
         let env = TypingEnv::empty();
-        let out = op_boundary_effects(kb, &env, &ret_ty, op_sym, result_sym, &regions, &row);
+        // WI-657(11): `<op>.result` is now resolved lazily inside op_boundary_effects.
+        let out = op_boundary_effects(kb, &env, &ret_ty, op_sym, &regions, &row);
         resources(kb, &out)
     }
 

@@ -555,6 +555,17 @@ pub struct KnowledgeBase {
     eq_connective_sym: Option<Symbol>,
     unify_connective_sym: Option<Symbol>,
 
+    /// WI-657(6): the resolved `anthill.reflect.TupleLiteral` entity symbol, cached
+    /// so the typer's `is_tuple_lit` (run per constructor argument during inference)
+    /// compares a `Symbol` instead of the 27-char `qualified_name_of(..) ==
+    /// "anthill.reflect.TupleLiteral"` string per call. `None` until reflect is
+    /// loaded (refreshed at [`crate::kb::typing::type_check_sorts_typed`] start,
+    /// where every reflect fact is asserted); `is_tuple_lit` falls back to the exact
+    /// string compare when unset, so behaviour is identical either way. The tuple
+    /// constructor name the loader stamps is the same `by_qualified_name` canonical
+    /// symbol this resolves to (load.rs), so the `Symbol ==` is exact.
+    pub(crate) tuple_literal_sym: Option<Symbol>,
+
     /// WI-429: every `RigidTypeProjection` the loader FORMS, with its source
     /// span — the work-list for the end-of-load formation sweep
     /// (`typing::validate_rigid_projection_formations`). A projection stored
@@ -622,11 +633,16 @@ pub struct KnowledgeBase {
     pub(crate) dispatch_rewrites: HashMap<TermId, TermId>,
     pub(crate) dispatch_origin: HashMap<TermId, Symbol>,
 
-    // WI-226 Cache A — memoized transitive `requires` closure per sort.
-    // After WI-230, this cache is dormant — `requires_chain` now routes
-    // through `requires_tree_cache` (the tree-shaped cache). Kept here
-    // to avoid breaking the `requires_chain_cache_contains` accessor
-    // tests rely on; cleared at the same time as the tree cache.
+    // WI-226 Cache A — memoized FLATTENED direct `requires` chain per sort.
+    // WI-657(12) revived this (WI-230 → WI-657 it was dormant): it now caches the
+    // flattened `Rc<Vec<RequiresEntry>>` that `typing::direct_requires_chain_rc`
+    // returns — the per-op `set_enclosing_sort` snapshot is then an `Rc` bump, not a
+    // fresh Vec + per-entry clone off the (already-cached) `requires_tree`. Derived
+    // purely from `requires_tree`, so it MUST be — and is — cleared together with
+    // `requires_tree_cache` by `invalidate_requires_chain_cache` whenever
+    // `SortRequiresInfo` changes; it can never outlive the tree it flattened. (Note:
+    // the `requires_chain_cache_contains` accessor reads `requires_tree_cache`, not
+    // this field.)
     pub(crate) requires_chain_cache: RefCell<HashMap<Symbol, Rc<Vec<crate::kb::typing::RequiresEntry>>>>,
 
     // WI-230 — memoized substitution-composed `requires` tree per sort.
@@ -720,6 +736,7 @@ impl KnowledgeBase {
             simp_gate_cache: None,
             eq_connective_sym: None,
             unify_connective_sym: None,
+            tuple_literal_sym: None,
             rigid_projection_formations: Vec::new(),
             existential_return_ops: std::collections::HashSet::new(),
             field_wise_noneq_carriers: std::collections::HashSet::new(),

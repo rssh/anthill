@@ -683,7 +683,9 @@ pub struct TypingEnv {
 #[derive(Clone)]
 struct EnclosingSort {
     sort: Symbol,
-    requires: Vec<RequiresEntry>,
+    /// WI-657(12): shared with the `requires_chain_cache` so `set_enclosing_sort`'s
+    /// per-op snapshot is an `Rc` bump, not a fresh `Vec` + per-entry clone.
+    requires: Rc<Vec<RequiresEntry>>,
 }
 
 impl TypingEnv {
@@ -762,7 +764,7 @@ impl TypingEnv {
     pub fn set_enclosing_sort(&mut self, kb: &mut KnowledgeBase, sort: Option<Symbol>) {
         self.enclosing = sort.map(|s| EnclosingSort {
             sort: s,
-            requires: direct_requires_chain(kb, s),
+            requires: direct_requires_chain_rc(kb, s),
         });
     }
 
@@ -1504,14 +1506,24 @@ fn make_arrow_value(
 /// canonicalizer.
 fn merge_effects(kb: &KnowledgeBase, a: &[Value], b: &[Value]) -> Vec<Value> {
     let mut result = a.to_vec();
-    for e in b {
+    merge_effects_into(kb, &mut result, b);
+    result
+}
+
+/// WI-657(8): in-place peer of [`merge_effects`] for the accumulator idiom
+/// (`acc = merge_effects(kb, &acc, &more)`). Dedup-appends `incoming` into `acc`
+/// without the per-call `acc.to_vec()` copy the by-value form pays — the
+/// accumulation loops (`if/match/collection` join, per-arg effect roll-up) run
+/// this many times per node, so copying the growing accumulator each round was an
+/// O(n²) realloc. Behaviour-identical: same carrier-agnostic dedup, same order.
+fn merge_effects_into(kb: &KnowledgeBase, acc: &mut Vec<Value>, incoming: &[Value]) {
+    for e in incoming {
         // WI-486: carrier-agnostic dedup so a ground `Value::Term` label and a
         // `Value::Node` `Modify[c]` of the same structure collapse across carriers.
-        if !result.iter().any(|r| views_structurally_equal(kb, r, e)) {
-            result.push(e.clone());
+        if !acc.iter().any(|r| views_structurally_equal(kb, r, e)) {
+            acc.push(e.clone());
         }
     }
-    result
 }
 
 /// NodeOccurrence-aware var_ref detection — peer of
@@ -2511,8 +2523,6 @@ pub fn type_check_node(
     occ: &Rc<NodeOccurrence>,
     expected: Option<Value>,
 ) -> Result<TypeResult, TypeError> {
-    let mut work: Vec<TypeWorkOp> = Vec::with_capacity(32);
-    let mut results: Vec<Result<TypeResult, TypeError>> = Vec::with_capacity(32);
     // WI-283: gate the in-typer `[simp]` firing on whether any rule can fire —
     // read once per walk. WI-443: a loaded `dot_apply` also enables the gate —
     // DotApply nodes are always rewritten (to the dispatched call). Tree
@@ -2528,6 +2538,27 @@ pub fn type_check_node(
     // node. Empty when `simp_enabled` is false — `fire_simp` is then never called.
     let simp_rids: Vec<RuleId> =
         if simp_enabled { kb.simp_equation_rids() } else { Vec::new() };
+    type_check_node_gated(kb, env, occ, expected, simp_enabled, &simp_rids)
+}
+
+/// WI-657(9): [`type_check_node`] with the `[simp]` gate (`simp_enabled` +
+/// `simp_rids`) supplied by the caller instead of recomputed. The eq/unify rule set
+/// is LOOP-INVARIANT across a whole `check_operation_bodies` pass (typing rewrites
+/// bodies, never asserts/retracts an equation), so the per-op-body driver computes
+/// the gate ONCE before its loop and threads it in — dropping a `has_simp_equations`
+/// + two `simp_equation_rids` bucket scans (each an allocating `rules_by_functor`)
+/// per checked operation. [`type_check_node`] stays the gate-computing entry for
+/// standalone callers.
+pub fn type_check_node_gated(
+    kb: &mut KnowledgeBase,
+    env: &TypingEnv,
+    occ: &Rc<NodeOccurrence>,
+    expected: Option<Value>,
+    simp_enabled: bool,
+    simp_rids: &[RuleId],
+) -> Result<TypeResult, TypeError> {
+    let mut work: Vec<TypeWorkOp> = Vec::with_capacity(32);
+    let mut results: Vec<Result<TypeResult, TypeError>> = Vec::with_capacity(32);
     // WI-283: `[simp]` fire-fuel rides on each `Visit` (not the host stack).
     // When an Apply/Constructor fires, the synthesized RHS is re-`Visit`ed
     // with `fuel - 1` on this same work-stack — so a non-terminating /
@@ -2543,7 +2574,7 @@ pub fn type_check_node(
                 visit_type(kb, occ, env, expected, fuel, &mut work, &mut results)
             }
             TypeWorkOp::Build(frame) => {
-                build_type(kb, frame, simp_enabled, &simp_rids, &mut work, &mut results)
+                build_type(kb, frame, simp_enabled, simp_rids, &mut work, &mut results)
             }
         }
     }
@@ -2679,7 +2710,9 @@ fn attach_eta_dispatch_dict(
     let Some(parent) = impl_parent_of_op(kb, sym) else {
         return Ok(()); // namespace-level op — no enclosing sort `requires`
     };
-    if direct_requires_chain(kb, parent).is_empty() {
+    // WI-657(12): emptiness test only — take the shared `Rc` (bump) rather than
+    // `direct_requires_chain`'s Vec clone.
+    if direct_requires_chain_rc(kb, parent).is_empty() {
         return Ok(()); // requires-free op — eval forwards the caller's reqs
     }
     if env.enclosing_sort() == Some(parent) {
@@ -3635,8 +3668,10 @@ fn visit_type(
         // classify logic without recursing through `type_check_node`.
         Expr::Apply { functor, pos_args, named_args, .. } => {
             let functor = *functor;
-            let pos_args = pos_args.clone();
-            let named_args = named_args.clone();
+            // WI-657(5): keep `pos_args`/`named_args` as the borrowed pattern slots for
+            // every local read AND the reversed push_visit loops; clone ONCE into the
+            // Build frame below. Previously they were cloned into locals here and cloned
+            // AGAIN into the frame — two SmallVec clones per Apply, ~1681+ execs.
             let occ_clone = Rc::clone(&occ);
             // WI-275: bidirectional inference for higher-order arguments. Look up
             // the callee's declared parameter types; a lambda or bare operation
@@ -3740,8 +3775,8 @@ fn visit_type(
         }
         Expr::Constructor { name, pos_args, named_args } => {
             let name = *name;
-            let pos_args = pos_args.clone();
-            let named_args = named_args.clone();
+            // WI-657(5): borrow the pattern slots for local reads + the push_visit loops;
+            // clone once into the Build frame below (was two clones per Constructor).
             // WI-427: the constructor-field twin of the nested-call hint — a
             // GROUND declared field type flows down into a field value that is
             // itself a call, so `hold(poly())` pins poly's return-only type
@@ -3755,11 +3790,33 @@ fn visit_type(
             // constructor` threads. (The `Expr::TupleLit` IR is a non-surface shape whose build
             // frame takes no expected, so a hint on it would be dropped — not recognized here.)
             fn is_tuple_lit(kb: &KnowledgeBase, arg: &Rc<NodeOccurrence>) -> bool {
-                matches!(
-                    &arg.kind,
-                    NodeKind::Expr { expr: Expr::Constructor { name, .. }, .. }
-                        if kb.qualified_name_of(*name) == "anthill.reflect.TupleLiteral"
-                )
+                let NodeKind::Expr { expr: Expr::Constructor { name, .. }, .. } = &arg.kind else {
+                    return false;
+                };
+                // WI-657(6): O(1) Symbol compare against the cached TupleLiteral symbol.
+                // The loader stamps that same `by_qualified_name` canonical symbol on a
+                // tuple constructor (`remap_symbol` of the short `TupleLiteral` resolves to
+                // the single `define(.., "anthill.reflect.TupleLiteral", ..)` entry, which
+                // is what `try_resolve_symbol` caches), so `*name == tl` is exact. Fall back
+                // to the exact string compare only when the cache is unset (pre-type-check /
+                // reflect-less). A `debug_assert` cross-checks that the Symbol compare never
+                // diverges from the qualified-name compare it replaced — a non-canonical
+                // `TupleLiteral` interning reaching here becomes a LOUD test failure rather
+                // than a silent mis-recognition (CLAUDE.md: loud over silent).
+                match kb.tuple_literal_sym {
+                    Some(tl) => {
+                        let by_sym = *name == tl;
+                        debug_assert_eq!(
+                            by_sym,
+                            kb.qualified_name_of(*name) == "anthill.reflect.TupleLiteral",
+                            "WI-657(6): tuple_literal_sym Symbol-compare diverged from the \
+                             qualified-name compare for constructor `{}`",
+                            kb.qualified_name_of(*name),
+                        );
+                        by_sym
+                    }
+                    None => kb.qualified_name_of(*name) == "anthill.reflect.TupleLiteral",
+                }
             }
             let has_call_field = pos_args
                 .iter()
@@ -4750,7 +4807,7 @@ fn build_type(
             // WI-342: carry the scrutinee's `ty` as a `Value` — the sort lookup
             // and pattern env binding read it carrier-agnostically (no re-ground).
             let scr_ty = scr_r.as_ref().ok().map(|r| r.ty.clone());
-            let scr_effects = scr_r.as_ref().ok().map(|r| r.effects.clone()).unwrap_or_default();
+            let mut scr_effects = scr_r.as_ref().ok().map(|r| r.effects.clone()).unwrap_or_default();
             // WI-283: the scrutinee's (possibly-rewritten) node for
             // reassembly — falling back to the original when it didn't type.
             let scr_node = scr_r
@@ -4830,9 +4887,10 @@ fn build_type(
                 // untyped → only cascading noise).
                 if let Some(g) = &branch.guard {
                     if scr_ty.is_some() && guard_error.is_none() {
-                        match type_check_node(kb, &branch_env, g, None) {
+                        // WI-657(9): reuse the gate build_type already holds.
+                        match type_check_node_gated(kb, &branch_env, g, None, simp_enabled, simp_rids) {
                             Ok(r) => {
-                                guard_effects = merge_effects(kb, &guard_effects, &r.effects);
+                                merge_effects_into(kb, &mut guard_effects, &r.effects);
                             }
                             Err(e) => guard_error = Some(e),
                         }
@@ -4848,7 +4906,8 @@ fn build_type(
                 results.push(Err(e));
                 return;
             }
-            let scr_effects = merge_effects(kb, &scr_effects, &guard_effects);
+            // WI-657(8): fold the guard effects into the owned scrutinee row in place.
+            merge_effects_into(kb, &mut scr_effects, &guard_effects);
 
             let branch_count = branches.len();
             // Materialize Visit envs first (clone from branch_envs),
@@ -4906,7 +4965,7 @@ fn build_type(
                 // pattern-bound resources don't leak past the case
                 // arm (their bindings live only inside the branch).
                 let branch_external = external_effects(kb, &*branch_envs[i], &body_r.effects);
-                effects = merge_effects(kb, &effects, &branch_external);
+                merge_effects_into(kb, &mut effects, &branch_external);
             }
 
             // WI-287: the match's result type accounts for *every* branch,
@@ -5019,9 +5078,9 @@ fn build_type(
             let then_r = it.next().unwrap();
             let else_r = it.next().unwrap();
             let mut effects = Vec::new();
-            effects = merge_effects(kb, &effects, &cond_r.effects);
-            effects = merge_effects(kb, &effects, &then_r.effects);
-            effects = merge_effects(kb, &effects, &else_r.effects);
+            merge_effects_into(kb, &mut effects, &cond_r.effects);
+            merge_effects_into(kb, &mut effects, &then_r.effects);
+            merge_effects_into(kb, &mut effects, &else_r.effects);
             // WI-287: the if's type is the join of both branches (checked
             // against `expected` when present), not just the then-branch
             // type — an `if` with incompatible arms is otherwise silently
@@ -5063,9 +5122,9 @@ fn build_type(
             };
             let mut effects = Vec::new();
             if let Some(cr) = &conclude_r {
-                effects = merge_effects(kb, &effects, &cr.effects);
+                merge_effects_into(kb, &mut effects, &cr.effects);
             }
-            effects = merge_effects(kb, &effects, &body_r.effects);
+            merge_effects_into(kb, &mut effects, &body_r.effects);
             // The proof is transparent to types: its type is the
             // continuation's.
             let ty = body_r.ty.clone();
@@ -5090,7 +5149,7 @@ fn build_type(
                 if element_type.is_none() {
                     element_type = Some(r.ty.clone());
                 }
-                effects = merge_effects(kb, &effects, &r.effects);
+                merge_effects_into(kb, &mut effects, &r.effects);
             }
             let t_val = element_type.unwrap_or_else(|| {
                 let fresh = kb.intern("?T");
@@ -5125,7 +5184,7 @@ fn build_type(
                 if element_type.is_none() {
                     element_type = Some(r.ty.clone());
                 }
-                effects = merge_effects(kb, &effects, &r.effects);
+                merge_effects_into(kb, &mut effects, &r.effects);
             }
             let t_val = element_type.unwrap_or_else(|| {
                 let fresh = kb.intern("?T");
@@ -5165,12 +5224,12 @@ fn build_type(
                 // treat `_N` positionally, so the base is invisible to them.
                 let field_name = kb.intern(&format!("_{}", i + 1));
                 field_types.push((field_name, r.ty.clone()));
-                effects = merge_effects(kb, &effects, &r.effects);
+                merge_effects_into(kb, &mut effects, &r.effects);
             }
             for name in named_names {
                 let r = it.next().unwrap().expect("aggregator");
                 field_types.push((name, r.ty.clone()));
-                effects = merge_effects(kb, &effects, &r.effects);
+                merge_effects_into(kb, &mut effects, &r.effects);
             }
             let tuple_type = named_tuple_value(kb, &field_types, span, owner);
             results.push(Ok(TypeResult { ty: tuple_type, env: unwrap_types(env), effects, node }));
@@ -5686,7 +5745,7 @@ fn check_apply_iter(
                         param_to_arg_type.insert(*param_sym, arg_result.ty.clone());
                     }
                 }
-                arg_effects = merge_effects(kb, &arg_effects, &arg_result.effects);
+                merge_effects_into(kb, &mut arg_effects, &arg_result.effects);
             }
         }
 
@@ -5717,7 +5776,7 @@ fn check_apply_iter(
                         param_to_arg_type.insert(*param_sym, arg_result.ty.clone());
                     }
                 }
-                arg_effects = merge_effects(kb, &arg_effects, &arg_result.effects);
+                merge_effects_into(kb, &mut arg_effects, &arg_result.effects);
             }
         }
 
@@ -6367,7 +6426,7 @@ fn check_apply_iter(
                             kb, impl_op, &op.params, &subst, pos_args, named_args,
                             pos_results, named_results,
                         );
-                        effects = merge_effects(kb, &effects, &derived);
+                        merge_effects_into(kb, &mut effects, &derived);
                         classify_pin_or_apply_within(
                             kb, occ, fn_sym, impl_op, env.enclosing_sort(), None,
                         );
@@ -6480,7 +6539,7 @@ fn check_apply_iter(
                             kb, impl_op, &op.params, &subst, pos_args, named_args,
                             pos_results, named_results,
                         );
-                        effects = merge_effects(kb, &effects, &derived);
+                        merge_effects_into(kb, &mut effects, &derived);
                     }
                     // PinNow, or ConcreteApplyWithin when the impl's OWN sort declares
                     // `requires` (so its dict threads) — the Unique-arm discipline. Only
@@ -6734,7 +6793,7 @@ fn check_apply_iter(
                             kb, impl_op, &op.params, &subst, pos_args, named_args,
                             pos_results, named_results,
                         );
-                        effects = merge_effects(kb, &effects, &derived);
+                        merge_effects_into(kb, &mut effects, &derived);
                         classify_pin_or_apply_within(kb, occ, fn_sym, impl_op, enclosing_sort, None);
                         return Ok(TypeResult {
                             ty: resolved_ret.clone(),
@@ -6923,13 +6982,17 @@ fn check_apply_iter(
                         // pure impl grounds the row to {} (`derived` empty); a
                         // non-pure one contributes its `Modify[b]`, so a pure
                         // consumer is rejected.
-                        let closed_op_effects: Vec<Value> = substituted_op_effects
+                        let mut closed_op_effects: Vec<Value> = substituted_op_effects
                             .iter()
                             .filter(|e| !effect_is_unresolved_var(kb, e))
                             .cloned()
                             .collect();
-                        let op_and_impl = merge_effects(kb, &closed_op_effects, &derived);
-                        effects = merge_effects(kb, &op_and_impl, &arg_effects);
+                        // WI-657(8): fold the impl's `derived` effects then the untouched
+                        // `arg_effects` into the owned filtered row in place — one alloc,
+                        // not the two throwaway merge results (`op_and_impl`, then `effects`).
+                        merge_effects_into(kb, &mut closed_op_effects, &derived);
+                        merge_effects_into(kb, &mut closed_op_effects, &arg_effects);
+                        effects = closed_op_effects;
                     }
                     // WI-231: tag the call site. The requirement-
                     // insertion pass (`req_insertion::run`) reads the
@@ -7080,7 +7143,7 @@ fn check_apply_iter(
             // f(a)` accumulated it), under-reporting a call's effect row.
             let mut effects = call_effects;
             for r in pos_results.iter().chain(named_results.iter()).flatten() {
-                effects = merge_effects(kb, &effects, &r.effects);
+                merge_effects_into(kb, &mut effects, &r.effects);
             }
             return Ok(TypeResult { ty: ret_ty, env: env.clone(), effects, node: Rc::clone(occ) });
         }
@@ -7091,7 +7154,7 @@ fn check_apply_iter(
     let mut effects: Vec<Value> = Vec::new();
     for r in pos_results.iter().chain(named_results.iter()) {
         if let Ok(r) = r {
-            effects = merge_effects(kb, &effects, &r.effects);
+            merge_effects_into(kb, &mut effects, &r.effects);
         }
     }
     let _ = pos_args;
@@ -14092,7 +14155,7 @@ fn check_tuple_literal_constructor(
     for (label, r) in labeled {
         let ty = thread_expected_tuple_field(kb, &mut tsubst, &exp_fields, label, &r.ty);
         tuple_fields.push((label, ty));
-        effects = merge_effects(kb, &effects, &r.effects);
+        merge_effects_into(kb, &mut effects, &r.effects);
     }
     let tuple_ty = named_tuple_value(kb, &tuple_fields, occ.span, occ.owner);
     Ok(TypeResult { ty: tuple_ty, env: env.clone(), effects, node: Rc::clone(occ) })
@@ -14124,7 +14187,7 @@ fn check_seq_literal_constructor(
         if element_type.is_none() {
             element_type = Some(r.ty.clone());
         }
-        effects = merge_effects(kb, &effects, &r.effects);
+        merge_effects_into(kb, &mut effects, &r.effects);
     }
     let t_val = element_type.unwrap_or_else(|| {
         let fresh = kb.intern("?T");
@@ -14490,7 +14553,7 @@ fn check_constructor_iter(
                     .or_else(|| carrier_arg_provision_projection(kb, env, declared_type, r))
                     .unwrap_or_else(|| r.ty.clone());
                 unify_types(kb, &mut subst, &arg_ty, declared_type);
-                effects = merge_effects(kb, &effects, &r.effects);
+                merge_effects_into(kb, &mut effects, &r.effects);
             }
         }
     }
@@ -14502,7 +14565,7 @@ fn check_constructor_iter(
                     .or_else(|| carrier_arg_provision_projection(kb, env, declared_type, r))
                     .unwrap_or_else(|| r.ty.clone());
                 unify_types(kb, &mut subst, &arg_ty, declared_type);
-                effects = merge_effects(kb, &effects, &r.effects);
+                merge_effects_into(kb, &mut effects, &r.effects);
             }
         }
     }
@@ -17800,6 +17863,15 @@ pub(crate) struct SortAliasIndex {
     /// caller that passes a short-name symbol against a qualified pos-arg; consulted
     /// only when `by_sym` misses, mirroring the scan's `.or_else`.
     by_name: HashMap<String, TermId>,
+    /// WI-657(7) — parent-sort qualified NAME → its type-param aliases as
+    /// `(param short-name Symbol, target `Var::Global` id)`, for
+    /// [`reconstruct_sort_params`] (which needs ALL of a sort's param aliases, a
+    /// query neither `by_sym` nor `by_name` answers). Keyed by the parent's qualified
+    /// name (the same key the scan's `qualified_name_of(parent)` prefix test uses);
+    /// only aliases whose target is a `Var::Global` are filed (the only shape the scan
+    /// reconstructs). Faithful to the scan for the single-identifier param names the
+    /// grammar produces — see the last-segment-split note in `build_sort_alias_index`.
+    by_parent: HashMap<String, Vec<(Symbol, VarId)>>,
 }
 
 /// WI-659 — build the SortAlias index in ONE pass. Mirrors [`resolve_sort_alias`]'s
@@ -17815,6 +17887,7 @@ pub(crate) fn build_sort_alias_index(kb: &mut KnowledgeBase) {
     };
     let mut by_sym: HashMap<Symbol, TermId> = HashMap::new();
     let mut by_name: HashMap<String, TermId> = HashMap::new();
+    let mut by_parent: HashMap<String, Vec<(Symbol, VarId)>> = HashMap::new();
     for rid in kb.rules_by_functor(alias_sym) {
         if !kb.is_fact(rid) {
             continue;
@@ -17834,8 +17907,29 @@ pub(crate) fn build_sort_alias_index(kb: &mut KnowledgeBase) {
         by_name
             .entry(kb.resolve_sym(functor).to_string())
             .or_insert(target);
+        // WI-657(7): file this alias under its parent sort for reconstruct_sort_params.
+        // A type-param alias functor's qualified name is `<parent-sort-qn>.<param>` where
+        // `<param>` is a single grammar identifier (no dots), so splitting off the LAST
+        // segment recovers exactly (parent, param) — equivalent to the scan's
+        // `starts_with(parent_name) + '.'-boundary` prefix test for this shape (the only
+        // shape that arises: sorts don't nest, so no `Sort.Inner.T` alias exists to make
+        // the last-segment split and the prefix test disagree). Only `Var::Global`-target
+        // aliases are reconstructable — the scan skips the rest — so gate on that.
+        let alias_qn = kb.qualified_name_of(functor);
+        if let Some((parent_qn, param_short)) = alias_qn.rsplit_once('.') {
+            let parent_qn = parent_qn.to_string();
+            let param_short = param_short.to_string();
+            if let Term::Var(Var::Global(vid)) = kb.get_term(target) {
+                let vid = *vid;
+                let param_sym = kb.intern(&param_short);
+                by_parent
+                    .entry(parent_qn)
+                    .or_default()
+                    .push((param_sym, vid));
+            }
+        }
     }
-    kb.sort_alias_index = Some(SortAliasIndex { by_sym, by_name });
+    kb.sort_alias_index = Some(SortAliasIndex { by_sym, by_name, by_parent });
 }
 
 /// WI-374 (§8.1, site-scoped): expand a FOREIGN bare/partial parametric sort
@@ -21953,8 +22047,28 @@ pub fn requires_chain(kb: &mut KnowledgeBase, sort_sym: Symbol) -> Vec<RequiresE
 /// recursive per-level, obligation checks, the `sort_refines` reach
 /// relation) use `requires_chain` / `requires_chain_flat` instead.
 pub fn direct_requires_chain(kb: &mut KnowledgeBase, sort_sym: Symbol) -> Vec<RequiresEntry> {
+    (*direct_requires_chain_rc(kb, sort_sym)).clone()
+}
+
+/// WI-657(12): the flattened direct `requires` chain as a shared `Rc`, memoized on
+/// the (previously dormant) `requires_chain_cache`. `set_enclosing_sort` runs once
+/// per op-body in `check_operation_bodies` and stored the chain by VALUE, rebuilding
+/// a fresh `Vec` + cloning every `RequiresEntry` off the already-cached
+/// `requires_tree` each time; caching the flattened `Rc` makes the per-op snapshot an
+/// `Rc` bump. Shares the `requires_tree` cache's lifetime exactly — both are cleared
+/// together by `invalidate_requires_chain_cache` whenever `SortRequiresInfo` changes,
+/// so the flattened chain can never outlive the tree it was flattened from.
+pub fn direct_requires_chain_rc(kb: &mut KnowledgeBase, sort_sym: Symbol) -> Rc<Vec<RequiresEntry>> {
+    if let Some(cached) = kb.requires_chain_cache.borrow().get(&sort_sym) {
+        return cached.clone();
+    }
     let tree = requires_tree(kb, sort_sym);
-    tree.iter().map(|n| n.entry.clone()).collect()
+    let chain: Vec<RequiresEntry> = tree.iter().map(|n| n.entry.clone()).collect();
+    let rc = Rc::new(chain);
+    kb.requires_chain_cache
+        .borrow_mut()
+        .insert(sort_sym, rc.clone());
+    rc
 }
 
 /// Synthesize the requirement-param name for each entry of
@@ -22695,6 +22809,53 @@ fn reconstruct_sort_params(
     parent_sym: Symbol,
     subst: &Substitution,
 ) -> Vec<(Symbol, TermId)> {
+    // WI-657(7): O(1) parent lookup on the SortAlias index (built once at type-check
+    // start) replaces a per-constructor-node scan of every SortAlias fact. Only the
+    // per-param subst resolution below is per-call; the alias set is precomputed. The
+    // final type term canonicalizes its named args (`make_entity_term`), so param
+    // ORDER here is irrelevant. Falls through to the scan when the index is not yet
+    // built (load-time value typing), behaviour-identical to pre-WI-657.
+    if kb.sort_alias_index.is_some() {
+        let params: Vec<(Symbol, VarId)> = kb
+            .sort_alias_index
+            .as_ref()
+            .unwrap()
+            .by_parent
+            .get(kb.qualified_name_of(parent_sym))
+            .cloned()
+            .unwrap_or_default();
+        let mut param_bindings: Vec<(Symbol, TermId)> = Vec::with_capacity(params.len());
+        for (param_sym, vid) in params {
+            // WI-384: an unbound param becomes a `type_var` WILDCARD so the built type
+            // keeps the sort's full param arity; WI-516: a `Value::Node`-carried binding
+            // is lowered to a Term so it is not dropped. Identical to the scan tail.
+            let bound_type = match subst.resolve_as_value(vid) {
+                Some(Value::Term { id: bound_type, .. }) => *bound_type,
+                Some(other) => {
+                    let other = other.clone();
+                    match value_to_term(kb, &other) {
+                        Ok(t) => t,
+                        Err(e) => {
+                            debug_assert!(
+                                false,
+                                "WI-516: param `{}` bound to un-lowerable carrier {}: {e:?}",
+                                kb.resolve_sym(param_sym),
+                                other.type_name(),
+                            );
+                            let name = kb.intern("?_");
+                            kb.make_type_var(name)
+                        }
+                    }
+                }
+                None => {
+                    let name = kb.intern("?_");
+                    kb.make_type_var(name)
+                }
+            };
+            param_bindings.push((param_sym, bound_type));
+        }
+        return param_bindings;
+    }
     let alias_sym = kb.try_resolve_symbol("SortAlias");
     let mut param_bindings: Vec<(Symbol, TermId)> = Vec::new();
     if let Some(a_sym) = alias_sym {
@@ -23728,6 +23889,11 @@ pub fn type_check_sorts_typed(kb: &mut KnowledgeBase, sort_terms: &[TermId]) -> 
     // stop scanning every provides fact per call. Sound build-once: `SortProvidesInfo`
     // is `constant` (053/WI-665) so it cannot mutate at runtime.
     build_provides_index(kb);
+    // WI-657(6) — resolve the `anthill.reflect.TupleLiteral` symbol once, so the
+    // per-constructor-arg `is_tuple_lit` compares a `Symbol` rather than the long
+    // qualified-name string. Reflect is fully loaded by now; `None` (reflect-less
+    // KB) leaves `is_tuple_lit` on its exact string fallback.
+    kb.tuple_literal_sym = kb.try_resolve_symbol("anthill.reflect.TupleLiteral");
     // Ops reached via a sort's `SortInfo` — so the gated free-op sweep
     // doesn't re-check them (collected only when the sweep is enabled).
     let mut sort_owned_ops: std::collections::HashSet<Symbol> = std::collections::HashSet::new();
@@ -24469,6 +24635,12 @@ fn check_operation_bodies(kb: &mut KnowledgeBase, op_syms: &[Symbol], errors: &m
         /// unequal (`?Eff` vs `?Eff`). Resolving incurred components through
         /// this subst maps that Global to the same Rigid.
         rigidify: Rc<Substitution>,
+        /// WI-657(10): the op's enclosing sort, resolved ONCE here via
+        /// `impl_parent_of_op` (already computed for `parent_sort_params` below).
+        /// The per-op body loop reuses it for `set_enclosing_sort` instead of
+        /// re-deriving it by a `qualified_name_of(..).to_string()` + rsplit +
+        /// re-resolve — that string form is byte-identical to `impl_parent_of_op`.
+        parent_sym: Option<Symbol>,
     }
 
     let mut ops_to_check = Vec::new();
@@ -24518,7 +24690,10 @@ fn check_operation_bodies(kb: &mut KnowledgeBase, op_syms: &[Symbol], errors: &m
         // `Stream.find`'s `[Elem, Eff]` and to the declared-effects check. The
         // (vid → rigid) map rides `OpInfo` onto the body env for the same-sort
         // sibling-call seeding in `check_apply_iter`.
-        let parent_sort_params: Rc<Vec<(Symbol, TermId)>> = impl_parent_of_op(kb, rec.op_sym)
+        // WI-657(10): resolve the enclosing sort once; reused below for both
+        // `parent_sort_params` and the `OpInfo.parent_sym` the body loop reads.
+        let parent_of_op = impl_parent_of_op(kb, rec.op_sym);
+        let parent_sort_params: Rc<Vec<(Symbol, TermId)>> = parent_of_op
             .map(|p| sort_type_params_as_pairs(kb, p))
             .unwrap_or_default();
         let mut sort_param_rigids: Vec<(VarId, TermId)> = Vec::new();
@@ -24564,6 +24739,7 @@ fn check_operation_bodies(kb: &mut KnowledgeBase, op_syms: &[Symbol], errors: &m
             span,
             sort_param_rigids: Rc::new(sort_param_rigids),
             rigidify: Rc::new(rigidify_subst),
+            parent_sym: parent_of_op,
         });
     }
 
@@ -24571,16 +24747,22 @@ fn check_operation_bodies(kb: &mut KnowledgeBase, op_syms: &[Symbol], errors: &m
     // compute it once before the per-op loop.
     let region_sorts = super::region::region_sorts(kb);
 
+    // WI-657(9): the `[simp]` gate is loop-invariant across this whole pass (typing
+    // rewrites op bodies, never asserts/retracts an equation), so compute it ONCE
+    // here and thread it into each per-op body walk via `type_check_node_gated` —
+    // instead of `type_check_node` recomputing `has_simp_equations` + two
+    // `simp_equation_rids` bucket scans per operation.
+    let simp_enabled = super::simp_rewrite::has_simp_equations(kb) || kb.has_dot_applies;
+    let simp_rids: Vec<RuleId> =
+        if simp_enabled { kb.simp_equation_rids() } else { Vec::new() };
+
     for op in &ops_to_check {
         let mut env = TypingEnv::empty();
         // WI-221: snapshot the enclosing sort + its requires chain so
         // defer-to-requirement detection in `check_apply` runs from a
         // cached chain instead of re-walking SortRequiresInfo per call.
-        let op_qn = kb.qualified_name_of(op.op_sym).to_string();
-        let parent_sym = op_qn
-            .rsplit_once('.')
-            .and_then(|(parent_qn, _)| kb.try_resolve_symbol(parent_qn));
-        env.set_enclosing_sort(kb, parent_sym);
+        // WI-657(10): reuse the parent resolved once at ops_to_check build time.
+        env.set_enclosing_sort(kb, op.parent_sym);
         // WI-562: snapshot this op's OWN op-scoped `requires` (WI-448) so the
         // body's abstract spec-op calls against an op-type-param the op
         // `requires` are licensed — `List.member requires Eq[E]` covers its
@@ -24726,7 +24908,14 @@ fn check_operation_bodies(kb: &mut KnowledgeBase, op_syms: &[Symbol], errors: &m
         // WI-341: `type_check_node`'s top-down hint is a ground `TermId`; pass it
         // for a ground return type, drop it (`None`) for a `Value::Node` (denoted-
         // bearing) return — never materialize the occurrence into the hint.
-        match type_check_node(kb, &env, &op.body_node, Some(effective_return.clone())) {
+        match type_check_node_gated(
+            kb,
+            &env,
+            &op.body_node,
+            Some(effective_return.clone()),
+            simp_enabled,
+            &simp_rids,
+        ) {
             Ok(result) => {
                 // WI-283: the typer is tree-producing — `result.node` is
                 // the (possibly `[simp]`-rewritten) body. Write the
@@ -24790,14 +24979,15 @@ fn check_operation_bodies(kb: &mut KnowledgeBase, op_syms: &[Symbol], errors: &m
                 // WI-314: operation-boundary effect masking. Drops effects
                 // on non-escaping locals (as before) and masks / re-keys
                 // `Modify[result]` from freshly-allocated regions per the
-                // return type — see kb::region.
-                let op_result_sym = kb.try_resolve_symbol(&format!("{}.result", op_qn));
+                // return type — see kb::region. WI-657(11): `<op>.result` is
+                // now resolved LAZILY inside `op_boundary_effects`, only when the
+                // result-region / callback-param arm actually needs it (the common
+                // effect-free op no longer pays the per-op format+resolve).
                 let ext_effects = super::region::op_boundary_effects(
                     kb,
                     &result.env,
                     &op.return_type,
                     op.op_sym,
-                    op_result_sym,
                     &region_sorts,
                     &result.effects,
                 );
