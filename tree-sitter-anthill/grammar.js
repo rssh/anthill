@@ -1037,6 +1037,7 @@ module.exports = grammar({
       $.ref_term,
       $.prefix_term,
       $.field_access,
+      $.distributive_projection,
     ),
 
     // Nested implication inside a forall binder, used as a body goal.
@@ -1093,6 +1094,45 @@ module.exports = grammar({
       '.',
       field('field', $.identifier),
     )),
+
+    // WI-639: distributive dot projection `x.(m1, …, mn)` — distribute the
+    // receiver `x` over a member list, generalizing WI-638's single-field
+    // `x.f`. Desugars (in convert.rs) to the ORDERED/NAMED tuple
+    // `(m1: x.m1, …, mn: x.mn)`: each member is a plain dot-member (WI-638
+    // field access), resolved against `x`'s type at TYPING — so a member is
+    // never a value-position scope symbol, and both keep (`x.(f1, f2)`) and
+    // rename (`x.(a: f1)`) are safe. A single member 1-collapses to `x.m`.
+    // Expression/call members (`x.(count(), y)`) are deferred (052 OQ3).
+    //
+    // The opener is a SINGLE `.(` token (`token(seq('.', '('))`), not `.`
+    // then `(`. `.(` is otherwise-free syntax that never occurs adjacently
+    // elsewhere (field access is `x.ident`, companion calls are `X.member`),
+    // so fusing it into one token is what keeps this conflict-free: the `name`
+    // rule's dotted continuation uses a plain `.`, so `Ring.one` (`.` + ident)
+    // and `t.(x, y)` (the `.(` token) diverge at the LEXER — no reduce/shift
+    // against `name`, and no precedence fight. That in turn lets the object be
+    // `_atom_term` (INCLUDING a bare/dotted `name` receiver `t.(…)` /
+    // `a.b.(…)`, which — unlike single-field `t.x` — has no name-folding
+    // fallback), and lets `prec.left(10)` mirror `field_access` so the prefix/
+    // infix/chaining ecosystem (`!x.(a,b)`, `x.(a,b).c`) behaves identically.
+    // (`.(` with interior whitespace — `x. (a,b)` — is not this token; write
+    // it tight.)
+    distributive_projection: $ => prec.left(10, seq(
+      field('object', $._atom_term),
+      token(seq('.', '(')),
+      commaSep1($.projection_member),
+      optional(','),
+      ')',
+    )),
+
+    // One member of a distributive projection: a bare member auto-labels
+    // (the identifier is BOTH the result key and the dot-member), or `a: f`
+    // renames (label `a`, dot-member `f`). Both forms expose a `member`
+    // field (the source dot-member); the rename adds a `label` field.
+    projection_member: $ => choice(
+      field('member', $.identifier),
+      seq(field('label', $.identifier), ':', field('member', $.identifier)),
+    ),
 
     // Variable with optional inline description(s): ?x {< text >}?
     // If descriptions are present, the variable term must end with '?'.

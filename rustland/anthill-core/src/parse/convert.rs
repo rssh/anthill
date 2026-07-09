@@ -63,6 +63,16 @@ enum ArgSlot {
     Named(Symbol),
 }
 
+/// One member of a distributive projection `x.(m1, …, mn)` (WI-639).
+/// `label` is the result tuple key (== `member` for a bare member, the
+/// rename target for `a: f`); `member` is the dot-member resolved off `x`.
+#[derive(Copy, Clone)]
+struct ProjEntry {
+    label: Symbol,
+    member: Symbol,
+    member_span: Span,
+}
+
 /// One slot in an infix chain. Operands consume the next result;
 /// operator slots carry the operator's source text (heap-allocated
 /// because tree-sitter Node lifetimes don't outlive the build phase).
@@ -119,6 +129,16 @@ enum BuildFrame<'t> {
     TupleLiteral {
         node: Node<'t>,
         slots: SmallVec<[ArgSlot; 4]>,
+    },
+    /// Distributive dot projection `x.(m1, …, mn)` (WI-639). The receiver
+    /// `x` is visited ONCE (its TermId shared across every member); each
+    /// entry carries the result label + dot-member. `is_value_recv` picks
+    /// the same `dot_apply` vs `field_access` desugaring `push_field_access`
+    /// uses. A single entry 1-collapses to the bare `x.m` access (no tuple).
+    DistributiveProjection {
+        node: Node<'t>,
+        entries: SmallVec<[ProjEntry; 4]>,
+        is_value_recv: bool,
     },
     // ── Expression-body frames ──────────────────────────────────
     MatchExpr {
@@ -787,6 +807,7 @@ impl<'a> Converter<'a> {
             "infix_term" => self.push_infix(node, work),
             "prefix_term" => self.push_prefix(node, work, results),
             "field_access" => self.push_field_access(node, work),
+            "distributive_projection" => self.push_distributive_projection(node, work),
             "set_literal" => self.push_set_literal(node, work),
             "collection_literal" => self.push_collection_literal(node, work),
             "tuple_literal" => self.push_tuple_literal(node, work),
@@ -1058,6 +1079,95 @@ impl<'a> Converter<'a> {
             work.push(WorkOp::Build(BuildFrame::FieldAccess { node, field_sym, field_span }));
         }
         work.push(WorkOp::Visit(WorkKind::Term, object_node));
+    }
+
+    /// WI-639: `x.(m1, …, mn)` — collect the projection members, then push a
+    /// `DistributiveProjection` build frame and visit the receiver ONCE. Each
+    /// member's `label` defaults to its `member` (bare auto-label); a rename
+    /// `a: f` gives `label = a`, `member = f`. The build phase distributes the
+    /// single converted receiver over the members (see `build_parse`).
+    fn push_distributive_projection<'t>(&mut self, node: Node<'t>, work: &mut Vec<WorkOp<'t>>) {
+        let object_node = self.field(node, "object").unwrap_or(node);
+        let mut entries: SmallVec<[ProjEntry; 4]> = SmallVec::new();
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            if child.kind() != "projection_member" {
+                continue;
+            }
+            // Both bare and rename forms expose a `member` field (the source
+            // dot-member); the rename adds a `label` field.
+            let member_node = match self.field(child, "member") {
+                Some(m) => m,
+                None => {
+                    self.err("projection member missing `member` field", child);
+                    continue;
+                }
+            };
+            let member_span = self.span(member_node);
+            let member = self.intern(self.text(member_node));
+            let label = match self.field(child, "label") {
+                Some(l) => self.intern(self.text(l)),
+                None => member,
+            };
+            entries.push(ProjEntry { label, member, member_span });
+        }
+        // A multi-member projection builds a NAMED tuple keyed by the labels;
+        // validate those keys are well-formed BEFORE building (a single member
+        // 1-collapses to a scalar — no tuple, nothing to key). Each check turns
+        // an otherwise-SILENT wrong result into a loud load error (WI-639
+        // review). A single member is exempt: `t.(_1)` = `t._1` is a fine
+        // scalar access.
+        if entries.len() > 1 {
+            self.validate_projection_labels(node, &entries);
+        }
+        let is_value_recv = self.is_value_receiver(object_node);
+        work.push(WorkOp::Build(BuildFrame::DistributiveProjection {
+            node,
+            entries,
+            is_value_recv,
+        }));
+        work.push(WorkOp::Visit(WorkKind::Term, object_node));
+    }
+
+    /// Reject the two ill-formed key shapes a multi-member projection could
+    /// otherwise emit into its result tuple, each a silent-corruption footgun
+    /// (WI-639 review):
+    ///  - A DUPLICATE label (`x.(a, a)`, or a rename collision
+    ///    `x.(k: f1, k: f2)`) would build a duplicate-key named tuple whose
+    ///    later columns are silently dropped — both the tuple typer and the
+    ///    eval twin resolve the FIRST match for a key.
+    ///  - A `_`-prefixed label (`x.(_1, _2)`; bare positional-component
+    ///    members) collides with the positional-tuple convention:
+    ///    `classify_ctor_arg` re-slots ANY `_`-keyed tuple field positionally
+    ///    in argument order, discarding the label, so a reordered projection
+    ///    silently returns the wrong column. Projection is named-only
+    ///    (proposal 052 OQ3) — positional selection is written out explicitly
+    ///    as `(x.f1, x.f2)`; renaming a positional member (`x.(a: _1)`) is
+    ///    fine (label `a` is not `_`-prefixed).
+    fn validate_projection_labels(&mut self, node: Node, entries: &[ProjEntry]) {
+        for (i, e) in entries.iter().enumerate() {
+            if self.symbols.name(e.label).starts_with('_') {
+                let nm = self.symbols.name(e.label).to_string();
+                self.err(
+                    format!(
+                        "distributive projection key `{nm}` is `_`-prefixed, colliding with the \
+                         positional-tuple convention; projection is named-only — write a positional \
+                         tuple `(x.f1, x.f2)` explicitly, or rename (`x.(name: {nm})`)"
+                    ),
+                    node,
+                );
+            }
+            if entries[..i].iter().any(|p| p.label == e.label) {
+                let nm = self.symbols.name(e.label).to_string();
+                self.err(
+                    format!(
+                        "duplicate distributive projection key `{nm}`; each projected member must \
+                         yield a distinct result key (rename a collision, e.g. `x.(a: {nm}, b: …)`)"
+                    ),
+                    node,
+                );
+            }
+        }
     }
 
     fn push_set_literal<'t>(&mut self, node: Node<'t>, work: &mut Vec<WorkOp<'t>>) {
@@ -1572,6 +1682,56 @@ impl<'a> Converter<'a> {
                     },
                     span,
                 ));
+            }
+            BuildFrame::DistributiveProjection { node, entries, is_value_recv } => {
+                // WI-639: `x.(m1, …, mn)` ⇒ the ordered/named tuple
+                // `(m1: x.m1, …, mn: x.mn)`. Distribute the SINGLE converted
+                // receiver (a shared TermId) over each member, building the
+                // same `dot_apply` / `field_access` node `push_field_access`
+                // would for `x.m` (chosen by `is_value_recv`), then key each
+                // by its result label. Desugaring here means the existing
+                // WI-638 field-access typing + named-tuple-literal typing +
+                // eval handle everything downstream — no new typer/eval arm.
+                use super::pratt::mint_op_node;
+                let span = self.span(node);
+                let object = results.pop().expect("distributive_projection: missing object");
+                let functor =
+                    self.intern(if is_value_recv { "dot_apply" } else { "field_access" });
+                let mut named: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
+                for entry in &entries {
+                    let member_tid =
+                        self.terms.alloc(Term::Ident(entry.member), entry.member_span);
+                    // Same accessor shape `push_field_access` builds for `x.m`,
+                    // via the sanctioned minted-alloc path (WI-618 provenance):
+                    // `mint_op_node` allocs `functor(object, Ident(member))` and
+                    // marks it, keeping the accessor-mint invariant in one place.
+                    let access = mint_op_node(
+                        &mut self.terms,
+                        functor,
+                        SmallVec::from_slice(&[object, member_tid]),
+                        span,
+                    );
+                    named.push((entry.label, access));
+                }
+                // 1-collapse: a single member IS `x.m` (no tuple wrapper) —
+                // matches proposal 052 ".(y) 1-collapses to the value" and the
+                // WI's `(f: x.f) -> x.f`. A single result is scalar whether the
+                // member is bare or renamed (the tuple key is only meaningful
+                // for a multi-column result; `.( )` with one member always
+                // yields the selected value, mirroring the relational lift).
+                if named.len() == 1 {
+                    results.push(named[0].1);
+                } else {
+                    let tuple_functor = self.intern("TupleLiteral");
+                    results.push(self.terms.alloc(
+                        Term::Fn {
+                            functor: tuple_functor,
+                            pos_args: SmallVec::new(),
+                            named_args: named,
+                        },
+                        span,
+                    ));
+                }
             }
             BuildFrame::MatchExpr { node, branch_count } => {
                 let span = self.span(node);
@@ -3484,6 +3644,7 @@ fn is_term_kind(kind: &str) -> bool {
             | "infix_term"
             | "prefix_term"
             | "field_access"
+            | "distributive_projection"
             | "set_literal"
             | "collection_literal"
             | "tuple_literal"

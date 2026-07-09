@@ -1286,6 +1286,55 @@ f(?a.b, ?c)      →  f(field_access(?a, b), ?c)
 - Abstract sorts (`sort T = ?`): field access is ill-formed (no fields)
 - Named tuples (mode 3): `t.f` requires `f` to be a component name of `t`'s named-tuple type, or a positional `_N` within its arity
 
+### 6.8 Distributive Dot Projection (member list)
+
+**Syntax:** `x.(m1, …, mn)` — a member LIST after the dot, generalizing the
+single-field `x.f` of §6.7. It **distributes** the receiver `x` over the members
+and desugars (at parse/convert time) to the **ordered/named tuple**
+`(m1: x.m1, …, mn: x.mn)`. Each `x.mi` is an ordinary §6.7 dot access (any member,
+not only a field), so no new typer/eval machinery is involved.
+
+```
+x.(f1, f2)        →  (f1: x.f1, f2: x.f2)       -- bare: member is BOTH key and dot-member
+x.(a: f1, b: f2)  →  (a: x.f1, b: x.f2)         -- rename: `a:`/`b:` are the result keys
+x.(f)             →  x.f                         -- single member 1-collapses to the scalar
+```
+
+Two properties are load-bearing:
+
+1. **The result is the ordered/named tuple, never positional.** Labels are
+   preserved from the member names (or the rename), never auto-named `_1/_2` —
+   this is what lets a projected relation keep its column schema and re-join by
+   name. The member ORDER is the source order.
+2. **Members resolve at TYPING, not at name-resolution.** Each `mi` lands in the
+   §6.7 `field_access(x, mi)` dot position, resolved against `x`'s type at the
+   typer — so a member is never a value-position scope symbol. Both keep
+   (`x.(f1, f2)`) and rename (`x.(a: f1)`) are therefore free of any
+   free-identifier hazard.
+
+**1-collapse.** A single-member projection yields the scalar `x.m` (not a
+1-field tuple) — arity-based, so a single *rename* `x.(a: f)` also collapses to
+`x.f` (the label has no multi-column tuple to key, and is dropped). Write a
+1-field record directly as `(a: x.f)` if you need one.
+
+**Grammar note.** The opener is a single fused `.(` token (a `.` immediately
+followed by `(`, no interior space). `.(` is otherwise-free syntax, so the
+receiver may be any atom **including a bare/dotted `name`** (`t.(x, y)`,
+`a.b.(x, y)`) — unlike single-field `x.f`, whose bare-name receiver rides the
+`name` rule — with no grammar conflict against qualified names (`Ring.one` uses
+a plain `.`).
+
+**Well-formedness (loud errors, checked at convert):**
+- **Named-only.** A projection key may not be `_`-prefixed (the positional-tuple
+  convention): `x.(_1, _2)` is rejected — positional selection is written out as
+  `(x.f1, x.f2)`. Renaming a positional member is fine: `x.(a: _1)`.
+- **Distinct keys.** Duplicate result keys are rejected: `x.(a, a)` and the
+  rename collision `x.(k: f1, k: f2)` are errors (a duplicate-key tuple would
+  silently drop the later column).
+
+Expression/call members (`x.(count(), y)`) and a positional projection variant
+are deferred (see proposal 052).
+
 ## 7. Metadata
 
 Every fact in the KB carries metadata. `Meta` is an **entity** in the `anthill.prelude` namespace — not a special grammar production. It is a regular Fn term with named arguments.

@@ -8,6 +8,9 @@ mod tuple_order_test;
 #[path = "include/wi638_named_tuple_field_test.rs"]
 mod wi638_named_tuple_field_test;
 
+#[path = "include/wi639_distributive_projection_test.rs"]
+mod wi639_distributive_projection_test;
+
 #[path = "include/wi009_phase3_builtins_test.rs"]
 mod wi009_phase3_builtins_test;
 
