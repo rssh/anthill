@@ -5,7 +5,22 @@
 Design (2026-07-03). **Realizes** the design-first acceptance of **WI-580** ("operation body as the
 single source of truth — derive rule views, retire hand-written duplicates"), and **re-answers its
 scope item 1**: derived rules are *not* materialized as semantic KB objects; the body is unfolded
-on demand by a single specializer. **Related:** proposal [043](../proposals/043-simp-rewrite.md)
+on demand by a single specializer.
+
+**Implementation status (2026-07-09).** §3.3's SLD one-step unfold is **partly delivered** as
+abstract-interpretation-on-suspend: when a `SemEq` goal has an operand that is an unground bodied
+op-call whose body `match`es on a flex scrutinee — the shape the direct call (`reduce_op_value` /
+the eval bridge) *suspends* on — the resolver case-splits the body into one choice-point per arm
+(`KnowledgeBase::unfold_eq_operand`, engine in `kb/body_specialize.rs::folded_call_match`). This
+covers **structural** ops (relational `append(?a, ys) = zs` solves; `code(?c) = ?v` enumerates), so
+`list.anthill`'s `length`/`append` `<=>` twins are **retired** (a ground call folds via the bridge,
+a non-ground occurrence unfolds). Soundness gates in place: only DISJOINT constructor arms
+case-split (a catch-all needs earlier-arm negation guards — undecidable on an unground scrutinee →
+declined to a WI-519 residual, not over-generated); effectful / `requires`-carrying bodies are
+declined (not yet threaded); an op-call OTHER operand is declined. **Not yet done:** `member`'s
+`if`-flattening (nested choice, §5) and its owed `requires Eq[T]` — so `member`'s `:-` twins stay;
+the typer inlining site (§3.2) — abandoned as type-unsound (it rewrote a call before the signature
+check); the prover site (§3.4). **Related:** proposal [043](../proposals/043-simp-rewrite.md)
 (`[simp]` rewriting), proposal 049 (`<=>`), WI-283 (typer-hosted firing — the natural host for the
 inlining site), WI-502 / [`constrained-term-substrate.md`](./constrained-term-substrate.md) and
 WI-246 (the resolver substrate the SLD site is gated on), WI-519 (undecided-as-data — where a

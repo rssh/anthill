@@ -31,9 +31,10 @@ enum anthill.prelude.List
     match l
       case nil() -> 0
       case cons(_, xs) -> add(1, length(xs))
-  -- Laws (also serve as rewrite/proof obligations):
-  rule length(nil) <=> 0
-  rule length(cons(?x, ?xs)) <=> add(1, length(?xs))
+  -- WI-580: the `<=>` law twins were the body's match arms restated verbatim.
+  -- Retired — the body is the single source: a ground `length(l)` folds via the
+  -- eval bridge, and a non-ground occurrence is served by the SLD one-step
+  -- body-unfold (docs/design/abstract-interpreter-and-rules.md §3.3).
 
   -- member: deterministic Bool. The Prolog-style rules below preserve the
   -- backtracking-relation semantics for resolver-mode queries; the operation
@@ -57,8 +58,10 @@ enum anthill.prelude.List
     match xs
       case nil() -> ys
       case cons(x, rest) -> cons(head: x, tail: append(rest, ys))
-  rule append(nil, ?ys) <=> ?ys
-  rule append(cons(head: ?x, tail: ?xs), ?ys) <=> cons(head: ?x, tail: append(?xs, ?ys))
+  -- WI-580: the `<=>` law twins restated the body's match arms verbatim. Retired
+  -- — the body is the single source: a ground call folds via the eval bridge; a
+  -- non-ground occurrence (relational `append(?a, ys) = zs`) is served by the SLD
+  -- one-step body-unfold case-split (§3.3).
 
   -- foldLeft / foldRight (WI-585): List's OWN concrete eager folds. These back
   -- the FiniteCollection default bodies (`List.foldLeft(collect(c), …)`), and are

@@ -104,20 +104,41 @@ fn host_bodied_match_op_decides_false_at_resolution() {
 }
 
 #[test]
-fn nonground_operand_residualizes_no_bridge() {
-    // code_is(?c, ?v) with BOTH unbound: `code(?c)` has a non-ground arg, so the
-    // ground-gate blocks the bridge (`=` must never bind) — the compare delays.
-    // The key soundness property: NO definite (empty-residual) solution appears,
-    // which would mean the bridge bound a resolution variable.
+fn nonground_operand_case_splits_via_unfold() {
+    // WI-580 §3.3: a non-ground bodied-op operand no longer merely residualizes —
+    // the SLD unfold case-splits the callee's `match`, ENUMERATING the sound
+    // relational solutions. `code(?c) = ?v` with both unbound yields exactly the
+    // three colour codes {red→1, green→2, blue→3}. The eval BRIDGE stays
+    // ground-gated (it never binds); these definite answers come from unification
+    // narrowing over the body, not a spurious bridge binding — so the original
+    // soundness intent holds sharpened: every definite answer is a GENUINE `code`
+    // pair (no wrong bindings), and there are no spurious extras.
     let mut kb = common::load_kb_with(MATCH_SRC);
     let c = fresh(&mut kb, "_c");
     let v = fresh(&mut kb, "_v");
     let g = goal(&mut kb, "gap1.matchop.code_is", &[c, v]);
     let sols = kb.resolve(&[g], &ResolveConfig::default());
     assert!(
-        sols.iter().all(|s| !s.residual.is_empty()),
-        "a non-ground operand must delay (residualize), never yield a definite \
-         solution — got {} solution(s), some with empty residual",
+        sols.iter().all(|s| s.is_definite()),
+        "every solution must be definite (fully narrowed); got {} solution(s)",
+        sols.len(),
+    );
+    let int_of = |kb: &mut KnowledgeBase, t: TermId, s: &anthill_core::kb::resolve::Solution| {
+        match kb.reify(t, &s.subst) {
+            anthill_core::eval::Value::Int(n) => Some(n),
+            anthill_core::eval::Value::Term { id, .. } => match kb.get_term(id) {
+                Term::Const(Literal::Int(n)) => Some(*n),
+                _ => None,
+            },
+            _ => None,
+        }
+    };
+    let mut codes: Vec<i64> = sols.iter().filter_map(|s| int_of(&mut kb, v, s)).collect();
+    codes.sort();
+    assert_eq!(
+        codes,
+        vec![1, 2, 3],
+        "code(?c)=?v must enumerate exactly the three colour codes; got {} solution(s)",
         sols.len(),
     );
 }

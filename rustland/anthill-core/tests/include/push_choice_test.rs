@@ -329,3 +329,113 @@ fn or_rule_isolates_substitutions_across_branches() {
     assert_eq!(bindings, expected,
         "σ isolation: each branch must bind ?x to its own value, not leak across");
 }
+
+#[test]
+fn wi580_relational_append_solves_first_arg() {
+    // WI-580 §3.3: abstract-interpretation-on-suspend. Solve `append(?a, [3]) =
+    // [1,3]` for the unground first arg — the <=> rules can't (they need a
+    // ground-headed first arg); the body-unfold case-split does, converging to
+    // the unique ?a = [1].
+    let src = r#"
+        namespace test.wi580ra
+          import anthill.prelude.List.{append, cons, nil}
+          rule solve(?a) :- eq(append(?a, cons(head: 3, tail: nil)), cons(head: 1, tail: cons(head: 3, tail: nil)))
+        end
+    "#;
+    let mut kb = load_with(src);
+    let solve_sym = kb.try_resolve_symbol("test.wi580ra.solve").unwrap();
+    let s = kb.intern("_a");
+    let a_vid = kb.fresh_var(s);
+    let a_term = kb.alloc(Term::Var(anthill_core::kb::term::Var::Global(a_vid)));
+    let goal = kb.alloc(Term::Fn {
+        functor: solve_sym,
+        pos_args: SmallVec::from_slice(&[a_term]),
+        named_args: SmallVec::new(),
+    });
+    let sols = kb.resolve(&[goal], &ResolveConfig::default());
+    let definite: Vec<_> = sols.iter().filter(|s| s.is_definite()).collect();
+    assert_eq!(definite.len(), 1, "expected exactly one definite solution; got {} total", sols.len());
+
+    // ?a must be [1] = cons(head:1, tail:nil). Compare hash-consed TermIds.
+    let one = kb.alloc(Term::Const(anthill_core::kb::term::Literal::Int(1)));
+    let conss = kb.try_resolve_symbol("anthill.prelude.List.cons").unwrap();
+    let fields = kb.entity_field_names(conss).expect("cons fields").to_vec();
+    let (heads, tails) = (fields[0], fields[1]);
+    let nilt = {
+        let nils = kb.try_resolve_symbol("anthill.prelude.List.nil").unwrap();
+        kb.alloc(Term::Ref(nils))
+    };
+    let mut na = SmallVec::<[(anthill_core::intern::Symbol, anthill_core::kb::term::TermId); 2]>::new();
+    na.push((heads, one));
+    na.push((tails, nilt));
+    na.sort_by_key(|(s, _)| s.index());
+    let expected = kb.alloc(Term::Fn { functor: conss, pos_args: SmallVec::new(), named_args: na });
+
+    let got = match kb.reify(a_term, &definite[0].subst) {
+        anthill_core::eval::Value::Term { id, .. } => id,
+        other => panic!("?a should reify to a ground term; got {other:?}"),
+    };
+    assert_eq!(got, expected, "?a should be [1] (cons(1,nil))");
+}
+
+#[test]
+fn wi580_catchall_arm_declines_no_overgeneration() {
+    // WI-580 §3.3 soundness: a body with a catch-all (`_`) arm is NOT disjoint —
+    // case-splitting it would need "earlier arms didn't match" negation guards
+    // (undecidable on an unground scrutinee). `folded_call_match` declines, so a
+    // relational `eq(label(?n), "nonzero")` DELAYS (residual) instead of wrongly
+    // enumerating a definite ?n (which would assert label(?n)="nonzero" for ALL
+    // ?n, including ?n=0 where label(0)="zero").
+    let src = r#"
+        namespace test.wi580ca
+          import anthill.prelude.{Int64, String}
+          operation label(n: Int64) -> String =
+            match n
+              case 0 -> "zero"
+              case _ -> "nonzero"
+          rule q(?n) :- eq(label(?n), "nonzero")
+        end
+    "#;
+    let mut kb = load_with(src);
+    let q = kb.try_resolve_symbol("test.wi580ca.q").unwrap();
+    let s = kb.intern("_n");
+    let nvid = kb.fresh_var(s);
+    let nt = kb.alloc(Term::Var(anthill_core::kb::term::Var::Global(nvid)));
+    let goal = kb.alloc(Term::Fn { functor: q, pos_args: SmallVec::from_slice(&[nt]), named_args: SmallVec::new() });
+    let sols = kb.resolve(&[goal], &ResolveConfig::default());
+    assert!(
+        sols.iter().all(|s| !s.is_definite()),
+        "a catch-all body must not over-generate a definite answer; got {} solution(s), some definite",
+        sols.len(),
+    );
+}
+
+#[test]
+fn wi580_op_call_other_operand_declines() {
+    // WI-580 §3.3 soundness: when the OTHER eq operand is itself an unevaluated
+    // bodied op-call, the residual/OTHER `unify` would compare it structurally
+    // and wrongly fail (dropping real solutions). `unfold_eq_operand` declines
+    // when OTHER carries an op-call, so the goal DELAYS (residual) as before —
+    // never a wrong definite answer.
+    let src = r#"
+        namespace test.wi580oc
+          import anthill.prelude.List.{append, cons, nil}
+          rule q(?a, ?b) :- eq(append(?a, cons(head: 3, tail: nil)), append(?b, cons(head: 4, tail: nil)))
+        end
+    "#;
+    let mut kb = load_with(src);
+    let q = kb.try_resolve_symbol("test.wi580oc.q").unwrap();
+    let sa = kb.intern("_a");
+    let sb = kb.intern("_b");
+    let av = kb.fresh_var(sa);
+    let bv = kb.fresh_var(sb);
+    let at = kb.alloc(Term::Var(anthill_core::kb::term::Var::Global(av)));
+    let bt = kb.alloc(Term::Var(anthill_core::kb::term::Var::Global(bv)));
+    let goal = kb.alloc(Term::Fn { functor: q, pos_args: SmallVec::from_slice(&[at, bt]), named_args: SmallVec::new() });
+    let sols = kb.resolve(&[goal], &ResolveConfig::default());
+    assert!(
+        sols.iter().all(|s| !s.is_definite()),
+        "an op-call OTHER operand must decline the unfold and delay; got {} solution(s), some definite",
+        sols.len(),
+    );
+}

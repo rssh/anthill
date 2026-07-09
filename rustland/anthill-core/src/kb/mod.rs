@@ -20,6 +20,7 @@ pub mod op_info;
 pub mod op_requirements;
 pub mod req_insertion;
 pub mod simp_rewrite;
+pub(crate) mod body_specialize;
 pub mod term_view;
 pub mod execute;
 pub mod route;
