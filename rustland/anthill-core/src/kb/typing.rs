@@ -10825,24 +10825,9 @@ pub fn check_provider_operations(kb: &mut KnowledgeBase) -> Vec<super::load::Loa
         }
     }
 
-    // Op symbols that have an EQUATIONAL definition. A rule `op(args) = rhs`
-    // (guarded or not) has head `eq(op(args), rhs)` — collect each LHS head
-    // functor. Must walk ALL rules, not `rules_by_functor`: WI-139 unindexes
-    // equational rules from the functor index (they're cite-required), so a
-    // functor walk would miss every one. `is_equation` is likewise unusable —
-    // it rejects guarded equations (`rule head(?s) = … :- …`), real definitions.
-    let mut eq_defined: std::collections::HashSet<Symbol> = std::collections::HashSet::new();
-    for rid in kb.live_rule_ids() {
-        let Value::Term { id: head, .. } = *kb.rule_head_value(rid) else { continue };
-        if !super::load::is_equational_head(kb, head) { continue; }
-        if let Term::Fn { pos_args, .. } = kb.get_term(head) {
-            if let Some(&lhs) = pos_args.first() {
-                if let Some(op) = head_functor_sym(kb, lhs) {
-                    eq_defined.insert(op);
-                }
-            }
-        }
-    }
+    // Op symbols that have an EQUATIONAL definition `op(args) = rhs` — the shared
+    // WI-652 helper (also read by the unbacked-eq guard).
+    let eq_defined = collect_eq_defined_ops(kb);
 
     // Every sort's own declared operations (one shared `SortInfo` scan).
     let own_ops: HashMap<Symbol, Vec<Symbol>> =
@@ -11188,6 +11173,75 @@ pub(crate) fn witness_op_for_carrier(
     kb.sort_ops_lookup(provider, op_short)
 }
 
+/// WI-652 — op symbols that have an EQUATIONAL definition `op(args) = rhs`
+/// (guarded or not): the rule's head is `eq(op(args), rhs)`, so collect each LHS
+/// head functor. Must walk ALL rules, not `rules_by_functor`: WI-139 unindexes
+/// equational rules from the functor index (they're cite-required), so a functor
+/// walk would miss every one. `is_equation` is likewise unusable — it rejects
+/// guarded equations (`rule head(?s) = … :- …`), which are real definitions.
+/// Shared by [`op_backed`] (provider-op coverage) and [`check_eq_override_backing`]
+/// (the unbacked-eq guard) so both read the SAME notion of "backed by an equation".
+fn collect_eq_defined_ops(kb: &KnowledgeBase) -> std::collections::HashSet<Symbol> {
+    let mut eq_defined: std::collections::HashSet<Symbol> = std::collections::HashSet::new();
+    for rid in kb.live_rule_ids() {
+        let Value::Term { id: head, .. } = *kb.rule_head_value(rid) else { continue };
+        if !super::load::is_equational_head(kb, head) { continue; }
+        if let Term::Fn { pos_args, .. } = kb.get_term(head) {
+            if let Some(&lhs) = pos_args.first() {
+                if let Some(op) = head_functor_sym(kb, lhs) {
+                    eq_defined.insert(op);
+                }
+            }
+        }
+    }
+    eq_defined
+}
+
+/// WI-652 — which rule leg counts as backing when [`op_backed_one`] probes an op.
+enum RuleBacking {
+    /// ANY non-fact rule under the functor ([`op_backed`]'s relational-definition
+    /// leg — a rule `op(args, r) :- body`).
+    AnyNonFact,
+    /// Only a GENERAL catch-all eq clause (all-var positional head, per
+    /// [`rule_is_general_eq_clause`]) — so `Map.eq`'s mis-attributed compound
+    /// `get`-rewrite law does NOT mask the empty override.
+    GeneralEqClause,
+}
+
+/// WI-652 — is the single op symbol `op` backed? The shared core of [`op_backed`]
+/// (multi-candidate provider-op coverage) and [`carrier_has_unbacked_eq_override`]
+/// (single own-op eq guard), which differ only in which legs they admit:
+///   - `op_backed`:                        runnable body │ eq= │ builtin │ any non-fact rule
+///   - `carrier_has_unbacked_eq_override`: runnable body │ eq= │  —      │ general eq clause
+///
+/// `allow_builtin = false` drops the builtin leg — admitting `PartialEq.eq`'s
+/// builtin-ness would mask exactly the empty `Map.eq` override the guard exists to
+/// catch. `rule_backing` picks the rule leg: `op_backed` counts any non-fact rule;
+/// the eq guard tightens to a general catch-all clause so Map's compound-headed
+/// `get`-rewrite law under `Map.eq` doesn't read as backing. The `eq=` leg is
+/// admitted by BOTH — a carrier that backs `eq` via an equational `eq(?a,?b) = rhs`
+/// (unindexed from `rules_by_functor`, WI-139) is genuinely backed and must not be
+/// flagged; this does NOT unmask Map, whose equational `get`-rewrite law contributes
+/// `get` (its LHS head), never `Map.eq`, to [`collect_eq_defined_ops`].
+fn op_backed_one(
+    kb: &KnowledgeBase,
+    op: Symbol,
+    eq_defined: &std::collections::HashSet<Symbol>,
+    allow_builtin: bool,
+    rule_backing: RuleBacking,
+) -> bool {
+    if op_has_runnable_body(kb, op) { return true; }
+    if eq_defined.contains(&op) { return true; }
+    if allow_builtin && kb.is_builtin(op) { return true; }
+    match rule_backing {
+        RuleBacking::AnyNonFact => kb.rules_by_functor(op).iter().any(|&r| !kb.is_fact(r)),
+        RuleBacking::GeneralEqClause => kb
+            .rules_by_functor(op)
+            .iter()
+            .any(|&r| !kb.is_fact(r) && rule_is_general_eq_clause(kb, r, op)),
+    }
+}
+
 /// True iff the operation `op_short` (declared by the provided spec, as
 /// `spec_op`) is backed for carrier `X`. See [`check_provider_operations`] for
 /// the backing kinds. Conservative: any one source suffices.
@@ -11221,12 +11275,11 @@ fn op_backed(
         }
     }
     for &c in &cands {
-        if op_has_runnable_body(kb, c) { return true; }
-        if eq_defined.contains(&c) { return true; }
-        if kb.is_builtin(c) { return true; }
-        // Relational definition: a non-fact rule (`op(args, r) :- body`) whose
-        // head functor is `c`.
-        if kb.rules_by_functor(c).iter().any(|&r| !kb.is_fact(r)) { return true; }
+        // Relational definition (`AnyNonFact`): a non-fact rule (`op(args, r) :-
+        // body`) whose head functor is `c` counts, and the builtin leg is admitted.
+        if op_backed_one(kb, c, eq_defined, true, RuleBacking::AnyNonFact) {
+            return true;
+        }
     }
     false
 }
@@ -26196,6 +26249,11 @@ struct EqFamilySyms {
     eq_spec: Symbol,
     eq_short: Symbol,
     neq_spec: Option<Symbol>,
+    /// The `PartialEq` / `Eq` spec sorts. A carrier is only a genuine unbacked-eq
+    /// OVERRIDE if it SELF-PROVIDES one of these (Map's `provides Eq[T = Map]`); a
+    /// spec that merely DECLARES its own `eq` op does not, and must not be flagged.
+    partial_eq_sort: Option<Symbol>,
+    eq_sort: Option<Symbol>,
 }
 
 /// WI-650 — flag a semantic `PartialEq.eq`/`PartialEq.neq` (`=`/`neq`) call whose operand's
@@ -26221,15 +26279,24 @@ struct EqFamilySyms {
 /// found false; that `Map.K` was Map's OWN key comparison `neq(?k, ?k2)`, where the
 /// operands genuinely ARE keys of type `K`).
 ///
-/// BEST-EFFORT, deliberately: it fires on the common shape — an `eq`/`neq` GOAL or
-/// op-body call whose operand the typer stamps CONCRETELY as the carrier (a var
-/// leaf typed via a `Map` param, or a param compared directly). Known escape routes
-/// (all silent-misdecide, none reachable by the current stdlib/examples/tests) are
-/// tracked as WI-652: a COMPOUND operand carries no stamped `inferred_type` (skipped
-/// by [`operand_unbacked_eq_carrier`]); a DOT-form `a.eq(b)` dispatches to the
-/// carrier's own `Map.eq`, whose functor is not `PartialEq.eq`; a CONSTRAINT body lives in
-/// `kb.guards`, not `live_rule_ids`; a POLYMORPHIC operand typed by an abstract `T`
-/// never concretizes to `Map` (this last one is `eq`/`neq`-symmetric).
+/// Three detection channels close the WI-652 gaps over WI-650's original var-leaf
+/// case:
+///   - the STAMPED type of a var-leaf operand ([`operand_unbacked_eq_carrier`], A1);
+///   - a COMPOUND operand's head result sort (`put(…)`, `build_map(x)` — un-stamped
+///     in a rule body, A2), same helper;
+///   - a DOT-form `m.eq(n)`, rewritten to `Map.eq(m, n)` whose functor is the
+///     carrier's own `eq` op, read straight off the functor ([`own_eq_op_carrier`]).
+/// These run over rule bodies, op bodies, AND constraint/guard bodies (the last
+/// carrier-agnostically over the untyped `LogicalQuery` Value — [`check_value_eq_override_backing`]).
+///
+/// Two escape routes remain deliberately OPEN (both need a concrete operand sort
+/// this load-time check cannot see): a POLYMORPHIC operand typed by an abstract `T`
+/// (`same(a: T, b: T) = eq(a, b)` at `T = Map`) never concretizes to `Map`; and a
+/// BARE-VAR operand inside a CONSTRAINT (`constraint c :- eq(?m, ?n)`) has no stamped
+/// type — a guard stores an untyped `Value`, so only the compound/dot channels reach
+/// it. A future WI-625 host bridge that registers `Map.eq` AS a resolver builtin
+/// must update the backing predicate ([`op_backed_one`] deliberately drops the
+/// builtin leg today, so it would then read a bridged `Map.eq` as still-unbacked).
 fn check_eq_override_backing(kb: &mut KnowledgeBase) -> Vec<TypeError> {
     let mut errors: Vec<TypeError> = Vec::new();
     // The semantic eq/neq spec symbols. WI-644 split: the `eq`/`neq` ops live on
@@ -26248,6 +26315,8 @@ fn check_eq_override_backing(kb: &mut KnowledgeBase) -> Vec<TypeError> {
         eq_spec,
         eq_short: kb.intern("eq"),
         neq_spec,
+        partial_eq_sort: impl_parent_of_op(kb, eq_spec),
+        eq_sort: kb.try_resolve_symbol("anthill.prelude.Eq"),
     };
     // `PartialEq.neq` is matched alongside `PartialEq.eq` so a `neq(map, map)` goal or op body is
     // flagged identically — its var operands are stamped `Map` by the same WI-603
@@ -26256,6 +26325,9 @@ fn check_eq_override_backing(kb: &mut KnowledgeBase) -> Vec<TypeError> {
     // not escape (the `Map.K` an earlier note worried about was Map's own KEY
     // comparison `neq(?k, ?k2)`, correctly typed `K` and correctly not flagged).
     let is_eq_call = |f: Symbol| f == syms.eq_spec || Some(f) == syms.neq_spec;
+    // WI-652 — equational-definition backing set, shared with `op_backed`, so a
+    // carrier that defines `eq` via `eq(?a,?b) = rhs` is not flagged spuriously.
+    let eq_defined = collect_eq_defined_ops(kb);
     // Memo per carrier sort — the same sort recurs across many call sites, and
     // the backing probe allocates a `rules_by_functor` Vec.
     let mut memo: std::collections::HashMap<Symbol, bool> = std::collections::HashMap::new();
@@ -26266,27 +26338,41 @@ fn check_eq_override_backing(kb: &mut KnowledgeBase) -> Vec<TypeError> {
             continue;
         }
         for node in kb.rule_body_nodes(rid) {
-            check_occ_eq_override_backing(kb, node, &is_eq_call, &syms, &mut memo, &mut errors);
+            check_occ_eq_override_backing(kb, node, &is_eq_call, &syms, &eq_defined, &mut memo, &mut errors);
         }
     }
     // Operation bodies — free namespace-level ops and sort ops alike (every op
     // with a body is type-checked and its occurrences stamped).
     for (_, body) in kb.op_bodies_iter() {
-        check_occ_eq_override_backing(kb, body, &is_eq_call, &syms, &mut memo, &mut errors);
+        check_occ_eq_override_backing(kb, body, &is_eq_call, &syms, &eq_defined, &mut memo, &mut errors);
+    }
+    // WI-652 — constraint/guard bodies. A guard stores an untyped `LogicalQuery`
+    // Value (no `NodeOccurrence`, no stamped `inferred_type`), never visited by
+    // `live_rule_ids`, so it walks carrier-agnostically via `TermView`, reaching
+    // the compound-operand and dot-form/own-op channels (a bare-var operand there
+    // has no type to read — documented open above).
+    for query in kb.guard_queries() {
+        check_value_eq_override_backing(kb, &query, &is_eq_call, &syms, &eq_defined, &mut memo, &mut errors);
     }
     errors
 }
 
-/// Walk `occ` for `PartialEq.eq`/`PartialEq.neq` calls and push an `EqOverrideUnbacked` per
-/// call whose operand sort has an unbacked own `eq` override (see
-/// [`check_eq_override_backing`]). Iterative (explicit stack) so a deeply-nested
-/// body cannot overflow the host stack. At most one error per call site (a
-/// map–map compare would trigger on both operands).
+/// Walk `occ` for eq calls and push an `EqOverrideUnbacked` per call whose carrier
+/// has an unbacked own `eq` override (see [`check_eq_override_backing`]). Iterative
+/// (explicit stack) so a deeply-nested body cannot overflow the host stack. At most
+/// one error per call site.
+///
+/// Two channels: (B) the call's OWN functor is an unbacked carrier's `eq` override
+/// (`m.eq(n)` rewritten to `Map.eq(m, n)` — the dot-form gap), read via
+/// [`own_eq_op_carrier`]; else (A) a semantic `PartialEq.eq`/`neq` call, whose
+/// operands are probed by [`operand_unbacked_eq_carrier`] (stamped var-leaf type OR
+/// compound-operand head result sort).
 fn check_occ_eq_override_backing(
     kb: &KnowledgeBase,
     occ: &Rc<NodeOccurrence>,
     is_eq_call: &impl Fn(Symbol) -> bool,
     syms: &EqFamilySyms,
+    eq_defined: &std::collections::HashSet<Symbol>,
     memo: &mut std::collections::HashMap<Symbol, bool>,
     errors: &mut Vec<TypeError>,
 ) {
@@ -26305,9 +26391,16 @@ fn check_occ_eq_override_backing(
             _ => None,
         };
         if let Some((functor, pos_args, named_args)) = call {
-            if is_eq_call(functor) {
+            // (B) dot-form / direct own-op call: carrier read off the functor.
+            if let Some(carrier) = own_eq_op_carrier(kb, functor, syms, eq_defined, memo) {
+                errors.push(TypeError::EqOverrideUnbacked {
+                    span: Some(o.span.span),
+                    carrier_sort: carrier,
+                });
+            } else if is_eq_call(functor) {
+                // (A) semantic eq/neq call: probe operands.
                 for operand in pos_args.iter().chain(named_args.iter().map(|(_, a)| a)) {
-                    if let Some(carrier) = operand_unbacked_eq_carrier(kb, operand, syms, memo) {
+                    if let Some(carrier) = operand_unbacked_eq_carrier(kb, operand, syms, eq_defined, memo) {
                         errors.push(TypeError::EqOverrideUnbacked {
                             span: Some(o.span.span),
                             carrier_sort: carrier,
@@ -26321,23 +26414,161 @@ fn check_occ_eq_override_backing(
     }
 }
 
-/// The operand's inferred sort IF it declares an unbacked own `eq` override
-/// ([`carrier_has_unbacked_eq_override`]), else `None`. A compound operand whose
-/// occurrence carries no stamped `inferred_type` reads `None` (skipped) — the same
-/// var-leaf reliance `check_one_spec_op_requirement` has, and a known best-effort
-/// gap tracked as WI-652 (a compound map operand escapes the load check).
+/// The operand's carrier sort IF it declares an unbacked own `eq` override
+/// ([`carrier_has_unbacked_eq_override`]), else `None`. The carrier is read from
+/// (A1) the operand's stamped `inferred_type` — a var leaf typed via a `Map`
+/// param, the common shape shared with `check_one_spec_op_requirement` — OR, when
+/// that is absent, (A2, WI-652) the operand HEAD's result sort for a COMPOUND
+/// operand (`put(…)`, `build_map(x)`), which WI-603 leaves un-stamped in a rule
+/// body. An abstract sort-param / abstract-spec carrier is ignored (a polymorphic
+/// `T` never concretizes to `Map` at load time — a documented WI-652 open gap),
+/// mirroring the sibling's operand filter.
 fn operand_unbacked_eq_carrier(
     kb: &KnowledgeBase,
     operand: &Rc<NodeOccurrence>,
     syms: &EqFamilySyms,
+    eq_defined: &std::collections::HashSet<Symbol>,
     memo: &mut std::collections::HashMap<Symbol, bool>,
 ) -> Option<Symbol> {
-    let ty = operand.inferred_type()?;
-    let carrier = sort_functor_of_view(kb, &ty)?;
+    let carrier = operand
+        .inferred_type()
+        .and_then(|ty| sort_functor_of_view(kb, &ty))
+        .or_else(|| operand_head_result_carrier(kb, operand))?;
+    unbacked_eq_carrier(kb, carrier, syms, eq_defined, memo)
+}
+
+/// WI-652 — `carrier` IF its own `eq` override is unbacked
+/// ([`carrier_has_unbacked_eq_override`], memoized), else `None`. Shared by ALL
+/// three detection channels (var-leaf / compound-head / dot-form own-op) so the
+/// eligibility rule and the memo cannot drift between them. The eligibility gate —
+/// the carrier must SELF-PROVIDE an Eq/PartialEq instance, which excludes an
+/// abstract sort-param `T` and a spec that merely declares its own `eq` — lives in
+/// [`carrier_has_unbacked_eq_override`] so the memo caches the full verdict.
+fn unbacked_eq_carrier(
+    kb: &KnowledgeBase,
+    carrier: Symbol,
+    syms: &EqFamilySyms,
+    eq_defined: &std::collections::HashSet<Symbol>,
+    memo: &mut std::collections::HashMap<Symbol, bool>,
+) -> Option<Symbol> {
     let unbacked = *memo
         .entry(carrier)
-        .or_insert_with(|| carrier_has_unbacked_eq_override(kb, carrier, syms));
+        .or_insert_with(|| carrier_has_unbacked_eq_override(kb, carrier, syms, eq_defined));
     unbacked.then_some(carrier)
+}
+
+/// WI-652 (compound-operand gap) — the sort an operand's HEAD produces, for a
+/// COMPOUND operand (`put(empty(), 1, 2)`, `build_map(x)`) that carries no stamped
+/// `inferred_type` (WI-603 stamps only var leaves in a rule body). An operation
+/// apply reads its declared `return_type`; a constructor/entity reads the sort it
+/// builds. `None` for a var leaf / literal / abstract-headed result (the latter
+/// correctly left unflagged — the abstract `T` open gap).
+fn operand_head_result_carrier(kb: &KnowledgeBase, operand: &Rc<NodeOccurrence>) -> Option<Symbol> {
+    let head = match operand.as_expr()? {
+        Expr::Apply { functor, .. } => *functor,
+        Expr::Constructor { name, .. } | Expr::Instantiation { name, .. } => *name,
+        _ => return None,
+    };
+    head_result_carrier(kb, head)
+}
+
+/// WI-652 — the sort produced by an operand HEAD functor: an operation's declared
+/// `return_type`, or the sort a constructor/entity builds. Shared by the occurrence
+/// probe ([`operand_head_result_carrier`]) and the guard-Value probe
+/// ([`check_value_eq_override_backing`]). `None` for a functor that is neither an
+/// operation nor a constructor, or whose result is abstract.
+fn head_result_carrier(kb: &KnowledgeBase, head: Symbol) -> Option<Symbol> {
+    if let Some(rec) = super::op_info::lookup_operation_info(kb, head) {
+        return sort_functor_of_view(kb, &rec.return_type);
+    }
+    let parent = kb.constructor_parent_sort(head)?;
+    sort_functor_of_view(kb, &parent)
+}
+
+/// WI-652 — walk a constraint/guard's untyped `LogicalQuery` Value for eq calls,
+/// carrier-agnostically via [`TermView`]. A guard has no `NodeOccurrence` and no
+/// stamped operand types, so only two channels apply: (B) the call's own functor is
+/// an unbacked carrier's `eq` override ([`own_eq_op_carrier`]); and (A2) a
+/// `PartialEq.eq`/`neq` call with a COMPOUND operand whose head produces an
+/// unbacked-eq carrier ([`head_result_carrier`]). A bare-var operand
+/// (`constraint c :- eq(?m, ?n)`) carries no type here and is left unflagged — a
+/// documented WI-652 open gap. Iterative (explicit stack) to bound host-stack depth;
+/// guard-derived diagnostics carry no span (guards store no source occurrence).
+fn check_value_eq_override_backing(
+    kb: &KnowledgeBase,
+    query: &Value,
+    is_eq_call: &impl Fn(Symbol) -> bool,
+    syms: &EqFamilySyms,
+    eq_defined: &std::collections::HashSet<Symbol>,
+    memo: &mut std::collections::HashMap<Symbol, bool>,
+    errors: &mut Vec<TypeError>,
+) {
+    let mut stack: Vec<Value> = vec![query.clone()];
+    while let Some(v) = stack.pop() {
+        let ViewHead::Functor { functor: Some(functor), pos_arity, .. } = v.head(kb) else {
+            continue;
+        };
+        // (B) dot-form / own-op call: carrier read off the functor. Else (A2) a
+        // semantic eq/neq call whose COMPOUND operand's head produces the carrier
+        // (Values carry no stamped var-leaf type, so channel A1 does not apply).
+        let mut probe_operands = false;
+        if let Some(carrier) = own_eq_op_carrier(kb, functor, syms, eq_defined, memo) {
+            errors.push(TypeError::EqOverrideUnbacked { span: None, carrier_sort: carrier });
+        } else if is_eq_call(functor) {
+            probe_operands = true;
+        }
+        // Single pass over positional args: probe each as an (A2) operand (until the
+        // one per-call-site diagnostic fires) AND push it for recursion.
+        let mut flagged_operand = false;
+        for i in 0..pos_arity {
+            let Some(operand) = v.pos_arg(kb, i).map(|it| it.to_value()) else { continue };
+            if probe_operands && !flagged_operand {
+                if let Some(carrier) = operand
+                    .head(kb)
+                    .functor_sym()
+                    .and_then(|h| head_result_carrier(kb, h))
+                    .and_then(|c| unbacked_eq_carrier(kb, c, syms, eq_defined, memo))
+                {
+                    errors.push(TypeError::EqOverrideUnbacked { span: None, carrier_sort: carrier });
+                    flagged_operand = true;
+                }
+            }
+            stack.push(operand);
+        }
+        for key in v.named_keys(kb) {
+            if let Some(item) = v.named_arg(kb, key) {
+                stack.push(item.to_value());
+            }
+        }
+    }
+}
+
+/// WI-652 (dot-form gap) — if `functor` is a carrier's OWN `eq` override that is
+/// UNBACKED, return that carrier, else `None`. A `receiver.eq(arg)` dot call is
+/// rewritten to `op(receiver, arg)` with `op` the carrier's own `eq` op (`Map.eq`,
+/// not `PartialEq.eq`), so the semantic `is_eq_call` functor test misses it; this
+/// reads the carrier straight off the functor via [`impl_parent_of_op`]. The
+/// `carrier_own_op` re-check pins `functor` as genuinely that carrier's `eq`
+/// override (not a coincidentally `eq`-named op elsewhere), then defers to the
+/// shared [`unbacked_eq_carrier`] — whose self-provides gate drops a spec that
+/// merely declares its own `eq` (a `PartialEq.eq` default target reached via a
+/// distinct spec's `MyEq.eq` functor) rather than spuriously flagging it.
+fn own_eq_op_carrier(
+    kb: &KnowledgeBase,
+    functor: Symbol,
+    syms: &EqFamilySyms,
+    eq_defined: &std::collections::HashSet<Symbol>,
+    memo: &mut std::collections::HashMap<Symbol, bool>,
+) -> Option<Symbol> {
+    // Cheap pre-filter: only an op whose short name is `eq` can be an eq override.
+    if short_name_of(kb.qualified_name_of(functor)) != "eq" {
+        return None;
+    }
+    let carrier = impl_parent_of_op(kb, functor)?;
+    if carrier_own_op(kb, carrier, syms.eq_spec, syms.eq_short) != Some(functor) {
+        return None;
+    }
+    unbacked_eq_carrier(kb, carrier, syms, eq_defined, memo)
 }
 
 /// WI-650 — does `carrier` declare its OWN `eq` override (per [`carrier_own_op`])
@@ -26364,20 +26595,43 @@ fn operand_unbacked_eq_carrier(
 /// lands under `Map.eq` with a `get`-shaped head. It fires only for `get`-shaped
 /// operands, never for two normal-form (`put`/`empty`) maps, so it provides no
 /// general map equality — Map.eq stays genuinely unbacked.
+///
+/// WI-652 — shares [`op_backed_one`] with [`op_backed`]. The `eq_defined` leg is
+/// admitted so a carrier that backs `eq` via an equational `eq(?a,?b) = rhs`
+/// (invisible to the general-clause probe, unindexed by WI-139) is NOT flagged
+/// spuriously; the builtin leg is dropped and the rule leg tightened to a general
+/// eq clause (see [`op_backed_one`]).
 fn carrier_has_unbacked_eq_override(
     kb: &KnowledgeBase,
     carrier: Symbol,
     syms: &EqFamilySyms,
+    eq_defined: &std::collections::HashSet<Symbol>,
 ) -> bool {
+    // A genuine unbacked-eq OVERRIDE requires the carrier to SELF-PROVIDE an
+    // Eq/PartialEq instance (Map's `provides Eq[T = Map]`) — only then is its own
+    // bodyless `eq` op an unimplemented instance override. A sort that merely
+    // DECLARES its own `eq` (a spec's abstract requirement / default target — e.g.
+    // a user `sort MyEq` with `operation eq(a: T, b: T) -> Bool`, or an abstract `T`
+    // that provides nothing) is not a self-provided instance and must not be flagged.
+    if !carrier_self_provides_eq(kb, carrier, syms) {
+        return false;
+    }
     let Some(own) = carrier_own_op(kb, carrier, syms.eq_spec, syms.eq_short) else {
         return false;
     };
-    let backed = op_has_runnable_body(kb, own)
-        || kb
-            .rules_by_functor(own)
-            .iter()
-            .any(|&r| !kb.is_fact(r) && rule_is_general_eq_clause(kb, r, own));
-    !backed
+    !op_backed_one(kb, own, eq_defined, false, RuleBacking::GeneralEqClause)
+}
+
+/// WI-652 — does `carrier` SELF-PROVIDE an `Eq` or `PartialEq` instance (a
+/// `provides Eq[T = carrier]` / `provides PartialEq[T = carrier]` fact)? Only then
+/// does its own bodyless `eq` op denote an unimplemented instance OVERRIDE (the
+/// `Map` case) rather than a spec's abstract `eq` DECLARATION. The check narrows the
+/// guard (never widens it): every carrier it excludes was never a self-provided
+/// instance, so no real misdecide is masked. `sort_provides` is transitive over
+/// `provides` edges, so a carrier providing `Eq[carrier]` satisfies the `Eq` leg.
+fn carrier_self_provides_eq(kb: &KnowledgeBase, carrier: Symbol, syms: &EqFamilySyms) -> bool {
+    syms.eq_sort.is_some_and(|e| sort_provides(kb, carrier, e))
+        || syms.partial_eq_sort.is_some_and(|pe| sort_provides(kb, carrier, pe))
 }
 
 /// WI-650 — is rule `r` a GENERAL clause defining `own`'s equality — head

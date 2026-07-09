@@ -142,3 +142,170 @@ fn set_eq_in_body_loads_clean() {
     "#;
     assert_loads_clean(src);
 }
+
+// ── WI-652 gap 1: COMPOUND operands ─────────────────────────────────────────
+// A rule-body operand that is not a var leaf (`build_map(x)`, `Map.put(…)`)
+// carries no WI-603 stamp, so the carrier is read from the operand HEAD's result
+// sort (`operand_head_result_carrier`). Both operands here are compound, so the
+// original var-leaf channel cannot see them — only the WI-652 head channel does.
+
+#[test]
+fn map_eq_compound_operand_in_rule_body_is_a_load_error() {
+    // `eq(build_map(?x), other())` — both operands are op applies returning `Map`,
+    // NOT var leaves. Neither is stamped, so the compound-head channel (A2) is the
+    // only one that reaches them.
+    let src = r#"
+        namespace mapeq.compound
+          import anthill.prelude.{Bool, Int64, Map, Eq}
+          operation build_map(x: Int64) -> Map[K = Int64, V = Int64]
+          operation other() -> Map[K = Int64, V = Int64]
+          operation same(x: Int64) -> Bool
+          rule same(?x) :- eq(build_map(?x), other())
+        end
+    "#;
+    let errs = crate::common::try_load_kb_with(src).err().unwrap_or_default();
+    assert_map_eq_unbacked(&errs);
+}
+
+#[test]
+fn map_eq_put_empty_compound_operand_is_a_load_error() {
+    // The ticket's literal example — `eq(put(empty(), …), empty())` — via qualified
+    // `Map.put`/`Map.empty` (the algebra constructors that build a `Map`).
+    let src = r#"
+        namespace mapeq.putempty
+          import anthill.prelude.{Bool, Int64, Map, Eq}
+          operation same() -> Bool
+          rule same() :- eq(Map.put(Map.empty(), 1, 2), Map.empty())
+        end
+    "#;
+    let errs = crate::common::try_load_kb_with(src).err().unwrap_or_default();
+    assert_map_eq_unbacked(&errs);
+}
+
+// ── WI-652 gap 2: DOT-form `m.eq(n)` ────────────────────────────────────────
+// Dot dispatch rewrites `m.eq(n)` to `Map.eq(m, n)`, whose functor is the
+// carrier's own `eq` op, not `PartialEq.eq` — so `is_eq_call` misses it. The
+// `own_eq_op_carrier` channel reads the carrier straight off that functor.
+
+#[test]
+fn map_eq_dot_form_in_op_body_is_a_load_error() {
+    let src = r#"
+        namespace mapeq.dotop
+          import anthill.prelude.{Bool, Int64, Map, Eq}
+          operation same(a: Map[K = Int64, V = Int64], b: Map[K = Int64, V = Int64]) -> Bool
+            = a.eq(b)
+        end
+    "#;
+    let errs = crate::common::try_load_kb_with(src).err().unwrap_or_default();
+    assert_map_eq_unbacked(&errs);
+}
+
+#[test]
+fn map_eq_dot_form_in_rule_body_is_a_load_error() {
+    let src = r#"
+        namespace mapeq.dotrule
+          import anthill.prelude.{Bool, Int64, Map, Eq}
+          operation same(a: Map[K = Int64, V = Int64], b: Map[K = Int64, V = Int64]) -> Bool
+          rule same(?a, ?b) :- ?a.eq(?b)
+        end
+    "#;
+    let errs = crate::common::try_load_kb_with(src).err().unwrap_or_default();
+    assert_map_eq_unbacked(&errs);
+}
+
+// ── WI-652 gap 3: EVALUATED (quantifier) constraint bodies ──────────────────
+// A quantifier constraint is lowered to a real `LogicalQuery` guard (unlike a
+// `head :- guard` DENIAL constraint, which is stored as an inert `Constraint`
+// fact and never evaluated). A guard carries no stamped operand types, so only
+// the compound-head / own-op channels reach it — the same detection the rule/op
+// walks use, carried over the untyped `Value` via `TermView`.
+
+#[test]
+fn map_eq_compound_in_quantifier_constraint_is_a_load_error() {
+    // The body `eq(build_map(?x), build_map(?x))` of a `no ?x -: …` guard is
+    // evaluated at load; comparing two `Map`s there would silently misdecide, so
+    // the compound-operand head channel flags it.
+    let src = r#"
+        namespace mapeq.constraint
+          import anthill.prelude.{Bool, Int64, Map, Eq}
+          operation build_map(x: Int64) -> Map[K = Int64, V = Int64]
+          fact num(1)
+          constraint c: no ?x: num(?x) -: eq(build_map(?x), build_map(?x))
+        end
+    "#;
+    let errs = crate::common::try_load_kb_with(src).err().unwrap_or_default();
+    assert_map_eq_unbacked(&errs);
+}
+
+// ── Controls: a BACKED carrier's new channels must stay clean ────────────────
+// Set's `eq` override IS backed (`eq(?a, ?b) :- subset(…)`), so neither the
+// dot-form nor the compound-operand channel may over-fire on it.
+
+#[test]
+fn set_eq_dot_form_in_op_body_loads_clean() {
+    let src = r#"
+        namespace mapeq.setdot
+          import anthill.prelude.{Bool, Int64, Set, Eq}
+          operation same(a: Set[T = Int64], b: Set[T = Int64]) -> Bool
+            = a.eq(b)
+        end
+    "#;
+    assert_loads_clean(src);
+}
+
+#[test]
+fn set_eq_compound_operand_loads_clean() {
+    let src = r#"
+        namespace mapeq.setcompound
+          import anthill.prelude.{Bool, Int64, Set, Eq}
+          operation build_set(x: Int64) -> Set[T = Int64]
+          operation same(x: Int64) -> Bool
+          rule same(?x) :- eq(build_set(?x), build_set(?x))
+        end
+    "#;
+    assert_loads_clean(src);
+}
+
+// The false-positive the `eq_defined` leg guards against — a carrier backing its
+// own `eq` via an equational `Carrier.eq(?a,?b) = rhs` that WI-139 unindexes — is
+// NOT separately unit-tested here: `is_equational_head` (WI-627) fires only for the
+// CANONICAL `PartialEq.eq` head, so the trigger requires an esoteric namespace-level
+// equational rule over a carrier's own `eq`, not a realistic user shape. The leg's
+// correctness rides on `op_backed_one` parity with `op_backed` (whose `eq_defined`
+// leg the provider-operation suite exercises) and on the Map cases above staying a
+// load error (Map's `eq` is NOT in `eq_defined`, so the leg does not unmask it).
+
+#[test]
+fn abstract_spec_redeclaring_eq_loads_clean() {
+    // WI-652 correctness: a USER spec that redeclares a bodyless `eq` (a sort
+    // DISTINCT from `PartialEq`) must NOT be flagged by the dot-form / own-op
+    // channel — its own `eq` is an abstract requirement satisfied by impls, not an
+    // unbacked concrete override. Its default `neq <=> not(eq(…))` rule calls
+    // `MyEq.eq`, which (unlike `PartialEq.eq`) survives `carrier_own_op`'s
+    // `o != spec_op` filter, so the channel must apply the abstract-spec eligibility
+    // filter (shared `unbacked_eq_carrier`) to stay clean rather than spuriously erroring.
+    let src = r#"
+        namespace mapeq.userspec
+          import anthill.reflect.{not}
+          import anthill.prelude.Bool
+          sort MyEq
+            sort T = ?
+            operation {
+              eq(a: T, b: T) -> Bool
+            }
+            operation neq2(a: T, b: T) -> Bool = not(eq(a, b))
+          end
+        end
+    "#;
+    assert_loads_clean(src);
+}
+
+// Two WI-652 gaps are left deliberately OPEN and documented on `check_eq_override_backing`
+// (typing.rs), not pinned by a test here — both need a concrete operand sort a
+// load-time check cannot see, so no in-source shape reaches them today:
+//   - a POLYMORPHIC operand typed by an abstract `T` (`same[T](a, b) = eq(a, b)`)
+//     never concretizes to `Map` at load;
+//   - a BARE-VAR operand in a constraint (`… -: eq(?m, ?n)`) has no stamped type on
+//     the untyped guard `Value` (only the compound/dot channels above reach a guard).
+// A DENIAL constraint (`c :- eq(m, m)`) is stored as an inert `Constraint` fact and
+// never evaluated, so an unbacked-eq there cannot misdecide — correctly not flagged.

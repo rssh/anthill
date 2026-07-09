@@ -1451,6 +1451,14 @@ impl KnowledgeBase {
         self.guards.len()
     }
 
+    /// WI-652 — every registered constraint/guard's `LogicalQuery` (cloned), for
+    /// the load-time unbacked-eq check. Guards live outside `self.rules`, so
+    /// `live_rule_ids` never visits them; this exposes their bodies for a
+    /// carrier-agnostic `TermView` walk.
+    pub(crate) fn guard_queries(&self) -> Vec<crate::eval::value::Value> {
+        self.guards.iter().map(|g| g.query.clone()).collect()
+    }
+
     /// Sorts whose facts re-fire guard `cid`.
     pub fn guard_trigger_sorts(&self, cid: ConstraintId) -> &[TermId] {
         self.guards.get(cid.index())
