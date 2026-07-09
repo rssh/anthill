@@ -551,11 +551,82 @@ class ParseTest extends munit.FunSuite:
       case fn: Term.Fn => pf.symbols.name(fn.functor)
       case other => fail(s"expected Fn, got $other")
 
+  /** Short (last `.`-segment) functor name of a `Fn` term — mirrors rustland's
+    * `resolve_sym`, since parse-time symbols keep their full interned string. */
+  private def shortFunctor(pf: ParsedFile, tid: TermId): String =
+    val n = functorName(pf, tid)
+    val i = n.lastIndexOf('.')
+    if i >= 0 then n.substring(i + 1) else n
+
   test("WI-288/WI-361: arrow type `(T) -> Int` lowers to `TypeExtractor.Arrow`") {
     val (pf, op) = parseDemoOp(
       "  operation f() -> Int =\n    let x : (T) -> Int = 1 in x")
     val tn = namedArg(pf, op.body.getOrElse(fail("no body")), "type_name")
     assertEquals(functorName(pf, tn), "anthill.prelude.TypeExtractor.Arrow")
+  }
+
+  test("WI-340: arrow effects lower to a canonical `effects_rows(EffectExpression)` row") {
+    // Effects written in REVERSE alphabetical order to prove the canonical sort
+    // reorders them `Modifies` before `Reads` (mirrors rustland's
+    // load_arrow_type_with_effect_set_canonical_row). scaland has no typer, so
+    // the undeclared effect bases parse purely syntactically.
+    val (pf, op) = parseDemoOp(
+      "  operation f() -> Int =\n    let x : (A) -> B @ {Reads[host], Modifies[host]} = 1 in x")
+    val arrow = namedArg(pf, op.body.getOrElse(fail("no body")), "type_name")
+    assertEquals(shortFunctor(pf, arrow), "Arrow")
+
+    // The `effects` field is the `effects_rows` wrapper, NOT a prelude cons-list.
+    val effectsField = namedArg(pf, arrow, "effects")
+    assertEquals(shortFunctor(pf, effectsField), "EffectsRows")
+
+    // Walk the right-folded `merge(present(l), merge(…, empty_row))` chain,
+    // collecting the present-label types in order.
+    def collect(node: TermId): List[TermId] =
+      shortFunctor(pf, node) match
+        case "empty_row" => Nil
+        case "present"   => List(namedArg(pf, node, "label"))
+        case "merge" =>
+          val left = namedArg(pf, node, "left")
+          val here =
+            if shortFunctor(pf, left) == "present" then List(namedArg(pf, left, "label")) else Nil
+          here ++ collect(namedArg(pf, node, "right"))
+        case other => fail(s"unexpected EffectExpression head `$other`")
+    val labels = collect(namedArg(pf, effectsField, "effects_expr"))
+    assertEquals(labels.length, 2, "row should carry two present labels")
+
+    // Each label is the parameterized effect `Fn{Modifies/Reads, …}`; the
+    // canonical sort put them in alphabetical order regardless of source order.
+    assertEquals(labels.map(l => shortFunctor(pf, l)), List("Modifies", "Reads"))
+  }
+
+  test("WI-340: canonical row keeps distinct same-base effects but collapses true duplicates") {
+    // rustland de-duplicates by hash-consed TermId, so structurally-distinct
+    // atoms all survive; scaland must match that with a fully-structural key,
+    // not a lossy display name that would collapse same-base parameterized
+    // effects (whose bindings ride as POSITIONAL args) into one.
+    def presentLabels(effectSrc: String): List[TermId] =
+      val (pf, op) = parseDemoOp(
+        s"  operation f() -> Int =\n    let x : (A) -> B @ {$effectSrc} = 1 in x")
+      val effectsField =
+        namedArg(pf, namedArg(pf, op.body.getOrElse(fail("no body")), "type_name"), "effects")
+      def collect(node: TermId): List[TermId] =
+        shortFunctor(pf, node) match
+          case "empty_row" => Nil
+          case "present"   => List(namedArg(pf, node, "label"))
+          case "merge" =>
+            val left = namedArg(pf, node, "left")
+            val here =
+              if shortFunctor(pf, left) == "present" then List(namedArg(pf, left, "label")) else Nil
+            here ++ collect(namedArg(pf, node, "right"))
+          case other => fail(s"unexpected EffectExpression head `$other`")
+      collect(namedArg(pf, effectsField, "effects_expr"))
+
+    // Distinct same-base parameterized effects must BOTH survive the dedup.
+    assertEquals(presentLabels("Modify[a], Modify[b]").length, 2,
+      "structurally-distinct `Modify[a]`/`Modify[b]` must both survive")
+    // A literal duplicate effect collapses to a single atom.
+    assertEquals(presentLabels("Reads, Reads").length, 1,
+      "a literal duplicate effect collapses to one atom")
   }
 
   test("WI-562: a plain-term op body after an `=`-ending ensures clause is captured, not swallowed") {

@@ -622,10 +622,15 @@ private class AnthillParserImpl(
         if params.length == 1 then typeExprToRef(params.head)
         else namedTupleTypeTerm(params.zipWithIndex.map((p, i) => (intern(s"_$i"), p)))
       val resultTerm = typeExprToRef(ret)
-      val effectsList = typeListTerm(effects.map(typeExprToRef))
+      // WI-340: the arrow's `effects` field is the canonical
+      // `effects_rows(EffectExpression)` row — a right-folded `merge` chain —
+      // NOT a prelude cons-list (the pre-WI-340 shape). This matches rustland's
+      // post-WI-307/WI-331 loader (`KnowledgeBase::build_canonical_effects_rows`)
+      // and the stdlib schema. See `buildCanonicalEffectsRows`.
+      val effectsRows = buildCanonicalEffectsRows(effects.map(typeExprToRef))
       // Named args in canonical (alphabetical) order: effects, param, result.
       terms.alloc(Term.Fn(intern("anthill.prelude.TypeExtractor.Arrow"), IArray.empty,
-        IArray((intern("effects"), effectsList), (intern("param"), paramTerm),
+        IArray((intern("effects"), effectsRows), (intern("param"), paramTerm),
                (intern("result"), resultTerm))))
     case TypeExpr.TupleType(fields) =>
       namedTupleTypeTerm(fields)
@@ -667,6 +672,126 @@ private class AnthillParserImpl(
     val nilTerm = terms.alloc(Term.Fn(intern("anthill.prelude.List.nil"), IArray.empty, IArray.empty))
     elems.foldRight(nilTerm)((h, t) =>
       terms.alloc(Term.Fn(intern("anthill.prelude.List.cons"), IArray(h, t), IArray.empty)))
+
+  // ── EffectExpression / EffectsRows builders (WI-340) ──────────────
+  // The Scala port of rustland's `make_effect_expression_*` /
+  // `make_effects_rows_type` (kb/mod.rs). Fully-qualified functor symbols so
+  // the built term is structurally identical to the Rust loader's, sitting
+  // naturally alongside the sibling `TypeExtractor.Arrow` / `.NamedTuple`.
+
+  /** `EffectExpression.empty_row` — the closed empty row `{}` (pure). */
+  private def effectExpressionEmptyRow(): TermId =
+    terms.alloc(Term.Fn(intern("anthill.prelude.EffectExpression.empty_row"),
+      IArray.empty, IArray.empty))
+
+  /** `EffectExpression.present(label: Type)` — a single present effect. */
+  private def effectExpressionPresent(label: TermId): TermId =
+    terms.alloc(Term.Fn(intern("anthill.prelude.EffectExpression.present"),
+      IArray.empty, IArray((intern("label"), label))))
+
+  /** `EffectExpression.open(tail: Type)` — a row-variable tail. */
+  private def effectExpressionOpen(tail: TermId): TermId =
+    terms.alloc(Term.Fn(intern("anthill.prelude.EffectExpression.open"),
+      IArray.empty, IArray((intern("tail"), tail))))
+
+  /** `EffectExpression.merge(left, right)` — union of two expressions. */
+  private def effectExpressionMerge(left: TermId, right: TermId): TermId =
+    terms.alloc(Term.Fn(intern("anthill.prelude.EffectExpression.merge"),
+      IArray.empty, IArray((intern("left"), left), (intern("right"), right))))
+
+  /** Wrap an EffectExpression in the `TypeExtractor.EffectsRows(effects_expr: …)`
+    * Type entity — the bridge from EffectExpression to Type position. */
+  private def effectsRowsType(expr: TermId): TermId =
+    terms.alloc(Term.Fn(intern("anthill.prelude.TypeExtractor.EffectsRows"),
+      IArray.empty, IArray((intern("effects_expr"), expr))))
+
+  /** Scala port of rustland's `KnowledgeBase::build_canonical_effects_rows`
+    * (kb/mod.rs). Builds the canonical `effects_rows(EffectExpression)` Type an
+    * arrow's `effects` field carries. Each bare effect label is wrapped in
+    * `present(label)`; a bare type-variable effect becomes the row tail
+    * `open(tail)`; already-built `present`/`absent`/`guarded` atoms (from the
+    * `+E` / `-E` / `E :- g` surface) are kept as-is. Atoms are ordered and
+    * de-duplicated by `canonicalAtomKey`, then right-folded into
+    * `merge(a1, merge(a2, …, tail))` and wrapped in `EffectsRows`.
+    *
+    * scaland has no typer, so — unlike rustland's `row_tail_var_of`, which also
+    * resolves a `Ref(S.E)` sort-alias tail — only a bare `Term.Var` is treated
+    * as a row tail (there is no SortAlias table here). */
+  private def buildCanonicalEffectsRows(effects: IndexedSeq[TermId]): TermId =
+    val atoms = ArrayBuffer.empty[TermId]
+    val tailVars = ArrayBuffer.empty[TermId]
+    effects.foreach { e =>
+      terms.get(e) match
+        case v: Term.Var =>
+          if !tailVars.exists(t => terms.get(t) == v) then tailVars += e
+        case fn: Term.Fn if isEffectAtom(fn.functor) =>
+          atoms += e   // pre-built present/absent/guarded — keep as-is
+        case _ =>
+          atoms += effectExpressionPresent(e)   // bare label → present(label)
+    }
+    // Canonical ordering: sort by structural key, then drop true duplicates.
+    // The key is fully structural (see `canonicalAtomKey`) so this drops only
+    // genuinely-identical atoms — matching rustland's hash-consed-TermId
+    // `atoms.dedup()`, NOT collapsing distinct effects that share a base.
+    val ordered = atoms.sortBy(canonicalAtomKey)
+    val deduped = ArrayBuffer.empty[TermId]
+    ordered.foreach { a =>
+      if deduped.isEmpty || canonicalAtomKey(deduped.last) != canonicalAtomKey(a) then deduped += a
+    }
+    // Seed: innermost tail — `open(?ρ)` when a row var was present, else the
+    // closed `empty_row`; any extra tails fold in as `open(…)` merges. Then
+    // right-fold `merge(atom, …)` back through the sorted atoms.
+    var acc = tailVars.headOption.map(effectExpressionOpen).getOrElse(effectExpressionEmptyRow())
+    tailVars.drop(1).foreach(extra => acc = effectExpressionMerge(effectExpressionOpen(extra), acc))
+    deduped.reverseIterator.foreach(atom => acc = effectExpressionMerge(atom, acc))
+    effectsRowsType(acc)
+
+  /** Recognizes an already-built EffectExpression atom in the effects input — a
+    * `present`/`absent`/`guarded` produced by the `+E` / `-E` / `E :- g` surface
+    * lowering (`effectPresence`/`effectAbsence`/`guardedEffect`, which intern the
+    * UNqualified functors). Such an atom is kept as-is rather than re-wrapped in
+    * `present`, mirroring rustland. Matched by EXACT functor name — not short
+    * name — so a user label like `Foo.present` is not misclassified (rustland
+    * likewise matches only the exact EffectExpression constructor symbols). */
+  private def isEffectAtom(functor: TermSymbol): Boolean =
+    symbols.name(functor) match
+      case "present" | "absent" | "guarded" => true
+      case _ => false
+
+  /** The last `.`-separated segment of a symbol's name — its short name.
+    * (Parse-time symbols are unresolved, so `symbols.name` returns the full
+    * interned string; this recovers the short name rustland's `resolve_sym`
+    * yields.) */
+  private def shortName(sym: TermSymbol): String =
+    val n = symbols.name(sym)
+    val i = n.lastIndexOf('.')
+    if i >= 0 then n.substring(i + 1) else n
+
+  /** Fully-structural canonical key for an effect atom — the row's ORDER and its
+    * de-duplication both key on this. Renders the functor short name plus a
+    * recursive `[arg, …]` over BOTH positional and named args; a `Ref`/`Ident`
+    * renders its short name, a `Var` renders `?name`.
+    *
+    * Unlike rustland's `type_display_name` (kb/typing.rs), which drops positional
+    * args, this keeps them. rustland de-duplicates by hash-consed `TermId`
+    * (`atoms.dedup()`), so its sort key may be lossy; scaland's parse-time store
+    * is NOT hash-consed and stores a parameterized effect's bindings positionally
+    * (`Modify[c]` → `Fn(Modify, pos = [c])`, and the `+E`/`-E`/`E :- g` atoms
+    * carry a positional label too), so a lossy key would collapse genuinely-
+    * distinct effects — `{Modify[c1], Modify[c2]}`, `{+A, +B}` — into one. A
+    * fully-structural key makes the dedup drop only true duplicates, matching
+    * rustland's TermId-based dedup. */
+  private def canonicalAtomKey(tid: TermId): String =
+    terms.get(tid) match
+      case Term.Ref(sym)   => shortName(sym)
+      case Term.Ident(sym) => shortName(sym)
+      case Term.Var(v)     => "?" + shortName(v.name)
+      case fn: Term.Fn =>
+        val args = fn.posArgs.map(canonicalAtomKey) ++
+          fn.namedArgs.map((k, v) => s"${shortName(k)} = ${canonicalAtomKey(v)}")
+        if args.isEmpty then shortName(fn.functor)
+        else shortName(fn.functor) + "[" + args.mkString(", ") + "]"
+      case other => other.toString
 
   private def refTerm[$: P]: P[TermId] =
     P(keyword("Ref") ~ "(" ~/ name ~ ")").map(n => terms.alloc(Term.Ref(n.last)))
