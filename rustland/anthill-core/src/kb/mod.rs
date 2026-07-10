@@ -514,10 +514,10 @@ pub struct KnowledgeBase {
     /// type-check start by `typing::build_provides_index`. Replaces the per-call
     /// linear scans of every provides fact at the dispatch/coherence sites (the SAME
     /// `rules_by_functor` antipattern as `op_records`/`sort_alias_index`). A
-    /// MANY-TO-MANY relation (carrier × spec), so TWO maps, keyed differently to
-    /// match each consumer's comparison: `canonical_sort_sym` for the spec-base
-    /// direction (exact), `same_symbol` for the carrier direction (hence a
-    /// short-name bucket + a `same_symbol` re-filter; see `ProvidesIndex`).
+    /// MANY-TO-MANY relation (carrier × spec), so TWO maps, both keyed by
+    /// `canonical_sort_sym` (WI-672 re-keyed the carrier direction from a short-name
+    /// bucket to the canonical carrier symbol; consumers compare by `canonical_sort_sym`,
+    /// not `same_symbol` — see `ProvidesIndex`).
     ///
     /// SOUND BUILD-ONCE — NO per-mutation invalidation. `SortProvidesInfo` is marked
     /// `constant` (`fact_monotonicity`, reflect.anthill; proposal 053 / WI-665), so
@@ -535,20 +535,23 @@ pub struct KnowledgeBase {
     /// first built; while `None`, every consumer falls back to the live scan.
     pub(crate) provides_index: Option<crate::kb::typing::ProvidesIndex>,
 
-    /// WI-671 — the SortInfo (per-sort reflect metadata) index: each sort's fact
-    /// keyed by the SHORT NAME (last segment) of its `name` field, built once at
-    /// type-check start by `typing::build_sort_info_index`. Replaces the per-call
-    /// linear scan of every SortInfo fact at the four per-query keyed lookup sites
-    /// (the SAME `rules_by_functor` antipattern as `op_records`/`sort_alias_index`/
+    /// WI-671/WI-672 — the SortInfo (per-sort reflect metadata) index: each sort's fact
+    /// keyed by the CANONICAL sort symbol (`canonical_sort_sym`) of its `name` field,
+    /// built once at type-check start by `typing::build_sort_info_index`. Replaces the
+    /// per-call linear scan of every SortInfo fact at the four per-query keyed lookup
+    /// sites (the SAME `rules_by_functor` antipattern as `op_records`/`sort_alias_index`/
     /// `provides_index`), the hottest being `find_sort_info`, called once PER SORT in
     /// the `type_check_sorts` loop (O(sorts²) before this).
     ///
-    /// Keyed by SHORT NAME, not a single canonical Symbol, because the consumers
-    /// split on how they compare the `name` field — two use raw `==` (exact), two use
-    /// `same_symbol` (bridges a bare↔qualified interning). Since `a == b` ⇒
-    /// `same_symbol(a, b)` ⇒ equal last segment, the short-name bucket is a sound
-    /// SUPERSET for BOTH; each consumer re-filters it with its own exact test (like
-    /// `ProvidesIndex`'s carrier direction).
+    /// Keyed by CANONICAL sort symbol (WI-672, re-keyed from the former short name).
+    /// `SortInfo.name` is always a resolved sort functor (`emit_sort_info` emits
+    /// `Term::Ref(sort_functor)`), so its canonical symbol IS the sort identity — an
+    /// exact key. This de-conflates two DISTINCT sorts that merely share a last segment
+    /// (a top-level `sort Ring` vs `anthill.prelude.algebra.Ring`), which the former
+    /// short-name bucket + `same_symbol` re-filter silently merged. The two consumers
+    /// that compared `name` via `same_symbol` now compare via `canonical_sort_sym` (no
+    /// short-name / last-segment matching); the two that used raw `==` are unchanged
+    /// (raw `==` within a canonical bucket returns the same exact fact).
     ///
     /// SOUND BUILD-ONCE — no per-mutation invalidation, no `constant` runtime guard.
     /// `SortInfo` is asserted only by `emit_sort_info` during the file-loading loop

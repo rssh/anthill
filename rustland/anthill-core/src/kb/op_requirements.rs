@@ -177,9 +177,10 @@ pub fn check_sort_requirements_coverage(
 /// for the sort's `operations` list. The list entries are `Term::Ref`
 /// pointing at each op's qualified symbol.
 pub(crate) fn operations_of_sort(kb: &KnowledgeBase, sort_sym: Symbol) -> Vec<Symbol> {
-    // WI-671 — the SortInfo short-name bucket (or a live scan pre-index); the raw
-    // `name != Some(sort_sym)` re-filter below preserves this site's exact-`==` match.
-    for rid in crate::kb::typing::sort_info_rids_by_name(kb, sort_sym) {
+    // WI-671/WI-672 — the SortInfo canonical-sort bucket (or a live scan pre-index); the
+    // raw `name != Some(sort_sym)` re-filter below preserves this site's exact-`==` match
+    // (raw `==` within a canonical bucket returns the same exact fact).
+    for rid in crate::kb::typing::sort_info_rids_by_sort(kb, sort_sym) {
         if !kb.is_fact(rid) { continue; }
         let Some(head) = kb.fact_head_term(rid) else { continue };
         let named_args = match kb.get_term(head) {

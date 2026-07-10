@@ -4891,9 +4891,10 @@ fn collect_sort_operations(kb: &mut KnowledgeBase, sort_sym: Symbol) -> Vec<Symb
     let name_field = kb.intern("name");
     let operations_field = kb.intern("operations");
 
-    // WI-671 — the SortInfo short-name bucket (or a live scan pre-index); the
-    // `Term::Ref(sym) == sort_sym` re-filter below preserves this site's exact match.
-    let rule_ids = crate::kb::typing::sort_info_rids_by_name(kb, sort_sym);
+    // WI-671/WI-672 — the SortInfo canonical-sort bucket (or a live scan pre-index); the
+    // `Term::Ref(sym) == sort_sym` re-filter below preserves this site's exact match
+    // (raw `==` within a canonical bucket returns the same exact fact).
+    let rule_ids = crate::kb::typing::sort_info_rids_by_sort(kb, sort_sym);
     for rid in rule_ids {
         if !kb.is_fact(rid) {
             continue;

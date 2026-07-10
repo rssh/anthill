@@ -3112,9 +3112,9 @@ fn find_spec_op_for_provided_sort(
         let Some(spec_t) = get_named_arg(kb, &named, "spec") else { continue };
         let Some(spec_sym) = super::load::provides_spec_base_sym(kb, spec_t) else { continue };
         // Carrier-keyed: the receiver's sort IS the provider — `(3).min(5)` →
-        // `Ordered.min` via `fact Ordered[Int]`. `same_symbol`, not `==`: a sort
-        // carries distinct Symbol ids (bare-interned vs fully-qualified).
-        let carrier_match = same_symbol(kb, carrier, recv_sort);
+        // `Ordered.min` via `fact Ordered[Int]`. WI-672: canonical sort identity (see
+        // `same_sort_canonical`), not `same_symbol`'s last-segment bridge.
+        let carrier_match = same_sort_canonical(kb, carrier, recv_sort);
         // WI-450 witness: the receiver's sort is the spec's CARRIER-PARAM VALUE of a
         // provider whose `sort_ref` is some OTHER (witness) sort — `tag.combine(t)`
         // → `Combiner.combine` via `sort TagCombiner provides Combiner[T = Tag]`. The
@@ -7298,6 +7298,17 @@ pub fn same_symbol(kb: &KnowledgeBase, a: Symbol, b: Symbol) -> bool {
     }
 }
 
+/// WI-672 — sort identity by CANONICAL symbol: `a` and `b` name the same sort iff their
+/// `canonical_sort_sym` agree. Differently-interned copies of one sort share a qualified
+/// name, hence a canonical symbol, so this bridges them — but UNLIKE [`same_symbol`] it
+/// does NOT bridge a bare/dotless name to the last segment of a qualified one. Identity
+/// is by resolved symbol, never by last segment (spec §8.6), so it de-conflates a
+/// top-level `sort Ring` from `anthill.prelude.algebra.Ring`. Short-circuits on the exact
+/// `a == b` hit (the common case) before the two `qualified_name_of` + map lookups.
+fn same_sort_canonical(kb: &KnowledgeBase, a: Symbol, b: Symbol) -> bool {
+    a == b || kb.canonical_sort_sym(a) == kb.canonical_sort_sym(b)
+}
+
 /// WI-227: interned stdlib symbols + field names needed to allocate
 /// the three requirement-projection IR forms. Resolved once at the
 /// entry point so the recursive search doesn't re-look-up per dep.
@@ -9347,26 +9358,28 @@ fn spec_warrants_abstract_check(kb: &KnowledgeBase, spec_sort: Symbol) -> bool {
     !kb.qualified_name_of(spec_sort).starts_with("anthill.")
 }
 
-/// WI-660 — the SortProvidesInfo (provider) index (see [`crate::kb::KnowledgeBase`]'s
+/// WI-660/WI-672 — the SortProvidesInfo (provider) index (see [`crate::kb::KnowledgeBase`]'s
 /// `provides_index`). The provider relation, bucketed from BOTH endpoints so the
 /// dispatch/coherence sites do a bucket lookup instead of scanning every provides
-/// fact. The two directions key DIFFERENTLY, each matching how its consumer sites
-/// compare sorts:
+/// fact. BOTH directions now key on the CANONICAL sort symbol (`canonical_sort_sym`):
 /// - `by_spec_base` keys on `canonical_sort_sym(spec_base)` — the spec-base sites
 ///   (`spec_has_any_providers`, `impl_sorts_providing_spec`, `collect_provides_candidates`)
 ///   compare with `canonical_sort_sym`, so an exact canonical key is faithful (both
 ///   drop a bare-interned spec base identically).
-/// - `by_carrier` keys on the carrier's SHORT NAME (last segment). The carrier sites
-///   compare with `same_symbol`, which bridges a bare-interned carrier (a
-///   `provides`-clause `sort_ref = domain`, e.g. a bare `Stream`) to its qualified
-///   form — a non-canonical, non-transitive match no single `Symbol` key can
-///   reproduce. `same_symbol(a, b)` always implies the same last segment, so the
-///   short-name bucket is a sound over-approximation; the consumer re-filters it with
-///   `same_symbol` for exactness (see [`ProvidesIndex::carrier_candidates`]).
+/// - `by_carrier` keys on `canonical_sort_sym(carrier)`. WI-672 re-keyed this from the
+///   carrier's SHORT NAME (last segment) to its canonical symbol, and the carrier sites
+///   now compare with `canonical_sort_sym` too (was `same_symbol`). A provider's
+///   `sort_ref` carrier is the enclosing sort's resolved functor (`emit_*` /
+///   `load_provides_clause` store `domain`), so canonical identity is exact — and it
+///   de-conflates a top-level `sort Foo provides Bar` from a qualified `x.y.Foo` that
+///   the former short-name bucket + `same_symbol` re-filter merged. Identity is by
+///   symbol, never by last segment (spec §8.6). `build_provides_index` `debug_assert`s
+///   that no carrier is an UNRESOLVED bare reference — the one shape canonical keying
+///   could not bridge to a qualified form.
 #[derive(Debug, Default)]
 pub(crate) struct ProvidesIndex {
     by_spec_base: HashMap<Symbol, Vec<crate::kb::RuleId>>,
-    by_carrier: HashMap<String, Vec<crate::kb::RuleId>>,
+    by_carrier: HashMap<Symbol, Vec<crate::kb::RuleId>>,
 }
 
 impl ProvidesIndex {
@@ -9374,25 +9387,13 @@ impl ProvidesIndex {
     pub(crate) fn providers_of_spec(&self, spec_canon: Symbol) -> &[crate::kb::RuleId] {
         self.by_spec_base.get(&spec_canon).map_or(&[], |v| v.as_slice())
     }
-    /// The provides-fact rids whose carrier shares `short_name`'s last segment — a
-    /// SUPERSET of the `same_symbol`-matching carriers. The caller MUST re-filter each
-    /// with `same_symbol(carrier, query)` for exactness (two distinct qualified sorts
-    /// can share a last segment).
-    pub(crate) fn carrier_candidates(&self, short_name: &str) -> &[crate::kb::RuleId] {
-        self.by_carrier.get(short_name).map_or(&[], |v| v.as_slice())
+    /// The provides-fact rids whose carrier canonicalizes to `carrier_canon` (exact:
+    /// the carrier is a resolved sort functor, so the canonical key IS the carrier
+    /// identity). Consumers still read each rid's `sort_ref` (the no-index scan fallback
+    /// returns EVERY fact), now comparing by `canonical_sort_sym`.
+    pub(crate) fn carrier_candidates(&self, carrier_canon: Symbol) -> &[crate::kb::RuleId] {
+        self.by_carrier.get(&carrier_canon).map_or(&[], |v| v.as_slice())
     }
-}
-
-/// WI-660 — the `by_carrier` key: the last segment of a symbol's qualified name.
-/// `same_symbol(a, b)` always implies `carrier_short_name(a) == carrier_short_name(b)`
-/// (all three of its cases share the last segment), so bucketing carriers by it never
-/// misses a `same_symbol` match — the consumer then re-filters for exactness. Returns a
-/// borrow (no allocation): the lookup sites only need it to key the map, and this runs
-/// per hop of the transitive `sort_provides` walk. `build_provides_index` copies it once
-/// (`.to_string()`) when it owns the bucket key.
-fn carrier_short_name(kb: &KnowledgeBase, sym: Symbol) -> &str {
-    let qn = kb.qualified_name_of(sym);
-    qn.rsplit('.').next().unwrap_or(qn)
 }
 
 /// WI-660 — the provides-fact rids for a SPEC-BASE-keyed lookup: the `by_spec_base`
@@ -9410,14 +9411,14 @@ fn provides_rids_by_spec(kb: &KnowledgeBase, spec_canon: Symbol) -> Vec<crate::k
     }
 }
 
-/// WI-660 — the provides-fact rids for a CARRIER-keyed lookup: the carrier short-name
-/// bucket when built, else a live scan. The bucket is a same-last-segment SUPERSET of
-/// the carriers the caller wants, so EVERY caller MUST still re-filter each rid
-/// (`same_symbol` / `canonical_sort_sym`, matching how it compares carriers) for
-/// exactness — this helper only narrows the candidate set, it does not decide membership.
+/// WI-660/WI-672 — the provides-fact rids for a CARRIER-keyed lookup: the canonical-carrier
+/// bucket when built, else a live scan. The bucket keys on `canonical_sort_sym(carrier)`,
+/// so the caller passes any carrier symbol and the lookup canonicalizes it; each consumer
+/// keeps its own per-fact `canonical_sort_sym` re-filter (the no-index scan fallback
+/// returns EVERY provides fact, so the re-filter is load-bearing there).
 fn provides_rids_by_carrier(kb: &KnowledgeBase, carrier: Symbol) -> Vec<crate::kb::RuleId> {
     match &kb.provides_index {
-        Some(ix) => ix.carrier_candidates(carrier_short_name(kb, carrier)).to_vec(),
+        Some(ix) => ix.carrier_candidates(kb.canonical_sort_sym(carrier)).to_vec(),
         None => kb
             .try_resolve_symbol("anthill.reflect.SortProvidesInfo")
             .map(|s| kb.rules_by_functor(s))
@@ -9425,9 +9426,9 @@ fn provides_rids_by_carrier(kb: &KnowledgeBase, carrier: Symbol) -> Vec<crate::k
     }
 }
 
-/// WI-660 — build the [`ProvidesIndex`] in ONE pass over the SortProvidesInfo facts:
-/// `by_spec_base` keyed by canonical spec base, `by_carrier` by carrier short name
-/// (see the struct doc for why the keys differ). Called at TWO points in `load.rs`:
+/// WI-660/WI-672 — build the [`ProvidesIndex`] in ONE pass over the SortProvidesInfo facts:
+/// `by_spec_base` keyed by canonical spec base, `by_carrier` by canonical carrier
+/// (WI-672; see the struct doc). Called at TWO points in `load.rs`:
 /// (1) `type_check_sorts` start — every provider that type-check itself needs already
 /// exists (the loader/witness/instantiation passes all ran; `type_check` asserts none),
 /// and type-check is the hot consumer; (2) again right after `eq_derive::run` (the only
@@ -9443,7 +9444,7 @@ pub(crate) fn build_provides_index(kb: &mut KnowledgeBase) {
         return;
     };
     let mut by_spec_base: HashMap<Symbol, Vec<crate::kb::RuleId>> = HashMap::new();
-    let mut by_carrier: HashMap<String, Vec<crate::kb::RuleId>> = HashMap::new();
+    let mut by_carrier: HashMap<Symbol, Vec<crate::kb::RuleId>> = HashMap::new();
     for rid in kb.rules_by_functor(provides_sym) {
         if !kb.is_fact(rid) {
             continue;
@@ -9461,8 +9462,25 @@ pub(crate) fn build_provides_index(kb: &mut KnowledgeBase) {
         }
         if let Some(sr_tid) = get_named_arg(kb, &named, "sort_ref") {
             if let Some(carrier) = super::load::sort_ref_functor(kb, sr_tid) {
+                // WI-672: the carrier keys by canonical symbol. Two RESOLVED sort symbols
+                // canonicalize equal iff they share a qualified name, so canonical keying
+                // is exact for any resolved carrier — a top-level bare `sort Foo` keys
+                // under itself and is queried under itself; a qualified carrier likewise.
+                // The one shape canonical keying could NOT bridge is an UNRESOLVED bare
+                // reference (`qualified_name_of` = its dotless raw name, no `by_qualified_name`
+                // entry): the former `same_symbol` last-segment match papered over that,
+                // canonical would misbucket it. A full-suite probe found ZERO bare-QN
+                // carriers (resolved or not — every `provides` carrier is a qualified
+                // enclosing sort, cf. WI-449), so this cannot arise today; assert it so a
+                // future producer that regresses is LOUD, not a silent drop (repo rule).
+                debug_assert!(
+                    !matches!(kb.symbols.get(carrier), crate::intern::SymbolDef::Unresolved { .. }),
+                    "WI-672: SortProvidesInfo carrier `{}` is unresolved — canonical re-key \
+                     would misbucket it; resolve the `provides` carrier at its producer",
+                    kb.qualified_name_of(carrier),
+                );
                 by_carrier
-                    .entry(carrier_short_name(kb, carrier).to_string())
+                    .entry(kb.canonical_sort_sym(carrier))
                     .or_default()
                     .push(rid);
             }
@@ -9471,43 +9489,44 @@ pub(crate) fn build_provides_index(kb: &mut KnowledgeBase) {
     kb.provides_index = Some(ProvidesIndex { by_spec_base, by_carrier });
 }
 
-/// WI-671 — the SortInfo (per-sort reflect metadata) index (see [`crate::kb::KnowledgeBase`]'s
-/// `sort_info_index`). Each SortInfo fact is bucketed by the SHORT NAME (last segment)
-/// of its `name` field, so the four per-query keyed lookups do a bucket lookup + a
-/// per-fact re-filter instead of scanning every SortInfo fact. The key is a short name
-/// (not a canonical Symbol) because the consumers split on how they compare `name`: two
-/// use raw `==`, two use `same_symbol` — the short-name bucket is a sound superset for
-/// both (see the field doc), each caller re-filtering for its own exactness.
+/// WI-671/WI-672 — the SortInfo (per-sort reflect metadata) index (see
+/// [`crate::kb::KnowledgeBase`]'s `sort_info_index`). Each SortInfo fact is bucketed by
+/// the CANONICAL sort symbol (`canonical_sort_sym`) of its `name` field, so the four
+/// per-query keyed lookups do an exact bucket lookup instead of scanning every SortInfo
+/// fact.
 ///
-/// TEMPORARY (WI-672): this short-name key exists ONLY to reproduce `same_symbol`'s
-/// bridge #2 (a bare short name matching the last segment of a qualified name), which is
-/// itself slated for removal. Bridge #2 is needed only because namespace-less top-level
-/// declarations get BARE `_global` qualified names that can collide with a qualified
-/// stdlib sort by last segment. Once top-level declarations no longer produce bare QNs,
-/// bridge #2 goes away and this keys by `canonical_sort_sym` like `ProvidesIndex`'s
-/// `by_spec_base`. The goal is NO short-name comparison anywhere in the KB.
+/// WI-672 re-keyed this from the short name (last segment) to the canonical symbol.
+/// `SortInfo.name` is always a resolved sort functor (`emit_sort_info` emits
+/// `Term::Ref(sort_functor)`), so its canonical symbol IS the sort identity — an exact
+/// key, like `ProvidesIndex`'s `by_spec_base`. This de-conflates two DISTINCT sorts that
+/// merely share a last segment (a top-level `sort Ring` vs `anthill.prelude.algebra.Ring`),
+/// which the former short-name bucket + `same_symbol` re-filter silently merged — a
+/// step toward NO short-name / last-segment matching anywhere in the KB. It aligns with
+/// the spec model (§8.6): identity is by resolved symbol, never by last segment.
 #[derive(Debug, Default)]
 pub(crate) struct SortInfoIndex {
-    by_name: HashMap<String, Vec<crate::kb::RuleId>>,
+    by_sort: HashMap<Symbol, Vec<crate::kb::RuleId>>,
 }
 
 impl SortInfoIndex {
-    /// The SortInfo-fact rids whose `name` shares `short_name`'s last segment — a
-    /// SUPERSET of both the raw-`==` and the `same_symbol` matches. The caller MUST
-    /// re-filter each rid with its own comparison; this only narrows the candidates.
-    pub(crate) fn candidates(&self, short_name: &str) -> &[crate::kb::RuleId] {
-        self.by_name.get(short_name).map_or(&[], |v| v.as_slice())
+    /// The SortInfo-fact rids whose `name` canonicalizes to `sort_canon`. Exact:
+    /// `SortInfo.name` is a resolved sort functor, so the canonical key IS the sort
+    /// identity. The consumers still read each rid's `name` (the no-index scan fallback
+    /// returns EVERY fact, so its re-filter is load-bearing there), now comparing by
+    /// `canonical_sort_sym` rather than `same_symbol`.
+    pub(crate) fn candidates(&self, sort_canon: Symbol) -> &[crate::kb::RuleId] {
+        self.by_sort.get(&sort_canon).map_or(&[], |v| v.as_slice())
     }
 }
 
-/// WI-671 — the SortInfo-fact rids for a name-keyed lookup: the short-name bucket when
-/// the index is built, else a live scan of every SortInfo fact (the pre-build /
-/// no-index fallback the load-time consumers hit). Collapses the identical
+/// WI-671/WI-672 — the SortInfo-fact rids for a sort-keyed lookup: the canonical-sort
+/// bucket when the index is built, else a live scan of every SortInfo fact (the
+/// pre-build / no-index fallback the load-time consumers hit). Collapses the identical
 /// fast-path/fallback selection the four keyed consumers share; each keeps its own
-/// per-fact `name` re-filter over the returned rids.
-pub(crate) fn sort_info_rids_by_name(kb: &KnowledgeBase, sort_sym: Symbol) -> Vec<crate::kb::RuleId> {
+/// per-fact `name` read over the returned rids.
+pub(crate) fn sort_info_rids_by_sort(kb: &KnowledgeBase, sort_sym: Symbol) -> Vec<crate::kb::RuleId> {
     match &kb.sort_info_index {
-        Some(ix) => ix.candidates(carrier_short_name(kb, sort_sym)).to_vec(),
+        Some(ix) => ix.candidates(kb.canonical_sort_sym(sort_sym)).to_vec(),
         None => kb
             .try_resolve_symbol("anthill.reflect.SortInfo")
             .map(|s| kb.rules_by_functor(s))
@@ -9515,17 +9534,17 @@ pub(crate) fn sort_info_rids_by_name(kb: &KnowledgeBase, sort_sym: Symbol) -> Ve
     }
 }
 
-/// WI-671 — build the [`SortInfoIndex`] in ONE pass over the SortInfo facts, bucketing
-/// each by the short name of its `name` field (see the struct doc for why the key is a
-/// short name). Called at `type_check_sorts` start beside `build_provides_index`, when
-/// every SortInfo fact is asserted and the relation is frozen for the rest of the load
-/// (its sole producer `emit_sort_info` ran in the file-loading loop; nothing re-asserts
-/// it). Value-fact heads (no named args) are skipped, as every keyed consumer skips them.
+/// WI-671/WI-672 — build the [`SortInfoIndex`] in ONE pass over the SortInfo facts,
+/// bucketing each by the canonical sort symbol of its `name` field (see the struct doc).
+/// Called at `type_check_sorts` start beside `build_provides_index`, when every SortInfo
+/// fact is asserted and the relation is frozen for the rest of the load (its sole
+/// producer `emit_sort_info` ran in the file-loading loop; nothing re-asserts it).
+/// Value-fact heads (no named args) are skipped, as every keyed consumer skips them.
 pub(crate) fn build_sort_info_index(kb: &mut KnowledgeBase) {
     let Some(sort_info_sym) = kb.try_resolve_symbol("anthill.reflect.SortInfo") else {
         return;
     };
-    let mut by_name: HashMap<String, Vec<crate::kb::RuleId>> = HashMap::new();
+    let mut by_sort: HashMap<Symbol, Vec<crate::kb::RuleId>> = HashMap::new();
     for rid in kb.rules_by_functor(sort_info_sym) {
         if !kb.is_fact(rid) {
             continue;
@@ -9536,22 +9555,21 @@ pub(crate) fn build_sort_info_index(kb: &mut KnowledgeBase) {
         let Some(name_tid) = get_named_arg(kb, &named, "name") else {
             continue;
         };
-        // The `name` field's Symbol, across the shapes the consumer re-filters read: a
-        // bare `Ref` (what `emit_sort_info` always emits) or a `Fn` head's functor (the
-        // consumers' defensive read). Any other shape is matched by no consumer, so
-        // leaving it unbucketed is faithful — the bucket must be a superset of the
-        // consumers, not broader.
+        // The `name` field's Symbol, across the shapes the consumer reads: a bare `Ref`
+        // (what `emit_sort_info` always emits) or a `Fn` head's functor (the consumers'
+        // defensive read). Any other shape is matched by no consumer, so leaving it
+        // unbucketed is faithful.
         let name_sym = match kb.get_term(name_tid) {
             Term::Ref(s) => *s,
             Term::Fn { functor, .. } => *functor,
             _ => continue,
         };
-        by_name
-            .entry(carrier_short_name(kb, name_sym).to_string())
+        by_sort
+            .entry(kb.canonical_sort_sym(name_sym))
             .or_default()
             .push(rid);
     }
-    kb.sort_info_index = Some(SortInfoIndex { by_name });
+    kb.sort_info_index = Some(SortInfoIndex { by_sort });
 }
 
 /// WI-325 — true iff at least one `SortProvidesInfo` fact exists whose
@@ -12402,9 +12420,8 @@ fn provision_binds_param_to_carrier(
 /// mirroring the edge extraction in [`sort_provides`]).
 fn directly_provided_specs(kb: &KnowledgeBase, carrier_sym: Symbol) -> SmallVec<[Symbol; 4]> {
     let mut out: SmallVec<[Symbol; 4]> = SmallVec::new();
-    // WI-660: the carrier short-name bucket (built index) or the full scan; the
-    // `same_symbol` filter below is the exact match for both (the bucket is a
-    // same-last-segment superset of the `same_symbol`-matching carriers).
+    // WI-660/WI-672: the canonical-carrier bucket (built index) or the full scan; the
+    // `canonical_sort_sym` filter below is the exact match for both.
     for rid in provides_rids_by_carrier(kb, carrier_sym) {
         if !kb.is_fact(rid) {
             continue;
@@ -12412,14 +12429,11 @@ fn directly_provided_specs(kb: &KnowledgeBase, carrier_sym: Symbol) -> SmallVec<
         let Some(named) = kb.fact_head_named_args(rid) else { continue };
         let Some(sr) = get_named_arg(kb, &named, "sort_ref") else { continue };
         let Some(carrier) = super::load::sort_ref_functor(kb, sr) else { continue };
-        // `same_symbol`, not `canonical_sort_sym` equality: the `provides`-clause
-        // path stores `sort_ref = domain` (the enclosing sort term) which may be a
-        // bare-interned `List` whose qualified name differs from a `fact`-form
-        // carrier's — `canonical_sort_sym` then maps them to distinct symbols and
-        // silently drops the provides-clause provision (the `provides Stream`
-        // edge), while `same_symbol` bridges bare/qualified (matches the dedup
-        // below).
-        if !same_symbol(kb, carrier, carrier_sym) {
+        // WI-672: canonical sort identity, not `same_symbol`. A provider's carrier is the
+        // enclosing sort's resolved functor (`build_provides_index` `debug_assert`s it is
+        // not an unresolved bare reference), so this no longer conflates a top-level
+        // `sort Foo` with a qualified `x.y.Foo`.
+        if !same_sort_canonical(kb, carrier, carrier_sym) {
             continue;
         }
         let Some(spec_t) = get_named_arg(kb, &named, "spec") else { continue };
@@ -13243,13 +13257,10 @@ fn provider_spec_view_bindings(
     carrier_sym: Symbol,
     spec_sort: Symbol,
 ) -> Option<SmallVec<[(Symbol, TermId); 2]>> {
-    // WI-660: the carrier short-name bucket (built index) or the full scan. This is the
-    // one carrier consumer that re-filters with `canonical_sort_sym` rather than
-    // `same_symbol`; the short-name bucket is still a sound superset because
-    // `canonical_sort_sym` is a by-QUALIFIED-NAME map (bridges same-FQN copies only), so
-    // canonical-equal ⟹ equal qualified name ⟹ equal last segment ⟹ same bucket. (An
-    // unresolved `SortProvidesInfo` symbol yields an empty candidate list, and the tail
-    // returns `None` — identical to the old `?` early return.)
+    // WI-660/WI-672: the canonical-carrier bucket (built index) or the full scan; the
+    // `same_sort_canonical` re-filter below is the exact match for both. (An unresolved
+    // `SortProvidesInfo` symbol yields an empty candidate list, and the tail returns
+    // `None` — identical to the old `?` early return.)
     for rid in provides_rids_by_carrier(kb, carrier_sym) {
         if !kb.is_fact(rid) {
             continue;
@@ -13264,7 +13275,7 @@ fn provider_spec_view_bindings(
         let Some(carrier) = super::load::sort_ref_functor(kb, sr) else {
             continue;
         };
-        if kb.canonical_sort_sym(carrier) != kb.canonical_sort_sym(carrier_sym) {
+        if !same_sort_canonical(kb, carrier, carrier_sym) {
             continue;
         }
         let Some(spec_t) = get_named_arg(kb, &head_named, "spec") else {
@@ -16632,8 +16643,8 @@ fn normalize_spec_binding_type(kb: &mut KnowledgeBase, v: TermId) -> Option<Term
 /// [`find_spec_op_for_provided_sort`].
 fn provided_spec_base_syms(kb: &KnowledgeBase, recv_sort: Symbol) -> Vec<Symbol> {
     let mut specs: Vec<Symbol> = Vec::new();
-    // WI-660: the carrier short-name bucket (built index) or the full scan; the
-    // `same_symbol` filter below is the exact match for both.
+    // WI-660/WI-672: the canonical-carrier bucket (built index) or the full scan; the
+    // `same_sort_canonical` filter below is the exact match for both.
     for rid in provides_rids_by_carrier(kb, recv_sort) {
         if !kb.is_fact(rid) {
             continue;
@@ -16641,7 +16652,7 @@ fn provided_spec_base_syms(kb: &KnowledgeBase, recv_sort: Symbol) -> Vec<Symbol>
         let Some(named) = kb.fact_head_named_args(rid) else { continue };
         let Some(sr) = get_named_arg(kb, &named, "sort_ref") else { continue };
         let Some(carrier) = super::load::sort_ref_functor(kb, sr) else { continue };
-        if !same_symbol(kb, carrier, recv_sort) {
+        if !same_sort_canonical(kb, carrier, recv_sort) {
             continue;
         }
         let Some(spec_t) = get_named_arg(kb, &named, "spec") else { continue };
@@ -22696,16 +22707,17 @@ fn direct_requires(kb: &KnowledgeBase, sort_sym: Symbol) -> Vec<RequiresEntry> {
         let head = kb.rule_head_value(rid);
 
         // Check that this SortRequiresInfo is for our sort. `sort_ref` is always a
-        // ground SortView of the enclosing sort; `same_symbol` keys on
-        // resolved-Symbol / qualified-name identity so a fact for anthill.cli.Main
-        // is not mistaken for one about anthill.todo.Main.
+        // ground SortView of the enclosing (resolved) sort. WI-672: compare by
+        // `canonical_sort_sym`, not `same_symbol` — canonical identity keeps a fact for
+        // anthill.cli.Main distinct from one about anthill.todo.Main without any
+        // last-segment matching (spec §8.6).
         let Some(sort_ref_tid) = super::op_info::head_field_term(kb, head, "sort_ref") else {
             continue;
         };
         let Term::Fn { functor: sr_functor, .. } = kb.get_term(sort_ref_tid) else {
             continue;
         };
-        if !same_symbol(kb, *sr_functor, sort_sym) {
+        if !same_sort_canonical(kb, *sr_functor, sort_sym) {
             continue;
         }
 
@@ -22861,9 +22873,9 @@ pub fn check_obligations(kb: &KnowledgeBase, sort_sym: Symbol) -> Vec<MissingObl
 
 /// Get operation names defined in a sort (from SortInfo.operations).
 fn sort_operation_names(kb: &KnowledgeBase, sort_sym: Symbol) -> Vec<String> {
-    // WI-671 — the SortInfo short-name bucket (or a live scan pre-index); the
-    // `same_symbol(name, sort_sym)` re-filter below preserves this site's exact match.
-    for rid in sort_info_rids_by_name(kb, sort_sym) {
+    // WI-671/WI-672 — the SortInfo canonical-sort bucket (or a live scan pre-index); the
+    // re-filter below compares by `canonical_sort_sym` (WI-672, was `same_symbol`).
+    for rid in sort_info_rids_by_sort(kb, sort_sym) {
         if !kb.is_fact(rid) { continue; }
         let Some(head) = kb.fact_head_term(rid) else { continue };
         let named_args = match kb.get_term(head) {
@@ -22884,7 +22896,7 @@ fn sort_operation_names(kb: &KnowledgeBase, sort_sym: Symbol) -> Vec<String> {
             Term::Ref(s) => *s,
             _ => continue,
         };
-        if !same_symbol(kb, name_sym, sort_sym) {
+        if !same_sort_canonical(kb, name_sym, sort_sym) {
             continue;
         }
 
@@ -24488,10 +24500,12 @@ fn check_operation_signatures(kb: &KnowledgeBase) -> Vec<TypeError> {
 /// `op_has_runnable_body` guarding WI-218 from rewriting spec ops to
 /// body-less impl symbols. Diagnostic: `wi237_diag_test.rs`.
 fn find_sort_info(kb: &KnowledgeBase, sort_functor: Symbol) -> Option<(Vec<Symbol>, Vec<Symbol>)> {
-    // WI-671 — the SortInfo short-name bucket (or a live scan pre-index). Called once
-    // PER SORT in `type_check_sorts_typed`, so the index turns an O(sorts²) scan into
-    // O(sorts). The `same_symbol(name, sort_functor)` re-filter below is unchanged.
-    for rid in sort_info_rids_by_name(kb, sort_functor) {
+    // WI-671/WI-672 — the SortInfo canonical-sort bucket (or a live scan pre-index).
+    // Called once PER SORT in `type_check_sorts_typed`, so the index turns an O(sorts²)
+    // scan into O(sorts). The re-filter below compares by `canonical_sort_sym` (WI-672,
+    // was `same_symbol`) — no last-segment matching, so a top-level `sort Ring` no longer
+    // reads `anthill.prelude.algebra.Ring`'s constructors/operations.
+    for rid in sort_info_rids_by_sort(kb, sort_functor) {
         if !kb.is_fact(rid) { continue; }
         let Some(head) = kb.fact_head_term(rid) else { continue };
         let named_args = match kb.get_term(head) {
@@ -24511,7 +24525,7 @@ fn find_sort_info(kb: &KnowledgeBase, sort_functor: Symbol) -> Option<(Vec<Symbo
             Term::Ref(s) => *s,
             _ => continue,
         };
-        if !same_symbol(kb, name_sym, sort_functor) {
+        if !same_sort_canonical(kb, name_sym, sort_functor) {
             continue;
         }
 
@@ -24902,12 +24916,12 @@ pub(crate) fn sort_provides(kb: &KnowledgeBase, carrier: Symbol, spec: Symbol) -
     sort_provides_reach(kb, carrier, spec, &mut visited)
 }
 
-/// WI-660 — the spec-base targets of the `SortProvidesInfo` edges OUT of `node` (the
-/// specs `node` directly provides). Uses the provider index's carrier direction
-/// (short-name bucket + `same_symbol` exactness), so the transitive walk queries only
-/// the out-edges per hop instead of re-extracting the whole edge table on every
-/// `sort_provides` call. Falls back to the full scan before the index is built (the
-/// same `same_symbol(c, node)` re-filter makes both paths identical). A value-fact
+/// WI-660/WI-672 — the spec-base targets of the `SortProvidesInfo` edges OUT of `node` (the
+/// specs `node` directly provides). Uses the provider index's carrier direction (canonical
+/// bucket + `same_sort_canonical` exactness), so the transitive walk queries only the
+/// out-edges per hop instead of re-extracting the whole edge table on every `sort_provides`
+/// call. Falls back to the full scan before the index is built (the same
+/// `same_sort_canonical(c, node)` re-filter makes both paths identical). A value-fact
 /// `SortProvidesInfo` (denoted-bearing spec) is skipped here; occurrence-based provides
 /// lookup is gated effect-expressions-as-types work (avoid the term-only `rule_head`
 /// panic on a value head).
@@ -24927,7 +24941,7 @@ fn provides_out_edges(kb: &KnowledgeBase, node: Symbol) -> SmallVec<[Symbol; 4]>
         else {
             continue;
         };
-        if !same_symbol(kb, c, node) {
+        if !same_sort_canonical(kb, c, node) {
             continue;
         }
         let Some(s) = get_named_arg(kb, &named, "spec")
