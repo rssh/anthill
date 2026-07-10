@@ -3162,6 +3162,13 @@ fn load_phase_inner(
     // ONLY invalidation the index needs: `SortProvidesInfo` is `constant` (053/WI-665),
     // so it never mutates at RUNTIME — no per-fact-mutation drop (see `provides_index`).
     kb.provides_index = None;
+    // WI-671 — same reset for the SortInfo index. Rebuilt at this phase's type-check
+    // (`build_sort_info_index`); clearing it first makes this phase's load-time SortInfo
+    // lookups fall back to the live scan (seeing THIS phase's freshly-asserted SortInfo
+    // facts) instead of a stale index from a prior phase — load-bearing for
+    // `load_incremental`. SortInfo is frozen after the file-loading loop and untouched
+    // by eq_derive, so unlike `provides_index` this is the ONLY invalidation it needs.
+    kb.sort_info_index = None;
 
     // WI-233: per-sub-phase timing, gated by ANTHILL_LOAD_TIMING=1.
     // Surfaces which step of the load pipeline dominates wall time
@@ -4881,14 +4888,12 @@ pub fn flatten_spec(kb: &KnowledgeBase, term: TermId) -> Option<String> {
 
 /// Collect the operation symbols from a sort's SortInfo.
 fn collect_sort_operations(kb: &mut KnowledgeBase, sort_sym: Symbol) -> Vec<Symbol> {
-    let sort_info_sym = match kb.try_resolve_symbol("anthill.reflect.SortInfo") {
-        Some(sym) => sym,
-        None => return Vec::new(),
-    };
     let name_field = kb.intern("name");
     let operations_field = kb.intern("operations");
 
-    let rule_ids = kb.rules_by_functor(sort_info_sym);
+    // WI-671 — the SortInfo short-name bucket (or a live scan pre-index); the
+    // `Term::Ref(sym) == sort_sym` re-filter below preserves this site's exact match.
+    let rule_ids = crate::kb::typing::sort_info_rids_by_name(kb, sort_sym);
     for rid in rule_ids {
         if !kb.is_fact(rid) {
             continue;

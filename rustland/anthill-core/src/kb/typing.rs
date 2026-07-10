@@ -9471,6 +9471,89 @@ pub(crate) fn build_provides_index(kb: &mut KnowledgeBase) {
     kb.provides_index = Some(ProvidesIndex { by_spec_base, by_carrier });
 }
 
+/// WI-671 — the SortInfo (per-sort reflect metadata) index (see [`crate::kb::KnowledgeBase`]'s
+/// `sort_info_index`). Each SortInfo fact is bucketed by the SHORT NAME (last segment)
+/// of its `name` field, so the four per-query keyed lookups do a bucket lookup + a
+/// per-fact re-filter instead of scanning every SortInfo fact. The key is a short name
+/// (not a canonical Symbol) because the consumers split on how they compare `name`: two
+/// use raw `==`, two use `same_symbol` — the short-name bucket is a sound superset for
+/// both (see the field doc), each caller re-filtering for its own exactness.
+///
+/// TEMPORARY (WI-672): this short-name key exists ONLY to reproduce `same_symbol`'s
+/// bridge #2 (a bare short name matching the last segment of a qualified name), which is
+/// itself slated for removal. Bridge #2 is needed only because namespace-less top-level
+/// declarations get BARE `_global` qualified names that can collide with a qualified
+/// stdlib sort by last segment. Once top-level declarations no longer produce bare QNs,
+/// bridge #2 goes away and this keys by `canonical_sort_sym` like `ProvidesIndex`'s
+/// `by_spec_base`. The goal is NO short-name comparison anywhere in the KB.
+#[derive(Debug, Default)]
+pub(crate) struct SortInfoIndex {
+    by_name: HashMap<String, Vec<crate::kb::RuleId>>,
+}
+
+impl SortInfoIndex {
+    /// The SortInfo-fact rids whose `name` shares `short_name`'s last segment — a
+    /// SUPERSET of both the raw-`==` and the `same_symbol` matches. The caller MUST
+    /// re-filter each rid with its own comparison; this only narrows the candidates.
+    pub(crate) fn candidates(&self, short_name: &str) -> &[crate::kb::RuleId] {
+        self.by_name.get(short_name).map_or(&[], |v| v.as_slice())
+    }
+}
+
+/// WI-671 — the SortInfo-fact rids for a name-keyed lookup: the short-name bucket when
+/// the index is built, else a live scan of every SortInfo fact (the pre-build /
+/// no-index fallback the load-time consumers hit). Collapses the identical
+/// fast-path/fallback selection the four keyed consumers share; each keeps its own
+/// per-fact `name` re-filter over the returned rids.
+pub(crate) fn sort_info_rids_by_name(kb: &KnowledgeBase, sort_sym: Symbol) -> Vec<crate::kb::RuleId> {
+    match &kb.sort_info_index {
+        Some(ix) => ix.candidates(carrier_short_name(kb, sort_sym)).to_vec(),
+        None => kb
+            .try_resolve_symbol("anthill.reflect.SortInfo")
+            .map(|s| kb.rules_by_functor(s))
+            .unwrap_or_default(),
+    }
+}
+
+/// WI-671 — build the [`SortInfoIndex`] in ONE pass over the SortInfo facts, bucketing
+/// each by the short name of its `name` field (see the struct doc for why the key is a
+/// short name). Called at `type_check_sorts` start beside `build_provides_index`, when
+/// every SortInfo fact is asserted and the relation is frozen for the rest of the load
+/// (its sole producer `emit_sort_info` ran in the file-loading loop; nothing re-asserts
+/// it). Value-fact heads (no named args) are skipped, as every keyed consumer skips them.
+pub(crate) fn build_sort_info_index(kb: &mut KnowledgeBase) {
+    let Some(sort_info_sym) = kb.try_resolve_symbol("anthill.reflect.SortInfo") else {
+        return;
+    };
+    let mut by_name: HashMap<String, Vec<crate::kb::RuleId>> = HashMap::new();
+    for rid in kb.rules_by_functor(sort_info_sym) {
+        if !kb.is_fact(rid) {
+            continue;
+        }
+        let Some(named) = kb.fact_head_named_args(rid) else {
+            continue;
+        };
+        let Some(name_tid) = get_named_arg(kb, &named, "name") else {
+            continue;
+        };
+        // The `name` field's Symbol, across the shapes the consumer re-filters read: a
+        // bare `Ref` (what `emit_sort_info` always emits) or a `Fn` head's functor (the
+        // consumers' defensive read). Any other shape is matched by no consumer, so
+        // leaving it unbucketed is faithful — the bucket must be a superset of the
+        // consumers, not broader.
+        let name_sym = match kb.get_term(name_tid) {
+            Term::Ref(s) => *s,
+            Term::Fn { functor, .. } => *functor,
+            _ => continue,
+        };
+        by_name
+            .entry(carrier_short_name(kb, name_sym).to_string())
+            .or_default()
+            .push(rid);
+    }
+    kb.sort_info_index = Some(SortInfoIndex { by_name });
+}
+
 /// WI-325 — true iff at least one `SortProvidesInfo` fact exists whose
 /// spec base matches `spec_sort`, regardless of whether the bindings
 /// match any particular per-call goal. Used as one leg of
@@ -22778,12 +22861,9 @@ pub fn check_obligations(kb: &KnowledgeBase, sort_sym: Symbol) -> Vec<MissingObl
 
 /// Get operation names defined in a sort (from SortInfo.operations).
 fn sort_operation_names(kb: &KnowledgeBase, sort_sym: Symbol) -> Vec<String> {
-    let sort_info_sym = match kb.try_resolve_symbol("anthill.reflect.SortInfo") {
-        Some(s) => s,
-        None => return Vec::new(),
-    };
-
-    for rid in kb.rules_by_functor(sort_info_sym) {
+    // WI-671 — the SortInfo short-name bucket (or a live scan pre-index); the
+    // `same_symbol(name, sort_sym)` re-filter below preserves this site's exact match.
+    for rid in sort_info_rids_by_name(kb, sort_sym) {
         if !kb.is_fact(rid) { continue; }
         let Some(head) = kb.fact_head_term(rid) else { continue };
         let named_args = match kb.get_term(head) {
@@ -24243,6 +24323,14 @@ pub fn type_check_sorts_typed(kb: &mut KnowledgeBase, sort_terms: &[TermId]) -> 
     // stop scanning every provides fact per call. Sound build-once: `SortProvidesInfo`
     // is `constant` (053/WI-665) so it cannot mutate at runtime.
     build_provides_index(kb);
+    // WI-671 — index the SortInfo (per-sort reflect metadata) facts once, keyed by the
+    // sort's short name, so the four per-query keyed lookups (`find_sort_info` — called
+    // once per sort in the loop below — `sort_operation_names`, `operations_of_sort`,
+    // `collect_sort_operations`) stop scanning every SortInfo fact per call. Sound
+    // build-once: SortInfo is frozen at the end of the file-loading loop (only
+    // `emit_sort_info` asserts it; nothing re-asserts it), so no runtime guard is
+    // needed and no eq_derive rebuild (eq_derive never touches SortInfo).
+    build_sort_info_index(kb);
     // WI-657(6) — resolve the `anthill.reflect.TupleLiteral` symbol once, so the
     // per-constructor-arg `is_tuple_lit` compares a `Symbol` rather than the long
     // qualified-name string. Reflect is fully loaded by now; `None` (reflect-less
@@ -24258,14 +24346,14 @@ pub fn type_check_sorts_typed(kb: &mut KnowledgeBase, sort_terms: &[TermId]) -> 
     let mut rule_typing_reportable: std::collections::HashSet<crate::kb::RuleId> =
         std::collections::HashSet::new();
 
-    if let Some(sort_info_sym) = kb.try_resolve_symbol("anthill.reflect.SortInfo") {
+    if kb.try_resolve_symbol("anthill.reflect.SortInfo").is_some() {
         for &sort_term in sort_terms {
             let sort_functor = match kb.get_term(sort_term) {
                 Term::Fn { functor, .. } => *functor,
                 _ => continue,
             };
 
-            let sort_info = find_sort_info(kb, sort_info_sym, sort_functor);
+            let sort_info = find_sort_info(kb, sort_functor);
             let (ctor_syms, op_syms) = match sort_info {
                 Some((ctors, ops)) => (ctors, ops),
                 None => continue,
@@ -24399,8 +24487,11 @@ fn check_operation_signatures(kb: &KnowledgeBase) -> Vec<TypeError> {
 /// anthill-stl spec-fact embedding, bundle effect declarations, and
 /// `op_has_runnable_body` guarding WI-218 from rewriting spec ops to
 /// body-less impl symbols. Diagnostic: `wi237_diag_test.rs`.
-fn find_sort_info(kb: &KnowledgeBase, sort_info_sym: Symbol, sort_functor: Symbol) -> Option<(Vec<Symbol>, Vec<Symbol>)> {
-    for rid in kb.rules_by_functor(sort_info_sym) {
+fn find_sort_info(kb: &KnowledgeBase, sort_functor: Symbol) -> Option<(Vec<Symbol>, Vec<Symbol>)> {
+    // WI-671 — the SortInfo short-name bucket (or a live scan pre-index). Called once
+    // PER SORT in `type_check_sorts_typed`, so the index turns an O(sorts²) scan into
+    // O(sorts). The `same_symbol(name, sort_functor)` re-filter below is unchanged.
+    for rid in sort_info_rids_by_name(kb, sort_functor) {
         if !kb.is_fact(rid) { continue; }
         let Some(head) = kb.fact_head_term(rid) else { continue };
         let named_args = match kb.get_term(head) {

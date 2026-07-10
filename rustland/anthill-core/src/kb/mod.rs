@@ -535,6 +535,30 @@ pub struct KnowledgeBase {
     /// first built; while `None`, every consumer falls back to the live scan.
     pub(crate) provides_index: Option<crate::kb::typing::ProvidesIndex>,
 
+    /// WI-671 — the SortInfo (per-sort reflect metadata) index: each sort's fact
+    /// keyed by the SHORT NAME (last segment) of its `name` field, built once at
+    /// type-check start by `typing::build_sort_info_index`. Replaces the per-call
+    /// linear scan of every SortInfo fact at the four per-query keyed lookup sites
+    /// (the SAME `rules_by_functor` antipattern as `op_records`/`sort_alias_index`/
+    /// `provides_index`), the hottest being `find_sort_info`, called once PER SORT in
+    /// the `type_check_sorts` loop (O(sorts²) before this).
+    ///
+    /// Keyed by SHORT NAME, not a single canonical Symbol, because the consumers
+    /// split on how they compare the `name` field — two use raw `==` (exact), two use
+    /// `same_symbol` (bridges a bare↔qualified interning). Since `a == b` ⇒
+    /// `same_symbol(a, b)` ⇒ equal last segment, the short-name bucket is a sound
+    /// SUPERSET for BOTH; each consumer re-filters it with its own exact test (like
+    /// `ProvidesIndex`'s carrier direction).
+    ///
+    /// SOUND BUILD-ONCE — no per-mutation invalidation, no `constant` runtime guard.
+    /// `SortInfo` is asserted only by `emit_sort_info` during the file-loading loop
+    /// and never retracted or re-asserted (the typer / `eq_derive` / eval only READ
+    /// it), so it is frozen well before `type_check_sorts` and cannot go stale — no
+    /// eq_derive null-then-rebuild pair (unlike `provides_index`). Reset to `None` at
+    /// `load_phase_inner` start for incremental loads; `None` until first built, and
+    /// while `None` every consumer falls back to the live scan.
+    pub(crate) sort_info_index: Option<crate::kb::typing::SortInfoIndex>,
+
     /// Proposal 039 / WI-084 — a term-level constant's DECLARED TYPE, keyed by
     /// its `SymbolKind::Const` symbol, as a carrier-agnostic `Value`. Read by
     /// the typer to type a bare const reference (fold-free: only the declared
@@ -766,6 +790,7 @@ impl KnowledgeBase {
             op_records: HashMap::new(),
             sort_alias_index: None,
             provides_index: None,
+            sort_info_index: None,
             const_types: HashMap::new(),
             const_bodies: HashMap::new(),
             has_dot_applies: false,
