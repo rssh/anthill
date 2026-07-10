@@ -131,7 +131,12 @@ end
     // or nullary `Term::Fn(s, [], [])`; both shapes mean "Ref(s)" for
     // substitution purposes.
     fn extract_t_binding(kb: &KnowledgeBase, node: &RequiresNode) -> Option<anthill_core::intern::Symbol> {
-        let term = kb.get_term(node.entry.spec);
+        // WI-662: `entry.spec` is now a carrier-faithful `Value`; these test specs
+        // are ground, so read the hash-consed term through `Value::Term`.
+        let anthill_core::eval::Value::Term { id: spec_tid, .. } = &node.entry.spec else {
+            return None;
+        };
+        let term = kb.get_term(*spec_tid);
         let named_args = match term {
             Term::Fn { named_args, .. } => named_args,
             _ => return None,

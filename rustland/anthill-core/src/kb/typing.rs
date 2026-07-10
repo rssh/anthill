@@ -3121,7 +3121,7 @@ fn find_spec_op_for_provided_sort(
         // dot-call synthesises a `combine(tag, t)` Apply that then value-directs to
         // the witness impl at eval (param-agnostic, like the non-dot call form).
         let witness_match = !carrier_match
-            && provision_carrier_sort(kb, spec_sym, spec_t)
+            && provision_carrier_sort(kb, spec_sym, &Value::term(spec_t))
                 .map(|c| kb.canonical_sort_sym(c) == recv_canon)
                 .unwrap_or(false);
         if carrier_match || witness_match {
@@ -3291,7 +3291,7 @@ fn requires_edge_is_carrier_preserving(
     let Some((s_carrier, _)) = sort_type_params_as_pairs(kb, recv_sort).first().copied() else {
         return false;
     };
-    provision_carrier_sort(kb, entry.required_sort, entry.spec)
+    provision_carrier_sort(kb, entry.required_sort, &entry.spec)
         .is_some_and(|bound| same_symbol(kb, bound, s_carrier))
 }
 
@@ -7491,7 +7491,7 @@ fn build_concrete_dispatch_dict(
         .iter()
         .map(|entry| RequiresEntry {
             required_sort: entry.required_sort,
-            spec: substitute_spec_via_subst(kb, entry.spec, subst),
+            spec: substitute_spec_via_subst(kb, &entry.spec, subst),
         })
         .collect();
     let syms = ProjectionSyms::resolve(kb)?;
@@ -7519,6 +7519,38 @@ fn build_concrete_dispatch_dict(
 /// param left abstract (`is_type_param_value`) or unbound is preserved.
 fn substitute_spec_via_subst(
     kb: &mut KnowledgeBase,
+    spec: &Value,
+    subst: &Substitution,
+) -> Value {
+    match spec {
+        Value::Term { id, .. } => Value::term(substitute_spec_via_subst_term(kb, *id, subst)),
+        // WI-662: carrier-faithful walk of a denoted spec. Substitute the
+        // term-representable children — a co-carried type-param binding
+        // (`Foo[T = ParentT, E = Modify[c]]`) must still be root-scoped so the
+        // concrete call type reaches the `SortGoal` — and preserve a denoted
+        // `Value::Node` child verbatim (its Expr-occurrence σ is the deferred
+        // parametric-effect handling, mirroring the op-level `substitute_clause`).
+        Value::Entity { functor, pos, named, ty } => {
+            let new_pos: Vec<Value> =
+                pos.iter().map(|v| substitute_spec_via_subst(kb, v, subst)).collect();
+            let new_named: Vec<(Symbol, Value)> = named
+                .iter()
+                .map(|(k, v)| (*k, substitute_spec_via_subst(kb, v, subst)))
+                .collect();
+            Value::Entity {
+                functor: *functor,
+                pos: new_pos.into(),
+                named: new_named.into(),
+                ty: ty.clone(),
+            }
+        }
+        other => other.clone(),
+    }
+}
+
+/// WI-662: the ground TermId walk under [`substitute_spec_via_subst`].
+fn substitute_spec_via_subst_term(
+    kb: &mut KnowledgeBase,
     spec: TermId,
     subst: &Substitution,
 ) -> TermId {
@@ -7531,7 +7563,7 @@ fn substitute_spec_via_subst(
             resolve_param_value_via_subst(kb, functor, subst).unwrap_or(spec)
         }
         Term::Fn { .. } => {
-            kb.map_fn_children(spec, |kb, child| substitute_spec_via_subst(kb, child, subst))
+            kb.map_fn_children(spec, |kb, child| substitute_spec_via_subst_term(kb, child, subst))
         }
         _ => spec,
     }
@@ -7717,10 +7749,10 @@ fn entries_cover(kb: &mut KnowledgeBase, caller: &RequiresEntry, dep: &RequiresE
     if !same_symbol(kb, caller.required_sort, dep.required_sort) {
         return false;
     }
-    let Some((_, caller_bindings)) = unwrap_spec_view(kb, caller.spec) else {
+    let Some((_, caller_bindings)) = unwrap_spec_view_value(kb, &caller.spec) else {
         return false;
     };
-    let Some((_, dep_bindings)) = unwrap_spec_view(kb, dep.spec) else {
+    let Some((_, dep_bindings)) = unwrap_spec_view_value(kb, &dep.spec) else {
         return false;
     };
     // Bindingless `requires X` matches any dep; no constraints to check.
@@ -7892,10 +7924,10 @@ fn entry_sigma_matches(
     if !same_symbol(kb, caller.required_sort, dep.required_sort) {
         return false;
     }
-    let Some((_, caller_bindings)) = unwrap_spec_view(kb, caller.spec) else {
+    let Some((_, caller_bindings)) = unwrap_spec_view_value(kb, &caller.spec) else {
         return false;
     };
-    let Some((_, dep_bindings)) = unwrap_spec_view(kb, dep.spec) else {
+    let Some((_, dep_bindings)) = unwrap_spec_view_value(kb, &dep.spec) else {
         return false;
     };
     if dep_bindings.is_empty() {
@@ -8128,7 +8160,7 @@ pub(crate) fn resolve_bridge_requirements(
     let names = synth_req_names(kb, parent);
     let mut trees: Vec<(Symbol, ResolvedRequiresNode)> = Vec::with_capacity(chain.len());
     for (entry, name) in chain.iter().zip(names.iter()) {
-        let concrete_spec = substitute_spec_via_subst(kb, entry.spec, &subst);
+        let concrete_spec = substitute_spec_via_subst(kb, &entry.spec, &subst);
         let concrete = RequiresEntry { required_sort: entry.required_sort, spec: concrete_spec };
         let Some(goal) = goal_from_requires_entry(kb, &concrete) else {
             return BridgeRequirements::Unresolvable;
@@ -8162,7 +8194,7 @@ pub(crate) fn resolve_bridge_requirements(
 /// Extract a `SortGoal` from a `RequiresEntry`'s SortView, keeping only
 /// type-parameter bindings (op bindings don't constrain dispatch).
 fn goal_from_requires_entry(kb: &KnowledgeBase, entry: &RequiresEntry) -> Option<SortGoal> {
-    let (_, raw_bindings) = unwrap_spec_view(kb, entry.spec)?;
+    let (_, raw_bindings) = unwrap_spec_view_value(kb, &entry.spec)?;
     let spec_qn = kb.qualified_name_of(entry.required_sort).to_string();
     let bindings: SmallVec<[(Symbol, TermId); 2]> = raw_bindings
         .into_iter()
@@ -8798,20 +8830,30 @@ fn entry_type_param_bindings(
     if entry.required_sort != spec_sort {
         return None;
     }
-    let bindings: SmallVec<[(Symbol, TermId); 2]> = match kb.get_term(entry.spec) {
-        Term::Fn { functor, named_args, pos_args } => {
-            let f_qn = kb.qualified_name_of(*functor);
-            if f_qn == "anthill.reflect.SortView" || f_qn.ends_with(".SortView") {
-                named_args.clone()
-            } else if pos_args.is_empty() && named_args.is_empty() {
-                // Plain sort term, e.g. `requires Paintable`.
-                SmallVec::new()
-            } else {
-                return None;
+    let bindings: SmallVec<[(Symbol, TermId); 2]> = match &entry.spec {
+        // WI-662: ground fast path — byte-identical to the pre-WI-662 term read.
+        Value::Term { id, .. } => match kb.get_term(*id) {
+            Term::Fn { functor, named_args, pos_args } => {
+                let f_qn = kb.qualified_name_of(*functor);
+                if f_qn == "anthill.reflect.SortView" || f_qn.ends_with(".SortView") {
+                    named_args.clone()
+                } else if pos_args.is_empty() && named_args.is_empty() {
+                    // Plain sort term, e.g. `requires Paintable`.
+                    SmallVec::new()
+                } else {
+                    return None;
+                }
             }
-        }
-        Term::Ref(_) | Term::Ident(_) => SmallVec::new(),
-        _ => return None,
+            Term::Ref(_) | Term::Ident(_) => SmallVec::new(),
+            _ => return None,
+        },
+        // A denoted spec — its SortView bindings via the shared view unwrap (a
+        // denoted binding value drops out; the per-call resolution below consumes
+        // only the type-param bindings, all of which are ground terms).
+        other => match unwrap_spec_view_value(kb, other) {
+            Some((_, bindings)) => bindings,
+            None => return None,
+        },
     };
     let mut out: SmallVec<[(TermId, TermId); 2]> = SmallVec::new();
     for (binding_short_sym, entry_value) in &bindings {
@@ -9777,6 +9819,48 @@ fn unwrap_spec_view(
     }
 }
 
+/// WI-662: the carrier-agnostic [`unwrap_spec_view`] for a `RequiresEntry.spec`
+/// `Value`. A ground `Value::Term` delegates to the TermId decode above
+/// (byte-identical). A denoted spec (`Value::Entity` / `Value::Node`, e.g.
+/// `Foo[E = Modify[c]]`) is decoded via [`TermView`] with the SAME SortView
+/// logic. A denoted BINDING value (`E = Modify[c]`) has no `TermId` and is
+/// dropped from the returned bindings — every caller filters to type-param
+/// bindings (`is_type_param_binding`) and threads `TermId`s into `SortGoal` /
+/// the child subst map, so an effect binding is never one they consume; the full
+/// denoted spec stays preserved on `RequiresEntry.spec` regardless.
+fn unwrap_spec_view_value(
+    kb: &KnowledgeBase,
+    spec: &Value,
+) -> Option<(Symbol, SmallVec<[(Symbol, TermId); 2]>)> {
+    if let Value::Term { id, .. } = spec {
+        return unwrap_spec_view(kb, *id);
+    }
+    match spec.head(kb) {
+        ViewHead::Functor { functor: Some(f), .. } => {
+            let f_qn = kb.qualified_name_of(f);
+            if f_qn == "anthill.reflect.SortView" || f_qn.ends_with(".SortView") {
+                let base_sym = spec.pos_arg(kb, 0).and_then(|p| match p.head(kb) {
+                    ViewHead::Functor { functor: Some(s), .. }
+                    | ViewHead::Ref(s)
+                    | ViewHead::Ident(s) => Some(s),
+                    _ => None,
+                })?;
+                let mut bindings: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
+                for key in spec.named_keys(kb) {
+                    if let Some(v) = spec.named_arg(kb, key).and_then(|it| it.as_term_id()) {
+                        bindings.push((key, v));
+                    }
+                }
+                Some((base_sym, bindings))
+            } else {
+                Some((f, SmallVec::new()))
+            }
+        }
+        ViewHead::Ref(s) | ViewHead::Ident(s) => Some((s, SmallVec::new())),
+        _ => None,
+    }
+}
+
 /// Look up `goal.bindings[short]` (the per-call value for the spec's
 /// short parameter name). Compared by **resolved short name** rather
 /// than symbol-identity: the candidate's binding_short and the goal's
@@ -10108,21 +10192,48 @@ fn op_requires_entry_carrier_map(
 ) -> SmallVec<[(Symbol, TermId); 2]> {
     let spec_qn = kb.qualified_name_of(entry.required_sort).to_string();
     let mut out: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
-    let Term::Fn { pos_args, named_args, .. } = kb.get_term(entry.spec).clone() else {
-        return out; // a bare `Ref`/`Ident` spec carries no bindings
-    };
     // Positional carriers pair with the spec's declared type-params (source order).
     let params = kb.type_params_of_sort(entry.required_sort);
-    for (short, v) in params.iter().zip(pos_args.iter()) {
-        if let Some(param) = kb.try_resolve_symbol(&format!("{spec_qn}.{short}")) {
-            out.push((param, *v));
+    match &entry.spec {
+        // WI-662: ground fast path — byte-identical to the pre-WI-662 term read.
+        Value::Term { id, .. } => {
+            let Term::Fn { pos_args, named_args, .. } = kb.get_term(*id).clone() else {
+                return out; // a bare `Ref`/`Ident` spec carries no bindings
+            };
+            for (short, v) in params.iter().zip(pos_args.iter()) {
+                if let Some(param) = kb.try_resolve_symbol(&format!("{spec_qn}.{short}")) {
+                    out.push((param, *v));
+                }
+            }
+            // Named carriers (sugar / explicit `Spec[C = T]`) — keyed by short param
+            // name, resolved to the canonical spec-param symbol.
+            for (k, v) in &named_args {
+                if let Some(param) = type_param_sym_of_binding(kb, *k, &spec_qn) {
+                    out.push((param, *v));
+                }
+            }
         }
-    }
-    // Named carriers (sugar / explicit `Spec[C = T]`) — keyed by short param name,
-    // resolved to the canonical spec-param symbol.
-    for (k, v) in &named_args {
-        if let Some(param) = type_param_sym_of_binding(kb, *k, &spec_qn) {
-            out.push((param, *v));
+        // WI-662: a denoted op-spec — the same positional/named carrier extraction via
+        // TermView, keeping only term-representable binding values (a denoted binding
+        // value has no TermId; its carrier threading is deferred parametric-effect work).
+        other => {
+            let ViewHead::Functor { pos_arity, .. } = other.head(kb) else {
+                return out;
+            };
+            for (short, i) in params.iter().zip(0..pos_arity) {
+                if let Some(v) = other.pos_arg(kb, i).and_then(|it| it.as_term_id()) {
+                    if let Some(param) = kb.try_resolve_symbol(&format!("{spec_qn}.{short}")) {
+                        out.push((param, v));
+                    }
+                }
+            }
+            for k in other.named_keys(kb) {
+                if let Some(param) = type_param_sym_of_binding(kb, k, &spec_qn) {
+                    if let Some(v) = other.named_arg(kb, k).and_then(|it| it.as_term_id()) {
+                        out.push((param, v));
+                    }
+                }
+            }
         }
     }
     out
@@ -10145,11 +10256,11 @@ fn compose_reached_carrier_map(
     // cannot decode is an unexpected `SortRequiresInfo` form — surface it loudly rather
     // than silently returning an empty (carrier-less) map that would false-reject a
     // legitimate coverage.
-    let Some((base, bindings)) = unwrap_spec_view(kb, reached.spec) else {
+    let Some((base, bindings)) = unwrap_spec_view_value(kb, &reached.spec) else {
         debug_assert!(
             false,
             "WI-653: reached requirement spec {} did not decode as a spec view",
-            crate::persistence::print::TermPrinter::new(kb).print_term(reached.spec),
+            type_display_name_value(kb, &reached.spec),
         );
         return out;
     };
@@ -10339,7 +10450,7 @@ fn candidate_sub_goals_owned(
         if Some(required_sort) == effects_runtime {
             continue;
         }
-        let Some((_, entry_bindings)) = unwrap_spec_view(kb, entry.spec) else {
+        let Some((_, entry_bindings)) = unwrap_spec_view_value(kb, &entry.spec) else {
             continue;
         };
         let spec_qn = kb.qualified_name_of(required_sort).to_string();
@@ -10978,7 +11089,7 @@ pub fn check_provider_operations(kb: &mut KnowledgeBase) -> Vec<super::load::Loa
         if concrete.contains(&p.carrier) {
             continue;
         }
-        let Some(carrier) = provision_carrier_sort(kb, p.spec, p.spec_view) else { continue };
+        let Some(carrier) = provision_carrier_sort(kb, p.spec, &Value::term(p.spec_view)) else { continue };
         let carrier_canon = kb.canonical_sort_sym(carrier);
         // Provider IS the carrier ⇒ a fact / normal self-provider, not a witness.
         if kb.canonical_sort_sym(p.carrier) == carrier_canon {
@@ -11016,12 +11127,12 @@ pub fn check_provider_operations(kb: &mut KnowledgeBase) -> Vec<super::load::Loa
 fn provision_carrier_sort(
     kb: &KnowledgeBase,
     spec_sort: Symbol,
-    spec_view: TermId,
+    spec_view: &Value,
 ) -> Option<Symbol> {
     let params = sort_type_params_as_pairs(kb, spec_sort);
     let carrier_param = params.first()?.0;
     let carrier_short = short_name_of(kb.resolve_sym(carrier_param));
-    let (_, bindings) = unwrap_spec_view(kb, spec_view)?;
+    let (_, bindings) = unwrap_spec_view_value(kb, spec_view)?;
     let val = bindings
         .iter()
         .find_map(|(k, v)| (short_name_of(kb.resolve_sym(*k)) == carrier_short).then_some(*v))?;
@@ -11148,7 +11259,7 @@ fn witness_provision(
         // NON-carrier param of a multi-param spec that merely happens to bind the
         // carrier sort (`Spec[A = Other, B = Tag]` for carrier `Tag`) does not
         // spuriously match.
-        let binds_carrier = provision_carrier_sort(kb, spec_sort, spec_t)
+        let binds_carrier = provision_carrier_sort(kb, spec_sort, &Value::term(spec_t))
             .map(|c| kb.canonical_sort_sym(c) == carrier_canon)
             .unwrap_or(false);
         if binds_carrier {
@@ -11329,7 +11440,7 @@ fn provider_requires_subgoals(
     let mut out: Vec<SortGoal> = Vec::with_capacity(chain.len());
     for entry in &chain {
         let required = entry.required_sort;
-        let Some((_, entry_bindings)) = unwrap_spec_view(kb, entry.spec) else {
+        let Some((_, entry_bindings)) = unwrap_spec_view_value(kb, &entry.spec) else {
             continue;
         };
         let r_qn = kb.qualified_name_of(required).to_string();
@@ -11873,7 +11984,7 @@ fn requires_entry_covers_goal(
     entry: &RequiresEntry,
     goal: &SortGoal,
 ) -> bool {
-    let Some((_, entry_bindings)) = unwrap_spec_view(kb, entry.spec) else {
+    let Some((_, entry_bindings)) = unwrap_spec_view_value(kb, &entry.spec) else {
         return false;
     };
     if entry_bindings.is_empty() {
@@ -12411,7 +12522,7 @@ fn abstract_spec_required_view(
         if kb.canonical_sort_sym(entry.required_sort) != kb.canonical_sort_sym(spec_sort) {
             continue;
         }
-        let (_base, bindings) = unwrap_spec_view(kb, entry.spec)?;
+        let (_base, bindings) = unwrap_spec_view_value(kb, &entry.spec)?;
         if !bindings.is_empty() {
             return Some(bindings);
         }
@@ -14320,7 +14431,7 @@ fn sort_param_is_effect_row(kb: &mut KnowledgeBase, sort: Symbol, member: &str) 
         if !same_symbol(kb, entry.required_sort, effects_runtime) {
             continue;
         }
-        if let Some(v) = spec_binding_value(kb, entry.spec, "Effects") {
+        if let Some(v) = spec_binding_value(kb, &entry.spec, "Effects") {
             if let Some(head) = spec_binding_head_sym(kb, v) {
                 if short_name_of(kb.resolve_sym(head)) == member {
                     return true;
@@ -16014,7 +16125,7 @@ fn requires_entry_lends_member(
     kb.type_params_of_sort(entry.required_sort)
         .iter()
         .any(|d| d.as_str() == member)
-        && spec_mentions_key(kb, entry.spec, carrier_key)
+        && spec_mentions_key(kb, &entry.spec, carrier_key)
 }
 
 /// WI-376 (cross-sort provider divergent member name): project `member` off a CONCRETE
@@ -16098,29 +16209,59 @@ fn op_requires_entries(kb: &KnowledgeBase, op_sym: Symbol) -> Vec<RequiresEntry>
     };
     let mut out = Vec::new();
     for v in &rec.requires {
-        if let Value::Term { id: tid, .. } = v {
-            push_op_requires_clause(kb, *tid, &mut out);
-        }
+        // WI-662: preserve a denoted op-`requires` clause too (was `if let
+        // Value::Term` — dropping `Value::Node` clauses for want of a `TermId`).
+        push_op_requires_clause(kb, v, &mut out);
     }
     out
 }
 
-/// Decode one operation `requires` clause term into [`RequiresEntry`]s. A multi-goal
+/// Decode one operation `requires` clause into [`RequiresEntry`]s. A multi-goal
 /// clause (`requires A, B`) lowers to `conjunction(A, B)` (load's `convert_clause_list`),
 /// so flatten it into its conjuncts — otherwise the conjunction functor would mask both
 /// specs and silently drop them. A single spec application is itself one entry; a clause
 /// with no resolvable spec functor carries no projectable members (skipped — it can never
 /// satisfy the member-declared + mentions-subject candidate filter regardless).
-fn push_op_requires_clause(kb: &KnowledgeBase, tid: TermId, out: &mut Vec<RequiresEntry>) {
+///
+/// WI-662: a ground clause takes the byte-identical `TermId` walk; a denoted
+/// `Value::Node` clause (`requires Foo[E = Modify[c]]`) is decoded via `TermView`
+/// — an op-`requires` clause is a bare `Fn{spec, bindings}`, so the base sort IS
+/// the head functor (not `spec_base_functor`'s positional-0 SortView shape).
+fn push_op_requires_clause(kb: &KnowledgeBase, clause: &Value, out: &mut Vec<RequiresEntry>) {
+    if let Value::Term { id, .. } = clause {
+        push_op_requires_clause_term(kb, *id, out);
+        return;
+    }
+    match clause.head(kb) {
+        ViewHead::Functor { functor: Some(f), pos_arity, .. }
+            if kb.resolve_sym(f) == "conjunction" =>
+        {
+            for i in 0..pos_arity {
+                if let Some(child) = clause.pos_arg(kb, i) {
+                    push_op_requires_clause(kb, &child.to_value(), out);
+                }
+            }
+        }
+        // Match the ground `push_op_requires_clause_term` exactly: `Fn`/`Ref` heads
+        // become an entry; an `Ident` (or functor-less) head is skipped (WI-662).
+        ViewHead::Functor { functor: Some(f), .. } | ViewHead::Ref(f) => {
+            out.push(RequiresEntry { required_sort: f, spec: clause.clone() });
+        }
+        _ => {}
+    }
+}
+
+/// WI-662: the ground `TermId` walk under [`push_op_requires_clause`].
+fn push_op_requires_clause_term(kb: &KnowledgeBase, tid: TermId, out: &mut Vec<RequiresEntry>) {
     match kb.get_term(tid) {
         Term::Fn { functor, pos_args, .. } if kb.resolve_sym(*functor) == "conjunction" => {
             let conjuncts: Vec<TermId> = pos_args.iter().copied().collect();
             for c in conjuncts {
-                push_op_requires_clause(kb, c, out);
+                push_op_requires_clause_term(kb, c, out);
             }
         }
         Term::Fn { functor, .. } | Term::Ref(functor) => {
-            out.push(RequiresEntry { required_sort: *functor, spec: tid });
+            out.push(RequiresEntry { required_sort: *functor, spec: Value::term(tid) });
         }
         _ => {}
     }
@@ -16214,7 +16355,7 @@ fn resolve_rigid_projection(
             // but fails to declare `member` is a typo (or a sort-type-param projection),
             // not self-carrier → keep the loud error.
             let is_op = kb.kind_of(decl_sort) == Some(crate::intern::SymbolKind::Operation);
-            let mentions_subject = chain.iter().any(|e| spec_mentions_key(kb, e.spec, key));
+            let mentions_subject = chain.iter().any(|e| spec_mentions_key(kb, &e.spec, key));
             if is_op && !mentions_subject {
                 Ok(ProjResult::Neutral)
             } else {
@@ -16227,7 +16368,7 @@ fn resolve_rigid_projection(
                 )))
             }
         }
-        [entry] => match spec_binding_value(kb, entry.spec, &member_str) {
+        [entry] => match spec_binding_value(kb, &entry.spec, &member_str) {
             // δ-through-the-bound. The stored application is AUTO-COMPLETED: an
             // unwritten member's binding is a placeholder ref to the SPEC'S OWN param
             // (`Key = Storage.Key`) — only THAT binding means "bound-open" (the rigid
@@ -16339,10 +16480,23 @@ fn subject_keys_equal(kb: &KnowledgeBase, a: SubjectKey, b: SubjectKey) -> bool 
 /// TOP-LEVEL binding values (`requires Storage[C = P]` mentions `P`)? Nested mentions
 /// (`Storage[C = List[P]]`) are not yet read — the candidate filter is conservative
 /// (an unmentioned subject surfaces the loud no-bound error, never a silent pick).
-fn spec_mentions_key(kb: &KnowledgeBase, spec: TermId, key: SubjectKey) -> bool {
-    let Term::Fn { named_args, .. } = kb.get_term(spec) else { return false };
-    named_args.iter().any(|(_, v)| {
-        subject_key_of_term(kb, *v).is_some_and(|k| subject_keys_equal(kb, k, key))
+fn spec_mentions_key(kb: &KnowledgeBase, spec: &Value, key: SubjectKey) -> bool {
+    // WI-662: ground fast path — byte-identical to the pre-WI-662 term read.
+    if let Value::Term { id, .. } = spec {
+        let Term::Fn { named_args, .. } = kb.get_term(*id) else { return false };
+        return named_args.iter().any(|(_, v)| {
+            subject_key_of_term(kb, *v).is_some_and(|k| subject_keys_equal(kb, k, key))
+        });
+    }
+    // Denoted spec — check each binding's subject key via TermView. A denoted
+    // binding value (`Value::Node`) has no term subject key (`subject_key_of_term`
+    // is term-only), so it contributes no match — the deferred parametric-effect
+    // boundary, consistent with the ground path.
+    spec.named_keys(kb).into_iter().any(|k| {
+        spec.named_arg(kb, k)
+            .and_then(|it| it.as_term_id())
+            .and_then(|v| subject_key_of_term(kb, v))
+            .is_some_and(|sk| subject_keys_equal(kb, sk, key))
     })
 }
 
@@ -16365,9 +16519,17 @@ fn spec_binding_head_sym(kb: &KnowledgeBase, v: TermId) -> Option<Symbol> {
 
 /// The binding VALUE a `requires` application carries for `member`, when bound
 /// (`requires Storage[C = P, Key = String]` binds `Key`).
-fn spec_binding_value(kb: &KnowledgeBase, spec: TermId, member: &str) -> Option<TermId> {
-    let Term::Fn { named_args, .. } = kb.get_term(spec) else { return None };
-    named_args.iter().find(|(p, _)| kb.resolve_sym(*p) == member).map(|(_, v)| *v)
+fn spec_binding_value(kb: &KnowledgeBase, spec: &Value, member: &str) -> Option<TermId> {
+    // WI-662: ground fast path — byte-identical to the pre-WI-662 term read.
+    if let Value::Term { id, .. } = spec {
+        let Term::Fn { named_args, .. } = kb.get_term(*id) else { return None };
+        return named_args.iter().find(|(p, _)| kb.resolve_sym(*p) == member).map(|(_, v)| *v);
+    }
+    // Denoted spec — the member's binding via TermView, when it is a ground term.
+    // A denoted binding value has no `TermId`; callers treat `None` as "not a
+    // projectable member" (the deferred parametric-effect boundary).
+    let key = spec.named_keys(kb).into_iter().find(|k| kb.resolve_sym(*k) == member)?;
+    spec.named_arg(kb, key).and_then(|it| it.as_term_id())
 }
 
 /// Normalize a `requires`-binding value LEAF to the plain TYPE shape (`Ref(s)`). A
@@ -17719,7 +17881,7 @@ fn ground_rigid_projection_if_concrete(
     let key = subject_key_of_term(kb, subj_t)?;
     let mut mentions_subject = false;
     for e in op_requires_entries(kb, sort) {
-        if !spec_mentions_key(kb, e.spec, key) {
+        if !spec_mentions_key(kb, &e.spec, key) {
             continue;
         }
         mentions_subject = true;
@@ -22056,13 +22218,71 @@ fn leaf_var_ref(node: &Rc<NodeOccurrence>) -> Option<Symbol> {
 
 // ── Requires chain ─────────────────────────────────────────────
 
-/// A direct requires entry: sort A requires spec B with the given SortView term.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+/// A direct requires entry: sort A requires spec B with the given SortView.
+///
+/// WI-662: `spec` is carrier-faithful — a ground spec rides as `Value::Term`, a
+/// denoted-bearing binding (`requires Foo[E = Modify[c]]`) as a `Value::Node`
+/// occurrence. The pre-WI-662 `TermId` field could not carry the latter, so the
+/// producers (`direct_requires`, `op_requires_entries`) silently dropped
+/// effect-bearing `requires` clauses; they now flow through and the readers
+/// decode the spec via `TermView` (ground path unchanged, denoted path new).
+#[derive(Clone, Debug)]
 pub struct RequiresEntry {
     /// The base sort symbol of the required spec (e.g., Eq in `requires Eq[T=Int]`).
     pub required_sort: Symbol,
-    /// The full SortView term (carries bindings like T=Int, combine=add).
-    pub spec: TermId,
+    /// The full SortView spec value (carries bindings like T=Int, combine=add).
+    pub spec: Value,
+}
+
+/// A kb-free identity for a `RequiresEntry.spec`, so `RequiresEntry` can key the
+/// `resolve_cache` scope (mod.rs) without `Value` gaining a structural `Eq`/`Hash`
+/// (WI-486 deliberately routes value equality through `views_structurally_equal`,
+/// which needs a `kb`). A ground `Value::Term` keys by its hash-cons `TermId`
+/// (exact, alloc-free). A denoted spec (`Value::Entity` / `Value::Node`) has no
+/// hash-cons id and MUST NOT be keyed by `Debug`: `NodeOccurrence`'s derived
+/// `Debug` prints the interior-mutable `term_cache: Cell<…>` (lazily filled by
+/// `cached_term`) and the `span`, so a live map key's hash would mutate in place
+/// (an unsound `HashMap` key) and structurally-identical specs at different spans
+/// would never collide. Key it instead by ALLOCATION identity — the `Rc` data
+/// pointer(s), stable under interior mutation. Same-`Rc` clones (the requires-chain
+/// caches hand back clones of one allocation) collide correctly; two distinct
+/// allocations key distinctly (a sound false MISS = a recompute, never a false
+/// HIT). Total and reflexive. WI-662.
+#[derive(PartialEq, Eq, Hash)]
+enum SpecEqKey {
+    Term(TermId),
+    /// `Rc` data pointer(s): a `Value::Node` occurrence (second field 0), or a
+    /// `Value::Entity`/`Tuple`'s `pos`+`named` slice pointers.
+    Ptr(usize, usize),
+    /// A non-spec carrier (never a real requires spec) — a defensive fallback.
+    Other(String),
+}
+
+fn spec_eq_key(spec: &Value) -> SpecEqKey {
+    match spec {
+        Value::Term { id, .. } => SpecEqKey::Term(*id),
+        Value::Node(occ) => SpecEqKey::Ptr(Rc::as_ptr(occ) as usize, 0),
+        Value::Entity { pos, named, .. } | Value::Tuple { pos, named, .. } => {
+            SpecEqKey::Ptr(pos.as_ptr() as usize, named.as_ptr() as usize)
+        }
+        other => SpecEqKey::Other(format!("{other:?}")),
+    }
+}
+
+impl PartialEq for RequiresEntry {
+    fn eq(&self, other: &Self) -> bool {
+        self.required_sort == other.required_sort
+            && spec_eq_key(&self.spec) == spec_eq_key(&other.spec)
+    }
+}
+
+impl Eq for RequiresEntry {}
+
+impl std::hash::Hash for RequiresEntry {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.required_sort.hash(state);
+        spec_eq_key(&self.spec).hash(state);
+    }
 }
 
 /// WI-230 — tree-shaped declaration of a sort's `requires` chain. Each
@@ -22209,9 +22429,16 @@ pub fn synth_req_names(kb: &mut KnowledgeBase, parent_sort: Symbol) -> Rc<Vec<Sy
         *counts.entry(b.as_str()).or_default() += 1;
     }
     let mut out: Vec<Symbol> = Vec::with_capacity(chain.len());
-    for (entry, base) in chain.iter().zip(bases.iter()) {
+    for (idx, (entry, base)) in chain.iter().zip(bases.iter()).enumerate() {
         let name = if counts[base.as_str()] > 1 {
-            format!("{base}_{}", entry.spec.raw())
+            match &entry.spec {
+                // Ground: the hash-cons id, unchanged from the pre-WI-662 field.
+                Value::Term { id, .. } => format!("{base}_{}", id.raw()),
+                // WI-662: a denoted spec has no hash-cons id — disambiguate by chain
+                // position (stable and deterministic across the typer/eval passes,
+                // which both derive names through this one cached function).
+                _ => format!("{base}_d{idx}"),
+            }
         } else {
             base.clone()
         };
@@ -22334,7 +22561,7 @@ fn build_requires_tree(
     let raw_entries = direct_requires(kb, sort_sym);
     let mut nodes = Vec::with_capacity(raw_entries.len());
     for raw in raw_entries {
-        let substituted_spec = substitute_in_spec(kb, raw.spec, subst);
+        let substituted_spec = substitute_in_spec(kb, &raw.spec, subst);
         let entry = RequiresEntry {
             required_sort: raw.required_sort,
             spec: substituted_spec,
@@ -22352,6 +22579,24 @@ fn build_requires_tree(
 /// its direct (non-transitive) requires entries. Same logic as the
 /// pre-WI-230 `collect_requires` but without the recursive descent —
 /// the tree builder owns recursion.
+/// WI-662: the base sort symbol a `requires` SortView spec describes, read
+/// carrier-agnostically via [`TermView`] so a denoted `Value::Node` spec decodes
+/// identically to a ground `Value::Term`. Mirrors the arms `direct_requires`
+/// previously matched on the hash-consed spec term: a `SortView(base, …)`
+/// application (positional arg 0 is the base sort), or a bare nullary sort.
+fn spec_base_functor(kb: &KnowledgeBase, spec: &impl TermView) -> Option<Symbol> {
+    match spec.head(kb) {
+        ViewHead::Functor { pos_arity, .. } if pos_arity > 0 => {
+            match spec.pos_arg(kb, 0)?.head(kb) {
+                ViewHead::Functor { functor, .. } => functor,
+                _ => None,
+            }
+        }
+        ViewHead::Functor { functor, pos_arity: 0, named_arity: 0 } => functor,
+        _ => None,
+    }
+}
+
 fn direct_requires(kb: &KnowledgeBase, sort_sym: Symbol) -> Vec<RequiresEntry> {
     let mut out = Vec::new();
     let Some(requires_sym) = kb.try_resolve_symbol("anthill.reflect.SortRequiresInfo") else {
@@ -22360,57 +22605,36 @@ fn direct_requires(kb: &KnowledgeBase, sort_sym: Symbol) -> Vec<RequiresEntry> {
 
     for rid in kb.rules_by_functor(requires_sym) {
         if !kb.is_fact(rid) { continue; }
-        // A value-fact SortRequiresInfo (denoted-bearing spec) cannot yield a
-        // term-form `RequiresEntry.spec` (a `TermId` consumed by the term-only
-        // spec walks `unwrap_spec_view` / `substitute_in_spec`); occurrence-based
-        // requires-chain resolution is gated effect-expressions-as-types work, so
-        // skip it here. The spec is preserved faithfully on the fact for that pass
-        // (rather than hit the term-only `rule_head` panic on a value head).
-        let Some(named_args) = kb.fact_head_named_args(rid) else { continue };
+        // WI-662: read the head carrier-agnostically. A value-fact SortRequiresInfo
+        // (denoted-bearing spec, e.g. `requires Foo[E = Modify[c]]`) now flows
+        // through — the spec rides as a `Value::Node` on `RequiresEntry.spec`
+        // rather than being skipped for want of a `TermId` (the pre-WI-662 gap
+        // that silently excluded effect-bearing sort-level requires).
+        let head = kb.rule_head_value(rid);
 
-        // Check that this SortRequiresInfo is for our sort. `same_symbol`
-        // keys on resolved-Symbol / qualified-name identity so a fact
-        // for anthill.cli.Main is not mistaken for one about
-        // anthill.todo.Main.
-        let sort_ref_tid = match named_args.iter()
-            .find(|(s, _)| kb.resolve_sym(*s) == "sort_ref")
-            .map(|(_, v)| *v)
-        {
-            Some(t) => t,
-            None => continue,
+        // Check that this SortRequiresInfo is for our sort. `sort_ref` is always a
+        // ground SortView of the enclosing sort; `same_symbol` keys on
+        // resolved-Symbol / qualified-name identity so a fact for anthill.cli.Main
+        // is not mistaken for one about anthill.todo.Main.
+        let Some(sort_ref_tid) = super::op_info::head_field_term(kb, head, "sort_ref") else {
+            continue;
         };
-        let sr_functor = match kb.get_term(sort_ref_tid) {
-            Term::Fn { functor, .. } => *functor,
-            _ => continue,
+        let Term::Fn { functor: sr_functor, .. } = kb.get_term(sort_ref_tid) else {
+            continue;
         };
-        if !same_symbol(kb, sr_functor, sort_sym) {
+        if !same_symbol(kb, *sr_functor, sort_sym) {
             continue;
         }
 
-        // Extract spec (SortView) and the base sort it describes.
-        let spec_tid = match named_args.iter()
-            .find(|(s, _)| kb.resolve_sym(*s) == "spec")
-            .map(|(_, v)| *v)
-        {
-            Some(t) => t,
-            None => continue,
+        // Extract the spec (SortView) carrier-faithfully and the base sort it
+        // describes. `head_field_value` yields a `Value::Term` for a ground spec
+        // and a `Value::Node` for a denoted-bearing one, preserving occurrence.
+        let Some(spec_value) = super::op_info::head_field_value(kb, head, "spec") else {
+            continue;
         };
-        let base_functor = match kb.get_term(spec_tid) {
-            Term::Fn { functor, pos_args, named_args, .. } if !pos_args.is_empty() => {
-                match kb.get_term(pos_args[0]) {
-                    Term::Fn { functor, .. } => *functor,
-                    _ => continue,
-                }
-            }
-            Term::Fn { functor, pos_args, named_args, .. }
-                if pos_args.is_empty() && named_args.is_empty() =>
-            {
-                *functor
-            }
-            _ => continue,
-        };
+        let Some(base_functor) = spec_base_functor(kb, &spec_value) else { continue };
 
-        out.push(RequiresEntry { required_sort: base_functor, spec: spec_tid });
+        out.push(RequiresEntry { required_sort: base_functor, spec: spec_value });
     }
     out
 }
@@ -22423,6 +22647,40 @@ fn direct_requires(kb: &KnowledgeBase, sort_sym: Symbol) -> Vec<RequiresEntry> {
 /// Allocates fresh `Term::Fn` nodes only when a child was actually
 /// rewritten (preserves hash-cons identity for unchanged sub-terms).
 fn substitute_in_spec(
+    kb: &mut KnowledgeBase,
+    spec: &Value,
+    map: &HashMap<Symbol, TermId>,
+) -> Value {
+    if map.is_empty() {
+        return spec.clone();
+    }
+    match spec {
+        Value::Term { id, .. } => Value::term(substitute_in_spec_term(kb, *id, map)),
+        // WI-662: carrier-faithful walk of a denoted spec (WI-230 root-scope
+        // composition) — substitute the term-representable children (a co-carried
+        // `T = ParentT` type binding is re-scoped top-down) and preserve a denoted
+        // `Value::Node` child verbatim (deferred parametric-effect handling). See
+        // `substitute_spec_via_subst` for the per-call-subst twin.
+        Value::Entity { functor, pos, named, ty } => {
+            let new_pos: Vec<Value> =
+                pos.iter().map(|v| substitute_in_spec(kb, v, map)).collect();
+            let new_named: Vec<(Symbol, Value)> = named
+                .iter()
+                .map(|(k, v)| (*k, substitute_in_spec(kb, v, map)))
+                .collect();
+            Value::Entity {
+                functor: *functor,
+                pos: new_pos.into(),
+                named: new_named.into(),
+                ty: ty.clone(),
+            }
+        }
+        other => other.clone(),
+    }
+}
+
+/// WI-662: the ground TermId walk under [`substitute_in_spec`].
+fn substitute_in_spec_term(
     kb: &mut KnowledgeBase,
     spec: TermId,
     map: &HashMap<Symbol, TermId>,
@@ -22439,7 +22697,7 @@ fn substitute_in_spec(
             map.get(&functor).copied().unwrap_or(spec)
         }
         Term::Fn { .. } => kb.map_fn_children(spec, |kb, child| {
-            substitute_in_spec(kb, child, map)
+            substitute_in_spec_term(kb, child, map)
         }),
         _ => spec,
     }
@@ -22456,7 +22714,7 @@ fn build_child_subst_map(
     entry: &RequiresEntry,
 ) -> HashMap<Symbol, TermId> {
     let mut map = HashMap::new();
-    let Some((base_sort, bindings)) = unwrap_spec_view(kb, entry.spec) else {
+    let Some((base_sort, bindings)) = unwrap_spec_view_value(kb, &entry.spec) else {
         return map;
     };
     let base_qn = kb.qualified_name_of(base_sort).to_string();
@@ -26070,12 +26328,14 @@ fn check_one_spec_op_requirement(
     });
 }
 
-/// Is `tid` a `SortView` wrapper term? Same discriminant [`unwrap_spec_view`] uses
+/// Is `spec` a `SortView` wrapper? Same discriminant [`unwrap_spec_view`] uses
 /// (`anthill.reflect.SortView` or any `.SortView` re-export), factored out so the
 /// witness-gate helper and the unwrapper cannot disagree on what counts as a view.
-fn term_is_sort_view(kb: &KnowledgeBase, tid: TermId) -> bool {
-    matches!(kb.get_term(tid), Term::Fn { functor, .. }
-        if { let q = kb.qualified_name_of(*functor); q == "anthill.reflect.SortView" || q.ends_with(".SortView") })
+/// Carrier-agnostic (WI-662): one discriminant for a ground `Value::Term` spec and
+/// a denoted `Value::Entity` spec carrier alike.
+fn view_is_sort_view(kb: &KnowledgeBase, spec: &impl TermView) -> bool {
+    matches!(spec.head(kb), ViewHead::Functor { functor: Some(f), .. }
+        if { let q = kb.qualified_name_of(f); q == "anthill.reflect.SortView" || q.ends_with(".SortView") })
 }
 
 /// The head symbol NAME of a type-argument term (`Ref(T)` / `Ident(T)` / `T[…]` → `"T"`).
@@ -26107,26 +26367,40 @@ fn spec_arg_head_name(kb: &KnowledgeBase, tid: TermId) -> Option<&str> {
 /// A bare `Ref(<S>)` (no args) carries no keyable carrier → not sound.
 fn requirement_ranges_over_owner_tparams(
     kb: &KnowledgeBase,
-    spec_tid: TermId,
+    spec: &Value,
     s_qn: &str,
     owner_tparams: &[String],
 ) -> bool {
+    // WI-662: one carrier-agnostic body. A ground `Value::Term` reads through
+    // `TermView` identically to the pre-WI-662 `get_term` walk (a `Value::Term`
+    // child's `as_term_id` always succeeds), and a denoted `Value::Entity` spec
+    // decodes the same way — a denoted binding value has no `TermId` and drops out
+    // via `as_term_id`, never a type-param arg. One body ⇒ the two carriers cannot
+    // silently diverge (the pre-fix denoted arm dropped the bare-`Fn` pos-args case).
     let mut bound_type_args: Vec<TermId> = Vec::new();
-    if term_is_sort_view(kb, spec_tid) {
-        // Only the named type-param bindings (`unwrap_spec_view` drops the `pos_args[0]`
-        // inner-spec carrier and hands back the bindings as named pairs).
-        if let Some((_, bindings)) = unwrap_spec_view(kb, spec_tid) {
+    if view_is_sort_view(kb, spec) {
+        // SortView wrapper: only the named type-param bindings
+        // (`unwrap_spec_view_value` drops the `pos_args[0]` inner-spec carrier).
+        if let Some((_, bindings)) = unwrap_spec_view_value(kb, spec) {
             for (key, val) in bindings.iter() {
                 if is_type_param_binding(kb, *key, s_qn) {
                     bound_type_args.push(*val);
                 }
             }
         }
-    } else if let Term::Fn { pos_args, named_args, .. } = kb.get_term(spec_tid) {
-        bound_type_args.extend(pos_args.iter().copied());
-        for (key, val) in named_args.iter() {
-            if is_type_param_binding(kb, *key, s_qn) {
-                bound_type_args.push(*val);
+    } else if let ViewHead::Functor { pos_arity, .. } = spec.head(kb) {
+        // Bare application `Fn{<S>, pos, named}` (op-`requires`): positionals bind
+        // in type-param order, named args by param name.
+        for i in 0..pos_arity {
+            if let Some(v) = spec.pos_arg(kb, i).and_then(|it| it.as_term_id()) {
+                bound_type_args.push(v);
+            }
+        }
+        for key in spec.named_keys(kb) {
+            if is_type_param_binding(kb, key, s_qn) {
+                if let Some(v) = spec.named_arg(kb, key).and_then(|it| it.as_term_id()) {
+                    bound_type_args.push(v);
+                }
             }
         }
     }
@@ -26174,7 +26448,7 @@ fn transitive_witness_grounds_soundly(
         if kb.canonical_sort_sym(entry.required_sort) != spec_canon {
             continue;
         }
-        if requirement_ranges_over_owner_tparams(kb, entry.spec, spec_qn, &spec_tparams) {
+        if requirement_ranges_over_owner_tparams(kb, &entry.spec, spec_qn, &spec_tparams) {
             return true;
         }
     }
@@ -26231,7 +26505,7 @@ fn inherited_spec_op_witness_grounds_soundly(
         if kb.canonical_sort_sym(entry.required_sort) != parent_canon {
             continue;
         }
-        if requirement_ranges_over_owner_tparams(kb, entry.spec, parent_qn, &spec_tparams) {
+        if requirement_ranges_over_owner_tparams(kb, &entry.spec, parent_qn, &spec_tparams) {
             return true;
         }
     }

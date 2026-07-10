@@ -166,7 +166,7 @@ fn nested_handle_emits_requirement_at_sort_chain() {
     let ordered_ref = kb.alloc(Term::Ref(ordered_sym));
     let caller_requires = vec![RequiresEntry {
         required_sort: ordered_sym,
-        spec: ordered_ref,
+        spec: ordered_ref.into(),
     }];
 
     // The dep we're searching for: Eq. Strategy 1 fails (Eq not in
@@ -175,7 +175,7 @@ fn nested_handle_emits_requirement_at_sort_chain() {
     let eq_ref = kb.alloc(Term::Ref(eq_sym));
     let dep = RequiresEntry {
         required_sort: eq_sym,
-        spec: eq_ref,
+        spec: eq_ref.into(),
     };
 
     // `caller_sort` is None: this is a synthetic non-flat caller chain
@@ -237,7 +237,7 @@ fn ground_dep_emits_construct_requirement() {
     });
     let dep = RequiresEntry {
         required_sort: eq_sym,
-        spec: dep_spec,
+        spec: dep_spec.into(),
     };
 
     let caller_requires: Vec<RequiresEntry> = Vec::new();

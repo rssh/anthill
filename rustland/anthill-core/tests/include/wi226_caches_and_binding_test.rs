@@ -80,7 +80,11 @@ fn requires_chain_memoizes_top_level_query() {
     );
     for (a, b) in first.iter().zip(second.iter()) {
         assert_eq!(a.required_sort, b.required_sort);
-        assert_eq!(a.spec, b.spec);
+        // WI-662: `spec` is now a `Value`; compare structurally (carrier-blind).
+        assert!(
+            anthill_core::kb::term_view::views_structurally_equal(&kb, &a.spec, &b.spec),
+            "cached requires_chain spec must match first call",
+        );
     }
 }
 
@@ -170,12 +174,12 @@ fn binding_aware_match_rejects_wrong_binding_at_flat_slot() {
     let caller_spec_int = make_sort_view(&mut kb, eq_sym, int_sym);
     let caller_requires = vec![RequiresEntry {
         required_sort: eq_sym,
-        spec: caller_spec_int,
+        spec: caller_spec_int.into(),
     }];
     let dep_spec_string = make_sort_view(&mut kb, eq_sym, string_sym);
     let dep = RequiresEntry {
         required_sort: eq_sym,
-        spec: dep_spec_string,
+        spec: dep_spec_string.into(),
     };
 
     let caller_sub_chains: Vec<Vec<RequiresEntry>> = caller_requires

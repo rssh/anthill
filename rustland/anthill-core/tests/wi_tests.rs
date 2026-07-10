@@ -600,3 +600,6 @@ mod wi619_two_ary_head_introducer_test;
 #[path = "include/wi515_entity_schema_fact_test.rs"]
 mod wi515_entity_schema_fact_test;
 
+#[path = "include/wi662_carrier_agnostic_requires_test.rs"]
+mod wi662_carrier_agnostic_requires_test;
+

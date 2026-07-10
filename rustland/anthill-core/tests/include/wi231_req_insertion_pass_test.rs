@@ -253,13 +253,17 @@ end
             entry.required_sort, eq_sort,
             "every Defer row's resolved_spec must point at Eq",
         );
-        // spec is a TermId — accessor on KB resolves to a Fn term.
-        let spec_term = kb.get_term(entry.spec);
-        let is_fn = matches!(spec_term, anthill_core::kb::term::Term::Fn { .. });
+        // WI-662: `spec` is now a carrier-faithful `Value`; this ground SortView
+        // reads through `Value::Term` to its hash-consed Fn term.
+        let is_fn = matches!(
+            &entry.spec,
+            anthill_core::eval::Value::Term { id, .. }
+                if matches!(kb.get_term(*id), anthill_core::kb::term::Term::Fn { .. })
+        );
         assert!(
             is_fn,
-            "resolved_spec.spec must be a Fn (the SortView), got {:?}",
-            spec_term
+            "resolved_spec.spec must be a ground Fn SortView, got {:?}",
+            entry.spec
         );
     }
 
