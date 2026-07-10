@@ -183,7 +183,7 @@ pub(crate) fn operations_of_sort(kb: &KnowledgeBase, sort_sym: Symbol) -> Vec<Sy
     };
     for rid in kb.rules_by_functor(sort_info_sym) {
         if !kb.is_fact(rid) { continue; }
-        let head = kb.rule_head(rid);
+        let Some(head) = kb.fact_head_term(rid) else { continue };
         let named_args = match kb.get_term(head) {
             Term::Fn { named_args, .. } => named_args.clone(),
             _ => continue,

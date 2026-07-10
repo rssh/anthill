@@ -3433,7 +3433,7 @@ fn build_base_substitutions(kb: &mut KnowledgeBase) {
         if !kb.is_fact(rid) {
             continue; // skip rules, only process facts
         }
-        let head = kb.rule_head(rid);
+        let Some(head) = kb.fact_head_term(rid) else { continue };
         let term = kb.get_term(head).clone();
         if let Term::Fn { named_args, .. } = term {
             let sort_functor_sym = named_args.iter()
@@ -3946,7 +3946,7 @@ fn register_induction_axiom_witnesses(kb: &mut KnowledgeBase) {
 
     for rid in sort_info_rids {
         if !kb.is_fact(rid) { continue; }
-        let head = kb.rule_head(rid);
+        let Some(head) = kb.fact_head_term(rid) else { continue };
         let head_term = kb.get_term(head).clone();
         let named = match head_term {
             Term::Fn { named_args, .. } => named_args,
@@ -4419,7 +4419,7 @@ pub(crate) fn sorts_and_own_ops(kb: &KnowledgeBase) -> Vec<(Symbol, Vec<Symbol>)
     let mut out: Vec<(Symbol, Vec<Symbol>)> = Vec::new();
     for rid in kb.rules_by_functor(sort_info_sym) {
         if !kb.is_fact(rid) { continue; }
-        let head = kb.rule_head(rid);
+        let Some(head) = kb.fact_head_term(rid) else { continue };
         let named = match kb.get_term(head) {
             Term::Fn { named_args, .. } => named_args,
             _ => continue,
@@ -4708,7 +4708,7 @@ fn collect_existing_proof_record_qns(kb: &KnowledgeBase, record_sym: Symbol) -> 
     let mut out = HashSet::new();
     for rid in kb.rules_by_functor(record_sym) {
         if !kb.is_fact(rid) { continue; }
-        let head = kb.rule_head(rid);
+        let Some(head) = kb.fact_head_term(rid) else { continue };
         if let Term::Fn { named_args, .. } = kb.get_term(head) {
             if let Some(tid) = super::typing::get_named_arg(kb, named_args, "rule") {
                 if let Term::Const(Literal::String(s)) = kb.get_term(tid) {
@@ -4893,7 +4893,7 @@ fn collect_sort_operations(kb: &mut KnowledgeBase, sort_sym: Symbol) -> Vec<Symb
         if !kb.is_fact(rid) {
             continue;
         }
-        let head = kb.rule_head(rid);
+        let Some(head) = kb.fact_head_term(rid) else { continue };
         if let Term::Fn { ref named_args, .. } = kb.get_term(head).clone() {
             let name_matches = named_args.iter()
                 .find(|(s, _)| *s == name_field)

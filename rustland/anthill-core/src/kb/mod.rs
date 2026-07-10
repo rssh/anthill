@@ -2363,6 +2363,20 @@ impl KnowledgeBase {
     /// deliberate trip-wire — a value fact must never reach a term-only head
     /// reader; carrier-agnostic readers use `rule_head_value` / `TermView`. (The
     /// `is_equation` bug was exactly such a leak, surfaced by this panic, then fixed.)
+    ///
+    /// WI-663 migrated every reader that **enumerates arbitrary rules** (the
+    /// `rules_by_functor` / `by_domain` scans that read a reflect-fact head's
+    /// structure — `SortInfo` / `ProofRecord` / `Modifiable` / entity-ctor walks,
+    /// and the `[simp]`-equation readers `stored_lhs_functor` / `open_equation`)
+    /// onto the graceful `fact_head_term` (skip a value head), matching the WI-659
+    /// sort-alias skip. So the surviving callers here are **term-only by
+    /// construction** — persistence (the persist API keys on `TermId`, so a value
+    /// head cannot enter the store; a *silent* skip there would unsoundly drop a
+    /// retrieved fact, hence the loud panic is kept), `unindex_functor` (WI-139
+    /// equations), the by-`domain` *bodied-rule* readers (facts, incl. value
+    /// facts, are pre-skipped), and heads already gated upstream. A value head
+    /// reaching one of those is a genuine kernel-invariant violation the panic
+    /// should surface loudly.
     pub fn rule_head(&self, id: RuleId) -> TermId {
         match &self.rules[id.index()].head {
             crate::eval::value::Value::Term { id: t, .. } => *t,

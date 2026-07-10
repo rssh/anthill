@@ -329,7 +329,7 @@ pub fn verify_proofs(kb: &mut KnowledgeBase) -> Vec<ProofReport> {
         if !kb.is_fact(rid) {
             continue;
         }
-        let head = kb.rule_head(rid);
+        let Some(head) = kb.fact_head_term(rid) else { continue };
         let named = match kb.get_term(head) {
             Term::Fn { named_args, .. } => named_args.clone(),
             _ => continue,

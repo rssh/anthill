@@ -533,8 +533,14 @@ pub(super) fn try_fire(
 /// DeBruijn opening). Used to skip non-matching rules before the
 /// allocate-heavy `open_equation`. `pub(super)`: the typer's dot-rule
 /// firing (WI-279 INC2) pre-filters `[simp]` equations by LHS functor.
+///
+/// WI-663: reads the head carrier-agnostically via `fact_head_term` (not the
+/// panicking term-only `rule_head`) — a value-fact head (`Value::Node`/`Entity`)
+/// is never an equation, so it reads `None` and the caller skips it. Callers
+/// already pre-gate with `is_equation`/`is_simp_equation` (carrier-agnostic), so
+/// this is belt-and-suspenders that also makes the reader intrinsically safe.
 pub(super) fn stored_lhs_functor(kb: &KnowledgeBase, rid: RuleId) -> Option<Symbol> {
-    let head = kb.rule_head(rid);
+    let head = kb.fact_head_term(rid)?;
     let lhs = match kb.get_term(head) {
         Term::Fn { pos_args, .. } if pos_args.len() == 2 => pos_args[0],
         _ => return None,
@@ -559,7 +565,10 @@ pub(super) fn open_equation(
     rid: RuleId,
 ) -> Option<(TermId, TermId, Vec<VarId>)> {
     let arity = kb.rule_arity(rid);
-    let head = kb.rule_head(rid);
+    // WI-663: `fact_head_term` (not the panicking term-only `rule_head`) — a
+    // value-fact head has no term LHS to open, so it reads `None` and the caller
+    // skips it. All callers pre-gate with `is_equation`/`is_simp_equation`.
+    let head = kb.fact_head_term(rid)?;
     let (opened, fresh) = if arity > 0 {
         let name = kb.intern("_");
         let fresh: Vec<VarId> = (0..arity).map(|_| kb.fresh_var(name)).collect();
@@ -916,6 +925,46 @@ mod tests {
 
     fn span() -> SourceSpan {
         SourceSpan::new(SourceId::from_raw(0), 0, 10)
+    }
+
+    /// WI-663: a value-fact head (`Value::Entity` — e.g. a reflect fact carrying
+    /// a denoted value) must not abort the term-only `[simp]`-equation head
+    /// readers. Before the migration `stored_lhs_functor` / `open_equation` read
+    /// the head through the panicking term-only `rule_head`; now they read
+    /// `fact_head_term`, so a value head — which is never an equation — reads
+    /// `None` and the caller skips it. Feed a synthetic `eq`-shaped *value* head
+    /// straight to both readers and assert they resolve to `None` instead of
+    /// panicking the process.
+    #[test]
+    fn value_fact_head_skips_term_only_equation_readers() {
+        use crate::eval::value::Value;
+        let mut kb = KnowledgeBase::new();
+        let eq = kb.eq_functor();
+        let a = kb.intern("a");
+        let b = kb.intern("b");
+        // `eq(a, b)` shaped, but carried as a `Value::Entity` (a value fact, not a
+        // hash-consed `Term`) — the adversarial case the `rule_head` panic guarded.
+        let head = Value::Entity {
+            functor: eq,
+            pos: vec![
+                Value::Entity { functor: a, pos: Vec::new().into(), named: Vec::new().into(), ty: None },
+                Value::Entity { functor: b, pos: Vec::new().into(), named: Vec::new().into(), ty: None },
+            ]
+            .into(),
+            named: Vec::new().into(),
+            ty: None,
+        };
+        let sort = kb.make_name_term("Eq");
+        let domain = kb.make_name_term("test");
+        let rid = kb.assert_fact_value(head, sort, domain, None);
+
+        // The stored head is a value carrier (not a `Term`), so the term-only
+        // `fact_head_term` skip reads `None`…
+        assert!(matches!(kb.rule_head_value(rid), Value::Entity { .. }));
+        assert_eq!(kb.fact_head_term(rid), None);
+        // …and both migrated equation readers skip it gracefully (no panic).
+        assert_eq!(stored_lhs_functor(&kb, rid), None);
+        assert!(open_equation(&mut kb, rid).is_none());
     }
 
     #[test]

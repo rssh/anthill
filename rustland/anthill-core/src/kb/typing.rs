@@ -22785,7 +22785,7 @@ fn sort_operation_names(kb: &KnowledgeBase, sort_sym: Symbol) -> Vec<String> {
 
     for rid in kb.rules_by_functor(sort_info_sym) {
         if !kb.is_fact(rid) { continue; }
-        let head = kb.rule_head(rid);
+        let Some(head) = kb.fact_head_term(rid) else { continue };
         let named_args = match kb.get_term(head) {
             Term::Fn { named_args, .. } => named_args,
             _ => continue,
@@ -24402,7 +24402,7 @@ fn check_operation_signatures(kb: &KnowledgeBase) -> Vec<TypeError> {
 fn find_sort_info(kb: &KnowledgeBase, sort_info_sym: Symbol, sort_functor: Symbol) -> Option<(Vec<Symbol>, Vec<Symbol>)> {
     for rid in kb.rules_by_functor(sort_info_sym) {
         if !kb.is_fact(rid) { continue; }
-        let head = kb.rule_head(rid);
+        let Some(head) = kb.fact_head_term(rid) else { continue };
         let named_args = match kb.get_term(head) {
             Term::Fn { named_args, .. } => named_args,
             _ => continue,
@@ -24759,7 +24759,7 @@ fn check_entity_facts(kb: &mut KnowledgeBase, ctor_syms: &[Symbol], errors: &mut
             // own reflect functors, so they never reach a user constructor's
             // rules_by_functor bucket anyway.
 
-            let head = kb.rule_head(rid);
+            let Some(head) = kb.fact_head_term(rid) else { continue };
             let named_args = match kb.get_term(head) {
                 Term::Fn { named_args, .. } => named_args.clone(),
                 _ => continue,

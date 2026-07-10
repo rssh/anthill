@@ -2664,8 +2664,11 @@ impl KnowledgeBase {
             }
             // A value-headed equation (a `Value::Node`/`Entity` head, WI-348) has
             // no term LHS the term-rewrite path can open — skip it (the retired
-            // legacy branch did too) BEFORE the term-only head reads below
-            // (`stored_lhs_functor` / `rule_head`), which panic on a non-`Term` head.
+            // legacy branch did too). Early-out: the head reads below
+            // (`stored_lhs_functor` / `open_equation`) are now carrier-agnostic
+            // (WI-663 — they read `fact_head_term` and return `None` on a value
+            // head rather than panicking), so this guard is a cheap early skip,
+            // no longer a panic-prevention necessity.
             if !matches!(&self.rules[rid.index()].head, Value::Term { .. }) {
                 continue;
             }
