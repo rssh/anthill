@@ -3054,10 +3054,10 @@ fn try_fire_dot_rule(
             Term::Ref(s) => *s,
             _ => continue,
         };
-        // `same_symbol` (not raw `==`): a sort can carry distinct Symbol ids
-        // (bare-interned vs fully-qualified) — match the convention used by
-        // `sort_provides` / sort widening. Identity OR spec satisfaction.
-        if !same_symbol(kb, recv_sort, encl) && !sort_provides(kb, recv_sort, encl) {
+        // WI-672 `same_sort_canonical` (not raw `==`): a sort's differently-interned
+        // copies share a canonical symbol — match the convention used by `sort_provides`
+        // / sort widening. Identity OR spec satisfaction.
+        if !same_sort_canonical(kb, recv_sort, encl) && !sort_provides(kb, recv_sort, encl) {
             continue;
         }
         let Some((lhs, rhs, _fresh)) = super::simp_rewrite::open_equation(kb, rid) else { continue };
@@ -3144,7 +3144,7 @@ fn find_spec_op_for_provided_sort(
         let s = spec_syms[i];
         let d = depths[i];
         for next in directly_provided_specs(kb, s) {
-            if !spec_syms.iter().any(|&x| same_symbol(kb, x, next)) {
+            if !spec_syms.iter().any(|&x| same_sort_canonical(kb, x, next)) {
                 spec_syms.push(next);
                 depths.push(d + 1);
             }
@@ -3195,6 +3195,8 @@ fn most_refined_spec(kb: &mut KnowledgeBase, specs: &[Symbol]) -> Option<Symbol>
     for &cand in specs {
         let chain = requires_chain(kb, cand);
         if specs.iter().all(|&other| {
+            // `same_symbol` (not `same_sort_canonical`): `specs`/`required_sort` here are
+            // requires-chain spec bases that may be stored unresolved-bare (WI-420).
             same_symbol(kb, other, cand)
                 || chain.iter().any(|e| same_symbol(kb, e.required_sort, other))
         }) {
@@ -3292,7 +3294,7 @@ fn requires_edge_is_carrier_preserving(
         return false;
     };
     provision_carrier_sort(kb, entry.required_sort, &entry.spec)
-        .is_some_and(|bound| same_symbol(kb, bound, s_carrier))
+        .is_some_and(|bound| same_sort_canonical(kb, bound, s_carrier))
 }
 
 /// WI-614 — is `sort_sym` SELF-REPRESENTING: does any declared operation take the sort ITSELF
@@ -7757,6 +7759,11 @@ fn entries_cover(kb: &mut KnowledgeBase, caller: &RequiresEntry, dep: &RequiresE
     // fully-qualified specs that merely share a last segment, so it cannot
     // over-match. Plain `!=` here silently failed cross-sort requirement
     // forwarding when the two sides' spec symbols differed in qualification.
+    // NB stays on `same_symbol`, NOT `same_sort_canonical` (WI-672): a not-yet-resolved
+    // bare `requires Eq` on a user sort must still bridge to the qualified
+    // `anthill.prelude.Eq` (WI-420) — `required_sort` is stored unresolved, so canonical
+    // keying would silently drop the forwarding until requires-specs are canonicalized at
+    // their producer.
     if !same_symbol(kb, caller.required_sort, dep.required_sort) {
         return false;
     }
@@ -7932,6 +7939,11 @@ fn entry_sigma_matches(
     caller: &RequiresEntry,
     dep: &RequiresEntry,
 ) -> bool {
+    // NB stays on `same_symbol`, NOT `same_sort_canonical` (WI-672): a not-yet-resolved
+    // bare `requires Eq` on a user sort must still bridge to the qualified
+    // `anthill.prelude.Eq` (WI-420) — `required_sort` is stored unresolved, so canonical
+    // keying would silently drop the forwarding until requires-specs are canonicalized at
+    // their producer.
     if !same_symbol(kb, caller.required_sort, dep.required_sort) {
         return false;
     }
@@ -12438,7 +12450,7 @@ fn directly_provided_specs(kb: &KnowledgeBase, carrier_sym: Symbol) -> SmallVec<
         }
         let Some(spec_t) = get_named_arg(kb, &named, "spec") else { continue };
         let Some(spec_sym) = super::load::provides_spec_base_sym(kb, spec_t) else { continue };
-        if !out.iter().any(|&s| same_symbol(kb, s, spec_sym)) {
+        if !out.iter().any(|&s| same_sort_canonical(kb, s, spec_sym)) {
             out.push(spec_sym);
         }
     }
@@ -12478,7 +12490,7 @@ fn transitive_carrier_for_param(
         sort: Symbol,
         visited: &mut SmallVec<[Symbol; 8]>,
     ) -> Option<Symbol> {
-        if visited.iter().any(|&v| same_symbol(kb, v, sort)) {
+        if visited.iter().any(|&v| same_sort_canonical(kb, v, sort)) {
             return None;
         }
         visited.push(sort);
@@ -12568,7 +12580,7 @@ fn transitive_provision_view(
     carrier_sym: Symbol,
     visited: &mut SmallVec<[Symbol; 8]>,
 ) -> Option<(SmallVec<[(Symbol, TermId); 2]>, bool)> {
-    if visited.iter().any(|&v| same_symbol(kb, v, carrier_sym)) {
+    if visited.iter().any(|&v| same_sort_canonical(kb, v, carrier_sym)) {
         return None;
     }
     visited.push(carrier_sym);
@@ -14522,6 +14534,7 @@ fn sort_param_is_effect_row(kb: &mut KnowledgeBase, sort: Symbol, member: &str) 
         return false;
     };
     for entry in direct_requires_chain(kb, sort) {
+        // `same_symbol`: `required_sort` may be stored unresolved-bare (WI-420/WI-672).
         if !same_symbol(kb, entry.required_sort, effects_runtime) {
             continue;
         }
@@ -16400,7 +16413,7 @@ fn resolve_rigid_projection(
     // Concrete / bare sort subject: keyed by the declaring-sort symbol itself (the
     // loader's `sort slot == var slot` discriminator).
     if let SubjectKey::Sym(subject_sym) = key {
-        if same_symbol(kb, subject_sym, decl_sort) {
+        if same_sort_canonical(kb, subject_sym, decl_sort) {
             let recv = Value::term(kb.make_sort_ref(subject_sym));
             return match project_type_member(kb, &recv, &member_str, None, ctx, span)? {
                 // WI-391: a ground member projects to the canonical `Ref(s)` shape (the
@@ -16539,7 +16552,7 @@ fn spec_member_param_key(
 /// id: the deep walks resolve a param `Ref` into that var (possibly rigidified by
 /// WI-392/424), and the `requires` bindings may name a different symbol registration
 /// of the same param — the var id is the one identity all spellings share. A
-/// non-alias sort is keyed by its symbol (compared via [`same_symbol`]).
+/// non-alias sort is keyed by its symbol (compared via [`same_sort_canonical`]).
 #[derive(Clone, Copy)]
 enum SubjectKey {
     Var(u32),
@@ -16565,7 +16578,7 @@ fn sym_subject_key(kb: &KnowledgeBase, s: Symbol) -> SubjectKey {
 fn subject_keys_equal(kb: &KnowledgeBase, a: SubjectKey, b: SubjectKey) -> bool {
     match (a, b) {
         (SubjectKey::Var(x), SubjectKey::Var(y)) => x == y,
-        (SubjectKey::Sym(x), SubjectKey::Sym(y)) => same_symbol(kb, x, y),
+        (SubjectKey::Sym(x), SubjectKey::Sym(y)) => same_sort_canonical(kb, x, y),
         _ => false,
     }
 }
@@ -17014,7 +17027,7 @@ fn expr_carried_zeta<A: TermView, B: TermView>(kb: &KnowledgeBase, a: &A, b: &B)
                     _ => views_structurally_equal(kb, &va, &vb),
                 };
                 return Some(
-                    same_symbol(kb, ma, mb) && same_symbol(kb, sa, sb) && subjects_eq,
+                    same_symbol(kb, ma, mb) && same_sort_canonical(kb, sa, sb) && subjects_eq,
                 );
             }
             _ => return Some(false),
@@ -20911,7 +20924,7 @@ fn matches_variance_fact(kb: &KnowledgeBase, fact_qn: &str, sort: Symbol, param:
         let Some(named) = kb.fact_head_named_args(rid) else { return false };
         let sort_ok = get_named_arg(kb, &named, "sort")
             .and_then(|t| super::load::sort_ref_functor(kb, t))
-            .is_some_and(|s| same_symbol(kb, s, sort));
+            .is_some_and(|s| same_sort_canonical(kb, s, sort));
         let param_ok = get_named_arg(kb, &named, "param")
             .and_then(|t| super::load::sort_ref_functor(kb, t))
             .is_some_and(|p| same_symbol(kb, p, param));
@@ -21861,7 +21874,7 @@ fn abstracting_return_error(
     // body as `actual` so each pair is `(body_component, ret_component)`). A raw
     // positional `zip` would mispair a NAMED tuple whose body/return field orders
     // differ (`(a: m, b: true)` vs `-> (b: Bool, a: KVStore)`) and let the escape
-    // slip. The gate's own `same_symbol` short-circuit spares an input-rooted /
+    // slip. The gate's own `same_sort_canonical` short-circuit spares an input-rooted /
     // equal component, and its `unbound` check spares a manifest one — so the
     // per-component reuse honours the "must NOT reject" cases without restating
     // them. Tuple components are the only gap here: a NOMINAL parameterized return
@@ -21881,7 +21894,7 @@ fn abstracting_return_error(
 
     let body_sort = sort_functor_of_view(kb, body_ty)?;
     let ret_sort = sort_functor_of_view(kb, ret_ty)?;
-    if same_symbol(kb, body_sort, ret_sort) {
+    if same_sort_canonical(kb, body_sort, ret_sort) {
         return None;
     }
     if !sort_provides_admissibly(kb, body_sort, ret_sort) {
@@ -22826,6 +22839,7 @@ fn build_child_subst_map(
 /// Check if sort A refines sort B via `requires` chain.
 fn sort_refines(kb: &KnowledgeBase, a_sym: Symbol, b_sym: Symbol) -> bool {
     let chain = requires_chain_flat(kb, a_sym);
+    // `same_symbol`: `required_sort` may be stored unresolved-bare (WI-420/WI-672).
     chain.iter().any(|entry| same_symbol(kb, entry.required_sort, b_sym))
 }
 
@@ -23999,7 +24013,7 @@ pub fn simp_fire_guard_holds(kb: &KnowledgeBase, redex: &NodeOccurrence) -> bool
 fn spec_self_represented_by(kb: &KnowledgeBase, params: &[(Symbol, Value)], spec_sort: Symbol) -> bool {
     params
         .iter()
-        .any(|(_n, pty)| carrier_sort_of_value(kb, pty).is_some_and(|s| same_symbol(kb, s, spec_sort)))
+        .any(|(_n, pty)| carrier_sort_of_value(kb, pty).is_some_and(|s| same_sort_canonical(kb, s, spec_sort)))
 }
 
 /// WI-596 — does parameter type `param_type` CARRY spec `spec_sort` (so that its
@@ -24017,7 +24031,7 @@ fn param_is_spec_carrier(
     param_type: &Value,
 ) -> bool {
     match carrier_sort_of_value(kb, param_type) {
-        Some(s) if self_representing => same_symbol(kb, s, spec_sort),
+        Some(s) if self_representing => same_sort_canonical(kb, s, spec_sort),
         Some(s) => type_params.iter().any(|tp| tp.as_str() == kb.resolve_sym(s)),
         None => false,
     }
@@ -24965,12 +24979,16 @@ fn sort_provides_reach(
     spec: Symbol,
     visited: &mut SmallVec<[Symbol; 8]>,
 ) -> bool {
-    if visited.iter().any(|&v| same_symbol(kb, v, carrier)) {
+    if visited.iter().any(|&v| same_sort_canonical(kb, v, carrier)) {
         return false;
     }
     visited.push(carrier);
     for dst in provides_out_edges(kb, carrier) {
-        // Direct hop, then the transitive chain through the intermediate spec.
+        // Direct hop, then the transitive chain through the intermediate spec. `spec`
+        // stays on `same_symbol` (not `same_sort_canonical`): it can be a bare-unresolved
+        // `RequiresEntry.required_sort` (via `check_provider_requires` /
+        // `check_requires_shadows`), so canonical keying would drop the WI-420 bare→qualified
+        // bridge; `dst` (a resolved provider-spec base) is fine either way.
         if same_symbol(kb, dst, spec) || sort_provides_reach(kb, dst, spec, visited) {
             return true;
         }
