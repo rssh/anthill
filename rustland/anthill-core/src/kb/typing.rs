@@ -3109,7 +3109,7 @@ fn find_spec_op_for_provided_sort(
     let mut spec_syms: Vec<Symbol> = Vec::new();
     let recv_canon = kb.canonical_sort_sym(recv_sort);
     // WI-660: deliberately NOT served by the carrier index. This site matches a
-    // provider EITHER by carrier (`same_symbol(carrier, recv_sort)`) OR as a WITNESS
+    // provider EITHER by carrier (`same_sort_canonical(carrier, recv_sort)`) OR as a WITNESS
     // (`recv_sort` is the provider's carrier-PARAM value, e.g. `sort TagCombiner
     // provides Combiner[T = Tag]` matched for `recv_sort = Tag`). A witness provider's
     // `sort_ref` is a DIFFERENT sort (`TagCombiner`), so it lives in another carrier
@@ -3149,7 +3149,7 @@ fn find_spec_op_for_provided_sort(
     // provides Iterable` (List no longer declares `provides Iterable` directly).
     // BFS-expand the directly-provided set with each spec's own provisions; the
     // direct specs stay at the front, so a directly-provided member still wins
-    // over a transitively-inherited one (more-specific-first). `same_symbol`
+    // over a transitively-inherited one (more-specific-first). `same_sort_canonical`
     // dedup guards a cyclic `provides` chain.
     // Track BFS depth alongside each spec: the directly-provided specs are depth 0,
     // each transitive hop +1. Distance is the PRIMARY ordering (direct-before-
@@ -3774,7 +3774,7 @@ fn visit_type(
                     for (i, (psym, _)) in ps.iter().enumerate() {
                         let arg = pos_args.get(i).or_else(|| {
                             // WI-426: named labels bind to params by NAME, not symbol identity.
-                            named_args.iter().find(|(n, _)| same_symbol(kb, *n, *psym)).map(|(_, a)| a)
+                            named_args.iter().find(|(n, _)| same_label(kb, *n, *psym)).map(|(_, a)| a)
                         });
                         if let Some(a) = arg {
                             if let Some(t) = varref_arg_env_type(&env, a) {
@@ -3808,7 +3808,7 @@ fn visit_type(
                     let pt = op_params
                         .as_ref()
                         // WI-426: match the named-arg label to its param by name.
-                        .and_then(|ps| ps.iter().find(|(s, _)| same_symbol(kb, *s, *name)))
+                        .and_then(|ps| ps.iter().find(|(s, _)| same_label(kb, *s, *name)))
                         .map(|(_, t)| t.clone());
                     let pt_hof = pt
                         .as_ref()
@@ -5453,10 +5453,10 @@ fn match_named_arg_param<'a>(
     params: &'a [(Symbol, Value)],
     arg_name: Symbol,
 ) -> Option<&'a (Symbol, Value)> {
-    // `same_symbol` relates a use-site label to a resolved param across
-    // resolution states (identity / qualified equality / bare-vs-qualified last
-    // segment) — the same comparison the dot-call named-arg path uses.
-    params.iter().find(|(s, _)| same_symbol(kb, *s, arg_name))
+    // `same_label` relates a written use-site label to a resolved param by SHORT
+    // name — a bare source label matched against the param's (possibly-qualified)
+    // registered name — the same name resolution the dot-call named-arg path uses.
+    params.iter().find(|(s, _)| same_label(kb, *s, arg_name))
 }
 
 /// apply(fn, args): type-check with type parameter instantiation.
@@ -5974,7 +5974,7 @@ fn check_apply_iter(
                 *slot = true;
             }
             for (arg_name, _) in named_args.iter() {
-                let err = match op.params.iter().position(|(s, _)| same_symbol(kb, *s, *arg_name)) {
+                let err = match op.params.iter().position(|(s, _)| same_label(kb, *s, *arg_name)) {
                     None => Some("names no parameter of this operation"),
                     Some(idx) if covered[idx] => Some("binds a parameter already given"),
                     Some(idx) => {
@@ -7286,48 +7286,67 @@ pub fn impl_parent_of_op(kb: &KnowledgeBase, op_sym: Symbol) -> Option<Symbol> {
     kb.try_resolve_symbol(parent_qn)
 }
 
-/// True iff `a` and `b` denote the same logical sort / symbol.
-///
-/// Identity is the resolved `Symbol`; this helper adds two name-based
-/// bridges that exact `Symbol ==` misses:
-///
-/// 1. **Differently-interned resolved copies** of the same sort compare
-///    equal via their (unique) qualified name.
-/// 2. **Resolved ↔ unresolved** of the same sort: some reflection facts
-///    still carry unresolved short-name symbols (`qualified_name_of`
-///    returns just the short name for those). A bare short name matches
-///    the last segment of a qualified name.
-///
-/// Crucially it does NOT match two *fully-qualified* names that merely
-/// share a last segment — `anthill.cli.Main` and `anthill.todo.Main`
-/// stay distinct.
-pub fn same_symbol(kb: &KnowledgeBase, a: Symbol, b: Symbol) -> bool {
+/// WI-672 — sort identity by CANONICAL symbol: `a` and `b` name the same sort iff their
+/// `canonical_sort_sym` agree. Differently-interned copies of one sort share a qualified
+/// name, hence a canonical symbol, so this bridges them — but UNLIKE the deleted
+/// `same_symbol` it does NOT bridge a bare/dotless name to the last segment of a
+/// qualified one. Identity is by resolved symbol, never by last segment (spec §8.6), so
+/// it de-conflates a top-level `sort Ring` from `anthill.prelude.algebra.Ring`. Short-
+/// circuits on the exact `a == b` hit (the common case) before the two `qualified_name_of`
+/// + map lookups. A sort's qualified name is always registered in `by_qualified_name`, so
+/// for sorts `canonical_sort_sym` agreement is equivalent to `qualified_name_of` agreement
+/// ([`same_qname`]) — the canonical form additionally normalizes to the index's canonical
+/// copy, which is why sort sites use this rather than `same_qname`.
+fn same_sort_canonical(kb: &KnowledgeBase, a: Symbol, b: Symbol) -> bool {
+    a == b || kb.canonical_sort_sym(a) == kb.canonical_sort_sym(b)
+}
+
+/// Entity IDENTITY by QUALIFIED NAME (bridge #1): `a` and `b` name the same entity iff
+/// they are the same symbol OR share a qualified name. This is exactly the deleted
+/// `same_symbol` MINUS its bare-vs-last-segment bridge #2 — it bridges differently-
+/// interned copies of one entity (same QN) but does NOT match a bare name to a qualified
+/// one's last segment (spec §8.6: identity is by resolved symbol, never last segment).
+/// Used for UNGATED non-sort entity identity — projection members in [`expr_carried_zeta`],
+/// where two members are compared with no enclosing same-container scope to make a
+/// short-name match sound, so identity is the right question. A member's qualified name
+/// may NOT be registered in `by_qualified_name`; raw QN equality bridges interned copies
+/// there unconditionally, whereas [`same_sort_canonical`]'s `canonical_sym` would fall
+/// through to identity for an unregistered QN and miss a copy. (For a registered QN the
+/// two agree.) Binding-key matching does NOT use this — it is scoped by a same-spec gate,
+/// so it is a short-name lookup ([`same_label`]), consistent with `goal_binding_value`.
+fn same_qname(kb: &KnowledgeBase, a: Symbol, b: Symbol) -> bool {
+    a == b || kb.qualified_name_of(a) == kb.qualified_name_of(b)
+}
+
+/// Resolve a WRITTEN or SCOPED name against a candidate set by SHORT NAME — the
+/// legitimate short-name LOOKUP (spec §8.6, the same principle as constructor-pattern
+/// resolution). Two families of caller:
+///   1. a bare source-written identifier — a named-argument label, a record/tuple field
+///      selector, or a scope variable — matched against a parameter, field, or binder
+///      whose registered name may be qualified;
+///   2. a type-param binding key matched WITHIN an already-established same-spec context
+///      (`entries_cover` / `entry_sigma_matches` / `goals_equal`, each gated on the spec
+///      sort first). The key may be bare `T` from one producer and qualified `Spec.T` from
+///      another (the cross-producer divergence `goal_binding_value` documents), so it must
+///      match by short name — and the same-spec gate makes short names unique, so this
+///      cannot collide two specs' `T`.
+/// Matching a bare name to the last segment of a qualified one is exactly name resolution
+/// — NOT the unsound short-name comparison of two SORT identities (that is
+/// [`same_sort_canonical`] / [`same_qname`], neither of which matches on last segment).
+/// WI-672 split this out of `same_symbol` so short-name matching survives ONLY for name
+/// resolution. The `debug_assert` catches the one misuse — two DISTINCT fully-qualified
+/// names sharing a last segment (`A.x` vs `B.x`) — that would reintroduce that unsoundness.
+fn same_label(kb: &KnowledgeBase, a: Symbol, b: Symbol) -> bool {
     if a == b {
         return true;
     }
     let aq = kb.qualified_name_of(a);
     let bq = kb.qualified_name_of(b);
-    if aq == bq {
-        return true;
-    }
-    let a_bare = !aq.contains('.');
-    let b_bare = !bq.contains('.');
-    match (a_bare, b_bare) {
-        (true, false) => bq.rsplit('.').next() == Some(aq),
-        (false, true) => aq.rsplit('.').next() == Some(bq),
-        _ => false,
-    }
-}
-
-/// WI-672 — sort identity by CANONICAL symbol: `a` and `b` name the same sort iff their
-/// `canonical_sort_sym` agree. Differently-interned copies of one sort share a qualified
-/// name, hence a canonical symbol, so this bridges them — but UNLIKE [`same_symbol`] it
-/// does NOT bridge a bare/dotless name to the last segment of a qualified one. Identity
-/// is by resolved symbol, never by last segment (spec §8.6), so it de-conflates a
-/// top-level `sort Ring` from `anthill.prelude.algebra.Ring`. Short-circuits on the exact
-/// `a == b` hit (the common case) before the two `qualified_name_of` + map lookups.
-fn same_sort_canonical(kb: &KnowledgeBase, a: Symbol, b: Symbol) -> bool {
-    a == b || kb.canonical_sort_sym(a) == kb.canonical_sort_sym(b)
+    debug_assert!(
+        !(aq != bq && aq.contains('.') && bq.contains('.') && short_name_of(aq) == short_name_of(bq)),
+        "same_label matched two distinct qualified names by short name: {aq} vs {bq} — use same_qname/same_sort_canonical for identity"
+    );
+    short_name_of(aq) == short_name_of(bq)
 }
 
 /// WI-227: interned stdlib symbols + field names needed to allocate
@@ -7771,13 +7790,6 @@ pub fn build_dep_projection(
 /// or with one side being a type-param wildcard, mirroring
 /// `requires_entry_covers_goal`'s flexibility).
 fn entries_cover(kb: &mut KnowledgeBase, caller: &RequiresEntry, dep: &RequiresEntry) -> bool {
-    // WI-420: bridge qualified↔short spec symbols (e.g. a not-yet-fully-resolved
-    // `requires Eq` on a user sort vs the qualified `anthill.prelude.Eq` from a
-    // loaded sort's direct-requires chain). `same_symbol` matches a bare short
-    // name against a qualified name's last segment but NOT two distinct
-    // fully-qualified specs that merely share a last segment, so it cannot
-    // over-match. Plain `!=` here silently failed cross-sort requirement
-    // forwarding when the two sides' spec symbols differed in qualification.
     // WI-672: canonical sort identity. `required_sort` is RESOLVED — stdlib specs resolve
     // to their qualified name (`requires Eq` → `anthill.prelude.Eq`; a probe found NO bare
     // `Eq`), and the only bare `required_sort`s are top-level USER specs (`Ring`, …) with
@@ -7802,13 +7814,14 @@ fn entries_cover(kb: &mut KnowledgeBase, caller: &RequiresEntry, dep: &RequiresE
         if !is_type_param_binding(kb, *dep_k, &spec_qn) {
             continue;
         }
-        // Find the caller's binding for the same key. `same_symbol`
-        // bridges differently-interned copies of the key without
-        // matching an unrelated type param that merely shares a short
-        // name (e.g. two specs' `T`).
+        // Find the caller's binding for the same key. The `same_sort_canonical`
+        // gate above already confined this to ONE spec, whose type-param short
+        // names are unique — so `same_label` (short name) matches the same key
+        // even across the bare/qualified interning divergence between producers,
+        // and cannot collide two specs' `T`. Mirrors `goal_binding_value`.
         let caller_val = caller_bindings
             .iter()
-            .find(|(ck, _)| same_symbol(kb, *ck, *dep_k))
+            .find(|(ck, _)| same_label(kb, *ck, *dep_k))
             .map(|(_, v)| *v);
         let Some(caller_val) = caller_val else {
             return false;
@@ -7984,7 +7997,7 @@ fn entry_sigma_matches(
         }
         let Some(caller_val) = caller_bindings
             .iter()
-            .find(|(ck, _)| same_symbol(kb, *ck, *dep_k))
+            .find(|(ck, _)| same_label(kb, *ck, *dep_k))
             .map(|(_, v)| *v)
         else {
             return false;
@@ -12146,8 +12159,12 @@ fn requires_entry_covers_goal(
 }
 
 /// Structural equality between two goals for cycle detection.
-/// Binding keys compared via `same_symbol` — bridges differently-interned
-/// copies without colliding two specs' same-short-named type params.
+/// The `spec_sort` gate below confines binding-key matching to ONE spec (unique
+/// type-param short names), so keys compare via `same_label` (short name) — the
+/// keys reach here from different producers (`sort_goal_from_subst` may store a
+/// bare `T`, a candidate sub-goal a qualified `Spec.T`), so short-name matching
+/// bridges that divergence just as `goal_binding_value` does. Comparing by
+/// qualified name would miss the bare-vs-qualified pair and drop a real cycle.
 fn goals_equal(kb: &KnowledgeBase, a: &SortGoal, b: &SortGoal) -> bool {
     if a.spec_sort != b.spec_sort {
         return false;
@@ -12158,7 +12175,7 @@ fn goals_equal(kb: &KnowledgeBase, a: &SortGoal, b: &SortGoal) -> bool {
     a.bindings.iter().all(|(k, av)| {
         b.bindings
             .iter()
-            .find(|(kk, _)| same_symbol(kb, *kk, *k))
+            .find(|(kk, _)| same_label(kb, *kk, *k))
             .map_or(false, |(_, bv)| values_structurally_equal(kb, *av, *bv))
     })
 }
@@ -12310,7 +12327,7 @@ fn receiver_carrier(
             named_args
                 // WI-426: a named label binds to its param by name, not symbol identity.
                 .iter()
-                .position(|(n, _)| same_symbol(kb, *n, param_name))
+                .position(|(n, _)| same_label(kb, *n, param_name))
                 .and_then(|j| named_results.get(j))
                 .and_then(|r| r.as_ref().ok())
                 .map(|r| &r.ty)
@@ -12941,7 +12958,7 @@ fn carrier_param_receiver(
                 named_args
                     // WI-426: a named label binds to its param by name, not symbol identity.
                     .iter()
-                    .position(|(n, _)| same_symbol(kb, *n, *pname))
+                    .position(|(n, _)| same_label(kb, *n, *pname))
                     .and_then(|j| named_results.get(j))
                     .and_then(|r| r.as_ref().ok())
                     .map(|r| r.ty.clone())
@@ -12994,7 +13011,7 @@ fn carrier_param_receiver(
             .or_else(|| {
                 named_args
                     .iter()
-                    .find(|(n, _)| same_symbol(kb, *n, *pname))
+                    .find(|(n, _)| same_label(kb, *n, *pname))
                     .and_then(|(_, occ)| extract_var_ref_sym_node(occ))
             });
         return Some((spec_sort, carrier_sym, recv_ty, view, pvid, transitive, recv_arg_sym));
@@ -13401,7 +13418,7 @@ fn dispatched_impl_effects(
             if let Some((spec_name, _)) = spec_params.get(i) {
                 for (j, (n, occ)) in named_args.iter().enumerate() {
                     // WI-426: a named label binds to its param by name, not symbol identity.
-                    if same_symbol(kb, *n, *spec_name) {
+                    if same_label(kb, *n, *spec_name) {
                         if arg_sym.is_none() {
                             arg_sym = extract_var_ref_sym_node(occ);
                         }
@@ -14169,7 +14186,7 @@ fn reorder_named_args_in_apply(
         .map(|&label| {
             params
                 .iter()
-                .position(|(s, _)| same_symbol(kb, *s, label))
+                .position(|(s, _)| same_label(kb, *s, label))
                 .unwrap_or(usize::MAX)
         })
         .collect();
@@ -17027,7 +17044,7 @@ fn expr_carried_zeta<A: TermView, B: TermView>(kb: &KnowledgeBase, a: &A, b: &B)
                 TypeExtractor::ExprCarried { value: va, member: ma },
                 TypeExtractor::ExprCarried { value: vb, member: mb },
             ) => {
-                return Some(same_symbol(kb, ma, mb) && views_structurally_equal(kb, &va, &vb));
+                return Some(same_qname(kb, ma, mb) && views_structurally_equal(kb, &va, &vb));
             }
             (
                 TypeExtractor::RigidTypeProjection { sort: sa, subject: va, member: ma },
@@ -17047,7 +17064,7 @@ fn expr_carried_zeta<A: TermView, B: TermView>(kb: &KnowledgeBase, a: &A, b: &B)
                     _ => views_structurally_equal(kb, &va, &vb),
                 };
                 return Some(
-                    same_symbol(kb, ma, mb) && same_sort_canonical(kb, sa, sb) && subjects_eq,
+                    same_qname(kb, ma, mb) && same_sort_canonical(kb, sa, sb) && subjects_eq,
                 );
             }
             _ => return Some(false),
@@ -20919,9 +20936,10 @@ enum Variance {
 /// idiom every other typer fact reader uses (`sort_provides` / `requires`), NOT
 /// SLD: the `effective_*` / `check_variance` rules in the stdlib are retained-but-
 /// unconsumed scaffolding for the future inference layer (WI-184), so matching the
-/// fact index directly is the consistent choice. `same_symbol` tolerates the
-/// bare/qualified split (a fact's `sort: List` resolves to `anthill.prelude.List`;
-/// its `param: T` stays a bare name).
+/// fact index directly is the consistent choice. The `sort` is a registered sort so
+/// it matches by canonical identity ([`same_sort_canonical`]); the `param` is written
+/// bare in the fact (`param: T`) and resolved against the sort's param by short name
+/// ([`same_label`]), a scoped label lookup within the already-sort-matched fact.
 fn declared_variance(kb: &KnowledgeBase, sort: Symbol, param: Symbol) -> Variance {
     let cov = matches_variance_fact(kb, "anthill.reflect.typing.Covariant", sort, param);
     let con = matches_variance_fact(kb, "anthill.reflect.typing.Contravariant", sort, param);
@@ -20934,8 +20952,8 @@ fn declared_variance(kb: &KnowledgeBase, sort: Symbol, param: Symbol) -> Varianc
 }
 
 /// Whether a `Covariant`/`Contravariant` fact (named by `fact_qn`) is asserted for
-/// `(sort, param)`. Walks `rules_by_functor` and matches the `sort` / `param`
-/// named args by symbol. The `entity Covariant(sort: Symbol, param: Symbol)`
+/// `(sort, param)`. Walks `rules_by_functor` and matches the `sort` by canonical
+/// identity and the `param` by short-name label. The `entity Covariant(sort: Symbol, param: Symbol)`
 /// declaration also shows up under this functor, but its arg values are the field
 /// metadata type (`Symbol`), so it never matches a real `(sort, param)` lookup.
 fn matches_variance_fact(kb: &KnowledgeBase, fact_qn: &str, sort: Symbol, param: Symbol) -> bool {
@@ -20947,7 +20965,7 @@ fn matches_variance_fact(kb: &KnowledgeBase, fact_qn: &str, sort: Symbol, param:
             .is_some_and(|s| same_sort_canonical(kb, s, sort));
         let param_ok = get_named_arg(kb, &named, "param")
             .and_then(|t| super::load::sort_ref_functor(kb, t))
-            .is_some_and(|p| same_symbol(kb, p, param));
+            .is_some_and(|p| same_label(kb, p, param));
         sort_ok && param_ok
     })
 }
@@ -21964,7 +21982,7 @@ fn abstracting_return_error(
 /// A join body (`-> KVStore = if persistent then diskStore else memStore`) widens
 /// divergent concrete providers up to the bare/partial spec, so the joined
 /// `body_ty` equals the declared return sort. The DIRECT [`abstracting_return_error`]
-/// short-circuits on `same_symbol(body_sort, ret_sort)` and so MISSES it — the
+/// short-circuits on `same_sort_canonical(body_sort, ret_sort)` and so MISSES it — the
 /// abstract member (`KVStore.K`) would escape via the join without an `ensures`
 /// vouching for it, the gap WI-401 left for join bodies. We re-apply the gate to
 /// each branch LEAF's own (typer-stamped) inferred type: a leaf that is itself a
@@ -21973,7 +21991,7 @@ fn abstracting_return_error(
 ///
 /// This naturally honours WI-457's "must NOT reject" constraints, because every
 /// leaf goes through the UNCHANGED [`abstracting_return_error`]: a same-sort leaf
-/// (an input-rooted `KVStore` value) short-circuits on `same_symbol`; a leaf under
+/// (an input-rooted `KVStore` value) short-circuits on `same_sort_canonical`; a leaf under
 /// a fully-manifest return has no unbound member; an `ensures`-vouched op is in
 /// `existential_return_ops`. It walks the TAIL positions of the body — both arms of
 /// each `if`, every `match` arm body, and a `let` BODY — so a join nested or wrapped
@@ -21986,7 +22004,7 @@ fn abstracting_return_error(
 /// its abstract type via the binding's ANNOTATION. The body env binds `s` to the
 /// bare-spec annotation (`check_bare_ref` reads `env.lookup_var`), so the returned
 /// tail leaf `s` is genuinely typed `Spec == ret_sort` and the per-leaf gate
-/// short-circuits on `same_symbol` — yet the abstract member still escapes. The
+/// short-circuits on `same_sort_canonical` — yet the abstract member still escapes. The
 /// fix is DATAFLOW: see through a returned let-bound variable to the binding's
 /// VALUE node, which the typer stamped with its OWN synthesized type (`MemStore`,
 /// the concrete provider), not the laundering annotation. Re-processing the value
@@ -22009,7 +22027,7 @@ fn abstracting_return_error(
 /// `let` binder (`let (s, _): (Spec, …) = (concreteProvider, …) ; s`,
 /// `let boxed(s): Box = boxed(concreteProvider) ; s`) launders the same way — the
 /// component var `s` is bound to its laundered annotation-component type and slips
-/// `same_symbol`. WI-468's `let_bound_var_name` only saw a single `Pattern::Var`, so
+/// `same_sort_canonical`. WI-468's `let_bound_var_name` only saw a single `Pattern::Var`, so
 /// these were never tracked. The see-through is generalised to a SELECTOR PATH: a
 /// destructuring binder records each destructured name → `(binding value node,
 /// path)`, where the path is the tuple-position / constructor-field selectors from
@@ -22018,7 +22036,7 @@ fn abstracting_return_error(
 /// WI-468), and an opaque value (a call result) or an input parameter is projected
 /// at the TYPE level (the value's own component type). In every case the UNCHANGED
 /// [`abstracting_return_error`] is re-applied to the seen-through component type, so
-/// its `same_symbol` short-circuit remains the line between a laundered concrete
+/// its `same_sort_canonical` short-circuit remains the line between a laundered concrete
 /// upcast (flagged: the value's component is a concrete provider widened at the let,
 /// exactly like `-> Spec = concreteProvider`) and an interface-rooted abstract
 /// (spared: an input-rooted component, or one a producer's signature already exposes
@@ -22080,7 +22098,7 @@ fn branch_leaf_abstracting_return_error(
             // A literal aggregate WITH a remaining selector path: project the
             // component node STRUCTURALLY and chase it (so `(concreteProvider, …)`
             // sees the element's own stamped type, and an input-rooted element
-            // `(param, …)` short-circuits on `same_symbol`).
+            // `(param, …)` short-circuits on `same_sort_canonical`).
             Some(Expr::TupleLit { .. } | Expr::Constructor { .. } | Expr::ConstructorWithin { .. })
                 if !path.is_empty() =>
             {
@@ -22182,7 +22200,7 @@ impl LeafScope {
             match cur.as_ref() {
                 LeafScope::Empty => return None,
                 LeafScope::Bind { name: n, base, path, parent } => {
-                    if same_symbol(kb, *n, name) {
+                    if same_label(kb, *n, name) {
                         return Some((Rc::clone(base), path.clone(), Rc::clone(parent)));
                     }
                     cur = parent;
@@ -22254,7 +22272,7 @@ fn project_node_component(
             LeafSelector::Pos(i) => positional.get(*i).map(Rc::clone),
             LeafSelector::Named(s) => named
                 .iter()
-                .find(|(k, _)| same_symbol(kb, *k, *s))
+                .find(|(k, _)| same_label(kb, *k, *s))
                 .map(|(_, v)| Rc::clone(v)),
         },
         Expr::Constructor { name, pos_args, named_args }
@@ -22291,7 +22309,7 @@ fn project_constructor_arg(
             match kb.entity_field_types(ctor).and_then(|f| f.get(*i)) {
                 Some((fname, _)) => named_args
                     .iter()
-                    .find(|(k, _)| same_symbol(kb, *k, *fname))
+                    .find(|(k, _)| same_label(kb, *k, *fname))
                     .map(|(_, v)| Rc::clone(v)),
                 None => {
                     let want = format!("_{}", *i + 1);
@@ -22303,13 +22321,13 @@ fn project_constructor_arg(
             }
         }
         LeafSelector::Named(s) => {
-            if let Some((_, a)) = named_args.iter().find(|(k, _)| same_symbol(kb, *k, *s)) {
+            if let Some((_, a)) = named_args.iter().find(|(k, _)| same_label(kb, *k, *s)) {
                 return Some(Rc::clone(a));
             }
             let idx = kb
                 .entity_field_types(ctor)?
                 .iter()
-                .position(|(k, _)| same_symbol(kb, *k, *s))?;
+                .position(|(k, _)| same_label(kb, *k, *s))?;
             pos_args.get(idx).map(Rc::clone)
         }
     }
@@ -22326,7 +22344,7 @@ fn project_type_component(kb: &KnowledgeBase, ty: &Value, sel: &LeafSelector) ->
         LeafSelector::Named(s) => match extract_type(kb, ty) {
             TypeExtractor::NamedTuple(fields) => fields
                 .into_iter()
-                .find(|(k, _)| same_symbol(kb, *k, *s))
+                .find(|(k, _)| same_label(kb, *k, *s))
                 .map(|(_, v)| v),
             _ => None,
         },
@@ -24522,8 +24540,8 @@ fn check_operation_signatures(kb: &KnowledgeBase) -> Vec<TypeError> {
 
 /// Extract constructor and operation symbol lists from a SortInfo fact.
 ///
-/// WI-237: matched on `same_symbol` (qualified-name identity) like the
-/// other five resolve_sym audit sites. The bundle's `sort Main` short
+/// WI-237: matched by qualified-name identity (`same_symbol` then; `canonical_sort_sym`
+/// since WI-672) like the other five resolve_sym audit sites. The bundle's `sort Main` short
 /// name no longer collides with `anthill.cli.Main` here, so the typer
 /// actually checks the anthill-todo bundle's cmd_X bodies. The chain of
 /// follow-up issues this exposed is fixed under WI-237: types_compatible
@@ -27276,7 +27294,7 @@ fn align_call_args_to_params(
     for (i, (pname, _pty)) in params.iter().enumerate() {
         if let Some(a) = pos_args.get(i) {
             out.push(a.clone());
-        } else if let Some((_, a)) = named_args.iter().find(|(n, _)| same_symbol(kb, *n, *pname)) {
+        } else if let Some((_, a)) = named_args.iter().find(|(n, _)| same_label(kb, *n, *pname)) {
             out.push(a.clone());
         } else {
             return None;

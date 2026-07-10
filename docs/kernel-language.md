@@ -1631,6 +1631,22 @@ comparison. No ambiguity arises within one match: a sort's constructors have
 distinct short names, and the constructors compared for exhaustiveness are the
 resolved scrutinee symbols, compared by identity.
 
+**Named-argument labels and field selectors resolve by short name, too.** The same
+lookup-not-identity principle governs other *written names matched against a known
+set*. A **named argument** (`op(label: v)`) resolves its `label` against the callee
+operation's parameter names; a **record/tuple field selector** (`t.field`, or a
+destructuring `let (field, _) = …`) resolves `field` against the aggregate's declared
+field names. Both match by short name, because the written label is a bare source
+identifier while the parameter or field it names is registered under a *qualified*
+name (`Iterable.find.pred`, `Point.x`). Within one candidate set the members have
+distinct short names, so the lookup is unambiguous. This scoped **name lookup** is
+legitimate exactly as constructor-pattern resolution is — and categorically distinct
+from **sort identity** comparison, which is always by the resolved (canonical) symbol
+and *never* by last segment: a top-level `sort Ring` and `anthill.prelude.algebra.Ring`
+are different sorts even though they share a short name. Short-name matching in the
+kernel therefore survives only for name resolution against a scoped set, never as a
+test of whether two sorts are the same.
+
 **Inherited operations.** When a sort gains an operation through `requires`
 (spec auto-binding, §8.7), a derived rule it supplies for that operation binds
 to the **inherited** operation symbol — it does not mint a new shadowing symbol.
