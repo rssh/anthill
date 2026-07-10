@@ -369,3 +369,112 @@ class ResolveTest extends munit.FunSuite:
     val solutions = SearchStream.resolve(kb, goal).allSolutions(kb)
     assertEquals(solutions.length, 0, "cyclic head-match link must occurs-fail (no spurious solution)")
   }
+
+  test("WI-671: nested query var binds (positional)") {
+    // Query `p(g(?x))` against fact `p(g(42))` must bind ?x = 42. Before the
+    // WI-671 fix, VarPath modelled only depth-1 arg paths and the query side
+    // descended nested compounds with no path, so ?x came back UNBOUND.
+    val kb = KnowledgeBase()
+    val sort = kb.makeNameTerm("Fact")
+    val domain = kb.makeNameTerm("test")
+    val pSym = kb.intern("p")
+    val gSym = kb.intern("g")
+
+    // Fact: p(g(42)).
+    val v42 = kb.alloc(Term.Const(Literal.IntLit(42)))
+    val gFact = kb.alloc(Term.Fn(gSym, IArray(v42), IArray.empty))
+    val fact = kb.alloc(Term.Fn(pSym, IArray(gFact), IArray.empty))
+    kb.assertFact(fact, sort, domain)
+
+    // Query: p(g(?x)).
+    val xid = kb.freshVar(kb.intern("x"))
+    val varX = kb.alloc(Term.Var(Var.Global(xid)))
+    val gQuery = kb.alloc(Term.Fn(gSym, IArray(varX), IArray.empty))
+    val goal = kb.alloc(Term.Fn(pSym, IArray(gQuery), IArray.empty))
+
+    val solutions = SearchStream.resolve(kb, goal).allSolutions(kb)
+    assertEquals(solutions.length, 1)
+    assertEquals(solutions(0).subst.resolve(xid).map(TermId.raw), Some(TermId.raw(v42)),
+      "nested query var must bind to the matched subterm")
+  }
+
+  test("WI-671: nested query var binds (named)") {
+    // Named-arg nesting: `p(box(v: ?x))` against `p(box(v: 42))` binds ?x = 42.
+    val kb = KnowledgeBase()
+    val sort = kb.makeNameTerm("Fact")
+    val domain = kb.makeNameTerm("test")
+    val pSym = kb.intern("p")
+    val boxSym = kb.intern("box")
+    val vField = kb.intern("v")
+
+    val v42 = kb.alloc(Term.Const(Literal.IntLit(42)))
+    val boxFact = kb.alloc(Term.Fn(boxSym, IArray.empty, IArray((vField, v42))))
+    val fact = kb.alloc(Term.Fn(pSym, IArray(boxFact), IArray.empty))
+    kb.assertFact(fact, sort, domain)
+
+    val xid = kb.freshVar(kb.intern("x"))
+    val varX = kb.alloc(Term.Var(Var.Global(xid)))
+    val boxQuery = kb.alloc(Term.Fn(boxSym, IArray.empty, IArray((vField, varX))))
+    val goal = kb.alloc(Term.Fn(pSym, IArray(boxQuery), IArray.empty))
+
+    val solutions = SearchStream.resolve(kb, goal).allSolutions(kb)
+    assertEquals(solutions.length, 1)
+    assertEquals(solutions(0).subst.resolve(xid).map(TermId.raw), Some(TermId.raw(v42)),
+      "nested named-arg query var must bind to the matched subterm")
+  }
+
+  test("WI-671: doubly-nested query var binds") {
+    // Two levels deep: `p(f(g(?x)))` against `p(f(g(7)))` binds ?x = 7 — a path
+    // of [Positional(0), Positional(0), Positional(0)].
+    val kb = KnowledgeBase()
+    val sort = kb.makeNameTerm("Fact")
+    val domain = kb.makeNameTerm("test")
+    val pSym = kb.intern("p")
+    val fSym = kb.intern("f")
+    val gSym = kb.intern("g")
+
+    val v7 = kb.alloc(Term.Const(Literal.IntLit(7)))
+    val gFact = kb.alloc(Term.Fn(gSym, IArray(v7), IArray.empty))
+    val fFact = kb.alloc(Term.Fn(fSym, IArray(gFact), IArray.empty))
+    val fact = kb.alloc(Term.Fn(pSym, IArray(fFact), IArray.empty))
+    kb.assertFact(fact, sort, domain)
+
+    val xid = kb.freshVar(kb.intern("x"))
+    val varX = kb.alloc(Term.Var(Var.Global(xid)))
+    val gQuery = kb.alloc(Term.Fn(gSym, IArray(varX), IArray.empty))
+    val fQuery = kb.alloc(Term.Fn(fSym, IArray(gQuery), IArray.empty))
+    val goal = kb.alloc(Term.Fn(pSym, IArray(fQuery), IArray.empty))
+
+    val solutions = SearchStream.resolve(kb, goal).allSolutions(kb)
+    assertEquals(solutions.length, 1)
+    assertEquals(solutions(0).subst.resolve(xid).map(TermId.raw), Some(TermId.raw(v7)),
+      "doubly-nested query var must bind to the matched subterm")
+  }
+
+  test("WI-671: nested var alongside a top-level var still binds both") {
+    // Mixed depths: `p(g(?x), ?y)` against `p(g(1), 2)` binds ?x=1 AND ?y=2 —
+    // guards the sibling-arg path continuation after a nested descent.
+    val kb = KnowledgeBase()
+    val sort = kb.makeNameTerm("Fact")
+    val domain = kb.makeNameTerm("test")
+    val pSym = kb.intern("p")
+    val gSym = kb.intern("g")
+
+    val v1 = kb.alloc(Term.Const(Literal.IntLit(1)))
+    val v2 = kb.alloc(Term.Const(Literal.IntLit(2)))
+    val gFact = kb.alloc(Term.Fn(gSym, IArray(v1), IArray.empty))
+    val fact = kb.alloc(Term.Fn(pSym, IArray(gFact, v2), IArray.empty))
+    kb.assertFact(fact, sort, domain)
+
+    val xid = kb.freshVar(kb.intern("x"))
+    val yid = kb.freshVar(kb.intern("y"))
+    val varX = kb.alloc(Term.Var(Var.Global(xid)))
+    val varY = kb.alloc(Term.Var(Var.Global(yid)))
+    val gQuery = kb.alloc(Term.Fn(gSym, IArray(varX), IArray.empty))
+    val goal = kb.alloc(Term.Fn(pSym, IArray(gQuery, varY), IArray.empty))
+
+    val solutions = SearchStream.resolve(kb, goal).allSolutions(kb)
+    assertEquals(solutions.length, 1)
+    assertEquals(solutions(0).subst.resolve(xid).map(TermId.raw), Some(TermId.raw(v1)), "nested ?x")
+    assertEquals(solutions(0).subst.resolve(yid).map(TermId.raw), Some(TermId.raw(v2)), "top-level ?y")
+  }

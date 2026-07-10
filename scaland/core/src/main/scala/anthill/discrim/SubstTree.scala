@@ -263,7 +263,9 @@ class SubstTree[L]:
         val arity = fn.arity
         node.concrete.get(DiscrimKey.Functor(fn.functor)).foreach { n1 =>
           n1.concrete.get(DiscrimKey.Arity(arity)).foreach { n2 =>
-            queryArgs(n2, terms, fn.posArgs, fn.namedArgs, 0, 0, bindPaths = true,
+            // `path` is the prefix to this head's args (Root at top level);
+            // each arg's own path extends it (WI-671).
+            queryArgs(n2, terms, fn.posArgs, fn.namedArgs, 0, 0, path,
               subst.copy(), results, collectLeavesOnDone)
           }
         }
@@ -299,7 +301,7 @@ class SubstTree[L]:
   private def queryArgs(
     node: DiscrimNode[L], terms: TermStore,
     pos: IArray[TermId], named: IArray[(TermSymbol, TermId)],
-    posIdx: Int, namedIdx: Int, bindPaths: Boolean,
+    posIdx: Int, namedIdx: Int, prefix: VarPath,
     subst: SmallSubst, results: ArrayBuffer[(L, SmallSubst)],
     onDone: OnDone
   ): Unit =
@@ -307,93 +309,96 @@ class SubstTree[L]:
       onDone(node, subst, results)
       return
 
+    // Each arg's path extends the container `prefix` by one step, so a query
+    // var at any depth records a full root-to-leaf path (WI-671).
     if posIdx < pos.length then
-      val path = if bindPaths then Some(VarPath.Arg(ArgPos.Positional(posIdx))) else None
+      val argPath = prefix.appended(ArgPos.Positional(posIdx))
       node.concrete.get(DiscrimKey.Positional).foreach { mc =>
-        queryArgValue(mc, terms, pos(posIdx), path,
-          pos, named, posIdx + 1, namedIdx, bindPaths, subst, results, onDone)
+        queryArgValue(mc, terms, pos(posIdx), argPath,
+          pos, named, posIdx + 1, namedIdx, prefix, subst, results, onDone)
       }
     else
       val (sym, id) = named(namedIdx)
-      val path = if bindPaths then Some(VarPath.Arg(ArgPos.Named(sym))) else None
+      val argPath = prefix.appended(ArgPos.Named(sym))
       node.concrete.get(DiscrimKey.NamedKey(sym)).foreach { mc =>
-        queryArgValue(mc, terms, id, path,
-          pos, named, posIdx, namedIdx + 1, bindPaths, subst, results, onDone)
+        queryArgValue(mc, terms, id, argPath,
+          pos, named, posIdx, namedIdx + 1, prefix, subst, results, onDone)
       }
 
   private def queryArgValue(
     node: DiscrimNode[L], terms: TermStore, argTermId: TermId,
-    argPath: Option[VarPath],
+    argPath: VarPath,
     remPos: IArray[TermId], remNamed: IArray[(TermSymbol, TermId)],
-    posIdx: Int, namedIdx: Int, bindPaths: Boolean,
+    posIdx: Int, namedIdx: Int, prefix: VarPath,
     subst: SmallSubst, results: ArrayBuffer[(L, SmallSubst)],
     onDone: OnDone
   ): Unit =
     terms.get(argTermId) match
       case Term.Var(v) =>
-        val s = argPath match
-          case Some(path) => subst.withBinding(v.varId, BindValue.Path(path))
-          case None => subst
-        skipSubtreeThenContinue(node, terms, remPos, remNamed, posIdx, namedIdx, bindPaths, s, results, onDone)
+        val s = subst.withBinding(v.varId, BindValue.Path(argPath))
+        skipSubtreeThenContinue(node, terms, remPos, remNamed, posIdx, namedIdx, prefix, s, results, onDone)
 
       case fn: Term.Fn =>
         val arity = fn.arity
         node.concrete.get(DiscrimKey.Functor(fn.functor)).foreach { n1 =>
           n1.concrete.get(DiscrimKey.Arity(arity)).foreach { n2 =>
+            // Continue the OUTER args with the outer `prefix`; descend the
+            // nested compound with `argPath` as its prefix so nested query
+            // vars extend the path rather than restart at root (WI-671).
             val nestedCont: OnDone = (nd, s, r) =>
-              queryArgs(nd, terms, remPos, remNamed, posIdx, namedIdx, bindPaths, s, r, onDone)
+              queryArgs(nd, terms, remPos, remNamed, posIdx, namedIdx, prefix, s, r, onDone)
             queryArgs(n2, terms, fn.posArgs, fn.namedArgs, 0, 0,
-              bindPaths = false, subst.copy(), results, nestedCont)
+              argPath, subst.copy(), results, nestedCont)
           }
         }
         for (treeVid, child) <- node.varEdges do
           val branch = subst.withBinding(treeVid, BindValue.TermVal(argTermId))
-          queryArgs(child, terms, remPos, remNamed, posIdx, namedIdx, bindPaths, branch, results, onDone)
+          queryArgs(child, terms, remPos, remNamed, posIdx, namedIdx, prefix, branch, results, onDone)
 
       case Term.Const(lit) =>
         followKeyThenContinue(node, DiscrimKey.Lit(lit), argTermId, terms,
-          remPos, remNamed, posIdx, namedIdx, bindPaths, subst, results, onDone)
+          remPos, remNamed, posIdx, namedIdx, prefix, subst, results, onDone)
       case Term.Ident(sym) =>
         followKeyThenContinue(node, DiscrimKey.IdentKey(sym), argTermId, terms,
-          remPos, remNamed, posIdx, namedIdx, bindPaths, subst, results, onDone)
+          remPos, remNamed, posIdx, namedIdx, prefix, subst, results, onDone)
       case Term.Ref(sym) =>
         followKeyThenContinue(node, DiscrimKey.RefKey(sym), argTermId, terms,
-          remPos, remNamed, posIdx, namedIdx, bindPaths, subst, results, onDone)
+          remPos, remNamed, posIdx, namedIdx, prefix, subst, results, onDone)
       case Term.Bottom =>
         followKeyThenContinue(node, DiscrimKey.Bottom, argTermId, terms,
-          remPos, remNamed, posIdx, namedIdx, bindPaths, subst, results, onDone)
+          remPos, remNamed, posIdx, namedIdx, prefix, subst, results, onDone)
 
   private def followKeyThenContinue(
     node: DiscrimNode[L], key: DiscrimKey, queryTerm: TermId, terms: TermStore,
     remPos: IArray[TermId], remNamed: IArray[(TermSymbol, TermId)],
-    posIdx: Int, namedIdx: Int, bindPaths: Boolean,
+    posIdx: Int, namedIdx: Int, prefix: VarPath,
     subst: SmallSubst, results: ArrayBuffer[(L, SmallSubst)],
     onDone: OnDone
   ): Unit =
     node.concrete.get(key).foreach { child =>
-      queryArgs(child, terms, remPos, remNamed, posIdx, namedIdx, bindPaths,
+      queryArgs(child, terms, remPos, remNamed, posIdx, namedIdx, prefix,
         subst.copy(), results, onDone)
     }
     for (treeVid, child) <- node.varEdges do
       val branch = subst.withBinding(treeVid, BindValue.TermVal(queryTerm))
-      queryArgs(child, terms, remPos, remNamed, posIdx, namedIdx, bindPaths,
+      queryArgs(child, terms, remPos, remNamed, posIdx, namedIdx, prefix,
         branch, results, onDone)
 
   private def skipSubtreeThenContinue(
     node: DiscrimNode[L], terms: TermStore,
     remPos: IArray[TermId], remNamed: IArray[(TermSymbol, TermId)],
-    posIdx: Int, namedIdx: Int, bindPaths: Boolean,
+    posIdx: Int, namedIdx: Int, prefix: VarPath,
     subst: SmallSubst, results: ArrayBuffer[(L, SmallSubst)],
     onDone: OnDone
   ): Unit =
-    queryArgs(node, terms, remPos, remNamed, posIdx, namedIdx, bindPaths,
+    queryArgs(node, terms, remPos, remNamed, posIdx, namedIdx, prefix,
       subst.copy(), results, onDone)
     for (_, child) <- node.concrete do
       skipSubtreeThenContinue(child, terms, remPos, remNamed, posIdx, namedIdx,
-        bindPaths, subst.copy(), results, onDone)
+        prefix, subst.copy(), results, onDone)
     for (_, child) <- node.varEdges do
       skipSubtreeThenContinue(child, terms, remPos, remNamed, posIdx, namedIdx,
-        bindPaths, subst.copy(), results, onDone)
+        prefix, subst.copy(), results, onDone)
 
   private def collectAllLeaves(
     node: DiscrimNode[L], subst: SmallSubst, results: ArrayBuffer[(L, SmallSubst)]
