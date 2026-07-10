@@ -3177,7 +3177,7 @@ fn find_spec_op_for_provided_sort(
     // prior first-match behavior. See kernel-language.md §8.7.
     let tied: Vec<Symbol> = nearest.iter().map(|(s, _)| *s).collect();
     if let Some(winner) = most_refined_spec(kb, &tied) {
-        if let Some((_, op)) = nearest.iter().find(|(s, _)| same_symbol(kb, *s, winner)) {
+        if let Some((_, op)) = nearest.iter().find(|(s, _)| same_sort_canonical(kb, *s, winner)) {
             return Some(*op);
         }
     }
@@ -3195,10 +3195,10 @@ fn most_refined_spec(kb: &mut KnowledgeBase, specs: &[Symbol]) -> Option<Symbol>
     for &cand in specs {
         let chain = requires_chain(kb, cand);
         if specs.iter().all(|&other| {
-            // `same_symbol` (not `same_sort_canonical`): `specs`/`required_sort` here are
-            // requires-chain spec bases that may be stored unresolved-bare (WI-420).
-            same_symbol(kb, other, cand)
-                || chain.iter().any(|e| same_symbol(kb, e.required_sort, other))
+            // WI-672 canonical: `specs`/`required_sort` are resolved (stdlib specs
+            // qualified; top-level user specs self-consistent — see `entries_cover`).
+            same_sort_canonical(kb, other, cand)
+                || chain.iter().any(|e| same_sort_canonical(kb, e.required_sort, other))
         }) {
             return Some(cand);
         }
@@ -3248,7 +3248,7 @@ fn find_spec_op_for_required_sort(
             continue;
         }
         let spec_sym = entry.required_sort;
-        if definers.iter().any(|(s, _)| same_symbol(kb, *s, spec_sym)) {
+        if definers.iter().any(|(s, _)| same_sort_canonical(kb, *s, spec_sym)) {
             continue;
         }
         let spec_term = kb.alloc(Term::Ref(spec_sym));
@@ -3262,7 +3262,7 @@ fn find_spec_op_for_required_sort(
     // Multi-spec TIE: prefer the requires-REFINEMENT (mirrors the provides resolver).
     let tied: Vec<Symbol> = definers.iter().map(|(s, _)| *s).collect();
     if let Some(winner) = most_refined_spec(kb, &tied) {
-        if let Some((_, op)) = definers.iter().find(|(s, _)| same_symbol(kb, *s, winner)) {
+        if let Some((_, op)) = definers.iter().find(|(s, _)| same_sort_canonical(kb, *s, winner)) {
             return Some(*op);
         }
     }
@@ -7759,12 +7759,13 @@ fn entries_cover(kb: &mut KnowledgeBase, caller: &RequiresEntry, dep: &RequiresE
     // fully-qualified specs that merely share a last segment, so it cannot
     // over-match. Plain `!=` here silently failed cross-sort requirement
     // forwarding when the two sides' spec symbols differed in qualification.
-    // NB stays on `same_symbol`, NOT `same_sort_canonical` (WI-672): a not-yet-resolved
-    // bare `requires Eq` on a user sort must still bridge to the qualified
-    // `anthill.prelude.Eq` (WI-420) — `required_sort` is stored unresolved, so canonical
-    // keying would silently drop the forwarding until requires-specs are canonicalized at
-    // their producer.
-    if !same_symbol(kb, caller.required_sort, dep.required_sort) {
+    // WI-672: canonical sort identity. `required_sort` is RESOLVED — stdlib specs resolve
+    // to their qualified name (`requires Eq` → `anthill.prelude.Eq`; a probe found NO bare
+    // `Eq`), and the only bare `required_sort`s are top-level USER specs (`Ring`, …) with
+    // no qualified twin, so canonical is self-consistent for them. It correctly
+    // de-conflates a testcase `Ring` from stdlib `anthill.prelude.algebra.Ring`, which the
+    // old `same_symbol` last-segment bridge (WI-420, now vestigial) wrongly merged.
+    if !same_sort_canonical(kb, caller.required_sort, dep.required_sort) {
         return false;
     }
     let Some((_, caller_bindings)) = unwrap_spec_view_value(kb, &caller.spec) else {
@@ -7939,12 +7940,13 @@ fn entry_sigma_matches(
     caller: &RequiresEntry,
     dep: &RequiresEntry,
 ) -> bool {
-    // NB stays on `same_symbol`, NOT `same_sort_canonical` (WI-672): a not-yet-resolved
-    // bare `requires Eq` on a user sort must still bridge to the qualified
-    // `anthill.prelude.Eq` (WI-420) — `required_sort` is stored unresolved, so canonical
-    // keying would silently drop the forwarding until requires-specs are canonicalized at
-    // their producer.
-    if !same_symbol(kb, caller.required_sort, dep.required_sort) {
+    // WI-672: canonical sort identity. `required_sort` is RESOLVED — stdlib specs resolve
+    // to their qualified name (`requires Eq` → `anthill.prelude.Eq`; a probe found NO bare
+    // `Eq`), and the only bare `required_sort`s are top-level USER specs (`Ring`, …) with
+    // no qualified twin, so canonical is self-consistent for them. It correctly
+    // de-conflates a testcase `Ring` from stdlib `anthill.prelude.algebra.Ring`, which the
+    // old `same_symbol` last-segment bridge (WI-420, now vestigial) wrongly merged.
+    if !same_sort_canonical(kb, caller.required_sort, dep.required_sort) {
         return false;
     }
     let Some((_, caller_bindings)) = unwrap_spec_view_value(kb, &caller.spec) else {
@@ -14534,8 +14536,7 @@ fn sort_param_is_effect_row(kb: &mut KnowledgeBase, sort: Symbol, member: &str) 
         return false;
     };
     for entry in direct_requires_chain(kb, sort) {
-        // `same_symbol`: `required_sort` may be stored unresolved-bare (WI-420/WI-672).
-        if !same_symbol(kb, entry.required_sort, effects_runtime) {
+        if !same_sort_canonical(kb, entry.required_sort, effects_runtime) {
             continue;
         }
         if let Some(v) = spec_binding_value(kb, &entry.spec, "Effects") {
@@ -22839,8 +22840,7 @@ fn build_child_subst_map(
 /// Check if sort A refines sort B via `requires` chain.
 fn sort_refines(kb: &KnowledgeBase, a_sym: Symbol, b_sym: Symbol) -> bool {
     let chain = requires_chain_flat(kb, a_sym);
-    // `same_symbol`: `required_sort` may be stored unresolved-bare (WI-420/WI-672).
-    chain.iter().any(|entry| same_symbol(kb, entry.required_sort, b_sym))
+    chain.iter().any(|entry| same_sort_canonical(kb, entry.required_sort, b_sym))
 }
 
 // ── Obligation checking ────────────────────────────────────────
@@ -24984,12 +24984,11 @@ fn sort_provides_reach(
     }
     visited.push(carrier);
     for dst in provides_out_edges(kb, carrier) {
-        // Direct hop, then the transitive chain through the intermediate spec. `spec`
-        // stays on `same_symbol` (not `same_sort_canonical`): it can be a bare-unresolved
-        // `RequiresEntry.required_sort` (via `check_provider_requires` /
-        // `check_requires_shadows`), so canonical keying would drop the WI-420 bare→qualified
-        // bridge; `dst` (a resolved provider-spec base) is fine either way.
-        if same_symbol(kb, dst, spec) || sort_provides_reach(kb, dst, spec, visited) {
+        // Direct hop, then the transitive chain through the intermediate spec. WI-672
+        // canonical: `spec` may be a `required_sort` (via `check_provider_requires` /
+        // `check_requires_shadows`), but those are resolved (stdlib qualified; top-level
+        // user specs self-consistent — see `entries_cover`), so canonical is exact.
+        if same_sort_canonical(kb, dst, spec) || sort_provides_reach(kb, dst, spec, visited) {
             return true;
         }
     }
