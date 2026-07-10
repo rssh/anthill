@@ -1094,21 +1094,37 @@ fn negate_goal(kb: &mut KnowledgeBase, goal: &Value) -> Option<Value> {
 // additive — read by WI-067 discharge / WI-538 proofs — so they change no
 // types or effects.
 
-/// A `Var`-pattern name resolved to the constructor it names, or `None` if it
-/// is a plain binding (`case x`). A name matching the scrutinee's constructor
-/// set resolves to that **canonical** (loader-qualified) symbol — a bare pattern
-/// symbol (`case red`, loaded unresolved) would not `Ref`-match a resolved
-/// reference to the same constructor elsewhere, since `views_structurally_equal`
-/// compares `Ref` by raw symbol identity; failing that, a globally-known
-/// constructor symbol is taken as-is. Shared by [`collect_covered_entities`]
-/// (coverage) and [`pattern_match_value`] (the Γ pattern fact) so the two
-/// never drift on what counts as a nullary constructor vs a binding.
+/// Resolve a pattern's constructor NAME to the scrutinee's constructor it names.
+/// Constructor patterns are written by SHORT NAME (`case Red`, `case some(x)`); the
+/// scrutinee's type picks which sort's constructor, so this is the pattern equivalent of
+/// name resolution (`resolve_in_scope`), scoped to the scrutinee's OWN constructors.
+/// Returns the resolved scrutinee constructor, or `None` if the name names none of them.
+///
+/// WI-672: this is a short-name LOOKUP (resolving a written name to a symbol), NOT an
+/// identity comparison. The loaded pattern name is a fresh binder symbol
+/// (`load_pattern_var`'s `binder_sym`) carrying only a display name, so matching it to a
+/// constructor can only be by name — the pattern equivalent of resolving any written
+/// identifier. Callers then hold the RESOLVED constructor and compare it canonically
+/// downstream, so `same_symbol`'s last-segment bridge no longer rides pattern coverage.
+fn resolve_pattern_ctor(kb: &KnowledgeBase, name: Symbol, scrutinee_ctors: &[Symbol]) -> Option<Symbol> {
+    let want = short_name_of(kb.qualified_name_of(name));
+    scrutinee_ctors
+        .iter()
+        .copied()
+        .find(|&c| short_name_of(kb.qualified_name_of(c)) == want)
+}
+
+/// A `Var`-pattern name resolved to the constructor it names, or `None` if it is a plain
+/// binding (`case x`). Resolves against the scrutinee's constructor set by short name
+/// ([`resolve_pattern_ctor`]); failing that, a globally-known constructor symbol is taken
+/// as-is. Shared by [`collect_covered_entities`] (coverage) and [`pattern_match_value`]
+/// (the Γ pattern fact) so the two never drift on what counts as a nullary constructor.
 fn pattern_var_ctor_sym(
     kb: &KnowledgeBase,
     name: Symbol,
     scrutinee_ctors: &[Symbol],
 ) -> Option<Symbol> {
-    if let Some(&ctor) = scrutinee_ctors.iter().find(|&&c| same_symbol(kb, c, name)) {
+    if let Some(ctor) = resolve_pattern_ctor(kb, name, scrutinee_ctors) {
         return Some(ctor);
     }
     (kb.is_constructor_symbol(name) || kb.constructor_parent_sort(name).is_some()).then_some(name)
@@ -5040,9 +5056,12 @@ fn build_type(
                             let missing: Vec<String> = all_entities
                                 .iter()
                                 .filter(|e| {
+                                    // WI-672: `covered_entities` are now resolved scrutinee
+                                    // ctors (via `pattern_var_ctor_sym` / `resolve_pattern_ctor`),
+                                    // so compare by canonical identity, not `same_symbol`.
                                     !covered_entities
                                         .iter()
-                                        .any(|c| same_symbol(kb, *c, **e))
+                                        .any(|c| same_sort_canonical(kb, *c, **e))
                                 })
                                 .map(|s| kb.resolve_sym(*s).to_string())
                                 .collect();
@@ -25595,7 +25614,12 @@ fn collect_covered_entities(
                 None => *has_wildcard = true,
             }
         }
-        Pattern::Constructor { name, .. } => { covered.push(*name); }
+        // WI-672: resolve the constructor name to the scrutinee's ctor (by short name)
+        // so `covered` holds resolved symbols the exhaustiveness check compares canonically
+        // — a bare `some` would otherwise read as uncovered under `same_sort_canonical`.
+        Pattern::Constructor { name, .. } => {
+            covered.push(resolve_pattern_ctor(kb, *name, scrutinee_ctors).unwrap_or(*name));
+        }
         // Literals don't cover enum entities.
         Pattern::Literal { .. } => {}
         // A tuple pattern matches a tuple, not an enum constructor — conservative

@@ -1613,6 +1613,24 @@ names. So bare `Open` resolves to `WorkStatus.Open`, while the sort's
 `requires`, or wildcard). Two sorts exposing the same variant name make that
 bare name **ambiguous** rather than letting one silently win.
 
+**Constructor patterns resolve against the scrutinee, not the scope.** A
+constructor name in a `match` case (`case Red`, `case some(?x)`, `case nil()`) is
+**not** resolved through the general scope order above. It is resolved
+**type-directedly against the scrutinee's own constructors**, by short name:
+`match c case Red` with `c: Color` binds `Red` to `Color.Red` because `Red` is one
+of `Color`'s constructors. A `case`-name that matches **none** of the scrutinee's
+constructors is instead a plain **variable binding** (`case x`) — so `case` on a
+bare name is inherently ambiguous between "nullary constructor" and "binder", and
+only the scrutinee's constructor set decides. Because that set is known only from
+the scrutinee's *type*, this resolution happens during **type-checking**, not at
+load; the loader carries the pattern name unresolved (as a fresh binder symbol) and
+the typer binds it. It is a name **lookup** scoped to the scrutinee's constructors —
+distinct from the general `resolve_in_scope` above (which ignores the scrutinee and
+could pick a different sort's same-named constructor) and from sort *identity*
+comparison. No ambiguity arises within one match: a sort's constructors have
+distinct short names, and the constructors compared for exhaustiveness are the
+resolved scrutinee symbols, compared by identity.
+
 **Inherited operations.** When a sort gains an operation through `requires`
 (spec auto-binding, §8.7), a derived rule it supplies for that operation binds
 to the **inherited** operation symbol — it does not mint a new shadowing symbol.
