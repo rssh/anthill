@@ -371,10 +371,11 @@ fn wi580_relational_append_solves_first_arg() {
     na.sort_by_key(|(s, _)| s.index());
     let expected = kb.alloc(Term::Fn { functor: conss, pos_args: SmallVec::new(), named_args: na });
 
-    let got = match kb.reify(a_term, &definite[0].subst) {
-        anthill_core::eval::Value::Term { id, .. } => id,
-        other => panic!("?a should reify to a ground term; got {other:?}"),
-    };
+    // WI-690 inc2: the unfold binds ?a to a Node pattern, so the answer now rides
+    // the Node carrier; lower it (any carrier) to its Term twin and compare.
+    let got_val = kb.reify(a_term, &definite[0].subst);
+    let got = anthill_core::kb::node_occurrence::value_to_term(&mut kb, &got_val)
+        .expect("?a should reify to a ground term (any carrier)");
     assert_eq!(got, expected, "?a should be [1] (cons(1,nil))");
 }
 
@@ -440,11 +441,13 @@ fn wi668_term_carried_opcall_eq_case_splits() {
     );
 
     let expected = mk_cons(&mut kb, one, nilt); // [1]
-    let got = match kb.reify(a_term, &definite[0].subst) {
-        anthill_core::eval::Value::Term { id, .. } => id,
-        other => panic!("?a should reify to a ground term; got {other:?}"),
-    };
-    assert_eq!(got, expected, "?a should be [1] via the Value::Term op_call_as_occ arm");
+    // WI-690 inc2: the Value::Term operand still case-splits (op_call_as_occ's
+    // Term arm), but the answer now rides the Node carrier (Node unify goals);
+    // lower it (any carrier) to its Term twin and compare.
+    let got_val = kb.reify(a_term, &definite[0].subst);
+    let got = anthill_core::kb::node_occurrence::value_to_term(&mut kb, &got_val)
+        .expect("?a should reify to a ground term (any carrier)");
+    assert_eq!(got, expected, "?a should be [1] (Value::Term operand case-splits; answer Node-carried)");
 }
 
 #[test]

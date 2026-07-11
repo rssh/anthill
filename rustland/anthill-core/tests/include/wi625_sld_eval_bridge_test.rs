@@ -124,12 +124,16 @@ fn nonground_operand_case_splits_via_unfold() {
         sols.len(),
     );
     let int_of = |kb: &mut KnowledgeBase, t: TermId, s: &anthill_core::kb::resolve::Solution| {
-        match kb.reify(t, &s.subst) {
-            anthill_core::eval::Value::Int(n) => Some(n),
-            anthill_core::eval::Value::Term { id, .. } => match kb.get_term(id) {
-                Term::Const(Literal::Int(n)) => Some(*n),
-                _ => None,
-            },
+        // WI-690 inc2: a solved var may ride the Node carrier — read a bare Int,
+        // else lower any carrier (Node / Term / Entity) to its Term twin and read
+        // the Int constant.
+        let val = kb.reify(t, &s.subst);
+        if let anthill_core::eval::Value::Int(n) = val {
+            return Some(n);
+        }
+        let id = anthill_core::kb::node_occurrence::value_to_term(kb, &val).ok()?;
+        match kb.get_term(id) {
+            Term::Const(Literal::Int(n)) => Some(*n),
             _ => None,
         }
     };

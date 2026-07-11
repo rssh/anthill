@@ -5626,26 +5626,53 @@ impl KnowledgeBase {
         }
     }
 
-    /// Whether a term carries a bodied (non-builtin) operation call anywhere —
-    /// an unevaluated op-call that structural `unify` would compare wrongly.
-    /// WI-580 declines to case-split against such an OTHER operand (leaving it to
-    /// the builtin, which delays), preserving soundness for a query like
-    /// `eq(append(?a, x), reverse(?b))`.
-    fn term_has_bodied_op_call(&self, t: TermId) -> bool {
-        match self.get_term(t) {
-            Term::Fn { functor, pos_args, named_args } => {
-                let f = *functor;
-                if self.builtins.get(&f).is_none() && self.op_body_node(f).is_some() {
-                    return true;
+    /// WI-690 — carrier-neutral peer of the former `term_has_bodied_op_call`:
+    /// does the value STRUCTURALLY CONTAIN (at any depth) a bodied (non-builtin)
+    /// operation call — an unevaluated op-call that structural `unify` would
+    /// compare wrongly? WI-580 declines to case-split against such an OTHER
+    /// operand (leaving it to the builtin, which delays), preserving soundness
+    /// for a query like `eq(append(?a, x), reverse(?b))`. Read over the
+    /// shallow-walked OTHER value directly through `TermView`, so a Node/Entity
+    /// operand is not lowered to a term just to run this gate. Structural (no σ
+    /// chase), matching the former Term walk over the shallow-walked operand.
+    fn value_has_bodied_op_call(&self, v: &Value) -> bool {
+        match v.head(self) {
+            ViewHead::Functor { functor, pos_arity, .. } => {
+                // A bodied (non-builtin) op functor is itself the hit.
+                if let Some(f) = functor {
+                    if self.builtins.get(&f).is_none() && self.op_body_node(f).is_some() {
+                        return true;
+                    }
                 }
-                let kids: Vec<TermId> = pos_args
-                    .iter()
-                    .copied()
-                    .chain(named_args.iter().map(|(_, a)| *a))
-                    .collect();
-                kids.into_iter().any(|c| self.term_has_bodied_op_call(c))
+                // Recurse children — for a functor-headed value AND a functor-less
+                // aggregate (`Tuple`/`Unit`, `functor: None`) whose components could
+                // hide an op-call — matching the former Term walk's full coverage.
+                for i in 0..pos_arity {
+                    if let Some(c) = v.pos_arg(self, i) {
+                        if self.value_has_bodied_op_call(&c.to_value()) {
+                            return true;
+                        }
+                    }
+                }
+                for k in v.named_keys(self) {
+                    if let Some(c) = v.named_arg(self, k) {
+                        if self.value_has_bodied_op_call(&c.to_value()) {
+                            return true;
+                        }
+                    }
+                }
+                false
             }
-            _ => false,
+            // Leaves carry no op-call.
+            ViewHead::Var(_) | ViewHead::Const(_) | ViewHead::Ref(_) | ViewHead::Ident(_)
+            | ViewHead::Bottom => false,
+            // An OPAQUE carrier we cannot structurally decompose (a `Node` tuple /
+            // set literal, a closure / stream) MIGHT hide a bodied op-call and we
+            // cannot verify otherwise — report "might" so the WI-580 caller declines
+            // the unfold rather than structurally unifying a form it cannot inspect.
+            // A conservative decline is sound (the builtin handles the eq); this is
+            // the "loud error over silent skip" choice over a latent unsound miss.
+            ViewHead::Opaque => true,
         }
     }
 
@@ -5745,51 +5772,60 @@ impl KnowledgeBase {
         }
         let (scrutinee_occ, arms) =
             super::body_specialize::folded_call_match(self, op, &pos_args, &named_args)?;
-        let scrutinee_term = super::node_occurrence::occurrence_to_term(self, &scrutinee_occ);
         // OTHER must be finite DATA: the per-arm `unify(result, OTHER)` compares
         // structurally, so an unevaluated bodied op-call inside OTHER would
-        // wrongly FAIL (dropping real solutions — unsound under NAF), and a
-        // non-Term/Node scalar would panic `reify_goal_value`. Convert totally
-        // (a `Node` via `occurrence_to_term`; a scalar/entity/var via
-        // `alloc_from_value`), then DECLINE if OTHER carries an op-call.
-        let other_term = match &other {
-            Value::Node(occ) => super::node_occurrence::occurrence_to_term(self, occ),
-            _ => self.alloc_from_value(&other).ok()?,
-        };
-        if self.term_has_bodied_op_call(other_term) {
+        // wrongly FAIL (dropping real solutions — unsound under NAF). DECLINE if
+        // OTHER carries a bodied op-call (read on the value carrier, WI-690).
+        if self.value_has_bodied_op_call(&other) {
             return None;
         }
+        // OTHER as a goal occurrence for the Node `unify(result, OTHER)` goal: a
+        // `Node` rides directly (no `occurrence_to_term`); any other carrier is
+        // the external finite-DATA operand we did not build, so materialize its
+        // occurrence at this boundary (via its faithful term twin).
+        let other_occ = match &other {
+            Value::Node(occ) => Rc::clone(occ),
+            _ => {
+                let t = self.alloc_from_value(&other).ok()?;
+                super::node_occurrence::materialize_from_handle(self, t)
+            }
+        };
         let unify_sym = self.unify_functor();
+        // Build a `Value::Node` `unify(a, b)` goal — the shape shared by the
+        // scrutinee-shape and result/OTHER decompositions in each arm.
+        let mk_unify = |pos: Vec<Rc<NodeOccurrence>>, span| {
+            Value::Node(NodeOccurrence::new_expr(
+                Expr::Apply {
+                    functor: unify_sym,
+                    pos_args: pos,
+                    named_args: Vec::new(),
+                    type_args: Vec::new(),
+                },
+                span,
+                None,
+            ))
+        };
         let mut cands = Vec::with_capacity(arms.len());
         for arm in arms {
-            let mut rename: Vec<(Symbol, TermId)> = Vec::new();
-            let pattern_term = self.fresh_pattern_term(&arm.pattern, &mut rename)?;
+            let mut rename: Vec<(Symbol, VarId)> = Vec::new();
+            let pattern_occ = self.fresh_pattern_occ(&arm.pattern, &mut rename)?;
             let mut hoists: Vec<Value> = Vec::new();
-            // WI-690: `anf_flatten` builds the arm body as a Node occurrence and
-            // hoists each nested op-call as a `Value::Node` `eq` goal DIRECTLY (no
-            // Term::Fn build re-walked back to a Node — the retired
-            // `materialize_from_handle` round-trip). The result spine is op-call
-            // free (the calls are ANF-hoisted out), so lowering it to the
-            // `result_g` term operand is a clean, byte-identical `Term`.
+            // WI-690: `anf_flatten` builds the arm body (and its hoisted op-call
+            // `eq` goals) as `Value::Node` occurrences directly — no Term::Fn build
+            // re-walked back to a Node (the retired `materialize_from_handle`
+            // round-trip).
             let result_occ = self.anf_flatten(&arm.body, &rename, &mut hoists)?;
-            let result_term = super::node_occurrence::occurrence_to_term(self, &result_occ);
-            let unify_g = self.alloc(Term::Fn {
-                functor: unify_sym,
-                pos_args: SmallVec::from_slice(&[scrutinee_term, pattern_term]),
-                named_args: SmallVec::new(),
-            });
-            // The residual/OTHER decomposition is UNIFY, not `SemEq`: needed
-            // narrowing must BIND the fresh spine vars (`SemEq` only compares and
-            // would delay on a flex operand). This is structural on the data
-            // spine (sound; for a custom-`Eq` ELEMENT type it is sound but may be
-            // incomplete — eq-variant solutions need element narrowing and stay
-            // WI-519 residual, per design §5). Element `eq` semantics live in the
-            // body's own `eq` calls (hoisted below as `SemEq`).
-            let result_g = self.alloc(Term::Fn {
-                functor: unify_sym,
-                pos_args: SmallVec::from_slice(&[result_term, other_term]),
-                named_args: SmallVec::new(),
-            });
+            // WI-690 inc2: both `unify` goals ride as `Value::Node` occurrences —
+            // the scrutinee / result / OTHER operands are used directly, with no
+            // `occurrence_to_term` lowering. The residual/OTHER decomposition is
+            // UNIFY, not `SemEq`: needed narrowing must BIND the fresh spine vars
+            // (`SemEq` only compares and would delay on a flex operand). This is
+            // structural on the data spine (sound; for a custom-`Eq` ELEMENT type
+            // it is sound but may be incomplete — eq-variant solutions need element
+            // narrowing and stay WI-519 residual, per design §5). Element `eq`
+            // semantics live in the body's own `eq` calls (hoisted below as `SemEq`).
+            let unify_g = mk_unify(vec![Rc::clone(&scrutinee_occ), pattern_occ], scrutinee_occ.span);
+            let result_g = mk_unify(vec![result_occ, Rc::clone(&other_occ)], arm.body.span);
             // Order: unify scrutinee shape → unify(result, OTHER) (binds the
             // hoist vars against the finite OTHER, bounding the recursion) → the
             // hoisted op-call `SemEq` goals (which re-trigger this fallback on
@@ -5798,69 +5834,81 @@ impl KnowledgeBase {
             // occurrence (built directly by `anf_flatten`), so its re-triggered
             // operand is recognized directly by `op_call_as_occ`'s Node arm — the
             // recursion stays on the Node carrier and never round-trips through the
-            // Term arm at re-entry. The two `unify` goals don't re-trigger the
-            // unfold, so they ride as `Value::term` (Node-carrying them is inc2).
-            let mut goals = vec![Value::term(unify_g), Value::term(result_g)];
+            // Term arm at re-entry.
+            let mut goals = vec![unify_g, result_g];
             goals.extend(hoists);
             cands.push(Candidate::Continuation(goals));
         }
         Some(cands)
     }
 
-    /// Build a constructor pattern term with FRESH resolver vars for each binder
-    /// (rule-head-style opening), recording each binder `Symbol` → its fresh-var
-    /// term in `rename` so the arm body can be renamed to match. `None` for a
-    /// pattern shape this unfold doesn't handle (a tuple pattern).
-    fn fresh_pattern_term(
+    /// Build a constructor pattern OCCURRENCE with FRESH resolver vars for each
+    /// binder (rule-head-style opening), recording each binder `Symbol` → its
+    /// fresh-var `Term` in `rename` so the arm body ([`Self::anf_flatten`]) can be
+    /// renamed to match. `None` for a pattern shape this unfold doesn't handle (a
+    /// tuple pattern).
+    ///
+    /// WI-690 inc2: occurrence-native, so the `unify(scrutinee, pattern)` goal
+    /// rides as a `Value::Node` (the scrutinee is used directly, no
+    /// `occurrence_to_term` lowering). `rename` records each binder's fresh
+    /// `VarId`; the pattern occurrence and the arm body ([`Self::anf_flatten`])
+    /// both emit `Expr::Var(Global(vid))` from it, so they share one binder
+    /// identity.
+    fn fresh_pattern_occ(
         &mut self,
         pattern: &Rc<NodeOccurrence>,
-        rename: &mut Vec<(Symbol, TermId)>,
-    ) -> Option<TermId> {
+        rename: &mut Vec<(Symbol, VarId)>,
+    ) -> Option<Rc<NodeOccurrence>> {
         use super::node_occurrence::Pattern;
+        let span = pattern.span;
         match pattern.as_pattern()? {
             Pattern::Var { name, .. } => {
                 let name = *name;
                 let v = self.fresh_var(name);
-                let t = self.alloc(Term::Var(Var::Global(v)));
-                rename.push((name, t));
-                Some(t)
+                // Record the fresh `VarId` and emit the same `VarId` as the
+                // pattern's occurrence leaf, so the pattern and the arm body share
+                // one binder identity.
+                rename.push((name, v));
+                Some(NodeOccurrence::new_expr(Expr::Var(Var::Global(v)), span, None))
             }
             Pattern::Wildcard => {
                 let anon = self.intern("_");
                 let v = self.fresh_var(anon);
-                Some(self.alloc(Term::Var(Var::Global(v))))
+                Some(NodeOccurrence::new_expr(Expr::Var(Var::Global(v)), span, None))
             }
             Pattern::Literal { value } => {
                 let lit = value.clone();
-                Some(self.alloc(Term::Const(lit)))
+                Some(NodeOccurrence::new_expr(Expr::Const(lit), span, None))
             }
             Pattern::Constructor { name, pos_args, named_args } => {
                 let name = *name;
                 let pos_p = pos_args.clone();
                 let named_p = named_args.clone();
-                // Build a CANONICAL entity term: positional sub-patterns map to
-                // the constructor's declaration field names, all args carried
+                // Build a CANONICAL entity occurrence: positional sub-patterns map
+                // to the constructor's declaration field names, all args carried
                 // named + sorted (the system's canonical entity form), so the
-                // bound value matches how entities are represented everywhere.
+                // bound value matches how entities are represented everywhere. A
+                // NULLARY constructor is the canonical `Ref(name)` (WI-436/WI-511),
+                // not an empty-args `Constructor`.
                 let fields = self.entity_field_names(name).map(|f| f.to_vec());
-                let mut named = SmallVec::<[(Symbol, TermId); 2]>::new();
+                let mut named: Vec<(Symbol, Rc<NodeOccurrence>)> = Vec::new();
                 for (i, p) in pos_p.iter().enumerate() {
                     let field = fields.as_ref().and_then(|f| f.get(i).copied())?;
-                    let t = self.fresh_pattern_term(p, rename)?;
-                    named.push((field, t));
+                    let occ = self.fresh_pattern_occ(p, rename)?;
+                    named.push((field, occ));
                 }
                 for (fs, p) in &named_p {
-                    named.push((*fs, self.fresh_pattern_term(p, rename)?));
+                    named.push((*fs, self.fresh_pattern_occ(p, rename)?));
                 }
                 if named.is_empty() {
-                    Some(self.alloc(Term::Ref(name)))
+                    Some(NodeOccurrence::new_expr(Expr::Ref(name), span, None))
                 } else {
                     named.sort_by_key(|(s, _)| s.index());
-                    Some(self.alloc(Term::Fn {
-                        functor: name,
-                        pos_args: SmallVec::new(),
-                        named_args: named,
-                    }))
+                    Some(NodeOccurrence::new_expr(
+                        Expr::Constructor { name, pos_args: Vec::new(), named_args: named },
+                        span,
+                        None,
+                    ))
                 }
             }
             Pattern::Tuple { .. } => None,
@@ -5884,7 +5932,7 @@ impl KnowledgeBase {
     fn anf_flatten(
         &mut self,
         occ: &Rc<NodeOccurrence>,
-        rename: &[(Symbol, TermId)],
+        rename: &[(Symbol, VarId)],
         hoists: &mut Vec<Value>,
     ) -> Option<Rc<NodeOccurrence>> {
         let span = occ.span;
@@ -5899,20 +5947,18 @@ impl KnowledgeBase {
                 let name = vid.name();
                 let vid = *vid;
                 Some(match rename.iter().rev().find(|(s, _)| *s == name) {
-                    // A pattern binder's fresh var rides as a `Term::Var` in
-                    // `rename` (fresh_pattern_term is still Term-native; that is
-                    // WI-690 inc2); lift it to its occurrence leaf so the same
-                    // `VarId` is shared across the Term-carried `unify` goals and
-                    // this Node-carried body (the cross-carrier var identity the
-                    // unfold already relies on).
-                    Some((_, t)) => super::node_occurrence::build_expr_leaf(self, *t),
+                    // A pattern binder resolves to its fresh `VarId` (recorded by
+                    // `fresh_pattern_occ`); emit its occurrence leaf so the same
+                    // `VarId` is shared between the pattern occurrence and this
+                    // body — the var identity the unfold relies on.
+                    Some((_, vid)) => NodeOccurrence::new_expr(Expr::Var(Var::Global(*vid)), span, None),
                     None => NodeOccurrence::new_expr(Expr::Var(Var::Global(vid)), span, None),
                 })
             }
             Expr::Ref(s) | Expr::Ident(s) => {
                 let s = *s;
                 Some(match rename.iter().rev().find(|(sy, _)| *sy == s) {
-                    Some((_, t)) => super::node_occurrence::build_expr_leaf(self, *t),
+                    Some((_, vid)) => NodeOccurrence::new_expr(Expr::Var(Var::Global(*vid)), span, None),
                     None => NodeOccurrence::new_expr(Expr::Ref(s), span, None),
                 })
             }
@@ -5993,7 +6039,7 @@ impl KnowledgeBase {
             Expr::VarRef { name } => {
                 let name = *name;
                 Some(match rename.iter().rev().find(|(sy, _)| *sy == name) {
-                    Some((_, t)) => super::node_occurrence::build_expr_leaf(self, *t),
+                    Some((_, vid)) => NodeOccurrence::new_expr(Expr::Var(Var::Global(*vid)), span, None),
                     None => NodeOccurrence::new_expr(Expr::Ref(name), span, None),
                 })
             }
