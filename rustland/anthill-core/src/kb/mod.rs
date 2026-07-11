@@ -3028,9 +3028,20 @@ impl KnowledgeBase {
                 // Leaf (Const/Ref/Ident/…) or an unbound `Var` — already final.
                 _ => Value::term(t),
             },
-            // A bound non-`Term` carrier (`Value::Node` / `Entity` / scalar /
-            // `Var`) — return as-is, identity preserved through the answer.
-            other => other,
+            // WI-691: a bound non-`Term` carrier. Fully σ-apply it and preserve
+            // the carrier — the former `other => other` returned the binding RAW,
+            // so a query var bound to a `Node cons(v1, v2)` reified with v1/v2
+            // UNRESOLVED even though σ determined them (the WI-690 unfold, which
+            // binds a query var to a Node pattern, is the first path to expose
+            // this). `reify_value` substitutes a `Node`'s (via
+            // `substitute_occurrence`, identity-preserving) / `Entity`'s inner
+            // vars, so the answer is fully ground where σ determines it, while a
+            // var-free `Node` — e.g. a WI-348 denoted value-in-type binding —
+            // rides through with its occurrence identity intact. The carrier is
+            // deliberately NOT promoted to a `Term` (that would drop the Node
+            // identity `value_fact_full_resolver_search_binds_node_as_value`
+            // asserts); an answer stays on the carrier it was proved on.
+            other => self.reify_value(&other, subst),
         }
     }
 
@@ -5163,6 +5174,60 @@ mod tests {
         match kb.reify_value(&Value::Var(Var::Global(vfree)), &subst) {
             Value::Var(v) => assert_eq!(v.as_global(), Some(vfree)),
             other => panic!("unbound var should pass through, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn reify_sigma_applies_a_node_binding_wi691() {
+        // WI-691: a query var bound to a `Value::Node` carrying inner logic vars
+        // must reify to the FULLY σ-applied answer. The former `reify` non-Term
+        // arm returned the Node binding RAW (`other => other`), so the inner vars
+        // stayed unresolved even though σ determined them — the gap the WI-690
+        // unfold (which binds a query var to a Node pattern) first exposed. The
+        // fix routes a non-Term binding through `reify_value`.
+        use crate::eval::value::Value;
+        use term::Var;
+        let mut kb = KnowledgeBase::new();
+        let f = kb.intern("pair");
+        let a_vid = { let n = kb.intern("a"); kb.fresh_var(n) };
+        let v1 = { let n = kb.intern("v1"); kb.fresh_var(n) };
+        let v2 = { let n = kb.intern("v2"); kb.fresh_var(n) };
+        let a_term = kb.alloc(Term::Var(Var::Global(a_vid)));
+        let one = kb.alloc(Term::Const(Literal::Int(1)));
+        let two = kb.alloc(Term::Const(Literal::Int(2)));
+        // A Node binding carrying inner logic vars: pair(?v1, ?v2) as a Value::Node.
+        let v1t = kb.alloc(Term::Var(Var::Global(v1)));
+        let v2t = kb.alloc(Term::Var(Var::Global(v2)));
+        let inner = kb.alloc(Term::Fn {
+            functor: f,
+            pos_args: SmallVec::from_slice(&[v1t, v2t]),
+            named_args: SmallVec::new(),
+        });
+        let node = node_occurrence::materialize_from_handle(&kb, inner);
+        let mut subst = subst::Substitution::new();
+        subst.bindings.insert(a_vid, Value::Node(node)); // ?a ↦ Node pair(?v1, ?v2)
+        subst.bindings.insert(v1, Value::term(one)); // ?v1 ↦ 1
+        subst.bindings.insert(v2, Value::term(two)); // ?v2 ↦ 2
+
+        let val = kb.reify(a_term, &subst);
+        // Lower whatever carrier the answer rides to its Term twin and check the
+        // inner vars are resolved (before the fix these stayed `Var` leaves).
+        let t = node_occurrence::value_to_term(&mut kb, &val).expect("answer lowers to a term");
+        match kb.get_term(t).clone() {
+            Term::Fn { functor, pos_args, .. } => {
+                assert_eq!(functor, f, "functor preserved");
+                assert!(
+                    matches!(kb.get_term(pos_args[0]), Term::Const(Literal::Int(1))),
+                    "?v1 must resolve to 1, got {:?}",
+                    kb.get_term(pos_args[0]),
+                );
+                assert!(
+                    matches!(kb.get_term(pos_args[1]), Term::Const(Literal::Int(2))),
+                    "?v2 must resolve to 2, got {:?}",
+                    kb.get_term(pos_args[1]),
+                );
+            }
+            other => panic!("reify(?a) must be ground pair(1, 2), got {other:?}"),
         }
     }
 
