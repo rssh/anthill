@@ -27,6 +27,10 @@ pub mod route;
 pub(crate) mod persist_subst;
 pub(crate) mod discrim;
 
+/// WI-669: body-derived defining-equation types, produced by
+/// `KnowledgeBase::op_defining_equations` for the prover/SMT tier.
+pub use body_specialize::{DefiningEquation, DefiningGuard};
+
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;

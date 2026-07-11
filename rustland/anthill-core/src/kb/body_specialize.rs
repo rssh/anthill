@@ -129,6 +129,107 @@ pub(crate) fn folded_call_match(
     Some((Rc::clone(scrutinee), arms))
 }
 
+/// A body-derived defining equation (design §3.4.1, WI-669): one arm of an
+/// operation body specialized at a call's arguments. `result` is the reduced
+/// arm expression (the op's parameters already substituted); `guards` are the
+/// `if`-conditions on the path to it (empty for an unconditional body). The
+/// arm set is exhaustive and mutually exclusive — equivalent to a single
+/// `ite`-chain — so a consumer asserts `⋀ guardsᵢ ⇒ op(args) = resultᵢ`.
+///
+/// Carried as **occurrences, not hash-consed terms**: a defining equation is
+/// transient, on-demand-derived structure (the CLAUDE.md Representation note —
+/// do not intern transient derived structure), and smt-gen already consumes
+/// rule bodies as occurrences (WI-246). Keeping the goal carrier neutral means
+/// the consumer never forces the partial occurrence→`TermId` conversion (which
+/// cannot represent control-flow); any lowering it needs happens at its own
+/// atom boundary, where an unrepresentable shape is rejected loudly.
+pub struct DefiningEquation {
+    pub guards: Vec<DefiningGuard>,
+    pub result: Rc<NodeOccurrence>,
+}
+
+/// One `if`-condition on the path to a [`DefiningEquation`]. `cond` is a
+/// boolean-valued occurrence in the op's parameter frame; `negated` marks the
+/// else-branch (the arm is reached only when `cond` is FALSE).
+#[derive(Clone)]
+pub struct DefiningGuard {
+    pub cond: Rc<NodeOccurrence>,
+    pub negated: bool,
+}
+
+/// The prover/SMT entry (design §3.4.1, WI-669): substitute a bodied op-call's
+/// arguments into its body one step and return its defining equations — one
+/// `DefiningEquation` per `if`-branch path, each carrying the branch conditions
+/// (`guards`) and the reduced result. Unlike [`folded_call_match`] (which serves
+/// the SLD relational case-split and admits only a flex-scrutinee disjoint
+/// `match`), this serves proofs: the arms become guarded SMT clauses whose
+/// conditions are asserted explicitly, so no flex/disjoint gate applies.
+///
+/// Returns `None` — a *loud* decline, never a silent partial — when the op is
+/// not a statically-known pure bodied op, the args don't bind, or the reduced
+/// body contains a form this increment does not admit: a `match` (ADT defining
+/// equations need SMT datatype support — future), a `let` (needs `Expr::Let` in
+/// [`reduce`] — the transponder follow-on, WI-679), or any higher-order /
+/// post-elaboration shape.
+fn defining_equations(
+    kb: &mut KnowledgeBase,
+    op: Symbol,
+    pos_args: &[Rc<NodeOccurrence>],
+    named_args: &[(Symbol, Rc<NodeOccurrence>)],
+) -> Option<Vec<DefiningEquation>> {
+    if !super::typing::op_has_runnable_body(kb, op) {
+        return None;
+    }
+    let info = lookup_operation_info(kb, op)?;
+    // Purity gate (design §9): an effectful body is not an equation. The
+    // `requires` gate is kept for this increment (relaxing it to carry the
+    // dictionary as an equation antecedent is future, §3.4.1); the arithmetic
+    // consumers (`desired_position`, the ranking transition) are requires-free.
+    if !info.effects.is_empty() || !info.requires.is_empty() {
+        return None;
+    }
+    let body = info.body_node.clone()?;
+    let env = bind_params(kb, &info.params, pos_args, named_args)?;
+    let pass = super::simp_rewrite::simp_pass(kb);
+    let residual = reduce(kb, &body, &env, pass)?;
+    let mut arms = Vec::new();
+    flatten_arms(&residual, Vec::new(), &mut arms)?;
+    Some(arms)
+}
+
+/// Flatten a reduced body into guarded arms: split every residual `if` into its
+/// two condition-guarded paths (then: `cond`; else: ¬`cond`), recursing so a
+/// nested `if` accumulates its conditions; a non-`if`/non-`match` residual is
+/// one arm under the guards collected so far. Declines (`None`) a residual
+/// `match` — ADT defining equations are future (they need SMT datatype support)
+/// — so the caller gets a loud decline rather than a silently-dropped branch.
+fn flatten_arms(
+    occ: &Rc<NodeOccurrence>,
+    guards: Vec<DefiningGuard>,
+    out: &mut Vec<DefiningEquation>,
+) -> Option<()> {
+    match occ.as_expr() {
+        Some(Expr::If { condition, then_branch, else_branch }) => {
+            let mut then_guards = guards.clone();
+            then_guards.push(DefiningGuard { cond: Rc::clone(condition), negated: false });
+            flatten_arms(then_branch, then_guards, out)?;
+            let mut else_guards = guards;
+            else_guards.push(DefiningGuard { cond: Rc::clone(condition), negated: true });
+            flatten_arms(else_branch, else_guards, out)?;
+            Some(())
+        }
+        // A residual `match` branches on an ADT scrutinee this increment can't
+        // lower to SMT — decline loudly (future: SMT datatype support + WI-679).
+        Some(Expr::Match { .. }) => None,
+        // Any other residual (constructor, arithmetic apply, field access, var,
+        // const) is a single arm under the accumulated guards.
+        _ => {
+            out.push(DefiningEquation { guards, result: Rc::clone(occ) });
+            Some(())
+        }
+    }
+}
+
 /// Bind `params` (declaration order) to the call's positional-then-named
 /// argument occurrences. Positional args fill the leading parameters; named
 /// args match a parameter by short name. Returns `None` on any arity mismatch,
@@ -595,4 +696,25 @@ fn reduce_named(
 
 fn rebuild(from: &Rc<NodeOccurrence>, expr: Expr, pass: PassId) -> Rc<NodeOccurrence> {
     NodeOccurrence::synthesized_expr(expr, Rc::clone(from), pass, from.owner)
+}
+
+impl KnowledgeBase {
+    /// Derive `op`'s defining equations from its body (design §3.4.1, WI-669):
+    /// the op's parameters become DeBruijn vars (`?0`…), the body is specialized
+    /// one step, and each `if`-branch path yields a guarded [`DefiningEquation`]
+    /// over those vars — as occurrences (carrier-neutral; see the type doc).
+    /// Returns `None` — a loud decline — when the body is not a pure,
+    /// `match`/`let`-free bodied op (see [`defining_equations`]).
+    ///
+    /// The parameter frame is `Var::DeBruijn` (rule storage convention, see
+    /// `rustland/CLAUDE.md` "De Bruijn Variables"), so a consumer can assert each
+    /// equation as a transient rule whose body the SMT emitter inlines unchanged.
+    pub fn op_defining_equations(&mut self, op: Symbol) -> Option<Vec<DefiningEquation>> {
+        let info = lookup_operation_info(self, op)?;
+        let span = info.body_node.as_ref()?.span;
+        let pos_args: Vec<Rc<NodeOccurrence>> = (0..info.params.len())
+            .map(|i| NodeOccurrence::new_expr(Expr::Var(Var::DeBruijn(i as u32)), span, None))
+            .collect();
+        defining_equations(self, op, &pos_args, &[])
+    }
 }

@@ -193,6 +193,81 @@ one-step specializer produces the equation set for an operation when a proof nee
 specialization *is* a defining equation). Extra **laws** (e.g. `append` associativity) are
 **theorems proved from the body** — never hand-written defining rules (unchanged from WI-580).
 
+### 3.4.1 Implementation design (WI-669)
+
+**Status:** in progress (2026-07-11). The SLD prover tier (`by derivation` / `discharge_by_derivation`,
+`kb/proof_verify.rs`) already reads bodies through §3.3's delivered unfold. The remaining piece is
+the **SMT tier** (`by z3`): `anthill-smt-gen` translates rule/fact bodies to SMT-LIB but has no path
+from an *operation body* to defining equations — a bodied op called in a proof-rule body is left
+uninterpreted. WI-669 closes that.
+
+**What a "defining equation" is here.** For a pure `op(params) -> T = body`, one-step-specialize
+`body` and read its arms. Each arm is a **guarded equation** `op(params) = resultᵢ :- guardᵢ`, where
+`guardᵢ` is the conjunction of branch conditions reaching that arm — for `match`, the
+scrutinee-vs-pattern unification; for `if`, `cond = true` on the then-arm and `cond = false` on the
+else-arm — and `resultᵢ` is the reduced arm body. Admitted arm sets are exhaustive and mutually
+exclusive, so the set is equivalent to one functional definition
+`op(params) = ite(guard₁, r₁, ite(guard₂, r₂, …))`. Recursion in a `resultᵢ` (a sub-call
+`op(smaller)`) is **not** unfolded by the specializer — it is a fresh call the *consumer* re-drives
+on demand (bounded by the concrete argument structure), the same "recursion is search, not the
+specializer" discipline as §3.3.
+
+**Engine entry point** (`kb/body_specialize.rs` — landed 2026-07-11, increment 1a). `defining_equations`
+(a sibling to `folded_call_match`) reduces the body one step and `flatten_arms` splits it into guarded
+arms, exposed as `KnowledgeBase::op_defining_equations(op)` over the op's parameters as DeBruijn vars:
+
+```rust
+pub struct DefiningEquation { pub guards: Vec<DefiningGuard>, pub result: Rc<NodeOccurrence> }
+pub struct DefiningGuard   { pub cond: Rc<NodeOccurrence>, pub negated: bool }
+impl KnowledgeBase { pub fn op_defining_equations(&mut self, op: Symbol) -> Option<Vec<DefiningEquation>> }
+```
+
+- **Carrier-neutral — occurrences, not `TermId`.** A defining equation is transient, on-demand-derived
+  structure, which the Representation note says *not* to intern; and smt-gen already consumes rule
+  bodies as occurrences (WI-246). So the equation stays a goal occurrence and the consumer never forces
+  the **partial** occurrence→`TermId` conversion — which cannot represent control-flow (`occurrence_to_term`
+  asserts/⊥s on `If`/`Match`), an intrinsic fact of goal position, not an incompleteness. Any lowering
+  happens at the consumer's own atom boundary, which rejects an unrepresentable shape loudly. *(An
+  earlier draft returned `TermId`; that round-trip reintroduced the boundary WI-246/668 removed and
+  created a partial-transformation crash/⊥ hazard — dropped.)*
+- Reuse `bind_params` + `reduce`; `flatten_arms` splits a residual `Expr::If` into two guarded arms
+  (then: `cond`; else: ¬`cond`), recursing so nested `if`s accumulate conditions.
+- **Admitted this increment: `if` + single-expression bodies.** A residual `match` is declined
+  (`None`) — ADT defining equations need SMT datatype support (future) + WI-679; `reduce` already
+  declines `let`/higher-order. Loud decline throughout.
+- **Gates:** keep **purity** (an effectful body is not an equation, §9). The `requires` gate is kept
+  for now (relaxing it to carry the dictionary as an antecedent is future); the arithmetic consumers
+  are requires-free. No flex-scrutinee / disjoint-constructor gate — those are §3.3 *relational*
+  guards; here guards are asserted explicitly.
+- **`let`** needs `Expr::Let` in `reduce` — the transponder follow-on (WI-679); increment-1 and WI-678
+  consumers are `let`-free.
+
+**The SMT seam (increment 1b, not yet built).** A proof references the equations by **calling the
+bodied op in the proof-rule body** — no new surface syntax (§3.4). The driver holds `&mut kb` and has
+the `synthesize_step_rule` precedent (`prove.rs:936`): materialize a transient rule via
+`assert_rule_debruijn_with_nodes_in_frame`, whose body is **the equation occurrences fed directly as
+rule body-nodes** (no term round-trip — the DeBruijn-param frame already matches rule storage), after
+which the ordinary `rule_id_by_qn → rule_body_nodes → SMT` path (`anthill-smt-gen/src/lib.rs:388,431`)
+emits it unchanged. Before `emit_satisfiability_check_with_deps` (`prove.rs:1876`), scan the obligation
+rule's body for calls to rule-less bodied ops and synthesize one `<op>__defeq` rule per call. Reuses
+the whole downstream emitter; no smt-gen change. A residual the emitter can't lower (an ADT arm, a
+control-flow occurrence) is rejected at smt-gen's own non-`Fn`-goal boundary — loud, at the right layer.
+
+Increment 1b's demonstrator is a small **arithmetic / `if`** bodied-op property (not `append`/`length`:
+those are ADT `match` bodies, which the SMT tier can't lower without datatype support). This is also
+closer to the lf1 consumers, which are all arithmetic. It discharges with **no** hand-written `<=>` twin.
+
+**Consumers:**
+- **arithmetic / `if` bodied-op property** — WI-669 increment-1b demonstrator. `if`/expr, `let`-free.
+- **lf1 GPS `desired_position`** ([WI-678]) — single-arm `Vec3` body, `let`-free; derives the
+  formation-geometry separation `|offset|` from the body, retiring the hand-planted `4.0` in
+  `real_pose_at(0, Follower, …)`. Needs a QF_NRA `cos²+sin²=1` fact — a backend wrinkle, not engine.
+- **lf1 transponder ranking** (follow-on) — the real drift case: `decrease_violation_transponder`'s
+  hand-written `?upc_next = ?upc + 1` appears to **diverge** from `step`'s clamp-through-0
+  (`else if gte(upc,0) then upc+1 else 0`), which snaps a post-armed `upc < 0` straight to `0`, not
+  `upc+1` (confirm at runtime). Deriving from the body removes the drift and may revise the `N = 6`
+  bound. Blocked on `let` in `reduce`.
+
 ## 4. The threshold — an optimization knob, NEVER a semantic gate
 
 - **Typer site (§3.2):** threshold-gated. Declining to inline leaves a runtime-evaluable call;
