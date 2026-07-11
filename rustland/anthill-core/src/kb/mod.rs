@@ -2911,9 +2911,8 @@ impl KnowledgeBase {
     /// term (`apply_subst`), inspecting a synthetic term marker
     /// (`forall_impl` / `push_choice` goal-classification), or recursing over
     /// term structure (`is_ground`, `collect_unbound_vars`). The carrier-faithful
-    /// chase that SURFACES a `Value::Node` is [`Self::walk_view`]; a builtin
-    /// reading a term-shaped arg uses `walk_arg_term` (which rejects a non-term
-    /// carrier rather than silently chasing past it). WI-348.
+    /// chase that SURFACES a `Value::Node` is [`Self::walk_view`], which the
+    /// carrier-neutral builtins read their args through. WI-348.
     pub fn walk(&self, term: TermId, subst: &subst::Substitution) -> TermId {
         use crate::eval::value::Value;
         let mut current = term;

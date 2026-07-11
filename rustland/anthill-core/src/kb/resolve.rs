@@ -899,12 +899,12 @@ impl SearchStream {
                 return self.step_naf(kb, &goal_val, depth, delay_mode);
             }
             // HO predicate application: replace goal with the applied term.
-            // `resolve_ho_apply` is term-structured; reify a Node goal (rare at
-            // a rule-body HoApply position) to a term for it.
+            // Carrier-neutral (WI-482 follow-up): `lower_ho_apply` reads the goal
+            // through `TermView`, so a rule-body `ho_apply` occurrence lowers
+            // without a whole-goal reify — only its args are reified as terms.
             if tag == BuiltinTag::HoApply {
                 let subst = frame.subst.clone();
-                let goal = goal_t.unwrap_or_else(|| reify_goal_value(kb, &goal_val));
-                if let Some(applied) = self.resolve_ho_apply(kb, goal, &subst) {
+                if let Some(applied) = Self::lower_ho_apply(kb, &goal_val, &subst) {
                     let f = self.stack.last_mut().unwrap();
                     f.goals[0] = Value::term(applied);
                     f.state = FrameState::Init { delay_mode };
@@ -1376,7 +1376,7 @@ impl SearchStream {
         let mut skolemized_antecedents: Vec<TermId> = Vec::with_capacity(antecedent_tids.len());
         for &t in &antecedent_tids {
             let sk = Self::subst_globals(kb, t, &skolem_map);
-            let lowered = Self::lower_ho_apply(kb, sk, &subst).unwrap_or(sk);
+            let lowered = Self::lower_ho_apply(kb, &sk, &subst).unwrap_or(sk);
             skolemized_antecedents.push(lowered);
         }
         let skolemized_consequents: Vec<TermId> = consequent_tids.iter()
@@ -1641,25 +1641,59 @@ impl SearchStream {
         Some(StepResult::Continue)
     }
 
-    /// If `term` is a top-level `ho_apply(?P, args...)` with `?P` walking
-    /// to a concrete symbol under `subst`, return the lowered form
-    /// `pred_sym(args...)`. Otherwise `None`.
-    fn lower_ho_apply(kb: &mut KnowledgeBase, term: TermId, subst: &Substitution) -> Option<TermId> {
-        let (pos_args, _named) = match kb.terms.get(term) {
-            Term::Fn { functor, pos_args, named_args, .. }
-                if kb.resolve_sym(*functor) == "ho_apply" =>
-                (pos_args.clone(), named_args.clone()),
+    /// If `goal` is a top-level `ho_apply(?P, args…)` whose predicate `?P` walks
+    /// to a concrete symbol under σ, return the lowered form `pred_sym(args…)`;
+    /// otherwise `None`. Reads `goal` through [`TermView`] (carrier-neutral — a
+    /// rule-body `ho_apply` occurrence lowers without a whole-goal reify), and
+    /// **creates a term for each argument** via `value_to_term` to build the
+    /// lowered `Term::Fn` (rather than splicing pre-interned arg handles). The
+    /// single lowering path for both the HoApply-builtin dispatch (a `Value`
+    /// goal) and `forall_impl` antecedent lowering (a `TermId`, which is itself a
+    /// `TermView`).
+    fn lower_ho_apply<V: TermView>(
+        kb: &mut KnowledgeBase,
+        goal: &V,
+        subst: &Substitution,
+    ) -> Option<TermId> {
+        let pos_arity = match goal.head(kb) {
+            ViewHead::Functor { functor: Some(f), pos_arity, .. }
+                if kb.resolve_sym(f) == "ho_apply" => pos_arity,
             _ => return None,
         };
-        if pos_args.is_empty() { return None; }
-        let Some(pred) = kb.walk_arg_term(pos_args[0], subst) else { return None };
-        let pred_sym = match kb.terms.get(pred) {
-            Term::Ref(s) => *s,
-            Term::Fn { functor, pos_args: pa, named_args: na, .. }
-                if pa.is_empty() && na.is_empty() => *functor,
+        if pos_arity == 0 { return None; }
+        // Collect the predicate (arg 0) and args (arg 1…) as raw owned values
+        // first — each `pos_arg` borrows `kb`, so this must finish before the
+        // `&mut kb` reify/alloc. The args are copied as-is (unwalked), mirroring
+        // the original splice.
+        let mut raw: SmallVec<[Value; 4]> = SmallVec::new();
+        for i in 0..pos_arity {
+            raw.push(match goal.pos_arg(kb, i)? {
+                ViewItem::Term(t) => Value::term(t),
+                ViewItem::Value(v) => v.clone(),
+                ViewItem::Node(occ) => Value::Node(occ),
+            });
+        }
+        // The predicate (arg 0) must reduce to a concrete symbol under σ: reify
+        // its carrier, then chase the var chain multi-hop through σ via
+        // `walk_view` (the carrier-faithful walk the old `walk_arg_term` used, so
+        // an ≥2-hop chain resolves the same). A still-unbound var / non-symbol
+        // term can't be applied.
+        let pred_term = kb.carrier_term(&raw[0])?;
+        let pred_sym = match kb.walk_view(pred_term, subst) {
+            Value::Term { id, .. } => match kb.terms.get(id) {
+                Term::Ref(s) => *s,
+                Term::Fn { functor, pos_args: pa, named_args: na, .. }
+                    if pa.is_empty() && na.is_empty() => *functor,
+                _ => return None,
+            },
             _ => return None,
         };
-        let remaining: SmallVec<[TermId; 4]> = pos_args[1..].into();
+        // Create a term for each argument (a `Value::Node` arg lowers via
+        // `occurrence_to_term`, a `Value::Term` unwraps, a scalar allocs a const).
+        let mut remaining: SmallVec<[TermId; 4]> = SmallVec::new();
+        for a in &raw[1..] {
+            remaining.push(node_occurrence::value_to_term(kb, a).ok()?);
+        }
         Some(kb.alloc(Term::Fn {
             functor: pred_sym,
             pos_args: remaining,
@@ -1868,34 +1902,6 @@ impl SearchStream {
             }
             _ => term,
         }
-    }
-
-    /// Resolve ho_apply(?P, args...) by walking ?P through the substitution.
-    /// If ?P resolves to a concrete symbol, construct Fn(sym, args) and return it.
-    fn resolve_ho_apply(&self, kb: &mut KnowledgeBase, goal: TermId, subst: &Substitution) -> Option<TermId> {
-        let (pos_args, _named_args) = match kb.get_term(goal) {
-            Term::Fn { pos_args, named_args, .. } => (pos_args.clone(), named_args.clone()),
-            _ => return None,
-        };
-        if pos_args.is_empty() { return None; }
-
-        // First pos_arg is the predicate variable — walk it
-        let Some(pred_tid) = kb.walk_arg_term(pos_args[0], subst) else { return None };
-        let pred_sym = match kb.get_term(pred_tid) {
-            Term::Ref(s) => *s,
-            Term::Fn { functor, pos_args: pa, named_args: na, .. }
-                if pa.is_empty() && na.is_empty() => *functor,
-            _ => return None, // still a variable or complex term — can't apply
-        };
-
-        // Construct the applied goal: pred_sym(remaining_args)
-        let remaining: SmallVec<[TermId; 4]> = pos_args[1..].into();
-        let result = kb.alloc(Term::Fn {
-            functor: pred_sym,
-            pos_args: remaining,
-            named_args: SmallVec::new(),
-        });
-        Some(result)
     }
 
     /// Rotate the current frame's `goals[0]` (a delayed / undecided NAF goal)
@@ -3124,27 +3130,6 @@ impl KnowledgeBase {
         match self.symbols.get(sym) {
             crate::intern::SymbolDef::Resolved { qualified_name, .. } => qualified_name.clone(),
             crate::intern::SymbolDef::Unresolved { name } => format!("_unresolved.{}", name),
-        }
-    }
-
-    /// Walk a builtin argument to a `TermId`, narrowing the carrier (WI-348
-    /// directive #3 / proposal Phase D). Used by the `ho_apply` predicate
-    /// extraction, which reads a term-shaped predicate head; a var bound to a
-    /// non-`Term` carrier (a `Value::Node` denoted/occurrence, a scalar) is a
-    /// type error for it — `None` here, which the caller turns into its failure
-    /// path. (The symbol-reflection builtins that formerly shared this now read
-    /// their goal through `TermView` and reify a structural arg via
-    /// `carrier_term`, WI-482.) Reads through `walk_view` (the carrier-faithful
-    /// chase) so a Node binding is *seen and rejected*, not silently chased past
-    /// to the bare var (the former `walk`, which would then `Delay` on an
-    /// already-bound arg).
-    fn walk_arg_term(&self, arg: TermId, subst: &Substitution) -> Option<TermId> {
-        // Narrow to the hash-consed `Term` carrier; a var bound to a non-`Term`
-        // (a `Value::Node` denoted/occurrence, a scalar) is `None` here, which each
-        // caller turns into its failure path (see the doc above).
-        match self.walk_view(arg, subst) {
-            Value::Term { id: t, .. } => Some(t),
-            _ => None,
         }
     }
 
