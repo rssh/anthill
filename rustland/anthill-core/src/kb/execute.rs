@@ -649,7 +649,6 @@ impl KnowledgeBase {
             functor,
             pos: std::rc::Rc::from(args),
             named: std::rc::Rc::from(Vec::<(Symbol, Value)>::new()),
-            ty: None,
         }
     }
 

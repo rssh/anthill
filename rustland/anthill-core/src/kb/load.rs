@@ -5127,14 +5127,12 @@ pub(crate) fn build_value_list(kb: &mut KnowledgeBase, items: Vec<crate::eval::v
         functor: nil_sym,
         pos: Rc::from(Vec::<Value>::new()),
         named: Rc::from(Vec::<(Symbol, Value)>::new()),
-        ty: None,
     };
     for item in items.into_iter().rev() {
         list = Value::Entity {
             functor: cons_sym,
             pos: Rc::from(Vec::<Value>::new()),
             named: Rc::from(vec![(head_sym, item), (tail_sym, list)]),
-            ty: None,
         };
     }
     list
@@ -9978,7 +9976,6 @@ impl<'a> Loader<'a> {
                 functor: sort_view_sym,
                 pos: std::rc::Rc::from(pos),
                 named: std::rc::Rc::from(named),
-                ty: None,
             }
         } else {
             let pos_args: SmallVec<[TermId; 4]> = pos
@@ -10645,7 +10642,6 @@ impl<'a> Loader<'a> {
                             functor: syms.field_info,
                             pos: std::rc::Rc::from(Vec::new()),
                             named: std::rc::Rc::from(named),
-                            ty: None,
                         }
                     }
                     Value::Term { id: type_term, .. } => {
@@ -10692,7 +10688,6 @@ impl<'a> Loader<'a> {
                 functor: syms.entity_info,
                 pos: std::rc::Rc::from(Vec::<Value>::new()),
                 named: std::rc::Rc::from(named),
-                ty: None,
             };
             self.kb.assert_metadata_fact_value(head, syms.sort_sort, domain, None);
         }
@@ -11774,7 +11769,6 @@ impl<'a> Loader<'a> {
                             functor: field_info_sym,
                             pos: std::rc::Rc::from(Vec::new()),
                             named: std::rc::Rc::from(named),
-                            ty: None,
                         }
                     }
                     crate::eval::value::Value::Term { id: type_term, .. } => {
@@ -11971,7 +11965,6 @@ impl<'a> Loader<'a> {
                 functor: op_info_sym,
                 pos: std::rc::Rc::from(Vec::<Value>::new()),
                 named: std::rc::Rc::from(named),
-                ty: None,
             };
             self.kb.assert_metadata_fact_value(head, op_sort, domain, None);
         }

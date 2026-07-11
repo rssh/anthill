@@ -1263,7 +1263,7 @@ fn pattern_match_value(
             Some(if pos.is_empty() && named.is_empty() {
                 Value::term(kb.alloc(Term::Ref(name)))
             } else {
-                Value::Entity { functor: name, pos: Rc::from(pos), named: Rc::from(named), ty: None }
+                Value::Entity { functor: name, pos: Rc::from(pos), named: Rc::from(named) }
             })
         }
         Pattern::Tuple { .. } => None,
@@ -7649,7 +7649,7 @@ fn substitute_spec_via_subst(
         // concrete call type reaches the `SortGoal` — and preserve a denoted
         // `Value::Node` child verbatim (its Expr-occurrence σ is the deferred
         // parametric-effect handling, mirroring the op-level `substitute_clause`).
-        Value::Entity { functor, pos, named, ty } => {
+        Value::Entity { functor, pos, named } => {
             let new_pos: Vec<Value> =
                 pos.iter().map(|v| substitute_spec_via_subst(kb, v, subst)).collect();
             let new_named: Vec<(Symbol, Value)> = named
@@ -7660,7 +7660,6 @@ fn substitute_spec_via_subst(
                 functor: *functor,
                 pos: new_pos.into(),
                 named: new_named.into(),
-                ty: ty.clone(),
             }
         }
         other => other.clone(),
@@ -19032,7 +19031,6 @@ fn substitute_ref_terms_value_rec(
                 functor: f,
                 pos: std::rc::Rc::from(pos),
                 named: std::rc::Rc::from(named),
-                ty: None,
             }
         }
         // A functor-LESS aggregate with children — a native `Value::Tuple`: rebuild a
@@ -19046,7 +19044,6 @@ fn substitute_ref_terms_value_rec(
             Value::Tuple {
                 pos: std::rc::Rc::from(pos),
                 named: std::rc::Rc::from(named),
-                ty: None,
             }
         }
         // A childless aggregate (Unit / empty tuple), literal, var, bottom, or opaque
@@ -22894,7 +22891,7 @@ fn substitute_in_spec(
         // `T = ParentT` type binding is re-scoped top-down) and preserve a denoted
         // `Value::Node` child verbatim (deferred parametric-effect handling). See
         // `substitute_spec_via_subst` for the per-call-subst twin.
-        Value::Entity { functor, pos, named, ty } => {
+        Value::Entity { functor, pos, named } => {
             let new_pos: Vec<Value> =
                 pos.iter().map(|v| substitute_in_spec(kb, v, map)).collect();
             let new_named: Vec<(Symbol, Value)> = named
@@ -22905,7 +22902,6 @@ fn substitute_in_spec(
                 functor: *functor,
                 pos: new_pos.into(),
                 named: new_named.into(),
-                ty: ty.clone(),
             }
         }
         other => other.clone(),
@@ -23370,15 +23366,16 @@ pub fn sort_functor_of_view<V: TermView>(kb: &KnowledgeBase, ty: &V) -> Option<S
     }
 }
 
-// ── WI-578 — value-level `typed` (the typed-VALUE producer) ──────────────────
+// ── WI-578 — value-level type computation (`value_type_term`) ─────────────────
 //
-// `typed(value, env)` (the design's boundary op; `env` = `kb` + `subst` for a
-// runtime value) populates the `Value::ty` field once at the boundary, SUPERSEDING
-// `min_sort_of_value` (which returned `None` on exactly the constructed values that
-// matter). The type COMPUTATION (`value_type_term`) reads the value through
-// `TermView` — ONE carrier-agnostic walk, so a constructor reached as `Value::Entity`
-// or as a hash-consed `Value::Term` types identically — while the PRODUCER (`typed`)
-// is variant-preserving. See `docs/design/constrained-term-substrate.md`.
+// `value_type_term(value, env)` (`env` = `kb` + `subst`) computes a runtime value's
+// type-term, SUPERSEDING `min_sort_of_value` (which returned `None` on exactly the
+// constructed values that matter). It reads the value through `TermView` — ONE
+// carrier-agnostic walk, so a constructor reached as `Value::Entity` or as a
+// hash-consed `Value::Term` types identically. (The M3 per-instance `Value::ty`
+// cache + its `typed` producer were built but never wired in, and were removed as
+// dead code; the type is recomputed on demand or read from an occurrence's
+// `inferred_type`.)
 
 /// WI-578 — reconstruct a constructor's parent-sort type-param bindings from a
 /// field-unified substitution. Walks the parent sort's `SortAlias` facts to recover
@@ -23633,7 +23630,8 @@ fn self_return_spec_op_result_type(
 
 /// WI-578 — the result type-term of a constructor application, given its children's
 /// already-computed types. The value-level analog of [`check_constructor_iter`]'s
-/// build core MINUS the error-producing field VALIDATION (`typed` is TOTAL): look up
+/// build core MINUS the error-producing field VALIDATION (`value_type_term` is
+/// TOTAL): look up
 /// the constructor's parent sort + declared field types, unify each child type
 /// against its field's declared type into a fresh substitution (pinning the sort's
 /// type-params), then [`reconstruct_sort_params`] + build `Sort[params]` (or the bare
@@ -23744,7 +23742,7 @@ fn seq_literal_value_type(kb: &mut KnowledgeBase, base_name: &str, pos_child_typ
 /// fresh `?_`. The deref is a CYCLE-GUARDED loop — the SLD bind path is not
 /// occurs-checked, so σ can carry a cyclic var spine; on a revisit we flounder (`?_`)
 /// rather than loop (M6 / WI-067: an under-determined type suspends, never crashes).
-/// WI-578 — depth bound for the [`value_type_term`] / [`typed`] structural recursion.
+/// WI-578 — depth bound for the [`value_type_term`] structural recursion.
 /// A runtime value can be DEEP (a long `cons` list) or CYCLIC (`?x := cons(1, ?x)` —
 /// the SLD bind path is not occurs-checked), either of which would otherwise recurse
 /// unboundedly on the Rust stack. At the cap we flounder to a `?_` type-var (M6 /
@@ -23888,20 +23886,15 @@ fn child_types_named(
 /// constructor reached as a `Value::Entity` or as a hash-consed `Value::Term` types
 /// identically (the one read path — WI-342/348). An under-determined part rides as a
 /// `?_` type-var, never `None` — the totality that SUPERSEDES `min_sort_of_value`.
-/// Returns the type as a `Value` type-term (the shape `inferred_type` / the
-/// `Value::ty` field hold: `Ref(S)` / `Fn{S, named}` / denoted).
+/// Returns the type as a `Value` type-term (the shape an occurrence's
+/// `inferred_type` holds: `Ref(S)` / `Fn{S, named}` / denoted).
 pub fn value_type_term(kb: &mut KnowledgeBase, subst: &Substitution, v: &Value) -> Value {
     value_type_term_d(kb, subst, v, 0)
 }
 
 fn value_type_term_d(kb: &mut KnowledgeBase, subst: &Substitution, v: &Value, depth: usize) -> Value {
-    // A constructed value already typed by `typed` carries its type — read it (O(1),
-    // no recursion, so honored at any depth).
-    if let Some(t) = v.ty() {
-        return (**t).clone();
-    }
-    // A typed source occurrence carries its type in `inferred_type` (not the `ty`
-    // field); honor it before a structural recompute.
+    // A typed source occurrence carries its type in `inferred_type`; honor it before
+    // a structural recompute.
     if let Value::Node(occ) = v {
         if let Some(t) = occ.inferred_type() {
             return t;
@@ -23931,105 +23924,6 @@ fn value_type_term_d(kb: &mut KnowledgeBase, subst: &Substitution, v: &Value, de
         }
         // Bare identifier / bottom / opaque handle — no structural type to read.
         ViewHead::Ident(_) | ViewHead::Bottom | ViewHead::Opaque => fresh_type_var(kb),
-    }
-}
-
-/// WI-578 — the value-level `typed` PRODUCER: return `value` with its `ty` field
-/// populated. Run ONCE at the boundary where an untyped runtime value enters.
-/// VARIANT-PRESERVING — an `Entity` stays an `Entity` (typed children + `ty`), a
-/// `Term` stays a `Term`, a `Tuple` stays a `Tuple`; carriers WITHOUT a `ty` field
-/// (scalars, `Unit`, `Var`, `Node`, runtime handles) pass through unchanged (their
-/// type is implicit / lives elsewhere, read by [`value_type_term`]). For `Entity` /
-/// `Tuple` the carried `ty` is computed from the ALREADY-TYPED children (bottom-up,
-/// O(n)); a `Term`'s structure is not a tree of `Value`s, so its `ty` is the one-shot
-/// [`value_type_term`] read of the whole term.
-pub fn typed(kb: &mut KnowledgeBase, subst: &Substitution, value: &Value) -> Value {
-    typed_d(kb, subst, value, 0)
-}
-
-fn typed_d(kb: &mut KnowledgeBase, subst: &Substitution, value: &Value, depth: usize) -> Value {
-    // Bound the structural recursion (deep / cyclic values) — leave a too-deep subterm
-    // un-stamped (sound: `ty` is optional) rather than overflow the stack.
-    if depth >= TYPE_DEPTH_CAP {
-        return value.clone();
-    }
-    match value {
-        Value::Entity { functor, pos, named, .. } => {
-            let functor = *functor;
-            let mut pos_t: Vec<Value> = Vec::with_capacity(pos.len());
-            for c in pos.iter() {
-                pos_t.push(typed_d(kb, subst, c, depth + 1));
-            }
-            let mut named_t: Vec<(Symbol, Value)> = Vec::with_capacity(named.len());
-            for (s, c) in named.iter() {
-                named_t.push((*s, typed_d(kb, subst, c, depth + 1)));
-            }
-            // Compute `ty` from the ALREADY-TYPED children (each `value_type_term_d` is
-            // O(1) via the child's cached `ty` / leaf sort — keeps `typed` O(n)).
-            let mut pos_types: Vec<Value> = Vec::with_capacity(pos_t.len());
-            for c in &pos_t {
-                pos_types.push(value_type_term_d(kb, subst, c, depth));
-            }
-            let mut named_types: Vec<(Symbol, Value)> = Vec::with_capacity(named_t.len());
-            for (s, c) in &named_t {
-                named_types.push((*s, value_type_term_d(kb, subst, c, depth)));
-            }
-            let ty = constructor_value_type(kb, functor, &pos_types, &named_types);
-            Value::Entity {
-                functor,
-                pos: pos_t.into(),
-                named: named_t.into(),
-                ty: Some(Rc::new(ty)),
-            }
-        }
-        Value::Tuple { pos, named, .. } => {
-            let mut pos_t: Vec<Value> = Vec::with_capacity(pos.len());
-            for c in pos.iter() {
-                pos_t.push(typed_d(kb, subst, c, depth + 1));
-            }
-            let mut named_t: Vec<(Symbol, Value)> = Vec::with_capacity(named.len());
-            for (s, c) in named.iter() {
-                named_t.push((*s, typed_d(kb, subst, c, depth + 1)));
-            }
-            let mut pos_types: Vec<Value> = Vec::with_capacity(pos_t.len());
-            for c in &pos_t {
-                pos_types.push(value_type_term_d(kb, subst, c, depth));
-            }
-            let mut named_types: Vec<(Symbol, Value)> = Vec::with_capacity(named_t.len());
-            for (s, c) in &named_t {
-                named_types.push((*s, value_type_term_d(kb, subst, c, depth)));
-            }
-            let ty = tuple_value_type(kb, pos_types, named_types);
-            Value::Tuple {
-                pos: pos_t.into(),
-                named: named_t.into(),
-                ty: Some(Rc::new(ty)),
-            }
-        }
-        Value::Term { id, .. } => {
-            let ty = value_type_term_d(kb, subst, value, depth);
-            Value::typed_term(*id, ty)
-        }
-        // Carriers WITHOUT a `ty` field: their type is implicit (a scalar's literal
-        // sort) or lives elsewhere (a `Node`'s `inferred_type`, a `Var`'s constraint
-        // store), surfaced by `value_type_term`. Listed EXPLICITLY (not `_`) so a future
-        // ty-bearing `Value` variant is a compile error here, not a silent untyped
-        // passthrough (the WI-538 wildcard trap).
-        Value::Int(_)
-        | Value::BigInt(_)
-        | Value::Float(_)
-        | Value::Bool(_)
-        | Value::Str(_)
-        | Value::Unit
-        | Value::Var(_)
-        | Value::Node(_)
-        | Value::Closure(_)
-        | Value::OpRef { .. }
-        | Value::Stream(_)
-        | Value::Substitution(_)
-        | Value::Map(_)
-        | Value::Cell(_)
-        | Value::Requirement(_) => value.clone(),
     }
 }
 
@@ -29194,13 +29088,11 @@ mod wi621_carrier_neutral_goal_subst {
         let tuple = Value::Tuple {
             pos: Rc::from(vec![Value::term(var_ref_b), Value::term(zero)]),
             named: Rc::from(Vec::<(Symbol, Value)>::new()),
-            ty: None,
         };
         let goal = Value::Entity {
             functor: pred,
             pos: Rc::from(vec![tuple]),
             named: Rc::from(Vec::<(Symbol, Value)>::new()),
-            ty: None,
         };
 
         let mut sigma: HashMap<Symbol, _> = HashMap::new();

@@ -713,7 +713,6 @@ fn value_to_term_errors_on_term_less_residue() {
     let tup = Value::Tuple {
         pos: vec![Value::Int(1)].into(),
         named: Vec::new().into(),
-        ty: None,
     };
     assert!(
         value_to_term(&mut kb, &tup).is_err(),

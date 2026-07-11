@@ -3064,7 +3064,6 @@ impl KnowledgeBase {
                 functor,
                 pos: std::rc::Rc::from(pos),
                 named: std::rc::Rc::from(named),
-                ty: None,
             }
         }
     }
@@ -3129,13 +3128,13 @@ impl KnowledgeBase {
             // ~1709) then floundered even after a sibling goal had bound them,
             // making the deep-groundness gate (which reads σ) and the reification
             // disagree.
-            Value::Entity { functor, pos, named, ty } => {
+            Value::Entity { functor, pos, named } => {
                 let (pos, named) = self.reify_value_children(pos, named, subst);
-                Value::Entity { functor: *functor, pos, named, ty: ty.clone() }
+                Value::Entity { functor: *functor, pos, named }
             }
-            Value::Tuple { pos, named, ty } => {
+            Value::Tuple { pos, named } => {
                 let (pos, named) = self.reify_value_children(pos, named, subst);
-                Value::Tuple { pos, named, ty: ty.clone() }
+                Value::Tuple { pos, named }
             }
             other => other.clone(),
         }
@@ -3308,7 +3307,7 @@ impl KnowledgeBase {
                     .iter()
                     .map(|(s, c)| (*s, self.close_value_head_debruijn(c.clone(), vars)))
                     .collect();
-                Value::Entity { functor, pos: std::rc::Rc::from(pos), named: std::rc::Rc::from(named), ty: None }
+                Value::Entity { functor, pos: std::rc::Rc::from(pos), named: std::rc::Rc::from(named) }
             }
             Value::Tuple { pos, named, .. } => {
                 let pos: Vec<Value> = pos
@@ -3319,7 +3318,7 @@ impl KnowledgeBase {
                     .iter()
                     .map(|(s, c)| (*s, self.close_value_head_debruijn(c.clone(), vars)))
                     .collect();
-                Value::Tuple { pos: std::rc::Rc::from(pos), named: std::rc::Rc::from(named), ty: None }
+                Value::Tuple { pos: std::rc::Rc::from(pos), named: std::rc::Rc::from(named) }
             }
             // Scalars have no vars to close.
             h @ (Value::Int(_) | Value::BigInt(_) | Value::Float(_) | Value::Bool(_)
@@ -4282,7 +4281,6 @@ impl KnowledgeBase {
                 functor: element_sym,
                 pos: Rc::from(Vec::new()),
                 named: Rc::from(named),
-                ty: None,
             });
         }
         // The `cons`/`nil` spine reuses the shared `Value`-list builder (its
@@ -5276,7 +5274,6 @@ mod tests {
             functor: f_sym,
             pos: Rc::from(vec![Value::Node(Rc::clone(&denoted_occ))]),
             named: Rc::from(Vec::<(Symbol, Value)>::new()),
-            ty: None,
         };
 
         let rid = kb.assert_fact_value(head, sort, domain, None);
@@ -5348,7 +5345,6 @@ mod tests {
                 ];
                 Rc::from(n)
             },
-            ty: None,
         };
 
         let rid = kb.assert_fact_value(head, sort, domain, None);
@@ -5413,7 +5409,6 @@ mod tests {
             functor: f_sym,
             pos: Rc::from(vec![Value::Node(Rc::clone(&denoted_occ))]),
             named: Rc::from(Vec::<(Symbol, Value)>::new()),
-            ty: None,
         };
         kb.assert_fact_value(head, sort, domain, None);
 
@@ -5504,7 +5499,6 @@ mod tests {
                 functor: f_sym,
                 pos: Rc::from(vec![Value::Node(occ)]),
                 named: Rc::from(Vec::<(Symbol, Value)>::new()),
-                ty: None,
             };
             kb.assert_fact_value(head, sort, domain, None);
         }
@@ -5595,7 +5589,6 @@ mod tests {
             functor: vf,
             pos: Rc::from(vec![Value::Node(Rc::clone(&denoted))]),
             named: Rc::from(Vec::<(Symbol, Value)>::new()),
-            ty: None,
         };
 
         // A ground body atom, so this is a rule (non-empty body), not a fact.
@@ -5661,7 +5654,6 @@ mod tests {
             functor: vf,
             pos: Rc::from(vec![Value::Node(g_db)]),
             named: Rc::from(Vec::<(Symbol, Value)>::new()),
-            ty: None,
         };
         let cond_goal = kb.alloc(Term::Fn {
             functor: cond,
@@ -5723,7 +5715,6 @@ mod tests {
             functor: vf,
             pos: Rc::from(vec![Value::Node(g_occ)]),
             named: Rc::from(Vec::<(Symbol, Value)>::new()),
-            ty: None,
         };
         let thing_x = kb.alloc(Term::Fn {
             functor: thing,
@@ -5798,7 +5789,6 @@ mod tests {
             functor: vf,
             pos: Rc::from(vec![Value::Node(g_occ)]),
             named: Rc::from(Vec::<(Symbol, Value)>::new()),
-            ty: None,
         };
         let thing_x = kb.alloc(Term::Fn {
             functor: thing, pos_args: SmallVec::from_elem(xt, 1), named_args: SmallVec::new(),
@@ -5927,7 +5917,6 @@ mod tests {
             functor: mk,
             pos: Rc::from(vec![Value::Int(1), Value::Int(2)]),
             named: Rc::from(Vec::<(crate::intern::Symbol, Value)>::new()),
-            ty: None,
         };
         let mut tree_subst = subst::Substitution::new();
         tree_subst.bind_value(&kb, Var::DeBruijn(0).as_vid(), entity);
@@ -5985,13 +5974,11 @@ mod tests {
         let tuple = Value::Tuple {
             pos: Rc::from(vec![Value::Int(1), Value::Int(2)]),
             named: Rc::from(Vec::<(crate::intern::Symbol, Value)>::new()),
-            ty: None,
         };
         let entity = Value::Entity {
             functor: mk,
             pos: Rc::from(vec![tuple]),
             named: Rc::from(Vec::<(crate::intern::Symbol, Value)>::new()),
-            ty: None,
         };
         let mut tree_subst = subst::Substitution::new();
         tree_subst.bind_value(&kb, Var::DeBruijn(0).as_vid(), entity);
@@ -6043,13 +6030,11 @@ mod tests {
         let tuple = Value::Tuple {
             pos: Rc::from(vec![Value::Int(1), Value::Int(2)]),
             named: Rc::from(Vec::<(crate::intern::Symbol, Value)>::new()),
-            ty: None,
         };
         let entity = Value::Entity {
             functor: mk,
             pos: Rc::from(vec![tuple]),
             named: Rc::from(Vec::<(crate::intern::Symbol, Value)>::new()),
-            ty: None,
         };
 
         // No panic; the candidate drops, so the predicate is unproved.
@@ -6239,7 +6224,6 @@ mod tests {
             functor: f,
             pos: vec![Value::Str("A001".into())].into(),
             named: Vec::new().into(),
-            ty: None,
         };
 
         let subst = kb.match_view(pattern, &value_target)
@@ -6330,19 +6314,16 @@ mod tests {
             functor: inner,
             pos: Vec::new().into(),
             named: vec![(a_field, Value::Int(1)), (b_field, Value::Str("hi".into()))].into(),
-            ty: None,
         };
-        let leaf_val = Value::Entity { functor: leaf, pos: Vec::new().into(), named: Vec::new().into(), ty: None };
+        let leaf_val = Value::Entity { functor: leaf, pos: Vec::new().into(), named: Vec::new().into() };
         let nested_tuple = Value::Tuple {
             pos: vec![Value::Int(2), leaf_val.clone()].into(),
             named: Vec::new().into(),
-            ty: None,
         };
         let target = Value::Entity {
             functor: pair,
             pos: vec![inner_val.clone(), nested_tuple.clone()].into(),
             named: Vec::new().into(),
-            ty: None,
         };
 
         let subst = kb.match_view(pattern, &target).expect("match should succeed");
@@ -7006,19 +6987,16 @@ mod wi518_occurrence_guard_resolution_tests {
             functor: pattern_query,
             pos: Rc::from(Vec::<Value>::new()),
             named: Rc::from(vec![(term, leaf)]),
-            ty: None,
         };
         let empty = Value::Entity {
             functor: empty_query,
             pos: Rc::from(Vec::<Value>::new()),
             named: Rc::from(Vec::<(Symbol, Value)>::new()),
-            ty: None,
         };
         Value::Entity {
             functor: no_q,
             pos: Rc::from(Vec::<Value>::new()),
             named: Rc::from(vec![(condition, pq), (body, empty)]),
-            ty: None,
         }
     }
 
@@ -7196,32 +7174,27 @@ mod wi518_occurrence_guard_resolution_tests {
             functor: pattern_query,
             pos: Rc::from(Vec::<Value>::new()),
             named: Rc::from(vec![(term, Value::term(flag_leaf))]),
-            ty: None,
         };
         // Right: the occurrence self-loop leaf.
         let pq_occ = Value::Entity {
             functor: pattern_query,
             pos: Rc::from(Vec::<Value>::new()),
             named: Rc::from(vec![(term, edge_self_loop_occurrence(&mut kb))]),
-            ty: None,
         };
         let conj = Value::Entity {
             functor: conjunction,
             pos: Rc::from(Vec::<Value>::new()),
             named: Rc::from(vec![(left, pq_term), (right, pq_occ)]),
-            ty: None,
         };
         let empty = Value::Entity {
             functor: empty_query,
             pos: Rc::from(Vec::<Value>::new()),
             named: Rc::from(Vec::<(Symbol, Value)>::new()),
-            ty: None,
         };
         let query = Value::Entity {
             functor: no_q,
             pos: Rc::from(Vec::<Value>::new()),
             named: Rc::from(vec![(condition, conj), (body, empty)]),
-            ty: None,
         };
         kb.add_guard_labeled(query, Some("conj_constraint".to_string()));
 
@@ -7297,7 +7270,6 @@ mod wi628_guard_truncation_tests {
             functor: pq,
             pos: Rc::from(Vec::<Value>::new()),
             named: Rc::from(vec![(term, leaf)]),
-            ty: None,
         }
     }
 
@@ -7307,7 +7279,6 @@ mod wi628_guard_truncation_tests {
             functor: f,
             pos: Rc::from(Vec::<Value>::new()),
             named: Rc::from(named),
-            ty: None,
         }
     }
 

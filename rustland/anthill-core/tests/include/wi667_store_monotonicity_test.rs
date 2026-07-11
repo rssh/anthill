@@ -80,7 +80,6 @@ fn register_policy_store(interp: &mut Interpreter, mock: PolicyStore) -> Value {
         functor,
         pos: vec![].into(),
         named: vec![].into(),
-        ty: None,
     };
     let key = interp.store_canonical_key(&store_val).expect("canonical key");
     interp.register_store(key, Box::new(mock));
@@ -100,10 +99,9 @@ fn register_file_store(interp: &mut Interpreter, root: &std::path::Path) -> Valu
         named: vec![
             (root_sym, Value::Str(root.to_str().unwrap().to_string())),
             (convention_sym, Value::Entity {
-                functor: flat, pos: vec![].into(), named: vec![].into(), ty: None,
+                functor: flat, pos: vec![].into(), named: vec![].into(),
             }),
         ].into(),
-        ty: None,
     };
     let key = interp.store_canonical_key(&store_val).expect("canonical key");
     interp.register_store(key, Box::new(FileStore::new(root.to_path_buf(), FileConvention::Flat)));
@@ -115,7 +113,7 @@ fn register_file_store(interp: &mut Interpreter, root: &std::path::Path) -> Valu
 fn functor_value(interp: &mut Interpreter, qname: &str) -> Value {
     let sym = interp.kb_mut().try_resolve_symbol(qname)
         .unwrap_or_else(|| panic!("resolve `{qname}` — is it declared?"));
-    Value::Entity { functor: sym, pos: vec![].into(), named: vec![].into(), ty: None }
+    Value::Entity { functor: sym, pos: vec![].into(), named: vec![].into() }
 }
 
 fn monotonicity(interp: &mut Interpreter, store: &Value, functor: Value) -> Result<Value, EvalError> {
@@ -255,7 +253,7 @@ fn append_only_default_store_cannot_retract() {
     let src = "namespace test.syn\n  entity Ghost\nend\n";
     let mut interp = interp_for(src);
     let functor = interp.kb_mut().intern("AppendOnly");
-    let store = Value::Entity { functor, pos: vec![].into(), named: vec![].into(), ty: None };
+    let store = Value::Entity { functor, pos: vec![].into(), named: vec![].into() };
     let key = interp.store_canonical_key(&store).expect("key");
     interp.register_store(key, Box::new(AppendOnly));
 

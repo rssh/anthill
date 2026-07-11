@@ -599,10 +599,8 @@ fn run_anthill_bundle(argv: &[String]) -> i32 {
                     functor: single_file_sym,
                     pos: vec![].into(),
                     named: vec![(file_field, Value::Str("workitems.anthill".to_string()))].into(),
-                    ty: None,
                 }),
             ].into(),
-            ty: None,
         };
         let key = match interp.store_canonical_key(&v) {
             Ok(k) => k,
@@ -672,7 +670,6 @@ fn run_anthill_bundle(argv: &[String]) -> i32 {
                 (backend_field, store_value.clone()),
                 (counter_field, Value::Int(id_counter)),
             ].into(),
-            ty: None,
         };
         let handle = interp.alloc_cell(wis_value);
         Value::Cell(handle)

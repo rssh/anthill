@@ -1726,7 +1726,7 @@ fn map_value_type<R: TypeChildRewrite>(
             // Reuse the original (cheap Rc bump) when no child var changed — the
             // ptr-eq economy the Type/Expr rewriters keep.
             if c1 || c2 {
-                (Value::Entity { functor: *functor, pos: Rc::from(npos), named: Rc::from(nnamed), ty: None }, true)
+                (Value::Entity { functor: *functor, pos: Rc::from(npos), named: Rc::from(nnamed) }, true)
             } else {
                 (v.clone(), false)
             }
@@ -1735,7 +1735,7 @@ fn map_value_type<R: TypeChildRewrite>(
             let (npos, c1) = map_value_seq(r, kb, pos);
             let (nnamed, c2) = map_value_named(r, kb, named);
             if c1 || c2 {
-                (Value::Tuple { pos: Rc::from(npos), named: Rc::from(nnamed), ty: None }, true)
+                (Value::Tuple { pos: Rc::from(npos), named: Rc::from(nnamed) }, true)
             } else {
                 (v.clone(), false)
             }
@@ -3433,12 +3433,10 @@ fn rewrite_ref_value(value: &Value, map: &std::collections::HashMap<Symbol, Symb
             functor: *functor,
             pos: pos.iter().map(|v| rewrite_ref_value(v, map)).collect(),
             named: named.iter().map(|(s, v)| (*s, rewrite_ref_value(v, map))).collect(),
-            ty: None,
         },
         Value::Tuple { pos, named, .. } => Value::Tuple {
             pos: pos.iter().map(|v| rewrite_ref_value(v, map)).collect(),
             named: named.iter().map(|(s, v)| (*s, rewrite_ref_value(v, map))).collect(),
-            ty: None,
         },
         other => other.clone(),
     }
@@ -5542,7 +5540,6 @@ mod tests {
             functor: f,
             pos: Rc::from(vec![Value::term(v_t)]),
             named: Rc::from(Vec::<(Symbol, Value)>::new()),
-            ty: None,
         };
         let nt = NodeOccurrence::new_type(TypeNode::NamedTuple { fields }, span, None);
 

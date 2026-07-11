@@ -37,7 +37,6 @@ fn goal(functor: Symbol, args: Vec<Value>) -> Value {
         functor,
         pos: Rc::from(args),
         named: Rc::from(Vec::new()),
-        ty: None,
     }
 }
 

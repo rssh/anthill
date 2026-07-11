@@ -84,13 +84,11 @@ fn group_query(interp: &mut Interpreter, group: i64) -> SearchStream {
             (key_field, Value::term(var_k)),
         ]
         .into(),
-        ty: None,
     };
     let query = Value::Entity {
         functor: pattern_query_sym,
         pos: Vec::new().into(),
         named: vec![(term_field, pattern)].into(),
-        ty: None,
     };
 
     kb.execute_logical_query(&query).expect("execute lowered query")

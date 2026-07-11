@@ -247,13 +247,12 @@ fn option_string_arg(v: Value) -> Result<Option<String>, EvalError> {
 
 /// Build a `cons(head:_, tail:_)` chain terminated by `nil()` as a `Value`.
 fn build_list_value(syms: &ReflectSyms, elements: Vec<Value>) -> Value {
-    let mut acc = Value::Entity { functor: syms.nil, pos: Vec::new().into(), named: Vec::new().into(), ty: None };
+    let mut acc = Value::Entity { functor: syms.nil, pos: Vec::new().into(), named: Vec::new().into() };
     for elem in elements.into_iter().rev() {
         acc = Value::Entity {
             functor: syms.cons,
             pos: Vec::new().into(),
             named: vec![(syms.head, elem), (syms.tail, acc)].into(),
-            ty: None,
         };
     }
     acc
@@ -269,7 +268,7 @@ fn make_entity(kb: &KnowledgeBase, functor: Symbol, mut named: Vec<(Symbol, Valu
             None => named.sort_by_key(|(s, _)| s.index()),
         }
     }
-    Value::Entity { functor, pos: Vec::new().into(), named: named.into(), ty: None }
+    Value::Entity { functor, pos: Vec::new().into(), named: named.into() }
 }
 
 // ── Builtin handlers ───────────────────────────────────────────
@@ -290,7 +289,6 @@ fn kb_sort_template(
         functor: syms.sort_query,
         pos: Vec::new().into(),
         named: vec![(syms.f_sort, sort)].into(),
-        ty: None,
     })
 }
 
@@ -505,9 +503,7 @@ impl reader::ReifyBuilder for ValueReprBuilder<'_> {
                 functor: ctor,
                 pos: Vec::new().into(),
                 named: vec![(syms.f_value, inner)].into(),
-                ty: None,
             })].into(),
-            ty: None,
         }
     }
 
@@ -516,7 +512,6 @@ impl reader::ReifyBuilder for ValueReprBuilder<'_> {
             functor: self.syms.var_repr,
             pos: Vec::new().into(),
             named: vec![(self.syms.f_name, Value::Str(name))].into(),
-            ty: None,
         }
     }
 
@@ -526,7 +521,6 @@ impl reader::ReifyBuilder for ValueReprBuilder<'_> {
             functor: self.syms.ref_repr,
             pos: Vec::new().into(),
             named: vec![(self.syms.f_name, Value::term(name_term))].into(),
-            ty: None,
         }
     }
 
@@ -540,7 +534,6 @@ impl reader::ReifyBuilder for ValueReprBuilder<'_> {
                 (self.syms.f_name, Value::term(name_term)),
                 (self.syms.f_args, args_list),
             ].into(),
-            ty: None,
         }
     }
 }
@@ -772,10 +765,9 @@ fn scope_op(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError
                 functor: some_sym,
                 pos: Vec::new().into(),
                 named: vec![(value_field, Value::term(ref_tid))].into(),
-                ty: None,
             }
         }
-        None => Value::Entity { functor: none_sym, pos: Vec::new().into(), named: Vec::new().into(), ty: None },
+        None => Value::Entity { functor: none_sym, pos: Vec::new().into(), named: Vec::new().into() },
     })
 }
 
@@ -877,10 +869,9 @@ fn term_as_sort(
             functor: some_sym,
             pos: Vec::new().into(),
             named: vec![(syms.f_value, Value::term(tid))].into(),
-            ty: None,
         })
     } else {
-        Ok(Value::Entity { functor: none_sym, pos: Vec::new().into(), named: Vec::new().into(), ty: None })
+        Ok(Value::Entity { functor: none_sym, pos: Vec::new().into(), named: Vec::new().into() })
     }
 }
 
@@ -1178,7 +1169,7 @@ end
 "#);
         let none_sym = interp.kb_mut().try_resolve_symbol("anthill.prelude.Option.none")
             .expect("Option.none");
-        let none_val = Value::Entity { functor: none_sym, pos: Vec::new().into(), named: Vec::new().into(), ty: None };
+        let none_val = Value::Entity { functor: none_sym, pos: Vec::new().into(), named: Vec::new().into() };
         let result = interp.call("anthill.reflect.KB.sorts", &[Value::Unit, none_val])
             .expect("sorts call");
         let mut count = 0;
@@ -1230,7 +1221,6 @@ end
             functor: some_sym,
             pos: Vec::new().into(),
             named: vec![(value_sym, Value::Str("Beta".into()))].into(),
-            ty: None,
         };
         let result = interp
             .call("anthill.reflect.KB.descriptions", &[Value::Unit, target])
@@ -1586,13 +1576,11 @@ end
             functor: ei_sym,
             pos: Vec::new().into(),
             named: vec![(name_field, Value::term(var_n)), (fields_field, Value::term(var_f))].into(),
-            ty: None,
         };
         let query = Value::Entity {
             functor: pq_sym,
             pos: Vec::new().into(),
             named: vec![(term_field, inner)].into(),
-            ty: None,
         };
 
         let stream = interp.call("anthill.reflect.KB.execute", &[Value::Unit, query])

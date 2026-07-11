@@ -419,8 +419,8 @@ fn reassemble_value(kb: &mut KnowledgeBase, node: &Value, new_children: &[Value]
                 // Hash-consing would dedup an unchanged rebuild back to `id`
                 // anyway, but this avoids the alloc + rebuild — now hit at EVERY
                 // node since WI-643 removed the fuel-as-depth cutoff (the term
-                // carrier rewrites bottom-up). Compare BEFORE building, and reuse
-                // `node.clone()` so a WI-578 carried `ty` survives.
+                // carrier rewrites bottom-up). Compare BEFORE building, returning
+                // the original node unchanged when no child moved.
                 let changed = new_children[..np]
                     .iter()
                     .zip(pos_args.iter())
@@ -947,12 +947,11 @@ mod tests {
         let head = Value::Entity {
             functor: eq,
             pos: vec![
-                Value::Entity { functor: a, pos: Vec::new().into(), named: Vec::new().into(), ty: None },
-                Value::Entity { functor: b, pos: Vec::new().into(), named: Vec::new().into(), ty: None },
+                Value::Entity { functor: a, pos: Vec::new().into(), named: Vec::new().into() },
+                Value::Entity { functor: b, pos: Vec::new().into(), named: Vec::new().into() },
             ]
             .into(),
             named: Vec::new().into(),
-            ty: None,
         };
         let sort = kb.make_name_term("Eq");
         let domain = kb.make_name_term("test");

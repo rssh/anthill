@@ -116,7 +116,7 @@ fn lq_entity(
     functor: anthill_core::intern::Symbol,
     named: Vec<(anthill_core::intern::Symbol, Value)>,
 ) -> Value {
-    Value::Entity { functor, pos: Vec::new().into(), named: named.into(), ty: None }
+    Value::Entity { functor, pos: Vec::new().into(), named: named.into() }
 }
 
 // ── KbBridge ────────────────────────────────────────────────────

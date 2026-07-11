@@ -167,7 +167,6 @@ end
         functor: interp.kb_mut().intern("FakeBackend"),
         pos: vec![].into(),
         named: vec![].into(),
-        ty: None,
     };
     let wis_value = Value::Entity {
         functor: wis_sym,
@@ -176,7 +175,6 @@ end
             (backend_field, dummy_backend),
             (counter_field, Value::Int(1)),
         ].into(),
-        ty: None,
     };
     let handle = interp.alloc_cell(wis_value);
     let cell_value = Value::Cell(handle);

@@ -1477,7 +1477,6 @@ mod wi436_tests {
             functor: red,
             pos: Rc::from(Vec::<Value>::new()),
             named: Rc::from(Vec::<(Symbol, Value)>::new()),
-            ty: None,
         };
         let ctor_occ = Value::Node(NodeOccurrence::new_expr(
             Expr::Constructor { name: red, pos_args: Vec::new(), named_args: Vec::new() },

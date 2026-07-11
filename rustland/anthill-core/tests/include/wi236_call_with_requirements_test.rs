@@ -79,11 +79,9 @@ fn build_cell_wis(interp: &mut Interpreter) -> Value {
                 functor: fake_backend_sym,
                 pos: vec![].into(),
                 named: vec![].into(),
-                ty: None,
             }),
             (counter_field, Value::Int(1)),
         ].into(),
-        ty: None,
     };
     let handle = interp.alloc_cell(wis_value);
     Value::Cell(handle)

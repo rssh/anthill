@@ -263,13 +263,12 @@ fn run(argv: Vec<String>) -> Result<i64, String> {{
 fn build_string_list(interp: &mut Interpreter, args: Vec<String>) -> Value {{
     let cons_sym = interp.kb().resolve_symbol("anthill.prelude.List.cons");
     let nil_sym  = interp.kb().resolve_symbol("anthill.prelude.List.nil");
-    let mut acc = Value::Entity {{ functor: nil_sym, pos: Vec::new().into(), named: Vec::new().into(), ty: None }};
+    let mut acc = Value::Entity {{ functor: nil_sym, pos: Vec::new().into(), named: Vec::new().into() }};
     for s in args.into_iter().rev() {{
         acc = Value::Entity {{
             functor: cons_sym,
             pos: vec![Value::Str(s), acc].into(),
             named: Vec::new().into(),
-            ty: None,
         }};
     }}
     acc

@@ -33,10 +33,8 @@ fn filestore_value(interp: &mut Interpreter, root: &str) -> Value {
                 functor: flat,
                 pos: vec![].into(),
                 named: vec![].into(),
-                ty: None,
             }),
         ].into(),
-        ty: None,
     }
 }
 
@@ -66,7 +64,6 @@ fn persist_then_flush_writes_fact_to_disk() {
         functor: foo_sym,
         pos: vec![].into(),
         named: vec![(value_sym, Value::Int(7))].into(),
-        ty: None,
     };
 
     let none_val = Value::Unit;
@@ -130,8 +127,8 @@ fn retract_via_builtin_removes_fact_from_disk() {
     let foo_sym = interp.kb_mut().intern("Foo");
     let bar_sym = interp.kb_mut().try_resolve_symbol("test.retract.Bar")
         .expect("declared Bar resolves");
-    let foo_val = Value::Entity { functor: foo_sym, pos: vec![].into(), named: vec![].into(), ty: None };
-    let bar_val = Value::Entity { functor: bar_sym, pos: vec![].into(), named: vec![].into(), ty: None };
+    let foo_val = Value::Entity { functor: foo_sym, pos: vec![].into(), named: vec![].into() };
+    let bar_val = Value::Entity { functor: bar_sym, pos: vec![].into(), named: vec![].into() };
 
     let none_val = Value::Unit;
     let _foo_id = interp.call("anthill.persistence.Store.persist", &[store_val.clone(), foo_val, none_val.clone()]).unwrap();
@@ -170,19 +167,17 @@ fn store_canonical_key_is_stable() {
         pos: vec![].into(),
         named: vec![
             (root, Value::Str("/tmp/x".into())),
-            (conv, Value::Entity { functor: flat, pos: vec![].into(), named: vec![].into(), ty: None }),
+            (conv, Value::Entity { functor: flat, pos: vec![].into(), named: vec![].into() }),
         ].into(),
-        ty: None,
     };
     let v2 = Value::Entity {
         functor: fs,
         pos: vec![].into(),
         named: vec![
             // reversed order
-            (conv, Value::Entity { functor: flat, pos: vec![].into(), named: vec![].into(), ty: None }),
+            (conv, Value::Entity { functor: flat, pos: vec![].into(), named: vec![].into() }),
             (root, Value::Str("/tmp/x".into())),
         ].into(),
-        ty: None,
     };
     let k1 = interp.store_canonical_key(&v1).unwrap();
     let k2 = interp.store_canonical_key(&v2).unwrap();

@@ -1,11 +1,10 @@
-//! WI-578 — the value-level `typed` producer + `value_type_term` reader.
+//! WI-578 — the `value_type_term` reader.
 //!
-//! `typed(value, env)` populates the `Value::ty` field; `value_type_term` computes a
-//! runtime value's type-term CARRIER-AGNOSTICALLY (a `Value::Entity` and the
-//! hash-consed `Value::Term` of the same constructor type identically — one
-//! `TermView` read path, WI-342/348). These pin the milestone `min_sort_of_value`
-//! could NOT reach: a bare constructed value gets its FULL parameterized type
-//! (`cons(1, nil)` -> `List[Int64]`), not `None`.
+//! `value_type_term` computes a runtime value's type-term CARRIER-AGNOSTICALLY (a
+//! `Value::Entity` and the hash-consed `Value::Term` of the same constructor type
+//! identically — one `TermView` read path, WI-342/348). These pin the milestone
+//! `min_sort_of_value` could NOT reach: a bare constructed value gets its FULL
+//! parameterized type (`cons(1, nil)` -> `List[Int64]`), not `None`.
 
 use anthill_core::eval::value::Value;
 use anthill_core::intern::Symbol;
@@ -13,7 +12,7 @@ use anthill_core::kb::load::{self, NullResolver};
 use anthill_core::kb::node_occurrence::value_to_term;
 use anthill_core::kb::subst::Substitution;
 use anthill_core::kb::term::{Term, Var, VarId};
-use anthill_core::kb::typing::{sort_functor_of_view, typed, value_type_term};
+use anthill_core::kb::typing::{sort_functor_of_view, value_type_term};
 use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
 
@@ -59,12 +58,12 @@ fn cons_value(kb: &mut KnowledgeBase, hd: Value, tl: Value) -> Value {
     let tail = kb.intern("tail");
     let mut named = vec![(head, hd), (tail, tl)];
     named.sort_by_key(|(s, _)| s.index());
-    Value::Entity { functor: cons, pos: vec![].into(), named: named.into(), ty: None }
+    Value::Entity { functor: cons, pos: vec![].into(), named: named.into() }
 }
 
 fn nil_value(kb: &KnowledgeBase) -> Value {
     let nil = sym(kb, "anthill.prelude.List.nil");
-    Value::Entity { functor: nil, pos: vec![].into(), named: vec![].into(), ty: None }
+    Value::Entity { functor: nil, pos: vec![].into(), named: vec![].into() }
 }
 
 /// Assert a parameterized type `Fn{S, named: [(_, P), ...]}` carries a param `P`
@@ -100,14 +99,6 @@ fn value_type_term_scalar_is_literal_sort() {
     assert_sort_named(&kb, head, "Int64");
 }
 
-#[test]
-fn typed_scalar_is_passthrough() {
-    let mut kb = load_kb();
-    let subst = Substitution::new();
-    let out = typed(&mut kb, &subst, &Value::Int(7));
-    assert!(matches!(out, Value::Int(7)), "a scalar passes through unchanged (no ty field)");
-}
-
 /// The MILESTONE: a bare constructed list gets its FULL parameterized type
 /// `List[Int64]` — the case `min_sort_of_value` returned `None` for.
 #[test]
@@ -120,23 +111,6 @@ fn value_type_term_of_cons_is_list_of_int() {
     let head = sort_functor_of_view(&kb, &ty).expect("cons has a sort head");
     assert_sort_named(&kb, head, "List");
     assert_type_param_is(&kb, &ty, "Int64");
-}
-
-/// `typed` stamps the `ty` field on a constructed Entity and preserves the variant.
-#[test]
-fn typed_cons_stamps_list_ty() {
-    let mut kb = load_kb();
-    let subst = Substitution::new();
-    let nil = nil_value(&kb);
-    let cons = cons_value(&mut kb, Value::Int(1), nil);
-    let out = typed(&mut kb, &subst, &cons);
-    match &out {
-        Value::Entity { ty: Some(t), .. } => {
-            let head = sort_functor_of_view(&kb, t.as_ref()).expect("ty has a sort head");
-            assert_sort_named(&kb, head, "List");
-        }
-        other => panic!("typed(cons) must be an Entity carrying a ty, got {other:?}"),
-    }
 }
 
 /// CARRIER-AGNOSTIC: the SAME constructor typed through a hash-consed `Value::Term`
@@ -241,7 +215,7 @@ fn value_type_term_unbound_var_reads_store_bound() {
 
 /// A reflect-`*Literal` entity carrying its elements positionally (no declared field).
 fn literal_value(kb: &KnowledgeBase, qn: &str, elems: Vec<Value>) -> Value {
-    Value::Entity { functor: sym(kb, qn), pos: elems.into(), named: vec![].into(), ty: None }
+    Value::Entity { functor: sym(kb, qn), pos: elems.into(), named: vec![].into() }
 }
 
 /// WI-578 (phase-2b review item A) — an un-desugared `[...]` reaches the value-typer as

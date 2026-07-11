@@ -1,5 +1,15 @@
 # Typed terms — values and variables carry their type
 
+> **UPDATE (2026-07-11): the M3 per-instance `Value::ty` cache was REVERTED.** The
+> `ty: Option<Rc<Value>>` field on `Value::Term`/`Entity`/`Tuple` and its `typed(value, env)`
+> producer were built (WI-578) but never wired into the value-entry boundary, so `ty` was
+> always `None` and the cache never populated. They were removed as dead code. The rest of the
+> substrate stands: **`value_type_term`** (the on-demand, carrier-agnostic type reader) is the
+> live "type of a value" mechanism, an occurrence's type lives on `NodeOccurrence::inferred_type`,
+> and the `imbl` constraint store (WI-570) is unaffected. Re-introduce the `ty` cache only
+> alongside a real producer call at value-entry, and only if profiling shows `value_type_term`
+> recomputation is hot. Sections below describing the `ty` field / `typed` producer are historical.
+
 ## Status
 
 Design — **origin** 2026-06-20 (as `typed-term-carrier.md`), generalized 2026-06-26, **converged

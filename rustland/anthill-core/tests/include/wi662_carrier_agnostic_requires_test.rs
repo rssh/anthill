@@ -86,7 +86,6 @@ fn assert_requires_fact(kb: &mut KnowledgeBase, denoted: bool) -> (Symbol, Symbo
             functor: sortview,
             pos: vec![foo_base].into(),
             named: vec![(k, Value::Node(node))].into(),
-            ty: None,
         }
     } else {
         foo_base
@@ -215,7 +214,6 @@ end
         functor: sortview,
         pos: vec![foo_base].into(),
         named: vec![(x_sym, x_ref), (e_sym, Value::Node(node))].into(),
-        ty: None,
     };
     let req_sort = kb.make_name_term("Requirement");
     let domain = kb.make_name_term("test.wi662b");

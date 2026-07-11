@@ -45,7 +45,6 @@ impl ExternalStream for WorkItemBackend {
             functor: self.functor,
             pos: Vec::new().into(),
             named: named.into(),
-            ty: None,
         })
     }
     fn description(&self) -> &str { "WorkItemBackend[in-memory]" }
@@ -189,7 +188,6 @@ impl ExternalStream for CyclicRowBackend {
             functor: self.wrap_functor,
             pos: vec![Value::Var(Var::Global(self.id_var))].into(),
             named: Vec::new().into(),
-            ty: None,
         };
         let mut named = vec![
             (self.id_field, cyclic),
@@ -200,7 +198,6 @@ impl ExternalStream for CyclicRowBackend {
             functor: self.functor,
             pos: Vec::new().into(),
             named: named.into(),
-            ty: None,
         })
     }
     fn description(&self) -> &str { "CyclicRowBackend[WI-649]" }

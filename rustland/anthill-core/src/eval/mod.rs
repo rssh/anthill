@@ -1126,6 +1126,6 @@ impl Interpreter {
         // positional pattern (`case undecided(subst, residual)`) binds the right
         // field; `subst`/`residual` are NOT in alphabetical order.
         self.kb.canonicalize_record_named_args(functor, &mut named);
-        Ok(Value::Entity { functor, pos: Vec::new().into(), named: named.into(), ty: None })
+        Ok(Value::Entity { functor, pos: Vec::new().into(), named: named.into() })
     }
 }

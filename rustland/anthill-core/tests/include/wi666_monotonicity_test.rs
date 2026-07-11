@@ -25,10 +25,9 @@ fn setup_store(interp: &mut Interpreter, root: &std::path::Path) -> Value {
         named: vec![
             (root_sym, Value::Str(root.to_str().unwrap().to_string())),
             (convention_sym, Value::Entity {
-                functor: flat, pos: vec![].into(), named: vec![].into(), ty: None,
+                functor: flat, pos: vec![].into(), named: vec![].into(),
             }),
         ].into(),
-        ty: None,
     };
     let key = interp.store_canonical_key(&store_val).expect("canonical key");
     interp.register_store(key, Box::new(FileStore::new(root.to_path_buf(), FileConvention::Flat)));
@@ -41,7 +40,7 @@ fn setup_store(interp: &mut Interpreter, root: &std::path::Path) -> Value {
 fn declared_fact(interp: &mut Interpreter, qname: &str) -> Value {
     let sym = interp.kb_mut().try_resolve_symbol(qname)
         .unwrap_or_else(|| panic!("resolve `{qname}` — is it declared?"));
-    Value::Entity { functor: sym, pos: vec![].into(), named: vec![].into(), ty: None }
+    Value::Entity { functor: sym, pos: vec![].into(), named: vec![].into() }
 }
 
 fn persist(interp: &mut Interpreter, store: &Value, fact: Value) -> Result<Value, anthill_core::eval::EvalError> {

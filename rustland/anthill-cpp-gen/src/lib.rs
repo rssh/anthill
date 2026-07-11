@@ -3661,7 +3661,6 @@ fn query_realization_facts(
         functor,
         pos: std::rc::Rc::from(Vec::<Value>::new()),
         named: std::rc::Rc::from(named),
-        ty: None,
     };
     kb.query_view(&pattern)
         .into_iter()

@@ -468,9 +468,9 @@ impl Substitution {
 
     /// WI-502 Step 3 — the `Type` constraint payloads recorded on `var`, unioned
     /// across the parent chain (the kind-#2 read dual of [`Self::lacks_of`]).
-    /// The value-level type reader (`var_type_term`, in `typed`) reads these as the
-    /// store-fallback for an unbound-but-constrained var. Owned `Vec` since the
-    /// union spans levels.
+    /// The value-level type reader (`var_type_term`, called from `value_type_term`)
+    /// reads these as the store-fallback for an unbound-but-constrained var. Owned
+    /// `Vec` since the union spans levels.
     pub fn type_constraints_of(&self, var: VarId) -> Vec<Value> {
         let mut out: Vec<Value> = self
             .constraints
@@ -760,7 +760,6 @@ mod tests {
             functor,
             pos: vec![Value::Int(10), Value::Str("hi".into())].into(),
             named: vec![(key, Value::Bool(true))].into(),
-            ty: None,
         };
         s.bind_value(&kb, v, entity);
         assert!(!matches!(s.resolve_as_value(v), Some(Value::Term { .. })));
@@ -784,7 +783,6 @@ mod tests {
         let tuple = Value::Tuple {
             pos: vec![Value::Int(1), Value::Int(2), Value::Int(3)].into(),
             named: vec![].into(),
-            ty: None,
         };
         s.bind_value(&kb, v, tuple);
         assert!(!matches!(s.resolve_as_value(v), Some(Value::Term { .. })));
@@ -806,7 +804,6 @@ mod tests {
             functor: Symbol::from_raw(7),
             pos: vec![Value::Int(10), Value::Str("hi".into())].into(),
             named: vec![(Symbol::from_raw(8), Value::Bool(true))].into(),
-            ty: None,
         };
         s.bind_value(&kb, v, make_entity());
         s.bind_value(&kb, v, make_entity());
@@ -824,7 +821,6 @@ mod tests {
                 functor: Symbol::from_raw(7),
                 pos: vec![Value::Int(10)].into(),
                 named: vec![].into(),
-                ty: None,
             },
         );
         s.bind_value(&kb,
@@ -833,7 +829,6 @@ mod tests {
                 functor: Symbol::from_raw(7),
                 pos: vec![Value::Int(11)].into(),
                 named: vec![].into(),
-                ty: None,
             },
         );
         assert!(s.is_contradiction());
@@ -854,7 +849,6 @@ mod tests {
             functor: foo,
             pos: vec![Value::Int(1)].into(),
             named: vec![].into(),
-            ty: None,
         };
         // The faithful Term form of `entity` — same structure, `Term` carrier.
         let t = crate::kb::node_occurrence::value_to_term(&mut kb, &entity).unwrap();
@@ -875,9 +869,9 @@ mod tests {
         let v = vid(1);
         let foo = kb.intern("foo");
         let one =
-            Value::Entity { functor: foo, pos: vec![Value::Int(1)].into(), named: vec![].into(), ty: None };
+            Value::Entity { functor: foo, pos: vec![Value::Int(1)].into(), named: vec![].into() };
         let two =
-            Value::Entity { functor: foo, pos: vec![Value::Int(2)].into(), named: vec![].into(), ty: None };
+            Value::Entity { functor: foo, pos: vec![Value::Int(2)].into(), named: vec![].into() };
         let t1 = crate::kb::node_occurrence::value_to_term(&mut kb, &one).unwrap();
         let mut s = Substitution::new();
         s.bind_term(&kb, v, t1);
@@ -895,10 +889,8 @@ mod tests {
             pos: vec![Value::Tuple {
                 pos: vec![Value::Int(1), Value::Str("x".into())].into(),
                 named: vec![].into(),
-                ty: None,
             }].into(),
             named: vec![].into(),
-            ty: None,
         };
         s.bind_value(&kb, v, make());
         s.bind_value(&kb, v, make());

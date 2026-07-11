@@ -150,7 +150,6 @@ mod tests {
             functor,
             pos: Rc::from([]),
             named: Rc::from([(op_field, Value::Str("Int64.div".to_string()))]),
-            ty: None,
         };
         assert_eq!(
             render_payload(&kb, &payload, 0),

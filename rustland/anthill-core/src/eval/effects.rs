@@ -536,7 +536,6 @@ impl Interpreter {
             functor,
             pos: Rc::from([]),
             named: named_syms.into(),
-            ty: None,
         };
         self.raise_error(payload)
     }

@@ -1751,7 +1751,7 @@ impl Interpreter {
         let value = if Some(ctor_sym) == self.reflect.list_literal {
             self.build_list_value(pos, &named)?
         } else if is_tuple_literal {
-            Value::Tuple { pos: pos.into(), named: named.into(), ty: None }
+            Value::Tuple { pos: pos.into(), named: named.into() }
         } else if Some(ctor_sym) == self.reflect.set_literal {
             // SetLiteral has set semantics: dedup by structural equality so
             // nested tuples/entities compare by shape, not identity. Opaque
@@ -1768,9 +1768,9 @@ impl Interpreter {
                     deduped.push(v);
                 }
             }
-            Value::Entity { functor: ctor_sym, pos: deduped.into(), named: named.into(), ty: None }
+            Value::Entity { functor: ctor_sym, pos: deduped.into(), named: named.into() }
         } else {
-            Value::Entity { functor: ctor_sym, pos: pos.into(), named: named.into(), ty: None }
+            Value::Entity { functor: ctor_sym, pos: pos.into(), named: named.into() }
         };
         Ok(StepOutcome::Deliver(value))
     }
@@ -1791,7 +1791,7 @@ impl Interpreter {
         let tail_seed = named.iter()
             .find(|(s, _)| *s == self.fields.tail)
             .map(|(_, v)| v.clone())
-            .unwrap_or(Value::Entity { functor: nil_sym, pos: Vec::new().into(), named: Vec::new().into(), ty: None });
+            .unwrap_or(Value::Entity { functor: nil_sym, pos: Vec::new().into(), named: Vec::new().into() });
 
         let mut acc = tail_seed;
         for elem in elements.into_iter().rev() {
@@ -1799,7 +1799,6 @@ impl Interpreter {
                 functor: cons_sym,
                 pos: Vec::new().into(),
                 named: vec![(self.fields.head, elem), (self.fields.tail, acc)].into(),
-                ty: None,
             };
         }
         Ok(acc)
