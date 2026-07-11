@@ -17,13 +17,17 @@
 //! a `SearchStream`, which depends on the M4 stream arena — that lives
 //! in the `LogicalStream` milestone, not here.
 
+use std::rc::Rc;
+
 use smallvec::SmallVec;
 
 use crate::eval::value::Value;
 use crate::intern::Symbol;
 
+use super::node_occurrence::NodeOccurrence;
 use super::resolve::{PositionalPlan, ResolveConfig, SearchStream};
 use super::term::{Literal, Term, TermId, Var, VarId};
+use super::term_view::{TermView, ViewHead};
 use super::KnowledgeBase;
 
 /// WI-169: a stable, hash-consing-independent structural fingerprint of a
@@ -78,6 +82,20 @@ pub(crate) enum SynthKey {
     Ident(Symbol),
     Bottom,
 }
+
+/// A `TermView` whose `head()` arity disagrees with its `pos_arg`/`named_arg`
+/// accessors. Impossible for every carrier: each derives `head`'s `pos_arity`
+/// from its positional-child count and `named_arity`/`named_keys` from its named
+/// children, so `pos_arg(i < pos_arity)` and `named_arg(k in named_keys)` always
+/// hit an existing child (verified for `TermId`/`Value::Entity`, and every goal
+/// occurrence kind — Apply/Constructor/Instantiation, and the synthesized
+/// DotApply/VarRef children; a reflect-unloaded DotApply/VarRef reads `Opaque`,
+/// not `Functor`, so the child loops never run). The goal-structure walkers
+/// [`KnowledgeBase::append_synth_key`] and [`KnowledgeBase::collect_goal_view_vars`]
+/// `debug_assert` on it as a backstop against a future carrier that breaks the
+/// contract — never a live path.
+const VIEW_ARITY_DESYNC: &str =
+    "TermView head() arity disagrees with pos_arg/named_arg accessor (broken carrier)";
 
 /// Reason a `Value` could not be lowered into a KB query.
 #[derive(Clone, Debug)]
@@ -337,19 +355,37 @@ impl KnowledgeBase {
     }
 
     /// Lift a multi-goal body into a single goal by synthesizing a fresh
-    /// rule `_synth_N(?vars) :- body`, where `?vars` are the free Globals
-    /// across `body`. Returns the head term — a single TermId callers can
-    /// pass to `not`, `or`, etc. Proposal 033 / WI-076.
-    fn synthesize_conjunction_rule(&mut self, body: Vec<TermId>) -> TermId {
-        // Free Globals across the body, in first-occurrence order — these are
+    /// rule `_synth_N(?vars) :- goals`, where `?vars` are the free Globals
+    /// across `goals`. Returns the head as a `Value` callers can pass to `not`,
+    /// `or`, etc. Proposal 033 / WI-076.
+    ///
+    /// WI-678: carrier-agnostic — the goals stay `Value`s (an occurrence
+    /// `Value::Node` NEVER round-trips through a `TermId`). Free vars and the memo
+    /// key are read through `TermView`, and the stored rule body is the goal
+    /// carriers themselves, so the former occurrence→`TermId`→occurrence detour
+    /// (`goal_value_to_term` + `term_body_to_nodes`) drops out. The synth head
+    /// itself is a genuinely synthetic `_synth_N(?vars)` application (no occurrence
+    /// source), so it stays a hash-consed `Term::Fn` carried as a `Value::Term` —
+    /// the exact head/rule shape the term path produced, so the De Bruijn frame is
+    /// byte-identical.
+    fn synthesize_conjunction_rule(&mut self, goals: Vec<Value>) -> Result<Value, LowerError> {
+        // Free Globals across the goals, in first-occurrence order — these are
         // the synth head's parameters and define the De Bruijn frame.
-        let mut free_vars: Vec<super::term::VarId> = Vec::new();
-        for &g in &body {
-            for v in self.collect_vars(g) {
-                if !free_vars.iter().any(|fv| fv.raw() == v.raw()) {
-                    free_vars.push(v);
-                }
-            }
+        // `collect_goal_view_vars` walks each goal through the SAME `TermView`
+        // traversal as `append_synth_key` below, so the head params and the memo
+        // key's `Var(pos)` slots are collected in lockstep — walk parity holds by
+        // construction (both share one traversal), for every carrier and however
+        // the goal nests. It is deliberately STRUCTURAL: a Global living only in a
+        // type-position field of an occurrence goal (`p[T = ?v](..)`) is NOT a head
+        // param — the resolver never matches type positions (they are not
+        // `TermView` children) — so `assert_rule_debruijn_with_nodes` re-collects
+        // it off the stored body occurrence and closes it as a sound body-local De
+        // Bruijn var. Byte-identical to the former term path, which reified each
+        // goal — dropping type positions (`occ_build_fn`) — before collecting.
+        let mut free_vars: Vec<VarId> = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        for g in &goals {
+            self.collect_goal_view_vars(g, &mut free_vars, &mut seen);
         }
 
         // WI-169: memoize on the body's structural fingerprint so a repeated
@@ -367,9 +403,12 @@ impl KnowledgeBase {
         // lowering artifact (never retracted — `_synth_N` is a generated symbol no
         // source can name), so the memo never goes stale and needs no
         // invalidation; like `fact_dedup` it must be reset alongside `rules` by
-        // any future KB clone/reset.
+        // any future KB clone/reset. WI-678: the key is walked off each goal's
+        // carrier through `TermView`, byte-identically to the former term walk (an
+        // occurrence reifies to its `Term::Fn` twin with the same functor / child
+        // order, WI-425), so dedup is unchanged.
         let mut key: Vec<SynthKey> = Vec::new();
-        for &g in &body {
+        for g in &goals {
             key.push(SynthKey::Goal);
             self.append_synth_key(g, &free_vars, &mut key);
         }
@@ -386,7 +425,7 @@ impl KnowledgeBase {
         // miss) and as the returned goal. On a hit it is the only allocation;
         // the rule itself is reused.
         let pos_args: SmallVec<[TermId; 4]> = free_vars.iter()
-            .map(|&v| self.terms.alloc(Term::Var(super::term::Var::Global(v))))
+            .map(|&v| self.terms.alloc(Term::Var(Var::Global(v))))
             .collect();
         let head = self.terms.alloc(Term::Fn {
             functor: synth_sym,
@@ -397,62 +436,149 @@ impl KnowledgeBase {
         if fresh {
             let rule_sort = self.make_name_term("Rule");
             let domain = self.make_name_term("_global");
-            let body_nodes = self.term_body_to_nodes(&body);
+            // WI-678: the stored body is the goal carriers themselves — an
+            // occurrence goal is used directly (its spans/types preserved, no
+            // reify), a term/entity goal materializes to an occurrence exactly as
+            // the former `term_body_to_nodes(reified)` did.
+            let mut body_nodes: Vec<Rc<NodeOccurrence>> = Vec::with_capacity(goals.len());
+            for g in &goals {
+                body_nodes.push(self.goal_value_to_node(g)?);
+            }
             self.assert_rule_debruijn_with_nodes(head, body_nodes, rule_sort, domain, None);
             self.synth_rule_memo.insert(key, synth_sym);
         }
-        head
+        Ok(Value::term(head))
     }
 
-    /// WI-169: append `term`'s structural fingerprint to `out` (see [`SynthKey`]).
+    /// Collect a goal `view`'s free `Var::Global`s in first-occurrence order, the
+    /// head twin of [`Self::append_synth_key`] (WI-678). It walks the IDENTICAL
+    /// `TermView` traversal — head, then positional children, then named children —
+    /// so every Global the key encodes as `Var(pos)` is collected here at exactly
+    /// that `pos`. Keeping the two on ONE shared traversal makes the WI-169
+    /// walk-parity invariant hold by construction (rather than by two collectors
+    /// happening to agree): a Global the key would emit can never be missing from
+    /// `free_vars`, so the `debug_assert` there is a redundant backstop, and a var
+    /// the traversal does NOT reach (a Rigid/DeBruijn constant, or a Global living
+    /// only in an occurrence's type-position / pattern field that `TermView` does
+    /// not expose) is uniformly absent from both — never a head param, and closed
+    /// as a body-local De Bruijn var off the stored occurrence instead.
+    fn collect_goal_view_vars<V: TermView>(
+        &self,
+        view: &V,
+        vars: &mut Vec<VarId>,
+        seen: &mut std::collections::HashSet<u32>,
+    ) {
+        match view.head(self) {
+            ViewHead::Functor { functor: Some(_), pos_arity, .. } => {
+                for i in 0..pos_arity {
+                    match view.pos_arg(self, i) {
+                        Some(child) => self.collect_goal_view_vars(&child, vars, seen),
+                        None => debug_assert!(false, "{}", VIEW_ARITY_DESYNC),
+                    }
+                }
+                for name in view.named_keys(self) {
+                    match view.named_arg(self, name) {
+                        Some(child) => self.collect_goal_view_vars(&child, vars, seen),
+                        None => debug_assert!(false, "{}", VIEW_ARITY_DESYNC),
+                    }
+                }
+            }
+            ViewHead::Var(Var::Global(vid)) => {
+                if seen.insert(vid.raw()) {
+                    vars.push(vid);
+                }
+            }
+            // Every non-`Global` head — a `Rigid`/`DeBruijn` constant, a literal /
+            // ref / ident leaf, a functor-less aggregate, an opaque carrier — binds
+            // no synth head parameter. `append_synth_key` emits a corresponding
+            // non-`Var` token for each, so the two walks stay in lockstep.
+            _ => {}
+        }
+    }
+
+    /// WI-169: append `view`'s structural fingerprint to `out` (see [`SynthKey`]).
     /// `free_vars` is the body's free Globals in first-occurrence order; a Global
     /// is keyed by its position there (De Bruijn-style), which erases the
     /// query-specific `VarId` while preserving variable sharing. A pre-order walk
     /// over interned symbols / literals / positions only — no term allocation and
     /// no `TermId` slot identity, so the resulting key is stable for the KB's
     /// lifetime.
-    fn append_synth_key(&self, term: TermId, free_vars: &[VarId], out: &mut Vec<SynthKey>) {
-        match self.terms.get(term) {
-            Term::Fn { functor, pos_args, named_args } => {
-                // Positional children inline, each named child prefixed by
-                // `Named`, and a closing `EndFn` — so the node (and its named-arg
-                // section) is self-delimiting and the stream stays injective.
-                out.push(SynthKey::Functor(*functor));
-                for &a in pos_args.iter() {
-                    self.append_synth_key(a, free_vars, out);
+    ///
+    /// WI-678: carrier-agnostic — reads structure through [`TermView`], so a goal
+    /// rides as a hash-consed `TermId` (a `Value::Term`), a `Value::Entity`, or a
+    /// reflect-`Expr` occurrence (`Value::Node`) and produces the SAME key. This is
+    /// byte-identical to the former `TermId`-only walk: a `Term::Fn` reads as a
+    /// `ViewHead::Functor` with its stored (canonical) child order; an occurrence
+    /// reads as its `Term::Fn` twin's head with the same child order (WI-425); a
+    /// 0-ary constructor reads as `Ref` under both carriers (WI-436, canonicalized
+    /// at `alloc`). Named children are walked in `named_keys` (carrier-stored)
+    /// order — matching the term path, which reads `Term::Fn.named_args` in that
+    /// same stored order (this walk is NOT the sorted `goal_fingerprint`). The old
+    /// path's reify of a `Value::Node` goal (`occ_build_fn`) does NOT re-sort — it
+    /// preserves the occurrence's named slice order — so the former reified-`Node`
+    /// key used that identical order; there is no term-vs-occurrence sort skew here.
+    fn append_synth_key<V: TermView>(&self, view: &V, free_vars: &[VarId], out: &mut Vec<SynthKey>) {
+        match view.head(self) {
+            // A functor application (`Term::Fn` / `Value::Entity` / an
+            // Apply/Constructor occurrence). Positional children inline, each named
+            // child prefixed by `Named`, and a closing `EndFn` — so the node (and
+            // its named-arg section) is self-delimiting and the stream stays
+            // injective.
+            ViewHead::Functor { functor: Some(functor), pos_arity, .. } => {
+                out.push(SynthKey::Functor(functor));
+                for i in 0..pos_arity {
+                    match view.pos_arg(self, i) {
+                        Some(child) => self.append_synth_key(&child, free_vars, out),
+                        None => debug_assert!(false, "{}", VIEW_ARITY_DESYNC),
+                    }
                 }
-                for &(name, a) in named_args.iter() {
+                for name in view.named_keys(self) {
                     out.push(SynthKey::Named(name));
-                    self.append_synth_key(a, free_vars, out);
+                    match view.named_arg(self, name) {
+                        Some(child) => self.append_synth_key(&child, free_vars, out),
+                        None => debug_assert!(false, "{}", VIEW_ARITY_DESYNC),
+                    }
                 }
                 out.push(SynthKey::EndFn);
             }
-            Term::Const(lit) => out.push(SynthKey::Lit(lit.clone())),
-            Term::Var(Var::Global(vid)) => match free_vars.iter().position(|v| v == vid) {
+            ViewHead::Const(lit) => out.push(SynthKey::Lit(lit)),
+            ViewHead::Var(Var::Global(vid)) => match free_vars.iter().position(|v| *v == vid) {
                 Some(pos) => out.push(SynthKey::Var(pos as u32)),
                 None => {
-                    // Walk-parity invariant: every body Global is collected into
-                    // `free_vars` by `collect_vars` (identical pos-then-named
-                    // pre-order). A miss means that invariant broke — scream in
-                    // debug; in release key by raw id so distinct vars still
-                    // never collapse (correct, just no memo hit).
+                    // Walk-parity invariant: `collect_goal_view_vars` collects
+                    // `free_vars` via this EXACT `TermView` traversal, so every
+                    // Global reached here is present by construction. A miss would
+                    // mean the two walks desynced — scream in debug; in release key
+                    // by raw id so distinct vars still never collapse (correct, just
+                    // no memo hit).
                     debug_assert!(
                         false,
                         "WI-169: body Global {} missing from free_vars — \
-                         collect_vars/append_synth_key walk parity broken",
+                         collect_goal_view_vars/append_synth_key walk parity broken",
                         vid.raw()
                     );
                     out.push(SynthKey::RawVar(vid.raw()));
                 }
             },
-            Term::Var(Var::DeBruijn(i)) => out.push(SynthKey::DeBruijnVar(*i)),
-            Term::Var(Var::Rigid(vid)) => out.push(SynthKey::Rigid(vid.raw())),
-            Term::Ref(s) => out.push(SynthKey::Ref(*s)),
-            Term::Ident(s) => out.push(SynthKey::Ident(*s)),
-            Term::Bottom => out.push(SynthKey::Bottom),
-            Term::ParseAux(_) => unreachable!(
-                "ParseAux is a parse-only term and never reaches the KB synth path"
-            ),
+            ViewHead::Var(Var::DeBruijn(i)) => out.push(SynthKey::DeBruijnVar(i)),
+            ViewHead::Var(Var::Rigid(vid)) => out.push(SynthKey::Rigid(vid.raw())),
+            ViewHead::Ref(s) => out.push(SynthKey::Ref(s)),
+            ViewHead::Ident(s) => out.push(SynthKey::Ident(s)),
+            ViewHead::Bottom => out.push(SynthKey::Bottom),
+            // A 0-ary constructor reads as `Ref` (WI-436), so `functor: None` here
+            // is a functor-less aggregate (`Value::Tuple`/`Unit`) and `Opaque` a
+            // runtime carrier (Closure/Stream/…). Neither is a valid goal shape —
+            // `lower_leaf`/`alloc_from_value` reject them upstream — so this is
+            // unreachable; scream in debug. In release a benign `Bottom` keeps the
+            // key well-formed: the body is re-materialized from the same goals, so
+            // a degraded key at worst forgoes a memo hit, never an unsound reuse.
+            ViewHead::Functor { functor: None, .. } | ViewHead::Opaque => {
+                debug_assert!(
+                    false,
+                    "WI-678: non-goal carrier (aggregate/opaque) reached synth body key"
+                );
+                out.push(SynthKey::Bottom);
+            }
         }
     }
 
@@ -463,10 +589,11 @@ impl KnowledgeBase {
     /// false) is almost always a caller bug rather than intent.
     /// Carrier-neutral single-goal coercion (WI-513): collapse a goal list into
     /// one goal `Value` for a `not`/`or` wrapper. A single goal passes through as
-    /// its `Value` (Term OR occurrence Node); multiple goals reify to terms and
-    /// synthesize a fresh `_synth_N(?vars) :- goals` conjunction-rule head
-    /// (term-level, since the head is a freshly-allocated rule), returned as a
-    /// `Value::Term`. Empty is rejected (almost always a caller bug).
+    /// its `Value` (Term OR occurrence Node); multiple goals synthesize a fresh
+    /// `_synth_N(?vars) :- goals` conjunction-rule head, returned as a
+    /// `Value::Term`. WI-678: the goals stay `Value`s all the way into
+    /// `synthesize_conjunction_rule` (no reify-to-`TermId` here — an occurrence
+    /// goal never round-trips). Empty is rejected (almost always a caller bug).
     fn coerce_to_single_goal_value(
         &mut self,
         goals: Vec<Value>,
@@ -475,12 +602,28 @@ impl KnowledgeBase {
         match goals.len() {
             0 => Err(LowerError::NotYetImplemented(empty_err)),
             1 => Ok(goals.into_iter().next().unwrap()),
-            _ => {
-                let mut tids: Vec<TermId> = Vec::with_capacity(goals.len());
-                for g in &goals {
-                    tids.push(self.goal_value_to_term(g)?);
-                }
-                Ok(Value::term(self.synthesize_conjunction_rule(tids)))
+            _ => self.synthesize_conjunction_rule(goals),
+        }
+    }
+
+    /// Materialize a goal `Value` as an occurrence for a synthesized rule's body
+    /// (WI-678). A `Value::Node` occurrence is used DIRECTLY — no reify — which is
+    /// the round-trip this cleanup removes (and preserves the occurrence's
+    /// spans/types). A term/entity goal has no occurrence source, so it reifies to
+    /// a `TermId` and materializes to an occurrence exactly as the former
+    /// `term_body_to_nodes(goal_value_to_term(g))` chain did — including the
+    /// pre-existing limitation that a builtin-wrapper entity over a BARE occurrence
+    /// child (`not(occ)`, from a negated single occurrence goal) cannot reify
+    /// (`alloc_from_value` rejects a `Value::Node` child) and surfaces the same
+    /// `LowerError` the term path raised. This materialization runs only on a memo
+    /// MISS (see the caller's `if fresh`), so that error — like the whole body
+    /// build — is bounded to once per distinct multi-goal body.
+    fn goal_value_to_node(&mut self, v: &Value) -> Result<Rc<NodeOccurrence>, LowerError> {
+        match v {
+            Value::Node(occ) => Ok(Rc::clone(occ)),
+            other => {
+                let t = self.goal_value_to_term(other)?;
+                Ok(super::node_occurrence::materialize_from_handle(self, t))
             }
         }
     }
@@ -821,8 +964,8 @@ mod tests {
 
         let free = [xid, vid];
         let (mut ka, mut kb_) = (Vec::new(), Vec::new());
-        kb.append_synth_key(a, &free, &mut ka);
-        kb.append_synth_key(b, &free, &mut kb_);
+        kb.append_synth_key(&a, &free, &mut ka);
+        kb.append_synth_key(&b, &free, &mut kb_);
         assert_ne!(ka, kb_, "pos/named nesting must produce distinct keys");
 
         // Canonicalization: the SAME shape as `a` built with FRESH vars must
@@ -834,7 +977,74 @@ mod tests {
         let g_x2 = mk(&mut kb, g, &[vx2], &[]);
         let a2 = mk(&mut kb, f, &[g_x2], &[(k, vv2)]);
         let mut ka2 = Vec::new();
-        kb.append_synth_key(a2, &[x2, v2], &mut ka2);
+        kb.append_synth_key(&a2, &[x2, v2], &mut ka2);
         assert_eq!(ka, ka2, "same shape with fresh vars must produce an identical key");
+    }
+
+    /// WI-678 regression: a Global living ONLY in an occurrence goal's
+    /// type-position field (`p[T = ?b](?a)`) must NOT become a synth head
+    /// parameter. `collect_goal_view_vars` (head params) and `append_synth_key`
+    /// (memo key) both read through `TermView`, which does not expose `type_args`,
+    /// so `?b` is uniformly absent from both — head arity and the key positions
+    /// stay in lockstep. The type-arg-AWARE `collect_value_head_vars` (the right
+    /// tool for a STORED rule, where `?b` must be closed as a body-local var) would
+    /// instead count `?b`; using it for the synth head — as the first draft did —
+    /// inflated head arity past what the key encoded, so two bodies differing only
+    /// in a type-arg var collided onto one synth rule with a mismatched arity.
+    #[test]
+    fn synth_head_ignores_type_position_only_var() {
+        use crate::kb::node_occurrence::{Expr, NodeOccurrence};
+        use crate::span::{SourceId, SourceSpan};
+        let span = SourceSpan::new(SourceId::from_raw(0), 0, 0);
+
+        let mut kb = KnowledgeBase::new();
+        let p = kb.intern("p");
+        let t_param = kb.intern("T");
+        let (a_sym, b_sym) = (kb.intern("a"), kb.intern("b"));
+        let (a, b) = (kb.fresh_var(a_sym), kb.fresh_var(b_sym));
+
+        // `?a` as a positional-arg occurrence; `?b` only in the `[T = ?b]` type arg.
+        let occ_a = NodeOccurrence::new_expr(Expr::Var(Var::Global(a)), span, None);
+        let vb = Value::term(kb.alloc(Term::Var(Var::Global(b))));
+        let goal = Value::Node(NodeOccurrence::new_expr(
+            Expr::Apply {
+                functor: p,
+                pos_args: vec![occ_a],
+                named_args: vec![],
+                type_args: vec![(Some(t_param), vb)],
+            },
+            span,
+            None,
+        ));
+
+        // Synth head params (the fix): ONLY the structural `?a` — `?b` is absent.
+        let mut free_vars = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        kb.collect_goal_view_vars(&goal, &mut free_vars, &mut seen);
+        assert_eq!(free_vars, vec![a], "type-position ?b must not be a synth head param");
+
+        // The type-arg-aware stored-rule collector DOES see `?b` — confirming the
+        // divergence the fix sidesteps (that collector stays correct for a stored
+        // body, where `?b` is closed as a body-local De Bruijn var).
+        let (mut occ_vars, mut occ_seen) = (Vec::new(), std::collections::HashSet::new());
+        kb.collect_value_head_vars(&goal, &mut occ_vars, &mut occ_seen);
+        assert_eq!(occ_vars, vec![a, b], "occurrence collector counts the type-arg var");
+
+        // The memo key references only `Var(0)` (=`?a`) and never the `RawVar`
+        // fallback: key positions and `free_vars` are in lockstep, no arity gap.
+        let mut key = Vec::new();
+        kb.append_synth_key(&goal, &free_vars, &mut key);
+        assert!(
+            key.iter().all(|t| !matches!(t, SynthKey::RawVar(_))),
+            "no Global escaped free_vars: {key:?}"
+        );
+        assert!(
+            key.iter().any(|t| matches!(t, SynthKey::Var(0))),
+            "?a keyed at position 0: {key:?}"
+        );
+        assert!(
+            key.iter().all(|t| !matches!(t, SynthKey::Var(pos) if *pos >= free_vars.len() as u32)),
+            "every keyed Var indexes a real free-var slot: {key:?}"
+        );
     }
 }
