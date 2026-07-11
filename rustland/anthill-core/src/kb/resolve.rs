@@ -5764,8 +5764,15 @@ impl KnowledgeBase {
         for arm in arms {
             let mut rename: Vec<(Symbol, TermId)> = Vec::new();
             let pattern_term = self.fresh_pattern_term(&arm.pattern, &mut rename)?;
-            let mut hoists: Vec<TermId> = Vec::new();
-            let result_term = self.anf_flatten(&arm.body, &rename, &mut hoists)?;
+            let mut hoists: Vec<Value> = Vec::new();
+            // WI-690: `anf_flatten` builds the arm body as a Node occurrence and
+            // hoists each nested op-call as a `Value::Node` `eq` goal DIRECTLY (no
+            // Term::Fn build re-walked back to a Node — the retired
+            // `materialize_from_handle` round-trip). The result spine is op-call
+            // free (the calls are ANF-hoisted out), so lowering it to the
+            // `result_g` term operand is a clean, byte-identical `Term`.
+            let result_occ = self.anf_flatten(&arm.body, &rename, &mut hoists)?;
+            let result_term = super::node_occurrence::occurrence_to_term(self, &result_occ);
             let unify_g = self.alloc(Term::Fn {
                 functor: unify_sym,
                 pos_args: SmallVec::from_slice(&[scrutinee_term, pattern_term]),
@@ -5787,16 +5794,14 @@ impl KnowledgeBase {
             // hoist vars against the finite OTHER, bounding the recursion) → the
             // hoisted op-call `SemEq` goals (which re-trigger this fallback on
             // their now-smaller arguments).
-            // WI-668: materialize each hoisted op-call goal to a `Value::Node`
-            // occurrence, so its re-triggered operand is recognized directly by
-            // `op_call_as_occ`'s Node arm — the recursion stays on the Node
-            // carrier and never round-trips through the Term arm at re-entry. The
-            // two `unify` goals don't re-trigger the unfold, so they ride as
-            // `Value::term`.
+            // WI-668/WI-690: each hoisted op-call goal is ALREADY a `Value::Node`
+            // occurrence (built directly by `anf_flatten`), so its re-triggered
+            // operand is recognized directly by `op_call_as_occ`'s Node arm — the
+            // recursion stays on the Node carrier and never round-trips through the
+            // Term arm at re-entry. The two `unify` goals don't re-trigger the
+            // unfold, so they ride as `Value::term` (Node-carrying them is inc2).
             let mut goals = vec![Value::term(unify_g), Value::term(result_g)];
-            for h in hoists {
-                goals.push(Value::Node(super::node_occurrence::materialize_from_handle(self, h)));
-            }
+            goals.extend(hoists);
             cands.push(Candidate::Continuation(goals));
         }
         Some(cands)
@@ -5862,85 +5867,124 @@ impl KnowledgeBase {
         }
     }
 
-    /// Flatten an arm-body occurrence into a goal term (ANF), renaming pattern
-    /// binders per `rename` and HOISTING each nested op-call to a fresh var + an
-    /// `eq` goal appended to `hoists` (so it re-becomes a top-level operand that
-    /// re-triggers [`Self::unfold_eq_operand`]). `None` for a body form this
-    /// unfold does not handle yet (`if`/`let`/`lambda`/…) — the caller then
-    /// declines the whole unfold, leaving the call to its normal delay.
+    /// Flatten an arm-body occurrence into a goal OCCURRENCE (ANF), renaming
+    /// pattern binders per `rename` and HOISTING each nested op-call to a fresh
+    /// var + a `Value::Node` `eq` goal appended to `hoists` (so it re-becomes a
+    /// top-level operand that re-triggers [`Self::unfold_eq_operand`]). `None`
+    /// for a body form this unfold does not handle yet (`if`/`let`/`lambda`/…) —
+    /// the caller then declines the whole unfold, leaving the call to its normal
+    /// delay.
+    ///
+    /// WI-690: occurrence-native. The former `Term`-building variant round-tripped
+    /// every hoisted op-call goal back to a `Value::Node` through
+    /// `materialize_from_handle` (WI-668) — a build-then-re-walk. Building the
+    /// arm body (and its hoisted goals) as occurrences directly retires that
+    /// round-trip; the op-call-free result spine is what the caller lowers for
+    /// the `result_g` operand.
     fn anf_flatten(
         &mut self,
         occ: &Rc<NodeOccurrence>,
         rename: &[(Symbol, TermId)],
-        hoists: &mut Vec<TermId>,
-    ) -> Option<TermId> {
+        hoists: &mut Vec<Value>,
+    ) -> Option<Rc<NodeOccurrence>> {
+        let span = occ.span;
         let Some(expr) = occ.as_expr() else {
-            // A term-backed leaf (e.g. a ground arg substituted from the call):
-            // reify directly — it carries no op-call to hoist.
-            return Some(super::node_occurrence::occurrence_to_term(self, occ));
+            // A non-`Expr` occurrence (a ground arg substituted from the call) is
+            // ALREADY an occurrence carrier — return it verbatim (no
+            // `occurrence_to_term` reification; it carries no op-call to hoist).
+            return Some(Rc::clone(occ));
         };
         match expr {
             Expr::Var(Var::Global(vid)) => {
                 let name = vid.name();
                 let vid = *vid;
                 Some(match rename.iter().rev().find(|(s, _)| *s == name) {
-                    Some((_, t)) => *t,
-                    None => self.alloc(Term::Var(Var::Global(vid))),
+                    // A pattern binder's fresh var rides as a `Term::Var` in
+                    // `rename` (fresh_pattern_term is still Term-native; that is
+                    // WI-690 inc2); lift it to its occurrence leaf so the same
+                    // `VarId` is shared across the Term-carried `unify` goals and
+                    // this Node-carried body (the cross-carrier var identity the
+                    // unfold already relies on).
+                    Some((_, t)) => super::node_occurrence::build_expr_leaf(self, *t),
+                    None => NodeOccurrence::new_expr(Expr::Var(Var::Global(vid)), span, None),
                 })
             }
             Expr::Ref(s) | Expr::Ident(s) => {
                 let s = *s;
                 Some(match rename.iter().rev().find(|(sy, _)| *sy == s) {
-                    Some((_, t)) => *t,
-                    None => self.alloc(Term::Ref(s)),
+                    Some((_, t)) => super::node_occurrence::build_expr_leaf(self, *t),
+                    None => NodeOccurrence::new_expr(Expr::Ref(s), span, None),
                 })
             }
             Expr::Const(lit) => {
                 let lit = lit.clone();
-                Some(self.alloc(Term::Const(lit)))
+                Some(NodeOccurrence::new_expr(Expr::Const(lit), span, None))
             }
             Expr::Constructor { name, pos_args, named_args } => {
                 let name = *name;
                 let pos_c = pos_args.clone();
                 let named_c = named_args.clone();
-                let mut pos = SmallVec::<[TermId; 4]>::new();
+                let mut pos = Vec::with_capacity(pos_c.len());
                 for a in &pos_c {
                     pos.push(self.anf_flatten(a, rename, hoists)?);
                 }
-                let mut named = SmallVec::<[(Symbol, TermId); 2]>::new();
+                let mut named = Vec::with_capacity(named_c.len());
                 for (fs, a) in &named_c {
                     named.push((*fs, self.anf_flatten(a, rename, hoists)?));
                 }
+                // Match the former Term build's canonicalization: an arg-LESS
+                // constructor lowered to `Term::Ref(name)`, but `occ_build_fn`
+                // (occurrence_to_term's Constructor path) emits `Term::Fn{name,[],[]}`
+                // — a different term. Emit `Expr::Ref` for the nullary case so the
+                // caller's `occurrence_to_term(result_occ)` stays byte-identical.
                 if pos.is_empty() && named.is_empty() {
-                    Some(self.alloc(Term::Ref(name)))
+                    Some(NodeOccurrence::new_expr(Expr::Ref(name), span, None))
                 } else {
-                    Some(self.alloc(Term::Fn { functor: name, pos_args: pos, named_args: named }))
+                    Some(NodeOccurrence::new_expr(
+                        Expr::Constructor { name, pos_args: pos, named_args: named },
+                        span,
+                        None,
+                    ))
                 }
             }
             Expr::Apply { functor, pos_args, named_args, .. } => {
                 let functor = *functor;
                 let pos_c = pos_args.clone();
                 let named_c = named_args.clone();
-                let mut pos = SmallVec::<[TermId; 4]>::new();
+                let mut pos = Vec::with_capacity(pos_c.len());
                 for a in &pos_c {
                     pos.push(self.anf_flatten(a, rename, hoists)?);
                 }
-                let mut named = SmallVec::<[(Symbol, TermId); 2]>::new();
+                let mut named = Vec::with_capacity(named_c.len());
                 for (fs, a) in &named_c {
                     named.push((*fs, self.anf_flatten(a, rename, hoists)?));
                 }
-                let call = self.alloc(Term::Fn { functor, pos_args: pos, named_args: named });
+                // Build the op-call as a Node occurrence directly (the shape
+                // `materialize_from_handle` produced for a `Term::Fn` op-call:
+                // `Expr::Apply` with empty `type_args`), then ANF-hoist it as a
+                // fresh var + a `Value::Node` `eq` goal that re-triggers the
+                // unfold on its now-smaller arguments.
+                let call = NodeOccurrence::new_expr(
+                    Expr::Apply { functor, pos_args: pos, named_args: named, type_args: Vec::new() },
+                    span,
+                    None,
+                );
                 let anf = self.intern("_anf");
                 let tvid = self.fresh_var(anf);
-                let tterm = self.alloc(Term::Var(Var::Global(tvid)));
+                let tvar = NodeOccurrence::new_expr(Expr::Var(Var::Global(tvid)), span, None);
                 let eq_sym = self.eq_functor();
-                let eq_g = self.alloc(Term::Fn {
-                    functor: eq_sym,
-                    pos_args: SmallVec::from_slice(&[call, tterm]),
-                    named_args: SmallVec::new(),
-                });
-                hoists.push(eq_g);
-                Some(tterm)
+                let eq_goal = NodeOccurrence::new_expr(
+                    Expr::Apply {
+                        functor: eq_sym,
+                        pos_args: vec![call, Rc::clone(&tvar)],
+                        named_args: Vec::new(),
+                        type_args: Vec::new(),
+                    },
+                    span,
+                    None,
+                );
+                hoists.push(Value::Node(eq_goal));
+                Some(tvar)
             }
             // `VarRef` is how an operation body spells a bare parameter / binder
             // reference (append's `nil -> ys`, the `cons(x, rest)` binders). Treat
@@ -5949,8 +5993,8 @@ impl KnowledgeBase {
             Expr::VarRef { name } => {
                 let name = *name;
                 Some(match rename.iter().rev().find(|(sy, _)| *sy == name) {
-                    Some((_, t)) => *t,
-                    None => self.alloc(Term::Ref(name)),
+                    Some((_, t)) => super::node_occurrence::build_expr_leaf(self, *t),
+                    None => NodeOccurrence::new_expr(Expr::Ref(name), span, None),
                 })
             }
             _ => None,
