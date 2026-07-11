@@ -804,43 +804,15 @@ impl<'kb> Emitter<'kb> {
         let mut callee_ent: BTreeMap<String, Rc<NodeOccurrence>> = BTreeMap::new();
         let mut head_caller: Vec<(u32, String)> = Vec::new();
         for (head_arg, call_arg) in head_pos.iter().zip(call_args.iter()) {
-            let head_idx = match head_arg.as_expr() {
-                Some(Expr::Var(Var::DeBruijn(i))) => *i,
-                _ => return Err(SmtGenError::new(format!(
-                    "v0: inlined rule '{callee_qn}' head args must be DeBruijn vars"))),
-            };
-            let head_synth = synthetic_var_name(head_idx);
-            match call_arg.as_expr() {
-                Some(Expr::Var(Var::DeBruijn(j))) => {
-                    let caller_synth = synthetic_var_name(*j);
-                    head_caller.push((head_idx, caller_synth.clone()));
-                    if let Some(s) = caller_bindings.get(&caller_synth) {
-                        callee_str.insert(head_synth.clone(), s.clone());
-                    } else {
-                        // Forward the synthetic name (caller will
-                        // declare it free if it remains unbound).
-                        callee_str.insert(head_synth.clone(), caller_synth.clone());
-                    }
-                    if let Some(t) = self.entity_bindings.get(&caller_synth) {
-                        callee_ent.insert(head_synth, Rc::clone(t));
-                    }
-                }
-                Some(Expr::Const(Literal::Float(f))) => {
-                    callee_str.insert(head_synth, format_real(f.into_inner()));
-                }
-                Some(Expr::Const(Literal::Int(i))) => {
-                    callee_str.insert(head_synth, format_real(*i as f64));
-                }
-                Some(Expr::Ref(_)) | Some(Expr::Ident(_)) => {
-                    // Nullary symbol — not arithmetic; ignore.
-                }
-                _ if occ_as_fn(call_arg).is_some() => {
-                    // Concrete entity literal at the call site —
-                    // expose it for field_access on the callee side.
-                    callee_ent.insert(head_synth, Rc::clone(call_arg));
-                }
-                _ => {}
-            }
+            self.bind_head_arg(
+                callee_qn,
+                head_arg,
+                call_arg,
+                caller_bindings,
+                &mut callee_str,
+                &mut callee_ent,
+                &mut head_caller,
+            )?;
         }
 
         // Process the callee's body. We share the global
@@ -885,6 +857,174 @@ impl<'kb> Emitter<'kb> {
             }
         }
         Ok(true)
+    }
+
+    /// Bind one head argument of an inlined rule against its call argument,
+    /// populating the callee's string / entity binding maps.
+    ///
+    /// A **bare De Bruijn** head arg is the generic case: bind it to the call
+    /// arg's already-translated SMT string (a var forwards its synth name — the
+    /// caller declares it free if unbound — a literal renders directly), and, for
+    /// an entity-typed arg, propagate the concrete construction into
+    /// `callee_ent` for downstream field access.
+    ///
+    /// A **constructor-shaped** head arg — `some(?0)` / `TFS(prev_distance:
+    /// some(?0), …)` — arises from the WI-687 per-call-site match specialization,
+    /// whose synthesized rule head carries the argument's constructor spine. It
+    /// is bound STRUCTURALLY: resolve the call arg to its concrete construction
+    /// (the arg itself, or — when the call passed a var already bound to an
+    /// entity — its `entity_bindings` value), check the functors and arities
+    /// agree, and recurse on the aligned fields (positional by index, named by
+    /// field short-name). Each leaf bottoms out at the De Bruijn case, so a
+    /// head leaf `?0` inside `some(?0)` binds to the caller's inner sub-term.
+    #[allow(clippy::too_many_arguments)]
+    fn bind_head_arg(
+        &self,
+        callee_qn: &str,
+        head_arg: &Rc<NodeOccurrence>,
+        call_arg: &Rc<NodeOccurrence>,
+        caller_bindings: &BTreeMap<String, String>,
+        callee_str: &mut BTreeMap<String, String>,
+        callee_ent: &mut BTreeMap<String, Rc<NodeOccurrence>>,
+        head_caller: &mut Vec<(u32, String)>,
+    ) -> Result<(), SmtGenError> {
+        // A nullary constructor CONSTANT in head position (`none`, spelled as a
+        // bare `Ref`/`Ident` or an arg-less `Fn`) is ground — nothing to BIND, but
+        // it must still MATCH the call (WI-687). `try_inline_rule_call` selects one
+        // synth rule per functor regardless of the call's shape, so a `none` head
+        // meeting a `some(…)` call must fail LOUDLY — symmetric with the `some(?0)`
+        // head direction, which already errors at `resolve_call_ctor` / the functor
+        // check below. Verify the call denotes the same nullary constructor.
+        if let Some(h_null) = nullary_ctor_sym(head_arg) {
+            let call_null = self
+                .resolve_call_ctor(call_arg)
+                .and_then(|cc| nullary_ctor_sym(&cc))
+                .or_else(|| nullary_ctor_sym(call_arg));
+            if call_null == Some(h_null) {
+                return Ok(());
+            }
+            return Err(SmtGenError::new(format!(
+                "WI-687: nullary head constructor `{}` inlining '{callee_qn}' does not match \
+                 the call argument {:?} (the specialized arm does not apply to this call)",
+                self.kb.qualified_name_of(h_null),
+                call_arg.as_expr().map(std::mem::discriminant))));
+        }
+
+        // Constructor-shaped head arg (WI-687): structurally match the call. The
+        // arity-0 case is already handled by the nullary check above, so `hpos` /
+        // `hnamed` here are non-empty.
+        if !matches!(head_arg.as_expr(), Some(Expr::Var(Var::DeBruijn(_)))) {
+            let Some((hf, hpos, hnamed)) = occ_as_fn(head_arg) else {
+                return Err(SmtGenError::new(format!(
+                    "v0: inlined rule '{callee_qn}' head arg must be a De Bruijn var \
+                     or a constructor, got {:?}",
+                    head_arg.as_expr().map(std::mem::discriminant))));
+            };
+            let Some(cc) = self.resolve_call_ctor(call_arg) else {
+                return Err(SmtGenError::new(format!(
+                    "WI-687: '{callee_qn}' expects a concrete `{}` construction at a \
+                     constructor-shaped head arg, but the call supplied {:?}",
+                    self.kb.qualified_name_of(hf),
+                    call_arg.as_expr().map(std::mem::discriminant))));
+            };
+            let Some((cf, cpos, cnamed)) = occ_as_fn(&cc) else {
+                return Err(SmtGenError::new(format!(
+                    "WI-687: '{callee_qn}' call arg resolved to a non-construction")));
+            };
+            if hf != cf || hpos.len() != cpos.len() || hnamed.len() != cnamed.len() {
+                return Err(SmtGenError::new(format!(
+                    "WI-687: structural head mismatch inlining '{callee_qn}': head `{}` \
+                     vs call `{}`",
+                    self.kb.qualified_name_of(hf), self.kb.qualified_name_of(cf))));
+            }
+            for (hp, cp) in hpos.iter().zip(cpos.iter()) {
+                self.bind_head_arg(
+                    callee_qn, hp, cp, caller_bindings, callee_str, callee_ent, head_caller)?;
+            }
+            for (hs, hv) in hnamed {
+                let short = self.kb.resolve_sym(*hs).rsplit('.').next();
+                let Some((_, cv)) = cnamed.iter()
+                    .find(|(cs, _)| self.kb.resolve_sym(*cs).rsplit('.').next() == short)
+                else {
+                    return Err(SmtGenError::new(format!(
+                        "WI-687: constructor-shaped head field '{}' absent in call arg to \
+                         '{callee_qn}'", self.kb.resolve_sym(*hs))));
+                };
+                self.bind_head_arg(
+                    callee_qn, hv, cv, caller_bindings, callee_str, callee_ent, head_caller)?;
+            }
+            return Ok(());
+        }
+
+        // Leaf: a bare De Bruijn head param.
+        let head_idx = match head_arg.as_expr() {
+            Some(Expr::Var(Var::DeBruijn(i))) => *i,
+            _ => unreachable!("guarded by the matches! above"),
+        };
+        let head_synth = synthetic_var_name(head_idx);
+        match call_arg.as_expr() {
+            Some(Expr::Var(Var::DeBruijn(j))) => {
+                let caller_synth = synthetic_var_name(*j);
+                head_caller.push((head_idx, caller_synth.clone()));
+                if let Some(s) = caller_bindings.get(&caller_synth) {
+                    callee_str.insert(head_synth.clone(), s.clone());
+                } else {
+                    // Forward the synthetic name (caller will
+                    // declare it free if it remains unbound).
+                    callee_str.insert(head_synth.clone(), caller_synth.clone());
+                }
+                if let Some(t) = self.entity_bindings.get(&caller_synth) {
+                    callee_ent.insert(head_synth, Rc::clone(t));
+                }
+            }
+            Some(Expr::Const(Literal::Float(f))) => {
+                callee_str.insert(head_synth, format_real(f.into_inner()));
+            }
+            Some(Expr::Const(Literal::Int(i))) => {
+                callee_str.insert(head_synth, format_real(*i as f64));
+            }
+            Some(Expr::Ref(_)) | Some(Expr::Ident(_)) => {
+                // Nullary symbol — not arithmetic; ignore.
+            }
+            _ if occ_as_fn(call_arg)
+                .is_some_and(|(f, _, _)| self.kb.entity_field_types(f).is_some()
+                    || self.kb.is_constructor_symbol(f)) =>
+            {
+                // Concrete entity / constructor at the call site — expose it for
+                // field_access on the callee side.
+                callee_ent.insert(head_synth, Rc::clone(call_arg));
+            }
+            _ if occ_as_fn(call_arg).is_some() => {
+                // A COMPUTED (non-entity) argument — an arithmetic / operation
+                // application (`?a + ?b`) — at a head leaf. `bind_head_arg` can't
+                // translate it (it holds `&self`, not the `&mut` `translate_expr`
+                // needs), and routing it to `entity_bindings` would silently drop
+                // its value (the callee would see a free Z3 var, not the sum). Fail
+                // loud (WI-687): pass a variable, literal, or entity construction.
+                return Err(SmtGenError::new(format!(
+                    "WI-687: '{callee_qn}' head leaf bound to a computed (non-entity) \
+                     argument {:?}; pass a variable, literal, or entity construction",
+                    call_arg.as_expr().map(std::mem::discriminant))));
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// Resolve a call argument to its concrete construction occurrence for the
+    /// WI-687 structural head binding: the argument itself when it is already a
+    /// construction (an inline `TFS(…)` / `some(?x)` call arg), or — when the
+    /// call passed a variable previously bound to an entity (`?state = TFS(…)`
+    /// then `step(?state, …)`) — its `entity_bindings` value. `None` when neither
+    /// holds (a bare scalar var / literal against a constructor-shaped head).
+    fn resolve_call_ctor(&self, call_arg: &Rc<NodeOccurrence>) -> Option<Rc<NodeOccurrence>> {
+        if occ_as_fn(call_arg).is_some() {
+            return Some(Rc::clone(call_arg));
+        }
+        if let Some(Expr::Var(Var::DeBruijn(j))) = call_arg.as_expr() {
+            return self.entity_bindings.get(&synthetic_var_name(*j)).cloned();
+        }
+        None
     }
 
     /// Structural equality of two occurrences for fact-match probing.
@@ -1640,6 +1780,20 @@ fn occ_as_fn(
             Some((*functor, args, named_args))
         }
         _ => None,
+    }
+}
+
+/// The functor of a NULLARY constructor occurrence — a bare `Ref`/`Ident`, or an
+/// arg-less `Fn`/`Constructor` (`none` / `Fn{none, [], []}`) — else `None` (a De
+/// Bruijn var, a literal, or an arity-bearing construction). Used by
+/// `bind_head_arg` to verify a nullary head constructor against the call arg.
+fn nullary_ctor_sym(occ: &Rc<NodeOccurrence>) -> Option<Symbol> {
+    match occ.as_expr()? {
+        Expr::Ref(s) | Expr::Ident(s) => Some(*s),
+        _ => match occ_as_fn(occ) {
+            Some((f, pos, named)) if pos.is_empty() && named.is_empty() => Some(f),
+            _ => None,
+        },
     }
 }
 

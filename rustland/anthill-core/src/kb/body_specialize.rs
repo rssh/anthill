@@ -337,6 +337,45 @@ fn reduce(
         // The recursive/nested call stays a call; the WI-283 re-`Visit` loop
         // re-specializes it when it is reassembled at this same hook.
         Expr::Apply { functor, pos_args, named_args, type_args } => {
+            // ── field projection (WI-687): a `field_access(recv, f)` whose
+            // receiver reduces to a statically-known constructor projects to the
+            // named field, so a body that `match`es (or otherwise reads) a field
+            // of a concrete-constructor argument reduces at synth time. When the
+            // receiver is NOT a known constructor — the abstract-parameter
+            // generic synth (WI-681 `desired_position`), where `?0.position`
+            // stays a residual read the SMT emitter later resolves via its
+            // `entity_bindings` — fall through and keep the field access residual.
+            if let Some((recv, fname)) = field_access_parts(kb, *functor, pos_args) {
+                let recv_r = reduce(kb, &recv, env, pass)?;
+                if let Some(fields) = ctor_field_occs(kb, &recv_r) {
+                    let Some((_, val)) = fields.iter().find(|(f, _)| short_of(kb, *f) == fname)
+                    else {
+                        // Known constructor lacking the projected field — a
+                        // malformed body; decline loudly, never emit a wrong read.
+                        return None;
+                    };
+                    return Some(Rc::clone(val));
+                }
+                // Residual field access over a non-constructor receiver: rebuild
+                // with the ALREADY-reduced receiver (reusing `recv_r` — don't reduce
+                // it a second time) and the reduced remaining args (the selector).
+                let mut pos = Vec::with_capacity(pos_args.len());
+                pos.push(recv_r);
+                for a in &pos_args[1..] {
+                    pos.push(reduce(kb, a, env, pass)?);
+                }
+                let named = reduce_named(kb, named_args, env, pass)?;
+                return Some(rebuild(
+                    occ,
+                    Expr::Apply {
+                        functor: *functor,
+                        pos_args: pos,
+                        named_args: named,
+                        type_args: type_args.clone(),
+                    },
+                    pass,
+                ));
+            }
             let pos = reduce_vec(kb, pos_args, env, pass)?;
             let named = reduce_named(kb, named_args, env, pass)?;
             Some(rebuild(
@@ -615,6 +654,86 @@ fn ctor_field_occs(
     }
 }
 
+/// Recognize an operation-body field projection `field_access(recv, field)` and
+/// return `(receiver, field short-name)`. A reduced/loaded op body encodes
+/// `x.f` as `Apply{field_access, [recv, Const::String(f)]}` (WI-681); the
+/// reflect selector may also be a bare `Ident`/`Ref`. Returns `None` for any
+/// non-field-access application.
+///
+/// NB: `anthill-smt-gen`'s `as_field_access` recognizes the SAME reflect form
+/// (same QN check, same three selector shapes) for its own lowering — the two
+/// are independent copies of one desugaring contract across the crate boundary;
+/// a new selector form must be mirrored in both.
+fn field_access_parts(
+    kb: &KnowledgeBase,
+    functor: Symbol,
+    pos_args: &[Rc<NodeOccurrence>],
+) -> Option<(Rc<NodeOccurrence>, String)> {
+    let qn = kb.qualified_name_of(functor);
+    if qn != "anthill.reflect.field_access" && qn != "field_access" {
+        return None;
+    }
+    let [obj, field] = pos_args else { return None };
+    let name = match field.as_expr()? {
+        Expr::Const(Literal::String(s)) => s.clone(),
+        Expr::Ref(s) | Expr::Ident(s) => short_of(kb, *s).to_string(),
+        _ => return None,
+    };
+    Some((Rc::clone(obj), name))
+}
+
+/// The data-constructor functor and child occurrences of a construction
+/// application (an entity or ADT-variant build), or `None` for a
+/// non-constructor occurrence. Recognizes `Constructor`/`Instantiation`, an
+/// `Apply` whose functor is a data constructor, and a bare nullary constructor
+/// `Ref`/`Ident`. Used by [`skeletonize`] to preserve a call argument's
+/// constructor spine (WI-687).
+#[allow(clippy::type_complexity)]
+fn occ_as_ctor(
+    kb: &KnowledgeBase,
+    occ: &Rc<NodeOccurrence>,
+) -> Option<(Symbol, Vec<Rc<NodeOccurrence>>, Vec<(Symbol, Rc<NodeOccurrence>)>)> {
+    let is_data = |f: Symbol| kb.entity_field_types(f).is_some() || kb.is_constructor_symbol(f);
+    match occ.as_expr()? {
+        Expr::Constructor { name, pos_args, named_args }
+        | Expr::Instantiation { name, pos_args, named_args }
+            if is_data(*name) =>
+        {
+            Some((*name, pos_args.clone(), named_args.clone()))
+        }
+        Expr::Apply { functor, pos_args, named_args, .. } if is_data(*functor) => {
+            Some((*functor, pos_args.clone(), named_args.clone()))
+        }
+        Expr::Ref(s) | Expr::Ident(s) if kb.kind_of(*s) == Some(SymbolKind::Entity) => {
+            Some((*s, Vec::new(), Vec::new()))
+        }
+        _ => None,
+    }
+}
+
+/// A per-call-site *shape skeleton* of an argument occurrence (WI-687): the
+/// argument's data-constructor spine is preserved verbatim while every
+/// non-constructor leaf is replaced by a FRESH `Var::Global`. Binding an
+/// operation parameter to this skeleton lets [`reduce`] decide a `match` on the
+/// parameter (or on one of its fields — the constructor heads are statically
+/// known) while keeping the derived rule generic in the leaf values: the SMT
+/// emitter binds each fresh leaf to the caller's actual sub-term when it inlines
+/// the synthesized rule (`try_inline_rule_call`'s structural head binding).
+fn skeletonize(kb: &mut KnowledgeBase, arg: &Rc<NodeOccurrence>) -> Rc<NodeOccurrence> {
+    if let Some((name, pos, named)) = occ_as_ctor(kb, arg) {
+        let pos2: Vec<_> = pos.iter().map(|p| skeletonize(kb, p)).collect();
+        let named2: Vec<_> = named.iter().map(|(s, v)| (*s, skeletonize(kb, v))).collect();
+        return NodeOccurrence::new_expr(
+            Expr::Constructor { name, pos_args: pos2, named_args: named2 },
+            arg.span,
+            arg.owner,
+        );
+    }
+    let name = kb.intern("defeq_arg");
+    let g = kb.fresh_var(name);
+    NodeOccurrence::new_expr(Expr::Var(Var::Global(g)), arg.span, arg.owner)
+}
+
 /// The head constructor symbol of a statically-known constructor occurrence, or
 /// `None` (a call, a variable, a literal — head not a known constructor).
 fn occ_head_ctor(kb: &KnowledgeBase, occ: &Rc<NodeOccurrence>) -> Option<Symbol> {
@@ -820,6 +939,26 @@ fn goal_functor(goal: &Rc<NodeOccurrence>) -> Option<Symbol> {
     }
 }
 
+/// The `n` leading positional argument occurrences of a relational op-call goal
+/// `op(a₀…a_{n-1}, result)` — the value arguments the per-call-site synthesis
+/// (WI-687) specializes at. The trailing result slot is dropped (the synth mints
+/// its own fresh result var). `None` when the goal carries named args, or its op
+/// has no known arity, or it supplies fewer than `n` positional args.
+fn goal_value_args(
+    kb: &KnowledgeBase,
+    goal: &Rc<NodeOccurrence>,
+    op: Symbol,
+) -> Option<Vec<Rc<NodeOccurrence>>> {
+    let Some(Expr::Apply { pos_args, named_args, .. }) = goal.as_expr() else {
+        return None;
+    };
+    if !named_args.is_empty() {
+        return None;
+    }
+    let n = lookup_operation_info(kb, op)?.params.len();
+    Some(pos_args.get(..n)?.to_vec())
+}
+
 impl KnowledgeBase {
     /// Derive `op`'s defining equations from its body (design §3.4.1, WI-669):
     /// the op's parameters become DeBruijn vars (`?0`…), the body is specialized
@@ -876,21 +1015,45 @@ impl KnowledgeBase {
         let n = info.params.len();
         let span = info.body_node.as_ref()?.span;
 
-        // Fresh Globals: one per parameter (named for readability) + the result.
+        // Fresh Globals: one per parameter (named for readability). The result
+        // Global is allocated by `assert_defining_rule`.
         let param_vars: Vec<VarId> =
             (0..n).map(|i| self.fresh_var(info.params[i].0)).collect();
-        let result_name = self.intern("defeq_result");
-        let result_var = self.fresh_var(result_name);
 
-        // Occurrence params → the arms carry these Globals; refold to a nested if.
+        // Occurrence params → the arms carry these Globals; the head args are the
+        // SAME Globals as `Term::Var`, so head/body share one De Bruijn frame.
         let pos_args: Vec<Rc<NodeOccurrence>> = param_vars
             .iter()
             .map(|g| NodeOccurrence::new_expr(Expr::Var(Var::Global(*g)), span, None))
             .collect();
         let eqs = defining_equations(self, op, &pos_args, &[])?;
-        let if_occ = refold_defining_equations(self, &eqs, span)?;
+        let head_args: SmallVec<[TermId; 4]> =
+            param_vars.iter().map(|g| self.alloc(Term::Var(Var::Global(*g)))).collect();
+        self.assert_defining_rule(op, &eqs, head_args, span)
+    }
 
-        // Body node: `?result = <refolded-if>`.
+    /// Shared tail of the two defining-rule synthesizers (WI-669 generic /
+    /// WI-687 per-call-site): from the derived `eqs` and the already-built head
+    /// argument terms (fresh-Global params for the generic path, skeleton
+    /// constructor terms for the per-call-site path), refold the arms into one
+    /// nested `Expr::If`, build the rule `op(<args>, ?result) :- ?result = <if>`
+    /// over a FRESH result Global, assert it under `op`'s own functor, and label
+    /// it `<op_qn>__defeq` (idempotency + debuggability). The head args must carry
+    /// `Var::Global` leaves (not raw De Bruijn) so
+    /// [`Self::assert_rule_debruijn_with_nodes`]' collector derives the arity;
+    /// the appended result Global becomes the trailing (highest-index) param.
+    fn assert_defining_rule(
+        &mut self,
+        op: Symbol,
+        eqs: &[DefiningEquation],
+        mut head_args: SmallVec<[TermId; 4]>,
+        span: SourceSpan,
+    ) -> Option<RuleId> {
+        let if_occ = refold_defining_equations(self, eqs, span)?;
+
+        // Body node: `?result = <refolded-if>` over a fresh result Global.
+        let result_name = self.intern("defeq_result");
+        let result_var = self.fresh_var(result_name);
         let eq_sym = self.eq_functor();
         let result_occ =
             NodeOccurrence::new_expr(Expr::Var(Var::Global(result_var)), span, None);
@@ -905,11 +1068,7 @@ impl KnowledgeBase {
             None,
         );
 
-        // Head term: `op(g₀…g_{n-1}, g_result)` — same Globals as the body.
-        let mut head_args: SmallVec<[TermId; 4]> = SmallVec::new();
-        for g in &param_vars {
-            head_args.push(self.alloc(Term::Var(Var::Global(*g))));
-        }
+        // Head term `op(<args>, g_result)` — the result Global is the trailing arg.
         head_args.push(self.alloc(Term::Var(Var::Global(result_var))));
         let head = self.alloc(Term::Fn {
             functor: op,
@@ -937,6 +1096,75 @@ impl KnowledgeBase {
         Some(rid)
     }
 
+    /// WI-687 — synthesize a defining rule for a **match-headed** bodied `op` by
+    /// specializing its body at a proof call-site's concrete-constructor
+    /// arguments. Where [`Self::synthesize_op_defining_rule`] builds ONE generic
+    /// rule over fresh Globals — which cannot reduce a `match` whose scrutinee is
+    /// an abstract parameter (or a field of one) — this reads the shape of the
+    /// actual call arguments (`value_args`, a state constructor with
+    /// `some(...)`/`none` Option fields, etc.), builds a fresh-Global *shape
+    /// skeleton* per argument ([`skeletonize`]), and specializes at the skeleton.
+    /// The known constructor heads let [`reduce`] decide the `match` (and project
+    /// field reads) while the skeleton's fresh leaves keep the rule generic in
+    /// the leaf values.
+    ///
+    /// The head is therefore **constructor-shaped** — `op(some(?0), ?1, ?result)`
+    /// rather than `op(?0, ?1, ?result)` — so the SMT emitter's inline path binds
+    /// the head structurally against the call (`try_inline_rule_call` recurses a
+    /// constructor head arg against the caller's construction, WI-687). The head
+    /// functor is `op` itself (label `<op_qn>__defeq`), so `rules_by_functor →
+    /// try_inline_rule_call` finds it exactly as for the generic path.
+    ///
+    /// Returns `None` — a loud decline — when `op` is not a pure runnable bodied
+    /// op, the arity doesn't fit, or the body still doesn't reduce at these
+    /// argument shapes (e.g. a `match` on a field whose call argument was not a
+    /// concrete constructor). A decline creates NO rule, so the idempotency check
+    /// stays correct on a re-scan; the skeleton's fresh vars leak (a bounded
+    /// handful per declined goal, benign — just a counter bump, no facts/index
+    /// entries). Idempotent on success: an existing defining rule under `op`'s
+    /// functor (a prior per-call-site or generic synth) is returned as-is, so a
+    /// second obligation goal for the same op reuses it (one shape per op in this
+    /// increment — a genuinely different-shape second call would inline the first
+    /// rule and fail the emitter's structural head match loudly, never silently).
+    pub fn synthesize_op_defining_rule_at(
+        &mut self,
+        op: Symbol,
+        value_args: &[Rc<NodeOccurrence>],
+    ) -> Option<RuleId> {
+        // Idempotent — reuse any existing (per-call-site or generic) defining rule.
+        if let Some(rid) = self.rules_by_functor(op).into_iter().find(|r| !self.is_fact(*r)) {
+            return Some(rid);
+        }
+        if !super::typing::op_has_runnable_body(self, op) {
+            return None;
+        }
+        let info = lookup_operation_info(self, op)?;
+        let n = info.params.len();
+        if value_args.len() != n {
+            return None;
+        }
+        let span = info.body_node.as_ref()?.span;
+
+        // Fresh-Global shape skeletons for each argument: the constructor spine is
+        // preserved (so a `match` on it reduces) with fresh leaves (so the rule is
+        // generic in the leaf values). Both the head term and the reduced body
+        // reference the SAME skeleton Globals — `assert_rule_debruijn_with_nodes`
+        // collects them head-first and closes to a consistent De Bruijn frame.
+        let skeletons: Vec<Rc<NodeOccurrence>> =
+            value_args.iter().map(|a| skeletonize(self, a)).collect();
+        let eqs = defining_equations(self, op, &skeletons, &[])?;
+
+        // Head args: each skeleton lowers to its constructor/var term twin (data
+        // only — no control flow — so `occurrence_to_term` is total here). The
+        // shared `assert_defining_rule` refolds the arms, appends the result var,
+        // asserts, and labels — identical to the generic path.
+        let head_args: SmallVec<[TermId; 4]> = skeletons
+            .iter()
+            .map(|s| super::node_occurrence::occurrence_to_term(self, s))
+            .collect();
+        self.assert_defining_rule(op, &eqs, head_args, span)
+    }
+
     /// WI-669 inc-1b seam entry: scan `rule_qn`'s body for goals that call a
     /// **rule-less bodied op** and synthesize a defining rule for each, so the SMT
     /// emitter inlines the body-derived definition (no hand-written twin). A no-op
@@ -956,9 +1184,14 @@ impl KnowledgeBase {
     ///   unhandled value-position op call loudly). Termination is by a
     ///   visited-rule set, so a recursive predicate (`real_pose_at`) is walked
     ///   once.
-    /// - A bodied op whose body this increment can't lower (a `match` body)
-    ///   is left un-synthesized — the emitter then rejects it loudly at its own
-    ///   goal boundary (`unhandled body goal functor`).
+    /// - A bodied op whose GENERIC (abstract-parameter) synthesis declines — a
+    ///   `match`-headed body, whose scrutinee is a parameter or a field of one —
+    ///   is retried **per call-site** (WI-687): the goal's concrete-constructor
+    ///   arguments are specialized (`synthesize_op_defining_rule_at`) so the
+    ///   `match` reduces at the actual argument shapes. If that also declines
+    ///   (the call did not supply a concrete constructor), the op is left
+    ///   un-synthesized and the emitter rejects it loudly at its own goal
+    ///   boundary (`unhandled body goal functor`).
     /// - Only a rule-less op with an actual `= body` is a synth candidate;
     ///   bodyless prelude ops (`add`/`cos`/…, no body_node) are never synthesized
     ///   — the emitter lowers them directly (arith / trig).
@@ -973,31 +1206,39 @@ impl KnowledgeBase {
             return;
         };
         let mut visited: std::collections::HashSet<RuleId> = std::collections::HashSet::new();
+        // Functors already synth-attempted — one attempt per op across the whole
+        // scan (synthesis is idempotent, and the per-call-site path uses the FIRST
+        // goal's shape; a repeat goal for the same op would only re-do work).
+        let mut attempted: std::collections::HashSet<Symbol> = std::collections::HashSet::new();
         let mut worklist: Vec<RuleId> = vec![root];
         while let Some(rid) = worklist.pop() {
             if !visited.insert(rid) {
                 continue;
             }
-            // Collect distinct body-goal functors first (owned) so the &mut synth
-            // loop below doesn't hold the immutable `rule_body_nodes` borrow.
-            let mut functors: Vec<Symbol> = Vec::new();
-            for goal in self.rule_body_nodes(rid) {
-                if let Some(f) = goal_functor(goal) {
-                    if !functors.contains(&f) {
-                        functors.push(f);
-                    }
-                }
-            }
-            for f in functors {
+            // Clone the body goals (owned Rcs) so the &mut synth calls below don't
+            // hold the immutable `rule_body_nodes` borrow. We iterate GOALS, not
+            // just distinct functors, because the per-call-site path (WI-687)
+            // needs each goal's actual argument occurrences.
+            let goals: Vec<Rc<NodeOccurrence>> = self.rule_body_nodes(rid).to_vec();
+            for goal in &goals {
+                let Some(f) = goal_functor(goal) else { continue };
                 // `f` must resolve to the operation itself — call the op qualified
                 // enough to bind (a bare relation name that doesn't resolve to the
                 // op is left to the emitter's loud "unhandled body goal functor").
                 let clauses = self.rules_by_functor(f);
                 let rule_less = clauses.iter().all(|r| self.is_fact(*r));
                 if rule_less {
-                    // A rule-less bodied op — synthesize its defining rule.
-                    if super::typing::op_has_runnable_body(self, f) {
-                        let _ = self.synthesize_op_defining_rule(f);
+                    // A rule-less bodied op — synthesize its defining rule ONCE. Try
+                    // the generic (abstract-parameter) path first; if it declines (a
+                    // `match`-headed body won't reduce over abstract params), fall
+                    // to per-call-site specialization at THIS goal's concrete args.
+                    if attempted.insert(f)
+                        && super::typing::op_has_runnable_body(self, f)
+                        && self.synthesize_op_defining_rule(f).is_none()
+                    {
+                        if let Some(args) = goal_value_args(self, goal, f) {
+                            let _ = self.synthesize_op_defining_rule_at(f, &args);
+                        }
                     }
                 } else {
                     // A defined rule the emitter would inline — recurse into its

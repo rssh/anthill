@@ -16,3 +16,4 @@ mod step_distance_test;
 mod wi680_ite_lowering_test;
 mod wi681_desired_position_test;
 mod wi686_scalar_param_in_constructor_test;
+mod wi687_match_headed_test;
