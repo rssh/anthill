@@ -566,9 +566,13 @@ pub struct ResolveStats {
 pub struct SearchStream {
     stack: Vec<Frame>,
     config: ResolveConfig,
-    /// Per-query cache: goal TermId → discrim tree query results.
-    /// Safe because facts/rules don't change during a single resolve call.
-    query_cache: HashMap<TermId, Vec<(RuleId, Substitution)>>,
+    /// Per-query cache: a ground goal's carrier-agnostic [`GoalKey`] → its
+    /// discrim-tree query results. Keyed by the structural fingerprint (not a
+    /// hash-consed `TermId`), so a `Value::Node` occurrence goal caches on equal
+    /// footing with a `Value::Term` — the typer phase / `anthill prove`, which
+    /// feed occurrence goals, get query caching too. Safe because facts/rules
+    /// don't change during a single resolve call.
+    query_cache: HashMap<GoalKey, Vec<(RuleId, Substitution)>>,
     /// Telemetry (see `ResolveStats`).
     stats: ResolveStats,
     /// Monotonic cut-barrier allocator (proposal 033.1 / WI-568). Bumped each
@@ -812,8 +816,9 @@ impl SearchStream {
         // Walk goals[0] under σ to a `Value` goal (memoized back). A `Value::Node`
         // occurrence goal walks via `substitute_occurrence` (occurrence-native,
         // no lowering); a `Value::Term` goal via `apply_subst`. `goal_t` is the
-        // term form when the goal has one — used by the synthetic term-only
-        // markers (pop_assumption / forall_impl) that are never occurrences.
+        // hash-consed carrier when the goal has one (`None` for an occurrence),
+        // consumed by the term-structured handlers (forall/quant tuple-surgery,
+        // HoApply, cut, external-row) and as the ground query-cache key.
         let goal_val: Value = {
             let f = self.stack.last().unwrap();
             if f.subst.is_empty() {
@@ -843,8 +848,9 @@ impl SearchStream {
 
         // Scoping / hereditary-Harrop markers (`__pop_assumption`,
         // `forall_impl`, WI-108). Detected by functor so they work for
-        // occurrence goals too (a rule-body `forall …` is a `Value::Node`);
-        // these handlers are term-structured, so reify only when matched.
+        // occurrence goals too (a rule-body `forall …` is a `Value::Node`).
+        // `__pop_assumption` classifies carrier-neutrally; the forall/quant
+        // handlers are term-structured, so reify only when one of them matches.
         let is_marker = match goal_val.head(kb) {
             ViewHead::Functor { functor: Some(f), .. } => {
                 let n = kb.resolve_sym(f);
@@ -854,9 +860,10 @@ impl SearchStream {
             _ => false,
         };
         if is_marker {
-            let goal = goal_t.unwrap_or_else(|| reify_goal_value(kb, &goal_val));
             // 3.4 __pop_assumption(N) — pops N entries off assumed_facts.
-            if let Some(n) = Self::pop_assumption_arg(kb, goal) {
+            // Carrier-neutral: reads the count off the goal's TermView, so this
+            // marker classifies without a `reify_goal_value` lowering.
+            if let Some(n) = Self::pop_assumption_arg(kb, &goal_val) {
                 let f = self.stack.last_mut().unwrap();
                 let drop_from = f.assumed_facts.len().saturating_sub(n);
                 f.assumed_facts.truncate(drop_from);
@@ -865,6 +872,10 @@ impl SearchStream {
                 f.state = FrameState::Init { delay_mode: delay_mode.reset() };
                 return Some(StepResult::Continue);
             }
+            // forall_impl / forall_in / some_in do TermId tuple-surgery in their
+            // step_ handlers, so reify the goal here — these arrive as `Value::Node`
+            // rule-body occurrences and genuinely need a hash-consed `TermId`.
+            let goal = goal_t.unwrap_or_else(|| reify_goal_value(kb, &goal_val));
             // 3.5 forall_impl(binders, antecedents, consequent) — skolemise,
             // push antecedents as scoped assumptions, prepend consequents.
             if Self::is_forall_impl(kb, goal, &frame.subst) {
@@ -1160,10 +1171,23 @@ impl SearchStream {
 
         // 6. Non-builtin goal → query discrimination tree via `TermView`
         // (no lowering — a `Value::Node` goal matches Term-indexed heads).
-        // Cache only ground *term* goals: the cache is keyed on hash-consed
-        // `TermId`, so occurrence goals and goals with variables aren't cached.
-        let cache_key = goal_t.filter(|&t| kb.collect_vars(t).is_empty());
-        let rule_candidates = match cache_key.and_then(|t| self.query_cache.get(&t).cloned()) {
+        // Cache the discrim query only for a goal whose `GoalKey` faithfully and
+        // completely identifies what `query_view` depends on, keyed by the
+        // carrier-agnostic `GoalKey`. The fingerprint is taken over `goal_val`
+        // exactly as `query_view` reads it — through `TermView` with NO σ
+        // resolution (an empty subst). `query_view(&goal_val)` (below) applies no
+        // σ, so the key must not either: a var kept in `goal_val` (a flex `Global`
+        // that σ bound to a non-`Term`, or a child of an unwalked
+        // `Value::Entity`/`Tuple` — the `other => other` walk arm) must stay a
+        // `Var` token → not cacheable, NOT be resolved to a structure `query_view`
+        // never saw. `is_cacheable` also excludes an `Opaque` leaf. Unlike the
+        // former hash-consed `TermId` key, a ground `Value::Node` occurrence goal
+        // caches too — no materialization.
+        let cache_key: Option<GoalKey> = {
+            let key = goal_fingerprint(kb, &goal_val, &Substitution::default());
+            key.is_cacheable().then_some(key)
+        };
+        let rule_candidates = match cache_key.as_ref().and_then(|k| self.query_cache.get(k).cloned()) {
             Some(cached) => cached,
             None => {
                 let mut rc = kb.query_view(&goal_val);
@@ -1201,8 +1225,8 @@ impl SearchStream {
                     }
                 }
                 rc.retain(|(rid, _)| !kb.is_equation(*rid));
-                if let Some(t) = cache_key {
-                    self.query_cache.insert(t, rc.clone());
+                if let Some(k) = cache_key {
+                    self.query_cache.insert(k, rc.clone());
                 }
                 rc
             }
@@ -1776,17 +1800,20 @@ impl SearchStream {
         }
     }
 
-    /// Recognise `__pop_assumption(N)` and return N. Returns None for
-    /// anything else.
-    fn pop_assumption_arg(kb: &KnowledgeBase, goal: TermId) -> Option<usize> {
-        match kb.terms.get(goal) {
-            Term::Fn { functor, pos_args, named_args, .. }
-                if kb.resolve_sym(*functor) == "__pop_assumption"
-                    && pos_args.len() == 1
-                    && named_args.is_empty() =>
+    /// Recognise `__pop_assumption(N)` and return N, reading through
+    /// [`TermView`] so the classification is carrier-neutral — no lowering to a
+    /// hash-consed `TermId`. The marker is synthesised as a `Value::Term` (see
+    /// `make_pop_assumption_marker`), so it never actually carries a `Value::Node`;
+    /// reading it via the view is what lets the marker branch dispatch on `&Value`
+    /// directly, before the `reify_goal_value` the term-structured forall/quant
+    /// handlers beside it still need. Returns None for anything else.
+    fn pop_assumption_arg(kb: &KnowledgeBase, goal: &impl TermView) -> Option<usize> {
+        match goal.head(kb) {
+            ViewHead::Functor { functor: Some(f), pos_arity: 1, named_arity: 0 }
+                if kb.resolve_sym(f) == "__pop_assumption" =>
             {
-                match kb.terms.get(pos_args[0]) {
-                    Term::Const(crate::kb::term::Literal::Int(n)) if *n >= 0 => Some(*n as usize),
+                match goal.pos_arg(kb, 0)?.head(kb) {
+                    ViewHead::Const(Literal::Int(n)) if n >= 0 => Some(n as usize),
                     _ => None,
                 }
             }

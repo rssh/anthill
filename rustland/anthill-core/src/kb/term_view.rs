@@ -849,6 +849,35 @@ pub enum StructToken {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct GoalKey(Vec<StructToken>);
 
+impl GoalKey {
+    /// True when this key may safely index the resolver's per-query cache. Two
+    /// conditions, both restoring exactly what the former hash-consed `TermId`
+    /// cache key guaranteed:
+    ///
+    /// - **No unresolved flex (`Global`) var.** Its candidate substitutions are
+    ///   tied to specific var-ids, so they aren't reusable. `fingerprint_into`
+    ///   emits a `Var` token only for a var that didn't resolve through the
+    ///   substitution; a `Rigid` skolem / `DeBruijn` binder is instead a
+    ///   *constant* whose identity is baked into the key, so it stays cacheable —
+    ///   mirroring [`KnowledgeBase::collect_vars`] (Global-only, DeBruijn/Rigid
+    ///   ignored), the predicate the old key used.
+    /// - **No `Opaque` leaf.** A `StructToken::Opaque` (a `Map`/`Cell`/`Closure`/
+    ///   `OpRef`/… carrier — and one may itself hide unbound vars the fingerprint
+    ///   can't see, so it is not truly "ground") is payload-free and not even
+    ///   structurally self-comparable (`views_structurally_equal` is `false` for
+    ///   it), so two genuinely distinct goals differing only inside an `Opaque`
+    ///   child collapse to one key. The old `TermId` key never faced this (a
+    ///   `Term` can't hold an `Opaque` child); excluding it restores that immunity
+    ///   locally, mirroring the explicit non-`Term`/`Node` guard the answer-dedup
+    ///   sibling `is_duplicate_projection` already applies for the same reason.
+    pub fn is_cacheable(&self) -> bool {
+        !self.0.iter().any(|t| matches!(
+            t,
+            StructToken::Var(Var::Global(_)) | StructToken::Opaque
+        ))
+    }
+}
+
 /// Append `view`'s structural fingerprint to `out`, resolving each `Var`
 /// through `subst` (so the key is over the *reified* goal). Named args are
 /// emitted in **sorted** key order — `named_keys` order differs by carrier
