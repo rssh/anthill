@@ -59,10 +59,11 @@ namespace anthill.examples.lf1.follower_transponder
   -- =================================================================
   --
   -- prev_distance / prev_delta: rolling history (None on first tick).
-  -- upc:    monotonicity counter — incremented while the distance
-  --         is shrinking faster, decremented while it is shrinking
+  -- upc:    monotonicity counter — decremented while the distance
+  --         is shrinking faster, incremented while it is shrinking
   --         slower / growing. Clamped through 0 so a sign change
-  --         resets the count.
+  --         resets the count (so a sustained-improvement regime drives
+  --         upc negative — matching seq == -1 below, set when upc < -5).
   -- seq:    -1 / 0 / +1 — the last "trend regime" (set when |upc|
   --         exceeds 5). seq == -1 means "we were recently improving
   --         fast"; seeing upc fall back to 0 from that regime is the
@@ -84,22 +85,6 @@ namespace anthill.examples.lf1.follower_transponder
   -- =================================================================
 
   sort TransponderFollowerController
-    -- Monotonicity-counter update, factored out of `step` so the
-    -- ranking safety proof (safety_transponder.anthill) can DERIVE the
-    -- upc transition from this operation's body via WI-669
-    -- defining-equation extraction, rather than restating it by hand.
-    -- `shrinking_faster` names the distance-trend test. The counter is
-    -- clamped through 0 so a trend reversal resets the streak — so a
-    -- post-armed upc < 0 snaps to 0 on the first slower/growing tick
-    -- (NOT upc + 1; this is the drift the ranking proof's decrease
-    -- obligation now reflects — see safety_transponder.anthill).
-    operation next_upc(upc: Int64, new_delta: Float, prev_delta: Float)
-      -> Int64 =
-      let shrinking_faster = lt(new_delta, prev_delta)
-      if shrinking_faster
-        then if lte(upc, 0) then upc - 1 else 0
-        else if gte(upc, 0) then upc + 1 else 0
-
     -- One discrete control step. Updates the rolling history,
     -- detects a direction-flip event using the *previous* tick's
     -- (upc, seq) — this matters; the flip check must run before
@@ -127,7 +112,7 @@ namespace anthill.examples.lf1.follower_transponder
                    reading: TransponderReading)
       -> TransponderFollowerState =
       match state.prev_distance
-        case none ->
+        case none() ->
           -- First tick: just record the distance, leave counters alone.
           TransponderFollowerState(
             prev_distance: some(reading.distance),
@@ -146,13 +131,22 @@ namespace anthill.examples.lf1.follower_transponder
                      then neg(state.yaw_cmd)
                      else -0.45
               else state.yaw_cmd
-          -- upc update: needs prev_delta to compare against. Delegated
-          -- to `next_upc` (clamp-through-0) so the ranking safety proof
-          -- derives the transition from that op's body (WI-679).
+          -- upc update: needs prev_delta to compare against. The counter
+          -- is clamped through 0 so a trend reversal resets the streak —
+          -- a post-armed upc < 0 snaps to 0 on the first slower/growing
+          -- tick (NOT upc + 1). `shrinking_faster` names the distance-trend
+          -- test. The ranking safety proof (safety_transponder.anthill)
+          -- DERIVES this transition directly from `step`'s body via WI-669
+          -- defining-equation extraction (WI-688) — no hand-written twin,
+          -- no factored-out op.
           let new_upc =
             match state.prev_delta
-              case none -> 0
-              case some(pd) -> next_upc(state.upc, new_delta, pd)
+              case none() -> 0
+              case some(pd) ->
+                let shrinking_faster = lt(new_delta, pd)
+                if shrinking_faster
+                  then if lte(state.upc, 0) then state.upc - 1 else 0
+                  else if gte(state.upc, 0) then state.upc + 1 else 0
           let new_seq =
             if lt(new_upc, -5)      then -1
             else if gt(new_upc, 5)  then  1

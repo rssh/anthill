@@ -47,10 +47,13 @@
 
 namespace anthill.examples.lf1.safety.transponder
   import anthill.prelude.{Float, Int64, Bool}
+  import anthill.prelude.Option.{some}
   import anthill.prelude.Ordered.{lt, gt, lte, gte}
   import anthill.prelude.Numeric.{add, sub, mul}
   import anthill.prelude.Float.{abs}
-  import anthill.examples.lf1.follower_transponder.{TransponderFollowerController}
+  import anthill.examples.lf1.follower_transponder.{
+    TransponderFollowerController, TransponderFollowerState, TransponderReading
+  }
   import anthill.examples.lf1.safety.common.{
     DistanceBounds, KinematicAssumptions, reachable_real, position_distance
   }
@@ -127,7 +130,7 @@ namespace anthill.examples.lf1.safety.transponder
   -- WI-100 ranking-tactic. The well-founded measure is R = −upc;
   -- the post-armed regime keeps upc ∈ [−6, 0], so R ∈ [0, 6].
   -- The bad-step transition is now DERIVED from the controller body
-  -- (`next_upc`, WI-679): the else-branch is `if gte(upc,0) then upc+1
+  -- (`step`, WI-688): the upc else-branch is `if gte(upc,0) then upc+1
   -- else 0`, so for a post-armed upc < 0 it clamps to 0 — R strictly
   -- decreases (to 0 in a single bad tick). R ≥ 0 (boundedness) + R
   -- strictly decreases on every bad step ⇒ the controller flips heading
@@ -250,12 +253,35 @@ namespace anthill.examples.lf1.safety.transponder
 
   -- R(upc') ≥ R(upc) ↔ −upc' ≥ −upc ↔ upc' ≤ upc, checked on a
   -- post-armed BAD step (distance not improving: new_delta ≥ prev_delta,
-  -- the else-branch of next_upc's trend test). The upc transition is
-  -- DERIVED from the controller body —
-  -- TransponderFollowerController.next_upc, via WI-669 defining-equation
-  -- extraction — not restated by hand. For a post-armed upc < 0 the body
-  -- clamps through 0, so upc' = 0; `0 ≤ upc` with upc < 0 is unsat ⇒ R
-  -- strictly decreases (to 0 in a single bad tick).
+  -- i.e. the follower's per-tick delta stopped shrinking). The upc
+  -- transition is DERIVED from the WHOLE controller step —
+  -- TransponderFollowerController.step, via WI-669 defining-equation
+  -- extraction (WI-688) — not restated by hand and no longer factored
+  -- into a helper op for the prover's benefit. The obligation calls
+  -- `step` relationally at a concrete post-armed state
+  -- (prev_distance / prev_delta both `some`, so the some/some arm reduces)
+  -- and reads `?next.upc`; the per-call-site match specialization (WI-687)
+  -- reduces `step`'s two `match`es at the supplied constructor shapes and
+  -- the scalar-param channel (WI-686) lowers the `upc` field's `ite` over
+  -- the caller's `?upc` / deltas.
+  --
+  -- Why the state is pinned to some/some (not a bare `?state`): `upc` is
+  -- ONLY ever driven away from 0 by the some/some arm — the first-tick
+  -- `none()` arm leaves upc unchanged and the some/none-delta arm sets it
+  -- to 0. So a post-armed state (upc ∈ [−6, −1]) is reachable ONLY through
+  -- some/some steps, i.e. post-armed ⟹ prev_distance = some ∧ prev_delta =
+  -- some. Restricting the obligation to that arm is therefore exactly the
+  -- transition a post-armed bad tick can take; it is not a lost case. (The
+  -- ranking argument is about the post-armed regime only — the first tick
+  -- is initialization, upc₀ = 0, not a bad step.)
+  --
+  -- The bad step forces the trend test `new_delta < prev_delta`
+  -- (shrinking_faster) FALSE, so `step`'s `upc` field takes the
+  -- else-branch `if gte(upc,0) then upc+1 else 0`; for a post-armed
+  -- upc < 0 that clamps to 0, so upc' = 0 and `0 ≤ upc` with upc < 0 is
+  -- unsat ⇒ R strictly decreases (to 0 in a single bad tick). The delta
+  -- comparison runs on the Float readings inside `step`, so the sub-query
+  -- carries Real operands and the proof logic is LRA.
   --
   -- DRIFT (WI-679): the retired hand-written twin used `upc' = upc + 1`,
   -- which diverges from the body's snap-to-0 for upc < 0. Both are unsat
@@ -265,8 +291,20 @@ namespace anthill.examples.lf1.safety.transponder
   rule decrease_violation_transponder(?w)
     :- gte(?upc, -6),
        lt(?upc, 0),
-       TransponderFollowerController.next_upc(?upc, ?new_delta, ?prev_delta, ?upc_next),
+       TransponderFollowerController.step(
+         TransponderFollowerState(
+           prev_distance: some(?prev_d),
+           prev_delta:    some(?prev_delta),
+           upc:           ?upc,
+           seq:           ?seq,
+           yaw_cmd:       ?yaw_cmd
+         ),
+         TransponderReading(distance: ?reading_dist),
+         ?next
+       ),
+       ?new_delta = ?reading_dist - ?prev_d,
        gte(?new_delta, ?prev_delta),
+       ?upc_next = ?next.upc,
        lte(?upc_next, ?upc),
        ?w = ?upc
 
@@ -311,8 +349,8 @@ namespace anthill.examples.lf1.safety.transponder
 
   -- Witness that R = −upc is a valid ranking function with bound 6.
   -- Logic is LRA (not LIA): the decrease obligation now derives its upc
-  -- transition from `next_upc`, whose trend test compares the Float
-  -- deltas, so the sub-query carries Real operands (WI-679).
+  -- transition from `step`'s body (WI-688), whose trend test compares the
+  -- Float deltas, so the sub-query carries Real operands.
   proof post_armed_excursion_bound
     by z3(tactic: ranking(boundedness: bound_violation_transponder,
                           decrease: decrease_violation_transponder),
