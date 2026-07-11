@@ -872,18 +872,22 @@ impl SearchStream {
                 f.state = FrameState::Init { delay_mode: delay_mode.reset() };
                 return Some(StepResult::Continue);
             }
-            // forall_impl / forall_in / some_in do TermId tuple-surgery in their
-            // step_ handlers, so reify the goal here — these arrive as `Value::Node`
-            // rule-body occurrences and genuinely need a hash-consed `TermId`.
-            let goal = goal_t.unwrap_or_else(|| reify_goal_value(kb, &goal_val));
+            // forall_impl / forall_in / some_in classify carrier-neutrally off
+            // the goal's `TermView`. Their step_ handlers do `TermId`
+            // tuple-surgery (skolemise binders, substitute, prepend), so reify
+            // once — only when we know we're dispatching — since a rule-body
+            // `forall … ==>` arrives as a `Value::Node` occurrence.
+            //
             // 3.5 forall_impl(binders, antecedents, consequent) — skolemise,
             // push antecedents as scoped assumptions, prepend consequents.
-            if Self::is_forall_impl(kb, goal, &frame.subst) {
+            if Self::is_forall_impl(kb, &goal_val) {
+                let goal = goal_t.unwrap_or_else(|| reify_goal_value(kb, &goal_val));
                 return self.step_forall_impl(kb, goal, depth, delay_mode);
             }
             // 3.6 (WI-027) forall_in / some_in — bounded quantification over a
             // collection's elements; expand to a conjunction / disjunction.
-            if let Some(is_forall) = Self::bounded_quant_kind(kb, goal, &frame.subst) {
+            if let Some(is_forall) = Self::bounded_quant_kind(kb, &goal_val) {
+                let goal = goal_t.unwrap_or_else(|| reify_goal_value(kb, &goal_val));
                 return self.step_bounded_quant(kb, goal, is_forall, depth, delay_mode);
             }
         }
@@ -1310,14 +1314,15 @@ impl SearchStream {
     ///   delay (floundering prevention).
     /// - Otherwise, run sub-resolution: if the inner goal has ANY solution,
     ///   `not(Goal)` fails; if it has NO solutions, `not(Goal)` succeeds.
-    /// True if `goal` is a `forall_impl(...)` body goal. Walks the goal
-    /// to handle the case where it sits behind a flex var binding.
-    fn is_forall_impl(kb: &KnowledgeBase, goal: TermId, subst: &Substitution) -> bool {
-        let walked = kb.walk(goal, subst);
-        match kb.terms.get(walked) {
-            Term::Fn { functor, .. } => kb.resolve_sym(*functor) == "forall_impl",
-            _ => false,
-        }
+    /// True if `goal` is a `forall_impl(...)` body goal. Reads the functor
+    /// through [`TermView`] (carrier-neutral — a rule-body `forall … ==>` arrives
+    /// as a `Value::Node` occurrence); the caller passes the already-σ-applied
+    /// goal, so no walk is needed here.
+    fn is_forall_impl(kb: &KnowledgeBase, goal: &Value) -> bool {
+        matches!(
+            goal.head(kb),
+            ViewHead::Functor { functor: Some(f), .. } if kb.resolve_sym(f) == "forall_impl"
+        )
     }
 
     /// Discharge a `forall_impl(binders, antecedents, consequent)` body
@@ -1332,9 +1337,9 @@ impl SearchStream {
         depth: usize,
         delay_mode: DelayMode,
     ) -> Option<StepResult> {
-        let frame = self.stack.last().unwrap();
-        let walked = kb.walk(goal, &frame.subst);
-        let pos_args = match kb.terms.get(walked) {
+        // `goal` arrives already σ-applied (the caller substitutes `goal_val`
+        // before reifying), so read its structure directly — no walk needed.
+        let pos_args = match kb.terms.get(goal) {
             Term::Fn { pos_args, .. } if pos_args.len() == 3 => pos_args.clone(),
             _ => {
                 // Malformed forall_impl term — treat as failure
@@ -1346,6 +1351,8 @@ impl SearchStream {
         let binder_tids = Self::unwrap_tuple_args(kb, pos_args[0]);
         let antecedent_tids = Self::unwrap_tuple_args(kb, pos_args[1]);
         let consequent_tids = Self::unwrap_tuple_args(kb, pos_args[2]);
+
+        let frame = self.stack.last().unwrap();
 
         // Build the Global → Rigid substitution map from the binders.
         let mut skolem_map: HashMap<u32, TermId> = HashMap::new();
@@ -1406,11 +1413,11 @@ impl SearchStream {
 
     /// WI-027: classify a bounded-quantifier body goal. `Some(true)` for
     /// `forall_in(?x, xs, tuple(body))`, `Some(false)` for `some_in(...)`,
-    /// `None` otherwise. Walks the goal so it works behind a flex binding.
-    fn bounded_quant_kind(kb: &KnowledgeBase, goal: TermId, subst: &Substitution) -> Option<bool> {
-        let walked = kb.walk(goal, subst);
-        match kb.terms.get(walked) {
-            Term::Fn { functor, .. } => match kb.resolve_sym(*functor) {
+    /// `None` otherwise. Reads the functor through [`TermView`] (carrier-neutral);
+    /// the caller passes the already-σ-applied goal, so no walk is needed.
+    fn bounded_quant_kind(kb: &KnowledgeBase, goal: &Value) -> Option<bool> {
+        match goal.head(kb) {
+            ViewHead::Functor { functor: Some(f), .. } => match kb.resolve_sym(f) {
                 "forall_in" => Some(true),
                 "some_in" => Some(false),
                 _ => None,
@@ -1510,9 +1517,9 @@ impl SearchStream {
         depth: usize,
         delay_mode: DelayMode,
     ) -> Option<StepResult> {
-        let frame = self.stack.last().unwrap();
-        let walked = kb.walk(goal, &frame.subst);
-        let pos_args = match kb.terms.get(walked) {
+        // `goal` arrives already σ-applied (the caller substitutes `goal_val`
+        // before reifying), so read its structure directly — no walk needed.
+        let pos_args = match kb.terms.get(goal) {
             Term::Fn { pos_args, .. } if pos_args.len() == 3 => pos_args.clone(),
             // Malformed bounded quantifier — treat as failure.
             _ => {
