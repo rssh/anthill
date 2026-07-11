@@ -3113,7 +3113,7 @@ fn find_spec_op_for_provided_sort(
     // (`recv_sort` is the provider's carrier-PARAM value, e.g. `sort TagCombiner
     // provides Combiner[T = Tag]` matched for `recv_sort = Tag`). A witness provider's
     // `sort_ref` is a DIFFERENT sort (`TagCombiner`), so it lives in another carrier
-    // bucket — `carrier_candidates(recv_sort)` would drop it. Nor is it spec-keyed
+    // bucket — the carrier index's `by_carrier` bucket for `recv_sort` would drop it. Nor is it spec-keyed
     // (it collects EVERY spec `recv_sort` provides). So the full scan is required.
     for rid in kb.rules_by_functor(provides_sym) {
         if !kb.is_fact(rid) {
@@ -9404,6 +9404,59 @@ fn spec_warrants_abstract_check(kb: &KnowledgeBase, spec_sort: Symbol) -> bool {
     !kb.qualified_name_of(spec_sort).starts_with("anthill.")
 }
 
+/// WI-661 (bucket-1 consolidation) — a reflect-fact index keyed by a canonical
+/// sort/spec `Symbol`: one `HashMap<Symbol, Vec<RuleId>>` bucket map, built once per
+/// load from a `rules_by_functor` scan, each bucket an order-preserving subsequence of
+/// that scan (so first-match order is kept). This is the shared shape the per-fact
+/// indexes previously hand-rolled — [`ProvidesIndex`] (two of these: spec-base and
+/// carrier) and the SortInfo index (one, stored directly as
+/// `KnowledgeBase::sort_info_index`). Identity is ALWAYS the canonical symbol
+/// (`canonical_sort_sym`), never a last segment (WI-672, spec §8.6): two symbols with the
+/// same qualified name collide into one bucket. WI-656 `op_records` (a rich per-op
+/// record) and WI-659 [`SortAliasIndex`] (maps to `TermId` targets under string /
+/// parent-sort keys) deliberately do NOT fold in — neither is a `Symbol → Vec<RuleId>`
+/// bucket.
+#[derive(Debug, Default)]
+pub(crate) struct SymbolKeyedFactIndex {
+    buckets: HashMap<Symbol, Vec<crate::kb::RuleId>>,
+}
+
+impl SymbolKeyedFactIndex {
+    /// The rids filed under `key_canon` (which the caller has already canonicalized),
+    /// empty if none. Consumers still re-read each rid's field over the returned rids —
+    /// the no-index fallback ([`Self::rids_or_scan`]) returns EVERY fact of the functor,
+    /// so a per-fact re-filter is load-bearing there and stays at the call site.
+    fn get(&self, key_canon: Symbol) -> &[crate::kb::RuleId] {
+        self.buckets.get(&key_canon).map_or(&[], |v| v.as_slice())
+    }
+
+    /// File `rid` under `key_canon`, appending so `rules_by_functor` order is preserved.
+    fn insert(&mut self, key_canon: Symbol, rid: crate::kb::RuleId) {
+        self.buckets.entry(key_canon).or_default().push(rid);
+    }
+
+    /// The rids for a keyed lookup: the built index's `key_canon` bucket if present, else
+    /// a live `rules_by_functor` scan of `functor_qn` (the pre-build / no-index fallback
+    /// the load-time consumers hit before their index exists — it returns EVERY fact, so
+    /// the caller keeps its own per-fact re-filter). `key_canon` must already be
+    /// canonical. Collapses the identical fast-path/fallback selection every keyed
+    /// consumer shared (`provides_rids_by_spec` / `_by_carrier`, `sort_info_rids_by_sort`).
+    fn rids_or_scan(
+        kb: &KnowledgeBase,
+        index: Option<&SymbolKeyedFactIndex>,
+        key_canon: Symbol,
+        functor_qn: &str,
+    ) -> Vec<crate::kb::RuleId> {
+        match index {
+            Some(ix) => ix.get(key_canon).to_vec(),
+            None => kb
+                .try_resolve_symbol(functor_qn)
+                .map(|s| kb.rules_by_functor(s))
+                .unwrap_or_default(),
+        }
+    }
+}
+
 /// WI-660/WI-672 — the SortProvidesInfo (provider) index (see [`crate::kb::KnowledgeBase`]'s
 /// `provides_index`). The provider relation, bucketed from BOTH endpoints so the
 /// dispatch/coherence sites do a bucket lookup instead of scanning every provides
@@ -9424,22 +9477,11 @@ fn spec_warrants_abstract_check(kb: &KnowledgeBase, spec_sort: Symbol) -> bool {
 ///   could not bridge to a qualified form.
 #[derive(Debug, Default)]
 pub(crate) struct ProvidesIndex {
-    by_spec_base: HashMap<Symbol, Vec<crate::kb::RuleId>>,
-    by_carrier: HashMap<Symbol, Vec<crate::kb::RuleId>>,
-}
-
-impl ProvidesIndex {
-    /// The provides-fact rids whose spec base canonicalizes to `spec_canon` (exact).
-    pub(crate) fn providers_of_spec(&self, spec_canon: Symbol) -> &[crate::kb::RuleId] {
-        self.by_spec_base.get(&spec_canon).map_or(&[], |v| v.as_slice())
-    }
-    /// The provides-fact rids whose carrier canonicalizes to `carrier_canon` (exact:
-    /// the carrier is a resolved sort functor, so the canonical key IS the carrier
-    /// identity). Consumers still read each rid's `sort_ref` (the no-index scan fallback
-    /// returns EVERY fact), now comparing by `canonical_sort_sym`.
-    pub(crate) fn carrier_candidates(&self, carrier_canon: Symbol) -> &[crate::kb::RuleId] {
-        self.by_carrier.get(&carrier_canon).map_or(&[], |v| v.as_slice())
-    }
+    /// Providers keyed by canonical spec base (`canonical_sort_sym(spec_base)`).
+    by_spec_base: SymbolKeyedFactIndex,
+    /// Providers keyed by canonical carrier (`canonical_sort_sym(carrier)`): the carrier
+    /// is a resolved sort functor, so the canonical key IS the carrier identity.
+    by_carrier: SymbolKeyedFactIndex,
 }
 
 /// WI-660 — the provides-fact rids for a SPEC-BASE-keyed lookup: the `by_spec_base`
@@ -9448,13 +9490,12 @@ impl ProvidesIndex {
 /// the spec-base consumers share. The bucket keys on `canonical_sort_sym(base)`, so the
 /// caller passes a canonical spec symbol; each consumer keeps its own per-fact filter.
 fn provides_rids_by_spec(kb: &KnowledgeBase, spec_canon: Symbol) -> Vec<crate::kb::RuleId> {
-    match &kb.provides_index {
-        Some(ix) => ix.providers_of_spec(spec_canon).to_vec(),
-        None => kb
-            .try_resolve_symbol("anthill.reflect.SortProvidesInfo")
-            .map(|s| kb.rules_by_functor(s))
-            .unwrap_or_default(),
-    }
+    SymbolKeyedFactIndex::rids_or_scan(
+        kb,
+        kb.provides_index.as_ref().map(|p| &p.by_spec_base),
+        spec_canon,
+        "anthill.reflect.SortProvidesInfo",
+    )
 }
 
 /// WI-660/WI-672 — the provides-fact rids for a CARRIER-keyed lookup: the canonical-carrier
@@ -9463,13 +9504,12 @@ fn provides_rids_by_spec(kb: &KnowledgeBase, spec_canon: Symbol) -> Vec<crate::k
 /// keeps its own per-fact `canonical_sort_sym` re-filter (the no-index scan fallback
 /// returns EVERY provides fact, so the re-filter is load-bearing there).
 fn provides_rids_by_carrier(kb: &KnowledgeBase, carrier: Symbol) -> Vec<crate::kb::RuleId> {
-    match &kb.provides_index {
-        Some(ix) => ix.carrier_candidates(kb.canonical_sort_sym(carrier)).to_vec(),
-        None => kb
-            .try_resolve_symbol("anthill.reflect.SortProvidesInfo")
-            .map(|s| kb.rules_by_functor(s))
-            .unwrap_or_default(),
-    }
+    SymbolKeyedFactIndex::rids_or_scan(
+        kb,
+        kb.provides_index.as_ref().map(|p| &p.by_carrier),
+        kb.canonical_sort_sym(carrier),
+        "anthill.reflect.SortProvidesInfo",
+    )
 }
 
 /// WI-660/WI-672 — build the [`ProvidesIndex`] in ONE pass over the SortProvidesInfo facts:
@@ -9489,8 +9529,8 @@ pub(crate) fn build_provides_index(kb: &mut KnowledgeBase) {
     let Some(provides_sym) = kb.try_resolve_symbol("anthill.reflect.SortProvidesInfo") else {
         return;
     };
-    let mut by_spec_base: HashMap<Symbol, Vec<crate::kb::RuleId>> = HashMap::new();
-    let mut by_carrier: HashMap<Symbol, Vec<crate::kb::RuleId>> = HashMap::new();
+    let mut by_spec_base = SymbolKeyedFactIndex::default();
+    let mut by_carrier = SymbolKeyedFactIndex::default();
     for rid in kb.rules_by_functor(provides_sym) {
         if !kb.is_fact(rid) {
             continue;
@@ -9500,10 +9540,7 @@ pub(crate) fn build_provides_index(kb: &mut KnowledgeBase) {
         };
         if let Some(spec_tid) = get_named_arg(kb, &named, "spec") {
             if let Some((base, _)) = unwrap_spec_view(kb, spec_tid) {
-                by_spec_base
-                    .entry(kb.canonical_sort_sym(base))
-                    .or_default()
-                    .push(rid);
+                by_spec_base.insert(kb.canonical_sort_sym(base), rid);
             }
         }
         if let Some(sr_tid) = get_named_arg(kb, &named, "sort_ref") {
@@ -9525,72 +9562,43 @@ pub(crate) fn build_provides_index(kb: &mut KnowledgeBase) {
                      would misbucket it; resolve the `provides` carrier at its producer",
                     kb.qualified_name_of(carrier),
                 );
-                by_carrier
-                    .entry(kb.canonical_sort_sym(carrier))
-                    .or_default()
-                    .push(rid);
+                by_carrier.insert(kb.canonical_sort_sym(carrier), rid);
             }
         }
     }
     kb.provides_index = Some(ProvidesIndex { by_spec_base, by_carrier });
 }
 
-/// WI-671/WI-672 — the SortInfo (per-sort reflect metadata) index (see
-/// [`crate::kb::KnowledgeBase`]'s `sort_info_index`). Each SortInfo fact is bucketed by
-/// the CANONICAL sort symbol (`canonical_sort_sym`) of its `name` field, so the four
-/// per-query keyed lookups do an exact bucket lookup instead of scanning every SortInfo
-/// fact.
-///
-/// WI-672 re-keyed this from the short name (last segment) to the canonical symbol.
-/// `SortInfo.name` is always a resolved sort functor (`emit_sort_info` emits
-/// `Term::Ref(sort_functor)`), so its canonical symbol IS the sort identity — an exact
-/// key, like `ProvidesIndex`'s `by_spec_base`. This de-conflates two DISTINCT sorts that
-/// merely share a last segment (a top-level `sort Ring` vs `anthill.prelude.algebra.Ring`),
-/// which the former short-name bucket + `same_symbol` re-filter silently merged — a
-/// step toward NO short-name / last-segment matching anywhere in the KB. It aligns with
-/// the spec model (§8.6): identity is by resolved symbol, never by last segment.
-#[derive(Debug, Default)]
-pub(crate) struct SortInfoIndex {
-    by_sort: HashMap<Symbol, Vec<crate::kb::RuleId>>,
-}
-
-impl SortInfoIndex {
-    /// The SortInfo-fact rids whose `name` canonicalizes to `sort_canon`. Exact:
-    /// `SortInfo.name` is a resolved sort functor, so the canonical key IS the sort
-    /// identity. The consumers still read each rid's `name` (the no-index scan fallback
-    /// returns EVERY fact, so its re-filter is load-bearing there), now comparing by
-    /// `canonical_sort_sym` rather than `same_symbol`.
-    pub(crate) fn candidates(&self, sort_canon: Symbol) -> &[crate::kb::RuleId] {
-        self.by_sort.get(&sort_canon).map_or(&[], |v| v.as_slice())
-    }
-}
-
 /// WI-671/WI-672 — the SortInfo-fact rids for a sort-keyed lookup: the canonical-sort
-/// bucket when the index is built, else a live scan of every SortInfo fact (the
-/// pre-build / no-index fallback the load-time consumers hit). Collapses the identical
-/// fast-path/fallback selection the four keyed consumers share; each keeps its own
-/// per-fact `name` read over the returned rids.
+/// bucket when the index (a [`SymbolKeyedFactIndex`] stored directly as
+/// `KnowledgeBase::sort_info_index`) is built, else a live scan of every SortInfo fact
+/// (the pre-build / no-index fallback the load-time consumers hit). Collapses the
+/// identical fast-path/fallback selection the four keyed consumers share; each keeps its
+/// own per-fact `name` read over the returned rids.
 pub(crate) fn sort_info_rids_by_sort(kb: &KnowledgeBase, sort_sym: Symbol) -> Vec<crate::kb::RuleId> {
-    match &kb.sort_info_index {
-        Some(ix) => ix.candidates(kb.canonical_sort_sym(sort_sym)).to_vec(),
-        None => kb
-            .try_resolve_symbol("anthill.reflect.SortInfo")
-            .map(|s| kb.rules_by_functor(s))
-            .unwrap_or_default(),
-    }
+    SymbolKeyedFactIndex::rids_or_scan(
+        kb,
+        kb.sort_info_index.as_ref(),
+        kb.canonical_sort_sym(sort_sym),
+        "anthill.reflect.SortInfo",
+    )
 }
 
-/// WI-671/WI-672 — build the [`SortInfoIndex`] in ONE pass over the SortInfo facts,
-/// bucketing each by the canonical sort symbol of its `name` field (see the struct doc).
-/// Called at `type_check_sorts` start beside `build_provides_index`, when every SortInfo
-/// fact is asserted and the relation is frozen for the rest of the load (its sole
-/// producer `emit_sort_info` ran in the file-loading loop; nothing re-asserts it).
-/// Value-fact heads (no named args) are skipped, as every keyed consumer skips them.
+/// WI-671/WI-672 — build the SortInfo index (a [`SymbolKeyedFactIndex`]) in ONE pass over
+/// the SortInfo facts, bucketing each by the CANONICAL sort symbol (`canonical_sort_sym`)
+/// of its `name` field. `SortInfo.name` is always a resolved sort functor (`emit_sort_info`
+/// emits `Term::Ref(sort_functor)`), so its canonical symbol IS the sort identity — an
+/// exact key that de-conflates two DISTINCT sorts merely sharing a last segment (spec §8.6;
+/// see `KnowledgeBase::sort_info_index`). Called at `type_check_sorts` start beside
+/// `build_provides_index`, when every SortInfo fact is asserted and the relation is frozen
+/// for the rest of the load (its sole producer `emit_sort_info` ran in the file-loading
+/// loop; nothing re-asserts it). Value-fact heads (no named args) are skipped, as every
+/// keyed consumer skips them.
 pub(crate) fn build_sort_info_index(kb: &mut KnowledgeBase) {
     let Some(sort_info_sym) = kb.try_resolve_symbol("anthill.reflect.SortInfo") else {
         return;
     };
-    let mut by_sort: HashMap<Symbol, Vec<crate::kb::RuleId>> = HashMap::new();
+    let mut index = SymbolKeyedFactIndex::default();
     for rid in kb.rules_by_functor(sort_info_sym) {
         if !kb.is_fact(rid) {
             continue;
@@ -9610,12 +9618,9 @@ pub(crate) fn build_sort_info_index(kb: &mut KnowledgeBase) {
             Term::Fn { functor, .. } => *functor,
             _ => continue,
         };
-        by_sort
-            .entry(kb.canonical_sort_sym(name_sym))
-            .or_default()
-            .push(rid);
+        index.insert(kb.canonical_sort_sym(name_sym), rid);
     }
-    kb.sort_info_index = Some(SortInfoIndex { by_sort });
+    kb.sort_info_index = Some(index);
 }
 
 /// WI-325 — true iff at least one `SortProvidesInfo` fact exists whose
@@ -9636,7 +9641,7 @@ fn spec_has_any_providers(kb: &KnowledgeBase, spec_sort: Symbol) -> bool {
     // in the provider index (built once at type-check start; the bucket keys on the
     // SAME `canonical_sort_sym(base)` this scan compares, so non-empty ⟺ a match).
     if let Some(index) = &kb.provides_index {
-        return !index.providers_of_spec(spec_canon).is_empty();
+        return !index.by_spec_base.get(spec_canon).is_empty();
     }
     // Fallback: the linear scan, for a call before the index is built.
     let Some(provides_sym) = kb.try_resolve_symbol("anthill.reflect.SortProvidesInfo") else {

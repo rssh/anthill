@@ -510,14 +510,14 @@ pub struct KnowledgeBase {
     pub(crate) sort_alias_index: Option<crate::kb::typing::SortAliasIndex>,
 
     /// WI-660 — the SortProvidesInfo (provider/coherence) index: providers keyed
-    /// BOTH by canonical spec-base symbol AND by carrier short-name, built once at
+    /// BOTH by canonical spec-base symbol AND by canonical carrier symbol, built once at
     /// type-check start by `typing::build_provides_index`. Replaces the per-call
     /// linear scans of every provides fact at the dispatch/coherence sites (the SAME
     /// `rules_by_functor` antipattern as `op_records`/`sort_alias_index`). A
-    /// MANY-TO-MANY relation (carrier × spec), so TWO maps, both keyed by
-    /// `canonical_sort_sym` (WI-672 re-keyed the carrier direction from a short-name
-    /// bucket to the canonical carrier symbol; consumers compare by `canonical_sort_sym`,
-    /// not `same_symbol` — see `ProvidesIndex`).
+    /// MANY-TO-MANY relation (carrier × spec), so TWO `SymbolKeyedFactIndex` buckets
+    /// (WI-661), both keyed by `canonical_sort_sym` (WI-672 re-keyed the carrier
+    /// direction from a short-name bucket to the canonical carrier symbol; consumers
+    /// compare by `canonical_sort_sym`, not `same_symbol` — see `ProvidesIndex`).
     ///
     /// SOUND BUILD-ONCE — NO per-mutation invalidation. `SortProvidesInfo` is marked
     /// `constant` (`fact_monotonicity`, reflect.anthill; proposal 053 / WI-665), so
@@ -536,8 +536,9 @@ pub struct KnowledgeBase {
     pub(crate) provides_index: Option<crate::kb::typing::ProvidesIndex>,
 
     /// WI-671/WI-672 — the SortInfo (per-sort reflect metadata) index: each sort's fact
-    /// keyed by the CANONICAL sort symbol (`canonical_sort_sym`) of its `name` field,
-    /// built once at type-check start by `typing::build_sort_info_index`. Replaces the
+    /// keyed by the CANONICAL sort symbol (`canonical_sort_sym`) of its `name` field, in
+    /// a shared `SymbolKeyedFactIndex` (WI-661), built once at type-check start by
+    /// `typing::build_sort_info_index`. Replaces the
     /// per-call linear scan of every SortInfo fact at the four per-query keyed lookup
     /// sites (the SAME `rules_by_functor` antipattern as `op_records`/`sort_alias_index`/
     /// `provides_index`), the hottest being `find_sort_info`, called once PER SORT in
@@ -560,7 +561,7 @@ pub struct KnowledgeBase {
     /// eq_derive null-then-rebuild pair (unlike `provides_index`). Reset to `None` at
     /// `load_phase_inner` start for incremental loads; `None` until first built, and
     /// while `None` every consumer falls back to the live scan.
-    pub(crate) sort_info_index: Option<crate::kb::typing::SortInfoIndex>,
+    pub(crate) sort_info_index: Option<crate::kb::typing::SymbolKeyedFactIndex>,
 
     /// Proposal 039 / WI-084 — a term-level constant's DECLARED TYPE, keyed by
     /// its `SymbolKind::Const` symbol, as a carrier-agnostic `Value`. Read by
