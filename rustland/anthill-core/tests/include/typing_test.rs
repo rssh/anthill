@@ -1511,6 +1511,43 @@ fn wi297_sub_occurrences_empty_vs_nonempty() {
 }
 
 #[test]
+fn wi682_node_pattern_binds_reflectable_child() {
+    // WI-682: the `Value::Node` arg1 pattern (`cons(head: ?h, tail: ?)`) STAYS a
+    // Node and is matched via `match_view_value_pattern` (no reification of the
+    // occurrence). A var it binds (`?h`) must therefore receive the child as a
+    // LIVE occurrence — so feeding `?h` straight into a second reflect builtin
+    // (`occurrence_term(?h, int_lit(value: ?))`) still reads its reflect shape.
+    // If the Node-pattern path had dropped the carrier (reified/lowered the
+    // child), `?h` could not re-reflect and the chain would fail.
+    let source = concat!(
+        "namespace wi682.chain\n",
+        "  import anthill.prelude.{List}\n",
+        "  import anthill.reflect.{Expr}\n",
+        // head child is an int literal → succeed with marker 1.
+        "  rule head_int(?e, 1) :- sub_occurrences(?e, cons(head: ?h, tail: ?)), occurrence_term(?h, int_lit(value: ?))\n",
+        // head child is a string literal → the int_lit re-reflection must NOT match.
+        "  rule probe_int(?k) :- head_int(cons(head: 7, tail: nil), ?k)\n",
+        "  rule probe_str(?k) :- head_int(cons(head: \"hi\", tail: nil), ?k)\n",
+        "end\n",
+    );
+    let mut kb = load_with_source(source);
+
+    let var_k = make_var(&mut kb, "k");
+    let g_int = make_goal(&mut kb, "wi682.chain.probe_int", &[var_k]);
+    let r_int = kb.resolve(&[g_int], &default_config());
+    assert_eq!(r_int.len(), 1, "the bound head child re-reflects as int_lit");
+    let t_int = kb.reify(var_k, &r_int[0].subst).expect_term();
+    assert_eq!(kb.get_term(t_int), &Term::Const(Literal::Int(1)));
+
+    let var_k2 = make_var(&mut kb, "k2");
+    let g_str = make_goal(&mut kb, "wi682.chain.probe_str", &[var_k2]);
+    assert_eq!(
+        kb.resolve(&[g_str], &default_config()).len(), 0,
+        "a string head child does not re-reflect as int_lit",
+    );
+}
+
+#[test]
 fn wi297_occurrence_owner_none_for_body_atom_child() {
     // A rule-body-atom child carries no owner, so `occurrence_owner` fails
     // (no top-level owner to report). Positive-owner cases need op-body

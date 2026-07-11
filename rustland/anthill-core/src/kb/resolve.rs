@@ -2596,6 +2596,19 @@ impl super::simp_rewrite::SimpFirer for ResolverSimpFirer<'_> {
     }
 }
 
+/// WI-682: the σ-applied arg1 pattern of an occurrence reflect builtin, kept
+/// carrier-faithful. A genuine hash-consed pattern (arg1 was a `Term` /
+/// `Value::Term`) routes through the fast [`KnowledgeBase::match_view`]; a
+/// `Value::Node` occurrence pattern STAYS a Node and routes through the
+/// carrier-neutral [`KnowledgeBase::match_view_value_pattern`] (WI-683) — no
+/// reification, so the occurrence keeps its identity/span. Built by
+/// [`KnowledgeBase::occurrence_arg_and_pattern`], consumed via
+/// [`KnowledgeBase::match_occ_pattern`].
+enum OccPattern {
+    Term(TermId),
+    Node(Value),
+}
+
 impl KnowledgeBase {
     /// Create a lazy search stream for the given goals. Representation-neutral
     /// (WI-349): a goal is anything that implements [`TermView`] — the same
@@ -3395,17 +3408,18 @@ impl KnowledgeBase {
         self.finish_result(target, prov_term)
     }
 
-    /// Shared front-half for the occurrence builtins (WI-297): walk arg0 to the
-    /// subject occurrence and reify arg1 to a result/pattern term under σ.
-    /// `Err(_)` carries the early `BuiltinResult` (Delay on an unbound subject,
-    /// Failure on a missing/non-occurrence subject or a missing arg1). On `Ok`,
-    /// the caller produces its target term/view and unifies the returned
-    /// pattern against it via [`KnowledgeBase::match_view`].
+    /// Shared front-half for the four occurrence reflect builtins (WI-297): walk
+    /// arg0 to the subject occurrence and read arg1 as a carrier-faithful
+    /// [`OccPattern`] via [`occ_arg1_pattern`](Self::occ_arg1_pattern). `Err(_)`
+    /// carries the early `BuiltinResult` (Delay on an unbound subject, Failure on
+    /// a missing / non-occurrence subject or a bad arg1). On `Ok`, the caller
+    /// builds its target term/view and unifies the pattern against it via
+    /// [`match_occ_pattern`](Self::match_occ_pattern).
     fn occurrence_arg_and_pattern<V: TermView>(
         &mut self,
         goal: &V,
         subst: &Substitution,
-    ) -> Result<(Rc<NodeOccurrence>, TermId), BuiltinResult> {
+    ) -> Result<(Rc<NodeOccurrence>, OccPattern), BuiltinResult> {
         // arg0 — the subject occurrence.
         let occ = match self.walk_arg(goal.pos_arg(self, 0), subst) {
             None => return Err(BuiltinResult::Failure),
@@ -3414,8 +3428,37 @@ impl KnowledgeBase {
             // Not an occurrence — nothing to reflect.
             Some(_) => return Err(BuiltinResult::Failure),
         };
-        // arg1 — extract an owned pattern source so the immutable borrow from
-        // `pos_arg` ends before the `&mut self` reify below.
+        let pattern = self.occ_arg1_pattern(goal, subst)?;
+        Ok((occ, pattern))
+    }
+
+    /// WI-682: read arg1 of an occurrence reflect builtin as a σ-applied,
+    /// carrier-faithful [`OccPattern`] — shared by
+    /// [`occurrence_arg_and_pattern`](Self::occurrence_arg_and_pattern) (the four
+    /// occurrence builtins) and [`builtin_operation_body`](Self::builtin_operation_body).
+    /// A `Value::Term` arg rides as a hash-consed term (matched via the fast
+    /// [`match_view`](Self::match_view)); a `Value::Node` occurrence arg STAYS a
+    /// Node — σ-applied carrier-faithfully (`substitute_occurrence` via
+    /// [`reify_value`](Self::reify_value), identity/span preserved) and matched via
+    /// the carrier-neutral [`match_view_value_pattern`](Self::match_view_value_pattern)
+    /// (WI-683), no reification.
+    ///
+    /// The `view_is_indexable` guard rejects a child-bearing / post-elaboration
+    /// reflect form (`if`/`let`/`lambda`/`match`, …) that reads `Opaque` and has no
+    /// goal-term shape: it fails clean (such a pattern could never unify with a
+    /// goal-shaped target) rather than trip `insert_pattern`'s `Opaque` panic. This
+    /// is the carrier-neutral peer of the former `try_occurrence_to_term`
+    /// `None => Failure` arm (WI-297) and — reading the WHOLE structure — also fails
+    /// clean on a *nested* such form (which that top-level-only reify silently
+    /// lowered to ⊥). `Err(BuiltinResult::Failure)` on a missing arg1 or a
+    /// non-term / non-occurrence carrier.
+    fn occ_arg1_pattern<V: TermView>(
+        &mut self,
+        goal: &V,
+        subst: &Substitution,
+    ) -> Result<OccPattern, BuiltinResult> {
+        // Extract an owned pattern source so the immutable borrow from `pos_arg`
+        // ends before the `&mut self` σ-apply below.
         let mut pat_term: Option<TermId> = None;
         let mut pat_node = None;
         match goal.pos_arg(self, 1) {
@@ -3424,20 +3467,33 @@ impl KnowledgeBase {
             Some(ViewItem::Node(o)) => pat_node = Some(o),
             Some(ViewItem::Value(_)) | None => return Err(BuiltinResult::Failure),
         }
-        // Reify the pattern to a term (keeping its unbound vars), then resolve
-        // any vars already bound earlier in the body. A child-bearing reflect
-        // pattern (`if_expr`/`let_expr`/`lambda`/`match_expr`) has no goal-term
-        // shape and isn't yet handled by the lens — fail (no match) rather than
-        // trip `occurrence_to_term`'s goal-form assertion (WI-297).
-        let pattern = match (pat_term, pat_node) {
-            (Some(t), _) => t,
-            (None, Some(o)) => match node_occurrence::try_occurrence_to_term(self, &o) {
-                Some(t) => t,
-                None => return Err(BuiltinResult::Failure),
-            },
-            (None, None) => return Err(BuiltinResult::Failure),
-        };
-        Ok((occ, self.apply_subst(pattern, subst)))
+        match (pat_term, pat_node) {
+            (Some(t), _) => Ok(OccPattern::Term(self.apply_subst(t, subst))),
+            (None, Some(o)) => {
+                let v = self.reify_value(&Value::Node(o), subst);
+                if !super::discrim::view_is_indexable(self, &v) {
+                    return Err(BuiltinResult::Failure);
+                }
+                Ok(OccPattern::Node(v))
+            }
+            (None, None) => Err(BuiltinResult::Failure),
+        }
+    }
+
+    /// WI-682: unify a carrier-faithful [`OccPattern`] against `target`. A term
+    /// pattern takes the established fast [`match_view`](Self::match_view); a
+    /// `Value::Node` occurrence pattern takes the carrier-neutral
+    /// [`match_view_value_pattern`](Self::match_view_value_pattern) (WI-683) — the
+    /// occurrence is never lowered to a hash-consed term to be matched.
+    fn match_occ_pattern<V: TermView>(
+        &self,
+        pattern: &OccPattern,
+        target: &V,
+    ) -> Option<Substitution> {
+        match pattern {
+            OccPattern::Term(t) => self.match_view(*t, target),
+            OccPattern::Node(v) => self.match_view_value_pattern(v, target),
+        }
     }
 
     /// `occurrence_term(occ, term)` — WI-297. "Show" the occurrence: unify the
@@ -3452,7 +3508,7 @@ impl KnowledgeBase {
             Err(r) => return r,
         };
         let syms = ReflectSyms::resolve(self);
-        match self.match_view(pattern, &ReflectedExpr::new(occ, syms)) {
+        match self.match_occ_pattern(&pattern, &ReflectedExpr::new(occ, syms)) {
             Some(extra) => BuiltinResult::SuccessWithBindings(extra),
             None => BuiltinResult::Failure,
         }
@@ -3472,7 +3528,7 @@ impl KnowledgeBase {
             Some(t) => t,
             None => return BuiltinResult::Failure,
         };
-        match self.match_view(pattern, &TermIdView(span_term)) {
+        match self.match_occ_pattern(&pattern, &TermIdView(span_term)) {
             Some(extra) => BuiltinResult::SuccessWithBindings(extra),
             None => BuiltinResult::Failure,
         }
@@ -3490,7 +3546,7 @@ impl KnowledgeBase {
             Some(sym) => self.alloc(Term::Ref(sym)),
             None => return BuiltinResult::Failure,
         };
-        match self.match_view(pattern, &TermIdView(owner)) {
+        match self.match_occ_pattern(&pattern, &TermIdView(owner)) {
             Some(extra) => BuiltinResult::SuccessWithBindings(extra),
             None => BuiltinResult::Failure,
         }
@@ -3515,7 +3571,7 @@ impl KnowledgeBase {
         let list = node_occurrence::build_occurrence_cons_list(
             self, children, occ.span, nil_sym, cons_sym, head_sym, tail_sym,
         );
-        match self.match_view(pattern, &Value::Node(list)) {
+        match self.match_occ_pattern(&pattern, &Value::Node(list)) {
             Some(extra) => BuiltinResult::SuccessWithBindings(extra),
             None => BuiltinResult::Failure,
         }
@@ -3543,24 +3599,14 @@ impl KnowledgeBase {
             },
             _ => return BuiltinResult::Failure,
         };
-        // arg1 — the result pattern (mirror occurrence_arg_and_pattern's arg1 block).
-        let mut pat_term: Option<TermId> = None;
-        let mut pat_node = None;
-        match goal.pos_arg(self, 1) {
-            Some(ViewItem::Term(t)) => pat_term = Some(t),
-            Some(ViewItem::Value(Value::Term { id: t, .. })) => pat_term = Some(*t),
-            Some(ViewItem::Node(o)) => pat_node = Some(o),
-            Some(ViewItem::Value(_)) | None => return BuiltinResult::Failure,
-        }
-        let pattern = match (pat_term, pat_node) {
-            (Some(t), _) => t,
-            (None, Some(o)) => match node_occurrence::try_occurrence_to_term(self, &o) {
-                Some(t) => t,
-                None => return BuiltinResult::Failure,
-            },
-            (None, None) => return BuiltinResult::Failure,
+        // arg1 — the result pattern, read carrier-faithfully (WI-682): a
+        // `Value::Node` some(value: …) / none() pattern STAYS a Node, matched via
+        // the carrier-neutral `match_occ_pattern` below (shared with the four
+        // occurrence builtins — same `occ_arg1_pattern` reader).
+        let pattern = match self.occ_arg1_pattern(goal, subst) {
+            Ok(p) => p,
+            Err(r) => return r,
         };
-        let pattern = self.apply_subst(pattern, subst);
         // Build the Option result as a Value::Node occurrence (like sub_occurrences
         // builds its list-node): some(value: <body>) or none().
         let result_node = match self.op_body_node(op_sym).cloned() {
@@ -3586,7 +3632,7 @@ impl KnowledgeBase {
                 )
             }
         };
-        match self.match_view(pattern, &Value::Node(result_node)) {
+        match self.match_occ_pattern(&pattern, &Value::Node(result_node)) {
             Some(extra) => BuiltinResult::SuccessWithBindings(extra),
             None => BuiltinResult::Failure,
         }
