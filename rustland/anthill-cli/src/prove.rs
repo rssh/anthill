@@ -1873,6 +1873,13 @@ fn run_smt_subquery(
     cli: &ProveArgs,
     stats: &mut CacheStats,
 ) -> DispatchOutcome {
+    // WI-669 inc-1b: before emitting, synthesize a defining rule for any
+    // rule-less bodied op the obligation body calls, so the emitter inlines the
+    // body-derived definition instead of failing on an uninterpreted op. Runs
+    // before emit (and thus before the cache key is computed from the emitted
+    // SMT) so a body-derived discharge caches like any other; idempotent, and a
+    // no-op when the obligation calls no such op.
+    kb.synthesize_body_derived_defrules(rule_qn);
     let (smt, deps) = match emit_satisfiability_check_with_deps(kb, rule_qn, config) {
         Ok(p) => p,
         Err(e) => return DispatchOutcome::no_witness(Verdict::EmitError(e.message)),

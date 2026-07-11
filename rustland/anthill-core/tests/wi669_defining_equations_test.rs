@@ -31,6 +31,11 @@ namespace test.wi669
     operation clamp(x: Int64) -> Int64 =
       if gte(x, 0) then x else 0
 
+    operation grade(x: Int64) -> Int64 =
+      if gte(x, 0)
+        then if gte(x, 5) then 2 else 1
+        else 0
+
     operation first_or(o: Option[T = Int64], d: Int64) -> Int64 =
       match o
         case some(v) -> v
@@ -96,6 +101,99 @@ fn match_body_declines_loudly() {
     assert!(
         kb.op_defining_equations(f).is_none(),
         "an ADT `match` body has no SMT defining-equation form in this increment"
+    );
+}
+
+// ── WI-669 inc-1b: synthesize a transient defining rule ──────────────────────
+
+/// The `?result = <rhs>` body node of `op`'s synthesized defining rule: the
+/// single body goal is `eq(?result, rhs)`; return `rhs` (the refolded body).
+fn synth_body_rhs(kb: &mut KnowledgeBase, op: Symbol) -> Rc<NodeOccurrence> {
+    let rid = kb.synthesize_op_defining_rule(op).expect("op must synthesize a defining rule");
+    let body = kb.rule_body_nodes(rid);
+    assert_eq!(body.len(), 1, "the defining rule has one `?result = <rhs>` body goal");
+    match body[0].as_expr() {
+        Some(Expr::Apply { pos_args, .. }) if pos_args.len() == 2 => Rc::clone(&pos_args[1]),
+        other => panic!("body goal must be `eq(?result, rhs)`, got {other:?}"),
+    }
+}
+
+#[test]
+fn synth_single_arm_body_is_bare_result_no_if() {
+    let mut kb = common::load_kb_with(SRC);
+    let d = op_sym(&kb, "double");
+    let rid = kb.synthesize_op_defining_rule(d).expect("double synthesizes");
+    // head `double(?0, ?result)`: one param + the result slot.
+    assert_eq!(kb.rule_arity(rid), 2, "one parameter plus the result var");
+    // The head functor is the op itself, so the emitter's rules_by_functor inline
+    // finds it.
+    assert!(
+        kb.rules_by_functor(d).contains(&rid),
+        "the synth rule is keyed under the op's own functor"
+    );
+    // A single-expression body refolds to its bare result — no `if`.
+    let rhs = synth_body_rhs(&mut kb, d);
+    assert_eq!(head_short(&kb, &rhs), "add", "double's body is `add(?0, ?0)`, no conditional");
+}
+
+#[test]
+fn synth_if_body_refolds_to_ite() {
+    let mut kb = common::load_kb_with(SRC);
+    let c = op_sym(&kb, "clamp");
+    let rhs = synth_body_rhs(&mut kb, c);
+    match rhs.as_expr() {
+        Some(Expr::If { condition, .. }) => {
+            assert_eq!(head_short(&kb, condition), "gte", "clamp's guard is `gte(x, 0)`");
+        }
+        other => panic!("clamp's body must refold to an `Expr::If`, got {other:?}"),
+    }
+}
+
+#[test]
+fn synth_nested_if_refolds_with_and_not() {
+    let mut kb = common::load_kb_with(SRC);
+    let g = op_sym(&kb, "grade");
+    let rhs = synth_body_rhs(&mut kb, g);
+    // grade: if x>=0 then (if x>=5 then 2 else 1) else 0. Three arms refold to
+    // `ite(and(g0,g1), 2, ite(and(g0, not g1), 1, 0))`: the outer guard conjoins,
+    // the middle guard negates.
+    let Some(Expr::If { condition, else_branch, .. }) = rhs.as_expr() else {
+        panic!("grade must refold to a nested `Expr::If`");
+    };
+    assert_eq!(head_short(&kb, condition), "and", "the outer arm's guard is a conjunction");
+    let Some(Expr::If { condition: inner_cond, .. }) = else_branch.as_expr() else {
+        panic!("grade's else must be the next `Expr::If`");
+    };
+    // inner condition is `and(gte(x,0), not(gte(x,5)))` — assert the `not` appears.
+    assert_eq!(head_short(&kb, inner_cond), "and", "the middle arm's guard is a conjunction");
+    if let Some(Expr::Apply { pos_args, .. }) = inner_cond.as_expr() {
+        assert!(
+            pos_args.iter().any(|a| head_short(&kb, a) == "not"),
+            "the middle arm negates the inner guard"
+        );
+    }
+}
+
+#[test]
+fn synth_match_body_declines() {
+    let mut kb = common::load_kb_with(SRC);
+    let f = op_sym(&kb, "first_or");
+    assert!(
+        kb.synthesize_op_defining_rule(f).is_none(),
+        "a `match` body has no synthesizable defining rule in this increment"
+    );
+}
+
+#[test]
+fn synth_is_idempotent() {
+    let mut kb = common::load_kb_with(SRC);
+    let c = op_sym(&kb, "clamp");
+    let first = kb.synthesize_op_defining_rule(c).expect("first synth");
+    let second = kb.synthesize_op_defining_rule(c).expect("second synth");
+    assert_eq!(first, second, "a second synthesis reuses the existing defining rule");
+    assert_eq!(
+        kb.rules_by_functor(c).len(), 1,
+        "no duplicate defining rule is registered"
     );
 }
 

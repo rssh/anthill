@@ -26,14 +26,17 @@
 
 use std::rc::Rc;
 
+use smallvec::SmallVec;
+
 use crate::eval::pattern::functor_matches;
 use crate::intern::{Symbol, SymbolKind};
+use crate::span::SourceSpan;
 
 use super::node_occurrence::{Expr, MatchBranch, NodeOccurrence, Pattern};
 use super::occurrence::PassId;
 use super::op_info::lookup_operation_info;
-use super::term::{Literal, Term, Var};
-use super::KnowledgeBase;
+use super::term::{Literal, Term, TermId, Var, VarId};
+use super::{KnowledgeBase, RuleId};
 
 /// Local interpretation environment: a binder `Symbol` → the occurrence bound
 /// to it (an operation parameter → its call argument, or a `match`-arm pattern
@@ -698,6 +701,100 @@ fn rebuild(from: &Rc<NodeOccurrence>, expr: Expr, pass: PassId) -> Rc<NodeOccurr
     NodeOccurrence::synthesized_expr(expr, Rc::clone(from), pass, from.owner)
 }
 
+/// Refold the flattened guarded arms (design §3.4.1) back into ONE nested
+/// `Expr::If` occurrence — `ite(conj(g₀), r₀, ite(conj(g₁), r₁, … r_last))` —
+/// dropping the *last* arm's guard: the arm set is exhaustive and ordered, so
+/// the final arm is the unconditional fallthrough. A single-arm body (no guards)
+/// folds to its bare result (no `if`). This is the SMT-consumable form of the
+/// equation set; `conj_of_guards` builds each non-last arm's guard.
+///
+/// Note the refold *hoists* each arm's guards out of their original control-flow
+/// nesting into one flat conjunction (an inner `if`'s condition is `and`-ed with
+/// the outer conditions rather than staying nested). That is sound only because
+/// this increment's admitted guards — arithmetic/boolean comparisons — are
+/// **total** in SMT-LIB (evaluating a guard outside the branch that originally
+/// reached it can't fault). If the admitted guard fragment ever grows to include
+/// a partial operation, the nesting would have to be preserved.
+///
+/// `None` — a loud decline — if a non-last arm carries no guard (a shape the
+/// flattener should never produce) or `Bool.and`/`Bool.not` can't be resolved.
+fn refold_defining_equations(
+    kb: &mut KnowledgeBase,
+    eqs: &[DefiningEquation],
+    span: SourceSpan,
+) -> Option<Rc<NodeOccurrence>> {
+    let (last, rest) = eqs.split_last()?;
+    let mut acc = Rc::clone(&last.result);
+    for eq in rest.iter().rev() {
+        let condition = conj_of_guards(kb, &eq.guards, span)?;
+        acc = NodeOccurrence::new_expr(
+            Expr::If { condition, then_branch: Rc::clone(&eq.result), else_branch: acc },
+            span,
+            None,
+        );
+    }
+    Some(acc)
+}
+
+/// Conjoin an arm's guards into one boolean-valued occurrence: a negated guard
+/// wraps its `cond` in `Bool.not`, several guards join pairwise under `Bool.and`.
+/// A single non-negated guard (the top-level-`if` case — the demonstrator and the
+/// lf1 GPS consumer) returns its `cond` unchanged, so those need neither builder.
+/// `None` if the guard list is empty (a non-last arm always has ≥1 guard — a loud
+/// decline if that invariant breaks) or `Bool.and`/`not` isn't resolvable.
+fn conj_of_guards(
+    kb: &mut KnowledgeBase,
+    guards: &[DefiningGuard],
+    span: SourceSpan,
+) -> Option<Rc<NodeOccurrence>> {
+    let mut terms: Vec<Rc<NodeOccurrence>> = Vec::with_capacity(guards.len());
+    for g in guards {
+        let cond = Rc::clone(&g.cond);
+        let term = if g.negated {
+            let not_sym = kb.try_resolve_symbol("anthill.prelude.Bool.not")?;
+            NodeOccurrence::new_expr(
+                Expr::Apply {
+                    functor: not_sym,
+                    pos_args: vec![cond],
+                    named_args: Vec::new(),
+                    type_args: Vec::new(),
+                },
+                span,
+                None,
+            )
+        } else {
+            cond
+        };
+        terms.push(term);
+    }
+    let mut it = terms.into_iter();
+    let mut acc = it.next()?;
+    for term in it {
+        let and_sym = kb.try_resolve_symbol("anthill.prelude.Bool.and")?;
+        acc = NodeOccurrence::new_expr(
+            Expr::Apply {
+                functor: and_sym,
+                pos_args: vec![acc, term],
+                named_args: Vec::new(),
+                type_args: Vec::new(),
+            },
+            span,
+            None,
+        );
+    }
+    Some(acc)
+}
+
+/// The head functor of a rule-body goal occurrence (a relational atom), or
+/// `None` for a non-`Apply` goal. Used by the WI-669 inc-1b seam to find bodied
+/// op-calls in a proof obligation's body.
+fn goal_functor(goal: &Rc<NodeOccurrence>) -> Option<Symbol> {
+    match goal.as_expr()? {
+        Expr::Apply { functor, .. } => Some(*functor),
+        _ => None,
+    }
+}
+
 impl KnowledgeBase {
     /// Derive `op`'s defining equations from its body (design §3.4.1, WI-669):
     /// the op's parameters become DeBruijn vars (`?0`…), the body is specialized
@@ -716,5 +813,148 @@ impl KnowledgeBase {
             .map(|i| NodeOccurrence::new_expr(Expr::Var(Var::DeBruijn(i as u32)), span, None))
             .collect();
         defining_equations(self, op, &pos_args, &[])
+    }
+
+    /// WI-669 inc-1b — synthesize a defining rule for a bodied `op` from its
+    /// body-derived equations, so the SMT emitter can inline it at an
+    /// `op(args, result)` call in a proof body (design §3.4.1). The rule is
+    /// **run-scoped, not retracted**: it is registered under the op's functor and
+    /// persists in the KB (see [`Self::synthesize_body_derived_defrules`] for why
+    /// that is benign — the prove driver discards the KB on return). The rule is
+    /// `op(?0…?n-1, ?result) :- ?result = <refolded-if>`, the arms refolded into
+    /// one nested `Expr::If`. Returns the rule id, or `None` — a *loud* decline —
+    /// when `op` has no admissible defining equations (effectful / `requires` /
+    /// `match` / `let` body; see [`op_defining_equations`]). Idempotent: an
+    /// existing defining rule (a prior synth, or a hand-written one) is returned
+    /// as-is.
+    ///
+    /// The head **functor is `op` itself** (labeled `<op_qn>__defeq`) so the
+    /// emitter's ordinary `rules_by_functor → try_inline_rule_call` path picks it
+    /// up unchanged. Built over **fresh `Var::Global`s** — not the raw
+    /// `Var::DeBruijn`s [`op_defining_equations`] emits — because
+    /// [`Self::assert_rule_debruijn_with_nodes`] derives the rule's arity from the
+    /// *Global* head/body vars it collects; feeding raw DeBruijn would leave the
+    /// collector with zero head vars and mint a malformed arity-0 rule.
+    pub fn synthesize_op_defining_rule(&mut self, op: Symbol) -> Option<RuleId> {
+        // Idempotent — reuse any existing (synth or hand-written) defining rule.
+        if let Some(rid) = self.rules_by_functor(op).into_iter().find(|r| !self.is_fact(*r)) {
+            return Some(rid);
+        }
+        // Probe admissibility over the DeBruijn frame FIRST (no fresh vars): a
+        // declined body (`match`/`let`/effectful) bails here, so a repeatedly
+        // scanned non-synthesizable op never leaks the rule-frame `fresh_var`s
+        // below across obligations (the idempotency short-circuit can't fire for
+        // a declined op — no rule is ever created).
+        self.op_defining_equations(op)?;
+        let info = lookup_operation_info(self, op)?;
+        let n = info.params.len();
+        let span = info.body_node.as_ref()?.span;
+
+        // Fresh Globals: one per parameter (named for readability) + the result.
+        let param_vars: Vec<VarId> =
+            (0..n).map(|i| self.fresh_var(info.params[i].0)).collect();
+        let result_name = self.intern("defeq_result");
+        let result_var = self.fresh_var(result_name);
+
+        // Occurrence params → the arms carry these Globals; refold to a nested if.
+        let pos_args: Vec<Rc<NodeOccurrence>> = param_vars
+            .iter()
+            .map(|g| NodeOccurrence::new_expr(Expr::Var(Var::Global(*g)), span, None))
+            .collect();
+        let eqs = defining_equations(self, op, &pos_args, &[])?;
+        let if_occ = refold_defining_equations(self, &eqs, span)?;
+
+        // Body node: `?result = <refolded-if>`.
+        let eq_sym = self.eq_functor();
+        let result_occ =
+            NodeOccurrence::new_expr(Expr::Var(Var::Global(result_var)), span, None);
+        let body_node = NodeOccurrence::new_expr(
+            Expr::Apply {
+                functor: eq_sym,
+                pos_args: vec![result_occ, if_occ],
+                named_args: Vec::new(),
+                type_args: Vec::new(),
+            },
+            span,
+            None,
+        );
+
+        // Head term: `op(g₀…g_{n-1}, g_result)` — same Globals as the body.
+        let mut head_args: SmallVec<[TermId; 4]> = SmallVec::new();
+        for g in &param_vars {
+            head_args.push(self.alloc(Term::Var(Var::Global(*g))));
+        }
+        head_args.push(self.alloc(Term::Var(Var::Global(result_var))));
+        let head = self.alloc(Term::Fn {
+            functor: op,
+            pos_args: head_args,
+            named_args: SmallVec::new(),
+        });
+
+        let rule_sort = self.make_name_term("Rule");
+        let global_scope = self.make_name_term("_global");
+        let rid = self.assert_rule_debruijn_with_nodes(
+            head,
+            vec![body_node],
+            rule_sort,
+            global_scope,
+            None,
+        );
+
+        // Stable QN `<op_qn>__defeq` (idempotency + debuggability).
+        let op_qn = self.qualified_name_of(op).to_string();
+        let defeq_qn = format!("{op_qn}__defeq");
+        let short = defeq_qn.rsplit('.').next().unwrap_or(&defeq_qn).to_string();
+        let label_sym =
+            self.define_symbol(&short, &defeq_qn, SymbolKind::Rule, global_scope.raw());
+        self.set_rule_label(rid, label_sym);
+        Some(rid)
+    }
+
+    /// WI-669 inc-1b seam entry: scan `rule_qn`'s body for goals that call a
+    /// **rule-less bodied op** and synthesize a defining rule for each, so the SMT
+    /// emitter inlines the body-derived definition (no hand-written twin). A no-op
+    /// for a rule that calls no such op, and idempotent (re-run over the same
+    /// obligation adds nothing). Called by the prove driver before emitting an
+    /// obligation to z3.
+    ///
+    /// Scope (all loud, never a silent wrong answer):
+    /// - Only `rule_qn`'s **direct** body goals are scanned — not `using`-cited
+    ///   lemmas, nor rules the emitter inlines transitively. If one of those calls
+    ///   a bodied op that wasn't also called directly, the emitter rejects it at
+    ///   its own goal boundary (`unhandled body goal functor`). Widening the scan
+    ///   to cited/transitive calls is a follow-on.
+    /// - A bodied op whose body this increment can't lower (a `match`/`let` body)
+    ///   is left un-synthesized — same loud emitter rejection.
+    /// - The synth rule is registered under the op's own functor and lives in the
+    ///   KB for the rest of the prove run (the driver discards the KB on return).
+    ///   It is semantically faithful (the op's true body), so this never yields a
+    ///   wrong answer; but a later `by derivation` proof that calls the same op
+    ///   *relationally* in the SAME run would see it — a benign order-dependency
+    ///   the resolver's own §3.3 body-fold makes moot for value-position calls.
+    pub fn synthesize_body_derived_defrules(&mut self, rule_qn: &str) {
+        let Some(rid) = self.rule_id_by_qn(rule_qn) else {
+            return;
+        };
+        // Collect distinct body-goal functors first (owned) so the &mut synth loop
+        // below doesn't hold the immutable `rule_body_nodes` borrow.
+        let mut functors: Vec<Symbol> = Vec::new();
+        for goal in self.rule_body_nodes(rid) {
+            if let Some(f) = goal_functor(goal) {
+                if !functors.contains(&f) {
+                    functors.push(f);
+                }
+            }
+        }
+        for f in functors {
+            // Only a rule-less bodied op is a candidate. `f` must resolve to the
+            // operation itself — call the op qualified enough to bind (a bare
+            // relation name that doesn't resolve to the op is left to the
+            // emitter's loud "unhandled body goal functor" report).
+            let rule_less = self.rules_by_functor(f).iter().all(|r| self.is_fact(*r));
+            if rule_less && super::typing::op_has_runnable_body(self, f) {
+                let _ = self.synthesize_op_defining_rule(f);
+            }
+        }
     }
 }
