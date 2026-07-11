@@ -385,6 +385,9 @@ mod wi392_op_type_param_rigid_test;
 #[path = "include/wi385_arg_field_validation_test.rs"]
 mod wi385_arg_field_validation_test;
 
+#[path = "include/wi510_typeerror_origin_test.rs"]
+mod wi510_typeerror_origin_test;
+
 #[path = "include/wi381_alias_resolution_test.rs"]
 mod wi381_alias_resolution_test;
 

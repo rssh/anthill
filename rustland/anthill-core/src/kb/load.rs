@@ -119,6 +119,50 @@ fn join_segments(symbols: &crate::intern::SymbolTable, segments: &[Symbol]) -> S
     out
 }
 
+/// WI-510: the always-on disambiguating tag appended after `entity.field` in a
+/// rendered `TypeMismatch` — ` (op-arg)` / ` (entity-field)` / … — so two checks
+/// that flatten to the same names render distinguishably. Empty for loader-built
+/// mismatches with no typer origin.
+fn type_mismatch_tag(origin: &Option<TypeMismatchOrigin>) -> String {
+    match origin {
+        Some(o) => format!(" ({})", o.context_kind),
+        None => String::new(),
+    }
+}
+
+/// WI-510: the opt-in construction-site trace appended to a rendered
+/// `TypeMismatch`, e.g. ` [Other @ kb/typing.rs:14028]`. Gated on the
+/// `ANTHILL_DIAG_ORIGIN` env var so normal diagnostics stay clean; a developer
+/// tracing a mismatch to its origin sets the var and re-runs. Empty otherwise.
+fn type_mismatch_origin_suffix(origin: &Option<TypeMismatchOrigin>) -> String {
+    match origin {
+        Some(o) if std::env::var_os("ANTHILL_DIAG_ORIGIN").is_some() => {
+            format!(" [{} @ {}:{}]", o.error_kind, o.site.file(), o.site.line())
+        }
+        _ => String::new(),
+    }
+}
+
+/// WI-510: provenance of a `LoadError::TypeMismatch` that came from the typer's
+/// `TypeError::to_load_error`. The typer flattens a structured `TypeErrorContext`
+/// (`EntityField` / `OperationArgument` / …) plus `Value`-typed expected/actual
+/// into plain display strings, so two structurally different checks can render
+/// identically (WI-509 debugging cost). This marker preserves enough to (a) tag
+/// the rendered message with the originating context variant — so `EntityField`
+/// and `OperationArgument` mismatches are distinguishable — and (b) trace the
+/// mismatch to its exact `TypeError::…{ … }` construction site (opt-in via the
+/// `ANTHILL_DIAG_ORIGIN` env var, kept off normal output). `None` for
+/// `TypeMismatch`es built directly by the loader (not via the typer).
+#[derive(Clone, Copy, Debug)]
+pub struct TypeMismatchOrigin {
+    /// The `TypeError` variant name — `"TypeMismatch"` or `"Other"`.
+    pub error_kind: &'static str,
+    /// The `TypeErrorContext` variant tag — `"entity-field"`, `"op-arg"`, …
+    pub context_kind: &'static str,
+    /// The `TypeError::…{ … }` construction site (file:line:col).
+    pub site: &'static std::panic::Location<'static>,
+}
+
 #[derive(Clone, Debug)]
 pub enum LoadError {
     UnresolvedName {
@@ -142,6 +186,11 @@ pub enum LoadError {
         expected_type: String,
         actual_type: String,
         span: Option<Span>,
+        /// WI-510: typer provenance — the originating `TypeError` context variant
+        /// and construction site. `Some` when built by `TypeError::to_load_error`
+        /// (for the lossy `TypeMismatch`/`Other` variants), `None` when the loader
+        /// constructs a `TypeMismatch` directly.
+        origin: Option<TypeMismatchOrigin>,
     },
     /// WI-343: a carrier provides a spec whose own `requires` is not
     /// satisfied by that carrier — e.g. `fact PersistentCollection[List]`
@@ -437,12 +486,14 @@ impl LoadError {
                 let (line, col) = Span::line_col(source, span.start);
                 format!("{}:{}: ambiguous symbol '{}' in scope '{}': candidates {:?}", line, col, name, scope_name, candidates)
             }
-            LoadError::TypeMismatch { entity_name, field_name, expected_type, actual_type, span } => {
+            LoadError::TypeMismatch { entity_name, field_name, expected_type, actual_type, span, origin } => {
+                let tag = type_mismatch_tag(origin);
+                let site = type_mismatch_origin_suffix(origin);
                 if let Some(sp) = span {
                     let (line, col) = Span::line_col(source, sp.start);
-                    format!("{}:{}: type mismatch in {}.{}: expected {}, got {}", line, col, entity_name, field_name, expected_type, actual_type)
+                    format!("{}:{}: type mismatch in {}.{}{}: expected {}, got {}{}", line, col, entity_name, field_name, tag, expected_type, actual_type, site)
                 } else {
-                    format!("type mismatch in {}.{}: expected {}, got {}", entity_name, field_name, expected_type, actual_type)
+                    format!("type mismatch in {}.{}{}: expected {}, got {}{}", entity_name, field_name, tag, expected_type, actual_type, site)
                 }
             }
             LoadError::UnsatisfiedProviderRequires { carrier, spec, required } => {
@@ -788,11 +839,13 @@ impl std::fmt::Display for LoadError {
             LoadError::AmbiguousSymbol { name, candidates, span, scope_name } => {
                 write!(f, "ambiguous symbol '{}' in scope '{}' at {}..{}: candidates {:?}", name, scope_name, span.start, span.end, candidates)
             }
-            LoadError::TypeMismatch { entity_name, field_name, expected_type, actual_type, span } => {
+            LoadError::TypeMismatch { entity_name, field_name, expected_type, actual_type, span, origin } => {
+                let tag = type_mismatch_tag(origin);
+                let site = type_mismatch_origin_suffix(origin);
                 if let Some(sp) = span {
-                    write!(f, "type mismatch in {}.{}: expected {}, got {} at {}..{}", entity_name, field_name, expected_type, actual_type, sp.start, sp.end)
+                    write!(f, "type mismatch in {}.{}{}: expected {}, got {}{} at {}..{}", entity_name, field_name, tag, expected_type, actual_type, site, sp.start, sp.end)
                 } else {
-                    write!(f, "type mismatch in {}.{}: expected {}, got {}", entity_name, field_name, expected_type, actual_type)
+                    write!(f, "type mismatch in {}.{}{}: expected {}, got {}{}", entity_name, field_name, tag, expected_type, actual_type, site)
                 }
             }
             LoadError::UnsatisfiedProviderRequires { carrier, spec, required } => {

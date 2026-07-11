@@ -38,6 +38,14 @@ pub enum TypeError {
         // without re-grounding. Rendered via `type_display_name_value`.
         expected: Value,
         actual: Value,
+        // WI-510: source location of the `TypeError::TypeMismatch { … }`
+        // construction, captured via the `#[track_caller]` `here()` helper.
+        // `TypeMismatch`/`Other` both flatten a `TypeErrorContext` + `Value`s
+        // into `LoadError::TypeMismatch` display strings, so two structurally
+        // different checks can render identically (WI-509 debugging cost). This
+        // marker is threaded into `LoadError::TypeMismatch.origin` so a mismatch
+        // can be traced to its construction site without hand-instrumenting.
+        site: &'static std::panic::Location<'static>,
     },
     UnknownField {
         span: Option<Span>,
@@ -189,6 +197,8 @@ pub enum TypeError {
         context: TypeErrorContext,
         expected: String,
         actual: String,
+        // WI-510: construction site — see `TypeMismatch::site`.
+        site: &'static std::panic::Location<'static>,
     },
 }
 
@@ -249,6 +259,25 @@ impl TypeErrorContext {
         }
     }
 
+    /// WI-510: a stable, variant-identifying tag rendered alongside the
+    /// flattened `entity.field` strings so two structurally different checks
+    /// that happen to flatten to the same names (an `EntityField` field-arg
+    /// check and an `OperationArgument` arg check both surfacing as
+    /// `field_access.field`, WI-509) are distinguishable in the diagnostic.
+    pub fn kind_tag(&self) -> &'static str {
+        match self {
+            TypeErrorContext::EntityField { .. } => "entity-field",
+            TypeErrorContext::OperationArgument { .. } => "op-arg",
+            TypeErrorContext::OperationReturn { .. } => "op-return",
+            TypeErrorContext::OperationEffects { .. } => "op-effects",
+            TypeErrorContext::OperationMatch { .. } => "op-match",
+            TypeErrorContext::Rule { .. } => "rule",
+            TypeErrorContext::LetBinding { .. } => "let-binding",
+            TypeErrorContext::OperationAsFunctionValue { .. } => "op-as-fn-value",
+            TypeErrorContext::OperationTypeParams { .. } => "op-type-params",
+        }
+    }
+
     pub fn field_name(&self, kb: &KnowledgeBase) -> String {
         match self {
             TypeErrorContext::EntityField { field, .. } => kb.resolve_sym(*field).to_string(),
@@ -265,6 +294,16 @@ impl TypeErrorContext {
 }
 
 impl TypeError {
+    /// WI-510: capture the caller's source location. `#[track_caller]` makes
+    /// `Location::caller()` return the location of *this* call — i.e. the
+    /// `TypeError::TypeMismatch { site: TypeError::here(), … }` construction
+    /// site — so every lossy `TypeError` records where it was built. Zero
+    /// runtime cost (a `&'static` pointer).
+    #[track_caller]
+    pub fn here() -> &'static std::panic::Location<'static> {
+        std::panic::Location::caller()
+    }
+
     pub fn format(&self, kb: &KnowledgeBase) -> String {
         match self {
             TypeError::TypeMismatch { expected, actual, .. } => {
@@ -432,9 +471,14 @@ impl TypeError {
     /// Lossy conversion to LoadError for legacy callers (load.rs, CLI).
     /// Resolves spans, formats type terms via `type_display_name`.
     pub fn to_load_error(&self, kb: &KnowledgeBase) -> super::load::LoadError {
-        use super::load::LoadError;
+        use super::load::{LoadError, TypeMismatchOrigin};
         match self {
-            TypeError::TypeMismatch { context, expected, actual, .. } => LoadError::TypeMismatch {
+            TypeError::TypeMismatch { context, expected, actual, site, .. } => LoadError::TypeMismatch {
+                origin: Some(TypeMismatchOrigin {
+                    error_kind: "TypeMismatch",
+                    context_kind: context.kind_tag(),
+                    site: *site,
+                }),
                 entity_name: context.entity_name(kb),
                 field_name: context.field_name(kb),
                 expected_type: type_display_name_value(kb, expected),
@@ -444,6 +488,7 @@ impl TypeError {
             TypeError::UnknownField { entity_name, field, .. } => {
                 let field_name = kb.resolve_sym(*field).to_string();
                 LoadError::TypeMismatch {
+                    origin: None,
                     entity_name: kb.resolve_sym(*entity_name).to_string(),
                     expected_type: "known field".to_string(),
                     actual_type: format!("unknown field '{}'", field_name),
@@ -452,6 +497,7 @@ impl TypeError {
                 }
             }
             TypeError::NoParentSort { name } => LoadError::TypeMismatch {
+                origin: None,
                 entity_name: kb.resolve_sym(*name).to_string(),
                 field_name: "parent_sort".to_string(),
                 expected_type: "parent sort".to_string(),
@@ -459,6 +505,7 @@ impl TypeError {
                 span: None,
             },
             TypeError::UnresolvedName { name, .. } => LoadError::TypeMismatch {
+                origin: None,
                 entity_name: kb.resolve_sym(*name).to_string(),
                 field_name: "name".to_string(),
                 expected_type: "resolved name".to_string(),
@@ -466,6 +513,7 @@ impl TypeError {
                 span: self.span(kb),
             },
             TypeError::NoConstructor { name, .. } => LoadError::TypeMismatch {
+                origin: None,
                 entity_name: kb.resolve_sym(*name).to_string(),
                 field_name: "constructor".to_string(),
                 expected_type: "known constructor".to_string(),
@@ -473,6 +521,7 @@ impl TypeError {
                 span: self.span(kb),
             },
             TypeError::UnknownApplyFunctor { name, .. } => LoadError::TypeMismatch {
+                origin: None,
                 entity_name: kb.resolve_sym(*name).to_string(),
                 field_name: "apply".to_string(),
                 expected_type: "known operation or arrow-typed variable".to_string(),
@@ -480,6 +529,7 @@ impl TypeError {
                 span: self.span(kb),
             },
             TypeError::DispatchNoMatch { op, .. } => LoadError::TypeMismatch {
+                origin: None,
                 entity_name: kb.qualified_name_of(*op).to_string(),
                 field_name: "dispatch".to_string(),
                 expected_type: "matching impl for per-call bindings".to_string(),
@@ -487,6 +537,7 @@ impl TypeError {
                 span: self.span(kb),
             },
             TypeError::DispatchAmbiguous { op, .. } => LoadError::TypeMismatch {
+                origin: None,
                 entity_name: kb.qualified_name_of(*op).to_string(),
                 field_name: "dispatch".to_string(),
                 expected_type: "unique impl for per-call bindings".to_string(),
@@ -494,6 +545,7 @@ impl TypeError {
                 span: self.span(kb),
             },
             TypeError::NoSuchTypeParam { op, name, .. } => LoadError::TypeMismatch {
+                origin: None,
                 entity_name: kb.qualified_name_of(*op).to_string(),
                 field_name: "type_arg".to_string(),
                 expected_type: "declared type-param name".to_string(),
@@ -508,6 +560,7 @@ impl TypeError {
                     kb.resolve_sym(*type_param),
                 );
                 LoadError::TypeMismatch {
+                    origin: None,
                     entity_name: op_qn.to_string(),
                     field_name: "type_arg".to_string(),
                     expected_type: format!("a type for '{}'", kb.resolve_sym(*type_param)),
@@ -531,6 +584,7 @@ impl TypeError {
                     params_list.join(", "),
                 );
                 LoadError::TypeMismatch {
+                    origin: None,
                     entity_name: op_qn.to_string(),
                     field_name: "requires".to_string(),
                     expected_type: format!("`requires {}[…]` covering abstract type parameter", spec_short),
@@ -542,6 +596,7 @@ impl TypeError {
                 let op_qn = kb.qualified_name_of(*op_sym).to_string();
                 let ret = kb.qualified_name_of(*return_sort).to_string();
                 LoadError::TypeMismatch {
+                    origin: None,
                     entity_name: op_qn,
                     field_name: "goal".to_string(),
                     expected_type:
@@ -556,6 +611,7 @@ impl TypeError {
             TypeError::EqOverrideUnbacked { carrier_sort, .. } => {
                 let carrier_qn = kb.qualified_name_of(*carrier_sort).to_string();
                 LoadError::TypeMismatch {
+                    origin: None,
                     entity_name: carrier_qn.clone(),
                     field_name: "eq".to_string(),
                     expected_type: format!(
@@ -567,6 +623,7 @@ impl TypeError {
                 }
             }
             TypeError::BottomExpr { .. } => LoadError::TypeMismatch {
+                origin: None,
                 entity_name: "<bottom>".to_string(),
                 field_name: "expr".to_string(),
                 expected_type: "surface expression".to_string(),
@@ -574,6 +631,7 @@ impl TypeError {
                 span: self.span(kb),
             },
             TypeError::DotDispatchNoMatch { member, receiver_sort, .. } => LoadError::TypeMismatch {
+                origin: None,
                 entity_name: receiver_sort
                     .map(|s| kb.qualified_name_of(s).to_string())
                     .unwrap_or_else(|| "<unresolved receiver>".to_string()),
@@ -602,6 +660,7 @@ impl TypeError {
                     first.to_load_error(kb)
                 } else {
                     LoadError::TypeMismatch {
+                        origin: None,
                         entity_name: "<empty>".to_string(),
                         field_name: "".to_string(),
                         expected_type: String::new(),
@@ -611,6 +670,7 @@ impl TypeError {
                 }
             }
             TypeError::UnsatisfiedPrecondition { op, clause, .. } => LoadError::TypeMismatch {
+                origin: None,
                 entity_name: kb.qualified_name_of(*op).to_string(),
                 field_name: "requires".to_string(),
                 expected_type: format!(
@@ -620,7 +680,12 @@ impl TypeError {
                 actual_type: "unsatisfied precondition".to_string(),
                 span: self.span(kb),
             },
-            TypeError::Other { context, expected, actual, .. } => LoadError::TypeMismatch {
+            TypeError::Other { context, expected, actual, site, .. } => LoadError::TypeMismatch {
+                origin: Some(TypeMismatchOrigin {
+                    error_kind: "Other",
+                    context_kind: context.kind_tag(),
+                    site: *site,
+                }),
                 entity_name: context.entity_name(kb),
                 field_name: context.field_name(kb),
                 expected_type: expected.clone(),
@@ -2820,6 +2885,7 @@ fn attach_eta_dispatch_dict(
             let op_qn = kb.qualified_name_of(sym).to_string();
             let parent_qn = kb.qualified_name_of(parent).to_string();
             Err(TypeError::Other {
+                site: TypeError::here(),
                 span: Some(occ.span.span),
                 context: TypeErrorContext::OperationAsFunctionValue { op_name: sym },
                 expected: format!(
@@ -4754,6 +4820,7 @@ fn build_type(
                     let var = extract_pattern_var_name(&pattern)
                         .unwrap_or_else(|| kb.intern("_"));
                     results.push(Err(TypeError::TypeMismatch {
+                        site: TypeError::here(),
                         span: None,
                         context: TypeErrorContext::LetBinding { var },
                         expected: ann.clone(),
@@ -5984,6 +6051,7 @@ fn check_apply_iter(
                 };
                 if let Some(reason) = err {
                     arg_type_errors.push(TypeError::Other {
+                        site: TypeError::here(),
                         span,
                         context: TypeErrorContext::OperationArgument { op_name: fn_sym, param: *arg_name },
                         expected: "a named argument matching a distinct unbound parameter".to_string(),
@@ -13997,6 +14065,7 @@ fn validate_arg_against_param(
                     // mismatch).
                     ArgValidation::WrapSome { .. } | ArgValidation::Fail(_) => {
                         ArgValidation::Fail(TypeError::TypeMismatch {
+                            site: TypeError::here(),
                             span,
                             context,
                             expected: declared_g,
@@ -14026,6 +14095,7 @@ fn validate_arg_against_param(
         }
     }
     ArgValidation::Fail(TypeError::TypeMismatch {
+        site: TypeError::here(),
         span,
         context,
         expected: declared_g,
@@ -14066,6 +14136,7 @@ fn validate_arrow_param_result(
         return None;
     };
     let mismatch = || TypeError::TypeMismatch {
+        site: TypeError::here(),
         span,
         context: context.clone(),
         expected: declared.clone(),
@@ -14377,6 +14448,7 @@ fn validate_callback_effect_row(
             e_absent.iter().find(|le| labels_match_aligned(kb, subst, &place_map, la, le))
         {
             return Some(TypeError::Other {
+                site: TypeError::here(),
                 span,
                 context: TypeErrorContext::OperationArgument { op_name: fn_sym, param: param_sym },
                 expected: format!(
@@ -14394,6 +14466,7 @@ fn validate_callback_effect_row(
         }
         if e_tails.is_empty() {
             return Some(TypeError::Other {
+                site: TypeError::here(),
                 span,
                 context: TypeErrorContext::OperationArgument { op_name: fn_sym, param: param_sym },
                 expected: format!(
@@ -16724,8 +16797,12 @@ fn provided_spec_base_syms(kb: &KnowledgeBase, recv_sort: Symbol) -> Vec<Symbol>
 /// projection eliminated at a non-call site reports the right place — a `let`-binding
 /// annotation (`LetBinding`), not a phantom operation return. The op-call callers
 /// (`check_apply_iter`) still pass `OperationReturn`, preserving their message.
+/// WI-510: `#[track_caller]` so the `here()` origin threads through to the real
+/// call site rather than collapsing all 10+ callers to this helper's own line.
+#[track_caller]
 fn projection_type_error(ctx: &TypeErrorContext, span: Option<Span>, msg: &str) -> TypeError {
     TypeError::Other {
+        site: TypeError::here(),
         span,
         context: ctx.clone(),
         expected: "a well-formed type projection".to_owned(),
@@ -18462,6 +18539,7 @@ fn enforce_member_tie(
             continue;
         }
         return Err(TypeError::Other {
+            site: TypeError::here(),
             span,
             context: TypeErrorContext::OperationTypeParams { op_name: error_name },
             expected: format!(
@@ -21631,6 +21709,7 @@ fn compute_branch_join_type(
         Some((b, _)) => b.clone(),
         None => {
             return Err(TypeError::Other {
+                site: TypeError::here(),
                 span: None,
                 context: branch_ctx,
                 expected: format!("non-empty {construct} expression"),
@@ -21649,6 +21728,7 @@ fn compute_branch_join_type(
             let mut subst = Substitution::new();
             if !types_compatible(kb, &mut subst, bt, exp) {
                 return Err(TypeError::TypeMismatch {
+                    site: TypeError::here(),
                     span: *span,
                     context: branch_ctx,
                     expected: exp.clone(),
@@ -21695,6 +21775,7 @@ fn compute_branch_join_type(
         (Some((bt, span)), Some(exp)) => {
             if type_dispatch_name_view(kb, &exp) == Some("type_var") {
                 Err(TypeError::TypeMismatch {
+                    site: TypeError::here(),
                     span,
                     context: branch_ctx,
                     expected: acc.clone(),
@@ -21708,6 +21789,7 @@ fn compute_branch_join_type(
         // has no join, so the branch types genuinely clash.
         (Some((bt, span)), None) => {
             Err(TypeError::TypeMismatch {
+                site: TypeError::here(),
                 span,
                 context: branch_ctx,
                 expected: acc.clone(),
@@ -21967,6 +22049,7 @@ fn abstracting_return_error(
     let ret_name = kb.qualified_name_of(ret_sort).to_owned();
     let members = unbound.iter().map(|m| format!("'{m}'")).collect::<Vec<_>>().join(", ");
     Some(TypeError::Other {
+        site: TypeError::here(),
         span: None,
         context: TypeErrorContext::OperationReturn { op_name: op_sym },
         expected: "an interface-expressible return (concrete, input-rooted, or an `ensures` \
@@ -24679,6 +24762,7 @@ fn check_value_against_sort_ref(
                 None
             } else {
                 Some(TypeError::Other {
+                    site: TypeError::here(),
                     span,
                     context: TypeErrorContext::EntityField { entity: entity_sym, field: field_sym },
                     expected: type_display_name_value(kb, declared_type),
@@ -24729,6 +24813,7 @@ fn check_value_sort_membership(
         return None;
     }
     Some(TypeError::Other {
+        site: TypeError::here(),
         span,
         context: TypeErrorContext::EntityField { entity: entity_sym, field: field_sym },
         expected: type_display_name_value(kb, declared_type),
@@ -24791,6 +24876,7 @@ fn check_value_against_parameterized(
                 return None;
             }
             return Some(TypeError::Other {
+                site: TypeError::here(),
                 span,
                 context: TypeErrorContext::EntityField { entity: entity_sym, field: field_sym },
                 expected: type_display_name_value(kb, declared_type),
@@ -25477,6 +25563,7 @@ fn check_operation_bodies(kb: &mut KnowledgeBase, op_syms: &[Symbol], errors: &m
                     };
                 if !conforms {
                     errors.push(TypeError::TypeMismatch {
+                        site: TypeError::here(),
                         span: None,
                         context: TypeErrorContext::OperationReturn { op_name: op.op_sym },
                         expected: effective_return.clone(),
@@ -25576,6 +25663,7 @@ fn check_operation_bodies(kb: &mut KnowledgeBase, op_syms: &[Symbol], errors: &m
                             .any(|d| views_structurally_equal(kb, &comp_canon, d));
                         if !declared {
                             errors.push(TypeError::Other {
+                                site: TypeError::here(),
                                 span: op.span,
                                 context: TypeErrorContext::OperationEffects { op_name: op.op_sym },
                                 expected: format!("declared: [{}]", declared_display.join(", ")),
@@ -25588,6 +25676,7 @@ fn check_operation_bodies(kb: &mut KnowledgeBase, op_syms: &[Symbol], errors: &m
                 // Collect exhaustiveness diagnostics from the typing env
                 for diag in &result.env.diagnostics {
                     errors.push(TypeError::Other {
+                        site: TypeError::here(),
                         span: op.span,
                         context: TypeErrorContext::OperationMatch { op_name: op.op_sym },
                         expected: "exhaustive".to_string(),
@@ -25676,6 +25765,7 @@ fn check_pattern_fragment(kb: &KnowledgeBase, sort_term: TermId, errors: &mut Ve
         // Rule 1: head must not contain ho_apply (no predicate variables in head)
         if term_contains_functor(kb, head, ho_apply_sym) {
             errors.push(TypeError::Other {
+                site: TypeError::here(),
                 span,
                 context: TypeErrorContext::Rule { name: head_sym, field: RuleField::Head },
                 expected: "no predicate variables in rule head".to_string(),
@@ -25746,6 +25836,7 @@ fn check_ho_apply_pattern_occ(
             if let Some(Expr::Apply { functor: inner_f, .. }) = pred.as_expr() {
                 if *inner_f == ho_apply_sym {
                     errors.push(TypeError::Other {
+                        site: TypeError::here(),
                         span,
                         context: TypeErrorContext::Rule { name: rule_sym, field: RuleField::Body },
                         expected: "variable as predicate in ho_apply".to_string(),
@@ -25761,6 +25852,7 @@ fn check_ho_apply_pattern_occ(
             if let Some(Expr::Var(Var::DeBruijn(idx))) = arg.as_expr() {
                 if seen_vars.contains(idx) {
                     errors.push(TypeError::Other {
+                        site: TypeError::here(),
                         span,
                         context: TypeErrorContext::Rule { name: rule_sym, field: RuleField::Body },
                         expected: "distinct variables in ho_apply args".to_string(),
@@ -25773,6 +25865,7 @@ fn check_ho_apply_pattern_occ(
             // Rule 3b: args must not contain ho_apply (no predicate variable as argument).
             if occurrence_contains_functor(arg, ho_apply_sym) {
                 errors.push(TypeError::Other {
+                    site: TypeError::here(),
                     span,
                     context: TypeErrorContext::Rule { name: rule_sym, field: RuleField::Body },
                     expected: "first-order args in ho_apply".to_string(),
@@ -25919,6 +26012,7 @@ fn type_rule_bodies(
                     let head_sym = *head_sym;
                     let span = kb.term_span(head).map(|s| s.span);
                     errors.push(TypeError::Other {
+                        site: TypeError::here(),
                         span,
                         context: TypeErrorContext::Rule { name: head_sym, field: RuleField::Whole },
                         expected: "consistent variable types".to_string(),
@@ -26063,6 +26157,7 @@ fn record_find_dictionary_grounding(kb: &mut KnowledgeBase) -> Vec<TypeError> {
             let canon = kb.canonical_sort_sym(base);
             if seen_bases.contains(&canon) {
                 errors.push(TypeError::Other {
+                    site: TypeError::here(),
                     span: Some(node.span.span),
                     context: TypeErrorContext::Rule {
                         name: rule_sym.unwrap_or(fd_sym),
@@ -27109,6 +27204,7 @@ fn rewrite_find_dictionary_goal(
     let span = goal.span;
     let owner = goal.owner;
     let err = |expected: String, actual: String| TypeError::Other {
+        site: TypeError::here(),
         span: Some(span.span),
         context: TypeErrorContext::Rule {
             name: rule_sym.unwrap_or(fd_sym),
