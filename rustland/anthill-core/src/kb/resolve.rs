@@ -2884,31 +2884,27 @@ impl KnowledgeBase {
         goal: &Value,
         answer_subst: &Substitution,
     ) -> BuiltinResult {
-        // The symbol-reflection builtins (qualified_name, short_name,
-        // lookup_symbol, resolve_sort_inst_param) operate on term-shaped symbol
-        // data and keep their hash-consed `TermId` goal signature. A rule-body
-        // goal arrives as a `Value::Node` occurrence (WI-246); lower it to a
-        // term here so they handle it uniformly (no panic narrow). `field_access`
-        // is fully `TermView`-migrated below (WI-482) — it reads its receiver
-        // carrier-agnostically, so a `Value::Node` receiver (a denoted entity)
-        // is projected without lowering.
-        let as_term = |kb: &mut KnowledgeBase, g: &Value| match g {
-            Value::Term { id: t, .. } => *t,
-            _ => reify_goal_value(kb, g),
-        };
+        // Every builtin reads its goal carrier-agnostically through `TermView`
+        // (WI-482): a rule-body `Value::Node` occurrence resolves without
+        // lowering the whole goal to a hash-consed `TermId`. The
+        // symbol-reflection builtins (`qualified_name`, `short_name`,
+        // `lookup_symbol`, `resolve_sort_instantiation_param`) still reify their
+        // *structural* argument carrier (a symbol ref, a `SortView`) internally
+        // via `carrier_term` — the KB's symbol/field lookups are keyed over
+        // `Term` — but that is a narrow, per-arg reify, not a per-goal one.
         match tag {
             BuiltinTag::NonVar => self.builtin_nonvar(goal, answer_subst),
             BuiltinTag::Ground => self.builtin_ground(goal, answer_subst),
-            BuiltinTag::QualifiedName => { let t = as_term(self, goal); self.builtin_qualified_name(t, answer_subst) }
-            BuiltinTag::ShortName => { let t = as_term(self, goal); self.builtin_short_name(t, answer_subst) }
-            BuiltinTag::LookupSymbol => { let t = as_term(self, goal); self.builtin_lookup_symbol(t, answer_subst) }
+            BuiltinTag::QualifiedName => self.builtin_qualified_name(goal, answer_subst),
+            BuiltinTag::ShortName => self.builtin_short_name(goal, answer_subst),
+            BuiltinTag::LookupSymbol => self.builtin_lookup_symbol(goal, answer_subst),
             BuiltinTag::IsEntityOf => self.builtin_is_entity_of(goal, answer_subst),
             BuiltinTag::ExtractSort => self.builtin_extract_sort(goal, answer_subst),
             BuiltinTag::Not => unreachable!("Not is handled in step_init, not execute_builtin"),
             BuiltinTag::HoApply => unreachable!("HoApply is handled in step_init, not execute_builtin"),
             BuiltinTag::PushChoice => unreachable!("PushChoice is handled in step_init, not execute_builtin"),
             BuiltinTag::Cut => unreachable!("Cut is handled in step_init, not execute_builtin"),
-            BuiltinTag::ResolveSortInstParam => { let t = as_term(self, goal); self.builtin_resolve_sort_inst_param(t, answer_subst) }
+            BuiltinTag::ResolveSortInstParam => self.builtin_resolve_sort_inst_param(goal, answer_subst),
             BuiltinTag::Scope => self.builtin_scope(goal, answer_subst),
             BuiltinTag::Kind => self.builtin_kind(goal, answer_subst),
             BuiltinTag::Provenance => self.builtin_provenance(goal, answer_subst),
@@ -2938,7 +2934,7 @@ impl KnowledgeBase {
 
     /// Resolve a builtin goal argument (read through [`TermView`]) to a
     /// `Value` under σ — the representation-agnostic analog of
-    /// `walk(builtin_first_arg(goal), σ)`. A term child is `walk_view`d; an
+    /// `walk(goal's positional arg, σ)`. A term child is `walk_view`d; an
     /// occurrence child that is a bound `Global` var leaf is resolved via σ,
     /// otherwise kept as-is (WI-246). `None` ⇒ the arg slot is absent.
     fn walk_arg(&self, item: Option<ViewItem>, subst: &Substitution) -> Option<Value> {
@@ -3115,32 +3111,8 @@ impl KnowledgeBase {
         }
     }
 
-    /// Extract the first positional argument from a builtin goal term.
-    fn builtin_first_arg(&self, goal: TermId) -> TermId {
-        match self.terms.get(goal) {
-            Term::Fn { pos_args, .. } => {
-                debug_assert!(!pos_args.is_empty(), "builtin goal must have at least one argument");
-                pos_args[0]
-            }
-            _ => panic!("builtin_first_arg called on non-Fn term"),
-        }
-    }
-
-    /// Extract the second positional argument from a builtin goal term.
-    fn builtin_second_arg(&self, goal: TermId) -> TermId {
-        match self.terms.get(goal) {
-            Term::Fn { pos_args, .. } => {
-                debug_assert!(pos_args.len() >= 2, "builtin goal must have at least two arguments");
-                pos_args[1]
-            }
-            _ => panic!("builtin_second_arg called on non-Fn term"),
-        }
-    }
-
-    /// `qualified_name(?sym, ?result)` — if `?sym` is bound to a Ref, bind `?result`
-    /// to the full qualified name string. Delay if `?sym` is unbound.
-    /// Return the fully-qualified name for a symbol.
-    /// Resolved symbols use their `qualified_name`; unresolved ones get `_unresolved.<name>`.
+    /// The fully-qualified name for a symbol. Resolved symbols use their
+    /// `qualified_name`; unresolved ones get `_unresolved.<name>`.
     fn symbol_qualified_name(&self, sym: crate::intern::Symbol) -> String {
         match self.symbols.get(sym) {
             crate::intern::SymbolDef::Resolved { qualified_name, .. } => qualified_name.clone(),
@@ -3149,17 +3121,16 @@ impl KnowledgeBase {
     }
 
     /// Walk a builtin argument to a `TermId`, narrowing the carrier (WI-348
-    /// directive #3 / proposal Phase D). The symbol/name/ref/result builtins
-    /// (`qualified_name`, `short_name`, `lookup_symbol`,
-    /// `resolve_sort_instantiation_param`, `field_access`, `ho_apply`) operate on
-    /// term-shaped data; a var bound to a non-`Term` carrier (a `Value::Node`
-    /// denoted/occurrence, a scalar) is a type error for them — `None` here,
-    /// which each caller turns into its failure path. Reads through `walk_view`
-    /// (the carrier-faithful chase) so a Node binding is *seen and rejected*, not
-    /// silently chased past to the bare var (the former `walk`, which would then
-    /// `Delay` on an already-bound arg). Latent today — the resolve_with_term
-    /// removal diagnostic proved no rule body binds a non-`Term` into a builtin
-    /// arg; this makes that boundary explicit and forward-correct.
+    /// directive #3 / proposal Phase D). Used by the `ho_apply` predicate
+    /// extraction, which reads a term-shaped predicate head; a var bound to a
+    /// non-`Term` carrier (a `Value::Node` denoted/occurrence, a scalar) is a
+    /// type error for it — `None` here, which the caller turns into its failure
+    /// path. (The symbol-reflection builtins that formerly shared this now read
+    /// their goal through `TermView` and reify a structural arg via
+    /// `carrier_term`, WI-482.) Reads through `walk_view` (the carrier-faithful
+    /// chase) so a Node binding is *seen and rejected*, not silently chased past
+    /// to the bare var (the former `walk`, which would then `Delay` on an
+    /// already-bound arg).
     fn walk_arg_term(&self, arg: TermId, subst: &Substitution) -> Option<TermId> {
         // Narrow to the hash-consed `Term` carrier; a var bound to a non-`Term`
         // (a `Value::Node` denoted/occurrence, a scalar) is `None` here, which each
@@ -3170,117 +3141,94 @@ impl KnowledgeBase {
         }
     }
 
-    fn builtin_qualified_name(&mut self, goal: TermId, subst: &Substitution) -> BuiltinResult {
-        let sym_arg = self.builtin_first_arg(goal);
-        let result_arg = self.builtin_second_arg(goal);
-        let Some(walked_sym) = self.walk_arg_term(sym_arg, subst) else {
+    /// `qualified_name(?sym, ?result)` — if `?sym` is bound to a `Ref`/`Ident`
+    /// symbol, bind `?result` to its full qualified-name string. Delay if `?sym`
+    /// is unbound. Reads its goal through [`TermView`] (WI-482) so a rule-body
+    /// `Value::Node` occurrence resolves; the symbol carrier itself is reified
+    /// via `carrier_term`.
+    fn builtin_qualified_name<V: TermView>(&mut self, goal: &V, subst: &Substitution) -> BuiltinResult {
+        if !matches!(goal.head(self), ViewHead::Functor { pos_arity, .. } if pos_arity >= 2) {
+            return BuiltinResult::Failure;
+        }
+        let sym_val = match self.walk_arg(goal.pos_arg(self, 0), subst) {
+            Some(v) => v,
+            None => return BuiltinResult::Failure,
+        };
+        if self.value_is_unbound_var(&sym_val) {
+            return BuiltinResult::delay();
+        }
+        let target = self.resolve_result_target(goal.pos_arg(self, 1), subst);
+        let Some(sym_term) = self.carrier_term(&sym_val) else {
             return BuiltinResult::Failure;
         };
-        match self.terms.get(walked_sym).clone() {
-            Term::Ref(sym) | Term::Ident(sym) => {
-                let name = self.symbol_qualified_name(sym);
-                let str_term = self.alloc(Term::Const(super::term::Literal::String(name)));
-                let Some(walked_result) = self.walk_arg_term(result_arg, subst) else {
-                    return BuiltinResult::Failure;
-                };
-                match self.terms.get(walked_result) {
-                    Term::Var(Var::Global(vid)) => {
-                        let vid = *vid;
-                        let mut extra = Substitution::new();
-                        extra.bind(self, vid, str_term);
-                        BuiltinResult::SuccessWithBindings(extra)
-                    }
-                    _ => {
-                        // Result already bound — succeed if it matches
-                        if walked_result == str_term {
-                            BuiltinResult::Success
-                        } else {
-                            BuiltinResult::Failure
-                        }
-                    }
-                }
-            }
-            Term::Var(_) => BuiltinResult::delay(),
-            _ => BuiltinResult::Failure,
-        }
+        let sym = match self.terms.get(sym_term) {
+            Term::Ref(s) | Term::Ident(s) => *s,
+            _ => return BuiltinResult::Failure,
+        };
+        let name = self.symbol_qualified_name(sym);
+        let str_term = self.alloc(Term::Const(super::term::Literal::String(name)));
+        self.finish_result(target, str_term)
     }
 
-    /// `short_name(?sym, ?result)` — if `?sym` is bound to a Ref, bind `?result`
-    /// to the last dot-separated segment. Delay if `?sym` is unbound.
-    fn builtin_short_name(&mut self, goal: TermId, subst: &Substitution) -> BuiltinResult {
-        let sym_arg = self.builtin_first_arg(goal);
-        let result_arg = self.builtin_second_arg(goal);
-        let Some(walked_sym) = self.walk_arg_term(sym_arg, subst) else {
+    /// `short_name(?sym, ?result)` — if `?sym` is bound to a `Ref`/`Ident`
+    /// symbol, bind `?result` to the last dot-separated segment of its name.
+    /// Delay if `?sym` is unbound. `TermView` goal (WI-482); symbol carrier
+    /// reified via `carrier_term`.
+    fn builtin_short_name<V: TermView>(&mut self, goal: &V, subst: &Substitution) -> BuiltinResult {
+        if !matches!(goal.head(self), ViewHead::Functor { pos_arity, .. } if pos_arity >= 2) {
+            return BuiltinResult::Failure;
+        }
+        let sym_val = match self.walk_arg(goal.pos_arg(self, 0), subst) {
+            Some(v) => v,
+            None => return BuiltinResult::Failure,
+        };
+        if self.value_is_unbound_var(&sym_val) {
+            return BuiltinResult::delay();
+        }
+        let target = self.resolve_result_target(goal.pos_arg(self, 1), subst);
+        let Some(sym_term) = self.carrier_term(&sym_val) else {
             return BuiltinResult::Failure;
         };
-        match self.terms.get(walked_sym).clone() {
-            Term::Ref(sym) | Term::Ident(sym) => {
-                let full = self.symbols.resolve(sym);
-                let short = full.rsplit('.').next().unwrap_or(full).to_string();
-                let str_term = self.alloc(Term::Const(super::term::Literal::String(short)));
-                let Some(walked_result) = self.walk_arg_term(result_arg, subst) else {
-                    return BuiltinResult::Failure;
-                };
-                match self.terms.get(walked_result) {
-                    Term::Var(Var::Global(vid)) => {
-                        let vid = *vid;
-                        let mut extra = Substitution::new();
-                        extra.bind(self, vid, str_term);
-                        BuiltinResult::SuccessWithBindings(extra)
-                    }
-                    _ => {
-                        if walked_result == str_term {
-                            BuiltinResult::Success
-                        } else {
-                            BuiltinResult::Failure
-                        }
-                    }
-                }
-            }
-            Term::Var(_) => BuiltinResult::delay(),
-            _ => BuiltinResult::Failure,
-        }
+        let sym = match self.terms.get(sym_term) {
+            Term::Ref(s) | Term::Ident(s) => *s,
+            _ => return BuiltinResult::Failure,
+        };
+        let full = self.symbols.resolve(sym);
+        let short = full.rsplit('.').next().unwrap_or(full).to_string();
+        let str_term = self.alloc(Term::Const(super::term::Literal::String(short)));
+        self.finish_result(target, str_term)
     }
 
     /// `lookup_symbol(?name_str, ?result)` — if `?name_str` is a bound String,
-    /// search the symbol table for that qualified name. Bind `?result` to
-    /// `Term::Ref(symbol)` if found, fail if not. Delay if `?name_str` is unbound.
-    fn builtin_lookup_symbol(&mut self, goal: TermId, subst: &Substitution) -> BuiltinResult {
-        let name_arg = self.builtin_first_arg(goal);
-        let result_arg = self.builtin_second_arg(goal);
-        let Some(walked_name) = self.walk_arg_term(name_arg, subst) else {
+    /// search the symbol table for that qualified name and bind `?result` to
+    /// `Ref(symbol)` if found, fail if not. Delay if `?name_str` is unbound.
+    /// `TermView` goal (WI-482); the name carrier is reified via `carrier_term`.
+    fn builtin_lookup_symbol<V: TermView>(&mut self, goal: &V, subst: &Substitution) -> BuiltinResult {
+        if !matches!(goal.head(self), ViewHead::Functor { pos_arity, .. } if pos_arity >= 2) {
+            return BuiltinResult::Failure;
+        }
+        let name_val = match self.walk_arg(goal.pos_arg(self, 0), subst) {
+            Some(v) => v,
+            None => return BuiltinResult::Failure,
+        };
+        if self.value_is_unbound_var(&name_val) {
+            return BuiltinResult::delay();
+        }
+        let target = self.resolve_result_target(goal.pos_arg(self, 1), subst);
+        let Some(name_term) = self.carrier_term(&name_val) else {
             return BuiltinResult::Failure;
         };
-        match self.terms.get(walked_name).clone() {
-            Term::Const(super::term::Literal::String(name)) => {
-                // Look up the symbol by qualified name (read-only)
-                match self.symbols.by_qualified_name.get(&name).copied() {
-                    Some(sym) => {
-                        let ref_term = self.alloc(Term::Ref(sym));
-                        let Some(walked_result) = self.walk_arg_term(result_arg, subst) else {
-                            return BuiltinResult::Failure;
-                        };
-                        match self.terms.get(walked_result) {
-                            Term::Var(Var::Global(vid)) => {
-                                let vid = *vid;
-                                let mut extra = Substitution::new();
-                                extra.bind(self, vid, ref_term);
-                                BuiltinResult::SuccessWithBindings(extra)
-                            }
-                            _ => {
-                                if walked_result == ref_term {
-                                    BuiltinResult::Success
-                                } else {
-                                    BuiltinResult::Failure
-                                }
-                            }
-                        }
-                    }
-                    None => BuiltinResult::Failure,
-                }
+        let name = match self.terms.get(name_term) {
+            Term::Const(super::term::Literal::String(s)) => s.clone(),
+            _ => return BuiltinResult::Failure,
+        };
+        // Look up the symbol by qualified name (read-only).
+        match self.symbols.by_qualified_name.get(&name).copied() {
+            Some(sym) => {
+                let ref_term = self.alloc(Term::Ref(sym));
+                self.finish_result(target, ref_term)
             }
-            Term::Var(_) => BuiltinResult::delay(),
-            _ => BuiltinResult::Failure,
+            None => BuiltinResult::Failure,
         }
     }
 
@@ -3722,76 +3670,49 @@ impl KnowledgeBase {
         PositionalPlan::Assign(assign)
     }
 
-    /// `resolve_sort_instantiation_param(?spec, ?param_name, ?value)` —
-    /// given a SortView term and a Ref(sym) for the param name,
-    /// find the corresponding named arg value. Delays if either arg is unbound.
-    fn builtin_resolve_sort_inst_param(&mut self, goal: TermId, subst: &Substitution) -> BuiltinResult {
-        let (inst_arg, param_arg, value_arg) = match self.terms.get(goal) {
-            Term::Fn { pos_args, .. } if pos_args.len() >= 3 => {
-                (pos_args[0], pos_args[1], pos_args[2])
-            }
-            _ => return BuiltinResult::Failure,
-        };
-
-        let Some(walked_inst) = self.walk_arg_term(inst_arg, subst) else {
+    /// `resolve_sort_instantiation_param(?spec, ?param_name, ?value)` — given a
+    /// `SortView(sort, named…)` instance and a `Ref`/`Fn` param symbol, bind
+    /// `?value` to the instance's binding for that param (fail if none). Delays
+    /// if `?spec` or `?param_name` is unbound. `TermView` goal (WI-482); the
+    /// `SortView`/param carriers are reified via `carrier_term`.
+    fn builtin_resolve_sort_inst_param<V: TermView>(&mut self, goal: &V, subst: &Substitution) -> BuiltinResult {
+        if !matches!(goal.head(self), ViewHead::Functor { pos_arity, .. } if pos_arity >= 3) {
             return BuiltinResult::Failure;
+        }
+        let inst_val = match self.walk_arg(goal.pos_arg(self, 0), subst) {
+            Some(v) => v,
+            None => return BuiltinResult::Failure,
         };
-        let Some(walked_param) = self.walk_arg_term(param_arg, subst) else {
-            return BuiltinResult::Failure;
+        let param_val = match self.walk_arg(goal.pos_arg(self, 1), subst) {
+            Some(v) => v,
+            None => return BuiltinResult::Failure,
         };
-
-        // Delay if either arg is unbound
-        if matches!(self.terms.get(walked_inst), Term::Var(_)) {
+        if self.value_is_unbound_var(&inst_val) || self.value_is_unbound_var(&param_val) {
             return BuiltinResult::delay();
         }
-        if matches!(self.terms.get(walked_param), Term::Var(_)) {
-            return BuiltinResult::delay();
-        }
-
-        // Extract the param symbol from the param arg (must be Ref)
-        let param_sym = match self.terms.get(walked_param) {
+        let target = self.resolve_result_target(goal.pos_arg(self, 2), subst);
+        // The param arg names a `Ref`, or a nullary-`Fn` name term.
+        let Some(param_term) = self.carrier_term(&param_val) else {
+            return BuiltinResult::Failure;
+        };
+        let param_sym = match self.terms.get(param_term) {
             Term::Ref(sym) => *sym,
             Term::Fn { functor, .. } => *functor,
             _ => return BuiltinResult::Failure,
         };
-
-        // Walk spec — must be SortView(sort_name, named_args...)
-        let value_tid = match self.terms.get(walked_inst).clone() {
-            Term::Fn { ref functor, ref named_args, .. } => {
-                let functor_name = self.symbols.name(*functor);
-                if functor_name == "SortView" {
-                    // Search named_args for the matching param symbol
-                    named_args.iter()
-                        .find(|(sym, _)| *sym == param_sym)
-                        .map(|(_, tid)| *tid)
-                } else {
-                    None
-                }
+        // The instance must be `SortView(sort_name, named_args…)`; find the
+        // named binding for `param_sym`.
+        let Some(inst_term) = self.carrier_term(&inst_val) else {
+            return BuiltinResult::Failure;
+        };
+        let value_tid = match self.terms.get(inst_term).clone() {
+            Term::Fn { ref functor, ref named_args, .. } if self.symbols.name(*functor) == "SortView" => {
+                named_args.iter().find(|(sym, _)| *sym == param_sym).map(|(_, tid)| *tid)
             }
             _ => None,
         };
-
         match value_tid {
-            Some(val) => {
-                let Some(walked_value) = self.walk_arg_term(value_arg, subst) else {
-                    return BuiltinResult::Failure;
-                };
-                match self.terms.get(walked_value) {
-                    Term::Var(Var::Global(vid)) => {
-                        let vid = *vid;
-                        let mut extra = Substitution::new();
-                        extra.bind(self, vid, val);
-                        BuiltinResult::SuccessWithBindings(extra)
-                    }
-                    _ => {
-                        if walked_value == val {
-                            BuiltinResult::Success
-                        } else {
-                            BuiltinResult::Failure
-                        }
-                    }
-                }
-            }
+            Some(val) => self.finish_result(target, val),
             None => BuiltinResult::Failure,
         }
     }
