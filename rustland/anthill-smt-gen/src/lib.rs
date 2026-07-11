@@ -561,8 +561,16 @@ impl<'kb> Emitter<'kb> {
                 // DeBruijn indices no longer mean the same thing).
                 if let Some((rhs_functor, _, _)) = occ_as_fn(&pos_args[1]) {
                     if self.is_known_entity(rhs_functor) {
-                        let env = self.entity_bindings.clone();
-                        let closed = self.close_occ(&pos_args[1], &env)?;
+                        // Close over this frame's two channels: the entity
+                        // bindings (WI-681) for entity-typed fields, and
+                        // `bindings` — the scalar string map — for a field
+                        // computed from a scalar op param (WI-686, e.g.
+                        // `upc: ite(…upc…)`). `close_occ` only reads
+                        // `entity_bindings` (it is `&self`), so borrow it in
+                        // place; the `insert` below re-borrows mutably after
+                        // the closed value is owned.
+                        let closed =
+                            self.close_occ(&pos_args[1], &self.entity_bindings, bindings)?;
                         self.entity_bindings.insert(synthetic_var_name(*i), closed);
                         return Ok(());
                     }
@@ -958,6 +966,15 @@ impl<'kb> Emitter<'kb> {
         match occ.as_expr() {
             Some(Expr::Const(Literal::Float(f))) => Ok(format_real(f.into_inner())),
             Some(Expr::Const(Literal::Int(i))) => Ok(format_real(*i as f64)),
+            // A pre-rendered SMT fragment injected by `close_occ` for a scalar
+            // operation parameter resolved across an inline boundary (WI-686 —
+            // via `scalar_param_occ`). It is already in the caller's frame and
+            // SMT syntax (a field const like `upc`, a literal like `(- 5.0)`, or
+            // a compound); emit it verbatim. A genuine anthill `String` field
+            // read into arithmetic position is a type error that does not occur
+            // here; were one to reach this arm it would emit as a bare token and
+            // fail loudly at the solver, not silently mis-evaluate.
+            Some(Expr::Const(Literal::String(s))) => Ok(s.clone()),
             Some(Expr::Var(Var::DeBruijn(i))) => {
                 let synth = synthetic_var_name(*i);
                 Ok(bindings.get(&synth).cloned().unwrap_or(synth))
@@ -1113,44 +1130,54 @@ impl<'kb> Emitter<'kb> {
     }
 
     /// Substitute `env` (this frame's entity bindings: synth var name →
-    /// entity occurrence) into `occ`, returning a structurally-closed copy
-    /// (WI-681). A body-derived constructor (e.g. `desired_position`'s
-    /// `Vec3(x: add(leader.position.x, …), …)`) carries the op's parameters
-    /// as callee-frame DeBruijn vars; once the constructor is bound as an
-    /// entity and propagated to a caller (or read by a later-inlined rule),
-    /// those indices no longer denote the same frame. Substituting the
-    /// param vars' bound entities here — while still in the frame that bound
-    /// them — closes the constructor: field access then bottoms out at the
-    /// ground fact entities (or `cos`/`sin` over a ground arg), never a
-    /// dangling callee var. Any DeBruijn var NOT in `env` is left as-is
-    /// (a scalar param resolves in its own frame — none appear in the
-    /// single-arm constructor bodies this increment closes). Loud error on
-    /// an occurrence shape a defining-equation body should never contain.
+    /// entity occurrence) and `str_env` (this frame's scalar bindings: synth
+    /// var name → already-translated SMT fragment) into `occ`, returning a
+    /// structurally-closed copy (WI-681, WI-686). A body-derived constructor
+    /// (e.g. `desired_position`'s `Vec3(x: add(leader.position.x, …), …)`)
+    /// carries the op's parameters as callee-frame DeBruijn vars; once the
+    /// constructor is bound as an entity and propagated to a caller (or read
+    /// by a later-inlined rule), those indices no longer denote the same
+    /// frame. Substituting the param vars here — while still in the frame that
+    /// bound them — closes the constructor: field access then bottoms out at
+    /// ground values, never a dangling callee var.
+    ///
+    /// A DeBruijn var is closed by (in order): its `env` entity binding
+    /// (WI-681 — an entity-typed param, e.g. `leader`/`offset`); else its
+    /// `str_env` scalar binding (WI-686 — a scalar-typed param whose value is
+    /// a caller-frame SMT fragment, e.g. `TransponderFollowerState{ upc:
+    /// ite(…upc…) }`); else a loud error (a param with no binding on either
+    /// channel can't be closed across the boundary). See [`scalar_param_occ`]
+    /// for how a scalar fragment becomes a (frozen) substitute occurrence.
+    /// Loud error on an occurrence shape a defining-equation body should never
+    /// contain.
     fn close_occ(
         &self,
         occ: &Rc<NodeOccurrence>,
         env: &BTreeMap<String, Rc<NodeOccurrence>>,
+        str_env: &BTreeMap<String, String>,
     ) -> Result<Rc<NodeOccurrence>, SmtGenError> {
         let Some(expr) = occ.as_expr() else { return Ok(Rc::clone(occ)) };
         let rebuilt = match expr {
             Expr::Var(Var::DeBruijn(i)) => {
                 let synth = synthetic_var_name(*i);
-                // A param var MUST resolve to an entity binding: a body-derived
-                // constructor's free vars are its op's parameters, and closing
-                // them is the whole point (leaving one live would let a
-                // callee-frame index dangle into the caller — a silently-wrong
-                // value, not a loud failure). A DeBruijn absent from `env` is a
-                // SCALAR param (bound in the string map, not `env`) inside the
-                // constructor — a shape this increment's single-arm Vec3 bodies
-                // never carry; error loudly rather than clone it across the
-                // boundary. A scalar-param constructor body needs a value-level
-                // binding channel (follow-on).
-                return match env.get(&synth) {
-                    Some(bound) => Ok(Rc::clone(bound)),
+                // A param var MUST resolve to a binding on one of the two
+                // channels: a body-derived constructor's free vars are its op's
+                // parameters, and closing them is the whole point (leaving one
+                // live would let a callee-frame index dangle into the caller — a
+                // silently-wrong value, not a loud failure). Entity-typed params
+                // resolve via `env` (WI-681); scalar-typed params via `str_env`
+                // (WI-686). A DeBruijn absent from BOTH is a param with no
+                // binding at all — error loudly rather than clone it across the
+                // boundary.
+                if let Some(bound) = env.get(&synth) {
+                    return Ok(Rc::clone(bound));
+                }
+                return match str_env.get(&synth) {
+                    Some(smt) => Ok(scalar_param_occ(smt, occ.span, occ.owner)),
                     None => Err(SmtGenError::new(format!(
-                        "close_occ: parameter ?{i} in a body-derived entity is not \
-                         an entity binding — a scalar operation parameter inside a \
-                         constructor cannot be closed across the inline boundary"))),
+                        "close_occ: parameter ?{i} in a body-derived entity is bound \
+                         on neither the entity nor the scalar channel — it cannot be \
+                         closed across the inline boundary"))),
                 };
             }
             Expr::Var(_) | Expr::Const(_) | Expr::Ref(_) | Expr::Ident(_) => {
@@ -1158,30 +1185,30 @@ impl<'kb> Emitter<'kb> {
             }
             Expr::Apply { functor, pos_args, named_args, type_args } => Expr::Apply {
                 functor: *functor,
-                pos_args: self.close_all(pos_args, env)?,
-                named_args: self.close_named(named_args, env)?,
+                pos_args: self.close_all(pos_args, env, str_env)?,
+                named_args: self.close_named(named_args, env, str_env)?,
                 type_args: type_args.clone(),
             },
             Expr::Constructor { name, pos_args, named_args } => Expr::Constructor {
                 name: *name,
-                pos_args: self.close_all(pos_args, env)?,
-                named_args: self.close_named(named_args, env)?,
+                pos_args: self.close_all(pos_args, env, str_env)?,
+                named_args: self.close_named(named_args, env, str_env)?,
             },
             Expr::Instantiation { name, pos_args, named_args } => Expr::Instantiation {
                 name: *name,
-                pos_args: self.close_all(pos_args, env)?,
-                named_args: self.close_named(named_args, env)?,
+                pos_args: self.close_all(pos_args, env, str_env)?,
+                named_args: self.close_named(named_args, env, str_env)?,
             },
             Expr::DotApply { receiver, name, pos_args, named_args } => Expr::DotApply {
-                receiver: self.close_occ(receiver, env)?,
+                receiver: self.close_occ(receiver, env, str_env)?,
                 name: *name,
-                pos_args: self.close_all(pos_args, env)?,
-                named_args: self.close_named(named_args, env)?,
+                pos_args: self.close_all(pos_args, env, str_env)?,
+                named_args: self.close_named(named_args, env, str_env)?,
             },
             Expr::If { condition, then_branch, else_branch } => Expr::If {
-                condition: self.close_occ(condition, env)?,
-                then_branch: self.close_occ(then_branch, env)?,
-                else_branch: self.close_occ(else_branch, env)?,
+                condition: self.close_occ(condition, env, str_env)?,
+                then_branch: self.close_occ(then_branch, env, str_env)?,
+                else_branch: self.close_occ(else_branch, env, str_env)?,
             },
             other => return Err(SmtGenError::new(format!(
                 "close_occ: unhandled occurrence shape in a defining-equation \
@@ -1195,16 +1222,18 @@ impl<'kb> Emitter<'kb> {
         &self,
         occs: &[Rc<NodeOccurrence>],
         env: &BTreeMap<String, Rc<NodeOccurrence>>,
+        str_env: &BTreeMap<String, String>,
     ) -> Result<Vec<Rc<NodeOccurrence>>, SmtGenError> {
-        occs.iter().map(|o| self.close_occ(o, env)).collect()
+        occs.iter().map(|o| self.close_occ(o, env, str_env)).collect()
     }
 
     fn close_named(
         &self,
         named: &[(Symbol, Rc<NodeOccurrence>)],
         env: &BTreeMap<String, Rc<NodeOccurrence>>,
+        str_env: &BTreeMap<String, String>,
     ) -> Result<Vec<(Symbol, Rc<NodeOccurrence>)>, SmtGenError> {
-        named.iter().map(|(s, o)| Ok((*s, self.close_occ(o, env)?))).collect()
+        named.iter().map(|(s, o)| Ok((*s, self.close_occ(o, env, str_env)?))).collect()
     }
 
     /// Resolve `field_access(?obj, Ident(field))` (possibly nested)
@@ -1626,6 +1655,32 @@ fn synthetic_var_name(idx: u32) -> String {
 /// Returns None for any other string shape.
 fn parse_synthetic_var_name(s: &str) -> Option<u32> {
     s.strip_prefix("var_").and_then(|n| n.parse::<u32>().ok())
+}
+
+/// WI-686 — re-encode a scalar operation parameter's caller-frame SMT
+/// fragment as a substitute occurrence, so `close_occ` can close a
+/// body-derived constructor whose field is computed from that scalar param
+/// (e.g. `TransponderFollowerState{ upc: ite(…upc…) }`). The fragment is the
+/// value `try_inline_rule_call` threaded into the callee string map: already
+/// translated and, at the point it is captured, fully resolved into the
+/// caller's frame (a forwarded free var `var_j`, a field const `upc`, a
+/// literal `(- 5.0)`, or a compound `(+ …)`). It is FROZEN verbatim as a
+/// `Const::String` fragment that `translate_expr` emits as-is.
+///
+/// Freezing (rather than re-encoding a `var_j` back to a live `Var::DeBruijn`)
+/// is deliberate: the fragment is the param's value at the binding point, and
+/// every token it names is a caller-frame identifier the caller already
+/// declares (the free-var text scan picks up a bare `var_j`; a field const /
+/// literal is self-contained). A frozen fragment is also frame-stable — it
+/// carries no live index that a later inline level could re-resolve against
+/// the wrong frame — and it cannot misread a field const that happens to spell
+/// `var_<digits>` as a de Bruijn index.
+fn scalar_param_occ(
+    smt: &str,
+    span: anthill_core::span::SourceSpan,
+    owner: Option<Symbol>,
+) -> Rc<NodeOccurrence> {
+    NodeOccurrence::new_expr(Expr::Const(Literal::String(smt.to_string())), span, owner)
 }
 
 /// Map anthill arithmetic functor qualified names to SMT-LIB ops.
