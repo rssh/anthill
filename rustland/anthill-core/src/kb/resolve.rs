@@ -3302,19 +3302,6 @@ impl KnowledgeBase {
         }
     }
 
-    /// WI-246: collapse a `Value::Node` arg to `Value::Term` (via
-    /// `occurrence_to_term`); scalars and terms pass through. Lets the
-    /// scalar/term-comparison builtins (`eq`/`neq`/`cmp`) treat a literal
-    /// occurrence arg uniformly.
-    fn normalize_value(&mut self, v: Value) -> Value {
-        match v {
-            // Reuse the single Node→term path; cf. `reify_goal_value` (the
-            // bare-`TermId` variant for goal-identity boundaries).
-            Value::Node(_) => Value::term(reify_goal_value(self, &v)),
-            other => other,
-        }
-    }
-
     /// `extract_sort_ref(?inst, ?result)`: given a term like `Eq[T = Int]` (represented as
     /// `ParameterizedType(Eq(), T=Int())`) or a simple `Ref(Eq)`, extract the sort symbol
     /// and bind `?result` to `Ref(sort_sym)`. Delays if `?inst` is unbound.
@@ -4066,8 +4053,8 @@ impl KnowledgeBase {
     /// WI-616 — deep groundness of a σ-walked operand `Value`: no unbound
     /// variable anywhere inside. The dispatch gate — a term-carried operand
     /// reuses the recursive [`Self::is_ground`]; entity/tuple carriers recurse;
-    /// an occurrence carrier (which `eq_operands` normalizes away) is
-    /// conservatively non-ground; scalars and runtime handles are ground.
+    /// an occurrence carrier walks carrier-neutrally (WI-685); scalars and
+    /// runtime handles are ground.
     pub(crate) fn value_deep_ground(&self, v: &Value, subst: &Substitution) -> bool {
         match v {
             Value::Term { id, .. } => self.term_deep_ground(*id, subst),
@@ -4086,7 +4073,48 @@ impl KnowledgeBase {
                 pos.iter().all(|c| self.value_deep_ground(c, subst))
                     && named.iter().all(|(_, c)| self.value_deep_ground(c, subst))
             }
-            Value::Node(_) => false,
+            // WI-685: an occurrence is deeply ground iff it has no unbound var
+            // leaf of ANY kind — matching `term_deep_ground`'s `Term::Var(_) =>
+            // false`. See [`Self::occurrence_deep_ground`].
+            Value::Node(occ) => self.occurrence_deep_ground(occ, subst),
+            _ => true,
+        }
+    }
+
+    /// WI-685 — the occurrence half of [`Self::value_deep_ground`], the
+    /// carrier-neutral twin of [`Self::term_deep_ground`]. A `Global` var head is
+    /// CHASED through σ (a nested tail binding survives `walk_arg`'s shallow
+    /// substitution, WI-683), a `Rigid`/`DeBruijn` skolem is non-ground, and
+    /// children recurse through the view. A non-var head with no children (`Ref` /
+    /// `Const` / …) is ground. So a ground occurrence reads as ground exactly where
+    /// its reified Term-twin would — the WI-685 acceptance that removing
+    /// `normalize_value` from `eq_operands` cannot flip a groundness verdict.
+    fn occurrence_deep_ground(&self, occ: &Rc<NodeOccurrence>, subst: &Substitution) -> bool {
+        match occ.head(self) {
+            ViewHead::Var(Var::Global(vid)) => match subst.resolve_as_value(vid) {
+                Some(bound) => {
+                    let bound = bound.clone();
+                    self.value_deep_ground(&bound, subst)
+                }
+                None => false,
+            },
+            ViewHead::Var(_) => false, // Rigid / DeBruijn skolem
+            ViewHead::Functor { pos_arity, .. } => {
+                for i in 0..pos_arity {
+                    match occ.pos_arg(self, i) {
+                        Some(c) if self.value_deep_ground(&c.to_value(), subst) => {}
+                        _ => return false,
+                    }
+                }
+                for k in occ.named_keys(self) {
+                    match occ.named_arg(self, k) {
+                        Some(c) if self.value_deep_ground(&c.to_value(), subst) => {}
+                        _ => return false,
+                    }
+                }
+                true
+            }
+            // Ref / Const / Ident / Bottom / Opaque — no unbound var leaf.
             _ => true,
         }
     }
@@ -4162,8 +4190,77 @@ impl KnowledgeBase {
                         .iter()
                         .any(|(_, c)| self.value_reaches_eq_override(c, subst, depth + 1))
             }
-            Value::Node(_) => true,
+            // WI-685: walk the occurrence carrier-neutrally — the twin of the
+            // `Value::Entity` arm and [`Self::term_reaches_eq_override`], NOT the
+            // former conservative `Node => true` (which forced a spurious Delay on
+            // every override-free occurrence operand → under `definite_only:false`
+            // a floundered residual counted as a solution).
+            Value::Node(occ) => self.occurrence_reaches_eq_override(occ, subst, depth),
             _ => false,
+        }
+    }
+
+    /// WI-685 — the occurrence half of [`Self::value_reaches_eq_override`], the
+    /// carrier-neutral twin of [`Self::term_reaches_eq_override`]. `true` iff the
+    /// head functor overrides `eq` ([`Self::eq_dispatch_target`]) or an overriding
+    /// carrier is reachable in a child. A `Global` head is chased through σ (an
+    /// override hidden behind a value binding must not escape); a `Rigid`/`DeBruijn`
+    /// skolem overrides nothing. So an override-free occurrence reads `false`
+    /// exactly where its reified Term-twin would.
+    fn occurrence_reaches_eq_override(
+        &self,
+        occ: &Rc<NodeOccurrence>,
+        subst: &Substitution,
+        depth: usize,
+    ) -> bool {
+        match occ.head(self) {
+            ViewHead::Var(Var::Global(vid)) => match subst.resolve_as_value(vid) {
+                Some(bound) => {
+                    let bound = bound.clone();
+                    self.value_reaches_eq_override(&bound, subst, depth + 1)
+                }
+                None => false,
+            },
+            ViewHead::Var(_) => false, // Rigid / DeBruijn skolem overrides nothing
+            head => {
+                if let Some(s) = head.functor_sym() {
+                    if self.eq_dispatch_target(s).is_some() {
+                        return true;
+                    }
+                }
+                // A non-functor head (Const / Ident / Bottom / Opaque, or a `Ref`
+                // that did not override above) has no children — `pos_arity` 0.
+                let ViewHead::Functor { pos_arity, .. } = head else {
+                    return false;
+                };
+                // A child the head reports (`pos_arity`, or a `named_keys` key) but
+                // the view can't resolve would be a carrier/view desync — a SILENT
+                // miss of a buried override there flips gate (5) to a wrong structural
+                // verdict, so surface it loudly (the repo's loud-over-silent rule)
+                // rather than skip. The term twin iterates the stored child Vecs and
+                // structurally cannot desync; this keeps the occurrence twin honest.
+                for i in 0..pos_arity {
+                    match occ.pos_arg(self, i) {
+                        Some(c) => {
+                            if self.value_reaches_eq_override(&c.to_value(), subst, depth + 1) {
+                                return true;
+                            }
+                        }
+                        None => debug_assert!(false, "occurrence_reaches_eq_override: head reports pos_arity {pos_arity} but no child {i}"),
+                    }
+                }
+                for k in occ.named_keys(self) {
+                    match occ.named_arg(self, k) {
+                        Some(c) => {
+                            if self.value_reaches_eq_override(&c.to_value(), subst, depth + 1) {
+                                return true;
+                            }
+                        }
+                        None => debug_assert!(false, "occurrence_reaches_eq_override: named_keys reports a key named_arg can't resolve"),
+                    }
+                }
+                false
+            }
         }
     }
 
@@ -4231,17 +4328,15 @@ impl KnowledgeBase {
         let b = self.reduce_operand(b, subst);
         // WI-483: a residual (complex, unfolded) op-call operand is treated as
         // un-ground — delay rather than fail, so a complex callee residualizes
-        // (substitution transparency), not silently mismatches. Checked BEFORE
-        // `normalize_value`, which would materialize the op-call `Node` into a
-        // `Term` and hide it from `is_unreduced_op_call`.
+        // (substitution transparency), not silently mismatches. A `Value::Node`
+        // op-call carrier reads directly (WI-685: no `normalize_value` first).
         if self.is_unreduced_op_call(&a) || self.is_unreduced_op_call(&b) {
             return EqOperands::Delay;
         }
-        // Reify literal occurrence args to terms so structural_eq compares
-        // them by hash-consed identity (a Node-vs-Node compare is otherwise
-        // conservatively false).
-        let a = self.normalize_value(a);
-        let b = self.normalize_value(b);
+        // WI-685: operands ride in their native carrier — a `Value::Node`
+        // occurrence is compared structurally by [`Self::values_equal`] and gated
+        // by the carrier-neutral `value_deep_ground` / `value_reaches_eq_override`,
+        // so no `normalize_value` collapse to a hash-consed `Term` is needed.
         if self.value_is_flex(&a) || self.value_is_flex(&b) {
             return EqOperands::Delay;
         }
@@ -4681,10 +4776,8 @@ impl KnowledgeBase {
         {
             return BuiltinResult::delay();
         }
-        // Reify literal occurrence args (a numeric literal in the goal reads
-        // as `Value::Node`) so `value_num` can extract from `Value::Term`.
-        let a = self.normalize_value(a);
-        let b = self.normalize_value(b);
+        // WI-685: `value_num` reads a numeric literal carrier-neutrally through
+        // the view (Term or Node), so no `normalize_value` collapse is needed.
         let ord = match (self.value_num(&a), self.value_num(&b)) {
             (Some(Num::Int(x)), Some(Num::Int(y))) => x.cmp(&y),
             (Some(Num::Big(x)), Some(Num::Big(y))) => x.cmp(&y),
@@ -4707,20 +4800,23 @@ impl KnowledgeBase {
     }
 
     /// Extract a comparable number from a σ-walked `Value` — an unboxed
-    /// scalar, or a numeric `Const` inside a `Value::Term`. `None` for
-    /// non-numeric values (cmp then fails, matching the original).
+    /// scalar, or a numeric `Const` read through the view from EITHER carrier.
+    /// `None` for non-numeric values (cmp then fails, matching the original).
     fn value_num(&self, v: &Value) -> Option<Num> {
         match v {
             Value::Int(n) => Some(Num::Int(*n)),
             Value::BigInt(n) => Some(Num::Big(n.clone())),
             Value::Float(f) => Some(Num::Float(ordered_float::OrderedFloat(*f))),
-            Value::Term { id: t, .. } => match self.terms.get(*t) {
-                Term::Const(Literal::Int(n)) => Some(Num::Int(*n)),
-                Term::Const(Literal::BigInt(n)) => Some(Num::Big(n.clone())),
-                Term::Const(Literal::Float(f)) => Some(Num::Float(*f)),
+            // WI-685: read a numeric `Const` carrier-neutrally through the view —
+            // a `Value::Term(Const)` OR a `Value::Node` literal occurrence (a
+            // numeric literal written in a rule body reads as `Value::Node`), so
+            // cmp/arith no longer need `normalize_value` to collapse the Node first.
+            _ => match v.head(self) {
+                ViewHead::Const(Literal::Int(n)) => Some(Num::Int(n)),
+                ViewHead::Const(Literal::BigInt(n)) => Some(Num::Big(n)),
+                ViewHead::Const(Literal::Float(f)) => Some(Num::Float(f)),
                 _ => None,
             },
-            _ => None,
         }
     }
 
@@ -4732,11 +4828,12 @@ impl KnowledgeBase {
     fn value_f64(&self, v: &Value) -> Option<f64> {
         match v {
             Value::Float(f) => Some(*f),
-            Value::Term { id: t, .. } => match self.terms.get(*t) {
-                Term::Const(Literal::Float(f)) => Some(f.into_inner()),
+            // WI-685: a `Literal::Float` read carrier-neutrally through the view —
+            // a `Value::Term(Const)` OR a `Value::Node` float literal occurrence.
+            _ => match v.head(self) {
+                ViewHead::Const(Literal::Float(f)) => Some(f.into_inner()),
                 _ => None,
             },
-            _ => None,
         }
     }
 
@@ -4772,8 +4869,7 @@ impl KnowledgeBase {
     }
 
     /// Back half of result binding: bind the computed `value` to the result
-    /// var, or check equality against an already-bound result (reifying a
-    /// `Value::Node` literal result arg to a term first).
+    /// var, or check equality against an already-bound result.
     fn finish_result(&mut self, target: ResultTarget, value: TermId) -> BuiltinResult {
         match target {
             ResultTarget::Bind(vid) => {
@@ -4782,8 +4878,11 @@ impl KnowledgeBase {
                 BuiltinResult::SuccessWithBindings(extra)
             }
             ResultTarget::Compare(Some(v)) => {
-                let bound = self.normalize_value(v);
-                if matches!(bound, Value::Term { id: t, .. } if t == value) {
+                // WI-685: structural cross-carrier compare of the σ-walked result
+                // arg (a `Value::Node` literal, a `Value::Term`, or an unboxed
+                // scalar) against the computed term — no `normalize_value`
+                // materialization of `v` to a `TermId` first.
+                if self.values_equal(&v, &Value::term(value)) {
                     BuiltinResult::Success
                 } else {
                     BuiltinResult::Failure
@@ -4834,11 +4933,8 @@ impl KnowledgeBase {
         }
         let target = (pos_arity >= 3).then(|| self.resolve_result_target(goal.pos_arg(self, 2), subst));
 
-        // Reify literal occurrence operands (a numeric literal written in a rule
-        // body reads as `Value::Node`) so `value_num` can extract from
-        // `Value::Term` — the same normalization `cmp`/`eq` apply (WI-482).
-        let a = self.normalize_value(a);
-        let b = self.normalize_value(b);
+        // WI-685: `value_num` reads a numeric literal carrier-neutrally through
+        // the view (Term or Node), so no `normalize_value` collapse is needed.
         let result_term = match (self.value_num(&a), self.value_num(&b)) {
             (Some(Num::Int(x)), Some(Num::Int(y))) => {
                 self.alloc(Term::Const(Literal::Int(int_op(x, y))))
@@ -5283,9 +5379,10 @@ impl KnowledgeBase {
     /// - **ground** — each arg is reified under σ (the interpreter has no σ) and
     ///   must be deeply ground; `=`/`cmp` are tests that must not bind, so a
     ///   non-ground operand returns `None` (the resolver delays), never runs.
-    ///   (A ground COMPOUND that still carries a nested `Value::Node` child reads
-    ///   as non-ground here and conservatively residualizes — safe, never a
-    ///   mis-decision; only a top-level `Node` is collapsed by `normalize_value`.)
+    ///   (WI-685: `value_deep_ground` walks a `Value::Node` operand carrier-
+    ///   neutrally — including nested Node children — so a genuinely ground
+    ///   occurrence reads as ground and `materialize_value` lowers it, rather than
+    ///   the pre-WI-685 collapse-then-check via the retired `normalize_value`.)
     /// - **no requirement dicts** — invoked via [`Interpreter::call_op_bridged`],
     ///   NOT the placeholder-seeding entry: a body that dispatches through a
     ///   `requires` slot errors → residualize, so only requirement-FREE ops
@@ -5314,23 +5411,22 @@ impl KnowledgeBase {
     ) -> Option<Value> {
         // Reify + ground-gate each arg under σ, in declaration order (before
         // taking the KB — this needs σ, which the interpreter has not). `reify_value`
-        // applies σ; `normalize_value` collapses a ground occurrence CARRIER
-        // (`Value::Node(Ref(green))`) to a `Value::Term` — otherwise the deep-ground
-        // check reads every `Value::Node` as non-ground and the gate would reject a
-        // perfectly ground argument.
+        // applies σ; the arg then rides in its native carrier — a ground occurrence
+        // (`Value::Node(Ref(green))`) reads as ground through the carrier-neutral
+        // `value_deep_ground` (WI-685), so no `normalize_value` collapse is needed
+        // and `materialize_value` below lowers any Node to the interpreter's form.
         let mut args: Vec<Value> = Vec::with_capacity(params.len());
         for p in params {
             let a = self.reify_value(param_args.get(p)?, subst);
-            let a = self.normalize_value(a);
             if !self.value_deep_ground(&a, subst) {
                 return None;
             }
             args.push(a);
         }
         // Run the op in a bridge-mode scratch interpreter, materializing each
-        // term-carried operand into the interpreter's native form
-        // (`Value::Term(box(…))` → `Value::Entity`), else a body that reads a field
-        // errors with "receiver is not an entity".
+        // term/occurrence operand into the interpreter's native form
+        // (`Value::Term(box(…))` / `Value::Node` → `Value::Entity`), else a body
+        // that reads a field errors with "receiver is not an entity".
         let outcome = self.run_in_bridge_interp(|interp| {
             let native: Vec<Value> =
                 args.into_iter().map(|a| interp.materialize_value(a)).collect();

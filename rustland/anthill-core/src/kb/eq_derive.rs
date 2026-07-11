@@ -350,22 +350,50 @@ impl KnowledgeBase {
     /// already stopped at boundaries, so there is no descent into a `TotalFloat`
     /// field; only tuples (no sort to key on) walk structurally.
     pub(crate) fn value_reaches_partial_carrier(&self, v: &Value) -> bool {
-        match v {
-            Value::Float(_) => true,
-            Value::Tuple { pos, named, .. } => {
-                pos.iter().any(|c| self.value_reaches_partial_carrier(c))
-                    || named.iter().any(|(_, c)| self.value_reaches_partial_carrier(c))
-            }
-            _ => {
-                let head = v.head(self);
-                if matches!(head, ViewHead::Const(Literal::Float(_))) {
+        // A bare `Float` scalar (eval's unboxed form), or a `Float` literal read
+        // through the view from ANY carrier (`Value::Term(Const)` / a `Value::Node`
+        // float-literal occurrence, WI-685).
+        if matches!(v, Value::Float(_)) {
+            return true;
+        }
+        let head = v.head(self);
+        if matches!(head, ViewHead::Const(Literal::Float(_))) {
+            return true;
+        }
+        match head.functor_sym() {
+            // A constructor / sort head keys the precomputed per-constructor
+            // classification in O(1) — it already stopped at lawful-Eq boundaries,
+            // so there is no descent into a `TotalFloat` field. Reads an entity, a
+            // `Value::Term(Fn)`, or a `Value::Node` constructor uniformly.
+            Some(f) => self.field_wise_noneq_carriers.contains(&f),
+            // No sort to key on — a tuple / unit (any carrier) — so walk its fields.
+            None => self.view_fields_reach_partial_carrier(v),
+        }
+    }
+
+    /// WI-685 — does any immediate field of a functor-less aggregate (a tuple /
+    /// unit, read carrier-neutrally through the view) reach an unshielded partial
+    /// carrier? Split from [`Self::value_reaches_partial_carrier`] so a `Value::Node`
+    /// tuple walks its fields exactly like a `Value::Tuple` (no sort to key on).
+    fn view_fields_reach_partial_carrier(&self, v: &Value) -> bool {
+        let pos_arity = match v.head(self) {
+            ViewHead::Functor { pos_arity, .. } => pos_arity,
+            _ => return false,
+        };
+        for i in 0..pos_arity {
+            if let Some(c) = v.pos_arg(self, i) {
+                if self.value_reaches_partial_carrier(&c.to_value()) {
                     return true;
-                }
-                match head.functor_sym() {
-                    Some(f) => self.field_wise_noneq_carriers.contains(&f),
-                    None => false,
                 }
             }
         }
+        for k in v.named_keys(self) {
+            if let Some(c) = v.named_arg(self, k) {
+                if self.value_reaches_partial_carrier(&c.to_value()) {
+                    return true;
+                }
+            }
+        }
+        false
     }
 }
