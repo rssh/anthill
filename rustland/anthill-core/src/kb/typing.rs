@@ -11497,11 +11497,10 @@ fn op_backed_one(
     if eq_defined.contains(&op) { return true; }
     if allow_builtin && kb.is_builtin(op) { return true; }
     match rule_backing {
-        RuleBacking::AnyNonFact => kb.rules_by_functor(op).iter().any(|&r| !kb.is_fact(r)),
+        RuleBacking::AnyNonFact => kb.rules_by_functor_iter(op).any(|r| !kb.is_fact(r)),
         RuleBacking::GeneralEqClause => kb
-            .rules_by_functor(op)
-            .iter()
-            .any(|&r| !kb.is_fact(r) && rule_is_general_eq_clause(kb, r, op)),
+            .rules_by_functor_iter(op)
+            .any(|r| !kb.is_fact(r) && rule_is_general_eq_clause(kb, r, op)),
     }
 }
 
@@ -20963,7 +20962,7 @@ fn declared_variance(kb: &KnowledgeBase, sort: Symbol, param: Symbol) -> Varianc
 /// metadata type (`Symbol`), so it never matches a real `(sort, param)` lookup.
 fn matches_variance_fact(kb: &KnowledgeBase, fact_qn: &str, sort: Symbol, param: Symbol) -> bool {
     let Some(functor) = kb.try_resolve_symbol(fact_qn) else { return false };
-    kb.rules_by_functor(functor).into_iter().any(|rid| {
+    kb.rules_by_functor_iter(functor).any(|rid| {
         let Some(named) = kb.fact_head_named_args(rid) else { return false };
         let sort_ok = get_named_arg(kb, &named, "sort")
             .and_then(|t| super::load::sort_ref_functor(kb, t))
@@ -26291,9 +26290,9 @@ fn check_goal_atom_op(
         // A non-Bool op that is ALSO rule-backed reads as the RELATION (the
         // rule-less gate of design §3.3 / `bare_bodied_bool_relation`): its rules
         // are its relational definition, so it resolves relationally, not an
-        // error. The `rules_by_functor` Vec alloc is paid only here — for a
-        // non-builtin, signature-bearing, right-arity, concrete-non-Bool functor.
-        if !kb.rules_by_functor(f).is_empty() {
+        // error. The borrowing `rules_by_functor_iter` short-circuits at the first
+        // rule — no `Vec` alloc for this cold, per-op check.
+        if kb.rules_by_functor_iter(f).next().is_some() {
             continue;
         }
         errors.push(TypeError::NonBoolOpInGoalPosition {

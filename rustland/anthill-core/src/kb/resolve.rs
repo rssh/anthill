@@ -5603,9 +5603,10 @@ impl KnowledgeBase {
         // gate and its static check cannot drift.
         let returns_bool = super::typing::sort_functor_of_view(self, &sig.return_type)
             .is_some_and(|s| self.sort_sym_is_bool(s));
-        // Rule-less last: the `rules_by_functor` Vec alloc is paid only for a
-        // pure bodied Bool op, which is rare.
-        returns_bool && self.rules_by_functor(f).is_empty()
+        // Rule-less last: the borrowing `rules_by_functor_iter` short-circuits at
+        // the first rule with no `Vec` alloc — this leg is reached only for a pure
+        // bodied Bool op, which is rare.
+        returns_bool && self.rules_by_functor_iter(f).next().is_none()
     }
 
     /// WI-580 (design §3.3): abstract-interpretation fallback for a suspended
@@ -5650,7 +5651,7 @@ impl KnowledgeBase {
             }
             _ => return None,
         };
-        if self.rules_by_functor(op).iter().any(|rid| !self.is_equation(*rid)) {
+        if self.rules_by_functor_iter(op).any(|rid| !self.is_equation(rid)) {
             return None;
         }
         let (scrutinee_occ, arms) =

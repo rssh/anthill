@@ -2417,7 +2417,7 @@ fn emit_effects_runtime_bridge_fact(kb: &mut KnowledgeBase) {
     // Idempotency guard — see doc-comment above. The bridge is the only
     // rule with EffectsRuntime as its head functor at prelude bootstrap,
     // so a non-empty `rules_by_functor` entry means it is already installed.
-    if !kb.rules_by_functor(er_sort_sym).is_empty() {
+    if kb.rules_by_functor_iter(er_sort_sym).next().is_some() {
         return;
     }
 

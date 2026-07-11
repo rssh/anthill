@@ -2368,6 +2368,21 @@ impl KnowledgeBase {
             .unwrap_or_default()
     }
 
+    /// Borrowing counterpart of [`Self::rules_by_functor`]: the active (non-retracted)
+    /// rule/fact ids with top-level functor `sym`, yielded WITHOUT allocating a `Vec`.
+    /// Same filter and order as the owned form. For read-only enumeration that reduces
+    /// immediately — `.any()` / `.find()` / `.next()` (first / emptiness) — where it also
+    /// SHORT-CIRCUITS. NOT usable when the loop body mutates the KB: the shared borrow
+    /// this holds would conflict, so those callers keep the owned `rules_by_functor`.
+    pub fn rules_by_functor_iter(&self, sym: Symbol) -> impl Iterator<Item = RuleId> + '_ {
+        self.rules_by_functor
+            .get(&sym)
+            .into_iter()
+            .flatten()
+            .copied()
+            .filter(move |rid| !self.rules[rid.index()].retracted)
+    }
+
     /// All active rules/facts belonging to a given domain.
     pub fn by_domain(&self, domain: TermId) -> Vec<RuleId> {
         self.by_domain
@@ -3390,7 +3405,7 @@ impl KnowledgeBase {
                 return Some(rid);
             }
         }
-        self.rules_by_functor(sym).first().copied()
+        self.rules_by_functor_iter(sym).next()
     }
 
     /// All rule ids that resolve to `qn` — label-first, then

@@ -1742,7 +1742,7 @@ fn reflect_find_fact(interp: &mut Interpreter, args: &[Value]) -> Result<Value, 
         _ => None,
     };
     let found = functor.and_then(|f| {
-        interp.kb.rules_by_functor(f).into_iter()
+        interp.kb.rules_by_functor_iter(f)
             // A value-fact head (WI-348/WI-366) is not a `TermId`, so it can never
             // equal the ground `target` — skip it (avoids the term-only
             // `rule_head` panic on a value head).
