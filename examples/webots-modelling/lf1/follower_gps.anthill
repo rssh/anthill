@@ -55,7 +55,7 @@ namespace anthill.examples.lf1.follower_gps
             roll:            0.0,
             target_altitude: target.z
           )
-        case none ->
+        case none() ->
           Controls(
             yaw:             0.0,
             pitch:           0.0,

@@ -91,7 +91,7 @@ namespace anthill.examples.lf1.leader
               current: next_idx
             )
           )
-        case none -> state
+        case none() -> state
 
     -- Compute outer-loop controls for one tick.
     --
@@ -124,7 +124,7 @@ namespace anthill.examples.lf1.leader
             roll:            0.0,
             target_altitude: state.altitude_target
           )
-        case none ->
+        case none() ->
           Controls(
             yaw:             0.0,
             pitch:           0.0,
