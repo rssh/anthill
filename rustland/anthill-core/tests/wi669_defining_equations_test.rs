@@ -7,6 +7,8 @@
 //! a hand-written `<=>` twin. This exercises the engine directly:
 //!   - a single-arm arithmetic body → one unconditional equation;
 //!   - an `if` body → two arms with a condition / negated-condition guard;
+//!   - a `let` body (WI-679) → the binding inlines, into a guard or a nested
+//!     expression, leaving the same equations as the let-free form;
 //!   - a `match` body → loud decline (ADT defining equations are future).
 
 mod common;
@@ -40,6 +42,26 @@ namespace test.wi669
       match o
         case some(v) -> v
         case none    -> d
+
+    -- WI-679: a `let` binding is inlined during reduction. `nonneg` names
+    -- the guard, then flows into the `if` condition — so the derived
+    -- equations must be identical to `clamp`'s (two `gte`-guarded arms).
+    operation clamp_let(x: Int64) -> Int64 =
+      let nonneg = gte(x, 0)
+      if nonneg then x else 0
+
+    -- WI-679: a `let` whose value flows into a nested expression position.
+    -- `y = add(x, x)` inlines into `add(y, x)` → `add(add(x, x), x)`.
+    operation shifted(x: Int64) -> Int64 =
+      let y = add(x, x)
+      add(y, x)
+
+    -- WI-679: a DESTRUCTURING `let some(a) = o` must decline — this arm
+    -- does not PROJECT the value, so binding `a` to the whole `o` would be
+    -- an unsound reduction. Only a top-level `Pattern::Var` is admitted.
+    operation destructure_let(o: Option[T = Int64]) -> Int64 =
+      let some(a) = o
+      add(a, a)
   end
 end
 "#;
@@ -92,6 +114,54 @@ fn if_body_yields_two_guarded_arms() {
     assert_eq!(eqs[1].guards.len(), 1);
     assert!(eqs[1].guards[0].negated, "else-arm holds when the condition is false");
     assert_eq!(head_short(&kb, &eqs[1].guards[0].cond), "gte");
+}
+
+#[test]
+fn let_binding_inlines_into_condition() {
+    // WI-679: `let nonneg = gte(x, 0)` in the body must inline so the derived
+    // equations match `clamp`'s exactly — two arms, each guarded by `gte`.
+    let mut kb = common::load_kb_with(SRC);
+    let c = op_sym(&kb, "clamp_let");
+    let eqs = kb.op_defining_equations(c).expect("clamp_let must derive equations");
+    assert_eq!(eqs.len(), 2, "the inlined `let` leaves the same then/else arms as clamp");
+    assert_eq!(eqs[0].guards.len(), 1);
+    assert!(!eqs[0].guards[0].negated);
+    assert_eq!(head_short(&kb, &eqs[0].guards[0].cond), "gte", "the let-bound guard inlined");
+    assert!(eqs[1].guards[0].negated, "else-arm negates the same inlined guard");
+}
+
+#[test]
+fn let_binding_inlines_into_nested_expression() {
+    // WI-679: `let y = add(x, x)` inlines into `add(y, x)`, yielding one
+    // unconditional arm whose result is `add(add(x, x), x)`.
+    let mut kb = common::load_kb_with(SRC);
+    let s = op_sym(&kb, "shifted");
+    let eqs = kb.op_defining_equations(s).expect("shifted must derive an equation");
+    assert_eq!(eqs.len(), 1, "no branches — one unconditional arm");
+    assert!(eqs[0].guards.is_empty());
+    assert_eq!(head_short(&kb, &eqs[0].result), "add", "outer body is `add(y, x)`");
+    // The first argument is the inlined `y = add(x, x)`, not a residual binder ref.
+    if let Some(Expr::Apply { pos_args, .. }) = eqs[0].result.as_expr() {
+        assert_eq!(
+            head_short(&kb, &pos_args[0]), "add",
+            "the let value `add(x, x)` was spliced into the first argument"
+        );
+    }
+}
+
+#[test]
+fn destructuring_let_declines_loudly() {
+    // WI-679: `let some(a) = o` binds a PROJECTION variable — this arm doesn't
+    // project, so it must loudly decline (return None) rather than bind `a` to
+    // the un-projected whole value. The single-var gate is a `Pattern::Var`
+    // check, not a binder-count check (which `some(a)` — one binder — would slip
+    // through).
+    let mut kb = common::load_kb_with(SRC);
+    let f = op_sym(&kb, "destructure_let");
+    assert!(
+        kb.op_defining_equations(f).is_none(),
+        "a single-binder destructuring `let some(a) = o` must decline, not mis-bind"
+    );
 }
 
 #[test]

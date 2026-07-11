@@ -50,6 +50,7 @@ namespace anthill.examples.lf1.safety.transponder
   import anthill.prelude.Ordered.{lt, gt, lte, gte}
   import anthill.prelude.Numeric.{add, sub, mul}
   import anthill.prelude.Float.{abs}
+  import anthill.examples.lf1.follower_transponder.{TransponderFollowerController}
   import anthill.examples.lf1.safety.common.{
     DistanceBounds, KinematicAssumptions, reachable_real, position_distance
   }
@@ -125,13 +126,16 @@ namespace anthill.examples.lf1.safety.transponder
   -- `post_armed_excursion_bound` proof block below, using the
   -- WI-100 ranking-tactic. The well-founded measure is R = −upc;
   -- the post-armed regime keeps upc ∈ [−6, 0], so R ∈ [0, 6].
-  -- Each bad-step transition is upc' = upc + 1 (else-branch in
-  -- mavic2pro.c), so R strictly decreases by 1. R ≥ 0 (boundedness)
-  -- + R strictly decreases on every bad step ⇒ at most 6 consecutive
-  -- bad ticks before the controller flips heading. The witness
-  -- value 6 is plugged in as the `max_ticks` field below until the
-  -- ranking tactic exposes a `pessimistic_bound: N` argument that
-  -- emits a `RankingProof(name, measure, max_ticks)` fact directly.
+  -- The bad-step transition is now DERIVED from the controller body
+  -- (`next_upc`, WI-679): the else-branch is `if gte(upc,0) then upc+1
+  -- else 0`, so for a post-armed upc < 0 it clamps to 0 — R strictly
+  -- decreases (to 0 in a single bad tick). R ≥ 0 (boundedness) + R
+  -- strictly decreases on every bad step ⇒ the controller flips heading
+  -- after at most 6 consecutive bad ticks. The witness value 6 is
+  -- plugged in as the `max_ticks` field below as a *conservative* upper
+  -- bound (the body's snap-to-0 makes the true bad-streak ≤ 1 tick),
+  -- until the ranking tactic exposes a `pessimistic_bound: N` argument
+  -- that emits a `RankingProof(name, measure, max_ticks)` fact directly.
 
   entity PostArmedExcursionBound(max_ticks: Int64)
 
@@ -244,12 +248,25 @@ namespace anthill.examples.lf1.safety.transponder
        gt(?upc, 0),
        ?w = ?upc
 
-  -- R(upc') ≥ R(upc) ↔ −upc' ≥ −upc ↔ upc' ≤ upc. Bad step has
-  -- upc' = upc + 1 (else-branch, post-armed). upc + 1 ≤ upc is unsat.
+  -- R(upc') ≥ R(upc) ↔ −upc' ≥ −upc ↔ upc' ≤ upc, checked on a
+  -- post-armed BAD step (distance not improving: new_delta ≥ prev_delta,
+  -- the else-branch of next_upc's trend test). The upc transition is
+  -- DERIVED from the controller body —
+  -- TransponderFollowerController.next_upc, via WI-669 defining-equation
+  -- extraction — not restated by hand. For a post-armed upc < 0 the body
+  -- clamps through 0, so upc' = 0; `0 ≤ upc` with upc < 0 is unsat ⇒ R
+  -- strictly decreases (to 0 in a single bad tick).
+  --
+  -- DRIFT (WI-679): the retired hand-written twin used `upc' = upc + 1`,
+  -- which diverges from the body's snap-to-0 for upc < 0. Both are unsat
+  -- here, but the body-derived transition decreases R faster; N = 6 below
+  -- stays a *conservative* upper bound on the excursion width (the true
+  -- post-armed bad-streak is ≤ 1 tick under this clamp).
   rule decrease_violation_transponder(?w)
     :- gte(?upc, -6),
        lt(?upc, 0),
-       ?upc_next = ?upc + 1,
+       TransponderFollowerController.next_upc(?upc, ?new_delta, ?prev_delta, ?upc_next),
+       gte(?new_delta, ?prev_delta),
        lte(?upc_next, ?upc),
        ?w = ?upc
 
@@ -293,10 +310,13 @@ namespace anthill.examples.lf1.safety.transponder
   end
 
   -- Witness that R = −upc is a valid ranking function with bound 6.
+  -- Logic is LRA (not LIA): the decrease obligation now derives its upc
+  -- transition from `next_upc`, whose trend test compares the Float
+  -- deltas, so the sub-query carries Real operands (WI-679).
   proof post_armed_excursion_bound
     by z3(tactic: ranking(boundedness: bound_violation_transponder,
                           decrease: decrease_violation_transponder),
-          logic: "LIA")
+          logic: "LRA")
   end
 
   -- Top-level public-claim discharges for the transponder follower.

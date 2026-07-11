@@ -171,9 +171,10 @@ pub struct DefiningGuard {
 /// Returns `None` — a *loud* decline, never a silent partial — when the op is
 /// not a statically-known pure bodied op, the args don't bind, or the reduced
 /// body contains a form this increment does not admit: a `match` (ADT defining
-/// equations need SMT datatype support — future), a `let` (needs `Expr::Let` in
-/// [`reduce`] — the transponder follow-on, WI-679), or any higher-order /
-/// post-elaboration shape.
+/// equations need SMT datatype support — future) or any higher-order /
+/// post-elaboration shape. A simple `let name = value` binding IS admitted
+/// (WI-679): [`reduce`] inlines it; a destructuring / wildcard `let` still
+/// declines.
 fn defining_equations(
     kb: &mut KnowledgeBase,
     op: Symbol,
@@ -292,6 +293,30 @@ fn reduce(
         // ── match: reduce when the scrutinee's shape is statically known ──
         Expr::Match { scrutinee, branches } => reduce_match(kb, occ, scrutinee, branches, env, pass),
 
+        // ── let: inline a simple `let name = value in body` binding ──
+        // Reduce the value, bind the pattern var to it, and reduce the
+        // continuation under the extended env — so a reference to `name` in
+        // `body` splices the reduced value in place. This is the operational
+        // face of proposal-050 Γ's binding component; it mirrors `reduce_match`'s
+        // Env extension (value reduced under the OUTER env, so the binder cannot
+        // capture into its own value). ONLY a top-level single binder
+        // (`Pattern::Var` — including the `(x)` / `(x: T)` forms that lower to
+        // it) is specialized: binding the whole value to that one name IS its
+        // meaning. A destructuring pattern (`some(a)`, `(a, b)`) must PROJECT the
+        // value, which this arm does not do, so anything but `Pattern::Var` is a
+        // *loud* decline (the whole inline bails) rather than silently binding a
+        // projection variable to the un-projected value — escalate destructuring
+        // lets to their own ticket if a body needs them (WI-679 scope note).
+        Expr::Let { pattern, value, body, .. } => {
+            let Some(Pattern::Var { name, .. }) = pattern.as_pattern() else {
+                return None;
+            };
+            let val = reduce(kb, value, env, pass)?;
+            let mut env2 = env.clone();
+            env2.push((*name, val));
+            reduce(kb, body, &env2, pass)
+        }
+
         // ── if: reduce when the condition folds to a boolean literal ──
         Expr::If { condition, then_branch, else_branch } => {
             let cond = reduce(kb, condition, env, pass)?;
@@ -335,7 +360,7 @@ fn reduce(
             ))
         }
 
-        // Any other form (let / lambda / higher-order / post-elaboration) is not
+        // Any other form (lambda / higher-order / post-elaboration) is not
         // specialized in this increment — decline the inline rather than emit a
         // residual we cannot guarantee is body-variable-free.
         _ => None,
@@ -801,7 +826,8 @@ impl KnowledgeBase {
     /// one step, and each `if`-branch path yields a guarded [`DefiningEquation`]
     /// over those vars — as occurrences (carrier-neutral; see the type doc).
     /// Returns `None` — a loud decline — when the body is not a pure,
-    /// `match`/`let`-free bodied op (see [`defining_equations`]).
+    /// `match`-free bodied op (a simple `let` IS inlined; see
+    /// [`defining_equations`]).
     ///
     /// The parameter frame is `Var::DeBruijn` (rule storage convention, see
     /// `rustland/CLAUDE.md` "De Bruijn Variables"), so a consumer can assert each
@@ -824,7 +850,7 @@ impl KnowledgeBase {
     /// `op(?0…?n-1, ?result) :- ?result = <refolded-if>`, the arms refolded into
     /// one nested `Expr::If`. Returns the rule id, or `None` — a *loud* decline —
     /// when `op` has no admissible defining equations (effectful / `requires` /
-    /// `match` / `let` body; see [`op_defining_equations`]). Idempotent: an
+    /// `match` body; see [`op_defining_equations`]). Idempotent: an
     /// existing defining rule (a prior synth, or a hand-written one) is returned
     /// as-is.
     ///
@@ -841,7 +867,7 @@ impl KnowledgeBase {
             return Some(rid);
         }
         // Probe admissibility over the DeBruijn frame FIRST (no fresh vars): a
-        // declined body (`match`/`let`/effectful) bails here, so a repeatedly
+        // declined body (`match`/effectful) bails here, so a repeatedly
         // scanned non-synthesizable op never leaks the rule-frame `fresh_var`s
         // below across obligations (the idempotency short-circuit can't fire for
         // a declined op — no rule is ever created).
@@ -930,7 +956,7 @@ impl KnowledgeBase {
     ///   unhandled value-position op call loudly). Termination is by a
     ///   visited-rule set, so a recursive predicate (`real_pose_at`) is walked
     ///   once.
-    /// - A bodied op whose body this increment can't lower (a `match`/`let` body)
+    /// - A bodied op whose body this increment can't lower (a `match` body)
     ///   is left un-synthesized — the emitter then rejects it loudly at its own
     ///   goal boundary (`unhandled body goal functor`).
     /// - Only a rule-less op with an actual `= body` is a synth candidate;

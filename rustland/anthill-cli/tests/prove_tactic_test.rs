@@ -90,29 +90,35 @@ fn raw_passes_through_verbatim() {
 
 #[test]
 fn legacy_lf1_proofs_unchanged() {
-    // Sanity: walk every safety_*.anthill in the lf1 example with
-    // --dry-run and confirm none of them ends up with a `using-params`
-    // form. The acceptance constraint for WI-098 is "discharge.sh
-    // reports 5/5 unsat unchanged" — we approximate via dry-run
-    // because z3 may not be on CI.
+    // Sanity: dry-run every proof in the lf1 example and confirm none emits
+    // a `using-params` / `check-sat-using` form — the lf1 proofs are all
+    // `by z3(logic: ...)` or `ranking(...)`, which must keep emitting a plain
+    // `(check-sat)`. The acceptance constraint for WI-098 is "discharge.sh
+    // reports N/N unsat unchanged"; we approximate via --dry-run because z3
+    // may not be on CI.
+    //
+    // Load the WHOLE directory, exactly as discharge.sh does. A hand-picked
+    // file subset does NOT work: safety_transponder / safety_gps import their
+    // controller specs (follower_transponder / follower_gps), so a subset
+    // fails to resolve, `prove` errors, and nothing is emitted — the negative
+    // assertion below would then pass vacuously (this is what happened between
+    // WI-681 and WI-679: the subset silently stopped exercising the proofs).
     if !z3_available() { return; }
     let lf1_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../examples/webots-modelling/lf1");
     if !lf1_dir.exists() { return; }
-    for fname in ["safety_gps.anthill", "safety_transponder.anthill"] {
-        let path = lf1_dir.join(fname);
-        if !path.exists() { continue; }
-        let common = lf1_dir.join("safety_common.anthill");
-        let leader = lf1_dir.join("leader.anthill");
-        let out = Command::new(ANTHILL_BIN)
-            .args(["prove", "--dry-run", "-v", "--no-cache",
-                   path.to_str().unwrap(),
-                   common.to_str().unwrap(),
-                   leader.to_str().unwrap()])
-            .output()
-            .expect("run anthill prove");
-        let stdout = String::from_utf8_lossy(&out.stdout);
-        assert!(!stdout.contains("(check-sat-using"),
-            "lf1 {fname} must keep emitting plain (check-sat) — got:\n{stdout}");
-    }
+    let out = Command::new(ANTHILL_BIN)
+        .args(["prove", "--dry-run", "-v", "--no-cache", lf1_dir.to_str().unwrap()])
+        .output()
+        .expect("run anthill prove");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    // Non-vacuity: the directory must load cleanly and the proofs must emit —
+    // otherwise the `check-sat-using` assertion proves nothing.
+    assert!(out.status.success(),
+        "anthill prove must load the lf1 directory cleanly — got:\nstdout:\n{stdout}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stderr));
+    assert!(stdout.contains("(check-sat)"),
+        "lf1 dry-run must emit at least one plain (check-sat) — got:\n{stdout}");
+    assert!(!stdout.contains("(check-sat-using"),
+        "lf1 proofs must keep emitting plain (check-sat), not a using-params form — got:\n{stdout}");
 }
