@@ -649,9 +649,9 @@ impl Interpreter {
     /// A non-term value (already native) passes through.
     ///
     /// WI-685: a `Value::Node` occurrence operand (a rule-body `eq`/`neq` operand,
-    /// which the resolver no longer collapses to a `Value::Term` via the retired
-    /// `normalize_value`) is lowered the same way — to a term, then to the native
-    /// form — so a bridged body reads a real `Value::Entity`, not an occurrence.
+    /// which the resolver no longer collapses to a `Value::Term` before the bridge)
+    /// is lowered the same way — to a term, then to the native form — so a bridged
+    /// body reads a real `Value::Entity`, not an occurrence.
     pub(crate) fn materialize_value(&mut self, v: Value) -> Value {
         match v {
             Value::Term { id, .. } => builtins::term_to_value(self, id),
