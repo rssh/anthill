@@ -206,6 +206,51 @@ fn is_bundle_logic_file(pf: &ParsedFile) -> bool {
     })
 }
 
+/// True if a parsed project file declares the bundle-owned `anthill.stage0`
+/// domain (entity/enum defs) or the `anthill.stage0.workflow` rules. Since
+/// WI-505 both ship in the binary bundle (anthill_bundle.rs), so re-loading a
+/// project's own domain.anthill/rules.anthill would DOUBLE-define every
+/// `anthill.stage0.WorkItem` / `claimable` etc. Skip such files — a project
+/// supplies data (workitems, project config), not the standard domain/rules.
+///
+/// Matched on the ORIGINAL namespace, before `assign_default_namespace` wraps
+/// headerless data files: a bare `workitems.anthill` / `project.anthill` has no
+/// namespace item here (it only gets the synthetic `anthill.stage0` wrap
+/// afterwards), so it is kept; only files that *explicitly* declare the domain
+/// (`anthill.stage0`) or the workflow rules (`anthill.stage0.workflow`) match.
+///
+/// The skip keys on the presence of the bundle-owned *definitions* — a sort /
+/// entity / enum for the domain, a `rule` for the workflow — not merely on the
+/// namespace name. A file that only carries facts under an explicit
+/// `namespace anthill.stage0` (unusual, but hand-authorable) defines nothing
+/// that the bundle also defines, so it is kept and its data is not silently
+/// dropped.
+fn is_bundled_domain_or_rules(pf: &ParsedFile) -> bool {
+    use anthill_core::parse::ir::Item;
+    // Sort/entity/enum declarations — what a re-declared bundle domain would
+    // double-define. Per parse/convert.rs: `sort`/`enum` → `Item::SortWithBody`,
+    // an abstract `sort` (no body) → `Item::AbstractSort`, and the `entity`
+    // sugar → `Item::Entity`. `rule` → `Item::Rule`.
+    let defines_domain = |i: &Item| {
+        matches!(i, Item::Entity(_) | Item::SortWithBody(_) | Item::AbstractSort(_))
+    };
+    let defines_rule = |i: &Item| matches!(i, Item::Rule(_));
+    pf.items.iter().any(|item| match item {
+        Item::Namespace(ns) => {
+            let segs = &ns.name.segments;
+            let seg = |i: usize| pf.symbols.name(segs[i]);
+            let is_domain_ns = segs.len() == 2 && seg(0) == "anthill" && seg(1) == "stage0";
+            let is_workflow_ns = segs.len() == 3
+                && seg(0) == "anthill"
+                && seg(1) == "stage0"
+                && seg(2) == "workflow";
+            (is_domain_ns && ns.items.iter().any(defines_domain))
+                || (is_workflow_ns && ns.items.iter().any(defines_rule))
+        }
+        _ => false,
+    })
+}
+
 // ── Term helpers ────────────────────────────────────────────────
 
 // The data-format version `init` stamps a new project's workitems.anthill with
@@ -214,12 +259,13 @@ fn is_bundle_logic_file(pf: &ParsedFile) -> bool {
 // the `fresh init produces a clean project` test guards against divergence.
 const CURRENT_STORE_FORMAT_VERSION: u32 = 1;
 
-// Scaffolded entity/rule templates `init` copies into a new project. The
-// entities they define still live per-project (WI-505 would bundle them); the
-// data-format stamp, by contrast, is bundle-owned and asserted from anthill via
-// the store (WorkItemStore.stamp_format / `migrate`), never text-written here.
-const DOMAIN_TEMPLATE: &str = include_str!("../../../examples/github-todo/domain.anthill");
-const RULES_TEMPLATE: &str = include_str!("../../../examples/github-todo/rules.anthill");
+// WI-505: `init` no longer scaffolds a per-project domain.anthill/rules.anthill.
+// The `anthill.stage0` domain and workflow rules ship bundled in the binary
+// (anthill_bundle.rs), version-locked with the logic that imports them, so a
+// fresh project carries no copy that could later drift out of sync with the
+// grammar or domain. The data-format stamp is likewise bundle-owned and
+// asserted from anthill via the store (WorkItemStore.stamp_format / `migrate`),
+// never text-written here.
 
 fn extract_named_arg(kb: &KnowledgeBase, term: TermId, field: &str) -> Option<TermId> {
     match kb.get_term(term) {
@@ -295,9 +341,9 @@ fn run_init(project_name: Option<&str>) {
 
     fs::create_dir_all(&dir).expect("cannot create anthill-todo/");
 
-    fs::write(dir.join("domain.anthill"), DOMAIN_TEMPLATE).expect("write domain.anthill");
-
-    fs::write(dir.join("rules.anthill"), RULES_TEMPLATE).expect("write rules.anthill");
+    // No domain.anthill / rules.anthill: the standard anthill.stage0 domain and
+    // workflow rules ship bundled in the binary (WI-505), so a fresh project
+    // has no per-project copy that could drift out of sync with the grammar.
 
     let project = format!(
         "-- Project configuration\n\nfact Project(\n  name: \"{name}\",\n  language: \"rust\",\n  build: \"cargo\",\n  tools: [\"cargo-test\"])\n"
@@ -308,10 +354,9 @@ fn run_init(project_name: Option<&str>) {
     fs::write(dir.join("workitems.anthill"), workitems).expect("write workitems.anthill");
 
     println!("created anthill-todo/ with:");
-    println!("  domain.anthill    — entity type definitions");
-    println!("  rules.anthill     — workflow rules (claimable, blocked, ...)");
     println!("  project.anthill   — project configuration");
     println!("  workitems.anthill — work items (empty)");
+    println!("(the anthill.stage0 domain + workflow rules ship bundled with anthill-todo)");
 }
 
 // `migrate` is served by the anthill bundle (main.anthill `cmd_migrate`): it
@@ -471,10 +516,21 @@ fn run_anthill_bundle(argv: &[String]) -> i32 {
         match parse::parse(&source) {
             Ok(mut parsed) => {
                 if is_bundle_logic_file(&parsed) { continue; }
+                // The standard domain/rules ship bundled (WI-505); a project's
+                // own copy would double-define them, so skip it. Its presence
+                // is a legacy scaffold, not an error — succeed against the
+                // bundled definitions.
+                if is_bundled_domain_or_rules(&parsed) { continue; }
                 assign_default_namespace(&mut parsed);
                 project_items.push(ProjectFile { path: file.clone(), parsed });
             }
             Err(errs) => {
+                // A parse failure is always surfaced — a stale domain.anthill
+                // that predates a grammar change (the WI-505 motivating case)
+                // no longer cascades into a wall of unresolved-import errors,
+                // because the bundled domain/rules already supply those names;
+                // the honest parse diagnostic is all that remains, and a real
+                // typo in any file must not be swallowed (loud over silent).
                 for err in &errs {
                     eprintln!("warning: {}:{}", file.display(), err.format_with_source(&source));
                 }

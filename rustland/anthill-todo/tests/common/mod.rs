@@ -44,6 +44,11 @@ pub fn workspace_root() -> PathBuf {
 /// domain.anthill / rules.anthill copied in (so the bundle's
 /// `import anthill.stage0.{...}` resolves at scan time) and a
 /// caller-supplied workitems.anthill body.
+///
+/// Since WI-505 these copied domain/rules are redundant — the bundle
+/// supplies them and the CLI skips a project's own copies — but keeping
+/// them here exercises that skip path, and existing assertions that scan
+/// every project file (`read_combined`) stay unchanged.
 pub fn setup_project(tmp: &tempfile::TempDir, workitems: &str) -> PathBuf {
     let proj = tmp.path().to_path_buf();
     let inner = proj.join("anthill-todo");
@@ -53,6 +58,18 @@ pub fn setup_project(tmp: &tempfile::TempDir, workitems: &str) -> PathBuf {
     for f in ["domain.anthill", "rules.anthill"] {
         fs::copy(src_root.join(f), inner.join(f)).expect("copy project file");
     }
+    fs::write(inner.join("workitems.anthill"), workitems).expect("write workitems");
+    proj
+}
+
+/// Build a fresh project under `tmp` carrying NO domain.anthill /
+/// rules.anthill — only a workitems.anthill body. The standard
+/// anthill.stage0 domain and workflow rules come from the binary bundle
+/// (WI-505), so such a project must load and run all the same.
+pub fn setup_domainless_project(tmp: &tempfile::TempDir, workitems: &str) -> PathBuf {
+    let proj = tmp.path().to_path_buf();
+    let inner = proj.join("anthill-todo");
+    fs::create_dir(&inner).expect("mkdir anthill-todo");
     fs::write(inner.join("workitems.anthill"), workitems).expect("write workitems");
     proj
 }
