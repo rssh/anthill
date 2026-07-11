@@ -79,6 +79,47 @@ fn feedback_persists_fact_to_project_dir() {
 }
 
 #[test]
+fn feedback_on_missing_item_errors_and_writes_nothing() {
+    // WI-432(a,b): the legacy `feedback` committed the Feedback fact without
+    // checking the target existed, so `feedback WI-999 ...` landed an orphan
+    // fact AND exited 0 (silently succeeding a mistargeted write). It must now
+    // fail loudly and persist nothing.
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let proj = setup_project(&tmp, SINGLE_OPEN_WI); // only WI-001 exists
+
+    let out = Command::new(ANTHILL_TODO_BIN)
+        .args([
+            "-d", proj.to_str().unwrap(),
+            "--agent", "claude",
+            "feedback", "WI-999", "feedback for a ghost",
+        ])
+        .output()
+        .expect("run anthill-todo");
+
+    assert!(!out.status.success(),
+        "feedback on a missing item must exit nonzero; stderr={}",
+        String::from_utf8_lossy(&out.stderr));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    // Pin the exact diagnostic (not two independent substrings) so a nonzero
+    // exit for an *unrelated* reason can't masquerade as the not-found path.
+    assert!(stderr.contains("work item 'WI-999' not found"),
+        "expected the not-found diagnostic, got stderr: {stderr}");
+
+    // Prove the store was left untouched — not merely that the literal
+    // "WI-999" is absent (a truncating rewrite would pass that). The pre-
+    // existing WI-001 must survive and NO Feedback fact may have landed.
+    // Neither domain.anthill nor rules.anthill mentions "WI-001" or
+    // "fact Feedback", so both checks are attributable to the store write.
+    let combined = common::read_combined(&proj.join("anthill-todo"));
+    assert!(!combined.contains("WI-999"),
+        "no orphan fact for a nonexistent item should be persisted; store:\n{combined}");
+    assert!(!combined.contains("fact Feedback"),
+        "no Feedback fact should have been written at all; store:\n{combined}");
+    assert!(combined.contains("WI-001"),
+        "the existing work item must remain intact; store:\n{combined}");
+}
+
+#[test]
 fn feedback_missing_text_errors_cleanly() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let proj = setup_project(&tmp, SINGLE_OPEN_WI);

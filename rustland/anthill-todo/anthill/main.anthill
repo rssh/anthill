@@ -2632,7 +2632,18 @@ namespace anthill.todo
               let _ = eprintln(console(), "feedback: missing text")
               2
             case some(text) ->
-              do_feedback(s, agent, id, text)
+              -- Validate the target exists BEFORE appending the Feedback fact
+              -- (WI-432b): the legacy path committed feedback for any id, so a
+              -- typo'd `feedback WI-999 ...` landed an orphan fact and still
+              -- exited 0. Mirror the deliver/claim lookup gate — loud error,
+              -- nonzero exit, nothing written.
+              match WorkItemStore.lookup(s, id)
+                case none() ->
+                  let _ = eprintln(console(),
+                    concat("error: work item '", concat(id, "' not found")))
+                  1
+                case some(_) ->
+                  do_feedback(s, agent, id, text)
 
     operation do_feedback(s: Cell[State], agent: String,
                           id: String, text: String) -> Int64
