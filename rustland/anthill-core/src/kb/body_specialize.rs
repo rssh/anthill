@@ -919,13 +919,23 @@ impl KnowledgeBase {
     /// obligation to z3.
     ///
     /// Scope (all loud, never a silent wrong answer):
-    /// - Only `rule_qn`'s **direct** body goals are scanned — not `using`-cited
-    ///   lemmas, nor rules the emitter inlines transitively. If one of those calls
-    ///   a bodied op that wasn't also called directly, the emitter rejects it at
-    ///   its own goal boundary (`unhandled body goal functor`). Widening the scan
-    ///   to cited/transitive calls is a follow-on.
+    /// - The scan is **transitive** over the rules the emitter will inline: the
+    ///   obligation's own body goals, plus the bodies of every defined rule those
+    ///   goals call *in goal position*, recursively (WI-681 — the lf1 GPS
+    ///   obligation reaches `desired_position` a level below its direct body,
+    ///   through `reachable_real_formation`). It does NOT follow `using`-cited
+    ///   lemmas (their bodies are lifted, not inlined), nor bodied-op calls in
+    ///   *value* position nested inside an expression (those are the resolver's
+    ///   §3.3 value-fold, a different mechanism; the emitter rejects an
+    ///   unhandled value-position op call loudly). Termination is by a
+    ///   visited-rule set, so a recursive predicate (`real_pose_at`) is walked
+    ///   once.
     /// - A bodied op whose body this increment can't lower (a `match`/`let` body)
-    ///   is left un-synthesized — same loud emitter rejection.
+    ///   is left un-synthesized — the emitter then rejects it loudly at its own
+    ///   goal boundary (`unhandled body goal functor`).
+    /// - Only a rule-less op with an actual `= body` is a synth candidate;
+    ///   bodyless prelude ops (`add`/`cos`/…, no body_node) are never synthesized
+    ///   — the emitter lowers them directly (arith / trig).
     /// - The synth rule is registered under the op's own functor and lives in the
     ///   KB for the rest of the prove run (the driver discards the KB on return).
     ///   It is semantically faithful (the op's true body), so this never yields a
@@ -933,27 +943,47 @@ impl KnowledgeBase {
     ///   *relationally* in the SAME run would see it — a benign order-dependency
     ///   the resolver's own §3.3 body-fold makes moot for value-position calls.
     pub fn synthesize_body_derived_defrules(&mut self, rule_qn: &str) {
-        let Some(rid) = self.rule_id_by_qn(rule_qn) else {
+        let Some(root) = self.rule_id_by_qn(rule_qn) else {
             return;
         };
-        // Collect distinct body-goal functors first (owned) so the &mut synth loop
-        // below doesn't hold the immutable `rule_body_nodes` borrow.
-        let mut functors: Vec<Symbol> = Vec::new();
-        for goal in self.rule_body_nodes(rid) {
-            if let Some(f) = goal_functor(goal) {
-                if !functors.contains(&f) {
-                    functors.push(f);
+        let mut visited: std::collections::HashSet<RuleId> = std::collections::HashSet::new();
+        let mut worklist: Vec<RuleId> = vec![root];
+        while let Some(rid) = worklist.pop() {
+            if !visited.insert(rid) {
+                continue;
+            }
+            // Collect distinct body-goal functors first (owned) so the &mut synth
+            // loop below doesn't hold the immutable `rule_body_nodes` borrow.
+            let mut functors: Vec<Symbol> = Vec::new();
+            for goal in self.rule_body_nodes(rid) {
+                if let Some(f) = goal_functor(goal) {
+                    if !functors.contains(&f) {
+                        functors.push(f);
+                    }
                 }
             }
-        }
-        for f in functors {
-            // Only a rule-less bodied op is a candidate. `f` must resolve to the
-            // operation itself — call the op qualified enough to bind (a bare
-            // relation name that doesn't resolve to the op is left to the
-            // emitter's loud "unhandled body goal functor" report).
-            let rule_less = self.rules_by_functor(f).iter().all(|r| self.is_fact(*r));
-            if rule_less && super::typing::op_has_runnable_body(self, f) {
-                let _ = self.synthesize_op_defining_rule(f);
+            for f in functors {
+                // `f` must resolve to the operation itself — call the op qualified
+                // enough to bind (a bare relation name that doesn't resolve to the
+                // op is left to the emitter's loud "unhandled body goal functor").
+                let clauses = self.rules_by_functor(f);
+                let rule_less = clauses.iter().all(|r| self.is_fact(*r));
+                if rule_less {
+                    // A rule-less bodied op — synthesize its defining rule.
+                    if super::typing::op_has_runnable_body(self, f) {
+                        let _ = self.synthesize_op_defining_rule(f);
+                    }
+                } else {
+                    // A defined rule the emitter would inline — recurse into its
+                    // non-fact clauses so a bodied op called one level down
+                    // (`desired_position` inside `reachable_real_formation`) is
+                    // reached too.
+                    for r in clauses {
+                        if !self.is_fact(r) {
+                            worklist.push(r);
+                        }
+                    }
+                }
             }
         }
     }

@@ -24,10 +24,12 @@ namespace anthill.examples.lf1.safety.gps
   import anthill.prelude.Ordered.{lt, gt, lte, gte}
   import anthill.prelude.Numeric.{add, sub, mul}
   import anthill.prelude.Float.{div, abs}
+  import anthill.geometry.{Vec3}
   import anthill.examples.lf1.leader.{Pose}
+  import anthill.examples.lf1.follower_gps.{FollowerController}
   import anthill.examples.lf1.safety.common.{
     Drone, DistanceBounds, KinematicAssumptions, reachable_real,
-    position_distance
+    real_pose_at, position_distance
   }
   import anthill.examples.lf1.safety.common.Drone.{Leader, Follower}
 
@@ -122,6 +124,37 @@ namespace anthill.examples.lf1.safety.gps
        ?delta    = ?phys + ?gps_term + ?stale
 
   -- =================================================================
+  -- Formation geometry — derived from the controller body (WI-681)
+  -- =================================================================
+  --
+  -- The follower's step-0 real pose is its FORMATION position: the
+  -- leader's pose plus the yaw-rotated body-frame offset. Rather than
+  -- hand-plant the resulting leader↔follower separation as a literal
+  -- (the old `real_pose_at(0, Follower, …)` x = −4 in safety_common),
+  -- we read it from the follower_gps controller's OWN body. WI-669
+  -- extracts `desired_position`'s defining equation on demand; calling
+  -- `FollowerController.desired_position(leader, offset, ?target)`
+  -- relationally makes the SMT emitter inline that body-derived
+  -- definition. The body is `leader.pos + R(leader.yaw)·offset`, and a
+  -- 2-D rotation preserves norm — so the separation is |offset| = 4 m
+  -- for ANY leader yaw. The only nonlinear fact this needs is
+  -- cos²+sin²=1 (QF_NRA-decidable, emitted as an uninterpreted-trig
+  -- Pythagorean identity), NOT a trust axiom.
+  --
+  -- `offset` is the follower's configured body-frame offset — a
+  -- formation-spec input (matches the C++ controller's --offset=-4,0,0
+  -- default and FollowerState.offset), NOT a derived quantity. What is
+  -- now derived (not hand-planted) is that |target − leader| = |offset|.
+  fact follower_offset(Vec3(x: -4.0, y: 0.0, z: 0.0))
+
+  rule reachable_real_formation(?leader_real, ?follower_real)
+    :- real_pose_at(0, Leader, ?leader_real),
+       follower_offset(?off),
+       FollowerController.desired_position(?leader_real, ?off, ?target),
+       ?follower_real = Pose(position: ?target,
+                             roll: 0.0, pitch: 0.0, yaw: 0.0)
+
+  -- =================================================================
   -- Properties (proof obligations)
   -- =================================================================
 
@@ -140,14 +173,14 @@ namespace anthill.examples.lf1.safety.gps
   -- exactly what Z3 QF_NRA decides.
 
   rule safety_min_distance(?w)
-    :- reachable_real(?leader_real, ?follower_real),
+    :- reachable_real_formation(?leader_real, ?follower_real),
        position_distance(?d, ?leader_real, ?follower_real),
        DistanceBounds(d_min: ?d_min, d_max: ?_),
        lt(?d, ?d_min),
        ?w = ?d
 
   rule safety_max_distance(?w)
-    :- reachable_real(?leader_real, ?follower_real),
+    :- reachable_real_formation(?leader_real, ?follower_real),
        position_distance(?d, ?leader_real, ?follower_real),
        DistanceBounds(d_min: ?_, d_max: ?d_max),
        gt(?d, ?d_max),
@@ -359,16 +392,19 @@ namespace anthill.examples.lf1.safety.gps
   end
 
   -- Top-level public-claim discharges. Each chases its body through
-  -- `reachable_real` → `real_pose_at` (fact-bound to the initial
-  -- geometry) → `position_distance` (nonlinear, hence QF_NRA) and
-  -- asks Z3 to refute the violation hypothesis. `unsat` ⇒ the
-  -- initial geometry satisfies the corresponding pointwise safety
-  -- property. Universal-over-k still rests on `reachability_band`.
+  -- `reachable_real_formation` → the body-derived `desired_position`
+  -- geometry (WI-681) + `position_distance` (nonlinear) and asks Z3 to
+  -- refute the violation hypothesis. `unsat` ⇒ the initial formation
+  -- geometry satisfies the corresponding pointwise safety property.
+  -- Logic is `QF_UFNRA` (not QF_NRA): the rotation's `cos`/`sin` ride
+  -- as uninterpreted functions constrained only by cos²+sin²=1, so the
+  -- refutation holds for every leader yaw. Universal-over-k still rests
+  -- on `reachability_band`.
   proof safety_min_distance
-    by z3(logic: "QF_NRA")
+    by z3(logic: "QF_UFNRA")
   end
 
   proof safety_max_distance
-    by z3(logic: "QF_NRA")
+    by z3(logic: "QF_UFNRA")
   end
 end

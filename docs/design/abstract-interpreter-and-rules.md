@@ -281,9 +281,19 @@ closer to the lf1 consumers, which are all arithmetic. It discharges with **no**
 
 **Consumers:**
 - **arithmetic / `if` bodied-op property** — WI-669 increment-1b demonstrator. `if`/expr, `let`-free.
-- **lf1 GPS `desired_position`** ([WI-681]) — single-arm `Vec3` body, `let`-free; derives the
-  formation-geometry separation `|offset|` from the body, retiring the hand-planted `4.0` in
-  `real_pose_at(0, Follower, …)`. Needs a QF_NRA `cos²+sin²=1` fact — a backend wrinkle, not engine.
+- **lf1 GPS `desired_position`** ([WI-681], DELIVERED) — single-arm `Vec3` body, `let`-free; the GPS
+  safety proofs (`safety_gps.anthill`) read the leader↔follower separation from the body via a
+  `reachable_real_formation` rule that calls `FollowerController.desired_position(leader, offset,
+  ?target)` relationally, retiring the hand-planted `4.0` (the old `real_pose_at(0, Follower, …)` x =
+  −4, now only the transponder's base case). The body rotates the offset — `leader.pos +
+  R(leader.yaw)·offset` — and a 2-D rotation preserves norm, so the separation is `|offset|` for every
+  yaw. Three smt-gen additions carry it (all general, not lf1-special): (1) an **entity-constructor
+  eq-RHS** (`?target = Vec3(...)`) is bound as a *frame-closed* entity for later field access (its
+  callee-frame param vars substituted out before it crosses an inline boundary), not translated as a
+  Real; (2) `cos`/`sin` lower to **uninterpreted functions** `anthill_cos`/`anthill_sin` plus a
+  per-argument **Pythagorean identity** `cos(θ)²+sin(θ)²=1` — the one nonlinear fact, so the logic is
+  `QF_UFNRA` (UF + NRA) and the refutation is yaw-independent; (3) the seam scan is **transitive** (the
+  op is reached one inline-level below the obligation, through `reachable_real_formation`).
 - **lf1 transponder ranking** (follow-on) — the real drift case: `decrease_violation_transponder`'s
   hand-written `?upc_next = ?upc + 1` appears to **diverge** from `step`'s clamp-through-0
   (`else if gte(upc,0) then upc+1 else 0`), which snaps a post-armed `upc < 0` straight to `0`, not

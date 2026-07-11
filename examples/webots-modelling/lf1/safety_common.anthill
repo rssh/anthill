@@ -287,6 +287,18 @@ namespace anthill.examples.lf1.safety.common
   --
   -- Universal-over-initial-conditions safety remains the inductive
   -- claim discharged by reachability_band (in safety_gps.anthill).
+  --
+  -- ── WI-681: the GPS variant no longer reads the follower's −4 ──────
+  -- The leader base case (at origin) is shared. The follower's step-0
+  -- pose below is the world-file spawn = the formation position. The
+  -- GPS safety proofs (safety_gps.anthill) now DERIVE that position
+  -- from the follower_gps `desired_position` body via
+  -- `reachable_real_formation` (WI-669 defining equations + a QF_UFNRA
+  -- cos²+sin²=1 rotation-norm argument), so they no longer read this
+  -- hand-planted −4. This fact survives as the TRANSPONDER variant's
+  -- base case: that controller is scalar-range (no pose-tracking body
+  -- to derive from), so its spawn geometry stays hand-planted here
+  -- until its own body-derivation lands (WI-679, tier 3 for it).
 
   fact real_pose_at(0, Leader, Pose(
     position: Vec3(x: 0.0, y: 0.0, z: 12.0),

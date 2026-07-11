@@ -197,3 +197,38 @@ fn synth_is_idempotent() {
     );
 }
 
+// ── WI-681: transitive seam reaches an op called one inline-level down ────────
+
+const SEAM_SRC: &str = r#"
+namespace test.wi669seam
+  import anthill.prelude.{Int64}
+  import anthill.prelude.Numeric.{add}
+
+  sort Ops
+    operation twice(x: Int64) -> Int64 = add(x, x)
+  end
+
+  -- `twice` is called inside `helper`, not directly in `obligation`.
+  rule helper(?r) :- Ops.twice(?x, ?r)
+  rule obligation(?w) :- helper(?w)
+end
+"#;
+
+#[test]
+fn transitive_seam_synthesizes_op_called_one_level_down() {
+    let mut kb = common::load_kb_with(SEAM_SRC);
+    let twice = op_sym(&kb, "twice");
+    // Before: `twice` has only its op body — no relational defining rule.
+    assert!(
+        kb.rules_by_functor(twice).iter().all(|r| kb.is_fact(*r)),
+        "no defining rule for `twice` before the seam runs"
+    );
+    // The obligation calls `twice` only transitively (through `helper`), so the
+    // scan must recurse into the inlined rule's body to reach it.
+    kb.synthesize_body_derived_defrules("test.wi669seam.obligation");
+    assert!(
+        kb.rules_by_functor(twice).iter().any(|r| !kb.is_fact(*r)),
+        "the transitive seam synthesizes `twice`'s defining rule"
+    );
+}
+

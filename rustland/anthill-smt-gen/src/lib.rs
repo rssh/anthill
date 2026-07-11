@@ -352,6 +352,13 @@ struct Emitter<'kb> {
     /// rendered script. SMT-LIB has no built-in `abs` for Real; we
     /// synthesise it via `(ite (< x 0) (- x) x)`.
     uses_abs: bool,
+    /// SMT argument strings θ for which `cos(θ)`/`sin(θ)` were rendered
+    /// (WI-681). Trigonometric functions have no SMT-LIB Real form, so
+    /// they emit as the uninterpreted functions `anthill_cos`/`anthill_sin`;
+    /// for each θ seen, the render adds the Pythagorean identity
+    /// `cos(θ)² + sin(θ)² = 1` — the ONE nonlinear fact a norm-preserving
+    /// 2-D rotation needs (QF_NRA-decidable). Deterministic order.
+    trig_args: BTreeSet<String>,
     /// AbstractLift mode: when true, `process_body_goal` skips
     /// rule-call expansion (single-arg shorthand and multi-pos-arg
     /// fact-match/inline) — those vars stay free in the rendered
@@ -374,6 +381,7 @@ impl<'kb> Emitter<'kb> {
             visited_rules: BTreeSet::new(),
             entity_bindings: BTreeMap::new(),
             uses_abs: false,
+            trig_args: BTreeSet::new(),
             abstract_mode: false,
         }
     }
@@ -496,6 +504,23 @@ impl<'kb> Emitter<'kb> {
                 }
             }
         }
+
+        // Soundness guard (WI-681): the uninterpreted-trig relaxation
+        // (cos/sin free except cos²+sin²=1) is an OVER-approximation — sound
+        // in body (positive) position, where dropping true trig facts only
+        // enlarges the model set. But a `-:` conclusion is emitted NEGATED
+        // (`(assert (not …))`), where the same relaxation UNDER-approximates:
+        // it could eliminate the witness of a real violation and report a
+        // false `unsat`. No obligation needs both today (the lf1 GPS proofs
+        // are violation-shape, no `-:`); refuse the combination loudly rather
+        // than silently emit an unsound query.
+        if !self.trig_args.is_empty() && !self.conclusion_assertions.is_empty() {
+            return Err(SmtGenError::new(
+                "cos/sin (uninterpreted-trig over-approximation) in an obligation \
+                 with a `-:` conclusion is unsound: the relaxation under-approximates \
+                 under the conclusion's negation. State the property as a violation \
+                 rule (body unsat), not a positive-form `-:` rule."));
+        }
         Ok(())
     }
 
@@ -520,16 +545,33 @@ impl<'kb> Emitter<'kb> {
                 return Err(SmtGenError::new(format!(
                     "= goal: expected 2 pos_args, got {}", pos_args.len())));
             }
-            let rhs_smt = self.translate_expr(&pos_args[1], bindings)?;
             // Bare-DeBruijn LHS → string binding (cheap inline substitution
             // for downstream uses). Anything else (e.g. `?d * ?d = ?d_sq`)
             // → emit as a free assertion `(= <lhs> <rhs>)`. This keeps the
             // bindings map small and lets nonlinear equalities flow into
             // QF_NRA naturally.
             if let Some(Expr::Var(Var::DeBruijn(i))) = pos_args[0].as_expr() {
+                // Entity-constructor RHS (`?target = Vec3(...)`, WI-681):
+                // bind the LHS to the entity for later field access instead
+                // of translating it as an arithmetic expression (a
+                // constructor is not a Real). CLOSE it over this frame's
+                // entity bindings so any callee-frame param var inside the
+                // constructor is substituted out before the entity is
+                // propagated across an inline boundary (where the frame's
+                // DeBruijn indices no longer mean the same thing).
+                if let Some((rhs_functor, _, _)) = occ_as_fn(&pos_args[1]) {
+                    if self.is_known_entity(rhs_functor) {
+                        let env = self.entity_bindings.clone();
+                        let closed = self.close_occ(&pos_args[1], &env)?;
+                        self.entity_bindings.insert(synthetic_var_name(*i), closed);
+                        return Ok(());
+                    }
+                }
+                let rhs_smt = self.translate_expr(&pos_args[1], bindings)?;
                 bindings.insert(synthetic_var_name(*i), rhs_smt);
                 return Ok(());
             }
+            let rhs_smt = self.translate_expr(&pos_args[1], bindings)?;
             let lhs_smt = self.translate_expr(&pos_args[0], bindings)?;
             self.assertions.push(format!("(= {lhs_smt} {rhs_smt})"));
             return Ok(());
@@ -970,6 +1012,20 @@ impl<'kb> Emitter<'kb> {
                     let e = self.translate_expr(&pos_args[2], bindings)?;
                     return Ok(format!("(ite {c} {t} {e})"));
                 }
+                // Trigonometric functions (WI-681): no SMT-LIB Real form, so
+                // `cos(θ)`/`sin(θ)` render as the uninterpreted functions
+                // `anthill_cos`/`anthill_sin`. The render adds the Pythagorean
+                // identity `cos(θ)²+sin(θ)²=1` for each θ seen — the one
+                // nonlinear fact norm-preservation of a 2-D rotation needs.
+                if let Some(trig) = map_trig_op(op) {
+                    if pos_args.len() != 1 {
+                        return Err(SmtGenError::new(format!(
+                            "{op}: expected 1 pos_arg, got {}", pos_args.len())));
+                    }
+                    let a = self.translate_expr(&pos_args[0], bindings)?;
+                    self.trig_args.insert(a.clone());
+                    return Ok(format!("({trig} {a})"));
+                }
                 if let Some(smt_op) = map_unary_op(op) {
                     if pos_args.len() != 1 {
                         return Err(SmtGenError::new(format!(
@@ -1056,6 +1112,101 @@ impl<'kb> Emitter<'kb> {
              `=`, or a Bool connective and/or/not)")))
     }
 
+    /// Substitute `env` (this frame's entity bindings: synth var name →
+    /// entity occurrence) into `occ`, returning a structurally-closed copy
+    /// (WI-681). A body-derived constructor (e.g. `desired_position`'s
+    /// `Vec3(x: add(leader.position.x, …), …)`) carries the op's parameters
+    /// as callee-frame DeBruijn vars; once the constructor is bound as an
+    /// entity and propagated to a caller (or read by a later-inlined rule),
+    /// those indices no longer denote the same frame. Substituting the
+    /// param vars' bound entities here — while still in the frame that bound
+    /// them — closes the constructor: field access then bottoms out at the
+    /// ground fact entities (or `cos`/`sin` over a ground arg), never a
+    /// dangling callee var. Any DeBruijn var NOT in `env` is left as-is
+    /// (a scalar param resolves in its own frame — none appear in the
+    /// single-arm constructor bodies this increment closes). Loud error on
+    /// an occurrence shape a defining-equation body should never contain.
+    fn close_occ(
+        &self,
+        occ: &Rc<NodeOccurrence>,
+        env: &BTreeMap<String, Rc<NodeOccurrence>>,
+    ) -> Result<Rc<NodeOccurrence>, SmtGenError> {
+        let Some(expr) = occ.as_expr() else { return Ok(Rc::clone(occ)) };
+        let rebuilt = match expr {
+            Expr::Var(Var::DeBruijn(i)) => {
+                let synth = synthetic_var_name(*i);
+                // A param var MUST resolve to an entity binding: a body-derived
+                // constructor's free vars are its op's parameters, and closing
+                // them is the whole point (leaving one live would let a
+                // callee-frame index dangle into the caller — a silently-wrong
+                // value, not a loud failure). A DeBruijn absent from `env` is a
+                // SCALAR param (bound in the string map, not `env`) inside the
+                // constructor — a shape this increment's single-arm Vec3 bodies
+                // never carry; error loudly rather than clone it across the
+                // boundary. A scalar-param constructor body needs a value-level
+                // binding channel (follow-on).
+                return match env.get(&synth) {
+                    Some(bound) => Ok(Rc::clone(bound)),
+                    None => Err(SmtGenError::new(format!(
+                        "close_occ: parameter ?{i} in a body-derived entity is not \
+                         an entity binding — a scalar operation parameter inside a \
+                         constructor cannot be closed across the inline boundary"))),
+                };
+            }
+            Expr::Var(_) | Expr::Const(_) | Expr::Ref(_) | Expr::Ident(_) => {
+                return Ok(Rc::clone(occ));
+            }
+            Expr::Apply { functor, pos_args, named_args, type_args } => Expr::Apply {
+                functor: *functor,
+                pos_args: self.close_all(pos_args, env)?,
+                named_args: self.close_named(named_args, env)?,
+                type_args: type_args.clone(),
+            },
+            Expr::Constructor { name, pos_args, named_args } => Expr::Constructor {
+                name: *name,
+                pos_args: self.close_all(pos_args, env)?,
+                named_args: self.close_named(named_args, env)?,
+            },
+            Expr::Instantiation { name, pos_args, named_args } => Expr::Instantiation {
+                name: *name,
+                pos_args: self.close_all(pos_args, env)?,
+                named_args: self.close_named(named_args, env)?,
+            },
+            Expr::DotApply { receiver, name, pos_args, named_args } => Expr::DotApply {
+                receiver: self.close_occ(receiver, env)?,
+                name: *name,
+                pos_args: self.close_all(pos_args, env)?,
+                named_args: self.close_named(named_args, env)?,
+            },
+            Expr::If { condition, then_branch, else_branch } => Expr::If {
+                condition: self.close_occ(condition, env)?,
+                then_branch: self.close_occ(then_branch, env)?,
+                else_branch: self.close_occ(else_branch, env)?,
+            },
+            other => return Err(SmtGenError::new(format!(
+                "close_occ: unhandled occurrence shape in a defining-equation \
+                 body: {:?}", std::mem::discriminant(other))),
+            ),
+        };
+        Ok(NodeOccurrence::new_expr(rebuilt, occ.span, occ.owner))
+    }
+
+    fn close_all(
+        &self,
+        occs: &[Rc<NodeOccurrence>],
+        env: &BTreeMap<String, Rc<NodeOccurrence>>,
+    ) -> Result<Vec<Rc<NodeOccurrence>>, SmtGenError> {
+        occs.iter().map(|o| self.close_occ(o, env)).collect()
+    }
+
+    fn close_named(
+        &self,
+        named: &[(Symbol, Rc<NodeOccurrence>)],
+        env: &BTreeMap<String, Rc<NodeOccurrence>>,
+    ) -> Result<Vec<(Symbol, Rc<NodeOccurrence>)>, SmtGenError> {
+        named.iter().map(|(s, o)| Ok((*s, self.close_occ(o, env)?))).collect()
+    }
+
     /// Resolve `field_access(?obj, Ident(field))` (possibly nested)
     /// to the projected value's occurrence. The chain bottoms out either
     /// at a literal (`Expr::Const`) or a value that itself goes back through
@@ -1071,7 +1222,7 @@ impl<'kb> Emitter<'kb> {
         &self,
         occ: &Rc<NodeOccurrence>,
     ) -> Result<Rc<NodeOccurrence>, SmtGenError> {
-        let (object_occ, field_sym) = self.as_field_access(occ).ok_or_else(|| {
+        let (object_occ, field_name) = self.as_field_access(occ).ok_or_else(|| {
             SmtGenError::new(format!(
                 "resolve_field_access: not a field projection: {:?}",
                 occ.as_expr().map(std::mem::discriminant)))
@@ -1102,10 +1253,7 @@ impl<'kb> Emitter<'kb> {
             }
         };
 
-        // Step 2: the field name.
-        let field_name = self.kb.resolve_sym(field_sym).to_string();
-
-        // Step 3: project into the entity's named_args by short-name match.
+        // Step 2: project into the entity's named_args by short-name match.
         let Some((_, _, named_args)) = occ_as_fn(&entity_occ) else {
             return Err(SmtGenError::new(format!(
                 "field_access: object resolved to non-Fn occurrence: {:?}",
@@ -1121,31 +1269,36 @@ impl<'kb> Emitter<'kb> {
     }
 
     /// Recognize a field projection in either occurrence representation and
-    /// return `(object_occurrence, field_name_symbol)`:
-    ///   - `Expr::Apply { functor: field_access, pos_args: [obj, Ident(field)] }`
+    /// return `(object_occurrence, field_name)`:
+    ///   - `Expr::Apply { functor: field_access, pos_args: [obj, field] }`
     ///     — the desugared reflect form (`field_access` is not a materialize
-    ///     key, so it round-trips to an `Apply`).
+    ///     key, so it round-trips to an `Apply`). The field selector is either
+    ///     an `Ident`/`Ref` symbol (the parse-IR form for `?p.field` in a rule
+    ///     body) or a `Const(String)` — the form a *reduced operation body*
+    ///     produces (the reflect builtin takes the field name as a string; see
+    ///     `reflect_field_access`), which WI-681's body-derived Vec3 carries.
     ///   - `Expr::DotApply { receiver, name, .. }` — the WI-278 value-receiver
     ///     dot form. Only an EMPTY arg list is a field access; a non-empty
     ///     `pos_args`/`named_args` is a method call (returns `None`).
-    fn as_field_access(&self, occ: &Rc<NodeOccurrence>) -> Option<(Rc<NodeOccurrence>, Symbol)> {
+    fn as_field_access(&self, occ: &Rc<NodeOccurrence>) -> Option<(Rc<NodeOccurrence>, String)> {
         match occ.as_expr()? {
             Expr::DotApply { receiver, name, pos_args, named_args } => {
                 if !pos_args.is_empty() || !named_args.is_empty() {
                     return None;
                 }
-                Some((Rc::clone(receiver), *name))
+                Some((Rc::clone(receiver), self.kb.resolve_sym(*name).to_string()))
             }
             _ => {
                 let (functor, pos_args, _named) = occ_as_fn(occ)?;
                 let op = self.kb.qualified_name_of(functor);
                 if op == "anthill.reflect.field_access" || op == "field_access" {
                     if let [obj, field] = pos_args {
-                        let field_sym = match field.as_expr()? {
-                            Expr::Ref(s) | Expr::Ident(s) => *s,
+                        let field_name = match field.as_expr()? {
+                            Expr::Ref(s) | Expr::Ident(s) => self.kb.resolve_sym(*s).to_string(),
+                            Expr::Const(Literal::String(name)) => name.clone(),
                             _ => return None,
                         };
-                        return Some((Rc::clone(obj), field_sym));
+                        return Some((Rc::clone(obj), field_name));
                     }
                 }
                 None
@@ -1249,6 +1402,8 @@ impl<'kb> Emitter<'kb> {
         }
         out.push('\n');
 
+        emit_trig_prelude(&mut out, &self.trig_args);
+
         emit_assumptions(&mut out, config);
 
         out.push_str(&self.body_smtlib);
@@ -1299,6 +1454,8 @@ impl<'kb> Emitter<'kb> {
             out.push_str(&format!("(declare-const {v} Real)\n"));
         }
         out.push('\n');
+
+        emit_trig_prelude(&mut out, &self.trig_args);
 
         emit_assumptions(&mut out, config);
 
@@ -1354,6 +1511,25 @@ fn emit_abs_prelude(out: &mut String, uses_abs: bool, config: &ProofConfig) {
     if needs {
         out.push_str("(define-fun anthill_abs ((x Real)) Real (ite (< x 0) (- x) x))\n\n");
     }
+}
+
+/// Emit the trigonometric prelude (WI-681): declare `anthill_cos`/`anthill_sin`
+/// as uninterpreted `(Real) Real` functions and, for each argument θ seen,
+/// assert the Pythagorean identity `cos(θ)²+sin(θ)²=1`. That single nonlinear
+/// fact is what lets QF_NRA prove a 2-D rotation preserves norm; the functions
+/// are otherwise uninterpreted, so the proof holds for EVERY θ (yaw-independent)
+/// rather than assuming a concrete angle. No-op when no trig was rendered.
+fn emit_trig_prelude(out: &mut String, trig_args: &BTreeSet<String>) {
+    if trig_args.is_empty() { return; }
+    out.push_str("; Trig as uninterpreted reals + Pythagorean identity (WI-681).\n");
+    out.push_str("(declare-fun anthill_cos (Real) Real)\n");
+    out.push_str("(declare-fun anthill_sin (Real) Real)\n");
+    for a in trig_args {
+        out.push_str(&format!(
+            "(assert (= (+ (* (anthill_cos {a}) (anthill_cos {a})) \
+             (* (anthill_sin {a}) (anthill_sin {a}))) 1.0))\n"));
+    }
+    out.push('\n');
 }
 
 fn emit_assumptions(out: &mut String, config: &ProofConfig) {
@@ -1462,6 +1638,20 @@ fn map_arith_op(qn: &str) -> Option<&'static str> {
         "anthill.prelude.Numeric.mul" | "Numeric.mul" | "mul" => Some("*"),
         "anthill.prelude.Float.div"   | "Float.div"   | "div" => Some("/"),
         "anthill.prelude.Int64.div"     | "Int64.div"             => Some("div"),
+        _ => None,
+    }
+}
+
+/// Map the trigonometric ops `cos`/`sin` to their uninterpreted-function
+/// spelling (WI-681). SMT-LIB's Real logics have no transcendental cos/sin,
+/// so they ride as uninterpreted `anthill_cos`/`anthill_sin` reals; the ONLY
+/// fact the emitter injects about them is the Pythagorean identity
+/// `cos(θ)²+sin(θ)²=1` per argument (see `emit_trig_prelude`) — sufficient
+/// for the norm-preservation of a 2-D rotation, and nothing more is claimed.
+fn map_trig_op(qn: &str) -> Option<&'static str> {
+    match qn {
+        "anthill.prelude.Float.cos" | "Float.cos" | "cos" => Some("anthill_cos"),
+        "anthill.prelude.Float.sin" | "Float.sin" | "sin" => Some("anthill_sin"),
         _ => None,
     }
 }
