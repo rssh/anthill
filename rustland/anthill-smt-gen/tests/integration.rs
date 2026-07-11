@@ -13,3 +13,4 @@ mod lf1_real_spec_test;
 mod lift_implication_test;
 mod qfnra_field_access_test;
 mod step_distance_test;
+mod wi680_ite_lowering_test;

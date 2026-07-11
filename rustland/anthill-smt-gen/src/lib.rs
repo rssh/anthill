@@ -478,7 +478,15 @@ impl<'kb> Emitter<'kb> {
         // expression (body OR conclusion) that has no binding entry.
         // Those need `(declare-const ... Real)` in satisfiability mode
         // — and become the forall-quantified parameters in the lift.
-        let scan = self.assertions.iter().chain(self.conclusion_assertions.iter());
+        // `body_smtlib` is scanned too (WI-680): a `FunctionLike` result bound to
+        // an `ite` over an otherwise-unused input (`?w = ite(gte(?x,0), ?x, 0)`)
+        // puts a genuinely-free `var_x` only into the `(define-fun var_w …)`
+        // string; without this it would emit undeclared and z3 would error. The
+        // result var itself is in `local_bindings`, so it is skipped (never
+        // double-declared), and `free_vars` are rendered before `body_smtlib`.
+        let scan = self.assertions.iter()
+            .chain(self.conclusion_assertions.iter())
+            .chain(std::iter::once(&self.body_smtlib));
         for assertion in scan {
             for tok in assertion.split(|c: char| !c.is_alphanumeric() && c != '_') {
                 if parse_synthetic_var_name(tok).is_some()
@@ -917,6 +925,17 @@ impl<'kb> Emitter<'kb> {
             Some(Expr::Ref(s)) | Some(Expr::Ident(s)) => {
                 Ok(sanitize_smt_id(self.kb.resolve_sym(*s)))
             }
+            // Conditional in expression position (WI-680): a bodied op's `if`
+            // reduces to an `Expr::If` occurrence (the WI-669 defining-equation
+            // refold feeds exactly this). Lower to SMT-LIB `(ite cond t e)` —
+            // the condition is Bool, the branches Real. SMT-LIB `ite` is
+            // polymorphic in the branch sort, so it works in LRA/NRA/LIA alike.
+            Some(Expr::If { condition, then_branch, else_branch }) => {
+                let c = self.translate_condition(condition, bindings)?;
+                let t = self.translate_expr(then_branch, bindings)?;
+                let e = self.translate_expr(else_branch, bindings)?;
+                Ok(format!("(ite {c} {t} {e})"))
+            }
             _ => {
                 // Entity field projection: `?p.field` reaches us as
                 // `field_access(?p, Ident(field))` (an `Expr::Apply`) or,
@@ -934,6 +953,23 @@ impl<'kb> Emitter<'kb> {
                         occ.as_expr().map(std::mem::discriminant))));
                 };
                 let op = self.kb.qualified_name_of(functor);
+                // `ite(cond, then, else)` functor form (WI-680): the surface
+                // `if` is not expressible in a rule body (parser-gated to op
+                // bodies), so a hand-written defining twin spells the
+                // conditional `ite(...)`. Same lowering as `Expr::If`. (stdlib's
+                // `<=>` twins — `sign`/`max`/`min` — also spell it `ite`, but are
+                // stored as EQUATIONS, not reached by this op-call inline path; a
+                // separate `<=>`-twin lowering, out of WI-680's scope.)
+                if is_ite_op(op) {
+                    if pos_args.len() != 3 {
+                        return Err(SmtGenError::new(format!(
+                            "ite: expected 3 pos_args, got {}", pos_args.len())));
+                    }
+                    let c = self.translate_condition(&pos_args[0], bindings)?;
+                    let t = self.translate_expr(&pos_args[1], bindings)?;
+                    let e = self.translate_expr(&pos_args[2], bindings)?;
+                    return Ok(format!("(ite {c} {t} {e})"));
+                }
                 if let Some(smt_op) = map_unary_op(op) {
                     if pos_args.len() != 1 {
                         return Err(SmtGenError::new(format!(
@@ -959,6 +995,65 @@ impl<'kb> Emitter<'kb> {
                 Ok(format!("({smt_op} {a} {b})"))
             }
         }
+    }
+
+    /// Translate a Bool-valued occurrence to an SMT-LIB *formula* — the
+    /// condition slot of an `ite`/`if` (WI-680). SMT-LIB segregates Bool from
+    /// Real, so a condition can't go through `translate_expr` (which yields a
+    /// Real term); this is the Bool sibling. Handles the relational ops
+    /// (`gte`/`lte`/`gt`/`lt`), equality (`=`/`eq`), and the Bool connectives
+    /// (`and`/`or`/`not`) recursively; a bare `true`/`false` literal folds
+    /// directly. Any other shape (including a bare Bool variable, which this
+    /// Real-typed emitter can't yet carry) is a *loud* error, not a guess.
+    fn translate_condition(
+        &mut self,
+        occ: &Rc<NodeOccurrence>,
+        bindings: &BTreeMap<String, String>,
+    ) -> Result<String, SmtGenError> {
+        if let Some(Expr::Const(Literal::Bool(b))) = occ.as_expr() {
+            return Ok(if *b { "true".to_string() } else { "false".to_string() });
+        }
+        let Some((functor, pos_args, _named)) = occ_as_fn(occ) else {
+            return Err(SmtGenError::new(format!(
+                "v0: unhandled condition shape: {:?}",
+                occ.as_expr().map(std::mem::discriminant))));
+        };
+        let qn = self.kb.qualified_name_of(functor);
+        // Relational comparison → SMT-LIB predicate over Real operands.
+        if let Some(smt_op) = map_inequality_op(&qn) {
+            if pos_args.len() != 2 {
+                return Err(SmtGenError::new(format!(
+                    "{qn}: expected 2 pos_args in condition, got {}", pos_args.len())));
+            }
+            let a = self.translate_expr(&pos_args[0], bindings)?;
+            let b = self.translate_expr(&pos_args[1], bindings)?;
+            return Ok(format!("({smt_op} {a} {b})"));
+        }
+        // Equality → `(= a b)` over Real operands.
+        if is_eq_functor(self.kb, functor) {
+            if pos_args.len() != 2 {
+                return Err(SmtGenError::new(format!(
+                    "=: expected 2 pos_args in condition, got {}", pos_args.len())));
+            }
+            let a = self.translate_expr(&pos_args[0], bindings)?;
+            let b = self.translate_expr(&pos_args[1], bindings)?;
+            return Ok(format!("(= {a} {b})"));
+        }
+        // Bool connective → recurse into sub-conditions.
+        if let Some(conn) = map_bool_connective(&qn) {
+            let arity = if conn == "not" { 1 } else { 2 };
+            if pos_args.len() != arity {
+                return Err(SmtGenError::new(format!(
+                    "{qn}: expected {arity} pos_args in condition, got {}", pos_args.len())));
+            }
+            let subs: Result<Vec<String>, _> = pos_args.iter()
+                .map(|p| self.translate_condition(p, bindings))
+                .collect();
+            return Ok(format!("({conn} {})", subs?.join(" ")));
+        }
+        Err(SmtGenError::new(format!(
+            "v0: unhandled condition functor '{qn}' (expected a relational op, \
+             `=`, or a Bool connective and/or/not)")))
     }
 
     /// Resolve `field_access(?obj, Ident(field))` (possibly nested)
@@ -1383,6 +1478,27 @@ fn map_unary_op(qn: &str) -> Option<&'static str> {
         "anthill.prelude.Int64.abs" => Some("anthill_abs"),
         "anthill.prelude.Float.neg" | "Float.neg" => Some("-"),
         "anthill.prelude.Int64.neg" | "Int64.neg" => Some("-"),
+        _ => None,
+    }
+}
+
+/// True if `qn` names the `ite` (if-then-else) op — `anthill.prelude.Bool.ite`
+/// or the bare short form (WI-680). The refolded defining-equation body uses the
+/// `Expr::If` occurrence directly; this covers the hand-written / stdlib
+/// `Bool.ite(...)` functor spelling of the same conditional.
+fn is_ite_op(qn: &str) -> bool {
+    qn == "anthill.prelude.Bool.ite" || qn == "Bool.ite" || qn == "ite"
+}
+
+/// Map the Bool connectives to their SMT-LIB spelling (WI-680), for the
+/// condition slot of an `ite`/`if`. `and`/`or` are binary, `not` unary — the
+/// caller checks arity. Matched by qualified or short name, mirroring
+/// `map_inequality_op`.
+fn map_bool_connective(qn: &str) -> Option<&'static str> {
+    match qn {
+        "anthill.prelude.Bool.and" | "Bool.and" | "and" => Some("and"),
+        "anthill.prelude.Bool.or"  | "Bool.or"  | "or"  => Some("or"),
+        "anthill.prelude.Bool.not" | "Bool.not" | "not" => Some("not"),
         _ => None,
     }
 }

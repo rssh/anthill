@@ -239,19 +239,41 @@ impl KnowledgeBase { pub fn op_defining_equations(&mut self, op: Symbol) -> Opti
   for now (relaxing it to carry the dictionary as an antecedent is future); the arithmetic consumers
   are requires-free. No flex-scrutinee / disjoint-constructor gate — those are §3.3 *relational*
   guards; here guards are asserted explicitly.
-- **`let`** needs `Expr::Let` in `reduce` — the transponder follow-on (WI-679); increment-1 and WI-678
+- **`let`** needs `Expr::Let` in `reduce` — the transponder follow-on (WI-679); increment-1 and WI-681
   consumers are `let`-free.
 
-**The SMT seam (increment 1b, not yet built).** A proof references the equations by **calling the
-bodied op in the proof-rule body** — no new surface syntax (§3.4). The driver holds `&mut kb` and has
-the `synthesize_step_rule` precedent (`prove.rs:936`): materialize a transient rule via
-`assert_rule_debruijn_with_nodes_in_frame`, whose body is **the equation occurrences fed directly as
-rule body-nodes** (no term round-trip — the DeBruijn-param frame already matches rule storage), after
-which the ordinary `rule_id_by_qn → rule_body_nodes → SMT` path (`anthill-smt-gen/src/lib.rs:388,431`)
-emits it unchanged. Before `emit_satisfiability_check_with_deps` (`prove.rs:1876`), scan the obligation
-rule's body for calls to rule-less bodied ops and synthesize one `<op>__defeq` rule per call. Reuses
-the whole downstream emitter; no smt-gen change. A residual the emitter can't lower (an ADT arm, a
-control-flow occurrence) is rejected at smt-gen's own non-`Fn`-goal boundary — loud, at the right layer.
+**The SMT seam (increment 1b).** A proof references the equations by **calling the bodied op in the
+proof-rule body** — no new surface syntax (§3.4), and (function-as-relation) with the result as the
+trailing arg: `clamp(?x, ?r)`. The driver holds `&mut kb`; before it emits the obligation
+(`dispatch_z3` → `run_smt_subquery`), it scans the obligation rule's body-nodes for goals whose functor
+is a **rule-less bodied op** and, for each, synthesizes a transient defining rule
+(`KnowledgeBase::synthesize_op_defining_rule`, sibling to `op_defining_equations` in
+`kb/body_specialize.rs`):
+
+- **Refold, don't re-flatten.** `op_defining_equations` returns the *flattened* guarded arms; the seam
+  refolds them into one nested `Expr::If` occurrence — `ite(conj(g₀), r₀, ite(conj(g₁), r₁, … r_last))`,
+  dropping the last arm's guard (arms are exhaustive + ordered, so the fallthrough is unconditional). A
+  guard conjunction is built from the arm's `DefiningGuard`s: a negated guard wraps its `cond` in
+  `Bool.not`, multiple guards join under `Bool.and`. (For a single top-level `if` — the demonstrator and
+  the lf1 GPS consumer — this is just `Expr::If { cond, then_arm, else_arm }`, no `and`/`not`.)
+- **Fresh-`Global` frame, not raw DeBruijn.** The synth head `op(g₀…g_{n-1}, g_result)` and body
+  `g_result = <refolded-if>` are built over **fresh `Var::Global`s** (one per param, one for the result),
+  then handed to `assert_rule_debruijn_with_nodes`, which collects those Globals and converts them to
+  De Bruijn with the correct arity. Feeding raw `Var::DeBruijn` occurrences (as `op_defining_equations`
+  emits) would leave the collector with zero head vars → arity-0 → a malformed rule; the fresh-Global
+  round is the load-bearing detail. Head **functor is the op symbol itself** (registered under label
+  `<op_qn>__defeq` for idempotency) so smt-gen's ordinary `rules_by_functor → try_inline_rule_call`
+  path inlines it at the `clamp(?x, ?r)` call unchanged (`anthill-smt-gen/src/lib.rs`).
+
+**Prerequisite: WI-680 (smt-gen conditional lowering).** The refold produces an `Expr::If`; smt-gen's
+`translate_expr` had **no** expression-position conditional path (only arithmetic + inequalities-as-goals),
+so an `ite`/`if` subterm died with `unhandled arithmetic op 'ite'` — a *general* gap that also blocks
+stdlib's own hand-written `ite` twins (`sign`/`max`/`min`). Extracted as prerequisite **WI-680**: teach
+`translate_expr` to emit `(ite …)` for `Expr::If` and the `Bool.ite` functor, with a `translate_condition`
+helper (inequalities + `eq` + `Bool.and/or/not`). *(An earlier draft of this note claimed "no smt-gen
+change"; that was wrong — the conditional lowering is unavoidable, and belongs in smt-gen as a general
+capability, not smuggled through the seam.)* A residual the emitter still can't lower (an ADT arm) is
+rejected at smt-gen's own non-`Fn`-goal / `translate_condition` boundary — loud, at the right layer.
 
 Increment 1b's demonstrator is a small **arithmetic / `if`** bodied-op property (not `append`/`length`:
 those are ADT `match` bodies, which the SMT tier can't lower without datatype support). This is also
@@ -259,7 +281,7 @@ closer to the lf1 consumers, which are all arithmetic. It discharges with **no**
 
 **Consumers:**
 - **arithmetic / `if` bodied-op property** — WI-669 increment-1b demonstrator. `if`/expr, `let`-free.
-- **lf1 GPS `desired_position`** ([WI-678]) — single-arm `Vec3` body, `let`-free; derives the
+- **lf1 GPS `desired_position`** ([WI-681]) — single-arm `Vec3` body, `let`-free; derives the
   formation-geometry separation `|offset|` from the body, retiring the hand-planted `4.0` in
   `real_pose_at(0, Follower, …)`. Needs a QF_NRA `cos²+sin²=1` fact — a backend wrinkle, not engine.
 - **lf1 transponder ranking** (follow-on) — the real drift case: `decrease_violation_transponder`'s
