@@ -620,13 +620,17 @@ impl<L: Clone> SubstTree<L> {
     ///
     /// This is the RESOLUTION path (SLD head selection via `query_view`, and the
     /// Γ overlay's `query_resolved_value` + `views_structurally_equal` filter),
-    /// so a nonlinear pattern var UNIFIES its matched subterms (`unify_rebind =
-    /// true`, WI-633) — the binding becomes part of the answer. `match_view`'s
-    /// one-directional matching uses [`query_resolved`] instead.
+    /// which pass `unify_rebind = true` (WI-633) so a nonlinear pattern var
+    /// UNIFIES its matched subterms — the binding becomes part of the answer.
+    /// `unify_rebind = false` gives the one-directional-into-the-answer semantics
+    /// `match_view` uses (WI-683's carrier-neutral `match_view_value_pattern`, a
+    /// `Value`-pattern peer, passes `false` here to resolve a `Value::Node`
+    /// forall-antecedent pattern head without lowering it to a term).
     pub(crate) fn query_resolved_value<V: TermView, F>(
         &self,
         kb: &KnowledgeBase,
         query: &V,
+        unify_rebind: bool,
         resolve_head: F,
     ) -> Vec<(L, Substitution)>
     where
@@ -636,8 +640,8 @@ impl<L: Clone> SubstTree<L> {
             .map(|(leaf, subst)| {
                 let head = resolve_head(&leaf);
                 let s = match &head {
-                    Value::Term { id: t, .. } => subst.resolve_leaf(kb, *t, true),
-                    _ => subst.resolve_leaf_view(kb, &head, true),
+                    Value::Term { id: t, .. } => subst.resolve_leaf(kb, *t, unify_rebind),
+                    _ => subst.resolve_leaf_view(kb, &head, unify_rebind),
                 };
                 (leaf, s)
             })

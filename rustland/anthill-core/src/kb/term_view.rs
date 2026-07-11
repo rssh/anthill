@@ -281,6 +281,17 @@ fn var_ref_functor(kb: &KnowledgeBase) -> Option<Symbol> {
     kb.try_resolve_symbol("anthill.reflect.Expr.var_ref")
 }
 
+/// The `ListLiteral` functor symbol, or `None` when reflect isn't loaded — the
+/// occurrence then reads `Opaque` (fail-soft: such a KB holds no reflect list
+/// literal). WI-683: a `[…]` list-literal occurrence reads STRUCTURALLY as its
+/// `ListLiteral(e…)` term twin (`occurrence_to_term` builds exactly that
+/// `Fn{anthill.reflect.ListLiteral, pos_args: e…}`), so a carrier-neutral reader
+/// — the bounded-quant collection walk, a `[simp]` LHS — walks a list literal in
+/// ANY carrier, instead of the former `Opaque` collapse that forced a lowering.
+fn list_literal_functor(kb: &KnowledgeBase) -> Option<Symbol> {
+    kb.try_resolve_symbol("anthill.reflect.ListLiteral")
+}
+
 /// The `name` field key of the `var_ref` encoding, panicking if never interned
 /// (mirrors [`dot_apply_key`]): any KB holding a `var_ref` occurrence interned
 /// it building the occurrence's term twin, so a miss is an inconsistent KB — and
@@ -362,6 +373,15 @@ fn occ_head(occ: &NodeOccurrence, kb: &KnowledgeBase) -> ViewHead {
             }
             None => ViewHead::Opaque,
         },
+        // WI-683: a `[…]` list literal reads as its `ListLiteral(e…)` term twin —
+        // the elements are the positional children, no tail (`occurrence_to_term`
+        // builds `Fn{ListLiteral, pos_args: e…}`). Through `functor_view_head`,
+        // an empty `[]` and its `Fn{ListLiteral}` twin canonicalize to the same
+        // head. Reflect-not-loaded ⇒ `Opaque` (no reflect list literal exists).
+        Some(Expr::ListLit(es)) => match list_literal_functor(kb) {
+            Some(f) => functor_view_head(kb, f, es.len(), 0),
+            None => ViewHead::Opaque,
+        },
         // Rigid / DeBruijn vars, control-flow and post-elaboration forms,
         // and rule-head occurrences are opaque to rule-LHS matching.
         _ => ViewHead::Opaque,
@@ -395,6 +415,9 @@ fn occ_pos_child(occ: &NodeOccurrence, _kb: &KnowledgeBase, i: usize) -> Option<
         | Expr::Constructor { pos_args, .. }
         // WI-520: `Instantiation` reads like `Constructor` — expose its children.
         | Expr::Instantiation { pos_args, .. } => pos_args.get(i).map(Rc::clone),
+        // WI-683: a list literal's elements are its positional children, mirroring
+        // the `Fn{ListLiteral, pos_args: e…}` term twin.
+        Expr::ListLit(es) => es.get(i).map(Rc::clone),
         _ => None,
     }
 }

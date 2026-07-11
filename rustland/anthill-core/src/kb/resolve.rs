@@ -475,7 +475,10 @@ struct Frame {
     /// Antecedents assumed under a `forall_impl` discharge that landed in
     /// this frame's goal stream. Consulted as zero-body facts during the
     /// proof of the consequent goals; popped when the frame pops. WI-108.
-    assumed_facts: Vec<TermId>,
+    /// WI-683: carried carrier-faithfully as `Value` (a `Value::Node` antecedent
+    /// keeps its occurrence), matched via `match_view_value_pattern` — parity
+    /// with the already-`Value` Γ overlay, no lowering to a hash-consed term.
+    assumed_facts: Vec<Value>,
 }
 
 /// WI-246: reify a goal `Value` to a hash-consed `TermId` — a `Value::Term`
@@ -727,7 +730,7 @@ impl SearchStream {
             return Vec::new();
         };
         gamma
-            .query_resolved_value(kb, goal_value, |f| f.clone())
+            .query_resolved_value(kb, goal_value, true, |f| f.clone())
             .into_iter()
             // Per-parameter soundness (WI-537): the discrim query unifies a goal
             // variable as a WILDCARD, so a fact `neq(b, 0)` would also match a
@@ -873,22 +876,20 @@ impl SearchStream {
                 return Some(StepResult::Continue);
             }
             // forall_impl / forall_in / some_in classify carrier-neutrally off
-            // the goal's `TermView`. Their step_ handlers do `TermId`
-            // tuple-surgery (skolemise binders, substitute, prepend), so reify
-            // once — only when we know we're dispatching — since a rule-body
-            // `forall … ==>` arrives as a `Value::Node` occurrence.
+            // the goal's `TermView`, and their step_ handlers now read binders /
+            // antecedents / consequents through `TermView` too and skolemise via
+            // `reify_value` (WI-683) — so a rule-body `forall … ==>` arriving as a
+            // `Value::Node` occurrence flows through without a whole-goal reify.
             //
             // 3.5 forall_impl(binders, antecedents, consequent) — skolemise,
             // push antecedents as scoped assumptions, prepend consequents.
             if Self::is_forall_impl(kb, &goal_val) {
-                let goal = goal_t.unwrap_or_else(|| reify_goal_value(kb, &goal_val));
-                return self.step_forall_impl(kb, goal, depth, delay_mode);
+                return self.step_forall_impl(kb, &goal_val, depth, delay_mode);
             }
             // 3.6 (WI-027) forall_in / some_in — bounded quantification over a
             // collection's elements; expand to a conjunction / disjunction.
             if let Some(is_forall) = Self::bounded_quant_kind(kb, &goal_val) {
-                let goal = goal_t.unwrap_or_else(|| reify_goal_value(kb, &goal_val));
-                return self.step_bounded_quant(kb, goal, is_forall, depth, delay_mode);
+                return self.step_bounded_quant(kb, &goal_val, is_forall, depth, delay_mode);
             }
         }
 
@@ -1278,8 +1279,8 @@ impl SearchStream {
         if !assumed.is_empty() || self.config.gamma.is_some() {
             let frame_subst = self.stack.last().unwrap().subst.clone();
             let goal_value = kb.reify_value(&goal_val, &frame_subst);
-            for assumed_fact in assumed {
-                if let Some(subst) = kb.match_view(assumed_fact, &goal_value) {
+            for assumed_fact in &assumed {
+                if let Some(subst) = kb.match_view_value_pattern(assumed_fact, &goal_value) {
                     if !subst.is_contradiction() {
                         candidates.push(Candidate::Assumption(subst));
                     }
@@ -1333,67 +1334,83 @@ impl SearchStream {
     fn step_forall_impl(
         &mut self,
         kb: &mut KnowledgeBase,
-        goal: TermId,
+        goal: &Value,
         depth: usize,
         delay_mode: DelayMode,
     ) -> Option<StepResult> {
         // `goal` arrives already σ-applied (the caller substitutes `goal_val`
-        // before reifying), so read its structure directly — no walk needed.
-        let pos_args = match kb.terms.get(goal) {
-            Term::Fn { pos_args, .. } if pos_args.len() == 3 => pos_args.clone(),
-            _ => {
-                // Malformed forall_impl term — treat as failure
-                self.stack.pop();
-                return Some(StepResult::Continue);
-            }
+        // before dispatch), so read its structure directly through `TermView`
+        // — carrier-neutral (WI-683), no whole-goal reify: a rule-body
+        // `forall … ==>` flows through as its `Value::Node` occurrence.
+        let pos_arity = match goal.head(kb) {
+            ViewHead::Functor { pos_arity, .. } => pos_arity,
+            _ => 0,
         };
+        let (Some(binders_arg), Some(antes_arg), Some(cons_arg)) =
+            (goal.pos_arg(kb, 0), goal.pos_arg(kb, 1), goal.pos_arg(kb, 2))
+        else {
+            // Malformed forall_impl — treat as failure.
+            self.stack.pop();
+            return Some(StepResult::Continue);
+        };
+        if pos_arity != 3 {
+            self.stack.pop();
+            return Some(StepResult::Continue);
+        }
+        let binders = Self::unwrap_tuple_args(kb, &binders_arg);
+        let antecedents = Self::unwrap_tuple_args(kb, &antes_arg);
+        let consequents = Self::unwrap_tuple_args(kb, &cons_arg);
+        drop((binders_arg, antes_arg, cons_arg));
 
-        let binder_tids = Self::unwrap_tuple_args(kb, pos_args[0]);
-        let antecedent_tids = Self::unwrap_tuple_args(kb, pos_args[1]);
-        let consequent_tids = Self::unwrap_tuple_args(kb, pos_args[2]);
-
-        let frame = self.stack.last().unwrap();
-
-        // Build the Global → Rigid substitution map from the binders.
-        let mut skolem_map: HashMap<u32, TermId> = HashMap::new();
-        for &b in &binder_tids {
-            let walked_b = kb.walk(b, &frame.subst);
-            if let Term::Var(Var::Global(vid)) = kb.terms.get(walked_b) {
-                let vid = *vid;
-                let fresh = kb.fresh_var(vid.name());
-                let rigid_term = kb.alloc(Term::Var(Var::Rigid(fresh)));
-                skolem_map.insert(vid.raw(), rigid_term);
+        // Skolemise the binders into fresh `Rigid` witnesses, as a `Substitution`
+        // (Global → `Value::Var(Rigid)`) applied by `reify_value` — carrier-
+        // faithful, so a `Value::Node` antecedent skolemises via
+        // `substitute_occurrence` (reused, not re-derived) rather than a bespoke
+        // rebuild. Each binder is already σ-applied (a child of the reified
+        // goal); an open quantified binder is a flex `Global`.
+        let mut skolem = Substitution::default();
+        for b in &binders {
+            if let Some(Var::Global(vid)) = b.index_var(kb) {
+                // Skolemise each distinct binder once: duplicate binders
+                // (`forall(?x, ?x)` — one opened Global) must map to ONE rigid,
+                // and re-binding `bind_value` to a second fresh rigid would flag a
+                // spurious contradiction on this throwaway subst (and leak a var).
+                if skolem.resolve_as_value(vid).is_none() {
+                    let fresh = kb.fresh_var(vid.name());
+                    skolem.bind_value(kb, vid, Value::Var(Var::Rigid(fresh)));
+                }
             }
         }
 
-        // Substitute Global → Rigid in antecedents and consequents.
-        // Also try to lower top-level ho_apply forms in antecedents so
-        // they share a functor with whatever the consequent's resolution
-        // will eventually look up (the resolver's HoApply path lowers
-        // the goal-side; we lower the assumption-side here for parity).
-        let frame = self.stack.last().unwrap();
-        let subst = frame.subst.clone();
-        let mut skolemized_antecedents: Vec<TermId> = Vec::with_capacity(antecedent_tids.len());
-        for &t in &antecedent_tids {
-            let sk = Self::subst_globals(kb, t, &skolem_map);
-            let lowered = Self::lower_ho_apply(kb, &sk, &subst).unwrap_or(sk);
-            skolemized_antecedents.push(lowered);
-        }
-        let skolemized_consequents: Vec<TermId> = consequent_tids.iter()
-            .map(|&t| Self::subst_globals(kb, t, &skolem_map))
-            .collect();
+        let frame_subst = self.stack.last().unwrap().subst.clone();
 
-        // Append a pop_assumption marker after the consequents so the
-        // assumed antecedents go out of scope before the surrounding
-        // rule's remaining goals run (WI-108 scoping invariant).
-        let frame = self.stack.last().unwrap();
+        // Skolemise antecedents, then lower a top-level `ho_apply` so an assumed
+        // antecedent shares a functor with whatever the consequent's resolution
+        // looks up (the resolver's HoApply path lowers the goal-side; we lower
+        // the assumption-side here for parity).
+        let skolemized_antecedents: Vec<Value> = antecedents
+            .iter()
+            .map(|a| {
+                let sk = kb.reify_value(a, &skolem);
+                match Self::lower_ho_apply(kb, &sk, &frame_subst) {
+                    Some(t) => Value::term(t),
+                    None => sk,
+                }
+            })
+            .collect();
+        let skolemized_consequents: Vec<Value> =
+            consequents.iter().map(|c| kb.reify_value(c, &skolem)).collect();
+
+        // Append a pop_assumption marker after the consequents so the assumed
+        // antecedents go out of scope before the surrounding rule's remaining
+        // goals run (WI-108 scoping invariant).
         let n_assumed = skolemized_antecedents.len();
-        let mut new_goals: Vec<Value> =
-            skolemized_consequents.into_iter().map(Value::term).collect();
+        let mut new_goals: Vec<Value> = skolemized_consequents;
         if n_assumed > 0 {
             let marker = Self::make_pop_assumption_marker(kb, n_assumed);
             new_goals.push(Value::term(marker));
         }
+        let frame = self.stack.last().unwrap();
         new_goals.extend(frame.goals[1..].iter().cloned());
         let mut new_assumed = frame.assumed_facts.clone();
         new_assumed.extend(skolemized_antecedents);
@@ -1426,75 +1443,114 @@ impl SearchStream {
         }
     }
 
-    /// WI-027: walk `list` under σ and collect its elements when it is a fully
-    /// ground spine — a `cons`/`nil` chain (the runtime list shape) or a
-    /// `ListLiteral(e…)` (the un-desugared surface literal, since a
-    /// bounded-quant collection slot carries no List-typed context to trigger
-    /// the WI-007 `ListLiteral → cons/nil` rewrite). A `ListLiteral` carries all
-    /// its elements positionally and never a tail (the `[h | t]` surface was
-    /// removed, WI-560). Elements themselves need not be ground — only the
-    /// SPINE. Returns `None` when the spine is not ground (an unbound `cons`
-    /// tail, or a non-list term): the caller then DELAYs
-    /// rather than silently deciding the quantifier. Constructors are matched
-    /// by SHORT NAME via `resolve_sym` (mirroring `list_to_vec`), since a value
-    /// list and the resolver can carry distinct `Symbol`s that share the name
-    /// `cons` / `nil`.
+    /// WI-027: collect a list `Value`'s elements when it is a fully ground spine
+    /// — a `cons`/`nil` chain (the runtime list shape) or a `ListLiteral(e…)`
+    /// (the un-desugared surface literal, since a bounded-quant collection slot
+    /// carries no List-typed context to trigger the WI-007 `ListLiteral →
+    /// cons/nil` rewrite). A `ListLiteral` carries all its elements positionally
+    /// and never a tail (the `[h | t]` surface was removed, WI-560). Elements
+    /// themselves need not be ground — only the SPINE. Returns `None` when the
+    /// spine is not ground (an unbound `cons` tail, or a non-list head): the
+    /// caller then DELAYs rather than silently deciding the quantifier.
+    /// Constructors match by SHORT NAME via `resolve_sym` (`functor_sym` reads
+    /// the `Fn{c}` / `Ref(c)` spellings alike), since a value list and the
+    /// resolver can carry distinct `Symbol`s sharing the name `cons` / `nil`.
+    ///
+    /// WI-683: carrier-neutral — reads the whole spine (including a
+    /// `ListLiteral`, now a structural `TermView` case) through [`TermView`], so
+    /// a list riding as a `Value::Entity` (a runtime list), a `Value::Node`
+    /// occurrence, or a hash-consed term all walk natively, no lowering. Each
+    /// spine node is chased through σ ([`walk_value_chain`]): `goal_val` is built
+    /// by `apply_subst`/`substitute_occurrence`, which are SHALLOW at a var's
+    /// binding (they inline `?xs ↦ cons(a, ?t)` but not the `?t` inside), so the
+    /// collection can arrive as `cons(a, ?t)` with `?t` bound to the rest — a
+    /// partial cons a relational goal left in σ. Chasing per node resolves it;
+    /// the `seen` set guards a cyclic σ spine (`?t ↦ cons(_, ?t)`) → `None`
+    /// (delay), replacing the former `HashSet<TermId>` guard carrier-neutrally.
     fn bounded_list_elements(
         kb: &KnowledgeBase,
-        list: TermId,
+        list: &Value,
         subst: &Substitution,
-    ) -> Option<Vec<TermId>> {
+    ) -> Option<Vec<Value>> {
         let mut elems = Vec::new();
-        let mut cur = kb.walk(list, subst);
-        // The standard SLD bind path is not occurs-checked, so σ can carry a
-        // cyclic spine (`?t → cons(_, ?t)`). Bail (→ delay) on a revisited node
-        // rather than loop forever / OOM — loud-not-silent over a hard hang.
-        let mut seen: HashSet<TermId> = HashSet::new();
+        let mut seen: HashSet<VarId> = HashSet::new();
+        let mut cur = Self::walk_value_chain(kb, list.clone(), subst, &mut seen)?;
         loop {
-            if !seen.insert(cur) {
-                return None;
-            }
-            let named = |args: &[(Symbol, TermId)], key: &str| {
-                args.iter().find(|(s, _)| kb.resolve_sym(*s) == key).map(|&(_, t)| t)
-            };
-            match kb.terms.get(cur).clone() {
-                // `nil` — the nullary list terminator, which can ride as either a
-                // bare `Ref` or an empty `Fn` (entity refs take both shapes).
-                Term::Ref(functor) if kb.resolve_sym(functor) == "nil" => return Some(elems),
-                Term::Fn { functor, pos_args, named_args }
-                    if kb.resolve_sym(functor) == "nil"
-                        && pos_args.is_empty() && named_args.is_empty() =>
-                {
-                    return Some(elems);
-                }
-                Term::Fn { functor, named_args, pos_args } if kb.resolve_sym(functor) == "cons" => {
-                    // `cons(head:, tail:)` — named (canonical); tolerate a positional
-                    // `cons(h, t)` too, like `list_to_vec`.
-                    let head = named(&named_args, "head").or_else(|| pos_args.first().copied());
-                    let tail = named(&named_args, "tail").or_else(|| pos_args.get(1).copied());
-                    match (head, tail) {
+            let name = cur.head(kb).functor_sym().map(|f| kb.resolve_sym(f));
+            match name.as_deref() {
+                // The nullary terminator (a bare `Ref(nil)` or an empty `Fn{nil}`
+                // / `Entity{nil}` — `functor_sym` unifies the spellings).
+                Some("nil") => return Some(elems),
+                Some("cons") => {
+                    // `cons(head:, tail:)` — named (canonical); tolerate a
+                    // positional `cons(h, t)` too, like `list_to_vec`. The tail is
+                    // chased through σ before the next iteration inspects it.
+                    match (
+                        Self::cons_child(kb, &cur, "head", 0),
+                        Self::cons_child(kb, &cur, "tail", 1),
+                    ) {
                         (Some(h), Some(t)) => {
                             elems.push(h);
-                            cur = kb.walk(t, subst);
+                            cur = Self::walk_value_chain(kb, t, subst, &mut seen)?;
                         }
-                        // A malformed `cons` — surface as not-ground (delay) rather
-                        // than silently dropping the element.
+                        // A malformed `cons` — surface as not-ground (delay)
+                        // rather than silently dropping the element.
                         _ => return None,
                     }
                 }
-                Term::Fn { functor, pos_args, .. }
-                    if kb.resolve_sym(functor) == "ListLiteral" =>
-                {
-                    // A `ListLiteral` carries all its elements in `pos_args` and
-                    // never a tail — the `[h | t]` head-tail surface was removed
-                    // (WI-560), so the spine ends here.
-                    elems.extend(pos_args.iter().copied());
+                Some("ListLiteral") => {
+                    // A `ListLiteral` carries all its elements as positional
+                    // children and never a tail (the `[h | t]` surface was
+                    // removed, WI-560), so the spine ends here.
+                    let mut i = 0;
+                    while let Some(e) = cur.pos_arg(kb, i) {
+                        elems.push(e.to_value());
+                        i += 1;
+                    }
                     return Some(elems);
                 }
-                // Unbound var tail or any non-list term → spine not ground.
+                // Unbound var tail or any non-list head → spine not ground.
                 _ => return None,
             }
         }
+    }
+
+    /// Chase a `Value`'s var chain under σ to its representative, carrier-neutrally
+    /// (a `Value::Term` / `Value::Node` var leaf or a bare `Value::Var` all resolve
+    /// via `index_var` → σ). `None` on a REVISITED var — a cyclic σ spine (`?t ↦
+    /// cons(_, ?t)`); the [`bounded_list_elements`] caller treats that as a
+    /// non-ground spine (delay), never an infinite loop. Only spine nodes are
+    /// chased (elements ride as-is), so `seen` collects tail vars, never element
+    /// vars — a legitimate list has distinct tail vars, so no false cycle.
+    fn walk_value_chain(
+        kb: &KnowledgeBase,
+        mut v: Value,
+        subst: &Substitution,
+        seen: &mut HashSet<VarId>,
+    ) -> Option<Value> {
+        while let Some(Var::Global(vid)) = v.index_var(kb) {
+            if !seen.insert(vid) {
+                return None; // cyclic spine
+            }
+            match subst.resolve_as_value(vid) {
+                Some(bound) => v = bound.clone(),
+                None => return Some(v), // unbound var — a non-ground spine at the caller
+            }
+        }
+        Some(v)
+    }
+
+    /// A `cons` cell's `head` / `tail` child as an owned [`Value`], read carrier-
+    /// neutrally (WI-683): matched by field NAME (not `Symbol` identity — a value
+    /// list can carry a `head`/`tail` symbol distinct from the resolver's),
+    /// falling back to the positional slot for a `cons(h, t)`.
+    fn cons_child(kb: &KnowledgeBase, cell: &Value, name: &str, pos: usize) -> Option<Value> {
+        for key in cell.named_keys(kb) {
+            if kb.resolve_sym(key) == name {
+                return cell.named_arg(kb, key).map(|c| c.to_value());
+            }
+        }
+        cell.pos_arg(kb, pos).map(|c| c.to_value())
     }
 
     /// WI-027: discharge a `forall_in(?x, xs, tuple(body))` / `some_in(…)` body
@@ -1512,61 +1568,77 @@ impl SearchStream {
     fn step_bounded_quant(
         &mut self,
         kb: &mut KnowledgeBase,
-        goal: TermId,
+        goal: &Value,
         is_forall: bool,
         depth: usize,
         delay_mode: DelayMode,
     ) -> Option<StepResult> {
         // `goal` arrives already σ-applied (the caller substitutes `goal_val`
-        // before reifying), so read its structure directly — no walk needed.
-        let pos_args = match kb.terms.get(goal) {
-            Term::Fn { pos_args, .. } if pos_args.len() == 3 => pos_args.clone(),
-            // Malformed bounded quantifier — treat as failure.
-            _ => {
-                self.stack.pop();
-                return Some(StepResult::Continue);
-            }
+        // before dispatch), so read its structure directly through `TermView`
+        // — carrier-neutral (WI-683). The binder / body ride as `Value`; only
+        // the COLLECTION structural-arg is reified (below), for the term-spine
+        // walk, mirroring `forall_impl`'s antecedent path.
+        let pos_arity = match goal.head(kb) {
+            ViewHead::Functor { pos_arity, .. } => pos_arity,
+            _ => 0,
         };
-        let binder = pos_args[0];
-        let collection = pos_args[1];
-        let body_tids = Self::unwrap_tuple_args(kb, pos_args[2]);
+        let (Some(binder_arg), Some(coll_arg), Some(body_arg)) =
+            (goal.pos_arg(kb, 0), goal.pos_arg(kb, 1), goal.pos_arg(kb, 2))
+        else {
+            // Malformed bounded quantifier — treat as failure.
+            self.stack.pop();
+            return Some(StepResult::Continue);
+        };
+        if pos_arity != 3 {
+            self.stack.pop();
+            return Some(StepResult::Continue);
+        }
+        let binder = binder_arg.to_value();
+        let collection = coll_arg.to_value();
+        let body: Vec<Value> = Self::unwrap_tuple_args(kb, &body_arg);
+        drop((binder_arg, coll_arg, body_arg));
 
         let subst = self.stack.last().unwrap().subst.clone();
 
         // The binder's Global var id (after rule opening it is a fresh Global,
         // never bound in σ). `None` if the slot is not an open Global — then no
-        // element substitution applies (a degenerate but defensible case).
-        let binder_vid = match kb.terms.get(kb.walk(binder, &subst)) {
-            Term::Var(Var::Global(vid)) => Some(vid.raw()),
+        // element substitution applies (a degenerate but defensible case). Read
+        // off the σ-applied binder directly (no re-walk): it and the body's
+        // binder occurrence share the SAME shallow substitution, so binding this
+        // vid substitutes the body's occurrences consistently.
+        let binder_vid = match binder.index_var(kb) {
+            Some(Var::Global(vid)) => Some(vid),
             _ => None,
         };
 
-        let elements = Self::bounded_list_elements(kb, collection, &subst);
-        let Some(elements) = elements else {
-            // Spine not ground — delay (loud-not-silent; floundering residual).
+        // The collection's ground `cons`/`nil`/`ListLiteral` spine, read carrier-
+        // neutrally (WI-683): a list riding as a `Value::Entity` runtime
+        // list, a `Value::Node` occurrence, or a hash-consed term all walk
+        // natively — no lowering. σ is chased per spine node (the collection can
+        // arrive as a partial `cons(a, ?t)` with `?t` bound elsewhere). `None` ⇒
+        // spine not ground ⇒ delay (floundering residual), never silently decided.
+        let Some(elements) = Self::bounded_list_elements(kb, &collection, &subst) else {
             return self.delay_goal(depth, delay_mode);
         };
 
-        // body[?x := element_i] for each element, substituting only the binder.
-        let per_element: Vec<Vec<TermId>> = elements
+        // body[?x := element_i] for each element, binding only the binder — as a
+        // `Substitution` applied by `reify_value` (carrier-faithful, retiring
+        // `subst_globals`; the body and elements stay `Value`).
+        let per_element: Vec<Vec<Value>> = elements
             .iter()
-            .map(|&e| {
-                let mut map: HashMap<u32, TermId> = HashMap::new();
+            .map(|e| {
+                let mut map = Substitution::default();
                 if let Some(vid) = binder_vid {
-                    map.insert(vid, e);
+                    map.bind_value(kb, vid, e.clone());
                 }
-                body_tids
-                    .iter()
-                    .map(|&g| Self::subst_globals(kb, g, &map))
-                    .collect()
+                body.iter().map(|g| kb.reify_value(g, &map)).collect()
             })
             .collect();
 
         if is_forall {
             // Conjunction: flatten all element bodies, prepend, replace frame.
             let frame = self.stack.last().unwrap();
-            let mut new_goals: Vec<Value> =
-                per_element.into_iter().flatten().map(Value::term).collect();
+            let mut new_goals: Vec<Value> = per_element.into_iter().flatten().collect();
             new_goals.extend(frame.goals[1..].iter().cloned());
             let new_subst = frame.subst.clone();
             let new_assumed = frame.assumed_facts.clone();
@@ -1587,7 +1659,7 @@ impl SearchStream {
             }
             let candidates: Vec<Candidate> = per_element
                 .into_iter()
-                .map(|body| Candidate::Continuation(body.into_iter().map(Value::term).collect()))
+                .map(Candidate::Continuation)
                 .collect();
             let original_goal = self.stack.last().unwrap().goals[0].clone();
             let f = self.stack.last_mut().unwrap();
@@ -1862,46 +1934,27 @@ impl SearchStream {
         }
     }
 
-    /// Extract the positional args of a `tuple(...)` Fn term. Returns an
-    /// empty vec if the term isn't a tuple.
-    fn unwrap_tuple_args(kb: &KnowledgeBase, id: TermId) -> Vec<TermId> {
-        match kb.terms.get(id) {
-            Term::Fn { functor, pos_args, .. } if kb.resolve_sym(*functor) == "tuple" => {
-                pos_args.iter().copied().collect()
-            }
-            _ => Vec::new(),
+    /// The positional args of a `tuple(...)` application, each as a carrier-
+    /// faithful [`Value`] (WI-683). Reads through [`TermView`], so a `Value::Node`
+    /// `forall_impl` binder / antecedent / consequent tuple — or a bounded-quant
+    /// body tuple — unwraps to its child occurrences without lowering to a term.
+    /// Empty vec if the head isn't a `tuple` (`functor_sym` reads the functor off
+    /// either the `Fn{tuple}` or the 0-ary `Ref(tuple)` spelling).
+    fn unwrap_tuple_args(kb: &KnowledgeBase, goal: &impl TermView) -> Vec<Value> {
+        let is_tuple = matches!(
+            goal.head(kb).functor_sym(),
+            Some(f) if kb.resolve_sym(f) == "tuple"
+        );
+        if !is_tuple {
+            return Vec::new();
         }
-    }
-
-    /// Walk a term, replacing every `Var::Global(vid)` whose raw id is
-    /// in `subst_map` with the mapped term. Allocates new Fn terms only
-    /// where children change.
-    fn subst_globals(
-        kb: &mut KnowledgeBase,
-        term: TermId,
-        subst_map: &HashMap<u32, TermId>,
-    ) -> TermId {
-        match kb.terms.get(term).clone() {
-            Term::Var(Var::Global(vid)) => {
-                subst_map.get(&vid.raw()).copied().unwrap_or(term)
-            }
-            Term::Fn { functor, pos_args, named_args } => {
-                let new_pos: SmallVec<[TermId; 4]> = pos_args.iter()
-                    .map(|&t| Self::subst_globals(kb, t, subst_map))
-                    .collect();
-                let new_named: SmallVec<[(Symbol, TermId); 2]> = named_args.iter()
-                    .map(|&(s, t)| (s, Self::subst_globals(kb, t, subst_map)))
-                    .collect();
-                if new_pos.iter().zip(pos_args.iter()).all(|(a, b)| a == b)
-                    && new_named.iter().zip(named_args.iter())
-                        .all(|(a, b)| a.1 == b.1)
-                {
-                    return term;
-                }
-                kb.alloc(Term::Fn { functor, pos_args: new_pos, named_args: new_named })
-            }
-            _ => term,
+        let mut out = Vec::new();
+        let mut i = 0;
+        while let Some(child) = goal.pos_arg(kb, i) {
+            out.push(child.to_value());
+            i += 1;
         }
+        out
     }
 
     /// Rotate the current frame's `goals[0]` (a delayed / undecided NAF goal)

@@ -99,6 +99,20 @@ const FIXTURE: &str = r#"
 
       -- non-ground collection: ?xs is never bound
       rule unground(?d)        :- (forall ?x in ?xs: good(?x))
+
+      -- WI-683 coverage: head unification binds ?xs to a partial cons whose tail
+      -- ?rest a body goal fills, so ?xs is a VAR-SOURCED `cons(a, cons(b, nil))`
+      -- spine reaching the quantifier (a distinct binding path from a direct list
+      -- argument). (`eq` is semantic and would DELAY rather than bind — head
+      -- unification is what produces a var-bound spine.)
+      rule ab_partial(cons(head: a, tail: ?rest))    :- tail_is_b(?rest)
+      fact tail_is_b(cons(head: b, tail: nil))
+      rule bada_partial(cons(head: bad, tail: ?rest)) :- tail_is_a(?rest)
+      fact tail_is_a(cons(head: a, tail: nil))
+
+      rule all_good_chained(?d)  :- ab_partial(?xs),   (forall ?x in ?xs: good(?x))
+      -- the sole `good` witness (`a`) lives in the CHAINED tail
+      rule some_chained_tail(?d) :- bada_partial(?xs), (some ?x in ?xs: good(?x))
     end
 "#;
 
@@ -170,6 +184,44 @@ fn forall_over_nil_is_vacuously_true() {
     let empty = make_list(&mut kb, &[]);
     let goal = make_call(&mut kb, "test.wi027.all_good_of", &[empty]);
     assert!(resolve_one(&mut kb, goal), "forall over [] must hold vacuously");
+}
+
+// definite_only: a floundered/delayed solution is NOT counted, so a `true`
+// result means the quantifier was actually DECIDED (the collection enumerated),
+// not just residualized (`resolve_one`, with `definite_only:false`, would count
+// a residual and mask a delay).
+fn resolve_one_definite(kb: &mut KnowledgeBase, goal: TermId) -> bool {
+    let cfg = ResolveConfig { definite_only: true, ..ResolveConfig::default() };
+    !kb.resolve(&[goal], &cfg).is_empty()
+}
+
+#[test]
+fn forall_over_head_unified_partial_cons() {
+    // The collection var ?xs is bound — via head unification of `ab_partial`'s
+    // structured head plus a body goal filling the tail — to `cons(a, cons(b,
+    // nil))`; `forall` must DECIDE it (both good), not flounder. Exercises the
+    // WI-683 carrier-neutral `bounded_list_elements` over a var-sourced spine (a
+    // distinct binding path from the direct-argument `forall_over_variable_bound_list`).
+    // NB the resolved `Term` binding arrives fully inlined; a `Value::Node`/`Entity`
+    // tail — which `apply_subst` leaves as a var — is what the per-node σ-chase
+    // additionally covers, but that needs eval integration to exhibit here.
+    let mut kb = load_with(FIXTURE);
+    let d = item(&mut kb, "a");
+    let goal = make_call(&mut kb, "test.wi027.all_good_chained", &[d]);
+    assert!(resolve_one_definite(&mut kb, goal),
+        "forall over a head-unified var list [a,b] must enumerate and decide true");
+}
+
+#[test]
+fn some_over_head_unified_partial_cons_witness_in_tail() {
+    // The sole `good` witness (`a`) lives in the tail of a var-sourced spine
+    // (`bada_partial` binds ?xs to `cons(bad, cons(a, nil))`); `some` must decide
+    // true by enumerating past the first element.
+    let mut kb = load_with(FIXTURE);
+    let d = item(&mut kb, "a");
+    let goal = make_call(&mut kb, "test.wi027.some_chained_tail", &[d]);
+    assert!(resolve_one_definite(&mut kb, goal),
+        "some over a head-unified var list [bad, a] must find the tail witness a");
 }
 
 #[test]

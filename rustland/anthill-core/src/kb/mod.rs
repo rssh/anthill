@@ -2741,6 +2741,33 @@ impl KnowledgeBase {
             .find(|s| !s.is_contradiction())
     }
 
+    /// WI-683 — carrier-neutral peer of [`match_view`]: the PATTERN may itself
+    /// ride any carrier (a `Value::Node` occurrence / `Value::Entity`), not only
+    /// a hash-consed `TermId`. Inserts the pattern via the already-generic
+    /// [`SubstTree::insert_pattern`] and resolves the matched leaf against the
+    /// pattern's OWN [`term_view::TermView`] (`resolve_leaf_view`), so a
+    /// `Value::Node` `forall_impl` antecedent discharges a goal without being
+    /// lowered to a term (`reify_goal_value` retired from the assumed-fact path).
+    ///
+    /// Same match semantics as `match_view` — the resolution (wildcard) query so
+    /// a goal's flex-`Global` var binds to the assumed fact's structure, and
+    /// `unify_rebind = false` (a `Value::Term` pattern head therefore resolves
+    /// byte-identically to `match_view(reify(pattern), target)`, the pre-WI-683
+    /// path). `match_view` stays the fast path for the many term-pattern callers
+    /// (reflect matching, external rows, simp).
+    pub fn match_view_value_pattern<V: term_view::TermView>(
+        &self,
+        pattern: &crate::eval::value::Value,
+        target: &V,
+    ) -> Option<subst::Substitution> {
+        let mut tree = SubstTree::<()>::new();
+        tree.insert_pattern(self, pattern, ());
+        let results = tree.query_resolved_value(self, target, false, |_| pattern.clone());
+        results.into_iter()
+            .map(|(_, s)| s)
+            .find(|s| !s.is_contradiction())
+    }
+
     /// One-directional match of a rule-LHS `pattern` against a `target` that may
     /// itself carry flex-`Global` (query) vars — the simp-rewriter's matcher. A
     /// flex-`Global` var on the TARGET side is INERT (matches only a stored
@@ -2796,6 +2823,7 @@ impl KnowledgeBase {
         let candidates = self.discrim.query_resolved_value(
             self,
             pattern,
+            true,
             |rid: &RuleId| rules[rid.index()].head.clone(),
         );
 
