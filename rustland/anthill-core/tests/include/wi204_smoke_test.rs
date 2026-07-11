@@ -15,7 +15,7 @@ use anthill_core::parse;
 /// loaded KB if all phases succeed; panics with diagnostics otherwise.
 fn load_bundle_context(driver_src: &str) -> KnowledgeBase {
     let mut files = crate::common::collect_stdlib_and_rust_bindings();
-    files.push(crate::common::workspace_root().join("anthill-todo/domain.anthill"));
+    files.push(crate::common::workspace_root().join("rustland/anthill-todo/anthill/domain.anthill"));
     // version.anthill defines the bundle's `StoreFormat` entity that store.anthill
     // now imports (WI-434) — load it before store or the import is unresolved.
     files.push(crate::common::workspace_root().join("rustland/anthill-todo/anthill/version.anthill"));

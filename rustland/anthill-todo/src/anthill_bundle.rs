@@ -18,16 +18,14 @@ const BUNDLE_SOURCES: &[(&str, &str)] = &[
     // skips a project's own domain.anthill/rules.anthill at load so they are
     // never doubled.
     //
-    // Canonical source = the repo-root tracker copy, reached the way main.rs
-    // reaches its init templates (`../../../` = repo root). That keeps ONE
-    // on-disk copy rather than minting a third: the same file is the binary's
-    // domain, this project's own (skipped-at-load) tracker file, and the
-    // anthill-core test fixture. Editing it rebuilds the binary — which is the
-    // point (version-locking). A future cleanup could relocate the canonical
-    // copy to `anthill/` beside version/store/main and repoint the fixtures,
-    // decoupling the asset from the live tracker dir.
-    ("anthill.stage0/domain", include_str!("../../../anthill-todo/domain.anthill")),
-    ("anthill.stage0.workflow/rules", include_str!("../../../anthill-todo/rules.anthill")),
+    // Canonical source = these two files under `anthill/` beside version/store/
+    // main (WI-684). This is the ONE on-disk copy: the bundle asset and the
+    // anthill-core test fixtures point here, decoupled from the live tracker
+    // dir. Editing them rebuilds the binary — which is the point (version-
+    // locking). The repo's own `anthill-todo/` tracker no longer carries a
+    // domain/rules copy; it dogfoods the bundle like any other project.
+    ("anthill.stage0/domain", include_str!("../anthill/domain.anthill")),
+    ("anthill.stage0.workflow/rules", include_str!("../anthill/rules.anthill")),
     ("anthill-todo/store", include_str!("../anthill/store.anthill")),
     ("anthill-todo/main", include_str!("../anthill/main.anthill")),
 ];

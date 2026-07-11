@@ -649,7 +649,7 @@ fn dispatch_commit_s_w_type_checks_via_workitemstore_satisfaction() {
     // Exercises the typer's check_apply path end-to-end (parse → unify →
     // dispatch), not just the manual-subst entry point above.
     let domain_src = std::fs::read_to_string(
-        crate::common::workspace_root().join("anthill-todo/domain.anthill")
+        crate::common::workspace_root().join("rustland/anthill-todo/anthill/domain.anthill")
     ).expect("read domain.anthill");
     let store_src = std::fs::read_to_string(
         crate::common::workspace_root().join("rustland/anthill-todo/anthill/store.anthill")

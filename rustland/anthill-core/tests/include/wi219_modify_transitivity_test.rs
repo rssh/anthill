@@ -31,7 +31,7 @@ fn load_stdlib_and_project_kb() -> KnowledgeBase {
     // plus version.anthill for the bundle's `StoreFormat` entity that store.anthill
     // now imports (WI-434) — without it store.anthill's import is unresolved.
     let project_files = vec![
-        crate::common::workspace_root().join("anthill-todo/domain.anthill"),
+        crate::common::workspace_root().join("rustland/anthill-todo/anthill/domain.anthill"),
         crate::common::workspace_root().join("rustland/anthill-todo/anthill/version.anthill"),
     ];
     let parsed: Vec<_> = project_files.iter()

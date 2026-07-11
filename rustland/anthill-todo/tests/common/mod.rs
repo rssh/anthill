@@ -40,7 +40,7 @@ pub fn workspace_root() -> PathBuf {
         .to_path_buf()
 }
 
-/// Build a fresh project under `tmp` with the workspace's own
+/// Build a fresh project under `tmp` with the bundle-asset
 /// domain.anthill / rules.anthill copied in (so the bundle's
 /// `import anthill.stage0.{...}` resolves at scan time) and a
 /// caller-supplied workitems.anthill body.
@@ -48,13 +48,15 @@ pub fn workspace_root() -> PathBuf {
 /// Since WI-505 these copied domain/rules are redundant — the bundle
 /// supplies them and the CLI skips a project's own copies — but keeping
 /// them here exercises that skip path, and existing assertions that scan
-/// every project file (`read_combined`) stay unchanged.
+/// every project file (`read_combined`) stay unchanged. The copy-source is
+/// the canonical bundle asset under `rustland/anthill-todo/anthill/`, not the
+/// live tracker dir (WI-684).
 pub fn setup_project(tmp: &tempfile::TempDir, workitems: &str) -> PathBuf {
     let proj = tmp.path().to_path_buf();
     let inner = proj.join("anthill-todo");
     fs::create_dir(&inner).expect("mkdir anthill-todo");
 
-    let src_root = workspace_root().join("anthill-todo");
+    let src_root = workspace_root().join("rustland/anthill-todo/anthill");
     for f in ["domain.anthill", "rules.anthill"] {
         fs::copy(src_root.join(f), inner.join(f)).expect("copy project file");
     }

@@ -16,8 +16,8 @@ use anthill_core::persistence::print::TermPrinter;
 #[ignore]
 fn dump_eq_lt_rewrites() {
     let mut files = crate::common::collect_stdlib_and_rust_bindings();
-    files.push(crate::common::workspace_root().join("anthill-todo/domain.anthill"));
-    files.push(crate::common::workspace_root().join("anthill-todo/rules.anthill"));
+    files.push(crate::common::workspace_root().join("rustland/anthill-todo/anthill/domain.anthill"));
+    files.push(crate::common::workspace_root().join("rustland/anthill-todo/anthill/rules.anthill"));
     // version.anthill defines the bundle's `StoreFormat` entity that store.anthill
     // and main.anthill now import (WI-434) — load it before them.
     files.push(crate::common::workspace_root().join("rustland/anthill-todo/anthill/version.anthill"));

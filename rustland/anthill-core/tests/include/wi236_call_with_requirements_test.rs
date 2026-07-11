@@ -36,7 +36,7 @@ end
 
 fn load_with_driver() -> KnowledgeBase {
     let mut files = crate::common::collect_stdlib_and_rust_bindings();
-    files.push(crate::common::workspace_root().join("anthill-todo/domain.anthill"));
+    files.push(crate::common::workspace_root().join("rustland/anthill-todo/anthill/domain.anthill"));
     // version.anthill defines the bundle's `StoreFormat` entity that store.anthill
     // now imports (WI-434) — load it before store or the import is unresolved.
     files.push(crate::common::workspace_root().join("rustland/anthill-todo/anthill/version.anthill"));
@@ -229,7 +229,7 @@ fn nested_op_dispatches_spec_call_via_inherited_requires() {
     // dispatch classification must still fire so the runtime reaches
     // the impl body instead of erroring `unknown operation: lookup`.
     let mut files = crate::common::collect_stdlib_and_rust_bindings();
-    files.push(crate::common::workspace_root().join("anthill-todo/domain.anthill"));
+    files.push(crate::common::workspace_root().join("rustland/anthill-todo/anthill/domain.anthill"));
     // version.anthill defines the bundle's `StoreFormat` entity that store.anthill
     // now imports (WI-434) — load it before store or the import is unresolved.
     files.push(crate::common::workspace_root().join("rustland/anthill-todo/anthill/version.anthill"));
