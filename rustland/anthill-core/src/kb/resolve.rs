@@ -3491,26 +3491,20 @@ impl KnowledgeBase {
             return BuiltinResult::delay();
         }
         let target = self.resolve_result_target(goal.pos_arg(self, 1), subst);
-        let walked_inst = reify_goal_value(self, &inst);
-
-        // Extract the sort symbol from various term shapes
-        let sort_sym = match self.terms.get(walked_inst).clone() {
-            // Simple Ref: the sort itself
-            Term::Ref(sym) => Some(sym),
-            // SortView(sort_name_term, bindings...) — first pos arg is the sort name
-            Term::Fn { ref functor, ref pos_args, .. } => {
-                let functor_name = self.symbols.name(*functor);
-                if functor_name == "SortView" && !pos_args.is_empty() {
-                    // First pos arg is the sort name term (e.g. Eq())
-                    let name_term = pos_args[0];
-                    match self.terms.get(name_term) {
-                        Term::Fn { functor: inner_f, .. } => Some(*inner_f),
-                        Term::Ref(sym) => Some(*sym),
-                        _ => None,
-                    }
+        // WI-694: read the sort symbol off the arg's head carrier-neutrally (no
+        // reify) — `functor_sym` unifies the `Ref` / `Fn` spellings across carriers.
+        let sort_sym = match inst.head(self) {
+            // Simple Ref: the sort itself.
+            ViewHead::Ref(sym) => Some(sym),
+            // `SortView(sort_name, bindings…)` — the first positional child is the
+            // sort name; read ITS head symbol. Any other functor is the sort itself
+            // (e.g. `Eq()` / `SortInfo(...)`).
+            ViewHead::Functor { functor: Some(functor), pos_arity, .. } => {
+                if self.symbols.name(functor) == "SortView" && pos_arity > 0 {
+                    inst.pos_arg(self, 0)
+                        .and_then(|name| name.head(self).functor_sym())
                 } else {
-                    // Direct functor (e.g. Eq() or SortInfo(...))
-                    Some(*functor)
+                    Some(functor)
                 }
             }
             _ => None,
@@ -3543,13 +3537,13 @@ impl KnowledgeBase {
             return BuiltinResult::delay();
         }
         let target = self.resolve_result_target(goal.pos_arg(self, 1), subst);
-        let walked = reify_goal_value(self, &place_val);
-        // A `Symbol` value is a `Term::Ref`; a canonical sort/place reference is
-        // a nullary `Fn` — accept either, mirroring `builtin_kind`.
-        let sym = match self.terms.get(walked) {
-            Term::Ref(s) => *s,
-            Term::Fn { functor, .. } => *functor,
-            _ => return BuiltinResult::Failure,
+        // WI-694: the place symbol read off the arg's head, carrier-neutrally. A
+        // `Symbol` value is a `Ref`, a canonical sort/place reference a nullary `Fn`;
+        // `functor_sym` yields the symbol from either spelling for any carrier
+        // (Term/Node/Entity) with no reify. A non-symbol arg (scalar/…) reads `None`
+        // → clean `Failure` (the former `reify_goal_value` would have panicked).
+        let Some(sym) = place_val.head(self).functor_sym() else {
+            return BuiltinResult::Failure;
         };
         let prov_qn = match self.kind_of(sym) {
             Some(crate::intern::SymbolKind::Param) => "anthill.reflect.feed.Provenance.input",
@@ -5135,12 +5129,11 @@ impl KnowledgeBase {
             return BuiltinResult::delay();
         }
         let target = self.resolve_result_target(goal.pos_arg(self, 1), subst);
-        let walked_sym = reify_goal_value(self, &sym_val);
-        // Extract the symbol from Ref or Fn term
-        let sym = match self.terms.get(walked_sym) {
-            Term::Ref(s) => *s,
-            Term::Fn { functor, .. } => *functor,
-            _ => return BuiltinResult::Failure,
+        // WI-694: the symbol read off the arg's head, carrier-neutrally —
+        // `functor_sym` yields it from a `Ref` or `Fn` of any carrier without
+        // reifying; a non-symbol arg reads `None` → `Failure`.
+        let Some(sym) = sym_val.head(self).functor_sym() else {
+            return BuiltinResult::Failure;
         };
 
         let scope_raw = match self.symbols.get(sym) {
@@ -5174,11 +5167,10 @@ impl KnowledgeBase {
             return BuiltinResult::delay();
         }
         let target = self.resolve_result_target(goal.pos_arg(self, 1), subst);
-        let walked_sym = reify_goal_value(self, &sym_val);
-        let sym = match self.terms.get(walked_sym) {
-            Term::Ref(s) => *s,
-            Term::Fn { functor, .. } => *functor,
-            _ => return BuiltinResult::Failure,
+        // WI-694: the symbol read off the arg's head, carrier-neutrally (no reify);
+        // a non-symbol arg reads `None` → `Failure`.
+        let Some(sym) = sym_val.head(self).functor_sym() else {
+            return BuiltinResult::Failure;
         };
 
         let kind_str = match self.symbols.get(sym) {
