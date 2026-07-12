@@ -78,7 +78,7 @@ end
         ("WI-003".to_string(), "third".to_string()),
     ];
     let rows_clone = rows.clone();
-    kb.register_route_handler(functor, move |_kb: &_, _pattern| {
+    kb.register_route_handler(functor, move |_kb: &_, _pattern: &Value| {
         Box::new(WorkItemBackend {
             rows: rows_clone.clone().into_iter(),
             functor,
@@ -229,7 +229,7 @@ end
     // Emit-witness shared between the handler's backend and this test.
     let emits = std::rc::Rc::new(std::cell::Cell::new(0u32));
     let emits_for_handler = emits.clone();
-    kb.register_route_handler(functor, move |_kb: &_, _pattern| {
+    kb.register_route_handler(functor, move |_kb: &_, _pattern: &Value| {
         Box::new(CyclicRowBackend {
             functor,
             wrap_functor,

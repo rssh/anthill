@@ -32,20 +32,23 @@ use std::collections::HashMap;
 
 use crate::intern::Symbol;
 
-use super::term::TermId;
 use super::KnowledgeBase;
 use crate::eval::stream::ExternalStream;
+use crate::eval::value::Value;
 
-/// Trait-driven row source for a routed goal. The `pattern` argument is
-/// the goal `TermId` as it appears in the resolver — the handler may
-/// inspect arguments to push filters down to its backend, or ignore them
-/// and stream every row.
+/// Trait-driven row source for a routed goal. The `pattern` argument is the
+/// goal as a carrier-neutral [`Value`] (WI-696) as it appears in the resolver — a
+/// `Value::Term`, or a `Value::Node` occurrence goal that has no hash-consed twin
+/// — read through [`TermView`](super::term_view::TermView)
+/// (`pattern.head(kb).functor_sym()`, `pattern.pos_arg(kb, i)`, …). The handler
+/// may inspect arguments to push filters down to its backend, or ignore them and
+/// stream every row.
 ///
 /// Stateless by convention: a single registered handler may be invoked
 /// many times across resolutions. Per-call state (open cursors, file
 /// handles) lives inside the returned [`ExternalStream`].
 pub trait RouteHandler {
-    fn retrieve(&self, kb: &KnowledgeBase, pattern: TermId) -> Box<dyn ExternalStream>;
+    fn retrieve(&self, kb: &KnowledgeBase, pattern: &Value) -> Box<dyn ExternalStream>;
 }
 
 /// Blanket impl for closures: lets callers register a backend with
@@ -53,9 +56,9 @@ pub trait RouteHandler {
 /// of declaring a struct + impl per backend.
 impl<F> RouteHandler for F
 where
-    F: Fn(&KnowledgeBase, TermId) -> Box<dyn ExternalStream>,
+    F: Fn(&KnowledgeBase, &Value) -> Box<dyn ExternalStream>,
 {
-    fn retrieve(&self, kb: &KnowledgeBase, pattern: TermId) -> Box<dyn ExternalStream> {
+    fn retrieve(&self, kb: &KnowledgeBase, pattern: &Value) -> Box<dyn ExternalStream> {
         (self)(kb, pattern)
     }
 }

@@ -818,10 +818,9 @@ impl SearchStream {
         self.stats.lazy_walk_calls += 1;
         // Walk goals[0] under σ to a `Value` goal (memoized back). A `Value::Node`
         // occurrence goal walks via `substitute_occurrence` (occurrence-native,
-        // no lowering); a `Value::Term` goal via `apply_subst`. `goal_t` is the
-        // hash-consed carrier when the goal has one (`None` for an occurrence),
-        // consumed by the term-structured handlers (forall/quant tuple-surgery,
-        // HoApply, cut, external-row) and as the ground query-cache key.
+        // no lowering); a `Value::Term` goal via `apply_subst`. The goal rides
+        // carrier-neutrally from here — the builtin handlers read it through
+        // `TermView`, reifying to a `TermId` only at genuine term boundaries.
         let goal_val: Value = {
             let f = self.stack.last().unwrap();
             if f.subst.is_empty() {
@@ -839,13 +838,6 @@ impl SearchStream {
                 self.stack.last_mut().unwrap().goals[0] = walked.clone();
                 walked
             }
-        };
-        // The hash-consed `TermId` carrier of the goal, if any — a `Value::Node`
-        // occurrence goal has none and is lowered on demand via `reify_goal_value`
-        // below.
-        let goal_t = match &goal_val {
-            Value::Term { id: t, .. } => Some(*t),
-            _ => None,
         };
         let frame = self.stack.last().unwrap();
 
@@ -1243,20 +1235,21 @@ impl SearchStream {
         candidates.extend(rule_candidates.into_iter().map(|(rid, s)| Candidate::Rule(rid, s)));
 
         // External-source rows (proposal 007 §11 + 026.1 Q4 Stage B). If the
-        // goal head functor has a registered route handler, drain its stream
-        // and add each matching row as an ExternalRow candidate. Term-
-        // structured; reify a Node goal for the handler + row match.
+        // goal head functor has a registered route handler, drain its stream and
+        // add each matching row as an ExternalRow candidate. Carrier-neutral
+        // (WI-696): the handler reads the goal `Value` through `TermView` and each
+        // row matches via `match_view_value_pattern` — no whole-goal reify.
         let functor = match goal_val.head(kb) {
             ViewHead::Functor { functor: Some(f), .. } => Some(f),
             _ => None,
         };
         if let Some(functor) = functor {
             if kb.route_handler_for(functor).is_some() {
-                let goal = goal_t.unwrap_or_else(|| reify_goal_value(kb, &goal_val));
-                let stream_opt = kb.route_handler_for(functor).map(|h| h.retrieve(kb, goal));
+                let stream_opt =
+                    kb.route_handler_for(functor).map(|h| h.retrieve(kb, &goal_val));
                 if let Some(mut stream) = stream_opt {
                     while let Some(row) = stream.next() {
-                        if let Some(subst) = kb.match_view(goal, &row) {
+                        if let Some(subst) = kb.match_view_value_pattern(&goal_val, &row) {
                             if !subst.is_contradiction() {
                                 candidates.push(Candidate::ExternalRow(subst));
                             }
