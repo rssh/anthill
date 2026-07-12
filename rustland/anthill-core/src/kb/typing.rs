@@ -24566,6 +24566,11 @@ pub fn type_check_sorts_typed(kb: &mut KnowledgeBase, sort_terms: &[TermId]) -> 
     // sort/body split above, so a body-less FREE spec is covered too.
     errors.extend(check_operation_signatures(kb));
 
+    // WI-701 (proposal 054 §"Branch and External"): reject a declared effect row that
+    // carries BOTH Branch and External — a Branch region may not perform External.
+    // Load-time, over every OperationInfo fact, like the signature check above.
+    errors.extend(check_branch_external_exclusion(kb));
+
     // WI-282 + WI-603: type every rule body in one pass — collect each rule's var
     // types once, report a (sort-scoped) contradiction, dispatch its `Expr::DotApply`
     // to method/field form, and stamp the collected type onto every `Var` leaf.
@@ -24639,6 +24644,100 @@ fn check_operation_signatures(kb: &KnowledgeBase) -> Vec<TypeError> {
                  parameter's type may project an EARLIER parameter, not form a cycle",
                 names.join(" -> "),
             )));
+        }
+    }
+    errors
+}
+
+/// The `label` child of a `guarded(label, guard)` effect atom, else `None`. WI-067
+/// (proposal 048): a guarded effect element `E :- g` is CONSERVATIVELY PRESENT — the
+/// same over-approximation [`decompose_effect_row_raw`] makes (guarded contributes its
+/// label exactly like `present` until discharge lands) — so the co-occurrence gate
+/// peeks past the guard to the underlying sort rather than silently missing it.
+fn guarded_effect_label(kb: &KnowledgeBase, v: &Value) -> Option<Value> {
+    if resolved_functor_name(kb, v) == Some("guarded") {
+        named_child_value(kb, v, kb.lookup_symbol("label")?)
+    } else {
+        None
+    }
+}
+
+/// Does an effect label name the effect sort `sort` (canonically)? `Branch` and
+/// `External` are nullary effect sorts, so a PRESENT label is a bare `sort_ref`; the
+/// `Parameterized` arm is defensive so a future indexed spelling of either sort is
+/// still recognized rather than silently missed. A guarded label is peeked past to its
+/// underlying sort (conservatively present — see [`guarded_effect_label`]); an
+/// `absent(...)` (`-External`) is deliberately NOT unwrapped — an absent label is not
+/// performed, so it must not trip the gate. A row var / arrow / other head is not a
+/// named effect sort. Carrier-agnostic — reads the head through [`TermView`].
+fn effect_label_names_sort(kb: &KnowledgeBase, label: &Value, sort: Symbol) -> bool {
+    let guarded = guarded_effect_label(kb, label);
+    let label = guarded.as_ref().unwrap_or(label);
+    match type_head(kb, label) {
+        TypeHead::SortRef(s) | TypeHead::Parameterized { base: s } => {
+            same_sort_canonical(kb, s, sort)
+        }
+        _ => false,
+    }
+}
+
+/// WI-701 / proposal 054 §"`Branch` and `External`": a `Branch` region may not
+/// perform `External`, so the typer REJECTS a declared effect row that carries both.
+///
+/// WHY (054): 027/037/047 §8 give a tracked resource exactly two lawful
+/// branch-interaction contracts — ranked ABOVE `Branch` it is snapshotted on entry
+/// and rolled back on backtrack (`register_undo`); ranked BELOW it survives across
+/// branches — and both rest on one premise: the runtime mediates every change to the
+/// resource. `External` names precisely the state for which that premise fails IN
+/// PRINCIPLE — there is no `register_undo` for the world (above `Branch` is
+/// impossible: a branch that `fail()`s after `create_issue` cannot un-mint the id),
+/// and a solver multi-shot-resumes the continuation once per solution (below `Branch`
+/// is unsound: an `External` call reached after a `reflect` runs once per branch) — so
+/// NEITHER contract is available and the hazard is permanent.
+///
+/// This is the BLUNT co-occurrence reject the ticket scopes: any operation whose
+/// declared effect row PRESENTS both labels is rejected at load. It is sound to add
+/// now and purely additive — the `Branch`/suspend-resume runtime is still a
+/// placeholder, so no runnable code declares both today (the gate forbids nothing we
+/// can currently run). It is deliberately NOT compositional: WI-329's row-discharge
+/// typing (047 §9 step 5) is what later makes it exact — a solver's reify discharges
+/// `Branch` from the row, so `External` becomes legal again at precisely the point
+/// where the search has committed to its solutions (the sound sandwich: read the
+/// world before the search, search over tracked state only, write after the commit).
+///
+/// Walks every `OperationInfo` fact (via [`all_operation_effects`], NOT the
+/// first-fact-only cache) so a spec AND its impl are each checked; a diagnostic is
+/// emitted once per offending op symbol. Inert on a KB without the `External` prelude
+/// (WI-699) — nothing can carry the label, so there is nothing to exclude.
+fn check_branch_external_exclusion(kb: &KnowledgeBase) -> Vec<TypeError> {
+    let mut errors: Vec<TypeError> = Vec::new();
+    let (Some(branch_sym), Some(external_sym)) = (
+        kb.try_resolve_symbol("anthill.prelude.Branch"),
+        kb.try_resolve_symbol("anthill.prelude.External"),
+    ) else {
+        return errors;
+    };
+    let mut reported: std::collections::HashSet<Symbol> = std::collections::HashSet::new();
+    for (op_sym, effects) in super::op_info::all_operation_effects(kb) {
+        let has_branch = effects.iter().any(|e| effect_label_names_sort(kb, e, branch_sym));
+        let has_external = effects.iter().any(|e| effect_label_names_sort(kb, e, external_sym));
+        if has_branch && has_external && reported.insert(op_sym) {
+            let span = kb.functor_span(op_sym).map(|s| s.span);
+            errors.push(TypeError::Other {
+                site: TypeError::here(),
+                span,
+                context: TypeErrorContext::OperationEffects { op_name: op_sym },
+                expected: format!(
+                    "operation `{}` to declare at most one of `Branch` / `External`",
+                    kb.qualified_name_of(op_sym),
+                ),
+                actual:
+                    "effect row carries BOTH `Branch` and `External` — a Branch region \
+                     may not perform External: External state has no register_undo (above \
+                     Branch is impossible) and is re-run once per solution (below Branch is \
+                     unsound). Proposal 054 §\"Branch and External\"."
+                        .to_string(),
+            });
         }
     }
     errors

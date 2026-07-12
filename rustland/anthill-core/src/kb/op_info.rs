@@ -112,6 +112,32 @@ pub struct OperationRecord {
 /// check pass (`check_operation_bodies`, keyed off `op_bodies`/`SortInfo`) does not
 /// reach. Carrier-agnostic, mirroring [`lookup_operation_info`]'s param decode.
 pub fn all_operation_params(kb: &KnowledgeBase) -> Vec<(Symbol, Vec<(Symbol, Value)>)> {
+    operation_info_fact_heads(kb)
+        .into_iter()
+        .map(|(op_sym, head)| (op_sym, extract_params(kb, head_field(kb, head, "params"))))
+        .collect()
+}
+
+/// WI-701: every operation's `(symbol, declared effect labels)` in ONE pass over the
+/// `OperationInfo` facts — the effect-row twin of [`all_operation_params`]. Returns
+/// ONE entry PER FACT, deliberately un-deduped by symbol: a spec op and its impl are
+/// separate `OperationInfo` facts, each with its OWN declared row, and the
+/// Branch×External co-occurrence gate (proposal 054 §"`Branch` and `External`") must
+/// see every declared row — not just the first-fact-only [`lookup_operation_info`]
+/// cache. Carrier-agnostic via [`effects_of_head`] (a `denoted`-bearing label rides
+/// as a `Value::Node`, a ground one as a `Value::Term`).
+pub fn all_operation_effects(kb: &KnowledgeBase) -> Vec<(Symbol, Vec<Value>)> {
+    operation_info_fact_heads(kb)
+        .into_iter()
+        .map(|(op_sym, head)| (op_sym, effects_of_head(kb, head)))
+        .collect()
+}
+
+/// `(op_sym, &head)` for every `OperationInfo` FACT — the shared walk behind
+/// [`all_operation_params`] / [`all_operation_effects`]. ONE entry PER FACT (a spec op
+/// and its impl are separate facts, each with its own signature); each `&Value` head
+/// borrows `kb`. A fact whose head carries no resolvable `name` ref is skipped.
+fn operation_info_fact_heads(kb: &KnowledgeBase) -> Vec<(Symbol, &Value)> {
     let Some(op_info_sym) = kb.try_resolve_symbol("anthill.reflect.OperationInfo") else {
         return Vec::new();
     };
@@ -122,8 +148,7 @@ pub fn all_operation_params(kb: &KnowledgeBase) -> Vec<(Symbol, Vec<(Symbol, Val
         }
         let head = kb.rule_head_value(rid);
         let Some(op_sym) = head_name_ref(kb, head) else { continue };
-        let params = extract_params(kb, head_field(kb, head, "params"));
-        out.push((op_sym, params));
+        out.push((op_sym, head));
     }
     out
 }

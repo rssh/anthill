@@ -580,3 +580,152 @@ fn nullary_returning_function_prefers_return_type_reading() {
         "make_inc reads as its returned Function (not eta'd to `() -> Function`); apply_it(make_inc) applies it to 0",
     );
 }
+
+// ── WI-701: the `Branch` × `External` co-occurrence gate ───────────────────────
+//
+// Proposal 054 §"`Branch` and `External`": a `Branch` region may not perform
+// `External`. Neither branch-interaction contract (snapshot-above / survive-below,
+// 027/037/047 §8) is available for state the runtime cannot mediate, and the hazard
+// is permanent (no `register_undo` for the world; a solver re-runs the continuation
+// once per solution). WI-701 is the BLUNT load-time co-occurrence reject: any
+// operation whose DECLARED effect row presents both labels is rejected. WI-329's
+// row-discharge typing later makes it compositional (a solver's reify discharges
+// `Branch`); this is the un-discharged floor, "acceptable and intended" per the ticket.
+
+/// A `Branch` region performing `External` — the primary hazard shape (a body that
+/// searches AND mints an issue). `search_and_create` OVER-declares on a pure body
+/// (the `poke`/`poke3` idiom: over-declaration is not itself an error), so ONLY the
+/// co-occurrence gate fires, isolating the mechanism under test.
+const BRANCH_EXTERNAL_SRC: &str = r#"
+namespace smoke.g_branch_external
+  import anthill.prelude.{Int64, Branch, External}
+
+  operation search_and_create() -> Int64
+    effects {Branch, External}
+  = 41
+end
+"#;
+
+/// Order-independence + the body-less SPEC-op shape: the same reject when the row is
+/// written `External`-first and declared on a body-less spec operation (walked per
+/// `OperationInfo` fact, so a spec op with no body is covered like the signature check).
+const BRANCH_EXTERNAL_SPEC_SRC: &str = r#"
+namespace smoke.g2_branch_external_spec
+  import anthill.prelude.{Int64, Branch, External}
+
+  sort Region
+    sort C = ?
+    operation region_probe(m: C) -> Int64 effects {External, Branch}
+  end
+end
+"#;
+
+/// Negative: `Branch` ALONE loads — the gate rejects only the CO-occurrence, never
+/// `Branch` on its own (a pure search region is fine).
+const BRANCH_ALONE_SRC: &str = r#"
+namespace smoke.g3_branch_alone
+  import anthill.prelude.{Int64, Branch}
+
+  operation only_branch() -> Int64
+    effects {Branch}
+  = 41
+end
+"#;
+
+/// Negative twin: `External` ALONE loads — an `External`-rowed op with no `Branch`
+/// is exactly what every WI-437 backend op is; it must stay loadable.
+const EXTERNAL_ALONE_SRC: &str = r#"
+namespace smoke.g4_external_alone
+  import anthill.prelude.{Int64, External}
+
+  operation only_external() -> Int64
+    effects {External}
+  = 41
+end
+"#;
+
+/// WI-701 present-vs-absent: `effects {Branch, -External}` LOADS — an ABSENT External
+/// is not co-occurrence (the op explicitly LACKS External inside a Branch region,
+/// which is exactly fine). Locks the gate to PRESENCE, so a future refactor keying on
+/// "mentions External" instead of "presents External" would be caught here.
+const BRANCH_LACKS_EXTERNAL_SRC: &str = r#"
+namespace smoke.g5_branch_lacks_external
+  import anthill.prelude.{Int64, Branch, External}
+
+  operation branch_lacks_external() -> Int64
+    effects {Branch, -External}
+  = 41
+end
+"#;
+
+/// WI-701 guarded co-occurrence: a GUARDED External (`External :- g`) is
+/// CONSERVATIVELY PRESENT — the same stance `decompose_effect_row_raw` takes — so
+/// `{Branch, External :- g}` is REJECTED: the gate peeks past the `:- guard` to the
+/// External sort. Without the guarded-unwrap this slips through (the `guarded(...)`
+/// atom classifies as `Parameterized{base: guarded}`, not `External`). Over-declared
+/// on a pure body (WI-478: a guarded effect is a declaration, not a performance).
+const BRANCH_GUARDED_EXTERNAL_SRC: &str = r#"
+namespace smoke.g6_branch_guarded_external
+  import anthill.prelude.{Int64, Branch, External}
+
+  operation guarded_region(b: Int64) -> Int64
+    effects {Branch, External :- eq(b, 0)}
+  = 41
+end
+"#;
+
+/// WI-701: an op declaring `effects {Branch, External}` is REJECTED at load — a
+/// Branch region may not perform External. Needles tie the error to THIS op AND both
+/// effects, so an unrelated diagnostic mentioning a token cannot satisfy it.
+#[test]
+fn branch_external_co_occurrence_rejected() {
+    expect_reject(
+        &[BRANCH_EXTERNAL_SRC],
+        &["search_and_create", "Branch", "External"],
+        "an op declaring effects {Branch, External}",
+    );
+}
+
+/// WI-701: the reject is order-independent and covers body-less SPEC ops — the row
+/// is walked per `OperationInfo` fact, not off a body.
+#[test]
+fn branch_external_co_occurrence_rejected_spec_op_order_independent() {
+    expect_reject(
+        &[BRANCH_EXTERNAL_SPEC_SRC],
+        &["region_probe", "Branch", "External"],
+        "a body-less spec op declaring effects {External, Branch}",
+    );
+}
+
+/// WI-701 negative: `Branch` alone loads — the gate is a CO-occurrence reject, not a
+/// ban on `Branch`.
+#[test]
+fn branch_alone_still_loads() {
+    expect_load(&[BRANCH_ALONE_SRC], "effects {Branch} alone");
+}
+
+/// WI-701 negative: `External` alone loads — the gate does not touch ordinary
+/// External-rowed ops (every WI-437 backend op).
+#[test]
+fn external_alone_still_loads() {
+    expect_load(&[EXTERNAL_ALONE_SRC], "effects {External} alone");
+}
+
+/// WI-701 present-vs-absent: `{Branch, -External}` loads — an absent External is not
+/// co-occurrence. Guards against the gate keying on mere mention of the label.
+#[test]
+fn branch_with_absent_external_loads() {
+    expect_load(&[BRANCH_LACKS_EXTERNAL_SRC], "effects {Branch, -External}");
+}
+
+/// WI-701: a GUARDED External is conservatively present, so `{Branch, External :- g}`
+/// is rejected — the gate peeks past the guard to the External sort (loud over silent,
+/// consistent with `decompose_effect_row_raw`).
+#[test]
+fn branch_guarded_external_co_occurrence_rejected() {
+    expect_reject(
+        &[BRANCH_GUARDED_EXTERNAL_SRC],
+        &["guarded_region", "Branch", "External"],
+        "guarded External co-occurring with Branch",
+    );
+}
