@@ -6043,11 +6043,20 @@ impl KnowledgeBase {
                 for (fs, a) in &named_c {
                     named.push((*fs, self.anf_flatten(a, rename, hoists)?));
                 }
-                // Match the former Term build's canonicalization: an arg-LESS
-                // constructor lowered to `Term::Ref(name)`, but `occ_build_fn`
-                // (occurrence_to_term's Constructor path) emits `Term::Fn{name,[],[]}`
-                // — a different term. Emit `Expr::Ref` for the nullary case so the
-                // caller's `occurrence_to_term(result_occ)` stays byte-identical.
+                // Emit `Expr::Ref(name)` for a nullary constructor so its occurrence
+                // presents the canonical bare-`Ref` form (matching the former Term
+                // build, which lowered an arg-less constructor to `Term::Ref(name)`).
+                // Redundant for a REGISTERED constructor — `occ_head`/`functor_view_head`
+                // and `occ_build_fn`+`kb.alloc` both canonicalize `Fn{name,[],[]}` →
+                // `Ref(name)` (WI-511) — but RETAINED because it also forces the `Ref`
+                // form for a nullary FREE-STANDING entity, which `functor_view_head`
+                // does NOT canonicalize (`is_constructor_symbol` is false for it), so
+                // `Expr::Constructor{name,[],[]}` would otherwise read as
+                // `Functor{name,0,0}` and mis-match a `Ref`-spelled OTHER in the
+                // `unify` goal. (The former rationale — keeping a downstream
+                // `occurrence_to_term(result_occ)` byte-identical — is stale:
+                // `result_occ` rides as a `Value::Node` into the `unify` goal, WI-690,
+                // and is never reified.)
                 if pos.is_empty() && named.is_empty() {
                     Some(NodeOccurrence::new_expr(Expr::Ref(name), span, None))
                 } else {
