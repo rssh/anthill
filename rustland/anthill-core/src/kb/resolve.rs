@@ -955,8 +955,9 @@ impl SearchStream {
             // frame tagged with `B`. Then the cut goal is consumed and resolution
             // continues with the body's tail — the cut itself always succeeds.
             if tag == BuiltinTag::Cut {
-                let goal = goal_t.unwrap_or_else(|| reify_goal_value(kb, &goal_val));
-                let barrier = Self::resolve_cut_barrier(kb, goal);
+                // Carrier-neutral (WI-348): the barrier is read off the goal's
+                // `TermView`, so a `Value::Node` cut goal needs no whole-goal reify.
+                let barrier = Self::resolve_cut_barrier(kb, &goal_val);
                 self.apply_cut(barrier);
                 let new_delay = delay_mode.reset();
                 let f = self.stack.last_mut().unwrap();
@@ -1839,25 +1840,35 @@ impl SearchStream {
     /// is entered (`bake_cut_barrier`). Returns `None` for the unbaked nullary
     /// `cut` — a `!` written at query top level with no enclosing rule —
     /// whereupon [`Self::apply_cut`] commits the whole query.
-    fn resolve_cut_barrier(kb: &KnowledgeBase, goal: TermId) -> Option<i64> {
-        match kb.terms.get(goal) {
+    ///
+    /// Carrier-neutral (WI-348): the goal is read through [`TermView`]
+    /// (`head` arity gate + `pos_arg`), so a rule-body `!` arriving as a
+    /// `Value::Node` occurrence is classified without a whole-goal reify. The
+    /// baked barrier is a concrete `IntLit` (never a σ-bound variable), so the arg
+    /// head is read directly — no walk — exactly as the former term reader did.
+    fn resolve_cut_barrier(kb: &KnowledgeBase, goal: &Value) -> Option<i64> {
+        match goal.head(kb) {
             // Unbaked nullary `cut` — a top-level-query `!` with no enclosing rule
             // body to open it. Intentional: `apply_cut(None)` commits the query.
-            Term::Fn { pos_args, named_args, .. }
-                if pos_args.is_empty() && named_args.is_empty() =>
-            {
-                None
-            }
+            // (`cut` is a builtin, not a constructor, so it never canonicalizes to
+            // the bare `Ref` spelling — the 0-ary `Functor` head is exact.)
+            ViewHead::Functor { pos_arity: 0, named_arity: 0, .. } => None,
             // The baked form `cut(IntLit(B))`.
-            Term::Fn { pos_args, named_args, .. }
-                if pos_args.len() == 1 && named_args.is_empty() =>
-            {
-                match kb.terms.get(pos_args[0]) {
-                    Term::Const(crate::kb::term::Literal::Int(n)) => Some(*n),
-                    // A baked cut always carries an Int barrier; any other arg
-                    // means a broken lowering, not a recoverable case.
-                    _ => {
-                        debug_assert!(false, "cut goal argument is not an Int barrier");
+            ViewHead::Functor { pos_arity: 1, named_arity: 0, .. } => {
+                match goal.pos_arg(kb, 0) {
+                    Some(arg) => match arg.head(kb) {
+                        ViewHead::Const(Literal::Int(n)) => Some(n),
+                        // A baked cut always carries an Int barrier; any other arg
+                        // means a broken lowering, not a recoverable case.
+                        _ => {
+                            debug_assert!(false, "cut goal argument is not an Int barrier");
+                            None
+                        }
+                    },
+                    // Head reports arity 1 but the view can't resolve arg 0 — a
+                    // carrier/view desync; surface it loudly rather than skip.
+                    None => {
+                        debug_assert!(false, "cut goal reports arity 1 but no arg 0");
                         None
                     }
                 }
