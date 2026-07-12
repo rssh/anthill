@@ -257,6 +257,20 @@ struct RuleEntry {
     /// its head vars per match instead of raw-binding their persistent VarIds
     /// into aliasing goals (the arity-0 remnant of the WI-624 leak).
     head_vars: Vec<VarId>,
+    /// WI-472: the hash-consed `TermId` this ground fact is keyed under in
+    /// `fact_dedup`, for a `Node`/`Entity`-carrier head whose key is *derived*
+    /// (not the head itself). `Some` only for a deduped value fact — a `Value::Term`
+    /// head reads its key straight off the head at retract (so it stays `None`),
+    /// and a rule / un-deduped head is `None`. Set at assert alongside the
+    /// `fact_dedup` insert; read at retract to remove the same entry (rid-guarded).
+    ///
+    /// The key term is *pinned for the KB's lifetime* (v1): a `Value::Node` head's
+    /// key is the WI-471 `cached_term` (the occ's cache owns the `+1`); a
+    /// `Value::Entity` head's key is `value_to_term`'s owned `+1`, retained and
+    /// deliberately NOT released at retract. So this field is a BORROWED id — never
+    /// release it here. Both are freed wholesale at KB teardown; a future
+    /// deferred-release queue reclaims them incrementally.
+    dedup_key: Option<TermId>,
 }
 
 /// Collect the ground `TermId` leaves reachable in a value (WI-348 Phase B), for
@@ -1205,10 +1219,18 @@ impl KnowledgeBase {
 
         // WI-233: ground-fact dedup index. Inserted only for body-empty entries
         // (rules with a body match structurally via the discrim tree, not
-        // exact-equality) AND only for a `Term`-carrier head — a value `Node`
-        // head has no `TermId` key, a dedup-miss not unsoundness (WI-348 Phase
-        // B). We do not overwrite an existing entry; the dedup check in
-        // `assert_fact` upstream routes duplicates to the existing RuleId first.
+        // exact-equality) AND only for a `Term`-carrier head. We do not overwrite an
+        // existing entry; the dedup check in `assert_fact` upstream routes duplicates
+        // to the existing RuleId first.
+        //
+        // WI-472: a `Node`/`Entity` value head is deduped instead by
+        // [`Self::assert_fact_value`] (via a derived `cached_term`/`value_to_term`
+        // key), which is the sole entry point every value-fact producer uses
+        // (`assert_fact_carrier` routes value heads there; value RULES have non-empty
+        // bodies so `is_fact` is false here). A value head reaching THIS path with an
+        // empty body has no current caller; it would be a benign dedup-MISS (stored,
+        // just not collapsed) — never unsound — and retract stays symmetric because
+        // its `dedup_key` is `None`, so no `fact_dedup` entry is removed for it.
         if is_fact {
             if let Some(t) = head_term {
                 self.fact_dedup.entry((t, sort, domain)).or_insert(rule_id);
@@ -1313,6 +1335,10 @@ impl KnowledgeBase {
             label: None,
             type_bounds: Vec::new(),
             head_vars,
+            // WI-472: set by `assert_fact_value` after this push, for a deduped
+            // Node/Entity fact head. Every other head (rule, un-deduped, or a
+            // `Value::Term` fact whose key is the head itself) leaves it `None`.
+            dedup_key: None,
         });
 
         self.by_sort.entry(sort).or_default().push(rule_id);
@@ -1863,10 +1889,18 @@ impl KnowledgeBase {
     /// Assert a value fact — a fact whose head is carrier-agnostic and may
     /// carry a `Value::Node` (denoted) subterm (WI-348 Phase B). A `Value::Term`
     /// head is an ordinary ground fact and routes to [`Self::assert_fact`]
-    /// (hash-consed dedup + refcount). A Node-bearing head is stored directly:
-    /// indexed by functor via its `TermView`, skipped by `fact_dedup` (no
-    /// `TermId` key — a dedup-miss, not unsound), and inserted into the
+    /// (hash-consed dedup + refcount). A `Node`/`Entity`-bearing head is stored
+    /// directly: indexed by functor via its `TermView` and inserted into the
     /// discrimination tree through the value carrier.
+    ///
+    /// WI-472: a `Node`/`Entity` head is now ALSO `fact_dedup`-indexed, closing
+    /// the WI-348 Node-head dedup-miss. Its key is a *derived* hash-consed `TermId`
+    /// — [`node_occurrence::cached_term`] for a bare `Node`, `value_to_term` for an
+    /// `Entity` — so two structurally-identical value facts collapse to one
+    /// `RuleEntry` exactly as two identical `Term` facts do (both route through the
+    /// hash-consing `TermStore`, so identical structure → the same key). A head
+    /// with no term form (an un-lowerable `Entity`) falls back to today's
+    /// store-without-dedup. See [`Self::value_fact_dedup_key`].
     pub fn assert_fact_value(
         &mut self,
         head: crate::eval::value::Value,
@@ -1878,9 +1912,108 @@ impl KnowledgeBase {
         if let Value::Term { id: t, .. } = head {
             return self.assert_fact(t, sort, domain, meta);
         }
-        // A value (Node/Entity) head: store + index via the shared epilogue. No
-        // body (a fact) and no `fact_dedup` (its key is `Term`-only).
+        // WI-472: dedup a Node/Entity-headed ground fact via a hash-consed key
+        // (a bare `Node` reuses the WI-471 per-occurrence `cached_term`; an
+        // `Entity` materializes the whole head with `value_to_term`).
+        if let Some((key, key_owned)) = self.value_fact_dedup_key(&head) {
+            // Dedup check — mirrors `assert_fact`: a LIVE (non-retracted) entry at
+            // this key short-circuits to the existing RuleId.
+            if let Some(&rid) = self.fact_dedup.get(&(key, sort, domain)) {
+                if !self.rules[rid.index()].retracted {
+                    // Duplicate. Balance the `Entity` probe's own throwaway
+                    // `value_to_term` `+1` (`key_owned`). A `Node` key is NOT
+                    // released: the duplicate carried a distinct occurrence `Rc`,
+                    // so `cached_term` minted a per-cell `+1` on *that transient
+                    // occ's* cache — orphaned when this `head` drops (`Drop` can't
+                    // reach the store). We leave it: a same-`Rc` re-probe would be a
+                    // cache HIT that mints NO `+1`, so releasing would under-count
+                    // and could dangle the shared key. This per-cell `+1` is the v1
+                    // pin-for-lifetime leak — benign (an over-count that only keeps
+                    // the key MORE pinned; never freed early), though it grows per
+                    // duplicate assert; the deferred-release queue reclaims it per
+                    // cell (WI-471 feedback (1)).
+                    if key_owned {
+                        self.terms.release(key);
+                    }
+                    return rid;
+                }
+            }
+            // Miss (or the keyed entry is stale-retracted): store + re-key. The
+            // key's `+1` is retained pin-for-lifetime — an `Entity`'s owned alloc
+            // and a `Node`'s cache `+1` are both left alive at retract (v1). Use
+            // `insert` (not `or_insert`) so a stale retracted key re-points to the
+            // fresh live RuleId.
+            let rid = self.push_value_head_entry(head, Vec::new(), sort, domain, meta);
+            self.fact_dedup.insert((key, sort, domain), rid);
+            self.rules[rid.index()].dedup_key = Some(key);
+            return rid;
+        }
+        // No term key (an un-lowerable `Entity` head): store without dedup, as
+        // before — a dedup-miss, never unsound (WI-348 Phase B).
         self.push_value_head_entry(head, Vec::new(), sort, domain, meta)
+    }
+
+    /// WI-472: the hash-consed `fact_dedup` key for a `Node`/`Entity`-carrier
+    /// ground-fact head, plus whether the returned `TermId` carries a `+1` that
+    /// the caller OWNS (must release if it discards the key on a dedup hit):
+    ///
+    /// - `Value::Node(occ)`: the WI-471 [`node_occurrence::cached_term`] — a
+    ///   BORROWED id (the occ's cache owns the pinned `+1`), so `key_owned = false`.
+    ///   Used as a key without releasing, consistent with the non-owning `bind_term`
+    ///   model (WI-471 feedback (2)).
+    /// - `Value::Entity{..}`: the whole head materialized via `value_to_term` — a
+    ///   freshly-alloc'd `+1` the caller owns (`key_owned = true`). An un-lowerable
+    ///   head (opaque / `Unit` / `Tuple` child) yields `None` → no key → no O(1)
+    ///   dedup (a dedup-miss, exactly the prior behavior, never unsound).
+    /// - Any other carrier (a `Value::Term` head is handled by the caller before
+    ///   this is reached): `None`.
+    ///
+    /// Both routes go through the hash-consing `TermStore`, so two structurally-
+    /// identical heads map to the SAME `TermId` — the property `fact_dedup` needs.
+    ///
+    /// INJECTIVITY (soundness). `fact_dedup` over-dedup DROPS a fact (returns the
+    /// existing RuleId, never stores the duplicate), so the key MUST be faithful:
+    /// two heads share a key only if they are the same fact. Every reachable
+    /// value-fact head is goal-shaped — a `denoted` over a `Ref` / field-path, or a
+    /// `Type`/`EffectExpr` node — which lowers losslessly (WI-390). Two lossy spots
+    /// exist but are unreachable from today's producers and guarded here:
+    ///  - A child-bearing control-flow occurrence (`If`/`Let`/`Match`/`Lambda`/
+    ///    `HoApply`) has no goal-term twin; `occurrence_to_term` maps it to
+    ///    `Term::Bottom` (a `debug_assert!(false)`, silent in release). That is a
+    ///    LOSSY key — distinct such heads collapse — so the `Node` arm rejects a
+    ///    `Bottom` key (→ `None`, store-without-dedup), mirroring the `Entity`
+    ///    arm's `Err`→`None` and honoring the "un-lowerable ⇒ never unsound"
+    ///    contract in release too.
+    ///  - `occ_build_fn` drops an `Expr::Apply`'s `type_args` (the pre-existing
+    ///    `TermView` gap documented at [`Self::incref_value_ground`]). No producer
+    ///    mints a `type_args`-bearing `Apply` inside a value-fact head, so it cannot
+    ///    over-dedup today; closing it fully is an `occ_build_fn` concern, not this
+    ///    one. (The `Bottom` guard does not catch a nested-in-`Entity` control-flow
+    ///    child either — equally unreachable, and the `debug_assert` fires first.)
+    fn value_fact_dedup_key(
+        &mut self,
+        head: &crate::eval::value::Value,
+    ) -> Option<(TermId, bool)> {
+        use crate::eval::value::Value;
+        match head {
+            Value::Node(occ) => {
+                // `cached_term` needs the `Rc` for the recursive materialize and
+                // `&mut self`; clone the `Rc` out to avoid the borrow clash.
+                let occ = Rc::clone(occ);
+                let k = node_occurrence::cached_term(self, &occ);
+                // Reject a `Bottom` key (a non-goal occurrence) — a lossy key must
+                // degrade to no-dedup, never collapse distinct heads. Symmetric with
+                // the `Entity` arm's `Err`→`None`. Unreachable for goal-shaped heads.
+                (!matches!(self.get_term(k), Term::Bottom)).then_some((k, false))
+            }
+            // An Entity head has no single occurrence to memoize on, so materialize
+            // the whole head. `Err` (opaque / Unit / Tuple child) degrades to no
+            // dedup — same as the pre-WI-472 miss, never a lossy key.
+            Value::Entity { .. } => {
+                node_occurrence::value_to_term(self, head).ok().map(|t| (t, true))
+            }
+            _ => None,
+        }
     }
 
     /// Assert a fact `functor(pos…, named…)` from carrier-agnostic `Value`
@@ -2091,6 +2224,9 @@ impl KnowledgeBase {
         // release; emptiness (fact-ness) reads the occurrence body.
         let is_fact = entry.body_nodes.is_empty();
         let label = entry.label;
+        // WI-472: the derived `fact_dedup` key for a Node/Entity-carrier head
+        // (`None` for a Term head or a rule — those need no separate key).
+        let dedup_key = entry.dedup_key;
 
         // Remove from indexes
         if let Some(v) = self.by_sort.get_mut(&sort) {
@@ -2125,10 +2261,20 @@ impl KnowledgeBase {
         // previously-retracted-then-re-asserted fact may have a
         // different RuleId at that key.
         if is_fact {
-            // Only Term-carrier heads were dedup-indexed (WI-348 Phase B).
-            if let crate::eval::value::Value::Term { id: head_t, .. } = &head_val {
+            // A Term-carrier head keys `fact_dedup` on the head term itself
+            // (WI-233); a Node/Entity head keys on the derived `dedup_key`
+            // stashed at assert (WI-472). Both removals are rid-guarded — a
+            // retracted-then-re-asserted fact may hold a different RuleId at the
+            // key, which must not be evicted. The two are mutually exclusive: a
+            // Term head never carries a `dedup_key`, and a value head is never
+            // `Value::Term`.
+            let key = match &head_val {
+                crate::eval::value::Value::Term { id: head_t, .. } => Some(*head_t),
+                _ => dedup_key,
+            };
+            if let Some(k) = key {
                 if let std::collections::hash_map::Entry::Occupied(e) =
-                    self.fact_dedup.entry((*head_t, sort, domain))
+                    self.fact_dedup.entry((k, sort, domain))
                 {
                     if *e.get() == id {
                         e.remove();
@@ -2145,6 +2291,19 @@ impl KnowledgeBase {
 
         // Release refcounts (head/sort/domain/meta; the body atoms are
         // occurrences with no term-store refcount of their own — WI-246).
+        //
+        // WI-472 caveat: a deduped Node/Entity fact head ALSO pins a `+1` on its
+        // derived `dedup_key` term — a `Node`'s WI-471 `cached_term` cache slot, or
+        // an `Entity`'s `value_to_term` alloc. That `+1` is deliberately NOT released
+        // here (v1 = pin-for-lifetime): the fact_dedup ENTRY was removed above, but
+        // the key term stays alive until KB teardown (benign, sharing-safe; a future
+        // deferred-release queue reclaims it per cell). Bounded per live fact for a
+        // `Node` (a cache-hit re-assert mints no new pin), but an `Entity`'s pin
+        // count grows by one per retract→re-assert CYCLE (each miss retains a fresh
+        // `value_to_term` `+1`) — still benign (never freed early, dedup always
+        // correct). So the WI-246 "head occurrences hold no term-store refcount"
+        // invariant now has this one exception — a head occurrence whose cache was
+        // demanded by `cached_term`.
         self.release_value_ground(&head_val);
         self.terms.release(sort);
         self.terms.release(domain);
@@ -5598,6 +5757,83 @@ mod tests {
             !Rc::ptr_eq(&nodes[0], &nodes[1]),
             "the two Node answers are distinct occurrences, kept distinct by the structural key",
         );
+    }
+
+    #[test]
+    fn wi472_node_head_fact_dedup() {
+        // WI-472: two structurally-identical Node/Entity-headed ground facts must
+        // dedup to ONE RuleEntry via the WI-471 `cached_term` / `value_to_term`
+        // key — closing the WI-348 Node-head fact-dedup-miss (where both inserted).
+        // Also checks a distinct structure stays distinct and assert/retract/
+        // re-assert behaves.
+        use crate::eval::value::Value;
+        use crate::intern::Symbol;
+        use crate::kb::load::register_prelude;
+        use crate::span::{SourceId, SourceSpan};
+        use std::rc::Rc;
+
+        let mut kb = KnowledgeBase::new();
+        register_prelude(&mut kb); // interns the `denoted` field key `value`
+        let span = SourceSpan::new(SourceId::from_raw(0), 0, 10);
+
+        let f_sym = kb.intern("vf");
+        let sort = kb.make_name_term("MySort");
+        let domain = kb.make_name_term("test");
+
+        // Build an Entity head `vf(denoted(c))`. The child occurrence is a FRESH
+        // `Rc` each call (verified below), so two same-name heads are Rc-distinct
+        // but structurally identical — the case that dedup must collapse.
+        let entity_head = |kb: &mut KnowledgeBase, name: &str| {
+            let c = kb.intern(name);
+            let occ = kb.make_denoted_occ_ref(c, span, None);
+            Value::Entity {
+                functor: f_sym,
+                pos: Rc::from(vec![Value::Node(occ)]),
+                named: Rc::from(Vec::<(Symbol, Value)>::new()),
+            }
+        };
+
+        // (1) Two identical Entity heads dedup to one RuleId (the fix): pre-WI-472
+        //     this inserted two entries.
+        let h1a = entity_head(&mut kb, "c1");
+        let h1b = entity_head(&mut kb, "c1");
+        if let (Value::Entity { pos: p1, .. }, Value::Entity { pos: p2, .. }) = (&h1a, &h1b) {
+            if let (Value::Node(o1), Value::Node(o2)) = (&p1[0], &p2[0]) {
+                assert!(!Rc::ptr_eq(o1, o2), "the two child occurrences are distinct Rc allocations");
+            }
+        }
+        let r1 = kb.assert_fact_value(h1a, sort, domain, None);
+        let r2 = kb.assert_fact_value(h1b, sort, domain, None);
+        assert_eq!(r1, r2, "structurally-identical Entity heads must dedup to one RuleEntry");
+
+        // (2) A structurally-distinct head gets its own RuleId (no over-dedup) —
+        //     the invariant `value_fact_dedup_keeps_distinct_node_answers` guards
+        //     at the query level, here at the RuleId level.
+        let h2 = entity_head(&mut kb, "c2");
+        let r3 = kb.assert_fact_value(h2, sort, domain, None);
+        assert_ne!(r1, r3, "a structurally-distinct Entity head must NOT dedup");
+
+        // (3) assert / retract / re-assert. After retract the dedup entry is removed
+        //     (rid-guarded), so a re-assert of the same structure allocates a FRESH
+        //     RuleId (mirrors the Term-head re-assert-after-retract behavior)…
+        kb.retract(r1);
+        let h3 = entity_head(&mut kb, "c1");
+        let r4 = kb.assert_fact_value(h3, sort, domain, None);
+        assert_ne!(r1, r4, "re-assert after retract allocates a fresh RuleEntry");
+        // …and re-asserting that revived head once more dedups to it.
+        let h4 = entity_head(&mut kb, "c1");
+        let r5 = kb.assert_fact_value(h4, sort, domain, None);
+        assert_eq!(r4, r5, "re-assert after revival dedups to the live RuleId");
+
+        // (4) A BARE `Node` head (a `denoted(c)` directly, no Entity wrapper) dedups
+        //     via `cached_term`, exercising the borrowed-key (`key_owned = false`) path.
+        let c = kb.intern("bare");
+        let n1 = Value::Node(kb.make_denoted_occ_ref(c, span, None));
+        let n2 = Value::Node(kb.make_denoted_occ_ref(c, span, None));
+        let sort2 = kb.make_name_term("BareSort");
+        let b1 = kb.assert_fact_value(n1, sort2, domain, None);
+        let b2 = kb.assert_fact_value(n2, sort2, domain, None);
+        assert_eq!(b1, b2, "structurally-identical bare Node heads dedup via cached_term");
     }
 
     #[test]
