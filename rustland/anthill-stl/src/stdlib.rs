@@ -65,6 +65,7 @@ pub static SOURCES: &[(&str, &str)] = &[
     ("anthill/prelude/lattice", include_str!("../../../stdlib/anthill/prelude/lattice.anthill")),
     ("anthill/prelude/effects", include_str!("../../../stdlib/anthill/prelude/effects.anthill")),
     ("anthill/prelude/effects-runtime", include_str!("../../../stdlib/anthill/prelude/effects-runtime.anthill")),
+    ("anthill/prelude/external", include_str!("../../../stdlib/anthill/prelude/external.anthill")),
     ("anthill/prelude/cell", include_str!("../../../stdlib/anthill/prelude/cell.anthill")),
     ("anthill/prelude/mutable_stack", include_str!("../../../stdlib/anthill/prelude/mutable_stack.anthill")),
     ("anthill/prelude/console", include_str!("../../../stdlib/anthill/prelude/console.anthill")),

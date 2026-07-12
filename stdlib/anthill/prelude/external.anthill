@@ -1,0 +1,43 @@
+-- External: the effect of depending on — or changing — state OUTSIDE the
+-- tracked heap: the forge / network, entropy, an out-of-store filesystem.
+-- Proposal 054.
+--
+-- An operation is External iff its result or behaviour depends on, or
+-- changes, state the runtime does not mediate. That state is
+-- non-deterministic across calls (two reads may DISAGREE with NO tracked
+-- Modify between them), non-replayable, and never equational. External
+-- therefore REVOKES the pure-code licences: no re-run, no reorder, no
+-- dedup / CSE, no drop, no equational use. Any non-empty row already pins
+-- sequencing; External adds precisely the "two calls may disagree without a
+-- tracked mutation between them" increment. Over `Modify` it additionally
+-- covers state the typer cannot see (a `Modify[s]` op may ALSO be External).
+--
+-- Deliberately GENERIC — ONE effect, not one per capability (no
+-- Http / Db / Forge effects). What distinguishes external capabilities is
+-- AUTHORITY, which lives in CARRIERS (the value you must hold; the
+-- IndexedFileStore precedent) and later in a capability system — so the row
+-- vocabulary stays STABLE as backends multiply. `Clock` (time.anthill) and
+-- the `Console*` effects are proto-External markers left as-is for now;
+-- folding / aliasing them is a later decision (054 §Consumers).
+--
+-- Branch × External is incompatible by construction (054 §Branch): the world
+-- has no register_undo, and a multi-shot solver would re-run an External call
+-- once per branch — the typer rejects a row carrying both (WI-701). Declared
+-- the `Clock` way (a resource-less effect sort + `fact Effect`, mirroring
+-- `Suspension` in effects.anthill): the external world is a single implicit
+-- resource, no per-instance handle to thread. Interpretation is provided by
+-- the realization layer (host binding); the kernel only threads it as an
+-- ordinary effect-row member.
+--
+-- First consumer: the WI-437 Mirror carrier — forge reads / writes typed
+-- `{External, Error}`, `alloc_id` / `commit` typed `{Modify[s], External,
+-- Error}`, `fresh_token()` (entropy). Any future host binding (http, db,
+-- external tools) reuses this same effect.
+namespace anthill.prelude
+  import anthill.prelude.{Effect}
+
+  sort External
+  end
+
+  fact Effect[T = External]
+end

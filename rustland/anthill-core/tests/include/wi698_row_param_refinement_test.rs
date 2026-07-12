@@ -2,14 +2,24 @@
 //! DELIVERED machinery — a carrier-tied effect-row parameter (`effects EM = ?`,
 //! the WI-320 EffectsRuntime anchor), instantiated per carrier in `provides`
 //! and substituted into the spec op's row at concrete call sites
-//! (`substituted_op_effects`). These tests pin that substrate from the
-//! 2026-07-12 design-session smoke, BEFORE `External` itself exists:
-//! `Outside` below is a stand-in effect declared the Clock way.
+//! (`substituted_op_effects`). These tests pin that substrate.
+//!
+//! WI-699 retargets the substrate probes from the design-session stand-in
+//! effect `Outside` onto the REAL `anthill.prelude.External` (proposal 054,
+//! declared the Clock way in `stdlib/anthill/prelude/external.anthill`): the
+//! retargeted carrier probes (invariants 1–3, 6) now bind `External`, while
+//! invariants 4–5 are effect-agnostic (abstract-dispatch failure; the stdlib
+//! `List` precedent). The two `*_today` GAP pins
+//! (invariant 7) DELIBERATELY keep the generic `Outside` stand-in — the hole
+//! they pin is NOT External-specific (it exists for Modify / Error / Clock
+//! alike), and keeping them off `External` isolates them from External's extra
+//! gates (the Branch × External co-occurrence check, WI-701); they are owned by
+//! WI-700, which flips each from `expect_load` to `expect_reject` as it lands.
 //!
 //! Pinned invariants:
 //!   1. a consumer holding the "fake" carrier (EM = {}) typechecks at the
 //!      INSTANTIATED row — `effects {}` loads (refinement-by-instantiation);
-//!   2. the "real" carrier's row ({Outside}) reaches the same consumer shape
+//!   2. the "real" carrier's row ({External}) reaches the same consumer shape
 //!      and is REJECTED loudly — instantiation is enforced, not dropped;
 //!   3. param-to-param threading (a wrapper's own row param bound in its
 //!      `provides` — the `CoordState[M]` shape of WI-437 §8.3) refines and
@@ -17,7 +27,24 @@
 //!   4. dot dispatch on an ABSTRACT carrier fails loudly — no silent `{}`;
 //!   5. the stdlib precedent itself: `Iterable.isEmpty` (row = spec param E)
 //!      over `List` (E = {}) under a consumer declaring `effects {}`;
-//!   6. the pre-WI-700 GAP, pinned to flip — TWO independent probes:
+//!   6. the 054 §Mechanism READ/WRITE SPLIT: a spec `Mir2` with TWO decoupled
+//!      row params (`ER`/`EW`, the WI-441 pair shipped as MappedStream
+//!      `ES`/`EF`) threads and refines INDEPENDENTLY. The GENUINE pin is the
+//!      param-to-param `Wrap2RW` (WRAP_SRC's idiom — typer-enforced both ways —
+//!      extended to two params): it threads its own `WR`/`WW` into
+//!      `Mir2[ER = WR, EW = WW]`, and a consumer instantiating
+//!      `Wrap2RW[WR = {External}, WW = {Modify[Reg]}]` refines ER and EW to
+//!      DIFFERENT rows at the call site, each declared tightly — so a swap or a
+//!      dropped param fails to load (the `*_wrong` negatives). `StoreRW` pins
+//!      the UNION `{ER, EW}` at a NON-empty instantiation (a dropped component
+//!      is caught by `store_union_drops`). `FakeRW`/`GhRW` only ILLUSTRATE the
+//!      §Faking concrete shape (read pure vs tracked write; real both-External):
+//!      their `provides Mir2` effect-binding is fail-open today
+//!      (`check_override_refinement` defers denoted/parametric rows), so it is
+//!      `Wrap2RW`, not they, that pins the mechanism. Expected FREE — the same
+//!      type-arg substitution carries a second row param with no new typer work;
+//!   7. the pre-WI-700 GAP, pinned to flip — TWO independent probes over the
+//!      generic `Outside` stand-in:
 //!      (a) `shield[EffP = {Outside}](poke)` loads although the callback row
 //!          declares `-Outside` (lacks unenforced at explicit instantiation);
 //!      (b) `shield[EffP = {}](poke3)` loads although `poke3` declares
@@ -26,23 +53,15 @@
 //!      have pure bodies and OVER-declare deliberately. WI-700 wires the
 //!      checks; as each lands, flip the corresponding `*_today` test from
 //!      `expect_load` to `expect_reject`.
-//!
-//! One row param (`EM`) stands in for 054 §Mechanism's read/write pair
-//! (`ER`/`EW`, the WI-441 decoupled split): multiple params ride the same
-//! type-arg substitution (MappedStream's `ES`/`EF` ships it today).
 
-/// The 054 §Faking mini-model: user effect + spec with row param + the two
-/// carriers. NOTE `import anthill.prelude.EffectsRuntime`: the `effects EM = ?`
-/// desugar emits `requires EffectsRuntime[Effects = EM]`, and without the
-/// import the provider-requires exemption misses (symbol identity) — see the
-/// WI-698 memory/proposal by-catch.
+/// The 054 §Faking mini-model over the REAL `External`: spec with a row param +
+/// the two carriers. NOTE `import anthill.prelude.EffectsRuntime`: the
+/// `effects EM = ?` desugar emits `requires EffectsRuntime[Effects = EM]`, and
+/// without the import the provider-requires exemption misses (symbol identity)
+/// — see the WI-698 memory/proposal by-catch (WI-703).
 const MECH_SRC: &str = r#"
 namespace smoke.b_mech
-  import anthill.prelude.{Int64, Effect, EffectsRuntime}
-
-  sort Outside
-  end
-  fact Effect[T = Outside]
+  import anthill.prelude.{Int64, EffectsRuntime, External}
 
   sort Mir
     sort C = ?
@@ -52,8 +71,8 @@ namespace smoke.b_mech
 
   sort Gh
     entity MkGh
-    provides Mir[C = Gh, EM = {Outside}]
-    operation ping(m: Gh) -> Int64 effects {Outside} = 41
+    provides Mir[C = Gh, EM = {External}]
+    operation ping(m: Gh) -> Int64 effects {External} = 41
   end
 
   sort Fake
@@ -67,7 +86,7 @@ namespace smoke.b_mech
   = f.ping()
 
   operation t_gh_ok(g: Gh) -> Int64
-    effects {Outside}
+    effects {External}
   = g.ping()
 end
 "#;
@@ -106,11 +125,10 @@ end
 
 const WRAP_NEG_SRC: &str = r#"
 namespace smoke.c_wrap_neg
-  import anthill.prelude.{Int64}
-  import smoke.b_mech.{Outside}
+  import anthill.prelude.{Int64, External}
   import smoke.c_wrap.{Wrap2}
 
-  operation t_wrap_wrong(w: Wrap2[EW = {Outside}]) -> Int64
+  operation t_wrap_wrong(w: Wrap2[EW = {External}]) -> Int64
     effects {}
   = w.ping()
 end
@@ -143,13 +161,163 @@ namespace smoke.a_inst
 end
 "#;
 
+/// 054 §Mechanism READ/WRITE SPLIT: a spec `Mir2` with TWO decoupled row params
+/// (`ER`/`EW`), the WI-441 pair shipped as MappedStream `ES`/`EF`.
+///
+/// The GENUINE two-param pin is `Wrap2RW` — WRAP_SRC's param-to-param idiom
+/// (which the typer enforces both ways) extended to TWO params: it threads its
+/// own `WR`/`WW` into `Mir2[ER = WR, EW = WW]`, so a consumer instantiating
+/// `Wrap2RW[WR = {External}, WW = {Modify[Reg]}]` refines ER and EW to DIFFERENT
+/// rows through call-site type-arg substitution into `peek`/`stir`. Because the
+/// two rows are DISTINCT and each consumer declares its row TIGHTLY, a swap or a
+/// dropped param under-declares and fails to load (pinned negatively by
+/// WRAP2RW_NEG_SRC). `StoreRW` pins the UNION `{ER, EW}` at a NON-empty
+/// instantiation (a dropped component is caught by STORE_UNION_NEG_SRC).
+///
+/// `FakeRW`/`GhRW` only ILLUSTRATE the §Faking concrete shape (read pure vs
+/// tracked write; real both-External) and are checked at their CONCRETE ops by
+/// `obs_fake_*`/`obs_gh_read`. NOTE: their `provides Mir2[...]` effect-binding is
+/// NOT enforced today — `check_override_refinement` defers denoted/parametric
+/// effect rows (fail-open), so those bindings could be swapped without any test
+/// noticing; `Wrap2RW` is what actually pins the mechanism. Expected FREE: the
+/// same type-arg substitution carries a second row param with no new typer work.
+const RW_SRC: &str = r#"
+namespace smoke.f_rw
+  import anthill.prelude.{Int64, Unit, EffectsRuntime, Modify, Modifiable, External}
+  import smoke.b_mech.{Mir}
+
+  sort Reg
+    entity mkReg
+  end
+  fact Modifiable[T = Reg]
+
+  sort Mir2
+    sort C = ?
+    effects ER = ?
+    effects EW = ?
+    operation peek(m: C) -> Int64 effects ER
+    operation stir(m: C, x: Int64) -> Unit effects EW
+  end
+
+  sort Wrap2RW
+    effects WR = ?
+    effects WW = ?
+    entity mkWrap2RW
+    provides Mir2[C = Wrap2RW[WR, WW], ER = WR, EW = WW]
+    operation peek(m: Wrap2RW) -> Int64 effects WR = 0
+    operation stir(m: Wrap2RW, x: Int64) -> Unit effects WW = ()
+  end
+
+  sort GhRW
+    entity mkGhRW
+    provides Mir2[C = GhRW, ER = {External}, EW = {External}]
+    operation peek(m: GhRW) -> Int64 effects {External} = 1
+    operation stir(m: GhRW, x: Int64) -> Unit effects {External} = ()
+  end
+
+  sort FakeRW
+    entity mkFakeRW
+    provides Mir2[C = FakeRW, ER = {}, EW = {Modify[Reg]}]
+    operation peek(m: FakeRW) -> Int64 effects {} = 2
+    operation stir(m: FakeRW, x: Int64) -> Unit effects {Modify[Reg]} = ()
+  end
+
+  sort StoreRW
+    effects ER = ?
+    effects EW = ?
+    entity mkStoreRW
+    provides Mir[C = StoreRW[ER, EW], EM = {ER, EW}]
+    operation ping(m: StoreRW) -> Int64 effects {ER, EW} = 0
+  end
+
+  -- GENUINE two-param substitution: ER and EW refined to DIFFERENT non-empty
+  -- rows at the call site, each declared TIGHTLY — a swap/conflation of the two
+  -- params under-declares one of these and fails to load.
+  operation wrap_read_ext(w: Wrap2RW[WR = {External}, WW = {Modify[Reg]}]) -> Int64
+    effects {External}
+  = w.peek()
+
+  operation wrap_write_mod(w: Wrap2RW[WR = {External}, WW = {Modify[Reg]}]) -> Unit
+    effects {Modify[Reg]}
+  = w.stir(0)
+
+  -- Union threads BOTH components at a NON-empty instantiation.
+  operation store_union(s: StoreRW[ER = {External}, EW = {Modify[Reg]}]) -> Int64
+    effects {External, Modify[Reg]}
+  = s.ping()
+
+  -- Concrete-carrier consumers (§Faking shape): read pure / write tracked / real
+  -- read External. These check the CONCRETE ops, not the Mir2 provides binding.
+  operation obs_fake_read(f: FakeRW) -> Int64
+    effects {}
+  = f.peek()
+
+  operation obs_fake_write(f: FakeRW) -> Unit
+    effects {Modify[Reg]}
+  = f.stir(0)
+
+  operation obs_gh_read(g: GhRW) -> Int64
+    effects {External}
+  = g.peek()
+end
+"#;
+
+/// Negative twin for the concrete write: the fake's WRITE refines to
+/// {Modify[Reg]}, so a consumer declaring `{}` for `f.stir(...)` must be rejected
+/// — the tracked write escapes a pure row.
+const RW_NEG_SRC: &str = r#"
+namespace smoke.f_rw_neg
+  import anthill.prelude.{Int64, Unit}
+  import smoke.f_rw.{FakeRW}
+
+  operation obs_fake_write_wrong(f: FakeRW) -> Unit
+    effects {}
+  = f.stir(0)
+end
+"#;
+
+/// Negative twin for the GENUINE two-param substitution: `w.peek()` refines to
+/// WR = {External} at the call site, so declaring `{}` must be rejected — the
+/// External read escapes a pure row. This pins that the read row substitutes and
+/// is ENFORCED (not dropped to {}, and not conflated with the write row WW).
+const WRAP2RW_NEG_SRC: &str = r#"
+namespace smoke.f_rw_wrap_neg
+  import anthill.prelude.{Int64, Modify, External}
+  import smoke.f_rw.{Wrap2RW, Reg}
+
+  operation wrap_read_wrong(w: Wrap2RW[WR = {External}, WW = {Modify[Reg]}]) -> Int64
+    effects {}
+  = w.peek()
+end
+"#;
+
+/// Negative twin for the store UNION: `s.ping()` threads `{ER, EW}`, so at
+/// ER = {External}, EW = {Modify[Reg]} a consumer declaring only `{External}`
+/// must be rejected — the write component escapes. Pins that the union carries
+/// BOTH components (not just one), the non-degenerate half of the union claim.
+const STORE_UNION_NEG_SRC: &str = r#"
+namespace smoke.f_rw_store_neg
+  import anthill.prelude.{Int64, Modify, External}
+  import smoke.f_rw.{StoreRW, Reg}
+
+  operation store_union_drops(s: StoreRW[ER = {External}, EW = {Modify[Reg]}]) -> Int64
+    effects {External}
+  = s.ping()
+end
+"#;
+
 /// Gap probe (a): `shield` demands `-Outside` on its callback, yet an
 /// explicitly-instantiated `EffP = {Outside}` LOADS — the lacks-constraint
-/// is unenforced at this call shape today. WI-700 flips this.
+/// is unenforced at this call shape today. WI-700 flips this. Kept on the
+/// generic `Outside` stand-in (declared here): the hole is not
+/// External-specific, and `Outside` carries none of External's extra gates.
 const LACKS_SRC: &str = r#"
 namespace smoke.e_lacks
-  import anthill.prelude.{Int64}
-  import smoke.b_mech.{Outside}
+  import anthill.prelude.{Int64, Effect}
+
+  sort Outside
+  end
+  fact Effect[T = Outside]
 
   operation shield[EffP](f: () -> Int64 @ {EffP, -Outside}) -> Int64
     effects {EffP}
@@ -164,8 +332,7 @@ end
 const LACKS_GAP_SRC: &str = r#"
 namespace smoke.e2_lacks_named
   import anthill.prelude.{Int64}
-  import smoke.b_mech.{Outside}
-  import smoke.e_lacks.{shield}
+  import smoke.e_lacks.{Outside, shield}
 
   operation poke() -> Int64
     effects {Outside}
@@ -180,13 +347,12 @@ end
 /// Gap probe (b): even a plain row MISMATCH loads — `poke3` declares
 /// `{Outside}` where the explicit instantiation says `EffP = {}`. Callback-row
 /// conformance at this shape is unchecked entirely; unlike probe (a) there is
-/// no self-contradictory `{Outside, -Outside}` row here, so when WI-698 (c)
-/// lands, the reject must come from actual-vs-declared conformance itself.
+/// no self-contradictory `{Outside, -Outside}` row here, so when WI-700 lands,
+/// the reject must come from actual-vs-declared conformance itself.
 const LACKS_GAP2_SRC: &str = r#"
 namespace smoke.e3_row_mismatch
   import anthill.prelude.{Int64}
-  import smoke.b_mech.{Outside}
-  import smoke.e_lacks.{shield}
+  import smoke.e_lacks.{Outside, shield}
 
   operation poke3() -> Int64
     effects {Outside}
@@ -205,7 +371,7 @@ fn expect_load(sources: &[&str], what: &str) {
 
 /// All `needles` must co-occur in ONE error string — tying the assertion to
 /// the offending op AND the mechanism, so an unrelated diagnostic that merely
-/// mentions a token (every source names `Outside`/`ping` somewhere) cannot
+/// mentions a token (every source names `External`/`ping` somewhere) cannot
 /// satisfy it.
 fn expect_reject(sources: &[&str], needles: &[&str], what: &str) {
     match crate::common::try_load_kb_with_files(sources) {
@@ -226,8 +392,8 @@ fn row_param_instantiation_refines_at_concrete_call_site() {
 fn row_param_instantiation_is_enforced_not_dropped() {
     expect_reject(
         &[MECH_SRC, NEG_SRC],
-        &["t_gh_wrong", "Outside"],
-        "the real carrier's {Outside} under a consumer row {}",
+        &["t_gh_wrong", "External"],
+        "the real carrier's {External} under a consumer row {}",
     );
 }
 
@@ -240,8 +406,8 @@ fn row_param_threads_param_to_param() {
 fn threaded_row_param_is_enforced() {
     expect_reject(
         &[MECH_SRC, WRAP_SRC, WRAP_NEG_SRC],
-        &["t_wrap_wrong", "Outside"],
-        "Wrap2[EW = {Outside}] under a consumer row {}",
+        &["t_wrap_wrong", "External"],
+        "Wrap2[EW = {External}] under a consumer row {}",
     );
 }
 
@@ -259,13 +425,62 @@ fn stdlib_iterable_list_instantiation_precedent() {
     expect_load(&[STDLIB_PRECEDENT_SRC], "Iterable.isEmpty over List (E = {})");
 }
 
+/// 054 §Mechanism read/write split: TWO decoupled row params (ER/EW) thread and
+/// refine independently — the genuine pin is `Wrap2RW`, which refines WR↦ER and
+/// WW↦EW to DIFFERENT rows through call-site substitution (a swap would break
+/// the tight `wrap_read_ext`/`wrap_write_mod` declarations). Expected FREE
+/// (WI-441 substitution carries the second param with no new typer work).
+#[test]
+fn rw_split_threads_two_decoupled_row_params() {
+    expect_load(
+        &[MECH_SRC, RW_SRC],
+        "read/write split: Wrap2RW refines WR={External}/WW={Modify[Reg]} independently + store union non-empty",
+    );
+}
+
+/// The write row's refinement is enforced independently of the read row: the
+/// fake's tracked {Modify[Reg]} write must not escape a pure `{}` consumer row.
+#[test]
+fn rw_split_write_refinement_is_enforced() {
+    expect_reject(
+        &[MECH_SRC, RW_SRC, RW_NEG_SRC],
+        &["obs_fake_write_wrong", "Modify"],
+        "the fake write's {Modify[Reg]} under a consumer row {}",
+    );
+}
+
+/// The GENUINE two-param substitution is enforced: `w.peek()` refines to
+/// WR = {External}, so declaring `{}` must be rejected (the External read
+/// escapes). This is what actually pins that the second row param threads —
+/// a swap/conflation of WR/WW, or a dropped read row, would not reject here.
+#[test]
+fn rw_split_read_row_substitution_is_enforced() {
+    expect_reject(
+        &[MECH_SRC, RW_SRC, WRAP2RW_NEG_SRC],
+        &["wrap_read_wrong", "External"],
+        "Wrap2RW[WR = {External}] read under a consumer row {}",
+    );
+}
+
+/// The store threads the UNION of BOTH row params: at ER = {External},
+/// EW = {Modify[Reg]} a consumer declaring only `{External}` must be rejected —
+/// the write component of the union escapes. Pins the union is non-degenerate.
+#[test]
+fn rw_split_store_union_threads_both_components() {
+    expect_reject(
+        &[MECH_SRC, RW_SRC, STORE_UNION_NEG_SRC],
+        &["store_union_drops", "Modify"],
+        "StoreRW union {External, Modify[Reg]} under a consumer row {External}",
+    );
+}
+
 /// PINS GAP (a) — flip to `expect_reject` when WI-700 wires the lacks
 /// check at explicit instantiation sites.
 #[test]
 fn lacks_unenforced_at_explicit_instantiation_today() {
     expect_load(
-        &[MECH_SRC, LACKS_SRC, LACKS_GAP_SRC],
-        "pre-WI-698 status quo (a): EffP = {Outside} against a declared -Outside",
+        &[LACKS_SRC, LACKS_GAP_SRC],
+        "pre-WI-700 status quo (a): EffP = {Outside} against a declared -Outside",
     );
 }
 
@@ -274,7 +489,7 @@ fn lacks_unenforced_at_explicit_instantiation_today() {
 #[test]
 fn row_conformance_unchecked_at_explicit_instantiation_today() {
     expect_load(
-        &[MECH_SRC, LACKS_SRC, LACKS_GAP2_SRC],
-        "pre-WI-698 status quo (b): {Outside}-rowed op where EffP = {}",
+        &[LACKS_SRC, LACKS_GAP2_SRC],
+        "pre-WI-700 status quo (b): {Outside}-rowed op where EffP = {}",
     );
 }

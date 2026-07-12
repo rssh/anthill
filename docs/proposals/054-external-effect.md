@@ -94,11 +94,18 @@ we will ever write, and no shared spec churns again as backends multiply.
 ## Declaration
 
 The `Clock` convention — an effect is a sort plus an `Effect` marker fact —
-in a new prelude file (exact enclosing sort is WI-698's call):
+in a new prelude file. WI-699 resolved the enclosing-sort question (deferred
+here) in favour of a **top-level marker**, mirroring how the other
+resource-less markers (`Error`, `Suspension`, `Branch`) are declared in
+`effects.anthill`: `External` is `anthill.prelude.External`, not nested in an
+(operation-less, hence empty) `Externality` wrapper. Time's wrapper `Time`
+exists to hold `now()`; External has no such operation, and the top-level form
+also spares the clunky `Externality`/`External` name pair and keeps the import
+plain (`import anthill.prelude.{External}`):
 
 ```anthill
 -- stdlib/anthill/prelude/external.anthill
-sort anthill.prelude.Externality
+namespace anthill.prelude
   import anthill.prelude.{Effect}
 
   -- Effect kind. Resource-less at the effect level, deliberately: WHICH
