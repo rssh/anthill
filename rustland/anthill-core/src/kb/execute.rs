@@ -832,14 +832,19 @@ impl KnowledgeBase {
                 "disjunction without loaded anthill.kernel.or",
             ))?;
             let empty_msg = "disjunction with empty_query branch (empty branch trivially succeeds)";
-            // `or` lowers to the stdlib rule `or(?a, ?b) :- push_choice(?a, ?b)`,
-            // and push_choice's arg extraction (`resolve_push_choice_args`) is
-            // term-based (`kb.walk` → `TermId`). So the `or` wrapper must be a
-            // hash-consed `Term::Fn`, not a carrier-neutral `Value::Entity` — a
-            // `Value::Entity` branch arg would not flow through push_choice (a
-            // nested `or` branch would be silently lost). Disjunction is an
-            // eval-side form whose branches are always reifiable goals (never
-            // occurrences), so reifying each branch to a `TermId` here is sound.
+            // `or` lowers to the stdlib rule `or(?a, ?b) :- push_choice(?a, ?b)`.
+            // The `or` wrapper is built here as a hash-consed `Term::Fn` with each
+            // branch reified to a `TermId`. Disjunction is an eval-side form whose
+            // branches are always reifiable goals (never occurrences), so the reify
+            // is sound.
+            //
+            // NOTE (WI-692): this interning is no longer *forced*. It used to be —
+            // push_choice's arg extraction was term-based (`kb.walk → TermId`) so a
+            // `Value::Entity` branch would have been silently lost — but WI-692 made
+            // `resolve_push_choice_args` carrier-neutral (it reads args via
+            // `walk_arg`/`TermView`), so a `Value`-carried `or` would now flow through
+            // too. Building this as a Value carrier is a pending carrier-neutral
+            // follow-up (reify-audit item), not done here.
             let l_val = self.coerce_to_single_goal_value(l_goals, empty_msg)?;
             let r_val = self.coerce_to_single_goal_value(r_goals, empty_msg)?;
             let l = self.goal_value_to_term(&l_val)?;
