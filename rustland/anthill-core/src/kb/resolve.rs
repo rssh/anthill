@@ -3460,12 +3460,10 @@ impl KnowledgeBase {
         if self.value_is_unbound_var(&sub) || self.value_is_unbound_var(&sup) {
             return BuiltinResult::delay();
         }
-        // The subtype check is a KB lookup over hash-consed terms; reify each
-        // operand (a literal goal arg reads as `Value::Node`, a σ-bound one as
-        // `Value::Term`) to a term first.
-        let sub_t = reify_goal_value(self, &sub);
-        let sup_t = reify_goal_value(self, &sup);
-        if self.is_entity_of(sub_t, sup_t) {
+        // WI-697: the subtype check reads both operands through `TermView` — a
+        // literal goal arg (`Value::Node`) and a σ-bound one (`Value::Term`) both
+        // flow in carrier-neutrally, no reify.
+        if self.is_entity_of_view(&sub, &sup) {
             BuiltinResult::Success
         } else {
             BuiltinResult::Failure

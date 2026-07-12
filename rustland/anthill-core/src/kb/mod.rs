@@ -421,7 +421,7 @@ pub struct KnowledgeBase {
     // Entity-of indexes: entity → parent sort (1-level, non-transitive).
     // Materialized indexes for EntityOf(entity, parent) facts.
     sort_entities: HashMap<TermId, Vec<TermId>>,   // sort → its entity constructors
-    entity_parent: HashMap<TermId, TermId>,         // entity → its parent sort
+    entity_parent: HashMap<Symbol, TermId>,         // entity ctor SYMBOL → its parent sort term (WI-697)
     sort_info: HashMap<TermId, SortKind>,
 
     // Discrimination tree index for structural term matching
@@ -2327,55 +2327,96 @@ impl KnowledgeBase {
             .entry(parent)
             .or_default()
             .push(entity);
-        self.entity_parent.insert(entity, parent);
-        // WI-511: an entity identity may be built as `Fn{c}` (before `c` is a
-        // known constructor) OR as the canonical `Ref(c)` (alloc canonicalizes
-        // once `c` is registered). Extract the functor from either carrier and
-        // dual-key the canonical `Ref(c)` form, so an entity *value* that
-        // arrives as `Ref(c)` (post-flip alloc) resolves to the same parent via
-        // `is_entity_of` / `entity_parent_sort` as the `Fn{c}` identity does.
+        // WI-697: key the parent index by the constructor's functor SYMBOL. A
+        // symbol has ONE spelling, so this retires the former Fn{c}/Ref(c) TermId
+        // dual-keying (which existed only because the WI-511 alloc canon —
+        // `Fn{c,[],[]}` → `Ref(c)`, gated on `is_constructor_symbol` — is
+        // order-dependent, leaving the same symbol with two TermId identities
+        // pre/post registration).
         let functor = match *self.terms.get(entity) {
             Term::Fn { functor, .. } => Some(functor),
             Term::Ref(s) => Some(s),
             _ => None,
         };
-        if let Some(f) = functor {
-            self.constructor_symbols.insert(f);
-            let ref_tid = self.terms.alloc(Term::Ref(f));
-            if ref_tid != entity {
-                self.entity_parent.entry(ref_tid).or_insert(parent);
+        match functor {
+            Some(f) => {
+                self.constructor_symbols.insert(f);
+                self.entity_parent.insert(f, parent);
             }
+            // A constructor identity is always `Fn{c}` / `Ref(c)` (built via
+            // `name_to_sort_term`); anything else is a malformed registration that
+            // would half-populate the indexes (pushed into `sort_entities` above,
+            // absent from `entity_parent`). Fail LOUD (release too), not a
+            // release-silent `debug_assert` skip — the repo's loud-over-silent rule.
+            None => panic!(
+                "register_entity_of: entity term {entity:?} is neither Fn nor Ref (no functor symbol)"
+            ),
         }
     }
 
-    /// Check if `sub` is an entity of `sup` (1-level entity → parent sort).
+    /// Check if `sub` is an entity of `sup` (1-level entity → parent sort). The
+    /// TermId-ergonomic wrapper over [`Self::is_entity_of_view`] for the many
+    /// ground-term callers — `TermId` is itself a [`term_view::TermView`], so it
+    /// delegates directly (no `Value` wrap).
     pub fn is_entity_of(&self, sub: TermId, sup: TermId) -> bool {
-        if sub == sup {
+        self.is_entity_of_view(&sub, &sup)
+    }
+
+    /// WI-697 — the carrier-neutral core of [`Self::is_entity_of`]: reads both
+    /// operands through [`term_view::TermView`] (no reify), so a `Value::Node`
+    /// occurrence goal decides without lowering to a term.
+    ///
+    /// - Reflexive: `views_structurally_equal` — STRUCTURAL, so a parameterized
+    ///   `List[Int]` is not conflated with `List[Str]`. (This canonicalizes the
+    ///   `Fn{c}`/`Ref(c)` 0-ary spellings via `functor_view_head`, exactly as the
+    ///   former builtin's `reify`+`==` did; the retired direct-`TermId` `==` did
+    ///   not, so two cross-spelled TermIds of the *same* entity now compare equal —
+    ///   a same-direction broadening of the convenience path onto the builtin's
+    ///   semantics, unreachable via any caller.)
+    /// - Parent lookup keyed on `sub`'s functor symbol (O(1); the symbol unifies
+    ///   the Fn/Ref spellings), GATED on a NULLARY head: the `entity_parent` index
+    ///   only ever holds nullary entity terms (`register_entity_of` /
+    ///   `name_to_sort_term`), so an APPLIED constructor `Fn{c,[args]}` is NOT an
+    ///   entity of its sort here — preserving the pre-WI-697 verdict, which keyed on
+    ///   the full nullary `TermId` and so missed the applied form.
+    pub(crate) fn is_entity_of_view<A: term_view::TermView, B: term_view::TermView>(
+        &self,
+        sub: &A,
+        sup: &B,
+    ) -> bool {
+        if term_view::views_structurally_equal(self, sub, sup) {
             return true;
         }
-        self.entity_parent.get(&sub) == Some(&sup)
-    }
-
-    /// Get the parent sort of an entity (1-level, non-transitive).
-    pub fn entity_parent_sort(&self, entity: TermId) -> Option<TermId> {
-        self.entity_parent.get(&entity).copied()
-    }
-
-    /// Get the parent sort of a constructor by its functor symbol.
-    /// Searches entity_parent for any entity whose functor matches.
-    pub fn constructor_parent_sort(&self, functor: Symbol) -> Option<TermId> {
-        for (&entity_tid, &parent_tid) in &self.entity_parent {
-            // WI-511: an entity identity is `Fn{c}` or the canonical `Ref(c)`.
-            let f = match *self.terms.get(entity_tid) {
-                Term::Fn { functor: f, .. } => Some(f),
-                Term::Ref(s) => Some(s),
-                _ => None,
-            };
-            if f == Some(functor) {
-                return Some(parent_tid);
-            }
+        let sub_sym = match sub.head(self) {
+            term_view::ViewHead::Ref(s) => s,
+            term_view::ViewHead::Functor { functor: Some(s), pos_arity: 0, named_arity: 0 } => s,
+            _ => return false,
+        };
+        match self.entity_parent.get(&sub_sym) {
+            Some(&parent) => term_view::views_structurally_equal(
+                self,
+                &crate::eval::value::Value::term(parent),
+                sup,
+            ),
+            None => false,
         }
-        None
+    }
+
+    /// Get the parent sort of an entity (1-level, non-transitive). WI-697: the
+    /// index is symbol-keyed, so read the entity's functor symbol first.
+    pub fn entity_parent_sort(&self, entity: TermId) -> Option<TermId> {
+        let functor = match *self.terms.get(entity) {
+            Term::Fn { functor, .. } => functor,
+            Term::Ref(s) => s,
+            _ => return None,
+        };
+        self.constructor_parent_sort(functor)
+    }
+
+    /// Get the parent sort of a constructor by its functor symbol. WI-697: an
+    /// O(1) lookup into the symbol-keyed index (was an O(n) scan).
+    pub fn constructor_parent_sort(&self, functor: Symbol) -> Option<TermId> {
+        self.entity_parent.get(&functor).copied()
     }
 
     /// All entity-constructor functor symbols whose parent sort is `sort_sym`
@@ -2387,19 +2428,17 @@ impl KnowledgeBase {
     /// eliminator to resolve a field-access receiver's field type.
     pub fn constructors_of_sort(&self, sort_sym: Symbol) -> Vec<Symbol> {
         let mut out = Vec::new();
-        for (&entity_tid, &parent_tid) in &self.entity_parent {
+        // WI-697: the key IS the constructor symbol; match the parent's functor to
+        // `sort_sym`. (Symbol keys are unique, so — unlike the former dual-keyed
+        // TermId scan — no per-constructor duplicate is produced.)
+        for (&entity_sym, &parent_tid) in &self.entity_parent {
             let parent_functor = match self.terms.get(parent_tid) {
                 Term::Fn { functor, .. } => Some(*functor),
                 Term::Ref(s) => Some(*s),
                 _ => None,
             };
-            if parent_functor != Some(sort_sym) {
-                continue;
-            }
-            match self.terms.get(entity_tid) {
-                Term::Fn { functor, .. } => out.push(*functor),
-                Term::Ref(s) => out.push(*s),
-                _ => {}
+            if parent_functor == Some(sort_sym) {
+                out.push(entity_sym);
             }
         }
         out
@@ -5855,9 +5894,72 @@ mod tests {
         assert_eq!(results.len(), 1);
         assert_eq!(results[0], fid);
 
-        // is_entity_of
+        // is_entity_of (the TermId-ergonomic wrapper over the carrier-neutral core)
         assert!(kb.is_entity_of(zero, nat));
         assert!(!kb.is_entity_of(nat, zero));
+    }
+
+    /// WI-697 — `is_entity_of` reads its operands through `TermView` (no reify),
+    /// keys the parent index by the constructor SYMBOL (retiring the Fn/Ref
+    /// dual-keying), and keeps the reflexive check STRUCTURAL (not symbol-eq).
+    #[test]
+    fn is_entity_of_is_carrier_neutral() {
+        use crate::eval::value::Value;
+        let mut kb = KnowledgeBase::new();
+        let nat = kb.make_name_term("Nat");
+        let zero = kb.make_name_term("zero"); // Fn{zero} — succ not yet a constructor
+        kb.register_sort(nat, SortKind::Sort);
+        kb.register_entity_of(zero, nat);
+
+        // Term carriers via the ergonomic wrapper — reflexive / positive / negative.
+        assert!(kb.is_entity_of(nat, nat), "reflexive");
+        assert!(kb.is_entity_of(zero, nat), "zero ⊳ Nat");
+        assert!(!kb.is_entity_of(nat, zero), "Nat ⋫ zero");
+
+        // Carrier-neutral core: a `Value::Node` operand resolves with NO reification
+        // — the whole point of WI-697.
+        let zero_node = Value::Node(crate::kb::node_occurrence::materialize_from_handle(&kb, zero));
+        let nat_node = Value::Node(crate::kb::node_occurrence::materialize_from_handle(&kb, nat));
+        assert!(kb.is_entity_of_view(&zero_node, &Value::term(nat)), "Node sub ⊳ Term sup");
+        assert!(kb.is_entity_of_view(&zero_node, &nat_node), "Node sub ⊳ Node sup");
+        assert!(!kb.is_entity_of_view(&nat_node, &zero_node), "Node Nat ⋫ Node zero");
+
+        // Cross-spelling: register `succ` as the pre-canon `Fn{succ}`; a post-canon
+        // `Ref(succ)` (WI-511 alloc canon, gated on is_constructor_symbol) query
+        // resolves via the SINGLE symbol key — what the TermId dual-keying did before.
+        let succ_fn = kb.make_name_term("succ"); // Fn{succ} (succ not a ctor yet)
+        kb.register_entity_of(succ_fn, nat); // now succ IS a constructor
+        let succ_ref = kb.make_name_term("succ"); // alloc canonicalizes Fn{succ} → Ref(succ)
+        assert_ne!(succ_fn, succ_ref, "the two spellings must be distinct TermIds");
+        assert!(kb.is_entity_of(succ_fn, nat), "Fn{{succ}} spelling");
+        assert!(kb.is_entity_of(succ_ref, nat), "Ref(succ) spelling");
+
+        // Reflexive is STRUCTURAL, not symbol-eq: same head, different args ⇒ NOT
+        // equal (symbol-eq would wrongly conflate them — the List[Int]/List[Str] case).
+        let box_sym = kb.intern("box");
+        let box_zero = kb.alloc(term::Term::Fn {
+            functor: box_sym,
+            pos_args: smallvec::SmallVec::from_elem(zero, 1),
+            named_args: smallvec::SmallVec::new(),
+        });
+        let box_nat = kb.alloc(term::Term::Fn {
+            functor: box_sym,
+            pos_args: smallvec::SmallVec::from_elem(nat, 1),
+            named_args: smallvec::SmallVec::new(),
+        });
+        assert!(kb.is_entity_of(box_zero, box_zero), "structurally identical");
+        assert!(!kb.is_entity_of(box_zero, box_nat), "same head, diff args ⇒ not equal");
+
+        // Nullary gate: an APPLIED constructor `succ(zero)` is NOT an entity of its
+        // sort — the parent lookup fires only for a bare constructor identity, as
+        // the pre-WI-697 TermId-keyed index (nullary keys only) did.
+        let succ_sym = kb.intern("succ");
+        let succ_applied = kb.alloc(term::Term::Fn {
+            functor: succ_sym,
+            pos_args: smallvec::SmallVec::from_elem(zero, 1),
+            named_args: smallvec::SmallVec::new(),
+        });
+        assert!(!kb.is_entity_of(succ_applied, nat), "applied succ(zero) ⋫ Nat (nullary-gated)");
     }
 
     #[test]
