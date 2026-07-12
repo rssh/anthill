@@ -1963,7 +1963,10 @@ fn walk_pattern_field_type_deep(
 /// A ground label uses [`type_display_name`]; a `Value::Node` label renders via
 /// its [`TermView`] functor (adequate for the effect-name comparison; full
 /// occurrence pretty-printing is out of scope).
-fn type_display_name_value(kb: &KnowledgeBase, v: &Value) -> String {
+///
+/// WI-702: shared with [`crate::kb::KnowledgeBase::effect_row_blocking_equations`]
+/// so the defining-equation request sites render a declined op's row identically.
+pub(crate) fn type_display_name_value(kb: &KnowledgeBase, v: &Value) -> String {
     match v {
         Value::Term { id: t, .. } => type_display_name(kb, *t),
         // WI-342 E2: render a `Value::Node` label to the SAME string
@@ -24639,6 +24642,15 @@ pub fn type_check_sorts_typed(kb: &mut KnowledgeBase, sort_terms: &[TermId]) -> 
     // the collection + dispatch read is settled.
     errors.extend(type_rule_bodies(kb, &rule_typing_reportable));
 
+    // WI-702 (proposal 054 §"Consumers"): reject a `[simp]`/`[unfold]` rewrite whose
+    // sides mention an effectful operation — firing it would duplicate/reorder/drop
+    // the call. Load-time (all OperationInfo facts loaded), like the WI-701 sibling,
+    // and AFTER `type_rule_bodies` so a body/guard method call (`?x.effectful_op()`)
+    // is already dispatched to `Apply` form — otherwise the un-dispatched `DotApply`
+    // would slip the functor walk (mirrors `record_find_dictionary_grounding` below).
+    errors.extend(check_simp_effectful_ops(kb));
+
+
     // WI-300: rewrite every rule body's `find_dictionary(X)` guard (the converter's
     // desugaring of a rule-body `requires(X)`) into the resolver-ready
     // `find_dictionary(spec_base, op_functor, op_arg…)` form, recording which body
@@ -24797,6 +24809,124 @@ fn check_branch_external_exclusion(kb: &KnowledgeBase) -> Vec<TypeError> {
                      Branch is impossible) and is re-run once per solution (below Branch is \
                      unsound). Proposal 054 §\"Branch and External\"."
                         .to_string(),
+            });
+        }
+    }
+    errors
+}
+
+/// WI-702: collect every `Term::Fn` functor reachable in the hash-consed head
+/// term `id` — the operation symbols an equational `[simp]`/`[unfold]` head
+/// (`eq(lhs, rhs)`) mentions, so the formation gate can test each for an effect
+/// row. Iterative to survive a deep head.
+fn collect_op_functors_in_term(kb: &KnowledgeBase, id: TermId, out: &mut Vec<Symbol>) {
+    let mut stack = vec![id];
+    while let Some(t) = stack.pop() {
+        if let Term::Fn { functor, pos_args, named_args } = kb.get_term(t) {
+            out.push(*functor);
+            for a in pos_args.iter() {
+                stack.push(*a);
+            }
+            for (_, a) in named_args.iter() {
+                stack.push(*a);
+            }
+        }
+    }
+}
+
+/// WI-702: carrier-agnostic head-functor collection — a hash-consed `Value::Term`
+/// head walks as a term; an occurrence `Value::Node` head reuses the shared
+/// call-functor walk [`super::op_requirements::walk_calls_node`] (`Apply` /
+/// `ApplyWithin`), so this gate and the requirement scanner can't drift.
+fn collect_op_functors_in_value(kb: &KnowledgeBase, v: &Value, out: &mut Vec<Symbol>) {
+    match v {
+        Value::Term { id, .. } => collect_op_functors_in_term(kb, *id, out),
+        Value::Node(occ) => {
+            super::op_requirements::walk_calls_node(occ, &mut |sym, _| out.push(sym))
+        }
+        _ => {}
+    }
+}
+
+/// WI-702 / proposal 054 §"Consumers that must decline it — loudly": the FORMATION
+/// HOLE. A `[simp]`/`[unfold]`-tagged equation is a DIRECTIONAL rewrite the resolver
+/// (`fire_simp_equation`) and typer (`fire_simp`) fire LHS→RHS, so firing DUPLICATES,
+/// REORDERS, or DROPS the matched redex. That is sound today only because effectful
+/// ops never *become* simp equations — the defining-equation family declines them
+/// (`body_specialize::defining_equations`, WI-702 part 1). The one hole left is a
+/// USER-WRITTEN `[simp]`/`[unfold]` rule whose sides mention an EFFECTFUL operation:
+/// rewriting its call is unsound for the same reason equations of it are refused (an
+/// `External` `create_issue` rewritten twice mints two issues; a `Modify`/`Error` op
+/// is not equational either — the FUNCTION-HOOD predicate, matching the part-1 gate).
+/// The firing sites stay effect-blind; this LOAD-TIME gate rejects the rule instead.
+///
+/// Keyed on the effect ROW only, NOT `requires`: `Set`/`Map` carry a sort-level
+/// `requires Eq[T]` that rides into their ops (`member`/`insert`/`get`), and the
+/// stdlib's own `member(?x, insert(?s, ?x)) <=> true [simp]` laws mention them — a
+/// requires-inclusive gate would reject the standard library. A `requires`-only op is
+/// still a pure function once its dictionary is supplied, so rewriting it is sound;
+/// only a non-empty EFFECT row is the hazard. (Shares the effect predicate with the
+/// part-1 request-site gate — [`KnowledgeBase::effect_row_blocking_equations`].)
+///
+/// Runs in [`type_check_sorts_typed`] after every `OperationInfo` fact is loaded,
+/// like the WI-701 sibling, so a mentioned op's effect row is visible regardless of
+/// whether the rule or the op it names loaded first.
+fn check_simp_effectful_ops(kb: &mut KnowledgeBase) -> Vec<TypeError> {
+    let mut errors: Vec<TypeError> = Vec::new();
+    // Candidate directional rewrites live under the `eq`/`unify` functors — an
+    // equational head keeps its functor index only when `[simp]`/`[unfold]`-tagged
+    // (an untagged law is `unindex_functor`'d at load, WI-139). Filter to the
+    // tagged ones; their own `is_fact` status is irrelevant (a `lhs <=> rhs` law is
+    // stored as an empty-body rule, i.e. a fact — so DO NOT skip facts here).
+    for rid in kb.simp_equation_rids() {
+        let meta = kb.rule_meta(rid);
+        if !(super::load::meta_has_flag(kb, meta, "simp")
+            || super::load::meta_has_flag(kb, meta, "unfold"))
+        {
+            continue;
+        }
+        // Every operation symbol the rule's sides mention: the head equation term
+        // (`eq(lhs, rhs)`) plus any body goals/guards (a guarded `[simp]` rule fires
+        // with its guard). The body is already dot-dispatched (this pass runs after
+        // `type_rule_bodies`), so a `?x.effectful_op()` guard is an `Apply` here. A
+        // head written in method syntax stays a `dot_apply` TERM — but a `DotApply`
+        // redex never fires under simp (WI-279 `try_fire` returns None), so leaving
+        // its method functor uncollected declines nothing that could rewrite.
+        let mut functors: Vec<Symbol> = Vec::new();
+        collect_op_functors_in_value(kb, kb.rule_head_value(rid), &mut functors);
+        for node in kb.rule_body_nodes(rid) {
+            super::op_requirements::walk_calls_node(node, &mut |sym, _| functors.push(sym));
+        }
+        let mut reported: std::collections::HashSet<Symbol> = std::collections::HashSet::new();
+        for f in functors {
+            if !reported.insert(f) {
+                continue;
+            }
+            let Some(row) = kb.effect_row_blocking_equations(f) else {
+                continue;
+            };
+            // Name the rule (label if any) — built here, only on an actual violation.
+            let label = kb
+                .rule_label(rid)
+                .map(|l| format!("`{}`", kb.qualified_name_of(l)))
+                .unwrap_or_else(|| "an unlabeled".to_string());
+            errors.push(TypeError::Other {
+                site: TypeError::here(),
+                span: kb.functor_span(f).map(|s| s.span),
+                context: TypeErrorContext::OperationEffects { op_name: f },
+                expected: format!(
+                    "{label} `[simp]`/`[unfold]` rewrite not to mention effectful \
+                     operation `{}`",
+                    kb.qualified_name_of(f),
+                ),
+                actual: format!(
+                    "operation `{}` carries effect row {row} — a directional rewrite \
+                     DUPLICATES, REORDERS, or DROPS the matched call, which no effect \
+                     tolerates (an External call rewritten twice runs twice); an \
+                     effectful operation is not equational. Proposal 054 §\"Consumers \
+                     that must decline it\".",
+                    kb.qualified_name_of(f),
+                ),
             });
         }
     }

@@ -116,7 +116,12 @@ fn push_unique(list: &mut Vec<OpRequirement>, item: OpRequirement) {
 /// it directly without a reflect-symbol cache. `callee_bindings` is
 /// the per-call substitution; v0 leaves it empty (the rewrite pass
 /// will populate it from the typer's per-call subst).
-fn walk_calls_node(
+///
+/// WI-702: shared with `typing::check_simp_effectful_ops` (the one occurrence
+/// call-functor walk, so the two can't drift). It matches only `Apply` /
+/// `ApplyWithin`; a `DotApply` method call is caught only once dispatched to
+/// `Apply` (both callers run after `type_rule_bodies` / on dispatched bodies).
+pub(crate) fn walk_calls_node(
     root: &std::rc::Rc<NodeOccurrence>,
     visit: &mut dyn FnMut(Symbol, SmallVec<[(Symbol, TermId); 2]>),
 ) {

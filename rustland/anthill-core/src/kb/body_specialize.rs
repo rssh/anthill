@@ -185,10 +185,19 @@ fn defining_equations(
         return None;
     }
     let info = lookup_operation_info(kb, op)?;
-    // Purity gate (design §9): an effectful body is not an equation. The
-    // `requires` gate is kept for this increment (relaxing it to carry the
-    // dictionary as an equation antecedent is future, §3.4.1); the arithmetic
-    // consumers (`desired_position`, the ranking transition) are requires-free.
+    // Purity gate (design §9 + proposal 054 §"Consumers that must decline it —
+    // loudly", WI-702). An EFFECTFUL body is not a function, so it has no defining
+    // equations; a `requires` body owes a dictionary this increment cannot thread
+    // as an equation antecedent (a future relaxation, §3.4.1). Decline BOTH — but
+    // SILENTLY here: `defining_equations` is a shared reducer reached from the
+    // tolerant proof-time goal-closure sweep (`synthesize_body_derived_defrules`),
+    // so an unconditional diagnostic here would double-fire (generic +
+    // per-call-site synth) and spam every effectful goal. The sweep is the one
+    // consumer that treats an effectful op as a category error, and it emits the
+    // LOUD, deduped diagnostic naming the op + row at that call site instead
+    // ([`Self::effect_row_blocking_equations`]). The SLD/relational value-fold
+    // paths (`folded_call_match`, `bare_bodied_bool_relation`) stay silent too.
+    // (Any future memoization / CSE consumer joins the same decline.)
     if !info.effects.is_empty() || !info.requires.is_empty() {
         return None;
     }
@@ -960,6 +969,46 @@ fn goal_value_args(
 }
 
 impl KnowledgeBase {
+    /// Proposal 054 §"Consumers that must decline it — loudly" (WI-702): the
+    /// rendered effect row of `op` when that row is NON-EMPTY, else `None`.
+    ///
+    /// An operation with any effect is NOT A FUNCTION, so it has no defining
+    /// equations: for an `External` op `f(x) = f(x)` need not even hold across
+    /// two calls, and a `Modify`/`Error` op is not an equation either — the gate's
+    /// predicate is FUNCTION-HOOD, not the absence of one named effect (design
+    /// §"Consumers"). Two consumers name this row in a LOUD decline rather than a
+    /// silent absence: the proof-time goal-closure sweep
+    /// ([`Self::synthesize_body_derived_defrules`], deduped once per op) and the
+    /// load-time `[simp]`/`[unfold]` formation gate (`check_simp_effectful_ops`,
+    /// as a `TypeError`). A test asserts this predicate directly so the mechanism
+    /// is non-vacuous.
+    ///
+    /// A pure op → `None`. A `requires`-only op → `None` too: its equation decline
+    /// is deliberately SILENT (carrying the dictionary as an equation antecedent is
+    /// a future relaxation, §3.4.1, not a category error), so this predicate keys on
+    /// the effect row alone.
+    ///
+    /// CONSERVATIVE on an effect-POLYMORPHIC op: an open row whose only member is a
+    /// tail variable (`effects E`) has a non-empty `info.effects` (the var rides as
+    /// a list element), so it is reported as blocking. That is deliberate and sound
+    /// — the rewrite / equation would fire on EVERY instantiation, including an
+    /// effectful one — even though it over-refuses the specific pure (`E = {}`)
+    /// instantiation. No stdlib rule mentions such an op (the whole-stdlib load in
+    /// `github_todo_test` is the standing control); weakening to present-labels-only
+    /// would make the gate unsound for the effectful instantiation.
+    pub fn effect_row_blocking_equations(&self, op: Symbol) -> Option<String> {
+        let info = lookup_operation_info(self, op)?;
+        if info.effects.is_empty() {
+            return None;
+        }
+        let labels: Vec<String> = info
+            .effects
+            .iter()
+            .map(|e| super::typing::type_display_name_value(self, e))
+            .collect();
+        Some(format!("{{{}}}", labels.join(", ")))
+    }
+
     /// Derive `op`'s defining equations from its body (design §3.4.1, WI-669):
     /// the op's parameters become DeBruijn vars (`?0`…), the body is specialized
     /// one step, and each `if`-branch path yields a guarded [`DefiningEquation`]
@@ -1232,12 +1281,31 @@ impl KnowledgeBase {
                     // the generic (abstract-parameter) path first; if it declines (a
                     // `match`-headed body won't reduce over abstract params), fall
                     // to per-call-site specialization at THIS goal's concrete args.
-                    if attempted.insert(f)
-                        && super::typing::op_has_runnable_body(self, f)
-                        && self.synthesize_op_defining_rule(f).is_none()
-                    {
-                        if let Some(args) = goal_value_args(self, goal, f) {
-                            let _ = self.synthesize_op_defining_rule_at(f, &args);
+                    if attempted.insert(f) && super::typing::op_has_runnable_body(self, f) {
+                        // Proposal 054 §"Consumers that must decline it — loudly"
+                        // (WI-702): an EFFECTFUL bodied op is not a function, so it
+                        // has no defining equations. This proof-time goal-closure
+                        // sweep IS the "specifically requested" path the ticket
+                        // names; its `attempted` set dedups per op, so emit the LOUD
+                        // decline HERE (once), naming the op + row, and skip the
+                        // synth attempts (they decline silently in
+                        // `defining_equations`; the emitter then rejects the
+                        // un-synthesized goal downstream). Emitting here — not inside
+                        // the shared reducer — is what keeps it from double-firing.
+                        if let Some(row) = self.effect_row_blocking_equations(f) {
+                            eprintln!(
+                                "[anthill] operation `{}` carries effect row {row} — \
+                                 an effectful operation is not a function, so it has \
+                                 no defining equations (proposal 054 §\"Consumers \
+                                 that must decline it\")",
+                                self.qualified_name_of(f),
+                            );
+                            continue;
+                        }
+                        if self.synthesize_op_defining_rule(f).is_none() {
+                            if let Some(args) = goal_value_args(self, goal, f) {
+                                let _ = self.synthesize_op_defining_rule_at(f, &args);
+                            }
                         }
                     }
                 } else {

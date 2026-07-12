@@ -174,6 +174,77 @@ fn match_body_declines_loudly() {
     );
 }
 
+// ── WI-702 (proposal 054 §"Consumers that must decline it — loudly") ──────────
+//
+// An operation carrying a non-empty EFFECT ROW is NOT A FUNCTION, so it has no
+// defining equations: for an `External` op `f(x) = f(x)` need not even hold across
+// two calls. The defining-equation request sites (all routed through the shared
+// `defining_equations` gate) decline it — and, unlike the STRUCTURAL declines
+// above (`match` / destructuring `let`) that are legitimate silent absences, this
+// decline is LOUD: it names the offending op and its effect row (repo principle:
+// a loud error over a silent skip). The bulk SLD/relational paths keep their own
+// silent gates; only these "specifically-requested" sites go loud.
+
+/// `bump` and `bump_pure` share the body `add(x, 1)`; only the EFFECT ROW differs.
+/// The pure twin deriving while `bump` declines pins the gate to the effect row,
+/// not the body — so removing the gate reddens the FIRST assertion, not the third.
+const EFFECTFUL_SRC: &str = r#"
+namespace test.wi702eq
+  import anthill.prelude.{Int64, External}
+  import anthill.prelude.Numeric.{add}
+
+  sort EffOps
+    operation bump(x: Int64) -> Int64
+      effects {External}
+    = add(x, 1)
+
+    operation bump_pure(x: Int64) -> Int64 = add(x, 1)
+  end
+end
+"#;
+
+#[test]
+fn effectful_op_declines_defining_equations_but_pure_twin_derives() {
+    let mut kb = common::load_kb_with(EFFECTFUL_SRC);
+    let bump = op_sym(&kb, "bump");
+    let bump_pure = op_sym(&kb, "bump_pure");
+    // Declined at every request site (all route through `defining_equations`).
+    assert!(
+        kb.op_defining_equations(bump).is_none(),
+        "an `{{External}}`-rowed op is not a function — no defining equations"
+    );
+    assert!(
+        kb.synthesize_op_defining_rule(bump).is_none(),
+        "…and no synthesized defining rule either"
+    );
+    // The pure twin — SAME body, no effects — DOES derive: the gate keys on the
+    // effect row, not the body shape.
+    assert!(
+        kb.op_defining_equations(bump_pure).is_some(),
+        "the pure twin `add(x, 1)` must still derive its equation"
+    );
+}
+
+#[test]
+fn effect_row_blocking_equations_names_the_row() {
+    let kb = common::load_kb_with(EFFECTFUL_SRC);
+    let bump = op_sym(&kb, "bump");
+    let bump_pure = op_sym(&kb, "bump_pure");
+    // The predicate the LOUD decline renders through names the offending row …
+    let row = kb
+        .effect_row_blocking_equations(bump)
+        .expect("an effectful op reports a blocking effect row");
+    assert!(
+        row.contains("External"),
+        "the reported row must name External, got `{row}`"
+    );
+    // … and a pure op reports nothing (no false positive ⇒ no spurious diagnostic).
+    assert!(
+        kb.effect_row_blocking_equations(bump_pure).is_none(),
+        "a pure op has no blocking effect row"
+    );
+}
+
 // ── WI-669 inc-1b: synthesize a transient defining rule ──────────────────────
 
 /// The `?result = <rhs>` body node of `op`'s synthesized defining rule: the
