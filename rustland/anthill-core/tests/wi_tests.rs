@@ -14,6 +14,9 @@ mod wi639_distributive_projection_test;
 #[path = "include/wi009_phase3_builtins_test.rs"]
 mod wi009_phase3_builtins_test;
 
+#[path = "include/wi206_is_modifiable_test.rs"]
+mod wi206_is_modifiable_test;
+
 #[path = "include/wi023_quantified_constraint_test.rs"]
 mod wi023_quantified_constraint_test;
 

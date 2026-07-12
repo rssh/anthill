@@ -36,8 +36,8 @@ use super::resolve::ResolveConfig;
 use super::term::{Term, TermId};
 use super::KnowledgeBase;
 use super::typing::{
-    external_effects, extract_effect_resource_sym, extract_sort_ref_sym, substitute_ref_syms,
-    TypingEnv,
+    external_effects, extract_effect_resource_sym, extract_sort_ref_sym, extract_type,
+    extract_type_param, substitute_ref_syms, TypeExtractor, TypingEnv,
 };
 use crate::eval::value::Value;
 use crate::intern::{Symbol, SymbolKind};
@@ -60,6 +60,45 @@ pub(crate) fn region_sorts(kb: &KnowledgeBase) -> HashSet<Symbol> {
         collect_sort_refs(kb, head, modifiable, &mut out);
     }
     out
+}
+
+/// WI-206: whether `sort` is admitted by a `Modifiable[T = …]` fact — the test
+/// behind the `anthill.reflect.is_modifiable` reflect op.
+///
+/// Reads the fact's `T` BINDING and takes ITS head sort — deliberately NOT
+/// [`region_sorts`], despite both being driven by the same facts. `region_sorts`
+/// over-approximates on purpose: it collects every sort *reachable anywhere* in the
+/// head, because a result type that merely MENTIONS a region-bearing sort must keep
+/// its `Modify` effect (an over-approximation is the safe direction for masking).
+/// For "is this type modifiable" the same over-approximation is a wrong ANSWER:
+/// under a `fact Modifiable[T = Cell[V = Int64]]` — the parameterized shape
+/// `cell.anthill` itself describes — it would report `Int64` as modifiable.
+///
+/// The head sort decides, so a parameterized instance answers as its base does:
+/// `Modifiable[T = Cell]` makes `Cell[V = Int64]` modifiable too.
+pub(crate) fn is_modifiable_sort(kb: &KnowledgeBase, sort: Symbol) -> bool {
+    let Some(modifiable) = kb.try_resolve_symbol("anthill.prelude.Modifiable") else {
+        return false; // no Modifiable facts loaded — nothing is modifiable
+    };
+    kb.rules_by_functor(modifiable).into_iter().any(|rid| {
+        kb.fact_head_term(rid)
+            .and_then(|head| extract_type_param(kb, &super::term_view::TermIdView(head), "T"))
+            .and_then(|bound| type_head_sort(kb, &bound))
+            == Some(sort)
+    })
+}
+
+/// The head sort a type NAMES: `Cell` for both the bare `Cell` and the
+/// parameterized `Cell[V = Int64]`. `None` for a type that names no sort (a type
+/// variable, an arrow, a value-in-type). Carrier-agnostic via `extract_type`, so
+/// either fact-head encoding (term-backed `Fn{S, named}` or deep
+/// `parameterized(base, bindings)`) reads the same.
+fn type_head_sort(kb: &KnowledgeBase, ty: &Value) -> Option<Symbol> {
+    match extract_type(kb, ty) {
+        TypeExtractor::SortRef(s) => Some(s),
+        TypeExtractor::Parameterized { base, .. } => Some(base),
+        _ => None,
+    }
 }
 
 /// Collect every `sort_ref` symbol reachable in `term`, skipping `skip`

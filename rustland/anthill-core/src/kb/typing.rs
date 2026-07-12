@@ -2774,7 +2774,30 @@ fn check_bare_ref(
         let type_ty = kb.make_sort_ref_by_name("anthill.prelude.Type");
         return Ok(TypeResult::pure(type_ty, env.clone(), Rc::clone(occ)));
     }
+    // WI-206: the SORT peer of the arm above — a bare sort name in a slot that
+    // expects a `Type` denotes the sort as a type value (`is_modifiable(Cell)`,
+    // `sort_template(kb(), Color)`). Unlike an entity, a sort name has no other
+    // value reading to compete with, but it also has no value reading OUTSIDE a
+    // `Type` slot: gating on the expected type keeps a stray sort name in an
+    // ordinary value position the loud `UnresolvedName` it is today, rather than
+    // silently typing as a type value.
+    if kb.kind_of(sym) == Some(crate::intern::SymbolKind::Sort) && expects_reflect_type(kb, expected)
+    {
+        let type_ty = kb.make_sort_ref_by_name("anthill.prelude.Type");
+        return Ok(TypeResult::pure(type_ty, env.clone(), Rc::clone(occ)));
+    }
     Err(TypeError::UnresolvedName { span, name: sym })
+}
+
+/// WI-206: whether `expected` is the reflect `Type` sort — the slot in which a
+/// bare sort name denotes the sort itself (`is_modifiable(Cell)`). Resolving
+/// `anthill.prelude.Type` can fail on a partial-stdlib KB; that yields `false`
+/// (no `Type` slot exists to admit the reading), never a vacuous match against an
+/// `expected` whose own head sort is likewise unresolvable.
+fn expects_reflect_type(kb: &KnowledgeBase, expected: Option<&Value>) -> bool {
+    let Some(exp) = expected else { return false };
+    let Some(type_sym) = kb.try_resolve_symbol("anthill.prelude.Type") else { return false };
+    extract_sort_ref_sym(kb, exp) == Some(type_sym)
 }
 
 /// WI-275: the arrow type of an operation referenced as a first-class function
@@ -3061,6 +3084,41 @@ fn nested_call_arg_hint(
     let pins_by_equality = resolved_type_is_ground(kb, pt)
         && !matches!(pt, Value::Term { id: t, .. } if type_term_mentions_type_var(kb, *t));
     if is_call_arg && pins_by_equality {
+        Some(pt.clone())
+    } else {
+        None
+    }
+}
+
+/// WI-206: the hint a parameter declared `Type` pushes down to a BARE-REFERENCE
+/// argument — `is_modifiable(Cell)`, `sort_template(kb(), Color)`. A sort name has
+/// no value reading of its own, so [`check_bare_ref`] reads one as the sort's `Type`
+/// value only in a slot that asks for a `Type`; this hint is what tells it the slot
+/// does. (An ENTITY reference needs no hint — it denotes its `Type` unconditionally.)
+///
+/// Confined to bare refs, and to a `Type` param: no other argument shape changes
+/// reading under this hint, so a call / lambda argument keeps exactly the
+/// `hof_arg_hint` / `nested_call_arg_hint` it has today, and a sort name in any
+/// non-`Type` slot stays the loud `UnresolvedName` it is today.
+fn type_slot_arg_hint(
+    kb: &KnowledgeBase,
+    arg: &Rc<NodeOccurrence>,
+    param_type: Option<&Value>,
+) -> Option<Value> {
+    let pt = param_type?;
+    // Cheapest gates first — this runs for EVERY argument of every call the typer
+    // visits. A bare SORT reference is the only argument whose reading this hint
+    // changes (`check_bare_ref`'s WI-206 arm), and `kind_of` is an O(1) read, so an
+    // ordinary variable / literal argument never reaches the `Type` name-resolve.
+    let sym = match &arg.kind {
+        NodeKind::Expr { expr: Expr::Ref(s) | Expr::Ident(s), .. } => *s,
+        NodeKind::Expr { expr: Expr::VarRef { name }, .. } => *name,
+        _ => return None,
+    };
+    if kb.kind_of(sym) != Some(crate::intern::SymbolKind::Sort) {
+        return None;
+    }
+    if expects_reflect_type(kb, Some(pt)) {
         Some(pt.clone())
     } else {
         None
@@ -3911,6 +3969,7 @@ fn visit_type(
                         .or_else(|| pt.clone());
                     hof_arg_hint(kb, arg, pt_hof)
                         .or_else(|| nested_call_arg_hint(kb, arg, pt.as_ref()))
+                        .or_else(|| type_slot_arg_hint(kb, arg, pt.as_ref()))
                 })
                 .collect();
             let named_hints: Vec<Option<Value>> = named_args
@@ -3927,6 +3986,7 @@ fn visit_type(
                         .or_else(|| pt.clone());
                     hof_arg_hint(kb, arg, pt_hof)
                         .or_else(|| nested_call_arg_hint(kb, arg, pt.as_ref()))
+                        .or_else(|| type_slot_arg_hint(kb, arg, pt.as_ref()))
                 })
                 .collect();
             work.push(TypeWorkOp::Build(TypeBuildFrame::Apply {

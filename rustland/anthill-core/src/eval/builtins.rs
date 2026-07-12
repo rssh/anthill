@@ -117,6 +117,7 @@ pub fn register_standard_builtins(interp: &mut Interpreter) -> Result<(), EvalEr
     register_if_present(interp, "anthill.reflect.as_term", as_term)?;
     register_if_present(interp, "anthill.reflect.fresh_var", reflect_fresh_var)?;
     register_if_present(interp, "anthill.reflect.make_fn", reflect_make_fn)?;
+    register_if_present(interp, "anthill.reflect.is_modifiable", reflect_is_modifiable)?;
     register_if_present(interp, "anthill.reflect.find_fact", reflect_find_fact)?;
     register_if_present(interp, "anthill.reflect.replace_named_arg", reflect_replace_named_arg)?;
     register_if_present(interp, "anthill.prelude.Time.now", time_now)?;
@@ -1836,6 +1837,28 @@ fn kb_facts_of(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalEr
         .collect();
 
     interp.build_list_value(elements, &[])
+}
+
+/// `anthill.reflect.is_modifiable(t: Type) -> Bool` (WI-206). True iff `t`'s head
+/// sort is admitted by a `Modifiable[T = …]` fact — the marker proposal 037 Rule 8
+/// demands before `Modify[t]` may appear in an effect row.
+///
+/// The test is on the HEAD SORT, so a parameterized instance answers as its base
+/// does: `fact Modifiable[T = Cell]` (cell.anthill) makes `Cell` and `Cell[V =
+/// Int64]` alike modifiable. A literal `Modifiable[T = t]` KB query could not do
+/// that — the fact's `T` is the bare `Ref(Cell)`, which does not unify with the
+/// parameterized `Cell[V = Int64]`.
+///
+/// Reads the fact set through `region::is_modifiable_sort`, the same reader the
+/// typer's region analysis uses, so reflection and the kernel cannot disagree
+/// about what is modifiable.
+fn reflect_is_modifiable(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    let [ty] = expect_args::<1>("is_modifiable", args)?;
+    let sort = crate::eval::eval::value_functor(&interp.kb, &ty)
+        .ok_or_else(|| type_mismatch("Type (a sort reference)", &ty, None))?;
+    Ok(Value::Bool(crate::kb::region::is_modifiable_sort(
+        &interp.kb, sort,
+    )))
 }
 
 /// `Substitution.lookup(s: Substitution, name: String) -> Option[Term]`.

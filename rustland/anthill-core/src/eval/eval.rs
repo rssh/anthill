@@ -306,6 +306,15 @@ impl Interpreter {
             let tid = self.kb.alloc(crate::kb::term::Term::Ref(sym));
             return Ok(StepOutcome::Deliver(Value::term(tid)));
         }
+        // WI-206: likewise a bare reference to a SORT (e.g. `Cell` in
+        // `is_modifiable(Cell)`) is the sort as a type value — the eval twin of
+        // `check_bare_ref`'s `Type`-slot arm. Unconditional here because the typer
+        // has already settled the reading: it admits a bare sort name ONLY where a
+        // `Type` is expected, so one in any other value position never reaches eval.
+        if self.kb.kind_of(sym) == Some(crate::intern::SymbolKind::Sort) {
+            let tid = self.kb.alloc(crate::kb::term::Term::Ref(sym));
+            return Ok(StepOutcome::Deliver(Value::term(tid)));
+        }
         // WI-365: a bare reference to a NULLARY constructor — an enum variant
         // with no fields, e.g. `none` in `Option`'s `case nil() -> none` (and
         // `nil` itself) — is the *constructed value*, not an operation call.
