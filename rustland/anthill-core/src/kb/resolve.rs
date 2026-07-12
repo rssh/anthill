@@ -917,17 +917,19 @@ impl SearchStream {
                 }
             }
             // Bypasses execute_builtin: push_choice's effect is on the
-            // choice-point stack, not on σ — like Not/HoApply. Term-structured;
-            // reify a Node goal for arg extraction.
+            // choice-point stack, not on σ — like Not/HoApply. Carrier-neutral
+            // (WI-348): the two branch goals are read off the goal's `TermView`
+            // and walked to `Value`s, so a `Value::Node` push_choice goal needs no
+            // whole-goal reify and its `Node` branch continuations ride through
+            // as-is.
             if tag == BuiltinTag::PushChoice {
                 let subst = frame.subst.clone();
-                let goal = goal_t.unwrap_or_else(|| reify_goal_value(kb, &goal_val));
                 if let Some((goal_a, goal_b)) =
-                    Self::resolve_push_choice_args(kb, goal, &subst)
+                    Self::resolve_push_choice_args(kb, &goal_val, &subst)
                 {
                     let candidates = vec![
-                        Candidate::Continuation(vec![Value::term(goal_a)]),
-                        Candidate::Continuation(vec![Value::term(goal_b)]),
+                        Candidate::Continuation(vec![goal_a]),
+                        Candidate::Continuation(vec![goal_b]),
                     ];
                     let f = self.stack.last_mut().unwrap();
                     f.state = FrameState::ChoicePoint {
@@ -1785,20 +1787,22 @@ impl SearchStream {
         })
     }
 
-    /// Walk both args of a `push_choice(?a, ?b)` goal through σ and
-    /// return them as `(goal_a, goal_b)`. Returns `None` if the goal is
-    /// malformed (wrong arity). Proposal 033 / WI-075.
+    /// Read both args of a `push_choice(?a, ?b)` goal, walked through σ, as
+    /// `(goal_a, goal_b)`. Carrier-neutral (WI-348): the goal is read through
+    /// [`TermView`] and each arg is [`Self::walk_arg`]'d to a `Value`, so a
+    /// `Value::Node` push_choice goal needs no whole-goal reify and a `Node`
+    /// continuation rides through as-is (rather than being lowered to a `TermId`
+    /// and re-wrapped) — the [`Self::eq_operands`] idiom. `None` if the goal is
+    /// malformed (not a 2-ary, unnamed application). Proposal 033 / WI-075.
     fn resolve_push_choice_args(
         kb: &KnowledgeBase,
-        goal: TermId,
+        goal: &Value,
         subst: &Substitution,
-    ) -> Option<(TermId, TermId)> {
-        match kb.terms.get(goal) {
-            Term::Fn { pos_args, named_args, .. }
-                if pos_args.len() == 2 && named_args.is_empty() =>
-            {
-                let goal_a = kb.walk(pos_args[0], subst);
-                let goal_b = kb.walk(pos_args[1], subst);
+    ) -> Option<(Value, Value)> {
+        match goal.head(kb) {
+            ViewHead::Functor { pos_arity: 2, named_arity: 0, .. } => {
+                let goal_a = kb.walk_arg(goal.pos_arg(kb, 0), subst)?;
+                let goal_b = kb.walk_arg(goal.pos_arg(kb, 1), subst)?;
                 Some((goal_a, goal_b))
             }
             _ => None,
