@@ -215,8 +215,12 @@ the concrete evaluator at the goal, drive SLD, and **multi-shot-resume** the con
 solution. The control substrate is nearly free, because the interpreter is *already* suspend/resume-
 ready (047 §4): its `ActivationStack` is non-native (`run()` is a trampoline over an explicit heap
 stack, so the continuation is reified data). What's missing is small and mechanical:
-- a `StepOutcome::Suspend` that returns from `run()` with the stack intact + a resume entry (same
-  shape WI-455 already plans for `StepOutcome::Dispatch`);
+- a `StepOutcome::Suspend` that returns from `run()` with the stack intact + a resume entry — a
+  **new** variant, with no sibling to copy: WI-455 (delivered 2026-07-12) did **not** add the
+  `StepOutcome::Dispatch` it was filed for; it made an `OpRef` application resolve in a single hop
+  *by construction*, leaving no redispatch to hand back to `run()`. `StepOutcome::Done` is the
+  nearest existing shape (it *exits* the trampoline loop); `Suspend` keeps the stack instead of
+  emptying it;
 - `Clone` on `Frame`/`ActivationStack` for multi-shot — **already committed (WI-078 Phase-A/a)**;
 - **coordinated** binding: the interpreter keeps its suspended stack, the resolver frame holds only a
   resume handle it calls back — so the resolver never embeds eval types.
