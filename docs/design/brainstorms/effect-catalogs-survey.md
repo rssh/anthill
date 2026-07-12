@@ -90,7 +90,7 @@ load-bearing core, and the naming lines up:
   matches mtl's `ExceptT`).
 - **`Branch`** = `NonDet` / `MonadPlus` / `Choice` / `ndet` ✓ (047's `Branch ↦ Stream` is the lazy
   version Haskell's broken `ListT` *wanted* to be; `Cut`/`Cull` in fused-effects ≈ anthill's
-  soft-cut / `Scored Branch` proposal 034).
+  soft-cut / `Scored Branch` proposal 027.3).
 - **`Modify`/`ModifyRuntime`** = State / `Ref` / `Var` ✓.
 - **`Suspension`** = the Cont / Coroutine / `control0#` / OCaml-handler family ✓ — OCaml 5 is the
   proof that this is *the* substrate, vindicating 047 §4.

@@ -11,7 +11,7 @@
 
 ## Depends on: 002 (arrow sorts with effect annotations), 013 (effects as sorts and facts), 026 (expression evaluator), 026.1 (value-integrated KB queries)
 
-## Relates to: WI-050 (M5 effect handlers), WI-075 (resolver `push_choice` primitive — substrate for the `Branch` handler), 037 (Modify framework — supersedes the §4 "twin operations" approach for state mutation)
+## Relates to: WI-050 (M5 effect handlers), WI-075 (resolver `push_choice` primitive — substrate for the `Branch` handler), 037 (Modify framework — supersedes the §4 "twin operations" approach for state mutation), 054 (the `External` effect — state outside the tracked heap admits *neither* branch-interaction contract, so `Branch`×`External` is rejected; fakes restore compatibility by moving state back into `Modify`)
 
 ## Motivation
 
@@ -606,6 +606,16 @@ fact Effect[T = Error[?]]
 **Subtleties:**
 - `Error[T]` is non-resumable in this proposal — there's no operation to ask the handler "give me a T anyway." If we want resumable typed errors, that's a generalization that requires the multi-shot handler shape, which we've deferred.
 - `MatchFailed` (`stdlib/anthill/prelude/effects.anthill:54`) is a payload sort designed to be raised through `Error[MatchFailed]` by the evaluator when `match` is non-exhaustive. The exhaustiveness checker removes `Error[MatchFailed]` from a `match`'s inferred row when all arms are covered.
+
+### External — outside the tracked heap (proposal 054)
+
+Not defined here — see [054-external-effect](054-external-effect.md). One generic effect for state
+the runtime does not mediate (a forge registry, the network, entropy): non-replayable,
+non-reorderable, never equational. Its `Branch` interaction is the degenerate case of this proposal's
+resource contracts: **neither rank is lawful** — there is no `register_undo` for the world, and
+surviving-below means one execution per multi-shot resume — so `Branch` regions may not perform
+`External` (054 §"`Branch` and `External`"). Fakes restore searchability by moving the state back
+into `Modify` (054 §"Faking").
 
 ### ConsoleOutput / ConsoleInput — I/O
 

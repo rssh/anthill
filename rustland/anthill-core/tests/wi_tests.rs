@@ -606,3 +606,6 @@ mod wi515_entity_schema_fact_test;
 #[path = "include/wi662_carrier_agnostic_requires_test.rs"]
 mod wi662_carrier_agnostic_requires_test;
 
+#[path = "include/wi698_row_param_refinement_test.rs"]
+mod wi698_row_param_refinement_test;
+

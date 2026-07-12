@@ -437,6 +437,6 @@ missing requirement surfaces at query time, not load; the runtime path itself is
 - The `Branch` effect, `reflect(stream)`, solvers-as-handlers, the `match <solver> case` surface, and
   the eval↔SLD runtime switch — all [027.2](027.2-branch-from-streams.md).
 - Direct-style search bodies that re-enter search (nested solve) — 027.2 (needs the switch).
-- Scored / best-first consumption — [034-scored-branch-effect](034-scored-branch-effect.md), surfaced
+- Scored / best-first consumption — [027.3-scored-branch-effect](027.3-scored-branch-effect.md), surfaced
   as a solver in 027.2.
 - Changing the `LogicalQuery` ADT or the resolver (this is a surface + typing + `provides` layer only).
