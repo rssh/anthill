@@ -7,6 +7,8 @@ scaland/target/
 scaland/project/target/
 scaland/.bsp/
 scaland/.metals/
+# sbt invoked from the repo root (rather than scaland/) drops its target/ here
+/target/
 
 # IDE
 .idea/
