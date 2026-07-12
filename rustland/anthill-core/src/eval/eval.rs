@@ -333,10 +333,18 @@ impl Interpreter {
         // is that operation as a first-class function value (eta), not a call —
         // the runtime counterpart of the typer's `operation_as_function_value`.
         // The `Function`-typed parameter it flows into applies it later via the
-        // closure-dispatch path. A nullary operation keeps the zero-arg-call
-        // reading below (it is not a unary function value).
+        // closure-dispatch path.
+        //
+        // WI-700: a NULLARY op is AMBIGUOUS — a bare `poke` can mean "call it now"
+        // (→ its return value) or "eta" (→ a `() -> ret` thunk), and arity cannot
+        // decide. The typer resolves it: it eta-lifts only in a function-typed slot
+        // and MARKS that occurrence `CallClass::EtaOpRef`. So mint the `OpRef` when
+        // the op has arity ≥ 1 (unambiguously a function value) OR the occurrence
+        // carries the eta marker (the nullary case); otherwise fall through to the
+        // zero-arg call. `spread_eta_args`/`enter_operation` handle the arity-0
+        // apply (`f()`) with no indexing.
         if let Some((_, params)) = self.cached_operation_body(sym) {
-            if !params.is_empty() {
+            if !params.is_empty() || Self::occ_is_eta_marked(occ) {
                 // WI-420: if the typer attached a dispatching dict to this eta
                 // occurrence, evaluate it IN THE CURRENT (eta-site) FRAME — so
                 // an abstract requirement reads the enclosing `__req_*` and a
@@ -434,6 +442,30 @@ impl Interpreter {
         result
     }
 
+    /// WI-700: the eta marker on an occurrence, if any. `Some(dict)` when the typer
+    /// classified it `CallClass::EtaOpRef` — the inner `dict` is `None` at a
+    /// requires-free / nullary eta site (marker-only, forward the caller's reqs) and
+    /// `Some(tid)` for a requires-carrying one. `None` (outer) when unclassified.
+    /// Shared by `occ_is_eta_marked` (`.is_some()`) and `eta_dispatch_dict`
+    /// (`.flatten()`), so the classification read lives in one place.
+    fn eta_marker(occ: &Rc<NodeOccurrence>) -> Option<Option<TermId>> {
+        match &occ.kind {
+            NodeKind::Expr { classification, .. } => match classification.borrow().as_deref() {
+                Some(crate::kb::typing::CallClass::EtaOpRef { dict }) => Some(*dict),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// WI-700: true iff the typer marked this occurrence as an eta-lift. `reduce_var`
+    /// uses it to mint an `OpRef` for a NULLARY op — which arity alone cannot
+    /// distinguish from a zero-arg call. An arity-≥1 bare ref does not consult this
+    /// (it is unambiguously a function value).
+    fn occ_is_eta_marked(occ: &Rc<NodeOccurrence>) -> bool {
+        Self::eta_marker(occ).is_some()
+    }
+
     /// WI-420: read the `CallClass::EtaOpRef` dict the typer attached to an eta
     /// occurrence (if any) and evaluate it to a `RequirementHandle` in the
     /// CURRENT frame (so an abstract requirement reads the enclosing `__req_*`).
@@ -443,15 +475,9 @@ impl Interpreter {
         &self,
         occ: &Rc<NodeOccurrence>,
     ) -> Result<Option<super::value::RequirementHandle>, EvalError> {
-        let dict_tid = match &occ.kind {
-            NodeKind::Expr { classification, .. } => {
-                match classification.borrow().as_deref() {
-                    Some(crate::kb::typing::CallClass::EtaOpRef { dict }) => Some(*dict),
-                    _ => None,
-                }
-            }
-            _ => None,
-        };
+        // WI-700: `.flatten()` collapses "not eta" and "eta with no dict" — both mean
+        // "no dispatch dict, forward the caller's reqs".
+        let dict_tid = Self::eta_marker(occ).flatten();
         match dict_tid {
             Some(tid) => {
                 let dict_occ = crate::kb::node_occurrence::materialize_from_handle(&self.kb, tid);

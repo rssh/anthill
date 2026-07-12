@@ -2741,12 +2741,26 @@ fn check_bare_ref(
     if let Some(exp) = expected {
         if arrow_parts(kb, exp).is_some() {
             if let Some(fn_ty) = operation_as_function_value(kb, sym, occ) {
-                // WI-420: resolve + attach the op's requirement dispatch dict
-                // (the `expected` arrow pins its element type) so eval captures
-                // it on the OpRef. A cross-sort unsatisfiable requirement is a
-                // loud error here.
-                attach_eta_dispatch_dict(kb, env, sym, occ, &fn_ty, exp)?;
-                return Ok(TypeResult::pure_value(fn_ty, env.clone(), Rc::clone(occ)));
+                // WI-700: a NULLARY op reference in an arrow-typed slot is AMBIGUOUS —
+                // the eta reading `() -> ret` competes with the zero-arg-call reading
+                // `ret`. When `ret` itself already conforms to the expected arrow
+                // (`makeInc() -> (Int64 -> Int64)` into an `Int64 -> Int64` slot), the
+                // eta arrow `() -> ret` must NOT shadow it: prefer the return-type
+                // reading below (its pre-WI-700 behavior). A non-nullary op is never a
+                // zero-arg call, so it always eta-lifts (the check short-circuits on
+                // `operation_is_nullary`, which alone has both readings).
+                let eta_shadows_return_type = operation_is_nullary(kb, sym)
+                    && lookup_operation_return_type(kb, sym).is_some_and(|ret| {
+                        types_compatible(kb, &mut Substitution::new(), &TermIdView(ret), exp)
+                    });
+                if !eta_shadows_return_type {
+                    // WI-420: resolve + attach the op's requirement dispatch dict
+                    // (the `expected` arrow pins its element type) so eval captures
+                    // it on the OpRef. A cross-sort unsatisfiable requirement is a
+                    // loud error here.
+                    attach_eta_dispatch_dict(kb, env, sym, occ, &fn_ty, exp)?;
+                    return Ok(TypeResult::pure_value(fn_ty, env.clone(), Rc::clone(occ)));
+                }
             }
         }
     }
@@ -2793,7 +2807,14 @@ fn operation_as_function_value(
         return None;
     }
     let op = lookup_operation_info_full(kb, sym)?;
-    if op.params.is_empty() || !op.type_params.is_empty() {
+    // WI-700: a NULLARY op is eta-lifted too — to `() -> ret @ row`, a Unit-shaped
+    // (empty-`NamedTuple`) param produced by the builder below — so a bare nullary
+    // op passed into a callback slot carries its DECLARED effect row into the
+    // WI-440/469 conformance checks instead of collapsing to its return type (the
+    // pre-WI-700 hole: `ty=Int64 effects=[]`, arrow + row both dropped). Only a
+    // type-parameterized op stays excluded: its arrow would carry unfreshened
+    // type-param vars that alias across multiple eta-lifts of the same op.
+    if !op.type_params.is_empty() {
         return None;
     }
     let (span, owner) = (occ.span, occ.owner);
@@ -2811,18 +2832,34 @@ fn operation_as_function_value(
     Some(make_arrow_value(kb, &param, &op.return_type, &op.effects, span, owner))
 }
 
+/// WI-700: is `sym` a NULLARY (zero-parameter) operation? Only a nullary op has both
+/// a zero-arg-call reading (`ret`) and an eta reading (`() -> ret`) in an arrow-typed
+/// slot, so `check_bare_ref` consults this to decide when the return-type reading
+/// should win over eta. (Reads the authoritative op record — the same source
+/// `operation_as_function_value` used to build the eta arrow.)
+fn operation_is_nullary(kb: &KnowledgeBase, sym: Symbol) -> bool {
+    lookup_operation_info_full(kb, sym).is_some_and(|op| op.params.is_empty())
+}
+
 /// WI-420: at a bare-op eta site, resolve the operation's requirement dispatch
-/// dict and attach it (`CallClass::EtaOpRef`) to the occurrence so eval captures
-/// it on the `Value::OpRef` at mint. `fn_ty` is the op's eta arrow, `expected`
-/// the arrow type it is checked against; unifying them pins the op's element
-/// type (e.g. `member`'s `List.T := Int` from a `Function[(Int, List[Int]),
-/// Bool]` slot), which `build_concrete_dispatch_dict` needs to resolve a
-/// concrete dep (`Eq[Int]` from its `fact`) or forward an abstract one the
-/// enclosing sort's own `requires` covers (a caller-frame `var_ref`). A
-/// requires-free or same-sort op needs no dict (eval forwards the caller's
-/// requirements). A cross-sort op whose requirement is neither concretely
-/// resolvable nor covered by the enclosing scope is a loud error — the eta
-/// analogue of `MissingRequiresForSpecOp` for a direct call.
+/// dict and attach `CallClass::EtaOpRef` to the occurrence so eval captures it on
+/// the `Value::OpRef` at mint. `fn_ty` is the op's eta arrow, `expected` the arrow
+/// type it is checked against; unifying them pins the op's element type (e.g.
+/// `member`'s `List.T := Int` from a `Function[(Int, List[Int]), Bool]` slot),
+/// which `build_concrete_dispatch_dict` needs to resolve a concrete dep (`Eq[Int]`
+/// from its `fact`) or forward an abstract one the enclosing sort's own `requires`
+/// covers (a caller-frame `var_ref`). A requires-free or same-sort op needs no
+/// dict (eval forwards the caller's requirements). A cross-sort op whose
+/// requirement is neither concretely resolvable nor covered by the enclosing scope
+/// is a loud error — the eta analogue of `MissingRequiresForSpecOp` for a direct
+/// call.
+///
+/// WI-700: the `EtaOpRef` marker is now set at EVERY eta site — a requires-carrying
+/// op carries `dict = Some(...)`, a requires-free / namespace op carries
+/// `dict = None`. Previously the requires-free/namespace cases set NO
+/// classification (eval minted the `OpRef` by arity ≥ 1). A NULLARY eta cannot be
+/// distinguished from a zero-arg call by arity, so eval reads this marker to decide
+/// — hence it must be present even when there is no dict to attach.
 fn attach_eta_dispatch_dict(
     kb: &mut KnowledgeBase,
     env: &TypingEnv,
@@ -2832,12 +2869,19 @@ fn attach_eta_dispatch_dict(
     expected: &Value,
 ) -> Result<(), TypeError> {
     let Some(parent) = impl_parent_of_op(kb, sym) else {
-        return Ok(()); // namespace-level op — no enclosing sort `requires`
+        // Namespace-level op — no enclosing sort `requires`. WI-700: still MARK the
+        // eta (dict None) so a nullary eta mints an `OpRef` at eval (a namespace op
+        // like `poke` reaches only this arm).
+        occ.set_classification(CallClass::EtaOpRef { dict: None });
+        return Ok(());
     };
     // WI-657(12): emptiness test only — take the shared `Rc` (bump) rather than
     // `direct_requires_chain`'s Vec clone.
     if direct_requires_chain_rc(kb, parent).is_empty() {
-        return Ok(()); // requires-free op — eval forwards the caller's reqs
+        // Requires-free op — eval forwards the caller's reqs. WI-700: MARK the eta
+        // (dict None) regardless, so a nullary eta mints an `OpRef` at eval.
+        occ.set_classification(CallClass::EtaOpRef { dict: None });
+        return Ok(());
     }
     if env.enclosing_sort() == Some(parent) {
         // Same-sort eta: the op needs its OWN sort's dispatching dict. A DIRECT
@@ -2848,11 +2892,12 @@ fn attach_eta_dispatch_dict(
         // `__req_self` (the sort's own dispatching dict, identical to what this
         // op needs) at mint via a `var_ref`, and install it at apply. (WI-420)
         let Some(syms) = ProjectionSyms::resolve(kb) else {
+            occ.set_classification(CallClass::EtaOpRef { dict: None });
             return Ok(());
         };
         let req_self = kb.intern("__req_self");
         let dict = build_req_var_ref(kb, &syms, req_self);
-        occ.set_classification(CallClass::EtaOpRef { dict });
+        occ.set_classification(CallClass::EtaOpRef { dict: Some(dict) });
         return Ok(());
     }
     // Pin the op's element type(s) by unifying its eta arrow against the
@@ -2875,7 +2920,7 @@ fn attach_eta_dispatch_dict(
         env.enclosing_requires().map(|r| r.to_vec()).unwrap_or_default();
     match build_concrete_dispatch_dict(kb, &subst, parent, env.enclosing_sort(), &caller_requires, env.enclosing_sort_param_rigids()) {
         Some(dict) => {
-            occ.set_classification(CallClass::EtaOpRef { dict });
+            occ.set_classification(CallClass::EtaOpRef { dict: Some(dict) });
             Ok(())
         }
         None => {
@@ -8833,12 +8878,17 @@ pub enum CallClass {
     /// `build_concrete_dispatch_dict` from the expected arrow's pinning). Eval
     /// evaluates it IN THE ETA-SITE FRAME at mint and stores the resulting
     /// requirement on the `OpRef`, then installs it into the callee frame at
-    /// apply. Set whenever the eta'd op is requires-carrying — INCLUDING a
-    /// same-sort eta, which cannot inherit because an eta'd `OpRef` escapes to a
-    /// foreign apply frame; only a requires-free or namespace-level op carries no
-    /// classification and forwards the caller's requirements.
+    /// apply. A requires-carrying eta (INCLUDING a same-sort eta, which cannot
+    /// inherit because an eta'd `OpRef` escapes to a foreign apply frame) carries
+    /// `dict = Some(...)`; a requires-free or namespace-level op carries
+    /// `dict = None` and forwards the caller's requirements. WI-700: the marker is
+    /// now set at EVERY eta site (not only requires-carrying ones), because a
+    /// NULLARY eta needs it to disambiguate "mint the `OpRef`" from "zero-arg
+    /// call" at eval — an arity-≥1 bare ref is unambiguously a function value, but
+    /// a bare `poke` is not, so `None` here is the load-bearing "this occurrence
+    /// is an eta, not a call" signal.
     EtaOpRef {
-        dict: TermId,
+        dict: Option<TermId>,
     },
 }
 
@@ -14384,12 +14434,19 @@ fn labels_match_aligned(
 ///     not from the argument actually passed).
 ///
 /// Conservative skips (return `None`, no check): a non-arrow/`Function`
-/// declared or actual type, a missing effects child, a non-eta argument
-/// (a lambda synthesizes its row against the declared hint elsewhere), an
-/// actual row that is OPEN or carries its own absents, or a row that fails
-/// to decompose. VALIDATION-only: `subst` is read (label walking / bound
-/// row-tail resolution) and never extended — inference stays with the
-/// `unify_types` pass that precedes this check.
+/// declared or actual type, a missing effects child, an actual row that is OPEN or
+/// carries its own absents, or a row that fails to decompose. VALIDATION-only:
+/// `subst` is read (label walking / bound row-tail resolution) and never extended —
+/// inference stays with the `unify_types` pass that precedes this check.
+///
+/// KNOWN GAP (not "handled elsewhere" — verified 2026-07-12): a NON-eta argument (a
+/// `lambda`) bails at the `arg_op_sym` extraction below, so NEITHER the lacks/closed
+/// conformance NOR the WI-700 self-contradiction reject fires for a lambda callback.
+/// `shield[EffP = {}](lambda () -> poke())` LOADS with the `{Outside}` the lambda body
+/// incurs escaping a `-Outside` slot; the eta twin `…(poke)` rejects. A prior comment
+/// here wrongly claimed the lambda "synthesizes its row against the declared hint
+/// elsewhere" — that elsewhere does not enforce the constraint. Tracked as a WI-700
+/// sibling (lambda-callback row conformance).
 fn validate_callback_effect_row(
     kb: &mut KnowledgeBase,
     subst: &Substitution,
@@ -14413,19 +14470,55 @@ fn validate_callback_effect_row(
     if !head_is_callable {
         return None;
     }
+    // WI-700: check the DECLARED row FIRST. A self-contradictory instantiation
+    // (probe a) is a property of the declared param plus its instantiation ALONE, so
+    // it must reject regardless of the actual callback's row — a pure actual (or a
+    // non-arrow actual that would bail the actual-side gate below) must not let it
+    // slip through.
+    let (_, _, decl_eff) = arrow_parts(kb, declared)?;
+    let decl_eff = decl_eff?;
+    let decl_row = canonical_effects_row(kb, &decl_eff);
+    // Decompose the DECLARED row RAW (unfiltered) so a self-contradictory
+    // instantiation surfaces HERE instead of being swallowed as decompose's `None`.
+    let (e_present, e_tails, e_absent) = decompose_effect_row_raw(kb, subst, &decl_row)?;
+    // WI-700 (probe a): an explicit row-param instantiation made the callback param
+    // row both PRESENT and ABSENT the same effect (`{Outside, -Outside}` from
+    // `shield[EffP = {Outside}]` against a declared `-Outside`). The param is
+    // uninhabitable — the instantiation violates its OWN `-…` lacks-constraint — so
+    // reject loudly (the pre-WI-700 hole let decompose's `None` swallow it). Shares
+    // `row_self_contradiction` with `decompose_effect_row`'s filter so the two
+    // cannot drift. NOTE this fires only for an eta'd OP-REF callback arg (a lambda
+    // arg bails at `arg_op_sym` above); the general signature-level form (all
+    // callback shapes + an op's own row) is tracked as a WI-700 sibling.
+    if let Some(clash) = row_self_contradiction(kb, subst, &e_present, &e_absent) {
+        return Some(TypeError::Other {
+            site: TypeError::here(),
+            span,
+            context: TypeErrorContext::OperationArgument { op_name: fn_sym, param: param_sym },
+            expected: format!(
+                "callback parameter `{}` of `{}` to have a consistent effect row",
+                kb.resolve_sym(param_sym),
+                kb.qualified_name_of(fn_sym),
+            ),
+            actual: format!(
+                "the explicit instantiation makes it both admit and lack `{}` \
+                 (violates its `-{}` lacks-constraint)",
+                type_display_name_value(kb, clash),
+                type_display_name_value(kb, clash),
+            ),
+        });
+    }
+    // The ACTUAL callback's row. WI-700 eta-lifts a nullary op ref so its declared
+    // row is present here (an arrow) instead of collapsed to its return type.
     let (_, _, act_eff) = arrow_parts(kb, actual)?;
     let act_eff = act_eff?;
     let act_row = canonical_effects_row(kb, &act_eff);
     let (a_present, a_tails, a_absent) = decompose_effect_row(kb, subst, &act_row)?;
     if a_present.is_empty() || !a_tails.is_empty() || !a_absent.is_empty() {
-        // A pure actual row conforms to any declared row (subset semantics);
-        // an open / absent-carrying actual is left to the unify path (v1).
+        // A pure actual row conforms to any (consistent) declared row; an open /
+        // absent-carrying actual is left to the unify path (v1).
         return None;
     }
-    let (_, _, decl_eff) = arrow_parts(kb, declared)?;
-    let decl_eff = decl_eff?;
-    let decl_row = canonical_effects_row(kb, &decl_eff);
-    let (e_present, e_tails, e_absent) = decompose_effect_row(kb, subst, &decl_row)?;
     let actual_places = kb.symbols.arg_places(arg_op_sym);
     let declared_places = kb.symbols.arg_places(param_sym);
     // Positional alignment is meaningful only for EQUAL arities — a mismatch
@@ -18723,7 +18816,17 @@ fn effects_rows_inner<V: TermView>(kb: &KnowledgeBase, v: &V) -> Option<Value> {
 /// produces today never trip this; the hard-reject closes the door on
 /// external producers (loader bugs, hand-built test terms) leaking
 /// silent miscompares.
-fn decompose_effect_row(
+///
+/// The raw effect-row decomposition: present labels, row tails, absent labels —
+/// WITHOUT the self-contradiction (`{e, -e}`) filter. Returns `None` only for a
+/// genuinely malformed row (unknown functor). WI-700: `validate_callback_effect_row`
+/// needs the raw present/absent so it can REJECT a self-contradictory DECLARED
+/// callback row (an explicit row-param instantiation that violates its own `-X`
+/// lacks-constraint — `{Outside, -Outside}`) with a targeted diagnostic, instead
+/// of the silent `None` the filter turns it into. The filtering
+/// [`decompose_effect_row`] wrapper preserves prior behavior for its ~10
+/// subtype/unify/merge callers.
+fn decompose_effect_row_raw(
     kb: &mut KnowledgeBase,
     subst: &Substitution,
     effects: &impl TermView,
@@ -18838,19 +18941,41 @@ fn decompose_effect_row(
         }
     }
 
-    // WI-328 (piece d / proposal §7.2): a row presenting and absenting the
-    // SAME label (`{ e, - e }`) is malformed. Compared through the substitution
-    // carrier-agnostically via `views_structurally_equal` — a ground `Value::Term`
-    // label and a structurally-equal `Value::Node` occurrence label match across
-    // carriers.
-    for p in &present {
-        for a in &absent {
-            if resolved_labels_equal(kb, subst, p, a) {
-                return None;
-            }
-        }
-    }
+    Some((present, tails, absent))
+}
 
+/// WI-700 / WI-328 (piece d / proposal §7.2): the first PRESENT label of a row that
+/// is ALSO ABSENT (`{e, -e}`) — the self-contradictory, uninhabitable shape. Labels
+/// compare carrier-agnostically through the substitution (a ground `Value::Term`
+/// label and a structurally-equal `Value::Node` occurrence label match across
+/// carriers). Two callers share this so the detection cannot drift: the filtering
+/// [`decompose_effect_row`] tests `.is_some()` (drops the malformed row to `None`);
+/// [`validate_callback_effect_row`] binds the returned label for its lacks-violation
+/// diagnostic (an explicit instantiation that violates its own `-X` lacks-constraint).
+fn row_self_contradiction<'a>(
+    kb: &KnowledgeBase,
+    subst: &Substitution,
+    present: &'a [Value],
+    absent: &[Value],
+) -> Option<&'a Value> {
+    present
+        .iter()
+        .find(|p| absent.iter().any(|a| resolved_labels_equal(kb, subst, p, a)))
+}
+
+/// The self-contradiction-filtering decomposition used by the row subtype / unify
+/// / merge callers: a row presenting AND absenting the same label (`{e, -e}`, the
+/// WI-328 piece-d malformed shape) yields `None` — as does a genuinely malformed
+/// row.
+fn decompose_effect_row(
+    kb: &mut KnowledgeBase,
+    subst: &Substitution,
+    effects: &impl TermView,
+) -> Option<(Vec<Value>, Vec<TermId>, Vec<Value>)> {
+    let (present, tails, absent) = decompose_effect_row_raw(kb, subst, effects)?;
+    if row_self_contradiction(kb, subst, &present, &absent).is_some() {
+        return None;
+    }
     Some((present, tails, absent))
 }
 

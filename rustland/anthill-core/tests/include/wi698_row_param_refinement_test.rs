@@ -9,12 +9,12 @@
 //! declared the Clock way in `stdlib/anthill/prelude/external.anthill`): the
 //! retargeted carrier probes (invariants 1–3, 6) now bind `External`, while
 //! invariants 4–5 are effect-agnostic (abstract-dispatch failure; the stdlib
-//! `List` precedent). The two `*_today` GAP pins
-//! (invariant 7) DELIBERATELY keep the generic `Outside` stand-in — the hole
-//! they pin is NOT External-specific (it exists for Modify / Error / Clock
-//! alike), and keeping them off `External` isolates them from External's extra
-//! gates (the Branch × External co-occurrence check, WI-701); they are owned by
-//! WI-700, which flips each from `expect_load` to `expect_reject` as it lands.
+//! `List` precedent). The two GAP pins (invariant 7) DELIBERATELY keep the
+//! generic `Outside` stand-in — the hole they pin is NOT External-specific (it
+//! exists for Modify / Error / Clock alike), and keeping them off `External`
+//! isolates them from External's extra gates (the Branch × External
+//! co-occurrence check, WI-701). WI-700 DELIVERED closed both (they were
+//! `*_today` `expect_load` pins, now `expect_reject`).
 //!
 //! Pinned invariants:
 //!   1. a consumer holding the "fake" carrier (EM = {}) typechecks at the
@@ -43,16 +43,20 @@
 //!      (`check_override_refinement` defers denoted/parametric rows), so it is
 //!      `Wrap2RW`, not they, that pins the mechanism. Expected FREE — the same
 //!      type-arg substitution carries a second row param with no new typer work;
-//!   7. the pre-WI-700 GAP, pinned to flip — TWO independent probes over the
-//!      generic `Outside` stand-in:
-//!      (a) `shield[EffP = {Outside}](poke)` loads although the callback row
-//!          declares `-Outside` (lacks unenforced at explicit instantiation);
-//!      (b) `shield[EffP = {}](poke3)` loads although `poke3` declares
-//!          `{Outside}` (callback-row conformance unchecked entirely).
-//!      Declared rows are what the row checker consumes — `poke`/`poke3`
-//!      have pure bodies and OVER-declare deliberately. WI-700 wires the
-//!      checks; as each lands, flip the corresponding `*_today` test from
-//!      `expect_load` to `expect_reject`.
+//!   7. WI-700 DELIVERED — effect-row enforcement at an EXPLICIT instantiation
+//!      site, TWO independent probes over the generic `Outside` stand-in:
+//!      (a) `shield[EffP = {Outside}](poke)` is REJECTED: the instantiation makes
+//!          the callback row `{Outside, -Outside}` (present AND absent `Outside`),
+//!          violating its own `-Outside` — the self-contradiction reject, which
+//!          reads the DECLARED row RAW so the clash is not swallowed as a `None`;
+//!      (b) `shield[EffP = {}](poke3)` is REJECTED: the closed callback row
+//!          `{-Outside}` forbids the `{Outside}` that `poke3` declares
+//!          (actual-vs-declared conformance, no self-contradiction).
+//!      Declared rows are what the row checker consumes — `poke`/`poke3` have pure
+//!      bodies and OVER-declare deliberately. Both probes are NULLARY ops passed by
+//!      name: WI-700 eta-lifts a nullary op ref in a callback slot to
+//!      `() -> ret @ row` (pre-WI-700 it collapsed to its return type, dropping the
+//!      row and bypassing the check).
 
 /// The 054 §Faking mini-model over the REAL `External`: spec with a row param +
 /// the two carriers. NOTE `import anthill.prelude.EffectsRuntime`: the
@@ -474,22 +478,105 @@ fn rw_split_store_union_threads_both_components() {
     );
 }
 
-/// PINS GAP (a) — flip to `expect_reject` when WI-700 wires the lacks
-/// check at explicit instantiation sites.
+/// GAP (a) — WI-700 DELIVERED: the lacks-constraint is ENFORCED at an explicit
+/// instantiation site. `shield[EffP = {Outside}]` makes the callback param row
+/// `{Outside, -Outside}` (present AND absent `Outside`), so the instantiation
+/// violates its own `-Outside` — the param is uninhabitable and the load is
+/// rejected (the self-contradiction reject in `validate_callback_effect_row`,
+/// reading the DECLARED row RAW so the clash is not swallowed). Independent of
+/// `poke`: any argument fails an uninhabitable param.
 #[test]
-fn lacks_unenforced_at_explicit_instantiation_today() {
-    expect_load(
+fn lacks_enforced_at_explicit_instantiation() {
+    expect_reject(
         &[LACKS_SRC, LACKS_GAP_SRC],
-        "pre-WI-700 status quo (a): EffP = {Outside} against a declared -Outside",
+        &["shield", "Outside", "lack"],
+        "EffP = {Outside} against a declared -Outside (self-contradictory instantiation)",
     );
 }
 
-/// PINS GAP (b) — flip to `expect_reject` when WI-700 wires callback-row
-/// conformance at explicit instantiation sites.
+/// GAP (b) — WI-700 DELIVERED: callback-row conformance is CHECKED at an explicit
+/// instantiation site. `shield[EffP = {}]` closes the callback param row to
+/// `{-Outside}`; `poke3` declares `{Outside}`, which the closed row forbids, so the
+/// load is rejected. Unlike (a) there is no self-contradictory row — the reject
+/// comes from actual-vs-declared conformance itself, reached because WI-700
+/// eta-lifts the NULLARY `poke3` to a `() -> Int64 @ {Outside}` arrow (pre-WI-700
+/// it collapsed to `Int64`, dropping its row, so the check was bypassed).
 #[test]
-fn row_conformance_unchecked_at_explicit_instantiation_today() {
-    expect_load(
+fn row_conformance_checked_at_explicit_instantiation() {
+    expect_reject(
         &[LACKS_SRC, LACKS_GAP2_SRC],
-        "pre-WI-700 status quo (b): {Outside}-rowed op where EffP = {}",
+        &["shield", "poke3", "Outside"],
+        "{Outside}-rowed op passed where EffP = {} (row conformance)",
+    );
+}
+
+/// WI-700 nullary eta-lift round-trips through EVAL. The probes above reject at
+/// LOAD, so they never exercise the eval half of the fix — the typer now ACCEPTS a
+/// nullary op in a callback slot, so eval must MINT an `OpRef` for it (not eagerly
+/// call it) and APPLY that arity-0 `OpRef` at `f()`. This pins the typer⊆eval
+/// invariant: `five` is passed by name into a `() -> Int64` slot, `call_thunk`
+/// invokes it, and the result is `5` (the deferred call ran once, at `f()`).
+const ETA_NULLARY_SRC: &str = r#"
+namespace smoke.eta_nullary
+  import anthill.prelude.{Int64}
+
+  operation five() -> Int64 = 5
+
+  operation call_thunk(f: () -> Int64) -> Int64
+    effects {}
+  = f()
+
+  operation use_it() -> Int64
+    effects {}
+  = call_thunk(five)
+end
+"#;
+
+#[test]
+fn nullary_eta_lift_round_trips_through_eval() {
+    let mut interp = crate::common::interp_for(ETA_NULLARY_SRC);
+    let r = interp
+        .call("smoke.eta_nullary.use_it", &[])
+        .expect("use_it evaluates");
+    assert_eq!(
+        r.as_int(),
+        Some(5),
+        "nullary `five` eta'd to an OpRef, then called as a thunk at `f()`, yields 5",
+    );
+}
+
+/// WI-700 regression guard (surfaced in review): a NULLARY op whose RETURN type is
+/// itself a function, passed BY NAME into a slot of that function type, must still
+/// load and eval. The nullary eta-lift must NOT shadow the zero-arg-call/return-type
+/// reading when `ret` already conforms to the expected arrow (`make_inc() ->
+/// Function[..]` into a `Function[..]` slot) — else the arg types as `() ->
+/// Function[..]` and mismatches. Pre-fix this rejected with `expected Function[..],
+/// got () -> Function[..]`. `go` evals to `0`: `make_inc` is zero-arg-called to yield
+/// the identity lambda, which `apply_it` then applies to `0`.
+const NULLARY_RETURNS_FN_SRC: &str = r#"
+namespace smoke.nullary_ret_fn
+  import anthill.prelude.{Int64, Function}
+
+  operation make_inc() -> Function[A = Int64, B = Int64]
+  = lambda (x: Int64) -> x
+
+  operation apply_it(f: Function[A = Int64, B = Int64]) -> Int64
+  = f(0)
+
+  operation go() -> Int64
+  = apply_it(make_inc)
+end
+"#;
+
+#[test]
+fn nullary_returning_function_prefers_return_type_reading() {
+    let mut interp = crate::common::interp_for(NULLARY_RETURNS_FN_SRC);
+    let r = interp
+        .call("smoke.nullary_ret_fn.go", &[])
+        .expect("go evaluates");
+    assert_eq!(
+        r.as_int(),
+        Some(0),
+        "make_inc reads as its returned Function (not eta'd to `() -> Function`); apply_it(make_inc) applies it to 0",
     );
 }
