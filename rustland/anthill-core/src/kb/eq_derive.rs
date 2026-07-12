@@ -49,7 +49,7 @@ use smallvec::SmallVec;
 
 use crate::eval::value::Value;
 use crate::intern::Symbol;
-use crate::kb::term::{Literal, Term};
+use crate::kb::term::Term;
 use crate::kb::term_view::{TermView, ViewHead};
 use crate::kb::KnowledgeBase;
 
@@ -341,59 +341,23 @@ impl KnowledgeBase {
     /// WI-664 — does `v` reach an UNSHIELDED partial (non-reflexive) carrier — a
     /// `Float` leaf NOT behind a lawful-Eq own-`eq` boundary — so its SEMANTIC
     /// equality must be computed FIELD-WISE rather than by the structural
-    /// reflexivity shortcut? `true` for a bare `Float`, for an entity whose
-    /// constructor is a derived `NonEq` carrier
-    /// ([`Self::field_wise_noneq_carriers`]), and for a tuple any of whose fields
-    /// reaches one. `false` for a lawful-Eq boundary (`TotalFloat`/`Set`/`Map` —
-    /// own `eq`, so NOT in the set), an all-`Eq` composite, and every scalar. An
-    /// entity reads the precomputed per-constructor classification in O(1) — which
-    /// already stopped at boundaries, so there is no descent into a `TotalFloat`
-    /// field; only tuples (no sort to key on) walk structurally.
+    /// reflexivity shortcut? `true` for a bare `Float` (read carrier-neutrally
+    /// through the view from ANY carrier), for an entity whose constructor is a
+    /// derived `NonEq` carrier ([`Self::field_wise_noneq_carriers`]), and for a
+    /// tuple any of whose fields reaches one. `false` for a lawful-Eq boundary
+    /// (`TotalFloat`/`Set`/`Map` — own `eq`, so NOT in the set), an all-`Eq`
+    /// composite, and every scalar.
+    ///
+    /// WI-689 — a thin [`KnowledgeBase::fold_gate`] over
+    /// [`crate::kb::resolve::REACHES_PARTIAL_CARRIER`]: a structural (non-σ) `Any`
+    /// scan whose head-check stops at a `Float` leaf and at any sort/constructor
+    /// head — reading the precomputed per-constructor classification in O(1) (it
+    /// already stopped at lawful-Eq boundaries, so there is no descent into a
+    /// `TotalFloat` field) — while a functor-less aggregate (tuple/unit, no sort to
+    /// key on) walks its fields.
     pub(crate) fn value_reaches_partial_carrier(&self, v: &Value) -> bool {
-        // A bare `Float` scalar (eval's unboxed form), or a `Float` literal read
-        // through the view from ANY carrier (`Value::Term(Const)` / a `Value::Node`
-        // float-literal occurrence, WI-685).
-        if matches!(v, Value::Float(_)) {
-            return true;
-        }
-        let head = v.head(self);
-        if matches!(head, ViewHead::Const(Literal::Float(_))) {
-            return true;
-        }
-        match head.functor_sym() {
-            // A constructor / sort head keys the precomputed per-constructor
-            // classification in O(1) — it already stopped at lawful-Eq boundaries,
-            // so there is no descent into a `TotalFloat` field. Reads an entity, a
-            // `Value::Term(Fn)`, or a `Value::Node` constructor uniformly.
-            Some(f) => self.field_wise_noneq_carriers.contains(&f),
-            // No sort to key on — a tuple / unit (any carrier) — so walk its fields.
-            None => self.view_fields_reach_partial_carrier(v),
-        }
-    }
-
-    /// WI-685 — does any immediate field of a functor-less aggregate (a tuple /
-    /// unit, read carrier-neutrally through the view) reach an unshielded partial
-    /// carrier? Split from [`Self::value_reaches_partial_carrier`] so a `Value::Node`
-    /// tuple walks its fields exactly like a `Value::Tuple` (no sort to key on).
-    fn view_fields_reach_partial_carrier(&self, v: &Value) -> bool {
-        let pos_arity = match v.head(self) {
-            ViewHead::Functor { pos_arity, .. } => pos_arity,
-            _ => return false,
-        };
-        for i in 0..pos_arity {
-            if let Some(c) = v.pos_arg(self, i) {
-                if self.value_reaches_partial_carrier(&c.to_value()) {
-                    return true;
-                }
-            }
-        }
-        for k in v.named_keys(self) {
-            if let Some(c) = v.named_arg(self, k) {
-                if self.value_reaches_partial_carrier(&c.to_value()) {
-                    return true;
-                }
-            }
-        }
-        false
+        // A structural (non-σ) gate — `None` is the inert empty σ `fold_gate` never
+        // consults for `chase_sigma: false`, so no `Substitution` is minted per call.
+        self.fold_gate(v, None, 0, crate::kb::resolve::REACHES_PARTIAL_CARRIER)
     }
 }

@@ -2609,6 +2609,155 @@ enum OccPattern {
     Node(Value),
 }
 
+/// WI-689 — the ONE generic structural fold that the sem-eq / groundness "gates"
+/// reduce to, retiring the former per-carrier + per-gate twin split (8 helpers
+/// that hand-rolled the SAME `TermView` recursion skeleton, differing only in a
+/// few axes). It is the ONE-view analog of the two-view
+/// [`views_structurally_equal`](super::term_view::views_structurally_equal): a
+/// single walk over any [`TermView`] carrier (`Term` / `Value` / `Node` /
+/// `Entity` / `Tuple`), so a hypothetical NEW value carrier needs NO new per-gate
+/// arm — it rides the view like every other. Each gate is a thin predicate over a
+/// [`KnowledgeBase::fold_gate`] call parameterized by this spec.
+///
+/// The axes the gates differ on:
+/// * `combine` — how child verdicts fold (`All` for groundness, `Any` for the
+///   "reaches …" scans), which also fixes the empty-children (pure-leaf) verdict.
+/// * `chase_sigma` — whether a `Var(Global)` head is resolved through σ (the
+///   dispatch-time gates chase; the structural gates read already-reduced values).
+/// * `head_check` — an optional head-level short-circuit ([`HeadCheck`]).
+/// * `opaque` — the verdict for an [`ViewHead::Opaque`] carrier (normally the
+///   combine identity; `has_bodied_op_call` conservatively declines with `true`).
+/// * `depth_cap` — an optional `(cap, verdict-at-cap)` bound (only the
+///   `reaches_eq_override` scan caps, conservatively `true` at 256).
+#[derive(Clone, Copy)]
+pub(crate) struct GateSpec {
+    combine: Combine,
+    chase_sigma: bool,
+    head_check: HeadCheck,
+    opaque: bool,
+    depth_cap: Option<(usize, bool)>,
+}
+
+/// How a [`GateSpec`] folds child verdicts — and, for a pure leaf with no child,
+/// its identity element (`All` ⇒ `true`, `Any` ⇒ `false`).
+#[derive(Clone, Copy)]
+enum Combine {
+    /// Every child must hold (groundness) — short-circuits `false`.
+    All,
+    /// Some child must hold (the "reaches …" scans) — short-circuits `true`.
+    Any,
+}
+
+/// The head-level short-circuit a gate applies before recursing into children.
+/// Each reads only the head's `ViewHead` plus the KB's classification tables, so a
+/// gate is a fixed, `&self`-free predicate (the whole point of the unification —
+/// adding a value carrier can no longer silently omit an arm).
+#[derive(Clone, Copy)]
+enum HeadCheck {
+    /// No head short-circuit — always recurse (deep groundness).
+    AlwaysRecurse,
+    /// WI-616: the head functor is an eq-dispatch-index carrier (overrides `eq`),
+    /// read off either the `Functor` or the canonical bare-`Ref` spelling.
+    EqOverride,
+    /// WI-580/690: the head is a bodied (non-builtin) operation call — read off the
+    /// raw `Functor` functor ONLY (a bare `Ref` is a 0-ary constructor, never a
+    /// bodied op, so it takes the recurse-over-no-children path to the identity).
+    BodiedOpCall,
+    /// WI-664: the head is a `Float` leaf (an unshielded partial carrier) or a
+    /// sort/constructor whose precomputed per-constructor NonEq classification
+    /// decides in O(1) and STOPS (it already stopped at lawful-Eq boundaries, so
+    /// its fields are not re-walked); a functor-less aggregate walks its fields.
+    PartialCarrier,
+}
+
+/// The outcome of a [`HeadCheck`] at a node: a definite short-circuit verdict, or
+/// "descend into the children".
+enum HeadVerdict {
+    Stop(bool),
+    Recurse,
+}
+
+/// Reach-scan depth cap (WI-616): a buried-override scan on a pathologically deep
+/// value conservatively reports "reaches" at this depth rather than recursing
+/// unboundedly. Only [`REACHES_EQ_OVERRIDE`] caps.
+const REACH_DEPTH_CAP: usize = 256;
+
+/// WI-616 — deep groundness: no unbound variable anywhere inside a σ-walked value.
+pub(crate) const DEEP_GROUND: GateSpec = GateSpec {
+    combine: Combine::All,
+    chase_sigma: true,
+    head_check: HeadCheck::AlwaysRecurse,
+    // A runtime handle (`Map`/`Closure`/…) has no unbound var leaf — ground.
+    opaque: true,
+    depth_cap: None,
+};
+
+/// WI-616 — does the value structurally CONTAIN an eq-dispatch-override carrier?
+pub(crate) const REACHES_EQ_OVERRIDE: GateSpec = GateSpec {
+    combine: Combine::Any,
+    chase_sigma: true,
+    head_check: HeadCheck::EqOverride,
+    // An opaque carrier overrides nothing reachable here.
+    opaque: false,
+    depth_cap: Some((REACH_DEPTH_CAP, true)),
+};
+
+/// WI-580/690 — does the value structurally CONTAIN a bodied (non-builtin) op-call?
+pub(crate) const HAS_BODIED_OP_CALL: GateSpec = GateSpec {
+    combine: Combine::Any,
+    chase_sigma: false,
+    head_check: HeadCheck::BodiedOpCall,
+    // An opaque carrier we cannot decompose MIGHT hide a bodied op-call — decline
+    // (conservatively `true`) rather than structurally unify a form we can't inspect.
+    opaque: true,
+    depth_cap: None,
+};
+
+/// WI-664 — does the value reach an UNSHIELDED partial (Float) carrier?
+pub(crate) const REACHES_PARTIAL_CARRIER: GateSpec = GateSpec {
+    combine: Combine::Any,
+    chase_sigma: false,
+    head_check: HeadCheck::PartialCarrier,
+    opaque: false,
+    depth_cap: None,
+};
+
+impl HeadCheck {
+    /// The head-level short-circuit for this gate — reads the head and the KB's
+    /// classification tables only.
+    fn classify(self, kb: &KnowledgeBase, head: &ViewHead) -> HeadVerdict {
+        match self {
+            HeadCheck::AlwaysRecurse => HeadVerdict::Recurse,
+            HeadCheck::EqOverride => match head.functor_sym() {
+                Some(s) if kb.eq_dispatch_target(s).is_some() => HeadVerdict::Stop(true),
+                _ => HeadVerdict::Recurse,
+            },
+            HeadCheck::BodiedOpCall => match head {
+                ViewHead::Functor { functor: Some(f), .. }
+                    if kb.builtins.get(f).is_none() && kb.op_body_node(*f).is_some() =>
+                {
+                    HeadVerdict::Stop(true)
+                }
+                _ => HeadVerdict::Recurse,
+            },
+            HeadCheck::PartialCarrier => {
+                // A `Float` literal read carrier-neutrally through the view (a bare
+                // `Value::Float`, a `Value::Term(Const)`, a Node float-literal).
+                if matches!(head, ViewHead::Const(Literal::Float(_))) {
+                    return HeadVerdict::Stop(true);
+                }
+                match head.functor_sym() {
+                    // A sort/constructor head reads the O(1) per-constructor NonEq
+                    // classification and STOPS (no descent into a shielded field).
+                    Some(f) => HeadVerdict::Stop(kb.field_wise_noneq_carriers.contains(&f)),
+                    // A functor-less aggregate (tuple/unit) has no sort to key on.
+                    None => HeadVerdict::Recurse,
+                }
+            }
+        }
+    }
+}
+
 impl KnowledgeBase {
     /// Create a lazy search stream for the given goals. Representation-neutral
     /// (WI-349): a goal is anything that implements [`TermView`] — the same
@@ -3913,8 +4062,8 @@ impl KnowledgeBase {
             return self.sem_eq_dispatch(target, a, b, subst, positive);
         }
         // (5) Buried override → suspend rather than mis-decide structurally.
-        if self.value_reaches_eq_override(&a, subst, 0)
-            || self.value_reaches_eq_override(&b, subst, 0)
+        if self.value_reaches_eq_override(&a, subst)
+            || self.value_reaches_eq_override(&b, subst)
         {
             return BuiltinResult::delay();
         }
@@ -4096,253 +4245,157 @@ impl KnowledgeBase {
         }
     }
 
-    /// WI-616 — deep groundness of a σ-walked operand `Value`: no unbound
-    /// variable anywhere inside. The dispatch gate — a term-carried operand
-    /// reuses the recursive [`Self::is_ground`]; entity/tuple carriers recurse;
-    /// an occurrence carrier walks carrier-neutrally (WI-685); scalars and
-    /// runtime handles are ground.
-    pub(crate) fn value_deep_ground(&self, v: &Value, subst: &Substitution) -> bool {
-        match v {
-            Value::Term { id, .. } => self.term_deep_ground(*id, subst),
-            Value::Var(var) => match var {
-                Var::Global(vid) => match subst.resolve_as_value(*vid) {
-                    Some(bound) => {
-                        let bound = bound.clone();
-                        self.value_deep_ground(&bound, subst)
-                    }
-                    None => false,
-                },
-                // Rigid / DeBruijn — an unbound logic variable either way.
-                _ => false,
-            },
-            Value::Entity { pos, named, .. } | Value::Tuple { pos, named, .. } => {
-                pos.iter().all(|c| self.value_deep_ground(c, subst))
-                    && named.iter().all(|(_, c)| self.value_deep_ground(c, subst))
-            }
-            // WI-685: an occurrence is deeply ground iff it has no unbound var
-            // leaf of ANY kind — matching `term_deep_ground`'s `Term::Var(_) =>
-            // false`. See [`Self::occurrence_deep_ground`].
-            Value::Node(occ) => self.occurrence_deep_ground(occ, subst),
-            _ => true,
-        }
-    }
-
-    /// WI-685 — the occurrence half of [`Self::value_deep_ground`], the
-    /// carrier-neutral twin of [`Self::term_deep_ground`]. A `Global` var head is
-    /// CHASED through σ (a nested tail binding survives `walk_arg`'s shallow
-    /// substitution, WI-683), a `Rigid`/`DeBruijn` skolem is non-ground, and
-    /// children recurse through the view. A non-var head with no children (`Ref` /
-    /// `Const` / …) is ground. So a ground occurrence reads as ground exactly where
-    /// its reified Term-twin would — the WI-685 acceptance that a Node operand
-    /// cannot flip a groundness verdict versus its Term twin.
-    fn occurrence_deep_ground(&self, occ: &Rc<NodeOccurrence>, subst: &Substitution) -> bool {
-        match occ.head(self) {
-            ViewHead::Var(Var::Global(vid)) => match subst.resolve_as_value(vid) {
-                Some(bound) => {
-                    let bound = bound.clone();
-                    self.value_deep_ground(&bound, subst)
-                }
-                None => false,
-            },
-            ViewHead::Var(_) => false, // Rigid / DeBruijn skolem
-            ViewHead::Functor { pos_arity, .. } => {
-                for i in 0..pos_arity {
-                    match occ.pos_arg(self, i) {
-                        Some(c) if self.value_deep_ground(&c.to_value(), subst) => {}
-                        _ => return false,
-                    }
-                }
-                for k in occ.named_keys(self) {
-                    match occ.named_arg(self, k) {
-                        Some(c) if self.value_deep_ground(&c.to_value(), subst) => {}
-                        _ => return false,
-                    }
-                }
-                true
-            }
-            // Ref / Const / Ident / Bottom / Opaque — no unbound var leaf.
-            _ => true,
-        }
-    }
-
-    /// Term half of [`Self::value_deep_ground`] — like [`Self::is_ground`], but
-    /// CHASES a variable bound to a VALUE carrier (`walk` stops at such a var;
-    /// `is_ground` would read it as `HasVar` and permanently suspend a compare
-    /// that σ fully determines).
-    fn term_deep_ground(&self, term: TermId, subst: &Substitution) -> bool {
-        let walked = self.walk(term, subst);
-        match self.terms.get(walked) {
-            Term::Var(Var::Global(vid)) => match subst.resolve_as_value(*vid) {
-                Some(bound) => {
-                    let bound = bound.clone();
-                    self.value_deep_ground(&bound, subst)
-                }
-                None => false,
-            },
-            Term::Var(_) => false,
-            Term::Fn { pos_args, named_args, .. } => {
-                let pos_args = pos_args.clone();
-                let named_args = named_args.clone();
-                pos_args.iter().all(|&a| self.term_deep_ground(a, subst))
-                    && named_args.iter().all(|&(_, a)| self.term_deep_ground(a, subst))
-            }
-            _ => true,
-        }
-    }
-
-    /// WI-616 — does `v` STRUCTURALLY CONTAIN (at any depth) a value headed by
-    /// an eq-dispatch-index functor? Outcome 3's scan: an overriding carrier
-    /// buried under non-overriding structure makes the structural verdict
-    /// unsound, so the compare suspends instead of deciding. Present structure
-    /// only — an unbound variable is not (yet) an overriding value, matching
-    /// the structural test's instantiation-time semantics. Conservative `true`
-    /// at the depth cap and for occurrence carriers (suspend, never mis-decide).
-    /// WI-625 gap 1: eval-side entry to [`Self::value_reaches_eq_override`] (a
-    /// fresh, empty σ — a bridged interpreter's operand `Value`s are already
-    /// reified, carrying no resolution bindings). Lets the interpreter's
-    /// `semantic_equal` suspend on a buried override exactly where the resolver
-    /// delays, so the bridge never imports a membership-wrong structural verdict.
-    pub(crate) fn value_has_buried_eq_override(&self, v: &Value) -> bool {
-        self.value_reaches_eq_override(v, &Substitution::new(), 0)
-    }
-
-    fn value_reaches_eq_override(&self, v: &Value, subst: &Substitution, depth: usize) -> bool {
-        const REACH_DEPTH_CAP: usize = 256;
-        if depth >= REACH_DEPTH_CAP {
-            return true;
-        }
-        match v {
-            Value::Term { id, .. } => self.term_reaches_eq_override(*id, subst, depth),
-            Value::Var(var) => match var {
-                Var::Global(vid) => match subst.resolve_as_value(*vid) {
-                    Some(bound) => {
-                        let bound = bound.clone();
-                        self.value_reaches_eq_override(&bound, subst, depth + 1)
-                    }
-                    None => false,
-                },
-                _ => false,
-            },
-            Value::Entity { functor, pos, named, .. } => {
-                self.eq_dispatch_target(*functor).is_some()
-                    || pos.iter().any(|c| self.value_reaches_eq_override(c, subst, depth + 1))
-                    || named
-                        .iter()
-                        .any(|(_, c)| self.value_reaches_eq_override(c, subst, depth + 1))
-            }
-            Value::Tuple { pos, named, .. } => {
-                pos.iter().any(|c| self.value_reaches_eq_override(c, subst, depth + 1))
-                    || named
-                        .iter()
-                        .any(|(_, c)| self.value_reaches_eq_override(c, subst, depth + 1))
-            }
-            // WI-685: walk the occurrence carrier-neutrally — the twin of the
-            // `Value::Entity` arm and [`Self::term_reaches_eq_override`], NOT the
-            // former conservative `Node => true` (which forced a spurious Delay on
-            // every override-free occurrence operand → under `definite_only:false`
-            // a floundered residual counted as a solution).
-            Value::Node(occ) => self.occurrence_reaches_eq_override(occ, subst, depth),
-            _ => false,
-        }
-    }
-
-    /// WI-685 — the occurrence half of [`Self::value_reaches_eq_override`], the
-    /// carrier-neutral twin of [`Self::term_reaches_eq_override`]. `true` iff the
-    /// head functor overrides `eq` ([`Self::eq_dispatch_target`]) or an overriding
-    /// carrier is reachable in a child. A `Global` head is chased through σ (an
-    /// override hidden behind a value binding must not escape); a `Rigid`/`DeBruijn`
-    /// skolem overrides nothing. So an override-free occurrence reads `false`
-    /// exactly where its reified Term-twin would.
-    fn occurrence_reaches_eq_override(
+    /// WI-689 — the ONE generic structural fold the sem-eq / groundness gates
+    /// reduce to (see [`GateSpec`]). Reads any [`TermView`] carrier through the
+    /// view, so a new value carrier rides it with no per-gate arm to add.
+    ///
+    /// Per-carrier σ-read distinction (the WI-685 invariant this preserves): a
+    /// `Term` carrier path-compresses through σ via [`Self::walk`] (term→term
+    /// chase) BEFORE its head is read — matching the former `term_*` twins that led
+    /// with `walk`; a value / occurrence carrier reads its head directly and chases
+    /// a `Var(Global)` head through `resolve_as_value` below. Only the σ-chasing
+    /// gates walk/chase; the structural gates read already-reduced values verbatim.
+    /// `depth` increments on each child and each σ-chase (never on the term-walk),
+    /// so a capped gate ([`REACHES_EQ_OVERRIDE`]) counts exactly as its twins did.
+    pub(crate) fn fold_gate(
         &self,
-        occ: &Rc<NodeOccurrence>,
-        subst: &Substitution,
+        v: &Value,
+        subst: Option<&Substitution>,
         depth: usize,
+        spec: GateSpec,
     ) -> bool {
-        match occ.head(self) {
-            ViewHead::Var(Var::Global(vid)) => match subst.resolve_as_value(vid) {
-                Some(bound) => {
-                    let bound = bound.clone();
-                    self.value_reaches_eq_override(&bound, subst, depth + 1)
-                }
-                None => false,
-            },
-            ViewHead::Var(_) => false, // Rigid / DeBruijn skolem overrides nothing
-            head => {
-                if let Some(s) = head.functor_sym() {
-                    if self.eq_dispatch_target(s).is_some() {
-                        return true;
-                    }
-                }
-                // A non-functor head (Const / Ident / Bottom / Opaque, or a `Ref`
-                // that did not override above) has no children — `pos_arity` 0.
-                let ViewHead::Functor { pos_arity, .. } = head else {
-                    return false;
-                };
-                // A child the head reports (`pos_arity`, or a `named_keys` key) but
-                // the view can't resolve would be a carrier/view desync — a SILENT
-                // miss of a buried override there flips gate (5) to a wrong structural
-                // verdict, so surface it loudly (the repo's loud-over-silent rule)
-                // rather than skip. The term twin iterates the stored child Vecs and
-                // structurally cannot desync; this keeps the occurrence twin honest.
-                for i in 0..pos_arity {
-                    match occ.pos_arg(self, i) {
-                        Some(c) => {
-                            if self.value_reaches_eq_override(&c.to_value(), subst, depth + 1) {
-                                return true;
-                            }
-                        }
-                        None => debug_assert!(false, "occurrence_reaches_eq_override: head reports pos_arity {pos_arity} but no child {i}"),
-                    }
-                }
-                for k in occ.named_keys(self) {
-                    match occ.named_arg(self, k) {
-                        Some(c) => {
-                            if self.value_reaches_eq_override(&c.to_value(), subst, depth + 1) {
-                                return true;
-                            }
-                        }
-                        None => debug_assert!(false, "occurrence_reaches_eq_override: named_keys reports a key named_arg can't resolve"),
-                    }
-                }
-                false
+        if let Some((cap, at_cap)) = spec.depth_cap {
+            if depth >= cap {
+                return at_cap;
             }
+        }
+        // A Term carrier leads with `walk` (term→term path compression) when a σ is
+        // present; the structural gates pass `subst: None` — no bindings to follow —
+        // and read the head as-is (an inert empty σ, without minting one per call).
+        // Other carriers read the head directly too (a `Var(Global)` head is chased
+        // below).
+        let walked;
+        let v = match (v, subst) {
+            (Value::Term { id, .. }, Some(s)) if spec.chase_sigma => {
+                walked = Value::term(self.walk(*id, s));
+                &walked
+            }
+            _ => v,
+        };
+        match v.head(self) {
+            // A flex `Global` head under a σ-chasing gate: resolve and recurse; an
+            // unbound flex var (or an absent σ) is never itself ground / an override /
+            // a partial carrier / a bodied op-call.
+            ViewHead::Var(Var::Global(vid)) if spec.chase_sigma => {
+                match subst.and_then(|s| s.resolve_as_value(vid)) {
+                    Some(bound) => {
+                        let bound = bound.clone();
+                        self.fold_gate(&bound, subst, depth + 1, spec)
+                    }
+                    None => false,
+                }
+            }
+            // A rigid / DeBruijn skolem (or a flex `Global` in a structural gate):
+            // a bare variable satisfies no gate.
+            ViewHead::Var(_) => false,
+            ViewHead::Opaque => spec.opaque,
+            head => match spec.head_check.classify(self, &head) {
+                HeadVerdict::Stop(verdict) => verdict,
+                HeadVerdict::Recurse => {
+                    let pos_arity = match head {
+                        ViewHead::Functor { pos_arity, .. } => pos_arity,
+                        _ => 0,
+                    };
+                    self.fold_gate_children(v, subst, depth, pos_arity, spec)
+                }
+            },
         }
     }
 
-    /// Term half of [`Self::value_reaches_eq_override`].
-    fn term_reaches_eq_override(&self, term: TermId, subst: &Substitution, depth: usize) -> bool {
-        const REACH_DEPTH_CAP: usize = 256;
-        if depth >= REACH_DEPTH_CAP {
-            return true;
-        }
-        let walked = self.walk(term, subst);
-        match self.terms.get(walked) {
-            Term::Ref(s) => self.eq_dispatch_target(*s).is_some(),
-            // `walk` stops at a var bound to a VALUE carrier — chase it, or an
-            // overriding value hidden behind a value binding escapes the scan.
-            Term::Var(Var::Global(vid)) => match subst.resolve_as_value(*vid) {
-                Some(bound) => {
-                    let bound = bound.clone();
-                    self.value_reaches_eq_override(&bound, subst, depth + 1)
+    /// Combine the child verdicts of a functor-headed node per [`Combine`] —
+    /// short-circuiting `true` for `Any` and `false` for `All`, else returning the
+    /// combine's identity (`All` ⇒ `true`, `Any` ⇒ `false`) for a childless node.
+    fn fold_gate_children(
+        &self,
+        v: &Value,
+        subst: Option<&Substitution>,
+        depth: usize,
+        pos_arity: usize,
+        spec: GateSpec,
+    ) -> bool {
+        for i in 0..pos_arity {
+            match v.pos_arg(self, i) {
+                Some(child) => {
+                    let r = self.fold_gate(&child.to_value(), subst, depth + 1, spec);
+                    match spec.combine {
+                        Combine::Any if r => return true,
+                        Combine::All if !r => return false,
+                        _ => {}
+                    }
                 }
-                None => false,
-            },
-            Term::Fn { functor, pos_args, named_args } => {
-                if self.eq_dispatch_target(*functor).is_some() {
-                    return true;
-                }
-                let pos_args = pos_args.clone();
-                let named_args = named_args.clone();
-                pos_args
-                    .iter()
-                    .any(|&a| self.term_reaches_eq_override(a, subst, depth + 1))
-                    || named_args
-                        .iter()
-                        .any(|&(_, a)| self.term_reaches_eq_override(a, subst, depth + 1))
+                // WI-685 hardening: a child the head reports but the view cannot
+                // resolve is a carrier/view desync — surface it loudly, never a
+                // silent skip. Unreachable for the stored-child carriers
+                // (Entity/Tuple/Term, whose `pos_arity` equals the stored vec len);
+                // a guard for synthetic occurrence children.
+                None => debug_assert!(
+                    false,
+                    "fold_gate_children: head reports positional child {i} the view cannot resolve"
+                ),
             }
-            _ => false,
         }
+        for key in v.named_keys(self) {
+            match v.named_arg(self, key) {
+                Some(child) => {
+                    let r = self.fold_gate(&child.to_value(), subst, depth + 1, spec);
+                    match spec.combine {
+                        Combine::Any if r => return true,
+                        Combine::All if !r => return false,
+                        _ => {}
+                    }
+                }
+                None => debug_assert!(
+                    false,
+                    "fold_gate_children: named_keys reports a key named_arg cannot resolve"
+                ),
+            }
+        }
+        matches!(spec.combine, Combine::All)
+    }
+
+    /// WI-616 — deep groundness of a σ-walked operand `Value`: no unbound variable
+    /// anywhere inside. The dispatch gate. Now a thin [`Self::fold_gate`] over
+    /// [`DEEP_GROUND`] — every carrier (term / entity / tuple / occurrence, WI-685)
+    /// walks through the ONE view-generic fold; scalars and runtime handles are
+    /// ground.
+    pub(crate) fn value_deep_ground(&self, v: &Value, subst: &Substitution) -> bool {
+        self.fold_gate(v, Some(subst), 0, DEEP_GROUND)
+    }
+
+    /// WI-616 — does `v` STRUCTURALLY CONTAIN (at any depth) a value headed by an
+    /// eq-dispatch-index functor? Outcome 3's scan: an overriding carrier buried
+    /// under non-overriding structure makes the structural verdict unsound, so the
+    /// compare suspends instead of deciding. Present structure only — an unbound
+    /// variable is not (yet) an overriding value, matching the structural test's
+    /// instantiation-time semantics. Conservative `true` at the depth cap
+    /// ([`REACH_DEPTH_CAP`]).
+    ///
+    /// WI-625 gap 1: an eval-side entry with a fresh, empty σ — a bridged
+    /// interpreter's operand `Value`s are already reified, carrying no resolution
+    /// bindings — so the interpreter's `semantic_equal` suspends on a buried
+    /// override exactly where the resolver delays, and the bridge never imports a
+    /// membership-wrong structural verdict.
+    pub(crate) fn value_has_buried_eq_override(&self, v: &Value) -> bool {
+        // No σ — the operands are already reified; `None` is the inert empty σ the
+        // reach scan would otherwise never consult, without minting one per call.
+        self.fold_gate(v, None, 0, REACHES_EQ_OVERRIDE)
+    }
+
+    /// WI-616 — the σ-threaded reach scan ([`REACHES_EQ_OVERRIDE`]) whose every
+    /// carrier (term / entity / tuple / occurrence, WI-685) reads through the ONE
+    /// view-generic fold.
+    fn value_reaches_eq_override(&self, v: &Value, subst: &Substitution) -> bool {
+        self.fold_gate(v, Some(subst), 0, REACHES_EQ_OVERRIDE)
     }
 
     /// WI-511: structural value equality that is CARRIER-AWARE — routes through
@@ -5677,49 +5730,17 @@ impl KnowledgeBase {
     /// operation call — an unevaluated op-call that structural `unify` would
     /// compare wrongly? WI-580 declines to case-split against such an OTHER
     /// operand (leaving it to the builtin, which delays), preserving soundness
-    /// for a query like `eq(append(?a, x), reverse(?b))`. Read over the
-    /// shallow-walked OTHER value directly through `TermView`, so a Node/Entity
-    /// operand is not lowered to a term just to run this gate. Structural (no σ
-    /// chase), matching the former Term walk over the shallow-walked operand.
+    /// for a query like `eq(append(?a, x), reverse(?b))`.
+    ///
+    /// A thin [`Self::fold_gate`] over [`HAS_BODIED_OP_CALL`]: structural (no σ
+    /// chase — the empty σ is inert), reading the shallow-walked OTHER value
+    /// directly through `TermView` so a Node/Entity operand is not lowered to a
+    /// term. An [`ViewHead::Opaque`] carrier we cannot decompose conservatively
+    /// declines (`opaque: true`) — the builtin still handles the eq; a "loud over
+    /// silent" decline rather than a latent unsound miss.
     fn value_has_bodied_op_call(&self, v: &Value) -> bool {
-        match v.head(self) {
-            ViewHead::Functor { functor, pos_arity, .. } => {
-                // A bodied (non-builtin) op functor is itself the hit.
-                if let Some(f) = functor {
-                    if self.builtins.get(&f).is_none() && self.op_body_node(f).is_some() {
-                        return true;
-                    }
-                }
-                // Recurse children — for a functor-headed value AND a functor-less
-                // aggregate (`Tuple`/`Unit`, `functor: None`) whose components could
-                // hide an op-call — matching the former Term walk's full coverage.
-                for i in 0..pos_arity {
-                    if let Some(c) = v.pos_arg(self, i) {
-                        if self.value_has_bodied_op_call(&c.to_value()) {
-                            return true;
-                        }
-                    }
-                }
-                for k in v.named_keys(self) {
-                    if let Some(c) = v.named_arg(self, k) {
-                        if self.value_has_bodied_op_call(&c.to_value()) {
-                            return true;
-                        }
-                    }
-                }
-                false
-            }
-            // Leaves carry no op-call.
-            ViewHead::Var(_) | ViewHead::Const(_) | ViewHead::Ref(_) | ViewHead::Ident(_)
-            | ViewHead::Bottom => false,
-            // An OPAQUE carrier we cannot structurally decompose (a `Node` tuple /
-            // set literal, a closure / stream) MIGHT hide a bodied op-call and we
-            // cannot verify otherwise — report "might" so the WI-580 caller declines
-            // the unfold rather than structurally unifying a form it cannot inspect.
-            // A conservative decline is sound (the builtin handles the eq); this is
-            // the "loud error over silent skip" choice over a latent unsound miss.
-            ViewHead::Opaque => true,
-        }
+        // Structural gate (no σ chase) — `None` is the inert empty σ.
+        self.fold_gate(v, None, 0, HAS_BODIED_OP_CALL)
     }
 
     /// WI-580 (design §3.3/§5): is `f` a functor whose *bare* goal is the
