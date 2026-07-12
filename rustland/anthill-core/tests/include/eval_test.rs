@@ -184,6 +184,190 @@ end
 }
 
 #[test]
+fn m1_opref_denotes_its_operation_not_a_caller_local() {
+    // WI-455. `f` is bound to op `double`, so `f(1)` is 2. It stays 2 even though
+    // the CALLER has a local (the second param) whose name happens to be `double`.
+    //
+    // An `OpRef` carries an already-resolved operation Symbol. Dispatch used to
+    // re-resolve that Symbol's SHORT NAME against the caller's locals — and an
+    // OpRef hop pushes no frame, so "the caller's locals" were still on top. The
+    // param named `double` (holding `OpRef(triple)`) therefore HIJACKED the call
+    // and `apply_it` returned 3. Silently: no error, no crash, just the wrong
+    // operation. A resolved reference is not a name, and is not subject to scope.
+    let src = r#"
+namespace test.wi455.capture
+  import anthill.prelude.{Int64, Function}
+
+  operation double(x: Int64) -> Int64 = x + x
+  operation triple(x: Int64) -> Int64 = x + x + x
+
+  -- second param deliberately NAMED `double`, shadowing the op of that name
+  operation apply_it(f: Function[Int64, Int64], double: Function[Int64, Int64]) -> Int64 = f(1)
+
+  operation main() -> Int64 = apply_it(double, triple)
+end
+"#;
+    let mut interp = interp_for(src);
+    let v = interp.call("test.wi455.capture.main", &[]).expect("should evaluate");
+    assert_eq!(
+        expect_int(v), 2,
+        "`f` denotes op `double`; a caller-local merely NAMED `double` must not hijack it",
+    );
+}
+
+#[test]
+fn m1_mutually_shadowing_opref_params_do_not_cycle() {
+    // The pathological case of the same capture, and the reason WI-455 was filed
+    // as a crash. `cyc(b, a)` binds local `a` to `OpRef(op b)` and local `b` to
+    // `OpRef(op a)`. When dispatch re-resolved an OpRef's target name against the
+    // caller's locals, `a` -> op `b` -> local `b` -> op `a` -> local `a` -> ...
+    // cycled forever WITHOUT pushing a frame or producing a value. It was a native
+    // tail call, so it never returned to `run()`, `step_count` never ticked, and
+    // neither `step_cap` nor `depth_cap` could fire: the host Rust stack overflowed
+    // and the process ABORTED (SIGABRT) — uncatchable.
+    //
+    // Resolved dispatch ends it at the root: `a` denotes op `b`, full stop. One
+    // hop, no chain, so there is nothing to grow. `b(1)` == 101 also proves the
+    // hop landed on op `b` itself rather than back on op `a` (which would be 11).
+    //
+    // The step_cap is the teeth: a surviving cycle can no longer overflow the
+    // stack, but it would spin, so an unbounded run would hang instead of fail.
+    let src = r#"
+namespace test.wi455.cycle
+  import anthill.prelude.{Int64, Function}
+
+  operation a(x: Int64) -> Int64 = x + 10
+  operation b(x: Int64) -> Int64 = x + 100
+
+  operation cyc(a: Function[Int64, Int64], b: Function[Int64, Int64]) -> Int64 = a(1)
+
+  operation main() -> Int64 = cyc(b, a)
+end
+"#;
+    let kb = load_kb_with(src);
+    let mut interp = Interpreter::with_config(
+        kb,
+        anthill_core::eval::EvalConfig {
+            depth_cap: None,
+            step_cap: Some(1_000),
+            ..Default::default()
+        },
+    );
+    anthill_core::eval::builtins::register_standard_builtins(&mut interp)
+        .expect("register standard eval builtins");
+    let v = interp
+        .call("test.wi455.cycle.main", &[])
+        .expect("mutually-shadowing OpRef params must resolve, not cycle");
+    assert_eq!(expect_int(v), 101, "`a` denotes op `b`, so `a(1)` is `b(1)` == 101");
+}
+
+#[test]
+fn m1_steps_exhausted_chain_names_an_op_reached_through_an_opref() {
+    // The `StepsExhausted` ring is the only diagnostic that locates a runaway
+    // loop, so it must see ops reached through an `OpRef` — i.e. every HOF call.
+    // `spin` has no base case; each turn applies `f`, which is an OpRef to
+    // `bump`. `bump` is reached ONLY via that OpRef (nothing calls it by name),
+    // so it lands in the ring only if the OpRef dispatch notes it — which the
+    // resolved-dispatch path must do explicitly, having skipped the wrapper that
+    // notes source-level targets.
+    let src = r#"
+namespace test.wi455.ring
+  import anthill.prelude.{Int64, Function}
+
+  operation bump(x: Int64) -> Int64 = x + 1
+
+  operation spin(f: Function[Int64, Int64], x: Int64) -> Int64 = spin(f, f(x))
+
+  operation main() -> Int64 = spin(bump, 0)
+end
+"#;
+    let kb = load_kb_with(src);
+    let mut interp = Interpreter::with_config(
+        kb,
+        anthill_core::eval::EvalConfig {
+            depth_cap: None,
+            step_cap: Some(1_000),
+            ..Default::default()
+        },
+    );
+    anthill_core::eval::builtins::register_standard_builtins(&mut interp)
+        .expect("register standard eval builtins");
+    let err = interp.call("test.wi455.ring.main", &[]).unwrap_err();
+    match err {
+        EvalError::StepsExhausted { chain, .. } => {
+            assert!(
+                chain.iter().any(|d| d.ends_with("bump")),
+                "ring must name `bump`, reached only through an OpRef; got {chain:?}"
+            );
+            assert!(
+                chain.iter().any(|d| d.ends_with("spin")),
+                "ring must still name the source-dispatched `spin`; got {chain:?}"
+            );
+        }
+        other => panic!("expected StepsExhausted, got {other:?}"),
+    }
+}
+
+#[test]
+fn m1_steps_exhausted_chain_names_a_carrier_override_impl() {
+    // Same requirement as the OpRef case, for the other dispatch that resolves a
+    // DIFFERENT op than the one it was called as: the WI-444 carrier override.
+    //
+    // `Describable.describe` has a default body; `Widget` overrides it. `via_spec`
+    // holds its receiver at the ABSTRACT spec type, so the typer cannot PinNow the
+    // call and eval must resolve the override from the receiver VALUE each turn.
+    // `Widget.describe` bounces back through `via_spec`, so the loop re-enters that
+    // runtime override forever.
+    //
+    // The dispatch wrapper only ever noted the spec op it was called as. The impl
+    // that actually runs — and does the looping — reaches the ring only if the
+    // override arm notes `impl_target` itself.
+    let src = r#"
+namespace test.wi455.override
+  import anthill.prelude.{Int64}
+
+  sort Describable
+    sort T = ?
+    operation describe(x: Describable) -> Int64 = 0
+  end
+
+  sort Widget
+    import anthill.prelude.{Int64}
+    entity widget(n: Int64)
+    provides Describable[T = Int64]
+    operation describe(x: Widget) -> Int64 = via_spec(x)
+  end
+
+  operation via_spec(d: Describable) -> Int64 = Describable.describe(d)
+  operation main() -> Int64 = via_spec(widget(1))
+end
+"#;
+    let kb = load_kb_with(src);
+    let mut interp = Interpreter::with_config(
+        kb,
+        anthill_core::eval::EvalConfig {
+            depth_cap: None,
+            step_cap: Some(1_000),
+            ..Default::default()
+        },
+    );
+    anthill_core::eval::builtins::register_standard_builtins(&mut interp)
+        .expect("register standard eval builtins");
+    let err = interp.call("test.wi455.override.main", &[]).unwrap_err();
+    match err {
+        EvalError::StepsExhausted { chain, .. } => {
+            // The ring reads as the actual cycle:
+            //   Describable.describe -> Widget.describe -> via_spec -> ...
+            assert!(
+                chain.iter().any(|d| d.ends_with("Widget.describe")),
+                "ring must name the carrier override that is actually looping; got {chain:?}"
+            );
+        }
+        other => panic!("expected StepsExhausted, got {other:?}"),
+    }
+}
+
+#[test]
 fn m1_recursive_operation_multi_level() {
     // Multi-level recursive operation using only M1 primitives (no
     // arithmetic, no pattern matching). The recursion is terminated by a

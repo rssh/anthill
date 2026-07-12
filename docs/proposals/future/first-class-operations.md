@@ -38,7 +38,16 @@ depend on this.** 039 scopes to `const` as a *memoized value binding* (a bare
   (`(A) -> B @ E`). The runtime carrier (`Value::OpRef`) exists; the typer
   wiring and eta semantics do not.
 - **Dispatch:** how a first-class `OpRef` to a spec/overloaded operation
-  resolves when applied (cf. WI-455 OpRef redispatch).
+  resolves when applied (cf. WI-455 OpRef redispatch). *Scope half settled by
+  WI-455 (2026-07-12):* an `OpRef` **denotes its operation** — application
+  dispatches to that operation and is **not** subject to the applying frame's
+  scope, so a caller-local that merely shares the op's short name cannot capture
+  the call. One did: a param named `double` made `apply_it(double, triple)` run
+  `triple`, and two such locals pointing at each other cycled until the host
+  stack overflowed. An application therefore resolves in exactly **one hop** and
+  cannot chain. **Still open:** how an `OpRef` so dispatched picks the *carrier
+  impl* of a spec/overloaded op — unchanged, still the value-directed resolution
+  of WI-444 / WI-350.
 - **Interaction** with dot-dispatch (WI-279) and carrier-aware dispatch (WI-350).
 - **Migration:** none — additive (bare operation references are not currently
   first-class), and existing `f()` call sites keep their meaning.

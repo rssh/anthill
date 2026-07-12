@@ -1172,6 +1172,12 @@ impl Interpreter {
             .collect()
     }
 
+    /// Dispatch a call whose `target` is a source-level NAME — so a local holding
+    /// a callable (a lambda; a WI-275 eta'd operation reference) may shadow the
+    /// operation of that name, and wins. That shadowing is the whole point here,
+    /// and it is why this entry is distinct from `dispatch_resolved_operation`:
+    /// a *name* is subject to scope, an already-resolved operation Symbol is not
+    /// (WI-455).
     fn dispatch_call_with_requirements_inner(
         &mut self,
         target: Symbol,
@@ -1206,17 +1212,6 @@ impl Interpreter {
                 return self.enter_closure(handle, arg_values);
             }
             Some(Value::OpRef { op, dict }) => {
-                // NOTE (known limitation): this OpRef redispatch tail-calls the
-                // dispatch path NATIVELY (it does not return to the `run()`
-                // trampoline between hops), so a pathological eta-chain — each
-                // resolved `op` itself locally bound to another OpRef — recurses
-                // on the host stack and can overflow it before `step_cap` ticks.
-                // The value-cascade (builtin/operation results) IS trampolined;
-                // routing this redispatch through the trampoline too (a
-                // `StepOutcome::Dispatch{…}` re-entered by `run()`) is the deeper
-                // fix, deferred as its own work item. In practice eta-chains are
-                // 1 hop (the resolved op is rarely a local OpRef), so this is a
-                // narrow edge, not the common path.
                 // WI-275: applying an eta'd operation reference dispatches to the
                 // operation itself, spreading a single tuple argument across its
                 // parameters (`cmp((x, y))` ⇒ `op(x, y)`) — the runtime mirror of
@@ -1227,24 +1222,59 @@ impl Interpreter {
                 // the callee frame — not the caller's (empty / wrong-scope)
                 // requirements. A dict-less OpRef (requires-free, or a same-sort
                 // eta that inherits) forwards the caller's requirements.
-                match dict {
+                let requirements = match dict {
                     Some(d) => {
                         drop(requirements);
-                        let expanded = self.expand_dispatching_dict(op, &d)?;
-                        return self.dispatch_call_with_requirements(
-                            op, spread, expanded, type_args,
-                        );
+                        self.expand_dispatching_dict(op, &d)?
                     }
-                    None => {
-                        return self.dispatch_call_with_requirements(
-                            op, spread, requirements, type_args,
-                        );
-                    }
-                }
+                    None => requirements,
+                };
+                // WI-455: an `OpRef` DENOTES the operation `op`. It is an already-
+                // resolved reference, not a name to be looked up again — so go
+                // straight to resolved dispatch, bypassing the shadowing lookup
+                // above. Re-entering that lookup would re-resolve `op`'s SHORT NAME
+                // against the caller's locals (this frame is still on top — an
+                // OpRef hop pushes nothing), letting a caller-local that merely
+                // SHARES `op`'s name hijack the call: `apply_it(f, double)` called
+                // as `apply_it(double, triple)` ran `triple`, a silent wrong answer.
+                // Two such locals pointing at each other made it worse — an
+                // unbounded redispatch chain that grew on the host Rust stack,
+                // where no `step_cap` could see it, until the process aborted.
+                // Resolving here settles both: one hop, and no chain to grow.
+                //
+                // Note `op` explicitly: going straight to resolved dispatch skips
+                // the `dispatch_call_with_requirements` wrapper, and with it the
+                // ring that names the ops in `StepsExhausted`. Without this, an op
+                // reached through an OpRef (i.e. every HOF call) would be invisible
+                // to the one diagnostic that locates a runaway loop. The `_inner`
+                // tail needs no such call — the wrapper already noted its target.
+                self.note_dispatch(op);
+                return self.dispatch_resolved_operation(op, spread, requirements, type_args);
             }
             _ => {}
         }
 
+        self.dispatch_resolved_operation(target, arg_values, requirements, type_args)
+    }
+
+    /// Dispatch to an operation Symbol that is already RESOLVED — one no local
+    /// may shadow. Two callers: the tail of `dispatch_call_with_requirements_inner`
+    /// (a source-level name that no local shadowed) and its `OpRef` arm (a
+    /// first-class reference that denotes its operation outright).
+    ///
+    /// INVARIANT (WI-455): this must never re-enter `dispatch_call*`. Every arm
+    /// either delivers a value (builtin, eq-bridge) or enters a frame
+    /// (`enter_operation`), so one dispatch costs O(1) host stack and cannot chain.
+    /// Keep it so. A redispatch added here would grow the NATIVE stack — the one
+    /// place `step_cap` cannot see, because ticking it requires returning to
+    /// `run()` — and a cycle would abort the process rather than raise.
+    fn dispatch_resolved_operation(
+        &mut self,
+        target: Symbol,
+        arg_values: Vec<Value>,
+        requirements: SmallVec<[(Symbol, super::value::RequirementHandle); 2]>,
+        type_args: FrameTypeArgs,
+    ) -> Result<StepOutcome, EvalError> {
         // 2. Registered Rust builtin?
         if let Some(builtin) = self.builtins.get(&target).cloned() {
             let result = if self.profiling {
@@ -1281,11 +1311,21 @@ impl Interpreter {
             // resolves `None` and runs its body directly.
             if let Some(impl_target) = self.resolve_carrier_override_by_value(target, &arg_values) {
                 if impl_target != target {
+                    // WI-455: name the op we actually RUN. The ring was fed with
+                    // `target` (the spec op) by the dispatch wrapper; the override
+                    // below is a different op, so without this a runaway loop
+                    // through a carrier override would name only the spec op and
+                    // never the impl doing the looping. Noted at each dispatch
+                    // point rather than up front: an `impl_target` with neither a
+                    // builtin nor a body falls through to the spec's own body, and
+                    // must not leave a ring entry for a call that never happened.
                     if let Some(builtin) = self.builtins.get(&impl_target).cloned() {
+                        self.note_dispatch(impl_target);
                         let result = (builtin)(self, &arg_values)?;
                         return Ok(StepOutcome::Deliver(result));
                     }
                     if let Some((impl_body, impl_params)) = self.cached_operation_body(impl_target) {
+                        self.note_dispatch(impl_target);
                         return self.enter_operation(
                             impl_target, impl_body, &impl_params, arg_values, requirements, type_args,
                         );
@@ -1323,11 +1363,16 @@ impl Interpreter {
         // change.
         if let Some(impl_target) = self.resolve_spec_op_target_by_value(target, &arg_values) {
             if impl_target != target {
+                // WI-455: same as the carrier-override arm above — the ring must
+                // name the impl that runs, not just the body-less spec op the call
+                // was written against.
                 if let Some(builtin) = self.builtins.get(&impl_target).cloned() {
+                    self.note_dispatch(impl_target);
                     let result = (builtin)(self, &arg_values)?;
                     return Ok(StepOutcome::Deliver(result));
                 }
                 if let Some((body_node, params)) = self.cached_operation_body(impl_target) {
+                    self.note_dispatch(impl_target);
                     return self.enter_operation(
                         impl_target, body_node, &params, arg_values, requirements, type_args,
                     );
@@ -1346,7 +1391,9 @@ impl Interpreter {
             return self.prove_rule_predicate_value(pred, &arg_values).map(StepOutcome::Deliver);
         }
 
-        Err(EvalError::UnknownOperation { name: target_name })
+        Err(EvalError::UnknownOperation {
+            name: self.kb.resolve_sym(target).to_string(),
+        })
     }
 
     /// WI-275: adapt the arguments of an eta'd operation reference (a
