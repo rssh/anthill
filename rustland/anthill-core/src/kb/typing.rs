@@ -14746,9 +14746,11 @@ fn signature_self_contradiction_error(
 /// argument's effect row against the declared callback parameter's row,
 /// aligning the two binder spaces positionally. The declared row's labels
 /// name the callback's registered `CallbackParam` places (`<op>.f.x`, the
-/// WI-341 binder→place resolution); an eta'd operation argument's row names
-/// that op's OWN param places (`<pred>.c`) — param i of one corresponds to
-/// param i of the other (`arg_places` order on both symbols).
+/// WI-341 binder→place resolution); the ACTUAL argument's row names its own
+/// places — for an eta'd operation, that op's OWN param places (`<pred>.c`);
+/// for a LAMBDA, its top-level binder symbols (`lambda (c) -> …`, the WI-550
+/// gensym'd identity its body effects reference) — param i of one corresponds
+/// to param i of the other (`arg_places` order / binder order).
 ///
 /// For each PRESENT label of the actual row:
 ///   * covered by a declared PRESENT label (mod alignment) → ok;
@@ -14765,17 +14767,27 @@ fn signature_self_contradiction_error(
 /// `subst` is read (label walking / bound row-tail resolution) and never extended —
 /// inference stays with the `unify_types` pass that precedes this check.
 ///
-/// KNOWN GAP (not "handled elsewhere" — verified 2026-07-12): a NON-eta argument (a
-/// `lambda`) bails at the `arg_op_sym` extraction below, so the lacks/closed
-/// CONFORMANCE check does not fire for a lambda callback.
-/// `shield[EffP = {}](lambda () -> poke())` LOADS with the `{Outside}` the lambda body
-/// incurs escaping a `-Outside` slot; the eta twin `…(poke)` rejects. A prior comment
-/// here wrongly claimed the lambda "synthesizes its row against the declared hint
-/// elsewhere" — that elsewhere does not enforce the constraint. Tracked as WI-706
-/// (lambda-callback row conformance). NOTE the *self-contradiction* half of this gap
-/// (a lambda whose DECLARED param row is uninhabitable after instantiation) is now
-/// closed at signature altitude by [`check_signature_self_contradiction`] (WI-705);
-/// only the actual-vs-declared conformance for a lambda BODY remains (WI-706).
+/// WI-706 closed the LAMBDA gap: a non-eta argument no longer bails. The actual
+/// callback source is now an eta'd op-ref OR an inline lambda ([`callback_actual_source`]);
+/// a lambda's inferred row already rides its arrow type (`arrow_parts(actual)`, built
+/// from the body's effects by the `LambdaBody` frame), and its top-level binder slots
+/// align to the declared places exactly as an op's `arg_places` do. So
+/// `shield[EffP = {}](lambda () -> poke())` — a lambda whose body incurs `{Outside}` —
+/// is now REJECTED against the `-Outside` slot, agreeing with the eta twin `…(poke)`.
+/// (The *self-contradiction* half — a lambda whose DECLARED param row is uninhabitable
+/// after instantiation — is closed one altitude up by [`check_signature_self_contradiction`],
+/// WI-705; this owns the actual-vs-declared conformance for the lambda BODY.)
+///
+/// An un-flattenable lambda parameter (a `_`, a `Cons(h, t)` destructure, or a nested
+/// tuple) yields a `None` place slot: it stays position-aligned to the declared param
+/// but contributes no place-map entry, so a PLACE-CARRYING actual label over it cannot
+/// be matched to a declared PRESENT label by alignment. Such a label is then handled by
+/// the same absent/closed checks as any other — absorbed by an open declared tail (a
+/// row-polymorphic row) or rejected on a closed row (agreeing with the generic
+/// arrow-subtype check that also runs, but with a label-naming diagnostic). A
+/// PLACE-INDEPENDENT label (`Outside` / `External`, the WI-698 motivation) needs no
+/// alignment and is always checked precisely, so a place-free escape through a
+/// destructure lambda is caught — which the prior whole-lambda skip missed.
 fn validate_callback_effect_row(
     kb: &mut KnowledgeBase,
     subst: &Substitution,
@@ -14786,7 +14798,10 @@ fn validate_callback_effect_row(
     actual: &Value,
     span: Option<Span>,
 ) -> Option<TypeError> {
-    let arg_op_sym = extract_var_ref_sym_node(arg_occ)?;
+    // WI-706: the actual callback source — an eta'd op-ref OR an inline lambda.
+    // (Was `extract_var_ref_sym_node(arg_occ)?`, which bailed for a lambda,
+    // leaving lambda callbacks unchecked against the declared lacks/closed row.)
+    let actual_src = callback_actual_source(arg_occ)?;
     // Cheap head gate before `arrow_parts` (which interns its child keys on
     // every call): most var-ref args land in non-callable param slots.
     let head_is_callable = match type_head(kb, declared) {
@@ -14824,7 +14839,17 @@ fn validate_callback_effect_row(
         // absent-carrying actual is left to the unify path (v1).
         return None;
     }
-    let actual_places = kb.symbols.arg_places(arg_op_sym);
+    // WI-706: the actual callback's argument places, aligned to the declared
+    // places positionally. An eta'd op contributes its `arg_places` (all real); a
+    // lambda contributes its top-level binder slots (`None` for a `_`/literal
+    // position, which occupies a slot so arity stays aligned but names nothing an
+    // effect place could reference).
+    let actual_places: Vec<Option<Symbol>> = match &actual_src {
+        CallbackActual::Op(op_sym) => {
+            kb.symbols.arg_places(*op_sym).iter().map(|s| Some(*s)).collect()
+        }
+        CallbackActual::Lambda(slots) => slots.clone(),
+    };
     let declared_places = kb.symbols.arg_places(param_sym);
     // Positional alignment is meaningful only for EQUAL arities — a mismatch
     // (which the generic arg validation rejects on the param type) must not
@@ -14834,8 +14859,8 @@ fn validate_callback_effect_row(
     }
     let place_map: HashMap<Symbol, Symbol> = actual_places
         .iter()
-        .copied()
         .zip(declared_places.iter().copied())
+        .filter_map(|(a, e)| a.map(|a| (a, e)))
         .collect();
     for la in &a_present {
         if e_present.iter().any(|le| labels_match_aligned(kb, subst, &place_map, la, le)) {
@@ -14854,9 +14879,12 @@ fn validate_callback_effect_row(
                     kb.qualified_name_of(fn_sym),
                     type_display_name_value(kb, viol),
                 ),
+                // WI-706: the diagnostic subject — the offending op by name, or "the
+                // lambda argument". Built here (only on the reject path), so the clean
+                // typing pass allocates nothing.
                 actual: format!(
-                    "operation `{}` declares `{}` on the corresponding parameter",
-                    kb.qualified_name_of(arg_op_sym),
+                    "{} declares `{}` on the corresponding parameter",
+                    callback_actual_subject(kb, &actual_src),
                     type_display_name_value(kb, la),
                 ),
             });
@@ -14872,14 +14900,87 @@ fn validate_callback_effect_row(
                     kb.qualified_name_of(fn_sym),
                 ),
                 actual: format!(
-                    "operation `{}` declares `{}`, which the closed row does not admit",
-                    kb.qualified_name_of(arg_op_sym),
+                    "{} declares `{}`, which the closed row does not admit",
+                    callback_actual_subject(kb, &actual_src),
                     type_display_name_value(kb, la),
                 ),
             });
         }
     }
     None
+}
+
+/// WI-706: the ACTUAL source of a callback argument whose effect row
+/// [`validate_callback_effect_row`] validates — either an eta'd operation reference
+/// (its `arg_places` name the row's places) or an inline lambda (its top-level binder
+/// slots do). Anything else (a value, a nested call) has no aligned places and never
+/// reaches here as a callback.
+enum CallbackActual {
+    /// An eta'd `op` reference — `Op`'s `arg_places` are its row's places.
+    Op(Symbol),
+    /// An inline lambda — one slot per top-level parameter POSITION, in order:
+    /// `Some(binder)` for a `Var` (the WI-550 gensym'd identity its body effects
+    /// reference), `None` for a position that binds no single alignable name (a `_`,
+    /// a literal, or a destructure). The `Vec` length is the lambda's arity, so it
+    /// aligns to the declared `arg_places` length like an op's does.
+    Lambda(Vec<Option<Symbol>>),
+}
+
+/// WI-706: classify a callback argument occurrence as an eta'd op-ref or an inline
+/// lambda, returning `None` only for a shape that is neither (a value arg, a nested
+/// call). A lambda always classifies as `Lambda` — even one whose parameter cannot be
+/// fully flattened to positional binders (a constructor destructure / nested tuple);
+/// its un-flattenable positions become `None` slots (position-aligned but unmappable)
+/// rather than skipping the whole lambda.
+fn callback_actual_source(occ: &Rc<NodeOccurrence>) -> Option<CallbackActual> {
+    if let Some(op_sym) = extract_var_ref_sym_node(occ) {
+        return Some(CallbackActual::Op(op_sym));
+    }
+    if let NodeKind::Expr { expr: Expr::Lambda { param, .. }, .. } = &occ.kind {
+        return lambda_binder_slots(param).map(CallbackActual::Lambda);
+    }
+    None
+}
+
+/// WI-706: the ordered top-level binder slots of a lambda parameter pattern (see
+/// [`CallbackActual::Lambda`]). One slot per top-level parameter POSITION so the
+/// `Vec` length is the lambda's arity (aligning to the declared `arg_places`): a
+/// `Var` slot carries its binder symbol; every other shape — a `_`/literal (names
+/// nothing) or a destructure (`Cons(h, t)` / a nested tuple, whose sub-binders have
+/// no single positional identity) — is a `None` slot. A `None` slot stays
+/// position-aligned but contributes no place-map entry (see
+/// [`validate_callback_effect_row`] for how a label over it is then handled).
+fn lambda_binder_slots(param: &Rc<NodeOccurrence>) -> Option<Vec<Option<Symbol>>> {
+    /// One flat binder position: `Some(binder)` for a `Var`, `None` for any other
+    /// shape (a `_`/literal, or a nested tuple/constructor with no single binder).
+    fn slot(p: &Rc<NodeOccurrence>) -> Option<Symbol> {
+        match p.as_pattern() {
+            Some(Pattern::Var { name, .. }) => Some(*name),
+            _ => None,
+        }
+    }
+    match param.as_pattern()? {
+        Pattern::Var { name, .. } => Some(vec![Some(*name)]),
+        // A flat tuple (`lambda (a, b) -> …`, including the nullary `()`): one slot
+        // per element (a non-`Var` element is a `None` slot — position-aligned but
+        // unmappable).
+        Pattern::Tuple { positional, .. } => Some(positional.iter().map(slot).collect()),
+        // A single non-tuple parameter that binds no single alignable name — a `_`,
+        // a literal, or a top-level `Cons(h, t)` destructure — is one `None` slot.
+        Pattern::Wildcard | Pattern::Literal { .. } | Pattern::Constructor { .. } => {
+            Some(vec![None])
+        }
+    }
+}
+
+/// WI-706: the diagnostic subject naming the offending callback argument — the
+/// operation by qualified name (`operation `…poke3``) for an eta'd op-ref, or a
+/// generic phrase for an inline lambda (a lambda has no name to cite).
+fn callback_actual_subject(kb: &KnowledgeBase, actual_src: &CallbackActual) -> String {
+    match actual_src {
+        CallbackActual::Op(op_sym) => format!("operation `{}`", kb.qualified_name_of(*op_sym)),
+        CallbackActual::Lambda(_) => "the lambda argument".to_string(),
+    }
 }
 
 /// Extract the underlying sort symbol from a term in any of the

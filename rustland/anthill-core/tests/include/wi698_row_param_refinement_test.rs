@@ -804,6 +804,220 @@ fn guarded_present_vs_lacks_defers_not_rejects() {
     );
 }
 
+// ── WI-706: lambda-callback effect-row CONFORMANCE ─────────────────────────────
+//
+// The WI-440/469 callback-row conformance check (`validate_callback_effect_row`)
+// fired ONLY for an eta'd OP-REF callback arg — it bailed at the var-ref symbol
+// extraction for any non-var-ref arg, so a LAMBDA callback went UNCHECKED against
+// the declared callback row's lacks/closed constraints. Distinct from WI-705's
+// self-contradiction shape: there the DECLARED row is consistent (`{-Outside}`),
+// but the lambda's INFERRED row (`{Outside}`) violates it — actual-vs-declared
+// conformance for lambdas. WI-706 infers the lambda's effect row (already carried
+// in its arrow type) and runs the SAME lacks/closed conformance, aligning the
+// lambda's binder places to the declared callback param places. The eta twin
+// (`row_conformance_checked_at_explicit_instantiation`, `poke3` by name) already
+// rejected; these pin the lambda twin agreeing.
+
+/// An {Outside}-rowed op the lambda body calls, so the lambda's inferred row is
+/// `{Outside}`. `shield[EffP = {}]` closes the callback row to `{-Outside}`, which
+/// the escaping `{Outside}` violates — REJECTED (the WI-706 escape). `t_lambda_escape`
+/// declares `effects {}`: creating the lambda is pure (its effects live in its type),
+/// and `shield[EffP = {}]` contributes `{}`, so ONLY the callback-row conformance can
+/// fire — isolating the mechanism.
+const LAMBDA_ESCAPE_SRC: &str = r#"
+namespace smoke.e8_lambda_escape
+  import anthill.prelude.{Int64}
+  import smoke.e_lacks.{Outside, shield}
+
+  operation poke_l() -> Int64
+    effects {Outside}
+  = 41
+
+  operation t_lambda_escape() -> Int64
+    effects {}
+  = shield[EffP = {}](lambda () -> poke_l())
+end
+"#;
+
+/// Positive control: a PURE lambda (`lambda () -> 5`) conforms to the same closed
+/// `{-Outside}` row — the conformance check must ACCEPT it (no over-rejection). A
+/// separate source from the escape (the escape fails the whole load, so its pure
+/// sibling could not be asserted from one file).
+const LAMBDA_PURE_SRC: &str = r#"
+namespace smoke.e9_lambda_pure
+  import anthill.prelude.{Int64}
+  import smoke.e_lacks.{Outside, shield}
+
+  operation t_lambda_pure() -> Int64
+    effects {}
+  = shield[EffP = {}](lambda () -> 5)
+end
+"#;
+
+/// WI-706 — the lambda escape is REJECTED, the same reject the eta twin
+/// (`row_conformance_checked_at_explicit_instantiation`) already produced. The
+/// lambda's inferred `{Outside}` violates the closed `{-Outside}` callback row; the
+/// diagnostic names `shield`, `Outside`, and the `lack`s-constraint — the SAME
+/// needles as the eta twin (minus the op name), so the two agree.
+#[test]
+fn lambda_callback_row_escape_rejected() {
+    expect_reject(
+        &[LACKS_SRC, LAMBDA_ESCAPE_SRC],
+        // `shield`/`Outside`/`lack` are the eta twin's needles (minus the op name);
+        // `lambda` additionally pins that the reject came through the WI-706
+        // lambda-conformance path (the diagnostic subject), not an incidental check.
+        &["shield", "Outside", "lack", "lambda"],
+        "a lambda whose inferred {Outside} escapes the closed -Outside callback row",
+    );
+}
+
+/// WI-706 positive control: a PURE lambda under the SAME closed `{-Outside}` row
+/// loads — the conformance check rejects only an actual escape, not lambdas as such.
+#[test]
+fn pure_lambda_callback_under_closed_row_loads() {
+    expect_load(
+        &[LACKS_SRC, LAMBDA_PURE_SRC],
+        "a pure lambda conforming to the closed -Outside callback row",
+    );
+}
+
+/// WI-706 binder-place ALIGNMENT (the crux the ticket names): a lambda whose body
+/// modifies its OWN binder (`lambda (c) -> Cell.set(c, 1)`, effect `Modify[c]`) must
+/// align that binder to the declared callback place `a`. `taker_present`'s row PRESENTS
+/// `Modify[a]`, so the aligned `Modify[c]` is COVERED — ACCEPTED. Without alignment the
+/// gensym'd `c` would not match `a` on this closed presence-row and would falsely
+/// reject, so this pins the lambda-binder→place map is built (mirrors the WI-440 eta
+/// `aligned_modify_covered_by_declared_present`). `taker_lacks`'s row ABSENTS
+/// `Modify[a]`, so the same aligned `Modify[c]` is a lacks-violation — REJECTED.
+const MODIFY_FIXTURE: &str = r#"
+  import anthill.prelude.{Unit, Int64, Cell, Modify}
+  operation taker_present(f: (a: Cell[V = Int64]) -> Unit @ Modify[a]) -> Unit = ()
+  operation taker_lacks(f: (a: Cell[V = Int64]) -> Unit @ -Modify[a]) -> Unit = ()
+"#;
+
+const LAMBDA_MODIFY_OK_SRC: &str = r#"
+namespace smoke.e10_lambda_modify_ok
+  import anthill.prelude.{Unit, Int64, Cell, Modify}
+  import smoke.e10_fixture.{taker_present}
+
+  operation ok_aligned() -> Unit = taker_present(lambda (c) -> Cell.set(c, 1))
+end
+"#;
+
+const LAMBDA_MODIFY_BOOM_SRC: &str = r#"
+namespace smoke.e11_lambda_modify_boom
+  import anthill.prelude.{Unit, Int64, Cell, Modify}
+  import smoke.e10_fixture.{taker_lacks}
+
+  operation boom_aligned() -> Unit = taker_lacks(lambda (c) -> Cell.set(c, 1))
+end
+"#;
+
+/// The fixture defining the two takers, so both the OK and BOOM sources can import them.
+fn modify_fixture_src() -> String {
+    format!("namespace smoke.e10_fixture\n{MODIFY_FIXTURE}end\n")
+}
+
+/// WI-706 alignment positive: the lambda's `Modify[c]` aligns to the declared
+/// PRESENT `Modify[a]` (binder `c` ↔ place `a`) and is covered — loads. Proves the
+/// lambda-binder→place map is actually built (an empty/wrong map would falsely reject
+/// on this closed presence-row).
+#[test]
+fn lambda_modify_aligned_to_present_place_loads() {
+    expect_load(
+        &[&modify_fixture_src(), LAMBDA_MODIFY_OK_SRC],
+        "a lambda modifying its binder, aligned to a declared present Modify[place]",
+    );
+}
+
+/// WI-706 alignment negative: the SAME lambda's `Modify[c]` aligns to the declared
+/// ABSENT `Modify[a]` — a lacks-violation, rejected. Pins that alignment then feeds
+/// the lacks check (not merely that it accepts everything).
+#[test]
+fn lambda_modify_aligned_to_lacks_place_rejected() {
+    expect_reject(
+        &[&modify_fixture_src(), LAMBDA_MODIFY_BOOM_SRC],
+        &["taker_lacks", "Modify", "lambda"],
+        "a lambda modifying its binder, aligned to a declared -Modify[place] lacks",
+    );
+}
+
+/// WI-706 per-LABEL skip (altitude): a lambda whose parameter is a CONSTRUCTOR
+/// destructure (`lambda mkBox(x) -> …`) has no flat positional binder to align, so its
+/// place-carrying labels are conservatively skipped — but a PLACE-INDEPENDENT escape
+/// (`Outside`, the WI-698 shape) needs no alignment and is STILL rejected. Before this
+/// altitude refinement the whole check was skipped for such a lambda, so the escape
+/// LOADED silently. The body `poke_c()` performs `{Outside}`; the closed `{-Outside}`
+/// callback row (from `EffP = {}`) forbids it. `shield_box` never calls `f` — the reject
+/// is the arg-vs-param conformance at the call site, isolating the mechanism.
+const LAMBDA_CTOR_ESCAPE_SRC: &str = r#"
+namespace smoke.e12_lambda_ctor_escape
+  import anthill.prelude.{Int64}
+  import smoke.e_lacks.{Outside}
+
+  sort Box
+    entity mkBox(v: Int64)
+  end
+
+  operation shield_box[EffP](f: (b: Box) -> Int64 @ {EffP, -Outside}) -> Int64
+    effects {EffP}
+  = 0
+
+  operation poke_c() -> Int64
+    effects {Outside}
+  = 41
+
+  operation t_ctor_escape() -> Int64
+    effects {}
+  = shield_box[EffP = {}](lambda mkBox(x) -> poke_c())
+end
+"#;
+
+/// WI-706 per-label skip: a place-INDEPENDENT `{Outside}` escape through a
+/// CONSTRUCTOR-destructure lambda is still REJECTED — the un-flattenable binder skips
+/// only place-CARRYING labels, not place-free ones. Pins the altitude fix (per-label,
+/// not per-lambda skip); before it, this exact source loaded silently.
+#[test]
+fn place_independent_escape_through_destructure_lambda_rejected() {
+    expect_reject(
+        &[LACKS_SRC, LAMBDA_CTOR_ESCAPE_SRC],
+        &["shield_box", "Outside", "lack", "lambda"],
+        "an {Outside} escape through a constructor-destructure lambda (place-independent, still checked)",
+    );
+}
+
+/// WI-706 place-CARRYING escape through a destructure lambda on a CLOSED row: the
+/// sub-binder `c` of `lambda mkWrap(c) -> Cell.set(c, 1)` incurs `Modify[c]`, which the
+/// closed `@ {}` callback row forbids. `c` has no positional identity (it is inside the
+/// constructor), so it does not align to a declared place — but a closed row admits
+/// NOTHING unaligned, so the label is REJECTED by the same closed-row check any
+/// unabsorbed label hits, naming the offending `Modify` (a better diagnostic than the
+/// generic arrow-subtype check's effect-blind `expected Wrap -> Unit, got Wrap -> Unit`).
+/// Guards that a destructure lambda is NOT wholesale-skipped, and that the reject comes
+/// from the WI-706 check (the `lambda`/`Modify` needles the generic message lacks).
+const LAMBDA_DESTRUCTURE_MODIFY_SRC: &str = r#"
+namespace smoke.e13_destructure_modify
+  import anthill.prelude.{Unit, Int64, Cell, Modify}
+
+  sort Wrap
+    entity mkWrap(cell: Cell[V = Int64])
+  end
+
+  operation taker_pure(f: (w: Wrap) -> Unit @ {}) -> Unit = ()
+
+  operation escape_destructure() -> Unit = taker_pure(lambda mkWrap(c) -> Cell.set(c, 1))
+end
+"#;
+
+#[test]
+fn place_carrying_escape_through_destructure_lambda_rejected() {
+    expect_reject(
+        &[LAMBDA_DESTRUCTURE_MODIFY_SRC],
+        &["taker_pure", "Modify", "lambda"],
+        "a place-carrying Modify[sub-binder] through a destructure lambda escaping a closed {} callback row",
+    );
+}
+
 // ── WI-701: the `Branch` × `External` co-occurrence gate ───────────────────────
 //
 // Proposal 054 §"`Branch` and `External`": a `Branch` region may not perform
