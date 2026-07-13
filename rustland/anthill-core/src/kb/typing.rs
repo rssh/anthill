@@ -6136,6 +6136,18 @@ fn check_apply_iter(
             }
         }
 
+        // WI-705: reject a call whose SIGNATURE — the op's own effect row or any
+        // arrow-typed param row — an instantiation has made UNINHABITABLE (`{X, -X}`,
+        // present AND absent the same label). Placed HERE, after the arg-unify loops,
+        // so `subst` carries the FULL instantiation — explicit `[E = {…}]` AND
+        // argument/context inference alike — and BEFORE the per-arg
+        // `validate_callback_effect_row` below, which may then assume an inhabitable
+        // declared row and own only actual-vs-declared conformance. Covering the op's
+        // own row plus every param row, actual-agnostically, subsumes WI-700's
+        // eta-scoped per-arg self-contradiction reject (removed) AND catches the two
+        // shapes it missed (an op's own row; a lambda callback). No-op unless an
+        // instantiation actually bound a row-bearing type param.
+        check_signature_self_contradiction(kb, &subst, &op, fn_sym, span)?;
         // WI-385: VALIDATE each argument against its declared parameter type.
         // The unify loops above pin type-parameters for INFERENCE and DISCARD
         // their boolean — so before this check a caller could pass an argument
@@ -14560,6 +14572,176 @@ fn labels_match_aligned(
     }
 }
 
+/// WI-705: reject a call whose SIGNATURE — the op's own effect row, or any of its
+/// arrow / `Function`-typed param rows — an instantiation has made UNINHABITABLE:
+/// present AND absent the same label (`{X, -X}`, the WI-328 piece-d
+/// self-contradictory shape). Runs AFTER the argument-unification loops, so `subst`
+/// carries the FULL instantiation — explicit `[E = {…}]` args AND argument/context
+/// inference alike.
+///
+/// This is the SIGNATURE-altitude generalization of the WI-700 reject that lived
+/// inside [`validate_callback_effect_row`]: that one fired only for an eta'd
+/// OP-REF callback arg (a lambda arg, or a param with no arg at all, bailed at the
+/// var-ref extraction) and only inspected the ONE callback param being validated.
+/// Two shapes slipped through it: (a) the op's OWN row (`g[E]() effects {E, -X}`
+/// called `g[E = {X}]()` — no callback param to inspect), and (b) a lambda callback
+/// with a self-contradictory instantiated declared row. Being actual-agnostic and
+/// covering the own-row plus every param row, this subsumes the WI-700 reject (now
+/// removed) — including the case where inference (not an explicit `[…]`) binds the
+/// offending row param, which the old per-arg check caught because it too ran after
+/// unification. Placed before [`validate_callback_effect_row`] so that function may
+/// assume an inhabitable declared row and own only actual-vs-declared conformance.
+///
+/// Gated on at least one op type param actually BOUND in `subst`: an uninstantiated
+/// signature carries its rows as declared (a literal `{X, -X}` is a load-time
+/// concern, not this call-site one), and only binding a row tail can newly make a
+/// row uninhabitable. So the check is a no-op for a call that instantiates nothing.
+///
+/// KNOWN LIMITATION (not a WI-700 regression — the old check never saw these
+/// either): a contradiction in a RETURN-position arrow row, or in the inner row of a
+/// nested/curried arrow param, is not decomposed here; only the op's own row and the
+/// OUTER row of each directly arrow-typed param are checked.
+fn check_signature_self_contradiction(
+    kb: &mut KnowledgeBase,
+    subst: &Substitution,
+    op: &OperationInfoFull,
+    fn_sym: Symbol,
+    span: Option<Span>,
+) -> Result<(), TypeError> {
+    let any_param_bound = op.type_params.iter().any(|(_, vt)| {
+        resolved_var(kb, &walk_view(kb, subst, &TermIdView(*vt))).is_none()
+    });
+    if !any_param_bound {
+        return Ok(());
+    }
+
+    // (a) the op's OWN declared effect row. `op.effects` is a flat list of atoms /
+    // written-row wrappers; decompose each RAW (resolving row params through
+    // `subst`) and ACCUMULATE present/absent across the whole list — a clash may
+    // span two elements (`[{E}, -X]`) as well as one wrapper (`{E, -X}`). A
+    // non-decomposable element (malformed) contributes nothing and is reported by
+    // its own diagnostic path; it must not mask or fabricate a clash here.
+    let mut present: Vec<Value> = Vec::new();
+    let mut absent: Vec<Value> = Vec::new();
+    for e in &op.effects {
+        if let Some((p, _tails, a)) = decompose_effect_row_raw(kb, subst, e) {
+            present.extend(p);
+            absent.extend(a);
+        }
+    }
+    if let Some(err) =
+        uninhabitable_row_error(kb, subst, &present, &absent, &op.effects, fn_sym, None, span)
+    {
+        return Err(err);
+    }
+
+    // (b) each arrow / `Function`-typed PARAM's declared effect row (after subst).
+    // `arrow_parts` gates a non-callable param cheaply; a param row is a single
+    // self-contained expression, so its clash is within the one decomposition.
+    for (param_sym, param_type) in &op.params {
+        let Some((_, _, Some(eff))) = arrow_parts(kb, param_type) else {
+            continue;
+        };
+        let row = canonical_effects_row(kb, &eff);
+        let Some((p, _tails, a)) = decompose_effect_row_raw(kb, subst, &row) else {
+            continue;
+        };
+        if let Some(err) = uninhabitable_row_error(
+            kb, subst, &p, &a, std::slice::from_ref(&row), fn_sym, Some(*param_sym), span,
+        ) {
+            return Err(err);
+        }
+    }
+    Ok(())
+}
+
+/// The WI-705 uninhabitability test for one decomposed row (or the accumulated
+/// present/absent of the op's own multi-element row). Returns the diagnostic iff
+/// some label is present AND absent AND UNCONDITIONALLY present — a `guarded(X, g)`
+/// atom decomposes to a conservative present `X` ([`decompose_effect_row_raw`],
+/// WI-478), but it is only CONDITIONALLY present (WI-067 discharge may refute `g`
+/// and drop it), so a guarded present that clashes with `-X` is NOT a hard
+/// contradiction: defer to discharge rather than reject a row that may be
+/// inhabitable. The guarded re-walk (`rows` are the source rows to re-scan) runs
+/// only once a candidate clash exists — rare, since it needs an absent label — so
+/// the common no-lacks path pays nothing beyond the cheap present/absent scan.
+fn uninhabitable_row_error(
+    kb: &mut KnowledgeBase,
+    subst: &Substitution,
+    present: &[Value],
+    absent: &[Value],
+    rows: &[Value],
+    fn_sym: Symbol,
+    param: Option<Symbol>,
+    span: Option<Span>,
+) -> Option<TypeError> {
+    // Cheap pre-check: is any present label also absent at all? (Almost always no —
+    // a row needs a `-X` lacks-constraint to clash.) Bail before the guarded walk.
+    row_self_contradiction(kb, subst, present, absent)?;
+    // A candidate clash exists. Gather the dischargeable (guarded) labels — each
+    // cancels ONE present occurrence of that label (a `guarded(X,g)` atom decomposes
+    // to a present `X`, WI-478). A label is a genuine contradiction only if it is
+    // present AND absent AND has an UNCONDITIONAL occurrence, i.e. it appears in
+    // `present` more times than in `guarded` (so a row carrying both `X :- g` and a
+    // literal `X` alongside `-X` still rejects on the literal). Multiset-counted so a
+    // label that is only ever guarded (`{X :- g, -X}`) defers to WI-067 discharge.
+    let mut guarded: Vec<Value> = Vec::new();
+    for r in rows {
+        for (label, _guard) in collect_guarded_atoms(kb, subst, r) {
+            guarded.push(label);
+        }
+    }
+    let count = |hay: &[Value], needle: &Value| {
+        hay.iter().filter(|h| resolved_labels_equal(kb, subst, h, needle)).count()
+    };
+    let clash = absent
+        .iter()
+        .find(|a| count(present, a) > count(&guarded, a))?;
+    Some(signature_self_contradiction_error(kb, fn_sym, param, clash, span))
+}
+
+/// The WI-705 diagnostic: an instantiation (explicit `[E = {…}]` or inferred) made a
+/// signature row admit AND lack `clash`. `param = Some(_)` names a callback PARAM row
+/// (context `OperationArgument`, wording shared with the removed WI-700 reject so its
+/// `shield`/`Outside`/`lack` assertions still hold); `param = None` names the op's OWN
+/// effect row (context `OperationEffects`).
+fn signature_self_contradiction_error(
+    kb: &KnowledgeBase,
+    fn_sym: Symbol,
+    param: Option<Symbol>,
+    clash: &Value,
+    span: Option<Span>,
+) -> TypeError {
+    let label = type_display_name_value(kb, clash);
+    let op_qn = kb.qualified_name_of(fn_sym);
+    match param {
+        Some(param_sym) => TypeError::Other {
+            site: TypeError::here(),
+            span,
+            context: TypeErrorContext::OperationArgument { op_name: fn_sym, param: param_sym },
+            expected: format!(
+                "callback parameter `{}` of `{}` to have a consistent effect row",
+                kb.resolve_sym(param_sym),
+                op_qn,
+            ),
+            actual: format!(
+                "its instantiation makes it both admit and lack `{label}` \
+                 (violates its `-{label}` lacks-constraint)",
+            ),
+        },
+        None => TypeError::Other {
+            site: TypeError::here(),
+            span,
+            context: TypeErrorContext::OperationEffects { op_name: fn_sym },
+            expected: format!("operation `{op_qn}` to have a consistent effect row"),
+            actual: format!(
+                "its instantiation makes its effect row both admit and lack `{label}` \
+                 (violates its `-{label}` lacks-constraint)",
+            ),
+        },
+    }
+}
+
 /// WI-440 — the `-Modify[binder]` CHECKING direction: validate a callback
 /// argument's effect row against the declared callback parameter's row,
 /// aligning the two binder spaces positionally. The declared row's labels
@@ -14584,13 +14766,16 @@ fn labels_match_aligned(
 /// inference stays with the `unify_types` pass that precedes this check.
 ///
 /// KNOWN GAP (not "handled elsewhere" — verified 2026-07-12): a NON-eta argument (a
-/// `lambda`) bails at the `arg_op_sym` extraction below, so NEITHER the lacks/closed
-/// conformance NOR the WI-700 self-contradiction reject fires for a lambda callback.
+/// `lambda`) bails at the `arg_op_sym` extraction below, so the lacks/closed
+/// CONFORMANCE check does not fire for a lambda callback.
 /// `shield[EffP = {}](lambda () -> poke())` LOADS with the `{Outside}` the lambda body
 /// incurs escaping a `-Outside` slot; the eta twin `…(poke)` rejects. A prior comment
 /// here wrongly claimed the lambda "synthesizes its row against the declared hint
-/// elsewhere" — that elsewhere does not enforce the constraint. Tracked as a WI-700
-/// sibling (lambda-callback row conformance).
+/// elsewhere" — that elsewhere does not enforce the constraint. Tracked as WI-706
+/// (lambda-callback row conformance). NOTE the *self-contradiction* half of this gap
+/// (a lambda whose DECLARED param row is uninhabitable after instantiation) is now
+/// closed at signature altitude by [`check_signature_self_contradiction`] (WI-705);
+/// only the actual-vs-declared conformance for a lambda BODY remains (WI-706).
 fn validate_callback_effect_row(
     kb: &mut KnowledgeBase,
     subst: &Substitution,
@@ -14614,44 +14799,20 @@ fn validate_callback_effect_row(
     if !head_is_callable {
         return None;
     }
-    // WI-700: check the DECLARED row FIRST. A self-contradictory instantiation
-    // (probe a) is a property of the declared param plus its instantiation ALONE, so
-    // it must reject regardless of the actual callback's row — a pure actual (or a
-    // non-arrow actual that would bail the actual-side gate below) must not let it
-    // slip through.
+    // WI-705 (was WI-700): the self-contradictory-instantiation reject moved OUT of
+    // here to the SIGNATURE-altitude `check_signature_self_contradiction` (run after
+    // the arg-unify loops, before this per-arg validation) — actual-agnostic,
+    // covering every callback shape plus the op's OWN row, over the FULL instantiation
+    // (explicit + inferred). So by the time control reaches here the declared row is
+    // guaranteed inhabitable, and this function owns only actual-vs-declared
+    // CONFORMANCE. Decompose the declared row via the FILTERING wrapper (restored from
+    // WI-700's raw read): a self-contradictory row can no longer arrive, so the
+    // filter's `None` now means only a genuinely malformed row — a conservative skip,
+    // matching the other conformance skips below.
     let (_, _, decl_eff) = arrow_parts(kb, declared)?;
     let decl_eff = decl_eff?;
     let decl_row = canonical_effects_row(kb, &decl_eff);
-    // Decompose the DECLARED row RAW (unfiltered) so a self-contradictory
-    // instantiation surfaces HERE instead of being swallowed as decompose's `None`.
-    let (e_present, e_tails, e_absent) = decompose_effect_row_raw(kb, subst, &decl_row)?;
-    // WI-700 (probe a): an explicit row-param instantiation made the callback param
-    // row both PRESENT and ABSENT the same effect (`{Outside, -Outside}` from
-    // `shield[EffP = {Outside}]` against a declared `-Outside`). The param is
-    // uninhabitable — the instantiation violates its OWN `-…` lacks-constraint — so
-    // reject loudly (the pre-WI-700 hole let decompose's `None` swallow it). Shares
-    // `row_self_contradiction` with `decompose_effect_row`'s filter so the two
-    // cannot drift. NOTE this fires only for an eta'd OP-REF callback arg (a lambda
-    // arg bails at `arg_op_sym` above); the general signature-level form (all
-    // callback shapes + an op's own row) is tracked as a WI-700 sibling.
-    if let Some(clash) = row_self_contradiction(kb, subst, &e_present, &e_absent) {
-        return Some(TypeError::Other {
-            site: TypeError::here(),
-            span,
-            context: TypeErrorContext::OperationArgument { op_name: fn_sym, param: param_sym },
-            expected: format!(
-                "callback parameter `{}` of `{}` to have a consistent effect row",
-                kb.resolve_sym(param_sym),
-                kb.qualified_name_of(fn_sym),
-            ),
-            actual: format!(
-                "the explicit instantiation makes it both admit and lack `{}` \
-                 (violates its `-{}` lacks-constraint)",
-                type_display_name_value(kb, clash),
-                type_display_name_value(kb, clash),
-            ),
-        });
-    }
+    let (e_present, e_tails, e_absent) = decompose_effect_row(kb, subst, &decl_row)?;
     // The ACTUAL callback's row. WI-700 eta-lifts a nullary op ref so its declared
     // row is present here (an arrow) instead of collapsed to its return type.
     let (_, _, act_eff) = arrow_parts(kb, actual)?;
@@ -18963,13 +19124,15 @@ fn effects_rows_inner<V: TermView>(kb: &KnowledgeBase, v: &V) -> Option<Value> {
 ///
 /// The raw effect-row decomposition: present labels, row tails, absent labels —
 /// WITHOUT the self-contradiction (`{e, -e}`) filter. Returns `None` only for a
-/// genuinely malformed row (unknown functor). WI-700: `validate_callback_effect_row`
-/// needs the raw present/absent so it can REJECT a self-contradictory DECLARED
-/// callback row (an explicit row-param instantiation that violates its own `-X`
-/// lacks-constraint — `{Outside, -Outside}`) with a targeted diagnostic, instead
-/// of the silent `None` the filter turns it into. The filtering
-/// [`decompose_effect_row`] wrapper preserves prior behavior for its ~10
-/// subtype/unify/merge callers.
+/// genuinely malformed row (unknown functor). WI-705:
+/// [`check_signature_self_contradiction`] needs the raw present/absent so it can
+/// REJECT a signature row a row-param instantiation makes uninhabitable
+/// (violates its own `-X` lacks-constraint — `{Outside, -Outside}`) with a targeted
+/// diagnostic, instead of the silent `None` the filter turns it into. (WI-700 first
+/// introduced this split for `validate_callback_effect_row`; WI-705 hoisted the
+/// reject to signature altitude and that caller reverted to the filtered wrapper.)
+/// The filtering [`decompose_effect_row`] wrapper preserves prior behavior for its
+/// ~10 subtype/unify/merge callers.
 fn decompose_effect_row_raw(
     kb: &mut KnowledgeBase,
     subst: &Substitution,

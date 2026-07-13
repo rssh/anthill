@@ -47,8 +47,9 @@
 //!      site, TWO independent probes over the generic `Outside` stand-in:
 //!      (a) `shield[EffP = {Outside}](poke)` is REJECTED: the instantiation makes
 //!          the callback row `{Outside, -Outside}` (present AND absent `Outside`),
-//!          violating its own `-Outside` — the self-contradiction reject, which
-//!          reads the DECLARED row RAW so the clash is not swallowed as a `None`;
+//!          violating its own `-Outside` — the self-contradiction reject (hoisted by
+//!          WI-705 to the signature-altitude `check_signature_self_contradiction`,
+//!          which reads the DECLARED row RAW so the clash is not swallowed as a `None`);
 //!      (b) `shield[EffP = {}](poke3)` is REJECTED: the closed callback row
 //!          `{-Outside}` forbids the `{Outside}` that `poke3` declares
 //!          (actual-vs-declared conformance, no self-contradiction).
@@ -551,9 +552,10 @@ fn rw_split_store_union_threads_both_components() {
 /// instantiation site. `shield[EffP = {Outside}]` makes the callback param row
 /// `{Outside, -Outside}` (present AND absent `Outside`), so the instantiation
 /// violates its own `-Outside` — the param is uninhabitable and the load is
-/// rejected (the self-contradiction reject in `validate_callback_effect_row`,
-/// reading the DECLARED row RAW so the clash is not swallowed). Independent of
-/// `poke`: any argument fails an uninhabitable param.
+/// rejected. WI-705 SUBSUMED the original per-arg reject: the clash is now caught
+/// at signature altitude (`check_signature_self_contradiction`, param-row branch),
+/// which reads the DECLARED row RAW so it is not swallowed. Independent of `poke`:
+/// any argument fails an uninhabitable param.
 #[test]
 fn lacks_enforced_at_explicit_instantiation() {
     expect_reject(
@@ -647,6 +649,158 @@ fn nullary_returning_function_prefers_return_type_reading() {
         r.as_int(),
         Some(0),
         "make_inc reads as its returned Function (not eta'd to `() -> Function`); apply_it(make_inc) applies it to 0",
+    );
+}
+
+// ── WI-705: effect-row self-contradiction at SIGNATURE altitude ────────────────
+//
+// WI-700 rejects a self-contradictory instantiated CALLBACK-PARAM row, but only
+// for an eta'd OP-REF callback arg (inside the per-arg `validate_callback_effect_
+// row`, which bails at the `arg_op_sym` extraction for non-var-ref args). Three
+// shapes of the SAME uninhabitable-row bug are involved: (a) an op's OWN
+// instantiated row (no callback param at all) and (b) a LAMBDA callback with a
+// self-contradictory instantiated declared row — both verified LOADING on HEAD,
+// the two WI-700 missed; plus (c) an INFERENCE-bound (non-explicit) row param,
+// which WI-700 DID catch (its per-arg check ran after unification) and which the
+// subsumption must not regress. WI-705 replaces the per-arg reject with ONE per-call
+// SIGNATURE validation, decomposing the op's own row AND each arrow-typed param's
+// row (after subst). It runs AFTER the argument-unification loops (not merely after
+// `seed_op_type_args`) precisely so `subst` carries the FULL instantiation — explicit
+// AND inferred — covering all three shapes and SUBSUMING WI-700's eta-scoped reject.
+
+/// WI-705 probe (a): an op's OWN instantiated effect row is self-contradictory.
+/// `g[E]() effects {E, -Outside}` instantiated `g[E = {Outside}]()` makes the
+/// signature row `{Outside, -Outside}` — present AND absent `Outside`, hence
+/// uninhabitable. There is no callback param, so WI-700's per-arg
+/// `validate_callback_effect_row` never inspects it. `g` OVER-declares on a pure
+/// body (the `poke` idiom); the row checker consumes the DECLARED row.
+const OWN_ROW_SELFCONTRA_SRC: &str = r#"
+namespace smoke.e4_own_row
+  import anthill.prelude.{Int64}
+  import smoke.e_lacks.{Outside}
+
+  operation g[E]() -> Int64
+    effects {E, -Outside}
+  = 41
+
+  operation t_own_row() -> Int64
+    effects {Outside}
+  = g[E = {Outside}]()
+end
+"#;
+
+/// WI-705 probe (b): a LAMBDA callback with a self-contradictory instantiated
+/// declared row. `shield[EffP = {Outside}]` makes the callback param row
+/// `{Outside, -Outside}`; the arg is a pure lambda (not a var-ref op), so
+/// WI-700's `validate_callback_effect_row` bails at `arg_op_sym` and never checks
+/// it. The signature-level check is actual-agnostic, so it rejects the
+/// uninhabitable param regardless of the callback shape.
+const LAMBDA_SELFCONTRA_SRC: &str = r#"
+namespace smoke.e5_lambda_selfcontra
+  import anthill.prelude.{Int64}
+  import smoke.e_lacks.{Outside, shield}
+
+  operation t_lambda_selfcontra() -> Int64
+    effects {Outside}
+  = shield[EffP = {Outside}](lambda () -> 5)
+end
+"#;
+
+/// WI-705 probe (a) — REJECTED: the op's OWN instantiated row `{Outside, -Outside}`
+/// is uninhabitable. WI-700's per-arg callback check never inspects it (no callback
+/// param); the signature-level `check_signature_self_contradiction` (run over the op's
+/// own row after unification) rejects it, naming the op and the clashing `Outside`.
+#[test]
+fn own_row_self_contradiction_rejected_at_signature() {
+    expect_reject(
+        &[LACKS_SRC, OWN_ROW_SELFCONTRA_SRC],
+        &["e4_own_row.g", "Outside", "lack"],
+        "g[E = {Outside}]() own row {Outside, -Outside} (self-contradictory instantiation)",
+    );
+}
+
+/// WI-705 probe (b) — REJECTED: a LAMBDA callback whose instantiated declared param
+/// row `{Outside, -Outside}` is uninhabitable. WI-700's per-arg check bails at the
+/// var-ref extraction for a lambda arg; the signature-level check is actual-agnostic,
+/// so it rejects the uninhabitable param regardless of the callback's shape. Shares
+/// the diagnostic wording with the (now-removed) WI-700 eta-scoped reject, so the
+/// `shield`/`Outside`/`lack` assertion is stable across the subsumption.
+#[test]
+fn lambda_callback_self_contradiction_rejected_at_signature() {
+    expect_reject(
+        &[LACKS_SRC, LAMBDA_SELFCONTRA_SRC],
+        &["shield", "Outside", "lack"],
+        "shield[EffP = {Outside}](lambda) callback row {Outside, -Outside} (self-contradictory instantiation)",
+    );
+}
+
+/// WI-705 probe (c) — REGRESSION GUARD for the WI-700 coverage this WI subsumes: an
+/// INFERENCE-bound (no explicit `[EffP=…]`) row param that makes a callback declared
+/// row self-contradictory. `f[EffP](a: () -> Int64 @ {EffP}, cb: () -> Int64 @ {EffP,
+/// -Outside})` called `f(src, src)` with `src` rowed {Outside}: arg `a` infers
+/// EffP={Outside}, so `cb`'s row becomes {Outside, -Outside}. WI-700's per-arg check
+/// rejected this because it ran AFTER argument unification; WI-705 must too, which is
+/// exactly why `check_signature_self_contradiction` runs after the arg-unify loops
+/// (not merely after `seed_op_type_args`, which would see only explicit args and
+/// silently re-open this hole). Verified LOADING with the check placed pre-unification
+/// and REJECTED with it placed post-unification.
+const INFER_SELFCONTRA_SRC: &str = r#"
+namespace smoke.e6_infer_selfcontra
+  import anthill.prelude.{Int64}
+  import smoke.e_lacks.{Outside}
+
+  operation src() -> Int64
+    effects {Outside}
+  = 1
+
+  operation f[EffP](a: () -> Int64 @ {EffP}, cb: () -> Int64 @ {EffP, -Outside}) -> Int64
+    effects {EffP}
+  = cb()
+
+  operation caller() -> Int64
+    effects {Outside}
+  = f(src, src)
+end
+"#;
+
+#[test]
+fn inference_bound_self_contradiction_rejected() {
+    expect_reject(
+        &[LACKS_SRC, INFER_SELFCONTRA_SRC],
+        &["e6_infer_selfcontra.f", "Outside", "lack"],
+        "EffP inferred to {Outside} making cb's row {Outside, -Outside} (no explicit instantiation)",
+    );
+}
+
+/// WI-705 guarded-exclusion guard: a GUARDED (dischargeable) present label must NOT
+/// count as an unconditional contradiction against a `-X` lacks in the same row.
+/// `g[E]() effects { Outside :- eq(1,0), -Outside, E }` decomposes (pre-discharge)
+/// to present `[Outside]` (the guarded atom is conservatively present, WI-478) and
+/// absent `[Outside]` (the literal `-Outside`), so a naive `row_self_contradiction`
+/// fires — but WI-067 discharge would refute `eq(1,0)` and drop `Outside`, leaving an
+/// inhabitable `{-Outside}`. `check_signature_self_contradiction` must therefore DEFER
+/// (load), not hard-reject, when the only clashing label is guarded. `E = {}`
+/// satisfies the "some type param bound" gate so the check actually runs.
+const GUARDED_SELFCONTRA_SRC: &str = r#"
+namespace smoke.e7_guarded
+  import anthill.prelude.{Int64}
+  import smoke.e_lacks.{Outside}
+
+  operation g[E]() -> Int64
+    effects { Outside :- eq(1, 0), -Outside, E }
+  = 1
+
+  operation caller() -> Int64
+    effects {}
+  = g[E = {}]()
+end
+"#;
+
+#[test]
+fn guarded_present_vs_lacks_defers_not_rejects() {
+    expect_load(
+        &[LACKS_SRC, GUARDED_SELFCONTRA_SRC],
+        "a guarded (dischargeable) present label vs a -X lacks must defer to discharge, not reject",
     );
 }
 
