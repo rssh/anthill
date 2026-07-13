@@ -26,6 +26,9 @@ mod wi709_type_arg_validation_test;
 #[path = "include/wi710_rule_body_type_arg_test.rs"]
 mod wi710_rule_body_type_arg_test;
 
+#[path = "include/wi716_optional_fact_none_fill_test.rs"]
+mod wi716_optional_fact_none_fill_test;
+
 #[path = "include/wi023_quantified_constraint_test.rs"]
 mod wi023_quantified_constraint_test;
 

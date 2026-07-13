@@ -3,8 +3,10 @@
 //! for byte. The golden was captured at cutover time and equals the legacy
 //! native output except four DOCUMENTED divergences (recorded on WI-009):
 //!   1. `show`'s Acceptance items print the loader-canonical named form
-//!      (`ToolPasses(tool: "cargo-test", …)`, legacy printed the positional
-//!      spelling);
+//!      (`ToolPasses(tool: "cargo-test", params: none)`, legacy printed the
+//!      positional spelling). WI-716: an omitted optional field renders as
+//!      `none`, not the loader's synthetic fill var `?params` — a ground fact
+//!      stores `none()` for an absent optional, not an unbound var;
 //!   2. `next` with several claimable items picks resolver order (the
 //!      scenario keeps exactly one claimable so the transcript is
 //!      deterministic — multi-claimable order is unpinned);

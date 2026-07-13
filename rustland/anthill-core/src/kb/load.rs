@@ -5612,6 +5612,15 @@ struct Loader<'a> {
     // (`is_modifiable(Cell[V = Int64])`), whose arguments are type arguments and nothing
     // else. Only the nested reading gets the WI-709 type-argument check.
     term_depth: usize,
+    // WI-716: true while converting a VALUE position — a ground fact head
+    // (`load_fact`) or an entity-DERIVING rule head (`load_rule`). There the
+    // partial-named-arg expansion fills an absent OPTIONAL field with `none()`
+    // (value semantics); in a query/rule-body PATTERN (and for an absent REQUIRED
+    // field) it fills a fresh var. A var in a value slot would make the produced
+    // entity `forall v. E(field: v)` and unsoundly unify a `some(?)` pattern.
+    // CLEARED inside a reflect `Term`-typed field, whose content is a quoted
+    // pattern, not a value (see `convert_arg_value`).
+    in_value_position: bool,
     // WI-582: per-head accumulator of (head variable, declared-type bound) pairs
     // collected while converting a typed rule head; drained by `load_rule` after
     // each head, mapped to DeBruijn indices, and installed on the RuleEntry as
@@ -5866,6 +5875,7 @@ impl<'a> Loader<'a> {
             current_owner: None,
             in_rule_head: false,
             term_depth: 0,
+            in_value_position: false,
             rule_head_type_bounds: Vec::new(),
             rule_tvar_bounds: HashMap::new(),
             expr_syms,
@@ -6620,6 +6630,26 @@ impl<'a> Loader<'a> {
         self.convert_term_with_expected(parse_id, None)
     }
 
+    /// WI-716: convert a constructor ARGUMENT (a field value) under the value/pattern
+    /// context. A reflect `Term`-typed field holds a QUOTED pattern, not a value, so an
+    /// omitted optional inside it must var-fill ("match anything"), never default to
+    /// `none()` — otherwise a stored query pattern like `FactHolds(pattern: E(id: ?x))`
+    /// would silently match only `E`s whose optional field is `none()`. Clear
+    /// `in_value_position` for that field's subtree; every other field converts under
+    /// the ambient context.
+    fn convert_arg_value(&mut self, parse_id: TermId, expected: Option<TermId>) -> TermId {
+        let quoted = expected
+            .is_some_and(|e| super::typing::is_reflect_term_type(self.kb, &TermIdView(e)));
+        if quoted && self.in_value_position {
+            self.in_value_position = false;
+            let r = self.convert_term_with_expected(parse_id, expected);
+            self.in_value_position = true;
+            r
+        } else {
+            self.convert_term_with_expected(parse_id, expected)
+        }
+    }
+
     /// Like `convert_term` but takes an optional expected-type hint that drives
     /// context-aware ListLiteral desugaring (WI-007). When `expected` is a
     /// `List`-shaped type, `ListLiteral` is rewritten to `cons/nil`; otherwise
@@ -6843,7 +6873,10 @@ impl<'a> Loader<'a> {
                 {
                     let elem_expected = elem_hint.flatten();
                     let items: Vec<TermId> = pos_args.iter()
-                        .map(|&id| self.convert_term_with_expected(id, elem_expected))
+                        // WI-716: route through `convert_arg_value` so a `List[Term]`
+                        // element (a quoted pattern) clears the value flag like a bare
+                        // `Term` field — its omitted optionals stay vars, not `none()`.
+                        .map(|&id| self.convert_arg_value(id, elem_expected))
                         .collect();
                     let kb_id = build_list(self.kb, &items);
                     self.term_map.insert(parse_id.raw(), kb_id);
@@ -6892,7 +6925,7 @@ impl<'a> Loader<'a> {
                                     _ => None,
                                 }))
                         });
-                        let converted = self.convert_term_with_expected(id, exp);
+                        let converted = self.convert_arg_value(id, exp);
                         self.wrap_bare_option_value(converted, exp)
                     })
                     .collect();
@@ -6929,7 +6962,7 @@ impl<'a> Loader<'a> {
                                     _ => None,
                                 }))
                         });
-                        let converted = self.convert_term_with_expected(id, exp);
+                        let converted = self.convert_arg_value(id, exp);
                         (new_sym, self.wrap_bare_option_value(converted, exp))
                     })
                     .collect();
@@ -6991,14 +7024,38 @@ impl<'a> Loader<'a> {
                     }
                 }
 
-                // Expand partial named args: fill missing entity fields with fresh vars
-                // Always sort named args to match entity field order.
-                // Positional args also count as "provided" — `ToolPasses("x")`
-                // covers `tool` via pos_args[0], so it shouldn't be re-stuffed
-                // with a fresh var in named (which would shadow the positional
-                // at materialization time).
+                // Expand partial named args: fill missing entity fields so every
+                // fact/pattern of a functor presents the same named slots (the
+                // discrim tree matches structurally). Positional args also count as
+                // "provided" — `ToolPasses("x")` covers `tool` via pos_args[0], so it
+                // isn't re-stuffed with a fresh var that would shadow the positional.
+                //
+                // WI-716: the FILLER depends on VALUE vs PATTERN position. In a
+                // value position (`self.in_value_position` — a fact head or an
+                // entity-deriving rule head) an absent OPTIONAL field means
+                // `none()`, not a var: a var makes the produced entity
+                // `forall v. E(field: v)`, which unsoundly unifies a `some(?)`
+                // query. In a query/rule-body PATTERN (and for an absent REQUIRED
+                // field) the var-fill stays — "matches anything". A `none()` value
+                // still unifies a pattern's var (so `E(id: ?)` finds it) but
+                // correctly fails `field: some(?)`.
                 if let Some(all_fields) = self.kb.entity_field_names(new_functor) {
                     let all_fields = all_fields.to_vec(); // borrow-safe copy
+                    // Field symbols whose declared type is `Option[..]` — computed only
+                    // in a value position; patterns keep the uniform var-fill.
+                    let optional_fields: HashSet<Symbol> = if self.in_value_position {
+                        let fts: Vec<(Symbol, crate::eval::value::Value)> = self
+                            .kb
+                            .entity_field_types(new_functor)
+                            .map(|s| s.to_vec())
+                            .unwrap_or_default();
+                        fts.iter()
+                            .filter(|(_, ty)| crate::kb::typing::is_option_type(&*self.kb, ty))
+                            .map(|(s, _)| *s)
+                            .collect()
+                    } else {
+                        HashSet::new()
+                    };
                     if new_named.len() + new_pos.len() < all_fields.len() {
                         let mut provided: HashSet<Symbol> = new_named
                             .iter().map(|(s, _)| *s).collect();
@@ -7009,9 +7066,20 @@ impl<'a> Loader<'a> {
                         }
                         for &field_sym in &all_fields {
                             if !provided.contains(&field_sym) {
-                                let fresh = self.kb.fresh_var(field_sym);
-                                let var_term = self.kb.alloc(Term::Var(Var::Global(fresh)));
-                                new_named.push((field_sym, var_term));
+                                let fill = if optional_fields.contains(&field_sym) {
+                                    // WI-716: absent optional in a value position -> none()
+                                    let none_sym =
+                                        self.kb.resolve_symbol("anthill.prelude.Option.none");
+                                    self.kb.alloc(Term::Fn {
+                                        functor: none_sym,
+                                        pos_args: SmallVec::new(),
+                                        named_args: SmallVec::new(),
+                                    })
+                                } else {
+                                    let fresh = self.kb.fresh_var(field_sym);
+                                    self.kb.alloc(Term::Var(Var::Global(fresh)))
+                                };
+                                new_named.push((field_sym, fill));
                             }
                         }
                     }
@@ -10978,7 +11046,13 @@ impl<'a> Loader<'a> {
         // typo in a fact argument would otherwise assert inert arrow data.
         self.check_bare_arrow_typo(f.term, "a fact", &HashSet::new());
 
+        // WI-716: a fact head is a ground VALUE — mark the conversion so the
+        // partial-named-arg expansion defaults an absent OPTIONAL field to
+        // `none()` rather than an unbound var (which would unsoundly unify a
+        // `some(?)` pattern; see `convert_term_with_expected`).
+        self.in_value_position = true;
         let term = self.convert_term(f.term);
+        self.in_value_position = false;
         // Record the fact's top-level term span on the side-tables so
         // typing.rs error formatting can resolve it back to a span.
         self.create_occurrence(f.term, term);
@@ -11480,7 +11554,15 @@ impl<'a> Loader<'a> {
                     self.check_bare_arrow_typo(*tid, "a rule head", &arrow_bound);
                     self.rule_head_type_bounds.clear();
                     self.in_rule_head = true;
+                    // WI-716: a rule head is a VALUE the rule DERIVES — an
+                    // entity-constructor head with an omitted optional field must
+                    // store `none()`, not a `forall v` var (the same soundness
+                    // rule as a fact head; see the `wi716` refutation of the
+                    // fact-only fix). A non-entity head has no field expansion, so
+                    // this is a no-op for it.
+                    self.in_value_position = true;
                     let head = self.convert_term(*tid);
+                    self.in_value_position = false;
                     self.in_rule_head = false;
                     head_type_bounds.push(std::mem::take(&mut self.rule_head_type_bounds));
                     positive_heads.push(head);

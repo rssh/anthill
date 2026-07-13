@@ -14190,7 +14190,7 @@ fn denoted_value_is_closed(kb: &KnowledgeBase, value: &Rc<NodeOccurrence>) -> bo
 /// type lattice on it would make it the universal default on every term (see the
 /// note in `stdlib/anthill/prelude/sort.anthill`) — so this acceptance lives in
 /// the WI-385 validation, never in `types_compatible` / the subtype relation.
-fn is_reflect_term_type<V: TermView>(kb: &KnowledgeBase, ty: &V) -> bool {
+pub(crate) fn is_reflect_term_type<V: TermView>(kb: &KnowledgeBase, ty: &V) -> bool {
     // `type_head` reads only the head (no binding materialization), enough here.
     matches!(type_head(kb, ty),
         TypeHead::SortRef(s) if kb.qualified_name_of(s) == "anthill.reflect.Term")

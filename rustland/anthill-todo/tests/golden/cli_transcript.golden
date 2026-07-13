@@ -61,7 +61,7 @@ Description: base work
 Status:      Open
 Tags:        seq
 Acceptance:
-  - ToolPasses(tool: "cargo-test", params: ?params)
+  - ToolPasses(tool: "cargo-test", params: none)
 [exit=0]
 $ anthill-todo next
   WI-001 — base work
@@ -92,7 +92,7 @@ Status:      Open
 Depends on:  WI-001
 Tags:        seq
 Acceptance:
-  - ToolPasses(tool: "cargo-test", params: ?params)
+  - ToolPasses(tool: "cargo-test", params: none)
 Feedback (claude): some feedback text
 [exit=0]
 $ anthill-todo update WI-002 --description second work updated
