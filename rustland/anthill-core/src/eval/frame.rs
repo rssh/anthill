@@ -114,16 +114,14 @@ pub enum AwaitState {
     /// type, and evaluation is what routes each through the frame (locals, the
     /// type-argument channel, a nested application).
     ///
-    /// KNOWN GAP (not introduced here): inside a GENERIC operation, `Cell[V = T]`
-    /// still builds `Cell[V = Ref(T)]` rather than substituting `T`'s binding. The
-    /// frame's type-arg channel does carry `T ⇒ Int64`, but it is keyed by the
-    /// declared-name symbol `OperationInfo.type_params` holds, which is NOT the
-    /// op-scoped symbol a body reference to `T` resolves to — so `reduce_var`'s
-    /// `find_type_arg` (an identity match) misses, and the WI-206 bare-sort arm
-    /// delivers `Ref(T)`. Harmless for every consumer today (they all key on the
-    /// HEAD sort and never read the arguments), and evaluating the arguments is what
-    /// makes the substitution simply start working once the channel is keyed
-    /// consistently. Filed as its own WI with a reproducer.
+    /// Substituting a type param read here (WI-708): inside a GENERIC operation,
+    /// `Cell[V = T]` now builds `Cell[V = Int64]` from the frame's type-arg channel
+    /// (`T ⇒ Int64`). Because the argument is EVALUATED, `T` reaches `reduce_var`,
+    /// which consults the channel via `find_type_arg`. The channel is keyed by the
+    /// op-scoped symbol a body reference to `T` resolves to — NOT the bare
+    /// `OperationInfo.type_params` name (they differ; see `op_scoped_type_param_symbol`
+    /// in `kb/typing.rs`) — so the identity match hits. Before WI-708 it missed and the
+    /// WI-206 bare-sort arm delivered a dangling `Ref(T)`.
     SortTypeArgs {
         sort_sym: Symbol,
         buffered_pos: Vec<Value>,

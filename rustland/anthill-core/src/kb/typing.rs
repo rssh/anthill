@@ -6699,11 +6699,23 @@ fn check_apply_iter(
         // Write resolved op type-arg values back to the apply
         // occurrence so the eval can install them on the callee's
         // `Frame.type_args` (WI-272). Positional, in the callee's
-        // `[T1, T2, ...]` declaration order; each entry pairs the
-        // declared name symbol with the term the substitution walked
-        // its Var to. Skipped for ops without `[...]` (the common
-        // case) — `resolved_type_args` defaults to empty.
+        // `[T1, T2, ...]` declaration order; each entry pairs the type
+        // param with the term the substitution walked its Var to. Skipped
+        // for ops without `[...]` (the common case) — `resolved_type_args`
+        // defaults to empty.
+        //
+        // WI-708: the channel KEY is the symbol a BODY reference to the param
+        // resolves to (the op-scoped `<ns>.<op>.T`), NOT the bare-interned
+        // `OperationInfo.type_params` name (`kb.intern("T")`). The two differ,
+        // and `reduce_var`'s `find_type_arg` matches by symbol IDENTITY, so a
+        // channel keyed by the bare name is dead for body reads (a body `T`
+        // fell through to the WI-206 bare-sort arm, delivering a dangling
+        // `Ref(T)`). `op.type_params` itself CANNOT be re-keyed —
+        // `seed_op_type_args` matches call-site `[T = …]` labels (also
+        // bare-interned) against it — so only the eval channel is translated,
+        // making the two keyings agree on the op-scoped identity.
         if !op.type_params.is_empty() {
+            let op_scope_raw = kb.make_name_term_from_sym(fn_sym).raw();
             let mut resolved: Vec<(Symbol, TermId)> = Vec::with_capacity(op.type_params.len());
             for (name, var_term) in &op.type_params {
                 let walked = walk_type_deep(kb, &subst, *var_term);
@@ -6712,7 +6724,8 @@ fn check_apply_iter(
                 // the resolved type arg (`find_type_arg(...).map(Value::Term)`)
                 // rather than a stale unresolved var.
                 let walked = surface_node_binding_to_term(kb, &subst, walked);
-                resolved.push((*name, walked));
+                let key = op_scoped_type_param_symbol(kb, op_scope_raw, *name);
+                resolved.push((key, walked));
             }
             occ.set_resolved_type_args(resolved);
         }
@@ -8752,6 +8765,39 @@ fn lookup_operation_info_full(kb: &KnowledgeBase, functor: Symbol) -> Option<Ope
         type_params: rec.type_params,
         requires: rec.requires,
     })
+}
+
+/// WI-708: the symbol a BODY reference to op type-param `declared` resolves to — the
+/// op-scoped `<ns>.<op>.T` symbol `scan_operation_params` defines as a LOCAL of the op
+/// scope. The loader converts an op body under `current_scope == op_scope`, so a body
+/// reference reads a type param via `resolve_in_scope(short_name, op_scope)`, which hits
+/// that local; resolving the param's short name in the same scope here reproduces exactly
+/// the symbol the reference carries — the key `reduce_var`'s `find_type_arg` (an identity
+/// match) needs. This is deliberately NOT the bare `OperationInfo.type_params` symbol
+/// (`kb.intern("T")`), which stays the call-site / seeding key (`seed_op_type_args`).
+///
+/// Gated on the param being a genuine op-scope type param (`is_type_param`), NOT a bare
+/// `resolve_in_scope`. `op.type_params` also carries synthesized bare-spec carriers
+/// (`mint_bare_spec_carrier`, a `?P` named after a spec member — NOT a scope local). A
+/// bare resolve of such a name would search the op scope's ENCLOSING / import parents and
+/// could bind it to an unrelated VISIBLE sort of the same short name — keying the channel
+/// onto a body-readable symbol and hijacking a body read of that real sort (`find_type_arg`
+/// runs ahead of the WI-206 bare-sort arm). The `is_type_param` gate confines the re-key to
+/// real params; a carrier keeps its inert `declared` key, which no body reference resolves
+/// to, exactly as before WI-708.
+fn op_scoped_type_param_symbol(
+    kb: &KnowledgeBase,
+    op_scope_raw: u32,
+    declared: Symbol,
+) -> Symbol {
+    let short = kb.resolve_sym(declared).to_string();
+    if !kb.symbols.is_type_param(op_scope_raw, &short) {
+        return declared;
+    }
+    match kb.symbols.resolve_in_scope(&short, op_scope_raw) {
+        crate::intern::ResolveResult::Found(s) => s,
+        _ => declared,
+    }
 }
 
 /// Seed `subst` from `op[bindings](args)` call sites: named bindings
