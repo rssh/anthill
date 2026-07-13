@@ -30,7 +30,17 @@ fn claim_completes_when_description_has_unbalanced_paren() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let proj = common::setup_project(&tmp, WORKITEMS_WITH_UNBALANCED_PAREN);
 
-    let budget = Duration::from_secs(10);
+    // Guards a real regression: `find_fact_block` once looped forever on an
+    // unbalanced `(` in a string field, so `claim` never returned. The guard is
+    // about *termination*, not speed — we assert the process COMPLETES (and
+    // succeeds); any finite exit means the parser loop is bounded and the guard
+    // holds. The deadline is only a backstop so a genuine non-terminating
+    // regression fails instead of hanging the suite forever — not a performance
+    // budget. The claim runs in ~2.7s idle and up to ~10-20s under heavy
+    // parallel load (WI-715), so a 20s backstop sits just above the observed
+    // range; if it flakes again under heavier load, raise it — the only hard
+    // requirement is that it stay finite so a real hang still fails.
+    let hang_backstop = Duration::from_secs(20);
     let start = Instant::now();
 
     let mut child = Command::new(BIN)
@@ -46,14 +56,16 @@ fn claim_completes_when_description_has_unbalanced_paren() {
                 "claim WI-001 exited {:?} after {:?}", status.code(), start.elapsed());
             break;
         }
-        if start.elapsed() > budget {
+        if start.elapsed() > hang_backstop {
             let _ = child.kill();
             let _ = child.wait();
             panic!(
-                "claim WI-001 did not return within {:?} — \
-                 find_fact_block infinite-loop regression \
-                 (unbalanced `(` in description should be ignored)",
-                budget
+                "claim WI-001 still had not terminated after {:?} — treating \
+                 as a find_fact_block non-terminating-loop regression (an \
+                 unbalanced `(` in a description must not hang the parser). If \
+                 this fires under heavy parallel test load rather than a real \
+                 hang, raise the backstop in this test.",
+                hang_backstop
             );
         }
         thread::sleep(Duration::from_millis(50));
