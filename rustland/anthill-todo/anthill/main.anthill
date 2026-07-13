@@ -908,33 +908,29 @@ namespace anthill.todo
           match r
             case Row(_, status, _, _, _, _) -> some(status)
 
-    operation is_satisfied(status: String) -> Bool =
-      if eq(status, "Delivered") then true
-      else if eq(status, "Verified") then true
-      else false
-
     -- Positive claimability gate for the tag view's `<- next` marker.
     -- Mirrors the KB `claimable` rule (anthill-todo/rules.anthill), which is
     -- strictly `status == Open` + deps satisfied. The deps-satisfied half is
     -- checked separately at the call site (unmet == nil); this is the status
     -- half. Only Open qualifies: PreOpened (backlog), Draft, and the terminal
     -- off-ramps (Rejected/ProposalRejected/Stale) are NOT satisfied either, so
-    -- the old negative `not is_satisfied` test let a parked PreOpened row grab
+    -- an earlier negative deps-satisfied test let a parked PreOpened row grab
     -- `<- next` ahead of a live Open one (WI-597). Claimed is deliberately
     -- excluded: an in-progress item is "current", not "next" — the build loop
     -- resumes Claimed items separately, and `anthill-todo next` lists only Open.
     operation is_claimable_next(status: String) -> Bool =
       eq(status, "Open")
 
-    operation any_unmet(deps: List[String], row_map: Map[String, Row]) -> Bool =
+    -- WI-711: `satisfied_set` is the id-set of Delivered/Verified items,
+    -- collected once from the KB `dep_satisfied` rule (the single definition
+    -- of a satisfied dependency). A dep absent from it — not yet satisfied,
+    -- or a dangling reference to no work item — counts as unmet.
+    operation any_unmet(deps: List[String], satisfied_set: Map[String, Bool]) -> Bool =
       match deps
         case nil() -> false
         case cons(dep, rest) ->
-          match status_for_m(row_map, dep)
-            case some(s) ->
-              if is_satisfied(s) then any_unmet(rest, row_map)
-              else true
-            case none() -> true  -- unknown dep counts as unmet
+          if contains(satisfied_set, dep) then any_unmet(rest, satisfied_set)
+          else true
 
     -- ── Dependents map: id → list of items depending on it ────────
 
@@ -1300,7 +1296,7 @@ namespace anthill.todo
     -- ── Partition into ready / blocked ────────────────────────────
 
     operation partition_ready(rows: List[Row],
-                               row_map: Map[String, Row])
+                               satisfied_set: Map[String, Bool])
       -> List[Row]
     =
       match rows
@@ -1308,11 +1304,11 @@ namespace anthill.todo
         case cons(r, rest) ->
           match r
             case Row(_, _, _, deps, _, _) ->
-              if any_unmet(deps, row_map) then partition_ready(rest, row_map)
-              else cons(r, partition_ready(rest, row_map))
+              if any_unmet(deps, satisfied_set) then partition_ready(rest, satisfied_set)
+              else cons(r, partition_ready(rest, satisfied_set))
 
     operation partition_blocked(rows: List[Row],
-                                 row_map: Map[String, Row])
+                                 satisfied_set: Map[String, Bool])
       -> List[Row]
     =
       match rows
@@ -1320,25 +1316,26 @@ namespace anthill.todo
         case cons(r, rest) ->
           match r
             case Row(_, _, _, deps, _, _) ->
-              if any_unmet(deps, row_map) then cons(r, partition_blocked(rest, row_map))
-              else partition_blocked(rest, row_map)
+              if any_unmet(deps, satisfied_set) then cons(r, partition_blocked(rest, satisfied_set))
+              else partition_blocked(rest, satisfied_set)
 
     -- Keep only ids whose deps are all satisfied (the id-level analogue of
     -- partition_ready, for the `--unblocked` tag view). An id with no row is
     -- not an actionable item and is dropped.
     operation filter_unblocked_ids(ids: List[String],
-                                   row_map: Map[String, Row]) -> List[String] =
+                                   row_map: Map[String, Row],
+                                   satisfied_set: Map[String, Bool]) -> List[String] =
       match ids
         case nil() -> nil()
         case cons(id, rest) ->
           match get(row_map, id)
-            case none() -> filter_unblocked_ids(rest, row_map)
+            case none() -> filter_unblocked_ids(rest, row_map, satisfied_set)
             case some(r) ->
               match r
                 case Row(_, _, _, deps, _, _) ->
-                  if any_unmet(deps, row_map)
-                    then filter_unblocked_ids(rest, row_map)
-                    else cons(id, filter_unblocked_ids(rest, row_map))
+                  if any_unmet(deps, satisfied_set)
+                    then filter_unblocked_ids(rest, row_map, satisfied_set)
+                    else cons(id, filter_unblocked_ids(rest, row_map, satisfied_set))
 
     -- ── Print ─────────────────────────────────────────────────────
 
@@ -1400,7 +1397,7 @@ namespace anthill.todo
     -- and always prints a header.
     operation print_groups(statuses: List[String],
                            filtered: List[Row],
-                           row_map: Map[String, Row],
+                           satisfied_set: Map[String, Bool],
                            dep_map: Map[String, List[String]],
                            first: Bool) -> Unit
       effects ConsoleOutput
@@ -1411,19 +1408,19 @@ namespace anthill.todo
           let group = rows_with_status(filtered, st)
           let _ = if first then () else println(console(), "")
           let _ = println(console(), concat(st, ":"))
-          let _ = print_group_body(group, row_map, dep_map)
-          print_groups(rest, filtered, row_map, dep_map, false)
+          let _ = print_group_body(group, satisfied_set, dep_map)
+          print_groups(rest, filtered, satisfied_set, dep_map, false)
 
     -- One status group's body: ready then (if any) the `-- blocked --`
     -- section, each ordered chrono+topo. `unblocks` is filled only on the
     -- ready slice (display-only; the blocked render omits it).
     operation print_group_body(group: List[Row],
-                               row_map: Map[String, Row],
+                               satisfied_set: Map[String, Bool],
                                dep_map: Map[String, List[String]]) -> Unit
       effects ConsoleOutput
     =
-      let ready = chrono_topo(fill_unblocks(partition_ready(group, row_map), dep_map))
-      let blocked = chrono_topo(partition_blocked(group, row_map))
+      let ready = chrono_topo(fill_unblocks(partition_ready(group, satisfied_set), dep_map))
+      let blocked = chrono_topo(partition_blocked(group, satisfied_set))
       let _ = print_rows_ready(ready)
       match blocked
         case nil() -> ()
@@ -1458,13 +1455,15 @@ namespace anthill.todo
       let dep_map = build_dep_map(raw_rows)
       let fb_set = feedback_set()
       let annotated = annotate_rows(raw_rows, fb_set)
-      let row_map = build_row_map(annotated)
-      -- `--unblocked` drops rows with any unmet dependency. The row_map
-      -- spans ALL rows (pre-filter), so a dep hidden by the status filter
-      -- still counts toward blocked-ness. partition_ready keeps input order;
-      -- print_groups re-orders chrono+topo per status group afterwards.
+      -- WI-711: the blocked/ready split derives from the KB `dep_satisfied`
+      -- rule, not a hand-rolled status check. `satisfied_set` is the id-set
+      -- of Delivered/Verified items; it spans ALL items (independent of the
+      -- status filter), so a dep hidden by `--status` still counts correctly
+      -- toward a shown item's blocked-ness. partition_ready keeps input
+      -- order; print_groups re-orders chrono+topo per status group after.
+      let satisfied_set = query_id_set("anthill.stage0.workflow.dep_satisfied")
       let kept = filter_rows(annotated, status_filter, show_all)
-      let filtered = if only_unblocked then partition_ready(kept, row_map)
+      let filtered = if only_unblocked then partition_ready(kept, satisfied_set)
                      else kept
       if eq(count_rows(filtered), 0) then
         let _ = println(console(), "No work items found.")
@@ -1472,10 +1471,10 @@ namespace anthill.todo
       else
         -- WI-174: group by status (Open → Claimed → Delivered → …); each
         -- group splits into ready / blocked, each section ordered
-        -- chrono+topo (chrono_topo). `row_map` spans ALL rows so the
+        -- chrono+topo (chrono_topo). `satisfied_set` spans ALL items so the
         -- ready/blocked split sees deps that live in other groups.
         let statuses = ordered_present_statuses(filtered)
-        let _ = print_groups(statuses, filtered, row_map, dep_map, true)
+        let _ = print_groups(statuses, filtered, satisfied_set, dep_map, true)
         let _ = println(console(),
                         concat(to_string(count_rows(filtered)), " item(s)"))
         0
@@ -1501,6 +1500,10 @@ namespace anthill.todo
           0
         case cons(_, _) ->
           let row_map = build_row_map(rows_of_w(WorkItemStore.all(s)))
+          -- WI-711: satisfied-dependency set from the KB `dep_satisfied`
+          -- rule — the single source the `(blocked: …)` annotation and the
+          -- `--unblocked` narrowing both read.
+          let satisfied_set = query_id_set("anthill.stage0.workflow.dep_satisfied")
           let sequenced = topo_order_tagged(row_map, ids)
           -- `--unblocked` narrows the sequence to items whose deps are all
           -- satisfied. A tagged id with no row (a dangling [missing] ref) is
@@ -1509,14 +1512,14 @@ namespace anthill.todo
           -- counts rows actually printed, which a `--status` filter can shrink
           -- further (that header/footer gap predates --unblocked).
           let ordered = if only_unblocked
-            then filter_unblocked_ids(sequenced, row_map)
+            then filter_unblocked_ids(sequenced, row_map, satisfied_set)
             else sequenced
           let _ = println(console(),
             concat("tag '", concat(tag_name,
               concat("' (", concat(to_string(count_strings(ordered)),
                 " item(s), sequence order):")))))
-          let shown = print_tagged_rows(ordered, row_map, status_filter,
-                                        false, 0)
+          let shown = print_tagged_rows(ordered, row_map, satisfied_set,
+                                        status_filter, false, 0)
           let _ = println(console(), concat(to_string(shown), " item(s)"))
           0
 
@@ -1575,6 +1578,7 @@ namespace anthill.todo
 
     operation print_tagged_rows(ids: List[String],
                                 row_map: Map[String, Row],
+                                satisfied_set: Map[String, Bool],
                                 status_filter: Option[String],
                                 next_marked: Bool, shown: Int64) -> Int64
       effects ConsoleOutput
@@ -1586,7 +1590,7 @@ namespace anthill.todo
             case none() ->
               let _ = println(console(),
                 concat("  ", concat(id, " [missing] (no such work item)")))
-              print_tagged_rows(rest, row_map, status_filter,
+              print_tagged_rows(rest, row_map, satisfied_set, status_filter,
                                 next_marked, shown + 1)
             case some(r) ->
               match r
@@ -1595,7 +1599,7 @@ namespace anthill.todo
                     case none() -> true
                     case some(f) -> matches_filter(status, f)
                   if pass then
-                    let unmet = unmet_deps(deps, row_map)
+                    let unmet = unmet_deps(deps, satisfied_set)
                     let is_next =
                       if next_marked then false
                       else if not(is_claimable_next(status)) then false
@@ -1614,26 +1618,23 @@ namespace anthill.todo
                         concat(" [", concat(status,
                           concat("] ", concat(truncate_desc(desc),
                             concat(blocked, marker))))))))
-                    print_tagged_rows(rest, row_map, status_filter,
-                                      marked_after, shown + 1)
+                    print_tagged_rows(rest, row_map, satisfied_set,
+                                      status_filter, marked_after, shown + 1)
                   else
-                    print_tagged_rows(rest, row_map, status_filter,
-                                      next_marked, shown)
+                    print_tagged_rows(rest, row_map, satisfied_set,
+                                      status_filter, next_marked, shown)
 
-    -- Deps not yet Delivered/Verified. A dep id with no row counts as
-    -- unmet — a dangling reference must stay visible, never read as met.
+    -- Deps not yet Delivered/Verified. WI-711: membership in `satisfied_set`
+    -- (the KB `dep_satisfied` rule's id-set) decides — a dep absent from it,
+    -- including a dangling reference to no work item, counts as unmet, so a
+    -- dangling reference stays visible and is never read as met.
     operation unmet_deps(deps: List[String],
-                         row_map: Map[String, Row]) -> List[String] =
+                         satisfied_set: Map[String, Bool]) -> List[String] =
       match deps
         case nil() -> nil()
         case cons(d, rest) ->
-          match get(row_map, d)
-            case none() -> cons(d, unmet_deps(rest, row_map))
-            case some(r) ->
-              match r
-                case Row(_, st, _, _, _, _) ->
-                  if is_satisfied(st) then unmet_deps(rest, row_map)
-                  else cons(d, unmet_deps(rest, row_map))
+          if contains(satisfied_set, d) then unmet_deps(rest, satisfied_set)
+          else cons(d, unmet_deps(rest, satisfied_set))
 
     -- First 100 chars + '…' (native truncate_desc(s, 100); substring /
     -- length are char-based builtins, so multibyte text truncates
@@ -2679,6 +2680,49 @@ namespace anthill.todo
           match term_as_string(t)
             case none() -> fallback
             case some(s) -> s
+
+    -- ── WI-711: id-set queries over the workflow rules ──────────────
+    -- Collect the `?id` bindings of a 1-arg workflow predicate into a set
+    -- (Map[id → true]). Single-pass tail-recursive stream walk mirroring
+    -- walk_solutions, but accumulating instead of printing; Map.put dedups
+    -- a repeated id for free. An `undecided` solution is skipped — the
+    -- workflow predicates resolve over ground facts, so it is not expected,
+    -- but skipping keeps the match total and honest if it ever fires.
+    operation collect_id_set(stream: Stream[T = Solution, E = Error],
+                             acc: Map[String, Bool],
+                             limit: Int64) -> Map[String, Bool]
+      effects {Error}
+    =
+      if eq(limit, 0) then acc
+      else
+        match Stream.splitFirst(stream)
+          case none() -> acc
+          case some(p) ->
+            match p
+              case pair(sol, rest) ->
+                match sol
+                  case undecided(_, _) ->
+                    collect_id_set(rest, acc, limit + (0 - 1))
+                  case definite(subst) ->
+                    let id = extract_string_field(subst, "id", "")
+                    let acc2 = if eq(id, "") then acc else put(acc, id, true)
+                    collect_id_set(rest, acc2, limit + (0 - 1))
+
+    -- Run a 1-arg workflow predicate `pred(?id)` and collect the ids that
+    -- satisfy it. The DEFINITION of the predicate lives in the KB rule
+    -- (anthill.stage0.workflow — e.g. `dep_satisfied`), never a hand-rolled
+    -- status check: the `list` view derives its blocked/ready and unmet-
+    -- dependency classification from this single source (WI-711), the same
+    -- way `next` derives claimability from the `claimable` rule. The 100000
+    -- cap is a runaway guard; the predicate yields one solution per matching
+    -- WorkItem, far fewer.
+    operation query_id_set(pred: String) -> Map[String, Bool]
+      effects {Error}
+    =
+      let id_var = fresh_var[Term]("id")
+      let goal = make_fn(pred, cons(id_var, nil()))
+      let stream = execute(kb(), pattern_query(term: goal))
+      collect_id_set(stream, empty(), 100000)
 
     -- Single-pass stream walk: pull one solution at a time, dedupe by id
     -- against a running `seen` accumulator, print as we go. Tail-style

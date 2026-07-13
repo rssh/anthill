@@ -47,7 +47,7 @@ fact WorkItem(
   description: "delivered dep",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: [],
-  status: Delivered)
+  status: Delivered(agent: "bob", at: "2026-01-01T00:00:00Z"))
 
 fact Tag(workitem: "WI-001", name: "seq")
 fact Tag(workitem: "WI-002", name: "seq")

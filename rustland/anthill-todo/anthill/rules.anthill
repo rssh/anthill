@@ -35,6 +35,15 @@ namespace anthill.stage0.workflow
     :- dep_satisfied(?dep),
        all_deps_satisfied_rest(?rest)
 
+  -- An item has at least one unmet dependency (status-AGNOSTIC): it exists
+  -- and not all of its dependencies are satisfied. The CLI `list` view's
+  -- blocked/ready split computes this same notion (from the `dep_satisfied`
+  -- id-set) — status-agnostic, so a blocked item shows under its OWN group
+  -- (Open, Claimed, …), not only Open. `blocked` below is the Open-only
+  -- specialisation; both are convenience predicates for `anthill query`. WI-711.
+  rule has_unmet_deps(?id)
+    :- WorkItem(id: ?id), not(all_deps_satisfied(?id))
+
   -- ================================================================
   -- Status queries (convenience rules)
   -- ================================================================
@@ -49,11 +58,10 @@ namespace anthill.stage0.workflow
     :- WorkItem(id: ?id, status: Open, description: some(?desc)),
        all_deps_satisfied(?id)
 
-  -- Find blocked work items
-  -- (Open but dependencies NOT all satisfied)
+  -- Find blocked work items (Open + at least one unmet dependency).
   rule blocked(?id, ?desc)
     :- WorkItem(id: ?id, status: Open, description: some(?desc)),
-       not(all_deps_satisfied(?id))
+       has_unmet_deps(?id)
 
   -- Find delivered items awaiting review
   rule needs_review(?id, ?desc)
