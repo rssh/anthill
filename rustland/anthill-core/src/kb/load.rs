@@ -5602,6 +5602,16 @@ struct Loader<'a> {
     // A `typed_var` reaching `convert_term` with this false is a misuse (a type
     // annotation on a variable outside a rule pattern) and is reported loudly.
     in_rule_head: bool,
+    // WI-710: nesting depth inside `convert_term_with_expected` — 1 while converting a
+    // TOP-LEVEL term (a `fact` head, a rule head / body goal), >1 for a term nested as
+    // another term's argument. It tells the two readings of one syntax apart: a
+    // sort-headed term at top level is an INSTANCE CLAIM, whose argument grammar is the
+    // instance-fact one (type-param bindings, plus op bindings for an op-bearing fact
+    // like `fact Monad[M = Option, pure = optionPure]`, plus the WI-407 carrier slot of
+    // `fact NonMonotonicStore[FileStore]`); NESTED, it is a parameterized TYPE
+    // (`is_modifiable(Cell[V = Int64])`), whose arguments are type arguments and nothing
+    // else. Only the nested reading gets the WI-709 type-argument check.
+    term_depth: usize,
     // WI-582: per-head accumulator of (head variable, declared-type bound) pairs
     // collected while converting a typed rule head; drained by `load_rule` after
     // each head, mapped to DeBruijn indices, and installed on the RuleEntry as
@@ -5855,6 +5865,7 @@ impl<'a> Loader<'a> {
             source_id,
             current_owner: None,
             in_rule_head: false,
+            term_depth: 0,
             rule_head_type_bounds: Vec::new(),
             rule_tvar_bounds: HashMap::new(),
             expr_syms,
@@ -6613,7 +6624,21 @@ impl<'a> Loader<'a> {
     /// context-aware ListLiteral desugaring (WI-007). When `expected` is a
     /// `List`-shaped type, `ListLiteral` is rewritten to `cons/nil`; otherwise
     /// it stays in the KB as `ListLiteral` for downstream consumers.
+    ///
+    /// WI-710: maintains `term_depth` (see the field) across the WHOLE conversion —
+    /// every recursive child goes through here, so the inner fn can tell a top-level
+    /// term (an instance claim) from a nested one (a type). A wrapper rather than
+    /// bookkeeping inside the body, which has several early returns that would each
+    /// have to restore the counter.
     fn convert_term_with_expected(&mut self, parse_id: TermId, expected: Option<TermId>) -> TermId {
+        let saved = self.term_depth;
+        self.term_depth = saved + 1;
+        let converted = self.convert_term_inner(parse_id, expected);
+        self.term_depth = saved;
+        converted
+    }
+
+    fn convert_term_inner(&mut self, parse_id: TermId, expected: Option<TermId>) -> TermId {
         if let Some(&mapped) = self.term_map.get(&parse_id.raw()) {
             return mapped;
         }
@@ -6993,6 +7018,56 @@ impl<'a> Loader<'a> {
                     let order: HashMap<Symbol, usize> = all_fields.iter().enumerate()
                         .map(|(i, &s)| (s, i)).collect();
                     new_named.sort_by_key(|(s, _)| order.get(s).copied().unwrap_or(usize::MAX));
+                }
+
+                // WI-710: a NESTED sort-headed term is a parameterized TYPE — the
+                // `Cell[W = Int64]` in a rule body's `is_modifiable(Cell[W = Int64])`, or
+                // a binding value's `fact Modifiable[T = Cell[V = Int64]]`. `convert_term`
+                // is the THIRD path that lowers a written type (WI-709 covered the
+                // loader's type-position arm and the typer's value-position arm but not
+                // this one), so without the same check a rule body could carry a type
+                // argument the sort never declared.
+                //
+                // Gated on `term_depth > 1` — i.e. NOT a top-level term. At top level the
+                // same syntax is an INSTANCE CLAIM, and its argument grammar is a
+                // different, richer language that this rule would wrongly reject: an
+                // op-bearing instance fact names OPERATIONS (`fact Monad[M = Option,
+                // pure = optionPure]`), and a positional on a non-parametric spec is the
+                // WI-407 CARRIER slot (`fact NonMonotonicStore[FileStore]`), neither of
+                // which is a type parameter. Those shapes have their own checks
+                // (`maybe_emit_fact_provides_info`, WI-431); policing them here would
+                // reject the stdlib.
+                //
+                // And keyed on the parse-time provenance `is_type_application` — the
+                // BRACKETED surface. A `(…)` call whose functor names a sort is a data
+                // CONSTRUCTOR, not a type: `sort Leaf { entity Leaf(name: String) }` makes
+                // the bare `Leaf` resolve to the SORT, so `Leaf(name: "tip")` is a
+                // sort-headed `Term::Fn` whose named args are FIELDS. Shape cannot tell
+                // the two apart — only the surface `[…]` vs `(…)` can, which is why the
+                // converter records it (WI-618's `minted` set, same reason).
+                //
+                // Argument VALUES are never inspected, only their names and count, so a
+                // logic variable in an argument (`List[T = ?x]` — the rule-body type
+                // pattern reflect rules are written with) passes exactly as a ground one.
+                if self.term_depth > 1
+                    && self.parsed.terms.is_type_application(parse_id)
+                    && self.kb.kind_of(new_functor) == Some(SymbolKind::Sort)
+                {
+                    let declared = self.kb.type_params_of_sort(new_functor);
+                    let named_syms: SmallVec<[Symbol; 2]> =
+                        new_named.iter().map(|(s, _)| *s).collect();
+                    if let Err(problem) = self.kb.check_sort_type_args(
+                        new_functor,
+                        &declared,
+                        &named_syms,
+                        new_pos.len(),
+                    ) {
+                        let detail = problem.describe(&self.kb, new_functor);
+                        self.errors.push(LoadError::InvalidTypeArgument {
+                            detail,
+                            span: Some(self.parsed.terms.span(parse_id)),
+                        });
+                    }
                 }
 
                 Term::Fn { functor: new_functor, pos_args: new_pos, named_args: new_named }
@@ -8321,7 +8396,24 @@ impl<'a> Loader<'a> {
     /// memoized `convert_term` keeps every subterm consistent. Narrowing these
     /// fallbacks (native entities / structural reflect patterns, fixing the
     /// `apply(args: ?V)` collapse) is later work.
+    ///
+    /// WI-710: the entry point is a depth-tracking wrapper around the walk (see
+    /// `term_depth`) — a rule BODY is built as occurrences, not terms (WI-246), so this
+    /// walk is a second place a written parameterized type is lowered, and it needs the
+    /// same top-level-vs-nested reading: a body ATOM is a goal (`:- Modifiable[T = ?t]`,
+    /// an instance-fact query), a NESTED sort application is a type
+    /// (`is_modifiable(Cell[V = Int64])`).
     fn build_body_atom_occurrence(&mut self, parse_id: TermId) -> Rc<NodeOccurrence> {
+        let saved = self.term_depth;
+        self.term_depth = saved + 1;
+        let occ = self.build_body_atom_occurrence_inner(parse_id);
+        self.term_depth = saved;
+        occ
+    }
+
+    /// The walk itself — see [`Self::build_body_atom_occurrence`], which wraps it to
+    /// maintain `term_depth`. Every recursive child re-enters through the wrapper.
+    fn build_body_atom_occurrence_inner(&mut self, parse_id: TermId) -> Rc<NodeOccurrence> {
         let parse_term = self.parsed.terms.get(parse_id).clone();
         let span = SourceSpan::from_span(self.source_id, self.parsed.terms.span(parse_id));
         let expr = match parse_term {
@@ -8414,6 +8506,31 @@ impl<'a> Loader<'a> {
                     let key = self.reintern(sym);
                     let child = self.build_body_atom_occurrence(pid);
                     named.push((key, child));
+                }
+                // WI-710: a NESTED, BRACKETED sort application in a rule body is a
+                // parameterized TYPE (`is_modifiable(Cell[V = Int64])`) — check its type
+                // arguments by the same shared rule the other lowering paths use. Gated
+                // exactly as the `convert_term` peer: `term_depth > 1` (a top-level body
+                // ATOM with a sort head is a GOAL — `:- Modifiable[T = ?t]`, an
+                // instance-fact query), and `is_type_application` (a `(…)` call on a
+                // sort-named functor is a data CONSTRUCTOR — `Leaf(name: ?tip)`). Only
+                // names and counts are read, so a variable argument passes.
+                if self.term_depth > 1
+                    && self.parsed.terms.is_type_application(parse_id)
+                    && self.kb.kind_of(new_functor) == Some(SymbolKind::Sort)
+                {
+                    let declared = self.kb.type_params_of_sort(new_functor);
+                    let named_syms: SmallVec<[Symbol; 2]> =
+                        named.iter().map(|(s, _)| *s).collect();
+                    if let Err(problem) =
+                        self.kb.check_sort_type_args(new_functor, &declared, &named_syms, pos.len())
+                    {
+                        let detail = problem.describe(&self.kb, new_functor);
+                        self.errors.push(LoadError::InvalidTypeArgument {
+                            detail,
+                            span: Some(span.span),
+                        });
+                    }
                 }
                 Expr::Apply { functor: new_functor, pos_args: pos, named_args: named, type_args: Vec::new() }
             }

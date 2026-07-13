@@ -2051,7 +2051,14 @@ impl<'a> Converter<'a> {
             }
         }
 
-        self.terms.alloc(Term::Fn { functor, pos_args, named_args }, span)
+        // WI-710: a BRACKETED type application — mark the provenance, so the loader can
+        // tell it from a `(…)` data-constructor call whose functor happens to name a sort
+        // (`sort Leaf { entity Leaf(name: String) }`, where the bare `Leaf` resolves to
+        // the sort and `Leaf(name: x)` is a CONSTRUCTOR, not a type). Both lower to
+        // `Term::Fn` with the same functor symbol; only the surface tells them apart.
+        let tid = self.terms.alloc(Term::Fn { functor, pos_args, named_args }, span);
+        self.terms.mark_type_application(tid);
+        tid
     }
 
     /// Convert a `_type` CST node into a Term value suitable for use
@@ -2101,7 +2108,12 @@ impl<'a> Converter<'a> {
                         }
                     }
                 }
-                self.terms.alloc(Term::Fn { functor, pos_args, named_args }, span)
+                // WI-710: a bracketed type application as a binding VALUE
+                // (`fact Modifiable[T = Cell[V = Int64]]`) — same provenance mark as
+                // `convert_instantiation_term`'s.
+                let tid = self.terms.alloc(Term::Fn { functor, pos_args, named_args }, span);
+                self.terms.mark_type_application(tid);
+                tid
             }
             // Variables (`?` / `?x`) — preserve as Var terms; resolution
             // treats these as wildcards, not as named refs.

@@ -23,6 +23,9 @@ mod wi707_type_application_value_test;
 #[path = "include/wi709_type_arg_validation_test.rs"]
 mod wi709_type_arg_validation_test;
 
+#[path = "include/wi710_rule_body_type_arg_test.rs"]
+mod wi710_rule_body_type_arg_test;
+
 #[path = "include/wi023_quantified_constraint_test.rs"]
 mod wi023_quantified_constraint_test;
 

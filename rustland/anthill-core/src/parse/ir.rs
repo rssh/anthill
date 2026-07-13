@@ -45,6 +45,16 @@ pub struct SimpleTermStore {
     /// existing child ids; the loader never allocates into a parse store); a
     /// future rewrite pass that reconstructs subtrees must carry marks over.
     minted: HashSet<TermId>,
+    /// WI-710: `Term::Fn` nodes written as a BRACKETED type application in term
+    /// position — `Cell[V = Int64]`, `Monad[M = Option]` (grammar node `application`,
+    /// converted by `convert_instantiation_term`). Both a type application and a
+    /// data-constructor call lower to `Term::Fn`, and their functors can even be the
+    /// SAME symbol (`sort Leaf { entity Leaf(name: String) }` — the bare name resolves
+    /// to the sort), so the loader cannot tell `Cell[V = Int64]` from `Leaf(name: x)`
+    /// by shape: only the surface `[…]`-vs-`(…)` distinguishes them, and that is known
+    /// only here. Recorded like [`Self::minted`], for the same reason — provenance the
+    /// consumer needs is carried, not re-derived from name/scope heuristics.
+    type_applications: HashSet<TermId>,
 }
 
 impl SimpleTermStore {
@@ -85,6 +95,19 @@ impl SimpleTermStore {
     /// as a call?
     pub fn is_minted(&self, id: TermId) -> bool {
         self.minted.contains(&id)
+    }
+
+    /// WI-710: record that `id` was written as a bracketed type application
+    /// (`Cell[V = Int64]`), not as a `(…)` call.
+    pub fn mark_type_application(&mut self, id: TermId) {
+        self.type_applications.insert(id);
+    }
+
+    /// WI-710: was this `Term::Fn` written as a bracketed type application? The loader
+    /// checks type ARGUMENTS only on these — a `(…)` call with a sort-named functor is a
+    /// data constructor, whose named args are FIELDS.
+    pub fn is_type_application(&self, id: TermId) -> bool {
+        self.type_applications.contains(&id)
     }
 
     /// Iterate every allocated `(TermId, &Term)` in allocation order.
