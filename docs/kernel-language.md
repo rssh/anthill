@@ -1134,6 +1134,13 @@ entity Marker
 →  sort Marker { entity Marker }
 ```
 
+> **See also — runtime representation.** How an entity value crosses between the
+> interpreter's `Value::Entity` and the hash-consed `Term::Fn` at runtime (fact
+> load, materialization, optional-field defaulting, 0-ary constructor storage) is
+> an internal-representation concern, documented in
+> [`docs/design/entity-term-mapping.md`](design/entity-term-mapping.md). It has no
+> bearing on the surface language described here.
+
 ### 6.4 Operation and Rule Blocks
 
 Multiple operations or rules can be grouped under a single keyword using block syntax. Each entry inside the block has the same grammar as the standalone form minus the leading keyword, and desugars to an individual `operation` or `rule`.
