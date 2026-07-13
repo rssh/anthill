@@ -99,6 +99,40 @@ pub enum AwaitState {
         /// arrive on delivery).
         remaining: Vec<(Option<Symbol>, Rc<NodeOccurrence>)>,
     },
+    /// WI-707: a SORT-headed application (`Cell[V = Int64]`) in a `Type` slot is a
+    /// parameterized TYPE, not a call — it collects its type arguments the way a
+    /// constructor collects fields, then assembles a `Value::Term` type value
+    /// (`finish_sort_type`).
+    ///
+    /// Its own variant rather than a flag on [`AwaitState::ConstructorArgs`]: the
+    /// assembled carrier differs (a type TERM, not an entity), and the slots being
+    /// filled are type PARAMETERS, not declared fields — so none of the
+    /// constructor's field canonicalization / list-literal / tuple handling applies.
+    ///
+    /// The arguments are EVALUATED (not read off the syntax) because a type argument
+    /// need not be a literal sort name — it can be any expression that denotes a
+    /// type, and evaluation is what routes each through the frame (locals, the
+    /// type-argument channel, a nested application).
+    ///
+    /// KNOWN GAP (not introduced here): inside a GENERIC operation, `Cell[V = T]`
+    /// still builds `Cell[V = Ref(T)]` rather than substituting `T`'s binding. The
+    /// frame's type-arg channel does carry `T ⇒ Int64`, but it is keyed by the
+    /// declared-name symbol `OperationInfo.type_params` holds, which is NOT the
+    /// op-scoped symbol a body reference to `T` resolves to — so `reduce_var`'s
+    /// `find_type_arg` (an identity match) misses, and the WI-206 bare-sort arm
+    /// delivers `Ref(T)`. Harmless for every consumer today (they all key on the
+    /// HEAD sort and never read the arguments), and evaluating the arguments is what
+    /// makes the substitution simply start working once the channel is keyed
+    /// consistently. Filed as its own WI with a reproducer.
+    SortTypeArgs {
+        sort_sym: Symbol,
+        buffered_pos: Vec<Value>,
+        buffered_named: Vec<(Symbol, Value)>,
+        /// Remaining type-argument occurrences paired with their name hint
+        /// (`None` for a positional `Cell[Int64]`). As in `ConstructorArgs`, the
+        /// first entry's expression is a placeholder — only its name is read.
+        remaining: Vec<(Option<Symbol>, Rc<NodeOccurrence>)>,
+    },
     /// The frame has dispatched an apply to an anthill-defined operation
     /// body (child frame pushed). When the body produces a value, that
     /// value is the apply's result — cascade it up without re-evaluating

@@ -17,6 +17,9 @@ mod wi009_phase3_builtins_test;
 #[path = "include/wi206_is_modifiable_test.rs"]
 mod wi206_is_modifiable_test;
 
+#[path = "include/wi707_type_application_value_test.rs"]
+mod wi707_type_application_value_test;
+
 #[path = "include/wi023_quantified_constraint_test.rs"]
 mod wi023_quantified_constraint_test;
 

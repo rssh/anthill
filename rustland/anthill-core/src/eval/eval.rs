@@ -177,6 +177,19 @@ impl Interpreter {
                 Ok(StepOutcome::Continue)
             }
             Expr::Apply { functor, pos_args, named_args, .. } => {
+                // WI-707: a SORT-headed application is a parameterized TYPE VALUE,
+                // not a call — `Cell[V = Int64]` in `is_modifiable(Cell[V = Int64])`.
+                // The eval twin of the typer's sort-application arm, and the
+                // application peer of `reduce_var`'s bare-sort arm (WI-206).
+                // Unconditional on the functor's kind, as there: the typer has
+                // already settled the reading (it admits a sort-headed apply only
+                // where a `Type` is expected), and a sort names no operation, so
+                // such a node could only ever have died in dispatch as
+                // `UnknownOperation`. Sits ahead of the classification match — the
+                // typer classifies operation calls, never type applications.
+                if self.kb.kind_of(*functor) == Some(crate::intern::SymbolKind::Sort) {
+                    return self.start_sort_type(*functor, pos_args, named_args);
+                }
                 // WI-218: the typer may have classified this apply for
                 // spec-op rewrite. PinNow redirects the call to the
                 // impl op; ConcreteApplyWithin similarly redirects (the
@@ -1808,6 +1821,39 @@ impl Interpreter {
                     self.stack.push(child_frame(ctx, pushed_expr))?;
                     return Ok(StepOutcome::Continue);
                 }
+                AwaitState::SortTypeArgs {
+                    sort_sym,
+                    mut buffered_pos,
+                    mut buffered_named,
+                    mut remaining,
+                } => {
+                    // WI-707: same one-at-a-time pump as `ConstructorArgs` — the
+                    // first entry of `remaining` names the argument just evaluated.
+                    // No `classify_ctor_arg`: a type argument is placed by its own
+                    // name/position, with no declared-field lookup to reconcile
+                    // against (a sort's type params are not entity fields).
+                    let (current_name, _placeholder_occ) = remaining.remove(0);
+                    match current_name {
+                        Some(n) => buffered_named.push((n, v)),
+                        None => buffered_pos.push(v),
+                    }
+                    if remaining.is_empty() {
+                        return self.finish_sort_type(sort_sym, buffered_pos, buffered_named);
+                    }
+                    let (next_name, next_expr) = remaining[0].clone();
+                    let pushed_expr = next_expr.clone();
+                    remaining[0] = (next_name, next_expr);
+                    let top = self.stack.top_mut().unwrap();
+                    top.awaiting = Some(AwaitState::SortTypeArgs {
+                        sort_sym,
+                        buffered_pos,
+                        buffered_named,
+                        remaining,
+                    });
+                    let ctx = self.stack.top().unwrap().child_context();
+                    self.stack.push(child_frame(ctx, pushed_expr))?;
+                    return Ok(StepOutcome::Continue);
+                }
                 AwaitState::OperationResult => {
                     // Body produced a value — that's this apply's result.
                     // Cascade: loop again to pop this frame and deliver `v`
@@ -1815,6 +1861,136 @@ impl Interpreter {
                     continue;
                 }
             }
+        }
+    }
+
+    /// WI-707: begin evaluating a SORT-headed application's type arguments —
+    /// `Cell[V = Int64]`, `Map[K = String, V = Cell]`. Mirrors
+    /// [`Interpreter::start_constructor`]'s one-arg-at-a-time pump (see
+    /// [`AwaitState::SortTypeArgs`] for why the arguments are evaluated rather than
+    /// read off the syntax); [`Interpreter::finish_sort_type`] assembles the result.
+    ///
+    /// A bare sort carrying no arguments never reaches here — `reduce_var`'s WI-206
+    /// arm already delivers it — but an argument-less application (`Cell[]`) finishes
+    /// straight away, and `make_parameterized_type` maps it to the bare `Ref(Cell)`,
+    /// so `Cell[]` and `Cell` are the same type term.
+    fn start_sort_type(
+        &mut self,
+        sort_sym: Symbol,
+        pos_args: &[Rc<NodeOccurrence>],
+        named_args: &[(Symbol, Rc<NodeOccurrence>)],
+    ) -> Result<StepOutcome, EvalError> {
+        let mut remaining: Vec<(Option<Symbol>, Rc<NodeOccurrence>)> =
+            Vec::with_capacity(pos_args.len() + named_args.len());
+        for a in pos_args.iter() {
+            remaining.push((None, a.clone()));
+        }
+        for (n, a) in named_args.iter() {
+            remaining.push((Some(*n), a.clone()));
+        }
+
+        if remaining.is_empty() {
+            return self.finish_sort_type(sort_sym, Vec::new(), Vec::new());
+        }
+
+        let (first_name, first_expr) = remaining.remove(0);
+        let placeholder = first_expr.clone();
+        let top = self
+            .stack
+            .top_mut()
+            .ok_or_else(|| EvalError::Internal("start_sort_type with no parent".into()))?;
+        top.awaiting = Some(AwaitState::SortTypeArgs {
+            sort_sym,
+            buffered_pos: Vec::new(),
+            buffered_named: Vec::new(),
+            remaining: std::iter::once((first_name, placeholder))
+                .chain(remaining.into_iter())
+                .collect(),
+        });
+        let ctx = self.stack.top().unwrap().child_context();
+        self.stack.push(child_frame(ctx, first_expr))?;
+        Ok(StepOutcome::Continue)
+    }
+
+    /// WI-707: assemble the parameterized type value from its evaluated type
+    /// arguments — `Cell` + `{V: Int64}` ⇒ the type term for `Cell[V = Int64]`.
+    ///
+    /// Built through `make_parameterized_type`, the SAME canonical builder the loader
+    /// lowers a written type with (`load.rs`'s `TypeExpr::Parameterized` arm), so an
+    /// evaluated type and a written one hash-cons to ONE term and every type reader
+    /// (`extract_type`, the discrimination tree, unification) sees them as equal.
+    /// Hand-rolling the `Term::Fn` here would silently diverge from it three ways:
+    /// the builder canonicalizes named-arg ORDER (`canonicalize_record_named_args` —
+    /// declared-field order, not the spelling order), and it maps EMPTY bindings to a
+    /// bare `Ref(S)` rather than a degenerate no-arg `Fn{S}`, which `type_head`
+    /// classifies as `Error` (losing the base sort entirely).
+    ///
+    /// POSITIONAL type arguments bind the sort's declared type params in order
+    /// (`Cell[Int64]` ≡ `Cell[V = Int64]`), again mirroring the loader — otherwise the
+    /// two spellings of one type would build structurally different terms, and the
+    /// positional binding would be invisible to `extract_type_param`.
+    ///
+    /// Every argument must itself be a TYPE value, and a positional must have a
+    /// declared param to bind: both are loud errors rather than silent drops, per
+    /// CLAUDE.md's loud-over-silent rule — a type term quietly carrying a scalar, or
+    /// quietly missing an argument, would resurface far away as an unmatchable type.
+    fn finish_sort_type(
+        &mut self,
+        sort_sym: Symbol,
+        pos: Vec<Value>,
+        named: Vec<(Symbol, Value)>,
+    ) -> Result<StepOutcome, EvalError> {
+        let mut bindings: Vec<(Symbol, TermId)> = Vec::with_capacity(pos.len() + named.len());
+        for (n, v) in &named {
+            bindings.push((*n, self.expect_type_arg(sort_sym, v)?));
+        }
+
+        let declared = self.kb.type_params_of_sort(sort_sym);
+        let mut next_param = 0usize;
+        for v in &pos {
+            let term = self.expect_type_arg(sort_sym, v)?;
+            // Bind the next declared param not already given by name — the loader's
+            // rule, so `Cell[V = Int64]` and `Cell[Int64]` agree.
+            let param = loop {
+                let Some(name) = declared.get(next_param) else {
+                    return Err(EvalError::TypeMismatch {
+                        expected: "a positional type argument with a declared type parameter to bind",
+                        got: format!(
+                            "`{}` declares {} type parameter(s), so this positional type \
+                             argument binds nothing",
+                            self.kb.qualified_name_of(sort_sym),
+                            declared.len(),
+                        ),
+                    });
+                };
+                next_param += 1;
+                let sym = self.kb.intern(name);
+                if !bindings.iter().any(|(s, _)| *s == sym) {
+                    break sym;
+                }
+            };
+            bindings.push((param, term));
+        }
+
+        let base = self.kb.make_sort_ref(sort_sym);
+        let tid = self.kb.make_parameterized_type(base, &bindings);
+        Ok(StepOutcome::Deliver(Value::term(tid)))
+    }
+
+    /// WI-707: a type argument must denote a TYPE — a `Term`-carried type value.
+    /// Loud (never a silent drop) so a `Cell[V = <not a type>]` cannot quietly build
+    /// a malformed type term.
+    fn expect_type_arg(&self, sort_sym: Symbol, v: &Value) -> Result<TermId, EvalError> {
+        match v {
+            Value::Term { id, .. } => Ok(*id),
+            other => Err(EvalError::TypeMismatch {
+                expected: "Type (a type argument)",
+                got: format!(
+                    "{} (in a type argument of `{}[…]`)",
+                    other.type_name(),
+                    self.kb.qualified_name_of(sort_sym),
+                ),
+            }),
         }
     }
 

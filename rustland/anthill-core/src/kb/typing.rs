@@ -3093,14 +3093,16 @@ fn nested_call_arg_hint(
     }
 }
 
-/// WI-206: the hint a parameter declared `Type` pushes down to a BARE-REFERENCE
-/// argument — `is_modifiable(Cell)`, `sort_template(kb(), Color)`. A sort name has
-/// no value reading of its own, so [`check_bare_ref`] reads one as the sort's `Type`
-/// value only in a slot that asks for a `Type`; this hint is what tells it the slot
-/// does. (An ENTITY reference needs no hint — it denotes its `Type` unconditionally.)
+/// WI-206 / WI-707: the hint a parameter declared `Type` pushes down to an argument
+/// that NAMES A SORT — a bare reference (`is_modifiable(Cell)`, WI-206) or a sort
+/// APPLICATION (`is_modifiable(Cell[V = Int64])`, WI-707). Neither has a value
+/// reading of its own: [`check_bare_ref`] reads a sort name as the sort's `Type`
+/// value, and the Apply arms read a sort-headed application as a parameterized type,
+/// only in a slot that asks for a `Type` — this hint is what tells them the slot
+/// does. (An ENTITY reference needs no hint: it denotes its `Type` unconditionally.)
 ///
-/// Confined to bare refs, and to a `Type` param: no other argument shape changes
-/// reading under this hint, so a call / lambda argument keeps exactly the
+/// Confined to sort-naming arguments and to a `Type` param: no other argument shape
+/// changes reading under this hint, so a call / lambda argument keeps exactly the
 /// `hof_arg_hint` / `nested_call_arg_hint` it has today, and a sort name in any
 /// non-`Type` slot stays the loud `UnresolvedName` it is today.
 fn type_slot_arg_hint(
@@ -3109,16 +3111,10 @@ fn type_slot_arg_hint(
     param_type: Option<&Value>,
 ) -> Option<Value> {
     let pt = param_type?;
-    // Cheapest gates first — this runs for EVERY argument of every call the typer
-    // visits. A bare SORT reference is the only argument whose reading this hint
-    // changes (`check_bare_ref`'s WI-206 arm), and `kind_of` is an O(1) read, so an
-    // ordinary variable / literal argument never reaches the `Type` name-resolve.
-    let sym = match &arg.kind {
-        NodeKind::Expr { expr: Expr::Ref(s) | Expr::Ident(s), .. } => *s,
-        NodeKind::Expr { expr: Expr::VarRef { name }, .. } => *name,
-        _ => return None,
-    };
-    if kb.kind_of(sym) != Some(crate::intern::SymbolKind::Sort) {
+    // Cheapest gate first (see [`arg_names_sort`]): only an argument whose head names
+    // a SORT can change reading here, so an ordinary variable / literal / call
+    // argument never reaches the `Type` name-resolve below.
+    if !arg_names_sort(kb, arg) {
         return None;
     }
     if expects_reflect_type(kb, Some(pt)) {
@@ -3126,6 +3122,23 @@ fn type_slot_arg_hint(
     } else {
         None
     }
+}
+
+/// WI-206 / WI-707: whether an argument's HEAD names a sort — a bare reference
+/// (`Cell`) or an application (`Cell[V = Int64]`). These are the only argument shapes
+/// whose reading a `Type` slot changes, so this is the gate both the hint
+/// ([`type_slot_arg_hint`]) and the declared-type lookups that FEED it are keyed on.
+///
+/// O(1) — a pattern match plus a `kind_of` read — because it runs for every argument
+/// of every call and constructor the typer visits.
+fn arg_names_sort(kb: &KnowledgeBase, arg: &Rc<NodeOccurrence>) -> bool {
+    let head = match &arg.kind {
+        NodeKind::Expr { expr: Expr::Ref(s) | Expr::Ident(s), .. } => *s,
+        NodeKind::Expr { expr: Expr::VarRef { name }, .. } => *name,
+        NodeKind::Expr { expr: Expr::Apply { functor, .. }, .. } => *functor,
+        _ => return false,
+    };
+    kb.kind_of(head) == Some(crate::intern::SymbolKind::Sort)
 }
 
 /// WI-462: the expected type a TUPLE-LITERAL constructor field value should receive — the
@@ -3901,6 +3914,22 @@ fn visit_type(
         // classify logic without recursing through `type_check_node`.
         Expr::Apply { functor, pos_args, named_args, .. } => {
             let functor = *functor;
+            // WI-707: a SORT-headed application in a slot that expects a `Type` is a
+            // parameterized TYPE — `is_modifiable(Cell[V = Int64])` — not a call. Its
+            // arguments are themselves TYPES, so every one takes the `Type` hint: that
+            // is what lets a bare sort name inside read as a type (`check_bare_ref`'s
+            // WI-206 arm) and a NESTED application recurse into this same arm
+            // (`Map[K = String, V = Cell[V = Int64]]`). The Build frame turns the node
+            // into the `Type` result; eval assembles the type term (`start_sort_type`).
+            // `None` for every ordinary call, which then takes the hints below unchanged.
+            let sort_app_hint: Option<Value> =
+                if kb.kind_of(functor) == Some(crate::intern::SymbolKind::Sort)
+                    && expects_reflect_type(kb, expected.as_ref())
+                {
+                    Some(Value::term(kb.make_sort_ref_by_name("anthill.prelude.Type")))
+                } else {
+                    None
+                };
             // WI-657(5): keep `pos_args`/`named_args` as the borrowed pattern slots for
             // every local read AND the reversed push_visit loops; clone ONCE into the
             // Build frame below. Previously they were cloned into locals here and cloned
@@ -3931,7 +3960,15 @@ fn visit_type(
                 .iter()
                 .chain(named_args.iter().map(|(_, a)| a))
                 .any(|a| matches!(&a.kind, NodeKind::Expr { expr: Expr::Apply { .. }, .. }));
-            let op_params = if has_hof_arg || has_call_arg {
+            // WI-206 / WI-707: a sort-naming argument needs the callee's declared param
+            // type as its hint too (`type_slot_arg_hint`), so the param lookup must fire
+            // for it — `has_hof_arg` only covers Lambda/VarRef shapes and would miss a
+            // sort named as a plain `Expr::Ref`.
+            let has_sort_arg = pos_args
+                .iter()
+                .chain(named_args.iter().map(|(_, a)| a))
+                .any(|a| arg_names_sort(kb, a));
+            let op_params = if has_hof_arg || has_call_arg || has_sort_arg {
                 lookup_operation_info_full(kb, functor).map(|op| op.params)
             } else {
                 None
@@ -3962,6 +3999,10 @@ fn visit_type(
                 .iter()
                 .enumerate()
                 .map(|(i, arg)| {
+                    // WI-707: inside a sort application every argument is a type.
+                    if sort_app_hint.is_some() {
+                        return sort_app_hint.clone();
+                    }
                     let pt = op_params.as_ref().and_then(|ps| ps.get(i)).map(|(_, t)| t.clone());
                     // WI-485: eliminate a callback param projection for the lambda hint
                     // (`s.T ⟹ Int64`); keep the original `pt` for the nested-call hint
@@ -3978,6 +4019,10 @@ fn visit_type(
             let named_hints: Vec<Option<Value>> = named_args
                 .iter()
                 .map(|(name, arg)| {
+                    // WI-707: inside a sort application every argument is a type.
+                    if sort_app_hint.is_some() {
+                        return sort_app_hint.clone();
+                    }
                     let pt = op_params
                         .as_ref()
                         // WI-426: match the named-arg label to its param by name.
@@ -4067,11 +4112,20 @@ fn visit_type(
             // Owned field-type list (Symbol + declared Value), looked up once when any
             // field needs a hint — used both for the nested-call hint and to find a
             // tuple-literal field's declared symbol for the WI-462 expected derivation.
-            let field_types: Option<Vec<(Symbol, Value)>> = if has_call_field || has_tuple_field {
-                kb.entity_field_types(name).map(|ft| ft.to_vec())
-            } else {
-                None
-            };
+            // WI-707: likewise a sort-naming FIELD value (`ResourceRow(t: Cell)`) needs
+            // its declared field type as the hint — the bare form is neither a call nor
+            // a tuple, so without this the lookup is skipped and the sort name falls
+            // through to `UnresolvedName`.
+            let has_sort_field = pos_args
+                .iter()
+                .chain(named_args.iter().map(|(_, a)| a))
+                .any(|a| arg_names_sort(kb, a));
+            let field_types: Option<Vec<(Symbol, Value)>> =
+                if has_call_field || has_tuple_field || has_sort_field {
+                    kb.entity_field_types(name).map(|ft| ft.to_vec())
+                } else {
+                    None
+                };
             let pos_hints: Vec<Option<Value>> = pos_args
                 .iter()
                 .enumerate()
@@ -4084,7 +4138,11 @@ fn visit_type(
                             }
                         }
                     }
+                    // WI-707: a `Type`-declared FIELD takes a sort name / sort
+                    // application too (`ResourceRow(t: Cell)`), not just a `Type`-declared
+                    // operation param — the two slots read a sort identically.
                     nested_call_arg_hint(kb, arg, field.as_ref().map(|(_, t)| t))
+                        .or_else(|| type_slot_arg_hint(kb, arg, field.as_ref().map(|(_, t)| t)))
                 })
                 .collect();
             let named_hints: Vec<Option<Value>> = named_args
@@ -4099,7 +4157,9 @@ fn visit_type(
                         .as_ref()
                         .and_then(|fs| fs.iter().find(|(s, _)| s == fname))
                         .map(|(_, t)| t.clone());
+                    // WI-707: as above — a `Type`-declared field accepts a sort.
                     nested_call_arg_hint(kb, arg, ft.as_ref())
+                        .or_else(|| type_slot_arg_hint(kb, arg, ft.as_ref()))
                 })
                 .collect();
             work.push(TypeWorkOp::Build(TypeBuildFrame::Constructor {
@@ -4550,6 +4610,27 @@ fn build_type(
             // unconditional (a typer-inserted `some(...)` coercion below must
             // propagate even with no `[simp]` rules); `reassemble`'s ptr-eq
             // short-circuit keeps the unchanged case allocation-free.
+            // WI-707: a SORT-headed application in a `Type` slot IS a type
+            // (`Cell[V = Int64]`) — its result is the reflect `Type` sort, and there is
+            // no operation to dispatch. Sits ahead of `[simp]` firing and the spec-op
+            // redirect below: a type application is not a redex, and it names no
+            // receiver to dispatch on. Its arguments were hinted as types by the Visit
+            // arm, so an ill-typed one (`Cell[V = 3]`) still surfaces here, from the
+            // shared `collect_arg_errors`.
+            if kb.kind_of(fn_sym) == Some(crate::intern::SymbolKind::Sort)
+                && expects_reflect_type(kb, expected.as_ref())
+            {
+                if let Err(e) = collect_arg_errors(pos_results.iter().chain(named_results.iter())) {
+                    results.push(Err(e));
+                    return;
+                }
+                let child_refs: Vec<&Result<TypeResult, TypeError>> =
+                    pos_results.iter().chain(named_results.iter()).collect();
+                let node = reassemble_children(&occ, &child_refs);
+                let type_ty = kb.make_sort_ref_by_name("anthill.prelude.Type");
+                results.push(Ok(TypeResult::pure(type_ty, unwrap_env(env), node)));
+                return;
+            }
             let node = {
                 // Surface an ill-typed child first — we need `Ok` children to
                 // read their `.node` (check_apply_iter aggregates the same).
