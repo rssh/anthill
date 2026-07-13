@@ -371,7 +371,7 @@ consumer test (not a `query`-path substrate test) exercises that funnel.
 
 ## References
 
-- `docs/design/entity-representation-term-or-value.md` — the carrier rule.
+- `docs/design/entity-term-mapping.md` §1 — the carrier rule (a value element forces `Value`).
 - `docs/design/occurrence-as-value-type.md` — occurrences as a value carrier.
 - WI-342 — the typer carrier migration (delivered: P3/P4, effects loader flip,
   dispatch consolidation, ty-slot/arrow, collection builders, entity_field_types).

@@ -1,10 +1,10 @@
-# Entity ↔ term runtime mapping
+# Entity representation — carrier and runtime mapping
 
-**Reference (2026-07-13). Internal representation only.** The *how the runtime
-mapping works* companion to
-[`entity-representation-term-or-value.md`](entity-representation-term-or-value.md)
-(the *which carrier* question). Distilled from WI-267 / WI-268 so the rules below
-aren't rediscovered from inline comments each time.
+**Reference (2026-07-13). Internal representation only.** How an entity is
+represented in the KB: **which** carrier holds it (§1 — a value element forces
+`Value`) and **how** the runtime converts between carriers at the two crossing
+points (§4 — the five rules). Distilled from WI-267 / WI-268 / WI-716 so the rules
+below aren't rediscovered from inline comments each time.
 
 ## 1. `Term` vs `Value` is a carrier difference — the system is carrier-neutral
 
@@ -24,6 +24,18 @@ below convert, and only at the few sites that *require* one carrier: `assert` /
 Value::Entity  ──alloc_from_value  (Rule 1)──▶  Term::Fn        lower
 Term::Fn       ──materialize_entity (Rule 2)─▶  Value::Entity   materialize
 ```
+
+**Which carrier — a value element forces `Value`.** Carrier follows *content*, not
+sort. A `Term` is hash-consed, so every child must be hash-consable too; a child
+that is not — a `Value::Node` occurrence, a runtime handle (`Closure`, `Cell`,
+`Stream`, …) — poisons the whole structure up to `Value`. Hence: **anything that
+transitively contains a value-only element is carried as a `Value`, never a
+hash-consed `Term`.** Rule 1 (§4) enforces it — lowering a `Value` whose content
+isn't representable is a `LowerError`, never a synthetic term. This is purely a
+representation fact, independent of the entity's sort. (The type system's
+`denoted` ⇒ `Value` is the *same* rule applied to the `Type` sort — a dependent
+type contains a `denoted(NodeOccurrence)`, value-only; delivered under WI-342,
+principle in CLAUDE.md.)
 
 ## 2. Structural shapes
 
@@ -51,6 +63,26 @@ Term::Fn       ──materialize_entity (Rule 2)─▶  Value::Entity   material
 **Named-arg order** in both is canonical: **declaration order** for a registered
 entity (`entity_field_names`), else `Symbol::index()`. A fact and a matching
 pattern therefore carry byte-identical arg order — the discrim tree depends on it.
+
+**`pos_args` is empty in a canonical entity — with one exception.** `Term::Fn` is
+the *general* functor-application form (predicates, ad-hoc structures, reflect
+encodings — not only entities), so it carries a positional slot. A **registered
+entity** (declared fields) normally canonicalizes to **named-only**: lowering /
+load desugar each positional arg to its declaration-order field (WI-500/433,
+`positional_to_named_plan`), emptying `pos_args`. Positional args survive only in
+two cases:
+
+- an **anonymous / ad-hoc structure** — no `entity_field_names`, so there is
+  nothing to map positions onto;
+- a **reflect encoding form** (`if_expr`, `match_expr`, `apply`, `lambda_expr`, …
+  — reflect.anthill) — a *real entity with named fields*, but whose positional
+  shape **is** the `Expr`/`Pattern` encoding, so it is deliberately excluded from
+  the desugar (`is_reflect_form_functor` / the `anthill.reflect.*` namespace). This
+  is the one *entity* that stays positional.
+
+So non-empty `pos_args` ⟺ the functor is one of those two, or a pre-canonical /
+runtime-built value before lowering. Over-arity positional on a registered entity
+is a `LowerError`, never stored.
 
 ## 3. Value positions vs pattern positions
 
@@ -163,7 +195,7 @@ Lines drift; the code tags `WI-500`, `WI-511`, `WI-436`, `WI-433`, `WI-342`,
 
 ## See also
 
-- [`entity-representation-term-or-value.md`](entity-representation-term-or-value.md)
-  — the carrier question (`Term` vs `Value` vs `TermView`, `denoted` ⇒ `Value`).
 - `docs/kernel-language.md` §6.3 — the surface `entity` sugar (points here for the
   runtime mapping).
+- CLAUDE.md "Representation note" — the carrier rule at the principle level; the
+  type system applies it to `denoted` (a dependent type is `Value`-carried, WI-342).

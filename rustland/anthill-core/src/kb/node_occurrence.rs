@@ -587,7 +587,7 @@ pub enum NodeKind {
     /// Type content (WI-342). The `Value`-carried form of a `Type` entity
     /// whose subtree transitively contains a `denoted` (so it cannot be a
     /// hash-consed `Term` — the carrier rule, see
-    /// `docs/design/entity-representation-term-or-value.md` §2). Mirrors the
+    /// `docs/design/entity-term-mapping.md` §1). Mirrors the
     /// `Type` sort (`stdlib/anthill/prelude/sort.anthill`). Sibling NodeKind
     /// per the WI-318 `Pattern` precedent: a distinct stdlib sort gets a
     /// distinct NodeKind. The poisoned spine is `Rc<NodeOccurrence>`-linked
