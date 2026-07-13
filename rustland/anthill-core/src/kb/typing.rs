@@ -93,6 +93,20 @@ pub enum TypeError {
         op: Symbol,
         name: Symbol,
     },
+    /// WI-709: a parameterized type WRITTEN AS A VALUE (WI-707 —
+    /// `is_modifiable(Cell[W = Int64])`) whose type arguments do not fit the sort's
+    /// declared params. The value-position face of
+    /// [`LoadError::InvalidTypeArgument`](super::load::LoadError::InvalidTypeArgument):
+    /// both are decided by [`KnowledgeBase::check_sort_type_args`], so the written and
+    /// the evaluated spelling of one type agree on what is admissible — without which
+    /// they would build DIFFERENT terms for the same source text, defeating the
+    /// hash-consing identity WI-707 established. Raised here rather than left to eval's
+    /// `finish_sort_type` guard, so a typo is heard at load.
+    InvalidTypeArgument {
+        span: Option<Span>,
+        sort: Symbol,
+        problem: super::TypeArgProblem,
+    },
     /// A call's type-param could not be pinned from explicit bindings,
     /// from caller-side expected type, or from argument inference. Names
     /// the unconstrained parameter so the user can fix the call by
@@ -346,6 +360,7 @@ impl TypeError {
                     kb.resolve_sym(*name),
                 )
             }
+            TypeError::InvalidTypeArgument { sort, problem, .. } => problem.describe(kb, *sort),
             TypeError::UnconstrainedTypeParam { op, type_param, .. } => {
                 let op_name = kb.qualified_name_of(*op);
                 format!(
@@ -438,6 +453,7 @@ impl TypeError {
             | TypeError::DispatchNoMatch { span, .. }
             | TypeError::DispatchAmbiguous { span, .. }
             | TypeError::NoSuchTypeParam { span, .. }
+            | TypeError::InvalidTypeArgument { span, .. }
             | TypeError::UnconstrainedTypeParam { span, .. }
             | TypeError::MissingRequiresForSpecOp { span, .. }
             | TypeError::NonBoolOpInGoalPosition { span, .. }
@@ -550,6 +566,12 @@ impl TypeError {
                 field_name: "type_arg".to_string(),
                 expected_type: "declared type-param name".to_string(),
                 actual_type: format!("unknown type-param '{}'", kb.resolve_sym(*name)),
+                span: self.span(kb),
+            },
+            // WI-709: the SAME `LoadError` the type position raises — one written type,
+            // one diagnostic, wherever it appears.
+            TypeError::InvalidTypeArgument { sort, problem, .. } => LoadError::InvalidTypeArgument {
+                detail: problem.describe(kb, *sort),
                 span: self.span(kb),
             },
             TypeError::UnconstrainedTypeParam { op, type_param, .. } => {
@@ -4622,6 +4644,25 @@ fn build_type(
             {
                 if let Err(e) = collect_arg_errors(pos_results.iter().chain(named_results.iter())) {
                     results.push(Err(e));
+                    return;
+                }
+                // WI-709: the type ARGUMENTS must fit the sort's declared params, by the
+                // same rule the loader applies to the type written in TYPE position — so
+                // `Cell[W = Int64]` (an undeclared `W`) and `Cell[Int64, String]` (an
+                // over-applied positional) are rejected here rather than building a type
+                // term that carries a parameter the sort never declared. Eval's
+                // `finish_sort_type` keeps its own guard as a backstop for
+                // programmatically-built calls; for loaded source it is now unreachable.
+                let named_keys: Vec<Symbol> = named_args.iter().map(|(s, _)| *s).collect();
+                let declared = kb.type_params_of_sort(fn_sym);
+                if let Err(problem) =
+                    kb.check_sort_type_args(fn_sym, &declared, &named_keys, pos_args.len())
+                {
+                    results.push(Err(TypeError::InvalidTypeArgument {
+                        span: Some(occ.span.span),
+                        sort: fn_sym,
+                        problem,
+                    }));
                     return;
                 }
                 let child_refs: Vec<&Result<TypeResult, TypeError>> =

@@ -775,6 +775,42 @@ pub struct KnowledgeBase {
     pub(crate) sort_ops: SortOpsTable,
 }
 
+/// WI-709: how a sort application's type arguments failed to fit the sort's declared
+/// type params. Produced by [`KnowledgeBase::check_sort_type_args`] and rendered by
+/// [`TypeArgProblem::describe`], so the type-position (`LoadError::InvalidTypeArgument`)
+/// and value-position (`TypeError::InvalidTypeArgument`) diagnostics read the same.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TypeArgProblem {
+    /// A named type argument keys a param the sort never declares — `Cell[W = Int64]`,
+    /// where `Cell` declares only `V`.
+    UndeclaredParam { param: String },
+    /// More positional type arguments than there are declared params left to bind —
+    /// `Cell[Int64, String]`, or any argument at all on a non-parametric sort.
+    ExcessPositional { given: usize, free: usize },
+}
+
+impl TypeArgProblem {
+    /// One message, shared by both positions' diagnostics.
+    pub fn describe(&self, kb: &KnowledgeBase, sort_sym: Symbol) -> String {
+        let sort = kb.qualified_name_of(sort_sym);
+        let declared = kb.type_params_of_sort(sort_sym);
+        let declares = if declared.is_empty() {
+            "declares no type parameters".to_owned()
+        } else {
+            format!("declares type parameter(s) {}", declared.join(", "))
+        };
+        match self {
+            TypeArgProblem::UndeclaredParam { param } => {
+                format!("`{sort}` has no type parameter named '{param}' — it {declares}")
+            }
+            TypeArgProblem::ExcessPositional { given, free } => format!(
+                "`{sort}` is over-applied: {given} positional type argument(s) but only \
+                 {free} declared type parameter(s) left to bind — it {declares}"
+            ),
+        }
+    }
+}
+
 impl KnowledgeBase {
     /// WI-628 — the carrier-`eq` sub-proof depth budget used in production
     /// ([`Self::prove_rule_predicate`]); a `cfg(test)` field overrides it in tests.
@@ -1136,6 +1172,65 @@ impl KnowledgeBase {
         // alphabetic sort). The HashSet path is still used by
         // `is_type_param` membership checks.
         scope.type_params_ordered.clone()
+    }
+
+    /// WI-709: check a sort APPLICATION's type arguments against the sort's DECLARED
+    /// type params — the ONE rule both positions a type can be written in must obey.
+    ///
+    /// A type in TYPE position (`c: Cell[W = Int64]`) and the same type in VALUE
+    /// position (`is_modifiable(Cell[W = Int64])`, WI-707) lower through the SAME
+    /// canonical builder ([`Self::make_parameterized_type`]) so they hash-cons to one
+    /// term; that identity only holds if the two positions also AGREE on which
+    /// arguments are admissible. Without this check they did not: the written form
+    /// carried a stray `W` binding, an over-applied positional was silently dropped at
+    /// load, and eval rejected the same positional at run time — three answers to one
+    /// written type. Both callers (the loader's `type_expr_to_child`, the typer's
+    /// sort-application arm) run this check, so eval's own guard
+    /// (`Interpreter::finish_sort_type`) is a backstop for programmatically-built
+    /// calls rather than the only place a typo is heard.
+    ///
+    /// Loud, per CLAUDE.md's loud-over-silent rule: an undeclared param name is a typo
+    /// the author wants to hear about, and dropping it builds a type that silently
+    /// means something else.
+    ///
+    /// `declared` is [`Self::type_params_of_sort`] for the head — passed in, not re-read,
+    /// because that call scans the symbol table (both callers already hold the list, and
+    /// a type annotation is a hot load path — WI-653). `named` are the argument keys AS
+    /// WRITTEN (short names); `positional_count` the number of positional arguments, each
+    /// of which binds the next declared param not already given by name (`Cell[Int64]` ≡
+    /// `Cell[V = Int64]`).
+    ///
+    /// Skipped for a non-`Sort` head (an unresolved name — which already has its own
+    /// diagnostic, so piling on would double-report — or an entity / value head, whose
+    /// arguments are not sort type-args at all). This keeps the gate identical to the
+    /// value-position arm's own `kind_of(..) == Sort` firing condition.
+    pub fn check_sort_type_args(
+        &self,
+        sort_sym: Symbol,
+        declared: &[String],
+        named: &[Symbol],
+        positional_count: usize,
+    ) -> Result<(), TypeArgProblem> {
+        if self.kind_of(sort_sym) != Some(crate::intern::SymbolKind::Sort) {
+            return Ok(());
+        }
+        for n in named {
+            let short = self.resolve_sym(*n);
+            if !declared.iter().any(|d| d == short) {
+                return Err(TypeArgProblem::UndeclaredParam { param: short.to_owned() });
+            }
+        }
+        // Each positional binds the next declared param NOT already given by name, so
+        // the params still free is what bounds the positional count — the same rule
+        // `finish_sort_type` and the loader bind by.
+        let free = declared
+            .iter()
+            .filter(|d| !named.iter().any(|n| self.resolve_sym(*n) == d.as_str()))
+            .count();
+        if positional_count > free {
+            return Err(TypeArgProblem::ExcessPositional { given: positional_count, free });
+        }
+        Ok(())
     }
 
     /// Get the Term for a TermId.

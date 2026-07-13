@@ -414,6 +414,21 @@ pub enum LoadError {
         span: Span,
         scope_name: String,
     },
+    /// WI-709: a sort application's type ARGUMENTS do not fit the sort's declared type
+    /// params — a named argument keys a param the sort never declares (`Cell[W = Int64]`;
+    /// `Cell` declares only `V`), or a positional has no declared param left to bind
+    /// (`Cell[Int64, String]`). This is the TYPE-position (written) face of
+    /// [`crate::kb::TypeArgProblem`]; `TypeError::InvalidTypeArgument` is the
+    /// VALUE-position (WI-707, `is_modifiable(Cell[W = Int64])`) one, and both decide it
+    /// with the same [`KnowledgeBase::check_sort_type_args`] — so one written type cannot
+    /// mean two things depending on where it appears. Load-blocking: the stray binding
+    /// was previously kept in the type term (in type position) or dropped (an
+    /// over-applied positional), and either way the type silently meant something other
+    /// than what was written.
+    InvalidTypeArgument {
+        detail: String,
+        span: Option<Span>,
+    },
     /// WI-489: a value-in-type field projection (`Modify[result.nonexistent]`,
     /// `Modify[c.bogus]`) names a field the head's statically-known CONCRETE type
     /// (an entity / named-tuple param or `result`) does not declare. The v1 denoted
@@ -591,6 +606,13 @@ impl LoadError {
                     line, col, name, scope_name,
                 )
             }
+            LoadError::InvalidTypeArgument { detail, span } => match span {
+                Some(sp) => {
+                    let (line, col) = Span::line_col(source, sp.start);
+                    format!("{}:{}: invalid type argument: {}", line, col, detail)
+                }
+                None => format!("invalid type argument: {}", detail),
+            },
             LoadError::InvalidFieldProjection { path, field, type_display, span } => {
                 let (line, col) = Span::line_col(source, span.start);
                 format!(
@@ -664,6 +686,10 @@ impl LoadError {
             // WI-489: a value-in-type field projection onto a non-existent field
             // names nothing — block rather than defer to a silent accept.
             | LoadError::InvalidFieldProjection { .. }
+            // WI-709: a type argument the sort never declared (or one positional too
+            // many) makes the written type mean something other than what it says —
+            // and made the type- and value-position spellings of it disagree.
+            | LoadError::InvalidTypeArgument { .. }
             // WI-369: a cross-scope reference to an `internal` name defeats the
             // encapsulation it was declared for — block.
             | LoadError::ForbiddenInternalAccess { .. }
@@ -930,6 +956,12 @@ impl std::fmt::Display for LoadError {
                     name, scope_name, span.start, span.end,
                 )
             }
+            LoadError::InvalidTypeArgument { detail, span } => match span {
+                Some(sp) => {
+                    write!(f, "invalid type argument at {}..{}: {}", sp.start, sp.end, detail)
+                }
+                None => write!(f, "invalid type argument: {}", detail),
+            },
             LoadError::InvalidFieldProjection { path, field, type_display, span } => {
                 write!(
                     f,
@@ -9459,6 +9491,27 @@ impl<'a> Loader<'a> {
                 // symbols match across the two carriers (the display-name
                 // comparison in the op-boundary check relies on this).
                 let declared_params = self.kb.type_params_of_sort(sort_sym);
+                // WI-709: the arguments must FIT the sort's declared params — an
+                // undeclared name or an over-applied positional is load-blocking, decided
+                // by the same rule the VALUE position (WI-707) decides it by, so one
+                // written type cannot mean two things. Reported once here; the binding
+                // loop below then proceeds (a stray name still lands in the term, but the
+                // load already failed, so nothing downstream reads it).
+                let named_syms: SmallVec<[Symbol; 2]> = bindings
+                    .iter()
+                    .filter_map(|b| b.param.as_ref().map(|p| self.reintern(p.last())))
+                    .collect();
+                let positional_count = bindings.len() - named_syms.len();
+                if let Err(problem) = self.kb.check_sort_type_args(
+                    sort_sym,
+                    &declared_params,
+                    &named_syms,
+                    positional_count,
+                ) {
+                    let detail = problem.describe(&self.kb, sort_sym);
+                    self.errors
+                        .push(LoadError::InvalidTypeArgument { detail, span: Some(span.span) });
+                }
                 let mut child_bindings: Vec<(Symbol, node_occurrence::TypeChild)> = Vec::new();
                 let mut positional_index: usize = 0;
                 let mut any_node = false;
@@ -9469,12 +9522,26 @@ impl<'a> Loader<'a> {
                     }
                     let param_sym = if let Some(p) = &b.param {
                         Some(self.reintern(p.last()))
-                    } else if positional_index < declared_params.len() {
-                        let param_name = declared_params[positional_index].clone();
-                        positional_index += 1;
-                        Some(self.kb.intern(&param_name))
                     } else {
-                        None
+                        // A positional binds the next declared param NOT already given by
+                        // name — eval's rule (`finish_sort_type`), so `Map[K = K1, V1]`
+                        // binds `V` rather than re-binding `K` to a second value (which
+                        // would build a duplicate-key type term, a shape the evaluated
+                        // spelling of the same type never produces).
+                        loop {
+                            match declared_params.get(positional_index) {
+                                Some(param_name) => {
+                                    let param_name = param_name.clone();
+                                    positional_index += 1;
+                                    let sym = self.kb.intern(&param_name);
+                                    if !named_syms.contains(&sym) {
+                                        break Some(sym);
+                                    }
+                                }
+                                // Over-applied — already reported above.
+                                None => break None,
+                            }
+                        }
                     };
                     if let Some(sym) = param_sym {
                         child_bindings.push((sym, bound_child));

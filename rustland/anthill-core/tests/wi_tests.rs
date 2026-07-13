@@ -20,6 +20,9 @@ mod wi206_is_modifiable_test;
 #[path = "include/wi707_type_application_value_test.rs"]
 mod wi707_type_application_value_test;
 
+#[path = "include/wi709_type_arg_validation_test.rs"]
+mod wi709_type_arg_validation_test;
+
 #[path = "include/wi023_quantified_constraint_test.rs"]
 mod wi023_quantified_constraint_test;
 

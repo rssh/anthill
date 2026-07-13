@@ -1934,34 +1934,61 @@ impl Interpreter {
     /// declared param to bind: both are loud errors rather than silent drops, per
     /// CLAUDE.md's loud-over-silent rule — a type term quietly carrying a scalar, or
     /// quietly missing an argument, would resurface far away as an unmatchable type.
+    ///
+    /// WI-709: the type ARGUMENTS are checked against the sort's declared params by the
+    /// shared [`KnowledgeBase::check_sort_type_args`] — the same rule the typer applies
+    /// to this call at load, and the loader to the same type written in TYPE position, so
+    /// the written and the evaluated spelling admit the SAME arguments (without which
+    /// they would build different terms for one source text, defeating WI-707's
+    /// hash-consing identity). This replaced a LOCAL over-application guard that stated
+    /// the rule a second, weaker way (it never saw an undeclared NAME).
+    ///
+    /// For loaded source the typer now rejects the same call first, so this is a backstop
+    /// — for a synthesized occurrence, which never went through the typer. (A rule-body
+    /// occurrence does NOT reach here at all: `convert_term` builds it as a plain term at
+    /// load, a third lowering path this check does not cover — WI-710.)
     fn finish_sort_type(
         &mut self,
         sort_sym: Symbol,
         pos: Vec<Value>,
         named: Vec<(Symbol, Value)>,
     ) -> Result<StepOutcome, EvalError> {
+        // WI-709: the arguments must FIT the sort's declared params — the SAME rule the
+        // typer applies to this call at load and the loader applies to the type written
+        // in TYPE position, so one written type is admissible in one set of spellings
+        // wherever it appears. Kept here (rather than deleted as "the typer already
+        // checked") because not every occurrence reaches the typer: a RULE BODY is not
+        // type-checked, so eval is where its type arguments are heard — loud, not a
+        // silently-built term carrying a parameter the sort never declared.
+        let declared = self.kb.type_params_of_sort(sort_sym);
+        let named_keys: Vec<Symbol> = named.iter().map(|(s, _)| *s).collect();
+        if let Err(problem) =
+            self.kb.check_sort_type_args(sort_sym, &declared, &named_keys, pos.len())
+        {
+            return Err(EvalError::TypeMismatch {
+                expected: "type arguments matching the sort's declared type parameters",
+                got: problem.describe(&self.kb, sort_sym),
+            });
+        }
+
         let mut bindings: Vec<(Symbol, TermId)> = Vec::with_capacity(pos.len() + named.len());
         for (n, v) in &named {
             bindings.push((*n, self.expect_type_arg(sort_sym, v)?));
         }
 
-        let declared = self.kb.type_params_of_sort(sort_sym);
         let mut next_param = 0usize;
         for v in &pos {
             let term = self.expect_type_arg(sort_sym, v)?;
             // Bind the next declared param not already given by name — the loader's
-            // rule, so `Cell[V = Int64]` and `Cell[Int64]` agree.
+            // rule, so `Cell[V = Int64]` and `Cell[Int64]` agree. The check above admitted
+            // this many positionals, so a free param is guaranteed to be there.
             let param = loop {
                 let Some(name) = declared.get(next_param) else {
-                    return Err(EvalError::TypeMismatch {
-                        expected: "a positional type argument with a declared type parameter to bind",
-                        got: format!(
-                            "`{}` declares {} type parameter(s), so this positional type \
-                             argument binds nothing",
-                            self.kb.qualified_name_of(sort_sym),
-                            declared.len(),
-                        ),
-                    });
+                    return Err(EvalError::Internal(format!(
+                        "finish_sort_type: `{}` ran out of declared type params for a \
+                         positional that `check_sort_type_args` admitted",
+                        self.kb.qualified_name_of(sort_sym),
+                    )));
                 };
                 next_param += 1;
                 let sym = self.kb.intern(name);
