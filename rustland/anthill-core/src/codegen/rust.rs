@@ -209,13 +209,18 @@ impl<'a> SortInfo<'a> {
                     info.type_params.push(symbols.name(s.name.last()).to_owned());
                 }
                 Item::RequiresDecl(r) => {
-                    let name = type_expr_name(symbols, &r.type_expr);
-                    // `effects E = ?` desugars to `requires EffectsRuntime[Effects=E]`,
-                    // an effect-runtime anchor with no host trait. Emitting it as a Rust
-                    // supertrait (`trait Stream: EffectsRuntime`) would never resolve, so
-                    // drop it; every other `requires` becomes a real supertrait.
-                    if name != "EffectsRuntime" {
-                        info.supertraits.push(name);
+                    // `effects E = ?` desugars to `requires
+                    // anthill.prelude.EffectsRuntime[Effects=E]`, an effect-runtime
+                    // kind-anchor with no host trait. Emitting it as a Rust supertrait
+                    // (`trait Stream: EffectsRuntime`) would never resolve, so drop it;
+                    // every other `requires` becomes a real supertrait. Match by the
+                    // CANONICAL qualified name, not the short name — a user sort merely
+                    // NAMED `EffectsRuntime` in another namespace must still become a
+                    // supertrait (WI-703).
+                    if type_expr_qualified_name(symbols, &r.type_expr)
+                        != "anthill.prelude.EffectsRuntime"
+                    {
+                        info.supertraits.push(type_expr_name(symbols, &r.type_expr));
                     }
                 }
                 Item::Fact(f) => {
@@ -1826,6 +1831,25 @@ fn type_expr_name(symbols: &SymbolTable, ty: &TypeExpr) -> String {
         TypeExpr::EffectRow(_) => "EffectRow".to_owned(),
         TypeExpr::EffectGuarded { .. } => "EffectGuarded".to_owned(),
     }
+}
+
+/// The FULLY-QUALIFIED name of a named type expression's head — every segment
+/// joined, not just the last one (`type_expr_name` returns the short name).
+/// Used where recognition must key on the CANONICAL symbol rather than a short
+/// name: matching the `anthill.prelude.EffectsRuntime` kind-anchor by short name
+/// alone would also fire for a user sort merely NAMED `EffectsRuntime` in another
+/// namespace. Non-named variants fall back to `type_expr_name`.
+fn type_expr_qualified_name(symbols: &SymbolTable, ty: &TypeExpr) -> String {
+    let segments = match ty {
+        TypeExpr::Simple(name) => &name.segments,
+        TypeExpr::Parameterized { name, .. } => &name.segments,
+        _ => return type_expr_name(symbols, ty),
+    };
+    segments
+        .iter()
+        .map(|s| symbols.name(*s))
+        .collect::<Vec<_>>()
+        .join(".")
 }
 
 /// Collect all rules from a list of items.

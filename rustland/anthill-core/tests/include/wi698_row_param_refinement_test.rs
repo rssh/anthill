@@ -59,13 +59,15 @@
 //!      row and bypassing the check).
 
 /// The 054 §Faking mini-model over the REAL `External`: spec with a row param +
-/// the two carriers. NOTE `import anthill.prelude.EffectsRuntime`: the
-/// `effects EM = ?` desugar emits `requires EffectsRuntime[Effects = EM]`, and
-/// without the import the provider-requires exemption misses (symbol identity)
-/// — see the WI-698 memory/proposal by-catch (WI-703).
+/// the two carriers. NOTE: no `import anthill.prelude.EffectsRuntime` is needed —
+/// the `effects EM = ?` desugar emits its `requires` anchor by CANONICAL name
+/// (`anthill.prelude.EffectsRuntime`), so it resolves import-independent (WI-703).
+/// Before WI-703 this source had to import the anchor as a workaround, else the
+/// bare `EffectsRuntime` landed unresolved and the provider-requires exemption
+/// (keyed on the canonical symbol) missed, misreporting it as a missing provision.
 const MECH_SRC: &str = r#"
 namespace smoke.b_mech
-  import anthill.prelude.{Int64, EffectsRuntime, External}
+  import anthill.prelude.{Int64, External}
 
   sort Mir
     sort C = ?
@@ -111,7 +113,7 @@ end
 /// (the MappedStream `provides Stream[T = T, E = {ES, EF}]` idiom, C-style).
 const WRAP_SRC: &str = r#"
 namespace smoke.c_wrap
-  import anthill.prelude.{Int64, EffectsRuntime}
+  import anthill.prelude.{Int64}
   import smoke.b_mech.{Mir}
 
   sort Wrap2
@@ -187,7 +189,7 @@ end
 /// same type-arg substitution carries a second row param with no new typer work.
 const RW_SRC: &str = r#"
 namespace smoke.f_rw
-  import anthill.prelude.{Int64, Unit, EffectsRuntime, Modify, Modifiable, External}
+  import anthill.prelude.{Int64, Unit, Modify, Modifiable, External}
   import smoke.b_mech.{Mir}
 
   sort Reg
@@ -398,6 +400,73 @@ fn row_param_instantiation_is_enforced_not_dropped() {
         &[MECH_SRC, NEG_SRC],
         &["t_gh_wrong", "External"],
         "the real carrier's {External} under a consumer row {}",
+    );
+}
+
+/// WI-703 regression: an `effects E = ?` row param on a spec that a carrier
+/// `provides` must load with NO `import anthill.prelude.EffectsRuntime`. The
+/// `effects EM = ?` desugar emits its `requires` anchor by CANONICAL name
+/// (`anthill.prelude.EffectsRuntime`), so the bare anchor no longer lands
+/// unresolved and the provider-requires exemption (keyed on the canonical
+/// symbol) fires. Before the fix this exact source failed to load with
+/// `'…Gh3' provides '…Mir3', which requires 'EffectsRuntime', but '…Gh3' does
+/// not provide 'EffectsRuntime'` — the confusing wart WI-703 removes.
+const NO_ER_IMPORT_SRC: &str = r#"
+namespace smoke.wi703_no_import
+  import anthill.prelude.{Int64, External}
+
+  sort Mir3
+    sort C = ?
+    effects EM = ?
+    operation ping(m: C) -> Int64 effects EM
+  end
+
+  sort Gh3
+    entity mkGh3
+    provides Mir3[C = Gh3, EM = {External}]
+    operation ping(m: Gh3) -> Int64 effects {External} = 41
+  end
+end
+"#;
+
+#[test]
+fn effects_row_param_provider_needs_no_effectsruntime_import() {
+    expect_load(
+        &[NO_ER_IMPORT_SRC],
+        "an `effects E = ?` provider loading without importing EffectsRuntime (WI-703)",
+    );
+}
+
+/// WI-703 regression (WI-422 phantom-rival class): emitting the anchor by its
+/// canonical name makes it RESOLVE, so `scan_items_pass2` must NOT wire it as a
+/// scope parent — otherwise the whole `anthill.prelude` namespace becomes a
+/// resolution parent of every `effects E = ?` sort, and a user sort sharing a
+/// prelude short name resurfaces as a phantom rival (ambiguous-symbol load
+/// error). Here `Option` is a USER sort referenced by bare name INSIDE the
+/// `effects E = ?` sort `Cache`; it must resolve to `…wi703_no_parent.Option`,
+/// not collide with `anthill.prelude.Option`. Break the load.rs anchor-skip and
+/// this reddens with `ambiguous symbol 'Option' … [anthill.prelude.Option,
+/// …wi703_no_parent.Option]`.
+const NO_PRELUDE_PARENT_SRC: &str = r#"
+namespace smoke.wi703_no_parent
+  import anthill.prelude.{Int64}
+
+  sort Option
+    entity myNone
+  end
+
+  sort Cache
+    effects E = ?
+    operation lookup(c: Cache) -> Option effects E
+  end
+end
+"#;
+
+#[test]
+fn effects_row_param_anchor_is_not_wired_as_scope_parent() {
+    expect_load(
+        &[NO_PRELUDE_PARENT_SRC],
+        "a user sort sharing a prelude short name, referenced inside an `effects E = ?` sort (WI-703 / WI-422 class)",
     );
 }
 

@@ -1845,18 +1845,31 @@ fn scan_items_pass2(
             }
             Item::RequiresDecl(r) => {
                 let req_sort_name = type_expr_base_name(parse_sym, &r.type_expr);
-                // Use scope-aware resolution first (handles imported/aliased names),
-                // falling back to qualified-name lookup.
-                let req_scope = resolve_name_to_scope(kb, &req_sort_name, scope)
-                    .or_else(|| find_scope_by_name(kb, &req_sort_name));
-                if let Some(req_scope) = req_scope {
-                    // Create instantiation term
-                    let inst_term = build_instantiation_term(kb, parse_sym, &r.type_expr, scope);
-                    kb.symbols.add_parent(scope.raw(), ScopeInclusion {
-                        parent_scope_raw: req_scope.raw(),
-                        instantiation_term_raw: inst_term.raw(),
-                        is_enclosing: false,
-                    });
+                // The `effects E = ?` desugar's `requires anthill.prelude.EffectsRuntime[…]`
+                // anchor is a synthetic effect-runtime kind-marker, NOT a spec whose scope a
+                // sort should resolve names against. Wiring it as a scope parent would splice
+                // the ENTIRE prelude namespace in as a resolution parent of every effects-
+                // bearing sort, resurfacing prelude sorts as phantom rivals of user sorts that
+                // share their short name — the WI-422 ambiguous-symbol class (`sort Option`
+                // referenced inside an `effects E = ?` sort would collide with
+                // `anthill.prelude.Option`). Before WI-703 the bare anchor name usually failed
+                // to resolve here, so no parent was wired by accident; now that it resolves by
+                // canonical name the skip must be explicit — matching every other subsystem's
+                // EffectsRuntime exemption (WI-703).
+                if req_sort_name != "anthill.prelude.EffectsRuntime" {
+                    // Use scope-aware resolution first (handles imported/aliased names),
+                    // falling back to qualified-name lookup.
+                    let req_scope = resolve_name_to_scope(kb, &req_sort_name, scope)
+                        .or_else(|| find_scope_by_name(kb, &req_sort_name));
+                    if let Some(req_scope) = req_scope {
+                        // Create instantiation term
+                        let inst_term = build_instantiation_term(kb, parse_sym, &r.type_expr, scope);
+                        kb.symbols.add_parent(scope.raw(), ScopeInclusion {
+                            parent_scope_raw: req_scope.raw(),
+                            instantiation_term_raw: inst_term.raw(),
+                            is_enclosing: false,
+                        });
+                    }
                 }
             }
             _ => {}

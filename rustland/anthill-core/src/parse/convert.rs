@@ -2560,15 +2560,24 @@ impl<'a> Converter<'a> {
             span,
         };
 
-        // Build `EffectsRuntime[Effects = <row-var-name>]`. The base name is
-        // bare `EffectsRuntime` — the loader resolves it through the prelude
-        // imports just like every other reference to a stdlib sort. `Effects`
-        // is EffectsRuntime's row-parameter slot (`sort Effects = ?` in
-        // `prelude/effects-runtime.anthill` / `register_stdlib_scopes`).
-        let effects_runtime_sym = self.intern("EffectsRuntime");
+        // Build `anthill.prelude.EffectsRuntime[Effects = <row-var-name>]` by its
+        // CANONICAL qualified name — NOT a bare `EffectsRuntime` that leans on the
+        // user having written `import anthill.prelude.EffectsRuntime`. The anchor is
+        // an internal desugar artifact; a user writing `effects E = ?` should not
+        // have to import the machinery it lowers to (WI-703). A qualified reference
+        // resolves directly to the pre-registered prelude symbol, import-independent,
+        // so the provider-requires exemption (keyed on the canonical symbol) fires
+        // instead of the bare name landing unresolved and misreported as a missing
+        // provision. `Effects` is EffectsRuntime's row-parameter slot (`sort Effects
+        // = ?` in `prelude/effects-runtime.anthill` / `register_stdlib_scopes`).
+        let mut er_segments: SmallVec<[Symbol; 2]> = SmallVec::new();
+        er_segments.push(self.intern("anthill"));
+        er_segments.push(self.intern("prelude"));
+        er_segments.push(self.intern("EffectsRuntime"));
+        let effects_runtime_name = Name::qualified(er_segments, span);
         let effects_param_sym = self.intern("Effects");
         let requires_type = TypeExpr::Parameterized {
-            name: Name::simple(effects_runtime_sym, span),
+            name: effects_runtime_name,
             bindings: vec![SortBinding {
                 param: Some(Name::simple(effects_param_sym, span)),
                 bound: TypeExpr::Simple(name),
