@@ -16,7 +16,7 @@ use crate::common::{interp_for, try_load_kb_with};
 const SRC: &str = r#"
 namespace test.wi714ref
   import anthill.prelude.{String, Int64, Option, List, Pair, Unit}
-  import anthill.prelude.Relation.{negate}
+  import anthill.prelude.Relation.{negate, union}
 
   sort Person
     entity person(name: String, age: Int64)
@@ -85,6 +85,34 @@ namespace test.wi714ref
   -- succeeds, so the double negation is non-empty.
   operation doubleNegateIsEmpty() -> Bool effects Error =
     let r = negate(negate(has_alice))
+    r.isEmpty
+
+  -- WI-714 union increment: two disjoint 1-column relations (each yields one name).
+  rule alice_name(?name) :- person(name: ?name, age: 30)
+  rule bob_name(?name) :- person(name: ?name, age: 25)
+
+  -- union = disjunction: the solutions of EITHER operand (a bag). alice_name ∪
+  -- bob_name yields both names — proof the two operands' independent column vars are
+  -- aligned onto one materialization column.
+  operation unionNames() -> List[String] effects Error =
+    let r = union(alice_name, bob_name)
+    r.takeN(5)
+
+  -- Bag semantics (OQ6): union keeps multiplicity — alice ∪ alice yields alice twice.
+  operation unionBag() -> List[String] effects Error =
+    let r = union(alice_name, alice_name)
+    r.takeN(5)
+
+  -- 0-column (membership) union: provable iff EITHER operand is. has_alice is
+  -- provable, so the union is non-empty.
+  operation unionMembershipIsEmpty() -> Bool effects Error =
+    let r = union(has_alice, has_zed)
+    r.isEmpty
+
+  -- union COMPOSES into a bigger query: negate wraps the union's disjunction query
+  -- (both membership). union(has_zed, has_zed) is empty → negate is non-empty.
+  operation negateUnionIsEmpty() -> Bool effects Error =
+    let r = negate(union(has_zed, has_zed))
     r.isEmpty
 end
 "#;
@@ -301,6 +329,146 @@ fn wi714_negate_composes_double_negation() {
         r.as_bool(),
         Some(false),
         "double negation of a provable relation is non-empty (composes at the query level)"
+    );
+}
+
+// ── WI-714 relational algebra increment 2: union → disjunction ──────────────
+// union COMBINES QUERIES: disjunction(left: a.query, right: b.query), lowered to
+// `or(...)`. The two operands' independent column vars are aligned onto one result
+// column set so both branches materialize correctly. Bag semantics (multiplicity
+// kept).
+
+/// union yields the solutions of BOTH operands, each materialized onto the one
+/// (aligned) result column — `alice_name ∪ bob_name == {alice, bob}`.
+#[test]
+fn wi714_union_combines_solutions() {
+    let mut interp = interp_for(SRC);
+    let r = interp
+        .call("test.wi714ref.unionNames", &[])
+        .expect("union(alice_name, bob_name).takeN");
+    let mut got = collect_string_list(&r);
+    got.sort();
+    assert_eq!(
+        got,
+        vec!["alice".to_string(), "bob".to_string()],
+        "union drains every solution of either operand onto the shared column"
+    );
+}
+
+/// union is a BAG — multiplicity is preserved (OQ6): `alice_name ∪ alice_name`
+/// yields `alice` twice, not deduped.
+#[test]
+fn wi714_union_is_a_bag() {
+    let mut interp = interp_for(SRC);
+    let r = interp
+        .call("test.wi714ref.unionBag", &[])
+        .expect("union(alice_name, alice_name).takeN");
+    let got = collect_string_list(&r);
+    assert_eq!(
+        got,
+        vec!["alice".to_string(), "alice".to_string()],
+        "union keeps multiplicity (bag union): the same solution appears once per operand"
+    );
+}
+
+/// 0-column (membership) union: non-empty iff EITHER operand is provable. `has_alice`
+/// is provable, so `has_alice ∪ has_zed` is non-empty.
+#[test]
+fn wi714_union_of_membership_relations() {
+    let mut interp = interp_for(SRC);
+    let r = interp
+        .call("test.wi714ref.unionMembershipIsEmpty", &[])
+        .expect("union(has_alice, has_zed).isEmpty");
+    assert_eq!(
+        r.as_bool(),
+        Some(false),
+        "a membership union is non-empty iff either operand is provable"
+    );
+}
+
+/// union COMPOSES into a bigger query — negate wraps the union's `disjunction`
+/// (proof union yields a composable query, not a stream). `has_zed ∪ has_zed` is
+/// empty, so its negation is non-empty.
+#[test]
+fn wi714_union_composes_under_negate() {
+    let mut interp = interp_for(SRC);
+    let r = interp
+        .call("test.wi714ref.negateUnionIsEmpty", &[])
+        .expect("negate(union(has_zed, has_zed)).isEmpty");
+    assert_eq!(
+        r.as_bool(),
+        Some(false),
+        "negate of an empty union is non-empty (union composes at the query level)"
+    );
+}
+
+/// union requires the SAME schema: unioning relations with different schemas is a
+/// loud error, not a silent misalignment. Because union's two params share the sort's
+/// `T`, the typer's op-type-params consistency check catches a mismatch at LOAD (both
+/// `Relation` operands bind one `T`; `Relation[String]` ∪ `Relation[(name, age)]`
+/// binds `T` inconsistently). (The runtime `relation_union` keeps an arity backstop
+/// for a relation built past the typer, e.g. via reflect.)
+#[test]
+fn wi714_union_schema_mismatch_rejected() {
+    let src = r#"
+namespace test.wi714unioncol
+  import anthill.prelude.{String, Int64, Option, List}
+  import anthill.prelude.Relation.{union}
+
+  sort Person
+    entity person(name: String, age: Int64)
+  end
+  fact person(name: "alice", age: 30)
+
+  rule person_name(?name) :- person(name: ?name, age: ?)
+  rule person_row(?name, ?age) :- person(name: ?name, age: ?age)
+
+  -- 1-column ∪ 2-column: mismatched schema → loud LOAD error
+  operation bad() -> Bool effects Error =
+    let r = union(person_name, person_row)
+    r.isEmpty
+end
+"#;
+    let errs = try_load_kb_with(src).err().unwrap_or_default();
+    assert!(
+        errs.iter().any(|e| e.contains("shared type parameter")
+            || e.contains("consistent bindings")
+            || e.contains("type mismatch")),
+        "union of relations with mismatched schemas must be a loud load error, got: {errs:?}"
+    );
+}
+
+/// The same-arity/different-element-type case, which the runtime arity backstop
+/// CANNOT catch: `Relation[String] ∪ Relation[Int64]` (both 1-column) is rejected at
+/// LOAD by the op-type-params tie on the shared `Relation.T` (String vs Int64 don't
+/// re-unify). This locks in the load-time guarantee the runtime check can't provide.
+#[test]
+fn wi714_union_element_type_mismatch_rejected() {
+    let src = r#"
+namespace test.wi714unionty
+  import anthill.prelude.{String, Int64, Option, List}
+  import anthill.prelude.Relation.{union}
+
+  sort Person
+    entity person(name: String, age: Int64)
+  end
+  fact person(name: "alice", age: 30)
+
+  rule person_name(?name) :- person(name: ?name, age: ?)     -- Relation[String]
+  rule person_age(?age)   :- person(name: ?, age: ?age)      -- Relation[Int64]
+
+  -- Relation[String] ∪ Relation[Int64]: same arity, different element type → reject
+  operation bad() -> Bool effects Error =
+    let r = union(person_name, person_age)
+    r.isEmpty
+end
+"#;
+    let errs = try_load_kb_with(src).err().unwrap_or_default();
+    assert!(
+        errs.iter().any(|e| e.contains("shared type parameter")
+            || e.contains("consistent bindings")
+            || e.contains("type mismatch")),
+        "union of Relation[String] with Relation[Int64] must be a loud load error, got: {errs:?}"
     );
 }
 

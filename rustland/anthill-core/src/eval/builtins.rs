@@ -102,6 +102,7 @@ pub fn register_standard_builtins(interp: &mut Interpreter) -> Result<(), EvalEr
     register_if_present(interp, "anthill.prelude.LogicalStream.splitFirst", logical_stream_split_first)?;
     register_if_present(interp, "anthill.prelude.Relation.splitFirst", relation_split_first)?;
     register_if_present(interp, "anthill.prelude.Relation.negate", relation_negate)?;
+    register_if_present(interp, "anthill.prelude.Relation.union", relation_union)?;
     register_if_present(interp, "anthill.reflect.KB.kb", kb_ambient)?;
     register_if_present(interp, "anthill.reflect.KB.execute", kb_execute)?;
     register_if_present(interp, "anthill.reflect.KB.facts_of", kb_facts_of)?;
@@ -1061,10 +1062,7 @@ fn relation_split_first(
 /// solution. Combines queries, not streams, so the result stays composable.
 fn relation_negate(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [arg] = expect_args::<1>("Relation.negate", args)?;
-    let (query, columns) = match arg {
-        Value::Relation { query, columns } => (query, columns),
-        other => return Err(type_mismatch("Relation", &other, None)),
-    };
+    let (query, columns) = expect_relation(arg)?;
     // Membership guard: negating a relation that still has FREE columns would
     // flounder under NAF (`not p(?x)` with `?x` unbound is undecidable), reading a
     // floundered residual as a spurious solution. Reject it loudly — as a runtime
@@ -1094,6 +1092,102 @@ fn relation_negate(interp: &mut Interpreter, args: &[Value]) -> Result<Value, Ev
     // uses); `columns` is the operand's already-empty set — reuse it for the result.
     let neg = interp.build_logical_query_value("negation", vec![("query", (*query).clone())])?;
     Ok(Value::Relation { query: std::rc::Rc::new(neg), columns })
+}
+
+/// Destructure a `Value::Relation` into `(query, columns)`, or a loud type error.
+/// Shared by the relational-algebra builtins (`negate` / `union` / …), which all
+/// take `Relation` operands.
+type RelationParts =
+    (std::rc::Rc<Value>, std::rc::Rc<[(crate::intern::Symbol, crate::kb::term::VarId)]>);
+fn expect_relation(v: Value) -> Result<RelationParts, EvalError> {
+    match v {
+        Value::Relation { query, columns } => Ok((query, columns)),
+        other => Err(type_mismatch("Relation", &other, None)),
+    }
+}
+
+/// Rewrite the free column variables of a relation `query` value (WI-714 `union`)
+/// under σ, which maps one operand's column `VarId`s to the other's — so a
+/// `disjunction` of two INDEPENDENTLY-built relations binds ONE shared result column
+/// set (both `or` branches bind the same vars → materialization is correct). This
+/// walks the structural spine (`Value::Entity` — the LogicalQuery constructors and
+/// goal atoms) and renames each term leaf via the canonical `apply_subst`, which
+/// descends compound terms too — so a column var nested inside a compound goal arg
+/// (as a future `where` / `join` → `guarded` / `conjunction` will emit) is renamed,
+/// not silently missed. Ground scalar / opaque arg values carry no free column var
+/// and pass through; a `Value::Node` occurrence or a value-level `Var` never appears
+/// in an eval-built query, so it is surfaced loudly rather than cloned through (which
+/// could silently drop a var that must be aligned).
+fn rename_query_vars(
+    kb: &mut crate::kb::KnowledgeBase,
+    v: &Value,
+    sigma: &crate::kb::subst::Substitution,
+) -> Result<Value, EvalError> {
+    match v {
+        Value::Entity { functor, pos, named } => {
+            let mut pos2 = Vec::with_capacity(pos.len());
+            for c in pos.iter() {
+                pos2.push(rename_query_vars(kb, c, sigma)?);
+            }
+            let mut named2 = Vec::with_capacity(named.len());
+            for (k, c) in named.iter() {
+                named2.push((*k, rename_query_vars(kb, c, sigma)?));
+            }
+            Ok(Value::Entity { functor: *functor, pos: pos2.into(), named: named2.into() })
+        }
+        Value::Term { id } => Ok(Value::term(kb.apply_subst(*id, sigma))),
+        Value::Node(_) | Value::Var(_) => Err(EvalError::Internal(format!(
+            "Relation.union: cannot align variables — unexpected {} carrier in a \
+             relation query",
+            v.type_name()
+        ))),
+        _ => Ok(v.clone()),
+    }
+}
+
+/// `Relation.union` (WI-714 / proposal 052) — the bag union of two relations as a
+/// QUERY combinator. Builds `disjunction(left: a.query, right: b.query)` — a new
+/// LogicalQuery (the resolver lowers it to `or(...)`) — so the result stays a
+/// composable Relation. The operands' independently-minted column variables are
+/// aligned (b's rewritten to a's via σ) so both `or` branches bind the ONE result
+/// column set; without that a right-branch solution would leave a's columns unbound.
+/// Combines queries, not streams.
+fn relation_union(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    let [a, b] = expect_args::<2>("Relation.union", args)?;
+    let (qa, cols_a) = expect_relation(a)?;
+    let (qb, cols_b) = expect_relation(b)?;
+    // Same-schema requirement. The typer normally rejects a mismatch at LOAD — union's
+    // two `Relation` params share the sort's `T`, so `Relation[String]` ∪
+    // `Relation[Int64]` binds `T` inconsistently (op-type-params tie). This runtime
+    // arity check is the REACHABLE backstop for the T-collapse corner the type sees as
+    // consistent: a 0-column `Relation[Unit]` vs a 1-column relation over a `Unit`
+    // column, or a 1-column relation whose element is a tuple vs the matching 2-column
+    // relation — and for a relation built past the typer (reflect). A loud error, never
+    // a silent misalignment (the length-mismatched `zip` below would drop columns).
+    if cols_a.len() != cols_b.len() {
+        return Err(EvalError::TypeMismatch {
+            expected: "two relations with the same schema (union)",
+            got: format!(
+                "relations of differing arity: {} column(s) vs {} column(s)",
+                cols_a.len(),
+                cols_b.len()
+            ),
+        });
+    }
+    // σ maps b's column vars to a's (positionally); `apply_subst` (in the walker) then
+    // rewrites them in b's query so both disjunction branches bind the SAME result
+    // columns (a's).
+    let mut sigma = crate::kb::subst::Substitution::new();
+    for ((_, vb), (_, va)) in cols_b.iter().zip(cols_a.iter()) {
+        let va_term = interp.kb.alloc(crate::kb::term::Term::Var(crate::kb::term::Var::Global(*va)));
+        sigma.bind(&interp.kb, *vb, va_term);
+    }
+    let qb_aligned = rename_query_vars(&mut interp.kb, &qb, &sigma)?;
+    let disj = interp.build_logical_query_value(
+        "disjunction",
+        vec![("left", (*qa).clone()), ("right", qb_aligned)],
+    )?;
+    Ok(Value::Relation { query: std::rc::Rc::new(disj), columns: cols_a })
 }
 
 fn logical_stream_split_first(

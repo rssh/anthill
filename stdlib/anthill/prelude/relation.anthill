@@ -74,4 +74,19 @@ sort anthill.prelude.Relation
   -- (a dedicated operand-schema check). The bare `Relation` param keeps `E` open
   -- (threaded to the result as `r.E`); body-less — the runtime does the query wrap.
   operation negate(r: Relation) -> Relation[T = Unit, E = r.E]
+
+  -- union — the BAG union of two relations (052 §algebra; multiplicity kept, OQ6):
+  -- the solutions of EITHER operand. Combines QUERIES: builds
+  -- disjunction(left: a.query, right: b.query) — a new LogicalQuery the resolver
+  -- lowers to `or(…)` — so the result stays a composable Relation, never a merged
+  -- stream. The two operands are built with INDEPENDENT column variables, so the
+  -- runtime aligns b's to a's (both `or` branches then bind the ONE result column
+  -- set; otherwise a right-branch solution would leave a's columns unbound). Both
+  -- operands must share the schema T: arity is runtime-checked (a loud error on
+  -- mismatch), and full column type-match relies on the signature (best-effort —
+  -- the typer's non-ground-param skip, noted on `negate`, limits it). The result
+  -- keeps a's schema (a.T). Its effect row is the UNION {a.E, b.E}: consuming the
+  -- union runs BOTH operands' search (`or` explores both branches), so both rows are
+  -- incurred (both are {Error} today, but this stays sound if either ever carries more).
+  operation union(a: Relation, b: Relation) -> Relation[T = a.T, E = {a.E, b.E}]
 end
