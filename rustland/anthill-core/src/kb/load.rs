@@ -6366,25 +6366,14 @@ impl<'a> Loader<'a> {
                 // `Map.empty()` and proposal-035 form (3) `Map[...].empty()`,
                 // both of which produce a single joined Symbol "Map.empty"
                 // that doesn't appear in any scope's locals/imports.
-                if let Some((head, tail)) = name.split_once('.') {
-                    if let ResolveResult::Found(head_sym) =
-                        self.kb.symbols.resolve_in_scope(head, scope)
-                    {
-                        let head_qualified = match self.kb.symbols.get(head_sym) {
-                            SymbolDef::Resolved { qualified_name, .. } => qualified_name.clone(),
-                            SymbolDef::Unresolved { name } => name.clone(),
-                        };
-                        let probe = format!("{}.{}", head_qualified, tail);
-                        if let Some(&q_sym) = self.kb.symbols.by_qualified_name.get(&probe) {
-                            // WI-369: the qualified path bypasses the `internal`
-                            // filter. Return the hit if visible here; otherwise
-                            // it is a forbidden cross-scope internal reference.
-                            if self.qualified_visible(q_sym) {
-                                return q_sym;
-                            }
-                            return self.push_forbidden_internal(q_sym, name, Span::default());
-                        }
+                if let Some(q_sym) = self.resolve_dotted_by_head(name, scope) {
+                    // WI-369: the qualified path bypasses the `internal`
+                    // filter. Return the hit if visible here; otherwise
+                    // it is a forbidden cross-scope internal reference.
+                    if self.qualified_visible(q_sym) {
+                        return q_sym;
                     }
+                    return self.push_forbidden_internal(q_sym, name, Span::default());
                 }
                 // WI-040 / WI-521: reserved kernel desugaring vocab (synthesized
                 // `match_expr` / `field_access` / `ListLiteral` / …) and the
@@ -6414,6 +6403,28 @@ impl<'a> Loader<'a> {
                 self.kb.symbols.intern(name)
             }
         }
+    }
+
+    /// Resolve a dotted `name` by HEAD-SEGMENT qualification: resolve the head in
+    /// `scope` (`Map` → `anthill.prelude.Map`), append the trailing segments to its
+    /// qualified path, and look that joined name up directly in `by_qualified_name`
+    /// (the `Map.empty` / proposal-035 `Map[…].empty` / `ns.rule` shape a single
+    /// joined Symbol takes — one that appears in no scope's locals/imports). Purely
+    /// read-only: NO interning, NO visibility gate, NO error push — a caller layers
+    /// its own policy (`remap_name_str_inner` applies `qualified_visible` /
+    /// `push_forbidden_internal`; [`Self::resolve_qualified_rule_readonly`] applies
+    /// the visibility gate + a `Goal`/`Rule` kind filter). Shared so the bare and
+    /// applied `Sort.rule` citation forms resolve the SAME name identically.
+    fn resolve_dotted_by_head(&self, name: &str, scope: u32) -> Option<Symbol> {
+        let (head, tail) = name.split_once('.')?;
+        let ResolveResult::Found(head_sym) = self.kb.symbols.resolve_in_scope(head, scope) else {
+            return None;
+        };
+        let head_qualified = match self.kb.symbols.get(head_sym) {
+            SymbolDef::Resolved { qualified_name, .. } => qualified_name.clone(),
+            SymbolDef::Unresolved { name } => name.clone(),
+        };
+        self.kb.symbols.by_qualified_name.get(&format!("{head_qualified}.{tail}")).copied()
     }
 
     /// Strict scope-aware symbol resolution: errors on unresolved names.
@@ -7845,33 +7856,33 @@ impl<'a> Loader<'a> {
     }
 
     /// Read-only resolution of a dotted `name` to a RULE symbol (`Goal` head functor
-    /// or `Rule` label), else `None`. Mirrors the resolution
-    /// [`Self::remap_name_str_inner`] performs — direct scope resolution, else a
-    /// head-segment-qualified `by_qualified_name` probe (the `ns.rule` / `Map.empty`
-    /// shape a single joined name takes) — but WITHOUT its mutation (no
-    /// unresolved-name interning, no error push), so a non-rule name leaves loader
-    /// state untouched for the ordinary `field_access` projection path.
+    /// or `Rule` label), else `None`. Resolves the SAME way the applied `Sort.rule`
+    /// form does (via [`Self::remap_name_str_inner`], sharing the
+    /// [`Self::resolve_dotted_by_head`] probe so the two citation forms cannot drift)
+    /// but WITHOUT its mutation — no unresolved-name interning, no error push — so a
+    /// non-rule name leaves loader state untouched for the ordinary `field_access`
+    /// projection path. The three `resolve_in_scope` outcomes are handled explicitly:
+    ///  - `Found`: direct scope resolution already applied the `internal` filter.
+    ///  - `NotFound`: the dotted case — probe by head-qualification, then apply the
+    ///    same `qualified_visible` gate `remap_name_str_inner` does (the qualified
+    ///    path bypasses `resolve_in_scope`'s `internal` filter, WI-369), so a hidden
+    ///    cross-scope rule does NOT silently collapse to a value here. (Rules are
+    ///    never marked `internal` today, so this is defensive — but it keeps parity
+    ///    with the applied form's `ForbiddenInternalAccess` rather than diverging.)
+    ///  - `Ambiguous`: not a clean rule reference — don't collapse; the applied form
+    ///    reports the ambiguity loudly, and the ordinary path preserves that here.
     fn resolve_qualified_rule_readonly(&self, name: &str) -> Option<Symbol> {
         let scope = self.current_scope.raw();
         let sym = match self.kb.symbols.resolve_in_scope(name, scope) {
             ResolveResult::Found(s) => s,
-            _ => {
-                let (head, tail) = name.split_once('.')?;
-                let ResolveResult::Found(head_sym) =
-                    self.kb.symbols.resolve_in_scope(head, scope)
-                else {
+            ResolveResult::NotFound => {
+                let s = self.resolve_dotted_by_head(name, scope)?;
+                if !self.qualified_visible(s) {
                     return None;
-                };
-                let head_qualified = match self.kb.symbols.get(head_sym) {
-                    SymbolDef::Resolved { qualified_name, .. } => qualified_name.clone(),
-                    SymbolDef::Unresolved { name } => name.clone(),
-                };
-                self.kb
-                    .symbols
-                    .by_qualified_name
-                    .get(&format!("{head_qualified}.{tail}"))
-                    .copied()?
+                }
+                s
             }
+            ResolveResult::Ambiguous(_) => return None,
         };
         matches!(self.kb.kind_of(sym), Some(SymbolKind::Goal | SymbolKind::Rule)).then_some(sym)
     }

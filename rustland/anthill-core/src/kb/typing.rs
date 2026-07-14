@@ -2991,6 +2991,26 @@ fn relation_columns_across_clauses(
             ));
         }
     }
+    // WI-714: every clause must share ONE head functor. The relation's runnable query
+    // is built from a SINGLE head shape — `functor(?cols)` at the first clause's
+    // structure (`build_relation_value`) — and SLD unions the clauses THROUGH that
+    // shared functor. Clauses grouped under one LABEL may carry DIFFERENT head
+    // functors (`rule L: foo(?x) …` / `rule L: bar(?y) …`); the column fold below
+    // would then silently union them in the SCHEMA while eval runs only the first
+    // functor's clauses, dropping the rest — a typer/eval divergence. Reject loudly
+    // (per "loud error over silent skip"). Keys on the head FUNCTOR, not the label, so
+    // an ordinary homogeneous multi-clause relation (and every unlabeled rule, whose
+    // clauses share a functor by construction) passes.
+    let first_functor = kb.fact_head_term(first).and_then(|t| kb.head_functor(t));
+    for &rid in rids.iter().skip(1) {
+        if kb.fact_head_term(rid).and_then(|t| kb.head_functor(t)) != first_functor {
+            return Err(head_err(
+                kb,
+                "clauses with differing head functors (one label over multiple head \
+                 predicates) are not yet supported",
+            ));
+        }
+    }
     // Columns come from the FIRST clause (the goal is built at its structure); each
     // column's TYPE is the lub of that SLOT across every clause. Alignment is by
     // slot IDENTITY (`SlotKey`), not free-column index — a clause pinning a

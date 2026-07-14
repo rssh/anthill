@@ -827,6 +827,129 @@ end
     );
 }
 
+// ── Labeled rules + multi-clause head-functor uniformity (WI-714) ──
+
+/// A rule cited by its LABEL (`rule adult: head :- …`, `SymbolKind::Rule`) rather than
+/// its head functor is a `Relation[T]` value too — the relation machinery is keyed on
+/// `RuleId`, fully label-agnostic. Covers the bare-unqualified label and the
+/// bare-qualified `ns.label` form (both citation surfaces resolve the label). Every
+/// other test uses unlabeled head-functor rules; this closes that coverage gap.
+#[test]
+fn wi714_labeled_rule_reference() {
+    const SRC: &str = r#"
+namespace test.wi714label
+  import anthill.prelude.{String, Int64, List}
+
+  sort Person
+    entity person(name: String, age: Int64)
+  end
+  fact person(name: "alice", age: 30)
+  fact person(name: "bob", age: 25)
+
+  -- a namespace-level LABELED rule: label `adult`, head functor `isAdult`.
+  rule adult: isAdult(?name) :- person(name: ?name, age: ?)
+
+  operation viaBareLabel() -> List[String] effects Error =
+    let r = adult
+    r.takeN(5)
+
+  operation viaQualifiedLabel() -> List[String] effects Error =
+    let r = test.wi714label.adult
+    r.takeN(5)
+end
+"#;
+    let mut interp = interp_for(SRC);
+    for op in ["viaBareLabel", "viaQualifiedLabel"] {
+        let r = interp
+            .call(&format!("test.wi714label.{op}"), &[])
+            .unwrap_or_else(|e| panic!("{op} runs the labeled relation: {e:?}"));
+        let mut got = collect_string_list(&r);
+        got.sort();
+        assert_eq!(
+            got,
+            vec!["alice".to_string(), "bob".to_string()],
+            "{op}: a rule cited by its label is a Relation value keyed on RuleId"
+        );
+    }
+}
+
+/// A legitimate labeled MULTI-CLAUSE relation (all clauses share ONE head functor)
+/// unions its clauses' solutions — the ordinary case must keep working after the
+/// head-functor-uniformity guard.
+#[test]
+fn wi714_labeled_multiclause_same_functor_unions() {
+    const SRC: &str = r#"
+namespace test.wi714lm
+  import anthill.prelude.{String, Int64, List}
+
+  sort Person
+    entity person(name: String, age: Int64)
+  end
+  fact person(name: "alice", age: 30)
+
+  sort Pet
+    entity pet(petName: String)
+  end
+  fact pet(petName: "rex")
+
+  -- two clauses, same label `grouped` AND same head functor `named` → well-formed.
+  rule grouped: named(?n) :- person(name: ?n, age: ?)
+  rule grouped: named(?n) :- pet(petName: ?n)
+
+  operation everyName() -> List[String] effects Error =
+    let r = grouped
+    r.takeN(5)
+end
+"#;
+    let mut interp = interp_for(SRC);
+    let r = interp
+        .call("test.wi714lm.everyName", &[])
+        .expect("everyName drains the labeled same-functor relation");
+    let mut got = collect_string_list(&r);
+    got.sort();
+    assert_eq!(
+        got,
+        vec!["alice".to_string(), "rex".to_string()],
+        "a labeled multi-clause relation sharing one head functor unions its clauses"
+    );
+}
+
+/// A label grouping clauses with DIFFERING head functors (`rule L: foo(?x) …` /
+/// `rule L: bar(?y) …`) is rejected loudly at LOAD. The relation's query is built from
+/// ONE head shape (the first clause) and SLD unions clauses through that shared
+/// functor, so the schema would union both functors while eval ran only the first —
+/// dropping the rest. "Loud error over silent skip."
+#[test]
+fn wi714_differing_head_functors_rejected() {
+    const SRC: &str = r#"
+namespace test.wi714dhf
+  import anthill.prelude.{String, Int64, List}
+
+  sort Person
+    entity person(name: String, age: Int64)
+  end
+  fact person(name: "alice", age: 30)
+
+  sort Pet
+    entity pet(petName: String)
+  end
+  fact pet(petName: "rex")
+
+  rule things: fromPerson(?n) :- person(name: ?n, age: ?)
+  rule things: fromPet(?n) :- pet(petName: ?n)
+
+  operation allThings() -> List[String] effects Error =
+    let r = things
+    r.takeN(5)
+end
+"#;
+    let errs = try_load_kb_with(SRC).err().unwrap_or_default();
+    assert!(
+        errs.iter().any(|e| e.contains("differing head functors")),
+        "a label over multiple head predicates must be a loud load error, got: {errs:?}"
+    );
+}
+
 /// Decode a `List[(name: String, age: Int64)]` (cons chain of named tuples) into
 /// `(String, i64)` pairs — the multi-column-row shape.
 fn collect_named_rows(v: &Value) -> Vec<(String, i64)> {
