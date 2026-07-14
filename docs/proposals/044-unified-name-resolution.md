@@ -196,6 +196,12 @@ work** and is not required for uniform name resolution.
 - Should `requires`-inherited operations be reachable as bare names at all, or
   only via explicit `Sort.op` / dispatch? (Current model: reachable, subject to
   the variant-exposure filter.)
+- Should `requires` bring **rules** into scope as bare names? Only meaningful for
+  *dispatched* (associated) relations — a static rule is `import`'s job (the two
+  concerns stay orthogonal). See [052 §Future — associated relations](052-rules-as-stream-valued-operations.md);
+  ambiguity across two required specs = **load error** (decidable at the `requires`
+  site, so loud — unlike a plain unqualified rule miss, which is a silent
+  0-solutions).
 
 ## Related
 

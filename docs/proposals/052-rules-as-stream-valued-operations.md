@@ -432,6 +432,61 @@ missing requirement surfaces at query time, not load; the runtime path itself is
 6. **Ordering / multiplicity** — solution order is the resolver's search order; whether consumption
    de-dupes or preserves multiplicity (bag vs. set) — default to the resolver's stream as-is, documented.
 
+## Future direction — associated (dispatched) relations: relations as *spec members*
+
+052 makes a relation a first-class **value**. A separate axis, surfaced while specifying rule visibility
+under `requires`: a relation as a **dispatched spec member** — the relational dual of a spec operation.
+
+**The asymmetry it removes.** `requires Spec` gives a sort the dispatch of Spec's **operations** (a
+per-instance dictionary; bare-reachable, [044 Open questions](044-unified-name-resolution.md)) but
+reaches no **rules**: a rule is one *global* relation, so making `requires` bring a *static* rule into
+scope would be mere name aliasing — that is `import`'s job, and the two concerns stay orthogonal (044). A
+rule earns a place under `requires` only if it too is **per-instance dispatched**.
+
+**The construct.** A spec declares a rule **head with no clauses** (a relational signature); each
+instance **provides** clauses; generic code `requires`-ing the spec cites the rule bare and it resolves
+to *the discharged instance's* clauses:
+
+```anthill
+sort Graph
+  sort Node = ?
+  rule edge(?a: Node, ?b: Node)            -- associated relation: a signature, no clauses
+
+sort SocialNet
+  provides Graph[Node = Person]
+  rule edge(?a, ?b) :- follows(?a, ?b)      -- this instance's clauses
+
+sort Reach
+  requires Graph
+  rule reachable(?a, ?b) :- edge(?a, ?b)                    -- bare `edge` DISPATCHES per instance
+  rule reachable(?a, ?b) :- edge(?a, ?c), reachable(?c, ?b)
+```
+
+`reachable` over a `SocialNet` walks *follows*-edges; over a `RoadMap`, *road*-edges — one generic rule,
+a per-instance relation. This is to a relation what `Ordered.compare` (declared abstract, provided per
+type) is to a function. Static rules force the alternative: thread the graph explicitly
+(`reachable(g, ?a, ?b) :- edge_of(g, ?a, ?b)`) — the boilerplate dispatch removes for operations.
+
+**Dispatch = requirement-directed clause selection** (the one genuinely-new engine capability). Bare
+`edge` in a `requires Graph` clause resolves to the clauses of the *discharged* `Graph` instance, read
+from the resolver's Γ — the SLD analog of a frame's `requirements`, already threaded for rule-body
+requirements by **WI-300 / `find_dictionary`** (§Requirements in a clause body). The surface, schema, and
+coherence rule are comparatively easy; this selection step is the load-bearing part.
+
+**Coherence (resolution policy; owned by [044](044-unified-name-resolution.md)).**
+- `requires Spec` brings an associated-rule NAME into scope **only as a dispatched member**, never as a
+  static alias (static visibility stays `import` / qualification).
+- **Ambiguity is a LOAD error** (decided). Two required specs declaring the same associated-rule name ⟹
+  bare use is ambiguous ⟹ reject at load, qualify to disambiguate. Decidable statically at the `requires`
+  site — unlike a plain unqualified rule miss, which is a *silent* 0-solutions — so it is loud by
+  construction, matching the repo's "loud error over silent skip".
+- A sort's **own** rule of that name **overrides** the associated one (mirror the operation override
+  policy, WI-444 / WI-411).
+
+**Relationship.** Complements 052's relations-as-*values* with relations-as-dispatched-*members*; both
+rest on the same 026.1 engine — the value face composes a *fixed* query, the member face selects a *query
+per instance*. Out of scope for the 052 build; recorded as the natural next axis.
+
 ## Out of scope
 
 - The `Branch` effect, `reflect(stream)`, solvers-as-handlers, the `match <solver> case` surface, and
