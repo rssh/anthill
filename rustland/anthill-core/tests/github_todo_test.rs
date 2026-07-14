@@ -108,6 +108,34 @@ fn extract_string(kb: &KnowledgeBase, term: TermId) -> Option<String> {
     }
 }
 
+/// Resolve a named query var's binding in one solution to its term, loudly.
+fn binding_term(
+    kb: &KnowledgeBase,
+    query: TermId,
+    sol: &anthill_core::kb::resolve::Solution,
+    var_name: &str,
+) -> TermId {
+    let query_vars = kb.collect_vars(query);
+    let var = query_vars.iter().find(|v| kb.resolve_sym(v.name()) == var_name)
+        .unwrap_or_else(|| panic!("query has no var ?{var_name}"));
+    sol.subst.resolve_as_value(*var).map(|v| v.expect_term())
+        .unwrap_or_else(|| panic!("?{var_name} unbound in solution"))
+}
+
+/// Collect the `?id` bindings of every solution, sorted. Loud: a solution
+/// whose `?id` is unbound or not a String literal panics rather than being
+/// silently dropped from the comparison.
+fn sorted_ids(kb: &KnowledgeBase, query: TermId, solutions: &[anthill_core::kb::resolve::Solution]) -> Vec<String> {
+    let mut ids: Vec<String> = solutions.iter()
+        .map(|sol| {
+            let t = binding_term(kb, query, sol, "id");
+            extract_string(kb, t).unwrap_or_else(|| panic!("?id is not a String literal"))
+        })
+        .collect();
+    ids.sort();
+    ids
+}
+
 // ── Tests ───────────────────────────────────────────────────────
 
 #[test]
@@ -149,15 +177,11 @@ fn claimable_resolves_only_wi_auth_001() {
     let mut kb = load_github_todo_kb();
     let query = make_query2(&mut kb, "anthill.stage0.workflow.claimable", "id", "desc");
     let solutions = kb.resolve(&[query], &resolve_config());
-    assert_eq!(solutions.len(), 1, "only WI-AUTH-001 has no dependencies");
-
-    // Verify it's WI-AUTH-001
-    let sol = &solutions[0];
-    let query_vars = kb.collect_vars(query);
-    let id_var = query_vars.iter().find(|v| kb.resolve_sym(v.name()) == "id").unwrap();
-    let id_val = sol.subst.resolve_as_value(*id_var).map(|v| v.expect_term())
-        .and_then(|t| extract_string(&kb, t));
-    assert_eq!(id_val.as_deref(), Some("WI-AUTH-001"));
+    assert_eq!(
+        sorted_ids(&kb, query, &solutions),
+        vec!["WI-AUTH-001"],
+        "only WI-AUTH-001 has no dependencies",
+    );
 }
 
 /// WI-433 coverage hole: the example only had claimable items with EMPTY deps,
@@ -179,12 +203,7 @@ end
     let mut kb = load_github_todo_kb_with_extra(extra);
     let query = make_query2(&mut kb, "anthill.stage0.workflow.claimable", "id", "desc");
     let solutions = kb.resolve(&[query], &resolve_config());
-
-    let query_vars = kb.collect_vars(query);
-    let id_var = query_vars.iter().find(|v| kb.resolve_sym(v.name()) == "id").unwrap();
-    let ids: Vec<String> = solutions.iter()
-        .filter_map(|sol| sol.subst.resolve_as_value(*id_var).map(|v| v.expect_term()).and_then(|t| extract_string(&kb, t)))
-        .collect();
+    let ids = sorted_ids(&kb, query, &solutions);
 
     assert!(
         ids.contains(&"WI-CHILD".to_string()),
@@ -202,15 +221,106 @@ fn blocked_resolves_three() {
     let mut kb = load_github_todo_kb();
     let query = make_query2(&mut kb, "anthill.stage0.workflow.blocked", "id", "desc");
     let solutions = kb.resolve(&[query], &resolve_config());
-    assert_eq!(solutions.len(), 3, "3 items have unverified dependencies");
+    assert_eq!(
+        sorted_ids(&kb, query, &solutions),
+        vec!["WI-AUTH-002", "WI-AUTH-003", "WI-AUTH-004"],
+        "3 items have unverified dependencies",
+    );
+}
 
-    let query_vars = kb.collect_vars(query);
-    let id_var = query_vars.iter().find(|v| kb.resolve_sym(v.name()) == "id").unwrap();
-    let mut ids: Vec<String> = solutions.iter()
-        .filter_map(|sol| sol.subst.resolve_as_value(*id_var).map(|v| v.expect_term()).and_then(|t| extract_string(&kb, t)))
-        .collect();
-    ids.sort();
-    assert_eq!(ids, vec!["WI-AUTH-002", "WI-AUTH-003", "WI-AUTH-004"]);
+/// WI-717: an omitted OPTIONAL entity field is stored as `none()` (WI-716),
+/// so the workflow rules must give it the none() reading — an omitted
+/// `depends_on` means "no dependencies", an omitted `description` leaves the
+/// item listed (with `none` as its description) — instead of dropping the
+/// item from every view because none() matches neither the `nil()`/`cons(…)`
+/// nor the `some(?)` shapes.
+///
+/// The exact-set assertions also pin the WI-716 none()-fill itself for facts
+/// whose entity is declared in ANOTHER file: a var-filled optional would
+/// unify BOTH `description_view` cases (and both deps rules) and duplicate
+/// the item's solutions.
+const WI717_OMITTED_OPTIONALS: &str = r#"
+namespace anthill.stage0
+  fact WorkItem(id: "WI-NODEPS", description: "omits depends_on entirely",
+                acceptance: [], status: Open)
+  fact WorkItem(id: "WI-NODESC", acceptance: [], depends_on: [], status: Open)
+  fact WorkItem(id: "WI-DELIV-NODESC", acceptance: [], depends_on: [],
+                status: Delivered(agent: "claude", at: "2026-07-15"))
+end
+"#;
+
+#[test]
+fn wi717_omitted_optionals_stay_claimable() {
+    let mut kb = load_github_todo_kb_with_extra(WI717_OMITTED_OPTIONALS);
+    let query = make_query2(&mut kb, "anthill.stage0.workflow.claimable", "id", "desc");
+    let solutions = kb.resolve(&[query], &resolve_config());
+    assert_eq!(
+        sorted_ids(&kb, query, &solutions),
+        vec!["WI-AUTH-001", "WI-NODEPS", "WI-NODESC"],
+        "an item omitting depends_on (WI-NODEPS) or description (WI-NODESC) \
+         must be claimable exactly once, alongside the baseline WI-AUTH-001",
+    );
+}
+
+#[test]
+fn wi717_omitted_description_still_open_with_none_desc() {
+    let mut kb = load_github_todo_kb_with_extra(WI717_OMITTED_OPTIONALS);
+    let query = make_query2(&mut kb, "anthill.stage0.workflow.open_item", "id", "desc");
+    let solutions = kb.resolve(&[query], &resolve_config());
+    assert_eq!(
+        sorted_ids(&kb, query, &solutions),
+        vec!["WI-AUTH-001", "WI-AUTH-002", "WI-AUTH-003", "WI-AUTH-004",
+             "WI-NODEPS", "WI-NODESC"],
+        "the 4 example items + WI-NODEPS + WI-NODESC, each exactly once",
+    );
+
+    // An omitted description surfaces as the ground `none`, never an unbound
+    // var; a present one unwraps to its term (pins the some-case of
+    // description_view's nonlinear head, not just the ground none-case).
+    let find = |id: &str| {
+        solutions.iter()
+            .find(|sol| {
+                let t = binding_term(&kb, query, sol, "id");
+                extract_string(&kb, t).as_deref() == Some(id)
+            })
+            .unwrap_or_else(|| panic!("no solution for {id}"))
+    };
+    let nodesc_desc = binding_term(&kb, query, find("WI-NODESC"), "desc");
+    assert_eq!(
+        TermPrinter::new(&kb).print_term(nodesc_desc), "none",
+        "an omitted description surfaces as none(), not a leaked var",
+    );
+    let nodeps_desc = binding_term(&kb, query, find("WI-NODEPS"), "desc");
+    assert_eq!(
+        extract_string(&kb, nodeps_desc).as_deref(),
+        Some("omits depends_on entirely"),
+        "a present description unwraps to its term",
+    );
+}
+
+#[test]
+fn wi717_needs_review_lists_omitted_description() {
+    let mut kb = load_github_todo_kb_with_extra(WI717_OMITTED_OPTIONALS);
+    let query = make_query2(&mut kb, "anthill.stage0.workflow.needs_review", "id", "desc");
+    let solutions = kb.resolve(&[query], &resolve_config());
+    assert_eq!(
+        sorted_ids(&kb, query, &solutions),
+        vec!["WI-DELIV-NODESC"],
+        "a Delivered item whose description is omitted still shows up for review",
+    );
+}
+
+#[test]
+fn wi717_omitted_optionals_are_not_blocked() {
+    let mut kb = load_github_todo_kb_with_extra(WI717_OMITTED_OPTIONALS);
+    let query = make_query2(&mut kb, "anthill.stage0.workflow.blocked", "id", "desc");
+    let solutions = kb.resolve(&[query], &resolve_config());
+    assert_eq!(
+        sorted_ids(&kb, query, &solutions),
+        vec!["WI-AUTH-002", "WI-AUTH-003", "WI-AUTH-004"],
+        "items with omitted optionals have no unmet deps — blocked stays the \
+         3 example items with real unverified dependencies",
+    );
 }
 
 #[test]
@@ -237,8 +347,10 @@ fn tooldef_loaded() {
 /// lossy without types (it strips `some(value: x)` → `x`, drops `none()`, and
 /// renders nullary entities like `Open` as bare strings); the type-directed
 /// deserializer rebuilds each field from its declared type so the round-trip is
-/// faithful. Uses a fact with all fields explicitly valued (no omitted→fresh-var
-/// fields, which carry distinct VarIds and so cannot hash-cons-match).
+/// faithful. Uses a fact with all fields explicitly valued. (When this test was
+/// written an omitted field meant a fresh var with a distinct VarId, which could
+/// never hash-cons-match; since WI-716 an omitted OPTIONAL fills with ground
+/// none() — only omitted REQUIRED fields still var-fill.)
 #[test]
 fn wi501_workitem_round_trips_through_store() {
     use anthill_core::persistence::term_ser;
