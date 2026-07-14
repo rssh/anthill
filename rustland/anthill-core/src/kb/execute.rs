@@ -351,6 +351,11 @@ impl KnowledgeBase {
             Value::Cell(_) => Err(LowerError::UnsupportedVariant("Cell")),
             Value::Requirement(_) => Err(LowerError::UnsupportedVariant("Requirement")),
             Value::Node(_) => Err(LowerError::UnsupportedVariant("Node")),
+            // WI-714: a `Relation` is an intensional query value — it is RUN
+            // (`Relation.splitFirst` → `execute_logical_query`), never lowered to a
+            // data term. Its `query` payload IS a lowerable `LogicalQuery`, but the
+            // relation wrapper itself has no term equivalent.
+            Value::Relation { .. } => Err(LowerError::UnsupportedVariant("Relation")),
         }
     }
 

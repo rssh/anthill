@@ -376,7 +376,164 @@ impl Interpreter {
                 return Ok(StepOutcome::Deliver(Value::OpRef { op: sym, dict }));
             }
         }
+        // WI-714 (proposal 052): a bare reference to a RULE — its head functor
+        // (`SymbolKind::Goal`, an unlabeled rule) or a rule label
+        // (`SymbolKind::Rule`) — is a first-class `Relation` VALUE, not a call. This
+        // is the eval twin of the typer's `check_bare_ref` `Relation[T]` arm
+        // (parallel kind detection, like the free-standing-entity / sort arms
+        // above). A rule head functor is neither an entity, sort, constructor, nor
+        // operation, so it reaches here; without this it fell to `dispatch_call` →
+        // `UnknownOperation`.
+        if matches!(
+            self.kb.kind_of(sym),
+            Some(crate::intern::SymbolKind::Goal | crate::intern::SymbolKind::Rule)
+        ) {
+            return Ok(StepOutcome::Deliver(self.build_relation_value(sym)?));
+        }
         self.dispatch_call(sym, Vec::new(), SmallVec::new())
+    }
+
+    /// WI-714 (proposal 052) — build the `Relation` VALUE a rule reference denotes.
+    /// Resolves `ref_sym` (a rule label or head functor) to the rule's clauses,
+    /// opens the (shared) head with FRESH globals in each variable slot — those are
+    /// the relation's free COLUMNS, named by the head parameter — into a
+    /// `pattern_query(head(?cols…))` goal atom, and packages it as
+    /// `Value::Relation { query, columns }`. Consuming it runs the query
+    /// (`Relation.splitFirst`) and materializes each answer onto `columns`.
+    ///
+    /// All clauses of a multi-clause relation share one head interface, so the
+    /// first clause's head fixes the columns; the column TYPE lub across clauses is
+    /// a typing concern (C3), not a runtime one.
+    fn build_relation_value(&mut self, ref_sym: Symbol) -> Result<Value, EvalError> {
+        use crate::kb::term::VarId;
+        let qn = self.kb.qualified_name_of(ref_sym).to_string();
+        let rids = self.kb.rule_ids_by_qn(&qn);
+        let rid = *rids.first().ok_or_else(|| {
+            EvalError::Internal(format!("WI-714: no rule clause for reference `{qn}`"))
+        })?;
+        let head_tid = match self.kb.rule_head_value(rid) {
+            Value::Term { id, .. } => *id,
+            other => {
+                return Err(EvalError::Internal(format!(
+                    "WI-714: rule `{qn}` has a non-term head carrier ({})",
+                    other.type_name()
+                )))
+            }
+        };
+        let globals: Vec<VarId> = self.kb.rule_globals(rid).to_vec();
+        let (functor, pos_args, named_args) = match self.kb.get_term(head_tid) {
+            Term::Fn { functor, pos_args, named_args } => {
+                (*functor, pos_args.clone(), named_args.clone())
+            }
+            // A nullary head (`Ref(f)`) — a 0-column membership relation.
+            Term::Ref(f) | Term::Ident(f) => (*f, SmallVec::new(), SmallVec::new()),
+            other => {
+                return Err(EvalError::Internal(format!(
+                    "WI-714: rule `{qn}` head is not an atom: {other:?}"
+                )))
+            }
+        };
+
+        let mut pos: Vec<Value> = Vec::with_capacity(pos_args.len());
+        let mut named: Vec<(Symbol, Value)> = Vec::with_capacity(named_args.len());
+        let mut columns: Vec<(Symbol, VarId)> = Vec::new();
+        for arg in pos_args {
+            let (fresh_term, col) = self.fresh_head_slot(arg, None, &globals)?;
+            if let Some(c) = col {
+                columns.push(c);
+            }
+            pos.push(fresh_term);
+        }
+        for (key, arg) in named_args {
+            let (fresh_term, col) = self.fresh_head_slot(arg, Some(key), &globals)?;
+            if let Some(c) = col {
+                columns.push(c);
+            }
+            named.push((key, fresh_term));
+        }
+        // Dedup columns by NAME (a nonlinear head variable `twin(?n, ?n)` fills two
+        // slots but is ONE logical column) so the materialized row matches the typer
+        // schema's collapsed column set. The goal atom keeps both slots (distinct
+        // fresh vars unified by the rule head), so the resolver still enforces the
+        // equality; only the projection targets dedup.
+        {
+            let mut seen: std::collections::HashSet<Symbol> = std::collections::HashSet::new();
+            columns.retain(|(name, _)| seen.insert(*name));
+        }
+
+        let goal_atom = Value::Entity { functor, pos: pos.into(), named: named.into() };
+        // Wrap as `pattern_query(term: <goal atom>)` — the arbitrary-goal-atom
+        // LogicalQuery constructor `execute_logical_query` lowers to one goal.
+        let pattern_query_sym = self
+            .kb
+            .try_resolve_symbol("anthill.reflect.LogicalQuery.pattern_query")
+            .ok_or_else(|| {
+                EvalError::Internal("WI-714: LogicalQuery.pattern_query unresolved".into())
+            })?;
+        let term_key = self.kb.intern("term");
+        let query = Value::Entity {
+            functor: pattern_query_sym,
+            pos: Vec::new().into(),
+            named: vec![(term_key, goal_atom)].into(),
+        };
+        Ok(Value::Relation { query: Rc::new(query), columns: columns.into() })
+    }
+
+    /// Freshen ONE head argument slot for [`Self::build_relation_value`]. A head
+    /// VARIABLE (`Var::DeBruijn(d)`, how rules store head params) becomes a fresh
+    /// Global — a free query column — named by the head parameter: the field `key`
+    /// for a named slot, else the source variable name recovered from `globals`
+    /// (REVERSED DeBruijn, `globals[len-1-d]`, the same reversal `install_rule_type_bounds`
+    /// uses). A ground or compound slot (a constant `queens(3, ?b)`, or an
+    /// already-Global legacy fill) is kept verbatim — a bound arg, not a free
+    /// column. Returns the slot's query-atom term and its column when it is a var.
+    fn fresh_head_slot(
+        &mut self,
+        arg: TermId,
+        key: Option<Symbol>,
+        globals: &[crate::kb::term::VarId],
+    ) -> Result<(Value, Option<(Symbol, crate::kb::term::VarId)>), EvalError> {
+        use crate::kb::term::Var;
+        let var = match self.kb.get_term(arg) {
+            Term::Var(v) => Some(*v),
+            _ => None,
+        };
+        match var {
+            Some(Var::DeBruijn(d)) => {
+                let name = match key {
+                    Some(k) => k,
+                    None => globals
+                        .get(globals.len().wrapping_sub(1).wrapping_sub(d as usize))
+                        .map(|v| v.name())
+                        .ok_or_else(|| {
+                            EvalError::Internal(format!(
+                                "WI-714: head DeBruijn({d}) out of range of {} globals",
+                                globals.len()
+                            ))
+                        })?,
+                };
+                let fresh = self.kb.fresh_var(name);
+                let term = Value::term(self.kb.alloc(Term::Var(Var::Global(fresh))));
+                Ok((term, Some((name, fresh))))
+            }
+            // A COMPOUND slot mentioning a variable (`some(?x)`) cannot be spliced
+            // verbatim — its raw DeBruijn would unify reflexively-only and silently
+            // yield zero solutions — so reject it loudly (per "loud error over silent
+            // skip"). The typer's `relation_reference_type` already rejects this at
+            // LOAD; this guards a programmatically-built reference. A ground slot
+            // (constant / ground compound, or a legacy Global fill) is a filter — keep
+            // it verbatim, not a column.
+            _ => {
+                if self.kb.term_mentions_debruijn(arg) {
+                    return Err(EvalError::Internal(
+                        "WI-714: a relation reference with a compound head argument \
+                         (e.g. `some(?x)`) is not yet supported"
+                            .into(),
+                    ));
+                }
+                Ok((Value::term(arg), None))
+            }
+        }
     }
 
     /// Proposal 039 / WI-084 — produce a term-level constant's value, memoized.
@@ -2256,6 +2413,13 @@ pub(crate) fn runtime_carrier_sort(kb: &KnowledgeBase, value: &Value) -> Option<
         Value::Bool(_) => Some("anthill.prelude.Bool"),
         // Structured values: the carrier is the constructor's parent sort (below).
         Value::Entity { .. } | Value::Term { .. } => None,
+        // WI-714 (proposal 052): a `Relation` value's carrier IS the `Relation`
+        // sort — so `splitFirst`/`head`/`map`/… dispatch to `Relation.splitFirst`
+        // (the query-running host builtin) and, via `provides LogicalStream`, the
+        // inherited Stream API. Without this it would fall to `None` and dispatch
+        // as `UnknownOperation` (the WI-435 widening class this exhaustive match
+        // closes).
+        Value::Relation { .. } => Some("anthill.prelude.Relation"),
         // Values that never name a spec receiver — no carrier sort. Listed
         // explicitly (no `_` arm) so a new `Value` variant forces a decision.
         Value::Unit

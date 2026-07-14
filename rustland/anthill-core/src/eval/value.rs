@@ -9,7 +9,7 @@ use std::rc::Rc;
 
 use crate::intern::Symbol;
 use crate::kb::node_occurrence::NodeOccurrence;
-use crate::kb::term::{TermId, Var};
+use crate::kb::term::{TermId, Var, VarId};
 
 pub use super::cell_arena::CellHandle;
 pub use super::closure::ClosureHandle;
@@ -142,6 +142,43 @@ pub enum Value {
     /// tree directly. Atomic refcount on clone — no deep copy.
     /// See `docs/design/occurrence-as-value-type.md`.
     Node(Rc<NodeOccurrence>),
+
+    /// WI-714 (proposal 052) — a rule cited by name as a first-class,
+    /// composable query value: the typed, intensional face of a `LogicalQuery`.
+    ///
+    /// Why a dedicated variant (not a `Value::Entity`): `Relation` is an
+    /// **abstract sort with no data constructor** — the same situation as
+    /// `Stream`(`LogicalStream`) / `Map` / `Cell`. Nothing *builds* a `Relation`
+    /// entity, so its values ride a **native carrier** variant that
+    /// [`runtime_carrier_sort`] maps to `Relation` by fiat (exactly as
+    /// `Value::Stream`→`LogicalStream`), and it is `Opaque` in the term view for
+    /// the same reason those are — a native carrier is not structural data. (It is
+    /// NOT "a handle for live state": a relation's content is a `LogicalQuery`,
+    /// which is data. The load-bearing fact is only "constructor-less abstract
+    /// sort → native carrier".) The one thing it carries that `Stream` lacks is the
+    /// query; everything else (`head`/`map`/`toList`/…) is inherited through
+    /// `provides LogicalStream`.
+    ///
+    /// Two payloads:
+    /// - `query` — a reflect `LogicalQuery` value (`pattern_query(head_atom)` for
+    ///   a bare rule reference; the algebra increments wrap it in
+    ///   `conjunction`/`guarded`/`disjunction`/… — the constructors of the same
+    ///   ADT). Reaches [`crate::kb::KnowledgeBase::execute_logical_query`] verbatim.
+    /// - `columns` — the relation's free variables `(column name, VarId)` in head
+    ///   declaration order: the schema `T`'s projection targets. The `VarId`s are
+    ///   the fresh globals embedded in `query`'s goal atom, so an answer
+    ///   substitution binds exactly them; `materialize_solution` reads each column
+    ///   through these ids (1-collapsing to the element for one, `Unit` for zero).
+    ///
+    /// A `Relation` `provides LogicalStream[T, E]`, so it is consumed through the
+    /// ordinary Stream API: [`runtime_carrier_sort`] maps it to `Relation`, and
+    /// `Relation.splitFirst` (a host builtin) runs the query and pumps a
+    /// [`crate::eval::stream::StreamSource::MaterializedResolver`] over `columns`.
+    /// `Rc` payloads keep `clone` O(1) (an arg-bind / var-read cost).
+    Relation {
+        query: Rc<Value>,
+        columns: Rc<[(Symbol, VarId)]>,
+    },
 }
 
 /// A hash-consed `TermId` is the universal `Value::Term` carrier (WI-373). Lets
@@ -238,6 +275,7 @@ impl Value {
             Value::Term { .. } => "Term",
             Value::Node(_) => "Node",
             Value::Var(_) => "Var",
+            Value::Relation { .. } => "Relation",
         }
     }
 }

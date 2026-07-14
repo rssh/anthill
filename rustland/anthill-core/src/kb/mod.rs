@@ -2754,6 +2754,28 @@ impl KnowledgeBase {
         }
     }
 
+    /// WI-714 — whether `tid` contains ANY `Var::DeBruijn` (recursively). A rule
+    /// head slot that is a bare `DeBruijn` is a free column; a slot that is a
+    /// COMPOUND term MENTIONING a DeBruijn (`some(?x)`) cannot be spliced verbatim
+    /// into a runnable query goal — its raw DeBruijn would unify reflexively-only
+    /// (`kb/resolve.rs` `unify_match_values`) and silently yield zero solutions — so
+    /// `build_relation_value` / `relation_clause_columns` reject it loudly. A fully
+    /// GROUND compound (`pair(1, 2)`, no DeBruijn) is a legitimate filter and passes.
+    pub(crate) fn term_mentions_debruijn(&self, tid: TermId) -> bool {
+        match self.get_term(tid) {
+            Term::Var(Var::DeBruijn(_)) => true,
+            Term::Fn { pos_args, named_args, .. } => {
+                let children: SmallVec<[TermId; 8]> = pos_args
+                    .iter()
+                    .copied()
+                    .chain(named_args.iter().map(|(_, a)| *a))
+                    .collect();
+                children.iter().any(|&a| self.term_mentions_debruijn(a))
+            }
+            _ => false,
+        }
+    }
+
     /// The named args of a fact head when it is a ground `Term::Fn`, else `None`
     /// (a value head, or a non-`Fn` term). An owned clone — the carrier-agnostic
     /// skip peer of [`Self::fact_head_term`] for readers that pull named fields

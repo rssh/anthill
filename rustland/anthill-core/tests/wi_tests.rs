@@ -35,6 +35,9 @@ mod wi716_optional_fact_none_fill_test;
 #[path = "include/wi714_relation_materialize_test.rs"]
 mod wi714_relation_materialize_test;
 
+#[path = "include/wi714_relation_reference_test.rs"]
+mod wi714_relation_reference_test;
+
 #[path = "include/wi023_quantified_constraint_test.rs"]
 mod wi023_quantified_constraint_test;
 

@@ -492,6 +492,8 @@ impl Interpreter {
             | Value::Cell(_)
             | Value::Requirement(_)
             | Value::Node(_)
+            // WI-714: a `Relation` is a query value, never persisted store data.
+            | Value::Relation { .. }
             // WI-109: an unbound logic variable has no canonical store key.
             | Value::Var(_) => {
                 return Err(EvalError::TypeMismatch {

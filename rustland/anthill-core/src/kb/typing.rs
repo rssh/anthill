@@ -2811,7 +2811,256 @@ fn check_bare_ref(
         let type_ty = kb.make_sort_ref_by_name("anthill.prelude.Type");
         return Ok(TypeResult::pure(type_ty, env.clone(), Rc::clone(occ)));
     }
+    // WI-714 (proposal 052): a bare reference to a RULE — its head functor
+    // (`SymbolKind::Goal`, an unlabeled rule) or a rule label (`SymbolKind::Rule`)
+    // — denotes the relation as a first-class `Relation[T]` VALUE: the typed,
+    // composable face of its `LogicalQuery`, consumed as a stream via
+    // `provides LogicalStream`. Eval's `reduce_var` twin builds the runtime value.
+    // Sits before the `UnresolvedName` fall-through: a rule name is none of the
+    // readings above, so it reached here as an unresolved name today.
+    if matches!(
+        kb.kind_of(sym),
+        Some(crate::intern::SymbolKind::Goal | crate::intern::SymbolKind::Rule)
+    ) {
+        let ty = relation_reference_type(kb, sym, span, occ)?;
+        return Ok(TypeResult::pure_value(ty, env.clone(), Rc::clone(occ)));
+    }
     Err(TypeError::UnresolvedName { span, name: sym })
+}
+
+/// WI-714 (proposal 052) C3 — synthesize the `Relation[T]` type a rule reference
+/// denotes. `T` is the named tuple of the relation's free head parameters in
+/// declaration order — **1-collapsed** to the element for one, **`Unit`** for zero
+/// (a boolean/membership relation) — each column typed at the **lub** of that head
+/// parameter across the relation's clauses (WI-287 `join_types`; a disjoint pair
+/// with no lub is a load error, never a silent widen to `Term`). `sym` is a rule
+/// label or head functor (the caller gates on `SymbolKind::Goal | Rule`).
+///
+/// The access-effect row `E ⊇ {Error}` is threaded through the `provides` edge; it
+/// is not pinned on the sort here (Typing §3) — a follow-up increment.
+fn relation_reference_type(
+    kb: &mut KnowledgeBase,
+    sym: Symbol,
+    span: Option<Span>,
+    occ: &Rc<NodeOccurrence>,
+) -> Result<Value, TypeError> {
+    let qn = kb.qualified_name_of(sym).to_string();
+    let rids = kb.rule_ids_by_qn(&qn);
+    let first = *rids
+        .first()
+        .ok_or(TypeError::UnresolvedName { span, name: sym })?;
+    let head_err = |kb: &KnowledgeBase, msg: &str| TypeError::Other {
+        site: TypeError::here(),
+        span,
+        context: TypeErrorContext::Rule { name: sym, field: RuleField::Whole },
+        expected: "a relation with a uniform, simple-variable head interface".to_string(),
+        actual: format!("{} (rule `{}`)", msg, kb.qualified_name_of(sym)),
+    };
+    // WI-714: a COMPOUND head argument that mentions a variable (`some(?x)`) cannot
+    // ride verbatim into a runnable query goal (its raw DeBruijn unifies
+    // reflexively-only → zero solutions) and its column semantics are unsettled;
+    // reject it loudly (per "loud error over silent skip") across every clause. A
+    // fully-ground compound (`pair(1, 2)`) is a legitimate filter and passes.
+    for &rid in &rids {
+        if clause_head_has_compound_var(kb, rid) {
+            return Err(head_err(
+                kb,
+                "a compound head argument (e.g. `some(?x)`) is not yet supported",
+            ));
+        }
+    }
+    // Columns come from the FIRST clause (the goal is built at its structure); each
+    // column's TYPE is the lub of that SLOT across every clause. Alignment is by
+    // slot IDENTITY (`SlotKey`), not free-column index — a clause pinning a
+    // different slot to a constant shifts the free-column order, so index-alignment
+    // would lub unrelated columns. A clause whose free-slot SET differs (a
+    // heterogeneous interface) is rejected loudly rather than silently dropped
+    // (which would under-approximate the schema — unsound).
+    let mut columns = relation_clause_columns(kb, first);
+    for &rid in rids.iter().skip(1) {
+        let other = relation_clause_columns(kb, rid);
+        if !slot_keys_match(&columns, &other) {
+            return Err(head_err(
+                kb,
+                "clauses with differing free-variable slots are not yet supported",
+            ));
+        }
+        for oc in other {
+            let Some(c) = columns.iter_mut().find(|c| c.slot == oc.slot) else {
+                continue;
+            };
+            match join_types(kb, c.ty.clone(), oc.ty) {
+                Some(j) => c.ty = j,
+                None => {
+                    let cname = c.name;
+                    return Err(TypeError::Other {
+                        site: TypeError::here(),
+                        span,
+                        context: TypeErrorContext::Rule { name: sym, field: RuleField::Whole },
+                        expected: "a common column type across relation clauses".to_string(),
+                        actual: format!("disjoint types for column `{}`", kb.resolve_sym(cname)),
+                    });
+                }
+            }
+        }
+    }
+    let sp = occ.span;
+    // Dedup by column NAME: a nonlinear head variable (`twin(?n, ?n)`) fills two
+    // slots but is ONE logical column (same var ⟹ same name) — keep the first.
+    let mut seen_names: std::collections::HashSet<Symbol> = std::collections::HashSet::new();
+    let columns: Vec<(Symbol, Value)> = columns
+        .into_iter()
+        .filter(|c| seen_names.insert(c.name))
+        .map(|c| (c.name, c.ty))
+        .collect();
+    // Schema T: 0 → Unit, 1 → the element (1-collapse), else the named tuple.
+    let schema = match columns.len() {
+        0 => Value::term(kb.make_sort_ref_by_name("anthill.prelude.Unit")),
+        1 => columns.into_iter().next().unwrap().1,
+        _ => named_tuple_value(kb, &columns, sp, None),
+    };
+    // `Relation[T = schema, E = {Error}]`. The base sort IS the functor
+    // (`make_parameterized_type` producer flip); `parameterized_value` keeps a ground
+    // schema hash-consed and a denoted-bearing one occurrence-carried. `T` binds the
+    // first VALUE param; the EFFECT-ROW param `E` is pinned to `{Error}` — running a
+    // relation is not pure (search can raise, 026.1 `execute effects Error`), and the
+    // `provides LogicalStream[T, E]` edge threads this row so every inherited Stream
+    // op types at `{Error}`, not `{}` (Typing §3). Pinned HERE (at the value site),
+    // not on the sort — a concrete override on the abstract sort op would widen it
+    // (WI-347); the sort threads `E` abstractly (like FiniteStream).
+    let relation_sym = kb
+        .try_resolve_symbol("anthill.prelude.Relation")
+        .ok_or(TypeError::UnresolvedName { span, name: sym })?;
+    // The `{Error}` access-effect row (a canonical `present(Error)` effects row).
+    let error_row: Option<TermId> = kb
+        .try_resolve_symbol("anthill.prelude.Error")
+        .map(|es| {
+            let label = kb.make_sort_ref(es);
+            kb.build_canonical_effects_rows(&[label])
+        });
+    let params: Vec<(Symbol, TermId)> = sort_type_params_as_pairs(kb, relation_sym)
+        .iter()
+        .copied()
+        .collect();
+    let mut bindings: Vec<(Symbol, Value)> = Vec::with_capacity(params.len());
+    let mut schema = Some(schema);
+    for (psym, _) in params {
+        let short = short_name_of(kb.resolve_sym(psym)).to_string();
+        if sort_param_is_effect_row(kb, relation_sym, &short) {
+            if let Some(row) = error_row {
+                bindings.push((psym, Value::term(row)));
+            }
+        } else if let Some(s) = schema.take() {
+            // The first value parameter is the schema `T`.
+            bindings.push((psym, s));
+        }
+    }
+    let base = kb.make_sort_ref(relation_sym);
+    Ok(parameterized_value(kb, base, &bindings, sp, None))
+}
+
+/// WI-714 — the identity of a rule-head argument SLOT, stable across a relation's
+/// clauses so the cross-clause column lub aligns a slot with ITSELF (not with a
+/// free-column index that shifts when a clause pins a different slot to a constant).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SlotKey {
+    Pos(usize),
+    Named(Symbol),
+}
+
+/// WI-714 — one free-variable column of a relation clause: its head SLOT (for
+/// cross-clause alignment), its NAME (the field key for a named slot, else the
+/// source variable name), and its inferred TYPE.
+struct ClauseColumn {
+    slot: SlotKey,
+    name: Symbol,
+    ty: Value,
+}
+
+/// WI-714 — the free-variable COLUMNS of one relation clause, in declaration order.
+/// A head slot holding a bare variable (`Var::DeBruijn`, how rules store head
+/// params) is a free column; a ground or compound slot is not (a compound slot is
+/// rejected upstream by [`clause_head_has_compound_var`]). The column TYPE is the
+/// explicit `?x: T` bound if present, else the type inferred from the var's
+/// op-param / entity-field positions (`collect_rule_var_types`, keyed by DeBruijn
+/// index), else a fresh type var (an unconstrained column).
+fn relation_clause_columns(kb: &mut KnowledgeBase, rid: RuleId) -> Vec<ClauseColumn> {
+    let head = match kb.rule_head_value(rid).clone() {
+        Value::Term { id, .. } => id,
+        _ => return Vec::new(),
+    };
+    let globals = kb.rule_globals(rid).to_vec();
+    let body_nodes: Vec<Rc<NodeOccurrence>> = kb.rule_body_nodes(rid).to_vec();
+    let (var_types, _contradiction) = collect_rule_var_types(kb, head, &body_nodes);
+    let type_bounds: Vec<(u32, TermId)> = kb.rule_type_bounds(rid).to_vec();
+    let (pos_args, named_args) = match kb.get_term(head) {
+        Term::Fn { pos_args, named_args, .. } => (pos_args.clone(), named_args.clone()),
+        _ => return Vec::new(),
+    };
+    let n = globals.len();
+    // Ordered slots: positionals first (keyed by index), then named (keyed by field
+    // symbol) — matching the eval-side goal atom in `build_relation_value`.
+    let mut slots: Vec<(SlotKey, TermId, Option<Symbol>)> =
+        Vec::with_capacity(pos_args.len() + named_args.len());
+    for (i, &a) in pos_args.iter().enumerate() {
+        slots.push((SlotKey::Pos(i), a, None));
+    }
+    for &(k, a) in named_args.iter() {
+        slots.push((SlotKey::Named(k), a, Some(k)));
+    }
+    let mut columns: Vec<ClauseColumn> = Vec::new();
+    for (slot, arg, key) in slots {
+        let d = match kb.get_term(arg) {
+            Term::Var(Var::DeBruijn(idx)) => *idx,
+            _ => continue, // ground / compound slot — bound, not a free column
+        };
+        let name = match key {
+            Some(k) => k,
+            None => match globals.get(n.wrapping_sub(1).wrapping_sub(d as usize)) {
+                Some(v) => v.name(),
+                None => continue,
+            },
+        };
+        let ty = if let Some((_, t)) = type_bounds.iter().find(|(i, _)| *i == d) {
+            Value::term(*t)
+        } else if let Some(t) = var_types.get(&d) {
+            t.clone()
+        } else {
+            let fresh = kb.fresh_var(name);
+            Value::term(kb.alloc(Term::Var(Var::Global(fresh))))
+        };
+        columns.push(ClauseColumn { slot, name, ty });
+    }
+    columns
+}
+
+/// WI-714 — true iff any top-level rule-head slot is a COMPOUND term mentioning a
+/// variable (`some(?x)`, `pair(?a, 1)`). Such a slot cannot ride verbatim into a
+/// runnable query goal — its raw DeBruijn would unify reflexively-only and silently
+/// yield zero solutions — and its column semantics are unsettled, so a relation
+/// reference over it is rejected loudly. A fully-ground compound (`pair(1, 2)`,
+/// no variable) is a legitimate filter and returns `false`.
+fn clause_head_has_compound_var(kb: &KnowledgeBase, rid: RuleId) -> bool {
+    let Some(head) = kb.fact_head_term(rid) else { return false };
+    let (pos_args, named_args) = match kb.get_term(head) {
+        Term::Fn { pos_args, named_args, .. } => (pos_args.clone(), named_args.clone()),
+        _ => return false,
+    };
+    let is_compound_var = |kb: &KnowledgeBase, arg: TermId| -> bool {
+        // A BARE var slot is a column (fine); anything else is a compound only if it
+        // mentions a DeBruijn variable.
+        !matches!(kb.get_term(arg), Term::Var(_)) && kb.term_mentions_debruijn(arg)
+    };
+    pos_args.iter().any(|&a| is_compound_var(kb, a))
+        || named_args.iter().any(|&(_, a)| is_compound_var(kb, a))
+}
+
+/// WI-714 — the two clauses share the SAME set of free-variable slots (a uniform
+/// head interface), so their columns lub slot-for-slot. A differing set (a clause
+/// pins a slot the other leaves free, or a differing arity) is a heterogeneous
+/// interface the schema synthesis does not yet support.
+fn slot_keys_match(a: &[ClauseColumn], b: &[ClauseColumn]) -> bool {
+    a.len() == b.len() && a.iter().all(|ca| b.iter().any(|cb| cb.slot == ca.slot))
 }
 
 /// WI-206: whether `expected` is the reflect `Type` sort — the slot in which a
@@ -10180,6 +10429,19 @@ fn collect_provides_candidates(
     // check instead of format!+resolve+sort-alias per binding.
     let type_param_names: Vec<String> = kb.type_params_of_sort(goal.spec_sort);
 
+    // WI-714 (proposal 052): transitive-carrier acceptance (below) is a FALLBACK,
+    // enabled only when the carrier does NOT directly provide the spec. A carrier
+    // that BOTH directly and transitively provides `Stream` — `List provides Stream`
+    // AND `List provides FiniteStream provides Stream` — must keep resolving to its
+    // DIRECT impl; broadening unconditionally matched both and regressed to
+    // `Ambiguous` (wi357). A `Relation` provides `Stream` ONLY through the chain
+    // `Relation provides LogicalStream provides Stream` (no direct fact), so the
+    // fallback fires exactly for it. Computed once (immutable) before the mutable
+    // candidate loop.
+    let carrier_directly_provides = goal
+        .carrier
+        .is_some_and(|c| provider_spec_view_bindings(kb, c, goal.spec_sort).is_some());
+
     let mut out: Vec<Candidate> = Vec::new();
     for rid in candidates {
         if !kb.is_fact(rid) {
@@ -10222,7 +10484,22 @@ fn collect_provides_candidates(
         // may be interned under different copies of the same logical sort —
         // the same normalization `sort_ops_lookup` applies to `impl_sort`.
         if let Some(carrier) = goal.carrier {
-            if kb.canonical_sort_sym(impl_sort) != kb.canonical_sort_sym(carrier) {
+            // WI-714 (proposal 052): accept the provider when the carrier IS the
+            // impl sort (the direct hot path) OR — only as a FALLBACK, when the
+            // carrier does not directly provide the spec — when it TRANSITIVELY
+            // provides it (a provider CHAIN). A `Relation[T, E]` value dispatches a
+            // `Stream` op (`head`/`headOption`/`toList`) whose only provider of
+            // `Stream` is `LogicalStream` (`impl_sort = LogicalStream`), reached via
+            // `Relation provides LogicalStream provides Stream`. Before 052 the typer
+            // never saw a 2-hop carrier (a `.map` return type collapses to the direct
+            // provider `Stream`), so exact-equality sufficed; a relation is the first
+            // value whose STATIC type is two `provides` hops from the spec.
+            // `sort_provides` is transitive and cycle-guarded.
+            let impl_canon = kb.canonical_sort_sym(impl_sort);
+            let carrier_canon = kb.canonical_sort_sym(carrier);
+            let accept = impl_canon == carrier_canon
+                || (!carrier_directly_provides && sort_provides(kb, carrier, impl_sort));
+            if !accept {
                 continue;
             }
         }
@@ -13164,9 +13441,16 @@ fn bind_spec_params_from_carrier(
         return false;
     }
 
-    // The carrier's provider fact maps each spec parameter to a
-    // carrier-side value (`fact Stream[T = T]` ⇒ spec `T` ↦ carrier `T`).
-    let Some(view_bindings) = provider_spec_view_bindings(kb, carrier_sym, spec_sort) else {
+    // The carrier's provider fact maps each spec parameter to a carrier-side value
+    // (`fact Stream[T = T]` ⇒ spec `T` ↦ carrier `T`). WI-714: TRANSITIVE — a
+    // `Relation[T, E]` receiver grounds `Stream`'s params through the chain
+    // `Relation provides LogicalStream provides Stream` (no direct fact), so the
+    // self-receiver spec-op-on-a-2-hop-carrier case (`headOption`/`toList` on a
+    // relation) threads `Stream.T ↦ Relation.T`, `Stream.E ↦ Relation.E`.
+    let mut visited: SmallVec<[Symbol; 8]> = SmallVec::new();
+    let Some(view_bindings) =
+        transitive_provider_spec_view_bindings(kb, carrier_sym, spec_sort, &mut visited)
+    else {
         return false;
     };
 
@@ -13666,6 +13950,46 @@ fn parameterized_vid_bindings(
 /// value)` pairs (`fact Stream[T = T]` on `List` ⇒ `[(Stream.T, List.T)]`).
 /// First matching provider wins. `None` when the carrier declares no such
 /// provision.
+/// WI-714 (proposal 052) — the FULL provider view of `carrier_sym` for `spec_sort`
+/// (every spec param ↦ a carrier-side value), DIRECT or composed through TRANSITIVE
+/// provision. The self-receiver companion to [`transitive_provision_view`] (which
+/// returns a single carrier-`pvid` view for the carrier-param shape): here the
+/// receiver is typed by the spec sort itself (`headOption(s: Stream)` with `s :
+/// Relation[T, E]`), so ALL of the spec's params must ground off the carrier — and
+/// `Relation` provides `Stream` only through the chain `Relation provides
+/// LogicalStream provides Stream`, with no direct `Relation provides Stream` fact.
+/// Direct provision wins (the hot path — `List provides Stream` etc.). Otherwise
+/// descend the specs `carrier_sym` provides, find one that (transitively) provides
+/// `spec_sort`, and compose its view back through the carrier→intermediate hop via
+/// [`compose_provision_views`]. `visited` guards a cyclic `provides` chain.
+fn transitive_provider_spec_view_bindings(
+    kb: &KnowledgeBase,
+    carrier_sym: Symbol,
+    spec_sort: Symbol,
+    visited: &mut SmallVec<[Symbol; 8]>,
+) -> Option<SmallVec<[(Symbol, TermId); 2]>> {
+    if let Some(view) = provider_spec_view_bindings(kb, carrier_sym, spec_sort) {
+        return Some(view);
+    }
+    if visited.iter().any(|&v| same_sort_canonical(kb, v, carrier_sym)) {
+        return None;
+    }
+    visited.push(carrier_sym);
+    for intermediate in directly_provided_specs(kb, carrier_sym) {
+        let Some(outer_view) =
+            transitive_provider_spec_view_bindings(kb, intermediate, spec_sort, visited)
+        else {
+            continue;
+        };
+        // The carrier→intermediate bindings, to eliminate the intermediate's params.
+        let Some(inner_view) = provider_spec_view_bindings(kb, carrier_sym, intermediate) else {
+            continue;
+        };
+        return Some(compose_provision_views(kb, intermediate, &outer_view, &inner_view));
+    }
+    None
+}
+
 fn provider_spec_view_bindings(
     kb: &KnowledgeBase,
     carrier_sym: Symbol,

@@ -1130,7 +1130,11 @@ impl TermView for Value {
             | Value::Substitution(_)
             | Value::Map(_)
             | Value::Cell(_)
-            | Value::Requirement(_) => ViewHead::Opaque,
+            | Value::Requirement(_)
+            // WI-714: a `Relation` is an intensional query value, not structural
+            // data — opaque to the term view (it never unifies or indexes; it is
+            // consumed only through `Relation.splitFirst`).
+            | Value::Relation { .. } => ViewHead::Opaque,
         }
     }
 

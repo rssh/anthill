@@ -100,6 +100,7 @@ pub fn register_standard_builtins(interp: &mut Interpreter) -> Result<(), EvalEr
     register_if_present(interp, "anthill.prelude.Map.size", map_size)?;
 
     register_if_present(interp, "anthill.prelude.LogicalStream.splitFirst", logical_stream_split_first)?;
+    register_if_present(interp, "anthill.prelude.Relation.splitFirst", relation_split_first)?;
     register_if_present(interp, "anthill.reflect.KB.kb", kb_ambient)?;
     register_if_present(interp, "anthill.reflect.KB.execute", kb_execute)?;
     register_if_present(interp, "anthill.reflect.KB.facts_of", kb_facts_of)?;
@@ -981,17 +982,15 @@ use crate::eval::stream::StreamSource;
 /// reflect `Solution` (`definite(subst)` / `undecided(subst, residual)`,
 /// WI-531); it is passed through opaquely here, wrapped in `Pair` with the
 /// continuation (see `Interpreter::stream_split_first`).
-fn logical_stream_split_first(
+///
+/// Wrap a pumped stream step as the anthill `Option[Pair[T, Stream]]` value both
+/// `splitFirst` builtins return: `none` at end, else `some(pair(fst: value, snd:
+/// rest-stream))`. Shared by [`logical_stream_split_first`] and
+/// [`relation_split_first`] — the two differ only in how they obtain `pumped`.
+fn split_first_result(
     interp: &mut Interpreter,
-    args: &[Value],
+    pumped: Option<(Value, crate::eval::value::StreamHandle)>,
 ) -> Result<Value, EvalError> {
-    let [arg] = expect_args::<1>("LogicalStream.splitFirst", args)?;
-    let handle = match arg {
-        Value::Stream(h) => h,
-        other => return Err(type_mismatch("Stream", &other, None)),
-    };
-    let pumped = interp.stream_split_first(&handle)?;
-
     let some_sym = require_symbol(interp, "anthill.prelude.Option.some", "some")?;
     let none_sym = require_symbol(interp, "anthill.prelude.Option.none", "none")?;
     match pumped {
@@ -1017,6 +1016,53 @@ fn logical_stream_split_first(
             })
         }
     }
+}
+
+/// `Relation.splitFirst(r: Relation) -> Option[Pair[A = r.T, B = LogicalStream[T
+/// = r.T, E = r.E]]]` — WI-714 (proposal 052). The runtime primitive that makes a
+/// `Relation` consumable through `provides LogicalStream`: RUN the relation's
+/// query (026.1 `execute_logical_query`), wrap the resolver search in a
+/// `MaterializedResolver` over the relation's schema `columns`, and pump ONE
+/// solution — materialized onto the free vars as a `T` row (C1
+/// `materialize_solution`). The continuation `rest` is a `Value::Stream`, so after
+/// the first pull the relation IS an ordinary Stream (the columns ride in the
+/// `MaterializedResolver`), and every further `splitFirst`/`head`/`map` goes
+/// through `LogicalStream.splitFirst`. Structurally identical to
+/// [`logical_stream_split_first`] once the query is run — a runtime op returning a
+/// Stream. Empty answer set → `none` (NotFound is the ordinary Stream contract, no
+/// bespoke nil arm).
+fn relation_split_first(
+    interp: &mut Interpreter,
+    args: &[Value],
+) -> Result<Value, EvalError> {
+    let [arg] = expect_args::<1>("Relation.splitFirst", args)?;
+    let (query, columns) = match arg {
+        Value::Relation { query, columns } => (query, columns),
+        other => return Err(type_mismatch("Relation", &other, None)),
+    };
+    let search = interp
+        .kb
+        .execute_logical_query(&query)
+        .map_err(|e| EvalError::Internal(format!("Relation.splitFirst execute: {}", e)))?;
+    let handle = interp.alloc_stream(StreamSource::MaterializedResolver {
+        search: Some(search),
+        columns,
+    });
+    let pumped = interp.stream_split_first(&handle)?;
+    split_first_result(interp, pumped)
+}
+
+fn logical_stream_split_first(
+    interp: &mut Interpreter,
+    args: &[Value],
+) -> Result<Value, EvalError> {
+    let [arg] = expect_args::<1>("LogicalStream.splitFirst", args)?;
+    let handle = match arg {
+        Value::Stream(h) => h,
+        other => return Err(type_mismatch("Stream", &other, None)),
+    };
+    let pumped = interp.stream_split_first(&handle)?;
+    split_first_result(interp, pumped)
 }
 
 /// `KB.kb() -> KB` — the ambient-knowledge-base accessor. Returns a
