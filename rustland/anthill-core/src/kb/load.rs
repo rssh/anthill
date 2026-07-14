@@ -7555,6 +7555,19 @@ impl<'a> Loader<'a> {
                         {
                             return;
                         }
+                        // WI-714 (proposal 052) — the BARE-QUALIFIED citation
+                        // position: a rule cited by a dotted name with NO trailing
+                        // `(…)` (`ns.rule` / `Sort.rule`) parses (§6.7) as a
+                        // `field_access` chain, not a call. When that chain spells a
+                        // name resolving to a RULE, it is the `Relation[T]` value —
+                        // collapse it to the SAME reference form the bare UNQUALIFIED
+                        // rule name lowers to. AFTER the value-receiver re-route, so a
+                        // rule cannot shadow a genuine field access on a local value.
+                        if name == "field_access"
+                            && self.try_qualified_rule_ref(parse_id, results)
+                        {
+                            return;
+                        }
                         work.push(LoadWorkOp::Build(LoadBuildFrame::ApplyOrConstructor {
                             outer_parse_id: parse_id,
                             functor,
@@ -7764,6 +7777,103 @@ impl<'a> Loader<'a> {
                 _ => return None,
             }
         }
+    }
+
+    /// WI-714 (proposal 052) — the BARE-QUALIFIED citation position. A rule cited by
+    /// a dotted name with NO trailing `(…)` (`ns.rule`, `Sort.rule` — e.g.
+    /// `test.data.person_row`) parses (§6.7) as a `field_access` chain, NOT a call: a
+    /// name with no application is dot projection. When that chain's segments spell a
+    /// name resolving to a RULE (an unlabeled rule's `Goal` head functor or a `Rule`
+    /// label) in scope, it denotes the `Relation[T]` VALUE — exactly as the bare
+    /// UNQUALIFIED `person_row` does. Collapse it to the SAME `var_ref(name:
+    /// Ref(rule))` form `load_var_ref` lowers the unqualified reference to, so the
+    /// existing `check_bare_ref` (C3 schema) + `reduce_var` (C2 value) arms serve all
+    /// three citation positions uniformly — no new typer/eval arm, no `CallClass`.
+    ///
+    /// A value-rooted receiver never reaches here (the converter made it `dot_apply`),
+    /// and a LOCAL-value-rooted chain was already re-routed by
+    /// [`Self::try_identifier_dot_field`] — so a surviving chain is name-rooted
+    /// (sort / namespace), the proposal's §6.7 mode-2 gate implicit in a successful
+    /// rule resolution. Resolution is read-only ([`Self::resolve_qualified_rule_readonly`]),
+    /// so a chain that is a genuine projection falls through to the ordinary path
+    /// untouched.
+    fn try_qualified_rule_ref(&mut self, parse_id: TermId, results: &mut Vec<TermId>) -> bool {
+        let Some(name) = self.field_access_dotted_name(parse_id) else {
+            return false;
+        };
+        let Some(sym) = self.resolve_qualified_rule_readonly(&name) else {
+            return false;
+        };
+        // Emit the bare-unqualified rule-reference form + its leaf occurrence —
+        // mirrors the `Term::Ident` arm of `visit_load` (via `load_var_ref`).
+        let kb_id = self.mk_var_ref(sym);
+        self.create_occurrence(parse_id, kb_id);
+        results.push(kb_id);
+        self.push_leaf_occ(kb_id);
+        true
+    }
+
+    /// The dotted name a pure `field_access(Ident-chain, Ident)` term spells, or
+    /// `None` if any node isn't the converter's 2-arg `field_access(object,
+    /// Ident(field))` shape bottoming out in a root `Ident` (i.e. a call / value /
+    /// instantiation sits in the chain, so it is not a static name path).
+    fn field_access_dotted_name(&self, parse_id: TermId) -> Option<String> {
+        let mut segments: Vec<String> = Vec::new();
+        let mut cur = parse_id;
+        loop {
+            match self.parsed.terms.get(cur) {
+                Term::Ident(sym) => {
+                    segments.push(self.parsed.symbols.name(*sym).to_owned());
+                    break;
+                }
+                Term::Fn { functor, pos_args, named_args }
+                    if self.parsed.symbols.name(*functor) == "field_access"
+                        && pos_args.len() == 2
+                        && named_args.is_empty() =>
+                {
+                    let Term::Ident(field) = self.parsed.terms.get(pos_args[1]) else {
+                        return None;
+                    };
+                    segments.push(self.parsed.symbols.name(*field).to_owned());
+                    cur = pos_args[0];
+                }
+                _ => return None,
+            }
+        }
+        segments.reverse();
+        Some(segments.join("."))
+    }
+
+    /// Read-only resolution of a dotted `name` to a RULE symbol (`Goal` head functor
+    /// or `Rule` label), else `None`. Mirrors the resolution
+    /// [`Self::remap_name_str_inner`] performs — direct scope resolution, else a
+    /// head-segment-qualified `by_qualified_name` probe (the `ns.rule` / `Map.empty`
+    /// shape a single joined name takes) — but WITHOUT its mutation (no
+    /// unresolved-name interning, no error push), so a non-rule name leaves loader
+    /// state untouched for the ordinary `field_access` projection path.
+    fn resolve_qualified_rule_readonly(&self, name: &str) -> Option<Symbol> {
+        let scope = self.current_scope.raw();
+        let sym = match self.kb.symbols.resolve_in_scope(name, scope) {
+            ResolveResult::Found(s) => s,
+            _ => {
+                let (head, tail) = name.split_once('.')?;
+                let ResolveResult::Found(head_sym) =
+                    self.kb.symbols.resolve_in_scope(head, scope)
+                else {
+                    return None;
+                };
+                let head_qualified = match self.kb.symbols.get(head_sym) {
+                    SymbolDef::Resolved { qualified_name, .. } => qualified_name.clone(),
+                    SymbolDef::Unresolved { name } => name.clone(),
+                };
+                self.kb
+                    .symbols
+                    .by_qualified_name
+                    .get(&format!("{head_qualified}.{tail}"))
+                    .copied()?
+            }
+        };
+        matches!(self.kb.kind_of(sym), Some(SymbolKind::Goal | SymbolKind::Rule)).then_some(sym)
     }
 
     /// WI-304: push the native leaf `NodeOccurrence` for a just-built leaf

@@ -696,6 +696,174 @@ end
     );
 }
 
+// ── BARE-QUALIFIED citation position (WI-714): `ns.rule` / `Sort.rule` as a value ──
+//
+// The third and final citation position (proposal 052 §Naming). A rule cited by a
+// dotted name with NO trailing `(…)` parses (§6.7) as a `field_access` chain, not a
+// call. When that chain resolves to a rule, the loader collapses it to the SAME
+// `var_ref(Ref(rule))` form the bare UNQUALIFIED name takes, so `check_bare_ref` (C3)
+// and `reduce_var` (C2) type + run it identically — the reference is a `Relation[T]`
+// value consumed through the Stream API.
+
+/// A rule cited by a bare, fully-qualified NAMESPACE name (no application) from
+/// another file is a `Relation[T]` value: `test.wi714bq.data.person_row` types as
+/// `Relation[(name, age)]` and drains via the inherited `takeN`.
+#[test]
+fn wi714_bare_qualified_namespace_reference() {
+    const DATA: &str = r#"
+namespace test.wi714bq.data
+  import anthill.prelude.{String, Int64}
+
+  sort Person
+    entity person(name: String, age: Int64)
+  end
+  fact person(name: "alice", age: 30)
+  fact person(name: "bob", age: 25)
+
+  rule person_row(?name, ?age) :- person(name: ?name, age: ?age)
+end
+"#;
+    const USE: &str = r#"
+namespace test.wi714bq.use
+  import anthill.prelude.{String, Int64, List}
+
+  operation rows() -> List[(name: String, age: Int64)] effects Error =
+    let r = test.wi714bq.data.person_row
+    r.takeN(5)
+end
+"#;
+    let kb = crate::common::try_load_kb_with_files(&[DATA, USE])
+        .unwrap_or_else(|errs| panic!("bare-qualified namespace reference must load; got: {errs:?}"));
+    let mut interp = anthill_core::eval::Interpreter::new(kb);
+    anthill_core::eval::builtins::register_standard_builtins(&mut interp)
+        .expect("register builtins");
+    let r = interp
+        .call("test.wi714bq.use.rows", &[])
+        .expect("rows() drains the bare-qualified relation");
+    let mut rows = collect_named_rows(&r);
+    rows.sort();
+    assert_eq!(
+        rows,
+        vec![("alice".to_string(), 30), ("bob".to_string(), 25)],
+        "a bare-qualified `ns.rule` value drains exactly like the bare-unqualified form"
+    );
+}
+
+/// The proposal's canonical `Queen.find` — a rule declared inside a SORT body,
+/// cited bare as `Sort.rule` (no application). The receiver `Queen` is a sort symbol
+/// (§6.7 mode-2), and `find` names a rule in its scope, so the reference is the
+/// `Relation[Int64]` value of solved rows.
+#[test]
+fn wi714_bare_qualified_sort_scoped_reference() {
+    const SRC: &str = r#"
+namespace test.wi714bqsort
+  import anthill.prelude.{Int64, List}
+
+  sort Queen
+    entity queen(row: Int64, col: Int64)
+    rule find(?row) :- queen(row: ?row, col: ?)
+  end
+  fact queen(row: 1, col: 1)
+  fact queen(row: 2, col: 3)
+
+  -- bare `Sort.rule` (no parens): the relation value, consumed as a stream.
+  operation bareRows() -> List[Int64] effects Error =
+    let r = Queen.find
+    r.takeN(5)
+
+  -- and the applied form `Sort.rule()` resolves to the same relation.
+  operation appliedRows() -> List[Int64] effects Error =
+    let r = Queen.find()
+    r.takeN(5)
+end
+"#;
+    let mut interp = interp_for(SRC);
+    let bare = interp
+        .call("test.wi714bqsort.bareRows", &[])
+        .expect("bareRows drains the sort-scoped bare relation");
+    let mut got = collect_int_list(&bare);
+    got.sort();
+    assert_eq!(
+        got,
+        vec![1, 2],
+        "a bare `Sort.rule` value (the proposal's `Queen.find`) drains its rows"
+    );
+    let applied = interp
+        .call("test.wi714bqsort.appliedRows", &[])
+        .expect("appliedRows drains the sort-scoped applied relation");
+    let mut got2 = collect_int_list(&applied);
+    got2.sort();
+    assert_eq!(got2, vec![1, 2], "the applied `Sort.rule()` resolves to the same relation");
+}
+
+/// The proposal's negative invariant (§"`x.name` on a runtime value is not a way to
+/// name a relation"): dotting a runtime VALUE with a rule name is operation dispatch,
+/// NOT relation naming. A local value `q` bound to a `Queen` has no member `find` (a
+/// rule is not a member of a value's sort), so `q.find` is a loud "no such member"
+/// error — the bare-qualified collapse fires only for a sort/namespace receiver, and
+/// the value-receiver re-route runs first.
+#[test]
+fn wi714_rule_not_named_off_a_runtime_value() {
+    const SRC: &str = r#"
+namespace test.wi714bqguard
+  import anthill.prelude.{Int64, List}
+
+  sort Queen
+    entity queen(row: Int64)
+    rule find(?row) :- queen(row: ?row)
+  end
+  fact queen(row: 1)
+
+  operation bad() -> List[Int64] effects Error =
+    let q = queen(row: 1)
+    let r = q.find
+    r.takeN(5)
+end
+"#;
+    let errs = try_load_kb_with(SRC).err().unwrap_or_default();
+    assert!(
+        errs.iter().any(|e| e.contains("no such member") || e.contains("dot dispatch")),
+        "dotting a runtime value with a rule name must be a loud dispatch error, got: {errs:?}"
+    );
+}
+
+/// Decode a `List[(name: String, age: Int64)]` (cons chain of named tuples) into
+/// `(String, i64)` pairs — the multi-column-row shape.
+fn collect_named_rows(v: &Value) -> Vec<(String, i64)> {
+    let mut rows: Vec<(String, i64)> = Vec::new();
+    let mut cur = v.clone();
+    while let Value::Entity { named, .. } = &cur {
+        if named.is_empty() {
+            break;
+        }
+        let mut head_tuple: Option<Value> = None;
+        let mut tail: Option<Value> = None;
+        for (_k, val) in named.iter() {
+            match val {
+                Value::Tuple { .. } => head_tuple = Some(val.clone()),
+                Value::Entity { .. } => tail = Some(val.clone()),
+                _ => {}
+            }
+        }
+        match (head_tuple, tail) {
+            (Some(Value::Tuple { named: fields, .. }), Some(t)) => {
+                let name = fields.iter().find_map(|(_, v)| match v {
+                    Value::Str(s) => Some(s.clone()),
+                    _ => None,
+                });
+                let age = fields.iter().find_map(|(_, v)| match v {
+                    Value::Int(n) => Some(*n),
+                    _ => None,
+                });
+                rows.push((name.expect("name col"), age.expect("age col")));
+                cur = t;
+            }
+            _ => break,
+        }
+    }
+    rows
+}
+
 /// Decode an anthill `List[Int64]` value (`cons(head, tail)` chain, `nil` end) into a
 /// `Vec<i64>`.
 fn collect_int_list(v: &Value) -> Vec<i64> {
