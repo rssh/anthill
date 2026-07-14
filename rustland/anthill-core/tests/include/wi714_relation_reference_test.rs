@@ -950,6 +950,70 @@ end
     );
 }
 
+// ── Cross-sort, cross-file rule-body call (the SUBGOAL counterpart) ──
+
+/// A rule's BODY may cite another sort's rule by its qualified `Sort.rule` name as a
+/// SUBGOAL (a logical atom), across files in the same namespace. This is the ordinary
+/// qualified-subgoal path — NOT the WI-714 relation-VALUE collapse (which is
+/// expression context only): in a rule body `S.q(?x)` is a subgoal, in an operation
+/// body bare `S.q` is the relation value. Here `S2.q2`'s body calls `S.q` (a rule in
+/// another sort, another file), and the whole thing is then consumed as a WI-714
+/// bare-qualified relation value — exercising both worlds end-to-end.
+#[test]
+fn wi714_cross_sort_rule_body_subgoal() {
+    // file 1: sort S with rule q + facts.
+    const F1: &str = r#"
+namespace test.wi714xsort
+  import anthill.prelude.{Int64}
+
+  sort S
+    entity se(v: Int64)
+    rule q(?x) :- se(v: ?x)
+  end
+  fact se(v: 1)
+  fact se(v: 2)
+  fact se(v: 3)
+end
+"#;
+    // file 2: SAME namespace, sort S2 whose rule body calls the cross-sort `S.q`.
+    const F2: &str = r#"
+namespace test.wi714xsort
+  import anthill.prelude.{Int64, List}
+
+  sort S2
+    entity s2e(w: Int64)
+    rule other(?x) :- s2e(w: ?x)
+    -- `S.q(?x)` is a cross-sort SUBGOAL (S is in file 1); `other(?x)` resolves in
+    -- S2's own scope. q2 = S.q ∩ other.
+    rule q2(?x) :- S.q(?x), other(?x)
+  end
+  fact s2e(w: 2)
+  fact s2e(w: 3)
+  fact s2e(w: 9)
+
+  -- consume the sort-scoped relation as a WI-714 bare-qualified value.
+  operation q2Rows() -> List[Int64] effects Error =
+    let r = S2.q2
+    r.takeN(5)
+end
+"#;
+    let kb = crate::common::try_load_kb_with_files(&[F1, F2])
+        .unwrap_or_else(|errs| panic!("cross-sort rule-body call must load; got: {errs:?}"));
+    let mut interp = anthill_core::eval::Interpreter::new(kb);
+    anthill_core::eval::builtins::register_standard_builtins(&mut interp)
+        .expect("register builtins");
+    let r = interp
+        .call("test.wi714xsort.q2Rows", &[])
+        .expect("q2Rows drains the relation whose clause calls a cross-sort rule");
+    let mut got = collect_int_list(&r);
+    got.sort();
+    assert_eq!(
+        got,
+        vec![2, 3],
+        "q2 = S.q{{1,2,3}} ∩ other{{2,3,9}} — the cross-sort subgoal resolves and runs"
+    );
+}
+
 /// Decode a `List[(name: String, age: Int64)]` (cons chain of named tuples) into
 /// `(String, i64)` pairs — the multi-column-row shape.
 fn collect_named_rows(v: &Value) -> Vec<(String, i64)> {
