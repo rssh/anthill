@@ -20,7 +20,7 @@
 --   evaluated during resolution), exactly `execute`'s `effects Error`. The provides
 --   edge threads it so every inherited Stream op types at {Error}, not {}.
 sort anthill.prelude.Relation
-  import anthill.prelude.{LogicalStream, Option, Pair}
+  import anthill.prelude.{LogicalStream, Option, Pair, Unit}
 
   sort T = ?              -- schema: named tuple of the free head parameters
   -- E is threaded abstractly (like FiniteStream/Stream) so the `provides` override
@@ -42,4 +42,36 @@ sort anthill.prelude.Relation
   operation splitFirst(r: Relation)
     -> Option[Pair[A = r.T, B = LogicalStream[T = r.T, E = r.E]]]
     effects r.E
+
+  -- ================================================================
+  -- Relational algebra — each op COMBINES QUERIES into a new query
+  -- (never combines the extensional streams), so the result stays a
+  -- composable `Relation`. Consumption (splitFirst / the inherited
+  -- Stream API) is the only step that crosses into the stream face.
+  -- Proposal 052 §"Relational algebra"; WI-714 increments.
+  -- ================================================================
+
+  -- negation-as-failure. Builds the `negation(query: r.query)` LogicalQuery,
+  -- which the resolver lowers to `not(inner_goals)` (NAF). The result is a
+  -- 0-column membership relation `Relation[Unit]`: its stream yields one `unit`
+  -- iff `r` has NO solution, and is empty iff `r` is provable — so
+  -- `negate(r)` is empty when `r` is provable, non-empty otherwise.
+  --
+  -- The operand must be a MEMBERSHIP relation (all columns bound/closed — a bare
+  -- 0-column rule, or an applied relation that binds every column). NAF over a
+  -- relation with a FREE column would flounder (the resolver cannot decide
+  -- `not p(?x)` with `?x` unbound — resolver changes are out of 052's scope), so
+  -- negating a relation that still has columns is a loud error rather than a
+  -- silent floundered result. To negate a relation with columns, first close them
+  -- (bind via application, or project/exists — a later increment).
+  --
+  -- The membership requirement is enforced by the runtime (host builtin: reject a
+  -- non-empty column set), NOT by the signature: the arg-vs-param check runs only
+  -- when the param type is fully GROUND, but pinning the operand's effect row to
+  -- make it ground both over-narrows `E` and trips a param-order canonicalization
+  -- in the compatibility check — so `T = Unit` cannot be expressed as an
+  -- enforceable-yet-`E`-open constraint here. Load-time enforcement is a follow-up
+  -- (a dedicated operand-schema check). The bare `Relation` param keeps `E` open
+  -- (threaded to the result as `r.E`); body-less — the runtime does the query wrap.
+  operation negate(r: Relation) -> Relation[T = Unit, E = r.E]
 end

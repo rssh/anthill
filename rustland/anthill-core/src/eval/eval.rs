@@ -542,19 +542,40 @@ impl Interpreter {
         let goal_atom = Value::Entity { functor, pos: pos.into(), named: named.into() };
         // Wrap as `pattern_query(term: <goal atom>)` — the arbitrary-goal-atom
         // LogicalQuery constructor `execute_logical_query` lowers to one goal.
-        let pattern_query_sym = self
-            .kb
-            .try_resolve_symbol("anthill.reflect.LogicalQuery.pattern_query")
-            .ok_or_else(|| {
-                EvalError::Internal("WI-714: LogicalQuery.pattern_query unresolved".into())
-            })?;
-        let term_key = self.kb.intern("term");
-        let query = Value::Entity {
-            functor: pattern_query_sym,
-            pos: Vec::new().into(),
-            named: vec![(term_key, goal_atom)].into(),
-        };
+        let query = self.build_logical_query_value("pattern_query", vec![("term", goal_atom)])?;
         Ok(Value::Relation { query: Rc::new(query), columns: columns.into() })
+    }
+
+    /// Build a `LogicalQuery` constructor VALUE (WI-714 / proposal 052). This is the
+    /// single query-builder shared by BOTH `build_relation_value` (the `pattern_query`
+    /// leaf, above) and the relational-algebra ops (`negation` / `disjunction` /
+    /// `conjunction` / `guarded` / … each wrapping operand queries — `Relation.negate`
+    /// etc. in `builtins.rs`), so the two cannot drift. `ctor` is the short
+    /// constructor name (resolved to `anthill.reflect.LogicalQuery.<ctor>`); `fields`
+    /// its named args. Every algebra op COMBINES QUERIES this way — the result stays a
+    /// `LogicalQuery`, so a `Relation` stays composable and never collapses to a
+    /// materialized stream. Fields are stored in canonical (field-name) order per the
+    /// repo convention; the resolver reads them by name (`lower_query_with`) so order
+    /// never affects resolution, and reification (`alloc_from_value`) re-canonicalizes.
+    pub(crate) fn build_logical_query_value(
+        &mut self,
+        ctor: &str,
+        fields: Vec<(&str, Value)>,
+    ) -> Result<Value, EvalError> {
+        let functor = self
+            .kb
+            .try_resolve_symbol(&format!("anthill.reflect.LogicalQuery.{}", ctor))
+            .ok_or_else(|| {
+                EvalError::Internal(format!("WI-714: LogicalQuery.{} unresolved", ctor))
+            })?;
+        let mut fields = fields;
+        fields.sort_by(|a, b| a.0.cmp(b.0));
+        let mut named = Vec::with_capacity(fields.len());
+        for (key, value) in fields {
+            let key = self.kb.intern(key);
+            named.push((key, value));
+        }
+        Ok(Value::Entity { functor, pos: Vec::new().into(), named: named.into() })
     }
 
     /// WI-714 (proposal 052) — begin an APPLIED rule reference `ref_sym(args…)`

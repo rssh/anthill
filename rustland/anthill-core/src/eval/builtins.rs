@@ -101,6 +101,7 @@ pub fn register_standard_builtins(interp: &mut Interpreter) -> Result<(), EvalEr
 
     register_if_present(interp, "anthill.prelude.LogicalStream.splitFirst", logical_stream_split_first)?;
     register_if_present(interp, "anthill.prelude.Relation.splitFirst", relation_split_first)?;
+    register_if_present(interp, "anthill.prelude.Relation.negate", relation_negate)?;
     register_if_present(interp, "anthill.reflect.KB.kb", kb_ambient)?;
     register_if_present(interp, "anthill.reflect.KB.execute", kb_execute)?;
     register_if_present(interp, "anthill.reflect.KB.facts_of", kb_facts_of)?;
@@ -1050,6 +1051,49 @@ fn relation_split_first(
     });
     let pumped = interp.stream_split_first(&handle)?;
     split_first_result(interp, pumped)
+}
+
+/// `Relation.negate` (WI-714 / proposal 052) — negation-as-failure as a QUERY
+/// combinator. Wraps the operand's query in `negation(query: …)` (which the
+/// resolver lowers to `not(inner_goals)`) and returns a 0-column membership
+/// `Relation` (`Relation[Unit]`): consuming it (e.g. `.isEmpty`) gives an empty
+/// stream iff the operand is provable, and a single `unit` iff the operand has NO
+/// solution. Combines queries, not streams, so the result stays composable.
+fn relation_negate(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    let [arg] = expect_args::<1>("Relation.negate", args)?;
+    let (query, columns) = match arg {
+        Value::Relation { query, columns } => (query, columns),
+        other => return Err(type_mismatch("Relation", &other, None)),
+    };
+    // Membership guard: negating a relation that still has FREE columns would
+    // flounder under NAF (`not p(?x)` with `?x` unbound is undecidable), reading a
+    // floundered residual as a spurious solution. Reject it loudly — as a runtime
+    // TYPE error (the operand is the wrong shape), NOT an engine-internal error —
+    // rather than return a silently-wrong result. `columns` empty ⟺ every head slot
+    // is bound, the ground-goal precondition for every relation built from surface
+    // code; it is an APPROXIMATION of "the goal atom is ground" — a free logic var
+    // supplied as an argument VALUE (constructible only via reflect/metaprogramming,
+    // not plain code) is not reflected in `columns` and would slip through. Ideally
+    // this is load-time; see the stdlib note on why the signature can't carry the
+    // `T = Unit` constraint with `E` open.
+    if !columns.is_empty() {
+        let names: Vec<String> = columns
+            .iter()
+            .map(|(s, _)| interp.kb.resolve_sym(*s).to_string())
+            .collect();
+        return Err(EvalError::TypeMismatch {
+            expected: "a membership Relation (Relation[Unit]; all columns bound)",
+            got: format!(
+                "a relation with free column(s): {} — negating it would flounder under \
+                 negation-as-failure; close the columns first (bind via application, or project)",
+                names.join(", ")
+            ),
+        });
+    }
+    // Combine at the QUERY level (shared builder, same one `build_relation_value`
+    // uses); `columns` is the operand's already-empty set — reuse it for the result.
+    let neg = interp.build_logical_query_value("negation", vec![("query", (*query).clone())])?;
+    Ok(Value::Relation { query: std::rc::Rc::new(neg), columns })
 }
 
 fn logical_stream_split_first(

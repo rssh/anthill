@@ -15,7 +15,8 @@ use crate::common::{interp_for, try_load_kb_with};
 
 const SRC: &str = r#"
 namespace test.wi714ref
-  import anthill.prelude.{String, Int64, Option, List, Pair}
+  import anthill.prelude.{String, Int64, Option, List, Pair, Unit}
+  import anthill.prelude.Relation.{negate}
 
   sort Person
     entity person(name: String, age: Int64)
@@ -54,6 +55,36 @@ namespace test.wi714ref
   -- 0-column membership relation: is it non-empty? (each proof materializes Unit)
   operation aliceIsEmpty() -> Bool effects Error =
     let r = has_alice
+    r.isEmpty
+
+  -- WI-714 negate increment: an EMPTY membership relation (no person named "zed"),
+  -- the empty counterpart to has_alice, for negation-as-failure.
+  rule has_zed() :- person(name: "zed", age: ?)
+
+  -- negate = negation-as-failure as a QUERY combinator (proposal 052 §algebra).
+  -- negate(r) : Relation[Unit]; its stream is non-empty (one `unit`) iff r has NO
+  -- solution. Provable operand → the negation query fails → empty.
+  operation negateProvableIsEmpty() -> Bool effects Error =
+    let r = negate(has_alice)
+    r.isEmpty
+
+  -- Empty operand → NAF succeeds once with no bindings → non-empty.
+  operation negateEmptyIsEmpty() -> Bool effects Error =
+    let r = negate(has_zed)
+    r.isEmpty
+
+  -- The single solution of negate(empty) materializes as the 0-column Unit row.
+  operation negateEmptyHead() -> Option[Unit] effects Error =
+    let r = negate(has_zed)
+    match r.splitFirst
+      case some(pair(h, _)) -> some(h)
+      case none() -> none()
+
+  -- negate COMPOSES on itself — only possible because it returns a composable,
+  -- query-carrying Relation (combining QUERIES, not streams). not(not(provable))
+  -- succeeds, so the double negation is non-empty.
+  operation doubleNegateIsEmpty() -> Bool effects Error =
+    let r = negate(negate(has_alice))
     r.isEmpty
 end
 "#;
@@ -160,6 +191,116 @@ fn wi714_zero_column_membership_relation() {
         r.as_bool(),
         Some(false),
         "a provable membership relation is non-empty"
+    );
+}
+
+// ── WI-714 relational algebra increment 1: negate → negation (NAF) ──────────
+// negate COMBINES QUERIES: it wraps the operand's query in the `negation`
+// LogicalQuery constructor (lowered to `not(inner_goals)`), never running the
+// operand as a stream. Result is a 0-column `Relation[Unit]` membership relation.
+
+/// `has_alice` is provable, so `negate(has_alice)` is EMPTY: the resolver lowers
+/// `negation` to `not(inner)`, which fails when the inner query is provable.
+#[test]
+fn wi714_negate_of_provable_is_empty() {
+    let mut interp = interp_for(SRC);
+    let r = interp
+        .call("test.wi714ref.negateProvableIsEmpty", &[])
+        .expect("negate(has_alice).isEmpty");
+    assert_eq!(
+        r.as_bool(),
+        Some(true),
+        "negate of a provable relation is empty (NAF fails)"
+    );
+}
+
+/// `has_zed` has no solution, so `negate(has_zed)` is NON-empty — NAF succeeds
+/// once with no bindings, materialized as the single Unit row.
+#[test]
+fn wi714_negate_of_empty_is_nonempty() {
+    let mut interp = interp_for(SRC);
+    let r = interp
+        .call("test.wi714ref.negateEmptyIsEmpty", &[])
+        .expect("negate(has_zed).isEmpty");
+    assert_eq!(
+        r.as_bool(),
+        Some(false),
+        "negate of an empty relation is non-empty (NAF succeeds)"
+    );
+}
+
+/// The single solution of `negate(empty)` materializes as `unit` — the 0-column
+/// membership row. `negate(has_zed).headOption == some(unit)`.
+#[test]
+fn wi714_negate_materializes_unit() {
+    let mut interp = interp_for(SRC);
+    let r = interp
+        .call("test.wi714ref.negateEmptyHead", &[])
+        .expect("negate(has_zed).headOption");
+    // some(unit) — payload rides positionally (some) or as the single named field.
+    let inner = match &r {
+        Value::Entity { pos, .. } if !pos.is_empty() => pos[0].clone(),
+        Value::Entity { named, .. } if !named.is_empty() => named[0].1.clone(),
+        other => panic!("expected some(unit), got {other:?}"),
+    };
+    assert!(
+        matches!(inner, Value::Unit),
+        "negate's row materializes as the 0-column Unit, got {inner:?}"
+    );
+}
+
+/// negate REQUIRES a membership operand: negating a relation with a FREE column
+/// would flounder under NAF (the resolver cannot decide `not p(?x)` with `?x`
+/// unbound — resolver changes are out of 052's scope), so it is a LOUD error
+/// rather than a silent floundered result. Enforced at runtime (see the stdlib
+/// note on why the signature can't carry a `T = Unit`-with-`E`-open constraint).
+#[test]
+fn wi714_negate_requires_membership_operand() {
+    let src = r#"
+namespace test.wi714negcol
+  import anthill.prelude.{String, Int64, Option, List}
+  import anthill.prelude.Relation.{negate}
+
+  sort Person
+    entity person(name: String, age: Int64)
+  end
+  fact person(name: "alice", age: 30)
+
+  -- person_name : Relation[String] — a relation WITH a free column
+  rule person_name(?name) :- person(name: ?name, age: ?)
+
+  -- negate over a multi-column relation must be rejected (NAF would flounder)
+  operation bad() -> Bool effects Error =
+    let r = negate(person_name)
+    r.isEmpty
+end
+"#;
+    // Loads clean (the guard is at runtime); the call surfaces the loud error.
+    let mut interp = interp_for(src);
+    let err = interp
+        .call("test.wi714negcol.bad", &[])
+        .expect_err("negate over a relation with free columns must error, not flounder");
+    let msg = format!("{err:?}");
+    assert!(
+        msg.contains("membership") || msg.contains("free column") || msg.contains("flounder"),
+        "negate must loudly reject a non-membership operand, got: {msg}"
+    );
+}
+
+/// negate COMPOSES on itself — proof it returns a composable, query-carrying
+/// `Relation` (combining QUERIES, not streams; a stream-level bool could not be
+/// re-negated). `not(not(provable))` succeeds, so the double negation is
+/// non-empty.
+#[test]
+fn wi714_negate_composes_double_negation() {
+    let mut interp = interp_for(SRC);
+    let r = interp
+        .call("test.wi714ref.doubleNegateIsEmpty", &[])
+        .expect("negate(negate(has_alice)).isEmpty");
+    assert_eq!(
+        r.as_bool(),
+        Some(false),
+        "double negation of a provable relation is non-empty (composes at the query level)"
     );
 }
 
