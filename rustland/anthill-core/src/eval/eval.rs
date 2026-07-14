@@ -190,6 +190,21 @@ impl Interpreter {
                 if self.kb.kind_of(*functor) == Some(crate::intern::SymbolKind::Sort) {
                     return self.start_sort_type(*functor, pos_args, named_args);
                 }
+                // WI-714 (proposal 052): a RULE-headed application (`queens(board)`,
+                // `queryTwoParams(x: 3)`) is an APPLIED rule reference — a
+                // `Relation[T]` value whose supplied arguments BIND head parameters
+                // (subtracted from the free columns). The applied peer of
+                // `reduce_var`'s bare rule arm, and — like the sort arm above —
+                // re-derived from `kind_of(functor)` with no `CallClass` mark: the
+                // typer has settled the reading (a rule name applied to args), and a
+                // rule names no operation, so this could only ever have died in
+                // dispatch as `UnknownOperation`.
+                if matches!(
+                    self.kb.kind_of(*functor),
+                    Some(crate::intern::SymbolKind::Goal | crate::intern::SymbolKind::Rule)
+                ) {
+                    return self.start_relation_apply(*functor, pos_args, named_args);
+                }
                 // WI-218: the typer may have classified this apply for
                 // spec-op rewrite. PinNow redirects the call to the
                 // impl op; ConcreteApplyWithin similarly redirects (the
@@ -388,24 +403,37 @@ impl Interpreter {
             self.kb.kind_of(sym),
             Some(crate::intern::SymbolKind::Goal | crate::intern::SymbolKind::Rule)
         ) {
-            return Ok(StepOutcome::Deliver(self.build_relation_value(sym)?));
+            return Ok(StepOutcome::Deliver(self.build_relation_value(sym, &[], &[])?));
         }
         self.dispatch_call(sym, Vec::new(), SmallVec::new())
     }
 
     /// WI-714 (proposal 052) — build the `Relation` VALUE a rule reference denotes.
-    /// Resolves `ref_sym` (a rule label or head functor) to the rule's clauses,
-    /// opens the (shared) head with FRESH globals in each variable slot — those are
-    /// the relation's free COLUMNS, named by the head parameter — into a
-    /// `pattern_query(head(?cols…))` goal atom, and packages it as
+    /// Resolves `ref_sym` (a rule label or head functor) to the rule's clauses and
+    /// opens the (shared) head into a `pattern_query(head(…))` goal atom, packaged as
     /// `Value::Relation { query, columns }`. Consuming it runs the query
     /// (`Relation.splitFirst`) and materializes each answer onto `columns`.
+    ///
+    /// A head VARIABLE slot NOT bound by a supplied argument opens to a FRESH global —
+    /// a free COLUMN, named by the head parameter. The APPLIED citation position
+    /// (`supplied_pos` / `supplied_named` non-empty) BINDS some COLUMNS instead: the
+    /// supplied value is spliced verbatim into every slot of that column (a filter, not
+    /// a column). Binding is over the relation's dedup'd COLUMN names — the SAME
+    /// [`rule_head_var_slots`] enumeration + [`resolve_relation_arg_columns`] plan the
+    /// typer used — so a nonlinear head column binds as ONE parameter (all its slots
+    /// spliced) and the runtime columns match the typed schema exactly.
     ///
     /// All clauses of a multi-clause relation share one head interface, so the
     /// first clause's head fixes the columns; the column TYPE lub across clauses is
     /// a typing concern (C3), not a runtime one.
-    fn build_relation_value(&mut self, ref_sym: Symbol) -> Result<Value, EvalError> {
-        use crate::kb::term::VarId;
+    fn build_relation_value(
+        &mut self,
+        ref_sym: Symbol,
+        supplied_pos: &[Value],
+        supplied_named: &[(Symbol, Value)],
+    ) -> Result<Value, EvalError> {
+        use crate::kb::term::{Var, VarId};
+        use crate::kb::typing::{resolve_relation_arg_columns, rule_head_var_slots, SlotKey};
         let qn = self.kb.qualified_name_of(ref_sym).to_string();
         let rids = self.kb.rule_ids_by_qn(&qn);
         let rid = *rids.first().ok_or_else(|| {
@@ -420,7 +448,6 @@ impl Interpreter {
                 )))
             }
         };
-        let globals: Vec<VarId> = self.kb.rule_globals(rid).to_vec();
         let (functor, pos_args, named_args) = match self.kb.get_term(head_tid) {
             Term::Fn { functor, pos_args, named_args } => {
                 (*functor, pos_args.clone(), named_args.clone())
@@ -434,22 +461,73 @@ impl Interpreter {
             }
         };
 
+        // The head's free-variable slots (the SAME enumeration the typer's schema
+        // used) and the ordered dedup'd column names binding operates on.
+        let var_slots = rule_head_var_slots(&self.kb, rid);
+        let mut seen: std::collections::HashSet<Symbol> = std::collections::HashSet::new();
+        let column_names: Vec<Symbol> =
+            var_slots.iter().map(|(_, n, _)| *n).filter(|n| seen.insert(*n)).collect();
+        let named_keys: Vec<Symbol> = supplied_named.iter().map(|(k, _)| *k).collect();
+        let bound = resolve_relation_arg_columns(&column_names, supplied_pos.len(), &named_keys)
+            .map_err(|e| EvalError::Internal(format!("WI-714: {}", e.message(&self.kb))))?;
+        // `bound[i]` is the column NAME the i-th supplied argument (positionals first,
+        // then named) binds — resolve a column name to its supplied value.
+        let bound_value = |name: Symbol| -> Option<Value> {
+            bound.iter().position(|n| *n == name).map(|i| {
+                if i < supplied_pos.len() {
+                    supplied_pos[i].clone()
+                } else {
+                    supplied_named[i - supplied_pos.len()].1.clone()
+                }
+            })
+        };
+        // A head slot's column name if it is a free variable (looked up in the shared
+        // enumeration), so var-ness and naming match the typer exactly.
+        let slot_name = |slot: SlotKey| -> Option<Symbol> {
+            var_slots.iter().find(|(s, _, _)| *s == slot).map(|(_, n, _)| *n)
+        };
+
         let mut pos: Vec<Value> = Vec::with_capacity(pos_args.len());
         let mut named: Vec<(Symbol, Value)> = Vec::with_capacity(named_args.len());
         let mut columns: Vec<(Symbol, VarId)> = Vec::new();
-        for arg in pos_args {
-            let (fresh_term, col) = self.fresh_head_slot(arg, None, &globals)?;
-            if let Some(c) = col {
-                columns.push(c);
+        // Fill one head slot: a bound column splices its supplied value (a filter); a
+        // free column opens a fresh global (a materialized column); a ground slot rides
+        // verbatim; a compound slot mentioning a variable is rejected loudly (its raw
+        // DeBruijn would unify reflexively-only → silent 0 solutions — the typer
+        // rejects this at LOAD, this guards a programmatically-built reference).
+        let fill = |me: &mut Self,
+                    slot: SlotKey,
+                    arg: TermId,
+                    columns: &mut Vec<(Symbol, VarId)>|
+         -> Result<Value, EvalError> {
+            match slot_name(slot) {
+                Some(name) => match bound_value(name) {
+                    Some(v) => Ok(v),
+                    None => {
+                        let fresh = me.kb.fresh_var(name);
+                        columns.push((name, fresh));
+                        Ok(Value::term(me.kb.alloc(Term::Var(Var::Global(fresh)))))
+                    }
+                },
+                None => {
+                    if me.kb.term_mentions_debruijn(arg) {
+                        return Err(EvalError::Internal(
+                            "WI-714: a relation reference with a compound head argument \
+                             (e.g. `some(?x)`) is not yet supported"
+                                .into(),
+                        ));
+                    }
+                    Ok(Value::term(arg))
+                }
             }
-            pos.push(fresh_term);
+        };
+        for (i, arg) in pos_args.into_iter().enumerate() {
+            let v = fill(self, SlotKey::Pos(i), arg, &mut columns)?;
+            pos.push(v);
         }
         for (key, arg) in named_args {
-            let (fresh_term, col) = self.fresh_head_slot(arg, Some(key), &globals)?;
-            if let Some(c) = col {
-                columns.push(c);
-            }
-            named.push((key, fresh_term));
+            let v = fill(self, SlotKey::Named(key), arg, &mut columns)?;
+            named.push((key, v));
         }
         // Dedup columns by NAME (a nonlinear head variable `twin(?n, ?n)` fills two
         // slots but is ONE logical column) so the materialized row matches the typer
@@ -479,61 +557,51 @@ impl Interpreter {
         Ok(Value::Relation { query: Rc::new(query), columns: columns.into() })
     }
 
-    /// Freshen ONE head argument slot for [`Self::build_relation_value`]. A head
-    /// VARIABLE (`Var::DeBruijn(d)`, how rules store head params) becomes a fresh
-    /// Global — a free query column — named by the head parameter: the field `key`
-    /// for a named slot, else the source variable name recovered from `globals`
-    /// (REVERSED DeBruijn, `globals[len-1-d]`, the same reversal `install_rule_type_bounds`
-    /// uses). A ground or compound slot (a constant `queens(3, ?b)`, or an
-    /// already-Global legacy fill) is kept verbatim — a bound arg, not a free
-    /// column. Returns the slot's query-atom term and its column when it is a var.
-    fn fresh_head_slot(
+    /// WI-714 (proposal 052) — begin an APPLIED rule reference `ref_sym(args…)`
+    /// (`queens(board)`, `queryTwoParams(x: 3)`). Mirrors
+    /// [`Interpreter::start_sort_type`]'s one-argument-at-a-time evaluation pump (see
+    /// [`AwaitState::RelationArgs`]); when the last argument arrives,
+    /// [`Interpreter::build_relation_value`] assembles the `Value::Relation` with the
+    /// supplied values bound into the query's goal atom. An argument-less `queens()`
+    /// is exactly the bare reference (no bound slots).
+    fn start_relation_apply(
         &mut self,
-        arg: TermId,
-        key: Option<Symbol>,
-        globals: &[crate::kb::term::VarId],
-    ) -> Result<(Value, Option<(Symbol, crate::kb::term::VarId)>), EvalError> {
-        use crate::kb::term::Var;
-        let var = match self.kb.get_term(arg) {
-            Term::Var(v) => Some(*v),
-            _ => None,
-        };
-        match var {
-            Some(Var::DeBruijn(d)) => {
-                let name = match key {
-                    Some(k) => k,
-                    None => globals
-                        .get(globals.len().wrapping_sub(1).wrapping_sub(d as usize))
-                        .map(|v| v.name())
-                        .ok_or_else(|| {
-                            EvalError::Internal(format!(
-                                "WI-714: head DeBruijn({d}) out of range of {} globals",
-                                globals.len()
-                            ))
-                        })?,
-                };
-                let fresh = self.kb.fresh_var(name);
-                let term = Value::term(self.kb.alloc(Term::Var(Var::Global(fresh))));
-                Ok((term, Some((name, fresh))))
-            }
-            // A COMPOUND slot mentioning a variable (`some(?x)`) cannot be spliced
-            // verbatim — its raw DeBruijn would unify reflexively-only and silently
-            // yield zero solutions — so reject it loudly (per "loud error over silent
-            // skip"). The typer's `relation_reference_type` already rejects this at
-            // LOAD; this guards a programmatically-built reference. A ground slot
-            // (constant / ground compound, or a legacy Global fill) is a filter — keep
-            // it verbatim, not a column.
-            _ => {
-                if self.kb.term_mentions_debruijn(arg) {
-                    return Err(EvalError::Internal(
-                        "WI-714: a relation reference with a compound head argument \
-                         (e.g. `some(?x)`) is not yet supported"
-                            .into(),
-                    ));
-                }
-                Ok((Value::term(arg), None))
-            }
+        ref_sym: Symbol,
+        pos_args: &[Rc<NodeOccurrence>],
+        named_args: &[(Symbol, Rc<NodeOccurrence>)],
+    ) -> Result<StepOutcome, EvalError> {
+        let mut remaining: Vec<(Option<Symbol>, Rc<NodeOccurrence>)> =
+            Vec::with_capacity(pos_args.len() + named_args.len());
+        for a in pos_args.iter() {
+            remaining.push((None, a.clone()));
         }
+        for (n, a) in named_args.iter() {
+            remaining.push((Some(*n), a.clone()));
+        }
+
+        if remaining.is_empty() {
+            return Ok(StepOutcome::Deliver(
+                self.build_relation_value(ref_sym, &[], &[])?,
+            ));
+        }
+
+        let (first_name, first_expr) = remaining.remove(0);
+        let placeholder = first_expr.clone();
+        let top = self
+            .stack
+            .top_mut()
+            .ok_or_else(|| EvalError::Internal("start_relation_apply with no parent".into()))?;
+        top.awaiting = Some(AwaitState::RelationArgs {
+            ref_sym,
+            buffered_pos: Vec::new(),
+            buffered_named: Vec::new(),
+            remaining: std::iter::once((first_name, placeholder))
+                .chain(remaining.into_iter())
+                .collect(),
+        });
+        let ctx = self.stack.top().unwrap().child_context();
+        self.stack.push(child_frame(ctx, first_expr))?;
+        Ok(StepOutcome::Continue)
     }
 
     /// Proposal 039 / WI-084 — produce a term-level constant's value, memoized.
@@ -2003,6 +2071,40 @@ impl Interpreter {
                     let top = self.stack.top_mut().unwrap();
                     top.awaiting = Some(AwaitState::SortTypeArgs {
                         sort_sym,
+                        buffered_pos,
+                        buffered_named,
+                        remaining,
+                    });
+                    let ctx = self.stack.top().unwrap().child_context();
+                    self.stack.push(child_frame(ctx, pushed_expr))?;
+                    return Ok(StepOutcome::Continue);
+                }
+                AwaitState::RelationArgs {
+                    ref_sym,
+                    mut buffered_pos,
+                    mut buffered_named,
+                    mut remaining,
+                } => {
+                    // WI-714: same one-at-a-time pump as `SortTypeArgs` — the first
+                    // entry of `remaining` names the argument just evaluated.
+                    let (current_name, _placeholder_occ) = remaining.remove(0);
+                    match current_name {
+                        Some(n) => buffered_named.push((n, v)),
+                        None => buffered_pos.push(v),
+                    }
+                    if remaining.is_empty() {
+                        return Ok(StepOutcome::Deliver(self.build_relation_value(
+                            ref_sym,
+                            &buffered_pos,
+                            &buffered_named,
+                        )?));
+                    }
+                    let (next_name, next_expr) = remaining[0].clone();
+                    let pushed_expr = next_expr.clone();
+                    remaining[0] = (next_name, next_expr);
+                    let top = self.stack.top_mut().unwrap();
+                    top.awaiting = Some(AwaitState::RelationArgs {
+                        ref_sym,
                         buffered_pos,
                         buffered_named,
                         remaining,

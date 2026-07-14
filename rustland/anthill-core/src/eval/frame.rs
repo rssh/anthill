@@ -131,6 +131,22 @@ pub enum AwaitState {
         /// first entry's expression is a placeholder — only its name is read.
         remaining: Vec<(Option<Symbol>, Rc<NodeOccurrence>)>,
     },
+    /// WI-714 (proposal 052): an APPLIED rule reference (`queens(board)`,
+    /// `queryTwoParams(x: 3)`) evaluates its supplied arguments (each BINDS a head
+    /// parameter, narrowing the relation's schema) the way `SortTypeArgs` evaluates
+    /// type arguments, then assembles the `Value::Relation` via `build_relation_value`
+    /// with the bound slots spliced into the query's goal atom. The arguments are
+    /// EVALUATED (not read off the syntax) because a bound value is any expression —
+    /// a local, a literal, a nested call.
+    RelationArgs {
+        ref_sym: Symbol,
+        buffered_pos: Vec<Value>,
+        buffered_named: Vec<(Symbol, Value)>,
+        /// Remaining argument occurrences paired with their name hint (`None` for a
+        /// positional `queens(board)`). As in `SortTypeArgs`, the first entry's
+        /// expression is a placeholder — only its name is read on delivery.
+        remaining: Vec<(Option<Symbol>, Rc<NodeOccurrence>)>,
+    },
     /// The frame has dispatched an apply to an anthill-defined operation
     /// body (child frame pushed). When the body produces a value, that
     /// value is the apply's result — cascade it up without re-evaluating

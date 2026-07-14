@@ -294,6 +294,439 @@ end
     );
 }
 
+// ── APPLIED citation position (WI-714): a rule NAME applied to arguments binds columns ──
+
+const SRC3: &str = r#"
+namespace test.wi714applied
+  import anthill.prelude.{String, Int64, List}
+
+  sort Person
+    entity person(name: String, age: Int64)
+  end
+  fact person(name: "alice", age: 30)
+  fact person(name: "bob", age: 25)
+  fact person(name: "carol", age: 30)
+
+  rule person_name(?name) :- person(name: ?name, age: ?)
+  rule person_row(?name, ?age) :- person(name: ?name, age: ?age)
+
+  -- applied, BOTH free vars bound → Relation[Unit] (membership). (alice, 30) is a
+  -- fact, so the relation is non-empty.
+  operation aliceRowPresent() -> Bool effects Error =
+    let r = person_row("alice", 30)
+    r.isEmpty
+
+  -- applied, both bound but NO such row → empty membership relation.
+  operation ghostRowPresent() -> Bool effects Error =
+    let r = person_row("ghost", 99)
+    r.isEmpty
+
+  -- applied, bind name POSITIONALLY → the age column narrows T to Relation[Int64]
+  -- (1-collapse). alice appears once (age 30).
+  operation alicesAges() -> List[Int64] effects Error =
+    let r = person_row("alice")
+    r.takeN(5)
+
+  -- applied, bind age BY PARAM NAME → the name column narrows T to Relation[String].
+  -- both alice and carol are 30.
+  operation namesAged30() -> List[String] effects Error =
+    let r = person_row(age: 30)
+    r.takeN(5)
+
+  -- the bound value is a LOCAL (an operation parameter), not a literal.
+  operation agesOf(who: String) -> List[Int64] effects Error =
+    let r = person_row(who)
+    r.takeN(5)
+end
+"#;
+
+/// Applied form binding EVERY free variable → a 0-column `Relation[Unit]` membership
+/// relation: `person_row("alice", 30)` is provable (a fact), so it is non-empty.
+#[test]
+fn wi714_applied_full_binding_is_membership() {
+    let mut interp = interp_for(SRC3);
+    let present = interp
+        .call("test.wi714applied.aliceRowPresent", &[])
+        .expect("aliceRowPresent runs the fully-bound relation");
+    assert_eq!(
+        present.as_bool(),
+        Some(false),
+        "a fully-bound relation matching a fact is a non-empty membership relation"
+    );
+    let ghost = interp
+        .call("test.wi714applied.ghostRowPresent", &[])
+        .expect("ghostRowPresent runs the fully-bound relation");
+    assert_eq!(
+        ghost.as_bool(),
+        Some(true),
+        "a fully-bound relation matching no fact is empty"
+    );
+}
+
+/// Applied form binding one free variable POSITIONALLY subtracts that column: the
+/// remaining single column narrows `T` (1-collapse), so `person_row("alice")` is a
+/// `Relation[Int64]` of alice's ages.
+#[test]
+fn wi714_applied_positional_binding_narrows_schema() {
+    let mut interp = interp_for(SRC3);
+    let r = interp
+        .call("test.wi714applied.alicesAges", &[])
+        .expect("alicesAges drains the partially-bound relation");
+    let mut got = collect_int_list(&r);
+    got.sort();
+    assert_eq!(
+        got,
+        vec![30],
+        "binding name leaves the age column, materialized (1-collapse) to Int64"
+    );
+}
+
+/// Applied form binding a free variable BY PARAM NAME (`age: 30`) subtracts the age
+/// column; the name column narrows `T` to `Relation[String]`. alice and carol are 30.
+#[test]
+fn wi714_applied_named_binding_narrows_schema() {
+    let mut interp = interp_for(SRC3);
+    let r = interp
+        .call("test.wi714applied.namesAged30", &[])
+        .expect("namesAged30 drains the named-bound relation");
+    let mut got = collect_string_list(&r);
+    got.sort();
+    assert_eq!(
+        got,
+        vec!["alice".to_string(), "carol".to_string()],
+        "binding age by param name leaves the name column"
+    );
+}
+
+/// The bound value can be any expression — here an operation parameter (`who`),
+/// evaluated and spliced into the relation's goal atom.
+#[test]
+fn wi714_applied_binding_from_local() {
+    let mut interp = interp_for(SRC3);
+    let r = interp
+        .call("test.wi714applied.agesOf", &[Value::Str("bob".into())])
+        .expect("agesOf drains the relation bound to a local");
+    let got = collect_int_list(&r);
+    assert_eq!(got, vec![25], "the local's value binds the name column");
+}
+
+/// A supplied argument whose type is incompatible with the column it binds is a loud
+/// LOAD error (age is `Int64`; binding it to a `String` cannot narrow the schema).
+#[test]
+fn wi714_applied_type_mismatch_rejected() {
+    let src = r#"
+namespace test.wi714badtype
+  import anthill.prelude.{String, Int64, List}
+
+  sort Person
+    entity person(name: String, age: Int64)
+  end
+
+  rule person_row(?name, ?age) :- person(name: ?name, age: ?age)
+
+  operation bad() -> List[String] effects Error =
+    let r = person_row(age: "notanumber")
+    r.takeN(5)
+end
+"#;
+    let errs = try_load_kb_with(src).err().unwrap_or_default();
+    assert!(
+        errs.iter().any(|e| e.contains("incompatible type")),
+        "a type-incompatible bound argument must be a loud load error, got: {errs:?}"
+    );
+}
+
+/// Supplying more positional arguments than the relation has free columns is a loud
+/// LOAD error.
+#[test]
+fn wi714_applied_arity_overflow_rejected() {
+    let src = r#"
+namespace test.wi714arity
+  import anthill.prelude.{String, Int64, List}
+
+  sort Person
+    entity person(name: String, age: Int64)
+  end
+
+  rule person_name(?name) :- person(name: ?name, age: ?)
+
+  operation bad() -> List[String] effects Error =
+    let r = person_name("alice", "extra")
+    r.takeN(5)
+end
+"#;
+    let errs = try_load_kb_with(src).err().unwrap_or_default();
+    assert!(
+        errs.iter().any(|e| e.contains("no free column")),
+        "a positional-arity overflow must be a loud load error, got: {errs:?}"
+    );
+}
+
+/// A named argument whose key names no free column is a loud LOAD error.
+#[test]
+fn wi714_applied_unknown_param_rejected() {
+    let src = r#"
+namespace test.wi714unknown
+  import anthill.prelude.{String, Int64, List}
+
+  sort Person
+    entity person(name: String, age: Int64)
+  end
+
+  rule person_row(?name, ?age) :- person(name: ?name, age: ?age)
+
+  operation bad() -> List[String] effects Error =
+    let r = person_row(nope: 3)
+    r.takeN(5)
+end
+"#;
+    let errs = try_load_kb_with(src).err().unwrap_or_default();
+    assert!(
+        errs.iter().any(|e| e.contains("names no free column")),
+        "an unknown named param must be a loud load error, got: {errs:?}"
+    );
+}
+
+/// The applied form works through a QUALIFIED name too — `ns.rule(args)` (the
+/// proposal's `Sort.rule(args)`) — because the citation resolves the fn-term name to
+/// the rule symbol via existing name resolution, then the same `kind_of(fn_sym)` arm
+/// fires. Here the rule lives in one namespace and is applied, qualified, from
+/// another.
+#[test]
+fn wi714_applied_qualified_name() {
+    const DATA: &str = r#"
+namespace test.wi714q.data
+  import anthill.prelude.{String, Int64}
+
+  sort Person
+    entity person(name: String, age: Int64)
+  end
+  fact person(name: "alice", age: 30)
+  fact person(name: "bob", age: 25)
+
+  rule person_row(?name, ?age) :- person(name: ?name, age: ?age)
+end
+"#;
+    const USE: &str = r#"
+namespace test.wi714q.use
+  import anthill.prelude.{String, Int64, List}
+
+  operation bobsAges() -> List[Int64] effects Error =
+    let r = test.wi714q.data.person_row("bob")
+    r.takeN(5)
+end
+"#;
+    let kb = crate::common::try_load_kb_with_files(&[DATA, USE])
+        .unwrap_or_else(|errs| panic!("qualified applied reference must load; got: {errs:?}"));
+    let mut interp = anthill_core::eval::Interpreter::new(kb);
+    anthill_core::eval::builtins::register_standard_builtins(&mut interp)
+        .expect("register builtins");
+    let r = interp
+        .call("test.wi714q.use.bobsAges", &[])
+        .expect("bobsAges runs the qualified-applied relation");
+    assert_eq!(
+        collect_int_list(&r),
+        vec![25],
+        "a qualified `ns.rule(args)` binds and narrows exactly like the unqualified form"
+    );
+}
+
+// ── Applied binding operates on COLUMNS, not raw head slots (review edge cases) ──
+
+const SRC4: &str = r#"
+namespace test.wi714cols
+  import anthill.prelude.{String, Int64, List, Bool}
+
+  sort Person
+    entity person(name: String, age: Int64)
+  end
+  fact person(name: "alice", age: 30)
+  fact person(name: "bob", age: 25)
+
+  sort Score
+    entity score(rank: Int64, who: String)
+  end
+  fact score(rank: 1, who: "alice")
+  fact score(rank: 1, who: "carol")
+  fact score(rank: 2, who: "bob")
+
+  -- NONLINEAR head: ?n fills BOTH slots but is ONE column → bare Relation[String].
+  rule twin(?n, ?n) :- person(name: ?n, age: ?)
+
+  -- applied binds the SINGLE column n (all its slots) → Relation[Unit] membership,
+  -- NOT a residual echo column. alice is a person, ghost is not.
+  operation aliceIsTwin() -> Bool effects Error =
+    let r = twin("alice")
+    r.isEmpty
+  operation ghostIsTwin() -> Bool effects Error =
+    let r = twin("ghost")
+    r.isEmpty
+
+  -- head with a GROUND slot (rank 1) BEFORE the free var `who` → bare Relation[String]
+  -- of rank-1 names. Positional application binds the free COLUMN (who), not the
+  -- ground slot — the ground slot must not block left-to-right column binding.
+  rule rankOne(1, ?who) :- score(rank: 1, who: ?who)
+
+  operation aliceIsRankOne() -> Bool effects Error =
+    let r = rankOne("alice")
+    r.isEmpty
+  operation bobIsRankOne() -> Bool effects Error =
+    let r = rankOne("bob")
+    r.isEmpty
+end
+"#;
+
+/// A NONLINEAR head column bound by the applied form subtracts the WHOLE column (both
+/// its slots), yielding a `Relation[Unit]` membership relation — not a residual "echo"
+/// column. `twin("alice")` is membership: alice is a person, ghost is not.
+#[test]
+fn wi714_applied_nonlinear_column_binds_as_one() {
+    let mut interp = interp_for(SRC4);
+    let alice = interp
+        .call("test.wi714cols.aliceIsTwin", &[])
+        .expect("aliceIsTwin runs the nonlinear-bound relation");
+    assert_eq!(
+        alice.as_bool(),
+        Some(false),
+        "binding the single nonlinear column gives a provable (non-empty) membership relation"
+    );
+    let ghost = interp
+        .call("test.wi714cols.ghostIsTwin", &[])
+        .expect("ghostIsTwin runs the nonlinear-bound relation");
+    assert_eq!(
+        ghost.as_bool(),
+        Some(true),
+        "a non-person is not a twin — the membership relation is empty"
+    );
+}
+
+/// Positional application binds the relation's free COLUMNS left to right, so a GROUND
+/// head slot before a free var (`rankOne(1, ?who)`) does NOT block positional binding:
+/// `rankOne("alice")` binds the sole `who` column (not a load error).
+#[test]
+fn wi714_applied_positional_skips_ground_slot() {
+    let mut interp = interp_for(SRC4);
+    let alice = interp
+        .call("test.wi714cols.aliceIsRankOne", &[])
+        .expect("aliceIsRankOne binds the free column past the ground slot");
+    assert_eq!(
+        alice.as_bool(),
+        Some(false),
+        "alice is rank 1 — the positionally-bound membership relation is non-empty"
+    );
+    let bob = interp
+        .call("test.wi714cols.bobIsRankOne", &[])
+        .expect("bobIsRankOne runs the relation");
+    assert_eq!(
+        bob.as_bool(),
+        Some(true),
+        "bob is rank 2, not rank 1 — the membership relation is empty"
+    );
+}
+
+/// When two head columns share a type variable (`eq(?x, ?y)` types both at one `T`),
+/// the applied type-check threads ONE substitution, so a contradictory pair of bound
+/// values (`pair_eq(5, "s")`) is rejected loudly — arg 0 pins `T := Int64`, then `"s"`
+/// fails against it (not each arg passing in isolation).
+#[test]
+fn wi714_applied_correlated_columns_reject_contradiction() {
+    let src = r#"
+namespace test.wi714corr
+  import anthill.prelude.{String, Int64, List, Bool}
+
+  -- ?x and ?y are forced to one type by `eq(?x, ?y)`.
+  rule pair_eq(?x, ?y) :- eq(?x, ?y)
+
+  operation bad() -> Bool effects Error =
+    let r = pair_eq(5, "s")
+    r.isEmpty
+end
+"#;
+    let errs = try_load_kb_with(src).err().unwrap_or_default();
+    assert!(
+        errs.iter().any(|e| e.contains("incompatible type")),
+        "contradictory bindings of correlated columns must be a loud load error, got: {errs:?}"
+    );
+}
+
+/// Binding an UNCONSTRAINED column (a polymorphic head param the body pins to no
+/// concrete type) is ACCEPTED, not spuriously rejected — a raw column type var accepts
+/// any argument (it is not the reflect `TypeVar` wildcard `types_compatible` alone
+/// recognizes). Binding it also NARROWS the shared column: `rel(?x, ?y) :- eq(?x, ?y)`
+/// types both columns at one var, so `rel(5)` pins that var to `Int64` — the surviving
+/// `y` column is `Int64`, proven by a `List[String]` consumer being rejected while the
+/// matching `List[Int64]` one loads.
+#[test]
+fn wi714_applied_unconstrained_column_accepts_and_narrows() {
+    // The matching consumer loads: binding is accepted AND the surviving column is Int64.
+    let ok_src = r#"
+namespace test.wi714poly
+  import anthill.prelude.{String, Int64, List, Bool}
+
+  rule rel(?x, ?y) :- eq(?x, ?y)
+
+  operation relFiveInt() -> List[Int64] effects Error =
+    let r = rel(5)
+    r.takeN(3)
+end
+"#;
+    try_load_kb_with(ok_src).unwrap_or_else(|errs| {
+        panic!("binding an unconstrained column must be accepted and narrow to Int64; got: {errs:?}")
+    });
+
+    // The MISmatched consumer is rejected: the surviving column narrowed to Int64, so a
+    // `List[String]` result is a type error (were the column left an open var, it would
+    // wrongly unify with String and load).
+    let bad_src = r#"
+namespace test.wi714poly2
+  import anthill.prelude.{String, Int64, List, Bool}
+
+  rule rel(?x, ?y) :- eq(?x, ?y)
+
+  operation relFiveStr() -> List[String] effects Error =
+    let r = rel(5)
+    r.takeN(3)
+end
+"#;
+    let errs = try_load_kb_with(bad_src).err().unwrap_or_default();
+    assert!(
+        !errs.is_empty(),
+        "binding x = 5 narrows the shared column to Int64, so a List[String] result must \
+         be rejected — the column did not stay an open var"
+    );
+}
+
+/// Decode an anthill `List[Int64]` value (`cons(head, tail)` chain, `nil` end) into a
+/// `Vec<i64>`.
+fn collect_int_list(v: &Value) -> Vec<i64> {
+    let mut out = Vec::new();
+    let mut cur = v.clone();
+    loop {
+        match cur {
+            Value::Entity { ref named, .. } if !named.is_empty() => {
+                let mut head: Option<i64> = None;
+                let mut tail: Option<Value> = None;
+                for (_k, val) in named.iter() {
+                    match val {
+                        Value::Int(n) => head = Some(*n),
+                        Value::Entity { .. } => tail = Some(val.clone()),
+                        _ => {}
+                    }
+                }
+                match (head, tail) {
+                    (Some(h), Some(t)) => {
+                        out.push(h);
+                        cur = t;
+                    }
+                    _ => break,
+                }
+            }
+            _ => break,
+        }
+    }
+    out
+}
+
 /// Decode an anthill `List[String]` value (`cons(head, tail)` chain, `nil` end)
 /// into a `Vec<String>`.
 fn collect_string_list(v: &Value) -> Vec<String> {

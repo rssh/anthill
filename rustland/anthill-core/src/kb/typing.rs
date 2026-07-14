@@ -2828,13 +2828,13 @@ fn check_bare_ref(
     Err(TypeError::UnresolvedName { span, name: sym })
 }
 
-/// WI-714 (proposal 052) C3 — synthesize the `Relation[T]` type a rule reference
-/// denotes. `T` is the named tuple of the relation's free head parameters in
-/// declaration order — **1-collapsed** to the element for one, **`Unit`** for zero
-/// (a boolean/membership relation) — each column typed at the **lub** of that head
-/// parameter across the relation's clauses (WI-287 `join_types`; a disjoint pair
-/// with no lub is a load error, never a silent widen to `Term`). `sym` is a rule
-/// label or head functor (the caller gates on `SymbolKind::Goal | Rule`).
+/// WI-714 (proposal 052) C3 — synthesize the `Relation[T]` type a BARE rule
+/// reference denotes. `T` is the named tuple of the relation's free head parameters
+/// in declaration order — **1-collapsed** to the element for one, **`Unit`** for
+/// zero (a boolean/membership relation) — each column typed at the **lub** of that
+/// head parameter across the relation's clauses (WI-287 `join_types`; a disjoint
+/// pair with no lub is a load error, never a silent widen to `Term`). `sym` is a
+/// rule label or head functor (the caller gates on `SymbolKind::Goal | Rule`).
 ///
 /// The access-effect row `E ⊇ {Error}` is threaded through the `provides` edge; it
 /// is not pinned on the sort here (Typing §3) — a follow-up increment.
@@ -2844,6 +2844,128 @@ fn relation_reference_type(
     span: Option<Span>,
     occ: &Rc<NodeOccurrence>,
 ) -> Result<Value, TypeError> {
+    let columns = relation_columns_across_clauses(kb, sym, span)?;
+    relation_type_from_columns(kb, sym, columns, occ.span, span)
+}
+
+/// WI-714 (proposal 052) — the APPLIED citation position: a rule NAME applied to
+/// arguments (`queens(board)`, `queryTwoParams(x: 3)`). Each supplied argument
+/// **binds** a COLUMN — a positional arg by column ordinal (arg `i` ↦ the i-th
+/// column), a named arg by column name (`x: 3` ↦ column `x`; rule params are
+/// positional-with-names) — which **subtracts** that column, narrowing `T` (§8.3
+/// partial-entity expansion). A supplied argument's type must be compatible with its
+/// column's type (a loud error otherwise). The remaining free columns synthesize `T`
+/// exactly as the bare form does.
+///
+/// Binding is on the relation's dedup'd COLUMNS (its schema), not the raw head slots,
+/// so it matches what the user sees typed: a nonlinear head column binds as one
+/// parameter, and a ground head slot before a free var doesn't block positional
+/// binding (see [`resolve_relation_arg_columns`]).
+///
+/// Eval re-derives the applied form via `kind_of(functor)` (its `Expr::Apply` rule
+/// arm), so no `CallClass` mark is written; the SAME [`resolve_relation_arg_columns`]
+/// binding plan over the SAME [`rule_head_var_slots`] enumeration drives the eval-side
+/// splicing, keeping the two in lockstep.
+fn relation_reference_type_applied(
+    kb: &mut KnowledgeBase,
+    sym: Symbol,
+    pos_args: &[Rc<NodeOccurrence>],
+    named_args: &[(Symbol, Rc<NodeOccurrence>)],
+    pos_results: &[Result<TypeResult, TypeError>],
+    named_results: &[Result<TypeResult, TypeError>],
+    span: Option<Span>,
+    occ: &Rc<NodeOccurrence>,
+) -> Result<Value, TypeError> {
+    let columns = relation_columns_across_clauses(kb, sym, span)?;
+    let arg_err = |kb: &KnowledgeBase, msg: String| TypeError::Other {
+        site: TypeError::here(),
+        span,
+        context: TypeErrorContext::Rule { name: sym, field: RuleField::Whole },
+        expected: "supplied arguments that bind the relation's free columns".to_string(),
+        actual: format!("{} (relation `{}`)", msg, kb.qualified_name_of(sym)),
+    };
+    // The relation's ordered, dedup'd COLUMN NAMES (a nonlinear head var is ONE
+    // column). Binding operates on these, so `bound[i]` is the column the i-th supplied
+    // argument (positionals first, then named) binds. A bad arity / unknown param /
+    // double-bind is a loud error.
+    let mut seen: std::collections::HashSet<Symbol> = std::collections::HashSet::new();
+    let column_names: Vec<Symbol> =
+        columns.iter().map(|c| c.name).filter(|n| seen.insert(*n)).collect();
+    let named_keys: Vec<Symbol> = named_args.iter().map(|(k, _)| *k).collect();
+    let bound = resolve_relation_arg_columns(&column_names, pos_args.len(), &named_keys)
+        .map_err(|e| arg_err(kb, e.message(kb)))?;
+    // Type-check each supplied argument against the column it binds, threading ONE
+    // shared substitution so a column type constrained by an earlier argument is
+    // enforced on a later one — for a relation whose head columns share a type
+    // variable (`rel(?x, ?y) :- eq(?x, ?y)`, both typed at one `T`), binding `rel(5,
+    // "s")` binds `T := Int64` from arg 0, then rejects `"s"` against it. `bound[i]`
+    // aligns with the i-th argument, matching how `pos_results` ++ `named_results` index.
+    let mut subst = Substitution::new();
+    for (i, cname) in bound.iter().enumerate() {
+        let col_ty = columns
+            .iter()
+            .find(|c| c.name == *cname)
+            .map(|c| c.ty.clone())
+            .expect("a bound column name is one of the relation's columns");
+        let arg_res = if i < pos_results.len() {
+            &pos_results[i]
+        } else {
+            &named_results[i - pos_results.len()]
+        };
+        if let Ok(arg) = arg_res {
+            // Resolve the column type through the accumulated σ (a correlated
+            // column's var may already be pinned by an earlier argument).
+            let col_ty = walk_type_deep_value(kb, &subst, &col_ty);
+            // An UNCONSTRAINED column (a bare type var — a head param the body pins to
+            // no concrete type, e.g. `rel(?x, ?y) :- eq(?x, ?y)`) accepts ANY argument:
+            // BIND it to the argument's type (via σ) so a later correlated argument is
+            // checked against the pin, and the surviving free columns narrow with it.
+            // A CONCRETE column type is checked by subtyping. Binding to an
+            // unconstrained column via `types_compatible` alone would spuriously reject
+            // (a raw `Var::Global` is not its `TypeVar` wildcard), rejecting the valid,
+            // runnable `rel(5)`.
+            let ok = if let Some(vid) = resolved_var(kb, &col_ty) {
+                bind_resolved(kb, &mut subst, vid, arg.ty.clone())
+            } else {
+                types_compatible(kb, &mut subst, &arg.ty, &col_ty)
+            };
+            if !ok {
+                return Err(arg_err(
+                    kb,
+                    format!(
+                        "argument binding column `{}` has an incompatible type",
+                        kb.resolve_sym(*cname)
+                    ),
+                ));
+            }
+        }
+    }
+    // Subtract the bound columns (BY NAME — every slot of a nonlinear column goes): the
+    // remaining free columns narrow `T`, resolved through σ so a column correlated with
+    // a bound one carries its now-pinned type (`rel(5)` → `Relation[Int64]`, not an
+    // unresolved var).
+    let free: Vec<ClauseColumn> = columns
+        .into_iter()
+        .filter(|c| !bound.contains(&c.name))
+        .map(|mut c| {
+            c.ty = walk_type_deep_value(kb, &subst, &c.ty);
+            c
+        })
+        .collect();
+    relation_type_from_columns(kb, sym, free, occ.span, span)
+}
+
+/// WI-714 — the free-variable columns of a relation, merged across its clauses:
+/// compound-var heads rejected loudly, each column's type the **lub** of that SLOT
+/// across every clause (aligned by slot IDENTITY, not free-column index), and a
+/// heterogeneous free-slot interface rejected loudly. Shared by the bare
+/// ([`relation_reference_type`]) and applied ([`relation_reference_type_applied`])
+/// citation positions; before-dedup so the applied form can subtract bound slots.
+fn relation_columns_across_clauses(
+    kb: &mut KnowledgeBase,
+    sym: Symbol,
+    span: Option<Span>,
+) -> Result<Vec<ClauseColumn>, TypeError> {
     let qn = kb.qualified_name_of(sym).to_string();
     let rids = kb.rule_ids_by_qn(&qn);
     let first = *rids
@@ -2904,7 +3026,20 @@ fn relation_reference_type(
             }
         }
     }
-    let sp = occ.span;
+    Ok(columns)
+}
+
+/// WI-714 — assemble the `Relation[T = schema, E = {Error}]` value type from a final
+/// (post-subtraction) column list: dedup by name (a nonlinear head var is ONE
+/// column), 1-collapse to the element / `Unit` for zero, else the named tuple.
+/// Shared by both citation positions.
+fn relation_type_from_columns(
+    kb: &mut KnowledgeBase,
+    sym: Symbol,
+    columns: Vec<ClauseColumn>,
+    sp: crate::span::SourceSpan,
+    span: Option<Span>,
+) -> Result<Value, TypeError> {
     // Dedup by column NAME: a nonlinear head variable (`twin(?n, ?n)`) fills two
     // slots but is ONE logical column (same var ⟹ same name) — keep the first.
     let mut seen_names: std::collections::HashSet<Symbol> = std::collections::HashSet::new();
@@ -2962,8 +3097,10 @@ fn relation_reference_type(
 /// WI-714 — the identity of a rule-head argument SLOT, stable across a relation's
 /// clauses so the cross-clause column lub aligns a slot with ITSELF (not with a
 /// free-column index that shifts when a clause pins a different slot to a constant).
+/// `pub(crate)` so the eval-side applied builder shares the SAME head-slot enumeration
+/// ([`rule_head_var_slots`]) as the typer, keeping the two in lockstep.
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum SlotKey {
+pub(crate) enum SlotKey {
     Pos(usize),
     Named(Symbol),
 }
@@ -2977,50 +3114,65 @@ struct ClauseColumn {
     ty: Value,
 }
 
-/// WI-714 — the free-variable COLUMNS of one relation clause, in declaration order.
-/// A head slot holding a bare variable (`Var::DeBruijn`, how rules store head
-/// params) is a free column; a ground or compound slot is not (a compound slot is
-/// rejected upstream by [`clause_head_has_compound_var`]). The column TYPE is the
-/// explicit `?x: T` bound if present, else the type inferred from the var's
-/// op-param / entity-field positions (`collect_rule_var_types`, keyed by DeBruijn
-/// index), else a fresh type var (an unconstrained column).
+/// WI-714 — the free-variable SLOTS of a rule's head: `(slot, name, debruijn)` in
+/// declaration order (positionals first, then named). A head slot holding a bare
+/// variable (`Var::DeBruijn`, how rules store head params) is a free slot named by the
+/// head parameter — the field key for a named slot, else the source variable name
+/// recovered by the reversed DeBruijn `globals[len-1-d]`. Ground / compound slots are
+/// omitted (a compound-var slot is rejected upstream by [`clause_head_has_compound_var`]).
+///
+/// This is the SINGLE source of a relation's head slots, shared by the typer
+/// ([`relation_clause_columns`], which attaches column types via `debruijn`) and eval
+/// (`build_relation_value`, which splices bound slots / freshens free ones) — so the
+/// typed schema and the runtime column set are enumerated identically and cannot
+/// drift. An out-of-range reversed-DeBruijn (a malformed head, non-reachable for a
+/// well-formed rule) is skipped on BOTH sides, retiring the old typer-`continue`
+/// vs eval-`Err` asymmetry.
+pub(crate) fn rule_head_var_slots(kb: &KnowledgeBase, rid: RuleId) -> Vec<(SlotKey, Symbol, u32)> {
+    let head = match kb.rule_head_value(rid) {
+        Value::Term { id, .. } => *id,
+        _ => return Vec::new(),
+    };
+    let globals = kb.rule_globals(rid);
+    let n = globals.len();
+    let (pos_args, named_args) = match kb.get_term(head) {
+        Term::Fn { pos_args, named_args, .. } => (pos_args.clone(), named_args.clone()),
+        _ => return Vec::new(),
+    };
+    let mut slots: Vec<(SlotKey, Symbol, u32)> =
+        Vec::with_capacity(pos_args.len() + named_args.len());
+    for (i, &a) in pos_args.iter().enumerate() {
+        if let Term::Var(Var::DeBruijn(d)) = kb.get_term(a) {
+            let d = *d;
+            if let Some(v) = globals.get(n.wrapping_sub(1).wrapping_sub(d as usize)) {
+                slots.push((SlotKey::Pos(i), v.name(), d));
+            }
+        }
+    }
+    for &(k, a) in named_args.iter() {
+        if let Term::Var(Var::DeBruijn(d)) = kb.get_term(a) {
+            slots.push((SlotKey::Named(k), k, *d));
+        }
+    }
+    slots
+}
+
+/// WI-714 — the free-variable COLUMNS of one relation clause, in declaration order:
+/// [`rule_head_var_slots`] with a TYPE attached to each. The column TYPE is the
+/// explicit `?x: T` bound if present, else the type inferred from the var's op-param /
+/// entity-field positions (`collect_rule_var_types`, keyed by DeBruijn index), else a
+/// fresh type var (an unconstrained column).
 fn relation_clause_columns(kb: &mut KnowledgeBase, rid: RuleId) -> Vec<ClauseColumn> {
     let head = match kb.rule_head_value(rid).clone() {
         Value::Term { id, .. } => id,
         _ => return Vec::new(),
     };
-    let globals = kb.rule_globals(rid).to_vec();
     let body_nodes: Vec<Rc<NodeOccurrence>> = kb.rule_body_nodes(rid).to_vec();
     let (var_types, _contradiction) = collect_rule_var_types(kb, head, &body_nodes);
     let type_bounds: Vec<(u32, TermId)> = kb.rule_type_bounds(rid).to_vec();
-    let (pos_args, named_args) = match kb.get_term(head) {
-        Term::Fn { pos_args, named_args, .. } => (pos_args.clone(), named_args.clone()),
-        _ => return Vec::new(),
-    };
-    let n = globals.len();
-    // Ordered slots: positionals first (keyed by index), then named (keyed by field
-    // symbol) — matching the eval-side goal atom in `build_relation_value`.
-    let mut slots: Vec<(SlotKey, TermId, Option<Symbol>)> =
-        Vec::with_capacity(pos_args.len() + named_args.len());
-    for (i, &a) in pos_args.iter().enumerate() {
-        slots.push((SlotKey::Pos(i), a, None));
-    }
-    for &(k, a) in named_args.iter() {
-        slots.push((SlotKey::Named(k), a, Some(k)));
-    }
-    let mut columns: Vec<ClauseColumn> = Vec::new();
-    for (slot, arg, key) in slots {
-        let d = match kb.get_term(arg) {
-            Term::Var(Var::DeBruijn(idx)) => *idx,
-            _ => continue, // ground / compound slot — bound, not a free column
-        };
-        let name = match key {
-            Some(k) => k,
-            None => match globals.get(n.wrapping_sub(1).wrapping_sub(d as usize)) {
-                Some(v) => v.name(),
-                None => continue,
-            },
-        };
+    let slots = rule_head_var_slots(kb, rid);
+    let mut columns: Vec<ClauseColumn> = Vec::with_capacity(slots.len());
+    for (slot, name, d) in slots {
         let ty = if let Some((_, t)) = type_bounds.iter().find(|(i, _)| *i == d) {
             Value::term(*t)
         } else if let Some(t) = var_types.get(&d) {
@@ -3061,6 +3213,80 @@ fn clause_head_has_compound_var(kb: &KnowledgeBase, rid: RuleId) -> bool {
 /// interface the schema synthesis does not yet support.
 fn slot_keys_match(a: &[ClauseColumn], b: &[ClauseColumn]) -> bool {
     a.len() == b.len() && a.iter().all(|ca| b.iter().any(|cb| cb.slot == ca.slot))
+}
+
+/// WI-714 — why an applied rule reference's supplied arguments don't map cleanly to
+/// the relation's free COLUMNS. Rendered to a message by [`Self::message`] and wrapped
+/// in a loud `TypeError` (typer) / `EvalError` (eval).
+pub(crate) enum RelationArgError {
+    /// A positional argument beyond the relation's columns (`edge(?x)` given two
+    /// positional args). 0-based index.
+    PositionalOutOfRange(usize),
+    /// A named argument whose key names no free column.
+    UnknownParam(Symbol),
+    /// A named argument binding a column a positional argument already bound.
+    DoubleBind(Symbol),
+}
+
+impl RelationArgError {
+    pub(crate) fn message(&self, kb: &KnowledgeBase) -> String {
+        match self {
+            Self::PositionalOutOfRange(i) => format!(
+                "positional argument #{} has no free column to bind",
+                i + 1
+            ),
+            Self::UnknownParam(k) => format!(
+                "named argument `{}` names no free column",
+                kb.resolve_sym(*k)
+            ),
+            Self::DoubleBind(k) => format!(
+                "named argument `{}` binds a column already bound positionally",
+                kb.resolve_sym(*k)
+            ),
+        }
+    }
+}
+
+/// WI-714 — the binding plan for an APPLIED rule reference: which COLUMN each supplied
+/// argument binds. Binding operates on the relation's ordered, dedup'd COLUMNS (its
+/// schema) — NOT the raw head slots — so it matches what the user sees typed: a
+/// positional argument at index `i` binds `column_names[i]` (the i-th column left to
+/// right, skipping ground head slots), and a named argument `k` binds the column named
+/// `k` (rule params are positional-with-names — `queryTwoParams(x: 3)` binds param
+/// `x`). Returns the bound column NAMES in supplied order (positionals first, then
+/// `named_keys` order), so the i-th entry aligns with the i-th supplied argument.
+///
+/// Column-based (not slot-based) binding is what makes a NONLINEAR head column
+/// (`twin(?n, ?n)` → one column `n`) bind as ONE parameter (→ `Relation[Unit]`, not a
+/// residual echo column), and a ground head slot before a free var (`ranked(1, ?name)`)
+/// positionally bindable (`ranked("alice")` binds the sole `name` column). A positional
+/// overrun, an unknown param name, or a double-bind is a loud error. Shared by the
+/// typer ([`relation_reference_type_applied`]) and eval (`build_relation_value`) so the
+/// schema-subtraction and the runtime column set never diverge.
+pub(crate) fn resolve_relation_arg_columns(
+    column_names: &[Symbol],
+    n_pos: usize,
+    named_keys: &[Symbol],
+) -> Result<Vec<Symbol>, RelationArgError> {
+    let mut bound: Vec<Symbol> = Vec::with_capacity(n_pos + named_keys.len());
+    // Positional args bind columns left to right.
+    for i in 0..n_pos {
+        let name = *column_names
+            .get(i)
+            .ok_or(RelationArgError::PositionalOutOfRange(i))?;
+        bound.push(name);
+    }
+    // Named args bind the column of the matching name.
+    for &k in named_keys {
+        if !column_names.contains(&k) {
+            return Err(RelationArgError::UnknownParam(k));
+        }
+        if bound.contains(&k) {
+            return Err(RelationArgError::DoubleBind(k));
+        }
+        bound.push(k);
+    }
+    Ok(bound)
 }
 
 /// WI-206: whether `expected` is the reflect `Type` sort — the slot in which a
@@ -6176,6 +6402,36 @@ fn check_apply_iter(
             .and_then(|r| r.as_ref().ok())
             .map(|r| r.effects.clone())
             .unwrap_or_default();
+        return Ok(TypeResult { ty, env: env.clone(), effects, node: Rc::clone(occ) });
+    }
+
+    // WI-714 (proposal 052) — the APPLIED citation position: a rule NAME applied to
+    // arguments (`queens(board)`, `queryTwoParams(x: 3)`) is a `Relation[T]` value
+    // with the supplied columns bound (subtracted from the free columns → narrows T).
+    // A rule is never an operation, so without this it would fall through Path 1 →
+    // Path 3 and die as `UnknownApplyFunctor`. Eval re-derives via `kind_of(functor)`
+    // (its `Expr::Apply` rule arm), the applied peer of `check_bare_ref`'s rule arm;
+    // the value is pure to construct, so the apply's effects are its arguments' —
+    // running the relation carries `{Error}` through the `provides` edge, not here.
+    //
+    // Gated to EXPRESSION context (`!in_rule_body`): inside a rule body a rule name
+    // applied to arguments is a relational SUBGOAL (reached here only via
+    // `dispatch_dots_in_occ` for a dot-bearing atom), never a `Relation` VALUE — the
+    // value reading belongs to functional/operation code. In rule-body context this
+    // falls through, preserving the pre-WI-714 behavior there.
+    if !env.in_rule_body()
+        && matches!(
+            kb.kind_of(fn_sym),
+            Some(crate::intern::SymbolKind::Goal | crate::intern::SymbolKind::Rule)
+        )
+    {
+        let ty = relation_reference_type_applied(
+            kb, fn_sym, pos_args, named_args, pos_results, named_results, span, occ,
+        )?;
+        let mut effects: Vec<Value> = Vec::new();
+        for r in pos_results.iter().chain(named_results.iter()).flatten() {
+            merge_effects_into(kb, &mut effects, &r.effects);
+        }
         return Ok(TypeResult { ty, env: env.clone(), effects, node: Rc::clone(occ) });
     }
 
