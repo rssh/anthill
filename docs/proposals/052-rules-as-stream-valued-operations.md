@@ -434,14 +434,23 @@ missing requirement surfaces at query time, not load; the runtime path itself is
 
 ## Future direction — associated (dispatched) relations: relations as *spec members*
 
-052 makes a relation a first-class **value**. A separate axis, surfaced while specifying rule visibility
-under `requires`: a relation as a **dispatched spec member** — the relational dual of a spec operation.
+052 makes a relation a first-class **value**. A separate axis, surfaced while pinning down how `requires`
+reaches a spec's rules: a relation as a **per-instance-dispatched spec member** — the relational dual of a
+spec operation.
 
-**The asymmetry it removes.** `requires Spec` gives a sort the dispatch of Spec's **operations** (a
-per-instance dictionary; bare-reachable, [044 Open questions](044-unified-name-resolution.md)) but
-reaches no **rules**: a rule is one *global* relation, so making `requires` bring a *static* rule into
-scope would be mere name aliasing — that is `import`'s job, and the two concerns stay orthogonal (044). A
-rule earns a place under `requires` only if it too is **per-instance dispatched**.
+**Baseline — what already holds (no operations-vs-rules asymmetry).** `requires Spec` is **sort
+composition**: it splices Spec's scope in as a parent, and Spec's contents are reachable bare in the
+requiring sort. This is **uniform across operations and rules** — a spec's rules are bare-callable through
+`requires` exactly as its operations are (verified) — *subject to the same variant-exposure filter*: a
+required sort carrying `entity` variants leaks only those constructors, hiding its operations **and** its
+rules alike; an entity-less sort (a spec) leaks everything (WI-291 / [044](044-unified-name-resolution.md)).
+So a spec's **static** rules already compose in; there is no visibility gap to close.
+
+**The genuine gap — per-instance dispatch.** A spec *operation* is abstract: each provider supplies its
+own impl, selected at the call by the discharged requirement (the dictionary). A spec *rule* today is
+concrete: **one fixed clause set, shared by every requirer**. What is missing is the relational analogue
+of operation dispatch — a spec rule whose **clauses are supplied per provider** and selected at
+resolution. That, not visibility, is what this feature adds.
 
 **The construct.** A spec declares a rule **head with no clauses** (a relational signature); each
 instance **provides** clauses; generic code `requires`-ing the spec cites the rule bare and it resolves
@@ -467,15 +476,24 @@ a per-instance relation. This is to a relation what `Ordered.compare` (declared 
 type) is to a function. Static rules force the alternative: thread the graph explicitly
 (`reachable(g, ?a, ?b) :- edge_of(g, ?a, ?b)`) — the boilerplate dispatch removes for operations.
 
-**Dispatch = requirement-directed clause selection** (the one genuinely-new engine capability). Bare
-`edge` in a `requires Graph` clause resolves to the clauses of the *discharged* `Graph` instance, read
-from the resolver's Γ — the SLD analog of a frame's `requirements`, already threaded for rule-body
-requirements by **WI-300 / `find_dictionary`** (§Requirements in a clause body). The surface, schema, and
-coherence rule are comparatively easy; this selection step is the load-bearing part.
+**What it needs (NOT visibility — that already works via `requires` composition).** Two pieces:
+1. **Provider-scoped clauses** — a provider's `rule edge …` associated with *its provision*, not with the
+   global `rules_by_functor` / `rules_by_label` index every rule lands in today. (The spec's own `edge` is
+   a clause-less signature, like an abstract operation.)
+2. **Requirement-directed clause selection** (the load-bearing engine capability) — bare `edge` in a
+   `requires Graph` clause fires the *discharged* `Graph` instance's clauses, read from the resolver's Γ
+   (the SLD analog of a frame's `requirements`, already threaded for rule-body requirements by **WI-300 /
+   `find_dictionary`**, §Requirements in a clause body). This is the clause-level parallel of **WI-222
+   defer-to-requirement** for operations.
+
+The surface and the coherence rule are comparatively easy; piece 2 is the crux. Because name resolution is
+untouched (the name already composes in), the work is entirely in *storage* + *resolver dispatch*.
 
 **Coherence (resolution policy; owned by [044](044-unified-name-resolution.md)).**
-- `requires Spec` brings an associated-rule NAME into scope **only as a dispatched member**, never as a
-  static alias (static visibility stays `import` / qualification).
+- An **associated** rule is one whose spec-level head is **clause-less** (a signature) — firing it selects
+  the *discharged provider's* clauses. A spec's ordinary (clause-bearing) rule stays **static** — one
+  shared relation, composed in unchanged. The two are distinguished by the spec-head having clauses or not,
+  not by a new visibility rule.
 - **Ambiguity is a LOAD error** (decided). Two required specs declaring the same associated-rule name ⟹
   bare use is ambiguous ⟹ reject at load, qualify to disambiguate. Decidable statically at the `requires`
   site — unlike a plain unqualified rule miss, which is a *silent* 0-solutions — so it is loud by
