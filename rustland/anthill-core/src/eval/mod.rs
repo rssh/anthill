@@ -1020,6 +1020,12 @@ impl Interpreter {
             Done,
             YieldSelf(Value),
             PumpResolver(crate::kb::resolve::SearchStream),
+            // WI-714: pump the resolver one step, then MATERIALIZE the yielded
+            // Solution onto `columns` into a named-tuple row (see below).
+            PumpMaterialized {
+                search: crate::kb::resolve::SearchStream,
+                columns: std::rc::Rc<[(crate::intern::Symbol, crate::kb::term::VarId)]>,
+            },
             PumpLeft { left: value::StreamHandle, right: value::StreamHandle },
         }
 
@@ -1030,6 +1036,17 @@ impl Interpreter {
             StreamSource::Resolver(Some(stream)) => (
                 StreamSource::Resolver(None),
                 Action::PumpResolver(stream),
+            ),
+            // WI-714: a materializing resolver — same pump lifecycle as `Resolver`
+            // (take the `SearchStream`, leave `None` transiently), but its yielded
+            // element is the materialized named-tuple row, not the raw `Solution`.
+            StreamSource::MaterializedResolver { search: None, columns } => (
+                StreamSource::MaterializedResolver { search: None, columns },
+                Action::Done,
+            ),
+            StreamSource::MaterializedResolver { search: Some(stream), columns } => (
+                StreamSource::MaterializedResolver { search: None, columns: columns.clone() },
+                Action::PumpMaterialized { search: stream, columns },
             ),
             StreamSource::Pure(mut slot) => match slot.take() {
                 Some(v) => (StreamSource::Empty, Action::YieldSelf(v)),
@@ -1062,6 +1079,27 @@ impl Interpreter {
                         });
                         let solution = self.make_solution_value(sol)?;
                         Ok(Some((solution, handle.clone())))
+                    }
+                    None => {
+                        stream_arena.with_source_mut(handle, |_| (StreamSource::Empty, ()));
+                        Ok(None)
+                    }
+                }
+            }
+            Action::PumpMaterialized { search, columns } => {
+                // WI-714: pump one resolver step, then materialize the answer onto
+                // the relation's free variables (`columns`) — the one place a
+                // relation solution becomes a value row.
+                let result = search.split_first(&mut self.kb);
+                let stream_arena = self.streams.clone();
+                match result {
+                    Some((sol, rest)) => {
+                        let cols = columns.clone();
+                        stream_arena.with_source_mut(handle, move |_| {
+                            (StreamSource::MaterializedResolver { search: Some(rest), columns: cols }, ())
+                        });
+                        let row = self.materialize_solution(sol, &columns)?;
+                        Ok(Some((row, handle.clone())))
                     }
                     None => {
                         stream_arena.with_source_mut(handle, |_| (StreamSource::Empty, ()));
@@ -1127,5 +1165,57 @@ impl Interpreter {
         // field; `subst`/`residual` are NOT in alphabetical order.
         self.kb.canonicalize_record_named_args(functor, &mut named);
         Ok(Value::Entity { functor, pos: Vec::new().into(), named: named.into() })
+    }
+
+    /// WI-714 (proposal 052 §Typing 2): materialize one resolver `Solution` onto a
+    /// relation's free variables — the ONE place a relation answer becomes a value
+    /// row. `columns` is `(column name, free VarId)` in the relation's declaration
+    /// order; each column reads its bound value out of the answer substitution (a
+    /// flat lookup by `VarId`, mirroring `Substitution.lookup`; an unbound free var
+    /// carries as itself, a `Value::Var`). The row is a named-tuple `Value::Tuple`,
+    /// keyed by column name (order-faithful, §4.6), 1-COLLAPSED to the element value
+    /// for a single column and to `Value::Unit` for zero (a boolean/membership
+    /// relation — non-empty ⇔ provable). Definite and floundered (`undecided`)
+    /// answers materialize identically off `sol.subst`; NotFound is just the empty
+    /// stream, no bespoke nil arm.
+    fn materialize_solution(
+        &mut self,
+        sol: crate::kb::resolve::Solution,
+        columns: &[(crate::intern::Symbol, crate::kb::term::VarId)],
+    ) -> Result<Value, EvalError> {
+        use crate::kb::term::Var;
+        // Zero free variables → Unit (membership relation).
+        if columns.is_empty() {
+            return Ok(Value::Unit);
+        }
+        let mut named: Vec<(crate::intern::Symbol, Value)> = Vec::with_capacity(columns.len());
+        for &(name, vid) in columns {
+            // Read the binding through `resolve_as_value` — the single canonical
+            // substitution reader (WI-348), which chases the PARENT frame chain. A
+            // plain `bindings` scan would miss a binding held in a parent frame and
+            // wrongly report the column unbound. The resolver binds a var to a
+            // hash-consed `Value::Term`; REIFY it to a native value (scalar const →
+            // scalar Value, constructor → entity) so the column reads as its element
+            // sort, not a raw Term handle — a `Relation[String]` yields `Value::Str`,
+            // a `Relation[Board]` an entity. An unbound free var carries as itself.
+            let bound = match sol.subst.resolve_as_value(vid).cloned() {
+                Some(Value::Term { id, .. }) => crate::eval::builtins::term_to_value(self, id),
+                Some(v) => v,
+                None => Value::Var(Var::Global(vid)),
+            };
+            named.push((name, bound));
+        }
+        // One free variable → the element value (1-collapse).
+        if named.len() == 1 {
+            return Ok(named.pop().unwrap().1);
+        }
+        // A named tuple is an ORDERED PRODUCT — its field order IS the relation
+        // schema (§4.6). So, unlike `make_solution_value` (which canonicalizes a
+        // Solution ENTITY into its declared field order), the row is built in
+        // column / declaration order and deliberately NOT re-sorted by field name.
+        Ok(Value::Tuple {
+            pos: Vec::<Value>::new().into(),
+            named: named.into(),
+        })
     }
 }

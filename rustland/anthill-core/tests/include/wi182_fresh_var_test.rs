@@ -55,8 +55,8 @@ fn fresh_var_drives_pattern_query_end_to_end() {
     // rules and stays a pure builtin smoke.
     let src = r#"
 namespace test.wi182_query
-  import anthill.prelude.{LogicalStream, Option, Pair, String, Error}
-  import anthill.prelude.LogicalStream.{splitFirst}
+  import anthill.prelude.{LogicalStream, Stream, Option, Pair, String, Error}
+  import anthill.prelude.Stream.{splitFirst}
   import anthill.prelude.Pair.{pair}
   import anthill.prelude.Option.{some, none}
   import anthill.reflect.{Term, Substitution, Solution, fresh_var, as_term}
@@ -83,6 +83,9 @@ namespace test.wi182_query
     let name_var = fresh_var[String]("p")
     let goal = Item(id: id_var, name: name_var)
     let stream = execute(kb(), pattern_query(term: as_term(goal)))
+    -- WI-714: `execute` yields a `Stream[Solution]`; split it via `Stream.splitFirst`
+    -- (imported unqualified; LogicalStream.splitFirst's self-receiver no longer
+    -- accepts a bare Stream).
     let head = splitFirst(stream)
     match head
       case none() -> "no-solution"
@@ -90,7 +93,7 @@ namespace test.wi182_query
 
   -- WI-531: the stream element is a `Solution` (definite | undecided); read the
   -- binding off whichever arm (this Item query is definite).
-  operation after_split(p: Pair[A = Solution, B = LogicalStream]) -> String =
+  operation after_split(p: Pair[A = Solution, B = Stream]) -> String =
     match p
       case pair(definite(subst), _)     -> after_lookup(lookup(subst, "p"))
       case pair(undecided(subst, _), _) -> after_lookup(lookup(subst, "p"))

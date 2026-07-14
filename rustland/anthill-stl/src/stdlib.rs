@@ -62,6 +62,7 @@ pub static SOURCES: &[(&str, &str)] = &[
     ("anthill/prelude/finite_stream", include_str!("../../../stdlib/anthill/prelude/finite_stream.anthill")),
     ("anthill/prelude/finite_combinators", include_str!("../../../stdlib/anthill/prelude/finite_combinators.anthill")),
     ("anthill/prelude/logical_stream", include_str!("../../../stdlib/anthill/prelude/logical_stream.anthill")),
+    ("anthill/prelude/relation", include_str!("../../../stdlib/anthill/prelude/relation.anthill")),
     ("anthill/prelude/lattice", include_str!("../../../stdlib/anthill/prelude/lattice.anthill")),
     ("anthill/prelude/effects", include_str!("../../../stdlib/anthill/prelude/effects.anthill")),
     ("anthill/prelude/effects-runtime", include_str!("../../../stdlib/anthill/prelude/effects-runtime.anthill")),

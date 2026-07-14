@@ -15,20 +15,38 @@ sort anthill.prelude.LogicalStream
   import anthill.prelude.Pair.{pair}
 
   sort T = ?
+  -- WI-714 / proposal 052: LogicalStream carries the search access-effect row E
+  -- (⊇ {Error}: running a query can raise — a depth limit, or an `Error.raise`
+  -- from an operation body evaluated during resolution). Previously `fact
+  -- Stream[T]` bound only T and dropped E, so an inherited Stream op typed at
+  -- `{}` instead of the resolver's row. E is threaded through the `Stream`
+  -- provision below, exactly as `Stream` threads its own E into `Iterable`.
+  effects E = ?
 
   -- LogicalStream satisfies Stream for any T.
   -- Stream operations (head, tail, splitFirst, takeN, collect, isEmpty)
   -- are inherited — not redeclared here.
   -- LogicalStream must provide splitFirst (Stream's primitive);
   -- head, tail, isEmpty derive from Stream's rules.
-  fact Stream[T]
+  -- WI-714: binds Stream.E = LogicalStream.E (not a bare `fact Stream[T]`), so
+  -- LogicalStream.splitFirst's `effects s.E` REFINES Stream.splitFirst's `effects
+  -- s.E` (same row) instead of widening a decoupled fresh row — and so the row
+  -- threads Relation → LogicalStream → Stream to the inherited consumption ops.
+  fact Stream[T = T, E = E]
 
   -- ================================================================
   -- Stream primitive (required by fact Stream[T])
   -- ================================================================
 
-  operation splitFirst(s: LogicalStream[?A])
-    -> Option[Pair[?A,  LogicalStream[?A]]]
+  -- WI-714: threads the access-effect row `s.E` (like Stream.splitFirst) — both as
+  -- the incurred effect AND through the TAIL (`LogicalStream[T = s.T, E = s.E]`), so
+  -- a recursive consumer sees ONE effect var (not a fresh `rest.E`), and a carrier
+  -- that provides LogicalStream at a concrete row (Relation at {Error}) REFINES this
+  -- instead of widening it (override-refinement, WI-347). A value typed as a bare
+  -- `Stream` (e.g. `execute`'s `Stream[Solution]`) splits via `Stream.splitFirst`.
+  operation splitFirst(s: LogicalStream)
+    -> Option[Pair[A = s.T, B = LogicalStream[T = s.T, E = s.E]]]
+    effects s.E
 
   -- ================================================================
   -- Logic-specific construction

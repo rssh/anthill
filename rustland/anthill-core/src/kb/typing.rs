@@ -10242,29 +10242,29 @@ fn collect_provides_candidates(
             let per_call_value = match goal_binding_value(kb, goal, *binding_short) {
                 Some(t) => t,
                 None => {
-                    // WI-387: the goal under-constrains this spec param (no
-                    // per-call value). On the CARRIER-LESS compat path (provider
-                    // admissibility — "does some carrier provide Stream?"), a
-                    // written EFFECT-ROW binding (`E = {}` on `List provides
-                    // Stream[E = {}]`) is NON-discriminating for dispatch — it
-                    // carries the observation effect, not the carrier identity —
-                    // so it must not drop the candidate, and two providers still
-                    // resolve `Ambiguous` (the dispatch analogue of FIX 3: a
-                    // provided concrete `E` covers, it does not demand). A TYPE
-                    // binding the goal omits (a concrete `T = Int` on `fact
-                    // Eq[T = Int]`) IS discriminating and keeps the strict reject —
-                    // else every concrete `Eq` impl would match a bare `Eq` goal
-                    // (a coherence violation: wi325 / wi237). The CONCRETE
-                    // self-receiver path (`goal.carrier = Some`) also keeps the
-                    // strict reject: its carrier filter already selected the impl
-                    // and WI-357's pre-dispatch element re-walk threads the type,
-                    // so altering its outcome would regress element threading
-                    // (wi357).
-                    let is_effect_row = matches!(
-                        type_dispatch_name_view(kb, &TermIdView(*candidate_value)),
-                        Some("effects_rows")
-                    );
-                    if goal.carrier.is_none() && is_effect_row {
+                    // WI-387 + WI-714: the goal under-constrains this spec param (no
+                    // per-call value). The decision turns on the param's ROLE:
+                    //  - An EFFECT-ROW param the goal omits is NON-discriminating on
+                    //    BOTH paths — carrier-less (provider admissibility: "does some
+                    //    carrier provide Stream?") AND the concrete self-receiver path
+                    //    (`goal.carrier = Some`), where the carrier filter above has
+                    //    ALREADY selected the impl. A row is the observation effect,
+                    //    not carrier identity, so it must not drop the candidate (two
+                    //    providers still resolve `Ambiguous`; the dispatch analogue of
+                    //    FIX 3 — a provided `E` covers, it does not demand). Keyed on
+                    //    the SPEC PARAM (`sort_param_is_effect_row`), not the binding
+                    //    value's surface shape, so it holds whether the provider writes
+                    //    a concrete row (`E = {}`) OR threads its own param (`E = E`,
+                    //    LogicalStream / Relation — a bare param ref, not an
+                    //    `effects_rows` literal); else `head`/`find` on such a carrier
+                    //    resolve `NoCandidates`.
+                    //  - A TYPE param the goal omits (a concrete `T = Int` on `fact
+                    //    Eq[T = Int]`) IS discriminating and keeps the strict reject —
+                    //    else every concrete `Eq` impl would match a bare `Eq` goal (a
+                    //    coherence violation: wi325 / wi237); WI-357's pre-dispatch
+                    //    element re-walk owns the self-receiver element threading.
+                    let param_name = kb.resolve_sym(*binding_short).to_string();
+                    if sort_param_is_effect_row(kb, goal.spec_sort, &param_name) {
                         continue;
                     }
                     all_match = false;

@@ -1,0 +1,45 @@
+-- Relation[T]: a rule cited by name as a first-class, composable query value —
+-- the typed, composable face of a LogicalQuery (proposal 052 / WI-714).
+--
+-- Two faces, connected by `provides`:
+--   * Intensional (Relation): a query not yet run. Its inputs can be bound, and
+--     it composes — join / where / union / negate / project (landed as increments,
+--     each mapping to a LogicalQuery constructor).
+--   * Extensional (LogicalStream, via `provides`): a Relation IS a LogicalStream,
+--     so it runs and is consumed through the ordinary Stream API (head / headOption
+--     / map / find / toList / …). The provision runs the query LAZILY — `splitFirst`
+--     advances the resolver one solution (= 026.1 `execute`) and MATERIALIZES that
+--     solution's substitution onto the relation's free variables into a named-tuple
+--     record, in declaration order.
+--
+-- T = the schema: the named tuple of the relation's free head parameters. Two
+--   degenerate arities collapse at the typer's schema boundary — one free variable
+--   presents as that element (`Relation[Board]`), zero free variables as `Unit`.
+-- E = the search access-effect row (⊇ {Error}): running a query is NOT pure —
+--   search can raise (a depth limit, or an `Error.raise` from an operation body
+--   evaluated during resolution), exactly `execute`'s `effects Error`. The provides
+--   edge threads it so every inherited Stream op types at {Error}, not {}.
+sort anthill.prelude.Relation
+  import anthill.prelude.{LogicalStream, Option, Pair}
+
+  sort T = ?              -- schema: named tuple of the free head parameters
+  -- E is threaded abstractly (like FiniteStream/Stream) so the `provides` override
+  -- REFINES rather than widens (WI-347). The concrete pin `E ⊇ {Error}` is applied
+  -- where a rule reference actually produces a `Relation[T]` value (the resolver's
+  -- `execute` carries `effects Error`) — Typing §3, "the provides edge threads E".
+  effects E = ?
+
+  -- A Relation IS a LogicalStream (for consumption): the provided stream runs the
+  -- query and yields materialized `T` rows. Providing LogicalStream gives the whole
+  -- consumption chain transitively — Relation → LogicalStream → Stream — so the
+  -- Stream API is inherited, not re-implemented.
+  provides LogicalStream[T = T, E = E]
+
+  -- The Stream primitive LogicalStream requires (§Design). Body-less: the runtime
+  -- supplies it by running the query (026.1 `execute`) and materializing each
+  -- answer's substitution onto the free variables as the named-tuple row `T`. The
+  -- continuation is an ordinary LogicalStream over the resolver's remaining answers.
+  operation splitFirst(r: Relation)
+    -> Option[Pair[A = r.T, B = LogicalStream[T = r.T, E = r.E]]]
+    effects r.E
+end

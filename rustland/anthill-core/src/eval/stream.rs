@@ -24,7 +24,9 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use crate::intern::Symbol;
 use crate::kb::resolve::SearchStream;
+use crate::kb::term::VarId;
 
 use super::value::Value;
 
@@ -53,6 +55,19 @@ pub enum StreamSource {
     /// on each pump and replaced with the continuation, so the arena slot
     /// is always valid but holds `None` transiently during a pump.
     Resolver(Option<SearchStream>),
+    /// WI-714 (proposal 052): a resolver search whose yielded `Solution`s are
+    /// MATERIALIZED onto a relation's free variables — the runtime backing of a
+    /// `Relation[T]` consumed as a stream. Like `Resolver`, but each pull projects
+    /// the answer substitution onto `columns` (`(column name, free VarId)` in the
+    /// relation's declaration order) into a named-tuple `Value::Tuple` row —
+    /// 1-collapsing to the element for a single column, to `Value::Unit` for zero.
+    /// This is the ONE place a relation solution materializes (§Typing 2); the
+    /// continuation stays a `MaterializedResolver`, so every pull materializes
+    /// identically. `search` is `take()`n per pump like `Resolver`.
+    MaterializedResolver {
+        search: Option<SearchStream>,
+        columns: Rc<[(Symbol, VarId)]>,
+    },
     /// No solutions.
     Empty,
     /// Exactly one solution — the contained `Value`.

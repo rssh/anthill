@@ -32,6 +32,9 @@ mod wi708_body_type_arg_read_test;
 #[path = "include/wi716_optional_fact_none_fill_test.rs"]
 mod wi716_optional_fact_none_fill_test;
 
+#[path = "include/wi714_relation_materialize_test.rs"]
+mod wi714_relation_materialize_test;
+
 #[path = "include/wi023_quantified_constraint_test.rs"]
 mod wi023_quantified_constraint_test;
 

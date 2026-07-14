@@ -1919,7 +1919,7 @@ namespace test.m4_ancestor
   fact ancestor(parent: alice, child: bob)
   fact ancestor(parent: bob, child: carol)
 
-  operation drain(s: LogicalStream) -> Int64 =
+  operation drain(s: LogicalStream) -> Int64 effects s.E =
     match splitFirst(s)
       case some(pair(_, rest)) -> 1 + drain(rest)
       case none() -> 0
@@ -2004,7 +2004,7 @@ namespace test.m4_multi
   fact ancestor(parent: alice, child: bob)
   fact ancestor(parent: bob, child: carol)
 
-  operation drain(s: LogicalStream) -> Int64 =
+  operation drain(s: LogicalStream) -> Int64 effects s.E =
     match splitFirst(s)
       case some(pair(_, rest)) -> 1 + drain(rest)
       case none() -> 0
@@ -2069,7 +2069,7 @@ namespace test.m4_take
   import anthill.prelude.Pair.{pair}
   import anthill.prelude.Ordered.{gt}
 
-  operation takeN(s: LogicalStream, n: Int64) -> Int64 =
+  operation takeN(s: LogicalStream, n: Int64) -> Int64 effects s.E =
     if gt(n, 0) then
       match splitFirst(s)
         case some(pair(_, rest)) -> 1 + takeN(rest, n - 1)
